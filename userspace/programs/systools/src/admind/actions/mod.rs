@@ -1260,6 +1260,9 @@ registry![
     apps::Hold,
     apps::Unhold,
     apps::Remove,
+    apps::Search,
+    apps::Sheet,
+    apps::Install,
 ];
 
 /// The actions the console offers: [`REGISTRY`], and in a lab build the

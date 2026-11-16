@@ -635,6 +635,7 @@ fn the_list_says_which_changes_compare_a_probe_and_which_always_changed() {
             "apps.hold",
             "apps.unhold",
             "apps.remove",
+            "apps.install",
         ]
     );
     for action in console.as_array().unwrap() {

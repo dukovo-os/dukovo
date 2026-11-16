@@ -3,16 +3,18 @@
 
 //! The apps' actions (ADR 0515): the apps everyone has, one app's sheet,
 //! and an update, a way back, a hold or a removal of one, as `bundle`
-//! does them. The area is `apps`, the scope a token needs.
+//! does them, and what the catalogs list: a search of them, an app's sheet
+//! before it is installed, and its install. The area is `apps`, the scope a
+//! token needs.
 //!
 //! An app is named by its ID as `manifest` checks it, with its line after
 //! an `@` when it has one (`org.nodejs.node@22`). No ID is one bare word,
 //! so `/api/1/apps/update`, the address that updates every app, is never
 //! an app's.
 //!
-//! The list and the sheet are the person's own: what any account may see
-//! of the apps. Every change is the machine's, made for everyone, which
-//! is an administrator's: `--for-everyone`.
+//! The list, the sheet and what the catalogs list are the person's own:
+//! what any account may see of the apps. Every change is the machine's,
+//! made for everyone, which is an administrator's: `--for-everyone`.
 //!
 //! The bundles live under `/applications`, which admind does not see, so
 //! no change names a file and each says whether it changed anything from
@@ -37,6 +39,14 @@ const TESTS: Tests = Tests {
     browser: "web-console/apps",
     ansible: "web-console/ansible",
 };
+
+/// The tests of the actions that read the catalogs and install from them,
+/// whose page is the one that adds an app.
+const CATALOG_TESTS: Tests = Tests { browser: "web-console/add-app", ..TESTS };
+
+/// Where the apps everyone has are: a folder of each, by its ID with its
+/// line. admind does not see it, which is why a change here names no file.
+const FOLDER: &str = "/applications";
 
 /// The most characters of an app's ID with its line: the ID is at most
 /// 255, which `check_full_id` holds, and its line three numbers.
@@ -746,6 +756,264 @@ impl Action for Remove {
     }
 }
 
+/// The most words a search takes.
+const WORDS_MOST: usize = 5;
+
+/// The most characters of a word of a search.
+const WORD_MAX: usize = 64;
+
+/// What the words of a search match, as the schema says it: none, or one
+/// to five of one to 64 lowercase letters, digits, dots, `@` and hyphens,
+/// each after a single space. Written as [`check_words`] enforces it.
+const WORDS_PATTERN: &str = "^([a-z0-9.@-]{1,64}( [a-z0-9.@-]{1,64}){0,4})?$";
+
+/// The words of a search, which the page lowercases and joins with
+/// spaces.
+const WORDS: Field = Field::text(
+    "words",
+    "What to look for in the apps' IDs and names: up to five words of lowercase letters, \
+     digits, dots, @ and hyphens, separated by spaces. None lists every app.",
+    0,
+    WORDS_MOST * WORD_MAX + (WORDS_MOST - 1),
+    Some(WORDS_PATTERN),
+)
+.optional();
+
+/// Checks the words of a search: none, or up to [`WORDS_MOST`] of
+/// [`WORDS_PATTERN`]'s characters, each after a single space.
+fn check_words(words: &str) -> Result<(), Bad> {
+    let one = |word: &str| {
+        (1..=WORD_MAX).contains(&word.len())
+            && word
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b".@-".contains(&b))
+    };
+    if words.is_empty() || (words.split(' ').count() <= WORDS_MOST && words.split(' ').all(one)) {
+        return Ok(());
+    }
+    Err(Bad {
+        field: "words",
+        why: format!(
+            "A search takes up to {WORDS_MOST} words of lowercase letters, digits, dots, @ and \
+             hyphens, each after a single space. Nothing was searched."
+        ),
+    })
+}
+
+/// What a search looks for.
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Searching {
+    /// The words, or none for every app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub words: Option<String>,
+}
+
+impl Args for Searching {
+    const FIELDS: &'static [Field] = &[WORDS];
+
+    fn check(&self) -> Result<(), Bad> {
+        self.words.as_deref().map_or(Ok(()), check_words)
+    }
+}
+
+/// `bundle search [WORD...] --json` as the person: the newest version of
+/// each app the catalogs list, whose ID or name holds every word, with its
+/// flaws and the version installed, and each catalog that could not be
+/// read. When none could be read the command says so with its status, 1,
+/// and its output is still the answer, which names them.
+pub struct Search;
+
+impl Action for Search {
+    const ID: &'static str = "apps.search";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/apps/catalog/search";
+    const RUNS: Runs = Runs::AsThePerson;
+    const ERRORS: &'static [&'static str] = &["APP-103"];
+    const ANSWERS: &'static [i32] = &[0, 1];
+    const TESTS: Tests = CATALOG_TESTS;
+    const TITLE: &'static str = "Search the catalogs' apps";
+    type Args = Searching;
+
+    /// The words come after `--`, so that none is read as an option.
+    fn argv(args: &Searching) -> Vec<String> {
+        let mut argv = ["bundle", "search", "--json"].map(String::from).to_vec();
+        let words: Vec<&str> = args.words.iter().flat_map(|words| words.split(' ')).collect();
+        if !words.is_empty() && words != [""] {
+            argv.push("--".into());
+            argv.extend(words.into_iter().map(String::from));
+        }
+        argv
+    }
+
+    fn examples() -> Examples<Searching> {
+        Examples {
+            good: vec![Searching { words: None }, Searching { words: Some("notes".into()) }],
+            bad: vec![
+                json!({ "words": "a b c d e f" }),
+                json!({ "words": "../x" }),
+                json!({ "words": "Notes" }),
+                json!({ "words": "two  spaces" }),
+                json!({ "words": ["notes"] }),
+            ],
+            undo: None,
+        }
+    }
+}
+
+/// `bundle sheet ID --json` as the person: the sheet of the newest version
+/// of the app that the first catalog that lists it offers, as an install
+/// shows it, with which file it is: nothing is installed. It fetches the
+/// file, so a page asks for it only when a person opens an app.
+pub struct Sheet;
+
+impl Action for Sheet {
+    const ID: &'static str = "apps.sheet";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/apps/catalog/{id}/sheet";
+    const RUNS: Runs = Runs::AsThePerson;
+    const ERRORS: &'static [&'static str] = &["APP-101", "APP-103"];
+    const TESTS: Tests = CATALOG_TESTS;
+    const TITLE: &'static str = "Read an app's sheet before it is installed";
+    type Args = Named;
+
+    fn argv(args: &Named) -> Vec<String> {
+        vec!["bundle".into(), "sheet".into(), args.id.clone(), "--json".into()]
+    }
+
+    fn subject(args: &Named) -> Option<String> {
+        Some(args.id.clone())
+    }
+
+    fn examples() -> Examples<Named> {
+        named_examples(None)
+    }
+}
+
+/// The SHA-256 of a file, as `bundle sheet --json` says it: 64 lowercase
+/// hexadecimal digits.
+const SHA256_PATTERN: &str = "^[0-9a-f]{64}$";
+
+/// The hash of the file whose sheet was read: optional, 64 lowercase
+/// hexadecimal digits.
+const SHA256: Field = Field::text(
+    "sha256",
+    "The SHA-256 of the file whose sheet was read, as the sheet says it. The install is refused \
+     when the catalog offers another file now.",
+    64,
+    64,
+    Some(SHA256_PATTERN),
+)
+.optional();
+
+/// An app to install from the catalogs, and the file whose sheet was read.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Installing {
+    pub id: String,
+    /// The SHA-256 of the file the install may take, if it is said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
+impl Args for Installing {
+    const FIELDS: &'static [Field] = &[ID, SHA256];
+
+    fn check(&self) -> Result<(), Bad> {
+        check_id("id", &self.id)?;
+        let Some(sha256) = &self.sha256 else { return Ok(()) };
+        if sha256.len() == 64
+            && sha256.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Ok(());
+        }
+        Err(Bad {
+            field: "sha256",
+            why: "A file's SHA-256 is 64 lowercase hexadecimal digits, as its sheet says it. \
+                  Nothing was installed."
+                .into(),
+        })
+    }
+}
+
+/// `bundle install ID --for-everyone --yes [--sha256 HASH]`: the newest
+/// version of the app that the catalogs list, for everyone, as a task; with
+/// the hash of the sheet that was read, only that file.
+pub struct Install;
+
+impl Action for Install {
+    const ID: &'static str = "apps.install";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = true;
+    const PATH: &'static str = "/api/1/apps/catalog/{id}/install";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const LONG: bool = true;
+    const ERRORS: &'static [&'static str] = &["APP-101", "APP-102", "APP-103"];
+    const TESTS: Tests = CATALOG_TESTS;
+    const TITLE: &'static str = "Install an app from the catalogs";
+    type Args = Installing;
+
+    fn argv(args: &Installing) -> Vec<String> {
+        let mut argv = ["bundle", "install"].map(String::from).to_vec();
+        argv.extend([args.id.clone(), "--for-everyone".to_string(), "--yes".to_string()]);
+        if let Some(sha256) = &args.sha256 {
+            argv.extend(["--sha256".to_string(), sha256.clone()]);
+        }
+        argv
+    }
+
+    fn subject(args: &Installing) -> Option<String> {
+        Some(args.id.clone())
+    }
+
+    /// Run again once the app is there, it does nothing: its folder is the
+    /// sign that it was done.
+    fn ansible(args: &Installing) -> Ansible {
+        let mut task = Ansible::command(
+            format!("{}: {}", Self::TITLE, args.id),
+            &Self::argv(args),
+            true,
+            true,
+        );
+        task.params.insert("creates".into(), format!("{FOLDER}/{}", args.id).into());
+        task
+    }
+
+    fn probe(_: &Installing) -> Option<Vec<String>> {
+        Some(list_argv())
+    }
+
+    fn probed(args: &Installing, output: &str) -> Option<String> {
+        picked(&args.id, output)
+    }
+
+    /// Installed already, whatever its version, when everyone's list has a
+    /// row of it: the Ansible task is then skipped, and so is the install.
+    fn settled(_: &Installing, now: &str) -> Option<bool> {
+        Some(now != "none")
+    }
+
+    fn examples() -> Examples<Installing> {
+        Examples {
+            good: vec![Installing { id: EXAMPLE.into(), sha256: None }],
+            bad: vec![
+                json!({ "id": EXAMPLE, "sha256": "xyz" }),
+                json!({ "id": EXAMPLE, "sha256": "AB".repeat(32) }),
+                json!({ "id": "Notes" }),
+                json!({ "id": "../x" }),
+            ],
+            // What was installed is taken away again, with the data the
+            // app made kept.
+            undo: Some(Undo {
+                action: "apps.remove",
+                args: json!({ "id": EXAMPLE, "data": "keep" }),
+            }),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::{Caller, Found, REGISTRY, Registered, authorize, find};
@@ -1130,6 +1398,240 @@ mod tests {
             assert_eq!(session(false, true, id), Err(Kind::NotAdmin), "{id}");
             assert_eq!(session(true, false, id), Err(Kind::Locked), "{id}");
             assert_eq!(session(true, true, id), Ok(()), "{id}");
+        }
+    }
+
+    /// What `bundle sheet ID --json` and the other reads of the catalogs
+    /// are: the commands' JSON, run as the person.
+    #[test]
+    fn a_search_and_a_sheet_are_the_commands_json_run_as_the_person() {
+        let search = action("apps.search");
+        assert_eq!(
+            (search.changes(), search.runs(), search.path(), search.long(), search.posts()),
+            (false, Runs::AsThePerson, "/api/1/apps/catalog/search", false, false)
+        );
+        // 1 is no catalog that could be read, and the JSON says which.
+        assert_eq!(
+            (search.answers(), search.errors()),
+            ([0, 1].as_slice(), ["APP-103"].as_slice())
+        );
+        assert!(!search.compares());
+        let argv = |args: Value| search.prepare(args).unwrap().argv;
+        assert_eq!(argv(json!({})), ["bundle", "search", "--json"]);
+        assert_eq!(argv(json!({ "words": "" })), ["bundle", "search", "--json"]);
+        assert_eq!(
+            argv(json!({ "words": "notes" })),
+            ["bundle", "search", "--json", "--", "notes"]
+        );
+        // A word is never an option, whatever it starts with.
+        assert_eq!(
+            argv(json!({ "words": "web-server -x @1 a.b" })),
+            ["bundle", "search", "--json", "--", "web-server", "-x", "@1", "a.b"]
+        );
+        let five = "a b c d e";
+        assert_eq!(argv(json!({ "words": five })).len(), 3 + 1 + 5);
+        for words in [
+            "a b c d e f",
+            "../x",
+            "Notes",
+            "two  spaces",
+            " leading",
+            "trailing ",
+            "tab\tword",
+            "line\nbreak",
+            "é",
+            &"x".repeat(65),
+        ] {
+            let (kind, field, _) = refused("apps.search", json!({ "words": words }));
+            assert_eq!((kind, field), (Kind::BadValue, Some("words")), "{words:?}");
+        }
+        assert!(search.prepare(json!({ "words": "x".repeat(64) })).is_ok());
+        assert_eq!(refused("apps.search", json!({ "words": ["notes"] })).0, Kind::BadRequest);
+        assert_eq!(refused("apps.search", json!({ "all": true })).0, Kind::BadRequest);
+        // The pattern the schema carries is the one the check enforces.
+        let pattern = WORDS_PATTERN;
+        assert!(pattern.starts_with("^(") && pattern.ends_with(")?$"));
+        assert_eq!(pattern.matches("{1,64}").count(), 2);
+        assert!(pattern.contains(&format!("{{0,{}}}", WORDS_MOST - 1)));
+
+        let sheet = action("apps.sheet");
+        assert_eq!(
+            (sheet.changes(), sheet.runs(), sheet.path(), sheet.long(), sheet.posts()),
+            (false, Runs::AsThePerson, "/api/1/apps/catalog/{id}/sheet", false, false)
+        );
+        assert_eq!(
+            (sheet.answers(), sheet.errors()),
+            ([0].as_slice(), ["APP-101", "APP-103"].as_slice())
+        );
+        let prepared = sheet.prepare(json!({ "id": "org.nodejs.node@22" })).unwrap();
+        assert_eq!(prepared.argv, ["bundle", "sheet", "org.nodejs.node@22", "--json"]);
+        assert!(prepared.files.is_empty() && prepared.probe.is_none());
+        assert!(!prepared.ansible.become_root);
+        for id in ["Notes", "../x", "", "org.example.notes\n"] {
+            let (kind, field, _) = refused("apps.sheet", json!({ "id": id }));
+            assert_eq!((kind, field), (Kind::BadValue, Some("id")), "{id:?}");
+        }
+        assert_eq!(refused("apps.sheet", json!({})).0, Kind::BadRequest);
+    }
+
+    #[test]
+    fn an_install_names_the_file_whose_sheet_was_read_and_is_a_task_that_leaves_the_app_there() {
+        let install = action("apps.install");
+        assert_eq!(
+            (install.changes(), install.runs(), install.path(), install.long(), install.posts()),
+            (true, Runs::AsAdministrator, "/api/1/apps/catalog/{id}/install", true, true)
+        );
+        assert_eq!(
+            (install.answers(), install.errors()),
+            ([0].as_slice(), ["APP-101", "APP-102", "APP-103"].as_slice())
+        );
+        assert!(install.compares());
+        let without = install.prepare(json!({ "id": "org.example.notes" })).unwrap();
+        assert_eq!(
+            without.argv,
+            ["bundle", "install", "org.example.notes", "--for-everyone", "--yes"]
+        );
+        let hash = "0123456789abcdef".repeat(4);
+        let with = install.prepare(json!({ "id": "org.nodejs.node@22", "sha256": hash })).unwrap();
+        assert_eq!(
+            with.argv,
+            [
+                "bundle",
+                "install",
+                "org.nodejs.node@22",
+                "--for-everyone",
+                "--yes",
+                "--sha256",
+                &hash
+            ]
+        );
+        // Bundles are not under the settings: no file, and a read of the list says what moved.
+        for prepared in [&without, &with] {
+            assert!(prepared.files.is_empty());
+            assert_eq!(
+                prepared.probe.as_deref(),
+                Some(&["bundle", "list", "--json"].map(String::from)[..])
+            );
+        }
+        // Ansible: the command, as root, that does nothing when the app's folder is there.
+        assert!(with.ansible.become_root);
+        assert_eq!(with.ansible.params["creates"], "/applications/org.nodejs.node@22");
+        let yaml = super::super::show::yaml(&with.ansible);
+        assert!(yaml.contains("    creates: \"/applications/org.nodejs.node@22\"\n"), "{yaml}");
+        assert!(yaml.contains("  become: true\n"), "{yaml}");
+        for hash in [
+            "xyz",
+            "",
+            &"AB".repeat(32),
+            &"a".repeat(63),
+            &"a".repeat(65),
+            &format!("{}g", "a".repeat(63)),
+        ] {
+            let (kind, field, _) =
+                refused("apps.install", json!({ "id": "org.example.notes", "sha256": hash }));
+            assert_eq!((kind, field), (Kind::BadValue, Some("sha256")), "{hash:?}");
+        }
+        assert_eq!(refused("apps.install", json!({ "id": "Notes" })).1, Some("id"));
+        assert_eq!(
+            refused("apps.install", json!({ "id": "org.example.notes", "yes": true })).0,
+            Kind::BadRequest
+        );
+        assert_eq!(refused("apps.install", json!({})).0, Kind::BadRequest);
+        // What the probe picks, and when the app is there already.
+        let nginx = json!({ "id": "org.nginx.nginx" });
+        let before = install.probed(&nginx, LIST).unwrap();
+        assert!(before.contains("1.2.0"), "{before}");
+        let notes = json!({ "id": "org.example.notes" });
+        let none = install.probed(&notes, LIST).unwrap();
+        assert_eq!(none, "none");
+        assert_eq!(install.settled(&nginx, &before), Some(true));
+        assert_eq!(install.settled(&notes, &none), Some(false));
+        // Putting back is taking away, with the data kept.
+        let (good, _, undo) = install.example_values();
+        assert_eq!(good, [json!({ "id": "org.example.notes" })]);
+        assert_eq!(
+            undo,
+            Some(Undo {
+                action: "apps.remove",
+                args: json!({ "id": "org.example.notes", "data": "keep" })
+            })
+        );
+    }
+
+    #[test]
+    fn the_catalogs_routes_are_found_beside_the_apps_and_are_no_app_s() {
+        for (post, path, id) in [
+            (false, "/api/1/apps/catalog/search", "apps.search"),
+            (false, "/api/1/apps/catalog/org.nginx.nginx/sheet", "apps.sheet"),
+            (false, "/api/1/apps/catalog/org.nodejs.node@22/sheet", "apps.sheet"),
+            (true, "/api/1/apps/catalog/org.nginx.nginx/install", "apps.install"),
+            (false, "/api/1/apps/org.nginx.nginx", "apps.show"),
+            (true, "/api/1/apps/org.nginx.nginx/update", "apps.update"),
+        ] {
+            let found = find(REGISTRY, post, path);
+            assert!(
+                matches!(&found, Found::Action(action, _) if action.id() == id),
+                "{path}: {found:?}"
+            );
+        }
+        let Found::Action(_, params) = find(REGISTRY, false, "/api/1/apps/catalog/org.a.b/sheet")
+        else {
+            panic!()
+        };
+        assert_eq!(Value::Object(params), json!({ "id": "org.a.b" }));
+        assert!(matches!(find(REGISTRY, true, "/api/1/apps/catalog/search"), Found::WrongMethod));
+        assert!(matches!(
+            find(REGISTRY, false, "/api/1/apps/catalog/org.a.b/install"),
+            Found::WrongMethod
+        ));
+        // `catalog` is one word, which no app's ID is.
+        assert_eq!(refused("apps.show", json!({ "id": "catalog" })).1, Some("id"));
+        // Searching goes by a query, as the reads that take arguments do.
+        let search = action("apps.search");
+        assert!(search.prepare(json!({ "words": "nginx web" })).is_ok());
+    }
+
+    #[test]
+    fn a_search_and_a_sheet_are_a_persons_and_an_install_is_an_unlocked_administrators() {
+        let call = |list: &str, id: &str| {
+            let scopes = Scopes::parse(list).unwrap();
+            authorize(&Caller::Token { name: "ci", scopes: &scopes }, action(id))
+        };
+        for id in ["apps.search", "apps.sheet"] {
+            assert!(call("apps:read", id).is_ok(), "{id}");
+            assert_eq!(call("updates", id).unwrap_err().kind, Kind::OutOfScope, "{id}");
+        }
+        assert_eq!(call("apps:read", "apps.install").unwrap_err().kind, Kind::OutOfScope);
+        assert!(call("apps", "apps.install").is_ok());
+        let session = |admin: bool, unlocked: bool, id: &str| {
+            authorize(&Caller::Session { name: "ann", admin, unlocked }, action(id))
+                .map_err(|f| f.kind)
+        };
+        for id in ["apps.search", "apps.sheet"] {
+            assert_eq!(session(false, false, id), Ok(()), "{id}");
+        }
+        assert_eq!(session(false, true, "apps.install"), Err(Kind::NotAdmin));
+        assert_eq!(session(true, false, "apps.install"), Err(Kind::Locked));
+        assert_eq!(session(true, true, "apps.install"), Ok(()));
+    }
+
+    #[test]
+    fn the_catalogs_examples_are_what_the_boot_and_lab_tests_run() {
+        let (good, bad, undo) = action("apps.search").example_values();
+        assert_eq!(good, [json!({}), json!({ "words": "notes" })]);
+        assert_eq!(undo, None);
+        for args in bad {
+            assert!(action("apps.search").prepare(args.clone()).is_err(), "{args}");
+        }
+        let (good, bad, undo) = action("apps.sheet").example_values();
+        assert_eq!(good, [json!({ "id": "org.example.notes" })]);
+        assert_eq!(undo, None);
+        for args in bad {
+            assert!(action("apps.sheet").prepare(args.clone()).is_err(), "{args}");
+        }
+        let (_, bad, _) = action("apps.install").example_values();
+        for args in bad {
+            assert!(action("apps.install").prepare(args.clone()).is_err(), "{args}");
         }
     }
 
