@@ -5,8 +5,8 @@
 //! websites' six actions and the databases' (ADR 0569), on a machine whose
 //! nginx serves websites, whose PHP-FPM runs their pages and whose
 //! PostgreSQL keeps their databases. Dukovo's root is on a disk with
-//! 512 MiB of room after it, which the root grows over, in use, as
-//! `postgresql-service` does, since the three bundles do not fit the
+//! 512 MiB of room after it, which the root grows over, in use, as the
+//! test `postgresql-service` does, since the three bundles do not fit the
 //! image's root; a second disk holds their `.dkv` files and the script that
 //! makes the checks that would take too long to type. alice, the owner and
 //! an administrator, installs nginx, PHP and PostgreSQL for everyone and
@@ -26,9 +26,9 @@
 //! ADM-122 for the check.
 //!
 //! The plan. websites.plan of a static site named for the machine,
-//! dukovo.local, with the machine's certificate is what `website add
-//! --dry-run --json` prints, with no check that failed and the folder not
-//! there yet.
+//! dukovo.local, with the machine's certificate is what the command prints
+//! for `website add` with the options dry-run and json, with no check that
+//! failed and the folder not there yet.
 //!
 //! A static site over HTTPS. websites.add of it is a task of seven steps that
 //! ends with `Added dukovo.local: https://dukovo.local/`. With the machine's
@@ -57,9 +57,10 @@
 //! script writes into the PHP site's folder connects through PHP-FPM by PDO
 //! over 127.0.0.1 as that role with that password, inserts a row and reads
 //! it back, and with another password is refused. databases.list is what
-//! `database list --json` prints but for the sizes and the sessions: the
-//! server listens on localhost, with no TLS yet, and the database and its
-//! role are the command's. A second add of the name is DB-102.
+//! the command `database list --json` prints but for the sizes and the
+//! sessions: the server listens on localhost, with no TLS yet, and the
+//! database and its role are the command's. A second add of the name is
+//! DB-102.
 //!
 //! Other machines may connect. databases.allow from the guest's own network
 //! with the machine's certificate is a task of seven steps that has PostgreSQL

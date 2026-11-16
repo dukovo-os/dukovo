@@ -27,8 +27,10 @@
 //! sheet of an app of a catalog it adds. websites.check and websites.plan are
 //! answered 200 here, though the guest has no nginx and the example's owner is
 //! no account: their commands end with status 1 and print the JSON that says
-//! why, which is an answer (admin-websites has nginx and the sites). A change
-//! an administrator makes is ADM-122 for bob and ADM-106 for alice while her
+//! why, which is an answer (admin-websites has nginx and the sites).
+//! databases.list is answered 200 too: its command tells a PostgreSQL that
+//! is not installed with empty lists and status 0. A change an
+//! administrator makes is ADM-122 for bob and ADM-106 for alice while her
 //! session is locked, and so is a read that runs as an
 //! administrator, whose route is a POST when it takes or answers with a
 //! secret (move.plan, backups.key). A change a person makes with their own
