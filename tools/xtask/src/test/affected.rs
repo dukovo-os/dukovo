@@ -321,10 +321,11 @@ pub fn changed_files(ctx: &Ctx, commit: &str) -> Result<Vec<String>> {
 const SHARE_SECONDS: u32 = 600;
 
 /// The most machines CI splits the boot tests between, as for all of them.
-/// On five, each shard had more than 40 minutes of tests by test/times.txt
-/// besides some 8 minutes of building, past the 45 a shard may take; on
-/// ten, each has about 25.
-pub const MOST_PARTS: usize = 10;
+/// On ten, all of them, some 550 minutes by test/times.txt, left each
+/// shard about 55 minutes of tests besides some 11 minutes of setting up
+/// and building, past the 45 a shard may take; on twenty, each has about
+/// 28.
+pub const MOST_PARTS: usize = 20;
 
 /// How many of CI's machines `cases` need: none for no test, else one for
 /// each [`SHARE_SECONDS`] of tests by test/times.txt, up to [`MOST_PARTS`].
