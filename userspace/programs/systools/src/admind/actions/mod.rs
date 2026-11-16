@@ -65,6 +65,7 @@ mod network;
 mod power;
 mod private;
 mod reliability;
+mod reports;
 pub mod secret;
 mod security;
 mod service;
@@ -180,8 +181,6 @@ pub const SECRET_PATTERN: &str = "^[^\n\r\0]*$";
 pub const DOCUMENT_PATTERN: &str = "^[^\0]*$";
 
 /// The most bytes a document field takes.
-// The certificate's upload takes it; the registry's rules hold every field.
-#[cfg_attr(not(test), allow(dead_code))]
 pub const DOCUMENT_MAX: usize = 64 << 10;
 
 /// One argument of an action, as its input's schema describes it.
@@ -238,8 +237,6 @@ impl Field {
     /// A required argument that is a document of 1 to `max` bytes, which
     /// the action's command reads on its input ([`Action::input`]). `max`
     /// is at most [`DOCUMENT_MAX`], which the registry's rules hold.
-    // For a site's files; no action in the list that ships takes one yet.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub const fn document(name: &'static str, about: &'static str, max: usize) -> Field {
         Field { name, kind: Type::Document { max, secret: false }, required: true, about }
     }
@@ -1204,6 +1201,12 @@ registry![
     hardware::Last,
     hardware::History,
     hardware::Check,
+    hardware::Sensors,
+    hardware::Highest,
+    hardware::Devices,
+    hardware::Memtest,
+    hardware::MemtestCancel,
+    hardware::MemtestStatus,
     updates::Last,
     updates::Check,
     updates::Slots,
@@ -1230,6 +1233,14 @@ registry![
     apps::Hold,
     apps::Unhold,
     apps::Remove,
+    reports::Crashes,
+    reports::Draft,
+    reports::Redact,
+    reports::SendReport,
+    reports::List,
+    reports::Status,
+    reports::Retry,
+    reports::Delete,
 ];
 
 /// The actions the console offers: [`REGISTRY`], and in a lab build the
@@ -1398,6 +1409,25 @@ pub fn arguments(mut params: Params, body: &[u8]) -> Result<Value, Failure> {
     Ok(Value::Object(params))
 }
 
+/// `params`, the address's `{name}` parts, each read as the type of the
+/// field of its name says: a part of an address is text, and a number or a
+/// flag in it is not, as one of a query is not. A part that names no field
+/// is left as text for the action to refuse.
+///
+/// # Errors
+///
+/// ADM-108 for a number or a flag that is not written as one.
+pub fn typed_params(mut params: Params, fields: &[Field]) -> Result<Params, Failure> {
+    for (name, value) in &mut params {
+        if let (Some(field), Value::String(text)) =
+            (fields.iter().find(|field| field.name == *name), &*value)
+        {
+            *value = read_value(field, name, text.clone())?;
+        }
+    }
+    Ok(params)
+}
+
 /// The arguments of a read: `params`, the address's `{name}` parts, read
 /// as their type reads them, and each of `fields` that `query`, the
 /// address's query, gives, as its type reads it: text and a word as given,
@@ -1409,21 +1439,9 @@ pub fn arguments(mut params: Params, body: &[u8]) -> Result<Value, Failure> {
 /// ADM-108 for a name the read does not take, a name given twice or also
 /// in the address, a value that is not text, or one that its type does
 /// not read.
-pub fn query_arguments(
-    mut params: Params,
-    query: &str,
-    fields: &[Field],
-) -> Result<Value, Failure> {
+pub fn query_arguments(params: Params, query: &str, fields: &[Field]) -> Result<Value, Failure> {
     let bad = |why: String| Failure::new(Kind::BadRequest, why);
-    // A part of the address is text; a number or a flag in it is read as the
-    // type of its field says, as the query's are.
-    for (name, value) in &mut params {
-        if let (Some(field), Value::String(text)) =
-            (fields.iter().find(|field| field.name == *name), &*value)
-        {
-            *value = read_value(field, name, text.clone())?;
-        }
-    }
+    let mut params = typed_params(params, fields)?;
     for pair in query.split('&').filter(|pair| !pair.is_empty()) {
         let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
         let name =

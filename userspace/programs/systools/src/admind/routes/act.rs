@@ -83,7 +83,7 @@ pub async fn action(
     // A change's arguments, and those of a read that takes or answers a
     // secret, are in the body of a POST (ADR 0561).
     let args = if action.posts() {
-        actions::arguments(params, &cx.body)?
+        actions::arguments(actions::typed_params(params, action.fields())?, &cx.body)?
     } else {
         actions::query_arguments(params, &cx.query, action.fields())?
     };

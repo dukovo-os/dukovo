@@ -614,6 +614,8 @@ fn the_list_says_which_changes_compare_a_probe_and_which_always_changed() {
             "updates.bisect",
             "updates.bisect-stop",
             "updates.bisect-confirm",
+            "hardware.memtest",
+            "hardware.memtest-cancel",
             "updates.set",
             "updates.channel",
             "updates.check-add",
@@ -1353,6 +1355,14 @@ const CODE_DECIDES: &[(&str, &str)] = &[
     // cannot say as the check does.
     ("updates.check-add", "url"),
     ("updates.check-add", "service"),
+    // What a report is about decides which of the crash and the name goes
+    // with it, and an answer of only blanks is no answer, which a pattern
+    // cannot say.
+    ("reports.draft", "about"),
+    ("reports.draft", "crash"),
+    ("reports.draft", "name"),
+    ("reports.draft", "happened"),
+    ("reports.send", "title"),
 ];
 
 /// The bad examples whose rule a schema cannot say, which `check` alone
@@ -1444,6 +1454,12 @@ const BEYOND_THE_SCHEMA: &[(&str, &str)] = &[
     ("hardware.check", r#"{"areas":"disks cpu","disk":"vda"}"#),
     ("hardware.check", r#"{"disk":"vda"}"#),
     ("backups.add", r#"{"every":"hand","name":"lab","to":"relative/folder","verify":"never"}"#),
+    // A report about a crash names it, one about a service or a program names
+    // that, and no other has either: the code's.
+    ("reports.draft", r#"{"about":"crash","happened":"lab"}"#),
+    ("reports.draft", r#"{"about":"service","happened":"lab"}"#),
+    ("reports.draft", r#"{"about":"other","crash":"20261113T100211-4012","happened":"lab"}"#),
+    ("reports.draft", r#"{"about":"other","happened":"lab","name":"nginx"}"#),
     // The key as a file and typed, or as neither; a card choice that is no
     // card of this machine; and no more than eight of them: the code's.
     ("move.plan", r#"{"source":"/volumes/LAB/dukovo-backup/lab-machine"}"#),
@@ -1556,6 +1572,38 @@ fn a_part_of_the_address_is_read_as_its_field_s_type_reads_it() {
         let failure = given(name, text).unwrap_err();
         assert_eq!((failure.kind, failure.detail.as_str()), (Kind::BadRequest, why), "{name}");
     }
+}
+
+#[test]
+fn a_part_of_a_post_s_address_is_read_as_its_field_s_type_reads_it_before_the_body_joins_it() {
+    let fields = lab_action("lab.log").fields();
+    let given = |name: &str, text: &str| {
+        let mut params = Params::new();
+        params.insert(name.into(), json!(text));
+        typed_params(params, fields)
+    };
+    assert_eq!(given("lines", "20").unwrap(), json!({ "lines": 20 }).as_object().unwrap().clone());
+    assert_eq!(given("kernel", "false").unwrap()["kernel"], json!(false));
+    // Text is kept as it came, and a part no field names is left for the
+    // action to refuse.
+    assert_eq!(given("service", "20").unwrap()["service"], json!("20"));
+    assert_eq!(given("other", "20").unwrap()["other"], json!("20"));
+    for (name, text, why) in [
+        ("lines", "many", "\"lines\" is a whole number"),
+        ("lines", "", "\"lines\" is a whole number"),
+        ("kernel", "yes", "\"kernel\" is true or false"),
+    ] {
+        let failure = given(name, text).unwrap_err();
+        assert_eq!((failure.kind, failure.detail.as_str()), (Kind::BadRequest, why), "{name}");
+    }
+    // What the body gives is its own, and the address's part is still not
+    // given again in it.
+    let params = given("lines", "20").unwrap();
+    assert_eq!(
+        arguments(params.clone(), br#"{"kernel": true}"#).unwrap(),
+        json!({ "lines": 20, "kernel": true })
+    );
+    assert!(arguments(params, br#"{"lines": 30}"#).is_err());
 }
 
 #[test]

@@ -3,8 +3,9 @@
 
 //! The Hardware page's actions: what this machine is, the memory modules it
 //! holds, the last check of the hardware and the checks that came before
-//! it, and the check itself. The area is `hardware`, the scope a token
-//! needs.
+//! it, and the check itself; the temperatures and fans now and the highest
+//! of the last 30 days, the devices; and the memory test at the next start.
+//! The area is `hardware`, the scope a token needs.
 //!
 //! `hardware.show`, `hardware.last` and `hardware.history` run as the
 //! person: what they print is what everyone may read. `hardware.inventory`
@@ -21,12 +22,24 @@
 //! answers ([`Check::ANSWERS`]). Its areas are the words `hardware check`
 //! takes, and the check of them is the command's own rule: each once, and
 //! with a disk, the disks alone.
+//!
+//! `hardware.sensors`, `hardware.highest` and `hardware.devices` run as the
+//! person, as the commands answer anyone; with no history, the highest is
+//! `[]`. `hardware.memtest` asks
+//! the start menu for the memory to be tested at the next start, and
+//! `hardware.memtest-cancel` takes that back; each is the other's undo.
+//! Both write the start menu's block on the EFI system partitions and a
+//! file of `/system/state/hardware`, which admind may not name, so their
+//! `changed` is the probe's: `hardware memtest --status --json`, the
+//! `asked` member, which `hardware.memtest-status` also answers. Neither
+//! restarts the machine ([`super::Restarts`]): the page's Restart now is
+//! `power.restart`.
 
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::trial::refusal;
-use super::{Action, Args, Bad, Examples, Field, Nothing, Runs, Tests};
+use super::{Action, Args, Bad, Examples, Field, Nothing, Runs, Tests, Undo};
 use crate::storage::is_disk_name;
 
 /// The area of these actions: the scope a token needs, `hardware`.
@@ -37,6 +50,17 @@ const TESTS: Tests = Tests {
     checks: "admind::actions::hardware::tests",
     route: "admin-hardware",
     same_as_command: "admin-hardware",
+    browser: "web-console/hardware",
+    ansible: "web-console/ansible",
+};
+
+/// The tests of the actions of the memory test at the next start, which
+/// `lab/actions.toml` names: the boot test that restarts the machine for it
+/// runs their commands.
+const MEMTEST_TESTS: Tests = Tests {
+    checks: "admind::actions::hardware::tests",
+    route: "memory-test-start",
+    same_as_command: "memory-test-start",
     browser: "web-console/hardware",
     ansible: "web-console/ansible",
 };
@@ -311,6 +335,202 @@ impl Action for Check {
     }
 }
 
+/// `hardware sensors --json`: each temperature sensor and fan with its
+/// reading and its limits, and each disk that says its temperature.
+pub struct Sensors;
+
+impl Action for Sensors {
+    const ID: &'static str = "hardware.sensors";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/hardware/sensors";
+    const RUNS: Runs = Runs::AsThePerson;
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Show the temperatures and fans";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["hardware", "sensors", "--json"].map(String::from).to_vec()
+    }
+
+    fn examples() -> Examples<Nothing> {
+        reads()
+    }
+}
+
+/// `metrics show temp --since 30d --highest --json`: the highest value of
+/// each temperature series in the last 30 days, and when it was. `temp` is
+/// the metric, and a name with no instance means each instance of it, so
+/// one call covers every sensor and every disk. With no history it says
+/// `[]`.
+pub struct Highest;
+
+impl Action for Highest {
+    const ID: &'static str = "hardware.highest";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/hardware/highest";
+    const RUNS: Runs = Runs::AsThePerson;
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Show the highest temperatures of 30 days";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["metrics", "show", "temp", "--since", "30d", "--highest", "--json"]
+            .map(String::from)
+            .to_vec()
+    }
+
+    fn examples() -> Examples<Nothing> {
+        reads()
+    }
+}
+
+/// `hardware devices --json`: the PCI and USB devices, and the network
+/// cards, with the driver each uses.
+pub struct Devices;
+
+impl Action for Devices {
+    const ID: &'static str = "hardware.devices";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/hardware/devices";
+    const RUNS: Runs = Runs::AsThePerson;
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "List the devices";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["hardware", "devices", "--json"].map(String::from).to_vec()
+    }
+
+    fn examples() -> Examples<Nothing> {
+        reads()
+    }
+}
+
+/// The read that says what is asked, which each change of the memory
+/// test uses as its probe.
+fn memtest_shown() -> Vec<String> {
+    ["hardware", "memtest", "--status", "--json"].map(String::from).to_vec()
+}
+
+/// What is asked for the next start, from what `hardware memtest --status
+/// --json` printed, as text to compare: `null` for none, and else the time
+/// it was asked and by whom. None when it does not read.
+fn memtest_asked(output: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(output.trim()).ok()?;
+    let asked = value.get("asked")?;
+    Some(if asked.is_null() { "null".into() } else { asked.to_string() })
+}
+
+/// What the tests of the memory test's changes are tried with: nothing,
+/// and any argument is refused.
+fn memtest_examples(undo: &'static str) -> Examples<Nothing> {
+    Examples {
+        good: vec![Nothing {}],
+        bad: vec![json!({ "now": true }), json!({ "slot": "b" })],
+        undo: Some(Undo { action: undo, args: json!({}) }),
+    }
+}
+
+/// `hardware memtest --next-start`: the start menu tests the free memory
+/// before it starts the system, once, at the next start. It is refused
+/// while another start waits (HW-105); asked again it changes nothing.
+pub struct Memtest;
+
+impl Action for Memtest {
+    const ID: &'static str = "hardware.memtest";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = true;
+    const PATH: &'static str = "/api/1/hardware/memtest/next-start";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const ERRORS: &'static [&'static str] = &["HW-105"];
+    const TESTS: Tests = MEMTEST_TESTS;
+    const TITLE: &'static str = "Test the memory at the next start";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["hardware", "memtest", "--next-start"].map(String::from).to_vec()
+    }
+
+    fn probe(_: &Nothing) -> Option<Vec<String>> {
+        Some(memtest_shown())
+    }
+
+    fn probed(_: &Nothing, output: &str) -> Option<String> {
+        memtest_asked(output)
+    }
+
+    /// The test is asked already when `--status` says something is.
+    fn settled(_: &Nothing, now: &str) -> Option<bool> {
+        Some(now != "null")
+    }
+
+    fn examples() -> Examples<Nothing> {
+        memtest_examples(MemtestCancel::ID)
+    }
+}
+
+/// `hardware memtest --cancel`: takes the test away from the next start,
+/// while the menu has not taken it. With none asked it changes nothing.
+pub struct MemtestCancel;
+
+impl Action for MemtestCancel {
+    const ID: &'static str = "hardware.memtest-cancel";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = true;
+    const PATH: &'static str = "/api/1/hardware/memtest/cancel";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const TESTS: Tests = MEMTEST_TESTS;
+    const TITLE: &'static str = "Cancel the memory test at the next start";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["hardware", "memtest", "--cancel"].map(String::from).to_vec()
+    }
+
+    fn probe(_: &Nothing) -> Option<Vec<String>> {
+        Some(memtest_shown())
+    }
+
+    fn probed(_: &Nothing, output: &str) -> Option<String> {
+        memtest_asked(output)
+    }
+
+    /// Nothing is asked to cancel when `--status` says none is.
+    fn settled(_: &Nothing, now: &str) -> Option<bool> {
+        Some(now == "null")
+    }
+
+    fn examples() -> Examples<Nothing> {
+        memtest_examples(Memtest::ID)
+    }
+}
+
+/// `hardware memtest --status --json`: whether the test is asked for the
+/// next start, by whom and when, the last test and the ten before it.
+pub struct MemtestStatus;
+
+impl Action for MemtestStatus {
+    const ID: &'static str = "hardware.memtest-status";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/hardware/memtest";
+    const RUNS: Runs = Runs::AsThePerson;
+    const TESTS: Tests = MEMTEST_TESTS;
+    const TITLE: &'static str = "Show the memory test";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        memtest_shown()
+    }
+
+    fn examples() -> Examples<Nothing> {
+        reads()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::Value;
@@ -340,7 +560,7 @@ mod tests {
 
     /// Each action of the page: its id, its address, whether it changes
     /// anything, who runs it, and the command its first example makes.
-    const ACTIONS: [(&str, &str, bool, Runs, &[&str]); 5] = [
+    const ACTIONS: [(&str, &str, bool, Runs, &[&str]); 11] = [
         (
             "hardware.show",
             "/api/1/hardware",
@@ -376,7 +596,64 @@ mod tests {
             Runs::AsAdministrator,
             &["hardware", "check", "--json", "--progress", "memory"],
         ),
+        (
+            "hardware.sensors",
+            "/api/1/hardware/sensors",
+            false,
+            Runs::AsThePerson,
+            &["hardware", "sensors", "--json"],
+        ),
+        (
+            "hardware.highest",
+            "/api/1/hardware/highest",
+            false,
+            Runs::AsThePerson,
+            &["metrics", "show", "temp", "--since", "30d", "--highest", "--json"],
+        ),
+        (
+            "hardware.devices",
+            "/api/1/hardware/devices",
+            false,
+            Runs::AsThePerson,
+            &["hardware", "devices", "--json"],
+        ),
+        (
+            "hardware.memtest",
+            "/api/1/hardware/memtest/next-start",
+            true,
+            Runs::AsAdministrator,
+            &["hardware", "memtest", "--next-start"],
+        ),
+        (
+            "hardware.memtest-cancel",
+            "/api/1/hardware/memtest/cancel",
+            true,
+            Runs::AsAdministrator,
+            &["hardware", "memtest", "--cancel"],
+        ),
+        (
+            "hardware.memtest-status",
+            "/api/1/hardware/memtest",
+            false,
+            Runs::AsThePerson,
+            &["hardware", "memtest", "--status", "--json"],
+        ),
     ];
+
+    /// The reads that take nothing.
+    const READS: [&str; 8] = [
+        "hardware.show",
+        "hardware.inventory",
+        "hardware.last",
+        "hardware.history",
+        "hardware.sensors",
+        "hardware.highest",
+        "hardware.devices",
+        "hardware.memtest-status",
+    ];
+
+    /// The changes of the memory test at the next start.
+    const MEMTEST: [&str; 2] = ["hardware.memtest", "hardware.memtest-cancel"];
 
     /// The arguments of the first example of `id`.
     fn first_example(id: &str) -> Value {
@@ -401,9 +678,16 @@ mod tests {
             assert_eq!(prepared.ansible.changed_when.as_deref() == Some("false"), !changes, "{id}");
             assert_eq!(prepared.trial, None, "{id}");
             let tests = action.tests();
+            // The memory test is asked and cancelled by a boot test of its own,
+            // which restarts the machine.
+            let boot = if id.starts_with("hardware.memtest") {
+                "memory-test-start"
+            } else {
+                "admin-hardware"
+            };
             assert_eq!(tests.checks, "admind::actions::hardware::tests", "{id}");
-            assert_eq!(tests.route, "admin-hardware", "{id}");
-            assert_eq!(tests.same_as_command, "admin-hardware", "{id}");
+            assert_eq!(tests.route, boot, "{id}");
+            assert_eq!(tests.same_as_command, boot, "{id}");
             assert_eq!(tests.browser, "web-console/hardware", "{id}");
             assert_eq!(tests.ansible, "web-console/ansible", "{id}");
             assert!(!action.lines(), "{id}");
@@ -426,7 +710,9 @@ mod tests {
                 _ => &[0],
             };
             assert_eq!(action.answers(), answers, "{id}");
-            assert_eq!(action.errors(), &[] as &[&str], "{id}");
+            // Only the ask for the test is refused with an ID of its own.
+            let errors: &[&str] = if id == "hardware.memtest" { &["HW-105"] } else { &[] };
+            assert_eq!(action.errors(), errors, "{id}");
         }
         // The Ansible tasks that answer after another status say which.
         let last = action("hardware.last").prepare(json!({})).unwrap();
@@ -436,24 +722,33 @@ mod tests {
     }
 
     #[test]
-    fn nothing_is_compared_because_no_file_of_admind_s_or_probe_is_involved() {
+    fn nothing_is_compared_but_what_the_memory_test_asks_for_next_start_says() {
         for (id, ..) in ACTIONS {
             let action = action(id);
             let prepared = action.prepare(first_example(id)).unwrap();
             // What a check writes is under `/system/state/hardware`, which
-            // admind may not name: the change always answers `changed`.
-            assert!(!action.compares(), "{id}");
-            assert_eq!(prepared.probe, None, "{id}");
+            // admind may not name: the change always answers `changed`. The
+            // memory test's changes are put right by what `--status` says.
+            let probed = MEMTEST.contains(&id);
+            assert_eq!(action.compares(), probed, "{id}");
+            assert_eq!(
+                prepared.probe,
+                probed.then(|| ["hardware", "memtest", "--status", "--json"]
+                    .map(String::from)
+                    .to_vec()),
+                "{id}"
+            );
             assert_eq!(prepared.files, Vec::<String>::new(), "{id}");
             assert_eq!(prepared.not_self, None, "{id}");
             assert!(prepared.cuts_off.is_none(), "{id}");
             assert!(prepared.input.is_none(), "{id}");
+            assert!(action.restarts().is_none(), "{id}");
         }
     }
 
     #[test]
     fn a_read_takes_no_arguments_and_the_inventory_is_the_show_as_an_administrator() {
-        for id in ["hardware.show", "hardware.inventory", "hardware.last", "hardware.history"] {
+        for id in READS {
             assert!(action(id).fields().is_empty(), "{id}");
             assert_eq!(action(id).prepare(json!({})).unwrap().args, json!({}), "{id}");
             for args in [json!({ "all": true }), json!({ "areas": "memory" }), json!([1])] {
@@ -662,6 +957,10 @@ mod tests {
             ("/api/1/hardware/inventory", "hardware.inventory"),
             ("/api/1/hardware/check", "hardware.last"),
             ("/api/1/hardware/history", "hardware.history"),
+            ("/api/1/hardware/sensors", "hardware.sensors"),
+            ("/api/1/hardware/highest", "hardware.highest"),
+            ("/api/1/hardware/devices", "hardware.devices"),
+            ("/api/1/hardware/memtest", "hardware.memtest-status"),
         ] {
             let found = find(REGISTRY, false, path);
             let Found::Action(action, params) = found else { panic!("{path}: {found:?}") };
@@ -677,6 +976,16 @@ mod tests {
                 assert!(matches!(other, Found::WrongMethod), "{path}");
             }
         }
+        // The memory test's changes each have an address of their own, which
+        // no read answers: no address answers both methods but the check's.
+        for (path, id) in [
+            ("/api/1/hardware/memtest/next-start", "hardware.memtest"),
+            ("/api/1/hardware/memtest/cancel", "hardware.memtest-cancel"),
+        ] {
+            let Found::Action(found, params) = find(REGISTRY, true, path) else { panic!("{path}") };
+            assert_eq!((found.id(), params.is_empty()), (id, true), "{path}");
+            assert!(matches!(find(REGISTRY, false, path), Found::WrongMethod), "{path}");
+        }
         // There is no address beyond these.
         for path in [
             "/api/1/hardware/",
@@ -685,6 +994,12 @@ mod tests {
             "/api/1/hardware/inventory/x",
             "/api/1/hardware/histories",
             "/api/1/hardware/..%2Fx",
+            "/api/1/hardware/memtest/",
+            "/api/1/hardware/memtest/next-start/",
+            "/api/1/hardware/memtest/status",
+            "/api/1/hardware/sensors/x",
+            "/api/1/hardware/highest/x",
+            "/api/1/hardware/devices/x",
         ] {
             assert!(matches!(find(REGISTRY, false, path), Found::None), "{path}");
             assert!(matches!(find(REGISTRY, true, path), Found::None), "{path}");
@@ -703,8 +1018,14 @@ mod tests {
             ("hardware.show", true, true, true),
             ("hardware.last", true, true, true),
             ("hardware.history", true, true, true),
+            ("hardware.sensors", true, true, true),
+            ("hardware.highest", true, true, true),
+            ("hardware.devices", true, true, true),
+            ("hardware.memtest-status", true, true, true),
             ("hardware.inventory", false, true, false),
             ("hardware.check", false, true, false),
+            ("hardware.memtest", false, true, false),
+            ("hardware.memtest-cancel", false, true, false),
         ] {
             let action = action(id);
             let session = |admin, unlocked| {
@@ -722,6 +1043,10 @@ mod tests {
         assert_eq!(refused("hardware.check", false, true).kind, Kind::NotAdmin);
         assert_eq!(refused("hardware.inventory", true, false).kind, Kind::Locked);
         assert_eq!(refused("hardware.check", true, false).kind, Kind::Locked);
+        for id in MEMTEST {
+            assert_eq!(refused(id, false, true).kind, Kind::NotAdmin, "{id}");
+            assert_eq!(refused(id, true, false).kind, Kind::Locked, "{id}");
+        }
     }
 
     #[test]
@@ -730,7 +1055,15 @@ mod tests {
             let scopes = Scopes::parse(list).unwrap();
             authorize(&Caller::Token { name: "ci", scopes: &scopes }, action(id))
         };
-        for id in ["hardware.show", "hardware.last", "hardware.history"] {
+        for id in [
+            "hardware.show",
+            "hardware.last",
+            "hardware.history",
+            "hardware.sensors",
+            "hardware.highest",
+            "hardware.devices",
+            "hardware.memtest-status",
+        ] {
             for list in ["hardware", "hardware:read", "*"] {
                 assert!(call(list, id).is_ok(), "{id} {list}");
             }
@@ -738,7 +1071,9 @@ mod tests {
                 assert_eq!(call(list, id).unwrap_err().kind, Kind::OutOfScope, "{id} {list}");
             }
         }
-        for id in ["hardware.inventory", "hardware.check"] {
+        for id in
+            ["hardware.inventory", "hardware.check", "hardware.memtest", "hardware.memtest-cancel"]
+        {
             for list in ["hardware", "*"] {
                 assert!(call(list, id).is_ok(), "{id} {list}");
             }
@@ -765,7 +1100,7 @@ mod tests {
         assert_eq!((&disk["minLength"], &disk["maxLength"]), (&json!(1), &json!(32)));
         assert_eq!(disk["pattern"], "^[a-z0-9]+$");
         assert_eq!(schema["properties"]["full"]["type"], "boolean");
-        for id in ["hardware.show", "hardware.inventory", "hardware.last", "hardware.history"] {
+        for id in READS.into_iter().chain(MEMTEST) {
             assert_eq!(super::super::schema(action(id).fields())["properties"], json!({}), "{id}");
         }
     }
@@ -789,7 +1124,9 @@ mod tests {
             let action = action(id);
             let (good, bad, undo) = action.example_values();
             assert!(!bad.is_empty(), "{id}");
-            assert!(undo.is_none(), "{id}: a check leaves nothing to put back");
+            // The memory test's changes put each other back; a check leaves
+            // nothing to put back.
+            assert_eq!(undo.is_some(), MEMTEST.contains(&id), "{id}");
             for args in &good {
                 assert!(action.prepare(args.clone()).is_ok(), "{id}");
             }
@@ -813,5 +1150,87 @@ mod tests {
         }
         let (_, bad, _) = action("hardware.show").example_values();
         assert_eq!(bad, [json!({ "all": true })]);
+    }
+
+    /// What `hardware memtest --status --json` prints with nothing asked.
+    const NOTHING_ASKED: &str = r#"{"format":1,"asked":null,"last":null,"history":[]}"#;
+
+    /// And with the test asked for the next start.
+    const ASKED: &str = r#"{"format":1,"asked":{"at_ms":1763100000000,"by":1000,"by_name":"ann"},"last":null,"history":[]}"#;
+
+    #[test]
+    fn the_memory_test_is_asked_and_cancelled_with_each_other_as_the_undo() {
+        for (id, other) in [
+            ("hardware.memtest", "hardware.memtest-cancel"),
+            ("hardware.memtest-cancel", "hardware.memtest"),
+        ] {
+            let (good, bad, undo) = action(id).example_values();
+            assert_eq!(good, [json!({})], "{id}");
+            assert_eq!(undo, Some(Undo { action: other, args: json!({}) }), "{id}");
+            // It takes nothing: no time, no slot, no test to choose.
+            for args in bad {
+                assert_eq!(action(id).prepare(args.clone()).unwrap_err().kind, Kind::BadRequest);
+            }
+            for args in [json!({ "now": true }), json!({ "slot": "b" }), json!({ "at": "03:00" })] {
+                assert_eq!(action(id).prepare(args).unwrap_err().kind, Kind::BadRequest, "{id}");
+            }
+            // Neither restarts the machine, and each is a change an
+            // administrator runs, and nothing else may.
+            assert!(action(id).restarts().is_none(), "{id}");
+            assert_eq!(action(id).runs(), Runs::AsAdministrator, "{id}");
+            assert!(action(other).prepare(json!({})).is_ok());
+        }
+    }
+
+    #[test]
+    fn what_the_memory_test_changes_is_what_status_says_is_asked() {
+        for id in MEMTEST {
+            let args = action(id).prepare(json!({})).unwrap().args;
+            let said = |output: &str| action(id).probed(&args, output);
+            assert_eq!(said(NOTHING_ASKED).as_deref(), Some("null"), "{id}");
+            // The time it was asked and who asked, and nothing of the last
+            // tests, which a start moves on its own.
+            let asked = said(ASKED).unwrap();
+            assert_eq!(asked, r#"{"at_ms":1763100000000,"by":1000,"by_name":"ann"}"#, "{id}");
+            let later = ASKED.replace(r#""last":null"#, r#""last":{"result":"passed"}"#);
+            assert_eq!(said(&later).as_deref(), Some(asked.as_str()), "{id}");
+            for output in ["", "not json", "[]", r#"{"format":1}"#, "null"] {
+                assert_eq!(said(output), None, "{id}: {output:?}");
+            }
+        }
+        // Asking for what is asked, and cancelling what is not, are already
+        // as they would leave it, which check mode says.
+        let ask = action("hardware.memtest");
+        let cancel = action("hardware.memtest-cancel");
+        let args = json!({});
+        assert_eq!(ask.settled(&args, "null"), Some(false));
+        assert_eq!(ask.settled(&args, r#"{"at_ms":1,"by":0,"by_name":"root"}"#), Some(true));
+        assert_eq!(cancel.settled(&args, "null"), Some(true));
+        assert_eq!(cancel.settled(&args, r#"{"at_ms":1,"by":0,"by_name":"root"}"#), Some(false));
+    }
+
+    #[test]
+    fn the_highest_asks_for_every_temperature_of_the_30_days_and_the_others_for_their_own_commands()
+    {
+        assert_eq!(
+            argv("hardware.highest", json!({})),
+            ["metrics", "show", "temp", "--since", "30d", "--highest", "--json"]
+        );
+        // `temp` has no instance, so metrics(1) takes it for each instance:
+        // one call covers every sensor and every disk.
+        assert_eq!(argv("hardware.sensors", json!({})), ["hardware", "sensors", "--json"]);
+        assert_eq!(argv("hardware.devices", json!({})), ["hardware", "devices", "--json"]);
+        assert_eq!(
+            argv("hardware.memtest-status", json!({})),
+            ["hardware", "memtest", "--status", "--json"]
+        );
+        // Each is a read that anyone may ask, as the command answers anyone.
+        for id in
+            ["hardware.sensors", "hardware.highest", "hardware.devices", "hardware.memtest-status"]
+        {
+            assert_eq!(action(id).runs(), Runs::AsThePerson, "{id}");
+            assert!(!action(id).changes() && !action(id).long(), "{id}");
+            assert_eq!(action(id).answers(), [0], "{id}");
+        }
     }
 }

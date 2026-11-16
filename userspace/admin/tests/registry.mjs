@@ -307,6 +307,9 @@ function call(names, args, file) {
     case 'Field::flag': return { name: args[0], about: args[1], required: true, type: 'boolean' };
     // One line of text, sent and never given back (ADR 0561), as mod.rs's schema says.
     case 'Field::secret': return { name: args[0], about: args[1], required: true, type: 'string', minLength: 1, maxLength: args[2], pattern: '^[^\n\r\0]*$', writeOnly: true };
+    // A document of 1 to `max` bytes that the command reads on its input, as mod.rs's schema says; a secret one is never given back.
+    case 'Field::document': return { name: args[0], about: args[1], required: true, type: 'string', minLength: 1, maxLength: args[2], pattern: '^[^\0]*$' };
+    case 'Field::secret_document': return { name: args[0], about: args[1], required: true, type: 'string', minLength: 1, maxLength: args[2], pattern: '^[^\0]*$', writeOnly: true };
     default: break;
   }
   if (names.length === 1) return callFn(names[0], args, file);

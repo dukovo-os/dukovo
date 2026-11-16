@@ -101,6 +101,17 @@ web-console/apps use. The reads and the settings' changes of the Updates page
 are run: they need no server, and updates.check answers with what it could not
 reach.
 
+Nor are the memory test's two changes, hardware.memtest and
+hardware.memtest-cancel, which ask for the test at the next start and take
+the ask back: a machine that restarts afterwards would run the test, and a
+lab machine may have none to run. Nor are the Report page's reports.redact,
+reports.send, reports.retry and reports.delete, which need a draft, a report
+sent to a reports server, or send what waits there (SET_UP). The boot tests
+memory-test-start and admin-reports run them, and the browser tests
+web-console/hardware and web-console/report use them. The Hardware page's
+reads and reports.crashes, reports.draft, reports.list and reports.status are
+run: any machine answers them.
+
 Nor is storage.grow (ON_A_SECOND_DISK): its example grows vdb, a boot
 test's second disk with room after its last partition, which a lab machine
 has not, and a grow of the machine's own disk cannot be undone. The boot
@@ -138,8 +149,9 @@ from console import (
 # history they read; checks.run runs dukovo-check, as checks.last does; the
 # changes that are tried (TRIED) need a trial; ssh.on and ssh.off (UNDER)
 # stop the sshd that Ansible's tasks come through; the actions of the
-# Snapshots, Backups, Move, Accounts, Your account, Security, Updates and Apps
-# pages whose examples need what only their tests set up (SET_UP); and the grow of a
+# Snapshots, Backups, Move, Accounts, Your account, Security, Updates, Apps,
+# Hardware and Report pages whose examples need what only their tests set up,
+# or that no machine can take back (SET_UP); and the grow of a
 # second disk (ON_A_SECOND_DISK).
 TRIED = {
     "network.set", "network.keep", "network.undo",
@@ -172,6 +184,12 @@ UNDER = {"ssh.on", "ssh.off"}
 # apps.show, apps.update, apps.update-all, apps.rollback, apps.hold,
 # apps.unhold and apps.remove name an app of the test catalog, which a lab
 # machine has not installed.
+# hardware.memtest and hardware.memtest-cancel ask for the memory test of the
+# next start and take that back, and a lab machine that restarts after the
+# round would run it, or has none to run; reports.redact needs a draft that
+# only reports.draft's answer holds, reports.send and reports.retry send a
+# person's report to a reports server, and reports.delete takes one off it,
+# which none can take back.
 SET_UP = {
     "snapshots.browse", "snapshots.browse-all", "snapshots.take", "snapshots.restore", "snapshots.restore-all",
     "backups.show", "backups.key", "backups.run", "backups.verify", "backups.add", "backups.remove", "backups.restore",
@@ -182,6 +200,8 @@ SET_UP = {
     "security.unblock", "private.add", "private.remove",
     "updates.apply", "updates.unstage", "updates.undo", "updates.hold", "updates.unhold",
     "apps.show", "apps.update", "apps.update-all", "apps.rollback", "apps.hold", "apps.unhold", "apps.remove",
+    "hardware.memtest", "hardware.memtest-cancel",
+    "reports.redact", "reports.send", "reports.retry", "reports.delete",
 }
 # storage.grow's example grows vdb, a boot test's second disk with room after its last
 # partition; a lab machine has no such disk, and a grow of its own cannot be undone.
