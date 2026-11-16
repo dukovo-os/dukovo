@@ -402,6 +402,9 @@ pub struct Ansible {
     /// `when`, a condition the playbook must meet for the task to run, for
     /// a change that is only done on the playbook's own word.
     pub when: Option<String>,
+    /// Whether the machine restarts after the task: the play then waits for
+    /// it to answer again before its next task (ADR 0565).
+    pub comes_back: bool,
 }
 
 impl Ansible {
@@ -425,6 +428,7 @@ impl Ansible {
             failed_when: None,
             no_log: false,
             when: None,
+            comes_back: false,
         }
     }
 
@@ -446,6 +450,7 @@ impl Ansible {
             failed_when: None,
             no_log: false,
             when: None,
+            comes_back: false,
         }
     }
 
@@ -459,6 +464,14 @@ impl Ansible {
             self.register = Some(RESULT);
             self.failed_when = Some(format!("{RESULT}.rc not in [{}]", statuses.join(", ")));
         }
+        self
+    }
+
+    /// The task, for a change that restarts the machine a minute after it
+    /// answers: the play waits for the machine to answer again.
+    #[must_use]
+    pub fn coming_back(mut self) -> Ansible {
+        self.comes_back = true;
         self
     }
 
@@ -552,6 +565,19 @@ pub enum Restarts {
     Search,
 }
 
+/// The task of `A` run with `args` that runs its command: named by its
+/// title and subject, as root when an administrator runs it, failed only
+/// by a status that gives no answer. An action's task unless it says
+/// otherwise.
+pub fn command_task<A: Action + ?Sized>(args: &A::Args) -> Ansible {
+    let name = match A::subject(args) {
+        Some(subject) => format!("{}: {subject}", A::TITLE),
+        None => A::TITLE.to_string(),
+    };
+    let elevated = A::RUNS == Runs::AsAdministrator;
+    Ansible::command(name, &A::argv(args), elevated, A::CHANGES).answering(A::ANSWERS)
+}
+
 /// One action of the console.
 pub trait Action: 'static {
     /// `area.verb`, such as `service.restart`.
@@ -639,12 +665,7 @@ pub trait Action: 'static {
     /// The Ansible task that does the same: a task of the command, unless
     /// the action overrides this with the collection's module for it.
     fn ansible(args: &Self::Args) -> Ansible {
-        let name = match Self::subject(args) {
-            Some(subject) => format!("{}: {subject}", Self::TITLE),
-            None => Self::TITLE.to_string(),
-        };
-        let elevated = Self::RUNS == Runs::AsAdministrator;
-        Ansible::command(name, &Self::argv(args), elevated, Self::CHANGES).answering(Self::ANSWERS)
+        command_task::<Self>(args)
     }
 
     /// The files a change writes, for the Files tab and the journal.

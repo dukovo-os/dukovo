@@ -101,6 +101,24 @@ web-console/apps use. The reads and the settings' changes of the Updates page
 are run: they need no server, and updates.check answers with what it could not
 reach.
 
+Nor are the Certificates page's changes but its reads: certificate.get asks
+Let's Encrypt for a certificate of names that are not this machine's,
+certificate.add reads its certificate and key from variables of the
+playbook that this test does not give, certificate.revoke and
+certificate.remove name the certificate shop, which only the boot test
+admin-certificates makes, and machine.rename would rename the lab machine,
+whose name its inventory and its console's certificate go by (SET_UP).
+console.certificate is tried, as the console's reach is (TRIED). Their tasks
+are the commands the console shows, which the boot test admin-certificates
+runs, and the browser test web-console/certificates uses.
+
+Nor are the changes that restart the machine, which GET /api/1/actions marks
+`restarts`: a restart, a shut down and the search for a bad change would end
+the round with the machine, and a shut down would leave it off. Their tasks
+are the commands the console shows, followed for a restart and the search by
+a wait for the machine to answer again; the boot tests admin-hardware and
+admin-updates run their routes.
+
 Nor is storage.grow (ON_A_SECOND_DISK): its example grows vdb, a boot
 test's second disk with room after its last partition, which a lab machine
 has not, and a grow of the machine's own disk cannot be undone. The boot
@@ -145,6 +163,7 @@ TRIED = {
     "network.set", "network.keep", "network.undo",
     "firewall.add", "firewall.replace", "firewall.remove", "firewall.keep", "firewall.undo",
     "ssh.set", "ssh.keep", "ssh.undo", "console.keep", "console.undo",
+    "console.certificate",
 }
 UNDER = {"ssh.on", "ssh.off"}
 # The examples of these name the snapshot lab-before of /users, which
@@ -174,6 +193,11 @@ UNDER = {"ssh.on", "ssh.off"}
 # apps.unhold, apps.remove, apps.tonight and apps.not-tonight name an app of
 # the test catalog, which a lab machine has not installed, and apps.tonight-all
 # asks for the update of each such app.
+# certificate.get asks Let's Encrypt for names that are not this machine's;
+# certificate.add reads a certificate and its key from variables this test
+# does not give; certificate.revoke and certificate.remove name the
+# certificate shop, which only admin-certificates makes; machine.rename
+# would rename the lab machine.
 SET_UP = {
     "snapshots.browse", "snapshots.browse-all", "snapshots.take", "snapshots.restore", "snapshots.restore-all",
     "backups.show", "backups.key", "backups.run", "backups.verify", "backups.add", "backups.remove", "backups.restore",
@@ -184,6 +208,7 @@ SET_UP = {
     "security.unblock", "private.add", "private.remove",
     "updates.apply", "updates.unstage", "updates.undo", "updates.hold", "updates.unhold", "updates.later",
     "apps.show", "apps.update", "apps.update-all", "apps.rollback", "apps.hold", "apps.unhold", "apps.remove",
+    "certificate.get", "certificate.add", "certificate.revoke", "certificate.remove", "machine.rename",
     "apps.tonight", "apps.tonight-all", "apps.not-tonight",
 }
 # storage.grow's example grows vdb, a boot test's second disk with room after its last
@@ -314,7 +339,11 @@ def main():
     token = make_token(TOKEN_NAME, machine, ssh_port)
     try:
         console = Console(machine, console_port, token)
-        actions = [action for action in console.ask("GET", "/api/1/actions") if action["id"] not in LEFT_ALONE]
+        actions = [
+            action
+            for action in console.ask("GET", "/api/1/actions")
+            if action["id"] not in LEFT_ALONE and not action.get("restarts")
+        ]
         if not actions:
             raise Failure("GET /api/1/actions gave no actions")
         on_this_machine(console, actions)

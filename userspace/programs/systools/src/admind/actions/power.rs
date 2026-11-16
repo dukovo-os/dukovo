@@ -25,7 +25,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{Action, Args, Bad, Examples, Field, Nothing, Restarts, Runs, Tests, Undo};
+use super::{
+    Action, Ansible, Args, Bad, Examples, Field, Nothing, Restarts, Runs, Tests, Undo, command_task,
+};
 
 /// The area of these actions: the scope a token needs, `power`.
 pub(super) const AREA: &str = "power";
@@ -155,6 +157,10 @@ impl Action for Restart {
     fn argv(args: &When) -> Vec<String> {
         let at = args.at.clone().unwrap_or_else(|| "+1".into());
         vec!["shutdown".into(), "-r".into(), at, "--no-wall".into()]
+    }
+
+    fn ansible(args: &When) -> Ansible {
+        command_task::<Self>(args).coming_back()
     }
 
     fn subject(args: &When) -> Option<String> {
