@@ -8,7 +8,12 @@
 // last --json`, `update settings --json` and `sysupdate status --json`; a
 // field that is missing is left out of the words and never said as "null".
 
+import {
+  atWords, byWords, capital, holdStory, namesOf, untilWords,
+} from '../../lib/hold-words.js';
+import { tonightOf } from '../../lib/tonight-model.js';
 import { kindOfUpdate, versionPair } from '../../lib/version-words.js';
+import { putOff } from './put-off.js';
 
 const list = (value) => (Array.isArray(value) ? value : []);
 const text = (value) => (typeof value === 'string' && value.trim() !== '' ? value.trim() : null);
@@ -16,6 +21,8 @@ const counted = (count, noun) => `${count} ${noun}${count === 1 ? '' : 's'}`;
 
 /** The size of a download in whole megabytes, "412 MB" (a thousand to a unit, as the disks count). */
 const megabytes = (bytes) => `${Math.max(1, Math.round(bytes / 1_000_000))} MB`;
+
+export { atWords, holdStory, namesOf, untilWords };
 
 /** The release a server runs, from `release` in `console.about`'s answer ("Dukovo Server 1.0.0-alpha.2"): its last word, or null. */
 export const runningOf = (about) => (typeof about?.release === 'string' ? about.release.trim().split(/\s+/).at(-1) || null : null);
@@ -29,13 +36,10 @@ export function clockWords(hhmm) {
   return `${hour % 12 === 0 ? 12 : hour % 12}:${String(minute).padStart(2, '0')} ${hour < 12 ? 'AM' : 'PM'}`;
 }
 
-/** "on Nov 13 at 3:06 AM", "today at 3:06 AM": when something was done, from the person's clock `time` (lib/time.js). */
-export function atWords(ms, time) {
-  const words = time.when(ms / 1000);
-  if (/^\d/.test(words)) return `today at ${words}`;
-  if (words.startsWith('Yesterday ')) return `yesterday at ${words.slice(10)}`;
-  const found = /^(.+?) (\d{1,2}:\d{2} [AP]M)$/.exec(words);
-  return found ? `on ${found[1]} at ${found[2]}` : `on ${words}`;
+/** The reason kept with the hold of `item` (`system` or `firmware`) while the hold names `version`, as `holdStory` takes it, or null. */
+function reasonOf(settings, item, version) {
+  const one = settings?.hold_reasons?.[item];
+  return one && one.version === version ? { at: one.at_ms, by: one.by, why: one.text } : null;
 }
 
 // ---- the last check ---------------------------------------------------------
@@ -126,6 +130,47 @@ const FIX = {
 /** What is done about an advisory of the system, from its `fix`: "1.0.0-alpha.2 has the fix and is offered." */
 export const fixWords = (flaw) => (FIX[flaw.fix] ?? FIX.none)(flaw);
 
+// ---- Remind me later --------------------------------------------------------
+
+/** What a card says when it cannot tell whether an update fixes an advisory; the machine does not put it off then either. */
+const UNKNOWN_FIXES = 'Whether it fixes an advisory cannot be told, so it is not put off.';
+
+/**
+ * The advisories that `offer` fixes, from the check and `flaws` (`update
+ * advisories --json`'s `apps`, null when not read); null when that cannot be
+ * told: the security part of the check or an app's flaws were not read.
+ */
+export function fixingOf(check, offer, flaws) {
+  if (!check || whyUnchecked(check, 'security') !== null) return null;
+  if (offer.item !== 'system' && offer.item !== 'firmware') {
+    if (check.appFlaws > 0 && !Array.isArray(flaws)) return null;
+    return list(flaws).filter((flaw) => flaw.item === offer.item && flaw.fixed_by_update === offer.to);
+  }
+  return check.advisories.filter((flaw) => flaw.fix === 'offered' && (flaw.release === offer.to || (flaw.release == null && offer.item === 'system')));
+}
+
+/**
+ * What Later says of `offer`, `{state, words}`, or null when there is nothing
+ * to put off, the settings were not read, or the item is not told of (`told`
+ * is false for apps that update by themselves). `state` is `ask` (the choices
+ * are offered), `put` ("Put off until Nov 23 at 3:06 AM by admin"), `fixes`
+ * (it fixes an advisory, so it is never put off) or `unknown` (it cannot be
+ * told whether it does). `fixing` is `fixingOf`'s.
+ */
+export function laterOf(offer, {
+  settings, fixing, now, time, names, told = true,
+}) {
+  if (offer?.state !== 'update' || !settings || !told) return null;
+  // An advisory that this check read ends a reminder, whatever the machine's kept check said.
+  if (fixing?.length > 0) return { state: 'fixes', words: `It fixes ${fixing.map((flaw) => `${flaw.id}${flaw.severity ? ` (${flaw.severity})` : ''}`).join(', ')}: it is not put off. Hold it if you must.` };
+  const put = putOff(offer, settings.later, now);
+  if (put) return { state: 'put', words: `Put off until ${untilWords(put.until, time)}${byWords(put.by, names)}` };
+  return fixing === null ? { state: 'unknown', words: UNKNOWN_FIXES } : { state: 'ask', words: null };
+}
+
+/** The choices of Later: how long, and the `for` that `updates.later` takes for it. */
+export const LATER_CHOICES = Object.freeze([{ label: 'Remind me tomorrow', for: 'day' }, { label: 'Remind me in a week', for: 'week' }]);
+
 // ---- the System card --------------------------------------------------------
 
 const PILL = {
@@ -148,12 +193,12 @@ export const slotName = (slot) => String(slot).toUpperCase();
  * `running` is the version this system runs when no check says.
  */
 export function systemCard({
-  check, slots, settings, failed, running, time,
+  check, slots, settings, failed, running, time, now = Date.now(), names = null,
 }) {
   const offer = offerOf(check, 'system');
   const version = offer?.from ?? running ?? null;
-  const done = (state, title, lines = [], buttons = []) => ({
-    state, pill: { kind: PILL[state][0], word: PILL[state][1] }, version, title, lines, buttons,
+  const done = (state, title, lines = [], buttons = [], later = null) => ({
+    state, pill: { kind: PILL[state][0], word: PILL[state][1] }, version, title, lines, buttons, later,
   });
   const staged = slots?.staged;
   if (staged) {
@@ -173,7 +218,10 @@ export function systemCard({
     case 'update': {
       const size = Number.isFinite(offer.download?.bytes) ? ` · ${megabytes(offer.download.bytes)} to download` : '';
       const fixes = check.advisories.filter((flaw) => flaw.fix === 'offered').map((flaw) => `Fixes ${flawWords(flaw)}`);
-      return done('update', `${to} is ready${size}`, [...fixes, offer.bridge && `It goes through ${offer.bridge} first.`].filter(Boolean), ['stage', 'hold']);
+      const later = laterOf(offer, {
+        settings, fixing: fixingOf(check, offer, null), now, time, names,
+      });
+      return done('update', `${to} is ready${size}`, [...fixes, offer.bridge && `It goes through ${offer.bridge} first.`].filter(Boolean), ['stage', 'hold'], later);
     }
     case 'waiting':
       return done('waiting', `${to} reaches this machine on day ${offer.wave_day ?? '?'} of its waves`, [text(offer.waves_held) && `Its waves are paused: ${ended(offer.waves_held)}`].filter(Boolean), ['hold']);
@@ -181,9 +229,10 @@ export function systemCard({
       const fell = offer.held_because === 'fell-back';
       const held = Date.parse(offer.held_at ?? '');
       const cause = text(failed?.check) ? `: it failed its check (${failed.check})` : '';
+      const story = holdStory(reasonOf(settings, 'system', offer.to) ?? { why: offer.held_reason }, time, names);
       const lines = fell
         ? [`It was taken back${Number.isFinite(held) ? ` ${atWords(held, time)}` : ''}${cause}. It is not staged again until you release it.`]
-        : ['It is held until you release it. A held version gets no security fixes.'];
+        : [story && capital(story), 'It is held until you release it. A held version gets no security fixes.'].filter(Boolean);
       return done('held', `${to} is held`, lines, [fell && 'happened', 'release'].filter(Boolean));
     }
     case 'withdrawn':
@@ -213,11 +262,13 @@ export function keptWords(slots) {
 export const MAKER_WORDS = 'The machine\'s own firmware is its maker\'s to update; Dukovo updates the firmware set its drivers load.';
 
 /** The Firmware card: `{state, pill, title, buttons, reason}`; `reason` says why Stage it is off. */
-export function firmwareCard({ check, slots, running }) {
+export function firmwareCard({
+  check, slots, running, settings = null, now = Date.now(), time = null, names = null,
+}) {
   const offer = offerOf(check, 'firmware');
   const set = offer?.from ?? running ?? null;
   const done = (state, title, extra = {}) => ({
-    state, pill: { kind: PILL[state][0], word: PILL[state][1] }, title, buttons: [], reason: null, ...extra,
+    state, pill: { kind: PILL[state][0], word: PILL[state][1] }, title, buttons: [], reason: null, later: null, story: null, ...extra,
   });
   const why = whyUnchecked(check, 'firmware');
   if (why !== null) return done('unchecked', couldNot(why));
@@ -226,10 +277,15 @@ export function firmwareCard({ check, slots, running }) {
   switch (offer.state) {
     case 'update': {
       const blocked = slots?.staged ? 'After the system update has proved itself' : null;
-      return done('update', `${was} · ${offer.to} is offered`, { buttons: ['stage'], reason: blocked });
+      const later = laterOf(offer, {
+        settings, fixing: fixingOf(check, offer, null), now, time, names,
+      });
+      return done('update', `${was} · ${offer.to} is offered`, { buttons: ['stage'], reason: blocked, later });
     }
-    case 'held':
-      return done('held', `${was} · ${offer.to} is held`, { buttons: ['release'] });
+    case 'held': {
+      const story = holdStory(reasonOf(settings, 'firmware', offer.to) ?? { why: offer.held_reason }, time, names);
+      return done('held', `${was} · ${offer.to} is held`, { buttons: ['release'], story: story && capital(story) });
+    }
     default:
       return done('current', `${was} · up to date`);
   }
@@ -247,19 +303,29 @@ export function fixesFor(item, to, flaws) {
 
 /**
  * The rows of the Apps card: each app the check offers an update for, joined
- * with `apps` (`bundle list --json`'s `bundles`) for its name and with
- * `flaws` (`update advisories --json`'s `apps`) for what the update fixes.
+ * with `apps` (`bundle list --json`'s `bundles`) for its name, its hold's
+ * reason and what is asked for tonight, and with `flaws` (`update advisories
+ * --json`'s `apps`) for what the update fixes. With `say` (`{settings, now,
+ * time, names}`) a row that is ready also says what Later and tonight say.
  */
-export function appRows(check, apps, flaws) {
+export function appRows(check, apps, flaws, say = null) {
   const bundles = list(apps).filter((one) => one.for_everyone !== false);
   return appOffers(check).map((offer) => {
-    const name = bundles.find((one) => one.id === offer.item)?.name ?? offer.item;
+    const bundle = bundles.find((one) => one.id === offer.item);
+    const name = bundle?.name ?? offer.item;
     const pair = versionPair(offer.from, offer.to);
     const kind = kindOfUpdate(offer.from, offer.to);
     const state = offer.state === 'held' ? 'held' : offer.state === 'waiting' ? 'waiting' : 'update';
-    const lines = state === 'held' ? [`Held at ${offer.from}`] : state === 'waiting' ? ['Reaches this machine soon'] : [fixesFor(offer.item, offer.to, flaws)].filter(Boolean);
-    return {
+    const reason = state === 'held' ? text(bundle?.held_reason) : null;
+    const lines = state === 'held' ? [`Held at ${offer.from}${reason ? ` · ${reason}` : ''}`] : state === 'waiting' ? ['Reaches this machine soon'] : [fixesFor(offer.item, offer.to, flaws)].filter(Boolean);
+    const row = {
       id: offer.item, name, pair, kind, state, lines,
+    };
+    if (!say || state !== 'update') return row;
+    return {
+      ...row,
+      tonight: tonightOf(bundle?.tonight),
+      later: laterOf(offer, { ...say, fixing: fixingOf(check, offer, flaws), told: say.settings?.apps === 'notify' }),
     };
   });
 }
@@ -289,35 +355,75 @@ export function securityCard(check) {
 // ---- holds ------------------------------------------------------------------
 
 /**
- * What is held: the system and the firmware set by `settings.hold` (a version
- * each, or null), each app of `apps` with `held`. Each is `{kind, item, title,
- * line}`; `release` runs `updates.unhold` for the system and the firmware, and
- * `apps.unhold` for an app.
+ * What is held: the system and the firmware set by `settings.hold`, each app of
+ * `apps` with `held`. Each is `{kind, item, title, held, line}`; `held` says
+ * when, by whom and why (`settings.hold_reasons`, or the app's own members) in
+ * the clock and names of `say` (`{time, names}`), or that the health check
+ * held it after a fallback. `release` runs `updates.unhold` for the system and
+ * the firmware, and `apps.unhold` for an app.
  */
-export function heldRows(settings, apps) {
+export function heldRows(settings, apps, say = null) {
   const rows = [];
   const held = settings?.held ?? null;
+  const story = (one) => (say && one ? holdStory(one, say.time, say.names) : null);
   if (text(settings?.hold?.system)) {
-    const fell = held?.version === settings.hold.system && held.why === 'fell-back';
-    rows.push({ kind: 'system', item: 'system', title: `System ${settings.hold.system}`, line: fell ? 'It was taken back, so it is not staged again until you release it.' : 'It is not staged until you release it.' });
+    const version = settings.hold.system;
+    const fell = held?.version === version && held.why === 'fell-back';
+    const taken = fell && say && Number.isFinite(held.at_ms) ? `held after it was taken back ${atWords(held.at_ms, say.time)} (UPD-105)` : null;
+    rows.push({
+      kind: 'system',
+      item: 'system',
+      title: `System ${version}`,
+      held: taken ?? story(reasonOf(settings, 'system', version)),
+      line: fell ? 'It was taken back, so it is not staged again until you release it.' : 'It is not staged until you release it.',
+    });
   }
-  if (text(settings?.hold?.firmware)) rows.push({ kind: 'firmware', item: 'firmware', title: `Firmware set ${settings.hold.firmware}`, line: 'It is not staged until you release it.' });
+  const set = settings?.hold?.firmware;
+  if (text(set)) {
+    rows.push({
+      kind: 'firmware', item: 'firmware', title: `Firmware set ${set}`, held: story(reasonOf(settings, 'firmware', set)), line: 'It is not staged until you release it.',
+    });
+  }
   for (const app of list(apps).filter((one) => one.held && one.for_everyone !== false)) {
-    rows.push({ kind: 'app', item: app.id, title: `${app.name ?? app.id} ${app.version}`, line: `Held at ${app.version}.` });
+    rows.push({
+      kind: 'app',
+      item: app.id,
+      title: `${app.name ?? app.id} ${app.version}`,
+      held: story({ at: app.held_since_ms, by: app.held_by, why: app.held_reason }),
+      line: `Held at ${app.version}.`,
+    });
   }
   return rows;
 }
 
-/** What a person may hold: the system's offered release, the firmware set, each app not held, as `{item, kind, label, action, args}`. */
+/** What a person may hold, as `{item, kind, label, what}`; `what` names it in the dialog that asks why ("nginx at 1.2.0"). */
 export function holdChoices(check, settings, apps) {
   const choices = [];
   const system = offerOf(check, 'system');
-  if (system && ['update', 'waiting'].includes(system.state) && !text(settings?.hold?.system)) choices.push({ item: 'system', kind: 'system', label: `The system, ${system.to}` });
+  if (system && ['update', 'waiting'].includes(system.state) && !text(settings?.hold?.system)) {
+    choices.push({
+      item: 'system', kind: 'system', label: `The system, ${system.to}`, what: `the system update ${system.to}`,
+    });
+  }
   const firmware = offerOf(check, 'firmware');
-  if (firmware?.state === 'update' && !text(settings?.hold?.firmware)) choices.push({ item: 'firmware', kind: 'firmware', label: `The firmware set, ${firmware.to}` });
-  for (const app of list(apps).filter((one) => one.for_everyone !== false && !one.held)) choices.push({ item: app.id, kind: 'app', label: `${app.name ?? app.id}, held at ${app.version}` });
+  if (firmware?.state === 'update' && !text(settings?.hold?.firmware)) {
+    choices.push({
+      item: 'firmware', kind: 'firmware', label: `The firmware set, ${firmware.to}`, what: `the firmware set ${firmware.to}`,
+    });
+  }
+  for (const app of list(apps).filter((one) => one.for_everyone !== false && !one.held)) {
+    choices.push({
+      item: app.id, kind: 'app', label: `${app.name ?? app.id}, held at ${app.version}`, what: `${app.name ?? app.id} at ${app.version}`,
+    });
+  }
   return choices;
 }
+
+/** The action that holds `choice`, with `why` when there is one. */
+export const holdCall = (choice, why = null) => ({
+  action: choice.kind === 'app' ? 'apps.hold' : 'updates.hold',
+  args: { ...(choice.kind === 'app' ? { id: choice.item } : { item: choice.item }), ...(why ? { why } : {}) },
+});
 
 // ---- what the navigation and the Overview count -----------------------------
 

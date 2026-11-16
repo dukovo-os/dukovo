@@ -7,7 +7,7 @@
 // reads and counts them.
 
 import assert from 'node:assert/strict';
-import test, { afterEach, beforeEach } from 'node:test';
+import test, { afterEach, beforeEach, mock } from 'node:test';
 
 import { count } from '../pages/updates/badge.js';
 import {
@@ -17,7 +17,7 @@ import * as palette from '../pages/updates/palette.js';
 import { PAGES } from '../pages.js';
 import { buildIndex, find } from '../palette/index-model.js';
 import {
-  check, checkWith, failed, last, NOW, time,
+  check, checkWith, failed, last, NOW, settings, time,
 } from './updates-fixtures.mjs';
 
 /** A `cx` that answers `GET` of each path in `answers`, and counts the calls. */
@@ -45,6 +45,7 @@ beforeEach(() => {
   });
 });
 afterEach(() => {
+  mock.restoreAll();
   if (realStorage) Object.defineProperty(globalThis, 'localStorage', realStorage);
   else delete globalThis.localStorage;
 });
@@ -82,11 +83,51 @@ test('a check that is a week old or more is a thing to look at, and nothing kept
   assert.deepEqual(needsOf({}, NOW), []);
 });
 
-test('the Overview part reads the last check once and says nothing when it cannot', async () => {
-  const cx = fakeCx({ '/api/1/updates': last(), '/api/1/updates/failed': failed() });
+test('the Overview part reads the last check and the reminders once and says nothing when it cannot', async () => {
+  const cx = fakeCx({ '/api/1/updates': last(), '/api/1/updates/settings': settings(), '/api/1/updates/failed': failed() });
   assert.equal((await needs(cx)).length, 3);
-  assert.deepEqual(cx.calls, ['/api/1/updates']);
+  assert.deepEqual(cx.calls.sort(), ['/api/1/updates', '/api/1/updates/settings']);
   assert.deepEqual(await needs(fakeCx({ '/api/1/updates': new Error('no') })), []);
+});
+
+// ---- an update that is put off ------------------------------------------------------
+
+const put = (item, version, more = {}) => ({
+  item, version, until_ms: NOW + 86_400_000, by: 1000, at_ms: NOW - 60_000, stands: true, ...more,
+});
+/** A check of a system update, a firmware set and two apps that are ready, and no advisory. */
+const ready = () => {
+  const doc = checkWith();
+  doc.offers.push({ item: 'org.a', from: '1.0.0', to: '1.1.0', state: 'update' }, { item: 'org.b', from: '2.0.0', to: '2.1.0', state: 'update' });
+  return last(doc);
+};
+
+test('an update that is put off is not a thing to look at until its time comes', () => {
+  const later = [put('system', '0.16.0'), put('org.a', '1.1.0')];
+  assert.deepEqual(needsOf(ready(), NOW, later).map((one) => [one.id, one.title]), [['update-apps', '1 app update is ready']]);
+  assert.deepEqual(needsOf(ready(), NOW + 86_400_001, later).map((one) => one.id), ['update-system', 'update-apps'], 'its time came');
+  assert.deepEqual(needsOf(ready(), NOW, [put('system', '0.16.0'), put('org.a', '1.1.0'), put('org.b', '2.1.0')]), [], 'every one put off');
+});
+
+test('a reminder that no longer stands, or is for another version, puts nothing off', () => {
+  assert.equal(needsOf(ready(), NOW, [put('system', '0.16.0', { stands: false })])[0].id, 'update-system', 'an advisory ended it');
+  assert.equal(needsOf(ready(), NOW, [put('system', '0.15.0')])[0].id, 'update-system', 'a newer release ended it');
+  assert.equal(needsOf(ready(), NOW, [put('firmware', '2026.3')])[0].id, 'update-system', 'another part\'s');
+  assert.equal(needsOf(ready(), NOW, null)[0].id, 'update-system', 'reminders that could not be read put nothing off');
+});
+
+test('the check that was kept may say the update is put off when the reminders could not be read', () => {
+  const doc = checkWith({ system: 'update' }, { system: { later_until_ms: NOW + 1000 } });
+  assert.deepEqual(needsOf(last(doc), NOW, null), []);
+  assert.equal(needsOf(last(doc), NOW, []).length, 1, 'reminders that were read and hold none say it is not put off');
+});
+
+test('the Overview part leaves a put-off update out, as the page does', async () => {
+  const cx = fakeCx({ '/api/1/updates': ready(), '/api/1/updates/settings': settings({ later: [put('system', '0.16.0')] }) });
+  mock.method(Date, 'now', () => NOW);
+  assert.deepEqual((await needs(cx)).map((one) => one.id), ['update-apps']);
+  const none = fakeCx({ '/api/1/updates': ready(), '/api/1/updates/settings': new Error('no') });
+  assert.deepEqual((await needs(none)).map((one) => one.id), ['update-system', 'update-apps'], 'a page that cannot read them reminds');
 });
 
 test('a new failed start lets go of the one that was seen', async () => {
@@ -115,8 +156,12 @@ test('the failed start\'s notice gets What happened and Report it, and says "See
   assert.deepEqual(noticeButtons('another'), []);
 });
 
-test('the navigation counts the parts with an update ready, and nothing when none is', async () => {
-  assert.deepEqual(await count(fakeCx({ '/api/1/updates': last() })), { count: 3, label: 'ready', kind: 'info' });
+test('the navigation counts the parts with an update ready that is not put off, and nothing when none is', async () => {
+  mock.method(Date, 'now', () => NOW);
+  assert.deepEqual(await count(fakeCx({ '/api/1/updates': last(), '/api/1/updates/settings': settings() })), { count: 3, label: 'ready', kind: 'info' });
+  assert.deepEqual(await count(fakeCx({ '/api/1/updates': last(), '/api/1/updates/settings': settings({ later: [put('system', '0.16.0'), put('firmware', '2026.3')] }) })), { count: 1, label: 'ready', kind: 'info' });
+  assert.equal(await count(fakeCx({ '/api/1/updates': last(checkWith()), '/api/1/updates/settings': settings({ later: [put('system', '0.16.0'), put('firmware', '2026.3')] }) })), null);
+  assert.deepEqual(await count(fakeCx({ '/api/1/updates': last() })), { count: 3, label: 'ready', kind: 'info' }, 'with no reminders read, every update that is ready counts');
   assert.equal(await count(fakeCx({ '/api/1/updates': last(checkWith({ system: 'current', firmware: 'held' })) })), null);
   assert.equal(await count(fakeCx({ '/api/1/updates': null })), null);
   assert.equal(await count(fakeCx({ '/api/1/updates': new Error('no') })), null);

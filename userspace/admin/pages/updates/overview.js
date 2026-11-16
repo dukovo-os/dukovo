@@ -6,9 +6,10 @@
 // could not be checked, no check for a week), the buttons of the failed start's
 // notice, and the row that says when the check was. Every read is the
 // person's own: `GET /api/1/updates` is `update last --json`, kept by the daily
-// check.
+// check. An update that is put off to later is not one that waits until then.
 
 import { forget, recall } from '../../lib/store.js';
+import { putOff, readLater } from './put-off.js';
 
 /** The days a check may be old before the Overview says so. */
 const STALE_DAYS = 7;
@@ -19,13 +20,14 @@ const SEEN = 'updates.happened.seen';
 const read = (cx) => cx.cache('/api/1/updates', 5000, () => cx.api.get('/api/1/updates').catch(() => null));
 const offersOf = (answer) => (Array.isArray(answer?.updates?.offers) ? answer.updates.offers : []);
 
-/** The things to look at, for the Overview, from the last check `answer` and the time `now` in milliseconds. */
-export function needsOf(answer, now) {
+/** The things to look at, for the Overview, from the last check `answer`, the time `now` in milliseconds and the reminders `later` that are put off (null when not read). */
+export function needsOf(answer, now, later = null) {
   const offers = offersOf(answer);
   const found = [];
   const system = offers.find((offer) => offer.item === 'system');
+  const waits = (offer) => offer?.state === 'update' && !putOff(offer, later, now);
   const advisories = (Array.isArray(answer?.updates?.security?.system) ? answer.updates.security.system : []).filter((flaw) => flaw.fix === 'offered');
-  if (system?.state === 'update') {
+  if (waits(system)) {
     found.push({
       id: 'update-system',
       severity: advisories.length > 0 ? 'warn' : 'info',
@@ -47,7 +49,7 @@ export function needsOf(answer, now) {
       at: Number.isFinite(Date.parse(system.held_at)) ? Math.floor(Date.parse(system.held_at) / 1000) : null,
     });
   }
-  const apps = offers.filter((offer) => offer.item !== 'system' && offer.item !== 'firmware' && offer.state === 'update').length;
+  const apps = offers.filter((offer) => offer.item !== 'system' && offer.item !== 'firmware' && waits(offer)).length;
   if (apps > 0) {
     found.push({
       id: 'update-apps', severity: 'info', title: `${apps} ${apps === 1 ? 'app update is' : 'app updates are'} ready`, detail: 'Update them from Updates.', href: '/updates#apps', icon: 'updates', at: null,
@@ -76,13 +78,13 @@ export function needsOf(answer, now) {
 
 /** The things to look at, for the Overview. A check that was never kept has none. */
 export async function needs(cx) {
-  const answer = await read(cx);
+  const [answer, later] = await Promise.all([read(cx), readLater(cx)]);
   // A new failed start is a new thing to see: what was kept for the one before it is let go.
   if (recall(SEEN) !== null && answer?.updates) {
     const failed = await cx.cache('/api/1/updates/failed', 5000, () => cx.api.get('/api/1/updates/failed').catch(() => null));
     if (failed?.failed && recall(SEEN) !== failed.failed.start) forget(SEEN);
   }
-  return needsOf(answer, Date.now());
+  return needsOf(answer, Date.now(), later);
 }
 
 /** The row of the server card: when the update check was, and what waits. */
