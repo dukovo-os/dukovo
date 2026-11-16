@@ -26,7 +26,9 @@
 //! radix-file(2)'s `send_files`): a write may bring some, which ride on
 //! its first byte. A read never goes past a byte that has files on it
 //! unless it starts there, so the files come out with the bytes they were
-//! sent with; a read that does not take them closes them.
+//! sent with; a read that does not take them closes them. The pipe counts
+//! the Unix sockets among them, which `socket`'s rule against sockets
+//! that hold themselves open reads (ADR 0525).
 
 use alloc::sync::Weak;
 use alloc::vec::Vec;
@@ -73,14 +75,34 @@ pub struct Passed {
     pub file: FileRef,
 }
 
+impl Drop for Passed {
+    // The last reference to a Unix socket can be the one a queue holds,
+    // and the socket's own queues can hold more sockets: dropping them in
+    // place would go as deep as such a chain is long, on a kernel stack of
+    // a few pages. The socket waits with the released objects instead,
+    // which `fs::drop_deferred` drops one after another (ADR 0525).
+    fn drop(&mut self) {
+        if self.file.socket().is_some() {
+            super::defer_drop(self.file.clone());
+        }
+    }
+}
+
 /// Files sent together.
 pub type Files = alloc::vec::Vec<Passed, Kmalloc>;
+
+/// How many of `files` are Unix sockets.
+pub fn sockets_among(files: &Files) -> usize {
+    files.iter().filter(|passed| passed.file.socket().is_some()).count()
+}
 
 /// Files riding on a byte of a pipe.
 struct Attachment {
     /// The byte's place in all that was ever written to the pipe.
     at: u64,
     files: Files,
+    /// How many of `files` are Unix sockets.
+    sockets: usize,
 }
 
 /// A pipe's buffer, and the files riding on its bytes.
@@ -107,8 +129,8 @@ impl Buffer {
 }
 
 /// Copies of `files`, which a peek gives while they stay riding on their
-/// byte.
-fn copies(files: &Files) -> Result<Files, Status> {
+/// byte (or in a datagram, `socket`).
+pub(super) fn copies(files: &Files) -> Result<Files, Status> {
     let mut copies = alloc::vec::Vec::new_in(heap());
     copies.try_reserve_exact(files.len()).map_err(|_| Kernel::NoMemory.status(0))?;
     for passed in files {
@@ -125,7 +147,7 @@ fn heap() -> Kmalloc {
 }
 
 /// Zeroed storage for a buffer of `size` bytes.
-fn storage(size: usize) -> Result<alloc::vec::Vec<u8, Kmalloc>, Status> {
+pub(super) fn storage(size: usize) -> Result<alloc::vec::Vec<u8, Kmalloc>, Status> {
     let mut storage = alloc::vec::Vec::new_in(heap());
     storage.try_reserve_exact(size).map_err(|_| Kernel::NoMemory.status(0))?;
     while storage.len() < size {
@@ -149,6 +171,10 @@ pub struct Pipe {
     writers: AtomicU32,
     /// How many files ride on its bytes.
     files: AtomicUsize,
+    /// How many of those files are Unix sockets: changed only with the
+    /// buffer locked, and raised only by a send that holds `socket`'s
+    /// lock for sockets on their way (ADR 0525).
+    sockets: AtomicUsize,
     /// Its number, which both ends' nodes show.
     id: u64,
     /// Its pollers.
@@ -188,6 +214,7 @@ impl Pipe {
             readers: AtomicU32::new(ends),
             writers: AtomicU32::new(ends),
             files: AtomicUsize::new(0),
+            sockets: AtomicUsize::new(0),
             id: next_id(),
             polled: Polled::new(),
             opened: [AtomicU32::new(0), AtomicU32::new(0)],
@@ -307,6 +334,11 @@ impl Pipe {
         Ok(wanted)
     }
 
+    /// How many Unix sockets ride on its bytes.
+    pub(super) fn sockets(&self) -> usize {
+        self.sockets.load(Ordering::Acquire)
+    }
+
     /// How many ends read it, and how many write it.
     pub fn readers(&self) -> u32 {
         self.readers.load(Ordering::Acquire)
@@ -323,6 +355,7 @@ impl Pipe {
             let unread = {
                 let mut buffer = self.buffer.lock();
                 self.files.store(0, Ordering::Release);
+                self.sockets.store(0, Ordering::Release);
                 buffer.attachments.take()
             };
             drop(unread);
@@ -402,14 +435,13 @@ impl Pipe {
                     let read = buffer.ring.read_with(want.min(most), &mut sink);
                     let taken = *read.as_ref().unwrap_or(&0);
                     buffer.taken += taken as u64;
-                    let files = if with_files && taken > 0 {
-                        buffer.attachments.pop_front().map(|attachment| attachment.files)
-                    } else {
-                        None
-                    };
-                    if let Some(files) = &files {
-                        self.files.fetch_sub(files.len(), Ordering::AcqRel);
-                    }
+                    let attachment =
+                        if with_files && taken > 0 { buffer.attachments.pop_front() } else { None };
+                    let files = attachment.map(|attachment| {
+                        self.files.fetch_sub(attachment.files.len(), Ordering::AcqRel);
+                        self.sockets.fetch_sub(attachment.sockets, Ordering::AcqRel);
+                        attachment.files
+                    });
                     self.len.store(buffer.ring.len(), Ordering::Release);
                     drop(buffer);
                     self.changed();
@@ -452,7 +484,43 @@ impl Pipe {
         non_blocking: bool,
         signal: bool,
     ) -> Result<usize, Status> {
-        self.put(data, files, 0, non_blocking, signal)
+        let mut files = files;
+        self.put(data, &mut files, 0, non_blocking, signal, &mut |_| Ok(()))
+    }
+
+    /// Writes `data`, of at most [`ATOMIC`] bytes, whole and at once, with
+    /// `files` riding on its first byte, if `admit` lets the files in:
+    /// for `socket`'s sends of Unix sockets, whose rule against sockets
+    /// that hold themselves open must look at the queues while nothing
+    /// else can send a socket (ADR 0525). `admit` runs with the buffer
+    /// locked, just before the files go in, and nothing else does. Fails
+    /// with would_block while `data` does not fit, leaving `files` as
+    /// they were for the send to try again after [`Pipe::wait_writable`];
+    /// with what `admit` fails with, leaving them too.
+    pub(super) fn write_admitted(
+        &self,
+        data: &dyn In,
+        files: &mut Option<Files>,
+        signal: bool,
+        admit: &mut dyn FnMut(&Files) -> Result<(), Status>,
+    ) -> Result<usize, Status> {
+        debug_assert!(data.len() <= ATOMIC);
+        self.put(data, files, 0, true, signal, admit)
+    }
+
+    /// Waits until a write of `len` bytes would put some in at once, as
+    /// [`Pipe::write_files`] waits, or until no end reads the pipe.
+    pub(super) fn wait_writable(&self, len: usize) -> Result<(), Status> {
+        let room = if len <= ATOMIC { len } else { 1 };
+        wait::wait_until(self.key(), "pipe write", || {
+            self.free_bytes(self.len.load(Ordering::Acquire)) >= room
+                || self.readers.load(Ordering::Acquire) == 0
+                || sched::interrupted()
+        });
+        if sched::interrupted() {
+            return Err(interrupted(Restart::Always));
+        }
+        Ok(())
     }
 
     /// Writes `data`, of at most [`ATOMIC`] bytes, whole, as the kernel
@@ -466,18 +534,20 @@ impl Pipe {
         non_blocking: bool,
     ) -> Result<usize, Status> {
         debug_assert!(data.len() <= ATOMIC);
-        self.put(data, None, keep, non_blocking, false)
+        self.put(data, &mut None, keep, non_blocking, false, &mut |_| Ok(()))
     }
 
     /// [`Pipe::write_files`], leaving `keep` bytes free after a write of
-    /// up to [`ATOMIC`] bytes.
+    /// up to [`ATOMIC`] bytes. `files` stay where they are until they go
+    /// in with the first byte written, once `admit` has let them in.
     fn put(
         &self,
         data: &dyn In,
-        mut files: Option<Files>,
+        files: &mut Option<Files>,
         keep: usize,
         non_blocking: bool,
         signal: bool,
+        admit: &mut dyn FnMut(&Files) -> Result<(), Status>,
     ) -> Result<usize, Status> {
         let total = data.len();
         if total == 0 {
@@ -496,15 +566,15 @@ impl Pipe {
                 let free = buffer.ring.free();
                 if (atomic && free >= left + keep) || (!atomic && free > 0) {
                     // The files go with the first piece written.
-                    let count = files.as_ref().map_or(0, alloc::vec::Vec::len);
-                    if count > 0 {
+                    if let Some(sent) = files.as_ref().filter(|sent| !sent.is_empty()) {
                         let flying = self.files.load(Ordering::Acquire);
-                        if flying + count > FILES_IN_FLIGHT_MAX as usize {
+                        if flying + sent.len() > FILES_IN_FLIGHT_MAX as usize {
                             return Err(Kernel::TooMany.status(0));
                         }
                         if !buffer.attachments.reserve_one() {
                             return Err(Kernel::NoMemory.status(0));
                         }
+                        admit(sent)?;
                     }
                     let place = buffer.taken + buffer.ring.len() as u64;
                     let mut at = done;
@@ -517,8 +587,11 @@ impl Pipe {
                         && let Some(files) = files.take()
                     {
                         self.files.fetch_add(files.len(), Ordering::AcqRel);
+                        let sockets = sockets_among(&files);
+                        self.sockets.fetch_add(sockets, Ordering::AcqRel);
                         // Room was reserved above.
-                        let _ = buffer.attachments.push_back(Attachment { at: place, files });
+                        let attachment = Attachment { at: place, files, sockets };
+                        let _ = buffer.attachments.push_back(attachment);
                     }
                     self.len.store(buffer.ring.len(), Ordering::Release);
                     drop(buffer);

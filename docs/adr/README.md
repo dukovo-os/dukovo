@@ -109,7 +109,7 @@ their pull requests conflicted.
 | [0088](0088-archives-and-compressors.md) | libarchive is tar, cpio and unzip; each compressor is its own project's | Accepted |
 | [0089](0089-directory-descriptor-paths.md) | The C library notes the path of each directory descriptor, for `..` beneath it and fchdir | Accepted |
 | [0090](0090-editors-cxx-and-default-settings.md) | Editors, a C++ runtime, and the settings the system starts with | Accepted; changed by [0114](0114-plain-names-inside-system.md) |
-| [0091](0091-named-sockets-and-passed-descriptors.md) | Named sockets connect through the tree, and descriptors ride on their bytes | Accepted |
+| [0091](0091-named-sockets-and-passed-descriptors.md) | Named sockets connect through the tree, and descriptors ride on their bytes | Accepted; sockets are sent with `SCM_RIGHTS` under a rule that keeps cycles out, and datagram sockets and credentials as control messages exist, since [0525](0525-unix-datagram-sockets-and-sockets-passed-under-a-rule-that-keeps-out-cycles.md) |
 | [0092](0092-cpu-time-split-and-load-averages.md) | CPU time is split by the timer's samples, and the load averages are Linux's | Accepted |
 | [0093](0093-cpu-affinity-and-io-classes.md) | Threads have Linux's CPU affinity, and processes Linux's I/O classes | Accepted |
 | [0094](0094-proc-for-the-native-tools-kmsg-and-opened-paths.md) | /proc tells the native tools what they show, /dev/kmsg gives the log, and files keep the path they were opened by | Accepted; changed by [0113](0113-plain-names-for-the-root-folders.md) |

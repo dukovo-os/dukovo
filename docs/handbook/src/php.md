@@ -223,9 +223,9 @@ Some functions fall short of Linux's where the system does not have
 what they use yet: `dns_get_record`, `dns_check_record` (`checkdnsrr`) and
 `dns_get_mx` (`getmxrr`) are not there, as the C library has no
 `res_search`; `getprotobyname` and `getprotobynumber` return false; an
-`AF_UNIX` socket is a stream only, so `socket_create` of a datagram one
-fails, and with it passing a descriptor or credentials in a message; and
-`mail()` fails, as it does anywhere without `sendmail`.
+`AF_UNIX` socket is a stream or a datagram one, but not a sequenced-packet
+one, so `socket_create` of that fails, as does a name in the abstract
+namespace; and `mail()` fails, as it does anywhere without `sendmail`.
 
 ## Connecting to PostgreSQL
 

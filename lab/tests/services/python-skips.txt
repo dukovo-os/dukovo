@@ -10,8 +10,9 @@
 
 # multiprocessing's suites get past their setup now that sysconf(3)
 # answers _SC_SEM_NSEMS_MAX; they share sockets between processes by
-# passing them over Unix-domain sockets (SCM_RIGHTS), which Radix does
-# not pass yet, and return to the run with that work (deferred work).
+# passing them over Unix-domain sockets (SCM_RIGHTS), which Radix passes
+# (ADR 0525), and return to the run when a run of them passes (deferred
+# work).
 test_multiprocessing_fork
 test_multiprocessing_forkserver
 test_multiprocessing_spawn
@@ -75,14 +76,6 @@ test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testSingleCmsgTrunc1
 test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testSingleCmsgTrunc2Int
 test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testSingleCmsgTruncInData
 test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testSingleCmsgTruncLen0Minus1
-
-# Unix-domain datagram sockets (SOCK_DGRAM), and descriptors passed
-# over a socket (SCM_RIGHTS), which Radix does not have.
-test.test_asyncio.test_base_events.BaseEventLoopWithSelectorTests.test_create_datagram_endpoint_existing_sock_unix
-test.test_asyncio.test_base_events.BaseEventLoopWithSelectorTests.test_create_datagram_endpoint_sock_unix
-test.test_asyncio.test_unix_events.SelectorEventLoopUnixSocketTests.test_create_unix_server_path_dgram
-test.test_logging.UnixSysLogHandlerTest.test_udp_reconnection
-test.test_socket.SendRecvFdsTests.testSendAndRecvFds
 
 # File names must be valid UTF-8 on Dukovo (radix-files(7)): names
 # with undecodable bytes, which these tests make, are refused (EINVAL).

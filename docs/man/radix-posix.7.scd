@@ -328,9 +328,9 @@ There is no *epoll*, *eventfd*, *signalfd* or *timerfd*.
 
 # SOCKETS
 
-Sockets are *AF_UNIX* stream sockets and *AF_INET* stream (TCP) and
-datagram (UDP) sockets (*NETWORK SOCKETS*, below), as *socket*,
-*socketpair* and *accept* make them, with *SOCK_NONBLOCK* and
+Sockets are *AF_UNIX* stream and datagram sockets and *AF_INET* stream
+(TCP) and datagram (UDP) sockets (*NETWORK SOCKETS*, below), as
+*socket*, *socketpair* and *accept* make them, with *SOCK_NONBLOCK* and
 *SOCK_CLOEXEC* if asked.
 Each connection is a pipe's buffer each way (*radix-process*(2)'s
 *socket_pair*). *read*, *write*, *send*, *recv*, *sendto*, *recvfrom*,
@@ -349,10 +349,60 @@ once no socket listens there. *accept* and *accept4* take the
 connection that has waited longest. *getsockname*, *getpeername*,
 *recvfrom* and *accept* give a socket's name as it was bound, or an
 unnamed *AF_UNIX* address. *getsockopt* answers *SO_TYPE*, *SO_DOMAIN*,
-*SO_PROTOCOL*, *SO_ERROR*, *SO_ACCEPTCONN*, *SO_RCVBUF*, *SO_SNDBUF* and
-*SO_PEERCRED*, which gives the process at the other end, and the user
-and group it acted for, as they were when the connection was made: for
-the connecting end, when the other began to listen.
+*SO_PROTOCOL*, *SO_ERROR*, *SO_ACCEPTCONN*, *SO_RCVBUF*, *SO_SNDBUF*,
+*SO_PASSCRED* and *SO_PEERCRED*, which gives the process at the other
+end, and the user and group it acted for, as they were when the
+connection was made: for the connecting end, when the other began to
+listen. A pair of datagram sockets has the process that made it at each
+end. A datagram socket that is not of a pair has no process to give: it
+answers process 0 and, as Linux does, no user and no group (the largest
+*uid_t* and *gid_t*), never user 0.
+
+*AF_UNIX* datagram sockets keep each datagram whole (*SOCK_DGRAM*,
+protocol 0). *socketpair* makes two, each connected to the other. A
+named one is made with *bind*, as a stream socket is, and sent to by name
+with *sendto* and *sendmsg*, from a socket with a name or none; *connect*
+to a name sets where *send* goes and the only socket the datagrams are
+taken from, may be done again, and with *AF_UNSPEC* as the address
+forgets the peer. Either throws away the datagrams that wait. A name
+that is a stream socket's fails with EPROTOTYPE, one with no file with
+ENOENT, and a file that is no socket's name, or a socket that has gone,
+with ECONNREFUSED; a socket connected to another is sent to with EPERM.
+A connected socket whose peer has gone is told with ECONNREFUSED once,
+and then is not connected (ENOTCONN). A datagram is 0 to 212,960 bytes
+(EMSGSIZE above that). A socket's queue takes up to 512 datagrams and
+212,992 bytes of them, one datagram always going into an empty queue;
+a send to a full one waits, a signal ends the wait, and with
+*O_NONBLOCK* or *MSG_DONTWAIT* it fails with EAGAIN. A receive takes
+one datagram, whatever the buffers and *MSG_WAITALL* say: what they have
+no room for is lost, which *recvmsg* says with *MSG_TRUNC* in the
+message's flags, and a receive given *MSG_TRUNC* returns the datagram's
+whole size. *MSG_PEEK* leaves the datagram. *recvfrom* and
+*recvmsg* give the sender's name, or an address of length 0 if it has
+none. *FIONREAD* is the size of the next datagram. *poll* says a socket
+is readable while a datagram waits and once it is shut for reading, and
+a connected one writable while its peer's queue has room for another
+datagram and at most a quarter of its bytes taken, as Linux says while a
+socket has sent at most a quarter of its buffer. A datagram socket's
+*SO_RCVBUF* and *SO_SNDBUF* are 212,992.
+*shutdown* works on a socket that is not connected: a send on one shut
+for writing, or to one shut for reading, fails with EPIPE and raises no
+SIGPIPE, and a receive on one shut for reading, once its datagrams are
+gone, returns 0, or fails with EAGAIN if it does not wait. A datagram
+socket neither listens nor accepts (EOPNOTSUPP), and its peer closing
+does not end its receives.
+
+*SO_PASSCRED*, on a socket of either kind, has each *recvmsg* put a
+*SCM_CREDENTIALS* message of a *struct ucred* first in its control
+buffer: the process that sent a datagram, and its user and group, as
+they were at the send; a stream's is the connection's peer, as
+*SO_PEERCRED* gives it. Descriptors have the room it leaves, as on
+Linux. A control buffer with no room for it loses it, and *MSG_CTRUNC*
+says so.
+*sendmsg* accepts a *SCM_CREDENTIALS* message of the caller's own
+process, user and group, and fails with EPERM for any other, and with
+EINVAL for one of another size; the receiver gets the kernel's record of
+the sender either way.
 
 *sendmsg* passes up to 253 descriptors of files and directories with
 *SCM_RIGHTS*, which ride on the first byte it sends; one with no bytes
@@ -362,15 +412,19 @@ descriptors, closed by exec with *MSG_CMSG_CLOEXEC*. *recvmsg* closes
 those its control buffer has no room for and says so with
 *MSG_CTRUNC*; *read* and *recv* close them all. At most 1,024
 descriptors are on their way each way at once (ETOOMANYREFS). Sockets
-of the *AF_UNIX* family are not passed (EOPNOTSUPP), so none can keep
-itself open (ADR 0091); network sockets are. *MSG_PEEK* leaves the
-bytes it gets for the next receive, and the descriptors riding on them
-come to it as copies, as on Linux (ADR 0341).
+are passed, of either family and kind, listening ones too; a datagram
+carries its descriptors with it, even with no bytes. A socket that
+could hold itself open, which no process could then close, is not
+passed (ETOOMANYREFS, ADR 0525): one with a socket not yet received in
+a queue it reads, and one sent into a queue it reads, as the other end
+of a connection over that connection. *MSG_PEEK* leaves the bytes it
+gets for the next receive, and the descriptors riding on them come to
+it as copies, as on Linux (ADR 0341).
 
-*AF_UNIX* datagram and sequenced-packet sockets fail with
-ESOCKTNOSUPPORT, Linux's abstract names and *MSG_OOB* with EOPNOTSUPP,
-and control messages other than *SCM_RIGHTS* with EINVAL. Families
-other than *AF_UNIX*, *AF_INET* and *AF_INET6* fail with EAFNOSUPPORT.
+*AF_UNIX* sequenced-packet sockets fail with ESOCKTNOSUPPORT, Linux's
+abstract names and *MSG_OOB* with EOPNOTSUPP, and control messages other
+than *SCM_RIGHTS* and *SCM_CREDENTIALS* with EINVAL. Families other than
+*AF_UNIX*, *AF_INET* and *AF_INET6* fail with EAFNOSUPPORT.
 
 ## NETWORK SOCKETS
 
@@ -780,7 +834,7 @@ a session of its own with the terminal as the controlling one and runs
 each test as a shell runs a job, in a process group of its own, in the
 foreground. The tests are:
 
-*hello*, *fork*, *exec*, *signal*, *pipe*, *socket*, *inet*, *poll*, *tty*, *job*, *time*, *files*, *locks*, *shm*, *thread*, *cancel*, *spawn*, *limits*, *format*
+*hello*, *fork*, *exec*, *signal*, *pipe*, *socket*, *datagram*, *inet*, *poll*, *tty*, *job*, *time*, *files*, *locks*, *shm*, *thread*, *cancel*, *spawn*, *limits*, *format*
 	C programs in _userspace/posix_, one per area. *inet* runs TCP and
 	UDP over the loopback interface, makes 300 connections in a row, more
 	than the interface has sockets, and checks that a child with no
@@ -788,10 +842,14 @@ foreground. The tests are:
 	may only connect out cannot bind or listen, and one that may only
 	listen on a range of ports cannot connect out. *format* holds
 	*printf*, *strtod*, *scanf*, *strftime* and the time conversions to
-	1,461 answers generated with glibc 2.39. *shm* shares memory across
-	processes: files in _/dev/shm_ opened by name, their sizes and
-	SIGBUS, process-shared and named semaphores, and System V segments
-	and semaphore sets with their counts, waits, undos and removals.
+	1,461 answers generated with glibc 2.39. *datagram* makes *AF_UNIX*
+	datagram sockets as pairs and by name, checks their limits, how they
+	shut down, the descriptors, sockets and credentials that ride on a
+	datagram, and that sockets in flight leave nothing behind when
+	closed. *shm* shares memory across processes: files in _/dev/shm_
+	opened by name, their sizes and SIGBUS, process-shared and named
+	semaphores, and System V segments and semaphore sets with their
+	counts, waits, undos and removals.
 
 *library*
 	The C library's corners, as glibc 2.39 has them: allocations near
@@ -867,13 +925,14 @@ passed*; the boot test fails on any failure.
 
 # LIMITS
 
-- *AF_UNIX* sockets are streams only, and are not passed over each
-  other; network sockets are TCP, UDP and ping sockets, without
-  *MSG_OOB*. Hard links, named pipes (*mkfifo*), device
-  nodes (*mknod*) and socket names work on tmpfs and Btrfs, not on FAT
-  or exFAT (EPERM); a device node opens only the devices with fixed
-  Linux numbers (*radix-files*(7)). Symbolic links work on tmpfs, Btrfs
-  and in the boot archive, not on FAT or exFAT.
+- *AF_UNIX* sockets are streams and datagrams, with no sequenced
+  packets, abstract names or autobind, and a socket is not passed when
+  that could make it hold itself open; network sockets are TCP, UDP and
+  ping sockets, without *MSG_OOB*. Hard links, named pipes (*mkfifo*),
+  device nodes (*mknod*) and socket names work on tmpfs and Btrfs, not
+  on FAT or exFAT (EPERM); a device node opens only the devices with
+  fixed Linux numbers (*radix-files*(7)). Symbolic links work on tmpfs,
+  Btrfs and in the boot archive, not on FAT or exFAT.
 - A directory descriptor from before exec has no path: *..* above it
   and an absolute symbolic link beneath it fail with EXDEV, and *fchdir*
   to it with ENOSYS. One whose directory was moved while it was open

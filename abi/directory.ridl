@@ -576,7 +576,7 @@ struct ScrubProgress {
 }
 
 /// A directory.
-interface directory = 0x000b version 11 {
+interface directory = 0x000b version 12 {
     kind = directory;
     /// Opens the file or directory at `path` (`.` for this one) and puts
     /// a capability to it with `rights` in slot `to`. Returns what it is.
@@ -706,9 +706,11 @@ interface directory = 0x000b version 11 {
         raises [no_such_slot, empty_slot, missing_rights, invalid_argument, no_memory,
                 bad_address, not_found, not_directory, name_too_long, bad_name, outside, io,
                 corrupt, too_many_links, denied];
-    /// Names the socket in slot `socket` (radix-process(2)'s `socket`)
-    /// `path`: makes a socket's name there, a file of kind socket, which
-    /// `connect_socket` connects through while the socket listens. The
+    /// Names the socket in slot `socket` (radix-process(2)'s `socket` or
+    /// `datagram_socket`) `path`: makes a socket's name there, a file of
+    /// kind socket, which `connect_socket` connects through while the
+    /// socket listens, or, for a datagram socket, which `connect_socket`
+    /// and `send_datagram` reach it by while it is there. The
     /// socket keeps `name` (at most radix-file(2)'s SOCKET_NAME_MAX bytes)
     /// as its name for radix-file(2)'s `socket_name`: the path as the
     /// program gave it. A socket takes one name, before it listens or
@@ -729,13 +731,23 @@ interface directory = 0x000b version 11 {
     /// many connections wait as the listening socket allows, it waits
     /// for room, or fails with would_block if the socket's description
     /// is non_blocking. A name of a socket that does not listen, or is
-    /// gone, and any other file, fail with refused. Needs the write right,
-    /// and the write right on the socket.
+    /// gone, and any other file, fail with refused; a datagram socket's
+    /// name with wrong_type. Needs the write right, and the write right
+    /// on the socket.
+    ///
+    /// A datagram socket (radix-process(2)'s `datagram_socket`) waits for
+    /// nothing: the datagram socket named `path` becomes where its sends
+    /// go and the only socket it receives from, in place of any it was
+    /// connected to before; if that was another, the datagrams that wait
+    /// for it are thrown away, as on Linux. A stream socket's name fails with
+    /// wrong_type, and a datagram socket connected to a socket other
+    /// than this one with not_permitted. radix-file(2)'s `disconnect`
+    /// undoes it. (Since Phase 16, ADR 0525.)
     method connect_socket = 16 (path: in bytes, socket: slot) -> ()
         raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
                 no_memory, bad_address, not_found, not_directory, name_too_long, bad_name,
                 outside, io, corrupt, too_many_links, not_socket, refused, connected, busy,
-                would_block, interrupted, denied];
+                would_block, interrupted, denied, wrong_type, not_permitted];
     /// Makes `to` beneath the directory in slot `to_dir` another name of
     /// the file at `path`, a hard link: of the symbolic link itself when
     /// `path` ends in one, unless `flags` has follow, as linkat(2) has
@@ -1243,4 +1255,29 @@ interface directory = 0x000b version 11 {
         raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
                 no_memory, bad_address, exists, not_directory, no_space, name_too_long, bad_name,
                 in_use, not_permitted, not_supported];
+    /// Sends `data` as one datagram from the datagram socket in slot
+    /// `socket` to the datagram socket named `path`, with the files whose
+    /// slots `slots` holds, as radix-file(2)'s `send_files` sends them;
+    /// returns how many bytes went, all of them. The socket need not be
+    /// named or connected, and if it is connected, the datagram goes to
+    /// `path` all the same. `data` holds at most radix-file(2)'s
+    /// DATAGRAM_MAX bytes, else message_too_long; it may be empty. While
+    /// the receiver holds as many datagrams or bytes as it takes, the
+    /// send waits for room, or fails with would_block if the socket's
+    /// description is non_blocking or `flags` say dont_wait. A name whose
+    /// socket is gone, or any other file, fails with refused; a stream
+    /// socket's name with wrong_type; a receiver connected to a socket
+    /// other than this one with not_permitted; a socket shut for
+    /// writing, or a receiver shut for reading, with gone, never raising
+    /// SIGPIPE. A stream socket in slot `socket` fails with connected if
+    /// it is connected, else with not_supported, before `path` is looked
+    /// up. Needs the write right, and the write right on the socket.
+    /// (Since Phase 16, ADR 0525.)
+    method send_datagram = 55 (path: in bytes, socket: slot, data: in bytes, slots: in bytes,
+                               flags: SocketFlags) -> (count: u64)
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
+                no_memory, bad_address, not_found, not_directory, name_too_long, bad_name,
+                outside, io, corrupt, too_many_links, not_socket, not_supported, connected,
+                refused, wrong_type, not_permitted, message_too_long, too_many, would_block,
+                gone, interrupted, denied];
 }

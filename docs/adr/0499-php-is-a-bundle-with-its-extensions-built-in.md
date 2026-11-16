@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0499. PHP is a bundle with its extensions built in, and its own test suite
 
-- Status: Accepted; `pgsql` and `pdo_pgsql` are built in since [0522](0522-postgresql-runs-as-a-service-that-stops-with-its-own-signal-and-time.md)
+- Status: Accepted; `pgsql` and `pdo_pgsql` are built in since [0522](0522-postgresql-runs-as-a-service-that-stops-with-its-own-signal-and-time.md), and nine tests leave the skip list for Unix-domain datagram sockets since [0525](0525-unix-datagram-sockets-and-sockets-passed-under-a-rule-that-keeps-out-cycles.md)
 - Date: 2026-11-13
 
 ## Context
@@ -222,22 +222,26 @@ Sixteen of the 64 that were left were PHP's own on Radix, not the
 system's, and the port fixes them: `gh8472`, whose accepted socket blocked
 (patch 0010), and fifteen tests of host names and of
 `socket_create_listen()`, which took the C library's `gethostbyname_r(3)`
-(the answer to configure above). The boot test `php` runs those sixteen.
+(the answer to configure above). The boot test `php` runs those sixteen,
+and the nine below.
 
-The 48 that are left are in `lab/tests/services/php-skips.txt`, grouped by
-what they need of the system: in the C library, `getprotobyname(3)`,
-`getprotobynumber(3)` and `wait3(2)`, a `getservbyport(3)` that ignores
-the protocol, and a `sysconf(3)` that lacks names; in the kernel,
-Unix-domain datagram sockets, the socket options `TCP_CONGESTION`,
-`SO_ZEROCOPY`, `IPV6_PKTINFO` and `IPV6_RECVPKTINFO`, the ioctl for an
-interface's address, a SIGCHLD's sender's user number, a tmpfs folder of
-more than 32,768 entries, `fsync(2)` of a descriptor that is not a file, a
-slash after a file's name, `utimes(2)` of a time before 1970, and
-`getcwd(3)` in a removed folder; and, by choice, TLS in `curl`, which is
-rustls's, and `openssl.cafile`, which `php.ini` sets. The gaps are rows in
-`docs/deferred.md`; when one closes, its lines leave the list. PHP's
-`dl()` and `dns_*` functions are missing for reasons given above, and
-their tests are in the list for that.
+The 48 that were left needed something of the system; 9 of them needed
+Unix-domain datagram sockets, with the descriptors and credentials that
+travel on them, which the kernel has since ADR 0525. Those leave the list,
+and the boot test `php` runs them all. The 39 that are left are in
+`lab/tests/services/php-skips.txt`, grouped by what they need of the
+system: in the C library, `getprotobyname(3)`, `getprotobynumber(3)` and
+`wait3(2)`, a `getservbyport(3)` that ignores the protocol, and a
+`sysconf(3)` that lacks names; in the kernel, the socket options
+`TCP_CONGESTION`, `SO_ZEROCOPY`, `IPV6_PKTINFO` and `IPV6_RECVPKTINFO`,
+the ioctl for an interface's address, a SIGCHLD's sender's user number, a
+tmpfs folder of more than 32,768 entries, `fsync(2)` of a descriptor that
+is not a file, a slash after a file's name, `utimes(2)` of a time before
+1970, and `getcwd(3)` in a removed folder; and, by choice, TLS in `curl`,
+which is rustls's, and `openssl.cafile`, which `php.ini` sets. The gaps
+are rows in `docs/deferred.md`; when one closes, its lines leave the list.
+PHP's `dl()` and `dns_*` functions are missing for reasons given above,
+and their tests are in the list for that.
 
 The other 15,449 tests, the language's own, `Zend/tests` among them, then
 ran in the same machine, in 14 runs of about 1,100 with four workers,

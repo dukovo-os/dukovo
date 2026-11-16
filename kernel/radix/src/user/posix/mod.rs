@@ -641,6 +641,16 @@ pub fn method(
             crate::fs::socket::make(user, a.to, a.flags)?;
             answer(label, 0, [0; 8])
         }
+        process::DATAGRAM_SOCKET => {
+            let a = process::DatagramSocketArgs::decode(args)?;
+            crate::fs::socket::make_datagram(user, a.to, a.flags)?;
+            answer(label, 0, [0; 8])
+        }
+        process::DATAGRAM_PAIR => {
+            let a = process::DatagramPairArgs::decode(args)?;
+            crate::fs::socket::make_datagram_pair(user, a.first, a.second, a.flags)?;
+            answer(label, 0, [0; 8])
+        }
         process::POLL => {
             let a = process::PollArgs::decode(args)?;
             let ready = poll::poll(user, a)?;

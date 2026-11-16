@@ -8,7 +8,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
-use crate::{Abi, Call, Dir, Field, ItemKind, Module, Prim, Type, snake};
+use crate::{Abi, Call, Dir, Field, Item, ItemKind, Module, Prim, Type, snake};
 
 /// The license line of every generated header but `abi.h`, which has its
 /// own. The tag is split so that REUSE does not read it as this file's.
@@ -214,159 +214,183 @@ fn header(abi: &Abi, module: &Module) -> String {
     out.push_str(LICENSE_LINE);
     comment(&mut out, &module.doc, "");
     let _ = writeln!(out, "\n#ifndef {guard}\n#define {guard}\n\n#include <radix/abi.h>");
-    for dep in dependencies(abi, module) {
+    // The constants, enums, flags and errors refer to nothing in another
+    // module, so they come before the other modules' headers: two modules
+    // may then use each other's, as each header finds those of the one
+    // that included it already there.
+    let (alone, rest): (Vec<&Item>, Vec<&Item>) = module.items.iter().partition(|item| {
+        matches!(
+            item.kind,
+            ItemKind::Const { .. }
+                | ItemKind::Enum { .. }
+                | ItemKind::Flags { .. }
+                | ItemKind::Errors { .. }
+        )
+    });
+    for item in alone {
+        item_code(abi, module, item, &mut out);
+    }
+    let deps = dependencies(abi, module);
+    if !deps.is_empty() {
+        out.push('\n');
+    }
+    for dep in deps {
         let _ = writeln!(out, "#include <radix/{dep}.h>");
     }
-    let prefix = format!("RADIX_{}", module.name.to_uppercase());
-    for item in &module.items {
-        out.push('\n');
-        match &item.kind {
-            ItemKind::Const { ty, value } => {
-                comment(&mut out, &item.doc, "");
-                let _ = writeln!(out, "#define {prefix}_{} {}", item.name, literal(*ty, *value));
-            }
-            ItemKind::Enum { variants, .. } => {
-                let name = snake(&item.name);
-                comment(&mut out, &item.doc, "");
-                let _ = writeln!(out, "enum radix_{name} {{");
-                for variant in variants {
-                    comment(&mut out, &variant.doc, "    ");
-                    let _ = writeln!(
-                        out,
-                        "    RADIX_{}_{} = {},",
-                        upper(&item.name),
-                        variant.name.to_uppercase(),
-                        variant.value
-                    );
-                }
-                out.push_str("};\n");
-            }
-            ItemKind::Flags { repr, bits } => {
-                comment(&mut out, &item.doc, "");
-                let _ = writeln!(out, "typedef {} radix_{}_t;", prim(*repr), snake(&item.name));
-                for bit in bits {
-                    comment(&mut out, &bit.doc, "");
-                    let _ = writeln!(
-                        out,
-                        "#define RADIX_{}_{} ({} << {})",
-                        upper(&item.name),
-                        bit.name.to_uppercase(),
-                        literal(*repr, 1),
-                        bit.value
-                    );
-                }
-            }
-            ItemKind::Errors { domain, errors } => {
-                let set = item.name.to_uppercase();
-                comment(&mut out, &item.doc, "");
-                let _ = writeln!(out, "#define RADIX_{set}_ERROR_DOMAIN {domain}\n");
-                let _ = writeln!(out, "enum radix_{}_error {{", item.name);
-                for error in errors {
-                    comment(&mut out, &error.doc, "    ");
-                    let _ = writeln!(
-                        out,
-                        "    RADIX_{set}_{} = {},",
-                        error.name.to_uppercase(),
-                        error.value
-                    );
-                }
-                out.push_str("};\n\n");
-                out.push_str("/* The errno a status maps to: 0 for success, EIO (5) for an unknown error. */\n");
-                let _ = writeln!(
-                    out,
-                    "static inline int radix_{}_errno(uint64_t status)\n{{",
-                    item.name
-                );
-                out.push_str("    if (status == 0) {\n        return 0;\n    }\n");
-                let _ = writeln!(
-                    out,
-                    "    if (RADIX_STATUS_DOMAIN(status) != RADIX_{set}_ERROR_DOMAIN) {{\n        return 5;\n    }}"
-                );
-                out.push_str("    switch (RADIX_STATUS_CODE(status)) {\n");
-                for error in errors {
-                    let errno = error.errno.as_deref().and_then(crate::errno).unwrap_or(5);
-                    let _ = writeln!(
-                        out,
-                        "    case RADIX_{set}_{}:\n        return {errno};",
-                        error.name.to_uppercase()
-                    );
-                }
-                out.push_str("    default:\n        return 5;\n    }\n}\n");
-            }
-            ItemKind::Struct { fields } => {
-                let name = format!("radix_{}", snake(&item.name));
-                comment(&mut out, &item.doc, "");
-                let _ = writeln!(out, "struct {name} {{");
-                for field in fields {
-                    comment(&mut out, &field.doc, "    ");
-                    let _ = writeln!(out, "    {};", declaration(abi, &field.ty, &field.name));
-                }
-                out.push_str("};\n\n");
-                let (size, _) = abi.layout(&Type::Named(item.name.clone())).unwrap_or((0, 1));
-                let _ = writeln!(
-                    out,
-                    "_Static_assert(sizeof(struct {name}) == {size}, \"struct {name} has the wrong size\");"
-                );
-                let mut offset: usize = 0;
-                for field in fields {
-                    let (field_size, align) = abi.layout(&field.ty).unwrap_or((0, 1));
-                    offset = offset.next_multiple_of(align);
-                    let _ = writeln!(
-                        out,
-                        "_Static_assert(offsetof(struct {name}, {}) == {offset}, \"{name}.{} is misplaced\");",
-                        field.name, field.name
-                    );
-                    offset += field_size;
-                }
-            }
-            ItemKind::Syscall(call) => {
-                let _ = writeln!(out, "/* The number of the {} system call. */", call.name);
-                let _ = writeln!(
-                    out,
-                    "#define RADIX_SYSCALL_{} {}\n",
-                    call.name.to_uppercase(),
-                    call.number
-                );
-                call_code(&mut out, abi, call, &format!("radix_{}", call.name), None);
-            }
-            ItemKind::Interface { id, version, kind, methods } => {
-                let iface = item.name.to_uppercase();
-                comment(&mut out, &item.doc, "");
-                let _ = writeln!(out, "#define RADIX_{iface}_INTERFACE {id:#06x}");
-                let _ = writeln!(out, "#define RADIX_{iface}_VERSION {version}");
-                if let Some(kind) = kind {
-                    let _ = writeln!(
-                        out,
-                        "#define RADIX_{iface}_KIND RADIX_OBJECT_KIND_{}",
-                        kind.to_uppercase()
-                    );
-                }
-                for method in methods {
-                    let label = (id << 16) | method.number;
-                    out.push('\n');
-                    let _ = writeln!(
-                        out,
-                        "/* The label of the {} method of {}. */",
-                        method.name, item.name
-                    );
-                    let _ = writeln!(
-                        out,
-                        "#define RADIX_{iface}_{} UINT32_C({label:#010x})\n",
-                        method.name.to_uppercase()
-                    );
-                    call_code(
-                        &mut out,
-                        abi,
-                        method,
-                        &format!("radix_{}_{}", item.name, method.name),
-                        Some(label),
-                    );
-                }
-            }
-        }
+    for item in rest {
+        item_code(abi, module, item, &mut out);
     }
     let _ = writeln!(out, "\n#endif");
     out
+}
+
+/// The C of `item`, of `module`, after a blank line.
+fn item_code(abi: &Abi, module: &Module, item: &Item, out: &mut String) {
+    let prefix = format!("RADIX_{}", module.name.to_uppercase());
+    out.push('\n');
+    match &item.kind {
+        ItemKind::Const { ty, value } => {
+            comment(out, &item.doc, "");
+            let _ = writeln!(out, "#define {prefix}_{} {}", item.name, literal(*ty, *value));
+        }
+        ItemKind::Enum { variants, .. } => {
+            let name = snake(&item.name);
+            comment(out, &item.doc, "");
+            let _ = writeln!(out, "enum radix_{name} {{");
+            for variant in variants {
+                comment(out, &variant.doc, "    ");
+                let _ = writeln!(
+                    out,
+                    "    RADIX_{}_{} = {},",
+                    upper(&item.name),
+                    variant.name.to_uppercase(),
+                    variant.value
+                );
+            }
+            out.push_str("};\n");
+        }
+        ItemKind::Flags { repr, bits } => {
+            comment(out, &item.doc, "");
+            let _ = writeln!(out, "typedef {} radix_{}_t;", prim(*repr), snake(&item.name));
+            for bit in bits {
+                comment(out, &bit.doc, "");
+                let _ = writeln!(
+                    out,
+                    "#define RADIX_{}_{} ({} << {})",
+                    upper(&item.name),
+                    bit.name.to_uppercase(),
+                    literal(*repr, 1),
+                    bit.value
+                );
+            }
+        }
+        ItemKind::Errors { domain, errors } => {
+            let set = item.name.to_uppercase();
+            comment(out, &item.doc, "");
+            let _ = writeln!(out, "#define RADIX_{set}_ERROR_DOMAIN {domain}\n");
+            let _ = writeln!(out, "enum radix_{}_error {{", item.name);
+            for error in errors {
+                comment(out, &error.doc, "    ");
+                let _ = writeln!(
+                    out,
+                    "    RADIX_{set}_{} = {},",
+                    error.name.to_uppercase(),
+                    error.value
+                );
+            }
+            out.push_str("};\n\n");
+            out.push_str(
+                "/* The errno a status maps to: 0 for success, EIO (5) for an unknown error. */\n",
+            );
+            let _ =
+                writeln!(out, "static inline int radix_{}_errno(uint64_t status)\n{{", item.name);
+            out.push_str("    if (status == 0) {\n        return 0;\n    }\n");
+            let _ = writeln!(
+                out,
+                "    if (RADIX_STATUS_DOMAIN(status) != RADIX_{set}_ERROR_DOMAIN) {{\n        return 5;\n    }}"
+            );
+            out.push_str("    switch (RADIX_STATUS_CODE(status)) {\n");
+            for error in errors {
+                let errno = error.errno.as_deref().and_then(crate::errno).unwrap_or(5);
+                let _ = writeln!(
+                    out,
+                    "    case RADIX_{set}_{}:\n        return {errno};",
+                    error.name.to_uppercase()
+                );
+            }
+            out.push_str("    default:\n        return 5;\n    }\n}\n");
+        }
+        ItemKind::Struct { fields } => {
+            let name = format!("radix_{}", snake(&item.name));
+            comment(out, &item.doc, "");
+            let _ = writeln!(out, "struct {name} {{");
+            for field in fields {
+                comment(out, &field.doc, "    ");
+                let _ = writeln!(out, "    {};", declaration(abi, &field.ty, &field.name));
+            }
+            out.push_str("};\n\n");
+            let (size, _) = abi.layout(&Type::Named(item.name.clone())).unwrap_or((0, 1));
+            let _ = writeln!(
+                out,
+                "_Static_assert(sizeof(struct {name}) == {size}, \"struct {name} has the wrong size\");"
+            );
+            let mut offset: usize = 0;
+            for field in fields {
+                let (field_size, align) = abi.layout(&field.ty).unwrap_or((0, 1));
+                offset = offset.next_multiple_of(align);
+                let _ = writeln!(
+                    out,
+                    "_Static_assert(offsetof(struct {name}, {}) == {offset}, \"{name}.{} is misplaced\");",
+                    field.name, field.name
+                );
+                offset += field_size;
+            }
+        }
+        ItemKind::Syscall(call) => {
+            let _ = writeln!(out, "/* The number of the {} system call. */", call.name);
+            let _ = writeln!(
+                out,
+                "#define RADIX_SYSCALL_{} {}\n",
+                call.name.to_uppercase(),
+                call.number
+            );
+            call_code(out, abi, call, &format!("radix_{}", call.name), None);
+        }
+        ItemKind::Interface { id, version, kind, methods } => {
+            let iface = item.name.to_uppercase();
+            comment(out, &item.doc, "");
+            let _ = writeln!(out, "#define RADIX_{iface}_INTERFACE {id:#06x}");
+            let _ = writeln!(out, "#define RADIX_{iface}_VERSION {version}");
+            if let Some(kind) = kind {
+                let _ = writeln!(
+                    out,
+                    "#define RADIX_{iface}_KIND RADIX_OBJECT_KIND_{}",
+                    kind.to_uppercase()
+                );
+            }
+            for method in methods {
+                let label = (id << 16) | method.number;
+                out.push('\n');
+                let _ = writeln!(
+                    out,
+                    "/* The label of the {} method of {}. */",
+                    method.name, item.name
+                );
+                let _ = writeln!(
+                    out,
+                    "#define RADIX_{iface}_{} UINT32_C({label:#010x})\n",
+                    method.name.to_uppercase()
+                );
+                call_code(
+                    out,
+                    abi,
+                    method,
+                    &format!("radix_{}_{}", item.name, method.name),
+                    Some(label),
+                );
+            }
+        }
+    }
 }
 
 /// The statements packing argument `field` into `words` from `at`.
