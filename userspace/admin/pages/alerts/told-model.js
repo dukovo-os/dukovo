@@ -9,16 +9,6 @@ import {
   KIND_IDS, KINDS, joinWords, kindsOf,
 } from './channels-model.js';
 
-/** What each kind holds, for the checkboxes of the form. */
-export const HOLDS = Object.freeze({
-  data: 'A disk failing or wearing out, a filesystem nearly full, a mirror missing a disk, a backup failed or late.',
-  stopped: 'A service, an update or a start that failed, a certificate running out, the kernel stopping, memory running low.',
-  hardware: 'A sensor or a disk running hot, the memory test at the start.',
-});
-
-/** What is said of the alerts that fit no kind, and of a test. */
-export const UNTAGGED_WORDS = 'Alerts that fit none of these, and test alerts, go to every channel.';
-
 const lower = (label) => label.toLowerCase();
 
 /** "every kind", or the kinds in words: "data at risk, hardware". */

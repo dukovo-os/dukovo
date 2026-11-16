@@ -145,7 +145,7 @@ test('each alert opens the page it is about', () => {
   assert.equal(at('memory-test'), '/hardware');
   for (const key of ['update-failed', 'update-fell-back', 'update-check-wanted', 'start-failed']) assert.equal(at(key), '/updates#happened', key);
   for (const key of ['memory:low', 'kernel-panic', 'test', 'smart', '']) assert.equal(at(key), null, key);
-  assert.equal(pageFor('service:web').label, 'The service');
+  assert.equal(pageFor('service:web').label, 'web service');
 });
 
 test('active alerts come critical first, then the oldest, each with its page', () => {

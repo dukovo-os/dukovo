@@ -19,7 +19,7 @@ export const RECENT = 20;
 const PAGES = [
   [/^(smart|smart-rising|fs-full|fs-filling|btrfs-[a-z-]+):/, () => ['/storage', 'Storage']],
   [/^(backup-failed|backup-overdue):/, () => ['/snapshots/backups', 'Backups']],
-  [/^service:(.+)$/, (found) => [`/services/${encodeURIComponent(found[1])}`, 'The service']],
+  [/^service:(.+)$/, (found) => [`/services/${encodeURIComponent(found[1])}`, `${found[1]} service`]],
   [/^certificate:/, () => ['/certificates', 'Certificates']],
   [/^(temp:|memory-test$)/, () => ['/hardware', 'Hardware']],
   [/^(update-[a-z-]+|start-failed)$/, () => ['/updates#happened', 'What happened']],
@@ -121,3 +121,14 @@ export const NO_CHANNEL_STATE = 'Alerts reach this server\'s screens only.';
 
 /** The line above the rows, always the first row: alertd tells the screen of every change. */
 export const SCREENS_WORDS = 'On this server\'s screens and at the next sign-in';
+
+/** The action that takes a channel away, `{action, args, words}`, `words` saying what goes with it. */
+export function removeCall(channel) {
+  if (channel.kind === 'email') {
+    return { action: 'alerts.email-remove', args: {}, words: 'The addresses, the mail server and its password are taken out of alerts.toml.' };
+  }
+  if (channel.kind === 'push') {
+    return { action: 'alerts.push-remove', args: { id: channel.id }, words: 'That browser gets no more alerts from this server.' };
+  }
+  return { action: 'alerts.webhook-remove', args: { number: channel.number }, words: 'Its address and token are taken out of alerts.toml.' };
+}
