@@ -8,7 +8,7 @@
 // password once; that file is read then.
 
 import {
-  busy, h, icon,
+  busy, fill, h, icon,
 } from '../../dom.js';
 import {
   addArgs, allowArgs, DEFAULT_LOCALE, isSiteName, LOCALES, machineOf, nameFromSite, nameProblem, planRows, WAYS, wayWords,
@@ -155,9 +155,9 @@ export async function showAdd(view) {
     if (runs.hidden) return;
     timer = setTimeout(() => {
       const calls = Object.keys(now.problems).length === 0 ? callsOf(now) : null;
-      runs.replaceChildren(h('h3', {}, 'This runs'), calls === null
+      fill(runs, h('h3', {}, 'This runs'), calls === null
         ? h('p', { class: 'muted' }, 'The commands show when every field is right.')
-        : [view.api.panel('databases.add', calls.add), calls.allow && view.api.panel('databases.allow', calls.allow)].filter(Boolean));
+        : [view.api.panel('databases.add', calls.add), calls.allow && view.api.panel('databases.allow', calls.allow)]);
     }, TYPING_MS);
   }
 

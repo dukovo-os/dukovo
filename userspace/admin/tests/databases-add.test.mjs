@@ -211,6 +211,16 @@ test('the commands show under what happens only while commands are shown', async
   context.mock.timers.tick(400);
   assert.equal(shown.view.main.querySelector('.db-runs').hidden, false);
   assert.deepEqual(shown.panels, [['databases.add', { name: 'shop3', locale: 'en_US.UTF-8' }]]);
+  const drawn = () => shown.view.main.querySelector('.db-runs').querySelectorAll('div').map((one) => one.getAttribute('data-panel'));
+  assert.deepEqual(drawn(), ['databases.add']);
+  choose(shown.view.main, 'other machines');
+  type(fieldOf(shown.view.main, 'Addresses'), '10.0.0.0/8');
+  context.mock.timers.tick(400);
+  assert.deepEqual(drawn(), ['databases.add', 'databases.allow']);
+  assert.deepEqual(shown.panels.at(-1), ['databases.allow', { name: 'shop3', from: '10.0.0.0/8', certificate: 'this-machine' }]);
+  type(fieldOf(shown.view.main, 'Name'), 'Shop');
+  context.mock.timers.tick(400);
+  assert.match(shown.view.main.querySelector('.db-runs').textContent, /The commands show when every field is right\./);
 });
 
 test('a reader sees the form and the button is off, with the words', async (context) => {
