@@ -122,6 +122,8 @@ test('each action admind lists is a row, with who runs it and an icon of its are
   assert.equal(rows.find((one) => one.key === 'action:checks.last').icon, 'security');
   assert.equal(rows.find((one) => one.key === 'action:console.about').icon, 'info');
   assert.equal(rows.find((one) => one.key === 'action:metrics.now').icon, 'reliability');
+  assert.equal(rows.find((one) => one.key === 'action:databases.add').icon, 'db');
+  assert.deepEqual(rows.filter((one) => one.icon === 'code').map((one) => one.key), [], 'each area admind has has its own icon');
   const all = rows.find((one) => one.key === 'action:logs.read-all');
   assert.deepEqual([all.icon, all.change, all.elevated], ['logs', false, true]);
   const set = rows.find((one) => one.key === 'action:network.set');
