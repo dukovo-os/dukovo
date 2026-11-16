@@ -809,7 +809,7 @@ fn check_services(manifest: &Manifest, place: Place) -> Result<(), String> {
 }
 
 /// The record of service `name`'s file, if bundled wrote it.
-fn read_record(name: &str) -> Option<Record> {
+pub(crate) fn read_record(name: &str) -> Option<Record> {
     let path = state(&format!("{}/{name}", services::RECORDS));
     Record::parse(&fs::read_to_string(path).ok()?)
 }
