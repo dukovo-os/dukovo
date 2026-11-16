@@ -22,3 +22,32 @@
 /* The More sheet's own head: square, with a mark that is not a warning. */
 dialog.sheet .dialog-head { border-radius: 0; }
 .sheet .dialog-head .ic { color: var(--accent); }
+/* The progress bar of the Tasks drawer and the meters of the pages: stripes
+   that move for work under way, a bar that slides when no share is known. */
+.meter { height: .571rem; border-radius: .286rem; background: var(--sunken); border: 1px solid var(--border); overflow: hidden; }
+.meter i { display: block; height: 100%; background: linear-gradient(var(--accent), var(--accent)); border-radius: .286rem; }
+.meter.warn i { background: #C98A1B; }
+.meter.bad i { background: #C4392F; }
+.meter i { width: calc(var(--v, 0) * 1%);
+  background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.22) 0 .571rem, transparent .571rem 1.143rem), linear-gradient(var(--accent), var(--accent));
+  background-size: 1.614rem 1.614rem, 100% 100%; animation: stripes 1s linear infinite; }
+.meter.wait i { width: 35%; animation: slide 1.6s ease-in-out infinite alternate; }
+@keyframes stripes {
+  to { background-position: 1.614rem 0, 0 0; }
+}
+@keyframes slide {
+  from { margin-left: 0; }
+  to { margin-left: 65%; }
+}
+/* The head of a Show command panel. */
+.cmd-head { display: flex; flex-wrap: wrap; align-items: center; gap: .571rem; font-size: .857rem; color: var(--muted); }
+.cmd-head .btns { margin-left: auto; }
+@media (forced-colors: active) {
+  .dk .meter { border-color: ButtonText; }
+  .dk .meter i { forced-color-adjust: none; background: Highlight; animation: none; }
+}
+/* Less motion: a bar that moves becomes a still one. */
+.dk.calm .meter.wait i { margin-left: 0; width: 100%; }
+@media (prefers-reduced-motion: reduce) {
+  .dk .meter.wait i { margin-left: 0; width: 100%; }
+}

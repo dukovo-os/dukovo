@@ -182,10 +182,6 @@ html, body { margin: 0; }
 .rows { display: grid; grid-template-columns: max-content 1fr; gap: .429rem 1.143rem; }
 .rows dt { color: var(--muted); }
 .rows dd { margin: 0; min-width: 0; }
-.meter { height: .571rem; border-radius: .286rem; background: var(--sunken); border: 1px solid var(--border); overflow: hidden; }
-.meter i { display: block; height: 100%; background: linear-gradient(var(--accent), var(--accent)); border-radius: .286rem; }
-.meter.warn i { background: #C98A1B; }
-.meter.bad i { background: #C4392F; }
 .tbl-box { overflow-x: auto; border: 1px solid var(--border); border-radius: .429rem; background: var(--bg); }
 .tbl { width: 100%; border-collapse: collapse; min-width: 40rem; }
 .tbl th { text-align: left; font-weight: 600; font-size: .857rem; color: var(--muted); padding: .5rem .857rem; border-bottom: 1px solid var(--border);
@@ -224,8 +220,6 @@ html, body { margin: 0; }
   white-space: pre; overflow-x: auto; }
 .hc .log { border: 1px solid #FFF; }
 .cmd { display: flex; flex-direction: column; gap: .429rem; padding: .714rem .857rem; border: 1px dashed var(--sel-b); border-radius: .357rem; background: var(--sunken); }
-.cmd-head { display: flex; align-items: center; gap: .571rem; font-size: .857rem; color: var(--muted); }
-.cmd-head .btns { margin-left: auto; }
 .cmd pre { margin: 0; font: .893rem/1.55 var(--font-mono); white-space: pre-wrap; color: var(--text); }
 .inline-cmd { display: block; margin-top: .286rem; font: .893rem var(--font-mono); color: var(--muted); }
 .dialog { width: 100%; max-width: 44.286rem; border: 1px solid var(--btn-b); border-radius: .5rem; background: var(--bg); box-shadow: var(--shadow); display: flex; flex-direction: column; }
@@ -371,17 +365,6 @@ dialog.dialog::backdrop { background: var(--scrim); }
 .done-list li:last-child { border-bottom: 0; }
 .done-list li > .what { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .done-list time { font-size: .929rem; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.meter i { width: calc(var(--v, 0) * 1%);
-  background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.22) 0 .571rem, transparent .571rem 1.143rem), linear-gradient(var(--accent), var(--accent));
-  background-size: 1.614rem 1.614rem, 100% 100%; animation: stripes 1s linear infinite; }
-.meter.wait i { width: 35%; animation: slide 1.6s ease-in-out infinite alternate; }
-@keyframes stripes {
-  to { background-position: 1.614rem 0, 0 0; }
-}
-@keyframes slide {
-  from { margin-left: 0; }
-  to { margin-left: 65%; }
-}
 /* Notices */
 .notices { position: fixed; right: 1.143rem; bottom: 1.143rem; z-index: 70; width: 28.571rem; max-width: calc(100% - 2.286rem); display: flex; flex-direction: column; gap: .571rem; pointer-events: none; }
 .notice { pointer-events: auto; display: flex; flex-wrap: wrap; align-items: center; gap: .429rem .714rem; padding: .714rem .857rem; border: 1px solid var(--btn-b); border-left-width: 4px;
@@ -408,7 +391,6 @@ details[open] summary { margin-bottom: .429rem; }
 /* Show command */
 .showcmd { background: none; border: 0; padding: 0; font: inherit; font-size: .929rem; cursor: pointer; min-height: 2rem; }
 .cmd-holder { display: flex; flex-direction: column; gap: .429rem; min-width: 0; }
-.cmd-head { flex-wrap: wrap; }
 .tabs { display: inline-flex; border: 1px solid var(--btn-b); border-radius: .214rem; overflow: hidden; }
 .tab { font: inherit; font-size: .929rem; padding: .286rem .786rem; min-height: 2rem; border: 0; border-right: 1px solid var(--btn-b);
   background: linear-gradient(var(--btn-1), var(--btn-3)); color: var(--text); cursor: pointer; }
@@ -489,8 +471,6 @@ dialog.sheet { margin: 0; max-width: none; width: 100%; height: 100%; max-height
   .dk .btn.default, .dk .tab[aria-selected="true"], .dk .menu-item:focus-visible, .dk .menu-item:hover, .dk .tabbar a.cur, .dk .nav.cur { outline: 2px solid Highlight; outline-offset: -2px; }
   .dk .tasks-btn .count-pill, .dk .nav .count { border: 1px solid ButtonText; forced-color-adjust: none; background: ButtonFace; color: ButtonText; }
   .dk .sw::after { background: ButtonText; }
-  .dk .meter { border-color: ButtonText; }
-  .dk .meter i { forced-color-adjust: none; background: Highlight; animation: none; }
   .dk .ic { forced-color-adjust: none; background: ButtonText; }
   .dk .nav:not(.cur) { border-color: Canvas; }
   .dk .skip:focus { border-color: Highlight; }
@@ -501,7 +481,3 @@ dialog.sheet { margin: 0; max-width: none; width: 100%; height: 100%; max-height
    transitions, the stripes of progress bars, smooth scrolling and anything
    that moves. A bar that moves becomes a still one. */
 .dk.calm *, .dk.calm *::before, .dk.calm *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
-.dk.calm .meter.wait i { margin-left: 0; width: 100%; }
-@media (prefers-reduced-motion: reduce) {
-  .dk .meter.wait i { margin-left: 0; width: 100%; }
-}

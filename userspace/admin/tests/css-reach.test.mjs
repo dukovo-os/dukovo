@@ -10,7 +10,9 @@
 // draws has to link dialogs.css itself. A class that a sheet of the console
 // defines and no sheet of the graph does fails with the graph, the module,
 // the class and the sheet that has it, so that a rule that moved out of
-// console.css cannot leave a module drawing it bare.
+// console.css cannot leave a module drawing it bare. A page that draws what
+// dialogs.css holds in its own content lists it, so that it has it at its
+// first paint; and a drawer or panel that opens over any page waits for it.
 
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
@@ -44,6 +46,16 @@ const KNOWN = [
   'lib/chart.js|pick', 'lib/chart.js|pick-label', 'lib/chart.js|pick-layer',
   'pages/overview/card.js|card-body', 'pages/overview/change-dialogs.js|all-list',
 ];
+
+// What dialogs.css holds that a page draws in its own content and not in a
+// dialog: the meters, and the head of a command card. A page whose modules
+// name one lists dialogs.css before its other sheets, so that the rules are
+// there at its first paint and come before the ones its own sheet gives them.
+const IN_PAGES = ['cmd-head', 'meter'];
+
+// The modules that draw one of them over any page, in a drawer or a panel,
+// and so wait for dialogs.css themselves.
+const OVER_PAGES = ['tasks/cards.js', 'lib/command-panel.js'];
 
 const start = startFiles();
 
@@ -135,9 +147,23 @@ test('the graphs that open before the first page draws link dialogs.css and sign
   assert.deepEqual(linksOf('account-steps.js'), ['sign-in.css']);
 });
 
+test('a page that draws a meter or a command head lists dialogs.css first', () => {
+  const drawn = (entry) => [...entryGraph(entry).files].flatMap((file) => [...classNamesOf(read(file))].filter((name) => IN_PAGES.includes(name)).map((name) => `.${name} in ${shown(file)}`));
+  const late = PAGES.filter((entry) => drawn(entry).length > 0 && entry.css[0] !== 'dialogs.css');
+  assert.deepEqual(late.map((entry) => `${entry.id} draws ${drawn(entry)[0]} and does not list dialogs.css first`), []);
+  assert.ok(PAGES.filter((entry) => drawn(entry).length > 0).length >= 9, 'the pages that draw them are found');
+});
+
+test('the drawer and the panel that draw a meter or a command head over any page wait for dialogs.css', () => {
+  for (const name of OVER_PAGES) {
+    assert.ok(sheetLinksOf(read(`${ROOT}${name}`)).includes('dialogs.css'), `${name} links dialogs.css`);
+    assert.ok(classNamesOf(read(`${ROOT}${name}`)).size > 0, `${name} names classes`);
+  }
+});
+
 test('the graphs the shell starts later are the ones the console has', () => {
   const names = graphs.map((graph) => graph.name.replace('the graph of ', ''));
-  for (const name of ['palette/palette.js', 'shell/dialogs.js', 'shell/more.js', 'tasks/cards.js', 'lib/command-work.js', ...EARLY]) {
+  for (const name of ['palette/palette.js', 'shell/dialogs.js', 'shell/more.js', 'tasks/cards.js', 'lib/command-work.js', 'lib/command-panel.js', ...EARLY]) {
     assert.ok(names.includes(name), `${name} is a graph the shell starts later`);
   }
 });

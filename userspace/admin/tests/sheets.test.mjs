@@ -160,7 +160,7 @@ test('a page whose files draw a class of pages.css names pages.css, before its o
     }
     if (draws.length === 0) continue;
     assert.ok(entry.css.includes('pages.css'), `${entry.id} draws ${draws.join(', ')}, and does not name pages.css`);
-    const own = entry.css.filter((name) => name !== 'pages.css' && name !== 'boards.css');
+    const own = entry.css.filter((name) => !['pages.css', 'boards.css', 'dialogs.css'].includes(name));
     assert.ok(entry.css.indexOf('pages.css') < Math.min(...own.map((name) => entry.css.indexOf(name)), Infinity), `${entry.id} lists pages.css after a sheet of its own`);
   }
 });

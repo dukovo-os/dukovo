@@ -19,26 +19,26 @@ const ENTRIES = [
   {
     id: 'overview', title: 'Overview', path: '/', icon: 'overview', nav: { order: 10 }, phone: 1,
     keywords: ['home', 'health', 'status', 'dashboard', 'summary'],
-    css: ['boards.css', 'pages.css', 'pages/overview/overview.css'],
+    css: ['dialogs.css', 'boards.css', 'pages.css', 'pages/overview/overview.css'],
     load: () => import('./pages/overview/page.js'),
     parts: { overview: () => import('./pages/overview/overview.js') },
   },
   {
     id: 'logs', title: 'Logs', path: '/logs', icon: 'logs', nav: { order: 20 }, phone: 3,
     keywords: ['log', 'journal', 'messages', 'errors'],
-    css: ['boards.css', 'pages.css', 'pages/logs/logs.css'],
+    css: ['dialogs.css', 'boards.css', 'pages.css', 'pages/logs/logs.css'],
     load: () => import('./pages/logs/page.js'),
   },
   {
     id: 'reliability', title: 'Reliability', path: '/reliability', icon: 'reliability', nav: { order: 30 },
     keywords: ['crash', 'starts', 'boot', 'history'],
-    css: ['boards.css', 'pages.css', 'pages/reliability/rel.css'],
+    css: ['dialogs.css', 'boards.css', 'pages.css', 'pages/reliability/rel.css'],
     load: () => import('./pages/reliability/page.js'),
   },
   {
     id: 'storage', title: 'Storage', path: '/storage', icon: 'storage', nav: { order: 40 },
     keywords: ['disk', 'space', 'mirror', 'health', 'grow', 'shared folders'],
-    css: ['pages.css', 'pages/storage/sto.css'],
+    css: ['dialogs.css', 'pages.css', 'pages/storage/sto.css'],
     load: () => import('./pages/storage/page.js'),
     parts: { overview: () => import('./pages/storage/overview.js') },
   },
@@ -53,19 +53,19 @@ const ENTRIES = [
   {
     id: 'move', title: 'Move to new hardware', path: '/move', icon: 'server', needs: 'admin',
     keywords: ['migrate', 'new machine', 'old machine', 'restore everything'],
-    css: ['pages.css', 'pages/move/move.css'],
+    css: ['dialogs.css', 'pages.css', 'pages/move/move.css'],
     load: () => import('./pages/move/page.js'),
   },
   {
     id: 'networking', title: 'Networking', path: '/networking', icon: 'network', nav: { order: 60 },
     keywords: ['address', 'ip', 'dns', 'router', 'dhcp'],
-    css: ['pages.css', 'lib/trial-banner.css', 'pages/networking/net.css'],
+    css: ['dialogs.css', 'pages.css', 'lib/trial-banner.css', 'pages/networking/net.css'],
     load: () => import('./pages/networking/page.js'),
   },
   {
     id: 'firewall', title: 'Firewall', path: '/firewall', icon: 'firewall', nav: { order: 70 },
     keywords: ['port', 'rule', 'allow', 'deny', 'blocked'],
-    css: ['pages.css', 'lib/trial-banner.css', 'pages/firewall/fw.css'],
+    css: ['dialogs.css', 'pages.css', 'lib/trial-banner.css', 'pages/firewall/fw.css'],
     load: () => import('./pages/firewall/page.js'),
   },
   {
@@ -118,7 +118,7 @@ const ENTRIES = [
     id: 'services', title: 'Services', path: '/services', icon: 'services', nav: { order: 90 }, phone: 2,
     keywords: ['service', 'daemon', 'start', 'stop', 'restart', 'enable', 'disable', 'failed'],
     children: [{ title: 'Scheduled tasks', path: '/services/scheduled' }],
-    css: ['boards.css', 'pages.css', 'pages/services/svc.css'],
+    css: ['dialogs.css', 'boards.css', 'pages.css', 'pages/services/svc.css'],
     load: () => import('./pages/services/page.js'),
     parts: {
       overview: () => import('./pages/services/overview.js'),
@@ -146,7 +146,7 @@ const ENTRIES = [
   {
     id: 'security', title: 'Security', path: '/security', icon: 'security', nav: { order: 120 },
     keywords: ['checks', 'ssh', 'blocked', 'unblock', 'wireguard', 'private access', 'sign-in rules'],
-    css: ['boards.css', 'pages.css', 'lib/trial-banner.css', 'pages/security/sec.css'],
+    css: ['dialogs.css', 'boards.css', 'pages.css', 'lib/trial-banner.css', 'pages/security/sec.css'],
     load: () => import('./pages/security/page.js'),
     parts: { overview: () => import('./pages/security/overview.js') },
   },

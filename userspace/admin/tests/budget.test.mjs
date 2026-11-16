@@ -19,7 +19,7 @@ const LIMIT = 150_000;
 
 // The start is held under the limit with room for what the console takes in
 // next: a change that adds to it raises this number and says what grew.
-const START_PLAN = 149_950;
+const START_PLAN = 148_821;
 
 /** The files `index.html` names: its scripts and style sheets, as paths on disk. */
 function pageFiles() {
@@ -85,8 +85,10 @@ function pageBytes(page, shell) {
   } catch {
     // A page with no `page.js` of its own: parts only.
   }
-  // A sheet that is not there yet is left out, as a part is.
-  const sheets = (page.css ?? []).map((name) => `${ROOT}${name}`).filter((file) => existsSync(file));
+  // A sheet that is not there yet is left out, as a part is. dialogs.css is
+  // the shell's: frame.js links it for every page, so one that lists it only
+  // has it sooner and does not bring it.
+  const sheets = (page.css ?? []).filter((name) => name !== 'dialogs.css').map((name) => `${ROOT}${name}`).filter((file) => existsSync(file));
   return sizeOf(files) + sizeOf(sheets);
 }
 

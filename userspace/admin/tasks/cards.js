@@ -5,7 +5,7 @@
 // board's cards, a card's Stop and its log. tasks/drawer.js reads this file
 // the first time the drawer opens, so the shell's start does not carry it.
 
-import { fill, h, icon } from '../dom.js';
+import { fill, h, icon, sheet } from '../dom.js';
 import { needsLook, titleOf } from '../lib/tasks-model.js';
 import {
   canStop, endWords, groupsOf, logDue, percentOf, startedWords, stepWords,
@@ -13,9 +13,11 @@ import {
 
 /**
  * `model` is lib/tasks-model.js's; `changed()` tells the shell the list
- * changed; the rest is as in `createTasks`. Gives `{build, render, showLog}`.
+ * changed; the rest is as in `createTasks`. Gives `{build, render, showLog}`
+ * once the sheet of the progress bars has loaded.
  */
-export function makeCards({ model, get, post, session, time, notice, problem, commands, hasPage, changed }) {
+export async function makeCards({ model, get, post, session, time, notice, problem, commands, hasPage, changed }) {
+  await sheet('/dialogs.css');
   const logs = new Map();
   let view = null;
   let signature = '';
