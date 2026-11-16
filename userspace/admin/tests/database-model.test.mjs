@@ -10,8 +10,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  addArgs, allowArgs, connectionSettings, denyArgs, fileName, hrefOf, isReserved, isSiteName, listensOnNetwork, machineOf,
-  nameFromSite, nameProblem, parseNetworks, planRows, removeArgs, restarts, routeOf, secretOf, settingsFile, wayWords, WAYS,
+  addArgs, allowArgs, ANYWHERE, connectionSettings, DEFAULT_LOCALE, denyArgs, fileName, hrefOf, isReserved, isSiteName,
+  listensOnNetwork, LOCALES, machineOf, nameFromSite, nameProblem, needsAnywhere, networksProblem, NETWORKS_MAX, parseNetworks,
+  planRows, removeArgs, restarts, routeOf, secretOf, settingsFile, wayWords, WAYS,
 } from '../lib/database-model.js';
 
 const NAS = machineOf({ format: 1, name: 'nas.example.org', first: 'nas', domain: 'example.org', local: 'nas.local' });
@@ -324,4 +325,29 @@ test('what happens for other machines says that PostgreSQL listens on the networ
 test('a database made while PostgreSQL listens on the network says that nothing changes', () => {
   const rows = planRows(form, { listen: '*', ssl: true, certificate: 'this-machine' });
   assert.match(rows[2].words, /^Firewall: nothing to change\./);
+});
+
+test('the text and sorting offered start with the one that is the default, and only the first has a note', () => {
+  assert.equal(DEFAULT_LOCALE, 'en_US.UTF-8');
+  assert.deepEqual(LOCALES.map((one) => one.value), ['en_US.UTF-8', 'C.UTF-8']);
+  assert.match(LOCALES[0].note, /indexes to be rebuilt/);
+  assert.equal(LOCALES[1].note, null);
+  assert.equal(Object.isFrozen(LOCALES), true);
+});
+
+test('the networks are sent only when there is at least one, none is wrong and there are not too many', () => {
+  assert.equal(networksProblem(parseNetworks('192.168.1.0/24\n10.0.0.0/8')), '');
+  assert.match(networksProblem(parseNetworks('')), /Give at least one network/);
+  assert.match(networksProblem(parseNetworks('  \n')), /Give at least one network/);
+  assert.match(networksProblem(parseNetworks('10.0.2.0')), /^10\.0\.2\.0 is not an address with its prefix length/);
+  const many = Array.from({ length: NETWORKS_MAX + 1 }, (_, at) => `10.${at}.0.0/16`).join('\n');
+  assert.equal(networksProblem(parseNetworks(many)), `Give at most ${NETWORKS_MAX} networks.`);
+});
+
+test('every address needs the word typed, and nothing else does', () => {
+  const everywhere = parseNetworks('0.0.0.0/0');
+  assert.equal(needsAnywhere(everywhere, ''), true);
+  assert.equal(needsAnywhere(everywhere, 'any'), true);
+  assert.equal(needsAnywhere(everywhere, ` ${ANYWHERE} `), false);
+  assert.equal(needsAnywhere(parseNetworks('10.0.0.0/8'), ''), false);
 });

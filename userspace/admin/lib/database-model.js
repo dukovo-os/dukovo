@@ -121,6 +121,19 @@ export const WAYS = Object.freeze([
   },
 ]);
 
+/** The text and sorting a database can be made with: PostgreSQL's `en_US.UTF-8` of the C library, or its own `C.UTF-8`. */
+export const LOCALES = Object.freeze([
+  {
+    value: 'en_US.UTF-8',
+    label: 'UTF-8, sorted as English (US)',
+    note: 'If the system\'s language data changes in an update, PostgreSQL asks for its indexes to be rebuilt; the Databases page will say so.',
+  },
+  { value: 'C.UTF-8', label: 'UTF-8, sorted by character code, the same on every machine', note: null },
+]);
+
+/** The text and sorting a database gets unless another is chosen. */
+export const DEFAULT_LOCALE = LOCALES[0].value;
+
 /** The words of the way `id`, for the role `role`. */
 export const wayWords = (id, role) => WAYS.find((way) => way.id === id).words(role);
 
@@ -158,6 +171,17 @@ export function parseNetworks(text) {
     networks, problems, anywhere, tooMany: networks.length > NETWORKS_MAX,
   };
 }
+
+/** Why the networks `found` (`parseNetworks`'s) cannot be sent, in words; empty text when they can. */
+export function networksProblem(found) {
+  if (found.problems.length > 0) return found.problems[0].why;
+  if (found.networks.length === 0) return 'Give at least one network, one a line, such as 192.168.1.0/24.';
+  if (found.tooMany) return `Give at most ${NETWORKS_MAX} networks.`;
+  return '';
+}
+
+/** Whether `found` lets every address in and `typed` is not yet the word that says the person means it. */
+export const needsAnywhere = (found, typed) => found.anywhere && String(typed).trim() !== ANYWHERE;
 
 // ---- the connection settings ------------------------------------------------
 
