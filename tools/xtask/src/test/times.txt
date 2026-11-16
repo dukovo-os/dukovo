@@ -19,7 +19,7 @@ accounts 26
 acpi-power 31
 acpi-thermal 32
 admin-accounts 480
-admin-actions 370
+admin-actions 490
 admin-backups 600
 admin-commands 320
 admin-journal 270
