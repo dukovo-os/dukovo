@@ -32,18 +32,24 @@ on that socket's queue alone.
 
 ## Decision
 
-- **Each network socket has its own waiters** (`net::waiters::Waiters`):
-  a count of changes that its blocked calls wait on, how many threads
-  wait, and its own pollers (`Polled`), in place of networking's one
-  count and one list of pollers.
+- **Each network socket has its own waiters** (`net::waiters::Waiters`),
+  in two sides, receiving and sending, each a count of changes that the
+  socket's blocked calls that way wait on and how many threads wait, and
+  its own pollers (`Polled`), in place of networking's one count and one
+  list of pollers. A thread blocked in `recv` does not wake when room
+  comes free to send, as each segment a TCP connection's other end reads
+  frees, nor one blocked in `send` when data comes: with one count for
+  both, a TCP round trip on one CPU took four thread switches in place of
+  two.
 - **smoltcp says which socket changed.** Each smoltcp socket a network
   socket makes, for UDP, TCP, ping and each of a listening socket's pool
-  (ADR 0494), has the socket's waker, for receiving and sending, set once
-  when it is made, and an orphan (ADR 0185) has it taken away when its
-  interface adopts it. smoltcp wakes it whenever what the socket can receive
-  or send may have changed: data came, room came free, its state changed.
-  A connection `accept` takes gets its new socket's waker; one given back
-  gets the listening socket's again.
+  (ADR 0494), has the socket's two wakers, for receiving and for sending,
+  set once when it is made, and an orphan (ADR 0185) has them taken away
+  when its interface adopts it. smoltcp wakes the first when what the
+  socket can receive may have changed (data came, the other end closed),
+  the second when what it can send may have (room came free), and both
+  when its state changes. A connection `accept` takes gets its new
+  socket's wakers; one given back gets the listening socket's again.
 - **The kernel's smoltcp patch keeps a waker registered after it wakes**
   (smoltcp wakes and forgets it, for tasks that register again each time
   they wait) and never drops it: drop glue on a socket costs every frame
