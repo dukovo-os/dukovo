@@ -183,6 +183,32 @@ impl Kinds {
         let set = if kinds.is_empty() { Kinds::ALL } else { Kinds::of(&kinds) };
         (set, unknown.into_iter().cloned().collect())
     }
+
+    /// The kinds that the command-line text `text` names: `all`, or a
+    /// comma list of [`ABOUT`]'s words.
+    ///
+    /// # Errors
+    ///
+    /// Which word is no kind, and the words there are.
+    pub fn parse(text: &str) -> Result<Kinds, String> {
+        if text == "all" {
+            return Ok(Kinds::ALL);
+        }
+        let mut kinds = Vec::new();
+        for word in text.split(',') {
+            match About::parse(word.trim()) {
+                Some(about) => kinds.push(about),
+                None => {
+                    return Err(format!(
+                        "'{}' is no kind of alert; give all, or some of {}, with commas",
+                        word.trim(),
+                        ABOUT.join(", ")
+                    ));
+                }
+            }
+        }
+        Ok(Kinds::of(&kinds))
+    }
 }
 
 impl Default for Kinds {
@@ -647,6 +673,23 @@ mod tests {
         );
         assert_eq!(read(&[]), (Kinds::ALL, Vec::new()));
         assert_eq!(read(&["colour"]), (Kinds::ALL, vec!["colour".to_string()]));
+    }
+
+    #[test]
+    fn kinds_are_parsed_from_all_or_a_comma_list_and_a_wrong_word_is_named() {
+        assert_eq!(Kinds::parse("all"), Ok(Kinds::ALL));
+        assert_eq!(Kinds::parse("data"), Ok(Kinds::of(&[About::Data])));
+        assert_eq!(Kinds::parse("hardware,data"), Ok(Kinds::of(&[About::Data, About::Hardware])));
+        assert_eq!(Kinds::parse("data,stopped,hardware"), Ok(Kinds::ALL));
+        assert_eq!(
+            Kinds::parse("data,sign-in"),
+            Err("'sign-in' is no kind of alert; give all, or some of data, stopped, hardware, \
+                 with commas"
+                .to_string())
+        );
+        assert!(Kinds::parse("").is_err());
+        assert!(Kinds::parse("data,").is_err());
+        assert!(Kinds::parse("All").is_err());
     }
 
     #[test]

@@ -166,7 +166,11 @@ pub enum Kind {
 }
 
 impl Kind {
-    fn parse(name: &str) -> Option<Kind> {
+    /// The words for every kind, as alerts.toml(5) lists them.
+    pub const NAMES: [&'static str; 5] = ["ntfy", "matrix", "slack", "discord", "json"];
+
+    /// The kind that `name` names.
+    pub fn parse(name: &str) -> Option<Kind> {
         match name {
             "ntfy" => Some(Kind::Ntfy),
             "matrix" => Some(Kind::Matrix),
