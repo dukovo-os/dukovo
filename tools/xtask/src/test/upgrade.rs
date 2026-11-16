@@ -417,7 +417,7 @@ fn check_steps(runs: u32) -> Vec<(String, Vec<String>)> {
 fn check(vm: &mut Vm, runs: u32) -> Result<(), String> {
     for (command, shown) in check_steps(runs) {
         let shown: Vec<&str> = shown.iter().map(String::as_str).collect();
-        run(vm, &command, &shown)?;
+        run(vm, &command, &shown).map_err(|err| format!("check {runs}: {err}"))?;
     }
     Ok(())
 }
@@ -483,8 +483,42 @@ fn try_update(vm: &mut Vm, version: &str, old: &str) -> Result<(), String> {
     sign_in(vm)
 }
 
-/// Fills the machine, updates it, goes back, and updates again.
+/// Fills the machine, updates it, goes back, and updates again; on a
+/// failure, says what the serial log tells of each start ([`story`]).
 fn update_from_release(vm: &mut Vm, case: &Case) -> Result<(), String> {
+    update_and_back(vm, case).map_err(|err| format!("{err}\n{}", story(&vm.log())))
+}
+
+/// The lines of the serial log `log` that tell the case's story: the slot
+/// each start started and what its `/system` is, what sysupdate said,
+/// each command run as root, sshd's lines, and each service that could
+/// not start; the last [`STORY_LINES`] of them.
+fn story(log: &str) -> String {
+    const MARKS: [&str; 7] = [
+        "started slot",
+        "/system is",
+        "sysupdate:",
+        "could not start",
+        "elevated on",
+        "slot A",
+        "sshd",
+    ];
+    let lines: Vec<&str> =
+        log.lines().filter(|line| MARKS.iter().any(|mark| line.contains(mark))).collect();
+    let told = &lines[lines.len().saturating_sub(STORY_LINES)..];
+    let mut out = String::from("the serial log's starts, updates and elevated commands:");
+    for line in told {
+        out.push_str("\n  | ");
+        out.push_str(line);
+    }
+    out
+}
+
+/// How many lines of the serial log [`story`] tells at most.
+const STORY_LINES: usize = 150;
+
+/// [`update_from_release`], but for what a failure says.
+fn update_and_back(vm: &mut Vm, case: &Case) -> Result<(), String> {
     let old = release_of(case).ok_or_else(|| format!("{} is no update-from case", case.name))?;
     let version = test_update_version(UPDATE);
 
@@ -546,6 +580,26 @@ fn update_from_release(vm: &mut Vm, case: &Case) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failure_tells_the_starts_and_updates_of_the_serial_log() {
+        let log = "[    1.2] spark: started slot B, @system.b\n\
+                   [    1.3] timed: no server gave the time\n\
+                   [    2.0] spark: could not start reportd: /system/commands/reportd: not_found\n\
+                   [    9.1] authd: alice elevated on pts/0 (unlocked): process 9 runs sysupdate status\n";
+        let told = story(log);
+        assert!(told.contains("started slot B"), "{told}");
+        assert!(told.contains("could not start reportd"), "{told}");
+        assert!(told.contains("runs sysupdate status"), "{told}");
+        assert!(!told.contains("timed:"), "{told}");
+        let long = (0..STORY_LINES + 5)
+            .map(|n| format!("sysupdate: line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let told = story(&long);
+        assert_eq!(told.lines().count(), 1 + STORY_LINES);
+        assert!(told.ends_with(&format!("sysupdate: line {}", STORY_LINES + 4)), "{told}");
+    }
 
     fn named(name: &str) -> &'static Case {
         cases().iter().find(|case| case.name == name).unwrap()
