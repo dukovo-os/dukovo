@@ -182,7 +182,7 @@ test('hold a version picks from what can be held, and asks why before it holds',
   const dialog = world.dialog();
   assert.equal(dialog.querySelector('h2').textContent, 'Hold the system update 0.16.0');
   assert.match(dialog.textContent, /Why \(optional\)/);
-  assert.match(dialog.textContent, /Everyone who can sign in sees the reason, here and with `update settings`\./);
+  assert.match(dialog.textContent, /Everyone who can sign in sees the reason, here and with update settings\./);
   assert.equal(dialog.querySelector('input').getAttribute('maxlength'), '200');
   assert.equal(world.ran('updates.hold').length, 0, 'nothing is held until the dialog says so');
   await world.submit();
@@ -219,7 +219,7 @@ test('the reason of an app\'s hold goes to apps.hold, and the dialog says where 
   await world.press(world.card('held'), 'Hold it…');
   const dialog = world.dialog();
   assert.equal(dialog.querySelector('h2').textContent, 'Hold nginx at 1.2.0');
-  assert.match(dialog.textContent, /here and with `bundle list`/);
+  assert.match(dialog.textContent, /here and with bundle list/);
   dialog.querySelector('input').value = 'app tests use this version';
   await world.submit();
   assert.deepEqual(world.ran('apps.hold'), [{ id: 'org.nginx.nginx', why: 'app tests use this version' }]);

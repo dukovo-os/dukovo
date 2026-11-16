@@ -30,5 +30,5 @@ test('a reason has at most 200 characters, counted as people count them', () => 
 });
 
 test('the note says who reads the reason, and where', () => {
-  assert.equal(whyNote('update settings'), 'Everyone who can sign in sees the reason, here and with `update settings`.');
+  assert.deepEqual(whyNote('update settings'), ['Everyone who can sign in sees the reason, here and with ', 'update settings', '.']);
 });

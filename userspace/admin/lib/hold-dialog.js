@@ -31,7 +31,7 @@ export function openHold(view, {
     input.setAttribute('aria-describedby', `${id}-note`);
   });
   const field = h('div', { class: 'field' },
-    h('label', { for: id }, 'Why (optional)'), input, h('span', { id: `${id}-note`, class: 'hint' }, whyNote(place)), problem);
+    h('label', { for: id }, 'Why (optional)'), input, h('span', { id: `${id}-note`, class: 'hint' }, ...whyNote(place).map((part, at) => (at === 1 ? h('code', {}, part) : part))), problem);
   return openFormDialog(view, {
     title,
     lead,

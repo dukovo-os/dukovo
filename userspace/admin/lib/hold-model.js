@@ -23,5 +23,5 @@ export function whyOf(words) {
   return { why, problem: null };
 }
 
-/** The note under the field: who reads the reason, and where. `place` is the command that shows it beside the hold. */
-export const whyNote = (place) => `Everyone who can sign in sees the reason, here and with \`${place}\`.`;
+/** The note under the field, who reads the reason and where, as its parts: the words, and the command that shows it beside the hold, `place`, to be set as code. */
+export const whyNote = (place) => ['Everyone who can sign in sees the reason, here and with ', place, '.'];

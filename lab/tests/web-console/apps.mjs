@@ -404,7 +404,7 @@ async function holdAndRelease(t, page, info) {
   // Cancel in the question holds nothing, and the keyboard is where it was.
   let dialog = await opensDialog(t, page, button(page, `Hold at ${info.version}`), title);
   await t.see(dialog.getByText(`Holding keeps ${info.name} at ${info.version}: no update is taken, security fixes included, until you release the hold.`, { exact: true }));
-  await t.see(dialog.getByText("Everyone who can sign in sees the reason, here and with `bundle list`.", { exact: true }));
+  await t.see(dialog.getByText("Everyone who can sign in sees the reason, here and with bundle list.", { exact: true }));
   ensure((await dialog.getByLabel("Why (optional)", { exact: true }).getAttribute("maxlength")) === "200", "the reason may have more than 200 characters");
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await t.gone(dialog);

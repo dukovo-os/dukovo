@@ -313,7 +313,7 @@ test('the reason of a hold goes with it as one line of at most 200 characters, a
   const dialog = app.dialog();
   assert.equal(dialog.querySelector('label').textContent, 'Why (optional)');
   assert.ok(dialog.textContent.includes('Holding keeps Valkey at 8.0.3: no update is taken, security fixes included, until you release the hold.'));
-  assert.ok(dialog.textContent.includes('Everyone who can sign in sees the reason, here and with `bundle list`.'));
+  assert.ok(dialog.textContent.includes('Everyone who can sign in sees the reason, here and with bundle list.'));
   const input = dialog.querySelector('input');
   assert.equal(input.getAttribute('maxlength'), '200');
   input.value = 'two\tcolumns';

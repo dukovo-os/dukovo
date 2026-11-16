@@ -278,7 +278,7 @@ async function holdWithReason(t, page, system) {
   const field = dialog.getByLabel("Why (optional)", { exact: true });
   await t.see(field);
   ensure((await field.getAttribute("maxlength")) === "200", "the reason may have more than 200 characters");
-  await t.see(dialog.getByText("Everyone who can sign in sees the reason, here and with `update settings`.", { exact: true }));
+  await t.see(dialog.getByText("Everyone who can sign in sees the reason, here and with update settings.", { exact: true }));
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await t.gone(dialog);
   ensure((await settingsNow(page)).hold?.system == null, "Cancel in the question that asks why held the system");
