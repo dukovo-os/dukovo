@@ -36,6 +36,9 @@
 // encoder, loaded in the page, since the lab has no decoder: the page's picture
 // must be the one the encoder makes of the link it shows. The accounts are the
 // two that report.toml made, so no script needs the lab's password.
+//
+// A report that waits for the network, and Retry now, are report-queued.mjs and
+// report-retry.mjs, which use the helpers that this script exports.
 
 import { Buffer } from "node:buffer";
 import { execFile } from "node:child_process";
@@ -103,7 +106,7 @@ async function desk() {
 }
 
 /** What the staging server holds of report `number`, as bytes decoded as UTF-8, or null when it holds none. */
-async function deskCopy(number) {
+export async function deskCopy(number) {
   const { folder } = await desk();
   const file = `${folder}/${number}.txt`;
   return existsSync(file) ? readFile(file, "utf8") : null;
@@ -140,7 +143,7 @@ const sizeWords = (bytes) => (bytes < 1000 ? `${bytes} B` : `${(bytes / 1000).to
 // --- Signing in ---
 
 /** Opens the console in a context of its own and signs in as `name`. */
-async function signedIn(t, name, options = {}) {
+export async function signedIn(t, name, options = {}) {
   const { page, seen } = await openConsole(t, "/", options);
   await signInDone(t, page, name, PASSWORD);
   return { page, seen };
@@ -160,11 +163,11 @@ const lastCall = (calls, method, pattern) => [...calls].reverse().find((call) =>
 
 // --- The page ---
 
-const card = (page, heading) => page.locator("section.card").filter({ has: page.getByRole("heading", { name: heading, level: 2 }) });
-const questions = (page) => card(page, "What went wrong?");
+export const card = (page, heading) => page.locator("section.card").filter({ has: page.getByRole("heading", { name: heading, level: 2 }) });
+export const questions = (page) => card(page, "What went wrong?");
 const text = (page) => page.locator("pre.rp-text");
 const cutOf = (page, name) => text(page).getByRole("button", { name, exact: true });
-const choiceOf = (page, title) => page.locator("label.radio-card", { hasText: title }).first();
+export const choiceOf = (page, title) => page.locator("label.radio-card", { hasText: title }).first();
 
 /** The lines of the text on the screen, each as its row's words. */
 const linesOf = (page) => text(page).locator(".rl-text").evaluateAll((cells) => cells.map((cell) => cell.textContent));
@@ -180,14 +183,14 @@ async function settled(page) {
 }
 
 /** Opens `/report` with `query` and waits for the page. */
-async function openReport(t, page, query = "") {
+export async function openReport(t, page, query = "") {
   await page.goto(new URL(`/report${query}`, page.url()).href);
   await t.see(page.getByRole("heading", { level: 1, name: "Report a problem", exact: true }));
   await t.see(questions(page));
 }
 
 /** Waits for a text that has been drafted, and gives the lines of it. */
-async function draftShown(t, page) {
+export async function draftShown(t, page) {
   await t.see(text(page));
   await settled(page);
   return linesOf(page);

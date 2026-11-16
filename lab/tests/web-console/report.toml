@@ -31,12 +31,23 @@
 # reads where the server keeps its reports, and its script, from
 # /tmp/lab-report-desk, which a step below writes. The script runs once for each
 # engine, and the steps before it leave a crash of crash-test that is not
-# reported for each, since sending one reports it. A report that waits for the
-# network, and Retry now, are the boot test's. The accounts are two that this
-# test makes and removes, an administrator and a reader, so no script needs the
-# lab's password.
-about = "The web console's Report a problem page in each engine: the choices, a crash drafted from the address, the marks, Cut line and Cut these words, the answers written again, Undo all my changes, the question before Draft again, a security report, Save to a file, the QR code and its one-time link, Send to the staging server with its copy held to the screen, the table with Check the status and Delete, a reader, and the phone"
-time = "40m"
+# reported for each, since sending one reports it.
+#
+# A report that waits for the network is made twice, once from the page and
+# once by command. reportd reads the name of its server only when it starts, so
+# the test names a port of the lab PC's where nothing listens and restarts
+# reportd. The page then sends a report (report-queued.mjs), which waits, with
+# a banner that says so and why. Retry now of the banner
+# (`POST /api/1/reports/retry`) tries it again, and the server is still away;
+# `report retry --json` does the same on the command line. The test then names
+# the staging server again, and the table's Retry now sends the report, which
+# the server holds (report-retry.mjs). The second report is made by `report
+# draft` and `report send`, which queue it while the server is away, and
+# `report retry --json` sends it once the server is named again. The accounts
+# are two that this test makes and removes, an administrator and a reader, so no
+# script needs the lab's password.
+about = "The web console's Report a problem page in each engine: the choices, a crash drafted from the address, the marks, Cut line and Cut these words, the answers written again, Undo all my changes, the question before Draft again, a security report, Save to a file, the QR code and its one-time link, Send to the staging server with its copy held to the screen, the table with Check the status and Delete, a report that waits for the network and is sent by Retry now, one that report draft and report send queue and report retry sends, a reader, and the phone"
+time = "50m"
 host_needs = ["python3", "openssl", "scp", "curl"]
 
 [[step]]
@@ -107,6 +118,92 @@ expect = ["crash-test", "fault_here"]
 browser = "report.mjs"
 engines = ["webkit"]
 port = 9090
+
+# A report that waits for the network, from the page: the settings name a port
+# of the lab PC's where nothing listens, so the report that Send makes is
+# queued. Chromium sends it, and presses the banner's Retry now.
+[[step]]
+run = "sh -c 'cat > /system/settings/report.toml && service reportd restart && sleep 2 && echo away'"
+root = true
+input = """
+server = "https://{peer}:{port:away}"
+ca = ["/system/settings/ssl/lab-reports-ca.pem"]
+"""
+expect = "away"
+[[step]]
+browser = "report-queued.mjs"
+engines = ["chromium"]
+port = 9090
+
+# The same on the command line, with the server still away: the report waits
+# on. This try, with the two before, puts the next one of reportd's own a quarter
+# of an hour away, so that it does not send the report when it restarts. Root
+# tries the reports of every account.
+[[step]]
+run = "report retry --json"
+root = true
+expect = ['"number":null', '"state":"queued"']
+
+# The staging server is named again, and the table's Retry now sends the report.
+[[step]]
+run = "sh -c 'cat > /system/settings/report.toml && service reportd restart && sleep 2 && echo named'"
+root = true
+input = """
+server = "https://{peer}:{port:reports}"
+ca = ["/system/settings/ssl/lab-reports-ca.pem"]
+"""
+expect = "named"
+[[step]]
+browser = "report-retry.mjs"
+engines = ["chromium"]
+port = 9090
+
+# A report that waits, by command: report draft and report send, as report(1)
+# gives them, with the server away again. report list says that it is queued
+# and tried once; report retry tries it again, and the server is still away.
+[[step]]
+run = "sh -c 'cat > /system/settings/report.toml && service reportd restart && sleep 2 && echo away'"
+root = true
+input = """
+server = "https://{peer}:{port:away}"
+ca = ["/system/settings/ssl/lab-reports-ca.pem"]
+"""
+expect = "away"
+[[step]]
+run = '''sh -c 'draft=$(report draft --about other --happened "The command sent this report while the server was away." --json) && report send "$(printf "%s\n" "$draft" | jq -r .draft)" --sha256 "$(printf "%s\n" "$draft" | jq -r .sha256)" --title "The command sent this report while the server was away." --json' '''
+expect = ['"number":null', '"state":"queued"']
+[[step]]
+run = "report list --json"
+expect = ['"title":"The command sent this report while the server was away."', '"state":"queued"', '"tries":1']
+[[step]]
+run = "report retry --json"
+expect = ['"number":null', '"state":"queued"']
+[[step]]
+run = "report list --json"
+expect = ['"state":"queued"', '"tries":2']
+
+# The server is named again, and report retry sends the report: the lab PC
+# holds its text, and report status says that the server received it. Delete
+# takes it off the server and the machine.
+[[step]]
+run = "sh -c 'cat > /system/settings/report.toml && service reportd restart && sleep 2 && echo named'"
+root = true
+input = """
+server = "https://{peer}:{port:reports}"
+ca = ["/system/settings/ssl/lab-reports-ca.pem"]
+"""
+expect = "named"
+[[step]]
+run = "report retry --json"
+expect = ['"state":"sent"', '"why":null']
+[[step]]
+host = '''sh -c 'grep -lF "The command sent this report while the server was away." reports/*.txt' '''
+expect = ".txt"
+[[step]]
+run = "report status"
+expect = "Received"
+[[step]]
+run = '''sh -c 'report delete "$(report list --json | jq -r ".reports[] | select(.number != null) | .number")"' '''
 
 # The machine as it was: the settings that name the server, and the accounts.
 [[step]]
