@@ -1370,8 +1370,9 @@ like that is **long**, and `admin actions --json` says which are, in its
 `long`. A long action answers at once with a task number, `202` and
 `{"task": 42}`, and the console runs its command on its own, as an
 administrator, with no 30 seconds' limit. The work goes on without the page,
-shows from another browser, and can be stopped. No action of this release
-is long yet.
+shows from another browser, and can be stopped. An update, the install of an
+app, a backup, a scrub and a certificate order are long, and so is each step of
+adding a website.
 
 **Tasks**, in the header, opens a drawer that lists the tasks that wait or
 run and those that ended lately, each with its step and bar, and stops one
@@ -3329,9 +3330,9 @@ administrators too.
 It reads `website list --json`, and, for administrators, `website check --json`
 and `website add --dry-run --json`. It runs `website add`, `website https` and
 `website remove`, `cert get` for a certificate from Let's Encrypt, `bundle
-install` for nginx and PHP-FPM, `service enable`, and `firewall allow` for a
-port that a rule closes (website(8), cert(8), bundle(1), service(8),
-firewall(8)). "Websites, a file each" in the chapter on services says what each
+install` for nginx and PHP-FPM, `service enable`, `firewall test` to ask whether
+a rule closes port 80 or 443, and `firewall allow` for a port that a rule closes
+(website(8), cert(8), bundle(1), service(8), firewall(8)). "Websites, a file each" in the chapter on services says what each
 does.
 
 ### The list
@@ -3509,8 +3510,8 @@ page.
 ### A website's page
 
 A website's page has its first name as its title, its state in a pill, and for
-administrators **Check the sites**, which says what the list's does for this
-site. A banner tells when nginx does not run, and a banner for each problem found
+administrators **Check the sites**, which runs the check of the list and shows
+what it found of this site. A banner tells when nginx does not run, and a banner for each problem found
 in the site's files, with its ID. It has these rows:
 
 | Row | What it says |
