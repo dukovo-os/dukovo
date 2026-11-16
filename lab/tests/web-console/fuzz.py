@@ -26,8 +26,9 @@ body that is not JSON. The third sends the examples alone, since a change
 with made-up arguments would change the machine as it pleased; after each
 example the change's undo is called, and the service the examples use is put
 back as it was found (console.py). It leaves alone the changes at
-LEFT_ALONE: renewing the certificate, the changes that are tried, and those
-whose examples need what only their own tests set up.
+LEFT_ALONE: renewing the certificate, the changes that are tried, installing
+an app from the catalogs, and those whose examples need what only their own
+tests set up.
 
 A request that is refused changes nothing, so the first two runs leave the
 machine as it was. What each run checks of every answer: it is not a 5xx,
@@ -123,10 +124,18 @@ SET_UP = {
     "backups.show", "backups.key", "backups.run", "backups.verify", "backups.add", "backups.remove", "backups.restore",
     "move.plan", "move.stage", "move.cancel",
 }
-LEFT_ALONE = {"certificate.renew"} | TRIED | SET_UP
+# apps.install installs an app from the catalogs, and its example names an app that no catalog of this
+# machine lists, so each example would end as a task that failed (APP-101): the browser test web-console/add-app
+# adds a catalog of its own and installs from it, and the boot test admin-updates installs from another.
+CATALOG_CHANGES = {"apps.install"}
+LEFT_ALONE = {"certificate.renew"} | CATALOG_CHANGES | TRIED | SET_UP
 # The reads the second run leaves alone: lab.missing, which a lab machine offers, runs a command
 # no image has, and is answered 501 (ADM-129) by design, which Schemathesis takes for a server error.
-NOT_READ = ["lab.missing"]
+# apps.search and apps.sheet read the catalogs, which bundled reads anew at each request, over the
+# network for the machine's own, and the sheet fetches a whole file: neither keeps to the 2 seconds a
+# read is held to, and fifty requests an operation would load the catalogs' servers. The browser test
+# web-console/add-app reads them from a catalog of its own, and the boot test admin-updates from another.
+NOT_READ = ["lab.missing", "apps.search", "apps.sheet"]
 
 
 def schemathesis():
