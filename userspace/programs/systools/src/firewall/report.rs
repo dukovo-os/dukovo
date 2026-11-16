@@ -3,13 +3,15 @@
 
 //! What firewall(8) tells the web console (ADR 0518): the rules as JSON,
 //! which rule decides a connection, the listening sockets with who reaches
-//! each, and what the kernel dropped.
+//! each, what the kernel dropped, and the addresses authd has blocked.
 //!
 //! `list --json` reads the settings file and needs no right, as `list`
 //! does; `test` reads it too. `status --json` reads the kernel's rules and
 //! listeners, which needs the capability's read right, so it runs under
 //! elevate(8), as `status` does. `dropped` reads the kernel's records from
-//! logd(8), which gives them to root alone (ADR 0252).
+//! logd(8), which gives them to root alone (ADR 0252). `blocked --json`
+//! asks authd, which answers an administrator's command inside elevate(8)
+//! alone, and reads blocking.toml(5), which anyone may.
 //!
 //! The JSON's fields and their order are the interface: the structs below
 //! are in the order the fields are written, and the tests name them all.
@@ -34,6 +36,9 @@ use super::{
     decides, kernel_listeners, kernel_rules, name_ok, network_text, parse_settings, passed_over,
     program_path, refused, rules, words_of,
 };
+use accounts::request::BlockedEntry;
+
+use crate::authd::blocking::{self, Settings};
 use crate::log::parse_time;
 use crate::logd::{self, Record, Request};
 use crate::util::{self, Fail, fail, usage};
@@ -158,6 +163,94 @@ fn say(out: &mut dyn Write, value: &impl Serialize) -> Result<i32, Fail> {
     let line = serde_json::to_string(value).map_err(|error| fail(error.to_string()))?;
     writeln!(out, "{line}")?;
     Ok(0)
+}
+
+/// An address that is blocked now.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct Block {
+    /// The address, or the IPv6 network of 64 bits it is blocked as.
+    address: String,
+    /// When the block ends, in Unix milliseconds.
+    until_ms: i64,
+    /// How many blocks of it came one after another, each within a day of
+    /// the end of the one before, this one counted.
+    in_a_row: u32,
+    /// Why it was blocked, in authd's words.
+    why: String,
+}
+
+/// What `firewall blocked --json` writes: blocking.toml(5)'s settings and
+/// the blocks. The settings are null when the file does not read, since
+/// authd then goes on with the settings it read last, which this cannot
+/// know; `wrong` says why.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct Blocked {
+    /// The layout's number, 1.
+    format: u32,
+    /// Whether addresses are blocked at all.
+    on: Option<bool>,
+    /// How many wrong passwords block an address.
+    tries: Option<u32>,
+    /// The seconds they must come within.
+    within_s: Option<u64>,
+    /// How long the first block lasts, in seconds.
+    first_s: Option<u64>,
+    /// The longest a block lasts, in seconds.
+    longest_s: Option<u64>,
+    /// The networks that are never blocked.
+    never: Option<Vec<String>>,
+    /// The blocks in force, in authd's order.
+    blocks: Vec<Block>,
+    /// Why the settings are null, or null.
+    wrong: Option<String>,
+}
+
+/// The report of `entries`, authd's blocks, and of `settings`, what
+/// blocking.toml(5) says or why it does not read.
+fn blocked_of(entries: &[BlockedEntry], settings: Result<Settings, String>) -> Blocked {
+    let blocks = entries
+        .iter()
+        .map(|entry| Block {
+            address: entry.address.clone(),
+            until_ms: entry.until.saturating_mul(1000),
+            in_a_row: entry.times,
+            why: entry.why.clone(),
+        })
+        .collect();
+    let (settings, wrong) = match settings {
+        Ok(settings) => (Some(settings), None),
+        Err(wrong) => (None, Some(wrong)),
+    };
+    Blocked {
+        format: 1,
+        on: settings.as_ref().map(|settings| settings.on),
+        tries: settings.as_ref().map(|settings| settings.tries),
+        within_s: settings.as_ref().map(|settings| settings.within),
+        first_s: settings.as_ref().map(|settings| settings.first),
+        longest_s: settings.as_ref().map(|settings| settings.longest),
+        never: settings
+            .as_ref()
+            .map(|settings| settings.never.iter().map(ToString::to_string).collect()),
+        blocks,
+        wrong,
+    }
+}
+
+/// What blocking.toml(5) says: the defaults for a file that is not there,
+/// and why it does not read for one that does not.
+fn blocking_settings() -> Result<Settings, String> {
+    let path = blocking::SETTINGS;
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(format!("{path}: {}", util::strip_os_error(&error))),
+    };
+    Settings::parse(&text).map_err(|why| format!("{path}: {why}"))
+}
+
+/// `firewall blocked --json`, given authd's list of `entries`.
+pub fn blocked(entries: &[BlockedEntry], out: &mut dyn Write) -> Result<i32, Fail> {
+    say(out, &blocked_of(entries, blocking_settings()))
 }
 
 /// `firewall list --json`.
@@ -1000,5 +1093,111 @@ mod tests {
             dropped_text(&Tally::default().finish(1_763_113_200_000)),
             "The kernel dropped nothing it logged since 2025-11-14 09:40:00 UTC.\n"
         );
+    }
+    /// blocking.toml as the machine of the tests has it.
+    const BLOCKING: &str = "tries = 5\nwithin = \"10m\"\nfirst = \"10m\"\nlongest = \"24h\"\n\
+                            never = [\"192.168.1.0/24\", \"2001:db8:4:7::/64\"]\n";
+
+    fn entry(address: &str, until: i64, times: u32, why: &str) -> BlockedEntry {
+        BlockedEntry { address: address.into(), until, times, why: why.into() }
+    }
+
+    /// An address blocked for the second time in a row, and a network.
+    fn entries() -> Vec<BlockedEntry> {
+        vec![
+            entry(
+                "203.0.113.41",
+                1_763_122_740,
+                2,
+                "3 wrong passwords over SSH in 2 minutes, for admin",
+            ),
+            entry(
+                "2001:db8:9:1::/64",
+                1_763_126_400,
+                1,
+                "5 wrong passwords at the console in 4 minutes",
+            ),
+        ]
+    }
+
+    #[test]
+    fn the_blocked_report_is_the_golden_object_for_the_machine_the_tests_build() {
+        let report = blocked_of(&entries(), Settings::parse(BLOCKING));
+        let golden: Value = serde_json::from_str(include_str!("blocked.golden.json")).unwrap();
+        assert_eq!(read(&report), golden);
+    }
+
+    #[test]
+    fn the_blocked_report_has_its_fields_in_the_order_the_man_page_gives() {
+        let line =
+            serde_json::to_string(&blocked_of(&entries(), Settings::parse(BLOCKING))).unwrap();
+        let at = |name: &str| line.find(&format!("\"{name}\":")).unwrap();
+        let names = [
+            "format",
+            "on",
+            "tries",
+            "within_s",
+            "first_s",
+            "longest_s",
+            "never",
+            "blocks",
+            "address",
+            "until_ms",
+            "in_a_row",
+            "why",
+            "wrong",
+        ];
+        let places: Vec<usize> = names.iter().map(|name| at(name)).collect();
+        assert!(places.windows(2).all(|pair| pair[0] < pair[1]), "{line}");
+        assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn with_no_file_and_no_blocks_it_says_the_defaults_and_an_empty_list() {
+        let report = read(&blocked_of(&[], Settings::parse("")));
+        assert_eq!(
+            report,
+            json!({
+                "format": 1, "on": true, "tries": 5, "within_s": 600, "first_s": 600,
+                "longest_s": 86400, "never": [], "blocks": [], "wrong": null,
+            })
+        );
+    }
+
+    #[test]
+    fn blocking_that_is_off_says_so() {
+        let report = read(&blocked_of(&[], Settings::parse("on = false\n")));
+        assert_eq!(report["on"], json!(false));
+        assert_eq!(report["wrong"], Value::Null);
+    }
+
+    #[test]
+    fn a_file_that_does_not_read_leaves_the_settings_null_and_says_why() {
+        let why = Settings::parse("tries = 1\n").map_err(|why| format!("/x: {why}"));
+        let report = read(&blocked_of(&entries(), why));
+        for field in ["on", "tries", "within_s", "first_s", "longest_s", "never"] {
+            assert_eq!(report[field], Value::Null, "{field}");
+        }
+        assert_eq!(report["wrong"], json!("/x: tries is 2 to 100"));
+        // What authd says of the blocks needs no file.
+        assert_eq!(report["blocks"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_time_that_would_overflow_is_the_latest_there_is() {
+        let report =
+            read(&blocked_of(&[entry("203.0.113.9", i64::MAX, 1, "x")], Settings::parse("")));
+        assert_eq!(report["blocks"][0]["until_ms"], json!(i64::MAX));
+    }
+
+    #[test]
+    fn what_a_blocked_report_is_read_from_is_authd_s_list_and_one_file() {
+        let words = "203.0.113.41 1763122740 2 3 wrong passwords over SSH in 2 minutes, for admin";
+        let parsed = BlockedEntry::parse_list(words);
+        assert_eq!(parsed.len(), 1);
+        let report = read(&blocked_of(&parsed, Settings::parse("")));
+        assert_eq!(report["blocks"][0]["address"], json!("203.0.113.41"));
+        assert_eq!(report["blocks"][0]["until_ms"], json!(1_763_122_740_000_u64));
+        assert_eq!(report["blocks"][0]["in_a_row"], json!(2));
     }
 }

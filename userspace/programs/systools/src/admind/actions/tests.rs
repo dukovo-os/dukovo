@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use std::collections::HashSet;
+use std::net::IpAddr;
 use std::path::Path;
 
 use serde::Deserialize;
@@ -304,6 +305,96 @@ static KEEP: Entry<Keep> = Entry::new();
 /// the trials told; apart from [`LAB`], whose tests count its actions.
 pub static TRYING: &[&dyn Registered] = &[&TRY, &KEEP];
 
+/// A change for the tests alone that can cut off the browsers that come by
+/// `lo`, as `private.remove` can those that come by its WireGuard
+/// interface (ADR 0562): its read, `lab-peers`, prints each lab device and
+/// its addresses as `wireguard show --json` does, and fails for the device
+/// `broken`.
+struct Cut;
+
+/// The devices `lab-peers` prints in the route tests: `phone`, whose
+/// address is the tests' browser's, and `laptop`, another.
+pub const LAB_PEERS: &str = r#"{"devices": [
+    {"name": "phone", "addresses": ["192.0.2.7/32"]},
+    {"name": "laptop", "addresses": ["198.51.100.4/32", "2001:db8::4/128"]}
+]}"#;
+
+impl Action for Cut {
+    const ID: &'static str = "lab.cut";
+    const AREA: &'static str = "services";
+    const CHANGES: bool = true;
+    const PATH: &'static str = "/api/1/lab/{name}/cut";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const CUTS_OFF: Option<CutsOff<Named>> = Some(CutsOff {
+        card: "lo",
+        read: |args| vec!["lab-peers".into(), args.name.clone()],
+        cuts: |args, from, shown| {
+            let shown: Value = serde_json::from_str(shown).map_err(|_| "no list".to_string())?;
+            let devices = shown["devices"].as_array().ok_or("no devices")?;
+            let device = devices.iter().find(|device| device["name"] == args.name.as_str());
+            let addresses = device.and_then(|device| device["addresses"].as_array());
+            let holds = |address: &Value| {
+                let address = address.as_str().and_then(|text| text.split('/').next());
+                address.and_then(|text| text.parse::<IpAddr>().ok()) == Some(from)
+            };
+            if addresses.is_some_and(|addresses| addresses.iter().any(holds)) {
+                return Err(format!("this browser reaches the console through {}", args.name));
+            }
+            Ok(())
+        },
+    });
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Remove a lab device";
+    type Args = Named;
+
+    fn argv(args: &Named) -> Vec<String> {
+        vec!["lab-cut".into(), args.name.clone()]
+    }
+
+    fn examples() -> Examples<Named> {
+        Examples {
+            good: vec![Named { name: "laptop".into(), wait: None }],
+            bad: vec![],
+            undo: None,
+        }
+    }
+}
+
+static CUT: Entry<Cut> = Entry::new();
+/// The action that can cut off its browser, for the route tests of the
+/// guard.
+pub static CUTTING: &[&dyn Registered] = &[&CUT, &RESTART];
+
+#[test]
+fn what_can_cut_off_its_browser_names_its_card_and_its_read_and_fails_closed() {
+    keeps_the_rules(CUTTING);
+    let listed = listed(CUTTING);
+    assert_eq!((&listed[0]["cuts_off"], &listed[1]["cuts_off"]), (&json!("lo"), &Value::Null));
+    let prepared = CUT.prepare(json!({ "name": "phone" })).unwrap();
+    let read = prepared.cuts_off.as_ref().unwrap();
+    assert_eq!((read.card, &read.argv), ("lo", &vec!["lab-peers".to_string(), "phone".into()]));
+    assert!(RESTART.prepare(json!({ "name": "nginx" })).unwrap().cuts_off.is_none());
+
+    let phone: IpAddr = "192.0.2.7".parse().unwrap();
+    let cut = |name: &str, from: IpAddr, shown: &str| {
+        CUT.cuts_off(&CUT.prepare(json!({ "name": name })).unwrap().args, from, shown)
+    };
+    // The browser's own device is refused; another, or one not there, is
+    // not; nor is any for a browser that holds none of their addresses.
+    let refused = cut("phone", phone, LAB_PEERS).unwrap_err();
+    assert_eq!(refused, "this browser reaches the console through phone");
+    assert_eq!(cut("laptop", phone, LAB_PEERS), Ok(()));
+    assert_eq!(cut("tablet", phone, LAB_PEERS), Ok(()));
+    assert!(cut("laptop", "2001:db8::4".parse().unwrap(), LAB_PEERS).is_err());
+    assert_eq!(cut("phone", "198.51.100.9".parse().unwrap(), LAB_PEERS), Ok(()));
+    // What does not read refuses, and so do arguments that do not.
+    assert!(cut("laptop", phone, "").is_err());
+    assert!(cut("laptop", phone, "{}").is_err());
+    assert!(CUT.cuts_off(&json!({ "name": 3 }), phone, LAB_PEERS).is_err());
+    // An action with no guard never refuses.
+    assert_eq!(RESTART.cuts_off(&json!({ "name": "nginx" }), phone, ""), Ok(()));
+}
+
 #[test]
 fn an_address_finds_its_action_and_gives_its_arguments() {
     let Found::Action(action, params) = find(LAB, true, "/api/1/lab/nginx/restart") else {
@@ -481,6 +572,7 @@ fn the_list_says_which_changes_compare_a_probe_and_which_always_changed() {
             "service.enable",
             "service.disable",
             "console.reach",
+            "console.undo",
             "console.export",
             "network.set",
             "network.undo",
@@ -492,6 +584,19 @@ fn the_list_says_which_changes_compare_a_probe_and_which_always_changed() {
             "storage.log-set",
             "backups.add",
             "backups.remove",
+            "accounts.add",
+            "accounts.set",
+            "accounts.remove",
+            "account.name",
+            "account.key-add",
+            "account.key-remove",
+            "security.sign-in-set",
+            "security.never-block",
+            "security.never-block-remove",
+            "ssh.set",
+            "ssh.on",
+            "ssh.off",
+            "ssh.undo",
         ]
     );
     for action in console.as_array().unwrap() {
@@ -500,6 +605,19 @@ fn the_list_says_which_changes_compare_a_probe_and_which_always_changed() {
             assert_eq!(action["compares"], false, "{}: a read has no `changed`", action["id"]);
         }
     }
+}
+
+#[test]
+fn what_is_never_done_to_the_callers_own_account_names_a_required_field_of_a_change() {
+    for (action, listed) in REGISTRY.iter().zip(listed(REGISTRY).as_array().unwrap()) {
+        assert_eq!(listed["not_self"], json!(action.not_self()), "{}", action.id());
+        let Some(field) = action.not_self() else { continue };
+        let taken = action.fields().iter().find(|taken| taken.name == field);
+        assert!(taken.is_some_and(|taken| taken.required), "{}: {field}", action.id());
+        assert!(action.changes(), "{}: a read does nothing to an account", action.id());
+    }
+    // An action that names none is never refused for it.
+    assert_eq!(RESTART.prepare(json!({ "name": "nginx" })).unwrap().not_self, None);
 }
 
 #[test]
@@ -550,6 +668,10 @@ fn the_list_gives_each_action_s_examples_and_what_puts_back_the_first() {
 
 /// The rules every action of [`REGISTRY`] keeps, and these tests' own.
 fn keeps_the_rules(actions: &'static [&'static dyn Registered]) {
+    /// The places of the tree that admind's service sees, where the
+    /// journal can tell a file that changed.
+    const SEEN: &[&str] = &["/system/settings/", "/system/state/admind/"];
+    let mut unseen = Vec::new();
     let mut ids = HashSet::new();
     let mut routes = HashSet::new();
     for action in actions {
@@ -579,6 +701,13 @@ fn keeps_the_rules(actions: &'static [&'static dyn Registered]) {
             !action.long() || (action.changes() && action.runs() == Runs::AsAdministrator),
             "{id}: a long action is a change that runs as an administrator, which is all a task \
              runs as"
+        );
+        // A change that could cut off its browser is refused before it
+        // runs, which a task, started first and answered later, is not.
+        assert!(
+            action.cuts_off_card().is_none()
+                || (action.changes() && action.runs() == Runs::AsAdministrator && !action.long()),
+            "{id}: what can cut off its browser is a change an administrator runs at once"
         );
         secrets::keeps_secrets(*action);
         let (good, _, undo) = action.example_values();
@@ -618,11 +747,21 @@ fn keeps_the_rules(actions: &'static [&'static dyn Registered]) {
             // neither.
             let compared = prepared.probe.is_some() || !prepared.files.is_empty();
             assert_eq!(compared, action.compares(), "{id}: its probe and files");
+            // admind's service sees the settings and its own folders, and no
+            // home or other service's state (service.toml(5)): the journal
+            // would find any other file absent, before a change and after
+            // it, and the change would say that it changed nothing.
+            for file in &prepared.files {
+                if !SEEN.iter().any(|place| file.starts_with(place)) {
+                    unseen.push(format!("{id}: {file}"));
+                }
+            }
             if let Some(probe) = &prepared.probe {
                 assert!(!probe.is_empty() && action.changes(), "{id}: its probe");
             }
         }
     }
+    assert!(unseen.is_empty(), "files that admind cannot see:\n{}", unseen.join("\n"));
 }
 
 #[test]
@@ -855,6 +994,12 @@ fn the_list_gives_each_action_the_schema_of_what_it_takes() {
                     "type": "string",
                     "description": "Whom the console answers: private for machines on private networks, any for every machine.",
                     "enum": ["private", "any"],
+                },
+                "try": {
+                    "type": "integer",
+                    "description": "Try the change for this many seconds, 10 to 3600: Spark undoes it unless it is kept.",
+                    "minimum": 10,
+                    "maximum": 3600,
                 },
             },
             "required": ["reach"],
@@ -1121,6 +1266,22 @@ const CODE_DECIDES: &[(&str, &str)] = &[
     ("snapshots.restore-all", "paths"),
     // The place is a folder or an address `backup add` reads, which it says.
     ("backups.add", "to"),
+    // An address or a network is read as authd reads it: IPv4, or IPv6 with
+    // a prefix of 64 for a block; a network with no bits past its prefix.
+    ("security.unblock", "address"),
+    ("security.never-block", "network"),
+    ("security.never-block-remove", "network"),
+    // A list of names holds each once, `everyone` alone, and names of the
+    // shape `check_name` takes, at most 32 characters each; and both
+    // `passwords` and `keys` off is nobody to sign in.
+    ("ssh.set", "keys"),
+    ("ssh.set", "allow_users"),
+    ("ssh.set", "allow_groups"),
+    // The host, and the address and its length, are read as the command
+    // reads them, with the network's own address and its broadcast one
+    // refused.
+    ("private.serve", "endpoint"),
+    ("private.serve", "address"),
     // A source's name is counted in bytes, as a path is, and what it is
     // given with decides whether the key is: a key and its file are one or
     // the other, which only `check` says.
@@ -1128,6 +1289,20 @@ const CODE_DECIDES: &[(&str, &str)] = &[
     ("move.plan", "key"),
     ("move.stage", "source"),
     ("move.stage", "key"),
+    // A full name, a password and a key's line are counted in bytes, as the
+    // account files and the pipe count them, which a schema counts as
+    // characters; a key's line is a key only if the parser authd signs in
+    // with finds one in it; a session is two numbers that fit their types.
+    ("accounts.add", "full_name"),
+    ("accounts.add", "password"),
+    ("accounts.set", "full_name"),
+    ("accounts.password", "password"),
+    ("accounts.key-add", "line"),
+    ("accounts.end", "session"),
+    ("account.name", "full_name"),
+    ("account.password", "current"),
+    ("account.password", "new"),
+    ("account.key-add", "line"),
 ];
 
 /// The bad examples whose rule a schema cannot say, which `check` alone
@@ -1188,6 +1363,29 @@ const BEYOND_THE_SCHEMA: &[(&str, &str)] = &[
         r#"{"label":"lab","paths":"/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a","snapshot":"lab-before"}"#,
     ),
     ("backups.add", r#"{"every":"hand","name":"lab","to":"s3://bucket/x","verify":"never"}"#),
+    // At least one rule, and one the command reads: the code's.
+    ("security.sign-in-set", "{}"),
+    ("security.unblock", r#"{"address":"300.1.1.1"}"#),
+    ("security.unblock", r#"{"address":"192.0.2.0/24"}"#),
+    ("security.unblock", r#"{"address":"127.0.0.1"}"#),
+    ("security.never-block", r#"{"network":"300.1.1.1"}"#),
+    ("security.never-block", r#"{"network":"192.0.2.5/24"}"#),
+    ("security.never-block", r#"{"network":"192.0.2.0/33"}"#),
+    ("security.never-block-remove", r#"{"network":"300.1.1.1"}"#),
+    ("security.never-block-remove", r#"{"network":"192.0.2.5/24"}"#),
+    // A change that says nothing, both ways of signing in off, a list of
+    // names that is no list, and a name the command reads as a word.
+    ("ssh.set", "{}"),
+    ("ssh.set", r#"{"keys":"no","passwords":"no"}"#),
+    ("ssh.set", r#"{"allow_users":"everyone alice"}"#),
+    ("ssh.set", r#"{"allow_users":"alice alice"}"#),
+    ("ssh.set", r#"{"allow_users":"alice keys yes"}"#),
+    // The port and the host and address of the tunnel, as the command
+    // reads them.
+    ("private.serve", r#"{"address":"10.8.0.1/31"}"#),
+    ("private.serve", r#"{"address":"10.8.0.0/24"}"#),
+    ("private.serve", r#"{"address":"10.8.0.255/24"}"#),
+    ("private.serve", r#"{"endpoint":"-lab.example.org"}"#),
     ("backups.add", r#"{"every":"hand","name":"lab","to":"relative/folder","verify":"never"}"#),
     // The key as a file and typed, or as neither; a card choice that is no
     // card of this machine; and no more than eight of them: the code's.
@@ -1216,6 +1414,20 @@ const BEYOND_THE_SCHEMA: &[(&str, &str)] = &[
     (
         "move.stage",
         r#"{"cards":"a=automatic\na=automatic\na=automatic\na=automatic\na=automatic\na=automatic\na=automatic\na=automatic\na=automatic","key_file":"/system/settings/backup/lab.key","source":"/volumes/LAB/dukovo-backup/lab-machine"}"#,
+    ),
+    // A name that an account has already, nothing to change, and a key that
+    // is not a kind Dukovo takes or has options before it: the code's.
+    ("accounts.add", r#"{"name":"root"}"#),
+    ("accounts.set", r#"{"name":"lab-made"}"#),
+    ("accounts.key-add", r#"{"line":"ssh-dss AAAAB3NzaC1kc3MAAACBAP","name":"lab-made"}"#),
+    (
+        "accounts.key-add",
+        r#"{"line":"command=\"x\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f lab","name":"lab-made"}"#,
+    ),
+    ("account.key-add", r#"{"line":"ssh-dss AAAAB3NzaC1kc3MAAACBAP"}"#),
+    (
+        "account.key-add",
+        r#"{"line":"command=\"x\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f lab"}"#,
     ),
 ];
 
@@ -1311,7 +1523,16 @@ fn a_read_that_runs_as_an_administrator_needs_an_unlocked_one_or_a_token_s_full_
 
 #[test]
 fn a_change_tried_for_a_window_begins_its_trial_and_its_keep_and_undo_end_it() {
-    let ends = ["network.keep", "network.undo", "firewall.keep", "firewall.undo"];
+    let ends = [
+        "network.keep",
+        "network.undo",
+        "firewall.keep",
+        "firewall.undo",
+        "console.keep",
+        "console.undo",
+        "ssh.keep",
+        "ssh.undo",
+    ];
     let (mut begins, mut ended) = (0, 0);
     for action in REGISTRY {
         let (good, _, _) = action.example_values();

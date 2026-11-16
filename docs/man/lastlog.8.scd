@@ -9,7 +9,7 @@ lastlog - show each account's last sign-in
 
 # SYNOPSIS
 
-*lastlog* [*-u* _name_] [*-t* _days_] [*-b* _days_]
+*lastlog* [*-u* _name_] [*-t* _days_] [*-b* _days_] [*--json*]
 
 # DESCRIPTION
 
@@ -23,6 +23,25 @@ Root reads every account's. Anyone else reads their own alone, and
 gets a hint on the standard error saying so; an administrator runs
 *elevate lastlog*.
 
+With *--json* it writes one JSON array on the standard output, which the
+web console reads (*admind*(8)), an object for each account the options
+leave, in the same order:
+
+```
+[{"name": "alice", "sign_in": {"at_ms": 1763110000000, "terminal": "web",
+  "from": "192.168.1.25", "via": "console"}, "failed": 0, "last_failed": null}]
+```
+
+*sign_in* is the account's newest sign-in, and *last_failed* the newest
+wrong password typed for it since; each is null where there was none,
+and *sign_in* is null for an account that never signed in. *at_ms* is
+Unix milliseconds. *from* is null where the sign-in was at the machine
+itself. *via* says how the person came: *ssh*, or *console* for the web
+console and its terminals; it is null at the machine itself, for a
+wrong password, and for a sign-in recorded before it was kept. *failed* is how many wrong passwords were typed for the account
+since its last sign-in, or ever, if it never signed in. The hint is not
+written.
+
 # OPTIONS
 
 *-u* _name_, *--user* _name_
@@ -35,6 +54,9 @@ gets a hint on the standard error saying so; an administrator runs
 *-b* _days_, *--before* _days_
 	Only sign-ins older than _days_ days, and the accounts that never
 	signed in.
+
+*--json*
+	Write the accounts as a JSON array, as above.
 
 # EXAMPLES
 

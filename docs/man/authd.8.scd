@@ -116,6 +116,9 @@ closes the connection, but for a session (below):
 	its processes ended. Only root may. A disabled account's right
 	password is answered *no the account* _name_ *is disabled*, which
 	only someone who knows it learns; a wrong one as any wrong one.
+	It refuses the only administrator whose account is enabled, whom
+	Rescue and recovery need: *no that would leave no administrator*
+	(*ACC-102*). So do *remove*, and *set* when it takes the right away.
 
 *enable* _name_
 	Takes the mark away: the account signs in again with the password
@@ -973,6 +976,27 @@ answered for the user the connection gives.
 	*token-add* take the person's password as _proof_, or nothing, from
 	the worker of their own console session while it is unlocked.
 	*steps* lists them with none of their secrets.
+
+*steps-of* _name_, *steps-reset* _name_, *token-remove-of* _name_ _token_
+	Another person's second steps and tokens, as *user*(8) asks them
+	(ADR 0562); only root may. *steps-of* answers as *steps* does.
+	*steps-reset* removes the app, the passkeys, the recovery codes and
+	the trusted browsers, keeps the tokens, tells the person at their
+	next sign-in (see SESSIONS), and answers *ok* and how many of each
+	went: the app (0 or 1), passkeys, recovery codes and trusted
+	browsers. *token-remove-of* removes the token named _token_, or is
+	refused with *ACC-104*. Each change is an audit line.
+
+*end-session* _name_ _session_ *hang-up*|*kill*
+	Sends SIGHUP, or SIGKILL, to each process of the session at the
+	machine that process _session_ leads and that acts for the account
+	_name_, for *user end* (ADR 0562); only root may. The session must be
+	one that authd started for the account, at a terminal or over SSH,
+	or it is refused with *ACC-104*: its processes are below authd, and
+	the kernel lets a process signal only its own session's and those
+	below it, so authd alone can end them. A hang-up tells the person at
+	their next sign-in who ended the session. authd answers *ok* and how
+	many processes the signal was sent to, and each is an audit line.
 
 Each account's second steps and tokens are kept in one file,
 _/system/state/authd/console/_*name*.toml, in a folder of mode 0700,

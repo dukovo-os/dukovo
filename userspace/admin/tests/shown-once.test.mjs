@@ -167,7 +167,7 @@ test('with a QR code the picture has a label that points to the text, which is b
 });
 
 test('a text too long for a QR code is shown as text, with the way to keep it', async (context) => {
-  const { dialog } = await opened(context, { options: { label: 'Settings', text: 'x'.repeat(400), qr: true } });
+  const { dialog } = await opened(context, { options: { label: 'Settings', text: 'x'.repeat(413), qr: true } });
   assert.equal(dialog.querySelector('svg'), null);
   assert.equal(dialog.querySelector('pre').hidden, false);
   assert.match(dialog.textContent, /It is too long for a QR code\. Copy it or save it as a file\./);

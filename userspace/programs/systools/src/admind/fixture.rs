@@ -97,6 +97,12 @@ impl Authd {
         let seen = self.seen.lock().unwrap();
         seen.iter().map(|line| line.split(' ').next().unwrap_or_default().to_string()).collect()
     }
+
+    /// The requests asked so far, in order, each as its verb and fields
+    /// with a space between.
+    pub fn lines(&self) -> Vec<String> {
+        self.seen.lock().unwrap().clone()
+    }
 }
 
 impl Drop for Authd {

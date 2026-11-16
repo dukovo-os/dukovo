@@ -27,7 +27,9 @@
 //!
 //! authd(8) blocks the addresses that guess passwords for a while, and
 //! gives the kernel's firewall the list (ADR 0479). `firewall blocked`
-//! shows it, `firewall unblock ADDRESS` lifts one block, and `firewall
+//! shows it, as a table or, with `--json`, as the settings of blocking.toml(5)
+//! and the blocks (`report::blocked`) that the web console reads;
+//! `firewall unblock ADDRESS` lifts one block, and `firewall
 //! never-block [remove] NETWORK` keeps a network out of the list for good,
 //! or lets it in again, in blocking.toml(5). These three ask authd, which
 //! alone keeps the list and the file, so they need no capability of their
@@ -754,7 +756,7 @@ const HELP: &str = "Usage: firewall [status] [--json]
        firewall load
        firewall test tcp|udp PORT from ADDRESS [on INTERFACE] [--json]
        firewall dropped [--since TIME] [--json]
-       firewall blocked
+       firewall blocked [--json]
        firewall unblock ADDRESS
        firewall never-block [remove] NETWORK
   --try SECONDS  try the change: Spark undoes it after SECONDS, 10 to 3600, unless
@@ -765,7 +767,7 @@ const HELP: &str = "Usage: firewall [status] [--json]
 /// start with `--`.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Options {
-    /// `--json`: for `status` and `list`.
+    /// `--json`: for `status`, `list` and `blocked`.
     json: bool,
     /// `--try SECONDS`: for a change.
     seconds: Option<u32>,
@@ -828,8 +830,8 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     }
     let (words, Options { json, seconds }) = options_after(&words)?;
     let first = words.first().copied();
-    if json && !matches!(first, None | Some("status" | "list")) {
-        return Err(usage("--json goes with status and list".into()));
+    if json && !matches!(first, None | Some("status" | "list" | "blocked")) {
+        return Err(usage("--json goes with status, list and blocked".into()));
     }
     if seconds.is_some() && !matches!(first, Some("allow" | "deny" | "remove" | "replace")) {
         return Err(usage("--try goes with allow, deny, remove and replace".into()));
@@ -845,7 +847,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             Ok(0)
         }
         Some((&verb @ ("keep" | "undo"), [])) => end(verb, &mut out),
-        Some((&("blocked" | "unblock" | "never-block"), _)) => blocks(words, &mut out),
+        Some((&("blocked" | "unblock" | "never-block"), _)) => blocks(words, json, &mut out),
         Some((&"remove", [number])) if number.starts_with(|c: char| c.is_ascii_digit()) => {
             remove_number(number, seconds, &mut out)
         }
@@ -1132,7 +1134,7 @@ fn allow_process(number: &str, seconds: Option<u32>, out: &mut dyn Write) -> Res
 /// What `firewall blocked`, `unblock` and `never-block` ask of authd (ADR
 /// 0479).
 #[derive(Debug, PartialEq, Eq)]
-enum Blocks {
+pub(crate) enum Blocks {
     /// The addresses blocked now.
     Show,
     /// Lift the block of a source.
@@ -1151,7 +1153,7 @@ impl Blocks {
     /// # Errors
     ///
     /// What is wrong with the words.
-    fn parse(words: &[&str]) -> Result<Blocks, String> {
+    pub(crate) fn parse(words: &[&str]) -> Result<Blocks, String> {
         match words {
             ["blocked"] => Ok(Blocks::Show),
             ["unblock", address] => {
@@ -1210,8 +1212,9 @@ fn not_an_address(word: &str) -> String {
 }
 
 /// `firewall blocked`, `unblock` and `never-block`: ask authd, which keeps
-/// the blocks and blocking.toml(5), and say what it answers.
-fn blocks(words: &[&str], out: &mut dyn Write) -> Result<i32, Fail> {
+/// the blocks and blocking.toml(5), and say what it answers: for `blocked`
+/// a table, or with `json` the report the web console reads.
+fn blocks(words: &[&str], json: bool, out: &mut dyn Write) -> Result<i32, Fail> {
     let command = Blocks::parse(words).map_err(usage)?;
     let answer = match crate::account::ask(&command.request())? {
         Answer::Done(answer) => answer,
@@ -1219,6 +1222,7 @@ fn blocks(words: &[&str], out: &mut dyn Write) -> Result<i32, Fail> {
     };
     match command.done() {
         Some(done) => writeln!(out, "{done}")?,
+        None if json => return report::blocked(&BlockedEntry::parse_list(&answer), out),
         None => {
             let entries = BlockedEntry::parse_list(&answer);
             let now = (util::now_ns() / 1_000_000_000) as i64;

@@ -475,6 +475,9 @@ mod tests {
             assert!(answer(&checks, &ran(status), false).is_ok(), "status {status}");
         }
         assert_eq!(answer(&checks, &ran(3), false).unwrap_err().kind, Kind::CommandFailed);
+        // checks.run's too: it runs the same checks and keeps what they found.
+        let run = prepared("checks.run", serde_json::json!({}));
+        assert_eq!(run.action.answers(), [0, 1, 2]);
         // diskhealth exits with 2, 4 or 8 added for a disk it cannot read, one
         // that warns and one that is failing, and its answer is the output then too.
         let health = crate::admind::actions::REGISTRY
@@ -496,8 +499,14 @@ mod tests {
             .unwrap();
         assert_eq!(list.answers(), [0, 1]);
         // Every other action answers only after 0.
-        let named =
-            ["service.explain", "checks.last", "storage.health", "storage.scrub", "snapshots.list"];
+        let named = [
+            "service.explain",
+            "checks.last",
+            "checks.run",
+            "storage.health",
+            "storage.scrub",
+            "snapshots.list",
+        ];
         for action in crate::admind::actions::REGISTRY.iter().filter(|a| !named.contains(&a.id())) {
             assert_eq!(action.answers(), [0], "{}", action.id());
         }

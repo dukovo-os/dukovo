@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-// A QR code encoder for the authenticator app's otpauth:// address, as
-// ISO/IEC 18004 describes it: byte mode, error correction level M and
-// versions 1 to 10, which hold up to 213 bytes. The console loads nothing
-// from outside its own files, so no library is taken from anywhere.
+// A QR code encoder for the authenticator app's otpauth:// address and a
+// WireGuard device's settings, as ISO/IEC 18004 describes it: byte mode,
+// error correction level M and versions 1 to 15, which hold up to 412
+// bytes. The console loads nothing from outside its own files, so no
+// library is taken from anywhere.
 
 // For each version, the error correction codewords of every block and the
 // blocks as [count, data codewords] pairs. The later blocks of a version
@@ -21,12 +22,18 @@ const BLOCKS = [
   { ecc: 22, groups: [[2, 38], [2, 39]] },
   { ecc: 22, groups: [[3, 36], [2, 37]] },
   { ecc: 26, groups: [[4, 43], [1, 44]] },
+  { ecc: 30, groups: [[1, 50], [4, 51]] },
+  { ecc: 22, groups: [[6, 36], [2, 37]] },
+  { ecc: 22, groups: [[8, 37], [1, 38]] },
+  { ecc: 24, groups: [[4, 40], [5, 41]] },
+  { ecc: 24, groups: [[5, 41], [5, 42]] },
 ];
 
 // The rows and columns the alignment patterns are centred on, by version.
 const ALIGNMENT = [
   null, [], [6, 18], [6, 22], [6, 26], [6, 30], [6, 34],
   [6, 22, 38], [6, 24, 42], [6, 26, 46], [6, 28, 50],
+  [6, 30, 54], [6, 32, 58], [6, 34, 62], [6, 26, 46, 66], [6, 26, 48, 70],
 ];
 
 // The mask patterns: a module is flipped where the test holds.
@@ -92,7 +99,7 @@ function versionFor(length) {
     const header = version < 10 ? 12 : 20;
     if (header + 8 * length <= 8 * dataCodewords(version)) return version;
   }
-  throw new RangeError(`${length} bytes do not fit a QR code of version 10`);
+  throw new RangeError(`${length} bytes do not fit a QR code of version ${BLOCKS.length - 1}`);
 }
 
 // The data codewords of `bytes` in byte mode: indicators, the bytes, the
@@ -315,7 +322,7 @@ export function penalty(rows) {
  * `modules` as rows of 0 (light) and 1 (dark). The mask with the lowest
  * penalty is chosen, the first of those that tie; `chosen` makes it one
  * of the eight, which the tests use to compare with another encoder.
- * Throws a RangeError when `text` is longer than version 10 holds.
+ * Throws a RangeError when `text` is longer than version 15 holds, 412 bytes.
  */
 export function qrMatrix(text, chosen) {
   const bytes = new TextEncoder().encode(text);

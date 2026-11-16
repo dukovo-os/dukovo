@@ -147,6 +147,18 @@ impl Trials {
         self.began.remove(id);
     }
 
+    /// admind read its settings again at `now`, by Spark's reload. The
+    /// trial `console` tries admin.toml, and its change takes effect only
+    /// when admind has read it: a connection accepted before then was
+    /// answered by the old settings, so the trial begins again now for
+    /// [`Trials::fresh`]. Any other reload while it runs moves the time
+    /// later too, which only errs late.
+    pub fn reloaded(&mut self, now: Instant) {
+        if let Some(began) = self.began.get_mut("console") {
+            began.at = began.at.max(now);
+        }
+    }
+
     /// Takes in the trials Spark lists at `now`, each with how long until
     /// it is undone, and forgets the ones it no longer lists.
     ///
@@ -340,6 +352,30 @@ mod tests {
         // Spark's count goes down as admind's clock goes on: the same end.
         trials.listed([("firewall", 50_100)], start + 11 * SECOND);
         assert_eq!(trials.fresh("firewall", start + SECOND / 2), Some(true));
+    }
+
+    #[test]
+    fn the_console_s_trial_begins_again_when_admind_reads_its_settings() {
+        let start = Instant::now();
+        let mut trials = Trials::default();
+        trials.begun("console", start);
+        trials.begun("firewall", start);
+        trials.listed([("console", 60_000), ("firewall", 60_000)], start);
+        // Spark's reload reached admind after the action answered.
+        trials.reloaded(start + SECOND * 2);
+        assert_eq!(trials.fresh("console", start + SECOND), Some(false));
+        assert_eq!(trials.fresh("console", start + SECOND * 3), Some(true));
+        // Spark lists it again, and the later time stays.
+        trials.listed([("console", 59_000), ("firewall", 59_000)], start + SECOND * 3);
+        assert_eq!(trials.fresh("console", start + SECOND), Some(false));
+        // Another trial is not moved, and an earlier reload moves nothing.
+        assert_eq!(trials.fresh("firewall", start + SECOND), Some(true));
+        trials.reloaded(start);
+        assert_eq!(trials.fresh("console", start + SECOND * 3), Some(true));
+        // With no `console` trial, a reload begins none.
+        let mut none = Trials::default();
+        none.reloaded(start);
+        assert_eq!(none.fresh("console", start + SECOND), None);
     }
 
     #[test]

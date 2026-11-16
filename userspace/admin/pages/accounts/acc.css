@@ -1,0 +1,93 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ *
+ * The Accounts pages (design 7) and Your account, which draws the same rows:
+ * the groups and the table of accounts, one account's card with its rows,
+ * keys, tokens and sessions, and the dialogs that change them. The phone's
+ * layout is the same markup under the container query the shell uses (7.9).
+ * Same rules as console.css: rem, and px for borders and focus rings.
+ */
+.acc-list, .acc-account, .acc-body, .acc-sessions, .acc-extra { display: flex; flex-direction: column; gap: 1.143rem; min-width: 0; }
+.acc-sessions:empty, .acc-extra:empty { display: none; }
+.acc-errors:empty, .acc-command:empty { display: none; }
+
+/* Grey bars stand where words are read; they are still, and nothing reads them. */
+.acc-loading { display: flex; flex-direction: column; gap: .857rem; }
+.acc-bar { display: block; height: .857rem; width: 100%; border-radius: .214rem; background: var(--sunken); }
+
+/* The list */
+.acc-groups { display: flex; flex-wrap: wrap; align-items: center; gap: .429rem; }
+.acc-chip { display: inline-flex; align-items: center; min-height: 1.714rem; padding: 0 .714rem; border: 1px solid var(--border); border-radius: .857rem; background: var(--sunken); font-size: .929rem; }
+.acc-rules { margin: 0; }
+.acc-rules .ic { vertical-align: -.15rem; }
+.acc-list .tbl-box .tbl { min-width: 0; }
+.acc-note { margin: 0; padding: .571rem .857rem; border-top: 1px solid var(--border); }
+.acc-who { display: flex; align-items: center; gap: .714rem; min-width: 0; }
+.acc-who small { overflow-wrap: anywhere; }
+
+/* The letter in a circle: four fixed colours with white letters of at least 4.5 to 1 */
+.acc-avatar { display: inline-grid; place-items: center; flex: none; width: 2.143rem; height: 2.143rem; border-radius: 50%; color: #fff; font-weight: 700; background: #1C62B0; }
+.acc-avatar.big { width: 3.143rem; height: 3.143rem; font-size: 1.286rem; }
+.acc-avatar.shade-1 { background: #6B4FA0; }
+.acc-avatar.shade-2 { background: #2E7D4F; }
+.acc-avatar.shade-3 { background: #5C6B7B; }
+
+/* One account */
+.acc-card { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.acc-top h2 { font: 400 1.214rem var(--font-ui); color: var(--instr); margin: 0; }
+.acc-card .rows dd { display: flex; flex-wrap: wrap; align-items: baseline; gap: .286rem .571rem; overflow-wrap: anywhere; }
+.acc-card .rows dd > .small { flex: 1 1 100%; }
+.acc-card .rows dd > .btns { flex: 1 1 100%; }
+.acc-card .rows dd code, .acc-card > p code, .acc-section p code { font-family: var(--font-mono); }
+.acc-section { display: flex; flex-direction: column; gap: .714rem; align-items: flex-start; min-width: 0; }
+.acc-section h3 { margin: 0; font: 600 1rem var(--font-ui); }
+.acc-section > .tbl-box { align-self: stretch; }
+.acc-section > p { margin: 0; }
+.acc-mini { min-width: 0; }
+.acc-mini td.end { text-align: right; white-space: nowrap; width: 1%; }
+.acc-fp { font-family: var(--font-mono); overflow-wrap: anywhere; border-radius: .214rem; }
+.acc-fp:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* A switch that is a row's control, and one in a form */
+.acc-switch-row { display: flex; flex-direction: column; gap: .143rem; }
+.acc-switch { display: inline-flex; align-items: center; gap: .571rem; min-height: 2rem; padding: 0 .286rem; border: 0; background: none; font: inherit; color: var(--text); cursor: pointer; }
+.acc-switch[aria-disabled="true"] { cursor: default; opacity: .75; }
+.acc-switch[aria-busy="true"] { opacity: .75; }
+.acc-switch-field .acc-switch-label { display: inline-flex; align-items: center; gap: .571rem; cursor: pointer; }
+.acc-switch-field input { width: 1.286rem; height: 1.286rem; margin: 0; accent-color: var(--accent); }
+
+/* The dialogs */
+.acc-lead { display: flex; flex-direction: column; gap: .571rem; }
+.acc-lead p { margin: 0; }
+.acc-command { display: flex; flex-direction: column; gap: .429rem; }
+.acc-command h3 { font: 600 .929rem var(--font-ui); margin: 0; }
+.dialog fieldset.choices .radio-card > span { display: flex; flex-direction: column; gap: .143rem; }
+
+/* The phone (7.9): the table becomes a card a row, one account is one column, and the buttons are 44 px tall and fill the width. */
+@container (max-width: 51.4rem) {
+  .acc-list .tbl-box, .acc-section .tbl-box { border: 0; }
+  .acc-list .tbl.stack tr, .acc-section .tbl.stack tr { margin: .571rem 0; }
+  .acc-list .tbl.stack td::before, .acc-section .tbl.stack td::before { margin-bottom: .143rem; }
+  .acc-card .rows { grid-template-columns: minmax(0, 1fr); gap: .143rem; }
+  .acc-card .rows dd { margin-bottom: .571rem; }
+  .acc-card .btn, .acc-section .btn, .acc-card .btns .btn { min-height: 3.143rem; }
+  .acc-section { align-items: stretch; }
+  .acc-section > .btn, .acc-card .btns .btn { width: 100%; box-sizing: border-box; }
+  .acc-switch { min-height: 3.143rem; }
+  .acc-mini td.end { width: auto; text-align: left; }
+  .acc-mini td.end .btn { width: 100%; }
+}
+
+/* Forced colours: the circles and the bars are drawn in system colours, and a switch keeps its outline. */
+@media (forced-colors: active) {
+  .dk .acc-bar { background: GrayText; forced-color-adjust: none; }
+  .dk .acc-avatar { forced-color-adjust: none; background: ButtonFace; color: ButtonText; border: 1px solid ButtonText; }
+  .dk .acc-chip { border-color: CanvasText; }
+  .dk .acc-switch { border: 1px solid ButtonText; }
+  .dk .acc-switch:focus-visible { outline-color: Highlight; }
+  .dk .acc-switch .sw { border-color: ButtonText; forced-color-adjust: none; background: ButtonFace; }
+  .dk .acc-switch .sw.on { background: Highlight; border-color: Highlight; }
+  .dk .acc-switch .sw.on::after { background: HighlightText; }
+  .dk .acc-note { border-color: CanvasText; }
+}

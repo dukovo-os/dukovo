@@ -14,15 +14,15 @@ use crate::proc::{self, Process};
 use crate::util::{self, Fail};
 
 /// A login session.
-struct Session {
-    leader: Process,
-    terminal: String,
+pub(crate) struct Session {
+    pub(crate) leader: Process,
+    pub(crate) terminal: String,
     /// The name of the user its leader acts for.
-    user: String,
+    pub(crate) user: String,
 }
 
 /// The sessions with a terminal, by terminal.
-fn sessions(processes: &[Process]) -> Vec<Session> {
+pub(crate) fn sessions(processes: &[Process]) -> Vec<Session> {
     let mut sessions: Vec<Session> = processes
         .iter()
         .filter(|p| p.number == p.session && !p.zombie())
@@ -43,7 +43,7 @@ pub fn boot_seconds() -> i64 {
 }
 
 /// When a session began, in seconds since the epoch.
-fn login_seconds(session: &Session, boot: i64) -> i64 {
+pub(crate) fn login_seconds(session: &Session, boot: i64) -> i64 {
     boot + (session.leader.started_ns / 1_000_000_000) as i64
 }
 

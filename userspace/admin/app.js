@@ -20,6 +20,8 @@ const ENDED = {
   idle: 'no console tab was open for a while.',
   restarted: 'the console restarted.',
   worker: 'the process that works for your session stopped.',
+  'by-administrator': 'an administrator ended this session.',
+  'by-you': 'you ended this session from another browser.',
 };
 
 let session = null;

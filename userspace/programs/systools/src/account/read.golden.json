@@ -1,0 +1,50 @@
+{
+  "format": 1,
+  "account": {
+    "name": "owner",
+    "uid": 1000,
+    "full_name": "Ann Owner",
+    "home": "/users/owner",
+    "shell": "/system/commands/nukesh",
+    "admin": true,
+    "console": true,
+    "groups": ["admins", "owner", "photos"],
+    "disabled": false,
+    "password": "set",
+    "since_ms": 1760900000000,
+    "password_changed_ms": null
+  },
+  "keys": [
+    {
+      "type": "ssh-ed25519",
+      "comment": "laptop",
+      "fingerprint": "SHA256:ZkAslGjFiUHdGf/WUL8rQvkib4PTvQatUV0OUQSncCA",
+      "line": 2,
+      "options": false
+    },
+    {
+      "type": "ssh-ed25519",
+      "comment": "a job",
+      "fingerprint": "SHA256:asg/xZ452L6G/hFZ0PppVISqUWAw+bRyZZDKa3jkr10",
+      "line": 3,
+      "options": true
+    }
+  ],
+  "steps": {
+    "app": true,
+    "passkeys": [{"name": "Security key", "id": "AbC-1"}],
+    "recovery_left": 8,
+    "trusted_browsers": 2
+  },
+  "tokens": [{"name": "ansible", "scopes": ["*"], "until_ms": 1765600000000}],
+  "sessions": [
+    {
+      "id": "4123-1763110000",
+      "kind": "ssh",
+      "terminal": "pts/3",
+      "from": "10.8.0.2",
+      "since_ms": 1763110000000,
+      "processes": 5
+    }
+  ]
+}

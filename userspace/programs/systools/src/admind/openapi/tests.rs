@@ -111,7 +111,7 @@ fn every_route_of_the_table_is_an_operation_named_for_it_and_there_are_no_others
             assert!(operation["summary"].as_str().is_some_and(|text| !text.is_empty()));
             assert_eq!(operation["tags"], json!([tag(entry.access)]), "{}", entry.path);
             // The address's own parts are its path's parameters: a
-            // number, or a trial's name. Only the follow of the log takes
+            // number, or a trial's, an account's or a session's name. Only the follow of the log takes
             // a query, its filters.
             let parameters = operation["parameters"].as_array().cloned().unwrap_or_default();
             let place = |place: &str| -> Vec<&Value> {
@@ -121,7 +121,9 @@ fn every_route_of_the_table_is_an_operation_named_for_it_and_there_are_no_others
                 place("path").iter().map(|parameter| parameter["name"].as_str().unwrap()).collect();
             assert_eq!(path, parameters_of(entry.path).collect::<Vec<_>>(), "{}", entry.path);
             for parameter in place("path") {
-                let kind = if parameter["name"] == "trial" { "string" } else { "integer" };
+                let text = matches!(parameter["name"].as_str(), Some("trial" | "name"))
+                    || entry.path.contains("/sessions/");
+                let kind = if text { "string" } else { "integer" };
                 assert_eq!(parameter["schema"]["type"], kind, "{}", entry.path);
             }
             assert_eq!(place("query").is_empty(), entry.route != Route::Follow, "{}", entry.path);
@@ -295,7 +297,7 @@ fn every_error_status_lists_ids_that_have_that_status() {
             for (method, operation) in item.as_object().unwrap() {
                 let own: Vec<&str> = actions
                     .iter()
-                    .find(|action| action.path() == path)
+                    .find(|action| action.path() == path && action.posts() == (method == "post"))
                     .map_or_default(|action| action.errors().to_vec());
                 let responses = operation["responses"].as_object().unwrap();
                 // The Terminal's socket works when the connection is handed over.

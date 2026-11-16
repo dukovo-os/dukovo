@@ -1,0 +1,238 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# What `ssh-server set` makes of sshd_config(5) (ssh-server(8)): the
+# Security page's model asks the same of a change that narrows who may
+# sign in, and edit.rs's `edited` makes the text, so that the page and the
+# command say the same.
+#
+# A case is a block of lines, the blocks apart by a blank line. A line
+# that starts with `#` is a comment of this file. In a case:
+#
+#   `< TEXT`   a line of the file before the change; a bare `<` is an
+#              empty line, and a case with none starts from an empty file
+#   `+ WORDS`  the change, as the words after `ssh-server set`
+#   `> TEXT`   a line of the file after it, as `<` has them
+#   `=`        the file is as it was
+#   `-`        the file is empty
+#   `! WHY`    the change is refused: `mistake LINE` when the file does not
+#              read, `account NAME` or `group NAME` for a name the machine
+#              lacks, `nobody` when neither passwords nor keys would sign
+#              anyone in
+#   `\ no newline at end of file`
+#              after a `<` or `>` line: that line has no end
+#
+# The accounts and groups the machine has, for every case after them:
+accounts: alice bob carol root
+groups: admins staff
+
+# A keyword the file lacks is added at its end; the default file is all
+# comments, and the keys alone sign in.
+< # SSH: keys sign in, passwords do not.
+< # PasswordAuthentication no
++ passwords yes
+> # SSH: keys sign in, passwords do not.
+> # PasswordAuthentication no
+> PasswordAuthentication yes
+
+# A file with nothing in it gets the line alone.
++ passwords yes
+> PasswordAuthentication yes
+
+# What the file says already is left alone, including the defaults.
+< # nothing here
++ passwords no keys yes
+=
+
+< PasswordAuthentication yes
++ passwords yes
+=
+
+# A keyword is set on its first line, in its own spelling and indent, and
+# a later line of it, which sshd passes over, stays.
+< # first
+<   passwordauthentication=yes
+< PasswordAuthentication yes
++ passwords no
+> # first
+>   passwordauthentication no
+> PasswordAuthentication yes
+
+# A flag whose default is meant explicitly is written as asked.
+< PubkeyAuthentication no
+< PasswordAuthentication yes
++ keys yes
+> PubkeyAuthentication yes
+> PasswordAuthentication yes
+
+# The changed line loses its comment, which spoke of the old value.
+< PasswordAuthentication yes # until the keys are in
++ passwords no
+> PasswordAuthentication no
+
+# Other lines, comments and blank lines stay byte for byte.
+<
+< # Who is denied is not this command's.
+< DenyUsers mallory *.guest
+<   AllowTcpForwarding remote
+< GatewayPorts = no
+<
+< PasswordAuthentication yes
++ passwords no
+>
+> # Who is denied is not this command's.
+> DenyUsers mallory *.guest
+>   AllowTcpForwarding remote
+> GatewayPorts = no
+>
+> PasswordAuthentication no
+
+# A comment that looks like a line is not one.
+< # AllowUsers carol
++ allow-users alice bob
+> # AllowUsers carol
+> AllowUsers alice bob
+
+# A last line with no end gets one when a line follows it.
+< # kept
+\ no newline at end of file
++ passwords yes
+> # kept
+> PasswordAuthentication yes
+
+# A changed last line keeps having none.
+< PasswordAuthentication yes
+\ no newline at end of file
++ passwords no
+> PasswordAuthentication no
+\ no newline at end of file
+
+# A list is set on its first line, and its later lines go: they add up.
+< AllowUsers carol
+< # between
+< AllowUsers = "root" bob
++ allow-users alice
+> AllowUsers alice
+> # between
+
+< allowusers carol
++ allow-users bob alice
+> allowusers bob alice
+
+# A list that adds up to what is asked is left as it is.
+< AllowUsers alice
+< AllowUsers bob
++ allow-users alice bob
+=
+
+# The same names in another order are another list, written as asked.
+< AllowUsers bob alice
++ allow-users alice bob
+> AllowUsers alice bob
+
+# Everyone removes the keyword, from every line.
+< # before
+< AllowUsers alice
+< PasswordAuthentication yes
+< AllowUsers bob
++ allow-users everyone
+> # before
+> PasswordAuthentication yes
+
+< AllowUsers alice
++ allow-users everyone
+-
+
+< # nothing
++ allow-users everyone allow-groups everyone
+=
+
+< AllowGroups staff
++ allow-groups admins staff
+> AllowGroups admins staff
+
+< AllowGroups staff
+< AllowUsers alice
++ allow-groups everyone allow-users bob carol
+> AllowUsers bob carol
+
+# A change of everything at once, added in the order it is given.
+< # nothing
++ passwords yes keys no allow-users alice allow-groups staff
+> # nothing
+> PasswordAuthentication yes
+> PubkeyAuthentication no
+> AllowUsers alice
+> AllowGroups staff
+
+# Lists the file has from the person are kept: denials, and what is
+# allowed is the page's to change.
+< DenyGroups staff
++ allow-groups admins
+> DenyGroups staff
+> AllowGroups admins
+
+# Neither a password nor a key would sign anyone in.
+< PasswordAuthentication yes
++ passwords no keys no
+! nobody
+
+< # nothing
++ passwords no keys no
+! nobody
+
+< PasswordAuthentication no
++ keys no
+! nobody
+
+< PubkeyAuthentication no
++ allow-users alice
+! nobody
+
+< PubkeyAuthentication no
++ passwords yes allow-users alice
+> PubkeyAuthentication no
+> PasswordAuthentication yes
+> AllowUsers alice
+
+# A name the machine lacks is refused by name, accounts before groups.
+< # nothing
++ allow-users alice mallory
+! account mallory
+
+< # nothing
++ allow-groups wheel
+! group wheel
+
+< # nothing
++ allow-users nobody-here allow-groups wheel
+! account nobody-here
+
+< # nothing
++ allow-users Alice
+! account Alice
+
+< # nothing
++ allow-users *
+! account *
+
+# A file with a mistake is refused, whatever is asked, with its line.
+< # first
+< Port 2222
++ passwords yes
+! mistake 2
+
+< PasswordAuthentication maybe
++ passwords yes
+! mistake 1
+
+< AllowUsers alice@192.168.1.5
++ allow-users bob
+! mistake 1
+
+< # fine
+< AllowTcpForwarding remote
+< X11Forwarding yes
+< Match user alice
++ keys no
+! mistake 3

@@ -45,6 +45,14 @@ test('the network\'s and the firewall\'s trials have the words of design 8.6 and
   assert.equal(firewall.severity, 'warn');
 });
 
+test('SSH\'s and the console\'s reach trials lead to the Security page', () => {
+  const [ssh, reach] = trialNeeds({ trials: [trial('ssh', 290_000), trial('console', 120_000)] }, NOW, utcTime);
+  assert.deepEqual([ssh.title, ssh.detail, ssh.href, ssh.icon], [
+    'SSH settings are being tried', 'They are undone at 10:16 AM unless they are kept.', '/security', 'security',
+  ]);
+  assert.deepEqual([reach.title, reach.href, reach.icon], ['Settings of who may reach the console are being tried', '/security', 'security']);
+});
+
 test('the time is the person\'s own, and a time on another day says the day', () => {
   const prague = makeTime('Europe/Prague', () => NOW * 1000);
   assert.equal(trialNeeds({ trials: [trial('network', 60_000)] }, NOW, prague)[0].detail, 'They are undone at 11:13 AM unless they are kept.');

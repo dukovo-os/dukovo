@@ -29,12 +29,17 @@
 //! 1793440100 in alice pts/0 - 61
 //! 1793440200 failed bob pts/1 -
 //! 1793440300 out alice pts/0 - 61
+//! 1793440350 in bob pts/2 192.168.1.25 70 ssh
 //! 1793440400 down
 //! ```
 //!
 //! `in`, `out` and `failed` name the terminal and where from: `-` at the
 //! computer itself, a host's address once SSH comes (13c). `in` and `out`
 //! end with the number of the session's first process, which pairs them.
+//! An `in` line then says how the person came, where that is known: `ssh`,
+//! or `console` for the web console and its terminals (ADR 0517), which
+//! a terminal's name and an address alone do not tell from SSH. A line
+//! without it is one written at the machine itself, or before it was kept.
 
 use std::fmt::Write as _;
 
@@ -111,6 +116,9 @@ pub struct Seat {
     pub from: String,
     /// The number of the session's first process.
     pub session: u32,
+    /// How the person came: `ssh`, `console`, or empty where it is not
+    /// known, at the machine itself and on an `out` line.
+    pub via: String,
 }
 
 /// A record: when, and what happened.
@@ -149,8 +157,13 @@ impl Record {
             Event::Down => format!("{time} down\n"),
             Event::In(seat) | Event::Out(seat) => {
                 let kind = if matches!(self.event, Event::In(_)) { "in" } else { "out" };
+                let via = if seat.via.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", field(&seat.via))
+                };
                 format!(
-                    "{time} {kind} {} {} {} {}\n",
+                    "{time} {kind} {} {} {} {}{via}\n",
                     field(&seat.name),
                     field(&seat.terminal),
                     field(&seat.from),
@@ -172,12 +185,13 @@ impl Record {
         let event = match (kind, rest.as_slice()) {
             ("boot", [release]) => Event::Boot { release: unfield(release) },
             ("down", []) => Event::Down,
-            ("in" | "out", [name, terminal, from, session]) => {
+            ("in" | "out", [name, terminal, from, session, via @ ..]) if via.len() <= 1 => {
                 let seat = Seat {
                     name: unfield(name),
                     terminal: unfield(terminal),
                     from: unfield(from),
                     session: session.parse().ok()?,
+                    via: via.first().map_or_else(String::new, |via| unfield(via)),
                 };
                 if kind == "in" { Event::In(seat) } else { Event::Out(seat) }
             }
@@ -426,6 +440,9 @@ pub struct Place {
     pub terminal: String,
     /// Where from, empty at the computer itself.
     pub from: String,
+    /// How the person came, as the sign-in's line says: `ssh`, `console`
+    /// or empty; empty for a wrong password.
+    pub via: String,
 }
 
 /// An account's newest sign-in, and the wrong passwords typed for it
@@ -451,6 +468,7 @@ pub fn latest(records: &[Record]) -> Latest {
                     time: record.time,
                     terminal: seat.terminal.clone(),
                     from: seat.from.clone(),
+                    via: seat.via.clone(),
                 });
                 latest.failed = 0;
                 latest.last_failed = None;
@@ -463,6 +481,7 @@ pub fn latest(records: &[Record]) -> Latest {
                     time: record.time,
                     terminal: terminal.clone(),
                     from: from.clone(),
+                    via: String::new(),
                 });
             }
             _ => {}
@@ -483,7 +502,13 @@ mod tests {
     use super::*;
 
     fn seat(name: &str, terminal: &str, session: u32) -> Seat {
-        Seat { name: name.into(), terminal: terminal.into(), from: String::new(), session }
+        Seat {
+            name: name.into(),
+            terminal: terminal.into(),
+            from: String::new(),
+            session,
+            via: String::new(),
+        }
     }
 
     fn records(text: &str) -> Vec<Record> {
@@ -515,6 +540,20 @@ mod tests {
              103 out alice pts/0 - 61\n104 down\n"
         );
         assert_eq!(parse(&text), all);
+        // How the person came ends an `in` line where it is known, and a
+        // line without it, as every line before it was kept, reads as one
+        // where it is not.
+        let over_ssh = Record {
+            time: 105,
+            event: Event::In(Seat {
+                from: "10.0.0.2".into(),
+                via: "ssh".into(),
+                ..seat("bob", "pts/2", 70)
+            }),
+        };
+        assert_eq!(over_ssh.line(), "105 in bob pts/2 10.0.0.2 70 ssh\n");
+        assert_eq!(parse(&over_ssh.line()), [over_ssh]);
+        assert_eq!(parse("106 in bob pts/2 10.0.0.2 70 ssh more\n"), []);
         // A name typed may hold anything: it stays one field of one line.
         let typed = Record {
             time: 5,
@@ -631,6 +670,7 @@ mod tests {
             time,
             terminal: terminal.into(),
             from: from.into(),
+            via: String::new(),
         };
         assert_eq!(
             latest,

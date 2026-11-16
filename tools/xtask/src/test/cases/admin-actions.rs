@@ -20,18 +20,22 @@
 //! ADM-123 on a machine that keeps no record of its starts. This guest has no Btrfs root and no
 //! backup place, so snapshots.browse is ADM-123 or BAK-105, backups.show
 //! is BAK-101 and move.plan, which finds no backups, ADM-123: admin-backups
-//! and admin-move call them with what they need. A change is ADM-122 for
-//! bob and ADM-106 for alice while her session is locked, and so is a read
-//! that runs as an administrator, whose route is a POST when it takes or
-//! answers with a secret (move.plan, backups.key). A change a person makes
-//! with their own rights, console.export, is theirs to make, locked or
-//! not: bob copies the settings into a folder of his own, and a second copy
+//! and admin-move call them with what they need, and accounts.show, which
+//! names an account this guest has not made, ACC-101: admin-accounts makes
+//! it. A change an administrator makes is ADM-122 for bob and ADM-106 for
+//! alice while her session is locked, and so is a read that runs as an
+//! administrator, whose route is a POST when it takes or answers with a
+//! secret (move.plan, backups.key). A change a person makes with their own
+//! rights is theirs to make, locked or not. console.export is called here:
+//! bob copies the settings into a folder of his own, and a second copy
 //! changes nothing; alice, locked, types its shown command in her pane,
-//! after which the route finds nothing new to copy, twice. A name that is
-//! no name in an address is ADM-125 with the field name, whoever asks, and
-//! says so before anyone is asked; a name with a slash is no address at
-//! all, ADM-116. A token made with admin token add, its password on
-//! standard input, shows in admin token list. A token for services:read
+//! after which the route finds nothing new to copy, twice. The others,
+//! such as Your account's, which would change bob's and alice's own name,
+//! password and keys, are for the boot test of their route to call. A name
+//! that is no name in an address is ADM-125 with the field name, whoever
+//! asks, and says so before anyone is asked; a name with a slash is no
+//! address at all, ADM-116. A token made with admin token add, its password
+//! on standard input, shows in admin token list. A token for services:read
 //! reads services, and is ADM-124 for certificates and for a change in
 //! services; a token for every scope changes; a token sent with a session's
 //! cookie is ADM-108; and once
@@ -85,7 +89,7 @@ const ROUTE: &str = "admin-actions";
 /// The test.
 pub const CASE: Case = Case {
     name: "admin-actions",
-    about: "Each action of the web console is called through its route and typed as its shown command, and both do the same: the list of GET /api/1/actions is the one admin actions --json prints; a read is 200 for bob and alice, or the machine's own refusal for one that names what this guest has not (snapshots.browse, backups.show, move.plan); a change or a read an administrator runs ADM-122 for bob and ADM-106 for alice locked, by POST for a change and for a read that takes or answers with a secret; console.export, which a person runs with their own rights, copies the settings for bob and for alice locked and changes nothing the second time; a name in an address that is none ADM-125 with its field; a token made with admin token add reads and changes within its scopes, is ADM-124 outside them, ADM-108 with a cookie and ADM-115 once removed; POST /api/1/show and admin show give the command that, typed in alice's elevated pane, prints what a read's route answers and leaves the example service as the route's change did; the undo of examples.undo puts a change back; console.reach changes admin.toml keeping its comments, has admind read it again, and puts back the same by its undo and by its shown command, and refuses a word that is no reach with ADM-125 and the field reach; admind's log has a line for each change and none for a read that worked; each change's answer says changed, which is true for a restart and a renewal, which compare nothing, and false for the second run of each change whose compares is true, from the state the first left, with changed nothing at the end of its log line; certificate.renew makes the machine's certificate anew, which the console then serves, with its fingerprint in the issue file (ADR 0514)",
+    about: "Each action of the web console is called through its route and typed as its shown command, and both do the same: the list of GET /api/1/actions is the one admin actions --json prints; a read is 200 for bob and alice, or the machine's own refusal for one that names what this guest has not (snapshots.browse, backups.show, move.plan, accounts.show); a change or a read an administrator runs ADM-122 for bob and ADM-106 for alice locked, by POST for a change and for a read that takes or answers with a secret; console.export, which a person runs with their own rights, copies the settings for bob and for alice locked and changes nothing the second time; a name in an address that is none ADM-125 with its field; a token made with admin token add reads and changes within its scopes, is ADM-124 outside them, ADM-108 with a cookie and ADM-115 once removed; POST /api/1/show and admin show give the command that, typed in alice's elevated pane, prints what a read's route answers and leaves the example service as the route's change did; the undo of examples.undo puts a change back; console.reach changes admin.toml keeping its comments, has admind read it again, and puts back the same by its undo and by its shown command, and refuses a word that is no reach with ADM-125 and the field reach; admind's log has a line for each change and none for a read that worked; each change's answer says changed, which is true for a restart and a renewal, which compare nothing, and false for the second run of each change whose compares is true, from the state the first left, with changed nothing at the end of its log line; certificate.renew makes the machine's certificate anew, which the console then serves, with its fingerprint in the issue file (ADR 0514)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, admind among them.
@@ -547,6 +551,8 @@ fn seen(document: &Value, name: &str) -> Result<Seen, String> {
 /// - `move.plan` reads `/volumes/LAB/dukovo-backup/lab-machine`, a folder
 ///   no disk of this guest has: the command ends with its own words,
 ///   ADM-123, 422. `admin-move` plans a move from a folder it has made.
+/// - `accounts.show` shows the account `lab-made`, which this guest has
+///   not made: ACC-101, 422. `admin-accounts` makes it, and shows it.
 fn may_refuse(id: &str) -> &'static [(u16, &'static str)] {
     match id {
         "checks.last" | "metrics.usage" | "metrics.around" | "service.usage" | "storage.usage" => {
@@ -557,6 +563,7 @@ fn may_refuse(id: &str) -> &'static [(u16, &'static str)] {
         "snapshots.browse" | "snapshots.browse-all" => &[(422, "ADM-123"), (422, "BAK-105")],
         "backups.show" | "backups.key" => &[(422, "BAK-101")],
         "move.plan" => &[(422, "ADM-123")],
+        "accounts.show" => &[(422, "ACC-101")],
         _ => &[],
     }
 }
@@ -624,14 +631,14 @@ fn projection(id: &str, answer: &Value) -> Value {
             .iter()
             .all(|one| one["series"].is_string() && one["points"].is_array()))),
         // What these say moves from one moment to the next: counters,
-        // connections, log lines, starts and times. Their shape holds.
-        "firewall.dropped" | "firewall.status" | "lab.log" | "logs.read" | "logs.read-all"
-        | "metrics.around" | "network.connections" | "network.show" | "reliability.alerts"
-        | "reliability.dumps" | "reliability.failed" | "reliability.start"
-        | "reliability.starts" | "service.status" | "service.timers" | "service.usage"
-        | "storage.health" | "storage.log" | "storage.show" | "storage.usage" => {
-            shape(answer)
-        }
+        // connections, log lines, starts, times, sessions and sign-ins. Their
+        // shape holds.
+        "account.show" | "accounts.last" | "accounts.show" | "firewall.dropped"
+        | "firewall.status" | "lab.log" | "logs.read" | "logs.read-all" | "metrics.around"
+        | "network.connections" | "network.show" | "reliability.alerts" | "reliability.dumps"
+        | "reliability.failed" | "reliability.start" | "reliability.starts" | "service.status"
+        | "service.timers" | "service.usage" | "storage.health" | "storage.log" | "storage.show"
+        | "storage.usage" => shape(answer),
         _ => answer.clone(),
     }
 }
@@ -1505,6 +1512,13 @@ mod tests {
         );
         assert_ne!(shape(&at(4, json!([]))), shape(&json!({"pid": 4})));
         assert_eq!(projection("service.status", &at(4, json!([]))), shape(&at(5, json!([1]))));
+        // The sessions of an account and its sign-ins move; its list does not.
+        let sessions = |processes: u64| json!({"account": {"name": "a"}, "sessions": [processes]});
+        for id in ["account.show", "accounts.show"] {
+            assert_eq!(projection(id, &sessions(5)), projection(id, &sessions(7)), "{id}");
+        }
+        assert_eq!(projection("accounts.last", &json!([{"failed": 0}])), json!("array"));
+        assert_ne!(projection("accounts.list", &sessions(5)), projection("accounts.list", &sessions(7)));
     }
 
     #[test]
@@ -1637,8 +1651,23 @@ mod tests {
         let said = read_answer(reply(422, &refusal("ADM-123")), "move.plan", "alice").unwrap();
         assert_eq!(said, None);
         assert!(read_answer(reply(422, &refusal("BAK-101")), "move.plan", "alice").is_err());
+        // An account there is none of is ACC-101, and nothing else is told.
+        let said = read_answer(reply(422, &refusal("ACC-101")), "accounts.show", "alice").unwrap();
+        assert_eq!(said, None);
+        assert!(read_answer(reply(422, &refusal("ADM-123")), "accounts.show", "alice").is_err());
+        assert!(read_answer(reply(422, &refusal("ACC-101")), "account.show", "bob").is_err());
         // Any other read answers 200 or fails the test, whatever it says.
-        for id in ["service.list", "console.about", "console.notices", "metrics.now", "move.find"] {
+        for id in [
+            "service.list",
+            "console.about",
+            "console.notices",
+            "metrics.now",
+            "move.find",
+            "accounts.list",
+            "accounts.list-all",
+            "accounts.last",
+            "account.show",
+        ] {
             assert!(may_refuse(id).is_empty(), "{id}");
             assert!(read_answer(reply(501, &refusal("ADM-129")), id, "bob").is_err(), "{id}");
             assert!(read_answer(reply(403, &refusal("ADM-124")), id, "bob").is_err(), "{id}");

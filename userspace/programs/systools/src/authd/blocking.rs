@@ -61,7 +61,7 @@ pub(crate) const SETTINGS: &str = "/system/settings/blocking.toml";
 /// came one after another, each within a day of the end of the one
 /// before, this one counted. A block is kept for a day after it ends, so
 /// that the next one lasts longer.
-pub(super) const STATE: &str = "/system/state/authd/blocked";
+pub(crate) const STATE: &str = "/system/state/authd/blocked";
 
 /// The services whose ports a block closes: those people sign in to.
 const SIGN_IN_SERVICES: [&str; 3] = ["sshd", "smbd", "admind"];

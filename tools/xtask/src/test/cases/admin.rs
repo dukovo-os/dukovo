@@ -54,13 +54,13 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
 use super::super::console_client::{
-    ALICE_PASSWORD, Browser, CSRF_HEADER, Console, ORIGIN, PORT, Reply, SESSION_COOKIE, elevated,
-    http_date, parse_cookie, parse_reply,
+    ALICE_PASSWORD, App, Browser, CSRF_HEADER, Console, ORIGIN, PORT, Reply, SESSION_COOKIE,
+    elevated, parse_cookie, parse_reply, secret_of, wrong_code,
 };
 use super::super::*;
 
@@ -557,14 +557,6 @@ fn foreign_requests(console: &Console, alice: &mut Browser) -> Result<(), String
     Ok(())
 }
 
-/// What the host keeps of the authenticator app it made up: its secret, and
-/// the last step of its codes that alice used, which authd refuses to
-/// take again.
-struct App {
-    secret: Vec<u8>,
-    last: Option<u64>,
-}
-
 /// An authenticator app and recovery codes: alice begins one with her
 /// password and confirms it with its code, and the console asks for the
 /// step at the next sign-in. A wrong code is refused. The right one signs
@@ -927,37 +919,6 @@ fn hold_every_place(console: &Console) -> Result<Held, String> {
 }
 
 impl Console {
-    /// Unix seconds by the guest's clock, which the console's own `Date`
-    /// header gives: the app's codes follow the clock of the machine that
-    /// checks them, which need not be the host's to the second.
-    fn guest_unix(&self) -> Result<u64, String> {
-        let reply = self.send("GET", "/api/1/health", &[], None)?;
-        match reply.header("date").and_then(http_date) {
-            Some(seconds) => Ok(seconds),
-            None => {
-                Ok(SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs()))
-            }
-        }
-    }
-
-    /// The app's next code, which authd has not taken: the current step's,
-    /// or the next one's, which it takes too for a clock a little off. When
-    /// that is a step ahead of what it takes, this waits for the guest's
-    /// clock to come to it.
-    fn next_code(&self, app: &mut App) -> Result<String, String> {
-        let deadline = Instant::now() + Duration::from_secs(90);
-        loop {
-            if let Some(step) = step_to_give(self.guest_unix()?, app.last) {
-                app.last = Some(step);
-                return Ok(app_code(&app.secret, step));
-            }
-            if Instant::now() >= deadline {
-                return Err("the guest's clock did not come to the app's next step in 90 s".into());
-            }
-            std::thread::sleep(Duration::from_secs(1));
-        }
-    }
-
     /// TLS 1.1 is refused by the console itself: curl, allowed nothing
     /// above 1.1 and the old ciphers a library would refuse to offer, ends
     /// with an alert the server sent, and not with its own refusal to try.
@@ -1009,132 +970,6 @@ impl Console {
 // Helpers that read and compute, with no machine to ask: the unit tests
 // below run them alone.
 
-/// SHA-1 (FIPS 180-4), which RFC 6238's codes are made with by default and
-/// authd checks them with.
-fn sha1(data: &[u8]) -> [u8; 20] {
-    let mut state: [u32; 5] = [0x6745_2301, 0xEFCD_AB89, 0x98BA_DCFE, 0x1032_5476, 0xC3D2_E1F0];
-    let mut padded = data.to_vec();
-    padded.push(0x80);
-    while padded.len() % 64 != 56 {
-        padded.push(0);
-    }
-    padded.extend_from_slice(&(data.len() as u64 * 8).to_be_bytes());
-    let (blocks, _) = padded.as_chunks::<64>();
-    for block in blocks {
-        let mut words = [0u32; 80];
-        for (word, bytes) in words.iter_mut().zip(block.as_chunks::<4>().0) {
-            *word = u32::from_be_bytes(*bytes);
-        }
-        for at in 16..80 {
-            words[at] =
-                (words[at - 3] ^ words[at - 8] ^ words[at - 14] ^ words[at - 16]).rotate_left(1);
-        }
-        let [mut a, mut b, mut c, mut d, mut e] = state;
-        for (at, word) in words.into_iter().enumerate() {
-            let (mix, constant) = match at {
-                0..=19 => ((b & c) | (!b & d), 0x5A82_7999u32),
-                20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
-                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
-                _ => (b ^ c ^ d, 0xCA62_C1D6),
-            };
-            let next = a
-                .rotate_left(5)
-                .wrapping_add(mix)
-                .wrapping_add(e)
-                .wrapping_add(constant)
-                .wrapping_add(word);
-            (a, b, c, d, e) = (next, a, b.rotate_left(30), c, d);
-        }
-        for (kept, new) in state.iter_mut().zip([a, b, c, d, e]) {
-            *kept = kept.wrapping_add(new);
-        }
-    }
-    let mut hash = [0u8; 20];
-    for (bytes, word) in hash.as_chunks_mut::<4>().0.iter_mut().zip(state) {
-        *bytes = word.to_be_bytes();
-    }
-    hash
-}
-
-/// HMAC-SHA1 (RFC 2104).
-fn hmac_sha1(key: &[u8], data: &[u8]) -> [u8; 20] {
-    let mut block = [0u8; 64];
-    if key.len() > block.len() {
-        block[..20].copy_from_slice(&sha1(key));
-    } else {
-        block[..key.len()].copy_from_slice(key);
-    }
-    let mut inner: Vec<u8> = block.iter().map(|byte| byte ^ 0x36).collect();
-    inner.extend_from_slice(data);
-    let mut outer: Vec<u8> = block.iter().map(|byte| byte ^ 0x5c).collect();
-    outer.extend_from_slice(&sha1(&inner));
-    sha1(&outer)
-}
-
-/// The app's six digits for 30-second `step` since 1970 (RFC 6238 with
-/// HMAC-SHA1, truncated as RFC 4226 says).
-fn app_code(secret: &[u8], step: u64) -> String {
-    let mac = hmac_sha1(secret, &step.to_be_bytes());
-    let at = usize::from(mac[19] & 0x0f);
-    let number = u32::from_be_bytes([mac[at], mac[at + 1], mac[at + 2], mac[at + 3]]) & 0x7fff_ffff;
-    format!("{:06}", number % 1_000_000)
-}
-
-/// The step of the app's code to give at guest time `now` when `after` is
-/// the last step authd took a code for: this one, or the next when this
-/// was taken already, which authd takes as well for a clock a little off.
-/// `None` when even that is not one it takes yet: the clock has to come to
-/// it.
-fn step_to_give(now: u64, after: Option<u64>) -> Option<u64> {
-    let current = now / 30;
-    let step = after.map_or(current, |after| current.max(after + 1));
-    (step <= current + 1).then_some(step)
-}
-
-/// Six digits that are none of the app's codes for the steps around `now`.
-fn wrong_code(secret: &[u8], now: u64) -> String {
-    let current = now / 30;
-    let right: Vec<String> =
-        (current.saturating_sub(2)..=current + 2).map(|step| app_code(secret, step)).collect();
-    (1u32..)
-        .map(|n| format!("{:06}", n * 123_457 % 1_000_000))
-        .find(|code| !right.contains(code))
-        .unwrap_or_default()
-}
-
-/// The bytes of RFC 4648's base32 `text`, with or without padding.
-fn from_base32(text: &str) -> Option<Vec<u8>> {
-    let mut bytes = Vec::new();
-    let (mut buffer, mut bits) = (0u32, 0u32);
-    for letter in text.trim_end_matches('=').bytes() {
-        let value = match letter {
-            b'A'..=b'Z' => letter - b'A',
-            b'2'..=b'7' => letter - b'2' + 26,
-            _ => return None,
-        };
-        buffer = buffer << 5 | u32::from(value);
-        bits += 5;
-        if bits >= 8 {
-            bits -= 8;
-            bytes.push((buffer >> bits) as u8);
-            buffer &= (1 << bits) - 1;
-        }
-    }
-    Some(bytes)
-}
-
-/// The secret in an `otpauth://` URI.
-fn secret_of(uri: &str) -> Result<Vec<u8>, String> {
-    let query = uri.split_once('?').map_or("", |(_, query)| query);
-    let text = query
-        .split('&')
-        .find_map(|pair| pair.strip_prefix("secret="))
-        .ok_or_else(|| format!("the app's URI {uri:?} has no secret"))?;
-    from_base32(text)
-        .filter(|secret| secret.len() >= 10)
-        .ok_or_else(|| format!("the secret {text:?} does not read"))
-}
-
 /// Whether `text` is a recovery code: four groups of four letters and
 /// digits of base32, as `ABCD-EFGH-IJKL-MNOP`.
 fn is_recovery_code(text: &str) -> bool {
@@ -1167,109 +1002,6 @@ fn fingerprint_on_screen(screen: &[String]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().fold(String::new(), |text, byte| text + &format!("{byte:02x}"))
-    }
-
-    #[test]
-    fn sha1_has_the_standard_answers_across_block_ends() {
-        assert_eq!(hex(&sha1(b"")), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
-        assert_eq!(hex(&sha1(b"abc")), "a9993e364706816aba3e25717850c26c9cd0d89d");
-        let two_blocks = b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
-        assert_eq!(hex(&sha1(two_blocks)), "84983e441c3bd26ebaae4aa1f95129e5e54670f1");
-        // 55, 56 and 64 bytes: where the padding and the length change blocks.
-        assert_eq!(hex(&sha1(&[b'a'; 55])), "c1c8bbdc22796e28c0e15163d20899b65621d65a");
-        assert_eq!(hex(&sha1(&[b'a'; 56])), "c2db330f6083854c99d4b5bfb6e8f29f201be699");
-        assert_eq!(hex(&sha1(&[b'a'; 64])), "0098ba824b5c16427bd7a1122a5a442a25ec644d");
-        assert_eq!(hex(&sha1(&vec![b'a'; 1_000_000])), "34aa973cd4c4daa4f61eeb2bdbad27316534016f");
-    }
-
-    #[test]
-    fn hmac_sha1_has_the_answers_of_rfc_2202() {
-        assert_eq!(
-            hex(&hmac_sha1(&[0x0b; 20], b"Hi There")),
-            "b617318655057264e28bc0b6fb378c8ef146be00"
-        );
-        assert_eq!(
-            hex(&hmac_sha1(b"Jefe", b"what do ya want for nothing?")),
-            "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79"
-        );
-        // A key longer than a block is hashed first.
-        assert_eq!(
-            hex(&hmac_sha1(&[0xaa; 80], b"Test Using Larger Than Block-Size Key - Hash Key First")),
-            "aa4ae5e15272d00e95705637ce8a3b55ed402112"
-        );
-    }
-
-    #[test]
-    fn the_apps_codes_are_those_of_rfc_6238() {
-        // The RFC's SHA-1 secret, and its 8-digit codes cut to the last 6.
-        let secret = b"12345678901234567890";
-        for (time, code) in [
-            (59u64, "287082"),
-            (1_111_111_109, "081804"),
-            (1_111_111_111, "050471"),
-            (1_234_567_890, "005924"),
-            (2_000_000_000, "279037"),
-            (20_000_000_000, "353130"),
-        ] {
-            assert_eq!(app_code(secret, time / 30), code, "at {time}");
-        }
-    }
-
-    #[test]
-    fn a_code_is_given_for_this_step_or_the_next_and_otherwise_waits() {
-        // 1000 s is in step 33, which runs from 990 to 1019.
-        assert_eq!(step_to_give(1000, None), Some(33));
-        assert_eq!(step_to_give(1000, Some(10)), Some(33));
-        assert_eq!(step_to_give(1000, Some(32)), Some(33));
-        // Taken already: the next, which authd takes for a clock a little off.
-        assert_eq!(step_to_give(1000, Some(33)), Some(34));
-        // The next was taken too: wait for the clock.
-        assert_eq!(step_to_give(1000, Some(34)), None);
-        assert_eq!(step_to_give(1020, Some(34)), Some(35));
-    }
-
-    #[test]
-    fn a_wrong_code_is_none_of_the_codes_around_now() {
-        let secret = b"12345678901234567890";
-        for now in [0, 59, 1_111_111_109, 2_000_000_000] {
-            let wrong = wrong_code(secret, now);
-            assert_eq!(wrong.len(), 6);
-            for step in (now / 30).saturating_sub(2)..=now / 30 + 2 {
-                assert_ne!(wrong, app_code(secret, step), "now {now}, step {step}");
-            }
-        }
-    }
-
-    #[test]
-    fn base32_reads_the_rfc_4648_vectors_with_or_without_padding() {
-        for (text, want) in [
-            ("", ""),
-            ("MY======", "f"),
-            ("MZXQ====", "fo"),
-            ("MZXW6", "foo"),
-            ("MZXW6YQ=", "foob"),
-            ("MZXW6YTB", "fooba"),
-            ("MZXW6YTBOI======", "foobar"),
-        ] {
-            assert_eq!(from_base32(text).as_deref(), Some(want.as_bytes()), "{text}");
-        }
-        assert_eq!(from_base32("mzxw6"), None);
-        assert_eq!(from_base32("MZXW1"), None);
-    }
-
-    #[test]
-    fn the_secret_is_read_from_the_uri_as_authd_writes_it() {
-        let uri = "otpauth://totp/Dukovo%20(duke-nas):alice?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\
-                   &issuer=Dukovo%20(duke-nas)&algorithm=SHA1&digits=6&period=30";
-        assert_eq!(secret_of(uri).unwrap(), b"12345678901234567890");
-        assert!(secret_of("otpauth://totp/x?issuer=y").is_err());
-        assert!(secret_of("otpauth://totp/x?secret=!!!").is_err());
-        // Too short to be an app's secret.
-        assert!(secret_of("otpauth://totp/x?secret=MZXW6").is_err());
-    }
 
     #[test]
     fn recovery_codes_are_four_groups_of_base32() {

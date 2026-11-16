@@ -22,13 +22,18 @@
 //! (ADR 0516). It sets `reach` in admin.toml(5) through [`settings_edit`],
 //! so that every comment in the file stays, and has Spark reload admind,
 //! through the code `service admind reload` runs, so that the console
-//! answers whom the file says at once. It is root's, as the file is.
+//! answers whom the file says at once. It is root's, as the file is. With
+//! `--try SECONDS` the change is Spark's trial `console` (ADR 0562): Spark
+//! keeps admin.toml as it was and puts it back, and reloads admind, unless
+//! `admin keep` comes in time; `admin undo` puts it back now. While the
+//! trial runs, a change of admin.toml is refused (ADM-138), since the undo
+//! would put back the file as it was before both.
 //!
 //! When it misbehaves, `admin fingerprint` says whether admind has written
 //! its address, `log admind` and `log --audit` say what the console and
 //! authd did, and the `admin-actions` boot test covers it.
 
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::Path;
 
@@ -40,6 +45,7 @@ use toml_edit::DocumentMut;
 
 use crate::account::{self, Input};
 use crate::admin_about;
+use crate::admin_errors;
 use crate::admin_export;
 use crate::admin_put_back;
 use crate::admin_settings::{self, Reach, Settings};
@@ -48,15 +54,20 @@ use crate::admind::actions::{self, REGISTRY, Registered, show};
 use crate::admind::errors::Failure;
 use crate::admind::scopes::Scopes;
 use crate::args::{Arg, Args};
-use crate::service;
-use crate::settings_edit::{self, Changed};
+use crate::settings_edit::{self, Changed, Unedited};
+use crate::trial::{self, ToUse, Tried};
 use crate::util::{self, Fail, fail, usage};
+use crate::{net_errors, service};
 
 /// What a mistake in the command line is told.
 const USAGE: &str = "usage: admin fingerprint\n       admin about [--json]\n       \
                      admin notices [--json]\n       admin actions [--json]\n       \
                      admin show ACTION [NAME=VALUE | NAME:=JSON]...\n       \
-                     admin reach [private | any]\n       \
+                     admin reach [private | any] [--try SECONDS]\n       \
+                     admin keep\n       admin undo\n       \
+                     admin settings [--json]\n       \
+                     admin sign-in [--second-step if-set|administrators|everyone]\n                     \
+                     [--session-hours N] [--idle-minutes N]\n       \
                      admin token add NAME --scope SCOPE... [--days N]\n       \
                      admin token list\n       admin token remove NAME\n       \
                      admin put-back ID\n       admin export DIR";
@@ -90,6 +101,9 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         Some("actions") => list_actions(args),
         Some("show") => show_action(args),
         Some("reach") => reach(args),
+        Some(verb @ ("keep" | "undo")) => end(verb, args),
+        Some("settings") => admin_settings::settings(args),
+        Some("sign-in") => admin_settings::sign_in(args),
         Some("token") => token(args),
         Some("export") => admin_export::main(args),
         Some("put-back") => admin_put_back::main(args),
@@ -291,49 +305,98 @@ fn require_root(user: u32) -> Result<(), Fail> {
     ))
 }
 
-/// Makes `reach` what the admin.toml at `path` says, with every comment of
-/// the file kept, and nothing written when it says it already. A file that
-/// admind would refuse is left as it is, and what is wrong with it told,
-/// for the person to mend first.
-fn set_reach(path: &Path, reach: Reach) -> Result<Reached, Fail> {
+/// The trial that tries a change of admin.toml (C5 9.2).
+const TRIAL: &str = "console";
+
+/// The text of the admin.toml at `path` with `reach` set, every comment of
+/// the file kept: none when the file says it already. A file that admind
+/// would refuse is left as it is, and what is wrong with it told, for the
+/// person to mend first.
+fn reach_text(path: &Path, reach: Reach) -> Result<Option<String>, Fail> {
     if Settings::read_at(path).map_err(fail)?.console.reach == reach {
-        return Ok(Reached::Already);
+        return Ok(None);
     }
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(fail(Changed::<String>::Read { path: path.into(), error }.to_string()));
+        }
+    };
     let edit = |document: &mut DocumentMut| {
         let console = settings_edit::table(document, "console")
             .ok_or_else(|| format!("{}: console is not a table", admin_settings::PATH))?;
         settings_edit::set_string(console, "reach", reach.word());
         Ok(())
     };
-    match settings_edit::change(path, SETTINGS_MODE, edit) {
+    settings_edit::edited(&text, edit).map_err(|unedited| match unedited {
+        // The edit's words name the file already.
+        Unedited::Edit(error) => fail(error),
+        Unedited::Parse { line, message } => {
+            fail(Changed::<String>::Parse { path: path.into(), line, message }.to_string())
+        }
+    })
+}
+
+/// Makes `reach` what the admin.toml at `path` says, as [`reach_text`]
+/// gives it, and nothing written when it says it already.
+fn set_reach(path: &Path, reach: Reach) -> Result<Reached, Fail> {
+    let Some(text) = reach_text(path, reach)? else { return Ok(Reached::Already) };
+    match settings_edit::write(path, text.as_bytes(), SETTINGS_MODE) {
         Ok(true) => Ok(Reached::Changed),
         Ok(false) => Ok(Reached::Already),
-        // The edit's words name the file already.
-        Err(Changed::Edit { error, .. }) => Err(fail(error)),
-        Err(other) => Err(fail(other.to_string())),
+        Err(error) => Err(fail(Changed::<String>::Write { path: path.into(), error }.to_string())),
     }
 }
 
-/// `admin reach [private | any]`: says whom the console answers, or makes
-/// it answer that, as root.
+/// ADM-138: a change of admin.toml, the console's reach or its sign-in
+/// rules, while the trial `console` runs, since Spark's undo would put
+/// back the file as it was before both. Spark that does not answer runs
+/// no trial: only a change that is tried (`seconds`) needs it.
+///
+/// # Errors
+///
+/// ADM-138, or Spark's silence for a change that is tried.
+pub(crate) fn console_not_tried(seconds: Option<u32>) -> Result<(), Fail> {
+    match trial::running(TRIAL) {
+        Ok(Some(_)) => Err(admin_errors::console_is_tried()),
+        Ok(None) => Ok(()),
+        Err(_) if seconds.is_none() => Ok(()),
+        Err(refused) => Err(refused),
+    }
+}
+
+/// `admin reach [private | any] [--try SECONDS]`: says whom the console
+/// answers, or makes it answer that, as root, at once or as the trial
+/// `console`.
 fn reach(args: &mut Args) -> Result<i32, Fail> {
-    let mut word = None;
+    let (mut word, mut seconds) = (None, None);
     while let Some(arg) = args.next()? {
         match arg {
             Arg::Operand(operand) if word.is_none() => {
                 word = Some(operand.to_string_lossy().into_owned());
+            }
+            Arg::Long(option) if option == "try" && seconds.is_none() => {
+                seconds = Some(trial::seconds(&args.text()?)?);
             }
             other => return Err(args.unknown(&other)),
         }
     }
     let path = Path::new(admin_settings::PATH);
     let Some(word) = word else {
+        if seconds.is_some() {
+            return Err(usage(format!("--try goes with a reach: private or any\n{USAGE}")));
+        }
         println!("{}", Settings::read_at(path).map_err(fail)?.console.reach.word());
         return Ok(0);
     };
     let wanted = Reach::parse(&word)
         .ok_or_else(|| usage(format!("{word} is not a reach: private or any")))?;
     require_root(util::own_user())?;
+    console_not_tried(seconds)?;
+    if let Some(seconds) = seconds {
+        return try_reach(path, wanted, seconds);
+    }
     match set_reach(path, wanted)? {
         Reached::Already => println!("The console's reach is already {word}."),
         Reached::Changed => {
@@ -349,6 +412,55 @@ fn reach(args: &mut Args) -> Result<i32, Fail> {
             })?;
             println!("The console's reach is now {word}: admind has read it again.");
         }
+    }
+    Ok(0)
+}
+
+/// `admin reach WORD --try SECONDS`: the new reach as the trial `console`,
+/// which Spark's reload of admind puts to use; admind's reload marks the
+/// moment, so that the page's check that its browser still reaches the
+/// console counts only a connection made after it (C5 9.2). A reload that
+/// fails is undone at once, and says so, with 1.
+fn try_reach(path: &Path, reach: Reach, seconds: u32) -> Result<i32, Fail> {
+    let word = reach.word();
+    let Some(text) = reach_text(path, reach)? else {
+        println!("The console's reach is already {word}: nothing is tried.");
+        return Ok(0);
+    };
+    let to_use = ToUse::Reload("admind");
+    match trial::try_text(TRIAL, path, text.as_bytes(), SETTINGS_MODE, seconds, to_use)? {
+        Tried::InUse => {
+            println!(
+                "The console's reach is now {word}: Spark undoes it at {} unless it is kept, \
+                 with `admin keep`.",
+                trial::undone_at(seconds)
+            );
+            Ok(0)
+        }
+        Tried::Undone { why, undone } => {
+            eprintln!("admin: {why}");
+            println!("{undone}");
+            Ok(1)
+        }
+    }
+}
+
+/// `admin keep` and `admin undo`: what the trial `console` comes to, as
+/// root, whom Spark's control socket is for.
+fn end(verb: &str, args: &mut Args) -> Result<i32, Fail> {
+    if let Some(arg) = args.next()? {
+        return Err(args.unknown(&arg));
+    }
+    if util::own_user() != 0 {
+        return Err(fail(format!(
+            "only root keeps or undoes a change of the console's reach: run it with elevate, as \
+             `elevate admin {verb}`"
+        )));
+    }
+    let words = trial::end(verb, TRIAL, || net_errors::nothing_is_tried("the console's settings"))?;
+    match verb {
+        "keep" => println!("Kept: the console's reach stays as it is."),
+        _ => println!("{words}"),
     }
     Ok(0)
 }
@@ -858,6 +970,31 @@ mod tests {
         for items in [&["reach", "Any"][..], &["reach", "private", "any"], &["reach", "--now"]] {
             assert!(main(&mut args(items)).unwrap_err().usage, "{items:?}");
         }
+        // A trial needs a reach, and Spark's 10 seconds to an hour.
+        let fail = main(&mut args(&["reach", "--try", "60"])).unwrap_err();
+        assert!(fail.usage && fail.message.starts_with("--try goes with a reach"), "{fail:?}");
+        for items in [
+            &["reach", "any", "--try", "5"][..],
+            &["reach", "any", "--try=3601"],
+            &["reach", "any", "--try"],
+            &["reach", "any", "--try", "60", "--try", "60"],
+            &["keep", "now"],
+            &["undo", "--all"],
+        ] {
+            assert!(main(&mut args(items)).unwrap_err().usage, "{items:?}");
+        }
+    }
+
+    #[test]
+    fn a_tried_reach_is_the_text_a_reach_set_at_once_writes() {
+        let folder = Folder::new("tried");
+        std::fs::write(folder.file(), SHIPPED).unwrap();
+        let tried = reach_text(&folder.file(), Reach::Any).unwrap().unwrap();
+        // Nothing is written until the trial begins.
+        assert_eq!(folder.text(), SHIPPED);
+        set_reach(&folder.file(), Reach::Any).unwrap();
+        assert_eq!(folder.text(), tried);
+        assert_eq!(reach_text(&folder.file(), Reach::Any).unwrap(), None);
     }
 
     #[test]

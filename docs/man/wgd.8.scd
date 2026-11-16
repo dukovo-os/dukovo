@@ -97,5 +97,5 @@ DNS, which waits for *resolved*(8) to take a server for each interface.
 
 # SEE ALSO
 
-*wg*(8), *wireguard.conf*(5), *ip*(8), *netd*(8), *service*(8),
+*wg*(8), *wireguard*(8), *wireguard.conf*(5), *ip*(8), *netd*(8), *service*(8),
 *spark*(8), *systools*(1)

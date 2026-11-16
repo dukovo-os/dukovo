@@ -132,6 +132,27 @@ test('the firewall\'s add, replace and remove each begin its trial, and its rows
   assert.equal(triedBy([row(4, 'firewall.keep'), network], 'network')?.seconds, 30, 'the network trial is not the firewall\'s');
 });
 
+test('SSH\'s set and off and the console\'s reach begin their trials, and a change of their files by another action ends what the journal says', () => {
+  const set = row(5, 'ssh.set', { argv: ['ssh-server', 'set', 'password', 'no', '--try', '60'] });
+  assert.deepEqual(triedBy([set], 'ssh'), { who: 'alice', how: 'console', seconds: 60, card: null });
+  const off = row(5, 'ssh.off', { argv: ['ssh-server', 'off', '--try', '300'] });
+  assert.equal(triedBy([off], 'ssh')?.seconds, 300);
+  assert.equal(triedBy([row(6, 'ssh.on'), set], 'ssh'), null, 'on is never tried');
+  assert.equal(triedBy([row(6, null, { how: 'by hand', files: [{ path: '/system/settings/spark/services/sshd.toml' }] }), off], 'ssh'), null);
+  const reach = row(5, 'console.reach', { argv: ['admin', 'reach', 'any', '--try', '600'] });
+  assert.equal(triedBy([reach], 'console')?.seconds, 600);
+  assert.equal(triedBy([row(6, 'security.sign-in', { files: [{ path: '/system/settings/admin.toml' }] }), reach], 'console'), null);
+  // The sign-in rules are refused while the reach is tried (ADM-138): a refused row changed nothing.
+  assert.equal(triedBy([row(6, 'security.sign-in', { status: 1, files: [{ path: '/system/settings/admin.toml' }] }), reach], 'console')?.seconds, 600);
+  assert.equal(triedBy([reach], 'ssh'), null, 'the console\'s trial is not SSH\'s');
+});
+
+test('a trial the page has no family for is not said to have begun anywhere', () => {
+  const restart = row(5, 'service.restart', { argv: ['service', 'nginx', 'restart', '--try', '60'] });
+  assert.equal(triedBy([restart], 'service.nginx'), undefined);
+  assert.equal(triedBy([], 'toString'), undefined);
+});
+
 test('who began it, in words', () => {
   assert.equal(begunWords(null), 'at a terminal');
   assert.equal(begunWords({ who: 'alice', how: 'console' }), 'by alice in this console');

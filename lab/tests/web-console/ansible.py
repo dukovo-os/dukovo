@@ -55,11 +55,12 @@ metrics.now as `metrics now --json`.
 certificate.renew is not run: it makes the certificate the console serves
 anew, and the API calls that follow would have to be made again with
 another certificate. The boot test admin-actions renews it. checks.last,
-lab.missing, metrics.usage, metrics.around and service.usage are not run
-either, for the reasons at LEFT_ALONE.
+checks.run, lab.missing, metrics.usage, metrics.around and service.usage
+are not run either, for the reasons at LEFT_ALONE.
 
-Nor are the changes of the network's settings and the firewall's rules
-(ADR 0518): each is tried, and Spark undoes it unless it is kept, so it
+Nor are the changes of the network's settings, the firewall's rules,
+SSH's settings and who may reach the console (ADRs 0518 and 0562): each
+is tried, and Spark undoes it unless it is kept, so it
 has no state to begin from and come back to as this round's changes do,
 and its keep and undo need a trial running. Their tasks are the commands
 the console shows, which the boot test admin-trials runs, and the browser
@@ -72,6 +73,23 @@ the commands the console shows, which the boot tests admin-backups and
 admin-move run, and the browser tests web-console/snapshots and
 web-console/move use. The four that read what any machine has are run:
 snapshots.list, backups.list, backups.ssh-key and move.find.
+
+The same goes for the Accounts' and Your account's actions but the four
+reads of what any machine has, accounts.list, accounts.list-all,
+accounts.last and account.show: the others name the account lab-made, which only their own
+tests make, take a password, which a task reads from a variable of the
+playbook that this test does not give, or change the keys, the name and
+the password of the account this test signs in with. Their tasks are the
+commands the console shows, which the boot test admin-accounts runs, and
+the browser test web-console/accounts uses.
+
+Nor are ssh.on and ssh.off, since Ansible's tasks run over SSH: ssh.off,
+and the undo of ssh.on, stop sshd under them. Nor are the Security page's
+changes whose examples need what only their tests set up: security.unblock
+lifts the block of an address that a run of wrong sign-ins made, and
+private.add and private.remove name the device lab-phone, which the undo
+of private.add, run first, finds missing. The boot test admin-security
+runs them all, and the browser test web-console/security uses them.
 
 Nor is storage.grow (ON_A_SECOND_DISK): its example grows vdb, a boot
 test's second disk with room after its last partition, which a lab machine
@@ -107,14 +125,18 @@ from console import (
 # a command that no image has, so both end with a status other than 0;
 # metrics.usage, metrics.around and service.usage end with 1 on a machine
 # that has run for less than the 10 minutes in which metricsd writes the
-# history they read; the changes that are tried (TRIED) need a trial; the
-# actions of the Snapshots, Backups and Move pages whose examples need what
-# only their tests set up (SET_UP); and the grow of a second disk
-# (ON_A_SECOND_DISK).
+# history they read; checks.run runs dukovo-check, as checks.last does; the
+# changes that are tried (TRIED) need a trial; ssh.on and ssh.off (UNDER)
+# stop the sshd that Ansible's tasks come through; the actions of the
+# Snapshots, Backups, Move, Accounts, Your account and Security pages whose
+# examples need what only their tests set up (SET_UP); and the grow of a
+# second disk (ON_A_SECOND_DISK).
 TRIED = {
     "network.set", "network.keep", "network.undo",
     "firewall.add", "firewall.replace", "firewall.remove", "firewall.keep", "firewall.undo",
+    "ssh.set", "ssh.keep", "ssh.undo", "console.keep", "console.undo",
 }
+UNDER = {"ssh.on", "ssh.off"}
 # The examples of these name the snapshot lab-before of /users, which
 # snapshots.take makes after the reads have run and which has no undo to
 # bring a second pass back to; files of lab-reader that a lab machine has
@@ -126,20 +148,29 @@ TRIED = {
 # that write backups and the next start's places. snapshots.list,
 # backups.list, backups.ssh-key and move.find read what any machine has, and
 # are run.
+# The examples of the Accounts' actions name the account lab-made, which
+# accounts.add makes; those that take a password need the variable that
+# holds it; and those of Your account would change the name, the password
+# and the keys of the account that Ansible signs in with. accounts.list,
+# accounts.list-all, accounts.last and account.show read what any machine
+# has, and are run.
+# security.unblock needs an address that is blocked; private.add and
+# private.remove a device lab-phone, which private.add's undo removes first.
 SET_UP = {
     "snapshots.browse", "snapshots.browse-all", "snapshots.take", "snapshots.restore", "snapshots.restore-all",
     "backups.show", "backups.key", "backups.run", "backups.verify", "backups.add", "backups.remove", "backups.restore",
     "move.plan", "move.stage", "move.cancel",
+    "accounts.show", "accounts.add", "accounts.set", "accounts.password", "accounts.disable", "accounts.enable",
+    "accounts.remove", "accounts.key-add", "accounts.key-remove", "accounts.token-revoke", "accounts.steps-reset",
+    "accounts.end", "account.name", "account.password", "account.key-add", "account.key-remove",
+    "security.unblock", "private.add", "private.remove",
 }
 # storage.grow's example grows vdb, a boot test's second disk with room after its last
 # partition; a lab machine has no such disk, and a grow of its own cannot be undone.
 ON_A_SECOND_DISK = {"storage.grow"}
-LEFT_ALONE = (
-    {"certificate.renew", "checks.last", "lab.missing", "metrics.usage", "metrics.around", "service.usage"}
-    | TRIED
-    | SET_UP
-    | ON_A_SECOND_DISK
-)
+LEFT_ALONE = {
+    "certificate.renew", "checks.last", "checks.run", "lab.missing", "metrics.usage", "metrics.around", "service.usage",
+} | TRIED | UNDER | SET_UP | ON_A_SECOND_DISK
 # The reads whose example names a disk of the boot tests, vda, which ask after this machine's own disk instead.
 ON_THIS_MACHINE = {"storage.health"}
 

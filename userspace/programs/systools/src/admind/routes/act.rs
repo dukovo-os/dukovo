@@ -38,12 +38,15 @@ use serde_json::{Value, json};
 
 use super::{Context, Live, Outcome, Reply, Text, shown};
 use crate::admind::actions::show;
-use crate::admind::actions::{self, Caller, Params, Prepared, Registered, Runs, Trial};
+use crate::admind::actions::{
+    self, Caller, CutsOffRead, Params, Prepared, Registered, Runs, Trial,
+};
 use crate::admind::caller::{self, TokenCall};
 use crate::admind::errors::{Failure, Kind};
 use crate::admind::journal::{self, Ended};
 use crate::admind::link::Link;
 use crate::admind::log;
+use crate::admind::reach;
 use crate::admind::run::{self, Ran};
 use crate::admind::serve::look_at_trials;
 use crate::admind::shared::{Shared, unix_now};
@@ -93,11 +96,30 @@ pub async fn action(
         // `check` lets an action through with exactly one of them.
         _ => return Err(super::ended()),
     };
+    // What could lock the caller out is not done to their own account from
+    // the console or with their token (ADR 0562).
+    if prepared.not_self.as_deref() == Some(asker.who.as_str()) {
+        return Err(Failure::new(
+            Kind::NotSelf,
+            "the console does not do this to your own account, so that it cannot lock you out: \
+             another administrator does it, or `elevate user` at a terminal",
+        ));
+    }
+    // Where the request came from and by which card, for a change that
+    // could cut off the browser that asks for it (ADR 0562).
+    let came = prepared.cuts_off.as_ref().map(|_| Came {
+        from: reach::plain(cx.peer),
+        card: cx.connection.to.and_then(|to| reach::card_of(to.ip())),
+    });
     let (shared, peer) = (Rc::clone(cx.shared), cx.peer);
     if prepared.action.long() {
         return long(&shared, peer, prepared, &asker, &whose, live.as_ref(), token.as_ref());
     }
     let job = tokio::task::spawn_local(async move {
+        if let (Some(read), Some(came)) = (&prepared.cuts_off, &came) {
+            refuse_cutting_off(&shared, &prepared, read, came, live.as_ref(), token.as_ref())
+                .await?;
+        }
         let begun = prepared
             .action
             .changes()
@@ -269,6 +291,65 @@ async fn for_token(
             probed(shared, prepared, &probes, command).await
         }
     }
+}
+
+/// Where a request came from, for [`refuse_cutting_off`].
+struct Came {
+    /// The browser's address.
+    from: IpAddr,
+    /// The card of the address it came to; None when admind does not know.
+    card: Option<String>,
+}
+
+/// Refuses a change that would cut off the browser that asks for it
+/// (ADR 0562, ADM-137). A request that came by another card than the one
+/// the change can cut off goes on, with nothing read. Otherwise the
+/// action's read runs as the caller's administrator, as the change would,
+/// and the action says from what it printed whether the browser still
+/// reaches the console after the change. A read that fails refuses the
+/// change: the guard fails closed.
+///
+/// # Errors
+///
+/// As [`actions::authorize`] for the caller; ADM-137 for a change that
+/// would cut the browser off, or whose read failed.
+async fn refuse_cutting_off(
+    shared: &Rc<Shared>,
+    prepared: &Prepared,
+    read: &CutsOffRead,
+    came: &Came,
+    live: Option<&Live>,
+    token: Option<&TokenCall>,
+) -> Result<(), Failure> {
+    if came.card.as_deref() != Some(read.card) {
+        return Ok(());
+    }
+    let by = match (live, token) {
+        (Some(live), _) => {
+            permit_session(shared, prepared, live)?;
+            session_elevator(live)
+        }
+        (None, Some(token)) => {
+            permit_token(prepared, token)?;
+            token_elevator(prepared, token)
+        }
+        (None, None) => return Err(super::ended()),
+    };
+    let shown = match run::elevated(shared, by, &read.argv, None, run::RUN_TIME).await {
+        Ok(ran) if ran.status == 0 => ran.output,
+        _ => {
+            let why = format!(
+                "this request came through {}, and what the change would take away from it could \
+                 not be read: make the change from another connection",
+                read.card
+            );
+            return Err(Failure::new(Kind::CutsOff, why));
+        }
+    };
+    prepared
+        .action
+        .cuts_off(&prepared.args, came.from, &shown)
+        .map_err(|why| Failure::new(Kind::CutsOff, why))
 }
 
 /// A change's command that ran, and what its probe found.

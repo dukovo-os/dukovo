@@ -15,12 +15,18 @@ account and your own preferences; the Overview; the Logs; what changed on
 the machine, and how to put a change back; showing the command of an action,
 and using the API from a script; following a long task; the network cards
 and the firewall; the disks and the log's own space; the snapshots and the
-backups; moving to new hardware; the terminal; and what to do when something
-goes wrong or does not work. The references are dukovo-admin(7), admind(8),
-admin(8), admin.toml(5), authd(8), user(8), who(1), last(1), log(1),
-network(8), network(5), firewall(8), storage(8), diskhealth(8), scrub(8),
-logtrim(8), snap(1), backup(8), snap.toml(5) and backup.toml(5); the decisions
-are ADR 0514, ADR 0515, ADR 0516, ADR 0517, ADR 0461, ADR 0463 and ADR 0561.
+backups; moving to new hardware; the accounts, with their keys, tokens and
+sessions, and your own; the security page, with the checks and the score, the
+sign-in rules, the addresses blocked after wrong sign-ins, SSH, who may reach the
+console and private access with WireGuard; the terminal; and what to do when
+something goes wrong
+or does not work. The references are dukovo-admin(7), admind(8),
+admin(8), admin.toml(5), authd(8), user(8), passwd(1), lastlog(8), who(1),
+last(1), log(1), network(8), network(5), firewall(8), ssh-server(8), wireguard(8),
+storage(8), diskhealth(8),
+scrub(8), logtrim(8), snap(1), backup(8), snap.toml(5) and backup.toml(5); the
+decisions are ADR 0514, ADR 0515, ADR 0516, ADR 0517, ADR 0461, ADR 0463, ADR
+0561 and ADR 0562.
 
 | Task | How |
 | --- | --- |
@@ -30,8 +36,8 @@ are ADR 0514, ADR 0515, ADR 0516, ADR 0517, ADR 0461, ADR 0463 and ADR 0561.
 | Set a new account up | The welcome pages that come before the first page; see "Your first sign-in" |
 | Find a page, or run an action by its name | `Ctrl+K`, or **Search or run a command** in the header; see "The command palette" |
 | See the keys | `Ctrl+/`; see "Finding your way" |
-| Let someone who is not an administrator sign in | `elevate user set --console NAME` |
-| Take that away again | `elevate user set --no-console NAME` |
+| Let someone who is not an administrator sign in | **Can sign in to Dukovo Admin** on their account, or `elevate user set --console NAME` |
+| Take that away again | The same switch, or `elevate user set --no-console NAME` |
 | Ask everyone for a second step | `second-step = "everyone"` in `/system/settings/admin.toml` |
 | Open a shell in the browser | **Terminal** in the list of pages; see "The terminal" |
 | Open root's shell in the browser | **New administrator terminal**, with the console unlocked; see "The terminal" |
@@ -63,7 +69,21 @@ are ADR 0514, ADR 0515, ADR 0516, ADR 0517, ADR 0461, ADR 0463 and ADR 0561.
 | Find out why a backup is overdue or failed | The banner at the top of **Snapshots and backups**; see "When a backup is overdue or failed" |
 | Bring a machine's name, accounts, apps and files to new hardware | **Move to new hardware**, or `elevate backup restore --machine`; see "Move to new hardware" |
 | Give up a restore that is staged before the restart | **Cancel** on **Move to new hardware**, or `elevate backup restore --machine --cancel` |
+| See who has an account, and when each was last active | **Accounts**; see "Accounts" |
+| Add a person | **Add an account…** on **Accounts**, or `elevate user add NAME`; see "Adding a person" |
+| Give a person a new password | **Change…** on their account, or `elevate passwd NAME` |
+| Add or remove an SSH key of an account | **Add a key…** and **Remove** on the account, or `elevate user key add NAME LINE` and `elevate user key remove NAME FINGERPRINT` |
+| Take the second steps from someone who lost their phone | **Remove second steps…** on their account, or `elevate user steps reset NAME`; see "When someone loses their phone" |
+| End someone's session, terminal or SSH connection | **End**, under **Signed in now** on their account; see "Ending a session" |
+| Stop an account from signing in | **Disable the account…** on its page, or `elevate user disable NAME` |
+| See what lowers the health score, and run the checks again | **Security**, then **Check again**; see "The score and the checks" |
+| Change how long a console session lasts, or who gives a second step | **Change…** on **Sign-in rules**, or `elevate admin sign-in`; see "Sign-in rules" |
+| See which addresses were blocked for wrong passwords, and let one in | **Blocked after failed sign-ins**, then **Unblock**, or `elevate firewall blocked` and `elevate firewall unblock ADDRESS` |
+| Stop passwords signing in over SSH | **Change…** on **SSH**, then **Try it**, or `elevate ssh-server set passwords no`; see "Trying SSH settings" |
+| Let the console answer anyone, or this network only | **Make the console public…** and **Only this network…** on **Who may reach the console**, or `elevate admin reach`; see "Who may reach the console" |
+| Reach the console from a phone away from home | **Set up private access…**, then **Add a device…**, on **Security**; see "Private access with WireGuard" |
 | Undo a network or firewall change that cut the console off | Wait for the time the banner shows, or `elevate network undo` or `elevate firewall undo` at the machine |
+| Undo an SSH change, or a change of who may reach the console, that cut you off | Wait for the time the banner shows, or `elevate ssh-server undo` or `elevate admin undo` at the machine |
 | Keep the settings in your own Git | `admin export DIR` |
 | Find out what an error means | **Help**, then **What error messages mean**; see "When something goes wrong" |
 | Start the console again | `elevate service admind restart` |
@@ -292,6 +312,8 @@ out** or **Cancel** (see "The terminal"). A session also ends
 - 30 minutes after the last console page of it was closed, by default
   (`idle-minutes`, 5 to 1440);
 - when the account may no longer sign in, as when it is disabled;
+- when you, or an administrator, end it from **Accounts** (see "Ending a
+  session");
 - when the console starts again. Sessions are kept in memory only, so a
   restart of the console, `elevate service admind restart`, or of authd,
   signs everyone out.
@@ -350,8 +372,8 @@ wrong"), and **About Dukovo Admin**, which shows the system's release, the
 console's build and the licence of its files.
 
 The account menu is under your name. It has **Your account**, which holds
-the display, the time zone, the second step, the command that makes an API
-token and the terminal's settings; **Dark**, **Light**, **High contrast**
+your name, password, second step, SSH keys and API tokens, what you are signed
+in with, the display, the time zone and the terminal's settings; **Dark**, **Light**, **High contrast**
 and **Same as this device**, under **Display**, which change the colours
 at once (see "Your preferences"); and **Sign out**. When terminals run,
 **Sign out** asks first (see "Signing out, and when a session ends").
@@ -599,7 +621,9 @@ terminal's keys are under `terminal` there, and a value out of range is
 change them locked or unlocked; a script's token may not. The pages use
 them as they are kept: a display choice shows at once and follows you to
 every browser you sign in with, and times are shown in your zone. They are
-not in the journal.
+not in the journal. **Display**, **Time zone** and **Terminal settings** are
+cards of **Your account**, under the rows of the account itself (see "Your
+account").
 
 ## The Overview
 
@@ -1234,7 +1258,9 @@ The API token monitor is removed.
 
 A token that has ended is listed with `(ended)` for 30 days and then
 forgotten. Removing one takes effect at once: the next request that brings
-it is refused. Renaming an account ends its tokens.
+it is refused. Renaming an account ends its tokens. **Your account** lists your
+tokens too, each with **Revoke**, and an administrator sees another account's on
+**Accounts**, where **Revoke** ends one the same way (see "One account").
 
 ### What a script may meet
 
@@ -2678,6 +2704,534 @@ On a phone the page is one column: the steps are a list above the open step,
 the choices are cards the width of the screen, buttons are 44 pixels tall at
 least and fill the width, and the command box scrolls sideways inside itself.
 
+## Accounts
+
+**Accounts**, in the list of pages, shows the people who use the machine and
+what each can do. Anyone who signs in sees the list. An administrator who has
+unlocked the console also sees when each person was last active, adds accounts,
+changes them, and ends what they are signed in with. A reader sees each
+account's name and what it can do, and their own account whole. The page is at
+`/accounts`, and `/accounts/NAME` is one account; the person's own is also
+**Your account**, which has more (see "Your account"). The page reads `user
+list`, `user show` and `lastlog` and runs `user` and `passwd` (user(8),
+passwd(1), lastlog(8)); "Users and administration" says what the commands do.
+
+### The list
+
+Above the table are two lines. **Groups** lists the machine's groups, each with
+how many accounts are in it, **admins · 2**; they are for reading, and no page
+manages them. The second line is the console's sign-in rules, **Administrators
+give a second step. A session lasts 12 hours. These are the console's rules; SSH
+has its own, on Security.** with **Change**, which goes to **Security**.
+
+The table has a row for each account:
+
+| The column | What it says |
+| --- | --- |
+| **Account** | A letter in a circle, the name, which is a link to the account, and the full name under it; **Your account** on your own row |
+| **Can** | **Administrator**, **Console and shell**, **Console**, **Shell** or **Files only**; **Disabled** in warm colours; and for an account with no password, **SSH key only** when it has a key, **Cannot sign in** when it has none |
+| **Last active** | When the account last signed in, and how: **Now, this browser** on your own row, **Yesterday, SSH**, **Nov 8, file sharing**, **Never**. The places are **SSH**, **web console**, **at the machine**, **file sharing**, or a terminal's own name |
+
+Accounts that are disabled come last. Under the table, **Service accounts made
+by apps (postgres, nginx and others) are on each app's page.** The list reads
+again every 30 seconds while the tab is shown, and when something changes.
+
+**Last active** is for an administrator who has unlocked the console. A locked
+console says **Unlock to see when each was last active**, with **Unlock**, and a
+reader's table has **Account** and **Can** only. A machine with one account says
+**Add the people who use this server, so that each signs in as themselves.**
+
+### Adding a person
+
+**Add an account…**, at the top of the list, asks an administrator to unlock the
+console and opens **Add an account**:
+
+| Field | What it takes |
+| --- | --- |
+| **Name** | Lowercase letters, digits, `-`, `_` and `.`, starting with a letter, 32 characters at most. It cannot be changed later. A name that an account has, or `help`, which the helpers who sign in to help sessions use, is told under the field |
+| **Full name** | Optional, with no colon or line break |
+| **Administrator** | Off. An administrator can change everything once they unlock the console, and run commands as root with `elevate` |
+| **Can sign in to this console** | On. An administrator always can, and the switch is then on and cannot be changed |
+| **Password** and **Password, again** | Optional. **Leave it empty to give one later; the account cannot sign in until it has one or an SSH key.** Two that differ are **The two are not the same** and nothing is asked |
+
+**Add** makes the account with `user add`. The password goes in the one request
+that makes the account, to the command's standard input, and nowhere else: not
+in the command that **Show command** gives for it, which says that the password
+is typed when asked, and not in the page after. For a person who is not an
+administrator the page then sets the console right the switch chose, with
+`user set --console` or `--no-console`. The dialog then offers **Add an SSH key
+for NAME**, which you may leave with **Not now**. The person signs in with the
+name and the password, and is asked for a time zone the first time (see "Your
+first sign-in"). At a terminal:
+
+```sh
+elevate user add NAME
+elevate user set --console NAME
+```
+
+### One account
+
+`/accounts/NAME` shows one account. An administrator who has unlocked the
+console sees all of it; one who has not sees the account's row and **Unlock to
+see NAME's keys, second steps, tokens and sessions.**; a reader sees the row and
+**Administrators see the rest.** The person's own account is whole whoever they
+are. The top says **Administrator · account 1001 · since Oct 19**: the account's
+number, and when its home folder was made where the disk keeps that. A disabled
+account says **NAME is disabled: nothing signs in to the account.**
+
+| The row | What it says and does |
+| --- | --- |
+| **Full name** | **Change** opens a dialog for it; an account with none says **None** |
+| **Groups** | The groups, for reading |
+| **Administrator** | A switch. It asks first, **Make NAME an administrator?** or **Take away NAME's administrator right?**; taking it away from the last administrator is refused (ACC-102) |
+| **Console** | **Can sign in to Dukovo Admin**, a switch, on and fixed for an administrator, who always can |
+| **Password** | **Set, changed Oct 19**, **Set** or **None**, and **Never expires. Dukovo never forces a change.** **Change…** takes a new password twice: **NAME is not told the new password: give it to them yourself.** The old password stops working, and the console shows neither |
+| **Second step** | **Authenticator app and 1 passkey**, with **8 of 10 recovery codes left** and **2 trusted browsers**, or **None**; **Remove second steps…** (see "When someone loses their phone") |
+| **Shell** | The program their login runs |
+
+**SSH keys** lists each key with its name, which is its comment, its type
+(**ED25519**, **ECDSA P-256** or **ECDSA P-384**) and its fingerprint, **SHA256:pR8x…1kQ**,
+which is whole while it has the focus, so that two keys that look alike can be
+told apart. **Add a key…** takes the line that `ssh-keygen` wrote in the `.pub`
+file and checks it as the machine reads keys: Ed25519 and ECDSA keys on P-256
+and P-384, on one line, and no options such as `command=` or `from=` before it,
+which the machine passes over. The key goes in the account's
+`~/.ssh/authorized_keys`, with the modes that sshd(8) needs. **Remove** takes a
+key off at once. When it is the only way the account signs in, which is when it
+is the last key, the account has no password or SSH takes no passwords, and the
+account has no console right, the dialog says **This is the only way NAME signs
+in: after this it cannot sign in at all.** and asks for the account's name,
+typed.
+
+**API tokens** lists each token with what it may do, in words, **Everything
+NAME can do** or **Snapshots: read**, and when it runs out, with **Revoke**. It
+asks first, **Whatever uses it stops working.** A token can never do more than
+its owner, and every token runs out. An administrator does not make tokens for
+another account: a token is its owner's (see "Making a token").
+
+**Disable the account…** says what it does, **Everything NAME runs ends now:
+their sessions, terminals, SSH connections and processes. Nothing signs in to
+the account until it is enabled again, with the same password.** A disabled
+account has **Enable**, which asks nothing. **Remove the account…** asks what
+becomes of the home folder, **Keep it in /users/NAME**, which is the first
+choice, **Archive it**, which packs it into a file in `/users/.removed` that only
+root reads, or **Delete it**; and asks for the account's name, typed. At a
+terminal these are `elevate user set`, `passwd NAME`, `user key add NAME LINE`,
+`user key remove NAME FINGERPRINT`, `user token remove NAME TOKEN`, `user
+disable NAME`, `user enable NAME` and `user remove NAME` with `--keep-home`,
+`--archive-home` or `--delete-home`.
+
+### When someone loses their phone
+
+A person who has lost the phone or the key that gives their second step, and
+has no recovery code left, cannot sign in to the console. An administrator opens
+their account and presses **Remove second steps…**. The dialog says **Use this
+when NAME has lost the phone or key. Their app, passkeys, recovery codes and
+trusted browsers are removed. They sign in with their password alone; if the
+sign-in rules ask them for a second step, they add a new one before anything
+else.** At a terminal it is `elevate user steps reset NAME`, which prints what
+went.
+
+It leaves the person's password, their tokens and their sessions as they are. If
+the phone may be in someone else's hands, also press **Change…** for a new
+password, **Revoke** the tokens, and **End** what they are signed in with (see
+"Ending a session"). An administrator who cannot sign in to the web console
+signs in at the machine's own console or over SSH, which ask no second step, and
+uses the command there. A person who still has a recovery code does not need an
+administrator (see "If a second step is lost").
+
+### Ending a session
+
+**Signed in now**, on an account, lists what it is signed in with: its sessions
+in a browser, with the browser, the address it came from and when it began; its
+terminals in the console, with the name, the panes, **with an administrator
+shell** and **not open in a browser**; and its sessions at the machine, **SSH**
+with the address and the number of processes, the machine's screen, or a serial
+line. **This browser** comes first, with **this one** in place of **End**: the
+session in use is **Sign out**'s. The sessions of the console are read again
+every 10 seconds, and only this part of the page is drawn again, so that a
+dialog you opened is not pulled away.
+
+**End** asks first, and says what happens:
+
+| What | What End does |
+| --- | --- |
+| A session in a browser | It ends as **Sign out** ends it. Whoever was signed in there has to sign in again, and the browser's sign-in page says **an administrator ended this session.**, or **you ended this session from another browser.** when it was you |
+| A terminal in the console | Its shells get a hangup, so whatever runs in them stops (see "What happens to a terminal") |
+| A session at the machine | `user end NAME SESSION`: it is asked to stop, and what does not stop in 5 seconds is killed |
+
+An administrator who has unlocked the console may end any of another account's.
+A person ends their own other browsers and terminals, from **Your account**, and
+not a session at the machine. A locked console does not list another account's
+sessions: press **Unlock** first. A page that cannot read the sessions of the
+console says **The console sessions and
+terminals could not be read just now.** and still lists the sessions at the
+machine. Each End of another account's session is a line of the audit log,
+`elevate log --audit`.
+
+### What the console does not do
+
+- **It does not change the account in use.** An administrator cannot disable or
+  remove their own account, take their own administrator right away, or end the
+  session they are using, from the console. The page offers none of them and
+  says **Do this from another administrator's account, or at a terminal with
+  `elevate user …`.** The console refuses the request too, with
+  ADM-136, and so for a script's token.
+- **It never leaves the machine without an administrator.** `user disable`,
+  `user remove` and `user set --no-admin` are refused with ACC-102 when they
+  would leave no enabled account in `admins`, at a terminal as from the console.
+- **It asks before the only way in.** The last key of an account that has no
+  other way to sign in is removed only when its name is typed.
+
+Account changes are not tried and put back by themselves, as a network or a
+firewall change is: Disable ends everything the account runs, and a second step
+that is removed does not come back from a file. They ask first instead.
+
+### Your account
+
+**Your account**, in the account menu under your name, is `/account`, and
+`/accounts/YOURNAME` opens it too. It has the same rows as another account, for
+your own, whatever you are, and what only you have under them: **Display**,
+**Time zone** and **Terminal settings** (see "Your preferences"). You change
+your own full name, your password, your keys and your tokens, and end your other
+browsers and terminals, with the console locked.
+
+What is different from another person's account:
+
+- **Change your password** asks for **Current password**, then the new one
+  twice. It says **The new password is used from the next sign-in. Your other
+  sessions stay signed in.** A wrong current password is refused, and the dialog
+  stays.
+- **Administrator** and **Console** are told and not switched. For an
+  administrator the row says **Yes**, and that the console does not take this
+  away from the account you are signed in with, and where it is done. The last
+  section, where **Disable the account…** and **Remove the account…** are on
+  another account, says where they are done.
+- **Second step** has **Manage the second step**, which opens the page that adds
+  and removes them (see "Adding a second step"). An administrator's account also
+  has **Unlock asks**, which says what the console asks for when you unlock it: your
+  password, the code from the app, or a tap on a passkey.
+- **API tokens** has the command that makes one, in a box with **Copy**: `admin
+  token add NAME --scope services:read --days 30`, for NAME the token's name. A
+  script's token is made at a terminal, as you, and shown once. **Revoke** ends
+  one at once.
+- **SSH keys** are your own `~/.ssh/authorized_keys`: **Add a key…** and
+  **Remove**, as for any account. The key that is your only way in asks for your
+  name typed.
+
+### On a phone
+
+The list is a stack of cards, each with the name, what the account can do and
+when it was last active. One account is one column, each row a card, and buttons
+are as wide as the page and 44 pixels tall at least.
+
+## Security
+
+**Security**, in the list of pages, is where the machine's safety is read and
+changed in one place: the health score and what lowers it, who may sign in to
+the console, the addresses blocked after wrong sign-ins, SSH, who may reach the
+console, and a private way in from outside the house. Anyone who signs in sees
+the score, the findings and the rows. Changing anything, and seeing the blocked
+addresses and private access, are for administrators, who unlock the console
+first. The page is at `/security`, and each card has an address of its own:
+`/security#checks`, `#sign-in`, `#blocked`, `#ssh`, `#reach` and `#private`.
+
+It reads `dukovo-check`, `admin settings`, `ssh-server show`, `firewall blocked`
+and `wireguard show`, and runs `admin sign-in`, `ssh-server`, `admin reach`,
+`firewall unblock`, `firewall never-block` and `wireguard` (dukovo-check(8),
+admin(8), ssh-server(8), firewall(8), wireguard(8)). "Users and administration"
+and "Networking and firewalls" say what the commands do.
+
+### The score and the checks
+
+The top card, **Health score**, is the same score the Overview shows (see "The
+health score"), with the checks behind it. It says how many checks pass, **26 of
+29 checks pass, 2 skipped**, and when they ran, **Checked today at 5:17 AM**. A
+check that was skipped, because the machine has nothing to check, is not counted
+as one that ran.
+
+Under it is each warning and failure, worst first. A finding says what is wrong,
+**Passwords sign in over SSH**, what it protects against, how many points it
+takes off, **+6**, its ID as a link to its help page, and a button for the fix:
+
+| The finding | The button | What it does |
+| --- | --- | --- |
+| **SEC-101** A rule lets every port in | **See the rule** | Opens Firewall |
+| **SEC-102** The firewall is off or failed | **Start the firewall** | Starts the firewall service, and says **Check again to update the score** |
+| **SEC-110** Passwords sign in over SSH | **Keys only…** | Opens SSH's form with passwords off |
+| **SEC-111** Every account may sign in with a password | **Choose who may sign in…** | Opens SSH's form at **Who may sign in** |
+| **SEC-112** Blocking of repeated wrong passwords is off | **Show how** | Says which file and line to change |
+| **SEC-120** An account has an empty password | **Set a password…** | Opens that account, named in the finding |
+| **SEC-121** No account is an administrator | **Choose one…** | Opens Accounts |
+| **SEC-130**, **SEC-131** Updates | **Updates** | Opens the Updates page; on a machine without it, **Show how** gives the command |
+| **SEC-140** The clock has not synchronized | **Show how** | Says what to look at |
+| **SEC-150** A service gave up | **See it** | Opens that service |
+| **SEC-160** No snapshots of the folders people use | **Snapshots** | Opens Snapshots |
+| **MET-…** A disk or a filesystem | **See it** | Opens Storage, or the Overview for the rest |
+| **HW-…** The hardware | **See it** | Opens the hardware page, or Storage for a disk |
+
+**Show how** opens the advice and, where there is one, the command for a
+terminal with **Copy**. A finding that has no button of its own has **Show how**
+with the advice that `dukovo-check` gave. **Show the 26 that pass and 2 skipped**
+opens the rest of the checks, each with what it found.
+
+**Check again** runs the checks now, as root, and keeps the result; it asks an
+administrator to unlock the console first. The checks are never run by
+themselves while the page is open: the page shows the last result, and reads it
+again when something changes. `dukovo-check` keeps its result for
+administrators, so a reader reads **The health score is for administrators.**,
+as on the Overview. On a machine that was never
+checked the card says **The checks have not run on this server yet.**, with
+**Check again** for an administrator; on a machine without the checks, **Checks
+are not on this server yet. This server shows the score with a later update of
+Dukovo.** At a terminal:
+
+```sh
+elevate dukovo-check
+```
+
+### Sign-in rules
+
+**Sign-in rules** says who gives a second step and how long a session lasts:
+**Who gives a second step: administrators, and anyone who has added one.** **A
+session lasts 12 hours after its sign-in, and ends after 30 minutes with no
+console page open.** Under them, **These are the web console's rules and its
+API's. SSH signs in by its own settings, below.**
+
+**Change…** asks an administrator to unlock the console and opens a form with the
+three settings, as `admin.toml` bounds them:
+
+- **Who gives a second step**: **Whoever has added one**, **Administrators, and
+  whoever has added one**, or **Everyone** (see "Asking everyone for a second
+  step").
+- **Hours a session lasts after its sign-in**, 1 to 168.
+- **Minutes with no console page open before a session ends**, 5 to 1440.
+
+Before **Save the rules** is pressed, the form says what follows. A rule that
+asks more people for a second step says **Accounts that have none add one at
+their next sign-in, before anything else. Nobody is locked out.** Fewer hours
+say **Sessions older than 2 hours end within 30 seconds, this one too if it is:
+you sign in again.** A number out of bounds is told under its field, and
+nothing is sent. The change is made at once and is not tried: no one's way in is
+taken away. At a terminal:
+
+```sh
+elevate admin sign-in --second-step everyone --session-hours 8
+```
+
+### Blocked addresses
+
+An address that gets passwords wrong again and again, over SSH or at the
+console's sign-in, is blocked at the firewall for a while. **Blocked after failed
+sign-ins** lists each block for an administrator who has unlocked the console:
+the **Address**, with **outside** when it is not on a private network, **Tried**,
+which says what it did, **3 wrong passwords over SSH in 2 minutes, for admin**,
+and **Until**, in your time zone. **Unblock** lets an address in at once. A
+locked console says **Unlock to see blocked addresses.**, and a reader **Administrators
+see blocked addresses.** The list is read again every 30 seconds while the tab is
+shown. With no block, **No address is blocked now.**
+
+Under the table, the rule is said in words: **5 wrong tries in 10 minutes block
+an address for 10 minutes; each new block of it doubles, up to a day. An
+administrator's own address is never blocked while they are signed in.** When
+blocking is turned off, the card says **Blocking is off.** and names the line to
+remove, `on = false` in `/system/settings/blocking.toml`.
+
+**Never blocked: 192.168.1.0/24 and 10.8.0.0/24 · change** is the list of
+networks that are never blocked, however often they get a password wrong.
+**change** opens a dialog that lists them, each with **Remove**, and a field to
+add another. A network that is not private, or is wider than a /16 (IPv4) or a
+/48 (IPv6), is asked about first: **Addresses in 203.0.113.0/24 are never
+blocked, however often they get a password wrong.** with **Go back** and **Never
+block it**. The list is meant for your own networks: an address on it can guess
+passwords without end. At a terminal:
+
+```sh
+elevate firewall blocked
+elevate firewall unblock 203.0.113.41
+elevate firewall never-block 192.168.7.0/24
+```
+
+### Trying SSH settings
+
+**SSH** shows the row, **Port 22 · keys and passwords · root cannot sign in**, or
+**Off**, with the key's fingerprint that a client checks when it connects, and
+the settings the form shows and does not edit (forwarding, and the accounts and
+groups the file denies). An administrator has a switch for SSH and **Change…**.
+
+**Turning SSH on** takes nothing away and is made at once. Anything that takes a
+way in from someone is tried first, because a mistake in it can lock you out of
+the machine over SSH: **SSH** off, **Passwords sign in** off, **Keys sign in**
+off, or a shorter list of who may sign in. The form says so, **This takes a way in
+from someone, so it is tried first: it is undone unless you keep it.**, and
+offers **Try it** without **Apply**. A change that only adds ways in offers
+**Apply** and **Try it**. **Undo it after** is the window: 2, 5 or 10 minutes,
+with 5 chosen, since a new connection takes a while to open. The form refuses
+what the command would:
+
+- **Nobody could sign in over SSH. Turn on passwords, keys or both.**
+- **Choose at least one account, or let everyone sign in.** (and the same for
+  groups)
+- A file with a mistake, which is told at the top of the card, **sshd_config has a
+  mistake on line 7: …**, with **SSH goes on with the settings it read last; the
+  form cannot change the file until it is fixed.** `elevate ssh-server show` lists
+  each line that is wrong ([NET-183](../../errors/NET-183.md)).
+
+**Who may sign in** is **Everyone**, **These accounts** or **These groups**, as
+chips of the machine's accounts and groups; the lists are `AllowUsers` and
+`AllowGroups`.
+
+After **Try it** the banner of a tried change is at the top of the card, as for
+the network and the firewall (see "Trying a change"): **SSH's settings are being
+tried.** and **The change is undone at 14:32 unless it is kept.**, with **Keep
+this change** and **Undo now**. SSH has no browser to prove that it works, since the browser does
+not come over SSH, so the card asks you to do it:
+
+**Open a new SSH connection from your computer now: `ssh NAME@MACHINE.local`.
+Connections that were open stay open, so only a new one tells.**
+
+NAME and MACHINE are yours and this machine's. While the change is tried, the
+page reads who signed in over SSH every 5 seconds and lists each sign-in since it
+began, **owner signed in over SSH at 2:28 PM from 192.168.1.25**, and under
+**Keep this change** it says **Nobody has signed in over SSH since the change.**
+or how many have. **Keep this change** is yours to press: a page cannot tell whether a new SSH
+connection works, and you can. The
+list is for an administrator who has unlocked the console; a locked console says
+**Unlock to see who signs in over SSH since the change.**, and a reader
+**Administrators see who signs in over SSH since the change.**
+
+What happens to the connections that are open depends on the change:
+
+- A change of how or who signs in asks sshd to read its file again, which keeps
+  the connections that are open as they are, and the undo does the same. The
+  change is for the connections that come next; yours stays open, and it is a
+  new one that tells you whether you can still sign in.
+- Turning SSH off stops sshd, and the connections it serves end with it. They do
+  not come back: the undo starts sshd again, and each person signs in again. A
+  terminal that you opened over SSH ends with it; one in the console, or at the
+  machine's own screen, does not.
+
+While SSH's settings are tried, a second change waits: **Keep or undo the change
+being tried first** ([NET-182](../../errors/NET-182.md)). The tried change is a
+row in "What changed", and the header of every other page shows the chip that
+counts it down, as it does for the network and the firewall. At the machine:
+
+```sh
+elevate ssh-server show
+elevate ssh-server set passwords no
+elevate ssh-server keep
+elevate ssh-server undo
+```
+
+### Who may reach the console
+
+**Who may reach the console** shows **Port 9090 · this network and WireGuard
+only**, or **anyone who can reach this server**. The console answers, by default,
+only this machine, the networks of its network cards, and the private address
+ranges, WireGuard's among them; a browser from anywhere else is turned away
+before the sign-in page.
+
+**Make the console public…** says what `admin.toml` says, that public asks for
+care: anyone who can reach this server can then load the sign-in page. When the
+rule for a second step is the weakest, it offers **Ask administrators for a
+second step first**, on, which sets the rule before it changes the reach. It then
+offers **Try it** only: a change that is not kept goes back to this network by
+itself, within the window.
+
+**Only this network…** limits it again. When this browser comes from an address
+on one of the machine's networks, or a private range, it offers **Try it** and
+**Apply**. When it comes from outside, the form says so, in a warning:
+
+**This browser comes from 203.0.113.9, which is outside. After this change it
+cannot reach the console: the change is undone at 14:32 unless it is kept from a
+browser on this network.**
+
+and offers **Try it** only, with 2, 5 or 10 minutes (5 or 10 when you opened the
+console by an address, since there is a new tab to open). The banner then asks the
+console, over a new connection, whether this browser reaches it over the new
+settings (see "Trying a change"); **Keep this change** stays off while the answer
+is no, and the change is undone at the time shown. At the machine:
+
+```sh
+elevate admin settings
+elevate admin reach any --try 60
+elevate admin keep
+elevate admin undo
+```
+
+While the reach is tried, `admin reach` and `admin sign-in` refuse
+([ADM-138](../../errors/ADM-138.md)), since both write `admin.toml`.
+
+### Private access with WireGuard
+
+**Reach this console from anywhere, privately** is a way in for a phone or a
+laptop away from home that does not put the console on the internet. The device
+runs the WireGuard app and joins this server's own small network, **wg0**; the
+console answers it as it answers the house. A device reaches this server's
+address on wg0, and so the console and the server's other services; it does not
+reach the other machines of the server's networks, as Dukovo does not route
+between its network cards. For a machine without it, the card says what it is
+and has **Set up private access…**.
+
+**Set up private access** asks for three things, with defaults:
+
+- **Address devices reach this server at**: a name or an address from outside,
+  which starts as the name of this console. Under it the page says **Your router
+  must send UDP port 51820 to this server.**
+- **UDP port**, 51820.
+- **This server's address and network on wg0**, 10.8.0.1/24. The devices get the
+  next addresses of this network.
+
+**Set up** makes the interface and then opens its UDP port in the firewall. A
+second press, after a refusal, makes the same interface again, which changes
+nothing. **Show command** shows both. At a terminal:
+
+```sh
+elevate wireguard serve --endpoint home.example.org
+elevate firewall allow udp 51820
+```
+
+With private access set up, the card lists the devices: each with its address,
+when it last connected, **Connected 2 minutes ago** or **Never connected**, and
+what it sent and received, from the server's side. The list is read again every
+10 seconds. **Add a device…** says what a device reaches and asks for its name,
+1 to 32 letters, digits, `-` and `_`, not starting with `-`. **Add the device**
+makes a pair of keys in the server's memory, gives the device the next free
+address of wg0's network, keeps the device's public key, and shows the device's
+settings once, with its private key:
+
+- A QR code to scan with the WireGuard app, **Scan this with the WireGuard app on
+  your phone or laptop to add it to wg0.**, with **Show the settings as text**
+  under it. A device's settings are about 240 bytes, which a QR code holds; one
+  with an endpoint name of more than about 170 characters is longer than a QR code
+  of the console holds (412 bytes), and is shown as text, **It is too long for a
+  QR code. Copy it or save it as a file.**
+- **Copy**, and **Save as file**, which saves `NAME.conf` for the WireGuard app
+  to import.
+
+**I have kept it** closes the dialog. Closing it any other way asks first, since
+the private key is shown only now: the server keeps the public key only, and a
+device whose file is lost is removed and added again. At a terminal:
+
+```sh
+elevate wireguard add phone
+elevate wireguard show
+elevate wireguard remove phone
+```
+
+**Remove** asks first, and takes the device's access away at once. It is refused
+for the device this browser comes through ([ADM-137](../../errors/ADM-137.md)):
+once it was gone, this browser could not ask for anything more. The card says
+**This browser is connected through that device. Open the console over this
+server's own network, or from another device, and remove it there.**
+
+### On a phone
+
+The cards are one column. A finding is a card with its buttons as wide as the
+page, the blocked addresses and the devices are lists of cards, and the QR code
+fills the width, up to 320 pixels, with **Show the settings as text** under it.
+Buttons are 44 pixels tall at least.
+
 ## The terminal
 
 The **Terminal** page puts a shell in the browser: the login shell of your
@@ -2912,7 +3466,9 @@ An administrator terminal has a pill, **administrator**. Each row has
 program is running in NAME, and it ends too.** when one runs. **New
 terminal** makes one. The list reads again every 10 seconds, and says **No
 terminal is open. Open one.** when there is none. Terminals that no page
-shows are there, so Sessions is where to find what you left running.
+shows are there, so Sessions is where to find what you left running. An
+administrator who has unlocked the console sees and ends another account's
+terminals on **Accounts**, under **Signed in now** (see "Ending a session").
 
 **Terminal settings**, also under **Terminal** and on **Your account**,
 keeps these as you change them, for every browser you sign in with (see
@@ -3096,8 +3652,10 @@ the machine's own sign-in and SSH ask no second step.
 - **A passkey is lost.** Sign in another way, **Remove** it, and add a new
   one.
 - **Nothing works, and no recovery code is left.** Another administrator
-  removes the account's second steps, trusted browsers and tokens by
-  deleting its file:
+  presses **Remove second steps…** on the account's page under **Accounts**, or
+  runs `elevate user steps reset NAME` (see "When someone loses their phone").
+  Deleting the account's file removes its second steps, trusted browsers and
+  tokens as well:
 
   ```
   $ elevate rm /system/state/authd/console/bob.toml
@@ -3259,6 +3817,30 @@ center has a page for each.
   undo it: change it at the machine's screen or over the serial console, with
   `elevate network set` or `elevate firewall remove`, or put the file back from
   "What changed" (see "Put back").
+- **SSH stopped working after a change.** A change to SSH's settings that was
+  tried is undone by Spark at the time its banner shows unless **Keep this change**
+  was pressed first. Wait for it: SSH is then as it was, and sshd reads the old
+  file again. At the machine, over its own screen or the serial console,
+  `elevate ssh-server undo` undoes it at once. A change that was applied without
+  trying, which can only add ways in, is put right with `elevate ssh-server set`,
+  or by putting `/system/settings/ssh/sshd_config` back from "What changed" (see
+  "Put back"). A change that turned SSH off ended the connections sshd served;
+  open a new one once it is back. `elevate ssh-server show` says what SSH does
+  now, and each line of the file that sshd does not read
+  ([NET-183](../../errors/NET-183.md)).
+- **I cannot reach the console after making it private.** Making the console
+  answer this network only is tried, so that a browser that this cuts off gets
+  the console back: wait for the time the banner showed. At the machine,
+  `elevate admin undo` undoes it at once, and `elevate admin settings` says who
+  the console answers now. A browser on the machine's own network, or over
+  WireGuard, was never cut off.
+- **Remove is refused for a device (ADM-137).** This browser reaches the console
+  through that device, and removing it would leave nothing to ask with. Open the
+  console from this machine's network or from another device, and remove it there
+  ([ADM-137](../../errors/ADM-137.md)).
+- **Who may reach the console is being tried (ADM-138).** `admin reach` and `admin
+  sign-in` wait for a change that is tried. Keep it with `elevate admin keep` or
+  undo it with `elevate admin undo`.
 - **Keep this change is off (ADM-133, ADM-135).** The page has not yet reached
   the console over a new connection since the change, which is what turns
   **Keep this change** on, and it asks again by itself. Reload the page, or

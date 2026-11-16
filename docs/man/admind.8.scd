@@ -495,6 +495,274 @@ choice for a card of the old machine that *backup restore --card* takes:
 	*backup restore --machine --cancel*: takes what was staged away,
 	before the next start has put it in place.
 
+The Accounts page adds fourteen (ADR 0515, ADR 0561), in the area
+*accounts*. An account's name is 1 to 32 lowercase letters, digits, *\_*,
+*-* and *.*, starting with a letter or *\_*, and not *help*, as *user*(8)
+says. The list is the person's own; the other thirteen run as an
+administrator, since the last sign-ins, a person's keys, second steps,
+tokens and sessions and every change are not a person's to read or make.
+A name that no account has is ACC-101. *full\_name* has at most 256 bytes
+and no colon or line break. A password is a secret (see *Secrets*): the
+command reads it from its standard input, and it is one line of at most
+1023 characters and 1024 bytes:
+
+*GET /api/1/accounts* (*accounts.list*, area *accounts*)
+	*user list --json*, as the person: the people's accounts with what
+	each can do, as user(8) says it. *disabled* and *password* are null,
+	since only root reads them.
+
+*GET /api/1/accounts/list/all* (*accounts.list-all*, area *accounts*)
+	*user list --json*, as an administrator: the same list, with
+	*disabled* and *password*. The list's page reads it for an
+	administrator who has unlocked, to mark the accounts that are
+	disabled and those that sign in with a key alone.
+
+*GET /api/1/sign-ins/last* (*accounts.last*, area *accounts*)
+	*lastlog --json*: when each account last signed in, from where, and
+	the wrong passwords typed for it since.
+
+*GET /api/1/accounts/{name}* (*accounts.show*, area *accounts*)
+	*user show NAME --json*: the account whole, with its keys, second
+	steps, tokens and sessions at the machine, as user(8) says it.
+	ACC-101.
+
+*POST /api/1/accounts/add* (*accounts.add*, area *accounts*)
+	*user add [--admin] [--full-name TEXT] NAME*: *admin* and *full\_name*
+	are optional, and so is *password*: an account made without one has
+	none until one is set. A name that an account has is ACC-105.
+	*compares* is true: it reads *user list --json* before and after, for
+	the account's row, and names _/system/settings/passwd_ and
+	_/system/settings/group_ as its files.
+
+*POST /api/1/accounts/{name}/set* (*accounts.set*, area *accounts*)
+	*user set --yes NAME* with *--full-name TEXT* for *full\_name*,
+	*--admin* or *--no-admin* for *admin*, and *--console* or
+	*--no-console* for *console*: each is optional, and at least one is
+	given. *compares* is true, as for
+	*accounts.add*. ACC-101, and ACC-102 when it would leave no
+	administrator.
+
+*POST /api/1/accounts/{name}/password* (*accounts.password*, area *accounts*)
+	*passwd NAME*, as an administrator, who needs no old password:
+	*password* is the new one. It names no file and has no probe, so
+	*changed* is always true: authd's file of passwords is not in admind's
+	view. ACC-101.
+
+*POST /api/1/accounts/{name}/disable* (*accounts.disable*, area *accounts*)
+	*user disable --yes NAME*: nothing signs in to the account, and what
+	it runs ends. ACC-101 and ACC-102.
+
+*POST /api/1/accounts/{name}/enable* (*accounts.enable*, area *accounts*)
+	*user enable NAME*: the account signs in again, with its password.
+	ACC-101.
+
+*POST /api/1/accounts/{name}/remove* (*accounts.remove*, area *accounts*)
+	*user remove --keep-home | --archive-home | --delete-home --yes NAME*:
+	*home* is *keep*, *archive* or *delete*, and has no default.
+	*compares* is true, as for *accounts.add*. ACC-101 and ACC-102.
+
+*POST /api/1/accounts/{name}/keys/add* (*accounts.key-add*, area *accounts*)
+	*user key add NAME LINE*: *line* is an SSH public key, one line of at
+	most 16 KiB that the parser *authd*(8) reads keys with takes, and has no
+	options. ACC-103 for any other. It names no file and has no probe,
+	so *changed* is always true: admind sees no home folder, and a
+	probe runs as the person, who may not read another account's keys.
+
+*POST /api/1/accounts/{name}/keys/remove* (*accounts.key-remove*, area *accounts*)
+	*user key remove NAME FINGERPRINT*: *fingerprint* is *SHA256:* and 43
+	characters, as *user show* gives it. ACC-104 when none of the
+	account's keys has it. *changed* is always true, as for
+	*accounts.key-add*.
+
+*POST /api/1/accounts/{name}/tokens/remove* (*accounts.token-revoke*, area *accounts*)
+	*user token remove NAME TOKEN*: *token* is a name of 1 to 32 of *a*
+	to *z*, *0* to *9* and *-*. ACC-104 when the account has no such token.
+	*authd*(8) keeps the state, so it names no file.
+
+*POST /api/1/accounts/{name}/second-step/reset* (*accounts.steps-reset*, area *accounts*)
+	*user steps reset NAME*: takes the account's authenticator app,
+	passkeys, recovery codes and trusted browsers away. It names no file.
+
+*POST /api/1/accounts/{name}/end* (*accounts.end*, area *accounts*)
+	*user end NAME SESSION*: *session* is as *user show* gives it, the
+	number of the session's leader and the second it began with a dash
+	between, as *4123-1763110000*. ACC-104 when the account has no such
+	session.
+
+Your account adds five, in the area *account*. Each runs as the person,
+with the person's own rights, and none takes the name of an account: the
+commands take the caller's own when none is given. The two passwords of a
+change are secrets, read as two lines of the command's standard input, the
+current one first, and are at most 511 characters each:
+
+*GET /api/1/account/show* (*account.show*, area *account*)
+	*user show --json*, as the person: their own account whole.
+
+*POST /api/1/account/name* (*account.name*, area *account*)
+	*user set --full-name TEXT*: *full\_name* may be empty, which clears
+	it. *compares* is true: it names _/system/settings/passwd_ and reads
+	*user show --json* before and after, for *account*.
+
+*POST /api/1/account/password* (*account.password*, area *account*)
+	*passwd*, with *current* and *new*. A wrong *current* is authd's
+	refusal, ADM-123 with its words, after its wait. It names no file, as
+	*accounts.password*, so *changed* is always true.
+
+*POST /api/1/account/keys/add* (*account.key-add*, area *account*)
+	*user key add LINE*, as for *accounts.key-add*. ACC-103. It reads
+	*user show --json* before and after, for *keys*, and names no file,
+	since the file's folder is the caller's name, which the action does
+	not know.
+
+*POST /api/1/account/keys/remove* (*account.key-remove*, area *account*)
+	*user key remove FINGERPRINT*, as for *accounts.key-remove*. ACC-104.
+
+The Security page adds seven, in the area *security*, with *checks.last*.
+The sign-in rules are the person's to read, as *admin.toml* is readable by
+every account; the others run as an administrator, as above. Whom the
+console answers is the area *console*'s, below. An address or a network is
+read as *firewall*(8) reads it, and the refusal names the field *address*
+or *network* (ADM-125):
+
+*POST /api/1/checks/run* (*checks.run*, area *security*)
+	*dukovo-check --json*, as an administrator: runs the health checks now,
+	the ones only root can run too, and keeps the result, which
+	*checks.last* then gives. It is a *POST* because it writes the kept
+	result. Its answer is the result as printed, and status 1 or 2, a
+	failed or a warned check, is an answer too, as for *checks.last*;
+	status 3 is ADM-123. It names no file, has no undo and compares
+	nothing, so *changed* is always true. The console never runs it on a
+	timer.
+
+*GET /api/1/security/sign-in* (*security.sign-in*, area *security*)
+	*admin settings --json*, as the person: the sign-in rules, the
+	console's *listen* port, *reach* and *certificate*, and the terminals'
+	rules, as *admin*(8) says it, with *wrong* the reason _admin.toml_
+	does not read.
+
+*POST /api/1/security/sign-in* (*security.sign-in-set*, area *security*)
+	*admin sign-in [--second-step W] [--session-hours N] [--idle-minutes
+	N]*: sets the rules given, in _admin.toml_, and has admind read them at
+	once. *second\_step* is *if-set*, *administrators* or *everyone*,
+	*session\_hours* is 1 to 168 and *idle\_minutes* 5 to 1440; one of them
+	at least is needed (ADM-125 with the field *second\_step* for none).
+	*compares* is true: it reads *admin settings --json* before and after,
+	for *sign\_in*. While a change of the console's reach is tried, it is
+	ADM-138.
+
+*GET /api/1/security/blocked* (*security.blocked*, area *security*)
+	*firewall blocked --json*, as an administrator: the addresses that
+	wrong passwords have blocked, with the settings of the blocks, as
+	*firewall*(8) says it.
+
+*POST /api/1/security/unblock* (*security.unblock*, area *security*)
+	*firewall unblock ADDRESS*: lifts a block, so that the address is
+	let in at once. *address* is an IPv4 address, or an IPv6 address or its
+	network of 64 bits. The blocks are in a file only authd opens, which
+	is not in admind's view, so it names no file and *changed* is always
+	true. Nothing puts a block back.
+
+*POST /api/1/security/never-block* (*security.never-block*, area *security*)
+	*firewall never-block NETWORK*: keeps *network*, an address or a
+	network as *192.0.2.0/24*, out of the blocks. It names
+	_/system/settings/blocking.toml_, and *security.never-block-remove* undoes it.
+
+*POST /api/1/security/never-block/remove* (*security.never-block-remove*, area *security*)
+	*firewall never-block remove NETWORK*: lets the blocks count the
+	network again. *security.never-block* undoes it.
+
+The SSH page adds six (area *ssh*), of which the first is the person's read
+and the rest run as an administrator, as *ssh-server*(8) does. A change
+may be tried, as the Networking and Firewall pages try theirs: *try*, from
+10 to 3600 seconds, ends the command with *--try SECONDS*, and Spark
+undoes it unless it is kept (the trial *ssh*). While it is tried, a change
+is NET-182:
+
+*GET /api/1/ssh* (*ssh.show*, area *ssh*)
+	*ssh-server show --json*, as the person: whether sshd is on and
+	runs, its port, and what its file says of passwords, keys, who may
+	sign in, forwarding and its mistakes.
+
+*POST /api/1/ssh* (*ssh.set*, area *ssh*)
+	*ssh-server set [passwords yes|no] [keys yes|no] [allow-users NAME...] [allow-groups NAME...] [--try S]*,
+	with *passwords* and *keys* as *yes* or *no*, and *allow\_users* and
+	*allow\_groups* as *everyone* or up to 32 names with a space between
+	them, each by the rule of an account's name (*user*(8)). One at
+	least is needed, and *passwords* and *keys* may
+	not both be *no*, which would leave nobody to sign in (ADM-125 with the
+	field). A file with a mistake in it is NET-183. *compares* is true: it
+	reads *ssh-server show --json* before and after, for the settings of
+	the file.
+
+*POST /api/1/ssh/on* (*ssh.on*, area *ssh*)
+	*ssh-server on*: turns SSH on, as *service sshd enable* does. It names
+	sshd's service file and compares *on* in *ssh-server show --json*.
+	*ssh.off* undoes it.
+
+*POST /api/1/ssh/off* (*ssh.off*, area *ssh*)
+	*ssh-server off [--try S]*: turns SSH off, at once or tried.
+	*ssh.on* undoes it.
+
+*POST /api/1/ssh/trial/keep* (*ssh.keep*, area *ssh*)
+	*ssh-server keep*: keeps the change that is being tried. With none
+	it is NET-179.
+
+*POST /api/1/ssh/trial/undo* (*ssh.undo*, area *ssh*)
+	*ssh-server undo*: undoes the change that is being tried. NET-179 as
+	above.
+
+The console's reach (*console.reach*) takes *try* too, and then runs *admin
+reach WORD --try SECONDS*: Spark undoes the change unless it is kept (the
+trial *console*, which covers all of _admin.toml_, the sign-in rules as
+well). While it is tried, *console.reach* and *security.sign-in-set* are
+ADM-138.
+Two actions in the area *console* keep or undo it, both as an administrator
+and NET-179 with no trial running:
+
+*POST /api/1/console/trial/keep* (*console.keep*, area *console*)
+	*admin keep*: keeps the change that is being tried.
+
+*POST /api/1/console/trial/undo* (*console.undo*, area *console*)
+	*admin undo*: undoes the change that is being tried. It names
+	_admin.toml_, and compares what *admin settings --json* gives of it.
+
+The Private access page adds four, in the area *private*, which run
+*wireguard*(8) as an administrator: its interface's file holds the
+server's private key, and the system's socket for it is root's, so even
+the read needs the area's full scope for a token. A device's name is 1 to
+32 letters, digits, *-* and *\_*, not starting with *-*:
+
+*GET /api/1/private* (*private.show*, area *private*)
+	*wireguard show --json*: the interface, with its address, port,
+	endpoint and public key, and each device with its name, addresses and
+	what wgd says of it, as *wireguard*(8) says it. It prints public keys
+	only.
+
+*POST /api/1/private/serve* (*private.serve*, area *private*)
+	*wireguard serve [--endpoint HOST] [--port P] [--address A]*: sets the
+	server up, with its key, or changes only what is given, and has wgd
+	read the file. *endpoint* is a host's name or an address of at most 253
+	bytes, *port* 1024 to 65535, *address* an address and its length, as
+	*10.8.0.1/24*. Its file, _/system/state/wireguard/wg0.conf_, holds
+	the server's private key and is not in admind's view, so this action
+	and the two below name no file, and their *changed* is always true.
+
+*POST /api/1/private/devices/add* (*private.add*, area *private*)
+	*wireguard add NAME --json*: adds a device, makes its key and prints
+	the device's file, with its private key, once. The device reaches
+	the server's address on the tunnel. It prints a secret, so it has
+	*secret\_answer* set. *private.remove* undoes it. A machine without
+	private access is NET-184, and a name in use NET-185.
+
+*POST /api/1/private/devices/remove* (*private.remove*, area *private*)
+	*wireguard remove NAME*: takes the device away, so that its key no
+	longer reaches the machine. A device that is not there is NET-184.
+	A request that came through *wg0* is refused with ADM-137 when the
+	device holds the browser's address, as removing it would cut the
+	browser off and no trial puts a key back: admind reads the devices
+	with *wireguard show --json*, as the caller's administrator, first,
+	and refuses too when that read fails or does not say.
+
 An action's arguments are the parts of its address, such as _name_ above,
 and the members of the JSON object in its body, which may be empty,
 together. A name in both, a member the action does not have, or a body

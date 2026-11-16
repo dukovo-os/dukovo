@@ -16,7 +16,7 @@ use crate::admind::serve::look_at_trials;
 use crate::admind::trials::fake_spark;
 
 /// Asks `req` by `connection`.
-async fn send_on(world: &World, req: Req, connection: &Rc<Connection>) -> Answered {
+pub(super) async fn send_on(world: &World, req: Req, connection: &Rc<Connection>) -> Answered {
     let shared = Rc::clone(&world.console.shared);
     let Ok(response) =
         handle_on(shared, PEER.parse().unwrap(), Rc::clone(connection), build(req)).await;

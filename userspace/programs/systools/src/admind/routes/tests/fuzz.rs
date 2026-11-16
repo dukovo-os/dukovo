@@ -517,6 +517,19 @@ fn seeds(actions: &[&'static dyn Registered]) -> Vec<Seed> {
         Seed::new("terminal end", "POST", "/api/1/terminals/{id}/end", Some(json!({}))),
         Seed::new("pane end", "POST", "/api/1/terminals/panes/{pane}/end", Some(json!({}))),
         Seed::new("terminal socket", "GET", "/api/1/terminal", None),
+        Seed {
+            params: vec![("name".into(), "chase".into())],
+            ..Seed::new("signed in", "GET", "/api/1/accounts/{name}/sessions", None)
+        },
+        Seed {
+            params: vec![("name".into(), "dave".into())],
+            ..Seed::new(
+                "signed in end",
+                "POST",
+                "/api/1/accounts/{name}/sessions/{id}/end",
+                Some(json!({})),
+            )
+        },
         Seed::new("lock", "POST", "/api/1/lock", Some(json!({}))),
         Seed::new("sign-out", "POST", "/api/1/sign-out", Some(json!({}))),
     ];

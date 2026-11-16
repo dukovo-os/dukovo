@@ -264,6 +264,7 @@ impl Authd {
                 terminal: tty_name.clone(),
                 from: shown_from.clone(),
                 session: process as u32,
+                via: "console".into(),
             };
             record(&signins::of(user.uid), user.gid, 0o640, Event::In(seat));
         }

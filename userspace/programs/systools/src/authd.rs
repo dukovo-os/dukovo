@@ -753,6 +753,14 @@ impl Authd {
                 }
                 Request::Disable { name } => (self.disable(&files, name, peer), now),
                 Request::Enable { name } => (enable(&files, name, peer), now),
+                Request::StepsOf { name } => (console::steps_of(&files, name, peer), now),
+                Request::StepsReset { name } => (self.steps_reset(&files, name, peer), now),
+                Request::TokenRemoveOf { name, token } => {
+                    (console::token_remove_of(&files, name, token, peer), now)
+                }
+                Request::EndSession { name, session, kill } => {
+                    (self.end_session(&files, name, *session, *kill, peer), now)
+                }
                 Request::Remove { name } => (self.remove(files, name, peer), now),
                 Request::Service { name, whose, home } => {
                     (add_service(files, name, whose, home, peer), now)
@@ -1265,6 +1273,7 @@ impl Authd {
                     terminal: tty.clone(),
                     from: String::new(),
                     session: process as u32,
+                    via: String::new(),
                 };
                 record(&signins::of(user.uid), user.gid, 0o640, Event::In(seat));
                 let session = Session {
@@ -1339,11 +1348,14 @@ impl Authd {
                         session.terminal
                     );
                     if session.recorded {
+                        // How the person came is the `in` line's, which
+                        // this one pairs with by the session's number.
                         let seat = Seat {
                             name: session.name.clone(),
                             terminal: session.terminal.clone(),
                             from: session.from.clone(),
                             session: process as u32,
+                            via: String::new(),
                         };
                         let out = Event::Out(seat);
                         record(&signins::of(session.number), session.group, 0o640, out);
@@ -1818,6 +1830,7 @@ impl Authd {
                     terminal: SHARE_TERMINAL.into(),
                     from: shown(from),
                     session: process as u32,
+                    via: String::new(),
                 };
                 record(&signins::of(user.uid), user.gid, 0o640, Event::In(seat));
                 let session = Session {
@@ -2031,6 +2044,7 @@ impl Authd {
                 terminal: tty.clone(),
                 from: shown(from),
                 session: process as u32,
+                via: "ssh".into(),
             };
             record(&signins::of(user.uid), user.gid, 0o640, Event::In(seat));
         }
@@ -2369,6 +2383,76 @@ impl Authd {
         Err(format!("its processes made more as fast as {ended} of them ended"))
     }
 
+    /// Hangs up, or with `kill` kills, the processes of `name`'s session at
+    /// the machine that process `leader` leads, for `user end` (ADR 0562).
+    /// The session is one authd started for the account, at a terminal or
+    /// over SSH: its processes are below authd, and the kernel lets a
+    /// process signal only its own session's and those below it, so no
+    /// other process, root's neither, can end them. Only the session's
+    /// processes that act for the account are signalled. The person is told
+    /// at their next sign-in that the session was hung up. Answers how many
+    /// processes the signal was sent to.
+    fn end_session(
+        &self,
+        files: &Files,
+        name: &str,
+        leader: u64,
+        kill: bool,
+        peer: Peer,
+    ) -> Answer {
+        let user = match person(files, name, peer, "ends another account's session") {
+            Ok(user) => user.clone(),
+            Err(why) => return Answer::Refused(why),
+        };
+        if !started_for(&self.sessions, name, leader) {
+            return Answer::Refused(format!(
+                "{} has no session {leader} that authd started; `user show {}` lists their \
+                 sessions (ACC-104)",
+                shown(name),
+                shown(name)
+            ));
+        }
+        let processes = match proc::processes() {
+            Ok(processes) => processes,
+            Err(why) => return Answer::Refused(format!("cannot list the processes: {why}")),
+        };
+        let signal = if kill { libc::SIGKILL } else { libc::SIGHUP };
+        let mut sent = 0u32;
+        for process in
+            processes.iter().filter(|p| p.session == leader && p.user == user.uid && !p.zombie())
+        {
+            let Ok(number) = libc::pid_t::try_from(process.number) else { continue };
+            // SAFETY: kill only sends a signal, to a process of a session
+            // authd started, which is below it.
+            if unsafe { libc::kill(number, signal) } == 0 {
+                sent += 1;
+            }
+        }
+        // Who asked: the administrator whose elevated command this is.
+        let by = self
+            .sessions
+            .get(&i32::try_from(peer.process).unwrap_or(-1))
+            .filter(|session| session.elevated)
+            .map_or_else(|| "An administrator".to_string(), |session| shown(&session.name));
+        let what = if kill { "killed what was left of" } else { "hung up" };
+        audit!(
+            "{by} {what} the session {leader} of {name}: {sent} processes, for process {} (user \
+             {})",
+            peer.process,
+            peer.user
+        );
+        if !kill {
+            console::tell_next_sign_in(
+                name,
+                &format!(
+                    "{by} ended your session at the machine on {}.",
+                    util::local_time(console::unix_now(), "%a %b %e %H:%M %Y")
+                ),
+            );
+        }
+        Answer::Done(sent.to_string())
+    }
+
     /// Disables `name`'s account (ADR 0220): nothing signs in to it, and
     /// what acts for it ends.
     fn disable(&mut self, files: &Files, name: &str, peer: Peer) -> Answer {
@@ -2376,6 +2460,9 @@ impl Authd {
             Ok(user) => user.clone(),
             Err(why) => return Answer::Refused(why),
         };
+        if let Err(why) = leaves_an_administrator(files, name) {
+            return Answer::Refused(why);
+        }
         if let Err(why) = mark_disabled(files, name, true) {
             return Answer::Refused(why);
         }
@@ -2410,6 +2497,9 @@ impl Authd {
             Ok(user) => user.clone(),
             Err(why) => return Answer::Refused(why),
         };
+        if let Err(why) = leaves_an_administrator(&files, name) {
+            return Answer::Refused(why);
+        }
         // Nothing signs in to it from now on, whatever fails later.
         if let Err(why) = mark_disabled(&files, name, true) {
             return Answer::Refused(why);
@@ -2584,6 +2674,11 @@ impl Authd {
         if !user.is_person() {
             return Answer::Refused(format!("{name} is not a person's account"));
         }
+        if admin == Some(false)
+            && let Err(why) = leaves_an_administrator(&files, name)
+        {
+            return Answer::Refused(why);
+        }
         let Files { mut users, mut groups, .. } = files;
         let mut changed = Vec::new();
         if let Some(full_name) = full_name {
@@ -2692,6 +2787,24 @@ fn share_source(from: &str) -> String {
     format!("smb {from}")
 }
 
+/// Refuses a change that would leave no enabled administrator: account
+/// `name` disabled, removed or no longer one when it is the only enabled
+/// account in the administrators' group. Rescue and recovery need one, at
+/// a terminal as from the web console (ACC-102).
+fn leaves_an_administrator(files: &Files, name: &str) -> Result<(), String> {
+    let counts = |user: &User| {
+        user.is_person() && accounts::is_admin(user, &files.groups) && !files.disabled(&user.name)
+    };
+    let Some(user) = files.user(name) else { return Ok(()) };
+    if !counts(user) || files.users.entries().any(|other| other.name != name && counts(other)) {
+        return Ok(());
+    }
+    Err(format!(
+        "that would leave no administrator: {name} is the only one whose account is enabled, \
+         and Rescue and recovery need one; make another account an administrator first (ACC-102)"
+    ))
+}
+
 /// The account of a person `name`, for a request that changes it: root's
 /// to ask, from an administrator inside elevate, which `what` says.
 fn person<'a>(files: &'a Files, name: &str, peer: Peer, what: &str) -> Result<&'a User, String> {
@@ -2703,6 +2816,16 @@ fn person<'a>(files: &'a Files, name: &str, peer: Peer, what: &str) -> Result<&'
         return Err(format!("{} is not a person's account", shown(name)));
     }
     Ok(user)
+}
+
+/// Whether process `leader` leads a session that authd started for
+/// `name`, at a terminal or over SSH, which `user end` may end: not an
+/// elevated command, which acts as root.
+fn started_for(sessions: &HashMap<i32, Session>, name: &str, leader: u64) -> bool {
+    i32::try_from(leader)
+        .ok()
+        .and_then(|process| sessions.get(&process))
+        .is_some_and(|session| session.name == name && !session.elevated)
 }
 
 /// Enables `name`'s account again, with the password it had.
@@ -3558,6 +3681,61 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
 mod tests {
     use super::*;
 
+    /// The account files of alice and bob, administrators, and carol, who
+    /// is not one; `disabled` names the accounts that are disabled.
+    fn three_accounts(disabled: &[&str]) -> Files {
+        let passwords: String = ["alice", "bob", "carol"]
+            .into_iter()
+            .map(|name| {
+                let mark = if disabled.contains(&name) { "!" } else { "" };
+                [name, ":", mark, "$argon2id$v=19$x:\n"].concat()
+            })
+            .collect();
+        Files {
+            users: accounts::users(
+                "root:x:0:0::/:/bin/sh\nalice:x:1000:1000::/users/alice:/bin/sh\n\
+                 bob:x:1001:1001::/users/bob:/bin/sh\ncarol:x:1002:1002::/users/carol:/bin/sh\n",
+            ),
+            groups: accounts::groups(
+                "admins:x:10:alice,bob\nalice:x:1000:\nbob:x:1001:\ncarol:x:1002:\n",
+            ),
+            passwords: accounts::passwords(&passwords),
+            sharing: accounts::passwords(""),
+        }
+    }
+
+    #[test]
+    fn no_change_leaves_the_machine_without_an_enabled_administrator() {
+        // Two enabled: either may go.
+        let both = three_accounts(&[]);
+        assert_eq!(leaves_an_administrator(&both, "alice"), Ok(()));
+        assert_eq!(leaves_an_administrator(&both, "bob"), Ok(()));
+        // bob is disabled, so alice is the only one who counts.
+        let one = three_accounts(&["bob"]);
+        let refused = leaves_an_administrator(&one, "alice").unwrap_err();
+        assert!(refused.starts_with("that would leave no administrator: alice"), "{refused}");
+        assert!(refused.ends_with("(ACC-102)"), "{refused}");
+        // bob, disabled already, and carol, no administrator, change
+        // nothing of it; nor does an account that is not there.
+        for name in ["bob", "carol", "nobody"] {
+            assert_eq!(leaves_an_administrator(&one, name), Ok(()), "{name}");
+        }
+    }
+
+    #[test]
+    fn only_root_asks_of_another_persons_account() {
+        // `user show`, `user steps reset` and `user token remove` ask
+        // through `person`, as disabling an account does.
+        let files = three_accounts(&[]);
+        let what = "removes another account's second steps";
+        let refused = person(&files, "carol", Peer { process: 9, user: 1000 }, what).unwrap_err();
+        assert_eq!(refused, format!("only an administrator, inside elevate, {what}"));
+        let root = Peer { process: 9, user: 0 };
+        assert_eq!(person(&files, "carol", root, what).map(|u| u.uid), Ok(1002));
+        assert!(person(&files, "root", root, what).is_err(), "root is no person's account");
+        assert!(person(&files, "nobody", root, what).is_err());
+    }
+
     #[test]
     fn an_elevated_commands_question_goes_to_the_pane_it_was_elevated_in() {
         let session = |name: &str, terminal: &str, elevated| Session {
@@ -3593,6 +3771,13 @@ mod tests {
         assert!(elevated_by(&sessions, "none", terminal_of).is_none());
         // Once the command no longer acts for root, or has ended, neither.
         assert!(elevated_by(&sessions, "pts/3", |_| None).is_none());
+        // `user end` ends bob's session, and no elevated command, another
+        // account's session or a process authd did not start.
+        assert!(started_for(&sessions, "bob", 50));
+        assert!(!started_for(&sessions, "alice", 50));
+        assert!(!started_for(&sessions, "alice", 41));
+        assert!(!started_for(&sessions, "bob", 51));
+        assert!(!started_for(&sessions, "bob", u64::MAX));
     }
 
     #[test]
@@ -3602,6 +3787,7 @@ mod tests {
             time,
             terminal: terminal.into(),
             from: from.into(),
+            via: String::new(),
         };
         assert!(latest_lines(&Latest::default(), "bob", when).is_empty());
         let latest = Latest { sign_in: Some(place(5, "pts/1", "")), failed: 0, last_failed: None };

@@ -78,7 +78,8 @@ use serde_json::json;
 use super::blocking::Failed;
 use super::proofs::{self, Ceremony, CodeRefusal, Expected};
 use super::{
-    Authd, Files, Peer, Session, Wrong, record, replace, shown, signal_command, wait_after,
+    Authd, Files, Notices, Peer, Session, Wrong, person, record, replace, shown, signal_command,
+    wait_after,
 };
 use crate::admin_settings::{SecondStep, Settings};
 use crate::{elevate, signin, util};
@@ -714,7 +715,7 @@ fn label_ok(name: &str) -> bool {
 
 /// Whether `name` can name an API token: 1 to 32 of `a` to `z`, `0` to
 /// `9` and `-`.
-fn token_name_ok(name: &str) -> bool {
+pub(crate) fn token_name_ok(name: &str) -> bool {
     (1..=32).contains(&name.len())
         && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
@@ -930,8 +931,18 @@ fn short(session: &str) -> String {
     format!("{}…", session.chars().take(8).collect::<String>())
 }
 
+/// Keeps `notice` for account `name`'s next sign-in. A notice that cannot
+/// be kept is said in the log: what it tells is in the audit log too.
+pub(super) fn tell_next_sign_in(name: &str, notice: &str) {
+    let mut notices = Notices::read();
+    notices.add(name, notice);
+    if let Err(why) = notices.write() {
+        eprintln!("authd: {why}");
+    }
+}
+
 /// Unix seconds, now.
-fn unix_now() -> i64 {
+pub(super) fn unix_now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
@@ -1033,9 +1044,26 @@ impl Authd {
                 }
                 None => no(NO_SESSION, now),
             },
-            Console::End { session } => match self.console.live.remove(session) {
+            Console::End { session, by } => match self.console.live.remove(session) {
                 Some(live) => {
-                    audit!("{}'s web console session {} ended", live.name, short(session));
+                    let by_whom =
+                        by.as_deref().map_or_else(String::new, |by| format!(", by {}", shown(by)));
+                    audit!(
+                        "{}'s web console session {} from {} ended{by_whom}",
+                        live.name,
+                        short(session),
+                        live.from
+                    );
+                    if let Some(by) = by.as_deref().filter(|by| *by != live.name) {
+                        tell_next_sign_in(
+                            &live.name,
+                            &format!(
+                                "{by} ended your web console session from {} on {}.",
+                                live.from,
+                                util::local_time(unix_now(), "%a %b %e %H:%M %Y")
+                            ),
+                        );
+                    }
                     signal_command(live.worker, libc::SIGHUP);
                     self.end_admin_shells(now);
                     self.end_follows(now);
@@ -1043,6 +1071,26 @@ impl Authd {
                 }
                 None => no(NO_SESSION, now),
             },
+            Console::TerminalEnded { name, by, title } => {
+                if files.user(name).is_none_or(|user| !user.is_person()) {
+                    return no("no person has that account", now);
+                }
+                audit!(
+                    "{name}'s web console terminal \"{}\" was ended by {}",
+                    shown(title),
+                    shown(by)
+                );
+                tell_next_sign_in(
+                    name,
+                    &format!(
+                        "{} ended your web console terminal \"{}\" on {}.",
+                        shown(by),
+                        shown(title),
+                        util::local_time(unix_now(), "%a %b %e %H:%M %Y")
+                    ),
+                );
+                (Answer::Done(String::new()), now)
+            }
             Console::Elevate { by, language, command } => {
                 self.console_elevate(i, files, by, language, command, now)
             }
@@ -1469,6 +1517,7 @@ impl Authd {
             terminal: TERMINAL.into(),
             from: from.clone(),
             session: process as u32,
+            via: "console".into(),
         };
         record(&signins::of(user.uid), user.gid, 0o640, Event::In(seat));
         let recorded = Session {
@@ -2136,6 +2185,102 @@ impl Authd {
             _ => Err("not a request about one's own second steps".into()),
         }
     }
+}
+
+// What root asks of another account's second steps and tokens: `user
+// show`, `user steps reset` and `user token remove` (ADR 0562).
+
+/// Account `name`'s second steps and tokens, as its own `steps` answers
+/// them.
+pub(super) fn steps_of(files: &Files, name: &str, peer: Peer) -> Answer {
+    let user = match person(files, name, peer, "reads another account's second steps") {
+        Ok(user) => user,
+        Err(why) => return Answer::Refused(why),
+    };
+    let needed = match Settings::read() {
+        Ok(settings) => {
+            rules_need_step(settings.sign_in.second_step, accounts::is_admin(user, &files.groups))
+        }
+        Err(why) => return Answer::Refused(why),
+    };
+    match Store::read(name) {
+        Ok(store) => Answer::Done(steps(&store, needed, unix_now())),
+        Err(why) => Answer::Refused(why),
+    }
+}
+
+impl Authd {
+    /// Removes account `name`'s second steps, for a person who lost the
+    /// phone or key, and tells them at their next sign-in. Its tokens
+    /// stay: they are not a way to sign in.
+    pub(super) fn steps_reset(&mut self, files: &Files, name: &str, peer: Peer) -> Answer {
+        let user = match person(files, name, peer, "removes another account's second steps") {
+            Ok(user) => user.clone(),
+            Err(why) => return Answer::Refused(why),
+        };
+        let mut store = match Store::read(name) {
+            Ok(store) => store,
+            Err(why) => return Answer::Refused(why),
+        };
+        let unix = unix_now();
+        let app = usize::from(store.app.is_some());
+        let passkeys = store.passkeys.len();
+        let codes = store.recovery.as_ref().map_or(0, |recovery| recovery.codes.len());
+        let trusted = store.trusted.iter().filter(|t| t.until > unix).count();
+        store.app = None;
+        store.passkeys.clear();
+        store.recovery = None;
+        store.trusted.clear();
+        if let Err(why) = store.write(name) {
+            return Answer::Refused(why);
+        }
+        // An app half added goes too: its secret was never confirmed.
+        self.console.apps.remove(&user.uid);
+        audit!(
+            "removed the second steps of {name}: {app} app, {passkeys} passkeys, {codes} \
+             recovery codes and {trusted} trusted browsers, for process {} (user {})",
+            peer.process,
+            peer.user
+        );
+        let when = util::local_time(unix, "%a %b %e %H:%M %Y");
+        tell_next_sign_in(
+            name,
+            &format!(
+                "An administrator removed your second steps on {when}: your authenticator app, \
+                 passkeys, recovery codes and trusted browsers no longer sign you in. Add a new \
+                 second step in Your account."
+            ),
+        );
+        Answer::Done(format!("{app} {passkeys} {codes} {trusted}"))
+    }
+}
+
+/// Removes account `name`'s API token named `token`.
+pub(super) fn token_remove_of(files: &Files, name: &str, token: &str, peer: Peer) -> Answer {
+    if let Err(why) = person(files, name, peer, "removes another account's API tokens") {
+        return Answer::Refused(why);
+    }
+    let mut store = match Store::read(name) {
+        Ok(store) => store,
+        Err(why) => return Answer::Refused(why),
+    };
+    let before = store.tokens.len();
+    store.tokens.retain(|t| t.name != token);
+    if store.tokens.len() == before {
+        return Answer::Refused(format!(
+            "{name} has no API token named {} (ACC-104)",
+            shown(token)
+        ));
+    }
+    if let Err(why) = store.write(name) {
+        return Answer::Refused(why);
+    }
+    audit!(
+        "removed the API token \"{token}\" of {name}, for process {} (user {})",
+        peer.process,
+        peer.user
+    );
+    Answer::Done(String::new())
 }
 
 mod follow;

@@ -391,6 +391,12 @@ impl Terminals {
         self.terminals.get_mut(&id).filter(|t| t.account == account).ok_or_else(no_terminal)
     }
 
+    /// Terminal `id`, whoever's it is: for the Accounts page, which an
+    /// administrator ends another account's terminal from (ADR 0562).
+    pub fn terminal(&self, id: u32) -> Option<&Terminal> {
+        self.terminals.get(&id)
+    }
+
     /// The terminal of pane `pane`, if it is there.
     pub fn terminal_of_pane(&self, pane: u32) -> Option<u32> {
         self.panes.get(&pane).map(|pane| pane.terminal)
@@ -476,6 +482,32 @@ impl Terminals {
             "most": most,
             "sockets": { "open": open, "most": SOCKETS_PER_SESSION },
         })
+    }
+
+    /// The terminals of `account`, as the Accounts page lists them for an
+    /// administrator or the account (ADR 0562): each with its name, how
+    /// many panes it has, whether one is an administrator's, when it was
+    /// made, whether a page shows it now, and its panes' pseudo-terminals
+    /// as `pts/7`, which `user show` lists as sessions at the machine and
+    /// the page leaves out of those. Nothing of what it shows.
+    pub fn of_account(&self, account: &str) -> Vec<Value> {
+        self.terminals
+            .values()
+            .filter(|terminal| terminal.account == account)
+            .map(|terminal| {
+                let panes: Vec<&Pane> =
+                    terminal.panes.iter().filter_map(|pane| self.panes.get(pane)).collect();
+                json!({
+                    "id": terminal.id,
+                    "title": terminal.name,
+                    "panes": panes.len(),
+                    "admin": panes.iter().any(|pane| pane.admin.is_some()),
+                    "since_ms": terminal.made.saturating_mul(1000),
+                    "attached": panes.iter().any(|pane| !pane.attached.is_empty()),
+                    "ttys": panes.iter().map(|pane| pane.tty()).collect::<Vec<_>>(),
+                })
+            })
+            .collect()
     }
 
     /// Opens a socket for `account` on the console session `session`.

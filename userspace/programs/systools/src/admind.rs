@@ -116,6 +116,12 @@ fn log(level: u8, text: &str) {
     eprintln!("<{level}>admind: {text}");
 }
 
+/// Says `text` in the audit log: authpriv's level 6, which logd keeps
+/// with the security events that only root reads (ADR 0562).
+fn audit(text: &str) {
+    log(86, text);
+}
+
 /// admind(8).
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let help = "Usage: admind [--worker]";

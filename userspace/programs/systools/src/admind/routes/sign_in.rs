@@ -297,9 +297,14 @@ async fn start(
     };
     let started = started(&text).ok_or_else(authd_unreadable)?;
     let link = Link::new(ours).map_err(internal)?;
-    let session =
-        Session::new(name.to_string(), started.session.clone(), cx.peer, needs_step, link.clone())
-            .map_err(|why| Failure::new(Kind::Internal, why))?;
+    let session = Session::new(
+        name.to_string(),
+        started.session.clone(),
+        (cx.peer, browser_name(&cx.user_agent)),
+        needs_step,
+        link.clone(),
+    )
+    .map_err(|why| Failure::new(Kind::Internal, why))?;
     let cookie = cx.shared.admit(session)?;
     cx.shared.watch(&link, started.session);
     log(6, &format!("{} signed in from {}", shown(name), cx.peer));

@@ -111,10 +111,12 @@ export const momentWords = (moment) => `${leftWords(moment)} left to keep the ch
 
 // ---- who began it ------------------------------------------------------------
 
-/** The settings file and the actions that try it, for each trial. */
+/** The settings files and the actions that try them, for each trial. */
 const FAMILIES = Object.freeze({
-  network: { file: '/system/settings/network', begins: ['network.set'] },
-  firewall: { file: '/system/settings/firewall', begins: ['firewall.add', 'firewall.replace', 'firewall.remove'] },
+  network: { files: ['/system/settings/network'], begins: ['network.set'] },
+  firewall: { files: ['/system/settings/firewall'], begins: ['firewall.add', 'firewall.replace', 'firewall.remove'] },
+  ssh: { files: ['/system/settings/ssh/sshd_config', '/system/settings/spark/services/sshd.toml'], begins: ['ssh.set', 'ssh.off'] },
+  console: { files: ['/system/settings/admin.toml'], begins: ['console.reach'] },
 });
 
 /** The seconds of a `--try SECONDS` in `argv`, or null. */
@@ -126,24 +128,27 @@ function trySeconds(argv) {
 
 /**
  * Who began the running trial `id`, from the journal's rows (`GET
- * /api/1/changes`, newest first): the newest row that names the trial's
- * file or one of its actions decides, a refused one aside. A row of an action
- * that tries the file began it: `{who, how, seconds, card}` (`card` is the
- * network card, null for the firewall); a keep, an undo or a change that was
- * not tried, or a change of the file by hand or by Spark's undo, means a
- * trial now running began at a terminal, which is null.
+ * /api/1/changes`, newest first): the newest row that names one of the
+ * trial's files or one of its actions decides, a refused one aside. A row of
+ * an action that tries the files began it: `{who, how, seconds, card}`
+ * (`card` is the network card, null for the others); a keep, an undo or a
+ * change that was not tried, or a change of a file by hand, by another
+ * action or by Spark's undo, means a trial now running began at a terminal,
+ * which is null. A trial this page does not know, as a service's, is
+ * undefined: who began it is not said.
  */
 export function triedBy(rows, id) {
-  const family = FAMILIES[id];
+  const family = Object.hasOwn(FAMILIES, id) ? FAMILIES[id] : undefined;
+  if (family === undefined) return undefined;
   for (const row of Array.isArray(rows) ? rows : []) {
+    // A change that was refused changed nothing, and says nothing of the trial.
+    if (typeof row.action === 'string' && row.status !== 0) continue;
     if (typeof row.action === 'string' && row.action.startsWith(`${id}.`)) {
-      // A change that was refused changed nothing, and says nothing of the trial.
-      if (row.status !== 0) continue;
       const seconds = family.begins.includes(row.action) ? trySeconds(row.argv) : null;
       if (seconds === null) return null;
       return { who: row.who, how: row.how, seconds, card: id === 'network' ? (row.argv[2] ?? null) : null };
     }
-    if (Array.isArray(row.files) && row.files.some((file) => file.path === family.file)) return null;
+    if (Array.isArray(row.files) && row.files.some((file) => family.files.includes(file.path))) return null;
   }
   return null;
 }

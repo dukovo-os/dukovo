@@ -42,6 +42,11 @@ OpenSSH's sshd would carry such a line out, so it is not passed over:
 a line meant to keep people out never does nothing. *sshd -t* checks
 the file before a reload, and *sshd -T* shows what it says.
 
+*ssh-server*(8) shows the file's settings and changes *PasswordAuthentication*,
+*PubkeyAuthentication*, *AllowUsers* and *AllowGroups*, as the web
+console's Security page does, with every other line kept as it is. It
+refuses a file with a mistake.
+
 # KEYWORDS
 
 *AllowTcpForwarding* *yes*|*all*|*local*|*remote*|*no*
@@ -109,4 +114,4 @@ _/system/resources/default-settings/ssh/sshd_config_
 
 # SEE ALSO
 
-*sshd*(8), *authd*(8), *service*(8), *ssh_config*(5), *firewall*(8)
+*sshd*(8), *ssh-server*(8), *authd*(8), *service*(8), *ssh_config*(5), *firewall*(8)

@@ -43,6 +43,11 @@ export class Element {
       add: (...names) => names.forEach((name) => this.classes.add(name)),
       remove: (...names) => names.forEach((name) => this.classes.delete(name)),
       contains: (name) => this.classes.has(name),
+      toggle: (name, force = !this.classes.has(name)) => {
+        if (force) this.classes.add(name);
+        else this.classes.delete(name);
+        return force;
+      },
     };
   }
 

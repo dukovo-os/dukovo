@@ -1,0 +1,24 @@
+{
+  "format": 1,
+  "on": true,
+  "tries": 5,
+  "within_s": 600,
+  "first_s": 600,
+  "longest_s": 86400,
+  "never": ["192.168.1.0/24", "2001:db8:4:7::/64"],
+  "blocks": [
+    {
+      "address": "203.0.113.41",
+      "until_ms": 1763122740000,
+      "in_a_row": 2,
+      "why": "3 wrong passwords over SSH in 2 minutes, for admin"
+    },
+    {
+      "address": "2001:db8:9:1::/64",
+      "until_ms": 1763126400000,
+      "in_a_row": 1,
+      "why": "5 wrong passwords at the console in 4 minutes"
+    }
+  ],
+  "wrong": null
+}

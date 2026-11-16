@@ -1,13 +1,25 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-// A stand-in until this page is built: it shows the page's title and that
-// the page comes later, so that the shell routes to every entry. The page
-// that replaces this file has the same `show(view)`.
+// Accounts (design 7): `/accounts` is the list and `/accounts/NAME` is one
+// account. Add an account… and an account's own page are read when they are
+// first needed, so that the list opens with what it draws and no more.
 
-import { h } from '../../dom.js';
+import { nameOf } from './model.js';
 
 export async function show(view) {
-  view.head({ title: 'Accounts' });
-  view.main.append(h('p', { class: 'muted' }, 'Coming in this PR'));
+  const name = nameOf(view.rest);
+  if (name === null) {
+    const { showList } = await import('./list.js');
+    await showList(view, {
+      add: async (taken) => {
+        const { openAdd } = await import('./add.js');
+        const made = await openAdd(view, { taken });
+        if (made !== null) view.go(`/accounts/${encodeURIComponent(made)}`);
+      },
+    });
+    return;
+  }
+  const { showAccount } = await import('./account.js');
+  await showAccount(view, { name, route: 'accounts' });
 }

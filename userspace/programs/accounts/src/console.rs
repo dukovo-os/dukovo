@@ -194,10 +194,16 @@ pub enum Console {
         /// The session.
         session: String,
     },
-    /// Session `session` ended: signed out, or timed out.
+    /// Session `session` ended: signed out, timed out, or ended from the
+    /// console by `by` (ADR 0562), an administrator or the account itself
+    /// from another of its sessions. authd's audit line names `by`, and
+    /// when it is another account, the person is told at their next
+    /// sign-in.
     End {
         /// The session.
         session: String,
+        /// Who ended it from the console's Accounts page, if someone did.
+        by: Option<String>,
     },
     /// Run `command` as an administrator, as `elevate` does, by `by`'s
     /// right, with the four descriptors sent: its 0, 1 and 2, and the
@@ -253,6 +259,17 @@ pub enum Console {
         all: bool,
         /// What is shown of it.
         filter: Filter,
+    },
+    /// Administrator `by` ended terminal `title` of account `name` from the
+    /// console's Accounts page (ADR 0562). admind ends it; authd writes the
+    /// audit line and tells `name` at their next sign-in.
+    TerminalEnded {
+        /// The terminal's account.
+        name: String,
+        /// The administrator who ended it.
+        by: String,
+        /// The terminal's name, as its owner gave it.
+        title: String,
     },
     /// End the follow `process` of session `session`, which admind no
     /// longer reads (ADR 0518).
@@ -452,7 +469,10 @@ impl Console {
             }
             Console::Extend { session } => words(&[b"extend", session.as_bytes()]),
             Console::Lock { session } => words(&[b"lock", session.as_bytes()]),
-            Console::End { session } => words(&[b"end", session.as_bytes()]),
+            Console::End { session, by: None } => words(&[b"end", session.as_bytes()]),
+            Console::End { session, by: Some(by) } => {
+                words(&[b"end", session.as_bytes(), b"by", by.as_bytes()])
+            }
             Console::Elevate { by, language, command } => {
                 let mut fields = match by {
                     Elevator::Session(session) => {
@@ -486,6 +506,9 @@ impl Console {
                 fields.extend([given(&filter.service), kernel.to_vec()]);
                 fields.extend([given(&filter.priority), given(&filter.grep)]);
                 fields
+            }
+            Console::TerminalEnded { name, by, title } => {
+                words(&[b"terminal-ended", name.as_bytes(), by.as_bytes(), title.as_bytes()])
             }
             Console::FollowEnd { session, process } => {
                 words(&[b"follow-end", session.as_bytes(), process.to_string().as_bytes()])
@@ -571,7 +594,10 @@ impl Console {
             },
             [b"extend", session] => Console::Extend { session: text(session)? },
             [b"lock", session] => Console::Lock { session: text(session)? },
-            [b"end", session] => Console::End { session: text(session)? },
+            [b"end", session] => Console::End { session: text(session)?, by: None },
+            [b"end", session, b"by", by] => {
+                Console::End { session: text(session)?, by: Some(text(by)?) }
+            }
             [b"elevate", kind, by, ref rest @ ..] => {
                 let (by, rest) = match kind {
                     b"session" => (Elevator::Session(text(by)?), rest),
@@ -623,6 +649,9 @@ impl Console {
                         grep: given(grep)?,
                     },
                 }
+            }
+            [b"terminal-ended", name, by, title] => {
+                Console::TerminalEnded { name: text(name)?, by: text(by)?, title: text(title)? }
             }
             [b"follow-end", session, process] => Console::FollowEnd {
                 session: text(session)?,
@@ -691,6 +720,7 @@ impl Console {
                 | Console::Terminal { .. }
                 | Console::Follow { .. }
                 | Console::FollowEnd { .. }
+                | Console::TerminalEnded { .. }
         )
     }
 
@@ -730,6 +760,7 @@ impl Console {
             | Console::Terminal { .. }
             | Console::Follow { .. }
             | Console::FollowEnd { .. }
+            | Console::TerminalEnded { .. }
             | Console::Steps
             | Console::PasskeyAdd { .. }
             | Console::PasskeyRename { .. }
@@ -757,6 +788,7 @@ impl Console {
             Console::Terminal { .. } => "terminal",
             Console::Follow { .. } => "follow",
             Console::FollowEnd { .. } => "follow-end",
+            Console::TerminalEnded { .. } => "terminal-ended",
             Console::Steps => "steps",
             Console::AppBegin { .. } => "app-begin",
             Console::AppConfirm { .. } => "app-confirm",
@@ -861,7 +893,13 @@ mod tests {
             Console::Unlock { session: "3f9a".into(), proof: Proof::Passkey(assertion()) },
             Console::Extend { session: "3f9a".into() },
             Console::Lock { session: "3f9a".into() },
-            Console::End { session: "3f9a".into() },
+            Console::End { session: "3f9a".into(), by: None },
+            Console::End { session: "3f9a".into(), by: Some("owner".into()) },
+            Console::TerminalEnded {
+                name: "helper".into(),
+                by: "owner".into(),
+                title: "build logs".into(),
+            },
             Console::Elevate {
                 by: Elevator::Session("3f9a".into()),
                 language: vec!["LANG=C.UTF-8".into()],

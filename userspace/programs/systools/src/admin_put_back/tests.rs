@@ -41,7 +41,11 @@ impl Machine {
             service_files: self.folder.0.join("services"),
             data: self.folder.0.join("data"),
             records: self.folder.0.join("records"),
-            network: self.folder.0.join("network"),
+            reread: vec![
+                (self.folder.0.join("network"), "netd"),
+                (self.folder.0.join("sshd_config"), "sshd"),
+                (self.folder.0.join("admin.toml"), "admind"),
+            ],
             firewall: self.folder.0.join("firewall"),
         }
     }
@@ -214,6 +218,31 @@ fn the_network_settings_are_put_to_use_by_asking_spark_to_reload_netd() {
     let (done, said) = machine.put_back(again, "error: netd is not running\n");
     assert_eq!(done.unwrap(), 0);
     assert!(said.contains("netd is not running, so it reads its file when it starts\n"), "{said}");
+}
+
+#[test]
+fn ssh_s_and_the_console_s_settings_are_put_to_use_by_asking_spark_to_reload_sshd_and_admind() {
+    let machine = Machine::new("put-back-ssh-console");
+    let sshd = machine.path("sshd_config");
+    let id = machine.changed(&sshd, "PasswordAuthentication yes\n", "PasswordAuthentication no\n");
+    let (done, said) = machine.put_back(id, "ok: reloading sshd\n");
+    assert_eq!(done.unwrap(), 0);
+    assert_eq!(fs::read_to_string(&sshd).unwrap(), "PasswordAuthentication yes\n");
+    assert_eq!(*machine.asked.borrow(), ["reload sshd"]);
+    assert_eq!(
+        said,
+        format!("put back {sshd}\nasked sshd to reload\nchange {id} is put back: 1 file\n")
+    );
+    let admin = machine.path("admin.toml");
+    let id =
+        machine.changed(&admin, "[console]\nreach = \"private\"\n", "[console]\nreach = \"any\"\n");
+    let (done, said) = machine.put_back(id, "ok: reloading admind\n");
+    assert_eq!(done.unwrap(), 0);
+    assert_eq!(*machine.asked.borrow(), ["reload sshd", "reload admind"]);
+    assert_eq!(
+        said,
+        format!("put back {admin}\nasked admind to reload\nchange {id} is put back: 1 file\n")
+    );
 }
 
 #[test]

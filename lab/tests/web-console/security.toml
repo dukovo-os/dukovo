@@ -1,0 +1,162 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The Security page of the web console in each engine (design 8): the score
+# and the findings held to what `dukovo-check --last --json` says, with each
+# finding's button and Check again; the sign-in rules held to `admin settings
+# --json` and changed with `admin sign-in`; SSH held to `ssh-server show
+# --json`, with its switch and the form that refuses what `ssh-server set`
+# refuses; who may reach the console, with the words of its two dialogs;
+# private access, set up with `wireguard serve` and the firewall's UDP port,
+# a device added with `wireguard add` and removed with `wireguard remove`; a
+# locked administrator, a reader and a phone at 390 by 844. Each look is dark,
+# light, high contrast, forced colours and less motion, checked by axe.
+#
+# The first engine goes on to what changes what the machine does, in
+# functions of security.mjs that wait on the lead's parts: `ssh` is turned on
+# with its switch, Keys only is tried and the lab PC's own `ssh` with a key
+# signs in and is listed, and Keep; turning SSH off is tried and undone; a
+# narrower AllowUsers is tried and not kept, refuses the lab PC's key while it
+# is tried and is undone by Spark, and the last steps read at the serial console
+# that it is. The console is made public and kept after the reach check, made
+# private with Apply, and made public and undone; where the lab has an outside
+# network (the console's URL there in /tmp/lab-security-outside) a browser
+# there is warned, tries making it private and does not keep it. A device is
+# added, its file shown once and saved, the lab PC's WireGuard client brought
+# up with it and the console reached through wg0, and Remove of that device from
+# a browser that comes through it is refused (ADM-137) and allowed from another.
+#
+# The addresses blocked after wrong sign-ins are security-blocked.mjs's: a
+# second lab address guesses five wrong SSH passwords, as security/blocking.toml
+# does, and the page lists the block, Unblock lets the address in at once, and
+# the never-block list takes a private network, asks about one that is not
+# private, and gives each up.
+#
+# The lab PC's side is the script's: the first host step writes the machine's
+# address and the ports it reaches it by to /tmp/lab-security-machine, and
+# makes the key the lab PC signs in with. This test's first steps make, for
+# each engine, an administrator and a reader with the lab's password, so no
+# script needs it, and its last steps put the firewall's file back as the image
+# has it, have SSH as the image has it, and remove the accounts. The script runs
+# each engine one after the other, so that an engine the lab PC lacks is skipped
+# within it and the steps after it still run.
+about = "The web console's Security page in each engine: the score and findings from dukovo-check, the sign-in rules from admin settings, SSH from ssh-server show with Keys only and a narrower list tried and kept or undone and the lab PC's own ssh listed, who may reach the console made public, kept and undone, private access set up with a device added, its file saved and the guard of the device a browser comes through, the addresses blocked after wrong sign-ins with Unblock and the never-block list, a reader, and the phone"
+time = "40m"
+host_needs = ["curl", "ssh", "ssh-keygen"]
+fresh = true
+
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do echo lab-console-password | user add --admin wc-sec-$engine || exit 1; echo lab-console-password | user add wc-sec-r-$engine || exit 1; user set --console --yes wc-sec-r-$engine || exit 1; done'"
+root = true
+expect = ["Made wc-sec-chromium", "Made wc-sec-r-firefox", "Made wc-sec-webkit", "wc-sec-r-chromium is changed"]
+
+# What the page reads of the machine is what these commands print: the kept
+# result of the checks, the console's settings, SSH's, private access's and the
+# firewall's blocks.
+[[step]]
+run = "sh -c 'dukovo-check > /dev/null 2>&1; dukovo-check --last --json'"
+root = true
+expect = ["checked", "results", "counts"]
+[[step]]
+run = "admin settings --json"
+expect = ["sign_in", "console", "listen"]
+[[step]]
+run = "ssh-server show --json"
+expect = ["\"port\"", "\"passwords\"", "\"allow_users\""]
+[[step]]
+run = "wireguard show --json"
+root = true
+expect = "interfaces"
+[[step]]
+run = "firewall blocked --json"
+root = true
+expect = ["never", "blocks"]
+
+# The firewall's file as the image has it, kept to be put back: private access
+# opens its UDP port in it.
+[[step]]
+run = "sh -c 'mkdir -p /tmp/lab-security && cp /system/settings/firewall /tmp/lab-security/firewall && echo kept'"
+root = true
+expect = "kept"
+# SSH takes passwords as well as keys, so that Keys only takes a way in, and is
+# turned off, so that the page's switch turns it on. sshd ends every
+# connection when it stops, this step's own among them, so SSH's 255 is how
+# the step ends; the wait after it fails the step if SSH stays on. The page
+# reads that SSH is off before it turns it on.
+[[step]]
+run = "sh -c 'ssh-server set passwords yes > /dev/null && echo passwords-on && sleep 1 && ssh-server off; sleep 60'"
+root = true
+exit = 255
+expect = "passwords-on"
+
+# The console answers within seconds of the boot; its last answer is shown so
+# that a console that refuses this address says so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+# The lab PC's side: the machine and the ports it reaches it by (WireGuard's
+# UDP port is the one the page's Set up gives, 51820), and the key it signs in
+# with, which the script puts in the administrator's account.
+[[step]]
+host = '''sh -c 'printf "%s\n%s\n%s\n" {machine} {machine-port:22} 51820 > /tmp/lab-security-machine && rm -f /tmp/lab-security-key /tmp/lab-security-key.pub && ssh-keygen -t ed25519 -N "" -C lab-security -q -f /tmp/lab-security-key && echo lab-pc-ready' '''
+expect = "lab-pc-ready"
+[[step]]
+browser = "security.mjs"
+port = 9090
+
+# What the page changed, read at the serial console. The narrower AllowUsers
+# that was tried and not kept is gone, passwords sign in again, and SSH is on.
+[[step]]
+run = "ssh-server show --json"
+expect = ["\"on\":true", "\"passwords\":true", "\"allow_users\":[]"]
+expect_not = "wc-sec-r-"
+# The console answers this network only, as the image has it.
+[[step]]
+run = "admin settings --json"
+expect = "\"reach\":\"private\""
+# The device that the page added is removed.
+[[step]]
+run = "wireguard show --json"
+root = true
+expect_not = "labpc"
+
+# An address that guesses: five wrong SSH passwords from the second lab
+# address, each for another name (none needs to be an account), as
+# security/blocking.toml has them, give it a block that the page lists.
+[[step]]
+run = "sh -c 'ssh-server on && ssh-server set passwords yes && echo passwords-on'"
+root = true
+expect = "passwords-on"
+[[step]]
+attack = "sh -c 'printf \"#!/bin/sh\\necho not-the-password\\n\" > /tmp/lab-askpass && chmod 700 /tmp/lab-askpass && echo askpass-ready'"
+expect = "askpass-ready"
+[[step]]
+attack = "sh -c 'for name in admin test guest oracle ubuntu; do SSH_ASKPASS=/tmp/lab-askpass SSH_ASKPASS_REQUIRE=force ssh -o PubkeyAuthentication=no -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 $name@{target} true < /dev/null > /dev/null 2>&1; echo \"guess $name: $?\"; done'"
+expect = ["guess admin: 255", "guess test: 255", "guess guest: 255", "guess oracle: 255", "guess ubuntu: 255"]
+[[step]]
+run = "firewall blocked"
+root = true
+expect = "5 wrong passwords over SSH in "
+# The page lists it, unblocks it and keeps the never-block list.
+[[step]]
+browser = "security-blocked.mjs"
+engines = ["chromium"]
+port = 9090
+# Unblock let the address in at once, and the list is as it was.
+[[step]]
+attack = "nc -z -w3 {target} 22"
+[[step]]
+run = "firewall blocked"
+root = true
+expect = "No address is blocked."
+
+# The machine as it was: the firewall's file, which the firewall reads again if
+# it changed, and the accounts.
+[[step]]
+run = "sh -c 'cmp -s /tmp/lab-security/firewall /system/settings/firewall || { cp /tmp/lab-security/firewall /system/settings/firewall && firewall load; }; rm -r /tmp/lab-security; echo restored'"
+root = true
+expect = "restored"
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do for name in wc-sec-$engine wc-sec-r-$engine; do user remove --delete-home --yes $name || exit 1; done; done'"
+root = true
+expect = ["wc-sec-chromium is removed", "wc-sec-r-firefox is removed", "wc-sec-webkit is removed"]

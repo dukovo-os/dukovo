@@ -58,13 +58,11 @@
 //! on the host's loopback that QEMU's user network gives the guest at
 //! 10.0.2.2.
 
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
-
 use serde_json::{Value, json};
 
 use super::super::console_client::{
-    ALICE_PASSWORD, Browser, Console, ORIGIN, PORT, Pane, Reply, elevated, parse_reply,
+    ALICE_PASSWORD, Browser, Call, Console, Http, PORT, Pane, Reply, elevated, goaway, is_refusal,
+    is_undone_row, names, trial_in, trials_of, undone_in, wait_for,
 };
 use super::super::*;
 
@@ -153,7 +151,6 @@ fn admin_trials(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         pane: Pane::open()?,
         alice: Browser::default(),
         bob: Browser::default(),
-        runs: 0,
     };
 
     // alice's password once for this pane, then bob, who is in group
@@ -202,9 +199,6 @@ struct Test {
     pane: Pane,
     alice: Browser,
     bob: Browser,
-    /// How many runs of curl wrote their answers to files so far, to name
-    /// them.
-    runs: usize,
 }
 
 impl Test {
@@ -401,161 +395,6 @@ impl Test {
         })
     }
 
-    /// Runs curl once for `calls`, with the session of alice's browser, as
-    /// one run: with `--next`, curl takes the connection it has for the
-    /// next request, so the requests share one connection as a page's do.
-    fn carry(&mut self, http: Http, calls: &[Call]) -> Result<Run, String> {
-        self.runs += 1;
-        let place = self.console.pem.with_file_name(format!("carried-{}", self.runs));
-        let mut command = Command::new("curl");
-        // The first word of the command line, as curl wants it.
-        command.arg("--disable");
-        let mut files = Vec::new();
-        for (number, call) in calls.iter().enumerate() {
-            if number > 0 {
-                command.arg("--next");
-            }
-            let file = place.with_extension(number.to_string());
-            command.args(["--silent", "--show-error", http.flag(), "--max-time", "90"]);
-            command.args(["--noproxy", "*", "--connect-to"]);
-            command.arg(format!("localhost:{PORT}:127.0.0.1:{}", self.console.port));
-            command.args(["--include", "--cacert"]).arg(&self.console.pem);
-            command.args(["--request", call.method]);
-            for (name, value) in call.headers(&self.alice) {
-                command.arg("--header").arg(format!("{name}: {value}"));
-            }
-            if let Some(body) = &call.body {
-                command.arg("--data-binary").arg(body);
-            }
-            command.arg("--output").arg(&file);
-            command.args(["--write-out", WRITE_OUT]);
-            // What curl says of the last connection, for how it ended.
-            if number + 1 == calls.len() {
-                command.arg("--verbose");
-            }
-            command.arg(format!("{ORIGIN}{}", call.path));
-            files.push(file);
-        }
-        let out = command
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|err| format!("the console tests need the host's curl: {err}"))?;
-        let said = String::from_utf8_lossy(&out.stderr).into_owned();
-        let summaries = String::from_utf8_lossy(&out.stdout).into_owned();
-        let mut carried = Vec::new();
-        for (file, line) in files.iter().zip(summaries.lines()) {
-            let raw = std::fs::read(file).map_err(|err| format!("{}: {err}", file.display()))?;
-            let _ = std::fs::remove_file(file);
-            let (_, version, connects) = summary(line)
-                .ok_or_else(|| format!("curl's summary of a request is {line:?}, not as asked"))?;
-            carried.push(Carried { reply: parse_reply(&raw)?, version, connects });
-        }
-        if carried.len() != calls.len() {
-            return Err(format!(
-                "curl carried out {} of {} requests and said {said:?}",
-                carried.len(),
-                calls.len()
-            ));
-        }
-        Ok(Run { carried, said, ok: out.status.success() })
-    }
-}
-
-/// What curl prints of each request, one line: the status, the version of
-/// HTTP and how many connections it opened for the request.
-const WRITE_OUT: &str = "%{http_code} %{http_version} %{num_connects}\\n";
-
-/// The three words of a line that [`WRITE_OUT`] printed.
-fn summary(line: &str) -> Option<(u16, String, u32)> {
-    let mut words = line.split_whitespace();
-    let status = words.next()?.parse().ok()?;
-    let version = words.next()?.to_string();
-    let connects = words.next()?.parse().ok()?;
-    words.next().is_none().then_some((status, version, connects))
-}
-
-/// The version of HTTP a run of curl asks for. The last of curl's two
-/// options for it wins, and each request of a run has its own.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Http {
-    One,
-    Two,
-}
-
-impl Http {
-    /// curl's option for it.
-    fn flag(self) -> &'static str {
-        match self {
-            Http::One => "--http1.1",
-            Http::Two => "--http2",
-        }
-    }
-
-    /// The version as `%{http_version}` says it.
-    fn word(self) -> &'static str {
-        match self {
-            Http::One => "1.1",
-            Http::Two => "2",
-        }
-    }
-}
-
-/// A request of a run of curl.
-struct Call {
-    method: &'static str,
-    path: String,
-    body: Option<String>,
-}
-
-impl Call {
-    /// A read of `path`.
-    fn get(path: &str) -> Call {
-        Call { method: "GET", path: path.to_string(), body: None }
-    }
-
-    /// A change of `path` with `body`.
-    fn post(path: &str, body: &Value) -> Call {
-        Call { method: "POST", path: path.to_string(), body: Some(body.to_string()) }
-    }
-
-    /// The headers the page sends with it: for a read the session's cookie
-    /// alone, as [`Console::get`] sends it, for a change those of a change.
-    fn headers(&self, browser: &Browser) -> Vec<(String, String)> {
-        let all = browser.page_headers();
-        if self.method == "GET" {
-            all.into_iter().filter(|(name, _)| name == "Cookie").collect()
-        } else {
-            all
-        }
-    }
-}
-
-/// What curl made of one request.
-struct Carried {
-    reply: Reply,
-    /// The version of HTTP it went by.
-    version: String,
-    /// How many connections curl opened for it: none when it took the one
-    /// an earlier request had.
-    connects: u32,
-}
-
-/// What one run of curl did.
-struct Run {
-    carried: Vec<Carried>,
-    /// What curl said on its error output, with the last request's
-    /// `--verbose`.
-    said: String,
-    /// Whether curl ended without an error of its own.
-    ok: bool,
-}
-
-/// How a run of curl was told that the console ends the connection after an
-/// answer: whether `said`, curl's account of the last request, has the
-/// GOAWAY frame that closes an HTTP/2 connection with no error.
-fn goaway(said: &str) -> bool {
-    let said = said.to_ascii_lowercase();
-    said.contains("goaway") && said.contains("error=0")
 }
 
 /// The machine as it is before any change, which each undo must give
@@ -743,7 +582,7 @@ fn is_fresh(test: &mut Test, http: Http) -> Result<(), String> {
         Call::post("/api/1/firewall/add", &rule(Some(WINDOW * 2))),
         Call::get("/api/1/console/fresh/firewall"),
     ];
-    let run = test.carry(http, &calls)?;
+    let run = test.console.carry(&test.alice, http, &calls)?;
     let [session, add, old] = &run.carried[..] else {
         return Err("a run of three requests carried out another number".into());
     };
@@ -798,7 +637,7 @@ fn is_fresh(test: &mut Test, http: Http) -> Result<(), String> {
     }
 
     // A new run opens a new connection, opened after the change.
-    let new = test.carry(http, &[Call::get("/api/1/console/fresh/firewall")])?;
+    let new = test.console.carry(&test.alice, http, &[Call::get("/api/1/console/fresh/firewall")])?;
     let [one] = &new.carried[..] else {
         return Err("one request carried out another number".into());
     };
@@ -821,13 +660,6 @@ fn is_fresh(test: &mut Test, http: Http) -> Result<(), String> {
     test.change("/api/1/firewall/trial/keep", &json!({}))?;
     test.change("/api/1/firewall/remove", &rule(None))?;
     Ok(())
-}
-
-/// Whether `reply` is the console's error `id` with `status`, as
-/// [`Reply::refused`] holds an answer to, for a reply that is only looked at.
-fn is_refusal(reply: &Reply, status: u16, id: &str) -> bool {
-    let said = reply.json().ok().and_then(|body| body["error"]["id"].as_str().map(str::to_string));
-    reply.status == status && said.as_deref() == Some(id)
 }
 
 /// Checks that `answer`, of a route that tells where a request came from,
@@ -935,57 +767,9 @@ fn cut_short(vm: &mut Vm, test: &mut Test, machine: &Machine, first: i64) -> Res
     test.no_hand_edit(first, NETWORK)
 }
 
-/// Calls `look` every second until it gives `Ok(Ok(found))`, up to
-/// `seconds`: `what` is then said not to have happened, with the last
-/// state `look` gave as `Ok(Err(state))`. An `Err` ends it at once.
-fn wait_for<T>(
-    what: &str,
-    seconds: u64,
-    mut look: impl FnMut() -> Result<Result<T, String>, String>,
-) -> Result<T, String> {
-    let deadline = Instant::now() + Duration::from_secs(seconds);
-    loop {
-        match look()? {
-            Ok(found) => return Ok(found),
-            Err(state) if Instant::now() >= deadline => {
-                return Err(format!("{what} did not happen in {seconds} s: {state}"));
-            }
-            Err(_) => std::thread::sleep(Duration::from_secs(1)),
-        }
-    }
-}
-
 /// The texts of the rules in the answer of `GET /api/1/firewall`.
 fn rule_texts(list: &Value) -> Option<Vec<String>> {
     list["rules"].as_array()?.iter().map(|rule| rule["text"].as_str().map(str::to_string)).collect()
-}
-
-/// The trials in Spark's document.
-fn trials_of(document: &Value) -> Vec<&Value> {
-    document["trials"].as_array().map_or_default(|trials| trials.iter().collect())
-}
-
-/// The trial `id` of Spark's document, if it is being tried.
-fn trial_in<'a>(document: &'a Value, id: &str) -> Option<&'a Value> {
-    trials_of(document).into_iter().find(|trial| trial["id"] == id)
-}
-
-/// The entries of Spark's document for the trials `id` that were undone,
-/// oldest first.
-fn undone_in<'a>(document: &'a Value, id: &str) -> Vec<&'a Value> {
-    let undone = document["undone"].as_array();
-    undone.map_or_default(|all| all.iter().filter(|entry| entry["id"] == id).collect())
-}
-
-/// Whether the journal's `row` names `file` among its files.
-fn names(row: &Value, file: &str) -> bool {
-    row["files"].as_array().is_some_and(|files| files.iter().any(|one| one["path"] == file))
-}
-
-/// Whether `row` is Spark's row for a trial it undid, with its words `why`,
-/// that put `file` back.
-fn is_undone_row(row: &Value, file: &str, why: &str) -> bool {
-    row["who"] == "Spark" && row["how"] == "undone" && row["note"] == why && names(row, file)
 }
 
 /// How many rules the kernel holds, from the first line of `firewall
@@ -1022,38 +806,6 @@ fn card_holding(network: &Value, address: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    fn document() -> Value {
-        json!({
-            "now_ms": 51234,
-            "services": [],
-            "trials": [
-                {"id": "firewall", "files": [FIREWALL], "services": ["firewall"], "user": 1000, "left_ms": 42000},
-            ],
-            "undone": [
-                {"id": "network", "why": TIME_UP, "at_ms": 100, "files": [NETWORK]},
-                {"id": "firewall", "why": TIME_UP, "at_ms": 200, "files": [FIREWALL]},
-                {"id": "firewall", "why": RESTARTED, "at_ms": 300, "files": [FIREWALL]},
-            ],
-        })
-    }
-
-    #[test]
-    fn a_trial_and_the_undone_ones_are_found_by_their_name_in_sparks_document() {
-        let document = document();
-        assert_eq!(
-            trial_in(&document, "firewall").map(|trial| &trial["left_ms"]),
-            Some(&json!(42000))
-        );
-        assert!(trial_in(&document, "network").is_none());
-        let undone = undone_in(&document, "firewall");
-        assert_eq!(undone.len(), 2);
-        assert_eq!(undone[1]["why"], json!(RESTARTED));
-        assert_eq!(undone_in(&document, "network").len(), 1);
-        assert!(undone_in(&json!({}), "firewall").is_empty());
-        assert!(trials_of(&json!({"trials": []})).is_empty());
-        assert_eq!(trials_of(&document).len(), 1);
-    }
-
     #[test]
     fn the_rules_are_read_from_the_pages_answer() {
         let list = json!({
@@ -1079,25 +831,6 @@ mod tests {
         assert_eq!(kernel_rules("Firewall: many rules"), None);
         assert_eq!(kernel_rules(""), None);
         assert_eq!(kernel_rules("Other machines reach what services listen on"), None);
-    }
-
-    #[test]
-    fn a_row_is_sparks_undo_of_a_file_by_its_words() {
-        let row = json!({
-            "id": 9, "who": "Spark", "how": "undone", "action": null, "note": TIME_UP,
-            "files": [{"path": FIREWALL, "before": {}, "after": {}}],
-        });
-        assert!(is_undone_row(&row, FIREWALL, TIME_UP));
-        assert!(!is_undone_row(&row, NETWORK, TIME_UP));
-        assert!(!is_undone_row(&row, FIREWALL, RESTARTED));
-        let mut other = row.clone();
-        other["how"] = json!("by hand");
-        assert!(!is_undone_row(&other, FIREWALL, TIME_UP));
-        other["how"] = json!("undone");
-        other["who"] = json!("alice");
-        assert!(!is_undone_row(&other, FIREWALL, TIME_UP));
-        assert!(names(&row, FIREWALL) && !names(&row, NETWORK));
-        assert!(!names(&json!({}), FIREWALL));
     }
 
     #[test]
@@ -1147,55 +880,10 @@ mod tests {
     }
 
     #[test]
-    fn curls_summary_of_a_request_has_three_words() {
-        assert_eq!(summary("409 2 0"), Some((409, "2".to_string(), 0)));
-        assert_eq!(summary("200 1.1 1"), Some((200, "1.1".to_string(), 1)));
-        assert_eq!(summary("200 1.1"), None);
-        assert_eq!(summary("200 1.1 1 extra"), None);
-        assert_eq!(summary("ok 1.1 1"), None);
-        assert_eq!(summary(""), None);
-    }
-
-    #[test]
-    fn a_goaway_with_no_error_is_how_curl_says_the_server_ended_the_connection() {
-        let said = "* Connection #0 to host localhost left intact\n\
-                    < HTTP/2 409 \n* received GOAWAY, error=0, last_stream=5\n* Closing connection\n";
-        assert!(goaway(said));
-        assert!(goaway("* Received GOAWAY, error=0, last_stream=1"));
-        assert!(!goaway("* received GOAWAY, error=2, last_stream=5"));
-        assert!(!goaway("* Closing connection"));
-        assert!(!goaway(""));
-    }
-
-    #[test]
-    fn a_request_sends_the_cookie_alone_for_a_read_and_the_pages_headers_for_a_change() {
-        let browser = Browser { cookie: Some("abc".into()), token: Some("tok".into()) };
-        let read = Call::get("/api/1/session").headers(&browser);
-        assert_eq!(read, [("Cookie".to_string(), "__Host-dukovo=abc".to_string())]);
-        let change = Call::post("/api/1/firewall/add", &json!({})).headers(&browser);
-        assert!(change.iter().any(|(name, _)| name == "Origin"));
-        assert!(change.iter().any(|(name, value)| name == "X-Dukovo-CSRF" && value == "tok"));
-        assert!(change.iter().any(|(name, _)| name == "Cookie"));
-    }
-
-    #[test]
     fn the_rule_is_asked_for_with_a_window_or_without() {
         assert_eq!(rule(None), json!({"action": "deny", "protocol": "tcp", "ports": "7"}));
         assert_eq!(rule(Some(60))["try"], json!(60));
         assert_eq!(rule(Some(60))["ports"], json!("7"));
     }
 
-    #[test]
-    fn a_wait_gives_what_it_found_or_the_last_state_it_saw() {
-        let mut calls = 0;
-        let found = wait_for("a number", 5, || {
-            calls += 1;
-            Ok(if calls == 3 { Ok(calls) } else { Err(format!("call {calls}")) })
-        });
-        assert_eq!(found, Ok(3));
-        let never: Result<(), String> = wait_for("nothing", 0, || Ok(Err("still no".into())));
-        assert_eq!(never, Err("nothing did not happen in 0 s: still no".into()));
-        let failed: Result<(), String> = wait_for("it", 5, || Err("gone".into()));
-        assert_eq!(failed, Err("gone".into()));
-    }
 }

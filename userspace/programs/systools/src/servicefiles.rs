@@ -689,7 +689,7 @@ fn read_secret(name: &str, secret: &str) -> Result<Vec<u8>, Fail> {
 }
 
 /// The path of service `name`'s file.
-fn path(name: &str) -> String {
+pub(crate) fn path(name: &str) -> String {
     format!("{DIR}/{name}.toml")
 }
 
@@ -715,23 +715,23 @@ pub(crate) use manifest::service::with_enabled;
 
 /// Turns service `name` on or off: its file says whether it starts at
 /// boot, and Spark starts or stops it now. The file changes only if it
-/// still reads.
+/// still reads. An override that sets `enabled` (ADR 0386) wins over the
+/// file, so its line is changed too, and the service does what it is
+/// told at the next boot as well.
 pub fn turn(name: &str, on: bool) -> Result<(), Fail> {
     let path = path(name);
     let text = with_enabled(&text(name)?, on);
     service::from_toml(&text).map_err(|e| fail(format!("{path}: {e}")))?;
-    let new = format!("{DIR}/.{name}.toml.new");
-    let _ = fs::remove_file(&new);
-    let written = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o644)
-        .open(&new)
-        .and_then(|mut file| file.write_all(text.as_bytes()).and_then(|()| file.sync_all()))
-        .and_then(|()| fs::rename(&new, &path));
-    if let Err(e) = written {
-        let _ = fs::remove_file(&new);
-        return Err(util::failed(&path, e));
+    replace(Path::new(&path), &text)?;
+    let over = override_path(Path::new(&path));
+    match fs::read_to_string(&over) {
+        Ok(found) => {
+            if let Some(changed) = override_enabled(&found, on) {
+                replace(&over, &changed)?;
+            }
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(util::failed(&over.display().to_string(), e)),
     }
     // Spark does for it what it does at boot: an on-connection service
     // waits for its first connection (ADR 0477), and one with a timer is
@@ -750,6 +750,58 @@ pub fn turn(name: &str, on: bool) -> Result<(), Fail> {
         // it keeps this one's times from now, not from its next reading.
         // One that cannot be reached reads them when it starts.
         let _ = timerd::show::timers();
+    }
+    Ok(())
+}
+
+/// The file that says whether service `name` starts at boot, and its
+/// text with `enabled` saying `on`, checked to read: its override when
+/// that sets `enabled` (ADR 0386), as an override's keys win, or else
+/// its file. A trial of turning the service off changes this one file.
+pub(crate) fn deciding_file(name: &str, on: bool) -> Result<(PathBuf, String), Fail> {
+    let path = PathBuf::from(self::path(name));
+    let text = text(name)?;
+    let over = override_path(&path);
+    let found = match fs::read_to_string(&over) {
+        Ok(found) => Some(found),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(e) => return Err(util::failed(&over.display().to_string(), e)),
+    };
+    if let Some(changed) = found.as_deref().and_then(|found| override_enabled(found, on)) {
+        service::Override::from_toml(&changed)
+            .and_then(|read| service::from_toml_over(&text, Some(&read)))
+            .map_err(|e| fail(format!("{}: {e}", over.display())))?;
+        return Ok((over, changed));
+    }
+    let new = with_enabled(&text, on);
+    service::from_toml(&new).map_err(|e| fail(format!("{}: {e}", path.display())))?;
+    Ok((path, new))
+}
+
+/// The override `over` with its `enabled` line saying `on`, if it sets
+/// `enabled`; `None` if it does not, as the file's line is then the one
+/// that counts.
+fn override_enabled(over: &str, on: bool) -> Option<String> {
+    let keys: toml::Table = toml::from_str(over).ok()?;
+    keys.contains_key("enabled").then(|| with_enabled(over, on))
+}
+
+/// Puts `text` in the file at `path`, mode 644, by a copy beside it that
+/// is renamed over it, so that a reader finds the old file or the new.
+fn replace(path: &Path, text: &str) -> Result<(), Fail> {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let new = path.with_file_name(format!(".{name}.new"));
+    let _ = fs::remove_file(&new);
+    let written = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .open(&new)
+        .and_then(|mut file| file.write_all(text.as_bytes()).and_then(|()| file.sync_all()))
+        .and_then(|()| fs::rename(&new, path));
+    if let Err(e) = written {
+        let _ = fs::remove_file(&new);
+        return Err(util::failed(&path.display().to_string(), e));
     }
     Ok(())
 }
@@ -821,6 +873,38 @@ mod tests {
         assert!(!has_timer(plain));
         assert!(has_timer(&format!("{plain}\n[timer]\nat = [\"0 3 * * *\"]\n")));
         assert!(!has_timer("not a service file"));
+    }
+
+    #[test]
+    fn an_override_that_sets_enabled_is_changed_with_the_file() {
+        // The lab image turns sshd on so (ADR 0401): `service sshd disable`
+        // must turn its line off, or sshd starts again at the next boot.
+        let lab = "# The lab image: the lab signs in over SSH (ADR 0401).\nenabled = true\n";
+        assert_eq!(
+            override_enabled(lab, false).as_deref(),
+            Some("# The lab image: the lab signs in over SSH (ADR 0401).\nenabled = false\n")
+        );
+        assert_eq!(
+            override_enabled("enabled = false\n", true).as_deref(),
+            Some("enabled = true\n")
+        );
+        // An override of other keys is left alone, a table's `enabled` is
+        // not the service's, and one that does not read is not written.
+        assert_eq!(override_enabled("[limits]\nmemory = \"1G\"\n", false), None);
+        assert_eq!(override_enabled("[x]\nenabled = true\n", false), None);
+        assert_eq!(override_enabled("enabled = = true\n", false), None);
+    }
+
+    #[test]
+    fn a_file_is_replaced_whole_with_its_mode() {
+        let dir = folder("replace");
+        let path = dir.join("sshd.toml");
+        fs::write(&path, "old\n").unwrap();
+        replace(&path, "new\n").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new\n");
+        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o644);
+        assert!(!dir.join(".sshd.toml.new").exists(), "the copy is renamed, not left");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

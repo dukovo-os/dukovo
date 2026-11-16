@@ -320,6 +320,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/snap", "systools"),
     ("system/commands/ss", "systools"),
     ("system/commands/ssh-askpass-keyring", "systools"),
+    ("system/commands/ssh-server", "systools"),
     ("system/commands/startup", "systools"),
     ("system/commands/storage", "systools"),
     ("system/commands/subvolume", "systools"),
@@ -356,6 +357,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/which", "systools"),
     ("system/commands/who", "systools"),
     ("system/commands/whois", "systools"),
+    ("system/commands/wireguard", "systools"),
     ("system/commands/xxd", "systools"),
 ];
 

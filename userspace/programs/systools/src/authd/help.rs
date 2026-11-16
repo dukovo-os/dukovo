@@ -233,8 +233,7 @@ fn random(count: usize) -> Result<Vec<u8>, String> {
 /// The fingerprint of sshd's host key, if it has made one.
 fn host_key() -> Option<String> {
     let text = fs::read_to_string(accounts::sshd_config::HOST_KEY_PUBLIC).ok()?;
-    let key = sshkeys::public_line(text.lines().next()?)?;
-    Some(sshkeys::fingerprint(&key))
+    sshkeys::file_fingerprint(&text)
 }
 
 /// Whether `fd` is a pipe's end, as help-session sends authd for sshd.

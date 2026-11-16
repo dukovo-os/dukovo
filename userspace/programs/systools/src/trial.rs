@@ -52,13 +52,16 @@ pub enum ToUse<'a> {
     Restart(&'a str),
     /// The service reads its settings again and runs on, as netd does.
     Reload(&'a str),
+    /// The service stops, as its file now says it does not run: Spark's
+    /// undo starts it again, since it ran when the trial began.
+    Stop(&'a str),
 }
 
 impl ToUse<'_> {
     /// The service's name.
     fn name(&self) -> &str {
         match self {
-            ToUse::Restart(name) | ToUse::Reload(name) => name,
+            ToUse::Restart(name) | ToUse::Reload(name) | ToUse::Stop(name) => name,
         }
     }
 }
@@ -82,7 +85,10 @@ pub enum Tried {
 /// `seconds`, putting it back with `to_use`.
 fn request(id: &str, path: &Path, seconds: u32, to_use: ToUse<'_>) -> Request {
     let (restart, reload) = match to_use {
-        ToUse::Restart(name) => (vec![name.to_string()], Vec::new()),
+        // Spark restarts a service named here when it undoes the trial if
+        // it ran when the trial began, and stops it if it did not, which
+        // puts back a service that the change stopped as it was.
+        ToUse::Restart(name) | ToUse::Stop(name) => (vec![name.to_string()], Vec::new()),
         ToUse::Reload(name) => (Vec::new(), vec![name.to_string()]),
     };
     Request { id: id.into(), seconds, files: vec![path.display().to_string()], restart, reload }
@@ -197,6 +203,7 @@ pub fn try_file(
     let used = match to_use {
         ToUse::Restart(name) => command::change("restart", name, &[]).map(drop),
         ToUse::Reload(name) => ask(&format!("reload {name}")).map(drop),
+        ToUse::Stop(name) => command::change("stop", name, &[]).map(drop),
     };
     let Err(failed) = used else {
         return Ok(Tried::InUse);
@@ -213,7 +220,7 @@ pub fn try_file(
 /// What Spark did when it undid the trial of `path` by itself.
 fn undone_words(path: &Path, to_use: ToUse<'_>) -> String {
     match to_use {
-        ToUse::Restart(name) if path.starts_with(crate::servicefiles::DIR) => {
+        ToUse::Restart(name) | ToUse::Stop(name) if path.starts_with(crate::servicefiles::DIR) => {
             format!("Spark undid the change: {name} runs its file as it was")
         }
         _ => format!(
@@ -269,6 +276,11 @@ mod tests {
         let line = restart.line();
         let words: Vec<&str> = line.split_whitespace().skip(1).collect();
         assert_eq!(Request::parse(&words), Ok(restart));
+        // A service the change stops is restarted by the undo, which
+        // starts it again, since it ran when the trial began.
+        let path = Path::new("/system/settings/spark/services/sshd.toml");
+        let stop = request("ssh", path, 120, ToUse::Stop("sshd"));
+        assert_eq!(stop.line(), format!("try ssh 120 file={} restart=sshd\n", path.display()));
     }
 
     #[test]
