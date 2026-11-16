@@ -609,7 +609,7 @@ pub fn std_program(ctx: &Ctx, package: &str) -> Result<PathBuf> {
 }
 
 /// Checks that the programs on Rust's standard library take each crate
-/// the ports patch for Radix from the port, not from crates.io: Cargo
+/// the ports patch from the port, not from crates.io: Cargo
 /// keeps a version Cargo.lock names that the port has no patch for.
 fn check_patched(ctx: &Ctx, toolchain: &ports::Toolchain) -> Result<()> {
     let patches = toolchain.crate_patches();
@@ -634,8 +634,8 @@ fn check_patched(ctx: &Ctx, toolchain: &ports::Toolchain) -> Result<()> {
             patched.iter().filter(|(n, _)| n == name).map(|(_, v)| v.as_str()).collect();
         if !versions.is_empty() {
             return Err(crate::Error::new(format!(
-                "userspace/programs uses {name} {version} from crates.io, which does not \
-                 build for Radix"
+                "userspace/programs uses {name} {version} from crates.io, not the copy \
+                 the ports patch"
             ))
             .hint(format!(
                 "the ports patch {name} {}: run `cargo update --manifest-path {STD_MANIFEST} \

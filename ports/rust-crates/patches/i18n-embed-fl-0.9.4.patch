@@ -1,0 +1,25 @@
+SPDX-FileCopyrightText: Luke Frisken and the cargo-i18n contributors
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT
+
+fl! writes the arguments it is given in the order of their names, where it
+took the order of a HashMap, which differs each time the macro runs: the
+code of age's messages, and the programs that build them in, came out
+differently from one build to the next (ADR 0535).
+
+diff --git a/i18n-embed-fl-0.9.4/src/lib.rs b/i18n-embed-fl-0.9.4/src/lib.rs
+--- a/i18n-embed-fl-0.9.4/src/lib.rs
++++ b/i18n-embed-fl-0.9.4/src/lib.rs
+@@ -547,7 +547,11 @@
+         }
+         FlArgs::KeyValuePairs { specified_args } => {
+             let mut arg_assignments = proc_macro2::TokenStream::default();
+-            for (key, value) in &specified_args {
++            // In the order of their names: a HashMap's order differs each
++            // time the macro runs, and the code with it.
++            let mut sorted_args: Vec<_> = specified_args.iter().collect();
++            sorted_args.sort_by_key(|(key, _)| key.value());
++            for (key, value) in sorted_args {
+                 arg_assignments = quote! {
+                     #arg_assignments
+                     args.insert(#key, #value.into());

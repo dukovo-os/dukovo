@@ -131,6 +131,10 @@ when it is built in two places:
   - A port is built with `LANG` and `LC_ALL` as `C.UTF-8`: uutils'
     `uucore` builds in the translations of `LANG`'s language beside
     English.
+  - `i18n-embed-fl`, whose `fl!` macro `age` writes its messages with,
+    is patched in `rust-crates` to write the arguments it is given in
+    the order of their names: it took the order of a `HashMap`, which
+    differs each time the macro runs.
   - `terminfo(5)` is edited after ncurses installs it, to give its
     source files as `../include/...`.
   - Each of these changes a stamp: the wrappers' text is part of what
