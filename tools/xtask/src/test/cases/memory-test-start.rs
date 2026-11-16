@@ -31,7 +31,7 @@
 //! command line by hand: the kernel plants one error in the first block it
 //! tests, and the result is an error in one range, which the status keeps,
 //! the kernel counts as one page of memory gone bad, and alertd has as a
-//! critical alert.
+//! critical alert of the kind hardware.
 //!
 //! What the pane's commands print reaches the host through nc, to a port
 //! on the host's loopback that QEMU's user network gives the guest at
@@ -67,7 +67,7 @@ const NOTHING: &str = r#"{"format":1,"asked":null,"last":null,"history":[]}"#;
 /// The test.
 pub const CASE: Case = Case {
     name: "memory-test-start",
-    about: "The memory test at the next start, asked for from the web console: hardware.memtest-status is what hardware memtest --status --json prints, with nothing asked and no last test at first; hardware.memtest asks and says the next start tests the free memory first, the status says who asked, the file that keeps it is readable by anyone, and asked again it is done again; changes bisect is refused with HW-105 while it is asked; hardware.memtest-cancel takes the ask back and the file goes, and cancelled again it changes nothing; asked once more, a restart from the pane makes the start menu take the try, the kernel says in the serial log that it tests the free memory, its progress and that it passed, the system starts, the command line has the try and memtest=once, changes --list names the start a memory test at the start, and the status has the last test as passed and complete with at least 900 MiB tested and nothing asked; a second start with memtest=fault on its command line finds one error in one range, which the status keeps, /processes/meminfo counts as 4 KiB of corrupted memory and alertd has as a critical alert",
+    about: "The memory test at the next start, asked for from the web console: hardware.memtest-status is what hardware memtest --status --json prints, with nothing asked and no last test at first; hardware.memtest asks and says the next start tests the free memory first, the status says who asked, the file that keeps it is readable by anyone, and asked again it is done again; changes bisect is refused with HW-105 while it is asked; hardware.memtest-cancel takes the ask back and the file goes, and cancelled again it changes nothing; asked once more, a restart from the pane makes the start menu take the try, the kernel says in the serial log that it tests the free memory, its progress and that it passed, the system starts, the command line has the try and memtest=once, changes --list names the start a memory test at the start, and the status has the last test as passed and complete with at least 900 MiB tested and nothing asked; a second start with memtest=fault on its command line finds one error in one range, which the status keeps, /processes/meminfo counts as 4 KiB of corrupted memory and alertd has as a critical alert of the kind hardware",
     firmware: Firmware::Uefi,
     media: Media::Disk,
     cmdline: "lockdep",
@@ -323,6 +323,13 @@ fn second_start(vm: &mut Vm, _case: &Case) -> Result<(), String> {
          echo \"alerted $((6 * 7))\"",
         RESULT_SECONDS,
         &["alerted 42"],
+    )?;
+    run(
+        vm,
+        "echo \"kind $(elevate alerts list --json | grep 'memory-test' | grep -c \
+         '\"about\":\"hardware\"')\"",
+        60,
+        &["kind 1"],
     )?;
     let status = printed(vm, &pane)?;
     let last = &status["last"];

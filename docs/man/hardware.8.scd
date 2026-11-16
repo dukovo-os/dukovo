@@ -449,7 +449,8 @@ has been seen through (*sysupdate*(8) checks every start), *hardware*
 keeps the result, clears what was asked, and tells *alertd*(8): errors
 raise the critical alert *memory-test* (*HW-103*), a pass clears it, and
 a test the menu took that never told its end, because the power went or
-the machine stopped, is said once as a warning (*HW-104*). A test that
+the machine stopped, is said once as a warning (*HW-104*). Both are of
+the kind *hardware* (*alerts*(8)). A test that
 ran, or did not finish, also has a line in *hardware history*. A test
 that was asked for and not taken, because an update was tried first, is
 kept as *not-taken*, and nothing is said.

@@ -37,7 +37,7 @@ use slots::trial::{self, MAX_NUMBER, Trial};
 use super::history::{self, Line};
 use super::saved;
 use crate::alerts::client::{self, Screen};
-use crate::alerts::protocol::{Alert, Severity};
+use crate::alerts::protocol::{About, Alert, Severity};
 use crate::args::{Arg, Args};
 use crate::proc;
 use crate::sysupdate::bisect;
@@ -757,13 +757,15 @@ fn alerts_of(run: &Run) -> Vec<Told> {
             let detail = "Those parts of the memory are out of use until the next restart. The \
                           memory should be replaced; `hardware memtest --status` lists where. \
                           (HW-103)";
-            vec![Told::Raise(Alert::new("memory-test".into(), Severity::Critical, &title, detail))]
+            let alert = Alert::new("memory-test".into(), Severity::Critical, &title, detail);
+            vec![Told::Raise(alert.about(About::Hardware))]
         }
         Ended::Unfinished => {
             let title = "The memory test at the start did not finish (HW-104)";
             let detail = "The power went or the machine stopped during it, which failing memory \
                           can cause. `hardware memtest --status` shows what the last test found.";
-            vec![Told::Event(Alert::new("memory-test".into(), Severity::Warning, title, detail))]
+            let alert = Alert::new("memory-test".into(), Severity::Warning, title, detail);
+            vec![Told::Event(alert.about(About::Hardware))]
         }
         Ended::NotTaken => Vec::new(),
     }
@@ -1163,6 +1165,7 @@ mod tests {
         let said = told(&places, &mut block, &start(213, None));
         let [Told::Raise(alert)] = said.as_slice() else { panic!("{said:?}") };
         assert_eq!((alert.key.as_str(), alert.severity), ("memory-test", Severity::Critical));
+        assert_eq!(alert.kind(), Some(About::Hardware));
         assert_eq!(alert.title, "The memory test at the start found 3 errors");
         assert_eq!(
             alert.detail,
@@ -1198,6 +1201,7 @@ mod tests {
         let said = told(&places, &mut block, &start(5, None));
         let [Told::Event(alert)] = said.as_slice() else { panic!("{said:?}") };
         assert_eq!((alert.key.as_str(), alert.severity), ("memory-test", Severity::Warning));
+        assert_eq!(alert.kind(), Some(About::Hardware));
         assert_eq!(alert.title, "The memory test at the start did not finish (HW-104)");
         let last = read_kept(&places.dir).last.unwrap();
         assert_eq!(

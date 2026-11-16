@@ -258,7 +258,8 @@ goes to (*alertd*(8) says which alert is which):
 	certificate running out, the kernel stopping, memory running low.
 
 *hardware*
-	Hardware: a sensor running hot.
+	Hardware: a sensor or a disk running hot, the memory test at the
+	start finding errors or not finishing.
 
 A channel told of *data* and *hardware* hears alerts of those kinds and
 no others, and an alert that is about none of them, with every test
