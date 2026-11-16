@@ -279,6 +279,8 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	Shows an installed bundle's sheet, with every known flaw of its
 	version, what you said of its permissions
 	and since when, when it was installed, where, and where its data is,
+	and what the data takes when *bundled* has measured it (for a bundle
+	installed for everyone that keeps data of its services),
 	which version it can go back to, and whether it is held. *--json*
 	prints the same facts as one line of JSON (JSON).
 
@@ -752,6 +754,17 @@ bundle you can run, by ID and then yours before everyone's:
 
 *folder*, *data*
 	Where it is, and where its data is, in words.
+
+*data_size*
+	What the data of its services takes, as *bundled* measured it, or
+	*null* where nothing was measured: for a bundle installed for you
+	alone, and until the first measure after it was installed. An object:
+	*bytes*, the space the files take on the disk, counted by the blocks
+	they use, a file with two names once, a link as itself; *files*, how
+	many files; *complete*, *false* when the walk was ended by its limits
+	and the count is no more than that (the sheet says "at least"); and
+	*measured_ms*, when, in milliseconds since 1970. It is as old as the
+	last measure, a day at most; *info* measures nothing.
 
 *previous*
 	The version it can go back to, or *null*.

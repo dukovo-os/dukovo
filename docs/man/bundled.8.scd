@@ -11,6 +11,8 @@ bundled - install, seal, update and remove bundles, and keep what they may do
 
 *bundled*
 
+*bundled measure* _id_ _folder_ [_id_ _folder_]...
+
 # DESCRIPTION
 
 bundled installs bundles, seals them so that nothing changes them, and
@@ -234,6 +236,22 @@ under the issue text (*consoled*(8), ADR 0504), and when that list
 changes, the consoles are told at once (*notifyd*(8)). A catalog that
 could not be read leaves the list as it was.
 
+Once a day, after the check, bundled measures what the data of the apps
+installed for everyone takes, so that *bundle info* can say it. It
+starts *bundled measure* for it, a process of its own that takes each
+folder after its app's ID (bundled gives them; it is not for you to
+run). The process runs at the lowest priority for the disk and the
+processor, and walks nothing if it cannot be given that. It walks
+_/shared/services/ID/ACCOUNT_ of each such app and each account its
+services run as: it counts the blocks of each file (a file with two
+names once), counts a symbolic link and does not follow it, never enters
+another file system, and reads no content and keeps no name. The walk of
+one app ends after 10 minutes or 5,000,000 entries, the whole after an
+hour, and is then marked incomplete; bundled ends the process if it is
+still there after 70 minutes. A person's own apps are not measured: their
+data is in their home. Nothing measures when asked. The result is
+_sizes.json_, which a later day replaces whole.
+
 bundled writes each install, update, going back, removal, hold and
 release, waiting update and failed one to _history_. A person is shown
 their own bundles' events and everyone's; root is shown all.
@@ -377,6 +395,11 @@ _/system/state/bundled/automatic_
 _/system/state/bundled/defaults_
 	The default line of each ID with lines, for everyone and for each
 	person (*bundle default*).
+
+_/system/state/bundled/sizes.json_
+	What the data of each app installed for everyone takes, per app and
+	per folder, and when it was measured; mode 0600. Apps no longer
+	installed are dropped when it is written.
 
 _/system/state/bundled/history_
 	What bundled did to bundles, a line of tab-separated fields each,

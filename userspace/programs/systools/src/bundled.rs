@@ -58,7 +58,7 @@ use manifest::bundle::permissions::{self, Tier};
 use manifest::bundle::{Manifest, Need, Request as Asked, RunsWith};
 use spark_api::show;
 
-use crate::args::Args;
+use crate::args::{Arg, Args};
 use crate::bundles::catalogs::{self, Catalog};
 use crate::bundles::feeds;
 use crate::bundles::folder::{DEPTH_MAX, Dir, check, fd_stat, same};
@@ -73,7 +73,7 @@ use crate::bundles::protocol::{
 use crate::bundles::registry::{self, Installed, Place, Registry, Trust, base_id};
 use crate::bundles::services::{self, Record};
 use crate::bundles::sheet::{self, Facts};
-use crate::bundles::{MANIFEST, confine, signed, snapshots, sums};
+use crate::bundles::{MANIFEST, confine, signed, sizes, snapshots, sums};
 use crate::util::{self, Fail};
 use crate::{proc, signin, sys};
 
@@ -1768,6 +1768,7 @@ fn info(
         let kept = registry.previous(installed.place, id).map(|p| p.version.clone());
         (kept, registry.held(installed.place, id).is_some())
     };
+    let data_size = data_size_of(installed.place, &installed.id);
     if json {
         let said = shared.grants().of(asker, id, &installed.key);
         let started = started_services(&manifest, installed.place);
@@ -1776,6 +1777,7 @@ fn info(
             installed: installed.when,
             folder: &folder,
             data: &data,
+            data_size,
             previous: kept.as_deref(),
             held,
             started: &started,
@@ -1790,9 +1792,22 @@ fn info(
     send_grants(shared, connection, asker, id, &installed.key)?;
     let when =
         util::time_text(i64::try_from(installed.when).unwrap_or(0), "%Y-%m-%d %H:%M UTC", true);
+    let size = data_size.map_or_default(|d| {
+        let at = util::time_text(
+            i64::try_from(d.measured_ms / 1000).unwrap_or(0),
+            "%Y-%m-%d %H:%M",
+            true,
+        );
+        let least = if d.complete { "" } else { "at least " };
+        format!(
+            "; its data size: {least}{} in {} files, measured {at}",
+            sheet::size(d.bytes),
+            d.files
+        )
+    });
     let kept = kept.map_or_default(|v| format!("; it can go back to {v}"));
     let held = if held { "; held at its version" } else { "" };
-    Ok(format!("installed on {when}; in {folder}; its data: {data}{kept}{held}"))
+    Ok(format!("installed on {when}; in {folder}; its data: {data}{size}{kept}{held}"))
 }
 
 /// The names of `manifest`'s services that Spark starts at each boot: the
@@ -2845,9 +2860,72 @@ fn update_by_themselves(shared: &Shared) {
     }
 }
 
+/// The data folders of each app installed for everyone that runs
+/// services, and the IDs of all the apps installed for everyone.
+fn data_requests(shared: &Shared) -> (Vec<sizes::Request>, Vec<String>) {
+    let ids: Vec<String> = shared
+        .lock()
+        .installed
+        .iter()
+        .filter(|i| i.place == Place::Everyone)
+        .map(|i| i.id.clone())
+        .collect();
+    let requests = ids
+        .iter()
+        .filter_map(|id| {
+            let manifest = installed_manifest(Place::Everyone, id).ok()?;
+            let folders: Vec<String> = services::accounts(&manifest)
+                .iter()
+                .map(|account| services::data_folder(&manifest.id.0, account))
+                .collect();
+            (!folders.is_empty()).then(|| sizes::Request { id: id.clone(), folders })
+        })
+        .collect();
+    (requests, ids)
+}
+
+/// Measures what the data of each app installed for everyone takes, in a
+/// process of its own at idle priority, and keeps it in `sizes.json`. A
+/// person's own apps are never walked: their data is in their home.
+fn measure_data(shared: &Shared) {
+    let (requests, installed) = data_requests(shared);
+    let lines = if requests.is_empty() {
+        Vec::new()
+    } else {
+        match sizes::measure(sizes::PROGRAM, &requests, sizes::KILL_AFTER) {
+            Ok(lines) => lines,
+            Err(why) => {
+                eprintln!("bundled: measuring what the apps' data takes: {why}");
+                return;
+            }
+        }
+    };
+    for line in &lines {
+        if let sizes::Line::Error(why) = line {
+            eprintln!("bundled: measuring what the apps' data takes: {why}");
+        }
+    }
+    let mut kept = sizes::Sizes::read(&read_state(sizes::FILE).unwrap_or_default());
+    if kept.apply(&lines, &installed, now() * 1000)
+        && let Err(why) = write_whole(&state(sizes::FILE), &kept.text(), 0o600)
+    {
+        eprintln!("bundled: what the apps' data takes is not kept: {why}");
+    }
+}
+
+/// What the last walk found of the data of app `id`, if it is installed for
+/// everyone and the walk reached it.
+fn data_size_of(place: Place, id: &str) -> Option<sizes::DataSize> {
+    if place != Place::Everyone {
+        return None;
+    }
+    sizes::Sizes::read(&read_state(sizes::FILE).unwrap_or_default()).data_size(id)
+}
+
 /// Runs [`check_flaws`], and [`update_by_themselves`] where a place
 /// turned it on, some minutes after bundled starts, then daily, and at
-/// once when a place turns updating by themselves on.
+/// once when a place turns updating by themselves on; then measures what
+/// the apps' data takes ([`measure_data`]).
 fn updater(shared: &Shared) {
     let mut next = Instant::now() + AUTOMATIC_FIRST;
     loop {
@@ -2871,6 +2949,7 @@ fn updater(shared: &Shared) {
         if !shared.lock().automatic.is_empty() {
             update_by_themselves(shared);
         }
+        measure_data(shared);
     }
 }
 
@@ -3322,6 +3401,17 @@ fn notice(registry: &mut Registry) -> bool {
 }
 
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
+    match args.subcommand() {
+        // The walk of the apps' data, which bundled starts as a process of
+        // its own (`bundles::sizes`).
+        Some(mode) if mode == sizes::MODE => {
+            let words: Vec<String> =
+                args.rest().iter().map(|word| word.to_string_lossy().into_owned()).collect();
+            return Ok(sizes::child(&words));
+        }
+        Some(other) => return Err(args.unknown(&Arg::Operand(other))),
+        None => {}
+    }
     if let Some(arg) = args.next()? {
         return Err(args.unknown(&arg));
     }

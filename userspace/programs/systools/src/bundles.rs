@@ -48,6 +48,7 @@ pub(crate) mod registry;
 pub(crate) mod run;
 pub(crate) mod services;
 pub(crate) mod sheet;
+pub(crate) mod sizes;
 pub(crate) mod snapshots;
 
 use std::fs::{self, File, OpenOptions};
