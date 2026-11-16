@@ -67,6 +67,48 @@ impl<'a> Deadline<'a> {
     }
 }
 
+/// A Unix stream of its own whose reads and writes each wait at most a
+/// time, as [`Deadline::each`] gives one it borrows: for a client that
+/// keeps its stream for as long as it talks, as a database session does.
+pub struct Quiet {
+    stream: UnixStream,
+    wait: Duration,
+}
+
+impl Quiet {
+    /// `stream`, made non-blocking, with reads and writes that each wait
+    /// at most `wait`.
+    ///
+    /// # Errors
+    ///
+    /// When the stream cannot be made non-blocking.
+    pub fn new(stream: UnixStream, wait: Duration) -> io::Result<Self> {
+        stream.set_nonblocking(true)?;
+        Ok(Self { stream, wait })
+    }
+
+    /// One read or write's deadline.
+    fn one(&self) -> Deadline<'_> {
+        Deadline { stream: &self.stream, until: Instant::now() + self.wait, each: None }
+    }
+}
+
+impl Read for Quiet {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.one().read(buffer)
+    }
+}
+
+impl Write for Quiet {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.one().write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 impl Read for Deadline<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         self.start();
@@ -105,6 +147,22 @@ impl Write for Deadline<'_> {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
+
+    #[test]
+    fn a_quiet_streams_read_ends_when_nothing_comes_and_its_next_waits_again() {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let mut quiet = Quiet::new(ours, Duration::from_millis(50)).unwrap();
+        let mut byte = [0u8; 1];
+        let error = quiet.read(&mut byte).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        (&theirs).write_all(b"x").unwrap();
+        assert_eq!(quiet.read(&mut byte).unwrap(), 1);
+        assert_eq!(&byte, b"x");
+        quiet.write_all(b"y").unwrap();
+        let mut back = [0u8; 1];
+        (&theirs).read_exact(&mut back).unwrap();
+        assert_eq!(&back, b"y");
+    }
 
     #[test]
     fn a_read_ends_at_the_deadline_when_nothing_comes() {

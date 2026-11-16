@@ -29,6 +29,7 @@ use std::time::Duration;
 
 use rustls::RootCertStore;
 
+use crate::deadline::Quiet;
 use crate::tls;
 
 /// The protocol's version 3.0, as the startup message names it.
@@ -149,7 +150,7 @@ pub struct Session<S: Read + Write> {
     broken: Option<String>,
 }
 
-impl Session<UnixStream> {
+impl Session<Quiet> {
     /// Signs in over the server's Unix socket `socket` as the role
     /// postgres, to the database postgres.
     ///
@@ -158,14 +159,12 @@ impl Session<UnixStream> {
     /// When the socket cannot be reached, when the server asks for a
     /// proof ([`Error::NotLetIn`]), refuses the start, or reads strings
     /// otherwise than the standard says.
-    pub fn connect(socket: &Path) -> Result<Session<UnixStream>, Error> {
-        let stream = UnixStream::connect(socket)
-            .map_err(|err| Error::Broken(format!("{}: {err}", socket.display())))?;
-        let timeouts = stream
-            .set_read_timeout(Some(QUIET_MAX))
-            .and_then(|()| stream.set_write_timeout(Some(QUIET_MAX)));
-        timeouts.map_err(|err| Error::Broken(format!("{}: {err}", socket.display())))?;
-        Session::start(stream)
+    pub fn connect(socket: &Path) -> Result<Session<Quiet>, Error> {
+        let broken = |err: io::Error| Error::Broken(format!("{}: {err}", socket.display()));
+        let stream = UnixStream::connect(socket).map_err(broken)?;
+        // Radix's Unix sockets take no SO_RCVTIMEO or SO_SNDTIMEO: each
+        // read and write waits by poll instead.
+        Session::start(Quiet::new(stream, QUIET_MAX).map_err(broken)?)
     }
 }
 
