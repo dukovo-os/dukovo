@@ -66,6 +66,17 @@ on that socket's queue alone.
   the count and looks, the wake moves the count before it reads how many
   wait, each sequentially consistent, as `poll`'s pollers and changes are
   ordered (`kernel/radix/tla/Poll.tla`), so no wake-up is lost.
+- **A wake-up waits for the stack's lock**: smoltcp wakes a socket's
+  waiters while its caller holds the interface's stack, a sleeping lock.
+  A woken thread that should run at once on the waker's CPU would take
+  the CPU there and then, find the lock taken, and sleep again: a round
+  trip between two programs on one CPU took four thread switches in place
+  of two. Such a wake-up (`sched::lazily`) leaves the thread owed the CPU,
+  which it gets as the lock is let go (`net::StackGuard`, `sched::pay_owed`)
+  or at the waker's next switch, whichever comes first; a thread woken on
+  another CPU is sent there at once, as before. Linux wakes a socket's
+  readers with the socket's spin lock held, which defers preemption the
+  same way.
 - **What no socket sees wakes every socket**: a change to an interface's
   addresses or link, a bridge or VLAN taken away, a tunnel going up or
   down, calls `net::changed`, which wakes each socket of each stack. These

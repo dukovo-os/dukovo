@@ -65,11 +65,16 @@ impl Side {
         Side { changes: AtomicU64::new(0), sleepers: AtomicUsize::new(0) }
     }
 
-    /// Moves the count, and wakes the waiters if there are any.
-    fn changed(&self) {
+    /// Moves the count, and wakes the waiters if there are any: lazily
+    /// for a waker that holds its stack's lock ([`sched::lazily`]).
+    fn changed(&self, lazily: bool) {
         self.changes.fetch_add(1, Ordering::SeqCst);
         if self.sleepers.load(Ordering::SeqCst) > 0 {
-            wait::wake_all(self.key());
+            if lazily {
+                wait::wake_all_lazily(self.key());
+            } else {
+                wait::wake_all(self.key());
+            }
         }
     }
 
@@ -108,16 +113,20 @@ impl Waiters {
     /// What the socket can do either way may have changed: its waiters
     /// look again, and so do its pollers.
     pub fn changed(&self) {
-        self.receive.changed();
-        self.send.changed();
+        self.receive.changed(false);
+        self.send.changed(false);
         self.polled.changed();
     }
 
-    /// What the socket can do `way` may have changed: those waiting that
-    /// way look again, and so do its pollers. Costs an atomic add and two
-    /// loads while nobody waits or polls.
+    /// What the socket can do `way` may have changed, as smoltcp found
+    /// with its stack's lock held: those waiting that way look again, once
+    /// the lock is let go if they would run on this CPU ([`StackGuard`]),
+    /// and so do its pollers. Costs an atomic add and two loads while
+    /// nobody waits or polls.
+    ///
+    /// [`StackGuard`]: super::StackGuard
     pub fn changed_way(&self, way: Way) {
-        self.side(way).changed();
+        self.side(way).changed(true);
         self.polled.changed();
     }
 

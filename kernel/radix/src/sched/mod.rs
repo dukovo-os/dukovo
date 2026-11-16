@@ -144,6 +144,13 @@ struct CpuSched {
     /// Set by a switch away from a thread that has exited, for the thread
     /// switched to, which tells the reaper (`after_switch`).
     left_dead: AtomicBool,
+    /// Set while [`lazily`] wakes threads from this CPU: a thread woken
+    /// here that should run at once is owed the CPU ([`CpuSched::owed`])
+    /// rather than given it.
+    lazy: AtomicBool,
+    /// A thread woken here by [`lazily`] should have run at once: the
+    /// running thread gives way at [`pay_owed`], or at its next switch.
+    owed: AtomicBool,
 }
 
 impl CpuSched {
@@ -173,6 +180,8 @@ impl CpuSched {
             halts: AtomicU64::new(0),
             balance_failures: [const { AtomicU32::new(0) }; 4],
             left_dead: AtomicBool::new(false),
+            lazy: AtomicBool::new(false),
+            owed: AtomicBool::new(false),
         }
     }
 
@@ -982,6 +991,10 @@ impl Loads for LiveLoads {
 fn kick(cpu: usize) {
     let slot = CPUS.get(cpu);
     if cpu == Arch::current_cpu() {
+        if slot.lazy.load(Ordering::Relaxed) {
+            slot.owed.store(true, Ordering::Relaxed);
+            return;
+        }
         // The switch happens when this CPU lets go of its last spin lock or
         // leaves the interrupt it is in.
         slot.need_resched.store(true, Ordering::SeqCst);
@@ -1353,6 +1366,7 @@ fn reschedule(why: Switch) {
     let now = Arch::now_ns();
     rq.charge(now);
     slot.need_resched.store(false, Ordering::Relaxed);
+    slot.owed.store(false, Ordering::Relaxed);
     let mut moving = None;
     match (why, state.as_mut()) {
         (Switch::Block(reason), Some(state)) => {
@@ -1490,6 +1504,37 @@ pub(crate) fn preempt_enable() {
         && Arch::interrupts_enabled()
         && started()
     {
+        reschedule(Switch::Preempt);
+    }
+}
+
+/// Runs `wake`, whose wake-ups do not take this CPU from the running
+/// thread at once: one that should is owed it until [`pay_owed`], or the
+/// thread's next switch. For a waker that holds a sleeping lock its wakee
+/// will want, as a network stack's (ADR 0550): given the CPU at once, the
+/// wakee would find the lock taken and sleep again, two switches for
+/// nothing. A wake-up for another CPU goes there at once all the same.
+pub fn lazily(wake: impl FnOnce()) {
+    let were = Arch::disable_interrupts();
+    let slot = CPUS.this();
+    slot.lazy.store(true, Ordering::Relaxed);
+    wake();
+    slot.lazy.store(false, Ordering::Relaxed);
+    Arch::restore_interrupts(were);
+}
+
+/// Gives the CPU to a thread [`lazily`] woke here, if one is owed it:
+/// for the waker, once it lets go of the lock. A thread that moved to
+/// another CPU since only gives way there, if one is owed it too; the
+/// CPU it left switched threads when it left.
+pub fn pay_owed() {
+    let slot = CPUS.this();
+    if !slot.owed.load(Ordering::Relaxed) {
+        return;
+    }
+    slot.owed.store(false, Ordering::Relaxed);
+    slot.need_resched.store(true, Ordering::SeqCst);
+    if Arch::preempt_count() == 0 && Arch::interrupts_enabled() && started() {
         reschedule(Switch::Preempt);
     }
 }

@@ -63,6 +63,8 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::{self, Write};
+use core::mem::ManuallyDrop;
+use core::ops::{Deref, DerefMut};
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::task::Waker;
@@ -81,7 +83,7 @@ use radix_net::{
     PingMemory, Pinger, Reporter, Stack, TAGGED_FRAME,
 };
 use radix_nic::Nic;
-use radix_sync::{Mutex, Once};
+use radix_sync::{Mutex, MutexGuard, Once};
 use radix_virtio::net::{MAX_FRAME, Net};
 use radix_virtio::{NO_VECTOR, Transport};
 
@@ -358,6 +360,47 @@ pub struct Orphan {
     pub deadline_ns: u64,
 }
 
+/// An interface's stack's lock. smoltcp wakes a socket's waiters with it
+/// held, each lazily ([`sched::lazily`]): a waiter on this CPU that should
+/// run at once does so when the lock is let go, not while it is held,
+/// where it would find it taken and sleep again (ADR 0550).
+pub struct StackLock(Mutex<Box<Stack<Card>, Kmalloc>>);
+
+impl StackLock {
+    /// Takes the lock, sleeping while another thread holds it.
+    pub fn lock(&self) -> StackGuard<'_> {
+        StackGuard(ManuallyDrop::new(self.0.lock()))
+    }
+}
+
+/// An interface's stack, held.
+pub struct StackGuard<'a>(ManuallyDrop<MutexGuard<'a, Box<Stack<Card>, Kmalloc>>>);
+
+impl Deref for StackGuard<'_> {
+    type Target = Stack<Card>;
+
+    fn deref(&self) -> &Stack<Card> {
+        &self.0
+    }
+}
+
+impl DerefMut for StackGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Stack<Card> {
+        &mut self.0
+    }
+}
+
+impl Drop for StackGuard<'_> {
+    fn drop(&mut self) {
+        // SAFETY: the guard is dropped once, here, and not used after.
+        #[allow(unsafe_code)]
+        unsafe {
+            ManuallyDrop::drop(&mut self.0);
+        }
+        sched::pay_owed();
+    }
+}
+
 /// One interface: its stack and the thread that runs it.
 pub struct Interface {
     /// `lo`, `net0`, `net1` and on, or the name a program gave a bridge
@@ -369,7 +412,7 @@ pub struct Interface {
     /// Its stack, on the heap: the stack is several KiB, which every move
     /// of the interface would otherwise copy through the frames that make
     /// it, on the boot CPU's stack (ADR 0058).
-    pub stack: Mutex<Box<Stack<Card>, Kmalloc>>,
+    pub stack: StackLock,
     /// Its orphans, with room for as many as it has socket slots. Taken
     /// with the stack's lock held.
     orphans: Mutex<Vec<Orphan, Kmalloc>>,
@@ -983,7 +1026,7 @@ fn interface(
     Some(Interface {
         name,
         number,
-        stack: Mutex::new(stack),
+        stack: StackLock(Mutex::new(stack)),
         orphans: Mutex::new(orphans),
         slots: Mutex::new(slots),
         pools: Mutex::new(Vec::new_in(kmalloc())),
