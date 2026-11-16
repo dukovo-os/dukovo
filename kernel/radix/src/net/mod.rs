@@ -607,7 +607,7 @@ impl Interface {
     /// Takes `orphan`, on `stack`, its own, locked, to finish closing.
     pub fn adopt(&self, stack: &mut Stack<Card>, orphan: Orphan) {
         // Its socket's waiters go with the socket (ADR 0550).
-        stack.set_waker(orphan.handle, Waker::noop());
+        stack.set_wakers(orphan.handle, Waker::noop(), Waker::noop());
         let mut orphans = self.orphans.lock();
         // There is room for every socket slot, and the orphan has one.
         if let Err(lost) = orphans.push_within_capacity(orphan) {

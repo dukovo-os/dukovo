@@ -4,14 +4,18 @@
 //! Who waits on one network socket (ADR 0550): the threads blocked in its
 //! calls, and those polling it.
 //!
-//! Each of a socket's smoltcp sockets has the socket's [`Waiters`] as its
-//! waker, registered once when it is made, for receiving and sending.
-//! smoltcp wakes it whenever what that socket can receive or send may have
-//! changed: data or a datagram came, room came free, its state changed;
-//! the kernel's patch keeps the waker registered after each wake, and has
-//! the TCP calls that pass bytes straight across (ADR 0186) wake the other
-//! end too. A wake moves the socket's own count of changes and wakes the
-//! threads waiting on that socket alone, and its pollers. A change that no
+//! Each of a socket's smoltcp sockets has the socket's two wakers
+//! ([`Wakers`]), registered once when it is made: one for receiving, one
+//! for sending. smoltcp wakes the first when what the socket can receive
+//! may have changed (data or a datagram came, the other end closed) and
+//! the second when what it can send may have (room came free), and both
+//! when its state changes; the kernel's patch keeps the wakers registered
+//! after each wake, and has the TCP calls that pass bytes straight across
+//! (ADR 0186) wake the other end too. A wake moves that side's own count
+//! of changes and wakes the threads waiting on that side of that socket
+//! alone, and its pollers. A thread waiting to receive does not wake when
+//! room comes free for sending, as each byte a TCP connection passes
+//! frees, nor one waiting to send when data comes. A change that no
 //! socket sees, to an interface's addresses or link, wakes every socket's
 //! waiters ([`super::changed`]).
 //!
@@ -37,67 +41,35 @@ use radix_mm::{Flags, HEAP, Kmalloc};
 use crate::sched::{self, wait};
 use crate::user::posix::poll::Polled;
 
-/// A network socket's waiters, and its count of changes.
-pub struct Waiters {
-    /// Moves on every change: a waiter sleeps until it does.
-    changes: AtomicU64,
-    /// How many threads are in [`Waiters::wait`].
-    sleepers: AtomicUsize,
-    /// Its pollers.
-    polled: Polled,
+/// Which way a socket call goes, and which of a socket's changes it waits
+/// for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Way {
+    /// Data, a datagram, a connection to accept, or the end of them.
+    Receive,
+    /// Room to send, or a connection made.
+    Send,
 }
 
-impl Waiters {
-    /// Waiters for a new socket, or `None` without memory for them.
-    pub fn new() -> Option<Arc<Waiters, Kmalloc>> {
-        let waiters = Waiters {
-            changes: AtomicU64::new(0),
-            sleepers: AtomicUsize::new(0),
-            polled: Polled::new(),
-        };
-        Arc::try_new_in(waiters, HEAP.with(Flags::MAY_SLEEP)).ok()
+/// One side of a socket's waiters: its count of changes, and how many
+/// threads wait for it to move.
+struct Side {
+    /// Moves on every change: a waiter sleeps until it does.
+    changes: AtomicU64,
+    /// How many threads wait on this side.
+    sleepers: AtomicUsize,
+}
+
+impl Side {
+    const fn new() -> Side {
+        Side { changes: AtomicU64::new(0), sleepers: AtomicUsize::new(0) }
     }
 
-    /// What its pollers count themselves in.
-    pub fn polled(&self) -> &Polled {
-        &self.polled
-    }
-
-    /// What the socket can do may have changed: its waiters look again,
-    /// and so do its pollers. Costs an atomic add and two loads while
-    /// nobody waits or polls.
-    pub fn changed(&self) {
+    /// Moves the count, and wakes the waiters if there are any.
+    fn changed(&self) {
         self.changes.fetch_add(1, Ordering::SeqCst);
         if self.sleepers.load(Ordering::SeqCst) > 0 {
             wait::wake_all(self.key());
-        }
-        self.polled.changed();
-    }
-
-    /// Counts the caller among its waiters until the guard drops: a
-    /// thread does this before it first reads [`Waiters::count`].
-    pub fn waiting(&self) -> Waiting<'_> {
-        self.sleepers.fetch_add(1, Ordering::SeqCst);
-        Waiting(self)
-    }
-
-    /// Its count of changes, which a waiter reads before it looks.
-    pub fn count(&self) -> u64 {
-        self.changes.load(Ordering::SeqCst)
-    }
-
-    /// Sleeps until the count of changes moves from `seen`, or the thread
-    /// is interrupted, or `deadline_ns` (on the kernel's clock) passes if
-    /// there is one. Returns false if the deadline passed first. The
-    /// caller holds a [`Waiting`] guard.
-    pub fn sleep(&self, reason: &'static str, seen: u64, deadline_ns: Option<u64>) -> bool {
-        let moved = || self.changes.load(Ordering::Acquire) != seen || sched::interrupted();
-        match deadline_ns {
-            None => {
-                wait::wait_until(self.key(), reason, moved);
-                true
-            }
-            Some(deadline) => wait::wait_until_or_timeout(self.key(), reason, deadline, moved),
         }
     }
 
@@ -105,30 +77,120 @@ impl Waiters {
     fn key(&self) -> usize {
         &raw const self.changes as usize
     }
+}
 
-    /// A waker that calls [`Waiters::changed`] on these waiters, for its
-    /// socket's smoltcp sockets. It holds no reference: smoltcp's patch
-    /// never drops a socket's wakers, whose drop glue would cost each frame
-    /// that holds a socket a copy of it more (ADR 0058).
+/// A network socket's waiters, each way, and its pollers.
+pub struct Waiters {
+    receive: Side,
+    send: Side,
+    polled: Polled,
+}
+
+impl Waiters {
+    /// Waiters for a new socket, or `None` without memory for them.
+    pub fn new() -> Option<Arc<Waiters, Kmalloc>> {
+        let waiters = Waiters { receive: Side::new(), send: Side::new(), polled: Polled::new() };
+        Arc::try_new_in(waiters, HEAP.with(Flags::MAY_SLEEP)).ok()
+    }
+
+    fn side(&self, way: Way) -> &Side {
+        match way {
+            Way::Receive => &self.receive,
+            Way::Send => &self.send,
+        }
+    }
+
+    /// What its pollers count themselves in.
+    pub fn polled(&self) -> &Polled {
+        &self.polled
+    }
+
+    /// What the socket can do either way may have changed: its waiters
+    /// look again, and so do its pollers.
+    pub fn changed(&self) {
+        self.receive.changed();
+        self.send.changed();
+        self.polled.changed();
+    }
+
+    /// What the socket can do `way` may have changed: those waiting that
+    /// way look again, and so do its pollers. Costs an atomic add and two
+    /// loads while nobody waits or polls.
+    pub fn changed_way(&self, way: Way) {
+        self.side(way).changed();
+        self.polled.changed();
+    }
+
+    /// Counts the caller among those waiting `way` until the guard drops:
+    /// a thread does this before it first reads [`Waiters::count`].
+    pub fn waiting(&self, way: Way) -> Waiting<'_> {
+        let side = self.side(way);
+        side.sleepers.fetch_add(1, Ordering::SeqCst);
+        Waiting(side)
+    }
+
+    /// The count of changes `way`, which a waiter reads before it looks.
+    pub fn count(&self, way: Way) -> u64 {
+        self.side(way).changes.load(Ordering::SeqCst)
+    }
+
+    /// Sleeps until the count of changes `way` moves from `seen`, or the
+    /// thread is interrupted, or `deadline_ns` (on the kernel's clock)
+    /// passes if there is one. Returns false if the deadline passed first.
+    /// The caller holds a [`Waiting`] guard for `way`.
+    pub fn sleep(
+        &self,
+        way: Way,
+        reason: &'static str,
+        seen: u64,
+        deadline_ns: Option<u64>,
+    ) -> bool {
+        let side = self.side(way);
+        let moved = || side.changes.load(Ordering::Acquire) != seen || sched::interrupted();
+        match deadline_ns {
+            None => {
+                wait::wait_until(side.key(), reason, moved);
+                true
+            }
+            Some(deadline) => wait::wait_until_or_timeout(side.key(), reason, deadline, moved),
+        }
+    }
+
+    /// The wakers that call [`Waiters::changed_way`] on these waiters, for
+    /// its socket's smoltcp sockets. They hold no reference: smoltcp's
+    /// patch never drops a socket's wakers, whose drop glue would cost each
+    /// frame that holds a socket a copy of it more (ADR 0058).
     ///
     /// # Safety
     ///
-    /// Every smoltcp socket given the waker has it replaced
-    /// ([`radix_net::Stack::set_waker`] with [`Waker::noop`]) or is taken
+    /// Every smoltcp socket given the wakers has them replaced
+    /// ([`radix_net::Stack::set_wakers`] with [`Waker::noop`]) or is taken
     /// out of its stack before these waiters go: the socket's own parts
     /// when it closes, an orphan when its interface adopts it.
     #[allow(unsafe_code)]
-    pub unsafe fn waker(&self) -> Waker {
-        let raw = RawWaker::new(ptr::from_ref(self).cast(), &VTABLE);
-        // SAFETY: the vtable's functions keep RawWaker's contract while
-        // the waiters are there, which the caller promises; `changed` may
+    pub unsafe fn wakers(&self) -> Wakers {
+        let data = ptr::from_ref(self).cast::<()>();
+        // SAFETY: the vtables' functions keep RawWaker's contract while the
+        // waiters are there, which the caller promises; `changed_way` may
         // be called from any thread.
-        unsafe { Waker::from_raw(raw) }
+        unsafe {
+            Wakers {
+                receive: Waker::from_raw(RawWaker::new(data, &RECEIVE)),
+                send: Waker::from_raw(RawWaker::new(data, &SEND)),
+            }
+        }
     }
 }
 
-/// A thread counted among a socket's waiters, while it lives.
-pub struct Waiting<'a>(&'a Waiters);
+/// A socket's two wakers, for receiving and for sending.
+#[derive(Clone)]
+pub struct Wakers {
+    pub receive: Waker,
+    pub send: Waker,
+}
+
+/// A thread counted among one side of a socket's waiters, while it lives.
+pub struct Waiting<'a>(&'a Side);
 
 impl Drop for Waiting<'_> {
     fn drop(&mut self) {
@@ -136,20 +198,36 @@ impl Drop for Waiting<'_> {
     }
 }
 
-static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake, drop);
+static RECEIVE: RawWakerVTable =
+    RawWakerVTable::new(clone_receive, wake_receive, wake_receive, drop);
+static SEND: RawWakerVTable = RawWakerVTable::new(clone_send, wake_send, wake_send, drop);
 
-/// A copy of the waker: it holds no reference.
-fn clone(data: *const ()) -> RawWaker {
-    RawWaker::new(data, &VTABLE)
+/// A copy of a receive waker: it holds no reference.
+fn clone_receive(data: *const ()) -> RawWaker {
+    RawWaker::new(data, &RECEIVE)
+}
+
+/// A copy of a send waker: it holds no reference.
+fn clone_send(data: *const ()) -> RawWaker {
+    RawWaker::new(data, &SEND)
 }
 
 /// # Safety
 ///
 /// `data` is the waiters a waker was made for, which are still there.
 #[allow(unsafe_code)]
-unsafe fn wake(data: *const ()) {
+unsafe fn wake_receive(data: *const ()) {
     // SAFETY: as the function says.
-    unsafe { &*data.cast::<Waiters>() }.changed();
+    unsafe { &*data.cast::<Waiters>() }.changed_way(Way::Receive);
+}
+
+/// # Safety
+///
+/// As [`wake_receive`].
+#[allow(unsafe_code)]
+unsafe fn wake_send(data: *const ()) {
+    // SAFETY: as the function says.
+    unsafe { &*data.cast::<Waiters>() }.changed_way(Way::Send);
 }
 
 /// Nothing to let go of.

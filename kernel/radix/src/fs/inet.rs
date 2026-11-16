@@ -70,7 +70,6 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
-use core::task::Waker;
 
 use radix_abi::Status;
 use radix_abi::errors::{File, Kernel};
@@ -94,7 +93,7 @@ use crate::net::errors::{self, Heard, Sink, Watch};
 use crate::net::firewall::{self, Listener, Listening, Owner};
 use crate::net::memory::{self, PingLeases, TcpLeases, UdpLeases};
 use crate::net::ports::{self, Held, Protocol, Versions};
-use crate::net::waiters::Waiters;
+use crate::net::waiters::{Waiters, Wakers, Way};
 use crate::net::{self, Card, Interface, Orphan};
 use crate::sched;
 use crate::user::posix::poll::{self, Polled};
@@ -521,8 +520,8 @@ struct State {
     errors: Option<Arc<Sink, Kmalloc>>,
     /// Whether it is watched for them now.
     watched: bool,
-    /// Its waiters' waker, which each smoltcp socket it makes has.
-    waker: Waker,
+    /// Its waiters' wakers, which each smoltcp socket it makes has.
+    wakers: Wakers,
 }
 
 impl State {
@@ -576,7 +575,7 @@ impl State {
         let version = self.version();
         for interface in interfaces_for(address, self.options.device) {
             let groups = self.memberships.iter().filter(|m| core::ptr::eq(m.interface, interface));
-            match udp_part(interface, address, port, version, &self.options, groups, &self.waker) {
+            match udp_part(interface, address, port, version, &self.options, groups, &self.wakers) {
                 // Room was reserved for every interface.
                 Ok(part) => {
                     let _ = self.parts.push_within_capacity(part);
@@ -648,7 +647,7 @@ impl State {
                 return Err(status(Kernel::NoBuffers));
             }
         };
-        stack.set_waker(handle, &self.waker);
+        stack.set_wakers(handle, &self.wakers.receive, &self.wakers.send);
         drop(stack);
         // Room was reserved above.
         let _ = self.parts.push_within_capacity(Part {
@@ -696,7 +695,7 @@ impl State {
                 return Err(status(Kernel::NoBuffers));
             }
         };
-        stack.set_waker(handle, &self.waker);
+        stack.set_wakers(handle, &self.wakers.receive, &self.wakers.send);
         let local = bound.and_then(|(address, _)| address);
         if let Err(err) = stack.connect(handle, to, local, from) {
             memory::end_tcp(&mut stack, handle, leases, interface.name.as_str());
@@ -859,7 +858,7 @@ impl InetSocket {
         // replaces; a listening socket's pools go the same way, and a
         // connection `accept` takes gets the new socket's waker.
         #[allow(unsafe_code)]
-        let waker = unsafe { waiters.waker() };
+        let wakers = unsafe { waiters.wakers() };
         Ok(InetSocket {
             id: next_id(),
             kind,
@@ -887,7 +886,7 @@ impl InetSocket {
                 memberships: Vec::new_in(kmalloc()),
                 errors: None,
                 watched: false,
-                waker,
+                wakers,
             }),
         })
     }
@@ -903,10 +902,12 @@ impl InetSocket {
     }
 
     /// Waits until `attempt` gives an answer: it returns `None` when the
-    /// call cannot go on yet. Fails with would_block at once if
-    /// `non_blocking`, and after `timeout_ns` (0: none) with `late`.
+    /// call cannot go on yet, and is tried again after each change `way`
+    /// (ADR 0550). Fails with would_block at once if `non_blocking`, and
+    /// after `timeout_ns` (0: none) with `late`.
     fn wait<R>(
         &self,
+        way: Way,
         non_blocking: bool,
         timeout_ns: u64,
         late: Kernel,
@@ -914,16 +915,16 @@ impl InetSocket {
         mut attempt: impl FnMut(&mut State) -> Result<Option<R>, Status>,
     ) -> Result<R, Status> {
         let deadline = (timeout_ns > 0).then(|| sched::now_ns().saturating_add(timeout_ns));
-        let _waiting = self.waiters.waiting();
+        let _waiting = self.waiters.waiting(way);
         loop {
-            let seen = self.waiters.count();
+            let seen = self.waiters.count(way);
             if let Some(done) = attempt(&mut self.state.lock())? {
                 return Ok(done);
             }
             if non_blocking {
                 return Err(status(Kernel::WouldBlock));
             }
-            if !self.waiters.sleep(reason, seen, deadline) {
+            if !self.waiters.sleep(way, reason, seen, deadline) {
                 return Err(status(late));
             }
             if sched::interrupted() {
@@ -1096,7 +1097,7 @@ impl InetSocket {
         pools.try_reserve_exact(net::MAX_INTERFACES).map_err(|_| status(Kernel::NoMemory))?;
         let shape = Shape { address, port, version: state.version(), options: state.options };
         for interface in interfaces_for(address, state.options.device) {
-            match ListenPool::start(interface, shape, backlog, &state.waker) {
+            match ListenPool::start(interface, shape, backlog, &state.wakers) {
                 // Room was reserved for every interface's.
                 Ok(pool) => {
                     let _ = pools.push_within_capacity(pool);
@@ -1125,7 +1126,7 @@ impl InetSocket {
     /// `non_blocking`, for [`accept`].
     fn take(&self, non_blocking: bool) -> Result<Taken, Status> {
         let timeout = self.state.lock().options.receive_timeout_ns;
-        self.wait(non_blocking, timeout, Kernel::WouldBlock, "accept", |state| {
+        self.wait(Way::Receive, non_blocking, timeout, Kernel::WouldBlock, "accept", |state| {
             if state.phase != Phase::Listening {
                 return Err(status(Kernel::InvalidArgument));
             }
@@ -1163,7 +1164,8 @@ impl InetSocket {
         state.options = taken.options;
         state.v6 = taken.v6;
         // Its own waiters hear of the connection from now on.
-        taken.part.interface.stack.lock().set_waker(taken.part.handle, &state.waker);
+        let Wakers { receive, send } = &state.wakers;
+        taken.part.interface.stack.lock().set_wakers(taken.part.handle, receive, send);
         // Room for one part was reserved when it was made.
         let _ = state.parts.push_within_capacity(taken.part);
     }
@@ -1245,13 +1247,15 @@ impl InetSocket {
             }
             state.options.send_timeout_ns
         };
-        self.wait(false, timeout, Kernel::InProgress, "connect", |state| match state.phase {
-            Phase::Connecting => state.settle().map(|done| done.then_some(())),
-            Phase::Connected => Ok(Some(())),
-            // Another thread saw it fail.
-            _ => {
-                let error = core::mem::take(&mut state.error);
-                Err(if error == 0 { status(Kernel::Refused) } else { Status(error) })
+        self.wait(Way::Send, false, timeout, Kernel::InProgress, "connect", |state| {
+            match state.phase {
+                Phase::Connecting => state.settle().map(|done| done.then_some(())),
+                Phase::Connected => Ok(Some(())),
+                // Another thread saw it fail.
+                _ => {
+                    let error = core::mem::take(&mut state.error);
+                    Err(if error == 0 { status(Kernel::Refused) } else { Status(error) })
+                }
             }
         })
     }
@@ -1283,70 +1287,74 @@ impl InetSocket {
         }
         let timeout = self.state.lock().options.send_timeout_ns;
         let mut sent = 0;
-        let result = self.wait(non_blocking, timeout, Kernel::WouldBlock, "send", |state| {
-            loop {
-                if state.shut_write {
-                    return Err(status(Kernel::Gone));
-                }
-                let Some(index) = state.connection()? else { return Ok(None) };
-                let part = &mut state.parts[index];
-                let interface = part.interface;
-                let mut stack = interface.stack.lock();
-                let Some(socket) = stack.socket_mut::<tcp::Socket<'static>>(part.handle) else {
-                    return Err(status(Kernel::Gone));
-                };
-                if !socket.may_send() {
-                    return Err(status(Kernel::Gone));
-                }
-                let (mut copied, mut tried) = (Ok(true), 0);
-                let mut write = |room: &mut [u8]| {
-                    tried = room.len().min(data.len() - sent);
-                    copied = data.get_now(sent, &mut room[..tried]);
-                    if matches!(copied, Ok(true)) { (tried, tried) } else { (0, 0) }
-                };
-                // Straight into the other end's buffer, when it is a socket
-                // on the same interface, which reads them as soon as its
-                // program does (ADR 0186); else into the connection's own,
-                // for the stack to send.
-                let now = sched::now_ns();
-                let (wrote, across) =
-                    match stack.send_across(part.handle, &mut part.other, now, &mut write) {
-                        Across::Passed(wrote, _) => (wrote, true),
-                        Across::Full => (0, true),
-                        Across::Packets => {
-                            let socket = stack.socket_mut::<tcp::Socket<'static>>(part.handle);
-                            (socket.map_or(0, |socket| socket.send(&mut write).unwrap_or(0)), false)
-                        }
-                    };
-                drop(stack);
-                if wrote > 0 {
-                    // The other end hears of bytes in packets from the
-                    // poll that delivers them; passing bytes straight
-                    // across woke it already (ADR 0550).
-                    if !across {
-                        interface.kick();
+        let result =
+            self.wait(Way::Send, non_blocking, timeout, Kernel::WouldBlock, "send", |state| {
+                loop {
+                    if state.shut_write {
+                        return Err(status(Kernel::Gone));
                     }
+                    let Some(index) = state.connection()? else { return Ok(None) };
+                    let part = &mut state.parts[index];
+                    let interface = part.interface;
+                    let mut stack = interface.stack.lock();
+                    let Some(socket) = stack.socket_mut::<tcp::Socket<'static>>(part.handle) else {
+                        return Err(status(Kernel::Gone));
+                    };
+                    if !socket.may_send() {
+                        return Err(status(Kernel::Gone));
+                    }
+                    let (mut copied, mut tried) = (Ok(true), 0);
+                    let mut write = |room: &mut [u8]| {
+                        tried = room.len().min(data.len() - sent);
+                        copied = data.get_now(sent, &mut room[..tried]);
+                        if matches!(copied, Ok(true)) { (tried, tried) } else { (0, 0) }
+                    };
+                    // Straight into the other end's buffer, when it is a socket
+                    // on the same interface, which reads them as soon as its
+                    // program does (ADR 0186); else into the connection's own,
+                    // for the stack to send.
+                    let now = sched::now_ns();
+                    let (wrote, across) =
+                        match stack.send_across(part.handle, &mut part.other, now, &mut write) {
+                            Across::Passed(wrote, _) => (wrote, true),
+                            Across::Full => (0, true),
+                            Across::Packets => {
+                                let socket = stack.socket_mut::<tcp::Socket<'static>>(part.handle);
+                                (
+                                    socket.map_or(0, |socket| socket.send(&mut write).unwrap_or(0)),
+                                    false,
+                                )
+                            }
+                        };
+                    drop(stack);
+                    if wrote > 0 {
+                        // The other end hears of bytes in packets from the
+                        // poll that delivers them; passing bytes straight
+                        // across woke it already (ADR 0550).
+                        if !across {
+                            interface.kick();
+                        }
+                    }
+                    sent += wrote;
+                    // A page that was not there is made without the stack's lock,
+                    // which its interface's thread needs, and the copy tried again.
+                    let failed = match copied {
+                        Ok(true) => None,
+                        Ok(false) => data.fault_in(sent, tried).err(),
+                        Err(err) => Some(err),
+                    };
+                    if let Some(err) = failed {
+                        return if sent > 0 { Ok(Some(())) } else { Err(super::status(err)) };
+                    }
+                    if matches!(copied, Ok(false)) {
+                        continue;
+                    }
+                    if sent == data.len() || (non_blocking && sent > 0) {
+                        return Ok(Some(()));
+                    }
+                    return Ok(None);
                 }
-                sent += wrote;
-                // A page that was not there is made without the stack's lock,
-                // which its interface's thread needs, and the copy tried again.
-                let failed = match copied {
-                    Ok(true) => None,
-                    Ok(false) => data.fault_in(sent, tried).err(),
-                    Err(err) => Some(err),
-                };
-                if let Some(err) = failed {
-                    return if sent > 0 { Ok(Some(())) } else { Err(super::status(err)) };
-                }
-                if matches!(copied, Ok(false)) {
-                    continue;
-                }
-                if sent == data.len() || (non_blocking && sent > 0) {
-                    return Ok(Some(()));
-                }
-                return Ok(None);
-            }
-        });
+            });
         match result {
             Ok(()) => Ok(sent),
             Err(_) if sent > 0 => Ok(sent),
@@ -1405,7 +1413,7 @@ impl InetSocket {
         };
         let endpoint = IpEndpoint::new(to.0, to.1);
         let len = data.len();
-        self.wait(non_blocking, timeout, Kernel::WouldBlock, "send", |state| {
+        self.wait(Way::Send, non_blocking, timeout, Kernel::WouldBlock, "send", |state| {
             // The datagram is copied in first, with only the socket's lock
             // held: smoltcp sends what it has room for once it is given it,
             // and copying may wait for a page, which must not hold up the
@@ -1471,7 +1479,7 @@ impl InetSocket {
         peek: bool,
     ) -> Result<Received, Status> {
         let timeout = self.state.lock().options.receive_timeout_ns;
-        self.wait(non_blocking, timeout, Kernel::WouldBlock, "receive", |state| {
+        self.wait(Way::Receive, non_blocking, timeout, Kernel::WouldBlock, "receive", |state| {
             if state.shut_read {
                 return Ok(Some(Received::of(0, state.peer, state.scope)));
             }
@@ -1544,7 +1552,7 @@ impl InetSocket {
             (to, interface, ident, state.options.send_timeout_ns)
         };
         let len = data.len();
-        self.wait(non_blocking, timeout, Kernel::WouldBlock, "send", |state| {
+        self.wait(Way::Send, non_blocking, timeout, Kernel::WouldBlock, "send", |state| {
             if state.bounce.as_ref().is_none_or(|bounce| bounce.len() < len) {
                 let size = len.next_power_of_two().clamp(BOUNCE_FIRST, memory::PING_MAX);
                 let bounce = radix_mm::bytes::zeroed(size, kmalloc());
@@ -2078,7 +2086,7 @@ fn release_part(part: Part, connected: bool, port: &mut Option<Held>) {
 
 /// A UDP socket on `interface`, bound to `address` and `port`, kept to
 /// `version` of IP when it is any address, with `options`, in the
-/// multicast `groups` the socket joined there, waking `waker`. Not inlined: the socket
+/// multicast `groups` the socket joined there, waking `wakers`. Not inlined: the socket
 /// it makes, with its groups, is large for its callers' stacks (ADR 0058).
 #[inline(never)]
 fn udp_part<'a>(
@@ -2088,7 +2096,7 @@ fn udp_part<'a>(
     version: Option<IpVersion>,
     options: &Options,
     groups: impl Iterator<Item = &'a Membership>,
-    waker: &Waker,
+    wakers: &Wakers,
 ) -> Result<Part, Status> {
     let (leases, udp_memory) = memory::lend_udp().ok_or(status(Kernel::NoMemory))?;
     let mut socket = udp_memory.socket();
@@ -2106,7 +2114,7 @@ fn udp_part<'a>(
     let mut stack = interface.stack.lock();
     match interface.add_socket(&mut stack, socket) {
         Ok(handle) => {
-            stack.set_waker(handle, waker);
+            stack.set_wakers(handle, &wakers.receive, &wakers.send);
             Ok(Part { interface, handle, leases: Leases::Udp(leases), other: OtherEnd::default() })
         }
         Err(socket) => {
@@ -2138,9 +2146,9 @@ struct ListenPool {
     interface: &'static Interface,
     shape: Shape,
     members: Mutex<Members>,
-    /// The listening socket's waker, which each of its sockets has: one
+    /// The listening socket's wakers, which each of its sockets has: one
     /// whose connection is made wakes `accept`.
-    waker: Waker,
+    wakers: Wakers,
 }
 
 /// A [`ListenPool`]'s sockets, under its lock, which is taken with its
@@ -2163,12 +2171,12 @@ impl ListenPool {
         interface: &'static Interface,
         shape: Shape,
         backlog: usize,
-        waker: &Waker,
+        wakers: &Wakers,
     ) -> Result<Arc<ListenPool, Kmalloc>, Status> {
         let mut parts = Vec::new_in(kmalloc());
         parts.try_reserve(POOL).map_err(|_| status(Kernel::NoMemory))?;
         let members = Mutex::new(Members { parts, backlog, held_until_ns: 0 });
-        let pool = ListenPool { interface, shape, members, waker: waker.clone() };
+        let pool = ListenPool { interface, shape, members, wakers: wakers.clone() };
         let pool = Arc::try_new_in(pool, kmalloc()).map_err(|_| status(Kernel::NoMemory))?;
         let made = {
             let mut stack = interface.stack.lock();
@@ -2209,7 +2217,7 @@ impl ListenPool {
         socket.set_pooled(true);
         match self.interface.add_socket(stack, socket) {
             Ok(handle) => {
-                stack.set_waker(handle, &self.waker);
+                stack.set_wakers(handle, &self.wakers.receive, &self.wakers.send);
                 let leases = Leases::Tcp(leases);
                 let part =
                     Part { interface: self.interface, handle, leases, other: OtherEnd::default() };
@@ -2291,7 +2299,7 @@ impl ListenPool {
                 if let Some(socket) = stack.socket_mut::<tcp::Socket<'static>>(part.handle) {
                     socket.set_pooled(true);
                 }
-                stack.set_waker(part.handle, &self.waker);
+                stack.set_wakers(part.handle, &self.wakers.receive, &self.wakers.send);
                 // Room was reserved just now.
                 let _ = members.parts.push_within_capacity(part);
                 members.parts.rotate_right(1);

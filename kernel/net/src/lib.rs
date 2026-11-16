@@ -1205,28 +1205,28 @@ impl<L: Link> Stack<L> {
         self.sockets.try_get_mut(handle)
     }
 
-    /// Registers `waker` with socket `handle`, to be woken whenever what
-    /// it can receive or send may have changed (ADR 0550). False if the
-    /// stack has no such socket. Never inlined: the frames of the calls
-    /// that make sockets have a budget (ADR 0058).
+    /// Registers `receive` and `send` with socket `handle`, to be woken
+    /// whenever what it can receive, or send, may have changed (ADR 0550).
+    /// False if the stack has no such socket. Never inlined: the frames of
+    /// the calls that make sockets have a budget (ADR 0058).
     #[inline(never)]
-    pub fn set_waker(&mut self, handle: SocketHandle, waker: &Waker) -> bool {
+    pub fn set_wakers(&mut self, handle: SocketHandle, receive: &Waker, send: &Waker) -> bool {
         if let Some(socket) = self.sockets.try_get_mut::<tcp::Socket<'static>>(handle) {
-            socket.register_recv_waker(waker);
-            socket.register_send_waker(waker);
+            socket.register_recv_waker(receive);
+            socket.register_send_waker(send);
         } else if let Some(socket) = self.sockets.try_get_mut::<udp::Socket<'static>>(handle) {
-            socket.register_recv_waker(waker);
-            socket.register_send_waker(waker);
+            socket.register_recv_waker(receive);
+            socket.register_send_waker(send);
         } else if let Some(socket) = self.sockets.try_get_mut::<icmp::Socket<'static>>(handle) {
-            socket.register_recv_waker(waker);
-            socket.register_send_waker(waker);
+            socket.register_recv_waker(receive);
+            socket.register_send_waker(send);
         } else {
             return false;
         }
         true
     }
 
-    /// Wakes every socket's waker, after a change none of them can see,
+    /// Wakes every socket's wakers, after a change none of them can see,
     /// to the stack's addresses or its link.
     pub fn wake_sockets(&mut self) {
         for (_, socket) in self.sockets.iter_mut() {
