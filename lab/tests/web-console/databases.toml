@@ -1,0 +1,126 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The Databases pages of the web console in each engine: the list at
+# /databases held to what `database list --json` says, which
+# `GET /api/1/databases` runs, Add a database at /databases/add, and one
+# database's page at /databases/{name}. Add a database from a site makes a
+# role and a database (`POST /api/1/databases/add`, an answer that holds the
+# password) and shows the password once, in a dialog with Copy and Save as
+# file, which asks before the page is left and leaves no trace of the password
+# in the page when it is closed. The page's settings are held to the machine's;
+# Let other machines connect (`POST /api/1/databases/{name}/allow`, a task)
+# makes PostgreSQL listen on the network with this machine's certificate and
+# lets one network in, and its Remove (`POST /api/1/databases/{name}/deny`, a
+# task) puts it back; Make a new password
+# (`POST /api/1/databases/{name}/password`) shows a new one once; and Remove…
+# (`POST /api/1/databases/{name}/remove`) asks for the name, and ends the
+# session that is open on lab_busy, which the machine would not do without
+# being told to (DB-103). A reader is told who may list the databases and is
+# refused when a route is asked, and a phone at 390 by 844 shows the list and a
+# database alone. Each look is dark, light, high contrast, forced colours and
+# less motion, checked by axe.
+#
+# PostgreSQL is installed for everyone and turned on once, and each engine's
+# run starts from no database of the test. databases.sh makes lab_busy and
+# holds a session open on it, for the page to end. The accounts are two that
+# this test makes and removes, an administrator and a reader, so no script
+# needs the lab's password.
+about = "The web console's Databases pages in each engine: the list from what database list says, Add a database from a site with its password shown once, Copy, Save as file and the leave guard, the connection settings, Let other machines connect and Stop them as tasks, Make a new password, Remove with its name typed and a session open, a reader, and the phone"
+time = "30m"
+host_needs = ["curl", "scp"]
+
+[[step]]
+run = "sh -c 'echo lab-console-password | user add --admin wc-databases && echo lab-console-password | user add wc-databases-reader && user set --console --yes wc-databases-reader'"
+root = true
+expect = ["Made wc-databases", "Made wc-databases-reader", "wc-databases-reader is changed"]
+[[step]]
+host = "sh {here}/../services/copy-bundle.sh org.postgresql.postgresql {machine} {machine-port:22}"
+expect = "copied: org.postgresql.postgresql"
+[[step]]
+host = "sh {here}/../services/copy-file.sh {here}/databases.sh {machine} {machine-port:22}"
+expect = "copied: databases.sh"
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address says so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+
+# PostgreSQL, from nothing: a run before may have left it installed, with a
+# cluster that has databases the test does not know.
+[[step]]
+run = "sh -c 'service postgresql disable > /dev/null 2>&1; bundle remove --for-everyone --purge org.postgresql.postgresql > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.postgresql.postgresql.dkv | tail -1'"
+root = true
+expect = "installed org.postgresql.postgresql"
+[[step]]
+run = "service postgresql enable"
+root = true
+# The first start makes the cluster, which takes a while on a slow machine.
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 120 ] && ! service postgresql status > /dev/null; do sleep 1; i=$((i + 1)); done; service postgresql status'"
+root = true
+expect = "Active: active (running)"
+
+# Chromium.
+[[step]]
+run = "sh /users/lab/databases.sh reset"
+root = true
+expect = "reset"
+[[step]]
+run = "sh /users/lab/databases.sh busy"
+root = true
+expect = "holding lab_busy"
+[[step]]
+browser = "databases.mjs"
+engines = ["chromium"]
+port = 9090
+[[step]]
+run = "sh /users/lab/databases.sh gone"
+root = true
+expect = "gone"
+
+# Firefox.
+[[step]]
+run = "sh /users/lab/databases.sh reset"
+root = true
+expect = "reset"
+[[step]]
+run = "sh /users/lab/databases.sh busy"
+root = true
+expect = "holding lab_busy"
+[[step]]
+browser = "databases.mjs"
+engines = ["firefox"]
+port = 9090
+[[step]]
+run = "sh /users/lab/databases.sh gone"
+root = true
+expect = "gone"
+
+# WebKit.
+[[step]]
+run = "sh /users/lab/databases.sh reset"
+root = true
+expect = "reset"
+[[step]]
+run = "sh /users/lab/databases.sh busy"
+root = true
+expect = "holding lab_busy"
+[[step]]
+browser = "databases.mjs"
+engines = ["webkit"]
+port = 9090
+[[step]]
+run = "sh /users/lab/databases.sh gone"
+root = true
+expect = "gone"
+
+# The machine as it was: PostgreSQL and its cluster gone, and the accounts.
+[[step]]
+run = "sh -c 'service postgresql disable > /dev/null 2>&1; bundle remove --for-everyone --purge org.postgresql.postgresql > /dev/null 2>&1; echo cleaned'"
+root = true
+expect = "cleaned"
+[[step]]
+run = "sh -c 'for name in wc-databases wc-databases-reader; do user remove --delete-home --yes $name || exit 1; done'"
+root = true
+expect = ["wc-databases is removed", "wc-databases-reader is removed"]
