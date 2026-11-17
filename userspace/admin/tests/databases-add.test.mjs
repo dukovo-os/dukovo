@@ -283,7 +283,7 @@ test('the password is shown once, in a dialog, with the settings, and is nowhere
   const outside = holdings(world.view.main).join('\n');
   assert.equal(outside.includes(PASSWORD), false);
   assert.equal(world.view.leaving().includes(PASSWORD), false);
-  assert.match(world.view.leaving(), /The password of shop3 is shown once/);
+  assert.equal(world.view.leaving(), 'The password of shop3 is shown once. If you leave now it is lost, and you would have to make another.');
   for (const [words] of world.notices) assert.equal(words.includes(PASSWORD), false);
   for (const [error] of world.problems) assert.equal(JSON.stringify(error).includes(PASSWORD), false);
   assert.equal(JSON.stringify(world.ran.map(([action, args]) => [action, args])).includes(PASSWORD), false);

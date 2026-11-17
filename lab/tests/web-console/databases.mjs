@@ -224,6 +224,10 @@ async function serverLine(t, page, read) {
 async function formFromSite(t, page) {
   await page.goto(new URL(`/databases/add?site=${SITE}`, page.url()).href);
   await t.see(page.getByRole("heading", { level: 1, name: "Add a database", exact: true }));
+  // As for a person who came by the site's Make its database: the entry before
+  // is the console's own, so Back is the console's to ask about, not the
+  // browser's (a page opened by its address asks with the browser's question).
+  await page.evaluate(() => history.pushState(null, "", location.href));
   const crumbs = page.getByRole("navigation", { name: "Breadcrumb" });
   await t.see(crumbs.getByRole("link", { name: SITE, exact: true }));
   ensure((await crumbs.getByRole("link", { name: SITE, exact: true }).getAttribute("href")) === `/websites/${SITE}`, "the crumb of the site does not lead to its page");
