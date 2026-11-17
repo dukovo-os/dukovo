@@ -1591,13 +1591,14 @@ pub fn retry_wanted(
 ) -> Result<(Details, Vec<String>), Refused> {
     let began = std::time::Instant::now();
     let mut trace = Trace::default();
-    let result = order_wanted(store, record, now, say, &mut trace, began);
-    if let Err(refused) = &result {
-        let detail = trace.detail.clone().unwrap_or_else(|| refused.why.clone());
-        let entry = history::Entry::new(now, &record.order.name, Event::Failed, &detail, By::Certd);
+    order_wanted(store, record, now, say, &mut trace, began).map_err(|refused| {
+        // The record keeps the words the history has, with their codes, as
+        // `cert get` keeps them for the first try.
+        let why = trace.detail.clone().unwrap_or(refused.why);
+        let entry = history::Entry::new(now, &record.order.name, Event::Failed, &why, By::Certd);
         history::note(store, &entry.took(elapsed_ms(began)));
-    }
-    result
+        Refused { why, not_before: refused.not_before }
+    })
 }
 
 /// [`retry_wanted`], with `trace` filled in as it goes for what it says of a

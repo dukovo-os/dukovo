@@ -1032,7 +1032,7 @@ fn certd_tries_again(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
         && alert["alert"]["severity"] == "warning"
         && alert["alert"]["about"] == "stopped"
         && title.starts_with("The certificate lab-order could not be had for a day: ")
-        && title.contains("CRT-101")
+        && detail.contains("this machine (CRT-101). certd tries again until ")
         && detail.ends_with("(CRT-123)");
     if !well {
         return Err(format!("the alert for the certificate not got for a day is {alert}"));
