@@ -171,7 +171,7 @@ html, body { margin: 0; }
   border: 1px solid var(--field-b); border-radius: .143rem; background: var(--bg); color: var(--text); font: inherit; min-width: 10rem; }
 .select i { height: 100%; width: 1.571rem; display: grid; place-items: center; border-left: 1px solid var(--border); font-style: normal;
   font-size: .857rem; color: var(--muted); background: linear-gradient(var(--btn-1), var(--btn-3)); }
-.check { display: flex; gap: .571rem; align-items: flex-start; }
+.check { display: flex; gap: .571rem; align-items: flex-start; min-height: 1.714rem; }
 .check input { margin: .143rem 0 0; accent-color: var(--accent); width: 1.071rem; height: 1.071rem; }
 .radio-card { display: flex; gap: .714rem; align-items: flex-start; padding: .714rem .857rem; border: 1px solid var(--border); border-radius: .357rem; background: var(--bg); }
 .radio-card.on { border-color: var(--sel-b); background: linear-gradient(var(--sel-1), var(--sel-2)); }
