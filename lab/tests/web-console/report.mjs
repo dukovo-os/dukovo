@@ -130,7 +130,7 @@ async function unreportedCrash(page, seconds = 90) {
     ensure(Array.isArray(crashes), `${ROUTES.crashes} gives no list of crashes: ${answer.text}`);
     const found = crashes
       .filter((crash) => typeof crash?.program === "string" && crash.program.includes("crash-test") && !crash.reported)
-      .sort((a, b) => b.at - a.at)[0];
+      .sort((a, b) => b.at_ms - a.at_ms)[0];
     if (found) return found;
     ensure(Date.now() < until, `reportd kept no crash of crash-test that is not reported within ${seconds} seconds`);
     await sleep(2000);

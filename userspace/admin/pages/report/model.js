@@ -93,13 +93,15 @@ function failedChoice(failed, time) {
 /** A crash reportd keeps as a choice. */
 function crashChoice(crash, time) {
   const title = `${crash.program} stopped with an error`;
+  const at = Number.isFinite(crash.at_ms) ? crash.at_ms / 1000 : null;
+  const when = at === null ? 'Time not known' : time.when(at);
   return {
     key: keyOf({ about: 'crash', crash: crash.id }),
     about: 'crash',
     crash: crash.id,
     title,
-    words: `${time.when(crash.at)}${text(crash.what) ? ` · ${crash.what}` : ''}`,
-    line: `${title} ${atWords(time, crash.at)}.`,
+    words: `${when}${text(crash.what) ? ` · ${crash.what}` : ''}`,
+    line: `${title}${at === null ? '' : ` ${atWords(time, at)}`}.`,
     admin: false,
     questions: false,
   };
@@ -134,7 +136,7 @@ export function choicesOf({
   if (admin && failed?.failed) choices.push(failedChoice(failed.failed, time));
   choices.push(...listOf(crashes, 'crashes')
     .filter((crash) => typeof crash?.id === 'string' && typeof crash.program === 'string' && !crash.reported)
-    .sort((a, b) => b.at - a.at)
+    .sort((a, b) => (b.at_ms ?? 0) - (a.at_ms ?? 0))
     .map((crash) => crashChoice(crash, time)));
   if (admin) {
     for (const one of listOf(show, 'services').filter((service) => service?.state === 'failed' && typeof service.name === 'string')) {
