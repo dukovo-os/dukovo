@@ -252,11 +252,11 @@ async function nameIsChecked(t, page) {
   const name = page.getByLabel("Name", { exact: true });
   await name.fill(BUSY);
   await buttonOf(page, "Add the database").click();
-  // The owner follows the name, so its field says the same.
+  // The owner follows the name, so its field, the next one, says the same: the first is the name's.
   await t.see(page.getByText(`A database or a role named ${BUSY} is there already.`, { exact: true }).first());
   await name.fill("Shop");
   await buttonOf(page, "Add the database").click();
-  await t.see(page.getByText("Use lowercase letters, digits and _", { exact: false }));
+  await t.see(page.getByText("Use lowercase letters, digits and _", { exact: false }).first());
   await sleep(1000);
   page.off("request", watch);
   ensure(sent.length === 0, `Add the database sent ${sent.join(", ")} with a name that is wrong`);
