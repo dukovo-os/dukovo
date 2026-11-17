@@ -3507,14 +3507,14 @@ page: each command takes back its own half-made change.
 | --- | --- | --- |
 | The install | **Nothing about the website was changed.** and the install's own words | **Try again**, **Change the form** |
 | The add | **Nothing was changed: the command took its changes back.** and the error's words, with nginx's line for [WEB-103](../../errors/WEB-103.md) | **Try again**, **Change the form** |
-| The certificate | **shop.example.org is live over HTTP. The certificate was not got: the site's page has Get the certificate to try again.** | **Open its page** |
+| The certificate | **shop.example.org is live over HTTP. The certificate was not got: the site's page says whether certd tries again, and has Get a certificate when it does not.** | **Open its page** |
 | HTTPS | **shop.example.org is live over HTTP, and certd keeps the certificate shop. Try again turns HTTPS on.** | **Try again**, **Open its page** |
 
 **Try again** starts at the step that failed, and says **Done already:** with the
 steps before it. A failed order for a certificate through port 80 that began is
 kept, and certd tries it again by itself every hour for a day and every 6 hours
 after, for 14 days (see "The list" under "Certificates"): the website's page then
-says **Getting a certificate: certd tries again every hour** in place of **Get the
+says **Getting a certificate: certd tries again every hour** in place of **Get a
 certificate**. An order that failed before an account was made at the authority,
 with the terms not agreed to, is not kept, and is made again from the website's
 page.
@@ -3530,7 +3530,7 @@ in the site's files, with its ID. It has these rows:
 | --- | --- |
 | Names | Each name, as a link to the site over `https` or `http` |
 | Serves | **PHP pages from /shared/www/sites/shop.example.org, owned by alice**, and, for an administrator whose session has the terminal, **Open the Terminal** |
-| HTTPS | As in the list, with the certificate as a link to **Certificates**, and **Ends Dec 14, certd renews it from Nov 14**. For a site whose certificate certd is still trying to get (see "The list" under "Certificates"), **Getting a certificate: certd tries again every hour** in place of **Get the certificate** |
+| HTTPS | As in the list, with the certificate as a link to **Certificates**, and **Ends Dec 14, certd renews it from Nov 14**. For a site whose certificate certd is still trying to get (see "The list" under "Certificates"), **Getting a certificate: certd tries again every hour** in place of **Get a certificate** |
 | Visits and size | A small chart of the last 30 days, each day's visits and errors, and what the folder takes, with **Counted once a day from nginx's log; the log holds no addresses.** Before the first count it says **Not counted yet: visits are counted once a day.** |
 | Its database | The databases made for it that **Databases** has read since this page of the console was opened, as links, or **None that this page knows of**, and **Make its database** |
 | Its file | `/system/settings/websites/shop.example.org.conf` and **As website wrote it**, **Changed by hand · kept as you wrote it**, or **Added by hand · website does not write it, and keeps it as you wrote it**. **Show the file** shows its text, and a file changed by hand has a line that it is also a row of **What changed**, with **Keep it** and **Put back** (see "What changed") |
@@ -3738,7 +3738,10 @@ the connection settings, and:
   says so first.
 - **Firewall** says **Port 5432 is open to 192.168.1.0/24 and 10.0.0.0/8 only.**,
   the networks of every database, since one port serves them all, or **Port 5432
-  is closed to other machines: PostgreSQL listens on this machine only.** When a
+  is closed to other machines: PostgreSQL listens on this machine only.** On a
+  machine that let other machines in before `database` kept a block of firewall
+  rules, it says **Port 5432 has no rule of its own**: every address reaches the
+  port until the next `database allow` or `deny` writes the block. When a
   rule of your own before the block of `database` decides for the port first, a
   warning names the rule and links to **Firewall**, where it is moved or removed;
   `database` does not move it.
