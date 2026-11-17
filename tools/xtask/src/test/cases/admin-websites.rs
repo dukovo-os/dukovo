@@ -1239,7 +1239,7 @@ fn a_copy_put_back(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
     has_members("the server after the hook", &list["server"], &json!({"copies": true}))?;
     let made = row(&list, "databases", DATABASE)
         .ok_or_else(|| format!("the list has no database {DATABASE}: {list}"))?;
-    if !made["copy"]["at_ms"].as_u64().is_some_and(|at| at > 0) {
+    if made["copy"]["at_ms"].as_u64().is_none_or(|at| at == 0) {
         return Err(format!("the list has no time for the copy of {DATABASE}: {made}"));
     }
     let copies = same_as_command(
