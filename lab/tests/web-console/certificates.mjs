@@ -896,7 +896,8 @@ async function reader(t) {
   await t.see(page.getByText(READER_LEAD, { exact: true }));
   await listAsAnswered(t, page, { pebble: false });
   const buttons = await page.locator("main button").evaluateAll((all) => all.filter((one) => one.offsetParent !== null).map((one) => one.textContent.trim()));
-  const allowed = new Set(["Show fingerprint", "Check again", "Show all"]);
+  // The head's Show commands changes nothing of the machine, as the others do not.
+  const allowed = new Set(["Show fingerprint", "Check again", "Show all", "Show commands"]);
   const other = buttons.filter((words) => !allowed.has(words));
   ensure(other.length === 0, `a reader's page has these buttons: ${other.join(", ")}`);
   ensure((await page.getByRole("button", { name: "Upload your own…" }).count()) === 0, "a reader has Upload your own");
