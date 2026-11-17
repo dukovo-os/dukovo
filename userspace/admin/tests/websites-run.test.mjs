@@ -82,7 +82,7 @@ test('a certificate that cannot be got leaves the site live over HTTP, and its p
   await add(world);
   assert.deepEqual(states(world), ['done', 'failed', 'skipped']);
   assert.equal(world.ranOf('websites.https').length, 0, 'HTTPS is not turned on without the certificate');
-  assert.match(banners(world), /shop\.example\.org is live over HTTP\. The certificate was not got: the site's page has Get the certificate to try again\./);
+  assert.match(banners(world), /shop\.example\.org is live over HTTP\. The certificate was not got: the site's page says whether certd tries again, and has Get a certificate when it does not\./);
   assert.equal(buttonOf(world.view.main, 'Try again'), undefined, 'trying the certificate again is on the site\'s page');
   assert.equal(linkOf(world.view.main, 'Open its page').getAttribute('href'), '/websites/shop.example.org');
   assert.equal(buttonOf(world.view.main, 'Change the form'), undefined, 'the site is there: the form would add it again');

@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  CHARTS, combine, DEFAULT_RANGE, formatBits, formatBytes, formatPercent, formatRate, GAP_STEPS, modelOf, RANGES, rangeOf,
+  CHARTS, combine, DEFAULT_RANGE, FORMATS, formatBits, formatBytes, formatCount, formatPercent, formatRate, GAP_STEPS, modelOf, RANGES, rangeOf,
   labelOf, runs, shapes, statOf, summarize, tableOf, totalMemory, VIEW,
 } from '../lib/chart-model.js';
 import { makeTime } from '../lib/time.js';
@@ -241,4 +241,23 @@ test('the table has a row for each time, newest first, with an empty cell where 
     head: ['Time', 'In', 'Out'],
     rows: [['2:29 AM', '2 Mbit/s', '1 Mbit/s'], ['2:14 AM', '1 Mbit/s', '']],
   });
+});
+
+test('a count is written as a number is read, in thousands with commas', () => {
+  assert.equal(formatCount(1240), '1,240');
+  assert.equal(formatCount(7), '7');
+  assert.equal(formatCount(0), '0');
+  assert.equal(formatCount(1234.6), '1,235');
+  assert.equal(FORMATS.count, formatCount);
+});
+
+test('the first column of the numbers is named by the chart, and is Time for a chart that does not', () => {
+  const time = makeTime('UTC', () => NOW * 1000);
+  const chart = { id: 'x', name: 'X', now: 'X now', kind: 'count', scale: 'peak', lines: [{ series: 'x', label: 'X' }] };
+  const range = { id: 'r', label: 'r', words: 'the range', span: 100, every: 10 };
+  const answer = [{ series: 'x', points: [[NOW - 20, 5], [NOW - 10, 1500]] }];
+  assert.deepEqual(tableOf(modelOf(chart, answer, { range, now: NOW }), time).head, ['Time', 'X']);
+  const named = tableOf(modelOf({ ...chart, column: 'Day' }, answer, { range, now: NOW }), time);
+  assert.deepEqual(named.head, ['Day', 'X']);
+  assert.deepEqual(named.rows.map((row) => row[1]), ['1,500', '5']);
 });

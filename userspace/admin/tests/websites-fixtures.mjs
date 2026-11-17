@@ -36,7 +36,26 @@ export const site = (name, more = {}) => ({
   added_by_hand: false,
   problems: [],
   text: fileText(name),
+  size: null,
+  visits: null,
   ...more,
+});
+
+const DAY = 86_400_000;
+
+/** The `visits` of `website list --json`: 30 days, the newest first, from the day before NOW; the day before NOW has 1,240 visits and 3 errors. */
+export const visits = (more = {}) => {
+  const days = Array.from({ length: 30 }, (_, at) => [
+    new Date(NOW - (at + 1) * DAY).toISOString().slice(0, 10), 1240 + ((at * 97) % 600), ((at + 1) * 3) % 7, 5_000_000 + at * 1000,
+  ]);
+  return {
+    yesterday: 1240, last_7_days: 9100, last_30_days: 36000, complete: true, days, ...more,
+  };
+};
+
+/** The `size` of `website list --json`: 12.4 MB in 340 files, measured the night before. */
+export const size = (more = {}) => ({
+  bytes: 12_400_000, files: 340, complete: true, measured_ms: NOW - 10 * 3_600_000, ...more,
 });
 
 /** The state of a program of a read. */
@@ -49,9 +68,9 @@ export const list = (more = {}) => ({
   php_fpm: state(),
   websites: [
     site('shop.example.org', {
-      names: ['shop.example.org', 'www.shop.example.org'], kind: 'php', https: true, certificate: 'shop.example.org', redirects_http: true,
+      names: ['shop.example.org', 'www.shop.example.org'], kind: 'php', https: true, certificate: 'shop.example.org', redirects_http: true, size: size(), visits: visits(),
     }),
-    site('blog.example.org', { owner: 'chase' }),
+    site('blog.example.org', { owner: 'chase', size: size({ bytes: 3_400_000_000, files: 52_000, complete: false }) }),
     site('duke-nas.local', {
       names: ['duke-nas.local'], https: true, certificate: 'this-machine', redirects_http: true,
     }),
@@ -87,12 +106,30 @@ export const checkOk = () => ({
 /** `website check --json` for settings that lack both lines and a file nginx refuses. */
 export const checkBroken = () => ({
   format: 1,
-  nginx_conf: { path: '/shared/services/org.nginx.nginx/nginx/conf/nginx.conf', includes: false, hides_sites: false },
+  nginx_conf: {
+    path: '/shared/services/org.nginx.nginx/nginx/conf/nginx.conf', includes: false, hides_sites: false, logs_sites: false,
+  },
   check: { passed: false, line: 'nginx: [emerg] unknown directive "listn" in /system/settings/websites/blog.example.org.conf:3' },
   websites: [
     { name: 'blog.example.org', problems: [{ id: 'WEB-103', words: 'nginx refuses its file: unknown directive "listn"' }] },
     { name: 'shop.example.org', problems: [] },
   ],
+});
+
+/** `website check --json` for settings that have the two lines but not the log format of the sites' logs. */
+export const checkNoLogs = () => ({
+  ...checkOk(), nginx_conf: { ...checkOk().nginx_conf, logs_sites: false },
+});
+
+/** `certificate.wanted` when certd tries to get nothing. */
+export const noneWanted = () => ({ format: 1, wanted: [] });
+
+/** `certificate.wanted` with one order certd tries again, and one it has given up. */
+export const wantedFor = (name, givenUp = false) => ({
+  format: 1,
+  wanted: [{
+    name, names: [name], directory: 'https://acme-v02.api.letsencrypt.org/directory', first_ms: NOW - 3_600_000, last_ms: NOW - 600_000, next_ms: NOW + 3_000_000, tries: 2, why: 'port 80 is not reachable (CRT-106)', given_up: givenUp,
+  }],
 });
 
 /** The plan of a site that is new: the folder is not there, a file is to be written. */

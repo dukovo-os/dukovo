@@ -13,7 +13,7 @@ import { report } from './certificates-fixtures.mjs';
 import { sparkIdle } from './security-fixtures.mjs';
 import { usePageWithProperties } from './security-view.mjs';
 import {
-  accounts, backups, certificates, finished, list, machine, open, plan, planPath, sheet, snapshots, time,
+  accounts, backups, certificates, finished, list, machine, noneWanted, NOW, open, plan, planPath, sheet, snapshots, time,
 } from './websites-fixtures.mjs';
 
 /** Lets what is waiting on a promise run, as a click does. */
@@ -83,6 +83,8 @@ export async function openWebsites(context, {
   rest = '', query = '', session = {}, unlocked = true, world = {}, prefs = {}, load = true,
 } = {}) {
   const page = usePageWithProperties(context);
+  // The days of a site's visits are counted from the day it is.
+  context.mock.method(Date, 'now', () => NOW);
   // The dialogs watch where their problems go for a change; a test has none to watch.
   const observer = globalThis.MutationObserver;
   globalThis.MutationObserver = class { observe() {} disconnect() {} };
@@ -105,6 +107,7 @@ export async function openWebsites(context, {
   const reads = {
     '/api/1/websites': () => state.list,
     '/api/1/certificates': certificates(),
+    '/api/1/certificates/wanted/all': noneWanted(),
     '/api/1/accounts': accounts(),
     '/api/1/backups': backups(),
     '/api/1/snapshots': snapshots(),
