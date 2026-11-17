@@ -1055,9 +1055,23 @@ async function reader(t) {
 
   const refused = async (route, body = null) => mustBe(await askFor(page, route, body), 403, "ADM-122", `a reader's ${route}`);
   for (const route of [ROUTES.list, ROUTES.history, ROUTES.channels, ROUTES.pushKey]) await refused(route);
-  for (const route of [ROUTES.test, ROUTES.email, ROUTES.emailRemove, ROUTES.webhook, ROUTES.told, ROUTES.push, routeFor(ROUTES.webhookRemove, 1), routeFor(ROUTES.pushRemove, "0123456789abcdef")]) {
-    await refused(route, {});
-  }
+  // Arguments are checked before the person (ADR 0515), so each change is
+  // asked with arguments it takes, and only the person is left to refuse it.
+  const subscription = JSON.stringify({
+    endpoint: "https://push.example.net/send/lab",
+    keys: { p256dh: "BLabLabLabLabLabLabLabLabLabLabLabLabLab", auth: "LabLabLabLabLabLab" },
+  });
+  const changes = [
+    [ROUTES.test, {}],
+    [ROUTES.email, { to: "ops@example.org", server: "mail.example.org", user: "alerts@example.org", password: "lab-password" }],
+    [ROUTES.emailRemove, {}],
+    [ROUTES.webhook, { kind: "json", url: "http://10.0.2.2:8080/alerts" }],
+    [ROUTES.told, { channel: "email", about: "data,stopped" }],
+    [ROUTES.push, { subscription, name: "Lab browser" }],
+    [routeFor(ROUTES.webhookRemove, 1), {}],
+    [routeFor(ROUTES.pushRemove, "0123456789abcdef"), {}],
+  ];
+  for (const [route, body] of changes) await refused(route, body);
   await signOut(t, page);
   await page.context().close();
 }
