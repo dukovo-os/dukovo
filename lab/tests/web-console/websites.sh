@@ -28,12 +28,14 @@ folders=/shared/www/sites
 counts=/system/state/websites/counts.json
 php=php.acme-lab.example
 
-# The file of the site the hand edits are for: the first that is not the PHP site's.
+# The file of the site the hand edits are for: the first that is not the PHP
+# site's. A file whose name starts with _ is website's own, as _default.conf,
+# which answers HTTPS for a name no site has, and is no site.
 first() {
 	for file in "$files"/*.conf; do
 		[ -e "$file" ] || continue
 		case "$file" in
-		"$files/$php.conf") ;;
+		"$files/$php.conf" | "$files"/_*) ;;
 		*)
 			echo "$file"
 			return 0
@@ -94,6 +96,7 @@ repair)
 state)
 	sites=0
 	for file in "$files"/*.conf; do
+		case "$file" in "$files"/_*) continue ;; esac
 		[ -e "$file" ] && sites=$((sites + 1))
 	done
 	[ -e "$files/$php.conf" ] && there=there || there=missing

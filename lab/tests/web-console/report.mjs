@@ -344,7 +344,8 @@ async function cutWords(t, page, picked) {
   const [cut] = edits.cuts;
   ensure(edits.cuts.length === 1 && cut.line === picked.line - 1 && cut.from === from && cut.to === to && typeof cut.section === "string", `Cut these words asked for ${JSON.stringify(edits)}, not characters ${from} to ${to} of line ${picked.line - 1}`);
   ensure(edits.answers === undefined, `Cut these words asked for ${JSON.stringify(edits)}, which has answers in it`);
-  const row = text(page).locator(`.rl[data-n="${picked.n}"] .rl-text`);
+  // Found by its Cut line, which names the line as drafted: the head gains a line that counts the cuts, which moves the rows.
+  const row = text(page).locator(`.rl:has(> .rl-cut[aria-label=${JSON.stringify(`Cut line ${picked.line} of ${picked.title}`)}]) .rl-text`);
   ensure((await row.innerText()) === `[cut]${picked.words.slice(to)}`, `the line reads ${JSON.stringify(await row.innerText())} after its words were cut`);
   await t.see(page.getByText("You cut 1 part of a line.", { exact: true }));
   ensure((await linesOf(page)).some((line) => /^Cut by the sender: 1 part of a line/.test(line)), "the head of the text does not say what was cut");

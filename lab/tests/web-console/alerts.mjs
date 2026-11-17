@@ -457,10 +457,11 @@ async function nothingSetUp(t, page) {
   await t.see(active.getByText("Lab alert for the Alerts page", { exact: false }));
   await t.see(active.getByText("Lab temperature alert", { exact: false }));
   // The critical alert comes before the warning, with the way to the page it is about.
-  const titles = (await active.locator("li.al-item").allInnerTexts()).map((text) => text.split("\n")[0]);
-  const critical = titles.findIndex((text) => text.includes("Lab temperature alert"));
-  const warning = titles.findIndex((text) => text.includes("Lab alert for the Alerts page"));
-  ensure(critical >= 0 && warning >= 0 && critical < warning, `the alerts are listed ${titles.join(" | ")}: the critical one is not before the warning`);
+  // Each item begins with its level's word, then its title.
+  const items = (await active.locator("li.al-item").allInnerTexts()).map((text) => text.replace(/\s+/g, " "));
+  const critical = items.findIndex((text) => text.includes("Lab temperature alert"));
+  const warning = items.findIndex((text) => text.includes("Lab alert for the Alerts page"));
+  ensure(critical >= 0 && warning >= 0 && critical < warning, `the alerts are listed ${items.join(" | ")}: the critical one is not before the warning`);
   const hardware = active.locator("li.al-item").filter({ hasText: "Lab temperature alert" }).getByRole("link", { name: "Open Hardware", exact: true });
   await t.see(hardware);
   ensure((await hardware.getAttribute("href")) === "/hardware", `Open Hardware goes to ${await hardware.getAttribute("href")}`);
