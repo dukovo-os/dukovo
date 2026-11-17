@@ -12,7 +12,8 @@
 // it, and when the server answers it says "Back", or that an update was taken
 // back when `about` shows another release than the one it was to bring. A
 // restart ends the session, though: the sign-in page comes first, and the
-// banner made for the new session says it.
+// banner made for the new session says it, when the machine has started
+// since.
 
 import { whenAnswered } from '../api.js';
 import { h, icon } from '../dom.js';
@@ -105,9 +106,16 @@ export function createOnline({ host, region, stale, main, get, time, onBack, onC
     }, 1000);
   }
 
-  /** Says that the server is back: "Back" for a few seconds, or what happened to an update, until it is closed. */
-  async function greet(version) {
-    const back = backWords(version ? await ask('/api/1/console/about').catch(() => null) : null, version);
+  /**
+   * Says that the server is back: "Back" for a few seconds, or what happened
+   * to an update, until it is closed. `since` is when a greeting kept for
+   * the next session was kept: it is said only when the machine has started
+   * since, as `about`'s `up` tells.
+   */
+  async function greet(version, since = null) {
+    const about = version ? await ask('/api/1/console/about').catch(() => null) : null;
+    if (since !== null && !(Number.isFinite(about?.up) && Date.now() - about.up * 1000 > since)) return;
+    const back = backWords(about, version);
     const close = () => {
       clearTimeout(timer);
       note.remove();
@@ -136,13 +144,14 @@ export function createOnline({ host, region, stale, main, get, time, onBack, onC
       link.answered();
       render();
       onBack(restart !== null);
-      if (restart) greet(restart.version);
+      if (restart) {
+        forget(KEPT);
+        greet(restart.version);
+      }
     } catch (error) {
-      // A session that ended is shown by api.js's handler, and what an
-      // update brought is said after the next sign-in. Anything else is a
-      // server that still does not answer.
+      // A session that ended is shown by api.js's handler. Anything else is
+      // a server that still does not answer.
       if (error?.status === 401) {
-        if (expected?.version) keep(KEPT, { version: expected.version, at: Date.now() });
         expected = null;
         link.answered();
         render();
@@ -157,7 +166,7 @@ export function createOnline({ host, region, stale, main, get, time, onBack, onC
   const kept = recall(KEPT);
   if (kept) {
     forget(KEPT);
-    if (typeof kept.version === 'string' && Date.now() - kept.at < BACK_KEPT_MS) greet(kept.version);
+    if (typeof kept.version === 'string' && Date.now() - kept.at < BACK_KEPT_MS) greet(kept.version, kept.at);
   }
 
   return {
@@ -171,11 +180,13 @@ export function createOnline({ host, region, stale, main, get, time, onBack, onC
      * An action is about to restart the console or the machine: the banner
      * says `restartWords` and is quiet for `options.quietMs` (120 s unless it
      * says), then as offline. `options.version` is the release an update was
-     * to bring.
+     * to bring, which is also kept for the next session: whichever call finds
+     * that the restart ended the session, the sign-in page comes next.
      */
     expectRestart(restartWords, options = {}) {
       went = Math.floor(Date.now() / 1000);
       expected = { version: options.version ?? null };
+      if (expected.version) keep(KEPT, { version: expected.version, at: Date.now() });
       welcome?.();
       link.expectRestart(Date.now(), { words: restartWords, quietMs: options.quietMs });
       schedule();

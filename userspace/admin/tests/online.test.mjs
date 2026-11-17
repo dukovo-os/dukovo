@@ -252,22 +252,51 @@ test('a restart that ends the session is over, and the next time the server is l
   assert.equal(page.world.asked, 0);
 });
 
-test('an update\'s restart that ends the session keeps the release it was to bring, and the banner of the next session says what came', async (context) => {
+test('an update\'s restart keeps the release it was to bring, and after a restart that ended the session the banner of the next one says what came', async (context) => {
   const storage = useStorage(context);
   const page = openOnline(context);
   page.online.expectRestart('duke-nas is restarting.', { quietMs: MACHINE_QUIET_MS, version: '1.0.0-alpha.2' });
+  assert.deepEqual(JSON.parse(storage.get(KEPT)), { version: '1.0.0-alpha.2', at: START }, 'kept before any call can find the session gone');
   page.world.up = true;
   page.world.ended = true;
   await page.wait(MACHINE_QUIET_MS + 5000);
-  const kept = JSON.parse(storage.get(KEPT));
-  assert.equal(kept.version, '1.0.0-alpha.2');
-  assert.ok(kept.at > START + MACHINE_QUIET_MS && kept.at <= Date.now(), `kept at ${kept.at}`);
+  assert.equal(storage.has(KEPT), true);
   page.online.stop();
 
-  const next = openOnline(context, { again: true });
+  // The machine started 30 seconds ago, after the release was kept.
+  const next = openOnline(context, { again: true, about: () => Promise.resolve({ ...ABOUT, up: 30 }) });
   await next.wait(0);
   assert.equal(storage.has(KEPT), false, 'it is said once');
   assert.match(next.words()[0], /^Back, on 1\.0\.0-alpha\.1: the update was taken back\. See what happened/);
+});
+
+test('a kept release is forgotten unsaid when the machine has not started since it was kept, or says nothing of when it started', async (context) => {
+  const storage = useStorage(context);
+  const page = openOnline(context);
+  page.online.expectRestart('duke-nas is restarting.', { version: '1.0.0-alpha.2' });
+  page.online.stop();
+  await page.wait(60_000);
+  // Up for an hour: the restart never came, and this is only another sign-in.
+  const next = openOnline(context, { again: true, about: () => Promise.resolve({ ...ABOUT, up: 3600 }) });
+  await next.wait(0);
+  assert.equal(storage.has(KEPT), false);
+  assert.deepEqual(next.words(), []);
+
+  storage.set(KEPT, JSON.stringify({ version: '1.0.0-alpha.2', at: Date.now() - 1000 }));
+  const unsaid = openOnline(context, { again: true });
+  await unsaid.wait(0);
+  assert.deepEqual(unsaid.words(), [], 'an answer with no up says nothing of a restart');
+});
+
+test('when the session outlives the restart, the banner says what came at once and forgets the kept release', async (context) => {
+  const storage = useStorage(context);
+  const page = openOnline(context);
+  page.online.expectRestart('The console is restarting.', { version: '1.0.0-alpha.2' });
+  page.world.up = true;
+  await page.wait(RESTART_QUIET_MS + 5000);
+  assert.deepEqual(page.world.backs, [true]);
+  assert.equal(storage.has(KEPT), false);
+  assert.match(page.words()[0], /^Back, on 1\.0\.0-alpha\.1: the update was taken back\./);
 });
 
 test('a restart with no release to bring keeps nothing, and a kept release over an hour old is forgotten unsaid', async (context) => {
