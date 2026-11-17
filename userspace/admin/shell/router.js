@@ -96,15 +96,15 @@ export function createRouter({ pages, shell, main, asof }) {
   }
 
   /**
-   * Focus on the h1, unless the person moved it out of the page while it
-   * loaded, into a menu of the header say; and the scroll: to the id after
-   * the `#`, or to the top.
+   * Focus on the h1, unless the person (to a menu, say) or the page (to the
+   * card a `#` names) moved it while the page loaded; and the scroll: to the
+   * id after the `#`, or to the top.
    */
   function settle(place, focusAtStart) {
     const target = place.hash ? document.getElementById(decodeURIComponent(place.hash.slice(1))) : null;
     const heading = main.querySelector('h1');
     const now = document.activeElement;
-    const moved = now && now !== focusAtStart && now !== document.body && !main.contains(now);
+    const moved = now && now !== focusAtStart && now !== document.body && now !== heading;
     if (!moved) (heading ?? main).focus({ preventScroll: true });
     if (target) target.scrollIntoView();
     else main.scrollTop = 0;
