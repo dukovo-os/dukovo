@@ -50,7 +50,7 @@
 # The resolver, the authorities and the accounts are put back by the last steps.
 # The accounts are two that this test makes and removes, an administrator and a
 # reader, so no script needs the lab's password.
-about = "The web console's Websites pages in each engine: the list from website list, Add a website with what happens and Preview the files first, a static site with this machine's certificate, a PHP site whose certificate step fails and leaves it live on HTTP with Get the certificate after, a certificate that is here, HTTPS on and off, the order that certd is left to try again and Forget, the size and visits of each site before and after they are counted with the chart of the days, a site's file changed by hand and kept, Check the sites with a broken file, Remove with and without the folder, a reader, and the phone"
+about = "The web console's Websites pages in each engine: the list from website list, Add a website with what happens and Preview the files first, a static site with this machine's certificate, a PHP site whose certificate step fails and leaves it live on HTTP with Get the certificate after, a certificate that is here, HTTPS on and off, the order that certd is left to try again and Forget, the size and visits of each site before and after they are counted with the chart of the days, the daily count's service started as its timer starts it, a site's file changed by hand and kept, Check the sites with a broken file, Remove with and without the folder, a reader, and the phone"
 time = "45m"
 fresh = true
 host_needs = ["curl", "scp", "ssh", "openssl", "nc"]
@@ -200,6 +200,18 @@ port = 9090
 run = "sh /users/lab/websites.sh state"
 root = true
 expect = "sites: 2, php site: there, folders left of the removed: 0"
+# The daily count is the service website-count, which timerd starts after
+# midnight: its file passes the check, and started as the timer starts it, it
+# counts yesterday's lines, keeps the counts again and ends well (status
+# says that it is not running, with 3).
+[[step]]
+run = "service check website-count"
+root = true
+expect = "website-count.toml: ok"
+[[step]]
+run = '''sh -c 'c=/system/state/websites/counts.json; rm -f $c; service website-count start > /dev/null; i=0; while [ $i -lt 60 ] && [ ! -s $c ]; do sleep 1; i=$((i + 1)); done; [ -s $c ] && echo "kept again"; service website-count status || true' '''
+root = true
+expect = ["kept again", "website-count - Website counts", "Last: exited with code 0x0"]
 [[step]]
 run = "sh /users/lab/websites.sh repair"
 root = true

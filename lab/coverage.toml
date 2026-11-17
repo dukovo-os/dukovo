@@ -219,6 +219,7 @@ sysupdate-stage = ["updates/updater"]
 timerd = ["services/timers", "updates/server-on-dukovo", "web-console/services"]
 tune = ["system/tune"]
 valkey = ["services/valkey"]
+website-count = ["web-console/websites"]
 
 # The admin console's pages, by their path (thread C), and admind's
 # routes, as METHOD /path.
