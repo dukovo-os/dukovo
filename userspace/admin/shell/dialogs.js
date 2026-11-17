@@ -7,6 +7,7 @@
 
 import { get as fetchJson } from '../api.js';
 import { focusBack, h, icon, sheet, uniqueId } from '../dom.js';
+import { LOOK_MS } from './online-model.js';
 
 /** Opens `dialog` as a modal, once its sheet has loaded, and resolves with its return value when it closes. */
 export async function openModal(dialog) {
@@ -93,17 +94,37 @@ export async function aboutDialog({ get }) {
 }
 
 /**
- * The question before signing out: terminals that run can keep running or
- * end. Gives true when the person goes on to sign out.
+ * What GET /api/1/terminals answers with `get`, or null when the server
+ * does not answer within `ms` (the call is then given up) or has no such
+ * route: Sign out and Lock never wait on it for long.
  */
-export async function signOutOk({ get, post }) {
-  let running = [];
+async function terminalsNow(get, ms) {
+  const giveUp = new AbortController();
+  let timer;
+  const late = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      giveUp.abort();
+      resolve(null);
+    }, ms);
+  });
   try {
-    const answer = await get('/api/1/terminals');
-    running = Array.isArray(answer) ? answer : answer?.terminals ?? [];
+    return await Promise.race([get('/api/1/terminals', { abandon: giveUp.signal }), late]);
   } catch {
-    // A server with no terminals route has none running.
+    return null;
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+/**
+ * The question before signing out: terminals that run can keep running or
+ * end. Gives true when the person goes on to sign out. A server that does
+ * not say within `ms` which run is signed out of without the question:
+ * terminals go on after a sign-out, as Keep them running leaves them.
+ */
+export async function signOutOk({ get, post }, ms = LOOK_MS) {
+  const answer = await terminalsNow(get, ms);
+  const running = Array.isArray(answer) ? answer : answer?.terminals ?? [];
   if (running.length === 0) return true;
   const count = running.length;
   const choice = await ask({
@@ -133,13 +154,9 @@ export const lockTitle = (count) => `Lock and end ${count} administrator ${count
  * The question before Lock: administrator shells end with the unlock. Gives
  * true when the console has none or the person goes on to lock it.
  */
-export async function lockOk(get = fetchJson) {
-  let count = 0;
-  try {
-    count = adminShells(await get('/api/1/terminals'));
-  } catch {
-    // A server with no terminals route has no shells to end.
-  }
+export async function lockOk(get = fetchJson, ms = LOOK_MS) {
+  // A server that does not say within `ms` locks without the question.
+  const count = adminShells(await terminalsNow(get, ms));
   if (count === 0) return true;
   const choice = await ask({
     title: lockTitle(count),
