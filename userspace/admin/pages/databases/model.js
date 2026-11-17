@@ -10,6 +10,7 @@
 
 import { bytesWords, counted } from '../../lib/size-words.js';
 import { hrefOf } from '../../lib/database-route.js';
+import { dayWords } from '../../lib/snapshot-words.js';
 
 /** PostgreSQL's service, which the list's line links to and Turn it on starts. */
 export const SERVICE = 'postgresql';
@@ -31,6 +32,7 @@ const isObject = (value) => value !== null && typeof value === 'object' && !Arra
 const text = (value) => (typeof value === 'string' ? value : '');
 const number = (value) => (Number.isInteger(value) && value >= 0 ? value : null);
 const objects = (value) => (Array.isArray(value) ? value.filter(isObject) : []);
+const strings = (value) => (Array.isArray(value) ? value.filter((one) => typeof one === 'string') : []);
 const names = (value) => (Array.isArray(value) ? value.map(String) : text(value) === '' ? [] : text(value).split(',').map((one) => one.trim()));
 
 /** The number of PostgreSQL's version, from `version()`'s sentence or the number alone. */
@@ -41,8 +43,10 @@ const certificateOf = (value) => /(?:^|\/)postgresql\/([^/]+)\/fullchain\.pem$/.
 
 /**
  * `databases.list`'s answer as one value: `{server, databases, roles,
- * access, problems}`, with each list sorted as it is shown. Null when the
- * answer is not one.
+ * access, problems}`, with each list sorted as it is shown. `server` has
+ * the firewall's `{networks, earlier}` for port 5432 and whether the backup
+ * hook `copies` each database, and a database its newest `copy`, `{atMs,
+ * bytes}` or null. Null when the answer is not one.
  */
 export function readOf(answer) {
   if (!isObject(answer)) return null;
@@ -56,6 +60,11 @@ export function readOf(answer) {
       listen: text(server.listen),
       ssl: server.ssl === true || server.ssl === 'on',
       certificate: certificateOf(server.certificate),
+      firewall: {
+        networks: strings(server.firewall?.networks),
+        earlier: text(server.firewall?.earlier) || null,
+      },
+      copies: server.copies === true,
     },
     databases: objects(answer.databases).filter((one) => text(one.name) !== '').map((one) => ({
       name: one.name,
@@ -68,6 +77,7 @@ export function readOf(answer) {
       site: text(one.site) || null,
       madeHere: one.made_by_database === true,
       mismatch: one.collation_mismatch === true,
+      copy: isObject(one.copy) && number(one.copy.at_ms) !== null ? { atMs: one.copy.at_ms, bytes: number(one.copy.bytes) ?? 0 } : null,
     })).sort((one, other) => one.name.localeCompare(other.name)),
     roles: objects(answer.roles).filter((one) => text(one.name) !== '').map((one) => ({
       name: one.name, login: one.login !== false, password: one.password === true, madeHere: one.made_by_database === true,
@@ -195,6 +205,30 @@ export function factsOf(db) {
 
 /** The words over the sessions of a database. */
 export const sessionsWords = (count) => (count === 0 ? 'No one is connected now.' : `${counted(count, 'program')} ${count === 1 ? 'is' : 'are'} connected now.`);
+
+// ---- its copy -------------------------------------------------------------------
+
+/** The Backups page, which sets up what makes the copies. */
+export const BACKUPS_PATH = '/snapshots/backups';
+
+/** "Copied at 2:00 AM, 12 MB" for a copy of today; another day is named: "Copied Nov 15 at 2:00 AM, 12 MB". */
+export function copiedWords(copy, time, now = Date.now()) {
+  // `when` writes the clock alone for a time of today.
+  const today = /^\d/.test(time.when(copy.atMs / 1000));
+  return `Copied ${today ? '' : `${dayWords(copy.atMs, time.zone, now)} `}at ${time.clock(copy.atMs / 1000)}, ${bytesWords(copy.bytes)}`;
+}
+
+/**
+ * What a database's page says of its copy, from the database `db` and the
+ * `server` of a read: `{words, backups}`. `backups` is true when no copy is
+ * made before backups, which the Backups page sets up. `time` is
+ * lib/time.js's.
+ */
+export function copyOf(db, server, time, now = Date.now()) {
+  if (db.copy !== null) return { words: copiedWords(db.copy, time, now), backups: false };
+  if (server.copies) return { words: 'No copy yet: the next backup makes one', backups: false };
+  return { words: 'No copies are made before backups', backups: true };
+}
 
 /** The two commands that bring a database's indexes up to date after the system's sorting data changed. */
 export const reindexLines = (name) => [

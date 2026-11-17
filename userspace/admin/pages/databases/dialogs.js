@@ -8,7 +8,7 @@
 
 import { h } from '../../dom.js';
 import {
-  allowArgs, removeArgs, restarts, secretOf,
+  allowArgs, EARLIER_LEAD, EARLIER_TAIL, openedWords, parseNetworks, removeArgs, restarts, secretOf,
 } from '../../lib/database-model.js';
 import { openFormDialog } from '../../lib/form-dialog.js';
 import { ask } from '../../shell/dialogs.js';
@@ -17,7 +17,8 @@ import { endsSessions, removeLead } from './model.js';
 
 /**
  * Asks which networks may connect to `name`, and with which certificate.
- * `server` is the last read's, which says whether PostgreSQL restarts.
+ * `server` is the last read's, which says whether PostgreSQL restarts and
+ * what the firewall lets in now.
  * Gives `{networks, certificate}`, or null when the person cancelled; the
  * call is made by the page, which shows its steps.
  */
@@ -26,13 +27,19 @@ export async function askAllow(view, {
 }) {
   const access = accessFields({ certificates, machine });
   const restart = h('p', {});
+  const firewall = h('p', {});
   const words = () => {
     restart.textContent = restarts(server, access.certificate.input.value)
       ? 'PostgreSQL restarts once to listen on the network: its open sessions end.'
       : 'PostgreSQL is listening on the network already: it reads its settings again, and no session ends.';
   };
+  const ports = () => {
+    firewall.textContent = openedWords(server, parseNetworks(access.networks.input.value).networks);
+  };
   words();
+  ports();
   access.certificate.input.addEventListener('change', words);
+  access.networks.input.addEventListener('input', ports);
   let chosen = null;
   const done = await openFormDialog(view, {
     title: `Let other machines connect to ${name}`,
@@ -40,7 +47,9 @@ export async function askAllow(view, {
     lead: [
       `Lets the addresses you name sign in to ${name} with its password, over TLS with this server's certificate. Programs on this server connect as before.`,
       restart,
-    ],
+      firewall,
+      server.firewall.earlier && h('p', {}, EARLIER_LEAD, h('code', { class: 'mono' }, server.firewall.earlier), EARLIER_TAIL),
+    ].filter(Boolean),
     fields: access.elements,
     label: 'Let them connect',
     command: () => {

@@ -126,6 +126,9 @@ test('each page with its style sheets is within 150 KB beyond the shell', () => 
 // Security's is 2,500 more than 147,000: 1,500 for the rows of its Alerts card, one for each kind of alert, and 1,000 for the steps' rules in pages.css.
 // Add an app, Websites and Databases each keep about 1,000 of room over what
 // they bring; Websites' list reads the whole model of a site, its words and checks.
+// Databases' row is 4,200 more than it was, for the firewall's row and its rule that
+// comes first, the copy card and the Restore… button; the dialog, its model and the
+// steps of the restore are read when Restore… is pressed and are not in the row.
 const PAGE_LIMITS = {
   updates: 81_700,
   apps: 61_500,
@@ -139,7 +142,7 @@ const PAGE_LIMITS = {
   terminal: 149_908,
   'add-app': 55_500,
   websites: 81_300,
-  databases: 56_800,
+  databases: 61_000,
 };
 
 // The parts the Overview reads from a page, each a graph the shell starts

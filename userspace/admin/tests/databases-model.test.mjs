@@ -10,13 +10,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  accessOf, accountChoices, backupWords, certificateChoices, covers, denyRestarts, factsOf, handWords, leftOutWords, localeWords,
-  problemWords, readOf, reindexLines, removeOf, rowsOf, serverLine, serverState, sessionsWords, waysOf, whoLines,
+  accessOf, accountChoices, backupWords, BACKUPS_PATH, certificateChoices, copiedWords, copyOf, covers, denyRestarts, factsOf, handWords,
+  leftOutWords, localeWords, problemWords, readOf, reindexLines, removeOf, rowsOf, serverLine, serverState, sessionsWords, waysOf, whoLines,
 } from '../pages/databases/model.js';
 import {
   accounts, backups, broken, certificates, database, empty, list, missing, off, role, server,
 } from './databases-fixtures.mjs';
-import { backupsOf, place } from './snapshots-fixtures.mjs';
+import {
+  at, backupsOf, NOW, place, time,
+} from './snapshots-fixtures.mjs';
 
 const read = () => readOf(list());
 const shop = () => read().databases.find((one) => one.name === 'shop');
@@ -25,10 +27,28 @@ test('the answer is read into one shape, with each list in order', () => {
   const found = read();
   assert.deepEqual(found.databases.map((one) => one.name), ['blog', 'notes', 'shop']);
   assert.deepEqual(found.databases.find((one) => one.name === 'shop'), {
-    name: 'shop', owner: 'shop', encoding: 'UTF8', provider: 'libc', locale: 'en_US.UTF-8', bytes: 38_000_000, sessions: 0, site: 'shop.example.org', madeHere: true, mismatch: false,
+    name: 'shop',
+    owner: 'shop',
+    encoding: 'UTF8',
+    provider: 'libc',
+    locale: 'en_US.UTF-8',
+    bytes: 38_000_000,
+    sessions: 0,
+    site: 'shop.example.org',
+    madeHere: true,
+    mismatch: false,
+    copy: { atMs: at(2026, 11, 14, 2), bytes: 12_345_678 },
   });
   assert.deepEqual(found.server, {
-    installed: true, enabled: true, running: true, version: '19.0', listen: '*', ssl: true, certificate: 'this-machine',
+    installed: true,
+    enabled: true,
+    running: true,
+    version: '19.0',
+    listen: '*',
+    ssl: true,
+    certificate: 'this-machine',
+    firewall: { networks: ['192.168.1.0/24'], earlier: null },
+    copies: true,
   });
   assert.deepEqual(found.roles[0], { name: 'shop', login: true, password: true, madeHere: true });
   assert.deepEqual(found.access[0], {
@@ -45,6 +65,8 @@ test('what the answer leaves out is read as nothing, and an answer that is not o
   assert.deepEqual(bare.databases, []);
   assert.equal(bare.server.installed, false);
   assert.equal(bare.server.certificate, null);
+  assert.deepEqual(bare.server.firewall, { networks: [], earlier: null });
+  assert.equal(bare.server.copies, false);
   const odd = readOf({
     server: { installed: true, version: '19', ssl: 'on', certificate: 'blog.example.org' },
     databases: [{ name: 'a' }, { name: '' }, { owner: 'x' }, null, 5],
@@ -55,11 +77,49 @@ test('what the answer leaves out is read as nothing, and an answer that is not o
   assert.equal(odd.server.ssl, true);
   assert.equal(odd.server.certificate, 'blog.example.org');
   assert.deepEqual(odd.databases, [{
-    name: 'a', owner: '', encoding: '', provider: '', locale: '', bytes: null, sessions: 0, site: null, madeHere: false, mismatch: false,
+    name: 'a', owner: '', encoding: '', provider: '', locale: '', bytes: null, sessions: 0, site: null, madeHere: false, mismatch: false, copy: null,
   }]);
   assert.deepEqual(odd.roles, [{ name: 'a', login: true, password: false, madeHere: false }]);
   assert.deepEqual(odd.access[0].databases, ['a', 'b']);
   assert.deepEqual(odd.problems, [{ id: null, words: 'x', line: 3 }, { id: 'DB-104', words: 'y', line: null }]);
+});
+
+test('the firewall and the copies are read as the command wrote them, and what is not one is nothing', () => {
+  const found = readOf(list({
+    server: server({ firewall: { networks: ['10.0.0.0/8', 5, null, '192.168.1.0/24'], earlier: 'allow tcp 5000-6000' }, copies: true }),
+    databases: [
+      database('a', { copy: { at_ms: 5, bytes: 7 } }),
+      database('b', { copy: { at_ms: 'x', bytes: 7 } }),
+      database('c', { copy: { at_ms: 5 } }),
+      database('d', { copy: 'x' }),
+    ],
+  }));
+  assert.deepEqual(found.server.firewall, { networks: ['10.0.0.0/8', '192.168.1.0/24'], earlier: 'allow tcp 5000-6000' });
+  assert.deepEqual(found.databases.map((one) => one.copy), [{ atMs: 5, bytes: 7 }, null, { atMs: 5, bytes: 0 }, null]);
+  assert.equal(readOf(list({ server: server({ firewall: { networks: 'x', earlier: 5 } }) })).server.firewall.earlier, null);
+  assert.deepEqual(readOf(list({ server: server({ firewall: 'x' }) })).server.firewall, { networks: [], earlier: null });
+  assert.equal(readOf(list({ server: server({ copies: 'yes' }) })).server.copies, false);
+});
+
+test('a copy of today says its time, and one of another day says the day too, with its size', () => {
+  const copy = (atMs, bytes) => ({ atMs, bytes });
+  assert.equal(copiedWords(copy(at(2026, 11, 14, 2), 12_345_678), time, NOW), 'Copied at 2:00 AM, 12 MB');
+  assert.equal(copiedWords(copy(at(2026, 11, 13, 2), 345_678), time, NOW), 'Copied Nov 13 at 2:00 AM, 346 KB');
+  assert.equal(copiedWords(copy(at(2025, 12, 31, 14, 30), 8000), time, NOW), 'Copied Dec 31, 2025 at 2:30 PM, 8 KB');
+  assert.equal(copiedWords(copy(at(2026, 11, 14, 2), 0), time, NOW), 'Copied at 2:00 AM, 0 B');
+});
+
+test('the copy row says when it was made, that none is yet, or that backups make none and where to set them up', () => {
+  const found = read();
+  const [blog, notes, shopDb] = found.databases;
+  assert.deepEqual(copyOf(shopDb, found.server, time, NOW), { words: 'Copied at 2:00 AM, 12 MB', backups: false });
+  assert.deepEqual(copyOf(blog, found.server, time, NOW), { words: 'Copied Nov 13 at 2:00 AM, 346 KB', backups: false });
+  assert.deepEqual(copyOf(notes, found.server, time, NOW), { words: 'No copy yet: the next backup makes one', backups: false });
+  const none = readOf(list({ server: server({ copies: false }) }));
+  assert.deepEqual(copyOf(none.databases.find((one) => one.name === 'notes'), none.server, time, NOW), { words: 'No copies are made before backups', backups: true });
+  // A copy that was made stays shown when the hook is off now.
+  assert.equal(copyOf(none.databases.find((one) => one.name === 'shop'), none.server, time, NOW).backups, false);
+  assert.equal(BACKUPS_PATH, '/snapshots/backups');
 });
 
 test('the version is its number, and the certificate its name, whichever way the command wrote them', () => {
