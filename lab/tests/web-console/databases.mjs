@@ -332,7 +332,8 @@ async function addTheDatabase(t, page) {
   await buttonOf(shown, "I have kept it").click();
   await t.gone(shown);
   ensure(!(await page.content()).includes(password), "the password is still in the page after the dialog was closed");
-  await t.see(page.getByText(`${SHOP} is added.`, { exact: true }));
+  // The notice of the ended task says the same words: the page's own are under main.
+  await t.see(page.locator("#main").getByText(`${SHOP} is added.`, { exact: true }));
   await t.see(page.getByText("Its password was shown once and is kept nowhere on this server.", { exact: true }));
   // The settings stay, and the examples read the password from where it is kept.
   await t.see(cardOf(page, "Connection settings"));
