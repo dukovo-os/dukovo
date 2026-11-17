@@ -472,7 +472,8 @@ async function stopThem(t, page) {
   ensure((await page.locator(".db-flow .flow-step").first().getAttribute("data-state")) === "done", `the step that stops ${NETWORK} failed: ${await page.locator(".db-flow").innerText()}`);
   const read = await databasesBecome(
     page,
-    (one) => !(one.access ?? []).some((line) => line.address === NETWORK) && (one.server?.firewall?.networks ?? []).length === 0,
+    // A server that is not running, as while it restarts to listen anew, has no lines and no block either.
+    (one) => one.server?.running === true && !(one.access ?? []).some((line) => line.address === NETWORK) && (one.server?.firewall?.networks ?? []).length === 0,
     `stop ${NETWORK} connecting to ${SHOP}, and close port 5432 again`,
   );
   ensure(read.server.listen === "localhost", `PostgreSQL listens on ${read.server.listen} after the last network was stopped`);
@@ -531,7 +532,7 @@ async function removeShop(t, page) {
   page.off("request", watch);
   ensure(sent.length === 1 && /"role"\s*:\s*true/.test(sent[0]) && !/"force"/.test(sent[0]), `${ROUTES.remove} was sent ${JSON.stringify(sent)}, not the database with its role and no force`);
   await page.waitForURL((url) => url.pathname === "/databases", { timeout: 30_000 });
-  await databasesBecome(page, (one) => rowOf(one, SHOP) === undefined, `remove ${SHOP}`);
+  await databasesBecome(page, (one) => one.server?.running === true && rowOf(one, SHOP) === undefined, `remove ${SHOP}`);
   await t.gone(page.locator(`.db-list a[href="${hrefOf(SHOP)}"]`));
 }
 
@@ -633,7 +634,7 @@ async function restoreBusy(t, page) {
   await answerIfAsked(t, page);
   ensure((await removal).status() === 200, `${ROUTES.remove} for ${prefilled} was not answered 200`);
   await page.waitForURL((url) => url.pathname === "/databases", { timeout: 30_000 });
-  read = await databasesBecome(page, (one) => rowOf(one, prefilled) === undefined, `remove ${prefilled}`);
+  read = await databasesBecome(page, (one) => one.server?.running === true && rowOf(one, prefilled) === undefined, `remove ${prefilled}`);
   ensure(rowOf(read, BUSY) !== undefined, `${BUSY} is gone with ${prefilled}`);
   return prefilled;
 }
@@ -662,7 +663,7 @@ async function removeBusy(t, page) {
   ensure(/"force"\s*:\s*true/.test((await sent).postData() ?? ""), `${ROUTES.remove} for ${BUSY} was not sent with force`);
   ensure((await answered).status() === 200, `${ROUTES.remove} for ${BUSY} was not answered 200`);
   await page.waitForURL((url) => url.pathname === "/databases", { timeout: 30_000 });
-  await databasesBecome(page, (one) => rowOf(one, BUSY) === undefined, `remove ${BUSY}`);
+  await databasesBecome(page, (one) => one.server?.running === true && rowOf(one, BUSY) === undefined, `remove ${BUSY}`);
 }
 
 /** A database that is not there says so and leads back to the list. */
