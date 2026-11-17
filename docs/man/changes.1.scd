@@ -170,7 +170,11 @@ then _end_ (*found*, *not-found*, *otherwise*, *not-started*, *broken* or
 *stopped*), for *found* the change's _what_ and _version_, whether a try
 _confirmed_ it, and _undo_, the lines that say how to undo it; and
 _words_, the lines of the result as *--status* prints them. With no search
-at all every member is empty, *null* or *false*.
+at all every member is empty, *null* or *false*. Before a search of the
+newest failed start begins, _failed_start_, _levers_ and _cannot_ are those
+of the search that the health check planned when that start failed, which
+is what the console offers, and the rest are as with no search; a search
+that ended about an older start is not shown then.
 
 # FINDING THE CHANGE
 
@@ -280,6 +284,10 @@ _/system/state/starts/_
 
 _/system/state/bisect/state.json_
 	The search under way or the last one, written whole or not at all.
+
+_/system/state/bisect/planned.json_
+	The search of the newest failed start as the health check planned
+	it, before it begins, for *bisect --status --json*.
 
 _/system/state/bisect/try-_N_
 	The services try _N_ leaves out, one to a line. Spark reads it

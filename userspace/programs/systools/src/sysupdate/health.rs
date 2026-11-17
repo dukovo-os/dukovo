@@ -457,10 +457,17 @@ fn verdict(
     if trial.is_none() {
         // The search is offered for a start that failed and goes on: an
         // update that fell back cannot be tried again, so it has none.
-        let restarts = this
+        let planned = this
             .filter(|start| start.outcome == Outcome::Failed)
-            .and_then(|_| bisect::plan_now().ok())
-            .map(|search| search.restarts_left());
+            .and_then(|_| bisect::plan_now().ok());
+        // The Updates page offers it from this plan, which it reads as the
+        // person, who cannot read the slot state that planning takes.
+        if let Some(search) = &planned
+            && let Err(err) = bisect::keep_planned(search)
+        {
+            println!("changes bisect: cannot keep the search's plan: {err}");
+        }
+        let restarts = planned.map(|search| search.restarts_left());
         let held = held.as_deref();
         if let Some(text) = failure_notice(&records, this, checked, named, &likely, restarts, held)
         {

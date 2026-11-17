@@ -55,6 +55,11 @@ pub const DIR: &str = "/system/state/bisect";
 /// The search's file in [`DIR`].
 const STATE: &str = "state.json";
 
+/// The plan's file in [`DIR`]: the search of the newest failed start, as
+/// the health check planned it when that start failed, before anyone
+/// begins it.
+const PLANNED: &str = "planned.json";
+
 /// The kinds of a start's items that are the slot's: a try of the other
 /// slot changes them all at once.
 const SLOT_KINDS: [&str; 4] = ["system", "kernel", "firmware", "microcode"];
@@ -741,10 +746,53 @@ pub fn load_in(dir: &Path) -> Option<Search> {
 ///
 /// If it cannot be written.
 pub fn save_in(dir: &Path, search: &Search) -> std::io::Result<()> {
+    keep_as(dir, STATE, search)
+}
+
+/// Keeps `search`, planned and not begun, in `dir`: a plan reads the slot
+/// state, which only the system may read, and the page that offers the
+/// search reads it as the person.
+///
+/// # Errors
+///
+/// If it cannot be written.
+pub fn keep_planned_in(dir: &Path, search: &Search) -> std::io::Result<()> {
+    keep_as(dir, PLANNED, search)
+}
+
+/// [`keep_planned_in`] [`DIR`].
+///
+/// # Errors
+///
+/// If it cannot be written.
+pub fn keep_planned(search: &Search) -> std::io::Result<()> {
+    keep_planned_in(Path::new(DIR), search)
+}
+
+/// The plan kept in `dir`, when it is of the failed start a search of
+/// `records` would look into now and `kept`, the search kept, is none or
+/// one that has ended about an older start.
+#[must_use]
+pub fn planned_in(dir: &Path, records: &[Start], kept: Option<&Search>) -> Option<Search> {
+    let bytes = std::fs::read(dir.join(PLANNED)).ok()?;
+    let plan: Search = serde_json::from_slice(&bytes).ok()?;
+    let (failed, _) = failed_and_good(records).ok()?;
+    let newer = kept.is_none_or(|search| search.end.is_some() && search.failed < plan.failed);
+    (plan.failed == failed.number && newer).then_some(plan)
+}
+
+/// [`planned_in`] [`DIR`].
+#[must_use]
+pub fn planned(records: &[Start], kept: Option<&Search>) -> Option<Search> {
+    planned_in(Path::new(DIR), records, kept)
+}
+
+/// Keeps `search` as `name` in `dir`, whole or not at all.
+fn keep_as(dir: &Path, name: &str, search: &Search) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let mut bytes = serde_json::to_vec_pretty(search).map_err(std::io::Error::other)?;
     bytes.push(b'\n');
-    write_whole(&dir.join(STATE), &bytes)
+    write_whole(&dir.join(name), &bytes)
 }
 
 /// The path of try `number`'s list of services to leave out, in `dir`.
@@ -1489,6 +1537,33 @@ mod tests {
         assert!(dir.join(STATE).exists(), "the search stays");
         let names: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(Result::ok).collect();
         assert_eq!(names.len(), 1, "no partial file is left");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_plan_is_read_while_it_is_of_the_newest_failed_start_and_no_search_is_of_it() {
+        let dir = std::env::temp_dir().join(format!("bisect-plan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let usual = |number, outcome| start(number, "a", outcome, Vec::new());
+        let records = [usual(1, Outcome::Good), usual(2, Outcome::Failed)];
+        assert_eq!(planned_in(&dir, &records, None), None, "no plan is kept");
+        let plan = search_of(4);
+        keep_planned_in(&dir, &plan).unwrap();
+        assert_eq!(planned_in(&dir, &records, None), Some(plan.clone()));
+        // A search of that start, running or ended, is shown in its place.
+        assert_eq!(planned_in(&dir, &records, Some(&plan)), None);
+        let mut done = plan.clone();
+        done.stop();
+        assert_eq!(planned_in(&dir, &records, Some(&done)), None);
+        // One that ended about an older start is not.
+        let older = Search { failed: 1, ..done };
+        assert_eq!(planned_in(&dir, &records, Some(&older)), Some(plan));
+        // A newer failed start, or a good start since, leaves the plan behind.
+        let newer = [usual(1, Outcome::Good), usual(2, Outcome::Failed), usual(3, Outcome::Failed)];
+        assert_eq!(planned_in(&dir, &newer, None), None);
+        let good = [usual(1, Outcome::Good), usual(2, Outcome::Failed), usual(3, Outcome::Good)];
+        assert_eq!(planned_in(&dir, &good, None), None);
+        assert!(!dir.join(STATE).exists(), "a plan is no search");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

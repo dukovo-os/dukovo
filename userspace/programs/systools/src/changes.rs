@@ -330,12 +330,26 @@ struct ResultJson {
 }
 
 /// `bisect --status --json` for `search`, with the start times of
-/// `records` and `next_ms`, when the restart Spark has set is.
+/// `records` and `next_ms`, when the restart Spark has set is; or, when
+/// `planned` is a search of a newer failed start, that search before it
+/// begins: its changes, and no try.
 fn bisect_status_json(
     search: Option<&Search>,
+    planned: Option<&Search>,
     records: &[Start],
     next_ms: Option<u64>,
 ) -> BisectStatusJson {
+    if let Some(plan) = planned {
+        return BisectStatusJson {
+            state: bisect_json(None),
+            failed_start: Some(plan.failed),
+            levers: levers_json(plan),
+            cannot: cannot_json(plan),
+            tries: Vec::new(),
+            next_ms: None,
+            result: None,
+        };
+    }
     let state = bisect_json(search);
     let Some(search) = search else {
         return BisectStatusJson {
@@ -374,25 +388,8 @@ fn bisect_status_json(
     });
     BisectStatusJson {
         failed_start: Some(search.failed),
-        levers: search
-            .levers
-            .iter()
-            .map(|lever| LeverJson {
-                what: lever.name.clone(),
-                kind: lever.kind,
-                version: lever.after.clone(),
-                at_ms: lever.installed.map(|seconds| seconds.saturating_mul(1000)),
-            })
-            .collect(),
-        cannot: search
-            .apart
-            .iter()
-            .map(|apart| CannotJson {
-                what: apart.name.clone(),
-                kind: apart.kind.clone(),
-                why: apart.why.says(),
-            })
-            .collect(),
+        levers: levers_json(search),
+        cannot: cannot_json(search),
         tries: search
             .tries
             .iter()
@@ -409,6 +406,33 @@ fn bisect_status_json(
         result,
         state,
     }
+}
+
+/// The changes `search` can leave out, in `--json`.
+fn levers_json(search: &Search) -> Vec<LeverJson> {
+    search
+        .levers
+        .iter()
+        .map(|lever| LeverJson {
+            what: lever.name.clone(),
+            kind: lever.kind,
+            version: lever.after.clone(),
+            at_ms: lever.installed.map(|seconds| seconds.saturating_mul(1000)),
+        })
+        .collect()
+}
+
+/// The changes `search` cannot try apart, in `--json`.
+fn cannot_json(search: &Search) -> Vec<CannotJson> {
+    search
+        .apart
+        .iter()
+        .map(|apart| CannotJson {
+            what: apart.name.clone(),
+            kind: apart.kind.clone(),
+            why: apart.why.says(),
+        })
+        .collect()
 }
 
 /// When the restart Spark has set is, in milliseconds since 1970; none
@@ -569,10 +593,12 @@ fn bisect(args: &mut Args) -> Result<i32, Fail> {
     }
     match asked {
         Bisect::Status if json => {
+            let records = starts::all();
             let search = bisect::kept();
             let running = search.as_ref().filter(|search| search.end.is_none());
             let next_ms = running.and_then(|_| next_restart());
-            print_json(&bisect_status_json(search.as_ref(), &starts::all(), next_ms))
+            let planned = bisect::planned(&records, search.as_ref());
+            print_json(&bisect_status_json(search.as_ref(), planned.as_ref(), &records, next_ms))
         }
         Bisect::Status => {
             let Some(search) = bisect::kept() else {
@@ -1105,7 +1131,7 @@ mod tests {
     #[test]
     fn the_status_has_the_changes_each_try_the_next_restart_and_what_was_found() {
         let records = records();
-        let none = serde_json::to_value(bisect_status_json(None, &records, Some(1))).unwrap();
+        let none = serde_json::to_value(bisect_status_json(None, None, &records, Some(1))).unwrap();
         assert_eq!(
             none,
             serde_json::json!({
@@ -1117,7 +1143,7 @@ mod tests {
         // The first try was start 6, and failed as start 5 did.
         let mut running = search();
         running.judge(Verdict::Failed, Some(6), 6);
-        let value = bisect_status_json(Some(&running), &records, Some(1_800_000_060_000));
+        let value = bisect_status_json(Some(&running), None, &records, Some(1_800_000_060_000));
         let value = serde_json::to_value(value).unwrap();
         assert_eq!((value["running"].clone(), value["try"].clone()), (true.into(), 2.into()));
         assert_eq!(value["failed_start"], 5);
@@ -1142,7 +1168,7 @@ mod tests {
         // result says how it ended, in changes(1)'s words too.
         let mut stopped = search();
         stopped.stop();
-        let value = bisect_status_json(Some(&stopped), &records, Some(1));
+        let value = bisect_status_json(Some(&stopped), None, &records, Some(1));
         let value = serde_json::to_value(value).unwrap();
         assert_eq!(value["next_ms"], serde_json::Value::Null);
         assert_eq!(value["result"]["end"], "stopped");
@@ -1150,6 +1176,20 @@ mod tests {
         assert_eq!(value["result"]["undo"], serde_json::json!([]));
         let words = bisect_result(&stopped);
         assert_eq!(value["result"]["words"], serde_json::json!(words));
+
+        // The plan of a newer failed start is the search before it begins:
+        // its changes and no try, whatever search ended before.
+        let value = bisect_status_json(Some(&stopped), Some(&search()), &records, Some(1));
+        let value = serde_json::to_value(value).unwrap();
+        assert_eq!(
+            (value["running"].clone(), value["try"].clone()),
+            (false.into(), serde_json::Value::Null)
+        );
+        assert_eq!(value["failed_start"], 5);
+        assert_eq!(value["levers"].as_array().unwrap().len(), 5);
+        assert_eq!(value["tries"], serde_json::json!([]));
+        assert_eq!(value["next_ms"], serde_json::Value::Null);
+        assert_eq!(value["result"], serde_json::Value::Null);
     }
 
     /// Runs `changes` on `items`.

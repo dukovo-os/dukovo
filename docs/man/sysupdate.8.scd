@@ -638,7 +638,8 @@ _boot/grub/trial_ on each EFI system partition
 	by it.
 
 _/system/state/bisect/_
-	The search of *changes bisect*, _state.json_, and for each try
+	The search of *changes bisect*, _state.json_, the one the health
+	check plans when a start fails, _planned.json_, and for each try
 	_try-_N, the services Spark leaves out of it (*spark*(8)).
 
 # DIAGNOSTICS
