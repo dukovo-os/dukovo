@@ -150,10 +150,13 @@ async function goesToAPage(t, page) {
   await t.gone(palette);
   await t.see(page.getByRole("heading", { name: "Your account", level: 1 }));
   ensure(new URL(page.url()).hash === "#second-step", `Enter went to ${page.url()}, not the second step's section`);
-  ensure(
-    (await page.evaluate(() => document.activeElement?.tagName)) === "H1",
-    "the page does not have the focus after the palette took the person to it",
+  // The router puts the focus on the h1 once the page has drawn its cards,
+  // which is after the heading shows: wait for it.
+  const focused = await page.waitForFunction(() => document.activeElement?.tagName === "H1", null, { timeout: 15_000 }).then(
+    () => true,
+    () => false,
   );
+  ensure(focused, "the page does not have the focus after the palette took the person to it");
 }
 
 /** The Alerts page's cards are found by their words, for an administrator: "Get alerts in this browser" goes to the card of that name, by its hash. */

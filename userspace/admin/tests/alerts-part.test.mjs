@@ -288,6 +288,14 @@ async function openSetup(context) {
   context.after(() => controller.abort());
   const ran = [];
   const panels = [];
+  // What the page listens for, and a read of the steps that waits until `held` is let go.
+  const handlers = {};
+  let held = null;
+  const hold = () => {
+    let release;
+    held = new Promise((resolve) => { release = resolve; });
+    return () => { held = null; release(); };
+  };
   const view = {
     main: page.document.createElement('main'),
     signal: controller.signal,
@@ -295,14 +303,14 @@ async function openSetup(context) {
     host: 'duke-nas',
     query: new URLSearchParams('step=alert-email'),
     head() {},
-    on() {},
+    on(name, handler) { handlers[name] = handler; },
     go() {},
     parts: async (name, call) => [{
-      value: await call({
+      value: await (held ?? Promise.resolve()).then(() => call({
         steps: [...steps, {
           id: 'other', title: 'Another step', order: 70, points: 0, action: null, done: async () => false, summary: async () => '', form: () => ({ element: h('section', { class: 'card' }, h('h2', {}, 'Another step')), args: () => ({}) }),
         }],
-      }, fakeCx({ [PATH]: [] })),
+      }, fakeCx({ [PATH]: [] }))),
     }],
     api: {
       get: async () => { throw new Error('no answer'); },
@@ -318,7 +326,7 @@ async function openSetup(context) {
   const secret = view.main.querySelectorAll('input').find((one) => /^secret-\d+$/.test(one.id));
   const named = (words) => view.main.querySelectorAll('button').find((one) => one.textContent.trim() === words);
   return {
-    ...page, view, ran, panels, input, secret, named, controller,
+    ...page, view, ran, panels, input, secret, named, controller, handlers, hold,
   };
 }
 
@@ -374,4 +382,19 @@ test('/setup empties the password when the person goes to another step, and when
   left.secret.value = 'hunter2-secret';
   left.controller.abort();
   assert.equal(left.secret.value, '');
+});
+
+test('/setup keeps the step the person chose while the steps were read again', async (context) => {
+  unlocked(context);
+  const app = await openSetup(context);
+  const release = app.hold();
+  // A task ends: the page reads the steps again, and the read takes a while.
+  app.handlers.task();
+  app.view.main.querySelectorAll('button').find((one) => one.textContent.includes('Another step')).click();
+  release();
+  await settle();
+  const chosen = app.view.main.querySelector('[aria-current="step"]');
+  assert.match(chosen.textContent, /Another step/);
+  const run = app.view.main.querySelectorAll('button').find((one) => (one.getAttribute('aria-label') ?? '').startsWith('Set up'));
+  assert.equal(run.getAttribute('aria-label'), 'Set up: Another step');
 });
