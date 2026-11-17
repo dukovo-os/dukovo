@@ -862,8 +862,8 @@ impl Action for CheckAdd {
         check_picked(&args.name, output)
     }
 
-    /// A name that is in use is refused, so a check that is there is as
-    /// good as made.
+    /// A check of that name that is there is as good as made: the same
+    /// check is no change, and another is refused.
     fn settled(_: &CheckNew, now: &str) -> Option<bool> {
         Some(now != "none")
     }
@@ -911,7 +911,7 @@ impl Args for CheckNamed {
 }
 
 /// `update checks remove NAME`: the machine stops making a check after an
-/// update. A check that is not there is the command's own refusal.
+/// update. A check that is not there is no change.
 pub struct CheckRemove;
 
 impl Action for CheckRemove {
@@ -2018,8 +2018,8 @@ mod tests {
         for output in ["", "not json", "[]", r#"{"checks": 3}"#, r#"{"essential": []}"#] {
             assert_eq!(add.probed(&there, output), None, "{output:?}");
         }
-        // A name in use is refused, so a check that is there is as good as
-        // made, and one that is not is to be.
+        // A check of that name that is there is as good as made (the same
+        // is no change, another is refused), and one that is not is to be.
         assert_eq!(add.settled(&there, &picked), Some(true));
         assert_eq!(add.settled(&other, "none"), Some(false));
         let remove = action("updates.check-remove");

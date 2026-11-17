@@ -367,14 +367,15 @@ static void never_blocked(void) {
 	int before = check_failures;
 	says(FIREWALL " never-block " B_ADDRESS, 0, "firewall: " B_ADDRESS " is never blocked");
 	CHECK(strstr(contents(BLOCKING), "never = [\"" B_ADDRESS "\"]") != NULL);
-	says(FIREWALL " never-block " B_ADDRESS, 1, B_ADDRESS " is never blocked already");
+	// As asked already: said so, and no failure, so a playbook can run it again.
+	says(FIREWALL " never-block " B_ADDRESS, 0, B_ADDRESS " is never blocked already");
 	says(FIREWALL " never-block 192.168.1.5/24", 1, "its network is 192.168.1.0/24");
 	guess_all(NAMES_NEVER);
 	says(FIREWALL " blocked", 0, "No address is blocked.");
 	CHECK(b_reaches("22", 1, 20));
 	says(FIREWALL " never-block remove " B_ADDRESS, 0, "firewall: " B_ADDRESS " may be blocked again");
 	CHECK(strstr(contents(BLOCKING), B_ADDRESS) == NULL);
-	says(FIREWALL " never-block remove " B_ADDRESS, 1, B_ADDRESS " is not in never");
+	says(FIREWALL " never-block remove " B_ADDRESS, 0, B_ADDRESS " is not in never, and may be blocked");
 	if(check_failures == before)
 		printf("blockingtest: with b's address in never, six more wrong passwords blocked "
 			   "nothing\n");

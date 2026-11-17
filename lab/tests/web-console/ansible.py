@@ -412,10 +412,9 @@ class Round:
 
 def undo_first(console, undo, args):
     """Brings the machine to the state `undo` leaves, so that the change after it has something to
-    do. An undo refused with 422 finds that state already: the firewall will not remove an address
-    that is not in its never-block list, as on a machine that never had it. The change's first task
-    must then report a change, which the round checks, so a refusal for any other reason still
-    fails the test."""
+    do. An undo refused with 422 may find that state already, as a command that will not take away
+    what is not there. The change's first task must then report a change, which the round checks,
+    so a refusal for any other reason still fails the test."""
     path, rest = address(undo["path"], args)
     status, text = console.call("POST", path, rest)
     if status not in (200, 422):

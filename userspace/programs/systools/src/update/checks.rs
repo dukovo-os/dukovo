@@ -276,11 +276,13 @@ fn is_called(table: &Table, name: &str) -> bool {
     table.get("name").and_then(Item::as_str) == Some(name)
 }
 
-/// Adds the check `(name, command, required, timeout)` to `document`.
+/// Adds the check `(name, command, required, timeout)` to `document`. The
+/// same check there already leaves the document as it is, so that the same
+/// command run again, as a playbook does, ends the same way.
 ///
 /// # Errors
 ///
-/// When a check is called that already.
+/// When another check is called that already.
 fn added(
     document: &mut DocumentMut,
     (name, command, required, timeout): &(String, Vec<String>, bool, u64),
@@ -290,7 +292,21 @@ fn added(
         .and_then(Item::as_array_of_tables)
         .is_some_and(|tables| tables.iter().any(|table| is_called(table, name)));
     if taken {
-        return Err(format!("a check is called {name} already"));
+        // Read as the health check reads it, with its defaults.
+        let config = Config::parse(&document.to_string())?;
+        let same = config.checks.iter().any(|check| {
+            check.name == *name
+                && check.command == *command
+                && check.required == *required
+                && check.timeout == *timeout
+        });
+        if same {
+            return Ok(());
+        }
+        return Err(format!(
+            "a check is called {name} already, with other settings: remove it first, or give \
+             another name"
+        ));
     }
     let table = settings_edit::push_table(document, "check")
         .ok_or("`check` in the file is not a list of checks")?;
@@ -318,8 +334,11 @@ fn write(edit: impl FnOnce(&mut DocumentMut) -> Result<(), String>) -> Result<bo
 fn add(args: &mut Args) -> Result<i32, Fail> {
     let new = new(args)?;
     let check = made(&new).map_err(fail)?;
-    write(|document| added(document, &check))?;
-    println!("update: check {} is added", check.0);
+    if write(|document| added(document, &check))? {
+        println!("update: check {} is added", check.0);
+    } else {
+        println!("update: check {} is there already", check.0);
+    }
     Ok(0)
 }
 
@@ -335,22 +354,20 @@ fn remove(args: &mut Args) -> Result<i32, Fail> {
         }
     }
     let name = name.ok_or_else(|| usage("update checks remove needs the check's name".into()))?;
-    write(|document| removed(document, &name))?;
-    println!("update: check {name} is removed");
+    if write(|document| removed(document, &name))? {
+        println!("update: check {name} is removed");
+    } else {
+        println!("update: no check is called {name}, so none was removed");
+    }
     Ok(0)
 }
 
-/// Takes the check `name` out of `document`.
-///
-/// # Errors
-///
-/// When none is called that.
+/// Takes the check `name` out of `document`. None called that leaves the
+/// document as it is: the command run again, as a playbook does, ends the
+/// same way.
 fn removed(document: &mut DocumentMut, name: &str) -> Result<(), String> {
-    if settings_edit::remove_table(document, "check", |table| is_called(table, name)) {
-        Ok(())
-    } else {
-        Err(format!("no check is called {name}"))
-    }
+    settings_edit::remove_table(document, "check", |table| is_called(table, name));
+    Ok(())
 }
 
 /// `update checks essential SERVICE on|off`.
@@ -564,7 +581,11 @@ deadline = 600
         assert_eq!(names, ["web site", "nginx"]);
         assert!(config.checks[1].required && !config.checks[0].required);
         let why = with(&two, &["nginx", "--service", "sshd"]).unwrap_err();
-        assert_eq!(why, "a check is called nginx already");
+        assert!(why.starts_with("a check is called nginx already, with other settings"), "{why}");
+        // The same check again is no change, and no failure.
+        assert_eq!(with(&two, &["nginx", "--service", "nginx", "--required"]).unwrap(), two);
+        let why = with(&two, &["nginx", "--service", "nginx"]).unwrap_err();
+        assert!(why.contains("with other settings"), "{why}");
         // The comments above a check go with it.
         let back = without(&two, "web site").unwrap();
         assert!(back.contains("[[check]]\nname = \"nginx\"") && !back.contains("web site"));
@@ -573,9 +594,9 @@ deadline = 600
     }
 
     #[test]
-    fn a_check_that_is_not_there_is_not_removed() {
-        assert_eq!(without(SHIPPED, "web site").unwrap_err(), "no check is called web site");
-        assert_eq!(without("", "x").unwrap_err(), "no check is called x");
+    fn a_check_that_is_not_there_is_not_removed_and_that_is_no_failure() {
+        assert_eq!(without(SHIPPED, "web site").unwrap(), SHIPPED);
+        assert_eq!(without("", "x").unwrap(), "");
     }
 
     #[test]

@@ -1067,8 +1067,9 @@ impl Authd {
         };
         let had = never.contains(&network);
         match (remove, had) {
-            (false, true) => return Answer::Refused(format!("{network} is never blocked already")),
-            (true, false) => return Answer::Refused(format!("{network} is not in never")),
+            // As asked already: nothing is written, so that the same
+            // command twice, as a playbook run again, ends the same way.
+            (false, true) | (true, false) => return Answer::Done(request::NEVER_AS_IT_WAS.into()),
             (false, false) if never.len() >= NEVER_MAX => {
                 return Answer::Refused(format!("never lists {NEVER_MAX} networks at most"));
             }
@@ -1083,7 +1084,7 @@ impl Authd {
         let said = if remove { "may be blocked again" } else { "is never blocked" };
         audit!("{network} {said}, for process {} (user {})", peer.process, peer.user);
         self.check_blocking_settings(files);
-        Answer::Done(network.to_string())
+        Answer::Done(request::NEVER_CHANGED.into())
     }
 }
 
