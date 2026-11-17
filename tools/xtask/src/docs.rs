@@ -174,7 +174,9 @@ pub fn build(ctx: &Ctx, check: bool) -> Result<()> {
     Ok(())
 }
 
-/// Compiles `page` with scdoc into `output`.
+/// Compiles `page` with scdoc into `output`. The page's date is the
+/// commit's ([`page_date`]), not the clock's, so that two builds of one
+/// commit write the same page on either side of midnight (ADR 0535).
 pub fn compile(ctx: &Ctx, page: &Page, output: &Path) -> Result<()> {
     process::create_dir(output.parent().expect("man page has a section directory"))?;
     let input = std::fs::File::open(&page.source)
@@ -183,7 +185,18 @@ pub fn compile(ctx: &Ctx, page: &Page, output: &Path) -> Result<()> {
         std::fs::File::create(output).context(|| format!("creating {}", output.display()))?;
     let mut cmd = Command::new("scdoc");
     cmd.stdin(input).stdout(out_file).stderr(Stdio::piped());
+    if let Some(epoch) = page_date(ctx) {
+        cmd.env("SOURCE_DATE_EPOCH", epoch);
+    }
     process::output(ctx, &mut cmd).map(|_| ())
+}
+
+/// The time scdoc dates the pages with, as `SOURCE_DATE_EPOCH`: the one
+/// the image's files have ([`crate::image::source_date_epoch`]), read
+/// once a run. None outside a git checkout, where scdoc takes the clock.
+fn page_date(ctx: &Ctx) -> Option<&'static str> {
+    static DATE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    DATE.get_or_init(|| crate::image::source_date_epoch(ctx)).as_deref()
 }
 
 /// The pages of what runs on the build host, which the image leaves out.
