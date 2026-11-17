@@ -66,9 +66,9 @@ export function titleFor(page, host) {
 /**
  * Whether a click on `link` (`{href, target, download}`) with the event's
  * `{button, ctrlKey, metaKey, shiftKey, altKey, defaultPrevented}` is for
- * the shell to follow without a page load. A file, another origin, a new
- * tab and a download are the browser's; a click that the page's own handler
- * took, as Networking's Change… does to ask to unlock first, is the page's.
+ * the shell to follow without a page load. A file (admind's files.rs
+ * rule), another origin, a new tab and a download are the browser's; a click
+ * that the page's own handler took is the page's.
  */
 export function followsInPage(link, click, origin) {
   if (click.defaultPrevented) return false;
@@ -82,6 +82,5 @@ export function followsInPage(link, click, origin) {
     return false;
   }
   if (to.origin !== origin) return false;
-  const last = to.pathname.split('/').pop();
-  return !last.includes('.');
+  return !/\.(html|m?js|css|json|webmanifest|svg|png|ico|woff2|txt)$|^\/help\/.*\.md$/.test(to.pathname);
 }

@@ -17,9 +17,14 @@ import { CERTD_WORDS, rowsOf } from './model.js';
 import { makeName } from './name.js';
 import { machineOf } from './name-model.js';
 import { makeRenewals } from './renewals.js';
+import { wantedOf } from './wanted-model.js';
 
 const READS = {
-  list: '/api/1/certificates', history: '/api/1/certificates/history/all', signIn: '/api/1/security/sign-in', sites: '/api/1/websites',
+  list: '/api/1/certificates',
+  history: '/api/1/certificates/history/all',
+  wanted: '/api/1/certificates/wanted/all',
+  signIn: '/api/1/security/sign-in',
+  sites: '/api/1/websites',
 };
 const ABOUT = '/api/1/console/about';
 const MACHINE = '/api/1/machine/name';
@@ -34,7 +39,7 @@ export async function show(view) {
   const admin = view.session.admin === true;
   // `sites` is what the websites say they serve with; null until read, and left so when they could not be.
   const data = {
-    list: null, history: null, serving: null, machine: null, about: null, sites: null,
+    list: null, history: null, wanted: [], serving: null, machine: null, about: null, sites: null,
   };
   let latest = 0;
   let stopped = false;
@@ -113,12 +118,17 @@ export async function show(view) {
     name.draw();
   }
 
-  /** Reads what the page shows (all of it at the first read), and draws it. */
+  /**
+   * Reads what the page shows (all of it at the first read), and draws it.
+   * The machine's name and the console's address are read again while they
+   * could not be, as when the session ran too many commands at once (ADM-105).
+   */
   async function read(first) {
     if (stopped) return;
     latest += 1;
     const mine = latest;
-    const asked = { ...READS, ...(first ? { about: ABOUT, machine: MACHINE, tasks: TASKS } : {}) };
+    const again = first || data.machine === undefined || data.about === null;
+    const asked = { ...READS, ...(again ? { about: ABOUT, machine: MACHINE } : {}), ...(first ? { tasks: TASKS } : {}) };
     const names = Object.keys(asked);
     const found = await Promise.allSettled(names.map((one) => view.api.get(asked[one])));
     if (mine !== latest || view.signal.aborted || stopped) return;
@@ -126,11 +136,14 @@ export async function show(view) {
     const value = (one) => (got[one]?.status === 'fulfilled' ? got[one].value : undefined);
     data.list = Array.isArray(value('list')) ? value('list') : undefined;
     data.history = Array.isArray(value('history')) ? value('history') : undefined;
+    // The records are only more rows of the list: when they cannot be read the certificates are shown without them, and the list says so.
+    data.wanted = value('wanted') === undefined ? undefined : wantedOf(value('wanted'));
     data.serving = value('signIn')?.console?.certificate ?? data.serving;
     data.sites = value('sites') ?? data.sites;
-    if (first) {
+    if (again) {
       data.about = value('about') ?? null;
       data.machine = value('machine') === undefined ? undefined : machineOf(value('machine'));
+      if (!first && data.machine !== undefined) name.errors.replaceChildren();
     }
     loaded = true;
     drawAll();

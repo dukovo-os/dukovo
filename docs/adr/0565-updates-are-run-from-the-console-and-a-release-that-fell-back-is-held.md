@@ -126,6 +126,10 @@ at once, and test the memory once at the next restart.
   so that the page is answered and counts down; the health check
   restarts for each try after that by itself, as at a terminal. The
   search's state is read as the person after each restart.
+- A plan reads the slot state, which only the system may read, so the
+  health check keeps the search it plans when a start fails beside the
+  search's state, and `changes bisect --status --json` gives that plan's
+  changes before the search begins: the page offers the search from it.
 
 ### A hold keeps its reason
 

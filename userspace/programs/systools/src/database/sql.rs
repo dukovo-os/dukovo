@@ -173,6 +173,170 @@ pub fn the_database(name: &str) -> Result<String, String> {
     ))
 }
 
+/// How a database sorts text, as `restore` makes a database like another.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Sorting {
+    /// The C library's: the collation and the character types.
+    Libc {
+        /// `LC_COLLATE`.
+        collate: String,
+        /// `LC_CTYPE`.
+        ctype: String,
+    },
+    /// The builtin provider's, such as `C.UTF-8`.
+    Builtin {
+        /// Its locale.
+        locale: String,
+    },
+}
+
+/// What `restore` makes a new database like: the one it puts a copy back
+/// for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Like {
+    /// Its text encoding, such as `UTF8`.
+    pub encoding: String,
+    /// How it sorts text.
+    pub sorting: Sorting,
+}
+
+/// The database `name` as `restore` needs it: its owner and whether the
+/// owner has every right, its encoding, the sorting and the comment. No
+/// row when there is no such database.
+///
+/// # Errors
+///
+/// When the name holds a NUL.
+pub fn the_original(name: &str) -> Result<String, String> {
+    Ok(format!(
+        "SELECT pg_catalog.pg_get_userbyid(d.datdba) AS owner, r.rolsuper AS owner_super, \
+         pg_catalog.pg_encoding_to_char(d.encoding) AS encoding, \
+         d.datlocprovider AS provider, d.datcollate AS collate, d.datctype AS ctype, \
+         d.datlocale AS locale, pg_catalog.shobj_description(d.oid, 'pg_database') AS comment \
+         FROM pg_catalog.pg_database d JOIN pg_catalog.pg_roles r ON r.oid = d.datdba \
+         WHERE d.datname = {}",
+        literal(name)?
+    ))
+}
+
+/// `CREATE DATABASE` for `database`, owned by `owner`, from `template0`,
+/// stored and sorted as `like` says.
+///
+/// # Errors
+///
+/// When a text holds a NUL.
+pub fn create_like(database: &str, owner: &str, like: &Like) -> Result<String, String> {
+    let sorting = match &like.sorting {
+        Sorting::Libc { collate, ctype } => format!(
+            "LOCALE_PROVIDER libc LC_COLLATE {} LC_CTYPE {}",
+            literal(collate)?,
+            literal(ctype)?
+        ),
+        Sorting::Builtin { locale } => {
+            format!("LOCALE_PROVIDER builtin BUILTIN_LOCALE {}", literal(locale)?)
+        }
+    };
+    Ok(format!(
+        "CREATE DATABASE {} OWNER {} TEMPLATE template0 ENCODING {} {sorting}",
+        ident(database)?,
+        ident(owner)?,
+        literal(&like.encoding)?
+    ))
+}
+
+/// A comment, as it was written, on `database`.
+///
+/// # Errors
+///
+/// When a text holds a NUL.
+pub fn comment_on_database_as(database: &str, comment: &str) -> Result<String, String> {
+    Ok(format!("COMMENT ON DATABASE {} IS {}", ident(database)?, literal(comment)?))
+}
+
+/// `ALTER DATABASE ... RENAME TO`, which PostgreSQL does only while no one
+/// else is connected to the database.
+///
+/// # Errors
+///
+/// When a name holds a NUL.
+pub fn rename_database(from: &str, to: &str) -> Result<String, String> {
+    Ok(format!("ALTER DATABASE {} RENAME TO {}", ident(from)?, ident(to)?))
+}
+
+/// Lets connections in to `database`, or shuts them all out, the
+/// superuser's too.
+///
+/// # Errors
+///
+/// When the name holds a NUL.
+pub fn allow_connections(database: &str, allow: bool) -> Result<String, String> {
+    Ok(format!("ALTER DATABASE {} WITH ALLOW_CONNECTIONS {allow}", ident(database)?))
+}
+
+/// The role that `pg_restore` signs in as: it may sign in, inherits
+/// nothing, and holds no right of its own.
+///
+/// # Errors
+///
+/// When the name holds a NUL.
+pub fn create_restorer(role: &str) -> Result<String, String> {
+    Ok(format!("CREATE ROLE {} LOGIN NOINHERIT", ident(role)?))
+}
+
+/// Lets `role` become `owner` with `SET ROLE`, and inherit nothing of it.
+///
+/// # Errors
+///
+/// When a name holds a NUL.
+pub fn may_become(role: &str, owner: &str) -> Result<String, String> {
+    Ok(format!("GRANT {} TO {} WITH INHERIT FALSE, SET TRUE", ident(owner)?, ident(role)?))
+}
+
+/// Takes from `role` what [`may_become`] gave it.
+///
+/// # Errors
+///
+/// When a name holds a NUL.
+pub fn may_not_become(role: &str, owner: &str) -> Result<String, String> {
+    Ok(format!("REVOKE {} FROM {}", ident(owner)?, ident(role)?))
+}
+
+/// Gives `role` the right to connect to `database`, or takes it.
+///
+/// # Errors
+///
+/// When a name holds a NUL.
+pub fn connect_right(database: &str, role: &str, give: bool) -> Result<String, String> {
+    let (database, role) = (ident(database)?, ident(role)?);
+    Ok(if give {
+        format!("GRANT CONNECT ON DATABASE {database} TO {role}")
+    } else {
+        format!("REVOKE CONNECT ON DATABASE {database} FROM {role}")
+    })
+}
+
+/// Lets `role` sign in no more.
+///
+/// # Errors
+///
+/// When the name holds a NUL.
+pub fn no_login(role: &str) -> Result<String, String> {
+    Ok(format!("ALTER ROLE {} NOLOGIN", ident(role)?))
+}
+
+/// Ends the sessions other than this one that are open to `database`.
+///
+/// # Errors
+///
+/// When the name holds a NUL.
+pub fn end_sessions_of(database: &str) -> Result<String, String> {
+    Ok(format!(
+        "SELECT pg_catalog.pg_terminate_backend(pid) FROM pg_catalog.pg_stat_activity \
+         WHERE datname = {} AND pid <> pg_catalog.pg_backend_pid()",
+        literal(database)?
+    ))
+}
+
 /// The sessions other than this one that are open to `database`: the
 /// program each is, and how many.
 ///
@@ -321,6 +485,69 @@ mod tests {
     }
 
     #[test]
+    fn the_statements_of_a_restore_are_these() {
+        let libc = Like {
+            encoding: "UTF8".into(),
+            sorting: Sorting::Libc { collate: "en_US.UTF-8".into(), ctype: "en_US.UTF-8".into() },
+        };
+        assert_eq!(
+            create_like("shop_restored_20261116", "shop", &libc).unwrap(),
+            "CREATE DATABASE \"shop_restored_20261116\" OWNER \"shop\" TEMPLATE template0 \
+             ENCODING 'UTF8' LOCALE_PROVIDER libc LC_COLLATE 'en_US.UTF-8' LC_CTYPE 'en_US.UTF-8'"
+        );
+        let builtin = Like {
+            encoding: "UTF8".into(),
+            sorting: Sorting::Builtin { locale: "C.UTF-8".into() },
+        };
+        assert_eq!(
+            create_like("shop", "shop", &builtin).unwrap(),
+            "CREATE DATABASE \"shop\" OWNER \"shop\" TEMPLATE template0 ENCODING 'UTF8' \
+             LOCALE_PROVIDER builtin BUILTIN_LOCALE 'C.UTF-8'"
+        );
+        assert_eq!(create_restorer("root").unwrap(), "CREATE ROLE \"root\" LOGIN NOINHERIT");
+        assert_eq!(
+            may_become("root", "shop").unwrap(),
+            "GRANT \"shop\" TO \"root\" WITH INHERIT FALSE, SET TRUE"
+        );
+        assert_eq!(may_not_become("root", "shop").unwrap(), "REVOKE \"shop\" FROM \"root\"");
+        assert_eq!(
+            connect_right("shop", "root", true).unwrap(),
+            "GRANT CONNECT ON DATABASE \"shop\" TO \"root\""
+        );
+        assert_eq!(
+            connect_right("shop", "shop", false).unwrap(),
+            "REVOKE CONNECT ON DATABASE \"shop\" FROM \"shop\""
+        );
+        assert_eq!(no_login("root").unwrap(), "ALTER ROLE \"root\" NOLOGIN");
+        assert_eq!(
+            rename_database("shop", "shop_before_20261116_0200").unwrap(),
+            "ALTER DATABASE \"shop\" RENAME TO \"shop_before_20261116_0200\""
+        );
+        assert_eq!(
+            allow_connections("shop", false).unwrap(),
+            "ALTER DATABASE \"shop\" WITH ALLOW_CONNECTIONS false"
+        );
+        assert_eq!(
+            allow_connections("shop", true).unwrap(),
+            "ALTER DATABASE \"shop\" WITH ALLOW_CONNECTIONS true"
+        );
+        assert_eq!(
+            end_sessions_of("shop").unwrap(),
+            "SELECT pg_catalog.pg_terminate_backend(pid) FROM pg_catalog.pg_stat_activity \
+             WHERE datname = 'shop' AND pid <> pg_catalog.pg_backend_pid()"
+        );
+        assert_eq!(
+            comment_on_database_as("shop", "database(8): site shop.example.org").unwrap(),
+            "COMMENT ON DATABASE \"shop\" IS 'database(8): site shop.example.org'"
+        );
+        let original = the_original("shop").unwrap();
+        assert!(original.starts_with("SELECT pg_catalog.pg_get_userbyid(d.datdba) AS owner, "));
+        assert!(original.contains(" r.rolsuper AS owner_super, "), "{original}");
+        assert!(original.ends_with("ON r.oid = d.datdba WHERE d.datname = 'shop'"), "{original}");
+        assert!(!original.contains("rolpassword"));
+    }
+
+    #[test]
     fn a_name_is_quoted_as_a_name_and_a_text_as_a_text() {
         // The rule keeps these out long before, and the quoting would
         // still make each one a single name or a single string.
@@ -353,6 +580,23 @@ mod tests {
         assert!(alter_system_set("ssl", "\0").is_err());
         assert!(the_database("\0").is_err());
         assert!(sessions_of("\0").is_err());
+        let like = Like {
+            encoding: "UTF8".into(),
+            sorting: Sorting::Builtin { locale: "C.UTF-8".into() },
+        };
+        assert!(create_like("a\0", "b", &like).is_err());
+        assert!(create_like("a", "b\0", &like).is_err());
+        assert!(create_restorer("\0").is_err());
+        assert!(may_become("a", "\0").is_err());
+        assert!(may_not_become("\0", "b").is_err());
+        assert!(connect_right("a", "\0", true).is_err());
+        assert!(no_login("\0").is_err());
+        assert!(the_original("\0").is_err());
+        assert!(comment_on_database_as("a", "\0").is_err());
+        assert!(rename_database("a", "b\0").is_err());
+        assert!(rename_database("a\0", "b").is_err());
+        assert!(allow_connections("\0", true).is_err());
+        assert!(end_sessions_of("\0").is_err());
         assert!(database_exists("\0").is_err());
         assert!(role_exists("\0").is_err());
     }

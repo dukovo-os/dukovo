@@ -487,7 +487,11 @@ One that reaches what other apps keep, such as all of your files, says
 never the keys. A program that requires a permission you did not allow
 does not run, saying how to give it; one that asks for it as optional
 runs without it. Only the consoles ask: on another terminal, give it
-with *bundle grant* at a console first.
+with *bundle grant* at a console first. A program of the system's that
+runs a command of a bundle installed for everyone as its own, as
+*database restore* runs PostgreSQL's *pg\_restore*, checks the bundle as
+*bundle run* does and asks nobody: an administrator asked for what it
+does.
 
 Given, a permission is part of the program's view, each place at its
 real path:

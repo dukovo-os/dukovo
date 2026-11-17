@@ -35,8 +35,24 @@
 //!
 //! An order that cannot work. `certificate.get` without the agreement to
 //! the terms is refused before it runs; with it, it is a task that fails
-//! because the name leads nowhere, in the words of cert, and the history
-//! has the failure.
+//! because the name leads nowhere, in the words of cert, which add that certd
+//! tries again every hour, and the history has the failure.
+//!
+//! A certificate certd tries again. That order failed after it began, so
+//! for alice and for bob the route `GET /api/1/certificates/wanted/all`
+//! gives what the command `cert wanted --json` prints: a record with the
+//! names, the authority, one try and the reason CRT-101, and no account. The
+//! folder is root's (0700), the record root's (0600) and the summary
+//! anyone's (0644). Made due by hand, the record is tried by
+//! certd at its next look: two tries, the next an hour on, and the history
+//! has a failure by certd. Made 25 hours old, it is tried again, the next
+//! six hours on, and alertd has the alert `certificate:lab-order`, a warning
+//! about something that stopped, with the words of the last try and CRT-123.
+//! A record that does not read is left as it is, told in certd's log and not
+//! listed, and `cert remove` takes it away. `certificate.forget` is ADM-122
+//! for bob and ADM-106 for alice while locked; for alice it takes the record
+//! away, the alert clears, and forgetting what certd has no record of is
+//! ADM-123.
 //!
 //! The machine's name. `machine.rename` is ADM-122 for bob and ADM-106 for
 //! alice while locked, and a name that is none is ADM-125. To
@@ -85,7 +101,7 @@ const START: &str = "dukovo";
 /// The name the test gives the machine.
 const RENAMED: &str = "lab-renamed.example.org";
 
-/// The address of the machine the browser of the test is given in step 6,
+/// The address of the machine the browser of the test is given in step 7,
 /// which no certificate of the test names.
 const ADDRESS: &str = "10.0.2.15";
 
@@ -99,6 +115,7 @@ const ADMIND_SERVICE: &str = "/system/settings/spark/services/admind.toml";
 
 /// The routes the test asks for besides the certificates'.
 const HISTORY: &str = "/api/1/certificates/history/all";
+const WANTED: &str = "/api/1/certificates/wanted/all";
 const MACHINE: &str = "/api/1/machine/name";
 const SERVE: &str = "/api/1/console/certificate";
 const FRESH: &str = "/api/1/console/fresh/console";
@@ -114,6 +131,13 @@ const UNDO_SECONDS: u64 = 120;
 /// looks for the name's addresses are slow where no resolver answers.
 const ORDER_SECONDS: u64 = 180;
 
+/// The record of the order that certd asks for again.
+const RECORD: &str = "/system/state/certd/wanted/lab-order.toml";
+
+/// How long certd may take to look when it is told to, and to try an order
+/// again, in seconds: a try is slow where no resolver answers.
+const TRY_SECONDS: u64 = 240;
+
 /// The size of the document `certificate.add` is given in step 3, in
 /// bytes: 60 KiB, below the 64 KiB a document is at most.
 const BIG_DOCUMENT: usize = 60 * 1024;
@@ -121,7 +145,7 @@ const BIG_DOCUMENT: usize = 60 * 1024;
 /// The test.
 pub const CASE: Case = Case {
     name: "admin-certificates",
-    about: "The web console's Certificates: certificate.history is what cert history --json prints, for alice and for bob, and holds nothing but certd making this-machine; machine.name is what hostnamectl status --json prints; certificate.check is cert get --check --json, CRT-101 and a check of port 80 for a name with no record, CRT-102 for localhost, every check skipped and the two TXT records named by DNS, and a name that is none ADM-125; certificate.add is ADM-122 for bob and ADM-106 for alice locked, CRT-111 for a chain with no intermediate and CRT-112 for another key, neither adding anything, and with a document of 60 KiB adds the certificate, which the history has as cert history --json prints it, and certificate.remove takes it away and refuses this-machine; certificate.get without the agreement to the terms is refused before it runs, and with it is a task that fails in the words of cert because the name leads nowhere, with the failure in the history; machine.rename is ADM-122 for bob and ADM-106 for alice locked, a name that is none is ADM-125, and to lab-renamed.example.org it changes what hostnamectl status --json prints, makes this-machine for the four names of the new name, answers a request for lab-renamed.local and refuses the old name with ADM-114, and is put back; console.certificate for a certificate that does not name 10.0.2.15 is ADM-141 and changes nothing, and for a certificate of the new name, asked for as that name and tried for 30 seconds, the trial begins, fresh is ADM-133 on the connection that carried the change and 200 on a new one, the console serves the added certificate, and left alone Spark puts admin.toml and admind's service file back and the console serves this-machine again (ADR 0515, ADR 0567)",
+    about: "The web console's Certificates: certificate.history is what cert history --json prints, for alice and for bob, and holds nothing but certd making this-machine; machine.name is what hostnamectl status --json prints; certificate.check is cert get --check --json, CRT-101 and a check of port 80 for a name with no record, CRT-102 for localhost, every check skipped and the two TXT records named by DNS, and a name that is none ADM-125; certificate.add is ADM-122 for bob and ADM-106 for alice locked, CRT-111 for a chain with no intermediate and CRT-112 for another key, neither adding anything, and with a document of 60 KiB adds the certificate, which the history has as cert history --json prints it, and certificate.remove takes it away and refuses this-machine; certificate.get without the agreement to the terms is refused before it runs, and with it is a task that fails in the words of cert because the name leads nowhere, with the failure in the history and the words that certd tries again every hour; the order's record is what cert wanted --json prints and the route certificate.wanted gives for alice and for bob, with one try, CRT-101 and no account, in a folder of root's (0700) with the record 0600 and the summary 0644; made due by hand it is tried by certd, with two tries, the next an hour on and a failure by certd in the history; made 25 hours old it is tried again, the next six hours on, and alertd has the alert certificate:lab-order, a warning that is about something stopped, with the last reason and CRT-123; a record that does not read is left as it is, told in certd's log and not listed, and cert remove takes it away; certificate.forget is ADM-122 for bob and ADM-106 for alice locked, takes the record away for alice, clears the alert, and forgetting what certd has no record of is ADM-123; machine.rename is ADM-122 for bob and ADM-106 for alice locked, a name that is none is ADM-125, and to lab-renamed.example.org it changes what hostnamectl status --json prints, makes this-machine for the four names of the new name, answers a request for lab-renamed.local and refuses the old name with ADM-114, and is put back; console.certificate for a certificate that does not name 10.0.2.15 is ADM-141 and changes nothing, and for a certificate of the new name, asked for as that name and tried for 30 seconds, the trial begins, fresh is ADM-133 on the connection that carried the change and 200 on a new one, the console serves the added certificate, and left alone Spark puts admin.toml and admind's service file back and the console serves this-machine again (ADR 0515, ADR 0567)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, certd and admind among
@@ -515,8 +539,9 @@ fn people(vm: &mut Vm) -> Result<Test, String> {
 }
 
 /// The test: the history and the name at the start, the checks, a
-/// certificate added and removed, an order that cannot work, the machine
-/// renamed, and the console's certificate tried.
+/// certificate added and removed, an order that cannot work and certd
+/// asking for it again, the machine renamed, and the console's certificate
+/// tried.
 fn admin_certificates(vm: &mut Vm, case: &Case) -> Result<(), String> {
     owner_signs_in(vm, case)?;
     let mut test = people(vm)?;
@@ -526,6 +551,7 @@ fn admin_certificates(vm: &mut Vm, case: &Case) -> Result<(), String> {
     let chain = made_chain(vm, &test)?;
     added_and_removed(vm, &mut test, &chain, start)?;
     an_order_that_cannot_work(&mut test)?;
+    certd_tries_again(vm, &mut test)?;
     renamed_and_back(vm, &mut test)?;
     the_console_certificate(vm, &mut test, &chain)?;
 
@@ -807,11 +833,260 @@ fn an_order_that_cannot_work(test: &mut Test) -> Result<(), String> {
     if !log.iter().any(|line| line.contains("does not resolve to an address")) {
         return Err(format!("the order's log does not say the name leads nowhere: {log:?}"));
     }
+    let again = "certd tries again every hour; `cert forget lab-order` stops it";
+    if !log.iter().any(|line| line.contains(again)) {
+        return Err(format!("the order's log does not say that certd tries again: {log:?}"));
+    }
     let history = test.history()?;
     let failed = lines_of(&history, before, "lab-order", "failed");
     let detail = failed.first().and_then(|line| line["detail"].as_str()).unwrap_or_default();
     if failed.len() != 1 || !detail.contains("CRT-101") {
         return Err(format!("the history has no failure of lab-order with CRT-101: {history:?}"));
+    }
+    Ok(())
+}
+
+/// What the pane's `elevate alerts list --json` prints, an alert on each line.
+fn active_alerts(vm: &mut Vm, test: &Test) -> Result<Vec<Value>, String> {
+    let text = test.pane.output(vm, "elevate alerts list --json")?;
+    Ok(text.lines().filter_map(|line| serde_json::from_str(line.trim()).ok()).collect())
+}
+
+/// The alert `key` once `ready` is true of it, or of its being none,
+/// within `seconds`: alertd is told at the end of certd's look.
+fn alert_where(
+    vm: &mut Vm,
+    test: &Test,
+    key: &str,
+    seconds: u64,
+    ready: impl Fn(Option<&Value>) -> bool,
+) -> Result<Option<Value>, String> {
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    loop {
+        let all = active_alerts(vm, test)?;
+        let found = all.iter().find(|active| active["alert"]["key"] == key);
+        if ready(found) {
+            return Ok(found.cloned());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("the alert {key} is not as wanted after {seconds} s: {all:?}"));
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
+}
+
+/// What the route `certificate.wanted` gives once `ready` is true of it,
+/// within `seconds`.
+fn wanted_where(
+    test: &mut Test,
+    seconds: u64,
+    ready: impl Fn(&Value) -> bool,
+) -> Result<Value, String> {
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    loop {
+        let wanted = test.read(Who::Alice, WANTED)?;
+        if ready(&wanted) {
+            return Ok(wanted);
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("what is wanted is not as expected after {seconds} s: {wanted}"));
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
+}
+
+/// The one record `wanted` holds, which must be of `name`.
+fn record_of<'a>(wanted: &'a Value, name: &str) -> Result<&'a Value, String> {
+    let all = wanted["wanted"].as_array().ok_or_else(|| format!("{wanted} has no wanted list"))?;
+    match all.as_slice() {
+        [one] if one["name"] == name => Ok(one),
+        _ => Err(format!("what is wanted is not the one record of {name}: {wanted}")),
+    }
+}
+
+/// Moves the record of `name` in time with the script, as root, and has
+/// certd look.
+fn moved_and_looked(vm: &mut Vm, test: &Test, name: &str, how: &str) -> Result<(), String> {
+    let script = format!("elevate sh {FILES}/wanted.sh {name} {how}");
+    let status = test.pane.status(vm, &script)?;
+    if status != 0 {
+        return Err(format!("`{script}` ended with {status}"));
+    }
+    let status = test.pane.status(vm, "elevate service certd reload")?;
+    if status != 0 {
+        return Err(format!("the reload of certd ended with {status}"));
+    }
+    Ok(())
+}
+
+/// Step 5: certd asks again for the order of step 4. Its record is what the
+/// command and the route say, for alice and for bob; the record is root's
+/// and the summary anyone's. Due, it is tried at certd's next look and fails
+/// again, the next try an hour on; a day old, it is tried again, the next 6
+/// hours on, and alertd has the alert for a certificate not got for a day. A
+/// record that does not read is left alone and told in the log. Forgetting
+/// is for administrators who are unlocked, takes the record away and with it
+/// the alert.
+fn certd_tries_again(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
+    let hour = 3_600_000;
+    let alice = test.read(Who::Alice, WANTED)?;
+    let bob = test.read(Who::Bob, WANTED)?;
+    let typed = test.typed(vm, "cert wanted --json")?;
+    if alice != bob || alice != typed || alice["format"] != json!(1) {
+        return Err(format!("alice has {alice}, bob {bob} and the pane {typed}"));
+    }
+    let first = record_of(&alice, "lab-order")?.clone();
+    let authority = "https://acme-v02.api.letsencrypt.org/directory";
+    let tried = first["why"].as_str().unwrap_or_default();
+    if first["names"] != json!(["lab-order.test.invalid"])
+        || first["directory"] != json!(authority)
+        || first["tries"] != json!(1)
+        || first["given_up"] != json!(false)
+        || first["first_ms"] != first["last_ms"]
+        || !tried.contains("CRT-101")
+    {
+        return Err(format!("the record of the order is {first}"));
+    }
+    let (began, next) = (first["first_ms"].as_i64(), first["next_ms"].as_i64());
+    if began.zip(next).is_none_or(|(began, next)| next - began != hour) {
+        return Err(format!("the first try is not followed by one an hour on: {first}"));
+    }
+    let mut fields: Vec<&str> =
+        first.as_object().into_iter().flatten().map(|field| field.0.as_str()).collect();
+    fields.sort_unstable();
+    let known = [
+        "directory", "first_ms", "given_up", "last_ms", "name", "names", "next_ms", "tries", "why",
+    ];
+    if fields != known {
+        return Err(format!("the record has the fields {fields:?}, which leave out the account"));
+    }
+    let table = test.pane.output(vm, "cert wanted")?;
+    if !table.contains("lab-order.test.invalid") || !table.trim_start().starts_with("NAME") {
+        return Err(format!("cert wanted printed {table:?}"));
+    }
+
+    // The folder and the record are root's, the summary is anyone's.
+    let paths = "/system/state/certd/wanted /system/state/certd/wanted/lab-order.toml \
+                 /system/state/certd/wanted.json";
+    let modes = test.pane.output(vm, &format!("elevate stat -c '%U %a' {paths}"))?;
+    let want = ["root", "700", "root", "600", "root", "644"];
+    if modes.split_whitespace().collect::<Vec<_>>() != want {
+        return Err(format!("the folder, the record and the summary have {modes:?}"));
+    }
+    if test.pane.status(vm, &format!("cat {RECORD} > /dev/null 2>&1"))? == 0 {
+        return Err("alice, with no right of root's, reads the record".into());
+    }
+    let record = test.file(vm, RECORD)?;
+    for line in ["name = \"lab-order\"", "agree_terms = true", "by = \"cert\"", "tries = 1"] {
+        if !record.lines().any(|have| have == line) {
+            return Err(format!("the record has no line {line:?}: {record}"));
+        }
+    }
+    if !record.contains("account = \"acme-v02.api.letsencrypt.org.json\"") {
+        return Err(format!("the record does not name the authority's account: {record}"));
+    }
+    let summary = test.file(vm, "/system/state/certd/wanted.json")?;
+    if summary.contains("account") {
+        return Err(format!("the summary anyone reads names the account: {summary}"));
+    }
+
+    // Due, it is tried at once: a second try, which fails as the first did.
+    let before = test.history()?.len();
+    moved_and_looked(vm, test, "lab-order", "due")?;
+    let wanted =
+        wanted_where(test, TRY_SECONDS, |wanted| wanted["wanted"][0]["tries"] == json!(2))?;
+    let second = record_of(&wanted, "lab-order")?;
+    let (last, next) = (second["last_ms"].as_i64(), second["next_ms"].as_i64());
+    if second["first_ms"] != first["first_ms"]
+        || last.zip(next).is_none_or(|(last, next)| next - last != hour)
+        || last <= began
+        || second["given_up"] != json!(false)
+    {
+        return Err(format!("the record after the second try is {second}"));
+    }
+    let history = test.history()?;
+    let failed = lines_of(&history, before, "lab-order", "failed");
+    let detail = failed.first().and_then(|line| line["detail"].as_str()).unwrap_or_default();
+    if failed.len() != 1 || failed[0]["by"] != "certd" || !detail.contains("CRT-101") {
+        return Err(format!("the history has no failure of certd's with CRT-101: {history:?}"));
+    }
+    let alerts = active_alerts(vm, test)?;
+    if alerts.iter().any(|active| active["alert"]["key"] == "certificate:lab-order") {
+        return Err("an alert says the certificate was not got for a day, after two tries".into());
+    }
+
+    // A day old, it is tried again, the next 6 hours on, and alertd says so.
+    moved_and_looked(vm, test, "lab-order", "aged 25")?;
+    let wanted =
+        wanted_where(test, TRY_SECONDS, |wanted| wanted["wanted"][0]["tries"] == json!(3))?;
+    let third = record_of(&wanted, "lab-order")?;
+    let (last, next) = (third["last_ms"].as_i64(), third["next_ms"].as_i64());
+    if last.zip(next).is_none_or(|(last, next)| next - last != 6 * hour) {
+        return Err(format!("a try after the first day is not followed by one 6 hours on: {third}"));
+    }
+    let alert = alert_where(vm, test, "certificate:lab-order", 90, |found| found.is_some())?;
+    let alert = alert.ok_or("the alert is not there")?;
+    let title = alert["alert"]["title"].as_str().unwrap_or_default();
+    let detail = alert["alert"]["detail"].as_str().unwrap_or_default();
+    let well = alert["source"] == "certd"
+        && alert["alert"]["severity"] == "warning"
+        && alert["alert"]["about"] == "stopped"
+        && title.starts_with("The certificate lab-order could not be had for a day: ")
+        && detail.contains("this machine (CRT-101). certd tries again until ")
+        && detail.ends_with("(CRT-123)");
+    if !well {
+        return Err(format!("the alert for the certificate not got for a day is {alert}"));
+    }
+
+    // A record that does not read is left as it is and told of.
+    let junk = "/system/state/certd/wanted/lab-junk.toml";
+    moved_and_looked(vm, test, "lab-junk", "junk")?;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let said = test.pane.output(vm, "elevate log -s certd | grep -c lab-junk")?;
+        if said.trim().parse::<u32>().is_ok_and(|lines| lines > 0) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("certd's log does not tell of the junk record: {said:?}"));
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    if test.file(vm, junk)? != "not = = toml\n" {
+        return Err("certd changed the record that does not read".into());
+    }
+    let wanted = test.read(Who::Alice, WANTED)?;
+    record_of(&wanted, "lab-order")?;
+    let removed = test.pane.output(vm, "elevate cert remove lab-junk")?;
+    if !removed.contains("lab-junk removed: certd does not try to get it again")
+        || !test.file(vm, junk)?.is_empty()
+    {
+        return Err(format!("removing the record that does not read printed {removed:?}"));
+    }
+
+    // Forgetting: not for bob or while locked, then it takes the record away.
+    let path = "/api/1/certificates/lab-order/forget";
+    test.refused_for_both("certificate.forget", path, &json!({}))?;
+    test.unlocked()?;
+    let answer = done(test.post(Who::Alice, path, &json!({}))?, "forgetting lab-order")?;
+    if answer["changed"] != json!(true)
+        || answer["output"][0] != "lab-order forgotten: certd does not try to get it again"
+    {
+        return Err(format!("forgetting lab-order answered {answer}"));
+    }
+    let wanted = test.read(Who::Alice, WANTED)?;
+    if wanted != json!({"format": 1, "wanted": []}) || !test.file(vm, RECORD)?.is_empty() {
+        return Err(format!("what is wanted after forgetting is {wanted}"));
+    }
+    alert_where(vm, test, "certificate:lab-order", 90, |found| found.is_none())?;
+    let none = test.pane.output(vm, "cert wanted")?;
+    if none.trim() != "no certificate is being tried again" {
+        return Err(format!("cert wanted with nothing wanted printed {none:?}"));
+    }
+    let again = test.post(Who::Alice, path, &json!({}))?;
+    let again = again.refused("forgetting what certd has no record of", 422, "ADM-123")?;
+    if !again.detail().contains("certd is not trying to get lab-order again") {
+        return Err(format!("the refusal to forget what is not wanted says {}", again.body));
     }
     Ok(())
 }
@@ -867,7 +1142,7 @@ fn answered_as(test: &Test, host: &str, status: u16, id: Option<&str>) -> Result
     })
 }
 
-/// Step 5: `machine.rename` is ADM-122 for bob and ADM-106 for alice locked,
+/// Step 6: `machine.rename` is ADM-122 for bob and ADM-106 for alice locked,
 /// and a name that is none is ADM-125 with its field, none of which changes
 /// the name. To lab-renamed.example.org it changes what `hostnamectl status
 /// --json` prints, which `machine.name` says for bob, makes this-machine for
@@ -948,7 +1223,7 @@ fn removed(test: &mut Test, name: &str) -> Result<(), String> {
     done(reply, &format!("removing {name}")).map(drop)
 }
 
-/// Step 6: `console.certificate`. For a certificate that does not name the
+/// Step 7: `console.certificate`. For a certificate that does not name the
 /// address the browser uses, 10.0.2.15, it is ADM-141 and the console's
 /// settings are as they were. With the machine named lab-renamed.example.org
 /// and a certificate for that name added, asked for by a browser that

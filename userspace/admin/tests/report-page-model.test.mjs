@@ -164,10 +164,10 @@ test('the note leaves room for the choice\'s line in the answer\'s 2,000 charact
   assert.equal(noteMax(otherChoice()), 2000 - 1);
 });
 
-test('the draft\'s arguments are the choice\'s, with each answer that was written and each box that is checked', () => {
+test('the draft\'s arguments are the choice\'s, with each answer that was written and the logs left out when that box is checked', () => {
   assert.deepEqual(draftArgs(crashChoice(), fields({ note: 'More.' })), { about: 'crash', crash: '20261113T100211-4012', happened: 'php-fpm stopped with an error at 8:30 AM. More.' });
-  assert.deepEqual(draftArgs(otherChoice(), fields({ happened: 'It froze', expected: ' It stays on ', again: '' }), { security: true, withoutLogs: true }), {
-    about: 'other', happened: 'It froze', expected: 'It stays on', without_logs: true, security: true,
+  assert.deepEqual(draftArgs(otherChoice(), fields({ happened: 'It froze', expected: ' It stays on ', again: '' }), { withoutLogs: true }), {
+    about: 'other', happened: 'It froze', expected: 'It stays on', without_logs: true,
   });
   const service = choices().find((choice) => choice.about === 'service');
   assert.deepEqual(draftArgs(service, fields(), {}), { about: 'service', name: 'backup-sync', happened: 'backup-sync failed at 7:30 AM.' });

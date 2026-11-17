@@ -19,7 +19,13 @@
 // page (`POST /api/1/certificates/{name}/renew`, `POST
 // /api/1/certificates/{name}/revoke`, `POST /api/1/certificates/{name}/remove`).
 // The one proved by DNS cannot be renewed by certd: the page learns it from
-// the refusal and offers Renew by DNS, which fills the form. Upload your own
+// the refusal and offers Renew by DNS, which fills the form. An order that
+// cannot finish is kept for certd to ask again every hour: the list has a row
+// of its own kind for it (`GET /api/1/certificates/wanted/all`, what `cert
+// wanted --json` prints), which says when certd tries next, how many tries
+// there were and what the last said; a reader sees the row and has no Forget,
+// and an administrator's Forget asks first and stops certd trying (`POST
+// /api/1/certificates/{name}/forget`), which takes the row away. Upload your own
 // (`POST /api/1/certificates/{name}/add`) sends the key and the chain once, as
 // one secret, and the key is nowhere else: not the page, not a command shown,
 // not a request but the one, not the browser's storage. Use for this console
@@ -102,6 +108,8 @@ const ROUTES = {
   add: "POST /api/1/certificates/{name}/add",
   revoke: "POST /api/1/certificates/{name}/revoke",
   remove: "POST /api/1/certificates/{name}/remove",
+  wanted: "GET /api/1/certificates/wanted/all",
+  forget: "POST /api/1/certificates/{name}/forget",
   machine: "GET /api/1/machine/name",
   rename: "POST /api/1/machine/name",
   serve: "POST /api/1/console/certificate",
@@ -132,6 +140,7 @@ const NOT_TRUSTED = "Not from an authority this server trusts";
 const SERVING = (name) => `This console now serves ${name}'s certificate. Keep it once this page has come back on it.`;
 const AGAIN = "Use this server's own certificate again";
 const NOT_FINISHED = "The order did not finish.";
+const FORGET_WORDS = (name) => `Stop trying to get ${name}? certd will not ask the authority for it again, and its alert goes away.`;
 
 // --- Reading the machine ---
 
@@ -402,6 +411,86 @@ async function orderCannotFinish(t, page) {
   ensure(after.length === before.length, `an order that did not finish changed the list from ${before.length} to ${after.length} certificates`);
 }
 
+// --- What certd tries again ---
+
+/** What `GET /api/1/certificates/wanted/all` says: `cert wanted --json`, `{format, wanted: [...]}`. */
+async function readWanted(page) {
+  const answer = await askFor(page, ROUTES.wanted);
+  ensure(answer.status === 200 && Array.isArray(answer.json?.wanted), `${ROUTES.wanted} was answered ${answer.status}: ${answer.text}`);
+  return answer.json;
+}
+
+/** The record of `name` in what certd asks for again, or null. */
+const wantedOne = (read, name) => read.wanted.find((one) => one.name === name) ?? null;
+
+/** The row of the list that says certd tries to get `name` again. */
+const wantedRow = (page, name) => page.locator(`#certificates tr.certs-wanted[data-wanted="${name}"]`);
+
+/**
+ * The order that did not finish was kept: the machine has its record, and the
+ * list has a row for it that says when certd tries next, how many tries there
+ * were and what the last said, as the record has it. Gives the record.
+ */
+async function wantedIsShown(t, page) {
+  const read = await eventually(async () => {
+    const found = await readWanted(page);
+    ensure(wantedOne(found, ORDERED) !== null, `the order of ${ORDERED} that did not finish left no record in ${ROUTES.wanted}: ${JSON.stringify(found.wanted)}`);
+    return found;
+  }, 30);
+  const record = wantedOne(read, ORDERED);
+  ensure(record.given_up === false && record.tries >= 1 && record.names?.[0] === ORDERED && record.next_ms > record.first_ms, `the record of ${ORDERED} is ${JSON.stringify(record)}`);
+
+  // The card reads the records beside the certificates, so it is opened again.
+  await openCertificates(t, page);
+  const line = wantedRow(page, ORDERED);
+  await t.see(line);
+  const words = (await line.innerText()).replace(/\s+/g, " ");
+  ensure(words.includes("Trying again: next at "), `the row of ${ORDERED} does not say that certd tries again: ${words}`);
+  ensure(words.includes(record.tries === 1 ? "1 try" : `${record.tries} tries`), `the row of ${ORDERED} does not say ${record.tries} tries: ${words}`);
+  ensure(words.includes("last: "), `the row of ${ORDERED} does not say what the last try said: ${words}`);
+  const id = /\(([A-Z]{2,4}-\d{3})\)/.exec(record.why)?.[1];
+  if (id !== undefined) ensure(words.includes(id), `the row of ${ORDERED} does not say ${id}, which the last try ended with: ${words}`);
+  await t.see(buttonIn(line, "Forget"));
+  ensure((await row(page, ORDERED).count()) === 0, `${ORDERED} is listed among the certificates, which it is not`);
+  await lookAll(t, page, "certificates-wanted");
+  return record;
+}
+
+/** A reader sees the row, whose words are the machine's, and has no Forget; the route refuses it, and the list of records is open to it. */
+async function readerSeesWanted(t, record) {
+  const { page } = await signedIn(t, READER);
+  await openCertificates(t, page);
+  const line = wantedRow(page, ORDERED);
+  await t.see(line);
+  ensure((await line.innerText()).replace(/\s+/g, " ").includes("Trying again: next at "), "a reader's row of what certd tries again does not say so");
+  ensure((await buttonIn(line, "Forget").count()) === 0, "a reader's row of what certd tries again has Forget");
+  ensure(wantedOne(await readWanted(page), ORDERED)?.tries === record.tries, `a reader's ${ROUTES.wanted} does not give the record of ${ORDERED}`);
+  mustBe(await askFor(page, routeFor(ROUTES.forget, ORDERED), {}), 403, "ADM-122", `a reader's ${ROUTES.forget}`);
+  ensure(wantedOne(await readWanted(page), ORDERED) !== null, `a reader's ${ROUTES.forget} took the record of ${ORDERED} away`);
+  await signOut(t, page);
+  await page.context().close();
+}
+
+/** Forget asks first, and Cancel leaves the record; Forget it stops certd trying and takes the row away. */
+async function forgets(t, page) {
+  const dialog = page.getByRole("dialog", { name: `Forget ${ORDERED}`, exact: true });
+  await opensDialog(t, page, buttonIn(wantedRow(page, ORDERED), "Forget"), dialog);
+  await t.see(dialog.getByText(FORGET_WORDS(ORDERED), { exact: true }));
+  await lookAll(t, page, "certificates-forget");
+  await buttonIn(dialog, "Cancel").click();
+  await t.gone(dialog);
+  ensure(wantedOne(await readWanted(page), ORDERED) !== null, `Cancel took the record of ${ORDERED} away`);
+  await t.see(wantedRow(page, ORDERED));
+
+  await opensDialog(t, page, buttonIn(wantedRow(page, ORDERED), "Forget"), dialog);
+  await pressFor(t, page, buttonIn(dialog, "Forget it"), routeFor(pathOf(ROUTES.forget), ORDERED));
+  await t.gone(wantedRow(page, ORDERED));
+  ensure(wantedOne(await readWanted(page), ORDERED) === null, `${ROUTES.wanted} still has ${ORDERED} after Forget it`);
+  // Forgetting what certd has no record of is refused, and the list stays as it is.
+  const again = await askFor(page, routeFor(ROUTES.forget, ORDERED), {});
+  ensure(again.status >= 400, `${ROUTES.forget} for ${ORDERED} was answered ${again.status} when certd had no record of it`);
+}
+
 // --- Renew, revoke, remove ---
 
 /** Renew now asks the authority the certificate came from and says when the new one is good until; its fingerprint is new. */
@@ -614,7 +703,11 @@ async function servedBecomes(page, hex, what, seconds = 60) {
   }
 }
 
-/** The console's certificate: refused for one that does not name the address, a trial for one that does, kept once the page came back on it, and undone. */
+/**
+ * The console's certificate: refused for one that does not name the address, a trial for one that does, kept once the
+ * page came back on it, and undone; this server's own is chosen again at localhost, which it names. Gives what the
+ * localhost page asked.
+ */
 async function consoleCertificate(t, page) {
   const own = hexOf((await readShown(page, "this-machine")).fingerprint_sha256);
   const named = hexOf((await readShown(page, SERVED)).fingerprint_sha256);
@@ -639,19 +732,36 @@ async function consoleCertificate(t, page) {
   ensure(trialIn(await readDocument(page), "console") === null, "Spark still tries the console's certificate after it was kept");
   ensure((await readOf(page, "GET /api/1/security/sign-in")).console?.certificate === SERVED, "the sign-in rules do not say that the console serves the certificate that was kept");
 
-  // This server's own again: a trial, undone, and the one that was kept is served again.
-  await pressFor(t, page, await rowButton(page, "this-machine", AGAIN), pathOf(ROUTES.serve));
-  await trialBecomes(page, "console", (banner) => banner.running && banner.heading === SERVING("this-machine"), "show that the console serves its own certificate", 40);
-  await pressAndAnswer(t, page, undoOf(page, "console"), pathOf(ROUTES.consoleUndo));
-  await trialEnds(page, "console", "undone", 30);
+  // This server's own names neither 127.0.0.1 nor the lab PC's other way in: here it is not offered,
+  // the row says where to open the console, and admind refuses it as it refused the other.
+  const host = new URL(page.url()).hostname;
+  ensure((await buttonIn(row(page, "this-machine"), AGAIN).count()) === 0, `${AGAIN} is offered at ${host}, which this server's own certificate does not name`);
+  ensure(/Open the console at https:\/\/\S+ and choose it there/.test(await row(page, "this-machine").textContent()), `this server's own row does not say where to open the console to choose it`);
+  mustBe(await askFor(page, ROUTES.serve, { name: "this-machine", try: 300 }), 409, "ADM-141", `this server's own certificate set from ${host}, which it does not name`);
+  ensure((await servedNow(page)) === named, "the console serves another certificate after the guard refused this server's own");
+
+  // At localhost, which it names: a trial, undone, and the one that was kept is served again.
+  const there = new URL("/", page.url());
+  there.hostname = "localhost";
+  const { page: local, seen } = await openConsole(t, there.href);
+  await signInDone(t, local, ADMIN, PASSWORD);
+  await unlockNow(local);
+  await openCertificates(t, local);
+  await pressFor(t, local, await rowButton(local, "this-machine", AGAIN), pathOf(ROUTES.serve));
+  await trialBecomes(local, "console", (banner) => banner.running && banner.heading === SERVING("this-machine"), "show that the console serves its own certificate", 40);
+  await pressAndAnswer(t, local, undoOf(local, "console"), pathOf(ROUTES.consoleUndo));
+  await trialEnds(local, "console", "undone", 30);
   await servedBecomes(page, named, `${SERVED}'s certificate again`);
 
   // And kept, so that the console serves its own at the end.
-  await pressFor(t, page, await rowButton(page, "this-machine", AGAIN), pathOf(ROUTES.serve));
-  await trialBecomes(page, "console", (banner) => banner.reach === WORDS.reached && !banner.keepOff, "say that this browser reached the console", 60);
-  await pressAndAnswer(t, page, keepOf(page, "console"), pathOf(ROUTES.consoleKeep));
-  await trialEnds(page, "console", "kept", 30);
+  await pressFor(t, local, await rowButton(local, "this-machine", AGAIN), pathOf(ROUTES.serve));
+  await trialBecomes(local, "console", (banner) => banner.reach === WORDS.reached && !banner.keepOff, "say that this browser reached the console", 60);
+  await pressAndAnswer(t, local, keepOf(local, "console"), pathOf(ROUTES.consoleKeep));
+  await trialEnds(local, "console", "kept", 30);
   await servedBecomes(page, own, "this server's certificate again");
+  await signOut(t, local);
+  await local.context().close();
+  return seen;
 }
 
 // --- The machine's name ---
@@ -734,6 +844,9 @@ async function administrator(t, made) {
   await opensPort(t, page);
   await keepsPort(t, page);
   await orderCannotFinish(t, page);
+  const record = await wantedIsShown(t, page);
+  await readerSeesWanted(t, record);
+  await forgets(t, page);
 
   // What Pebble made: renewed, shown, the one proved by DNS refused its renewal, revoked, removed.
   await renewsStandalone(t, page);
@@ -754,7 +867,7 @@ async function administrator(t, made) {
   await second.key.fill(made.console.keyText);
   await pressFor(t, page, buttonIn(serving, "Upload"), routeFor(pathOf(ROUTES.add), SERVED));
   await t.gone(serving);
-  await consoleCertificate(t, page);
+  for (const route of await consoleCertificate(t, page)) a.seen.add(route);
   await removes(t, page, SERVED);
   await removes(t, page, OTHER);
 
@@ -767,14 +880,18 @@ async function administrator(t, made) {
 
   const concrete = (route, name) => `${methodOf(route)} ${routeFor(pathOf(route), name)}`;
   mustHaveCalled(a.seen, [
-    ROUTES.list, ROUTES.history, ROUTES.machine, ROUTES.rename, ROUTES.serve, ROUTES.consoleKeep, ROUTES.consoleUndo, ROUTES.open, ROUTES.portKeep, ROUTES.portUndo,
-    concrete(ROUTES.show, STANDALONE), concrete(ROUTES.get, ORDERED), concrete(ROUTES.renew, STANDALONE), concrete(ROUTES.revoke, STANDALONE),
+    ROUTES.list, ROUTES.history, ROUTES.wanted, ROUTES.machine, ROUTES.rename, ROUTES.serve, ROUTES.consoleKeep, ROUTES.consoleUndo, ROUTES.open, ROUTES.portKeep, ROUTES.portUndo,
+    concrete(ROUTES.show, STANDALONE), concrete(ROUTES.get, ORDERED), concrete(ROUTES.forget, ORDERED), concrete(ROUTES.renew, STANDALONE), concrete(ROUTES.revoke, STANDALONE),
     concrete(ROUTES.remove, STANDALONE), concrete(ROUTES.add, OTHER), concrete(ROUTES.fresh, "firewall"), concrete(ROUTES.fresh, "console"),
   ]);
   ensure([...a.seen].some((route) => route.startsWith(`${methodOf(ROUTES.check)} ${pathOf(ROUTES.check).replace("{names}", "")}`)), `the test never called ${ROUTES.check}`);
   await signOut(t, page);
   await page.context().close();
 }
+
+// A key and a chain in the shape `certificate.add` takes, for a reader's
+// refusal: no command ever reads it.
+const READER_PEM = "-----BEGIN PRIVATE KEY-----\nTUFSS0VS\n-----END PRIVATE KEY-----\n-----BEGIN CERTIFICATE-----\nQ0hBSU4=\n-----END CERTIFICATE-----\n";
 
 /** A reader sees every fact and no button but the panel's, is told who may change things, and is refused when a route is asked. */
 async function reader(t) {
@@ -783,13 +900,24 @@ async function reader(t) {
   await t.see(page.getByText(READER_LEAD, { exact: true }));
   await listAsAnswered(t, page, { pebble: false });
   const buttons = await page.locator("main button").evaluateAll((all) => all.filter((one) => one.offsetParent !== null).map((one) => one.textContent.trim()));
-  const allowed = new Set(["Show fingerprint", "Check again", "Show all"]);
+  // The head's Show commands changes nothing of the machine, as the others do not.
+  const allowed = new Set(["Show fingerprint", "Check again", "Show all", "Show commands"]);
   const other = buttons.filter((words) => !allowed.has(words));
   ensure(other.length === 0, `a reader's page has these buttons: ${other.join(", ")}`);
   ensure((await page.getByRole("button", { name: "Upload your own…" }).count()) === 0, "a reader has Upload your own");
   ensure((await buttonIn(card(page, "name"), "Change…").count()) === 0, "a reader has Change… for the machine's name");
-  for (const route of [ROUTES.renew, ROUTES.add, ROUTES.revoke, ROUTES.remove, ROUTES.get]) {
-    mustBe(await askFor(page, routeFor(route, "wc-cert-x"), {}), 403, "ADM-122", `a reader's ${route}`);
+  // Arguments are checked before the person (ADR 0515), so each asks with
+  // arguments the route takes, and only the person is left to refuse it.
+  const asks = [
+    [ROUTES.renew, {}],
+    [ROUTES.add, { pem: READER_PEM }],
+    [ROUTES.revoke, { reason: "unspecified" }],
+    [ROUTES.remove, {}],
+    [ROUTES.get, { names: "wc-cert-x.example.org", agree_terms: true }],
+    [ROUTES.forget, {}],
+  ];
+  for (const [route, body] of asks) {
+    mustBe(await askFor(page, routeFor(route, "wc-cert-x"), body), 403, "ADM-122", `a reader's ${route}`);
   }
   mustBe(await askFor(page, ROUTES.serve, { name: "this-machine" }), 403, "ADM-122", `a reader's ${ROUTES.serve}`);
   mustBe(await askFor(page, ROUTES.rename, { name: "wc-cert-x" }), 403, "ADM-122", `a reader's ${ROUTES.rename}`);

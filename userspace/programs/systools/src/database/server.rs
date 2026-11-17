@@ -3,17 +3,19 @@
 
 //! What `database` needs of the machine around PostgreSQL's statements:
 //! the session, Spark's word on the service, a restart, the certificates
-//! certd keeps, the accounts, the TLS check and the log. The commands
-//! work through [`Host`], so that a test can stand a machine in memory in
-//! their place.
+//! certd keeps, the accounts, the TLS check, the firewall's trial and its
+//! loading of rules, and the log. The commands work through [`Host`], so
+//! that a test can stand a machine in memory in their place.
 
 use std::fs::TryLockError;
 use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use manifest::service::OVERRIDES;
 use spark_api::show::State;
@@ -24,7 +26,7 @@ use crate::cert::store::Store;
 use crate::deadline::Quiet;
 use crate::tls;
 use crate::util::{Fail, fail};
-use crate::{logger, service, servicefiles};
+use crate::{firewall, logger, service, servicefiles, trial};
 
 /// PostgreSQL's socket, in the service's live folder.
 pub const SOCKET: &str = "/system/live/services/postgres/.s.PGSQL.5432";
@@ -37,6 +39,28 @@ pub const SERVICE: &str = "postgresql";
 
 /// The port PostgreSQL listens on.
 pub const PORT: u16 = 5432;
+
+/// The bundle PostgreSQL's service and its commands are in.
+pub const BUNDLE: &str = "org.postgresql.postgresql";
+
+/// The top of `/shared`, which snapshots and backups hold.
+pub const SHARED: &str = "/shared";
+
+/// Where the snapshots of `/shared` are read.
+pub const SNAPSHOTS_OF_SHARED: &str = "/snapshots/shared";
+
+/// The folder of the copies the bundle's backup hook makes, from the top
+/// of `/shared`: in the home of the account postgres.
+pub const DUMPS_IN_SHARED: &str = "services/org.postgresql.postgresql/postgres/dumps";
+
+/// The folder of those copies now.
+pub const DUMPS: &str = "/shared/services/org.postgresql.postgresql/postgres/dumps";
+
+/// The folder of PostgreSQL's socket, which `pg_restore` is told with `-h`.
+pub const SOCKET_DIR: &str = "/system/live/services/postgres";
+
+/// How much of what `pg_restore` says is kept.
+pub const SAID_MAX: usize = 16 * 1024;
 
 /// How long a restart is waited for: the server must answer again.
 pub const RESTART_WAIT: Duration = Duration::from_secs(60);
@@ -63,13 +87,16 @@ pub struct Service {
     pub running: bool,
 }
 
-/// The files of PostgreSQL's service that `database` changes.
+/// The files of PostgreSQL's service and of the firewall that `database`
+/// changes.
 #[derive(Clone, Debug)]
 pub struct Files {
     /// The service file Spark reads.
     pub service: PathBuf,
     /// Its override, which names the certificates.
     pub over: PathBuf,
+    /// The firewall's rules, which hold the block for the port.
+    pub firewall: PathBuf,
 }
 
 impl Files {
@@ -80,8 +107,54 @@ impl Files {
         Files {
             service: folder.join(format!("{SERVICE}.toml")),
             over: folder.join(OVERRIDES).join(format!("{SERVICE}.toml")),
+            firewall: PathBuf::from(firewall::SETTINGS),
         }
     }
+}
+
+/// The time now, as a person at the machine reads it and as a document
+/// writes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Clock {
+    /// Milliseconds since 1970.
+    pub ms: u64,
+    /// The local year, month, day, hour and minute.
+    pub local: (i64, u32, u32, u32, u32),
+}
+
+impl Clock {
+    /// The time on the machine's clock.
+    #[must_use]
+    pub fn now() -> Clock {
+        let ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX));
+        Clock { ms, local: crate::snap::local(i64::try_from(ms / 1000).unwrap_or(i64::MAX)) }
+    }
+
+    /// The local day as a name has it: `20261116`.
+    #[must_use]
+    pub fn day(&self) -> String {
+        let (year, month, day, _, _) = self.local;
+        format!("{year:04}{month:02}{day:02}")
+    }
+
+    /// The local day and minute as a name has them: `20261116_0200`.
+    #[must_use]
+    pub fn minute(&self) -> String {
+        let (_, _, _, hour, minute) = self.local;
+        format!("{}_{hour:02}{minute:02}", self.day())
+    }
+}
+
+/// A folder that holds the copies of the databases that a backup made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Folder {
+    /// `live` for the folder in use, or the name of the snapshot of
+    /// `/shared` the folder is in.
+    pub from: String,
+    /// The folder.
+    pub path: PathBuf,
 }
 
 /// The machine a command works on.
@@ -100,8 +173,9 @@ pub trait Host {
     /// When Spark does not answer.
     fn service(&mut self) -> Result<Service, Fail>;
 
-    /// Restarts the server and waits until it answers again, a new one:
-    /// the open sessions end, and the next statement signs in again.
+    /// Restarts the server and waits until it answers again, a new one
+    /// that Spark says runs: the open sessions end, and the next statement
+    /// signs in again.
     ///
     /// # Errors
     ///
@@ -126,8 +200,44 @@ pub trait Host {
     /// What the handshake or the certificate said.
     fn probe(&mut self, name: &str) -> Result<(), String>;
 
+    /// Whether the firewall's rules are being tried (ADR 0472): Spark puts
+    /// the file back as it was when the trial ends, so a change of it now
+    /// would be lost. Spark that does not answer runs no trial, as
+    /// `firewall` takes it.
+    fn firewall_is_tried(&mut self) -> bool;
+
+    /// Has the firewall give the kernel the rules of its file, as
+    /// `firewall load` does.
+    ///
+    /// # Errors
+    ///
+    /// Why the kernel did not take them, in words.
+    fn load_firewall(&mut self) -> Result<(), String>;
+
     /// The files of the service.
     fn files(&self) -> &Files;
+
+    /// The folder of the copies that the backup hook makes.
+    fn dumps(&self) -> PathBuf;
+
+    /// The folders of those copies in the snapshots of `/shared`, newest
+    /// snapshot first. Empty when the snapshots cannot be read, which
+    /// is said on standard error.
+    fn snapshot_dumps(&mut self) -> Vec<Folder>;
+
+    /// The time now.
+    fn now(&mut self) -> Clock;
+
+    /// Runs the bundle's `pg_restore` as root with `argv`, as a program of
+    /// the system's that no person is asked about
+    /// ([`crate::bundles::run::system_program`]), which reads the copy from
+    /// `copy`, an open file, as its standard input.
+    ///
+    /// # Errors
+    ///
+    /// What `pg_restore` said, the first [`SAID_MAX`] bytes of it, or why
+    /// it did not run.
+    fn pg_restore(&mut self, argv: &[String], copy: File) -> Result<(), String>;
 
     /// Waits `time`, as the server takes it to do something.
     fn pause(&mut self, time: Duration);
@@ -217,10 +327,17 @@ impl Host for Machine {
             match self.sql(START_TIME) {
                 Ok(answers) => {
                     let now = value(&answers).map(String::from);
-                    if now.is_some() && now != before {
+                    if now.is_none() || now == before {
+                        last = String::from("it had not restarted");
+                    } else if self.service().is_ok_and(|service| service.running) {
                         return Ok(());
+                    } else {
+                        // Spark says that the service runs once its check of
+                        // readiness passes, a moment after the server answers,
+                        // and `database list` asks Spark first: a list read
+                        // as the change ends would find no server.
+                        last = String::from("Spark did not say that it runs");
                     }
-                    last = String::from("it had not restarted");
                 }
                 Err(error) => last = error.to_string(),
             }
@@ -259,8 +376,74 @@ impl Host for Machine {
         wire::tls_probe(address, host, roots)
     }
 
+    fn firewall_is_tried(&mut self) -> bool {
+        trial::running(firewall::TRIAL).is_ok_and(|running| running.is_some())
+    }
+
+    fn load_firewall(&mut self) -> Result<(), String> {
+        firewall::load(&mut io::sink(), false).map(|_| ()).map_err(|failed| failed.message)
+    }
+
     fn files(&self) -> &Files {
         &self.files
+    }
+
+    fn dumps(&self) -> PathBuf {
+        PathBuf::from(DUMPS)
+    }
+
+    fn snapshot_dumps(&mut self) -> Vec<Folder> {
+        let shared = Path::new(SHARED);
+        let found = crate::snap::place(shared).and_then(|place| {
+            let snapshots = crate::snap::snapshots(&place)?;
+            Ok((place, snapshots))
+        });
+        match found {
+            // A snapshot whose name could not be in the path of a copy that
+            // is put back is left out: it would be listed and refused.
+            Ok((place, snapshots)) => snapshots
+                .iter()
+                .rev()
+                .filter(|snapshot| super::names::snapshot_name_ok(&snapshot.name))
+                .map(|snapshot| Folder {
+                    from: snapshot.name.clone(),
+                    path: place.shown.join(&snapshot.name).join(DUMPS_IN_SHARED),
+                })
+                .collect(),
+            Err(failed) => {
+                eprintln!("database: the snapshots of {SHARED} are not read: {}", failed.message);
+                Vec::new()
+            }
+        }
+    }
+
+    fn now(&mut self) -> Clock {
+        Clock::now()
+    }
+
+    fn pg_restore(&mut self, argv: &[String], copy: File) -> Result<(), String> {
+        use std::os::unix::process::CommandExt;
+        let program = crate::bundles::run::system_program(BUNDLE, "pg_restore")
+            .map_err(|why| format!("pg_restore cannot run: {why}"))?;
+        let mut child = Command::new(&program.path)
+            .arg0(&program.arg0)
+            .args(argv)
+            .stdin(Stdio::from(copy))
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("pg_restore did not start: {error}"))?;
+        let said = child.stderr.take().map_or_default(kept_words);
+        let status = child.wait().map_err(|error| format!("pg_restore: {error}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            let how = status.code().map_or_else(
+                || "was ended by a signal".to_string(),
+                |code| format!("ended with status {code}"),
+            );
+            Err(if said.is_empty() { format!("pg_restore {how}") } else { said })
+        }
     }
 
     fn pause(&mut self, time: Duration) {
@@ -272,6 +455,24 @@ impl Host for Machine {
             eprintln!("database: cannot write to the log: {}", failed.message);
         }
     }
+}
+
+/// The first [`SAID_MAX`] bytes of what a program wrote to `stream`, as
+/// text, with a line that says so when there was more. The rest is read
+/// and left, so that the program does not stop on a full pipe.
+fn kept_words(mut stream: impl Read) -> String {
+    let mut kept = Vec::new();
+    let _ = (&mut stream).take(SAID_MAX as u64).read_to_end(&mut kept);
+    let more = io::copy(&mut stream, &mut io::sink()).is_ok_and(|rest| rest > 0);
+    let mut words = String::from_utf8_lossy(&kept).trim_end().to_string();
+    if more {
+        // Not in the middle of a line.
+        if let Some(end) = words.rfind('\n') {
+            words.truncate(end);
+        }
+        words.push_str("\n(more of what pg_restore said is not kept)");
+    }
+    words
 }
 
 /// When the server started, to see that a restart made a new one.
@@ -354,13 +555,14 @@ mod tests {
     }
 
     #[test]
-    fn the_files_are_the_service_and_its_override() {
+    fn the_files_are_the_service_its_override_and_the_firewall_s_rules() {
         let files = Files::system();
         assert_eq!(files.service, Path::new("/system/settings/spark/services/postgresql.toml"));
         assert_eq!(
             files.over,
             Path::new("/system/settings/spark/services/settings.d/postgresql.toml")
         );
+        assert_eq!(files.firewall, Path::new("/system/settings/firewall"));
     }
 
     #[test]

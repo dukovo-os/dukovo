@@ -17,9 +17,15 @@
 # the sites as they are (`GET /api/1/websites/check`). A site's file changed by
 # hand is shown as changed and kept, and with a broken line in it nginx's check
 # fails, nginx's own line is shown, and the page refuses to change a site until
-# it passes (WEB-103). A reader sees it all and has no button that works, and a
-# phone at 390 by 844 shows the list, a site and Add a website. Each look is
-# dark, light, high contrast, forced colours and less motion, checked by axe.
+# it passes (WEB-103). The list has the size of each site's folder and its visits
+# of yesterday, and a site's page a chart of its last 30 days: dashes and "Not
+# counted yet" before the logs are counted, then the numbers, which are what
+# `website list --json` says. A site whose certificate could not be got is kept
+# for certd to ask again, which its page says in place of Get a certificate, and
+# Forget on the Certificates page stops. A reader sees it all and has no button
+# that works, and a phone at 390 by 844 shows the list, a site and Add a
+# website. Each look is dark, light, high contrast, forced colours and less
+# motion, checked by axe.
 #
 # websites.mjs runs three times for each engine, with the machine in the state
 # its word says, which the step before it writes to /tmp/lab-websites-machine
@@ -27,7 +33,9 @@
 # a, a machine with no site, where the script adds, changes and removes sites;
 # b, where the first site's file has a line added by hand; and c, where that
 # file has a line that nginx does not know. websites.sh makes the hand edits,
-# takes sites away, and says what is left.
+# counts the logs of the sites that phase a made (`website count --now`, as the
+# daily count does for yesterday) before b, takes sites away, and says what is
+# left.
 #
 # The Let's Encrypt order itself is not made here: `certificate.get` orders
 # from Let's Encrypt and from nowhere else, so no lab machine can have it reach
@@ -42,7 +50,7 @@
 # The resolver, the authorities and the accounts are put back by the last steps.
 # The accounts are two that this test makes and removes, an administrator and a
 # reader, so no script needs the lab's password.
-about = "The web console's Websites pages in each engine: the list from website list, Add a website with what happens and Preview the files first, a static site with this machine's certificate, a PHP site whose certificate step fails and leaves it live on HTTP with Get the certificate after, a certificate that is here, HTTPS on and off, a site's file changed by hand and kept, Check the sites with a broken file, Remove with and without the folder, a reader, and the phone"
+about = "The web console's Websites pages in each engine: the list from website list, Add a website with what happens and Preview the files first, a static site with this machine's certificate, a PHP site whose certificate step fails and leaves it live on HTTP with Get the certificate after, a certificate that is here, HTTPS on and off, the order that certd is left to try again and Forget, the size and visits of each site before and after they are counted with the chart of the days, the daily count's service started as its timer starts it, a site's file changed by hand and kept, Check the sites with a broken file, Remove with and without the folder, a reader, and the phone"
 time = "45m"
 fresh = true
 host_needs = ["curl", "scp", "ssh", "openssl", "nc"]
@@ -99,8 +107,18 @@ ready = "pebble ready"
 [[step]]
 host = "sh {here}/../services/copy-file.sh ca.pem {machine} {machine-port:22}"
 expect = "copied: ca.pem"
+# The authority Pebble signs certificates with is not the one its own HTTPS
+# has (ca.pem): it is made anew each time Pebble starts, and its management
+# port gives it. The machine trusts both, so that website's check of a site
+# over HTTPS trusts the certificate Pebble gave it.
 [[step]]
-run = '''sh -c 'cp /system/settings/resolved /users/lab/wc-web-resolved.orig && cd /system/settings/ssl/certs && cat /system/resources/certificates/ca-certificates.crt /users/lab/ca.pem > roots.new && mv roots.new ca-certificates.crt && echo trusted' '''
+host = "sh -c 'curl -fsS --noproxy \"*\" --cacert ca.pem https://127.0.0.1:{port:acmeman}/roots/0 > issuer.pem && grep -c \"BEGIN CERTIFICATE\" issuer.pem'"
+expect = "1"
+[[step]]
+host = "sh {here}/../services/copy-file.sh issuer.pem {machine} {machine-port:22}"
+expect = "copied: issuer.pem"
+[[step]]
+run = '''sh -c 'cp /system/settings/resolved /users/lab/wc-web-resolved.orig && cd /system/settings/ssl/certs && cat /system/resources/certificates/ca-certificates.crt /users/lab/ca.pem /users/lab/issuer.pem > roots.new && mv roots.new ca-certificates.crt && echo trusted' '''
 root = true
 expect = "trusted"
 [[step]]
@@ -146,6 +164,12 @@ port = 9090
 run = "sh /users/lab/websites.sh state"
 root = true
 expect = "sites: 2, php site: there, folders left of the removed: 0"
+# The logs hold the requests that phase a made; they are counted as the daily
+# count counts yesterday's, for today so far.
+[[step]]
+run = "sh /users/lab/websites.sh count"
+root = true
+expect = "counted"
 [[step]]
 run = "sh /users/lab/websites.sh edit"
 root = true
@@ -176,6 +200,18 @@ port = 9090
 run = "sh /users/lab/websites.sh state"
 root = true
 expect = "sites: 2, php site: there, folders left of the removed: 0"
+# The daily count is the service website-count, which timerd starts after
+# midnight: its file passes the check, and started as the timer starts it, it
+# counts yesterday's lines, keeps the counts again and ends well (status
+# says that it is not running, with 3).
+[[step]]
+run = "service check website-count"
+root = true
+expect = "website-count.toml: ok"
+[[step]]
+run = '''sh -c 'c=/system/state/websites/counts.json; rm -f $c; service website-count start > /dev/null; i=0; while [ $i -lt 60 ] && [ ! -s $c ]; do sleep 1; i=$((i + 1)); done; [ -s $c ] && echo "kept again"; service website-count status || true' '''
+root = true
+expect = ["kept again", "website-count - Website counts", "Last: exited with code 0x0"]
 [[step]]
 run = "sh /users/lab/websites.sh repair"
 root = true
@@ -205,6 +241,12 @@ port = 9090
 run = "sh /users/lab/websites.sh state"
 root = true
 expect = "sites: 2, php site: there, folders left of the removed: 0"
+# The logs hold the requests that phase a made; they are counted as the daily
+# count counts yesterday's, for today so far.
+[[step]]
+run = "sh /users/lab/websites.sh count"
+root = true
+expect = "counted"
 [[step]]
 run = "sh /users/lab/websites.sh edit"
 root = true
@@ -264,6 +306,12 @@ port = 9090
 run = "sh /users/lab/websites.sh state"
 root = true
 expect = "sites: 2, php site: there, folders left of the removed: 0"
+# The logs hold the requests that phase a made; they are counted as the daily
+# count counts yesterday's, for today so far.
+[[step]]
+run = "sh /users/lab/websites.sh count"
+root = true
+expect = "counted"
 [[step]]
 run = "sh /users/lab/websites.sh edit"
 root = true
@@ -311,7 +359,7 @@ expect = "gone"
 # Pebble made gone, the resolver and the authorities the system's, and the
 # accounts gone.
 [[step]]
-run = '''sh -c 'cert remove site.acme-lab.example > /dev/null 2>&1; service php-fpm disable > /dev/null 2>&1; service nginx disable > /dev/null 2>&1; bundle remove --for-everyone --purge net.php.php > /dev/null 2>&1; bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; cp /users/lab/wc-web-resolved.orig /system/settings/resolved && service resolved reload; ln -sf /system/resources/certificates/ca-certificates.crt /system/settings/ssl/certs/ca-certificates.crt; rm -f /users/lab/wc-web-* /users/lab/ca.pem /users/lab/websites.sh /users/lab/org.nginx.nginx.dkv /users/lab/net.php.php.dkv; rm -rf /shared/www/sites; echo restored' '''
+run = '''sh -c 'cert remove site.acme-lab.example > /dev/null 2>&1; service php-fpm disable > /dev/null 2>&1; service nginx disable > /dev/null 2>&1; bundle remove --for-everyone --purge net.php.php > /dev/null 2>&1; bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; cp /users/lab/wc-web-resolved.orig /system/settings/resolved && service resolved reload; ln -sf /system/resources/certificates/ca-certificates.crt /system/settings/ssl/certs/ca-certificates.crt; rm -f /users/lab/wc-web-* /users/lab/ca.pem /users/lab/issuer.pem /users/lab/websites.sh /users/lab/org.nginx.nginx.dkv /users/lab/net.php.php.dkv; rm -rf /shared/www/sites; echo restored' '''
 root = true
 expect = "restored"
 [[step]]

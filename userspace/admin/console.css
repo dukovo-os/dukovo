@@ -171,7 +171,7 @@ html, body { margin: 0; }
   border: 1px solid var(--field-b); border-radius: .143rem; background: var(--bg); color: var(--text); font: inherit; min-width: 10rem; }
 .select i { height: 100%; width: 1.571rem; display: grid; place-items: center; border-left: 1px solid var(--border); font-style: normal;
   font-size: .857rem; color: var(--muted); background: linear-gradient(var(--btn-1), var(--btn-3)); }
-.check { display: flex; gap: .571rem; align-items: flex-start; }
+.check { display: flex; gap: .571rem; align-items: flex-start; min-height: 1.714rem; }
 .check input { margin: .143rem 0 0; accent-color: var(--accent); width: 1.071rem; height: 1.071rem; }
 .radio-card { display: flex; gap: .714rem; align-items: flex-start; padding: .714rem .857rem; border: 1px solid var(--border); border-radius: .357rem; background: var(--bg); }
 .radio-card.on { border-color: var(--sel-b); background: linear-gradient(var(--sel-1), var(--sel-2)); }
@@ -280,9 +280,6 @@ dialog.dialog::backdrop { background: var(--scrim); }
   .main { padding: 1rem 1.143rem 1.714rem; }
 }
 /* ---- The shell (design 4) ---- */
-/* The root's size sets the console's text: the sizes in this file are rem
-   against 87.5% (14 px at the browser's own size), and the text size
-   preference sets the root to 98%, 109.375% or 131.25%. */
 .skip { position: absolute; left: .571rem; top: -4.571rem; z-index: 100; padding: .571rem .857rem; background: var(--bg); color: var(--text);
   border: 2px solid var(--focus); border-radius: .214rem; }
 .skip:focus { top: .571rem; }

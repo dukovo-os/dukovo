@@ -108,8 +108,10 @@ const END = {
  * is the note that the machine runs the last try.
  */
 export function searchOf(status, now) {
-  const tries = list(status?.tries).map((one) => tryWords(one, status.of));
   const result = status?.result;
+  // `of` is the most tries while the search runs; one that ended made its tries.
+  const of = result ? list(status.tries).length : status?.of;
+  const tries = list(status?.tries).map((one) => tryWords(one, of));
   if (result) {
     const found = result.end === 'found';
     const words = list(result.words).filter((line) => typeof line === 'string');

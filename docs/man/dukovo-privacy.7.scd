@@ -94,6 +94,28 @@ that is not listed is a bug.
 	for it and the key to encrypt for, in files of _/system/state/alerts_
 	that root alone reads (*alertd*(8)).
 
+*Websites*
+	For each website of *website*(8), a file in nginx's data folder, in
+	which nginx writes each request's time, status and number of bytes
+	sent, and no address, no path and no agent. *logturn*(8) turns it
+	over each day and keeps two copies, so a request is kept for about
+	two days, in files that root and nginx read. *website count* counts
+	the files once a day and keeps in
+	_/system/state/websites/counts.json_, which anyone can read, each
+	site's visits, errors and bytes sent for each day, for 400 days, and
+	the size of its folder; what is kept of a site that is gone goes
+	after 30 days (*website*(8)). It says how many and how big, never
+	who or what.
+
+*Database copies*
+	Before each backup, a copy of each PostgreSQL database, with all
+	that the database holds, as *pg\_dump* writes it, in
+	_/shared/services/org.postgresql.postgresql/postgres/dumps_, in
+	files that the account *postgres* and root read alone. A copy
+	is in each snapshot of _/shared_ and in each backup of it, for as
+	long as those are kept; a machine with no backup set up makes none
+	(*database*(8)).
+
 # SENT ON ITS OWN
 
 *netd*
@@ -255,7 +277,8 @@ public issue.
 
 # SEE ALSO
 
-*alertd*(8), *alerts.toml*(5), *logd*(8), *log*(5), *logforward*(8),
-*metrics*(1), *metricsd*(8), *metrics.toml*(5), *netd*(8), *netlog*(8),
-*notifyd*(8), *radix-crashes*(4), *radix-debug*(7), *report*(1),
-*report.toml*(5), *reportd*(8), *resolved*(8), *timed*(8)
+*alertd*(8), *alerts.toml*(5), *database*(8), *logd*(8), *log*(5),
+*logforward*(8), *metrics*(1), *metricsd*(8), *metrics.toml*(5),
+*netd*(8), *netlog*(8), *notifyd*(8), *radix-crashes*(4),
+*radix-debug*(7), *report*(1), *report.toml*(5), *reportd*(8),
+*resolved*(8), *timed*(8), *website*(8)

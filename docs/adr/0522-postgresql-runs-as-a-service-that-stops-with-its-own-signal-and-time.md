@@ -7,7 +7,10 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 - Status: Accepted; database(8) adds databases and lets other machines
   connect, in a block of `pg_hba.conf` of its own, since
-  [0569](0569-websites-databases-and-apps-are-added-from-the-web-console-through-website-8-database-8-and-the-catalog-s-sheet.md)
+  [0569](0569-websites-databases-and-apps-are-added-from-the-web-console-through-website-8-database-8-and-the-catalog-s-sheet.md);
+  the `before` hook of `backup` copies each database with `pg_dump` as well
+  as writing a checkpoint, since
+  [0570](0570-postgresql-s-port-is-open-only-to-the-networks-a-database-is-opened-to-a-certificate-that-could-not-be-had-is-tried-again-each-database-is-copied-before-a-backup-and-a-website-s-size-and-visits-are-counted.md)
 - Date: 2026-11-14
 
 ## Context

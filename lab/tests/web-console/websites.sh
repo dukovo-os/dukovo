@@ -6,7 +6,10 @@
 # away with the command that makes them, and the hand edits that the page must
 # show and keep, which only a person at the machine makes.
 #
-#   sh websites.sh reset    no website is left, nor its folder
+#   sh websites.sh reset    no website is left, nor its folder, nor a count of
+#                           its visits, nor an order that certd is left to try
+#   sh websites.sh count    the sites' logs are counted for today, so far, as
+#                           the daily count does for yesterday
 #   sh websites.sh edit     a line is added by hand to the first site's file
 #   sh websites.sh break    a line nginx does not know is added to that file
 #   sh websites.sh repair   the line that was added by break is taken out
@@ -22,14 +25,17 @@ set -eu
 
 files=/system/settings/websites
 folders=/shared/www/sites
+counts=/system/state/websites/counts.json
 php=php.acme-lab.example
 
-# The file of the site the hand edits are for: the first that is not the PHP site's.
+# The file of the site the hand edits are for: the first that is not the PHP
+# site's. A file whose name starts with _ is website's own, as _default.conf,
+# which answers HTTPS for a name no site has, and is no site.
 first() {
 	for file in "$files"/*.conf; do
 		[ -e "$file" ] || continue
 		case "$file" in
-		"$files/$php.conf") ;;
+		"$files/$php.conf" | "$files"/_*) ;;
 		*)
 			echo "$file"
 			return 0
@@ -49,8 +55,19 @@ reset)
 		website remove "$name" --files > /dev/null 2>&1 || rm -f "$file"
 	done
 	rm -rf "$folders"/*
+	# What was counted of the sites stays for 30 days in case a site comes back,
+	# and the PHP site's order is kept for certd to try again: each run starts
+	# with neither.
+	rm -f "$counts"
+	cert forget "$php" > /dev/null 2>&1 || true
 	service nginx reload > /dev/null 2>&1 || true
 	echo reset
+	;;
+count)
+	# The requests of the browser and of the lab PC are in the sites' logs, which
+	# the count reads; it prints a line for each site.
+	website count --now
+	echo counted
 	;;
 edit)
 	file=$(first) || {
@@ -79,6 +96,7 @@ repair)
 state)
 	sites=0
 	for file in "$files"/*.conf; do
+		case "$file" in "$files"/_*) continue ;; esac
 		[ -e "$file" ] && sites=$((sites + 1))
 	done
 	[ -e "$files/$php.conf" ] && there=there || there=missing
@@ -104,7 +122,7 @@ gone)
 	fi
 	;;
 *)
-	echo "usage: websites.sh reset|edit|break|repair|state|gone"
+	echo "usage: websites.sh reset|count|edit|break|repair|state|gone"
 	exit 2
 	;;
 esac

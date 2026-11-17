@@ -45,6 +45,7 @@
 //! which loads the rules of the file put back. `remove` and `replace` name
 //! a rule by its words, which the page has, as well as by its number.
 
+pub(crate) mod block;
 pub(crate) mod report;
 
 use std::fmt;

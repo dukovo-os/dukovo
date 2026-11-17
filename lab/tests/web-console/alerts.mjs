@@ -448,7 +448,8 @@ async function whileLocked(t, page) {
 async function nothingSetUp(t, page) {
   await openAlerts(t, page);
   for (const [id, title] of [["active", "Active"], ["browser", "This browser"], ["channels", "Where alerts go"], ["email", "Email"], ["recent", "Recent"]]) {
-    await t.see(card(page, id).getByRole("heading", { name: title, level: 2, exact: true }));
+    // A card's buttons sit in its heading, as on the console's other pages, so the heading's name begins with the title.
+    await t.see(card(page, id).getByRole("heading", { name: new RegExp(`^${title}( |$)`), level: 2 }));
   }
   ensure((await channelsOf(page)).length === 0, "the machine has a channel before the test set one up");
   await activeAsAnswered(t, page);
@@ -456,10 +457,11 @@ async function nothingSetUp(t, page) {
   await t.see(active.getByText("Lab alert for the Alerts page", { exact: false }));
   await t.see(active.getByText("Lab temperature alert", { exact: false }));
   // The critical alert comes before the warning, with the way to the page it is about.
-  const titles = (await active.locator("li.al-item").allInnerTexts()).map((text) => text.split("\n")[0]);
-  const critical = titles.findIndex((text) => text.includes("Lab temperature alert"));
-  const warning = titles.findIndex((text) => text.includes("Lab alert for the Alerts page"));
-  ensure(critical >= 0 && warning >= 0 && critical < warning, `the alerts are listed ${titles.join(" | ")}: the critical one is not before the warning`);
+  // Each item begins with its level's word, then its title.
+  const items = (await active.locator("li.al-item").allInnerTexts()).map((text) => text.replace(/\s+/g, " "));
+  const critical = items.findIndex((text) => text.includes("Lab temperature alert"));
+  const warning = items.findIndex((text) => text.includes("Lab alert for the Alerts page"));
+  ensure(critical >= 0 && warning >= 0 && critical < warning, `the alerts are listed ${items.join(" | ")}: the critical one is not before the warning`);
   const hardware = active.locator("li.al-item").filter({ hasText: "Lab temperature alert" }).getByRole("link", { name: "Open Hardware", exact: true });
   await t.see(hardware);
   ensure((await hardware.getAttribute("href")) === "/hardware", `Open Hardware goes to ${await hardware.getAttribute("href")}`);
@@ -1053,9 +1055,23 @@ async function reader(t) {
 
   const refused = async (route, body = null) => mustBe(await askFor(page, route, body), 403, "ADM-122", `a reader's ${route}`);
   for (const route of [ROUTES.list, ROUTES.history, ROUTES.channels, ROUTES.pushKey]) await refused(route);
-  for (const route of [ROUTES.test, ROUTES.email, ROUTES.emailRemove, ROUTES.webhook, ROUTES.told, ROUTES.push, routeFor(ROUTES.webhookRemove, 1), routeFor(ROUTES.pushRemove, "0123456789abcdef")]) {
-    await refused(route, {});
-  }
+  // Arguments are checked before the person (ADR 0515), so each change is
+  // asked with arguments it takes, and only the person is left to refuse it.
+  const subscription = JSON.stringify({
+    endpoint: "https://push.example.net/send/lab",
+    keys: { p256dh: "BLabLabLabLabLabLabLabLabLabLabLabLabLab", auth: "LabLabLabLabLabLab" },
+  });
+  const changes = [
+    [ROUTES.test, {}],
+    [ROUTES.email, { to: "ops@example.org", server: "mail.example.org", user: "alerts@example.org", password: "lab-password" }],
+    [ROUTES.emailRemove, {}],
+    [ROUTES.webhook, { kind: "json", url: "http://10.0.2.2:8080/alerts" }],
+    [ROUTES.told, { channel: "email", about: "data,stopped" }],
+    [ROUTES.push, { subscription, name: "Lab browser" }],
+    [routeFor(ROUTES.webhookRemove, 1), {}],
+    [routeFor(ROUTES.pushRemove, "0123456789abcdef"), {}],
+  ];
+  for (const [route, body] of changes) await refused(route, body);
   await signOut(t, page);
   await page.context().close();
 }

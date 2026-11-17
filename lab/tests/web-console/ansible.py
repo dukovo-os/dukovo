@@ -105,10 +105,12 @@ reach.
 
 Nor are the Databases' changes (SET_UP): they need PostgreSQL installed and on,
 and a database to work on, which a lab machine has not, and databases.allow
-and databases.deny make it listen on the network and restart. Their tasks are
+and databases.deny make it listen on the network and restart; databases.restore
+needs a copy of a database that a backup made as well. Their tasks are
 the commands the console shows, which the boot test admin-websites runs, and
-the browser test web-console/databases uses. databases.list is run: it
-answers with what a machine without PostgreSQL says.
+the browser test web-console/databases uses. databases.list and
+databases.copies are run: they answer with what a machine without PostgreSQL
+says.
 
 Nor are the Websites' changes (SET_UP): websites.add, websites.https and
 websites.remove need nginx installed and on, and a site to work on, which a
@@ -120,10 +122,11 @@ websites.plan are run: they answer with what a machine without nginx says.
 Nor are the Certificates page's changes but its reads: certificate.get asks
 Let's Encrypt for a certificate of names that are not this machine's,
 certificate.add reads its certificate and key from variables of the
-playbook that this test does not give, certificate.revoke and
-certificate.remove name the certificate shop, which only the boot test
-admin-certificates makes, and machine.rename would rename the lab machine,
-whose name its inventory and its console's certificate go by (SET_UP).
+playbook that this test does not give, certificate.revoke,
+certificate.remove and certificate.forget name the certificate shop, which
+only the boot test admin-certificates makes, and machine.rename would rename
+the lab machine, whose name its inventory and its console's certificate go by
+(SET_UP).
 console.certificate is tried, as the console's reach is (TRIED). Their tasks
 are the commands the console shows, which the boot test admin-certificates
 runs, and the browser test web-console/certificates uses.
@@ -235,18 +238,19 @@ UNDER = {"ssh.on", "ssh.off"}
 # asks for the update of each such app; apps.sheet and apps.install name an app
 # of the test catalog too, which no catalog a lab machine reads lists (the sheet
 # is refused with APP-101, and the install has nothing to fetch).
-# databases.add, databases.password, databases.allow, databases.deny and
-# databases.remove need PostgreSQL installed and on, and a database to work
-# on, which a lab machine has not; databases.allow and databases.deny also
+# databases.add, databases.password, databases.allow, databases.deny,
+# databases.remove and databases.restore need PostgreSQL installed and on, and
+# a database to work on, which a lab machine has not; databases.restore needs
+# a copy that a backup made of it too, and databases.allow and databases.deny
 # make PostgreSQL listen on the network and restart.
 # websites.add, websites.https and websites.remove need nginx installed and on
 # and a site to work on, which a lab machine has not, and each reloads or
 # restarts nginx.
 # certificate.get asks Let's Encrypt for names that are not this machine's;
 # certificate.add reads a certificate and its key from variables this test
-# does not give; certificate.revoke and certificate.remove name the
-# certificate shop, which only admin-certificates makes; machine.rename
-# would rename the lab machine.
+# does not give; certificate.revoke, certificate.remove and
+# certificate.forget name the certificate shop, which only admin-certificates
+# makes; machine.rename would rename the lab machine.
 # alerts.email, alerts.webhook-add and alerts.push-add take a password, an
 # address and a token or a subscription, which a task reads from variables of
 # the playbook that this test does not give, and each makes a channel that
@@ -271,9 +275,11 @@ SET_UP = {
     "security.unblock", "private.add", "private.remove",
     "updates.apply", "updates.unstage", "updates.undo", "updates.hold", "updates.unhold", "updates.later",
     "apps.show", "apps.update", "apps.update-all", "apps.rollback", "apps.hold", "apps.unhold", "apps.remove",
-    "certificate.get", "certificate.add", "certificate.revoke", "certificate.remove", "machine.rename",
+    "certificate.get", "certificate.add", "certificate.revoke", "certificate.remove", "certificate.forget",
+    "machine.rename",
     "apps.tonight", "apps.tonight-all", "apps.not-tonight",
     "databases.add", "databases.password", "databases.allow", "databases.deny", "databases.remove",
+    "databases.restore",
     "apps.sheet", "apps.install",
     "websites.add", "websites.https", "websites.remove",
     "alerts.email", "alerts.email-remove", "alerts.webhook-add", "alerts.webhook-remove",

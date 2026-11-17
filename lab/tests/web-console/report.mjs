@@ -14,8 +14,9 @@
 // and the hash of the text that was read). Edit your answers writes the three
 // answers again, Undo all my changes asks for the list with no cuts and the
 // first text comes back, and Draft again asks first when it would bring cuts
-// back. A security report needs a key that the lab machine has none of, and
-// says so. Send (`POST /api/1/reports/send`) gives reportd the draft and the
+// back. The security box keeps the text, and Save to a file and Download by
+// QR code are off while it is checked, since such a report is sent encrypted
+// only, to the key Send names. Send (`POST /api/1/reports/send`) gives reportd the draft and the
 // hash of the text read, and the staging server of the lab PC
 // (lab/tests/reports/report-server.py, which report.toml starts) keeps the bytes
 // of the text that was on the screen, byte for byte. Save to a file saves the
@@ -130,7 +131,7 @@ async function unreportedCrash(page, seconds = 90) {
     ensure(Array.isArray(crashes), `${ROUTES.crashes} gives no list of crashes: ${answer.text}`);
     const found = crashes
       .filter((crash) => typeof crash?.program === "string" && crash.program.includes("crash-test") && !crash.reported)
-      .sort((a, b) => b.at - a.at)[0];
+      .sort((a, b) => b.at_ms - a.at_ms)[0];
     if (found) return found;
     ensure(Date.now() < until, `reportd kept no crash of crash-test that is not reported within ${seconds} seconds`);
     await sleep(2000);
@@ -344,7 +345,8 @@ async function cutWords(t, page, picked) {
   const [cut] = edits.cuts;
   ensure(edits.cuts.length === 1 && cut.line === picked.line - 1 && cut.from === from && cut.to === to && typeof cut.section === "string", `Cut these words asked for ${JSON.stringify(edits)}, not characters ${from} to ${to} of line ${picked.line - 1}`);
   ensure(edits.answers === undefined, `Cut these words asked for ${JSON.stringify(edits)}, which has answers in it`);
-  const row = text(page).locator(`.rl[data-n="${picked.n}"] .rl-text`);
+  // Found by its Cut line, which names the line as drafted: the head gains a line that counts the cuts, which moves the rows.
+  const row = text(page).locator(`.rl:has(> .rl-cut[aria-label=${JSON.stringify(`Cut line ${picked.line} of ${picked.title}`)}]) .rl-text`);
   ensure((await row.innerText()) === `[cut]${picked.words.slice(to)}`, `the line reads ${JSON.stringify(await row.innerText())} after its words were cut`);
   await t.see(page.getByText("You cut 1 part of a line.", { exact: true }));
   ensure((await linesOf(page)).some((line) => /^Cut by the sender: 1 part of a line/.test(line)), "the head of the text does not say what was cut");
@@ -430,28 +432,22 @@ async function draftAgainAsks(t, page, calls, crash, first) {
 // --- The security box ---
 
 /**
- * A security report is for the team's key. Where reportd knows no key it
- * refuses and the page shows the refusal and takes the text away; where it
- * knows one, the text is there, sent encrypted only, with Save to a file and
- * Download by QR code off. Either way the box can be taken off again.
+ * A security report is for the team's key, which Send names: the box keeps
+ * the text and asks for no new draft, Send stays on, and Save to a file and
+ * Download by QR code are off, with why. The box can be taken off again.
  */
-async function securityBox(t, page) {
+async function securityBox(t, page, calls) {
   const box = questions(page).getByLabel(/^This is a security problem\./);
+  const drafts = draftsOf(calls);
+  const before = await shown(page);
   await box.check();
-  const refused = page.locator(".rp-problem .mono", { hasText: /^RPT-/ });
-  const drafted = text(page);
-  await t.see(refused.or(page.getByText("A security report is sent encrypted only", { exact: false })));
-  if (await refused.count() > 0) {
-    await t.gone(drafted);
-    for (const name of ["Send", "Save to a file…", "Download by QR code…"]) {
-      ensure(await page.getByRole("button", { name, exact: true }).isDisabled(), `${name} is on with no text`);
-    }
-  } else {
-    await settled(page);
-    ensure(await page.getByRole("button", { name: "Send", exact: true }).isEnabled(), "Send is off for a security report");
-    for (const name of ["Save to a file…", "Download by QR code…"]) {
-      ensure(await page.getByRole("button", { name, exact: true }).isDisabled(), `${name} is on for a security report`);
-    }
+  await t.see(page.getByText("A security report is sent encrypted only", { exact: false }));
+  await settled(page);
+  ensure(draftsOf(calls) === drafts, "the security box asked for a new draft");
+  ensure((await shown(page)) === before, "the text changed when the security box was checked");
+  ensure(await page.getByRole("button", { name: "Send", exact: true }).isEnabled(), "Send is off for a security report");
+  for (const name of ["Save to a file…", "Download by QR code…"]) {
+    ensure(await page.getByRole("button", { name, exact: true }).isDisabled(), `${name} is on for a security report`);
   }
   await lookAll(t, page, "report-security");
   await box.uncheck();
@@ -615,7 +611,7 @@ async function administrator(t) {
 
   await undone(t, page, first);
   await draftAgainAsks(t, page, calls, crash, first);
-  await securityBox(t, page);
+  await securityBox(t, page, calls);
 
   // Sent with a line cut: the staging server has the head's count and lacks the line.
   const [last] = await pickable(page);

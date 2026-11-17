@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use super::conf::FILE_MAX;
 use super::host::{Paths, STATE};
-use super::plan::{Main, SETTINGS};
+use super::plan::{LOGS, Main, NGINX_HOME, SETTINGS};
 use crate::bundles::folder::{Dir, check};
 use crate::util::strip_os_error;
 
@@ -74,6 +74,44 @@ pub fn read_conf(paths: &Paths) -> Result<Option<String>, String> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(words(error)),
     }
+}
+
+/// Gives the descriptor `fd` to the owner and group `uid` and `gid`.
+fn chown(fd: &OwnedFd, uid: libc::uid_t, gid: libc::gid_t) -> io::Result<()> {
+    // SAFETY: fchown takes a descriptor we hold and two numbers.
+    check(unsafe { libc::fchown(fd.as_raw_fd(), uid, gid) })
+}
+
+/// Opens the folder of the sites' logs, `logs/sites` in nginx's data
+/// folder, one part at a time and not through a link. When a part is not
+/// there it is made if `make` says so, for the owner of its folder, which
+/// is nginx, so that nginx can write what it logs there; else none.
+///
+/// # Errors
+///
+/// When a part is a link or not a folder, or cannot be opened or made.
+pub fn logs_dir(paths: &Paths, make: bool) -> io::Result<Option<Dir>> {
+    let mut at = match Dir::open(&paths.text(NGINX_HOME)) {
+        Ok(home) => home,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    for name in ["logs", "sites"] {
+        let inner = match at.dir_at(name) {
+            Ok(inner) => inner,
+            Err(error) if make && error.kind() == io::ErrorKind::NotFound => {
+                let owner = at.stat()?;
+                at.make(name, 0o755)?;
+                let inner = at.dir_at(name)?;
+                chown(&inner.0, owner.st_uid, owner.st_gid)?;
+                inner
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        at = inner;
+    }
+    Ok(Some(at))
 }
 
 /// A file of the settings folder, whole.
@@ -151,6 +189,9 @@ impl Staged {
     pub fn make(paths: &Paths, files: &[Raw], text: &str, main: &Main) -> Result<Staged, String> {
         let words = |error: io::Error| format!("{CONF}: {}", strip_os_error(&error));
         let conf = Dir::open(&paths.text(CONF)).map_err(words)?;
+        // nginx's check opens the file of each site's log, which needs the
+        // folder it is in.
+        logs_dir(paths, true).map_err(|error| format!("{LOGS}: {}", strip_os_error(&error)))?;
         // Whatever an earlier change that was cut short left.
         let staged = Staged { conf };
         staged.remove_all();
@@ -349,6 +390,51 @@ mod tests {
         let why = Staged::make(&tree.paths(), &[], "http { }", &main).err().unwrap();
         assert!(why.contains("does not include"), "{why}");
         assert!(!tree.at(CONF).join(NEXT).exists(), "what was made is gone");
+    }
+
+    #[test]
+    fn the_folder_of_the_sites_logs_is_made_for_nginx_in_its_data_folder_and_never_through_a_link()
+    {
+        use std::os::unix::fs::MetadataExt;
+        let tree = Scratch::new("logs");
+        assert!(logs_dir(&tree.paths(), false).unwrap().is_none());
+        assert!(!tree.at(LOGS).exists());
+        let made = logs_dir(&tree.paths(), true).unwrap().expect("it is made");
+        let home = fs::metadata(tree.at(NGINX_HOME)).unwrap();
+        let own = fs::metadata(tree.at(LOGS)).unwrap();
+        assert!(own.is_dir() && (own.uid(), own.gid()) == (home.uid(), home.gid()));
+        assert_eq!(own.permissions().mode() & 0o777, 0o755);
+        assert_eq!(made.stat().unwrap().st_ino, own.ino());
+        // Made again, it is the same folder, with what is in it.
+        fs::write(tree.at(LOGS).join("a.log"), "x").unwrap();
+        logs_dir(&tree.paths(), true).unwrap().expect("it is there");
+        assert!(tree.at(LOGS).join("a.log").is_file());
+        assert!(logs_dir(&tree.paths(), false).unwrap().is_some());
+
+        // nginx's account may make any part a link, which is refused, made or not.
+        for part in ["logs", "logs/sites"] {
+            let tree = Scratch::new("logs-link");
+            logs_dir(&tree.paths(), true).unwrap();
+            let place = tree.at(NGINX_HOME).join(part);
+            fs::remove_dir_all(&place).unwrap();
+            fs::create_dir_all(tree.at("/elsewhere")).unwrap();
+            symlink(tree.at("/elsewhere"), &place).unwrap();
+            assert!(logs_dir(&tree.paths(), false).is_err(), "{part}");
+            assert!(logs_dir(&tree.paths(), true).is_err(), "{part}");
+            assert!(fs::read_dir(tree.at("/elsewhere")).unwrap().next().is_none());
+        }
+        let none = Scratch::new("logs-none");
+        fs::remove_dir_all(none.at(NGINX_HOME)).unwrap();
+        assert!(logs_dir(&none.paths(), true).unwrap().is_none());
+    }
+
+    #[test]
+    fn staging_makes_the_folder_nginx_s_check_needs_for_the_sites_logs() {
+        let tree = Scratch::new("logs-stage");
+        let main = read_main(CONF_TEXT).unwrap();
+        assert!(!tree.at(LOGS).exists());
+        let _staged = Staged::make(&tree.paths(), &[], CONF_TEXT, &main).unwrap();
+        assert!(tree.at(LOGS).is_dir());
     }
 
     #[test]

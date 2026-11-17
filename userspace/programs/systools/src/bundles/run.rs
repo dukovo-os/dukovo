@@ -50,11 +50,22 @@ use manifest::service::Ports;
 use super::folder::{Dir, fd_stat};
 use super::grants::{self, Grant, Step, YOUR_ACCESS};
 use super::protocol::{AddOn, Answer, Find, Found, Lines, Request};
+use super::registry::Place;
 use super::signed::{self, LIST_MAX, MANIFEST_MAX, SIGNATURE_MAX};
 use super::sums::{self, Entry, LIST, SIGNATURE};
 use super::{MANIFEST, answer, ask};
 use crate::bundled;
 use crate::util::{self, Fail, fail};
+
+/// A command of a bundle installed for everyone, for a program of the
+/// system's to run as its own ([`system_program`]).
+#[derive(Debug, PartialEq, Eq)]
+pub struct SystemProgram {
+    /// Its path, in the bundle's sealed folder.
+    pub path: String,
+    /// The name it is run by.
+    pub arg0: String,
+}
 
 /// The architecture this system runs.
 pub const ARCH: Arch = Arch::X86_64;
@@ -662,6 +673,39 @@ pub(crate) fn open_program(sealed: &Sealed, path: &str) -> Result<OwnedFd, Strin
         return Err(format!("{shown} is not a sealed program"));
     }
     Ok(fd)
+}
+
+/// Command `name` of the bundle `id` installed for everyone, for a program
+/// of the system's that runs it as its own, as `database restore` runs
+/// PostgreSQL's `pg_restore`: found and checked as `bundle run` finds and
+/// checks a bundle, its program sealed. It must be a command that runs with
+/// your access, and no person is asked for that: the system runs it for the
+/// administrator who asked for what it does, as Spark runs a service of a
+/// bundle an administrator installed for everyone, and a console's question
+/// would stop the web console's tasks and any machine with no screen.
+///
+/// # Errors
+///
+/// If bundled does not find it for everyone, the bundle or its program is
+/// not as bundled sealed it, the command runs in the bundle's sandbox, or
+/// the bundle has add-ons, which only a person's run brings.
+pub fn system_program(id: &str, name: &str) -> Result<SystemProgram, String> {
+    manifest::bundle::check_full_id(id)?;
+    let found = match locate(&Find::Id(id.into())).map_err(|failure| failure.message)? {
+        Target::Bundle(found, _) if found.place == Place::Everyone => found,
+        Target::Bundle(..) => return Err(format!("{id} is not installed for everyone")),
+        Target::AddOn(_) => return Err("bundled answered out of turn".into()),
+    };
+    let sealed = open_sealed(&found)?;
+    let chosen = choose(&sealed.manifest, Some(name))?;
+    if chosen.runs_with != RunsWith::YourAccess {
+        return Err(format!("{name} of {id} runs in its sandbox, which only a person's run makes"));
+    }
+    if sealed.manifest.add_ons.is_some() {
+        return Err(format!("{id} has add-ons, which only a person's run brings"));
+    }
+    drop(open_program(&sealed, &chosen.path)?);
+    Ok(SystemProgram { path: format!("{}/{}", sealed.path, chosen.path), arg0: chosen.arg0 })
 }
 
 /// The caller's environment, as pairs.

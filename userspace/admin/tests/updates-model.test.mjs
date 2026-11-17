@@ -489,6 +489,7 @@ test('a search that found a change says it, how to undo it, and offers to make s
   assert.deepEqual(sure.result.undo, ['elevate bundle rollback org.nginx.nginx --for-everyone']);
   assert.equal(sure.result.makeSure, false);
   assert.match(sure.result.left, /^This start is a try of the search\. The next usual start is the failed one again until the fix is taken\.$/);
+  assert.deepEqual(sure.tries.map((one) => one.verdict.split(' started')[0]), ['Try 1 of 2', 'Try 2 of 2'], 'the tries it made, though no try is waited on');
   const unsure = searchOf(found(false), NOW);
   assert.equal(unsure.result.makeSure, true);
   assert.deepEqual(unsure.result.lines, ['Found: org.nginx.nginx 1.30.6, by elimination']);

@@ -5,7 +5,7 @@ certd(8) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-certd - keep the machine's own certificate, renew the ones from an authority and watch the others
+certd - keep the machine's own certificate, renew the ones from an authority, ask again for the ones that could not be got, and watch the others
 
 # SYNOPSIS
 
@@ -67,14 +67,19 @@ machines do not all wake together, certd looks at the certificates:
   and, at the end in parentheses, the error ID of the page that says
   what to do: *CRT-121* for a renewal that keeps failing and *CRT-122*
   for a certificate that has run out. An alert for a revoked
-  certificate has no ID. An alertd that does not run is logged once,
-  and certd goes on.
+  certificate has no ID. A certificate that could not be got is told in
+  the same list, and only there, not in the notice (below). An alertd
+  that does not run is logged once, and certd goes on.
 - For each certificate that *cert get* got by HTTP (*cert*(8)), it
   renews it when its day has come (*Renewal*, below). A certificate
   that *cert get* got with *--dns* is told as one added by hand is, at
   21 days and again at 7 days left, with the line saying to run
   *elevate cert get* _name_ *--dns* again, since certd cannot add the
   TXT records.
+- For each certificate that *cert get* could not get and kept for it, it
+  asks the authority again when the record's time has come (*A certificate
+  that could not be got*, below). It looks again when the soonest of them
+  is due if that is before its next look.
 
 A clock that is before the system's making is wrong: a machine whose
 battery is flat boots with 1970 on it. certd makes and judges no
@@ -144,6 +149,51 @@ notification, critical from 7 days. A certificate revoked with *cert
 revoke* is not renewed, and the notice says to get a new one with *cert
 get*.
 
+# A CERTIFICATE THAT COULD NOT BE GOT
+
+When *cert get* fails once its order has begun (*cert*(8)), it keeps what it
+was asked for in a record in _/system/state/certd/wanted_, and asks Spark to
+have certd look. The record has the names, the authority and the account's
+file, the type of key and the profile, when the first and the last try were
+and when the next is, how many failed, and why the last did.
+
+At each look, and when a record's time comes sooner, certd asks the
+authority for each record that is due, as *cert get* does, as a service
+that listens on port 80 (the right the service holds, as for a renewal). The
+next try is an hour after a try made within a day of the first, 6 hours
+after a later one, and none when it would come more than 14 days after the
+first try: the record is then given up. An authority that asks not to be
+asked before a time, in its Retry-After, as a rate limit does, is not asked
+before it: the next try is never sooner than that time, and a time past 14 days
+gives the record up. A try that works installs the certificate, as
+a renewal does, tells Spark, takes the record away and logs one line;
+one that fails logs the reason, writes it into the record, and into the
+history as a line *failed* by certd.
+
+Two things give a record up at once, with their reason: the account it
+names is not there and the order did not agree to the terms, which a new
+account needs, and a certificate of its name that was added by hand since,
+which a new one would replace. When the order did agree to the terms and the
+account is not there, certd makes the account, as the order would have: an
+order that failed in the checks, before the authority was asked, had made
+none. A given-up record is kept, and tried no more, until *cert forget*, or
+a *cert get* of the name, takes it away.
+
+A record is read and written while the store's lock is held and not
+while the authority is asked, and a try that finds the record taken away or
+made again when it ends installs and writes nothing. A record that does
+not read is left alone and logged at each look, as it is never acted on; *cert
+forget* takes it away.
+
+Each look sets alerts for them in *alertd*(8): once a record's first
+try is a day old and it is still tried, *certificate:*_name_, "The
+certificate _name_ could not be had for a day: _why_", a warning
+(*CRT-123*), unless the same certificate has an alert of its own for
+running out, which is shown in its place; and for a given-up record
+*certificate-given-up:*_name_ (*CRT-124*), a warning too, since alertd has
+no lesser kind. Both are about *stopped* (*alertd*(8)), and clear when
+the record is taken away.
+
 # READINESS
 
 Spark counts the service ready once its health check, *cert check*
@@ -157,7 +207,8 @@ certd logs again that it waits.
 
 *SIGHUP*
 	Look at the certificates now: *service certd reload*
-	(*service*(8)) sends it.
+	(*service*(8)) sends it, and so does *cert*(8) when it changes a
+	record of a certificate that could not be got.
 
 *SIGTERM*
 	End.
@@ -186,6 +237,14 @@ _/system/state/certd/accounts_
 _/system/state/certd/accounts.json_
 	When each account was made and whether it has a contact, for
 	*cert list*.
+
+_/system/state/certd/wanted_
+	The records of the certificates that could not be got, a file
+	_name_.toml each (0600, in a folder of 0700, root's) (*a
+	certificate that could not be got*, above).
+
+_/system/state/certd/wanted.json_
+	The same without the accounts, for *cert wanted* (0644).
 
 _/system/state/certd/history_
 	What was done to the certificates, a JSON line for each event

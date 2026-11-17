@@ -90,7 +90,7 @@ pub const HOST: &str = "127.0.0.1";
 /// The failure for a statement of `add` that PostgreSQL refused: a name
 /// that is taken is DB-102, `what` saying which, and anything else is
 /// PostgreSQL's own words.
-fn refused(error: &Error, what: &str, name: &str) -> Fail {
+pub(super) fn refused(error: &Error, what: &str, name: &str) -> Fail {
     match error {
         Error::Server(pg) if pg.is_taken() => errors::taken(what, name),
         other => errors::said(other),
@@ -126,7 +126,7 @@ pub fn run(host: &mut dyn Host, sql: &str) -> Result<Vec<Answer>, Fail> {
 }
 
 /// Whether the lookup `sql` finds a row.
-fn found(host: &mut dyn Host, sql: &str) -> Result<bool, Fail> {
+pub(super) fn found(host: &mut dyn Host, sql: &str) -> Result<bool, Fail> {
     Ok(run(host, sql)?.first().is_some_and(|answer| !answer.rows.is_empty()))
 }
 
@@ -281,7 +281,7 @@ pub fn password(host: &mut dyn Host, name: &str, random: &dyn SecureRandom) -> R
 }
 
 /// The failure for a database that is not there.
-fn no_database(name: &str) -> Fail {
+pub(super) fn no_database(name: &str) -> Fail {
     fail(format!("there is no database called {name}; `database list` shows them"))
 }
 
@@ -298,13 +298,16 @@ pub struct Remove {
 }
 
 /// `database remove`: the database dropped, its lines of `pg_hba.conf`
-/// taken out, and with `--role` the role it was owned by. Gives the
-/// words to say.
+/// taken out, port 5432 shut in the firewall to the networks that no
+/// database names any more, and with `--role` the role it was owned by.
+/// Gives the words to say.
 ///
 /// # Errors
 ///
 /// DB-101, DB-103 for open sessions unless they are forced to end,
-/// DB-104 when the block of `pg_hba.conf` is not whole.
+/// DB-104 when the block of `pg_hba.conf` is not whole, DB-107 while the
+/// firewall's rules are being tried and DB-108 when they cannot take the
+/// block, each before anything is dropped.
 pub fn remove(host: &mut dyn Host, ask: &Remove) -> Result<Vec<String>, Fail> {
     ready(host)?;
     let found = run(host, &built(sql::the_database(&ask.name))?)?;
@@ -320,8 +323,8 @@ pub fn remove(host: &mut dyn Host, ask: &Remove) -> Result<Vec<String>, Fail> {
             return Err(errors::sessions(&ask.name, &open));
         }
     }
-    // The file is read before anything is dropped: a block that is not
-    // whole is found while nothing is changed.
+    // The files are read before anything is dropped: a block that is not
+    // whole, or a firewall being tried, is found while nothing is changed.
     let lines = allow::hba_without(host, &ask.name)?;
     let dropped = built(sql::drop_database(&ask.name, ask.force))?;
     if let Err(error) = host.sql(&dropped) {
@@ -344,7 +347,7 @@ pub fn remove(host: &mut dyn Host, ask: &Remove) -> Result<Vec<String>, Fail> {
 }
 
 /// The programs with sessions open to `name`, and how many each has.
-fn sessions(host: &mut dyn Host, name: &str) -> Result<Vec<(String, u64)>, Fail> {
+pub(super) fn sessions(host: &mut dyn Host, name: &str) -> Result<Vec<(String, u64)>, Fail> {
     let answers = run(host, &built(sql::sessions_of(name))?)?;
     let Some(answer) = answers.first() else { return Ok(Vec::new()) };
     let (Some(program), Some(count)) = (

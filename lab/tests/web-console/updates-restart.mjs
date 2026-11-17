@@ -18,9 +18,11 @@
 // again, the restart is left to come: the shell's banner says the machine is
 // restarting into the update, the machine tries it, the health check fails it
 // and the machine falls back to the version before, with the settings from
-// before the update put back (ADRs 0453 and 0454). The console answers again,
-// and the shell's banner says "Back, on …: the update was taken back." with
-// "See what happened", which opens /updates#happened. What happened says that
+// before the update put back (ADRs 0453 and 0454). The restart ends the
+// session: when the console answers again, the sign-in page says that the
+// console restarted, and once signed in again the shell's banner says "Back,
+// on …: the update was taken back." with "See what happened", which opens
+// /updates#happened. What happened says that
 // the update was taken back, with the start and its error ID, the machine's
 // own words for what failed, what the machine did, and Report it
 // (`/report?about=failure`), and no search for a change (an update that fell
@@ -63,6 +65,7 @@ const ADMIN = "wc-updates";
 const RESTART_BUTTON = "Restart now…";
 const RESTART_CONFIRM = "Restart in a minute";
 const BACK_WORDS = /^Back, on .*: the update was taken back\./;
+const RESTARTED_WORDS = /Sign in again:? the console restarted\./;
 const WENT_BACK = /The machine went back to .* with the settings from before the update\. Nothing was lost\./;
 const NOT_OFFERED = "The search is not offered after an update was taken back";
 
@@ -115,14 +118,23 @@ async function countdownAndCancel(t, page, version) {
   await t.see(card(page, "system").getByText(/is staged in slot [AB]/));
 }
 
-/** The restart is left to come: the banner says where the machine restarts into, and then the console is away. */
+/**
+ * The restart is left to come: the banner says where the machine restarts
+ * into, and then the console is away. The restart ends the session, so when
+ * the console answers the sign-in page says why, and once signed in again
+ * the shell's banner says that the update was taken back.
+ */
 async function restartAndWait(t, page, version) {
   await restartSet(t, page, version);
   await page.getByText(new RegExp(`is restarting into ${version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\. It has three tries to prove itself`)).waitFor({ state: "visible", timeout: 100_000 });
   console.log("the shell's banner says the machine is restarting into the update");
   // The machine falls back by itself, which takes a few minutes: the update's tries, the menu, the version before.
-  const away = await page.getByText(BACK_WORDS).waitFor({ state: "visible", timeout: 15 * 60_000 }).then(() => true, () => false);
-  ensure(away, "the banner never said that the console is back on the version before");
+  const asked = await signInHeading(page).waitFor({ state: "visible", timeout: 15 * 60_000 }).then(() => true, () => false);
+  ensure(asked, "the console never asked to sign in again after the restart");
+  await t.see(page.getByText(RESTARTED_WORDS));
+  await signInDone(t, page, ADMIN, PASSWORD);
+  const back = await page.getByText(BACK_WORDS).waitFor({ state: "visible", timeout: 60_000 }).then(() => true, () => false);
+  ensure(back, "the banner never said that the console is back on the version before");
 }
 
 /** After the console is back: a session that did not survive the restart signs in again, and the console is unlocked again. */

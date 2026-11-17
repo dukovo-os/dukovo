@@ -1,21 +1,24 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-// A database's page: its facts, how programs connect to it, who may and the
-// changes that follow: let other machines connect, stop them, make a new
-// password, remove it. The read is an administrator's and is made when the page
+// A database's page: its facts, its copy, how programs connect to it, who may
+// and what the firewall does with the port, and the changes that follow:
+// restore a copy, let other machines connect, stop them, make a new password,
+// remove it. The read is an administrator's and is made when the page
 // opens, after a change and when the console is unlocked, never on a timer.
 // Each change that PostgreSQL may restart for is a task, shown as the steps of
 // lib/steps.js; the questions are read when a button is pressed.
 
 import { fill, h } from '../../dom.js';
-import { allowArgs, denyArgs, machineOf } from '../../lib/database-model.js';
+import {
+  allowArgs, denyArgs, EARLIER_LEAD, EARLIER_TAIL, machineOf, portWords,
+} from '../../lib/database-model.js';
 import { runSteps } from '../../lib/steps.js';
 import { PAGES } from '../../pages.js';
 import { matchPage } from '../../shell/route-model.js';
-import { problemsBanner, reindexNotice, serverCard } from './cards.js';
+import { banner, problemsBanner, reindexNotice, serverCard } from './cards.js';
 import {
-  accessOf, denyRestarts, factsOf, guessMachine, handWords, removeOf, serverState, sessionsWords, THIS_MACHINE, waysOf,
+  accessOf, BACKUPS_PATH, copyOf, denyRestarts, factsOf, guessMachine, handWords, removeOf, serverState, sessionsWords, THIS_MACHINE, waysOf,
 } from './model.js';
 import { makeRead } from './read.js';
 import { connectionCard } from './settings.js';
@@ -117,6 +120,13 @@ export async function showDatabase(view, name) {
     if (!kept && !view.signal.aborted) view.notice(`The new password of ${name} was not kept. Make another when you are ready.`, { kind: 'warn' });
   }
 
+  async function restore(db) {
+    const { restoreDatabase } = await import('./restore.js');
+    await restoreDatabase(view, {
+      db, read, flow, errors, slot: flowSlot,
+    });
+  }
+
   async function remove(db) {
     const { askRemove } = await import('./dialogs.js');
     if (await askRemove(view, { db, removal: removeOf(read.data, db) }) && !view.signal.aborted) view.go('/databases');
@@ -130,7 +140,22 @@ export async function showDatabase(view, name) {
       db.site && [h('dt', {}, 'For'), h('dd', {}, reaches(`/websites/${db.site}`) ? h('a', { href: `/websites/${encodeURIComponent(db.site)}` }, db.site) : db.site)]]),
     h('p', { class: 'small muted' }, sessionsWords(db.sessions)));
 
-  const whoCard = (access) => {
+  const copyCard = (db, server) => {
+    const copy = copyOf(db, server, view.time);
+    return h('section', { class: 'card', 'aria-labelledby': 'db-copy-h' },
+      h('h2', { id: 'db-copy-h' }, 'Copy'),
+      h('p', {}, copy.words, copy.backups && reaches(BACKUPS_PATH) && [' · ', h('a', { href: BACKUPS_PATH }, 'Add a backup place')]),
+      h('div', { class: 'btns' }, button('Restore…', { action: 'restore', onPress: () => restore(db) })));
+  };
+
+  /** What the firewall does with the port, and a rule of the person's that comes first and may decide it otherwise. */
+  const portRow = (server) => [
+    h('p', { class: 'small', 'data-row': 'firewall' }, portWords(server)),
+    server.firewall.earlier && banner('warn', 'warn', [EARLIER_LEAD, h('code', { class: 'mono' }, server.firewall.earlier), EARLIER_TAIL],
+      reaches('/firewall') && h('p', { class: 'small' }, h('a', { href: '/firewall' }, 'Open the Firewall page'))),
+  ];
+
+  const whoCard = (access, server) => {
     const lines = [
       access.password && h('li', {}, 'Programs on this server, with the password'),
       access.peer !== null && h('li', {}, `${access.peer}, by its account`),
@@ -144,6 +169,7 @@ export async function showDatabase(view, name) {
     return h('section', { class: 'card', 'aria-labelledby': 'db-who-h' },
       h('h2', { id: 'db-who-h' }, 'Who connects'),
       lines.length === 0 ? h('p', { class: 'muted' }, 'No one is known to connect.') : h('ul', { class: 'db-who' }, lines),
+      portRow(server),
       h('div', { class: 'btns' },
         access.password && button('Let other machines connect', { action: 'allow', onPress: allow }),
         access.networks.length > 0 && withCommand(view, button('Stop them', { action: 'stop', onPress: () => stop(null) }), 'databases.deny', { name })));
@@ -182,10 +208,11 @@ export async function showDatabase(view, name) {
       problemsBanner(data),
       db.mismatch && reindexNotice(name),
       factsCard(db),
+      copyCard(db, data.server),
       connectionCard(view, {
         database: name, role: db.owner, ways: waysOf(access), machine: machine ?? guessMachine(view.host ?? ''), certificate: data.server.certificate ?? THIS_MACHINE,
       }),
-      whoCard(access),
+      whoCard(access, data.server),
       manageCard(db, access));
     // Make a new password, from the palette: the question is asked, and nothing is done until it is answered.
     if (view.query.has('password') && !asked && access.password) {

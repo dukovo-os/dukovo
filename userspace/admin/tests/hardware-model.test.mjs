@@ -472,9 +472,9 @@ test('the card says what the next start does, with the time it takes here', () =
 test('the asked line says when, and by whom, as far as the answer does', () => {
   assert.equal(askedWords(asked(), time, NOW_SECONDS), 'The memory is tested at the next restart (asked Nov 14, 3:10 PM by chase)');
   assert.equal(askedWords({ at_ms: asked().at_ms }, time, NOW_SECONDS), 'The memory is tested at the next restart (asked Nov 14, 3:10 PM)');
-  assert.equal(askedWords({ by: 'chase' }, time, NOW_SECONDS), 'The memory is tested at the next restart (asked by chase)');
+  assert.equal(askedWords({ by: 1000, by_name: 'chase' }, time, NOW_SECONDS), 'The memory is tested at the next restart (asked by chase)');
   assert.equal(askedWords({}, time, NOW_SECONDS), 'The memory is tested at the next restart');
-  const old = { at_ms: Date.UTC(2025, 11, 30, 21, 5, 0), by: 'chase' };
+  const old = { at_ms: Date.UTC(2025, 11, 30, 21, 5, 0), by: 1000, by_name: 'chase' };
   assert.equal(askedWords(old, time, NOW_SECONDS), 'The memory is tested at the next restart (asked Dec 30, 2025, 9:05 PM by chase)');
 });
 

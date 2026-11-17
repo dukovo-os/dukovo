@@ -1,0 +1,154 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# PostgreSQL's backup hook (ADR 0570): backup(8) runs it as the account
+# postgres, in the service's view, before it makes the snapshots, with up
+# to an hour (the bundle's backup.time_limit). It writes a checkpoint, so
+# that the snapshot of /shared holds the cluster a moment after one, and
+# then a copy of each database in $HOME/dumps/NAME.dump, in pg_dump's
+# custom format, compressed with zstd. The folder is in the snapshot, so a
+# database can be put back on its own from the newest copy or an older one
+# (database restore, database(8)).
+#
+# A copy is written beside the old one and moved over it once it is whole,
+# so a copy that fails leaves the last good one as it was. The copies of
+# databases that are gone, and a copy left half written by a hook that was
+# stopped, are removed. The hook says one line for each database and one at
+# the end, and ends with status 1 when a database was not copied: backup(8)
+# goes on with the round, as it does after any hook that fails, and says so.
+#
+# A database's name is a file's, so the name is held to the characters of a
+# file name that cannot reach another folder or start an option, and a
+# database whose name has others is said not to be copied.
+set -eu
+
+bundle=$(cd "$(dirname "$0")/.." && pwd)
+psql="$bundle/bin/psql"
+pg_dump="$bundle/bin/pg_dump"
+dumps="$HOME/dumps"
+nl='
+'
+
+# A copy holds all that its database does, and only this account reads it.
+umask 077
+
+say() {
+	echo "postgresql-backup: $*"
+}
+
+# The time in milliseconds. A date that cannot say them gives whole seconds.
+now() {
+	stamp=$(date +%s%N)
+	case $stamp in
+	'' | *[!0-9]*) echo "$(date +%s)000" ;;
+	*) echo $((stamp / 1000000)) ;;
+	esac
+}
+
+# $1 milliseconds, as seconds with one decimal.
+seconds() {
+	tenths=$(($1 / 100))
+	echo "$((tenths / 10)).$((tenths % 10)) s"
+}
+
+# $1 bytes, as megabytes, or as kilobytes when it is under one megabyte.
+size() {
+	if [ "$1" -ge 1048576 ]; then
+		echo "$((($1 + 524288) / 1048576)) MB"
+	else
+		echo "$((($1 + 1023) / 1024)) KB"
+	fi
+}
+
+# $1 databases, in words.
+databases() {
+	if [ "$1" -eq 1 ]; then
+		echo "1 database"
+	else
+		echo "$1 databases"
+	fi
+}
+
+# Copies the database $1, and says how it went. Fails when it is not
+# copied, with the copy before it, if there is one, as it was.
+copy() {
+	name=$1
+	case $name in
+	'' | [!A-Za-z0-9_]* | *[!A-Za-z0-9_.-]*)
+		say "$name was not copied: its name has characters that the name of a file may not"
+		return 1
+		;;
+	esac
+	file="$dumps/$name.dump"
+	began=$(now)
+	if "$pg_dump" -Fc -Z zstd:3 -f "$file.new" -d "$name" && mv -f "$file.new" "$file"; then
+		bytes=$(($(wc -c <"$file")))
+		say "$name, $(size "$bytes") in $(seconds $(($(now) - began)))"
+	else
+		rm -f "$file.new"
+		say "$name was not copied; the copy before it, if there is one, stays"
+		return 1
+	fi
+}
+
+started=$(now)
+if ! "$psql" -X -q -c CHECKPOINT; then
+	say "the server did not take a checkpoint: no database was copied"
+	exit 1
+fi
+mkdir -p "$dumps"
+
+for left in "$dumps"/*.new; do
+	if [ -e "$left" ]; then
+		rm -f "$left"
+	fi
+done
+
+# The databases to copy are those that are not templates and take
+# connections; those that exist are all, which tell what is gone.
+if ! names=$("$psql" -X -At -c "SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn ORDER BY datname") ||
+	! every=$("$psql" -X -At -c "SELECT datname FROM pg_database"); then
+	say "the server did not say which databases it has: none was copied"
+	exit 1
+fi
+
+copied=0
+failed=0
+while IFS= read -r name; do
+	if [ -z "$name" ]; then
+		continue
+	fi
+	if copy "$name"; then
+		copied=$((copied + 1))
+	else
+		failed=$((failed + 1))
+	fi
+done <<EOF
+$names
+EOF
+
+# A copy of a database that exists and takes no connections stays: it is
+# the last there is of it.
+if [ -n "$every" ]; then
+	for file in "$dumps"/*.dump; do
+		if [ -e "$file" ]; then
+			name=${file##*/}
+			name=${name%.dump}
+			case "$nl$every$nl" in
+			*"$nl$name$nl"*) ;;
+			*)
+				rm -f "$file"
+				say "$name is gone: its copy was removed"
+				;;
+			esac
+		fi
+	done
+fi
+
+took=$(seconds $(($(now) - started)))
+if [ "$failed" -gt 0 ]; then
+	say "$copied of $(databases $((copied + failed))) copied, $failed not, in $took"
+	exit 1
+fi
+say "$(databases "$copied") copied in $took"

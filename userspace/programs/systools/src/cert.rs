@@ -3,11 +3,11 @@
 
 //! cert(8): the machine's certificates, which certd(8) keeps (ADR 0512).
 //!
-//! `cert list` and `cert show` read the store as anyone may; `add`, `get`,
-//! `remove`, `renew` and `revoke` change it, as root, under the store's lock, and tell
-//! Spark through its control socket, which copies the certificate again for
-//! the services that name it and has them read it. `cert check` is certd's
-//! health check.
+//! `cert list`, `cert show` and `cert wanted` read the store as anyone may;
+//! `add`, `get`, `remove`, `renew`, `revoke` and `forget` change it, as root,
+//! under the store's lock, and tell Spark through its control socket, which
+//! copies the certificate again for the services that name it and has them
+//! read it. `cert check` is certd's health check.
 //!
 //! - [`store`] is the folder of certificates and its lock;
 //! - [`history`] is what was done to them, which `cert history` shows;
@@ -17,7 +17,9 @@
 //! - [`machine`] makes `this-machine` and says when it needs making again;
 //! - [`add`] is what `cert add` checks;
 //! - [`acme`] gets certificates from an authority, renews and revokes them
-//!   (ADR 0513).
+//!   (ADR 0513);
+//! - [`wanted`] is the certificates that could not be got, which certd asks
+//!   for again.
 //!
 //! When it misbehaves, `cert show NAME` names what is wrong with a
 //! certificate's files, `log certd` shows what certd did, `spark`'s own
@@ -37,6 +39,7 @@ pub mod history;
 pub mod inspect;
 pub mod machine;
 pub mod store;
+pub mod wanted;
 
 use std::path::PathBuf;
 
@@ -61,6 +64,7 @@ const USAGE: &str = "usage: cert list [--json]\n       cert show NAME [--json] [
                      --check [--json]\n       \
                      cert history [NAME] [-n NUMBER] [--json]\n       \
                      cert revoke NAME [--reason REASON]\n       \
+                     cert wanted [--json]\n       cert forget NAME\n       \
                      cert remove NAME\n       cert renew NAME\n       cert check";
 
 /// How many of a certificate's names `cert list` shows.
@@ -95,6 +99,15 @@ pub fn spark_warning(why: &str) -> String {
     )
 }
 
+/// Asks Spark to have certd look now, so that it asks for the certificates
+/// that are wanted at the time they say, and its alerts follow what was
+/// changed without waiting for its next look.
+pub(crate) fn wake_certd() {
+    if let Err(failed) = crate::service::ask("reload certd") {
+        eprintln!("cert: certd was not asked to look now: {}", failed.message);
+    }
+}
+
 /// cert(8).
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let Some(subcommand) = args.subcommand() else {
@@ -113,6 +126,8 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         Some("add") => add_certificate(args),
         Some("get") => get(args),
         Some("history") => history(args),
+        Some("wanted") => wanted_certificates(args),
+        Some("forget") => forget(args),
         Some("revoke") => revoke(args),
         Some("remove") => remove(args),
         Some("renew") => renew(args),
@@ -285,6 +300,17 @@ fn list(args: &mut Args) -> Result<i32, Fail> {
     Ok(i32::from(unreadable))
 }
 
+/// The first of a certificate's names that a table shows, and how many are left
+/// out.
+fn names_cell(names: &[String]) -> String {
+    let mut shown: Vec<&str> = names.iter().take(NAMES_SHOWN).map(String::as_str).collect();
+    if shown.is_empty() {
+        shown.push("-");
+    }
+    let more = names.len().saturating_sub(NAMES_SHOWN);
+    if more > 0 { format!("{} +{more}", shown.join(", ")) } else { shown.join(", ") }
+}
+
 /// `list`'s table: a header, then a line a certificate, with the date a
 /// certificate ran out in red when `colour` is on.
 fn list_table(certificates: &[Certificate], now: i64, colour: bool) -> String {
@@ -292,14 +318,7 @@ fn list_table(certificates: &[Certificate], now: i64, colour: bool) -> String {
     let mut rows: Vec<[String; 5]> = vec![titles.map(String::from)];
     for read in certificates {
         let first = read.first();
-        let mut names: Vec<&str> =
-            first.names.iter().take(NAMES_SHOWN).map(String::as_str).collect();
-        if names.is_empty() {
-            names.push("-");
-        }
-        let more = first.names.len().saturating_sub(NAMES_SHOWN);
-        let names =
-            if more > 0 { format!("{} +{more}", names.join(", ")) } else { names.join(", ") };
+        let names = names_cell(&first.names);
         let used_by =
             if read.used_by.is_empty() { String::from("-") } else { read.used_by.join(", ") };
         rows.push([
@@ -547,6 +566,87 @@ fn history_text(entries: &[history::Entry]) -> String {
     text
 }
 
+/// `cert wanted [--json]`: the certificates that could not be got, which
+/// certd asks for again, as anyone may read them.
+fn wanted_certificates(args: &mut Args) -> Result<i32, Fail> {
+    let mut json = false;
+    while let Some(arg) = args.next()? {
+        match arg {
+            Arg::Long(option) if option == "json" => json = true,
+            other => return Err(args.unknown(&other)),
+        }
+    }
+    let wanted = wanted::read_public(&Store::system()).map_err(fail)?;
+    if json {
+        let document = wanted::Document { format: wanted::FORMAT, wanted };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&document).map_err(|err| fail(err.to_string()))?
+        );
+    } else {
+        print!("{}", wanted_table(&wanted));
+    }
+    Ok(0)
+}
+
+/// `wanted`'s table: a header, then a line a certificate, which says when the
+/// first try was, when the next is or that certd tries no more, and why the
+/// last failed.
+fn wanted_table(wanted: &[wanted::Public]) -> String {
+    if wanted.is_empty() {
+        return String::from("no certificate is being tried again\n");
+    }
+    let time = |ms: i64| util::local_time(ms.div_euclid(1_000), "%F %T");
+    let titles = ["NAME", "NAMES", "TRIES", "FIRST TRY", "NEXT TRY", "WHY"];
+    let mut rows: Vec<[String; 6]> = vec![titles.map(String::from)];
+    for each in wanted {
+        let next = if each.given_up { String::from("given up") } else { time(each.next_ms) };
+        rows.push([
+            each.name.clone(),
+            names_cell(&each.names),
+            each.tries.to_string(),
+            time(each.first_ms),
+            next,
+            each.why.clone(),
+        ]);
+    }
+    let mut widths = [0; 5];
+    for row in &rows {
+        for (width, cell) in widths.iter_mut().zip(row) {
+            *width = (*width).max(cell.chars().count());
+        }
+    }
+    let mut text = String::new();
+    for row in &rows {
+        for (column, cell) in row.iter().enumerate() {
+            text.push_str(cell);
+            if let Some(width) = widths.get(column) {
+                text.push_str(&" ".repeat(width - cell.chars().count() + 2));
+            }
+        }
+        text.push('\n');
+    }
+    text
+}
+
+/// `cert forget NAME`: certd does not ask for certificate `NAME` again.
+fn forget(args: &mut Args) -> Result<i32, Fail> {
+    let name = one_name(args, "forget")?;
+    need_root()?;
+    service::check_certificate(&name).map_err(fail)?;
+    let store = Store::system();
+    let lock = store.lock().map_err(fail)?;
+    if !wanted::remove(&store, &lock, &name).map_err(fail)? {
+        return Err(fail(format!(
+            "certd is not trying to get {name} again: `cert wanted` lists what it tries"
+        )));
+    }
+    drop(lock);
+    println!("{name} forgotten: certd does not try to get it again");
+    wake_certd();
+    Ok(0)
+}
+
 /// Refuses a change a person other than root asks for.
 fn need_root() -> Result<(), Fail> {
     if util::own_user() == 0 {
@@ -689,6 +789,14 @@ fn remove(args: &mut Args) -> Result<i32, Fail> {
     let store = Store::system();
     let lock = store.lock().map_err(fail)?;
     if store.generation(&name).map_err(fail)?.is_none() {
+        // A certificate that could not be got is not in the store, and is
+        // removed all the same.
+        if wanted::remove(&store, &lock, &name).map_err(fail)? {
+            drop(lock);
+            println!("{name} removed: certd does not try to get it again");
+            wake_certd();
+            return Ok(0);
+        }
         return Err(fail(format!("there is no certificate {name}")));
     }
     let named = users(&name, &servicefiles::read_all());
@@ -708,10 +816,18 @@ fn remove(args: &mut Args) -> Result<i32, Fail> {
         history::By::Cert,
     );
     history::record(&store, &lock, &entry);
+    let was_wanted = wanted::remove(&store, &lock, &name).unwrap_or_else(|why| {
+        eprintln!("cert: the record certd tried {name} again from cannot be taken away: {why}");
+        false
+    });
     drop(lock);
     println!("{name} removed");
     if let Err(why) = tell_spark(power::CONTROL, &name) {
         eprintln!("cert: {}", spark_warning(&why));
+    }
+    if was_wanted {
+        println!("certd does not try to get {name} again");
+        wake_certd();
     }
     Ok(0)
 }
@@ -777,10 +893,8 @@ fn get(args: &mut Args) -> Result<i32, Fail> {
             "--check orders nothing, so it has no steps: leave out --progress".into(),
         ));
     }
-    if let Some(email) = &options.email
-        && (!email.contains('@') || email.contains([' ', ',', '?', '&']))
-    {
-        return Err(usage(format!("`{email}` is not an email address")));
+    if let Some(email) = &options.email {
+        acme::check_email(email).map_err(usage)?;
     }
     options.name = name;
     acme::get(&options)
@@ -930,6 +1044,50 @@ mod tests {
         assert!(lines[2].ends_with(" -"));
         let used_by = lines[0].find("USED BY").unwrap();
         assert_eq!(lines[1].find("nginx").unwrap(), used_by);
+    }
+
+    fn wanted_one(name: &str, tries: u32, given_up: bool) -> wanted::Public {
+        wanted::Public {
+            name: name.into(),
+            names: vec![format!("{name}.example"), format!("www.{name}.example")],
+            directory: String::from("https://acme.example/dir"),
+            first_ms: NOW * 1_000,
+            last_ms: (NOW + 3_600) * 1_000,
+            next_ms: (NOW + 7_200) * 1_000,
+            tries,
+            why: String::from("port 80 is closed (CRT-103)"),
+            given_up,
+        }
+    }
+
+    #[test]
+    fn the_table_of_wanted_certificates_says_when_each_is_tried_and_why_it_failed() {
+        let table = wanted_table(&[wanted_one("shop", 2, false), wanted_one("blog", 31, true)]);
+        let lines: Vec<&str> = table.lines().collect();
+        assert_eq!(lines.len(), 3, "{table}");
+        assert!(lines[0].starts_with("NAME  NAMES"), "{table}");
+        assert!(lines[0].contains("TRIES") && lines[0].ends_with("WHY"), "{table}");
+        assert!(lines[1].starts_with("shop  shop.example, www.shop.example  2  "), "{table}");
+        assert!(lines[1].contains("2027-01-15 08:00:00  2027-01-15 10:00:00  port 80"), "{table}");
+        assert!(lines[2].contains("31     2027-01-15 08:00:00  given up"), "{table}");
+        let why = lines[0].find("WHY").unwrap();
+        assert_eq!(lines[1].find("port 80").unwrap(), why);
+        assert_eq!(lines[2].find("port 80").unwrap(), why);
+    }
+
+    #[test]
+    fn with_nothing_wanted_the_table_says_so() {
+        assert_eq!(wanted_table(&[]), "no certificate is being tried again\n");
+    }
+
+    #[test]
+    fn a_table_shows_two_names_and_counts_the_rest() {
+        let names = |count: usize| -> Vec<String> {
+            (1..=count).map(|number| format!("n{number}.example")).collect()
+        };
+        assert_eq!(names_cell(&[]), "-");
+        assert_eq!(names_cell(&names(2)), "n1.example, n2.example");
+        assert_eq!(names_cell(&names(5)), "n1.example, n2.example +3");
     }
 
     #[test]

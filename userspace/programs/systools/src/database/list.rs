@@ -6,7 +6,8 @@
 //!
 //! A server that is not installed or does not run is told as such, with
 //! empty lists, and is no failure. A verifier is never read: whether a
-//! role has a password is.
+//! role has a password is. The server's `firewall` is what the block in
+//! the firewall's rules says of its port ([`super::port`]).
 
 use std::fs;
 use std::path::Path;
@@ -14,7 +15,9 @@ use std::path::Path;
 use serde::Serialize;
 
 use super::add::{ready, run};
+use super::copies::{self, Copy};
 use super::names::Network;
+use super::port::{self, Firewall};
 use super::server::{Host, value};
 use super::wire::Answer;
 use super::{hba, settings, sql};
@@ -52,6 +55,13 @@ pub struct Server {
     pub ssl: bool,
     /// The certificate it takes TLS with, when `database` set it.
     pub certificate: Option<String>,
+    /// What the firewall's rules say of its port. While the server does
+    /// not run, they are not read, and say nothing.
+    pub firewall: Firewall,
+    /// Whether the backup hook of its service copies each database, as
+    /// the service file and its override say. A machine that has no
+    /// backup set up has the hook and makes no copy.
+    pub copies: bool,
 }
 
 /// A database.
@@ -78,6 +88,9 @@ pub struct Database {
     /// Whether the sorting data changed since it was made: its indexes
     /// are to be rebuilt.
     pub collation_mismatch: bool,
+    /// The newest copy of it that the backup hook made: when, and how
+    /// long. None before the first backup.
+    pub copy: Option<Copy>,
 }
 
 /// A role.
@@ -112,14 +125,16 @@ pub struct Access {
     pub by_hand: bool,
 }
 
-/// A mistake in `pg_hba.conf`.
+/// A mistake in `pg_hba.conf`, or DB-108: the firewall's rules have a
+/// block of `database`'s that is not whole.
 #[derive(Debug, Serialize)]
 pub struct Problem {
     /// The ID of the page that explains it.
     pub id: &'static str,
-    /// PostgreSQL's words.
+    /// PostgreSQL's words, or the firewall's file and what is wrong with
+    /// it.
     pub words: String,
-    /// The line of the file.
+    /// The line of `pg_hba.conf`; none for the firewall's rules.
     pub line: Option<u64>,
 }
 
@@ -150,8 +165,17 @@ fn provider(letter: &str) -> String {
     .to_string()
 }
 
+/// Whether the backup hook of the service is the one that copies each
+/// database, by the service file and its override as they are now.
+fn copying(host: &dyn Host) -> bool {
+    let files = host.files();
+    let Ok(file) = fs::read_to_string(&files.service) else { return false };
+    let over = fs::read_to_string(&files.over).ok();
+    settings::copies(&file, over.as_deref())
+}
+
 /// What `list` says of a server that is not there to ask.
-fn silent(installed: bool, enabled: bool) -> List {
+fn silent(installed: bool, enabled: bool, copies: bool) -> List {
     List {
         server: Server {
             installed,
@@ -161,6 +185,8 @@ fn silent(installed: bool, enabled: bool) -> List {
             listen: None,
             ssl: false,
             certificate: None,
+            firewall: Firewall::default(),
+            copies,
         },
         databases: Vec::new(),
         roles: Vec::new(),
@@ -177,7 +203,7 @@ fn silent(installed: bool, enabled: bool) -> List {
 pub fn list(host: &mut dyn Host) -> Result<List, Fail> {
     let service = host.service()?;
     if !service.installed || !service.running {
-        return Ok(silent(service.installed, service.enabled));
+        return Ok(silent(service.installed, service.enabled, service.installed && copying(host)));
     }
     ready(host)?;
     let version = run(host, "SHOW server_version")?;
@@ -185,7 +211,7 @@ pub fn list(host: &mut dyn Host) -> Result<List, Fail> {
     let ssl = run(host, "SHOW ssl")?;
     let cert_file = run(host, "SHOW ssl_cert_file")?;
     let hba_file = run(host, "SHOW hba_file")?;
-    let server = Server {
+    let mut server = Server {
         installed: true,
         enabled: service.enabled,
         running: true,
@@ -193,16 +219,22 @@ pub fn list(host: &mut dyn Host) -> Result<List, Fail> {
         listen: value(&listen).map(String::from),
         ssl: value(&ssl) == Some("on"),
         certificate: value(&cert_file).and_then(settings::certificate_of).map(String::from),
+        firewall: Firewall::default(),
+        copies: copying(host),
     };
     let sessions = run(host, sql::LIST_SESSIONS)?;
     let databases = run(host, sql::LIST_DATABASES)?;
     let roles = run(host, sql::LIST_ROLES)?;
     let access = run(host, sql::LIST_ACCESS)?;
     let hba_text = value(&hba_file).and_then(|path| fs::read_to_string(Path::new(path)).ok());
-    let (access, problems) = access_of(first(&access)?, hba_text.as_deref())?;
+    let (access, mut problems) = access_of(first(&access)?, hba_text.as_deref())?;
+    match port::read(&host.files().firewall) {
+        Ok(firewall) => server.firewall = firewall,
+        Err(words) => problems.push(Problem { id: "DB-108", words, line: None }),
+    }
     Ok(List {
         server,
-        databases: databases_of(first(&databases)?, first(&sessions)?),
+        databases: databases_of(first(&databases)?, first(&sessions)?, &host.dumps()),
         roles: roles_of(first(&roles)?),
         access,
         problems,
@@ -215,8 +247,9 @@ fn first(answers: &[Answer]) -> Result<&Answer, Fail> {
 }
 
 /// The databases of the answer of [`sql::LIST_DATABASES`], with their
-/// sessions from [`sql::LIST_SESSIONS`].
-fn databases_of(databases: &Answer, sessions: &Answer) -> Vec<Database> {
+/// sessions from [`sql::LIST_SESSIONS`] and their copies from `dumps`, the
+/// folder of the copies.
+fn databases_of(databases: &Answer, sessions: &Answer, dumps: &Path) -> Vec<Database> {
     databases
         .rows
         .iter()
@@ -248,6 +281,7 @@ fn databases_of(databases: &Answer, sessions: &Answer) -> Vec<Database> {
                 made_by_database: comment.is_some_and(|text| text.starts_with(sql::COMMENT))
                     || owner_made_it,
                 collation_mismatch: mismatch,
+                copy: copies::in_folder(dumps, &name),
                 name,
             }
         })
@@ -359,6 +393,10 @@ pub fn text(list: &List) -> String {
         ));
     }
     for problem in &list.problems {
+        if problem.id == "DB-108" {
+            out.push_str(&format!("{} ({})\n", problem.words, problem.id));
+            continue;
+        }
         let line = problem.line.map_or(String::new(), |line| format!(" at line {line}"));
         out.push_str(&format!(
             "a mistake in pg_hba.conf{line}: {} ({})\n",
@@ -370,7 +408,7 @@ pub fn text(list: &List) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fake::Fake;
+    use super::super::fake::{Fake, START_MS};
     use super::*;
     use crate::json;
 
@@ -498,10 +536,118 @@ mod tests {
             .with_site("shop", "shop.example.org")
             .with_sessions("shop", "php", 1)
             .listening_with("this-machine")
-            .with_hba_lines(&[("shop", "shop", "192.0.2.0/24")]);
+            .with_hba_lines(&[("shop", "shop", "192.0.2.0/24")])
+            .with_copying_hook()
+            .with_copy("shop", 12345, START_MS)
+            .with_firewall_rules(&format!(
+                "allow tcp 5000-6000\n\n{}",
+                block_of("shop", &["192.0.2.0/24"])
+            ));
         let list = list_of(&mut fake);
         let line = json::line(&list).unwrap();
         json::assert_golden(&line, include_str!("../../tests/json/database-list.json"));
+    }
+
+    /// The firewall's block when `database` is let in from `networks`.
+    fn block_of(database: &str, networks: &[&str]) -> String {
+        let rules: Vec<hba::Rule> = networks
+            .iter()
+            .map(|network| hba::Rule {
+                database: database.into(),
+                role: database.into(),
+                network: Network::parse(network).unwrap(),
+            })
+            .collect();
+        port::wanted("", &rules).unwrap().text
+    }
+
+    #[test]
+    fn the_firewall_is_what_its_block_says_of_the_port() {
+        let mut fake = Fake::new();
+        let list = list_of(&mut fake);
+        assert_eq!(list.server.firewall, Firewall::default(), "no file is no block");
+        let block = block_of("shop", &["192.168.1.0/24", "10.0.0.0/8"]);
+        let mut fake = Fake::new().with_firewall_rules(&format!("deny udp 5353\n{block}"));
+        let list = list_of(&mut fake);
+        assert_eq!(list.server.firewall.networks, ["192.168.1.0/24", "10.0.0.0/8"]);
+        assert_eq!(list.server.firewall.earlier, None);
+        assert!(list.problems.is_empty());
+        let mut fake = Fake::new().with_firewall_rules(&format!("allow tcp\n{block}"));
+        let list = list_of(&mut fake);
+        assert_eq!(list.server.firewall.earlier.as_deref(), Some("allow tcp"));
+    }
+
+    #[test]
+    fn a_firewall_block_that_is_not_whole_is_a_problem_and_no_failure() {
+        let mut fake = Fake::new().with_firewall_rules("allow tcp 22\n# database(8): end\n");
+        let list = list_of(&mut fake);
+        assert_eq!(list.server.firewall, Firewall::default());
+        assert_eq!(list.problems.len(), 1);
+        assert_eq!(list.problems[0].id, "DB-108");
+        assert_eq!(list.problems[0].line, None);
+        assert!(
+            list.problems[0].words.contains("line 2 ends a block that no line starts"),
+            "{}",
+            list.problems[0].words
+        );
+        let said = text(&list);
+        assert!(said.contains("(DB-108)") && !said.contains("a mistake in pg_hba.conf"), "{said}");
+    }
+
+    #[test]
+    fn a_server_that_does_not_run_says_nothing_of_the_firewall() {
+        let block = block_of("shop", &["10.0.0.0/8"]);
+        let mut fake = Fake::new().off().with_firewall_rules(&block);
+        let list = list_of(&mut fake);
+        assert_eq!(list.server.firewall, Firewall::default());
+    }
+
+    #[test]
+    fn a_database_has_the_copy_the_hook_made_of_it_or_none() {
+        let mut fake = Fake::new()
+            .with_database("shop", "shop")
+            .with_database("blog", "blog")
+            .with_copy("shop", 2048, START_MS - 3_600_000)
+            // A copy of a database that is gone is not any database's.
+            .with_copy("gone", 10, START_MS);
+        let list = list_of(&mut fake);
+        let copy = |name: &str| list.databases.iter().find(|one| one.name == name).unwrap().copy;
+        assert_eq!(copy("shop"), Some(Copy { at_ms: START_MS - 3_600_000, bytes: 2048 }));
+        assert_eq!(copy("blog"), None);
+        // The text of `list` says nothing of it.
+        assert!(!text(&list).contains("copy"), "{}", text(&list));
+    }
+
+    #[test]
+    fn the_server_says_whether_its_backup_hook_copies_the_databases() {
+        let says = |fake: Fake| {
+            let mut fake = fake;
+            list_of(&mut fake).server.copies
+        };
+        assert!(says(Fake::new().with_copying_hook()));
+        // The hook before the bundle copied, and none.
+        assert!(!says(Fake::new().with_checkpoint_hook()));
+        assert!(!says(Fake::new()));
+        // The override is read as Spark reads it: its list replaces the file's.
+        let fake = Fake::new().with_copying_hook();
+        let over = fake.files().over.clone();
+        std::fs::create_dir_all(over.parent().unwrap()).unwrap();
+        std::fs::write(&over, "[backup]\nbefore = []\n").unwrap();
+        assert!(!says(fake));
+        let fake = Fake::new().with_checkpoint_hook();
+        let over = fake.files().over.clone();
+        std::fs::create_dir_all(over.parent().unwrap()).unwrap();
+        std::fs::write(
+            &over,
+            "[backup]\nbefore = [\"/applications/org.postgresql.postgresql/bin/postgresql-backup\"]\n",
+        )
+        .unwrap();
+        assert!(says(fake));
+        // A server that does not run says it too, as far as the file says.
+        let mut off = Fake::new().off().with_copying_hook();
+        assert!(list(&mut off).unwrap().server.copies);
+        let mut none = Fake::new().not_installed().with_copying_hook();
+        assert!(!list(&mut none).unwrap().server.copies);
     }
 
     #[test]

@@ -10,20 +10,19 @@
 import { createHash } from 'node:crypto';
 
 export const NOW = Date.UTC(2026, 10, 16, 9, 30, 0);
-const SECONDS = Math.floor(NOW / 1000);
 
 /** `GET /api/1/reports/crashes`: two crashes kept, one of them reported already. */
 export const crashes = () => ({
   format: 1,
   crashes: [
     {
-      id: '20261113T100211-4012', kind: 'signal', program: 'php-fpm', version: '8.3.1', service: 'php', user: 0, at: SECONDS - 3600, what: 'SIGSEGV (address not mapped) in ngx_http_core_run_phases', signature: '3fa2c4d19e0b7a61', seen: 2, reported: null,
+      id: '20261113T100211-4012', kind: 'signal', program: 'php-fpm', version: '8.3.1', service: 'php', user: 0, at_ms: NOW - 3_600_000, what: 'SIGSEGV (address not mapped) in ngx_http_core_run_phases', signature: '3fa2c4d19e0b7a61', seen: 2, reported: null,
     },
     {
-      id: '20261110T081500-377', kind: 'signal', program: 'nginx', version: '1.29.0', service: 'web', user: 0, at: SECONDS - 5 * 86_400, what: 'SIGABRT', signature: '9a8b7c6d5e4f3a21', seen: 1, reported: 6,
+      id: '20261110T081500-377', kind: 'signal', program: 'nginx', version: '1.29.0', service: 'web', user: 0, at_ms: NOW - 5 * 86_400_000, what: 'SIGABRT', signature: '9a8b7c6d5e4f3a21', seen: 1, reported: 6,
     },
     {
-      id: '20261112T200000-99', kind: 'signal', program: 'valkey', version: null, service: null, user: 1000, at: SECONDS - 4 * 86_400, what: 'SIGSEGV', signature: '1111222233334444', seen: 1,
+      id: '20261112T200000-99', kind: 'signal', program: 'valkey', version: null, service: null, user: 1000, at_ms: NOW - 4 * 86_400_000, what: 'SIGSEGV', signature: '1111222233334444', seen: 1,
     },
   ],
 });

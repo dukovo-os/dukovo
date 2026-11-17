@@ -18,7 +18,8 @@ export function makeChannels(ctx) {
   const where = card('channels', 'Where alerts go');
   const add = h('button', { class: 'btn small', type: 'button' }, 'Add a webhook…');
   where.tools.append(add);
-  const results = h('ul', { class: 'al-test', role: 'status' });
+  // Said as it comes, and still a list: aria-live, since the role status would take the list's role away.
+  const results = h('ul', { class: 'al-test', 'aria-live': 'polite' });
   const warning = h('div', { class: 'banner warn', hidden: true });
   const list = h('ul', { class: 'al-list' });
   fill(where.body, results, warning, list);

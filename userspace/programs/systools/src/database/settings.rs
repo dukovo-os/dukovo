@@ -266,6 +266,31 @@ pub fn override_with(
     Ok(Some(new))
 }
 
+/// The program of the bundle's backup hook that copies each database, as
+/// the bundle names it.
+pub const COPYING_HOOK: &str = "postgresql-backup";
+
+/// Whether the service's backup hook, as its file says it with the
+/// override over it, is the one that copies each database: the bundle's
+/// `postgresql-backup`. A file or an override that does not read, or that
+/// has another hook, is not.
+#[must_use]
+pub fn copies(file: &str, over: Option<&str>) -> bool {
+    let parsed = match over {
+        Some(text) => match Override::from_toml(text) {
+            Ok(parsed) => Some(parsed),
+            Err(_) => return false,
+        },
+        None => None,
+    };
+    service::from_toml_over(file, parsed.as_ref()).is_ok_and(|read| {
+        read.backup
+            .before
+            .first()
+            .is_some_and(|program| program.rsplit('/').next() == Some(COPYING_HOOK))
+    })
+}
+
 /// What a new override starts with.
 const HEADER: &str = "\
 # Keys database(8) keeps for PostgreSQL's service (ADR 0569). Your own keys
@@ -530,5 +555,35 @@ mod tests {
                 .starts_with("its override")
         );
         assert!(override_with(SERVICE, Some("certificates = 5\n"), "a").is_err());
+    }
+
+    #[test]
+    fn the_hook_that_copies_is_the_one_the_service_file_and_its_override_say() {
+        let copying = format!(
+            "{SERVICE}[backup]\n\
+             before = [\"/applications/org.postgresql.postgresql/bin/postgresql-backup\"]\n\
+             time_limit = 3600\n"
+        );
+        assert!(copies(&copying, None));
+        let checkpoint = format!(
+            "{SERVICE}[backup]\n\
+             before = [\"/applications/org.postgresql.postgresql/bin/psql\", \"-X\", \"-q\", \
+             \"-c\", \"CHECKPOINT\"]\n"
+        );
+        assert!(!copies(&checkpoint, None));
+        assert!(!copies(SERVICE, None));
+        // The override's list replaces the file's.
+        assert!(!copies(&copying, Some("[backup]\nbefore = []\n")));
+        assert!(copies(
+            &checkpoint,
+            Some(
+                "[backup]\nbefore = [\"/applications/org.postgresql.postgresql/bin/postgresql-backup\"]\n"
+            )
+        ));
+        // A program of another name is not it, and nothing that does not read is.
+        let other = copying.replace("postgresql-backup", "postgresql-backup2");
+        assert!(!copies(&other, None));
+        assert!(!copies("not = toml = at all", None));
+        assert!(!copies(&copying, Some("before = ")));
     }
 }

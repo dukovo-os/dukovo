@@ -11,7 +11,7 @@ import test from 'node:test';
 
 import { certificate, own } from './certificates-fixtures.mjs';
 import {
-  checkBroken, checkOk, failedTask, list, off, phpOff, problem, site,
+  checkBroken, checkNoLogs, checkOk, failedTask, list, off, phpOff, problem, site, visits, wantedFor,
 } from './websites-fixtures.mjs';
 import {
   buttonOf, dialogsOf, fieldOf, linkOf, openWebsites, refusal, settle, text, tick, type,
@@ -51,7 +51,7 @@ test('the page names the site by its first name, with Apps and Websites above it
   assert.equal(head.commands, true);
   assert.deepEqual(head.pill, { words: 'Answers', kind: 'ok' });
   assert.deepEqual(head.buttons.map((one) => text(one)), ['Check the sites']);
-  assert.deepEqual(world.calls, ['/api/1/websites', '/api/1/certificates']);
+  assert.deepEqual(world.calls, ['/api/1/websites', '/api/1/certificates', '/api/1/certificates/wanted/all']);
 });
 
 test('the rows are its names as links, what it serves, its HTTPS, its database and its file', async (context) => {
@@ -210,6 +210,53 @@ test('a certificate that is not got leaves the site as it was, with no Try again
   assert.ok(buttonOf(row(world, 'https'), 'Get a certificate'), 'the page still has the way to try again');
 });
 
+test('while certd tries to get the certificate the row says so in place of Get a certificate, for an administrator and a reader', async (context) => {
+  const reads = { '/api/1/certificates/wanted/all': wantedFor('blog.example.org') };
+  const world = await open(context, 'blog.example.org', { world: { reads } });
+  assert.equal(buttonOf(row(world, 'https'), 'Get a certificate'), undefined);
+  assert.match(text(row(world, 'https')), /HTTP onlyGetting a certificate: certd tries again every hour$/);
+  assert.equal(row(world, 'https').querySelector('[data-row="getting"]').textContent, 'Getting a certificate: certd tries again every hour');
+  const reader = await open(context, 'blog.example.org', { session: { admin: false }, world: { reads } });
+  assert.match(text(row(reader, 'https')), /Getting a certificate: certd tries again every hour/);
+  assert.equal(row(reader, 'https').querySelectorAll('button').length, 0);
+});
+
+test('a record certd has given up, or one of another name, leaves the button where it was', async (context) => {
+  for (const wanted of [wantedFor('blog.example.org', true), wantedFor('other.example.org')]) {
+    const world = await open(context, 'blog.example.org', { world: { reads: { '/api/1/certificates/wanted/all': wanted } } });
+    assert.ok(buttonOf(row(world, 'https'), 'Get a certificate'));
+    assert.doesNotMatch(text(row(world, 'https')), /Getting a certificate/);
+  }
+});
+
+test('a site that has HTTPS does not say a certificate is being got, and the others\' buttons stay', async (context) => {
+  const world = await open(context, 'shop.example.org', { world: { reads: { '/api/1/certificates/wanted/all': wantedFor('shop.example.org') } } });
+  assert.doesNotMatch(text(row(world, 'https')), /Getting a certificate/);
+  assert.ok(buttonOf(row(world, 'https'), 'Turn HTTPS off…'));
+  const hand = list({ websites: [site('duke-nas.local')] });
+  const own = await open(context, 'duke-nas.local', { world: { list: hand, reads: { '/api/1/certificates/wanted/all': wantedFor('duke-nas.local') } } });
+  assert.ok(buttonOf(row(own, 'https'), 'Use this machine\'s certificate'), 'the machine\'s own certificate is still the other way');
+});
+
+test('records that cannot be read leave the row as it was, and no problem is shown for them', async (context) => {
+  const world = await open(context, 'blog.example.org', { world: { reads: { '/api/1/certificates/wanted/all': refusal('ADM-123', 'no', 422) } } });
+  assert.ok(buttonOf(row(world, 'https'), 'Get a certificate'));
+  assert.equal(world.problems.length, 0);
+});
+
+test('a certificate that certd keeps trying for after the step failed is the row the page reads again', async (context) => {
+  const reads = {
+    '/api/1/tasks/12': failedTask(12, 'cert: the authority could not reach blog.example.org (CRT-102)'),
+    '/api/1/certificates/wanted/all': () => (world.ranOf('certificate.get').length > 0 ? wantedFor('blog.example.org') : { format: 1, wanted: [] }),
+  };
+  const world = await open(context, 'blog.example.org', { world: { runs: { 'certificate.get': starts(12) }, reads } });
+  await world.press(buttonOf(row(world, 'https'), 'Get a certificate'));
+  tick(fieldOf(world.dialog(), 'I agree to'), true);
+  await world.submit();
+  assert.equal(buttonOf(row(world, 'https'), 'Get a certificate'), undefined, 'certd has the order now');
+  assert.match(text(row(world, 'https')), /Getting a certificate: certd tries again every hour/);
+});
+
 test('the command of the certificate shows in the dialog while commands are shown', async (context) => {
   const world = await open(context, 'blog.example.org', { prefs: { commands: 'shown' } });
   await world.press(buttonOf(row(world, 'https'), 'Get a certificate'));
@@ -335,4 +382,68 @@ test('cancelling a question changes nothing', async (context) => {
   assert.equal(world.ran.length, 0);
   assert.equal(dialogsOf(world.document).length, 0);
   await settle();
+});
+
+// ---- its visits ----
+
+const card = (world) => world.view.main.querySelector('section[data-card="visits"]');
+
+test('a site that has been counted has the chart of its 30 days, with where the numbers come from', async (context) => {
+  const world = await open(context, 'shop.example.org');
+  await settle();
+  const visited = card(world);
+  assert.equal(text(visited.querySelector('h2')), 'Visits');
+  const chart = visited.querySelector('.usage-chart[data-chart="visits"]');
+  assert.ok(chart, 'the chart is drawn once its module is read');
+  assert.match(text(chart.querySelector('.stat')), /^1,243Visits and errors on the last day counted · peak 1,\d{3} visits at /);
+  assert.deepEqual(chart.querySelectorAll('.legend li').map((one) => text(one)), ['Visits', 'Errors (dashed)']);
+  assert.match(chart.querySelector('svg').getAttribute('aria-label'), /^Visits and errors over the last 30 days: visits: average /);
+  assert.equal(chart.querySelectorAll('polyline.line').length, 2);
+  assert.equal(chart.querySelectorAll('polyline.line.second').length, 1, 'the errors are the dashed line');
+  assert.match(text(visited), /Counted once a day from nginx's log; the log holds no addresses\./);
+  assert.doesNotMatch(text(visited), /Not counted yet/);
+  assert.doesNotMatch(text(visited), /limits went/);
+});
+
+test('the numbers of the chart are a table of days, newest first, in UTC', async (context) => {
+  const world = await open(context, 'shop.example.org');
+  await settle();
+  const chart = card(world).querySelector('.usage-chart');
+  const toggle = buttonOf(chart, 'Show the numbers');
+  assert.ok(toggle);
+  await world.press(toggle);
+  const rows = chart.querySelectorAll('tbody tr').map((one) => [...one.querySelectorAll('th'), ...one.querySelectorAll('td')].map((cell) => text(cell)));
+  assert.equal(rows.length, 30);
+  assert.deepEqual(rows[0], ['Nov 13', '1,240', '3']);
+  assert.deepEqual(chart.querySelectorAll('thead th').map((one) => text(one)), ['Day (UTC)', 'Visits', 'Errors']);
+});
+
+test('a site that is not counted yet says so, and loads no chart', async (context) => {
+  const world = await open(context, 'blog.example.org');
+  await settle();
+  assert.match(text(card(world)), /Not counted yet: visits are counted once a day\./);
+  assert.equal(card(world).querySelector('.usage-chart'), null);
+  assert.doesNotMatch(text(card(world)), /Counted once a day from nginx's log/);
+});
+
+test('days counted only as far as the limits went say their numbers are at least what is shown', async (context) => {
+  const counted = list({ websites: [site('shop.example.org', { visits: visits({ complete: false }) })] });
+  const world = await open(context, 'shop.example.org', { world: { list: counted } });
+  await settle();
+  assert.match(text(card(world)), /Some days were counted only as far as the limits went, so their numbers are at least what is shown\./);
+});
+
+test('a reader has the chart too, and the card is drawn again with the page', async (context) => {
+  const world = await open(context, 'shop.example.org', { session: { admin: false } });
+  await settle();
+  assert.ok(card(world).querySelector('.usage-chart'));
+  await world.press(world.view.main.querySelector('[data-inline]') ?? card(world));
+  assert.equal(card(world).querySelectorAll('.usage-chart').length, 1, 'one chart, not one for each time the page is drawn');
+});
+
+test('Check the sites finds settings that lack the log format, and says it on the site\'s page too', async (context) => {
+  const world = await open(context, 'shop.example.org', { world: { runs: { 'websites.check': { ok: true, result: checkNoLogs() } } } });
+  await world.press(world.view.headed.buttons[0]);
+  assert.match(text(world.view.main.querySelector('.web-check')), /do not define the log format of the sites' own logs/);
+  assert.equal(world.view.main.querySelectorAll('section[data-card="visits"] .usage-chart').length, 1, 'the chart is drawn again, once');
 });

@@ -37,6 +37,9 @@ async function cutLine(app, text) {
   await settle();
 }
 
+/** The box that makes the report a security problem. */
+const securityBox = (app) => app.main.querySelectorAll('input').find((one) => one.getAttribute('type') === 'checkbox' && one.closest('label').textContent.includes('security problem'));
+
 /** The page after the php-fpm crash was chosen and drafted. */
 const drafted = async (context, options) => {
   const app = await openReport(context, options);
@@ -167,13 +170,13 @@ test('a failed start is drafted for an administrator with only its own line', as
   assert.equal(app.drafts()[0].happened, 'The update to 1.0.0-alpha.2 was taken back at 3:30 AM.');
 });
 
-test('the security box asks for a security report, turns Save to a file and Download by QR code off and says why, and Send stays on', async (context) => {
+test('the security box keeps the draft, turns Save to a file and Download by QR code off and says why, and Send stays on', async (context) => {
   const app = await drafted(context);
-  const box = app.main.querySelectorAll('input').find((one) => one.getAttribute('type') === 'checkbox' && one.closest('label').textContent.includes('security problem'));
+  const box = securityBox(app);
   box.checked = true;
   box.fire('change');
   await settle();
-  assert.equal(app.drafts().at(-1).security, true);
+  assert.equal(app.drafts().length, 1, 'the text is the same for the security team');
   assert.equal(app.button('Send').disabled, false);
   assert.equal(app.button('Save to a file…').disabled, true);
   assert.equal(app.button('Download by QR code…').disabled, true);
@@ -183,6 +186,7 @@ test('the security box asks for a security report, turns Save to a file and Down
   await settle();
   assert.equal(app.button('Save to a file…').disabled, false);
   assert.equal(app.main.querySelector('#report-why').textContent, '');
+  assert.equal(app.drafts().length, 1);
 });
 
 test('Leave out the logs is offered when the report has a log, and drafts again without it', async (context) => {
@@ -357,16 +361,17 @@ test('choosing another thing after cuts asks the same question, and keeping the 
   assert.equal(app.drafts().at(-1).crash, '20261112T200000-99');
 });
 
-test('the security box after cuts asks first, and keeping the cuts puts the box back', async (context) => {
+test('the security box after cuts keeps them, and asks nothing', async (context) => {
   const app = await drafted(context);
   await cutLine(app, 'php: signal 11');
-  const box = app.main.querySelectorAll('input').find((one) => one.getAttribute('type') === 'checkbox' && one.closest('label').textContent.includes('security problem'));
+  const shown = app.shown();
+  const box = securityBox(app);
   box.checked = true;
   box.fire('change');
   await settle();
-  assert.ok(app.dialog());
-  await app.press(app.button('Keep my cuts', app.dialog()));
-  assert.equal(box.checked, false);
+  assert.equal(app.dialog(), null);
+  assert.equal(box.checked, true);
+  assert.equal(app.shown(), shown);
   assert.equal(app.drafts().length, 1);
 });
 
@@ -458,6 +463,22 @@ test('Send gives reportd the draft and the hash of the text read, with the title
   assert.equal(app.main.querySelector('.rp-status').textContent, 'Sent as report 8.');
   assert.equal(app.main.querySelector('.radio-card.on'), null, 'the page starts over');
   assert.equal(app.main.querySelector('.rp-lead').textContent, 'Choose what went wrong to see the report.');
+});
+
+test('Send with the security box sends the report to the security team, and without it does not say so', async (context) => {
+  const app = await drafted(context);
+  const box = securityBox(app);
+  box.checked = true;
+  box.fire('change');
+  await settle();
+  await app.press(app.button('Send'));
+  assert.equal(app.ran('reports.send')[0].security, true);
+  assert.equal(securityBox(app).checked, false, 'the page starts over');
+  await app.choose('hardware');
+  await app.write('happened', 'The screen goes black');
+  await app.press(app.button('Send'));
+  assert.equal(app.ran('reports.send').length, 2);
+  assert.equal(app.ran('reports.send')[1].security, undefined);
 });
 
 test('the title of a report of a question is the first line of what happened, in at most 80 characters', async (context) => {

@@ -5,10 +5,10 @@
 // answers to and the rule they follow (`cert`'s), the two kinds of site, the
 // certificates a site may have, the arguments of the plan and of each step of
 // adding one, the rows of what that does, what stands when a step fails, and
-// a site's HTTPS, state and hand edit in words. Nothing here touches the
+// a site's HTTPS, state, hand edit, size and visits in words. Nothing here touches the
 // page. The addresses and the sites a certificate has are website-route.js's.
 
-import { counted } from './size-words.js';
+import { bytesWords, counted } from './size-words.js';
 
 /** The most names one website answers to. */
 export const NAMES_MOST = 20;
@@ -41,6 +41,8 @@ export const KINDS = Object.freeze([
 /** The line that lets nginx read the sites' files, and what hides their folders from the default server: what nginx's settings need. */
 export const INCLUDE_LINE = 'include /system/settings/websites/*.conf;';
 export const HIDE_LINES = Object.freeze(['location ^~ /sites/ {', '    return 404;', '}']);
+/** The line of nginx's settings that defines the log format the sites' logs, and so their visits, are counted from. */
+export const LOG_FORMAT_LINE = 'log_format site \'$msec $status $body_bytes_sent\';';
 
 /** "a", "a and b", "a, b and c". */
 export const listed = (items) => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`);
@@ -284,7 +286,7 @@ const WORDS = Object.freeze({
 export const STANDS = Object.freeze({
   install: () => 'Nothing about the website was changed.',
   add: () => 'Nothing was changed: the command took its changes back.',
-  get: (site) => `${site} is live over HTTP. The certificate was not got: the site's page has Get the certificate to try again.`,
+  get: (site) => `${site} is live over HTTP. The certificate was not got: the site's page says whether certd tries again, and has Get a certificate when it does not.`,
   https: (site, certificate) => `${site} is live over HTTP, and certd keeps the certificate ${certificate}. Try again turns HTTPS on.`,
 });
 
@@ -525,6 +527,37 @@ export function httpsOf(site, list, date) {
   return { ...base, words: `Let's Encrypt · ${base.renews ? `renews ${base.renews}` : `ends ${base.ends}`}` };
 }
 
+// ---- Size, visits and the certificate being got ----
+
+/** What the list writes where a site has not been measured or counted yet. */
+const NONE = '–';
+
+/** The Size column: "12 MB", "at least 3.4 GB" when the measure stopped short, and a dash before the first one. */
+export function sizeWords(size) {
+  if (!Number.isFinite(size?.bytes)) return NONE;
+  return `${size.complete === false ? 'at least ' : ''}${bytesWords(size.bytes)}`;
+}
+
+/** The Visits yesterday column: the count as a number is read, "1,240", and a dash before the first day is counted. */
+export const visitsWords = (visits) => (Number.isFinite(visits?.yesterday) ? visits.yesterday.toLocaleString('en-US') : NONE);
+
+/** What the chart of a site's visits is counted from. */
+export const COUNTED_WORDS = 'Counted once a day from nginx\'s log; the log holds no addresses.';
+
+/** What a site's page says in place of the chart before its first day is counted. */
+export const NOT_COUNTED_WORDS = 'Not counted yet: visits are counted once a day.';
+
+/** What the HTTPS row says while certd tries to get the site's certificate, in place of the button that gets it. */
+export const GETTING_WORDS = 'Getting a certificate: certd tries again every hour';
+
+/** The names of the certificates certd still tries to get, from `certificate.wanted`'s answer: a record it has given up is not one. */
+export const wantedNames = (answer) => (Array.isArray(answer?.wanted) ? answer.wanted : [])
+  .filter((one) => typeof one?.name === 'string' && one.given_up !== true).map((one) => one.name);
+
+/** Whether certd tries to get the certificate that `site` would be given, so that its page says so and does not offer to get it. `wanted` is `wantedNames`. */
+export const gettingOne = (site, wanted) => !site.https && Array.isArray(wanted)
+  && wanted.includes(certificateNameOf(site.names?.length > 0 ? site.names : [site.name]) ?? '');
+
 /** The line of a site's file: `{words, tone, by}` for a file changed by hand, made by hand, or as it was written. */
 export function handEditWords(site) {
   if (site.added_by_hand) return { tone: 'warn', by: 'added', words: 'Added by hand · website does not write it, and keeps it as you wrote it' };
@@ -580,6 +613,11 @@ export function confRows(check) {
   if (conf.hides_sites === false) {
     rows.push({
       key: 'hides', tone: 'warn', id: 'WEB-102', words: 'The default server does not hide /sites/, so a site\'s folder is served there too. Add this inside the default server, before location /:', lines: [...HIDE_LINES],
+    });
+  }
+  if (conf.logs_sites === false) {
+    rows.push({
+      key: 'logs', tone: 'warn', id: 'WEB-102', words: `nginx's settings (${conf.path ?? 'nginx.conf'}) do not define the log format of the sites' own logs, so their visits are not counted. Add this line in its http block, before the servers:`, lines: [LOG_FORMAT_LINE],
     });
   }
   return rows;

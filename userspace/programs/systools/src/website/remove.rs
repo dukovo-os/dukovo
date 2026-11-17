@@ -3,8 +3,8 @@
 
 //! `website remove` (ADR 0569): the site's file goes, nginx reads its
 //! settings again, nginx's service file gives back the certificate and
-//! the sockets for 443 that nothing else needs, and, when asked, the
-//! site's folder goes too.
+//! the sockets for 443 that nothing else needs, the files of the site's log
+//! of requests go, and, when asked, the site's folder goes too.
 //!
 //! The new set without the site is checked by nginx first, so that a
 //! hand edit of another site that nginx refuses is told before anything is
@@ -12,6 +12,7 @@
 //! since nothing can bring it back.
 
 use super::change::{Ctx, Done, Order, Refusal, apply, intent, load, rollback};
+use super::count;
 use super::folder;
 use super::stage::Lock;
 
@@ -40,6 +41,11 @@ pub fn remove(ctx: &Ctx<'_>, name: &str, files: bool) -> Result<Vec<String>, Ref
         }
     };
     let mut lines = vec![format!("Removed {name}")];
+    // What nginx wrote of its requests is of no use without the site, and
+    // is no reason to fail what is done.
+    if let Err(why) = count::remove_logs(ctx.paths, name) {
+        lines.push(format!("Its log of requests was not removed: {why}"));
+    }
     let mut kept = "its folder was not named";
     if let Some(site_folder) = &removed.folder {
         if files {

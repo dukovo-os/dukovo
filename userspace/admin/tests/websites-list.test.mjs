@@ -8,11 +8,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  checkBroken, checkOk, empty, list, missing, off, phpOff, problem,
+  checkBroken, checkNoLogs, checkOk, empty, list, missing, off, phpOff, problem, visits,
 } from './websites-fixtures.mjs';
 import {
   buttonOf, linkOf, openWebsites, refusal, text,
 } from './websites-view.mjs';
+
+/** The cell of `row` under the column `label`. */
+const cellOf = (row, label) => row.querySelectorAll('td').find((cell) => cell.getAttribute('data-label') === label);
 
 test('the list reads the sites and the certificates, and the head names Apps and has Add a website for an administrator', async (context) => {
   const world = await openWebsites(context);
@@ -35,12 +38,32 @@ test('each site is a row with its first name linked, the others under it, what i
   assert.deepEqual([cells[0].startsWith('shop.example.org'), cells[0].endsWith('www.shop.example.org')], [true, true]);
   assert.equal(shop.querySelector('small').textContent, 'www.shop.example.org');
   assert.equal(cells[1], 'PHP pages/shared/www/sites/shop.example.org');
-  assert.equal(cells[2], 'Let\'s Encrypt · renews Dec 30');
-  assert.equal(cells[3], 'Answers');
-  assert.equal(text(rows[1].querySelectorAll('td')[2]), 'HTTP only');
-  assert.equal(rows[1].querySelectorAll('td')[2].classes.has('web-tone-warn'), true, 'HTTP only is in the warning colour');
-  assert.equal(text(rows[2].querySelectorAll('td')[2]), 'This machine\'s certificate');
+  assert.equal(text(cellOf(shop, 'HTTPS')), 'Let\'s Encrypt · renews Dec 30');
+  assert.equal(text(cellOf(shop, 'State')), 'Answers');
+  assert.equal(text(cellOf(rows[1], 'HTTPS')), 'HTTP only');
+  assert.equal(cellOf(rows[1], 'HTTPS').classes.has('web-tone-warn'), true, 'HTTP only is in the warning colour');
+  assert.equal(text(cellOf(rows[2], 'HTTPS')), 'This machine\'s certificate');
   assert.equal(text(rows[3].querySelectorAll('td')[1]), 'Set up by hand');
+});
+
+test('Size and Visits yesterday say what was measured and counted, "at least" for a measure that stopped short, and a dash for a site that is not', async (context) => {
+  const world = await openWebsites(context);
+  const rows = world.view.main.querySelectorAll('tbody tr');
+  assert.deepEqual(world.view.main.querySelectorAll('thead th').map((cell) => text(cell)), ['Site', 'Serves', 'Size', 'Visits yesterday', 'HTTPS', 'State']);
+  assert.equal(text(cellOf(rows[0], 'Size')), '12 MB');
+  assert.equal(text(cellOf(rows[0], 'Visits yesterday')), '1,240');
+  assert.equal(text(cellOf(rows[1], 'Size')), 'at least 3.4 GB');
+  assert.equal(text(cellOf(rows[1], 'Visits yesterday')), '–', 'a site that is not counted has a dash');
+  assert.equal(text(cellOf(rows[2], 'Size')), '–');
+  assert.equal(text(cellOf(rows[3], 'Visits yesterday')), '–');
+  for (const column of ['Size', 'Visits yesterday']) assert.equal(cellOf(rows[0], column).classes.has('num'), true, `${column} is a number`);
+});
+
+test('a site that was counted with no visit yesterday says 0, not a dash', async (context) => {
+  const base = list();
+  base.websites[0].visits = visits({ yesterday: 0 });
+  const world = await openWebsites(context, { world: { list: base } });
+  assert.equal(text(cellOf(world.view.main.querySelector('tr[data-name="shop.example.org"]'), 'Visits yesterday')), '0');
 });
 
 test('a site changed by hand wears a pill that says it is kept as it was written', async (context) => {
@@ -53,14 +76,14 @@ test('a site changed by hand wears a pill that says it is kept as it was written
 
 test('a site with a problem anyone can see says it in its State column', async (context) => {
   const world = await openWebsites(context, { world: { list: problem() } });
-  const state = world.view.main.querySelector('tbody tr').querySelectorAll('td')[3];
+  const state = cellOf(world.view.main.querySelector('tbody tr'), 'State');
   assert.equal(text(state), 'Its folder /shared/www/sites/shop.example.org is not there');
   assert.equal(state.querySelector('.st').classes.has('warn'), true);
 });
 
 test('with the certificates unreadable the list still says which certificate each site has', async (context) => {
   const world = await openWebsites(context, { world: { reads: { '/api/1/certificates': refusal('ADM-123', 'no', 422) } } });
-  assert.equal(text(world.view.main.querySelector('tr[data-name="shop.example.org"]').querySelectorAll('td')[2]), 'Certificate shop.example.org');
+  assert.equal(text(cellOf(world.view.main.querySelector('tr[data-name="shop.example.org"]'), 'HTTPS')), 'Certificate shop.example.org');
   assert.equal(world.problems.length, 0, 'nothing is shown of what the page does not need');
 });
 
@@ -78,7 +101,7 @@ test('nginx that does not run is a line above the list with Turn it on, and the 
 test('PHP-FPM that does not run is a line when a PHP site is there', async (context) => {
   const world = await openWebsites(context, { world: { list: phpOff() } });
   assert.match(text(world.view.main.querySelector('[data-line="php-fpm"]')), /^PHP-FPM is off: its PHP pages fail\./);
-  assert.match(text(world.view.main.querySelector('tr[data-name="shop.example.org"]').querySelectorAll('td')[3]), /PHP-FPM is off/);
+  assert.match(text(cellOf(world.view.main.querySelector('tr[data-name="shop.example.org"]'), 'State')), /PHP-FPM is off/);
   await world.press(buttonOf(world.view.main.querySelector('[data-line="php-fpm"]'), 'Turn it on'));
   assert.deepEqual(world.ranOf('service.enable').map(([args]) => args), [{ name: 'php-fpm' }]);
 });
@@ -87,7 +110,7 @@ test('nginx that is not installed says so on every site and offers no button for
   const world = await openWebsites(context, { world: { list: { ...missing(), websites: list().websites } } });
   assert.match(text(world.view.main.querySelector('[data-line="nginx"]')), /^nginx is not installed: no site answers\./);
   assert.equal(buttonOf(world.view.main.querySelector('[data-line="nginx"]'), 'Turn it on'), undefined);
-  assert.equal(text(world.view.main.querySelector('tbody tr').querySelectorAll('td')[3]), 'nginx is not installed');
+  assert.equal(text(cellOf(world.view.main.querySelector('tbody tr'), 'State')), 'nginx is not installed');
 });
 
 test('no site yet says so, with Add a website for an administrator', async (context) => {
@@ -133,9 +156,30 @@ test('Check the sites asks nginx as an administrator and shows its line and the 
   assert.match(shown, /include \/system\/settings\/websites\/\*\.conf;/);
   assert.match(shown, /location \^~ \/sites\/ \{/);
   assert.match(shown, /What WEB-102 means/);
-  const blog = world.view.main.querySelector('tr[data-name="blog.example.org"]').querySelectorAll('td')[3];
+  assert.match(shown, /do not define the log format of the sites' own logs/);
+  assert.match(shown, /log_format site '\$msec \$status \$body_bytes_sent';/);
+  const blog = cellOf(world.view.main.querySelector('tr[data-name="blog.example.org"]'), 'State');
   assert.match(text(blog), /nginx refuses its file: unknown directive "listn"WEB-103$/);
   assert.equal(blog.querySelector('.st').classes.has('bad'), true);
+});
+
+test('settings that lack only the log format of the sites say so, with the line to add in a box that copies it', async (context) => {
+  const world = await openWebsites(context, { world: { runs: { 'websites.check': { ok: true, result: checkNoLogs() } } } });
+  await world.press(world.view.headed.buttons[1]);
+  const rows = world.view.main.querySelectorAll('.web-check .banner');
+  assert.equal(rows.length, 2, 'the passed check and the one row');
+  const row = rows[1];
+  assert.match(text(row), /nginx's settings \(\/shared\/services\/org\.nginx\.nginx\/nginx\/conf\/nginx\.conf\) do not define the log format of the sites' own logs, so their visits are not counted\. Add this line in its http block, before the servers:/);
+  assert.equal(row.querySelectorAll('pre').length, 1);
+  assert.equal(text(row.querySelector('pre')), 'log_format site \'$msec $status $body_bytes_sent\';');
+  assert.match(text(row), /What WEB-102 means/);
+  assert.doesNotMatch(text(world.view.main), /do not include the websites' folder|does not hide \/sites\//);
+});
+
+test('settings that have all three lines say nothing about them', async (context) => {
+  const world = await openWebsites(context, { world: { runs: { 'websites.check': { ok: true, result: checkOk() } } } });
+  await world.press(world.view.headed.buttons[1]);
+  assert.equal(world.view.main.querySelectorAll('.web-check .banner').length, 1);
 });
 
 test('a check that passes says so, and a refusal of the check goes where the page puts problems', async (context) => {

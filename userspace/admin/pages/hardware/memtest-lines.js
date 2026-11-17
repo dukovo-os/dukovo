@@ -20,7 +20,8 @@ const dayAndClock = (ms, time, now) => `${dayWords(ms, time.zone, now * 1000)}, 
 /** "The memory is tested at the next restart (asked Nov 16, 3:10 PM by admin)", from the `asked` of the answer. */
 export function askedWords(asked, time, now) {
   const when = Number.isFinite(asked?.at_ms) ? dayAndClock(asked.at_ms, time, now) : '';
-  const by = typeof asked?.by === 'string' && asked.by !== '' ? `by ${asked.by}` : '';
+  const name = asked?.by_name;
+  const by = typeof name === 'string' && name !== '' ? `by ${name}` : '';
   const said = [when, by].filter(Boolean).join(' ');
   return `The memory is tested at the next restart${said ? ` (asked ${said})` : ''}`;
 }

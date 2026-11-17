@@ -34,8 +34,7 @@
   .upd > p, .upd > .banner, .upd-wide { grid-column: 1 / -1; }
 }
 @container (max-width: 51.4rem) {
-  .upd .btn { min-height: 3.143rem; }
-  .upd .radio-card { min-height: 3.143rem; }
+  .upd .btn, .upd .radio-card, .upd .input, .upd .select { min-height: 3.143rem; box-sizing: border-box; }
   .upd .cards-row { flex-direction: column; }
   .upd-row > .btn, .upd-row > .btns { flex: 1 1 100%; }
   .upd-row > .btns > *, .upd .menu-box > .btn { flex: 1 1 auto; }

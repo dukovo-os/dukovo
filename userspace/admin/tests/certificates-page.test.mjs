@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import test, { afterEach, beforeEach } from 'node:test';
 
 import {
-  byDns, certificate, closed, dnsLog, history, list, machineWithDomain, oneMissing, own, report, SHOWN_FINGERPRINT, signIn, task,
+  byDns, certificate, closed, dnsLog, history, list, machine, machineWithDomain, oneMissing, own, report, SHOWN_FINGERPRINT, signIn, task, wanted,
 } from './certificates-fixtures.mjs';
 import {
   holdings, openCertificates, refusal, settle, text,
@@ -172,6 +172,24 @@ test('reads that fail say so in the card, and the others are still drawn', async
   assert.match(text(page.card('name')), /The machine's name could not be read\./);
   assert.ok(page.card('get'));
   assert.equal(page.problems.length, 3);
+});
+
+test('the machine\'s name is read again while it could not be, as when the session ran too many commands at once', async (context) => {
+  let refused = false;
+  const busy = () => {
+    if (refused) return machine();
+    refused = true;
+    throw refusal('ADM-105', 'too many commands at once for this session', 429);
+  };
+  // The console serves another certificate, so this server's own row offers a way back.
+  const reads = { '/api/1/machine/name': busy, '/api/1/security/sign-in': () => signIn('shop.example.org') };
+  const page = await openCertificates(context, { world: { reads } });
+  assert.match(text(page.card('name')), /The machine's name could not be read\./);
+  assert.doesNotMatch(text(page.row('this-machine')), /Open the console at/);
+  await page.tick(60_000);
+  assert.doesNotMatch(text(page.card('name')), /could not be read/);
+  assert.match(text(page.card('name')), /duke-nas/);
+  assert.match(text(page.row('this-machine')), /Open the console at https:\/\/duke-nas:9090\/ and choose it there/);
 });
 
 test('the list is read again every minute and when the server comes back', async (context) => {
@@ -422,6 +440,78 @@ test('an order that runs when the page opens is followed', async (context) => {
   assert.match(text(form(page).querySelector('.certs-progress')), /Getting the certificate: Step 3 of 5: the authority checks port 80/);
 });
 
+// ---- Certificates that could not be got -------------------------------------------------------------------------
+
+test('a certificate that could not be got is a row of its own, with when certd asks again and why the last try failed', async (context) => {
+  const page = await openCertificates(context, { world: { reads: { '/api/1/certificates/wanted/all': wanted() } } });
+  assert.ok(page.calls.includes('/api/1/certificates/wanted/all'));
+  const row = page.wantedRow('blog.example.org');
+  assert.match(text(row), /blog\.example\.org.*and 2 more/);
+  assert.match(text(row), /Trying again: next at 4:05 PM, 3 tries, last: Let's Encrypt could not reach port 80 CRT-106/);
+  assert.deepEqual(buttons(row), ['Forget']);
+  const old = page.wantedRow('old.example.org');
+  assert.match(text(old), /Given up: No address for old\.example\.org\. Get it again to start afresh\. CRT-104/);
+  assert.match(old.querySelectorAll('td')[1].getAttribute('class'), /certs-tone-bad/);
+  assert.equal(page.view.main.querySelectorAll('tbody tr[data-name]').length, 5, 'the certificates are the rows they were');
+});
+
+test('with nothing to try again the list has no such row, and no words about it', async (context) => {
+  const page = await openCertificates(context);
+  assert.equal(page.view.main.querySelectorAll('tr[data-wanted]').length, 0);
+  assert.doesNotMatch(text(page.card('certificates')), /could not be read/);
+});
+
+test('a reader sees the row without Forget', async (context) => {
+  const page = await openCertificates(context, { session: { admin: false }, world: { reads: { '/api/1/certificates/wanted/all': wanted() } } });
+  const row = page.wantedRow('blog.example.org');
+  assert.match(text(row), /Trying again/);
+  assert.deepEqual(buttons(row), []);
+  assert.deepEqual(buttons(page.wantedRow('old.example.org')), []);
+});
+
+test('Forget asks first, says what it stops, and forgets the record by its name', async (context) => {
+  const page = await openCertificates(context, { world: { reads: { '/api/1/certificates/wanted/all': wanted() } } });
+  await page.press(page.wantedRow('blog.example.org'), 'Forget');
+  const dialog = page.dialog();
+  assert.equal(dialog.querySelector('h2').textContent, 'Forget blog.example.org');
+  assert.match(text(dialog), /Stop trying to get blog\.example\.org\? certd will not ask the authority for it again, and its alert goes away\./);
+  assert.deepEqual(page.ran('certificate.forget'), [], 'nothing runs before the person agrees');
+  assert.deepEqual(page.shown(), ['certificate.forget', { name: 'blog.example.org' }]);
+  await page.submit();
+  assert.deepEqual(page.ran('certificate.forget'), [{ name: 'blog.example.org' }]);
+  assert.equal(page.dialog(), null);
+});
+
+test('after Forget the records are read again, and the row is gone', async (context) => {
+  const page = await openCertificates(context, { world: { reads: { '/api/1/certificates/wanted/all': wanted() } } });
+  const before = page.calls.filter((path) => path === '/api/1/certificates/wanted/all').length;
+  page.reads['/api/1/certificates/wanted/all'] = { format: 1, wanted: [wanted().wanted[1]] };
+  await page.press(page.wantedRow('blog.example.org'), 'Forget');
+  await page.submit();
+  assert.equal(page.calls.filter((path) => path === '/api/1/certificates/wanted/all').length, before + 1);
+  assert.equal(page.wantedRow('blog.example.org'), null);
+  assert.ok(page.wantedRow('old.example.org'));
+});
+
+test('a refused Forget leaves the dialog open with the reason, and the row where it was', async (context) => {
+  const refused = refusal('ADM-123', 'certd has no record of blog.example.org', 404);
+  const page = await openCertificates(context, { world: { reads: { '/api/1/certificates/wanted/all': wanted() }, answers: { 'certificate.forget': refused } } });
+  await page.press(page.wantedRow('blog.example.org'), 'Forget');
+  await page.submit();
+  assert.ok(page.dialog(), 'the dialog stays');
+  assert.match(text(page.dialog()), /ADM-123/);
+  assert.ok(page.wantedRow('blog.example.org'));
+});
+
+test('records that cannot be read leave the certificates as they were, and the list says so', async (context) => {
+  const down = refusal('ADM-135', 'admind could not answer', 500);
+  const page = await openCertificates(context, { world: { reads: { '/api/1/certificates/wanted/all': down } } });
+  assert.equal(page.view.main.querySelectorAll('tr[data-wanted]').length, 0);
+  assert.equal(page.view.main.querySelectorAll('tbody tr[data-name]').length, 5);
+  assert.match(text(page.card('certificates')), /The certificates that certd tries to get again could not be read\./);
+  assert.deepEqual(page.problems, [], 'no error is raised for a part of the list');
+});
+
 // ---- Revoke, remove, make anew -----------------------------------------------------------------------------------
 
 test('Revoke asks why, says what it does not do, and revokes with the reason', async (context) => {
@@ -488,7 +578,9 @@ test('a certificate that names the browser\'s address is used for the console, a
   assert.deepEqual(page.ran('console.certificate'), [{ name: 'shop.example.org', try: 300 }]);
   assert.match(text(page.row('shop.example.org')), /this console/);
   assert.equal(buttons(page.row('shop.example.org')).includes('Use for this console'), false);
-  assert.ok(buttons(page.row('this-machine')).includes('Use this server\'s own certificate again'));
+  // This server's own does not name 192.168.1.10, which admind would refuse (ADM-141): the row says where to choose it.
+  assert.equal(buttons(page.row('this-machine')).includes('Use this server\'s own certificate again'), false);
+  assert.match(text(page.row('this-machine')), /Open the console at https:\/\/duke-nas:9090\/ and choose it there/);
 });
 
 test('Keep stays off until the page has come back on the new certificate, and then keeps it', async (context) => {

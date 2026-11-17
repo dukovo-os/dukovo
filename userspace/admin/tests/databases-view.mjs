@@ -10,9 +10,10 @@ import { ApiError } from '../api.js';
 import { errorView } from '../lib/problem.js';
 import { setUnlockSeconds } from '../unlock.js';
 import {
-  accounts, backups, certificates, list, machine,
+  accounts, backups, certificates, copies, list, machine,
 } from './databases-fixtures.mjs';
 import { Element, usePage } from './fake-dom.mjs';
+import { NOW, time } from './snapshots-fixtures.mjs';
 
 // A checkbox and a radio button are checked when they have the attribute, as the browser's property says.
 Object.defineProperty(Element.prototype, 'checked', {
@@ -81,6 +82,8 @@ export async function openDatabases(context, {
   rest = '', query = '', session = {}, unlocked = true, world = {}, prefs = {}, load = true,
 } = {}) {
   const page = usePage(context);
+  // The page says "today" of a copy by the clock of `time`, and names a new database by the day.
+  context.mock.method(Date, 'now', () => NOW);
   // The dialogs watch where their problems go for a change; a test has none to watch.
   const observer = globalThis.MutationObserver;
   globalThis.MutationObserver = class { observe() {} disconnect() {} };
@@ -128,6 +131,7 @@ export async function openDatabases(context, {
     path: `/databases/${rest}`,
     query: new URLSearchParams(query),
     host: 'nas.example.org',
+    time,
     leaving: null,
     prefs: {
       theme: 'dark', text: 100, motion: 'normal', zone: 'UTC', commands: 'hidden', ...prefs,
@@ -161,7 +165,11 @@ export async function openDatabases(context, {
       },
       run: async (action, args, options = {}) => {
         ran.push([action, args, options]);
-        const way = world.runs?.[action] ?? (action === 'databases.list' ? () => ({ ok: true, result: state.list }) : undefined);
+        const answers = {
+          'databases.list': () => ({ ok: true, result: state.list }),
+          'databases.copies': ({ name }) => ({ ok: true, result: copies(name) }),
+        };
+        const way = world.runs?.[action] ?? answers[action];
         const value = typeof way === 'function' ? await way(args, options) : way;
         if (value instanceof Error) {
           view.problem(value, options.where ?? {});

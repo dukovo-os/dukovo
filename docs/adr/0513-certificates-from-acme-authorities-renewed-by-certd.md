@@ -5,7 +5,10 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0513. Certificates from ACME authorities, renewed by certd
 
-- Status: Accepted
+- Status: Accepted; an order by HTTP that failed after it began is kept, and
+  certd asks for it again every hour for a day and every 6 hours after, for 14
+  days, since
+  [0570](0570-postgresql-s-port-is-open-only-to-the-networks-a-database-is-opened-to-a-certificate-that-could-not-be-had-is-tried-again-each-database-is-copied-before-a-backup-and-a-website-s-size-and-visits-are-counted.md)
 - Date: 2026-11-13
 
 ## Context

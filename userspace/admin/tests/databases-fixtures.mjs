@@ -6,9 +6,11 @@
 // --json`, `hostnamectl status --json`), for the tests of the Databases
 // pages. A small server: a shop's database that other machines may reach, a
 // blog with open sessions and a line written by hand, and notes, which
-// signs in as an account. Not a test itself, and never installed.
+// signs in as an account; the firewall opens the port to one network and
+// backups copy each database, the shop's of this morning. Not a test itself,
+// and never installed.
 
-import { backupsOf, place } from './snapshots-fixtures.mjs';
+import { at, backupsOf, place } from './snapshots-fixtures.mjs';
 import { account } from './accounts-fixtures.mjs';
 
 /** The password the lead's command would print, as a test must never find it in a page. */
@@ -23,6 +25,8 @@ export const server = (more = {}) => ({
   listen: 'localhost',
   ssl: false,
   certificate: null,
+  firewall: { networks: [], earlier: null },
+  copies: false,
   ...more,
 });
 
@@ -38,6 +42,7 @@ export const database = (name, more = {}) => ({
   site: null,
   made_by_database: true,
   collation_mismatch: false,
+  copy: null,
   ...more,
 });
 
@@ -61,10 +66,16 @@ export const line = (databaseName, address, more = {}) => ({
 /** `database list --json` for the small server. */
 export const list = (more = {}) => ({
   format: 1,
-  server: server({ listen: '*', ssl: true, certificate: '/system/live/certificates/postgresql/this-machine/fullchain.pem' }),
+  server: server({
+    listen: '*',
+    ssl: true,
+    certificate: '/system/live/certificates/postgresql/this-machine/fullchain.pem',
+    firewall: { networks: ['192.168.1.0/24'], earlier: null },
+    copies: true,
+  }),
   databases: [
-    database('shop', { site: 'shop.example.org', bytes: 38_000_000 }),
-    database('blog', { sessions: 2, bytes: 1_200_000, collation_mismatch: true }),
+    database('shop', { site: 'shop.example.org', bytes: 38_000_000, copy: { at_ms: at(2026, 11, 14, 2), bytes: 12_345_678 } }),
+    database('blog', { sessions: 2, bytes: 1_200_000, collation_mismatch: true, copy: { at_ms: at(2026, 11, 13, 2), bytes: 345_678 } }),
     database('notes', { owner: 'webdev', provider: 'builtin', locale: 'C.UTF-8', bytes: 8000 }),
   ],
   roles: [
@@ -136,4 +147,14 @@ export const added = (database_, more = {}) => ({
 /** A task that ended well. */
 export const finished = (id, log = ['PostgreSQL is listening on the network']) => ({
   id, state: 'done', step: 5, steps: 5, words: '', log, changed: true,
+});
+
+/** `databases.copies` for `name`: this morning's copy in the folder in use and last night's in a snapshot. */
+export const copies = (name = 'shop') => ({
+  format: 1,
+  database: name,
+  copies: [
+    { at_ms: at(2026, 11, 14, 2), bytes: 12_345_678, from: 'live', path: `/shared/services/org.postgresql.postgresql/postgres/dumps/${name}.dump` },
+    { at_ms: at(2026, 11, 13, 2), bytes: 11_000_000, from: '2026-11-13-0200', path: `/snapshots/shared/2026-11-13-0200/services/org.postgresql.postgresql/postgres/dumps/${name}.dump` },
+  ],
 });

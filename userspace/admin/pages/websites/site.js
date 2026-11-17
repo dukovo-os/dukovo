@@ -3,14 +3,14 @@
 
 // A site's page: its names, what it serves, its HTTPS and what to do about it
 // (get a certificate, use one that is here, turn HTTPS off), its database, its
-// file with a hand edit shown and kept, and Remove. Anyone reads it; an
+// file with a hand edit shown and kept, the chart of its visits, and Remove. Anyone reads it; an
 // administrator changes it. A change is a list of steps, drawn on the page, so
 // that each says its state.
 
 import { fill, h, icon } from '../../dom.js';
 import { hrefOf as databaseHref } from '../../lib/database-route.js';
 import {
-  certificateChoices, certificateSteps, handEditWords, httpsLocked, httpsOf, httpsStep, offStep, READER_WORDS, removeStep, serveWords, stateOf,
+  certificateChoices, certificateSteps, COUNTED_WORDS, GETTING_WORDS, gettingOne, handEditWords, httpsLocked, httpsOf, httpsStep, NOT_COUNTED_WORDS, offStep, READER_WORDS, removeStep, serveWords, stateOf,
 } from '../../lib/website-model.js';
 import { remembered } from '../databases/seen.js';
 import { makeCheck } from './check.js';
@@ -73,7 +73,7 @@ export async function showSite(view, name) {
   /** Reads the sites again and draws them. */
   async function reread() {
     fill(errors);
-    const got = await readWebsites(view, errors);
+    const got = await readWebsites(view, errors, { wanted: true });
     if (got === null) return;
     data = got;
     draw();
@@ -128,10 +128,12 @@ export async function showSite(view, name) {
     const options = certificateChoices({ names: site.names ?? [site.name], list: data.certificates });
     const can = (id) => options.options.some((one) => one.id === id && !one.off);
     const buttons = [];
+    // While certd tries to get the certificate there is nothing to ask for: the words stand in place of the button.
+    const getting = gettingOne(site, data.wanted);
     if (admin && locked === '') {
       if (site.https) buttons.push(button('Turn HTTPS off…', () => turnOff(site)));
       else {
-        if (can('letsencrypt')) buttons.push(button('Get a certificate', () => getCertificate(site), 'small default'));
+        if (can('letsencrypt') && !getting) buttons.push(button('Get a certificate', () => getCertificate(site), 'small default'));
         if (can('machine')) buttons.push(button('Use this machine\'s certificate', () => use(site, 'this-machine')));
         if (options.here.length > 0) buttons.push(button('Use one that is here…', () => use(site, options.here[0].name)));
       }
@@ -141,6 +143,7 @@ export async function showSite(view, name) {
       now.certificate && [' · ', certificateLink(now.certificate)],
       now.ends && h('small', {}, `Ends ${now.ends}${now.renews ? `, certd renews it from ${now.renews}` : ''}`),
       admin && locked !== '' && h('small', { class: 'muted' }, locked),
+      getting && h('p', { class: 'small', 'data-row': 'getting' }, GETTING_WORDS),
       buttons.length > 0 && h('div', { class: 'btns' }, buttons));
   }
 
@@ -161,11 +164,23 @@ export async function showSite(view, name) {
       text.hidden = !text.hidden;
       one.textContent = text.hidden ? 'Show the file' : 'Hide the file';
     });
-    return h('dd', { 'data-row': 'file' },
+    return h('dd', { 'data-row': 'file', class: 'web-file' },
       h('span', { class: 'mono' }, site.file),
       h('small', { class: edit.tone === 'warn' ? 'web-tone-warn' : null }, edit.words),
       edit.by && hasPage('/reliability') && h('small', {}, 'It is also a row of ', h('a', { href: '/reliability' }, 'What changed'), ', with Keep it and Put back.'),
       h('div', { class: 'btns' }, show), text);
+  }
+
+  /** The card of the visits: the chart of the 30 days once the site has been counted, which is read when it is drawn, else what is waited for. */
+  function visitsCard(site) {
+    const slot = h('div', { class: 'web-visits' });
+    if (site.visits) {
+      import('./visits.js').then(({ drawVisits }) => drawVisits(slot, site.visits))
+        .catch(() => fill(slot, h('p', { class: 'small muted' }, 'The chart could not be drawn.')));
+    }
+    return h('section', { class: 'card', 'aria-labelledby': 'web-visits-h', 'data-card': 'visits' },
+      h('h2', { id: 'web-visits-h' }, 'Visits'),
+      site.visits ? [slot, h('p', { class: 'small muted' }, COUNTED_WORDS)] : h('p', { class: 'muted' }, NOT_COUNTED_WORDS));
   }
 
   function draw() {
@@ -197,6 +212,7 @@ export async function showSite(view, name) {
           h('dt', {}, 'HTTPS'), httpsRow(site),
           h('dt', {}, 'Its database'), databaseRow(site),
           h('dt', {}, 'Its file'), fileRow(site))),
+      visitsCard(site),
       admin && h('div', { class: 'btns' }, button('Remove…', () => remove(site), 'danger')),
       h('div', { class: 'web-foot' }, view.api.inline('websites.list', {})));
   }

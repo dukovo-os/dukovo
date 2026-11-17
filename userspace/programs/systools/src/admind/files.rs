@@ -11,8 +11,11 @@
 //! against the manifest: admind holds none of them, so the console's files
 //! cost an idle machine no memory, and a file that changes after admind
 //! started is not served either. The pages are single-page: a path that is
-//! no file and has no extension is the page router's, and is answered with
-//! `index.html`.
+//! no file and does not end in the extension of a kind of file the console
+//! has is the page router's, and is answered with `index.html`. A page's
+//! path can end in a name with dots, a website's or a certificate's
+//! (`/websites/example.org`), and the shell's links follow the same rule
+//! (`route-model.js`).
 //!
 //! The manifest's hash of a file is its `ETag`, so that a browser that
 //! has the file asks "has it changed?" and is told 304, with no body and
@@ -36,6 +39,25 @@ pub const FOLDER: &str = "/system/resources/admin";
 
 /// The file the page router's paths are answered with.
 const SHELL: &str = "index.html";
+
+/// The extensions of the kinds of file the console has, but `md`, which is
+/// help's alone: a path whose last part ends in one names a file. Keep in
+/// step with the pattern of `followsInPage` in `userspace/admin/shell/route-model.js`.
+const FILE_EXTENSIONS: &[&str] =
+    &["html", "js", "mjs", "css", "json", "webmanifest", "svg", "png", "ico", "woff2", "txt"];
+
+/// Whether `name`, a path with no leading `/`, names one of the console's
+/// files rather than a page: its last part ends in the extension of a kind
+/// of file the console has, or in `.md` inside help. A name with other dots,
+/// as `websites/shop.example.md` or `certificates/example.org`, is a page's.
+fn names_a_file(name: &str) -> bool {
+    let last = name.rsplit('/').next().unwrap_or(name);
+    match last.rsplit_once('.') {
+        Some((_, "md")) => name.starts_with("help/"),
+        Some((_, extension)) => FILE_EXTENSIONS.contains(&extension),
+        None => false,
+    }
+}
 
 /// A file of the console's as a request is answered with it: its bytes,
 /// none for a 304, and its headers.
@@ -171,16 +193,15 @@ impl Files {
     }
 
     /// The file `GET path` is answered with: the file of that name, or
-    /// the page router's `index.html` for a path with no extension. `None`
-    /// is a 404.
+    /// the page router's `index.html` for a path that names no file
+    /// ([`names_a_file`]). `None` is a 404.
     pub fn get(&self, path: &str) -> Option<&Listed> {
         let name = path.strip_prefix('/').unwrap_or(path);
         let name = if name.is_empty() { SHELL } else { name };
         if let Some(file) = self.listed.get(name) {
             return Some(file);
         }
-        let last = name.rsplit('/').next().unwrap_or(name);
-        if last.contains('.') { None } else { self.listed.get(SHELL) }
+        if names_a_file(name) { None } else { self.listed.get(SHELL) }
     }
 
     /// `listed` with its bytes, read from the disk now.
@@ -334,11 +355,30 @@ mod tests {
         let scratch =
             folder("router", &[("index.html", "<html>")], &[(&sum(b"<html>"), "index.html")]);
         let files = Files::read(&scratch.0, &mut Vec::new()).unwrap();
-        for router in ["/", "/services", "/services/nginx/log", "/accounts/second-step"] {
+        // A website's or a certificate's name has dots, and its page is the
+        // router's all the same, even with a top-level domain that is the
+        // extension of help's files.
+        for router in [
+            "/",
+            "/services",
+            "/services/nginx/log",
+            "/accounts/second-step",
+            "/websites/dukovo.local",
+            "/certificates/site.example.org",
+            "/websites/shop.example.md",
+            "/apps/org.postgresql.postgresql",
+        ] {
             assert_eq!(files.load(files.get(router).unwrap()).unwrap().bytes, "<html>", "{router}");
         }
         assert_eq!(files.get("/index.html").unwrap().content_type, "text/html; charset=utf-8");
-        for no_file in ["/missing.js", "/css/none.css", "/favicon.ico", "/a/b.c"] {
+        for no_file in [
+            "/missing.js",
+            "/css/none.css",
+            "/favicon.ico",
+            "/help/errors/index.json",
+            "/help/none.md",
+            "/pages/websites/none.mjs",
+        ] {
             assert!(files.get(no_file).is_none(), "{no_file}");
         }
         // Nothing climbs out of the folder: only a listed name is a file.

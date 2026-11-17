@@ -62,8 +62,13 @@ export const formatRate = (value) => `${formatBytes(value)}/s`;
 /** Bytes a second as bits a second, the way a network is counted: "38 Mbit/s". */
 export const formatBits = (value) => scaled(value * 8, ['bit/s', 'kbit/s', 'Mbit/s', 'Gbit/s', 'Tbit/s']);
 
+/** A count, as "1,240". */
+export const formatCount = (value) => Math.round(value).toLocaleString('en-US');
+
 /** How each kind of value is written. */
-export const FORMATS = Object.freeze({ percent: formatPercent, bytes: formatBytes, rate: formatRate, bits: formatBits });
+export const FORMATS = Object.freeze({
+  percent: formatPercent, bytes: formatBytes, rate: formatRate, bits: formatBits, count: formatCount,
+});
 
 // ---- series ---------------------------------------------------------------
 
@@ -235,14 +240,14 @@ export function statOf(model, time) {
  * The table under "Show the numbers": `{head, rows}`, the head's words
  * and a row for each time that any line has a point, newest first, each
  * a list of the time and the values as words (an empty cell where a line
- * has none).
+ * has none). The first column is "Time" unless the chart names it (`column`).
  */
 export function tableOf(model, time) {
   const format = FORMATS[model.chart.kind];
   const times = [...new Set(model.lines.flatMap((line) => line.points.map((point) => point.at)))].sort((a, b) => b - a);
   const byTime = model.lines.map((line) => new Map(line.points.map((point) => [point.at, point.value])));
   return {
-    head: ['Time', ...model.lines.map((line) => line.label)],
+    head: [model.chart.column ?? 'Time', ...model.lines.map((line) => line.label)],
     rows: times.map((at) => [time.when(at), ...byTime.map((values) => (values.has(at) ? format(values.get(at)) : ''))]),
   };
 }

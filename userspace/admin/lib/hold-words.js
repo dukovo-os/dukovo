@@ -26,8 +26,8 @@ export function namesOf(answer) {
   return new Map((Array.isArray(accounts) ? accounts : []).filter((one) => Number.isFinite(one?.uid) && text(one.name)).map((one) => [one.uid, one.name]));
 }
 
-/** " by admin": who did it, by name when it is known, else by number; nothing when it is not told. */
-export const byWords = (by, names) => (Number.isFinite(by) ? ` by ${names?.get(by) ?? `account ${by}`}` : '');
+/** " by admin": who did it, by name when it is known (0 is root), else by number; nothing when it is not told. */
+export const byWords = (by, names) => (Number.isFinite(by) ? ` by ${names?.get(by) ?? (by ? `account ${by}` : 'root')}` : '');
 
 /**
  * What a hold says of itself, `held on Nov 2 at 3:06 AM by admin: "why"`, each

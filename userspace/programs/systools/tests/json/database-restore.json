@@ -1,0 +1,8 @@
+{
+  "format": 1,
+  "database": "shop",
+  "from": "COPY",
+  "restored_as": "shop_restored_20261116",
+  "kept_as": null,
+  "took_ms": 1500
+}

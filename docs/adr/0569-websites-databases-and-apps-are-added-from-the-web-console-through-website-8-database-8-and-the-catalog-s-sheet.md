@@ -5,7 +5,9 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0569. Websites, databases and apps are added from the web console through website(8), database(8) and the catalog's sheet
 
-- Status: Accepted
+- Status: Accepted; `nginx.conf` also defines the format of the sites' own logs,
+  and `database restore` runs the bundle's `pg_restore`, since
+  [0570](0570-postgresql-s-port-is-open-only-to-the-networks-a-database-is-opened-to-a-certificate-that-could-not-be-had-is-tried-again-each-database-is-copied-before-a-backup-and-a-website-s-size-and-visits-are-counted.md)
 - Date: 2026-11-16
 
 ## Context

@@ -33,7 +33,9 @@ function asApiError(error) {
 export function showProblem(thrown, where, cx) {
   const error = asApiError(thrown);
   const slot = where.slot ?? cx.slot;
-  switch (placeOf(error)) {
+  // A fault of the page's own has no status and no ID, as no answer has: it
+  // is shown, and not left to the offline banner, which never comes for it.
+  switch (thrown instanceof ApiError ? placeOf(error) : PLACE.view) {
     case PLACE.field:
       if (!underField(error, where)) errorView(error, where, cx, slot);
       break;

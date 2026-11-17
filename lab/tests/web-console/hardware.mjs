@@ -900,7 +900,7 @@ async function memoryAtNextRestart(t, page, host) {
   await pressFor(t, page, buttonIn(dialog, "At the next restart"), pathOf(ROUTES.ask));
   await t.gone(dialog);
   const asked = (await readOf(page, ROUTES.asked)).asked;
-  ensure(asked !== null && asked.by === ADMIN && Number.isFinite(asked.at_ms), `${ROUTES.asked} says ${JSON.stringify(asked)} after the test was asked by ${ADMIN}`);
+  ensure(asked !== null && asked.by_name === ADMIN && Number.isFinite(asked.at_ms), `${ROUTES.asked} says ${JSON.stringify(asked)} after the test was asked by ${ADMIN}`);
   const said = new RegExp(`^${escaped(ASKED)} \\(asked [A-Z][a-z]{2} \\d{1,2}(, \\d{4})?, \\d{1,2}:\\d\\d [AP]M by ${escaped(ADMIN)}\\)$`);
   await eventually(async () => ensure(said.test((await memoryLine(page, ASKED).innerText()).trim()), `the memory card says ${JSON.stringify(await memoryLine(page, ASKED).allInnerTexts())} of the test that was asked`), 30);
   ensure((await ask.count()) === 0, "Test at the next restart… is still there when the test is asked");

@@ -25,6 +25,8 @@ decisions are ADR 0512 and, for certificates from Let's Encrypt, ADR 0513.
 | Remove one | `elevate cert remove NAME` |
 | Revoke one from Let's Encrypt | `elevate cert revoke NAME` |
 | Renew one from Let's Encrypt now | `elevate cert renew NAME` |
+| See the certificates that certd asks for again after an order failed | `cert wanted` |
+| Stop certd asking for one | `elevate cert forget NAME` |
 | Make the machine's own again now | `elevate cert renew this-machine` |
 | Check that the machine's own is there and has time | `cert check` |
 
@@ -143,6 +145,45 @@ rate limit is told with the time to try again.
 `cert revoke example.com` revokes a certificate whose key you lost
 track of; `--reason key-compromise` says why. The services keep using
 it until you get another with `cert get example.com`, which replaces it.
+
+### When the order fails
+
+An order by port 80 that fails after it began, because the name does not lead
+here yet, port 80 is not reached or the authority refuses it, is kept, and certd
+asks the authority again by itself, with the names, the authority, the type of
+key and the profile you gave. The last line of `cert get` says so: `certd tries
+again every hour; cert forget NAME stops it`. certd tries every hour for the day
+after the first try, then every 6 hours, until 14 days after the first try; an
+authority that asks to be left alone for a time, as a rate limit does, is left
+alone for it. Mend the cause, which the reason in `cert get`'s answer and in
+`cert history example.com` names, and the next try works, with no command of
+yours; to try at once and see each step, run `elevate cert get example.com`
+again with the same names. Each try is a line of `cert history`, and the one that
+works installs the certificate as `cert get` does, has the services that name it
+read it, and takes the record away.
+
+```
+$ cert wanted
+NAME         NAMES                         TRIES  FIRST TRY            NEXT TRY             WHY
+example.com  example.com, www.example.com  3      2026-11-16 09:12:00  2026-11-16 12:12:00  the authority could not reach http://example.com/.well-known/acme-challenge/
+```
+
+An order made with `--dry-run`, `--staging` or `--dns` is not kept: the first
+two are for you to watch, and a DNS order needs you to add the TXT records. An
+order that failed before the authority was asked, in the checks of the names,
+is kept only when you gave `--agree-terms`, since certd then makes the account.
+
+When the certificate has not been got for a day, certd raises the alert
+`certificate:example.com`, "The certificate example.com could not be had for a
+day", with the last reason ([CRT-123](../../errors/CRT-123.md)). After 14 days it
+gives up: `cert wanted` then says `given up`, it raises
+`certificate-given-up:example.com` ([CRT-124](../../errors/CRT-124.md)), and it
+asks no more. It also gives up at once when the account at the authority was
+taken away and the order had not agreed to the terms for a new one, or when a
+certificate of that name was added by hand since. A `cert get` of the name
+starts afresh, and replaces the record. When you no longer
+want the certificate, `elevate cert forget example.com` stops certd asking and
+takes the alert away; the certificates that are in the store stay as they are.
 
 ### When nginx holds port 80
 
@@ -347,7 +388,12 @@ certificate](web-console.md#getting-a-certificate) and [The machine's
 name](web-console.md#the-machines-name) in the chapter on the console. Under
 the checks of **Get a certificate from Let's Encrypt**, **Where it is used** says
 which websites use the name, and **Add a website** there opens the page that adds
-one, with the name filled in (see [Websites](web-console.md#websites)).
+one, with the name filled in (see [Websites](web-console.md#websites)). A
+certificate that certd is asking for again is a row of its own in the list, **Trying
+again**, with when the next try is, how many have failed and the last reason,
+and **Forget**, which stops certd; one it gave up is a row that says so. The
+page of a website whose certificate is wanted says that certd tries again every
+hour instead of offering **Get the certificate**.
 
 ## Troubleshooting
 
@@ -358,7 +404,10 @@ is in the store.
 | What you see | What it means and what to do |
 | --- | --- |
 | `cert: the clock is wrong (1970-01-01)` | The clock is before Dukovo's making: certd makes and judges no certificate until it is right, and looks again each minute. Set it (`timedatectl`) or let `timed` set it from the network. The service is ready when `cert check` passes, and Spark starts it again if that takes more than 2 minutes, which is harmless. |
-| `cert: run it with elevate: changing certificates needs root` | `add`, `get`, `remove`, `renew` and `revoke` change the store: run them with `elevate`. |
+| `cert: run it with elevate: changing certificates needs root` | `add`, `get`, `remove`, `renew`, `revoke` and `forget` change the store: run them with `elevate`. |
+| `certd tries again every hour; cert forget NAME stops it` | The order failed after it began, and certd keeps it. `cert wanted` shows when the next try is and why the last failed. Mend the cause, or `elevate cert forget NAME` if you do not want the certificate. |
+| The alert `The certificate NAME could not be had for a day` | The tries of certd have not worked for a day ([CRT-123](../../errors/CRT-123.md)). Read the reason with `cert wanted`, and mend it, as the table above says for each. |
+| `cert forget`: `certd is not trying to get NAME again` | There is no record of that name: `cert wanted` lists what certd tries. A certificate that is in `cert list` is not forgotten by this command; `cert remove` removes it. |
 | `the firewall closes port 80, which the authority must reach: open it with ...` | Let's Encrypt's check cannot reach the machine. Run `elevate firewall allow tcp 80`, as the message says, or prove the names by DNS with `--dns`. |
 | `NAME does not resolve to an address` or `NAME leads to ADDRESS, a private address` | The name's DNS record is missing, or it leads to an address only your own network reaches. Give it the machine's public address, or use `--dns`. |
 | `the authority could not reach http://NAME/.well-known/acme-challenge/` | The name leads somewhere, but port 80 does not reach this machine from the internet. Check the router's forward, and that the provider lets port 80 in. |

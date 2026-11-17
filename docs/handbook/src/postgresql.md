@@ -43,11 +43,12 @@ postgres=# SELECT current_user;
 (1 row)
 ```
 
-`-U postgres` names the role, as there is none called `root`. The first time
-you run `elevate psql`, Dukovo asks in your terminal pane, with a warning,
-whether `psql` may run with root's access, as for any command of the
-catalog's that runs with its user's; answer `A` to allow it always. `psql`
-looks for the server's socket in the service's folder,
+`-U postgres` names the role, as there is none called `root`; only a
+`database restore` makes one, for as long as it runs (see "Putting one database
+back"). The first time you run `elevate psql`, Dukovo asks in your terminal
+pane, with a warning, whether `psql` may run with root's access, as for any
+command of the catalog's that runs with its user's; answer `A` to allow it
+always. `psql` looks for the server's socket in the service's folder,
 `/system/live/services/postgres`, so it needs no `-h`. Its line editing,
 history (`~/.psql_history`) and tab completion are libedit's.
 
@@ -135,13 +136,14 @@ with the password:
 
 ```
 $ elevate database allow shop --from 192.168.1.0/24 --progress
-step 1 of 7: checking the database, the networks and the certificate
-step 2 of 7: naming the certificate in PostgreSQL's service file
-step 3 of 7: writing the lines of pg_hba.conf
-step 4 of 7: setting what PostgreSQL listens with
-step 5 of 7: having PostgreSQL check its files
-step 6 of 7: restarting PostgreSQL
-step 7 of 7: checking that PostgreSQL answers over TLS
+step 1 of 8: checking the database, the networks and the certificate
+step 2 of 8: naming the certificate in PostgreSQL's service file
+step 3 of 8: writing the lines of pg_hba.conf
+step 4 of 8: setting what PostgreSQL listens with
+step 5 of 8: having PostgreSQL check its files
+step 6 of 8: opening port 5432 to these networks only
+step 7 of 8: restarting PostgreSQL
+step 8 of 8: checking that PostgreSQL answers over TLS
 192.168.1.0/24 may connect to shop over TLS, as shop, with the password
 PostgreSQL restarted, and its open sessions ended
 ```
@@ -149,7 +151,7 @@ PostgreSQL restarted, and its open sessions ended
 A network is an address and the length of its prefix, `192.168.1.0/24` or
 `2001:db8::/32`, and `--from` may be given up to 20 times. `--certificate` names
 one of `cert list`, and is `this-machine` unless you say; certd has to keep it
-([DB-105](../../errors/DB-105.md)). It changes three places, and every other line
+([DB-105](../../errors/DB-105.md)). It changes four places, and every other line
 of each stays as it was:
 
 - `pg_hba.conf` gains a `hostssl` line with `scram-sha-256` for each network, in
@@ -160,6 +162,19 @@ of each stays as it was:
   `ssl = on` and the paths of the certificate's copy, each only when it differs.
 - PostgreSQL's service file gets the certificate in `certificates`, in its
   override, which keeps every item and comment that is in it.
+- The firewall's rules, `/system/settings/firewall`, get a block that opens port
+  5432 to the networks of every database and to no other:
+
+  ```
+  # database(8): who reaches PostgreSQL from other machines (ADR 0570)
+  allow tcp 5432 from 192.168.1.0/24
+  deny tcp 5432
+  # database(8): end
+  ```
+
+  It has an `allow` for each network that a line of the block of `pg_hba.conf`
+  names, whichever database the line is for, since 5432 is one port for all of
+  them, and a `deny` that ends it.
 
 Before anything takes effect, PostgreSQL checks the files it will read, and a
 mistake it finds ends the command with everything put back ([DB-104](../../errors/DB-104.md)).
@@ -169,34 +184,132 @@ check that the certificate loads. A change that needs none, such as a second
 network for a database that lets others in already, is a reload that ends
 nothing, and `allow` with the same networks again changes nothing.
 
-PostgreSQL then listens on the network, and the firewall lets other computers
-reach what a service listens on (see [The firewall](networking.md#the-firewall)),
-so port 5432 is open to every address; the `hostssl` lines decide who may sign in.
-A firewall rule can narrow it. A client checks the server with `sslmode=verify-full`,
-and for the machine's own certificate needs the file `cert show this-machine
---pem` prints, as its `sslrootcert` (see [Certificates](certificates.md#postgresql)).
+PostgreSQL then listens on the network, and the block opens port 5432 to the
+networks of the databases and to no other address: a connection from another one
+is dropped before PostgreSQL sees it, and for those that are let through the
+`hostssl` lines decide who may sign in. `elevate firewall list` shows the
+block's rules, numbered as the others are. The block goes at the end of the
+file, after your own rules, and the first rule that matches decides (see [The
+firewall](networking.md#the-firewall)), so a rule of your own before the block
+that covers port 5432, `allow tcp` or `allow tcp 5432` say, decides first for the
+connections it names: `database` does not move it, `allow` says so, and the
+console's **Databases** page shows it as a warning. If you move the block,
+`database` writes it where you put it. It is not a trial of the firewall
+(`firewall allow --try`), since Spark's trials hold files under
+`/system/settings` and `pg_hba.conf` is not one. While a trial of the rules
+runs, `allow`, `deny` and `remove` change nothing ([DB-107](../../errors/DB-107.md)),
+and neither do they when the block's two comment lines do not make one block or
+the file would hold more rules than the firewall holds
+([DB-108](../../errors/DB-108.md)). A client checks the server with
+`sslmode=verify-full`, and for the machine's own certificate needs the file `cert
+show this-machine --pem` prints, as its `sslrootcert` (see
+[Certificates](certificates.md#postgresql)).
 
 `database deny shop` takes the lines of that database out of the block, or only
-those of the networks named with `--from`. When no line is left, the block goes,
-PostgreSQL listens on this machine only again, which restarts it, and the settings
-for TLS stay.
+those of the networks named with `--from`. The firewall's block is made again from
+the lines that are left, so a network that no database names any more is shut out
+of port 5432, and when no line is left, the block goes, PostgreSQL listens on this
+machine only again, which restarts it, and the settings for TLS stay.
 
 ### Taking a database away
 
-`database remove shop` drops the database with its data and takes its lines out of
-the block. It stops with the programs that have a session open to it, by name, and
+`database remove shop` drops the database with its data, takes its lines out of
+the block and shuts port 5432 in the firewall to the networks that no database
+names any more. It stops with the programs that have a session open to it, by name, and
 does nothing ([DB-103](../../errors/DB-103.md)); `--force` ends the sessions and
 drops it. `--role` drops its owner too, only when `database` made the role and it
 owns and may use nothing else; otherwise the command says that the role stays and
 why. It is the data that goes: a snapshot of `/shared` taken before holds it until
-the snapshots are pruned.
+the snapshots are pruned, and so do the copies of it that backups made (see
+"Putting one database back").
+
+### Putting one database back
+
+Before each backup the system copies every database into a file of its own (see
+"Backups"), and `database copies` lists the copies of one, the newest first:
+
+```
+$ elevate database copies shop
+2026-11-16 02:00  12M  live  /shared/services/org.postgresql.postgresql/postgres/dumps/shop.dump
+2026-11-15 02:00  12M  2026-11-15-0200  /snapshots/shared/2026-11-15-0200/services/org.postgresql.postgresql/postgres/dumps/shop.dump
+```
+
+`live` is the copy in use. The others are the copies that the snapshots of
+`/shared` hold, each named by its snapshot, and a copy that several snapshots hold
+is listed once. A database that has gone has copies in the snapshots made before
+it went. `database restore` puts one back, from the path the list gives, and
+always into a database that is made for it:
+
+```
+$ elevate database restore shop --from /shared/services/org.postgresql.postgresql/postgres/dumps/shop.dump
+put the copy into the new database shop_restored_20261116; shop was not changed
+```
+
+By default the copy goes into a new database called `shop_restored_` and the day
+(`shop_restored_20261116_2` when that is taken), with the owner, the encoding and
+the sorting of `shop`, and nobody else may connect to it. `--as NAME` chooses
+the name. `shop` is not touched, so the two can be compared, and the program is
+pointed at the new one once it is right.
+
+To put the copy where the database is, add `--over`:
+
+```
+$ elevate database restore shop --from /snapshots/shared/2026-11-15-0200/services/org.postgresql.postgresql/postgres/dumps/shop.dump --over --force
+put the copy into shop; the database as it was is kept as shop_before_20261116_0200
+`database remove shop_before_20261116_0200` removes it when it is not needed
+```
+
+The database as it is now is kept, renamed `shop_before_` with the day and the
+minute, and a new `shop` takes its name and comment. Its owner cannot connect
+until the copy is in, so that no program finds it empty. Programs that have a
+session open stop it, by name ([DB-103](../../errors/DB-103.md)); `--force` ends
+the sessions and lets no other in until the database is renamed. Nothing removes
+the kept database: it holds the rows that the copy may lack, and the room it takes,
+until `database remove` drops it.
+
+When a step fails after a database was made, it is taken back: the new database is
+dropped and, with `--over`, the old one has its name back and takes connections
+again. The error then gives what `pg_restore` said first, and how the taking back
+went ([DB-110](../../errors/DB-110.md)). A file that is no copy made with
+`pg_dump -Fc` is refused before anything is made
+([DB-109](../../errors/DB-109.md)). `--progress` tells each step, and `--json`
+says what was done. The web console's **Restore…** on a database's page offers the
+copies that `database copies` lists, as a long task with steps.
+
+What a restore keeps in mind:
+
+- **A short-lived role called `root`.** A copy holds what the database's owner
+  wrote, and putting it back runs some of it, so it is put back with the owner's
+  rights and no more, never the superuser's. `pg_restore` signs in over the
+  server's socket as a role called `root`, which `database restore` makes for the
+  restore and drops when it ends, whether it worked or not. It may become the
+  database's owner, as `pg_restore --role` does at once, and inherits none of its
+  rights; it may connect to the new database alone, and is no superuser. Do not
+  make a role called `root`: the restore stops before it makes anything when
+  there is one. A restore that a power cut stopped may leave one: `elevate psql
+  -U postgres -c 'DROP ROLE root'` removes it.
+- **The owner's rights only.** A copy that creates an extension that PostgreSQL
+  does not trust the database's owner with, or that needs a superuser for
+  anything else, fails ([DB-110](../../errors/DB-110.md) says how to put such a
+  copy in by hand), and a database that a superuser owns is not restored here.
+- **Roles are not in a copy.** A grant to a role that is not on this machine fails
+  the restore: make the role first (`elevate createuser -U postgres NAME`).
+- **No subscriptions.** A subscription in the copy would connect to another
+  server, so none is made, and a database that had subscriptions comes back
+  without them.
+- **The first restore asks.** `pg_restore` is the bundle's program, run as root,
+  so Dukovo asks once whether the bundle may run with root's access, as for
+  `elevate psql` (see "Connecting as an administrator"). A restore that nobody
+  answers for fails ([DB-110](../../errors/DB-110.md)): run `elevate pg_restore
+  --version` at a terminal once and answer `A`, before the web console restores.
 
 ### From the web console
 
 The web console's **Databases** page runs these commands, with the checks first
 and the password shown once in a box that copies and saves it; see
 [Databases](web-console.md#databases) in the chapter on the console. The password
-that **Add a database** shows is this line's.
+that **Add a database** shows is this line's. The page also says when each
+database was copied, and its **Restore…** puts a copy back.
 
 ## A role and a database for an application
 
@@ -293,9 +406,10 @@ the machine's own or one from an authority, as
 such as `'*'`; adds a `hostssl` line for them to `pg_hba.conf`, with
 `scram-sha-256`; and restarts the service. `database allow` does each of these
 steps for one database, with the checks before and after (see "Letting other
-machines connect"). The firewall lets other
-computers reach what a service listens on, so it needs no rule of its
-own.
+machines connect"). Done by hand, they leave port 5432 open to every address,
+since the firewall lets other computers reach what a service listens on;
+`database allow` also writes the block of firewall rules that opens it only to
+the networks named.
 
 ## Stopping and starting
 
@@ -320,13 +434,25 @@ recovery](updates.md)) takes a snapshot of `/shared`, with the cluster in
 it. Before the snapshot the system has the server write a checkpoint, so that
 the snapshot holds the cluster as a crash would leave it a moment after one,
 which PostgreSQL documents as a valid backup of the files. A cluster
-restored from it starts with a short recovery. The backup holds every
-database and makes no dump.
+restored from it starts with a short recovery.
 
-A dump is for another version of PostgreSQL, or another computer, and for a
-single database. `pg_dump` writes a database as SQL, the redirection puts
-it in a file of yours, and `psql` reads it into a database made the same
-way:
+In the same step each database is copied with `pg_dump -Fc`, compressed with
+zstd, into `dumps/NAME.dump` in the data folder of the service,
+`/shared/services/org.postgresql.postgresql/postgres/dumps`, which the snapshot
+and so the backup holds. A copy is written beside the last one and moved over it
+once it is whole, so one that fails leaves the last good one, and the copies of
+databases that are gone are removed. It is made before each round of backups,
+the nightly one and `elevate backup run`, and never on its own: a computer with
+no backup place set up has no copies. The step has up to an hour, says a line for
+each database in the service's log (`elevate log postgresql`), and when a copy
+fails the backup goes on and says so. A copy holds all that its database does,
+and is readable by the account postgres and root alone. `database copies` lists
+the copies and `database restore` puts one back (see "Putting one database
+back").
+
+A dump is also for another version of PostgreSQL, or another computer. `pg_dump`
+writes a database as SQL, the redirection puts it in a file of yours, and `psql`
+reads it into a database made the same way:
 
 ```
 $ elevate pg_dump -U postgres shop > shop.sql

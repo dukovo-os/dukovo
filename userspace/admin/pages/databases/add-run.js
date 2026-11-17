@@ -15,8 +15,9 @@ import { banner } from './cards.js';
 import { showPassword } from './once.js';
 import { connectionCard } from './settings.js';
 
-/** What the leave guard says while the password is not yet shown. */
+/** What the leave guard says while the password is not yet shown, and while it is. */
 const leavingWords = (name) => `The password of ${name} is shown once, when the steps end. If you leave now it is lost, and you would have to make a new one.`;
+const shownWords = (name) => `The password of ${name} is shown once. If you leave now it is lost, and you would have to make another.`;
 
 /** The steps for a database `name` with the role `role`: `add` and `allow` are the arguments of their calls, `allow` null for a way that does not open the network. */
 function stepsOf({ name, role, add, allow }) {
@@ -95,6 +96,7 @@ export async function runAdd(view, {
   const connects = way !== 'network' || outcome.done;
   const open = secret.password !== null;
   const own = secret.role;
+  if (open) view.leaving = () => shownWords(name);
   const kept = open ? await showPassword(view, {
     name, secret, way: connects ? way : 'local', machine,
   }) : true;

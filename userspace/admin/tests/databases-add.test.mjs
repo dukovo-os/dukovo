@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  added, finished, list, missing, PASSWORD, role,
+  added, finished, list, missing, PASSWORD, role, server,
 } from './databases-fixtures.mjs';
 import {
   buttonOf, choose, dialogsOf, fieldOf, holdings, openDatabases, refusal, settle, type,
@@ -79,13 +79,30 @@ test('what happens is drawn for the way chosen, and changes with the name', asyn
   const words = () => view.main.querySelectorAll('.db-plan-rows li').map((one) => one.textContent);
   assert.equal(words()[0], 'Makes the PostgreSQL role shop2, which signs in with a password, from this server only');
   assert.match(words()[1], /^Makes the database shop2, owned by shop2, UTF-8, sorted as English \(US\)\./);
-  assert.match(words()[2], /^Firewall: nothing to change\. PostgreSQL listens on the network already, and only programs on this server may sign in to this database\.$/);
+  assert.equal(words()[2], 'Firewall: nothing to change. Port 5432 stays open to 192.168.1.0/24 only, and only programs on this server may sign in to this database.');
   assert.match(words()[3], /none; the database is ready at once/);
   choose(view.main, 'other machines');
   type(fieldOf(view.main, 'Addresses'), '192.168.1.0/24');
   assert.equal(words()[0], 'Makes the PostgreSQL role shop2, which signs in with a password, from 192.168.1.0/24 over TLS');
-  assert.match(words()[2], /Port 5432 is open to every address while PostgreSQL runs/);
+  assert.equal(words()[2], 'Firewall: port 5432 is opened to 192.168.1.0/24 only.');
   assert.match(words()[3], /none; the database is ready at once/);
+});
+
+test('what happens says that the port is opened to the networks typed and those already open, and says when a rule comes first', async (context) => {
+  const { view } = await open(context);
+  const words = () => view.main.querySelectorAll('.db-plan-rows li').map((one) => one.textContent);
+  choose(view.main, 'other machines');
+  assert.equal(words()[2], 'Firewall: port 5432 is opened to 192.168.1.0/24 only.');
+  type(fieldOf(view.main, 'Addresses'), '10.0.0.0/8');
+  assert.equal(words()[2], 'Firewall: port 5432 is opened to 192.168.1.0/24 and 10.0.0.0/8 only.');
+  assert.equal(words().length, 4);
+  const earlier = list({ server: server({ listen: '*', ssl: true, certificate: 'this-machine', firewall: { networks: [], earlier: 'allow tcp 5432' } }) });
+  const other = await open(context, { world: { list: earlier } });
+  choose(other.view.main, 'other machines');
+  type(fieldOf(other.view.main, 'Addresses'), '10.0.0.0/8');
+  const rows = other.view.main.querySelectorAll('.db-plan-rows li').map((one) => one.textContent);
+  assert.equal(rows[2], 'Firewall: port 5432 is opened to 10.0.0.0/8 only.');
+  assert.equal(rows[3], 'A rule earlier in the firewall\'s rules decides for port 5432 first: allow tcp 5432. Move or remove it on the Firewall page.');
 });
 
 test('the role follows the name until it is typed, and is the account\'s for the socket', async (context) => {
@@ -266,7 +283,7 @@ test('the password is shown once, in a dialog, with the settings, and is nowhere
   const outside = holdings(world.view.main).join('\n');
   assert.equal(outside.includes(PASSWORD), false);
   assert.equal(world.view.leaving().includes(PASSWORD), false);
-  assert.match(world.view.leaving(), /The password of shop3 is shown once/);
+  assert.equal(world.view.leaving(), 'The password of shop3 is shown once. If you leave now it is lost, and you would have to make another.');
   for (const [words] of world.notices) assert.equal(words.includes(PASSWORD), false);
   for (const [error] of world.problems) assert.equal(JSON.stringify(error).includes(PASSWORD), false);
   assert.equal(JSON.stringify(world.ran.map(([action, args]) => [action, args])).includes(PASSWORD), false);

@@ -147,8 +147,9 @@ export async function enterShell({ app, session: first, signOut, signInAgain, on
   };
   shell.parts = parts;
 
-  // The offline banner is another module, read when the server first does
-  // not answer. `offline` is what the rest of the shell asks meanwhile.
+  // The offline banner is another module, read once the first page is shown,
+  // so that it is here when the server does not answer. `offline` is what the
+  // rest of the shell asks.
   let offline = false;
   let waiting = null;
   const online = {
@@ -170,9 +171,7 @@ export async function enterShell({ app, session: first, signOut, signInAgain, on
       region: statusRegion,
       stale: asof,
       main,
-      health: () => get('/api/1/health'),
-      session: () => get('/api/1/session'),
-      about: () => get('/api/1/console/about'),
+      get,
       time: () => time,
       onChange: (now) => { offline = now; },
       onBack(restarted) {
@@ -312,7 +311,11 @@ export async function enterShell({ app, session: first, signOut, signInAgain, on
     },
     onEvent(name, data) {
       if (name === 'unlock') setUnlockSeconds(data.unlock_seconds);
-      if (name === 'session') onEnded(data.ended);
+      // A restart ends every session: the stream is over, and the banner waits for the server.
+      if (name === 'session' && data.ended === 'restarted') {
+        stream.close();
+        online.lost();
+      } else if (name === 'session') onEnded(data.ended);
       if (name === 'trial') header.trials(data.trials);
       if (name === 'task') tasks.event(name, data);
       // What the parts kept is old now, before the page reads again.
@@ -337,6 +340,7 @@ export async function enterShell({ app, session: first, signOut, signInAgain, on
   tasks.load().catch(() => {});
   nav.readBadges('start');
   await router.start();
+  begin();
   // Every dialog from here on has its look; nothing waits for the sheet.
   sheet('/dialogs.css');
 

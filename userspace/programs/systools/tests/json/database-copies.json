@@ -1,0 +1,8 @@
+{
+  "format": 1,
+  "database": "shop",
+  "copies": [
+    { "at_ms": 1794794400000, "bytes": 12345678, "from": "live", "path": "LIVE/shop.dump" },
+    { "at_ms": 1794708000000, "bytes": 1234, "from": "2026-11-15-0200", "path": "SNAPSHOT/shop.dump" }
+  ]
+}

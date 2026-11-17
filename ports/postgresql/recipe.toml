@@ -103,9 +103,10 @@ commands = [
 	"vacuumdb",
 	"vacuumlo",
 ]
-# pg_isready and psql, which the service's health check and its backup hook
-# run, are commands above, and so programs of the manifest.
-programs = ["postgresql-service"]
+# pg_isready, which the service's health check runs, is a command above,
+# and so a program of the manifest. postgresql-backup, which its backup hook
+# runs, is a script of the bundle, as postgresql-service is.
+programs = ["postgresql-service", "postgresql-backup"]
 links = ["mlibc", "openssl", "zlib", "lz4", "zstd", "libxml2", "libedit", "ncurses"]
 
 # postgresql-service makes the cluster at its first start and runs the
@@ -133,7 +134,11 @@ links = ["mlibc", "openssl", "zlib", "lz4", "zstd", "libxml2", "libedit", "ncurs
 #   TimeoutSec=infinity, and Debian's gives an hour).
 # - Before a backup it checkpoints, so that the snapshot of /shared holds
 #   the cluster a moment after one and a restored copy starts with a short
-#   recovery.
+#   recovery, and copies each database with pg_dump into its own file in
+#   the account's dumps folder, which the snapshot holds too, so that a
+#   database can be put back on its own (ADR 0570). A hook is one program,
+#   so postgresql-backup does both. It has an hour: the copy of large
+#   databases takes minutes.
 # - No memory limit: the database is the machine's main tenant and sizes
 #   its own memory, and an administrator who wants a limit sets one in an
 #   override file.
@@ -146,7 +151,7 @@ start = "when-enabled"
 ready = { when = "healthy", timeout = 3600 }
 health = { command = { program = "pg_isready", arguments = ["-q"], every = 30, timeout = 10, failures = 3 } }
 stop = { signal = "SIGINT", timeout = 300 }
-backup = { before = { program = "psql", arguments = ["-X", "-q", "-c", "CHECKPOINT"] } }
+backup = { before = { program = "postgresql-backup" }, time_limit = 3600 }
 
 [bundle.permissions."network.listen"]
 ports = [5432]
