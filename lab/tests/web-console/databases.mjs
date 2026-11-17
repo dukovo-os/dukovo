@@ -714,12 +714,15 @@ async function administrator(t) {
   await databaseAsAnswered(t, page, SHOP, read);
   await lookAll(t, page, "databases-database");
 
+  // lab_busy's turn comes first: letting other machines in restarts
+  // PostgreSQL, which ends the session databases.sh holds open on it.
+  const restored = await restoreBusy(t, page);
+  await removeBusy(t, page);
+  await openDatabase(t, page, SHOP);
   await letThemConnect(t, page);
   await stopThem(t, page);
   await newPassword(t, page, old);
   await removeShop(t, page);
-  const restored = await restoreBusy(t, page);
-  await removeBusy(t, page);
   await lookAll(t, page, "databases-list-after");
   await notThere(t, page);
 
