@@ -88,14 +88,15 @@ written:
 Before anything takes effect, PostgreSQL is asked to check the files it
 would read (*pg\_hba\_file\_rules* and *pg\_file\_settings*). A mistake it finds
 is the end of the command, and everything it changed is put back (DB-104).
-Then the firewall's rules are written, and the server is told. A change of *listen\_addresses* or of the
-certificate needs a restart, which *database* has Spark do with
-*service postgresql restart*: the sessions that are open end, and the
-command waits until the new server answers. Any other change is a reload,
-which ends nothing. Last, the command connects over TLS to this machine's
-address with the certificate it set, and checks the certificate against
-the names it holds; if that fails, the change is taken back and the
-server told again.
+Then the firewall's rules are written, and PostgreSQL is told to read its
+files again. A change of *listen\_addresses* or of the certificate needs a
+restart, which *database* has Spark do with *service postgresql restart*:
+the sessions that are open end, and the command waits until the new
+server answers. Any other change is a reload, which ends nothing. Last,
+the command connects over TLS to this machine's address with the
+certificate it set, and checks the certificate against the names it
+holds; if that fails, the change is taken back and the server told
+again.
 
 *The firewall.* Once PostgreSQL listens on the network, the firewall lets
 every address reach its port, as it does for any service while it runs, and
@@ -113,18 +114,19 @@ deny tcp 5432
 ```
 
 The block has an *allow* for each network that a line of the block of
-*pg\_hba.conf* names, whichever database the line is for, since 5432 is one
-port for all of them, each network once, in the order the lines come, and a
-*deny* that ends it. *deny* and *remove* make the block again from the
-lines that are left, and take it away when none is. A block that is as it should be is not
-written again. A new block goes at the end of the file, after the rules the
-administrator wrote, and a block that is there is written where it is, so
-that the administrator may move it. Every other line stays as it was
-written. After the file is written the command has the firewall load it, as
-*firewall load* does. The change is not a trial of the firewall (*firewall
-allow --try*): Spark's trials hold files under _/system/settings_ alone,
-and *pg\_hba.conf* is not one. A failure at a later step puts the
-firewall's rules back with the rest, and has the firewall load them again.
+*pg\_hba.conf* names, whichever database the line is for, since 5432 is
+one port for all of them, each network once, in the order the lines
+come, and a *deny* that ends it. *deny* and *remove* make the block
+again from the lines that are left, and take it away when none is. A
+block that is as it should be is not written again. A new block goes at
+the end of the file, after the rules the administrator wrote, and a block
+that is there is written where it is, so that the administrator may move
+it. Every other line stays as it was written. After the file is written
+the command has the firewall load it, as *firewall load* does. The
+change is not a trial of the firewall (*firewall allow --try*): Spark's
+trials hold files under _/system/settings_ alone, and *pg\_hba.conf* is
+not one. A failure at a later step puts the firewall's rules back with
+the rest, and has the firewall load them again.
 
 A rule that the administrator wrote before the block, such as *allow tcp*
 or *allow tcp 5432*, decides first for the connections it names, and
@@ -163,9 +165,9 @@ set to zero. *allow* takes up to 20 at a time.
 
 *list* [*--json*]
 	Shows the server, the databases except *postgres* and the templates,
-	the roles except those whose names start with *pg\_*, who may connect (the lines of
-	*pg\_hba.conf*, as the server read them) and the mistakes the server
-	found in that file. One line each:
+	the roles except those whose names start with *pg\_*, who may
+	connect (the lines of *pg\_hba.conf*, as the server read them) and
+	the mistakes the server found in that file. One line each:
 
 	```
 	# database list
@@ -203,9 +205,8 @@ set to zero. *allow* takes up to 20 at a time.
 *password* _name_ *--json*
 	Makes a new password for the role that owns the database _name_, and
 	prints it in JSON. The old one signs nobody in again; a session that is
-	open stays open. It is for a
-	role that has a password: one made with *--peer* has none, and
-	*password* says so.
+	open stays open. It is for a role that has a password: one made with
+	*--peer* has none, and *password* says so.
 
 *allow* _name_ *--from* _network_ [*--from* _network_ ...] [*--certificate* _name_] [*--progress*]
 	Lets each network connect to the database _name_ from other machines,
@@ -269,7 +270,9 @@ set to zero. *allow* takes up to 20 at a time.
 	Puts the copy _file_, a path that *copies* gives or any file that
 	*pg\_dump -Fc* wrote, into a database, which is _name_'s: the same
 	owner, encoding and sorting, and nobody else may connect to it. The
-	database _name_ must be there.
+	database _name_ must be there, and must sort text with *libc* or
+	*builtin*, as every database that *add* makes does: one that sorts
+	with ICU is refused, since *database* cannot make another like it.
 
 	With *--as* the copy goes into a new database called _new_, which
 	must not be there (DB-102), and _name_ is not touched. Without
@@ -311,7 +314,8 @@ set to zero. *allow* takes up to 20 at a time.
 	the owner's role finds a role that can do nothing. The role is
 	removed when the restore ends, whether it worked or not. A role
 	called *root* that is there already stops the restore before it makes
-	anything, as one left by a restore that was stopped does, and so does
+	anything, as one left by a restore that was stopped does; the words
+	say how to remove it, with *DROP ROLE root* through *psql*. So does
 	a database that a role with every right owns. The objects of the copy
 	are the owner's; a copy that needs a superuser, as an extension that
 	PostgreSQL does not trust its owner with does, fails. The first time,

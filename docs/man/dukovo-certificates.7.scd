@@ -124,6 +124,11 @@ up, which the command shows and a person adds at the name's DNS
 provider, and which also proves a wildcard name. A certificate got that
 way is not renewed by certd, which warns before it runs out.
 
+An order by HTTP that fails once it has begun is not lost: certd asks
+again every hour for a day, then every 6 hours, for 14 days, and says in
+an alert when the first day has gone by without it. *cert wanted* shows
+what it asks for, and *cert forget* stops it (*cert*(8)).
+
 The certificate from Let's Encrypt is vouched for by the authorities
 above; one from another authority is vouched for only if its authority
 is among them, and *cert show* says if not. A certificate from an
