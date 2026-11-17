@@ -889,6 +889,10 @@ async function administrator(t, made) {
   await page.context().close();
 }
 
+// A key and a chain in the shape `certificate.add` takes, for a reader's
+// refusal: no command ever reads it.
+const READER_PEM = "-----BEGIN PRIVATE KEY-----\nTUFSS0VS\n-----END PRIVATE KEY-----\n-----BEGIN CERTIFICATE-----\nQ0hBSU4=\n-----END CERTIFICATE-----\n";
+
 /** A reader sees every fact and no button but the panel's, is told who may change things, and is refused when a route is asked. */
 async function reader(t) {
   const { page } = await signedIn(t, READER);
@@ -902,8 +906,18 @@ async function reader(t) {
   ensure(other.length === 0, `a reader's page has these buttons: ${other.join(", ")}`);
   ensure((await page.getByRole("button", { name: "Upload your own…" }).count()) === 0, "a reader has Upload your own");
   ensure((await buttonIn(card(page, "name"), "Change…").count()) === 0, "a reader has Change… for the machine's name");
-  for (const route of [ROUTES.renew, ROUTES.add, ROUTES.revoke, ROUTES.remove, ROUTES.get, ROUTES.forget]) {
-    mustBe(await askFor(page, routeFor(route, "wc-cert-x"), {}), 403, "ADM-122", `a reader's ${route}`);
+  // Arguments are checked before the person (ADR 0515), so each asks with
+  // arguments the route takes, and only the person is left to refuse it.
+  const asks = [
+    [ROUTES.renew, {}],
+    [ROUTES.add, { pem: READER_PEM }],
+    [ROUTES.revoke, { reason: "unspecified" }],
+    [ROUTES.remove, {}],
+    [ROUTES.get, { names: "wc-cert-x.example.org", agree_terms: true }],
+    [ROUTES.forget, {}],
+  ];
+  for (const [route, body] of asks) {
+    mustBe(await askFor(page, routeFor(route, "wc-cert-x"), body), 403, "ADM-122", `a reader's ${route}`);
   }
   mustBe(await askFor(page, ROUTES.serve, { name: "this-machine" }), 403, "ADM-122", `a reader's ${ROUTES.serve}`);
   mustBe(await askFor(page, ROUTES.rename, { name: "wc-cert-x" }), 403, "ADM-122", `a reader's ${ROUTES.rename}`);
