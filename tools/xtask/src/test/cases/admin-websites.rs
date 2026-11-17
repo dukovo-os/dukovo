@@ -1227,9 +1227,9 @@ fn other_machines_may_connect(vm: &mut Vm, test: &mut Test) -> Result<(), String
 /// the database's owner, and leaves the database as it is; the role the
 /// restore signed in as is gone, and the new database is then removed.
 fn a_copy_put_back(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
-    // pg_restore runs as root for the task, which has no pane to ask in, so
-    // root is asked here, as it was for psql, if its answer is not kept for
-    // the whole bundle.
+    // The bundle's pg_restore, which the restore runs as root, is there; at
+    // a terminal root is asked first, as it was for psql, if its answer is
+    // not kept for the whole bundle. The task asks nobody.
     unlock(vm)?;
     let version = "clear; elevate pg_restore --version";
     run_answering_until(vm, version, "pg_restore (PostgreSQL) 19", 120)?;

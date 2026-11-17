@@ -318,8 +318,11 @@ set to zero. *allow* takes up to 20 at a time.
 	say how to remove it, with *DROP ROLE root* through *psql*. So does
 	a database that a role with every right owns. The objects of the copy
 	are the owner's; a copy that needs a superuser, as an extension that
-	PostgreSQL does not trust its owner with does, fails. The first time,
-	Dukovo asks whether the bundle may run with root's access.
+	PostgreSQL does not trust its owner with does, fails. *pg\_restore*
+	is the bundle's own program, found and checked as *bundle run*
+	checks it, and run as a program of the system's: no console asks
+	whether the bundle may run with root's access, so a restore runs
+	from the web console and on a machine with no screen.
 
 	When anything fails after the new database is made, it is taken
 	back: the new database is dropped, and with *--over* the old one has

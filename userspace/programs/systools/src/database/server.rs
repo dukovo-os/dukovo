@@ -59,9 +59,6 @@ pub const DUMPS: &str = "/shared/services/org.postgresql.postgresql/postgres/dum
 /// The folder of PostgreSQL's socket, which `pg_restore` is told with `-h`.
 pub const SOCKET_DIR: &str = "/system/live/services/postgres";
 
-/// The command that runs a bundle's command.
-const BUNDLE_COMMAND: &str = "/system/commands/bundle";
-
 /// How much of what `pg_restore` says is kept.
 pub const SAID_MAX: usize = 16 * 1024;
 
@@ -231,8 +228,10 @@ pub trait Host {
     /// The time now.
     fn now(&mut self) -> Clock;
 
-    /// Runs the bundle's `pg_restore` as root with `argv`, which reads the
-    /// copy from `copy`, an open file, as its standard input.
+    /// Runs the bundle's `pg_restore` as root with `argv`, as a program of
+    /// the system's that no person is asked about
+    /// ([`crate::bundles::run::system_program`]), which reads the copy from
+    /// `copy`, an open file, as its standard input.
     ///
     /// # Errors
     ///
@@ -423,14 +422,17 @@ impl Host for Machine {
     }
 
     fn pg_restore(&mut self, argv: &[String], copy: File) -> Result<(), String> {
-        let mut child = Command::new(BUNDLE_COMMAND)
-            .args(["run", "--command", "pg_restore", BUNDLE])
+        use std::os::unix::process::CommandExt;
+        let program = crate::bundles::run::system_program(BUNDLE, "pg_restore")
+            .map_err(|why| format!("pg_restore cannot run: {why}"))?;
+        let mut child = Command::new(&program.path)
+            .arg0(&program.arg0)
             .args(argv)
             .stdin(Stdio::from(copy))
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|error| format!("{BUNDLE_COMMAND} did not start: {error}"))?;
+            .map_err(|error| format!("pg_restore did not start: {error}"))?;
         let said = child.stderr.take().map_or_default(kept_words);
         let status = child.wait().map_err(|error| format!("pg_restore: {error}"))?;
         if status.success() {

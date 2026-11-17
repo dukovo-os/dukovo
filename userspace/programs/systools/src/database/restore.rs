@@ -16,7 +16,9 @@
 //! checked of it is checked of that open file, which `pg_restore` then
 //! reads as its standard input: the file that was checked is the file that
 //! is put back, whatever is done to its name meanwhile. `pg_restore` is the
-//! bundle's own command, run as root.
+//! bundle's own command, run as root as a program of the system's: checked
+//! as `bundle run` checks it, and with no console's question, which a task
+//! of the web console and a machine with no screen could not answer.
 //!
 //! A copy holds what the database's owner wrote, and putting it back runs
 //! some of it: a check or a default that calls a function of the owner's

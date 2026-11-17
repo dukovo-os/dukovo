@@ -191,13 +191,19 @@ when a later one fails, last first; DB-110 gives the first 16 KiB of what
 `pg_restore` said and how the taking back went, and the old database is never
 dropped.
 
-`pg_restore` is the bundle's own program, run as root through `bundle run`,
-with `--no-owner --role=OWNER --exit-on-error --no-subscriptions`, over
-PostgreSQL's socket. It is the one thing database(8) does with a program of the
-bundle: the first run asks whether the bundle may run with root's access, as for
-`elevate psql`, and the answer is given once at a terminal. A subscription of
-the copy would connect to another server, so none is made, and a restore over a
-database with subscriptions does not bring them back.
+`pg_restore` is the bundle's own program, run as root with `--no-owner
+--role=OWNER --exit-on-error --no-subscriptions`, over PostgreSQL's socket. It
+is the one thing database(8) does with a program of the bundle. It is found and
+checked as `bundle run` checks a bundle installed for everyone (its folder
+sealed, its list the one recorded and signed, the program one the list names)
+and run as a program of the system's, which no person is asked about: the
+trusted question that `bundle run` asks before a command runs with a person's
+access is asked only at a console, which a task of the web console does not
+have and a machine with no screen never shows. An administrator installed the
+bundle for everyone and asked for the restore, as Spark runs a service of such
+a bundle with no question. A subscription of the copy would connect to another
+server, so none is made, and a restore over a database with subscriptions does
+not bring them back.
 
 A copy holds what the database's owner wrote, and putting it back runs some of
 it: a check or a default that calls a function of the owner's runs as each row
@@ -286,8 +292,9 @@ system's log keeps its lines as it did.
   so a row deleted today is still in the copies of earlier days. The copy of a
   large database takes time before the snapshot is made, up to the hook's hour.
 - `database restore` runs a program of the bundle, as root, which the other
-  commands of database(8) do not: the trusted question is asked once, at a
-  terminal, before the web console can restore. It puts back only what a copy
+  commands of database(8) do not, and asks no person first: the bundle's
+  signature and an administrator's install for everyone are what it trusts,
+  as for a service. It puts back only what a copy
   holds: subscriptions are not made, and a copy that needs a superuser does not
   go in.
 - The web console's restore offers the copies that `database copies` lists and
