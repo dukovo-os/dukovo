@@ -3511,8 +3511,12 @@ page: each command takes back its own half-made change.
 | HTTPS | **shop.example.org is live over HTTP, and certd keeps the certificate shop. Try again turns HTTPS on.** | **Try again**, **Open its page** |
 
 **Try again** starts at the step that failed, and says **Done already:** with the
-steps before it. A failed order for a certificate is not tried again by itself:
-certd keeps no order that failed, so the order is made again from the website's
+steps before it. A failed order for a certificate through port 80 that began is
+kept, and certd tries it again by itself every hour for a day and every 6 hours
+after, for 14 days (see "The list" under "Certificates"): the website's page then
+says **Getting a certificate: certd tries again every hour** in place of **Get the
+certificate**. An order that failed before an account was made at the authority,
+with the terms not agreed to, is not kept, and is made again from the website's
 page.
 
 ### A website's page

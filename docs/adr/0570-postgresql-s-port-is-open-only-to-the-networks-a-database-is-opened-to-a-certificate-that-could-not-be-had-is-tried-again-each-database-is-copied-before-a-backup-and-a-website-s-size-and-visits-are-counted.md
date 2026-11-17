@@ -128,8 +128,8 @@ taken away and the order did not agree to the terms for a new one, or when a
 certificate of that name was added by hand since. Let's Encrypt allows five
 failed validations an hour for an account and a name, so an hourly try stays
 below it. A lab build of certd reads `retry_s` from
-`/system/settings/certd-lab.toml` to shorten the hour for a boot test; a
-release has no such setting.
+`/system/settings/certd-lab.toml` to shorten the hour for a test; a release
+has no such setting.
 
 A certificate that has failed for 24 hours raises the alert `certificate:NAME`,
 "The certificate NAME could not be had for a day: WHY", a warning that is
@@ -296,12 +296,14 @@ system's log keeps its lines as it did.
   and the counts for 400 days, which dukovo-privacy(7) says. A machine that was
   off for more than a day counts the last day only.
 - Deferred, each in `docs/deferred.md`: the counts of a machine that was off for
-  more than a day; the retry of a wanted certificate tested against the boot
-  test's own authority only; a copy on a schedule of its own; subscriptions
-  brought back by a restore; and a service's `logs` with an entry for each file
-  pattern, so that nginx's own files keep their 14 turned copies. The rows "A
-  first certificate order that failed, tried again by itself" and "One database
-  copied and restored on its own" close.
+  more than a day; the retry of a wanted certificate tried against an authority
+  that grants it, the lab's or a public one; a copy on a schedule of its own;
+  subscriptions brought back by a restore; the check of a backup opening a
+  database's copy; and a service's `logs` with an entry for each file pattern,
+  so that nginx's own files keep their 14 turned copies. The rows "A first
+  certificate order that failed, tried again by itself" and "One database
+  copied and restored on its own" close, the second without its check of a
+  backup, which stays as a row of its own.
 - The boot tests `admin-websites` and `admin-certificates` cover the firewall's
   block, the copies and the restore, the counts and the retry, and the web
   console's lab tests the rows and dialogs that show them.
