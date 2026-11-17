@@ -198,11 +198,14 @@ pub async fn lock(cx: &Context<'_>, live: &Live) -> Outcome {
     // The administrators' panes and the follow of the whole log end first,
     // for `locked`: authd ends their shells and the follow's command as it
     // locks, and one that ended while authd was asked would say only that
-    // its program exited.
-    cx.shared.terminals.borrow_mut().end_admin_panes(&live.authd, Why::Locked);
+    // its program exited. The panes' masters stay open until authd has
+    // ended the shells, so that its audit says the console locked: a shell
+    // hung up by its master would be gone before authd looked.
+    let panes = cx.shared.terminals.borrow_mut().close_admin_panes(&live.authd, Why::Locked);
     cx.shared.follows.borrow_mut().lock(&live.cookie);
     let what = format!("to lock {}'s session", shown(&live.name));
     ask(cx, Console::Lock { session: live.authd.clone() }, Attempt::Other, &what).await?;
+    drop(panes);
     cx.shared.set_unlocked(&live.cookie, None);
     Ok(Reply::json(json!({ "unlock_seconds": null })))
 }

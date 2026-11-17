@@ -878,7 +878,13 @@ impl Terminals {
     /// the sockets that showed it are told, and the account's that its
     /// terminal changed. A terminal left with no pane ends too.
     pub fn end_pane(&mut self, pane_id: u32, why: Why, status: Option<i32>) {
-        let Some(pane) = self.panes.remove(&pane_id) else { return };
+        drop(self.close_pane(pane_id, why, status));
+    }
+
+    /// The same, but the pane is given back with its master still open, so
+    /// that its shell is hung up only when the caller drops it.
+    fn close_pane(&mut self, pane_id: u32, why: Why, status: Option<i32>) -> Option<Pane> {
+        let pane = self.panes.remove(&pane_id)?;
         for task in &pane.tasks {
             task.abort();
         }
@@ -890,7 +896,7 @@ impl Terminals {
             }
             self.send_text(*id, &message);
         }
-        let Some(terminal) = self.terminals.get_mut(&pane.terminal) else { return };
+        let Some(terminal) = self.terminals.get_mut(&pane.terminal) else { return Some(pane) };
         terminal.panes.retain(|id| *id != pane_id);
         let status = status.map_or_else(String::new, |status| format!(" {status}"));
         log(
@@ -914,6 +920,7 @@ impl Terminals {
         }
         self.tell_changed(&account, terminal_id);
         // The master closes as `pane` goes.
+        Some(pane)
     }
 
     /// The administrators' panes that run at Unix time `now`, and those
@@ -930,11 +937,14 @@ impl Terminals {
 
     /// Ends every pane `which` picks, for `why`.
     pub fn end_where(&mut self, which: impl Fn(&Pane) -> bool, why: Why) {
+        drop(self.close_where(which, why));
+    }
+
+    /// The same, giving the panes back with their masters open.
+    fn close_where(&mut self, which: impl Fn(&Pane) -> bool, why: Why) -> Vec<Pane> {
         let ended: Vec<u32> =
             self.panes.values().filter(|pane| which(pane)).map(|pane| pane.id).collect();
-        for pane in ended {
-            self.end_pane(pane, why, None);
-        }
+        ended.into_iter().filter_map(|pane| self.close_pane(pane, why, None)).collect()
     }
 
     /// Ends the panes of terminal `id`, and so the terminal.
@@ -951,7 +961,18 @@ impl Terminals {
     /// Ends the administrators' panes of the console session `session`,
     /// for `why`.
     pub fn end_admin_panes(&mut self, session: &str, why: Why) {
-        self.end_where(|pane| pane.admin.as_deref() == Some(session), why);
+        drop(self.close_admin_panes(session, why));
+    }
+
+    /// Ends the administrators' panes of `session` for `why`, as the
+    /// sockets and the lists see them, and gives them back with their
+    /// masters open. The caller drops them once authd has ended their
+    /// shells: a shell hung up by its master first would end, and be
+    /// reaped, before authd looks, and authd's audit would not say that
+    /// the console locked or the session ended.
+    #[must_use = "dropping the panes hangs their shells up"]
+    pub fn close_admin_panes(&mut self, session: &str, why: Why) -> Vec<Pane> {
+        self.close_where(|pane| pane.admin.as_deref() == Some(session), why)
     }
 
     /// Tells each socket of `account` that terminal `terminal` changed.
