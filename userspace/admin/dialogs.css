@@ -16,6 +16,9 @@
 .dialog-body.roomy { --gap: 1rem; padding: 1.714rem; }
 .dialog-title { font: 400 1.357rem var(--font-ui); color: var(--instr); }
 .dialog-foot { display: flex; flex-wrap: wrap; gap: .571rem; justify-content: flex-end; padding: .857rem 1.143rem; border-top: 1px solid var(--border); background: var(--pane); border-radius: 0 0 .5rem .5rem; }
+/* A modal dialog keeps below it the margin it has above, on any screen:
+   what does not fit scrolls inside it, so that its foot can be reached. */
+dialog.dialog:not(.sheet) { max-height: calc(100% - 6.143rem); overflow-y: auto; }
 @media (max-width: 480px) {
   .dialog-body.roomy { padding: 1.286rem; }
 }
