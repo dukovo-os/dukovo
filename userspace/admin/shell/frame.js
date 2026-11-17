@@ -311,9 +311,11 @@ export async function enterShell({ app, session: first, signOut, signInAgain, on
     },
     onEvent(name, data) {
       if (name === 'unlock') setUnlockSeconds(data.unlock_seconds);
-      // A restart ends every session: the banner waits, and the server says so when it answers.
-      if (name === 'session' && data.ended === 'restarted') online.lost();
-      else if (name === 'session') onEnded(data.ended);
+      // A restart ends every session: the stream is over, and the banner waits for the server.
+      if (name === 'session' && data.ended === 'restarted') {
+        stream.close();
+        online.lost();
+      } else if (name === 'session') onEnded(data.ended);
       if (name === 'trial') header.trials(data.trials);
       if (name === 'task') tasks.event(name, data);
       // What the parts kept is old now, before the page reads again.

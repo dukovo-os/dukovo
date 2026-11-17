@@ -288,8 +288,8 @@ test('a restart with no release to bring keeps nothing, and a kept release over 
   assert.equal(later.world.asked, 0);
 });
 
-test('the frame reads the banner once the first page is shown, and a session that a restart ended is the server going away', () => {
+test('the frame reads the banner once the first page is shown, and a session that a restart ended is the server going away, whose stream is not opened again', () => {
   const frame = readFileSync(`${ROOT}shell/frame.js`, 'utf8');
   assert.match(frame, /await router\.start\(\);\n\s+begin\(\);\n/);
-  assert.match(frame, /if \(name === 'session' && data\.ended === 'restarted'\) online\.lost\(\);\n\s+else if \(name === 'session'\) onEnded\(data\.ended\);/);
+  assert.match(frame, /if \(name === 'session' && data\.ended === 'restarted'\) \{\n\s+stream\.close\(\);\n\s+online\.lost\(\);\n\s+\} else if \(name === 'session'\) onEnded\(data\.ended\);/);
 });
