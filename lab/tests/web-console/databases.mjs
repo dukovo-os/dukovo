@@ -648,7 +648,7 @@ async function removeBusy(t, page) {
   ensure((await factsOf(page)).Sessions !== "0", `the page says no session is open on ${BUSY}`);
   await t.see(cardOf(page, "About this database").getByText(/\d+ programs? (is|are) connected now\./));
   // Without force the machine refuses, and changes nothing.
-  mustBe(await fetchAsPage(page, "POST", pathOf(ROUTES.remove, BUSY), {}), 409, "DB-103", `the removal of ${BUSY} without force`);
+  mustBe(await fetchAsPage(page, "POST", pathOf(ROUTES.remove, BUSY), {}), 422, "DB-103", `the removal of ${BUSY} without force`);
   ensure(rowOf(await readDatabases(page), BUSY) !== undefined, `${BUSY} is gone though its removal was refused`);
 
   await buttonOf(page, "Remove…").click();
