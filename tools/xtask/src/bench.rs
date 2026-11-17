@@ -157,9 +157,9 @@ pub const BUDGETS: &[(&str, u64)] = &[
     ("posix_poll", 1_300),                     // 1,092
     ("posix_futex_same_cpu", 5_300),           // 4,787
     ("posix_futex_shared_same_cpu", 5_800),    // 5,248
-    ("posix_tcp_connect", 76_000),             // 69,397, beside 11 idle sockets (ADR 0550)
+    ("posix_tcp_connect", 71_000),             // 64,734, beside 11 idle sockets (ADR 0550)
     ("posix_tcp_roundtrip_same_cpu", 11_000),  // 9,274
-    ("posix_udp_roundtrip_same_cpu", 25_000),  // 22,807, beside 11 idle sockets (ADR 0550)
+    ("posix_udp_roundtrip_same_cpu", 23_500),  // 21,291, beside 11 idle sockets (ADR 0550)
     ("posix_tcp_mib", 1_700_000),              // 1,515,375
 ];
 

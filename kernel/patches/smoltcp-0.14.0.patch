@@ -205,6 +205,14 @@ waker, as a segment carrying them would; and `wake` on the TCP, UDP and
 ICMP sockets wakes both, for a change to the interface that no socket
 sees.
 
+An interface sending what its sockets hold passes over a socket that
+certainly has nothing to send before it works out anything else for it:
+a UDP or ICMP socket with nothing queued, a TCP socket with no one to
+talk to, listening or closed (`Socket::has_nothing_to_send`). Each idle
+socket cost every poll the neighbour check and the dispatch's setup
+before; a system's idle sockets, its services' listening ones, cost a
+packet less than half as much as they did (ADR 0550).
+
 To be offered upstream.
 
 --- a/src/iface/interface/tcp.rs
@@ -4342,3 +4350,84 @@ To be offered upstream.
 +        }
      }
  }
+--- a/src/iface/interface/mod.rs
++++ b/src/iface/interface/mod.rs
+@@ -801,6 +801,11 @@
+ 
+         let mut result = PollResult::None;
+         for item in sockets.items_mut() {
++            // A socket with nothing to send is passed over before anything
++            // else is worked out for it: an idle one costs a load or two.
++            if item.socket.has_nothing_to_send() {
++                continue;
++            }
+             if !item
+                 .meta
+                 .egress_permitted(self.inner.now, |ip_addr| self.inner.has_neighbor(&ip_addr))
+--- a/src/socket/icmp.rs
++++ b/src/socket/icmp.rs
+@@ -757,6 +757,11 @@
+         }
+     }
+ 
++    /// Whether `dispatch` would send nothing: no packet waits.
++    pub(crate) fn has_nothing_to_send(&self) -> bool {
++        self.tx_buffer.is_empty()
++    }
++
+     pub(crate) fn poll_at(&self, _cx: &mut Context) -> PollAt {
+         if self.tx_buffer.is_empty() {
+             PollAt::Ingress
+--- a/src/socket/mod.rs
++++ b/src/socket/mod.rs
+@@ -73,6 +73,21 @@
+ }
+ 
+ impl<'a> Socket<'a> {
++    /// Whether the socket certainly has nothing to send now, found
++    /// without working out more: the interface passes such a socket over.
++    pub(crate) fn has_nothing_to_send(&self) -> bool {
++        match self {
++            #[cfg(feature = "socket-icmp")]
++            Socket::Icmp(s) => s.has_nothing_to_send(),
++            #[cfg(feature = "socket-udp")]
++            Socket::Udp(s) => s.has_nothing_to_send(),
++            #[cfg(feature = "socket-tcp")]
++            Socket::Tcp(s) => s.has_nothing_to_send(),
++            #[allow(unreachable_patterns)]
++            _ => false,
++        }
++    }
++
+     pub(crate) fn poll_at(&self, cx: &mut Context) -> PollAt {
+         match self {
+             #[cfg(feature = "socket-raw")]
+--- a/src/socket/tcp.rs
++++ b/src/socket/tcp.rs
+@@ -3489,6 +3489,12 @@
+     }
+ 
+     #[allow(clippy::if_same_then_else)]
++    /// Whether `dispatch` would send nothing whatever the time: a socket
++    /// with no one to talk to, listening or closed.
++    pub(crate) fn has_nothing_to_send(&self) -> bool {
++        self.tuple.is_none()
++    }
++
+     pub(crate) fn poll_at(&self, cx: &mut Context) -> PollAt {
+         // The logic here mirrors the beginning of dispatch() closely.
+         if self.tuple.is_none() {
+--- a/src/socket/udp.rs
++++ b/src/socket/udp.rs
+@@ -732,6 +732,11 @@
+         }
+     }
+ 
++    /// Whether `dispatch` would send nothing: no datagram waits.
++    pub(crate) fn has_nothing_to_send(&self) -> bool {
++        self.tx_buffer.is_empty()
++    }
++
+     pub(crate) fn poll_at(&self, _cx: &mut Context) -> PollAt {
+         if self.tx_buffer.is_empty() {
+             PollAt::Ingress

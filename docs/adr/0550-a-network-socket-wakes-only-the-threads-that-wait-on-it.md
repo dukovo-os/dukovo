@@ -99,9 +99,10 @@ on that socket's queue alone.
   a separate change.
 - smoltcp still goes through every socket of a stack for each packet and
   each poll, so an idle socket is not free: the benchmarks' 11 idle
-  sockets cost a UDP round trip on one CPU about 5,000 instructions and a
-  TCP connection about 14,000, which their instruction budgets now
-  allow for. A round trip over a TCP connection passes its bytes straight
+  sockets cost a UDP round trip on one CPU about 3,500 instructions and a
+  TCP connection about 10,000, which their instruction budgets now
+  allow for, since the send loop passes over a socket with nothing to
+  send first. A round trip over a TCP connection passes its bytes straight
   across (ADR 0186) and does not pay it. Finding a socket by its address
   and port, as Linux does, is a separate change.
 - The kernel's wait table is one list, which `wake_all` goes through:
