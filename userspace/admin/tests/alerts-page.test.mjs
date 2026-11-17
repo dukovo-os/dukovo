@@ -105,6 +105,11 @@ test('Send a test alert shows each channel\'s line, and the rows are read again'
   const lines = world.card('channels').querySelectorAll('.al-test li').map((one) => text(one));
   assert.deepEqual(lines, ['email: sent', 'ntfy (ntfy.sh): failed: ntfy answered 403 Forbidden: forbidden ALR-102']);
   assert.ok(world.card('channels').querySelector('.al-test li').classes.has('al-ok'));
+  // A list that is said as it comes: a role would take the list's away from its items.
+  const results = world.card('channels').querySelector('.al-test');
+  assert.equal(results.tag, 'ul');
+  assert.equal(results.getAttribute('role'), null);
+  assert.equal(results.getAttribute('aria-live'), 'polite');
   assert.ok(world.calls.filter((path) => path === '/api/1/alerts/channels').length > before);
   assert.ok(world.ran('alerts.test').length >= 1);
 });
