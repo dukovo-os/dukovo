@@ -108,13 +108,18 @@ SLOWEST_CHANGE = 10
 EXAMPLES = 50
 
 # The changes the third run leaves alone: certificate.renew makes the certificate the console
-# serves anew, which the boot test admin-actions renews; and the changes that are tried, whose
-# examples give the card and the rules of QEMU's user network, which another machine does not
-# have, and which the boot test admin-trials and the browser tests of Networking and Firewall
-# try, keep and undo.
+# serves anew, which the boot test admin-actions renews; and the changes that are tried (ADRs 0518
+# and 0562), as web-console/ansible.py leaves them: the network's examples give the card and the
+# rules of QEMU's user network, which another machine does not have; SSH's settings and the
+# console's certificate start a trial that Spark undoes unless it is kept, and their keep and undo
+# need one running; and the console's certificate is refused (ADM-141) where it does not name the
+# address the test reaches the console by, as 127.0.0.1 through QEMU. The boot tests admin-trials and
+# admin-certificates and the browser tests of Networking, Firewall, Security and Certificates try,
+# keep and undo them.
 TRIED = {
     "network.set", "network.keep", "network.undo",
     "firewall.add", "firewall.replace", "firewall.remove", "firewall.keep", "firewall.undo",
+    "ssh.set", "ssh.keep", "ssh.undo", "console.keep", "console.undo", "console.certificate",
 }
 # The actions of the Snapshots, Backups and Move pages whose examples need what only their own
 # tests set up: a snapshot, a backup place on a second disk, or the folder of another machine's
