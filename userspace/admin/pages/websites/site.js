@@ -164,7 +164,7 @@ export async function showSite(view, name) {
       text.hidden = !text.hidden;
       one.textContent = text.hidden ? 'Show the file' : 'Hide the file';
     });
-    return h('dd', { 'data-row': 'file' },
+    return h('dd', { 'data-row': 'file', class: 'web-file' },
       h('span', { class: 'mono' }, site.file),
       h('small', { class: edit.tone === 'warn' ? 'web-tone-warn' : null }, edit.words),
       edit.by && hasPage('/reliability') && h('small', {}, 'It is also a row of ', h('a', { href: '/reliability' }, 'What changed'), ', with Keep it and Put back.'),

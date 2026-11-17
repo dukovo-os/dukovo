@@ -227,7 +227,7 @@ export const memtest = (more = {}) => plain({
 });
 
 /** The test asked for at 3:10 PM on November 14, by chase. */
-export const asked = () => ({ at_ms: Date.UTC(2026, 10, 14, 15, 10, 0), by: 'chase' });
+export const asked = () => ({ at_ms: Date.UTC(2026, 10, 14, 15, 10, 0), by: 1000, by_name: 'chase' });
 
 /** The last test at a start, as `result` (`passed`, `errors`, `unfinished` or `not-taken`) gives it: at 3:06 AM on November 14, of a 16 GiB machine. */
 export const startTest = (result = 'passed', more = {}) => {
