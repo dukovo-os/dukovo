@@ -280,7 +280,13 @@ tcp 8000           212  /users/alice/bin/devserver       this machine only
 `firewall list` numbers them and `firewall remove N` takes one away;
 they are kept in `/system/settings/firewall`, and the first that
 matches decides. Changing them needs an administrator, through
-`elevate`. The kernel logs what it drops, five a second at most:
+`elevate`. A command may keep a block of rules in the file between two comment
+lines of its own, which it writes whole each time and changes no other line of:
+`database` keeps one that opens PostgreSQL's port 5432 to the networks a database
+is opened to and to no others (see [PostgreSQL](postgresql.md#letting-other-machines-connect)).
+`firewall list` numbers its rules as it numbers the others, and `firewall remove`
+takes one away until the command writes the block again. The kernel logs what it
+drops, five a second at most:
 
 ```
 Firewall: dropped a TCP connection from 192.168.1.7:51514 to port 8000 on net0: process 212 listens for this machine alone
