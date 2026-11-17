@@ -345,10 +345,13 @@ def run_schemathesis(command, folder, document, origin, name, seed, headers, opt
     run = subprocess.run(arguments + options, capture_output=True, text=True, cwd=folder, env=env, timeout=3600)
     output = run.stdout + run.stderr
     if run.returncode != 0:
-        # The failures come before the summary; the first few say what is wrong.
-        failures = output.find("FAILURES")
+        # The errors and the failures come before the summary; the first few of each say what is
+        # wrong, and an error, as an answer that never came, names its operation only there.
+        errors = output.find("= ERRORS =")
+        failures = output.find("= FAILURES =")
         summary = output.rfind("SUMMARY")
-        shown = output[failures : failures + 3500] if failures >= 0 else ""
+        shown = output[errors : errors + 1500] if errors >= 0 else ""
+        shown += output[failures : failures + 3500] if failures >= 0 else ""
         raise Failure(
             f"{name}: Schemathesis ended with status {run.returncode}; rerun with LAB_FUZZ_SEED={seed}:\n"
             f"{shown}\n{output[summary:][-1500:] if summary >= 0 else output[-1500:]}"
