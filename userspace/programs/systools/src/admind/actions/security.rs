@@ -218,6 +218,20 @@ impl Action for SignInSet {
         Some(document.get("sign_in")?.to_string())
     }
 
+    /// The rules are as asked already when each one given is the one in
+    /// force, which `now`, the `sign_in` that [`Self::probed`] picks, says.
+    fn settled(args: &Rules, now: &str) -> Option<bool> {
+        let now: Value = serde_json::from_str(now).ok()?;
+        let step = now.get("second_step")?.as_str()?;
+        let hours = now.get("session_hours")?.as_i64()?;
+        let minutes = now.get("idle_minutes")?.as_i64()?;
+        Some(
+            args.second_step.as_deref().is_none_or(|asked| asked == step)
+                && args.session_hours.is_none_or(|asked| asked == hours)
+                && args.idle_minutes.is_none_or(|asked| asked == minutes),
+        )
+    }
+
     fn examples() -> Examples<Rules> {
         // The default is 12 hours, so 8 is a change; what puts it back is
         // the default, which a test holds to `admin_settings`'s.
@@ -388,6 +402,15 @@ impl Args for Taken {
 /// machine of the tests is on.
 const EXAMPLE_NETWORK: &str = "192.0.2.0/24";
 
+/// Whether blocking.toml, which holds `text` (None when there is no file),
+/// lists `network` in `never`: None when the file or the network does not
+/// read, which the command refuses and check mode cannot tell of.
+fn never_lists(network: &str, text: Option<&str>) -> Option<bool> {
+    let network = blocking::Network::parse(network).ok()?;
+    let settings = blocking::Settings::parse(text.unwrap_or_default()).ok()?;
+    Some(settings.never.contains(&network))
+}
+
 /// `firewall never-block NETWORK`: keeps a network out of the blocks, however
 /// many wrong passwords come from it. What puts it back is the removal.
 pub struct NeverBlock;
@@ -412,6 +435,11 @@ impl Action for NeverBlock {
 
     fn files(_: &Network) -> Vec<String> {
         vec![blocking::SETTINGS.into()]
+    }
+
+    /// authd writes nothing when `never` lists the network already.
+    fn keeps_file(args: &Network, _: &str, text: Option<&str>) -> Option<bool> {
+        never_lists(&args.network, text)
     }
 
     fn examples() -> Examples<Network> {
@@ -458,6 +486,11 @@ impl Action for NeverBlockRemove {
 
     fn files(_: &Taken) -> Vec<String> {
         vec![blocking::SETTINGS.into()]
+    }
+
+    /// authd writes nothing when `never` does not list the network.
+    fn keeps_file(args: &Taken, _: &str, text: Option<&str>) -> Option<bool> {
+        never_lists(&args.network, text).map(|listed| !listed)
     }
 
     fn examples() -> Examples<Taken> {
@@ -676,6 +709,15 @@ mod tests {
         for output in ["", "{}", "[]", "not json", r#"{"console":{}}"#] {
             assert_eq!(picked(output), None, "{output:?}");
         }
+        // Check mode: the rules given are the ones in force, or one is not.
+        let now = picked(&printed(12, "private")).unwrap();
+        let settled = |args: Value| action.settled(&action.prepare(args).unwrap().args, &now);
+        assert_eq!(settled(json!({ "session_hours": 8 })), Some(false));
+        assert_eq!(settled(json!({ "session_hours": 12 })), Some(true));
+        assert_eq!(settled(json!({ "session_hours": 12, "idle_minutes": 30 })), Some(true));
+        assert_eq!(settled(json!({ "session_hours": 12, "second_step": "everyone" })), Some(false));
+        assert_eq!(settled(json!({ "second_step": "if-set" })), Some(true));
+        assert_eq!(action.settled(&prepared.args, "not json"), None);
     }
 
     #[test]
@@ -766,6 +808,28 @@ mod tests {
         }
         let (_, _, words) = refused("security.never-block", json!({ "network": "192.0.2.5/24" }));
         assert!(words.contains("bits set past its prefix"), "{words}");
+    }
+
+    #[test]
+    fn check_mode_reads_the_never_list_that_each_leaves_as_it_is() {
+        let path = "/system/settings/blocking.toml";
+        let (add, remove) = (action("security.never-block"), action("security.never-block-remove"));
+        let args = |action: &'static dyn Registered| {
+            action.prepare(json!({ "network": "192.0.2.0/24" })).unwrap().args
+        };
+        let (added, removed) = (args(add), args(remove));
+        let listed = "never = [\"10.0.0.0/8\", \"192.0.2.0/24\"]\n";
+        for text in [None, Some(""), Some("never = [\"10.0.0.0/8\"]\n")] {
+            assert_eq!(add.keeps_file(&added, path, text), Some(false), "{text:?}");
+            assert_eq!(remove.keeps_file(&removed, path, text), Some(true), "{text:?}");
+        }
+        assert_eq!(add.keeps_file(&added, path, Some(listed)), Some(true));
+        assert_eq!(remove.keeps_file(&removed, path, Some(listed)), Some(false));
+        // One address is a network of its own: 192.0.2.7 is not 192.0.2.0/24.
+        let one = add.prepare(json!({ "network": "192.0.2.7" })).unwrap().args;
+        assert_eq!(add.keeps_file(&one, path, Some(listed)), Some(false));
+        // A file that does not read is refused by the command: check mode cannot tell.
+        assert_eq!(add.keeps_file(&added, path, Some("never = 3\n")), None);
     }
 
     #[test]
