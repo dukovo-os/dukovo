@@ -19,7 +19,13 @@
 // page (`POST /api/1/certificates/{name}/renew`, `POST
 // /api/1/certificates/{name}/revoke`, `POST /api/1/certificates/{name}/remove`).
 // The one proved by DNS cannot be renewed by certd: the page learns it from
-// the refusal and offers Renew by DNS, which fills the form. Upload your own
+// the refusal and offers Renew by DNS, which fills the form. An order that
+// cannot finish is kept for certd to ask again every hour: the list has a row
+// of its own kind for it (`GET /api/1/certificates/wanted/all`, what `cert
+// wanted --json` prints), which says when certd tries next, how many tries
+// there were and what the last said; a reader sees the row and has no Forget,
+// and an administrator's Forget asks first and stops certd trying (`POST
+// /api/1/certificates/{name}/forget`), which takes the row away. Upload your own
 // (`POST /api/1/certificates/{name}/add`) sends the key and the chain once, as
 // one secret, and the key is nowhere else: not the page, not a command shown,
 // not a request but the one, not the browser's storage. Use for this console
@@ -102,6 +108,8 @@ const ROUTES = {
   add: "POST /api/1/certificates/{name}/add",
   revoke: "POST /api/1/certificates/{name}/revoke",
   remove: "POST /api/1/certificates/{name}/remove",
+  wanted: "GET /api/1/certificates/wanted/all",
+  forget: "POST /api/1/certificates/{name}/forget",
   machine: "GET /api/1/machine/name",
   rename: "POST /api/1/machine/name",
   serve: "POST /api/1/console/certificate",
@@ -132,6 +140,7 @@ const NOT_TRUSTED = "Not from an authority this server trusts";
 const SERVING = (name) => `This console now serves ${name}'s certificate. Keep it once this page has come back on it.`;
 const AGAIN = "Use this server's own certificate again";
 const NOT_FINISHED = "The order did not finish.";
+const FORGET_WORDS = (name) => `Stop trying to get ${name}? certd will not ask the authority for it again, and its alert goes away.`;
 
 // --- Reading the machine ---
 
@@ -400,6 +409,86 @@ async function orderCannotFinish(t, page) {
   ensure((await get.getAttribute("aria-disabled")) !== "true", "the button that gets the certificate stays off after the order ended");
   const after = await readList(page);
   ensure(after.length === before.length, `an order that did not finish changed the list from ${before.length} to ${after.length} certificates`);
+}
+
+// --- What certd tries again ---
+
+/** What `GET /api/1/certificates/wanted/all` says: `cert wanted --json`, `{format, wanted: [...]}`. */
+async function readWanted(page) {
+  const answer = await askFor(page, ROUTES.wanted);
+  ensure(answer.status === 200 && Array.isArray(answer.json?.wanted), `${ROUTES.wanted} was answered ${answer.status}: ${answer.text}`);
+  return answer.json;
+}
+
+/** The record of `name` in what certd asks for again, or null. */
+const wantedOne = (read, name) => read.wanted.find((one) => one.name === name) ?? null;
+
+/** The row of the list that says certd tries to get `name` again. */
+const wantedRow = (page, name) => page.locator(`#certificates tr.certs-wanted[data-wanted="${name}"]`);
+
+/**
+ * The order that did not finish was kept: the machine has its record, and the
+ * list has a row for it that says when certd tries next, how many tries there
+ * were and what the last said, as the record has it. Gives the record.
+ */
+async function wantedIsShown(t, page) {
+  const read = await eventually(async () => {
+    const found = await readWanted(page);
+    ensure(wantedOne(found, ORDERED) !== null, `the order of ${ORDERED} that did not finish left no record in ${ROUTES.wanted}: ${JSON.stringify(found.wanted)}`);
+    return found;
+  }, 30);
+  const record = wantedOne(read, ORDERED);
+  ensure(record.given_up === false && record.tries >= 1 && record.names?.[0] === ORDERED && record.next_ms > record.first_ms, `the record of ${ORDERED} is ${JSON.stringify(record)}`);
+
+  // The card reads the records beside the certificates, so it is opened again.
+  await openCertificates(t, page);
+  const line = wantedRow(page, ORDERED);
+  await t.see(line);
+  const words = (await line.innerText()).replace(/\s+/g, " ");
+  ensure(words.includes("Trying again: next at "), `the row of ${ORDERED} does not say that certd tries again: ${words}`);
+  ensure(words.includes(record.tries === 1 ? "1 try" : `${record.tries} tries`), `the row of ${ORDERED} does not say ${record.tries} tries: ${words}`);
+  ensure(words.includes("last: "), `the row of ${ORDERED} does not say what the last try said: ${words}`);
+  const id = /\(([A-Z]{2,4}-\d{3})\)/.exec(record.why)?.[1];
+  if (id !== undefined) ensure(words.includes(id), `the row of ${ORDERED} does not say ${id}, which the last try ended with: ${words}`);
+  await t.see(buttonIn(line, "Forget"));
+  ensure((await row(page, ORDERED).count()) === 0, `${ORDERED} is listed among the certificates, which it is not`);
+  await lookAll(t, page, "certificates-wanted");
+  return record;
+}
+
+/** A reader sees the row, whose words are the machine's, and has no Forget; the route refuses it, and the list of records is open to it. */
+async function readerSeesWanted(t, record) {
+  const { page } = await signedIn(t, READER);
+  await openCertificates(t, page);
+  const line = wantedRow(page, ORDERED);
+  await t.see(line);
+  ensure((await line.innerText()).replace(/\s+/g, " ").includes("Trying again: next at "), "a reader's row of what certd tries again does not say so");
+  ensure((await buttonIn(line, "Forget").count()) === 0, "a reader's row of what certd tries again has Forget");
+  ensure(wantedOne(await readWanted(page), ORDERED)?.tries === record.tries, `a reader's ${ROUTES.wanted} does not give the record of ${ORDERED}`);
+  mustBe(await askFor(page, routeFor(ROUTES.forget, ORDERED), {}), 403, "ADM-122", `a reader's ${ROUTES.forget}`);
+  ensure(wantedOne(await readWanted(page), ORDERED) !== null, `a reader's ${ROUTES.forget} took the record of ${ORDERED} away`);
+  await signOut(t, page);
+  await page.context().close();
+}
+
+/** Forget asks first, and Cancel leaves the record; Forget it stops certd trying and takes the row away. */
+async function forgets(t, page) {
+  const dialog = page.getByRole("dialog", { name: `Forget ${ORDERED}`, exact: true });
+  await opensDialog(t, page, buttonIn(wantedRow(page, ORDERED), "Forget"), dialog);
+  await t.see(dialog.getByText(FORGET_WORDS(ORDERED), { exact: true }));
+  await lookAll(t, page, "certificates-forget");
+  await buttonIn(dialog, "Cancel").click();
+  await t.gone(dialog);
+  ensure(wantedOne(await readWanted(page), ORDERED) !== null, `Cancel took the record of ${ORDERED} away`);
+  await t.see(wantedRow(page, ORDERED));
+
+  await opensDialog(t, page, buttonIn(wantedRow(page, ORDERED), "Forget"), dialog);
+  await pressFor(t, page, buttonIn(dialog, "Forget it"), routeFor(pathOf(ROUTES.forget), ORDERED));
+  await t.gone(wantedRow(page, ORDERED));
+  ensure(wantedOne(await readWanted(page), ORDERED) === null, `${ROUTES.wanted} still has ${ORDERED} after Forget it`);
+  // Forgetting what certd has no record of is refused, and the list stays as it is.
+  const again = await askFor(page, routeFor(ROUTES.forget, ORDERED), {});
+  ensure(again.status >= 400, `${ROUTES.forget} for ${ORDERED} was answered ${again.status} when certd had no record of it`);
 }
 
 // --- Renew, revoke, remove ---
@@ -734,6 +823,9 @@ async function administrator(t, made) {
   await opensPort(t, page);
   await keepsPort(t, page);
   await orderCannotFinish(t, page);
+  const record = await wantedIsShown(t, page);
+  await readerSeesWanted(t, record);
+  await forgets(t, page);
 
   // What Pebble made: renewed, shown, the one proved by DNS refused its renewal, revoked, removed.
   await renewsStandalone(t, page);
@@ -767,8 +859,8 @@ async function administrator(t, made) {
 
   const concrete = (route, name) => `${methodOf(route)} ${routeFor(pathOf(route), name)}`;
   mustHaveCalled(a.seen, [
-    ROUTES.list, ROUTES.history, ROUTES.machine, ROUTES.rename, ROUTES.serve, ROUTES.consoleKeep, ROUTES.consoleUndo, ROUTES.open, ROUTES.portKeep, ROUTES.portUndo,
-    concrete(ROUTES.show, STANDALONE), concrete(ROUTES.get, ORDERED), concrete(ROUTES.renew, STANDALONE), concrete(ROUTES.revoke, STANDALONE),
+    ROUTES.list, ROUTES.history, ROUTES.wanted, ROUTES.machine, ROUTES.rename, ROUTES.serve, ROUTES.consoleKeep, ROUTES.consoleUndo, ROUTES.open, ROUTES.portKeep, ROUTES.portUndo,
+    concrete(ROUTES.show, STANDALONE), concrete(ROUTES.get, ORDERED), concrete(ROUTES.forget, ORDERED), concrete(ROUTES.renew, STANDALONE), concrete(ROUTES.revoke, STANDALONE),
     concrete(ROUTES.remove, STANDALONE), concrete(ROUTES.add, OTHER), concrete(ROUTES.fresh, "firewall"), concrete(ROUTES.fresh, "console"),
   ]);
   ensure([...a.seen].some((route) => route.startsWith(`${methodOf(ROUTES.check)} ${pathOf(ROUTES.check).replace("{names}", "")}`)), `the test never called ${ROUTES.check}`);
@@ -788,7 +880,7 @@ async function reader(t) {
   ensure(other.length === 0, `a reader's page has these buttons: ${other.join(", ")}`);
   ensure((await page.getByRole("button", { name: "Upload your own…" }).count()) === 0, "a reader has Upload your own");
   ensure((await buttonIn(card(page, "name"), "Change…").count()) === 0, "a reader has Change… for the machine's name");
-  for (const route of [ROUTES.renew, ROUTES.add, ROUTES.revoke, ROUTES.remove, ROUTES.get]) {
+  for (const route of [ROUTES.renew, ROUTES.add, ROUTES.revoke, ROUTES.remove, ROUTES.get, ROUTES.forget]) {
     mustBe(await askFor(page, routeFor(route, "wc-cert-x"), {}), 403, "ADM-122", `a reader's ${route}`);
   }
   mustBe(await askFor(page, ROUTES.serve, { name: "this-machine" }), 403, "ADM-122", `a reader's ${ROUTES.serve}`);

@@ -14,7 +14,19 @@
 // (`POST /api/1/websites/{name}/https`, a task), removes the site with its folder
 // or without it, with its name typed first (`POST /api/1/websites/{name}/remove`,
 // a task), and asks nginx to check the sites as they are
-// (`GET /api/1/websites/check`).
+// (`GET /api/1/websites/check`), and says whether nginx's settings define the
+// format of the sites' logs, which the visits are counted from.
+//
+// The list has a Size and a Visits yesterday column, and a site's page a Visits
+// card with a chart of the last 30 days, each held to what `website list
+// --json` says of the site's `size` and `visits`: dashes, and "Not counted
+// yet", until `website count --now` has counted the logs (websites.sh does,
+// between a and b), then the folder's size, the visits of yesterday, and the
+// chart with the days, visits and errors, whose numbers are one click away. A
+// site whose certificate could not be got is kept for certd to ask again (`GET
+// /api/1/certificates/wanted/all`): its page says so in place of Get a
+// certificate, and Forget on the Certificates page (`POST
+// /api/1/certificates/{name}/forget`) stops certd and gives the button back.
 //
 // The script runs three times for each engine, with the machine in the state
 // that the word in /tmp/lab-websites-machine says, which websites.toml writes
@@ -97,6 +109,8 @@ const ROUTES = {
   add: "POST /api/1/websites/add",
   https: "POST /api/1/websites/{name}/https",
   remove: "POST /api/1/websites/{name}/remove",
+  wanted: "GET /api/1/certificates/wanted/all",
+  forget: "POST /api/1/certificates/{name}/forget",
 };
 
 /** The path of a route as the table names it, for the site `name`. */
@@ -123,6 +137,11 @@ const NOT_GOT = `${PHP} is live over HTTP. The certificate was not got: the site
 const HAND_WORDS = "Changed by hand · kept as you wrote it";
 const HAND_LOCKED = "The file was changed by hand, so website does not write it: add the HTTPS server yourself, as website(8) shows.";
 const BLOCKED = "Put right what the plan says first.";
+const GETTING = "Getting a certificate: certd tries again every hour";
+const NOT_COUNTED = "Not counted yet: visits are counted once a day.";
+const COUNTED = "Counted once a day from nginx's log; the log holds no addresses.";
+const NO_LOG_FORMAT = "do not define the log format of the sites' own logs";
+const DASH = "–";
 
 // --- Waiting and reading ---
 
@@ -537,12 +556,44 @@ async function addPhpSite(t, page, lab) {
   ensure(JSON.stringify(site.names) === JSON.stringify([PHP, PHP_WWW]), `the names of ${PHP} are ${JSON.stringify(site.names)}`);
 }
 
+/**
+ * The order of the PHP site failed after it began, and the terms were agreed
+ * to, so certd keeps it and asks again every hour: the machine has the record
+ * and the site's page says so in place of Get a certificate. Forget on the
+ * Certificates page stops certd, and the site's page has the button again.
+ */
+async function certdTriesAgain(t, page) {
+  const kept = (await readOf(page, ROUTES.wanted))?.wanted?.find((one) => one.name === PHP);
+  ensure(kept !== undefined && kept.given_up === false, `the order of ${PHP} that failed is not kept for certd to ask again: ${JSON.stringify(kept)}`);
+  const getting = rowFact(page, "https").locator('p[data-row="getting"]');
+  await t.see(getting);
+  ensure((await getting.innerText()).trim() === GETTING, `the page says ${JSON.stringify(await getting.innerText())} while certd tries again`);
+  ensure((await buttonOf(page, "Get a certificate").count()) === 0, "Get a certificate is offered while certd tries to get the certificate");
+  await t.see(buttonOf(page, "Use one that is here…"));
+  await lookAll(t, page, "websites-getting");
+
+  await page.goto(new URL("/certificates", page.url()).href);
+  const line = page.locator(`#certificates tr.certs-wanted[data-wanted="${PHP}"]`);
+  await t.see(line);
+  await buttonOf(line, "Forget").click();
+  await answerIfAsked(t, page);
+  const dialog = dialogOf(page, `Forget ${PHP}`);
+  await t.see(dialog);
+  await pressFor(t, page, buttonOf(dialog, "Forget it"), pathOf(ROUTES.forget, PHP));
+  await t.gone(line);
+  ensure((await readOf(page, ROUTES.wanted))?.wanted?.some((one) => one.name === PHP) === false, `${ROUTES.wanted} still has ${PHP} after Forget it`);
+  await openSite(t, page, PHP);
+  await t.see(buttonOf(page, "Get a certificate"));
+  await t.gone(rowFact(page, "https").locator('p[data-row="getting"]'));
+}
+
 /** The PHP site's page: Get the certificate again, which fails the same way, and the certificate that is here. */
 async function getAndUse(t, page, lab) {
   await linkOf(page, "Open its page").click();
   await page.waitForURL((url) => url.pathname === hrefOf(PHP));
   await t.see(rowFact(page, "https"));
   ensure((await rowFact(page, "https").innerText()).includes("HTTP only"), "the HTTPS of a site whose certificate failed is not HTTP only");
+  await certdTriesAgain(t, page);
   await t.see(buttonOf(page, "Get a certificate"));
   await t.see(buttonOf(page, "Use one that is here…"));
   ensure((await buttonOf(page, "Use this machine's certificate").count()) === 0, "this machine's certificate is offered for a name that is not its own");
@@ -655,6 +706,77 @@ async function folderIs(t, page, name, { there }) {
   }
 }
 
+/** The Size and Visits yesterday cells of the row of `site`, which are the machine's own numbers: a dash before the first count, then the folder's size and the visits of yesterday. */
+async function countsAsAnswered(page, site) {
+  const row = rowOf(page, site.name);
+  const size = (await row.locator('td[data-label="Size"]').innerText()).trim();
+  if (site.size === null || site.size === undefined) ensure(size === DASH, `the row of ${site.name} says ${JSON.stringify(size)} of its size, and the machine has none counted`);
+  else {
+    ensure(/^(at least )?\d+(\.\d+)? (B|KB|MB|GB|TB)$/.test(size) && size.startsWith("at least") === (site.size.complete === false), `the row of ${site.name} says ${JSON.stringify(size)} of its size, and the machine says ${JSON.stringify(site.size)}`);
+  }
+  const visits = (await row.locator('td[data-label="Visits yesterday"]').innerText()).trim();
+  const wanted = site.visits ? site.visits.yesterday.toLocaleString("en-US") : DASH;
+  ensure(visits === wanted, `the row of ${site.name} says ${JSON.stringify(visits)} of yesterday's visits, and the machine says ${JSON.stringify(site.visits)}`);
+}
+
+/** The Visits card of a site that was not counted says so, and has no chart. */
+async function notCounted(t, page) {
+  const card = page.locator('section[data-card="visits"]');
+  await t.see(card.getByRole("heading", { level: 2, name: "Visits", exact: true }));
+  await t.see(card.getByText(NOT_COUNTED, { exact: true }));
+  ensure((await card.locator(".usage-chart").count()) === 0, "the card of a site that was not counted has a chart");
+}
+
+/** The day `day` ("2026-11-17") as the chart writes it, by the UTC clock: "Nov 17", with the year in another year than this one. */
+function dayLabel(day) {
+  const at = new Date(`${day}T00:00:00Z`);
+  const year = at.getUTCFullYear() === new Date().getUTCFullYear() ? {} : { year: "numeric" };
+  return new Intl.DateTimeFormat("en-US", { timeZone: "UTC", month: "short", day: "numeric", ...year }).format(at);
+}
+
+/** The Visits card of a site that was counted: the chart, drawn when it is asked for, with a legend for its two lines, and the numbers of the machine's days under Show the numbers. */
+async function visitsCounted(t, page, name) {
+  const site = siteIn(await readWebsites(page), name);
+  ensure(site?.visits && Array.isArray(site.visits.days) && site.visits.days.length > 0, `${ROUTES.list} says ${JSON.stringify(site?.visits)} of the visits of ${name}, which was counted`);
+  const card = page.locator('section[data-card="visits"]');
+  await t.see(card.getByRole("heading", { level: 2, name: "Visits", exact: true }));
+  const chart = card.locator('.usage-chart[data-chart="visits"]');
+  await seeSoon(chart, 30);
+  await t.see(card.getByText(COUNTED, { exact: true }));
+  ensure((await card.getByText(NOT_COUNTED, { exact: true }).count()) === 0, "the card of a site that was counted says that it was not");
+  // Two lines: a legend names both, and the second is dashed. The big number is the last day's visits and errors together.
+  const legend = (await chart.locator("ul.legend").innerText()).replace(/\s+/g, " ").trim();
+  ensure(legend === "Visits Errors (dashed)", `the legend of the chart says ${JSON.stringify(legend)}`);
+  const [, visits, errors] = site.visits.days[0];
+  ensure((await chart.locator(".stat b").innerText()).trim() === (visits + errors).toLocaleString("en-US"), `the chart says ${JSON.stringify(await chart.locator(".stat b").innerText())} of the last day, and the machine says ${visits} visits and ${errors} errors`);
+  // The numbers are the machine's, a row for each day, by the UTC day.
+  await buttonOf(chart, "Show the numbers").click();
+  const table = chart.locator("table");
+  await t.see(table);
+  const head = (await table.locator("thead th").allInnerTexts()).map((words) => words.trim());
+  ensure(JSON.stringify(head) === JSON.stringify(["Day (UTC)", "Visits", "Errors"]), `the numbers of the chart have the columns ${JSON.stringify(head)}`);
+  const rows = await table.locator("tbody tr").evaluateAll((all) => all.map((one) => [...one.children].map((cell) => cell.textContent.trim())));
+  for (const [day, counted, failed] of site.visits.days.slice(0, 30)) {
+    const row = rows.find((cells) => cells[0] === dayLabel(day));
+    ensure(row !== undefined, `the numbers of the chart have no row of ${day}: ${JSON.stringify(rows)}`);
+    ensure(row[1] === counted.toLocaleString("en-US") && row[2] === failed.toLocaleString("en-US"), `the numbers of ${day} are ${JSON.stringify(row)}, and the machine says ${counted} visits and ${failed} errors`);
+  }
+  await lookAll(t, page, "websites-visits");
+}
+
+/** nginx's settings either define the format of the sites' logs or the check says they do not, as the machine reports, with the line to add. */
+async function logFormatAsChecked(t, page) {
+  const conf = (await readOf(page, ROUTES.check))?.nginx_conf;
+  ensure(typeof conf?.logs_sites === "boolean", `${ROUTES.check} says ${JSON.stringify(conf)} of nginx's settings, which has no logs_sites`);
+  const row = page.locator(".web-check .banner").filter({ hasText: NO_LOG_FORMAT });
+  if (conf.logs_sites) {
+    await t.gone(row);
+    return;
+  }
+  await t.see(row);
+  ensure((await row.innerText()).includes("log_format site"), `the row about the log format does not give the line to add: ${await row.innerText()}`);
+}
+
 /** The list is the machine's: a link to each site, with what it serves, its HTTPS and its state. */
 async function listAsAnswered(t, page, read) {
   const links = await page.locator('.web-list td[data-label="Site"] a').evaluateAll((all) => all.map((link) => link.getAttribute("href")));
@@ -665,6 +787,7 @@ async function listAsAnswered(t, page, read) {
     const https = (await row.locator('td[data-label="HTTPS"]').innerText()).trim();
     ensure(one.https === !https.startsWith("HTTP only"), `the row of ${one.name} says ${JSON.stringify(https)} of its HTTPS, and the machine says ${one.https}`);
     ensure((await row.locator('td[data-label="Serves"]').innerText()).startsWith(one.kind === "php" ? "PHP pages" : "Files"), `the row of ${one.name} does not say what it serves`);
+    await countsAsAnswered(page, one);
   }
 }
 
@@ -776,7 +899,10 @@ async function phaseA(t, lab) {
   // The console is locked until the plan of the first site asks to unlock it.
   await addMachineSite(t, page, lab, own);
   await machineSitePage(t, page, own);
+  // Nothing is counted yet: the site's page says so, and has no chart.
+  await notCounted(t, page);
   await checkSites(t, page, true);
+  await logFormatAsChecked(t, page);
   await httpsOffAndOn(t, page, lab, own);
   await addPhpSite(t, page, lab);
   await getAndUse(t, page, lab);
@@ -794,6 +920,7 @@ async function phaseA(t, lab) {
   await openList(t, page);
   const read = await readWebsites(page);
   ensure(read.websites.length === 2 && siteIn(read, own)?.https === true && siteIn(read, PHP)?.https === true, `${ROUTES.list} lists ${JSON.stringify(read.websites.map((one) => [one.name, one.https]))}, not ${own} and ${PHP} over HTTPS`);
+  ensure(read.websites.every((one) => one.size === null && one.visits === null), `${ROUTES.list} has a size or visits for ${JSON.stringify(read.websites.map((one) => [one.name, one.size, one.visits]))}, which no count has been made of`);
   await listAsAnswered(t, page, read);
   await lookAll(t, page, "websites-list");
 
@@ -806,6 +933,8 @@ async function phaseA(t, lab) {
     routeFor(ROUTES.https, own),
     routeFor(ROUTES.https, PHP),
     routeFor(ROUTES.remove, PLAIN),
+    routeFor(ROUTES.wanted),
+    routeFor(ROUTES.forget, PHP),
   ]);
   await signOut(t, page);
   await page.context().close();
@@ -821,7 +950,13 @@ async function phaseB(t, lab) {
   await openList(t, page);
   await t.see(rowOf(page, own).locator(".pill").filter({ hasText: "Changed by hand" }));
   ensure((await rowOf(page, PHP).locator(".pill").count()) === 0, `${PHP} is marked as changed by hand`);
+  // websites.sh counted the sites' logs, so the list has their sizes and yesterday's visits, which are the machine's.
+  const counted = await readWebsites(page);
+  ensure(counted.websites.length === 2 && counted.websites.every((one) => one.size !== null && one.visits !== null), `${ROUTES.list} says ${JSON.stringify(counted.websites.map((one) => [one.name, one.size, one.visits]))}, with a size and visits for each of the two sites that were counted`);
+  await listAsAnswered(t, page, counted);
+  await lookAll(t, page, "websites-counted");
   await openSite(t, page, own);
+  await visitsCounted(t, page, own);
   const file = rowFact(page, "file");
   ensure((await file.innerText()).includes(HAND_WORDS), `the page says ${JSON.stringify(await file.innerText())} of a file that was changed by hand`);
   await t.see(linkOf(file, "What changed"));
