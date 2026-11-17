@@ -1089,9 +1089,14 @@ mod tests {
         let served =
             format!("file://{}", std::path::absolute(dir.join("updates")).unwrap().display());
         assert_eq!(run(&strings(&["served", "--root", &root, &served])), 0);
-        assert_eq!(run(&strings(&["served", "--root", &root, "file:///nowhere"])), 1);
         assert_eq!(run(&strings(&["served", "--json", "--root", &root, &served])), 0);
-        assert_eq!(run(&strings(&["served", "--json", "--root", &root, "file:///nowhere"])), 1);
+        // A server that has had nothing deployed has no timestamp, and is
+        // not at fault; one that cannot be reached is.
+        assert!(!published(&tuf::Url::parse("file:///nowhere/").unwrap()).unwrap());
+        assert!(published(&tuf::Url::parse(&format!("{served}/")).unwrap()).unwrap());
+        assert_eq!(run(&strings(&["served", "--root", &root, "file:///nowhere"])), 0);
+        assert_eq!(run(&strings(&["served", "--json", "--root", &root, "file:///nowhere"])), 0);
+        assert_eq!(run(&strings(&["served", "--root", &root, "ftp://nowhere/"])), 1);
 
         // What the status read says: the roles, the release and firmware
         // set the channel offers, and their rollouts, once the server has
