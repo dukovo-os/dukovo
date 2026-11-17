@@ -681,7 +681,8 @@ async function administrator(t) {
   await t.see(page.getByRole("heading", { level: 1, name: "Databases", exact: true }));
   await t.see(page.getByText(LOCKED_WORDS, { exact: true }));
   await lookAll(t, page, "databases-locked");
-  await buttonOf(page, "Unlock").click();
+  // The page's own Unlock, not the header's, which a locked console shows too.
+  await buttonOf(page.locator("#main"), "Unlock").click();
   await answerUnlock(t, page);
   await page.waitForFunction(() => document.querySelectorAll(".db-list table").length > 0, null, { timeout: 30_000 });
   let read = await readDatabases(page);
@@ -750,7 +751,7 @@ async function reader(t) {
   mustBe(await fetchAsPage(page, "POST", pathOf(ROUTES.add), { name: "lab_reader" }), 403, "ADM-122", `a reader's ${ROUTES.add}`);
   mustBe(await fetchAsPage(page, "POST", pathOf(ROUTES.remove, BUSY), { force: true }), 403, "ADM-122", `a reader's removal of ${BUSY}`);
   mustBe(await fetchAsPage(page, "GET", pathOf(ROUTES.copies, BUSY)), 403, "ADM-122", `a reader's ${ROUTES.copies}`);
-  mustBe(await fetchAsPage(page, "POST", pathOf(ROUTES.restore, BUSY), { from: "/shared/none", as: "lab_reader_restored" }), 403, "ADM-122", `a reader's ${ROUTES.restore}`);
+  mustBe(await fetchAsPage(page, "POST", pathOf(ROUTES.restore, BUSY), { from: `/shared/services/org.postgresql.postgresql/postgres/dumps/${BUSY}.dump`, as: "lab_reader_restored" }), 403, "ADM-122", `a reader's ${ROUTES.restore}`);
   await signOut(t, page);
   await page.context().close();
 }

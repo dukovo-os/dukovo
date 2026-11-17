@@ -63,8 +63,11 @@ expect = ["Made wc-cert", "Made wc-cert-reader", "wc-cert-reader is changed"]
 host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
 expect = '{"ok":true}'
 # The machine's name, kept to put back, and what the page will show of it.
+# A machine that was never named has no hostname file and goes by the name
+# it was built with, which is written to the file first, so that the steps
+# after can see it kept.
 [[step]]
-run = "sh -c 'cp /system/settings/hostname /users/lab/wc-cert-name && hostnamectl status --json'"
+run = "sh -c '[ -e /system/settings/hostname ] || hostnamectl set-hostname \"$(uname -n)\"; cp /system/settings/hostname /users/lab/wc-cert-name && hostnamectl status --json'"
 root = true
 expect = ["\"name\"", "\"local\""]
 
@@ -107,6 +110,14 @@ expect = ["TXT added: _acme-challenge.dns.acme-lab.example.", "records shown: 2"
 run = '''sh -c 'service resolved reload; i=0; while [ $i -lt 90 ] && ! grep -q "installed" /users/lab/wc-cert-dns.out; do sleep 2; i=$((i + 1)); done; grep installed /users/lab/wc-cert-dns.out; firewall list | grep -c "tcp 80"; true' '''
 root = true
 expect = ["dns.acme-lab.example installed: dns.acme-lab.example, *.dns.acme-lab.example, runs out ", "0"]
+# The name the page orders from Let's Encrypt leads to a public address no
+# machine answers on (TEST-NET-1, RFC 5737), so that its checks pass and the
+# order itself is what cannot finish. Pebble's DNS gives every other name
+# this machine's address, which in the lab is a private one that a public
+# authority's checks refuse (CRT-102).
+[[step]]
+host = '''sh -c 'printf "\173\"host\":\"fails.acme-lab.example.\",\"addresses\":[\"192.0.2.10\"]\175" | curl -fsS --noproxy "*" -X POST --data-binary @- http://127.0.0.1:{port:chall}/add-a && echo address-set' '''
+expect = "address-set"
 [[step]]
 browser = "certificates.mjs"
 engines = ["chromium"]

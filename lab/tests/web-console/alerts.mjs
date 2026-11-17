@@ -448,7 +448,8 @@ async function whileLocked(t, page) {
 async function nothingSetUp(t, page) {
   await openAlerts(t, page);
   for (const [id, title] of [["active", "Active"], ["browser", "This browser"], ["channels", "Where alerts go"], ["email", "Email"], ["recent", "Recent"]]) {
-    await t.see(card(page, id).getByRole("heading", { name: title, level: 2, exact: true }));
+    // A card's buttons sit in its heading, as on the console's other pages, so the heading's name begins with the title.
+    await t.see(card(page, id).getByRole("heading", { name: new RegExp(`^${title}( |$)`), level: 2 }));
   }
   ensure((await channelsOf(page)).length === 0, "the machine has a channel before the test set one up");
   await activeAsAnswered(t, page);

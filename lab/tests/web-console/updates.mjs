@@ -577,7 +577,8 @@ async function checksChange(t, page) {
   await pressAndAnswer(t, page, service.getByRole("button", { name: "Add the service", exact: true }), pathOf(ROUTES.essential));
   await t.gone(service);
   ensure((await read(page, ROUTES.checks)).json.essential.includes(name), `${name} is not one of the services that must run again`);
-  const added = box.locator("li.upd-row").filter({ hasText: new RegExp(`^${name}$`) });
+  // A row is the service's name and its Remove: the name is the row's first span.
+  const added = box.locator("li.upd-row").filter({ has: page.locator("span", { hasText: new RegExp(`^${name}$`) }) });
   await pressAndAnswer(t, page, added.getByRole("button", { name: "Remove", exact: true }), pathOf(ROUTES.essential));
   ensure(!(await read(page, ROUTES.checks)).json.essential.includes(name), `${name} still must run again after Remove`);
 }

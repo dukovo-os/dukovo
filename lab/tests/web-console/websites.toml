@@ -107,8 +107,18 @@ ready = "pebble ready"
 [[step]]
 host = "sh {here}/../services/copy-file.sh ca.pem {machine} {machine-port:22}"
 expect = "copied: ca.pem"
+# The authority Pebble signs certificates with is not the one its own HTTPS
+# has (ca.pem): it is made anew each time Pebble starts, and its management
+# port gives it. The machine trusts both, so that website's check of a site
+# over HTTPS trusts the certificate Pebble gave it.
 [[step]]
-run = '''sh -c 'cp /system/settings/resolved /users/lab/wc-web-resolved.orig && cd /system/settings/ssl/certs && cat /system/resources/certificates/ca-certificates.crt /users/lab/ca.pem > roots.new && mv roots.new ca-certificates.crt && echo trusted' '''
+host = "sh -c 'curl -fsS --noproxy \"*\" --cacert ca.pem https://127.0.0.1:{port:acmeman}/roots/0 > issuer.pem && grep -c \"BEGIN CERTIFICATE\" issuer.pem'"
+expect = "1"
+[[step]]
+host = "sh {here}/../services/copy-file.sh issuer.pem {machine} {machine-port:22}"
+expect = "copied: issuer.pem"
+[[step]]
+run = '''sh -c 'cp /system/settings/resolved /users/lab/wc-web-resolved.orig && cd /system/settings/ssl/certs && cat /system/resources/certificates/ca-certificates.crt /users/lab/ca.pem /users/lab/issuer.pem > roots.new && mv roots.new ca-certificates.crt && echo trusted' '''
 root = true
 expect = "trusted"
 [[step]]
@@ -337,7 +347,7 @@ expect = "gone"
 # Pebble made gone, the resolver and the authorities the system's, and the
 # accounts gone.
 [[step]]
-run = '''sh -c 'cert remove site.acme-lab.example > /dev/null 2>&1; service php-fpm disable > /dev/null 2>&1; service nginx disable > /dev/null 2>&1; bundle remove --for-everyone --purge net.php.php > /dev/null 2>&1; bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; cp /users/lab/wc-web-resolved.orig /system/settings/resolved && service resolved reload; ln -sf /system/resources/certificates/ca-certificates.crt /system/settings/ssl/certs/ca-certificates.crt; rm -f /users/lab/wc-web-* /users/lab/ca.pem /users/lab/websites.sh /users/lab/org.nginx.nginx.dkv /users/lab/net.php.php.dkv; rm -rf /shared/www/sites; echo restored' '''
+run = '''sh -c 'cert remove site.acme-lab.example > /dev/null 2>&1; service php-fpm disable > /dev/null 2>&1; service nginx disable > /dev/null 2>&1; bundle remove --for-everyone --purge net.php.php > /dev/null 2>&1; bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; cp /users/lab/wc-web-resolved.orig /system/settings/resolved && service resolved reload; ln -sf /system/resources/certificates/ca-certificates.crt /system/settings/ssl/certs/ca-certificates.crt; rm -f /users/lab/wc-web-* /users/lab/ca.pem /users/lab/issuer.pem /users/lab/websites.sh /users/lab/org.nginx.nginx.dkv /users/lab/net.php.php.dkv; rm -rf /shared/www/sites; echo restored' '''
 root = true
 expect = "restored"
 [[step]]
