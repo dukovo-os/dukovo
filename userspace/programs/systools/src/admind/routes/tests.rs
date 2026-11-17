@@ -1219,6 +1219,78 @@ fn a_body_is_json_and_not_too_long_and_what_is_wrong_with_it_is_said_without_rep
     });
 }
 
+/// A body that comes in pieces, as a client sends a long one, and counts
+/// the pieces read.
+struct Pieces {
+    left: std::collections::VecDeque<Bytes>,
+    read: Rc<std::cell::Cell<usize>>,
+}
+
+impl http_body::Body for Pieces {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Bytes>, Infallible>>> {
+        let piece = self.left.pop_front();
+        if piece.is_some() {
+            self.read.set(self.read.get() + 1);
+        }
+        std::task::Poll::Ready(piece.map(|bytes| Ok(http_body::Frame::data(bytes))))
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.left.is_empty()
+    }
+}
+
+/// `req` with its body sent `pieces` times over, in pieces: the status,
+/// how many pieces were read, and the answer's `Connection`.
+async fn sent_in_pieces(world: &World, req: Req, pieces: usize) -> (u16, usize, Option<String>) {
+    let read = Rc::new(std::cell::Cell::new(0));
+    let piece = Bytes::from(req.body.clone());
+    let body =
+        Pieces { left: std::iter::repeat_n(piece, pieces).collect(), read: Rc::clone(&read) };
+    let mut builder = Request::builder().method(req.method).uri(&req.path);
+    for (name, value) in &req.headers {
+        builder = builder.header(name, value);
+    }
+    let request = builder.body(body).unwrap();
+    let shared = Rc::clone(&world.console.shared);
+    let Ok(response) = handle(shared, PEER.parse().unwrap(), request).await;
+    let connection = response.headers().get(header::CONNECTION);
+    let connection = connection.map(|value| value.to_str().unwrap().to_string());
+    (response.status().as_u16(), read.get(), connection)
+}
+
+#[test]
+fn a_body_no_answer_reads_is_read_to_its_end_so_that_its_client_reads_the_answer() {
+    run(async {
+        let world = world("unread");
+        let restore = || {
+            let args = json!({ "snapshot": "lab-before", "label": "lab", "paths": "/a" });
+            post("/api/1/snapshots/restore", &args)
+        };
+        // Signed out, a change is refused before its body is read; the
+        // body is read all the same, and the connection goes on.
+        assert_eq!(sent_in_pieces(&world, restore(), 3).await, (401, 3, None));
+        // A client that waits for 100 Continue sends nothing more, and one
+        // that says its body is longer than is read anyway is not waited
+        // for: the connection ends with the answer.
+        let waits = restore().with("expect", Some("100-continue"));
+        assert_eq!(sent_in_pieces(&world, waits, 3).await, (401, 0, Some("close".into())));
+        let long = (UNREAD_MAX + 1).to_string();
+        let long = restore().with("content-length", Some(&long));
+        assert_eq!(sent_in_pieces(&world, long, 3).await, (401, 0, Some("close".into())));
+        // A body that is read is not read again.
+        let signed_in = json!({ "name": "chase", "password": "wrong" });
+        let one = sent_in_pieces(&world, post("/api/1/sign-in", &signed_in), 1).await;
+        assert_eq!((one.1, one.2), (1, None));
+    });
+}
+
 #[test]
 fn ten_sign_in_requests_a_minute_from_an_address_and_the_eleventh_is_told_when_to_try_again() {
     run(async {

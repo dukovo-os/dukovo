@@ -117,7 +117,11 @@ answers it:
   routes that sign a browser in keep the first two, and count each
   request against the ten an address may make in a minute.
 . Its body is JSON (415, ADM-119), at most 64 KiB before sign-in and 1 MiB
-  after (413, ADM-113).
+  after (413, ADM-113). A body that no answer reads, as a refused
+  request's, is read to its end all the same, up to 16 MiB and for 10
+  seconds, so that a client still sending it reads the answer; past that,
+  or when the client waits for *100 Continue* first, the connection ends
+  with the answer.
 . For an action, its arguments are checked (400, ADM-108 for what the
   action does not take, ADM-125 for a value that cannot work), then
   whether the caller may ask for it (ADM-124, ADM-122, ADM-106), and only

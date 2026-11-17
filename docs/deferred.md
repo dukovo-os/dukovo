@@ -401,6 +401,7 @@ machine asks for them.
 | A `net.tcp_buffer_kib` kernel setting: the size of TCP sockets' buffers | ADR 0476 |
 | A TCP connection that outlives a moment in which its interface lacks its address, as on Linux: smoltcp ends it at the stack's next poll, without a reset, though the doc of the kernel's `Stack::configure` says it stays. netd keeps the addresses that stay through a reload, and those a card set to DHCP had until its lease comes, so a change of the settings no longer does this to them | Lab test `web-console/networking` (Phase 16) |
 | An interface MTU below 1500 from DHCP's option 26 | ADR 0197 |
+| A reset when a program closes a TCP connection with data it has not read, or data comes after it closed one, as RFC 1122 (4.2.2.13) asks and Linux does: the kernel ends the connection with a FIN and keeps it for up to 60 seconds without reading it, so a peer still sending waits on a closed window until it gives up. admind reads a body no answer reads, as a web server's lingering close does, so its clients are not kept waiting; another server that answers before it reads is | ADR 0188; found by the lab test `web-console/fuzz` |
 | RSA keys made by certd: `this-machine` has an ECDSA P-256 key, since ring makes no RSA keys and every browser takes ECDSA; a certificate with an RSA key added by `cert add` works | ADR 0512 |
 | ENA's low-latency queues; gVNIC's DQO queue format; SFP+ modules; fiber and SerDes gigabit cards | ADR 0197 |
 | Legacy INTx interrupts through `_PRT`, for cards and SD controllers without MSI | ADRs 0197, 0198, 0437 |

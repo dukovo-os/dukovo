@@ -104,6 +104,11 @@ const BODY_MAX_SIGNED_IN: usize = 1 << 20;
 /// How long a body has to arrive.
 const BODY_TIME: Duration = Duration::from_secs(10);
 
+/// The most of a body that no answer reads which is read anyway, and let
+/// go, so that a client still sending it can read the answer
+/// (`read_the_rest`).
+const UNREAD_MAX: usize = 16 << 20;
+
 /// What an answer's body is: a few bytes, or a tab's stream of events.
 pub type Body = UnsyncBoxBody<Bytes, Infallible>;
 
@@ -736,7 +741,8 @@ where
     let (mut head, body) = request.into_parts();
     let upgrade = head.extensions.remove::<OnUpgrade>();
     let mut ends = false;
-    let reply = match answer(&shared, peer, &head, body, (upgrade, connection)).await {
+    let mut body = Some(body);
+    let reply = match answer(&shared, peer, &head, &mut body, (upgrade, connection)).await {
         Ok(reply) => reply,
         Err(failure) => {
             ends = failure.kind == Kind::OldConnection;
@@ -758,6 +764,14 @@ where
         }
     };
     let mut response = render(&shared, reply);
+    // A body the answer did not read is read to its end first, on HTTP/1.1,
+    // where the client may still be sending it; HTTP/2 ends the stream.
+    if let Some(unread) = body
+        && head.version < Version::HTTP_2
+        && !read_the_rest(&head.headers, unread).await
+    {
+        ends = true;
+    }
     // An answer that ends its connection (`fresh`'s ADM-133) says so on
     // HTTP/1.1, and hyper closes the connection once it is sent; HTTP/2 has
     // no such header, and the GOAWAY that follows says it there.
@@ -769,11 +783,12 @@ where
 
 /// What a request is answered with, or why it is not; `handover` is what
 /// the Terminal's socket takes the connection with, and the connection.
+/// The body is taken from `body` only by the answers that read it.
 async fn answer<B>(
     shared: &Rc<Shared>,
     peer: IpAddr,
     head: &Parts,
-    body: B,
+    body: &mut Option<B>,
     handover: (Option<OnUpgrade>, Rc<Connection>),
 ) -> Outcome
 where
@@ -1027,13 +1042,18 @@ fn host_of(shared: &Shared, head: &Parts) -> Result<(String, String), Failure> {
 }
 
 /// The body of a request that changes something, if it is JSON and not
-/// too long, or not there.
-async fn read_body<B>(headers: &HeaderMap, body: B, signed_in: bool) -> Result<Bytes, Failure>
+/// too long, or not there. A body refused before it is read stays in
+/// `body`.
+async fn read_body<B>(
+    headers: &HeaderMap,
+    body: &mut Option<B>,
+    signed_in: bool,
+) -> Result<Bytes, Failure>
 where
     B: http_body::Body<Data = Bytes>,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    if body.is_end_stream() {
+    if body.as_ref().is_none_or(http_body::Body::is_end_stream) {
         return Ok(Bytes::new());
     }
     if !is_json(single(headers, &header::CONTENT_TYPE)) {
@@ -1046,11 +1066,57 @@ where
     if declared.is_some_and(|length| length > limit) {
         return Err(too_big());
     }
+    let Some(body) = body.take() else {
+        return Ok(Bytes::new());
+    };
     match tokio::time::timeout(BODY_TIME, Limited::new(body, limit).collect()).await {
         Ok(Ok(collected)) => Ok(collected.to_bytes()),
         Ok(Err(err)) if err.is::<http_body_util::LengthLimitError>() => Err(too_big()),
         Ok(Err(_)) => Err(Failure::new(Kind::BadRequest, "the body did not arrive whole")),
         Err(_) => Err(Failure::new(Kind::BadRequest, "the body did not arrive in time")),
+    }
+}
+
+/// Reads `body`, which no answer read, to its end, and lets it go, as a
+/// web server's lingering close does: a client that sends a body before it
+/// reads the answer, as most do, would otherwise wait for a connection that
+/// takes no more from it, until it gives up, and never read the answer that
+/// refused it. A body longer than [`UNREAD_MAX`], or one that has not
+/// arrived after [`BODY_TIME`], is not read, nor is one whose client waits
+/// for `100 Continue` before it sends it, which reading would ask for. Says
+/// whether the body was read to its end: if not, the connection ends with
+/// the answer.
+async fn read_the_rest<B>(headers: &HeaderMap, body: B) -> bool
+where
+    B: http_body::Body<Data = Bytes>,
+{
+    if body.is_end_stream() {
+        return true;
+    }
+    let waits = headers
+        .get_all(header::EXPECT)
+        .iter()
+        .any(|value| value.as_bytes().eq_ignore_ascii_case(b"100-continue"));
+    let declared =
+        single(headers, &header::CONTENT_LENGTH).and_then(|text| text.parse::<usize>().ok());
+    if waits || declared.is_some_and(|length| length > UNREAD_MAX) {
+        return false;
+    }
+    let mut body = std::pin::pin!(body);
+    let mut left = UNREAD_MAX;
+    let until = tokio::time::Instant::now() + BODY_TIME;
+    loop {
+        match tokio::time::timeout_at(until, body.frame()).await {
+            Ok(None) => return true,
+            Ok(Some(Ok(frame))) => {
+                let length = frame.data_ref().map_or(0, Bytes::len);
+                if length > left {
+                    return false;
+                }
+                left -= length;
+            }
+            Ok(Some(Err(_))) | Err(_) => return false,
+        }
     }
 }
 
