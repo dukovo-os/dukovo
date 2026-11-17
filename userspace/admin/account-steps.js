@@ -10,7 +10,7 @@
 // one is added.
 
 import { get, post } from './api.js';
-import { busy, clearError, errorSlot, h, icon, showError, uniqueId } from './dom.js';
+import { busy, clearError, errorSlot, h, icon, sheet, showError, uniqueId } from './dom.js';
 import { qrSvg } from './qr.js';
 import { isUnlocked, onUnlockChange } from './unlock.js';
 import { canUsePasskeys, createCredential, isAddress, passkeyProblem } from './webauthn.js';
@@ -188,9 +188,11 @@ export function secondStepView({ session, signInAgain, embedded = false, changed
   let codesShown = null;
   const cards = h('div', { class: 'cards' }, h('p', { class: 'muted' }, 'Loading…'));
 
+  // The recovery codes and the app's setup text have their look from sign-in.css, which the cards wait for.
   async function load() {
     try {
-      render(await get(PATH));
+      const [steps] = await Promise.all([get(PATH), sheet('/sign-in.css')]);
+      render(steps);
     } catch (error) {
       cards.replaceChildren();
       showError(failure, error);

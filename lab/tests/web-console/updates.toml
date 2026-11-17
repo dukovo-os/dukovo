@@ -1,0 +1,324 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The Updates page of the web console in each engine, against the
+# test update server that `ob lab` builds (tests/updates/update-server.sh): the
+# cards held to `update last --json`, `update check --json`, `update settings
+# --json` and `update checks --json`; Save and its Undo; Check now; a hold with
+# the reason it is asked for (`POST /api/1/updates/{item}/hold`, with `why`) and
+# its release; Later, which puts an update's reminder off, and Remind me now
+# (`POST /api/1/updates/{item}/later`); Stage it and Take it back; an app's
+# update, and Tonight and Install tonight for it (`POST /api/1/apps/{id}/tonight`,
+# `POST /api/1/apps/tonight` and `POST /api/1/apps/{id}/not-tonight`) and
+# Update all on the Apps page (`POST /api/1/apps/update`), where the machine's
+# catalog offers an update, and two for Update all; the advisories, the
+# history, a check and a service added and removed; a reader and a phone at
+# 390 by 844. Each look is dark, light, high contrast, forced colours and less
+# motion, checked by axe.
+#
+# The steps after that are in one engine each, since each changes the machine
+# for good. Check now with the update server not answering: the machine's
+# updates.toml names a port where nothing listens, and the page says "Could
+# not check" in the machine's words on each card it could not check. The
+# update of tests/updates/fallback.toml, staged here, restarted from the
+# page with a minute's notice, counted down and cancelled once and then left
+# to come, falls back by itself: the shell's banner says "Back, on ...: the
+# update was taken back", What happened says what failed and what the machine
+# did, the release that fell back is held, and Release lets it go. The good
+# update of tests/updates/stage-and-rollback.toml, staged here and proved by a
+# restart of the machine, is gone back from by the page
+# (`POST /api/1/updates/{item}/undo`): Go back to it… asks which settings the
+# version before starts with, the page asks to restart the machine as every
+# restart is asked, and it says that the machine runs the version before. The
+# search for a bad change of tests/startup/bisect.toml, begun from the page:
+# four changes, two tries, and Valkey named, with the machine restarting by
+# itself for each try.
+#
+# This test's first steps make an administrator and a reader that every script
+# signs in as, so no script needs the lab's password. The lab PC serves the
+# update server for the whole test, and the machine reads it as a canary (the
+# release is paused on its first day, ADR 0469). Its last steps put back what
+# the test changed.
+about = "The web console's Updates page in each engine: the cards against update last, check, settings and checks, Save and Undo, Check now with the server away, Hold with its reason and Release, Later and Remind me now, Stage it and Take it back, an app's update with Tonight and Install tonight, Update all on the Apps page, a check and a service added and removed, a reader and the phone; then the page's Restart now with its countdown, Cancel and the restart of an update that falls back, the banner Back, on, What happened, the release held after the fallback, Go back to the version before an update that proved itself with its choice of settings and its restart, and the search for the change that broke a start, with its two restarts"
+time = "105m"
+fresh = true
+host_needs = ["curl", "python3", "scp"]
+
+[[step]]
+run = "sh -c 'echo lab-console-password | user add --admin wc-updates && echo lab-console-password | user add wc-updates-reader && user set --console --yes wc-updates-reader'"
+root = true
+expect = ["Made wc-updates", "Made wc-updates-reader", "wc-updates-reader is changed"]
+
+# The update server of the lab PC, read by the machine as a canary. An update
+# proves itself after 10 seconds here.
+[[step]]
+host = "sh {here}/../updates/update-server.sh serve {port:updates}"
+background = true
+ready = "serving updates"
+[[step]]
+run = '''sh -c 'printf "stable = 10\n" > /system/settings/sysupdate/health.toml && printf "server = \"http://{peer}:{port:updates}/system/\"\ncanary = true\n" > /system/settings/sysupdate/updates.toml && echo "set: $((6 * 7))"' '''
+root = true
+expect = "set: 42"
+# The daily check, which the page shows as the last check: updated keeps it.
+[[step]]
+run = "updated --once"
+root = true
+expect = "updated: Dukovo "
+# What the page reads of the machine is what these commands print.
+[[step]]
+run = "update last --json"
+expect = ["checked_ms", "offers"]
+[[step]]
+run = "update check --json"
+expect = ["offers", "system"]
+[[step]]
+run = "update settings --json"
+expect = "channel"
+[[step]]
+run = "update checks --json"
+expect = ["essential", "logd"]
+[[step]]
+run = "sysupdate status"
+root = true
+expect = ["Running:  slot A", "Next start: slot A"]
+
+# The console answers within seconds of the boot; its last answer is shown so
+# that a console that refuses this address says so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+browser = "updates.mjs"
+port = 9090
+
+# What the page did, read on the machine: nothing is staged, no hold or check
+# or channel is left, and the settings are as they were.
+[[step]]
+run = "sysupdate status"
+root = true
+expect = ["Running:  slot A", "Next start: slot A"]
+[[step]]
+run = "sh -c 'update checks --json | grep -c lab-web || true'"
+expect = "0"
+[[step]]
+run = "update settings --json"
+expect = "channel"
+# No reminder is put off and no reason is kept with a hold: the page ended
+# each as it made it.
+[[step]]
+run = "sh -c 'update settings --json | grep -c until_ms || true'"
+expect = "0"
+[[step]]
+run = "sh -c 'update settings --json | grep -c \"lab: waiting for the next alpha\" || true'"
+expect = "0"
+
+# The update server does not answer: the machine's server is a port where
+# nothing listens.
+[[step]]
+run = '''sh -c 'printf "server = \"http://{peer}:9/system/\"\ncanary = true\n" > /system/settings/sysupdate/updates.toml && echo "set: $((6 * 7))"' '''
+root = true
+expect = "set: 42"
+[[step]]
+browser = "updates-offline.mjs"
+engines = ["chromium"]
+port = 9090
+[[step]]
+run = '''sh -c 'printf "server = \"http://{peer}:{port:updates}/system/\"\ncanary = true\n" > /system/settings/sysupdate/updates.toml && echo "set: $((6 * 7))"' '''
+root = true
+expect = "set: 42"
+
+# The update of updates/fallback.toml: its system log service cannot start, so
+# the health check fails it. A setting changed after the stage, which the
+# fallback takes back.
+[[step]]
+host = "sh {here}/../updates/copy-update.sh broken {machine} {machine-port:22}"
+expect = "copied: broken"
+[[step]]
+run = "sysupdate stage /users/lab/update-broken"
+root = true
+expect = "-test.broken in slot B: it starts at the next restart"
+[[step]]
+run = "sh -c 'echo changed > /system/settings/update-test'"
+root = true
+# The page restarts the machine, and the update falls back by itself.
+[[step]]
+browser = "updates-restart.mjs"
+engines = ["chromium"]
+port = 9090
+[[step]]
+wait = "ready"
+[[step]]
+run = "sh -c '[ -e /system/settings/update-test ] || echo \"taken back\"'"
+root = true
+expect = "taken back"
+[[step]]
+run = "sysupdate status"
+root = true
+expect = ["Running:  slot A", "Next start: slot A", "a fallback put the settings from before it back"]
+[[step]]
+run = "changes --failed --json"
+root = true
+expect = "fell-back"
+# The page released the hold that the fallback made.
+[[step]]
+run = "sh -c 'update settings --json | grep -c test.broken || true'"
+expect = "0"
+
+# The update of updates/stage-and-rollback.toml: staged, tried at the restart
+# and proved after 10 seconds, so that slot B is the default and slot A keeps
+# the version before it. The page goes back to that version with today's
+# settings kept and restarts the machine into it.
+[[step]]
+host = "sh {here}/../updates/copy-update.sh good {machine} {machine-port:22}"
+expect = "copied: good"
+[[step]]
+run = "sysupdate stage /users/lab/update-good"
+root = true
+expect = "-test.good in slot B: it starts at the next restart"
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot b, @system.b"
+[[step]]
+serial = "proved itself: it is now the default"
+[[step]]
+wait = "ready"
+[[step]]
+run = "sysupdate status"
+root = true
+expect = ["Running:  slot B", "-test.good, the default", "the previous version", "Next start: slot B"]
+# The console answers again before the page opens.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 120 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+# The page restarts the machine, which comes back on slot A.
+[[step]]
+browser = "updates-back.mjs"
+engines = ["chromium"]
+port = 9090
+[[step]]
+wait = "ready"
+[[step]]
+run = "sysupdate status"
+root = true
+expect = ["Running:  slot A", "Next start: slot A", "-test.good, the previous version"]
+
+# The search for a bad change of startup/bisect.toml: an update proved in slot
+# B and made the default again by `sysupdate rollback`, the boot option that
+# update starts with, and two apps, Valkey and nginx, Valkey made the one that
+# fails.
+[[step]]
+host = "sh {here}/../startup/copy-update.sh bisect {machine} {machine-port:22}"
+expect = "copied: bisect"
+[[step]]
+host = "sh {here}/../startup/copy-bundle.sh io.valkey.valkey {machine} {machine-port:22}"
+expect = "copied: io.valkey.valkey"
+[[step]]
+host = "sh {here}/../startup/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
+expect = "copied: org.nginx.nginx"
+[[step]]
+run = '''printf 'essential = ["logd", "authd", "consoled", "netd", "sshd", "valkey"]\nstable = 10\n' > /users/lab/health.toml'''
+[[step]]
+run = "cp /users/lab/health.toml /system/settings/sysupdate/health.toml"
+root = true
+# The good start: the update is tried and proved in slot B, and slot A, the
+# default again, starts.
+[[step]]
+run = "sysupdate stage /users/lab/update-bisect"
+root = true
+expect = "-test.bisect in slot B: it starts at the next restart"
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot b, @system.b"
+[[step]]
+serial = "proved itself: it is now the default"
+[[step]]
+wait = "ready"
+[[step]]
+run = "sysupdate rollback --keep-settings"
+root = true
+expect = "starts from the next restart on"
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+serial = "is seen through"
+[[step]]
+wait = "ready"
+# The apps, for everyone and enabled. Valkey's first start copies its settings
+# into its data folder; one it does not know there ends it.
+[[step]]
+run = "sh -c 'bundle install --for-everyone --yes /users/lab/io.valkey.valkey.dkv | tail -1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+root = true
+expect = ["installed io.valkey.valkey", "installed org.nginx.nginx"]
+[[step]]
+run = "sh -c 'service valkey enable; service nginx enable'"
+root = true
+[[step]]
+run = '''sh -c 'c=/shared/services/io.valkey.valkey/valkey/conf/valkey.conf; i=0; while [ $i -lt 60 ] && [ ! -e $c ]; do sleep 1; i=$((i + 1)); done; echo "lab-bisect-bad yes" >> $c && echo "broken: $((6 * 7))"' '''
+root = true
+expect = "broken: 42"
+# The failed start: slot B, the default again, starts with the update's boot
+# option and the apps, and fails at Valkey.
+[[step]]
+run = "sysupdate rollback --keep-settings"
+root = true
+expect = "starts from the next restart on"
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot b, @system.b"
+[[step]]
+serial = "failed its health check: "
+[[step]]
+serial = "(BOOT-102)"
+[[step]]
+wait = "ready"
+[[step]]
+run = "cat /system/live/sysupdate/failure"
+root = true
+expect = ["failed its health check: ", "elevate changes bisect", "up to 2 restarts."]
+# The console answers again before the page opens.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 120 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+# The page starts the search, and the machine restarts by itself for each try.
+[[step]]
+browser = "updates-bisect.mjs"
+engines = ["chromium"]
+port = 9090
+[[step]]
+wait = "ready"
+[[step]]
+run = "changes bisect --status"
+root = true
+expect = [
+    ", left out 1, 2: it failed as start ",
+    ", left out 3: it started well",
+    "The start fails with io.valkey.valkey ",
+    ", and starts without it.",
+]
+[[step]]
+run = "changes --list"
+root = true
+expect = [", slot A, try 1 of changes bisect: failed: ", ", slot B, try 2 of changes bisect: good"]
+
+# The machine as it was: the accounts, what the search used and the settings.
+[[step]]
+run = "sh -c 'rm -f /system/settings/sysupdate/health.toml /system/settings/sysupdate/updates.toml /system/settings/update-test /users/lab/health.toml; bundle remove --for-everyone --purge io.valkey.valkey > /dev/null 2>&1; bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; for name in wc-updates wc-updates-reader; do user remove --delete-home --yes $name || exit 1; done; echo cleaned'"
+root = true
+expect = ["wc-updates is removed", "wc-updates-reader is removed", "cleaned"]

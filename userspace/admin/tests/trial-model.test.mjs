@@ -141,6 +141,8 @@ test('SSH\'s set and off and the console\'s reach begin their trials, and a chan
   assert.equal(triedBy([row(6, null, { how: 'by hand', files: [{ path: '/system/settings/spark/services/sshd.toml' }] }), off], 'ssh'), null);
   const reach = row(5, 'console.reach', { argv: ['admin', 'reach', 'any', '--try', '600'] });
   assert.equal(triedBy([reach], 'console')?.seconds, 600);
+  const served = row(5, 'console.certificate', { argv: ['admin', 'certificate', 'shop', '--try', '300'] });
+  assert.equal(triedBy([served], 'console')?.seconds, 300, 'the console\'s certificate is tried as its reach is');
   assert.equal(triedBy([row(6, 'security.sign-in', { files: [{ path: '/system/settings/admin.toml' }] }), reach], 'console'), null);
   // The sign-in rules are refused while the reach is tried (ADM-138): a refused row changed nothing.
   assert.equal(triedBy([row(6, 'security.sign-in', { status: 1, files: [{ path: '/system/settings/admin.toml' }] }), reach], 'console')?.seconds, 600);

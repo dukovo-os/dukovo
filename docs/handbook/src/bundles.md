@@ -82,6 +82,28 @@ everyone through elevate, `elevate bundle install --for-everyone ID`.
 info ID` shows a bundle's sheet again, with what you said of its
 permissions.
 
+To read a sheet before you decide, `bundle sheet ID` shows what an install
+would show and installs nothing. bundle fetches the newest version, checks it
+as an install does, and unpacks it only in a folder of your own, which it
+removes; anyone may run it, also someone who may not install the bundle, and its
+last line says *It would not install* and why when bundle would refuse the file.
+bundle keeps the one download it read last, so the install that follows does not
+fetch it again, and `--sha256` makes the install take that file and no other:
+
+```
+$ bundle sheet io.github.burntsushi.ripgrep --json | jq -r .sha256
+3f1c...
+$ elevate bundle install io.github.burntsushi.ripgrep --for-everyone --sha256 3f1c...
+```
+
+When the catalog lists another file by then, most often a newer version, nothing
+is fetched or installed and bundle says so ([APP-102](../../errors/APP-102.md));
+read the sheet again, which shows what the new file asks for. `bundle search
+--json` prints the search as one line of JSON, lists every bundle the catalogs
+list when it has no word, and names each catalog it could not read and why. The
+web console's Add an app page is made of these three (see [Add an
+app](web-console.md#add-an-app)).
+
 An administrator can add other catalogs, each with the first root its
 publisher gives, which every file the catalog serves is checked
 against:
@@ -210,10 +232,21 @@ $ bundle rollback org.example.notes
 
 Going back holds the bundle at that version, so no update undoes it;
 `bundle unhold` lets it update again, and `bundle hold` holds one
-yourself. The first time a new version runs, bundle keeps a copy of the
+yourself. `bundle hold --why TEXT` keeps a reason with the hold, one line of
+up to 200 characters, which `bundle list` shows to everyone who can run the
+bundle, so it is not for what should stay private. The first time a new version
+runs, bundle keeps a copy of the
 app's data as the old version left it, for 30 days; going back puts that
 copy back. `bundle history` shows each install, update, going back,
 hold and removal, and who asked.
+
+An update that would restart an app's services in the middle of the day can wait
+for the night: `elevate bundle update ID --for-everyone --tonight` installs it in
+the hour before the restart time of `updates.toml`, or between 2:00 and 3:00 AM
+without one, and `--not-tonight` takes it off again. A computer that was off
+through the window installs nothing in the day, and the request waits for the next
+one. The web console has the same as **Tonight** and a reason on **Hold** (see
+[Apps](web-console.md#apps)).
 
 ## Known flaws
 

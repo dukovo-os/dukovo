@@ -617,8 +617,10 @@ up to 30 seconds.
 
 nginx's settings are in its data folder,
 `/shared/services/org.nginx.nginx/nginx/conf`. `nginx.conf` holds the
-server on port 80 and, turned off, the same server over HTTPS; the other
-files are nginx's own, which `nginx.conf` includes. Edit them through
+server on port 80 and, turned off, the same server over HTTPS, and it
+includes the files of `/system/settings/websites`, one for each website (see
+*Websites, a file each*); the other files are nginx's own, which
+`nginx.conf` includes. Edit them through
 elevate, check them, have nginx read them again, and see what it said:
 
 ```
@@ -656,11 +658,109 @@ every setting. What differs on Dukovo:
 | `systemctl reload nginx` | `elevate service nginx reload` |
 | `sudo nginx -t` | `elevate nginx -t` |
 | Runs as `www-data` or `nginx` | Runs as the account `nginx` |
-| `sites-available` and `sites-enabled` | Servers in `nginx.conf`, or files of your own it includes |
+| `sites-available` and `sites-enabled` | A file each in `/system/settings/websites` (`website add`), or servers in `nginx.conf` |
 
 nginx reads only what its service may: its bundle, its data folder,
 `/shared/www` and the system's own folders. A site kept elsewhere goes in
 `/shared/www`, or in a folder of its data folder.
+
+### Websites, a file each
+
+`website` keeps each website as a file of its own, so that adding or
+taking one away is not an edit of `nginx.conf`. The file is
+`/system/settings/websites/NAME.conf`, which `nginx.conf` includes, and
+the pages are in a folder, `/shared/www/sites/NAME` unless you choose
+another under `/shared/www/sites`. An account of a person owns the folder
+and changes its files; nginx only reads them.
+
+```
+$ elevate website add shop.example.org --name www.shop.example.org --owner alice
+```
+
+The first name is the site's name and its file's name; each `--name` adds
+one more, up to 20 names in all. A name is a lowercase DNS name: an
+address by number and a wildcard are not names a site answers to.
+`--kind static`, the default, serves the files as they are and answers 404
+to a `.php` URL; `--kind php` hands the files that end in `.php` to
+PHP-FPM (see [Websites with PHP](php.md#websites-with-php)). Either way, a
+file whose name starts with a dot, such as `.git` or `.env`, is never
+served, except under `.well-known`.
+
+`website add` makes the folder, with a starter page when it has no
+`index.html` or `index.php`, and keeps a folder that is there as it is.
+It turns nginx on, and PHP-FPM for a PHP site, when they are off, and
+refuses when one is not installed ([WEB-105](../../errors/WEB-105.md)).
+Before it changes anything it checks the names, the account, the folder
+and nginx's settings, and has nginx check the new set of sites before
+nginx reads it, so that a mistake stops the change and never a site that
+runs ([WEB-103](../../errors/WEB-103.md)). When the change is made it asks
+each name of the site, over the machine's own address, for a small file it
+put in the folder; a site that does not answer is taken back, with every
+step before it ([WEB-104](../../errors/WEB-104.md)). `--dry-run` does the
+checks and says what would be made, written and started, and what the
+firewall says of the ports, and changes nothing; with `--json` it says it
+for a program.
+
+`nginx.conf` must include the websites' folder, at the end of its `http`
+block, and answer 404 under `/sites/` in its default server, so that a
+site's folder is never served as a path of the machine's own address:
+
+```
+include /system/settings/websites/*.conf;
+```
+
+```
+location ^~ /sites/ {
+    return 404;
+}
+```
+
+The second goes in the default server, before `location / {`. The
+`nginx.conf` of the bundle has both. `website check` asks nginx whether it accepts the
+settings as they are, and whether `nginx.conf` has both lines; a file that
+has not says which, with the lines to add
+([WEB-102](../../errors/WEB-102.md)). `website list`, which anyone may run, shows
+each site with its kind, its certificate and its folder, and what is wrong
+with it that can be seen from the files.
+
+A site is served over HTTPS with a certificate of certd (see
+[Certificates](certificates.md#a-websites-certificate)) that names every
+name of the site ([WEB-106](../../errors/WEB-106.md)):
+
+```
+$ elevate cert get shop.example.org --name shop.example.org --name www.shop.example.org --agree-terms
+$ elevate website https shop.example.org --certificate shop.example.org
+```
+
+`website https` makes port 80 answer with a redirect to `https://`, except
+for what certd needs to prove the names to an authority, and gives nginx
+the certificate and the sockets for port 443 by the override of nginx's
+service file at `/system/settings/spark/services/settings.d/nginx.toml`,
+which `website` keeps and an update of the bundle leaves alone. nginx
+restarts once when that changes; Spark holds its ports, so no request is
+refused. `website add` takes `--certificate` too, to do both at once, and
+`website https shop.example.org --off` serves HTTP only again and gives back
+what the service file held. The certificate stays in certd. A file whose
+name starts with `_` is not a site: `_default.conf` is the server that
+refuses the handshake of an HTTPS request for a name no site has, and
+`website` writes it with the first site served over HTTPS and removes it
+with the last.
+
+`website remove shop.example.org` removes the site's file, has nginx read
+its settings again and gives back what the service file held. The folder
+is kept unless `--files` is given.
+
+`website` writes a site's file from a template, so that it can tell a file
+it wrote from one a person changed. A file you changed is served as you
+wrote it, `website list` and the web console show it as changed by hand,
+and `website` does not write it again: `website https` refuses it
+([WEB-107](../../errors/WEB-107.md)), and you add the HTTPS server to the
+file yourself. A file of your own in the folder is served as it is, and
+shown as added by hand. `website add` makes sites that serve files or PHP
+pages; a site that passes requests on to a program is written by hand, as
+in *A reverse proxy*. website(8) has every command, and the web console's
+**Websites** page runs them (see
+[Websites](web-console.md#websites)).
 
 ### HTTPS
 
@@ -675,6 +775,10 @@ $ elevate service edit nginx          # add: certificates = ["this-machine"]
 $ elevate nano /shared/services/org.nginx.nginx/nginx/conf/nginx.conf
 $ elevate service nginx restart
 ```
+
+These steps are for the server in `nginx.conf`. A site that `website add`
+made is given its certificate by `website https` instead (see *Websites, a
+file each*).
 
 It serves HTTP/1.1 and HTTP/2 over TLS 1.2 and 1.3. A renewed
 certificate reaches it without a restart or a lost request. Browsers

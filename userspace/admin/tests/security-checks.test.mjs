@@ -36,7 +36,8 @@ test('each finding has the button that design 8.3 gives it', async (context) => 
   const set = card.querySelectorAll('a').find((one) => one.textContent === 'Set a password…');
   assert.equal(set.getAttribute('href'), '/accounts/alice');
   assert.ok(buttonOf(card, 'Keys only…'), 'passwords over SSH offer the SSH form');
-  assert.ok(buttonOf(card, 'Show how'), 'a check with no page of its own says how, from a terminal');
+  const updates = card.querySelectorAll('a').find((one) => one.textContent === 'Updates');
+  assert.equal(updates.getAttribute('href'), '/updates', 'a waiting release goes to the Updates page');
 });
 
 test('the findings of a machine whose firewall is off offer to start it, and run service.start', async (context) => {
@@ -53,7 +54,10 @@ test('the findings of a machine whose firewall is off offer to start it, and run
 });
 
 test('Show how opens the advice with a command to copy, and a second press closes it', async (context) => {
-  const page = await openSecurity(context, { unlocked: true });
+  const page = await openSecurity(context, {
+    unlocked: true,
+    world: { reads: { '/api/1/checks/last': kept({ results: [check('SEC-140', 'warning', { detail: 'The clock is not set' })], counts: { passed: 0, warning: 1, failed: 0, skipped: 0 } }) } },
+  });
   const card = page.card('checks');
   const how = buttonOf(card, 'Show how');
   const box = card.querySelector('.sec-how');
@@ -61,7 +65,7 @@ test('Show how opens the advice with a command to copy, and a second press close
   how.click();
   assert.equal(box.hasAttribute('hidden'), false);
   assert.equal(how.getAttribute('aria-expanded'), 'true');
-  assert.equal(box.querySelector('pre').textContent, 'elevate update apply');
+  assert.equal(box.querySelector('pre').textContent, 'timedatectl timesync-status');
   how.click();
   assert.equal(box.hasAttribute('hidden'), true);
 });

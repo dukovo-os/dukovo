@@ -27,7 +27,7 @@ export function makeReach(view, { reread }) {
   card.more.append(change);
   const banner = makeTrialBanner(view, {
     id: 'console',
-    what: () => 'Who may reach the console is being tried.',
+    what: () => "The console's address or certificate is being tried.",
     keep: 'console.keep',
     undo: 'console.undo',
     onState: ({ running, ended }) => {

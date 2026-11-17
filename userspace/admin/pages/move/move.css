@@ -14,7 +14,7 @@
 .mv-wiz > * { min-width: 0; }
 .mv-panels, .mv-panel, .mv-check, .mv-stage { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
 .mv-panel[hidden] { display: none; }
-.mv-errors:empty { display: none; }
+.mv-errors:empty, .mv-pending:has(> [hidden]) { display: none; }
 
 /* The steps: a button each, which goes back to a step that is done. */
 .mv-steps { padding: .571rem; gap: 0; }

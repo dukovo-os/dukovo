@@ -49,6 +49,17 @@ _/kernel/boot/times_
 	the last line alone. *startup*(8) reads it. Linux shows the first two
 	at _/sys/firmware/acpi/fpdt/boot/_.
 
+_/kernel/boot/memtest_
+	The result of the memory test that *memtest*=once ran at this start
+	(*dukovo-boot*(7)), there only when it ran: a line each, *result
+	passed* or *result errors*; *complete yes*, or *complete no* when it
+	stopped after an hour; *tested* and *total*, the bytes it tested and
+	the bytes the kernel manages; *errors*, the words that read back
+	wrong; *seconds*; *retired*, the pages it took out of use; then a
+	line *bad* _first_ _last_ _errors_ for each range of pages with
+	errors, at most 64, the first and last byte in hexadecimal.
+	*hardware*(8) records it and raises an alert when it found errors.
+
 _/kernel/cpus_
 	The CPUs online.
 

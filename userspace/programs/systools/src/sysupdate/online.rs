@@ -389,6 +389,19 @@ pub fn minutes_of_day(time: &str) -> Option<u32> {
     (hours < 24 && minutes < 60 && time.len() == 5).then_some(hours * 60 + minutes)
 }
 
+/// The window apps update in at night (ADR 0565), in minutes after local
+/// midnight, as its start and its end: the hour that ends at `restart`,
+/// the time of day an unattended machine restarts into a staged update, so
+/// that the apps are done before it; 2:00 to 3:00 with none, or one that
+/// does not read.
+#[must_use]
+pub fn window_of(restart: Option<&str>) -> (u32, u32) {
+    match restart.and_then(minutes_of_day) {
+        Some(end) => ((end + 24 * 60 - 60) % (24 * 60), end),
+        None => (2 * 60, 3 * 60),
+    }
+}
+
 /// Refuses a channel there is not.
 ///
 /// # Errors
@@ -1308,6 +1321,24 @@ mod tests {
         assert!(Settings::parse("metered = \"never\"").is_err());
         assert_eq!(minutes_of_day("03:30"), Some(210));
         assert!(Settings::parse("chanel = \"beta\"").is_err());
+    }
+
+    #[test]
+    fn the_window_apps_update_in_is_the_hour_before_the_restart_time() {
+        // The hour that ends at the restart time, so that the apps are done first.
+        assert_eq!(window_of(Some("03:00")), (2 * 60, 3 * 60));
+        assert_eq!(window_of(Some("04:30")), (3 * 60 + 30, 4 * 60 + 30));
+        // Across midnight.
+        assert_eq!(window_of(Some("00:30")), (23 * 60 + 30, 30));
+        assert_eq!(window_of(Some("00:00")), (23 * 60, 0));
+        // Without a restart time, or one that does not read.
+        for none in [None, Some(""), Some("3:00"), Some("24:00"), Some("03:60")] {
+            assert_eq!(window_of(none), (2 * 60, 3 * 60), "{none:?}");
+        }
+        // The restart time of the settings, which needs an unattended machine.
+        let unattended = Settings::parse("unattended = true\nrestart = \"05:00\"\n").unwrap();
+        assert_eq!(window_of(unattended.restart.as_deref()), (4 * 60, 5 * 60));
+        assert_eq!(window_of(Settings::default().restart.as_deref()), (2 * 60, 3 * 60));
     }
 
     #[test]

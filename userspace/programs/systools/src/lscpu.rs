@@ -540,6 +540,43 @@ pub(crate) fn model_name(cpuid: Cpuid<'_>) -> Option<String> {
     Some(text.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|name| !name.is_empty())
 }
 
+/// What `hardware show` says of the processor: its name, how many CPUs a
+/// core runs, and its clock.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Summary {
+    /// The brand string, as [`model_name`] gives it.
+    pub(crate) name: Option<String>,
+    /// The logical CPUs a core runs: 1 or more.
+    pub(crate) threads_per_core: u32,
+    /// The clock the processor is rated at, in MHz: what Intel's leaf 0x16
+    /// says, else what the brand string names.
+    pub(crate) base_mhz: Option<u32>,
+    /// The highest clock it runs at, in MHz, when leaf 0x16 says.
+    pub(crate) max_mhz: Option<u32>,
+}
+
+/// What the processor `cpuid` reads says of itself, for `hardware show`.
+pub(crate) fn summary(cpuid: Cpuid<'_>) -> Summary {
+    let processor = Processor::read(cpuid);
+    let [highest, ..] = cpuid(0, 0);
+    // Only Intel's processors define leaf 0x16: the base and the highest
+    // clock in its low 16 bits.
+    let (base, max) = if highest >= 0x16 && processor.vendor == "GenuineIntel" {
+        let [base, max, ..] = cpuid(0x16, 0);
+        (base & 0xffff, max & 0xffff)
+    } else {
+        (0, 0)
+    };
+    let known = |mhz: u32| Some(mhz).filter(|&mhz| mhz > 0);
+    let named = processor.model_name.as_deref().and_then(crate::dukofetch::named_mhz);
+    Summary {
+        base_mhz: known(base).or(named),
+        max_mhz: known(max),
+        threads_per_core: processor.threads_per_core.max(1),
+        name: processor.model_name,
+    }
+}
+
 /// The CPUs the kernel runs.
 pub(crate) fn cpus() -> Result<u32, Fail> {
     let text = std::fs::read_to_string("/kernel/cpus")
@@ -606,6 +643,7 @@ mod tests {
                 brand("Intel(R) Core(TM) i7-8550U CPU @ 1.80GHz", l)
             }
             (0x8000_0008, _) => [0x3027, 0, 0, 0],
+            (0x16, _) => [1800, 4000, 100, 0],
             _ => [0; 4],
         }
     }
@@ -680,6 +718,40 @@ mod tests {
         assert_eq!(row("L1d:"), "128 KiB (2 instances)");
         assert_eq!(row("L3:"), "16 MiB (1 instance)");
         assert!(p.flags.contains(&"hypervisor") && p.flags.contains(&"lahf_lm"));
+    }
+
+    #[test]
+    fn the_summary_says_the_name_the_threads_of_a_core_and_the_clock() {
+        assert_eq!(
+            summary(&kaby_lake),
+            Summary {
+                name: Some("Intel(R) Core(TM) i7-8550U CPU @ 1.80GHz".into()),
+                threads_per_core: 2,
+                base_mhz: Some(1800),
+                max_mhz: Some(4000),
+            }
+        );
+        // Without leaf 0x16 the brand string names the base clock, and
+        // nothing says the highest.
+        let without = |leaf, sub| if leaf == 0x16 { [0; 4] } else { kaby_lake(leaf, sub) };
+        let said = summary(&without);
+        assert_eq!((said.base_mhz, said.max_mhz), (Some(1800), None));
+        // A virtual processor with neither says nothing of its clock, and
+        // AMD's, which has no such leaf, is not read as if it had.
+        let virtual_ = summary(&qemu_amd);
+        assert_eq!(
+            (virtual_.base_mhz, virtual_.max_mhz, virtual_.threads_per_core),
+            (None, None, 1)
+        );
+        let amd = |leaf, sub| match leaf {
+            0 => {
+                let [_, b, c, d] = qemu_amd(0, 0);
+                [0x20, b, c, d]
+            }
+            0x16 => [3000, 4500, 100, 0],
+            _ => qemu_amd(leaf, sub),
+        };
+        assert_eq!((summary(&amd).base_mhz, summary(&amd).max_mhz), (None, None));
     }
 
     #[test]

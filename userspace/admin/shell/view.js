@@ -68,6 +68,9 @@ export function makeView(shell, route) {
 
     notice: (words, options) => shell.notice(words, options),
 
+    /** Says that the server restarts: call it after the action that restarts it answered `done`. */
+    expectRestart: (words, options) => shell.online.expectRestart(words, options),
+
     /** Shows `error` in the place it belongs: see lib/problem.js. */
     problem(error, where = {}) {
       if (error?.name === 'AbortError') return;

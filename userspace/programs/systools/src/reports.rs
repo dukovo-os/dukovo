@@ -14,6 +14,8 @@
 //! - [`draft`] puts the text of a report together;
 //! - [`client`] asks reportd, with a time limit;
 //! - [`command`] is `report(1)`;
+//! - `forms` are the parts of report(1) that print JSON, for the web
+//!   console and scripts;
 //! - [`preview`] shows the text and reads the key that says what to do
 //!   with it;
 //! - [`save`] writes the text to a file, and serves it once over HTTPS to
@@ -25,6 +27,7 @@ pub mod client;
 pub mod command;
 pub mod draft;
 pub mod facts;
+mod forms;
 pub mod preview;
 pub mod protocol;
 pub mod qr;

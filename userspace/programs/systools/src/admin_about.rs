@@ -84,7 +84,7 @@ impl Sources {
     }
 
     /// What the file at `path` holds, as text, if the person can read it.
-    fn read(&self, path: impl AsRef<Path>) -> Option<String> {
+    pub(crate) fn read(&self, path: impl AsRef<Path>) -> Option<String> {
         let mut text = String::new();
         File::open(self.at(path)).ok()?.take(SMALL).read_to_string(&mut text).ok()?;
         Some(text)
@@ -245,7 +245,7 @@ fn release(text: &str) -> Option<String> {
 
 /// A field of the firmware's SMBIOS table the kernel shows, if it has a
 /// value.
-fn dmi(sources: &Sources, name: &str) -> Option<String> {
+pub(crate) fn dmi(sources: &Sources, name: &str) -> Option<String> {
     let text = sources.read(Path::new(crate::hwinfo::DMI).join(name))?;
     Some(text.trim().to_string()).filter(|value| !value.is_empty())
 }

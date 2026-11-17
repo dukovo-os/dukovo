@@ -530,6 +530,11 @@ const ROOT_ROOM: u8 = 37;
 /// release's slot needs, since no file of it is known to be there.
 const UPDATE_FULL: u8 = 38;
 
+/// [`Disk::fat`] for a [`BUNDLE_FILES`] disk that also holds the
+/// `admin-websites` test's script and page
+/// ([`cases::admin_websites::make_disk`]).
+const WEBSITES_FILES: u8 = 39;
+
 /// One of the boot tests' updates of an installed system (ADR 0451): this
 /// build's slot, under a version after this one's that updates from it,
 /// with kernel flags of its own, or a command broken.
@@ -1808,7 +1813,12 @@ fn needs_packing(case: &Case) -> bool {
     case.disks.iter().any(|disk| {
         matches!(
             disk.fat,
-            BUNDLE_FILES | CATALOG_SITE | PHP_FILES | POSTGRESQL_FILES | POSTGRESQL_SERVICE_FILES
+            BUNDLE_FILES
+                | CATALOG_SITE
+                | PHP_FILES
+                | POSTGRESQL_FILES
+                | POSTGRESQL_SERVICE_FILES
+                | WEBSITES_FILES
         )
     })
 }
@@ -4313,8 +4323,13 @@ pub fn test_advisory(fixed: &str) -> String {
 pub const TEST_SERVER_CATALOG_KEY: &str = "catalog-key";
 
 /// The boot tests that read [`TEST_SERVER`] over the network.
-const TEST_SERVER_CASES: [&str; 4] =
-    ["update-online", "update-bad-network", "update-clock-ahead", "update-clock-behind"];
+const TEST_SERVER_CASES: [&str; 5] = [
+    "update-online",
+    "update-bad-network",
+    "update-clock-ahead",
+    "update-clock-behind",
+    "admin-updates",
+];
 
 /// The releases the test update server offers, by their version's last
 /// word: `bridge`, this build with three files added, which updates from
@@ -5532,6 +5547,11 @@ fn make_disks(
         }
         if disk.fat == POSTGRESQL_SERVICE_FILES {
             cases::postgresql_service::make_disk(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == WEBSITES_FILES {
+            cases::admin_websites::make_disk(ctx, disk, &image.path)?;
             made.push(image);
             continue;
         }

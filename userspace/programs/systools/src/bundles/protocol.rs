@@ -24,6 +24,18 @@ pub const SOCKET: &str = "/system/live/bundled/socket";
 pub const LINE_MAX: usize = 4096;
 /// The longest sheet.
 pub const SHEET_MAX: usize = 64 * 1024;
+/// The most characters of the reason kept with a hold.
+pub const WHY_MAX: usize = 200;
+/// What an answer says between what was done and the reason kept with it.
+pub const REASON_KEPT: &str = "; the reason kept with it: ";
+
+/// Whether `text` can be the reason kept with a hold: one line of 1 to
+/// [`WHY_MAX`] characters, with no control character (a tab would break
+/// the history's fields and a request's).
+#[must_use]
+pub fn why_ok(text: &str) -> bool {
+    (1..=WHY_MAX).contains(&text.chars().count()) && !text.chars().any(char::is_control)
+}
 
 /// What bundle asks bundled.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,11 +68,19 @@ pub enum Request {
     /// away from app `id` while it runs.
     Watch { id: String },
     /// Installs the newest version of `id` a catalog lists, from
-    /// `catalog` or the first that lists it (ADR 0383), as `Install`.
-    Get { id: String, catalog: Option<String>, everyone: bool, yes: bool },
+    /// `catalog` or the first that lists it (ADR 0383), as `Install`; with
+    /// `sha256`, only a file that has it, and otherwise nothing is
+    /// fetched or unpacked.
+    Get { id: String, catalog: Option<String>, everyone: bool, yes: bool, sha256: Option<String> },
     /// Lists the bundles the catalogs list whose ID or name holds every
-    /// one of `words`.
-    Search { words: Vec<String> },
+    /// one of `words`; with `json`, as one JSON document of the bundles of
+    /// the catalogs read now and of the catalogs that could not be, and
+    /// then `words` may be none, for every bundle.
+    Search { words: Vec<String>, json: bool },
+    /// Fetches the newest version of `id` from `from`, or the first
+    /// catalog that lists it, checks it as an install does, and says its
+    /// sheet, and then its facts as one JSON document; installs nothing.
+    Sheet { id: String, from: Option<String> },
     /// Lists the catalogs.
     Catalogs,
     /// Adds catalog `name` at `url`, with the root sent with the request:
@@ -75,11 +95,20 @@ pub enum Request {
     Update { ids: Vec<String>, everyone: bool, check: bool, yes: bool },
     /// Goes back to the version bundle `id` replaced.
     Rollback { id: String, everyone: bool },
-    /// Holds bundle `id` at its version, or lets it go.
-    Hold { id: String, everyone: bool, on: bool },
+    /// Holds bundle `id` at its version, or lets it go; a hold may keep
+    /// the reason `why`, which [`why_ok`] accepts.
+    Hold { id: String, everyone: bool, on: bool, why: Option<String> },
+    /// Has the updates of `ids`, or of every app that has one when there
+    /// is none, installed in tonight's window and not now (`on`), or takes
+    /// the apps off it (ADR 0565). `by` is the user who asked, which
+    /// `elevate` knows and the connection does not say. An administrator's.
+    Tonight { ids: Vec<String>, on: bool, yes: bool, by: u32 },
     /// Turns updating by themselves on or off, for the asker's bundles or
     /// everyone's.
     Automatic { everyone: bool, on: bool },
+    /// Whether everyone's bundles update by themselves: `on` or `off`,
+    /// which anyone may ask, since bundled's state is root's to read.
+    AutomaticForEveryone,
     /// What bundled did to the asker's bundles and everyone's, or to `id`.
     History { id: Option<String> },
     /// The lines of `name`, an ID or a command one of its lines adds,
@@ -145,10 +174,15 @@ fn checked_permission(name: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{name:?} is no permission of the list"))
 }
 
+/// A file's SHA-256, as 64 hex digits, kept in lowercase.
+fn checked_sha256(hex: &str) -> Result<String, String> {
+    let ok = hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit());
+    ok.then(|| hex.to_ascii_lowercase()).ok_or_else(|| "not a SHA-256 of 64 hex digits".into())
+}
+
 /// A list's SHA-256, as 64 hex digits, in lowercase.
 fn checked_list(list: &str) -> Result<String, String> {
-    let hex = list.len() == 64 && list.bytes().all(|b| b.is_ascii_hexdigit());
-    hex.then(|| list.to_ascii_lowercase()).ok_or_else(|| "not a list's SHA-256".into())
+    checked_sha256(list).map_err(|_| "not a list's SHA-256".into())
 }
 
 /// Words, separated by commas, `-` for none.
@@ -194,13 +228,25 @@ impl Request {
             }
             Request::Revoke { id, permission } => format!("revoke\t{id}\t{permission}\n"),
             Request::Watch { id } => format!("watch\t{id}\n"),
-            Request::Get { id, catalog, everyone, yes } => format!(
-                "get\t{id}\t{}\t{}\t{}\n",
+            Request::Get { id, catalog, everyone, yes, sha256 } => format!(
+                "get\t{id}\t{}\t{}\t{}{}\n",
                 catalog.as_deref().unwrap_or("-"),
                 whose(*everyone),
-                if *yes { "yes" } else { "ask" }
+                if *yes { "yes" } else { "ask" },
+                // An older bundled reads no more than the four words.
+                sha256.as_ref().map_or_else(String::new, |hex| format!("\t{hex}"))
             ),
-            Request::Search { words } => format!("search\t{}\n", words.join("\t")),
+            Request::Search { words, json: false } => format!("search\t{}\n", words.join("\t")),
+            Request::Search { words, json: true } => {
+                let mut line = "search-json".to_string();
+                for word in words {
+                    line += &format!("\t{word}");
+                }
+                line + "\n"
+            }
+            Request::Sheet { id, from } => {
+                format!("sheet\t{id}\t{}\n", from.as_deref().unwrap_or("-"))
+            }
             Request::Catalogs => "catalogs\n".into(),
             Request::CatalogAdd { name, url } => format!("catalog-add\t{name}\t{url}\n"),
             Request::CatalogRemove { name } => format!("catalog-remove\t{name}\n"),
@@ -217,12 +263,27 @@ impl Request {
                 line + "\n"
             }
             Request::Rollback { id, everyone } => format!("rollback\t{id}\t{}\n", whose(*everyone)),
-            Request::Hold { id, everyone, on } => {
-                format!("hold\t{id}\t{}\t{}\n", whose(*everyone), if *on { "on" } else { "off" })
+            Request::Hold { id, everyone, on, why } => format!(
+                "hold\t{id}\t{}\t{}{}\n",
+                whose(*everyone),
+                if *on { "on" } else { "off" },
+                why.as_ref().map_or_else(String::new, |why| format!("\t{why}"))
+            ),
+            Request::Tonight { ids, on, yes, by } => {
+                let mut line = format!(
+                    "tonight\t{}\t{}\t{by}",
+                    if *on { "on" } else { "off" },
+                    if *yes { "yes" } else { "ask" }
+                );
+                for id in ids {
+                    line += &format!("\t{id}");
+                }
+                line + "\n"
             }
             Request::Automatic { everyone, on } => {
                 format!("automatic\t{}\t{}\n", whose(*everyone), if *on { "on" } else { "off" })
             }
+            Request::AutomaticForEveryone => "automatic\n".into(),
             Request::History { id } => format!("history\t{}\n", id.as_deref().unwrap_or("-")),
             Request::Lines { name } => format!("lines\t{name}\n"),
             Request::Default { name, line, everyone } => format!(
@@ -256,14 +317,24 @@ impl Request {
             ["install", place, answer] => {
                 Ok(Request::Install { everyone: everyone(place)?, yes: yes(answer)? })
             }
-            ["get", id, catalog, place, answer] => Ok(Request::Get {
+            ["get", id, catalog, place, answer, rest @ ..] if rest.len() <= 1 => Ok(Request::Get {
                 id: checked_id(id)?,
                 catalog: if *catalog == "-" { None } else { Some(checked_catalog(catalog)?) },
                 everyone: everyone(place)?,
                 yes: yes(answer)?,
+                sha256: rest.first().map(|hex| checked_sha256(hex)).transpose()?,
             }),
             ["search", words @ ..] if !words.is_empty() => Ok(Request::Search {
                 words: words.iter().map(|w| checked_word(w)).collect::<Result<_, _>>()?,
+                json: false,
+            }),
+            ["search-json", words @ ..] => Ok(Request::Search {
+                words: words.iter().map(|w| checked_word(w)).collect::<Result<_, _>>()?,
+                json: true,
+            }),
+            ["sheet", id, from] => Ok(Request::Sheet {
+                id: checked_id(id)?,
+                from: if *from == "-" { None } else { Some(checked_catalog(from)?) },
             }),
             ["catalogs"] => Ok(Request::Catalogs),
             ["add-ons"] => Ok(Request::AddOns),
@@ -291,14 +362,26 @@ impl Request {
             ["rollback", id, place] => {
                 Ok(Request::Rollback { id: checked_id(id)?, everyone: everyone(place)? })
             }
-            ["hold", id, place, state] => Ok(Request::Hold {
+            ["hold", id, place, state, rest @ ..] => Ok(Request::Hold {
                 id: checked_id(id)?,
                 everyone: everyone(place)?,
                 on: on(state)?,
+                why: match rest {
+                    [] => None,
+                    [why] if why_ok(why) => Some((*why).into()),
+                    _ => return Err("the reason is not one line of 1 to 200 characters".into()),
+                },
+            }),
+            ["tonight", state, answer, by, ids @ ..] => Ok(Request::Tonight {
+                ids: ids.iter().map(|id| checked_id(id)).collect::<Result<_, _>>()?,
+                on: on(state)?,
+                yes: yes(answer)?,
+                by: by.parse().map_err(|_| "who asked is not a user ID".to_string())?,
             }),
             ["automatic", place, state] => {
                 Ok(Request::Automatic { everyone: everyone(place)?, on: on(state)? })
             }
+            ["automatic"] => Ok(Request::AutomaticForEveryone),
             ["history", id] => {
                 Ok(Request::History { id: if *id == "-" { None } else { Some(checked_id(id)?) } })
             }
@@ -357,9 +440,34 @@ pub struct Listed {
     pub catalog: Option<String>,
     /// Whether it is held at its version.
     pub held: bool,
+    /// While it is held, since when, in seconds since 1970.
+    pub held_since: Option<u64>,
+    /// While it is held, who held it: the user ID the newest event of its
+    /// hold names.
+    pub held_by: Option<u32>,
+    /// While it is held, the reason kept with it, if one was.
+    pub held_reason: Option<String>,
     /// The newest version the catalog listed when bundled last read it,
     /// when that is newer than this one.
     pub update: Option<String>,
+    /// While its update is asked for tonight, what was asked.
+    pub tonight: Option<Tonight>,
+}
+
+/// An update asked for tonight's window, as `list` says it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tonight {
+    /// The version it installs, which was the newest when it was asked.
+    pub to: String,
+    /// When it was asked, in milliseconds since 1970.
+    pub asked_ms: u64,
+    /// The user ID of who asked.
+    pub by: u32,
+    /// When a window first passed without it, if one did.
+    pub missed_ms: Option<u64>,
+    /// When the window it installs in starts, in milliseconds since 1970:
+    /// now, in the window.
+    pub starts_ms: u64,
 }
 
 /// The bundle to run, as `run` finds it: where, and what bundled
@@ -488,6 +596,8 @@ pub struct Available {
     pub catalog: Option<String>,
     /// Whether it is held at its version.
     pub held: bool,
+    /// While it is held, the reason kept with the hold, if one was.
+    pub held_reason: Option<String>,
 }
 
 /// What bundled answers.
@@ -544,7 +654,7 @@ impl Answer {
             Answer::Question => b"question\n".to_vec(),
             Answer::Document(text) => format!("document {}\n{text}", text.len()).into_bytes(),
             Answer::Listed(l) => format!(
-                "listed\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                "listed\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                 l.place,
                 l.id,
                 one_line(&l.version),
@@ -554,6 +664,19 @@ impl Answer {
                 l.catalog.as_deref().unwrap_or("-"),
                 if l.held { "held" } else { "free" },
                 l.update.as_deref().map_or_else(|| "-".into(), one_line),
+                l.held_since.map_or_else(|| "-".into(), |since| since.to_string()),
+                l.held_by.map_or_else(|| "-".into(), |by| by.to_string()),
+                // Empty for none: a reason may be any one line, `-` too.
+                l.held_reason.as_deref().map_or_else(String::new, one_line),
+                // Five words for what was asked for tonight, a dash each for none.
+                l.tonight.as_ref().map_or_else(|| "-".into(), |t| one_line(&t.to)),
+                l.tonight.as_ref().map_or_else(|| "-".into(), |t| t.asked_ms.to_string()),
+                l.tonight.as_ref().map_or_else(|| "-".into(), |t| t.by.to_string()),
+                l.tonight
+                    .as_ref()
+                    .and_then(|t| t.missed_ms)
+                    .map_or_else(|| "-".into(), |ms| ms.to_string()),
+                l.tonight.as_ref().map_or_else(|| "-".into(), |t| t.starts_ms.to_string()),
                 one_line(&l.name)
             )
             .into_bytes(),
@@ -605,13 +728,14 @@ impl Answer {
                 .into_bytes()
             }
             Answer::Available(a) => format!(
-                "available\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                "available\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                 a.place,
                 a.id,
                 one_line(&a.from),
                 one_line(&a.to),
                 a.catalog.as_deref().unwrap_or("-"),
-                if a.held { "held" } else { "free" }
+                if a.held { "held" } else { "free" },
+                a.held_reason.as_deref().map_or_else(String::new, one_line)
             )
             .into_bytes(),
             Answer::Event(e) => format!("event\t{}", e.line()).into_bytes(),
@@ -772,7 +896,7 @@ impl Answer {
                 expires: time(expires)?,
             })));
         }
-        if let ["available", at, id, from, to, catalog, held] = words.as_slice() {
+        if let ["available", at, id, from, to, catalog, held, reason] = words.as_slice() {
             return Ok(Some(Answer::Available(Available {
                 place: place(at)?,
                 id: checked_id(id).map_err(|why| bad(&why))?,
@@ -787,14 +911,34 @@ impl Answer {
                     "free" => false,
                     _ => return Err(bad("neither held nor free")),
                 },
+                held_reason: (!reason.is_empty()).then(|| one_line(reason)),
             })));
         }
         if let ["revoked", permission] = words.as_slice() {
             let permission = checked_permission(permission).map_err(|why| bad(&why))?;
             return Ok(Some(Answer::Revoked(permission)));
         }
-        if let ["listed", place_word, id, version, key, when, flags, catalog, held, update, name] =
-            words.as_slice()
+        if let [
+            "listed",
+            place_word,
+            id,
+            version,
+            key,
+            when,
+            flags,
+            catalog,
+            held,
+            update,
+            since,
+            by,
+            reason,
+            to,
+            asked,
+            asked_by,
+            missed,
+            starts,
+            name,
+        ] = words.as_slice()
         {
             let place = place(place_word)?;
             return Ok(Some(Answer::Listed(Listed {
@@ -815,6 +959,28 @@ impl Answer {
                     _ => return Err(bad("neither held nor free")),
                 },
                 update: (*update != "-").then(|| one_line(update)),
+                held_since: match *since {
+                    "-" => None,
+                    since => Some(since.parse().map_err(|_| bad("a hold's time"))?),
+                },
+                held_by: match *by {
+                    "-" => None,
+                    by => Some(by.parse().map_err(|_| bad("who held a bundle"))?),
+                },
+                held_reason: (!reason.is_empty()).then(|| one_line(reason)),
+                tonight: match *to {
+                    "-" => None,
+                    to => Some(Tonight {
+                        to: one_line(to),
+                        asked_ms: asked.parse().map_err(|_| bad("when it was asked"))?,
+                        by: asked_by.parse().map_err(|_| bad("who asked"))?,
+                        missed_ms: match *missed {
+                            "-" => None,
+                            ms => Some(ms.parse().map_err(|_| bad("when a window passed"))?),
+                        },
+                        starts_ms: starts.parse().map_err(|_| bad("when a window starts"))?,
+                    }),
+                },
             })));
         }
         Err(bad("not an answer bundle knows"))
@@ -870,14 +1036,27 @@ mod tests {
                 catalog: None,
                 everyone: false,
                 yes: false,
+                sha256: None,
             },
             Request::Get {
                 id: "io.github.burntsushi.ripgrep".into(),
                 catalog: Some("dukovo".into()),
                 everyone: true,
                 yes: true,
+                sha256: None,
             },
-            Request::Search { words: vec!["rip".into(), "grep tool".into()] },
+            Request::Get {
+                id: "org.nginx.nginx".into(),
+                catalog: None,
+                everyone: true,
+                yes: true,
+                sha256: Some("ab".repeat(32)),
+            },
+            Request::Search { words: vec!["rip".into(), "grep tool".into()], json: false },
+            Request::Search { words: vec!["rip".into(), "grep tool".into()], json: true },
+            Request::Search { words: Vec::new(), json: true },
+            Request::Sheet { id: "org.nginx.nginx".into(), from: None },
+            Request::Sheet { id: "org.nodejs.node@22".into(), from: Some("dukovo".into()) },
             Request::Catalogs,
             Request::CatalogAdd { name: "feed".into(), url: "https://example.org/catalog/".into() },
             Request::CatalogRemove { name: "dukovo".into() },
@@ -889,8 +1068,33 @@ mod tests {
                 yes: true,
             },
             Request::Rollback { id: "org.example.notes".into(), everyone: false },
-            Request::Hold { id: "org.example.notes".into(), everyone: true, on: true },
-            Request::Hold { id: "org.example.notes".into(), everyone: false, on: false },
+            Request::Hold { id: "org.example.notes".into(), everyone: true, on: true, why: None },
+            Request::Hold { id: "org.example.notes".into(), everyone: false, on: false, why: None },
+            Request::Hold {
+                id: "org.example.notes".into(),
+                everyone: true,
+                on: true,
+                why: Some("app tests use this version".into()),
+            },
+            Request::Hold {
+                id: "org.example.notes".into(),
+                everyone: true,
+                on: true,
+                why: Some("-".into()),
+            },
+            Request::Tonight { ids: Vec::new(), on: true, yes: true, by: 1000 },
+            Request::Tonight {
+                ids: vec!["org.example.notes".into(), "org.example.tea@2".into()],
+                on: true,
+                yes: false,
+                by: 1000,
+            },
+            Request::Tonight {
+                ids: vec!["org.example.notes".into()],
+                on: false,
+                yes: false,
+                by: 0,
+            },
             Request::Automatic { everyone: false, on: true },
             Request::History { id: None },
             Request::History { id: Some("org.example.notes".into()) },
@@ -901,6 +1105,7 @@ mod tests {
             Request::Default { name: "node".into(), line: Some("22".into()), everyone: false },
             Request::Default { name: "org.nodejs.node".into(), line: None, everyone: true },
             Request::AddOns,
+            Request::AutomaticForEveryone,
         ] {
             let line = request.line();
             assert!(line.ends_with('\n') && line.matches('\n').count() == 1);
@@ -929,8 +1134,17 @@ mod tests {
             "watch\tNotes",
             "get\tRipgrep\t-\tme\task",
             "get\tio.github.burntsushi.ripgrep\tDukovo\tme\task",
+            "get\torg.nginx.nginx\t-\teveryone\tyes\tabcd",
+            "get\torg.nginx.nginx\t-\teveryone\tyes\t",
             "search",
             "search\t",
+            "search-json\t",
+            "search-json\trip\t",
+            "sheet",
+            "sheet\torg.nginx.nginx",
+            "sheet\tNginx\t-",
+            "sheet\torg.nginx.nginx\tDukovo",
+            "sheet\torg.nginx.nginx\t-\textra",
             "catalog-add\tfeed\tftp://example.org/",
             "catalog-remove\t../x",
             "update\tme\tcheck",
@@ -938,11 +1152,66 @@ mod tests {
             "update\tme\tapply\task\tNotes",
             "rollback\torg.example.notes",
             "hold\torg.example.notes\tme\tsometimes",
+            "hold\torg.example.notes\tme\ton\t",
+            "hold\torg.example.notes\tme\ton\ttwo\ttabs",
             "automatic\tall\ton",
+            "tonight\ton\tyes",
+            "tonight\ton\tyes\tme",
+            "tonight\tmaybe\tyes\t1000",
+            "tonight\ton\tsure\t1000",
+            "tonight\ton\task\t1000\tNotes",
             "history",
         ] {
             assert!(Request::read(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn the_lines_an_older_bundle_sends_still_read() {
+        // An install by ID names no SHA-256, and a later one may; it is read
+        // in lowercase.
+        assert_eq!(
+            Request::read("get\torg.nginx.nginx\t-\tme\task"),
+            Ok(Request::Get {
+                id: "org.nginx.nginx".into(),
+                catalog: None,
+                everyone: false,
+                yes: false,
+                sha256: None,
+            })
+        );
+        let upper = format!("get\torg.nginx.nginx\t-\tme\task\t{}", "AB".repeat(32));
+        let Ok(Request::Get { sha256, .. }) = Request::read(&upper) else { panic!("{upper}") };
+        assert_eq!(sha256, Some("ab".repeat(32)));
+        // The words of a search with no `--json`, and a search of no words
+        // that only `--json` makes.
+        assert_eq!(
+            Request::read("search\trip"),
+            Ok(Request::Search { words: vec!["rip".into()], json: false })
+        );
+        assert_eq!(Request::read("search-json"), Ok(Request::Search { words: vec![], json: true }));
+        assert_eq!(Request::read("search"), Err("not a request bundled knows".into()));
+    }
+
+    #[test]
+    fn a_reason_is_one_line_of_at_most_200_characters() {
+        assert!(why_ok("Waiting for the nginx fix"));
+        assert!(why_ok(&"é".repeat(200)));
+        for bad in ["", "two\nlines", "a\ttab", "bell\x07", "del\x7f"] {
+            assert!(!why_ok(bad), "{bad:?}");
+        }
+        assert!(!why_ok(&"x".repeat(201)));
+        // A request line of the longest reason is no longer than a line may be.
+        let longest = Request::Hold {
+            id: "org.example.notes".into(),
+            everyone: true,
+            on: true,
+            why: Some("é".repeat(200)),
+        };
+        assert!(longest.line().len() < LINE_MAX);
+        assert_eq!(Request::read(longest.line().trim_end()), Ok(longest));
+        let too_long = format!("hold\torg.example.notes\tme\ton\t{}", "x".repeat(201));
+        assert!(Request::read(&too_long).is_err());
     }
 
     #[test]
@@ -957,14 +1226,44 @@ mod tests {
             flags: Flags::Known { count: 2, worst: Severity::High },
             catalog: Some("dukovo".into()),
             held: true,
+            held_since: Some(1_793_100_000),
+            held_by: Some(1000),
+            held_reason: Some("app tests use this version".into()),
             update: Some("0.2.0".into()),
+            tonight: Some(Tonight {
+                to: "0.2.0".into(),
+                asked_ms: 1_793_200_000_000,
+                by: 1000,
+                missed_ms: Some(1_793_250_000_000),
+                starts_ms: 1_793_300_000_000,
+            }),
         };
-        let unbound = Listed { catalog: None, held: false, update: None, ..listed.clone() };
+        let unbound = Listed {
+            catalog: None,
+            held: false,
+            held_since: None,
+            held_by: None,
+            held_reason: None,
+            update: None,
+            tonight: None,
+            ..listed.clone()
+        };
+        // Asked, with no window missed yet.
+        let fresh = Listed {
+            tonight: Some(Tonight { missed_ms: None, ..listed.tonight.clone().unwrap() }),
+            ..listed.clone()
+        };
+        // A hold with no reason, and one whose reason is a dash.
+        let unsaid = Listed { held_reason: None, ..listed.clone() };
+        let dash = Listed { held_reason: Some("-".into()), ..listed.clone() };
         let answers = [
             Answer::Sheet("Notes 0.1.0, for yourself\n  Signed by key RW...\n".into()),
             Answer::Question,
             Answer::Listed(listed),
             Answer::Listed(unbound),
+            Answer::Listed(fresh),
+            Answer::Listed(unsaid),
+            Answer::Listed(dash),
             Answer::Document("{\"format\":1,\"id\":\"org.example.notes\"}".into()),
             Answer::Lines(Lines {
                 id: "org.nodejs.node".into(),
@@ -1051,6 +1350,7 @@ mod tests {
                 to: "1.1.0".into(),
                 catalog: Some("dukovo".into()),
                 held: true,
+                held_reason: Some("app tests use this version".into()),
             }),
             Answer::Available(Available {
                 place: Place::Everyone,
@@ -1059,6 +1359,7 @@ mod tests {
                 to: "2.1.0".into(),
                 catalog: None,
                 held: false,
+                held_reason: None,
             }),
             Answer::Event(crate::bundles::history::Event {
                 when: 1_793_000_000,

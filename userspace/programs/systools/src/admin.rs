@@ -45,6 +45,7 @@ use toml_edit::DocumentMut;
 
 use crate::account::{self, Input};
 use crate::admin_about;
+use crate::admin_certificate;
 use crate::admin_errors;
 use crate::admin_export;
 use crate::admin_put_back;
@@ -64,6 +65,7 @@ const USAGE: &str = "usage: admin fingerprint\n       admin about [--json]\n    
                      admin notices [--json]\n       admin actions [--json]\n       \
                      admin show ACTION [NAME=VALUE | NAME:=JSON]...\n       \
                      admin reach [private | any] [--try SECONDS]\n       \
+                     admin certificate [NAME] [--try SECONDS]\n       \
                      admin keep\n       admin undo\n       \
                      admin settings [--json]\n       \
                      admin sign-in [--second-step if-set|administrators|everyone]\n                     \
@@ -101,6 +103,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         Some("actions") => list_actions(args),
         Some("show") => show_action(args),
         Some("reach") => reach(args),
+        Some("certificate") => admin_certificate::main(args),
         Some(verb @ ("keep" | "undo")) => end(verb, args),
         Some("settings") => admin_settings::settings(args),
         Some("sign-in") => admin_settings::sign_in(args),
@@ -316,6 +319,17 @@ fn reach_text(path: &Path, reach: Reach) -> Result<Option<String>, Fail> {
     if Settings::read_at(path).map_err(fail)?.console.reach == reach {
         return Ok(None);
     }
+    console_text(path, "reach", reach.word())
+}
+
+/// The text of the admin.toml at `path` with `key` of its `[console]` the
+/// string `value`, every comment of the file kept, or None when the file
+/// says it already: a file that is not there is made.
+///
+/// # Errors
+///
+/// A file that does not read, or is not TOML.
+pub(crate) fn console_text(path: &Path, key: &str, value: &str) -> Result<Option<String>, Fail> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
@@ -326,7 +340,7 @@ fn reach_text(path: &Path, reach: Reach) -> Result<Option<String>, Fail> {
     let edit = |document: &mut DocumentMut| {
         let console = settings_edit::table(document, "console")
             .ok_or_else(|| format!("{}: console is not a table", admin_settings::PATH))?;
-        settings_edit::set_string(console, "reach", reach.word());
+        settings_edit::set_string(console, key, value);
         Ok(())
     };
     settings_edit::edited(&text, edit).map_err(|unedited| match unedited {
@@ -453,13 +467,13 @@ fn end(verb: &str, args: &mut Args) -> Result<i32, Fail> {
     }
     if util::own_user() != 0 {
         return Err(fail(format!(
-            "only root keeps or undoes a change of the console's reach: run it with elevate, as \
+            "only root keeps or undoes a change of the console's settings: run it with elevate, as \
              `elevate admin {verb}`"
         )));
     }
     let words = trial::end(verb, TRIAL, || net_errors::nothing_is_tried("the console's settings"))?;
     match verb {
-        "keep" => println!("Kept: the console's reach stays as it is."),
+        "keep" => println!("Kept: the console's settings stay as they are."),
         _ => println!("{words}"),
     }
     Ok(0)

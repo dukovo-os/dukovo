@@ -80,6 +80,9 @@
 //! `certd` keeps the machine's certificates, which `cert` lists, adds and
 //! removes, and which Spark copies for the services that name them (ADR
 //! 0512).
+//! `website` adds, lists, checks and removes nginx's websites, and takes one
+//! to HTTPS, with nginx's own check run on the new set before it is live
+//! (ADR 0569).
 //! `bundle` makes, signs, installs and runs bundles, which `bundled`
 //! installs, seals and removes (ADRs 0221 to 0223 and 0225); called by a
 //! name that is no tool's, through a link in a commands folder of
@@ -93,6 +96,7 @@ mod account;
 mod account_errors;
 mod admin;
 mod admin_about;
+mod admin_certificate;
 mod admin_errors;
 mod admin_export;
 #[cfg(feature = "lab")]
@@ -123,6 +127,7 @@ mod check;
 mod cloud;
 mod column;
 mod crontab;
+mod database;
 mod deadline;
 mod device;
 mod df;
@@ -263,6 +268,7 @@ mod util;
 mod volumed;
 mod watch;
 mod watchdog;
+mod website;
 mod wg;
 mod wgd;
 mod which;
@@ -314,6 +320,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("cloud-setup", cloud::main),
     ("column", column::main),
     ("crontab", crontab::main),
+    ("database", database::main),
     ("df", df::main),
     ("device", device::main),
     ("dig", dig::dig),
@@ -470,6 +477,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("w", sessions::w),
     ("watch", watch::main),
     ("watchdog", watchdog::main),
+    ("website", website::main),
     ("wg", wg::main),
     ("wgd", wgd::main),
     ("which", which::main),
@@ -481,9 +489,15 @@ const TOOLS: &[(&str, Tool)] = &[
 
 /// The tools whose Linux versions exit with 2, not 1, for a mistake in
 /// the command line: procps-ng's pgrep and pkill, iputils' ping, and
-/// which; and update, whose exit status 1 says that something applies
-/// (`update advisories`, ADR 0534).
-const USAGE_TWO: &[&str] = &["getfacl", "pgrep", "ping", "pkill", "setfacl", "update", "which"];
+/// which; update, whose exit status 1 says that something applies
+/// (`update advisories`, ADR 0534); alerts, whose exit status 1 says
+/// that the channel it was to change is not there, or that a test through
+/// a channel failed; and database and website, whose exit status 1 says
+/// that PostgreSQL or nginx, or what was asked of it, refused, with an ID.
+const USAGE_TWO: &[&str] = &[
+    "alerts", "database", "getfacl", "pgrep", "ping", "pkill", "setfacl", "update", "website",
+    "which",
+];
 
 /// The tool named `name`.
 fn tool(name: &str) -> Option<Tool> {

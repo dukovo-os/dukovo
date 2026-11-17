@@ -78,7 +78,7 @@ pub(super) const OWN_COMMANDS: [&str; 7] =
 /// The service the examples use: every image runs it, nothing needs it,
 /// and neither the console nor the tests depend on it, so that stopping
 /// and starting it again leaves nothing different. It only looks at the
-/// disks every half hour (diskhealth(8)).
+/// disks every ten minutes (diskhealth(8)).
 const EXAMPLE: &str = "diskhealth";
 
 /// What a change of a service moves, as text to compare, from what Spark
@@ -977,6 +977,8 @@ mod tests {
             register: None,
             failed_when: None,
             no_log: false,
+            when: None,
+            comes_back: false,
         }
     }
 

@@ -3,8 +3,9 @@
 
 // What the palette finds of certificates (design 3.5): each certificate
 // certd keeps, with a state to filter by (`state:expiring`), and a row of its
-// own to renew it ("Renew this-machine"). Until the Certificates page is
-// there, Enter on a certificate shows it.
+// own to renew it ("Renew this-machine"). Enter on a certificate opens its
+// panel on the Certificates page. An administrator also finds the three
+// things the page does: get a certificate, upload one, change the machine's name.
 
 /** A certificate with this many days left or fewer is expiring. */
 export const EXPIRING_DAYS = 14;
@@ -46,11 +47,30 @@ export function itemsOf(answer) {
     }));
 }
 
+/** The things the page does, which only an administrator does: each takes the person to the card that does it. */
+export function pageItems(admin) {
+  return admin ? [
+    {
+      key: 'get', title: 'Get a certificate', detail: 'From Let\'s Encrypt, for a name that leads to this server', href: '/certificates#get',
+    },
+    {
+      key: 'upload', title: 'Upload a certificate', detail: 'One you made or bought, with its private key', href: '/certificates#upload',
+    },
+    {
+      key: 'name', title: 'Change this machine\'s name', detail: 'Its name on the network and its domain', href: '/certificates#name',
+    },
+  ] : [];
+}
+
 export const providers = [{
   group: 'Certificates',
   kind: 'certificate',
   filters: { state: STATES },
   items: async (cx) => itemsOf(await cx.cache('/api/1/certificates', 5000, () => cx.api.get('/api/1/certificates'))),
+}, {
+  group: 'Certificates',
+  kind: 'certificate',
+  items: async (cx) => pageItems(cx.session?.admin === true),
 }];
 
 export const phrases = {

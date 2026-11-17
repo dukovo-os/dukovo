@@ -258,6 +258,9 @@ fn machine_checks() -> Result<u64, Fail> {
     dmesg::records().map(|log| corrected(&log))
 }
 
+/// How many checks [`run`] gives.
+pub(crate) const CHECKS: usize = 3;
+
 /// The checks of the area: the load of `cpus` CPUs for `time`, the
 /// temperatures it reached, and the machine checks.
 pub(crate) fn run(cpus: usize, time: Duration, stop: &AtomicBool) -> Vec<Check> {
@@ -278,11 +281,12 @@ pub(crate) fn run(cpus: usize, time: Duration, stop: &AtomicBool) -> Vec<Check> 
         &mut || peaks.add(processor_temperatures(Path::new(HWMON))),
     );
     peaks.add(processor_temperatures(Path::new(HWMON)));
-    vec![
+    let checks: [Check; CHECKS] = [
         load_check(cpus, time, &found),
         peaks.check(),
         machine_check_check(&before, &machine_checks()),
-    ]
+    ];
+    checks.into()
 }
 
 #[cfg(test)]

@@ -83,7 +83,13 @@ pub enum Tried {
 
 /// The request that asks Spark to try `path` as trial `id` for
 /// `seconds`, putting it back with `to_use`.
+#[cfg(test)]
 fn request(id: &str, path: &Path, seconds: u32, to_use: ToUse<'_>) -> Request {
+    request_of(id, &[path], seconds, to_use)
+}
+
+/// [`request`] for the files at `paths`, which one trial keeps together.
+fn request_of(id: &str, paths: &[&Path], seconds: u32, to_use: ToUse<'_>) -> Request {
     let (restart, reload) = match to_use {
         // Spark restarts a service named here when it undoes the trial if
         // it ran when the trial began, and stops it if it did not, which
@@ -91,7 +97,8 @@ fn request(id: &str, path: &Path, seconds: u32, to_use: ToUse<'_>) -> Request {
         ToUse::Restart(name) | ToUse::Stop(name) => (vec![name.to_string()], Vec::new()),
         ToUse::Reload(name) => (Vec::new(), vec![name.to_string()]),
     };
-    Request { id: id.into(), seconds, files: vec![path.display().to_string()], restart, reload }
+    let files = paths.iter().map(|path| path.display().to_string()).collect();
+    Request { id: id.into(), seconds, files, restart, reload }
 }
 
 /// The name of the file beside `path` that holds its new text: hidden,
@@ -189,17 +196,75 @@ pub fn try_file(
     seconds: u32,
     to_use: ToUse<'_>,
 ) -> Result<Tried, Fail> {
-    if let Err(refused) = ask(&request(id, path, seconds, to_use).line()) {
-        let _ = fs::remove_file(copy);
+    try_files(id, &[(path, copy)], seconds, to_use)
+}
+
+/// Tries the new texts of several files as one trial, `id`: each `(path,
+/// text, mode)` is written beside its file, then [`try_files`].
+///
+/// # Errors
+///
+/// As [`write_beside`] and [`try_files`]; a copy made before a write that
+/// failed is removed.
+pub fn try_texts(
+    id: &str,
+    changes: &[(&Path, &[u8], u32)],
+    seconds: u32,
+    to_use: ToUse<'_>,
+) -> Result<Tried, Fail> {
+    let mut copies: Vec<PathBuf> = Vec::new();
+    for &(path, text, mode) in changes {
+        match write_beside(path, text, mode) {
+            Ok(copy) => copies.push(copy),
+            Err(failed) => {
+                for copy in &copies {
+                    let _ = fs::remove_file(copy);
+                }
+                return Err(failed);
+            }
+        }
+    }
+    let pairs: Vec<(&Path, &Path)> =
+        changes.iter().zip(&copies).map(|(&(path, _, _), copy)| (path, copy.as_path())).collect();
+    try_files(id, &pairs, seconds, to_use)
+}
+
+/// [`try_file`] for several files, which Spark keeps and puts back
+/// together: each `(path, copy)` is renamed in the order given, and a
+/// rename that fails has Spark undo the trial, which puts back those
+/// renamed before it.
+///
+/// # Errors
+///
+/// As [`try_file`].
+pub fn try_files(
+    id: &str,
+    files: &[(&Path, &Path)],
+    seconds: u32,
+    to_use: ToUse<'_>,
+) -> Result<Tried, Fail> {
+    let remove_copies = |from: usize| {
+        for &(_, copy) in &files[from..] {
+            let _ = fs::remove_file(copy);
+        }
+    };
+    let paths: Vec<&Path> = files.iter().map(|&(path, _)| path).collect();
+    if let Err(refused) = ask(&request_of(id, &paths, seconds, to_use).line()) {
+        remove_copies(0);
         return Err(refused);
     }
-    if let Err(error) = fs::rename(copy, path) {
-        let _ = fs::remove_file(copy);
-        let _ = ask(&format!("undo {id}"));
-        return Err(util::failed(&path.display(), error));
+    for (at, &(path, copy)) in files.iter().enumerate() {
+        if let Err(error) = fs::rename(copy, path) {
+            remove_copies(at);
+            let _ = ask(&format!("undo {id}"));
+            return Err(util::failed(&path.display(), error));
+        }
+        sync_folder(path);
     }
-    sync_folder(path);
-    println!("{}: trying the change for {seconds} s", path.display());
+    for path in &paths {
+        println!("{}: trying the change for {seconds} s", path.display());
+    }
+    let path = paths.first().copied().unwrap_or(Path::new("/"));
     let used = match to_use {
         ToUse::Restart(name) => command::change("restart", name, &[]).map(drop),
         ToUse::Reload(name) => ask(&format!("reload {name}")).map(drop),

@@ -1,0 +1,161 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The Hardware page of the web console in each engine: the
+# This machine card held to `hardware show` (`GET /api/1/hardware`) and, once
+# an administrator unlocks the console, to `hardware inventory`
+# (`GET /api/1/hardware/inventory`); Check the hardware, which asks what to
+# check, is run to its end (`POST /api/1/hardware/check`, a task) and its
+# result held to `hardware last` (`GET /api/1/hardware/check`) and to
+# `hardware history` (`GET /api/1/hardware/history`), the last check and the
+# checks before it; the memory test, which is the memory area of a check;
+# Restart… and Restart now… asked and cancelled, a restart at a time of day set
+# and cancelled, and a shut down set with the machine's name typed and cancelled
+# within its minute (`POST /api/1/power/restart`, `POST /api/1/power/shutdown`,
+# `POST /api/1/power/cancel`, and `GET /api/1/power` for what waits); a reader,
+# who sees it all and no button that changes the machine, and a phone at 390 by
+# 844. Each look is dark, light, high contrast, forced colours and less motion,
+# checked by axe. The page's second half: Temperatures and fans held to
+# `hardware sensors` and `metrics show --highest` (`GET /api/1/hardware/sensors`
+# and `GET /api/1/hardware/highest`), the disks' own tests held to `diskhealth`
+# (`GET /api/1/storage/disks/{disk}/health`), Devices held to `hardware devices`
+# (`GET /api/1/hardware/devices`), which the steps below hold to `lspci`, and the
+# memory test at the next restart, asked and taken back with the restart's
+# question read and cancelled (`GET /api/1/hardware/memtest`,
+# `POST /api/1/hardware/memtest/next-start`, `POST /api/1/hardware/memtest/cancel`).
+# The machine is never restarted: the test that restarts it for the memory is
+# hardware/memtest-start's.
+#
+# A check takes minutes, so the script runs one engine after the other, each on
+# a machine that has kept no check: the steps before each engine remove the
+# last check and its history, cancel a memory test that is asked, and cancel
+# anything that waits to restart. Chromium checks every area, as a quick check
+# does; the other two engines check the memory and the processors, so that the
+# three fit in the test's time. The full check, which takes hours, is read and
+# never started. The steps after each engine hold the machine to what the page
+# left: what `hardware last` and `hardware history` say is the check the page
+# ran, nothing waits to restart or shut down, and no memory test is asked. The
+# accounts are two that this test makes and removes, an administrator and a
+# reader, so no script needs the lab's password.
+about = "The web console's Hardware page in each engine: This machine from hardware show and the slots once unlocked, Check the hardware run to its end and held to hardware last and hardware history, the temperatures and fans from hardware sensors, the disks' own tests, the devices from hardware devices held to lspci, the memory test asked for the next restart and taken back, Restart and Shut down asked and cancelled, a restart at a time and its Cancel, a shut down with the typed name taken back within its minute, a reader, and the phone"
+time = "30m"
+host_needs = ["curl"]
+
+[[step]]
+run = "sh -c 'echo lab-console-password | user add --admin wc-hw && echo lab-console-password | user add wc-hw-reader && user set --console --yes wc-hw-reader'"
+root = true
+expect = ["Made wc-hw", "Made wc-hw-reader", "wc-hw-reader is changed"]
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address says so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+# What the page shows of this machine is what this prints.
+[[step]]
+run = "hardware show --json"
+expect = ["\"processor\"", "\"memory\""]
+# The temperatures and fans, and the devices, as the page holds them.
+[[step]]
+run = "hardware sensors --json"
+expect = ["\"sensors\"", "\"zones\"", "\"disks\""]
+[[step]]
+run = "hardware devices --json"
+expect = ["\"ids\"", "\"driver\"", "\"where\""]
+# Every PCI function that lspci lists is a device the page can show.
+[[step]]
+run = '''sh -c 'missing=""; for id in $(lspci -n | cut -d" " -f3 | sort -u); do hardware devices --json | grep -q "$id" || missing="$missing $id"; done; echo "pci ids missing:$missing."' '''
+expect = "pci ids missing:."
+# Nothing is asked of the memory when the test begins.
+[[step]]
+run = "hardware memtest --status --json"
+expect = ["\"asked\"", "\"last\""]
+
+# Chromium. From nothing: no check kept, and nothing waiting to restart.
+[[step]]
+run = "sh -c 'rm -f /system/state/hardware/last.json /system/state/hardware/history; hardware memtest --cancel > /dev/null 2>&1; shutdown -c --no-wall > /dev/null 2>&1; shutdown --show --json | grep -c \"shutdown.: *null\"'"
+root = true
+expect = "1"
+[[step]]
+browser = "hardware.mjs"
+engines = ["chromium"]
+port = 9090
+# Two checks were made, the whole quick check and the memory's, and the
+# machine kept both; nothing waits.
+[[step]]
+run = "hardware history"
+root = true
+expect = "quick"
+[[step]]
+run = "hardware last --json"
+root = true
+expect = ["\"checks\"", "\"area\": \"memory\""]
+[[step]]
+run = "sh -c 'shutdown --show --json | grep -c \"shutdown.: *null\"'"
+root = true
+expect = "1"
+[[step]]
+run = "sh -c 'hardware memtest --status --json | grep -c \"asked.: *null\"'"
+root = true
+expect = "1"
+
+# Firefox, from nothing again.
+[[step]]
+run = "sh -c 'rm -f /system/state/hardware/last.json /system/state/hardware/history; hardware memtest --cancel > /dev/null 2>&1; shutdown -c --no-wall > /dev/null 2>&1; shutdown --show --json | grep -c \"shutdown.: *null\"'"
+root = true
+expect = "1"
+[[step]]
+browser = "hardware.mjs"
+engines = ["firefox"]
+port = 9090
+[[step]]
+run = "hardware history"
+root = true
+expect = "quick"
+[[step]]
+run = "hardware last --json"
+root = true
+expect = ["\"checks\"", "\"area\": \"memory\""]
+[[step]]
+run = "sh -c 'shutdown --show --json | grep -c \"shutdown.: *null\"'"
+root = true
+expect = "1"
+[[step]]
+run = "sh -c 'hardware memtest --status --json | grep -c \"asked.: *null\"'"
+root = true
+expect = "1"
+
+# WebKit, from nothing again.
+[[step]]
+run = "sh -c 'rm -f /system/state/hardware/last.json /system/state/hardware/history; hardware memtest --cancel > /dev/null 2>&1; shutdown -c --no-wall > /dev/null 2>&1; shutdown --show --json | grep -c \"shutdown.: *null\"'"
+root = true
+expect = "1"
+[[step]]
+browser = "hardware.mjs"
+engines = ["webkit"]
+port = 9090
+[[step]]
+run = "hardware history"
+root = true
+expect = "quick"
+[[step]]
+run = "hardware last --json"
+root = true
+expect = ["\"checks\"", "\"area\": \"memory\""]
+[[step]]
+run = "sh -c 'shutdown --show --json | grep -c \"shutdown.: *null\"'"
+root = true
+expect = "1"
+[[step]]
+run = "sh -c 'hardware memtest --status --json | grep -c \"asked.: *null\"'"
+root = true
+expect = "1"
+
+# The machine as it was: no check kept, no memory test asked, nothing waiting, and the accounts gone.
+[[step]]
+run = "sh -c 'rm -f /system/state/hardware/last.json /system/state/hardware/history; hardware memtest --cancel > /dev/null 2>&1; shutdown -c --no-wall > /dev/null 2>&1; echo cleaned'"
+root = true
+expect = "cleaned"
+[[step]]
+run = "sh -c 'for name in wc-hw wc-hw-reader; do user remove --delete-home --yes $name || exit 1; done'"
+root = true
+expect = ["wc-hw is removed", "wc-hw-reader is removed"]

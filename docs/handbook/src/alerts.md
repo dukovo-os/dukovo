@@ -29,8 +29,9 @@ tells you once, however long it stays:
   there until you press a key;
 - at your next sign-in, as a line for each active alert, such as `Alert:
   Disk WDC (sda) is failing (since 2026-11-13 10:02, alerts list)`;
-- by email and to the webhooks you set up, if any, about 30 seconds
-  later, so that alerts that come together are one message.
+- by email, to the webhooks you set up and to the browsers you turned
+  alerts on in, if any, about 30 seconds later, so that alerts that come
+  together are one message.
 
 When the problem is gone, alertd clears the alert and tells you that too.
 An alert that is active and gets worse, from a warning to critical, is
@@ -54,6 +55,17 @@ cleared and when (`-n 50` for more), and `elevate alerts --json` gives a
 script the same data. The source is the service that raised the alert;
 what the alert means and what to do is in "What each alert means", and
 each alert's own detail says which command to run first.
+
+## From the web console
+
+The web console's **Alerts** page shows the same things in a browser: what is
+active, what changed lately, where alerts go and how each place last did, a
+test alert, and the forms for email and webhooks. It also gets alerts to a
+browser as a notice on a computer or a phone, even with the console closed, and
+sets a phone up with a code to scan; see [Alerts and the
+phone](web-console.md#alerts-and-the-phone) in the chapter on the console.
+Each place can be told of only some kinds of alert there (see "Which alerts go
+where"). The Alerts card of Security shows each kind and the places that hear it.
 
 ## Telling you away from the machine
 
@@ -166,6 +178,35 @@ severity = "critical"
 cleared = false
 ```
 
+A channel can also be told of only some kinds of alert, with `about`. An alert
+says what it is about, and goes only to the channels that are told of that kind:
+
+| Kind | In `about` | What it holds |
+| --- | --- | --- |
+| Data at risk | `"data"` | A disk failing or wearing out, a filesystem nearly full, a mirror missing a disk, a backup failed or late |
+| Something stopped | `"stopped"` | A service, an update or a start that failed, a certificate running out, the kernel stopping, memory running low |
+| Hardware | `"hardware"` | A sensor or a disk running hot, the memory test at the start |
+
+```
+[[webhook]]
+kind = "ntfy"
+url = "https://ntfy.sh/server-alerts-7f3a9c"
+about = ["data", "hardware"]
+```
+
+A phone that is told of `["data"]` does not buzz for a certificate that is
+running out; the alert is still on the screen and in `alerts list`, and in every
+channel that is told of its kind. A channel with no `about` hears every kind.
+`elevate alerts channel webhook:1 --about data,hardware` writes the line for you,
+and `--about all` takes it out; `email`, `webhook:N` and `push:ID` name the
+channel, as `alerts status` lists them. A few alerts are about no kind, such as
+the one that says the system's files are not the release's, and reach every
+channel, as does a test. The screen is told of every alert, whatever any
+channel is told of. A word in `about` that is no kind is left out with a
+warning in the log ([ALR-106](../../errors/ALR-106.md)), and a mistake can only
+tell a channel more, never less. The Alerts page of the web console sets this
+with **Edit what it is told**.
+
 ## When a message does not arrive
 
 `elevate alerts status` shows each channel's last success, last failure
@@ -221,7 +262,10 @@ names a channel, only over TLS, and never writes a password, a token or a
 webhook address in the log. What an alert says can name a disk's model
 and serial number, a mount point or a service, and goes with the
 machine's name to the email account and webhooks you set up; keep to
-providers you trust with that. The active alerts, the last 1000 to 2000
+providers you trust with that. A notice for a browser goes through the
+push service of the browser's maker, encrypted for that browser alone, and
+only after you turned alerts on in it; "Privacy and security reporting" says
+what that service sees. The active alerts, the last 1000 to 2000
 changes and the messages not yet delivered are kept on the machine in
 `/system/state/alerts`, in files that root alone reads. See "Privacy and
 security reporting".

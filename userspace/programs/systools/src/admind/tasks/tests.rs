@@ -131,7 +131,7 @@ fn the_log_keeps_the_last_2000_lines_and_at_most_256_kib() {
 }
 
 #[test]
-fn only_the_standard_output_says_progress_and_those_lines_are_not_the_log() {
+fn a_progress_is_said_on_the_output_a_step_on_either_stream_and_neither_is_the_log() {
     let tasks = Tasks::new();
     tasks.add(task(1));
     tasks.line(1, Stream::Output, "step 1 of 3: Starting");
@@ -148,6 +148,11 @@ fn only_the_standard_output_says_progress_and_those_lines_are_not_the_log() {
     // A new step starts its progress again.
     tasks.line(1, Stream::Output, "step 2 of 3: Next");
     assert_eq!(tasks.live.borrow()[&1].task.percent, None);
+    // A command that prints JSON writes its steps on its errors.
+    tasks.line(1, Stream::Errors, "step 3 of 3: memory pattern 2 passed");
+    let now = tasks.live.borrow()[&1].full();
+    assert_eq!((now.step, now.words.as_str()), (3, "memory pattern 2 passed"));
+    assert_eq!(now.log, ["progress 90%", "plain line"]);
 }
 
 #[test]
@@ -285,7 +290,7 @@ fn a_command_ends_a_task_by_how_it_ended() {
         last_error: last_error.map(String::from),
     };
     let concluded = |done: &Done| {
-        let end = conclude(done, "admin", limits);
+        let end = conclude(done, "admin", limits, &[0, 2]);
         (end.state, end.status, end.note)
     };
     assert_eq!(concluded(&done(Some(0), None, false, None)), (State::Done, Some(0), None));
@@ -298,6 +303,12 @@ fn a_command_ends_a_task_by_how_it_ended() {
     assert_eq!(
         concluded(&done(Some(3), None, false, None)),
         (State::Failed, Some(3), Some("admin ended with status 3".into()))
+    );
+    // A status the action takes as an answer, as a check's warning, is
+    // done, whatever its last error line said.
+    assert_eq!(
+        concluded(&done(Some(2), None, false, Some("one warning"))),
+        (State::Done, Some(2), None)
     );
     // A stop is a stop whether the command ends well, as one that puts back
     // what it did does, or not.

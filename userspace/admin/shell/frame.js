@@ -7,7 +7,7 @@
 // `enterShell` once the session is known, and `stop` when it ends.
 
 import { get, post, request, whenUnreachable } from '../api.js';
-import { h } from '../dom.js';
+import { h, sheet } from '../dom.js';
 import { makeCommands } from '../lib/command.js';
 import { makeTime } from '../lib/time.js';
 import { PAGES } from '../pages.js';
@@ -158,9 +158,9 @@ export async function enterShell({ app, session: first, signOut, signInAgain, on
       offline = true;
       (await begin()).lost();
     },
-    async expectRestart() {
+    async expectRestart(words, options) {
       offline = true;
-      (await begin()).expectRestart();
+      (await begin()).expectRestart(words, options);
     },
     stop: () => waiting?.then((made) => made.stop()),
   };
@@ -172,10 +172,13 @@ export async function enterShell({ app, session: first, signOut, signInAgain, on
       main,
       health: () => get('/api/1/health'),
       session: () => get('/api/1/session'),
+      about: () => get('/api/1/console/about'),
       time: () => time,
       onChange: (now) => { offline = now; },
-      onBack() {
-        bus.emit('online');
+      onBack(restarted) {
+        // The page that asked for a restart has lost its state, and is shown again.
+        if (restarted) router.refresh();
+        else bus.emit('online');
         tasks.load().catch(() => {});
         nav.readBadges('event');
       },
@@ -334,6 +337,8 @@ export async function enterShell({ app, session: first, signOut, signInAgain, on
   tasks.load().catch(() => {});
   nav.readBadges('start');
   await router.start();
+  // Every dialog from here on has its look; nothing waits for the sheet.
+  sheet('/dialogs.css');
 
   return {
     stop() {

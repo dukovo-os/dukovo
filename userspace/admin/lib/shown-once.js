@@ -48,7 +48,7 @@ export async function showOnce(view, {
   if (view.signal.aborted) return false;
   let secret = text;
   const id = uniqueId('once');
-  const heading = h('h2', { id: `${id}-h`, tabindex: '-1' }, title);
+  const heading = h('h2', { id: `${id}-h`, tabindex: '-1', autofocus: true }, title);
   const labelId = `${id}-label`;
   const pre = h('pre', { class: 'cmdtext', tabindex: '0' }, secret);
   const status = h('p', { class: 'small', role: 'status' });
@@ -105,9 +105,7 @@ export async function showOnce(view, {
   });
   view.signal.addEventListener('abort', () => dialog.close(''), { once: true });
 
-  const closed = openModal(dialog);
-  heading.focus();
-  const how = await closed;
+  const how = await openModal(dialog);
   secret = null;
   pre.replaceChildren();
   picture?.remove();

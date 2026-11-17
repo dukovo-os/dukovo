@@ -669,6 +669,18 @@ presses.
 	snapshots of a round of backups (ADR 0463). One set of hooks runs
 	at a time.
 
+*run* _service_ _program_ [_argument_...]
+	Run _program_, an absolute path, once with the _arguments_ as a
+	process of _service_'s own, as its health checks run: in its
+	resource domain and view, as its account, with its environment and
+	_/devices/null_ as its input. Answer once it ends with *ran* _code_,
+	the code as a shell gives it, or *stopped* when it ran past 30
+	seconds and was killed, then the first 16 KiB of what it wrote. A
+	service with no account of its own, or one with *names* or
+	*runs-with-your-access*, is refused. One program runs so at a time;
+	another request meanwhile is answered *error:* and asks again.
+	*website*(8) has nginx check its settings so (ADR 0569).
+
 # CERTD'S SOCKET
 
 certd does not hold the control socket, which could stop any service or

@@ -37,13 +37,13 @@
 //! device to remove holds the browser's address, or when what was read
 //! does not say.
 
-use std::net::IpAddr;
-
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::trial::refusal;
-use super::{Action, Args, Bad, CutsOff, Examples, Field, Nothing, Runs, Tests, Undo};
+use super::{
+    Action, Args, Bad, Browser, CutsOff, Examples, Field, Nothing, Runs, Tests, Through, Undo,
+};
 use crate::private_access::{
     INTERFACE, NAME_MAX, parse_address, parse_host, parse_name, parse_port,
 };
@@ -314,7 +314,7 @@ struct ShownDevice {
 /// which came through `wg0`, reaching the console: not when the device
 /// holds `from`, and not when `shown`, what `wireguard show --json`
 /// printed, does not read.
-fn cuts_off(args: &Named, from: IpAddr, shown: &str) -> Result<(), String> {
+fn cuts_off(args: &Named, browser: &Browser<'_>, shown: &str) -> Result<(), String> {
     let unread = || {
         format!(
             "this request came through {INTERFACE}, and its devices could not be read: remove \
@@ -328,7 +328,7 @@ fn cuts_off(args: &Named, from: IpAddr, shown: &str) -> Result<(), String> {
     for device in devices.iter().filter(|device| device.name == args.name) {
         for address in &device.addresses {
             let Some(held) = Prefix::parse(address) else { return Err(unread()) };
-            if held.contains(from) {
+            if held.contains(browser.from) {
                 return Err(format!(
                     "this browser reaches the console through {}: remove it from another \
                      connection",
@@ -352,7 +352,7 @@ impl Action for Remove {
     const RUNS: Runs = Runs::AsAdministrator;
     const ERRORS: &'static [&'static str] = &["NET-184"];
     const CUTS_OFF: Option<CutsOff<Named>> = Some(CutsOff {
-        card: INTERFACE,
+        on: Through::Card(INTERFACE),
         read: |_| ["wireguard", "show", "--json"].map(String::from).to_vec(),
         cuts: cuts_off,
     });
@@ -583,7 +583,7 @@ mod tests {
         assert_eq!(prepared.ansible.name, "Remove a device: lab-phone");
         assert!(!prepared.ansible.no_log);
         let read = prepared.cuts_off.unwrap();
-        assert_eq!(read.card, "wg0");
+        assert_eq!(read.on, Through::Card("wg0"));
         assert_eq!(read.argv, ["wireguard", "show", "--json"]);
         let (good, bad, undo) = action.example_values();
         assert_eq!((good, undo), (vec![json!({ "name": "lab-phone" })], None));
@@ -641,7 +641,8 @@ mod tests {
     /// Whether removing `name` leaves a browser at `from` reaching the
     /// console, as `private.remove`'s guard says.
     fn guard(name: &str, from: &str, printed: &str) -> Result<(), String> {
-        action("private.remove").cuts_off(&json!({ "name": name }), from.parse().unwrap(), printed)
+        let browser = Browser { from: from.parse().unwrap(), host: "10.8.0.1" };
+        action("private.remove").cuts_off(&json!({ "name": name }), &browser, printed)
     }
 
     #[test]

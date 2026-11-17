@@ -59,13 +59,13 @@ const NEEDS_CAPABILITY: &str =
 /// The tables, as the kernel gives them.
 pub struct Tables {
     /// The entry point.
-    entry: Vec<u8>,
+    pub(crate) entry: Vec<u8>,
     /// The structures.
-    structures: Vec<u8>,
+    pub(crate) structures: Vec<u8>,
 }
 
 /// Reads them through the capability in SLOT_PLATFORM.
-fn read_tables() -> Result<Tables, Status> {
+pub(crate) fn read_tables() -> Result<Tables, Status> {
     let read = |table| -> Result<Vec<u8>, Status> {
         let mut buffer = vec![0; 4096];
         loop {
@@ -207,7 +207,7 @@ impl Section {
 }
 
 /// `bytes` in the largest unit that holds it whole.
-fn size(bytes: u64) -> String {
+pub(crate) fn size(bytes: u64) -> String {
     let units = [(40, "TiB"), (30, "GiB"), (20, "MiB"), (10, "KiB")];
     for (shift, unit) in units {
         if bytes >= 1 << shift && bytes.is_multiple_of(1 << shift) {

@@ -1,0 +1,22 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ *
+ * What only the sign-in page, the failure page and the second step's cards
+ * draw: the brand's lockup, the dialogs in the middle of the page, the note
+ * on the certificate, and the recovery codes and the app's setup text. The
+ * modules that draw them link this file and wait for it. Same rules as
+ * console.css: rem, and px for borders and focus rings.
+ */
+.lockup { display: flex; align-items: center; gap: .714rem; }
+.lockup b { font: 600 1.214rem var(--font-brand); }
+.sign-in-dialogs { flex: 1; display: flex; flex-wrap: wrap; gap: 2rem; justify-content: center; align-items: flex-start; padding: 4.571rem 1.143rem 2.286rem; }
+.sign-in-note { display: flex; justify-content: center; padding: 0 1.143rem 2.286rem; }
+.sign-in-note .banner { max-width: 58.571rem; }
+.sign-in-dialogs .banner { flex-basis: 100%; }
+.qr-text { flex: 1 1 15.714rem; display: flex; flex-direction: column; gap: .714rem; min-width: 0; }
+.codes { list-style: none; margin: 0; padding: .714rem .857rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(12.143rem, 1fr)); gap: .429rem 1.143rem;
+  border: 1px dashed var(--sel-b); border-radius: .357rem; background: var(--sunken); font: 1rem/1.4 var(--font-mono); user-select: all; }
+@media (max-width: 480px) {
+  .sign-in-dialogs { padding-top: 1.714rem; }
+}

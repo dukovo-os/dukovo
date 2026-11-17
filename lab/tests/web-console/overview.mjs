@@ -10,7 +10,9 @@
 // are answered by the test's own routes in a second page of the same browser
 // (a score in each band, checks that are not on the machine, a notice, usage
 // of a known size over each range), so that the words and the colours of each
-// are seen whatever the machine is doing.
+// are seen whatever the machine is doing. Finish setting up lists the steps
+// that pages offer, the lab's and the alert email's among them, and the table
+// of "How the score works" has a row for SEC-170, Alerts reach nobody.
 //
 // The one thing that needs the machine is a hand edit: overview.toml's root
 // step before each engine has added a comment line naming the engine to a
@@ -72,6 +74,7 @@ const ASK_EVERY_MILLISECONDS = 3000;
 // image, which is built with systools' `lab` feature.
 const LAB_ACTION = "lab.long";
 const STEP_TITLE = "Run the lab's long test";
+const ALERT_TITLE = "Get an email when something needs you";
 
 // The routes that lab/coverage.toml says this test covers, as the console's
 // table names them: the browser must have called each by the end, with the
@@ -290,9 +293,19 @@ async function setupAsAnswered(t, page, host) {
   ensure(tasks.status === 200 && Array.isArray(tasks.json?.tasks), `GET /api/1/tasks was answered ${tasks.status}: ${tasks.text}`);
   const done = tasks.json.tasks.some((task) => task.action === LAB_ACTION && task.state === "done");
   await t.see(card);
-  await t.see(card.getByText(`${done ? 1 : 0} of 1 done`, { exact: true }));
+  // The steps are every page's that offers one here, so the count is the card's own rows.
+  const total = await card.locator("ul.todo > li").count();
+  ensure(total >= 2, `Finish setting up lists ${total} steps, and the lab's and the alert email's are two`);
+  await t.see(card.getByText(new RegExp(`^\\d+ of ${total} done$`)));
   const step = card.locator("li").filter({ hasText: STEP_TITLE });
   await t.see(step);
+
+  // The alert email step is listed, and leads to /setup with the step chosen, unless email is set up.
+  const email = card.locator("li").filter({ hasText: ALERT_TITLE });
+  await t.see(email);
+  const setUp = email.getByRole("link", { name: `Set up ${ALERT_TITLE}`, exact: true });
+  if ((await setUp.count()) === 0) ensure((await email.innerText()).includes("Done"), "the alert email step has no Set up and does not say it is done");
+  else ensure((await setUp.getAttribute("href")) === "/setup?step=alert-email", `Set up of the alert email step goes to ${await setUp.getAttribute("href")}`);
   const link = card.getByRole("link", { name: `Set up ${STEP_TITLE}` });
   if (done) {
     await t.gone(link);
@@ -455,7 +468,10 @@ async function scoreExplained(t, page) {
   await t.see(dialog.getByText("Good is 90 and over; Could be better is 70 to 89; Needs you is under 70.", { exact: false }));
   const table = dialog.getByRole("region", { name: "What each check takes off" });
   await t.see(table);
-  for (const id of ["SEC-101", "SEC-150", "MET-…", "HW-…"]) await t.see(table.getByRole("rowheader", { name: id, exact: true }));
+  for (const id of ["SEC-101", "SEC-150", "SEC-170", "MET-…", "HW-…"]) await t.see(table.getByRole("rowheader", { name: id, exact: true }));
+  // Alerts that reach nobody take off 6.
+  const alerts = (await table.locator("tbody tr").filter({ hasText: "SEC-170" }).locator("th, td").allInnerTexts()).map((cell) => cell.trim());
+  ensure(alerts.join(" | ") === "SEC-170 | Alerts reach nobody | 6", `the row of SEC-170 says ${alerts.join(" | ")}, not SEC-170 | Alerts reach nobody | 6`);
   await t.see(dialog.getByText(/^Checked (today at|yesterday at) /));
   await look(t, page, "overview-score");
   await page.keyboard.press("Escape");

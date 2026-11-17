@@ -254,6 +254,17 @@ pub fn matches(pattern: &str, text: &str) -> Result<bool, String> {
     if parser.at != parser.chars.len() {
         return Err(format!("{pattern}: a ) with no ( before it"));
     }
+    // One class over the whole text, as a document's `^[^\0]*$`, is matched
+    // a character at a time: the engine's depth grows with the text, and a
+    // document is up to 64 KiB.
+    if let [alternative] = alternatives.as_slice()
+        && let [Node::Start, Node::Repeat { node, min: 0, max: None }, Node::End] =
+            alternative.as_slice()
+        && let Node::Class { ranges, negated } = node.as_ref()
+    {
+        let inside = |c: char| ranges.iter().any(|&(low, high)| (low..=high).contains(&c));
+        return Ok(text.chars().all(|c| inside(c) != *negated));
+    }
     let whole = [Node::Group(alternatives)];
     let text: Vec<char> = text.chars().collect();
     Ok((0..=text.len()).any(|start| matches_at(&whole, &text, start, &mut |_| true)))

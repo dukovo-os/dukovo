@@ -56,6 +56,12 @@ pub fn account(service: &Service) -> String {
     service.account.as_ref().map_or_else(|| service.name.0.clone(), |a| a.0.clone())
 }
 
+/// Whether `service`'s file says it is enabled as it is installed: all
+/// but those that start once an administrator enables them.
+pub fn starts_enabled(service: &Service) -> bool {
+    service.start != Start::WhenEnabled
+}
+
 /// The accounts of `manifest`'s services, each once, in order.
 pub fn accounts(manifest: &Manifest) -> Vec<String> {
     let mut all: Vec<String> = Vec::new();
@@ -497,7 +503,7 @@ pub fn file_with(
     let data = data_folder(id, &account);
     let live = live_folder(&account);
     let holds = holds(manifest, service);
-    let enabled = enabled.unwrap_or(service.start != Start::WhenEnabled);
+    let enabled = enabled.unwrap_or(starts_enabled(service));
     let mut o = String::new();
     let _ = writeln!(
         o,

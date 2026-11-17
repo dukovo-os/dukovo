@@ -79,7 +79,9 @@ sessions-per-account = 32
 	The certificate it serves, by certd's name for it (*cert*(8)
 	*list*): *"this-machine"*, the default, which a browser warns about
 	once, or one from an authority for the console's own name. The
-	service file's *certificates* must name it too.
+	service file's *certificates* must name it too: *admin certificate*
+	_name_ (*admin*(8)) changes both, and the console's Certificates
+	page runs it.
 
 # THE [terminal] TABLE
 

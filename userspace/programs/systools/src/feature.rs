@@ -351,7 +351,7 @@ fn add(ids: &[String], yes: bool) -> Result<i32, Fail> {
     for feature in &features {
         let now = Now::of(&[feature])?;
         for bundle in feature.bundles.iter().filter(|b| !now.installed(b)) {
-            if bundles::get(bundle, None, true, yes)? != 0 {
+            if bundles::get(bundle, None, true, yes, None)? != 0 {
                 return Err(fail(format!(
                     "{} is not added: {bundle} did not install",
                     feature.name

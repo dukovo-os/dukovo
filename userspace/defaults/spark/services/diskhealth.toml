@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 #
 # Disk health: diskhealth(8) reads each disk's SMART record or NVMe health
-# log at boot and every half hour, and writes a line to the kernel log
+# log at boot and every ten minutes, and writes a line to the kernel log
 # when a disk's verdict changes, as smartd(8) does on Linux. It also
 # writes each disk's summary for anyone to read (storage(8) shows it).
 #

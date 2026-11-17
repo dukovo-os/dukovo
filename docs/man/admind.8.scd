@@ -218,11 +218,13 @@ areas'. Besides the routes of the actions there are these:
 *GET /api/1/actions*
 	The list: a JSON array with an object for each action, with its *id*,
 	*title*, *area*, *changes*, *method*, *path*, *runs*, *long*,
-	*compares*, *secret\_answer*, *errors*, *tests*, *input* and
-	*examples*. *compares* is true for a change whose *changed* is found by
-	comparing what it moves before and after it, and false for any other
-	action. *secret\_answer* is true for an action whose command prints a
-	secret. *input* is the JSON Schema of the action's arguments, in which
+	*compares*, *secret\_answer*, *not\_self*, *cuts\_off*, *restarts*,
+	*errors*, *tests*, *input* and *examples*. *compares* is true for a
+	change whose *changed* is found by comparing what it moves before and
+	after it, and false for any other action. *secret\_answer* is true for
+	an action whose command prints a secret. *restarts* is true for a
+	change that restarts or powers off the machine, which is refused while
+	a trial runs (see *Restarting the machine*, below). *input* is the JSON Schema of the action's arguments, in which
 	a secret is text marked *writeOnly*. *admin actions --json* prints the
 	same. A session or a token of any scope may ask.
 
@@ -763,6 +765,40 @@ the read needs the area's full scope for a token. A device's name is 1 to
 	with *wireguard show --json*, as the caller's administrator, first,
 	and refuses too when that read fails or does not say.
 
+*Restarting the machine*. The Hardware page, and the pages that offer
+Restart now, restart or shut down the machine with *shutdown*(8), a
+minute after the change answers or at a time of day: the minute lets the
+page count down, and gives a person who clicked by mistake the time to
+cancel. Spark stops admind with the rest, and the page waits for the
+console to answer again.
+
+*GET /api/1/power* (*power.status*, area *power*)
+	*shutdown --show --json*: the restart or shut down that is set, if one
+	is. Spark's read socket answers anyone, so it runs as the person.
+
+*POST /api/1/power/restart* (*power.restart*, area *power*)
+	*shutdown -r +1 --no-wall*, or *shutdown -r HH:MM --no-wall* with
+	*at*, a time of day from 00:00 to 23:59 by the machine's clock.
+	*power.cancel* undoes it.
+
+*POST /api/1/power/shutdown* (*power.shutdown*, area *power*)
+	*shutdown -P +1 --no-wall*: turns the machine off in a minute. Only
+	its power button turns it on again. *power.cancel* undoes it.
+
+*POST /api/1/power/cancel* (*power.cancel*, area *power*)
+	*shutdown -c --no-wall*: cancels what is set. With nothing set it
+	changes nothing, and says so.
+
+A change with *restarts* set is refused before it runs while a trial of
+settings runs (ADM-142), which the restart would undo half way: keep or
+undo the trial first. A restart or a shut down is refused while the search
+for a bad change runs (UPD-106), whose tries restart the machine on their
+own; the search is refused while a restart or a shut down is set. admind
+reads Spark's read socket for the trials and what is set, and *changes
+bisect --status --json*, as the caller's administrator, for the search.
+When either does not answer, the change is refused all the same: the
+guard fails closed.
+
 An action's arguments are the parts of its address, such as _name_ above,
 and the members of the JSON object in its body, which may be empty,
 together. A name in both, a member the action does not have, or a body
@@ -858,6 +894,18 @@ An administrator's command gets that input from *authd*(8) as its first
 descriptor; a person's command gets it from their worker. The input is at
 most 4 KiB.
 
+An action that takes a document, such as a certificate's key and chain,
+takes it as text of many lines, at most as many bytes as its
+*maxLength*, with no NUL (ADR 0567); a document that is a secret is
+marked *writeOnly* and kept as a secret is. The command reads it on its
+standard input as it is, after the action's secret lines, in the order of
+the fields. Such an action's input may be more than a pipe holds, up to
+128 KiB: admind, or the worker, writes it while the command runs, so a
+command that prints before it has read all of it never waits, and ends
+the writer, whose copy is overwritten with zeros, before the action
+answers. A command that ends before it has read all of its input is no
+failure of the action: its status says what it did.
+
 Nothing admind keeps holds a secret. The journal and the audit log have
 the command's words, a task keeps its arguments with *(secret)* for each
 secret and drops the secret once the command has it, and *POST
@@ -874,7 +922,10 @@ variable named after its field in capitals, such as *$PASSWORD*, inside a
 body in double quotes: a secret with a *"* or a *\\* in it needs the JSON
 escape in the variable (*\\"* or *\\\\*). Its Ansible task takes each from
 the playbook's variable of the field's name on *stdin*, with *no\_log:
-true*.
+true*. A document that is a secret comes from a variable named after its
+field in capitals with *\_JSON* added, such as *$KEY\_JSON*, which holds
+it as a JSON string, quotes and escapes included (*jq -Rs . key.pem*
+makes one).
 
 ## API tokens
 
@@ -1220,6 +1271,17 @@ a signed-in session. It tells:
 	runs. The round that finds the last trial gone tells the empty list
 	once. The page counts down by its own clock between two tellings.
 
+*event: power*
+	*{"shutdown": {"end": "reboot", "in\_seconds": 41, "at\_ms":
+	1800000060000}}*, the restart or shut down that is set, as
+	*shutdown --show --json* prints it, with the seconds left as of when it is
+	sent; *{"shutdown": null}* when none is. It is told to every stream
+	of every signed-in session: to one that opens while one is set, at
+	once, and to all of them each time what is set changes. admind sees
+	that when it reads Spark: as soon as a *power* change answers, and at
+	each 30-second round, so a restart set or cancelled at a terminal is
+	told too.
+
 A comment line, *: keep*, comes every 25 seconds, so that nothing between
 the browser and admind closes a stream that says nothing. A session with a
 stream open is not idle; once its last stream has closed and a minute has
@@ -1351,6 +1413,35 @@ detached from the pane, so that other pages go on. At most 64 KiB of typing
 waits for a pane; past that, admind reads no more from that page until the
 shell has taken some.
 
+## One-time links
+
+The Report a problem page hands a report to a phone by a QR code (ADR
+0568). *POST /api/1/reports/drafts/*_draft_*/phone*, with
+*{"sha256": "..."}*, has the person's worker run *report text* _draft_
+*--sha256* _hash_ (*report*(1)): reportd gives the text of a draft it keeps
+only to the person who drafted it, and only while its SHA-256 is the one
+the page read (RPT-101, RPT-102). admind keeps the text in memory under a
+token of 128 random bits and answers *{"url", "expires_ms",
+"fingerprint_sha256"}*: the link, when it ends, and the fingerprint of the
+certificate the console serves, which the phone's warning shows. The
+link's host is the address the browser used when it is a private one, else
+the machine's first private address, IPv4 first, since a phone may not
+resolve the machine's name; else the name the browser used. A session has
+at most 4 links at once and the console 32 (ADM-105, with the seconds until
+one ends).
+
+*GET /once/*_token_*/report.txt* needs no session, as the phone has none.
+The first request gets the text as a file to keep (*text/plain*, with
+*Content-Disposition: attachment*), and a link works for 10 minutes. A
+*HEAD* counts as that request, since a program that only looks at a link,
+as a chat program does for a preview, is not the person. A later request
+is told in plain words that the link was used (410), and a token admind
+does not keep that there is nothing there (404), both naming ADM-140. A
+text whose connection was lost before it was handed over is kept for the
+next request. Each request counts against its address's tries, as a
+sign-in does (ADM-105 after 10 in a minute). Links are kept by their
+token's SHA-256, never in the log or on disk, and a restart forgets them.
+
 ## Errors
 
 An error is *{"error": {"id", "title", "detail", "fix"}}*, with an ID that
@@ -1376,7 +1467,12 @@ have the program yet, *ADM-130* too many terminals, *ADM-131* no such
 terminal, *ADM-132* the terminal is not open to this account, *ADM-133* the
 question came by a connection opened before the change, *ADM-134* the
 console follows as many logs as it may, *ADM-135* nothing is being tried by
-that name. *detail* says what happened this time, in authd's own words where
+that name, *ADM-136* not on your own account from the console, *ADM-137* the
+browser comes through what the change takes away, *ADM-139* the session has
+ended already, *ADM-140* the one-time link was used or has ended, *ADM-141*
+the certificate does not name the address the browser uses, and *ADM-142* a
+trial runs, which a restart would undo. *ADM-138* is given by *admin*(8),
+not admind. *detail* says what happened this time, in authd's own words where
 authd refused. ADM-125 also has the *field* whose value cannot work, and
 ADM-123 the *command* with its words, status and error output. Each ID has a
 page in the support center that says what to do.
@@ -1472,6 +1568,10 @@ or the journal could not do: *the journal could not look at the files*, *the
 journal could not keep* an action's change, *the journal cannot tell who
 changed a file* (logd did not answer, so the rows say *outside the
 console*), and *task 42 could not be saved*.
+
+A one-time link has a line as it is made, such as *alice made a one-time
+link to a report's text*, and as it is opened, with the address it was
+opened from, never its token; a request for one that was used says so.
 
 Each terminal's pane has a line as it opens, such as *terminal 3 pane 12
 opened for alice as an administrator from 192.0.2.7 (pts/7)*, as a page

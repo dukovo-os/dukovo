@@ -1,0 +1,140 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The Apps pages of the web console in each engine: the list at /apps held to
+# what `bundle list --json` says, which `GET /api/1/apps` runs, and one app's
+# page at /apps/{id} held to what `bundle info --json` says of it, which
+# `GET /api/1/apps/{id}` runs, with its services, what it may use, provides,
+# uses and what uses it, its data, its size and its versions. Hold, which asks
+# why first, and Release the hold (`POST /api/1/apps/{id}/hold`, with the
+# reason, and `POST /api/1/apps/{id}/unhold`) change the row and the panel and
+# the machine says so; an app that has an update has Tonight and Not tonight
+# (`POST /api/1/apps/{id}/tonight` and `POST /api/1/apps/{id}/not-tonight`,
+# and `POST /api/1/apps/tonight` for every update at once), which the apps of
+# this test's machine may not have, and the script says so when they do not;
+# Remove… asks a locked administrator to unlock first, says what the app is
+# removed for and asks for its name before it removes the data too; Remove…
+# with Keep its data (`POST /api/1/apps/{id}/remove`, a task) takes nginx away
+# and the page leaves its panel for the list, and this test finds the data
+# folder where it was. An app that is not installed says so, a reader sees every fact and no
+# button, and a phone at 390 by 844 shows the list and an app alone. Each look
+# is dark, light, high contrast, forced colours and less motion, checked by axe.
+#
+# The apps are nginx, which has a service and a data folder, and Python, which
+# has neither, from the catalog, installed for everyone. The browser script
+# removes nginx, and runs once for each engine, so the steps before it put both
+# apps back from nothing for each: a marker in nginx's data folder, which
+# nginx's first start makes, is what Keep its data must leave. Going back and
+# updating an app are tested with the Updates page. The accounts are two that
+# this test makes and removes, an administrator and a reader, so no script
+# needs the lab's password.
+about = "The web console's Apps pages in each engine: the apps from what bundle list says, an app's facts and size from bundle info, Hold with its reason and Release the hold, Tonight and Not tonight where an app has an update, Remove asks to unlock, says what uses the app and asks for its name before the data goes, nginx removed with its data kept, an app that is not there, a reader, and the phone"
+time = "20m"
+host_needs = ["curl", "scp"]
+
+[[step]]
+run = "sh -c 'echo lab-console-password | user add --admin wc-apps && echo lab-console-password | user add wc-apps-reader && user set --console --yes wc-apps-reader'"
+root = true
+expect = ["Made wc-apps", "Made wc-apps-reader", "wc-apps-reader is changed"]
+[[step]]
+host = "sh {here}/../services/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
+expect = "copied: org.nginx.nginx"
+[[step]]
+host = "sh {here}/../services/copy-bundle.sh org.python.python {machine} {machine-port:22}"
+expect = "copied: org.python.python"
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address says so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+
+# Chromium. From nothing: a run before may have left either app, and nginx's
+# data folder, which a removal that keeps the data leaves.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle remove --for-everyone --purge org.python.python > /dev/null 2>&1; rm -rf /shared/services/org.nginx.nginx; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1; bundle install --for-everyone --yes /users/lab/org.python.python.dkv | tail -1'"
+root = true
+expect = ["installed org.nginx.nginx", "installed org.python.python"]
+[[step]]
+run = "service nginx enable"
+root = true
+# Spark counts it ready once it listens, which takes seconds on a slow
+# machine; its first start copies its settings into its data folder, where a
+# marker is put.
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! service nginx status > /dev/null; do sleep 1; i=$((i + 1)); done; service nginx status'"
+root = true
+expect = "Active: active (running)"
+[[step]]
+run = "sh -c 'd=/shared/services/org.nginx.nginx/nginx; i=0; while [ $i -lt 30 ] && [ ! -e $d/conf/nginx.conf ]; do sleep 1; i=$((i + 1)); done; echo kept-by-apps-test > $d/lab-apps-marker && cat $d/lab-apps-marker'"
+root = true
+expect = "kept-by-apps-test"
+[[step]]
+browser = "apps.mjs"
+engines = ["chromium"]
+port = 9090
+# The data stayed where it was, whether or not the engine was there to remove
+# nginx.
+[[step]]
+run = "cat /shared/services/org.nginx.nginx/nginx/lab-apps-marker"
+root = true
+expect = "kept-by-apps-test"
+
+# Firefox, with both apps put back.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle remove --for-everyone --purge org.python.python > /dev/null 2>&1; rm -rf /shared/services/org.nginx.nginx; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1; bundle install --for-everyone --yes /users/lab/org.python.python.dkv | tail -1'"
+root = true
+expect = ["installed org.nginx.nginx", "installed org.python.python"]
+[[step]]
+run = "service nginx enable"
+root = true
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! service nginx status > /dev/null; do sleep 1; i=$((i + 1)); done; service nginx status'"
+root = true
+expect = "Active: active (running)"
+[[step]]
+run = "sh -c 'd=/shared/services/org.nginx.nginx/nginx; i=0; while [ $i -lt 30 ] && [ ! -e $d/conf/nginx.conf ]; do sleep 1; i=$((i + 1)); done; echo kept-by-apps-test > $d/lab-apps-marker && cat $d/lab-apps-marker'"
+root = true
+expect = "kept-by-apps-test"
+[[step]]
+browser = "apps.mjs"
+engines = ["firefox"]
+port = 9090
+[[step]]
+run = "cat /shared/services/org.nginx.nginx/nginx/lab-apps-marker"
+root = true
+expect = "kept-by-apps-test"
+
+# WebKit, with both apps put back.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle remove --for-everyone --purge org.python.python > /dev/null 2>&1; rm -rf /shared/services/org.nginx.nginx; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1; bundle install --for-everyone --yes /users/lab/org.python.python.dkv | tail -1'"
+root = true
+expect = ["installed org.nginx.nginx", "installed org.python.python"]
+[[step]]
+run = "service nginx enable"
+root = true
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! service nginx status > /dev/null; do sleep 1; i=$((i + 1)); done; service nginx status'"
+root = true
+expect = "Active: active (running)"
+[[step]]
+run = "sh -c 'd=/shared/services/org.nginx.nginx/nginx; i=0; while [ $i -lt 30 ] && [ ! -e $d/conf/nginx.conf ]; do sleep 1; i=$((i + 1)); done; echo kept-by-apps-test > $d/lab-apps-marker && cat $d/lab-apps-marker'"
+root = true
+expect = "kept-by-apps-test"
+[[step]]
+browser = "apps.mjs"
+engines = ["webkit"]
+port = 9090
+[[step]]
+run = "cat /shared/services/org.nginx.nginx/nginx/lab-apps-marker"
+root = true
+expect = "kept-by-apps-test"
+
+# The machine as it was: both apps and nginx's data gone, and the accounts.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle remove --for-everyone --purge org.python.python > /dev/null 2>&1; rm -rf /shared/services/org.nginx.nginx; echo cleaned'"
+root = true
+expect = "cleaned"
+[[step]]
+run = "sh -c 'for name in wc-apps wc-apps-reader; do user remove --delete-home --yes $name || exit 1; done'"
+root = true
+expect = ["wc-apps is removed", "wc-apps-reader is removed"]

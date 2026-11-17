@@ -1,0 +1,42 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ */
+
+/* The Updates page: its cards in a column on a phone, and two columns on a
+   wide screen, where the cards that hold lists or forms take both. The
+   cards, pills, banners, buttons and tables are console.css's. Same rules:
+   rem, and px for borders and focus rings. */
+.upd { display: grid; gap: 1rem; grid-template-columns: minmax(0, 1fr); align-items: start; }
+.upd > p { margin: 0; }
+.upd-checked { font-weight: 600; }
+.upd-body, .upd-top { display: flex; flex-direction: column; gap: .714rem; }
+.upd-top:empty { display: none; }
+.upd-errors:empty { display: none; }
+.upd-body p, .upd-body h3 { margin: 0; }
+.upd-body h3 { font: 600 .929rem var(--font-ui); }
+.upd-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .571rem; }
+.upd-row { display: flex; gap: .714rem; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.upd-row > :first-child { flex: 1 1 14rem; min-width: 0; overflow-wrap: anywhere; }
+.upd-note { color: var(--warn); }
+.upd-sheet { margin: .286rem 0 0; max-height: 14rem; overflow: auto; }
+.upd-put { display: flex; flex-wrap: wrap; align-items: center; gap: .286rem .571rem; }
+.upd-row > .btns { flex: 0 1 auto; }
+.upd-tries { margin: 0; padding-left: 1.5rem; display: flex; flex-direction: column; gap: .286rem; }
+.upd-search, .upd-full, .upd-kept { display: flex; flex-direction: column; gap: .571rem; }
+.upd-search:empty, .upd-full:empty { display: none; }
+.upd-kept { padding-top: .714rem; border-top: 1px solid var(--border); }
+.upd .cmdtext { margin: 0; overflow-x: auto; }
+.upd input[type="time"], .upd input[type="number"] { width: 9rem; }
+.upd .choice-groups { gap: 1.143rem; }
+@container (min-width: 51.5rem) {
+  .upd { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .upd > p, .upd > .banner, .upd-wide { grid-column: 1 / -1; }
+}
+@container (max-width: 51.4rem) {
+  .upd .btn { min-height: 3.143rem; }
+  .upd .radio-card { min-height: 3.143rem; }
+  .upd .cards-row { flex-direction: column; }
+  .upd-row > .btn, .upd-row > .btns { flex: 1 1 100%; }
+  .upd-row > .btns > *, .upd .menu-box > .btn { flex: 1 1 auto; }
+}

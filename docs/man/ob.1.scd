@@ -1566,7 +1566,7 @@ _target/userspace/_).
 		test takes on CI; a test it does not name counts as 40 seconds.
 		Tests that install the catalog's bundles tend to land together,
 		as the first of them in a run packs the bundles. CI runs the boot
-		tests in up to ten jobs this way. It needs *boot*.
+		tests in up to twenty jobs this way. It needs *boot*.
 
 	*--affected* _commit_
 		Run only the boot tests that the changes since _commit_ reach, as
@@ -1709,8 +1709,11 @@ _target/userspace/_).
 	the tests' host steps: *DUKOVO_LAB_BUNDLES*, _out/bundles_, and
 	*DUKOVO_LAB_PORTS*, _out/ports_, whose _PORT/for-lab_ folders hold
 	what a port builds for the lab's tests, as the sqlite port's test
-	program and scripts. A test that needs one skips when the folder
-	is not named, as with *--image*.
+	program and scripts. Of the bundles it also makes a catalog of the
+	nginx and Python ones, signed with throwaway keys, for the web
+	console's test of adding an app, and names its folder,
+	_out/lab-catalog_, in *DUKOVO_LAB_CATALOG*. A test that needs one
+	skips when the folder is not named, as with *--image*.
 
 	*dukovo-lab* is found on *PATH*, or at *OB_LAB*. The handbook's Lab
 	tests chapter shows how to write a test, and its Coverage section

@@ -12,10 +12,12 @@
 //! [`exchange`] sends any other request, with its own headers and body,
 //! for a client of an interface such as S3's (backup(8), ADR 0465) or an
 //! ACME authority's (cert(8), ADR 0513), which signs each request and reads
-//! every status and header itself.
+//! every status and header itself. [`exchange_to`] is the same, at
+//! addresses its caller resolved and checked: alertd's push to a browser
+//! (ADR 0566) refuses a private one.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -334,19 +336,40 @@ fn tls_config() -> Arc<ClientConfig> {
 
 /// Connects to `url`'s host, over TLS for https.
 fn connect(url: &Url) -> Result<Connection, Error> {
+    connect_to(url, None)
+}
+
+/// The port `url` names, or its scheme's.
+#[must_use]
+pub fn port_of(url: &Url) -> u16 {
+    url.port().unwrap_or(if url.scheme() == "https" { 443 } else { 80 })
+}
+
+/// `url`'s host without the brackets of a literal IPv6 address, which the
+/// resolver and TLS do not take.
+#[must_use]
+pub fn bare_host(url: &Url) -> &str {
+    url.host().trim_start_matches('[').trim_end_matches(']')
+}
+
+/// Connects to `url`'s host, over TLS for https: at one of `addresses`
+/// when given, which the caller resolved and checked, else at those the
+/// resolver gives now.
+fn connect_to(url: &Url, addresses: Option<&[SocketAddr]>) -> Result<Connection, Error> {
     let tls = match url.scheme() {
         "http" => false,
         "https" => true,
         other => return Err(Error::Url(format!("{other}: is not http or https"))),
     };
     let host = url.host();
-    let port = url.port().unwrap_or(if tls { 443 } else { 80 });
-    // A literal IPv6 address comes in brackets, which the resolver and
-    // TLS do not take.
-    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    let bare = bare_host(url);
+    let resolved: Vec<SocketAddr> = match addresses {
+        Some(addresses) => addresses.to_vec(),
+        None => (bare, port_of(url)).to_socket_addrs()?.collect(),
+    };
     let mut last = io::Error::new(io::ErrorKind::NotFound, format!("{host} has no address"));
     let mut tcp = None;
-    for address in (bare, port).to_socket_addrs()? {
+    for address in resolved {
         match TcpStream::connect_timeout(&address, TIMEOUT) {
             Ok(stream) => {
                 tcp = Some(stream);
@@ -458,6 +481,35 @@ pub fn exchange(
     headers: &[(&str, &str)],
     body: &[u8],
 ) -> Result<Answer, Error> {
+    exchange_at(method, url, None, headers, body)
+}
+
+/// [`exchange`], connecting only to one of `addresses`, which the caller
+/// resolved from `url`'s host and checked, so that no second lookup can
+/// lead the request elsewhere; TLS still checks the certificate against
+/// the host's name.
+///
+/// # Errors
+///
+/// As [`exchange`].
+pub fn exchange_to(
+    method: &str,
+    url: &Url,
+    addresses: &[SocketAddr],
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> Result<Answer, Error> {
+    exchange_at(method, url, Some(addresses), headers, body)
+}
+
+/// [`exchange`] at `addresses` when given.
+fn exchange_at(
+    method: &str,
+    url: &Url,
+    addresses: Option<&[SocketAddr]>,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> Result<Answer, Error> {
     let line_break = |text: &str| text.contains(['\r', '\n']);
     if line_break(method)
         || headers.iter().any(|(name, value)| line_break(name) || line_break(value))
@@ -475,7 +527,7 @@ pub fn exchange(
         head.push_str(&format!("{name}: {value}\r\n"));
     }
     head.push_str("\r\n");
-    let mut connection = connect(url)?;
+    let mut connection = connect_to(url, addresses)?;
     connection.write_all(head.as_bytes())?;
     connection.write_all(body)?;
     connection.flush()?;

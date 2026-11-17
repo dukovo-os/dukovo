@@ -6,7 +6,7 @@
 // sessions never open it. unlock.js loads it when it is first asked.
 
 import { post } from './api.js';
-import { busy, clearError, errorSlot, h, icon, showError } from './dom.js';
+import { busy, clearError, errorSlot, h, icon, sheet, showError } from './dom.js';
 import { isUnlocked, setUnlockSeconds } from './unlock.js';
 import { canUsePasskeys, getAssertion, passkeyProblem } from './webauthn.js';
 
@@ -57,10 +57,12 @@ async function proofOf(method, input, signal) {
 /**
  * Opens the unlock dialog for `session` and resolves with whether the
  * console is unlocked when it closes. `action` is the words for what the
- * person is about to do ("restart nginx"), if there is one.
+ * person is about to do ("restart nginx"), if there is one. The dialog
+ * opens once its sheet has loaded.
  */
-export function openUnlockDialog(session, action) {
-  if (isUnlocked()) return Promise.resolve(true);
+export async function openUnlockDialog(session, action) {
+  if (isUnlocked()) return true;
+  await sheet('/dialogs.css');
   const methods = methodsOf(session);
   const dialog = h('dialog', { class: 'dialog medium', 'aria-labelledby': 'h-unlock' });
   const prompt = new AbortController();

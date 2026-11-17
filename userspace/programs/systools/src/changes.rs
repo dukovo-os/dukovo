@@ -15,7 +15,9 @@
 //! restarts, each a start with some of them left out
 //! ([`crate::sysupdate::bisect`], ADR 0475): `--status` follows it,
 //! `--stop` stops it, and `--confirm` makes sure of a change it named by
-//! elimination.
+//! elimination. `--later` restarts for the first try a minute from now,
+//! through Spark, instead of at once: the web console asks so, to answer
+//! the page before the machine goes.
 //!
 //! `--json` goes with `--list`, with `--failed` and with `bisect
 //! --status`, for the web console (changes(1)): what each start, each
@@ -26,14 +28,15 @@ use std::io::Write as _;
 use serde::Serialize;
 
 use crate::args::{Arg, Args};
+use crate::hardware::memtest::MEMTEST_TRY;
 use crate::power;
 use crate::sysupdate::bisect::{self, Apart, End, Kind, Lever, Search, Verdict};
 use crate::sysupdate::starts::{self, Change, Outcome, Start};
 use crate::util::{self, Fail, fail};
 
 const USAGE: &str = "usage: changes [--failed | --between START START | --list]\n       changes \
-                     (--list | --failed) --json\n       changes bisect [--yes | --status \
-                     [--json] | --stop | --confirm [--yes]]";
+                     (--list | --failed) --json\n       changes bisect [--confirm] [--yes] \
+                     [--later]\n       changes bisect (--status [--json] | --stop)";
 
 /// What to compare.
 enum Asked {
@@ -164,7 +167,13 @@ pub fn start_line(start: &Start) -> String {
             format!("failed: {}", start.why.as_deref().unwrap_or("the health check failed"))
         }
     };
-    let tried = start.trial.map_or_else(String::new, |n| format!(", try {n} of changes bisect"));
+    let tried = start.trial.map_or_else(String::new, |n| {
+        if n == MEMTEST_TRY {
+            ", memory test at the start".to_string()
+        } else {
+            format!(", try {n} of changes bisect")
+        }
+    });
     format!("Start {}, slot {}{tried}: {outcome}", short(start), start.slot.to_uppercase())
 }
 
@@ -251,6 +260,164 @@ struct BisectJson {
     attempt: Option<u8>,
     /// The most tries the search takes, counting those it has made.
     of: Option<u32>,
+}
+
+/// What `bisect --status --json` gives: the search's state, as `--failed
+/// --json` has it, and what a page shows of it: the failed start, the
+/// changes it can and cannot try apart, each try, when the next restart
+/// is, and what it found.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct BisectStatusJson {
+    #[serde(flatten)]
+    state: BisectJson,
+    /// The start the search is about; none when no search has run.
+    failed_start: Option<u64>,
+    /// The changes it can leave out, in the order `--status` numbers them.
+    levers: Vec<LeverJson>,
+    /// The changes it cannot try apart, and why.
+    cannot: Vec<CannotJson>,
+    tries: Vec<TryJson>,
+    /// When the machine restarts for the next try, in milliseconds since
+    /// 1970, while a restart is set and the search runs.
+    next_ms: Option<u64>,
+    /// What it found, once it has ended.
+    result: Option<ResultJson>,
+}
+
+/// A change a search can leave out, in `--json`: the app's ID, `system`
+/// or `boot options`, what the failed start ran, and when that was
+/// installed, where known.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct LeverJson {
+    what: String,
+    kind: Kind,
+    version: String,
+    at_ms: Option<i64>,
+}
+
+/// A change a search cannot try apart, in `--json`.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct CannotJson {
+    what: String,
+    kind: String,
+    why: String,
+}
+
+/// A try, in `--json`: the changes it left out, by [`LeverJson::what`],
+/// what it found once judged, and the start that was it, and when.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct TryJson {
+    #[serde(rename = "try")]
+    attempt: u8,
+    left_out: Vec<String>,
+    confirm: bool,
+    verdict: Option<Verdict>,
+    start: Option<u64>,
+    at_ms: Option<i64>,
+}
+
+/// How a search ended, in `--json`: `found`, `not-found`, `otherwise`,
+/// `not-started`, `broken` or `stopped`; for `found`, the change, whether
+/// a try confirmed it, and how to undo it; and changes(1)'s own words.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct ResultJson {
+    end: &'static str,
+    what: Option<String>,
+    version: Option<String>,
+    confirmed: bool,
+    undo: Vec<String>,
+    words: Vec<String>,
+}
+
+/// `bisect --status --json` for `search`, with the start times of
+/// `records` and `next_ms`, when the restart Spark has set is.
+fn bisect_status_json(
+    search: Option<&Search>,
+    records: &[Start],
+    next_ms: Option<u64>,
+) -> BisectStatusJson {
+    let state = bisect_json(search);
+    let Some(search) = search else {
+        return BisectStatusJson {
+            state,
+            failed_start: None,
+            levers: Vec::new(),
+            cannot: Vec::new(),
+            tries: Vec::new(),
+            next_ms: None,
+            result: None,
+        };
+    };
+    let name = |place: &usize| search.levers.get(*place).map_or_default(|lever| lever.name.clone());
+    let started = |number: u64| {
+        let start = records.iter().find(|start| start.number == number)?;
+        Some(start.started.saturating_mul(1000))
+    };
+    let result = search.end.as_ref().map(|end| {
+        let (end, found) = match end {
+            End::Found { lever, confirmed } => ("found", Some((*lever, *confirmed))),
+            End::NotFound => ("not-found", None),
+            End::Otherwise { .. } => ("otherwise", None),
+            End::NotStarted { .. } => ("not-started", None),
+            End::Broken { .. } => ("broken", None),
+            End::Stopped => ("stopped", None),
+        };
+        let lever = found.and_then(|(place, _)| search.levers.get(place));
+        ResultJson {
+            end,
+            what: lever.map(|lever| lever.name.clone()),
+            version: lever.map(|lever| lever.after.clone()),
+            confirmed: found.is_some_and(|(_, confirmed)| confirmed),
+            undo: lever.map_or_default(|lever| fix(search, lever)),
+            words: bisect_result(search),
+        }
+    });
+    BisectStatusJson {
+        failed_start: Some(search.failed),
+        levers: search
+            .levers
+            .iter()
+            .map(|lever| LeverJson {
+                what: lever.name.clone(),
+                kind: lever.kind,
+                version: lever.after.clone(),
+                at_ms: lever.installed.map(|seconds| seconds.saturating_mul(1000)),
+            })
+            .collect(),
+        cannot: search
+            .apart
+            .iter()
+            .map(|apart| CannotJson {
+                what: apart.name.clone(),
+                kind: apart.kind.clone(),
+                why: apart.why.says(),
+            })
+            .collect(),
+        tries: search
+            .tries
+            .iter()
+            .map(|t| TryJson {
+                attempt: t.number,
+                left_out: t.undone.iter().map(name).collect(),
+                confirm: t.confirm,
+                verdict: t.verdict,
+                start: t.start,
+                at_ms: t.start.and_then(started),
+            })
+            .collect(),
+        next_ms: next_ms.filter(|_| state.running),
+        result,
+        state,
+    }
+}
+
+/// When the restart Spark has set is, in milliseconds since 1970; none
+/// when none is set, or Spark does not answer, which is no reason to fail
+/// the read of the search.
+fn next_restart() -> Option<u64> {
+    let document = spark_api::show::parse(&power::read("show").ok()?).ok()?;
+    let now_ms = util::now_ns() / 1_000_000;
+    power::pending(&document, now_ms).filter(|set| set.end == "reboot").map(|set| set.at_ms)
 }
 
 /// Writes `value` as a line of JSON.
@@ -351,6 +518,11 @@ fn bisect_json(search: Option<&Search>) -> BisectJson {
     }
 }
 
+/// How long `--later` waits before the restart for the first try: the time
+/// a page takes to be answered and to count down, and as long as the
+/// health check waits before each try after.
+const LATER: std::time::Duration = std::time::Duration::from_mins(1);
+
 /// What `changes bisect` was asked.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Bisect {
@@ -363,12 +535,16 @@ enum Bisect {
 /// `changes bisect`.
 fn bisect(args: &mut Args) -> Result<i32, Fail> {
     let mut asked = Bisect::Begin;
-    let (mut yes, mut json) = (false, false);
+    let (mut yes, mut json, mut later) = (false, false, false);
     while let Some(arg) = args.next()? {
         let Arg::Long(name) = arg else { return Err(util::usage(USAGE.into())) };
         let said = match name.as_str() {
             "yes" => {
                 yes = true;
+                continue;
+            }
+            "later" => {
+                later = true;
                 continue;
             }
             "json" => {
@@ -385,14 +561,19 @@ fn bisect(args: &mut Args) -> Result<i32, Fail> {
         }
         asked = said;
     }
-    if yes && matches!(asked, Bisect::Status | Bisect::Stop) {
+    if (yes || later) && matches!(asked, Bisect::Status | Bisect::Stop) {
         return Err(util::usage(USAGE.into()));
     }
     if json && asked != Bisect::Status {
         return Err(util::usage(USAGE.into()));
     }
     match asked {
-        Bisect::Status if json => print_json(&bisect_json(bisect::kept().as_ref())),
+        Bisect::Status if json => {
+            let search = bisect::kept();
+            let running = search.as_ref().filter(|search| search.end.is_none());
+            let next_ms = running.and_then(|_| next_restart());
+            print_json(&bisect_status_json(search.as_ref(), &starts::all(), next_ms))
+        }
         Bisect::Status => {
             let Some(search) = bisect::kept() else {
                 println!("changes bisect: no search has run");
@@ -431,6 +612,15 @@ fn bisect(args: &mut Args) -> Result<i32, Fail> {
                 return Ok(1);
             }
             let number = bisect::write_first(search)?;
+            if later {
+                power::request(&format!("reboot {}", LATER.as_secs()))?;
+                println!(
+                    "changes bisect: restarting in {} seconds for try {number}; `elevate shutdown \
+                     -c` cancels the restart, and the try is then the next start",
+                    LATER.as_secs()
+                );
+                return Ok(0);
+            }
             println!("changes bisect: restarting for try {number}");
             power::request("reboot")?;
             Ok(0)
@@ -766,6 +956,18 @@ mod tests {
     }
 
     #[test]
+    fn a_try_is_named_as_a_try_of_the_search_and_the_memory_test_as_itself() {
+        let mut one = start(5, "a", Outcome::Good, Vec::new());
+        assert!(start_line(&one).contains(", slot A: good"), "{}", start_line(&one));
+        one.trial = Some(2);
+        assert!(start_line(&one).contains(", slot A, try 2 of changes bisect: good"));
+        one.trial = Some(99);
+        let line = start_line(&one);
+        assert!(line.contains(", slot A, memory test at the start: good"), "{line}");
+        assert!(!line.contains("changes bisect"), "{line}");
+    }
+
+    #[test]
     fn the_list_is_newest_first_with_what_each_start_changed() {
         let list = list_json(&records());
         let numbers: Vec<u64> = list.iter().map(|s| s.start).collect();
@@ -900,6 +1102,56 @@ mod tests {
         assert_eq!(value["bisect"], serde_json::json!({"running": true, "try": 1, "of": 3}));
     }
 
+    #[test]
+    fn the_status_has_the_changes_each_try_the_next_restart_and_what_was_found() {
+        let records = records();
+        let none = serde_json::to_value(bisect_status_json(None, &records, Some(1))).unwrap();
+        assert_eq!(
+            none,
+            serde_json::json!({
+                "running": false, "try": null, "of": null, "failed_start": null, "levers": [],
+                "cannot": [], "tries": [], "next_ms": null, "result": null,
+            })
+        );
+
+        // The first try was start 6, and failed as start 5 did.
+        let mut running = search();
+        running.judge(Verdict::Failed, Some(6), 6);
+        let value = bisect_status_json(Some(&running), &records, Some(1_800_000_060_000));
+        let value = serde_json::to_value(value).unwrap();
+        assert_eq!((value["running"].clone(), value["try"].clone()), (true.into(), 2.into()));
+        assert_eq!(value["failed_start"], 5);
+        assert_eq!(
+            value["levers"][0],
+            serde_json::json!({ "what": "org.app0", "kind": "app", "version": "2", "at_ms": null })
+        );
+        assert_eq!(value["levers"].as_array().unwrap().len(), 5);
+        let first = &value["tries"][0];
+        assert_eq!(first["verdict"], "failed");
+        assert_eq!((first["start"].clone(), first["at_ms"].clone()), (6.into(), 6_000_000.into()));
+        let left_out = first["left_out"].as_array().unwrap();
+        assert!(
+            !left_out.is_empty()
+                && left_out.iter().all(|what| what.as_str().unwrap().starts_with("org.app"))
+        );
+        assert_eq!(value["tries"][1]["verdict"], serde_json::Value::Null, "the try waited on");
+        assert_eq!(value["next_ms"], 1_800_000_060_000_u64);
+        assert_eq!(value["result"], serde_json::Value::Null);
+
+        // Once it has ended there is no next restart of its own, and the
+        // result says how it ended, in changes(1)'s words too.
+        let mut stopped = search();
+        stopped.stop();
+        let value = bisect_status_json(Some(&stopped), &records, Some(1));
+        let value = serde_json::to_value(value).unwrap();
+        assert_eq!(value["next_ms"], serde_json::Value::Null);
+        assert_eq!(value["result"]["end"], "stopped");
+        assert_eq!(value["result"]["what"], serde_json::Value::Null);
+        assert_eq!(value["result"]["undo"], serde_json::json!([]));
+        let words = bisect_result(&stopped);
+        assert_eq!(value["result"]["words"], serde_json::json!(words));
+    }
+
     /// Runs `changes` on `items`.
     fn run(items: &[&str]) -> Result<i32, Fail> {
         changes(&mut Args::new("changes", items.iter().map(OsString::from).collect()))
@@ -916,6 +1168,8 @@ mod tests {
             &["bisect", "--confirm", "--json"],
             &["bisect", "--yes", "--json"],
             &["bisect", "--status", "--stop", "--json"],
+            &["bisect", "--status", "--later"],
+            &["bisect", "--stop", "--later"],
         ] {
             let err = run(refused).err().unwrap_or_else(|| panic!("{refused:?} is refused"));
             assert!(err.usage, "{refused:?}");

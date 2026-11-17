@@ -11,6 +11,8 @@ bundled - install, seal, update and remove bundles, and keep what they may do
 
 *bundled*
 
+*bundled measure* _id_ _folder_ [_id_ _folder_]...
+
 # DESCRIPTION
 
 bundled installs bundles, seals them so that nothing changes them, and
@@ -147,8 +149,9 @@ For each catalog, bundled keeps the metadata it trusts, the root it
 started from, and an index of the bundles the catalog's targets list:
 each one's path, SHA-256, length, ID, version and name, with when it was
 read and when the soonest of the metadata it came from expires. It reads
-a catalog anew, from what it trusts, for *bundle search* and for *bundle
-install* by ID, and writes the index only once every check has passed.
+a catalog anew, from what it trusts, for *bundle search*, *bundle sheet*
+and *bundle install* by ID, and writes the index only once every check has
+passed.
 It starts again from _root.json_ when that file changes.
 
 Asked to install an ID, it reads the catalogs in order, those the system
@@ -158,6 +161,38 @@ its length and SHA-256 as it comes. The file is its own until the
 install ends, and then removed. Asked to install a file, it sums the
 archive and looks it up in each index that has not expired: a catalog
 lists it if it has that ID with that SHA-256 and length.
+
+An install by ID may name the file it is to install by its SHA-256,
+which the client sends as the last word of its request, as 64
+hexadecimal digits: if the catalog lists another file of that ID by then, a
+newer version, bundled says so before it fetches anything, in words that
+end in *APP-102*, and installs nothing. When no catalog lists the ID it
+says so in words that end in *APP-101*, and when no catalog could be
+read, in words that end in *APP-103*. An older *bundle*, which sends no
+hash, installs the newest file, as it always did.
+
+Asked for the sheet of an ID, bundled fetches the newest version as an
+install does, checks the file as an install does, and answers with the
+sheet an install for everyone shows, and then the same facts as one
+document of JSON, with the catalog, the file's SHA-256 and size, the
+version installed now, if there is one, and why the install would be
+refused, if it would; each asker reads the one it asked for. It unpacks
+the file in a folder of the asker's own, which it removes, installs
+nothing and records nothing. Of the files it fetched for sheets it keeps
+only the one read last, in its catalog's _downloads_, named by its
+SHA-256, so that the install that follows finds it there and fetches
+nothing again: another sheet's file takes its place, an install takes it
+and removes it, and none outlasts bundled's start. Any person may ask
+for a sheet or a search, as no one's bundles change; the file is checked
+against its length and SHA-256 as it comes, whoever asks.
+
+Asked to search with its JSON, bundled answers with one document: the
+newest version of each bundle that the catalogs it could read list,
+whose ID or name holds every word, each with its catalog, what the
+catalog's list of known flaws says of it and the version the asker has
+installed, or else everyone has; and each catalog it could not read,
+with why. That no catalog could be read is an error after the document,
+in words that end in *APP-103*.
 
 Each time it reads a catalog, bundled also fetches the catalog's list
 of known flaws (ADR 0389), which its targets delegate to the role
@@ -233,6 +268,41 @@ sign-in in _/system/live/sign-in/bundled_, which the sign-in screens show
 under the issue text (*consoled*(8), ADR 0504), and when that list
 changes, the consoles are told at once (*notifyd*(8)). A catalog that
 could not be read leaves the list as it was.
+
+Once a day, after the check, bundled measures what the data of the apps
+installed for everyone takes, so that *bundle info* can say it. It
+starts *bundled measure* for it, a process of its own that takes each
+folder after its app's ID (bundled gives them; it is not for you to
+run). The process runs at the lowest priority for the disk and the
+processor, and walks nothing if it cannot be given that. It walks
+_/shared/services/ID/ACCOUNT_ of each such app and each account its
+services run as: it counts the blocks of each file (a file with two
+names once), counts a symbolic link and does not follow it, never enters
+another file system, and reads no content and keeps no name. The walk of
+one app ends after 10 minutes or 5,000,000 entries, the whole after an
+hour, and is then marked incomplete; bundled ends the process if it is
+still there after 70 minutes. A person's own apps are not measured: their
+data is in their home. Nothing measures when asked. The result is
+_sizes.json_, which a later day replaces whole.
+
+An app installed for everyone can also be asked to update tonight
+(*bundle update --tonight*, *bundle*(1)). The request is kept in
+_tonight.json_ and an update installs in the window: the hour that ends
+at the time *restart* names in _updates.toml_ when *unattended* is on
+(*updates.toml*(5)), else 02:00 to 03:00 by the local clock; the window
+may cross midnight. The updater wakes when the window starts, and at
+least hourly while requests wait. In the window it installs each app
+asked for, one at a time, as an update by itself that nobody is there
+for: it asks for more than the version it replaces only when the person
+asked with *--yes*, else the update waits as an update by itself does,
+and says so once for that version. A held app is left alone and the
+history says "held". A request made inside the window runs at once,
+and none starts in the last 5 minutes of it, so that the restart at its
+end does not cut one off. When the computer was off or bundled was not
+running through the window, nothing installs in the day after; the
+request stays for the next window and *bundle list --json* says when a
+window passed without it. Each request is taken away when its update is
+installed, has failed, is held, or waits for a yes that was not given.
 
 bundled writes each install, update, going back, removal, hold and
 release, waiting update and failed one to _history_. A person is shown
@@ -378,6 +448,16 @@ _/system/state/bundled/defaults_
 	The default line of each ID with lines, for everyone and for each
 	person (*bundle default*).
 
+_/system/state/bundled/sizes.json_
+	What the data of each app installed for everyone takes, per app and
+	per folder, and when it was measured; mode 0600. Apps no longer
+	installed are dropped when it is written.
+
+_/system/state/bundled/tonight.json_
+	The apps asked to update tonight: for each, the version asked
+	for, whether *--yes* was said, who asked and when, and when a
+	window first passed without it; mode 0600.
+
 _/system/state/bundled/history_
 	What bundled did to bundles, a line of tab-separated fields each,
 	mode 0600; it keeps about the newest thousand.
@@ -386,7 +466,7 @@ _/system/state/bundled/catalogs/NAME_
 	Each catalog's client: _tuf_, the metadata it trusts,
 	_first-root.json_, the root it started from, _index_, _flaws.json_,
 	its list of known flaws, and _downloads_, the files being
-	installed.
+	installed, and the one whose sheet was read last.
 
 _/system/settings/catalogs/NAME_
 	Each catalog: _url_, _root.json_ and _off_.

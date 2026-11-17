@@ -32,11 +32,11 @@ use std::time::{Duration, Instant};
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::pem::PemObject;
 
-use super::sample::{Filesystem, Snapshot, Temperature, Volume};
+use super::sample::{DISK_CHIP, Filesystem, Snapshot, Temperature, Volume};
 use super::settings::Thresholds;
 use super::size_text;
 use super::store::{self, Selector};
-use crate::alerts::protocol::{Alert, DETAIL_MAX, KEY_MAX, Severity, TITLE_MAX};
+use crate::alerts::protocol::{About, Alert, DETAIL_MAX, KEY_MAX, Severity, TITLE_MAX};
 use crate::logd;
 
 /// The folder of the system's certificates, where `*.pem` and `*.crt`
@@ -84,6 +84,7 @@ const BEHIND: &str = "MET-104";
 const MEMORY: &str = "MET-105";
 const HOT: &str = "MET-106";
 const CERTIFICATE: &str = "MET-107";
+const DISK_HOT: &str = "MET-108";
 
 /// How bad a check finds a thing, which it keeps from one step to the
 /// next for its hysteresis.
@@ -150,11 +151,19 @@ fn one_line(text: &str) -> String {
     cut
 }
 
-/// An alert, its detail ended with the error ID of its page.
-fn alert(key: String, level: Level, title: &str, advice: &str, id: &str) -> Option<Alert> {
+/// An alert about `about`, its detail ended with the error ID of its page.
+fn alert(
+    key: String,
+    level: Level,
+    title: &str,
+    advice: &str,
+    id: &str,
+    about: About,
+) -> Option<Alert> {
     let mut detail = format!("{advice} ({id})");
     detail.truncate(DETAIL_MAX);
-    Some(Alert { key, severity: level.severity()?, title: one_line(title), detail })
+    let about = Some(about.word().to_string());
+    Some(Alert { key, severity: level.severity()?, title: one_line(title), detail, about })
 }
 
 /// The percent of `whole` that `part` is.
@@ -418,6 +427,7 @@ impl Warnings {
                  what is in use."
             ),
             FULL,
+            About::Data,
         ));
         if let (true, Some(days)) = (state.filling, days) {
             alerts.extend(alert(
@@ -430,6 +440,7 @@ impl Warnings {
                      shows what is in use."
                 ),
                 FILLING,
+                About::Data,
             ));
         }
         alerts
@@ -453,6 +464,7 @@ impl Warnings {
             "`top` shows which programs hold the memory and `free` how it is used; stop what is \
              not needed, or add memory.",
             MEMORY,
+            About::Stopped,
         )
     }
 
@@ -473,17 +485,36 @@ impl Warnings {
                 state.over = 0;
                 state.level = level;
             }
+            let (title, advice, id) = if temperature.chip == DISK_CHIP {
+                (
+                    disk_title(temperature, state.level, warn, critical),
+                    format!(
+                        "A disk kept this hot wears out sooner. Check the fans and the air around \
+                         the disks; `diskhealth {}` shows its record.",
+                        temperature.sensor
+                    ),
+                    DISK_HOT,
+                )
+            } else {
+                (
+                    format!(
+                        "{instance} is at {} °C; its limit is {} °C",
+                        temperature.celsius.round(),
+                        critical.unwrap_or(warn).round()
+                    ),
+                    "`sensors` shows every sensor. Check that the fans turn and the air can reach \
+                     them."
+                        .to_string(),
+                    HOT,
+                )
+            };
             alerts.extend(alert(
                 key("temp", &instance),
                 state.level,
-                &format!(
-                    "{instance} is at {} °C; its limit is {} °C",
-                    temperature.celsius.round(),
-                    critical.unwrap_or(warn).round()
-                ),
-                "`sensors` shows every sensor. Check that the fans turn and the air can reach \
-                 them.",
-                HOT,
+                &title,
+                &advice,
+                id,
+                About::Hardware,
             ));
             states.insert(instance, state);
         }
@@ -503,14 +534,43 @@ impl Warnings {
     }
 }
 
+/// The title of a disk's alert at `level`: "Disk sda (WDC WD40EFRX-68N)
+/// is at 52 °C; its warning limit is 50 °C", or "its limit is 60 °C" at
+/// the critical level. A model too long for a title is cut, so that the
+/// numbers stay.
+fn disk_title(disk: &Temperature, level: Level, warn: f64, critical: Option<f64>) -> String {
+    let limit = match (level, critical) {
+        (Level::Critical, Some(critical)) => format!("its limit is {} °C", critical.round()),
+        _ => format!("its warning limit is {} °C", warn.round()),
+    };
+    let build = |model: &str| {
+        let model = if model.is_empty() { String::new() } else { format!(" ({model})") };
+        format!("Disk {}{model} is at {} °C; {limit}", disk.sensor, disk.celsius.round())
+    };
+    let title = build(&disk.model);
+    let over = title.chars().count().saturating_sub(TITLE_MAX);
+    if over == 0 {
+        return title;
+    }
+    // Cut the model by what is over, and one more for the mark.
+    let kept = disk.model.chars().count().saturating_sub(over + 1);
+    let mut model: String = disk.model.chars().take(kept).collect();
+    model.push('…');
+    build(&model)
+}
+
 /// The temperature at which `temperature` is a warning and, if it has
-/// one, a critical limit: `margin` degrees below its critical
-/// temperature, or its maximum where it has no critical one. A sensor with
-/// neither, or with one that is no temperature, is not watched.
+/// one, a critical limit: the warning limit it says itself (a disk's), or
+/// `margin` degrees below its critical temperature, or its maximum where
+/// it has no critical one. A sensor with neither, or with one that is no
+/// temperature, is not watched.
 fn lines(temperature: &Temperature, margin: f64) -> Option<(f64, Option<f64>)> {
     let positive = |limit: Option<f64>| limit.filter(|limit| *limit > 0.0);
     match (positive(temperature.crit), positive(temperature.max)) {
-        (Some(critical), _) => Some((critical - margin, Some(critical))),
+        (Some(critical), _) => {
+            let warn = positive(temperature.warn).unwrap_or(critical - margin);
+            Some((warn, Some(critical)))
+        }
         (None, Some(max)) => Some((max, None)),
         (None, None) => None,
     }
@@ -548,6 +608,7 @@ fn volume_alerts(volumes: &[Volume]) -> Vec<Alert> {
             "Put a new disk in its place with `replace start` (replace(8)); a second failure \
              before then loses data.",
             MISSING,
+            About::Data,
         ));
         alerts.extend(alert(
             key("btrfs-behind", name),
@@ -559,6 +620,7 @@ fn volume_alerts(volumes: &[Volume]) -> Vec<Alert> {
             "A scrub brings them up to date from the other copies: run `scrub start` on a \
              folder of the volume (scrub(8)).",
             BEHIND,
+            About::Data,
         ));
     }
     alerts
@@ -609,6 +671,7 @@ fn certificate_alert(file: &Path, now: i64, days: i64) -> Option<Alert> {
              services that use it read it again."
         },
         CERTIFICATE,
+        About::Stopped,
     )
 }
 
@@ -649,6 +712,14 @@ mod tests {
 
     fn at_used(warnings: &mut Warnings, mount: &str, percent: u64) -> Vec<String> {
         said(warnings, &snapshot(vec![filesystem(mount, percent)]))
+    }
+
+    #[test]
+    fn a_full_filesystem_is_about_data_at_risk() {
+        let mut w = warnings();
+        let alerts = w.check(&snapshot(vec![filesystem("/data", 95)]), Instant::now());
+        let full = alerts.iter().find(|a| a.key == "fs-full:/data").expect("full");
+        assert_eq!(full.kind(), Some(About::Data));
     }
 
     #[test]
@@ -780,6 +851,7 @@ mod tests {
         let alerts = fill(&mut w, 31, 60.0, 0.1);
         let found = alerts.iter().find(|a| a.key == "fs-filling:/data").expect("filling");
         assert_eq!(found.severity, Severity::Warning);
+        assert_eq!(found.kind(), Some(About::Data));
         assert!(found.title.starts_with("/data will be full in about "), "{}", found.title);
         assert!(found.title.ends_with(" at the last 6 hours' rate"), "{}", found.title);
         assert!(found.detail.ends_with("(MET-102)"));
@@ -824,6 +896,7 @@ mod tests {
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].key, "btrfs-missing:data");
         assert_eq!(alerts[0].severity, Severity::Critical);
+        assert_eq!(alerts[0].kind(), Some(About::Data));
         assert_eq!(
             alerts[0].title,
             "Btrfs volume data is missing 1 of its 2 disks; its data has no second copy until it is replaced"
@@ -834,6 +907,7 @@ mod tests {
         let alerts = volume_alerts(&[volume(0, 1)]);
         assert_eq!(alerts[0].key, "btrfs-behind:data");
         assert_eq!(alerts[0].severity, Severity::Warning);
+        assert_eq!(alerts[0].kind(), Some(About::Data));
         assert!(alerts[0].detail.ends_with("(MET-104)"));
         assert_eq!(volume_alerts(&[volume(1, 1)]).len(), 2);
         assert!(volume_alerts(&[volume(0, 0)]).is_empty());
@@ -867,6 +941,7 @@ mod tests {
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].key, "memory:low");
         assert_eq!(alerts[0].severity, Severity::Warning);
+        assert_eq!(alerts[0].kind(), Some(About::Stopped));
         assert_eq!(alerts[0].title, "Memory is nearly used up: 41 KB of 1.1 MB is available");
         assert!(alerts[0].detail.ends_with("(MET-105)"));
         // Held between 5 and 10 percent, cleared from 10.
@@ -885,6 +960,7 @@ mod tests {
             celsius,
             max,
             crit,
+            ..Temperature::default()
         }
     }
 
@@ -903,6 +979,7 @@ mod tests {
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].key, "temp:coretemp-isa-0000/package-id-0");
         assert_eq!(alerts[0].severity, Severity::Warning);
+        assert_eq!(alerts[0].kind(), Some(About::Hardware));
         assert_eq!(
             alerts[0].title,
             "coretemp-isa-0000/Package id 0 is at 95 °C; its limit is 100 °C"
@@ -924,6 +1001,72 @@ mod tests {
         // Held down to 3 degrees under the line, 92, and clear below.
         assert_eq!(temperature_step(&mut w, vec![sensor(92.0, None, Some(100.0))]).len(), 1);
         assert!(temperature_step(&mut w, vec![sensor(91.9, None, Some(100.0))]).is_empty());
+    }
+
+    fn disk(celsius: f64, warn: f64, crit: f64, model: &str) -> Temperature {
+        Temperature {
+            chip: DISK_CHIP.into(),
+            sensor: "sda".into(),
+            label: "sda".into(),
+            celsius,
+            crit: Some(crit),
+            warn: Some(warn),
+            model: model.into(),
+            ..Temperature::default()
+        }
+    }
+
+    #[test]
+    fn a_hot_disk_is_raised_at_its_own_warning_limit_with_its_model_and_its_own_words() {
+        let mut w = warnings();
+        let hot = disk(52.0, 50.0, 60.0, "WDC WD40EFRX-68N");
+        for _ in 0..4 {
+            assert!(temperature_step(&mut w, vec![hot.clone()]).is_empty());
+        }
+        let alerts = temperature_step(&mut w, vec![hot.clone()]);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].key, "temp:disk/sda");
+        assert_eq!(alerts[0].severity, Severity::Warning);
+        assert_eq!(alerts[0].kind(), Some(About::Hardware));
+        assert_eq!(
+            alerts[0].title,
+            "Disk sda (WDC WD40EFRX-68N) is at 52 °C; its warning limit is 50 °C"
+        );
+        assert!(
+            alerts[0].detail.contains("`diskhealth sda`")
+                && alerts[0].detail.ends_with("(MET-108)"),
+            "{}",
+            alerts[0].detail
+        );
+        // At its critical temperature it is critical, and says that limit.
+        let alerts = temperature_step(&mut w, vec![disk(60.0, 50.0, 60.0, "WDC WD40EFRX-68N")]);
+        assert_eq!(alerts[0].severity, Severity::Critical);
+        assert!(alerts[0].title.ends_with("its limit is 60 °C"), "{}", alerts[0].title);
+        // Held 3 degrees below the warning line, and clear under.
+        assert_eq!(temperature_step(&mut w, vec![disk(47.0, 50.0, 60.0, "")]).len(), 1);
+        assert!(temperature_step(&mut w, vec![disk(46.9, 50.0, 60.0, "")]).is_empty());
+    }
+
+    #[test]
+    fn a_disk_without_a_model_has_none_in_its_title_and_a_long_one_is_cut_for_the_numbers() {
+        let plain = disk(70.0, 50.0, 60.0, "");
+        assert_eq!(
+            disk_title(&plain, Level::Warning, 50.0, Some(60.0)),
+            "Disk sda is at 70 °C; its warning limit is 50 °C"
+        );
+        let long = disk(70.0, 50.0, 60.0, &"M".repeat(400));
+        let title = disk_title(&long, Level::Critical, 50.0, Some(60.0));
+        assert!(title.chars().count() <= TITLE_MAX, "{title}");
+        assert!(title.ends_with("…) is at 70 °C; its limit is 60 °C"), "{title}");
+    }
+
+    #[test]
+    fn a_disk_with_no_limits_of_its_own_is_not_watched() {
+        let mut w = warnings();
+        let unknown = Temperature { crit: None, warn: None, ..disk(90.0, 0.0, 0.0, "x") };
+        for _ in 0..6 {
+            assert!(temperature_step(&mut w, vec![unknown.clone()]).is_empty());
+        }
     }
 
     #[test]
@@ -1003,6 +1146,7 @@ mod tests {
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].key, "certificate:www.pem");
         assert_eq!(alerts[0].severity, Severity::Critical);
+        assert_eq!(alerts[0].kind(), Some(About::Stopped));
         assert_eq!(
             alerts[0].title,
             format!("The certificate in {}/www.pem ended on 2021-01-01", dir.display())
@@ -1073,7 +1217,7 @@ mod tests {
     }
 
     fn some_alert(title: &str) -> Alert {
-        alert(key("fs-full", "/data"), Level::Warning, title, "do it", FULL).unwrap()
+        alert(key("fs-full", "/data"), Level::Warning, title, "do it", FULL, About::Data).unwrap()
     }
 
     #[test]

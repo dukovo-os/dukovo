@@ -342,9 +342,13 @@ impl Tasks {
     }
 
     /// Takes a line the command wrote into the task `id`: a step or a
-    /// progress if the output says one, else a line of the log.
+    /// progress if it says one, else a line of the log. A step may come on
+    /// either stream, as a command that prints JSON on its output writes
+    /// its steps beside it, on its errors; a progress comes on the output
+    /// alone, since other programs write percentages on their errors.
     fn line(&self, id: i64, stream: Stream, text: &str) {
-        let progress = (stream == Stream::Output).then(|| progress(text)).flatten();
+        let progress = progress(text)
+            .filter(|said| stream == Stream::Output || matches!(said, Progress::Step { .. }));
         self.edit(id, |entry| {
             entry.unsaved = true;
             match progress {
@@ -666,7 +670,8 @@ async fn run(shared: Rc<Shared>, id: i64, mut job: Job) {
         Ok(started) => {
             let done = follow(&shared, id, started).await;
             let program = argv.first().map_or("the command", String::as_str);
-            let end = conclude(&done, program, tasks.limits.get());
+            let answers = job.prepared.action.answers();
+            let end = conclude(&done, program, tasks.limits.get(), answers);
             let row = (done.status, end.note.clone());
             (end, Some(row))
         }
@@ -763,8 +768,13 @@ fn task_changed(files: &[String], files_same: bool) -> bool {
 /// How a task whose command came to `done` ends. A command that was sent
 /// SIGTERM to stop is `stopped`, whatever its status: one that puts back
 /// what it did ends well. A command that ended before the signal was sent
-/// is not stopped, and is `done` or `failed` as its status says.
-fn conclude(done: &Done, program: &str, limits: Limits) -> End {
+/// is not stopped, and is `done` or `failed` as its status says: `done`
+/// for 0 and for another status of `answers`, the action's
+/// [`Action::ANSWERS`], as a check that found a warning ends with an
+/// answer (its result), not a failure.
+///
+/// [`Action::ANSWERS`]: super::actions::Action::ANSWERS
+fn conclude(done: &Done, program: &str, limits: Limits, answers: &[i32]) -> End {
     let end = |state, status, note: Option<String>| End { state, status, note, changed: None };
     match (done.status, &done.stopped_by) {
         (Some(code), Some(by)) => end(State::Stopped, Some(code), Some(format!("stopped by {by}"))),
@@ -781,6 +791,7 @@ fn conclude(done: &Done, program: &str, limits: Limits) -> End {
             Some(format!("it did not end in {}, and was stopped", lasting(limits.time))),
         ),
         (Some(0), None) => end(State::Done, Some(0), None),
+        (Some(code), None) if answers.contains(&code) => end(State::Done, Some(code), None),
         (Some(code), None) => {
             let note = done
                 .last_error
@@ -890,7 +901,7 @@ async fn follow(shared: &Rc<Shared>, id: i64, started: Started) -> Done {
     let Some(store) = shared.store.as_ref() else { return Done::default() };
     let tasks = &shared.tasks;
     let limits = tasks.limits.get();
-    let Started { output, errors, asked, relay } = started;
+    let Started { output, errors, asked, relay, typing } = started;
     let (tell, mut pieces) = mpsc::channel(256);
     // A command that leaves a child holding its pipes open must not keep
     // the readers, so they are ended with the watching.
@@ -948,7 +959,10 @@ async fn follow(shared: &Rc<Shared>, id: i64, started: Started) -> Done {
         }
         match next(&mut pieces, woken, until).await {
             Next::Piece(Some(Piece::Line(stream, text))) => {
-                if stream == Stream::Errors && !text.trim().is_empty() {
+                // A step on the errors stream is progress, not what went
+                // wrong.
+                let step = matches!(progress(&text), Some(Progress::Step { .. }));
+                if stream == Stream::Errors && !text.trim().is_empty() && !step {
                     done.last_error = Some(clean(&text));
                 }
                 tasks.line(id, stream, &text);
@@ -969,6 +983,9 @@ async fn follow(shared: &Rc<Shared>, id: i64, started: Started) -> Done {
     for reader in readers {
         reader.abort();
     }
+    // The command has ended, or was hung up: its input's writer, if it has
+    // one, ends before the task does (ADR 0567).
+    typing.ended().await;
     done
 }
 

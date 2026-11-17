@@ -37,6 +37,18 @@ impl Record {
         format!("_acme-challenge.{}.", base.trim_end_matches('.'))
     }
 
+    /// The name the record is made at, as a DNS provider's page takes it:
+    /// [`at`](Record::at) without the dot at its end.
+    pub fn label(&self) -> String {
+        self.at().trim_end_matches('.').to_string()
+    }
+
+    /// The line `cert get --progress` gives for the record, for a page to
+    /// show: `add: NAME TXT "VALUE"`.
+    pub fn add_line(&self) -> String {
+        format!("add: {} TXT \"{}\"", self.label(), self.value)
+    }
+
     /// The record as a zone file shows it.
     pub fn line(&self) -> String {
         format!("{}  TXT  \"{}\"", self.at(), self.value)
@@ -85,9 +97,30 @@ pub fn lookup(at: &str) -> Vec<String> {
     }
 }
 
+/// How a wait for the records stands after a look.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Look {
+    /// The look that was made, from 1.
+    pub number: u64,
+    /// How many looks the wait makes at most.
+    pub of: u64,
+    /// How many records have shown so far, and how many there are.
+    pub found: usize,
+    pub records: usize,
+}
+
+/// What a wait tells before and after each look.
+pub struct Watch<'a> {
+    /// Called before each look: it empties the resolver's cache, so that
+    /// the answer of none from before the record was added is not kept.
+    pub before: &'a mut dyn FnMut(),
+    /// Called after each look, with how the wait stands.
+    pub after: &'a mut dyn FnMut(&Look),
+}
+
 /// Waits until `ask` shows every record, looking each `every` for up to
 /// `up_to`, `pause` being the wait between looks; `say` is told when it
-/// waits, once for each name.
+/// waits, once for each name, and `watch` before and after each look.
 ///
 /// # Errors
 ///
@@ -99,12 +132,20 @@ pub fn wait_for(
     ask: &mut dyn FnMut(&str) -> Vec<String>,
     pause: &mut dyn FnMut(Duration),
     say: &mut dyn FnMut(&str),
+    watch: &mut Watch<'_>,
 ) -> Result<(), String> {
     let looks = (up_to.as_secs() / every.as_secs().max(1)).max(1);
     let mut missing: Vec<&Record> = records.iter().collect();
     let mut told = false;
     for look in 0..looks {
+        (watch.before)();
         missing.retain(|record| !ask(&record.at()).contains(&record.value));
+        (watch.after)(&Look {
+            number: look + 1,
+            of: looks,
+            found: records.len() - missing.len(),
+            records: records.len(),
+        });
         if missing.is_empty() {
             return Ok(());
         }
@@ -146,6 +187,15 @@ mod tests {
         assert_eq!(
             record("example.com", "x-Y_9").line(),
             "_acme-challenge.example.com.  TXT  \"x-Y_9\""
+        );
+    }
+
+    #[test]
+    fn the_line_for_a_page_has_the_name_without_its_last_dot() {
+        assert_eq!(record("shop.example.org", "v1").label(), "_acme-challenge.shop.example.org");
+        assert_eq!(
+            record("*.shop.example.org", "v2").add_line(),
+            "add: _acme-challenge.shop.example.org TXT \"v2\""
         );
     }
 
@@ -196,6 +246,7 @@ mod tests {
             }
         };
         let (mut pauses, mut said) = (Vec::new(), Vec::new());
+        let (mut flushed, mut looks) = (0, Vec::new());
         let result = wait_for(
             &records,
             Duration::from_secs(10),
@@ -203,9 +254,16 @@ mod tests {
             &mut ask,
             &mut |time| pauses.push(time),
             &mut |text| said.push(text.to_string()),
+            &mut Watch { before: &mut || flushed += 1, after: &mut |look| looks.push(*look) },
         );
         assert_eq!(result, Ok(()));
         assert_eq!(pauses, [Duration::from_secs(10); 2]);
+        // The cache is emptied before each of the three looks, and each look
+        // says how many records have shown.
+        assert_eq!(flushed, 3);
+        let stood: Vec<(u64, usize)> = looks.iter().map(|look| (look.number, look.found)).collect();
+        assert_eq!(stood, [(1, 0), (2, 1), (3, 2)]);
+        assert!(looks.iter().all(|look| look.of == 60 && look.records == 2));
         assert_eq!(
             said,
             [
@@ -229,6 +287,7 @@ mod tests {
             &mut ask,
             &mut |_| pauses += 1,
             &mut |_| {},
+            &mut Watch { before: &mut || {}, after: &mut |_| {} },
         );
         assert_eq!(
             result.unwrap_err(),

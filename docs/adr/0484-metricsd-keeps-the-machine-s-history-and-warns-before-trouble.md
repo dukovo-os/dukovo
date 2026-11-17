@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0484. metricsd keeps the machine's history and warns before trouble
 
-- Status: Accepted
+- Status: Accepted; disks' temperatures come from diskhealth's live files since [0566](0566-alerts-reach-a-browser-by-web-push-encrypted-for-it-and-signed-with-the-machine-s-own-key.md)
 - Date: 2026-11-13
 
 ## Context

@@ -14,9 +14,10 @@ import { makeTime } from '../lib/time.js';
 import {
   addressOf, dayChoices, filterRows, howOf, queryOf, READ_PATH, scriptable, scriptOf, shellWord, whoChoices,
 } from '../pages/reliability/journal-model.js';
+import { hardwareEvents } from '../pages/reliability/hardware-row.js';
 import {
-  alertRows, ALERTS_SHOWN, barsOf, bucketAt, bucketsOf, dumpRows, eventsOf, groupsOf, problemsOf, problemsWords, rangeOf, tableOf,
-  timelineOf, TIMELINE_MAX,
+  alertRows, ALERTS_SHOWN, barsOf, bucketAt, bucketsOf, dumpRows, eventsOf, groupsOf, problemsOf, problemsWords, rangeOf, reportHref,
+  summaryWords, tableOf, timelineOf, TIMELINE_MAX,
 } from '../pages/reliability/model.js';
 import { onlyWords } from '../pages/overview/admin-reads.js';
 import { cappedWords, pageOf } from '../pages/reliability/reads-model.js';
@@ -24,6 +25,7 @@ import {
   chainWords, changeWords, deltaWords, failedOf, hasNoTimes, msWords, restartsOf, resultOf, slowestOf, startRows, stepRows,
   tryNumbers, updatesOf,
 } from '../pages/reliability/starts-model.js';
+import { history } from './hardware-fixtures.mjs';
 import * as fixture from './reliability-fixtures.mjs';
 
 const { NOW_MS } = fixture;
@@ -153,7 +155,7 @@ const cells = (table, id) => table.rows.find((row) => row.id === id).cells;
 test('the table counts each day\'s starts, errors, updates, changes and crashes in words, and says which went wrong', () => {
   const { buckets, groups } = groupsFor();
   const table = tableOf(buckets, groups);
-  assert.deepEqual(table.rows.map((row) => row.title), ['Starts', 'Services', 'Updates', 'Changes', 'Crashes']);
+  assert.deepEqual(table.rows.map((row) => row.title), ['Starts', 'Services', 'Updates', 'Changes', 'Crashes', 'Hardware checks']);
   assert.deepEqual(cells(table, 'start')[3], { count: 1, dot: 'info', words: '1 start' });
   assert.deepEqual(cells(table, 'start')[6], { count: 5, dot: 'bad', words: '5 starts, 1 failed, 1 fell back' });
   assert.deepEqual(cells(table, 'error')[5], { count: 3, dot: 'warn', words: '3 errors' });
@@ -168,8 +170,9 @@ test('the table counts each day\'s starts, errors, updates, changes and crashes 
 test('a source that was not read has no row, and one that was read and is empty has a row of empty cells', () => {
   const { buckets, groups } = groupsFor('UTC', '7d', { records: null, dumps: null });
   const table = tableOf(buckets, groups, ['error', 'crash']);
-  assert.deepEqual(table.rows.map((row) => row.id), ['start', 'update', 'change']);
-  const { buckets: quiet, groups: none } = groupsFor('UTC', '7d', { starts: [], records: [], changes: [], dumps: [] });
+  assert.deepEqual(table.rows.map((row) => row.id), ['start', 'update', 'change', 'hardware']);
+  assert.deepEqual(tableOf(buckets, groups, ['hardware']).rows.map((row) => row.id), ['start', 'error', 'update', 'change', 'crash']);
+  const { buckets: quiet, groups: none } = groupsFor('UTC', '7d', { starts: [], records: [], changes: [], dumps: [], hardware: [] });
   assert.ok(tableOf(quiet, none).rows.every((row) => row.cells.every((cell) => cell.count === 0)));
 });
 
@@ -234,7 +237,9 @@ test('a long error text is cut, and only the newest of a crowded day are listed'
   const many = Array.from({ length: TIMELINE_MAX + 20 }, (_, number) => ({
     kind: 'change', at: number, dot: 'info', title: `Change ${number}`, sub: '', failed: false, taken: false,
   }));
-  const crowded = timelineOf({ start: [], update: [], change: many, crash: [], error: [] });
+  const crowded = timelineOf({
+    start: [], update: [], change: many, crash: [], hardware: [], error: [],
+  });
   assert.equal(crowded.items.length, TIMELINE_MAX);
   assert.equal(crowded.left, 20);
   assert.equal(crowded.items.at(-1).title, `Change ${TIMELINE_MAX + 19}`);
@@ -264,7 +269,8 @@ test('the card of a failed start: what failed it, the changes since, and the off
   assert.deepEqual(card.offer, {
     words: 'Find which change broke it. The machine restarts up to 2 times, and nothing is changed for good.',
     command: 'elevate changes bisect',
-    later: 'Running it from the console comes with the Hardware page.',
+    later: 'An administrator can also run it from What happened on Updates.',
+    run: { words: 'Run it from What happened on Updates', href: '/updates#happened' },
   });
   assert.equal(card.running, null);
 });
@@ -478,4 +484,69 @@ test('two rows at the same second keep the order of their numbers', () => {
     { ...fixture.changes[6], id: 11, argv: ['service', 'a', 'restart'] },
   ];
   assert.deepEqual(scriptOf(same, fixture.runs).split('\n').filter((line) => line.startsWith('elevate')), ['elevate service a restart', 'elevate service b restart']);
+});
+
+// ---- the hardware checks -----------------------------------------------------------------------
+
+const line = (when, more = {}) => ({
+  at_ms: at(when), full: false, status: 0, passed: 8, warnings: 0, failed: 0, skipped: 1, ids: [], ...more,
+});
+
+test('each check of the hardware is an event with its counts, its IDs and a link to the Hardware page, and a line with no time is left out', () => {
+  const [passed, warned, failed, quick] = hardwareEvents([
+    line('2026-11-09T02:10:00Z'),
+    line('2026-11-10T02:10:00Z', { full: true, warnings: 1, ids: ['HW-115'] }),
+    line('2026-11-11T02:10:00Z', { failed: 1, warnings: 1, ids: ['HW-113', 'HW-115'], passed: 0 }),
+    line('2026-11-12T02:10:00Z', { passed: 0, skipped: 0 }),
+    { at_ms: null, passed: 1 },
+  ]);
+  assert.deepEqual(passed, {
+    kind: 'hardware', at: at('2026-11-09T02:10:00Z'), dot: 'info', title: 'Quick hardware check', sub: '8 passed, 1 skipped', href: '/hardware', link: 'Open the Hardware page', failed: false, warned: false,
+  });
+  assert.deepEqual([warned.dot, warned.title, warned.sub], ['warn', 'Full hardware check', '8 passed, 1 warning, 1 skipped · HW-115']);
+  assert.deepEqual([failed.dot, failed.sub], ['bad', '1 warning, 1 failed, 1 skipped · HW-113, HW-115']);
+  assert.equal(quick.sub, 'Nothing could be checked');
+  assert.deepEqual(hardwareEvents(null), []);
+  assert.equal(hardwareEvents([{ passed: 1 }]).length, 0);
+});
+
+test('the Hardware checks row counts the day\'s checks with a dot for the worst, and the day lists them with a link', () => {
+  const sources = { hardware: [...history(), line('2026-11-09T05:00:00Z', { failed: 1, ids: ['HW-113'] }), line('2026-11-13T02:10:00Z', { warnings: 2 })] };
+  const { buckets, groups } = groupsFor('UTC', '7d', sources);
+  const row = cells(tableOf(buckets, groups), 'hardware');
+  assert.deepEqual(row[1], { count: 2, dot: 'bad', words: '2 checks, 1 failed, 1 with a warning' });
+  assert.deepEqual(row[5], { count: 1, dot: 'warn', words: '1 check, 1 with a warning' });
+  assert.deepEqual(row[6], { count: 0, dot: null, words: '' });
+  const day = timelineOf(groups[1]).items;
+  assert.deepEqual(day.map((item) => item.title), ['Full hardware check', 'Quick hardware check']);
+  assert.deepEqual([day[0].href, day[0].link, day[1].dot], ['/hardware', 'Open the Hardware page', 'bad']);
+  assert.equal(timelineOf(groups[6]).items.find((item) => item.title === 'Start failed: BOOT-104').link, 'Open the start');
+  const year = groupsFor('UTC', '1y', sources);
+  assert.equal(cells(tableOf(year.buckets, year.groups), 'hardware').at(-1).count, 5, 'a month counts the checks of each of its days');
+});
+
+// ---- Save as report ----------------------------------------------------------------------------
+
+test('the summary of a range names its days once a month and what went wrong, or that nothing did', () => {
+  const { buckets, groups } = groupsFor();
+  const problems = problemsOf(buckets, groups);
+  assert.equal(summaryWords(problems, buckets), 'Reliability, Nov 8 to 14: 1 failed start, 1 crash, 6 errors in the log');
+  assert.equal(summaryWords(problems.map((one) => ({ ...one, failed: 2 })), buckets).split(': ')[1], '14 failed starts, 1 crash, 6 errors in the log');
+  const month = groupsFor('UTC', '30d');
+  assert.match(summaryWords(problemsOf(month.buckets, month.groups), month.buckets), /^Reliability, Oct 16 to Nov 14: /);
+  const year = groupsFor('UTC', '1y');
+  assert.match(summaryWords(problemsOf(year.buckets, year.groups), year.buckets), /^Reliability, Dec 2025 to Nov 2026: /);
+  const none = groupsFor('UTC', '7d', { starts: [], records: [], changes: [], dumps: [] });
+  assert.equal(summaryWords(problemsOf(none.buckets, none.groups), none.buckets), 'Reliability, Nov 8 to 14: no failed start, crash or error');
+});
+
+test('Save as report is about the failed start the machine keeps when it fell in the range, and else carries the range\'s summary', () => {
+  const { buckets, groups } = groupsFor();
+  const problems = problemsOf(buckets, groups);
+  assert.equal(reportHref(fixture.failed.failed, problems, buckets), '/report?about=failure');
+  assert.equal(reportHref({ at_ms: null }, problems, buckets), '/report?about=failure');
+  const url = new URL(reportHref(null, problems, buckets), 'https://duke-nas');
+  assert.deepEqual([url.pathname, url.searchParams.get('about'), url.searchParams.get('note')], ['/report', 'other', 'Reliability, Nov 8 to 14: 1 failed start, 1 crash, 6 errors in the log']);
+  const old = { at_ms: at('2026-10-01T00:00:00Z') };
+  assert.equal(new URL(reportHref(old, problems, buckets), 'https://duke-nas').searchParams.get('about'), 'other');
 });

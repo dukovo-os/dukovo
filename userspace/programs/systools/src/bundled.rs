@@ -48,7 +48,7 @@ use std::net::Shutdown;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
@@ -58,7 +58,7 @@ use manifest::bundle::permissions::{self, Tier};
 use manifest::bundle::{Manifest, Need, Request as Asked, RunsWith};
 use spark_api::show;
 
-use crate::args::Args;
+use crate::args::{Arg, Args};
 use crate::bundles::catalogs::{self, Catalog};
 use crate::bundles::feeds;
 use crate::bundles::folder::{DEPTH_MAX, Dir, check, fd_stat, same};
@@ -73,7 +73,7 @@ use crate::bundles::protocol::{
 use crate::bundles::registry::{self, Installed, Place, Registry, Trust, base_id};
 use crate::bundles::services::{self, Record};
 use crate::bundles::sheet::{self, Facts};
-use crate::bundles::{MANIFEST, confine, signed, snapshots, sums};
+use crate::bundles::{MANIFEST, confine, documents, signed, sizes, snapshots, sums, tonight};
 use crate::util::{self, Fail};
 use crate::{proc, signin, sys};
 
@@ -171,8 +171,50 @@ struct Shared {
     /// Held while a catalog's client reads or fetches, one at a time.
     catalogs: Mutex<()>,
     /// Set, and signalled, to have the bundles that update by themselves
-    /// do so now.
-    wake: (Mutex<bool>, Condvar),
+    /// do so now, or the requests for tonight looked at.
+    wake: (Mutex<Wake>, Condvar),
+    /// Held while the requests for tonight are read to be changed and
+    /// written.
+    tonight: Mutex<()>,
+    /// The download of the sheet read last.
+    sheet: Kept,
+}
+
+/// The one download bundled keeps beyond the install it was fetched for:
+/// that of the sheet read last, which stays in its catalog's downloads,
+/// for the install that follows to find, until another sheet's replaces it.
+#[derive(Default)]
+struct Kept(Mutex<Option<PathBuf>>);
+
+impl Kept {
+    /// Keeps `file`, the download of the sheet just read, in place of the
+    /// one kept before, which goes.
+    fn keep(&self, file: &Path) {
+        let mut kept = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(before) = kept.replace(file.to_path_buf())
+            && before != file
+        {
+            let _ = fs::remove_file(before);
+        }
+    }
+
+    /// Forgets the download kept when `file` is it: an install took it and
+    /// removed it.
+    fn forget(&self, file: &Path) {
+        let mut kept = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if kept.as_deref() == Some(file) {
+            *kept = None;
+        }
+    }
+}
+
+/// What wakes the thread that updates.
+#[derive(Default)]
+struct Wake {
+    /// A place turned updating by themselves on: do it now.
+    updates: bool,
+    /// A request for tonight came: look at the requests now.
+    tonight: bool,
 }
 
 /// A run of an app, by its runner's `watch` connection.
@@ -197,6 +239,10 @@ impl Shared {
 
     fn catalogs(&self) -> MutexGuard<'_, ()> {
         self.catalogs.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn tonight(&self) -> MutexGuard<'_, ()> {
+        self.tonight.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -435,6 +481,17 @@ struct How<'a> {
     automatic: bool,
     /// Fetched from the bundle's own feed (ADR 0390).
     feed: bool,
+    /// Asked for tonight's window (ADR 0565) by this user: nobody is
+    /// there, so an update that asks for more waits unless `yes` says the
+    /// person accepted it, and the history says who asked.
+    tonight: Option<u32>,
+    /// Only to see whether it asks for more: unpacked and checked, and then
+    /// not installed, which says so as [`tonight::CHECKED`].
+    dry: bool,
+    /// Only to read its sheet: unpacked and checked as for an install, and
+    /// then its sheet and its facts are sent, with the first thing that
+    /// would stop the install said beside them, and nothing is installed.
+    sheet_only: bool,
 }
 
 /// What an update that asks for more says, when nobody is there to ask.
@@ -518,6 +575,17 @@ fn listing(id: &str, sha256: &str, length: u64, from: Option<&str>) -> Vec<Strin
     listed
 }
 
+/// What stops an install, `why`: it ends the install with an error, but
+/// for one that only reads the sheet, which keeps the first and goes on to
+/// say it with the sheet.
+fn stop(how: &How<'_>, refused: &mut Option<String>, why: String) -> Result<(), String> {
+    if !how.sheet_only {
+        return Err(why);
+    }
+    refused.get_or_insert(why);
+    Ok(())
+}
+
 fn install_in(
     shared: &Shared,
     mut talk: Option<&mut Connection>,
@@ -559,33 +627,45 @@ fn install_in(
     // the unpacked folder came from and has been checked against.
     let (sha256, length) = archive_hash(archive)?;
     let listed = listing(&id, &sha256, length, how.from);
+    let mut refused = None;
     if let Some(from) = how.from
         && listed.first().map(String::as_str) != Some(from)
     {
-        return Err(format!("catalog {from} does not list what was fetched from it"));
+        let why = format!("catalog {from} does not list what was fetched from it");
+        stop(&how, &mut refused, why)?;
     }
     let (trust, others, before) = {
         let registry = shared.lock();
-        let trust = registry.trust(place, asker, &id, &checked.key, &listed)?;
+        let trust = match registry.trust(place, asker, &id, &checked.key, &listed) {
+            // The sheet still says where the file is from.
+            Err(why) if how.sheet_only => {
+                refused.get_or_insert(why);
+                Trust::Catalog { name: how.from.unwrap_or_default().into(), since: None }
+            }
+            trusted => trusted?,
+        };
         let before = registry.installed(place, &id).map(|i| i.version.clone());
         (trust, commands_in_reach(&registry, place, &id), before)
     };
     for command in &checked.manifest.commands {
         let name = command.name.to_string();
         if Path::new("/system/commands").join(&name).exists() {
-            return Err(format!("its command {name} is one of the system's"));
+            stop(&how, &mut refused, format!("its command {name} is one of the system's"))?;
         }
         if let Some(other) = others.iter().find(|(c, _)| *c == name) {
-            return Err(format!("its command {name} is one {} already adds", other.1));
+            let why = format!("its command {name} is one {} already adds", other.1);
+            stop(&how, &mut refused, why)?;
         }
     }
     // Services run for everyone, each by a name of its own (ADR 0385).
-    check_services(&checked.manifest, place)?;
+    if let Err(why) = check_services(&checked.manifest, place) {
+        stop(&how, &mut refused, why)?;
+    }
     // The sockets of other bundles it uses (ADR 0477): one it requires
     // and cannot have stops the install, saying why.
     let wanted = socket_uses(shared, &checked.manifest, &checked.key);
     if let Some(why) = services::refusal(&wanted) {
-        return Err(format!("not installed: {why}"));
+        stop(&how, &mut refused, format!("not installed: {why}"))?;
     }
     // What it asks for that the version it replaces did not (ADR 0384).
     // One whose manifest cannot be read is taken to have asked for
@@ -607,7 +687,7 @@ fn install_in(
             }
         }
     }
-    if how.automatic && !more.is_empty() {
+    if waits_for_yes(&how, &more) {
         return Err(format!(
             "{WAITS}{} did: {}",
             before.as_deref().unwrap_or_default(),
@@ -626,6 +706,31 @@ fn install_in(
         flaws: flaws.as_ref(),
         all_flaws: false,
     };
+    if how.sheet_only {
+        let Some(talk) = talk else { return Err("a sheet is for somebody to read".into()) };
+        let file = OfferedFile {
+            catalog: how.from.unwrap_or_default(),
+            sha256: &sha256,
+            length,
+            refusal: refused.as_deref(),
+        };
+        return send_sheet(shared, talk, asker, &facts, &wanted, &file);
+    }
+    if how.dry {
+        if more.is_empty() {
+            return Err(tonight::CHECKED.into());
+        }
+        if let Some(talk) = talk.as_deref_mut() {
+            let mut text = sheet::write(&facts);
+            text.push_str(&services::socket_sheet(&wanted));
+            talk.send(&Answer::Sheet(text)).map_err(|e| format!("{e}"))?;
+        }
+        return Err(format!(
+            "not queued: it asks for more than {} did: {}; --yes queues it anyway",
+            before.as_deref().unwrap_or_default(),
+            more.join(", ")
+        ));
+    }
     if !how.update || !more.is_empty() {
         if let Some(talk) = talk.as_deref_mut() {
             let mut text = sheet::write(&facts);
@@ -676,8 +781,11 @@ fn install_in(
         Trust::Bound { .. } | Trust::BoundForEveryone { .. } => "its key".into(),
         Trust::Unknown => "a key this computer did not know".into(),
     };
-    let asked_by =
-        if how.automatic { "updating by itself, bundled".into() } else { whom(Place::User(asker)) };
+    let asked_by = match how.tonight {
+        Some(by) => format!("bundled, as asked by {} for tonight", whom(Place::User(by))),
+        None if how.automatic => "updating by itself, bundled".into(),
+        None => whom(Place::User(asker)),
+    };
     let over = previous.as_ref().map_or_default(|v| format!(" in place of {v}"));
     audit!(
         "{asked_by} installed {id} {version} for {}{over}, signed by key {} ({why})",
@@ -696,8 +804,8 @@ fn install_in(
         what: if previous.is_some() { What::Updated } else { What::Installed },
         from: previous.clone(),
         to: Some(version.clone()),
-        by: (!how.automatic).then_some(asker),
-        note: source,
+        by: how.tonight.or_else(|| (!how.automatic).then_some(asker)),
+        note: if how.tonight.is_some() { "as asked, in the window".into() } else { source },
     });
     let whose = if place == Place::Everyone { "everyone" } else { "you" };
     let linked = link_commands(&shared.lock(), place)
@@ -722,6 +830,54 @@ fn install_in(
         });
     }
     Ok(installed)
+}
+
+/// The file whose sheet is read: the catalog that offered it, its SHA-256
+/// in hex and length, and what stops its install, if anything does.
+struct OfferedFile<'a> {
+    catalog: &'a str,
+    sha256: &'a str,
+    length: u64,
+    refusal: Option<&'a str>,
+}
+
+/// Sends the sheet of a file whose facts are `facts`, as an install shows
+/// it, with what stops the install said after it, and then the same facts
+/// as one JSON document.
+fn send_sheet(
+    shared: &Shared,
+    talk: &mut Connection,
+    asker: u32,
+    facts: &Facts<'_>,
+    wanted: &[services::Wanted],
+    file: &OfferedFile<'_>,
+) -> Result<String, String> {
+    let mut text = sheet::write(facts);
+    text.push_str(&services::socket_sheet(wanted));
+    if let Some(why) = file.refusal {
+        let _ = writeln!(text, "  It would not install: {why}");
+    }
+    talk.send(&Answer::Sheet(text)).map_err(|e| format!("{e}"))?;
+    // The version the asker has, or else everyone has.
+    let installed = {
+        let registry = shared.lock();
+        let id = facts.manifest.full_id();
+        registry
+            .installed(Place::User(asker), &id)
+            .or_else(|| registry.installed(Place::Everyone, &id))
+            .map(|i| i.version.clone())
+    };
+    let download = sheet::Download {
+        catalog: file.catalog,
+        sha256: file.sha256,
+        bytes: file.length,
+        installed: installed.as_deref(),
+        refusal: file.refusal,
+    };
+    let document =
+        crate::json::line(&sheet::offer(facts, &download)).map_err(|fail| fail.message)?;
+    talk.send(&Answer::Document(document)).map_err(|e| format!("{e}"))?;
+    Ok("its sheet".into())
 }
 
 /// What each socket of another bundle that `manifest` uses comes to
@@ -768,7 +924,7 @@ fn check_services(manifest: &Manifest, place: Place) -> Result<(), String> {
 }
 
 /// The record of service `name`'s file, if bundled wrote it.
-fn read_record(name: &str) -> Option<Record> {
+pub(crate) fn read_record(name: &str) -> Option<Record> {
     let path = state(&format!("{}/{name}", services::RECORDS));
     Record::parse(&fs::read_to_string(path).ok()?)
 }
@@ -1673,13 +1829,17 @@ fn list(shared: &Shared, connection: &mut Connection, asker: u32) -> Result<Stri
     let state = Path::new(catalogs::STATE);
     let mut lists = std::collections::HashMap::new();
     let mut indexes = std::collections::HashMap::new();
+    let events = history::read(&self::state(history::HISTORY));
+    let (wanted, window, at) = (read_wanted(), window_now(), now());
     for i in &installed {
         let name = installed_manifest(i.place, &i.id).map_or_else(|_| "?".into(), |m| m.name.0);
         let (bound, held) = {
             let registry = shared.lock();
             let bound = registry.catalog_bound(i.place, &i.id).map(|b| b.catalog.clone());
-            (bound, registry.held(i.place, &i.id).is_some())
+            (bound, registry.held(i.place, &i.id).map(|h| h.since))
         };
+        let (held_by, held_reason) =
+            if held.is_some() { hold_facts(&events, i.place, &i.id) } else { (None, None) };
         let flags = bound.clone().map_or(Flags::Unknown, |catalog| {
             let list = lists
                 .entry(catalog)
@@ -1705,12 +1865,38 @@ fn list(shared: &Shared, connection: &mut Connection, asker: u32) -> Result<Stri
             name: sheet::shown(&name, 60),
             flags,
             catalog: bound,
-            held,
+            held: held.is_some(),
+            held_since: held,
+            held_by,
+            held_reason,
             update,
+            // Only an app of everyone's is asked for tonight.
+            tonight: wanted.get(&i.id).filter(|_| i.place == Place::Everyone).map(|want| {
+                protocol::Tonight {
+                    to: want.to.clone(),
+                    asked_ms: want.asked_ms,
+                    by: want.by,
+                    missed_ms: want.missed_ms,
+                    starts_ms: tonight::starts(window, at, &tonight::local_second_of_day) * 1000,
+                }
+            }),
         };
         connection.send(&Answer::Listed(listed)).map_err(|e| format!("{e}"))?;
     }
     Ok(format!("{} bundles", installed.len()))
+}
+
+/// Who held `id` in `place`, and the reason they gave: what the newest
+/// event of a hold or its release says, when that is a hold.
+fn hold_facts(events: &[Event], place: Place, id: &str) -> (Option<u32>, Option<String>) {
+    let newest = events
+        .iter()
+        .rev()
+        .find(|e| e.place == place && e.id == id && matches!(e.what, What::Held | What::Released));
+    match newest {
+        Some(e) if e.what == What::Held => (e.by, Some(e.note.clone()).filter(|n| !n.is_empty())),
+        _ => (None, None),
+    }
 }
 
 /// `bundle info`: the bundle's sheet, what the asker said of its
@@ -1768,14 +1954,20 @@ fn info(
         let kept = registry.previous(installed.place, id).map(|p| p.version.clone());
         (kept, registry.held(installed.place, id).is_some())
     };
+    let data_size = data_size_of(installed.place, &installed.id);
     if json {
         let said = shared.grants().of(asker, id, &installed.key);
+        let started = started_services(&manifest, installed.place);
+        let used_by = used_by(shared, &manifest, installed.place);
         let installation = sheet::Installation {
             installed: installed.when,
             folder: &folder,
             data: &data,
+            data_size,
             previous: kept.as_deref(),
             held,
+            started: &started,
+            used_by: &used_by,
         };
         let document = crate::json::line(&sheet::details(&facts, &said, &installation))
             .map_err(|fail| fail.message)?;
@@ -1786,9 +1978,60 @@ fn info(
     send_grants(shared, connection, asker, id, &installed.key)?;
     let when =
         util::time_text(i64::try_from(installed.when).unwrap_or(0), "%Y-%m-%d %H:%M UTC", true);
+    let size = data_size.map_or_default(|d| {
+        let at = util::time_text(
+            i64::try_from(d.measured_ms / 1000).unwrap_or(0),
+            "%Y-%m-%d %H:%M",
+            true,
+        );
+        let least = if d.complete { "" } else { "at least " };
+        format!(
+            "; its data size: {least}{} in {} files, measured {at}",
+            sheet::size(d.bytes),
+            d.files
+        )
+    });
     let kept = kept.map_or_default(|v| format!("; it can go back to {v}"));
     let held = if held { "; held at its version" } else { "" };
-    Ok(format!("installed on {when}; in {folder}; its data: {data}{kept}{held}"))
+    Ok(format!("installed on {when}; in {folder}; its data: {data}{size}{kept}{held}"))
+}
+
+/// The names of `manifest`'s services that Spark starts at each boot: the
+/// ones whose service files, which only a bundle installed for everyone
+/// has, say they are enabled.
+fn started_services(manifest: &Manifest, place: Place) -> Vec<String> {
+    if place != Place::Everyone {
+        return Vec::new();
+    }
+    manifest
+        .services
+        .iter()
+        .filter(|service| {
+            fs::read_to_string(services::file_path(&service.name.0))
+                .ok()
+                .and_then(|text| services::enabled(&text))
+                .unwrap_or(false)
+        })
+        .map(|service| service.name.0.clone())
+        .collect()
+}
+
+/// The bundles installed in `place` whose manifests use what `manifest`
+/// provides: those the manifest of which cannot be read are left out.
+fn used_by(shared: &Shared, manifest: &Manifest, place: Place) -> Vec<sheet::Dependent> {
+    if manifest.provides.is_empty() {
+        return Vec::new();
+    }
+    let ids: Vec<String> = shared
+        .lock()
+        .installed
+        .iter()
+        .filter(|installed| installed.place == place)
+        .map(|installed| installed.id.clone())
+        .collect();
+    let others: Vec<Manifest> =
+        ids.iter().filter_map(|id| installed_manifest(place, id).ok()).collect();
+    sheet::dependents(manifest, &others)
 }
 
 fn remove(
@@ -2154,8 +2397,21 @@ fn read_catalogs() -> (Vec<Catalog>, Vec<String>) {
     catalogs::read_all(Path::new(catalogs::SETTINGS), Path::new(catalogs::DEFAULTS))
 }
 
-/// The catalogs read anew, and why each other could not be.
-type Opened = (Vec<(Catalog, catalogs::Open)>, Vec<String>);
+/// A catalog that could not be read, and why.
+struct Unread {
+    catalog: String,
+    why: String,
+}
+
+impl Unread {
+    /// What is said of it on a line of text.
+    fn note(&self) -> String {
+        format!("catalog {} could not be read: {}", self.catalog, self.why)
+    }
+}
+
+/// The catalogs read anew, and each other, which could not be.
+type Opened = (Vec<(Catalog, catalogs::Open)>, Vec<Unread>);
 
 /// Reads every catalog that is on anew, or `only`: each one read, and why
 /// each other could not be.
@@ -2182,7 +2438,7 @@ fn open_catalogs(only: Option<&str>) -> Result<Opened, String> {
     for catalog in chosen {
         match catalogs::open(&catalog, state) {
             Ok(read) => open.push((catalog, read)),
-            Err(why) => failed.push(format!("catalog {} could not be read: {why}", catalog.name)),
+            Err(why) => failed.push(Unread { catalog: catalog.name, why }),
         }
     }
     Ok((open, failed))
@@ -2199,7 +2455,7 @@ fn search(
     let (open, failed) = open_catalogs(None)?;
     let state = Path::new(catalogs::STATE);
     let (all, _) = read_catalogs();
-    let mut notes = failed;
+    let mut notes: Vec<String> = failed.iter().map(Unread::note).collect();
     let mut found = 0;
     for catalog in all.iter().filter(|c| !c.off) {
         let index = match open.iter().find(|(c, _)| c.name == catalog.name) {
@@ -2229,20 +2485,107 @@ fn search(
     Ok(said)
 }
 
-/// `bundle install ID`: the newest version of `id` that `catalog`, or the
-/// first catalog that lists it, lists; or, when `id` came from a catalog
-/// already here, that catalog's. Fetched by the client, checked against
-/// its targets, then installed as a file is.
-#[allow(clippy::too_many_arguments)]
-fn get(
+/// Why no catalog could be read, as one line that ends in the ID of the
+/// error it is.
+fn none_read(failed: &[Unread]) -> String {
+    let notes: Vec<String> = failed.iter().map(Unread::note).collect();
+    format!("{} (APP-103)", notes.join("; "))
+}
+
+/// [`open_catalogs`], with an ID at the end of each refusal: one for no
+/// catalog set to be read, and one for the catalog asked for that is not
+/// there or is off.
+fn open_for_asker(only: Option<&str>) -> Result<Opened, String> {
+    open_catalogs(only)
+        .map_err(|why| format!("{why} ({})", if only.is_some() { "APP-101" } else { "APP-103" }))
+}
+
+/// The catalogs of `failed`, as the document of a search says them.
+fn unread_pairs(failed: Vec<Unread>) -> Vec<(String, String)> {
+    failed.into_iter().map(|u| (u.catalog, u.why)).collect()
+}
+
+/// `bundle search --json`: what the catalogs that could be read list,
+/// read anew, of every bundle whose ID or name holds every word, or of
+/// every bundle with none; the catalogs that could not be, with why, are
+/// not searched as they last were: their bundles could not be fetched.
+/// The document is sent whatever came of it, and when no catalog could be
+/// read it is empty but for them, and an error ending in APP-103 follows.
+fn search_json(
     shared: &Shared,
     connection: &mut Connection,
+    asker: u32,
+    words: &[String],
+) -> Result<String, String> {
+    let (hits, unread, refusal) = {
+        let _reading = shared.catalogs();
+        match open_for_asker(None) {
+            Err(why) => (Vec::new(), Vec::new(), Some(why)),
+            Ok((open, failed)) if open.is_empty() => {
+                let why = none_read(&failed);
+                (Vec::new(), unread_pairs(failed), Some(why))
+            }
+            Ok((open, failed)) => {
+                let state = Path::new(catalogs::STATE);
+                let mut hits = Vec::new();
+                for (catalog, read) in &open {
+                    let flaws = catalogs::read_flaws(state, &catalog.name);
+                    for entry in read.index.search(words) {
+                        hits.push(Hit {
+                            catalog: catalog.name.clone(),
+                            id: entry.id.clone(),
+                            version: entry.version.clone(),
+                            name: entry.name.clone(),
+                            flags: catalogs::flags(flaws.as_ref(), &entry.id, &entry.version),
+                        });
+                    }
+                }
+                (hits, unread_pairs(failed), None)
+            }
+        }
+    };
+    // What the asker has installed of each, or else what everyone has.
+    let hits: Vec<(Hit, Option<String>)> = {
+        let registry = shared.lock();
+        hits.into_iter()
+            .map(|hit| {
+                let installed = registry
+                    .installed(Place::User(asker), &hit.id)
+                    .or_else(|| registry.installed(Place::Everyone, &hit.id))
+                    .map(|i| i.version.clone());
+                (hit, installed)
+            })
+            .collect()
+    };
+    let found = hits.len();
+    let document =
+        crate::json::line(&documents::Search::of(hits, unread)).map_err(|fail| fail.message)?;
+    connection.send(&Answer::Document(document)).map_err(|e| format!("{e}"))?;
+    refusal.map_or_else(|| Ok(format!("{found} found")), Err)
+}
+
+/// A file fetched from a catalog.
+struct Fetched {
+    /// The catalog that lists it.
+    catalog: String,
+    /// Where it is, in that catalog's downloads.
+    file: PathBuf,
+}
+
+/// Fetches the newest version of `id` that `catalog`, or the first catalog
+/// that lists it, lists; or, when `id` came from a catalog already here,
+/// that catalog's. The catalogs are read anew first, and the file is
+/// checked against its length and SHA-256 as it comes. What cannot be done
+/// ends in the ID of its error: APP-101 when no catalog lists it and
+/// APP-103 when none could be read.
+fn fetch_newest(
+    shared: &Shared,
     asker: u32,
     id: &str,
     catalog: Option<&str>,
     everyone: bool,
-    yes: bool,
-) -> Result<String, String> {
+    sha256: Option<&str>,
+) -> Result<Fetched, String> {
     let place = if everyone { Place::Everyone } else { Place::User(asker) };
     let bound = {
         let registry = shared.lock();
@@ -2255,34 +2598,101 @@ fn get(
         return Err(format!("{id} comes from catalog {bound}, since its first install from it"));
     }
     let only = catalog.or(bound.as_deref());
-    let (name, file) = {
-        let _reading = shared.catalogs();
-        let (mut open, failed) = open_catalogs(only)?;
-        let mut chosen = None;
-        for (catalog, read) in &mut open {
-            if let Some(entry) = read.index.newest(id).cloned() {
-                chosen = Some((catalog.name.clone(), read, entry));
-                break;
-            }
+    let _reading = shared.catalogs();
+    let (mut open, failed) = open_for_asker(only)?;
+    if open.is_empty() {
+        return Err(none_read(&failed));
+    }
+    let mut chosen = None;
+    for (catalog, read) in &mut open {
+        if let Some(entry) = read.index.newest(id).cloned() {
+            chosen = Some((catalog.name.clone(), read, entry));
+            break;
         }
-        let Some((name, read, entry)) = chosen else {
-            let mut why = match only {
-                Some(only) => format!("catalog {only} does not list {id}"),
-                None => format!("no catalog lists {id}"),
-            };
-            for note in failed {
-                why += &format!("; {note}");
-            }
-            return Err(why);
+    }
+    let Some((name, read, entry)) = chosen else {
+        let mut why = match only {
+            Some(only) => format!("catalog {only} does not list {id}"),
+            None => format!("no catalog lists {id}"),
         };
-        (name, read.fetch(&entry)?)
+        for note in failed.iter().map(Unread::note) {
+            why += &format!("; {note}");
+        }
+        return Err(why + " (APP-101)");
     };
-    let archive = File::open(&file).map_err(|e| format!("{}: {e}", file.display()));
+    if let Some(why) = another_file(&name, id, &entry, sha256) {
+        return Err(why);
+    }
+    Ok(Fetched { catalog: name, file: read.fetch(&entry)? })
+}
+
+/// Why `entry`, the file `catalog` lists for `id` now, is not the one whose
+/// SHA-256 `wanted` names, ending in APP-102; none when it is, or none was
+/// named. It is said before the file is fetched.
+fn another_file(
+    catalog: &str,
+    id: &str,
+    entry: &catalogs::Entry,
+    wanted: Option<&str>,
+) -> Option<String> {
+    let wanted = wanted.filter(|wanted| !wanted.eq_ignore_ascii_case(&entry.sha256))?;
+    Some(format!(
+        "catalog {catalog} now lists {id} {}, a file whose SHA-256 is not {wanted}: read its \
+         sheet again (APP-102)",
+        entry.version
+    ))
+}
+
+/// `bundle install ID`: the newest version of `id` that `catalog`, or the
+/// first catalog that lists it, lists; or, when `id` came from a catalog
+/// already here, that catalog's. Fetched by the client, checked against
+/// its targets, then installed as a file is; with `sha256`, only if that
+/// is the file's.
+fn get(
+    shared: &Shared,
+    connection: &mut Connection,
+    asker: u32,
+    id: &str,
+    catalog: Option<&str>,
+    (everyone, yes): (bool, bool),
+    sha256: Option<&str>,
+) -> Result<String, String> {
+    let fetched = fetch_newest(shared, asker, id, catalog, everyone, sha256)?;
+    let archive = File::open(&fetched.file).map_err(|e| format!("{}: {e}", fetched.file.display()));
     let result = archive.and_then(|archive| {
-        let how = How { yes, from: Some(&name), ..How::default() };
+        let how = How { yes, from: Some(&fetched.catalog), ..How::default() };
         install(shared, Some(connection), asker, &archive, everyone, how)
     });
-    let _ = fs::remove_file(&file);
+    let _ = fs::remove_file(&fetched.file);
+    shared.sheet.forget(&fetched.file);
+    result
+}
+
+/// `bundle sheet ID`: fetches the newest version of `id` as an install
+/// does, checks it as an install does, and sends its sheet and facts; it
+/// installs nothing and leaves nothing unpacked. The file stays in its
+/// catalog's downloads, named by its SHA-256, for the install that
+/// follows, which finds it there; the file of the sheet read before goes.
+/// The sheet is that of an install for everyone, the one that can run
+/// services; it is unpacked in the asker's own folder.
+fn sheet_of(
+    shared: &Shared,
+    connection: &mut Connection,
+    asker: u32,
+    id: &str,
+    from: Option<&str>,
+) -> Result<String, String> {
+    let fetched = fetch_newest(shared, asker, id, from, false, None)?;
+    shared.sheet.keep(&fetched.file);
+    let archive =
+        File::open(&fetched.file).map_err(|e| format!("{}: {e}", fetched.file.display()))?;
+    let (places, path) = open_place(Place::User(asker))?;
+    let working = working_name("installing")?;
+    places.make(&working, 0o700).map_err(|e| format!("{path}/{working}: {e}"))?;
+    let to = Unpacking { place: Place::Everyone, places: &places, path: &path, working: &working };
+    let how = How { from: Some(&fetched.catalog), sheet_only: true, ..How::default() };
+    let result = install_in(shared, Some(connection), asker, &archive, &to, how);
+    let _ = places.remove_tree(&working, 0);
     result
 }
 
@@ -2501,7 +2911,7 @@ fn find_updates(
         match open_catalogs(Some(name)) {
             Ok((read, failed)) => {
                 open.extend(read);
-                notes.extend(failed);
+                notes.extend(failed.iter().map(Unread::note));
             }
             Err(why) => notes.push(why),
         }
@@ -2637,6 +3047,7 @@ fn update(
     let waits =
         if waiting == 0 { String::new() } else { format!(", {waiting} waiting for their wave") };
     if check {
+        let events = history::read(&state(history::HISTORY));
         for p in &pending {
             if let Some(lines) = &p.waits {
                 for line in wave_lines(lines) {
@@ -2644,6 +3055,8 @@ fn update(
                 }
                 continue;
             }
+            let held_reason =
+                if p.held { hold_facts(&events, place, &p.installed.id).1 } else { None };
             let available = Available {
                 place,
                 id: p.installed.id.clone(),
@@ -2651,6 +3064,7 @@ fn update(
                 to: p.newest.clone(),
                 catalog: p.catalog.clone(),
                 held: p.held,
+                held_reason,
             };
             connection.send(&Answer::Available(available)).map_err(|e| format!("{e}"))?;
         }
@@ -2690,6 +3104,7 @@ fn update(
                 update: true,
                 automatic: false,
                 feed: p.catalog.is_none(),
+                ..How::default()
             };
             let result = File::open(&file)
                 .map_err(|e| format!("{}: {e}", file.display()))
@@ -2759,6 +3174,7 @@ fn update_by_themselves(shared: &Shared) {
                 update: true,
                 automatic: true,
                 feed: p.catalog.is_none(),
+                ..How::default()
             };
             let result = File::open(&file)
                 .map_err(|e| format!("{}: {e}", file.display()))
@@ -2803,33 +3219,423 @@ fn update_by_themselves(shared: &Shared) {
     }
 }
 
+/// The data folders of each app installed for everyone that runs
+/// services, and the IDs of all the apps installed for everyone.
+fn data_requests(shared: &Shared) -> (Vec<sizes::Request>, Vec<String>) {
+    let ids: Vec<String> = shared
+        .lock()
+        .installed
+        .iter()
+        .filter(|i| i.place == Place::Everyone)
+        .map(|i| i.id.clone())
+        .collect();
+    let requests = ids
+        .iter()
+        .filter_map(|id| {
+            let manifest = installed_manifest(Place::Everyone, id).ok()?;
+            let folders: Vec<String> = services::accounts(&manifest)
+                .iter()
+                .map(|account| services::data_folder(&manifest.id.0, account))
+                .collect();
+            (!folders.is_empty()).then(|| sizes::Request { id: id.clone(), folders })
+        })
+        .collect();
+    (requests, ids)
+}
+
+/// Measures what the data of each app installed for everyone takes, in a
+/// process of its own at idle priority, and keeps it in `sizes.json`. A
+/// person's own apps are never walked: their data is in their home.
+fn measure_data(shared: &Shared) {
+    let (requests, installed) = data_requests(shared);
+    let lines = if requests.is_empty() {
+        Vec::new()
+    } else {
+        match sizes::measure(sizes::PROGRAM, &requests, sizes::KILL_AFTER) {
+            Ok(lines) => lines,
+            Err(why) => {
+                eprintln!("bundled: measuring what the apps' data takes: {why}");
+                return;
+            }
+        }
+    };
+    for line in &lines {
+        if let sizes::Line::Error(why) = line {
+            eprintln!("bundled: measuring what the apps' data takes: {why}");
+        }
+    }
+    let mut kept = sizes::Sizes::read(&read_state(sizes::FILE).unwrap_or_default());
+    if kept.apply(&lines, &installed, now() * 1000)
+        && let Err(why) = write_whole(&state(sizes::FILE), &kept.text(), 0o600)
+    {
+        eprintln!("bundled: what the apps' data takes is not kept: {why}");
+    }
+}
+
+/// What the last walk found of the data of app `id`, if it is installed for
+/// everyone and the walk reached it.
+fn data_size_of(place: Place, id: &str) -> Option<sizes::DataSize> {
+    if place != Place::Everyone {
+        return None;
+    }
+    sizes::Sizes::read(&read_state(sizes::FILE).unwrap_or_default()).data_size(id)
+}
+
 /// Runs [`check_flaws`], and [`update_by_themselves`] where a place
 /// turned it on, some minutes after bundled starts, then daily, and at
-/// once when a place turns updating by themselves on.
+/// once when a place turns updating by themselves on; then measures what
+/// the apps' data takes ([`measure_data`]). While an update waits for
+/// tonight, it wakes too for the start of the window, and at least each
+/// hour, which is when a request is looked at ([`tonight_tick`]).
 fn updater(shared: &Shared) {
     let mut next = Instant::now() + AUTOMATIC_FIRST;
     loop {
+        let window_at = waiting_nap().map(|nap| Instant::now() + nap);
+        let mut daily = false;
         {
-            let (now_please, signal) = &shared.wake;
-            let mut asked = now_please.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            while !*asked {
-                let left = next.saturating_duration_since(Instant::now());
-                if left.is_zero() {
+            let (flags, signal) = &shared.wake;
+            let mut wake = flags.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            loop {
+                if wake.updates {
+                    wake.updates = false;
+                    daily = true;
                     break;
                 }
-                asked = signal
-                    .wait_timeout(asked, left)
+                if wake.tonight {
+                    wake.tonight = false;
+                    break;
+                }
+                let at = Instant::now();
+                if at >= next {
+                    daily = true;
+                    break;
+                }
+                if window_at.is_some_and(|due| at >= due) {
+                    break;
+                }
+                let until = window_at.map_or(next, |due| due.min(next));
+                wake = signal
+                    .wait_timeout(wake, until - at)
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .0;
             }
-            *asked = false;
         }
-        next = Instant::now() + AUTOMATIC_EVERY;
-        check_flaws(shared);
-        if !shared.lock().automatic.is_empty() {
-            update_by_themselves(shared);
+        if daily {
+            next = Instant::now() + AUTOMATIC_EVERY;
+            check_flaws(shared);
+            if !shared.lock().automatic.is_empty() {
+                update_by_themselves(shared);
+            }
+            measure_data(shared);
+        }
+        tonight_tick(shared);
+    }
+}
+
+/// The requests for tonight, as bundled last kept them.
+fn read_wanted() -> tonight::Wanted {
+    tonight::Wanted::read(&read_state(tonight::FILE).unwrap_or_default())
+}
+
+/// Keeps `wanted` as the requests for tonight.
+fn save_wanted(wanted: &tonight::Wanted) -> Result<(), String> {
+    write_whole(&state(tonight::FILE), &wanted.text(), tonight::MODE)
+}
+
+/// The window apps install in, by the restart time updates.toml(5) has
+/// now, read at each plan so that a time changed is seen at the next wake.
+fn window_now() -> tonight::Window {
+    let settings = crate::sysupdate::online::Settings::load().ok();
+    tonight::Window::of(settings.as_ref().and_then(|settings| settings.restart.as_deref()))
+}
+
+/// How long the updater sleeps for a request that waits, none when there
+/// is none.
+fn waiting_nap() -> Option<Duration> {
+    let waiting = !read_wanted().wanted.is_empty();
+    waiting.then(|| tonight::nap(window_now(), now(), &tonight::local_second_of_day))
+}
+
+/// Has the requests for tonight looked at again at the next wake.
+fn wake_tonight(shared: &Shared) {
+    let (flags, signal) = &shared.wake;
+    flags.lock().unwrap_or_else(std::sync::PoisonError::into_inner).tonight = true;
+    signal.notify_all();
+}
+
+/// Installs the updates asked for tonight when this wake falls in the
+/// window with time left, one at a time, each as `update_by_themselves`
+/// installs one, and notes the requests whose window passed without them:
+/// the machine was off, or bundled not running, and they go on to the next
+/// window. None starts outside the window, since an app's service
+/// restarting in the day is what the person put off.
+fn tonight_tick(shared: &Shared) {
+    let window = window_now();
+    let plan = {
+        let _writing = shared.tonight();
+        let mut wanted = read_wanted();
+        if wanted.wanted.is_empty() {
+            return;
+        }
+        let plan = tonight::plan(&wanted, window, now(), &tonight::local_second_of_day);
+        for (id, ms) in &plan.missed {
+            wanted.missed(id, *ms);
+        }
+        if !plan.missed.is_empty()
+            && let Err(why) = save_wanted(&wanted)
+        {
+            eprintln!("bundled: the requests for tonight are not kept: {why}");
+        }
+        plan
+    };
+    for id in plan.install {
+        // An install before this one may have taken the window's time.
+        if !window.may_start(tonight::local_second_of_day(now())) {
+            break;
+        }
+        let want = {
+            let _reading = shared.tonight();
+            read_wanted().get(&id).cloned()
+        };
+        let Some(want) = want else { continue };
+        install_tonight(shared, &want);
+        // Done, failed, held or waiting for a yes: each is told in the
+        // history, and the request has had its turn.
+        let _writing = shared.tonight();
+        let mut wanted = read_wanted();
+        if wanted.cancel(&id)
+            && let Err(why) = save_wanted(&wanted)
+        {
+            eprintln!("bundled: the requests for tonight are not kept: {why}");
         }
     }
+}
+
+/// Installs the newest version of the app of `want`, as asked, with the
+/// history's `by` the one who asked: the app is held and left alone, asks
+/// for more than the version before and the person did not say yes, or is
+/// done, or failed, which the history says too.
+fn install_tonight(shared: &Shared, want: &tonight::Want) {
+    let id = &want.id;
+    let found = {
+        let _reading = shared.catalogs();
+        find_updates(shared, Place::Everyone, std::slice::from_ref(id), true)
+    };
+    let (pending, notes, _) = match found {
+        Ok(found) => found,
+        Err(why) => {
+            // The app was removed since.
+            eprintln!("bundled: installing {id} tonight, as asked: {why}");
+            return;
+        }
+    };
+    for note in notes {
+        eprintln!("bundled: installing {id} tonight: {note}");
+    }
+    let Some(p) = pending.into_iter().find(|p| p.installed.id == *id) else {
+        // Nothing newer than what is installed: updated by hand since.
+        return;
+    };
+    let (from, to) = (p.installed.version.clone(), p.newest.clone());
+    let told = |what: What, note: String| Event {
+        when: now(),
+        place: Place::Everyone,
+        id: id.clone(),
+        what,
+        from: Some(from.clone()),
+        to: Some(to.clone()),
+        by: Some(want.by),
+        note,
+    };
+    if p.held {
+        add_history(&told(
+            What::Failed,
+            format!(
+                "held at {from}: not updated tonight, as asked; `bundle unhold {id}` lets it update"
+            ),
+        ));
+        return;
+    }
+    let Some(file) = p.file else {
+        add_history(&told(What::Failed, "its file could not be fetched".into()));
+        return;
+    };
+    let how = How {
+        // What the person said yes to was the version asked for.
+        yes: want.yes && want.to == to,
+        from: p.catalog.as_deref(),
+        update: true,
+        automatic: false,
+        feed: p.catalog.is_none(),
+        tonight: Some(want.by),
+        dry: false,
+        sheet_only: false,
+    };
+    let result = File::open(&file)
+        .map_err(|e| format!("{}: {e}", file.display()))
+        .and_then(|archive| install(shared, None, 0, &archive, true, how));
+    let _ = fs::remove_file(&file);
+    match result {
+        Ok(_) => {
+            eprintln!("bundled: updated {id} {from} to {to} for everyone, in the window, as asked");
+        }
+        Err(why) => {
+            let waits = why.starts_with(WAITS);
+            eprintln!("bundled: {id} {to} for everyone, as asked tonight: {why}");
+            // Said once for each version, not each night.
+            let said = history::read(&state(history::HISTORY)).iter().any(|e| {
+                e.what == What::Waiting
+                    && e.place == Place::Everyone
+                    && e.id == *id
+                    && e.to.as_deref() == Some(to.as_str())
+            });
+            if !said || !waits {
+                add_history(&told(if waits { What::Waiting } else { What::Failed }, why));
+            }
+        }
+    }
+}
+
+/// `bundle update --for-everyone --not-tonight`: takes `ids` off the
+/// requests for tonight.
+fn take_off_tonight(shared: &Shared, ids: &[String]) -> Result<String, String> {
+    if ids.is_empty() {
+        return Err("--not-tonight names the apps to take off tonight's window".into());
+    }
+    let _writing = shared.tonight();
+    let mut wanted = read_wanted();
+    let said: Vec<String> = ids
+        .iter()
+        .map(|id| {
+            if wanted.cancel(id) {
+                format!("{id} no longer installs tonight")
+            } else {
+                format!("{id} was not to install tonight")
+            }
+        })
+        .collect();
+    save_wanted(&wanted)?;
+    Ok(said.join("; "))
+}
+
+/// `bundle update --for-everyone --tonight`: asks that the updates of
+/// `ids`, or of every app that has one, are installed in tonight's window
+/// and not now. An update that asks for more than the version it replaces
+/// is answered with what it asks for, and queued only with a yes; one
+/// that is held is left. When apps are named and one cannot be queued,
+/// none is. `by` is the user who asked.
+fn tonight_ask(
+    shared: &Shared,
+    connection: &mut Connection,
+    asker: u32,
+    ids: &[String],
+    (on, yes, by): (bool, bool, u32),
+) -> Result<String, String> {
+    if asker != 0 {
+        return Err("installing tonight is an administrator's: run elevate bundle update \
+                    --for-everyone --tonight"
+            .into());
+    }
+    if !on {
+        return take_off_tonight(shared, ids);
+    }
+    let window = window_now().words();
+    let (pending, notes, _) = {
+        let _reading = shared.catalogs();
+        // Without a yes, the new versions are fetched to see what they ask for.
+        find_updates(shared, Place::Everyone, ids, !yes)?
+    };
+    let with_update: Vec<String> = pending.iter().map(|p| p.installed.id.clone()).collect();
+    let asked_ms = now() * 1000;
+    let mut wants = Vec::new();
+    let mut left = Vec::new();
+    for p in pending {
+        let id = p.installed.id.clone();
+        if p.held {
+            left.push(format!(
+                "{id} is held at {}, so {} waits: `bundle unhold {id}` lets it update",
+                p.installed.version, p.newest
+            ));
+            continue;
+        }
+        if let Some(lines) = &p.waits {
+            left.extend(wave_lines(lines));
+            continue;
+        }
+        if !yes {
+            let Some(file) = &p.file else {
+                left.push(format!("{id} {}: its file could not be fetched", p.newest));
+                continue;
+            };
+            let how = How {
+                yes: false,
+                from: p.catalog.as_deref(),
+                update: true,
+                automatic: false,
+                feed: p.catalog.is_none(),
+                tonight: Some(by),
+                dry: true,
+                sheet_only: false,
+            };
+            let result = File::open(file).map_err(|e| format!("{}: {e}", file.display())).and_then(
+                |archive| install(shared, Some(&mut *connection), 0, &archive, true, how),
+            );
+            let _ = fs::remove_file(file);
+            match result {
+                Err(why) if why == tonight::CHECKED => {}
+                Err(why) => {
+                    left.push(format!("{id} {}: {why}", p.newest));
+                    continue;
+                }
+                Ok(_) => {}
+            }
+        }
+        wants.push(tonight::Want { id, to: p.newest, yes, by, asked_ms, missed_ms: None });
+    }
+    for id in ids {
+        if !with_update.contains(id) {
+            left.push(format!("{id} has no update to install tonight"));
+        }
+    }
+    if !ids.is_empty() && !left.is_empty() {
+        return Err(left.join("; "));
+    }
+    for note in notes.into_iter().chain(left) {
+        connection.send(&Answer::Note(note)).map_err(|e| format!("{e}"))?;
+    }
+    if wants.is_empty() {
+        return Ok("nothing is left to install tonight".into());
+    }
+    {
+        let _writing = shared.tonight();
+        let mut wanted = read_wanted();
+        for want in &wants {
+            wanted.ask(want.clone());
+        }
+        save_wanted(&wanted)?;
+    }
+    wake_tonight(shared);
+    for want in &wants {
+        audit!(
+            "{} asked that {} {} be installed in tonight's window",
+            whom(Place::User(by)),
+            want.id,
+            want.to
+        );
+    }
+    Ok(match wants.as_slice() {
+        [one] => format!("{} installs tonight, {window}", one.id),
+        many => format!("{} apps install tonight, {window}", many.len()),
+    })
+}
+
+/// Whether an update that asks for `more` than the version it replaces
+/// waits for a person's yes instead of being installed: one that updates
+/// by itself always does, and one asked for tonight unless the person said
+/// yes to what it asks for. An update only checked for tonight is looked
+/// at in the sheet's words, not held.
+fn waits_for_yes(how: &How<'_>, more: &[String]) -> bool {
+    !more.is_empty() && !how.dry && (how.automatic || (how.tonight.is_some() && !how.yes))
 }
 
 /// `bundle update --automatic on|off`: whether the asker's bundles, or
@@ -2858,8 +3664,8 @@ fn automatic(shared: &Shared, asker: u32, everyone: bool, on: bool) -> Result<St
         whom(place)
     );
     if on {
-        let (now_please, signal) = &shared.wake;
-        *now_please.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        let (flags, signal) = &shared.wake;
+        flags.lock().unwrap_or_else(std::sync::PoisonError::into_inner).updates = true;
         signal.notify_all();
         Ok(format!(
             "{whose} update by themselves from now on, daily, from their catalogs; one that asks \
@@ -2976,7 +3782,14 @@ fn go_back(
 
 /// `bundle hold` and `bundle unhold`: whether updates leave the bundle as
 /// it is.
-fn hold(shared: &Shared, asker: u32, id: &str, everyone: bool, on: bool) -> Result<String, String> {
+fn hold(
+    shared: &Shared,
+    asker: u32,
+    id: &str,
+    everyone: bool,
+    on: bool,
+    why: Option<&str>,
+) -> Result<String, String> {
     if everyone && asker != 0 {
         return Err("holding everyone's bundles is an administrator's: run it with elevate and \
                     --for-everyone"
@@ -3000,11 +3813,13 @@ fn hold(shared: &Shared, asker: u32, id: &str, everyone: bool, on: bool) -> Resu
         from: Some(installed.version.clone()),
         to: None,
         by: Some(asker),
-        note: String::new(),
+        // Why a hold is asked for is its event's note; a release says none.
+        note: why.filter(|_| on).unwrap_or_default().into(),
     });
     Ok(if on {
+        let kept = why.map_or_default(|why| format!("{}{why}", protocol::REASON_KEPT));
         format!(
-            "held {id} at {}: updates leave it as it is until `bundle unhold {id}`",
+            "held {id} at {}: updates leave it as it is until `bundle unhold {id}`{kept}",
             installed.version
         )
     } else {
@@ -3185,18 +4000,34 @@ fn serve(shared: &Shared, stream: UnixStream) {
         Ok(_) if !fds.is_empty() => {
             Err("only an install request, or adding a catalog, comes with a file".into())
         }
-        Ok(Request::Get { id, catalog, everyone, yes }) => {
-            get(shared, &mut connection, asker, &id, catalog.as_deref(), everyone, yes)
+        Ok(Request::Get { id, catalog, everyone, yes, sha256 }) => {
+            let ask = (everyone, yes);
+            get(shared, &mut connection, asker, &id, catalog.as_deref(), ask, sha256.as_deref())
         }
-        Ok(Request::Search { words }) => search(shared, &mut connection, &words),
+        Ok(Request::Sheet { id, from }) => {
+            sheet_of(shared, &mut connection, asker, &id, from.as_deref())
+        }
+        Ok(Request::Search { words, json: false }) => search(shared, &mut connection, &words),
+        Ok(Request::Search { words, json: true }) => {
+            search_json(shared, &mut connection, asker, &words)
+        }
         Ok(Request::Catalogs) => list_catalogs(&mut connection),
         Ok(Request::CatalogRemove { name }) => catalog_remove(shared, asker, &name),
         Ok(Request::Update { ids, everyone, check, yes }) => {
             update(shared, &mut connection, asker, &ids, everyone, check, yes)
         }
         Ok(Request::Rollback { id, everyone }) => rollback(shared, asker, &id, everyone),
-        Ok(Request::Hold { id, everyone, on }) => hold(shared, asker, &id, everyone, on),
+        Ok(Request::Hold { id, everyone, on, why }) => {
+            hold(shared, asker, &id, everyone, on, why.as_deref())
+        }
+        Ok(Request::Tonight { ids, on, yes, by }) => {
+            tonight_ask(shared, &mut connection, asker, &ids, (on, yes, by))
+        }
         Ok(Request::Automatic { everyone, on }) => automatic(shared, asker, everyone, on),
+        Ok(Request::AutomaticForEveryone) => {
+            let on = shared.lock().automatic(Place::Everyone).is_some();
+            Ok(if on { "on" } else { "off" }.into())
+        }
         Ok(Request::History { id }) => history_of(&mut connection, asker, id.as_deref()),
         Ok(Request::Lines { name }) => match lines_of(&shared.lock(), asker, &name) {
             Some(lines) => connection
@@ -3280,6 +4111,17 @@ fn notice(registry: &mut Registry) -> bool {
 }
 
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
+    match args.subcommand() {
+        // The walk of the apps' data, which bundled starts as a process of
+        // its own (`bundles::sizes`).
+        Some(mode) if mode == sizes::MODE => {
+            let words: Vec<String> =
+                args.rest().iter().map(|word| word.to_string_lossy().into_owned()).collect();
+            return Ok(sizes::child(&words));
+        }
+        Some(other) => return Err(args.unknown(&Arg::Operand(other))),
+        None => {}
+    }
     if let Some(arg) = args.next()? {
         return Err(args.unknown(&arg));
     }
@@ -3343,7 +4185,9 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         watchers: Mutex::new(Vec::new()),
         connections: AtomicUsize::new(0),
         catalogs: Mutex::new(()),
-        wake: (Mutex::new(false), Condvar::new()),
+        wake: (Mutex::new(Wake::default()), Condvar::new()),
+        tonight: Mutex::new(()),
+        sheet: Kept::default(),
     });
     let updating = Arc::clone(&shared);
     if std::thread::Builder::new().name("updater".into()).spawn(move || updater(&updating)).is_err()
@@ -3376,6 +4220,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_file_other_than_the_one_named_is_said_before_it_is_fetched() {
+        let entry = catalogs::Entry {
+            path: "bundles/org.nginx.nginx-1.30.6.dkv".into(),
+            sha256: "ab".repeat(32),
+            length: 3_100_000,
+            id: "org.nginx.nginx".into(),
+            version: "1.30.6".into(),
+            name: "nginx".into(),
+        };
+        let said = |wanted: Option<&str>| another_file("dukovo", &entry.id, &entry, wanted);
+        // None named, the same in either case: it goes on.
+        assert_eq!(said(None), None);
+        assert_eq!(said(Some(&"ab".repeat(32))), None);
+        assert_eq!(said(Some(&"AB".repeat(32))), None);
+        let other = "cd".repeat(32);
+        let why = said(Some(&other)).unwrap();
+        assert!(why.starts_with("catalog dukovo now lists org.nginx.nginx 1.30.6, "), "{why}");
+        assert!(why.contains(&other) && why.ends_with("(APP-102)"), "{why}");
+    }
+
+    #[test]
+    fn only_the_download_of_the_sheet_read_last_is_kept() {
+        let folder = std::env::temp_dir().join(format!("bundled-kept-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&folder);
+        fs::create_dir_all(&folder).unwrap();
+        let (first, second) = (folder.join("a.dkv"), folder.join("b.dkv"));
+        fs::write(&first, "a").unwrap();
+        fs::write(&second, "b").unwrap();
+        let kept = Kept::default();
+        kept.keep(&first);
+        kept.keep(&first);
+        assert!(first.exists(), "a sheet read again keeps its file");
+        kept.keep(&second);
+        assert!(!first.exists() && second.exists(), "another sheet's file replaces it");
+        // An install that took the file forgets it, so that a later sheet
+        // does not remove what another install fetched by the same name.
+        kept.forget(&second);
+        fs::write(&first, "a").unwrap();
+        kept.keep(&first);
+        assert!(second.exists() && first.exists());
+        fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
     fn an_update_stops_a_service_keeping_its_sockets() {
         assert_eq!(stop_for_update("nginx"), "stop nginx --keep-sockets");
     }
@@ -3398,9 +4286,111 @@ mod tests {
         assert_eq!(stop_time([Some(300)]), Duration::from_secs(310));
     }
 
+    fn hold_event(place: Place, id: &str, what: What, by: Option<u32>, note: &str) -> Event {
+        Event {
+            when: 1_793_000_000,
+            place,
+            id: id.into(),
+            what,
+            from: Some("1.0.0".into()),
+            to: None,
+            by,
+            note: note.into(),
+        }
+    }
+
+    #[test]
+    fn who_held_a_bundle_and_why_is_what_the_newest_event_of_its_hold_says() {
+        let id = "org.example.notes";
+        let (everyone, mine) = (Place::Everyone, Place::User(1000));
+        let events = [
+            hold_event(everyone, id, What::Held, Some(0), "first reason"),
+            hold_event(mine, id, What::Held, Some(1000), "mine"),
+            hold_event(everyone, "org.example.tea", What::Held, Some(0), "another app"),
+            hold_event(everyone, id, What::Updated, None, "from catalog dukovo"),
+            hold_event(everyone, id, What::Released, Some(0), ""),
+            hold_event(everyone, id, What::Held, Some(0), "app tests use this version"),
+            hold_event(everyone, id, What::Failed, None, "a failure after it"),
+        ];
+        // The newest hold is the one asked for, and what came after it says nothing of it.
+        assert_eq!(
+            hold_facts(&events, everyone, id),
+            (Some(0), Some("app tests use this version".into()))
+        );
+        // One place's hold is not another's.
+        assert_eq!(hold_facts(&events, mine, id), (Some(1000), Some("mine".into())));
+        // A release ends it, and a hold with no reason has none.
+        assert_eq!(hold_facts(&events[..5], everyone, id), (None, None));
+        let unsaid = [hold_event(everyone, id, What::Held, Some(0), "")];
+        assert_eq!(hold_facts(&unsaid, everyone, id), (Some(0), None));
+        // No event in the history, which keeps the newest thousand.
+        assert_eq!(hold_facts(&[], everyone, id), (None, None));
+    }
+
     #[test]
     fn the_longest_of_the_services_decides() {
         assert_eq!(stop_time([Some(30), None, Some(300), Some(2)]), Duration::from_secs(310));
         assert_eq!(stop_time([Some(2), None]), Duration::from_secs(15));
+    }
+
+    #[test]
+    fn an_update_that_asks_for_more_waits_for_a_yes_unless_a_person_gave_it_for_tonight() {
+        let more = vec!["network".to_string()];
+        let nothing: Vec<String> = Vec::new();
+        let by_itself = How { yes: true, update: true, automatic: true, ..How::default() };
+        let asked = How { update: true, ..How::default() };
+        let night = How { update: true, tonight: Some(1000), ..How::default() };
+        let night_yes = How { yes: true, ..night };
+        let checked = How { dry: true, ..night };
+        // Updating by itself waits for more, even with its own yes.
+        assert!(waits_for_yes(&by_itself, &more));
+        // A person at a terminal is shown the sheet instead.
+        assert!(!waits_for_yes(&asked, &more));
+        // Asked for tonight, it waits unless the person accepted what it asks for.
+        assert!(waits_for_yes(&night, &more));
+        assert!(!waits_for_yes(&night_yes, &more));
+        // One that asks for nothing more is installed whichever way.
+        for how in [by_itself, asked, night, night_yes, checked] {
+            assert!(!waits_for_yes(&how, &nothing));
+        }
+        // Looking at what it asks for, to queue it, is not waiting.
+        assert!(!waits_for_yes(&checked, &more));
+    }
+
+    /// A folder of a test with a folder in it for each of `folders`, which
+    /// holds a file `version` with the text given.
+    fn places(name: &str, folders: &[(&str, &str)]) -> (std::path::PathBuf, Dir) {
+        let path = std::env::temp_dir().join(format!("bundled-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).unwrap();
+        for (folder, version) in folders {
+            fs::create_dir_all(path.join(folder)).unwrap();
+            fs::write(path.join(folder).join("version"), version).unwrap();
+        }
+        let dir = Dir::open(path.to_str().unwrap()).unwrap();
+        (path, dir)
+    }
+
+    fn version_in(path: &Path, folder: &str) -> Option<String> {
+        fs::read_to_string(path.join(folder).join("version")).ok()
+    }
+
+    #[test]
+    fn a_switch_leaves_the_old_version_alone_or_the_new_one_in_place_and_the_old_beside_it() {
+        let id = "org.example.notes";
+        let (path, dir) = places("switch", &[(id, "1.0.0"), (".installing-1", "1.1.0")]);
+        let shown = path.to_str().unwrap();
+        // The folder to switch in is not there: the old stays where it was
+        // and nothing of it is kept beside it.
+        assert!(switch_in(&dir, shown, ".installing-none", id).is_err());
+        assert_eq!(version_in(&path, id).as_deref(), Some("1.0.0"));
+        assert_eq!(version_in(&path, &previous_name(id)), None);
+        assert!(path.join(".installing-1").exists());
+        // The new one in place, and the old kept as the version it replaced.
+        switch_in(&dir, shown, ".installing-1", id).unwrap();
+        assert_eq!(version_in(&path, id).as_deref(), Some("1.1.0"));
+        assert_eq!(version_in(&path, &previous_name(id)).as_deref(), Some("1.0.0"));
+        assert!(!path.join(".installing-1").exists());
+        let _ = fs::remove_dir_all(path);
     }
 }

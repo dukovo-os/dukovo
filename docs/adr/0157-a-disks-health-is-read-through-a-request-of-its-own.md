@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0157. A disk's health is read through a request of its own
 
-- Status: Accepted
+- Status: Accepted; a SATA disk in standby is not read, and diskhealth looks every 10 minutes, since [0566](0566-alerts-reach-a-browser-by-web-push-encrypted-for-it-and-signed-with-the-machine-s-own-key.md)
 - Date: 2026-10-29
 
 ## Context

@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0532. report shows every byte, and hands a report to a stick or a phone
 
-- Status: Accepted
+- Status: Accepted; the web console hands a report to a phone through its own port since [0568](0568-reportd-keeps-a-draft-for-the-web-console-which-cuts-its-lines-and-hands-it-to-a-phone-once.md)
 - Date: 2026-11-13
 
 ## Context

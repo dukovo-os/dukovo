@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0485. Alerts reach the owner by notice, email and webhooks
 
-- Status: Accepted
+- Status: Accepted; alerts also reach a browser by Web Push, and a channel can be told of some kinds of alert only, since [0566](0566-alerts-reach-a-browser-by-web-push-encrypted-for-it-and-signed-with-the-machine-s-own-key.md)
 - Date: 2026-11-13
 
 ## Context

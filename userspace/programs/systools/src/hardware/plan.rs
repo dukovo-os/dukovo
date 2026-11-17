@@ -31,6 +31,8 @@ pub(crate) struct Options {
     pub(crate) time: Option<u64>,
     pub(crate) yes: bool,
     pub(crate) json: bool,
+    /// Whether each check that ends says how far the run is.
+    pub(crate) progress: bool,
 }
 
 /// What a run does.

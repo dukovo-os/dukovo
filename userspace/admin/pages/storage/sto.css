@@ -21,7 +21,7 @@
 .sto-card .stat, .sto-io .stat { display: flex; flex-direction: column; gap: .143rem; }
 .sto-card .stat b, .sto-io .stat b { font: 600 1.571rem/1.2 var(--font-ui); }
 .sto-card .stat span, .sto-io .stat span { color: var(--muted); font-size: .857rem; }
-/* A meter of use does not move: the stripes of console.css are for progress. */
+/* A meter of use does not move: the stripes of the progress bar are for work under way. */
 .sto-meter i { background-image: linear-gradient(var(--accent), var(--accent)); animation: none; }
 
 /* The chart's own rules, which the Overview's sheet holds for its page. */

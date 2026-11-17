@@ -11,7 +11,7 @@ import { setUnlockSeconds } from '../unlock.js';
 import {
   account, lastlog, NOW, people, peopleAsAPerson, rules, sessionsAnswer, shown, time,
 } from './accounts-fixtures.mjs';
-import { Element, usePage } from './fake-dom.mjs';
+import { usePage } from './fake-dom.mjs';
 
 /** Lets what is waiting on a promise run, as a click does. */
 export const settle = async () => {
@@ -57,14 +57,6 @@ export async function openAccounts(context, {
   const page = usePage(context);
   // The words of "Today" and "Yesterday" are of the day the fixtures are made on.
   context.mock.method(Date, 'now', () => NOW);
-  // A sheet that is linked loads at once, as the console's own do.
-  const head = new Element('head', page.document);
-  const append = head.append.bind(head);
-  head.append = (...nodes) => {
-    append(...nodes);
-    for (const node of nodes) if (node.tag === 'link') setImmediate(() => node.fire('load'));
-  };
-  page.document.head = head;
   setUnlockSeconds(unlocked ? 900 : null);
   const controller = new AbortController();
   context.after(() => {

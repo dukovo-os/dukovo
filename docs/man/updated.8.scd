@@ -20,7 +20,11 @@ canary, it checks for a newer system, firmware set and apps, as
 
 - By default (*check = "notify"*, *apps = "notify"*) it tells whoever is
   signed in, on each console, that an update is ready and that
-  *elevate update apply* stages it. It changes nothing.
+  *elevate update apply* stages it. It changes nothing. An update put
+  off with *update later* (*update*(8)) is left out of the notice until
+  its time comes, or a newer release or an advisory ends it; when
+  every update is put off, there is no notice. The notice of a critical
+  or high advisory whose fix is not staged is never put off.
 - *check = "download"* fetches the system update first, so that staging
   it later needs no network.
 - *apps = "auto"* updates the apps installed for everyone by itself.
@@ -66,6 +70,13 @@ Whatever the settings, a staged release that the release keys withdraw
 is unstaged at the next check, and the console says so: it is never
 tried (ADR 0469).
 
+Each check ends by keeping what it found, as *update check --json*
+says it, in _/system/state/sysupdate/last-check.json_, which *update
+last* reads: the web console shows it when it opens, so that a page does
+not ask the update server. The record is replaced whole, so that a
+reader finds the last one or the one before. A check that cannot be
+kept says so in the log and goes on.
+
 It never restarts the machine otherwise. What it does goes to the log
 under *updated*, and what it tells goes to *notifyd*(8).
 
@@ -86,6 +97,14 @@ does not, is described in *dukovo-privacy*(7).
 
 _/system/settings/sysupdate/updates.toml_
 	What it does (*updates.toml*(5)).
+
+_/system/state/sysupdate/last-check.json_
+	What the last check found, one line, written after each check
+	(*update*(8), *update last*).
+
+_/system/state/sysupdate/later.json_
+	The updates put off, which *update later* writes and each daily
+	check reads, with the advisories it reads in the same round.
 
 _/system/live/netd/metered_
 	Whether the connection is metered, which *netd*(8) writes; updated

@@ -61,7 +61,8 @@ test('the pages a person may see are rows, with their children and sections, and
     'Your account', 'Your account › Display', 'Your account › Time zone', 'Your account › Second step', 'Your account › API tokens',
     'Terminal', 'Terminal › Sessions', 'Terminal › Terminal settings', 'Terminal › Terminal keys',
     'Services', 'Services › Scheduled tasks',
-    'Security',
+    'Apps', 'Certificates', 'Security', 'Hardware', 'Updates', 'Report a problem', 'Alerts',
+    'Add an app', 'Websites', 'Databases',
   ]);
   const terminal = rows.find((one) => one.title === 'Terminal › Terminal keys');
   assert.deepEqual(terminal, {
@@ -72,7 +73,9 @@ test('the pages a person may see are rows, with their children and sections, and
   const shown = new Set(rows.map((one) => one.target.path.split('#')[0]));
   assert.equal(shown.has('/welcome'), false, 'the welcome page is shown once and not found');
   assert.equal(shown.has('/services'), true);
-  assert.equal(shown.has('/certificates'), false, 'a folder of parts only has no page to go to');
+  assert.equal(shown.has('/certificates'), true);
+  const folder = { id: 'folder', title: 'Folder', path: '/folder', load: null, needs: 'person' };
+  assert.deepEqual(pageRows([folder], admin), [], 'a folder of parts only has no page to go to');
 });
 
 test('a reader does not find the administrators\' pages, and a person with no terminal does not find the terminal', () => {
@@ -94,7 +97,8 @@ test('whether an address is a page that is registered and that this person may s
   assert.equal(reaches(PAGES, admin, '/account#display'), true);
   assert.equal(reaches(PAGES, admin, '/?x=1'), true);
   assert.equal(reaches(PAGES, admin, '/services/nginx'), true);
-  assert.equal(reaches(PAGES, admin, '/certificates'), false, 'a folder of parts only is no page');
+  assert.equal(reaches(PAGES, admin, '/certificates'), true);
+  assert.equal(reaches([{ id: 'folder', path: '/folder', load: null, needs: 'person' }], admin, '/folder'), false, 'a folder of parts only is no page');
   assert.equal(reaches(PAGES, admin, '/setup'), true);
   assert.equal(reaches(PAGES, reader, '/setup'), false);
   assert.equal(reaches(PAGES, reader, '/terminal'), false);
@@ -105,7 +109,7 @@ test('whether an address is a page that is registered and that this person may s
 
 test('each action admind lists is a row, with who runs it and an icon of its area', () => {
   const rows = actionRows(ACTIONS);
-  assert.equal(rows.length, 108);
+  assert.equal(rows.length, 200);
   const restart = rows.find((one) => one.key === 'action:service.restart');
   assert.deepEqual(restart, {
     key: 'action:service.restart', kind: 'action', group: ACTIONS_GROUP, title: 'Restart a service', detail: '',
@@ -118,6 +122,8 @@ test('each action admind lists is a row, with who runs it and an icon of its are
   assert.equal(rows.find((one) => one.key === 'action:checks.last').icon, 'security');
   assert.equal(rows.find((one) => one.key === 'action:console.about').icon, 'info');
   assert.equal(rows.find((one) => one.key === 'action:metrics.now').icon, 'reliability');
+  assert.equal(rows.find((one) => one.key === 'action:databases.add').icon, 'db');
+  assert.deepEqual(rows.filter((one) => one.icon === 'code').map((one) => one.key), [], 'each area admind has has its own icon');
   const all = rows.find((one) => one.key === 'action:logs.read-all');
   assert.deepEqual([all.icon, all.change, all.elevated], ['logs', false, true]);
   const set = rows.find((one) => one.key === 'action:network.set');
@@ -174,8 +180,8 @@ test('a thing goes to its page when that page is registered, and to its action w
       groups: [{
         group: 'Pages', kind: 'page-thing', items: [
           { key: 'a', title: 'Account', href: '/account', action: 'service.explain', args: { name: 'a' } },
-          { key: 'b', title: 'Certificates', href: '/certificates', action: 'service.explain', args: { name: 'b' } },
-          { key: 'c', title: 'Nothing yet', href: '/certificates/c' },
+          { key: 'b', title: 'Nowhere', href: '/nowhere', action: 'service.explain', args: { name: 'b' } },
+          { key: 'c', title: 'Nothing yet', href: '/nowhere/c' },
           { key: 'd', title: 'Only an action', action: 'service.restart' },
         ],
       }],
@@ -341,7 +347,7 @@ test('with nothing typed the recent rows are a group of their own, first; with s
   const made = index();
   applyRecent(made.rows, ['thing:service:nginx', 'page:/account']);
   // The list is cut at fifty rows, and the actions are more than that.
-  const empty = groupResults(made, find(made, '', 200), '');
+  const empty = groupResults(made, find(made, '', 400), '');
   assert.deepEqual(empty.map((group) => group.label), [RECENT_GROUP, 'Actions', 'Services', 'Certificates', 'Settings and pages']);
   assert.deepEqual(titles(empty[0].results), ['nginx', 'Your account'], 'in the order they were used');
   assert.equal(empty.find((group) => group.label === 'Services').results.some((one) => one.row.title === 'nginx'), false, 'and not twice');
@@ -353,9 +359,10 @@ test('with nothing typed the recent rows are a group of their own, first; with s
 test('groups come in the order of the index with no empty group, and the arrow keys walk them in that order', () => {
   const made = index();
   // "nginx" in full: a shorter word is found in the words of other actions too ("ngi" in "connection against the firewall").
+  // The Websites page lists it as a keyword, so its row comes last, in the pages' group.
   const groups = groupResults(made, find(made, 'nginx'), 'nginx');
-  assert.deepEqual(groups.map((group) => group.label), ['Actions', 'Services']);
-  assert.deepEqual(flatten(groups).map((one) => one.row.title), ['Start nginx', 'Restart nginx', 'Explain nginx', 'nginx']);
+  assert.deepEqual(groups.map((group) => group.label), ['Actions', 'Services', 'Settings and pages']);
+  assert.deepEqual(flatten(groups).map((one) => one.row.title), ['Start nginx', 'Restart nginx', 'Explain nginx', 'nginx', 'Websites']);
   assert.deepEqual(groupResults(made, [], 'zzzz'), []);
   assert.deepEqual(flatten([]), []);
 });

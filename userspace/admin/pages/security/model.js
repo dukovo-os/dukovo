@@ -30,7 +30,7 @@ function namesBefore(detail, ending) {
 const link = (label, href) => ({ kind: 'link', label, href });
 const how = (words, command = null) => ({ kind: 'how', label: 'Show how', words, command });
 
-/** The disk checks of the hardware check, which Storage shows until the Hardware page is in the console. */
+/** The disk checks of the hardware check, which Storage shows to a console that has no Hardware page. */
 const DISK_CHECKS = /^HW-11\d$/;
 
 /** The warnings that name a disk or a filesystem, which Storage shows. */
@@ -69,6 +69,7 @@ export function fixesFor(finding, has) {
       return names.length === 0 ? [link('See the services', '/services')] : names.map((name) => link(names.length === 1 ? 'See it' : `See ${name}`, serviceHref(name)));
     }
     case 'SEC-160': return [link('Snapshots', '/snapshots')];
+    case 'SEC-170': return [link('Where alerts go', '/alerts')];
     default: break;
   }
   if (typeof id === 'string' && STORAGE_CHECKS.test(id)) return [link('See it', '/storage')];

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 // What the shell tells a page: 'task', 'change', 'unlock', 'session',
-// 'trial', 'online' and 'route'. A page listens with `view.on`, which ends
+// 'trial', 'power', 'online' and 'route'. A page listens with `view.on`, which ends
 // with its signal.
 
 /** A small bus of named events. */

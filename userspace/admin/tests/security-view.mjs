@@ -11,7 +11,7 @@ import { setUnlockSeconds } from '../unlock.js';
 import {
   accounts, blocked, kept, lastlog, network, NOW, settings, sparkIdle, ssh, time, wireguard,
 } from './security-fixtures.mjs';
-import { Element, usePage } from './fake-dom.mjs';
+import { usePage } from './fake-dom.mjs';
 
 /** Lets what is waiting on a promise run, as a click does. */
 export const settle = async () => {
@@ -131,8 +131,6 @@ export async function openSecurity(context, {
     delete globalThis.location;
     setUnlockSeconds(null);
   });
-  const head = new Element('head', page.document);
-  page.document.head = head;
   setUnlockSeconds(unlocked ? 900 : null);
   const controller = new AbortController();
   context.after(() => controller.abort());

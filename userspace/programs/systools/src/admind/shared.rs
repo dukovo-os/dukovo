@@ -42,7 +42,7 @@ use super::tasks::Tasks;
 use super::terminal::Terminals;
 use super::terminal::protocol::Why;
 use super::tls::Certificate;
-use super::trials::{self, Trials};
+use super::trials::{self, Power, Trials};
 use super::websocket::Code;
 use super::who::Sources;
 use crate::admin_settings::Settings;
@@ -70,9 +70,11 @@ pub struct Identity {
 
 impl Identity {
     /// What a machine called `host`, with cards on `networks` and a
-    /// certificate for `certificate`, answers to.
+    /// certificate for `certificate`, answers to: the names its own
+    /// certificate holds ([`machine::names`]), whichever certificate it
+    /// serves, and the served certificate's.
     pub fn new(host: &str, networks: Vec<Network>, certificate: &[String]) -> Identity {
-        let mut names = vec![host.to_string(), format!("{host}.local"), String::from("localhost")];
+        let mut names = machine::names(host);
         let mut addresses: Vec<IpAddr> =
             networks.iter().map(|network| reach::plain(network.ip)).collect();
         for name in certificate {
@@ -194,12 +196,25 @@ pub struct Shared {
     pub trials: RefCell<Trials>,
     /// Spark's read socket: [`trials::READ`], or a test's own.
     pub spark: Cell<&'static str>,
+    /// The restart or shut down that is set, as Spark last said
+    /// (ADR 0565).
+    pub power: RefCell<Power>,
+    /// The command that says whether the search for a bad change runs,
+    /// which a restart is refused during: [`SEARCH`], or a test's own.
+    pub search: Cell<&'static [&'static str]>,
+    /// The one-time links to reports' texts (ADR 0568).
+    pub once: super::once::Links,
     /// How the machine's names and addresses are read, given the
     /// certificate's names: [`Identity::read`], or a test's own.
     pub reads_identity: Cell<fn(&[String]) -> Identity>,
     /// When [`Shared::identity`] was last read.
     pub identity_read: Cell<Instant>,
 }
+
+/// `changes bisect --status --json`, which says whether the search for a
+/// bad change runs (`running`). It runs as the caller's administrator:
+/// the search's state is not admind's to read.
+pub const SEARCH: &[&str] = &["changes", "bisect", "--status", "--json"];
 
 impl Shared {
     /// What admind starts with, asking the authd at `authd`.
@@ -238,6 +253,9 @@ impl Shared {
             follows: RefCell::default(),
             trials: RefCell::default(),
             spark: Cell::new(trials::READ),
+            power: RefCell::default(),
+            search: Cell::new(SEARCH),
+            once: super::once::Links::default(),
             reads_identity: Cell::new(Identity::read),
             identity_read: Cell::new(Instant::now()),
         })
@@ -341,10 +359,15 @@ impl Shared {
         };
         let mut terminals = self.terminals.borrow_mut();
         terminals.close_session(&authd, code);
-        terminals.end_admin_panes(&authd, why);
+        // Held until authd has ended their shells, for its audit.
+        let panes = terminals.close_admin_panes(&authd, why);
         drop(terminals);
         self.changes.send_replace(());
-        tokio::task::spawn_local(tell_end(self.authd.clone(), authd, by.map(String::from)))
+        let told = tell_end(self.authd.clone(), authd, by.map(String::from));
+        tokio::task::spawn_local(async move {
+            told.await;
+            drop(panes);
+        })
     }
 
     /// Keeps `session` and gives the cookie that names it. When the
@@ -480,6 +503,13 @@ mod tests {
         );
         assert_eq!(identity.addresses, [ip("192.168.1.10"), ip("fd00::10"), ip("10.0.0.5")]);
         assert_eq!(identity.networks, cards);
+        // With a domain, the first word and its `.local` name too, whose
+        // own certificate is another's.
+        let identity = Identity::new("duke-nas.example.org", cards, &["shop.example.org".into()]);
+        assert_eq!(
+            identity.names,
+            ["duke-nas.example.org", "duke-nas", "duke-nas.local", "localhost", "shop.example.org"]
+        );
     }
 
     #[test]

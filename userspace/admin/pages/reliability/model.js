@@ -14,6 +14,7 @@ import {
   addDays, dayOf, dayStart, dayWords, timeOf,
 } from '../../lib/when-model.js';
 import { changeRow } from '../overview/change-model.js';
+import { HARDWARE_KIND, hardwareCell, hardwareEvents } from './hardware-row.js';
 import {
   msWords, resultOf, startHref, tryNumbers, updatesOf, versionWords,
 } from './starts-model.js';
@@ -95,6 +96,7 @@ export const KINDS = Object.freeze([
   { id: 'update', title: 'Updates' },
   { id: 'change', title: 'Changes' },
   { id: 'crash', title: 'Crashes' },
+  HARDWARE_KIND,
 ]);
 
 /** The most characters of an error's text that the day shows. */
@@ -123,10 +125,11 @@ const takenBack = (change) => change.how === 'undone' || change.action === 'chan
  * sub, ...}` with `at` in Unix milliseconds. A source that was not read
  * (a locked console, an error) is null, and has no events. `starts` are
  * newest first; `records` are the log's records; `changes` the journal's
- * rows; `dumps` what `dumps list` gives.
+ * rows; `dumps` what `dumps list` gives; `hardware` the checks of `hardware
+ * history`.
  */
 export function eventsOf({
-  starts, records, changes, dumps,
+  starts, records, changes, dumps, hardware,
 }, time) {
   const events = [];
   const tries = tryNumbers(starts ?? []);
@@ -157,6 +160,7 @@ export function eventsOf({
       kind: 'crash', at: dump.at_ms, dot: 'bad', title: 'The kernel crashed', sub: dump.first_line ?? '',
     });
   }
+  events.push(...hardwareEvents(hardware));
   return events;
 }
 
@@ -184,6 +188,7 @@ function cellOf(kind, list) {
   if (kind === 'error') return { count, dot: 'warn', words: counted(count, 'error') };
   if (kind === 'update') return { count, dot: 'info', words: counted(count, 'update') };
   if (kind === 'crash') return { count, dot: 'bad', words: counted(count, 'crash', 'crashes') };
+  if (kind === HARDWARE_KIND.id) return hardwareCell(list);
   const failed = howMany((event) => event.failed);
   const back = howMany((event) => event.taken);
   const words = [counted(count, 'change'), failed > 0 && `${failed} did not work`, back > 0 && `${back} taken back`].filter(Boolean).join(', ');
@@ -263,8 +268,8 @@ export const TIMELINE_MAX = 100;
  */
 export function timelineOf(group) {
   const items = [];
-  for (const kind of ['start', 'update', 'change', 'crash']) {
-    for (const event of group[kind]) items.push({ at: event.at, dot: event.dot, title: event.title, sub: event.sub, href: event.href ?? null });
+  for (const kind of ['start', 'update', 'change', 'crash', HARDWARE_KIND.id]) {
+    for (const event of group[kind]) items.push({ at: event.at, dot: event.dot, title: event.title, sub: event.sub, href: event.href ?? null, link: event.link ?? 'Open the start' });
   }
   const byService = new Map();
   for (const event of group.error) {
@@ -281,6 +286,37 @@ export function timelineOf(group) {
   }
   items.sort((a, b) => a.at - b.at);
   return { items: items.slice(-TIMELINE_MAX), left: Math.max(0, items.length - TIMELINE_MAX) };
+}
+
+// ---- Save as report ----------------------------------------------------------
+
+/**
+ * What the range holds, for a report: "Reliability, Nov 8 to 14: 2 failed
+ * starts, 1 crash". `problems` is `problemsOf`'s and `buckets` the range's.
+ */
+export function summaryWords(problems, buckets) {
+  const from = buckets[0].short;
+  const to = buckets.at(-1).short;
+  const sum = (name) => problems.reduce((total, one) => total + one[name], 0);
+  const counts = [
+    [sum('failed'), 'failed start'], [sum('crashes'), 'crash', 'crashes'], [sum('errors'), 'error in the log', 'errors in the log'],
+  ].filter(([count]) => count > 0).map(([count, one, many]) => counted(count, one, many));
+  // Days of one month say the month once.
+  const [month, day] = to.split(' ');
+  const end = from.startsWith(`${month} `) && /^\d+$/.test(day) ? day : to;
+  return `Reliability, ${from} to ${end}: ${counts.join(', ') || 'no failed start, crash or error'}`;
+}
+
+/**
+ * Where Save as report leads: Report a problem about the failed start when
+ * the one the machine keeps (`failed`, the member of `starts --failed`'s
+ * answer, or null) fell in the range, and about "other" with the range's
+ * summary in its note when not.
+ */
+export function reportHref(failed, problems, buckets) {
+  const at = failed?.at_ms;
+  if (failed && (!Number.isFinite(at) || (at >= buckets[0].since && at < buckets.at(-1).until))) return '/report?about=failure';
+  return `/report?${new URLSearchParams({ about: 'other', note: summaryWords(problems, buckets) })}`;
 }
 
 // ---- crashes and alerts ------------------------------------------------------

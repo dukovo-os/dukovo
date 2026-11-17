@@ -1410,9 +1410,12 @@ fn health(device: &DeviceRef, argument: u64) -> Result<(), Status> {
             (request::HEALTH_ATA, request::HEALTH_SMART_OFF)
         }
         Health::Nvme => {
-            page.bytes_mut()[512..1024].fill(0);
+            // Its temperature limits are at 512 to 515.
+            page.bytes_mut()[516..1024].fill(0);
             (request::HEALTH_NVME, 0)
         }
+        // A disk in standby is not woken to be read.
+        Health::Asleep => return Err(Kernel::WouldBlock.status(0)),
     };
     let mut head = [0u8; 8];
     head[..4].copy_from_slice(&kind.to_le_bytes());
@@ -1449,7 +1452,7 @@ fn self_test(device: &DeviceRef, argument: u64, may_write: bool) -> Result<(), S
     let state = device.self_test(test, &mut page).map_err(block_status)?;
     let kind = match state.kind {
         Health::Nvme => request::HEALTH_NVME,
-        Health::Ata | Health::AtaOff => request::HEALTH_ATA,
+        Health::Ata | Health::AtaOff | Health::Asleep => request::HEALTH_ATA,
     };
     let mut head = [0u8; 16];
     head[..4].copy_from_slice(&kind.to_le_bytes());

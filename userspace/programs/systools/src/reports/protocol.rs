@@ -8,14 +8,20 @@
 //! | ask       | with                          | answer                                  |
 //! |-----------|-------------------------------|-----------------------------------------|
 //! | `crashes` |                               | a [`Crash`] a line, newest first, then [`End`] |
-//! | `draft`   | `about`, `answers`, `without_logs` | [`Drafted`]                        |
-//! | `redact`  | `text`                        | [`Drafted`]                             |
-//! | `send`    | `text`, `title`, `security`, `crash` | [`Sent`]                          |
+//! | `draft`   | `about`, `answers`, `without_logs`, `keep` | [`Drafted`]               |
+//! | `redact`  | `text`, or `draft`, `sha256` and `edits` | [`Drafted`]                  |
+//! | `send`    | `text` or `draft` and `sha256`; `title`, `security`, `crash` | [`Sent`]  |
+//! | `text`    | `draft`, `sha256`             | [`KeptText`]                            |
 //! | `queue`   |                               | a [`Waiting`] a line, then [`End`]      |
 //! | `retry`   |                               | a [`Sent`] a line, one per report tried, then [`End`] |
 //! | `status`  | `number` (all when none)      | a [`Status`] a line, then [`End`]       |
 //! | `delete`  | `number`                      | [`Done`]                                |
 //! | `forget`  | `crash`                       | [`Done`]                                |
+//!
+//! A draft asked for with `keep` is kept by reportd for the person who
+//! asked (ADR 0568), by the ID and hash its answer gives: `send` sends it
+//! as kept, `text` gives it back, and `redact` with a draft applies a list
+//! of [`Edits`] to it as reportd drafted it.
 //!
 //! A request reportd does not take is answered with a [`Refusal`].
 //! reportd knows who asks from the kernel (`SO_PEERCRED`), never from the
@@ -37,6 +43,12 @@ pub const REQUEST_MAX: usize = TEXT_MAX * 2;
 /// The longest a title may be, in characters: the start of the first
 /// answer, kept on the machine to name the report.
 pub const TITLE_MAX: usize = 80;
+/// The longest an answer may be, in characters.
+pub const ANSWER_MAX: usize = 2000;
+/// The most cuts a list of edits may hold, and the most bytes it may be
+/// as JSON: a thousand cuts of words and three whole answers fit.
+pub const CUTS_MAX: usize = 1000;
+pub const EDITS_MAX: usize = 64 * 1024;
 
 /// What a report is about.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +105,20 @@ pub struct Request {
     /// draft: leave out the log and the failed start's log lines.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub without_logs: bool,
+    /// draft: keep the draft, for `send`, `text` and `redact` to name.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub keep: bool,
+    /// send, text and redact: the ID of a draft reportd keeps for the
+    /// asker, in place of a text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub draft: Option<String>,
+    /// send, text and redact: the SHA-256 of the draft's text as the
+    /// person read it, in hex.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    /// redact: the person's changes to the draft, the whole list each time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edits: Option<Edits>,
     /// redact: the text the person edited; send: the exact bytes they
     /// saw, sent as they are.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -174,6 +200,103 @@ pub struct Crash {
     pub reported: Option<u64>,
 }
 
+/// A person's changes to a draft reportd keeps, against the draft as it
+/// was drafted: the whole list each time.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Edits {
+    /// The cuts of the lines the system gathered.
+    #[serde(default)]
+    pub cuts: Vec<Cut>,
+    /// The person's answers, in place of those drafted; none keeps them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answers: Option<Answers>,
+}
+
+/// A cut: the whole line `line` of `section` (to `through`, when given),
+/// or the characters `from` to `to` of it, which become `[cut]`. Lines
+/// count from 0 within their section, and characters are Unicode scalar
+/// values, from 0, as the text reportd answered has them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Cut {
+    /// `crash`, `failed-start`, `log` or `start-log`.
+    pub section: String,
+    pub line: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub through: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<usize>,
+    /// Never taken: a line the system gathered is cut, not typed into
+    /// (RPT-105). Read only to refuse it with its own words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+/// How many of each mark a text holds: what redaction took out, by kind,
+/// and what the person cut.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CutBy {
+    pub user: u32,
+    pub host: u32,
+    pub ipv4: u32,
+    pub ipv6: u32,
+    pub mac: u32,
+    pub email: u32,
+    pub wifi: u32,
+    pub serial: u32,
+    pub machine: u32,
+    /// The lines and the parts of lines the person cut.
+    pub you: u32,
+}
+
+impl CutBy {
+    /// The marks redaction put, of every kind.
+    pub fn total(&self) -> u32 {
+        self.user
+            + self.host
+            + self.ipv4
+            + self.ipv6
+            + self.mac
+            + self.email
+            + self.wifi
+            + self.serial
+            + self.machine
+    }
+}
+
+/// What the person cut of a draft.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CutByYou {
+    /// Whole lines.
+    pub lines: u32,
+    /// Words of a line, each run counted once.
+    pub parts: u32,
+}
+
+/// Where a section of a kept draft's text is: its ID (`head`, `happened`,
+/// `expected`, `again`, `crash`, `failed-start`, `log`, `start-log`), its
+/// title, the line of the text its first line is (from 0, after its
+/// heading), and how many lines it has.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Place {
+    pub id: String,
+    pub title: String,
+    pub first_line: usize,
+    pub lines: usize,
+}
+
+/// A part of a report and its size in bytes, with its heading.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Size {
+    pub title: String,
+    pub bytes: usize,
+}
+
 /// A drafted or redacted text.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Drafted {
@@ -183,6 +306,34 @@ pub struct Drafted {
     pub cuts: u32,
     /// Whether the text has a log section that `without_logs` leaves out.
     pub has_logs: bool,
+    /// The marks in the text, by kind.
+    #[serde(default)]
+    pub cut_by: CutBy,
+    /// A kept draft's ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<String>,
+    /// A kept draft's text's SHA-256, in hex.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    /// A kept draft's parts and their sizes: what the computer says of
+    /// itself, the answers, and each section the system gathered.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<Size>,
+    /// Where each section of a kept draft starts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sections: Vec<Place>,
+    /// Where the answers the person typed are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub typed: Vec<Place>,
+    /// What the person cut of a kept draft.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut_by_you: Option<CutByYou>,
+}
+
+/// A kept draft's text, as `text` gives it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptText {
+    pub text: String,
 }
 
 /// What became of a report the person sent.

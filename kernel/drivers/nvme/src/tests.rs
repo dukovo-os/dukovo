@@ -279,6 +279,9 @@ impl State {
                         let oacs = (1u16 << 4) | if self.offers_shadow { 1u16 << 8 } else { 0 };
                         data[256..258].copy_from_slice(&oacs.to_le_bytes());
                         data[316..318].copy_from_slice(&25u16.to_le_bytes());
+                        // Too warm at 70 °C, in danger at 85 °C.
+                        data[266..268].copy_from_slice(&343u16.to_le_bytes());
+                        data[268..270].copy_from_slice(&358u16.to_le_bytes());
                         data[516..520].copy_from_slice(&8u32.to_le_bytes());
                         data[520..522].copy_from_slice(&(1u16 << 2).to_le_bytes());
                         data[525] = u8::from(self.write_cache);
@@ -665,6 +668,7 @@ fn starts_self_tests_and_reads_their_log() {
     let (sim, mut nvme) = setup();
     assert!(nvme.identity().self_test);
     assert_eq!(nvme.identity().extended_test_minutes, 25);
+    assert_eq!((nvme.identity().warning_kelvin, nvme.identity().critical_kelvin), (343, 358));
     for code in [command::SHORT_SELF_TEST, command::ABORT_SELF_TEST] {
         nvme.self_test(&mut |_| {}, code).unwrap();
         let &(queue, opcode, namespace, [cdw10, ..]) = sim.state().commands.last().unwrap();

@@ -199,12 +199,14 @@ struct Shared {
 /// the host's loopback, which the machine reaches as 10.0.2.2, and, when
 /// asked, the path canaries post their reports to. It stops when dropped.
 pub(crate) struct Server {
+    /// The port of the host's loopback it answers on.
     pub(crate) port: u16,
     stop: Arc<AtomicBool>,
     shared: Arc<Shared>,
 }
 
 impl Server {
+    /// Starts serving `repo` as `/system/`.
     pub(crate) fn start(repo: &Path) -> Result<Server, String> {
         let listener = TcpListener::bind("127.0.0.1:0")
             .map_err(|err| format!("no port for the update server: {err}"))?;

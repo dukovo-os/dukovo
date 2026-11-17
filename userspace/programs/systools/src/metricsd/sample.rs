@@ -6,7 +6,8 @@
 //!
 //! A [`Reader`] reads everything once into a [`Snapshot`]: the CPUs' times,
 //! the load, memory, each disk's, card's and filesystem's numbers, the
-//! temperatures, what each service uses, and each Btrfs volume's missing
+//! temperatures (the disks' from what diskhealth(8) last read, never from
+//! the disks), what each service uses, and each Btrfs volume's missing
 //! disks. [`series`] turns the snapshot and the one before it into the
 //! history's rows, the names and units of which are in metricsd(8), and
 //! the Prometheus endpoint writes a snapshot out as it is. The files read
@@ -28,6 +29,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::diskhealth::{self, Live};
 use crate::proc::{self, CpuTimes, Memory, Process};
 use crate::sensors::{self, Kind};
 use crate::util;
@@ -45,6 +47,8 @@ pub struct Sources {
     pub kernel: PathBuf,
     /// Where Spark reads the service files, whose names are the services'.
     pub services: PathBuf,
+    /// Where diskhealth(8) writes what it read of each disk.
+    pub diskhealth: PathBuf,
 }
 
 impl Sources {
@@ -54,6 +58,7 @@ impl Sources {
             processes: PathBuf::from(proc::PROC),
             kernel: PathBuf::from("/kernel"),
             services: PathBuf::from("/system/settings/spark/services"),
+            diskhealth: PathBuf::from(diskhealth::LIVE),
         }
     }
 }
@@ -107,26 +112,48 @@ pub struct Network {
     pub tx_dropped: u64,
 }
 
-/// A temperature of a hardware monitor chip, in degrees Celsius, with its
-/// limits where the sensor gives them.
+/// The chip a disk's temperature is under, in its series and its alert's
+/// key.
+pub const DISK_CHIP: &str = "disk";
+
+/// A temperature of a hardware monitor chip or of a disk, in degrees
+/// Celsius, with its limits where the sensor gives them.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Temperature {
-    /// The chip as `sensors` names it: `k10temp-pci-00c3`.
+    /// The chip as `sensors` names it: `k10temp-pci-00c3`; for a disk,
+    /// [`DISK_CHIP`].
     pub chip: String,
-    /// The sensor's file name: `temp1`.
+    /// The sensor's file name: `temp1`; for a disk, its name.
     pub sensor: String,
-    /// Its label, or its file name when it has none.
+    /// Its label, or its file name when it has none; for a disk, its name.
     pub label: String,
     pub celsius: f64,
     pub max: Option<f64>,
     pub crit: Option<f64>,
+    /// The temperature a disk is warned of at, which a hardware monitor
+    /// does not give.
+    pub warn: Option<f64>,
+    /// What the driver says a disk is, empty for a monitor and for a disk
+    /// that says nothing.
+    pub model: String,
 }
 
 impl Temperature {
     /// What its series is called: `chip/label`.
     pub fn instance(&self) -> String {
-        format!("{}/{}", self.chip, self.label)
+        sensor_instance(&self.chip, &self.label)
     }
+}
+
+/// What the series of a sensor of `chip` labelled `label` is called:
+/// `chip/label`.
+pub fn sensor_instance(chip: &str, label: &str) -> String {
+    format!("{chip}/{label}")
+}
+
+/// The series of a hardware monitor's sensor or a disk: `temp{chip/label}`.
+pub fn temperature_series(chip: &str, label: &str) -> String {
+    named("temp", &sensor_instance(chip, label))
 }
 
 /// A thermal zone of the firmware's.
@@ -230,7 +257,11 @@ impl Reader {
                 &fs::read(kernel.join("fs/space")).unwrap_or_default(),
             ),
             networks: read_networks(&kernel.join("class/net")),
-            temperatures: read_temperatures(&kernel.join("class/hwmon")),
+            temperatures: read_temperatures(
+                &kernel.join("class/hwmon"),
+                &self.sources.diskhealth,
+                u64::try_from(at).unwrap_or(0).saturating_mul(1000),
+            ),
             zones: read_zones(&kernel.join("class/thermal")),
             services: self.clock.count(&running, &names),
             volumes: read_volumes(&kernel.join("fs/btrfs")),
@@ -378,9 +409,13 @@ fn read_networks(net: &Path) -> Vec<Network> {
     networks
 }
 
+/// A disk's reading is used while it is no older than this.
+const DISK_FRESH_MS: u64 = 15 * 60 * 1000;
+
 /// The temperature sensors of the hardware monitors in `hwmon`, those
-/// that give a reading and do not say they are faulty.
-fn read_temperatures(hwmon: &Path) -> Vec<Temperature> {
+/// that give a reading and do not say they are faulty, and then the
+/// disks' from `diskhealth`.
+fn read_temperatures(hwmon: &Path, diskhealth: &Path, now_ms: u64) -> Vec<Temperature> {
     let mut temperatures = Vec::new();
     for chip in sensors::chips(hwmon) {
         for feature in sensors::features(&chip).into_iter().filter(|f| f.kind == Kind::Temp) {
@@ -395,16 +430,48 @@ fn read_temperatures(hwmon: &Path) -> Vec<Temperature> {
                 celsius,
                 max: feature.value(&chip, "max"),
                 crit: feature.value(&chip, "crit"),
+                ..Temperature::default()
             });
         }
     }
+    temperatures.extend(read_disk_temperatures(diskhealth, now_ms));
     temperatures
+}
+
+/// The temperatures of the disks diskhealth(8) has a file of in `dir`,
+/// those it read within 15 minutes of `now_ms` and that did not sleep
+/// since: a disk that sleeps is not read, so it has no value rather than a
+/// made-up one, and neither has one the service stopped looking at.
+fn read_disk_temperatures(dir: &Path, now_ms: u64) -> Vec<Temperature> {
+    let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
+    let mut found: Vec<Temperature> = entries
+        .flatten()
+        .filter(|entry| Path::new(&entry.file_name()).extension().is_some_and(|ext| ext == "json"))
+        .filter_map(|entry| {
+            let live: Live = serde_json::from_str(&fs::read_to_string(entry.path()).ok()?).ok()?;
+            let fresh = now_ms.saturating_sub(live.checked_ms) <= DISK_FRESH_MS;
+            let celsius =
+                live.summary.temperature_c.filter(|_| fresh && live.asleep_ms.is_none())?;
+            Some(Temperature {
+                chip: DISK_CHIP.to_string(),
+                sensor: live.summary.disk.clone(),
+                label: live.summary.disk,
+                celsius: celsius as f64,
+                max: None,
+                crit: live.limits.map(|limits| limits.critical_c as f64),
+                warn: live.limits.map(|limits| limits.warning_c as f64),
+                model: live.summary.model.unwrap_or_default(),
+            })
+        })
+        .collect();
+    found.sort_by(|a, b| a.sensor.cmp(&b.sensor));
+    found
 }
 
 /// The thermal zones of `thermal` that read, each called after its type.
 /// Machines often have several zones of one type, `acpitz`; those get
 /// their number as well, so that a zone is the same series each time.
-fn read_zones(thermal: &Path) -> Vec<Zone> {
+pub(crate) fn read_zones(thermal: &Path) -> Vec<Zone> {
     let Ok(entries) = fs::read_dir(thermal) else { return Vec::new() };
     let mut found: Vec<(u32, String, f64)> = entries
         .flatten()
@@ -502,7 +569,7 @@ fn parse_space(text: &[u8]) -> HashMap<Vec<u8>, (u64, u64)> {
 }
 
 /// `metric{instance}`.
-fn named(metric: &str, instance: &str) -> String {
+pub(crate) fn named(metric: &str, instance: &str) -> String {
     format!("{metric}{{{instance}}}")
 }
 
@@ -534,7 +601,7 @@ pub fn series(before: Option<&Snapshot>, now: &Snapshot) -> Vec<(String, f32)> {
     }
     network_rates(before, now, seconds, &mut row);
     for temperature in &now.temperatures {
-        row.push((named("temp", &temperature.instance()), temperature.celsius));
+        row.push((temperature_series(&temperature.chip, &temperature.label), temperature.celsius));
     }
     for zone in &now.zones {
         row.push((named("temp", &zone.instance), zone.celsius));
@@ -739,7 +806,7 @@ mod tests {
         put(&hwmon, "hwmon1/temp2_input", "0\n");
         put(&hwmon, "hwmon1/temp2_fault", "1\n");
         put(&hwmon, "hwmon1/fan1_input", "1190\n");
-        let found = read_temperatures(&hwmon);
+        let found = read_temperatures(&hwmon, &dir.join("none"), 0);
         assert_eq!(found.len(), 2, "a faulty sensor and a fan are left out");
         assert_eq!(found[0].instance(), "coretemp-isa-0000/Package id 0");
         assert_eq!(
@@ -763,6 +830,51 @@ mod tests {
         let said: Vec<(&str, f64)> =
             zones.iter().map(|z| (z.instance.as_str(), z.celsius)).collect();
         assert_eq!(said, [("zone/acpitz-0", 27.8), ("zone/acpitz-1", 30.0), ("zone/pch", 41.0)]);
+    }
+
+    #[test]
+    fn a_disks_temperature_is_read_while_it_is_fresh_and_awake() {
+        let dir = folder("disks");
+        let live = |disk: &str, temperature: &str, checked_ms: u64, asleep: &str, limits: &str| {
+            put(
+                &dir,
+                &format!("{disk}.json"),
+                &format!(
+                    "{{\"disk\":\"{disk}\",\"model\":\"WDC WD40\",\"serial\":null,\
+                     \"verdict\":\"passed\",\"reasons\":[],\"hours\":1,\
+                     \"temperature_c\":{temperature},\"moved\":null,\"waiting\":null,\
+                     \"offline\":null,\"media_errors\":null,\"used_percent\":null,\
+                     \"checked_ms\":{checked_ms},\"rose\":null,\"kind\":\"hdd\",\
+                     \"asleep_ms\":{asleep},\"limits\":{limits}}}\n"
+                ),
+            );
+        };
+        let now_ms: u64 = 1_794_564_000_000;
+        let limits = "{\"warning_c\":50,\"critical_c\":60,\"from\":\"kind\"}";
+        live("sda", "41", now_ms - 60_000, "null", limits);
+        // Read 16 minutes ago: the service stopped looking.
+        live("sdb", "42", now_ms - 16 * 60_000, "null", limits);
+        // Asleep since, and a disk that gives no temperature.
+        live("sdc", "43", now_ms - 60_000, &(now_ms - 30_000).to_string(), limits);
+        live("sdd", "null", now_ms - 60_000, "null", limits);
+        live("nvme0n1", "38", now_ms - 60_000, "null", "null");
+        put(&dir, "sde.json", "not json");
+        put(&dir, "sda.json.new", "half");
+        let found = read_disk_temperatures(&dir, now_ms);
+        let said: Vec<(&str, f64, Option<f64>, Option<f64>)> =
+            found.iter().map(|t| (t.sensor.as_str(), t.celsius, t.warn, t.crit)).collect();
+        assert_eq!(said, [("nvme0n1", 38.0, None, None), ("sda", 41.0, Some(50.0), Some(60.0))]);
+        assert_eq!(found[1].instance(), "disk/sda");
+        assert_eq!(found[1].model, "WDC WD40");
+        assert_eq!(temperature_series(&found[1].chip, &found[1].label), "temp{disk/sda}");
+        // A folder that is not there is no disks.
+        assert!(read_disk_temperatures(&dir.join("none"), now_ms).is_empty());
+        // The sensors and the disks come together, the monitors first.
+        put(&dir, "hwmon/hwmon0/name", "coretemp\n");
+        put(&dir, "hwmon/hwmon0/temp1_input", "44500\n");
+        let both = read_temperatures(&dir.join("hwmon"), &dir, now_ms);
+        let names: Vec<String> = both.iter().map(Temperature::instance).collect();
+        assert_eq!(names, ["coretemp-isa-0000/temp1", "disk/nvme0n1", "disk/sda"]);
     }
 
     #[test]
@@ -1075,7 +1187,8 @@ mod tests {
         put(&services, "settings.d/web.toml", "override\n");
         put(&kernel, "block/vda/stat", "1 0 2 3 4 0 5 6 0 7 8\n");
         put(&kernel, "fs/space", &format!("{} 4096 100 40 0 0\n", dir.display()));
-        let mut reader = Reader::new(Sources { processes, kernel, services });
+        let diskhealth = dir.join("no");
+        let mut reader = Reader::new(Sources { processes, kernel, services, diskhealth });
         let snapshot = reader.read();
         assert_eq!(snapshot.cpus.len(), 1);
         assert_eq!((snapshot.cpu.user_ns, snapshot.cpu.idle_ns), (10, 70));
@@ -1094,6 +1207,7 @@ mod tests {
             processes: dir.join("no"),
             kernel: dir.join("no"),
             services: dir.join("no"),
+            diskhealth: dir.join("no"),
         })
         .read();
         assert!(

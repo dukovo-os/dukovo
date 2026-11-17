@@ -41,7 +41,7 @@ use std::collections::BTreeMap;
 use serde_json::{Map, Value, json};
 use spark_api::trial;
 
-use super::actions::{self, Field, Registered, Runs, logs};
+use super::actions::{self, Field, Registered, Runs, Through, logs};
 use super::errors::Kind;
 use super::guard::{CSRF_HEADER, SESSION_COOKIE};
 use super::routes::{Access, Entry, Route, TABLE, Verb};
@@ -208,7 +208,7 @@ fn route_operation(entry: &Entry, actions: &[&dyn Registered]) -> Value {
         "summary": summary(entry.route),
         "tags": [tag(entry.access)],
         "security": security(entry.access, post),
-        "responses": responses(success_of(entry.route), &route_kinds(entry), &[]),
+        "responses": responses(success_of(entry.route), &route_kinds(entry), &[], &[]),
     });
     let parameters: Vec<Value> =
         parameters_of(entry.path).map(|name| id_parameter(name, entry.path)).collect();
@@ -272,7 +272,12 @@ fn action_operation(action: &dyn Registered) -> Value {
         "description": describe(action),
         "tags": [tag(Access::Api)],
         "security": security(Access::Api, action.posts()),
-        "responses": responses(action_success(action), &action_kinds(action), action.errors()),
+        "responses": responses(
+            action_success(action),
+            &action_kinds(action),
+            action.errors(),
+            &refusals(action),
+        ),
     });
     let given = |field: &Field| example.and_then(|given| given.get(field.name));
     let mut parameters: Vec<Value> =
@@ -526,6 +531,19 @@ const SIGNED_IN_END: &[Kind] = &[
     Kind::Internal,
 ];
 
+/// What asking for a one-time link can answer with besides: a draft or a
+/// hash that is not one, reportd's refusal (RPT-101 and RPT-102 as the
+/// command's own), and too many links.
+const PHONE: &[Kind] = &[
+    Kind::BadRequest,
+    Kind::BadValue,
+    Kind::CommandFailed,
+    Kind::WorkerSilent,
+    Kind::NoProgram,
+    Kind::Wait,
+    Kind::Internal,
+];
+
 /// What the Terminal's socket can answer with besides: the opening request
 /// did not come from the console's page with the session's token.
 const SOCKET: &[Kind] = &[
@@ -558,6 +576,10 @@ fn own_kinds(route: Route) -> &'static [Kind] {
         Route::TerminalSocket => SOCKET,
         Route::SignedIn => SIGNED_IN,
         Route::SignedInEnd => SIGNED_IN_END,
+        Route::Phone => PHONE,
+        // A link used, or none, in plain words for a phone; too many tries
+        // from its address.
+        Route::Once | Route::OnceHead => &[Kind::OnceGone, Kind::NoRoute, Kind::Wait],
         Route::Changes
         | Route::Change
         | Route::Keep
@@ -627,8 +649,13 @@ fn action_kinds(action: &dyn Registered) -> Vec<Kind> {
         if action.not_self().is_some() {
             kinds.push(Kind::NotSelf);
         }
-        if action.cuts_off_card().is_some() {
-            kinds.push(Kind::CutsOff);
+        match action.cuts_off_on() {
+            Some(Through::Card(_)) => kinds.push(Kind::CutsOff),
+            Some(Through::Name) => kinds.push(Kind::NotNamed),
+            None => {}
+        }
+        if action.restarts().is_some() {
+            kinds.push(Kind::TrialRuns);
         }
     }
     if action.long() {
@@ -637,11 +664,24 @@ fn action_kinds(action: &dyn Registered) -> Vec<Kind> {
     kinds
 }
 
+/// The refusals of `action` that admind gives with an ID of another area,
+/// as ADM-128 is answered, with their titles: UPD-106 for a change that
+/// restarts the machine.
+pub fn refusals(action: &dyn Registered) -> Vec<(&'static str, &'static str)> {
+    action.restarts().map(|_| actions::OTHER_RESTART).into_iter().collect()
+}
+
 /// The responses of an operation: its success, one for each status that
 /// `kinds` give, listing the error IDs that come with it, and 431, which
 /// any request may meet before a route is found. `own` are the IDs the
-/// action's command can give instead of ADM-123.
-fn responses(success: (&str, Value), kinds: &[Kind], own: &[&str]) -> Value {
+/// action's command can give instead of ADM-123, and `refused` those
+/// admind refuses it with as it does with ADM-128 ([`refusals`]).
+fn responses(
+    success: (&str, Value),
+    kinds: &[Kind],
+    own: &[&str],
+    refused: &[(&'static str, &'static str)],
+) -> Value {
     let mut all = Map::new();
     all.insert(success.0.into(), success.1);
     all.insert("431".into(), head_too_large());
@@ -653,6 +693,9 @@ fn responses(success: (&str, Value), kinds: &[Kind], own: &[&str]) -> Value {
         for id in own {
             ids.insert(id, "The command gave this ID");
         }
+    }
+    for (id, title) in refused {
+        by_status.entry(Kind::Cannot.status()).or_default().insert(id, title);
     }
     for (status, ids) in &by_status {
         all.insert(status.to_string(), error_response(*status, ids));
@@ -842,6 +885,37 @@ fn success_of(route: Route) -> (&'static str, Value) {
                 },
             })),
         ),
+        Route::Phone => ok(
+            "The one-time link to the draft's text, for a phone.",
+            Some(json!({
+                "type": "object",
+                "required": ["url", "expires_ms", "fingerprint_sha256"],
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "https://ADDRESS:PORT/once/TOKEN/report.txt, by an address \
+                            of this machine a phone on its network reaches.",
+                    },
+                    "expires_ms": {
+                        "type": "integer",
+                        "description": "When the link ends, in milliseconds since 1970.",
+                    },
+                    "fingerprint_sha256": {
+                        "type": "string",
+                        "description": "The fingerprint of the certificate the console serves, \
+                            which the phone's warning shows.",
+                    },
+                },
+            })),
+        ),
+        Route::Once | Route::OnceHead => (
+            "200",
+            json!({
+                "description": "The report's text, once, as a file to keep. A link used is \
+                    410 and one not kept 404, each with plain words that name ADM-140.",
+                "content": { "text/plain": {} },
+            }),
+        ),
         _ => ok("What the route answers, as JSON.", None),
     }
 }
@@ -910,6 +984,8 @@ fn summary(route: Route) -> &'static str {
             "Says whether the browser reaches the console by a connection opened after a tried \
              change took effect."
         }
+        Route::Phone => "Makes a one-time link to a draft's text, for a phone to download.",
+        Route::Once | Route::OnceHead => "Gives a report's text once, with no session.",
         #[cfg(feature = "lab")]
         Route::TestElevate => "Runs a command as an administrator in an unlocked session.",
     }

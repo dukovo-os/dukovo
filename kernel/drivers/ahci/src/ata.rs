@@ -43,6 +43,9 @@ pub mod command {
     /// SMART: with a feature code ([`super::smart`]), the disk's own
     /// record of its health.
     pub const SMART: u8 = 0xb0;
+    /// CHECK POWER MODE: the disk says in its Count register whether it
+    /// is in standby, idle or active, and spins up for none of them.
+    pub const CHECK_POWER_MODE: u8 = 0xe5;
     /// IDENTIFY DEVICE: 512 bytes of what the disk is.
     pub const IDENTIFY_DEVICE: u8 = 0xec;
     /// PACKET: an ATAPI device's command, a SCSI command descriptor block
@@ -50,6 +53,15 @@ pub mod command {
     pub const PACKET: u8 = 0xa0;
     /// IDENTIFY PACKET DEVICE: 512 bytes of what an ATAPI device is.
     pub const IDENTIFY_PACKET_DEVICE: u8 = 0xa1;
+}
+
+/// Whether a disk whose CHECK POWER MODE ended with `count` in its Count
+/// register is to be left alone: 00h and 01h are standby (ACS-4, 7.3.4),
+/// and anything but the idle and active answers (80h to 83h, FFh), or no
+/// answer, is a disk that did not say. A disk that sleeps is not read, so
+/// that asking how it is never wakes it.
+pub const fn asleep(count: Option<u8>) -> bool {
+    !matches!(count, Some(0x80..=0x83 | 0xff))
 }
 
 /// SMART's feature codes, for the features register.
@@ -261,6 +273,11 @@ impl Taskfile {
             count: u16::from(feature != smart::EXECUTE_OFFLINE),
             device: 0,
         }
+    }
+
+    /// CHECK POWER MODE, which moves no data.
+    pub fn check_power_mode() -> Taskfile {
+        Taskfile { command: command::CHECK_POWER_MODE, ..Taskfile::default() }
     }
 }
 

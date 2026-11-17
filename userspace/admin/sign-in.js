@@ -7,7 +7,7 @@
 // page only tells the router that it is.
 
 import { get, post } from './api.js';
-import { asSentence, busy, clearError, errorSlot, h, icon, marks, showError } from './dom.js';
+import { asSentence, busy, clearError, errorSlot, h, icon, marks, sheet, showError } from './dom.js';
 import { canUsePasskeys, getAssertion, isAddress, passkeyProblem } from './webauthn.js';
 
 // What each way of finishing the second step says, and what its link says
@@ -57,11 +57,13 @@ function fingerprintNote(fingerprint) {
 }
 
 /**
- * Draws the sign-in page into `page` and focuses its first field. `notice`,
- * if given, is `{title, detail}` words for why the person is here again;
- * `onSignedIn` is called once the server has set the session's cookie.
+ * Draws the sign-in page into `page`, once its sheets have loaded, and
+ * focuses its first field. `notice`, if given, is `{title, detail}` words
+ * for why the person is here again; `onSignedIn` is called once the server
+ * has set the session's cookie.
  */
-export function showSignIn(page, { notice, onSignedIn }) {
+export async function showSignIn(page, { notice, onSignedIn }) {
+  await Promise.all([sheet('/sign-in.css'), sheet('/dialogs.css')]);
   const machine = h('span', { class: 'muted' }, location.hostname);
   const dialogs = h('div', { class: 'sign-in-dialogs' });
   const note = h('div', { class: 'sign-in-note' });

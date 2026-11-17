@@ -1,0 +1,38 @@
+{
+  "format": 1,
+  "server": {
+    "installed": true,
+    "enabled": true,
+    "running": true,
+    "version": "19.0",
+    "listen": "*",
+    "ssl": true,
+    "certificate": "this-machine"
+  },
+  "databases": [
+    {
+      "name": "shop",
+      "owner": "shop",
+      "encoding": "UTF8",
+      "provider": "libc",
+      "locale": "en_US.UTF-8",
+      "bytes": 8192,
+      "sessions": 1,
+      "site": "shop.example.org",
+      "made_by_database": true,
+      "collation_mismatch": false
+    }
+  ],
+  "roles": [
+    { "name": "postgres", "login": true, "password": false, "made_by_database": false },
+    { "name": "shop", "login": true, "password": true, "made_by_database": true }
+  ],
+  "access": [
+    { "line": 3, "type": "local", "databases": ["all"], "users": ["postgres"], "address": null, "method": "peer", "by_hand": true },
+    { "line": 4, "type": "local", "databases": ["all"], "users": ["all"], "address": null, "method": "peer", "by_hand": true },
+    { "line": 5, "type": "host", "databases": ["all"], "users": ["all"], "address": "127.0.0.1/32", "method": "scram-sha-256", "by_hand": true },
+    { "line": 6, "type": "host", "databases": ["all"], "users": ["all"], "address": "::1/128", "method": "scram-sha-256", "by_hand": true },
+    { "line": 9, "type": "hostssl", "databases": ["shop"], "users": ["shop"], "address": "192.0.2.0/24", "method": "scram-sha-256", "by_hand": false }
+  ],
+  "problems": []
+}

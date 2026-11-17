@@ -48,19 +48,27 @@
 
 mod account;
 mod accounts;
+mod alerts;
+mod apps;
 mod backups;
+mod bisect;
 mod certificate;
 pub mod checks;
 mod console;
+mod databases;
 mod firewall;
+mod hardware;
 #[cfg(any(test, feature = "lab"))]
 pub mod lab;
 pub mod logs;
+mod machine;
 mod metrics;
 mod moving;
 mod network;
+mod power;
 mod private;
 mod reliability;
+mod reports;
 pub mod secret;
 mod security;
 mod service;
@@ -69,6 +77,8 @@ mod snapshots;
 mod ssh;
 mod storage;
 mod trial;
+mod updates;
+mod websites;
 
 use std::fmt;
 use std::net::IpAddr;
@@ -139,9 +149,6 @@ pub enum Type {
     /// One of these words.
     OneOf(&'static [&'static str]),
     /// A whole number from `min` to `max`, both included.
-    // Kept for the actions that take a number. None in the list that ships
-    // does: only the lab's long action and the tests make one.
-    #[cfg_attr(not(test), allow(dead_code))]
     Number {
         /// The least.
         min: i64,
@@ -157,12 +164,28 @@ pub enum Type {
         /// The most characters.
         max: usize,
     },
+    /// Text of many lines, 1 to `max` bytes with no NUL, that the action's
+    /// command reads on its input as it is (ADR 0567): a certificate's
+    /// chain, or its key. A `secret` one is read into a [`Secret`], as a
+    /// secret line is, and marked `writeOnly`.
+    Document {
+        /// The most bytes.
+        max: usize,
+        /// Whether it is a secret.
+        secret: bool,
+    },
 }
 
 /// What a secret field's text matches: no line end and no NUL. The
 /// characters are in the class as they are, which a JSON Schema pattern
 /// (ECMAScript's) reads as written.
 pub const SECRET_PATTERN: &str = "^[^\n\r\0]*$";
+
+/// What a document's text matches: no NUL.
+pub const DOCUMENT_PATTERN: &str = "^[^\0]*$";
+
+/// The most bytes a document field takes.
+pub const DOCUMENT_MAX: usize = 64 << 10;
 
 /// One argument of an action, as its input's schema describes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -200,7 +223,6 @@ impl Field {
     }
 
     /// A required argument that is a whole number from `min` to `max`.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub const fn number(name: &'static str, about: &'static str, min: i64, max: i64) -> Field {
         Field { name, kind: Type::Number { min, max }, required: true, about }
     }
@@ -216,9 +238,41 @@ impl Field {
         Field { name, kind: Type::Secret { max }, required: true, about }
     }
 
-    /// Whether it is a secret.
+    /// A required argument that is a document of 1 to `max` bytes, which
+    /// the action's command reads on its input ([`Action::input`]). `max`
+    /// is at most [`DOCUMENT_MAX`], which the registry's rules hold.
+    pub const fn document(name: &'static str, about: &'static str, max: usize) -> Field {
+        Field { name, kind: Type::Document { max, secret: false }, required: true, about }
+    }
+
+    /// A required argument that is a document of 1 to `max` bytes, which
+    /// is a secret, as a certificate's key is: read into a [`Secret`], and
+    /// never shown, kept or put in a log.
+    pub const fn secret_document(name: &'static str, about: &'static str, max: usize) -> Field {
+        Field { name, kind: Type::Document { max, secret: true }, required: true, about }
+    }
+
+    /// Whether it is a secret: a line or a document.
     pub const fn is_secret(&self) -> bool {
-        matches!(self.kind, Type::Secret { .. })
+        matches!(self.kind, Type::Secret { .. } | Type::Document { secret: true, .. })
+    }
+
+    /// Whether the command reads it on its input: a secret or a document.
+    pub const fn is_input(&self) -> bool {
+        matches!(self.kind, Type::Secret { .. } | Type::Document { .. })
+    }
+
+    /// The most bytes it takes of the command's input: a secret line's
+    /// four for each character and its end, a document's own most, and
+    /// nothing for an argument the command does not read there.
+    // The registry's rules hold each action's input to its most by it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub const fn input_bytes(&self) -> usize {
+        match self.kind {
+            Type::Secret { max } => secret::line_bytes(max),
+            Type::Document { max, .. } => max,
+            _ => 0,
+        }
     }
 
     /// The same argument, which the action can be asked for without. A
@@ -264,6 +318,18 @@ pub fn schema(fields: &[Field]) -> Value {
                 property.insert("maxLength".into(), max.into());
                 property.insert("pattern".into(), SECRET_PATTERN.into());
                 property.insert("writeOnly".into(), true.into());
+                "string"
+            }
+            // JSON Schema counts characters, and the action bytes: a text of
+            // `max` characters that takes more bytes fits the schema and is
+            // refused, which the action's words say.
+            Type::Document { max, secret } => {
+                property.insert("minLength".into(), 1.into());
+                property.insert("maxLength".into(), max.into());
+                property.insert("pattern".into(), DOCUMENT_PATTERN.into());
+                if secret {
+                    property.insert("writeOnly".into(), true.into());
+                }
                 "string"
             }
         };
@@ -335,6 +401,12 @@ pub struct Ansible {
     /// `no_log: true`, for a task that gives its command a secret or whose
     /// command prints one (ADR 0561): Ansible then shows neither.
     pub no_log: bool,
+    /// `when`, a condition the playbook must meet for the task to run, for
+    /// a change that is only done on the playbook's own word.
+    pub when: Option<String>,
+    /// Whether the machine restarts after the task: the play then waits for
+    /// it to answer again before its next task (ADR 0565).
+    pub comes_back: bool,
 }
 
 impl Ansible {
@@ -357,6 +429,8 @@ impl Ansible {
             register: None,
             failed_when: None,
             no_log: false,
+            when: None,
+            comes_back: false,
         }
     }
 
@@ -377,6 +451,8 @@ impl Ansible {
             register: None,
             failed_when: None,
             no_log: false,
+            when: None,
+            comes_back: false,
         }
     }
 
@@ -393,23 +469,41 @@ impl Ansible {
         self
     }
 
+    /// The task, for a change that restarts the machine a minute after it
+    /// answers: the play waits for the machine to answer again.
+    #[must_use]
+    pub fn coming_back(mut self) -> Ansible {
+        self.comes_back = true;
+        self
+    }
+
+    /// The task, run only when `condition`, an expression of the
+    /// playbook's variables, holds.
+    #[must_use]
+    pub fn when(mut self, condition: &str) -> Ansible {
+        self.when = Some(condition.to_string());
+        self
+    }
+
     /// The task, for an action whose fields are `fields`, with `args` as
     /// they serialize, and whose command prints a secret when `answer`
-    /// (ADR 0561). Each secret `args` gives is read from the playbook's
-    /// variable of the field's name, one a line on the command's input in
-    /// the fields' order, as [`Action::input`] gives them. Ansible shows
-    /// nothing of a task that has a secret, and keeps the answer of one
-    /// whose command prints one for the playbook.
+    /// (ADR 0561). Each secret and each document `args` gives is read from
+    /// the playbook's variable of the field's name, on the command's input
+    /// in the fields' order, as [`Action::input`] gives them: a secret line
+    /// with its end, a document as it is (ADR 0567). Ansible shows nothing
+    /// of a task that has a secret, and keeps the answer of one whose
+    /// command prints one for the playbook.
     #[must_use]
     pub fn keeping_secrets(mut self, fields: &[Field], args: &Value, answer: bool) -> Ansible {
-        let given: Vec<String> = fields
+        let given: Vec<&Field> = fields
             .iter()
-            .filter(|field| field.is_secret() && args.get(field.name).is_some_and(|v| !v.is_null()))
-            .map(|field| format!("{{{{ {} }}}}", field.name))
+            .filter(|field| field.is_input() && args.get(field.name).is_some_and(|v| !v.is_null()))
             .collect();
         if !given.is_empty() {
-            self.params.insert("stdin".into(), given.join("\n").into());
-            self.no_log = true;
+            let stdin: Vec<String> =
+                given.iter().map(|field| format!("{{{{ {} }}}}", field.name)).collect();
+            self.params.insert("stdin".into(), stdin.join("\n").into());
+            self.no_log |= given.iter().any(|field| field.is_secret());
         }
         if answer {
             self.register = Some(RESULT);
@@ -447,6 +541,45 @@ pub struct Undo {
     pub args: Value,
 }
 
+/// The area of the actions that set and cancel a restart or a shut down:
+/// admind reads Spark as soon as one of its changes answers, as it does
+/// after any change that restarts the machine, so that the open tabs are
+/// told at once (`event: power`, ADR 0565).
+pub const POWER: &str = power::AREA;
+
+/// The ID admind refuses a change that restarts the machine with, and its
+/// title, while the other kind of restart is set or runs: the updates'
+/// UPD-106, since it is about them, with the status of ADM-128.
+pub const OTHER_RESTART: (&str, &str) = ("UPD-106", "A restart is pending, or changes bisect runs");
+
+/// What a change that restarts the machine is, for the guard that refuses
+/// it while something a restart would spoil runs (ADR 0565).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Restarts {
+    /// It restarts or powers off the machine once, a minute from when it
+    /// answers. It is refused while a trial of settings runs, which the
+    /// restart would undo unasked, and while the search for a bad change
+    /// runs, whose restarts are its own.
+    Machine,
+    /// It starts or goes on with the search for a bad change, which
+    /// restarts the machine once for each try. It is refused while a
+    /// trial runs, and while a restart or a shut down is set.
+    Search,
+}
+
+/// The task of `A` run with `args` that runs its command: named by its
+/// title and subject, as root when an administrator runs it, failed only
+/// by a status that gives no answer. An action's task unless it says
+/// otherwise.
+pub fn command_task<A: Action + ?Sized>(args: &A::Args) -> Ansible {
+    let name = match A::subject(args) {
+        Some(subject) => format!("{}: {subject}", A::TITLE),
+        None => A::TITLE.to_string(),
+    };
+    let elevated = A::RUNS == Runs::AsAdministrator;
+    Ansible::command(name, &A::argv(args), elevated, A::CHANGES).answering(A::ANSWERS)
+}
+
 /// One action of the console.
 pub trait Action: 'static {
     /// `area.verb`, such as `service.restart`.
@@ -478,6 +611,11 @@ pub trait Action: 'static {
     /// recovery key (ADR 0561). Its route is a `POST`, a read's too, and it
     /// is never a task, which keeps what its command prints.
     const SECRET_ANSWER: bool = false;
+    /// The most bytes its command is given on its input: what a pipe
+    /// holds, unless it takes a document that does not fit (ADR 0567),
+    /// which is written while the command runs. The registry's rules hold
+    /// its input fields to it, and name the actions that take more.
+    const INPUT_MAX: usize = secret::INPUT_MAX;
     /// The field that names an account the caller may not do this to from
     /// the console or with their token (ADR 0562, ADM-136): disabling or
     /// removing it, taking its administrator right away, or ending one of
@@ -490,6 +628,13 @@ pub trait Action: 'static {
     /// cannot try the change (ADR 0562, ADM-137). None, the default, for an
     /// action that cuts off nothing a trial does not put back.
     const CUTS_OFF: Option<CutsOff<Self::Args>> = None;
+    /// Whether it restarts the machine, and how: such a change is refused
+    /// while a trial of settings runs (ADM-142) and while the other kind
+    /// of restart is set or runs (UPD-106), and when admind cannot tell,
+    /// so that the guard fails closed. None, the default, for an action
+    /// that restarts nothing. It answers before the machine goes down,
+    /// a minute later, so it never needs to be [`Action::LONG`].
+    const RESTARTS: Option<Restarts> = None;
     /// Its five tests.
     const TESTS: Tests;
     /// What a person reads as its name in the palette and in the journal:
@@ -505,9 +650,9 @@ pub trait Action: 'static {
     fn argv(args: &Self::Args) -> Vec<String>;
 
     /// What the command reads on its standard input: the secrets of
-    /// `args`, each a line, in the order of the fields ([`Secret::lines`]).
-    /// None, the default, for an action that takes no secret, whose
-    /// command's input ends at once.
+    /// `args`, each a line, in the order of the fields ([`Secret::lines`]),
+    /// and a document as it is (ADR 0567). None, the default, for an
+    /// action that takes neither, whose command's input ends at once.
     fn input(_args: &Self::Args) -> Option<Secret> {
         None
     }
@@ -522,12 +667,7 @@ pub trait Action: 'static {
     /// The Ansible task that does the same: a task of the command, unless
     /// the action overrides this with the collection's module for it.
     fn ansible(args: &Self::Args) -> Ansible {
-        let name = match Self::subject(args) {
-            Some(subject) => format!("{}: {subject}", Self::TITLE),
-            None => Self::TITLE.to_string(),
-        };
-        let elevated = Self::RUNS == Runs::AsAdministrator;
-        Ansible::command(name, &Self::argv(args), elevated, Self::CHANGES).answering(Self::ANSWERS)
+        command_task::<Self>(args)
     }
 
     /// The files a change writes, for the Files tab and the journal.
@@ -593,24 +733,56 @@ pub trait Action: 'static {
 /// thing the change is to: what it needs comes from `read`, a command run
 /// as the caller's administrator, as the change will be.
 pub struct CutsOff<A> {
-    /// The network card the change can cut off. A request that came by
-    /// another card is never cut off, and nothing is read for it.
-    pub card: &'static str,
+    /// The requests the change can cut off.
+    pub on: Through,
     /// The command that says what the change would take away, for these
     /// arguments. It prints no secret: admind reads what it prints.
     pub read: fn(&A) -> Vec<String>,
-    /// Whether the change with these arguments leaves a browser at `from`
-    /// reaching the console, from what `read` printed: Err with the words
-    /// of the refusal when it does not, and when what was printed does not
-    /// read, so that the guard fails closed.
-    pub cuts: fn(&A, IpAddr, &str) -> Result<(), String>,
+    /// Whether the change with these arguments leaves `browser` reaching
+    /// the console, from what `read` printed: Err with the words of the
+    /// refusal when it does not, and when what was printed does not read,
+    /// so that the guard fails closed.
+    pub cuts: fn(&A, &Browser<'_>, &str) -> Result<(), String>,
+}
+
+/// The requests a change can cut off ([`CutsOff::on`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Through {
+    /// Those that came by this network card, as a device's tunnel: a
+    /// request by another card is never cut off, and nothing is read for
+    /// it (ADM-137).
+    Card(&'static str),
+    /// Any request, by the name its browser uses for the console, as a
+    /// certificate that does not name it would (ADM-141, ADR 0567).
+    Name,
+}
+
+impl Through {
+    /// What `GET /api/1/actions` lists of it: the card's name, or `*` for
+    /// a guard of any request.
+    pub fn listed(self) -> &'static str {
+        match self {
+            Through::Card(card) => card,
+            Through::Name => "*",
+        }
+    }
+}
+
+/// The browser that asks for a change, as [`CutsOff::cuts`] sees it.
+#[derive(Clone, Copy, Debug)]
+pub struct Browser<'a> {
+    /// Its address, an IPv4 address as itself.
+    pub from: IpAddr,
+    /// The name or address it asked for, in small letters, without the
+    /// port: the request's `Host`.
+    pub host: &'a str,
 }
 
 /// The read of [`Action::CUTS_OFF`] for a change's arguments.
 #[derive(Debug)]
 pub struct CutsOffRead {
-    /// The card a request must have come by for the change to cut it off.
-    pub card: &'static str,
+    /// The requests the change can cut off.
+    pub on: Through,
     /// The command to run, as the caller's administrator, before the change.
     pub argv: Vec<String>,
 }
@@ -666,20 +838,26 @@ pub trait Registered: Sync + fmt::Debug {
     fn lines(&self) -> bool;
     /// [`Action::SECRET_ANSWER`].
     fn secret_answer(&self) -> bool;
+    /// [`Action::INPUT_MAX`], which the registry's rules check.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn input_max(&self) -> usize;
     /// [`Action::NOT_SELF`].
     fn not_self(&self) -> Option<&'static str>;
-    /// The card of [`Action::CUTS_OFF`], None for an action without one.
-    fn cuts_off_card(&self) -> Option<&'static str>;
-    /// Whether the change with the prepared `args` leaves a browser at
-    /// `from` reaching the console, from what [`CutsOffRead::argv`]
-    /// printed (`shown`): Err with the refusal's words when it does not,
-    /// when `shown` does not read, or when `args` do not read as the
-    /// action's. Ok for an action with no [`Action::CUTS_OFF`].
+    /// The requests [`Action::CUTS_OFF`] guards, None for an action without
+    /// one.
+    fn cuts_off_on(&self) -> Option<Through>;
+    /// Whether the change with the prepared `args` leaves `browser`
+    /// reaching the console, from what [`CutsOffRead::argv`] printed
+    /// (`shown`): Err with the refusal's words when it does not, when
+    /// `shown` does not read, or when `args` do not read as the action's.
+    /// Ok for an action with no [`Action::CUTS_OFF`].
     ///
     /// # Errors
     ///
     /// The words of the refusal, as above.
-    fn cuts_off(&self, args: &Value, from: IpAddr, shown: &str) -> Result<(), String>;
+    fn cuts_off(&self, args: &Value, browser: &Browser<'_>, shown: &str) -> Result<(), String>;
+    /// [`Action::RESTARTS`].
+    fn restarts(&self) -> Option<Restarts>;
     fn tests(&self) -> Tests;
     fn title(&self) -> &'static str;
     /// Whether a change's `changed` comes from comparing, its probe's
@@ -710,11 +888,11 @@ pub trait Registered: Sync + fmt::Debug {
     fn example_values(&self) -> (Vec<Value>, Vec<Value>, Option<Undo>);
 
     /// Whether its route is a `POST`: a change's, and a read's that takes a
-    /// secret or answers one, so that the secret is in a body and never in
-    /// an address, a browser's history or a log of addresses (ADR 0561).
-    /// Any other read is a `GET`.
+    /// secret or a document or answers a secret, so that the secret is in
+    /// a body and never in an address, a browser's history or a log of
+    /// addresses (ADR 0561). Any other read is a `GET`.
     fn posts(&self) -> bool {
-        self.changes() || self.secret_answer() || self.fields().iter().any(Field::is_secret)
+        self.changes() || self.secret_answer() || self.fields().iter().any(Field::is_input)
     }
 }
 
@@ -764,17 +942,23 @@ impl<A: Action> Registered for Entry<A> {
     fn secret_answer(&self) -> bool {
         A::SECRET_ANSWER
     }
+    fn input_max(&self) -> usize {
+        A::INPUT_MAX
+    }
     fn not_self(&self) -> Option<&'static str> {
         A::NOT_SELF
     }
-    fn cuts_off_card(&self) -> Option<&'static str> {
-        A::CUTS_OFF.map(|cuts_off| cuts_off.card)
+    fn cuts_off_on(&self) -> Option<Through> {
+        A::CUTS_OFF.map(|cuts_off| cuts_off.on)
     }
-    fn cuts_off(&self, args: &Value, from: IpAddr, shown: &str) -> Result<(), String> {
+    fn cuts_off(&self, args: &Value, browser: &Browser<'_>, shown: &str) -> Result<(), String> {
         let Some(cuts_off) = A::CUTS_OFF else { return Ok(()) };
         let typed: A::Args = serde_json::from_value(args.clone())
             .map_err(|_| format!("the arguments of {} do not read", A::ID))?;
-        (cuts_off.cuts)(&typed, from, shown)
+        (cuts_off.cuts)(&typed, browser, shown)
+    }
+    fn restarts(&self) -> Option<Restarts> {
+        A::RESTARTS
     }
     fn tests(&self) -> Tests {
         A::TESTS
@@ -798,7 +982,7 @@ impl<A: Action> Registered for Entry<A> {
     fn prepare(&'static self, args: Value) -> Result<Prepared, Failure> {
         // A secret is checked before serde reads it, since serde's words
         // about a value that is not what a field takes can quote it.
-        secrets_checked(A::Args::FIELDS, &args)?;
+        inputs_checked(A::Args::FIELDS, &args)?;
         let typed: A::Args = serde_json::from_value(args).map_err(|err| {
             Failure::new(
                 Kind::BadRequest,
@@ -811,7 +995,7 @@ impl<A: Action> Registered for Entry<A> {
         let probe = if A::CHANGES { A::probe(&typed) } else { None };
         let trial = A::trial(&typed);
         let input = A::input(&typed);
-        if input.as_ref().is_some_and(|input| input.bytes().len() > secret::INPUT_MAX) {
+        if input.as_ref().is_some_and(|input| input.bytes().len() > A::INPUT_MAX) {
             // The fields' limits keep it within, which a unit test holds.
             return Err(Failure::new(Kind::Internal, format!("{}'s input is too long", A::ID)));
         }
@@ -823,7 +1007,7 @@ impl<A: Action> Registered for Entry<A> {
             .filter(|_| A::not_self_applies(&typed))
             .and_then(|field| args.get(field)?.as_str().map(String::from));
         let cuts_off = A::CUTS_OFF
-            .map(|cuts_off| CutsOffRead { card: cuts_off.card, argv: (cuts_off.read)(&typed) });
+            .map(|cuts_off| CutsOffRead { on: cuts_off.on, argv: (cuts_off.read)(&typed) });
         Ok(Prepared {
             action: self,
             args,
@@ -860,26 +1044,41 @@ impl<A: Action> Registered for Entry<A> {
     }
 }
 
-/// Checks each secret that `args` gives for a field of `fields`: one line
-/// of 1 to the field's most characters, with no NUL (ADR 0561). What is
-/// wrong is said without the value.
+/// Checks each secret and each document that `args` gives for a field of
+/// `fields`: a secret is one line of 1 to the field's most characters, with
+/// no NUL (ADR 0561); a document 1 to the field's most bytes, with no NUL
+/// (ADR 0567). What is wrong is said without the value.
 ///
 /// # Errors
 ///
-/// ADM-125 for a secret that is not such a line, ADM-108 for one that is
-/// not text.
-fn secrets_checked(fields: &[Field], args: &Value) -> Result<(), Failure> {
-    for field in fields {
-        let Type::Secret { max } = field.kind else { continue };
+/// ADM-125 for one that is not such text, ADM-108 for one that is not
+/// text.
+fn inputs_checked(fields: &[Field], args: &Value) -> Result<(), Failure> {
+    for field in fields.iter().filter(|field| field.is_input()) {
         match args.get(field.name) {
             None | Some(Value::Null) => {}
             Some(Value::String(text)) => {
-                let length = text.chars().count();
-                if length == 0 || length > max || text.contains(['\n', '\r', '\0']) {
-                    let why = format!(
-                        "It is one line of 1 to {max} characters, with no line break. Nothing \
-                         was done."
-                    );
+                let why = match field.kind {
+                    Type::Secret { max } => {
+                        let length = text.chars().count();
+                        (length == 0 || length > max || text.contains(['\n', '\r', '\0'])).then(
+                            || {
+                                format!(
+                                    "It is one line of 1 to {max} characters, with no line \
+                                     break. Nothing was done."
+                                )
+                            },
+                        )
+                    }
+                    Type::Document { max, .. } => (text.is_empty()
+                        || text.len() > max
+                        || text.contains('\0'))
+                    .then(|| {
+                        format!("It is text of 1 to {max} bytes, with no NUL. Nothing was done.")
+                    }),
+                    _ => None,
+                };
+                if let Some(why) = why {
                     return Err(Failure::bad_value(field.name, why));
                 }
             }
@@ -915,7 +1114,16 @@ registry![
     certificate::List,
     certificate::Show,
     certificate::Renew,
+    certificate::Check,
+    certificate::Get,
+    certificate::Add,
+    certificate::Revoke,
+    certificate::Remove,
+    certificate::History,
+    machine::Name,
+    machine::Rename,
     console::SetReach,
+    console::SetCertificate,
     console::About,
     console::Notices,
     console::Keep,
@@ -947,6 +1155,17 @@ registry![
     reliability::Start,
     reliability::Dumps,
     reliability::Alerts,
+    alerts::List,
+    alerts::Channels,
+    alerts::Test,
+    alerts::Email,
+    alerts::EmailRemove,
+    alerts::WebhookAdded,
+    alerts::WebhookRemove,
+    alerts::PushKey,
+    alerts::PushAdded,
+    alerts::PushRemove,
+    alerts::ChannelAboutSet,
     storage::Show,
     storage::Usage,
     storage::Health,
@@ -1011,6 +1230,78 @@ registry![
     private::Serve,
     private::Add,
     private::Remove,
+    power::Status,
+    power::Restart,
+    power::Shutdown,
+    power::Cancel,
+    bisect::Status,
+    bisect::Begin,
+    bisect::Stop,
+    bisect::Confirm,
+    hardware::Show,
+    hardware::Inventory,
+    hardware::Last,
+    hardware::History,
+    hardware::Check,
+    hardware::Sensors,
+    hardware::Highest,
+    hardware::Devices,
+    hardware::Memtest,
+    hardware::MemtestCancel,
+    hardware::MemtestStatus,
+    updates::Last,
+    updates::Check,
+    updates::Slots,
+    updates::History,
+    updates::Advisories,
+    updates::Settings,
+    updates::Set,
+    updates::SetChannel,
+    updates::Checks,
+    updates::CheckAdd,
+    updates::CheckRemove,
+    updates::SetEssential,
+    updates::Apply,
+    updates::Unstage,
+    updates::Undoing,
+    updates::Hold,
+    updates::Unhold,
+    updates::Later,
+    updates::Failed,
+    apps::List,
+    apps::Show,
+    apps::Update,
+    apps::UpdateAll,
+    apps::Tonight,
+    apps::TonightAll,
+    apps::NotTonight,
+    apps::Rollback,
+    apps::Hold,
+    apps::Unhold,
+    apps::Remove,
+    apps::Search,
+    apps::Sheet,
+    apps::Install,
+    databases::List,
+    databases::Add,
+    databases::Password,
+    databases::Allow,
+    databases::Deny,
+    databases::Remove,
+    reports::Crashes,
+    reports::Draft,
+    reports::Redact,
+    reports::SendReport,
+    reports::List,
+    reports::Status,
+    reports::Retry,
+    reports::Delete,
+    websites::List,
+    websites::Check,
+    websites::Plan,
+    websites::Add,
+    websites::Https,
+    websites::Remove,
 ];
 
 /// The actions the console offers: [`REGISTRY`], and in a lab build the
@@ -1039,7 +1330,8 @@ pub fn offered() -> &'static [&'static dyn Registered] {
 /// compared from a probe (`compares`), the field naming an account it is
 /// never done to by the caller's own (`not_self`, null for none), the
 /// card whose browsers it is refused for when it would cut them off
-/// (`cuts_off`, null for none), its error IDs, the names of its five
+/// (`cuts_off`, null for none), whether it restarts the machine
+/// (`restarts`), its error IDs, the names of its five
 /// tests, the JSON Schema of its arguments (`input`), and its examples:
 /// the arguments that work, and for a change the action and
 /// arguments that put back what the first did (null when nothing does).
@@ -1062,7 +1354,8 @@ pub fn listed(actions: &[&dyn Registered]) -> Value {
                     "secret_answer": action.secret_answer(),
                     "compares": action.compares(),
                     "not_self": action.not_self(),
-                    "cuts_off": action.cuts_off_card(),
+                    "cuts_off": action.cuts_off_on().map(Through::listed),
+                    "restarts": action.restarts().is_some(),
                     "errors": action.errors(),
                     "tests": action.tests(),
                     "input": schema(action.fields()),
@@ -1177,6 +1470,25 @@ pub fn arguments(mut params: Params, body: &[u8]) -> Result<Value, Failure> {
     Ok(Value::Object(params))
 }
 
+/// `params`, the address's `{name}` parts, each read as the type of the
+/// field of its name says: a part of an address is text, and a number or a
+/// flag in it is not, as one of a query is not. A part that names no field
+/// is left as text for the action to refuse.
+///
+/// # Errors
+///
+/// ADM-108 for a number or a flag that is not written as one.
+pub fn typed_params(mut params: Params, fields: &[Field]) -> Result<Params, Failure> {
+    for (name, value) in &mut params {
+        if let (Some(field), Value::String(text)) =
+            (fields.iter().find(|field| field.name == *name), &*value)
+        {
+            *value = read_value(field, name, text.clone())?;
+        }
+    }
+    Ok(params)
+}
+
 /// The arguments of a read: `params`, the address's `{name}` parts, read
 /// as their type reads them, and each of `fields` that `query`, the
 /// address's query, gives, as its type reads it: text and a word as given,
@@ -1188,21 +1500,9 @@ pub fn arguments(mut params: Params, body: &[u8]) -> Result<Value, Failure> {
 /// ADM-108 for a name the read does not take, a name given twice or also
 /// in the address, a value that is not text, or one that its type does
 /// not read.
-pub fn query_arguments(
-    mut params: Params,
-    query: &str,
-    fields: &[Field],
-) -> Result<Value, Failure> {
+pub fn query_arguments(params: Params, query: &str, fields: &[Field]) -> Result<Value, Failure> {
     let bad = |why: String| Failure::new(Kind::BadRequest, why);
-    // A part of the address is text; a number or a flag in it is read as the
-    // type of its field says, as the query's are.
-    for (name, value) in &mut params {
-        if let (Some(field), Value::String(text)) =
-            (fields.iter().find(|field| field.name == *name), &*value)
-        {
-            *value = read_value(field, name, text.clone())?;
-        }
-    }
+    let mut params = typed_params(params, fields)?;
     for pair in query.split('&').filter(|pair| !pair.is_empty()) {
         let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
         let name =
@@ -1240,10 +1540,13 @@ fn read_value(field: &Field, name: &str, text: String) -> Result<Value, Failure>
             "false" => Value::Bool(false),
             _ => return Err(bad(format!("\"{name}\" is true or false"))),
         },
-        // A read that takes a secret is a `POST`, whose arguments are in its
-        // body: a secret is never read from an address.
-        Type::Secret { .. } => {
+        // A read that takes a secret or a document is a `POST`, whose
+        // arguments are in its body: neither is read from an address.
+        Type::Secret { .. } | Type::Document { secret: true, .. } => {
             return Err(bad(format!("\"{name}\" is a secret, never given in an address")));
+        }
+        Type::Document { secret: false, .. } => {
+            return Err(bad(format!("\"{name}\" is a document, never given in an address")));
         }
     })
 }

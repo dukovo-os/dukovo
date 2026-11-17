@@ -314,6 +314,11 @@ async fn journal_round(shared: &Shared) {
 /// ([`trials::Trials::round_tells`]), and gives the journal a row for each
 /// trial Spark undid by itself (ADR 0518). A change that begins a trial
 /// calls it too, since how long the trial has left is Spark's to say.
+///
+/// The same read says whether a restart or a shut down is set: the tabs
+/// are told when that changes (`event: power`, ADR 0565), so a restart set
+/// or cancelled at a terminal is told at the next round, and one from the
+/// console at once, since each `power` change calls this when it answers.
 pub(super) async fn look_at_trials(shared: &Shared) {
     let document = match trials::document(shared.spark.get()).await {
         Ok(document) => document,
@@ -326,6 +331,10 @@ pub(super) async fn look_at_trials(shared: &Shared) {
     };
     if shared.trials.borrow_mut().complain(None) {
         log(6, "Spark answers again: the console reads what is being tried");
+    }
+    let set = crate::power::pending(&document, crate::util::now_ns() / 1_000_000);
+    if shared.power.borrow_mut().read(set) {
+        shared.changes.send_replace(());
     }
     let now = unix_now();
     let read_at = Instant::now().into_std();

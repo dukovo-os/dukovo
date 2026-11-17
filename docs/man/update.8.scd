@@ -10,14 +10,23 @@ update - see, take, hold back and undo every update: the system, its firmware se
 # SYNOPSIS
 
 *update* [*check*] [*--json*]++
-*update apply* [*--yes*]++
+*update apply* [*--only* _part_] [*--yes*]++
 *update undo* _item_ [*--settings-from-before* | *--keep-settings*]++
-*update hold* _item_++
+*update hold* _item_ [*--why* _text_]++
 *update unhold* _item_++
+*update later* _item_ (*--for* *1d* | *--for* *7d* | *--off*)++
 *update history* [*--json*]++
-*update advisories* [*--json*]
+*update advisories* [*--json*]++
+*update last* [*--json*]++
+*update settings* [*--json*]++
+*update set* [*--check* *notify*|*download*|*off*] [*--apps* *notify*|*auto*] [*--unattended* *on*|*off*] [*--restart* _HH:MM_ | *--no-restart*] [*--metered* *wait*|*download*]++
+*update checks* [*--json*]++
+*update checks add* _name_ (*--url* _url_ [*--insecure*] | *--service* _name_) [*--required*] [*--timeout* _seconds_]++
+*update checks remove* _name_++
+*update checks essential* _service_ *on*|*off*
 
-_item_ is *system*, *firmware* or an app's ID.
+_item_ is *system*, *firmware* or an app's ID. _part_ is *system*,
+*firmware*, *apps* or an app's ID.
 
 # DESCRIPTION
 
@@ -42,13 +51,22 @@ that the update server offers.
 	caller's own */tmp*, and keeps nothing, so it never changes what the
 	system trusts. With *--json*, one document says it all; see *JSON*.
 
-*apply* [*--yes*]
+*apply* [*--only* _part_] [*--yes*]
 	Stages the system update into the spare slot, to start at the
 	next restart, which the owner picks; or, when no system update
 	waits, the firmware set. The two share the spare slot, so a new
 	firmware set waits until a new system has proved itself. Then it
 	updates the apps installed for everyone, asking first unless
 	*--yes* is given. An administrator's, through *elevate*(8).
+
+	With *--only*, it does that part alone and nothing else. *system*
+	stages the system update, and says that none waits when none
+	does, without taking the firmware set in its place. *firmware*
+	stages the firmware set, even while a system update waits. *apps*
+	updates every app installed for everyone, and an app's ID updates
+	that app, as *bundle update* does; what goes wrong with an app is
+	then the command's answer, with the exit status *bundle* gives,
+	where without *--only* it is told and the command ends with 0.
 
 *undo* _item_
 	Goes back on one thing. *system* makes the previous version the
@@ -60,17 +78,53 @@ that the update server offers.
 	*sysupdate rollback*. An app's ID goes back to the app's version
 	before, as *bundle rollback* does.
 
-*hold* _item_
+*hold* _item_ [*--why* _text_]
 	Holds one thing back at the version the channel offers now, or the
 	one it runs: a newer one is taken as usual, and the held one is
 	not. *system* and *firmware* are kept in the *[hold]* table of
-	*updates.toml*(5); an app as *bundle hold* keeps it. A held
-	version gets no security fixes, so a hold is for a while, not for
-	good. *sysupdate stage --version* still stages a held release
+	*updates.toml*(5); an app as *bundle hold* keeps it, for everyone
+	when root holds it. A held version gets no security fixes, so a
+	hold is for a while, not for good. *sysupdate stage --version* still stages a held release
 	when asked by name.
 
+	*--why* keeps a reason with the hold, so that whoever sees the hold
+	sees why: one line of 1 to 200 characters, with no control character
+	(else the status is 2). Everyone who can sign in sees it, as
+	*update settings* and *update check* say it, so it is not for what
+	should stay private. For *system* and *firmware* it is kept in
+	_/system/state/sysupdate/hold-reasons.json_ with the version it was
+	given for, who gave it (the user who ran *elevate*, not root) and
+	when; it counts only while the hold names that version, and the
+	next *hold* or *unhold* drops one that does not. For an app it is
+	the note of the hold's event in bundled's history (*bundle*(1)).
+	Holding again at the same version without *--why* keeps the reason
+	it has.
+
 *unhold* _item_
-	Lifts the hold.
+	Lifts the hold, and the reason kept with it.
+
+*later* _item_ (*--for* *1d* | *--for* *7d* | *--off*)
+	Puts the reminder of an update off for a day or for a week, or, with
+	*--off*, brings it back now. Root's, so that it is run through
+	*elevate*: it is a choice for everyone who is told of updates. It
+	reads the offers as *check* does, with the network, and refuses an
+	item that has no update on offer, one that is held (a hold is the
+	other way to wait, and has no end of its own), and an update that
+	fixes a security advisory, or whose advisories could not all be read
+	(UPD-107): the first is not put off, the second fails closed. It keeps
+	the item, the version offered, until when, who asked and when in
+	_/system/state/sysupdate/later.json_, one entry for an item.
+
+	While an entry stands, no reader tells of that update: *updated*(8)
+	sends no notice of it and leaves the apps put off out of its count,
+	*dukovo-check*(8) passes its *waiting* line with "put off", and
+	*check* says "put off until DATE (update later)" under it. An entry
+	stands only until its time, for the version it was made for, and
+	while no advisory names that version: a newer release, or an
+	advisory published after, ends it at the next look, and the update
+	is told of as before. An advisory's own notice (*updated*(8)) is
+	never put off. The update is not held, and *update apply* takes it
+	when asked.
 
 *history*
 	Each change of the system and the firmware set, by the start that
@@ -110,10 +164,84 @@ that the update server offers.
 	give the apps, as bundled last kept them. The system's part is then
 	not checked, and the document says so in *unchecked*.
 
+*last*
+	Says the last check that ran as root, which is the daily check of
+	*updated*(8), or *elevate update check --json*: when it ran, who
+	made it, and what each part offered then. Anyone may read it. It
+	is what the web console shows when it opens, without asking the
+	update server. A check by a person who is not root keeps nothing,
+	as it cannot write where the record is kept. A check by *update
+	check* without *--json* keeps nothing either. With nothing kept,
+	it says so and ends with status 3. With *--json*, one document
+	says it; see *JSON*.
+
+*settings*
+	Says how this system updates: the channel, what *updated*(8)
+	does when it finds an update, what it does with apps and on a
+	metered connection, whether the machine is unattended and when it
+	restarts, and the versions held back (*updates.toml*(5)), with
+	the defaults filled in where the file says nothing. It says too
+	whether *bundled*(8) updates the apps of everyone by themselves,
+	and when that disagrees with *apps*. With *--json*, one document
+	says it; see *JSON*. Anyone may read it.
+
+*set* [*--check* _word_] [*--apps* _word_] [*--unattended* _word_] [*--restart* _HH:MM_ | *--no-restart*] [*--metered* _word_]
+	Changes the settings given in *updates.toml*(5), as *settings*
+	says them, and nothing else: the comments and the order of the file
+	stay, and a key that already has the value asked, in the file or by
+	default, is not written. It says *update: settings changed: KEY =
+	VALUE* for each key it changed, or *update: nothing to change*, and
+	ends with status 0. *--check* is *notify*, *download* or *off*;
+	*--apps* is *notify* or *auto*; *--unattended* is *on* or *off*;
+	*--restart* is a time of day, _HH:MM_ as *03:30*; *--no-restart*
+	takes the time away; *--metered* is *wait* or *download*. A restart
+	time is for a machine that is unattended: it is refused, with status
+	1, without *--unattended on* in the file or given with it, and
+	*--unattended off* takes the time away with it. A time that is not
+	_HH:MM_ is refused, with status 1. With no setting at all it is a
+	usage error. *--apps* also has *bundled*(8) update the apps of
+	everyone by themselves, or not, as *bundle update --automatic*
+	does, so that the two agree. An administrator's, through
+	*elevate*(8).
+
+*checks*
+	Says what a new version of the system must do to prove itself, as
+	the health check reads *health.toml*(5): the services the machine
+	needs, the seconds they must run and the seconds an update has to
+	start them, and the checks of your own. With *--json*, one
+	document says it; see *JSON*. Anyone may read it. When the file
+	cannot be read, it says why and ends with status 1: the health
+	check goes by the defaults then.
+
+*checks add* _name_ (*--url* _url_ [*--insecure*] | *--service* _name_) [*--required*] [*--timeout* _seconds_]
+	Adds a check to *health.toml*(5). *--url* makes a check that
+	passes when the web address answers: the command
+	*curl -fsS -g --max-time* _seconds_ _url_, with *-k* after *-g* for *--insecure*,
+	which accepts a certificate that is not trusted. *--service* makes
+	a check that passes when the service runs: *systemctl is-active*
+	_name_. Give one of the two. _name_ is what the log calls the check,
+	1 to 64 letters, digits, spaces, *.*, *\_* and *-*, starting with a
+	letter or a digit. *--required* makes an update fail when the check
+	fails; without it the check is only logged. *--timeout* is the
+	seconds it may take, 1 to 600, 30 by default. A name in use is
+	refused, with status 1. An administrator's, through *elevate*(8).
+
+*checks remove* _name_
+	Takes the check called _name_ out of *health.toml*(5), with the
+	comments above it. If none is called that, it says *update: no
+	check is called* _name_ and ends with status 1.
+
+*checks essential* _service_ *on*|*off*
+	Adds the service to the *essential* list of *health.toml*(5), or
+	takes it out. Where the file has no list, the one the health check
+	goes by without it is written, with the change. A service that is
+	listed already, or not listed, is told so, and the command ends with
+	status 0.
+
 # JSON
 
-*--json* with *check*, or no word at all, and with *history* and
-*advisories*, prints one line of JSON, an object whose first member is *format*, 1 (ADR 0541),
+*--json* with *check*, or no word at all, and with *history*,
+*advisories*, *last*, *settings* and *checks*, prints one line of JSON, an object whose first member is *format*, 1 (ADR 0541),
 which scripts and Ansible's *dukovo.system* collection read in place of
 the text. A later field may be added without a new *format*. Names are in
 snake_case, times are RFC 3339 in UTC, and a value that is not known is
@@ -146,10 +274,25 @@ same exit status.
 	slot names and *to* the set the channel offers, each *null* for
 	none. *state* is *current*, *update* or *held*.
 
+	*system* and *firmware* also have *held_because* and *held_at*,
+	each *null* unless *state* is *held*. *held_because* is
+	*fell-back* when the health check held the release it fell back
+	from, which it records in */system/state/sysupdate/held.json*, and
+	that record names the version the hold holds; else *asked*. *held_at*
+	is when it was held, for *fell-back*, and *null* for *asked*.
+	*held_reason* is the text *update hold --why* kept with the hold,
+	or *null*: with no reason, unless *state* is *held*.
+
 	An app: *item* is its ID; *from* is the version installed and *to*
 	the newest its catalog lists. *state* is *update*, or *held*
 	when *bundle hold* holds it at its version. *catalog* is the
-	catalog it updates from, or *null* for its own feed.
+	catalog it updates from, or *null* for its own feed. *held_reason*
+	is why it is held, as for the system, or *null*.
+
+	Each with *state* *update* also has *later_until_ms*, when the
+	reminder of that update is put off until, in milliseconds since 1970,
+	and *null* unless an entry of *later* stands for this version, with
+	the advisories this check read.
 
 *running_withdrawn*
 	*null*, or, when the release keys withdrew the release this system
@@ -173,6 +316,83 @@ same exit status.
 	system, each as *advisories --json* gives them, and *app_flaws*,
 	how many flaws the apps have. A part that could not be checked is
 	named in *unchecked* with the *item* *security*.
+
+*last --json* has:
+
+*checked_ms*
+	When the check ran, in milliseconds since 1970.
+
+*by*
+	*updated* for the daily check, or *update check* for *elevate
+	update check --json*.
+
+*updates*
+	The document *check --json* printed, as it printed it, with its
+	own *format*.
+
+With no check kept, it prints *null*, and ends with status 3.
+
+*settings --json* has:
+
+*channel*, *check*, *apps*, *metered*
+	As *updates.toml*(5) has them: *check* is *notify*, *download* or
+	*off*; *apps* is *notify* or *auto*; *metered* is *wait* or
+	*download*.
+
+*unattended*, *restart*
+	Whether the machine stages updates itself, and the time of day,
+	_HH:MM_, it restarts into one, or *null*.
+
+*hold*
+	An object with *system* and *firmware*, each the version held back
+	or *null*.
+
+*held*
+	*null*, or, when the health check held the release it fell back
+	from and that hold is still there, an object with *version*, *why*
+	(*fell-back*), *at_ms*, when, in milliseconds since 1970, and
+	*start*, the number of the start that fell back.
+
+*hold_reasons*
+	An object with *system* and *firmware*, each *null* or, while the
+	hold at that version stands, the reason *update hold --why* kept
+	with it: an object with *version*, the version held, *text*, *by*,
+	the user ID of who held it, and *at_ms*, when. The words of
+	*settings* say it as *hold system reason = text*, where there is one.
+
+*later*
+	A list with an object for each update put off by *later*: *item*,
+	*version*, the version offered when it was put off, *until_ms*,
+	when its time ends, in milliseconds since 1970, *by*, the user ID of
+	who asked, *at_ms*, when, and *stands*, whether it puts off the
+	reminder now. *stands* goes by the last check root kept (*last*),
+	since *settings* reads no network: with no such check, or one whose
+	advisories were not read, it is *false*, and an app's is *false*
+	while any app has a known flaw. The words of *settings* say an entry
+	that stands as *later ITEM = until DATE, version VERSION*.
+
+*apps_automatic*
+	Whether *bundled*(8) updates the apps of everyone by themselves.
+
+*apps_disagree*
+	Whether *apps* and *apps_automatic* say different things.
+	*update set --apps* makes them agree.
+
+*server*, *canary*
+	The update server's address and whether this machine is a canary.
+
+*checks --json* has:
+
+*essential*, *stable*, *deadline*
+	As *health.toml*(5) has them, with the defaults filled in.
+
+*checks*
+	A list with an object for each check of your own: *name*,
+	*command*, its words as a list, *required*, *timeout*, in seconds,
+	and *kind* and *target*. *kind* is *url* with *target* the web
+	address, for a command that *checks add --url* makes; *service*
+	with *target* the service's name, for one that *--service* makes;
+	and *command* for any other, with *target* its words on one line.
 
 *history --json* has:
 
@@ -227,6 +447,8 @@ same exit status.
 0 when it did what was asked, 1 when it could not, with why on standard
 error, and 2 for a usage error.
 
+*last* ends with 3 when no check is kept.
+
 *advisories* ends with 0 when no advisory applies and no flaw is known in
 the apps, 1 when one does, and 3 when none was found but a part could not be
 checked, such as the system's with no update server to read, which it says
@@ -268,6 +490,15 @@ $ elevate update unhold system
 update: system is no longer held back
 ```
 
+Put the system's update off for a week, and bring it back:
+
+```
+$ elevate update later system --for 7d
+update: Dukovo 2026.3.1 is put off until 2026-11-23: no reminder of it until then; `update later system --off` brings it back
+$ elevate update later system --off
+update: system is no longer put off: its reminders are back
+```
+
 What changed, start by start:
 
 ```
@@ -283,7 +514,29 @@ Apps:
 
 _/system/settings/sysupdate/updates.toml_
 	The channel, the server, what *updated*(8) does, and the holds
-	(*updates.toml*(5)).
+	(*updates.toml*(5)), which *settings* reads and *set* changes.
+
+_/system/settings/sysupdate/health.toml_
+	What a new version of the system must do to prove itself
+	(*health.toml*(5)), which *checks* reads and changes.
+
+_/system/state/sysupdate/last-check.json_
+	The last check that ran as root, one line, which *last* reads.
+
+_/system/state/sysupdate/held.json_
+	The release the health check held after it fell back from it,
+	which the health check writes, *check* and *settings* read, and
+	*unhold system* takes away with the hold.
+
+_/system/state/sysupdate/hold-reasons.json_
+	The reasons kept with the holds of *system* and *firmware*, one
+	line of JSON, mode 0644, which *hold --why* writes, *check* and
+	*settings* read, and *unhold* takes from.
+
+_/system/state/sysupdate/later.json_
+	The updates put off, one line of JSON, mode 0644, which *later*
+	writes, and *check*, *settings*, *updated*(8) and *dukovo-check*(8)
+	read. It is not in *updates.toml*(5), which has no key for it.
 
 _/system/state/starts_
 	The starts' records that *history* reads (*changes*(1)).
@@ -295,5 +548,6 @@ _/system/state/sysupdate/lists_
 
 # SEE ALSO
 
-*updated*(8), *sysupdate*(8), *bundle*(1), *updates.toml*(5), *changes*(1),
+*updated*(8), *sysupdate*(8), *bundle*(1), *updates.toml*(5), *health.toml*(5),
+*changes*(1),
 *system-release*(8)

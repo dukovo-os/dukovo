@@ -11,6 +11,10 @@ machine may send from, and about five minutes. The settings are described
 in alerts.toml(5), and the chapter "Alerts: email, ntfy and webhooks"
 explains the rest.
 
+The web console's Alerts page sets this up from a browser, and the step **Get an
+email when something needs you** of **Finish setting up** on the Overview does
+too; see [From the web console](#from-the-web-console) below.
+
 ## What you need from your provider
 
 Your provider publishes the settings a mail program uses to send mail,
@@ -92,3 +96,22 @@ count and the first title in its subject: `[machine] 3 alerts: Disk WDC
 If the provider is down when an alert is raised, the mail is kept and
 sent when it is back, for up to 24 hours (`elevate alerts status` shows
 what waits).
+
+To be mailed only about some kinds of alert, add `about = ["data"]`, or any of
+`"data"`, `"stopped"` and `"hardware"`, to the `[email]` table; `elevate alerts
+channel email --about data` does it for you (see "Which alerts go where" in
+[Alerts: email, ntfy and webhooks](alerts.md#which-alerts-go-where)).
+
+## From the web console
+
+The step **Get an email when something needs you** of **Finish setting up** on the
+Overview, and the **Email** card on the Alerts page, ask for what this page lists,
+**Send to**, **Mail server**, **Port**, **Sign in as**, **Password** and **From
+(optional)**, and write the `[email]` table for you. The password goes to the
+command once and is never shown again. A test alert follows when the step is
+saved, and the page says **Sent a test alert: it reached email.** or why it did
+not, in the provider's words. The card also takes how bad an alert must be, **Every
+alert** or **Critical alerts only**, **Tell me when an alert clears**, and the
+kinds of alert the mail is about. See [Email](web-console.md#email) and
+[Setting the machine up](web-console.md#setting-the-machine-up) in the chapter on
+the console.

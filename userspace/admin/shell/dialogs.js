@@ -6,11 +6,12 @@
 // focus goes back to what opened it (dom.js's focusBack).
 
 import { get as fetchJson } from '../api.js';
-import { focusBack, h, icon, uniqueId } from '../dom.js';
+import { focusBack, h, icon, sheet, uniqueId } from '../dom.js';
 
-/** Opens `dialog` as a modal and resolves with its return value when it closes. */
-export function openModal(dialog) {
+/** Opens `dialog` as a modal, once its sheet has loaded, and resolves with its return value when it closes. */
+export async function openModal(dialog) {
   const opener = document.activeElement;
+  await sheet('/dialogs.css');
   return new Promise((resolve) => {
     dialog.addEventListener('close', () => {
       dialog.remove();

@@ -51,6 +51,7 @@ async function open(context, { query = '', admin = false, world: given = {} } = 
   const panels = [];
   const listeners = {};
   const opened = [];
+  const expected = [];
   const view = {
     main: page.document.createElement('main'),
     signal: controller.signal,
@@ -58,6 +59,10 @@ async function open(context, { query = '', admin = false, world: given = {} } = 
     time,
     query: new URLSearchParams(query),
     host: 'new-box',
+    prefs: { commands: 'hidden' },
+    slot: page.document.createElement('div'),
+    notice: () => {},
+    expectRestart: (words, options) => expected.push([words, options]),
     head: (options) => { view.headed = options; },
     on: (event, listener) => { (listeners[event] ??= []).push(listener); },
     openTask: (id) => opened.push(id),
@@ -66,6 +71,7 @@ async function open(context, { query = '', admin = false, world: given = {} } = 
         calls.push(['GET', path]);
         if (path === '/api/1/backups') return world.backups;
         if (path === '/api/1/tasks') return world.tasks;
+        if (path === '/api/1/power') return world.power ?? { shutdown: null };
         throw new Error(`no answer for ${path}`);
       },
       run: async (action, args) => {
@@ -75,6 +81,7 @@ async function open(context, { query = '', admin = false, world: given = {} } = 
           'move.plan': world.plan?.ok === false ? world.plan : { ok: true, result: world.plan },
           'move.stage': world.stage,
           'move.cancel': world.cancel,
+          'power.restart': { ok: true, result: { done: true, changed: true } },
         };
         const answer = answers[action];
         return typeof answer === 'function' ? answer(args) : answer;
@@ -94,7 +101,7 @@ async function open(context, { query = '', admin = false, world: given = {} } = 
   const ran = (action) => calls.filter((call) => call[0] === action).map((call) => call[1]);
   const shown = () => ['find', 'unlock', 'check', 'restart'].filter((id) => !panel(id).hidden);
   return {
-    ...page, view, world, calls, panels, opened, panel, emit, ran, shown, listeners,
+    ...page, view, world, calls, panels, opened, expected, panel, emit, ran, shown, listeners,
   };
 }
 
@@ -353,7 +360,8 @@ test('with a key file Stage it sends it with the cards and the time that were ch
   assert.ok(restart.textContent.includes('elevate reboot'));
   assert.ok(buttonOf(restart, 'Cancel'));
   assert.equal(buttonOf(restart, 'Stage it'), undefined);
-  assert.equal(buttonOf(restart, 'Restart'), undefined, 'the Restart button comes with the Hardware page');
+  assert.ok(buttonOf(restart, 'Restart now…'), 'a restore that is staged can be finished from here');
+  assert.equal(buttonOf(restart, 'Restart'), undefined, 'and Restart now is the only button that restarts');
 });
 
 test('a typed key is asked for again at Stage it, and goes in the body of move.stage alone', async (context) => {
@@ -399,6 +407,46 @@ test('a restore that is staged already is shown as staged, with Cancel and no St
   buttonOf(restart, 'Cancel').click();
   await settle();
   assert.deepEqual(app.ran('move.cancel'), [{}]);
+});
+
+test('Restart now asks first, then restarts the machine in a minute and counts the minute on the card', async (context) => {
+  context.after(() => setUnlockSeconds(null));
+  setUnlockSeconds(900);
+  const realObserver = globalThis.MutationObserver;
+  globalThis.MutationObserver = class { observe() {} disconnect() {} };
+  context.after(() => {
+    if (realObserver === undefined) delete globalThis.MutationObserver;
+    else globalThis.MutationObserver = realObserver;
+  });
+  const app = await open(context, { admin: true, world: { backups: stagedBackups() } });
+  const restart = app.panel('restart');
+  assert.ok(restart.textContent.includes('press Restart now, or type this at a terminal'));
+  assert.ok(restart.textContent.includes('elevate reboot'), 'the command stays for a terminal');
+  app.world.power = { shutdown: { end: 'reboot', in_seconds: 60, at_ms: Date.now() + 60_000 } };
+  buttonOf(restart, 'Restart now…').click();
+  await settle();
+  const dialog = app.document.body.querySelector('dialog');
+  assert.equal(dialog.querySelector('h2').textContent, 'Restart new-box?');
+  assert.ok(dialog.textContent.includes('To finish the restore from nas.'));
+  assert.equal(app.ran('power.restart').length, 0, 'nothing is set before the question is answered');
+  dialog.querySelector('form').fire('submit');
+  await settle();
+  assert.deepEqual(app.ran('power.restart'), [{ at: null }]);
+  assert.ok(restart.textContent.includes('new-box restarts in 60 seconds'), 'the card counts the minute');
+  assert.ok(buttonOf(restart, 'Cancel'), 'and Cancel stays');
+});
+
+test('a restart that is set when the page opens shows its line on the staged card', async (context) => {
+  const app = await open(context, {
+    admin: true, world: { backups: stagedBackups(), power: { shutdown: { end: 'reboot', in_seconds: 5400, at_ms: Date.now() + 5_400_000 } } },
+  });
+  await settle();
+  assert.match(app.panel('restart').textContent, /new-box restarts at/);
+});
+
+test('a card that is not staged has no Restart now', async (context) => {
+  const app = await open(context, { query: `source=${FOLDER}`, admin: true });
+  assert.equal(buttonOf(app.panel('restart'), 'Restart now…'), undefined);
 });
 
 test('a task that fails because a restore was staged first (BAK-104) shows that one Staged', async (context) => {

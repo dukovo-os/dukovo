@@ -4,14 +4,15 @@
 // Security (design 8): one route, /security. The score and the checks with each
 // finding's button, the sign-in rules, the addresses blocked after wrong
 // sign-ins, SSH, who may reach the console and private access, each a card
-// that scrolls into view by its id (#checks, #sign-in, #blocked, #ssh, #reach,
-// #private). SSH's settings and the console's reach are changed as trials: the
+// that scrolls into view by its id (#checks, #alerts, #sign-in, #blocked, #ssh,
+// #reach, #private). SSH's settings and the console's reach are changed as trials: the
 // banner of each is at the top of its card. The sign-in rules and the console's
 // reach come from the same read, `admin settings --json`.
 
 import { h } from '../../dom.js';
 import { PAGES } from '../../pages.js';
 import { atMostEvery } from '../overview/refresh.js';
+import { makeAlerts } from './alerts-card.js';
 import { makeBlocked } from './blocked.js';
 import { makeFindings } from './findings.js';
 import { makePrivate } from './private.js';
@@ -33,10 +34,12 @@ export async function show(view) {
   const findings = makeFindings(view, { hasPage, openSsh: (preset) => ssh.open(preset) });
   const signIn = makeSignIn(view, { reread: () => readRules() });
   const reach = makeReach(view, { reread: () => readRules() });
+  const alerts = makeAlerts(view);
   const blocked = makeBlocked(view);
   const priv = makePrivate(view);
   view.main.append(h('div', { class: 'sec' },
     findings.element,
+    alerts.element,
     h('div', { class: 'grid two' }, signIn.element, blocked.element),
     h('div', { class: 'grid two' }, ssh.element, reach.element),
     priv.element));
@@ -60,5 +63,5 @@ export async function show(view) {
   const soon = atMostEvery(readRules, EVENT_GAP_MS);
   view.signal.addEventListener('abort', soon.stop, { once: true });
   view.on('change', soon);
-  await Promise.all([findings.load(), readRules(), ssh.load(), reach.load(), blocked.load(), priv.load()]);
+  await Promise.all([findings.load(), readRules(), ssh.load(), reach.load(), alerts.load(), blocked.load(), priv.load()]);
 }

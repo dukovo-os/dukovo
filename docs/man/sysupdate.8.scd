@@ -52,8 +52,18 @@ services run for two minutes, and whose required checks pass, proves
 itself and becomes the default, with the slot it updated as the previous
 version. One that fails, or runs out of tries, falls back: the version
 before starts again by itself, with the settings it had before the
-update (ADRs 0452 to 0454). Nothing installs or restarts by itself: the
-update waits for a restart the administrator chooses.
+update (ADRs 0452 to 0454). The release that fell back is then held, as
+*update hold system* holds one, so that a machine that updates by itself
+does not stage it again at its next check and fall back again (UPD-105):
+the health check writes *system* under *[hold]* in *updates.toml*(5),
+keeping its comments, unless a hold there names that release or a newer
+one. A newer release is taken as usual. A wanted check of
+*health.toml*(5) that fails during the try does not fail it: the update
+stays, and the health check tells *alertd*(8) of the warning
+*update-check-wanted*, "After the update to _version_, the wanted check
+_name_ failed", with the check's reason (UPD-104). Nothing installs or
+restarts by itself: the update waits for a restart the administrator
+chooses.
 
 The root's top level, where the slots are, is held only by the services
 that need it, each in a view of its own (ADR 0473). The health check, the
@@ -534,7 +544,19 @@ _/system/live/sysupdate/failure_
 	webhook too; and of *update-failed* when an update gives up its tries
 	and the machine cannot be restarted into the version before it.
 	When the signatures of *troubleshoot*(8) name a likely cause, a
-	line says so: "Likely cause: _cause_ (_ID_). Fix: _fix_".
+	line says so: "Likely cause: _cause_ (_ID_). Fix: _fix_". After a
+	fallback, a line says that the release is held: "Dukovo _version_ is
+	held: it is not staged again until you release it with *elevate
+	update unhold system* (UPD-105)."
+
+_/system/state/sysupdate/held.json_
+	That the hold of a release came from its fallback: one JSON object,
+	*{"version": "1.0.0-alpha.2", "why": "fell-back", "at\_ms":
+	1794000000000, "start": 14}*, with the time in milliseconds since
+	1970 and the start that fell back. *update*(8) reads it to say why a
+	release is held (*held\_because*), and *update unhold system* removes
+	it with the hold. A hold that cannot be written is logged and said in
+	the notice; it never stops the fallback.
 
 _/system/state/troubleshoot/signatures.toml_
 	The newer signatures for *troubleshoot*(8) that a check or an update

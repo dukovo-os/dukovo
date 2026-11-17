@@ -1,0 +1,219 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The Report a problem page of the web console in each engine: the page at
+# /report, which asks reportd for a draft of the report (`POST
+# /api/1/reports/drafts`) and shows every line of it. A crash that the lab's
+# program leaves, which `GET /api/1/reports/crashes` lists, is a choice of its
+# own and /report?about=crash&id= opens it drafted. The text is shown with what
+# was taken out marked, and what the system gathered can be cut: Cut line on a
+# line, and Cut these words on words that are selected (`POST
+# /api/1/reports/drafts/{draft}/redact`). Edit your answers writes the three
+# answers again, Undo all my changes brings the first text back, and Draft
+# again asks first when it would bring the cuts back. Save to a file saves the
+# text on the screen; Download by QR code (`POST
+# /api/1/reports/drafts/{draft}/phone`) draws a link to it as a QR code, with
+# the certificate's fingerprint, and `GET /once/{token}/report.txt` gives the
+# text to the first request and refuses the next. Send (`POST
+# /api/1/reports/send`) sends it to the staging reports server that the lab PC
+# runs (lab/tests/reports/report-server.py, as the reports tests start it), which
+# keeps the bytes that were on the screen, and the table of Reports from this
+# server (`GET /api/1/reports`) lists it: Check the status (`GET
+# /api/1/reports/status`) shows what the server says, received and then fixed in
+# a version the lab PC names, and Delete (`POST /api/1/reports/{number}/delete`)
+# takes the report off the server and the table. A reader is offered neither a
+# failed start nor a service, and a phone at 390 by 844 shows the page with no
+# sideways scroll. Each look is dark, light, high contrast, forced colours and
+# less motion, checked by axe.
+#
+# The staging server's certificate is signed by an authority of the test's own,
+# which report.toml(5) names in `ca`, as the crash-report test does. The script
+# reads where the server keeps its reports, and its script, from
+# /tmp/lab-report-desk, which a step below writes. The script runs once for each
+# engine, and the steps before it leave a crash of crash-test that is not
+# reported for each, since sending one reports it.
+#
+# A report that waits for the network is made twice, once from the page and
+# once by command. reportd reads the name of its server only when it starts, so
+# the test names a port of the lab PC's where nothing listens and restarts
+# reportd. The page then sends a report (report-queued.mjs), which waits, with
+# a banner that says so and why. Retry now of the banner
+# (`POST /api/1/reports/retry`) tries it again, and the server is still away;
+# `report retry --json` does the same on the command line. The test then names
+# the staging server again, and the table's Retry now sends the report, which
+# the server holds (report-retry.mjs). The second report is made by `report
+# draft` and `report send`, which queue it while the server is away, and
+# `report retry --json` sends it once the server is named again. The accounts
+# are two that this test makes and removes, an administrator and a reader, so no
+# script needs the lab's password.
+about = "The web console's Report a problem page in each engine: the choices, a crash drafted from the address, the marks, Cut line and Cut these words, the answers written again, Undo all my changes, the question before Draft again, a security report, Save to a file, the QR code and its one-time link, Send to the staging server with its copy held to the screen, the table with Check the status and Delete, a report that waits for the network and is sent by Retry now, one that report draft and report send queue and report retry sends, a reader, and the phone"
+time = "50m"
+host_needs = ["python3", "openssl", "scp", "curl"]
+
+[[step]]
+run = "sh -c 'echo lab-console-password | user add --admin wc-report && echo lab-console-password | user add wc-report-reader && user set --console --yes wc-report-reader'"
+root = true
+expect = ["Made wc-report", "Made wc-report-reader", "wc-report-reader is changed"]
+
+# The staging server runs on the lab PC for the whole test; report.toml(5)
+# names it and its authority, and reportd reads its settings when it starts.
+[[step]]
+host = "sh {here}/../reports/report-lab.sh serve {port:reports} {peer}"
+background = true
+ready = "report server ready"
+[[step]]
+host = "sh {here}/../services/copy-file.sh ca.pem {machine} {machine-port:22}"
+expect = "copied: ca.pem"
+[[step]]
+run = "sh -c 'cp /users/lab/ca.pem /system/settings/ssl/lab-reports-ca.pem && cat > /system/settings/report.toml && service reportd restart && sleep 2 && echo configured'"
+root = true
+input = """
+server = "https://{peer}:{port:reports}"
+ca = ["/system/settings/ssl/lab-reports-ca.pem"]
+"""
+expect = "configured"
+
+# Where the server keeps what it takes, and its script, for the browser script.
+[[step]]
+host = '''sh -c 'printf "%s\n%s\n" "$(pwd)/reports" {here}/../reports/report-server.py > /tmp/lab-report-desk && echo desk-noted' '''
+expect = "desk-noted"
+
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address says so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+
+# Chromium, with a crash for it: the program writes through a null pointer in
+# fault_here, the kernel ends it with SIGSEGV, and reportd keeps the record a
+# moment later. A crash of the same signature that was reported is a new one.
+[[step]]
+run = "sh -c '/system/tests/report/crash-test segv; true; sleep 3'"
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! report list | grep -q fault_here; do sleep 1; i=$((i + 1)); done; report list'"
+expect = ["crash-test", "fault_here"]
+[[step]]
+browser = "report.mjs"
+engines = ["chromium"]
+port = 9090
+
+# Firefox, with a crash of its own.
+[[step]]
+run = "sh -c '/system/tests/report/crash-test segv; true; sleep 3'"
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! report list | grep -q fault_here; do sleep 1; i=$((i + 1)); done; report list'"
+expect = ["crash-test", "fault_here"]
+[[step]]
+browser = "report.mjs"
+engines = ["firefox"]
+port = 9090
+
+# WebKit, with a crash of its own.
+[[step]]
+run = "sh -c '/system/tests/report/crash-test segv; true; sleep 3'"
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! report list | grep -q fault_here; do sleep 1; i=$((i + 1)); done; report list'"
+expect = ["crash-test", "fault_here"]
+[[step]]
+browser = "report.mjs"
+engines = ["webkit"]
+port = 9090
+
+# A report that waits for the network, from the page: the settings name a port
+# of the lab PC's where nothing listens, so the report that Send makes is
+# queued. Chromium sends it, and presses the banner's Retry now.
+[[step]]
+run = "sh -c 'cat > /system/settings/report.toml && service reportd restart && sleep 2 && echo away'"
+root = true
+input = """
+server = "https://{peer}:{port:away}"
+ca = ["/system/settings/ssl/lab-reports-ca.pem"]
+"""
+expect = "away"
+[[step]]
+browser = "report-queued.mjs"
+engines = ["chromium"]
+port = 9090
+
+# The same on the command line, with the server still away: the report waits
+# on. This try, with the two before, puts the next one of reportd's own a quarter
+# of an hour away, so that it does not send the report when it restarts. Root
+# tries the reports of every account.
+[[step]]
+run = "report retry --json"
+root = true
+expect = ['"number":null', '"state":"queued"']
+
+# The staging server is named again, and the table's Retry now sends the report.
+[[step]]
+run = "sh -c 'cat > /system/settings/report.toml && service reportd restart && sleep 2 && echo named'"
+root = true
+input = """
+server = "https://{peer}:{port:reports}"
+ca = ["/system/settings/ssl/lab-reports-ca.pem"]
+"""
+expect = "named"
+[[step]]
+browser = "report-retry.mjs"
+engines = ["chromium"]
+port = 9090
+
+# A report that waits, by command: report draft and report send, as report(1)
+# gives them, with the server away again. report list says that it is queued
+# and tried once; report retry tries it again, and the server is still away.
+[[step]]
+run = "sh -c 'cat > /system/settings/report.toml && service reportd restart && sleep 2 && echo away'"
+root = true
+input = """
+server = "https://{peer}:{port:away}"
+ca = ["/system/settings/ssl/lab-reports-ca.pem"]
+"""
+expect = "away"
+[[step]]
+run = '''sh -c 'draft=$(report draft --about other --happened "The command sent this report while the server was away." --json) && report send "$(printf "%s\n" "$draft" | jq -r .draft)" --sha256 "$(printf "%s\n" "$draft" | jq -r .sha256)" --title "The command sent this report while the server was away." --json' '''
+expect = ['"number":null', '"state":"queued"']
+[[step]]
+run = "report list --json"
+expect = ['"title":"The command sent this report while the server was away."', '"state":"queued"', '"tries":1']
+[[step]]
+run = "report retry --json"
+expect = ['"number":null', '"state":"queued"']
+[[step]]
+run = "report list --json"
+expect = ['"state":"queued"', '"tries":2']
+
+# The server is named again, and report retry sends the report: the lab PC
+# holds its text, and report status says that the server received it. Delete
+# takes it off the server and the machine.
+[[step]]
+run = "sh -c 'cat > /system/settings/report.toml && service reportd restart && sleep 2 && echo named'"
+root = true
+input = """
+server = "https://{peer}:{port:reports}"
+ca = ["/system/settings/ssl/lab-reports-ca.pem"]
+"""
+expect = "named"
+[[step]]
+run = "report retry --json"
+expect = ['"state":"sent"', '"why":null']
+[[step]]
+host = '''sh -c 'grep -lF "The command sent this report while the server was away." reports/*.txt' '''
+expect = ".txt"
+[[step]]
+run = "report status"
+expect = "Received"
+[[step]]
+run = '''sh -c 'report delete "$(report list --json | jq -r ".reports[] | select(.number != null) | .number")"' '''
+
+# The machine as it was: the settings that name the server, and the accounts.
+[[step]]
+run = "sh -c 'rm -f /system/settings/report.toml /system/settings/ssl/lab-reports-ca.pem /users/lab/ca.pem && service reportd restart && echo cleaned'"
+root = true
+expect = "cleaned"
+[[step]]
+run = "sh -c 'for name in wc-report wc-report-reader; do user remove --delete-home --yes $name || exit 1; done'"
+root = true
+expect = ["wc-report is removed", "wc-report-reader is removed"]
+[[step]]
+host = "sh -c 'rm -f /tmp/lab-report-desk && echo desk-gone'"
+expect = "desk-gone"

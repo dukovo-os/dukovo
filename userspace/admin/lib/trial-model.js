@@ -116,7 +116,7 @@ const FAMILIES = Object.freeze({
   network: { files: ['/system/settings/network'], begins: ['network.set'] },
   firewall: { files: ['/system/settings/firewall'], begins: ['firewall.add', 'firewall.replace', 'firewall.remove'] },
   ssh: { files: ['/system/settings/ssh/sshd_config', '/system/settings/spark/services/sshd.toml'], begins: ['ssh.set', 'ssh.off'] },
-  console: { files: ['/system/settings/admin.toml'], begins: ['console.reach'] },
+  console: { files: ['/system/settings/admin.toml'], begins: ['console.reach', 'console.certificate'] },
 });
 
 /** The seconds of a `--try SECONDS` in `argv`, or null. */

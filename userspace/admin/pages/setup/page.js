@@ -8,7 +8,9 @@
 // each page that has one gives it through its overview part, and a server
 // whose pages have none has nothing to show here. A step whose form has
 // `args: null` is done on a page of its own: its form's `href` is offered as
-// "Continue on its page" in place of Set up.
+// "Continue on its page" in place of Set up. A form that holds a secret gives
+// `shown()` for the command, which reads none of it, and `clear()`, which the
+// page calls when the step is left.
 
 import { busy, h, icon, uniqueId } from '../../dom.js';
 import { assess } from '../../lib/health.js';
@@ -84,7 +86,8 @@ export async function show(view) {
     }
     let args;
     try {
-      args = form.args();
+      // A form that holds a secret says what to show in `shown`, which reads none of it.
+      args = (form.shown ?? form.args)();
     } catch {
       // A field that does not give arguments yet: the box keeps what it shows.
       return;
@@ -113,6 +116,7 @@ export async function show(view) {
     current = steps.find((step) => step.id === id) ?? current;
     history.replaceState(null, '', `/setup?step=${encodeURIComponent(current.id)}`);
     status.textContent = '';
+    form?.clear?.();
     form = null;
     formBox.replaceChildren();
     if (typeof current.form === 'function') {
@@ -193,7 +197,7 @@ export async function show(view) {
   const again = atMostEvery(reload, EVENT_GAP_MS);
   view.on('task', again);
   view.on('change', again);
-  view.signal.addEventListener('abort', () => { again.stop(); clearTimeout(waiting); }, { once: true });
+  view.signal.addEventListener('abort', () => { again.stop(); clearTimeout(waiting); form?.clear?.(); }, { once: true });
 
   view.main.append(
     h('p', { class: 'muted' }, introWords(steps)),

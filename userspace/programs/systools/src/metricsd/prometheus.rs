@@ -754,6 +754,7 @@ mod tests {
                 celsius: 45.5,
                 max: None,
                 crit: None,
+                ..Temperature::default()
             }],
             zones: Vec::new(),
             services: vec![Service {

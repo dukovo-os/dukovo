@@ -49,6 +49,13 @@ admin-accounts userspace/programs/systools/src/elevate.rs userspace/programs/sys
 admin-accounts userspace/programs/sshd/ ports/openssh/ ports/uutils-coreutils/ ports/netcat/
 admin-accounts userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/sshd.toml
 admin-accounts tools/xtask/src/test/console_client.rs tools/xtask/src/test/websocket_client.py
+admin-alerts userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
+admin-alerts userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
+admin-alerts userspace/programs/systools/src/alerts.rs userspace/programs/systools/src/alerts/ userspace/programs/systools/src/alertd.rs
+admin-alerts userspace/programs/systools/src/alertd/ userspace/programs/systools/src/check.rs userspace/programs/systools/src/check/
+admin-alerts userspace/programs/systools/src/settings_edit.rs userspace/programs/monitoring-test/ ports/curl/
+admin-alerts userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/alertd.toml
+admin-alerts userspace/spark/tests/services/admin-alerts/ tools/xtask/src/test/console_client.rs ports/netcat/ ports/openssl/
 admin-backups userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
 admin-backups userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
 admin-backups userspace/programs/systools/src/backup.rs userspace/programs/systools/src/backup/ userspace/programs/systools/src/backup_errors.rs
@@ -57,6 +64,13 @@ admin-backups userspace/programs/systools/src/subvolume/ userspace/programs/syst
 admin-backups userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/backup.toml
 admin-backups kernel/fs/btrfs/ kernel/fs/exfat/ ports/uutils-coreutils/ ports/netcat/
 admin-backups tools/xtask/src/test/console_client.rs tools/xtask/src/test/websocket_client.py
+admin-certificates userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
+admin-certificates userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
+admin-certificates userspace/programs/systools/src/cert.rs userspace/programs/systools/src/cert/ userspace/programs/systools/src/certd.rs
+admin-certificates userspace/programs/systools/src/hostnamectl.rs userspace/programs/systools/src/firewall.rs userspace/programs/systools/src/resolvectl.rs
+admin-certificates userspace/programs/systools/src/servicefiles.rs userspace/programs/systools/src/admin_certificate.rs ports/openssl/ ports/netcat/
+admin-certificates userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/certd.toml
+admin-certificates userspace/spark/tests/services/admin-certificates/ tools/xtask/src/test/console_client.rs
 admin-journal userspace/programs/systools/src/admin.rs userspace/programs/systools/src/admin_lab.rs userspace/programs/systools/src/admin_put_back.rs
 admin-journal userspace/programs/systools/src/admin_put_back/ userspace/programs/systools/src/admin_export.rs ports/git/
 admin-journal userspace/admin/ userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml
@@ -78,10 +92,29 @@ admin-move userspace/programs/systools/src/log.rs userspace/programs/systools/sr
 admin-move userspace/spark/src/main.rs userspace/programs/slots/src/machine.rs kernel/fs/btrfs/ kernel/fs/exfat/
 admin-move userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/backup.toml
 admin-move tools/xtask/src/test/console_client.rs ports/uutils-coreutils/ ports/netcat/
+admin-reports abi/crash.ridl kernel/radix/src/fs/crashes.rs kernel/radix/src/user/crash.rs
+admin-reports userspace/defaults/spark/services/reportd.toml userspace/programs/report-test/
+admin-reports userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
+admin-reports userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
+admin-reports userspace/programs/systools/src/reportd.rs userspace/programs/systools/src/reportd/
+admin-reports userspace/programs/systools/src/reports.rs userspace/programs/systools/src/reports/
+admin-reports userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/authd.toml
+admin-reports tools/xtask/src/test/console_client.rs tools/xtask/src/test/cases/problem-report.rs
+admin-reports kernel/fs/vfs/src/mount.rs kernel/fs/vfs/src/view.rs ports/netcat/
 admin-security userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
 admin-security userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
 admin-security userspace/programs/systools/src/admin.rs userspace/programs/systools/src/admin_settings.rs userspace/programs/systools/src/admin_settings/
 admin-security userspace/programs/systools/src/ssh_server.rs userspace/programs/systools/src/ssh_server/ userspace/programs/systools/src/trial.rs
+admin-hardware userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
+admin-hardware userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
+admin-hardware userspace/programs/systools/src/hardware.rs userspace/programs/systools/src/hardware/ userspace/programs/systools/src/hwinfo.rs
+admin-hardware userspace/programs/systools/src/lscpu.rs userspace/programs/systools/src/admin_about.rs userspace/programs/systools/src/dukofetch.rs
+admin-hardware userspace/programs/systools/src/sensors.rs userspace/programs/systools/src/nic.rs kernel/lib/smbios/ kernel/lib/sensors/
+admin-hardware userspace/programs/systools/src/metricsd.rs userspace/programs/systools/src/metricsd/ userspace/programs/systools/src/lspci.rs
+admin-hardware userspace/programs/systools/src/lsusb.rs userspace/programs/systools/src/diskhealth.rs ports/pciids/ ports/usbids/
+admin-hardware kernel/radix/src/fs/sysfs/net.rs userspace/defaults/spark/services/metricsd.toml userspace/defaults/spark/services/diskhealth.toml
+admin-hardware userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/authd.toml
+admin-hardware tools/xtask/src/test/console_client.rs ports/netcat/
 admin-security userspace/programs/systools/src/private_access.rs userspace/programs/systools/src/private_access/ userspace/programs/systools/src/wireguard.rs
 admin-security userspace/programs/systools/src/firewall.rs userspace/programs/systools/src/firewall/ userspace/programs/systools/src/check.rs
 admin-security userspace/programs/systools/src/check/ userspace/programs/spark-api/ userspace/spark/src/supervisor/ userspace/programs/sshd/
@@ -113,6 +146,27 @@ admin-trials userspace/programs/systools/src/trial.rs userspace/programs/systool
 admin-trials userspace/spark/src/supervisor/ userspace/defaults/admin.toml userspace/defaults/firewall userspace/defaults/network
 admin-trials userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/firewall.toml
 admin-trials userspace/defaults/spark/services/netd.toml tools/xtask/src/test/console_client.rs ports/netcat/
+admin-updates userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
+admin-updates userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
+admin-updates userspace/programs/systools/src/update.rs userspace/programs/systools/src/update/ userspace/programs/systools/src/changes.rs
+admin-updates userspace/programs/systools/src/sysupdate.rs userspace/programs/systools/src/sysupdate/ userspace/programs/systools/src/settings_edit.rs
+admin-updates userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/ userspace/programs/systools/src/bundled.rs
+admin-updates userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/sysupdate-stage.toml
+admin-updates userspace/programs/systools/src/check.rs userspace/programs/systools/src/check/
+admin-updates userspace/programs/systools/src/json.rs
+admin-updates tools/update-server/ tools/xtask/src/test/console_client.rs tools/xtask/src/test/websocket_client.py ports/netcat/
+admin-websites userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
+admin-websites userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
+admin-websites userspace/programs/systools/src/website.rs userspace/programs/systools/src/website/ docs/man/website.8.scd
+admin-websites userspace/programs/systools/src/database.rs userspace/programs/systools/src/database/ docs/man/database.8.scd
+admin-websites userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/ userspace/programs/systools/src/bundled.rs
+admin-websites userspace/programs/systools/src/settings_edit.rs userspace/programs/systools/src/firewall.rs userspace/programs/systools/src/cert.rs
+admin-websites userspace/programs/systools/src/cert/ userspace/programs/dkv/ userspace/programs/manifest/
+admin-websites userspace/spark/src/supervisor/runs.rs userspace/programs/spark-api/src/run.rs userspace/spark/src/supervisor/
+admin-websites ports/nginx/ ports/php/ ports/postgresql/ ports/locales/ ports/curl/ ports/openssl/ ports/netcat/
+admin-websites tools/xtask/src/bundles.rs tools/xtask/src/ports.rs tools/xtask/src/licenses.rs
+admin-websites userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml
+admin-websites tools/xtask/src/test/console_client.rs tools/xtask/src/test/websocket_client.py
 ansible ports/bzip2/ ports/ncurses/ ports/openssl/ ports/python/ ports/ripgrep/ ports/xz/ ports/zlib/ ports/zstd/
 ansible tools/xtask/src/ansible.rs tools/xtask/src/bundles.rs tools/xtask/src/catalog.rs
 ansible tools/xtask/src/test/ansible/ tools/xtask/src/test/ansible.lock
@@ -510,6 +564,17 @@ memory-test image/grub/installed.cfg.in image/grub/menu.cfg image/grub/rescue.cf
 memory-test tools/xtask/src/grub.rs tools/xtask/src/image.rs tools/xtask/src/memtest.rs
 memory-test-bios image/grub/installed.cfg.in image/grub/menu.cfg image/grub/rescue.cfg
 memory-test-bios tools/xtask/src/grub.rs tools/xtask/src/image.rs tools/xtask/src/memtest.rs
+memory-test-start image/grub/installed.cfg.in image/grub/menu.cfg kernel/radix/src/memtest.rs kernel/mm/src/memtest.rs
+memory-test-start kernel/radix/src/fs/sysfs.rs userspace/programs/slots/ userspace/programs/systools/src/hardware.rs
+memory-test-start userspace/programs/systools/src/hardware/ userspace/programs/systools/src/changes.rs
+memory-test-start userspace/programs/systools/src/sysupdate.rs userspace/programs/systools/src/sysupdate/
+memory-test-start userspace/programs/systools/src/alertd.rs userspace/programs/systools/src/alertd/ userspace/programs/systools/src/alerts.rs
+memory-test-start userspace/programs/systools/src/alerts/ userspace/programs/systools/src/elevate.rs
+memory-test-start userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
+memory-test-start userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
+memory-test-start userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/alertd.toml
+memory-test-start userspace/defaults/spark/services/authd.toml userspace/defaults/spark/services/sysupdate.toml
+memory-test-start tools/xtask/src/test/console_client.rs ports/netcat/
 microcode kernel/lib/microcode/
 mm-stress kernel/mm/
 monitoring kernel/net/ userspace/defaults/alerts.toml userspace/defaults/spark/services/alertd.toml

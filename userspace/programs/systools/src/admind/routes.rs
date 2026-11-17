@@ -53,6 +53,7 @@ mod events;
 mod follow;
 #[cfg(feature = "lab")]
 mod lab;
+mod reports;
 mod session;
 mod sign_in;
 mod signed_in;
@@ -147,6 +148,12 @@ enum Content {
     /// The Terminal's socket, with its `Sec-WebSocket-Accept`: the
     /// connection is handed over once the answer, 101, is sent.
     Socket(String),
+    /// A one-time link's text, as a file to keep.
+    Once(crate::admind::once::OnceBody),
+    /// The headers of a one-time link's text, of this length, for a `HEAD`.
+    OnceHead(usize),
+    /// Plain words for a phone: a one-time link that is not there.
+    Plain(&'static str),
 }
 
 /// An answer, before its headers.
@@ -289,6 +296,9 @@ pub(super) enum Route {
     TerminalSocket,
     SignedIn,
     SignedInEnd,
+    Phone,
+    Once,
+    OnceHead,
     #[cfg(feature = "lab")]
     TestElevate,
 }
@@ -308,6 +318,9 @@ const fn entry(verb: Verb, path: &'static str, route: Route, access: Access) -> 
 
 /// What a file is answered with, whoever asks.
 const FILE: Entry = entry(Verb::Get, "", Route::File, Access::Anyone);
+
+/// The address of a one-time link: the only route outside `/api/`.
+const ONCE: &str = "/once/{token}/report.txt";
 
 /// Every route of the API; a `{name}` in an address is one part of it that
 /// the handler reads as an argument. The second-step routes, `session`,
@@ -389,6 +402,10 @@ pub(super) const TABLE: &[Entry] = &[
     entry(Verb::Post, "/api/1/accounts/{name}/sessions/{id}/end", Route::SignedInEnd, Access::Full),
     entry(Verb::Get, "/api/1/logs/follow", Route::Follow, Access::Full),
     entry(Verb::Get, "/api/1/console/fresh/{trial}", Route::Fresh, Access::Full),
+    entry(Verb::Post, "/api/1/reports/drafts/{draft}/phone", Route::Phone, Access::Full),
+    // A report's text, once, for a phone with no session (ADR 0568).
+    entry(Verb::Get, ONCE, Route::Once, Access::Anyone),
+    entry(Verb::Head, ONCE, Route::OnceHead, Access::Anyone),
     #[cfg(feature = "lab")]
     entry(Verb::Post, "/api/1/test/elevate", Route::TestElevate, Access::Full),
 ];
@@ -456,7 +473,7 @@ enum Lookup {
 /// table, once for each verb it takes, whose `{name}` parts each take one
 /// part of it; any other is a file's, which `GET` and `HEAD` ask for.
 fn lookup(verb: Verb, path: &str) -> Lookup {
-    if path != "/api" && !path.starts_with("/api/") {
+    if path != "/api" && !path.starts_with("/api/") && !path.starts_with("/once/") {
         return if verb == Verb::Post {
             Lookup::WrongVerb
         } else {
@@ -961,6 +978,9 @@ async fn dispatch(
         (Route::SignedInEnd, Some(live)) => signed_in::end(cx, &live),
         (Route::Follow, Some(live)) => follow::open(cx, &live).await,
         (Route::Fresh, Some(_)) => session::fresh(cx).await,
+        (Route::Phone, Some(live)) => reports::phone(cx, &live).await,
+        (Route::Once, _) => reports::fetch(cx, false),
+        (Route::OnceHead, _) => reports::fetch(cx, true),
         #[cfg(feature = "lab")]
         (Route::TestElevate, Some(live)) => lab::elevate(cx, &live).await,
         // A route of the signed in, for a session that has ended, which
@@ -1087,6 +1107,7 @@ fn render(shared: &Shared, reply: Reply) -> Response<Body> {
         return switching(shared, accept);
     }
     let mut etag = None;
+    let mut once = None;
     let (kind, caching, body) = match reply.content {
         Content::Json(value) => (
             Some("application/json"),
@@ -1106,6 +1127,17 @@ fn render(shared: &Shared, reply: Reply) -> Response<Body> {
         Content::Events(events) => (Some("text/event-stream"), "no-store", events.boxed_unsync()),
         Content::Follow(body) => (Some("text/event-stream"), "no-store", body.boxed_unsync()),
         Content::Socket(_) => (None, "no-store", Empty::new().boxed_unsync()),
+        Content::Once(body) => {
+            once = Some(None);
+            (Some(PLAIN), "no-store", body.boxed_unsync())
+        }
+        Content::OnceHead(length) => {
+            once = Some(Some(length));
+            (Some(PLAIN), "no-store", Empty::new().boxed_unsync())
+        }
+        Content::Plain(words) => {
+            (Some(PLAIN), "no-store", Full::new(Bytes::from(words)).boxed_unsync())
+        }
     };
     let mut response = Response::new(body);
     *response.status_mut() = reply.status;
@@ -1128,8 +1160,28 @@ fn render(shared: &Shared, reply: Reply) -> Response<Body> {
     if let Some(seconds) = reply.retry_after {
         headers.insert(header::RETRY_AFTER, HeaderValue::from(seconds));
     }
+    if kind == Some(PLAIN) {
+        // A report's text and the words for a phone are not a page: they
+        // run nothing and load nothing.
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src 'none'"),
+        );
+    }
+    if let Some(head) = once {
+        headers.insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_static("attachment; filename=\"report.txt\""),
+        );
+        if let Some(length) = head {
+            headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+        }
+    }
     response
 }
+
+/// The type of a report's text and of plain words.
+const PLAIN: &str = "text/plain; charset=utf-8";
 
 /// The 101 that hands a connection to the Terminal's socket: its accept
 /// key, its one protocol, and no extension, so no compression.

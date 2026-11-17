@@ -10,7 +10,8 @@
  * 109.375% or 131.25%. Borders and focus rings stay in px. theme.js puts the
  * theme on the root element: light is the base, and dark and hc (high
  * contrast) swap the tokens. Nothing loads from outside the console. What
- * only some pages draw is in pages.css, which their entries name.
+ * only some pages draw is in pages.css, which their entries name; what a
+ * dialog or the sign-in page draws is in dialogs.css and sign-in.css.
  */
 .dk {
   --page: #F2F5F9; --bg: #FFFFFF; --pane: #F5F8FC; --sunken: #ECF1F6; --border: #D4DDE7; --control: #6B7989;
@@ -105,6 +106,9 @@ html, body { margin: 0; }
 .ic-db { --m: url("/icons/db.svg"); }
 .ic-globe { --m: url("/icons/globe.svg"); }
 .ic-tasks { --m: url("/icons/tasks.svg"); }
+.ic-power { --m: url("/icons/power.svg"); }
+.ic-chip { --m: url("/icons/chip.svg"); }
+.ic-push { --m: url("/icons/push.svg"); }
 /* The boards' components */
 .top { display: flex; flex-wrap: wrap; align-items: center; gap: .714rem 1rem; padding: .5rem 1rem;
   background: linear-gradient(var(--cmd-1), var(--cmd-2)); border-bottom: 1px solid var(--cmd-b); }
@@ -178,10 +182,6 @@ html, body { margin: 0; }
 .rows { display: grid; grid-template-columns: max-content 1fr; gap: .429rem 1.143rem; }
 .rows dt { color: var(--muted); }
 .rows dd { margin: 0; min-width: 0; }
-.meter { height: .571rem; border-radius: .286rem; background: var(--sunken); border: 1px solid var(--border); overflow: hidden; }
-.meter i { display: block; height: 100%; background: linear-gradient(var(--accent), var(--accent)); border-radius: .286rem; }
-.meter.warn i { background: #C98A1B; }
-.meter.bad i { background: #C4392F; }
 .tbl-box { overflow-x: auto; border: 1px solid var(--border); border-radius: .429rem; background: var(--bg); }
 .tbl { width: 100%; border-collapse: collapse; min-width: 40rem; }
 .tbl th { text-align: left; font-weight: 600; font-size: .857rem; color: var(--muted); padding: .5rem .857rem; border-bottom: 1px solid var(--border);
@@ -220,16 +220,9 @@ html, body { margin: 0; }
   white-space: pre; overflow-x: auto; }
 .hc .log { border: 1px solid #FFF; }
 .cmd { display: flex; flex-direction: column; gap: .429rem; padding: .714rem .857rem; border: 1px dashed var(--sel-b); border-radius: .357rem; background: var(--sunken); }
-.cmd-head { display: flex; align-items: center; gap: .571rem; font-size: .857rem; color: var(--muted); }
-.cmd-head .btns { margin-left: auto; }
 .cmd pre { margin: 0; font: .893rem/1.55 var(--font-mono); white-space: pre-wrap; color: var(--text); }
 .inline-cmd { display: block; margin-top: .286rem; font: .893rem var(--font-mono); color: var(--muted); }
 .dialog { width: 100%; max-width: 44.286rem; border: 1px solid var(--btn-b); border-radius: .5rem; background: var(--bg); box-shadow: var(--shadow); display: flex; flex-direction: column; }
-.dialog-head { display: flex; align-items: center; gap: .714rem; padding: .857rem 1.143rem; border-bottom: 1px solid var(--border); background: linear-gradient(var(--cmd-1), var(--cmd-2)); border-radius: .5rem .5rem 0 0; }
-.dialog-head h2 { font: 400 1.214rem var(--font-ui); color: var(--instr); }
-.dialog-head .btn { margin-left: auto; }
-.dialog-body { padding: 1rem 1.143rem; display: flex; flex-direction: column; gap: .857rem; }
-.dialog-foot { display: flex; flex-wrap: wrap; gap: .571rem; justify-content: flex-end; padding: .857rem 1.143rem; border-top: 1px solid var(--border); background: var(--pane); border-radius: 0 0 .5rem .5rem; }
 /* The pages C2a built, and what they added to the boards */
 .dk .mark-dark { display: none; }
 .dk.dark .mark-dark, .dk.hc .mark-dark { display: block; }
@@ -274,31 +267,16 @@ html, body { margin: 0; }
 dialog.dialog { padding: 0; margin: 5rem auto 1.143rem; color: var(--text); }
 dialog.dialog:not([open]) { display: none; }
 dialog.dialog::backdrop { background: var(--scrim); }
-.dialog-head .ic { color: var(--bad); }
-.dialog-body { --gap: .857rem; padding: 1rem 1.143rem; display: flex; flex-direction: column; gap: var(--gap); }
-.dialog-body.roomy { --gap: 1rem; padding: 1.714rem; }
-.dialog-title { font: 400 1.357rem var(--font-ui); color: var(--instr); }
-.lockup { display: flex; align-items: center; gap: .714rem; }
-.lockup b { font: 600 1.214rem var(--font-brand); }
-/* The sign-in page: dialogs in the middle, the note on the certificate below. */
+/* The sign-in page's frame; its dialogs and its note are in sign-in.css. */
 .sign-in { flex: 1; display: flex; flex-direction: column; }
-.sign-in-dialogs { flex: 1; display: flex; flex-wrap: wrap; gap: 2rem; justify-content: center; align-items: flex-start; padding: 4.571rem 1.143rem 2.286rem; }
-.sign-in-note { display: flex; justify-content: center; padding: 0 1.143rem 2.286rem; }
-.sign-in-note .banner { max-width: 58.571rem; }
-.sign-in-dialogs .banner { flex-basis: 100%; }
 /* The second step's pages */
 .panel { --gap: .714rem; display: flex; flex-direction: column; gap: var(--gap); padding: .857rem; border: 1px solid var(--border); border-radius: .357rem; background: var(--bg); }
 .panel h3 { font-size: 1rem; }
 .qr-row { display: flex; flex-wrap: wrap; gap: 1.143rem; align-items: flex-start; }
 .qr { width: 14.286rem; height: 14.286rem; flex: none; border: 1px solid var(--border); border-radius: .286rem; forced-color-adjust: none; }
-.qr-text { flex: 1 1 15.714rem; display: flex; flex-direction: column; gap: .714rem; min-width: 0; }
 .secret { font: 600 1.071rem/1.5 var(--font-mono); letter-spacing: .04em; overflow-wrap: anywhere; user-select: all; }
-.codes { list-style: none; margin: 0; padding: .714rem .857rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(12.143rem, 1fr)); gap: .429rem 1.143rem;
-  border: 1px dashed var(--sel-b); border-radius: .357rem; background: var(--sunken); font: 1rem/1.4 var(--font-mono); user-select: all; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 @media (max-width: 480px) {
-  .sign-in-dialogs { padding-top: 1.714rem; }
-  .dialog-body.roomy { padding: 1.286rem; }
   .main { padding: 1rem 1.143rem 1.714rem; }
 }
 /* ---- The shell (design 4) ---- */
@@ -387,17 +365,6 @@ dialog.dialog::backdrop { background: var(--scrim); }
 .done-list li:last-child { border-bottom: 0; }
 .done-list li > .what { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .done-list time { font-size: .929rem; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.meter i { width: calc(var(--v, 0) * 1%);
-  background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.22) 0 .571rem, transparent .571rem 1.143rem), linear-gradient(var(--accent), var(--accent));
-  background-size: 1.614rem 1.614rem, 100% 100%; animation: stripes 1s linear infinite; }
-.meter.wait i { width: 35%; animation: slide 1.6s ease-in-out infinite alternate; }
-@keyframes stripes {
-  to { background-position: 1.614rem 0, 0 0; }
-}
-@keyframes slide {
-  from { margin-left: 0; }
-  to { margin-left: 65%; }
-}
 /* Notices */
 .notices { position: fixed; right: 1.143rem; bottom: 1.143rem; z-index: 70; width: 28.571rem; max-width: calc(100% - 2.286rem); display: flex; flex-direction: column; gap: .571rem; pointer-events: none; }
 .notice { pointer-events: auto; display: flex; flex-wrap: wrap; align-items: center; gap: .429rem .714rem; padding: .714rem .857rem; border: 1px solid var(--btn-b); border-left-width: 4px;
@@ -424,7 +391,6 @@ details[open] summary { margin-bottom: .429rem; }
 /* Show command */
 .showcmd { background: none; border: 0; padding: 0; font: inherit; font-size: .929rem; cursor: pointer; min-height: 2rem; }
 .cmd-holder { display: flex; flex-direction: column; gap: .429rem; min-width: 0; }
-.cmd-head { flex-wrap: wrap; }
 .tabs { display: inline-flex; border: 1px solid var(--btn-b); border-radius: .214rem; overflow: hidden; }
 .tab { font: inherit; font-size: .929rem; padding: .286rem .786rem; min-height: 2rem; border: 0; border-right: 1px solid var(--btn-b);
   background: linear-gradient(var(--btn-1), var(--btn-3)); color: var(--text); cursor: pointer; }
@@ -451,12 +417,9 @@ fieldset.choices legend { font-weight: 600; padding: 0; margin-bottom: .286rem; 
   font: inherit; font-size: .857rem; color: var(--muted); text-decoration: none; min-height: 3.714rem; background: none; border: 0; cursor: pointer; }
 .tabbar a.cur { color: var(--accent); font-weight: 600; }
 dialog.sheet { margin: 0; max-width: none; width: 100%; height: 100%; max-height: none; border-radius: 0; border: 0; overflow-y: auto; }
-dialog.sheet .dialog-head { border-radius: 0; }
 .sheet .nav { min-height: 3.143rem; width: 100%; background: none; font: inherit; cursor: pointer; text-align: left; }
 .sheet-nav, .sheet-account { display: flex; flex-direction: column; padding: .571rem .857rem; }
 /* A table that becomes a list of cards on a phone (its rules are in the narrow block below) */
-/* The More sheet's mark is not a warning. */
-.sheet .dialog-head .ic { color: var(--accent); }
 /* Narrower than 78.5rem (1100 px at 100% text): the navigation and a drawer open over the page. */
 @container (max-width: 78.55rem) {
   .frame, .frame.with-drawer { grid-template-columns: minmax(0, 1fr); grid-template-areas: "top" "content"; }
@@ -508,8 +471,6 @@ dialog.sheet .dialog-head { border-radius: 0; }
   .dk .btn.default, .dk .tab[aria-selected="true"], .dk .menu-item:focus-visible, .dk .menu-item:hover, .dk .tabbar a.cur, .dk .nav.cur { outline: 2px solid Highlight; outline-offset: -2px; }
   .dk .tasks-btn .count-pill, .dk .nav .count { border: 1px solid ButtonText; forced-color-adjust: none; background: ButtonFace; color: ButtonText; }
   .dk .sw::after { background: ButtonText; }
-  .dk .meter { border-color: ButtonText; }
-  .dk .meter i { forced-color-adjust: none; background: Highlight; animation: none; }
   .dk .ic { forced-color-adjust: none; background: ButtonText; }
   .dk .nav:not(.cur) { border-color: Canvas; }
   .dk .skip:focus { border-color: Highlight; }
@@ -520,7 +481,3 @@ dialog.sheet .dialog-head { border-radius: 0; }
    transitions, the stripes of progress bars, smooth scrolling and anything
    that moves. A bar that moves becomes a still one. */
 .dk.calm *, .dk.calm *::before, .dk.calm *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
-.dk.calm .meter.wait i { margin-left: 0; width: 100%; }
-@media (prefers-reduced-motion: reduce) {
-  .dk .meter.wait i { margin-left: 0; width: 100%; }
-}

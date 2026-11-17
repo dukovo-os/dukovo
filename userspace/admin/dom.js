@@ -32,6 +32,25 @@ export function icon(name) {
   return h('i', { class: `ic ic-${name}`, 'aria-hidden': 'true' });
 }
 
+const sheets = new Map();
+
+/**
+ * Links the style sheet at `href` once. Gives a promise that resolves when it
+ * has loaded, at once when it did already, and when the load fails, so that
+ * what waits for it is shown bare and not left out.
+ */
+export function sheet(href) {
+  if (!sheets.has(href)) {
+    const link = h('link', { rel: 'stylesheet', href });
+    sheets.set(href, new Promise((done) => {
+      link.addEventListener('load', done);
+      link.addEventListener('error', done);
+    }));
+    document.head.append(link);
+  }
+  return sheets.get(href);
+}
+
 /** `words` as a sentence: admind's titles name what happened and carry no full stop of their own. */
 export function asSentence(words) {
   return /[.!?:]$/.test(words) ? words : `${words}.`;

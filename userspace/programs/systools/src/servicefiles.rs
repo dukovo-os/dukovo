@@ -778,6 +778,58 @@ pub(crate) fn deciding_file(name: &str, on: bool) -> Result<(PathBuf, String), F
     Ok((path, new))
 }
 
+/// The file that says which certificates service `name` uses, and its
+/// text with the list `edit` makes of the one it has, every comment kept
+/// and checked to read; None for the text when the list is the same. The
+/// file is its override when that sets `certificates` (ADR 0386), as an
+/// override's keys win, or else its file; a file that is not there yet is
+/// made from the system's own.
+///
+/// # Errors
+///
+/// A file that does not read, as it is or as changed.
+pub(crate) fn certificates_file(
+    name: &str,
+    edit: impl FnOnce(&[String]) -> Vec<String>,
+) -> Result<(PathBuf, Option<String>), Fail> {
+    let path = PathBuf::from(self::path(name));
+    let text = text(name)?;
+    let over = override_path(&path);
+    let found = match fs::read_to_string(&over) {
+        Ok(found) => Some(found),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(e) => return Err(util::failed(&over.display().to_string(), e)),
+    };
+    let sets = |text: &str| {
+        toml::from_str::<toml::Table>(text).ok().and_then(|keys| keys.get("certificates").cloned())
+    };
+    let set_in = |file: &Path, text: &str, list: &[String]| {
+        crate::settings_edit::edited(text, |document| {
+            crate::settings_edit::set_strings(document.as_table_mut(), "certificates", list);
+            Ok::<(), String>(())
+        })
+        .map_err(|_| fail(format!("{}: it is not TOML", file.display())))
+    };
+    if let Some(found) = found.filter(|found| sets(found).is_some()) {
+        let read = service::Override::from_toml(&found)
+            .and_then(|read| service::from_toml_over(&text, Some(&read)))
+            .map_err(|e| fail(format!("{}: {e}", over.display())))?;
+        let changed = set_in(&over, &found, &edit(&read.certificates))?;
+        if let Some(changed) = &changed {
+            service::Override::from_toml(changed)
+                .and_then(|read| service::from_toml_over(&text, Some(&read)))
+                .map_err(|e| fail(format!("{}: {e}", over.display())))?;
+        }
+        return Ok((over, changed));
+    }
+    let read = service::from_toml(&text).map_err(|e| fail(format!("{}: {e}", path.display())))?;
+    let changed = set_in(&path, &text, &edit(&read.certificates))?;
+    if let Some(changed) = &changed {
+        service::from_toml(changed).map_err(|e| fail(format!("{}: {e}", path.display())))?;
+    }
+    Ok((path, changed))
+}
+
 /// The override `over` with its `enabled` line saying `on`, if it sets
 /// `enabled`; `None` if it does not, as the file's line is then the one
 /// that counts.

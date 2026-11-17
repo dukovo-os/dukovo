@@ -88,7 +88,7 @@ export function makeFailed(view, reads, retry) {
       failed.offer && h('div', { class: 'rel-offer' },
         h('p', {}, failed.offer.words),
         commandBox(failed.offer.command, { title: 'To find the change' }),
-        h('p', { class: 'small muted' }, failed.offer.later)),
+        h('p', { class: 'small muted' }, view.session.admin === true ? h('a', { href: failed.offer.run.href }, failed.offer.run.words) : failed.offer.later)),
       ...FAILED_COMMANDS.map((one) => commandBox(one.command, { title: one.title })));
   }
   return { element: card.element, draw };

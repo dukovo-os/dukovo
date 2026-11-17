@@ -5,7 +5,9 @@
 //!
 //! `metrics` shows the latest values, `metrics list` the series the
 //! history holds, and `metrics show` the points of series over a time
-//! range, as text or, with `--json`, for a script. The latest values are
+//! range, as text or, with `--json`, for a script. `metrics show
+//! --highest` gives the greatest value of each series in the range, and
+//! when, instead of its points. The latest values are
 //! the file metricsd writes at each step; the history is read from its
 //! files, as the console reads it, so that neither needs metricsd to
 //! answer.
@@ -23,7 +25,7 @@ use std::time::{Duration, SystemTime};
 
 use serde_json::{Map, Value, json};
 
-use super::store::{self, Selector, Series};
+use super::store::{self, Highest, Selector, Series};
 use super::{NOW, STATE, size_text};
 use crate::args::{Arg, Args};
 use crate::log;
@@ -84,7 +86,8 @@ fn plain(value: f32) -> f64 {
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let help = "Usage: metrics [now] [SERIES...] [--json]\n       metrics list [SERIES...] \
                 [--json]\n       metrics show SERIES... [--since TIME] [--until TIME] [--every \
-                TIME] [--json] [--utc]";
+                TIME] [--json] [--utc]\n       metrics show SERIES... --highest [--since TIME] \
+                [--until TIME] [--json] [--utc]";
     let mut command: Option<String> = None;
     let mut options = Options::default();
     let mut operands = Vec::new();
@@ -96,6 +99,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             }
             Arg::Long(l) if l == "json" => options.json = true,
             Arg::Long(l) if l == "utc" => options.utc = true,
+            Arg::Long(l) if l == "highest" => options.highest = true,
             Arg::Long(l) if l == "since" => options.since = Some(args.text()?),
             Arg::Long(l) if l == "until" => options.until = Some(args.text()?),
             Arg::Long(l) if l == "every" => options.every = Some(args.text()?),
@@ -133,6 +137,7 @@ const COMMANDS: [&str; 3] = ["now", "list", "show"];
 struct Options {
     json: bool,
     utc: bool,
+    highest: bool,
     since: Option<String>,
     until: Option<String>,
     every: Option<String>,
@@ -143,6 +148,7 @@ impl Options {
     fn only_for_show(&self) -> Option<&'static str> {
         [
             ("utc", self.utc),
+            ("highest", self.highest),
             ("since", self.since.is_some()),
             ("until", self.until.is_some()),
             ("every", self.every.is_some()),
@@ -297,6 +303,9 @@ fn show(dir: &Path, select: &[Selector], options: &Options, now_ns: u64) -> Resu
     if from >= until {
         return Err(usage("--since has to be before --until".into()));
     }
+    if options.highest {
+        return highest(dir, select, (from, until), options);
+    }
     let every = options.every.as_deref().map(every_option).transpose()?;
     let series =
         store::read(dir, from, until, select, every).map_err(|error| cannot_read(dir, &error))?;
@@ -311,6 +320,78 @@ fn show(dir: &Path, select: &[Selector], options: &Options, now_ns: u64) -> Resu
     }
     print!("{}", render_show(&series, options.json, options.utc));
     Ok(0)
+}
+
+/// `metrics show --highest`: the greatest value of each series `select`
+/// names over `range`, seconds since 1970.
+///
+/// As JSON it is a list with an entry for each series found, and for a
+/// series asked for by its whole name that has no point, a `null`: nothing
+/// found is an empty list, not a failure, so that a page can ask for every
+/// sensor on a machine with none. As text a range with no point is said
+/// as `show` says it.
+fn highest(
+    dir: &Path,
+    select: &[Selector],
+    range: (i64, i64),
+    options: &Options,
+) -> Result<i32, Fail> {
+    if options.every.is_some() {
+        return Err(usage("--every does not go with --highest".into()));
+    }
+    let found =
+        store::highest(dir, range.0, range.1, select).map_err(|error| cannot_read(dir, &error))?;
+    if options.json {
+        print!("{}", render_highest(&found, select));
+        return Ok(0);
+    }
+    if found.is_empty() {
+        return Err(fail(format!(
+            "no points of {} between {} and {}: `metrics list` shows the series, and the history \
+             starts when metricsd first ran",
+            names_of(select),
+            util::time_text(range.0, "%Y-%m-%d %H:%M:%S", options.utc),
+            util::time_text(range.1, "%Y-%m-%d %H:%M:%S", options.utc),
+        )));
+    }
+    print!("{}", render_highest_text(&found, options.utc));
+    Ok(0)
+}
+
+/// The highest values as JSON: `[{"series", "highest": [seconds, value] |
+/// null}]`, in the order of the names, then a `null` for each series named
+/// whole in `select` that has none.
+fn render_highest(found: &[Highest], select: &[Selector]) -> String {
+    let mut entries: Vec<Value> = found
+        .iter()
+        .map(|h| json!({ "series": h.name, "highest": [h.at, plain(h.value)] }))
+        .collect();
+    for selector in select {
+        if let Some(instance) = &selector.instance {
+            let name = format!("{}{{{instance}}}", selector.metric);
+            if !found.iter().any(|h| h.name == name) && !entries.iter().any(|e| e["series"] == name)
+            {
+                entries.push(json!({ "series": name, "highest": null }));
+            }
+        }
+    }
+    format!("{}\n", Value::Array(entries))
+}
+
+/// The highest values as a line each: the series, its value and when.
+fn render_highest_text(found: &[Highest], utc: bool) -> String {
+    let width = found.iter().map(|h| util::width(&h.name)).max().unwrap_or(0).min(48);
+    found.iter().fold(String::new(), |mut out, h| {
+        let pad = width.saturating_sub(util::width(&h.name));
+        let time = util::time_text(h.at, "%Y-%m-%d %H:%M:%S", utc);
+        out.push_str(&format!(
+            "{}{}  {}  {time}\n",
+            h.name,
+            " ".repeat(pad),
+            value_text(&h.name, h.value)
+        ));
+        out
+    })
 }
 
 /// The series asked for, as they were written.
@@ -490,6 +571,7 @@ mod tests {
             since: Some(since.into()),
             until: until.map(String::from),
             every: every.map(String::from),
+            highest: false,
         }
     }
 
@@ -546,6 +628,50 @@ mod tests {
         let none =
             show(&dir, &selected, &options("3d", Some("2d"), None, false), now_ns).unwrap_err();
         assert!(none.message.starts_with("no points of fs.used between "), "{}", none.message);
+    }
+
+    #[test]
+    fn the_highest_is_a_line_each_or_an_entry_each_with_a_null_for_a_series_named_with_none() {
+        let (dir, start) = history("highest");
+        let select = selectors(&["fs.used", "cpu", "temp{disk/sda}"]);
+        let found = store::highest(&dir, start, start + 600, &select).unwrap();
+        assert_eq!(
+            render_highest(&found, &select),
+            format!(
+                "[{{\"highest\":[{},19.0],\"series\":\"cpu\"}},\
+                 {{\"highest\":[{},609000000.0],\"series\":\"fs.used{{/}}\"}},\
+                 {{\"highest\":null,\"series\":\"temp{{disk/sda}}\"}}]\n",
+                start + 540,
+                start + 540
+            )
+        );
+        assert_eq!(
+            render_highest_text(&found, true),
+            format!("cpu         19.0%  {t}\nfs.used{{/}}  609 MB  {t}\n", t = time(start + 540))
+        );
+        // Nothing found, and nothing asked for by its whole name, is an
+        // empty list.
+        let nothing = [Selector::parse("temp")];
+        assert_eq!(render_highest(&[], &nothing), "[]\n");
+    }
+
+    #[test]
+    fn highest_is_for_show_alone_and_does_not_go_with_every() {
+        let (dir, _) = history("highest-options");
+        let selected = selectors(&["fs.used"]);
+        let mut ask = options("1h", None, None, true);
+        ask.highest = true;
+        assert_eq!(show(&dir, &selected, &ask, util::now_ns()).unwrap(), 0);
+        ask.every = Some("5m".into());
+        let wrong = show(&dir, &selected, &ask, util::now_ns()).unwrap_err();
+        assert!(wrong.usage && wrong.message.contains("--every does not go with --highest"));
+        assert!(run(&["list", "--highest"]).is_err());
+        assert!(run(&["now", "--highest"]).is_err());
+        // A range with no point is said in words, as `show` says it.
+        let mut none = options("3d", Some("2d"), None, false);
+        none.highest = true;
+        let said = show(&dir, &selected, &none, util::now_ns()).unwrap_err();
+        assert!(said.message.starts_with("no points of fs.used between "), "{}", said.message);
     }
 
     #[test]

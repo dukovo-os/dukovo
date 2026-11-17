@@ -133,7 +133,7 @@ pub fn send(from: Option<&str>, to: &[String], message: &[u8]) -> Result<(), Err
     let (channels, wrong) = settings::load(&host);
     let email = channels.channels.into_iter().find_map(|channel| match channel.target {
         Target::Email(email) => Some(email),
-        Target::Webhook(_) => None,
+        Target::Webhook(_) | Target::Push(_) => None,
     });
     let Some(email) = email else {
         let why = wrong.first().cloned().unwrap_or_else(|| {

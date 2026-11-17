@@ -25,6 +25,13 @@
 //! (critical from 7). One proved by DNS by hand is told of at 21 and 7 days
 //! as an added one is, and a revoked one is told of until it is replaced.
 //!
+//! Each look also tells alertd the certificates that need attention, as the
+//! alerts `certificate:NAME` with the words of the notice: a warning, and
+//! critical from 7 days or once the certificate has run out. It sends the
+//! whole list with alertd's `set`, so that an alert whose certificate was
+//! renewed, replaced or removed clears by itself. What certd and `cert` did
+//! to the certificates is kept in `/system/state/certd/history`.
+//!
 //! While the clock is before the system's making it does neither (a
 //! certificate made then would be dated 1970), and looks again each
 //! minute. SIGHUP has it look now; SIGTERM ends it.
@@ -41,10 +48,12 @@ use std::time::{Duration, Instant};
 
 use ring::rand::{SecureRandom, SystemRandom};
 
+use crate::alerts::protocol::{About, Alert, Severity};
 use crate::args::Args;
 use crate::cert::acme::{self, Who};
+use crate::cert::history::{self, By, Event};
 use crate::cert::store::{Acme, Challenge, Kind, Store};
-use crate::cert::{self, inspect, machine};
+use crate::cert::{self, accounts, inspect, machine};
 use crate::notifyd::{self, Urgency};
 use crate::sign_in_notices;
 use crate::util::{self, Fail};
@@ -98,6 +107,8 @@ struct Certd {
     /// Why each certificate from an authority was not renewed at the last
     /// look, until it is.
     failed: BTreeMap<String, String>,
+    /// Whether the log already says that alertd could not be told.
+    alertd_unreached: bool,
 }
 
 /// certd(8).
@@ -121,6 +132,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         waiting: false,
         asked: BTreeMap::new(),
         failed: BTreeMap::new(),
+        alertd_unreached: false,
     };
     println!("certd: keeping certificates in {}", certd.store.dir().display());
     while !STOP.load(Ordering::Relaxed) {
@@ -165,6 +177,11 @@ impl Certd {
         }
         let kept = self.keep_this_machine(now);
         self.keep_authority_certificates(now);
+        // The summary of the accounts at authorities that anyone may read:
+        // made for the accounts of a machine that had them before it.
+        if let Err(why) = accounts::refresh(&self.store) {
+            eprintln!("<4>certd: the summary of the accounts cannot be written: {why}");
+        }
         self.warn_of_expiry(now);
         if kept {
             let mut spread = [0u8; 4];
@@ -199,6 +216,14 @@ impl Certd {
             details.fingerprint_colons(),
             util::local_time(details.not_after, "%F")
         );
+        let entry = history::Entry::new(
+            now,
+            machine::NAME,
+            Event::Made,
+            &format!("for {host}: {why}"),
+            By::Certd,
+        );
+        history::note(&self.store, &entry);
         if existed {
             self.remade = Some(format!(
                 "This machine's certificate was remade on {}: its fingerprint is now {}; a \
@@ -328,23 +353,40 @@ impl Certd {
     }
 
     /// Puts the notice of what needs a person's attention, or takes it
-    /// away when nothing does, and tells notifyd when it changed.
-    fn warn_of_expiry(&self, now: i64) {
+    /// away when nothing does, and tells notifyd when it changed; and tells
+    /// alertd the same, which clears what no longer does.
+    fn warn_of_expiry(&mut self, now: i64) {
         let (added, authority) = self.watched_certificates();
-        let (mut lines, mut urgency) = expiry_lines(&added, now);
-        let (mut more, more_urgent) = authority_lines(&authority, &self.failed, now);
-        lines.append(&mut more);
-        if more_urgent == Urgency::Critical {
-            urgency = Urgency::Critical;
-        }
+        let mut notices = expiry_notices(&added, now);
+        notices.append(&mut authority_notices(&authority, &self.failed, now));
+        self.tell_alertd(&alerts_of(&notices));
+        let urgency = if notices.iter().any(|notice| notice.critical) {
+            Urgency::Critical
+        } else {
+            Urgency::Normal
+        };
         let mut shown: Vec<String> = self.remade.iter().cloned().collect();
-        shown.append(&mut lines);
+        shown.extend(notices.into_iter().map(|notice| notice.line));
         if !sign_in_notices::put("certd", &shown) {
             return;
         }
         let sent = notifyd::send("certd", "Certificates", &shown.join("\n"), urgency);
         if let Err(err) = sent {
             eprintln!("<4>certd: cannot tell notifyd: {}", err.message);
+        }
+    }
+
+    /// Sets certd's alerts in alertd to `alerts`, each raised and each of
+    /// certd's others cleared. alertd not running is said once, until it
+    /// is.
+    fn tell_alertd(&mut self, alerts: &[Alert]) {
+        match crate::alerts::client::set(alerts) {
+            Ok(()) => self.alertd_unreached = false,
+            Err(why) if !self.alertd_unreached => {
+                self.alertd_unreached = true;
+                eprintln!("<4>certd: cannot tell alertd: {why}");
+            }
+            Err(_) => {}
         }
     }
 
@@ -395,72 +437,164 @@ struct Watched {
     revoked: bool,
 }
 
-/// The notice lines for the certificates from an authority, `failures`
-/// being why each was not renewed at the last look, at time `now`: one for
-/// a revoked certificate, one for one proved by hand with [`NOTICE_DAYS`] or
-/// fewer left, and one for one whose renewal failed with
-/// [`FAILED_NOTICE_DAYS`] or fewer left; and how urgent they are together.
-fn authority_lines(
+/// What certd says of one certificate that needs attention: a line of the
+/// sign-in notice, and the alert that has the same words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Notice {
+    name: String,
+    /// The line of the notice.
+    line: String,
+    /// What the alert says is wrong, in a line.
+    title: String,
+    /// From 7 days before the certificate runs out, or once it has.
+    critical: bool,
+    /// The error page of the alert, when it has one.
+    id: Option<&'static str>,
+}
+
+/// The notices for the certificates from an authority, `failures` being why
+/// each was not renewed at the last look, at time `now`: one for a revoked
+/// certificate, one for one proved by hand with [`NOTICE_DAYS`] or fewer
+/// left, and one for one whose renewal failed with [`FAILED_NOTICE_DAYS`]
+/// or fewer left.
+fn authority_notices(
     watched: &[Watched],
     failures: &BTreeMap<String, String>,
     now: i64,
-) -> (Vec<String>, Urgency) {
-    let mut urgency = Urgency::Normal;
-    let mut lines = Vec::new();
+) -> Vec<Notice> {
+    let mut notices = Vec::new();
     for one in watched {
         let days = (one.not_after - now).div_euclid(86_400);
         let ends = util::local_time(one.not_after, "%F");
-        let verb = if one.not_after <= now { "ran out" } else { "runs out" };
+        let ran_out = one.not_after <= now;
+        let verb = if ran_out { "ran out" } else { "runs out" };
         let by_hand = if one.by_hand { " --dns" } else { "" };
-        if one.revoked {
-            lines.push(format!(
-                "The certificate {} was revoked: get a new one with `elevate cert get {}{by_hand}`; \
-                 the services keep using it until it is replaced.",
-                one.name, one.name
-            ));
+        let name = &one.name;
+        let (line, title, critical, id) = if one.revoked {
+            (
+                format!(
+                    "The certificate {name} was revoked: get a new one with `elevate cert get \
+                     {name}{by_hand}`; the services keep using it until it is replaced."
+                ),
+                format!("The certificate {name} was revoked"),
+                false,
+                None,
+            )
         } else if one.by_hand && days <= NOTICE_DAYS {
-            lines.push(format!(
-                "The certificate {} {verb} on {ends}: renew it with `elevate cert get {} --dns`.",
-                one.name, one.name
-            ));
-            if days <= CRITICAL_DAYS {
-                urgency = Urgency::Critical;
-            }
-        } else if let Some(why) = failures.get(&one.name).filter(|_| days <= FAILED_NOTICE_DAYS) {
-            lines.push(format!(
-                "The certificate {} could not be renewed: {why}. It {verb} on {ends}.",
-                one.name
-            ));
-            if days <= CRITICAL_DAYS {
-                urgency = Urgency::Critical;
-            }
-        }
+            (
+                format!(
+                    "The certificate {name} {verb} on {ends}: renew it with `elevate cert get \
+                     {name} --dns`."
+                ),
+                format!("The certificate {name} {verb} on {ends}"),
+                days <= CRITICAL_DAYS,
+                ran_out.then_some(RAN_OUT),
+            )
+        } else if let Some(why) = failures.get(name).filter(|_| days <= FAILED_NOTICE_DAYS) {
+            (
+                format!("The certificate {name} could not be renewed: {why}. It {verb} on {ends}."),
+                format!("The certificate {name} could not be renewed"),
+                days <= CRITICAL_DAYS,
+                Some(if ran_out { RAN_OUT } else { KEEPS_FAILING }),
+            )
+        } else {
+            continue;
+        };
+        notices.push(Notice { name: name.clone(), line, title, critical, id });
     }
-    (lines, urgency)
+    notices
 }
 
-/// The notice lines for the certificates `ends`, each a name and the time
-/// it runs out, at time `now`: one for each with [`NOTICE_DAYS`] or
-/// fewer left, and how urgent they are together.
-fn expiry_lines(ends: &[(String, i64)], now: i64) -> (Vec<String>, Urgency) {
-    let mut urgency = Urgency::Normal;
-    let mut lines = Vec::new();
+/// The notices for the certificates `ends`, each a name and the time it
+/// runs out, at time `now`: one for each with [`NOTICE_DAYS`] or fewer left.
+fn expiry_notices(ends: &[(String, i64)], now: i64) -> Vec<Notice> {
+    let mut notices = Vec::new();
     for (name, not_after) in ends {
         let days = (not_after - now).div_euclid(86_400);
         if days > NOTICE_DAYS {
             continue;
         }
-        if days <= CRITICAL_DAYS {
-            urgency = Urgency::Critical;
-        }
-        let verb = if *not_after <= now { "ran out" } else { "runs out" };
-        lines.push(format!(
-            "The certificate {name} {verb} on {}: add its new version with `elevate cert add \
-             {name} --replace`.",
-            util::local_time(*not_after, "%F")
-        ));
+        let ran_out = *not_after <= now;
+        let verb = if ran_out { "ran out" } else { "runs out" };
+        let ends = util::local_time(*not_after, "%F");
+        notices.push(Notice {
+            name: name.clone(),
+            line: format!(
+                "The certificate {name} {verb} on {ends}: add its new version with `elevate cert \
+                 add {name} --replace`."
+            ),
+            title: format!("The certificate {name} {verb} on {ends}"),
+            critical: days <= CRITICAL_DAYS,
+            id: ran_out.then_some(RAN_OUT),
+        });
     }
-    (lines, urgency)
+    notices
+}
+
+/// The error ID of a certificate whose renewal keeps failing.
+const KEEPS_FAILING: &str = "CRT-121";
+
+/// The error ID of a certificate that has run out.
+const RAN_OUT: &str = "CRT-122";
+
+/// The notice lines for the certificates from an authority: see
+/// [`authority_notices`]; and how urgent they are together.
+#[cfg(test)]
+fn authority_lines(
+    watched: &[Watched],
+    failures: &BTreeMap<String, String>,
+    now: i64,
+) -> (Vec<String>, Urgency) {
+    lines_of(authority_notices(watched, failures, now))
+}
+
+/// The notice lines for the certificates `ends`: see [`expiry_notices`];
+/// and how urgent they are together.
+#[cfg(test)]
+fn expiry_lines(ends: &[(String, i64)], now: i64) -> (Vec<String>, Urgency) {
+    lines_of(expiry_notices(ends, now))
+}
+
+/// The lines of `notices`, and Critical when any is.
+#[cfg(test)]
+fn lines_of(notices: Vec<Notice>) -> (Vec<String>, Urgency) {
+    let urgency = if notices.iter().any(|notice| notice.critical) {
+        Urgency::Critical
+    } else {
+        Urgency::Normal
+    };
+    (notices.into_iter().map(|notice| notice.line).collect(), urgency)
+}
+
+/// The alerts for `notices`: `certificate:NAME`, a warning, and critical
+/// from 7 days or once the certificate has run out, with the notice's words
+/// and the error ID of the page for what is wrong at the end. An alert alertd
+/// would refuse, as for a name that is not a key, is left out.
+fn alerts_of(notices: &[Notice]) -> Vec<Alert> {
+    notices
+        .iter()
+        .filter_map(|notice| {
+            let severity = if notice.critical { Severity::Critical } else { Severity::Warning };
+            let detail = match notice.id {
+                Some(id) => format!("{} ({id})", notice.line),
+                None => notice.line.clone(),
+            };
+            let alert = Alert::new(
+                format!("certificate:{}", notice.name),
+                severity,
+                &notice.title,
+                &detail,
+            )
+            .about(About::Stopped);
+            match alert.invalid() {
+                None => Some(alert),
+                Some(why) => {
+                    eprintln!("<4>certd: no alert for {}: {why}", notice.name);
+                    None
+                }
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -583,6 +717,7 @@ mod tests {
             waiting: false,
             asked: BTreeMap::new(),
             failed: BTreeMap::new(),
+            alertd_unreached: false,
         }
     }
 
@@ -637,5 +772,107 @@ mod tests {
             lines[0]
         );
         assert_eq!(urgency, Urgency::Critical);
+    }
+
+    fn added(name: &str, left: i64) -> Vec<Alert> {
+        alerts_of(&expiry_notices(&[(name.into(), NOW + left)], NOW))
+    }
+
+    #[test]
+    fn an_added_certificate_alerts_from_21_days_and_critical_from_7() {
+        assert!(added("a.example", 22 * DAY).is_empty());
+        let warning = added("a.example", 21 * DAY + 600);
+        assert_eq!(warning.len(), 1);
+        assert_eq!(warning[0].key, "certificate:a.example");
+        assert_eq!(warning[0].severity, Severity::Warning);
+        assert_eq!(warning[0].kind(), Some(About::Stopped));
+        assert_eq!(warning[0].title, "The certificate a.example runs out on 2027-02-05");
+        assert_eq!(
+            warning[0].detail,
+            "The certificate a.example runs out on 2027-02-05: add its new version with \
+             `elevate cert add a.example --replace`."
+        );
+        assert_eq!(added("a.example", 8 * DAY + 600)[0].severity, Severity::Warning);
+        assert_eq!(added("a.example", 7 * DAY + 600)[0].severity, Severity::Critical);
+        // Once it has run out the alert is critical and has CRT-122's page.
+        let out = added("a.example", -DAY);
+        assert_eq!(out[0].severity, Severity::Critical);
+        assert!(out[0].detail.starts_with("The certificate a.example ran out on 2027-01-14:"));
+        assert!(out[0].detail.ends_with("--replace`. (CRT-122)"), "{}", out[0].detail);
+        assert!(added("a.example", 7 * DAY + 600)[0].detail.ends_with("--replace`."));
+    }
+
+    #[test]
+    fn a_renewal_that_keeps_failing_alerts_from_14_days_with_the_notice_s_words() {
+        let failed = failures(&[("a.example", "port 80 was closed (CRT-103)")]);
+        let alerts = |left: i64| {
+            alerts_of(&authority_notices(&[watched("a.example", left, false, false)], &failed, NOW))
+        };
+        assert!(alerts(15 * DAY).is_empty());
+        let warning = alerts(14 * DAY + 600);
+        assert_eq!(warning[0].severity, Severity::Warning);
+        assert_eq!(warning[0].title, "The certificate a.example could not be renewed");
+        assert_eq!(
+            warning[0].detail,
+            "The certificate a.example could not be renewed: port 80 was closed (CRT-103). It \
+             runs out on 2027-01-29. (CRT-121)"
+        );
+        assert_eq!(alerts(7 * DAY + 600)[0].severity, Severity::Critical);
+        let out = alerts(-DAY);
+        assert_eq!(out[0].severity, Severity::Critical);
+        assert!(out[0].detail.ends_with("ran out on 2027-01-14. (CRT-122)"), "{}", out[0].detail);
+        // A certificate that renewed, or was replaced or removed, is no alert,
+        // and `set` with what is left clears the rest.
+        let renewed =
+            authority_notices(&[watched("a.example", 5 * DAY, false, false)], &failures(&[]), NOW);
+        assert!(alerts_of(&renewed).is_empty());
+    }
+
+    #[test]
+    fn one_proved_by_hand_and_a_revoked_one_alert_as_their_notices_do() {
+        let none = failures(&[]);
+        let one = |left: i64, by_hand: bool, revoked: bool| {
+            alerts_of(&authority_notices(
+                &[watched("a.example", left, by_hand, revoked)],
+                &none,
+                NOW,
+            ))
+        };
+        assert!(one(22 * DAY, true, false).is_empty());
+        let hand = one(21 * DAY + 600, true, false);
+        assert_eq!(hand[0].severity, Severity::Warning);
+        assert!(hand[0].detail.ends_with("renew it with `elevate cert get a.example --dns`."));
+        assert_eq!(one(6 * DAY, true, false)[0].severity, Severity::Critical);
+        let revoked = one(60 * DAY, false, true);
+        assert_eq!(revoked[0].severity, Severity::Warning);
+        assert_eq!(revoked[0].title, "The certificate a.example was revoked");
+        assert!(revoked[0].detail.contains("was revoked: get a new one"), "{}", revoked[0].detail);
+    }
+
+    #[test]
+    fn the_alerts_and_the_notice_have_the_same_lines_in_the_same_order() {
+        let ends = [
+            (String::from("b.example"), NOW + 3 * DAY),
+            (String::from("a.example"), NOW + 90 * DAY),
+        ];
+        let from_authority = [watched("c.example", 10 * DAY, true, false)];
+        let mut notices = expiry_notices(&ends, NOW);
+        notices.append(&mut authority_notices(&from_authority, &failures(&[]), NOW));
+        let alerts = alerts_of(&notices);
+        let keys: Vec<&str> = alerts.iter().map(|alert| alert.key.as_str()).collect();
+        assert_eq!(keys, ["certificate:b.example", "certificate:c.example"]);
+        for (alert, notice) in alerts.iter().zip(&notices) {
+            assert!(alert.detail.starts_with(&notice.line));
+        }
+        // Nothing that needs attention is the empty list, which clears them all.
+        assert!(alerts_of(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_name_alertd_would_refuse_is_left_out_not_sent() {
+        let ends = [(String::from("Bad Name"), NOW + DAY)];
+        assert!(alerts_of(&expiry_notices(&ends, NOW)).is_empty());
+        let long = "a".repeat(130);
+        assert!(alerts_of(&expiry_notices(&[(long, NOW + DAY)], NOW)).is_empty());
     }
 }

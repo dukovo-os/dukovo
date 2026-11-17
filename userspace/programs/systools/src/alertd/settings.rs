@@ -24,7 +24,8 @@ use std::path::{Component, Path, PathBuf};
 use toml::{Table, Value};
 use tuf::Url;
 
-use crate::alerts::protocol::{Change, Severity, State};
+use super::push::{Network, Push};
+use crate::alerts::protocol::{Change, Kinds, Severity, State};
 
 /// The settings file.
 pub const FILE: &str = "/system/settings/alerts.toml";
@@ -34,10 +35,10 @@ pub const FILE: &str = "/system/settings/alerts.toml";
 const SSL: &str = "/system/settings/ssl";
 
 /// The settings of the email channel.
-const EMAIL_KEYS: [&str; 9] =
-    ["to", "from", "server", "port", "user", "password", "ca", "severity", "cleared"];
+const EMAIL_KEYS: [&str; 10] =
+    ["to", "from", "server", "port", "user", "password", "ca", "severity", "cleared", "about"];
 /// The settings of a webhook.
-const WEBHOOK_KEYS: [&str; 6] = ["kind", "url", "token", "room", "severity", "cleared"];
+const WEBHOOK_KEYS: [&str; 7] = ["kind", "url", "token", "room", "severity", "cleared", "about"];
 
 /// A password or a token: it prints as nothing but its presence.
 #[derive(Clone, PartialEq, Eq)]
@@ -63,21 +64,36 @@ impl fmt::Debug for Secret {
 }
 
 /// Which changes a channel is told: those at least as severe as
-/// `severity`, and clears only when `cleared`.
+/// `severity`, clears only when `cleared`, and only of the kinds in
+/// `about`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Filter {
     pub severity: Severity,
     pub cleared: bool,
+    pub about: Kinds,
 }
 
 impl Filter {
+    /// A filter that tells of every kind of alert, as one does that
+    /// names none.
+    #[cfg(test)]
+    pub fn new(severity: Severity, cleared: bool) -> Filter {
+        Filter { severity, cleared, about: Kinds::ALL }
+    }
+
     /// Whether `change` goes to a channel with this filter. A test always
-    /// goes; an event goes when its severity passes.
+    /// goes; an event goes when its severity passes; an alert that is
+    /// about a kind goes only where that kind is told of, and one that is
+    /// about none, or a word that is no kind, goes where its severity
+    /// does.
     pub fn passes(self, change: &Change) -> bool {
+        let severe = change.alert.severity >= self.severity;
         match change.state {
             State::Test => true,
-            State::Cleared => self.cleared && change.alert.severity >= self.severity,
-            State::Raised | State::Event => change.alert.severity >= self.severity,
+            State::Cleared if !self.cleared => false,
+            State::Cleared | State::Raised | State::Event => {
+                severe && change.alert.kind().is_none_or(|about| self.about.holds(about))
+            }
         }
     }
 }
@@ -93,11 +109,37 @@ pub struct Channel {
     pub target: Target,
 }
 
+impl Channel {
+    /// What `alerts status` calls its kind: `email`, a webhook's kind, or
+    /// `push`.
+    pub fn kind(&self) -> &'static str {
+        match &self.target {
+            Target::Email(_) => "email",
+            Target::Webhook(hook) => hook.kind.name(),
+            Target::Push(_) => "push",
+        }
+    }
+
+    /// The host of its server: a mail server's, the host of a webhook's
+    /// address or of a browser's push service. Never more of the address,
+    /// which can be a secret.
+    pub fn host(&self) -> Option<String> {
+        match &self.target {
+            Target::Email(mail) => Some(mail.server.clone()),
+            Target::Webhook(hook) => Url::parse(&hook.url).ok().map(|url| url.host().to_string()),
+            Target::Push(push) => Some(push.subscription.host()).filter(|host| !host.is_empty()),
+        }
+    }
+}
+
 /// Where a channel sends.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
     Email(Email),
     Webhook(Webhook),
+    /// A browser, by Web Push: kept in alertd's own `push.json`, not in
+    /// alerts.toml, as a browser adds and removes itself.
+    Push(Box<Push>),
 }
 
 /// The submission server and the addresses of the email channel.
@@ -124,7 +166,11 @@ pub enum Kind {
 }
 
 impl Kind {
-    fn parse(name: &str) -> Option<Kind> {
+    /// The words for every kind, as alerts.toml(5) lists them.
+    pub const NAMES: [&'static str; 5] = ["ntfy", "matrix", "slack", "discord", "json"];
+
+    /// The kind that `name` names.
+    pub fn parse(name: &str) -> Option<Kind> {
         match name {
             "ntfy" => Some(Kind::Ntfy),
             "matrix" => Some(Kind::Matrix),
@@ -156,12 +202,19 @@ pub struct Webhook {
     pub token: Option<Secret>,
     /// Matrix only: the room's ID.
     pub room: Option<String>,
+    /// Its place among the `[[webhook]]` tables of alerts.toml, from 1,
+    /// whether the ones before it are channels or have mistakes: what
+    /// `alerts webhook remove` takes.
+    pub place: u32,
 }
 
 /// The channels the settings name.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Settings {
     pub channels: Vec<Channel>,
+    /// `[push] private`: the networks a browser's push service may be
+    /// on besides the internet, for a push service of one's own.
+    pub private: Vec<Network>,
 }
 
 /// The settings in [`FILE`], and what is wrong in it, a line each; no
@@ -219,36 +272,71 @@ pub fn read_settings(text: &str, host: &str) -> (Settings, Vec<String>) {
     };
     let mut wrong: Vec<String> = table
         .keys()
-        .filter(|key| !["email", "webhook"].contains(&key.as_str()))
+        .filter(|key| !["email", "webhook", "push"].contains(&key.as_str()))
         .map(|key| {
-            format!("{FILE}: no setting is called {key}; there is [email] and each address is a [[webhook]]")
+            format!(
+                "{FILE}: no setting is called {key}; there is [email], [push], and each address \
+                 is a [[webhook]]"
+            )
         })
         .collect();
+    let private = match table.get("push") {
+        None => Vec::new(),
+        Some(push) => push_private(push).unwrap_or_else(|why| {
+            wrong.push(format!("{FILE}: [push]: {why}"));
+            Vec::new()
+        }),
+    };
     let mut channels = Vec::new();
     if let Some(email) = table.get("email") {
         match email_channel(email, host) {
-            Ok(channel) => channels.push(channel),
+            Ok((channel, notes)) => {
+                channels.push(channel);
+                wrong.extend(notes.iter().map(|note| format!("{FILE}: [email]: {note}")));
+            }
             Err(why) => wrong.push(format!("{FILE}: [email]: {why}")),
         }
     }
     match table.get("webhook") {
         None => {}
         Some(Value::Array(entries)) => {
-            for (at, entry) in entries.iter().enumerate() {
-                match webhook_channel(entry) {
-                    Ok(channel) => channels.push(channel),
-                    Err(why) => wrong.push(format!("{FILE}: webhook {}: {why}", at + 1)),
+            for (at, entry) in (1..).zip(entries) {
+                match webhook_channel(entry, at) {
+                    Ok((channel, notes)) => {
+                        channels.push(channel);
+                        wrong.extend(
+                            notes.iter().map(|note| format!("{FILE}: webhook {at}: {note}")),
+                        );
+                    }
+                    Err(why) => wrong.push(format!("{FILE}: webhook {at}: {why}")),
                 }
             }
         }
         Some(_) => wrong.push(format!("{FILE}: webhook is not a [[webhook]] table")),
     }
     name_uniquely(&mut channels);
-    (Settings { channels }, wrong)
+    (Settings { channels, private }, wrong)
+}
+
+/// The networks `[push] private` lists.
+fn push_private(entry: &Value) -> Result<Vec<Network>, String> {
+    let table = entry.as_table().ok_or("push is not a [push] table")?;
+    unknown_key(table, &["private"])?;
+    match table.get("private") {
+        None => Ok(Vec::new()),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                let text = item.as_str().ok_or("private is not a list of addresses")?;
+                Network::parse(text).map_err(|why| format!("private: {why}"))
+            })
+            .collect(),
+        Some(_) => Err("private is not a list of addresses".into()),
+    }
 }
 
 /// Gives a channel whose name an earlier one has a number after it.
-fn name_uniquely(channels: &mut [Channel]) {
+pub(super) fn name_uniquely(channels: &mut [Channel]) {
     for at in 1..channels.len() {
         let name = channels[at].name.clone();
         let mut number = 1;
@@ -268,8 +356,9 @@ fn text<'a>(table: &'a Table, key: &str) -> Result<Option<&'a str>, String> {
     }
 }
 
-/// The filter of a channel's table.
-fn filter(table: &Table) -> Result<Filter, String> {
+/// The filter of a channel's table, and what is wrong in its `about`,
+/// which is not a reason to leave the channel out (ALR-106).
+fn filter(table: &Table) -> Result<(Filter, Vec<String>), String> {
     let severity = match text(table, "severity")? {
         None | Some("warning") => Severity::Warning,
         Some("critical") => Severity::Critical,
@@ -280,7 +369,38 @@ fn filter(table: &Table) -> Result<Filter, String> {
         Some(Value::Boolean(cleared)) => *cleared,
         Some(_) => return Err("cleared is not true or false".into()),
     };
-    Ok(Filter { severity, cleared })
+    let (about, notes) = kinds(table);
+    Ok((Filter { severity, cleared, about }, notes))
+}
+
+/// The kinds of alert a channel's `about` names, and what is wrong with it,
+/// a line each (ALR-106). It can only narrow what a channel is told of: a
+/// word that is no kind is left out, and an `about` that names no kind, is
+/// empty or is not a list of words tells the channel of every kind, so that
+/// a mistake in it never loses an alert.
+fn kinds(table: &Table) -> (Kinds, Vec<String>) {
+    let Some(value) = table.get("about") else { return (Kinds::ALL, Vec::new()) };
+    let every = "the channel is told of every kind (ALR-106)";
+    let Some(list) = value.as_array() else {
+        let note = format!("about is not a list of kinds of alert, such as [\"data\"]; {every}");
+        return (Kinds::ALL, vec![note]);
+    };
+    let Some(words) = list.iter().map(Value::as_str).collect::<Option<Vec<&str>>>() else {
+        let note = format!("about holds something that is not text; {every}");
+        return (Kinds::ALL, vec![note]);
+    };
+    let words: Vec<String> = words.into_iter().map(str::to_string).collect();
+    let (set, unknown) = Kinds::read(&words);
+    let mut notes: Vec<String> = unknown
+        .iter()
+        .map(|word| format!("about names {word}, which is no kind of alert (ALR-106)"))
+        .collect();
+    if words.is_empty() {
+        notes.push(format!("about is empty and names no kind of alert; {every}"));
+    } else if unknown.len() == words.len() {
+        notes.push(format!("about names no kind of alert; {every}"));
+    }
+    (set, notes)
 }
 
 fn unknown_key(table: &Table, known: &[&str]) -> Result<(), String> {
@@ -290,7 +410,7 @@ fn unknown_key(table: &Table, known: &[&str]) -> Result<(), String> {
     }
 }
 
-fn email_channel(entry: &Value, host: &str) -> Result<Channel, String> {
+fn email_channel(entry: &Value, host: &str) -> Result<(Channel, Vec<String>), String> {
     let table = entry.as_table().ok_or("email is not a table of settings")?;
     unknown_key(table, &EMAIL_KEYS)?;
     let to = recipients(table)?;
@@ -334,7 +454,8 @@ fn email_channel(entry: &Value, host: &str) -> Result<Channel, String> {
         password: password.map(|password| Secret(password.to_string())),
         ca,
     };
-    Ok(Channel { name, filter: filter(table)?, target: Target::Email(email) })
+    let (filter, notes) = filter(table)?;
+    Ok((Channel { name, filter, target: Target::Email(email) }, notes))
 }
 
 /// The addresses of `to`.
@@ -358,7 +479,7 @@ fn recipients(table: &Table) -> Result<Vec<String>, String> {
 /// Whether `address` is `local@domain` in the plain form mail is sent to:
 /// no spaces, quotes, angle brackets or line breaks, which could end the
 /// address in SMTP's commands and start another.
-fn is_address(address: &str) -> bool {
+pub(crate) fn is_address(address: &str) -> bool {
     let Some((local, domain)) = address.split_once('@') else { return false };
     let local_char = |c: char| c.is_ascii_graphic() && !"<>()[]\\,;:\"@".contains(c);
     !local.is_empty() && local.len() <= 64 && local.chars().all(local_char) && is_host(domain)
@@ -366,7 +487,7 @@ fn is_address(address: &str) -> bool {
 
 /// Whether `host` is a host name or an IPv4 address: letters, digits,
 /// dots and hyphens.
-fn is_host(host: &str) -> bool {
+pub(crate) fn is_host(host: &str) -> bool {
     let edge = |c: char| c == '.' || c == '-';
     !host.is_empty()
         && host.len() <= 253
@@ -389,7 +510,7 @@ fn in_ssl_folder(file: &str) -> Result<PathBuf, String> {
     }
 }
 
-fn webhook_channel(entry: &Value) -> Result<Channel, String> {
+fn webhook_channel(entry: &Value, place: u32) -> Result<(Channel, Vec<String>), String> {
     let table = entry.as_table().ok_or("it is not a table of settings")?;
     unknown_key(table, &WEBHOOK_KEYS)?;
     let name =
@@ -427,8 +548,10 @@ fn webhook_channel(entry: &Value) -> Result<Channel, String> {
         url: url.to_string(),
         token: token.map(|token| Secret(token.to_string())),
         room: room.map(str::to_string),
+        place,
     };
-    Ok(Channel { name: channel_name, filter: filter(table)?, target: Target::Webhook(target) })
+    let (filter, notes) = filter(table)?;
+    Ok((Channel { name: channel_name, filter, target: Target::Webhook(target) }, notes))
 }
 
 /// Alerts are sent over TLS only; the json kind may use plain HTTP to a
@@ -503,6 +626,26 @@ mod tests {
     }
 
     #[test]
+    fn push_private_names_the_networks_a_push_service_may_be_on() {
+        let text = "[push]\nprivate = [\"10.0.2.0/24\", \"fd00::/8\"]\n";
+        let (settings, wrong) = read_settings(text, HOST);
+        assert!(wrong.is_empty(), "{wrong:?}");
+        let networks = ["10.0.2.0/24", "fd00::/8"].map(|text| Network::parse(text).unwrap());
+        assert_eq!(settings.private, networks);
+        let (settings, wrong) = read_settings("[push]\nprivate = [\"ten\"]\n", HOST);
+        assert!(settings.private.is_empty());
+        assert_eq!(
+            wrong,
+            [format!(
+                "{FILE}: [push]: private: ten is not an address or a network such as \
+                 192.168.0.0/16"
+            )]
+        );
+        let (_, wrong) = read_settings("[push]\nkey = \"x\"\n", HOST);
+        assert_eq!(wrong, [format!("{FILE}: [push]: no setting is called key")]);
+    }
+
+    #[test]
     fn email_with_every_setting_is_read() {
         let channel = one(r#"
             [email]
@@ -518,7 +661,7 @@ mod tests {
             "#)
         .unwrap();
         assert_eq!(channel.name, "email to ops@example.com and 1 more");
-        assert_eq!(channel.filter, Filter { severity: Severity::Critical, cleared: false });
+        assert_eq!(channel.filter, Filter::new(Severity::Critical, false));
         let email = target_email(channel);
         assert_eq!(email.to, ["ops@example.com", "me@example.org"]);
         assert_eq!(
@@ -534,7 +677,7 @@ mod tests {
     fn email_with_only_what_it_needs_goes_through_starttls_from_the_machine() {
         let channel = one(&email("")).unwrap();
         assert_eq!(channel.name, "email to ops@example.com");
-        assert_eq!(channel.filter, Filter { severity: Severity::Warning, cleared: true });
+        assert_eq!(channel.filter, Filter::new(Severity::Warning, true));
         let email = target_email(channel);
         assert_eq!((email.from.as_str(), email.port), ("alerts@server", 587));
         assert_eq!((email.user, email.password, email.ca), (None, None, None));
@@ -683,7 +826,8 @@ mod tests {
             ("webhook = [5]\n".into(), "webhook 1: it is not a table of settings"),
             (
                 "colour = 5\n".into(),
-                "no setting is called colour; there is [email] and each address is a [[webhook]]",
+                "no setting is called colour; there is [email], [push], and each address is a \
+                 [[webhook]]",
             ),
         ] {
             let refused = one(&text).unwrap_err();
@@ -779,11 +923,11 @@ mod tests {
             at: 0,
             source: "s".into(),
             state,
-            alert: Alert { key: "k".into(), severity, title: "t".into(), detail: String::new() },
+            alert: Alert::new("k".into(), severity, "t", ""),
         };
-        let all = Filter { severity: Severity::Warning, cleared: true };
-        let critical = Filter { severity: Severity::Critical, cleared: true };
-        let quiet = Filter { severity: Severity::Warning, cleared: false };
+        let all = Filter::new(Severity::Warning, true);
+        let critical = Filter::new(Severity::Critical, true);
+        let quiet = Filter::new(Severity::Warning, false);
         assert!(all.passes(&change(State::Raised, Severity::Warning)));
         assert!(!critical.passes(&change(State::Raised, Severity::Warning)));
         assert!(critical.passes(&change(State::Raised, Severity::Critical)));
@@ -796,6 +940,146 @@ mod tests {
         for filter in [all, critical, quiet] {
             assert!(filter.passes(&change(State::Test, Severity::Warning)));
         }
+    }
+
+    /// The kinds a channel with `about` is told of, and the lines the log
+    /// says of it.
+    fn told_of(settings: &str) -> (Kinds, Vec<String>) {
+        let (settings, wrong) = read_settings(settings, HOST);
+        let channel = settings.channels.first().expect("the channel is kept");
+        (channel.filter.about, wrong)
+    }
+
+    #[test]
+    fn about_narrows_what_a_channel_is_told_of_and_a_mistake_in_it_never_does() {
+        use crate::alerts::protocol::About;
+        let data = Kinds::of(&[About::Data]);
+        let email_with = |about: &str| email(&format!("about = {about}\n"));
+        // None is every kind, as every file today is.
+        assert_eq!(told_of(&email("")), (Kinds::ALL, Vec::new()));
+        assert_eq!(told_of(&email_with("[\"data\"]")), (data, Vec::new()));
+        let both = Kinds::of(&[About::Data, About::Hardware]);
+        assert_eq!(told_of(&email_with("[\"hardware\", \"data\", \"data\"]")), (both, Vec::new()));
+        assert_eq!(told_of(&email_with("[\"data\", \"stopped\", \"hardware\"]")).0, Kinds::ALL);
+        // A word that is no kind is left out and said, the others kept.
+        let (kinds, wrong) = told_of(&email_with("[\"data\", \"colour\"]"));
+        assert_eq!(kinds, data);
+        assert_eq!(
+            wrong,
+            [format!("{FILE}: [email]: about names colour, which is no kind of alert (ALR-106)")]
+        );
+        // Everything else a mistake can be gives every kind, never fewer.
+        for (value, why) in [
+            ("[]", "about is empty and names no kind of alert"),
+            ("[\"colour\"]", "about names no kind of alert"),
+            ("\"data\"", "about is not a list of kinds of alert, such as [\"data\"]"),
+            ("[1]", "about holds something that is not text"),
+            ("true", "about is not a list of kinds of alert"),
+        ] {
+            let (kinds, wrong) = told_of(&email_with(value));
+            assert_eq!(kinds, Kinds::ALL, "{value}");
+            let said = wrong.last().cloned().unwrap_or_default();
+            assert!(
+                said.starts_with(&format!("{FILE}: [email]: {why}"))
+                    && said.ends_with("the channel is told of every kind (ALR-106)"),
+                "{value}: {wrong:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_webhooks_about_is_read_as_the_emails_and_its_line_names_its_place() {
+        use crate::alerts::protocol::About;
+        let text = format!(
+            "{}\n{}",
+            hook("kind = \"ntfy\"\nurl = \"https://ntfy.sh/a-topic\"\n"),
+            hook(
+                "kind = \"json\"\nurl = \"https://hooks.example.org/x\"\nabout = \
+                 [\"hardware\", \"colour\"]\n"
+            )
+        );
+        let (settings, wrong) = read_settings(&text, HOST);
+        assert_eq!(
+            wrong,
+            [format!("{FILE}: webhook 2: about names colour, which is no kind of alert (ALR-106)")]
+        );
+        let [first, second] = &settings.channels[..] else { panic!("{:?}", settings.channels) };
+        assert_eq!(first.filter.about, Kinds::ALL);
+        assert_eq!(second.filter.about, Kinds::of(&[About::Hardware]));
+        let place = |channel: &Channel| match &channel.target {
+            Target::Webhook(hook) => hook.place,
+            other => panic!("not a webhook: {other:?}"),
+        };
+        assert_eq!((place(first), place(second)), (1, 2));
+    }
+
+    #[test]
+    fn a_webhooks_place_counts_the_tables_that_have_mistakes_too() {
+        let text = format!(
+            "{}\n{}",
+            hook("kind = \"pager\"\nurl = \"https://x.example.org\"\n"),
+            hook("kind = \"ntfy\"\nurl = \"https://ntfy.sh/a-topic\"\n")
+        );
+        let (settings, wrong) = read_settings(&text, HOST);
+        assert_eq!(wrong.len(), 1);
+        match &settings.channels[0].target {
+            Target::Webhook(hook) => assert_eq!(hook.place, 2),
+            other => panic!("not a webhook: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_change_goes_to_a_channel_told_of_its_kind_and_to_one_told_of_every_kind() {
+        use crate::alerts::protocol::{About, Alert};
+        let change = |about: Option<&str>, state| {
+            let mut alert = Alert::new("k".into(), Severity::Warning, "t", "");
+            alert.about = about.map(str::to_string);
+            Change { at: 0, source: "s".into(), state, alert }
+        };
+        let told = |kinds: &[About]| Filter {
+            about: Kinds::of(kinds),
+            ..Filter::new(Severity::Warning, true)
+        };
+        let data = told(&[About::Data]);
+        assert!(data.passes(&change(Some("data"), State::Raised)));
+        assert!(!data.passes(&change(Some("hardware"), State::Raised)));
+        assert!(!data.passes(&change(Some("stopped"), State::Event)));
+        // The clearing of an alert goes where its raising did.
+        assert!(data.passes(&change(Some("data"), State::Cleared)));
+        assert!(!data.passes(&change(Some("hardware"), State::Cleared)));
+        // An alert about none, or about a word no kind, goes to every channel.
+        assert!(data.passes(&change(None, State::Raised)));
+        assert!(data.passes(&change(Some("colour"), State::Raised)));
+        assert!(data.passes(&change(Some(""), State::Event)));
+        // A test goes to all, whatever it is about.
+        assert!(data.passes(&change(Some("hardware"), State::Test)));
+        // A channel that is not told of clears is not, of any kind.
+        let quiet = Filter { cleared: false, ..data };
+        assert!(!quiet.passes(&change(Some("data"), State::Cleared)));
+        assert!(quiet.passes(&change(Some("data"), State::Raised)));
+        for about in ["data", "stopped", "hardware"] {
+            assert!(
+                Filter::new(Severity::Warning, true).passes(&change(Some(about), State::Raised))
+            );
+        }
+    }
+
+    #[test]
+    fn a_channel_says_its_kind_and_the_host_of_its_server_and_never_more() {
+        let (settings, _) = read_settings(
+            &format!(
+                "{}\n{}",
+                email(""),
+                hook("kind = \"ntfy\"\nurl = \"https://ntfy.sh/a-long-topic\"\n")
+            ),
+            HOST,
+        );
+        let said: Vec<(&str, Option<String>)> =
+            settings.channels.iter().map(|channel| (channel.kind(), channel.host())).collect();
+        assert_eq!(
+            said,
+            [("email", Some("smtp.example.com".into())), ("ntfy", Some("ntfy.sh".into()))]
+        );
     }
 
     #[test]

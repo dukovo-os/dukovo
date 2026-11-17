@@ -1,0 +1,60 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ */
+
+/*
+ * Report a problem: the choices and what the report holds beside the text of
+ * the report on a wide screen, one under the other on a phone. The text is the
+ * board's dark code surface, a row for each line, what redaction took out and
+ * what the person cut marked by colour and by shape. Same rules as console.css:
+ * rem, and px for borders and focus rings.
+ */
+.rp { display: grid; gap: 1rem; grid-template-columns: minmax(0, 1fr); align-items: start; }
+.rp-left { display: flex; flex-direction: column; gap: .857rem; min-width: 0; }
+.rp-problem:empty, .rp-status:empty, .rp-command:empty, .rp-lead:empty, .rp-errors:empty { display: none; }
+.rp-actions { display: flex; flex-direction: column; gap: .571rem; }
+.rp-actions p, .rp-live p, .rp-lead p { margin: 0; }
+.rp-privacy { margin: 0; }
+.rp-privacy summary { padding: .929rem 0; }
+.rp-privacy p { margin: .429rem 0 0; max-width: 60rem; }
+.rp-choices, .rp-answers, .rp-editor { display: flex; flex-direction: column; gap: .429rem; }
+.rp-answers, .rp-editor { gap: .857rem; }
+.rp-parts { margin: 0; padding-left: 1.143rem; display: flex; flex-direction: column; gap: .214rem; }
+.rp textarea.input { height: auto; min-height: 5.5rem; padding: .357rem .571rem; resize: vertical; width: 100%; }
+.rp-card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .571rem; }
+.rp-live { display: flex; flex-direction: column; gap: .714rem; min-width: 0; }
+
+/* The text: a row for each line, scrolling inside its box */
+.rp-box { position: relative; min-width: 0; }
+.rp-text { --taken: #F0C26E; --cut: #8FC7FF; max-height: min(85.8rem, 75vh); overflow: auto; white-space: normal; }
+.hc .rp-text { --taken: #FFD166; --cut: #00E5FF; }
+.rl { display: flex; gap: .571rem; align-items: flex-start; padding-left: .357rem; border-left: 3px solid transparent; }
+.rl-text { flex: 1 1 auto; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rl-text:empty::before { content: " "; white-space: pre; }
+.rl.heading { font-weight: 600; }
+.rl.typed, .rl.heading.typed { border-left-color: var(--cut); }
+.rl-tag { flex: none; font-size: .786rem; font-weight: 400; color: var(--cut); user-select: none; -webkit-user-select: none; }
+.rp-text mark { color: var(--taken); background: rgba(240, 194, 110, .22); border-radius: .143rem; padding: 0 .143rem; }
+.rp-text mark.cut { color: var(--cut); background: rgba(143, 199, 255, .2); outline: 1px dashed currentColor; outline-offset: -1px; }
+.hc .rp-text mark, .hc .rp-text mark.cut { background: none; outline: 1px solid currentColor; outline-offset: -1px; }
+@media (forced-colors: active) {
+  .rp-text mark { outline: 1px solid currentColor; outline-offset: -1px; }
+}
+
+/* Cut line on the line that is pointed at or reached by the arrow keys; always there on a phone. Cut these words is set beside the selection by the page. */
+.rl-cut { visibility: hidden; flex: none; margin-left: auto; user-select: none; -webkit-user-select: none; }
+.rl:hover .rl-cut, .rl:focus-within .rl-cut, .rp-text:focus-within .rl.act .rl-cut { visibility: visible; }
+.rp-words { position: absolute; z-index: 2; box-shadow: var(--shadow); }
+@media (hover: none) {
+  .rl-cut { visibility: visible; }
+}
+
+@container (min-width: 51.5rem) {
+  .rp { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); }
+}
+@container (max-width: 51.4rem) {
+  .rp-actions .btns .btn { flex: 1 1 100%; }
+  .rl-cut { visibility: visible; min-width: 3.143rem; }
+  .rp-text { max-height: 70vh; }
+}

@@ -15,8 +15,8 @@ metricsd - keep the machine's history, warn early, and answer Prometheus
 
 metricsd reads the machine once a step (ADR 0484): the processors,
 load, memory and swap, each disk's reads and writes, each filesystem's
-use, each network card, the temperatures, what each service uses, and
-each Btrfs volume's missing disks. It keeps each reading in a history of
+use, each network card, the temperatures, including those of the disks,
+what each service uses, and each Btrfs volume's missing disks. It keeps each reading in a history of
 two weeks at the step and a year at one record an hour, and writes the
 newest reading as text, so that *metrics*(1) and the web console show
 the machine's past and now with nothing to install. Spark runs *metricsd
@@ -77,7 +77,7 @@ at a step, or no value yet, is missing for it.
 :  the card
 :  receive and send errors and drops in the step
 |  temp
-:  chip/label, or chip/tempN without a label; zone/type for a thermal zone
+:  chip/label, or chip/tempN without a label; zone/type for a thermal zone; disk/name for a disk
 :  degrees Celsius
 |  service.cpu
 :  the service
@@ -107,7 +107,11 @@ and its warnings are not repeated for each. The
 loopback card is left out of the history's *net.rx*, *net.tx* and
 *net.errors*, but not of the endpoint's, as node_exporter has it. A
 thermal zone of the firmware whose type another zone has is told by its
-number: *zone/acpitz-0*. *service.cpu* and *service.memory* are those of
+number: *zone/acpitz-0*. A disk's temperature, *temp{disk/sda}*, is what
+*diskhealth*(8) read at its last look, which it makes every 10 minutes;
+the series has a point for each step that reading is not older than 15
+minutes, and has none for a disk that sleeps, which is not read so as
+not to wake it. *service.cpu* and *service.memory* are those of
 the processes of a service's resource domain (*spark*(8)); the processes
 of sessions and apps count in *cpu* and *memory.used* only.
 
@@ -183,6 +187,10 @@ set in *metrics.toml*(5).
 :  a sensor is *temperature-margin* degrees (5) below its critical temperature, or at its maximum where it has no critical one, for 5 steps in a row
 :  warning; critical at its critical temperature
 :  it is 3 degrees below the line it was raised at; a critical one is a warning again 3 degrees below its critical temperature
+|  temp:disk/_name_
+:  a disk is at its warning temperature, the disk's own or the usual for its kind (*diskhealth*(8)), for 5 steps in a row
+:  warning; critical at its critical temperature
+:  it is 3 degrees below the line it was raised at; a critical one is a warning again 3 degrees below its critical temperature
 |  certificate:_file_
 :  the first certificate in a *.pem* or *.crt* file of _/system/settings/ssl_ ends within *certificate-days* (14)
 :  warning; critical within 3 days, or once it has ended
@@ -190,7 +198,8 @@ set in *metrics.toml*(5).
 
 A filesystem mounted read-only is not checked, since freeing space on it
 is not something its owner can do. A sensor with neither a critical
-temperature nor a maximum is not checked. A file in _/system/settings/ssl_
+temperature nor a maximum is not checked, and neither is a disk that gives
+no temperature or no limits. A file in _/system/settings/ssl_
 that holds only a key is skipped, and the certificates are read at start
 and then once an hour, not at each step. After a restart the line of a
 filesystem's filling starts from the history, not from nothing.
@@ -201,7 +210,8 @@ Each title names the thing and the number: "/data is 93% full (1.2 TB of
 copy until it is replaced". Each detail says what to do, and ends with an
 error ID, *MET-101* for a full filesystem, *MET-102* for a filling one,
 *MET-103* and *MET-104* for a missing and a lagging disk, *MET-105* for
-memory, *MET-106* for a sensor and *MET-107* for a certificate. The
+memory, *MET-106* for a sensor, *MET-107* for a certificate and *MET-108*
+for a disk that is too hot, whose title has the disk's model. The
 support center has a page for each.
 
 # PROMETHEUS
@@ -223,7 +233,8 @@ and *node_disk_io_time_seconds_total*{device};
 *node_network_receive_bytes_total*, *node_network_transmit_bytes_total*,
 *node_network_receive_errs_total* and
 *node_network_transmit_errs_total*{device};
-*node_hwmon_temp_celsius*{chip,sensor}; *node_boot_time_seconds* and
+*node_hwmon_temp_celsius*{chip,sensor}, a disk's with the chip *disk*;
+*node_boot_time_seconds* and
 *node_time_seconds*; *node_uname_info*{sysname,release,machine,nodename}.
 
 Dukovo's own are *dukovo_service_cpu_seconds_total*{service} and
@@ -274,6 +285,9 @@ _/system/settings/ssl_
 _/system/live/alerts/socket_
 	alertd's socket, where the alerts are given.
 
+_/system/live/diskhealth/_
+	What each disk's temperature is read from (*diskhealth*(8)).
+
 _/system/settings/spark/services/metricsd.toml_
 	Its service. It holds the history, the newest row and the port 9100
 	to listen on (*service.toml*(5)). It reads each filesystem's space
@@ -313,6 +327,7 @@ $ curl http://192.168.1.10:9100/metrics
 
 # SEE ALSO
 
-*metrics*(1), *metrics.toml*(5), *alertd*(8), *alerts*(8), *log*(1),
+*metrics*(1), *metrics.toml*(5), *alertd*(8), *alerts*(8), *diskhealth*(8),
+*hardware*(8), *log*(1),
 *dukovo-privacy*(7), *radix-proc*(5), *radix-sysfs*(5), *service*(8),
 *spark*(8), *systools*(1)

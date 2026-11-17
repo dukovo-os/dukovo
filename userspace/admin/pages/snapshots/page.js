@@ -162,7 +162,7 @@ export async function show(view) {
       // A reader cannot back up or check, and is told who can.
       const buttons = admin ? one.buttons.map((button) => {
         if (button.id === 'run' || button.id === 'verify') return jobs.button(button.id, button.name, button.label, { size: button.id === 'run' ? 'small default' : 'small' });
-        if (button.id === 'move') return h('a', { class: 'btn small', href: button.href }, button.label);
+        if (button.href) return h('a', { class: 'btn small', href: button.href }, button.label);
         const choose = h('button', { class: 'btn small', type: 'button' }, button.label);
         choose.addEventListener('click', () => addPlace(volumes()[0] ?? null));
         return choose;

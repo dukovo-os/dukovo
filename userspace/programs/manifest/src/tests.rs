@@ -143,6 +143,9 @@ fn the_updater_holds_the_roots_system_names_and_no_owner_s_files() {
     // fallback; the health check removes a half-built slot and no more.
     assert!(stage.network.outbound && !health.network.outbound);
     assert_eq!(health.files.root_subvolumes.len(), 4);
+    // A memory test asked for at a start is kept once the start is seen
+    // through, and what was asked is cleared.
+    assert!(health.files.read_write.iter().any(|place| place == "/system/state/hardware"));
     for name in ["@settings", "@state", "@snapshots"] {
         assert!(stage.files.root_subvolumes.iter().any(|held| held == name), "{name}");
     }

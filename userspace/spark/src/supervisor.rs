@@ -83,6 +83,7 @@ macro_rules! audit {
 mod certd;
 mod health;
 mod read;
+mod runs;
 mod show;
 mod starting;
 pub mod trial;
@@ -931,6 +932,9 @@ pub struct Supervisor {
     program: Option<Program>,
     /// The backup hooks running, if a request asked for them.
     hooks: Option<Hooks>,
+    /// The program a `run` request runs as a service's, if one does
+    /// (ADR 0569).
+    running: Option<runs::Running>,
     shutdown: Option<Shutdown>,
     /// The watchdog's timeout to ask for, 0 for none, and whether to stop
     /// responding once it runs: at the first start (`--test-hang`), or at
@@ -1018,6 +1022,7 @@ impl Supervisor {
             dir: String::from(SERVICES_DIR),
             program: None,
             hooks: None,
+            running: None,
             shutdown: None,
             watchdog_seconds: WATCHDOG_SECONDS,
             hang: false,
@@ -1862,7 +1867,8 @@ impl Supervisor {
     }
 
     /// Process `pid` ended with `status`: a backup hook, the program
-    /// Spark was asked to run, a health check, or a service.
+    /// Spark was asked to run, a program run as a service's, a health
+    /// check, or a service.
     fn ended(&mut self, pid: u64, status: u32) {
         if self.hooks.as_ref().and_then(|h| h.running.as_ref()).is_some_and(|r| r.pid == pid) {
             self.hook_ended(status);
@@ -1874,6 +1880,9 @@ impl Supervisor {
             flush_line(&mut program.line, None);
             println!("spark: process {pid} ({}) {}", program.path, ending(status));
             self.note_idle();
+            return;
+        }
+        if self.run_ended(pid, status) {
             return;
         }
         if self.check_ended(pid, status) {
@@ -2054,6 +2063,9 @@ impl Supervisor {
             connection.until = now() + CONNECTION_WAIT;
             return self.write_answer(index);
         }
+        if let Some(words) = request.strip_prefix("run ") {
+            return self.begin_run(index, words);
+        }
         if let Some(phase) = request.strip_prefix("hooks ") {
             let connection = self.connections.remove(index);
             self.begin_hooks(connection.file, phase.trim());
@@ -2152,20 +2164,68 @@ impl Supervisor {
     }
 
     /// The answer to `reload NAME` from process `peer`: SIGHUP for the
-    /// service, if it runs.
-    fn answer_reload(&self, name: Option<&str>, peer: u64) -> String {
+    /// service, if it runs. When its file names other certificates than
+    /// it runs with, they are copied first, so that a service that reads
+    /// which one to use from its own settings, as admind does, finds a new
+    /// one there on SIGHUP (ADR 0567); the rest of a changed file waits
+    /// for its restart, as before.
+    fn answer_reload(&mut self, name: Option<&str>, peer: u64) -> String {
         let Some(name) = name else {
             return "error: reload needs a service's name\n".into();
         };
-        let Some(service) = self.services.iter().find(|s| s.spec.name == name) else {
+        let Some(index) = self.services.iter().position(|s| s.spec.name == name) else {
             return format!("error: no service is called {name}\n");
         };
-        let Some(pid) = service.state.pid() else {
+        let Some(pid) = self.services[index].state.pid() else {
             return format!("error: {name} is not running\n");
         };
+        if let Err(err) = self.certificates_named(index) {
+            audit!(
+                "{name}'s certificates were not copied for its reload, by process {peer}: {err}"
+            );
+            return format!(
+                "error: {name}'s certificates were not copied ({err}): it was not asked to reload\n"
+            );
+        }
         let _ = process::kill(&SYS, SLOT_PROCESS, pid as i64, signal::SIGHUP);
         audit!("asked {name} to reload, by process {peer}");
         format!("ok: asked {name} to reload\n")
+    }
+
+    /// Copies the certificates service `index`'s file names now, if they
+    /// are not the ones it runs with, and runs it with them. A file that
+    /// does not read changes nothing here: its next start says what is
+    /// wrong with it. A copy that fails is put back as it was, as far as
+    /// it can be, and the service runs with the ones it had.
+    fn certificates_named(&mut self, index: usize) -> Result<(), String> {
+        let name = self.services[index].spec.name.clone();
+        let Ok((spec, _)) = services::read(&self.root, &self.dir, &name) else {
+            return Ok(());
+        };
+        if spec.certificates == self.services[index].spec.certificates {
+            return Ok(());
+        }
+        let had =
+            core::mem::replace(&mut self.services[index].spec.certificates, spec.certificates);
+        let copied = self.copy_certificates(index);
+        if copied.is_err() {
+            self.services[index].spec.certificates = had;
+            let _ = self.copy_certificates(index);
+        }
+        copied
+    }
+
+    /// Makes service `index`'s folder of copies hold the certificates its
+    /// running file names, as its start does.
+    fn copy_certificates(&self, index: usize) -> Result<(), String> {
+        let spec = &self.services[index].spec;
+        let account = match &spec.account {
+            Some(name) if !spec.certificates.is_empty() => {
+                Some(account(&self.root, self.names, name, Vec::new())?)
+            }
+            _ => None,
+        };
+        certificates::copy_all(&self.root, spec, account.as_ref())
     }
 
     /// The answer to `reopen NAME` from process `peer`: has the service
@@ -2697,7 +2757,7 @@ impl Supervisor {
 
     /// When the loop must look again without a wake-up: the next restart,
     /// readiness look, health check or shutdown step, the watchdog's next
-    /// pet, or the end of a trial.
+    /// pet, a hook's or a run's time limit, or the end of a trial.
     fn deadline(&self) -> Option<u64> {
         let time = now();
         let restarts = self.services.iter().filter_map(|s| s.next_look(time));
@@ -2709,8 +2769,16 @@ impl Supervisor {
         let connections = self.connections.iter().map(|c| c.until);
         let pet = self.pets.map(|(_, next)| next);
         let hook = self.hooks.as_ref().and_then(|h| h.running.as_ref()).map(|r| r.until);
+        let run = self.running.as_ref().and_then(runs::Running::next_look);
         let trial = self.trials_deadline();
-        restarts.chain(shutdown).chain(connections).chain(pet).chain(hook).chain(trial).min()
+        restarts
+            .chain(shutdown)
+            .chain(connections)
+            .chain(pet)
+            .chain(hook)
+            .chain(run)
+            .chain(trial)
+            .min()
     }
 
     /// Starts the `phase` backup hooks of the running services that have
@@ -2912,6 +2980,9 @@ impl Supervisor {
             {
                 add(output.slot(), readable, Source::Hook);
             }
+            if let Some(output) = self.running.as_ref().and_then(runs::Running::output) {
+                add(output.slot(), readable, Source::Run);
+            }
             let mut polled: Vec<PollEntry> = entries.iter().map(|(entry, _)| *entry).collect();
             let (timeout, flags) = match self.deadline() {
                 Some(at) => (at.saturating_sub(now()), PollFlags::NONE),
@@ -2967,6 +3038,11 @@ impl Supervisor {
                         Source::Check(i) => self.services[i].checks.read_output(),
                         Source::Socket(i, k) => self.connected(i, k),
                         Source::Hook => self.hook_output(),
+                        Source::Run => {
+                            if let Some(running) = &mut self.running {
+                                running.read_output();
+                            }
+                        }
                         Source::Program => {
                             if let Some(program) = &mut self.program {
                                 let open = Self::copy_lines(
@@ -2989,6 +3065,7 @@ impl Supervisor {
             self.connections.retain(|c| c.watch.is_some() || c.until > time);
             self.step_stops(time);
             self.step_hook(time);
+            self.step_run(time);
             self.step_ready(time);
             self.step_health(time);
             self.step_reloads(time);
@@ -3034,6 +3111,8 @@ enum Source {
     /// Socket `k` of service `i`, which waits for a connection.
     Socket(usize, usize),
     Hook,
+    /// The output of the program a `run` request runs.
+    Run,
     Program,
 }
 

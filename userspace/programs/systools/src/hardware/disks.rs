@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use super::check::{Area, Check, Problem, counted};
 use super::drivetest;
 use super::scan::{self, PIECE, Range, SLOW, Scan};
-use crate::diskhealth::{self, Record, Verdict};
+use crate::diskhealth::{self, Reading, Record, Verdict};
 use crate::probe;
 use crate::selftest::Test;
 use crate::util::{self, Fail, fail};
@@ -139,8 +139,13 @@ fn health(disk: &Disk) -> Check {
     let name = format!("{} health", disk.name);
     match diskhealth::read(&disk.name) {
         Err(fail) => Check::skipped(Area::Disks, &name, fail.message),
-        Ok(None) => Check::skipped(Area::Disks, &name, "it keeps no record of its health".into()),
-        Ok(Some(record)) => {
+        Ok(Reading::None) => {
+            Check::skipped(Area::Disks, &name, "it keeps no record of its health".into())
+        }
+        Ok(Reading::Asleep) => {
+            Check::skipped(Area::Disks, &name, diskhealth::asleep_words(&disk.name))
+        }
+        Ok(Reading::Record(record)) => {
             let early = diskhealth::early_warning_title(&disk.name, &record);
             health_verdict(disk, &record, early)
         }
@@ -229,6 +234,10 @@ fn read_scan(disk: &Disk, full: bool, stop: &AtomicBool) -> Check {
     scan_verdict(disk, &found)
 }
 
+/// How many checks [`check`] gives for a disk: its health, its self-test
+/// and its read scan.
+pub(crate) const CHECKS: usize = 3;
+
 /// Takes `disk` through its checks, giving each line to `emit` when it
 /// is done.
 pub(crate) fn check(disk: &Disk, full: bool, stop: &AtomicBool, emit: &(dyn Fn(Check) + Sync)) {
@@ -255,6 +264,21 @@ mod tests {
 
     fn healthy() -> NvmeLog {
         NvmeLog { kelvin: 323, hours: 1234, ..NvmeLog::default() }
+    }
+
+    #[test]
+    fn a_disk_gives_as_many_checks_as_the_run_counts_on() {
+        // A disk this machine does not have is skipped three times over,
+        // and a stop asked for before the start ends the self-test at once.
+        let nameless = Disk { name: "nodisk".into(), bytes: 0, ..disk() };
+        let given = std::sync::Mutex::new(Vec::new());
+        let stop = AtomicBool::new(true);
+        check(&nameless, false, &stop, &|check| given.lock().unwrap().push(check));
+        let given = given.into_inner().unwrap();
+        assert_eq!(given.len(), CHECKS);
+        assert!(given.iter().all(|check| check.outcome == Outcome::Skipped));
+        let names: Vec<&str> = given.iter().map(|check| check.name.as_str()).collect();
+        assert_eq!(names, ["nodisk health", "nodisk self-test", "nodisk read scan"]);
     }
 
     #[test]

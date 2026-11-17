@@ -12,7 +12,7 @@ import { dirname, relative, resolve } from 'node:path';
 export const ROOT = new URL('../', import.meta.url).pathname;
 
 /** `source` without block comments and without the lines that are only a comment. */
-function withoutComments(source) {
+export function withoutComments(source) {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((line) => !line.trim().startsWith('//')).join('\n');
 }
 

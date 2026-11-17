@@ -6,7 +6,7 @@
 // page and its styles, call `show`, focus the h1, scroll to the top or to
 // the id after the `#`.
 
-import { h } from '../dom.js';
+import { h, sheet } from '../dom.js';
 import { chooseView, followsInPage } from './route-model.js';
 
 /** "Loading…" shows only after this long, so that a quick page never flashes. */
@@ -18,22 +18,12 @@ const LOADING_AFTER_MS = 300;
  * `{start, go, refresh, helpFor, confirmLeave, current}`.
  */
 export function createRouter({ pages, shell, main, asof }) {
-  const linked = new Set();
   let controller = null;
   let active = null;
   let url = '';
 
   // Resolves once each sheet has loaded or failed, so that a page never draws bare.
-  function linkStyles(css) {
-    const loads = css.filter((href) => !linked.has(href)).map((href) => new Promise((done) => {
-      linked.add(href);
-      const link = h('link', { rel: 'stylesheet', href: `/${href}` });
-      link.addEventListener('load', done);
-      link.addEventListener('error', done);
-      document.head.append(link);
-    }));
-    return Promise.all(loads);
-  }
+  const linkStyles = (css) => Promise.all(css.map((href) => sheet(`/${href}`)));
 
   async function resolve(decision, path) {
     const own = async (title, make) => ({ module: make(await import('./static-pages.js')), entry: { title, css: [] }, rest: '' });

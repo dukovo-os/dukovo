@@ -29,6 +29,8 @@ mod changes;
 mod cuts_off;
 mod follow;
 mod fuzz;
+mod once;
+mod restarts;
 mod secrets;
 mod signed_in;
 mod tasks;
@@ -111,6 +113,17 @@ fn worker_answers(method: &str, params: &Value, calls: &Calls) -> Result<Value, 
         }
         "run" if params["argv"] == json!(["passwd"]) => {
             Ok(json!({ "status": 0, "output": "The password is changed.\n", "errors": "" }))
+        }
+        // A draft reportd keeps for the person (ADR 0568), and any other
+        // that it does not.
+        "run" if params["argv"][0] == "report" && params["argv"][1] == "text" => {
+            let kept = json!(["report", "text", once::DRAFT, "--sha256", once::SHA256]);
+            if params["argv"] == kept {
+                Ok(json!({ "status": 0, "output": once::TEXT, "errors": "" }))
+            } else {
+                let errors = "report: That draft has ended: draft it again (RPT-101)\n";
+                Ok(json!({ "status": 1, "output": "", "errors": errors }))
+            }
         }
         "run" if params["argv"][0] == "probe" => {
             Ok(probe_answer(params["argv"][1].as_str().unwrap_or_default(), calls))
@@ -252,7 +265,9 @@ fn token_answer(hex: &str) -> Option<&'static str> {
 /// with a service's error ID; `/system/commands/echo` writes its words
 /// and ends with the status 3; anything else writes its words, or for a
 /// command asked for JSON `{"ran": WORDS}`, and ends well; `lab-unlock`,
-/// `lab-key` and `lab-peers` print JSON. The command is noted in `calls`
+/// `lab-key` and `lab-peers` print JSON, and so do `changes bisect
+/// --status --json`, that no search runs, and `lab-search`, that one does.
+/// The command is noted in `calls`
 /// as a call of `elevate`, so that a test sees it among the worker's, and
 /// what it read on its input, if anything, as a call of `elevate-input`:
 /// admind has written it, and closed the pipe, before it asks authd.
@@ -282,8 +297,18 @@ fn elevated(asked: &Asked, mut fds: Vec<OwnedFd>, calls: &Calls) -> Vec<String> 
         output.write_all(b"{\"n\": 1}\n\n{\"n\": 2}\n").unwrap();
         return vec!["ok 4321".into(), "ended 0".into()];
     }
+    if command[0] == "cert" && command.get(1).is_some_and(|word| word == "show") {
+        output.write_all(certificate_shown(&command[2]).as_bytes()).unwrap();
+        return vec!["ok 4321".into(), "ended 0".into()];
+    }
     if command[0] == "lab-peers" {
         output.write_all(crate::admind::actions::tests::LAB_PEERS.as_bytes()).unwrap();
+        return vec!["ok 4321".into(), "ended 0".into()];
+    }
+    if command[0] == "changes" || command[0] == "lab-search" {
+        let running = command[0] == "lab-search";
+        let printed = json!({ "running": running, "attempt": null, "of": null });
+        output.write_all(format!("{printed}\n").as_bytes()).unwrap();
         return vec!["ok 4321".into(), "ended 0".into()];
     }
     if command[0] == "lab-unlock" || command[0] == "lab-key" {
@@ -303,6 +328,20 @@ fn elevated(asked: &Asked, mut fds: Vec<OwnedFd>, calls: &Calls) -> Vec<String> 
     output.write_all(format!("{printed}\n").as_bytes()).unwrap();
     let status = if command[0] == "/system/commands/echo" { 768 } else { 0 };
     vec!["ok 4321".into(), format!("ended {status}")]
+}
+
+/// What `cert show NAME --json` prints in these tests: `other.example`
+/// names itself alone, `unreadable` prints no JSON, and any other names
+/// the tests' host, a wildcard of another domain and an address.
+fn certificate_shown(name: &str) -> String {
+    match name {
+        "unreadable" => "the store is being written\n".into(),
+        "other.example" => format!("{}\n", json!({ "name": name, "names": ["other.example"] })),
+        _ => format!(
+            "{}\n",
+            json!({ "name": name, "names": ["nas.example", "*.example.org", "198.51.100.4"] })
+        ),
+    }
 }
 
 /// The test authd's shell, on the terminal that came with the request,
@@ -639,12 +678,17 @@ fn every_route_is_found_by_its_own_verb_and_no_other_and_no_route_is_in_the_tabl
             entry.path,
             entry.verb
         );
-        assert!(entry.path.starts_with("/api/1/"), "{}", entry.path);
+        // The API's routes, and the one-time links, which a phone opens.
+        let once = entry.path == ONCE;
+        assert!(entry.path.starts_with("/api/1/") || once, "{}", entry.path);
         assert!(
             matches!(lookup(entry.verb, entry.path), Lookup::Found(found, _) if found.route == entry.route)
         );
-        // No verb that the table does not give the address finds it.
-        assert!(matches!(lookup(Verb::Head, entry.path), Lookup::WrongVerb), "{}", entry.path);
+        // No verb that the table does not give the address finds it: a
+        // one-time link alone answers a HEAD, which counts as its fetch.
+        if !once {
+            assert!(matches!(lookup(Verb::Head, entry.path), Lookup::WrongVerb), "{}", entry.path);
+        }
         // What only reads is a GET, and what changes anything is a POST.
         let reads = [
             Route::Health,
@@ -664,10 +708,13 @@ fn every_route_is_found_by_its_own_verb_and_no_other_and_no_route_is_in_the_tabl
             Route::Follow,
             Route::Fresh,
             Route::SignedIn,
+            Route::Once,
         ];
         assert_eq!(entry.verb == Verb::Get, reads.contains(&entry.route), "{}", entry.path);
     }
-    assert_eq!(TABLE.len(), 50 + usize::from(cfg!(feature = "lab")));
+    assert_eq!(TABLE.len(), 53 + usize::from(cfg!(feature = "lab")));
+    assert!(matches!(lookup(Verb::Post, "/once/x/report.txt"), Lookup::WrongVerb));
+    assert!(matches!(lookup(Verb::Get, "/once/x/other.txt"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api/1/nothing"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api/1/health/"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api"), Lookup::Missing));
@@ -995,6 +1042,42 @@ fn the_consoles_files_are_served_whole_and_any_page_of_it_is_the_shell() {
         assert_eq!(send(&world, head).await.status, 200);
         // A query does not change which file it is.
         assert_eq!(send(&world, get("/app.js?v=3")).await.body, "export {};");
+    });
+}
+
+#[test]
+fn the_service_worker_and_the_manifest_are_the_consoles_files_for_anyone_and_the_worker_is_never_cached()
+ {
+    run(async {
+        let world = world("files-worker");
+        let worker = send(&world, get("/sw.js")).await;
+        assert_eq!((worker.status, worker.body.as_str()), (200, fixture::WORKER));
+        assert_eq!(worker.header("content-type"), Some("text/javascript; charset=utf-8"));
+        // A browser asks for a new worker every time it starts one, and so is told when it
+        // has changed.
+        assert_eq!(worker.header("cache-control"), Some("no-cache"));
+        assert!(worker.header("etag").is_some());
+        // Its scope is its own folder, the console's whole address: the header that
+        // would widen it is not sent.
+        assert_eq!(worker.header("service-worker-allowed"), None);
+        let policy = worker.header("content-security-policy").unwrap();
+        assert!(policy.contains("worker-src 'self'") && policy.contains("manifest-src 'self'"));
+        let manifest = send(&world, get("/manifest.webmanifest")).await;
+        assert_eq!((manifest.status, manifest.body.as_str()), (200, fixture::WEB_MANIFEST));
+        assert_eq!(manifest.header("content-type"), Some("application/manifest+json"));
+        assert_eq!(manifest.header("cache-control"), Some("no-cache"));
+        assert_eq!(manifest.header("service-worker-allowed"), None);
+        // They are files, so neither is the page router's: one that is not listed is a 404.
+        for path in ["/sw2.js", "/other.webmanifest", "/icons/app-192.png"] {
+            let none = send(&world, get(path)).await;
+            assert_eq!((none.status, none.error().as_str()), (404, "ADM-116"), "{path}");
+        }
+        // The one the browser holds is not sent again.
+        let held = get("/sw.js").with("if-none-match", worker.header("etag"));
+        let answered = send(&world, held).await;
+        assert_eq!((answered.status, answered.body.as_str()), (304, ""));
+        assert_eq!(answered.header("cache-control"), Some("no-cache"));
+        assert_eq!(answered.header("service-worker-allowed"), None);
     });
 }
 

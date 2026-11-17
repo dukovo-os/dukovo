@@ -123,6 +123,12 @@ pub const FLAGS: &[Flag] = &[
         summary: "framebuffer console font: 8x16, 12x24 or 16x32",
     },
     Flag {
+        name: "memtest",
+        value: Some("once|fault"),
+        summary: "test the free memory once before the first program, and take the pages \
+                  with errors out of use; fault plants one error, for the boot tests",
+    },
+    Flag {
         name: "crashlog",
         value: Some("off"),
         summary: "do not keep the log in memory for the next boot",

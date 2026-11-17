@@ -31,9 +31,13 @@ bundle - make, check, sign, pack, install, update and run bundles, and say what 
 
 *bundle install* _file_*.dkv* [*--unsigned*] [*--for-everyone*] [*--yes*]
 
-*bundle install* _id_ [*--from* _catalog_] [*--for-everyone*] [*--yes*]
+*bundle install* _id_ [*--from* _catalog_] [*--sha256* _hex_] [*--for-everyone*] [*--yes*]
 
 *bundle search* _word_...
+
+*bundle search --json* [_word_...]
+
+*bundle sheet* _id_ [*--from* _catalog_] [*--json*]
 
 *bundle catalog*
 
@@ -43,11 +47,15 @@ bundle - make, check, sign, pack, install, update and run bundles, and say what 
 
 *bundle update* [_id_...] [*--check*] [*--for-everyone*] [*--yes*]
 
+*bundle update* [_id_...] *--for-everyone* *--tonight* [*--yes*]
+
+*bundle update* _id_... *--for-everyone* *--not-tonight*
+
 *bundle update --automatic* *on*|*off* [*--for-everyone*]
 
 *bundle rollback* _id_ [*--for-everyone*]
 
-*bundle hold* _id_ [*--for-everyone*]
+*bundle hold* _id_ [*--for-everyone*] [*--why* _text_]
 
 *bundle unhold* _id_ [*--for-everyone*]
 
@@ -189,11 +197,16 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	(*bundled*(8), ADR 0385). A file with no signature is refused, unless
 	*--unsigned* says to install it anyway (UNSIGNED BUNDLES).
 
-*install* _id_ [*--from* _catalog_] [*--for-everyone*] [*--yes*]
+*install* _id_ [*--from* _catalog_] [*--sha256* _hex_] [*--for-everyone*] [*--yes*]
 	Fetches the newest version of _id_ from the first catalog that lists
 	it, or from _catalog_, and installs it as a file, with the catalog's
 	name on its sheet. bundle takes what it is given for a file when it
-	has a _/_, ends in _.dkv_ or names a file that is there.
+	has a _/_, ends in _.dkv_ or names a file that is there. With
+	*--sha256*, only the file whose SHA-256 is _hex_, 64 hexadecimal
+	digits, installs, which is the one whose sheet *bundle sheet*
+	showed: if the catalog lists another file by now, a newer
+	version, bundled says so before it fetches anything, in words that
+	end in *APP-102*, and nothing is installed (SHEETS).
 
 *search* _word_...
 	Reads the catalogs anew and lists the newest version of each bundle
@@ -201,6 +214,28 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	catalog, its known flaws (FLAWS) and name. It exits with 1 when none
 	does. A catalog that cannot be read is left out, and bundle says
 	why.
+
+*search --json* [_word_...]
+	Prints the same search as one line of JSON (JSON) in place of the
+	table, and with no _word_ lists every bundle the catalogs list. A
+	catalog that cannot be read is in the document, with why. That
+	nothing matches is no failure, and the status is 0. That no catalog
+	could be read is, and the status is 1: the document is printed
+	first, naming each catalog and why, and the error follows on
+	standard error, in words that end in *APP-103*. A _word_ that
+	starts with *-* follows a *--*.
+
+*sheet* _id_ [*--from* _catalog_] [*--json*]
+	Shows the sheet that *install* _id_ would show, of the newest
+	version of _id_ that the first catalog that lists it, or _catalog_,
+	lists, and installs nothing (SHEETS). It is the sheet of an install
+	for everyone, the one that can run services, and says on a last line,
+	*It would not install*, why bundled would refuse it, if it would.
+	*--json* prints the facts of the sheet as one line of JSON (JSON)
+	instead, with which file it is. It exits with 1 when no catalog lists
+	_id_, in words that end in *APP-101*, and when none could be read,
+	which end in *APP-103*; that the install would be refused is no
+	failure.
 
 *catalog*
 	Lists the catalogs: name, on or off, how many bundles each listed
@@ -235,6 +270,23 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	and the catalog, or *its own feed*, and, for each that waits for its
 	wave, why and how to take it now, and changes nothing.
 
+*update* [_id_...] *--for-everyone* *--tonight* [*--yes*]
+	Asks, through *elevate*(8), that the update of each _id_ given, or of
+	every app everyone has that has one, is installed in tonight's
+	window and not now: an app's services restart in the middle of the
+	day when it updates, and this puts that off. The window is the hour
+	before the restart time of *updates.toml*(5) (*update set --restart*),
+	and 2:00 to 3:00 without one; see TONIGHT. An update that asks for
+	more than the version it replaces shows its sheet, as above, and is
+	not queued unless *--yes* says it is taken as it asks. A held app, and
+	one with no update, are not queued: when apps are named and one of
+	them cannot be, none is. Asking again for an app changes the version
+	it will install to the newest one, and keeps when it was first asked.
+
+*update* _id_... *--for-everyone* *--not-tonight*
+	Takes each _id_ off tonight's window: its update waits for *bundle
+	update* or for updating by themselves, as before.
+
 *update --automatic* *on*|*off* [*--for-everyone*]
 	Says whether your bundles, or everyone's, through *elevate*(8),
 	update by themselves, daily; it is off unless you turn it on. Turned
@@ -248,9 +300,15 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	next run, and its services' data at once. Running it again goes
 	forward again.
 
-*hold* _id_ [*--for-everyone*], *unhold* _id_ [*--for-everyone*]
+*hold* _id_ [*--for-everyone*] [*--why* _text_], *unhold* _id_ [*--for-everyone*]
 	Holds a bundle at its version, so that no update changes it, or
-	lets it update again.
+	lets it update again. *--why* keeps a reason with the hold: one line
+	of 1 to 200 characters, with no control character, which *list* and
+	*update --check* say beside the bundle and which everyone who can
+	run it sees, so it is not for what should stay private. It is the
+	note of the hold's event in the history, so it goes with that event
+	after the history's newest thousand or so; a hold of a bundle that
+	is held already changes nothing, the reason it has included.
 
 *history* [_id_]
 	Shows what was done to your bundles and everyone's, or to _id_, the
@@ -279,6 +337,8 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	Shows an installed bundle's sheet, with every known flaw of its
 	version, what you said of its permissions
 	and since when, when it was installed, where, and where its data is,
+	and what the data takes when *bundled* has measured it (for a bundle
+	installed for everyone that keeps data of its services),
 	which version it can go back to, and whether it is held. *--json*
 	prints the same facts as one line of JSON (JSON).
 
@@ -512,6 +572,23 @@ A file no catalog lists installs as before: signed by your developer key
 with no warning, or by any other key after one, which also says that no
 catalog this computer trusts lists it.
 
+# SHEETS
+
+*bundle sheet* shows what an install shows, before one: bundled fetches
+the newest version of the bundle from the catalogs, checks the file as it
+comes, and unpacks it only in a folder of your own, which it removes,
+so nothing of the bundle is installed, run or left. The facts are those
+of the sheet of an install for everyone, whoever asks, so that someone who
+may not install it can read what it asks for.
+
+bundled keeps the one file whose sheet was read last, in the folder of its
+catalog's downloads (*bundled*(8)), until another sheet's takes its place
+or an install takes it. *bundle install* with *--sha256* then uses that
+file, with no second download. The hash names the file the sheet showed,
+and no other: a catalog that lists another file by then, which is a newer
+version, is *APP-102*, and nothing is fetched or installed. Read the sheet
+again, then, which shows what the new file asks for.
+
 # FLAWS
 
 A catalog lists the known flaws of its bundles (ADR 0389): its update
@@ -562,6 +639,23 @@ Updating by themselves, once turned on, runs some minutes after
 *bundled*(8) starts and then daily. An update that asks for more than
 the version it replaces never installs by itself: it waits for *bundle
 update*.
+
+# TONIGHT
+
+*bundle update --tonight* keeps the request in *bundled*(8)'s state, and
+*bundle list* says ", installs tonight" at the app's line. In the window,
+*bundled* installs each app asked for, one at a time, as an update that
+nobody is there for: it asks for more than the version it replaces only
+when *--yes* was said, else it waits as an update by itself does, and
+*bundle history* says so; a held app is left alone, and one that fails
+says why. The history's row names who asked, and says "as asked, in the
+window". A request made inside the window runs at once, and none starts in
+the last 5 minutes of it.
+
+A computer that was off through the window, or whose *bundled* was not
+running, installs nothing when it is on in the day: the request waits
+for the next window, and *bundle list --json* says when a window passed
+without it.
 
 # WAVES
 
@@ -634,13 +728,15 @@ changed it after it was signed. A folder with no signature is signed by
 
 # JSON
 
-*list --json* and *info --json* print one line of JSON, an object whose
+*list --json*, *info --json*, *search --json* and *sheet --json* print one
+line of JSON, an object whose
 first member is *format*, 1 (ADR 0541), which scripts and Ansible's
 *dukovo.system* collection read in place of the text. A later field may
 be added without a new *format*; read the members you know. Names are in
 snake_case, times are RFC 3339 in UTC, sizes are bytes, and a value that
 is not known is *null*. An error is told to standard error as without
-*--json*, with the same exit status, and prints no JSON.
+*--json*, with the same exit status, and prints no JSON, except that
+*search --json*, when no catalog could be read, prints its document first.
 
 *bundle list --json* has *bundles*, a list with an object for each
 bundle you can run, by ID and then yours before everyone's:
@@ -664,10 +760,24 @@ bundle you can run, by ID and then yours before everyone's:
 *held*
 	Whether it is held at its version.
 
+*held_reason*, *held_by*, *held_since_ms*
+	While it is held: why, the text *bundle hold --why* kept, or *null*
+	where none was given; who, the user ID that held it, or *null*;
+	and since when, in milliseconds since 1970. All *null* when it is
+	not held.
+
 *update*
 	The newest version its catalog listed when bundled last read it, if
 	that is newer than *version*, else *null*. The list reads no
 	network; *bundle update --check* reads the catalogs anew.
+
+*tonight*
+	*null*, or, for an app of everyone's whose update is asked for
+	tonight's window (TONIGHT), an object: *to*, the version it
+	installs, *asked_ms*, when it was asked, and *by*, the user ID of who
+	asked, *missed_ms*, when a window first passed without it, or *null*,
+	and *starts_ms*, when the window it installs in starts, in
+	milliseconds since 1970: now, in the window with time left.
 
 *flaws*
 	What the catalog's list of known flaws says of this version
@@ -720,6 +830,28 @@ bundle you can run, by ID and then yours before everyone's:
 *services*
 	What each of its services is, in a line, as the sheet says it.
 
+*service_list*
+	The same services as a list of objects: *name*; *account*, the account
+	it runs as; and *start*, *on* when Spark starts it at each boot, *off*
+	when it does not, which is also so for one installed for yourself or
+	one an administrator has not enabled yet.
+
+*license*
+	Its license, as the SPDX expression its manifest gives.
+
+*provides*, *uses*
+	The sockets and interfaces its manifest offers and the ones it
+	talks to, each an object of *interface*, as *NAME/MAJOR*, and
+	*socket*, which is the socket's name for *provides* and the
+	provider's ID and the name, *ID/NAME*, for *uses*; each is *null*
+	where the entry names the other.
+
+*used_by*
+	The bundles installed in the same place whose *uses* name an
+	interface or a socket this bundle *provides*, each an object of *id*,
+	*name* and *what*, the interface or the socket, as *uses* gives it,
+	that they use. A bundle that uses nothing of it is not listed.
+
 *grants*
 	What you said of its permissions, each an object: *permission*,
 	*said* (*allow* or *never*), *since*, and *given*, what it gives, in
@@ -731,11 +863,72 @@ bundle you can run, by ID and then yours before everyone's:
 *folder*, *data*
 	Where it is, and where its data is, in words.
 
+*data_size*
+	What the data of its services takes, as *bundled* measured it, or
+	*null* where nothing was measured: for a bundle installed for you
+	alone, and until the first measure after it was installed. An object:
+	*bytes*, the space the files take on the disk, counted by the blocks
+	they use, a file with two names once, a link as itself; *files*, how
+	many files; *complete*, *false* when the walk was ended by its limits
+	and the count is no more than that (the sheet says "at least"); and
+	*measured_ms*, when, in milliseconds since 1970. It is as old as the
+	last measure, a day at most; *info* measures nothing.
+
 *previous*
 	The version it can go back to, or *null*.
 
 *held*
 	Whether it is held at its version.
+
+*bundle search --json* has *bundles*, a list with an object for each
+bundle the catalogs list, the newest version of each, catalog by catalog
+in the order bundled reads them, and *unread*, a list with an object for
+each catalog that could not be read, with *catalog* and *why*, in words. A
+bundle is an object of:
+
+*id*, *name*, *version*, *flaws*
+	As in *list*: the ID, its name, the newest version and what the
+	catalog's list of known flaws says of it.
+
+*catalog*
+	The catalog that lists it.
+
+*installed*
+	The version installed for you, or else for everyone, or *null*.
+
+*bundle sheet* _id_ *--json* is the facts of *info*, as the sheet shows
+them before an install: *id*, *name*, *version*, *publisher*, *summary*,
+*key*, *trust*, *files*, *bytes*, *support*, *update_feed*, *flaws*,
+*permissions*, *commands*, *commands_with_your_access*, *services*,
+*service_list*, *license*, *provides* and *uses* as there, and, which *info* has not,
+*catalog*, *sha256*, *download_bytes*, *services_need_everyone*, *data*,
+*installed* and *refusal*. It has none of *used_by*, *grants*, *folder*,
+*data_size*, *previous* and *held*, which only an installed bundle has.
+
+*catalog*
+	The catalog whose file it is.
+
+*sha256*
+	The file's SHA-256, 64 lowercase hexadecimal digits, which *install*
+	takes with *--sha256*.
+
+*download_bytes*
+	The file's size, in bytes.
+
+*services_need_everyone*
+	Whether it has services, which run for no one in particular, so that
+	only an administrator installs it, for everyone.
+
+*data*
+	The folder of each of its services' accounts, where its data will be,
+	a list; for *info*, *data* is a sentence.
+
+*installed*
+	The version installed now, for you or else for everyone, or *null*;
+	for *info*, when it was installed.
+
+*refusal*
+	Why bundled would not install it now, in its words, or *null*.
 
 # FILES
 
@@ -778,7 +971,9 @@ _/system/settings/catalogs/name_
 
 0 when the manifest reads, and 1 when it does not, a file it names is
 missing, a bundle does not check, or the command line is wrong. *install*
-and *remove* exit with 1 when bundled refused, and *grant* and *revoke*
+and *remove* exit with 1 when bundled refused, *search* when it finds no
+bundle (with *--json*, only when no catalog could be read), *sheet* when no
+catalog lists the bundle or none could be read, and *grant* and *revoke*
 when it refused or you said no. *run* and a bundle's
 command exit with the program's status, 128 and the signal's number for
 one a signal ended, or 1 when it did not run.
@@ -838,6 +1033,16 @@ ripgrep 15.2.0, for yourself
   ...
 Install it? [y/N] y
 installed io.github.burntsushi.ripgrep 15.2.0, for you
+```
+
+The sheet before the install, and the install of that very file:
+
+```
+$ bundle sheet io.github.burntsushi.ripgrep
+...
+$ bundle sheet io.github.burntsushi.ripgrep --json | jq -r .sha256
+3f1c...
+$ elevate bundle install io.github.burntsushi.ripgrep --for-everyone --sha256 3f1c...
 ```
 
 Updating, going back, and holding there:

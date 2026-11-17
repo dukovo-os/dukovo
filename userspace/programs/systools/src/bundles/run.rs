@@ -641,7 +641,7 @@ pub fn environment(user: &accounts::User, home: &str, caller: &[(String, String)
 /// Opens the program at `path` in the sealed folder, one part at a time,
 /// never through a link: a regular file of root's, nobody's to change,
 /// that may run, and that the signed list names.
-fn open_program(sealed: &Sealed, path: &str) -> Result<OwnedFd, String> {
+pub(crate) fn open_program(sealed: &Sealed, path: &str) -> Result<OwnedFd, String> {
     let shown = format!("{}/{path}", sealed.path);
     if !sealed.listed.iter().any(|e| e.path == path) {
         return Err(format!("{shown}: its signed list does not name it"));

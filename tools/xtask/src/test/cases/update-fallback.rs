@@ -11,14 +11,16 @@
 //! failed. Spark keeps the failed attempt's settings and puts back those
 //! snapshotted at the stage, before any service starts: the changed
 //! setting is gone from */system/settings*, and kept in
-//! *@snapshots/update/settings-failed*.
+//! *@snapshots/update/settings-failed*. The health check of the start
+//! after it holds the release that fell back, in *updates.toml*, with the
+//! record of why in */system/state/sysupdate/held.json* (UPD-105).
 
 use super::super::*;
 use super::update_stage::{UPDATE_DISKS, power_off, restart, run, stage, started};
 
 pub const CASE: Case = Case {
     name: "update-fallback",
-    about: "an update whose system log service cannot start fails its health check on its first try and falls back to slot A by itself, with the settings from before it put back and the failed attempt's kept (ADRs 0453 and 0454)",
+    about: "an update whose system log service cannot start fails its health check on its first try and falls back to slot A by itself, with the settings from before it put back and the failed attempt's kept, and the release that fell back held (ADRs 0453 and 0454, UPD-105)",
     firmware: Firmware::Uefi,
     media: Media::Disk,
     cmdline: "console-sign-in=off",
@@ -64,6 +66,10 @@ fn update_fallback(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     vm.expect("spark: the settings from before the update are back")?;
     started(vm, 'a')?;
     vm.expect(&format!(
+        "sysupdate: held Dukovo {version}, which fell back, in \
+         /system/settings/sysupdate/updates.toml (UPD-105)"
+    ))?;
+    vm.expect(&format!(
         "sysupdate: the update in slot B (Dukovo {version}) did not prove itself; slot A (Dukovo \
          {VERSION}) runs, with the settings from before the update"
     ))?;
@@ -79,6 +85,15 @@ fn update_fallback(vm: &mut Vm, _case: &Case) -> Result<(), String> {
              /volumes/*/@snapshots/update/settings-failed/update-test"
         ),
         &["taken back: 49", "changed"],
+    )?;
+    run(
+        vm,
+        "cat /system/settings/sysupdate/updates.toml /system/state/sysupdate/held.json",
+        &[
+            "[hold]",
+            &format!("system = \"{version}\""),
+            &format!("{{\"version\":\"{version}\",\"why\":\"fell-back\","),
+        ],
     )?;
     run(
         vm,

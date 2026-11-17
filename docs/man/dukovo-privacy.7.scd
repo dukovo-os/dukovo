@@ -88,9 +88,11 @@ that is not listed is a bug.
 	_/system/live/metrics_, which a boot starts without.
 
 *Alerts*
-	The active alerts and the newest 1000 to 2000 changes, and the
-	messages not yet delivered for 24 hours at most, in files of
-	_/system/state/alerts_ that root alone reads (*alertd*(8)).
+	The active alerts and the newest 1000 to 2000 changes, the
+	messages not yet delivered for 24 hours at most, and for each
+	browser that asked for alerts its name, its push service's address
+	for it and the key to encrypt for, in files of _/system/state/alerts_
+	that root alone reads (*alertd*(8)).
 
 # SENT ON ITS OWN
 
@@ -144,9 +146,13 @@ that is not listed is a bug.
 	The title and detail of each alert, with the machine's name and the
 	time, to the email account and the webhook addresses the user names
 	in *alerts.toml*(5), over TLS only. An alert can name a disk's
-	model and serial number, a mount point or a service. By default it
-	sends nothing; taking the channel out of the file, then *service
-	alertd reload* (*service*(8)), or *enabled = false* in its service
+	model and serial number, a mount point or a service. To a browser
+	that asked for alerts, the same goes through the push service its
+	maker runs, encrypted for that browser alone (RFC 8291), so that
+	the push service sees only when a message is sent and its size. By
+	default it sends nothing; taking the channel out of the file, then
+	*service alertd reload* (*service*(8)), *alerts push remove*
+	(*alerts*(8)) for a browser, or *enabled = false* in its service
 	file stops it (*alertd*(8)).
 
 *updated*
@@ -228,7 +234,12 @@ Planned, each to be described here in full before it ships:
 	team, with age, before it is queued, so that only they can read it;
 	the server stores it as it came and cannot open it.
 	*report --save* writes the text to a file, or offers it once to a
-	phone on the local network, and sends nothing to a server. A report
+	phone on the local network, and sends nothing to a server. The web
+	console's Report a problem page does the same through the console's
+	own port: its link works once, for 10 minutes. A draft the page
+	makes is kept in memory for an hour at most, for its own user, and
+	its sender may cut any line the system gathered, or a part of one,
+	before it is sent (ADR 0568). A report
 	that cannot be sent waits in a queue on the machine and is tried
 	again for 30 days (*reportd*(8)).
 

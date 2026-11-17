@@ -1,0 +1,43 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ */
+
+/* The Alerts page: its cards in one column, which is their order on a phone,
+   and two columns on a wide screen. The cards, pills, banners, buttons and
+   fields are console.css's. Same rules: rem, and px for borders. */
+.al { display: flex; flex-direction: column; gap: 1rem; }
+.al > div:empty, .al-errors:empty, .al-test:empty { display: none; }
+.al-grid { display: grid; gap: 1rem; grid-template-columns: minmax(0, 1fr); align-items: start; }
+.al-body, .al-form { display: flex; flex-direction: column; gap: .714rem; }
+.al-body p, .al-form p, .al-item p { margin: 0; }
+.al-list, .al-test { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.al-test { gap: .286rem; margin-bottom: .714rem; }
+.al-test li, .al-bad { display: flex; gap: .429rem; align-items: flex-start; }
+.al-ok { color: var(--ok); }
+.al-bad { color: var(--bad); }
+.al-item { display: flex; gap: .714rem; align-items: flex-start; padding: .714rem 0; border-top: 1px solid var(--border); }
+.al-item:first-child { border-top: 0; padding-top: 0; }
+.al-item > div:not(.btns) { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .214rem; overflow-wrap: anywhere; }
+.al-item > .btns { flex: none; justify-content: flex-end; }
+.al-item.bad { border-left: 3px solid var(--bad); padding-left: .714rem; }
+.al-dot { flex: none; width: .714rem; height: .714rem; margin-top: .357rem; border-radius: 50%; background: var(--muted); }
+.al-dot.bad { background: var(--bad); }
+.al-dot.warn { background: var(--warn); }
+.al-steps { margin: 0; padding-left: 1.5rem; display: flex; flex-direction: column; gap: .714rem; }
+.al-steps .qr-row { margin-top: .571rem; }
+.al-steps .cmdtext { margin-top: .286rem; }
+.al summary { cursor: pointer; }
+@media (forced-colors: active) {
+  .al-dot { forced-color-adjust: none; background: CanvasText; }
+}
+@container (min-width: 51.5rem) {
+  .al-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container (max-width: 51.4rem) {
+  .al .btn, .al input:not([type="checkbox"], [type="radio"]), .al select, .al summary, .al .check, .al-item a { min-height: 3.143rem; }
+  .al summary, .al .check, .al-item a { display: flex; align-items: center; }
+  .al-item { flex-wrap: wrap; }
+  .al-item > .btns { flex: 1 1 100%; justify-content: stretch; }
+  .al-item > .btns .btn { flex: 1; }
+}

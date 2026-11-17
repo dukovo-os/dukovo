@@ -8,8 +8,9 @@
 //! `/applications/commands`, as authd finds an elevated one, so a word
 //! that names a path, or a program of the person's own, is refused. It
 //! runs with the worker's own environment, no terminal, and input that
-//! holds the secrets the action takes, if any, and then ends (ADR 0561);
-//! its output and its error output are kept as admind's elevated ones are.
+//! holds the secrets and the documents the action takes, if any, and then
+//! ends (ADR 0561, 0567); its output and its error output are kept as
+//! admind's elevated ones are.
 //! At most 8 run at once for a worker, and each has 30 seconds, after
 //! which it is killed. A program that is in neither folder is ADM-129,
 //! said as authd says it of an elevated one.
@@ -25,7 +26,7 @@ use serde_json::{Value, json};
 use tokio::net::unix::pipe::Receiver;
 
 use crate::admind::actions::Secret;
-use crate::admind::actions::secret::INPUT_MAX;
+use crate::admind::actions::secret::INPUT_LIMIT;
 use crate::admind::errors::{Kind, NOT_FOUND};
 use crate::admind::link::Fault;
 use crate::admind::run::{RUN_TIME, exit_code, read_both, typed_and_ended};
@@ -88,10 +89,10 @@ pub async fn run(params: Value) -> Result<Value, Fault> {
 /// standard input.
 async fn run_in(argv: &[String], input: Option<&Secret>, folders: &[&str]) -> Result<Value, Fault> {
     check(argv)?;
-    if input.is_some_and(|input| input.bytes().len() > INPUT_MAX) {
+    if input.is_some_and(|input| input.bytes().len() > INPUT_LIMIT) {
         return Err(Fault::new(
             Kind::BadRequest,
-            format!("a command's input is at most {INPUT_MAX} bytes"),
+            format!("a command's input is at most {INPUT_LIMIT} bytes"),
         ));
     }
     let program = find(&argv[0], folders)
@@ -99,15 +100,16 @@ async fn run_in(argv: &[String], input: Option<&Secret>, folders: &[&str]) -> Re
     let _place = Place::take()
         .ok_or_else(|| Fault::new(Kind::Wait, "too many commands at once for this session"))?;
     let internal = |err: std::io::Error| Fault::new(Kind::Internal, format!("{}: {err}", argv[0]));
-    // The input is written to a pipe of its own before the command starts,
-    // which holds it all (INPUT_MAX), and the pipe is closed.
-    let stdin = match input {
+    // The input is written to a pipe of its own, and the pipe is closed:
+    // before the command starts when the pipe holds it all, and as it runs
+    // when it does not (ADR 0567), by a writer that ends with it.
+    let (stdin, typing) = match input {
         Some(input) => {
             let (reading, typed) = std::io::pipe().map_err(internal)?;
-            typed_and_ended(typed, Some(input)).map_err(internal)?;
-            Stdio::from(reading)
+            let typing = typed_and_ended(typed, Some(input)).map_err(internal)?;
+            (Stdio::from(reading), Some(typing))
         }
-        None => Stdio::null(),
+        None => (Stdio::null(), None),
     };
     let mut child = Command::new(&program)
         .args(&argv[1..])
@@ -126,14 +128,21 @@ async fn run_in(argv: &[String], input: Option<&Secret>, folders: &[&str]) -> Re
             // Killed and waited for, so that no process of it is left.
             let _ = child.kill();
             let _ = tokio::task::spawn_blocking(move || child.wait()).await;
+            if let Some(typing) = typing {
+                typing.ended().await;
+            }
             let why = format!("{} did not end in {} seconds", argv[0], RUN_TIME.as_secs());
             return Err(Fault::new(Kind::Internal, why));
         }
     };
     // Its output has closed, so it has ended or is ending: the wait is
     // short, and off the thread that answers the link.
-    let status = tokio::task::spawn_blocking(move || child.wait())
-        .await
+    let status = tokio::task::spawn_blocking(move || child.wait()).await;
+    // It has ended: so does the writer of its input, before the answer.
+    if let Some(typing) = typing {
+        typing.ended().await;
+    }
+    let status = status
         .map_err(|err| Fault::new(Kind::Internal, format!("waiting for {}: {err}", argv[0])))?
         .map_err(internal)?;
     let status = std::os::unix::process::ExitStatusExt::into_raw(status);
@@ -242,13 +251,54 @@ mod tests {
         let call = json!({ "argv": ["lines"], "input": "one\n" });
         let params: Params = serde_json::from_value(call).unwrap();
         assert_eq!(params.input.unwrap().bytes(), b"one\n");
-        // One that is more than a pipe holds is refused before anything runs.
-        let long = Secret::from("x".repeat(INPUT_MAX + 1));
+        // One that is more than any action takes is refused before anything
+        // runs.
+        let long = Secret::from("x".repeat(INPUT_LIMIT + 1));
         let refused = runtime.block_on(run_in(&argv, Some(&long), &folders)).unwrap_err();
         assert_eq!(refused.id, Kind::BadRequest.id());
         // What run does not take is refused without quoting it.
         let wrong = runtime.block_on(run(json!({ "argv": ["lines"], "input": 5 }))).unwrap_err();
         assert!(!wrong.detail.contains('5'), "{}", wrong.detail);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_command_that_writes_before_it_reads_a_large_input_never_stalls() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("admind-large-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // 1 MiB of output before it reads any input, and then the count of
+        // what it read; and one that reads none of it.
+        let tool = dir.join("large");
+        std::fs::write(
+            &tool,
+            "#!/bin/sh
+head -c 1048576 /dev/zero
+wc -c >&2
+",
+        )
+        .unwrap();
+        let deaf = dir.join("deaf");
+        std::fs::write(
+            &deaf,
+            "#!/bin/sh
+echo done
+",
+        )
+        .unwrap();
+        for program in [&tool, &deaf] {
+            std::fs::set_permissions(program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let folders = [dir.to_str().unwrap()];
+        let input = Secret::from("k".repeat(INPUT_LIMIT));
+        let ran = runtime.block_on(run_in(&["large".into()], Some(&input), &folders)).unwrap();
+        assert_eq!(ran["status"], 0);
+        assert_eq!(ran["output"].as_str().unwrap().len(), 1 << 20);
+        assert_eq!(ran["errors"].as_str().unwrap().trim(), INPUT_LIMIT.to_string());
+        // A command that ends before reading it is no fault: its status says.
+        let ran = runtime.block_on(run_in(&["deaf".into()], Some(&input), &folders)).unwrap();
+        assert_eq!((ran["status"].as_i64(), ran["output"].as_str()), (Some(0), Some("done\n")));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

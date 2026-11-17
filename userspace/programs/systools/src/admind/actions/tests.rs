@@ -326,9 +326,10 @@ impl Action for Cut {
     const PATH: &'static str = "/api/1/lab/{name}/cut";
     const RUNS: Runs = Runs::AsAdministrator;
     const CUTS_OFF: Option<CutsOff<Named>> = Some(CutsOff {
-        card: "lo",
+        on: Through::Card("lo"),
         read: |args| vec!["lab-peers".into(), args.name.clone()],
-        cuts: |args, from, shown| {
+        cuts: |args, browser, shown| {
+            let from = browser.from;
             let shown: Value = serde_json::from_str(shown).map_err(|_| "no list".to_string())?;
             let devices = shown["devices"].as_array().ok_or("no devices")?;
             let device = devices.iter().find(|device| device["name"] == args.name.as_str());
@@ -364,6 +365,10 @@ static CUT: Entry<Cut> = Entry::new();
 /// The action that can cut off its browser, for the route tests of the
 /// guard.
 pub static CUTTING: &[&dyn Registered] = &[&CUT, &RESTART];
+static SERVE: Entry<super::console::SetCertificate> = Entry::new();
+/// The console's certificate, whose guard is by the browser's name, for
+/// the route tests of that guard.
+pub static NAMING: &[&dyn Registered] = &[&SERVE];
 
 #[test]
 fn what_can_cut_off_its_browser_names_its_card_and_its_read_and_fails_closed() {
@@ -372,12 +377,16 @@ fn what_can_cut_off_its_browser_names_its_card_and_its_read_and_fails_closed() {
     assert_eq!((&listed[0]["cuts_off"], &listed[1]["cuts_off"]), (&json!("lo"), &Value::Null));
     let prepared = CUT.prepare(json!({ "name": "phone" })).unwrap();
     let read = prepared.cuts_off.as_ref().unwrap();
-    assert_eq!((read.card, &read.argv), ("lo", &vec!["lab-peers".to_string(), "phone".into()]));
+    assert_eq!(
+        (read.on, &read.argv),
+        (Through::Card("lo"), &vec!["lab-peers".to_string(), "phone".into()])
+    );
     assert!(RESTART.prepare(json!({ "name": "nginx" })).unwrap().cuts_off.is_none());
 
     let phone: IpAddr = "192.0.2.7".parse().unwrap();
     let cut = |name: &str, from: IpAddr, shown: &str| {
-        CUT.cuts_off(&CUT.prepare(json!({ "name": name })).unwrap().args, from, shown)
+        let browser = Browser { from, host: "lab.example.org" };
+        CUT.cuts_off(&CUT.prepare(json!({ "name": name })).unwrap().args, &browser, shown)
     };
     // The browser's own device is refused; another, or one not there, is
     // not; nor is any for a browser that holds none of their addresses.
@@ -390,9 +399,10 @@ fn what_can_cut_off_its_browser_names_its_card_and_its_read_and_fails_closed() {
     // What does not read refuses, and so do arguments that do not.
     assert!(cut("laptop", phone, "").is_err());
     assert!(cut("laptop", phone, "{}").is_err());
-    assert!(CUT.cuts_off(&json!({ "name": 3 }), phone, LAB_PEERS).is_err());
+    let browser = Browser { from: phone, host: "lab.example.org" };
+    assert!(CUT.cuts_off(&json!({ "name": 3 }), &browser, LAB_PEERS).is_err());
     // An action with no guard never refuses.
-    assert_eq!(RESTART.cuts_off(&json!({ "name": "nginx" }), phone, ""), Ok(()));
+    assert_eq!(RESTART.cuts_off(&json!({ "name": "nginx" }), &browser, ""), Ok(()));
 }
 
 #[test]
@@ -571,7 +581,11 @@ fn the_list_says_which_changes_compare_a_probe_and_which_always_changed() {
             "service.stop",
             "service.enable",
             "service.disable",
+            "certificate.get",
+            "certificate.add",
+            "machine.rename",
             "console.reach",
+            "console.certificate",
             "console.undo",
             "console.export",
             "network.set",
@@ -597,6 +611,40 @@ fn the_list_says_which_changes_compare_a_probe_and_which_always_changed() {
             "ssh.on",
             "ssh.off",
             "ssh.undo",
+            "power.restart",
+            "power.shutdown",
+            "power.cancel",
+            "updates.bisect",
+            "updates.bisect-stop",
+            "updates.bisect-confirm",
+            "hardware.memtest",
+            "hardware.memtest-cancel",
+            "updates.set",
+            "updates.channel",
+            "updates.check-add",
+            "updates.check-remove",
+            "updates.essential",
+            "updates.unstage",
+            "updates.undo",
+            "updates.hold",
+            "updates.unhold",
+            "updates.later",
+            "apps.update",
+            "apps.tonight",
+            "apps.tonight-all",
+            "apps.not-tonight",
+            "apps.rollback",
+            "apps.hold",
+            "apps.unhold",
+            "apps.remove",
+            "apps.install",
+            "databases.add",
+            "databases.allow",
+            "databases.deny",
+            "databases.remove",
+            "websites.add",
+            "websites.https",
+            "websites.remove",
         ]
     );
     for action in console.as_array().unwrap() {
@@ -705,9 +753,16 @@ fn keeps_the_rules(actions: &'static [&'static dyn Registered]) {
         // A change that could cut off its browser is refused before it
         // runs, which a task, started first and answered later, is not.
         assert!(
-            action.cuts_off_card().is_none()
+            action.cuts_off_on().is_none()
                 || (action.changes() && action.runs() == Runs::AsAdministrator && !action.long()),
             "{id}: what can cut off its browser is a change an administrator runs at once"
+        );
+        // A change that restarts the machine is refused while a trial or
+        // the other kind of restart runs, which authd's administrator reads.
+        assert!(
+            action.restarts().is_none()
+                || (action.changes() && action.runs() == Runs::AsAdministrator),
+            "{id}: what restarts the machine is a change an administrator runs"
         );
         secrets::keeps_secrets(*action);
         let (good, _, undo) = action.example_values();
@@ -768,6 +823,7 @@ fn keeps_the_rules(actions: &'static [&'static dyn Registered]) {
 fn every_action_keeps_the_rules() {
     keeps_the_rules(LAB);
     keeps_the_rules(secrets::SECRETS);
+    keeps_the_rules(secrets::DOCUMENTS);
     keeps_the_rules(REGISTRY);
 }
 
@@ -1158,6 +1214,7 @@ fn fields_are_true_to_the_types(actions: &'static [&'static dyn Registered]) {
                 Type::Number { min, max } => numbers(min, max),
                 Type::Flag => vec![json!(true), json!(false), json!(0), json!("true"), json!(null)],
                 Type::Secret { max } => secrets::candidates(max),
+                Type::Document { max, .. } => secrets::document_candidates(max),
             };
             for candidate in candidates {
                 // A `null` is an optional argument left out, which the
@@ -1206,6 +1263,7 @@ fn fields_are_true_to_the_types(actions: &'static [&'static dyn Registered]) {
 fn every_action_s_fields_are_true_to_its_types() {
     fields_are_true_to_the_types(LAB);
     fields_are_true_to_the_types(secrets::SECRETS);
+    fields_are_true_to_the_types(secrets::DOCUMENTS);
     fields_are_true_to_the_types(REGISTRY);
 }
 
@@ -1303,6 +1361,48 @@ const CODE_DECIDES: &[(&str, &str)] = &[
     ("account.password", "current"),
     ("account.password", "new"),
     ("account.key-add", "line"),
+    // A list of areas holds each once, and with a disk it is the disks
+    // alone, which a pattern cannot say.
+    ("hardware.check", "areas"),
+    ("hardware.check", "disk"),
+    // Each name an order or a check is for is read as `cert get` reads it,
+    // once, a wildcard only with dns, which a pattern of the letters a name
+    // has cannot say; and the terms are agreed to only with true, which a
+    // flag says as true or false.
+    ("certificate.check", "names"),
+    ("certificate.get", "names"),
+    ("certificate.get", "agree_terms"),
+    // The other names of a site are names as `website` reads them, each
+    // once and none the site's own, which a pattern of the letters a name
+    // has cannot say; and a site is served over HTTPS with a certificate
+    // or taken back to HTTP with off, one of the two, which two optional
+    // fields cannot say.
+    ("websites.plan", "names"),
+    ("websites.add", "names"),
+    ("websites.https", "off"),
+    // A page or a service, one of the two, and a page's address is one the
+    // check reads: no space or control character in it, which a pattern
+    // cannot say as the check does.
+    ("updates.check-add", "url"),
+    ("updates.check-add", "service"),
+    // Addresses, a server and a sender as the command's parser reads them,
+    // an account with no control character, and a Matrix room that is for
+    // a Matrix webhook alone; a browser's name that is not spaces alone.
+    ("alerts.email", "to"),
+    ("alerts.email", "server"),
+    ("alerts.email", "user"),
+    ("alerts.email", "from"),
+    ("alerts.webhook-add", "kind"),
+    ("alerts.webhook-add", "room"),
+    ("alerts.push-add", "name"),
+    // What a report is about decides which of the crash and the name goes
+    // with it, and an answer of only blanks is no answer, which a pattern
+    // cannot say.
+    ("reports.draft", "about"),
+    ("reports.draft", "crash"),
+    ("reports.draft", "name"),
+    ("reports.draft", "happened"),
+    ("reports.send", "title"),
 ];
 
 /// The bad examples whose rule a schema cannot say, which `check` alone
@@ -1386,7 +1486,29 @@ const BEYOND_THE_SCHEMA: &[(&str, &str)] = &[
     ("private.serve", r#"{"address":"10.8.0.0/24"}"#),
     ("private.serve", r#"{"address":"10.8.0.255/24"}"#),
     ("private.serve", r#"{"endpoint":"-lab.example.org"}"#),
+    // An area named twice, and a disk with the areas that are not the disks
+    // alone: the code's.
+    ("hardware.check", r#"{"areas":"memory memory"}"#),
+    ("hardware.check", r#"{"areas":"disks cpu disks"}"#),
+    ("hardware.check", r#"{"areas":"memory","disk":"vda"}"#),
+    ("hardware.check", r#"{"areas":"disks cpu","disk":"vda"}"#),
+    ("hardware.check", r#"{"disk":"vda"}"#),
     ("backups.add", r#"{"every":"hand","name":"lab","to":"relative/folder","verify":"never"}"#),
+    // A name with an empty word, a wildcard without dns, a name twice, a
+    // name of one word for an order, and terms not agreed to: the code's.
+    ("certificate.check", r#"{"names":"shop..example.org"}"#),
+    ("certificate.check", r#"{"names":"*.example.org"}"#),
+    ("certificate.check", r#"{"names":"a.example.org,a.example.org"}"#),
+    ("certificate.get", r#"{"agree_terms":false,"name":"shop","names":"shop.example.org"}"#),
+    ("certificate.get", r#"{"agree_terms":true,"name":"shop","names":"shop..example.org"}"#),
+    ("certificate.get", r#"{"agree_terms":true,"name":"shop","names":"*.example.org"}"#),
+    ("certificate.get", r#"{"agree_terms":true,"name":"shop","names":"shop"}"#),
+    // A report about a crash names it, one about a service or a program names
+    // that, and no other has either: the code's.
+    ("reports.draft", r#"{"about":"crash","happened":"lab"}"#),
+    ("reports.draft", r#"{"about":"service","happened":"lab"}"#),
+    ("reports.draft", r#"{"about":"other","crash":"20261113T100211-4012","happened":"lab"}"#),
+    ("reports.draft", r#"{"about":"other","happened":"lab","name":"nginx"}"#),
     // The key as a file and typed, or as neither; a card choice that is no
     // card of this machine; and no more than eight of them: the code's.
     ("move.plan", r#"{"source":"/volumes/LAB/dukovo-backup/lab-machine"}"#),
@@ -1429,6 +1551,51 @@ const BEYOND_THE_SCHEMA: &[(&str, &str)] = &[
         "account.key-add",
         r#"{"line":"command=\"x\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f lab"}"#,
     ),
+    // Nothing to change, a restart time for a machine that does not update
+    // by itself, a check of both a page and a service, and an `insecure`
+    // that is for a page: the code's, since each is a way of combining
+    // fields.
+    ("updates.set", "{}"),
+    ("updates.set", r#"{"restart":"03:30","unattended":false}"#),
+    ("updates.check-add", r#"{"name":"x"}"#),
+    ("updates.check-add", r#"{"name":"x","service":"nginx","url":"https://a/"}"#),
+    ("updates.check-add", r#"{"insecure":true,"name":"x","service":"nginx"}"#),
+    // An address that is no address, an account's password without the
+    // account, and a sender that is no address: what the command's parser
+    // reads. A Matrix webhook without its room, a room for another kind,
+    // a token for a kind that has none, and a browser's name of spaces
+    // alone: fields that go together in ways a schema does not say.
+    ("alerts.email", r#"{"server":"mail.example.org","to":"nobody"}"#),
+    ("alerts.email", r#"{"from":"nobody","server":"mail.example.org","to":"ops@example.org"}"#),
+    ("alerts.email", r#"{"password":"x","server":"mail.example.org","to":"ops@example.org"}"#),
+    ("alerts.webhook-add", r#"{"kind":"matrix","url":"https://matrix.example.org"}"#),
+    ("alerts.webhook-add", r#"{"kind":"json","room":"!a:b.test","url":"https://x.example.org"}"#),
+    ("alerts.webhook-add", r#"{"kind":"slack","token":"t","url":"https://hooks.slack.com/x"}"#),
+    ("alerts.push-add", r#"{"name":"   ","subscription":"{}"}"#),
+    // An address by number is no name for a site, a name twice and a name
+    // with an empty label are no names, which `website` says; and HTTPS
+    // takes a certificate or off, one of the two.
+    ("websites.plan", r#"{"kind":"static","name":"10.0.0.1","owner":"webdev"}"#),
+    (
+        "websites.plan",
+        r#"{"kind":"static","name":"shop.lab.example","names":"shop.lab.example","owner":"webdev"}"#,
+    ),
+    (
+        "websites.plan",
+        r#"{"kind":"static","name":"shop.lab.example","names":"a..b","owner":"webdev"}"#,
+    ),
+    ("websites.add", r#"{"kind":"static","name":"10.0.0.1","owner":"webdev"}"#),
+    (
+        "websites.add",
+        r#"{"kind":"static","name":"shop.lab.example","names":"shop.lab.example","owner":"webdev"}"#,
+    ),
+    (
+        "websites.add",
+        r#"{"kind":"static","name":"shop.lab.example","names":"a..b","owner":"webdev"}"#,
+    ),
+    ("websites.https", r#"{"name":"shop.lab.example"}"#),
+    ("websites.https", r#"{"name":"shop.lab.example","off":false}"#),
+    ("websites.https", r#"{"certificate":"this-machine","name":"shop.lab.example","off":true}"#),
 ];
 
 fn lab_action(id: &str) -> &'static dyn Registered {
@@ -1490,6 +1657,38 @@ fn a_part_of_the_address_is_read_as_its_field_s_type_reads_it() {
         let failure = given(name, text).unwrap_err();
         assert_eq!((failure.kind, failure.detail.as_str()), (Kind::BadRequest, why), "{name}");
     }
+}
+
+#[test]
+fn a_part_of_a_post_s_address_is_read_as_its_field_s_type_reads_it_before_the_body_joins_it() {
+    let fields = lab_action("lab.log").fields();
+    let given = |name: &str, text: &str| {
+        let mut params = Params::new();
+        params.insert(name.into(), json!(text));
+        typed_params(params, fields)
+    };
+    assert_eq!(given("lines", "20").unwrap(), json!({ "lines": 20 }).as_object().unwrap().clone());
+    assert_eq!(given("kernel", "false").unwrap()["kernel"], json!(false));
+    // Text is kept as it came, and a part no field names is left for the
+    // action to refuse.
+    assert_eq!(given("service", "20").unwrap()["service"], json!("20"));
+    assert_eq!(given("other", "20").unwrap()["other"], json!("20"));
+    for (name, text, why) in [
+        ("lines", "many", "\"lines\" is a whole number"),
+        ("lines", "", "\"lines\" is a whole number"),
+        ("kernel", "yes", "\"kernel\" is true or false"),
+    ] {
+        let failure = given(name, text).unwrap_err();
+        assert_eq!((failure.kind, failure.detail.as_str()), (Kind::BadRequest, why), "{name}");
+    }
+    // What the body gives is its own, and the address's part is still not
+    // given again in it.
+    let params = given("lines", "20").unwrap();
+    assert_eq!(
+        arguments(params.clone(), br#"{"kernel": true}"#).unwrap(),
+        json!({ "lines": 20, "kernel": true })
+    );
+    assert!(arguments(params, br#"{"lines": 30}"#).is_err());
 }
 
 #[test]

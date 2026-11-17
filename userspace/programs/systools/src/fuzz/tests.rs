@@ -707,6 +707,24 @@ fn arguments_for(rng: &mut Rng, id: &str) -> Value {
                     }
                     Value::String(secret)
                 }
+                // Lines of a document, or now and then one with a NUL, which
+                // is refused before anything reads it.
+                actions::Type::Document { max, .. } => {
+                    let length = 1 + rng.below(max.min(200));
+                    let mut document: String = (0..length)
+                        .map(|at| {
+                            if at % 40 == 39 {
+                                '\n'
+                            } else {
+                                char::from(b' ' + u8::try_from(rng.below(95)).unwrap())
+                            }
+                        })
+                        .collect();
+                    if rng.chance(10) {
+                        document.insert(document.len() / 2, '\0');
+                    }
+                    Value::String(document)
+                }
             }
         };
         object.insert(field.name.to_string(), value);

@@ -113,6 +113,7 @@ test('Escape asks before it closes, and Go back keeps the dialog open with the t
   const { dialog, document, closed } = await opened(context, { options: { loss: 'You can ask for it again later.' } });
   const event = dialog.fire('cancel');
   assert.equal(event.defaultPrevented, true, 'the browser does not close it');
+  await tick();
   const [first, question] = dialogsOf(document);
   assert.equal(first, dialog);
   assert.equal(question.querySelector('h2').textContent, 'Close without keeping it?');
@@ -123,6 +124,7 @@ test('Escape asks before it closes, and Go back keeps the dialog open with the t
   assert.equal(dialog.querySelector('pre').textContent, KEY);
 
   dialog.fire('cancel');
+  await tick();
   buttonOf(dialogsOf(document)[1], 'Close without keeping it').click();
   assert.equal(await closed, false);
   assert.equal(holdings(dialog).some((text) => text.includes('AGE-SECRET')), false);
@@ -132,6 +134,7 @@ test('a second Escape while the question is open does not ask again', async (con
   const { dialog, document } = await opened(context);
   dialog.fire('cancel');
   dialog.fire('cancel');
+  await tick();
   assert.equal(dialogsOf(document).length, 2);
 });
 

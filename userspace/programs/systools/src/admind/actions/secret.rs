@@ -23,10 +23,18 @@ use serde::{Deserialize, Serialize, Serializer};
 /// arguments of a task, the examples of `GET /api/1/actions`, a log line.
 pub const SHOWN: &str = "(secret)";
 
-/// The most bytes an action's command is given on its input: what a pipe
-/// holds before its reader has read any (POSIX's `PIPE_BUF`), so that
-/// writing them never waits for the command.
+/// The most bytes an action's command is given on its input, unless the
+/// action says more ([`Action::INPUT_MAX`]): what a pipe holds before its
+/// reader has read any (POSIX's `PIPE_BUF`), so that writing them never
+/// waits for the command.
+///
+/// [`Action::INPUT_MAX`]: super::Action::INPUT_MAX
 pub const INPUT_MAX: usize = 4096;
+
+/// The most bytes any action's command is given on its input: a document
+/// that a pipe does not hold at once is written while the command runs
+/// (ADR 0567), up to this.
+pub const INPUT_LIMIT: usize = 128 << 10;
 
 /// The most bytes a secret of up to `chars` characters takes as a line:
 /// four for each character, and its end.
@@ -57,6 +65,12 @@ impl Secret {
     /// Its bytes, for the pipe its command reads.
     pub fn bytes(&self) -> &[u8] {
         &self.0
+    }
+
+    /// A copy of it, for a writer that holds it while the command runs:
+    /// zeroed when it goes, as the first is.
+    pub fn copied(&self) -> Secret {
+        Secret(self.0.clone())
     }
 }
 
@@ -154,6 +168,8 @@ mod tests {
         assert_eq!(Secret::lines(&[&new]).bytes(), "néw\n".as_bytes());
         assert_eq!(Secret::lines(&[]).bytes(), b"");
         assert_eq!(format!("{:?}", Secret::lines(&[&current])), SHOWN);
+        let copy = new.copied();
+        assert_eq!((copy.bytes(), format!("{copy:?}").as_str()), (new.bytes(), SHOWN));
     }
 
     #[test]

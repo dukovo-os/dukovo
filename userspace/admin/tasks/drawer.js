@@ -111,7 +111,7 @@ export function createTasks({ get, post, session, time, notice, problem, command
     async open(opener, logId = null) {
       if (!cards) {
         const { makeCards } = await import('./cards.js');
-        cards = makeCards({ model, get, post, session, time, notice, problem, commands, hasPage, changed });
+        cards = await makeCards({ model, get, post, session, time, notice, problem, commands, hasPage, changed });
       }
       if (logId !== null) cards.showLog(logId);
       const options = {

@@ -39,18 +39,42 @@ server such as nginx; see [Websites with PHP](#websites-with-php).
 
 PHP-FPM is a service of the bundle: it runs the pages of a website as the
 account `php`, for nginx, which passes each `.php` URL to it on port 9000 of
-the computer itself. Install both bundles for everyone and turn both
-services on:
+the computer itself. Install both bundles for everyone:
 
 ```
 $ elevate bundle install --for-everyone org.nginx.nginx
 $ elevate bundle install --for-everyone net.php.php
-$ elevate service nginx enable
-$ elevate service php-fpm enable
 ```
 
-nginx's settings come with PHP turned off: its `.php` location answers 404,
-so that no page's code is ever sent as text. To turn PHP on, edit
+Then add the website. `website add` with `--kind php` makes the site's file,
+its folder and what nginx needs, and turns nginx and PHP-FPM on when they are
+off (see [Websites, a file each](services.md#websites-a-file-each)):
+
+```
+$ elevate website add shop.example.org --name www.shop.example.org --kind php --owner alice
+```
+
+The site is in `/shared/www/sites/shop.example.org`, which alice owns and
+changes. It has a starter `index.php` until you put your own there, and an
+`uploads` folder that belongs to the account `php`. The pages run as `php`,
+which, like nginx, reads the folder and cannot change it, except in `uploads`:
+a page that stores what a visitor uploads puts it there. What is in `uploads`
+is served as files, and a `.php` file there is not found, so that a file a
+visitor uploaded never runs. Elsewhere in the site, nginx passes each `.php` URL
+to PHP-FPM only when its file is there. For a site over HTTPS, give the
+certificate with `--certificate`, or later with `website https` (see
+[A website's certificate](certificates.md#a-websites-certificate)).
+
+PHP-FPM keeps the sessions of the pages, and the files visitors upload
+until a page moves them, in its own data folder.
+
+### The default site, by hand
+
+A site that is not one of `website`'s is a folder of `/shared/www`, as for any
+nginx site (see [The web server: nginx](services.md#the-web-server-nginx)).
+nginx's settings come with PHP turned off for it: its `.php` location answers
+404, so that no page's code is ever sent as text. To turn PHP on, turn the
+services on, then edit
 `/shared/services/org.nginx.nginx/nginx/conf/nginx.conf`: put a `#` before
 `return 404;`, and remove the `#` signs before the three lines after it.
 The location is then
@@ -69,13 +93,13 @@ The same lines are in the commented HTTPS server. Check the settings and
 have nginx read them again:
 
 ```
+$ elevate service nginx enable
+$ elevate service php-fpm enable
 $ elevate nginx -t
 $ elevate service nginx reload
 ```
 
-A site is a folder of `/shared/www`, as for any nginx site (see [The web
-server: nginx](services.md#the-web-server-nginx)). `index.php` is the front
-page of a folder that has no `index.html`:
+`index.php` is the front page of a folder that has no `index.html`:
 
 ```
 $ elevate cp -R mysite/. /shared/www/
@@ -89,9 +113,6 @@ visitor uploads, or a file of its own, needs a folder of the account's:
 ```
 $ elevate chown -R php /shared/www/mysite/uploads
 ```
-
-PHP-FPM keeps the sessions of the pages, and the files visitors upload
-until a page moves them, in its own data folder.
 
 ### Its settings
 
@@ -234,7 +255,16 @@ namespace; and `mail()` fails, as it does anywhere without `sendmail`.
 and the pages of PHP-FPM run as the account `php`, which is none of its
 roles: they connect over `127.0.0.1` with a role's password, as an
 application would to a server on another machine. An administrator makes
-the role and its database:
+the role and its database with `database add`, which makes the password too and
+shows it once, in JSON (see [Databases for programs and
+websites](postgresql.md#databases-for-programs-and-websites)):
+
+```
+$ elevate database add shop --site shop.example.org --json
+{"format":1,"database":"shop","role":"shop","password":"kT3x0Gv9uQ1mYwZb5nR2LcHd7SpJaEfA","host":"127.0.0.1","port":5432}
+```
+
+or, with PostgreSQL's own programs, which ask for the password as it is set:
 
 ```
 $ elevate createuser -U postgres --pwprompt shop

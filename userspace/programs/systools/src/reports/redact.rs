@@ -34,6 +34,7 @@ use std::fs;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 
+use super::protocol::CutBy;
 use crate::{diskhealth, hwinfo, lsusb};
 
 const USER: &str = "[user]";
@@ -45,9 +46,12 @@ const EMAIL: &str = "[email]";
 const WIFI: &str = "[Wi-Fi]";
 const SERIAL: &str = "[serial]";
 const MACHINE: &str = "[machine]";
+/// What the person cut of a line the system gathered (ADR 0568): not
+/// redaction's, but left alone by it as its own marks are.
+pub const CUT: &str = "[cut]";
 
 /// Every mark, to leave the ones already in a text alone.
-const MARKS: [&str; 9] = [USER, HOST, IPV4, IPV6, MAC, EMAIL, WIFI, SERIAL, MACHINE];
+const MARKS: [&str; 10] = [USER, HOST, IPV4, IPV6, MAC, EMAIL, WIFI, SERIAL, MACHINE, CUT];
 
 /// The folder the people's homes are in, `/users/<name>`.
 const HOMES: &str = "/users/";
@@ -206,6 +210,30 @@ impl Redactor {
         }
         kept
     }
+}
+
+/// How many of each of redaction's marks `text` holds, as a draft's
+/// answer counts them; `you`, the person's cuts, is not redaction's and
+/// stays 0.
+pub fn marks_in(text: &str) -> CutBy {
+    let mut by = CutBy::default();
+    for piece in split_marks(text) {
+        let Piece::Mark(mark) = piece else { continue };
+        let count = match mark {
+            USER => &mut by.user,
+            HOST => &mut by.host,
+            IPV4 => &mut by.ipv4,
+            IPV6 => &mut by.ipv6,
+            MAC => &mut by.mac,
+            EMAIL => &mut by.email,
+            WIFI => &mut by.wifi,
+            SERIAL => &mut by.serial,
+            MACHINE => &mut by.machine,
+            _ => continue,
+        };
+        *count += 1;
+    }
+    by
 }
 
 /// `text` as text and the marks it holds already.
@@ -785,5 +813,16 @@ mod tests {
                     0 ngx_http_core_run_phases+0x4c  nginx 1.29.0 +0x5a2c1c  build 7be951e4\n";
         let (got, cuts) = names(&["alice"], &["studio"]).redact(text);
         assert_eq!((got.as_str(), cuts), (text, 0));
+    }
+
+    #[test]
+    fn the_marks_are_counted_by_kind_and_a_cut_is_left_alone_and_not_counted() {
+        let text = "[user] at [IPv4] and [IPv4], [cut] then [Wi-Fi] [machine] [nope]";
+        let by = marks_in(text);
+        assert_eq!((by.user, by.ipv4, by.wifi, by.machine, by.host, by.you), (1, 2, 1, 1, 0, 0));
+        assert_eq!(by.total(), 5);
+        // A person called "cut" leaves the mark as it is.
+        let redactor = Redactor::new(Lists { users: vec!["cut".into()], ..Lists::default() });
+        assert_eq!(redactor.redact("[cut] by cut"), ("[cut] by [user]".to_string(), 1));
     }
 }

@@ -54,13 +54,24 @@ memory = "64M"
 #   (ADR 0474). Spark leaves out of the view a socket or signatures that
 #   are not there yet (service.toml(5)), and the notice goes without the
 #   likely cause then.
+# - The settings, to write, since the start after a fallback holds the
+#   release it fell back from in updates.toml(5).
+# - The hardware state, where a memory test asked for at a start is kept
+#   with its history and what was asked is cleared once the start is seen
+#   through (hardware(8)).
 [permissions]
 files.root-subvolumes = ["@system.a", "@system.b", "@system.new", "@firmware"]
 files.efi-system = "read-write"
 files.read-write = [
     "/system/state/sysupdate",
+    # Every service reads the settings, and a view cannot hold one folder
+    # of them apart, so the whole is named for updates.toml. It adds
+    # little to a service that already writes the system slots and the
+    # EFI system partitions.
+    "/system/settings",
     "/system/state/starts",
     "/system/state/bisect",
+    "/system/state/hardware",
     "/system/live/sysupdate",
     "/system/live/sign-in",
     "/system/live/spark/control",

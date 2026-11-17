@@ -295,10 +295,12 @@ fn every_error_status_lists_ids_that_have_that_status() {
         let document = document(actions);
         for (path, item) in document["paths"].as_object().unwrap() {
             for (method, operation) in item.as_object().unwrap() {
-                let own: Vec<&str> = actions
+                let action = actions
                     .iter()
-                    .find(|action| action.path() == path && action.posts() == (method == "post"))
-                    .map_or_default(|action| action.errors().to_vec());
+                    .find(|action| action.path() == path && action.posts() == (method == "post"));
+                let own: Vec<&str> = action.map_or_default(|action| action.errors().to_vec());
+                let others: Vec<&str> = action
+                    .map_or_default(|action| refusals(*action).iter().map(|(id, _)| *id).collect());
                 let responses = operation["responses"].as_object().unwrap();
                 // The Terminal's socket works when the connection is handed over.
                 assert!(
@@ -320,6 +322,9 @@ fn every_error_status_lists_ids_that_have_that_status() {
                     for id in ids(operation, status) {
                         let wanted = Kind::of(id).map_or_else(
                             || {
+                                if others.contains(&id) {
+                                    return Kind::Cannot.status();
+                                }
                                 assert!(own.contains(&id), "{method} {path}: {id} is nobody's");
                                 Kind::CommandFailed.status()
                             },

@@ -7,7 +7,9 @@
 // journal. It is apart from lib/command.js so that the console's start does
 // not carry it: it is read when a panel is first shown.
 
-import { asSentence, h, icon, uniqueId } from '../dom.js';
+import {
+  asSentence, h, icon, sheet, uniqueId,
+} from '../dom.js';
 import { copyText, COPIED, PRESS_CTRL_C } from './copy.js';
 import {
   changeFor, diffLines, diffOf, FOOTNOTE, TABS, textOfTab,
@@ -72,7 +74,8 @@ export function panel(deps, action, args = {}, { signal } = {}) {
   };
   root.append(h('p', { class: 'small muted' }, 'Loading the command…'));
 
-  deps.load(action, args).then((answer) => {
+  // The head of the panel has its look from dialogs.css, which the panel waits for.
+  Promise.all([deps.load(action, args), sheet('/dialogs.css')]).then(([answer]) => {
     const id = uniqueId('cmd');
     const files = filesTab(answer, deps, signal);
     const bodies = {

@@ -61,7 +61,7 @@ on a busy day main's full results were seldom recorded.
 - Whenever any boot test runs, so do the smoke tests (`uefi-usb`,
   `bios-cdrom`, `spark`) and every test `covers.txt` does not name.
 - `--plan` prints how many machines the chosen tests need, one for each
-  ten minutes of tests by `times.txt`, at most ten, in the form
+  ten minutes of tests by `times.txt`, at most twenty, in the form
   `$GITHUB_OUTPUT` takes.
 - In CI, the job "Choose the checks" builds ob and runs
   `./ob test boot --affected HEAD^1 --plan` on a pull request, where
@@ -69,7 +69,9 @@ on a busy day main's full results were seldom recorded.
   matrix of that many shards, each running
   `./ob test boot --affected HEAD^1 --shard <n>/<parts>`; with no test
   to run there is no boot job. A push to main, a manual run and the
-  nightly run use all ten shards and every test.
+  nightly run use all twenty shards and every test. On ten, every
+  test, some 550 minutes by `times.txt`, left each shard more than the
+  45 minutes its step may take.
 - Main runs every boot test after each merge. Its runs are no longer
   cancelled by the next merge: a merge waits for the run before it, and
   of the runs waiting only the newest is kept, as it holds the others'

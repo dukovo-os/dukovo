@@ -21,6 +21,8 @@ admin - the web console from a terminal: its address, its actions and its API to
 
 *admin reach* [*private* | *any*] [*--try* _seconds_]
 
+*admin certificate* [_name_] [*--try* _seconds_]
+
 *admin keep*
 
 *admin undo*
@@ -57,8 +59,9 @@ console runs an action's command, which is the command *show* prints: the
 button, the API call and the command typed at a terminal do the same.
 
 *about*, *notices*, *actions*, *show*, *settings*, *sign-in* with no option
-and *reach* with no word need no rights. *reach* with a word and
-*sign-in* with an option are root's, as the file they change is:
+and *reach* and *certificate* with no word need no rights. *reach* and
+*certificate* with a word and *sign-in* with an option are root's, as
+the files they change are:
 *elevate*(8) them. *token* is the
 person's own, asked of *authd*(8) as that person, so it can never make or
 remove another's.
@@ -283,9 +286,55 @@ remove another's.
 	The console's reach is now private: Spark undoes it at 21:42:10 unless it is kept, with `admin keep`.
 	```
 
+*certificate* [_name_]
+	With no name, prints the name of the certificate the console serves,
+	from *certificate* in _/system/settings/admin.toml_: *this-machine*,
+	the machine's own, unless the file names another. With a name, makes
+	the console serve that certificate, one of those *certd*(8) keeps
+	(*cert list*). It changes *certificate* in the *[console]* table of
+	the file, and *certificates* in *admind*'s service file, which has
+	Spark copy the certificate for it (*service.toml*(5)): the name is
+	added, *this-machine* stays, and the one served before goes. Then it
+	has Spark reload *admind*, which copies the certificate and sends
+	*admind* SIGHUP, and waits up to 10 seconds for *admind* to write the
+	new certificate's fingerprint in its issue file, which says it serves
+	it. A connection that is open keeps the certificate it began with;
+	the next is served the new one. When both files say the name already
+	it changes nothing and says so. A name certd does not keep is refused
+	before anything changes, and so is a file that does not read. The
+	change is root's, as the console's *console.certificate* action runs
+	it:
+
+	```
+	$ admin certificate
+	this-machine
+	$ elevate admin certificate duke-nas.example.org
+	admin: the console serves duke-nas.example.org's certificate
+	```
+
+	A browser that opens the console at a name or address the
+	certificate does not hold warns on every new connection, so the
+	console's Certificates page offers it only for a certificate that
+	names the address its browser uses, and its action refuses any other
+	(ADM-141).
+
+	With *--try* _seconds_ both files are the trial *console*, as with
+	*reach*: Spark puts both back, and has *admind* read them again,
+	unless *admin keep* comes in time. When *admind* does not serve the
+	new certificate in time, the trial is undone at once and the command
+	ends with 1.
+
+	```
+	$ elevate admin certificate duke-nas.example.org --try 300
+	/system/settings/spark/services/admind.toml: trying the change for 300 s
+	/system/settings/admin.toml: trying the change for 300 s
+	admin: the console serves duke-nas.example.org's certificate
+	Spark undoes it at 21:42:10 unless it is kept, with `admin keep`.
+	```
+
 *keep*, *undo*
 	What the trial *console* comes to: *keep* ends it with the change in
-	force, and *undo* has Spark put the file back and *admind* read it
+	force, and *undo* has Spark put the files back and *admind* read them
 	again now. With no trial they say so (NET-179). Root's, as Spark's
 	control socket is.
 
@@ -489,9 +538,13 @@ _/system/live/admind/issue_
 	changes. It is not there while the console is not running.
 
 _/system/settings/admin.toml_
-	The console's settings, which *admin reach* and *admin sign-in* read
-	and, as root, change (*admin.toml*(5)), *admin settings* shows, and
-	*admin about* reads for the port.
+	The console's settings, which *admin reach*, *admin certificate* and
+	*admin sign-in* read and, as root, change (*admin.toml*(5)), *admin
+	settings* shows, and *admin about* reads for the port.
+
+_/system/settings/spark/services/admind.toml_
+	*admind*'s service file, whose *certificates* *admin certificate*
+	changes, or its override in _settings.d_ when that sets them.
 
 _/system/live/sign-in/_, _/system/live/sysupdate/failure_
 	The notices *admin notices* lists.
@@ -512,9 +565,11 @@ _/system/state/admind/store.db_
 
 0 when it did what was asked; 1 when it did not, saying why, which
 includes a mistake in the command line, a refusal of *authd*(8), the
-console not running for *fingerprint*, for *reach* and *sign-in* a change
-that was not made by root, a settings file that is not right, a trial that
-runs (ADM-138) and a Spark that did not take the reload or the trial, for
+console not running for *fingerprint*, for *reach*, *certificate* and
+*sign-in* a change that was not made by root, a settings file that is not
+right, a trial that runs (ADM-138) and a Spark that did not take the
+reload or the trial, for *certificate* a certificate certd does not keep
+or one *admind* did not serve in time, for
 *keep* and *undo* no trial (NET-179), a change that cannot be put back or a
 store that cannot be opened for *put-back*, and a folder that *export* will
 not write in or a *git* that does not run.

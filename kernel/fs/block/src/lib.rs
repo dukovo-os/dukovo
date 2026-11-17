@@ -337,6 +337,9 @@ pub enum Health {
     Ata,
     /// Nothing: the SATA disk has SMART, and it is off.
     AtaOff,
+    /// Nothing: the SATA disk is in standby, or did not say whether it
+    /// is, so it was not read, so that asking does not wake it.
+    Asleep,
     /// An NVMe controller's SMART / Health Information log.
     Nvme,
 }
