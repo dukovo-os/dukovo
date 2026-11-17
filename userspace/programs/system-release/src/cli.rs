@@ -943,6 +943,14 @@ fn served(options: &Options) -> Result<(), String> {
         .map_err(|err| format!("the trusted root {}: {err}", root_path.display()))?;
     let url = if url.ends_with('/') { url.clone() } else { format!("{url}/") };
     let base = tuf::Url::parse(&url).map_err(|err| format!("{url}: {err}"))?;
+    if !published(&base)? {
+        if options.json {
+            println!("{}", serde_json::json!({ "url": url, "published": false }));
+        } else {
+            println!("system-release: {url} serves no releases yet: none has been deployed");
+        }
+        return Ok(());
+    }
     if options.json {
         let status = updates::status(&base, &root)?;
         println!("{}", serde_json::to_string(&status).map_err(|err| err.to_string())?);
@@ -964,6 +972,17 @@ fn served(options: &Options) -> Result<(), String> {
         println!("{line}");
     }
     Ok(())
+}
+
+/// Whether the server at `base` serves a repository at all: before the
+/// first deploy it has no timestamp, which is no fault of the server's.
+fn published(base: &tuf::Url) -> Result<bool, String> {
+    let url = base.resolve("metadata/timestamp.json").map_err(|err| format!("{base}: {err}"))?;
+    match tuf::fetch::fetch(&url, tuf::Limits::default().timestamp) {
+        Ok(_) => Ok(true),
+        Err(tuf::fetch::Error::NotFound) => Ok(false),
+        Err(err) => Err(format!("{url}: {err}")),
+    }
 }
 
 /// `rescue --out ESP REPOSITORY`: Rescue of the release there, read from

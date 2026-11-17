@@ -312,7 +312,9 @@ with their index, which must agree, but none of the files.
 With *--json* it prints, as JSON, each role's version and expiry, every
 release with its rollout and withdrawal, every firmware set with its
 rollout, every channel and every security advisory's index entry: what
-*ob updates status* reads for Dukovo Ops.
+*ob updates status* reads for Dukovo Ops. A server that has had nothing
+deployed has no timestamp; *served* then says it serves no releases yet,
+or with *--json* prints *{"url": ..., "published": false}*, and succeeds.
 
 # OPTIONS
 

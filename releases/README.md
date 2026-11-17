@@ -20,8 +20,11 @@ The public half of the system's release repository is kept here (ADRs
   server serves, signed on both YubiKeys in the key ceremony. `./ob
   release deploy` deploys only a repository that starts from it.
 
-Until the ceremony, every build machine signs its releases with keys of
-its own in `.cache/release-keys`, and nothing it signs is deployed.
+The ceremony signed the first root on 2026-11-17; its SHA-256 is
+`b9b2421ef1cd9f67d376547970bac6dcecd1c85f83a333559ebfb8d6c9345e14`.
+Until `ob release sign` signs releases on the YubiKeys, every build
+machine still signs its releases with keys of its own in
+`.cache/release-keys`, and nothing it signs is deployed.
 
 `stand-in-root.json` is a root made once with `system-release keys`,
 whose secret keys were deleted when it was made, so that no one can sign
