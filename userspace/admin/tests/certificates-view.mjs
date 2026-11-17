@@ -8,7 +8,7 @@
 
 import { setUnlockSeconds } from '../unlock.js';
 import {
-  about, history, list, machine, NOW, report, show, signIn, time,
+  about, history, list, machine, noneWanted, NOW, report, show, signIn, time,
 } from './certificates-fixtures.mjs';
 import { sparkIdle } from './security-fixtures.mjs';
 import { list as websites } from './websites-fixtures.mjs';
@@ -22,6 +22,7 @@ export { buttonOf, refusal, settle };
 export const reads = () => ({
   '/api/1/certificates': list(),
   '/api/1/certificates/history/all': history(),
+  '/api/1/certificates/wanted/all': noneWanted(),
   '/api/1/security/sign-in': signIn(),
   '/api/1/websites': websites(),
   '/api/1/console/about': about(),
@@ -186,6 +187,7 @@ export async function openCertificates(context, {
     },
     card: (id) => view.main.querySelector(`#${id}`),
     row: (name) => view.main.querySelector(`tr[data-name="${name}"]`),
+    wantedRow: (name) => view.main.querySelector(`tr[data-wanted="${name}"]`),
     dialog: () => page.document.body.querySelectorAll('dialog').at(-1) ?? null,
     press: async (root, words) => {
       const one = buttonOf(root, words);

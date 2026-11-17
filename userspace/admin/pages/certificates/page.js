@@ -17,9 +17,14 @@ import { CERTD_WORDS, rowsOf } from './model.js';
 import { makeName } from './name.js';
 import { machineOf } from './name-model.js';
 import { makeRenewals } from './renewals.js';
+import { wantedOf } from './wanted-model.js';
 
 const READS = {
-  list: '/api/1/certificates', history: '/api/1/certificates/history/all', signIn: '/api/1/security/sign-in', sites: '/api/1/websites',
+  list: '/api/1/certificates',
+  history: '/api/1/certificates/history/all',
+  wanted: '/api/1/certificates/wanted/all',
+  signIn: '/api/1/security/sign-in',
+  sites: '/api/1/websites',
 };
 const ABOUT = '/api/1/console/about';
 const MACHINE = '/api/1/machine/name';
@@ -34,7 +39,7 @@ export async function show(view) {
   const admin = view.session.admin === true;
   // `sites` is what the websites say they serve with; null until read, and left so when they could not be.
   const data = {
-    list: null, history: null, serving: null, machine: null, about: null, sites: null,
+    list: null, history: null, wanted: [], serving: null, machine: null, about: null, sites: null,
   };
   let latest = 0;
   let stopped = false;
@@ -126,6 +131,8 @@ export async function show(view) {
     const value = (one) => (got[one]?.status === 'fulfilled' ? got[one].value : undefined);
     data.list = Array.isArray(value('list')) ? value('list') : undefined;
     data.history = Array.isArray(value('history')) ? value('history') : undefined;
+    // The records are only more rows of the list: when they cannot be read the certificates are shown without them, and the list says so.
+    data.wanted = value('wanted') === undefined ? undefined : wantedOf(value('wanted'));
     data.serving = value('signIn')?.console?.certificate ?? data.serving;
     data.sites = value('sites') ?? data.sites;
     if (first) {

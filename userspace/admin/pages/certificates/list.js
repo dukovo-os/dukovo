@@ -4,7 +4,9 @@
 // The list of certificates: each one's first name, who made it, when it ends
 // and whether it renews by itself, which services use it and what can be done
 // with it, and under a row whose last renewal failed, why and the two ways to
-// go on. What a button does is the page's (`ctx.act`).
+// go on. A certificate that could not be got, which certd asks for again, is a
+// row of its own after them, with Forget. What a button does is the page's
+// (`ctx.act`).
 
 import { fill, h } from '../../dom.js';
 import { button, makeCard, statusLine } from './cards.js';
@@ -12,6 +14,7 @@ import { failureWords } from './history-model.js';
 import {
   accountWords, ACTION_WORDS, actionsOf, serviceHref, useOffer, WARNING_WORDS,
 } from './model.js';
+import { WANTED_LOST_WORDS, wantedWords } from './wanted-model.js';
 
 const COLUMNS = ['Certificate', 'From', 'Good until', 'Used by', 'Actions'];
 
@@ -80,6 +83,16 @@ export function makeList(ctx) {
       buttons.length > 0 && h('div', { class: 'btns' }, buttons)));
   }
 
+  /** The row of a certificate that could not be got: what certd does about it, and Forget for an administrator. */
+  function wantedRow(record) {
+    return h('tr', { class: 'certs-wanted', 'data-wanted': record.name },
+      h('td', { 'data-label': COLUMNS[0] }, h('b', {}, record.name), record.more > 0 && h('small', {}, `and ${record.more} more`)),
+      h('td', { 'data-label': 'Getting it', colspan: '3', class: record.givenUp ? 'certs-tone-bad' : null },
+        wantedWords(record, view.time), record.id && h('span', { class: 'mono muted' }, ` ${record.id}`)),
+      h('td', { 'data-label': COLUMNS[4], class: 'certs-actions' }, ctx.admin && h('div', { class: 'btns' },
+        button('Forget', (one) => ctx.act('forget', record, one), 'small'))));
+  }
+
   const rowOf = (row) => [
     h('tr', { 'data-name': row.name },
       nameCell(row),
@@ -108,7 +121,8 @@ export function makeList(ctx) {
         h('table', { class: 'tbl stack' },
           h('caption', { class: 'sr-only' }, `${rows.length} ${rows.length === 1 ? 'certificate' : 'certificates'}`),
           h('thead', {}, h('tr', {}, COLUMNS.map((name) => h('th', { scope: 'col' }, name)))),
-          h('tbody', {}, rows.map(rowOf)))),
+          h('tbody', {}, rows.map(rowOf), (data.wanted ?? []).map(wantedRow)))),
+      data.wanted === undefined && h('p', { class: 'small muted' }, WANTED_LOST_WORDS),
       account && h('p', { class: 'small muted' }, account),
       h('p', { class: 'small muted' }, WARNING_WORDS, ' ', h('a', { href: '/alerts' }, 'Open the alerts')));
   }
