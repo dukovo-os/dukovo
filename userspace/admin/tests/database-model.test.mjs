@@ -10,9 +10,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  addArgs, allowArgs, ANYWHERE, connectionSettings, DEFAULT_LOCALE, denyArgs, fileName, hrefOf, isReserved, isSiteName,
-  listensOnNetwork, LOCALES, machineOf, nameFromSite, nameProblem, needsAnywhere, networksProblem, NETWORKS_MAX, parseNetworks,
-  planRows, removeArgs, restarts, routeOf, secretOf, settingsFile, wayWords, WAYS,
+  addArgs, allowArgs, ANYWHERE, connectionSettings, DEFAULT_LOCALE, denyArgs, EARLIER_LEAD, EARLIER_TAIL, fileName, hrefOf, isReserved,
+  isSiteName, listensOnNetwork, LOCALES, machineOf, nameFromSite, nameProblem, needsAnywhere, networksProblem, NETWORKS_MAX,
+  openedWords, parseNetworks, planRows, portWords, removeArgs, restarts, routeOf, secretOf, settingsFile, wayWords, WAYS,
 } from '../lib/database-model.js';
 import * as routes from '../lib/database-route.js';
 
@@ -313,7 +313,7 @@ test('what happens for an account by the socket', () => {
 test('what happens for other machines says that PostgreSQL listens on the network and restarts', () => {
   const rows = planRows({ ...form, way: 'network', networks: ['192.168.1.0/24'] }, { listen: 'localhost', ssl: false, certificate: null });
   assert.equal(rows[0].words, 'Makes the PostgreSQL role shop, which signs in with a password, from 192.168.1.0/24 over TLS');
-  assert.match(rows[2].words, /PostgreSQL listens on the network, and only the addresses you named may sign in\. Port 5432 is open to every address/);
+  assert.equal(rows[2].words, 'Firewall: port 5432 is opened to 192.168.1.0/24 only.');
   assert.equal(rows[3].words, 'Restart: PostgreSQL restarts once, and its open sessions end.');
   const reload = planRows({ ...form, way: 'network', networks: ['192.168.1.0/24'] }, { listen: '*', ssl: true, certificate: 'this-machine' });
   assert.equal(reload[3].words, 'Restart: none; the database is ready at once.');
@@ -326,6 +326,45 @@ test('what happens for other machines says that PostgreSQL listens on the networ
 test('a database made while PostgreSQL listens on the network says that nothing changes', () => {
   const rows = planRows(form, { listen: '*', ssl: true, certificate: 'this-machine' });
   assert.match(rows[2].words, /^Firewall: nothing to change\./);
+});
+
+/** The server of a read that listens on the network, with the firewall's block as `networks` and `earlier` say. */
+const away = (networks, earlier = null) => ({
+  listen: '*', ssl: true, certificate: 'this-machine', firewall: { networks, earlier },
+});
+
+test('what the firewall says of the port is who it is open to, or that it is closed, or that no rule of its own holds it', () => {
+  assert.equal(portWords(away(['192.168.1.0/24'])), 'Port 5432 is open to 192.168.1.0/24 only.');
+  assert.equal(portWords(away(['192.168.1.0/24', '10.0.0.0/8'])), 'Port 5432 is open to 192.168.1.0/24 and 10.0.0.0/8 only.');
+  assert.equal(portWords(away(['192.168.1.0/24', '10.0.0.0/8', '172.16.0.0/12'])), 'Port 5432 is open to 192.168.1.0/24, 10.0.0.0/8 and 172.16.0.0/12 only.');
+  assert.equal(portWords({ listen: 'localhost', firewall: { networks: [], earlier: null } }), 'Port 5432 is closed to other machines: PostgreSQL listens on this machine only.');
+  // A server that listens on the network before the block was written is not closed.
+  assert.match(portWords(away([])), /^Port 5432 has no rule of its own: PostgreSQL listens on the network, so every address reaches it/);
+  assert.match(portWords({ listen: '', firewall: { networks: [], earlier: null } }), /closed to other machines/);
+});
+
+test('what the firewall will say once networks are let in is the networks it is open to and theirs, each once, and no other', () => {
+  assert.equal(openedWords(null, ['192.168.1.0/24']), 'Port 5432 is opened to 192.168.1.0/24 only.');
+  assert.equal(openedWords(away(['10.0.0.0/8']), ['192.168.1.0/24', '10.0.0.0/8']), 'Port 5432 is opened to 10.0.0.0/8 and 192.168.1.0/24 only.');
+  assert.equal(openedWords(away([]), []), 'Port 5432 is opened to the networks you name only.');
+  assert.equal(openedWords({ listen: '*' }, []), 'Port 5432 is opened to the networks you name only.');
+});
+
+test('a rule that decides the port first is told in the words around it, and in a row of what happens for other machines', () => {
+  assert.equal(`${EARLIER_LEAD}allow tcp 5000-6000${EARLIER_TAIL}`, 'A rule earlier in the firewall\'s rules decides for port 5432 first: allow tcp 5000-6000. Move or remove it on the Firewall page.');
+  const asked = { ...form, way: 'network', networks: ['192.168.1.0/24'] };
+  const rows = planRows(asked, away([], 'allow tcp 5000-6000'));
+  assert.deepEqual(rows.map((row) => row.icon), ['accounts', 'db', 'check', 'warn', 'check']);
+  assert.equal(rows[3].words, `${EARLIER_LEAD}allow tcp 5000-6000${EARLIER_TAIL}`);
+  // The rule matters to what opens the port, not to a database that does not.
+  assert.equal(planRows(form, away(['10.0.0.0/8'], 'allow tcp 5000-6000')).length, 4);
+  assert.equal(planRows(asked, away([])).length, 4);
+});
+
+test('a database made for programs on this server leaves the port as the firewall has it', () => {
+  const open = planRows(form, away(['192.168.1.0/24', '10.0.0.0/8']));
+  assert.equal(open[2].words, 'Firewall: nothing to change. Port 5432 stays open to 192.168.1.0/24 and 10.0.0.0/8 only, and only programs on this server may sign in to this database.');
+  assert.equal(planRows(form, { listen: 'localhost', firewall: { networks: [], earlier: null } })[2].words, 'Firewall: port 5432 stays closed to other machines, since PostgreSQL listens on this machine only.');
 });
 
 test('the text and sorting offered start with the one that is the default, and only the first has a note', () => {

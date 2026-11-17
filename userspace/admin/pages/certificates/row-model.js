@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 // What the dialogs and the changes of a row say: why a certificate is
-// revoked, what making this server's own anew does to browsers, and how the
-// console's certificate is tried. The page reads this file with the first
-// button of a row that is pressed.
+// revoked, what making this server's own anew does to browsers, how the
+// console's certificate is tried, and what stopping the tries for a
+// certificate that could not be got means. The page reads this file with the
+// first button of a row that is pressed.
 
 /** The reasons `cert revoke` takes, as the authority records them, and the words a person reads. */
 export const REVOKE_REASONS = Object.freeze([
@@ -19,6 +20,9 @@ export const REVOKE_WORDS = 'Revoking tells the authority never to trust it agai
 
 /** What making this server's own certificate anew does to browsers. */
 export const MAKE_ANEW_WORDS = 'This server makes its own certificate again. Browsers and phones that trusted the old one warn again, and its new fingerprint is shown when it is made.';
+
+/** What the dialog that stops certd trying to get `name` says. */
+export const forgetWords = (name) => `Stop trying to get ${name}? certd will not ask the authority for it again, and its alert goes away.`;
 
 /** How long a change of the certificate the console serves is tried for, in seconds. */
 export const SERVE_TRY_SECONDS = 300;

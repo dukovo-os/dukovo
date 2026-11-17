@@ -342,12 +342,46 @@ export const listensOnNetwork = (server) => Boolean(server) && server.listen !==
  */
 export const restarts = (server, certificate) => !(listensOnNetwork(server) && server.ssl === true && server.certificate === certificate);
 
-/** What the Firewall row says: whether other machines can reach port 5432 because of this database. */
-function firewallWords(away, listening) {
-  if (away) {
-    return `Firewall: PostgreSQL listens on the network, and only the addresses you named may sign in. Port ${PORT} is open to every address while PostgreSQL runs, as for any service that listens; a firewall rule can narrow it.`;
+/** `items` as the words of a sentence: "a", "a and b", "a, b and c". */
+const listed = (items) => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`);
+
+/** The networks that `server` (a read's) says port 5432 is open to: those of the firewall's block, none while it has none. */
+const openNetworks = (server) => server?.firewall?.networks ?? [];
+
+/**
+ * What the firewall says of port 5432 as the `server` of a read has it:
+ * open to the networks of its block only, closed to other machines, or
+ * ruled by no block of its own while PostgreSQL listens on the network.
+ */
+export function portWords(server) {
+  const open = openNetworks(server);
+  if (open.length > 0) return `Port ${PORT} is open to ${listed(open)} only.`;
+  if (listensOnNetwork(server)) {
+    return `Port ${PORT} has no rule of its own: PostgreSQL listens on the network, so every address reaches it, and only pg_hba.conf keeps the others out.`;
   }
-  return listening
+  return `Port ${PORT} is closed to other machines: PostgreSQL listens on this machine only.`;
+}
+
+/** What port 5432 is once `networks` are let in: opened to them and to the networks it is open to now, and to no other. */
+function openedTo(server, networks) {
+  const all = [...new Set([...openNetworks(server), ...networks])];
+  return `opened to ${all.length === 0 ? 'the networks you name' : listed(all)} only`;
+}
+
+/** What the firewall will say of port 5432 once `networks` are let in. */
+export const openedWords = (server, networks) => `Port ${PORT} is ${openedTo(server, networks)}.`;
+
+/** The words around a rule that decides for port 5432 before the block does, as the firewall's file writes the rule: what comes before it and what after. */
+export const EARLIER_LEAD = `A rule earlier in the firewall's rules decides for port ${PORT} first: `;
+export const EARLIER_TAIL = '. Move or remove it on the Firewall page.';
+
+/** What the Firewall row says: what the firewall does with port 5432 once this database is made. */
+function firewallWords(away, server, networks) {
+  if (away) return `Firewall: port ${PORT} is ${openedTo(server, networks)}.`;
+  if (openNetworks(server).length > 0) {
+    return `Firewall: nothing to change. Port ${PORT} stays open to ${listed(openNetworks(server))} only, and only programs on this server may sign in to this database.`;
+  }
+  return listensOnNetwork(server)
     ? 'Firewall: nothing to change. PostgreSQL listens on the network already, and only programs on this server may sign in to this database.'
     : `Firewall: port ${PORT} stays closed to other machines, since PostgreSQL listens on this machine only.`;
 }
@@ -374,8 +408,9 @@ export function planRows({
     {
       icon: 'check',
       ok: true,
-      words: firewallWords(away, listensOnNetwork(server)),
+      words: firewallWords(away, server, networks),
     },
+    ...(away && server?.firewall?.earlier ? [{ icon: 'warn', words: `${EARLIER_LEAD}${server.firewall.earlier}${EARLIER_TAIL}` }] : []),
     {
       icon: 'check',
       ok: true,

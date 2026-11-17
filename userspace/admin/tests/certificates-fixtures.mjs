@@ -114,6 +114,38 @@ export const history = () => [
   event(Date.UTC(2026, 10, 14, 6, 0, 0), 'photos.example.org', 'failed', 'Let\'s Encrypt could not reach port 80 (CRT-106)'),
 ];
 
+/** `cert wanted --json` when nothing is tried again. */
+export const noneWanted = () => ({ format: 1, wanted: [] });
+
+/** `cert wanted --json`: an order certd tries again, and one it has given up. */
+export const wanted = () => plain({
+  format: 1,
+  wanted: [
+    {
+      name: 'blog.example.org',
+      names: ['blog.example.org', 'www.blog.example.org', 'news.blog.example.org'],
+      directory: 'https://acme-v02.api.letsencrypt.org/directory',
+      first_ms: NOW - 3 * 3_600_000,
+      last_ms: NOW - 55 * 60_000,
+      next_ms: Date.UTC(2026, 10, 14, 16, 5, 0),
+      tries: 3,
+      why: 'Let\'s Encrypt could not reach port 80 (CRT-106)',
+      given_up: false,
+    },
+    {
+      name: 'old.example.org',
+      names: ['old.example.org'],
+      directory: 'https://acme-v02.api.letsencrypt.org/directory',
+      first_ms: NOW - 15 * DAY,
+      last_ms: NOW - DAY,
+      next_ms: 0,
+      tries: 40,
+      why: 'No address for old.example.org (CRT-104)',
+      given_up: true,
+    },
+  ],
+});
+
 /** `hostnamectl status --json`. */
 export const machine = (more = {}) => ({
   format: 1, name: 'duke-nas', first: 'duke-nas', domain: null, local: 'duke-nas.local', release: 'Dukovo Server 0.15.0', ...more,

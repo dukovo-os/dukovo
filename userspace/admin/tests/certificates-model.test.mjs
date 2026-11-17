@@ -5,8 +5,9 @@
 // the rows of the list and their words, the buttons each kind has and which
 // certificates the console may serve, the history and the failure of a
 // renewal, the checks before an order and the button each offers, the lines
-// the rename dialog says for each address the browser may come by, and what
-// the upload checks before it sends.
+// the rename dialog says for each address the browser may come by, what
+// the upload checks before it sends, and the rows of the certificates that
+// could not be got.
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -18,9 +19,10 @@ import * as name from '../pages/certificates/name-model.js';
 import * as rename from '../pages/certificates/rename-model.js';
 import * as change from '../pages/certificates/row-model.js';
 import * as upload from '../pages/certificates/upload-model.js';
+import * as wanted from '../pages/certificates/wanted-model.js';
 import {
-  about, byDns, certificate, closed, FINGERPRINT, history, list, machine, machineWithDomain, NOW, oneMissing, own, report,
-  SHOWN_FINGERPRINT, time,
+  about, byDns, certificate, closed, FINGERPRINT, history, list, machine, machineWithDomain, noneWanted, NOW, oneMissing, own, report,
+  SHOWN_FINGERPRINT, time, wanted as wantedAnswer,
 } from './certificates-fixtures.mjs';
 
 const rows = () => model.rowsOf(list(), time, { serving: 'this-machine', now: NOW });
@@ -533,4 +535,40 @@ test('the document is the key and then the chain, and the shown call never has i
   assert.deepEqual(upload.shownArgs({ name: 'x', replace: true, untrusted: true }), { name: 'x', replace: true, untrusted: true });
   assert.deepEqual(upload.addArgs({ name: 'x', replace: true }, 'DOC'), { name: 'x', replace: true, pem: 'DOC' });
   assert.equal('pem' in upload.shownArgs({ name: 'x' }), false);
+});
+
+// ---- The certificates that could not be got ----------------------------------------------------------------------
+
+test('the records of cert wanted are read with the error ID apart from the words, and none with no name is kept', () => {
+  const [trying, gaveUp] = wanted.wantedOf(wantedAnswer());
+  assert.deepEqual(trying, {
+    name: 'blog.example.org', more: 2, nextMs: Date.UTC(2026, 10, 14, 16, 5, 0), tries: 3, why: 'Let\'s Encrypt could not reach port 80', id: 'CRT-106', givenUp: false,
+  });
+  assert.equal(gaveUp.givenUp, true);
+  assert.equal(gaveUp.more, 0);
+  assert.equal(gaveUp.id, 'CRT-104');
+  assert.deepEqual(wanted.wantedOf(noneWanted()), []);
+  assert.deepEqual(wanted.wantedOf({ wanted: [{ name: '' }, null, 7, { names: [] }] }), []);
+  for (const answer of [undefined, null, {}, { wanted: 'none' }, []]) assert.deepEqual(wanted.wantedOf(answer), []);
+});
+
+test('a record with odd values still reads: no next try, no count, no reason', () => {
+  const [one] = wanted.wantedOf({ wanted: [{ name: 'a.example.org', next_ms: null, tries: -2, why: 'Failed.  ', names: 'a.example.org' }] });
+  assert.deepEqual(one, {
+    name: 'a.example.org', more: 0, nextMs: null, tries: 0, why: 'Failed', id: null, givenUp: false,
+  });
+});
+
+test('a row says when certd asks again, how many tries failed and why the last did', () => {
+  const [trying, gaveUp] = wanted.wantedOf(wantedAnswer());
+  assert.equal(wanted.wantedWords(trying, time), 'Trying again: next at 4:05 PM, 3 tries, last: Let\'s Encrypt could not reach port 80');
+  assert.equal(wanted.wantedWords({ ...trying, tries: 1 }, time), 'Trying again: next at 4:05 PM, 1 try, last: Let\'s Encrypt could not reach port 80');
+  assert.equal(wanted.wantedWords({ ...trying, nextMs: null, why: '' }, time), 'Trying again: 3 tries');
+  assert.equal(wanted.wantedWords({ ...trying, nextMs: Date.UTC(2026, 10, 15, 10, 30, 0) }, time), 'Trying again: next at Nov 15 10:30 AM, 3 tries, last: Let\'s Encrypt could not reach port 80');
+  assert.equal(wanted.wantedWords(gaveUp, time), 'Given up: No address for old.example.org. Get it again to start afresh.');
+  assert.equal(wanted.wantedWords({ ...gaveUp, why: '' }, time), 'Given up. Get it again to start afresh.');
+});
+
+test('the dialog that forgets a record says what certd stops and what goes away', () => {
+  assert.equal(change.forgetWords('blog.example.org'), 'Stop trying to get blog.example.org? certd will not ask the authority for it again, and its alert goes away.');
 });

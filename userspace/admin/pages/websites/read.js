@@ -2,16 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 // What the Websites pages read and the small things they all draw from it:
-// the sites with nginx's and PHP-FPM's states, the certificates certd keeps,
-// a date in words, and a link to a page only when the console has it.
+// the sites with nginx's and PHP-FPM's states, the certificates certd keeps
+// and those it tries to get, a date in words, and a link to a page only when
+// the console has it.
 
 import { h } from '../../dom.js';
+import { wantedNames } from '../../lib/website-model.js';
 import { sitesOf } from '../../lib/website-route.js';
 import { PAGES } from '../../pages.js';
 import { matchPage } from '../../shell/route-model.js';
 
 const SITES = '/api/1/websites';
 const CERTIFICATES = '/api/1/certificates';
+const WANTED = '/api/1/certificates/wanted/all';
 
 /** Whether the console has a page at `path`, so that a link to it is not a dead end. */
 export const hasPage = (path) => matchPage(PAGES, path)?.entry.load != null;
@@ -31,18 +34,21 @@ export function readOf(answer) {
 }
 
 /**
- * Reads the sites and the certificates. A problem with the sites goes where
- * `slot` is; the certificates are only needed to say more of each site's
- * HTTPS, so a failure to read them gives null. Gives `{read, certificates}`,
- * `read` null when the sites could not be read, or null when the page was left.
+ * Reads the sites and the certificates, and with `wanted` the certificates
+ * certd tries to get. A problem with the sites goes where `slot` is; the
+ * others are only needed to say more of each site's HTTPS, so a failure to
+ * read them gives null (and no names for `wanted`). Gives `{read,
+ * certificates, wanted}`, `read` null when the sites could not be read, or null
+ * when the page was left.
  */
-export async function readWebsites(view, slot) {
-  const [sites, certificates] = await Promise.allSettled([view.api.get(SITES), view.api.get(CERTIFICATES)]);
+export async function readWebsites(view, slot, { wanted = false } = {}) {
+  const [sites, certificates, tried] = await Promise.allSettled([view.api.get(SITES), view.api.get(CERTIFICATES), wanted ? view.api.get(WANTED) : null]);
   if (view.signal.aborted) return null;
   if (sites.status === 'rejected') view.problem(sites.reason, { slot });
   return {
     read: sites.status === 'fulfilled' ? readOf(sites.value) : null,
     certificates: certificates.status === 'fulfilled' && Array.isArray(certificates.value) ? certificates.value : null,
+    wanted: tried.status === 'fulfilled' ? wantedNames(tried.value) : [],
   };
 }
 

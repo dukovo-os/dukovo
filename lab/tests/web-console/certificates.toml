@@ -16,10 +16,14 @@
 # /api/1/certificates/{name}/revoke`, `POST /api/1/certificates/{name}/remove`),
 # and the one that was proved by DNS, which certd cannot renew; Upload your
 # own, with its key sent once as a secret and nowhere kept (`POST
-# /api/1/certificates/{name}/add`); Use for this console, refused for a
-# certificate that does not name the address the browser comes by, tried for
-# five minutes for one that does, kept after the page came back on it and
-# undone (`POST /api/1/console/certificate`, `POST
+# /api/1/certificates/{name}/add`); the order that cannot finish, which
+# certd is left to ask for again every hour: its row in the list (`GET
+# /api/1/certificates/wanted/all`, `cert wanted --json`), seen by a reader with
+# no button, and Forget, which asks first and stops it (`POST
+# /api/1/certificates/{name}/forget`, `cert forget`); Use for this console,
+# refused for a certificate that does not name the address the browser comes
+# by, tried for five minutes for one that does, kept after the page came back
+# on it and undone (`POST /api/1/console/certificate`, `POST
 # /api/1/console/trial/keep`, `POST /api/1/console/trial/undo`, and
 # `GET /api/1/console/fresh/{trial}`); and the machine's name changed with the
 # page asking for nothing after the answer (`GET /api/1/machine/name`, `POST
@@ -36,12 +40,15 @@
 # renewal asks the authority the certificate came from. What the page does
 # with an order is what it does without the authority: the checks, Open port
 # 80 as a trial, and an order that cannot finish, since the machine's
-# resolver leads every name, Let's Encrypt's too, to the machine itself.
-# The machine's own name, its firewall, its console's certificate and its
-# resolver are put back by the steps after each engine and at the end. The
-# accounts are two that this test makes and removes, an administrator and a
-# reader, so no script needs the lab's password.
-about = "The web console's Certificates page in each engine: the list held to cert list and cert show, the history, the checks of a name and Open port 80 as a trial of the firewall kept or undone, an order that cannot finish, Renew now, Revoke and Remove of certificates Pebble made, the one proved by DNS and its Renew by DNS, Upload your own with its key sent once, Use for this console refused, tried, kept and undone, the machine's name changed with the page asking for nothing after it, a reader, and the phone"
+# resolver leads every name, Let's Encrypt's too, to the machine itself. That
+# order fails after it began, so it is kept for certd to ask again, which is
+# the record the page shows.
+# The machine's own name, its firewall, its console's certificate, its
+# resolver and the record of the order that did not finish are put back by the
+# steps before each engine and at the end. The accounts are two that this test
+# makes and removes, an administrator and a reader, so no script needs the
+# lab's password.
+about = "The web console's Certificates page in each engine: the list held to cert list and cert show, the history, the checks of a name and Open port 80 as a trial of the firewall kept or undone, an order that cannot finish, which certd is left to try again and Forget stops, Renew now, Revoke and Remove of certificates Pebble made, the one proved by DNS and its Renew by DNS, Upload your own with its key sent once, Use for this console refused, tried, kept and undone, the machine's name changed with the page asking for nothing after it, a reader, and the phone"
 time = "40m"
 fresh = true
 host_needs = ["curl", "scp", "ssh", "openssl", "nc"]
@@ -86,7 +93,7 @@ expect = "standalone.acme-lab.example"
 # Chromium. From a machine with two certificates from Pebble, one proved on
 # port 80 and one proved by DNS, and port 80 closed.
 [[step]]
-run = '''sh -c 'for name in standalone dns; do cert remove $name.acme-lab.example > /dev/null 2>&1; done; sed -i "/^allow tcp 80$/d" /system/settings/firewall; firewall load > /dev/null; firewall allow tcp 80 && cert get standalone.acme-lab.example --directory https://{peer}:{port:acme}/dir --agree-terms --email lab@acme-lab.example --profile default; status=$?; sed -i "/^allow tcp 80$/d" /system/settings/firewall; firewall load > /dev/null; exit $status' '''
+run = '''sh -c 'for name in standalone dns; do cert remove $name.acme-lab.example > /dev/null 2>&1; done; cert forget fails.acme-lab.example > /dev/null 2>&1; sed -i "/^allow tcp 80$/d" /system/settings/firewall; firewall load > /dev/null; firewall allow tcp 80 && cert get standalone.acme-lab.example --directory https://{peer}:{port:acme}/dir --agree-terms --email lab@acme-lab.example --profile default; status=$?; sed -i "/^allow tcp 80$/d" /system/settings/firewall; firewall load > /dev/null; exit $status' '''
 root = true
 expect = "standalone.acme-lab.example installed: standalone.acme-lab.example, runs out "
 [[step]]
@@ -118,7 +125,7 @@ expect = ["standalone.acme-lab.example", "dns.acme-lab.example"]
 
 # Firefox, from the two certificates again.
 [[step]]
-run = '''sh -c 'for name in standalone dns; do cert remove $name.acme-lab.example > /dev/null 2>&1; done; sed -i "/^allow tcp 80$/d" /system/settings/firewall; firewall load > /dev/null; firewall allow tcp 80 && cert get standalone.acme-lab.example --directory https://{peer}:{port:acme}/dir --agree-terms --email lab@acme-lab.example --profile default; status=$?; sed -i "/^allow tcp 80$/d" /system/settings/firewall; firewall load > /dev/null; exit $status' '''
+run = '''sh -c 'for name in standalone dns; do cert remove $name.acme-lab.example > /dev/null 2>&1; done; cert forget fails.acme-lab.example > /dev/null 2>&1; sed -i "/^allow tcp 80$/d" /system/settings/firewall; firewall load > /dev/null; firewall allow tcp 80 && cert get standalone.acme-lab.example --directory https://{peer}:{port:acme}/dir --agree-terms --email lab@acme-lab.example --profile default; status=$?; sed -i "/^allow tcp 80$/d" /system/settings/firewall; firewall load > /dev/null; exit $status' '''
 root = true
 expect = "standalone.acme-lab.example installed: standalone.acme-lab.example, runs out "
 [[step]]
@@ -143,7 +150,7 @@ expect = ["name-kept", "0"]
 
 # WebKit, from the two certificates again.
 [[step]]
-run = '''sh -c 'for name in standalone dns; do cert remove $name.acme-lab.example > /dev/null 2>&1; done; sed -i "/^allow tcp 80$/d" /system/settings/firewall; firewall load > /dev/null; firewall allow tcp 80 && cert get standalone.acme-lab.example --directory https://{peer}:{port:acme}/dir --agree-terms --email lab@acme-lab.example --profile default; status=$?; sed -i "/^allow tcp 80$/d" /system/settings/firewall; firewall load > /dev/null; exit $status' '''
+run = '''sh -c 'for name in standalone dns; do cert remove $name.acme-lab.example > /dev/null 2>&1; done; cert forget fails.acme-lab.example > /dev/null 2>&1; sed -i "/^allow tcp 80$/d" /system/settings/firewall; firewall load > /dev/null; firewall allow tcp 80 && cert get standalone.acme-lab.example --directory https://{peer}:{port:acme}/dir --agree-terms --email lab@acme-lab.example --profile default; status=$?; sed -i "/^allow tcp 80$/d" /system/settings/firewall; firewall load > /dev/null; exit $status' '''
 root = true
 expect = "standalone.acme-lab.example installed: standalone.acme-lab.example, runs out "
 [[step]]
@@ -170,7 +177,7 @@ expect = ["name-kept", "0"]
 # the one it had, the firewall has no rule for port 80, the resolver and the
 # authorities are the system's, and the accounts are gone.
 [[step]]
-run = '''sh -c 'admin certificate this-machine > /dev/null 2>&1; hostnamectl set-hostname "$(cat /users/lab/wc-cert-name)" --apply > /dev/null 2>&1; for name in standalone dns; do cert remove $name.acme-lab.example > /dev/null 2>&1; done; sed -i "/^allow tcp 80$/d" /system/settings/firewall; firewall load; cp /users/lab/wc-cert-resolved.orig /system/settings/resolved && service resolved reload; ln -sf /system/resources/certificates/ca-certificates.crt /system/settings/ssl/certs/ca-certificates.crt; rm -f /users/lab/wc-cert-* /users/lab/ca.pem; echo restored' '''
+run = '''sh -c 'admin certificate this-machine > /dev/null 2>&1; hostnamectl set-hostname "$(cat /users/lab/wc-cert-name)" --apply > /dev/null 2>&1; for name in standalone dns; do cert remove $name.acme-lab.example > /dev/null 2>&1; done; cert forget fails.acme-lab.example > /dev/null 2>&1; sed -i "/^allow tcp 80$/d" /system/settings/firewall; firewall load; cp /users/lab/wc-cert-resolved.orig /system/settings/resolved && service resolved reload; ln -sf /system/resources/certificates/ca-certificates.crt /system/settings/ssl/certs/ca-certificates.crt; rm -f /users/lab/wc-cert-* /users/lab/ca.pem; echo restored' '''
 root = true
 expect = "restored"
 [[step]]

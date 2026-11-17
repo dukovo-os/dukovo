@@ -16,17 +16,24 @@
 # (`POST /api/1/databases/{name}/password`) shows a new one once; and Remove…
 # (`POST /api/1/databases/{name}/remove`) asks for the name, and ends the
 # session that is open on lab_busy, which the machine would not do without
-# being told to (DB-103). A reader is told who may list the databases and is
-# refused when a route is asked, and a phone at 390 by 844 shows the list and a
-# database alone. Each look is dark, light, high contrast, forced colours and
-# less motion, checked by axe.
+# being told to (DB-103). A database's page says what the firewall does with
+# port 5432, which is the machine's: closed to other machines, then open to the
+# one network, then closed again. It shows the copy that the backup hook made of
+# lab_busy, and says there is none yet of the database the page added. Restore…
+# reads the copies (`GET /api/1/databases/{name}/copies`), asks where to put one
+# and puts lab_busy's copy into a new database (`POST
+# /api/1/databases/{name}/restore`, a task), which is then removed. A reader is
+# told who may list the databases and is refused when a route is asked, and a
+# phone at 390 by 844 shows the list and a database alone. Each look is dark,
+# light, high contrast, forced colours and less motion, checked by axe.
 #
 # PostgreSQL is installed for everyone and turned on once, and each engine's
-# run starts from no database of the test. databases.sh makes lab_busy and
-# holds a session open on it, for the page to end. The accounts are two that
-# this test makes and removes, an administrator and a reader, so no script
-# needs the lab's password.
-about = "The web console's Databases pages in each engine: the list from what database list says, Add a database from a site with its password shown once, Copy, Save as file and the leave guard, the connection settings, Let other machines connect and Stop them as tasks, Make a new password, Remove with its name typed and a session open, a reader, and the phone"
+# run starts from no database of the test. databases.sh makes lab_busy, holds a
+# session open on it, for the page to end, and has Spark run the backup hook,
+# which copies it, for the page to put back. The accounts are two that this test
+# makes and removes, an administrator and a reader, so no script needs the
+# lab's password.
+about = "The web console's Databases pages in each engine: the list from what database list says, Add a database from a site with its password shown once, Copy, Save as file and the leave guard, the connection settings, the firewall's row and the copy of a database, Restore into a new database, Let other machines connect and Stop them as tasks, Make a new password, Remove with its name typed and a session open, a reader, and the phone"
 time = "30m"
 host_needs = ["curl", "scp"]
 
@@ -71,6 +78,10 @@ run = "sh /users/lab/databases.sh busy"
 root = true
 expect = "holding lab_busy"
 [[step]]
+run = "sh /users/lab/databases.sh copy"
+root = true
+expect = "copied lab_busy"
+[[step]]
 browser = "databases.mjs"
 engines = ["chromium"]
 port = 9090
@@ -89,6 +100,10 @@ run = "sh /users/lab/databases.sh busy"
 root = true
 expect = "holding lab_busy"
 [[step]]
+run = "sh /users/lab/databases.sh copy"
+root = true
+expect = "copied lab_busy"
+[[step]]
 browser = "databases.mjs"
 engines = ["firefox"]
 port = 9090
@@ -106,6 +121,10 @@ expect = "reset"
 run = "sh /users/lab/databases.sh busy"
 root = true
 expect = "holding lab_busy"
+[[step]]
+run = "sh /users/lab/databases.sh copy"
+root = true
+expect = "copied lab_busy"
 [[step]]
 browser = "databases.mjs"
 engines = ["webkit"]

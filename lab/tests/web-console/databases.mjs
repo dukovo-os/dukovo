@@ -29,6 +29,19 @@
 // that databases.sh holds, which the machine refuses to end unless it is told
 // to (DB-103) and which the dialog says it ends.
 //
+// A database's page says what the firewall does with port 5432: the row is the
+// machine's own (`server.firewall` of the list), closed to other machines
+// before they are let in, open to the network that was let in only, and closed
+// again once it is stopped; the dialog of Let other machines connect says the
+// same before anything is done. The page shows the copy that the backup hook
+// made of a database (databases.sh has Spark run the hook for lab_busy), and
+// says that none is made yet of the database it added. Restore… reads the
+// copies (`GET /api/1/databases/{name}/copies`), lists them with their time,
+// size and where they are, asks where to put one, and puts the copy of
+// lab_busy into a new database (`POST /api/1/databases/{name}/restore`, a task
+// the page follows): the machine lists the new database, owned by lab_busy,
+// and its page, which says that it has no copy yet, removes it.
+//
 // A reader is told who may list the databases, has no button that works, and
 // is refused when a route is asked. A phone at 390 by 844 shows the list and a
 // database alone, with no sideways scroll and every control 44 px tall. Each
@@ -78,6 +91,8 @@ const ROUTES = {
   allow: "POST /api/1/databases/{name}/allow",
   deny: "POST /api/1/databases/{name}/deny",
   remove: "POST /api/1/databases/{name}/remove",
+  copies: "GET /api/1/databases/{name}/copies",
+  restore: "POST /api/1/databases/{name}/restore",
 };
 
 /** The path of a route as the table names it, for the database `name`. */
@@ -95,6 +110,14 @@ const LOCKED_WORDS = "Listing the databases signs in to PostgreSQL as its superu
 const ADD_READER_WORDS = "Only an administrator can add a database.";
 const GUARD_WORDS = `The password of ${SHOP} is shown once. If you leave now it is lost, and you would have to make another.`;
 const SECOND_STEP_WORDS = "Let other machines connect";
+const PORT_CLOSED = "Port 5432 is closed to other machines: PostgreSQL listens on this machine only.";
+const PORT_OPEN = `Port 5432 is open to ${NETWORK} only.`;
+const PORT_OPENED = `Port 5432 is opened to ${NETWORK} only.`;
+const NO_COPY_YET = "No copy yet: the next backup makes one";
+const NO_COPIES = "No copies are made before backups";
+// "Copied at 2:00 AM, 12 MB", or with the day for another day than today.
+const COPIED = /^Copied (at \d{1,2}:\d{2} [AP]M|[A-Z][a-z]{2} \d{1,2}(, \d{4})? at \d{1,2}:\d{2} [AP]M), \d+(\.\d+)? (B|KB|MB|GB)$/;
+const RESTORED_NAME = new RegExp(`^${BUSY}_restored_\\d{8}$`);
 
 // --- Reading the machine ---
 
@@ -323,6 +346,32 @@ async function addTheDatabase(t, page) {
 
 // --- A database's page ---
 
+/** The firewall row of Who connects says `words`: the firewall's own, which the machine reads and the page does not guess. */
+async function firewallRow(t, page, words) {
+  const row = cardOf(page, "Who connects").locator('p[data-row="firewall"]');
+  await t.see(row.filter({ hasText: words }));
+  const said = (await row.innerText()).trim();
+  ensure(said === words, `the firewall row says ${JSON.stringify(said)}, not ${JSON.stringify(words)}`);
+}
+
+/** The copy row of a database's page is the machine's: when and how big the copy that the hook made is, or why there is none. `one` is the database's row of the list. */
+async function copyRow(t, page, one, server) {
+  const card = cardOf(page, "Copy");
+  await t.see(card);
+  const row = card.locator("p").first();
+  const said = (await row.innerText()).trim();
+  if (one.copy !== null) {
+    ensure(Number.isInteger(one.copy.at_ms) && one.copy.at_ms > 0 && one.copy.bytes > 0, `${ROUTES.list} says ${JSON.stringify(one.copy)} of the copy of ${one.name}`);
+    ensure(COPIED.test(said), `the copy row of ${one.name} says ${JSON.stringify(said)}, which is not "Copied" with a time and a size`);
+  } else if (server.copies === true) {
+    ensure(said === NO_COPY_YET, `the copy row of ${one.name} says ${JSON.stringify(said)}, not ${JSON.stringify(NO_COPY_YET)}`);
+  } else {
+    ensure(said.startsWith(NO_COPIES), `the copy row of ${one.name} says ${JSON.stringify(said)}, not ${JSON.stringify(NO_COPIES)}`);
+    ensure((await row.getByRole("link", { name: "Add a backup place", exact: true }).getAttribute("href")) === "/snapshots/backups", "Add a backup place does not lead to the Backups page");
+  }
+  ensure((await buttonOf(card, "Restore…").count()) === 1, `the Copy card of ${one.name} has no Restore…`);
+}
+
 /** The facts, who connects and the settings of a database's page are the machine's. */
 async function databaseAsAnswered(t, page, name, read) {
   const one = rowOf(read, name);
@@ -336,6 +385,12 @@ async function databaseAsAnswered(t, page, name, read) {
   await t.see(settings.getByRole("heading", { level: 3, name: "Programs on this server, with a password", exact: true }));
   const text = await settings.innerText();
   ensure(text.includes(`dbname=${name}`) && text.includes("$password") && text.includes("127.0.0.1"), `the settings of ${name} say ${JSON.stringify(text.slice(0, 200))}`);
+  // The firewall: the port is shut to other machines until a network is let in, with no rule of the person's before it.
+  ensure(read.server.listen === "localhost" && (read.server.firewall?.networks ?? []).length === 0 && (read.server.firewall?.earlier ?? null) === null, `${ROUTES.list} says ${JSON.stringify(read.server)} of the server, which should listen on this machine only with no rule before the firewall's`);
+  await firewallRow(t, page, PORT_CLOSED);
+  await t.gone(cardOf(page, "Who connects").getByText("A rule earlier in the firewall's rules", { exact: false }));
+  // The database was added after the hook ran, so it has no copy yet.
+  await copyRow(t, page, one, read.server);
 }
 
 /** Let other machines connect: a task that the page follows, and the machine says that PostgreSQL listens on the network, with TLS, for the network that was named. */
@@ -345,6 +400,7 @@ async function letThemConnect(t, page) {
   const dialog = dialogOf(page, `Let other machines connect to ${SHOP}`);
   await t.see(dialog);
   await t.see(dialog.getByText(/PostgreSQL (restarts once to listen on the network|is listening on the network already)/));
+  await t.see(dialog.getByText("Port 5432 is opened to the networks you name only.", { exact: true }));
   await lookAll(t, page, "databases-allow");
   // Nothing is sent for a network that is not one, or that says every address.
   await buttonOf(dialog, "Let them connect").click();
@@ -353,6 +409,8 @@ async function letThemConnect(t, page) {
   await buttonOf(dialog, "Let them connect").click();
   await t.see(dialog.getByText("192.0.2.0 is not an address with its prefix length", { exact: false }));
   await dialog.getByLabel("Addresses", { exact: true }).fill(NETWORK);
+  // The dialog says what the firewall will do, as the network is typed: open the port to it only.
+  await t.see(dialog.getByText(PORT_OPENED, { exact: true }));
 
   const path = pathOf(ROUTES.allow, SHOP);
   const sent = page.waitForRequest((request) => request.method() === "POST" && new URL(request.url()).pathname === path);
@@ -368,11 +426,17 @@ async function letThemConnect(t, page) {
   await t.see(page.locator(".db-flow").getByRole("heading", { level: 2, name: `Letting other machines connect to ${SHOP}`, exact: true }));
   await page.waitForSelector('.db-flow .flow-step[data-state="done"], .db-flow .flow-step[data-state="failed"]', { timeout: 240_000 });
   ensure((await page.locator('.db-flow .flow-step').first().getAttribute("data-state")) === "done", `the step "${SECOND_STEP_WORDS}" failed: ${await page.locator(".db-flow").innerText()}`);
-  const read = await databasesBecome(page, (one) => one.server?.ssl === true && (one.access ?? []).some((line) => line.address === NETWORK && (line.databases ?? []).includes(SHOP)), `let ${NETWORK} in to ${SHOP}`);
+  const read = await databasesBecome(
+    page,
+    (one) => one.server?.ssl === true && (one.access ?? []).some((line) => line.address === NETWORK && (line.databases ?? []).includes(SHOP)) && (one.server.firewall?.networks ?? []).includes(NETWORK),
+    `let ${NETWORK} in to ${SHOP}, and open port 5432 to it`,
+  );
   ensure(read.server.listen !== "localhost", `PostgreSQL listens on ${read.server.listen} after other machines were let in`);
+  ensure(JSON.stringify(read.server.firewall.networks) === JSON.stringify([NETWORK]), `the firewall says ${JSON.stringify(read.server.firewall)} of port 5432, which is open to ${NETWORK} only`);
 
   // The page says so: the line, who connects, and the settings for other machines with the certificate to download.
   await t.see(cardOf(page, "Who connects").getByText(`${NETWORK}, over TLS with the password`, { exact: true }));
+  await firewallRow(t, page, PORT_OPEN);
   const settings = cardOf(page, "Connection settings");
   await t.see(settings.getByRole("heading", { level: 3, name: "Programs on other machines, with a password", exact: true }));
   ensure((await settings.innerText()).includes("sslmode=verify-full"), "the settings for other machines do not say sslmode=verify-full");
@@ -400,8 +464,13 @@ async function stopThem(t, page) {
   ensure(status === 200 || status === 202, `${ROUTES.deny} was answered ${status}`);
   await page.waitForSelector('.db-flow .flow-step[data-state="done"], .db-flow .flow-step[data-state="failed"]', { timeout: 240_000 });
   ensure((await page.locator(".db-flow .flow-step").first().getAttribute("data-state")) === "done", `the step that stops ${NETWORK} failed: ${await page.locator(".db-flow").innerText()}`);
-  const read = await databasesBecome(page, (one) => !(one.access ?? []).some((line) => line.address === NETWORK), `stop ${NETWORK} connecting to ${SHOP}`);
+  const read = await databasesBecome(
+    page,
+    (one) => !(one.access ?? []).some((line) => line.address === NETWORK) && (one.server?.firewall?.networks ?? []).length === 0,
+    `stop ${NETWORK} connecting to ${SHOP}, and close port 5432 again`,
+  );
   ensure(read.server.listen === "localhost", `PostgreSQL listens on ${read.server.listen} after the last network was stopped`);
+  await firewallRow(t, page, PORT_CLOSED);
   await t.gone(cardOf(page, "Who connects").getByText(NETWORK, { exact: false }));
   await t.gone(cardOf(page, "Connection settings").getByRole("heading", { level: 3, name: "Programs on other machines, with a password", exact: true }));
 }
@@ -458,6 +527,109 @@ async function removeShop(t, page) {
   await page.waitForURL((url) => url.pathname === "/databases", { timeout: 30_000 });
   await databasesBecome(page, (one) => rowOf(one, SHOP) === undefined, `remove ${SHOP}`);
   await t.gone(page.locator(`.db-list a[href="${hrefOf(SHOP)}"]`));
+}
+
+/** A copy's row in the Restore dialog: "Today 2:00 AM", then "12 MB · This machine". */
+const COPY_ROW = /^((Today|Yesterday) |[A-Z][a-z]{2} \d{1,2}(, \d{4})? )\d{1,2}:\d{2} [AP]M \d+(\.\d+)? (B|KB|MB|GB) · This machine$/;
+
+/** Restore… of lab_busy lists the copy that the hook made, asks where to put it and puts it into a new database, which the page follows as a task; the new database is the machine's, and is then removed. */
+async function restoreBusy(t, page) {
+  await openDatabase(t, page, BUSY);
+  let read = await readDatabases(page);
+  const busy = rowOf(read, BUSY);
+  ensure(busy?.copy !== null && busy?.copy !== undefined, `${ROUTES.list} says no copy of ${BUSY}, which the hook made`);
+  await copyRow(t, page, busy, read.server);
+
+  // The copies, as the machine lists them: the one the hook made is in the folder in use.
+  const listed = await fetchAsPage(page, "GET", pathOf(ROUTES.copies, BUSY));
+  ensure(listed.status === 200 && Array.isArray(listed.json?.copies) && listed.json.copies.length > 0, `${ROUTES.copies} for ${BUSY} was answered ${listed.status}: ${listed.text}`);
+  const newest = listed.json.copies[0];
+  ensure(newest.from === "live" && typeof newest.path === "string" && newest.at_ms === busy.copy.at_ms, `the newest copy is ${JSON.stringify(newest)}, and the list says ${JSON.stringify(busy.copy)}`);
+
+  await buttonOf(cardOf(page, "Copy"), "Restore…").click();
+  await answerIfAsked(t, page);
+  const dialog = dialogOf(page, `Restore ${BUSY}`);
+  await t.see(dialog);
+  // Which copy: one row for each copy, the newest chosen, with its time, size and where it is.
+  const copies = dialog.locator('input[name="restore-copy"]');
+  ensure((await copies.count()) === listed.json.copies.length, `the dialog lists ${await copies.count()} copies, and the machine ${listed.json.copies.length}`);
+  ensure(await copies.first().isChecked(), "the newest copy is not the one chosen");
+  const first = (await dialog.locator("label.radio-card").filter({ has: copies.first() }).innerText()).replace(/\s+/g, " ").trim();
+  ensure(COPY_ROW.test(first), `the first copy is described as ${JSON.stringify(first)}, not with its time, size and "This machine"`);
+  // Where to put it: as a new database, which is the way chosen, with a name for it, or over the database.
+  const way = dialog.getByRole("radio", { name: /As a new database/ });
+  ensure(await way.isChecked(), "As a new database is not the way chosen");
+  const wanted = dialog.getByLabel("Name of the new database", { exact: true });
+  const prefilled = await wanted.inputValue();
+  ensure(RESTORED_NAME.test(prefilled), `the name of the new database is ${JSON.stringify(prefilled)}, not ${BUSY}_restored_ and a day`);
+  await t.see(dialog.getByText(`Over ${BUSY}`, { exact: true }));
+  await t.see(dialog.getByText(new RegExp(`The database as it is now is kept as ${BUSY}_before_… and the day and time\\. It has \\d+ open sessions?: you are asked before they are ended\\.`)));
+  await lookAll(t, page, "databases-restore");
+
+  // A name that is taken, or that is not one, is refused under its field, and nothing is sent.
+  const sent = [];
+  const watch = (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === pathOf(ROUTES.restore, BUSY)) sent.push(request.url());
+  };
+  page.on("request", watch);
+  await wanted.fill(BUSY);
+  await buttonOf(dialog, "Restore").click();
+  await t.see(dialog.getByText(`A database named ${BUSY} is there already.`, { exact: true }));
+  await wanted.fill("Shop");
+  await buttonOf(dialog, "Restore").click();
+  await t.see(dialog.getByText("Use lowercase letters, digits and _", { exact: false }));
+  await sleep(1000);
+  page.off("request", watch);
+  ensure(sent.length === 0, `Restore sent ${sent.join(", ")} with a name that is wrong`);
+
+  // As a new database, with the name the page offered: a task with its steps, which ends with the words that say where it went.
+  await wanted.fill(prefilled);
+  const request = page.waitForRequest((one) => one.method() === "POST" && new URL(one.url()).pathname === pathOf(ROUTES.restore, BUSY));
+  const answered = page.waitForResponse((reply) => reply.request().method() === "POST" && new URL(reply.url()).pathname === pathOf(ROUTES.restore, BUSY));
+  await buttonOf(dialog, "Restore").click();
+  await answerIfAsked(t, page);
+  const body = JSON.parse((await request).postData() ?? "{}");
+  ensure(body.from === newest.path && body.as === prefilled && !("over" in body) && !("force" in body), `${ROUTES.restore} was sent ${JSON.stringify(body)}, not the newest copy as ${prefilled}`);
+  const status = (await answered).status();
+  ensure(status === 200 || status === 202, `${ROUTES.restore} was answered ${status}`);
+  await t.see(page.locator(".db-flow").getByRole("heading", { level: 2, name: `Restoring ${BUSY}`, exact: true }));
+  // pg_restore runs as root: the first restore on a machine may wait for root's answer to the bundle's question, which is asked at a terminal.
+  await page.waitForSelector('.db-flow .flow-step[data-state="done"], .db-flow .flow-step[data-state="failed"]', { timeout: 300_000 });
+  ensure((await page.locator(".db-flow .flow-step").first().getAttribute("data-state")) === "done", `the restore of ${BUSY} failed: ${await page.locator(".db-flow").innerText()}`);
+  const done = page.locator(".db-flow .banner.ok");
+  await t.see(done.filter({ hasText: `Restored into ${prefilled}` }));
+  const ended = (await done.locator("p").first().innerText()).trim();
+  ensure(ended === `Restored into ${prefilled}`, `the words of the end are ${JSON.stringify(ended)}`);
+  const leads = await done.getByRole("link", { name: prefilled, exact: true }).getAttribute("href");
+  ensure(leads === hrefOf(prefilled), `the link of ${prefilled} leads to ${leads}`);
+  await lookAll(t, page, "databases-restored");
+
+  // The machine lists the new database, owned as the database is, and leaves the database as it was.
+  read = await databasesBecome(page, (one) => rowOf(one, prefilled)?.owner === BUSY, `list ${prefilled}, owned by ${BUSY}`);
+  ensure(rowOf(read, BUSY)?.owner === BUSY && (rowOf(read, BUSY)?.sessions ?? 0) >= 1, `${BUSY} is not as it was after its copy was put into ${prefilled}: ${JSON.stringify(rowOf(read, BUSY))}`);
+
+  // Its page has no copy yet, and Remove… takes it away; the role stays, since it owns the other database.
+  await done.getByRole("link", { name: prefilled, exact: true }).click();
+  await page.waitForURL((url) => url.pathname === hrefOf(prefilled));
+  await t.see(page.getByRole("heading", { level: 1, name: prefilled, exact: true }));
+  await t.see(cardOf(page, "About this database"));
+  ensure((await factsOf(page)).Owner === BUSY, `the page of ${prefilled} does not say it is owned by ${BUSY}`);
+  await copyRow(t, page, rowOf(read, prefilled), read.server);
+  await buttonOf(page, "Remove…").click();
+  await answerIfAsked(t, page);
+  const remove = dialogOf(page, `Remove ${prefilled}?`);
+  await t.see(remove);
+  await t.see(remove.getByText(`The role ${BUSY} also owns 1 other database.`, { exact: true }));
+  ensure(!(await remove.getByLabel(`Also remove the role ${BUSY}`).isChecked()), `the role ${BUSY} is ticked for removal though it owns ${BUSY}`);
+  await remove.getByLabel(`Type ${prefilled} to go on`).fill(prefilled);
+  const removal = page.waitForResponse((reply) => reply.request().method() === "POST" && new URL(reply.url()).pathname === pathOf(ROUTES.remove, prefilled));
+  await buttonOf(remove, "Remove the database").click();
+  await answerIfAsked(t, page);
+  ensure((await removal).status() === 200, `${ROUTES.remove} for ${prefilled} was not answered 200`);
+  await page.waitForURL((url) => url.pathname === "/databases", { timeout: 30_000 });
+  read = await databasesBecome(page, (one) => rowOf(one, prefilled) === undefined, `remove ${prefilled}`);
+  ensure(rowOf(read, BUSY) !== undefined, `${BUSY} is gone with ${prefilled}`);
+  return prefilled;
 }
 
 /** A database with a session open is refused by the machine unless it is told to end it, and the page tells it to. */
@@ -537,6 +709,7 @@ async function administrator(t) {
   await stopThem(t, page);
   await newPassword(t, page, old);
   await removeShop(t, page);
+  const restored = await restoreBusy(t, page);
   await removeBusy(t, page);
   await lookAll(t, page, "databases-list-after");
   await notThere(t, page);
@@ -549,6 +722,9 @@ async function administrator(t) {
     routeFor(ROUTES.deny, SHOP),
     routeFor(ROUTES.remove, SHOP),
     routeFor(ROUTES.remove, BUSY),
+    routeFor(ROUTES.copies, BUSY),
+    routeFor(ROUTES.restore, BUSY),
+    routeFor(ROUTES.remove, restored),
   ]);
   await signOut(t, page);
   await page.context().close();
@@ -564,6 +740,7 @@ async function reader(t) {
   await openDatabase(t, page, BUSY).catch(() => null);
   await t.see(page.getByText(READER_WORDS, { exact: true }));
   ensure((await page.getByRole("button", { name: "Remove…", exact: true }).count()) === 0, "a reader's page of a database has Remove…");
+  ensure((await page.getByRole("button", { name: "Restore…", exact: true }).count()) === 0, "a reader's page of a database has Restore…");
   await page.goto(new URL("/databases/add", page.url()).href);
   await t.see(page.getByRole("heading", { level: 1, name: "Add a database", exact: true }));
   await t.see(page.getByText(ADD_READER_WORDS, { exact: true }));
@@ -572,6 +749,8 @@ async function reader(t) {
   mustBe(await fetchAsPage(page, "GET", pathOf(ROUTES.list)), 403, "ADM-122", `a reader's ${ROUTES.list}`);
   mustBe(await fetchAsPage(page, "POST", pathOf(ROUTES.add), { name: "lab_reader" }), 403, "ADM-122", `a reader's ${ROUTES.add}`);
   mustBe(await fetchAsPage(page, "POST", pathOf(ROUTES.remove, BUSY), { force: true }), 403, "ADM-122", `a reader's removal of ${BUSY}`);
+  mustBe(await fetchAsPage(page, "GET", pathOf(ROUTES.copies, BUSY)), 403, "ADM-122", `a reader's ${ROUTES.copies}`);
+  mustBe(await fetchAsPage(page, "POST", pathOf(ROUTES.restore, BUSY), { from: "/shared/none", as: "lab_reader_restored" }), 403, "ADM-122", `a reader's ${ROUTES.restore}`);
   await signOut(t, page);
   await page.context().close();
 }

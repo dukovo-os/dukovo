@@ -12,10 +12,10 @@ import test from 'node:test';
 import {
   addStep, allNames, backupRow, bothWords, certificateChoices, certificateNameOf, certificateNameProblem, certificateOf,
   certificatesFor, certificateSteps, checkWords, checkedProblems, confRows, covers, firewallRows, folderFor, folderProblem, folderWords,
-  getArgs, getStep, handEditWords, httpsArgs, httpsLocked, httpsOf, httpsStep, installStep, KINDS, lastToUse, listed,
-  liveUrl, machineNamesOf, missingApps, nameProblem, namesOf, namesProblem, offLead, offStep, openPortArgs, removeStep, outcomeOf, ownerChoices, planChecks, planRows,
-  portsFor, previewFiles, removeArgs, removeLead, serveWords, serverLines, siteArgs, snapshotRow, stateOf, STANDS, stepsOf, testArgs,
-  wwwDefault, wwwOf,
+  COUNTED_WORDS, getArgs, GETTING_WORDS, gettingOne, getStep, handEditWords, httpsArgs, httpsLocked, httpsOf, httpsStep, installStep, KINDS, lastToUse, listed,
+  liveUrl, LOG_FORMAT_LINE, machineNamesOf, missingApps, nameProblem, namesOf, namesProblem, NOT_COUNTED_WORDS, offLead, offStep, openPortArgs, removeStep, outcomeOf, ownerChoices, planChecks, planRows,
+  portsFor, previewFiles, removeArgs, removeLead, serveWords, serverLines, siteArgs, sizeWords, snapshotRow, stateOf, STANDS, stepsOf, testArgs,
+  visitsWords, wantedNames, wwwDefault, wwwOf,
 } from '../lib/website-model.js';
 
 const own = {
@@ -260,7 +260,7 @@ test('what stands after each step fails is said in the step\'s words', () => {
   const [install, add, get, https] = steps;
   assert.equal(install.words.stands, 'Nothing about the website was changed.');
   assert.equal(add.words.stands, 'Nothing was changed: the command took its changes back.');
-  assert.equal(get.words.stands, 'shop.example.org is live over HTTP. The certificate was not got: the site\'s page has Get the certificate to try again.');
+  assert.equal(get.words.stands, 'shop.example.org is live over HTTP. The certificate was not got: the site\'s page says whether certd tries again, and has Get a certificate when it does not.');
   assert.equal(https.words.stands, 'shop.example.org is live over HTTP, and certd keeps the certificate shop.example.org. Try again turns HTTPS on.');
   assert.equal(STANDS.https('a', 'b'), 'a is live over HTTP, and certd keeps the certificate b. Try again turns HTTPS on.');
   assert.equal(installStep({ id: 'x', name: 'nginx', sha256: 's' }).words.failed, 'nginx was not installed');
@@ -514,10 +514,60 @@ test('nginx\'s check and its settings: the lines that are missing and where they
     ['hides', 'WEB-102', ['location ^~ /sites/ {', '    return 404;', '}']],
   ]);
   assert.match(rows[0].words, /\(\/x\/nginx\.conf\)/);
-  assert.deepEqual(confRows({ nginx_conf: { includes: true, hides_sites: false } }).map((one) => one.key), ['hides']);
+  assert.deepEqual(confRows({ nginx_conf: { includes: true, hides_sites: false } }).map((one) => one.key), ['hides'], 'an answer with no word of the log format says nothing of it');
   assert.deepEqual(checkWords(broken), {
     passed: false, tone: 'bad', words: 'nginx\'s check of the sites failed, so nothing is changed until it passes.', line: 'nginx: [emerg] unknown directive "x" in /x/a.conf:3',
   });
   assert.deepEqual(checkedProblems(broken), { a: [{ id: 'WEB-103', words: 'bad' }], b: [] });
   assert.deepEqual([confRows(null), checkWords(null), checkedProblems(null)], [[], null, {}]);
+});
+
+test('settings without the log format of the sites\' logs say so, with the line to add and where', () => {
+  const rows = confRows({ nginx_conf: { path: '/x/nginx.conf', includes: true, hides_sites: true, logs_sites: false } });
+  assert.deepEqual(rows.map((one) => [one.key, one.tone, one.id, one.lines]), [['logs', 'warn', 'WEB-102', ["log_format site '$msec $status $body_bytes_sent';"]]]);
+  assert.equal(LOG_FORMAT_LINE, "log_format site '$msec $status $body_bytes_sent';");
+  assert.equal(rows[0].words, "nginx's settings (/x/nginx.conf) do not define the log format of the sites' own logs, so their visits are not counted. Add this line in its http block, before the servers:");
+  assert.match(confRows({ nginx_conf: { logs_sites: false } })[0].words, /\(nginx\.conf\)/);
+  assert.deepEqual(confRows({ nginx_conf: { includes: false, hides_sites: false, logs_sites: false } }).map((one) => one.key), ['include', 'hides', 'logs']);
+  assert.deepEqual(confRows({ nginx_conf: { includes: true, hides_sites: true, logs_sites: true } }), []);
+});
+
+// ---- Size, visits, and a certificate being got ----
+
+test('the Size column says the size, "at least" when the measure stopped short, and a dash before one', () => {
+  assert.equal(sizeWords({ bytes: 12_400_000, files: 340, complete: true }), '12 MB');
+  assert.equal(sizeWords({ bytes: 3_400_000_000, files: 52_000, complete: false }), 'at least 3.4 GB');
+  assert.equal(sizeWords({ bytes: 0, files: 0, complete: true }), '0 B');
+  for (const none of [null, undefined, {}, { bytes: 'big' }]) assert.equal(sizeWords(none), '–');
+});
+
+test('the Visits yesterday column writes the count as a number is read, 0 for a day with none, and a dash before the first day is counted', () => {
+  assert.equal(visitsWords({ yesterday: 1240 }), '1,240');
+  assert.equal(visitsWords({ yesterday: 7 }), '7');
+  assert.equal(visitsWords({ yesterday: 0 }), '0');
+  assert.equal(visitsWords({ yesterday: 1_234_567 }), '1,234,567');
+  for (const none of [null, undefined, {}, { yesterday: null }]) assert.equal(visitsWords(none), '–');
+});
+
+test('the words of the visits and of a certificate being got are the pages\'', () => {
+  assert.equal(COUNTED_WORDS, "Counted once a day from nginx's log; the log holds no addresses.");
+  assert.equal(NOT_COUNTED_WORDS, 'Not counted yet: visits are counted once a day.');
+  assert.equal(GETTING_WORDS, 'Getting a certificate: certd tries again every hour');
+});
+
+test('the certificates certd tries to get are the names of the records it has not given up', () => {
+  assert.deepEqual(wantedNames({ format: 1, wanted: [{ name: 'a.example.org', given_up: false }, { name: 'b.example.org', given_up: true }, { name: 'c.example.org' }] }), ['a.example.org', 'c.example.org']);
+  for (const none of [null, undefined, {}, { wanted: 'no' }, { wanted: [null, {}, { name: 7 }] }]) assert.deepEqual(wantedNames(none), []);
+});
+
+test('certd gets the certificate of a site that has none, by the name the site would give it', () => {
+  const blog = { name: 'blog.example.org', names: ['blog.example.org', 'www.blog.example.org'], https: false };
+  assert.equal(gettingOne(blog, ['blog.example.org']), true);
+  assert.equal(gettingOne(blog, ['other.example.org']), false, 'a record of another name is not the site\'s');
+  assert.equal(gettingOne(blog, []), false);
+  assert.equal(gettingOne(blog, null), false, 'records that could not be read say nothing');
+  assert.equal(gettingOne({ ...blog, https: true }, ['blog.example.org']), false, 'a site that has HTTPS is not waiting for one');
+  assert.equal(gettingOne({ name: 'legacy', https: false }, ['legacy']), true, 'a site with no names of its own is named by its file');
+  const long = `${'a'.repeat(70)}.example.org`;
+  assert.equal(gettingOne({ name: long, names: [long], https: false }, [long]), false, 'a name too long for a certificate has the one that was typed, which is not known');
 });

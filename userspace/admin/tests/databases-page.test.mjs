@@ -99,11 +99,11 @@ test('Who connects has each way, each network with its Remove, and a line writte
 test('the buttons are those that fit: a password database has Let other machines connect and a new password, an account has neither', async (context) => {
   const shop = await open(context, 'shop');
   const words = (world) => world.view.main.querySelectorAll('button').map((one) => one.textContent.trim()).filter((one) => !['', 'Copy'].includes(one) && !one.startsWith('Download'));
-  assert.deepEqual(words(shop), ['Remove', 'Let other machines connect', 'Stop them', 'Make a new password', 'Remove…']);
+  assert.deepEqual(words(shop), ['Restore…', 'Remove', 'Let other machines connect', 'Stop them', 'Make a new password', 'Remove…']);
   const blog = await open(context, 'blog');
-  assert.deepEqual(words(blog), ['Let other machines connect', 'Make a new password', 'Remove…']);
+  assert.deepEqual(words(blog), ['Restore…', 'Let other machines connect', 'Make a new password', 'Remove…']);
   const notes = await open(context, 'notes');
-  assert.deepEqual(words(notes), ['Remove…']);
+  assert.deepEqual(words(notes), ['Restore…', 'Remove…']);
   assert.match(sectionOf(notes, 'Password and removal').textContent, /Its role signs in as the account webdev, so it has no password\./);
 });
 
@@ -156,6 +156,63 @@ test('a read that fails is said, with Try again', async (context) => {
   const world = await open(context, 'shop', { world: { runs: { 'databases.list': refusal('DB-101', 'PostgreSQL did not answer') } } });
   assert.match(world.view.main.textContent, /PostgreSQL did not answer/);
   assert.ok(buttonOf(world.view.main, 'Try again') || buttonOf(world.view.main, 'Read again'));
+});
+
+// ---- the firewall and the copy ---------------------------------------------
+
+test('Who connects says who the firewall opens the port to, or that it is closed', async (context) => {
+  const world = await open(context, 'shop');
+  const row = sectionOf(world, 'Who connects').querySelector('[data-row="firewall"]');
+  assert.equal(row.textContent, 'Port 5432 is open to 192.168.1.0/24 only.');
+  assert.equal(sectionOf(world, 'Who connects').querySelector('.banner'), null);
+  const local = await open(context, 'shop', { world: { list: list({ server: server() }) } });
+  assert.equal(sectionOf(local, 'Who connects').querySelector('[data-row="firewall"]').textContent, 'Port 5432 is closed to other machines: PostgreSQL listens on this machine only.');
+  const two = await open(context, 'blog', { world: { list: list({ server: server({ listen: '*', firewall: { networks: ['10.0.0.0/8', '192.168.1.0/24'], earlier: null } }) }) } });
+  assert.equal(sectionOf(two, 'Who connects').querySelector('[data-row="firewall"]').textContent, 'Port 5432 is open to 10.0.0.0/8 and 192.168.1.0/24 only.');
+});
+
+test('a rule of the firewall that comes first is a warning with a link to the Firewall page', async (context) => {
+  const earlier = list({ server: server({ listen: '*', firewall: { networks: ['192.168.1.0/24'], earlier: 'allow tcp 5000-6000' } }) });
+  const world = await open(context, 'shop', { world: { list: earlier } });
+  const warning = sectionOf(world, 'Who connects').querySelector('.banner.warn');
+  assert.equal(warning.querySelector('p').textContent, 'A rule earlier in the firewall\'s rules decides for port 5432 first: allow tcp 5000-6000. Move or remove it on the Firewall page.');
+  assert.equal(warning.querySelector('code').textContent, 'allow tcp 5000-6000');
+  assert.equal(warning.querySelectorAll('a').find((one) => one.textContent === 'Open the Firewall page').getAttribute('href'), '/firewall');
+});
+
+test('the copy card says when the database was copied, and that none is yet or that backups make none', async (context) => {
+  const world = await open(context, 'shop');
+  const card = sectionOf(world, 'Copy');
+  assert.equal(card.querySelector('p').textContent, 'Copied at 2:00 AM, 12 MB');
+  assert.ok(buttonOf(card, 'Restore…'));
+  const blog = await open(context, 'blog');
+  assert.equal(sectionOf(blog, 'Copy').querySelector('p').textContent, 'Copied Nov 13 at 2:00 AM, 346 KB');
+  const notes = await open(context, 'notes');
+  assert.equal(sectionOf(notes, 'Copy').querySelector('p').textContent, 'No copy yet: the next backup makes one');
+  assert.equal(sectionOf(notes, 'Copy').querySelector('a'), null);
+  const none = await open(context, 'notes', { world: { list: list({ server: { ...list().server, copies: false } }) } });
+  assert.equal(sectionOf(none, 'Copy').querySelector('p').textContent, 'No copies are made before backups · Add a backup place');
+  assert.equal(sectionOf(none, 'Copy').querySelector('a').getAttribute('href'), '/snapshots/backups');
+});
+
+test('Let other machines connect says that the firewall opens the port to the networks typed and those already open, and no other', async (context) => {
+  const world = await open(context, 'blog');
+  await world.press(buttonOf(world.view.main, 'Let other machines connect'));
+  const dialog = world.dialog();
+  assert.match(dialog.textContent, /Port 5432 is opened to 192\.168\.1\.0\/24 only\./);
+  type(fieldOf(dialog, 'Addresses'), '10.0.0.0/8\n192.168.1.0/24');
+  assert.match(dialog.textContent, /Port 5432 is opened to 192\.168\.1\.0\/24 and 10\.0\.0\.0\/8 only\./);
+  assert.doesNotMatch(dialog.textContent, /A rule earlier/);
+  const local = await open(context, 'blog', { world: { list: list({ server: server() }) } });
+  await local.press(buttonOf(local.view.main, 'Let other machines connect'));
+  assert.match(local.dialog().textContent, /Port 5432 is opened to the networks you name only\./);
+});
+
+test('Let other machines connect shows the rule that comes first, which the firewall does not move', async (context) => {
+  const earlier = list({ server: server({ listen: '*', firewall: { networks: [], earlier: 'allow tcp 5000-6000' } }) });
+  const world = await open(context, 'blog', { world: { list: earlier } });
+  await world.press(buttonOf(world.view.main, 'Let other machines connect'));
+  assert.match(world.dialog().textContent, /A rule earlier in the firewall's rules decides for port 5432 first: allow tcp 5000-6000\. Move or remove it on the Firewall page\./);
 });
 
 // ---- Let other machines connect, Stop them --------------------------------

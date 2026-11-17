@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 // The list of websites: a line for nginx or PHP-FPM when it does not run, and
-// a table of each site with what it serves, its HTTPS and its state, which
-// becomes a card for each on a phone. Anyone reads it; an administrator adds a
-// site and asks nginx to check them as they are.
+// a table of each site with what it serves, how big it is, its visits of
+// yesterday, its HTTPS and its state, which becomes a card for each on a
+// phone. Anyone reads it; an administrator adds a site and asks nginx to check
+// them as they are.
 
 import { fill, h, icon } from '../../dom.js';
 import {
-  httpsOf, kindWords, READER_WORDS, serverLines, stateOf,
+  httpsOf, kindWords, READER_WORDS, serverLines, sizeWords, stateOf, visitsWords,
 } from '../../lib/website-model.js';
 import { hrefOf } from '../../lib/website-route.js';
 import { copyBox } from '../snapshots/copy-box.js';
@@ -16,6 +17,9 @@ import { makeCheck } from './check.js';
 import {
   dateOf, hasPage, readWebsites,
 } from './read.js';
+
+/** The columns of the table, with the class of those that hold a number. */
+const COLUMNS = [['Site'], ['Serves'], ['Size', 'num'], ['Visits yesterday', 'num'], ['HTTPS'], ['State']];
 
 /** The command a reader types, in a box that copies it. */
 const ADD_COMMAND = 'elevate website add NAME';
@@ -69,6 +73,8 @@ export async function showList(view) {
         others.length > 0 && h('small', {}, others.join(', ')),
         (site.by_hand || site.added_by_hand) && h('span', { class: 'pill warn', title: 'Kept as you wrote it' }, 'Changed by hand')),
       h('td', { 'data-label': 'Serves' }, kindWords(site), site.folder && h('small', { class: 'mono' }, site.folder)),
+      h('td', { 'data-label': 'Size', class: 'num' }, sizeWords(site.size)),
+      h('td', { 'data-label': 'Visits yesterday', class: 'num' }, visitsWords(site.visits)),
       h('td', { 'data-label': 'HTTPS', class: https.tone === 'warn' ? 'web-tone-warn' : null }, https.words),
       h('td', { 'data-label': 'State' },
         h('span', { class: `st ${state.tone}` }, state.words),
@@ -99,8 +105,8 @@ export async function showList(view) {
             : [h('p', { class: 'small muted' }, 'An administrator adds one. At a terminal:'), copyBox(ADD_COMMAND, 'The command that adds a website')])
         : h('div', { class: 'tbl-box' },
           h('table', { class: 'tbl stack' },
-            h('caption', { class: 'sr-only' }, 'Websites: each with what it serves, its HTTPS and its state'),
-            h('thead', {}, h('tr', {}, ['Site', 'Serves', 'HTTPS', 'State'].map((title) => h('th', { scope: 'col' }, title)))),
+            h('caption', { class: 'sr-only' }, 'Websites: each with what it serves, its size, its visits yesterday, its HTTPS and its state'),
+            h('thead', {}, h('tr', {}, COLUMNS.map(([title, kind]) => h('th', { scope: 'col', class: kind }, title)))),
             h('tbody', {}, read.sites.map((site) => rowOf(site, read))))),
       h('div', { class: 'web-foot' }, again, view.api.inline('websites.list', {})));
   }
