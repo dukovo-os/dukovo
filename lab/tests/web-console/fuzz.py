@@ -28,7 +28,8 @@ example the change's undo is called, and the service the examples use is put
 back as it was found (console.py). It leaves alone the changes at
 LEFT_ALONE: renewing the certificate, the changes that are tried, installing
 an app from the catalogs, and those whose examples need what only their own
-tests set up, as the databases' and the changes to another account do.
+tests set up, as the databases', the changes to another account and the
+others that web-console/ansible leaves out do.
 
 A request that is refused changes nothing, so the first two runs leave the
 machine as it was. What each run checks of every answer: it is not a 5xx,
@@ -175,7 +176,28 @@ ACCOUNTS = {
     "accounts.set", "accounts.password", "accounts.disable", "accounts.enable", "accounts.remove",
     "accounts.key-add", "accounts.key-remove", "accounts.token-revoke", "accounts.steps-reset", "accounts.end",
 }
-LEFT_ALONE = {"certificate.renew"} | CATALOG_CHANGES | TRIED | SET_UP | DATABASES | WEBSITES | ACCOUNTS
+# The other changes that web-console/ansible.py leaves out at its SET_UP, for the reasons it gives there:
+# certificate.get asks Let's Encrypt for names that are not this machine's, and the certificate shop the
+# others add, revoke, remove or forget is one only admin-certificates makes; machine.rename renames the
+# lab machine; the alert channels' changes take what a test does not give or need a channel that is not
+# there; Your account's changes would change the name, password and keys of the account the test signs
+# in with; security.unblock needs a blocked address and private.add and private.remove the device
+# lab-phone; and the Updates' and Apps' changes need a release on an update server or an app of the test
+# catalog. Their examples end refused, and so does the undo after them, which the round must not.
+OTHERS_SET_UP = {
+    "certificate.get", "certificate.add", "certificate.revoke", "certificate.remove", "certificate.forget",
+    "machine.rename",
+    "alerts.email", "alerts.email-remove", "alerts.webhook-add", "alerts.webhook-remove",
+    "alerts.push-add", "alerts.push-remove", "alerts.channel-about",
+    "account.name", "account.password", "account.key-add", "account.key-remove",
+    "security.unblock", "private.add", "private.remove",
+    "updates.apply", "updates.unstage", "updates.undo", "updates.hold", "updates.unhold", "updates.later",
+    "apps.update", "apps.update-all", "apps.tonight", "apps.tonight-all", "apps.not-tonight",
+    "apps.rollback", "apps.hold", "apps.unhold", "apps.remove",
+}
+LEFT_ALONE = (
+    {"certificate.renew"} | CATALOG_CHANGES | TRIED | SET_UP | DATABASES | WEBSITES | ACCOUNTS | OTHERS_SET_UP
+)
 # The reads the second run leaves alone: lab.missing, which a lab machine offers, runs a command
 # no image has, and is answered 501 (ADM-129) by design, which Schemathesis takes for a server error.
 # apps.search and apps.sheet read the catalogs, which bundled reads anew at each request, over the
