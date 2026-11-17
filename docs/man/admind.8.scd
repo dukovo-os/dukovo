@@ -848,10 +848,11 @@ what it printed, or a file cannot be read. A change whose action does
 not compare, such as a restart or *cert renew*, which makes the
 certificate anew whether or not it is due, always answers *true*. A
 command runs 30 seconds at most (ADM-121 for one that has not ended; an
-action marked *long* is a task, below), a worker runs 8 at once, and admind
-runs 32 at once as an administrator, for all sessions and tokens together,
-the commands of tasks among them (ADM-105 for the next short command; a
-task waits for a place instead). A command
+action marked *long* is a task, below), a worker runs 8 at once, and
+another waits up to 5 seconds for one of them to end (ADM-105 after that),
+and admind runs 32 at once as an administrator, for all sessions and
+tokens together, the commands of tasks among them (ADM-105 for the next
+short command; a task waits for a place instead). A command
 that ends with a status other than 0 is ADM-123 (422), except a read
 that answers with other statuses too: *service explain*, which ends
 with 3 for a service that does not run, is not ready or fails its

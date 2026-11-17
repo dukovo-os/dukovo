@@ -11,19 +11,23 @@
 //! holds the secrets and the documents the action takes, if any, and then
 //! ends (ADR 0561, 0567); its output and its error output are kept as
 //! admind's elevated ones are.
-//! At most 8 run at once for a worker, and each has 30 seconds, after
-//! which it is killed. A program that is in neither folder is ADM-129,
+//! At most 8 run at once for a worker; another waits up to 5 seconds for
+//! one of them to end before it is refused (ADM-105), since a page's reads
+//! come together and those of the page before may still run. Each has 30
+//! seconds, after which it is killed. A program that is in neither folder is ADM-129,
 //! said as authd says it of an elevated one.
 
-use std::cell::Cell;
 use std::fs::File;
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::net::unix::pipe::Receiver;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::admind::actions::Secret;
 use crate::admind::actions::secret::INPUT_LIMIT;
@@ -37,33 +41,29 @@ const PROGRAM_FOLDERS: [&str; 2] = ["/system/commands", "/applications/commands"
 /// The most commands a worker runs at once.
 const RUNNING_MAX: usize = 8;
 
+/// How long a command waits for a place among those before it is refused.
+const PLACE_WAIT: Duration = Duration::from_secs(5);
+
 /// The most words of a command, and bytes of them, as authd allows an
 /// elevated one.
 const WORDS_MAX: usize = 64;
 const BYTES_MAX: usize = 32 * 1024;
 
 thread_local! {
-    /// The commands this worker runs now. The worker is one thread.
-    static RUNNING: Cell<usize> = const { Cell::new(0) };
+    /// The places among the commands this worker runs at once, given in
+    /// the order they were asked for. The worker is one thread.
+    static PLACES: Arc<Semaphore> = Arc::new(Semaphore::new(RUNNING_MAX));
 }
 
-/// A place among the commands that run at once.
-struct Place;
-
-impl Place {
-    fn take() -> Option<Place> {
-        RUNNING.with(|running| {
-            (running.get() < RUNNING_MAX).then(|| {
-                running.set(running.get() + 1);
-                Place
-            })
-        })
-    }
-}
-
-impl Drop for Place {
-    fn drop(&mut self) {
-        RUNNING.with(|running| running.set(running.get().saturating_sub(1)));
+/// A place among the commands that run at once, waited for at most
+/// `wait`, and given back when it goes; ADM-105 when none came.
+async fn place(wait: Duration) -> Result<OwnedSemaphorePermit, Fault> {
+    let places = PLACES.with(Arc::clone);
+    match tokio::time::timeout(wait, places.acquire_owned()).await {
+        Ok(Ok(place)) => Ok(place),
+        Ok(Err(_)) | Err(_) => {
+            Err(Fault::new(Kind::Wait, "too many commands at once for this session"))
+        }
     }
 }
 
@@ -97,8 +97,7 @@ async fn run_in(argv: &[String], input: Option<&Secret>, folders: &[&str]) -> Re
     }
     let program = find(&argv[0], folders)
         .ok_or_else(|| Fault::new(Kind::NoProgram, format!("{}{NOT_FOUND}", argv[0])))?;
-    let _place = Place::take()
-        .ok_or_else(|| Fault::new(Kind::Wait, "too many commands at once for this session"))?;
+    let _place = place(PLACE_WAIT).await?;
     let internal = |err: std::io::Error| Fault::new(Kind::Internal, format!("{}: {err}", argv[0]));
     // The input is written to a pipe of its own, and the pipe is closed:
     // before the command starts when the pipe holds it all, and as it runs
@@ -201,6 +200,30 @@ mod tests {
             assert_eq!(find(name, &folders), None, "{name:?}");
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_command_waits_for_a_place_while_eight_run_and_is_refused_after_the_wait() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let wait = Duration::from_secs(5);
+            let mut held = Vec::new();
+            for _ in 0..RUNNING_MAX {
+                held.push(place(wait).await.unwrap());
+            }
+            // A ninth waits, and has the place the first gives back.
+            let ninth = tokio::spawn(place(wait));
+            tokio::task::yield_now().await;
+            assert!(!ninth.is_finished());
+            drop(held.remove(0));
+            held.push(ninth.await.unwrap().unwrap());
+            // With eight held, another is refused when its wait is over.
+            let fault = place(Duration::from_millis(50)).await.unwrap_err();
+            assert_eq!(fault.id, Kind::Wait.id());
+            assert_eq!(fault.detail, "too many commands at once for this session");
+            drop(held);
+            assert!(place(Duration::ZERO).await.is_ok());
+        });
     }
 
     #[test]
