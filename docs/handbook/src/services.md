@@ -773,7 +773,10 @@ numbers in `/system/state/websites/counts.json`, for 400 days a site. Both
 show in `website list`: its Size column, and `visits` and `size` with
 `--json`. The numbers of a day that a limit cut short (a log file of
 more than 2 GiB, or one that took over a minute to read) are marked as at
-least. `elevate website count --now` counts today so far.
+least. `elevate website count --now` counts today so far. Each run counts one
+day: a machine that was off at midnight counts when it starts, and a day it was
+off through is not counted later, so one that was off for more than a day counts
+only the last.
 
 A site that `website` added before the sites were logged has no such
 file, and `website list --json` says `"visits": null` for it until
@@ -875,6 +878,13 @@ the day before's. The files of the websites, in `logs/sites`, are turned
 the same way.
 `zstd -d` reads one. [Log files of a service](#log-files-of-a-service)
 says how.
+
+nginx keeps 2 turned files, where a service's log files keep 14 unless its file
+says otherwise. A service has one `logs` entry and so one number to keep, and
+the requests of the websites, which are kept for about two days (see *What a
+site counts*), need only that: so every file that `logs/*.log` names keeps 2
+turned files too, a file of your own among them. Copy a turned file that you
+want for longer before the next turn removes it.
 
 ### Limits
 

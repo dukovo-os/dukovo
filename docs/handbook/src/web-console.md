@@ -35,7 +35,7 @@ updates.toml(5), sysupdate(8), updated(8), bundle(1), bundled(8), changes(1),
 hardware(8), shutdown(8), metrics(1), cert(8), certd(8), hostnamectl(1),
 report(1), reportd(8), alerts(8), alertd(8), database(8), website(8) and alerts.toml(5); the
 decisions are ADR 0514, ADR 0515, ADR 0516, ADR 0517, ADR 0461, ADR 0463, ADR
-0561, ADR 0562, ADR 0565, ADR 0566, ADR 0567, ADR 0568 and ADR 0569.
+0561, ADR 0562, ADR 0565, ADR 0566, ADR 0567, ADR 0568, ADR 0569 and ADR 0570.
 
 | Task | How |
 | --- | --- |
@@ -99,8 +99,10 @@ decisions are ADR 0514, ADR 0515, ADR 0516, ADR 0517, ADR 0461, ADR 0463, ADR
 | Make a database and its password | **Add a database**, or `elevate database add NAME --json`; see "Databases" |
 | Let other machines connect to a database | **Let other machines connect** on the database's page, or `elevate database allow NAME --from NETWORK`; see "A database's page" |
 | Make a new password for a database | **Make a new password** on the database's page, or `elevate database password NAME --json` |
+| Put a database back from one of its copies | **Restore…** on the database's page, or `elevate database restore NAME --from COPY`; see "A database's page" |
 | See each certificate, who uses it and when it runs out | **Certificates**; see "Certificates" |
 | Get a certificate from Let's Encrypt | **Get one from Let's Encrypt** on **Certificates**, or `elevate cert get NAME`; see "Getting a certificate" |
+| Stop certd asking again for a certificate it could not get | **Forget** on its row on **Certificates**, or `elevate cert forget NAME`; see "The list" under "Certificates" |
 | Make the console serve another certificate | **Use for this console** on the certificate, or `elevate admin certificate NAME --try 300`; see "The certificate the console serves" |
 | Change the machine's name or its domain | **Change…** under **Name and domain** on **Certificates**, or `elevate hostnamectl set-hostname NAME --apply`; see "The machine's name" |
 | See what lowers the health score, and run the checks again | **Security**, then **Check again**; see "The score and the checks" |
@@ -3333,7 +3335,9 @@ and `website add --dry-run --json`. It runs `website add`, `website https` and
 install` for nginx and PHP-FPM, `service enable`, `firewall test` to ask whether
 a rule closes port 80 or 443, and `firewall allow` for a port that a rule closes
 (website(8), cert(8), bundle(1), service(8), firewall(8)). "Websites, a file each" in the chapter on services says what each
-does.
+does. The size and the visits are counted once a day by `website count`, so they
+are as of that night; "What a site counts" in the same chapter says from what,
+and for how long it is kept.
 
 ### The list
 
@@ -3350,6 +3354,8 @@ The table has a row for each website:
 | Site | Its first name, which opens its page, with the other names under it. **Changed by hand** when its file was changed or made by hand, with the title **Kept as you wrote it** |
 | Serves | **Files**, **PHP pages**, or **Set up by hand** for a file that is neither, and the folder |
 | HTTPS | **HTTP only**, in the warning colour; **Let's Encrypt · renews Dec 14**; **This machine's certificate**; **Certificate shop (added)**; or **Certificate shop, which certd does not have**, in the warning colour |
+| Size | What the folder takes on disk, as the last daily count measured it, **at least** that when the walk stopped at a limit, or a dash before the first count |
+| Visits yesterday | The requests the site answered with a status from 200 to 399 on the day before, or a dash before the first count |
 | State | **Answers** when nginx runs and nothing is wrong. Else what is wrong, with its ID: **nginx is not installed**, **nginx is off**, **PHP-FPM is off: its PHP pages fail**, or what `website list` found in the site's files, such as a folder that is not there |
 
 **Add a website** and **Check the sites** are for administrators. Under the table
@@ -3363,11 +3369,13 @@ a reader is told **An administrator adds one. At a terminal:** and given
 so nothing is changed until it passes.** with nginx's own line, which names the
 file of the site that nginx refuses; that site's row then shows the line as its
 state ([WEB-103](../../errors/WEB-103.md)). It also says when `nginx.conf` lacks
-one of the two lines the websites need: **nginx's settings do not include the
-websites' folder** with the line to add at the end of its `http` block, or **The
+one of the three parts the websites need: **nginx's settings do not include the
+websites' folder** with the line to add at the end of its `http` block, **The
 default server does not hide /sites/, so a site's folder is served there too.**
-with the lines to add before `location /` in the default server. Each has the
-lines in a box with **Copy** ([WEB-102](../../errors/WEB-102.md)).
+with the lines to add before `location /` in the default server, or the
+definition of the format of the sites' logs, `log_format site`, with the line to
+add in the `http` block before the servers. Each has the lines in a box with
+**Copy** ([WEB-102](../../errors/WEB-102.md)).
 
 ### Add a website
 
@@ -3503,8 +3511,12 @@ page: each command takes back its own half-made change.
 | HTTPS | **shop.example.org is live over HTTP, and certd keeps the certificate shop. Try again turns HTTPS on.** | **Try again**, **Open its page** |
 
 **Try again** starts at the step that failed, and says **Done already:** with the
-steps before it. A failed order for a certificate is not tried again by itself:
-certd keeps no order that failed, so the order is made again from the website's
+steps before it. A failed order for a certificate through port 80 that began is
+kept, and certd tries it again by itself every hour for a day and every 6 hours
+after, for 14 days (see "The list" under "Certificates"): the website's page then
+says **Getting a certificate: certd tries again every hour** in place of **Get the
+certificate**. An order that failed before an account was made at the authority,
+with the terms not agreed to, is not kept, and is made again from the website's
 page.
 
 ### A website's page
@@ -3518,7 +3530,8 @@ in the site's files, with its ID. It has these rows:
 | --- | --- |
 | Names | Each name, as a link to the site over `https` or `http` |
 | Serves | **PHP pages from /shared/www/sites/shop.example.org, owned by alice**, and, for an administrator whose session has the terminal, **Open the Terminal** |
-| HTTPS | As in the list, with the certificate as a link to **Certificates**, and **Ends Dec 14, certd renews it from Nov 14** |
+| HTTPS | As in the list, with the certificate as a link to **Certificates**, and **Ends Dec 14, certd renews it from Nov 14**. For a site whose certificate certd is still trying to get (see "The list" under "Certificates"), **Getting a certificate: certd tries again every hour** in place of **Get the certificate** |
+| Visits and size | A small chart of the last 30 days, each day's visits and errors, and what the folder takes, with **Counted once a day from nginx's log; the log holds no addresses.** Before the first count it says **Not counted yet: visits are counted once a day.** |
 | Its database | The databases made for it that **Databases** has read since this page of the console was opened, as links, or **None that this page knows of**, and **Make its database** |
 | Its file | `/system/settings/websites/shop.example.org.conf` and **As website wrote it**, **Changed by hand · kept as you wrote it**, or **Added by hand · website does not write it, and keeps it as you wrote it**. **Show the file** shows its text, and a file changed by hand has a line that it is also a row of **What changed**, with **Keep it** and **Put back** (see "What changed") |
 
@@ -3590,10 +3603,11 @@ console has to be unlocked first.** with **Unlock**. The page reads when it open
 after a change, when the console is unlocked and when you press **Read again**,
 and never on a timer.
 
-It reads `database list --json`, and runs `database add --json`, `database
-password --json`, `database allow`, `database deny` and `database remove`, and
-`service enable` for PostgreSQL (database(8), service(8)). "Databases for
-programs and websites" in the chapter on PostgreSQL says what each does.
+It reads `database list --json` and, for a restore, `database copies --json`,
+and runs `database add --json`, `database password --json`, `database allow`,
+`database deny`, `database remove` and `database restore`, and `service enable`
+for PostgreSQL (database(8), service(8)). "Databases for programs and websites"
+and "Putting one database back" in the chapter on PostgreSQL say what each does.
 
 ### The list
 
@@ -3646,24 +3660,26 @@ is not running.
 | **An account of this server, by the socket** | **The role is named for the account and signs in as it, with no password, through PostgreSQL's socket.** Choose the account; **Owned by** then takes its name. **A service of another bundle cannot reach the socket yet: for a website's PHP, choose a password.** |
 | **Programs on other machines, with a password** | Lets the networks you name sign in as the role, with its password, over TLS. **Addresses** are one network a line, such as `192.168.1.0/24` or `2001:db8::/64`, at most 20. **Certificate** is this machine's own unless you choose another, and a note says when it does not name this machine. To let every address in, type **anywhere**. **PostgreSQL restarts once to listen on the network: its open sessions end.** |
 
-**Backups** says what copies the database: **Before each snapshot of /shared,
-PostgreSQL's backup hook asks it for a checkpoint, so the copy starts as after a
-power cut, which PostgreSQL recovers from.** and whether **/shared is in the
-nightly backup to nas** or **No backup place copies /shared yet.** with **Add a
-backup place**. A database is not copied on its own: its files are copied with
-`/shared`.
+**Backups** says what copies the database: before each snapshot of `/shared`,
+PostgreSQL's backup hook writes a checkpoint and copies the database into a file
+of its own, which the snapshot and the backup hold, and whether **/shared is in
+the nightly backup to nas** or **No backup place copies /shared yet.** with **Add
+a backup place**. A database is copied before each backup and never on its own, so
+a machine with no backup place has no copies.
 
 **What happens** lists, before anything is done: the role, **Makes the PostgreSQL
 role shop, which signs in with a password, from this server only**; the database,
 **Makes the database shop, owned by shop, UTF-8, sorted as English (US). Other roles
 may not connect to it.**; the firewall; and the restart, **Restart: none; the
 database is ready at once.** or **Restart: PostgreSQL restarts once, and its
-open sessions end.** For other machines the firewall row says **PostgreSQL listens
-on the network, and only the addresses you named may sign in. Port 5432 is open to
-every address while PostgreSQL runs, as for any service that listens; a firewall
-rule can narrow it.** The page changes no firewall rule: **Firewall** is where one
-is made. Where commands are shown, **This runs** has `database add`, and `database
-allow` for other machines (see "Showing the command").
+open sessions end.** For other machines the firewall row says that port 5432 will be opened to the
+networks you named and to no other address, and that a rule of your own before the
+database's rules for that port decides first, when one does. The change is the
+block of rules that `database allow` keeps in the firewall's rules (see "Letting
+other machines connect" in the chapter on PostgreSQL); the page changes no other
+firewall rule: **Firewall** is where one is made. Where commands are shown,
+**This runs** has `database add`, and `database allow` for other machines (see
+"Showing the command").
 
 **Add the database** runs `database add NAME --json`, with `--owner`, `--peer`,
 `--locale` and `--site` as the form says, and then, for other machines, `database
@@ -3720,6 +3736,31 @@ the connection settings, and:
   **Remove**, for one, run `database deny`. When no network is left, PostgreSQL
   goes back to listening on this machine only and restarts once, and the dialog
   says so first.
+- **Firewall** says **Port 5432 is open to 192.168.1.0/24 and 10.0.0.0/8 only.**,
+  the networks of every database, since one port serves them all, or **Port 5432
+  is closed to other machines: PostgreSQL listens on this machine only.** When a
+  rule of your own before the block of `database` decides for the port first, a
+  warning names the rule and links to **Firewall**, where it is moved or removed;
+  `database` does not move it.
+- **Copy** says **Copied at 2:00 AM, 12 MB** (the date, when it was not today),
+  **No copy yet: the next backup makes one**, or, on a machine where PostgreSQL's
+  backup hook does not copy the databases, **No copies are made before backups**
+  with a link to the page of the backups.
+- **Restore…** puts a copy back. It lists the copies that `database copies`
+  finds, each with its time, its size and where it is, **This machine** for the
+  one in use or the name of the snapshot, and then asks where to put it: **As a
+  new database**, which is the choice made for you, with a name that starts as
+  `shop_restored_20261116` and follows the rule for the names of databases, or
+  **Over shop**, which keeps the database as it is now under the name
+  `shop_before_` with the day and the minute. When programs have a session open to
+  it, **Over** stops with them by name ([DB-103](../../errors/DB-103.md)) and offers
+  **End the sessions and restore**. The restore is a task with its steps. It says
+  **Restored into shop_restored_20261116**, or **Restored into shop; the database
+  before is kept as shop_before_20261116_0200**, with a link to the database
+  that was made, where **Remove…** drops the one that is kept. A copy that is not
+  one ([DB-109](../../errors/DB-109.md)) and a restore that `pg_restore` did not
+  take ([DB-110](../../errors/DB-110.md)) are told with their IDs, and what was
+  made is taken back.
 - **Password and removal** has **Make a new password**, which asks first, **Programs
   that use the old one stop signing in until they have the new one.**, and shows the
   new password once as the first was shown. It is not there for a role that signs
@@ -3758,9 +3799,9 @@ the console first (see "Unlocking the console"). The page is at
 `#get`, `#renewals` and `#name`; `/certificates#upload` opens the dialog that
 uploads one, and `/certificates/NAME` opens a certificate's fingerprint.
 
-It reads `cert list`, `cert history`, `cert show` and `hostnamectl status`, and
-runs `cert get`, `cert add`, `cert renew`, `cert revoke`, `cert remove`,
-`admin certificate` and `hostnamectl set-hostname` (cert(8), certd(8),
+It reads `cert list`, `cert wanted`, `cert history`, `cert show` and `hostnamectl
+status`, and runs `cert get`, `cert add`, `cert renew`, `cert revoke`, `cert
+remove`, `cert forget`, `admin certificate` and `hostnamectl set-hostname` (cert(8), certd(8),
 hostnamectl(1), admin(8)). The chapter "Certificates" says what each command
 does and how a service takes a certificate.
 
@@ -3775,6 +3816,17 @@ does and how a service takes a certificate.
 | Good until | The date, and a note under it when it ends soon, has ended or was revoked |
 | Used by | The services that use it, each as a link to its page, or why none does |
 | Actions | The buttons of the row |
+
+A certificate that `cert get` could not get, and that certd asks for again by
+itself, is a row of its own, which is not a certificate: **Trying again: next at
+4:05 PM, 3 tries, last: port 80 is not reachable from the internet**, with the
+names it is for, or **Given up: WHY. Get it again to start afresh.** for one that
+certd stopped asking for after 14 days ([CRT-123](../../errors/CRT-123.md) and
+[CRT-124](../../errors/CRT-124.md) are its alerts). An administrator has
+**Forget** on it, which asks **Stop trying to get shop.example.org? certd will
+not ask the authority for it again, and its alert goes away.** and runs `cert
+forget`; a reader sees the row without the button. A certificate that is in the
+store stays as it is.
 
 A line under the table says which Let's Encrypt account the machine has, **Let's
 Encrypt account: made on Nov 2, with no contact email**. Under it, **Warnings go
@@ -3828,7 +3880,9 @@ Let's Encrypt, and the server warns you itself when a certificate runs out.
 ([CRT-103](../../errors/CRT-103.md); **Open port 80** opens it for a while),
 whether the clock is right ([CRT-105](../../errors/CRT-105.md)) and whether
 another program holds port 80 ([CRT-106](../../errors/CRT-106.md)). **Get the
-certificate** orders it as a task, and its steps show in the card. **Try it
+certificate** orders it as a task, and its steps show in the card. An order through
+port 80 that fails once it began is kept, and certd asks again every hour for a day and every 6
+hours after, for 14 days; the list shows it as the row above. **Try it
 first** asks Let's Encrypt's staging authority, which installs nothing and
 does not count against Let's Encrypt's limits. By DNS the card lists the TXT
 records, each with **Copy**, and this server looks for them for up to 10
@@ -3907,10 +3961,10 @@ full name wherever the domain's records lead, with the same certificate.
 ### Who may do what
 
 Anyone who signs in sees the list, the renewals and the name. An administrator
-gets, uploads, renews, revokes and removes certificates, changes the console's
-certificate and the machine's name; anyone else is told **An administrator can
-get, upload, renew, revoke and remove certificates and change this machine's
-name.** The page reads again every minute while the tab is shown, and when the
+gets, uploads, renews, revokes and removes certificates, makes certd forget one it
+tries again for, changes the console's certificate and the machine's name; anyone
+else is told **An administrator can get, upload, renew, revoke and remove
+certificates and change this machine's name.** The page reads again every minute while the tab is shown, and when the
 connection returns.
 
 ### On a phone

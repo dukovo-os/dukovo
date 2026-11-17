@@ -5,7 +5,7 @@ cert(8) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-cert - list, add, get, check, renew, revoke, remove, forget and recall the machine's certificates
+cert - list, show, add, get, renew, revoke, remove and check the machine's certificates, and see and forget the ones that could not be got
 
 # SYNOPSIS
 
@@ -151,17 +151,20 @@ be run by anyone, as certificates are public and keys are not shown. *add*,
 	had, unless the options say others; a certificate that was added by
 	hand, or *this-machine*, is refused.
 
-	An order by HTTP that fails after it began, as when the authority
-	cannot reach the name or refuses it, is kept for certd to ask again
-	(*a certificate that could not be got*, below), and the message
-	ends with *certd tries again every hour; cert forget* _name_ *stops
-	it*. That is not so for an order made with *--dry-run*, *--staging*
-	or *--dns*. certd asks through the account at the authority; where
-	there is none yet, because the order failed in the checks before the
-	authority was asked, it is kept only with *--agree-terms*, and certd
-	makes the account at its first try, with the *--email* the order had,
-	as the order would have. A later *cert get* of the same name makes the
-	record anew, and one that works takes it away.
+	An order by HTTP that fails once it has begun, as when a name does
+	not lead to this machine, or the authority cannot reach it or
+	refuses it, is kept for certd to ask again (*A certificate that could
+	not be got*, below), and the message ends with *certd tries again
+	every hour; cert forget* _name_ *stops it*. That is not so for an
+	order made with *--dry-run*, *--staging* or *--dns*. certd asks
+	through the account at the authority. Where there is none yet,
+	because the order failed in the checks before the authority was
+	asked, the order is kept only with *--agree-terms*, which an account
+	needs, and certd makes the account at its first try, with the
+	*--email* the order had, as the order would have; without it the
+	order is not kept, and the message says nothing of certd. A later
+	*cert get* of the same name makes the record anew, and one that works
+	takes it away.
 
 	*--dns*
 		Prove the names by DNS instead of by HTTP: the command shows
@@ -270,11 +273,18 @@ be run by anyone, as certificates are public and keys are not shown. *add*,
 	*next\_ms* (milliseconds since 1970), *tries*, *why* and *given\_up*.
 	The account at the authority is left out. Anyone may read it.
 
+	```
+	$ cert wanted
+	NAME         NAMES                         TRIES  FIRST TRY            NEXT TRY             WHY
+	example.com  example.com, www.example.com  3      2026-11-16 09:12:00  2026-11-16 12:12:00  the authority could not reach http://example.com/.well-known/acme-challenge/
+	```
+
 *cert forget* _name_
 	Has certd stop asking for a certificate that could not be got, and
-	takes away its alert. It also takes away a record that does not read,
-	which certd leaves alone. It is refused when certd has no record of
-	_name_. It changes no certificate: one that is in the store stays.
+	takes away its alert. It takes away the record whatever it holds,
+	one that does not read too, which certd leaves alone. It is refused
+	when there is no record of _name_. It changes no certificate: one
+	that is in the store stays.
 
 *cert revoke* _name_ [*--reason* _reason_]
 	Revokes a certificate from an authority, through the account that
@@ -373,8 +383,8 @@ window the authority names, or two thirds of the way through its life
 where the authority says nothing: *certd*(8) says how. *cert renew*
 does it at once.
 
-*A certificate that could not be got.* When *cert get* fails after the
-order began, cert keeps what it was asked for: the names, the authority,
+*A certificate that could not be got.* When *cert get* fails once the
+order has begun, cert keeps what it was asked for: the names, the authority,
 the type of key and the profile, and the account it asked through.
 certd asks for the certificate again by itself, as *cert get* does,
 every hour for the day after the first try, then every 6 hours, until 14
@@ -387,11 +397,11 @@ was taken away, or when a certificate of that name was added by hand
 since; a record given up stays, so that *cert wanted* shows why, until
 *cert forget* or a *cert get* that works takes it away.
 
-When the first day is over and the certificate is still not got, certd raises
-the alert *certificate:*_name_, "The certificate _name_ could not be had
-for a day", with the reason of the last try (*CRT-123*); when it gives up,
-*certificate-given-up:*_name_ (*CRT-124*). Both clear by themselves when the
-record is taken away.
+When the first day is over and the certificate is still not got, certd
+raises the alert *certificate:*_name_, "The certificate _name_ could not
+be had for a day", with the reason of the last try (*CRT-123*); when it
+gives up, *certificate-given-up:*_name_ (*CRT-124*). Both clear by
+themselves when the record is taken away.
 
 # THE CHANGE IS TOLD TO SPARK
 

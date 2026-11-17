@@ -62,9 +62,9 @@ One change runs at a time. A second waits for the first, for up to a
 minute.
 
 *list*, and the *--help* of any command, may be run by anyone who can
-read the files. *check* asks nginx, *count* reads nginx's data folder,
-and *add*, *https* and *remove* change nginx and its service file, so
-they need root: run them with *elevate*(8).
+read the files. *check*, which asks nginx, *count*, which reads nginx's
+data folder, and *add*, *https* and *remove*, which change nginx and its
+service file, need root: run them with *elevate*(8).
 
 # COMMANDS
 
@@ -73,8 +73,8 @@ they need root: run them with *elevate*(8).
 	or *other* for a file website does not read as one of those), its
 	certificate when it serves HTTPS, its size (the folder as *count* last
 	measured it, with a _+_ when the measure stopped short, or _-_ before
-	the first count), and its folder. Under the table is
-	a line for what is wrong with a site that can be seen from the files:
+	the first count), and its folder. Under the table is a line for
+	what is wrong with a site that can be seen from the files:
 	its folder is not there, nginx has no copy of its certificate, PHP-FPM
 	is off or not installed, or its file does not read as nginx's
 	settings. With *--json*, see JSON.
@@ -85,8 +85,8 @@ they need root: run them with *elevate*(8).
 	includes the websites' folder, the answer 404 under _/sites/_ in
 	its default server, which keeps one site's folder from being served
 	by another, and the definition of the format of the sites' logs.
-	When nginx refuses the file of one site, the report says which. Ends with status 1 when nginx's check fails or a part is
-	missing.
+	When nginx refuses the file of one site, the report says which. Ends
+	with status 1 when nginx's check fails or a part is missing.
 
 *website add* _name_ ... *--owner* _account_
 	Adds a website that answers to _name_ and to each *--name*, at most
@@ -154,10 +154,12 @@ they need root: run them with *elevate*(8).
 	process of its own, at the lowest priority for the disk and the
 	processor, and with the same limits. The numbers are kept (see THE
 	FILES) and *list* shows them. A day counted again is counted anew.
-	*--now* counts today so far, from the file nginx is writing, and at
-	the usual priority. A site that has no log file, which is a site
-	added before the sites were logged, is left out until *https* writes
-	its file again.
+	*--now* counts today so far, from the file nginx is writing. The
+	daily run lowers its own priority for the disk and the processor as
+	well, which *--now*, that a person waits for, does not. A site that
+	has no log file, which is a site added before the sites were logged,
+	has nothing counted, and the line says it has no log of its
+	requests, until *https* writes its file again.
 
 	The log of a site is its file and the two copies *logturn*(8) keeps,
 	_NAME.log_, _NAME.log.1_ and _NAME.log.2.zst_. *logturn* turns a file
@@ -171,11 +173,21 @@ they need root: run them with *elevate*(8).
 	read is told, and counted as far as it was read.
 
 	The service *website-count* (*service*(8), *timerd*(8)) runs it each
-	day, a little after midnight in UTC, so a person runs it for *--now*.
-	It prints a line for each site: the day, the visits, the errors, the
-	bytes sent and the size of the folder. With *--json*, see JSON. It
-	ends with status 0 when it counted what it could; what it could not
-	read it prints, and writes to the system's log.
+	day, a little after midnight in UTC, and a machine that was off then
+	counts soon after it starts; it counts the one day before, so a
+	machine that was off for more than a day counts the last day alone,
+	and a person runs *count* for *--now*. It prints a line for each
+	site: the day, the visits, the errors, the bytes sent and the size of
+	the folder, with _at least_ before the numbers of a day or a folder
+	that a limit stopped short. With *--json*, see JSON. It ends with status 0 when it counted
+	what it could; what it could not read it prints, and writes to the
+	system's log.
+
+	```
+	# website count
+	blog.example.org: 2026-11-16: 214 visits, 9 errors, 1.2M sent; folder 12M in 340 files
+	shop.example.org: no log of its requests; folder 4.0M in 61 files
+	```
 
 # THE FILES
 

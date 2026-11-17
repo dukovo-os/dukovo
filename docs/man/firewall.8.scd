@@ -65,6 +65,16 @@ The rules are kept in _/system/settings/firewall_, a rule a line, in
 order. The *firewall* service gives them to the kernel at boot, before
 the services that listen start.
 
+A command other than *firewall* may keep a block of rules in the file,
+between two comment lines that it writes: *database*(8) keeps one for
+PostgreSQL's port 5432, which opens the port to the networks that its
+databases are opened to and to no others. The block is rules like any
+other: *list* numbers them, and a rule above the block decides first
+for the connections it names. Do not take the comment lines out or
+split the block; the command that keeps it leaves every other line as
+it was, and refuses to change it while the rules are being tried
+(*allow --try*).
+
 *status*, or no command, says how many rules the kernel holds and how
 many packets it dropped since the machine started, and lists each
 socket that listens: its protocol and port, its process, its program,
@@ -326,7 +336,8 @@ the firewall capability.
 # FILES
 
 _/system/settings/firewall_
-	The rules, a rule a line; *#* starts a comment.
+	The rules, a rule a line; *#* starts a comment. *database*(8)
+	keeps a block in it, between two comment lines.
 
 _/system/settings/spark/services/firewall.toml_
 	The service that loads them at boot, and again after a change that
@@ -361,4 +372,4 @@ firewall: rule 3 is `deny ping on net1`
 
 *radix-firewall*(2), *blocking.toml*(5), *authd*(8), *ip*(8), *ss*(8),
 *log*(1), *network*(8), *service.toml*(5), *spark*(8), *elevate*(8),
-*systools*(1)
+*database*(8), *systools*(1)

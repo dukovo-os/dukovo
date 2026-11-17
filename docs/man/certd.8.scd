@@ -5,7 +5,7 @@ certd(8) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-certd - keep the machine's own certificate, renew the ones from an authority and watch the others
+certd - keep the machine's own certificate, renew the ones from an authority, ask again for the ones that could not be got, and watch the others
 
 # SYNOPSIS
 
@@ -151,7 +151,7 @@ get*.
 
 # A CERTIFICATE THAT COULD NOT BE GOT
 
-When *cert get* fails after its order began (*cert*(8)), it keeps what it
+When *cert get* fails once its order has begun (*cert*(8)), it keeps what it
 was asked for in a record in _/system/state/certd/wanted_, and asks Spark to
 have certd look. The record has the names, the authority and the account's
 file, the type of key and the profile, when the first and the last try were
@@ -168,14 +168,16 @@ before it: the next try is never sooner than that time, and a time past 14 days
 gives the record up. A try that works installs the certificate, as
 a renewal does, tells Spark, takes the record away and logs one line;
 one that fails logs the reason, writes it into the record, and into the
-history as a line *failed* by certd. A record whose account file was
-taken away when the order did not say that its terms were agreed to, or whose
-name has a certificate that was added by hand since, is given up at once with
-that reason. One whose account is not there for it is made, when the order
-agreed to the terms: the order failed before the authority was asked, and had
-made none. A given-up record is kept, and
-tried no more, until *cert forget*, or a *cert get* of the name, takes it
-away.
+history as a line *failed* by certd.
+
+Two things give a record up at once, with their reason: the account it
+names is not there and the order did not agree to the terms, which a new
+account needs, and a certificate of its name that was added by hand since,
+which a new one would replace. When the order did agree to the terms and the
+account is not there, certd makes the account, as the order would have: an
+order that failed in the checks, before the authority was asked, had made
+none. A given-up record is kept, and tried no more, until *cert forget*, or
+a *cert get* of the name, takes it away.
 
 A record is read and written while the store's lock is held and not
 while the authority is asked, and a try that finds the record taken away or
@@ -189,8 +191,8 @@ certificate _name_ could not be had for a day: _why_", a warning
 (*CRT-123*), unless the same certificate has an alert of its own for
 running out, which is shown in its place; and for a given-up record
 *certificate-given-up:*_name_ (*CRT-124*), a warning too, since alertd has
-no lesser kind. Both are about *stopped*, and clear when the record is
-taken away.
+no lesser kind. Both are about *stopped* (*alertd*(8)), and clear when
+the record is taken away.
 
 # READINESS
 
