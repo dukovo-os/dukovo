@@ -1,0 +1,11 @@
+{
+  "key": {
+    "keytype": "ecdsa",
+    "keyval": {
+      "public": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE/sYJXJ3kQeOEH85j9mkfz7/Aq1Zt\nkHmr24aeUF6DU9uWX3wOYIGPWhtgFx+L8MwQJWLvlVyB8dTGX4UfIuFi9w==\n-----END PUBLIC KEY-----\n"
+    },
+    "scheme": "ecdsa-sha2-nistp256"
+  },
+  "slot": "95",
+  "yubikey": 38775519
+}

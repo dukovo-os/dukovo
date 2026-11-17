@@ -1998,7 +1998,7 @@ _target/userspace/_).
 	are changed with *release canary* (ADR 0533), and *rollout canary*
 	is refused. *bundle*(1) says what a computer does with one.
 
-*release* *build* [*--out* _dir_] | *server* *setup* [*--dukovo*] | *channel* _repository_ (_channel_ _version_ | *--firmware* _version_|*none* _channel_) | *advisories* _repository_ | *deploy* _repository_ | *send* [*--copy-only*] _repository_ | *check* [*--root* _file_] [_url_] | *rollout* (*pause* _version_ _reason_ | *resume* _version_) | *canaries* [*--json*] | *canary* (*add* _name_ _key_ | *remove* _name_ | _name_ *red*|*green* _reason_ | _name_ *auto*)
+*release* *build* [*--out* _dir_] | *key* *yubikey* [*--serial* _n_] | *root* | *server* *setup* [*--dukovo*] | *channel* _repository_ (_channel_ _version_ | *--firmware* _version_|*none* _channel_) | *advisories* _repository_ | *deploy* _repository_ | *send* [*--copy-only*] _repository_ | *check* [*--root* _file_] [_url_] | *rollout* (*pause* _version_ _reason_ | *resume* _version_) | *canaries* [*--json*] | *canary* (*add* _name_ _key_ | *remove* _name_ | _name_ *red*|*green* _reason_ | _name_ *auto*)
 	Build the system's release, and deploy the system's releases to the
 	update server and check what it serves (ADR 0467), over the same SSH
 	login as *catalog*.
@@ -2027,6 +2027,17 @@ _target/userspace/_).
 	as long as *ob build*, and *SOURCE_DATE_EPOCH* is the commit's time
 	unless it is set. CI runs *build* twice in different
 	places and compares the results (_.github/workflows/reproducible.yml_).
+
+	*key yubikey* and *root* are the key ceremony (ADRs 0457 and 0538),
+	which _releases/README.md_ walks through. *key yubikey* adds
+	_releases/keys/yubikey-SERIAL.json_, the public half of the P-256
+	key in slot 95 of the YubiKey plugged in, or of the one *--serial*
+	names, made with ykman. *root* signs root version 1 of the system's
+	releases on both YubiKeys, a PIN and a touch for each, from their
+	keys and the server's online key in _releases/keys/_, and writes
+	_releases/metadata/1.root.json_. The last line it prints is the
+	root's SHA-256. It signs the first root once (*system-release*(8)
+	*first-root*).
 
 	*server setup* is *catalog server setup*, which sets up both; it
 	writes the server's online key for the system's releases to

@@ -8,9 +8,9 @@
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use serde_json::{Value, json};
+use system_release::yubikey::{self, CATALOG_SLOT, YubiKey};
 use tuf::keys::Key;
 use tuf::repo::{self, Signer};
 
@@ -104,51 +104,6 @@ pub fn read_all(dir: &Path) -> Result<Vec<KeyFile>, String> {
     Ok(keys)
 }
 
-/// A key held by a YubiKey, which signs through the helper.
-pub struct YubiKey {
-    helper: PathBuf,
-    serial: u64,
-    key: Key,
-}
-
-impl Signer for YubiKey {
-    fn key(&self) -> &Key {
-        &self.key
-    }
-
-    fn sign(&self, message: &[u8]) -> Result<Vec<u8>, String> {
-        let hex = run_helper(&self.helper, &["sign", &self.serial.to_string()], message)?;
-        let hex = hex.trim();
-        if hex.len() % 2 != 0 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(format!("YubiKey {}'s helper printed no signature", self.serial));
-        }
-        (0..hex.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|e| e.to_string()))
-            .collect()
-    }
-}
-
-/// Runs the YubiKey helper with `args`, `input` on its standard input,
-/// and returns what it printed. Its prompts go to the terminal.
-fn run_helper(path: &Path, args: &[&str], input: &[u8]) -> Result<String, String> {
-    let mut child = Command::new(path)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(input).map_err(|e| format!("{}: {e}", path.display()))?;
-    }
-    let out = child.wait_with_output().map_err(|e| format!("{}: {e}", path.display()))?;
-    if !out.status.success() {
-        return Err(format!("{} {} failed", path.display(), args.join(" ")));
-    }
-    String::from_utf8(out.stdout)
-        .map_err(|_| format!("{} printed what is not text", path.display()))
-}
-
 /// What can sign: the YubiKeys plugged in, through `helper`, and the
 /// secret key files given.
 #[derive(Default)]
@@ -167,7 +122,7 @@ impl Signers {
     /// If the helper fails, or a file is not a secret key.
     pub fn new(helper: Option<&Path>, files: &[PathBuf]) -> Result<Signers, String> {
         let plugged = match helper {
-            Some(path) => helper_list(path)?,
+            Some(path) => yubikey::plugged(path)?,
             None => Vec::new(),
         };
         let mut keys = Vec::new();
@@ -186,11 +141,7 @@ impl Signers {
         if let (Some(serial), Some(helper)) = (key.yubikey, &self.helper)
             && self.plugged.contains(&serial)
         {
-            return Some(Box::new(YubiKey {
-                helper: helper.clone(),
-                serial,
-                key: key.key.clone(),
-            }));
+            return Some(Box::new(YubiKey::new(helper, serial, CATALOG_SLOT, key.key.clone())));
         }
         let file = self.files.iter().find(|f| f.key() == &key.key)?;
         Some(Box::new(FileSigner(file)))
@@ -240,13 +191,6 @@ impl Signer for FileSigner<'_> {
     }
 }
 
-fn helper_list(path: &Path) -> Result<Vec<u64>, String> {
-    let text = run_helper(path, &["list"], &[])?;
-    text.lines()
-        .map(|line| line.trim().parse().map_err(|_| format!("{} listed {line:?}", path.display())))
-        .collect()
-}
-
 /// The key of the YubiKey `serial`, or of the only one plugged in.
 ///
 /// # Errors
@@ -254,16 +198,8 @@ fn helper_list(path: &Path) -> Result<Vec<u64>, String> {
 /// If there is no such YubiKey, more than one and no serial, or its slot
 /// holds no P-256 key.
 pub fn from_yubikey(helper: &Path, serial: Option<u64>) -> Result<KeyFile, String> {
-    let serial = match serial {
-        Some(serial) => serial,
-        None => match helper_list(helper)?.as_slice() {
-            [one] => *one,
-            [] => return Err("no YubiKey is plugged in".into()),
-            _ => return Err("more than one YubiKey is plugged in: name one with --serial".into()),
-        },
-    };
-    let pem = run_helper(helper, &["public", &serial.to_string()], &[])?;
-    let key = repo::p256_key(&pem).map_err(|e| format!("YubiKey {serial}: {e}"))?;
+    let serial = yubikey::one(helper, serial)?;
+    let key = yubikey::public_key(helper, serial, CATALOG_SLOT)?;
     Ok(KeyFile {
         name: format!("yubikey-{serial}"),
         roles: vec!["root".into(), "targets".into()],

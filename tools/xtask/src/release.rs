@@ -115,6 +115,9 @@ pub fn tool_for(ctx: &Ctx, release: bool) -> Result<PathBuf> {
 pub fn command(ctx: &Ctx, args: &[String]) -> Result<()> {
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["build", rest @ ..] => build(ctx, rest),
+        ["key", "yubikey"] => release_key(ctx, None),
+        ["key", "yubikey", "--serial", serial] => release_key(ctx, Some(serial)),
+        ["root"] => first_root(ctx),
         ["server", "setup"] => crate::catalog::server_setup(ctx, false),
         ["server", "setup", "--dukovo"] => crate::catalog::server_setup(ctx, true),
         ["channel", repo, "--firmware", set, channel] => {
@@ -136,7 +139,8 @@ pub fn command(ctx: &Ctx, args: &[String]) -> Result<()> {
         ["canaries", "--json"] => canaries(ctx, true),
         ["canary", rest @ ..] if !rest.is_empty() => canary(ctx, rest),
         _ => bail!(
-            "usage: ./ob release build [--out <dir>] | server setup [--dukovo] | channel <repository> (<channel> \
+            "usage: ./ob release build [--out <dir>] | key yubikey [--serial <number>] | root \
+             | server setup [--dukovo] | channel <repository> (<channel> \
              <version> | --firmware <version>|none <channel>) | advisories <repository> \
              | deploy <repository> | send [--copy-only] <repository> \
              | check [--root <file>] [<url>] \
@@ -144,6 +148,35 @@ pub fn command(ctx: &Ctx, args: &[String]) -> Result<()> {
              | canary (add <name> <key> | remove <name> | <name> red|green <reason> | <name> auto)"
         ),
     }
+}
+
+/// `ob release key yubikey [--serial N]`: keeps the public half of a
+/// YubiKey's release key, in its slot 95, in `releases/keys/` (ADR 0538).
+fn release_key(ctx: &Ctx, serial: Option<&str>) -> Result<()> {
+    let mut cmd = Command::new(tool(ctx)?);
+    cmd.arg("release-key")
+        .arg("--yubikey-helper")
+        .arg(ctx.root.join(crate::catalog::YUBIKEY_HELPER));
+    if let Some(serial) = serial {
+        cmd.args(["--serial", serial]);
+    }
+    cmd.arg(ctx.root.join(REPO).join("keys"));
+    process::run(ctx, &mut cmd)
+}
+
+/// `ob release root`: the key ceremony's first root of the system's
+/// releases, signed on both YubiKeys from the keys in `releases/keys/`,
+/// in `releases/metadata/1.root.json` (ADRs 0457 and 0538).
+fn first_root(ctx: &Ctx) -> Result<()> {
+    let repo = ctx.root.join(REPO);
+    let mut cmd = Command::new(tool(ctx)?);
+    cmd.arg("first-root")
+        .arg("--yubikey-helper")
+        .arg(ctx.root.join(crate::catalog::YUBIKEY_HELPER))
+        .arg("--out")
+        .arg(repo.join("metadata"))
+        .arg(repo.join("keys"));
+    process::run(ctx, &mut cmd)
 }
 
 /// `ob release channel REPOSITORY ...`: has the channel of the update

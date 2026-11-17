@@ -23,8 +23,9 @@ const WARN_DAYS: i64 = 30;
 /// Seconds in a day.
 const DAY: i64 = 86_400;
 
-/// Why the system's releases have nothing to read yet.
-const NOT_SET_UP: &str = "the first root of the system's releases is not signed yet (ADR 0457)";
+/// Why the system's releases have nothing to read yet: the key ceremony
+/// has not signed their first root, or no release has been deployed.
+const NOT_SET_UP: &str = "no system release has been deployed yet (ADRs 0457 and 0467)";
 
 /// What reading one side of the update server gave.
 #[derive(Debug, Clone, PartialEq)]
@@ -94,7 +95,7 @@ fn read_catalog(ctx: &Ctx) -> Result<Side> {
 }
 
 /// Reads the system's releases the server serves, if their first root is
-/// signed.
+/// signed and the server has had one deployed.
 fn read_system(ctx: &Ctx) -> Result<Side> {
     let root = ctx.root.join(release::REPO).join("metadata/1.root.json");
     if !root.is_file() {
@@ -103,7 +104,16 @@ fn read_system(ctx: &Ctx) -> Result<Side> {
     let program = release::tool(ctx)?;
     let mut cmd = Command::new(program);
     cmd.args(["served", "--json", "--root"]).arg(root).arg(release::URL);
-    Ok(run_json(ctx, &mut cmd))
+    Ok(unpublished_is_not_set_up(run_json(ctx, &mut cmd)))
+}
+
+/// `side`, or [`Side::NotSetUp`] when `served` says the server has no
+/// repository yet: before the first deploy, nothing is wrong with it.
+fn unpublished_is_not_set_up(side: Side) -> Side {
+    match side {
+        Side::Read(served) if served["published"] == false => Side::NotSetUp,
+        side => side,
+    }
 }
 
 /// Runs `cmd`, which prints one JSON value, and gives it, or the last
@@ -349,6 +359,15 @@ mod tests {
     }
 
     #[test]
+    fn a_server_with_nothing_deployed_is_not_set_up_rather_than_broken() {
+        let unpublished = Side::Read(json!({ "url": "https://x/system/", "published": false }));
+        assert_eq!(unpublished_is_not_set_up(unpublished), Side::NotSetUp);
+        assert_eq!(unpublished_is_not_set_up(well()), well());
+        let failed = Side::Failed("down".into());
+        assert_eq!(unpublished_is_not_set_up(failed.clone()), failed);
+    }
+
+    #[test]
     fn nothing_needs_the_owner_when_all_is_signed_and_nothing_is_held() {
         assert_eq!(needs_you(&well(), &Side::NotSetUp, NOW), []);
         assert_eq!(needs_you(&well(), &well(), NOW), []);
@@ -473,7 +492,12 @@ mod tests {
         assert_eq!(merged["catalog"]["state"], "ok");
         assert_eq!(merged["catalog"]["url"], "u");
         assert_eq!(merged["system"]["state"], "not_set_up");
-        assert!(merged["system"]["why"].as_str().unwrap().contains("ADR 0457"));
+        assert!(
+            merged["system"]["why"]
+                .as_str()
+                .unwrap()
+                .contains("no system release has been deployed")
+        );
         assert_eq!(merged["needs_you"], json!([]));
 
         let failed = Side::Failed("no route".into());

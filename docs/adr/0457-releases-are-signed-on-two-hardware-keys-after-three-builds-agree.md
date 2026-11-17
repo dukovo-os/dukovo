@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0457. Releases are signed on two hardware keys, after three builds agree
 
-- Status: Accepted; the builds are made reproducible, and CI builds twice, by [0535](0535-a-release-is-built-twice-by-ci-in-different-places-and-must-come-out-the-same.md)
+- Status: Accepted; the builds are made reproducible, and CI builds twice, by [0535](0535-a-release-is-built-twice-by-ci-in-different-places-and-must-come-out-the-same.md); the first root's ceremony and the release keys' own slot are set by [0538](0538-the-system-releases-first-root-is-signed-on-a-slot-of-each-yubikey-of-its-own.md)
 - Date: 2026-11-11
 
 ## Context
