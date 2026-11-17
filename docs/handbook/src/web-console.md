@@ -5093,9 +5093,10 @@ administrator, or choose what else went wrong.** What you type is kept in this
 browser until you send, and **Discard** forgets it.
 
 **This is a security problem.** sends the report encrypted to the security team's
-key, which the reports server keeps no readable copy of. It turns **Save to a
-file…** and **Download by QR code…** off, since a security report is sent encrypted
-only (see "A report for the security team", in "Reporting a problem").
+key, which the reports server keeps no readable copy of. The text, and what you
+cut from it, stays as it is. It turns **Save to a file…** and **Download by QR
+code…** off, since a security report is sent encrypted only (see "A report for
+the security team", in "Reporting a problem").
 
 ### Exactly what is sent
 

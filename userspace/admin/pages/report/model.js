@@ -170,14 +170,17 @@ export const noteMax = (choice) => Math.max(0, ANSWER_MAX - choice.line.length -
 /** Whether a draft can be made: a choice that asks questions needs the first answer. */
 export const ready = (choice, fields) => choice !== null && (!choice.questions || fields.happened.trim() !== '');
 
-/** The arguments of `reports.draft` for `choice`, the form's `fields` and the boxes. */
-export function draftArgs(choice, fields, { security = false, withoutLogs = false } = {}) {
+/**
+ * The arguments of `reports.draft` for `choice`, the form's `fields` and the
+ * box that leaves the logs out. Whether it is a security report is said when
+ * it is sent, and does not change the text.
+ */
+export function draftArgs(choice, fields, { withoutLogs = false } = {}) {
   const args = { about: choice.about, happened: happenedOf(choice, fields) };
   if (choice.crash) args.crash = choice.crash;
   if (choice.name) args.name = choice.name;
   for (const name of choice.questions ? ['expected', 'again'] : []) if (fields[name].trim() !== '') args[name] = fields[name].trim();
   if (withoutLogs) args.without_logs = true;
-  if (security) args.security = true;
   return args;
 }
 

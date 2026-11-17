@@ -80,13 +80,14 @@ export async function show(view) {
 
   const chosen = () => all.find((choice) => choice.key === key) ?? null;
   const hasChanges = () => cuts.length > 0 || answers !== null;
-  const argsOf = () => draftArgs(chosen(), fields, { security, withoutLogs });
+  const argsOf = () => draftArgs(chosen(), fields, { withoutLogs });
   const dirty = () => key !== null || Object.values(fields).some((value) => value.trim() !== '');
   const sendArgs = () => ({
     draft: first.draft,
     sha256: now.sha256,
     title: titleOf(chosen(), answers?.happened ?? happenedOf(chosen(), fields)),
     ...(chosen().crash ? { crash: chosen().crash } : {}),
+    ...(security ? { security: true } : {}),
   });
 
   // The table is read after the page has drawn.
@@ -119,7 +120,11 @@ export async function show(view) {
       paintChoices();
     },
     onField: () => afterChange(() => { Object.assign(fields, committed.fields); choices.setValues(); }),
-    onSecurity: (on) => afterChange(() => { security = committed.security; paint(); }, () => { security = on; }),
+    // Said when it is sent: the text, and the cuts made in it, stay.
+    onSecurity: (on) => {
+      security = on;
+      paint();
+    },
     onDiscard: () => reset(),
   });
   const holds = makeHolds({ onLogs: (left) => afterChange(() => { withoutLogs = committed.withoutLogs; paint(); }, () => { withoutLogs = left; }) });
@@ -190,7 +195,7 @@ export async function show(view) {
 
   /** What the controls held when the text was drafted. */
   const snapshot = () => ({
-    key, fields: { ...fields }, security, withoutLogs, args: JSON.stringify(chosen() && ready(chosen(), fields) ? argsOf() : null),
+    key, fields: { ...fields }, withoutLogs, args: JSON.stringify(chosen() && ready(chosen(), fields) ? argsOf() : null),
   });
 
   /** Forgets the draft, and the cuts with it. */
