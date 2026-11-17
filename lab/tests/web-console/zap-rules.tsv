@@ -10,3 +10,7 @@
 # rule numbers are those of ZAP's passive scan rules, as the scan's report
 # gives them in square brackets.
 10035	IGNORE	Strict-Transport-Security Header Not Set: admind asks for HSTS only when it serves a certificate an authority signed, since HSTS would keep a browser from passing the one-time warning for the machine's own certificate (ADR 0514)
+10015	IGNORE	Re-examine Cache-control Directives: the console's own files, its page, scripts and styles, are the same for every visitor and hold nothing of anyone's; they go out no-cache with an ETag, so that a browser asks again before each use and sees an update at once, and every answer of the API is no-store (admind(8))
+10027	IGNORE	Information Disclosure - Suspicious Comments: the comments are those of the console's own scripts, whose source is published; words such as user, admin or password in them say what the code does and give away nothing the repository does not
+10049	IGNORE	Non-Storable Content, Storable and Cacheable Content: a note on how each answer may be kept, which is as 10015 says: no-store for the API, no-cache with an ETag for the console's own files
+10109	IGNORE	Modern Web Application: a note that the page is drawn by its scripts, which ZAP's AJAX spider would follow; the baseline scan only watches, and the browser tests of web-console drive every page
