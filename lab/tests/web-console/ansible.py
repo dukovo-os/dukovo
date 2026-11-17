@@ -55,8 +55,8 @@ metrics.now as `metrics now --json`.
 certificate.renew is not run: it makes the certificate the console serves
 anew, and the API calls that follow would have to be made again with
 another certificate. The boot test admin-actions renews it. checks.last,
-checks.run, lab.missing, metrics.usage, metrics.around and service.usage
-are not run either, for the reasons at LEFT_ALONE.
+checks.run, lab.missing, metrics.usage, metrics.around, service.usage and
+storage.usage are not run either, for the reasons at LEFT_ALONE.
 
 Nor are the changes of the network's settings, the firewall's rules,
 SSH's settings and who may reach the console (ADRs 0518 and 0562): each
@@ -193,9 +193,9 @@ from console import (
 # makes the machine's certificate anew; checks.last runs dukovo-check, which
 # a machine has only once an update brings the checks, and lab.missing runs
 # a command that no image has, so both end with a status other than 0;
-# metrics.usage, metrics.around and service.usage end with 1 on a machine
-# that has run for less than the 10 minutes in which metricsd writes the
-# history they read; checks.run runs dukovo-check, as checks.last does; the
+# metrics.usage, metrics.around, service.usage and storage.usage end with 1
+# on a machine that has run for less than the 10 minutes in which metricsd
+# writes the history they read; checks.run runs dukovo-check, as checks.last does; the
 # changes that are tried (TRIED) need a trial; ssh.on and ssh.off (UNDER)
 # stop the sshd that Ansible's tasks come through; the actions of the
 # Snapshots, Backups, Move, Accounts, Your account, Security, Updates, Apps,
@@ -292,6 +292,7 @@ SET_UP = {
 ON_A_SECOND_DISK = {"storage.grow"}
 LEFT_ALONE = {
     "certificate.renew", "checks.last", "checks.run", "lab.missing", "metrics.usage", "metrics.around", "service.usage",
+    "storage.usage",
 } | TRIED | UNDER | SET_UP | ON_A_SECOND_DISK
 # The reads whose example names a disk of the boot tests, vda, which ask after this machine's own disk instead.
 ON_THIS_MACHINE = {"storage.health"}

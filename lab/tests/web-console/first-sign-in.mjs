@@ -20,8 +20,9 @@
 // done once the task ends. The alert email step is one of the steps: it says
 // that it needs the unlock to tell whether email is set up, its form is the
 // email's fields, and a Set up with a field wrong says which and runs nothing.
-// A step that an earlier engine already did leaves
-// no offer, and the end is the page that was asked for. An account that is
+// The alert email step is never set up here, so an administrator's wizard
+// ends at the offer in each engine; a lab step that an engine before ran is
+// shown as ended at /setup. An account that is
 // no administrator adds an authenticator app in the frame, which marks the
 // step done, and goes to the page it asked for, and is told that /setup is
 // for administrators. An account that presses Skip all keeps the zone that
@@ -318,16 +319,10 @@ async function administrator(t, name) {
   await displayStep(t, page);
   await secondStep(t, page);
 
-  // The account keeps no second step, and the wizard ends.
+  // The account keeps no second step, and the wizard ends at the offer: the
+  // alert email step is left, even when an engine before ran the lab's.
   await page.getByRole("button", { name: "Skip for now", exact: true }).click();
-  if (done) {
-    // An engine before this one did the lab's step: nothing is left to offer.
-    await t.see(page.getByRole("heading", { name: "Your account", level: 1 }));
-    ensure(placeOf(page).path === "/account", `the wizard ended at ${placeOf(page).path}, not /account`);
-    await page.goto(new URL("/setup", page.url()).href);
-  } else {
-    await offer(t, page, host);
-  }
+  await offer(t, page, host);
   await setup(t, page, host, done);
 
   // The wizard is done: the Overview is the first page now, and /welcome is not.

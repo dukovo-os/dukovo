@@ -125,12 +125,16 @@ const tasksButton = (page, words) => page.getByRole("banner").getByRole("button"
 // says so first.
 const RUNNING = /^Tasks, (\d+ needs? a look, )?\d+ running$/;
 
-/** The drawer, and the card of the task called `title` in it. */
+/**
+ * The drawer, and the card of task `id` in it, called `title`. An engine
+ * before this one left a stopped task of the same name, which needs a look:
+ * the card is told from it by the number of its task.
+ */
 const drawerOf = (page) => page.getByRole("complementary", { name: "Tasks" });
-const cardOf = (drawer, title) => drawer.getByRole("region", { name: title });
+const cardOf = (drawer, title, id) =>
+  drawer.getByRole("region", { name: title }).filter({ has: drawer.page().getByText(new RegExp(`task ${id}$`)) });
 
-// The task's card is named by the action's title and its one argument,
-// which a task of a test before has another of.
+// The task's card is named by the action's title and its one argument.
 const CARD = `Run the lab's long test · ${SECONDS}`;
 
 /** The drawer shows the running task: its group, step, bar, log and command; its looks; and Esc closes it. */
@@ -141,7 +145,7 @@ async function drawerShowsTask(t, page, id, name) {
   const drawer = drawerOf(page);
   await t.see(drawer);
   await t.see(drawer.getByRole("heading", { name: /^Running/, level: 3 }));
-  const card = cardOf(drawer, CARD);
+  const card = cardOf(drawer, CARD, id);
   await t.see(card);
   await t.see(card.getByText(`Started by ${name}`, { exact: false }));
   await t.see(card.getByText(new RegExp(`task ${id}$`)));
@@ -167,7 +171,7 @@ async function stopInDrawer(t, page, id, other) {
   await tasksButton(page, RUNNING).click();
   const drawer = drawerOf(page);
   await t.see(drawer);
-  const card = cardOf(drawer, CARD);
+  const card = cardOf(drawer, CARD, id);
   await card.getByRole("button", { name: "Stop", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: `Stop task ${id}?` });
   await t.see(dialog);

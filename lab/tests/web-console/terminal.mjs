@@ -363,11 +363,15 @@ async function announcements(t, page) {
  */
 async function pasting(t, page) {
   await enter(page);
+  // Firefox makes a ClipboardEvent's data from members of its own and not
+  // from `clipboardData`, so the data is given to the event as its own.
   const paste = (text) =>
     page.evaluate((words) => {
       const data = new DataTransfer();
       data.setData("text/plain", words);
-      document.querySelector(".tr-pane.tr-focused .tr-input").dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+      const event = new ClipboardEvent("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "clipboardData", { value: data });
+      document.querySelector(".tr-pane.tr-focused .tr-input").dispatchEvent(event);
     }, text);
   const screen = () => focusedPane(page).locator(".tr-screen").innerText();
   const dialog = page.getByRole("dialog", { name: "Paste?" });

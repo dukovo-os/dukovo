@@ -28,7 +28,7 @@ example the change's undo is called, and the service the examples use is put
 back as it was found (console.py). It leaves alone the changes at
 LEFT_ALONE: renewing the certificate, the changes that are tried, installing
 an app from the catalogs, and those whose examples need what only their own
-tests set up, as the databases' do.
+tests set up, as the databases' and the changes to another account do.
 
 A request that is refused changes nothing, so the first two runs leave the
 machine as it was. What each run checks of every answer: it is not a 5xx,
@@ -167,7 +167,15 @@ WEBSITES = {
     # takes that site away, with its folder when asked, which nothing brings back.
     "websites.remove",
 }
-LEFT_ALONE = {"certificate.renew"} | CATALOG_CHANGES | TRIED | SET_UP | DATABASES | WEBSITES
+# The changes of the Accounts page to an account that is there: their examples name the account lab-made,
+# which accounts.add's example makes and its undo, accounts.remove, takes away again, so that none is there
+# when they run. The boot test admin-accounts makes lab-made and runs each on it, and the browser test
+# web-console/accounts uses them.
+ACCOUNTS = {
+    "accounts.set", "accounts.password", "accounts.disable", "accounts.enable", "accounts.remove",
+    "accounts.key-add", "accounts.key-remove", "accounts.token-revoke", "accounts.steps-reset", "accounts.end",
+}
+LEFT_ALONE = {"certificate.renew"} | CATALOG_CHANGES | TRIED | SET_UP | DATABASES | WEBSITES | ACCOUNTS
 # The reads the second run leaves alone: lab.missing, which a lab machine offers, runs a command
 # no image has, and is answered 501 (ADM-129) by design, which Schemathesis takes for a server error.
 # apps.search and apps.sheet read the catalogs, which bundled reads anew at each request, over the

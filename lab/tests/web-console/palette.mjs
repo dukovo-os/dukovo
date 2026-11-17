@@ -134,14 +134,18 @@ async function closesWithEsc(t, page) {
   ensure(back, "the focus did not go back to where it was when the palette closed");
 }
 
-/** A page is found by its words, and Enter goes to it: the section of the account page, by its hash. */
+/**
+ * A page is found by its words, and Enter goes to it: the section of the
+ * account page, by its hash. "your" keeps out the action "Remove an
+ * account's second steps", whose group comes before the pages'.
+ */
 async function goesToAPage(t, page) {
   const palette = await openPalette(t, page);
-  await fieldOf(palette).fill("second step");
+  await fieldOf(palette).fill("your second step");
   const row = rowsOf(palette).first();
   await t.see(row);
   const label = await rowInHand(palette);
-  ensure(/^Your account › Second step/.test(label), `"second step" has "${label}" first, not the section of the account page`);
+  ensure(/^Your account › Second step/.test(label), `"your second step" has "${label}" first, not the section of the account page`);
   await page.keyboard.press("Enter");
   await t.gone(palette);
   await t.see(page.getByRole("heading", { name: "Your account", level: 1 }));
