@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::advisory;
 use crate::canary::{self, Canaries, Colour, Standing};
+use crate::ceremony;
 use crate::list::{About, Release};
 use crate::repo::{self, Keys};
 use crate::rollout::Plans;
@@ -21,6 +22,8 @@ pub const TRUSTED_ROOT: &str = "/system/resources/updates/root.json";
 const USAGE: &str = "\
 usage: system-release keys [--rotate ROLE | --online KEY] DIR
        system-release online-key --out KEY SECRET
+       system-release release-key --yubikey-helper FILE [--serial NUMBER] KEYS
+       system-release first-root --yubikey-helper FILE --out METADATA KEYS
        system-release make --tree DIR --keys DIR --out DIR --version VERSION
                            --commit COMMIT --toolchain TOOLCHAIN --built SECONDS
                            [--updates-from VERSION]
@@ -76,6 +79,8 @@ pub fn run(args: &[String]) -> i32 {
     let done = match command.as_str() {
         "keys" => keys(&options),
         "online-key" => online_key(&options),
+        "release-key" => release_key(&options),
+        "first-root" => first_root(&options),
         "make" => make(&options),
         "list" => list(&options),
         "add" => add(&options),
@@ -140,6 +145,8 @@ struct Options {
     canaries: Option<PathBuf>,
     reports: Option<PathBuf>,
     socket: Option<PathBuf>,
+    yubikey_helper: Option<PathBuf>,
+    serial: Option<u64>,
     /// For tests: the time the canaries are judged at, in place of now.
     now: Option<i64>,
     json: bool,
@@ -177,6 +184,14 @@ impl Options {
                 "--canaries" => options.canaries = Some(value()?.into()),
                 "--reports" => options.reports = Some(value()?.into()),
                 "--socket" => options.socket = Some(value()?.into()),
+                "--yubikey-helper" => options.yubikey_helper = Some(value()?.into()),
+                "--serial" => {
+                    let text = value()?;
+                    let serial = text.parse().map_err(|_| {
+                        format!("--serial takes a YubiKey's serial number, not {text}")
+                    })?;
+                    options.serial = Some(serial);
+                }
                 "--now" => {
                     let text = value()?;
                     let seconds = text
@@ -276,6 +291,41 @@ fn online_key(options: &Options) -> Result<(), String> {
         &key.key().id()[..16],
         out.display()
     );
+    Ok(())
+}
+
+/// `release-key --yubikey-helper FILE [--serial NUMBER] KEYS`: keeps the
+/// public half of a YubiKey's release key, in its slot 95, in the folder
+/// `KEYS` (ADR 0538).
+fn release_key(options: &Options) -> Result<(), String> {
+    let [dir] = options.operands.as_slice() else {
+        return Err("release-key takes the folder of the release keys' public halves".into());
+    };
+    let helper = needed(&options.yubikey_helper, "--yubikey-helper")?;
+    let path = ceremony::add_yubikey(Path::new(dir), helper, options.serial)?;
+    println!("system-release: wrote {}", path.display());
+    Ok(())
+}
+
+/// `first-root --yubikey-helper FILE --out METADATA KEYS`: the key
+/// ceremony's root, signed on both YubiKeys whose keys are in `KEYS`,
+/// written to `METADATA/1.root.json`, with what identifies it.
+fn first_root(options: &Options) -> Result<(), String> {
+    let [dir] = options.operands.as_slice() else {
+        return Err("first-root takes the folder of the release keys' public halves".into());
+    };
+    let helper = needed(&options.yubikey_helper, "--yubikey-helper")?;
+    let metadata = needed(&options.out, "--out")?;
+    let root = ceremony::sign_first_root(Path::new(dir), metadata, helper, tuf::time::now())?;
+    let parsed = tuf::metadata::Signed::<tuf::metadata::Root>::parse(&root)
+        .map_err(|err| err.to_string())?;
+    let sha256 = ring::digest::digest(&ring::digest::SHA256, &root);
+    println!(
+        "system-release: signed the first root, {}, on both YubiKeys; it expires {}",
+        metadata.join(ceremony::FIRST_ROOT).display(),
+        tuf::time::format(parsed.expires)
+    );
+    println!("SHA-256 {}", crate::list::hex(sha256.as_ref()));
     Ok(())
 }
 

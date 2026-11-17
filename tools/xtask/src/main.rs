@@ -806,6 +806,8 @@ resolve)."
         }
         "release" => {
             "Usage: ./ob release build [--out <dir>]
+       ./ob release key yubikey [--serial <number>]
+       ./ob release root
        ./ob release server setup [--dukovo]
        ./ob release channel <repository> (<channel> <version>
                                           | --firmware <version>|none <channel>)
@@ -831,6 +833,14 @@ and releases/stand-in-root.json until then, and not this machine's, which
 would make the tree differ from every other machine's. The tree stays in
 out/release-build-tree. SOURCE_DATE_EPOCH is the commit's time unless it is
 set, and the build takes as long as `./ob build`.
+
+`key yubikey` and `root` are the key ceremony (ADRs 0457 and 0538), as
+releases/README.md says. `key yubikey` adds releases/keys/yubikey-SERIAL.json,
+the P-256 key in slot 95 of the YubiKey plugged in, or of the one --serial
+names, made with ykman. `root` signs root version 1 on both YubiKeys, a PIN
+and a touch for each, from the two YubiKeys' keys and the server's online key
+in releases/keys/, and writes releases/metadata/1.root.json; the last line it
+prints is the root's SHA-256. It signs the first root once.
 
 Deploys the system's releases to the update server (ADR 0467), reached over
 SSH as `$OB_UPDATE_SSH` (default updates.dukovo.org), as `ob catalog` deploys

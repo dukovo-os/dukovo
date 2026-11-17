@@ -2,17 +2,19 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-"""Signs the catalog's metadata with a YubiKey's PIV key (ADR 0381).
+"""Signs TUF metadata with a YubiKey's PIV key (ADRs 0381 and 0538).
 
     yubikey-piv.py list
-    yubikey-piv.py public SERIAL
-    yubikey-piv.py sign SERIAL < MESSAGE
+    yubikey-piv.py public SERIAL [SLOT]
+    yubikey-piv.py sign SERIAL [SLOT] < MESSAGE
 
-catalog-repo(1) runs this, through `ob catalog`, on the computer the
-YubiKeys are plugged into. `list` prints the serial number of each
-YubiKey plugged in, one a line. `public` prints, in PEM, the public half
-of the ECDSA P-256 key in the Digital Signature slot (9c) of the YubiKey
-with that serial number. `sign` asks for its PIN, asks for a touch, and
+catalog-repo(1) and system-release(8) run this, through `ob catalog` and
+`ob release`, on the computer the YubiKeys are plugged into. `list`
+prints the serial number of each YubiKey plugged in, one a line.
+`public` prints, in PEM, the public half of the ECDSA P-256 key in SLOT
+of the YubiKey with that serial number: 9c, the Digital Signature slot,
+which holds the catalog's key and is the default, or 95, which holds the
+system releases' key. `sign` asks for its PIN, asks for a touch, and
 prints in hex the DER signature, ECDSA with SHA-256, of what it reads;
 the secret half never leaves the YubiKey.
 
@@ -49,6 +51,10 @@ ASSUAN_LINE_MAX = 1000
 # How many times the PIN window asks before signing gives up.
 PIN_ASKS = 5
 
+# The slots a key may be in: the catalog's and the system releases'. A
+# signature from one slot is never taken for the other repository's.
+SLOTS = {"9c": 0x9C, "95": 0x95}
+
 
 def yubikit():
     """Yubico's modules, imported only when a YubiKey is used."""
@@ -76,19 +82,25 @@ def device(yk, serial):
     sys.exit(f"yubikey-piv: no YubiKey with serial number {serial} is plugged in")
 
 
-def public(serial):
+def public(serial, slot):
     yk = yubikit()
     with device(yk, serial).open_connection(yk.SmartCardConnection) as conn:
         piv = yk.PivSession(conn)
-        metadata = piv.get_slot_metadata(yk.SLOT.SIGNATURE)
+        try:
+            metadata = piv.get_slot_metadata(yk.SLOT(SLOTS[slot]))
+        except Exception:
+            # yubikit raises ApduError, whose module differs between its
+            # versions, when the slot is empty.
+            sys.exit(f"yubikey-piv: slot {slot} of YubiKey {serial} holds no key; "
+                     "make one with ykman")
         if metadata.key_type != yk.KEY_TYPE.ECCP256:
-            sys.exit(f"yubikey-piv: slot 9c of YubiKey {serial} holds no ECDSA P-256 key")
+            sys.exit(f"yubikey-piv: slot {slot} of YubiKey {serial} holds no ECDSA P-256 key")
         if not metadata.generated:
-            sys.exit(f"yubikey-piv: the key in slot 9c of YubiKey {serial} was imported, "
+            sys.exit(f"yubikey-piv: the key in slot {slot} of YubiKey {serial} was imported, "
                      "not made on it, so a copy may exist; make one with ykman")
         if metadata.touch_policy != yk.TOUCH_POLICY.ALWAYS:
-            print(f"yubikey-piv: warning: the key of YubiKey {serial} signs without a touch",
-                  file=sys.stderr)
+            print(f"yubikey-piv: warning: the key in slot {slot} of YubiKey {serial} signs "
+                  "without a touch", file=sys.stderr)
         pem = metadata.public_key.public_bytes(
             yk.serialization.Encoding.PEM, yk.serialization.PublicFormat.SubjectPublicKeyInfo
         )
@@ -199,7 +211,7 @@ def pin_by_pinentry(program, serial, error=None):
         return ""
 
 
-def sign(serial):
+def sign(serial, slot):
     message = sys.stdin.buffer.read()
     yk = yubikit()
     program = pinentry_program()
@@ -228,7 +240,9 @@ def sign(serial):
             sys.exit(f"yubikey-piv: no PIN was accepted after {PIN_ASKS} asks")
         del pin
         print(f"Touch YubiKey {serial} now.", file=sys.stderr, flush=True)
-        signature = piv.sign(yk.SLOT.SIGNATURE, yk.KEY_TYPE.ECCP256, message, yk.hashes.SHA256())
+        signature = piv.sign(
+            yk.SLOT(SLOTS[slot]), yk.KEY_TYPE.ECCP256, message, yk.hashes.SHA256()
+        )
         print(signature.hex())
 
 
@@ -237,10 +251,13 @@ def main(args):
         for _, info in yubikit().list_all_devices():
             if info.serial is not None:
                 print(info.serial)
-    elif len(args) == 2 and args[0] in ("public", "sign") and args[1].isdigit():
-        {"public": public, "sign": sign}[args[0]](int(args[1]))
+    elif len(args) in (2, 3) and args[0] in ("public", "sign") and args[1].isdigit():
+        slot = args[2] if len(args) == 3 else "9c"
+        if slot not in SLOTS:
+            sys.exit(f"yubikey-piv: no slot {slot}: the slots are {', '.join(SLOTS)}")
+        {"public": public, "sign": sign}[args[0]](int(args[1]), slot)
     else:
-        sys.exit("usage: yubikey-piv.py list | public SERIAL | sign SERIAL < MESSAGE")
+        sys.exit("usage: yubikey-piv.py list | public SERIAL [SLOT] | sign SERIAL [SLOT] < MESSAGE")
 
 
 if __name__ == "__main__":

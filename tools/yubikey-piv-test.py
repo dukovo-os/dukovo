@@ -56,11 +56,13 @@ class InvalidPinError(Exception):
 
 
 class FakeYubiKey:
-    """A YubiKey whose PIN is 123456, with three tries."""
+    """A YubiKey whose PIN is 123456, with three tries, and keys in no
+    slot: it signs with any, and keeps which."""
 
     def __init__(self):
         self.tries = 3
         self.pins = []
+        self.slots = []
 
     def namespace(self):
         key = self
@@ -77,7 +79,11 @@ class FakeYubiKey:
                 key.tries = 3
 
             def sign(self, slot, key_type, message, hash_):
+                key.slots.append(slot)
                 return b"\x30\x01" + message[:1]
+
+            def get_slot_metadata(self, slot):
+                raise RuntimeError("APDU error: SW=0x6a82")
 
         class Device:
             def open_connection(self, kind):
@@ -86,7 +92,7 @@ class FakeYubiKey:
         return types.SimpleNamespace(
             list_all_devices=lambda: [(Device(), types.SimpleNamespace(serial=7))],
             SmartCardConnection=object, PivSession=Session, InvalidPinError=InvalidPinError,
-            SLOT=types.SimpleNamespace(SIGNATURE="9c"),
+            SLOT=lambda number: number,
             KEY_TYPE=types.SimpleNamespace(ECCP256="p256"),
             hashes=types.SimpleNamespace(SHA256=lambda: None),
         )
@@ -141,18 +147,19 @@ class PinentryTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"DUKOVO_PINENTRY": "/usr/bin/pinentry-gtk-2"}):
             self.assertEqual(piv.pinentry_program(), "/usr/bin/pinentry-gtk-2")
 
-    def sign(self, pins):
+    def sign(self, pins, slot="9c"):
         key = FakeYubiKey()
         out, err = io.StringIO(), io.StringIO()
         stdin = types.SimpleNamespace(buffer=io.BytesIO(b"message"))
         with self.environment(pins), mock.patch.object(piv, "yubikit", key.namespace), \
                 mock.patch.object(sys, "stdin", stdin), redirect_stdout(out), redirect_stderr(err):
-            piv.sign(7)
+            piv.sign(7, slot)
         return key, out.getvalue(), err.getvalue()
 
     def test_signing_asks_again_after_a_wrong_pin(self):
         key, out, err = self.sign(["654321", "123456"])
         self.assertEqual(key.pins, ["654321", "123456"])
+        self.assertEqual(key.slots, [0x9C])
         self.assertEqual(out.strip(), "30016d")
         self.assertIn("Touch YubiKey 7 now.", err)
         self.assertIn("SETERROR Wrong PIN: 2 tries left.", self.sent())
@@ -168,6 +175,23 @@ class PinentryTests(unittest.TestCase):
             self.sign(["000000"])
         self.assertIn("0 tries left", str(stop.exception))
         self.assertIn("SETERROR Wrong PIN: 1 try left.", self.sent())
+
+    def test_the_system_releases_sign_with_slot_95(self):
+        key, out, _ = self.sign(["123456"], slot="95")
+        self.assertEqual(key.slots, [0x95])
+        self.assertEqual(out.strip(), "30016d")
+
+    def test_an_empty_slot_has_no_public_key(self):
+        key = FakeYubiKey()
+        with mock.patch.object(piv, "yubikit", key.namespace), \
+                self.assertRaises(SystemExit) as stop:
+            piv.public(7, "95")
+        self.assertIn("slot 95 of YubiKey 7 holds no key", str(stop.exception))
+
+    def test_only_the_two_slots_are_taken(self):
+        with self.assertRaises(SystemExit) as stop:
+            piv.main(["sign", "7", "9a"])
+        self.assertIn("no slot 9a: the slots are 9c, 95", str(stop.exception))
 
 
 if __name__ == "__main__":

@@ -22,10 +22,14 @@
 //! ([`firmware`]). Dukovo's security advisories ([`advisory`]) are
 //! signed beside them too, so that a machine matches them against
 //! itself.
+//!
+//! The project's own releases are signed on two YubiKeys, whose keys and
+//! first root the key ceremony makes ([`ceremony`], through [`yubikey`]).
 
 pub mod advisory;
 pub mod archive;
 pub mod canary;
+pub mod ceremony;
 pub mod cli;
 pub mod firmware;
 pub mod list;
@@ -36,3 +40,4 @@ pub mod rollout;
 pub mod store;
 pub mod updates;
 pub mod verdict;
+pub mod yubikey;

@@ -24,6 +24,10 @@ system-release - check, sign, offer, publish, pack, keep Rescue of and make keys
 
 *system-release online-key* *--out* _key_ _secret_
 
+*system-release release-key* *--yubikey-helper* _file_ [*--serial* _number_] _keys_
+
+*system-release first-root* *--yubikey-helper* _file_ *--out* _metadata_ _keys_
+
 *system-release add* *--repo* _dir_ *--keys* _dir_ _release_
 
 *system-release channel* *--repo* _dir_ *--keys* _dir_ [*--advisories* _dir_] _channel_ _version_
@@ -131,6 +135,21 @@ trust only those.
 *online-key* makes the update server's online key: an Ed25519 key whose
 secret half goes into the new file _secret_, readable by its owner
 alone, and whose public half goes into *--out*, for a root to name.
+
+*release-key* and *first-root* are the key ceremony of the project's
+releases (ADRs 0457 and 0538), which ob(1) runs as *ob release key
+yubikey* and *ob release root*. *release-key* writes the public half of
+the ECDSA P-256 key in slot 95 of the YubiKey plugged in, or of the one
+*--serial* names, as _keys_/yubikey-_serial_.json, through the helper
+*--yubikey-helper*, tools/yubikey-piv.py in the source tree. It refuses
+a key that was imported rather than made on the YubiKey. *first-root*
+signs root version 1, good for a year, on both YubiKeys whose files are
+in _keys_, each asking for its PIN and a touch: it names both YubiKeys'
+keys for root, targets, snapshot and timestamp, either signing alone,
+and the update server's key in _keys_/online.json for snapshot and
+timestamp too. It writes _metadata_/1.root.json and prints the root's
+SHA-256 last, and refuses when that file is there already, or when a
+YubiKey is not plugged in or holds another key than its file names.
 
 The update repository, *--repo*, holds every release a server offers,
 each file once, and the channels, stable, beta and nightly, each naming

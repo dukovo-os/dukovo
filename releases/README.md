@@ -6,21 +6,22 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 # The system releases' public keys and first root
 
 The public half of the system's release repository is kept here (ADRs
-0457, 0466 and 0467):
+0457, 0466, 0467 and 0538):
 
 - `keys/online.json`: the update server's online key for the system's
   releases, which signs their snapshot and timestamp. `./ob release
   server setup` writes it the first time it sets the server up; its
   secret half never leaves the server.
+- `keys/yubikey-SERIAL.json`: the public half of the release key in slot
+  95 of each of the two YubiKeys, which `./ob release key yubikey` writes.
+  Slot 9c of the same YubiKeys holds the catalog's key; the two are kept
+  apart so that nothing signed for one repository is taken by the other.
 - `metadata/1.root.json`: the first root of the releases the update
-  server serves, signed on the two hardware keys in the key ceremony
-  (ADR 0457). `./ob release deploy` deploys only a repository that
-  starts from it.
+  server serves, signed on both YubiKeys in the key ceremony. `./ob
+  release deploy` deploys only a repository that starts from it.
 
-Neither is here yet: the server is set up for the system's releases
-before the key ceremony, and the ceremony comes before 1.0.0-alpha.1.
-Until then, every build machine signs its releases with keys of its own
-in `.cache/release-keys`, and nothing it signs is deployed.
+Until the ceremony, every build machine signs its releases with keys of
+its own in `.cache/release-keys`, and nothing it signs is deployed.
 
 `stand-in-root.json` is a root made once with `system-release keys`,
 whose secret keys were deleted when it was made, so that no one can sign
@@ -29,6 +30,40 @@ puts it in the tree it builds, until `metadata/1.root.json` exists and is
 used in its place: a tree that held a build machine's own root would differ
 from the same tree built on another machine (ADR 0535). Nothing that is
 shipped trusts it.
+
+## The key ceremony
+
+Once, on the maintainer's computer running Linux Mint, Debian or Ubuntu,
+with the two YubiKeys that already hold the catalog's keys
+(`catalog/README.md`). It takes about fifteen minutes. Nothing secret is
+typed anywhere but the YubiKeys' own prompts, and no secret half leaves a
+YubiKey.
+
+1. Set up the server's key for the system's releases, if
+   `keys/online.json` is not here yet: `./ob release server setup`. It
+   asks for your password on the server, and writes `keys/online.json`.
+2. With one YubiKey plugged in, check that slot 95 is free: `ykman piv
+   info` lists the slots that hold keys, and 95 must not be among them.
+3. Make the release key on it, so that its secret half never leaves it,
+   asking for the PIN once a session and a touch for every signature:
+   `ykman piv keys generate --algorithm ECCP256 --pin-policy ONCE
+   --touch-policy ALWAYS 95 -`. It asks for the PIN, which unlocks the
+   management key the YubiKey keeps behind it.
+4. `./ob release key yubikey`. It adds `keys/yubikey-SERIAL.json`.
+5. Unplug it, and do steps 2 to 4 with the other YubiKey.
+6. Plug both in, and run `./ob release root`. It signs root version 1
+   with each, a PIN and a touch for each, writes `metadata/1.root.json`,
+   and prints the root's SHA-256 last.
+7. Commit `keys/` and `metadata/`. Keep the SHA-256 it printed: it is
+   the root's fingerprint, by which anyone can check the root an
+   install trusts (ADR 0457).
+8. The second YubiKey goes back to its safe place; either one alone
+   signs from then on.
+
+The root is good for a year: sign the next one at ten months. A touch
+that times out fails with `SW=0x6982`; run the step again. Touching the
+wrong YubiKey types a one-time code into the terminal instead of
+signing; clear the line and touch the one that asked.
 
 ## Building a release twice
 
