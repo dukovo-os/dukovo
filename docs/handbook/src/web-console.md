@@ -5502,10 +5502,13 @@ the restart:
 The page waits 2 minutes for the console to come back, and 10 minutes for the
 machine. A test of the memory waits 10 minutes and one more for each 4 GiB of
 memory, 70 at the most. When that time has passed with no answer, the banner is
-the one of "When the console does not answer". When the machine answers, the
-page says **Back** for a few seconds; the Overview, Tasks and the numbers in the
-navigation read again. After an update it says which release the machine runs
-(see "The update was taken back").
+the one of "When the console does not answer". When the machine answers and
+your session is still open, the page says **Back** for a few seconds; the
+Overview, Tasks and the numbers in the navigation read again. A restart of the
+console or the machine ends every session, though, and then the sign-in page
+says **Sign in again: the console restarted.** After an update, the page you
+sign in to says which release the machine runs (see "The update was taken
+back").
 
 ### The update was taken back
 
@@ -5513,9 +5516,11 @@ An update starts as a try. The machine restarts into it and runs its checks (see
 "Checks after an update"), and when a required one fails it goes back to the
 version before, by itself, and restarts again. What you see, in this order:
 
-- The banner after the restart says **Back, on 1.0.0-alpha.1: the update was
-  taken back.** with **See what happened** and **Close**, and stays until you
-  close it. After an update that went well it says **Back** for a few seconds.
+- When you sign in again after the restart, the banner says **Back, on
+  1.0.0-alpha.1: the update was taken back.** with **See what happened** and
+  **Close**, and stays until you close it. After an update that went well it
+  says **Back** for a few seconds. The browser that asked for the restart says
+  it, once, at a sign-in within an hour.
 - The Overview shows the notice of the failed start with **What happened**, which
   becomes **See it again** once you have opened it, and **Report it**. Among
   what needs a look it lists **1.0.0-alpha.2 was taken back and is held**, **It

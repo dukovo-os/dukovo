@@ -280,9 +280,6 @@ dialog.dialog::backdrop { background: var(--scrim); }
   .main { padding: 1rem 1.143rem 1.714rem; }
 }
 /* ---- The shell (design 4) ---- */
-/* The root's size sets the console's text: the sizes in this file are rem
-   against 87.5% (14 px at the browser's own size), and the text size
-   preference sets the root to 98%, 109.375% or 131.25%. */
 .skip { position: absolute; left: .571rem; top: -4.571rem; z-index: 100; padding: .571rem .857rem; background: var(--bg); color: var(--text);
   border: 2px solid var(--focus); border-radius: .214rem; }
 .skip:focus { top: .571rem; }

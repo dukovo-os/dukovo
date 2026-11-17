@@ -10,13 +10,19 @@
 // time, when any other call is answered meanwhile. After a restart that a
 // page asked for, the banner says what it was told and "Waiting since" under
 // it, and when the server answers it says "Back", or that an update was taken
-// back when `about` shows another release than the one it was to bring.
+// back when `about` shows another release than the one it was to bring. A
+// restart ends the session, though: the sign-in page comes first, and the
+// banner made for the new session says it.
 
 import { whenAnswered } from '../api.js';
 import { h, icon } from '../dom.js';
+import { forget, keep, recall } from '../lib/store.js';
 import {
-  asOfWords, BACK_MS, backWords, DISABLED_TIP, LOOK_MS, makeConnection, offlineWords, tryingWords, waitingWords,
+  asOfWords, BACK_KEPT_MS, BACK_MS, backWords, DISABLED_TIP, LOOK_MS, makeConnection, offlineWords, tryingWords, waitingWords,
 } from './online-model.js';
+
+// Where an update's restart keeps the release it was to bring, for the next sign-in.
+const KEPT = 'updates.back';
 
 /**
  * Makes the offline handling. `region` holds the banner; `stale` holds the
@@ -132,9 +138,11 @@ export function createOnline({ host, region, stale, main, get, time, onBack, onC
       onBack(restart !== null);
       if (restart) greet(restart.version);
     } catch (error) {
-      // A session that ended is shown by api.js's handler. Anything else is
-      // a server that still does not answer.
+      // A session that ended is shown by api.js's handler, and what an
+      // update brought is said after the next sign-in. Anything else is a
+      // server that still does not answer.
       if (error?.status === 401) {
+        if (expected?.version) keep(KEPT, { version: expected.version, at: Date.now() });
         expected = null;
         link.answered();
         render();
@@ -144,6 +152,12 @@ export function createOnline({ host, region, stale, main, get, time, onBack, onC
     } finally {
       looking = false;
     }
+  }
+
+  const kept = recall(KEPT);
+  if (kept) {
+    forget(KEPT);
+    if (typeof kept.version === 'string' && Date.now() - kept.at < BACK_KEPT_MS) greet(kept.version);
   }
 
   return {

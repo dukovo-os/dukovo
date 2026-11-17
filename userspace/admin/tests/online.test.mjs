@@ -15,12 +15,28 @@ import test from 'node:test';
 import { h } from '../dom.js';
 import { makeTime } from '../lib/time.js';
 import { createOnline } from '../shell/online.js';
-import { LOOK_MS, MACHINE_QUIET_MS, RESTART_QUIET_MS } from '../shell/online-model.js';
+import { BACK_KEPT_MS, LOOK_MS, MACHINE_QUIET_MS, RESTART_QUIET_MS } from '../shell/online-model.js';
 import { usePage } from './fake-dom.mjs';
 import { ROOT } from './graph.mjs';
 
 const START = Date.UTC(2026, 10, 14, 2, 4);
+const KEPT = 'dukovo-admin.updates.back';
 const ABOUT = { release: 'Dukovo Server 1.0.0-alpha.1' };
+
+/** Puts a `localStorage` in place that holds `entries`, for this test only; gives its map. */
+function useStorage(context, entries = {}) {
+  const storage = new Map(Object.entries(entries));
+  const real = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) },
+    configurable: true,
+  });
+  context.after(() => {
+    if (real) Object.defineProperty(globalThis, 'localStorage', real);
+    else delete globalThis.localStorage;
+  });
+  return storage;
+}
 
 /** Lets the calls that wait on each other finish. */
 const settle = async () => {
@@ -31,17 +47,20 @@ const settle = async () => {
  * The banner on a page with a clock the test moves. `world.up` says whether
  * the server answers, and `world.silent` that a call gets no answer at all;
  * `about` is what `console.about` gives, or a function that throws. Gives
- * the banner's pieces, what `onBack` heard and the paths asked.
+ * the banner's pieces, what `onBack` heard and the paths asked. `again`
+ * makes another banner on the same page and clock, as the next session does.
  */
-function openOnline(context, { about = () => Promise.resolve(ABOUT) } = {}) {
-  const { document } = usePage(context);
-  context.mock.timers.enable({ apis: ['setInterval', 'setTimeout', 'Date'], now: START });
-  const was = globalThis.MutationObserver;
-  globalThis.MutationObserver = class { observe() {} disconnect() {} };
-  context.after(() => {
-    if (was === undefined) delete globalThis.MutationObserver;
-    else globalThis.MutationObserver = was;
-  });
+function openOnline(context, { about = () => Promise.resolve(ABOUT), again = false } = {}) {
+  const { document } = again ? globalThis : usePage(context);
+  if (!again) {
+    context.mock.timers.enable({ apis: ['setInterval', 'setTimeout', 'Date'], now: START });
+    const was = globalThis.MutationObserver;
+    globalThis.MutationObserver = class { observe() {} disconnect() {} };
+    context.after(() => {
+      if (was === undefined) delete globalThis.MutationObserver;
+      else globalThis.MutationObserver = was;
+    });
+  }
   const region = h('div', {});
   const stale = h('div', {});
   const main = h('main', {});
@@ -231,4 +250,46 @@ test('a restart that ends the session is over, and the next time the server is l
   await page.wait(5000);
   assert.deepEqual(page.world.backs, [false]);
   assert.equal(page.world.asked, 0);
+});
+
+test('an update\'s restart that ends the session keeps the release it was to bring, and the banner of the next session says what came', async (context) => {
+  const storage = useStorage(context);
+  const page = openOnline(context);
+  page.online.expectRestart('duke-nas is restarting.', { quietMs: MACHINE_QUIET_MS, version: '1.0.0-alpha.2' });
+  page.world.up = true;
+  page.world.ended = true;
+  await page.wait(MACHINE_QUIET_MS + 5000);
+  const kept = JSON.parse(storage.get(KEPT));
+  assert.equal(kept.version, '1.0.0-alpha.2');
+  assert.ok(kept.at > START + MACHINE_QUIET_MS && kept.at <= Date.now(), `kept at ${kept.at}`);
+  page.online.stop();
+
+  const next = openOnline(context, { again: true });
+  await next.wait(0);
+  assert.equal(storage.has(KEPT), false, 'it is said once');
+  assert.match(next.words()[0], /^Back, on 1\.0\.0-alpha\.1: the update was taken back\. See what happened/);
+});
+
+test('a restart with no release to bring keeps nothing, and a kept release over an hour old is forgotten unsaid', async (context) => {
+  const storage = useStorage(context);
+  const page = openOnline(context);
+  page.online.expectRestart('The console is restarting.');
+  page.world.up = true;
+  page.world.ended = true;
+  await page.wait(RESTART_QUIET_MS + 5000);
+  assert.equal(storage.has(KEPT), false);
+  page.online.stop();
+
+  storage.set(KEPT, JSON.stringify({ version: '1.0.0-alpha.2', at: START - BACK_KEPT_MS }));
+  const later = openOnline(context, { again: true });
+  await later.wait(0);
+  assert.equal(storage.has(KEPT), false);
+  assert.deepEqual(later.words(), []);
+  assert.equal(later.world.asked, 0);
+});
+
+test('the frame reads the banner once the first page is shown, and a session that a restart ended is the server going away', () => {
+  const frame = readFileSync(`${ROOT}shell/frame.js`, 'utf8');
+  assert.match(frame, /await router\.start\(\);\n\s+begin\(\);\n/);
+  assert.match(frame, /if \(name === 'session' && data\.ended === 'restarted'\) online\.lost\(\);\n\s+else if \(name === 'session'\) onEnded\(data\.ended\);/);
 });
