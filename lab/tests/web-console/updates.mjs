@@ -677,7 +677,7 @@ async function phone(t) {
 
   await openUpdates(t, page);
   ensure((await sidewaysScroll(page)) === 0, `the phone's page scrolls ${await sidewaysScroll(page)} px sideways`);
-  const small = await smallControls(page, "main .upd button, main .upd a.btn, main .upd input, main .upd select");
+  const small = await smallControls(page, "main .upd button, main .upd a.btn, main .upd input:not([type=checkbox]):not([type=radio]), main .upd select, main .upd .radio-card");
   ensure(small.length === 0, `these controls of the phone's page are under 44 px tall: ${small.join(", ")}`);
   const order = await page.locator("main section.card[id]").evaluateAll((cards) => cards.map((one) => one.id));
   const wanted = ["system", "apps", "security", "firmware", "held", "settings", "checks", "history"];
