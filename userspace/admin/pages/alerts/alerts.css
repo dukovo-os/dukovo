@@ -28,6 +28,9 @@
 .al-steps .qr-row { margin-top: .571rem; }
 .al-steps .cmdtext { margin-top: .286rem; }
 .al summary { cursor: pointer; }
+/* A box or a round button a row of 24 px at least: the room around each that
+   a target smaller than 24 px needs. */
+.al .check { min-height: 1.714rem; }
 @media (forced-colors: active) {
   .al-dot { forced-color-adjust: none; background: CanvasText; }
 }
