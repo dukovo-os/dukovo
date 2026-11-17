@@ -359,10 +359,15 @@ impl Shared {
         };
         let mut terminals = self.terminals.borrow_mut();
         terminals.close_session(&authd, code);
-        terminals.end_admin_panes(&authd, why);
+        // Held until authd has ended their shells, for its audit.
+        let panes = terminals.close_admin_panes(&authd, why);
         drop(terminals);
         self.changes.send_replace(());
-        tokio::task::spawn_local(tell_end(self.authd.clone(), authd, by.map(String::from)))
+        let told = tell_end(self.authd.clone(), authd, by.map(String::from));
+        tokio::task::spawn_local(async move {
+            told.await;
+            drop(panes);
+        })
     }
 
     /// Keeps `session` and gives the cookie that names it. When the
