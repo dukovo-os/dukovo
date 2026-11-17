@@ -561,7 +561,8 @@ async function restoreBusy(t, page) {
   const copies = dialog.locator('input[name="restore-copy"]');
   ensure((await copies.count()) === listed.json.copies.length, `the dialog lists ${await copies.count()} copies, and the machine ${listed.json.copies.length}`);
   ensure(await copies.first().isChecked(), "the newest copy is not the one chosen");
-  const first = (await dialog.locator("label.radio-card").filter({ has: copies.first() }).innerText()).replace(/\s+/g, " ").trim();
+  // A filter's inner locator is matched inside the outer one, so it starts from the page.
+  const first = (await dialog.locator("label.radio-card").filter({ has: page.locator('input[name="restore-copy"]:checked') }).innerText()).replace(/\s+/g, " ").trim();
   ensure(COPY_ROW.test(first), `the first copy is described as ${JSON.stringify(first)}, not with its time, size and "This machine"`);
   // Where to put it: as a new database, which is the way chosen, with a name for it, or over the database.
   const way = dialog.getByRole("radio", { name: /As a new database/ });
