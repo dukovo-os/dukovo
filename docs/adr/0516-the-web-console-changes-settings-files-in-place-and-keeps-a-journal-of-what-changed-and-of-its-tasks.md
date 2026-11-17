@@ -168,7 +168,9 @@ which belong to them, not to the machine.
 - Who made a hand edit is the audit log's best answer, not a proof: an
   administrator's shell that edits a file without naming it on the command
   line is "outside the console", and a person whose elevated command named
-  the file is taken for a write by root soon after.
+  the file is taken for a write by root soon after. The audit line is
+  authd's as the kernel's log keeps it, its first 200 bytes, so a path that
+  a long command names after them is not seen.
 - `settings_edit::change` reads, edits and writes; what another program
   writes to the file in between is lost. The console's changes are small
   and quick, and the journal shows the result.
