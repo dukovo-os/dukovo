@@ -15,7 +15,9 @@ _/system/settings/netlog_
 
 *netlog*(8) sends the system's log over UDP to the computer this file
 names (ADR 0196). The default file says nothing but comments, so netlog
-sends nothing. *service netlog reload* has netlog read the file again.
+sends nothing; the Dukovo Lab's test image (*ob*(1) *image --lab*) names
+the lab computer, 10.77.0.1, which reads each lab machine's log as its
+console. *service netlog reload* has netlog read the file again.
 The kernel command line's *netlog=* flag (*dukovo-boot*(7)) names a
 target for one boot in place of this file's.
 

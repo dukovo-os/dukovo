@@ -6,9 +6,10 @@
 //! TFTP server that boots it.
 //!
 //! dukovo-lab's `amt` driver asks AMT to boot the machine from the
-//! network once; the firmware gets its address and its boot file from
-//! dnsmasq on the lab card; the boot file is the network GRUB
-//! ([`net_grub`]), which reads the boot script the driver wrote for that
+//! network once, and its `plug` driver cuts and restores the machine's
+//! power, whose firmware boots from the network first; the firmware gets
+//! its address and its boot file from dnsmasq on the lab card; the boot
+//! file is the network GRUB ([`net_grub`]), which reads the boot script the driver wrote for that
 //! boot and loads the writer ([`writer_kit`]) from the driver's own HTTP
 //! server; the writer writes the image under test to the machine's disk.
 //! The contract between the two sides is dukovo-os/lab's
@@ -61,12 +62,15 @@ pub const WRITER_CMDLINE: &str = "console=ttyS0 loglevel=4";
 /// What the writer says once it is done, as its kit's `done`.
 const WRITER_DONE: &str = "lab-writer: done";
 
-/// The modules the writer loads where the kernel has them as modules:
-/// the disk controllers' and the network cards' of the lab's machines and
-/// of most PCs (Intel's and Realtek's cards, with Realtek's PHY driver,
-/// which r8169 asks for by name), and QEMU's for the writer's own check.
+/// The modules the writer loads where the kernel has them as modules, in
+/// this order: the disk controllers' and the network cards' of the lab's
+/// machines and of most PCs (Intel's and Realtek's cards), and QEMU's for
+/// the writer's own check. Realtek's PHY driver goes before r8169: r8169
+/// finds its PHY's driver when it binds the card and refuses the card
+/// when there is none ("no dedicated PHY driver found"), and the writer
+/// has no modprobe to fetch it then.
 const WRITER_MODULES: &[&str] =
-    &["ahci", "nvme", "e1000e", "igb", "igc", "e1000", "r8169", "realtek"];
+    &["ahci", "nvme", "e1000e", "igb", "igc", "e1000", "realtek", "r8169"];
 
 /// What the network GRUB adds to the images' GRUB for x86-64 UEFI (ADR
 /// 0306's [`grub::MODULES`] and [`grub::EFI_MODULES`]): the firmware's
@@ -195,24 +199,29 @@ struct Host {
 }
 
 /// The real machines in `dukovo-lab machines --json`'s answer: those whose
-/// driver is `amt`.
+/// driver is `amt` or `plug`, each with its settings under its driver's
+/// name. Both boot from the lab network, so dnsmasq gives each its address.
 fn real_machines(json: &str) -> Result<Vec<Host>> {
     let value: Value = serde_json::from_str(json)
         .map_err(|err| Error::new(format!("dukovo-lab's list of machines is not JSON: {err}")))?;
     let mut hosts = Vec::new();
     let machines = value.get("machines").and_then(Value::as_array).cloned().unwrap_or_default();
     for machine in &machines {
-        if machine.get("driver").and_then(Value::as_str) != Some("amt") {
+        let Some(driver) = machine
+            .get("driver")
+            .and_then(Value::as_str)
+            .filter(|driver| matches!(*driver, "amt" | "plug"))
+        else {
             continue;
-        }
+        };
         let name = machine.get("name").and_then(Value::as_str).unwrap_or("?").to_string();
         let text = |key: &str| {
             machine
-                .get("amt")
-                .and_then(|amt| amt.get(key))
+                .get(driver)
+                .and_then(|settings| settings.get(key))
                 .and_then(Value::as_str)
                 .map(str::to_string)
-                .ok_or_else(|| Error::new(format!("the machine {name} has no amt.{key}")))
+                .ok_or_else(|| Error::new(format!("the machine {name} has no {driver}.{key}")))
         };
         let mac = text("mac")?.to_ascii_lowercase();
         let valid = mac.split(':').count() == 6
@@ -220,7 +229,9 @@ fn real_machines(json: &str) -> Result<Vec<Host>> {
                 .split(':')
                 .all(|part| part.len() == 2 && part.bytes().all(|b| b.is_ascii_hexdigit()));
         if !valid || mac == "00:00:00:00:00:00" {
-            bail!("the machine {name}'s amt.mac is {mac}: put in its network card's MAC address");
+            bail!(
+                "the machine {name}'s {driver}.mac is {mac}: put in its network card's MAC address"
+            );
         }
         hosts.push(Host {
             mac,
@@ -533,6 +544,21 @@ mod tests {
         let err = real_machines(&placeholder).unwrap_err().to_string();
         assert!(err.contains("put in its network card's MAC address"), "{err}");
         assert!(real_machines(r#"{"machines": []}"#).unwrap().is_empty());
+        // A plug machine boots from the lab network too, by its own settings.
+        let with_plug = json.replace(
+            "]}",
+            r#", {"name": "m75q", "driver": "plug", "plug": {
+                "shelly": "192.168.1.3", "mac": "04:7B:CB:45:B6:ED", "machine_address": "10.77.0.3",
+                "lab_address": "10.77.0.1", "tftp": "/srv/dukovo-lab/tftp",
+                "writer": "/srv/dukovo-lab/writer"}}]}"#,
+        );
+        assert_eq!(
+            real_machines(&with_plug).unwrap(),
+            [
+                host("m75q", "04:7b:cb:45:b6:ed", "10.77.0.3"),
+                host("optiplex", "aa:bb:cc:00:11:22", "10.77.0.2"),
+            ]
+        );
     }
 
     #[test]

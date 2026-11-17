@@ -230,15 +230,18 @@ _target/userspace/_).
 	*--lab*
 		Make the Dukovo Lab's test image,
 		_out/dukovo-VERSION-x86_64-lab.img_, instead: an installed
-		system's disk as *--installed* makes it, with three things beside
+		system's disk as *--installed* makes it, with four things beside
 		the system's slot, which stays a release's: an administrator's
 		account *lab*, which signs in over SSH with the lab's key and
 		whose password, the lab's own, lets tests run commands as root
-		through *elevate*(8); sshd turned on by an override file; and a
+		through *elevate*(8); sshd turned on by an override file; a
 		sign-in banner that says the image is a test image (ADRs 0401 and
-		0408). Its systools is built with the *lab* feature, which gives
-		the web console the route the lab's tests run an elevated command
-		by, _POST /api/1/test/elevate_, and the long action *lab.long*
+		0408); and _/system/settings/netlog_ naming the lab computer,
+		_10.77.0.1_, as the target of *netlog*(8), so that a real lab
+		machine with no serial port sends its log to the lab. Its
+		systools is built with the *lab* feature, which gives the web
+		console the route the lab's tests run an elevated command by,
+		_POST /api/1/test/elevate_, and the long action *lab.long*
 		that its task tests run (ADRs 0514 and 0516); no other image,
 		the boot tests' images included, has either. *lab run* tests it.
 		Never give it to anyone as a release.
