@@ -76,14 +76,18 @@ page has the rest.
 
 ## The lab image
 
-`./ob image --lab` is an installed system's disk with three things more,
+`./ob image --lab` is an installed system's disk with four things more,
 all outside the system's slot that a release is made from:
 
 - an administrator's account, `lab`, that signs in over SSH with the
   lab's key, and whose password, which elevate asks for, is the lab
   password (ADR 0408);
 - sshd turned on;
-- a sign-in banner that says it is a test image.
+- a sign-in banner that says it is a test image;
+- netlog's settings naming the lab computer, `10.77.0.1`, as its target
+  (netlog(5)), so that a real machine with no serial port sends its log
+  to the lab, which reads it as the machine's console. The other lab
+  machines send it too, which costs nothing.
 
 The lab's private key and password stay on the lab computer, in
 `~/.config/dukovo-lab`: the image holds only the public half of the key

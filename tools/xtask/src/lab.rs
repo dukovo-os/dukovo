@@ -5,7 +5,7 @@
 //! the lab tests, and `ob lab`, which runs the lab's harness on this
 //! tree's tests in `lab/tests`.
 //!
-//! A lab image is an installed system's disk with three things added,
+//! A lab image is an installed system's disk with four things added,
 //! all outside the system's slot, so that no release (which is made from
 //! the slot alone) can ever carry them:
 //!
@@ -15,7 +15,10 @@
 //! - its home, the account's, holding the lab's public key in
 //!   `~/.ssh/authorized_keys`;
 //! - sshd turned on, through an override file, and a sign-in banner that
-//!   says the image is a test image.
+//!   says the image is a test image;
+//! - netlog's settings naming the lab PC on the lab network ([`NETLOG`]),
+//!   so a real machine with no serial port sends its log to the lab, which
+//!   reads it as the machine's console.
 //!
 //! The harness itself, dukovo-lab, lives in dukovo-os/lab; `ob lab` finds
 //! it on PATH (or at `OB_LAB`), builds the lab image and passes it on.
@@ -73,6 +76,15 @@ const PASSWORD: &str = "lab_password";
 /// banner.
 pub const BANNER: &str = "Test image of the Dukovo Lab: the lab account signs in over SSH \
                           with the lab's key. Never use it as a release.";
+
+/// What a lab image's `/system/settings/netlog` says (netlog(5)): the lab
+/// PC's address on the lab network and netlog's port, the defaults of
+/// dukovo-lab's `lab_address` and `netlog_port`. A lab machine with no
+/// serial port sends its log there; the others send it too, which costs
+/// nothing.
+const NETLOG: &str = "# The lab image: a lab machine with no serial port sends its log to the lab PC \
+                      (ADR 0196), and the others send it too, which costs nothing.\n\
+                      target = 10.77.0.1:6666\n";
 
 /// Where dukovo-lab comes from.
 const LAB_REPO: &str = "https://github.com/dukovo-os/lab";
@@ -278,6 +290,9 @@ pub fn stage(staging: &Path, system: &Path, access: &Access) -> Result<Owned> {
     let defaults = crate::userspace::DEFAULTS_DIR.strip_prefix("system/").expect("in the system");
     let issue = std::fs::read_to_string(system.join(defaults).join("issue")).unwrap_or_default();
     write(&settings.join("issue"), &format!("{issue}{BANNER}\n"), 0o644)?;
+
+    // netlog sends nothing by default; the lab image names the lab PC.
+    write(&settings.join("netlog"), NETLOG, 0o644)?;
 
     Ok(Owned { path: Path::new("@users").join(ACCOUNT), owner, group })
 }
@@ -1287,7 +1302,7 @@ mod tests {
     }
 
     #[test]
-    fn stages_the_account_home_key_sshd_and_banner_beside_the_system() {
+    fn stages_the_account_home_key_sshd_banner_and_netlog_beside_the_system() {
         let staging = std::env::temp_dir().join(format!("ob-lab-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&staging);
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -1318,6 +1333,7 @@ mod tests {
             read("@settings/spark/services/settings.d/sshd.toml").contains("\nenabled = true\n")
         );
         assert!(read("@settings/issue").ends_with(&format!("{BANNER}\n")));
+        assert!(read("@settings/netlog").lines().any(|line| line == "target = 10.77.0.1:6666"));
         assert!(std::fs::metadata(staging.join("@users/lab/documents")).unwrap().is_dir());
         let mode = |path: &str| {
             use std::os::unix::fs::PermissionsExt as _;

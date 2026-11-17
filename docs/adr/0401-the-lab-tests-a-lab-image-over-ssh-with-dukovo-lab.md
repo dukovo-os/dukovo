@@ -5,7 +5,8 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0401. The Dukovo Lab tests a lab image over SSH, with tests kept here
 
-- Status: Accepted
+- Status: Accepted; the lab image also names the lab PC as netlog's
+  target, so a lab machine with no serial port sends its log to the lab
 - Date: 2026-11-07
 
 ## Context
@@ -36,7 +37,7 @@ Phase 13c (ADR 0347).
 
 - **The lab image.** `ob image --lab` makes
   `out/dukovo-VERSION-x86_64-lab.img`: an installed system's disk, as
-  `--installed` makes it (ADR 0307), with three things more.
+  `--installed` makes it (ADR 0307), with four things more.
   - An administrator's account, `lab` ("Dukovo Lab"), whose password
     hash is of 32 random bytes that are then thrown away, so that no
     password signs it in. Its home holds the lab's public key in
@@ -49,7 +50,11 @@ Phase 13c (ADR 0347).
   - A sign-in banner, after the default one: "Test image of the Dukovo
     Lab: the lab account signs in over SSH with the lab's key. Never use
     it as a release."
-- **Never in a release.** All three go into `@settings`, `@state` and
+  - netlog's target, `/system/settings/netlog`, the lab PC at
+    `10.77.0.1:6666` (ADR 0196): a lab machine with no serial port, as
+    the M75q, sends its log to the lab over the network, and the others
+    send theirs too, which costs nothing.
+- **Never in a release.** All four go into `@settings`, `@state` and
   `@users` of the root. The system's slot, `@system.a`, which is what a
   release is made from (ADR 0308), is staged exactly as for
   `--installed`, and a unit test checks that the lab's files leave it as
