@@ -118,12 +118,17 @@ export async function show(view) {
     name.draw();
   }
 
-  /** Reads what the page shows (all of it at the first read), and draws it. */
+  /**
+   * Reads what the page shows (all of it at the first read), and draws it.
+   * The machine's name and the console's address are read again while they
+   * could not be, as when the session ran too many commands at once (ADM-105).
+   */
   async function read(first) {
     if (stopped) return;
     latest += 1;
     const mine = latest;
-    const asked = { ...READS, ...(first ? { about: ABOUT, machine: MACHINE, tasks: TASKS } : {}) };
+    const again = first || data.machine === undefined || data.about === null;
+    const asked = { ...READS, ...(again ? { about: ABOUT, machine: MACHINE } : {}), ...(first ? { tasks: TASKS } : {}) };
     const names = Object.keys(asked);
     const found = await Promise.allSettled(names.map((one) => view.api.get(asked[one])));
     if (mine !== latest || view.signal.aborted || stopped) return;
@@ -135,9 +140,10 @@ export async function show(view) {
     data.wanted = value('wanted') === undefined ? undefined : wantedOf(value('wanted'));
     data.serving = value('signIn')?.console?.certificate ?? data.serving;
     data.sites = value('sites') ?? data.sites;
-    if (first) {
+    if (again) {
       data.about = value('about') ?? null;
       data.machine = value('machine') === undefined ? undefined : machineOf(value('machine'));
+      if (!first && data.machine !== undefined) name.errors.replaceChildren();
     }
     loaded = true;
     drawAll();

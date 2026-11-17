@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import test, { afterEach, beforeEach } from 'node:test';
 
 import {
-  byDns, certificate, closed, dnsLog, history, list, machineWithDomain, oneMissing, own, report, SHOWN_FINGERPRINT, signIn, task, wanted,
+  byDns, certificate, closed, dnsLog, history, list, machine, machineWithDomain, oneMissing, own, report, SHOWN_FINGERPRINT, signIn, task, wanted,
 } from './certificates-fixtures.mjs';
 import {
   holdings, openCertificates, refusal, settle, text,
@@ -172,6 +172,24 @@ test('reads that fail say so in the card, and the others are still drawn', async
   assert.match(text(page.card('name')), /The machine's name could not be read\./);
   assert.ok(page.card('get'));
   assert.equal(page.problems.length, 3);
+});
+
+test('the machine\'s name is read again while it could not be, as when the session ran too many commands at once', async (context) => {
+  let refused = false;
+  const busy = () => {
+    if (refused) return machine();
+    refused = true;
+    throw refusal('ADM-105', 'too many commands at once for this session', 429);
+  };
+  // The console serves another certificate, so this server's own row offers a way back.
+  const reads = { '/api/1/machine/name': busy, '/api/1/security/sign-in': () => signIn('shop.example.org') };
+  const page = await openCertificates(context, { world: { reads } });
+  assert.match(text(page.card('name')), /The machine's name could not be read\./);
+  assert.doesNotMatch(text(page.row('this-machine')), /Open the console at/);
+  await page.tick(60_000);
+  assert.doesNotMatch(text(page.card('name')), /could not be read/);
+  assert.match(text(page.card('name')), /duke-nas/);
+  assert.match(text(page.row('this-machine')), /Open the console at https:\/\/duke-nas:9090\/ and choose it there/);
 });
 
 test('the list is read again every minute and when the server comes back', async (context) => {
