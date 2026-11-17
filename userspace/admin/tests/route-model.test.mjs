@@ -114,6 +114,10 @@ test('a click on a link of the console is followed in the page, and the browser 
   assert.equal(followsInPage({ href: 'https://example.org/' }, plain, origin), false);
   assert.equal(followsInPage({ href: '/help/errors/index.json' }, plain, origin), false, 'a file');
   assert.equal(followsInPage({ href: '/mark-dark.svg' }, plain, origin), false);
+  assert.equal(followsInPage({ href: '/help/certificates.md' }, plain, origin), false, "help's file");
+  for (const page of ['/websites/dukovo.local', '/websites/shop.example.md', '/certificates/site.example.org', '/apps/org.postgresql.postgresql']) {
+    assert.equal(followsInPage({ href: page }, plain, origin), true, `${page}: a page whose path ends in a dotted name`);
+  }
   assert.equal(followsInPage({ href: '/terminal', target: '_blank' }, plain, origin), false);
   assert.equal(followsInPage({ href: '/terminal', download: true }, plain, origin), false);
   assert.equal(followsInPage({ href: '/terminal' }, { ...plain, ctrlKey: true }, origin), false);
