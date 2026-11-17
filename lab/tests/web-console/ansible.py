@@ -44,9 +44,10 @@ check mode reads the state, and it may say it cannot tell, unless it
 compares nothing, as lab.long, which check mode says changes each time. A change whose
 undo is itself with the same arguments, as console.reach's, finds nothing
 to do from the start, so check mode must say false before it too; and one
-that has no undo and compares something, as console.export, starts from
-what the machine has, so check mode may say before it that it cannot
-tell.
+that has no undo and compares something, as console.export or
+power.cancel, starts from what the machine has, so check mode may say
+before it that it cannot tell, or that it would change nothing; a module
+must then report what check mode said.
 
 The console's own reads run here as the commands they show: console.about
 as `admin about --json`, console.notices as `admin notices --json` and
@@ -512,6 +513,8 @@ def main():
         # change that is already made would make one again (it may say it cannot tell); a change
         # that compares nothing is said to change something each time.
         reported = {action["id"]: (first, second) for action, first, second in changes}
+        # Every disagreement is named at once, so one run shows them all.
+        disagreements = []
         for action, before_run, after_run in checks:
             first, second = reported[action["id"]]
             undo = action["examples"]["undo"]
@@ -520,14 +523,17 @@ def main():
             undoes_itself = undo is not None and (undo["action"], undo["args"]) == (action["id"], action["examples"]["good"][0])
             # A change with no undo starts from what the machine has: console.export's folder may
             # be a repository from a run before, and check mode cannot tell whether the settings
-            # moved since, so it may say so.
+            # moved since, so it may say so; power.cancel and updates.bisect-stop have nothing to
+            # cancel or stop unless something left one, so check mode rightly says false. A command
+            # reports a change either way, so any answer may be right; a module reports what it
+            # did, and an answer check mode gives must be the same.
             unknown_start = undo is None and not always_changes(action)
             if unknown_start:
-                wrong = before_run is False
+                wrong = round_.is_module(action) and before_run is not None and before_run is not bool(first)
             else:
                 wrong = before_run is not (False if undoes_itself else True)
             if wrong:
-                raise Failure(f"check mode said {action['id']} would change {before_run} before it ran, and Ansible changed {first}")
+                disagreements.append(f"check mode said {action['id']} would change {before_run} before it ran, and Ansible changed {first}")
             if always_changes(action):
                 wrong = after_run is not True
             elif round_.is_module(action):
@@ -535,7 +541,9 @@ def main():
             else:
                 wrong = after_run is True
             if wrong:
-                raise Failure(f"check mode said {action['id']} would change {after_run} after it ran twice, and Ansible's second run changed {second}")
+                disagreements.append(f"check mode said {action['id']} would change {after_run} after it ran twice, and Ansible's second run changed {second}")
+        if disagreements:
+            raise Failure("; ".join(disagreements))
         print("check mode agreed with Ansible on each change")
     finally:
         remove_token(TOKEN_NAME, machine, ssh_port)
