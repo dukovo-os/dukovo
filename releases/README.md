@@ -43,7 +43,9 @@ YubiKey.
    `keys/online.json` is not here yet: `./ob release server setup`. It
    asks for your password on the server, and writes `keys/online.json`.
 2. With one YubiKey plugged in, check that slot 95 is free: `ykman piv
-   info` lists the slots that hold keys, and 95 must not be among them.
+   keys info 95` must fail, saying the slot holds no key. (`ykman piv
+   info` is no help here: it lists only slots that hold a certificate,
+   and none of these keys has one.)
 3. Make the release key on it, so that its secret half never leaves it,
    asking for the PIN once a session and a touch for every signature:
    `ykman piv keys generate --algorithm ECCP256 --pin-policy ONCE
