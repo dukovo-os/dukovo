@@ -5,7 +5,10 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0334. The firewall denies what other machines start, unless a service listens there or a rule allows it
 
-- Status: Accepted
+- Status: Accepted; PostgreSQL's port is open only to the networks a database
+  is opened to, by a block of rules that database(8) keeps in the rules file,
+  since
+  [0570](0570-postgresql-s-port-is-open-only-to-the-networks-a-database-is-opened-to-a-certificate-that-could-not-be-had-is-tried-again-each-database-is-copied-before-a-backup-and-a-website-s-size-and-visits-are-counted.md)
 - Date: 2026-11-02
 
 ## Context

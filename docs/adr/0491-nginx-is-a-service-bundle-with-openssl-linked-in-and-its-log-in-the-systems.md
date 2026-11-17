@@ -7,7 +7,11 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 - Status: Accepted; `nginx -t` runs through elevate since [0493](0493-a-command-elevated-in-a-pane-is-asked-about-in-that-pane.md); its websites are files that `nginx.conf` includes,
   checked with `nginx -t` as the account nginx before they are used, since
-  [0569](0569-websites-databases-and-apps-are-added-from-the-web-console-through-website-8-database-8-and-the-catalog-s-sheet.md)
+  [0569](0569-websites-databases-and-apps-are-added-from-the-web-console-through-website-8-database-8-and-the-catalog-s-sheet.md);
+  each website's requests are also written to a file of its own, in a format
+  with no address, which `website count` counts once a day, and nginx's log
+  files keep 2 turned copies, since
+  [0570](0570-postgresql-s-port-is-open-only-to-the-networks-a-database-is-opened-to-a-certificate-that-could-not-be-had-is-tried-again-each-database-is-copied-before-a-backup-and-a-website-s-size-and-visits-are-counted.md)
 - Date: 2026-11-11
 
 ## Context
