@@ -33,6 +33,7 @@ test('the accounts are named by their user ID, from a list or the object that ho
   assert.equal(byWords(1000, names), ' by admin');
   assert.equal(byWords(1001, names), ' by account 1001', 'a name that is not known is said by its number');
   assert.equal(byWords(1001, null), ' by account 1001');
+  assert.equal(byWords(0, names), ' by root', "root's name is known though the accounts do not list it");
   assert.equal(byWords(null, names), '');
   assert.equal(byWords(undefined, names), '');
 });

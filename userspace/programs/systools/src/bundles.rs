@@ -301,11 +301,13 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         }
         (Some("update"), ids) => update(ids, everyone, check_only, yes),
         (Some("rollback"), [id]) => simple(&Request::Rollback { id: checked(id)?, everyone }, id),
-        (Some("hold"), [id]) => {
-            simple(&Request::Hold { id: checked(id)?, everyone, on: true, why }, id)
-        }
+        (Some("hold"), [id]) => simple(
+            &Request::Hold { id: checked(id)?, everyone, on: true, by: util::asker(), why },
+            id,
+        ),
         (Some("unhold"), [id]) => {
-            simple(&Request::Hold { id: checked(id)?, everyone, on: false, why: None }, id)
+            let by = util::asker();
+            simple(&Request::Hold { id: checked(id)?, everyone, on: false, by, why: None }, id)
         }
         (Some("default"), [name]) if !clear && !everyone => show_default(name),
         (Some("default"), [name]) if clear => {

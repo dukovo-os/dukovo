@@ -96,8 +96,11 @@ pub enum Request {
     /// Goes back to the version bundle `id` replaced.
     Rollback { id: String, everyone: bool },
     /// Holds bundle `id` at its version, or lets it go; a hold may keep
-    /// the reason `why`, which [`why_ok`] accepts.
-    Hold { id: String, everyone: bool, on: bool, why: Option<String> },
+    /// the reason `why`, which [`why_ok`] accepts. `by` is the person who
+    /// asked, which root may say for the person it runs for (the web
+    /// console runs `bundle hold` elevated); bundled takes anyone else as
+    /// themselves.
+    Hold { id: String, everyone: bool, on: bool, by: u32, why: Option<String> },
     /// Has the updates of `ids`, or of every app that has one when there
     /// is none, installed in tonight's window and not now (`on`), or takes
     /// the apps off it (ADR 0565). `by` is the user who asked, which
@@ -263,8 +266,8 @@ impl Request {
                 line + "\n"
             }
             Request::Rollback { id, everyone } => format!("rollback\t{id}\t{}\n", whose(*everyone)),
-            Request::Hold { id, everyone, on, why } => format!(
-                "hold\t{id}\t{}\t{}{}\n",
+            Request::Hold { id, everyone, on, by, why } => format!(
+                "hold\t{id}\t{}\t{}\t{by}{}\n",
                 whose(*everyone),
                 if *on { "on" } else { "off" },
                 why.as_ref().map_or_else(String::new, |why| format!("\t{why}"))
@@ -362,10 +365,11 @@ impl Request {
             ["rollback", id, place] => {
                 Ok(Request::Rollback { id: checked_id(id)?, everyone: everyone(place)? })
             }
-            ["hold", id, place, state, rest @ ..] => Ok(Request::Hold {
+            ["hold", id, place, state, by, rest @ ..] => Ok(Request::Hold {
                 id: checked_id(id)?,
                 everyone: everyone(place)?,
                 on: on(state)?,
+                by: by.parse().map_err(|_| "who asked is not a user ID".to_string())?,
                 why: match rest {
                     [] => None,
                     [why] if why_ok(why) => Some((*why).into()),
@@ -1068,18 +1072,32 @@ mod tests {
                 yes: true,
             },
             Request::Rollback { id: "org.example.notes".into(), everyone: false },
-            Request::Hold { id: "org.example.notes".into(), everyone: true, on: true, why: None },
-            Request::Hold { id: "org.example.notes".into(), everyone: false, on: false, why: None },
             Request::Hold {
                 id: "org.example.notes".into(),
                 everyone: true,
                 on: true,
+                by: 0,
+                why: None,
+            },
+            Request::Hold {
+                id: "org.example.notes".into(),
+                everyone: false,
+                on: false,
+                by: 1000,
+                why: None,
+            },
+            Request::Hold {
+                id: "org.example.notes".into(),
+                everyone: true,
+                on: true,
+                by: 1000,
                 why: Some("app tests use this version".into()),
             },
             Request::Hold {
                 id: "org.example.notes".into(),
                 everyone: true,
                 on: true,
+                by: 1000,
                 why: Some("-".into()),
             },
             Request::Tonight { ids: Vec::new(), on: true, yes: true, by: 1000 },
@@ -1151,9 +1169,11 @@ mod tests {
             "update\tme\tmaybe\task",
             "update\tme\tapply\task\tNotes",
             "rollback\torg.example.notes",
-            "hold\torg.example.notes\tme\tsometimes",
-            "hold\torg.example.notes\tme\ton\t",
-            "hold\torg.example.notes\tme\ton\ttwo\ttabs",
+            "hold\torg.example.notes\tme\tsometimes\t1000",
+            "hold\torg.example.notes\tme\ton",
+            "hold\torg.example.notes\tme\ton\tsomeone",
+            "hold\torg.example.notes\tme\ton\t1000\t",
+            "hold\torg.example.notes\tme\ton\t1000\ttwo\ttabs",
             "automatic\tall\ton",
             "tonight\ton\tyes",
             "tonight\ton\tyes\tme",
@@ -1206,11 +1226,12 @@ mod tests {
             id: "org.example.notes".into(),
             everyone: true,
             on: true,
+            by: u32::MAX,
             why: Some("é".repeat(200)),
         };
         assert!(longest.line().len() < LINE_MAX);
         assert_eq!(Request::read(longest.line().trim_end()), Ok(longest));
-        let too_long = format!("hold\torg.example.notes\tme\ton\t{}", "x".repeat(201));
+        let too_long = format!("hold\torg.example.notes\tme\ton\t1000\t{}", "x".repeat(201));
         assert!(Request::read(&too_long).is_err());
     }
 

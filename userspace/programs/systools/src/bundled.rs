@@ -3780,16 +3780,23 @@ fn go_back(
     ))
 }
 
+/// Who a hold is told as: the person root says it runs for, as the web
+/// console's elevated `bundle hold` does, and anyone else as themselves.
+fn holder(asker: u32, by: u32) -> u32 {
+    if asker == 0 { by } else { asker }
+}
+
 /// `bundle hold` and `bundle unhold`: whether updates leave the bundle as
 /// it is.
 fn hold(
     shared: &Shared,
-    asker: u32,
+    (asker, by): (u32, u32),
     id: &str,
     everyone: bool,
     on: bool,
     why: Option<&str>,
 ) -> Result<String, String> {
+    let by = holder(asker, by);
     if everyone && asker != 0 {
         return Err("holding everyone's bundles is an administrator's: run it with elevate and \
                     --for-everyone"
@@ -3812,7 +3819,7 @@ fn hold(
         what: if on { What::Held } else { What::Released },
         from: Some(installed.version.clone()),
         to: None,
-        by: Some(asker),
+        by: Some(by),
         // Why a hold is asked for is its event's note; a release says none.
         note: why.filter(|_| on).unwrap_or_default().into(),
     });
@@ -4017,8 +4024,8 @@ fn serve(shared: &Shared, stream: UnixStream) {
             update(shared, &mut connection, asker, &ids, everyone, check, yes)
         }
         Ok(Request::Rollback { id, everyone }) => rollback(shared, asker, &id, everyone),
-        Ok(Request::Hold { id, everyone, on, why }) => {
-            hold(shared, asker, &id, everyone, on, why.as_deref())
+        Ok(Request::Hold { id, everyone, on, by, why }) => {
+            hold(shared, (asker, by), &id, everyone, on, why.as_deref())
         }
         Ok(Request::Tonight { ids, on, yes, by }) => {
             tonight_ask(shared, &mut connection, asker, &ids, (on, yes, by))
@@ -4284,6 +4291,14 @@ mod tests {
     #[test]
     fn a_service_that_takes_long_to_stop_is_waited_for() {
         assert_eq!(stop_time([Some(300)]), Duration::from_secs(310));
+    }
+
+    #[test]
+    fn a_hold_is_told_as_the_person_root_runs_for_and_anyone_else_as_themselves() {
+        assert_eq!(holder(0, 1001), 1001);
+        assert_eq!(holder(0, 0), 0);
+        assert_eq!(holder(1000, 0), 1000, "only root says whom it holds for");
+        assert_eq!(holder(1000, 1001), 1000);
     }
 
     fn hold_event(place: Place, id: &str, what: What, by: Option<u32>, note: &str) -> Event {
