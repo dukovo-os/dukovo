@@ -176,8 +176,9 @@ pub trait Host {
     /// When Spark does not answer.
     fn service(&mut self) -> Result<Service, Fail>;
 
-    /// Restarts the server and waits until it answers again, a new one:
-    /// the open sessions end, and the next statement signs in again.
+    /// Restarts the server and waits until it answers again, a new one
+    /// that Spark says runs: the open sessions end, and the next statement
+    /// signs in again.
     ///
     /// # Errors
     ///
@@ -327,10 +328,17 @@ impl Host for Machine {
             match self.sql(START_TIME) {
                 Ok(answers) => {
                     let now = value(&answers).map(String::from);
-                    if now.is_some() && now != before {
+                    if now.is_none() || now == before {
+                        last = String::from("it had not restarted");
+                    } else if self.service().is_ok_and(|service| service.running) {
                         return Ok(());
+                    } else {
+                        // Spark says that the service runs once its check of
+                        // readiness passes, a moment after the server answers,
+                        // and `database list` asks Spark first: a list read
+                        // as the change ends would find no server.
+                        last = String::from("Spark did not say that it runs");
                     }
-                    last = String::from("it had not restarted");
                 }
                 Err(error) => last = error.to_string(),
             }
