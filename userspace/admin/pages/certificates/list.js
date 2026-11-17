@@ -33,7 +33,7 @@ export function makeList(ctx) {
     const offer = useOffer(row.certificate, {
       host: hostOf(), full: data.machine?.name, port: data.about?.port ?? globalThis.location?.port, serving: data.serving,
     });
-    if (offer.offer === 'use') return button(offer.words, (one) => { more.open = false; ctx.act('use', row, one); }, 'small');
+    if (offer.offer === 'use' || offer.offer === 'again') return button(offer.words, (one) => { more.open = false; ctx.act(offer.offer, row, one); }, 'small');
     if (offer.offer === 'open') return h('p', { class: 'small' }, 'Open the console at ', h('a', { href: offer.url }, offer.url), ' and choose it there');
     return offer.offer === 'none' ? h('p', { class: 'small muted' }, offer.words) : null;
   }
@@ -45,7 +45,7 @@ export function makeList(ctx) {
     const more = can.more.length > 0 && h('details', { class: 'certs-more' });
     if (more) {
       const inside = h('div', { class: 'certs-menu' }, can.more.map((id) => {
-        if (id === 'use') return useItem(row, more);
+        if (id === 'use' || id === 'again') return useItem(row, more);
         const pressed = button(ACTION_WORDS[id], (target) => { more.open = false; ctx.act(id, row, target); }, `small${id === 'remove' || id === 'revoke' ? ' danger' : ''}`);
         return pressed;
       }), can.removeNote && h('p', { class: 'small muted' }, can.removeNote));

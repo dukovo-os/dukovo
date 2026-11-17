@@ -703,7 +703,11 @@ async function servedBecomes(page, hex, what, seconds = 60) {
   }
 }
 
-/** The console's certificate: refused for one that does not name the address, a trial for one that does, kept once the page came back on it, and undone. */
+/**
+ * The console's certificate: refused for one that does not name the address, a trial for one that does, kept once the
+ * page came back on it, and undone; this server's own is chosen again at localhost, which it names. Gives what the
+ * localhost page asked.
+ */
 async function consoleCertificate(t, page) {
   const own = hexOf((await readShown(page, "this-machine")).fingerprint_sha256);
   const named = hexOf((await readShown(page, SERVED)).fingerprint_sha256);
@@ -728,19 +732,36 @@ async function consoleCertificate(t, page) {
   ensure(trialIn(await readDocument(page), "console") === null, "Spark still tries the console's certificate after it was kept");
   ensure((await readOf(page, "GET /api/1/security/sign-in")).console?.certificate === SERVED, "the sign-in rules do not say that the console serves the certificate that was kept");
 
-  // This server's own again: a trial, undone, and the one that was kept is served again.
-  await pressFor(t, page, await rowButton(page, "this-machine", AGAIN), pathOf(ROUTES.serve));
-  await trialBecomes(page, "console", (banner) => banner.running && banner.heading === SERVING("this-machine"), "show that the console serves its own certificate", 40);
-  await pressAndAnswer(t, page, undoOf(page, "console"), pathOf(ROUTES.consoleUndo));
-  await trialEnds(page, "console", "undone", 30);
+  // This server's own names neither 127.0.0.1 nor the lab PC's other way in: here it is not offered,
+  // the row says where to open the console, and admind refuses it as it refused the other.
+  const host = new URL(page.url()).hostname;
+  ensure((await buttonIn(row(page, "this-machine"), AGAIN).count()) === 0, `${AGAIN} is offered at ${host}, which this server's own certificate does not name`);
+  ensure(/Open the console at https:\/\/\S+ and choose it there/.test(await row(page, "this-machine").textContent()), `this server's own row does not say where to open the console to choose it`);
+  mustBe(await askFor(page, ROUTES.serve, { name: "this-machine", try: 300 }), 409, "ADM-141", `this server's own certificate set from ${host}, which it does not name`);
+  ensure((await servedNow(page)) === named, "the console serves another certificate after the guard refused this server's own");
+
+  // At localhost, which it names: a trial, undone, and the one that was kept is served again.
+  const there = new URL("/", page.url());
+  there.hostname = "localhost";
+  const { page: local, seen } = await openConsole(t, there.href);
+  await signInDone(t, local, ADMIN, PASSWORD);
+  await unlockNow(local);
+  await openCertificates(t, local);
+  await pressFor(t, local, await rowButton(local, "this-machine", AGAIN), pathOf(ROUTES.serve));
+  await trialBecomes(local, "console", (banner) => banner.running && banner.heading === SERVING("this-machine"), "show that the console serves its own certificate", 40);
+  await pressAndAnswer(t, local, undoOf(local, "console"), pathOf(ROUTES.consoleUndo));
+  await trialEnds(local, "console", "undone", 30);
   await servedBecomes(page, named, `${SERVED}'s certificate again`);
 
   // And kept, so that the console serves its own at the end.
-  await pressFor(t, page, await rowButton(page, "this-machine", AGAIN), pathOf(ROUTES.serve));
-  await trialBecomes(page, "console", (banner) => banner.reach === WORDS.reached && !banner.keepOff, "say that this browser reached the console", 60);
-  await pressAndAnswer(t, page, keepOf(page, "console"), pathOf(ROUTES.consoleKeep));
-  await trialEnds(page, "console", "kept", 30);
+  await pressFor(t, local, await rowButton(local, "this-machine", AGAIN), pathOf(ROUTES.serve));
+  await trialBecomes(local, "console", (banner) => banner.reach === WORDS.reached && !banner.keepOff, "say that this browser reached the console", 60);
+  await pressAndAnswer(t, local, keepOf(local, "console"), pathOf(ROUTES.consoleKeep));
+  await trialEnds(local, "console", "kept", 30);
   await servedBecomes(page, own, "this server's certificate again");
+  await signOut(t, local);
+  await local.context().close();
+  return seen;
 }
 
 // --- The machine's name ---
@@ -846,7 +867,7 @@ async function administrator(t, made) {
   await second.key.fill(made.console.keyText);
   await pressFor(t, page, buttonIn(serving, "Upload"), routeFor(pathOf(ROUTES.add), SERVED));
   await t.gone(serving);
-  await consoleCertificate(t, page);
+  for (const route of await consoleCertificate(t, page)) a.seen.add(route);
   await removes(t, page, SERVED);
   await removes(t, page, OTHER);
 

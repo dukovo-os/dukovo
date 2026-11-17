@@ -150,9 +150,13 @@ test('Use for this console is offered where the certificate names the address th
   const none = offer(certificate());
   assert.equal(none.offer, 'none');
   assert.match(none.words, /^This certificate does not name this machine\. Give the machine that name first \(Name and domain, below\)/);
-  // This server's own one is offered again once the console serves another.
-  assert.equal(offer(own(), { serving: 'shop.example.org' }).offer, 'again');
-  assert.equal(offer(own(), { serving: 'shop.example.org' }).words, 'Use this server\'s own certificate again');
+  // This server's own one is offered again once the console serves another, where it names the address.
+  const back = offer(own(), { serving: 'shop.example.org', host: 'duke-nas.local' });
+  assert.deepEqual(back, { offer: 'again', words: 'Use this server\'s own certificate again' });
+  // Where it does not, admind would refuse it (ADM-141): the page says where to open the console.
+  const elsewhere = offer(own(), { serving: 'shop.example.org' });
+  assert.equal(elsewhere.offer, 'open');
+  assert.equal(elsewhere.url, 'https://duke-nas.example.org:9090/');
   // The one it serves, a revoked one and an ended one are not offered.
   assert.equal(offer(own()).offer, null);
   assert.equal(offer(certificate({ revoked: true, names: ['192.168.1.10'] })).offer, null);

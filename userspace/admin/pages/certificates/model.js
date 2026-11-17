@@ -178,13 +178,16 @@ export const namesCover = (names, host) => (names ?? []).some((name) => covers(n
  * say: it is served already, it was revoked, or it has ended). `host` is the
  * address this browser reaches the console by, `full` the machine's full
  * name, `port` the console's, `serving` the certificate it serves now.
+ * admind refuses a certificate that does not name `host` (ADM-141), this
+ * server's own too, so each is offered only where it names it.
  */
 export function useOffer(certificate, {
   host, full, port, serving,
 }) {
   if (certificate.name === serving || certificate.revoked === true || (typeof certificate.days_left === 'number' && certificate.days_left < 0)) return { offer: null, words: '' };
-  if (kindOf(certificate) === 'machine') return { offer: 'again', words: 'Use this server\'s own certificate again' };
-  if (namesCover(certificate.names, host)) return { offer: 'use', words: 'Use for this console' };
+  if (namesCover(certificate.names, host)) {
+    return kindOf(certificate) === 'machine' ? { offer: 'again', words: 'Use this server\'s own certificate again' } : { offer: 'use', words: 'Use for this console' };
+  }
   const shown = port && String(port) !== '443' ? `:${port}` : '';
   if (full && namesCover(certificate.names, full)) {
     const url = `https://${full}${shown}/`;

@@ -3842,7 +3842,7 @@ others:
 
 | Certificate | Buttons | Under More |
 | --- | --- | --- |
-| This server's own | **Show fingerprint**, **Make it anew…** | **Use this server's own certificate again**, when the console serves another |
+| This server's own | **Show fingerprint**, **Make it anew…** | **Use this server's own certificate again**, when the console serves another and the certificate names the address in use |
 | From Let's Encrypt | **Renew now**, or **Renew by DNS…** for one that was proved by DNS | **Show fingerprint**, **Use for this console**, **Revoke…**, **Remove…** |
 | Uploaded | **Replace…** | **Show fingerprint**, **Use for this console**, **Remove…** |
 | A reader's view | **Show fingerprint** | |
@@ -3931,7 +3931,10 @@ and not the address in use, the row says **Open the console at** that address
 does not name this machine. Give the machine that name first (Name and domain,
 below) to use it for the console.** A revoked certificate, one that has ended
 and the one the console serves are not offered. **Use this server's own certificate
-again** puts the machine's own back.
+again** puts the machine's own back. It follows the same rule: the machine's own
+names its full name, its first word, the first word with `.local` and
+`localhost`, and not an IP address, so a console opened by an address gets
+**Open the console at** the full name **and choose it there** in its place.
 
 ### The machine's name
 

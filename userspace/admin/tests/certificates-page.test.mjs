@@ -560,7 +560,9 @@ test('a certificate that names the browser\'s address is used for the console, a
   assert.deepEqual(page.ran('console.certificate'), [{ name: 'shop.example.org', try: 300 }]);
   assert.match(text(page.row('shop.example.org')), /this console/);
   assert.equal(buttons(page.row('shop.example.org')).includes('Use for this console'), false);
-  assert.ok(buttons(page.row('this-machine')).includes('Use this server\'s own certificate again'));
+  // This server's own does not name 192.168.1.10, which admind would refuse (ADM-141): the row says where to choose it.
+  assert.equal(buttons(page.row('this-machine')).includes('Use this server\'s own certificate again'), false);
+  assert.match(text(page.row('this-machine')), /Open the console at https:\/\/duke-nas:9090\/ and choose it there/);
 });
 
 test('Keep stays off until the page has come back on the new certificate, and then keeps it', async (context) => {
