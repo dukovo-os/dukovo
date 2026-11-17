@@ -194,6 +194,13 @@ expect = ["Running:  slot B", "-test.good, the default", "the previous version",
 [[step]]
 host = "sh -c 'i=0; while [ $i -lt 120 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
 expect = '{"ok":true}'
+# Rescue is written again from the update that proved itself, and going back
+# waits for the slot state until it is: the console's command would not end
+# within its 30 seconds. The page goes back once Rescue is written.
+[[step]]
+run = "sh -c 'while service sysupdate-stage status > /dev/null; do sleep 2; done; sysupdate status | grep Rescue:'"
+root = true
+expect = "Rescue:"
 # The page restarts the machine, which comes back on slot A.
 [[step]]
 browser = "updates-back.mjs"
