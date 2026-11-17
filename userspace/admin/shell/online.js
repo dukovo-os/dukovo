@@ -1,11 +1,13 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-// The offline banner and its looks at the server. `health` asks `GET
-// /api/1/health`; when it answers, `session` reads the session again: the
-// same session means the page is back, a session that is gone is for api.js's
-// handler, which shows the sign-in page. A look is made at once, and not at
-// its time, when any other call is answered meanwhile. After a restart that a
+// The offline banner and its looks at the server. A look asks `GET
+// /api/1/health`; when it answers, it reads the session again: the same
+// session means the page is back, a session that is gone is for api.js's
+// handler, which shows the sign-in page. Each is given up after LOOK_MS: the
+// connection a server had when it went away may never answer again, and the
+// next look then comes on another. A look is made at once, and not at its
+// time, when any other call is answered meanwhile. After a restart that a
 // page asked for, the banner says what it was told and "Waiting since" under
 // it, and when the server answers it says "Back", or that an update was taken
 // back when `about` shows another release than the one it was to bring.
@@ -13,18 +15,18 @@
 import { whenAnswered } from '../api.js';
 import { h, icon } from '../dom.js';
 import {
-  asOfWords, BACK_MS, backWords, DISABLED_TIP, makeConnection, offlineWords, tryingWords, waitingWords,
+  asOfWords, BACK_MS, backWords, DISABLED_TIP, LOOK_MS, makeConnection, offlineWords, tryingWords, waitingWords,
 } from './online-model.js';
 
 /**
  * Makes the offline handling. `region` holds the banner; `stale` holds the
  * "As of" mark; `main` is the page, whose buttons that change something
- * (`data-changes`) are marked while the server does not answer. `time()`
- * gives lib/time.js's formatters; `about()` reads `console.about`.
+ * (`data-changes`) are marked while the server does not answer. `get` is
+ * api.js's, and `time()` gives lib/time.js's formatters.
  * `onBack(restarted)` is called when the server answers again with the same
  * session, and says whether a page had asked for a restart.
  */
-export function createOnline({ host, region, stale, main, health, session, about, time, onBack, onChange }) {
+export function createOnline({ host, region, stale, main, get, time, onBack, onChange }) {
   const link = makeConnection();
   let ticker = null;
   let left = 0;
@@ -42,6 +44,13 @@ export function createOnline({ host, region, stale, main, health, session, about
   whenAnswered(() => {
     if (link.state(Date.now()) === 'offline') look();
   });
+
+  /** Asks `path`, and gives the call up after LOOK_MS. */
+  function ask(path) {
+    const giveUp = new AbortController();
+    const timer = setTimeout(() => giveUp.abort(), LOOK_MS);
+    return get(path, { abandon: giveUp.signal }).finally(() => clearTimeout(timer));
+  }
 
   function mark() {
     const offline = link.state(Date.now()) !== 'online';
@@ -92,7 +101,7 @@ export function createOnline({ host, region, stale, main, health, session, about
 
   /** Says that the server is back: "Back" for a few seconds, or what happened to an update, until it is closed. */
   async function greet(version) {
-    const back = backWords(version ? await about().catch(() => null) : null, version);
+    const back = backWords(version ? await ask('/api/1/console/about').catch(() => null) : null, version);
     const close = () => {
       clearTimeout(timer);
       note.remove();
@@ -114,8 +123,8 @@ export function createOnline({ host, region, stale, main, health, session, about
     clearInterval(ticker);
     if (link.state(Date.now()) !== 'restarting') words.textContent = tryingWords(host);
     try {
-      await health();
-      await session();
+      await ask('/api/1/health');
+      await ask('/api/1/session');
       const restart = expected;
       expected = null;
       link.answered();

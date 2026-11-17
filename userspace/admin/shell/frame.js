@@ -170,9 +170,7 @@ export async function enterShell({ app, session: first, signOut, signInAgain, on
       region: statusRegion,
       stale: asof,
       main,
-      health: () => get('/api/1/health'),
-      session: () => get('/api/1/session'),
-      about: () => get('/api/1/console/about'),
+      get,
       time: () => time,
       onChange: (now) => { offline = now; },
       onBack(restarted) {

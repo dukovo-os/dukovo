@@ -16,6 +16,14 @@ export const RESTART_QUIET_MS = 120_000;
 /** After one restarts the machine: its firmware, disks and services take minutes, and the tries of an update or a bisect take longer. */
 export const MACHINE_QUIET_MS = 600_000;
 
+/**
+ * How long a look waits for its answer. A server that restarted, or went
+ * away without a word, can leave the browser's connection to it open with
+ * nothing at the other end, where a call never ends; the browser gives such
+ * a connection up, and a later look comes on a new one.
+ */
+export const LOOK_MS = 10_000;
+
 /** "Back" stays this long, when the restart was as expected. */
 export const BACK_MS = 5000;
 

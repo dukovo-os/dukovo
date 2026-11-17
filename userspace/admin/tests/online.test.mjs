@@ -15,7 +15,7 @@ import test from 'node:test';
 import { h } from '../dom.js';
 import { makeTime } from '../lib/time.js';
 import { createOnline } from '../shell/online.js';
-import { MACHINE_QUIET_MS, RESTART_QUIET_MS } from '../shell/online-model.js';
+import { LOOK_MS, MACHINE_QUIET_MS, RESTART_QUIET_MS } from '../shell/online-model.js';
 import { usePage } from './fake-dom.mjs';
 import { ROOT } from './graph.mjs';
 
@@ -28,9 +28,10 @@ const settle = async () => {
 };
 
 /**
- * The banner on a page with a clock the test moves. `answers` says whether
- * the server answers; `about` is what `console.about` gives, or a function
- * that throws. Gives the banner's pieces and what `onBack` heard.
+ * The banner on a page with a clock the test moves. `world.up` says whether
+ * the server answers, and `world.silent` that a call gets no answer at all;
+ * `about` is what `console.about` gives, or a function that throws. Gives
+ * the banner's pieces, what `onBack` heard and the paths asked.
  */
 function openOnline(context, { about = () => Promise.resolve(ABOUT) } = {}) {
   const { document } = usePage(context);
@@ -45,23 +46,25 @@ function openOnline(context, { about = () => Promise.resolve(ABOUT) } = {}) {
   const stale = h('div', {});
   const main = h('main', {});
   document.body.append(region, stale, main);
-  const world = { up: false, ended: false, backs: [], asked: 0 };
+  const world = { up: false, ended: false, silent: false, backs: [], asked: 0, calls: [] };
   const online = createOnline({
     host: 'duke-nas',
     region,
     stale,
     main,
-    health: async () => {
-      if (!world.up) throw new Error('no answer');
+    get: async (path, { abandon }) => {
+      world.calls.push(path);
+      if (path === '/api/1/console/about') {
+        world.asked += 1;
+        return about();
+      }
+      if (world.silent) {
+        // The connection the server had: no answer comes, until the call is given up.
+        return new Promise((resolve, reject) => abandon.addEventListener('abort', () => reject(new Error('given up'))));
+      }
+      if (path === '/api/1/health' && !world.up) throw new Error('no answer');
+      if (path === '/api/1/session' && world.ended) throw Object.assign(new Error('ended'), { status: 401 });
       return {};
-    },
-    session: async () => {
-      if (world.ended) throw Object.assign(new Error('ended'), { status: 401 });
-      return {};
-    },
-    about: async () => {
-      world.asked += 1;
-      return about();
     },
     time: () => makeTime('UTC'),
     onBack: (restarted) => world.backs.push(restarted),
@@ -191,11 +194,28 @@ test('a restart that is asked for again drops the words of the one before', asyn
   assert.deepEqual(page.banners().map((one) => one.querySelector('span')?.textContent), ['second']);
 });
 
-test('the frame hands the words and the options of a restart to the banner, gives it console.about, and shows the page again when the server is back', () => {
+test('the frame hands the words and the options of a restart to the banner, gives it api.js\'s get, and shows the page again when the server is back', () => {
   const frame = readFileSync(`${ROOT}shell/frame.js`, 'utf8');
   assert.match(frame, /async expectRestart\(words, options\) \{\n\s+offline = true;\n\s+\(await begin\(\)\)\.expectRestart\(words, options\);/);
-  assert.match(frame, /about: \(\) => get\('\/api\/1\/console\/about'\),/);
+  assert.match(frame, /createOnline\(\{[^}]*\n\s+get,\n/);
   assert.match(frame, /onBack\(restarted\) \{[^}]*if \(restarted\) router\.refresh\(\);\n\s+else bus\.emit\('online'\);/);
+});
+
+test('a look that gets no answer is given up after ten seconds, and a later one sees the server back', async (context) => {
+  const page = openOnline(context);
+  page.online.expectRestart('duke-nas is restarting.', { quietMs: MACHINE_QUIET_MS, version: '1.0.0-alpha.2' });
+  page.world.silent = true;
+  await page.wait(5000);
+  assert.deepEqual(page.world.calls, ['/api/1/health']);
+  await page.wait(LOOK_MS - 1000);
+  assert.deepEqual(page.world.calls, ['/api/1/health'], 'the look still waits');
+  await page.wait(1000);
+  page.world.silent = false;
+  page.world.up = true;
+  await page.wait(10_000);
+  assert.deepEqual(page.world.calls, ['/api/1/health', '/api/1/health', '/api/1/session', '/api/1/console/about']);
+  assert.deepEqual(page.world.backs, [true]);
+  assert.match(page.words()[0], /^Back, on 1\.0\.0-alpha\.1: the update was taken back\./);
 });
 
 test('a restart that ends the session is over, and the next time the server is lost and back is no restart', async (context) => {
