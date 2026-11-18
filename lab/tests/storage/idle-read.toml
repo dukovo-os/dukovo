@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# An idle-class read of the root's disk on the first CPU, beside a
+# best-effort read on another, ends soon after the other does. An idle
+# request waits for every lane of the disk's queue to be empty, and on an
+# NVMe disk, whose lanes are its CPUs', the request that left the disk
+# empty woke only its own lane: the idle read slept on in the first CPU's
+# lane after the other's requests ended, and Rescue's rewrite after an
+# update, which runs at idle priority, never finished.
+about = "An idle-class read on one CPU ends soon after a best-effort read beside it on another, on every kind of disk: the request that empties the disk wakes the idle class's waiters in every lane"
+time = "5m"
+host_needs = ["scp"]
+
+[[step]]
+host = "sh {here}/../services/copy-file.sh {here}/root-disk.sh {machine} {machine-port:22}"
+expect = "copied: root-disk.sh"
+# The other read is pinned to the last CPU, the idle one to the first; on a
+# machine of one CPU both share it, and the test still holds.
+[[step]]
+run = '''sh -c '. /users/lab/root-disk.sh; last=$(( $(nproc) - 1 )); taskset -c $last dd if=/devices/$disk of=/devices/null bs=1M skip=128 count=1024 2>/devices/null & other=$!; timeout 60 taskset -c 0 ionice -c 3 dd if=/devices/$disk of=/devices/null bs=1M skip=1152 count=256 2> /tmp/idle-read; status=$?; tail -n 1 /tmp/idle-read; wait $other; echo "idle read: $status"' '''
+root = true
+expect = ["copied", "idle read: 0"]

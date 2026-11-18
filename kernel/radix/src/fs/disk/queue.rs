@@ -832,11 +832,7 @@ impl<C: Controller> Disk<C> {
         if rank < IDLE {
             return !others(0..rank);
         }
-        !others(0..IDLE)
-            && self
-                .lanes
-                .iter()
-                .all(|lane| lane.requests.iter().all(|r| r.load(Ordering::Acquire) == FREE))
+        !others(0..IDLE) && self.empty()
     }
 
     /// Whether a request that goes out alone, of rank `rank` or more
@@ -967,10 +963,27 @@ impl<C: Controller> Disk<C> {
         }
     }
 
-    /// Frees `slot` of `lane`, and wakes those waiting there for one.
+    /// Frees `slot` of `lane`, and wakes those waiting there for one. An
+    /// idle-class request waits for every lane to be empty, not only its
+    /// own ([`Disk::may_go`]), so the request that leaves the disk empty
+    /// wakes the waiters of every lane: on an NVMe namespace, whose lanes
+    /// are its CPUs', an idle-class read waiting in one CPU's lane slept
+    /// on while the requests that held it back ended in another's, and
+    /// went only when something else of its own CPU's came by.
     fn free(&self, lane: usize, slot: usize) {
-        self.lanes[lane].requests[slot].store(FREE, Ordering::Release);
+        self.lanes[lane].requests[slot].store(FREE, Ordering::SeqCst);
         self.wake(lane);
+        if self.waiting[IDLE].load(Ordering::SeqCst) > 0 && self.empty() {
+            self.wake_room();
+        }
+    }
+
+    /// Whether no request is in flight in any lane. Sequentially
+    /// consistent, as [`Disk::free`]'s store is: of two lanes freeing their
+    /// last requests at once, one sees the other's free and wakes the idle
+    /// class's waiters.
+    fn empty(&self) -> bool {
+        self.lanes.iter().all(|lane| lane.requests.iter().all(|r| r.load(Ordering::SeqCst) == FREE))
     }
 
     /// Calls `f` with the driver's part in the first lane, under its

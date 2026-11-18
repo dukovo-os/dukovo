@@ -10,7 +10,10 @@
 //! without an error, and each disk holds what it held. A thread that holds
 //! slots of a queue never waits for more, so threads that each hold some
 //! never wait on one another for ever, as sixteen did on a SATA disk
-//! before.
+//! before. Then an idle-class read of the NVMe namespace, on the first
+//! CPU, while a best-effort read goes on the second: it ends once the
+//! other has, though the requests that held it back ended in the other
+//! CPU's lane.
 
 use super::super::*;
 
@@ -28,7 +31,7 @@ const NAMES: [&str; 3] = ["sda", "nvme0n1", "vda"];
 /// The test.
 pub const CASE: Case = Case {
     name: "disk-readers",
-    about: "many threads reading one disk raw at once, more than its queue holds: 32 threads each on a SATA, an NVMe and a virtio disk for 15 seconds; then a read of 8 MiB of each gets through, the readers read without an error, and the disks are unchanged",
+    about: "many threads reading one disk raw at once, more than its queue holds: 32 threads each on a SATA, an NVMe and a virtio disk for 15 seconds; then a read of 8 MiB of each gets through, the readers read without an error, and the disks are unchanged; then an idle-class read of the NVMe disk on one CPU ends while a best-effort read goes on the other",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     cmdline: "console-sign-in=off",
@@ -51,6 +54,11 @@ const READERS: &str = "clear; r=/system/tests/posix/diskread; $r /devices/sda 32
                        32 64 > /tmp/vda 2>&1 & c=$!; sleep 15; for d in sda nvme0n1 vda; do echo \
                        \"$d gave $(head -c 8388608 /devices/$d | wc -c | tr -d ' ')\"; done; kill $a \
                        $b $c; echo \"stopped $?\"";
+
+/// A best-effort read of the whole NVMe namespace on the second CPU, and
+/// beside it an idle-class read of its first 8 MiB on the first.
+const IDLE_READ: &str = "clear; taskset -c 1 cat /devices/nvme0n1 > /devices/null & taskset -c 0 \
+                         ionice -c 3 head -c 8388608 /devices/nvme0n1 | wc -c | sed 's/^/idle read /'";
 
 fn disk_readers(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     vm.expect("spark: started consoled (/system/commands/consoled) as process ")?;
@@ -78,6 +86,13 @@ fn disk_readers(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     if let Some(line) = screen.iter().find(|line| line.contains("diskread: a read")) {
         return Err(format!("a reader's read failed: {}", line.trim_end()));
     }
+
+    // The idle-class read waits in the first CPU's lane for the disk to
+    // be empty; the best-effort one's requests go in the second's.
+    answer_prompt(vm, "#", IDLE_READ)?;
+    answer_prompt_within(vm, "#", "echo finished", 60)
+        .map_err(|err| format!("an idle-class read never went once the disk was free: {err}"))?;
+    vm.expect_screen(&["idle read 8388608", "finished"])?;
 
     vm.type_text("poweroff\n")?;
     vm.expect("spark: asked to power off the machine")?;
