@@ -232,11 +232,14 @@ blocked, and *never-block remove* _network_ takes it out again. A
 network is an address or an address and its prefix, as *192.168.1.0/24*.
 The rest of the file stays as it was, comments too, and authd reads it
 at once. A network already in the list, or not in it to be taken out,
-is said so and changes nothing:
+is said so, changes nothing and ends with status 0, so that the same
+command run again, as a playbook does, succeeds:
 
 ```
 $ elevate firewall never-block 192.168.1.0/24
 firewall: 192.168.1.0/24 is never blocked
+$ elevate firewall never-block 192.168.1.0/24
+firewall: 192.168.1.0/24 is never blocked already
 $ elevate firewall never-block remove 192.168.1.0/24
 firewall: 192.168.1.0/24 may be blocked again
 ```

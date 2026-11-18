@@ -55,7 +55,7 @@ use std::net::IpAddr;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-use accounts::request::{Answer, BlockedEntry, Request};
+use accounts::request::{self, Answer, BlockedEntry, Request};
 use radix_abi::Status;
 use radix_abi::errors::Kernel;
 use radix_abi::firewall::{
@@ -1199,13 +1199,20 @@ impl Blocks {
     }
 
     /// The line that says it is done, for a command that changes
-    /// something: none for the list.
-    fn done(&self) -> Option<String> {
+    /// something, from authd's `answer`: none for the list.
+    fn done(&self, answer: &str) -> Option<String> {
+        let already = answer == request::NEVER_AS_IT_WAS;
         Some(match self {
             Blocks::Show => return None,
             Blocks::Unblock(source) => format!("firewall: {source} is no longer blocked"),
+            Blocks::NeverBlock { network, remove: false } if already => {
+                format!("firewall: {network} is never blocked already")
+            }
             Blocks::NeverBlock { network, remove: false } => {
                 format!("firewall: {network} is never blocked")
+            }
+            Blocks::NeverBlock { network, remove: true } if already => {
+                format!("firewall: {network} is not in never, and may be blocked")
             }
             Blocks::NeverBlock { network, remove: true } => {
                 format!("firewall: {network} may be blocked again")
@@ -1232,7 +1239,7 @@ fn blocks(words: &[&str], json: bool, out: &mut dyn Write) -> Result<i32, Fail> 
         Answer::Done(answer) => answer,
         Answer::Refused(why) => return Err(fail(why)),
     };
-    match command.done() {
+    match command.done(&answer) {
         Some(done) => writeln!(out, "{done}")?,
         None if json => return report::blocked(&BlockedEntry::parse_list(&answer), out),
         None => {
@@ -1853,7 +1860,7 @@ mod tests {
             let command = parsed(text).unwrap();
             assert_eq!(command.request(), Request::Unblock { address: address.into() }, "{text}");
             assert_eq!(
-                command.done().unwrap(),
+                command.done("").unwrap(),
                 format!("firewall: {address} is no longer blocked")
             );
         }
@@ -1884,13 +1891,28 @@ mod tests {
             command.request(),
             Request::NeverBlock { network: "192.168.1.0/24".into(), remove: false }
         );
-        assert_eq!(command.done().unwrap(), "firewall: 192.168.1.0/24 is never blocked");
+        assert_eq!(
+            command.done(request::NEVER_CHANGED).unwrap(),
+            "firewall: 192.168.1.0/24 is never blocked"
+        );
+        // A second time, which authd finds as asked, is no failure.
+        assert_eq!(
+            command.done(request::NEVER_AS_IT_WAS).unwrap(),
+            "firewall: 192.168.1.0/24 is never blocked already"
+        );
         let command = parsed("never-block remove 192.168.1.0/24").unwrap();
         assert_eq!(
             command.request(),
             Request::NeverBlock { network: "192.168.1.0/24".into(), remove: true }
         );
-        assert_eq!(command.done().unwrap(), "firewall: 192.168.1.0/24 may be blocked again");
+        assert_eq!(
+            command.done(request::NEVER_CHANGED).unwrap(),
+            "firewall: 192.168.1.0/24 may be blocked again"
+        );
+        assert_eq!(
+            command.done(request::NEVER_AS_IT_WAS).unwrap(),
+            "firewall: 192.168.1.0/24 is not in never, and may be blocked"
+        );
         // One address is a network of its own, and is written as it was.
         assert_eq!(
             parsed("never-block 198.51.100.4").unwrap().request(),
@@ -1923,7 +1945,7 @@ mod tests {
     fn blocked_asks_for_the_list_and_nothing_more() {
         let command = parsed("blocked").unwrap();
         assert_eq!(command.request(), Request::Blocked);
-        assert_eq!(command.done(), None);
+        assert_eq!(command.done(""), None);
         assert!(parsed("blocked now").unwrap_err().contains("takes nothing more"));
     }
 }

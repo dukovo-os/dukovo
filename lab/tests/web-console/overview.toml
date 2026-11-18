@@ -12,7 +12,7 @@
 # test's own routes in the browser, and drawn as the machine's would be.
 #
 # A service file changed by hand is the one thing that needs the machine: a
-# browser script cannot run commands on it, so a root step adds a comment
+# browser script cannot run commands on it, so root steps add a comment
 # line naming each engine to a service file of that engine's own
 # (diskhealth's for Chromium, nfsd's for Firefox, smbd's for WebKit), 45
 # seconds apart, as journal.toml does, so that the console's round, which
@@ -23,12 +23,14 @@
 # script waits for the row of its engine's edit, up to 90 seconds, and then
 # finds it in the Health list and in What changed, looks at its diff, marks
 # it seen with Keep it, which asks to unlock first, and puts it back, which
-# asks first what it will write back. The step waits a second after its
-# command starts, so that no file's time is before the second authd's audit
-# gives the command, which is how the row knows who changed the file. The
-# same step saves copies of the three service files first, and the last one
-# leaves them as the image has them, also when an engine was skipped, and
-# removes the copies. A reader sees the cards and no button that
+# asks first what it will write back. Each edit is a root step of its own,
+# which waits after its command starts, so that no file's time is before the
+# second authd's audit gives the command, which is how the row knows who
+# changed the file, and is short enough that the audit line names the whole
+# path (the kernel's log keeps 200 bytes of a line). A step before them
+# saves copies of the three service files, and the last one leaves them as
+# the image has them, also when an engine was skipped, and removes the
+# copies. A reader sees the cards and no button that
 # changes anything. Each look is dark, light, high contrast, forced colours
 # and less motion, checked by axe. admind is the service that answers.
 # The accounts are two this test makes and removes, an administrator and a
@@ -48,7 +50,16 @@ expect = ["Made wc-overview", "Made wc-overview-reader", "wc-overview-reader is 
 host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
 expect = '{"ok":true}'
 [[step]]
-run = "sh -c 'mkdir -p /tmp/lab-overview && cp /system/settings/spark/services/diskhealth.toml /system/settings/spark/services/nfsd.toml /system/settings/spark/services/smbd.toml /tmp/lab-overview/ && sleep 1 && echo \"# lab overview chromium\" >> /system/settings/spark/services/diskhealth.toml && sleep 45 && echo \"# lab overview firefox\" >> /system/settings/spark/services/nfsd.toml && sleep 45 && echo \"# lab overview webkit\" >> /system/settings/spark/services/smbd.toml'"
+run = "sh -c 'mkdir -p /tmp/lab-overview && cp /system/settings/spark/services/diskhealth.toml /system/settings/spark/services/nfsd.toml /system/settings/spark/services/smbd.toml /tmp/lab-overview/'"
+root = true
+[[step]]
+run = "sh -c 'sleep 1; echo \"# lab overview chromium\" >> /system/settings/spark/services/diskhealth.toml'"
+root = true
+[[step]]
+run = "sh -c 'sleep 45; echo \"# lab overview firefox\" >> /system/settings/spark/services/nfsd.toml'"
+root = true
+[[step]]
+run = "sh -c 'sleep 45; echo \"# lab overview webkit\" >> /system/settings/spark/services/smbd.toml'"
 root = true
 [[step]]
 browser = "overview.mjs"

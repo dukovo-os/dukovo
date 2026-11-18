@@ -784,8 +784,11 @@ fn what_is_checked_after_an_update(vm: &mut Vm, test: &mut Test) -> Result<(), S
     {
         return Err(format!("the checks after the add are {shown}"));
     }
-    // The name is taken: the command's own words.
-    is_refused(test, add, &page, (422, "ADM-123"), "a check is called web site already")?;
+    // The same check again is no change, and no failure; the name taken by
+    // another is refused, in the command's own words.
+    changes(test, add, &page, false)?;
+    let other = json!({"name": "web site", "url": "https://localhost/other"});
+    is_refused(test, add, &other, (422, "ADM-123"), "a check is called web site already")?;
 
     // A service, which has no certificate to be insecure about.
     let service = json!({"name": "nginx check", "service": "nginx"});
@@ -833,20 +836,14 @@ fn what_is_checked_after_an_update(vm: &mut Vm, test: &mut Test) -> Result<(), S
         "A service's name has 1 to",
     )?;
 
-    // The checks taken away, which a name that is not there refuses.
+    // The checks taken away; a name that is not there is no change.
     for name in ["web%20site", "nginx%20check"] {
         changes(test, &format!("/api/1/updates/checks/{name}/remove"), &json!({}), true)?;
     }
     let text = text_of(test, vm, HEALTH)?;
     has("health.toml", &text, &["# kept", "stable = 10"])?;
     has_none("health.toml", &text, &["web site", "nginx check"])?;
-    is_refused(
-        test,
-        "/api/1/updates/checks/web%20site/remove",
-        &json!({}),
-        (422, "ADM-123"),
-        "no check is called web site",
-    )?;
+    changes(test, "/api/1/updates/checks/web%20site/remove", &json!({}), false)?;
     let shown = same_as_command(vm, test, add, "update checks --json")?;
     if shown["checks"] != json!([]) {
         return Err(format!("the checks after the removals are {shown}"));

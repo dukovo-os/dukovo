@@ -14,14 +14,16 @@
 # routes. admind is the service that answers.
 #
 # A browser script cannot run commands on the machine, so a root step
-# first saves copies of three service files and adds a comment line naming
-# an engine to each, one engine to a file (diskhealth's for Chromium,
+# first saves copies of three service files, and a root step each then adds
+# a comment line naming an engine to one of them (diskhealth's for Chromium,
 # nfsd's for Firefox, smbd's for WebKit). The edits are 45 seconds apart, so
-# that the round finds each alone and each is a row of its own, and the
-# first waits a second after the command starts, so that no file's time is
-# before the second authd's audit gives the command, which is how the row
-# knows the command named the file. Each engine then reads, keeps and puts
-# back its own. A last root step leaves the files as the image has them,
+# that the round finds each alone and each is a row of its own, and each
+# waits after its command starts, so that no file's time is before the
+# second authd's audit gives the command, which is how the row knows the
+# command named the file. Each edit is a command of its own, short enough
+# that its audit line names the whole path: the kernel's log keeps 200 bytes
+# of a line, and a path past them is not in the line. Each engine then
+# reads, keeps and puts back its own. A last root step leaves the files as the image has them,
 # also when an engine the lab PC lacks was skipped, and removes the copies.
 # The account is one this test makes and removes, so no script needs the
 # lab's password.
@@ -40,7 +42,16 @@ expect = "Made wc-journal"
 host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
 expect = '{"ok":true}'
 [[step]]
-run = "sh -c 'mkdir -p /tmp/lab-journal && cp /system/settings/spark/services/diskhealth.toml /system/settings/spark/services/nfsd.toml /system/settings/spark/services/smbd.toml /tmp/lab-journal/ && sleep 1 && echo \"# lab journal chromium\" >> /system/settings/spark/services/diskhealth.toml && sleep 45 && echo \"# lab journal firefox\" >> /system/settings/spark/services/nfsd.toml && sleep 45 && echo \"# lab journal webkit\" >> /system/settings/spark/services/smbd.toml'"
+run = "sh -c 'mkdir -p /tmp/lab-journal && cp /system/settings/spark/services/diskhealth.toml /system/settings/spark/services/nfsd.toml /system/settings/spark/services/smbd.toml /tmp/lab-journal/'"
+root = true
+[[step]]
+run = "sh -c 'sleep 1; echo \"# lab journal chromium\" >> /system/settings/spark/services/diskhealth.toml'"
+root = true
+[[step]]
+run = "sh -c 'sleep 45; echo \"# lab journal firefox\" >> /system/settings/spark/services/nfsd.toml'"
+root = true
+[[step]]
+run = "sh -c 'sleep 45; echo \"# lab journal webkit\" >> /system/settings/spark/services/smbd.toml'"
 root = true
 [[step]]
 browser = "journal.mjs"

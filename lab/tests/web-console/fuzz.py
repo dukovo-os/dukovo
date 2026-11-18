@@ -28,7 +28,8 @@ example the change's undo is called, and the service the examples use is put
 back as it was found (console.py). It leaves alone the changes at
 LEFT_ALONE: renewing the certificate, the changes that are tried, installing
 an app from the catalogs, and those whose examples need what only their own
-tests set up, as the databases' do.
+tests set up, as the databases', the changes to another account and the
+others that web-console/ansible leaves out do.
 
 A request that is refused changes nothing, so the first two runs leave the
 machine as it was. What each run checks of every answer: it is not a 5xx,
@@ -107,13 +108,18 @@ SLOWEST_CHANGE = 10
 EXAMPLES = 50
 
 # The changes the third run leaves alone: certificate.renew makes the certificate the console
-# serves anew, which the boot test admin-actions renews; and the changes that are tried, whose
-# examples give the card and the rules of QEMU's user network, which another machine does not
-# have, and which the boot test admin-trials and the browser tests of Networking and Firewall
-# try, keep and undo.
+# serves anew, which the boot test admin-actions renews; and the changes that are tried (ADRs 0518
+# and 0562), as web-console/ansible.py leaves them: the network's examples give the card and the
+# rules of QEMU's user network, which another machine does not have; SSH's settings and the
+# console's certificate start a trial that Spark undoes unless it is kept, and their keep and undo
+# need one running; and the console's certificate is refused (ADM-141) where it does not name the
+# address the test reaches the console by, as 127.0.0.1 through QEMU. The boot tests admin-trials and
+# admin-certificates and the browser tests of Networking, Firewall, Security and Certificates try,
+# keep and undo them.
 TRIED = {
     "network.set", "network.keep", "network.undo",
     "firewall.add", "firewall.replace", "firewall.remove", "firewall.keep", "firewall.undo",
+    "ssh.set", "ssh.keep", "ssh.undo", "console.keep", "console.undo", "console.certificate",
 }
 # The actions of the Snapshots, Backups and Move pages whose examples need what only their own
 # tests set up: a snapshot, a backup place on a second disk, or the folder of another machine's
@@ -167,7 +173,36 @@ WEBSITES = {
     # takes that site away, with its folder when asked, which nothing brings back.
     "websites.remove",
 }
-LEFT_ALONE = {"certificate.renew"} | CATALOG_CHANGES | TRIED | SET_UP | DATABASES | WEBSITES
+# The changes of the Accounts page to an account that is there: their examples name the account lab-made,
+# which accounts.add's example makes and its undo, accounts.remove, takes away again, so that none is there
+# when they run. The boot test admin-accounts makes lab-made and runs each on it, and the browser test
+# web-console/accounts uses them.
+ACCOUNTS = {
+    "accounts.set", "accounts.password", "accounts.disable", "accounts.enable", "accounts.remove",
+    "accounts.key-add", "accounts.key-remove", "accounts.token-revoke", "accounts.steps-reset", "accounts.end",
+}
+# The other changes that web-console/ansible.py leaves out at its SET_UP, for the reasons it gives there:
+# certificate.get asks Let's Encrypt for names that are not this machine's, and the certificate shop the
+# others add, revoke, remove or forget is one only admin-certificates makes; machine.rename renames the
+# lab machine; the alert channels' changes take what a test does not give or need a channel that is not
+# there; Your account's changes would change the name, password and keys of the account the test signs
+# in with; security.unblock needs a blocked address and private.add and private.remove the device
+# lab-phone; and the Updates' and Apps' changes need a release on an update server or an app of the test
+# catalog. Their examples end refused, and so does the undo after them, which the round must not.
+OTHERS_SET_UP = {
+    "certificate.get", "certificate.add", "certificate.revoke", "certificate.remove", "certificate.forget",
+    "machine.rename",
+    "alerts.email", "alerts.email-remove", "alerts.webhook-add", "alerts.webhook-remove",
+    "alerts.push-add", "alerts.push-remove", "alerts.channel-about",
+    "account.name", "account.password", "account.key-add", "account.key-remove",
+    "security.unblock", "private.add", "private.remove",
+    "updates.apply", "updates.unstage", "updates.undo", "updates.hold", "updates.unhold", "updates.later",
+    "apps.update", "apps.update-all", "apps.tonight", "apps.tonight-all", "apps.not-tonight",
+    "apps.rollback", "apps.hold", "apps.unhold", "apps.remove",
+}
+LEFT_ALONE = (
+    {"certificate.renew"} | CATALOG_CHANGES | TRIED | SET_UP | DATABASES | WEBSITES | ACCOUNTS | OTHERS_SET_UP
+)
 # The reads the second run leaves alone: lab.missing, which a lab machine offers, runs a command
 # no image has, and is answered 501 (ADM-129) by design, which Schemathesis takes for a server error.
 # apps.search and apps.sheet read the catalogs, which bundled reads anew at each request, over the
@@ -310,10 +345,13 @@ def run_schemathesis(command, folder, document, origin, name, seed, headers, opt
     run = subprocess.run(arguments + options, capture_output=True, text=True, cwd=folder, env=env, timeout=3600)
     output = run.stdout + run.stderr
     if run.returncode != 0:
-        # The failures come before the summary; the first few say what is wrong.
-        failures = output.find("FAILURES")
+        # The errors and the failures come before the summary; the first few of each say what is
+        # wrong, and an error, as an answer that never came, names its operation only there.
+        errors = output.find("= ERRORS =")
+        failures = output.find("= FAILURES =")
         summary = output.rfind("SUMMARY")
-        shown = output[failures : failures + 3500] if failures >= 0 else ""
+        shown = output[errors : errors + 1500] if errors >= 0 else ""
+        shown += output[failures : failures + 3500] if failures >= 0 else ""
         raise Failure(
             f"{name}: Schemathesis ended with status {run.returncode}; rerun with LAB_FUZZ_SEED={seed}:\n"
             f"{shown}\n{output[summary:][-1500:] if summary >= 0 else output[-1500:]}"
@@ -383,6 +421,7 @@ def main():
             print("fuzz: a token that reads: no failure in %d operations (%d requests)" % tested_in(output, "a token that reads"))
 
             ran = []
+            own = set()
             for action in actions:
                 if not action["changes"] or action["id"] in LEFT_ALONE:
                     continue
@@ -394,6 +433,9 @@ def main():
                 tested_in(output, action["id"])
                 ran.append(action["id"])
                 put_back(changer, actions, action, service, before)
+                # The undo is the test's own change too, as accounts.remove is accounts.add's.
+                undo = action["examples"]["undo"]
+                own.update([action["id"]] + ([undo["action"]] if undo else []))
             if not ran:
                 raise Failure("the list of actions has no change to run")
             print(f"fuzz: a token that changes: no failure in {len(ran)} examples ({', '.join(ran)}), each followed by its undo")
@@ -408,7 +450,7 @@ def main():
 
             rows = [row for row in administrator.changes() if row["id"] > first_row]
             for row in rows:
-                if row["how"] != f"token {CHANGE_TOKEN}" or row["action"] not in ran:
+                if row["how"] != f"token {CHANGE_TOKEN}" or row["action"] not in own:
                     raise Failure(
                         f"the journal has a change that is not the test's own: row {row['id']}, {row['action']} "
                         f"by {row['who']}, {row['how']}"

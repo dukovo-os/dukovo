@@ -250,7 +250,11 @@ async function viewer(t, page) {
   await signOut(t, page);
   await signInDone(t, page, VIEWER, PASSWORD);
   await accountItem(await openAccountMenu(t, page), "Your account").click();
-  await t.see(page.getByText("it is not an administrator"));
+  await t.see(page.getByRole("heading", { name: "Your account", level: 1 }));
+  const administrator = page.locator("dl.rows dt").filter({ hasText: /^Administrator$/ }).locator("xpath=following-sibling::dd[1]");
+  await t.see(administrator);
+  const said = (await administrator.innerText()).replace(/\s+/g, " ").trim();
+  ensure(said === "No", `the row Administrator of a viewer's own account says "${said}", not No`);
   await t.see(header(page).getByText("Limited access"));
   await t.gone(headerButton(page, "Unlock"));
   await look(t, page, "viewer");

@@ -223,13 +223,17 @@ that the update server offers.
 	1 to 64 letters, digits, spaces, *.*, *\_* and *-*, starting with a
 	letter or a digit. *--required* makes an update fail when the check
 	fails; without it the check is only logged. *--timeout* is the
-	seconds it may take, 1 to 600, 30 by default. A name in use is
-	refused, with status 1. An administrator's, through *elevate*(8).
+	seconds it may take, 1 to 600, 30 by default. The same check again
+	is told so, *update: check* _name_ *is there already*, and ends with
+	status 0, so that a playbook can run the command again; a name in
+	use by another check is refused, with status 1. An administrator's,
+	through *elevate*(8).
 
 *checks remove* _name_
 	Takes the check called _name_ out of *health.toml*(5), with the
 	comments above it. If none is called that, it says *update: no
-	check is called* _name_ and ends with status 1.
+	check is called* _name_*, so none was removed* and ends with status
+	0, as the command run again does.
 
 *checks essential* _service_ *on*|*off*
 	Adds the service to the *essential* list of *health.toml*(5), or

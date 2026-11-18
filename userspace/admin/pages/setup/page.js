@@ -145,7 +145,6 @@ export async function show(view) {
 
   /** Reads the steps again, and draws what changed without making the form again, so that what was typed stays. */
   async function reload() {
-    const was = current;
     let read;
     try {
       read = await readSteps(view);
@@ -153,6 +152,8 @@ export async function show(view) {
       return;
     }
     if (view.signal.aborted || read.length === 0) return;
+    // The step shown now: the person may have chosen another while the steps were read.
+    const was = current;
     steps = read;
     current = steps.find((step) => step.id === was.id) ?? chosenStep(steps, null);
     if (current.id !== was.id) {

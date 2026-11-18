@@ -77,14 +77,19 @@ async function copied(page, engine) {
   return engine === "chromium" ? (await page.evaluate(() => navigator.clipboard.readText())).trim() : null;
 }
 
-/** Starts the lab's long action and opens the Tasks drawer on its card; gives the card's one-line command. */
+/**
+ * Opens the Tasks drawer on the card of the lab's long task `id`; gives the
+ * card's one-line command. The task an engine before this one stopped needs
+ * a look in this browser, which the button's name says first, and has a card
+ * of the same name: the card is told from it by the number of its task.
+ */
 async function openOnCard(t, page, id) {
-  await page.getByRole("banner").getByRole("button", { name: /^Tasks, \d+ running/ }).click();
+  await page.getByRole("banner").getByRole("button", { name: /^Tasks, (\d+ needs? a look, )?\d+ running/ }).click();
   const tasks = page.getByRole("complementary", { name: "Tasks" });
   await t.see(tasks);
-  const card = tasks.getByRole("region", { name: /^Run the lab's long test/ });
+  const card = tasks.getByRole("region", { name: /^Run the lab's long test/ }).filter({ has: page.getByText(new RegExp(`task ${id}$`)) });
   await t.see(card);
-  ensure((await card.getByText(new RegExp(`task ${id}$`)).count()) === 1, `the card of task ${id} is not in the drawer`);
+  ensure((await card.count()) === 1, `the card of task ${id} is not in the drawer once`);
   const line = card.getByRole("button", { name: /^Show the command: elevate admin lab-steps/ });
   await t.see(line);
   return line;

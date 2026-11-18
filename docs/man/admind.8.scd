@@ -117,7 +117,11 @@ answers it:
   routes that sign a browser in keep the first two, and count each
   request against the ten an address may make in a minute.
 . Its body is JSON (415, ADM-119), at most 64 KiB before sign-in and 1 MiB
-  after (413, ADM-113).
+  after (413, ADM-113). A body that no answer reads, as a refused
+  request's, is read to its end all the same, up to 16 MiB and for 10
+  seconds, so that a client still sending it reads the answer; past that,
+  or when the client waits for *100 Continue* first, the connection ends
+  with the answer.
 . For an action, its arguments are checked (400, ADM-108 for what the
   action does not take, ADM-125 for a value that cannot work), then
   whether the caller may ask for it (ADM-124, ADM-122, ADM-106), and only
@@ -1022,7 +1026,10 @@ console ran (Terminals), is that account's, with the note *in an
 administrator's terminal of this console*; when two accounts' ran, it is no
 one's. A change that none of these names is *outside the console*: an edit
 by *service* _name_ *edit*, which names the service and not the path, an
-editor run as root at the machine's own console, or a file copied in. Names that begin with a dot,
+editor run as root at the machine's own console, or a file copied in. The
+audit log has authd's line as the kernel's log kept it, which is its first
+200 bytes: a path that a long command names after them is not in the line,
+and that command does not name it. Names that begin with a dot,
 which an editor's work file has on its way to its name, and links are not
 looked at. A file changed and changed back between two looks is not seen,
 and two changes between two looks are one row. The first look at a store

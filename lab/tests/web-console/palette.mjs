@@ -134,22 +134,29 @@ async function closesWithEsc(t, page) {
   ensure(back, "the focus did not go back to where it was when the palette closed");
 }
 
-/** A page is found by its words, and Enter goes to it: the section of the account page, by its hash. */
+/**
+ * A page is found by its words, and Enter goes to it: the section of the
+ * account page, by its hash. "your" keeps out the action "Remove an
+ * account's second steps", whose group comes before the pages'.
+ */
 async function goesToAPage(t, page) {
   const palette = await openPalette(t, page);
-  await fieldOf(palette).fill("second step");
+  await fieldOf(palette).fill("your second step");
   const row = rowsOf(palette).first();
   await t.see(row);
   const label = await rowInHand(palette);
-  ensure(/^Your account › Second step/.test(label), `"second step" has "${label}" first, not the section of the account page`);
+  ensure(/^Your account › Second step/.test(label), `"your second step" has "${label}" first, not the section of the account page`);
   await page.keyboard.press("Enter");
   await t.gone(palette);
   await t.see(page.getByRole("heading", { name: "Your account", level: 1 }));
   ensure(new URL(page.url()).hash === "#second-step", `Enter went to ${page.url()}, not the second step's section`);
-  ensure(
-    (await page.evaluate(() => document.activeElement?.tagName)) === "H1",
-    "the page does not have the focus after the palette took the person to it",
+  // The router puts the focus on the h1 once the page has drawn its cards,
+  // which is after the heading shows: wait for it.
+  const focused = await page.waitForFunction(() => document.activeElement?.tagName === "H1", null, { timeout: 15_000 }).then(
+    () => true,
+    () => false,
   );
+  ensure(focused, "the page does not have the focus after the palette took the person to it");
 }
 
 /** The Alerts page's cards are found by their words, for an administrator: "Get alerts in this browser" goes to the card of that name, by its hash. */

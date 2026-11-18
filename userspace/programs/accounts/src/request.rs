@@ -617,7 +617,9 @@ pub enum Request {
     },
     /// Never block `network`, or block it again when `remove`, as
     /// blocking.toml(5)'s `never` lists it: an administrator's to ask,
-    /// inside elevate.
+    /// inside elevate. authd answers [`NEVER_CHANGED`], or
+    /// [`NEVER_AS_IT_WAS`] when the list was as asked already, and wrote
+    /// nothing.
     NeverBlock {
         /// An address, or a network as `192.168.1.0/24`.
         network: String,
@@ -696,6 +698,12 @@ pub enum HelpProof {
         signature: Vec<u8>,
     },
 }
+
+/// authd's answer to [`Request::NeverBlock`] that changed the list.
+pub const NEVER_CHANGED: &str = "changed";
+
+/// authd's answer to [`Request::NeverBlock`] that found the list as asked.
+pub const NEVER_AS_IT_WAS: &str = "as it was";
 
 /// The name a helper signs in with over SSH (ADR 0540): no account's, and
 /// one no account may take.

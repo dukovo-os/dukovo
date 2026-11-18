@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { adminShells, lockOk, lockTitle } from '../shell/dialogs.js';
+import { adminShells, lockOk, lockTitle, signOutOk } from '../shell/dialogs.js';
 
 const terminal = (...admins) => ({ id: 1, panes: admins.map((admin, id) => ({ id, admin })) });
 
@@ -31,4 +31,13 @@ test('Lock goes on without a question when there are no administrator shells or 
   assert.equal(await lockOk(async () => ({ terminals: [terminal(false)] })), true);
   assert.equal(await lockOk(async () => ({ terminals: [] })), true);
   assert.equal(await lockOk(async () => { throw new Error('ADM-104'); }), true);
+});
+
+test('Sign out and Lock do not wait long on a server that does not say which terminals run', async () => {
+  const never = () => new Promise(() => {});
+  assert.equal(await signOutOk({ get: never, post: async () => null }, 20), true);
+  assert.equal(await lockOk(never, 20), true);
+  const refused = async () => { throw new Error('no such route'); };
+  assert.equal(await signOutOk({ get: refused, post: async () => null }, 20), true);
+  assert.equal(await lockOk(refused, 20), true);
 });

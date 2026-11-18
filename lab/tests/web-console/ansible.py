@@ -44,9 +44,10 @@ check mode reads the state, and it may say it cannot tell, unless it
 compares nothing, as lab.long, which check mode says changes each time. A change whose
 undo is itself with the same arguments, as console.reach's, finds nothing
 to do from the start, so check mode must say false before it too; and one
-that has no undo and compares something, as console.export, starts from
-what the machine has, so check mode may say before it that it cannot
-tell.
+that has no undo and compares something, as console.export or
+power.cancel, starts from what the machine has, so check mode may say
+before it that it cannot tell, or that it would change nothing; a module
+must then report what check mode said.
 
 The console's own reads run here as the commands they show: console.about
 as `admin about --json`, console.notices as `admin notices --json` and
@@ -55,8 +56,8 @@ metrics.now as `metrics now --json`.
 certificate.renew is not run: it makes the certificate the console serves
 anew, and the API calls that follow would have to be made again with
 another certificate. The boot test admin-actions renews it. checks.last,
-checks.run, lab.missing, metrics.usage, metrics.around and service.usage
-are not run either, for the reasons at LEFT_ALONE.
+checks.run, lab.missing, metrics.usage, metrics.around, service.usage and
+storage.usage are not run either, for the reasons at LEFT_ALONE.
 
 Nor are the changes of the network's settings, the firewall's rules,
 SSH's settings and who may reach the console (ADRs 0518 and 0562): each
@@ -193,9 +194,9 @@ from console import (
 # makes the machine's certificate anew; checks.last runs dukovo-check, which
 # a machine has only once an update brings the checks, and lab.missing runs
 # a command that no image has, so both end with a status other than 0;
-# metrics.usage, metrics.around and service.usage end with 1 on a machine
-# that has run for less than the 10 minutes in which metricsd writes the
-# history they read; checks.run runs dukovo-check, as checks.last does; the
+# metrics.usage, metrics.around, service.usage and storage.usage end with 1
+# on a machine that has run for less than the 10 minutes in which metricsd
+# writes the history they read; checks.run runs dukovo-check, as checks.last does; the
 # changes that are tried (TRIED) need a trial; ssh.on and ssh.off (UNDER)
 # stop the sshd that Ansible's tasks come through; the actions of the
 # Snapshots, Backups, Move, Accounts, Your account, Security, Updates, Apps,
@@ -292,6 +293,7 @@ SET_UP = {
 ON_A_SECOND_DISK = {"storage.grow"}
 LEFT_ALONE = {
     "certificate.renew", "checks.last", "checks.run", "lab.missing", "metrics.usage", "metrics.around", "service.usage",
+    "storage.usage",
 } | TRIED | UNDER | SET_UP | ON_A_SECOND_DISK
 # The reads whose example names a disk of the boot tests, vda, which ask after this machine's own disk instead.
 ON_THIS_MACHINE = {"storage.health"}
@@ -411,10 +413,9 @@ class Round:
 
 def undo_first(console, undo, args):
     """Brings the machine to the state `undo` leaves, so that the change after it has something to
-    do. An undo refused with 422 finds that state already: the firewall will not remove an address
-    that is not in its never-block list, as on a machine that never had it. The change's first task
-    must then report a change, which the round checks, so a refusal for any other reason still
-    fails the test."""
+    do. An undo refused with 422 may find that state already, as a command that will not take away
+    what is not there. The change's first task must then report a change, which the round checks,
+    so a refusal for any other reason still fails the test."""
     path, rest = address(undo["path"], args)
     status, text = console.call("POST", path, rest)
     if status not in (200, 422):
@@ -512,6 +513,8 @@ def main():
         # change that is already made would make one again (it may say it cannot tell); a change
         # that compares nothing is said to change something each time.
         reported = {action["id"]: (first, second) for action, first, second in changes}
+        # Every disagreement is named at once, so one run shows them all.
+        disagreements = []
         for action, before_run, after_run in checks:
             first, second = reported[action["id"]]
             undo = action["examples"]["undo"]
@@ -520,14 +523,17 @@ def main():
             undoes_itself = undo is not None and (undo["action"], undo["args"]) == (action["id"], action["examples"]["good"][0])
             # A change with no undo starts from what the machine has: console.export's folder may
             # be a repository from a run before, and check mode cannot tell whether the settings
-            # moved since, so it may say so.
+            # moved since, so it may say so; power.cancel and updates.bisect-stop have nothing to
+            # cancel or stop unless something left one, so check mode rightly says false. A command
+            # reports a change either way, so any answer may be right; a module reports what it
+            # did, and an answer check mode gives must be the same.
             unknown_start = undo is None and not always_changes(action)
             if unknown_start:
-                wrong = before_run is False
+                wrong = round_.is_module(action) and before_run is not None and before_run is not bool(first)
             else:
                 wrong = before_run is not (False if undoes_itself else True)
             if wrong:
-                raise Failure(f"check mode said {action['id']} would change {before_run} before it ran, and Ansible changed {first}")
+                disagreements.append(f"check mode said {action['id']} would change {before_run} before it ran, and Ansible changed {first}")
             if always_changes(action):
                 wrong = after_run is not True
             elif round_.is_module(action):
@@ -535,7 +541,9 @@ def main():
             else:
                 wrong = after_run is True
             if wrong:
-                raise Failure(f"check mode said {action['id']} would change {after_run} after it ran twice, and Ansible's second run changed {second}")
+                disagreements.append(f"check mode said {action['id']} would change {after_run} after it ran twice, and Ansible's second run changed {second}")
+        if disagreements:
+            raise Failure("; ".join(disagreements))
         print("check mode agreed with Ansible on each change")
     finally:
         remove_token(TOKEN_NAME, machine, ssh_port)

@@ -223,6 +223,9 @@ fn route_operation(entry: &Entry, actions: &[&dyn Registered]) -> Value {
     if matches!(entry.route, Route::Show | Route::Check) {
         operation["requestBody"] = action_and_arguments(actions);
     }
+    if matches!(entry.route, Route::Once | Route::OnceHead) {
+        plain_too(&mut operation["responses"]);
+    }
     operation
 }
 
@@ -743,6 +746,22 @@ fn error_response(status: u16, ids: &BTreeMap<&str, &str>) -> Value {
         });
     }
     response
+}
+
+/// Adds plain words to the refusals of a one-time link: it is a phone's,
+/// so a link used or not kept and too many tries from an address are
+/// answered in plain words that name their ID. What is refused before
+/// the route, as a wrong host or a bad escape, is JSON, as everywhere.
+fn plain_too(responses: &mut Value) {
+    for status in [Kind::OnceGone, Kind::NoRoute, Kind::Wait].map(Kind::status) {
+        if let Some(content) = responses
+            .get_mut(status.to_string())
+            .and_then(|response| response.get_mut("content"))
+            .and_then(Value::as_object_mut)
+        {
+            content.insert("text/plain".into(), json!({ "schema": { "type": "string" } }));
+        }
+    }
 }
 
 /// A response whose body is JSON, with `schema` when the shape is known.

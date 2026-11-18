@@ -470,6 +470,32 @@ fn what_a_route_answers_is_described_where_the_table_knows_it() {
 }
 
 #[test]
+fn a_one_time_link_s_own_refusals_may_be_plain_words_and_no_other_error_is() {
+    let document = document(REGISTRY);
+    let once = "/once/{token}/report.txt";
+    for method in ["get", "head"] {
+        let responses = &operation(&document, method, once)["responses"];
+        for status in ["404", "410", "429"] {
+            let kinds = names(&responses[status]["content"]);
+            assert_eq!(
+                kinds,
+                HashSet::from(["application/json", "text/plain"]),
+                "{method} {status}"
+            );
+        }
+        assert_eq!(names(&responses["400"]["content"]), HashSet::from(["application/json"]));
+    }
+    for (path, methods) in document["paths"].as_object().unwrap() {
+        for (method, operation) in methods.as_object().unwrap() {
+            for (status, response) in operation["responses"].as_object().unwrap() {
+                let plain = response["content"].get("text/plain").is_some();
+                assert!(!plain || path == once || !is_error(status), "{method} {path} {status}");
+            }
+        }
+    }
+}
+
+#[test]
 fn show_and_check_take_any_action_and_its_arguments_and_no_other_route_of_the_table_has_a_body() {
     for actions in sets() {
         let document = document(actions);
