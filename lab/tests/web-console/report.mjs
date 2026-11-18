@@ -474,6 +474,22 @@ async function savedToAFile(t, page, calls) {
   return saved;
 }
 
+/**
+ * Asks for the one-time link at `address`, as a phone does. admind counts
+ * each request for a link with the sign-in requests of the address, so that
+ * a link cannot be guessed, and in the second engine this script's own
+ * sign-ins from the lab PC have used the minute up. A 429 is waited out for
+ * the seconds its Retry-After gives and the same request is made once more:
+ * the limit is checked before the link is looked at, so the refusal has not
+ * used the link up.
+ */
+async function askedFor(page, address) {
+  const answer = await page.request.get(address);
+  if (answer.status() !== 429) return answer;
+  await sleep(Number.parseInt(answer.headers()["retry-after"], 10) * 1000);
+  return page.request.get(address);
+}
+
 /** The dialog: a QR code that is the one the console's encoder makes of the link it shows, the link as text, the fingerprint of the certificate the console serves, and a countdown. The first request for the link gets the text on the screen and the next is refused. */
 async function qrCode(t, page, calls, wanted) {
   const asked = page.waitForResponse((reply) => reply.request().method() === "POST" && PHONE_LINK.test(new URL(reply.url()).pathname));
@@ -508,14 +524,14 @@ async function qrCode(t, page, calls, wanted) {
 
   // The lab PC stands in for the phone: it asks for the link by the address it reached the console by.
   const address = `${originOf(page)}/once/${found[1]}/report.txt`;
-  const first = await page.request.get(address);
+  const first = await askedFor(page, address);
   ensure(first.status() === 200, `the first request for the link was answered ${first.status()}`);
   ensure(/^text\/plain/.test(first.headers()["content-type"] ?? "") && /attachment/.test(first.headers()["content-disposition"] ?? "") && /report\.txt/.test(first.headers()["content-disposition"] ?? ""), `the link is served as ${first.headers()["content-type"]} with ${first.headers()["content-disposition"]}`);
   ensure(/no-store/.test(first.headers()["cache-control"] ?? ""), "the link's answer may be kept");
   ensure((await first.text()) === wanted, "the link gives a text that is not the one on the screen");
-  const second = await page.request.get(address);
+  const second = await askedFor(page, address);
   ensure(second.status() === 410 && (await second.text()).includes("ADM-140"), `the second request for the link was answered ${second.status()}, not 410 with ADM-140`);
-  const unknown = await page.request.get(`${originOf(page)}/once/${"0".repeat(32)}/report.txt`);
+  const unknown = await askedFor(page, `${originOf(page)}/once/${"0".repeat(32)}/report.txt`);
   ensure(unknown.status() === 404, `a token that was never made was answered ${unknown.status()}, not 404`);
 
   await dialog.getByRole("button", { name: "Close", exact: true }).click();

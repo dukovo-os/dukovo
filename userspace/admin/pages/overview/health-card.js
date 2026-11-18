@@ -21,15 +21,17 @@ function ring(card) {
   return element;
 }
 
-/** One row of the list: an icon, its title and detail, and a link when there is a page. */
+/** One row of the list: an icon, its title and detail, and a link when there is a page. Its `data-need` is the row's id, which names it when another row has the same title. */
 function rowOf(row, time) {
   const words = h('span', { class: 'need-words' },
     h('b', {}, h('span', { class: 'sr-only' }, SEVERITY_WORDS[row.severity]), row.title),
     (row.detail || row.at !== null) && h('small', {}, [row.at === null ? null : time.when(row.at), row.detail].filter(Boolean).join(' · ')));
   const mark = icon(row.icon);
   mark.classList.add(row.severity === 'info' ? 'info' : row.severity);
-  if (linkable(row.href)) return h('li', {}, h('a', { class: 'need-row', href: row.href }, mark, words, h('span', { class: 'go', 'aria-hidden': 'true' }, '›')));
-  return h('li', {}, h('div', { class: 'need-row' }, mark, words));
+  const body = linkable(row.href)
+    ? h('a', { class: 'need-row', href: row.href }, mark, words, h('span', { class: 'go', 'aria-hidden': 'true' }, '›'))
+    : h('div', { class: 'need-row' }, mark, words);
+  return h('li', { 'data-need': row.id }, body);
 }
 
 /** The card, which reads again with `load()`. */

@@ -185,6 +185,9 @@ pub fn headers(authority: bool) -> Vec<(&'static str, &'static str)> {
         ("x-content-type-options", "nosniff"),
         ("referrer-policy", "no-referrer"),
         ("cross-origin-opener-policy", "same-origin"),
+        // The console loads nothing from another origin (see POLICY), so
+        // `require-corp` costs it nothing.
+        ("cross-origin-embedder-policy", "require-corp"),
         ("cross-origin-resource-policy", "same-origin"),
         (
             "permissions-policy",
@@ -305,6 +308,23 @@ mod tests {
         assert!(!names(false).contains(&"strict-transport-security"));
         assert!(names(true).contains(&"strict-transport-security"));
         assert!(!POLICY.contains("unsafe"));
+    }
+
+    #[test]
+    fn every_answer_carries_the_three_cross_origin_policies() {
+        for authority in [false, true] {
+            let all = headers(authority);
+            for policy in [
+                ("cross-origin-opener-policy", "same-origin"),
+                ("cross-origin-embedder-policy", "require-corp"),
+                ("cross-origin-resource-policy", "same-origin"),
+            ] {
+                assert!(
+                    all.contains(&policy),
+                    "{policy:?} is missing when authority is {authority}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -62,6 +62,8 @@ export async function enterShell({ app, session: first, signOut, signInAgain, on
   let actionsList = null;
   let stopped = false;
   let wentAway = false;
+  // What the shell registers outside its own elements ends with it.
+  const open = new AbortController();
 
   // The regions of the frame.
   const asof = h('p', { class: 'asof small muted', role: 'status' });
@@ -82,12 +84,13 @@ export async function enterShell({ app, session: first, signOut, signInAgain, on
   };
   // The parts of the page that go inert while a drawer is modal at phone width; filled below.
   const behind = [];
-  const drawer = lazyDrawer({ aside, behind, host });
+  const drawer = lazyDrawer({ aside, behind, host, signal: open.signal });
   const commands = makeCommands({ get, post, drawer });
   commands.setOn(prefs.value.commands === 'shown');
   prefs.onChange((value) => commands.setOn(value.commands === 'shown'));
   const shell = {
     host,
+    signal: open.signal,
     get,
     post,
     prefs,
@@ -224,7 +227,7 @@ export async function enterShell({ app, session: first, signOut, signInAgain, on
   shell.openAbout = async () => (await import('./dialogs.js')).aboutDialog({ get });
 
   // The unlock's warning, once per unlock; also for a page opened with the
-  // end already near.
+  // end already near. Its notice is another module, read when it is first due.
   let warned = false;
   const warnOfLock = () => {
     const minutes = unlockMinutes();
@@ -232,16 +235,10 @@ export async function enterShell({ app, session: first, signOut, signInAgain, on
       warned = false;
     } else if (!warned) {
       warned = true;
-      notice(`The console locks in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`, {
-        kind: 'warn',
-        action: {
-          label: 'Reset to 15 min',
-          run: () => post('/api/1/unlock/extend').then((answer) => setUnlockSeconds(answer.unlock_seconds), (error) => notice(error.title, { kind: 'warn' })),
-        },
-      });
+      import('./lock-warning.js').then((module) => module.warnOfLock({ minutes, post, notice }));
     }
   };
-  onUnlockChange(warnOfLock);
+  open.signal.addEventListener('abort', onUnlockChange(warnOfLock));
   warnOfLock();
 
   async function signOutAsked() {
@@ -347,6 +344,7 @@ export async function enterShell({ app, session: first, signOut, signInAgain, on
   return {
     stop() {
       stopped = true;
+      open.abort();
       stopKeys();
       clearInterval(poll);
       stream.close();

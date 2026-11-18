@@ -304,6 +304,7 @@ fn machine(vm: &mut Vm, console: &Console) -> Result<(), String> {
         ("x-content-type-options", "nosniff"),
         ("referrer-policy", "no-referrer"),
         ("cross-origin-opener-policy", "same-origin"),
+        ("cross-origin-embedder-policy", "require-corp"),
         ("cache-control", "no-store"),
         ("content-type", "application/json"),
     ] {

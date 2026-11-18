@@ -14,9 +14,9 @@ import { linkable } from './card.js';
 import { close, dialog } from './change-dialogs.js';
 import { checkedWords, SEVERITY_WORDS } from './model.js';
 
-/** The whole list of what needs a look, with each thing's detail and a link where there is a page for it. */
+/** The whole list of what needs a look, with each thing's detail and a link where there is a page for it. A row's `data-need` is its id, as in the card's list. */
 export function seeAllDialog(rows, time) {
-  const items = rows.map((row) => h('li', { class: 'all-row' },
+  const items = rows.map((row) => h('li', { class: 'all-row', 'data-need': row.id },
     h('b', {}, SEVERITY_WORDS[row.severity], row.title),
     (row.detail || row.at !== null) && h('span', { class: 'muted small' }, [row.at === null ? null : time.when(row.at), row.detail].filter(Boolean).join(' · ')),
     linkable(row.href) && h('a', { href: row.href }, 'Open')));

@@ -7,11 +7,8 @@
 // comments. A test fails when a folder in pages/ has no entry here, or an
 // entry no folder.
 //
-// The navigation's order is fixed here, ten apart, in the Main board's
-// order: Overview 10, Logs 20, Reliability 30, Storage 40, Snapshots and
-// backups 50, Networking 60, Firewall 70, Accounts 80, Services 90, Apps 100,
-// Certificates 110, Security 120, Hardware 130, Updates 140, Terminal 150, and
-// Report a problem 1000 at the bottom (`nav: {order: 1000, bottom: true}`).
+// The navigation's order is fixed here, ten apart, in the Main board's order,
+// and Report a problem is at the bottom (`nav: {order: 1000, bottom: true}`).
 // `nav: null` is a page reached by a link, `load: null` a folder of parts
 // only, and the Terminal is listed only when the session may open one. A page
 // with `under` marks that entry of the navigation as its own.

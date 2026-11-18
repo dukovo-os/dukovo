@@ -10,10 +10,11 @@
 // time, when any other call is answered meanwhile. After a restart that a
 // page asked for, the banner says what it was told and "Waiting since" under
 // it, and when the server answers it says "Back", or that an update was taken
-// back when `about` shows another release than the one it was to bring. A
-// restart ends the session, though: the sign-in page comes first, and the
-// banner made for the new session says it, when the machine has started
-// since.
+// back when `about` says the start is a fallback. A restart ends the session,
+// though: the sign-in page comes first, and the banner made for the new
+// session says it, when the machine has started since. An update's try is a
+// start that is no fallback, and the machine may go back from it at once, so
+// the release is kept again for the sign-in after that.
 
 import { whenAnswered } from '../api.js';
 import { h, icon } from '../dom.js';
@@ -110,12 +111,14 @@ export function createOnline({ host, region, stale, main, get, time, onBack, onC
    * Says that the server is back: "Back" for a few seconds, or what happened
    * to an update, until it is closed. `since` is when a greeting kept for
    * the next session was kept: it is said only when the machine has started
-   * since, as `about`'s `up` tells.
+   * since, as `about`'s `up` tells. The release is kept again while the
+   * update is on its try.
    */
   async function greet(version, since = null) {
     const about = version ? await ask('/api/1/console/about').catch(() => null) : null;
     if (since !== null && !(Number.isFinite(about?.up) && Date.now() - about.up * 1000 > since)) return;
     const back = backWords(about, version);
+    if (back.trying) keep(KEPT, { version, at: Date.now() });
     const close = () => {
       clearTimeout(timer);
       note.remove();

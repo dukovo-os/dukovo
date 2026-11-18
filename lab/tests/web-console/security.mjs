@@ -259,7 +259,8 @@ async function theAlerts(t, page) {
   const channels = await readRoute(page, ROUTES.channels);
   ensure(Array.isArray(channels), `${ROUTES.channels} does not give a list: ${JSON.stringify(channels)}`);
   const card = cardOf(page, "alerts");
-  await t.see(card.getByRole("heading", { name: "Alerts", level: 2, exact: true }));
+  // Once the console is unlocked the heading holds the card's Read again button, so its name is "Alerts Read again".
+  await t.see(card.getByRole("heading", { name: /^Alerts( |$)/, level: 2 }));
   if (channels.length === 0) {
     await t.see(card.getByText("Alerts reach this server's screens only.", { exact: false }));
     ensure((await buttonOf(card, "Send a test alert").count()) === 0, "the Alerts card offers a test alert where no channel is set");

@@ -43,6 +43,21 @@ const buttonOf = (dialog, words) => dialog.querySelectorAll('button').find((butt
 /** Every attribute and text under `node`, for what a secret must not be left in. */
 const holdings = (node) => [node, ...node.descendants].flatMap((one) => [...one.attributes.values(), one.textContent]);
 
+/**
+ * What `dialog` holds of the text, and whether it holds a picture, at the
+ * moment its `close` is delivered: `{held, picture}` is filled then. A
+ * browser delivers `close` in a later task than the call that closes the
+ * dialog, so the text has to be gone before it.
+ */
+function atCloseOf(dialog) {
+  const seen = { held: [], picture: undefined };
+  dialog.addEventListener('close', () => {
+    seen.held = holdings(dialog);
+    seen.picture = dialog.querySelector('svg');
+  });
+  return seen;
+}
+
 test('importing the module does nothing and needs no page', async () => {
   assert.equal(typeof globalThis.document, 'undefined');
   assert.equal(typeof (await import('../lib/shown-once.js')).showOnce, 'function');
@@ -107,6 +122,32 @@ test('I have kept it closes the dialog, says that it was kept, and leaves none o
   assert.equal(await closed, true);
   assert.equal(dialogsOf(document).length, 0);
   assert.equal(holdings(dialog).some((text) => text.includes('AGE-SECRET')), false, 'the text is dropped when the dialog closes');
+});
+
+test('I have kept it takes the text and the picture out before the close event, which a browser sends in a later task', async (context) => {
+  const { dialog } = await opened(context, { options: { qr: true } });
+  const atClose = atCloseOf(dialog);
+  buttonOf(dialog, 'I have kept it').click();
+  assert.equal(atClose.held.length > 0, true, 'the close event was delivered');
+  assert.equal(atClose.held.some((text) => text.includes('AGE-SECRET')), false, 'the text is gone when the close is delivered');
+  assert.equal(atClose.picture === null, true, 'the picture is gone when the close is delivered');
+});
+
+test('Close without keeping it and a page that is left take the text out before the close event too', async (context) => {
+  const closing = await opened(context);
+  const atClose = atCloseOf(closing.dialog);
+  closing.dialog.fire('cancel');
+  await tick();
+  buttonOf(dialogsOf(closing.document)[1], 'Close without keeping it').click();
+  await closing.closed;
+  assert.equal(atClose.held.length > 0, true, 'the close event was delivered');
+  assert.equal(atClose.held.some((text) => text.includes('AGE-SECRET')), false, 'the text is gone when Escape closes it');
+
+  const leaving = await opened(context);
+  const atLeave = atCloseOf(leaving.dialog);
+  leaving.leaving.abort();
+  assert.equal(atLeave.held.length > 0, true, 'the close event was delivered');
+  assert.equal(atLeave.held.some((text) => text.includes('AGE-SECRET')), false, 'the text is gone when the page is left');
 });
 
 test('Escape asks before it closes, and Go back keeps the dialog open with the text', async (context) => {

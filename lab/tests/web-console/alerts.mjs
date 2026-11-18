@@ -466,7 +466,8 @@ async function nothingSetUp(t, page) {
   await t.see(hardware);
   ensure((await hardware.getAttribute("href")) === "/hardware", `Open Hardware goes to ${await hardware.getAttribute("href")}`);
   await recentAsAnswered(t, page);
-  await t.see(card(page, "recent").getByText("Lab temperature alert", { exact: false }));
+  // Engines run one after another on one machine and the history keeps the raises of the one before, so more than one row names the alert.
+  await t.see(card(page, "recent").getByText("Lab temperature alert", { exact: false }).first());
   await t.see(card(page, "recent").getByRole("link", { name: "Show all on Reliability", exact: true }));
   await channelsAsAnswered(t, page);
   await lookAll(t, page, "alerts-none");

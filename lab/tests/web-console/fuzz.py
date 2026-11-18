@@ -106,6 +106,9 @@ SLOWEST = 2
 SLOWEST_CHANGE = 10
 # The most requests Schemathesis sends for one operation in a phase.
 EXAMPLES = 50
+# Seconds that let one round of admind's journal pass: a file under /system/settings that was changed by hand is
+# found only at the next round, every 30 seconds, and the margin is for the round's own work.
+JOURNAL_ROUND = 35
 
 # The changes the third run leaves alone: certificate.renew makes the certificate the console
 # serves anew, which the boot test admin-actions renews; and the changes that are tried (ADRs 0518
@@ -399,6 +402,10 @@ def main():
 
             administrator = Administrator(machine, console_port)
             administrator.sign_in()
+            # The root steps before the test (the account it reads the journal as, and the last of the tests before it)
+            # change files under /system/settings by hand. Their rows come at the next round, so without the wait they
+            # come after first_row and are taken for the test's own changes.
+            time.sleep(JOURNAL_ROUND)
             first_row = max((row["id"] for row in administrator.changes()), default=0)
             admind = admind_of(machine, ssh_port)
             changer = Console(machine, console_port, change_token)

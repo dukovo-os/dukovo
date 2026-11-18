@@ -1056,13 +1056,20 @@ where
     if body.as_ref().is_none_or(http_body::Body::is_end_stream) {
         return Ok(Bytes::new());
     }
+    let declared =
+        single(headers, &header::CONTENT_LENGTH).and_then(|text| text.parse::<usize>().ok());
+    // A POST with no body over HTTP/2 is HEADERS, with a length of 0 and no
+    // type, and then an empty DATA frame that ends the stream: until that
+    // frame is read the body is not at its end. What is left of it stays in
+    // `body` for `read_the_rest`.
+    if declared == Some(0) {
+        return Ok(Bytes::new());
+    }
     if !is_json(single(headers, &header::CONTENT_TYPE)) {
         return Err(Failure::new(Kind::NotJson, "a body is JSON, with the type application/json"));
     }
     let limit = body_limit(signed_in);
     let too_big = || Failure::new(Kind::TooBig, format!("a body is at most {limit} bytes here"));
-    let declared =
-        single(headers, &header::CONTENT_LENGTH).and_then(|text| text.parse::<usize>().ok());
     if declared.is_some_and(|length| length > limit) {
         return Err(too_big());
     }

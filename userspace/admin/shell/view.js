@@ -94,6 +94,9 @@ export function makeView(shell, route) {
     /** The parts named `name` of every page that has one, called with `call(module, cx)`. */
     parts: (name, call) => shell.parts.collect(name, call),
 
+    /** Forgets what the parts kept. */
+    forgetParts: () => shell.parts.forget(),
+
     /** Changes the person's preferences; the colours apply at once and go back if the server refuses. */
     setPrefs: (change) => shell.prefs.set(change),
 
