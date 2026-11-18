@@ -81,8 +81,12 @@ serial = "spark: started sshd ("
 power = "cut"
 [[step]]
 power = "on"
+# Spark says this early in the start that follows the cut, before the
+# network is up, so netlog does not carry it; the step needs the console
+# from the power-on.
 [[step]]
 serial = "spark: undid service.sshd (the machine started again before it was kept): put back /system/settings/spark/services/sshd.toml"
+early = true
 [[step]]
 wait = "ready"
 [[step]]

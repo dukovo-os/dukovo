@@ -32,8 +32,12 @@ serial = "spark: started slot b, @system.b"
 serial = "has data that failed its checks, so none of it was used"
 [[step]]
 serial = "the update gives up its tries"
+# The boot menu is GRUB's, drawn before the system starts, so a console
+# that starts with the network (netlog) never carries it; the step needs
+# the console from the power-on.
 [[step]]
 serial = "(the firmware update to 2026.3.1 failed)"
+early = true
 [[step]]
 serial = "spark: started slot a, @system.a"
 [[step]]

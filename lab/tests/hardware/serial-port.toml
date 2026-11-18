@@ -4,6 +4,13 @@
 about = "The first serial port, COM1, is the terminal /devices/ttyS0 at 115200 baud, the speed GRUB and the kernel log run: stty reads its speed and sets another, and serial-console, the console a computer with no screen uses, stays stopped when the kernel has no console= flag and the firmware names no console port. Needs a machine with COM1 that is not its console"
 time = "2m"
 
+# A machine with no first serial port (the M75q has none) has no
+# /devices/ttyS0 to read or set, so the test is skipped there.
+[[step]]
+run = "ls /devices/ttyS0"
+root = true
+or_skip = "the machine has no first serial port, /devices/ttyS0"
+
 # A machine whose console is COM1 (the lab's real machines, started
 # with console=ttyS0) runs serial-console on it instead: not this test.
 [[step]]

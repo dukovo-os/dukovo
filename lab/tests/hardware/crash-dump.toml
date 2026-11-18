@@ -29,10 +29,15 @@ expect = "no crash dumps saved"
 [[step]]
 run = "sh -c '(sleep 2; dumps test --yes) > /dev/null 2>&1 &'"
 root = true
+# The kernel's warning and its panic report are the system's last lines,
+# written after its network is down, so netlog does not carry them; the
+# steps need the console from the power-on.
 [[step]]
 serial = "Crash dump: a test panic was asked for by process "
+early = true
 [[step]]
 serial = "RADIX KERNEL PANIC"
+early = true
 [[step]]
 serial = "dumps test: a panic asked for on purpose"
 [[step]]

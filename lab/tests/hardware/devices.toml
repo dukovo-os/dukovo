@@ -1,12 +1,15 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-about = "The PCI devices are found and named: a network card, a USB controller and a SATA controller"
+about = "The PCI devices are found and named: a network card, a USB controller and a storage controller, SATA or NVMe"
 time = "2m"
 
+# A machine's disk sits on a SATA controller (the OptiPlex, QEMU) or an
+# NVMe one (the M75q), which lspci names "SATA controller" or
+# "Non-Volatile memory controller".
 [[step]]
-run = "lspci"
-expect = ["Ethernet controller", "USB controller", "SATA controller"]
+run = "sh -c 'lspci; lspci | grep -q -e \"SATA controller\" -e \"Non-Volatile memory controller\" && echo \"storage controller: found\"'"
+expect = ["Ethernet controller", "USB controller", "storage controller: found"]
 [[step]]
 run = "lspci -nn"
 expect = "]: "

@@ -31,8 +31,12 @@ serial = "failed its health check: logd has restarted"
 [[step]]
 serial = "the update gives up its tries"
 # The menu shows, as the try was not seen through, and starts slot A.
+# The boot menu is GRUB's, drawn before the system starts, so a console
+# that starts with the network (netlog) never carries it; the step needs
+# the console from the power-on.
 [[step]]
 serial = "(the update to "
+early = true
 [[step]]
 serial = "the settings from before the update are back"
 [[step]]
