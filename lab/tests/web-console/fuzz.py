@@ -421,6 +421,7 @@ def main():
             print("fuzz: a token that reads: no failure in %d operations (%d requests)" % tested_in(output, "a token that reads"))
 
             ran = []
+            own = set()
             for action in actions:
                 if not action["changes"] or action["id"] in LEFT_ALONE:
                     continue
@@ -432,6 +433,9 @@ def main():
                 tested_in(output, action["id"])
                 ran.append(action["id"])
                 put_back(changer, actions, action, service, before)
+                # The undo is the test's own change too, as accounts.remove is accounts.add's.
+                undo = action["examples"]["undo"]
+                own.update([action["id"]] + ([undo["action"]] if undo else []))
             if not ran:
                 raise Failure("the list of actions has no change to run")
             print(f"fuzz: a token that changes: no failure in {len(ran)} examples ({', '.join(ran)}), each followed by its undo")
@@ -446,7 +450,7 @@ def main():
 
             rows = [row for row in administrator.changes() if row["id"] > first_row]
             for row in rows:
-                if row["how"] != f"token {CHANGE_TOKEN}" or row["action"] not in ran:
+                if row["how"] != f"token {CHANGE_TOKEN}" or row["action"] not in own:
                     raise Failure(
                         f"the journal has a change that is not the test's own: row {row['id']}, {row['action']} "
                         f"by {row['who']}, {row['how']}"
