@@ -37,7 +37,6 @@ list is kept current instead.
 
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
-| The catalog's first signed batch and deploy (`./ob catalog sign`, then `./ob catalog deploy`; ADR 0381) | The first root is signed and every image trusts it, but the server serves no bundles until a batch is signed; signing packs every port, a long build | A maintainer, before the first public release |
 | Post-Phase-13 code audit (audit 10) | Planned and scoped; starts only on approval | Decision |
 | System releases signed on the two hardware keys: `ob release sign` with its gates and a third build that must match CI's two, root versions after the first, the Rekor record, `ob keys ceremony` for the yearly root, and the key runbooks (ADRs 0450, 0457, 0467, 0538) | Phase 15 signs with each build machine's own keys and tests against a local update server; the key ceremony signed the first root, but no command signs a release on the YubiKeys yet, so `ob release deploy` has nothing to deploy | Before 1.0.0-alpha.1 |
 | The release train is off: `.github/release-train.json` says `"enabled": false`, so the release-train bot writes what it would do into its job summary and cuts no branch and opens no issue (ADRs 0458, 0534) | The first release branch is cut at 1.0.0, and the backport bot has no release branch to copy to until then | 1.0.0, when a maintainer sets `"enabled": true` |
