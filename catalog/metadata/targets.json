@@ -1,0 +1,139 @@
+{
+  "signatures": [
+    {
+      "keyid": "c81a7cbb15da4652dc994461531edbef9ea48c2e21d97df7c8d6fd9fa1b0803e",
+      "sig": "304402203aeff08f95627f3738b25906c6137f219050f91f13d9a891928ae0519a2bf30402205c56d53e6938d4b3077398e9762ac988974ff4227a7cd4533d7acd02273ae470"
+    }
+  ],
+  "signed": {
+    "_type": "targets",
+    "delegations": {
+      "keys": {
+        "953e613da83d2200853dc4d5321452c76ae3e9e480f73b28dbecf8c775c34bfa": {
+          "keytype": "ed25519",
+          "keyval": {
+            "public": "4a1dc114b2b6689c82e846d13104d4b4049df3de2abf329b4289a300ab565770"
+          },
+          "scheme": "ed25519"
+        }
+      },
+      "roles": [
+        {
+          "keyids": [
+            "953e613da83d2200853dc4d5321452c76ae3e9e480f73b28dbecf8c775c34bfa"
+          ],
+          "name": "flaws",
+          "paths": [
+            "flaws/*"
+          ],
+          "terminating": true,
+          "threshold": 1
+        },
+        {
+          "keyids": [
+            "953e613da83d2200853dc4d5321452c76ae3e9e480f73b28dbecf8c775c34bfa"
+          ],
+          "name": "rollout",
+          "paths": [
+            "rollout/*/*.json"
+          ],
+          "terminating": true,
+          "threshold": 1
+        }
+      ]
+    },
+    "expires": "2027-05-19T17:25:09Z",
+    "spec_version": "1.0.31",
+    "targets": {
+      "bundles/io.github.burntsushi.ripgrep-15.2.0.dkv": {
+        "custom": {
+          "id": "io.github.burntsushi.ripgrep",
+          "name": "ripgrep",
+          "version": "15.2.0"
+        },
+        "hashes": {
+          "sha256": "d72461dfee3e7dfcf481fc6d895399941195f0be3ed0715fcb41fce6e4c692f0"
+        },
+        "length": 2167738
+      },
+      "bundles/io.github.sharkdp.bat-0.26.1.dkv": {
+        "custom": {
+          "id": "io.github.sharkdp.bat",
+          "name": "bat",
+          "version": "0.26.1"
+        },
+        "hashes": {
+          "sha256": "f15e995f60b0d57f7c357c2d6cccafc61f647825eedfe7144cf38a9179d458b5"
+        },
+        "length": 3576316
+      },
+      "bundles/io.valkey.valkey-9.1.3.dkv": {
+        "custom": {
+          "id": "io.valkey.valkey",
+          "name": "Valkey",
+          "version": "9.1.3"
+        },
+        "hashes": {
+          "sha256": "81b6ecb268bb64d11d14d2add3937ecf155e4cf34a5424ea80425a2982cbcf79"
+        },
+        "length": 7956259
+      },
+      "bundles/net.php.php-8.5.12.dkv": {
+        "custom": {
+          "id": "net.php.php",
+          "name": "PHP",
+          "version": "8.5.12"
+        },
+        "hashes": {
+          "sha256": "1356495e37ed1b14b7d48f581a6936beb91632e6d4f12cec4a021ed98257bf0a"
+        },
+        "length": 39106661
+      },
+      "bundles/org.nginx.nginx-1.30.6.dkv": {
+        "custom": {
+          "id": "org.nginx.nginx",
+          "name": "nginx",
+          "version": "1.30.6"
+        },
+        "hashes": {
+          "sha256": "97c3945ac1d84751908585bd571511a6db6cba195bed3b595f3c8623817ff832"
+        },
+        "length": 3555151
+      },
+      "bundles/org.postgresql.postgresql-19.0-rc.2.dkv": {
+        "custom": {
+          "id": "org.postgresql.postgresql",
+          "name": "PostgreSQL",
+          "version": "19.0-rc.2"
+        },
+        "hashes": {
+          "sha256": "456bd6d0eef278da1a65bdf274472667373806915f21dfcef2a3436500c5f4cd"
+        },
+        "length": 28905617
+      },
+      "bundles/org.python.python-3.15.2.dkv": {
+        "custom": {
+          "id": "org.python.python",
+          "name": "Python",
+          "version": "3.15.2"
+        },
+        "hashes": {
+          "sha256": "4000dab898de03ecb0194771ab607a1fb4209742c7d659d7e4d716832c821c2c"
+        },
+        "length": 30212510
+      },
+      "bundles/org.sqlite.sqlite-3.54.1.dkv": {
+        "custom": {
+          "id": "org.sqlite.sqlite",
+          "name": "SQLite",
+          "version": "3.54.1"
+        },
+        "hashes": {
+          "sha256": "2be158b40594d0760d16b4a8a1ba34ba3b8a9d39ae59c7960306e7530c35b8a6"
+        },
+        "length": 1308416
+      }
+    },
+    "version": 1
+  }
+}
