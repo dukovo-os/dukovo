@@ -3,13 +3,19 @@
 
 about = "resize-ntfs is on the system and refuses a device that holds no NTFS, changing nothing"
 time = "2m"
+host_needs = ["scp"]
 
 # A full NTFS shrink is driven by the dukovo suite's ntfs-resize boot case,
 # which attaches an NTFS fixture disk the host's mkntfs makes. The lab plugs
 # only blank sticks, so here we check resize-ntfs is present and guards a
 # device that is not NTFS; a lab shrink waits on an NTFS fixture stick.
+# The disk is the root's, whatever its name: sda on a SATA machine,
+# nvme0n1 on an NVMe one (storage/root-disk.sh).
 [[step]]
-run = "resize-ntfs --info /devices/sda"
+host = "sh {here}/../services/copy-file.sh {here}/../storage/root-disk.sh {machine} {machine-port:22}"
+expect = "copied: root-disk.sh"
+[[step]]
+run = "sh -c '. /users/lab/root-disk.sh; resize-ntfs --info /devices/$disk'"
 root = true
 exit = 1
 expect = "no NTFS volume"

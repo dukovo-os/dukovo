@@ -27,8 +27,12 @@ serial = "spark: started slot b, @system.b"
 power = "cut"
 [[step]]
 power = "on"
+# The boot menu is GRUB's, drawn before the system starts, so a console
+# that starts with the network (netlog) never carries it; the step needs
+# the console from the power-on.
 [[step]]
 serial = "(update, second try)'"
+early = true
 [[step]]
 serial = "spark: started slot b, @system.b"
 [[step]]

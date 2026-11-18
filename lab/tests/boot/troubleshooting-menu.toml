@@ -27,14 +27,19 @@ power = "on"
 # screen draws it with the slot's theme, in a font the console's cells do
 # not hold, so its text is read from the serial port, which gets GRUB's
 # plain menu; the screen is kept for a person to look at.
+# The menu's lines are GRUB's, drawn before the system starts, so a
+# console that starts with the network (netlog) never carries them; the
+# steps need the console from the power-on.
 [[step]]
 serial = "Troubleshooting"
+early = true
 [[step]]
 screenshot = "start-menu"
 [[step]]
 keys = ["down", "down", "ret"]
 [[step]]
 serial = "Start only the essentials"
+early = true
 [[step]]
 screenshot = "troubleshooting"
 [[step]]

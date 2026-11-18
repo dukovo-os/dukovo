@@ -3,27 +3,36 @@
 
 about = "The disks, partitions and filesystems line up: lsblk, blkid, findmnt and df all show the root Btrfs"
 time = "3m"
+host_needs = ["scp"]
 
+# The disk is sda on a SATA machine and nvme0n1 on an NVMe one, so each
+# step finds the root's disk and partitions with root-disk.sh, which
+# lists them as disk, part and esp.
 [[step]]
-run = "lsblk"
-expect = ["sda", "disk", "part", "/system"]
+host = "sh {here}/../services/copy-file.sh {here}/../storage/root-disk.sh {machine} {machine-port:22}"
+expect = "copied: root-disk.sh"
 [[step]]
-run = "lsblk -o NAME,SIZE,TYPE,MOUNTPOINTS sda"
-expect = ["sda", "/users"]
+run = "sh -c '. /users/lab/root-disk.sh; lsblk; lsblk | grep -q \"^$disk \" && echo \"root disk: $disk\"'"
+root = true
+expect = ["root disk: ", "disk", "part", "/system"]
+[[step]]
+run = "sh -c '. /users/lab/root-disk.sh; lsblk -o NAME,SIZE,TYPE,MOUNTPOINTS $disk; lsblk -o NAME,MOUNTPOINTS $disk | grep -q \"^$disk\" && echo \"named: $disk\"'"
+root = true
+expect = ["named: ", "/users"]
 # blkid reads a device's own marks, so it runs as root.
 [[step]]
-run = "blkid /devices/sda3"
+run = "sh -c '. /users/lab/root-disk.sh; blkid /devices/$part'"
 root = true
 expect = ["LABEL=\"dukovo-root\"", "TYPE=\"btrfs\""]
 [[step]]
-run = "blkid /devices/sda2"
+run = "sh -c '. /users/lab/root-disk.sh; blkid /devices/$esp'"
 root = true
 expect = "TYPE=\"vfat\""
 # blkid finds a device by the label of the filesystem on it.
 [[step]]
-run = "blkid -L dukovo-root"
+run = "sh -c '. /users/lab/root-disk.sh; blkid -L dukovo-root | grep -q \"/devices/$part\" && echo \"root is: /devices/$part\"'"
 root = true
-expect = "/devices/sda3"
+expect = "root is: /devices/"
 # The system is mounted read-only; the writable trees share the same disk.
 [[step]]
 run = "findmnt -t btrfs -o TARGET,SOURCE,FSTYPE,OPTIONS"

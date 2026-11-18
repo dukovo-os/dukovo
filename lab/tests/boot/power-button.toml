@@ -7,10 +7,15 @@ time = "6m"
 # Spark stops every service before the kernel turns the power off.
 [[step]]
 power = "button"
+# The system's last lines come as it powers off, after its network is down,
+# so a console that starts with the network (netlog) never carries them;
+# the steps need the console from the power-on.
 [[step]]
 serial = "every service has stopped"
+early = true
 [[step]]
 serial = "asked to power off the machine; syncing the filesystems"
+early = true
 [[step]]
 wait = "off"
 [[step]]

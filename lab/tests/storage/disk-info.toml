@@ -3,23 +3,31 @@
 
 about = "The tools that read a disk's own facts: rdisk shows the partition table and the types it knows, diskhealth reads SMART, nvme lists namespaces"
 time = "3m"
+host_needs = ["scp"]
 
+# The root's disk is sda on a SATA machine and nvme0n1 on an NVMe one;
+# root-disk.sh finds it, as disk.
 [[step]]
-run = "rdisk -l /devices/sda"
+host = "sh {here}/../services/copy-file.sh {here}/../storage/root-disk.sh {machine} {machine-port:22}"
+expect = "copied: root-disk.sh"
+[[step]]
+run = "sh -c '. /users/lab/root-disk.sh; rdisk -l /devices/$disk'"
 root = true
 expect = ["Partition table: gpt", "Dukovo root"]
 [[step]]
 run = "rdisk --list-types"
 expect = ["EFI System", "Linux swap"]
-# A SATA disk keeps SMART, which diskhealth reads and judges.
+# A SATA disk keeps SMART and an NVMe drive its health log, which
+# diskhealth reads and judges: the counts are SATA's reallocated sectors
+# or NVMe's media errors.
 [[step]]
-run = "diskhealth"
+run = "sh -c '. /users/lab/root-disk.sh; diskhealth | grep -q \"$disk\" && echo \"listed: $disk\"; diskhealth'"
 root = true
-expect = ["DISK", "HEALTH", "sda", "PASSED"]
+expect = ["listed: ", "DISK", "HEALTH", "PASSED"]
 [[step]]
-run = "diskhealth -a sda"
+run = "sh -c '. /users/lab/root-disk.sh; diskhealth -a $disk; diskhealth -a $disk | grep -q \"^$disk: \" && diskhealth -a $disk | grep -q -e \"Reallocated sectors\" -e \"Media and data integrity errors\" && echo \"reported: $disk\"'"
 root = true
-expect = ["sda: ", ", serial ", "Health: PASSED", "Reallocated sectors"]
+expect = [", serial ", "Health: PASSED", "reported: "]
 # The QEMU lab machine has no NVMe drive, so the list is empty; its heading
 # shows nvme is there and lists the namespaces when a drive is.
 [[step]]

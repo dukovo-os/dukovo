@@ -25,8 +25,12 @@ power = "cut"
 [[step]]
 power = "on"
 # The menu shows, and its Dukovo entry starts once its time is up.
+# GRUB says this before the system starts, so a console that starts with
+# the network (netlog) never carries it; the step needs the console from
+# the power-on.
 [[step]]
 serial = "Booting `Dukovo Server"
+early = true
 [[step]]
 serial = "spark: started slot a, @system.a"
 [[step]]

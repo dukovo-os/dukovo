@@ -7,8 +7,12 @@ time = "6m"
 [[step]]
 run = "sh -c '(sleep 2; poweroff) > /dev/null 2>&1 &'"
 root = true
+# The system's last lines come as it powers off, after its network is down,
+# so a console that starts with the network (netlog) never carries them;
+# the step needs the console from the power-on.
 [[step]]
 serial = "asked to power off the machine; syncing the filesystems"
+early = true
 [[step]]
 wait = "off"
 [[step]]
