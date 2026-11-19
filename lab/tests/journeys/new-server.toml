@@ -1,0 +1,355 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The first weeks of a new server, told as its owner lives them, on one
+# install. The account that the install made signs in to the console for the
+# first time and is welcomed, and adds an administrator, with an SSH key, and a
+# reader. The administrator signs in over SSH with the key, which the lab PC
+# does, and the password is refused. The administrator sets two firewall rules
+# from the console, each tried and kept, and the lab PC reaches the ports the
+# rules allow and no other, with programs listening on four ports that no
+# service owns. The administrator then adds a website with the certificate
+# that Pebble, Let's Encrypt's own test authority on the lab PC, made for it,
+# as services/acme makes one, and the lab PC fetches the site over HTTPS,
+# trusting Pebble's authority. Alerts by email are set from the console to the
+# lab PC's Mailpit, an alert is raised and the mail arrives. The machine is
+# restarted, and everything is as it was: the accounts and the key, the rules
+# in force, the website and its certificate, the email for alerts, which mails
+# again. The reader signs in and can change none of it.
+#
+# alertd takes only ports 587 and 465, which the lab PC cannot listen on unless
+# it runs as root, so Mailpit listens on a port of its own and
+# mail-relay.sh, on the machine, hands what alertd sends to its own port 587 on
+# to it. The certificate Mailpit presents is for the loopback address alertd
+# names as the server. The console is driven in Chromium, one engine for the
+# whole story, as the people in it are one person each; the same pages are
+# checked in each engine by the web-console tests.
+#
+# The facts the browser scripts need from the lab PC, and the key the
+# administrator signs in with, are in /tmp/lab-journey-new-server, which the
+# first step makes and the last takes away. The machine is put back at the end:
+# the accounts, the website, the certificate and its authority, the resolver,
+# the firewall's rules and the alerts' settings.
+about = "A new server's first weeks: the first console sign-in, an administrator with an SSH key and a reader, the key accepted and the password refused over SSH, firewall rules from the console that the lab PC feels, a website with a Pebble certificate fetched over HTTPS, alerts by email that arrive, a restart after which every one still holds, and a reader who can change none of it"
+time = "15m"
+fresh = true
+host_needs = ["curl", "scp", "ssh", "ssh-keygen", "openssl", "nc", "mailpit"]
+
+# The facts for the browser scripts, and the administrator's key. The reader
+# has no key, so a key of its own that the machine does not know is refused.
+[[step]]
+host = '''sh -c 'rm -rf /tmp/lab-journey-new-server && mkdir -p /tmp/lab-journey-new-server && cd /tmp/lab-journey-new-server && ssh-keygen -q -t ed25519 -N "" -C journey-key -f key && ssh-keygen -q -t ed25519 -N "" -C journey-stranger -f stranger && printf "#!/bin/sh\necho lab-journey-password-1\n" > askpass && chmod 700 askpass && printf "owner=journey-owner\nowner_password=lab-console-password\nadmin=journey-admin\nadmin_password=lab-journey-password-1\nreader=journey-reader\nreader_password=lab-journey-password-2\nsite=journey.acme-lab.example\nmail_to=owner@lab.test\nmail_server=127.0.0.1\n" > info && echo journey-ready' '''
+expect = "journey-ready"
+# The account the install made: an administrator with a password, and no
+# time zone yet, so its first sign-in is the welcome page.
+[[step]]
+run = "sh -c 'echo lab-console-password | user add --admin journey-owner'"
+root = true
+expect = "Made journey-owner"
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+
+# nginx for the website, from the lab's packed bundle.
+[[step]]
+host = "sh {here}/../services/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
+expect = "copied: org.nginx.nginx"
+[[step]]
+run = "sh -c 'bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1; service nginx enable'"
+root = true
+expect = "installed org.nginx.nginx"
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! service nginx status > /dev/null; do sleep 1; i=$((i + 1)); done; service nginx status'"
+root = true
+expect = "Active: active (running)"
+
+# Pebble and its DNS server on the lab PC, the machine trusting Pebble's
+# authorities and asking that DNS server, as services/acme.toml has it.
+[[step]]
+host = "sh {here}/../services/acme-pebble.sh {port:acme} {port:acmeman} {port:dns} {port:chall} {machine-port:80} {peer} {machine}"
+background = true
+ready = "pebble ready"
+[[step]]
+host = "sh {here}/../services/copy-file.sh ca.pem {machine} {machine-port:22}"
+expect = "copied: ca.pem"
+# The authority that signs Pebble's certificates is not the one its own HTTPS
+# has: it is made anew each time Pebble starts and its management port gives it.
+[[step]]
+host = "sh -c 'curl -fsS --noproxy \"*\" --cacert ca.pem https://127.0.0.1:{port:acmeman}/roots/0 > issuer.pem && grep -c \"BEGIN CERTIFICATE\" issuer.pem'"
+expect = "1"
+[[step]]
+host = "sh {here}/../services/copy-file.sh issuer.pem {machine} {machine-port:22}"
+expect = "copied: issuer.pem"
+[[step]]
+run = '''sh -c 'cp /system/settings/resolved /users/lab/journey-resolved.orig && cd /system/settings/ssl/certs && cat /system/resources/certificates/ca-certificates.crt /users/lab/ca.pem /users/lab/issuer.pem > roots.new && mv roots.new ca-certificates.crt && echo trusted' '''
+root = true
+expect = "trusted"
+[[step]]
+run = "sh -c 'cat > /system/settings/resolved && service resolved reload && echo resolver-set'"
+root = true
+input = "servers = {peer}:{port:dns}\ndns-over-tls = no\n"
+expect = "resolver-set"
+[[step]]
+run = '''sh -c 'i=0; while [ $i -lt 20 ] && ! resolvectl query journey.acme-lab.example > /dev/null 2>&1; do sleep 1; i=$((i + 1)); done; resolvectl query journey.acme-lab.example' '''
+expect = "journey.acme-lab.example"
+
+# Mailpit on a port of the lab PC's own, with the machine's port 587 relayed
+# to it, and its authority trusted.
+[[step]]
+host = "sh -c 'mkdir -p mail && cd mail && exec sh {here}/../monitoring/alerts-mail.sh serve {port:mailapi} 127.0.0.1 {port:mailsmtp}'"
+background = true
+ready = "mailpit ready"
+[[step]]
+host = "sh {here}/../services/copy-file.sh mail/ca.pem {machine} {machine-port:22}"
+expect = "copied: ca.pem"
+[[step]]
+run = "sh -c 'cd /system/settings/ssl/certs && cat ca-certificates.crt /users/lab/ca.pem > roots.new && mv roots.new ca-certificates.crt && echo trusted'"
+root = true
+expect = "trusted"
+[[step]]
+host = "sh {here}/../services/copy-file.sh {here}/mail-relay.sh {machine} {machine-port:22}"
+expect = "copied: mail-relay.sh"
+[[step]]
+run = "sh -c '(sh /users/lab/mail-relay.sh {peer} {port:mailsmtp} > /dev/null 2>&1 &); sleep 2; ss -tln'"
+root = true
+expect = "127.0.0.1:587"
+
+# Programs that listen on four ports no service owns, which only the firewall's
+# rules let another machine reach.
+[[step]]
+run = '''sh -c 'for p in 8081 8082 8084 8085; do sh -c "while true; do echo hello-$p | nc -l 0.0.0.0 $p; done" < /dev/null > /dev/null 2>&1 & done; sleep 2; ss -tln' '''
+expect = ["0.0.0.0:8081", "0.0.0.0:8082", "0.0.0.0:8084", "0.0.0.0:8085"]
+# Before the owner sets a rule, none of them answers the lab PC.
+[[step]]
+host = "sh -c 'nc -w 3 {machine} {machine-port:8081} < /dev/null; nc -w 3 {machine} {machine-port:8082} < /dev/null; nc -w 3 {machine} {machine-port:8084} < /dev/null; nc -w 3 {machine} {machine-port:8085} < /dev/null; echo asked'"
+expect = "asked"
+expect_not = "hello-"
+
+# The first sign-in, and the administrator and the reader added in the console.
+[[step]]
+browser = "new-server-accounts.mjs"
+engines = ["chromium"]
+port = 9090
+[[step]]
+run = "user list --json"
+root = true
+expect = ["journey-owner", "journey-admin", "journey-reader"]
+[[step]]
+run = "user show journey-admin --json"
+root = true
+expect = ["journey-key", "\"admin\":true"]
+[[step]]
+run = "user show journey-reader --json"
+root = true
+expect = ["\"keys\":[]", "\"console\":true"]
+[[step]]
+run = "stat -c '%a %U' /users/journey-admin/.ssh /users/journey-admin/.ssh/authorized_keys"
+root = true
+expect = ["700 journey-admin", "600 journey-admin"]
+
+# Over SSH from the lab PC: the key signs the administrator in, a key the
+# machine does not know and a password are both refused, and so is root.
+[[step]]
+host = "sh -c 'ssh -p {machine-port:22} -i /tmp/lab-journey-new-server/key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR journey-admin@{machine} \"whoami; pwd\"'"
+expect = ["journey-admin", "/users/journey-admin"]
+[[step]]
+host = "sh -c 'SSH_ASKPASS=/tmp/lab-journey-new-server/askpass SSH_ASKPASS_REQUIRE=force ssh -p {machine-port:22} -o PubkeyAuthentication=no -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR journey-admin@{machine} echo let-in < /dev/null; echo status=$?'"
+expect = ["Permission denied", "status=255"]
+expect_not = "let-in\n"
+[[step]]
+host = "sh -c 'ssh -p {machine-port:22} -i /tmp/lab-journey-new-server/stranger -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR journey-admin@{machine} echo let-in < /dev/null; echo status=$?'"
+expect = ["Permission denied", "status=255"]
+expect_not = "let-in\n"
+
+# The firewall rules from the console.
+[[step]]
+browser = "new-server-firewall.mjs"
+engines = ["chromium"]
+port = 9090
+# From SSH: the machine's own list, which rule decides, and what each listener
+# is reached from. The machine reaches its own ports whatever the rules say.
+[[step]]
+run = "firewall list"
+root = true
+expect = ["allow tcp 8081 from 10.0.2.2", "allow tcp 8084-8085 from 10.0.2.2"]
+[[step]]
+run = "sh -c 'firewall test tcp 8082 from {peer}; firewall test tcp 8085 from {peer}'"
+root = true
+expect = ["No rule decides", "Rule 2 allows it: allow tcp 8084-8085"]
+[[step]]
+run = "sh -c 'nc -w 3 127.0.0.1 8082 < /dev/null'"
+expect = "hello-8082"
+# From the lab PC: the allowed ports answer and the other does not.
+[[step]]
+host = "sh -c 'nc -w 3 {machine} {machine-port:8081} < /dev/null; nc -w 3 {machine} {machine-port:8084} < /dev/null; nc -w 3 {machine} {machine-port:8085} < /dev/null; echo asked'"
+expect = ["hello-8081", "hello-8084", "hello-8085", "asked"]
+[[step]]
+host = "sh -c 'nc -w 3 {machine} {machine-port:8082} < /dev/null; echo asked'"
+expect = "asked"
+expect_not = "hello-8082"
+
+# The certificate for the website, which Pebble makes with its TXT record added
+# the way a person adds it at their DNS provider, as web-console/websites does.
+[[step]]
+run = '''sh -c '(cert get journey.acme-lab.example --name journey.acme-lab.example --name www.journey.acme-lab.example --dns --yes --directory https://{peer}:{port:acme}/dir --agree-terms --profile default > /users/lab/journey-dns.out 2>&1 < /dev/null &); echo started' '''
+root = true
+expect = "started"
+[[step]]
+host = "sh {here}/../services/acme-dns.sh {machine} {machine-port:22} {port:chall} /users/lab/journey-dns.out"
+expect = ["TXT added: _acme-challenge.journey.acme-lab.example.", "TXT added: _acme-challenge.www.journey.acme-lab.example.", "records shown: 2"]
+[[step]]
+run = '''sh -c 'service resolved reload; i=0; while [ $i -lt 90 ] && ! grep -q "installed" /users/lab/journey-dns.out; do sleep 2; i=$((i + 1)); done; grep installed /users/lab/journey-dns.out' '''
+root = true
+expect = "journey.acme-lab.example installed: journey.acme-lab.example, www.journey.acme-lab.example, runs out "
+
+# The website and the email, from the console.
+[[step]]
+browser = "new-server-site.mjs"
+engines = ["chromium"]
+port = 9090
+# The lab PC fetches the site as a visitor does, trusting Pebble's authority
+# alone: the name, the chain and the dates are checked, and http:// is sent to
+# https://.
+[[step]]
+host = "sh -c 'curl -sS --noproxy \"*\" --cacert issuer.pem --resolve journey.acme-lab.example:{machine-port:443}:{machine} -o site.out -w \"status=%{http_code} verify=%{ssl_verify_result}\\n\" https://journey.acme-lab.example:{machine-port:443}/'"
+expect = "status=200 verify=0"
+[[step]]
+host = "sh -c 'curl -sS --noproxy \"*\" -o /dev/null -w \"status=%{http_code} to=%{redirect_url}\\n\" --resolve journey.acme-lab.example:{machine-port:80}:{machine} http://journey.acme-lab.example:{machine-port:80}/'"
+expect = "to=https://journey.acme-lab.example"
+[[step]]
+run = "website list --json"
+root = true
+expect = ["journey.acme-lab.example", "\"https\": true"]
+# The email: the settings are in the machine's file, which only root reads, and
+# an alert raised is mailed to the lab PC's catcher.
+[[step]]
+run = "sh -c 'stat -c \"%a\" /system/settings/alerts.toml; alerts status'"
+root = true
+expect = ["600", "email to owner@lab.test"]
+[[step]]
+run = "alerts test"
+root = true
+expect = "email to owner@lab.test: sent"
+[[step]]
+host = "sh {here}/../monitoring/alerts-mail.sh wait {port:mailapi} 'Test alert' 60"
+expect = "mails with Test alert: 1"
+[[step]]
+run = "alerts raise journey-disk --title 'Journey alert before the restart' --detail 'From the new-server journey.'"
+root = true
+[[step]]
+host = "sh {here}/../monitoring/alerts-mail.sh wait {port:mailapi} 'Warning: Journey alert before the restart' 90"
+expect = "mails with Warning: Journey alert before the restart: 1"
+[[step]]
+run = "alerts clear journey-disk"
+root = true
+# The clear is mailed before the restart, so that nothing waits in the queue to
+# join the mail that follows it.
+[[step]]
+host = "sh {here}/../monitoring/alerts-mail.sh wait {port:mailapi} 'Cleared: Journey alert before the restart' 90"
+expect = "mails with Cleared: Journey alert before the restart: 1"
+
+# The restart.
+[[step]]
+run = "sync"
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "Boot complete."
+[[step]]
+wait = "ready"
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 120 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+
+# After the restart: the accounts and the key, over SSH from the lab PC again.
+[[step]]
+run = "user list --json"
+root = true
+expect = ["journey-owner", "journey-admin", "journey-reader"]
+[[step]]
+host = "sh -c 'ssh -p {machine-port:22} -i /tmp/lab-journey-new-server/key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR journey-admin@{machine} whoami'"
+expect = "journey-admin"
+[[step]]
+host = "sh -c 'SSH_ASKPASS=/tmp/lab-journey-new-server/askpass SSH_ASKPASS_REQUIRE=force ssh -p {machine-port:22} -o PubkeyAuthentication=no -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR journey-admin@{machine} echo let-in < /dev/null; echo status=$?'"
+expect = ["Permission denied", "status=255"]
+expect_not = "let-in\n"
+# The firewall: the rules the kernel took from the file at the boot, felt from
+# the lab PC. The programs are started again, as nothing restarts them.
+[[step]]
+run = "firewall list"
+root = true
+expect = ["allow tcp 8081 from 10.0.2.2", "allow tcp 8084-8085 from 10.0.2.2"]
+[[step]]
+run = '''sh -c 'for p in 8081 8082 8084 8085; do sh -c "while true; do echo hello-$p | nc -l 0.0.0.0 $p; done" < /dev/null > /dev/null 2>&1 & done; sleep 2; ss -tln' '''
+expect = ["0.0.0.0:8081", "0.0.0.0:8085"]
+[[step]]
+host = "sh -c 'nc -w 3 {machine} {machine-port:8081} < /dev/null; nc -w 3 {machine} {machine-port:8084} < /dev/null; nc -w 3 {machine} {machine-port:8085} < /dev/null; echo asked'"
+expect = ["hello-8081", "hello-8084", "hello-8085", "asked"]
+[[step]]
+host = "sh -c 'nc -w 3 {machine} {machine-port:8082} < /dev/null; echo asked'"
+expect = "asked"
+expect_not = "hello-8082"
+# The website and its certificate: nginx starts at the boot, and the lab PC
+# fetches the site as before.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 90 ] && ! curl -sS --noproxy \"*\" --cacert issuer.pem --resolve journey.acme-lab.example:{machine-port:443}:{machine} -o /dev/null https://journey.acme-lab.example:{machine-port:443}/ 2> /dev/null; do sleep 2; i=$((i + 1)); done; curl -sS --noproxy \"*\" --cacert issuer.pem --resolve journey.acme-lab.example:{machine-port:443}:{machine} -o site.out -w \"status=%{http_code} verify=%{ssl_verify_result}\\n\" https://journey.acme-lab.example:{machine-port:443}/'"
+expect = "status=200 verify=0"
+[[step]]
+run = "cert list"
+root = true
+expect = "journey.acme-lab.example"
+# The alerts: the channel is read from the file again, and mails once the
+# relay to the lab PC's catcher is in place again.
+[[step]]
+run = "alerts status"
+root = true
+expect = "email to owner@lab.test"
+[[step]]
+run = "sh -c '(sh /users/lab/mail-relay.sh {peer} {port:mailsmtp} > /dev/null 2>&1 &); sleep 2; ss -tln'"
+root = true
+expect = "127.0.0.1:587"
+[[step]]
+run = "alerts test"
+root = true
+expect = "email to owner@lab.test: sent"
+[[step]]
+host = "sh {here}/../monitoring/alerts-mail.sh count {port:mailapi} 'Test alert'"
+expect = "mails with Test alert: 2"
+[[step]]
+run = "alerts raise journey-after --title 'Journey alert after the restart' --detail 'From the new-server journey.'"
+root = true
+[[step]]
+host = "sh {here}/../monitoring/alerts-mail.sh wait {port:mailapi} 'Warning: Journey alert after the restart' 90"
+expect = "mails with Warning: Journey alert after the restart: 1"
+[[step]]
+run = "alerts clear journey-after"
+root = true
+
+# The console shows it all in a session of its own, and
+# the reader can change none of it.
+[[step]]
+browser = "new-server-after.mjs"
+engines = ["chromium"]
+port = 9090
+# What the reader's refused calls left: the rules, the accounts and the
+# alerts are as the owner set them.
+[[step]]
+run = "sh -c 'firewall list; user list --json | grep -c journey-intruder; true'"
+root = true
+expect = ["allow tcp 8084-8085", "0"]
+[[step]]
+run = "sh -c 'ls /system/settings/websites; true'"
+root = true
+expect_not = "intruder"
+
+# The machine as it was.
+[[step]]
+run = '''sh -c 'website remove journey.acme-lab.example --files > /dev/null 2>&1; cert remove journey.acme-lab.example > /dev/null 2>&1; service nginx disable > /dev/null 2>&1; bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; rm -f /system/settings/alerts.toml; service alertd reload; sed -i "/^allow tcp 808/d" /system/settings/firewall; firewall load; cp /users/lab/journey-resolved.orig /system/settings/resolved && service resolved reload; ln -sf /system/resources/certificates/ca-certificates.crt /system/settings/ssl/certs/ca-certificates.crt; rm -f /users/lab/journey-* /users/lab/ca.pem /users/lab/issuer.pem /users/lab/mail-relay.sh /users/lab/org.nginx.nginx.dkv; rm -rf /shared/www/sites; for name in journey-owner journey-admin journey-reader; do user remove --delete-home --yes $name || exit 1; done; echo restored' '''
+root = true
+expect = ["journey-reader is removed", "restored"]
+[[step]]
+host = "sh -c 'rm -rf /tmp/lab-journey-new-server; echo gone'"
+expect = "gone"

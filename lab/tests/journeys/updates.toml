@@ -1,0 +1,224 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# An update and a bad update, as the owner of a server meets them in the web
+# console. The lab PC serves an update server, the machine checks it, and the
+# console is opened and stays open: the owner stages the update it offers (a
+# bridge release, which comes before the release the server names), restarts
+# into it from the page, and the page, which the restart cut off, asks to sign
+# in again by itself. The machine runs the update, and the console and every
+# service that was up are as before; the owner goes back to the version before
+# from the same page, restarts again, and everything is as it was at the
+# start. The machine's own view is read after each part.
+#
+# Then the owner meets a bad update. The lab's `bisect` update, a boot option it
+# starts with and two apps, Valkey and nginx, make four changes, and Valkey is
+# given a setting it does not know, so the machine that starts with all four
+# fails its health check, as web-console/updates sets up. The owner finds which
+# change broke it with the search that the Updates page starts, while the
+# machine restarts by itself for each try, and the page names Valkey, confirmed.
+#
+# The update server and the test updates are the lab's (`ob lab` builds them);
+# a run without them skips the test. The page's own restarts, and not the
+# test's, are the machine's restarts for the first part. The machine is put
+# back at the end.
+about = "An update and a bad one from the web console: the page stays open while the update is staged and the machine restarts into it, the page asks to sign in again by itself and the console and services are as before, the update is gone back from and everything is as at the start, then a start that fails is searched from the page, through the machine's own restarts, to the change that broke it"
+time = "30m"
+fresh = true
+host_needs = ["curl", "python3", "scp"]
+
+# The update server of the lab PC, which the machine reads as a canary; an
+# update proves itself after 10 seconds here.
+[[step]]
+host = "sh {here}/../updates/update-server.sh serve {port:updates}"
+background = true
+ready = "serving updates"
+[[step]]
+run = "sh -c 'echo lab-console-password | user add --admin journey-admin'"
+root = true
+expect = "Made journey-admin"
+[[step]]
+run = '''sh -c 'printf "stable = 10\n" > /system/settings/sysupdate/health.toml && printf "server = \"http://{peer}:{port:updates}/system/\"\ncanary = true\n" > /system/settings/sysupdate/updates.toml && echo "set: $((6 * 7))"' '''
+root = true
+expect = "set: 42"
+[[step]]
+run = "updated --once"
+root = true
+expect = "is ready: `elevate update apply` stages it"
+# The services that are up, to hold the machine to after the restarts.
+[[step]]
+run = '''sh -c 'service --status-all | grep "\[ + \]" | sed "s/.*\]  //" | grep -v "^sysupdate$" | sort > /users/lab/journey-services-before; wc -l < /users/lab/journey-services-before' '''
+root = true
+[[step]]
+run = "sysupdate status"
+root = true
+expect = ["Running:  slot A", "Next start: slot A"]
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+
+# The page stays open through the stage, the restart into the update, the way
+# back and its restart.
+[[step]]
+browser = "updates-update.mjs"
+engines = ["chromium"]
+port = 9090
+# What the machine's console says of the two restarts the page made, in order:
+# the update's try, which proved itself and became the default, and the way
+# back, which the machine saw through. The steps after read the console from
+# here on.
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot b, @system.b"
+[[step]]
+serial = "proved itself: it is now the default"
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+serial = "is seen through"
+[[step]]
+wait = "ready"
+[[step]]
+run = "sysupdate status"
+root = true
+expect = ["Running:  slot A", "Next start: slot A", "-test.bridge, the previous version"]
+# Every service that was up before the update is up again.
+[[step]]
+run = '''sh -c 'i=0; while [ $i -lt 60 ]; do service --status-all | grep "\[ + \]" | sed "s/.*\]  //" | grep -v "^sysupdate$" | sort > /users/lab/journey-services-after; [ "$(comm -23 /users/lab/journey-services-before /users/lab/journey-services-after | wc -l)" = 0 ] && break; sleep 2; i=$((i + 1)); done; echo "down since the start: $(comm -23 /users/lab/journey-services-before /users/lab/journey-services-after | wc -l)"' '''
+root = true
+expect = "down since the start: 0"
+# The log of the starts, the update's and the way back among them, holds no
+# panic: the kernel's own words are "Radix panic", a program's "panicked at".
+# The kernel's command line says `panic=10` at each start, and authd logs this
+# command's own line, which the brackets keep from matching.
+[[step]]
+run = "sh -c 'log --all -g \"Radix [p]anic|[p]anicked at\"; true'"
+root = true
+expect = "-- No entries --"
+# Rescue follows the update that proved itself, and the next stage waits for
+# it to be written.
+[[step]]
+run = "sh -c 'while service sysupdate-stage status > /dev/null; do sleep 2; done; sysupdate status | grep Rescue:'"
+root = true
+expect = "Rescue:"
+
+# The bad update, as web-console/updates sets it up: the lab's `bisect`
+# update proved in slot B and made the default again by `sysupdate rollback`,
+# the boot option that update starts with, and two apps, Valkey made the one
+# that fails.
+[[step]]
+host = "sh {here}/../startup/copy-update.sh bisect {machine} {machine-port:22}"
+expect = "copied: bisect"
+[[step]]
+host = "sh {here}/../startup/copy-bundle.sh io.valkey.valkey {machine} {machine-port:22}"
+expect = "copied: io.valkey.valkey"
+[[step]]
+host = "sh {here}/../startup/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
+expect = "copied: org.nginx.nginx"
+[[step]]
+run = '''printf 'essential = ["logd", "authd", "consoled", "netd", "sshd", "valkey"]\nstable = 10\n' > /users/lab/health.toml'''
+[[step]]
+run = "cp /users/lab/health.toml /system/settings/sysupdate/health.toml"
+root = true
+[[step]]
+run = "sysupdate stage /users/lab/update-bisect"
+root = true
+expect = "-test.bisect in slot B: it starts at the next restart"
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot b, @system.b"
+[[step]]
+serial = "proved itself: it is now the default"
+[[step]]
+wait = "ready"
+[[step]]
+run = "sysupdate rollback --keep-settings"
+root = true
+expect = "starts from the next restart on"
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+serial = "is seen through"
+[[step]]
+wait = "ready"
+# The apps, for everyone and on. Valkey's first start copies its settings into
+# its data folder; one it does not know there ends it.
+[[step]]
+run = "sh -c 'bundle install --for-everyone --yes /users/lab/io.valkey.valkey.dkv | tail -1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+root = true
+expect = ["installed io.valkey.valkey", "installed org.nginx.nginx"]
+[[step]]
+run = "sh -c 'service valkey enable; service nginx enable'"
+root = true
+[[step]]
+run = '''sh -c 'c=/shared/services/io.valkey.valkey/valkey/conf/valkey.conf; i=0; while [ $i -lt 60 ] && [ ! -e $c ]; do sleep 1; i=$((i + 1)); done; echo "lab-bisect-bad yes" >> $c && echo "broken: $((6 * 7))"' '''
+root = true
+expect = "broken: 42"
+# The failed start: slot B, the default again, starts with the update's boot
+# option and the apps, and fails at Valkey.
+[[step]]
+run = "sysupdate rollback --keep-settings"
+root = true
+expect = "starts from the next restart on"
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot b, @system.b"
+[[step]]
+serial = "failed its health check: "
+[[step]]
+serial = "(BOOT-102)"
+[[step]]
+wait = "ready"
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 120 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+browser = "updates-bisect.mjs"
+engines = ["chromium"]
+port = 9090
+[[step]]
+wait = "ready"
+[[step]]
+run = "changes bisect --status"
+root = true
+expect = [
+    ", left out 1, 2: it failed as start ",
+    ", left out 3: it started well",
+    "The start fails with io.valkey.valkey ",
+    ", and starts without it.",
+]
+[[step]]
+run = "changes --list"
+root = true
+expect = [", slot A, try 1 of changes bisect: failed: ", ", slot B, try 2 of changes bisect: good"]
+# The console answers once the search is over, and the services that were up at
+# the start are up, apart from the app the search found.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 120 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+run = '''sh -c 'i=0; while [ $i -lt 60 ]; do service --status-all | grep "\[ + \]" | sed "s/.*\]  //" | grep -v "^sysupdate$" | sort > /users/lab/journey-services-after; [ "$(comm -23 /users/lab/journey-services-before /users/lab/journey-services-after | wc -l)" = 0 ] && break; sleep 2; i=$((i + 1)); done; echo "down since the start: $(comm -23 /users/lab/journey-services-before /users/lab/journey-services-after | wc -l)"' '''
+root = true
+expect = "down since the start: 0"
+
+# The machine as it was.
+[[step]]
+run = '''sh -c 'rm -f /system/settings/sysupdate/health.toml /system/settings/sysupdate/updates.toml /users/lab/health.toml /users/lab/journey-services-*; bundle remove --for-everyone --purge io.valkey.valkey > /dev/null 2>&1; bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; user remove --delete-home --yes journey-admin; echo cleaned' '''
+root = true
+expect = ["journey-admin is removed", "cleaned"]
