@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-// Threads on x86-64: a new thread's stack, with a guard below it, and the
-// C++ side of its entry (thread-entry.S).
+// Threads on x86-64: a new thread's stack, with a guard below it, the
+// C++ side of its entry (thread-entry.S), and its end, which unmaps the
+// stack it runs on.
 
 #include <bits/ensure.h>
 #include <errno.h>
@@ -11,6 +12,8 @@
 #include <mlibc/threads.hpp>
 #include <stdint.h>
 #include <sys/mman.h>
+
+#include "../generic/radix.hpp"
 
 extern "C" void __mlibc_thread_trampoline(void *(*fn)(void *), Tcb *tcb, void *arg) {
 	if(mlibc::sysdep<TcbSet>(tcb))
@@ -86,6 +89,52 @@ int Sysdeps<PrepareStack>::operator()(void **stack, void *entry, void *arg, void
 	*--sp = reinterpret_cast<uintptr_t>(entry);
 	*stack = sp;
 	return 0;
+}
+
+// The thread's last steps, in registers alone: it discards the `size`
+// bytes at `stack`, its stack and the guard below it, when there are any;
+// then sets *did_exit, after which its joiner, or the next pthread_create
+// for a detached thread, may free the TCB that holds it; then wakes the
+// joiner and ends. The system call takes its arguments in registers and
+// keeps rbx, so nothing here reads or writes memory but *did_exit, and
+// the caller has every signal blocked, so no handler runs on the stack
+// once it is gone.
+[[noreturn]] void Sysdeps<ThreadExitUnmapping>::operator()(void *stack, size_t size,
+		int *did_exit) {
+	register uint64_t rax asm("rax") = RADIX_SYSCALL_CAP_CALL;
+	register uint64_t rdi asm("rdi") = radix::SLOT_SPACE;
+	register uint64_t rsi asm("rsi") = RADIX_ADDRESS_SPACE_DISCARD | (uint64_t{2} << 32);
+	register uint64_t rdx asm("rdx") = reinterpret_cast<uint64_t>(stack);
+	register uint64_t r10 asm("r10") = size;
+	register uint64_t rbx asm("rbx") = reinterpret_cast<uint64_t>(did_exit);
+	asm volatile(
+		"test %%r10, %%r10\n\t"
+		"jz 1f\n\t"
+		"syscall\n"
+		"1:\n\t"
+		"movl $1, (%%rbx)\n\t"
+		"mov %[call], %%eax\n\t"
+		"mov %[space], %%edi\n\t"
+		"movabs %[wake], %%rsi\n\t"
+		"mov %%rbx, %%rdx\n\t"
+		"mov %[everyone], %%r10d\n\t"
+		"syscall\n\t"
+		"mov %[call], %%eax\n\t"
+		"mov %[process], %%edi\n\t"
+		"movabs %[exit], %%rsi\n\t"
+		"xor %%edx, %%edx\n\t"
+		"syscall\n\t"
+		"ud2"
+		:
+		: "r"(rax), "r"(rdi), "r"(rsi), "r"(rdx), "r"(r10), "r"(rbx),
+		  [call] "i"(RADIX_SYSCALL_CAP_CALL),
+		  [space] "i"(radix::SLOT_SPACE),
+		  [wake] "i"(RADIX_ADDRESS_SPACE_FUTEX_WAKE | (uint64_t{2} << 32)),
+		  [everyone] "i"(INT32_MAX),
+		  [process] "i"(radix::SLOT_PROCESS),
+		  [exit] "i"(RADIX_PROCESS_EXIT_THREAD | (uint64_t{1} << 32))
+		: "memory");
+	__builtin_unreachable();
 }
 
 } // namespace mlibc

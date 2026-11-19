@@ -1,0 +1,322 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+A thread's stack and TCB are freed once it has exited. mlibc kept both
+for good: the stack it mapped, with its guard, and the block of the TCB,
+its initial TLS, its dynamic TLS blocks, its DTV and its 1024 key slots,
+whether the thread was joined or detached. A server that starts a thread
+for each connection or task grew by some 25 KiB a thread for as long as
+it ran, and kept a page table for each stack: sshd, the console's
+server and the services it asks grew 50 to 70 MiB in a day of use.
+
+A thread cannot free what it runs on with the C library, so it ends
+through a ThreadExitUnmapping sysdep, with every signal blocked: in
+registers alone, it unmaps its stack when the C library mapped it, sets
+didExit, wakes its joiner and ends. Its TCB is then free: pthread_join
+frees it, and a detached thread's goes on a list that the next
+pthread_create frees, once each thread on it has set didExit. isJoinable
+gains a third state, a thread that exited and may still be joined, so
+that pthread_detach and the thread's exit agree on who frees it. The
+dynamic linker frees the TCB (__rtld_freeTcb), as its allocator made it,
+and takes it out of the TCBs that loading an object with TLS updates.
+pthread_create frees the TCB when it fails, which it kept too. A system
+without the sysdep keeps both, as before. Meant for upstream.
+
+--- a/options/internal/generic/threads.cpp
++++ b/options/internal/generic/threads.cpp
+@@ -16,6 +16,7 @@
+ #include <string.h>
+ 
+ extern "C" Tcb *__rtld_allocateTcb();
++extern "C" void __rtld_freeTcb(Tcb *tcb);
+ 
+ namespace {
+ 
+@@ -37,6 +38,48 @@ FutexLock key_mutex_;
+ // exits, the process exits with 0, as POSIX says.
+ constinit unsigned int live_threads = 1;
+ 
++// The values of a TCB's isJoinable: a thread that is detached, one that
++// may be joined, and one that exited while it still could be. Whoever
++// changes it last frees the TCB: the joiner, or for a detached thread
++// the next pthread_create.
++constexpr int thread_detached = 0;
++constexpr int thread_joinable = 1;
++constexpr int thread_exited_joinable = 2;
++
++// Detached threads that have exited or are exiting, linked by their
++// nextFinished, whose TCBs wait to be freed: a thread runs with its TCB
++// until its last instruction, so another frees it once its didExit is
++// set. Pushed and taken whole without a lock, which a fork could leave
++// held in the child.
++constinit Tcb *finished_threads = nullptr;
++
++void add_finished(Tcb *tcb) {
++	auto head = __atomic_load_n(&finished_threads, __ATOMIC_RELAXED);
++	do {
++		tcb->nextFinished = head;
++	} while (!__atomic_compare_exchange_n(&finished_threads, &head, tcb, true,
++			__ATOMIC_RELEASE, __ATOMIC_RELAXED));
++}
++
++// Frees the TCBs of the finished threads that have gone, and puts back
++// those still on their way out.
++void free_finished() {
++	auto tcb = __atomic_exchange_n(&finished_threads, nullptr, __ATOMIC_ACQUIRE);
++	while (tcb) {
++		auto next = tcb->nextFinished;
++		if (__atomic_load_n(&tcb->didExit, __ATOMIC_ACQUIRE))
++			__rtld_freeTcb(tcb);
++		else
++			add_finished(tcb);
++		tcb = next;
++	}
++}
++
++// Whether the system can free a thread's stack and TCB once it exits;
++// without ThreadExitUnmapping they stay, as nothing can tell when the
++// thread no longer runs on them.
++constexpr bool frees_threads = mlibc::IsImplemented<ThreadExitUnmapping>;
++
+ // What a thread whose signal mask is not its creator's starts with: its
+ // function and argument, and its mask.
+ struct masked_start {
+@@ -132,6 +175,8 @@ int thread_once(__mlibc_once *once, void (*func) (void)) {
+ }
+ 
+ int thread_create(struct __mlibc_thread_data **__restrict thread, const struct __mlibc_threadattr *__restrict attrp, void *entry, void *__restrict user_arg, bool returns_int) {
++	if constexpr (frees_threads)
++		free_finished();
+ 	auto new_tcb = __rtld_allocateTcb();
+ 	if (!new_tcb)
+ 		return EAGAIN;
+@@ -142,6 +187,7 @@ int thread_create(struct __mlibc_thread_data **__restrict thread, const struct _
+ 
+ 	if (!IsImplemented<PrepareStack> || !IsImplemented<Clone>) {
+ 		MLIBC_MISSING_SYSDEP();
++		__rtld_freeTcb(new_tcb);
+ 		return ENOSYS;
+ 	}
+ 
+@@ -159,11 +205,15 @@ int thread_create(struct __mlibc_thread_data **__restrict thread, const struct _
+ 	if (attr.__sigmaskset
+ 			|| !tcb_cancel_enabled(__atomic_load_n(&self->cancelBits, __ATOMIC_RELAXED))) {
+ 		sigset_t now;
+-		if (int e = thread_mask(SIG_BLOCK, nullptr, &now); e)
++		if (int e = thread_mask(SIG_BLOCK, nullptr, &now); e) {
++			__rtld_freeTcb(new_tcb);
+ 			return e;
++		}
+ 		start = frg::construct<masked_start>(getAllocator());
+-		if (!start)
++		if (!start) {
++			__rtld_freeTcb(new_tcb);
+ 			return EAGAIN;
++		}
+ 		start->entry = entry;
+ 		start->user_arg = user_arg;
+ 		start->mask = now;
+@@ -184,13 +234,16 @@ int thread_create(struct __mlibc_thread_data **__restrict thread, const struct _
+ 	if (ret) {
+ 		if (start)
+ 			frg::destruct(getAllocator(), start);
++		__rtld_freeTcb(new_tcb);
+ 		return ret;
+ 	}
+ 
++	new_tcb->ownsStack = !attr.__stackaddr;
+ 	new_tcb->stackSize = attr.__stacksize;
+ 	new_tcb->guardSize = attr.__guardsize;
+ 	new_tcb->returnValueType = (returns_int) ? TcbThreadReturnValue::Integer : TcbThreadReturnValue::Pointer;
+-	new_tcb->isJoinable = (attr.__detachstate == __MLIBC_THREAD_CREATE_JOINABLE);
++	new_tcb->isJoinable = (attr.__detachstate == __MLIBC_THREAD_CREATE_JOINABLE)
++			? thread_joinable : thread_detached;
+ 	__atomic_store_n(&new_tcb->cancelBits, 0, __ATOMIC_RELAXED);
+ 	__atomic_fetch_add(&live_threads, 1, __ATOMIC_RELAXED);
+ 	sigset_t creator_mask;
+@@ -234,22 +287,27 @@ int thread_join(struct __mlibc_thread_data *thread, void *ret) {
+ 	else if(ret && tcb->returnValueType == TcbThreadReturnValue::Integer)
+ 		*reinterpret_cast<int *>(ret) = tcb->returnValue.integer;
+ 
+-	// FIXME: destroy tcb here, currently we leak it
++	// The thread set didExit with its last store, so its TCB is free.
++	if constexpr (frees_threads)
++		__rtld_freeTcb(tcb);
+ 
+ 	return 0;
+ }
+ 
+ int thread_detach(struct __mlibc_thread_data *thread) {
+ 	auto tcb = reinterpret_cast<Tcb *>(thread);
+-	if (!__atomic_load_n(&tcb->isJoinable, __ATOMIC_RELAXED))
+-		return EINVAL;
+-
+-	int expected = 1;
+-	if(!__atomic_compare_exchange_n(&tcb->isJoinable, &expected, 0, false, __ATOMIC_RELEASE,
+-				__ATOMIC_RELAXED))
+-		return EINVAL;
+-
+-	return 0;
++	int state = __atomic_load_n(&tcb->isJoinable, __ATOMIC_ACQUIRE);
++	while (state != thread_detached) {
++		if (__atomic_compare_exchange_n(&tcb->isJoinable, &state, thread_detached, false,
++				__ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
++			// A thread that exited before it was detached left its TCB
++			// to whoever joined it; that falls to the next pthread_create.
++			if (state == thread_exited_joinable)
++				add_finished(tcb);
++			return 0;
++		}
++	}
++	return EINVAL;
+ }
+ 
+ namespace {
+@@ -309,11 +367,32 @@ __attribute__ ((__noreturn__)) void thread_exit(thread_exit_return ret_val) {
+ 
+ 	self->returnValue = ret_val;
+ 
++	if constexpr (frees_threads) {
++		// No signal handler may run from here on: the stack it would run
++		// on is about to go.
++		sigset_t all;
++		memset(&all, ~0, sizeof(all));
++		thread_mask(SIG_BLOCK, &all, nullptr);
++
++		// A thread no one can join any more leaves its TCB to the next
++		// pthread_create; one that may still be joined leaves it to its
++		// joiner, or to pthread_detach.
++		int state = thread_joinable;
++		if (!__atomic_compare_exchange_n(&self->isJoinable, &state, thread_exited_joinable,
++				false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
++			add_finished(self);
++
++		void *stack = nullptr;
++		size_t size = 0;
++		if (self->ownsStack) {
++			stack = self->stackAddr;
++			size = self->guardSize + self->stackSize;
++		}
++		sysdep<ThreadExitUnmapping>(stack, size, &self->didExit);
++	}
++
+ 	__atomic_store_n(&self->didExit, 1, __ATOMIC_RELEASE);
+ 	sysdep<FutexWake>(&self->didExit, true);
+-
+-	// TODO: clean up thread resources when we are detached.
+-
+ 	mlibc::do_exit();
+ }
+ 
+--- a/options/internal/include/mlibc/sysdep-signatures.hpp
++++ b/options/internal/include/mlibc/sysdep-signatures.hpp
+@@ -59,6 +59,7 @@ SYSDEP_FUNC(RiscvHwprobe, struct riscv_hwprobe *pairs, size_t pair_count, size_t
+ // ANSI option sysdeps
+ SYSDEP_FUNC_NORETURN(Exit, int status);
+ SYSDEP_FUNC_NORETURN(ThreadExit);
++SYSDEP_FUNC_NORETURN(ThreadExitUnmapping, void *stack, size_t size, int *did_exit);
+ SYSDEP_FUNC(PrepareStack, void **stack, void *entry, void *user_arg, void* tcb, size_t *stack_size, size_t *guard_size, void **stack_base);
+ SYSDEP_FUNC(Clone, void *tcb, pid_t *pid_out, void *stack);
+ SYSDEP_FUNC(FutexWait, int *pointer, int expected, const struct timespec *time);
+--- a/options/internal/include/mlibc/sysdep-tags.hpp
++++ b/options/internal/include/mlibc/sysdep-tags.hpp
+@@ -25,6 +25,13 @@
+ struct Exit { static constexpr bool is_noreturn = true; };
+ // [[noreturn]] void sys_thread_exit();
+ struct ThreadExit { static constexpr bool is_noreturn = true; };
++// Ends the calling thread as sys_thread_exit does, after it unmaps the
++// `size` bytes at `stack`, which holds the stack it runs on, then sets
++// *did_exit to 1 and wakes its waiters. It touches no memory of the stack
++// once it is unmapped, and none of *did_exit's once that is set; signals
++// are blocked.
++// [[noreturn]] void sys_thread_exit_unmapping(void *stack, size_t size, int *did_exit);
++struct ThreadExitUnmapping { static constexpr bool is_noreturn = true; };
+ 
+ // If *stack is not null, it should point to the lowest addressable byte of the stack.
+ // Returns the new stack pointer in *stack and the stack base in *stack_base.
+--- a/options/internal/include/mlibc/tcb.hpp
++++ b/options/internal/include/mlibc/tcb.hpp
+@@ -156,6 +156,17 @@ struct Tcb {
+ 
+ 	CxaThreadExitHandler *cxaThreadExitHandlers;
+ 
++	// The block allocateTcb cut the TCB and its TLS from, which freeTcb
++	// gives back.
++	void *allocation;
++	// Whether the C library mapped the thread's stack, and the thread
++	// unmaps it as it exits; a stack from pthread_attr_setstack stays
++	// its owner's.
++	bool ownsStack;
++	// The next detached thread that has exited, or is exiting, whose TCB
++	// the next pthread_create frees once its didExit is set.
++	Tcb *nextFinished;
++
+ 	inline void invokeThreadFunc(void *entry, void *user_arg) {
+ 		if(returnValueType == TcbThreadReturnValue::Pointer) {
+ 			auto func = reinterpret_cast<void *(*)(void *)>(entry);
+--- a/options/rtld/generic/linker.cpp
++++ b/options/rtld/generic/linker.cpp
+@@ -1470,6 +1470,9 @@ Tcb *allocateTcb() {
+ 
+ 	Tcb *tcb_ptr = new ((char *)tcbAddress) Tcb;
+ 	tcb_ptr->selfPointer = tcb_ptr;
++	tcb_ptr->allocation = reinterpret_cast<void *>(allocation);
++	tcb_ptr->ownsStack = false;
++	tcb_ptr->nextFinished = nullptr;
+ 
+ 	tcb_ptr->stackCanary = __stack_chk_guard;
+ 	tcb_ptr->cancelBits = tcbCancelEnableBit;
+@@ -1512,6 +1515,28 @@ Tcb *allocateTcb() {
+ 	return tcb_ptr;
+ }
+ 
++// Gives back what allocateTcb took for `tcb`, and what loading objects
++// with TLS since added to it: its dynamic TLS blocks, its DTV, its keys
++// and the TCB itself, with its initial TLS. The thread has exited.
++void freeTcb(Tcb *tcb) {
++	frg::unique_lock lock{*runtimeTlsMapLock};
++	auto &tcbs = runtimeTlsMap->tcbs;
++	for (size_t i = 0; i < tcbs.size(); i++) {
++		if (tcbs[i] == tcb) {
++			tcbs[i] = tcbs.back();
++			tcbs.pop();
++			break;
++		}
++	}
++	for (size_t i = 0; i < tcb->dtvSize; i++) {
++		if (runtimeTlsMap->indices[i]->tlsModel == TlsModel::dynamic)
++			getAllocator().free(tcb->dtvPointers[i]);
++	}
++	getAllocator().free(tcb->dtvPointers);
++	getAllocator().free(tcb->localKeys);
++	getAllocator().free(tcb->allocation);
++}
++
+ void *accessDtv(SharedObject *object) {
+ 	Tcb *tcb_ptr = mlibc::get_current_tcb();
+ 	size_t size = __atomic_load_n(&tcb_ptr->dtvSize, __ATOMIC_ACQUIRE);
+--- a/options/rtld/generic/linker.hpp
++++ b/options/rtld/generic/linker.hpp
+@@ -362,6 +362,7 @@ extern frg::manual_box<FutexLock> runtimeTlsMapLock;
+ extern frg::manual_box<RuntimeTlsMap> runtimeTlsMap;
+ 
+ Tcb *allocateTcb();
++void freeTcb(Tcb *tcb);
+ void initTlsObjects(Tcb *tcb, const frg::vector<SharedObject *, MemoryAllocator> &objects, bool checkInitialized);
+ void *accessDtv(SharedObject *object);
+ // Tries to access the DTV, if not allocated, or object doesn't have
+--- a/options/rtld/generic/main.cpp
++++ b/options/rtld/generic/main.cpp
+@@ -236,6 +236,12 @@ extern "C" [[ gnu::visibility("default") ]] void *__rtld_allocateTcb() {
+ 	return tcb;
+ }
+ 
++// Gives back a TCB of __rtld_allocateTcb once its thread has exited; the
++// dynamic linker frees it, as its allocator made it.
++extern "C" [[ gnu::visibility("default") ]] void __rtld_freeTcb(void *tcb) {
++	freeTcb(static_cast<Tcb *>(tcb));
++}
++
+ extern "C" {
+ 	[[ gnu::visibility("hidden") ]] void dl_debug_state() {
+ 		// This function is used to signal changes in the debugging link map,

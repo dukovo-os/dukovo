@@ -203,6 +203,7 @@ struct RadixSysdepTags :
 	Tcsetwinsize,
 	Tgkill,
 	ThreadExit,
+	ThreadExitUnmapping,
 	ThreadGetname,
 	ThreadSetname,
 	ThreadSigmask,

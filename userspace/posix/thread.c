@@ -3,10 +3,12 @@
 
 // POSIX threads: creating and joining them, mutexes and condition
 // variables, thread-local storage, detached threads, signals to a
-// thread, thread names, and descriptors two threads open at once.
+// thread, thread names, descriptors two threads open at once, and the
+// memory of threads that have ended, which the process gets back.
 
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
@@ -264,6 +266,99 @@ static void descriptors(void) {
 	CHECK((intptr_t)times > 0);
 }
 
+enum { ENDED = 300, STACK_USED = 16384 };
+
+static atomic_int ended;
+
+// Uses STACK_USED bytes of its stack, as a thread that does some work
+// does, and counts itself among the ended.
+static void *works(void *argument) {
+	volatile char used[STACK_USED];
+	memset((char *)used, 1, sizeof(used));
+	atomic_fetch_add(&ended, 1);
+	return argument;
+}
+
+// The pages of anonymous memory the process holds, from
+// /processes/<pid>/status; -1 if it cannot be read.
+static long anonymous_pages(void) {
+	char path[64];
+	snprintf(path, sizeof(path), "/processes/%d/status", (int)getpid());
+	FILE *status = fopen(path, "r");
+	if(!status)
+		return -1;
+	char line[128];
+	long pages = -1;
+	while(fgets(line, sizeof(line), status))
+		if(sscanf(line, "anonymous_memory: %ld pages", &pages) == 1)
+			break;
+	fclose(status);
+	return pages;
+}
+
+// Waits until `count` threads in all have run works, for at most 10 s.
+static void wait_ended(int count) {
+	for(int i = 0; i < 10000 && atomic_load(&ended) < count; i++)
+		check_sleep_ms(1);
+	CHECK(atomic_load(&ended) >= count);
+}
+
+// Threads that end, joined, detached before they end and detached after
+// they ended, ENDED of each, while the process's memory holds still: the
+// C library gives back each thread's stack, its guard, its TLS and its
+// key slots; kept, they would grow a server that starts a thread for each
+// connection by some 25 KiB a connection for as long as it runs. A
+// thread on a stack of its caller's (pthread_attr_setstack) leaves that
+// stack to the caller, who can use it after the join.
+static void given_back(void) {
+	pthread_t thread;
+	pthread_attr_t detach;
+	pthread_attr_init(&detach);
+	pthread_attr_setdetachstate(&detach, PTHREAD_CREATE_DETACHED);
+	// The first round takes what the heap keeps for TCBs from then on.
+	for(int i = 0; i < 20; i++) {
+		CHECK(pthread_create(&thread, NULL, works, NULL) == 0);
+		CHECK(pthread_join(thread, NULL) == 0);
+	}
+	atomic_store(&ended, 0);
+	long before = anonymous_pages();
+	CHECK(before > 0);
+	for(int i = 0; i < ENDED; i++) {
+		void *result = NULL;
+		CHECK(pthread_create(&thread, NULL, works, &ended) == 0);
+		CHECK(pthread_join(thread, &result) == 0 && result == &ended);
+	}
+	for(int i = 0; i < ENDED; i++) {
+		CHECK(pthread_create(&thread, &detach, works, NULL) == 0);
+		wait_ended(ENDED + i + 1);
+	}
+	for(int i = 0; i < ENDED; i++) {
+		CHECK(pthread_create(&thread, NULL, works, NULL) == 0);
+		wait_ended(2 * ENDED + i + 1);
+		CHECK(pthread_detach(thread) == 0);
+	}
+	// The last detached threads' TCBs are freed by the next create.
+	CHECK(pthread_create(&thread, NULL, works, NULL) == 0);
+	CHECK(pthread_join(thread, NULL) == 0);
+	long after = anonymous_pages();
+	// 900 threads that kept what they used would hold over 5000 pages.
+	if(after - before > 64)
+		fprintf(stderr, "thread: %ld pages before %d threads ended, %ld after\n", before,
+				3 * ENDED, after);
+	CHECK(after - before <= 64);
+	pthread_attr_destroy(&detach);
+
+	static char own_stack[1 << 16] __attribute__((aligned(16)));
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	CHECK(pthread_attr_setstack(&attr, own_stack, sizeof(own_stack)) == 0);
+	CHECK(pthread_create(&thread, &attr, works, NULL) == 0);
+	CHECK(pthread_join(thread, NULL) == 0);
+	pthread_attr_destroy(&attr);
+	memset(own_stack, 2, sizeof(own_stack));
+	CHECK(own_stack[0] == 2 && own_stack[sizeof(own_stack) - 1] == 2);
+}
+
 int main(void) {
 	check_start("thread");
 	RUN(counts);
@@ -273,5 +368,6 @@ int main(void) {
 	RUN(forking);
 	RUN(names);
 	RUN(descriptors);
+	RUN(given_back);
 	return check_end();
 }
