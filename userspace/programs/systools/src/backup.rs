@@ -487,18 +487,39 @@ struct State {
     /// When it was last verified by a restore, and why that failed.
     verified: u64,
     verify_failed: String,
+    /// When the backup to it that runs now began, in ns; 0 while none
+    /// runs. One still there when no round runs was cut off.
+    began: u64,
 }
+
+/// Why a backup failed that began and never ended.
+const CUT_OFF: &str = "it was cut off before it ended: the machine stopped, or the backup was \
+                       stopped, while it ran";
 
 impl State {
     fn path(name: &str) -> PathBuf {
         Path::new(STATE).join(format!("{name}.json"))
     }
 
+    /// What backup last did for `name`. A backup that began in a round
+    /// that no longer runs failed: it was cut off.
     fn read(name: &str) -> State {
-        fs::read(State::path(name))
+        let state: State = fs::read(State::path(name))
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        state.ended(Lock::held())
+    }
+
+    /// The state as it is with a round running or not: a backup begun
+    /// in a round that does not run is a failed one.
+    fn ended(mut self, running: bool) -> State {
+        if self.began != 0 && !running {
+            self.tried = self.began;
+            self.failed = CUT_OFF.into();
+            self.began = 0;
+        }
+        self
     }
 
     fn write(&self, name: &str) -> Result<(), Fail> {
@@ -1207,6 +1228,9 @@ fn round(dests: Vec<Destination>, out: &mut dyn Write, progress: bool) -> Result
     for mut r in ready {
         let name = r.dest.name.clone();
         r.state.tried = now;
+        // Noted first, so that a backup cut off says so.
+        r.state.began = now;
+        r.state.write(&name)?;
         let failed = match r.repo.take() {
             Some(mut repo) => restic_round(&mut r, &mut repo, &made, &not_made, &time, now, out),
             None => streams_round(&mut r, &made, &not_made, &time, out),
@@ -1220,6 +1244,7 @@ fn round(dests: Vec<Destination>, out: &mut dyn Write, progress: bool) -> Result
             let _ = writeln!(out, "backup: {name}: {}", r.state.failed);
             good = false;
         }
+        r.state.began = 0;
         r.state.write(&name)?;
     }
     remove_unneeded(&made)?;
@@ -3089,6 +3114,22 @@ mod tests {
         let unchecked =
             State { done: now, verify_failed: "a chain is short".into(), ..State::default() };
         assert!(line(Every::Day, &unchecked, 0).unwrap().contains("to check them failed: a chain"));
+    }
+
+    #[test]
+    fn a_backup_that_began_and_never_ended_was_cut_off_once_no_round_runs() {
+        let began = State { done: 5, began: 9, ..State::default() };
+        let cut = State { done: 5, began: 9, ..State::default() }.ended(false);
+        assert_eq!((cut.tried, cut.done, cut.began), (9, 5, 0));
+        assert_eq!(cut.failed, CUT_OFF);
+        // While its round runs, the backup is not cut off: it runs.
+        let running = began.ended(true);
+        assert_eq!((running.began, running.failed.as_str()), (9, ""));
+        let ended = State { done: 5, ..State::default() }.ended(false);
+        assert!(ended.failed.is_empty());
+        let now = 10 * 86_400 * NANOS;
+        let dest = Destination::parse("stick", "to = \"/v\"\n").unwrap();
+        assert!(sign_in_line(&dest, &cut, 0, now).unwrap().contains("failed: it was cut off"));
     }
 
     #[test]
