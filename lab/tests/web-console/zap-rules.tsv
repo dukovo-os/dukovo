@@ -19,11 +19,7 @@
 10027	IGNORE	Information Disclosure - Suspicious Comments: the comments are those of the console's own scripts, whose source is published; words such as user, admin or password in them say what the code does and give away nothing the repository does not
 10049	IGNORE	Non-Storable Content, Storable and Cacheable Content: a note on how each answer may be kept, which is as 10015 says: no-store for the API, no-cache with an ETag for the console's own files
 10109	IGNORE	Modern Web Application: a note that the page is drawn by its scripts, which ZAP's AJAX spider would follow; the baseline scan only watches, and the browser tests of web-console drive every page
-# Timestamp Disclosure - Unix: the API's answers are data for a program that
-# holds a token, and times in them are that data (when a task ran, the
-# examples of each action that /api/1/actions lists); none is the server's
-# clock given away, which every answer's Date header says anyway.
-10096	OUTOFSCOPE	^https://[^/]+/api/1/.*
+10096	IGNORE	Timestamp Disclosure - Unix: a note that an answer holds a number that reads as a time; the API's answers are data for a program that holds a token, and times in them are that data (when a task ran, the examples of each action that /api/1/actions lists), and every answer's Date header gives the server's clock anyway. It is ignored everywhere and not only for /api/1/: ZAP 2.17 still counts a rule as warning when an address rule has taken all of its instances away (WARN-NEW x 0)
 # Private IP Disclosure: an answer of the API may name the machine's own
 # addresses on its network, and /api/1/actions lists examples and defaults
 # such as 192.168.1.20 and 10.8.0.1/24; only a holder of a token reads them,

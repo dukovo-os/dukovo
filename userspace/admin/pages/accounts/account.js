@@ -61,6 +61,9 @@ export async function showAccount(view, { name, route }) {
   let latest = 0;
   let model = null;
   let drawnBody = null;
+  // Whether the last read failed: only then does a read that works take its
+  // words away, so that a later read keeps what an action of the person's showed.
+  let failed = false;
   let drawnSessions = null;
   let sessions = null;
   let ssh = null;
@@ -170,7 +173,10 @@ export async function showAccount(view, { name, route }) {
         next = account ? { kind, account } : { kind, missing: true };
       }
       model = next;
-      view.slot.replaceChildren();
+      if (failed) {
+        failed = false;
+        view.slot.replaceChildren();
+      }
       draw();
     } catch (error) {
       if (mine !== latest || error?.name === 'AbortError') return;
@@ -180,12 +186,14 @@ export async function showAccount(view, { name, route }) {
         return;
       }
       if (model === null) fill(body);
+      failed = true;
       view.problem(error, { buttons: [again] });
     }
   }
 
   const again = h('button', { class: 'btn small', type: 'button' }, 'Try again');
   again.addEventListener('click', () => {
+    failed = false;
     view.slot.replaceChildren();
     fill(body, frames());
     drawnBody = null;

@@ -196,7 +196,7 @@ async function navigationIcons(t, page) {
   // The browser asked for each file for the mask, before this check asks for it again.
   const asked = await page.evaluate(() => performance.getEntriesByType("resource").map((entry) => entry.name));
   const missing = urls.filter((url) => !asked.includes(url));
-  ensure(missing.length === 0, `the browser did not ask for the image of ${missing.join(", ")}`);
+  ensure(missing.length === 0, `the browser did not ask for the image of ${missing.join(", ")} (it kept the timing of ${asked.length} files)`);
   const served = await page.evaluate(
     (wanted) =>
       Promise.all(

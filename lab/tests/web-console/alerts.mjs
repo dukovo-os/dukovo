@@ -59,7 +59,7 @@
 // alerts.toml raises two alerts before each engine, a warning of the Alerts page's
 // own and a critical one about Hardware, clears them after, and leaves no channel
 // and no certificate of the test's authority. The receiver, and where its log is,
-// are what alerts.toml wrote to /tmp/lab-alerts-hooks. The accounts are the two
+// are what alerts.toml wrote to /tmp/lab-alerts-hooks-{machine}-{port}. The accounts are the two
 // that alerts.toml made, so no script needs the lab's password.
 
 import { createECDH, randomBytes } from "node:crypto";
@@ -67,6 +67,7 @@ import { readFile } from "node:fs/promises";
 import {
   ensure,
   fetchAsPage,
+  labNote,
   leaveWelcome,
   lookAll,
   mustBe,
@@ -87,7 +88,7 @@ const READER = "wc-alerts-reader";
 
 // What alerts.toml writes for the script: the receiver's address, its port and
 // the log it keeps.
-const HOOKS_FILE = "/tmp/lab-alerts-hooks";
+const HOOKS_FILE = "lab-alerts-hooks";
 
 // The routes that lab/coverage.toml says this test covers, as the console's
 // table names them: the browser must have called each by the end. `{number}` is
@@ -222,10 +223,11 @@ function outputJson(answer, member) {
 
 // --- The lab PC's receiver ---
 
-/** Where the receiver is, from alerts.toml: `{peer, port, log}`. */
-async function hooksOf() {
-  const [peer, port, log] = (await readFile(HOOKS_FILE, "utf8")).trim().split("\n");
-  ensure(isText(peer) && /^\d+$/.test(port ?? "") && isText(log), `${HOOKS_FILE} does not give the receiver's address, its port and its log`);
+/** Where the receiver for the machine that `page` shows is, from alerts.toml: `{peer, port, log}`. */
+async function hooksOf(page) {
+  const file = labNote(HOOKS_FILE, page);
+  const [peer, port, log] = (await readFile(file, "utf8")).trim().split("\n");
+  ensure(isText(peer) && /^\d+$/.test(port ?? "") && isText(log), `${file} does not give the receiver's address, its port and its log`);
   return { peer, port, log };
 }
 
@@ -1015,8 +1017,8 @@ async function phoneCard(t, page) {
 // --- The administrator ---
 
 async function administrator(t) {
-  const hooks = await hooksOf();
   const { page, seen } = await signedIn(t, ADMIN, permissionsOf(t.engine));
+  const hooks = await hooksOf(page);
   const said = watching(page);
   await whileLocked(t, page);
   await nothingSetUp(t, page);

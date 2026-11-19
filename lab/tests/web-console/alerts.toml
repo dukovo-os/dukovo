@@ -34,7 +34,7 @@
 # taken out at the end. The script runs once for each engine, on a machine that
 # has no channel and two alerts of its own (the steps before it raise them, the
 # steps after it clear them). The script reads where the receiver is, and its
-# log, from /tmp/lab-alerts-hooks, which a step below writes. The accounts are
+# log, from /tmp/lab-alerts-hooks-{machine}-{machine-port:9090}, which a step below writes. The accounts are
 # two that this test makes and removes, an administrator and a reader, so no
 # script needs the lab's password.
 #
@@ -67,7 +67,7 @@ expect = "trusted"
 
 # Where the receiver is and where its log is, for the browser script.
 [[step]]
-host = '''sh -c 'printf "%s\n%s\n%s\n" {peer} {port:hooks} "$(pwd)/received.log" > /tmp/lab-alerts-hooks && echo hooks-noted' '''
+host = '''sh -c 'printf "%s\n%s\n%s\n" {peer} {port:hooks} "$(pwd)/received.log" > /tmp/lab-alerts-hooks-{machine}-{machine-port:9090} && echo hooks-noted' '''
 expect = "hooks-noted"
 
 # The console answers within seconds of the boot; its last answer is shown
@@ -141,5 +141,5 @@ run = "sh -c 'for name in wc-alerts wc-alerts-reader; do user remove --delete-ho
 root = true
 expect = ["wc-alerts is removed", "wc-alerts-reader is removed"]
 [[step]]
-host = "sh -c 'rm -f /tmp/lab-alerts-hooks && echo hooks-gone'"
+host = "sh -c 'rm -f /tmp/lab-alerts-hooks-{machine}-{machine-port:9090} && echo hooks-gone'"
 expect = "hooks-gone"

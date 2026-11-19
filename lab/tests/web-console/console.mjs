@@ -47,10 +47,14 @@ export async function openConsole(t, path, options = {}) {
 
 /**
  * Has every page of `page`'s context note what its content security policy
- * stops, from its next load on, for `look` to read (`policyStopped`).
+ * stops, from its next load on, for `look` to read (`policyStopped`), and
+ * keep the timing of every file it asks for.
  */
 export async function watchPolicy(page) {
   await page.context().addInitScript(() => {
+    // A browser keeps the timing of 250 files by default and drops the rest;
+    // a page that has called the API that often has none for its icons.
+    performance.setResourceTimingBufferSize(100_000);
     window.labPolicyStopped = [];
     window.labShooting = 0;
     document.addEventListener(
@@ -386,6 +390,17 @@ export async function openSecondStep(t, page) {
 
 /** The origin of the console that `page` shows, `https://host:port`. */
 export const originOf = (page) => new URL(page.url()).origin;
+
+/**
+ * The file on the lab PC in which a test's host step leaves what its browser
+ * script reads, for the machine whose console `page` shows. The lab runs a
+ * test on each of its machines at once, so each machine has its own:
+ * `/tmp/NAME-{machine}-{machine-port:9090}` in the test's steps.
+ */
+export const labNote = (name, page) => {
+  const { hostname, port } = new URL(page.url());
+  return `/tmp/${name}-${hostname}-${port || "443"}`;
+};
 
 /**
  * A POST as the console's own page makes it, from the page's origin and

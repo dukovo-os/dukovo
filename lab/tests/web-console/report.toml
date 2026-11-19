@@ -29,7 +29,7 @@
 # The staging server's certificate is signed by an authority of the test's own,
 # which report.toml(5) names in `ca`, as the crash-report test does. The script
 # reads where the server keeps its reports, and its script, from
-# /tmp/lab-report-desk, which a step below writes. The script runs once for each
+# /tmp/lab-report-desk-{machine}-{machine-port:9090}, which a step below writes. The script runs once for each
 # engine, and the steps before it leave a crash of crash-test that is not
 # reported for each, since sending one reports it.
 #
@@ -79,7 +79,7 @@ expect = "configured"
 
 # Where the server keeps what it takes, and its script, for the browser script.
 [[step]]
-host = '''sh -c 'printf "%s\n%s\n" "$(pwd)/reports" {here}/../reports/report-server.py > /tmp/lab-report-desk && echo desk-noted' '''
+host = '''sh -c 'printf "%s\n%s\n" "$(pwd)/reports" {here}/../reports/report-server.py > /tmp/lab-report-desk-{machine}-{machine-port:9090} && echo desk-noted' '''
 expect = "desk-noted"
 
 # The console answers within seconds of the boot; its last answer is shown
@@ -219,5 +219,5 @@ run = "sh -c 'for name in wc-report wc-report-reader; do user remove --delete-ho
 root = true
 expect = ["wc-report is removed", "wc-report-reader is removed"]
 [[step]]
-host = "sh -c 'rm -f /tmp/lab-report-desk && echo desk-gone'"
+host = "sh -c 'rm -f /tmp/lab-report-desk-{machine}-{machine-port:9090} && echo desk-gone'"
 expect = "desk-gone"

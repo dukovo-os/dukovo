@@ -172,7 +172,7 @@ export async function show(view) {
       jobs.learn((await view.api.get('/api/1/tasks'))?.tasks);
       paint();
     } catch {
-      // The Tasks list is where tasks are shown; without it the rows say what they always say.
+      // The Tasks list shows tasks; without it the rows say what they always say.
     }
   }
 
@@ -212,7 +212,7 @@ export async function show(view) {
     latest += 1;
     const mine = latest;
     try {
-      // An app that is asked for is read apart, so that its failing does not hide the list.
+      // An app asked for is read apart, so that its failing does not hide the list.
       const one = wanted
         ? view.api.get(`/api/1/apps/${encodeURIComponent(wanted)}`).then((answer) => ({ answer }), (error) => {
           if (error?.name === 'AbortError') throw error;
@@ -231,7 +231,7 @@ export async function show(view) {
       ]);
       if (mine !== latest) return;
       const listed = (Array.isArray(bundles?.bundles) ? bundles.bundles : []).some((bundle) => bundle?.id === wanted);
-      // An app that cannot be read is not installed when the list does not have it, and a problem when it does.
+      // An app that cannot be read is not installed if the list lacks it, and a problem if not.
       if (found?.error && listed) throw found.error;
       apps = bundles;
       last = checked;
@@ -240,11 +240,11 @@ export async function show(view) {
       settings = rule;
       names = namesOf(who);
       managed = manage;
+      draw(failed);
       failed = false;
-      draw();
     } catch (error) {
       if (mine !== latest || error?.name === 'AbortError') return;
-      // What is drawn stays while the server does not answer; a first read that fails leaves nothing to show.
+      // What is drawn stays while the server is away; a failed first read leaves nothing.
       if (apps === null) content.hidden = true;
       if (!headed) drawHead(null);
       if (failed) return;
@@ -261,9 +261,9 @@ export async function show(view) {
     read();
   });
 
-  /** Draws what was read. */
-  function draw() {
-    view.slot.replaceChildren();
+  /** Draws what was read; `clear` empties the slot. */
+  function draw(clear = true) {
+    if (clear) view.slot.replaceChildren();
     content.hidden = false;
     const rows = rowsOf(apps, last);
     if (!headed) drawHead(info?.name ?? null);
