@@ -59,7 +59,11 @@ run = '''sh -c 'mem_before=$(cat /tmp/mem-before); fds_before=$(cat /tmp/fds-bef
 root = true
 expect = "within-bounds"
 
+# The log holds no panic: the kernel's own words are "Radix panic", a
+# program's "panicked at". The kernel's command line says `panic=10` at each
+# start, and authd logs this command's own line, which the brackets keep
+# from matching.
 [[step]]
-run = "sh -c 'log | grep -c panic || true'"
+run = "sh -c 'log --all -g \"Radix [p]anic|[p]anicked at\"; true'"
 root = true
-expect = "0"
+expect = "-- No entries --"
