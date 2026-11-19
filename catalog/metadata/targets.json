@@ -2,7 +2,7 @@
   "signatures": [
     {
       "keyid": "c81a7cbb15da4652dc994461531edbef9ea48c2e21d97df7c8d6fd9fa1b0803e",
-      "sig": "304402203aeff08f95627f3738b25906c6137f219050f91f13d9a891928ae0519a2bf30402205c56d53e6938d4b3077398e9762ac988974ff4227a7cd4533d7acd02273ae470"
+      "sig": "3046022100a6100d80f107a11c3f84913302ea22bfa9b5f163da18ed7832fd4fca8acd6ead022100a9b69958394ed561f73bacd3ffba4500438de484007722ad3e67a3f7a6b7436c"
     }
   ],
   "signed": {
@@ -42,7 +42,7 @@
         }
       ]
     },
-    "expires": "2027-05-19T17:25:09Z",
+    "expires": "2027-05-20T18:30:09Z",
     "spec_version": "1.0.31",
     "targets": {
       "bundles/io.github.burntsushi.ripgrep-15.2.0.dkv": {
@@ -111,6 +111,17 @@
         },
         "length": 28905617
       },
+      "bundles/org.postgresql.postgresql-19.0.dkv": {
+        "custom": {
+          "id": "org.postgresql.postgresql",
+          "name": "PostgreSQL",
+          "version": "19.0"
+        },
+        "hashes": {
+          "sha256": "63044bf8e86a04bdaf295885dee62bee0fae11acc9c30ec02ec16b53f4d4e6ee"
+        },
+        "length": 28914556
+      },
       "bundles/org.python.python-3.15.2.dkv": {
         "custom": {
           "id": "org.python.python",
@@ -134,6 +145,6 @@
         "length": 1308416
       }
     },
-    "version": 1
+    "version": 2
   }
 }
