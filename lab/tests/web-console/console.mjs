@@ -52,12 +52,38 @@ export async function openConsole(t, path, options = {}) {
 export async function watchPolicy(page) {
   await page.context().addInitScript(() => {
     window.labPolicyStopped = [];
+    window.labShooting = 0;
     document.addEventListener(
       "securitypolicyviolation",
-      (event) => window.labPolicyStopped.push(`${event.effectiveDirective} ${event.blockedURI || "inline"}`),
+      (event) => {
+        // Playwright hides the caret for a screenshot with a style of its
+        // own, which WebKit puts in the page, where the policy stops it.
+        const inline = event.blockedURI === "" || event.blockedURI === "inline";
+        if (window.labShooting > 0 && inline && event.effectiveDirective.startsWith("style-src")) return;
+        window.labPolicyStopped.push(`${event.effectiveDirective} ${event.blockedURI || "inline"}`);
+      },
       { capture: true },
     );
   });
+}
+
+/**
+ * `t.screenshot(page, name)`, with the page told that a screenshot is being
+ * taken until the browser has said what its policy stopped meanwhile, so
+ * that the style Playwright adds for it is not taken for the console's.
+ */
+export async function screenshot(t, page, name) {
+  await page.evaluate(() => { window.labShooting = (window.labShooting ?? 0) + 1; });
+  try {
+    await t.screenshot(page, name);
+  } finally {
+    // The browser tells of a stopped style in a task of its own, after the
+    // screenshot has returned.
+    await page.evaluate(() => new Promise((done) => setTimeout(() => {
+      window.labShooting -= 1;
+      done();
+    }, 100))).catch(() => {});
+  }
 }
 
 /** What the content security policy stopped on `page` since it loaded, if it is watched. */
@@ -124,7 +150,7 @@ export async function look(t, page, name) {
   for (const theme of ["dark", "light"]) {
     const restore = await showAs(page, { theme }, theme);
     await t.axe(page);
-    await t.screenshot(page, `${name}-${theme}`);
+    await screenshot(t, page, `${name}-${theme}`);
     await restore();
   }
 }
@@ -146,7 +172,7 @@ export async function lookAll(t, page, name) {
 
   let restore = await showAs(page, { theme: "high-contrast" }, "hc");
   await t.axe(page);
-  await t.screenshot(page, `${name}-high-contrast`);
+  await screenshot(t, page, `${name}-high-contrast`);
   await restore();
 
   let forced = false;
@@ -162,7 +188,7 @@ export async function lookAll(t, page, name) {
     // calls it unreadable. Every other rule holds.
     const found = (await t.violations(page)).filter(({ id }) => id !== "color-contrast");
     ensure(found.length === 0, `${name}: with forced colours the accessibility check found ${found.map(({ id }) => id).join(", ")}`);
-    await t.screenshot(page, `${name}-forced-colours`);
+    await screenshot(t, page, `${name}-forced-colours`);
     const bare = await page.evaluate(() =>
       [...document.querySelectorAll("main button, main .btn, header button")]
         .filter((button) => button.offsetParent !== null && getComputedStyle(button).borderTopWidth === "0px")
@@ -177,7 +203,7 @@ export async function lookAll(t, page, name) {
   restore = await showAs(page, { motion: "less" }, "dark");
   await page.emulateMedia({ reducedMotion: "reduce" });
   await t.axe(page);
-  await t.screenshot(page, `${name}-less-motion`);
+  await screenshot(t, page, `${name}-less-motion`);
   const moving = await runningAnimations(page);
   ensure(moving.length === 0, `${name}: with less motion these still move: ${moving.join(", ")}`);
   await page.emulateMedia({ reducedMotion: "no-preference" });

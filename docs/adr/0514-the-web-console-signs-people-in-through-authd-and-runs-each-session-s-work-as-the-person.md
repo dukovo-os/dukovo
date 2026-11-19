@@ -195,7 +195,8 @@ own record.
   It opens no socket and listens on nothing. admind and the worker speak
   JSON in frames of a 4-byte length and at most 4 MiB, many calls at once,
   told apart by an id; admind gives up on a call after 30 seconds, and the
-  worker works on 16 at once. The worker ends when admind closes the
+  worker works on 16 at once, with up to 64 more waiting in line for 5
+  seconds at most, since a page's first reads come together. The worker ends when admind closes the
   calls' pipe, when its account is
   disabled (authd ends what an account runs, ADR 0220), or after 12 hours
   with no call.

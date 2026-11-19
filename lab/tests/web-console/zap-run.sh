@@ -68,7 +68,10 @@ chmod 777 "$work"
 cp "$rules" "$work/zap-rules.tsv"
 
 # One scan: its name, the page it starts from, and the options for ZAP
-# itself, if any (-z). The report is kept for the failure's words.
+# itself, if any (-z). The report is kept for the failure's words. A scan
+# that fails does not stop the others, so that one run names every rule
+# that warns; the script fails at the end.
+failed=0
 scan() {
 	name="$1"
 	url="$2"
@@ -80,7 +83,8 @@ scan() {
 	if [ "$status" -ne 0 ]; then
 		echo "FAILED: ZAP's baseline scan of $name ended with status $status (1: a rule failed, 2: a rule warned):"
 		grep -E '^(WARN|FAIL)' "$work/$name.out" || tail -20 "$work/$name.out"
-		exit 1
+		failed=1
+		return
 	fi
 	echo "zap: $name: no rule warns or fails that zap-rules.tsv does not ignore"
 }
@@ -104,3 +108,4 @@ header="-config replacer.full_list(0).description=token -config replacer.full_li
 for route in actions services certificates; do
 	scan "the API's $route with a token" "$origin/api/1/$route" -z "$header"
 done
+exit "$failed"

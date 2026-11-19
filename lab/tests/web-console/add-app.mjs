@@ -197,7 +197,14 @@ async function signedIn(t, name, options = {}) {
 const panel = (page) => page.locator("section.add-panel");
 const searchField = (page) => page.getByLabel("Search apps and setups", { exact: true });
 const installButton = (page) => panel(page).getByRole("button", { name: "Install for everyone", exact: true });
-const rowLink = (page, id) => page.locator(`.add-list a.add-who[href^="${sheetHrefOf(id)}"]`);
+/**
+ * The link of `id`'s row from `catalog`. An app two catalogs list has a row
+ * from each, both leading to its one sheet, so the row is told by its
+ * catalog: the sheet's own when one is given.
+ */
+const rowLink = (page, id, catalog) => page.locator(".add-list tbody tr")
+  .filter({ has: page.locator('td[data-label="Catalog"]', { hasText: new RegExp(`^${catalog ?? "labtest"}$`) }) })
+  .locator(`a.add-who[href^="${sheetHrefOf(id)}"]`);
 
 /** Waits for `locator` to show, for up to `seconds`: the sheet is read by downloading the app, and an install takes the time of its download. */
 const soon = (locator, seconds = 120) => locator.waitFor({ state: "visible", timeout: seconds * 1000 });
@@ -349,7 +356,7 @@ const linesOf = (page, name) => sectionOf(page, name).locator("ul.add-lines > li
 /** Opens the sheet of `id` from its row, and waits for its heading. Gives the sheet as the machine says it. */
 async function openSheet(t, page, id) {
   const sheet = await readSheet(page, id);
-  await rowLink(page, id).click();
+  await rowLink(page, id, sheet.catalog).click();
   await page.waitForURL((url) => url.pathname === sheetHrefOf(id));
   await soon(panel(page).getByRole("heading", { level: 2, name: `${sheet.name} ${sheet.version}`, exact: true }));
   await t.see(page.getByRole("heading", { level: 1, name: "Add an app", exact: true }));
@@ -665,7 +672,7 @@ async function administrator(t) {
   // The sheet of an app that is installed says so, with a link to its page and no Install.
   await panel(page).locator('a[data-action="close"]').click();
   await settled(page);
-  await rowLink(page, PYTHON).click();
+  await rowLink(page, PYTHON, python.catalog).click();
   await soon(panel(page).getByRole("heading", { level: 2, name: `${python.name} ${python.version}`, exact: true }));
   await t.see(panel(page).getByText(`Version ${python.version} is installed. Updating is on its page.`));
   ensure((await panel(page).getByRole("link", { name: "Open its page", exact: true }).getAttribute("href")) === hrefOf(PYTHON), "Open its page does not lead to the app's page");

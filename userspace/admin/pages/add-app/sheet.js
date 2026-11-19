@@ -34,11 +34,13 @@ const lines = (items) => h('ul', { class: 'add-lines' }, items.map((item) => h('
  * The panel of the app `id`. `typed` is what the search holds, kept in the
  * address of the list the panel leads back to. `admin` says who looks;
  * `apps()` gives `GET /api/1/apps` as the page has it (or null); `installed()`
- * is called when an install is done, so that the list says so. Gives
+ * is called when an install is done, so that the list says so;
+ * `readFrom(catalog)` when the sheet is read, with the catalog it came
+ * from, so that the list marks that catalog's row. Gives
  * `{element, load}`: `load()` reads the sheet and draws it.
  */
 export function makePanel(view, {
-  id, typed, admin, apps, installed,
+  id, typed, admin, apps, installed, readFrom = () => {},
 }) {
   const element = h('section', { class: 'card add-panel', 'aria-labelledby': 'add-h' });
   let latest = 0;
@@ -73,6 +75,7 @@ export function makePanel(view, {
       const have = Array.isArray(read?.uses) && read.uses.length > 0 ? await readInstalled() : null;
       if (mine !== latest) return;
       sheet = sheetOf(read, { admin, backups, installed: have });
+      readFrom(typeof read?.catalog === 'string' ? read.catalog : null);
       drawSheet();
     } catch (error) {
       if (mine !== latest || error?.name === 'AbortError') return;

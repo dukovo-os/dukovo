@@ -240,6 +240,20 @@ test('leaving the page stops a search that waited for the typing to end', async 
 
 // ---- the sheet ----
 
+test('of an app two catalogs list, the row marked is the one of the catalog the sheet came from', async (context) => {
+  const answer = search();
+  const second = { ...answer.bundles.find((one) => one.id === 'org.nginx.nginx'), catalog: 'labtest' };
+  const app = await openAdd(context, {
+    rest: NGINX,
+    world: { reads: { [PATHS.search]: { ...answer, bundles: [...answer.bundles, second] }, [SHEET]: nginx({ catalog: 'labtest' }) } },
+  });
+  const marked = app.view.main.querySelectorAll('a.add-who').filter((link) => link.getAttribute('aria-current') === 'page');
+  assert.equal(marked.length, 1);
+  assert.equal(app.view.main.querySelectorAll('tbody tr').filter((row) => row.classes.has('sel')).length, 1);
+  const row = app.view.main.querySelector('tbody tr.sel');
+  assert.equal(row.querySelector('td[data-label="Catalog"]').textContent, 'labtest');
+});
+
 test('a sheet is drawn beside the list with its row marked, and reads the sheet and the backups, once', async (context) => {
   const app = await openAdd(context, { rest: NGINX });
   assert.ok(app.view.main.querySelector('.add').classes.has('has-sheet'));

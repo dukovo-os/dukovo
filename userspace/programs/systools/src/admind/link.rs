@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::unix::pipe::{Receiver, Sender};
-use tokio::sync::{Mutex, mpsc, oneshot, watch};
+use tokio::sync::{Mutex, Semaphore, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use super::errors::Kind;
@@ -53,9 +53,16 @@ pub const FRAME_MAX: usize = 4 << 20;
 /// How long a call waits for its answer.
 pub const CALL_TIME: Duration = Duration::from_secs(30);
 
-/// The most calls a worker works on at once; another is answered with a
-/// wait.
+/// The most calls a worker works on at once; the next ones wait in line.
 const CALLS_MAX: usize = 16;
+
+/// The most calls that wait in line for a worker; another is answered with
+/// a wait (ADM-105). A page's first reads come together, a score of them
+/// with the shell's, and those of the page before may still run.
+const WAITING_MAX: usize = 64;
+
+/// How long a call waits in line before it is answered with a wait.
+const LINE_TIME: Duration = Duration::from_secs(5);
 
 /// Why a frame could not be read or written.
 #[derive(Debug)]
@@ -441,7 +448,8 @@ where
     let (mut reader, writer) = theirs.open()?;
     let writer = Rc::new(Mutex::new(writer));
     let handle = Rc::new(handle);
-    let working = Rc::new(Cell::new(0usize));
+    let places = Rc::new(Semaphore::new(CALLS_MAX));
+    let waiting = Rc::new(Cell::new(0usize));
     loop {
         let frame = match tokio::time::timeout(idle, read_frame(&mut reader)).await {
             Err(_) => return Ok(Ended::Idle),
@@ -453,22 +461,42 @@ where
             Ok(call) => call,
             Err(err) => return Ok(Ended::Broken(FrameError::Json(err).to_string())),
         };
-        let (handle, writer, working) =
-            (Rc::clone(&handle), Rc::clone(&writer), Rc::clone(&working));
+        let (handle, writer, places, waiting) =
+            (Rc::clone(&handle), Rc::clone(&writer), Rc::clone(&places), Rc::clone(&waiting));
         tokio::task::spawn_local(async move {
-            let outcome = if working.get() >= CALLS_MAX {
-                Outcome::Error(Fault::new(Kind::Wait, "the worker has as many calls as it takes"))
-            } else {
-                working.set(working.get() + 1);
-                let done = handle(call.method, call.params).await;
-                working.set(working.get() - 1);
-                done.map_or_else(Outcome::Error, Outcome::Result)
+            let outcome = match take_place(&places, &waiting).await {
+                Some(_place) => handle(call.method, call.params)
+                    .await
+                    .map_or_else(Outcome::Error, Outcome::Result),
+                None => Outcome::Error(Fault::new(
+                    Kind::Wait,
+                    "the worker has as many calls as it takes, and as many waiting",
+                )),
             };
             if let Err(err) = answer(&writer, call.id, outcome).await {
                 log(4, &format!("the worker cannot answer: {err}"));
             }
         });
     }
+}
+
+/// A place among the calls the worker works on, waited for in line at most
+/// [`LINE_TIME`]; none when [`WAITING_MAX`] wait already, or the time
+/// passed. The calls are let in in the order they came.
+async fn take_place<'a>(
+    places: &'a Semaphore,
+    waiting: &Cell<usize>,
+) -> Option<tokio::sync::SemaphorePermit<'a>> {
+    if let Ok(place) = places.try_acquire() {
+        return Some(place);
+    }
+    if waiting.get() >= WAITING_MAX {
+        return None;
+    }
+    waiting.set(waiting.get() + 1);
+    let place = tokio::time::timeout(LINE_TIME, places.acquire()).await;
+    waiting.set(waiting.get() - 1);
+    place.ok()?.ok()
 }
 
 /// Writes the answer to call `id`; an answer too big for a frame is
@@ -734,19 +762,28 @@ mod tests {
     }
 
     #[test]
-    fn the_worker_takes_as_many_calls_at_once_as_it_may() {
+    fn calls_past_those_the_worker_works_on_wait_in_line_and_past_the_line_are_told_to_wait() {
         run(async {
             let (ours, theirs) = pipes().unwrap();
+            let most = Rc::new(Cell::new(0usize));
+            let now = Rc::new(Cell::new(0usize));
+            let (seen_most, seen_now) = (Rc::clone(&most), Rc::clone(&now));
             tokio::task::spawn_local(serve(
                 theirs,
                 Duration::from_secs(60),
-                |_: String, _: Value| async {
-                    tokio::time::sleep(Duration::from_millis(300)).await;
-                    Ok(Value::Null)
+                move |_: String, _: Value| {
+                    let (most, now) = (Rc::clone(&seen_most), Rc::clone(&seen_now));
+                    async move {
+                        now.set(now.get() + 1);
+                        most.set(most.get().max(now.get()));
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        now.set(now.get() - 1);
+                        Ok(Value::Null)
+                    }
                 },
             ));
             let link = Link::new(ours).unwrap();
-            let calls: Vec<_> = (0..=CALLS_MAX)
+            let calls: Vec<_> = (0..=CALLS_MAX + WAITING_MAX)
                 .map(|_| {
                     let link = link.clone();
                     tokio::task::spawn_local(async move { link.call("slow", Value::Null).await })
@@ -760,7 +797,11 @@ mod tests {
                     other => panic!("{other:?}"),
                 }
             }
+            // A page's burst is answered, the line in turn; only the one
+            // past the line is told to wait, and no more run at once than
+            // the worker takes.
             assert_eq!(busy, 1);
+            assert_eq!(most.get(), CALLS_MAX);
         });
     }
 
