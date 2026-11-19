@@ -38,6 +38,19 @@ fn an_elevated_command_at_a_terminal_is_read_from_authd_s_line() {
 }
 
 #[test]
+fn a_line_the_kernel_cut_short_keeps_its_command_whole() {
+    let command = "/system/commands/sh -c sleep 45; echo \"# lab journal firefox\" >> \
+                   /system/settings/spark/services/nfsd.toml";
+    let line = format!("lab elevated on no terminal (password typed): process 3427 runs {command}");
+    for tail in [", for process 3426", ", for process ", ", for process", ", for p", ", f", ",", ""]
+    {
+        let found = Elevated::of(&record(&format!("{line}{tail}"), 5)).unwrap();
+        assert_eq!(found.command, command, "{tail:?}");
+        assert!(found.names("/system/settings/spark/services/nfsd.toml"), "{tail:?}");
+    }
+}
+
+#[test]
 fn what_the_console_runs_and_other_lines_are_not_a_hand_at_a_terminal() {
     for text in [
         "chase elevated in the web console session 1a2b3c4d: process 5 runs service x restart",

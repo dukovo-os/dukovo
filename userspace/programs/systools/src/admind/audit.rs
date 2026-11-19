@@ -94,7 +94,7 @@ impl Elevated {
         }
         let (_, rest) = rest.split_once("): process ")?;
         let (_, command) = rest.split_once(" runs ")?;
-        let command = command.rsplit_once(", for process ").map_or(command, |(command, _)| command);
+        let command = without_asker(command);
         let ns = logd::parse_rfc3339(&record.time)?;
         Some(Elevated {
             who: who.to_string(),
@@ -108,6 +108,25 @@ impl Elevated {
     pub fn names(&self, path: &str) -> bool {
         self.command.split_whitespace().any(|word| word == path)
     }
+}
+
+/// What follows the command on authd's line.
+const FOR_PROCESS: &str = ", for process ";
+
+/// The command of authd's line, from `runs` on: without `, for process M`
+/// after it, or what is left of that when the line was cut short. The
+/// kernel keeps 200 bytes of each record of its log (radix_klog's
+/// `RECORD_TEXT`), so a long command's line loses its end, and the end
+/// goes to a record of its own.
+fn without_asker(line: &str) -> &str {
+    if let Some((command, _)) = line.rsplit_once(FOR_PROCESS) {
+        return command;
+    }
+    let cut = (1..FOR_PROCESS.len())
+        .rev()
+        .find(|&kept| line.ends_with(&FOR_PROCESS[..kept]))
+        .unwrap_or(0);
+    &line[..line.len() - cut]
 }
 
 /// Who changed `path` at Unix time `edited`: the person whose elevated
