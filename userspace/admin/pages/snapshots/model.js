@@ -272,6 +272,9 @@ export function whereWords(place) {
   } else if (place.plugged_in) {
     const label = typeof place.plugged_in === 'string' ? place.plugged_in : place.plugged_in?.label ?? volumeOf(to);
     where = label ? `USB disk ${label}` : 'USB disk';
+  } else if (place.plugged_in === false) {
+    const label = volumeOf(to);
+    where = label ? `Disk ${label}, not plugged in` : 'A disk that is not plugged in';
   } else {
     where = `Folder ${to}`;
   }
@@ -283,8 +286,8 @@ export const everyWords = (place) => (place.every === 'hand' ? 'by hand' : place
 
 /**
  * One row of the table of backup places, `{name, href, where, every, last,
- * now, job}`: `last` the day of the last good backup, `now` `{words, tone}`
- * ("3 days overdue", "OK"), and `job` the kind of task that runs for it
+ * now, job}`: `last` the day and time of the last good backup, `now`
+ * `{words, tone}` ("3 days overdue", "not plugged in", "OK"), and `job` the kind of task that runs for it
  * (`run`, `verify`, `restore`), or `run` when only the round's lock says so.
  */
 export function placeRows(backups, { time, now, jobs = null }) {
@@ -295,6 +298,7 @@ export function placeRows(backups, { time, now, jobs = null }) {
     let words = { words: 'OK', tone: 'ok' };
     if (state.failed) words = { words: 'failed', tone: 'bad' };
     else if (late) words = { words: `${counted(late.days, 'day')} overdue`, tone: late.tone };
+    else if (place.plugged_in === false) words = { words: 'not plugged in', tone: 'warn' };
     else if (state.verifyFailed) words = { words: 'check failed', tone: 'warn' };
     else if (state.done === null) words = { words: place.every === 'hand' ? 'Not yet' : 'Waiting for the first backup', tone: '' };
     return {
@@ -302,7 +306,7 @@ export function placeRows(backups, { time, now, jobs = null }) {
       href: placeHref(place.name),
       where: whereWords(place),
       every: everyWords(place),
-      last: state.done === null ? 'Never' : dayWords(state.done, time.zone, now),
+      last: state.done === null ? 'Never' : atWords(state.done, { time, now }),
       now: words,
       job,
     };

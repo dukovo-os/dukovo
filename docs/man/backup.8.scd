@@ -221,7 +221,10 @@ cannot check the tags, needs *--unchecked*.
 	notices count it, null when it is not overdue) and *running* (a
 	round holds the lock). Its *state* is *tried_ms*, *done_ms*,
 	*failed*, *verified_ms* and *verify_failed*, each null when it has
-	not happened or is empty. Times are milliseconds since 1970.
+	not happened or is empty. Times are milliseconds since 1970. A
+	backup that began and did not end, because the machine stopped or
+	the backup was stopped while it ran, is a failed one once no round
+	runs: its *failed* says that it was cut off, here and in *list*.
 
 *show* [*--json*] _name_
 	What the destination holds: each place's chains, and the times of

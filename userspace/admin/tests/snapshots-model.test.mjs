@@ -233,7 +233,7 @@ test('the last check is the newest that passed, Never, or failed with the place 
 
 test('a place is told by where it is, how often, the last good backup and how it is now', () => {
   assert.deepEqual(placeRows(good(), context), [{
-    name: 'nas', href: '/snapshots/backups/nas', where: 'SSH to nas.local · encrypted', every: 'day', last: 'Nov 14', now: { words: 'OK', tone: 'ok' }, job: null,
+    name: 'nas', href: '/snapshots/backups/nas', where: 'SSH to nas.local · encrypted', every: 'day', last: 'Nov 14 at 3:40 AM', now: { words: 'OK', tone: 'ok' }, job: null,
   }]);
   assert.deepEqual(placeRows(failed(), context)[0].now, { words: 'failed', tone: 'bad' });
   assert.deepEqual(placeRows(overdue(5), context)[0].now, { words: '5 days overdue', tone: 'warn' });
@@ -243,6 +243,9 @@ test('a place is told by where it is, how often, the last good backup and how it
   assert.deepEqual([fresh.last, fresh.now], ['Never', { words: 'Waiting for the first backup', tone: '' }]);
   assert.deepEqual(placeRows(backupsOf(withState('usb', { done_ms: 0 }, { every: 'hand' })), context)[0].now, { words: 'Not yet', tone: '' });
   assert.equal(placeRows(backupsOf(place('usb', { every: 'hand' })), context)[0].every, 'by hand');
+  // A disk that is not plugged in is not OK, though nothing failed.
+  const pulled = placeRows(backupsOf(place('usb', { kind: 'folder', to: '/volumes/JOURNEY', plugged_in: false })), context)[0];
+  assert.deepEqual([pulled.where, pulled.now], ['Disk JOURNEY, not plugged in · encrypted', { words: 'not plugged in', tone: 'warn' }]);
   assert.deepEqual(placeRows(null, context), []);
 });
 
@@ -269,6 +272,7 @@ test('where a backup goes is told by its kind: a server, a bucket, a plugged-in 
   assert.equal(whereWords({ kind: 'folder', to: '/volumes/Stick/x', plugged_in: true }), 'USB disk Stick · encrypted');
   assert.equal(whereWords({ kind: 'folder', to: '/mnt/x', plugged_in: true }), 'USB disk · encrypted');
   assert.equal(whereWords({ kind: 'folder', to: '/srv/backups' }), 'Folder /srv/backups · encrypted');
+  assert.equal(whereWords({ kind: 'folder', to: '/volumes/Stick/x', plugged_in: false }), 'Disk Stick, not plugged in · encrypted');
   assert.equal(hostOf('backup@nas.local:/srv/x'), 'nas.local');
   assert.equal(hostOf('nas.local'), 'nas.local');
 });
