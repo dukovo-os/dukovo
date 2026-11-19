@@ -13,23 +13,28 @@
 # contrast, forced colours and less motion, checked by axe.
 #
 # This test's first steps make the two accounts, a named snapshot of /users
-# with two files of the reader's in it (the files are deleted after, so that
-# the snapshot is the only place they are), and a backup place to an SSH
-# address that does not answer: `backup add` checks that it can write where it
-# is told, so the place is added to a folder and its file is changed to name
-# the address, and a first `backup run` fails. The address is a port of this
-# machine that nothing listens on, so that the failure comes at once and not
-# when a network gives up. The stick is made a Btrfs and mounted under /volumes,
-# which is where the page offers a disk. The steps after the browser look at
-# what the page did on the machine: the files that Restore N chosen put beside
-# the reader's folder's, the named snapshot that Take a snapshot now made, and
-# the places that were added and removed. The last steps put the machine back:
-# the places and their keys removed, the snapshots deleted, the stick unplugged
-# and the accounts removed. The script runs each engine one after the other,
-# so that an engine the lab PC lacks is skipped within it and the steps after
-# it still run.
+# with two files of the reader's for each engine (the files are deleted after,
+# so that the snapshot is the only place they are), and a backup place for each
+# engine to an SSH address that does not answer: `backup add` checks that it
+# can write where it is told, so each place is added to a folder and its file
+# is changed to name the address, and a first `backup run` fails. The address
+# is a port of this machine that nothing listens on, so that the failure comes
+# at once and not when a network gives up. The stick is divided into a
+# partition for each engine, each made a Btrfs and mounted under /volumes,
+# which is where the page offers a disk: a volume that a place has is not
+# offered for another, and a folder of backups made with another key is
+# refused, so the engines cannot share one. The script runs each engine one
+# after the other, so that an engine the lab PC lacks is skipped within it and
+# the steps after it still run; each engine has names of its own, as
+# overview.toml has a file for each, and what an engine made is still there
+# when the next one starts. The steps after the browser look at what the page
+# did on the machine, for the engines that ran: the files that Restore N chosen
+# put beside the reader's folder's, the named snapshots that Take a snapshot
+# now made, and the places that were added and removed. The last steps put the
+# machine back: the places and their keys removed, the snapshots deleted, the
+# stick unplugged and the accounts removed, also of an engine that was skipped.
 about = "The web console's Snapshots and backups page in each engine: a failed backup's banner and the Overview's need, What is protected, Take a snapshot now, Browse and Restore beside with the label in the browser's zone, an administrator's restore of another account's file, Add a backup place on a stick with the recovery key shown once and saved as a file, Back up now, Check now, Show it again, Restore files from a backup, Remove, a reader, and the phone"
-time = "30m"
+time = "45m"
 host_needs = ["curl"]
 
 [[step]]
@@ -37,48 +42,51 @@ run = "sh -c 'echo lab-console-password | user add --admin wc-snap && echo lab-c
 root = true
 expect = ["Made wc-snap", "Made wc-snap-reader", "wc-snap-reader is changed"]
 
-# Two files of the reader's, kept in a snapshot with a name and then deleted:
-# the page restores them beside where they were.
+# Two files of the reader's for each engine, kept in a snapshot with a name and
+# then deleted: the page restores them beside where they were. Each engine has
+# files of its own, since a copy beside a file is refused where one of its name
+# is, and the snapshot is read by every engine and changed by none.
 [[step]]
-run = "sh -c 'echo notes first > /users/wc-snap-reader/notes.txt && echo plans first > /users/wc-snap-reader/plans.txt && chown wc-snap-reader /users/wc-snap-reader/notes.txt /users/wc-snap-reader/plans.txt && snap create --name lab-before /users && rm /users/wc-snap-reader/notes.txt /users/wc-snap-reader/plans.txt && echo kept-in-snapshot'"
+run = "sh -c 'cd /users/wc-snap-reader && for e in chromium firefox webkit; do echo notes first > notes-$e.txt && echo plans first > plans-$e.txt; done && chown wc-snap-reader notes-*.txt plans-*.txt && snap create --name lab-before /users && rm notes-*.txt plans-*.txt && echo kept-in-snapshot'"
 root = true
 expect = ["/snapshots/users/lab-before", "kept-in-snapshot"]
 # What the page will read of that folder, as the command gives it.
 [[step]]
 run = "snap browse /users lab-before /users/wc-snap-reader --json"
 root = true
-expect = ["notes.txt", "plans.txt"]
+expect = ["notes-chromium.txt", "plans-chromium.txt", "notes-firefox.txt", "plans-firefox.txt", "notes-webkit.txt", "plans-webkit.txt"]
 
-# A backup place that does not answer: added to a folder, and its file made to
-# name a server at a port that nothing listens on.
+# A backup place for each engine that does not answer: added to a folder of its
+# own, and its file made to name a server at a port that nothing listens on.
 [[step]]
-run = '''sh -c 'mkdir -p /tmp/lab-snap-dead && backup add --every day --verify never lab-nas /tmp/lab-snap-dead > /dev/null && printf "to = \"ssh://backup@127.0.0.1:1/srv/dukovo\"\nevery = \"day\"\nverify = \"never\"\n" > /system/settings/backup/lab-nas.toml && echo made-lab-nas' '''
+run = '''sh -c 'for e in chromium firefox webkit; do mkdir -p /tmp/lab-snap-dead-$e && backup add --every day --verify never lab-nas-$e /tmp/lab-snap-dead-$e > /dev/null && printf "to = \"ssh://backup@127.0.0.1:1/srv/dukovo\"\nevery = \"day\"\nverify = \"never\"\n" > /system/settings/backup/lab-nas-$e.toml || exit 1; done; echo made-lab-nas' '''
 root = true
 expect = "made-lab-nas"
 [[step]]
-run = "sh -c 'backup run lab-nas; echo ended'"
+run = "sh -c 'for e in chromium firefox webkit; do backup run lab-nas-$e; done; echo ended'"
 root = true
 expect = "ended"
 [[step]]
 run = "backup list"
 root = true
-expect = ["lab-nas", "127.0.0.1"]
+expect = ["lab-nas-chromium", "lab-nas-firefox", "lab-nas-webkit", "127.0.0.1"]
 
-# A USB stick of 1 GB with a Btrfs on it, mounted where the page finds a disk.
+# A USB stick of 3 GB with a partition of 1000 MB for each engine, the last
+# one the rest, each a Btrfs mounted where the page finds a disk.
 [[step]]
 usb = "plug"
-blank = "1G"
+blank = "3G"
 [[step]]
 wait = "5s"
 [[step]]
-run = "lsblk -dbn -o NAME,SIZE,TYPE | awk '$2 == \"1073741824\" && $3 == \"disk\" { print $1 }' > ~/lab-stick && cat ~/lab-stick"
+run = "lsblk -dbn -o NAME,SIZE,TYPE | awk '$2 == \"3221225472\" && $3 == \"disk\" { print $1 }' > ~/lab-stick && cat ~/lab-stick"
 expect = "sd"
 [[step]]
-run = '''sh -c 'printf "g\nn\n\n\n\nw\n" | rdisk /devices/$(cat /users/lab/lab-stick) || exit 1' '''
+run = '''sh -c 'printf "g\nn\n\n\n+1000M\nn\n\n\n+1000M\nn\n\n\n\nw\n" | rdisk /devices/$(cat /users/lab/lab-stick) || exit 1' '''
 root = true
-expect = ["Partition 1 is added", "The kernel has read it"]
+expect = ["Partition 1 is added", "Partition 2 is added", "Partition 3 is added", "The kernel has read it"]
 [[step]]
-run = "sh -c 'b=$(cat /users/lab/lab-stick); mkfs-btrfs -f -L LABBACKUP /devices/${b}1 && mkdir -p /volumes/LABBACKUP && mount /devices/${b}1 /volumes/LABBACKUP && echo mounted'"
+run = "sh -c 'b=$(cat /users/lab/lab-stick); n=1; for e in chromium firefox webkit; do mkfs-btrfs -f -L LABBACKUP-$e /devices/$b$n && mkdir -p /volumes/LABBACKUP-$e && mount /devices/$b$n /volumes/LABBACKUP-$e || exit 1; n=$((n + 1)); done; echo mounted'"
 root = true
 expect = "mounted"
 
@@ -91,17 +99,18 @@ expect = '{"ok":true}'
 browser = "snapshots.mjs"
 port = 9090
 
-# What the page did, read on the machine. Take a snapshot now made a named
-# snapshot of each place.
+# What the page did, read on the machine. An engine that was skipped did none
+# of it, so each check holds for the engines that ran. Take a snapshot now made
+# a named snapshot of each place for each of them.
 [[step]]
 run = "sh -c 'snap list /users; snap list /shared; snap list /system/settings'"
-expect = ["lab-page-take", "named"]
+expect = ["lab-page-take-", "named"]
 # Restore N chosen put a copy of each of the two files beside where it was,
 # with the snapshot's time in its name, and nothing was written over.
 [[step]]
 run = "ls /users/wc-snap-reader"
 root = true
-expect = ["notes (", "plans (", "M).txt"]
+expect = ["notes-", "plans-", "M).txt"]
 [[step]]
 run = "sh -c 'grep -h first /users/wc-snap-reader/*.txt'"
 root = true
@@ -110,25 +119,30 @@ expect = ["notes first", "plans first"]
 [[step]]
 run = "backup list"
 root = true
-expect = ["lab-stick", "/volumes/LABBACKUP"]
+expect = ["lab-stick-", "/volumes/LABBACKUP-"]
 [[step]]
-run = "backup show lab-stick"
+run = "sh -c 'for e in chromium firefox webkit; do if [ -e /system/settings/backup/lab-stick-$e.toml ]; then backup show lab-stick-$e || exit 1; fi; done'"
 root = true
 expect = ["users:", "shared:", "settings:"]
-# Remove… forgot the place that did not answer.
+# Remove… forgot the place that did not answer, of each engine that ran; the
+# place of one that was skipped is there until the last steps.
 [[step]]
-run = "sh -c 'backup list | grep -c lab-nas || true'"
+run = "sh -c 'left=0; for e in chromium firefox webkit; do if [ -e /system/settings/backup/lab-stick-$e.toml ] && [ -e /system/settings/backup/lab-nas-$e.toml ]; then left=$((left + 1)); fi; done; echo \"dead places left: $left\"'"
 root = true
-expect = "0"
+expect = "dead places left: 0"
 
 # The machine as it was: the places and their keys, the snapshots, the stick
-# and the accounts.
+# and the accounts, of each engine whether it ran or not.
 [[step]]
-run = '''sh -c 'backup remove lab-stick; for p in /users /shared /system/settings; do snap delete $p lab-page-take; done; snap delete /users lab-before; for s in /snapshots/users/restored-*; do [ -d "$s" ] && snap delete /users ${s##*/}; done; rm -rf /tmp/lab-snap-dead; echo cleaned' '''
+run = '''sh -c 'for e in chromium firefox webkit; do for n in lab-stick-$e lab-nas-$e; do if [ -e /system/settings/backup/$n.toml ]; then backup remove $n || exit 1; fi; done; rm -rf /tmp/lab-snap-dead-$e; done; echo removed-places' '''
+root = true
+expect = "removed-places"
+[[step]]
+run = '''sh -c 'for e in chromium firefox webkit; do for p in /users /shared /system/settings; do if snap list $p | grep -q lab-page-take-$e; then snap delete $p lab-page-take-$e || exit 1; fi; done; done; snap delete /users lab-before; for s in /snapshots/users/restored-*; do [ -d "$s" ] && snap delete /users ${s##*/}; done; echo cleaned' '''
 root = true
 expect = "cleaned"
 [[step]]
-run = "sh -c 'umount /volumes/LABBACKUP && rmdir /volumes/LABBACKUP; rm -f /users/lab/lab-stick; echo unmounted'"
+run = "sh -c 'for e in chromium firefox webkit; do umount /volumes/LABBACKUP-$e && rmdir /volumes/LABBACKUP-$e; done; rm -f /users/lab/lab-stick; echo unmounted'"
 root = true
 expect = "unmounted"
 [[step]]

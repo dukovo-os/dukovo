@@ -5520,7 +5520,9 @@ version before, by itself, and restarts again. What you see, in this order:
   1.0.0-alpha.1: the update was taken back.** with **See what happened** and
   **Close**, and stays until you close it. After an update that went well it
   says **Back** for a few seconds. The browser that asked for the restart says
-  it, once, at a sign-in within an hour.
+  it, once, at a sign-in within an hour. A sign-in that comes while the update
+  is still on its try, before the machine has gone back, says **Back** and no
+  more: the banner says the update was taken back at the sign-in after that.
 - The Overview shows the notice of the failed start with **What happened**, which
   becomes **See it again** once you have opened it, and **Report it**. Among
   what needs a look it lists **1.0.0-alpha.2 was taken back and is held**, **It

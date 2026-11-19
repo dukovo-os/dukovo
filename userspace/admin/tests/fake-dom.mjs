@@ -196,13 +196,17 @@ export class Element {
     this.document.activeElement = this;
   }
 
-  /** A press: a submit button of a form that closes its dialog does so with its value; any other button calls its listeners. */
+  /**
+   * A press: a submit button of a form that closes its dialog sends the
+   * form's `submit` and then closes the dialog with its value, unless a
+   * listener prevented either; any other button calls its listeners.
+   */
   click() {
     if (this.hasAttribute('disabled')) return;
     const event = this.fire('click');
     const form = this.closest('form[method="dialog"]');
     if (!event.defaultPrevented && this.tag === 'button' && this.getAttribute('type') === 'submit' && form) {
-      form.closest('dialog').close(this.getAttribute('value') ?? '');
+      if (!form.fire('submit').defaultPrevented) form.closest('dialog').close(this.getAttribute('value') ?? '');
     }
   }
 

@@ -40,10 +40,10 @@ function hostPopover({ host, get }) {
 }
 
 /**
- * Makes the header from `shell`'s `session()`, `host`, `prefs`, `tasks`,
- * `notice`, `openPalette()`, `openShortcuts()`, `openAbout()`, `pageHelp()`,
- * `openPageHelp()`, `signOut()` and `togglePages()`. Gives `{element,
- * tasksButton, pagesButton, accountItems, helpItems, trials}`.
+ * Makes the header from `shell`'s `session()`, `host`, `signal`, `prefs`,
+ * `tasks`, `notice`, `openPalette()`, `openShortcuts()`, `openAbout()`,
+ * `pageHelp()`, `openPageHelp()`, `signOut()` and `togglePages()`. Gives
+ * `{element, tasksButton, pagesButton, accountItems, helpItems, trials}`.
  */
 export function createHeader(shell) {
   const session = shell.session();
@@ -89,7 +89,7 @@ export function createHeader(shell) {
     }
   });
   drawAccess();
-  onUnlockChange(drawAccess);
+  shell.signal.addEventListener('abort', onUnlockChange(drawAccess));
 
   // The chip is another module, read when a trial first runs.
   const trialSlot = h('span', { class: 'trial-slot', hidden: true });

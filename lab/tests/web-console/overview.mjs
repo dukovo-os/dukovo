@@ -70,6 +70,10 @@ const EDITOR = "lab";
 const WAIT_SECONDS = 90;
 const ASK_EVERY_MILLISECONDS = 3000;
 
+// How long the Health card is given to list a hand edit that the journal has:
+// the card reads again on the `change` event, at most every 5 seconds.
+const LISTED_SECONDS = 20;
+
 // The action and the title of the step that Finish setting up shows on a lab
 // image, which is built with systools' `lab` feature.
 const LAB_ACTION = "lab.long";
@@ -622,22 +626,38 @@ async function handEditAdding(page, { file: path, line }) {
   }
 }
 
-/** The thing to look at that the edit is, in the Health list or, when four others come first, in the dialog that "See all" opens. */
-async function listedInHealth(t, page, title) {
+/** The selector of the row that the hand edit `edit` is in the Health list and in the dialog that "See all" opens. Other tests leave unseen hand edits of the same file, so a title can name two rows; the row's id names one. */
+const needOf = (edit) => `[data-need="change-${edit.id}"]`;
+
+/**
+ * The thing to look at that the edit is, in the Health list or, when four
+ * others come first, in the dialog that "See all" opens, waited for up to
+ * `LISTED_SECONDS`: a dialog that opened on the list as it was before the card
+ * read again is closed and opened once more.
+ */
+async function listedInHealth(t, page, edit, title) {
   const card = page.locator("#ov-health");
-  if ((await card.locator("ul.need").getByText(title).count()) > 0) return;
-  const more = card.getByRole("button", { name: /^See all \d+$/ });
-  ensure((await more.count()) === 1, `the Health card does not list "${title}" and has no See all`);
-  await more.click();
-  const dialog = page.getByRole("dialog", { name: /^\d+ things to look at$/ });
-  await t.see(dialog.getByText(title));
-  await closeButton(dialog).click();
-  await t.gone(dialog);
+  const until = Date.now() + LISTED_SECONDS * 1000;
+  for (;;) {
+    if ((await card.locator(`ul.need ${needOf(edit)}`).count()) > 0) return;
+    const more = card.getByRole("button", { name: /^See all \d+$/ });
+    if ((await more.count()) > 0) {
+      await more.click();
+      const dialog = page.getByRole("dialog", { name: /^\d+ things to look at$/ });
+      await t.see(dialog);
+      const listed = (await dialog.locator(needOf(edit)).count()) > 0;
+      await closeButton(dialog).click();
+      await t.gone(dialog);
+      if (listed) return;
+    }
+    ensure(Date.now() < until, `the Health card does not list "${title}" within ${LISTED_SECONDS} seconds, in its list or in See all`);
+    await sleep(ASK_EVERY_MILLISECONDS);
+  }
 }
 
-/** The edit in What changed, with the dot that asks for a look, who did it, and the buttons that fit it. */
-async function editListed(t, page, title) {
-  const item = page.locator("#ov-changed .tl-item").filter({ hasText: title });
+/** The edit in What changed, found by its change's id since other tests leave edits of the same file with the same title, with the dot that asks for a look, who did it, and the buttons that fit it. */
+async function editListed(t, page, edit, title) {
+  const item = page.locator(`#ov-changed .tl-item[data-change="${edit.id}"]`);
   await t.see(item);
   ensure((await item.locator("time").getAttribute("datetime")) !== null, "the row has no time");
   await t.see(item.getByText("Needs a look"));
@@ -675,7 +695,7 @@ async function editKept(t, page, item, edit, target) {
   await t.see(page.getByText(`Kept: ${target.title}. It stays as it is.`));
   await t.see(item.getByText(`kept by ${ADMIN}`));
   await t.gone(item.getByRole("button", { name: `Keep it: ${target.title}`, exact: true }));
-  await t.gone(page.locator("#ov-health ul.need").getByText(target.title));
+  await t.gone(page.locator(`#ov-health ul.need ${needOf(edit)}`));
   const row = await readChange(page, edit.id);
   ensure(row.seen?.by === ADMIN, `the journal says ${JSON.stringify(row.seen)} after Keep it, not that ${ADMIN} saw it`);
 }
@@ -721,8 +741,8 @@ async function handEdit(t, page, target) {
   ensure(edit.who === EDITOR, `the row of the hand edit names ${edit.who}, not ${EDITOR}: admind could not tell who wrote ${target.file} from authd's audit lines`);
   ensure(edit.seen === null, `the hand edit is marked seen before anyone looked: ${JSON.stringify(edit.seen)}`);
   await reopen(t, page);
-  await listedInHealth(t, page, target.title);
-  const item = await editListed(t, page, target.title);
+  await listedInHealth(t, page, edit, target.title);
+  const item = await editListed(t, page, edit, target.title);
   await lookAll(t, page, "overview-hand-edit");
   await changeSeen(t, page, item, target);
   await editKept(t, page, item, edit, target);

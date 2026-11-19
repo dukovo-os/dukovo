@@ -53,7 +53,15 @@ export async function show(view) {
   const server = makeServer(view, { about });
   const top = makeTop(view);
   // What changed alters the health list (a hand edit that is kept is no longer one) and the other way.
-  const changed = makeChanged(view, { about, reload: () => Promise.all([changed.load(), health.load()]) });
+  // Keeping an edit sends no `change` event, so the parts' answer for the
+  // list, kept for 5 seconds, is forgotten before Health reads it again.
+  const changed = makeChanged(view, {
+    about,
+    reload() {
+      view.forgetParts();
+      return Promise.all([changed.load(), health.load()]);
+    },
+  });
   const upLine = h('p', { class: 'small muted ov-up' });
 
   view.main.append(h('div', { class: 'ov' },

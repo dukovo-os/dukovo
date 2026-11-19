@@ -104,15 +104,25 @@ test('the running release is the last word of what console.about says, and none 
 
 test('after a restart the banner says Back, or that the update was taken back with a link to what happened', () => {
   const now = { release: 'Dukovo Server 1.0.0-alpha.2' };
-  assert.deepEqual(backWords(now, '1.0.0-alpha.2'), { words: 'Back', link: null });
-  assert.deepEqual(backWords(now, null), { words: 'Back', link: null }, 'a restart that was no update has no version to compare');
-  assert.deepEqual(backWords({ release: 'Dukovo Server 1.0.0-alpha.1' }, '1.0.0-alpha.2'), {
+  assert.deepEqual(backWords(now, '1.0.0-alpha.2'), { words: 'Back', link: null, trying: false });
+  assert.deepEqual(backWords(now, null), { words: 'Back', link: null, trying: false }, 'a restart that was no update has no version to compare');
+  assert.deepEqual(backWords({ release: 'Dukovo Server 1.0.0-alpha.1', fallback: true }, '1.0.0-alpha.2'), {
     words: 'Back, on 1.0.0-alpha.1: the update was taken back.',
     link: { label: 'See what happened', href: '/updates#happened' },
+    trying: false,
   });
-  assert.deepEqual(backWords(null, '1.0.0-alpha.2'), { words: 'Back', link: null }, 'an answer that could not be read says no more than Back');
-  assert.deepEqual(backWords({}, '1.0.0-alpha.2'), { words: 'Back', link: null });
+  assert.deepEqual(backWords(null, '1.0.0-alpha.2'), { words: 'Back', link: null, trying: false }, 'an answer that could not be read says no more than Back');
+  assert.deepEqual(backWords({}, '1.0.0-alpha.2'), { words: 'Back', link: null, trying: false });
   assert.equal(BACK_MS, 5000);
+});
+
+test('another release that is no fallback is the update on its try: Back, and not taken back yet', () => {
+  const tried = { release: 'Dukovo Server 1.0.0-alpha.1' };
+  assert.deepEqual(backWords(tried, '1.0.0-alpha.2'), { words: 'Back', link: null, trying: true });
+  assert.deepEqual(backWords({ ...tried, fallback: false }, '1.0.0-alpha.2'), { words: 'Back', link: null, trying: true });
+  assert.deepEqual(backWords({ ...tried, fallback: 'yes' }, '1.0.0-alpha.2'), { words: 'Back', link: null, trying: true }, 'only true says a fallback');
+  assert.deepEqual(backWords({ ...tried, fallback: true }, null), { words: 'Back', link: null, trying: false }, 'a fallback after a restart that was no update is not the update taken back');
+  assert.deepEqual(backWords({ release: 'Dukovo Server 1.0.0-alpha.2', fallback: true }, '1.0.0-alpha.2'), { words: 'Back', link: null, trying: false });
 });
 
 test('the event stream names the power event', () => {

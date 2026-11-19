@@ -133,7 +133,7 @@ export function createRouter({ pages, shell, main, asof }) {
   }
 
   return {
-    /** Starts following clicks and the browser's back and forward buttons, and shows the first page. */
+    /** Follows clicks and the back and forward buttons until `shell.signal` ends; shows the first page. */
     start() {
       document.addEventListener('click', async (event) => {
         const link = event.target.closest?.('a[href^="/"]');
@@ -153,17 +153,17 @@ export function createRouter({ pages, shell, main, asof }) {
           return;
         }
         await go(where.href);
-      });
+      }, { signal: shell.signal });
       window.addEventListener('popstate', async () => {
         if (await confirmLeave()) {
           render();
         } else {
           history.pushState(null, '', url);
         }
-      });
+      }, { signal: shell.signal });
       window.addEventListener('beforeunload', (event) => {
         if (leavingWords()) event.preventDefault();
-      });
+      }, { signal: shell.signal });
       return render();
     },
     go,

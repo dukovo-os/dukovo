@@ -33,13 +33,12 @@ import {
   fetchAsPage,
   lookAll,
   mustHaveCalled,
-  signInDone,
   signInHeading,
   signOut,
   sleep,
 } from "./console.mjs";
-import { PASSWORD, pressAndAnswer, unlockNow } from "./trial.mjs";
-import { ROUTES, card, openUpdates, pathOf, pendingLine, routeFor, signedIn, wordsOf } from "./updates-page.mjs";
+import { pressAndAnswer, unlockNow } from "./trial.mjs";
+import { ROUTES, card, openUpdates, pathOf, pendingLine, routeFor, signedIn, signInInTry, wordsOf } from "./updates-page.mjs";
 
 const ADMIN = "wc-updates";
 
@@ -75,13 +74,18 @@ async function beforeTheSearch(t, page) {
   return status;
 }
 
-/** Signs in again if the restarts took the session, and shows What happened. */
+/**
+ * Signs in again if the restarts took the session, and shows What happened.
+ * A try that fails its health check restarts the machine a second or two after
+ * the console answers, which ends a session that signed in there: the sign-in
+ * page is then used again at the next look.
+ */
 async function backAtThePage(t, page) {
-  if (await signInHeading(page).isVisible().catch(() => false)) {
-    await signInDone(t, page, ADMIN, PASSWORD);
+  if (!(await signInHeading(page).isVisible().catch(() => false))) return;
+  await signInInTry(t, page, ADMIN, async () => {
     await unlockNow(page);
     await openUpdates(t, page, "#happened");
-  }
+  });
 }
 
 /** Waits for the search to end, for up to `minutes`, while the machine restarts for each try; gives the words of the search card. */

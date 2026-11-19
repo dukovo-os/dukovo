@@ -74,8 +74,18 @@ export async function showOnce(view, {
     buttons.push(reveal);
   }
 
+  // The text leaves the page in the step that closes the dialog, not when
+  // `close` arrives: the browser delivers that in a later task, and until
+  // then the hidden dialog is still in the document with the text in its
+  // `pre`. A form with method=dialog closes it during its submit.
+  function drop() {
+    secret = null;
+    pre.replaceChildren();
+    picture?.remove();
+  }
+
   const dialog = h('dialog', { class: 'dialog medium', 'aria-labelledby': heading.id },
-    h('form', { method: 'dialog' },
+    h('form', { method: 'dialog', onsubmit: drop },
       h('div', { class: 'dialog-head' }, icon('key'), heading),
       h('div', { class: 'dialog-body' },
         warn && h('div', { class: 'banner warn' }, icon('warn'), h('div', {}, h('p', {}, warn))),
@@ -101,13 +111,15 @@ export async function showOnce(view, {
       choices: [{ label: 'Go back', value: 'back', kind: 'default', safe: true }, { label: 'Close without keeping it', value: 'close' }],
     });
     asking = false;
-    if (choice === 'close') dialog.close('');
+    if (choice === 'close') {
+      drop();
+      dialog.close('');
+    }
   });
-  view.signal.addEventListener('abort', () => dialog.close(''), { once: true });
+  view.signal.addEventListener('abort', () => {
+    drop();
+    dialog.close('');
+  }, { once: true });
 
-  const how = await openModal(dialog);
-  secret = null;
-  pre.replaceChildren();
-  picture?.remove();
-  return how === 'kept';
+  return (await openModal(dialog)) === 'kept';
 }

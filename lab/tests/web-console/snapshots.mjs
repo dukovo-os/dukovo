@@ -27,18 +27,22 @@
 //
 // The machine has a backup place to an SSH address that does not answer, which
 // snapshots.toml makes and a Back up now to it fails, and a USB stick with a
-// Btrfs on it that this test adds as a backup place from the page. The browser
-// is in America/New_York: a snapshot's label, "Nov 13 10:02 PM", is the time on
-// that clock, and the files that Restore N chosen puts beside the current ones
-// have it in their names, which snapshots.toml finds on the machine after. An
-// administrator restores a file of another account; a reader restores a file
-// of their own and sees no button that changes anything. The recovery key is
-// shown once, saved as a file, and the file, the key shown again after the
-// console was locked and unlocked, and the key that `backups.key` answers are
-// the same. A phone at 390 by 844 shows the list and a snapshot's folder. Each
-// look is the console's own: dark, light, high contrast, forced colours and less
-// motion, each checked by axe (console.mjs's lookAll). The accounts are the two
-// that snapshots.toml made, so no script needs the lab's password.
+// Btrfs volume on it, which this test adds as a backup place from the page. The
+// engines run one after another on one machine, so each has a dead place, a
+// volume, two files of the reader's and a snapshot name of its own (`namesOf`),
+// and the steps after the browser remove those of every engine, also of one that
+// was skipped. The browser is in America/New_York: a snapshot's label, "Nov 13
+// 10:02 PM", is the time on that clock, and the files that Restore N chosen puts
+// beside the current ones have it in their names, which snapshots.toml finds on
+// the machine after. An administrator restores a file of another account; a
+// reader restores a file of their own and sees no button that changes anything.
+// The recovery key is shown once, saved as a file, and the file, the key shown
+// again after the console was locked and unlocked, and the key that
+// `backups.key` answers are the same. A phone at 390 by 844 shows the list and a
+// snapshot's folder. Each look is the console's own: dark, light, high contrast,
+// forced colours and less motion, each checked by axe (console.mjs's lookAll).
+// The accounts are the two that snapshots.toml made, so no script needs the
+// lab's password.
 
 import { readFile } from "node:fs/promises";
 
@@ -63,18 +67,35 @@ const READER = "wc-snap-reader";
 // snapshot's time in it.
 const ZONE = "America/New_York";
 
-// The backup places this test uses: the one that does not answer, which
-// snapshots.toml made, and the one on the stick, which the page adds.
-const DEAD = "lab-nas";
-const STICK = "lab-stick";
-
-// The snapshot that snapshots.toml made of /users with two files of the
-// reader's in it, and the files, which the reader and the administrator each
-// restore one of.
+// The snapshot that snapshots.toml made of /users with the reader's files in
+// it, and the folder they were in. The snapshot is the same for each engine,
+// which only reads it.
 const BEFORE = "lab-before";
 const HOME = `/users/${READER}`;
-const FOR_ADMIN = "notes.txt";
-const FOR_READER = "plans.txt";
+
+/**
+ * The names `engine` makes and removes. The engines run one after another on
+ * one machine and leave what they made, so each has names of its own: the
+ * place that does not answer, which snapshots.toml made; the place on the
+ * stick and its volume, which snapshots.toml mounted (a folder that holds
+ * backups of another key is refused, so two places cannot share one); the
+ * snapshot that Take a snapshot now makes; and the two files of the reader's
+ * in BEFORE (the copy that Restore N chosen puts beside a file is refused
+ * where one of that name is).
+ */
+function namesOf(engine) {
+  return {
+    dead: `lab-nas-${engine}`,
+    stick: `lab-stick-${engine}`,
+    volume: `/volumes/LABBACKUP-${engine}`,
+    take: `lab-page-take-${engine}`,
+    forAdmin: `notes-${engine}.txt`,
+    forReader: `plans-${engine}.txt`,
+  };
+}
+
+/** The path that Restore N chosen gives the copy of `file` beside it, for the snapshot made at `label`. */
+const besideOf = (file, label) => `${HOME}/${file.replace(/\.txt$/, "")} (${label}).txt`;
 
 // The routes that lab/coverage.toml says this test covers, as the console's
 // table names them: the browser must have called each by the end, with the
@@ -217,9 +238,9 @@ async function cardsAsAnswered(t, page) {
 // --- The backup that fails ---
 
 /** A backup to an address that does not answer is a bad banner, with the last good one and what still protects, and a need on the Overview. */
-async function failedBanner(t, page) {
+async function failedBanner(t, page, names) {
   await openSnapshots(t, page);
-  const banner = banners(page).filter({ hasText: `The last backup to ${DEAD} failed` });
+  const banner = banners(page).filter({ hasText: `The last backup to ${names.dead} failed` });
   await t.see(banner);
   ensure((await banner.getAttribute("role")) === "alert", "the banner of a failed backup is not an alert");
   await t.see(banner.getByText(/Nothing has been backed up there yet\./));
@@ -229,33 +250,50 @@ async function failedBanner(t, page) {
   const settings = banner.getByRole("link", { name: "Alert settings", exact: true });
   await t.see(settings);
   ensure((await settings.getAttribute("href")) === "/alerts", `Alert settings of the banner goes to ${await settings.getAttribute("href")}, not to /alerts`);
-  await t.see(placesCard(page).getByRole("row", { name: new RegExp(`^${DEAD}`) }).getByText("failed", { exact: true }));
+  await t.see(placesCard(page).getByRole("row", { name: new RegExp(`^${names.dead}`) }).getByText("failed", { exact: true }));
   await t.see(protectedCard(page).getByText(/, failed/).first());
 
   await page.goto(new URL("/", page.url()).href);
-  await t.see(page.getByText(`The last backup to ${DEAD} failed`).first());
+  await listedInHealth(t, page, `backup-failed-${names.dead}`);
+}
+
+/**
+ * The Overview's Health card lists the need `id`, in its list or, when the
+ * places of the other engines fill the four rows it shows, in See all.
+ */
+async function listedInHealth(t, page, id) {
+  const card = page.locator("#ov-health");
+  const row = `[data-need="${id}"]`;
+  await t.see(card.locator("ul.need"));
+  if ((await card.locator(`ul.need ${row}`).count()) > 0) return;
+  await card.getByRole("button", { name: /^See all \d+$/ }).click();
+  const dialog = page.getByRole("dialog", { name: /^\d+ things to look at$/ });
+  await t.see(dialog);
+  await t.see(dialog.locator(row));
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await t.gone(dialog);
 }
 
 /** Back up now in the banner runs a task that fails again, and the button says how it goes until it ends. */
-async function backUpFails(t, page) {
+async function backUpFails(t, page, names) {
   await unlockNow(page);
   await openSnapshots(t, page);
-  const before = placeOf(await readBackups(page), DEAD)?.state?.tried_ms ?? 0;
-  const banner = banners(page).filter({ hasText: `The last backup to ${DEAD} failed` });
-  const answered = page.waitForResponse((answer) => answer.request().method() === "POST" && new URL(answer.url()).pathname === pathOf(ROUTES.run, DEAD));
+  const before = placeOf(await readBackups(page), names.dead)?.state?.tried_ms ?? 0;
+  const banner = banners(page).filter({ hasText: `The last backup to ${names.dead} failed` });
+  const answered = page.waitForResponse((answer) => answer.request().method() === "POST" && new URL(answer.url()).pathname === pathOf(ROUTES.run, names.dead));
   await banner.getByRole("button", { name: "Back up now", exact: true }).click();
   const reply = await answered;
-  ensure(reply.status() === 202 || reply.status() === 200, `${ROUTES.run} for ${DEAD} was answered ${reply.status()}`);
+  ensure(reply.status() === 202 || reply.status() === 200, `${ROUTES.run} for ${names.dead} was answered ${reply.status()}`);
   // The task ends in a failure: the machine says so, and the banner is there again with its button.
-  await placeBecomes(page, DEAD, (place) => place.running !== true && place.state?.tried_ms > before && place.state?.failed, "end in a failure", 300);
+  await placeBecomes(page, names.dead, (place) => place.running !== true && place.state?.tried_ms > before && place.state?.failed, "end in a failure", 300);
   await openSnapshots(t, page);
-  await t.see(banners(page).filter({ hasText: `The last backup to ${DEAD} failed` }).getByRole("button", { name: "Back up now", exact: true }));
+  await t.see(banners(page).filter({ hasText: `The last backup to ${names.dead} failed` }).getByRole("button", { name: "Back up now", exact: true }));
 }
 
 // --- Snapshots ---
 
 /** Take a snapshot now makes a named snapshot of each place the machine keeps, and says so. */
-async function takeOne(t, page) {
+async function takeOne(t, page, names) {
   await unlockNow(page);
   await openSnapshots(t, page);
   await page.getByRole("button", { name: "Take a snapshot now", exact: true }).click();
@@ -265,7 +303,7 @@ async function takeOne(t, page) {
   await dialog.getByLabel("Name (optional)").fill("2026-11-14-0302");
   await dialog.getByRole("button", { name: "Take a snapshot", exact: true }).click();
   await t.see(dialog.getByText("A name like that is a time, which snap gives itself"));
-  await dialog.getByLabel("Name (optional)").fill("lab-page-take");
+  await dialog.getByLabel("Name (optional)").fill(names.take);
   const answered = page.waitForResponse((answer) => answer.request().method() === "POST" && new URL(answer.url()).pathname === pathOf(ROUTES.take));
   await dialog.getByRole("button", { name: "Take a snapshot", exact: true }).click();
   ensure((await answered).status() === 200, `${ROUTES.take} was not answered 200`);
@@ -273,7 +311,7 @@ async function takeOne(t, page) {
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
   await t.gone(dialog);
   const users = await readSnapshots(page, "/users");
-  ensure((users.snapshots ?? []).some((one) => one.name === "lab-page-take" && one.named === true), "the named snapshot of /users is not in `snap list /users`");
+  ensure((users.snapshots ?? []).some((one) => one.name === names.take && one.named === true), "the named snapshot of /users is not in `snap list /users`");
 }
 
 /** Browse opens a snapshot's folder with how each entry compares with now; a folder is entered by its link and left by the crumbs. */
@@ -299,7 +337,7 @@ async function browseOwn(t, page) {
  * outside their home, and Restore N chosen puts a copy of one of another
  * account's files beside it with the label in the browser's zone.
  */
-async function restoreOfAnother(t, page) {
+async function restoreOfAnother(t, page, names) {
   await unlockNow(page);
   const made = (await readSnapshots(page, "/users")).snapshots.find((one) => one.name === BEFORE)?.made;
   ensure(typeof made === "string" && Number.isFinite(Date.parse(made)), `snap list /users has no snapshot ${BEFORE}`);
@@ -308,27 +346,27 @@ async function restoreOfAnother(t, page) {
   ensure(label !== utc, `the label in ${ZONE} is the label in UTC, ${label}`);
 
   await openFolder(t, page, "/users", BEFORE, HOME);
-  await t.see(page.getByRole("row", { name: new RegExp(FOR_ADMIN) }));
-  await t.see(page.getByRole("row", { name: new RegExp(FOR_READER) }));
+  await t.see(page.getByRole("row", { name: new RegExp(names.forAdmin) }));
+  await t.see(page.getByRole("row", { name: new RegExp(names.forReader) }));
   // The files were deleted after the snapshot.
-  await t.see(page.getByRole("row", { name: new RegExp(FOR_ADMIN) }).getByText("deleted since", { exact: true }));
+  await t.see(page.getByRole("row", { name: new RegExp(names.forAdmin) }).getByText("deleted since", { exact: true }));
   const restore = page.getByRole("button", { name: /^Restore \d+ chosen$/ });
   ensure(await restore.isDisabled(), "Restore 0 chosen is not disabled");
-  await page.getByRole("checkbox", { name: `Pick ${FOR_ADMIN}`, exact: true }).check();
+  await page.getByRole("checkbox", { name: `Pick ${names.forAdmin}`, exact: true }).check();
   await t.see(buttonOf(page, "Restore 1 chosen"));
   const answered = page.waitForResponse((answer) => answer.request().method() === "POST" && new URL(answer.url()).pathname === pathOf(ROUTES.restoreAll));
   await buttonOf(page, "Restore 1 chosen").click();
   ensure((await answered).status() === 200, `${ROUTES.restoreAll} was not answered 200`);
   const result = page.locator(".snap-result");
   await t.see(result.getByText("Restored 1 path beside the current one:"));
-  await t.see(result.getByText(`${HOME}/notes (${label}).txt`, { exact: true }));
+  await t.see(result.getByText(besideOf(names.forAdmin, label), { exact: true }));
   await lookAll(t, page, "snapshots-browse");
 }
 
 // --- The backup place on the stick ---
 
 /** Chooses the disk, names the place, and adds it; the key is shown once and saved as a file. Gives the key. */
-async function addOnStick(t, page) {
+async function addOnStick(t, page, names) {
   await unlockNow(page);
   await openSnapshots(t, page);
   await page.getByRole("button", { name: "Add a backup place…", exact: true }).click();
@@ -344,21 +382,22 @@ async function addOnStick(t, page) {
   await dialog.getByRole("button", { name: "Add", exact: true }).click();
   await t.see(dialog.getByText(/user@host:\/folder/).first());
 
-  // A plugged-in disk, by hand, never checked automatically.
+  // A plugged-in disk, by hand, never checked automatically. The stick has a volume for each engine, and this one's is chosen.
   await dialog.getByText("A plugged-in disk", { exact: true }).click();
   await t.see(dialog.getByLabel("Disk", { exact: true }));
-  await dialog.getByLabel("Name", { exact: true }).fill(STICK);
+  await dialog.getByLabel("Disk", { exact: true }).selectOption(names.volume);
+  await dialog.getByLabel("Name", { exact: true }).fill(names.stick);
   await dialog.getByLabel("Back up", { exact: true }).selectOption("hand");
   await dialog.getByLabel("Check by restoring", { exact: true }).selectOption("never");
   await dialog.getByRole("button", { name: "Add", exact: true }).click();
-  await t.see(page.getByRole("dialog", { name: `Recovery key for ${STICK}`, exact: true }));
-  const keyDialog = page.getByRole("dialog", { name: `Recovery key for ${STICK}`, exact: true });
+  await t.see(page.getByRole("dialog", { name: `Recovery key for ${names.stick}`, exact: true }));
+  const keyDialog = page.getByRole("dialog", { name: `Recovery key for ${names.stick}`, exact: true });
   const shown = /AGE-SECRET-KEY-1[0-9A-Z]+/.exec(await keyDialog.innerText())?.[0];
   ensure(shown !== undefined, "the dialog of the recovery key shows no AGE-SECRET-KEY-1 line");
 
   // Save as file: the file is the key and nothing else.
   const [download] = await Promise.all([page.waitForEvent("download", { timeout: 30_000 }), keyDialog.getByRole("button", { name: "Save as file", exact: true }).click()]);
-  ensure(download.suggestedFilename() === `${STICK}-recovery.key`, `the saved file is called ${download.suggestedFilename()}`);
+  ensure(download.suggestedFilename() === `${names.stick}-recovery.key`, `the saved file is called ${download.suggestedFilename()}`);
   const file = await download.path();
   ensure(file !== null, "the browser kept no file for the recovery key");
   ensure((await readFile(file, "utf8")).trim() === shown, "the saved file is not the key that was shown");
@@ -369,9 +408,9 @@ async function addOnStick(t, page) {
   // The key is gone from the page once the dialog is closed.
   ensure(!(await page.content()).includes(shown), "the recovery key is still in the page after the dialog closed");
   // Back up now? is asked once the key was kept.
-  const ask = page.getByRole("dialog", { name: `Back up to ${STICK} now?`, exact: true });
+  const ask = page.getByRole("dialog", { name: `Back up to ${names.stick} now?`, exact: true });
   await t.see(ask);
-  const run = page.waitForResponse((answer) => answer.request().method() === "POST" && new URL(answer.url()).pathname === pathOf(ROUTES.run, STICK));
+  const run = page.waitForResponse((answer) => answer.request().method() === "POST" && new URL(answer.url()).pathname === pathOf(ROUTES.run, names.stick));
   await ask.getByRole("button", { name: "Back up now", exact: true }).click();
   const started = await run;
   ensure(started.status() === 202 || started.status() === 200, `${ROUTES.run} was answered ${started.status()}`);
@@ -379,20 +418,20 @@ async function addOnStick(t, page) {
 }
 
 /** The first backup to the stick ends, and the page says the place is OK, backed up today. */
-async function firstBackup(t, page) {
-  const place = await placeBecomes(page, STICK, (one) => one.running !== true && one.state?.done_ms > 0 && !one.state?.failed, "finish its first backup", 600);
-  ensure(place.every === "hand", `${STICK} is backed up ${place.every}, not by hand`);
-  await openSnapshots(t, page, `/snapshots/backups/${STICK}`);
-  const row = placesCard(page).getByRole("row", { name: new RegExp(`^${STICK}`) });
+async function firstBackup(t, page, names) {
+  const place = await placeBecomes(page, names.stick, (one) => one.running !== true && one.state?.done_ms > 0 && !one.state?.failed, "finish its first backup", 600);
+  ensure(place.every === "hand", `${names.stick} is backed up ${place.every}, not by hand`);
+  await openSnapshots(t, page, `/snapshots/backups/${names.stick}`);
+  const row = placesCard(page).getByRole("row", { name: new RegExp(`^${names.stick}`) });
   await t.see(row.getByText("OK", { exact: true }));
-  await t.see(protectedCard(page).getByText(new RegExp(`${STICK}`)).first());
+  await t.see(protectedCard(page).getByText(new RegExp(`${names.stick}`)).first());
 }
 
 /** The place's own page: what it holds and keeps, Check now to done, Show it again after the console was locked, and Restore files…. */
-async function placePage(t, page, shown) {
+async function placePage(t, page, names, shown) {
   await unlockNow(page);
-  await openSnapshots(t, page, `/snapshots/backups/${STICK}`);
-  await t.see(page.getByRole("heading", { name: STICK, level: 3, exact: true }));
+  await openSnapshots(t, page, `/snapshots/backups/${names.stick}`);
+  await t.see(page.getByRole("heading", { name: names.stick, level: 3, exact: true }));
   // backup add backs up the four places, the apps among them.
   await t.see(placesCard(page).getByText("/users, /shared, settings and apps", { exact: false }));
   await t.see(placesCard(page).getByText(/^People's files, \d+ backups?$/));
@@ -400,43 +439,51 @@ async function placePage(t, page, shown) {
   await lookAll(t, page, "snapshots-place");
 
   // Check now restores the newest backups and compares them: a task.
-  const verify = page.waitForResponse((answer) => answer.request().method() === "POST" && new URL(answer.url()).pathname === pathOf(ROUTES.verify, STICK));
+  const verify = page.waitForResponse((answer) => answer.request().method() === "POST" && new URL(answer.url()).pathname === pathOf(ROUTES.verify, names.stick));
   await placesCard(page).getByRole("button", { name: "Check now", exact: true }).click();
   const started = await verify;
   ensure(started.status() === 202 || started.status() === 200, `${ROUTES.verify} was answered ${started.status()}`);
-  await placeBecomes(page, STICK, (one) => one.running !== true && one.state?.verified_ms > 0 && !one.state?.verify_failed, "pass its check by a restore", 600);
-  await openSnapshots(t, page, `/snapshots/backups/${STICK}`);
+  await placeBecomes(page, names.stick, (one) => one.running !== true && one.state?.verified_ms > 0 && !one.state?.verify_failed, "pass its check by a restore", 600);
+  await openSnapshots(t, page, `/snapshots/backups/${names.stick}`);
   await t.see(placesCard(page).getByText(/restored the newest backups and compared them\. Passed\./));
 
   // Show it again asks to unlock, and shows the key once: the same one.
   const locked = await fetchAsPage(page, "POST", "/api/1/lock");
   ensure(locked.status === 200, `the console was not locked: ${locked.status} ${locked.text}`);
   await sleep(1500);
-  const key = page.waitForResponse((answer) => answer.request().method() === "POST" && new URL(answer.url()).pathname === pathOf(ROUTES.key, STICK));
+  const key = page.waitForResponse((answer) => answer.request().method() === "POST" && new URL(answer.url()).pathname === pathOf(ROUTES.key, names.stick));
   await buttonOf(page, "Show it again").click();
   await t.see(unlockDialog(page));
   await answerUnlock(t, page);
   ensure((await key).status() === 200, `${ROUTES.key} was not answered 200`);
-  const keyDialog = page.getByRole("dialog", { name: `Recovery key for ${STICK}`, exact: true });
+  const keyDialog = page.getByRole("dialog", { name: `Recovery key for ${names.stick}`, exact: true });
   await t.see(keyDialog);
   ensure((await keyDialog.innerText()).includes(shown), "Show it again shows another key than the one that was shown when the place was added");
   await keyDialog.getByRole("button", { name: KEPT_WORDS, exact: true }).click();
   await t.gone(keyDialog);
   // The machine's own read of the key, which the route runs, is the same.
-  const again = await fetchAsPage(page, "POST", pathOf(ROUTES.key, STICK), {});
+  const again = await fetchAsPage(page, "POST", pathOf(ROUTES.key, names.stick), {});
   ensure(again.status === 200 && again.text.includes(shown), `${ROUTES.key} does not answer the key that was shown: ${again.status}`);
 }
 
+/** The names of the restored-TIME snapshots of /users, which Restore files… makes. */
+async function restoredOf(page) {
+  const users = await readSnapshots(page, "/users");
+  return (users.snapshots ?? []).map((one) => one.name).filter((name) => name.startsWith("restored-"));
+}
+
 /** Restore files… receives the newest backup into the snapshots as restored-TIME; the page then shows it. */
-async function restoreFromBackup(t, page) {
+async function restoreFromBackup(t, page, names) {
   await unlockNow(page);
-  await openSnapshots(t, page, `/snapshots/backups/${STICK}`);
+  await openSnapshots(t, page, `/snapshots/backups/${names.stick}`);
   await t.see(placesCard(page).getByText(/^People's files, \d+ backups?$/));
+  // The engines before this one left their restored-TIME snapshots, so the one that this restore makes is the one that was not there.
+  const had = await restoredOf(page);
   await buttonOf(page, "Restore files…").click();
-  const dialog = page.getByRole("dialog", { name: `Restore files from ${STICK}`, exact: true });
+  const dialog = page.getByRole("dialog", { name: `Restore files from ${names.stick}`, exact: true });
   await t.see(dialog);
   await dialog.getByLabel("Place", { exact: true }).selectOption({ index: 0 });
-  const answered = page.waitForResponse((answer) => answer.request().method() === "POST" && new URL(answer.url()).pathname === pathOf(ROUTES.restoreFrom, STICK));
+  const answered = page.waitForResponse((answer) => answer.request().method() === "POST" && new URL(answer.url()).pathname === pathOf(ROUTES.restoreFrom, names.stick));
   await dialog.getByRole("button", { name: "Restore", exact: true }).click();
   const reply = await answered;
   ensure(reply.status() === 202 || reply.status() === 200, `${ROUTES.restoreFrom} was answered ${reply.status()}`);
@@ -444,30 +491,29 @@ async function restoreFromBackup(t, page) {
   // When the restore is done this page shows the snapshot it made.
   await page.waitForURL((url) => url.pathname === "/snapshots/browse" && url.searchParams.get("snapshot")?.startsWith("restored-"), { timeout: 600_000 });
   await t.see(page.locator(".snap-browse .tbl"));
-  const users = await readSnapshots(page, "/users");
-  ensure((users.snapshots ?? []).some((one) => one.name.startsWith("restored-")), "`snap list /users` has no restored-TIME snapshot");
+  ensure((await restoredOf(page)).some((name) => !had.includes(name)), "`snap list /users` has no new restored-TIME snapshot");
 }
 
 /** Remove… asks, and forgets the place; the backups stay where they are. */
-async function removeDead(t, page) {
+async function removeDead(t, page, names) {
   await unlockNow(page);
-  await openSnapshots(t, page, `/snapshots/backups/${DEAD}`);
-  await t.see(page.getByRole("heading", { name: DEAD, level: 3, exact: true }));
+  await openSnapshots(t, page, `/snapshots/backups/${names.dead}`);
+  await t.see(page.getByRole("heading", { name: names.dead, level: 3, exact: true }));
   await buttonOf(page, "Remove…").click();
-  const ask = page.getByRole("dialog", { name: `Remove ${DEAD}?`, exact: true });
+  const ask = page.getByRole("dialog", { name: `Remove ${names.dead}?`, exact: true });
   await t.see(ask);
   await t.see(ask.getByText(/Its backups stay /));
   // Cancel leaves it.
   await ask.getByRole("button", { name: "Cancel", exact: true }).click();
   await t.gone(ask);
-  ensure(placeOf(await readBackups(page), DEAD) !== undefined, `${DEAD} was removed by Cancel`);
+  ensure(placeOf(await readBackups(page), names.dead) !== undefined, `${names.dead} was removed by Cancel`);
   await buttonOf(page, "Remove…").click();
-  const removed = page.waitForResponse((answer) => answer.request().method() === "POST" && new URL(answer.url()).pathname === pathOf(ROUTES.remove, DEAD));
-  await page.getByRole("dialog", { name: `Remove ${DEAD}?`, exact: true }).getByRole("button", { name: "Remove", exact: true }).click();
+  const removed = page.waitForResponse((answer) => answer.request().method() === "POST" && new URL(answer.url()).pathname === pathOf(ROUTES.remove, names.dead));
+  await page.getByRole("dialog", { name: `Remove ${names.dead}?`, exact: true }).getByRole("button", { name: "Remove", exact: true }).click();
   ensure((await removed).status() === 200, `${ROUTES.remove} was not answered 200`);
   await t.see(page.getByRole("heading", { name: "Snapshots and backups", level: 1, exact: true }));
-  ensure(placeOf(await readBackups(page), DEAD) === undefined, `${DEAD} is still listed after Remove`);
-  await t.gone(banners(page).filter({ hasText: DEAD }));
+  ensure(placeOf(await readBackups(page), names.dead) === undefined, `${names.dead} is still listed after Remove`);
+  await t.gone(banners(page).filter({ hasText: names.dead }));
 }
 
 /** A place the machine does not have says so and leads back. */
@@ -477,29 +523,29 @@ async function noSuchPlace(t, page) {
   await t.see(page.getByRole("link", { name: "Back to the backup places", exact: true }));
 }
 
-async function administrator(t) {
+async function administrator(t, names) {
   const { page, seen } = await signedIn(t, ADMIN);
   await unlockNow(page);
 
-  await failedBanner(t, page);
+  await failedBanner(t, page, names);
   await openSnapshots(t, page);
   await cardsAsAnswered(t, page);
   await lookAll(t, page, "snapshots-list");
-  await backUpFails(t, page);
+  await backUpFails(t, page, names);
 
-  await takeOne(t, page);
+  await takeOne(t, page, names);
   await browseOwn(t, page);
-  await restoreOfAnother(t, page);
+  await restoreOfAnother(t, page, names);
 
-  const shown = await addOnStick(t, page);
-  await firstBackup(t, page);
-  await placePage(t, page, shown);
-  await restoreFromBackup(t, page);
+  const shown = await addOnStick(t, page, names);
+  await firstBackup(t, page, names);
+  await placePage(t, page, names, shown);
+  await restoreFromBackup(t, page, names);
 
-  await removeDead(t, page);
+  await removeDead(t, page, names);
   await noSuchPlace(t, page);
   await openSnapshots(t, page, "/snapshots/backups");
-  await t.see(placesCard(page).getByRole("row", { name: new RegExp(`^${STICK}`) }));
+  await t.see(placesCard(page).getByRole("row", { name: new RegExp(`^${names.stick}`) }));
 
   remember(seen);
   mustHaveCalled(seen, [
@@ -510,13 +556,13 @@ async function administrator(t) {
     routeFor(ROUTES.restoreAll),
     routeFor(ROUTES.sshKey),
     routeFor(ROUTES.add),
-    routeFor(ROUTES.run, STICK),
-    routeFor(ROUTES.run, DEAD),
-    routeFor(ROUTES.show, STICK),
-    routeFor(ROUTES.verify, STICK),
-    routeFor(ROUTES.key, STICK),
-    routeFor(ROUTES.restoreFrom, STICK),
-    routeFor(ROUTES.remove, DEAD),
+    routeFor(ROUTES.run, names.stick),
+    routeFor(ROUTES.run, names.dead),
+    routeFor(ROUTES.show, names.stick),
+    routeFor(ROUTES.verify, names.stick),
+    routeFor(ROUTES.key, names.stick),
+    routeFor(ROUTES.restoreFrom, names.stick),
+    routeFor(ROUTES.remove, names.dead),
   ]);
   await signOut(t, page);
   await page.context().close();
@@ -529,14 +575,14 @@ async function administrator(t) {
  * own files beside the current one, and sees no button that changes anything
  * and none that reads what a backup place holds.
  */
-async function reader(t) {
+async function reader(t, names) {
   const { page, seen } = await signedIn(t, READER);
   await openSnapshots(t, page);
   await cardsAsAnswered(t, page);
   for (const name of ["Take a snapshot now", "Add a backup place…", "Back up now", "Check now"]) {
     ensure((await buttonOf(page, name).count()) === 0, `a reader's page has ${name}`);
   }
-  await openSnapshots(t, page, `/snapshots/backups/${STICK}`);
+  await openSnapshots(t, page, `/snapshots/backups/${names.stick}`);
   await t.see(placesCard(page).getByText(READER_WORDS));
   for (const name of ["Show it again", "Restore files…", "Remove…", "Back up now", "Check now"]) {
     ensure((await buttonOf(page, name).count()) === 0, `a reader's place page has ${name}`);
@@ -548,12 +594,12 @@ async function reader(t) {
   ensure(typeof made === "string", `the reader's snap list /users has no ${BEFORE}`);
   const label = labelOf(Date.parse(made), ZONE);
   await openFolder(t, page, "/users", BEFORE, HOME);
-  await t.see(page.getByRole("row", { name: new RegExp(FOR_READER) }));
-  await page.getByRole("checkbox", { name: `Pick ${FOR_READER}`, exact: true }).check();
+  await t.see(page.getByRole("row", { name: new RegExp(names.forReader) }));
+  await page.getByRole("checkbox", { name: `Pick ${names.forReader}`, exact: true }).check();
   const answered = page.waitForResponse((answer) => answer.request().method() === "POST" && new URL(answer.url()).pathname === pathOf(ROUTES.restore));
   await buttonOf(page, "Restore 1 chosen").click();
   ensure((await answered).status() === 200, `${ROUTES.restore} was not answered 200`);
-  await t.see(page.locator(".snap-result").getByText(`${HOME}/plans (${label}).txt`, { exact: true }));
+  await t.see(page.locator(".snap-result").getByText(besideOf(names.forReader, label), { exact: true }));
 
   // The reader's console cannot see every file: a folder of another account is refused as theirs.
   const others = await fetchAsPage(page, "GET", `${pathOf(ROUTES.browseAll)}?place=%2Fusers&snapshot=${BEFORE}&folder=%2Fusers%2F${ADMIN}`);
@@ -592,11 +638,12 @@ async function phone(t) {
 }
 
 export default async function check(t) {
-  await administrator(t);
-  await reader(t);
+  const names = namesOf(t.engine);
+  await administrator(t, names);
+  await reader(t, names);
   await phone(t);
   // Everything the table names was called by some browser.
-  const wanted = Object.values(ROUTES).map((route) => routeFor(route, STICK));
-  const missing = wanted.filter((route) => !called.has(route) && !called.has(route.replace(encodeURIComponent(STICK), encodeURIComponent(DEAD))));
+  const wanted = Object.values(ROUTES).map((route) => routeFor(route, names.stick));
+  const missing = wanted.filter((route) => !called.has(route) && !called.has(route.replace(encodeURIComponent(names.stick), encodeURIComponent(names.dead))));
   ensure(missing.length === 0, `no browser called ${missing.join(", ")}`);
 }

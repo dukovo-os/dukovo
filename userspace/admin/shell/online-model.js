@@ -58,12 +58,19 @@ export function runningVersion(about) {
  * What the banner says when the server answers after a restart. `about` is
  * `console.about`'s answer, null when it could not be read; `version` is the
  * release an update was to bring, null for any other restart. Gives `{words,
- * link}`; `link` is `{label, href}` when the update was taken back, else null.
+ * link, trying}`; `link` is `{label, href}` when the update was taken back,
+ * else null. The update was taken back when this start is a fallback and not
+ * the release it was to bring. A server that runs another release and is no
+ * fallback is the update on its try, which may yet be taken back: it says
+ * Back, and `trying` is true.
  */
 export function backWords(about, version) {
   const running = runningVersion(about);
-  if (!version || !running || running === version) return { words: 'Back', link: null };
-  return { words: `Back, on ${running}: the update was taken back.`, link: { label: 'See what happened', href: '/updates#happened' } };
+  const other = Boolean(version && running && running !== version);
+  if (other && about.fallback === true) {
+    return { words: `Back, on ${running}: the update was taken back.`, link: { label: 'See what happened', href: '/updates#happened' }, trying: false };
+  }
+  return { words: 'Back', link: null, trying: other };
 }
 
 /** The mark on what a page shows while it is stale: "As of 2:02 PM". */

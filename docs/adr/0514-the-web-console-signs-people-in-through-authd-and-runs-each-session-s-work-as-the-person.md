@@ -179,12 +179,13 @@ own record.
   forward or an SSH tunnel works, and the `Origin` is checked against it.
 - **Every answer carries a strict content security policy** (the
   console's own files, no inline script or style, no frames), `nosniff`,
-  `Referrer-Policy: no-referrer`, the same-origin policies, a permissions
-  policy that keeps the camera, microphone and location off and the
-  passkey functions on, and no `Server` header. Strict-Transport-Security
-  comes only while admind serves an authority's certificate: for the
-  machine's own it would stop the browser's one-time warning from being
-  passed.
+  `Referrer-Policy: no-referrer`, the same-origin policies,
+  `Cross-Origin-Embedder-Policy: require-corp` (the console loads
+  nothing from another origin), a permissions policy that keeps the
+  camera, microphone and location off and the passkey functions on, and
+  no `Server` header. Strict-Transport-Security comes only while admind
+  serves an authority's certificate: for the machine's own it would stop
+  the browser's one-time warning from being passed.
 - **The worker is `admind --worker`, authd's child, as the person.** authd
   starts it for the person and their groups in the person's session root,
   with no bypass right and no control right, the network a session gets

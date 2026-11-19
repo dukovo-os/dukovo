@@ -848,6 +848,7 @@ fn every_answer_carries_the_security_headers_and_no_server_header() {
             assert_eq!(answered.header("x-content-type-options"), Some("nosniff"));
             assert_eq!(answered.header("referrer-policy"), Some("no-referrer"));
             assert_eq!(answered.header("cross-origin-opener-policy"), Some("same-origin"));
+            assert_eq!(answered.header("cross-origin-embedder-policy"), Some("require-corp"));
             assert!(answered.header("server").is_none());
             // The console's own certificate is never pinned by HSTS.
             assert!(answered.header("strict-transport-security").is_none());
@@ -1216,6 +1217,70 @@ fn a_body_is_json_and_not_too_long_and_what_is_wrong_with_it_is_said_without_rep
         assert_eq!(send(&world, empty).await.error(), "ADM-108");
         // Only the one sign-in that was right in form got as far as authd.
         assert_eq!(world.console.authd.verbs(), ["begin"]);
+    });
+}
+
+/// A body that holds nothing but does not say so until it is read: an
+/// empty DATA frame that ends an HTTP/2 stream, which a browser sends after
+/// the HEADERS of a POST that has no body.
+struct Unfinished;
+
+impl http_body::Body for Unfinished {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Bytes>, Infallible>>> {
+        std::task::Poll::Ready(None)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        false
+    }
+}
+
+/// The status and error of `POST /api/1/lock` by `session` with an
+/// [`Unfinished`] body, a `Content-Length` of `length` and no
+/// `Content-Type`, as Firefox sends a fetch that has no body over HTTP/2.
+async fn lock_without_a_body(
+    world: &World,
+    session: &Session,
+    length: Option<&str>,
+) -> (u16, Option<String>) {
+    let cookie = format!("{SESSION_COOKIE}={}", session.cookie);
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/api/1/lock")
+        .header("host", HOST)
+        .header("origin", ORIGIN)
+        .header("cookie", cookie)
+        .header("x-dukovo-csrf", &session.csrf);
+    if let Some(length) = length {
+        builder = builder.header("content-length", length);
+    }
+    let request = builder.body(Unfinished).unwrap();
+    let Ok(response) =
+        handle(Rc::clone(&world.console.shared), PEER.parse().unwrap(), request).await;
+    let status = response.status().as_u16();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let error = serde_json::from_slice::<Value>(&bytes).ok();
+    (status, error.and_then(|json| json["error"]["id"].as_str().map(String::from)))
+}
+
+#[test]
+fn a_post_whose_length_is_nothing_has_no_body_though_its_stream_has_not_ended() {
+    run(async {
+        let world = world("bodiless");
+        let session = sign_in(&world, "chase").await;
+        assert_eq!(lock_without_a_body(&world, &session, Some("0")).await, (200, None));
+        // Only the length says there is no body: one that is not said, or
+        // that is more than nothing, still needs the type.
+        let unsaid = lock_without_a_body(&world, &session, None).await;
+        assert_eq!(unsaid, (415, Some("ADM-119".into())));
+        let said = lock_without_a_body(&world, &session, Some("2")).await;
+        assert_eq!(said, (415, Some("ADM-119".into())));
     });
 }
 

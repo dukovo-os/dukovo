@@ -22,6 +22,8 @@ import { ROOT } from './graph.mjs';
 const START = Date.UTC(2026, 10, 14, 2, 4);
 const KEPT = 'dukovo-admin.updates.back';
 const ABOUT = { release: 'Dukovo Server 1.0.0-alpha.1' };
+// The same release, as a start that the machine fell back to.
+const FALLBACK = { ...ABOUT, fallback: true };
 
 /** Puts a `localStorage` in place that holds `entries`, for this test only; gives its map. */
 function useStorage(context, entries = {}) {
@@ -158,8 +160,8 @@ test('when an update was to bring a release and the server runs it, the banner s
   assert.equal(page.world.asked, 1);
 });
 
-test('when the server runs another release than the update was to bring, the banner says it was taken back, with a link to what happened, until it is closed', async (context) => {
-  const page = openOnline(context);
+test('when the machine fell back to another release than the update was to bring, the banner says it was taken back, with a link to what happened, until it is closed', async (context) => {
+  const page = openOnline(context, { about: () => Promise.resolve(FALLBACK) });
   page.online.expectRestart('duke-nas is restarting into 1.0.0-alpha.2.', { version: '1.0.0-alpha.2' });
   page.world.up = true;
   await page.wait(5000);
@@ -174,7 +176,7 @@ test('when the server runs another release than the update was to bring, the ban
 });
 
 test('following the link to what happened closes the banner', async (context) => {
-  const page = openOnline(context);
+  const page = openOnline(context, { about: () => Promise.resolve(FALLBACK) });
   page.online.expectRestart('duke-nas is restarting into 1.0.0-alpha.2.', { version: '1.0.0-alpha.2' });
   page.world.up = true;
   await page.wait(5000);
@@ -221,7 +223,7 @@ test('the frame hands the words and the options of a restart to the banner, give
 });
 
 test('a look that gets no answer is given up after ten seconds, and a later one sees the server back', async (context) => {
-  const page = openOnline(context);
+  const page = openOnline(context, { about: () => Promise.resolve(FALLBACK) });
   page.online.expectRestart('duke-nas is restarting.', { quietMs: MACHINE_QUIET_MS, version: '1.0.0-alpha.2' });
   page.world.silent = true;
   await page.wait(5000);
@@ -264,10 +266,58 @@ test('an update\'s restart keeps the release it was to bring, and after a restar
   page.online.stop();
 
   // The machine started 30 seconds ago, after the release was kept.
-  const next = openOnline(context, { again: true, about: () => Promise.resolve({ ...ABOUT, up: 30 }) });
+  const next = openOnline(context, { again: true, about: () => Promise.resolve({ ...FALLBACK, up: 30 }) });
   await next.wait(0);
   assert.equal(storage.has(KEPT), false, 'it is said once');
   assert.match(next.words()[0], /^Back, on 1\.0\.0-alpha\.1: the update was taken back\. See what happened/);
+});
+
+test('the sign-in into the update\'s try says Back and keeps the release, and the sign-in after the machine went back says it was taken back', async (context) => {
+  const storage = useStorage(context);
+  const page = openOnline(context);
+  page.online.expectRestart('duke-nas is restarting.', { quietMs: MACHINE_QUIET_MS, version: '1.0.0-alpha.2' });
+  page.world.up = true;
+  page.world.ended = true;
+  await page.wait(MACHINE_QUIET_MS + 5000);
+  page.online.stop();
+
+  // The update's start, 2 seconds old: another release, and no fallback.
+  await page.wait(1000);
+  const tried = openOnline(context, { again: true, about: () => Promise.resolve({ ...ABOUT, up: 2 }) });
+  await tried.wait(0);
+  assert.deepEqual(tried.words(), ['Back']);
+  assert.equal(JSON.parse(storage.get(KEPT)).version, '1.0.0-alpha.2', 'the release waits for the start after this one');
+  tried.online.stop();
+
+  // The machine went back, and this start is a fallback, 1 second old.
+  await page.wait(3000);
+  const back = openOnline(context, { again: true, about: () => Promise.resolve({ ...FALLBACK, up: 1 }) });
+  await back.wait(0);
+  assert.match(back.words()[0], /^Back, on 1\.0\.0-alpha\.1: the update was taken back\. See what happened/);
+  assert.equal(storage.has(KEPT), false, 'it is said once');
+});
+
+test('the sign-in into the update\'s try is no greeting again at the next sign-in of the same start', async (context) => {
+  const storage = useStorage(context);
+  storage.set(KEPT, JSON.stringify({ version: '1.0.0-alpha.2', at: START - 5000 }));
+  const first = openOnline(context, { about: () => Promise.resolve({ ...ABOUT, up: 3 }) });
+  await first.wait(0);
+  assert.deepEqual(first.words(), ['Back']);
+  first.online.stop();
+  await first.wait(1000);
+  const second = openOnline(context, { again: true, about: () => Promise.resolve({ ...ABOUT, up: 4 }) });
+  await second.wait(0);
+  assert.deepEqual(second.words(), []);
+  assert.equal(storage.has(KEPT), false);
+});
+
+test('an update that went well keeps nothing for the next sign-in', async (context) => {
+  const storage = useStorage(context);
+  storage.set(KEPT, JSON.stringify({ version: '1.0.0-alpha.2', at: START - 5000 }));
+  const page = openOnline(context, { about: () => Promise.resolve({ release: 'Dukovo Server 1.0.0-alpha.2', up: 3 }) });
+  await page.wait(0);
+  assert.deepEqual(page.words(), ['Back']);
+  assert.equal(storage.has(KEPT), false);
 });
 
 test('a kept release is forgotten unsaid when the machine has not started since it was kept, or says nothing of when it started', async (context) => {
@@ -290,7 +340,7 @@ test('a kept release is forgotten unsaid when the machine has not started since 
 
 test('when the session outlives the restart, the banner says what came at once and forgets the kept release', async (context) => {
   const storage = useStorage(context);
-  const page = openOnline(context);
+  const page = openOnline(context, { about: () => Promise.resolve(FALLBACK) });
   page.online.expectRestart('The console is restarting.', { version: '1.0.0-alpha.2' });
   page.world.up = true;
   await page.wait(RESTART_QUIET_MS + 5000);

@@ -22,7 +22,11 @@
 // session: when the console answers again, the sign-in page says that the
 // console restarted, and once signed in again the shell's banner says "Back,
 // on …: the update was taken back." with "See what happened", which opens
-// /updates#happened. What happened says that
+// /updates#happened. The console answers first in the update's own start, a
+// second or two before the machine goes back, so a sign-in there says "Back"
+// and no more, and ends with the restart: the sign-in page asks again, and the
+// banner says that the update was taken back at the sign-in after that. What
+// happened says that
 // the update was taken back, with the start and its error ID, the machine's
 // own words for what failed, what the machine did, and Report it
 // (`/report?about=failure`), and no search for a change (an update that fell
@@ -56,6 +60,7 @@ import {
   routeFor,
   settingsNow,
   signedIn,
+  signInInTry,
   wordsOf,
 } from "./updates-page.mjs";
 
@@ -119,22 +124,45 @@ async function countdownAndCancel(t, page, version) {
 }
 
 /**
+ * What comes after a sign-in, for up to a minute: the banner that the update
+ * was taken back (`"back"`), the sign-in page again, which is the update's
+ * try ending in a restart (`"again"`), or neither (`"none"`).
+ */
+async function whatComes(page) {
+  const within = { state: "visible", timeout: 60_000 };
+  return Promise.race([
+    page.getByText(BACK_WORDS).waitFor(within).then(() => "back", () => "none"),
+    signInHeading(page).waitFor(within).then(() => "again", () => "none"),
+  ]);
+}
+
+/**
  * The restart is left to come: the banner says where the machine restarts
  * into, and then the console is away. The restart ends the session, so when
- * the console answers the sign-in page says why, and once signed in again
- * the shell's banner says that the update was taken back.
+ * the console answers the sign-in page says why. The console answers in the
+ * update's own start, which fails its health check a second or two later and
+ * restarts the machine into the version before, so a sign-in there is ended
+ * by that restart, and the sign-in page is used again, for up to 15 minutes in
+ * all, until the shell's banner says that the update was taken back.
  */
 async function restartAndWait(t, page, version) {
   await restartSet(t, page, version);
   await page.getByText(new RegExp(`is restarting into ${version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\. It has three tries to prove itself`)).waitFor({ state: "visible", timeout: 100_000 });
   console.log("the shell's banner says the machine is restarting into the update");
   // The machine falls back by itself, which takes a few minutes: the update's tries, the menu, the version before.
-  const asked = await signInHeading(page).waitFor({ state: "visible", timeout: 15 * 60_000 }).then(() => true, () => false);
-  ensure(asked, "the console never asked to sign in again after the restart");
-  await t.see(page.getByText(RESTARTED_WORDS));
-  await signInDone(t, page, ADMIN, PASSWORD);
-  const back = await page.getByText(BACK_WORDS).waitFor({ state: "visible", timeout: 60_000 }).then(() => true, () => false);
-  ensure(back, "the banner never said that the console is back on the version before");
+  const until = Date.now() + 15 * 60_000;
+  for (let asks = 0; ; asks += 1) {
+    const asked = await signInHeading(page).waitFor({ state: "visible", timeout: Math.max(until - Date.now(), 1) }).then(() => true, () => false);
+    ensure(asked, "the console never asked to sign in again after the restart");
+    if (asks === 0) await t.see(page.getByText(RESTARTED_WORDS));
+    let comes = "again";
+    const shown = await signInInTry(t, page, ADMIN, async () => {
+      comes = await whatComes(page);
+    });
+    if (shown && comes === "back") return;
+    ensure(!shown || comes === "again", "the banner never said that the console is back on the version before");
+    console.log("the sign-in was in the update's try, which ended in a restart: the console asks to sign in again");
+  }
 }
 
 /** After the console is back: a session that did not survive the restart signs in again, and the console is unlocked again. */

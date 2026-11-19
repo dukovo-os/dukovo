@@ -15,9 +15,10 @@ const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), selec
 
 /**
  * `aside` is the drawer's element; `behind` are the elements that go inert
- * while it is modal; `host` is the machine's name, in the head.
+ * while it is modal; `host` is the machine's name, in the head; `signal`
+ * ends the drawer's follow of the screen's width.
  */
-export function createDrawer({ aside, behind, host }) {
+export function createDrawer({ aside, behind, host, signal }) {
   const phone = matchMedia(PHONE);
   const listeners = new Set();
   let name = null;
@@ -44,7 +45,7 @@ export function createDrawer({ aside, behind, host }) {
     }
     for (const element of behind) element.inert = modal;
   }
-  phone.addEventListener('change', mode);
+  phone.addEventListener('change', mode, { signal });
 
   function tell() {
     for (const listener of listeners) listener(name);

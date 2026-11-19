@@ -25,8 +25,8 @@ function face() {
 
 /**
  * Makes the chip in `slot`, a hidden element of the header, from `shell`'s
- * `time()` and `bus`. Gives `{show(list)}`: `list` is the `trial` event's
- * trials, every one that runs.
+ * `time()`, `bus` and `signal`, which stops the countdown. Gives
+ * `{show(list)}`: `list` is the `trial` event's trials, every one that runs.
  */
 export function trialChip(slot, shell) {
   let held = [];
@@ -77,6 +77,7 @@ export function trialChip(slot, shell) {
   }
 
   shell.bus.on('route', draw);
+  shell.signal.addEventListener('abort', () => clearInterval(timer));
 
   return {
     show(list) {

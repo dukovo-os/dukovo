@@ -29,7 +29,7 @@ export function makeChanged(view, { about, reload }) {
 
   function itemOf(change, detail) {
     const row = changeRow(change, view.time);
-    return h('div', { class: 'tl-item' },
+    return h('div', { class: 'tl-item', 'data-change': change.id },
       h('time', { datetime: new Date(change.at * 1000).toISOString(), title: view.time.full(change.at) }, row.time),
       h('span', { class: 'tl-rail' }, h('i', { class: row.dot }, h('span', { class: 'sr-only' }, { warn: 'Needs a look', bad: 'Did not work', ok: 'Kept', info: '' }[row.dot]))),
       h('div', { class: 'tl-body' },

@@ -8,7 +8,7 @@
 // the words that a card says for each state of an offer. The scripts import it
 // from beside themselves.
 
-import { ensure, fetchAsPage, openConsole, signInDone, sleep } from "./console.mjs";
+import { ensure, fetchAsPage, leaveWelcome, openConsole, signIn, signInDone, signInHeading, signOutButton, sleep } from "./console.mjs";
 import { PASSWORD } from "./trial.mjs";
 
 /** The routes that lab/actions.toml names for web-console/updates, as the console's table writes them. */
@@ -62,6 +62,29 @@ export const pendingLine = (page) => card(page, "system").locator(".banner.info"
 
 /** The text of a card with its white space made single, for a test to match. */
 export const wordsOf = async (locator) => (await locator.innerText()).replace(/\s+/g, " ").trim();
+
+/**
+ * Signs in as `name` where the console may be in the try of an update: a
+ * start that fails its health check and restarts at once, which ends the
+ * session again, a second or two after the console first answers. Shows the
+ * signed-in page, and then does `work`. Gives true when `work` was done, and
+ * false when the sign-in page came back first, which the caller waits for and
+ * signs in at again.
+ */
+export async function signInInTry(t, page, name, work = async () => {}) {
+  const answer = await signIn(page, name, PASSWORD);
+  ensure(answer.status() === 200, `${name} was not signed in: the console answered ${answer.status()}`);
+  try {
+    await t.see(signOutButton(page));
+    await leaveWelcome(t, page);
+    await work();
+    return true;
+  } catch (error) {
+    const asksAgain = await signInHeading(page).waitFor({ state: "visible", timeout: 30_000 }).then(() => true, () => false);
+    if (asksAgain) return false;
+    throw error;
+  }
+}
 
 /** Opens a console in a context of its own and signs in as `name`. */
 export async function signedIn(t, name, options = {}) {

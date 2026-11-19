@@ -153,9 +153,13 @@ async function landmarks(t, page, host) {
 /** The navigation lists the pages in the order of the design, with the current one marked. */
 async function navigation(t, page, session) {
   const names = (await navLinks(page)).map((text) => text.replace(/\s+/g, " ").trim());
-  // The terminal's entry is there when the account has a terminal.
-  const pages = ["Overview", "Logs", "Reliability", "Storage", "Snapshots and backups", "Networking", "Firewall", "Accounts", "Services", "Security"];
-  const wanted = session.terminal ? [...pages, "Terminal"] : pages;
+  // The terminal's entry is there when the account has a terminal, and
+  // Report a problem is last, apart under the rule.
+  const pages = [
+    "Overview", "Logs", "Reliability", "Storage", "Snapshots and backups", "Networking", "Firewall", "Accounts",
+    "Services", "Apps", "Certificates", "Security", "Hardware", "Updates",
+  ];
+  const wanted = [...pages, ...(session.terminal ? ["Terminal"] : []), "Report a problem"];
   ensure(JSON.stringify(names) === JSON.stringify(wanted), `the navigation lists ${names.join(", ")}, not ${wanted.join(", ")}`);
   const current = page.getByRole("navigation", { name: "Pages" }).getByRole("link", { name: "Overview" });
   ensure((await current.getAttribute("aria-current")) === "page", "the navigation does not mark the Overview as the current page");
