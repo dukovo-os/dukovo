@@ -79,6 +79,7 @@ import {
   smallControls,
   trialIn,
   undoneIn,
+  undoneSince,
   undoOf,
   undoRowAfter,
   unlockDialog,
@@ -391,11 +392,11 @@ async function keptChange(t, a, b, where) {
 
   // Kept: the window's end changes nothing.
   const kept = await readDocument(a.page);
-  ensure(trialIn(kept, "network") === null && undoneIn(kept, "network").length === before.length, `Spark still tries the change or undid one after it was kept: ${JSON.stringify(kept.trials)}`);
+  ensure(trialIn(kept, "network") === null && undoneSince(kept, "network", before) === 0, `Spark still tries the change or undid one after it was kept: ${JSON.stringify(kept.trials)}`);
   await sleep(Math.max(0, beganAt + 60_000 + 5000 - Date.now()));
   const still = await cardBecomes(a.page, card.name, () => true, "be read");
   ensure(heldOf(still).includes(`${spare}/${where.prefix}`) && still.settings.mode === "fixed", `${card.name} lost its second address after the window: ${JSON.stringify(heldOf(still))}`);
-  ensure(undoneIn(await readDocument(a.page), "network").length === before.length, "Spark undid a change that was kept");
+  ensure(undoneSince(await readDocument(a.page), "network", before) === 0, "Spark undid a change that was kept");
   await openCards(t, b.page);
   const listed = (await cardsShown(b.page)).find((one) => one.name === card.name);
   ensure(listed !== undefined && listed.addresses.includes(`${spare}/${where.prefix}`), `the cards do not show ${spare}/${where.prefix} on ${card.name}: ${JSON.stringify(listed)}`);
@@ -433,7 +434,7 @@ async function undoneAtOnce(t, a, b, where) {
   await bannerEnds(b.page, "undone", 30);
   const document = await readDocument(a.page);
   ensure(trialIn(document, "network") === null, "a change is still tried after Undo now");
-  ensure(undoneIn(document, "network").length >= before.length, "Spark's list of undone changes got shorter");
+  ensure(undoneSince(document, "network", before) > 0, `Spark's document does not list the change Undo now took back: ${JSON.stringify(document.undone)}`);
   await cardBecomes(a.page, card.name, (each) => each.settings.mode === "dhcp" && !heldOf(each).includes(`${where.spare}/${where.prefix}`), "have its settings back", 60);
   // The form is on again, with the card's own values.
   ensure(!(await a.page.locator(".net-form fieldset.net-sheet").evaluate((sheet) => sheet.disabled)), "the form stays off after Undo now");
@@ -473,7 +474,7 @@ async function undoneByTimer(t, a, b, c, where) {
   for (const page of [a.page, b.page, c.page]) await bannerEnds(page, "undone", 60);
   const document = await readDocument(a.page);
   ensure(trialIn(document, "network") === null, "a change is still tried after its window");
-  ensure(undoneIn(document, "network").length > before.length, `Spark's document does not list the change it undid: ${JSON.stringify(document.undone)}`);
+  ensure(undoneSince(document, "network", before) > 0, `Spark's document does not list the change it undid: ${JSON.stringify(document.undone)}`);
   await cardBecomes(a.page, card.name, (each) => each.settings.mode === "dhcp" && !heldOf(each).includes(`${where.spare}/${where.prefix}`), "have its settings back", 60);
 }
 
@@ -531,7 +532,7 @@ async function cutOff(t, a, b, where) {
   const back = await cardBecomes(a.page, card.name, (each) => JSON.stringify(each.settings) === settings && each.addresses.some((held) => held.address === where.address), "be as it was", 90);
   ensure(JSON.stringify(back.settings) === settings, `${card.name}'s settings are ${JSON.stringify(back.settings)} after the undo, and were ${settings}`);
   const document = await readDocument(a.page);
-  ensure(trialIn(document, "network") === null && undoneIn(document, "network").length > before.length, `Spark's document after the undo: ${JSON.stringify(document.undone)}`);
+  ensure(trialIn(document, "network") === null && undoneSince(document, "network", before) > 0, `Spark's document after the undo: ${JSON.stringify(document.undone)}`);
   // The other session came by the same address, so it lost the console when
   // the change was made and never saw the trial: once the console is back, its
   // page shows the card as it was and no trial.
