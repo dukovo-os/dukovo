@@ -522,13 +522,19 @@ impl State {
         self
     }
 
+    /// Writes the state so that it outlasts the machine stopping: a
+    /// backup's start is noted before it sends, and a start the disk
+    /// never kept could not say, after a power cut, that it was cut off.
     fn write(&self, name: &str) -> Result<(), Fail> {
         fs::create_dir_all(STATE).map_err(|e| util::failed(&STATE, e))?;
         let path = State::path(name);
         let new = path.with_extension("json.new");
         let text = serde_json::to_vec_pretty(self).map_err(io::Error::other)?;
-        fs::write(&new, text).map_err(|e| util::failed(&new.display(), e))?;
-        fs::rename(&new, &path).map_err(|e| util::failed(&path.display(), e))
+        File::create(&new)
+            .and_then(|mut file| file.write_all(&text).and_then(|()| file.sync_all()))
+            .map_err(|e| util::failed(&new.display(), e))?;
+        fs::rename(&new, &path).map_err(|e| util::failed(&path.display(), e))?;
+        File::open(STATE).and_then(|dir| dir.sync_all()).map_err(|e| util::failed(&STATE, e))
     }
 }
 
