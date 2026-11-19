@@ -23,17 +23,18 @@ expect = "copied: metrics-compare.sh"
 run = "sh -c 'i=0; while [ $i -lt 90 ] && ! metrics cpu > /dev/null 2>&1; do sleep 2; i=$((i + 1)); done; metrics cpu memory.used memory.available'"
 root = true
 expect = ["cpu", "memory.used", "memory.available", "%", "B"]
+
+# The history is written every ten minutes and when the service stops, so
+# a restart puts what it has read so far into the files, and `metrics list`
+# and `metrics show` read them. The points come as seconds and a number
+# for a script.
+[[step]]
+run = "service metricsd restart"
+root = true
 [[step]]
 run = "metrics list fs.used"
 root = true
 expect = "fs.used"
-
-# The history is written every ten minutes and when the service stops, so
-# a restart puts what it has read so far into the files, and `metrics show`
-# reads them. The points come as seconds and a number for a script.
-[[step]]
-run = "service metricsd restart"
-root = true
 [[step]]
 run = "metrics show memory.used --since 1h --json"
 root = true

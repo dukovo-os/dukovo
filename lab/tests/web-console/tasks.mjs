@@ -43,6 +43,7 @@ import {
   mustHaveCalled,
   openConsole,
   routeOf,
+  screenshot,
   signIn,
   signInDone,
   signOut,
@@ -175,7 +176,7 @@ async function stopInDrawer(t, page, id, other) {
   await card.getByRole("button", { name: "Stop", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: `Stop task ${id}?` });
   await t.see(dialog);
-  await t.screenshot(page, "tasks-stop-question");
+  await screenshot(t, page, "tasks-stop-question");
   const [answer] = await Promise.all([
     answerTo(page, `/api/1/tasks/${id}/stop`),
     dialog.getByRole("button", { name: "Stop the task" }).click(),
