@@ -1,10 +1,9 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-// What the console knows of its tasks (design 8), as plain values: the
-// tasks from `GET /api/1/tasks` and `event: task`, the count on the header's
-// button and the notice for a task that ended. The drawer's groups and the
-// words on a card are in tasks-words.js, read when the drawer first opens.
+// What the console knows of its tasks (design 8): the tasks from
+// `GET /api/1/tasks` and `event: task`, the header's count and the notice of
+// an end. The drawer's words are in tasks-words.js.
 //
 // A task is admind's summary: `{id, action, title, args, who, how, started,
 // state, step, steps, words, percent, ended, status, note, changed}`, with
@@ -17,10 +16,13 @@ const LOOK_STATES = ['failed', 'stopped'];
 /** Whether `task` waits for a place or runs. */
 export const isRunning = (task) => RUNNING_STATES.includes(task.state);
 
-/** Whether `task` ended in a way a person should look at: it failed, or it was stopped before its end. */
+/** Whether `task` ended in a way a person should look at: it failed, or was stopped. */
 export const needsLook = (task) => LOOK_STATES.includes(task.state);
 
-/** What the console knows of its tasks, as the list and the events tell it. `event` says whether an id is known; if not, the task is read whole. */
+// An ended task never runs again, though Stop's answer, written as it ran, comes later.
+const merged = (was, now) => (was && !isRunning(was) && isRunning(now) ? { ...now, ...was } : { ...was, ...now });
+
+/** The tasks, as the list and the events tell them; `event` says whether an id is known. */
 export function makeTasks() {
   const byId = new Map();
   return {
@@ -32,7 +34,7 @@ export function makeTasks() {
 
     /** Adds `task`, or lets it replace what was known of that id. */
     put(task) {
-      byId.set(task.id, { ...byId.get(task.id), ...task });
+      byId.set(task.id, merged(byId.get(task.id), task));
     },
 
     /**
@@ -43,7 +45,7 @@ export function makeTasks() {
     event(data) {
       const before = byId.get(data.id);
       if (!before) return { known: false };
-      const task = { ...before, ...data };
+      const task = merged(before, data);
       byId.set(data.id, task);
       return { known: true, task, ended: isRunning(before) && !isRunning(task) };
     },

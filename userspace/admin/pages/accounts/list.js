@@ -123,8 +123,10 @@ export async function showList(view, { add }) {
         : { all: null, last: null, keys: new Map() };
       if (mine !== latest) return;
       accounts = more.all ?? (Array.isArray(found) ? found : []);
-      failed = false;
-      view.slot.replaceChildren();
+      if (failed) {
+        failed = false;
+        view.slot.replaceChildren();
+      }
       content.hidden = false;
       draw({ last: more.last, keys: more.keys, rules: ruleWords(settings) });
     } catch (error) {

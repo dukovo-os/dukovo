@@ -58,6 +58,7 @@ import {
   signOut,
   sidewaysScroll,
   sleep,
+  labNote,
   leaveWelcome,
 } from "./console.mjs";
 import { PASSWORD, PHONE, pressAndAnswer, smallControls, unlockNow } from "./trial.mjs";
@@ -69,7 +70,7 @@ const READER = "wc-report-reader";
 
 // What report.toml writes for the script: the staging server's folder, and
 // report-server.py, which sets what a report's status says.
-const DESK_FILE = "/tmp/lab-report-desk";
+const DESK_FILE = "lab-report-desk";
 
 // The routes that lab/coverage.toml says this test covers, as the console's
 // table names them. `{draft}`, `{token}` and `{number}` are the ID, the 32 hex
@@ -99,23 +100,24 @@ const FIXED_CHOICES = ["The hardware", "Installing or updating Dukovo", "Somethi
 
 // --- The staging server of the lab PC ---
 
-/** Where report.toml says the staging server keeps its reports, and where its script is: `{folder, script}`. */
-async function desk() {
-  const [folder, script] = (await readFile(DESK_FILE, "utf8")).trim().split("\n");
-  ensure(folder && script, `${DESK_FILE} does not give the staging server's folder and script`);
+/** Where report.toml says the staging server of the machine that `page` shows keeps its reports, and where its script is: `{folder, script}`. */
+async function desk(page) {
+  const file = labNote(DESK_FILE, page);
+  const [folder, script] = (await readFile(file, "utf8")).trim().split("\n");
+  ensure(folder && script, `${file} does not give the staging server's folder and script`);
   return { folder, script };
 }
 
-/** What the staging server holds of report `number`, as bytes decoded as UTF-8, or null when it holds none. */
-export async function deskCopy(number) {
-  const { folder } = await desk();
+/** What the staging server of the machine that `page` shows holds of report `number`, as bytes decoded as UTF-8, or null when it holds none. */
+export async function deskCopy(page, number) {
+  const { folder } = await desk(page);
   const file = `${folder}/${number}.txt`;
   return existsSync(file) ? readFile(file, "utf8") : null;
 }
 
 /** Has the staging server say that report `number` is fixed in 0.16.1, as the people who handle reports do. */
-async function markFixed(number) {
-  const { folder, script } = await desk();
+async function markFixed(page, number) {
+  const { folder, script } = await desk(page);
   await run("python3", ["-I", script, "set-status", folder, String(number), "fixed", "--fixed-in", "0.16.1"]);
 }
 
@@ -557,7 +559,7 @@ async function sent(t, page, calls, wanted, cutLineWords, crash) {
   await t.gone(choiceOf(page, `${crash.program} stopped with an error`));
 
   // What the staging server keeps is what the person read.
-  const copy = await deskCopy(number);
+  const copy = await deskCopy(page, number);
   ensure(copy !== null, `the staging server holds no report ${number}`);
   ensure(copy === wanted, `the staging server's copy of report ${number} is not the text that was on the screen`);
   ensure(/^Cut by the sender: 1 line/m.test(copy) && !copy.includes(cutLineWords), `the staging server's copy of report ${number} lacks the line that says what was cut, or has the line that was cut`);
@@ -576,7 +578,7 @@ async function tableAsSent(t, page, calls, number, crash) {
   ensure(lastCall(calls, "GET", /^\/api\/1\/reports\/status$/) !== undefined, `Check the status never called ${ROUTES.status}`);
   await lookAll(t, page, "report-table");
 
-  await markFixed(number);
+  await markFixed(page, number);
   await table.getByRole("button", { name: "Check the status", exact: true }).click();
   await t.see(row.getByText("Fixed in 0.16.1"));
 
@@ -586,7 +588,7 @@ async function tableAsSent(t, page, calls, number, crash) {
   await t.see(dialog);
   await dialog.getByRole("button", { name: "Keep it", exact: true }).click();
   await t.gone(dialog);
-  ensure((await deskCopy(number)) !== null, "Keep it took the report off the staging server");
+  ensure((await deskCopy(page, number)) !== null, "Keep it took the report off the staging server");
   await row.getByRole("button", { name: `Delete report ${number}`, exact: true }).click();
   await t.see(dialog);
   const deleted = page.waitForResponse((reply) => reply.request().method() === "POST" && DELETE.test(new URL(reply.url()).pathname));
@@ -594,7 +596,7 @@ async function tableAsSent(t, page, calls, number, crash) {
   const answer = await deleted;
   ensure(answer.status() === 200, `${ROUTES.remove} was answered ${answer.status()}: ${await answer.text()}`);
   await t.gone(row);
-  ensure((await deskCopy(number)) === null, `report ${number} is still on the staging server after Delete`);
+  ensure((await deskCopy(page, number)) === null, `report ${number} is still on the staging server after Delete`);
 }
 
 // --- The people and the phone ---

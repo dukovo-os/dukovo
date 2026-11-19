@@ -36,6 +36,7 @@ import {
   signInHeading,
   signOut,
   signOutButton,
+  sleep,
 } from "./console.mjs";
 
 // The password that csrf.toml gives the account it makes.
@@ -135,7 +136,15 @@ async function controls(page, token) {
   const own = { Origin: origin, "Sec-Fetch-Site": "same-origin" };
   // A sign-in with nothing to prove passes the Origin check and is
   // refused for what it holds.
-  const empty = await page.request.post(`${origin}/api/1/sign-in`, { headers: own, data: { name: "", password: "" } });
+  // The console counts every sign-in request an address makes in a minute,
+  // and the lab PC signs in for each test from one address: a console that
+  // says to wait is waited for, as long as it asks, and asked again.
+  let empty;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    empty = await page.request.post(`${origin}/api/1/sign-in`, { headers: own, data: { name: "", password: "" } });
+    if (empty.status() !== 429) break;
+    await sleep((Number.parseInt(empty.headers()["retry-after"] ?? "60", 10) + 1) * 1000);
+  }
   await mustRefuse(empty, 401, "ADM-101");
   const lock = await page.request.post(`${origin}/api/1/lock`, {
     headers: { ...own, "X-Dukovo-CSRF": token },

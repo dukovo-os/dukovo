@@ -40,6 +40,18 @@ test('an event for a task that is not known says so, and one for a known task up
   assert.deepEqual([moved.task.step, moved.task.words, moved.task.title, moved.task.who], [2, 'copying', 'Restart a service', 'alice']);
 });
 
+test('a task that has ended does not run again when a summary written before its end comes after it', () => {
+  const tasks = makeTasks();
+  tasks.replace([task({ id: 6, step: 3, steps: 4 })]);
+  tasks.event({ id: 6, state: 'stopped', ended: 1640, status: 0, note: 'stopped by bob' });
+  // The answer to Stop says the task as it was when the stop was asked.
+  tasks.put(task({ id: 6, step: 3, steps: 4, percent: 18 }));
+  assert.deepEqual([tasks.get(6).state, tasks.get(6).note, tasks.get(6).ended], ['stopped', 'stopped by bob', 1640]);
+  assert.equal(tasks.event({ id: 6, state: 'running' }).task.state, 'stopped');
+  tasks.put({ id: 6, state: 'stopped', note: 'stopped by bob', words: 'Stopped' });
+  assert.equal(tasks.get(6).words, 'Stopped', 'a later word of an ended task is taken');
+});
+
 test('the event that ends a task is told once', () => {
   const tasks = makeTasks();
   tasks.replace([task({ id: 7 }), task({ id: 8, state: 'waiting' })]);

@@ -152,6 +152,31 @@ test('the account\'s own page is read again after a change, and the sessions eve
   assert.equal(app.calls.filter((path) => path === '/api/1/accounts/sam').length, before + 1);
 });
 
+test('a read after a change keeps what an action showed in the page\'s slot, and takes away only a failed read\'s words', async (context) => {
+  let fail = false;
+  const app = await openAccounts(context, {
+    rest: 'sam', unlocked: true, world: { reads: { '/api/1/accounts/sam': () => { if (fail) throw refusal('ADM-500', 'Could not read', 500); return shown('sam'); } } },
+  });
+  // Reads after a change come at most every two seconds.
+  context.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const again = async () => {
+    app.emit('change');
+    context.mock.timers.tick(2000);
+    await settle();
+  };
+  const words = app.document.createElement('p');
+  words.textContent = 'Too many tries.';
+  app.view.slot.append(words);
+  await again();
+  assert.equal(app.view.slot.textContent, 'Too many tries.');
+  fail = true;
+  await again();
+  assert.equal(app.problems.length, 1);
+  fail = false;
+  await again();
+  assert.equal(app.view.slot.children.length, 0);
+});
+
 // ---- the switches --------------------------------------------------------------------
 
 test('the console switch of an account that is not an administrator changes it, and an administrator\'s is on and cannot', async (context) => {

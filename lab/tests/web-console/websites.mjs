@@ -29,7 +29,7 @@
 // /api/1/certificates/{name}/forget`) stops certd and gives the button back.
 //
 // The script runs three times for each engine, with the machine in the state
-// that the word in /tmp/lab-websites-machine says, which websites.toml writes
+// that the word in /tmp/lab-websites-machine-{machine}-{port} says, which websites.toml writes
 // with the machine's address and the lab PC's ports for its port 80 and 443:
 //
 //   a  A machine with no site. A reader is told who adds one. An administrator
@@ -60,6 +60,7 @@ import https from "node:https";
 import {
   ensure,
   fetchAsPage,
+  labNote,
   leaveWelcome,
   lookAll,
   mustBe,
@@ -78,7 +79,7 @@ const READER = "wc-websites-reader";
 
 // What websites.toml writes: the machine, the lab PC's ports for its port 80 and
 // 443, and the state the machine is in.
-const MACHINE_FILE = "/tmp/lab-websites-machine";
+const MACHINE_FILE = "lab-websites-machine";
 
 // The sites of the test. The static site is named after this machine, since its
 // certificate names no other name; the others are under a domain that Pebble's DNS
@@ -161,10 +162,13 @@ async function eventually(test, what, seconds = 60) {
 /** The fingerprint as hex in capitals, which is the same for each way the console and Node write it. */
 const hexOf = (text) => String(text ?? "").replace(/[^0-9a-fA-F]/g, "").toUpperCase();
 
-/** What websites.toml wrote: `{host, http, https, phase}`. */
-async function labOf() {
-  const [host, port80, port443, phase] = (await readFile(MACHINE_FILE, "utf8")).trim().split("\n");
-  return { host, http: Number(port80), https: Number(port443), phase };
+/** What websites.toml wrote for the machine whose console `t` opens: `{host, http, https, phase, file}`. */
+async function labOf(t) {
+  const page = await t.open("/");
+  const file = labNote(MACHINE_FILE, page);
+  await page.context().close();
+  const [host, port80, port443, phase] = (await readFile(file, "utf8")).trim().split("\n");
+  return { host, http: Number(port80), https: Number(port443), phase, file };
 }
 
 /**
@@ -1032,9 +1036,9 @@ async function phaseC(t) {
 }
 
 export default async function check(t) {
-  const lab = await labOf();
+  const lab = await labOf(t);
   if (lab.phase === "a") await phaseA(t, lab);
   else if (lab.phase === "b") await phaseB(t, lab);
   else if (lab.phase === "c") await phaseC(t, lab);
-  else ensure(false, `${MACHINE_FILE} says the machine is in the state ${JSON.stringify(lab.phase)}, which is not a, b or c`);
+  else ensure(false, `${lab.file} says the machine is in the state ${JSON.stringify(lab.phase)}, which is not a, b or c`);
 }

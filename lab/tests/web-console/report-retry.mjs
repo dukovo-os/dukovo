@@ -53,7 +53,7 @@ export default async function check(t) {
   const { number } = sent;
 
   // The staging server holds what was typed, and says that it received it.
-  const copy = await deskCopy(number);
+  const copy = await deskCopy(page, number);
   ensure(copy !== null, `the staging server holds no report ${number}`);
   ensure(copy.includes(WORDS), `the staging server's copy of report ${number} does not have the words that were typed`);
   await table.getByRole("button", { name: "Check the status", exact: true }).click();
@@ -65,7 +65,7 @@ export default async function check(t) {
   await t.see(dialog);
   await pressAndAnswer(t, page, dialog.getByRole("button", { name: "Delete", exact: true }), `/api/1/reports/${number}/delete`);
   await t.gone(row);
-  ensure((await deskCopy(number)) === null, `report ${number} is still on the staging server after Delete`);
+  ensure((await deskCopy(page, number)) === null, `report ${number} is still on the staging server after Delete`);
 
   mustHaveCalled(a.seen, [`POST ${RETRY}`, `GET ${LIST}`, "GET /api/1/reports/status", `POST /api/1/reports/${number}/delete`]);
   await page.context().close();
