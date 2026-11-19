@@ -80,6 +80,7 @@ import {
   smallControls,
   trialIn,
   undoneIn,
+  undoneSince,
   undoOf,
   undoRowAfter,
   unlockNow,
@@ -441,7 +442,7 @@ async function undoneByTimer(t, a, b, c) {
   for (const page of [a.page, b.page, c.page]) await bannerEnds(page, "undone", 60);
   const document = await readDocument(a.page);
   ensure(trialIn(document, "firewall") === null, "the rules are still tried after their window");
-  ensure(undoneIn(document, "firewall").length > before.length, `Spark's document does not list the change it undid: ${JSON.stringify(document.undone)}`);
+  ensure(undoneSince(document, "firewall", before) > 0, `Spark's document does not list the change it undid: ${JSON.stringify(document.undone)}`);
   const back = await rulesBecome(a.page, (rules) => rules.length === rulesBefore.length, "be as they were");
   ensure(JSON.stringify(textsOf(back)) === JSON.stringify(rulesBefore), `the rules are ${textsOf(back).join("; ")} after the undo, and were ${rulesBefore.join("; ")}`);
 }
@@ -493,7 +494,7 @@ async function cutOff(t, a, b, session) {
   const back = await rulesBecome(a.page, (rules) => rules.length === rulesBefore.length, "be as they were");
   ensure(JSON.stringify(textsOf(back)) === JSON.stringify(rulesBefore), `the rules are ${textsOf(back).join("; ")} after the undo, and were ${rulesBefore.join("; ")}`);
   const document = await readDocument(a.page);
-  ensure(trialIn(document, "firewall") === null && undoneIn(document, "firewall").length > before.length, `Spark's document after the undo: ${JSON.stringify(document.undone)}`);
+  ensure(trialIn(document, "firewall") === null && undoneSince(document, "firewall", before) > 0, `Spark's document after the undo: ${JSON.stringify(document.undone)}`);
   await bannerEnds(b.page, "undone", 60);
   ensure((await undoRowAfter(a.page, lastRow)) !== null, "the journal has no row of the rule that was undone");
   const again = await askTest(t, a.page, "tcp", session.via.port);

@@ -109,6 +109,17 @@ export const trialIn = (document, id) => (document.trials ?? []).find((trial) =>
 /** The times at which Spark undid trials `id`, as its document says them. */
 export const undoneIn = (document, id) => (document.undone ?? []).filter((entry) => entry.id === id).map((entry) => entry.at_ms);
 
+/**
+ * How many of the trials `id` that `document` lists as undone were undone
+ * after all the times `before` (an earlier `undoneIn`) holds. Spark keeps
+ * the last 8 undone trials of all, so a count of them stops growing once
+ * the list is full: a new one is told by its time.
+ */
+export const undoneSince = (document, id, before) => {
+  const last = Math.max(0, ...before);
+  return undoneIn(document, id).filter((at) => at > last).length;
+};
+
 /** Reads the document until trial `id` is not in it, for up to `seconds`, tolerating a console that does not answer for a while. */
 export async function noTrial(page, id, seconds) {
   const until = Date.now() + seconds * 1000;
