@@ -209,6 +209,18 @@ test('the machine\'s networks that cannot be read leave the question to the priv
   assert.equal(buttonOf(dialog, 'Apply'), undefined);
 });
 
+test('a try another page began, read before the journal has its row, names who began it once the row comes', async (context) => {
+  const journal = { changes: [] };
+  const page = await openSecurity(context, { unlocked: true, world: { reads: { '/api/1/services': sparkWith('console'), '/api/1/changes?limit=100': () => journal } } });
+  assert.match(text(page), /Begun at a terminal\./);
+  journal.changes = [{
+    id: 7, at: 1_000, who: 'alice', how: 'console', action: 'console.reach', status: 0, argv: ['admin', 'reach', 'any', '--try', '60'], files: [],
+  }];
+  page.emit('change', { id: 7 });
+  await settle();
+  assert.match(text(page), /Begun by alice in this console\./);
+});
+
 test('a locked console is asked to unlock first', async (context) => {
   const page = await openSecurity(context, { unlocked: false });
   control(page.card('reach'), 'reach-change').click();

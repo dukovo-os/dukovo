@@ -366,7 +366,12 @@ export function makeTrialBanner(view, {
   view.every(READ_MS, () => {
     if (anchor !== null) read();
   });
-  view.on('change', read);
+  // A change's row comes as its command ends, after Spark shows the trial:
+  // while no row names who began it, each new row reads the journal again.
+  view.on('change', () => {
+    read();
+    if (!mine && anchor !== null && began === null) findWho();
+  });
 
   return {
     element,

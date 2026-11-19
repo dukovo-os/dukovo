@@ -23,8 +23,9 @@
 // machine's own `storage show` and `lsblk` in the steps before. The mirror's
 // card says "Mirror healthy" with "each a full copy"; its disk's panel scrubs
 // it, with the button saying how far the scrub is, until the last scrub is told
-// as "in the last scrub"; the stick's disk grows into the room after its
-// partition and then has no room left; the log's limits are changed, shown in
+// as "in the last scrub"; the mirror's disk with the most room grows into the
+// room after its partition and then has none left, which leaves the card and
+// the stick to the first two engines, and the third is shown no Grow into it; the log's limits are changed, shown in
 // the card's own sentence and put back, and the log is trimmed. A virtual disk,
 // a card and a stick give no health, and the page says so ("Not checked") and
 // offers no Check now: when a disk of this machine does give it, Check now is
@@ -265,11 +266,25 @@ async function scrubMirror(t, page, mirror) {
   await t.see(panel(page).getByText(/in the last scrub/));
 }
 
-/** The mirror's disk with the most room after its partition grows into it, and then has none. */
+/** Whether `disk` has room after its last partition: more than 1 percent of it. */
+const hasRoom = (disk) => disk.free_after / disk.size > 0.01;
+
+/**
+ * The mirror's disk with the most room after its partition grows into it,
+ * and then has none. The engines run one after another on the one mirror, and
+ * each grows a disk for good: the card and the stick give two engines a disk
+ * to grow, and an engine after them finds no room on either, has no Grow into
+ * it offered, and gives null.
+ */
 async function growDisk(t, page, answer) {
   const volume = volumeLabelled(answer, MIRROR_LABEL);
   const [disk] = disksOfVolume(answer, volume).sort((one, other) => other.free_after - one.free_after);
-  ensure(disk.free_after / disk.size > 0.01, `${disk.name} has no room after its partition: ${disk.free_after} of ${disk.size}`);
+  if (!hasRoom(disk)) {
+    await openStorage(t, page, disk.name);
+    await t.see(scrubButton(page));
+    ensure((await panel(page).getByRole("button", { name: "Grow into it", exact: true }).count()) === 0, `${disk.name} has no room after its partition and is offered Grow into it`);
+    return null;
+  }
   await openStorage(t, page, disk.name);
   await t.see(panel(page).getByText(/after its last partition/));
   const answered = page.waitForResponse((reply) => reply.request().method() === "POST" && new URL(reply.url()).pathname === pathOf(ROUTES.grow, disk.name));
@@ -309,7 +324,6 @@ async function administrator(t) {
   await scrubMirror(t, page, mirror);
   await lookAll(t, page, "storage-disk");
   const grew = await growDisk(t, page, answer);
-  ensure(grew.length > 0, "no disk grew");
 
   await openStorage(t, page);
   await logLimits(t, page);
@@ -325,7 +339,7 @@ async function administrator(t) {
     routeFor(ROUTES.show),
     routeFor(ROUTES.usage),
     routeFor(ROUTES.scrub),
-    routeFor(ROUTES.grow, grew),
+    ...(grew === null ? [] : [routeFor(ROUTES.grow, grew)]),
     routeFor(ROUTES.log),
     routeFor(ROUTES.limits),
     routeFor(ROUTES.trim),
