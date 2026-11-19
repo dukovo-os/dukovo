@@ -413,9 +413,29 @@ impl Key {
 struct Cache {
     entries: HashMap<Key, Entry>,
     size: usize,
+    /// Counts the times the cache was emptied or the servers changed. An
+    /// answer is kept only if this is what it was when the answer was
+    /// asked for: an answer from the servers of before a reload can come
+    /// after the cache was emptied, and keeping it would give it out, an
+    /// NXDOMAIN for as long as a day, in place of the new servers' own.
+    era: u64,
 }
 
 impl Cache {
+    /// Empties the cache, and starts a new era.
+    fn empty(&mut self) {
+        self.entries.clear();
+        self.era += 1;
+    }
+
+    /// Keeps `answer` as [`Cache::put`] does, if the cache is still in the
+    /// `era` it was asked for in.
+    fn put_in(&mut self, era: u64, key: Key, answer: &[u8], ttl: u32, now: Instant) {
+        if era == self.era {
+            self.put(key, answer, ttl, now);
+        }
+    }
+
     fn get(&mut self, key: &Key, now: Instant) -> Option<Vec<u8>> {
         let entry = self.entries.get(key)?;
         if entry.expires <= now {
@@ -515,11 +535,12 @@ impl Shared {
         if let Some(answer) = self.cached(&key, header.id) {
             return Some(answer);
         }
+        let era = self.cache.lock().unwrap_or_else(PoisonError::into_inner).era;
         match self.ask(links, query, &question) {
             Some(mut answer) => {
                 if let Some(ttl) = dns::keep_for(&answer) {
                     let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-                    cache.put(key, &answer, ttl, Instant::now());
+                    cache.put_in(era, key, &answer, ttl, Instant::now());
                 }
                 dns::set_id(&mut answer, header.id);
                 Some(answer)
@@ -1135,7 +1156,7 @@ impl Watcher {
             self.read(shared, first || reload);
         }
         if FLUSH.swap(false, Ordering::Relaxed) || reload {
-            shared.cache.lock().unwrap_or_else(PoisonError::into_inner).entries.clear();
+            shared.cache.lock().unwrap_or_else(PoisonError::into_inner).empty();
             println!("resolved: emptied the cache");
         }
         let status = status_text(shared);
@@ -1175,6 +1196,7 @@ impl Watcher {
                 vec![Health::default(); servers.len()];
             write(&shared.servers, Arc::new(servers));
             shared.generation.fetch_add(1, Ordering::AcqRel);
+            shared.cache.lock().unwrap_or_else(PoisonError::into_inner).era += 1;
         }
         shared.cache.lock().unwrap_or_else(PoisonError::into_inner).size = settings.cache_size;
         write(&shared.settings, Arc::new(settings));
@@ -1343,6 +1365,33 @@ mod tests {
         // Nothing kept for no time, or with no room.
         cache.put(key("d"), &answer("localhost"), 0, now);
         assert!(cache.get(&key("d"), now).is_none());
+    }
+
+    #[test]
+    fn an_answer_asked_for_before_the_cache_was_emptied_is_not_kept() {
+        let mut cache = Cache { size: 4, ..Cache::default() };
+        let now = Instant::now();
+        let key = Key {
+            name: "a.example".into(),
+            qtype: dns::A,
+            qclass: dns::IN,
+            dnssec: false,
+            unchecked: false,
+        };
+        let query = dns::query("a.example", dns::A, 1, 512).unwrap();
+        let question = dns::question(&query).unwrap();
+        let nothing = dns::failure(&query, &question, dns::NXDOMAIN);
+        // Asked of the old servers, and the cache emptied as they are
+        // changed while the answer is on its way: it is given, not kept.
+        let era = cache.era;
+        cache.empty();
+        cache.put_in(era, key.clone(), &nothing, 3600, now);
+        assert!(cache.get(&key, now).is_none());
+        // Asked in the cache's own era, it is kept.
+        cache.put_in(cache.era, key.clone(), &nothing, 3600, now);
+        assert!(cache.get(&key, now).is_some());
+        cache.empty();
+        assert!(cache.get(&key, now).is_none());
     }
 
     #[test]
