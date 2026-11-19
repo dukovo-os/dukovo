@@ -739,6 +739,10 @@ async function consoleService(t, page, host) {
     if (request.method() === "POST" && new URL(request.url()).pathname.startsWith(`/api/1/services/${CONSOLE}/`)) posted += 1;
   };
   page.on("request", count);
+  // Brought whole into the middle of the view first: a press that skips
+  // Playwright's checks lands where the control's middle is, and a control
+  // left half under the view's edge is not pressed at all.
+  await control.evaluate((element) => element.scrollIntoView({ block: "center" }));
   // A switch that says it is off is pressed all the same, as a person may:
   // Playwright would wait for it to come on.
   await control.click({ force: true });

@@ -61,6 +61,10 @@ const readerOf = (engine) => `wc-chart-reader-${engine}`;
 
 // The service that chart-to-logs.toml starts, and the tag of its warnings.
 const BURNER = "lab-burn";
+
+// How far below the most CPU a minute of the burn may be and still count as
+// one of its busiest, in percent of a processor.
+const BURN_TIE = 1;
 const MARK = "lab-mark burning";
 
 // The routes that lab/coverage.toml says this test covers, as the console's
@@ -138,14 +142,22 @@ async function restartMetricsd(page, name) {
   return row;
 }
 
-/** The minute of the last hour in which the burner had the most CPU, as the history says it: `{at, value}`. */
+/**
+ * The minute of the last hour in which the burner had the most CPU, as the
+ * history says it: `{at, value}`. The burn keeps a processor busy for three
+ * minutes, so several minutes have all of one, a hair apart; of those the
+ * first is taken. A point is the reading taken in its minute, of the
+ * minute before it, so the last of the burn may be read once the burn has
+ * stopped, in a minute that holds no mark.
+ */
 async function burnMinute(page) {
   const now = Math.floor(Date.now() / 1000);
   const series = await seriesOf(page, `/api/1/metrics/around/${now}?range=1h`);
   const cpu = series.find((one) => one.series === `service.cpu{${BURNER}}`);
   ensure(cpu !== undefined, `the history has no CPU of ${BURNER}, only ${series.map((one) => one.series).join(", ")}: the root step that burns did not run, or metricsd did not write what it read`);
   const points = cpu.points.filter(([time, value]) => Number.isFinite(time) && typeof value === "number" && time <= now);
-  const [at, value] = points.reduce((most, point) => (point[1] > most[1] ? point : most));
+  const most = Math.max(...points.map(([, value]) => value));
+  const [at, value] = points.find(([, value]) => value >= most - BURN_TIE);
   ensure(value >= 50, `${BURNER} had at most ${value} percent of a processor in the last hour, which spent all of one for three minutes`);
   return { at, value };
 }

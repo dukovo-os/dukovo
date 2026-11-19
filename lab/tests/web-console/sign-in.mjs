@@ -218,6 +218,9 @@ async function trustedBrowser(t, page, name) {
     "forgetting the trusted browsers did not forget one",
   );
   await t.see(page.getByText("0 trusted", { exact: true }));
+  // The page is done once it has read the session again and put the focus on
+  // its heading; a menu opened before that would close as the focus moves.
+  await page.waitForFunction(() => document.activeElement?.textContent === "Second step", null, { timeout: 15_000 });
 
   // The browser still holds its cookie, which no longer works: the step is
   // asked, and the cookie is dropped.

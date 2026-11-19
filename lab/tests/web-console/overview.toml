@@ -17,7 +17,10 @@
 # (diskhealth's for Chromium, nfsd's for Firefox, smbd's for WebKit), 45
 # seconds apart, as journal.toml does, so that the console's round, which
 # looks for hand edits every 30 seconds, finds each alone and makes each a
-# row of its own. One browser step then runs every engine, so that an engine
+# row of its own. The first waits 45 seconds too: a test before this one
+# may have changed a file by hand as it ended (a real machine's network
+# settings, put back), and a round that found both would make them one
+# row, with another title and another file to put back. One browser step then runs every engine, so that an engine
 # the lab PC lacks is skipped within it and the steps after it still run (a
 # step of that engine alone would be skipped, and the steps after it too). The
 # script waits for the row of its engine's edit, up to 90 seconds, and then
@@ -53,7 +56,7 @@ expect = '{"ok":true}'
 run = "sh -c 'mkdir -p /tmp/lab-overview && cp /system/settings/spark/services/diskhealth.toml /system/settings/spark/services/nfsd.toml /system/settings/spark/services/smbd.toml /tmp/lab-overview/'"
 root = true
 [[step]]
-run = "sh -c 'sleep 1; echo \"# lab overview chromium\" >> /system/settings/spark/services/diskhealth.toml'"
+run = "sh -c 'sleep 45; echo \"# lab overview chromium\" >> /system/settings/spark/services/diskhealth.toml'"
 root = true
 [[step]]
 run = "sh -c 'sleep 45; echo \"# lab overview firefox\" >> /system/settings/spark/services/nfsd.toml'"
