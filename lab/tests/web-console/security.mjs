@@ -80,13 +80,13 @@ export const ROUTES = {
   last: "GET /api/1/checks/last",
   check: "POST /api/1/checks/run",
   rules: "GET /api/1/security/sign-in",
-  rulesSet: "POST /api/1/security/sign-in",
+  rulesSet: "POST /api/1/security/sign-in", // security.sign-in-set
   blocked: "GET /api/1/security/blocked",
   unblock: "POST /api/1/security/unblock",
   channels: "GET /api/1/alerts/channels",
   never: "POST /api/1/security/never-block",
-  neverRemove: "POST /api/1/security/never-block/remove",
-  ssh: "GET /api/1/ssh",
+  neverRemove: "POST /api/1/security/never-block/remove", // security.never-block-remove
+  ssh: "GET /api/1/ssh", // ssh.show
   sshSet: "POST /api/1/ssh",
   sshOn: "POST /api/1/ssh/on",
   sshOff: "POST /api/1/ssh/off",
@@ -95,7 +95,7 @@ export const ROUTES = {
   reach: "POST /api/1/console/reach",
   consoleKeep: "POST /api/1/console/trial/keep",
   consoleUndo: "POST /api/1/console/trial/undo",
-  private: "GET /api/1/private",
+  private: "GET /api/1/private", // private.show
   serve: "POST /api/1/private/serve",
   add: "POST /api/1/private/devices/add",
   remove: "POST /api/1/private/devices/remove",
@@ -768,6 +768,8 @@ async function whileLocked(t, page) {
   await t.see(cardOf(page, "alerts").getByText("Unlock to see where alerts go."));
   mustBe(await fetchAsPage(page, "GET", pathOf(ROUTES.blocked)), 403, "ADM-106", "a locked administrator's read of the blocked addresses");
   mustBe(await fetchAsPage(page, "GET", pathOf(ROUTES.channels)), 403, "ADM-106", "a locked administrator's read of where alerts go");
+  // private.show: the route refuses a locked administrator, as it refuses a reader below.
+  mustBe(await fetchAsPage(page, "GET", pathOf(ROUTES.private)), 403, "ADM-106", "a locked administrator's read of private access");
   await lookAll(t, page, "security-locked");
 }
 

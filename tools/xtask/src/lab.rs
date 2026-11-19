@@ -338,6 +338,7 @@ const VALUED: &[&str] = &[
     "--run-id",
     "--ob",
     "--browsers",
+    "--share",
 ];
 
 /// `ob lab`: runs dukovo-lab on `lab/tests`, building the lab image first

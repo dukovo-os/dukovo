@@ -70,7 +70,7 @@ const NOBODY = "org.example.nothing";
 // table names them: the browser must have called each by the end, with an
 // app's ID for {id}.
 const ROUTES = {
-  list: "GET /api/1/apps",
+  list: "GET /api/1/apps", // apps.list
   show: "GET /api/1/apps/{id}",
   hold: "POST /api/1/apps/{id}/hold",
   unhold: "POST /api/1/apps/{id}/unhold",

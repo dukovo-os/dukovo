@@ -48,6 +48,12 @@
 # steps before each engine and at the end. The accounts are two that this test
 # makes and removes, an administrator and a reader, so no script needs the
 # lab's password.
+#
+# The console's actions (lab/actions.toml) that this test uses through its
+# page, by id: certificate.list, certificate.show, certificate.check,
+# certificate.get, certificate.add, certificate.revoke, certificate.remove,
+# certificate.history, certificate.wanted, certificate.forget, machine.name,
+# machine.rename, console.certificate.
 about = "The web console's Certificates page in each engine: the list held to cert list and cert show, the history, the checks of a name and Open port 80 as a trial of the firewall kept or undone, an order that cannot finish, which certd is left to try again and Forget stops, Renew now, Revoke and Remove of certificates Pebble made, the one proved by DNS and its Renew by DNS, Upload your own with its key sent once, Use for this console refused, tried, kept and undone, the machine's name changed with the page asking for nothing after it, a reader, and the phone"
 time = "40m"
 fresh = true

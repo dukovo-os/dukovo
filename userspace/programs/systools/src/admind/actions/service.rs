@@ -306,7 +306,7 @@ impl Action for Explain {
     /// health check: the explanation is what is asked for then most.
     const ANSWERS: &'static [i32] = &[0, 3];
     const RUNS: Runs = Runs::AsThePerson;
-    const TESTS: Tests = TESTS;
+    const TESTS: Tests = PAGE_TESTS;
     const TITLE: &'static str = "Explain a service";
     type Args = Named;
 

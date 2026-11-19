@@ -113,7 +113,10 @@ pub struct Tests {
     pub route: &'static str,
     /// The boot test case that runs its shown command and compares.
     pub same_as_command: &'static str,
-    /// The lab test that uses it in each browser.
+    /// The lab test that uses it in each browser, through the page that
+    /// has it, and names its id beside the steps that do (a unit test
+    /// holds each to it). `web-console/actions` is the lab test that calls
+    /// every action naming it from the list, and names none.
     pub browser: &'static str,
     /// The lab test that runs its Ansible task twice.
     pub ansible: &'static str,

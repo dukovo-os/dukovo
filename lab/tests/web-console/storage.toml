@@ -23,6 +23,10 @@
 # administrator and a reader, so no script needs the lab's password. The script
 # runs each engine one after the other, so that an engine the lab PC lacks is
 # skipped within it and the steps after it still run.
+#
+# The console's actions (lab/actions.toml) that this test uses through its
+# page, by id: storage.show, storage.usage, storage.health, storage.scrub,
+# storage.grow, storage.log, storage.log-set, storage.log-trim.
 about = "The web console's Storage pages in each engine: the disks from what storage show says and lsblk lists, the mirror of a memory card and a stick in words, a disk's panel, Scrub the mirror to done, Grow into it, the log's limits changed and Trim now, the steps for a new disk, a disk that is not there, a reader, and the phone"
 time = "25m"
 host_needs = ["curl"]

@@ -953,6 +953,74 @@ fn the_golden_list_is_toml_that_says_what_the_registry_says() {
     }
 }
 
+/// The lab test that calls every action whose browser test it is from the
+/// console's own page, by the list `GET /api/1/actions` gives. It names no
+/// action, so it is not held to a scenario of its own.
+const GENERIC_BROWSER_TEST: &str = "web-console/actions";
+
+/// The actions no page can drive, each with why: the scenario test of an
+/// action left out here need not name it.
+const NO_PAGE_DRIVES: &[(&str, &str)] = &[];
+
+/// Whether `text` names the action `id` as a whole word: `updates.check`
+/// is not named by `updates.check-add`, nor `service.start` by
+/// `lab-service.start`.
+fn names_action(text: &str, id: &str) -> bool {
+    let word = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_';
+    text.match_indices(id).any(|(at, _)| {
+        let before = text[..at].bytes().next_back();
+        let after = text[at + id.len()..].bytes().next();
+        !before.is_some_and(|byte| word(byte) || byte == b'.') && !after.is_some_and(word)
+    })
+}
+
+#[test]
+fn an_action_is_named_as_a_whole_word() {
+    assert!(names_action("// updates.check, which", "updates.check"));
+    assert!(names_action("(`updates.check`)", "updates.check"));
+    assert!(names_action("ends with certificate.list.", "certificate.list"));
+    assert!(!names_action("updates.check-add", "updates.check"));
+    assert!(!names_action("lab-updates.check", "updates.check"));
+    assert!(!names_action("web.updates.check", "updates.check"));
+    assert!(!names_action("updates.checks", "updates.check"));
+}
+
+#[test]
+fn every_action_is_named_by_the_scenario_its_browser_test_names() {
+    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../lab/tests");
+    for (id, why) in NO_PAGE_DRIVES {
+        assert!(REGISTRY.iter().any(|action| action.id() == *id), "{id} is not in the registry");
+        assert!(!why.is_empty(), "{id} is left out without a reason");
+    }
+    let mut unnamed: Vec<String> = Vec::new();
+    for action in REGISTRY {
+        let id = action.id();
+        let name = action.tests().browser;
+        if id.starts_with("lab.")
+            || name == GENERIC_BROWSER_TEST
+            || NO_PAGE_DRIVES.iter().any(|(left_out, _)| *left_out == id)
+        {
+            continue;
+        }
+        let scenario: String = ["toml", "mjs"]
+            .iter()
+            .filter_map(|ext| std::fs::read_to_string(tests.join(format!("{name}.{ext}"))).ok())
+            .collect();
+        if scenario.is_empty() {
+            unnamed.push(format!("{id}: lab/tests/{name}.toml and .mjs are not there"));
+        } else if !names_action(&scenario, id) {
+            unnamed.push(format!("{id}: {name} never names it"));
+        }
+    }
+    assert!(
+        unnamed.is_empty(),
+        "an action needs a scenario that uses it through its page, with its id in a comment \
+         beside the steps (lab/tests/web-console), or a row of NO_PAGE_DRIVES with the reason \
+         no page can:\n{}",
+        unnamed.join("\n")
+    );
+}
+
 /// The schema of an action's input, from the list.
 fn input_of(actions: &[&dyn Registered], id: &str) -> Value {
     let listed = listed(actions);

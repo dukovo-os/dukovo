@@ -32,6 +32,9 @@
 # removed after, as lab-broken is. The accounts are two that this test makes
 # and removes, an administrator and a reader, so no script needs the lab's
 # password.
+#
+# The console's actions (lab/actions.toml) that this test uses through its
+# page, by id: service.explain, service.status, service.usage, service.timers.
 about = "The web console's Services pages in each engine: the list from what Spark answers, a failed service explained with its log behind the unlock, diskhealth stopped, run, restarted and turned off and on at boot as its status says, its cards of use, limits, sockets and timer, the scheduled tasks behind the unlock, admind refused, a reader, and the phone's page of a service"
 time = "30m"
 host_needs = ["curl", "scp"]

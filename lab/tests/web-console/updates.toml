@@ -32,14 +32,27 @@
 # restart is asked, and it says that the machine runs the version before. The
 # search for a bad change of tests/startup/bisect.toml, begun from the page:
 # four changes, two tries, and Valkey named, with the machine restarting by
-# itself for each try.
+# itself for each try. Then the failure moves to the boot option, as in the
+# second half of that test: the Reliability page's card of the failed start,
+# Stop the search between tries with the restart it asked for cancelled, and
+# a search begun at the terminal that names the option by elimination, which
+# the page makes sure of with one more try.
 #
 # This test's first steps make an administrator and a reader that every script
 # signs in as, so no script needs the lab's password. The lab PC serves the
 # update server for the whole test, and the machine reads it as a canary (the
 # release is paused on its first day, ADR 0469). Its last steps put back what
 # the test changed.
-about = "The web console's Updates page in each engine: the cards against update last, check, settings and checks, Save and Undo, Check now with the server away, Hold with its reason and Release, Later and Remind me now, Stage it and Take it back, an app's update with Tonight and Install tonight, Update all on the Apps page, a check and a service added and removed, a reader and the phone; then the page's Restart now with its countdown, Cancel and the restart of an update that falls back, the banner Back, on, What happened, the release held after the fallback, Go back to the version before an update that proved itself with its choice of settings and its restart, and the search for the change that broke a start, with its two restarts"
+#
+# The console's actions (lab/actions.toml) that this test uses through its
+# page, by id: updates.bisect-status, updates.bisect, updates.bisect-stop,
+# updates.bisect-confirm, updates.last, updates.check, updates.slots,
+# updates.history, updates.advisories, updates.settings, updates.set,
+# updates.channel, updates.checks, updates.check-add, updates.check-remove,
+# updates.essential, updates.apply, updates.unstage, updates.undo,
+# updates.hold, updates.unhold, updates.later, updates.failed, apps.update,
+# apps.update-all, apps.rollback.
+about = "The web console's Updates page in each engine: the cards against update last, check, settings and checks, Save and Undo, Check now with the server away, Hold with its reason and Release, Later and Remind me now, Stage it and Take it back, an app's update with Tonight and Install tonight, Update all on the Apps page, a check and a service added and removed, a reader and the phone; then the page's Restart now with its countdown, Cancel and the restart of an update that falls back, the banner Back, on, What happened, the release held after the fallback, Go back to the version before an update that proved itself with its choice of settings and its restart, and the search for the change that broke a start, with its two restarts, stopped between tries, and an answer by elimination made sure of with a restart more"
 time = "105m"
 fresh = true
 host_needs = ["curl", "python3", "scp"]
@@ -324,8 +337,91 @@ run = "changes --list"
 root = true
 expect = [", slot A, try 1 of changes bisect: failed: ", ", slot B, try 2 of changes bisect: good"]
 
+# The second half of startup/bisect.toml, with the page: the failure moves to
+# the boot option. Valkey is mended, and a required check fails while the
+# update's boot option is on the command line, so the next start fails it.
+[[step]]
+run = '''sh -c 'sed -i "/lab-bisect-bad/d" /shared/services/io.valkey.valkey/valkey/conf/valkey.conf && echo "mended: $((6 * 8))"' '''
+root = true
+expect = "mended: 48"
+[[step]]
+run = '''printf '#!/bin/sh\nif /system/commands/grep -q bisect.test.fail=1 /kernel/cmdline; then\n  echo "bisect.test.fail=1 is set"\n  exit 1\nfi\n' > /users/lab/bisect-check'''
+[[step]]
+run = '''printf 'essential = ["logd", "authd", "consoled", "netd", "sshd", "valkey"]\nstable = 10\n\n[[check]]\nname = "bisect option"\ncommand = ["/system/commands/sh", "/system/settings/bisect-check"]\nrequired = true\n' > /users/lab/health.toml'''
+[[step]]
+run = "sh -c 'cp /users/lab/bisect-check /system/settings/bisect-check && cp /users/lab/health.toml /system/settings/sysupdate/health.toml'"
+root = true
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot b, @system.b"
+[[step]]
+serial = "failed its health check: the required check bisect option failed: "
+[[step]]
+serial = "(BOOT-103)"
+[[step]]
+wait = "ready"
+[[step]]
+run = "cat /system/live/sysupdate/failure"
+root = true
+expect = ["failed its health check: the required check bisect option failed", "up to 2 restarts."]
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 120 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+# The Reliability page's card of the failed start, and Stop the search between
+# its tries with the restart it asked for cancelled (the page cannot begin
+# another search after a stopped one).
+[[step]]
+browser = "updates-bisect-stop.mjs"
+engines = ["firefox"]
+port = 9090
+[[step]]
+run = "changes bisect --status"
+root = true
+expect = "The search was stopped"
+# A search begun at the terminal, as startup/bisect.toml begins it: try 1 leaves
+# out the system and the options and starts well, and try 2 leaves out the
+# system alone, which the option still fails, so the option is named by
+# elimination. The page waits for the end and makes sure of it with one more
+# try that leaves out only the option, which starts well.
+[[step]]
+run = "sh -c '(sleep 2; changes bisect --yes) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+serial = "spark: try 1 of changes bisect: leaving out nothing"
+[[step]]
+serial = "is seen through"
+[[step]]
+serial = "changes bisect: restarting in 60 seconds for try 2"
+[[step]]
+browser = "updates-bisect-confirm.mjs"
+engines = ["webkit"]
+port = 9090
+[[step]]
+wait = "ready"
+[[step]]
+run = "changes bisect --status"
+root = true
+expect = [
+    ", left out 1, 2: it started well",
+    ", left out 1: it failed as start ",
+    ", to confirm, left out 2: it started well",
+    ", and starts without it.",
+]
+[[step]]
+run = "sysupdate status"
+root = true
+expect = ["Running:  slot B", "-test.bisect, the default", "Next start: slot B"]
+
 # The machine as it was: the accounts, what the search used and the settings.
 [[step]]
-run = "sh -c 'rm -f /system/settings/sysupdate/health.toml /system/settings/sysupdate/updates.toml /system/settings/update-test /users/lab/health.toml; bundle remove --for-everyone --purge io.valkey.valkey > /dev/null 2>&1; bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; for name in wc-updates wc-updates-reader; do user remove --delete-home --yes $name || exit 1; done; echo cleaned'"
+run = "sh -c 'rm -f /system/settings/sysupdate/health.toml /system/settings/sysupdate/updates.toml /system/settings/update-test /system/settings/bisect-check /users/lab/health.toml /users/lab/bisect-check; bundle remove --for-everyone --purge io.valkey.valkey > /dev/null 2>&1; bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; for name in wc-updates wc-updates-reader; do user remove --delete-home --yes $name || exit 1; done; echo cleaned'"
 root = true
 expect = ["wc-updates is removed", "wc-updates-reader is removed", "cleaned"]

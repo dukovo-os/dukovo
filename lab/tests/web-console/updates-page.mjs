@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 // What the web console's Updates scripts share (updates.mjs, updates-offline.mjs,
-// updates-restart.mjs, updates-back.mjs and updates-bisect.mjs): the routes the
-// page calls, its cards as locators, opening the page and waiting until its
-// first read is drawn, the machine's own answers read through the console, and
-// the words that a card says for each state of an offer. The scripts import it
+// updates-restart.mjs, updates-back.mjs, updates-bisect.mjs,
+// updates-bisect-stop.mjs and updates-bisect-confirm.mjs): the routes the page
+// calls, its cards as locators, opening the page and waiting until its first
+// read is drawn, the machine's own answers read through the console, and the
+// words that a card says for each state of an offer. The scripts import it
 // from beside themselves.
 
 import { ensure, fetchAsPage, leaveWelcome, openConsole, signIn, signInDone, signInHeading, signOutButton, sleep } from "./console.mjs";
@@ -13,7 +14,7 @@ import { PASSWORD } from "./trial.mjs";
 
 /** The routes that lab/actions.toml names for web-console/updates, as the console's table writes them. */
 export const ROUTES = {
-  last: "GET /api/1/updates",
+  last: "GET /api/1/updates", // updates.last
   check: "GET /api/1/updates/check",
   slots: "GET /api/1/updates/slots",
   history: "GET /api/1/updates/history",
@@ -22,8 +23,8 @@ export const ROUTES = {
   set: "POST /api/1/updates/settings",
   channel: "POST /api/1/updates/channel",
   checks: "GET /api/1/updates/checks",
-  checkAdd: "POST /api/1/updates/checks",
-  checkRemove: "POST /api/1/updates/checks/{name}/remove",
+  checkAdd: "POST /api/1/updates/checks", // updates.check-add
+  checkRemove: "POST /api/1/updates/checks/{name}/remove", // updates.check-remove
   essential: "POST /api/1/updates/essential",
   apply: "POST /api/1/updates/{item}/apply",
   unstage: "POST /api/1/updates/unstage",
@@ -32,8 +33,10 @@ export const ROUTES = {
   undo: "POST /api/1/updates/{item}/undo",
   later: "POST /api/1/updates/{item}/later",
   failed: "GET /api/1/updates/failed",
-  bisectStatus: "GET /api/1/updates/bisect",
+  bisectStatus: "GET /api/1/updates/bisect", // updates.bisect-status
   bisect: "POST /api/1/updates/bisect",
+  bisectStop: "POST /api/1/updates/bisect/stop", // updates.bisect-stop
+  bisectConfirm: "POST /api/1/updates/bisect/confirm", // updates.bisect-confirm
   power: "GET /api/1/power",
   restart: "POST /api/1/power/restart",
   cancel: "POST /api/1/power/cancel",

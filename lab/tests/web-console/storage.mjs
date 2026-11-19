@@ -61,14 +61,14 @@ const READER = "wc-storage-reader";
 // table names them: the browser must have called each by the end, with the
 // disk's name for {disk} and `1h` for {range}.
 const ROUTES = {
-  show: "GET /api/1/storage",
+  show: "GET /api/1/storage", // storage.show
   usage: "GET /api/1/storage/usage/{range}",
   health: "GET /api/1/storage/disks/{disk}/health",
   scrub: "POST /api/1/storage/scrub",
   grow: "POST /api/1/storage/disks/{disk}/grow",
   log: "GET /api/1/storage/log",
-  limits: "POST /api/1/storage/log/limits",
-  trim: "POST /api/1/storage/log/trim",
+  limits: "POST /api/1/storage/log/limits", // storage.log-set
+  trim: "POST /api/1/storage/log/trim", // storage.log-trim
 };
 
 /** The path of a route as the table names it, for `disk`: `GET /api/1/storage/disks/{disk}/health` is `/api/1/storage/disks/sdb/health`. */

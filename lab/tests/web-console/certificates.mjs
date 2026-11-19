@@ -99,16 +99,16 @@ const ORDERED = "fails.acme-lab.example";
 // The routes that lab/coverage.toml says this test covers, as the console's
 // table names them: the browser must have called each by the end.
 const ROUTES = {
-  list: "GET /api/1/certificates",
-  show: "GET /api/1/certificates/{name}",
-  history: "GET /api/1/certificates/history/all",
-  check: "GET /api/1/certificates/check/{names}",
+  list: "GET /api/1/certificates", // certificate.list
+  show: "GET /api/1/certificates/{name}", // certificate.show
+  history: "GET /api/1/certificates/history/all", // certificate.history
+  check: "GET /api/1/certificates/check/{names}", // certificate.check
   get: "POST /api/1/certificates/{name}/get",
   renew: "POST /api/1/certificates/{name}/renew",
   add: "POST /api/1/certificates/{name}/add",
   revoke: "POST /api/1/certificates/{name}/revoke",
   remove: "POST /api/1/certificates/{name}/remove",
-  wanted: "GET /api/1/certificates/wanted/all",
+  wanted: "GET /api/1/certificates/wanted/all", // certificate.wanted
   forget: "POST /api/1/certificates/{name}/forget",
   machine: "GET /api/1/machine/name",
   rename: "POST /api/1/machine/name",

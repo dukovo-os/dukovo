@@ -33,6 +33,11 @@
 # which copies it, for the page to put back. The accounts are two that this test
 # makes and removes, an administrator and a reader, so no script needs the
 # lab's password.
+#
+# The console's actions (lab/actions.toml) that this test uses through its
+# page, by id: databases.list, databases.add, databases.password,
+# databases.allow, databases.deny, databases.remove, databases.copies,
+# databases.restore.
 about = "The web console's Databases pages in each engine: the list from what database list says, Add a database from a site with its password shown once, Copy, Save as file and the leave guard, the connection settings, the firewall's row and the copy of a database, Restore into a new database, Let other machines connect and Stop them as tasks, Make a new password, Remove with its name typed and a session open, a reader, and the phone"
 time = "30m"
 host_needs = ["curl", "scp"]

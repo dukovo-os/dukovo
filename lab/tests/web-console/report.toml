@@ -46,6 +46,10 @@
 # `report retry --json` sends it once the server is named again. The accounts
 # are two that this test makes and removes, an administrator and a reader, so no
 # script needs the lab's password.
+#
+# The console's actions (lab/actions.toml) that this test uses through its
+# page, by id: reports.crashes, reports.draft, reports.redact, reports.send,
+# reports.list, reports.status, reports.retry, reports.delete.
 about = "The web console's Report a problem page in each engine: the choices, a crash drafted from the address, the marks, Cut line and Cut these words, the answers written again, Undo all my changes, the question before Draft again, a security report, Save to a file, the QR code and its one-time link, Send to the staging server with its copy held to the screen, the table with Check the status and Delete, a report that waits for the network and is sent by Retry now, one that report draft and report send queue and report retry sends, a reader, and the phone"
 time = "50m"
 host_needs = ["python3", "openssl", "scp", "curl"]

@@ -46,6 +46,11 @@ const TESTS: Tests = Tests {
     ansible: "web-console/ansible",
 };
 
+/// The tests of the reads that the Certificates page's list and panel
+/// make: the boot tests are the generic ones, and the lab test is the
+/// page's, which holds each to `cert list` and `cert show`.
+const LISTED_TESTS: Tests = Tests { browser: "web-console/certificates", ..TESTS };
+
 /// The tests of the actions that came with the Certificates page: the
 /// boot test and the lab test of the page, which `lab/actions.toml` names.
 const PAGE_TESTS: Tests = Tests {
@@ -133,7 +138,7 @@ impl Action for List {
     const CHANGES: bool = false;
     const PATH: &'static str = "/api/1/certificates";
     const RUNS: Runs = Runs::AsThePerson;
-    const TESTS: Tests = TESTS;
+    const TESTS: Tests = LISTED_TESTS;
     const TITLE: &'static str = "List the certificates";
     type Args = Nothing;
 
@@ -160,7 +165,7 @@ impl Action for Show {
     const CHANGES: bool = false;
     const PATH: &'static str = "/api/1/certificates/{name}";
     const RUNS: Runs = Runs::AsThePerson;
-    const TESTS: Tests = TESTS;
+    const TESTS: Tests = LISTED_TESTS;
     const TITLE: &'static str = "Show a certificate";
     type Args = Named;
 

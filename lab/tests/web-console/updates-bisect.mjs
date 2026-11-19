@@ -23,10 +23,10 @@
 // that this start is a try of the search. A search that has found its change
 // by two tries has nothing left for Make sure to confirm.
 //
-// Stop the search, which only a search between tries has, and Make sure, which
-// only a change named by elimination has (a power cut in the machine's second
-// search), are not driven here: startup/bisect.toml has the second search, and
-// its power cut is the boot test's.
+// Stop the search and Make sure, which only a search between tries and a change
+// named by elimination have, are driven by updates-bisect-stop.mjs and
+// updates-bisect-confirm.mjs, on the machine that updates.toml leaves for the
+// second search.
 
 import {
   ensure,
@@ -80,7 +80,7 @@ async function beforeTheSearch(t, page) {
  * the console answers, which ends a session that signed in there: the sign-in
  * page is then used again at the next look.
  */
-async function backAtThePage(t, page) {
+export async function backAtThePage(t, page) {
   if (!(await signInHeading(page).isVisible().catch(() => false))) return;
   await signInInTry(t, page, ADMIN, async () => {
     await unlockNow(page);
@@ -88,13 +88,17 @@ async function backAtThePage(t, page) {
   });
 }
 
-/** Waits for the search to end, for up to `minutes`, while the machine restarts for each try; gives the words of the search card. */
-async function searchEnds(t, page, minutes) {
+/**
+ * Waits for the search to end, for up to `minutes`, while the machine restarts
+ * for each try, until the card says `named` (the change it found); gives the
+ * words of the search card.
+ */
+export async function searchEnds(t, page, minutes, named = /io\.valkey\.valkey/) {
   const until = Date.now() + minutes * 60_000;
   for (;;) {
     await backAtThePage(t, page);
     const words = await wordsOf(card(page, "happened")).catch(() => "");
-    if (/(The start fails with|Found:) io\.valkey\.valkey/.test(words)) return words;
+    if (new RegExp(`(The start fails with|Found:) ${named.source}`).test(words)) return words;
     ensure(Date.now() < until, `the search did not end within ${minutes} minutes: ${words}`);
     await sleep(5000);
   }
