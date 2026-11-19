@@ -41,6 +41,7 @@ mod patched;
 mod ports;
 mod process;
 mod qemu;
+mod redteam;
 mod release;
 mod repro;
 mod riscv;

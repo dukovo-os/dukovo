@@ -1,0 +1,250 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The console's web API, attacked from the red-team kit rather than
+# watched, as web-console/zap and web-console/fuzz do from the lab PC.
+# nuclei's own templates look for CVEs, misconfiguration, exposed files
+# and default logins; sqlmap drives the routes the console's OpenAPI
+# document parameterises, signed out and then with a token that may only
+# read; ffuf looks for files no page links to; path traversal is tried on
+# the files the console serves; and the changes a forger, a reader and an
+# ordinary account might try are refused.
+#
+# A step's `save` carries what one step made to the steps after it: the
+# reader's token made on the machine, and the administrator's session
+# cookie and CSRF token made at the sign-in, are presented by later steps
+# as an attacker who holds them would.
+about = "nuclei finds no CVE, misconfiguration, exposed file or default login on the console; sqlmap, signed out and as a reader, finds no injection in the routes its OpenAPI document parameterises; ffuf finds no unlinked file; path traversal on the served files leaks nothing; forged requests, a reader's token and an ordinary account's session are refused an administrator's change; and a session cookie is refused once it is signed out"
+time = "40m"
+fresh = true
+attacker = "linux"
+
+[[step]]
+run = "sh -c 'echo lab-console-password | user add --admin wc-redteam'"
+root = true
+expect = "Made wc-redteam"
+
+[[step]]
+run = "sh -c 'echo lab-console-password | user add wc-plain'"
+root = true
+expect = "Made wc-plain"
+
+# An ordinary account still needs the console group to sign in at all
+# (ADR 0514, ADM-104); it is no administrator either way.
+[[step]]
+run = "user set --console wc-plain"
+root = true
+expect = "signs in to the web console"
+
+# A token that may read services and nothing else. `admin token add` takes
+# the lab account's password on its input and prints the token alone on
+# its output.
+[[step]]
+run = "sh -c 'admin token add redteam-reader --scope services:read 2> /dev/null'"
+input = "{password}\n"
+expect = "dkv_"
+save = "reader-token"
+
+[[step]]
+attack = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{target}:9090/api/1/health; do sleep 1; i=$((i + 1)); done'"
+
+# No finding means no `[medium]`, `[high]` or `[critical]` line.
+[[step]]
+# -no-mhe: an ssrf template calls checkip.amazonaws.com, which the
+# attacker's restricted network cannot reach; without it nuclei counts
+# that as a host error and skips the target for good after enough of
+# them. -etags ssrf leaves that template out instead, so the target is
+# never skipped and the other templates still run against it. CVE-2019-5544
+# (OpenSLP on port 427, which Dukovo's firewall never opens) ends its probe
+# with "no response means it crashed"; a closed port gives the same no
+# response, so it matches any host with nothing on 427 and is excluded by
+# id, not disproven by this run.
+attack = "nuclei -u https://{target}:9090 -t /opt/nuclei-templates -tags cve,misconfig,exposure,default-login -etags ssrf -eid CVE-2019-5544 -severity medium,high,critical -timeout 10 -duc -nc -no-mhe"
+expect_not = ["[critical]", "[high]", "[medium]"]
+
+# sqlmap reads no OpenAPI document, so the routes are read from the
+# console's own and given to sqlmap, each with the path parameters and body
+# fields its schema names, four at a time. One route of each area is tried.
+# The sign-in and unlock routes are left out: they answer ten a minute from
+# one address, and guessing at them would block the attacker.
+[[step]]
+attack = '''python3 - signed-out <<"PY"
+import concurrent.futures, json, re, ssl, subprocess, sys, urllib.request
+
+BASE = "https://{target}:9090"
+mode = sys.argv[1]
+token = sys.argv[2] if len(sys.argv) > 2 else None
+context = ssl.create_default_context()
+context.check_hostname = False
+context.verify_mode = ssl.CERT_NONE
+spec = json.load(urllib.request.urlopen(BASE + "/api/1/openapi.json", context=context))
+
+LEFT_OUT = ("/api/1/sign-in", "/api/1/unlock", "/api/1/lock", "/api/1/sign-out")
+picked = {}
+for path, operations in sorted(spec["paths"].items()):
+    if path.startswith(LEFT_OUT):
+        continue
+    if mode == "reader" and not path.startswith("/api/1/services"):
+        continue
+    for method, operation in operations.items():
+        fields = operation.get("requestBody", {}).get("content", {}).get("application/json", {}).get("schema", {}).get("properties", {})
+        parameters = [p for p in operation.get("parameters", []) if p["in"] in ("path", "query")]
+        if not fields and not parameters:
+            continue
+        if mode == "reader" and method != "get":
+            continue
+        area = "/".join(path.split("/")[:4])
+        picked.setdefault((area, method), (path, method, parameters, fields))
+
+def sample(schema):
+    kind = schema.get("type")
+    if kind == "integer":
+        return 1
+    if kind == "boolean":
+        return True
+    return "a"
+
+def attack(route):
+    path, method, parameters, fields = route
+    url = BASE + path
+    for parameter in parameters:
+        if parameter["in"] == "path":
+            url = url.replace("{" + parameter["name"] + "}", str(parameter.get("example", "a")) + "*")
+    query = [p for p in parameters if p["in"] == "query"]
+    if query:
+        url += "?" + "&".join(p["name"] + "=" + str(p.get("example", "a")) for p in query)
+    command = ["sqlmap", "-u", url, "--batch", "--level=1", "--risk=1", "--flush-session",
+               "--disable-coloring", "--timeout=10", "--retries=1", "--threads=1", "--skip-waf",
+               "--output-dir=/tmp/sqlmap", "-H", "Origin: " + BASE]
+    if token:
+        command += ["-H", "Authorization: Bearer " + token]
+    if method == "post":
+        body = {name: sample(schema) for name, schema in fields.items()}
+        command += ["--method=POST", "--data=" + json.dumps(body), "-H", "Content-Type: application/json"]
+    try:
+        text = subprocess.run(command, capture_output=True, text=True, timeout=120).stdout
+    except subprocess.TimeoutExpired:
+        return route, False, "timed out after 120 s"
+    found = bool(re.search(r"is vulnerable|appears to be injectable|following injection point", text))
+    notes = [line for line in text.splitlines() if "[CRITICAL]" in line or "[WARNING]" in line]
+    return route, found, notes[-1].strip() if notes else "tested"
+
+injectable = 0
+with concurrent.futures.ThreadPoolExecutor(4) as pool:
+    for route, found, note in pool.map(attack, list(picked.values())[:30]):
+        injectable += found
+        print("sqlmap", route[1].upper(), route[0], "INJECTABLE" if found else "not injectable", "-", note)
+print("sqlmap", mode + ":", injectable, "injectable of", len(list(picked.values())[:30]), "routes")
+PY'''
+expect = "sqlmap signed-out: 0 injectable of"
+expect_not = "INJECTABLE"
+
+# The same with the reader's token, on the routes that token may read: the
+# services', whose names are the path parameters sqlmap works on.
+[[step]]
+attack = '''python3 - reader {saved:reader-token} <<"PY"
+import concurrent.futures, json, re, ssl, subprocess, sys, urllib.request
+
+BASE = "https://{target}:9090"
+mode = sys.argv[1]
+token = sys.argv[2] if len(sys.argv) > 2 else None
+context = ssl.create_default_context()
+context.check_hostname = False
+context.verify_mode = ssl.CERT_NONE
+spec = json.load(urllib.request.urlopen(BASE + "/api/1/openapi.json", context=context))
+
+picked = {}
+for path, operations in sorted(spec["paths"].items()):
+    if not path.startswith("/api/1/services"):
+        continue
+    operation = operations.get("get")
+    parameters = [p for p in (operation or {}).get("parameters", []) if p["in"] in ("path", "query")]
+    if parameters:
+        picked[path] = (path, "get", parameters, {})
+
+def attack(route):
+    path, method, parameters, fields = route
+    url = BASE + path
+    for parameter in parameters:
+        if parameter["in"] == "path":
+            url = url.replace("{" + parameter["name"] + "}", str(parameter.get("example", "a")) + "*")
+    command = ["sqlmap", "-u", url, "--batch", "--level=1", "--risk=1", "--flush-session",
+               "--disable-coloring", "--timeout=10", "--retries=1", "--threads=1", "--skip-waf",
+               "--output-dir=/tmp/sqlmap", "-H", "Origin: " + BASE, "-H", "Authorization: Bearer " + token]
+    try:
+        text = subprocess.run(command, capture_output=True, text=True, timeout=120).stdout
+    except subprocess.TimeoutExpired:
+        return route, False, "timed out after 120 s"
+    found = bool(re.search(r"is vulnerable|appears to be injectable|following injection point", text))
+    notes = [line for line in text.splitlines() if "[CRITICAL]" in line or "[WARNING]" in line]
+    return route, found, notes[-1].strip() if notes else "tested"
+
+injectable = 0
+with concurrent.futures.ThreadPoolExecutor(4) as pool:
+    for route, found, note in pool.map(attack, list(picked.values())[:30]):
+        injectable += found
+        print("sqlmap", route[1].upper(), route[0], "INJECTABLE" if found else "not injectable", "-", note)
+print("sqlmap", mode + ":", injectable, "injectable of", len(list(picked.values())[:30]), "routes")
+PY'''
+expect = "sqlmap reader: 0 injectable of"
+expect_not = "INJECTABLE"
+
+# ffuf's content discovery against the API's own path, from a list of names
+# such files have; the console's open routes are not in it, so nothing may
+# answer 200.
+[[step]]
+attack = '''printf '%s\n' admin backup backups .git/config .env config config.json debug console server-status phpinfo.php swagger.json swagger-ui openapi.yaml metrics actuator users passwd shadow dump.sql db.sql id_rsa logs log secret secrets api admin.php login wp-admin robots.txt sitemap.xml .htaccess > /tmp/words.txt; ffuf -u https://{target}:9090/api/1/FUZZ -w /tmp/words.txt -k -mc 200 -ac -s -o /tmp/ffuf.json -of json > /dev/null; python3 -c "import json; print('ffuf hits:', len(json.load(open('/tmp/ffuf.json'))['results']))"'''
+expect = "ffuf hits: 0"
+
+# The files the console serves, asked for with traversal encodings: none
+# answers with the passwd file's text, whichever status it gives.
+[[step]]
+attack = '''for path in ../../../etc/passwd %2e%2e%2f%2e%2e%2fetc%2fpasswd ..%252f..%252fetc%252fpasswd %2e%2e/%2e%2e/etc/passwd ....//....//etc/passwd; do body=$(curl -sk --path-as-is --max-time 5 https://{target}:9090/$path); echo "$path: leaks $(echo "$body" | grep -c root:)"; done'''
+expect = ["etc/passwd: leaks 0", "..%252fetc%252fpasswd: leaks 0"]
+expect_not = ["leaks 1", "leaks 2"]
+
+# An administrator's session, as an attacker who holds it presents it: the
+# cookie and the CSRF token are kept for the steps below.
+[[step]]
+attack = '''B=https://{target}:9090; curl -sk --max-time 10 -o /dev/null -c /tmp/admin.jar -X POST $B/api/1/sign-in -H "Origin: $B" -H "Content-Type: application/json" -d '{"name":"wc-redteam","password":"lab-console-password"}'; cookie=$(awk '/__Host-dukovo/ { print $7 }' /tmp/admin.jar); csrf=$(curl -sk --max-time 10 -b "__Host-dukovo=$cookie" $B/api/1/session -H "Origin: $B" | python3 -c 'import json,sys; print(json.load(sys.stdin)["csrf"])'); [ -n "$cookie" ] && [ -n "$csrf" ] || { echo sign-in failed; exit 1; }; echo $cookie $csrf'''
+expect = " "
+save = "admin-session"
+
+# Requests no browser of the console would send, each with the session's
+# own cookie: no Origin, another site's, no token, a wrong token, and a
+# fetch that says it comes from another site. All are refused, and the
+# session is as it was.
+[[step]]
+attack = '''S='{saved:admin-session}'; cookie=${S% *}; csrf=${S#* }; B=https://{target}:9090; post() { curl -sk --max-time 10 -o /dev/null -w %{http_code} -X POST $B/api/1/lock -b "__Host-dukovo=$cookie" "$@"; }; echo no-origin: $(post -H "X-Dukovo-CSRF: $csrf"); echo foreign-origin: $(post -H 'Origin: https://evil.example' -H "X-Dukovo-CSRF: $csrf"); echo no-token: $(post -H "Origin: $B"); echo wrong-token: $(post -H "Origin: $B" -H 'X-Dukovo-CSRF: AAAA'); echo cross-site: $(post -H "Origin: $B" -H "X-Dukovo-CSRF: $csrf" -H 'Sec-Fetch-Site: cross-site'); echo session-after: $(curl -sk --max-time 10 -o /dev/null -w %{http_code} -b "__Host-dukovo=$cookie" $B/api/1/session -H "Origin: $B")'''
+expect = ["no-origin: 403", "foreign-origin: 403", "no-token: 403", "wrong-token: 403", "cross-site: 403", "session-after: 200"]
+
+# A reader's token and an ordinary account's session ask for the changes
+# that are an administrator's: each is refused, and the token still reads
+# what its scope allows.
+[[step]]
+attack = '''B=https://{target}:9090; T='Authorization: Bearer {saved:reader-token}'; echo restart: $(curl -sk --max-time 10 -w ' %{http_code}' -X POST $B/api/1/services/discoverd/restart -H "$T"); echo disable: $(curl -sk --max-time 10 -o /dev/null -w %{http_code} -X POST $B/api/1/accounts/wc-redteam/disable -H "$T"); echo accounts: $(curl -sk --max-time 10 -o /dev/null -w %{http_code} $B/api/1/accounts -H "$T"); echo services: $(curl -sk --max-time 10 -o /dev/null -w %{http_code} $B/api/1/services -H "$T")'''
+expect = ["ADM-124", "restart:", "disable: 403", "accounts: 403", "services: 200"]
+
+[[step]]
+attack = '''B=https://{target}:9090; curl -sk --max-time 10 -o /dev/null -c /tmp/plain.jar -X POST $B/api/1/sign-in -H "Origin: $B" -H "Content-Type: application/json" -d '{"name":"wc-plain","password":"lab-console-password"}'; cookie=$(awk '/__Host-dukovo/ { print $7 }' /tmp/plain.jar); csrf=$(curl -sk --max-time 10 -b "__Host-dukovo=$cookie" $B/api/1/session -H "Origin: $B" | python3 -c 'import json,sys; print(json.load(sys.stdin)["csrf"])'); echo disable: $(curl -sk --max-time 10 -o /dev/null -w %{http_code} -X POST $B/api/1/accounts/wc-redteam/disable -b "__Host-dukovo=$cookie" -H "Origin: $B" -H "X-Dukovo-CSRF: $csrf" -H 'Content-Type: application/json' -d '{}')'''
+expect = "disable: 403"
+
+# Signing out ends the session: the cookie the attacker kept is refused,
+# for a read and for a change.
+[[step]]
+attack = '''S='{saved:admin-session}'; cookie=${S% *}; csrf=${S#* }; B=https://{target}:9090; echo sign-out: $(curl -sk --max-time 10 -o /dev/null -w %{http_code} -X POST $B/api/1/sign-out -b "__Host-dukovo=$cookie" -H "Origin: $B" -H "X-Dukovo-CSRF: $csrf"); echo read-after: $(curl -sk --max-time 10 -o /dev/null -w %{http_code} -b "__Host-dukovo=$cookie" $B/api/1/session -H "Origin: $B"); echo change-after: $(curl -sk --max-time 10 -o /dev/null -w %{http_code} -X POST $B/api/1/lock -b "__Host-dukovo=$cookie" -H "Origin: $B" -H "X-Dukovo-CSRF: $csrf")'''
+expect = ["sign-out: 200", "read-after: 401", "change-after: 401"]
+
+[[step]]
+run = "admin token remove redteam-reader"
+expect = "is removed"
+
+[[step]]
+run = "user remove --delete-home --yes wc-plain"
+root = true
+expect = "wc-plain is removed"
+
+[[step]]
+run = "user remove --delete-home --yes wc-redteam"
+root = true
+expect = "wc-redteam is removed"

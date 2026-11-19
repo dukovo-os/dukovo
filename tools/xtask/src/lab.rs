@@ -53,7 +53,9 @@ use crate::account::{self, Account};
 use crate::image::{self, Overrides};
 use crate::process::{self, step};
 use crate::rootfs::Owned;
-use crate::{Args, Context as _, Ctx, Error, Result, VERSION, bail, baseline, bench, doctor, qemu};
+use crate::{
+    Args, Context as _, Ctx, Error, Result, VERSION, bail, baseline, bench, doctor, qemu, redteam,
+};
 
 /// The lab's account.
 pub const ACCOUNT: &str = "lab";
@@ -338,6 +340,7 @@ const VALUED: &[&str] = &[
     "--run-id",
     "--ob",
     "--browsers",
+    "--redteam",
     "--share",
 ];
 
@@ -360,6 +363,11 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     // it) on a freshly built image.
     if lab_command(&rest) == Some("attack") {
         rest = attack_to_run(&rest);
+    }
+    if lab_command(&rest) == Some("redteam-kit") {
+        let kit = redteam::kit(ctx)?;
+        println!("{}", ctx.display(&kit));
+        return Ok(());
     }
     if lab_command(&rest) == Some("coverage") {
         let check = match rest.iter().filter(|word| *word != "coverage").collect::<Vec<_>>()[..] {
@@ -428,6 +436,22 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
                     lab.arg("--browsers").arg(kit);
                 }
                 Err(why) => eprintln!("    note: the web console's tests will skip: {why}"),
+            }
+        }
+        // The red-team kit, with nmap, hydra, sqlmap, nuclei and ffuf, that
+        // the attack tests (`ob lab attack`) boot on the private segment;
+        // a kit that will not build only makes those tests skip.
+        if !rest.iter().any(|arg| arg == "--redteam") {
+            let kit = if no_build {
+                existing_redteam_kit(ctx)
+            } else {
+                redteam::kit(ctx).map_err(|e| e.to_string())
+            };
+            match kit {
+                Ok(kit) => {
+                    lab.arg("--redteam").arg(kit);
+                }
+                Err(why) => eprintln!("    note: the attack tests will skip: {why}"),
             }
         }
         // ob itself, whose disc-drive holds a test's music CD in a QEMU
@@ -802,6 +826,16 @@ fn existing_kit(ctx: &Ctx) -> std::result::Result<PathBuf, String> {
         Ok(dir)
     } else {
         Err("no Linux kit was built yet, and --no-build builds none".into())
+    }
+}
+
+/// The red-team kit an earlier `ob lab` built, for `--no-build`.
+fn existing_redteam_kit(ctx: &Ctx) -> std::result::Result<PathBuf, String> {
+    let dir = ctx.out.join("lab-redteam");
+    if dir.join(KIT_FILE).is_file() {
+        Ok(dir)
+    } else {
+        Err("no red-team kit was built yet, and --no-build builds none".into())
     }
 }
 
