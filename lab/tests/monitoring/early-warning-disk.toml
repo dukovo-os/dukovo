@@ -48,26 +48,35 @@ run = "alerts test"
 root = true
 expect = "email to ops@lab.test: sent"
 
-# A Btrfs needs 109 MiB at least. The stick is found by its size, which no
-# system disk has, and its name kept in the lab's home for the steps
-# below, which root runs.
+# A Btrfs needs 109 MiB at least. The stick's name is kept in the lab's
+# home for the steps below, which root runs. The Btrfs goes on a partition
+# of 200 MiB, so a big stick fills as fast as the small one QEMU has.
+# The disks there before the stick, so the stick is the one that is new
+# and a stick of any size does (the lab's real sticks are 64 GB).
+[[step]]
+run = "lsblk -dn -o NAME,TYPE | awk '$2 == \"disk\" { print $1 }' > ~/lab-disks-before && echo listed"
+expect = "listed"
 [[step]]
 usb = "plug"
 blank = "256M"
 [[step]]
 wait = "5s"
 [[step]]
-run = "lsblk -dn | awk '$2 == \"256M\" && $4 == \"disk\" { print $1 }' > ~/lab-alerts-stick && cat ~/lab-alerts-stick"
+run = "lsblk -dn -o NAME,TYPE | awk '$2 == \"disk\" { print $1 }' | grep -vxF -f ~/lab-disks-before > ~/lab-alerts-stick; cat ~/lab-alerts-stick"
 expect = "sd"
 [[step]]
-run = "sh -c 'mkfs-btrfs -f -L LABALERT /devices/$(cat /users/lab/lab-alerts-stick) && mkdir -p /volumes/lab-alerts && mount /devices/$(cat /users/lab/lab-alerts-stick) /volumes/lab-alerts'"
+run = '''sh -c 'printf "g\nn\n\n\n+200M\nw\n" | rdisk /devices/$(cat /users/lab/lab-alerts-stick)' '''
+root = true
+expect = ["Partition 1 is added", "The kernel has read it"]
+[[step]]
+run = "sh -c 'p=$(cat /users/lab/lab-alerts-stick)1; mkfs-btrfs -f -L LABALERT /devices/$p && mkdir -p /volumes/lab-alerts && mount /devices/$p /volumes/lab-alerts'"
 root = true
 expect = "LABALERT"
 [[step]]
 run = "findmnt /volumes/lab-alerts"
 expect = ["btrfs", "rw"]
 
-# Filled until the writes stop, the stick is full.
+# Filled until the writes stop, the partition is full.
 [[step]]
 run = "dd if=/dev/zero of=/volumes/lab-alerts/fill bs=1M"
 root = true

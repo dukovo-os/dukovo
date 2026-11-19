@@ -71,15 +71,20 @@ run = "backup list"
 root = true
 expect = ["lab-nas-chromium", "lab-nas-firefox", "lab-nas-webkit", "127.0.0.1"]
 
-# A USB stick of 3 GB with a partition of 1000 MB for each engine, the last
-# one the rest, each a Btrfs mounted where the page finds a disk.
+# A USB stick of 3 GB or more with a partition of 1000 MB for each engine,
+# the last one the rest, each a Btrfs mounted where the page finds a disk.
+# The stick is the disk that was not there before it was plugged in, so a
+# stick of any size does: the lab's sticks are 64 GB.
+[[step]]
+run = "lsblk -dn -o NAME,TYPE | awk '$2 == \"disk\" { print $1 }' > ~/lab-disks-before && echo listed"
+expect = "listed"
 [[step]]
 usb = "plug"
 blank = "3G"
 [[step]]
 wait = "5s"
 [[step]]
-run = "lsblk -dbn -o NAME,SIZE,TYPE | awk '$2 == \"3221225472\" && $3 == \"disk\" { print $1 }' > ~/lab-stick && cat ~/lab-stick"
+run = "lsblk -dn -o NAME,TYPE | awk '$2 == \"disk\" { print $1 }' | grep -vxF -f ~/lab-disks-before > ~/lab-stick; cat ~/lab-stick"
 expect = "sd"
 [[step]]
 run = '''sh -c 'printf "g\nn\n\n\n+1000M\nn\n\n\n+1000M\nn\n\n\n\nw\n" | rdisk /devices/$(cat /users/lab/lab-stick) || exit 1' '''
@@ -142,7 +147,7 @@ run = '''sh -c 'for e in chromium firefox webkit; do for p in /users /shared /sy
 root = true
 expect = "cleaned"
 [[step]]
-run = "sh -c 'for e in chromium firefox webkit; do umount /volumes/LABBACKUP-$e && rmdir /volumes/LABBACKUP-$e; done; rm -f /users/lab/lab-stick; echo unmounted'"
+run = "sh -c 'for e in chromium firefox webkit; do umount /volumes/LABBACKUP-$e && rmdir /volumes/LABBACKUP-$e; done; rm -f /users/lab/lab-stick /users/lab/lab-disks-before; echo unmounted'"
 root = true
 expect = "unmounted"
 [[step]]
