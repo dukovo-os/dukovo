@@ -11,3 +11,9 @@ name = "quick"
 title = "Quick check"
 about = "A few minutes on QEMU: boots, signs in over SSH, runs commands, pulls the cable"
 tests = ["boot/reaches-ready", "ssh/commands", "network/link-pull"]
+
+[[preset]]
+name = "journeys"
+title = "User journeys"
+about = "About forty minutes on QEMU with KVM: a new server's first weeks, a person's files kept safe through a power cut, an update and a bad one from the console, and a day of two people and an SSH session at once"
+tests = ["journeys"]

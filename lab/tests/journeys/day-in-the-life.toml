@@ -1,0 +1,116 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# A day of a server with people on it, in as many minutes as `minutes` says in
+# the facts the first step writes (20 here, so that a run is affordable; the
+# evening round sets a larger number there and a longer `time` above). An
+# administrator and a reader, each in a browser of their own and in two
+# different engines when the browser kit has two, go round the console's
+# pages, change a setting of their account and put it back, and every fourth
+# round the administrator tries a firewall rule and takes it back; the reader's
+# every try at a change is refused. Beside them an SSH session of the
+# administrator runs commands, writes files and reads them back, and uploads
+# and downloads a file by its sum, each round for the same minutes. Then the
+# machine is held to what it was: the memory in use and the files open have
+# not grown past what two people's day needs, the disk has used little, every
+# service that was up is up, and the log has no error and no panic since the
+# start.
+#
+# /tmp/lab-journey-day-in-the-life holds the SSH key, the facts the browser
+# script reads and what the SSH session found; the first step makes it and the
+# last takes it away. The baseline is taken before anyone signs in, so what
+# the first use of a page allocates counts against the day; the limits in
+# day-machine.sh are set with that in mind.
+about = "A day of two people at the console in two browsers and an SSH session at once for twenty minutes: pages read, settings changed and put back, a firewall try undone, files uploaded and downloaded by sum and commands run, then the machine's memory, open files, disk and services held to the start, and no error or panic in the log"
+time = "35m"
+fresh = true
+host_needs = ["curl", "ssh", "ssh-keygen", "scp", "sha256sum"]
+
+# The length of the day, in minutes, and the people in it. The browsers and the
+# SSH session both read the length from here.
+[[step]]
+host = '''sh -c 'rm -rf /tmp/lab-journey-day-in-the-life && mkdir -p /tmp/lab-journey-day-in-the-life && cd /tmp/lab-journey-day-in-the-life && ssh-keygen -q -t ed25519 -N "" -C journey-ada -f journey-ada && printf "minutes=20\nada=journey-ada\nada_password=lab-journey-password-1\nben=journey-ben\nben_password=lab-journey-password-2\n" > info && echo journey-ready' '''
+expect = "journey-ready"
+[[step]]
+host = "sh {here}/../services/copy-file.sh /tmp/lab-journey-day-in-the-life/journey-ada.pub {machine} {machine-port:22}"
+expect = "copied: journey-ada.pub"
+[[step]]
+run = '''sh -c 'echo lab-journey-password-1 | user add --admin journey-ada && echo lab-journey-password-2 | user add journey-ben && user set --console --yes journey-ben && user key add journey-ada "$(cat /users/lab/journey-ada.pub)"' '''
+root = true
+expect = ["Made journey-ada", "Made journey-ben"]
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+
+# The machine before the day: its memory, open files, disk and services.
+[[step]]
+host = "sh {here}/../services/copy-file.sh {here}/day-machine.sh {machine} {machine-port:22}"
+expect = "copied: day-machine.sh"
+[[step]]
+run = "sh /users/lab/day-machine.sh before"
+root = true
+expect = "before: "
+
+# The SSH session starts first and goes round for the same minutes as the
+# browsers; it is ready after its first round.
+[[step]]
+host = "sh {here}/day-ssh.sh work /tmp/lab-journey-day-in-the-life journey-ada {machine} {machine-port:22}"
+background = true
+ready = "ssh session ready"
+[[step]]
+browser = "day-in-the-life.mjs"
+engines = ["chromium"]
+port = 9090
+# The SSH session's rounds end with the day, and none went wrong.
+[[step]]
+host = "sh {here}/day-ssh.sh finish"
+expect = "failures: 0"
+expect_not = "failed in round"
+# A minute for what the closed browsers left to be given back.
+[[step]]
+wait = "60s"
+
+# The machine after the day.
+[[step]]
+run = "sh /users/lab/day-machine.sh after"
+root = true
+expect = [
+    "memory in use: ",
+    "open files: ",
+    "disk used: ",
+    "services down since the start: 0",
+    "errors in the log since the start: 0",
+    "panics in the log since the start: 0",
+]
+expect_not = "too much"
+# Every service is as it was, and the console answers.
+[[step]]
+host = "sh -c 'curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+run = "service --status-all"
+root = true
+expect_not = "[ ? ]"
+
+# The memory comes last, so that a day that leaks has every other check made
+# first: it grew by no more over the whole day than a day's use needs, and it
+# stopped growing in the second half of the SSH session's rounds, the way a
+# cache that is full does and a leak does not.
+[[step]]
+run = "sh /users/lab/day-machine.sh memory"
+root = true
+expect = ": kept"
+expect_not = "too much"
+[[step]]
+host = "sh {here}/day-ssh.sh trend"
+expect = ": kept"
+expect_not = "too much"
+
+# The machine as it was.
+[[step]]
+run = "sh -c 'rm -f /users/lab/journey-* /users/lab/day-machine.sh; for name in journey-ada journey-ben; do user remove --delete-home --yes $name || exit 1; done; echo cleaned'"
+root = true
+expect = ["journey-ben is removed", "cleaned"]
+[[step]]
+host = "sh -c 'rm -rf /tmp/lab-journey-day-in-the-life; echo gone'"
+expect = "gone"

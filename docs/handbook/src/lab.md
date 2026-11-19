@@ -146,8 +146,9 @@ their order and their titles on the runner page are in
 processes and monitors, disks and filesystems, network, SSH, services and
 logs, system tuning, time and date, monitoring, problem reports, accounts
 and elevate, commands, the console, the web console, installing, updates,
-startup trouble, stress and soak, security, performance against Linux, and
-file sharing. Add one there when a new kind of test needs it. This test
+startup trouble, stress and soak, security, performance against Linux,
+file sharing, and user journeys. Add one there when a new kind of test
+needs it. This test
 pulls the network cable:
 
 ```toml
@@ -180,6 +181,18 @@ with its lab tests ([Contributing](https://github.com/dukovo-os/dukovo/blob/main
 [test file reference](https://github.com/dukovo-os/lab/blob/main/docs/test-files.md)
 lists every key, and `./ob lab show <test>` shows which machines can run
 a test. A new file needs no other change.
+
+A user journey, in `lab/tests/journeys`, is one long test that follows
+what an owner does with a new server, on one install: the first sign-in,
+accounts and SSH keys, firewall rules, a website with a certificate,
+alerts, a restart, an update, backups and a power cut, and a day of two
+people and an SSH session at once. It chains what the single-feature
+tests check apart, so that a bug in the join shows: state one step leaves
+for the next, a restart in the middle, the console and SSH side by side.
+Each step checks what the person sees, in the web console's page, against
+the machine's own answer, and a journey reuses the web console tests'
+helpers (`lab/tests/web-console/console.mjs`) and the tests' scripts
+rather than copying them. The `journeys` preset runs all four.
 
 A test of what only some machines have, such as Azure's, Hyper-V's or
 VMware's devices, starts with a `run` step that checks the machine is of

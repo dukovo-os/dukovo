@@ -119,3 +119,8 @@ about = "Dukovo's time for each operation, held to Linux's on the same machine"
 name = "sharing"
 title = "File sharing"
 about = "SMB and NFS shares, both ways, with the lab PC's Samba and NFS server"
+
+[[category]]
+name = "journeys"
+title = "User journeys"
+about = "Long stories of an owner's life with a new server, told on one install: what each step leaves for the next, across reboots, power cuts, two people at once and the console beside SSH"
