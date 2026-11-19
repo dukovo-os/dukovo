@@ -183,7 +183,7 @@ async function stillStanding(t, page, before) {
  * the answer whatever headers it carries, where a script's request of
  * another origin would have its answer withheld.
  */
-async function fromAnotherOrigin(page) {
+async function fromAnotherOrigin(page, engine) {
   const { hostname, port } = new URL(page.url());
   if (hostname !== "127.0.0.1") {
     console.log(`${hostname} has no other name that this lab PC reaches it by: the page of another origin is not tried`);
@@ -198,15 +198,14 @@ async function fromAnotherOrigin(page) {
   await attacker.route(attackerPage, (route) =>
     route.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><title>Another site</title>" }),
   );
-  // A browser that asks before a page reaches the machine's own addresses
-  // (local network access, which a handed-in page counts as public) is
-  // told yes for this page: that check is the browser's own, and what is
-  // tested here is the console's refusal. An engine that has no such
-  // check has no such permission either, and refuses to be given it.
-  await page
-    .context()
-    .grantPermissions(["local-network-access"], { origin: attackerOrigin })
-    .catch(() => undefined);
+  // Chromium asks before a page reaches the machine's own addresses (local
+  // network access, which a handed-in page counts as public), and is told
+  // yes for this page: that check is the browser's own, and what is tested
+  // here is the console's refusal. The other engines have no such check;
+  // WebKit takes the permission's name and refuses every page opened after.
+  if (engine === "chromium") {
+    await page.context().grantPermissions(["local-network-access"], { origin: attackerOrigin });
+  }
   for (const [route, body] of [...SIGN_IN_ROUTES, ...SESSION_ROUTES]) {
     const url = `${originOf(page)}${pathOf(route)}`;
     await attacker.goto(attackerPage);
@@ -256,7 +255,7 @@ export default async function check(t) {
   await forge(page, SESSION_ROUTES, csrf, true);
   await forge(page, SIGN_IN_ROUTES, csrf, false);
   await stillStanding(t, page, null);
-  const another = await fromAnotherOrigin(page);
+  const another = await fromAnotherOrigin(page, t.engine);
   await stillStanding(t, page, null);
 
   // Unlocked: now a forged lock, extension or sign-out would show.
@@ -265,7 +264,7 @@ export default async function check(t) {
   const { unlock_seconds: seconds } = await unlocked.json();
   await forge(page, SESSION_ROUTES, csrf, true);
   await stillStanding(t, page, seconds);
-  await fromAnotherOrigin(page);
+  await fromAnotherOrigin(page, t.engine);
   await stillStanding(t, page, seconds);
 
   // Signed out: a forged sign-in with the right name and password signs
