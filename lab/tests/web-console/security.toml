@@ -40,6 +40,13 @@
 # has it, have SSH as the image has it, and remove the accounts. The script runs
 # each engine one after the other, so that an engine the lab PC lacks is skipped
 # within it and the steps after it still run.
+#
+# The console's actions (lab/actions.toml) that this test uses through its
+# page, by id: console.keep, console.undo, checks.run, security.sign-in,
+# security.sign-in-set, security.blocked, security.unblock,
+# security.never-block, security.never-block-remove, ssh.show, ssh.set,
+# ssh.on, ssh.off, ssh.keep, ssh.undo, private.show, private.serve,
+# private.add, private.remove.
 about = "The web console's Security page in each engine: the score and findings from dukovo-check, the sign-in rules from admin settings, SSH from ssh-server show with Keys only and a narrower list tried and kept or undone and the lab PC's own ssh listed, who may reach the console made public, kept and undone, private access set up with a device added, its file saved and the guard of the device a browser comes through, the addresses blocked after wrong sign-ins with Unblock and the never-block list, a reader, and the phone"
 time = "40m"
 host_needs = ["curl", "ssh", "ssh-keygen"]

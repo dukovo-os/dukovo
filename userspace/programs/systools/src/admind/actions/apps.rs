@@ -40,6 +40,10 @@ const TESTS: Tests = Tests {
     ansible: "web-console/ansible",
 };
 
+/// The tests of the actions that update an app and go back: the Updates
+/// page offers them, and its lab test is the browser's.
+const UPDATE_TESTS: Tests = Tests { browser: "web-console/updates", ..TESTS };
+
 /// The tests of the actions that read the catalogs and install from them,
 /// whose page is the one that adds an app.
 const CATALOG_TESTS: Tests = Tests { browser: "web-console/add-app", ..TESTS };
@@ -283,7 +287,7 @@ impl Action for Update {
     /// 1 is an update that stops to say what it asks for, which is the
     /// answer without `yes`.
     const ANSWERS: &'static [i32] = &[0, 1];
-    const TESTS: Tests = TESTS;
+    const TESTS: Tests = UPDATE_TESTS;
     const TITLE: &'static str = "Update an app";
     type Args = Updating;
 
@@ -334,7 +338,7 @@ impl Action for UpdateAll {
     const PATH: &'static str = "/api/1/apps/update";
     const RUNS: Runs = Runs::AsAdministrator;
     const LONG: bool = true;
-    const TESTS: Tests = TESTS;
+    const TESTS: Tests = UPDATE_TESTS;
     const TITLE: &'static str = "Update every app";
     type Args = Nothing;
 
@@ -525,7 +529,7 @@ impl Action for Rollback {
     const PATH: &'static str = "/api/1/apps/{id}/rollback";
     const RUNS: Runs = Runs::AsAdministrator;
     const LONG: bool = true;
-    const TESTS: Tests = TESTS;
+    const TESTS: Tests = UPDATE_TESTS;
     const TITLE: &'static str = "Go back to an app's version before";
     type Args = Named;
 

@@ -33,6 +33,12 @@
 # now made, and the places that were added and removed. The last steps put the
 # machine back: the places and their keys removed, the snapshots deleted, the
 # stick unplugged and the accounts removed, also of an engine that was skipped.
+#
+# The console's actions (lab/actions.toml) that this test uses through its
+# page, by id: snapshots.list, snapshots.browse, snapshots.browse-all,
+# snapshots.take, snapshots.restore, snapshots.restore-all, backups.list,
+# backups.ssh-key, backups.show, backups.run, backups.verify, backups.add,
+# backups.remove, backups.key, backups.restore.
 about = "The web console's Snapshots and backups page in each engine: a failed backup's banner and the Overview's need, What is protected, Take a snapshot now, Browse and Restore beside with the label in the browser's zone, an administrator's restore of another account's file, Add a backup place on a stick with the recovery key shown once and saved as a file, Back up now, Check now, Show it again, Restore files from a backup, Remove, a reader, and the phone"
 time = "45m"
 host_needs = ["curl"]

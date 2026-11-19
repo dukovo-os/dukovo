@@ -81,12 +81,12 @@ const READER = "wc-hw-reader";
 // The routes that lab/coverage.toml says this test covers, as the console's
 // table names them: the browser must have called each by the end.
 const ROUTES = {
-  show: "GET /api/1/hardware",
+  show: "GET /api/1/hardware", // hardware.show
   inventory: "GET /api/1/hardware/inventory",
   last: "GET /api/1/hardware/check",
   history: "GET /api/1/hardware/history",
   check: "POST /api/1/hardware/check",
-  power: "GET /api/1/power",
+  power: "GET /api/1/power", // power.status
   restart: "POST /api/1/power/restart",
   shutdown: "POST /api/1/power/shutdown",
   cancel: "POST /api/1/power/cancel",
@@ -94,7 +94,7 @@ const ROUTES = {
   highest: "GET /api/1/hardware/highest",
   devices: "GET /api/1/hardware/devices",
   storage: "GET /api/1/storage",
-  asked: "GET /api/1/hardware/memtest",
+  asked: "GET /api/1/hardware/memtest", // hardware.memtest-status
   ask: "POST /api/1/hardware/memtest/next-start",
   unask: "POST /api/1/hardware/memtest/cancel",
 };

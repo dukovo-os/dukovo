@@ -50,6 +50,10 @@
 # The resolver, the authorities and the accounts are put back by the last steps.
 # The accounts are two that this test makes and removes, an administrator and a
 # reader, so no script needs the lab's password.
+#
+# The console's actions (lab/actions.toml) that this test uses through its
+# page, by id: websites.list, websites.check, websites.plan, websites.add,
+# websites.https, websites.remove.
 about = "The web console's Websites pages in each engine: the list from website list, Add a website with what happens and Preview the files first, a static site with this machine's certificate, a PHP site whose certificate step fails and leaves it live on HTTP with Get the certificate after, a certificate that is here, HTTPS on and off, the order that certd is left to try again and Forget, the size and visits of each site before and after they are counted with the chart of the days, the daily count's service started as its timer starts it, a site's file changed by hand and kept, Check the sites with a broken file, Remove with and without the folder, a reader, and the phone"
 time = "45m"
 fresh = true

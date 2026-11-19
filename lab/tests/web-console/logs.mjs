@@ -80,8 +80,8 @@ const readerOf = (engine) => `wc-logs-reader-${engine}`;
 // The routes that lab/coverage.toml says this test covers, as the console's
 // table names them.
 const ROUTES = {
-  own: "GET /api/1/logs",
-  all: "GET /api/1/logs/all",
+  own: "GET /api/1/logs", // logs.read
+  all: "GET /api/1/logs/all", // logs.read-all
   follow: "GET /api/1/logs/follow",
   about: "GET /api/1/console/about",
   services: "GET /api/1/services",

@@ -23,6 +23,9 @@
 # booted has some history to compare with. The accounts are an
 # administrator and a reader for each engine, which this test makes and
 # removes, so no script needs the lab's password.
+#
+# The console's actions (lab/actions.toml) that this test uses through its
+# page, by id: metrics.around.
 about = "The web console's view from a chart in each engine: the CPU chart opened from the Overview, a moment chosen with the keys, a change made in the browser marked at its minute, the busiest service and what moved at a minute of a three-minute burn, the log of that minute against the API, a reader, and the phone"
 time = "40m"
 host_needs = ["curl"]

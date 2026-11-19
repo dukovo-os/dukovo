@@ -30,6 +30,9 @@
 # places and their keys removed, the stick unplugged and the accounts
 # removed. The script runs each engine one after the other, so that an engine
 # the lab PC lacks is skipped within it and the steps after it still run.
+#
+# The console's actions (lab/actions.toml) that this test uses through its
+# page, by id: move.find, move.plan, move.stage, move.cancel.
 about = "The web console's Move to new hardware page in each engine: the backups on a plugged-in disk, the key typed and as a file, a wrong key, what comes across and what differs, Stage it as a task, Cancel, a restore that is staged already, a console that is locked, a reader, and the phone"
 time = "30m"
 host_needs = ["curl"]

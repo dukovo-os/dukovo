@@ -57,6 +57,7 @@ import {
   leaveWelcome,
   look,
   lookAll,
+  mustBe,
   mustHaveCalled,
   openConsole,
   sessionOf,
@@ -105,8 +106,8 @@ const NO_HISTORY = "No history yet: the machine keeps it from its first 10 minut
 // service's name for {name}.
 const ROUTES = {
   list: "GET /api/1/services",
-  status: "GET /api/1/services/{name}",
-  explain: "GET /api/1/services/{name}/explain",
+  status: "GET /api/1/services/{name}", // service.status
+  explain: "GET /api/1/services/{name}/explain", // service.explain
   start: "POST /api/1/services/{name}/start",
   stop: "POST /api/1/services/{name}/stop",
   restart: "POST /api/1/services/{name}/restart",
@@ -115,7 +116,7 @@ const ROUTES = {
   logs: "GET /api/1/logs",
   logsAll: "GET /api/1/logs/all",
   usage: "GET /api/1/services/{name}/usage/{range}",
-  timers: "GET /api/1/timers",
+  timers: "GET /api/1/timers", // service.timers
 };
 
 const routeFor = (template, name) => template.replace("{name}", name);
@@ -805,6 +806,8 @@ async function timersLocked(t, page, host) {
   await t.see(card.getByRole("button", { name: "Unlock", exact: true }));
   ensure(watch.count() === 0, `the pages of the timers asked for ${ROUTES.timers} ${watch.count()} times while the console was locked`);
   watch.stop();
+  // service.timers is an administrator's read: the route refuses a locked one as the page does not ask.
+  mustBe(await fetchAsPage(page, "GET", pathOf(ROUTES.timers)), 403, "ADM-106", "a locked administrator's read of the scheduled tasks");
 }
 
 /** The words of a result that `last_result` stands for. */
@@ -971,6 +974,8 @@ async function reader(t) {
   ensure((await timerCard.getByRole("button").count()) === 0, "a reader's Timer card has a button");
   ensure(timers.count() === 0, `a reader's pages asked for ${ROUTES.timers} ${timers.count()} times`);
   timers.stop();
+  // service.timers: the route refuses a reader, as the pages tell it.
+  mustBe(await fetchAsPage(page, "GET", pathOf(ROUTES.timers)), 403, "ADM-122", "a reader's read of the scheduled tasks");
   await look(t, page, "services-timer-reader");
 
   mustHaveCalled(seen, [ROUTES.list, routeFor(ROUTES.status, SAFE), routeFor(ROUTES.status, TIMED), ROUTES.logs]);

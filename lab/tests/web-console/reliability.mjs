@@ -51,6 +51,7 @@ import {
   leaveWelcome,
   look,
   lookAll,
+  mustBe,
   mustHaveCalled,
   openConsole,
   postAsPage,
@@ -85,10 +86,10 @@ const folderOf = (t) => `/users/${ADMIN}/lab-settings-${t.engine}`;
 // table names them: the browser must have called each by the end.
 const ROUTES = {
   starts: "GET /api/1/starts",
-  failed: "GET /api/1/starts/failed",
+  failed: "GET /api/1/starts/failed", // reliability.failed
   start: "GET /api/1/starts/{start}",
-  dumps: "GET /api/1/dumps",
-  alerts: "GET /api/1/alerts/history",
+  dumps: "GET /api/1/dumps", // reliability.dumps
+  alerts: "GET /api/1/alerts/history", // reliability.alerts
   logsAll: "GET /api/1/logs/all",
   changes: "GET /api/1/changes",
   actions: "GET /api/1/actions",
@@ -104,6 +105,9 @@ const LOCKED_LINE = "Unlock to see errors, crashes and alerts.";
 const READER_LINE = "Administrators see errors, crashes and alerts.";
 const NO_TIMES = "No times are kept for this start.";
 const UNLOCK_FOR = "see errors, crashes and alerts";
+
+// The alert that reliability.toml raises and clears, so that the history the Alerts card reads has rows.
+const ALERT_TITLE = "Lab alert for the Reliability page";
 
 // The cards that only an administrator reads.
 const ADMIN_CARDS = ["events", "crashes", "alerts"];
@@ -256,6 +260,8 @@ async function lockedPage(t, page) {
   }
   ensure(watch.count() === 0, `the page asked for ${watch.count()} of the administrator's reads while the console was locked`);
   watch.stop();
+  // reliability.dumps and reliability.alerts: the routes refuse a locked administrator, which the page does not ask for.
+  for (const route of [ROUTES.dumps, ROUTES.alerts]) mustBe(await fetchAsPage(page, "GET", pathOf(route)), 403, "ADM-106", `a locked administrator's ${route}`);
   await lookAll(t, page, "reliability-locked");
 }
 
@@ -281,6 +287,13 @@ async function crashesAndAlerts(t, page) {
     const rows = await alerts.locator("tbody tr").count();
     ensure(rows === Math.min(20, kept), `the Alerts card shows ${rows} rows and the history has ${kept} lines`);
   }
+
+  // The alert that the machine raised and cleared before the page opened is in the history, and the card says each change.
+  const states = lines.filter((line) => line.alert?.title === ALERT_TITLE).map((line) => line.state);
+  ensure(states.includes("raised") && states.includes("cleared"), `${ROUTES.alerts} has the changes ${JSON.stringify(states)} of "${ALERT_TITLE}", not a raise and a clear`);
+  const mine = alerts.locator("tbody tr", { hasText: ALERT_TITLE });
+  await t.see(mine.filter({ hasText: "Raised" }).first());
+  await t.see(mine.filter({ hasText: "Cleared" }).first());
 }
 
 /** The records of today's errors in the whole log, as `GET /api/1/logs/all` gives them. */
@@ -605,6 +618,8 @@ async function reader(t) {
   await t.see(page.locator("#ov-health").getByText("The health score is for administrators.", { exact: true }));
   ensure(watch.count() === 0, `a reader's page asked for ${watch.count()} of the administrator's reads`);
   watch.stop();
+  // reliability.dumps and reliability.alerts: the routes refuse a reader, as the cards tell it.
+  for (const route of [ROUTES.dumps, ROUTES.alerts]) mustBe(await fetchAsPage(page, "GET", pathOf(route)), 403, "ADM-122", `a reader's ${route}`);
   await look(t, page, "reliability-reader");
 
   // The journal is every account's: a reader sees its rows and no script of them.

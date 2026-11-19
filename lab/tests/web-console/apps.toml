@@ -28,6 +28,10 @@
 # updating an app are tested with the Updates page. The accounts are two that
 # this test makes and removes, an administrator and a reader, so no script
 # needs the lab's password.
+#
+# The console's actions (lab/actions.toml) that this test uses through its
+# page, by id: apps.list, apps.show, apps.tonight, apps.tonight-all,
+# apps.not-tonight, apps.hold, apps.unhold, apps.remove.
 about = "The web console's Apps pages in each engine: the apps from what bundle list says, an app's facts and size from bundle info, Hold with its reason and Release the hold, Tonight and Not tonight where an app has an update, Remove asks to unlock, says what uses the app and asks for its name before the data goes, nginx removed with its data kept, an app that is not there, a reader, and the phone"
 time = "20m"
 host_needs = ["curl", "scp"]

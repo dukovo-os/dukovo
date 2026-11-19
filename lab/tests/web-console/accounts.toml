@@ -29,6 +29,13 @@
 # The last steps remove every account. The script runs each engine one after
 # the other, so that an engine the lab PC lacks is skipped within it and the
 # steps after it still run.
+#
+# The console's actions (lab/actions.toml) that this test uses through its
+# page, by id: accounts.list, accounts.list-all, accounts.last, accounts.show,
+# accounts.add, accounts.set, accounts.password, accounts.disable,
+# accounts.enable, accounts.remove, accounts.key-add, accounts.key-remove,
+# accounts.token-revoke, accounts.steps-reset, accounts.end, account.show,
+# account.name, account.password, account.key-add, account.key-remove.
 about = "The web console's Accounts page and Your account in each engine: the list against user list and lastlog, Add an account and its first sign-in, Can sign in to Dukovo Admin off, a new password, Disable and Enable, SSH keys and the only way in, Revoke, Remove second steps, the guards of the account in use, the sessions and terminals of an account ended by the person and by an administrator, a reader, and the phone"
 time = "30m"
 host_needs = ["curl"]

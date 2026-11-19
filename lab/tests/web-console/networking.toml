@@ -26,6 +26,10 @@
 # so that an engine the lab PC lacks is skipped within it and the steps after
 # it still run; it takes about 10 minutes in each, most of it the 5 minutes
 # that the change that cuts the console off is waited for.
+#
+# The console's actions (lab/actions.toml) that this test uses through its
+# page, by id: network.show, network.connections, network.set, network.keep,
+# network.undo.
 about = "The web console's Networking pages in each engine: the cards from what network show says, their traffic and connections, the editor's checks, a change tried and kept, one undone at once, one undone by Spark's timer, one that takes away the browser's own address and is undone within its window, a reader, and the phone"
 time = "40m"
 host_needs = ["curl"]

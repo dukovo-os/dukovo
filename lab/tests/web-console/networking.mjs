@@ -94,7 +94,7 @@ const READER = "wc-networking-reader";
 // table names them: the browser must have called each by the end, with the
 // card's name for {card} and `network` for {trial}.
 const ROUTES = {
-  show: "GET /api/1/network",
+  show: "GET /api/1/network", // network.show
   connections: "GET /api/1/network/connections",
   set: "POST /api/1/network/cards/{card}",
   keep: "POST /api/1/network/trial/keep",

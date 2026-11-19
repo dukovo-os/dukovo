@@ -29,6 +29,11 @@
 # administrators and a reader, so no script needs the lab's password. The script
 # runs each engine one after the other, so that an engine the lab PC lacks is
 # skipped within it and the steps after it still run.
+#
+# The console's actions (lab/actions.toml) that this test uses through its
+# page, by id: firewall.list, firewall.test, firewall.status,
+# firewall.dropped, firewall.add, firewall.replace, firewall.remove,
+# firewall.keep, firewall.undo.
 about = "The web console's Firewall page in each engine: the rules from what firewall list says, the test of a connection, a rule added, replaced and removed with a try that is kept or taken back, one undone by Spark's timer, a rule that would cut off the browser's own connection and is undone within its window, what was blocked, a reader, and the phone"
 time = "35m"
 host_needs = ["curl"]

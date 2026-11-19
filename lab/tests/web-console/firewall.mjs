@@ -94,7 +94,7 @@ const READER = "wc-firewall-reader";
 // table names them: the browser must have called each by the end, with
 // `firewall` for {trial}.
 const ROUTES = {
-  list: "GET /api/1/firewall",
+  list: "GET /api/1/firewall", // firewall.list
   test: "GET /api/1/firewall/test",
   status: "GET /api/1/firewall/status",
   dropped: "GET /api/1/firewall/dropped",

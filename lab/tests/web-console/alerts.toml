@@ -37,6 +37,11 @@
 # log, from /tmp/lab-alerts-hooks, which a step below writes. The accounts are
 # two that this test makes and removes, an administrator and a reader, so no
 # script needs the lab's password.
+#
+# The console's actions (lab/actions.toml) that this test uses through its
+# page, by id: alerts.list, alerts.channels, alerts.test, alerts.email,
+# alerts.email-remove, alerts.webhook-add, alerts.webhook-remove,
+# alerts.push-key, alerts.push-add, alerts.push-remove, alerts.channel-about.
 about = "The web console's Alerts page in each engine: what is active and recent, email and a webhook set up and tested against a receiver on the lab PC, what each is told of, the secrets kept out of the page, Get alerts in this browser up to the browser's answer, a subscription listed and turned off, the worker and the manifest, a reader, the phone's panel and the QR code for a phone"
 time = "45m"
 host_needs = ["python3", "openssl", "scp", "curl"]
