@@ -4,16 +4,21 @@
 about = "A swap area made on a stick turns on, shows in the swap list and in free, and turns off again"
 time = "5m"
 
+# The disks there before the stick, so the stick is the one that is new
+# and a stick of any size does (the lab's real sticks are 64 GB).
+[[step]]
+run = "lsblk -dn -o NAME,TYPE | awk '$2 == \"disk\" { print $1 }' > ~/lab-disks-before && echo listed"
+expect = "listed"
 [[step]]
 usb = "plug"
 blank = "64M"
 [[step]]
 wait = "5s"
-# Find the stick by its size, which no system disk has, and keep its name
+# Find the stick, the disk that is new, and keep its name
 # in the lab's home for the steps below, which root runs: each account has
 # a /tmp of its own. Nothing is formatted unless a stick was found.
 [[step]]
-run = "lsblk -dn | awk '$2 == \"64M\" && $4 == \"disk\" { print $1 }' > ~/lab-stick && cat ~/lab-stick"
+run = "lsblk -dn -o NAME,TYPE | awk '$2 == \"disk\" { print $1 }' | grep -vxF -f ~/lab-disks-before > ~/lab-stick; cat ~/lab-stick"
 expect = "sd"
 [[step]]
 run = "sh -c 'mkswap -L LABSWAP /devices/$(cat /users/lab/lab-stick)'"

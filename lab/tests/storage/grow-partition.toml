@@ -4,15 +4,20 @@
 about = "rdisk --grow grows a mounted Btrfs partition into the free space after it, as a cloud machine's first boot does, and device resize max grows the Btrfs over it; grown once, neither grows again, and fsck-btrfs finds the Btrfs sound"
 time = "5m"
 
+# The disks there before the stick, so the stick is the one that is new
+# and a stick of any size does (the lab's real sticks are 64 GB).
+[[step]]
+run = "lsblk -dn -o NAME,TYPE | awk '$2 == \"disk\" { print $1 }' > ~/lab-disks-before && echo listed"
+expect = "listed"
 [[step]]
 usb = "plug"
 blank = "512M"
 [[step]]
 wait = "5s"
-# Find the stick by its size, which no system disk has, and keep its name
+# Find the stick, the disk that is new, and keep its name
 # in the lab's home for the steps below, which root runs.
 [[step]]
-run = "lsblk -dn | awk '$2 == \"512M\" && $4 == \"disk\" { print $1 }' > ~/lab-stick && cat ~/lab-stick"
+run = "lsblk -dn -o NAME,TYPE | awk '$2 == \"disk\" { print $1 }' | grep -vxF -f ~/lab-disks-before > ~/lab-stick; cat ~/lab-stick"
 expect = "sd"
 # A GPT with one partition of 128 MiB, at the stick's start, and a Btrfs on
 # it, mounted: the rest of the stick is free.
@@ -50,3 +55,5 @@ root = true
 run = "sh -c 'fsck-btrfs /devices/$(cat /users/lab/lab-stick)1'"
 root = true
 expect = "no error found"
+[[step]]
+usb = "unplug"
