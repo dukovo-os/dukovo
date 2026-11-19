@@ -23,7 +23,8 @@ export const captionOf = (count) => `${counted(count, 'app')} in the catalogs`;
  * the search is cleared from the table. Gives `{element, input, setups,
  * catalogs, problem, say}`: `setups(list)` draws the cards of catalog-model's
  * `setupsOf`; `catalogs({rows, unread, empty, selected, busy, updates})`
- * draws the table of `rowsOf`, the banners of `unreadOf` (`updates` says
+ * draws the table of `rowsOf`, with the row of `selected`, the sheet shown
+ * as `{id, catalog}`, marked current, the banners of `unreadOf` (`updates` says
  * whether the Updates page is there to link to) and what `emptyOf` says when
  * there is no row; `problem(words)` says why the search was not sent; `say(words)`
  * is the line a screen reader hears when the table changed.
@@ -67,10 +68,22 @@ export function makeList({ type, clear }) {
   const bannerOf = (one, updates) => h('div', { class: 'banner warn', role: 'note' }, icon('warn'),
     h('div', {}, h('p', {}, one.words), one.network && updates && h('p', { class: 'small' }, h('a', { href: '/updates' }, 'Look at the connection on the Updates page'))));
 
-  /** One row of the table. */
-  const rowOf = (row, selected) => h('tr', { class: row.id === selected ? 'sel' : null },
+  /**
+   * The row of the sheet shown, given `selected`, `{id, catalog}` or null:
+   * an app two catalogs list has a row from each, and the current one is
+   * from the catalog the sheet was read from, or the first until it is read.
+   */
+  const currentOf = (rows, selected) => {
+    if (!selected) return -1;
+    const same = (row) => row.id === selected.id;
+    const from = rows.findIndex((row) => same(row) && row.catalog === selected.catalog);
+    return selected.catalog && from >= 0 ? from : rows.findIndex(same);
+  };
+
+  /** One row of the table; `current` when it is the row of the sheet shown. */
+  const rowOf = (row, current) => h('tr', { class: current ? 'sel' : null },
     h('td', { 'data-label': 'App' },
-      h('a', { class: 'add-who', href: row.href, 'aria-current': row.id === selected ? 'page' : null },
+      h('a', { class: 'add-who', href: row.href, 'aria-current': current ? 'page' : null },
         square(row, 'add-ic'), h('span', {}, h('b', {}, row.name), h('small', { class: 'mono' }, row.id)))),
     h('td', { 'data-label': 'Version' }, row.version),
     h('td', { 'data-label': 'Catalog' }, row.catalog),
@@ -97,6 +110,7 @@ export function makeList({ type, clear }) {
     const {
       rows, unread, empty, selected, busy, updates,
     } = data;
+    const current = currentOf(rows, selected);
     fill(catalogsBox, h('section', { class: 'card', 'aria-labelledby': 'add-cat-h', 'aria-busy': busy ? 'true' : null },
       h('h2', { id: 'add-cat-h' }, 'Apps in the catalogs'),
       unread.map((one) => bannerOf(one, updates)),
@@ -106,7 +120,7 @@ export function makeList({ type, clear }) {
           h('table', { class: 'tbl stack' },
             h('caption', { class: 'sr-only' }, captionOf(rows.length)),
             h('thead', {}, h('tr', {}, ['App', 'Version', 'Catalog', 'Flaws', 'Installed'].map((name) => h('th', { scope: 'col' }, name)))),
-            h('tbody', {}, rows.map((row) => rowOf(row, selected)))))));
+            h('tbody', {}, rows.map((row, at) => rowOf(row, at === current)))))));
   }
 
   /** Says why the search was not sent, under the field; empty words clear it. */

@@ -41,6 +41,8 @@ export async function show(view) {
   let timer = null;
   let failed = false;
   let headed = false;
+  /** The catalog the sheet shown was read from, once it is read. */
+  let sheetCatalog = null;
 
   /** Draws the head: the page's name under its crumb, and the two views of the apps with how many are installed. */
   function drawHead() {
@@ -79,6 +81,7 @@ export async function show(view) {
   // The sheet is read only for one that is asked for; an address that cannot be an app's ID has none.
   const panel = wanted ? (await import('./sheet.js')).makePanel(view, {
     id: wanted, typed, admin, apps: () => apps, installed: () => { read(); search(); },
+    readFrom(catalog) { sheetCatalog = catalog; draw(); },
   }) : null;
   const missing = wanted === null
     ? h('section', { class: 'card add-panel', role: 'status' },
@@ -97,7 +100,7 @@ export async function show(view) {
       rows,
       unread: unreadOf(answer),
       empty: answer === null ? (failed ? FAILED : LOADING) : emptyOf(answer, found.words),
-      selected: wanted || null,
+      selected: wanted ? { id: wanted, catalog: sheetCatalog } : null,
       busy: searching,
       updates,
     });
