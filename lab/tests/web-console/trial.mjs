@@ -203,6 +203,10 @@ export async function sendsNothing(page, control, route) {
     if (new URL(request.url()).pathname === route) sent += 1;
   };
   page.on("request", count);
+  // Brought whole into the middle of the view first: a press that skips
+  // Playwright's checks lands where the control's middle is, and a control
+  // left half under the view's edge is not pressed at all.
+  await control.evaluate((element) => element.scrollIntoView({ block: "center" }));
   // Pressed as a person may: Playwright would wait for it to come on.
   await control.click({ force: true });
   await sleep(1200);

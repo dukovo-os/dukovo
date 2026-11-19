@@ -421,8 +421,12 @@ async function draftAgainAsks(t, page, calls, crash, first) {
 
   await page.getByRole("button", { name: "Draft again", exact: true }).first().click();
   await t.see(dialog);
+  // The draft that is there stays shown until the new one comes, so the
+  // request is waited for, not the text.
+  const asked = page.waitForRequest((request) => request.method() === "POST" && DRAFT.test(new URL(request.url()).pathname), { timeout: 30_000 });
   await dialog.getByRole("button", { name: "Draft again", exact: true }).click();
   await t.gone(dialog);
+  await asked;
   await draftShown(t, page);
   ensure(draftsOf(calls) === drafts + 1, "Draft again did not ask for a new draft");
   ensure((await linesOf(page)).length === first.length, "the new draft is not as long as the first, with the cut line back");

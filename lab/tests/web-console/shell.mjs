@@ -47,6 +47,7 @@ import {
   openConsole,
   policyStopped,
   press,
+  screenshot,
   sessionOf,
   sidewaysScroll,
   signIn,
@@ -388,11 +389,11 @@ async function largeText(t, page) {
   await press(page, choice(display, "150%"), "/api/1/account/preferences");
   ensure((await rootClasses(page)).includes("t150"), "the text is not 150% after the choice");
   ensure((await sidewaysScroll(page)) === 0, `at 150% the account page scrolls ${await sidewaysScroll(page)} px sideways`);
-  await t.screenshot(page, "account-text-150");
+  await screenshot(t, page, "account-text-150");
   await page.getByRole("link", { name: "Dukovo Admin, Overview" }).click();
   await seeFocusOnHeading(page, "Overview");
   ensure((await sidewaysScroll(page)) === 0, `at 150% the Overview scrolls ${await sidewaysScroll(page)} px sideways`);
-  await t.screenshot(page, "overview-text-150");
+  await screenshot(t, page, "overview-text-150");
   await accountItem(await openAccountMenu(t, page), "Your account").click();
   await seeFocusOnHeading(page, "Your account");
   await press(page, choice(display, "100%"), "/api/1/account/preferences");
@@ -408,7 +409,7 @@ async function largeTextOnPhone(t, page, name) {
   const bar = await page.getByRole("navigation", { name: "Pages" }).boundingBox();
   const size = page.viewportSize();
   ensure(bar !== null && bar.x >= 0 && bar.x + bar.width <= size.width + 1, "at 150% the tab bar is wider than the phone");
-  await t.screenshot(page, "phone-text-150");
+  await screenshot(t, page, "phone-text-150");
 }
 
 /** The header's states while the console is locked and unlocked, and its warning two minutes before the end. */

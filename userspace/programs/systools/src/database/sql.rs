@@ -407,10 +407,16 @@ pub const LIST_ACCESS: &str = "SELECT line_number, type, \
      FROM pg_catalog.pg_hba_file_rules ORDER BY line_number";
 
 /// What each setting `allow` and `deny` change is: set in a file, where,
-/// and as what.
+/// and as what. A line the server has not taken because it takes it only
+/// as it starts, as `listen_addresses`, is what the files say all the
+/// same: `pg_file_settings` gives it with an error that says so, and
+/// leaving it out would read the server's default in its place, so that a
+/// change written but not yet taken would not be seen to need a restart.
 pub const FILE_SETTINGS: &str = "SELECT name, setting, sourcefile FROM pg_catalog.pg_file_settings \
      WHERE name IN ('listen_addresses', 'ssl', 'ssl_cert_file', 'ssl_key_file') \
-     AND error IS NULL ORDER BY seqno";
+     AND (error IS NULL OR error = 'setting could not be applied' \
+     OR error = 'parameter \"' || name || '\" cannot be changed without restarting the server') \
+     ORDER BY seqno";
 
 /// What each setting `allow` and `deny` change is when no file sets it,
 /// and what it is now.
@@ -605,6 +611,20 @@ mod tests {
     fn the_comments_database_writes_start_the_same_way() {
         assert!(ROLE_COMMENT.starts_with(COMMENT));
         assert!(SITE_COMMENT.starts_with(COMMENT));
+    }
+
+    #[test]
+    fn the_files_settings_keep_a_line_that_waits_for_a_restart() {
+        // PostgreSQL gives a line it takes only as it starts, written while
+        // it runs, with one of these errors. Without the line, `allow` read
+        // the default `localhost` for `listen_addresses` once `deny` had
+        // reset it and a second `allow` set it again, saw no restart to make,
+        // and found the server still on localhost (DB-104).
+        assert!(FILE_SETTINGS.contains("error IS NULL"));
+        assert!(FILE_SETTINGS.contains("error = 'setting could not be applied'"));
+        assert!(FILE_SETTINGS.contains(
+            "error = 'parameter \"' || name || '\" cannot be changed without restarting the server'"
+        ));
     }
 
     #[test]
