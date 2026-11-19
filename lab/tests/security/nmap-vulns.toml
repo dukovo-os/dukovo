@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# nmap's own vulnerability, TLS, SSH-algorithm and HTTP-header scripts
+# against the two ports the machine answers on, from the red-team kit.
+about = "nmap's vuln, ssl-enum-ciphers, ssh2-enum-algos and http-security-headers scripts find no VULNERABLE finding, TLS 1.2 or better alone with no weak cipher, and no weak SSH algorithm"
+time = "20m"
+fresh = true
+attacker = "linux"
+
+# The Vulners-family and CVE-checking scripts nmap-scripts carries,
+# against both open ports: none of them reports VULNERABLE.
+[[step]]
+attack = "nmap --script vuln -p22,9090 {target}"
+expect_not = "VULNERABLE"
+
+# The console's TLS: 1.2 or better alone, so none of the three weaker
+# protocols nmap's own script names ever shows in its table.
+[[step]]
+attack = "nmap --script ssl-enum-ciphers -p9090 {target}"
+expect_not = ["SSLv3", "TLSv1.0", "TLSv1.1"]
+
+# sshd's own algorithms: none of the ones port-scan.toml's TLS check
+# leaves to this script, the weak ciphers, MACs and key exchanges SSH
+# still lists for older peers.
+[[step]]
+attack = "nmap --script ssh2-enum-algos -p22 {target}"
+expect_not = ["arcfour", "cbc", "hmac-md5", "hmac-sha1", "diffie-hellman-group1", "diffie-hellman-group14-sha1"]
+
+# The console's HTTP response headers, held to what it promises (ADR 0514,
+# admind's guard.rs): a content security policy of its own files with no
+# framing, nosniff, no referrer, the same-origin policies, a permissions
+# policy that keeps the camera, microphone and location off, and no Server
+# header. Strict-Transport-Security is sent only while admind serves an
+# authority's certificate, which a machine's own is not.
+[[step]]
+attack = "curl -sk -D - -o /dev/null --max-time 10 https://{target}:9090/api/1/health"
+expect = [
+    "default-src 'self'",
+    "script-src 'self'",
+    "frame-ancestors 'none'",
+    "object-src 'none'",
+    "x-content-type-options: nosniff",
+    "referrer-policy: no-referrer",
+    "cross-origin-opener-policy: same-origin",
+    "cross-origin-embedder-policy: require-corp",
+    "cross-origin-resource-policy: same-origin",
+    "permissions-policy: camera=(), microphone=(), geolocation=()",
+]
+expect_not = ["server:", "x-powered-by", "unsafe-inline", "unsafe-eval", "strict-transport-security"]
+
+# nmap's own script lists the headers it finds missing, for the record; the
+# step passes when it runs, and the list is held to the promise above.
+[[step]]
+attack = "nmap --script http-security-headers -p9090 {target}"

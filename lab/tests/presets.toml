@@ -17,3 +17,16 @@ name = "journeys"
 title = "User journeys"
 about = "About forty minutes on QEMU with KVM: a new server's first weeks, a person's files kept safe through a power cut, an update and a bad one from the console, and a day of two people and an SSH session at once"
 tests = ["journeys"]
+
+[[preset]]
+name = "redteam"
+title = "Red team"
+about = "The security range's own attacker, the red-team kit, probing the machine: a port scan, nmap's vulnerability and crypto scripts, password guessing against SSH and the console, nuclei, sqlmap and ffuf against the console's API, and a connection flood with slowloris"
+tests = [
+    "security/attacker-stays-in",
+    "security/port-scan",
+    "security/nmap-vulns",
+    "security/password-attacks",
+    "security/web-attacks",
+    "security/flood",
+]

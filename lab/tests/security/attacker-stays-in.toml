@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The attacker's own sandbox, not the machine's firewall: the private
+# segment is the one network the attacker has, so it must reach the
+# machine under test and nothing past it, whichever machine stands in as
+# the attacker. No `attacker = "linux"` here, so this holds for the lab's
+# own Dukovo attacker and for the red-team kit alike.
+about = "The attacker reaches the machine on the private segment; the lab PC's own forwarded SSH, the open internet and an ordinary home router's address are all unreachable from there"
+time = "5m"
+fresh = true
+
+# The one thing the attacker's network is for.
+[[step]]
+attack = "nc -z -w3 {target} 22"
+
+# The lab PC's own address, as the attacker's first NIC would reach it
+# over QEMU's user networking: not on the private segment at all, and
+# `restrict=on` keeps that first NIC from the real network besides.
+[[step]]
+attack = "nc -z -w3 10.0.2.2 22"
+exit = 1
+
+# The open internet.
+[[step]]
+attack = "nc -z -w3 1.1.1.1 443"
+exit = 1
+
+# A typical home or office router: stands for any address that is
+# neither the machine under test nor the lab's own.
+[[step]]
+attack = "nc -z -w3 192.168.1.1 80"
+exit = 1

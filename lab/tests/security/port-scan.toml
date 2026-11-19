@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# nmap's own scan of every TCP port and the UDP ports a scanner tries
+# first, from the red-team kit (the raw sockets a SYN scan needs take a
+# kit whose only account is root, which the Linux attacker's is and the
+# lab's own Dukovo attacker's is not). security/open-ports already checks
+# the firewall's own table port by port with nc; this is the same claim
+# from an actual scanner, which also reads the banner nmap's -sV prints.
+about = "nmap's SYN scan of every TCP port, and of the UDP ports a scanner tries first, finds open only the ports security/open-ports allows (22 and 9090), and their version banners name nothing beyond SSH and the console"
+time = "20m"
+fresh = true
+attacker = "linux"
+
+# Every TCP port, open or not: the grepable line for each open one, port
+# and protocol alone, sorted, is compared whole rather than searched for a
+# substring, so a port nmap finds beyond 22 and 9090 fails the test
+# instead of hiding beside the two expected lines.
+[[step]]
+attack = "sh -c 'nmap -sS -p- -T4 --open -oG - {target} | grep -o \"[0-9]*/open/tcp\" | sort -n | tr \"\\n\" \" \"'"
+expect = "22/open/tcp 9090/open/tcp "
+
+# The UDP ports a scanner tries first. discoverd answers mDNS on 5353
+# (ADR 0338), so that port may be open and no other: the open ones other
+# than it are listed, and none must be. UDP answers are rate limited, so
+# this scan takes a while.
+[[step]]
+attack = "sh -c 'others=$(nmap -sU --top-ports 50 -T4 -oG - {target} | grep -o \"[0-9]*/open/udp\" | grep -v \"^5353/\" | tr \"\\n\" \" \"); echo \"udp-open-besides-mdns:[$others]\"'"
+expect = "udp-open-besides-mdns:[]"
+
+# Version detection on the two open ports: SSH and the console's TLS, and
+# nothing that names the distribution or an unrelated package.
+[[step]]
+attack = "nmap -sV -p22,9090 {target}"
+expect = ["22/tcp", "ssh", "9090/tcp"]
+expect_not = ["Ubuntu", "Debian", "Alpine", "nginx", "Apache", "lighttpd"]
