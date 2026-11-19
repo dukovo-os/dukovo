@@ -31,7 +31,7 @@ const LABEL: &str = "BUNDLES";
 const VOLUME: &str = "/volumes/vdb";
 
 /// PostgreSQL's bundle file.
-const FILE: &str = "org.postgresql.postgresql-19.0-rc.2.dkv";
+const FILE: &str = "org.postgresql.postgresql-19.0.dkv";
 
 /// The steps' script, by its path on the disk.
 const SCRIPT: &str = "/volumes/vdb/postgresql.sh";

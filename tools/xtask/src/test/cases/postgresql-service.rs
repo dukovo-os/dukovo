@@ -41,7 +41,7 @@ const LABEL: &str = "BUNDLES";
 const VOLUME: &str = "/volumes/vdb";
 
 /// PostgreSQL's bundle file.
-const POSTGRESQL_FILE: &str = "org.postgresql.postgresql-19.0-rc.2.dkv";
+const POSTGRESQL_FILE: &str = "org.postgresql.postgresql-19.0.dkv";
 
 /// PHP's bundle file.
 const PHP_FILE: &str = "net.php.php-8.5.12.dkv";
