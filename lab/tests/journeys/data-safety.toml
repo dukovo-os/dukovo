@@ -210,7 +210,7 @@ expect = "same-backups"
 [[step]]
 run = "backup list"
 root = true
-expect = ["shelf", "stick"]
+expect = ["shelf", "stick", "failed: it was cut off"]
 [[step]]
 run = "backup verify --restore shelf"
 root = true

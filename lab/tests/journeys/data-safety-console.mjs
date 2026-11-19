@@ -31,7 +31,9 @@ async function administrator(t, info) {
   ensure(shelf !== undefined && stick !== undefined, `the machine has the places ${places.map((place) => place.name).join(", ")}, not shelf and stick`);
   ensure(shelf.running === false, "the machine says a backup to shelf is running after the cord was pulled");
   ensure(shelf.state.done_ms !== null, "the machine has no good backup to shelf, and the earlier one was whole");
-  ensure(!shelf.state.failed, `the machine says the last backup to shelf failed: ${shelf.state.failed}`);
+  // The round the cord cut off is a failure, and says so: the last good
+  // backup is still the earlier, whole one.
+  ensure(typeof shelf.state.failed === "string" && /cut off/.test(shelf.state.failed), `the machine does not say the last backup to shelf was cut off: ${JSON.stringify(shelf.state.failed)}`);
   ensure(shelf.state.tried_ms >= shelf.state.done_ms, "the machine's last try at shelf is older than its last good backup");
   ensure(stick.plugged_in === false, `the machine says the stick is plugged in after it was taken away: ${JSON.stringify(stick.plugged_in)}`);
 
@@ -45,6 +47,7 @@ async function administrator(t, info) {
   const words = await wordsOf(page.locator("main"));
   console.log(`Snapshots and backups says: ${words.slice(0, 1500)}`);
   ensure(!/Backing up|Running now/i.test(words), `the page says a backup runs: ${words}`);
+  ensure(/cut off/i.test(words), `the page does not say the backup to shelf was cut off: ${words}`);
   await lookAll(t, page, "journey-backups-after-cut");
   await signOut(t, page);
   await page.context().close();
