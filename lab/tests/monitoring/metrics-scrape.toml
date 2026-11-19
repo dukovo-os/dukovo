@@ -5,8 +5,8 @@
 # promtool (metrics-scrape.sh beside this file) and the machine's own free,
 # df and ps (metrics-compare.sh): the metrics command shows the latest
 # values and the history, the endpoint answers the lab PC and nobody else,
-# promtool reads its scrape, and what it says of memory, the root
-# filesystem, metricsd's own memory and the clock is what free, df, ps and
+# promtool reads its scrape, and what it says of memory, the system
+# volume, metricsd's own memory and the clock is what free, df, ps and
 # date say. The machine's settings are put back at the end.
 about = "metricsd keeps the machine's history that metrics shows, and its Prometheus endpoint answers only the allowed addresses with a scrape promtool reads and free, df and ps agree with (ADR 0484)"
 time = "6m"
@@ -87,8 +87,8 @@ root = true
 expect = [
     "ok: memory total is free's",
     "ok: memory available is free's",
-    "ok: the root's size is df's",
-    "ok: the root's free space is df's",
+    "ok: the system volume's size is df's",
+    "ok: the system volume's free space is df's",
     "ok: metricsd's memory is ps's",
     "ok: the time is date's",
     "ok: it booted before now",
