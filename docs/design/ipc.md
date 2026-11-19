@@ -497,7 +497,10 @@ the host only ever adds time, and rarely to the same row in every run.
 Linux in the virtual machine (ADR 0107); while a row is over, it boots
 both systems in turn again, up to six more times, each side keeping its
 fastest run, so the noise of a run is set aside and a real difference
-stays. CI's `bench` job runs
+stays. A host can slow one side of a row in every run on one machine,
+so in CI a gate over only by a little, within 1.10 times Linux's time
+on every row over, is run again on another runner, whose verdict counts
+(ADR 0559). CI's `bench` job runs
 it on every pull request and every merge to main and shows the report in
 the job's summary, with the numbers as an artifact (`results.json`).
 Without KVM nothing is comparable: the Linux virtual machine does not
