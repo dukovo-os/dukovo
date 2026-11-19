@@ -3,6 +3,9 @@
 
 about = "Twenty minutes of programs starting and ending, one after another: the free memory at the end is what it was at the start"
 time = "40m"
+# Its loop prints nothing until the 20 minutes are up, and the console
+# is quiet while it runs: that silence is the soak, not a hang.
+stall = "off"
 
 # Free memory before and after, in KiB, with programs run back to back
 # between; a twentieth lost is a leak worth a look.
