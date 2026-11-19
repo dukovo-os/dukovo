@@ -395,9 +395,18 @@ export const originOf = (page) => new URL(page.url()).origin;
  * The file on the lab PC in which a test's host step leaves what its browser
  * script reads, for the machine whose console `page` shows. The lab runs a
  * test on each of its machines at once, so each machine has its own:
- * `/tmp/NAME-{machine}-{machine-port:9090}` in the test's steps.
+ * `/tmp/NAME-{machine}-{machine-port:9090}` in the test's steps. The lab
+ * names the machine that way in `DUKOVO_LAB_MACHINE` (`host:port`), which
+ * the page's address is not when the browser opens a real machine through
+ * a forward on the lab PC's loopback; without it the page's address is the
+ * machine's.
  */
 export const labNote = (name, page) => {
+  const machine = process.env.DUKOVO_LAB_MACHINE;
+  if (machine) {
+    const at = machine.lastIndexOf(":");
+    return `/tmp/${name}-${machine.slice(0, at)}-${machine.slice(at + 1)}`;
+  }
   const { hostname, port } = new URL(page.url());
   return `/tmp/${name}-${hostname}-${port || "443"}`;
 };
