@@ -1735,7 +1735,7 @@ _target/userspace/_).
 	*--lab-password* _file_
 		The lab's password, as *image --lab* takes it.
 
-*bench* [*--gate*] [*--linux-kernel* _file_] [*--runs* _n_] [*--no-linux*] [*--instructions*] [*--shell*] [*--scaling*] [*--from* _file_] [*--summary* _file_] [*--debug* | *--release*]
+*bench* [*--gate* [*--defer-close*]] [*--linux-kernel* _file_] [*--runs* _n_] [*--no-linux*] [*--instructions*] [*--shell*] [*--scaling*] [*--from* _file_] [*--summary* _file_] [*--debug* | *--release*]
 	Measure what system calls, IPC round trips, context switches, fresh
 	pages, TLB shootdowns, memory copies, files and POSIX calls cost on
 	Radix, next to Linux.
@@ -1795,6 +1795,16 @@ _target/userspace/_).
 		the performance gate of the plan. While an operation is over,
 		measure Radix and the Linux virtual machine in turn again, up to
 		six more times, each operation keeping its fastest run.
+
+	*--defer-close*
+		With *--gate*: when every operation still over the gate is within
+		1.10 times Linux's time, name them in _out/bench/close.txt_ and
+		pass. CI then runs *ob bench --gate* again on another runner, and
+		that run's verdict is the gate's: a host that slows one side of
+		an operation in every run on one machine cannot fail a pull
+		request, and a loss of a few percent, which is on every machine,
+		still does. An operation further over, or not measured, fails at
+		once.
 
 	*--linux-kernel* _file_
 		The Linux kernel to boot instead of the baseline. Without it,

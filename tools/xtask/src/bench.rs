@@ -24,7 +24,11 @@
 //! fails if Radix is slower than Linux in the virtual machine at any
 //! operation ([`GATE_RATIO`], parity): the performance gate of the plan.
 //! While an operation is over it, both systems are measured again, up to
-//! [`MORE_RUNS`] more times (ADR 0107).
+//! [`MORE_RUNS`] more times (ADR 0107). With `--defer-close` too, a gate
+//! that fails only at rows close to parity ([`CLOSE_RATIO`]) names them
+//! in `out/bench/close.txt` ([`CLOSE_LIST`]) and passes, for CI to run the
+//! whole gate again on another runner, whose verdict is the gate's (ADR
+//! 0559).
 //!
 //! With `--instructions` it boots Radix under QEMU's instruction counting
 //! instead, where every instruction takes one nanosecond of the guest's
@@ -115,6 +119,22 @@ pub(crate) const RUNS: u32 = 3;
 /// slowed is set aside on whichever side it fell, while what the kernel
 /// costs is in every run, so a real difference stays (ADR 0107).
 pub const MORE_RUNS: u32 = 6;
+
+/// The most time Radix may take for an operation, as a share of Linux's,
+/// for a row over the gate to count as close to it, under
+/// `--defer-close`. A host that slows one side's every run on a machine,
+/// as a cross-CPU wake-up on some Intel runners does, keeps a row a few
+/// percent over in all of [`RUNS`] and [`MORE_RUNS`], so more runs on the
+/// same machine do not help, and another machine is the measurement left
+/// (ADR 0559). Beyond this the loss is too large to be such a host's, and
+/// the gate fails at once. The bar is still [`GATE_RATIO`]: a close row
+/// passes only when the other runner measures it at parity or under.
+pub const CLOSE_RATIO: f64 = 1.10;
+
+/// The file in `out/bench/` where `--defer-close` names the close rows,
+/// one a line, when they are the only ones over the gate; CI runs the
+/// gate again on another runner when it is there.
+pub const CLOSE_LIST: &str = "close.txt";
 
 /// How long the benchmark boot may take: minutes under KVM, about three
 /// without it.
@@ -491,6 +511,7 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     let linux = !args.flag("--no-linux");
     let instructions = args.flag("--instructions");
     let gate = args.flag("--gate");
+    let defer_close = args.flag("--defer-close");
     let runs = match args.value("--runs")? {
         Some(value) => value.parse::<u32>().ok().filter(|&runs| runs > 0).ok_or_else(|| {
             crate::Error::new(format!("--runs takes a number of runs, not `{value}`"))
@@ -505,6 +526,12 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     let scaling = args.flag("--scaling");
     let profile = args.profile(&ctx.config)?;
     args.finish()?;
+    if defer_close && (!gate || instructions || shell || scaling || from.is_some()) {
+        crate::bail!(
+            "--defer-close hands a close timing gate on to another runner, so it takes --gate \
+             and none of --instructions, --shell, --scaling and --from"
+        );
+    }
     if shell {
         return crate::shellbench::command(ctx, summary.as_deref());
     }
@@ -548,6 +575,8 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         Built { kernel: kernel::build(ctx, profile)?, programs: userspace::build(ctx, profile)? };
     let dir = ctx.out.join("bench");
     process::create_dir(&dir)?;
+    let close_list = dir.join(CLOSE_LIST);
+    let _ = std::fs::remove_file(&close_list);
     let image = test::build_test_image(ctx, &built, &dir, TestImage::Plain, false)?;
     let btrfs = btrfs_disk(ctx, &dir)?;
     if instructions {
@@ -649,7 +678,7 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
             step(&format!(
                 "Over the gate after {} runs: {}. Measuring both again",
                 numbers.runs,
-                over.join("; ")
+                listed(&over)
             ));
             let of = format!(", run {} of at most {}", numbers.runs + 1, runs + MORE_RUNS);
             measure(&mut numbers, &of)?;
@@ -671,6 +700,9 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     eprintln!("\n{report}");
     step(&format!("Benchmark report in {} and {}", ctx.display(&markdown), ctx.display(&json)));
     if gate {
+        if defer_close && hand_on_close(ctx, &numbers, &close_list)? {
+            return Ok(());
+        }
         check_gate(&numbers)?;
         step(
             "Performance gate passed: Radix is as fast as Linux in the same virtual machine, \
@@ -833,17 +865,73 @@ fn ratio(numbers: &Numbers, row: &Row) -> Option<f64> {
     (theirs > 0.0).then(|| ours / theirs)
 }
 
-/// The rows over the gate, each with its ratio (or that it is missing).
-fn over_gate(numbers: &Numbers) -> Vec<String> {
-    let mut over = Vec::new();
-    for row in ROWS.iter().filter(|row| row.linux.is_some() && row.gated()) {
-        match ratio(numbers, row) {
-            Some(ratio) if ratio <= GATE_RATIO => {}
-            Some(ratio) => over.push(format!("{} ({} times Linux)", row.what, shown(ratio))),
-            None => over.push(format!("{} (not measured)", row.what)),
+/// A row over the gate.
+struct Over {
+    what: &'static str,
+    /// Radix's time as a share of Linux's, or `None` when a side has no
+    /// number for it.
+    ratio: Option<f64>,
+}
+
+impl Over {
+    /// Whether the row is close enough to parity ([`CLOSE_RATIO`]) for the
+    /// gate to be run again on another runner; a row not measured never is.
+    fn close(&self) -> bool {
+        self.ratio.is_some_and(|ratio| ratio <= CLOSE_RATIO)
+    }
+}
+
+impl std::fmt::Display for Over {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.ratio {
+            Some(ratio) => write!(f, "{} ({} times Linux)", self.what, shown(ratio)),
+            None => write!(f, "{} (not measured)", self.what),
         }
     }
-    over
+}
+
+/// The rows over the gate, each with its ratio (or that it is missing).
+fn over_gate(numbers: &Numbers) -> Vec<Over> {
+    ROWS.iter()
+        .filter(|row| row.linux.is_some() && row.gated())
+        .filter_map(|row| match ratio(numbers, row) {
+            Some(ratio) if ratio <= GATE_RATIO => None,
+            ratio => Some(Over { what: row.what, ratio }),
+        })
+        .collect()
+}
+
+/// Whether some rows are over the gate, and every one of them is close.
+fn only_close(over: &[Over]) -> bool {
+    !over.is_empty() && over.iter().all(Over::close)
+}
+
+/// The rows over the gate, in one line.
+fn listed(over: &[Over]) -> String {
+    over.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ")
+}
+
+/// Under `--defer-close`: when Linux was measured and the only rows over
+/// the gate are close to it, names them in `close_list`, one a line, for
+/// CI's run of the gate on another runner, and returns true.
+fn hand_on_close(ctx: &Ctx, numbers: &Numbers, close_list: &Path) -> Result<bool> {
+    let over = over_gate(numbers);
+    if numbers.linux_vm.is_empty() || !only_close(&over) {
+        return Ok(false);
+    }
+    let lines = over.iter().fold(String::new(), |mut lines, row| {
+        let _ = writeln!(lines, "{row}");
+        lines
+    });
+    std::fs::write(close_list, lines).context(|| format!("writing {}", close_list.display()))?;
+    step(&format!(
+        "Close to the gate after {} runs, and over it only there: {}. The gate's verdict is \
+         left to a run on another runner (rows named in {})",
+        numbers.runs,
+        listed(&over),
+        ctx.display(close_list)
+    ));
+    Ok(true)
 }
 
 /// A ratio to two decimals, or to three where two would hide that it is
@@ -872,7 +960,7 @@ fn check_gate(numbers: &Numbers) -> Result<()> {
             "the performance gate failed: Radix is slower than Linux in the same virtual machine \
              after {} runs at {}",
             numbers.runs,
-            over.join("; ")
+            listed(&over)
         );
     }
     Ok(())
@@ -2091,6 +2179,24 @@ mod tests {
         let mut no_vm = numbers(90.0, 100.0);
         no_vm.linux_vm.clear();
         assert!(check_gate(&no_vm).is_err());
+    }
+
+    #[test]
+    fn only_rows_a_little_over_parity_are_close() {
+        let one_close = |radix_ns: f64| {
+            let mut numbers = numbers(90.0, 100.0);
+            numbers.radix[0].ns = radix_ns;
+            over_gate(&numbers)
+        };
+        assert!(!only_close(&one_close(100.0)), "nothing over the gate is nothing to defer");
+        assert!(only_close(&one_close(105.0)));
+        assert!(only_close(&one_close(110.0)));
+        assert!(!only_close(&one_close(110.5)));
+        let mut missing = numbers(105.0, 100.0);
+        let gated = ROWS.iter().rposition(Row::gated).expect("a gated row");
+        missing.linux_vm.remove(gated);
+        assert!(!only_close(&over_gate(&missing)), "a row not measured is never close");
+        assert_eq!(listed(&one_close(105.0)), format!("{} (1.05 times Linux)", ROWS[0].what));
     }
 
     #[test]

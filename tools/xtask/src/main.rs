@@ -504,8 +504,8 @@ The boot tests are:
                         is flaky, named in out/test/flaky.txt, and fails nothing"
         }
         "bench" => {
-            "Usage: ./ob bench [--no-linux] [--gate] [--linux-kernel <file>] [--runs <n>]
-                [--instructions] [--shell] [--scaling] [--from <file>] [--summary <file>]
+            "Usage: ./ob bench [--no-linux] [--gate [--defer-close]] [--linux-kernel <file>]
+                [--runs <n>] [--instructions] [--shell] [--scaling] [--from <file>] [--summary <file>]
                 [--debug | --release]
 
 Boots Radix in QEMU on 2 CPUs with selftest=bench, where user programs time
@@ -527,6 +527,10 @@ and take minutes.
   --gate              Fail if Radix takes longer than Linux in the same
                       virtual machine at any operation, measuring both
                       again (up to 6 more runs) while one is over
+  --defer-close       With --gate: when every operation over it is within
+                      1.10 times Linux's time, name them in
+                      out/bench/close.txt and pass, for CI to run the gate
+                      again on another runner
   --linux-kernel <file>
                       Boot this Linux kernel instead of the pinned baseline
                       (Ubuntu's, fetched once into .cache/linux-baseline)
