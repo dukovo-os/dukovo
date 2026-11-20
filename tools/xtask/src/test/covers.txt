@@ -300,6 +300,10 @@ catalog-waves userspace/programs/catalog-repo/ userspace/programs/manifest/
 catalog-waves userspace/programs/system-release/src/rollout.rs userspace/programs/systools/src/bundled.rs
 catalog-waves userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
 catalog-waves userspace/programs/tuf/ catalog/
+catalog-withdraw tools/xtask/src/bundles.rs tools/xtask/src/catalog.rs userspace/programs/dkv/
+catalog-withdraw userspace/programs/catalog-repo/ userspace/programs/manifest/
+catalog-withdraw userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles.rs
+catalog-withdraw userspace/programs/systools/src/bundles/ userspace/programs/tuf/ catalog/
 certificates userspace/defaults/spark/services/certd.toml userspace/programs/manifest/src/service.rs
 certificates userspace/programs/systools/src/cert.rs userspace/programs/systools/src/cert/
 certificates userspace/programs/systools/src/certd.rs userspace/programs/systools/src/servicefiles.rs

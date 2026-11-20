@@ -11,7 +11,7 @@
 
 use serde::Serialize;
 
-use super::protocol::{Flags, Hit, Listed};
+use super::protocol::{Flags, Hit, Listed, WithdrawnBy};
 use super::registry::Place;
 
 /// The members of `bundle list --json` after `format`.
@@ -42,7 +42,37 @@ struct Bundle {
     update: Option<String>,
     /// While its update is asked for tonight's window, what was asked.
     tonight: Option<Tonight>,
+    /// The withdrawal that applies to this version, if one does.
+    withdrawn: Option<Withdrawn>,
     flaws: Flaws,
+}
+
+/// A catalog's or a feed's withdrawal of an installed version (ADR 0593),
+/// as `bundle list --json` and `bundle info --json` say it.
+#[derive(Serialize)]
+pub(crate) struct Withdrawn {
+    /// Who withdrew it: `catalog:NAME` or `feed:PLACE`.
+    source: String,
+    /// `broken` or `malicious`.
+    kind: &'static str,
+    reason: String,
+    /// Since when, in seconds since 1970.
+    since: u64,
+    /// Whether it is stopped: a malicious version stays installed, but
+    /// cannot run.
+    stopped: bool,
+}
+
+impl Withdrawn {
+    pub(crate) fn of(by: WithdrawnBy) -> Withdrawn {
+        Withdrawn {
+            source: by.source.to_string(),
+            kind: by.kind.word(),
+            reason: by.reason,
+            since: by.since,
+            stopped: by.stopped,
+        }
+    }
 }
 
 /// An update asked for tonight, as `bundle list --json` says it.
@@ -107,6 +137,7 @@ impl List {
                     missed_ms: t.missed_ms,
                     starts_ms: t.starts_ms,
                 }),
+                withdrawn: row.withdrawn.map(|by| Withdrawn::of(*by)),
                 flaws: Flaws::of(row.flags),
             })
             .collect();
@@ -168,7 +199,9 @@ mod tests {
     use dkv::flaws::Severity;
 
     use super::*;
+    use crate::bundles::catalogs::Kind;
     use crate::bundles::minisign::SecretKey;
+    use crate::bundles::registry::Source;
 
     fn row(place: Place, id: &str, version: &str, flags: Flags) -> Listed {
         let mut random = [9u8; 40];
@@ -188,6 +221,7 @@ mod tests {
             held_reason: None,
             update: None,
             tonight: None,
+            withdrawn: None,
         }
     }
 
@@ -204,6 +238,13 @@ mod tests {
                     missed_ms: None,
                     starts_ms: 1_793_300_000_000,
                 }),
+                withdrawn: Some(Box::new(WithdrawnBy {
+                    source: Source::Catalog("dukovo".into()),
+                    kind: Kind::Malicious,
+                    since: 1_793_400_000,
+                    reason: "it sends files away".into(),
+                    stopped: true,
+                })),
                 ..row(
                     Place::Everyone,
                     "org.nginx.nginx",

@@ -61,10 +61,11 @@ and ADR 0223 (what a removal leaves).
   - bundled's registry files in `/system/state/bundled`: the bindings of
     an ID to its publisher's key, for everyone and for each person, and
     to the catalog it came from (ADR 0383), which outlive the bundle so
-    that a later bundle of the ID from another key is refused, and
-    bundled's history of what it did; the other files of the registry
-    are written whole at each change and are empty when nothing is
-    installed;
+    that a later bundle of the ID from another key is refused, the
+    versions catalogs and feeds withdrew, which are kept for good (ADR
+    0593), and bundled's history of what it did; the other files of the
+    registry are written whole at each change and are empty when nothing
+    is installed;
   - the folder bundled keeps the records of its service files in;
   - authd's retired numbers (ADR 0220), which are never given again;
   - `/shared/services`, the folder of every service bundle's data, made at

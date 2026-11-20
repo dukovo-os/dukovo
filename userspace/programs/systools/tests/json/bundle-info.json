@@ -86,6 +86,13 @@
   },
   "previous": "0.0.9",
   "held": true,
+  "withdrawn": {
+    "source": "catalog:dukovo",
+    "kind": "broken",
+    "reason": "it crashes at start",
+    "since": 1793400000,
+    "stopped": false
+  },
   "license": "MIT",
   "service_list": [
     {"name": "notes-sync", "account": "notes", "start": "on"},
