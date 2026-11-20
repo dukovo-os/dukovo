@@ -133,7 +133,7 @@ machine with AMT, an AMD machine and a laptop; see
 | Each slot's release list kept beside it, so that `sysupdate check` reads none of the slot's files (ADR 0466) | A check reads the running slot's files whose size matches a wanted one, as a stage does | A need |
 | The three cloud canaries (ADRs 0456, 0533) | The reference machine and the lab machines are the canaries: each reports every hour, and one that fails or goes quiet holds the waves | Buying the cloud machines, before 1.0.0-alpha.1 |
 | `system-release pull` signing with the hardware keys (ADRs 0457, 0469) | It signs with the release keys' files, as `add` and `channel` do | `ob release sign` |
-| Firmware that drivers load for their cards, in firmware sets, with a per-device check that the driver loaded it (ADR 0468) | Sets hold CPU microcode only; no driver Dukovo has loads firmware yet | A port: the first driver that needs firmware (Wi-Fi, release 1.6) |
+| Firmware that drivers load for their cards, in firmware sets, with a per-device check that the driver loaded it (ADR 0468) | Sets hold CPU microcode only; no driver Dukovo has loads firmware yet | A port: the first driver that needs firmware (Wi-Fi, release 1.11) |
 | AMD CPU microcode in firmware sets (ADRs 0014, 0468) | The kernel's loader is Intel's; AMD's patches have their own format and loader | A need |
 | Disks other than the root's in the health check's device record (ADR 0468) | Data disks, USB disks and discs come and go with their owner, so a missing one says nothing of the update | A need |
 | A summary of the last starts on the EFI system partition, for a root Rescue cannot mount (ADRs 0500, 0501) | Rescue reads the root's records, and says how many starts the boot menu counted as not seen through | A need |
@@ -276,20 +276,20 @@ These come from finished work; the releases themselves are in the
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
 | The graphical sign-in, its startup-trouble menu and its elevate prompt; the version on the graphical sign-in (ADRs 0251, 0253, 0254, 0261) | Need the window manager | Release 1.1 |
-| The Precision Touchpad's reports (fingers, scrolling, gestures), touchpad sleep and wake (ADR 0235) | The desktop reads them | Release 1.1 |
-| The lid lock, brightness keys and sleep; the sleep button; wake events (ADRs 0142, 0201) | Power management with the desktop | Release 1.1 |
+| The Precision Touchpad's reports (fingers, scrolling, gestures), touchpad sleep and wake (ADR 0235) | The desktop reads them | Release 1.3 |
+| The lid lock, brightness keys and sleep; the sleep button; wake events (ADRs 0142, 0201) | Power management with the desktop | Release 1.3 |
 | Mouse selection in the consoles, and fonts beyond Spleen's (ADR 0100) | Console polish | Release 1.1 or a need |
-| Console layouts whose letters are not Latin, with a second group (ADR 0149) | Needs group switching in the consoles | Release 1.20 (languages) or a need |
-| A sound server that mixes, as the one player (ADR 0320) | Full audio | Release 1.7 |
+| Console layouts whose letters are not Latin, with a second group (ADR 0149) | Needs group switching in the consoles | Release 1.31 (languages) or a need |
+| A sound server that mixes, as the one player (ADR 0320) | Full audio | Release 1.13 |
 | Version 2 of the bundle manifest: `entries`, `actions` and `display` (ADR 0221) | Desktop integration | Releases 1.3 and 1.4 |
-| The Trash for deleted bundle data; installing by dropping a file into `~/applications` (ADR 0223) | The file manager | Release 1.4 |
-| Optional permissions asked through the desktop's portals (ADR 0224) | Portals | Release 1.4 |
+| The Trash for deleted bundle data; installing by dropping a file into `~/applications` (ADR 0223) | The file manager | Release 1.7 |
+| Optional permissions asked through the desktop's portals (ADR 0224) | Portals | Release 1.7 |
 | Secrets sealed by the TPM (ADR 0217) | TPM support | Release 1.2 |
 | Password reset with the recovery key once disks are encrypted (ADR 0253) | Disk encryption | Release 1.2 |
 | Bundle signing keys with passwords (ADR 0222) | Key store | Release 1.2 |
-| zellij | Needs Wasmtime | Release 1.10 |
+| zellij | Needs Wasmtime | Release 1.19 |
 | Ogg Opus and Vorbis for music CDs (ADR 0447) | Needs the media service's libopus port | The media service |
-| Crash dumps of all the kernel's memory, which a post-mortem tool reads with the kernel's symbols (ADR 0483) | The text dump holds the state a person reads without a tool; a dump of memory is as large as the RAM and needs somewhere to be written from the panic path | Release 1.15 |
+| Crash dumps of all the kernel's memory, which a post-mortem tool reads with the kernel's symbols (ADR 0483) | The text dump holds the state a person reads without a tool; a dump of memory is as large as the RAM and needs somewhere to be written from the panic path | Release 1.27 |
 
 ## Waiting on a port, an upstream or a description
 
@@ -548,5 +548,4 @@ finding or removed.
 | Support center pages built from the settings schemas (each field with the release it arrived in and its stability) and stability labels on the pages ridlc writes from `abi/*.ridl` (ADR 0419) | `ob docs site` renders the docs in the tree first; these generators follow it |
 | A scheduled check of the support center's links to other sites (ADR 0420) | Pull requests check only the links between the site's own pages; outside links need a job of their own |
 | The *Known limits* sections of `docs/design/posix.md` and `docs/design/storage.md`, and radix-posix(7) | They still describe Phases 7 to 9: no network sockets, no users, no hot plug, no exFAT, no Btrfs quotas, locales "until Phase 12" |
-| The roadmap's catalog ports paragraph says Go comes with release 1.1 | Go is Phase 17 |
 | The roadmap's Phase 16 status paragraph | It lists the work up to the web console's sign-in (ADR 0514); the console's pages, PostgreSQL, PHP, nginx, Valkey, certificates, the update server on Dukovo, Ansible and problem reports have merged since |
