@@ -279,6 +279,29 @@ export function holdRow(info, hold, time, names) {
   return `Held at ${info.version}${since}${byWords(hold?.by, names)}${isText(hold?.why) ? `: "${hold.why}"` : ''}`;
 }
 
+/** Who withdrew a version, from `withdrawn.source` (`catalog:NAME` or `feed:PLACE`): "catalog dukovo" or "its publisher's feed". */
+const withdrawerWords = (source) => {
+  const [kind, name] = String(source).split(':');
+  return kind === 'catalog' && name ? `catalog ${name}` : 'its publisher\'s feed';
+};
+
+/**
+ * The withdrawal row of an app whose installed version a catalog or its feed
+ * withdrew (`info.withdrawn` of `bundle info --json`): "Withdrawn by catalog
+ * dukovo since Nov 2: it crashes at start", and for a malicious one, which is
+ * stopped, what the person may do; null for an app that is not withdrawn.
+ */
+export function withdrawnRow(info, time) {
+  const withdrawn = info?.withdrawn;
+  if (!isText(withdrawn?.source)) return null;
+  const since = Number.isFinite(withdrawn.since) ? ` since ${atWords(withdrawn.since * 1000, time).replace(/^on /, '')}` : '';
+  const why = isText(withdrawn.reason) ? `: ${withdrawn.reason}` : '';
+  if (withdrawn.stopped === true) {
+    return `Stopped by ${withdrawerWords(withdrawn.source)}${since}${why}. Remove it, or update it to a version that is not withdrawn.`;
+  }
+  return `Withdrawn by ${withdrawerWords(withdrawn.source)}${since}${why}`;
+}
+
 /** How the apps update, from `updates.settings` (`update settings --json`): "Update by themselves", "Tell me", or null when it is not told. */
 export function ruleWords(settings) {
   if (settings?.apps === 'auto') return 'Update by themselves';

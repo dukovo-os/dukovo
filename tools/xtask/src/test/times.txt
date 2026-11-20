@@ -64,6 +64,7 @@ card-reader 70
 catalog-bundles 64
 catalog-install 70
 catalog-waves 70
+catalog-withdraw 120
 certificates 120
 consoles 38
 crash-dump 140

@@ -2,7 +2,7 @@
   "signatures": [
     {
       "keyid": "c81a7cbb15da4652dc994461531edbef9ea48c2e21d97df7c8d6fd9fa1b0803e",
-      "sig": "3046022100a6100d80f107a11c3f84913302ea22bfa9b5f163da18ed7832fd4fca8acd6ead022100a9b69958394ed561f73bacd3ffba4500438de484007722ad3e67a3f7a6b7436c"
+      "sig": "3046022100851846483b97824e4fdf91d9bac4e2ee6953ab04a95390de7561d39abcc08181022100fe7996b516e6a06f6b8b1da1e408d030cb09dbaaa9a360861211b46693839e4e"
     }
   ],
   "signed": {
@@ -42,13 +42,14 @@
         }
       ]
     },
-    "expires": "2027-05-20T18:30:09Z",
+    "expires": "2027-05-21T19:21:23Z",
     "spec_version": "1.0.31",
     "targets": {
       "bundles/io.github.burntsushi.ripgrep-15.2.0.dkv": {
         "custom": {
           "id": "io.github.burntsushi.ripgrep",
           "name": "ripgrep",
+          "owner": "verified",
           "version": "15.2.0"
         },
         "hashes": {
@@ -60,6 +61,7 @@
         "custom": {
           "id": "io.github.sharkdp.bat",
           "name": "bat",
+          "owner": "verified",
           "version": "0.26.1"
         },
         "hashes": {
@@ -71,6 +73,7 @@
         "custom": {
           "id": "io.valkey.valkey",
           "name": "Valkey",
+          "owner": "verified",
           "version": "9.1.3"
         },
         "hashes": {
@@ -82,6 +85,7 @@
         "custom": {
           "id": "net.php.php",
           "name": "PHP",
+          "owner": "verified",
           "version": "8.5.12"
         },
         "hashes": {
@@ -93,6 +97,7 @@
         "custom": {
           "id": "org.nginx.nginx",
           "name": "nginx",
+          "owner": "verified",
           "version": "1.30.6"
         },
         "hashes": {
@@ -104,6 +109,7 @@
         "custom": {
           "id": "org.postgresql.postgresql",
           "name": "PostgreSQL",
+          "owner": "verified",
           "version": "19.0-rc.2"
         },
         "hashes": {
@@ -115,6 +121,7 @@
         "custom": {
           "id": "org.postgresql.postgresql",
           "name": "PostgreSQL",
+          "owner": "verified",
           "version": "19.0"
         },
         "hashes": {
@@ -126,6 +133,7 @@
         "custom": {
           "id": "org.python.python",
           "name": "Python",
+          "owner": "verified",
           "version": "3.15.2"
         },
         "hashes": {
@@ -137,6 +145,7 @@
         "custom": {
           "id": "org.sqlite.sqlite",
           "name": "SQLite",
+          "owner": "verified",
           "version": "3.54.1"
         },
         "hashes": {
@@ -145,6 +154,6 @@
         "length": 1308416
       }
     },
-    "version": 2
+    "version": 3
   }
 }

@@ -714,6 +714,8 @@ Formats every Rust source file in the repository with rustfmt."
        ./ob catalog root [--days <n>] [--key <file>]...
        ./ob catalog sign [--days <n>] [--remove <path>]... [--yes] [--key <file>]...
                          [<bundle>]...
+       ./ob catalog withdraw <id> <version> --kind broken|malicious --reason <text>
+                         [--yes] [--key <file>]...
        ./ob catalog publish --key <file>
        ./ob catalog status [--json]
        ./ob catalog server setup [--dukovo]
@@ -726,7 +728,9 @@ by a YubiKey, either of the catalog's two alone; `key yubikey` adds the
 P-256 key in a YubiKey's slot 9c, made with ykman as catalog/README.md says.
 `root` signs the next root from the keys in catalog/keys/. `sign` lists
 what changes, the bundles in out/bundles/ by default, and signs them into
-the next targets with one touch of a YubiKey. `publish` signs a snapshot
+the next targets with one touch of a YubiKey. `withdraw` signs the next
+targets with one version the targets list marked as withdrawn, broken or
+malicious (ADR 0593), as `sign` does. `publish` signs a snapshot
 and timestamp with the online key and lays out what the server serves in
 out/catalog/site/, then reads it back as a client. --key names an Ed25519
 secret key file that signs in place of a YubiKey: the online key, or a

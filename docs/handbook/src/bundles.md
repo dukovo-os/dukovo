@@ -279,6 +279,34 @@ app's data as the old version left it, for 30 days; going back puts that
 copy back. `bundle history` shows each install, update, going back,
 hold and removal, and who asked.
 
+### A version that was pulled
+
+A catalog, or the feed of an app that comes from no catalog, can pull a
+version it listed: as *broken* when it does not work as it should, or as
+*malicious* when it does harm. The version stays in the catalog, so every
+computer learns of it, keeps that for good, and never installs, updates
+to or goes back to it ([ADR 0593](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0593-a-catalog-or-a-bundles-feed-may-withdraw-a-version-and-machines-leave-it.md)).
+`bundle install` of its file says who pulled it, when, and why.
+
+If you run a pulled version, your computer leaves it at once, without
+waiting for its wave:
+
+- A broken one goes back to the version kept beside it, with the data that
+  version left. With none kept, it keeps running, and the next good
+  version, a newer one, is taken as soon as it is out: by itself on a
+  computer that updates by itself, else when you run `bundle update`.
+- A malicious one is stopped first. Its services stop, the programs of
+  it that run are ended, with `bundle: org.example.notes was stopped:
+  WHY` on their terminal, and nothing can start it: its commands say
+  why. Its data stays. Your computer then goes back as for a broken one; with no
+  good version kept, the app stays installed and stopped, and `bundle
+  list` says "stopped by catalog dukovo: WHY". Remove it, or run `bundle
+  update org.example.notes` for a version that was fixed.
+
+An app you hold goes back, or is stopped, all the same, and stays held: the
+next good version waits for you. `bundle history` says "was withdrawn", and
+you get a notice at your next sign-in.
+
 An update that would restart an app's services in the middle of the day can wait
 for the night: `elevate bundle update ID --for-everyone --tonight` installs it in
 the hour before the restart time of `updates.toml`, or between 2:00 and 3:00 AM

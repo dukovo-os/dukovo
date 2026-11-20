@@ -19,8 +19,10 @@ use manifest::bundle::{Manifest, RunsWith};
 use dkv::flaws::List;
 use serde::Serialize;
 
+use super::documents::Withdrawn;
 use super::grants::Grant;
 use super::minisign::PublicKey;
+use super::protocol::WithdrawnBy;
 use super::registry::{Place, Trust};
 use super::sizes::DataSize;
 use crate::{json, util};
@@ -295,6 +297,8 @@ pub struct Installation<'a> {
     pub previous: Option<&'a str>,
     /// Whether it is held at its version.
     pub held: bool,
+    /// The withdrawal that applies to its version, if one does (ADR 0593).
+    pub withdrawn: Option<WithdrawnBy>,
     /// The names of its services that Spark starts at each boot.
     pub started: &'a [String],
     /// The bundles of the same place that use what it provides.
@@ -384,6 +388,7 @@ pub struct Details {
     data_size: Option<DataSize>,
     previous: Option<String>,
     held: bool,
+    withdrawn: Option<Withdrawn>,
     license: String,
     service_list: Vec<ServiceDetails>,
     provides: Vec<Offered>,
@@ -618,6 +623,7 @@ pub fn details(facts: &Facts<'_>, grants: &[Grant], installation: &Installation<
         data_size: installation.data_size,
         previous: installation.previous.map(String::from),
         held: installation.held,
+        withdrawn: installation.withdrawn.clone().map(Withdrawn::of),
         license: m.license.0.clone(),
         service_list: m
             .services
@@ -742,7 +748,9 @@ pub fn offer(facts: &Facts<'_>, download: &Download<'_>) -> Offer {
 
 #[cfg(test)]
 mod tests {
+    use super::super::catalogs::Kind;
     use super::super::grants::Said;
+    use super::super::registry::Source;
     use super::*;
     use crate::bundles::minisign::SecretKey;
     use dkv::flaws::Severity;
@@ -983,6 +991,13 @@ mod tests {
             }),
             previous: Some("0.0.9"),
             held: true,
+            withdrawn: Some(WithdrawnBy {
+                source: Source::Catalog("dukovo".into()),
+                kind: Kind::Broken,
+                since: 1_793_400_000,
+                reason: "it crashes at start".into(),
+                stopped: false,
+            }),
             started: &["notes-sync".to_string()],
             used_by: &used_by,
         };
@@ -1145,6 +1160,7 @@ mod tests {
                 data_size: None,
                 previous: None,
                 held: false,
+                withdrawn: None,
                 started,
                 used_by: &[],
             };

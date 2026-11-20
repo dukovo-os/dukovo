@@ -1914,7 +1914,7 @@ _target/userspace/_).
 	*--debug*, *--release*
 		As for *build*.
 
-*catalog* *key* *yubikey* [*--serial* _n_] | *key* *new* _file_ _name_ [_role_]... | *root* [*--days* _n_] | *sign* [*--days* _n_] [*--remove* _path_]... [*--yes*] [_bundle_]... | *publish* | *status* [*--json*] | *server* *setup* [*--dukovo*] | *deploy* | *check* [_url_] | *rollout* (*pause* _id_ _version_ _reason_ | *resume* _id_ _version_)
+*catalog* *key* *yubikey* [*--serial* _n_] | *key* *new* _file_ _name_ [_role_]... | *root* [*--days* _n_] | *sign* [*--days* _n_] [*--remove* _path_]... [*--yes*] [_bundle_]... | *withdraw* _id_ _version_ *--kind* *broken*|*malicious* *--reason* _text_ [*--yes*] | *publish* | *status* [*--json*] | *server* *setup* [*--dukovo*] | *deploy* | *check* [_url_] | *rollout* (*pause* _id_ _version_ _reason_ | *resume* _id_ _version_)
 	Make and sign the catalog's TUF repository in _catalog/_ (ADR 0381),
 	with catalog-repo, which ob builds for this machine. Every command
 	takes *--key* _file_, an Ed25519 secret key that signs in place of a
@@ -1944,6 +1944,19 @@ _target/userspace/_).
 	version and expiry, and warns a month before. The YubiKeys need
 	yubikey-manager (the *yubikey-manager* package on Debian, Ubuntu and
 	Linux Mint) and the system's Python.
+
+	*withdraw* pulls a version the targets list (ADR 0593). _id_ is the
+	bundle's full ID as its target has it, which is _ID_@_LINE_ for a
+	bundle with a line, and _version_ is the version. It lists the
+	change, asks, and signs the next targets with a YubiKey as *sign*
+	does, with the target's custom field *withdrawn* set to the *--kind*,
+	the *--reason* (one line of at most 200 bytes) and the time now; the
+	target stays listed. A deploy then sends it to the server. It
+	refuses a version no target lists, and one withdrawn already as the
+	same kind or a worse one: a malicious withdrawal is never made
+	broken again, but a broken one may be made malicious. Computers keep
+	what they read of it for good and leave that version; *bundle*(1)
+	says how.
 
 	The update server (ADR 0382) is reached with *ssh*(1) as
 	*$OB_UPDATE_SSH*, by default _updates.dukovo.org_, with the login

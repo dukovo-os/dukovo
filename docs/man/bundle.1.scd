@@ -328,7 +328,8 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	Goes back to the version the last update replaced, and holds the
 	bundle there. Its data, as that version left it, comes back at its
 	next run, and its services' data at once. Running it again goes
-	forward again.
+	forward again. It refuses a version that a catalog or a feed
+	withdrew (WITHDRAWALS).
 
 *hold* _id_ [*--for-everyone*] [*--why* _text_], *unhold* _id_ [*--for-everyone*]
 	Holds a bundle at its version, so that no update changes it, or
@@ -343,7 +344,8 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 *history* [_id_]
 	Shows what was done to your bundles and everyone's, or to _id_, the
 	newest last: each install, update, going back, removal, hold and
-	release, update that waits for you and update that failed, with
+	release, withdrawal of an installed version, update that waits for
+	you and update that failed, with
 	when, who asked or that it did so by itself, and, for a version
 	that failed its health check, why bundled went back. It also shows
 	the known flaws the daily check found in an installed version
@@ -360,8 +362,9 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 
 *list* [*--json*]
 	Lists the bundles you can run, yours and everyone's: ID, version,
-	whose, its known flaws (FLAWS), and name. *--json* prints them as
-	one line of JSON (JSON).
+	whose, its known flaws (FLAWS), and name; a bundle whose version a
+	catalog or its feed withdrew says so, with the reason, and says if
+	it is stopped. *--json* prints them as one line of JSON (JSON).
 
 *info* _id_ [*--json*]
 	Shows an installed bundle's sheet, with every known flaw of its
@@ -369,8 +372,9 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	and since when, when it was installed, where, and where its data is,
 	and what the data takes when *bundled* has measured it (for a bundle
 	installed for everyone that keeps data of its services),
-	which version it can go back to, and whether it is held. *--json*
-	prints the same facts as one line of JSON (JSON).
+	which version it can go back to, whether it is held, and whether
+	its version was withdrawn. *--json* prints the same facts as one
+	line of JSON (JSON).
 
 *remove* _id_ [*--for-everyone*] [*--keep-data* | *--purge*]
 	Removes your bundle, or with *--for-everyone* one installed for
@@ -570,6 +574,13 @@ socket outlives the capability it was made with, so the program and
 what it started are stopped, *SIGTERM* and two seconds later *SIGKILL*,
 and bundle exits with 143; its next run goes without.
 
+Every run follows *bundled*(8) so, whether it holds a permission or
+not. When a catalog or a feed withdraws the version it runs as
+malicious (WITHDRAWALS), bundle prints *bundle: id was stopped: why*
+and stops the program and what it started in the same way. *bundle run*
+of a stopped bundle, or a command of it, fails with "stopped by catalog
+c: why; remove it, or *bundle update* id takes a fixed version".
+
 # SOCKETS
 
 A bundle can offer a socket to others (ADR 0385, 0477): its manifest names
@@ -755,6 +766,54 @@ from its own feed (OWN FEEDS) has no waves. A rollout that cannot be
 read holds the update back, and bundle says why; naming the bundle takes
 it.
 
+# WITHDRAWALS
+
+A catalog, or the feed of a bundle (OWN FEEDS), may withdraw a version it
+listed (ADR 0593): as *broken*, for a version that does not work as it
+should, or as *malicious*, for one that does harm, with a reason and the
+day. The target stays listed. Only the keys that sign what the catalog
+lists, or the publisher's for a feed, can say it, never the online key
+that signs the flaws and the waves. A withdrawal that cannot be read
+withdraws the version as broken, and stops nothing that runs.
+
+Each time *bundled*(8) reads a catalog or a feed, in a search, a sheet,
+an install, an update or its daily check, it keeps what it did not know
+of, for good: a later read that drops a withdrawal, or calls it broken
+where it was malicious, changes nothing. A withdrawn version is not
+offered by *search*, a sheet or an update, *bundle rollback* refuses to
+go back to it, and *bundle install* refuses it, also from a file that
+a catalog or the feed withdrew:
+
+```
+$ bundle install ./app-2.1.0.dkv
+bundle: org.example.app 2.1.0 was withdrawn by catalog dukovo on 2026-11-20: it sends the keys away
+```
+
+An installed version that is withdrawn is left at once, in the daily
+check, at *bundled*'s start and when it learns of the withdrawal:
+
+- A *broken* version goes back to the version the last update kept
+  beside it, with that version's data, if that one is not withdrawn
+  too, and is not held there. With none kept, it keeps running, and
+  the next newer version that is not withdrawn is taken at once, ahead
+  of the waves: by itself where the bundles update by themselves, else
+  when you run *bundle update*.
+- A *malicious* version is stopped: its services are dropped, with their
+  accounts and data kept, each run of it ends (RUNNING), and its folder
+  is made mode 0500, so that no run of it can start; its commands stay,
+  and say why. It then goes back as a broken one does. With no good
+  version, it stays installed and stopped until you remove it, or
+  *bundle update* _id_ takes a version that is not withdrawn.
+- A held bundle goes back, or is stopped, all the same, and stays held:
+  the next good version waits for you.
+
+*bundle list* says "withdrawn by catalog c: why" beside a withdrawn
+version that runs, and "stopped by catalog c: why; remove it, or *bundle
+update* id takes a fixed version" beside one that is stopped; *bundle
+info* says so too. *bundle history* shows "version was withdrawn: note",
+and each withdrawal of an installed version is also an audit line, a
+notice at your next sign-in and one from *notifyd*(8).
+
 # OWN FEEDS
 
 A bundle that no catalog lists can still update, from a feed its
@@ -838,6 +897,14 @@ bundle you can run, by ID and then yours before everyone's:
 	asked, *missed_ms*, when a window first passed without it, or *null*,
 	and *starts_ms*, when the window it installs in starts, in
 	milliseconds since 1970: now, in the window with time left.
+
+*withdrawn*
+	*null*, or, for a version a catalog or the bundle's own feed
+	withdrew (ADR 0593), an object: *source*, *catalog:*_name_ or
+	*feed:*_place_; *kind*, *broken* or *malicious*; *reason*, the text
+	it gave; *since*, when, in seconds since 1970; and *stopped*, *true*
+	once a malicious version is stopped: it stays installed but cannot
+	run.
 
 *flaws*
 	What the catalog's list of known flaws says of this version
@@ -945,6 +1012,9 @@ bundle you can run, by ID and then yours before everyone's:
 *held*
 	Whether it is held at its version.
 
+*withdrawn*
+	As in *list*.
+
 *bundle search --json* has *bundles*, a list with an object for each
 bundle the catalogs list, the newest version of each, catalog by catalog
 in the order bundled reads them, and *unread*, a list with an object for
@@ -1027,6 +1097,10 @@ _~/applications/add-ons/id@line_, _/applications/add-ons/id@line_
 _/system/state/grants/uid_
 	What each person said of each bundle's permissions, which only
 	*bundled*(8) writes.
+
+_/system/state/bundled/withdrawn_
+	The versions a catalog or a feed withdrew, which only *bundled*(8)
+	writes (WITHDRAWALS).
 
 _/system/settings/catalogs/name_
 	A catalog: _url_, _root.json_, and _off_ when it is turned off

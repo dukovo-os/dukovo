@@ -84,3 +84,6 @@ catalog-repo (ADR 0381).
 - A publisher who changes the key that signs the bundle moves its ID to
   the new key with a rollover file the old key signed, which a feed's
   update carries as it does any file of the bundle ([0592](0592-a-catalog-that-vouches-for-an-apps-publisher-may-take-its-id-and-a-publisher-may-move-its-app-to-a-new-key.md)).
+- A feed's publisher may withdraw a version of its own bundle in the
+  feed's targets, signed with the feed's key, and machines go back or
+  stop it as they do for a catalog's withdrawal ([0593](0593-a-catalog-or-a-bundles-feed-may-withdraw-a-version-and-machines-leave-it.md)).

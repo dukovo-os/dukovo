@@ -308,6 +308,62 @@ bundled writes each install, update, going back, removal, hold and
 release, waiting update and failed one to _history_. A person is shown
 their own bundles' events and everyone's; root is shown all.
 
+# WITHDRAWALS
+
+A catalog, or the feed of a bundle (ADR 0390), may withdraw a version it
+listed (ADR 0593). The target stays listed, and its _custom_ holds
+*withdrawn*: *kind*, *broken* or *malicious*, *reason* and *since*, the
+time in seconds since 1970. For a catalog the targets role signs it, the
+offline keys; for a feed the publisher's key; the catalog's list of
+flaws, which the online key signs, never carries it. A field that does
+not read withdraws the version as *broken*, with the reason "its
+withdrawal does not read: why", and stops nothing that runs.
+
+Each read of a catalog, by a search, a sheet, an install, an update or
+the daily check, and each read of a feed, adds to _withdrawn_ the
+withdrawals it has not got. A feed withdraws only versions of its own
+bundle's ID. A line is never changed or removed by a later read: a
+*malicious* line may be added beside a *broken* one, never the reverse.
+The file holds at most 4,096 lines; past that, the oldest line of a
+version installed nowhere and kept nowhere goes. When a catalog that
+vouches for an ID's publisher takes the ID from it (ADR 0592), what that
+publisher's feed withdrew is forgotten.
+
+A line applies to an install of an ID at a version in a place when it
+is the line of the catalog the ID is bound to there or for everyone, or
+of a feed there or for everyone. It applies to a file offered for
+install when it is any catalog's line, or the place's feed's, whose
+SHA-256 is the file's. An install of such a file is refused: "ID
+VERSION was withdrawn by catalog C on DATE: REASON". Searches, sheets
+and updates never offer a withdrawn version, and going back refuses
+one.
+
+On its updater thread, at once after it learns a new line, when it
+starts, and in the daily check, bundled acts on each installed version a
+line applies to:
+
+- *malicious*: it drops the version's services, keeping their accounts
+  and data; it tells each run of it, on its *watch* connection, to end,
+  with the answer *withdrawn* and the reason; and it makes the bundle's
+  folder mode 0500, so that no person's or service's run can start. Its
+  commands stay linked, and say why it does not run. It then goes back to the version kept
+  beside it, with that version's data and without a hold, if that one is
+  not withdrawn too. With no good version kept, the bundle stays
+  installed and stopped until it is removed or a good version installs:
+  *bundle update* _id_ takes one at once, ahead of the waves.
+- *broken*: it goes back the same way. With no good version kept, the
+  version keeps running, and the next good version is taken at once,
+  ahead of the waves: by itself in a place that updates by itself, else
+  when the person updates.
+
+A held bundle goes back, or is stopped, all the same, and stays held:
+the next good version waits for the person. Each new
+withdrawal of an installed version is written to _history_ as
+*withdrawn*, to the audit log, to a notice at the next sign-in, and to
+*notifyd*(8). A run, or a command, of a stopped bundle fails with
+"stopped by catalog C: reason; remove it, or `bundle update ID` takes a
+fixed version", as *bundle*(1) does.
+
 # SERVICES
 
 A bundle whose manifest declares services installs only for everyone
@@ -443,6 +499,12 @@ _/system/state/bundled/previous_
 
 _/system/state/bundled/held_
 	Each bundle held at its version, and since when.
+
+_/system/state/bundled/withdrawn_
+	Each version a catalog or a bundle's feed withdrew and bundled
+	learned of, a line each, tab-separated: source (*catalog:*_name_ or
+	*feed:*_place_), ID, version, the SHA-256 of its file, *broken* or
+	*malicious*, when, and why (WITHDRAWALS). Lines are only added.
 
 _/system/state/bundled/automatic_
 	Each place whose bundles update by themselves, and since when.
