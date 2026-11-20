@@ -79,10 +79,37 @@ and `bundle install` read the catalog from it (ADR 0383).
 
 `./ob catalog sign` packs the catalog's bundles into `out/bundles/`, as
 `./ob ports` does, then lists what would change, asks, and signs the next
-targets: one PIN and one touch for the whole batch. Commit
-`metadata/targets.json`. Targets are good for half a year, so sign at
-least that often, even when nothing has changed; `./ob catalog status`
-warns a month before.
+targets: one PIN and one touch for the whole batch. Targets are good for
+half a year, so sign at least that often, even when nothing has changed;
+`./ob catalog status` warns a month before. Once it is published (below),
+`./ob catalog pr` records it in the repository.
+
+Before it signs, ob reads what updates.dukovo.org serves. If that is a
+newer targets or root version than `metadata/` holds, it refuses: this
+checkout is behind, so pull main first. A server it cannot read is only
+warned of.
+
+To read the list before the touch, run `./ob catalog sign --preview`. It
+prints the changes, says which targets version would be signed and until
+when, writes the plan to `out/catalog/plan.json` and signs nothing; no key
+is needed. The plan holds each change in full and a digest of what would
+be signed. `./ob catalog sign --expect DIGEST` lists the batch again and
+signs it, with no question, only if its digest is that one; if a bundle
+or anything else changed since, it fails with "prepare again" before it
+looks for a key. It packs nothing, so the bytes are those that were read.
+`--yes`, `--preview` and `--expect` are alternatives. `./ob catalog
+withdraw` takes the same three.
+
+`./ob catalog sign --renew` signs the targets again as they are, to renew
+their dates. It reads no bundle and packs nothing, and is refused when a
+bundle is named or `--remove` is given.
+
+A bundle whose ID and version the targets list already is never signed
+again as other bytes. When the ports pack such a version to other bytes
+(every port does after a change to the C library), `sign` does not fail:
+it lists the version on a line that starts with `=`, keeps the signed
+bytes and signs the rest. A rebuild reaches computers only under a new
+version.
 
 The PIN is asked for on the terminal. With `DUKOVO_PINENTRY` set, or with
 no terminal attached, `tools/yubikey-piv.py` asks through pinentry, the
@@ -96,12 +123,55 @@ sets it, so that no PIN passes through the app.
 signed to the server, which signs a snapshot and timestamp, checks the
 whole catalog as a new computer would, and only then serves it. It says
 whether that worked; when it did not, the server keeps serving what it
-served. Then it reads the catalog back from https://updates.dukovo.org.
-`./ob catalog check` does that last part alone, at any time.
+served. Then it reads the catalog back from https://updates.dukovo.org
+by itself, so no separate `./ob catalog check` is needed after it;
+`check` stays for reading the catalog at any other time.
 
 The server signs a new timestamp every six hours by itself. Keep the
 bundles in `out/catalog/store/` until they are deployed: they exist
 nowhere else.
+
+## Recording it in the repository
+
+Once the signed catalog is live, `./ob catalog pr` opens the pull request
+that puts it in main, so that the next signing follows what computers are
+served. It needs `gh` installed (`sudo apt install gh`) and signed in
+(`gh auth login`), and `git config user.name` and `user.email`, for the
+sign-off. In order, it:
+
+1. checks `keys/` and `metadata/` offline, as `./ob catalog verify` does;
+2. fetches `origin/main` and takes the files of `keys/` and `metadata/`
+   that differ from main's; with none, it says "catalog/ is main's:
+   nothing to propose" and stops;
+3. refuses when `catalog/` is older than main, when a version main holds
+   has other bytes here, or when updates.dukovo.org does not serve what
+   `catalog/` holds (run `./ob catalog deploy` first);
+4. builds one commit on `origin/main` with those files and a sign-off,
+   in an index of its own, and pushes it, never forced, to the branch
+   `catalog-targets-N` (`catalog-root-M` when only the root changed);
+5. opens the pull request, turns on auto-merge with squash, and stages
+   the signed files in your checkout.
+
+Your checkout is not moved: HEAD, the branch and the working tree stay as
+they are, and only the staged copies of the signed files change, so the
+next `git pull --ff-only` takes main's. If the branch has an open pull
+request already, it prints that one. An older open catalog pull request is
+named in the new one and left open for you to close. The last two lines
+are `Targets version N is live, and this pull request records it:` and its
+URL.
+
+`./ob catalog verify` runs the same check as step 1 on its own and prints
+one line, such as `catalog: root 1, targets version 2 signed by c81a7cbb…,
+9 bundles, good until 2027-05-20`. CI runs it on every pull request, and
+a pull request that changes only `metadata/targets.json` skips the code
+jobs. It fails once the targets or the root expire, which is what the
+warning in `./ob catalog status` a month ahead is for.
+
+## Dukovo Ops
+
+Dukovo Ops runs this whole flow from its Catalog page: prepare (`sign
+--preview`, no key), a review of the exact list, signing with one touch
+(`sign --expect`), deploy and `pr`. Each step is the command above.
 
 ## Waves
 

@@ -501,6 +501,7 @@ machine asks for them.
 | A version of an app older than the one kept: bundled keeps one version back, so an app's page lists the version it runs, the one on offer and the one kept | bundled(8) |
 | A new alert rule tried on last week's history before it is on: no alert rule is the owner's to write, and a script raises an alert with `alerts raise`, so this waits until rules exist | ADR 0485 |
 | An alert when an administrator signs in from a new place or device, and Sign-ins as a kind of alert: no program raises an alert for a sign-in, since authd blocks an address that fails too often but keeps no record of where each administrator signs in from; it waits on a record in authd of the places and devices each administrator signs in from, with its own privacy note | ADR 0485, ADR 0566 |
+| Ops' catalog prepare does not see a lab round reading out/: the lab tool keeps its run lock in its own store, which Ops does not read, so the prepare window warns instead | ADR 0594 |
 
 ### Benchmarks
 
@@ -540,6 +541,7 @@ finding or removed.
 | Known weak spots to plan for: Wi-Fi, Bluetooth and webcams; large desktop apps; Btrfs maturity | Raised, not yet discussed |
 | Nightly system releases on the update server, and the key that signs them (ADRs 0456, 0467); to decide before 1.0.0-alpha.1 | The server offers stable and beta; a nightly release would be signed at every merge with no person there, and ADR 0457 keeps release keys off servers and out of CI |
 | The update server's online keys kept encrypted at rest, as ADR 0457's table has them (ADRs 0382, 0467); to decide before 1.0.0-alpha.1 | They are files only their system users read; a timer signs with them with nobody there, so a key the server decrypts itself guards only a copy of its disk |
+| A rebuild of a version the catalog lists ships only under a new version; recipes have no build number. | A recipe's version is the upstream one, and a build number changes version order on every machine, so it needs its own design (ADR 0594) |
 
 ## Documentation to bring up to date
 
