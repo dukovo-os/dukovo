@@ -62,6 +62,10 @@ lab-web   failed                   off      10:43:10  Lab web
 Not running as asked: lab-sick and lab-web. `service lab-sick explain` says why.
 ```
 
+A stopped service whose file is gone, as a removed bundle's is, is left
+out: Spark keeps it, stopped, until the next boot, which no longer
+knows it.
+
 The last line, on a terminal, names those not running as asked: given
 up on, waiting to be started again after an end, stopped for a reason,
 or failing their health check. One that is off as it is meant to be, a

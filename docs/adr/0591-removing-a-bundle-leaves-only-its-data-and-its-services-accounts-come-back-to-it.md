@@ -37,7 +37,9 @@ and ADR 0223 (what a removal leaves).
   socket group's, and removes the service's folder in
   `/system/live/services`, which Spark made the account's. Its data,
   `/shared/services/ID`, stays, owned by the retired numbers, and the
-  removal says so; `--purge` removes it too.
+  removal says so; `--purge` removes it too. Spark keeps a removed
+  service, stopped, until the next boot; `service list` leaves out a
+  stopped service whose file is gone.
 - **An account made again for a bundle takes its old number.** When
   bundled asks authd for a service's account, authd gives it the number
   that owns its data folder, `/shared/services/ID/ACCOUNT`, if the

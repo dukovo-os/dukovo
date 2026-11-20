@@ -24,9 +24,11 @@
 //! and `services/explain` tests cover this file.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use manifest::service::Stop;
@@ -929,6 +931,10 @@ fn list(options: &[String]) -> Result<i32, Fail> {
         return list_timers(json);
     }
     let mut document = shown(None)?;
+    without_removed(&mut document.services, |name| {
+        let file = Path::new(servicefiles::DIR).join(format!("{name}.toml"));
+        !matches!(fs::symlink_metadata(file), Err(e) if e.kind() == io::ErrorKind::NotFound)
+    });
     as_filed(&mut document.services, &servicefiles::at_boot());
     if json {
         println!("{}", show::to_json(&document).map_err(fail)?);
@@ -947,6 +953,16 @@ fn list(options: &[String]) -> Result<i32, Fail> {
         writeln!(out, "\n{}", not_as_asked_line(&names))?;
     }
     Ok(i32::from(failed_only && !wrong.is_empty()))
+}
+
+/// Leaves out of `services` each one that is stopped and whose file,
+/// as `has_file` says, is gone: the service of a bundle that was removed
+/// (ADR 0591), or one an administrator took the file of. Spark keeps it,
+/// stopped, until the next boot, which no longer knows it; the list is of
+/// what the system has. One that still runs, or does anything else, is
+/// listed, file or not.
+fn without_removed(services: &mut Vec<show::Service>, has_file: impl Fn(&str) -> bool) {
+    services.retain(|s| !matches!(s.state, State::Stopped | State::Disabled) || has_file(&s.name));
 }
 
 /// Sets whether each of `services` starts at boot to what its file says
@@ -1638,6 +1654,21 @@ mod tests {
                 ("unread", State::Stopped, true),
             ]
         );
+    }
+
+    #[test]
+    fn a_stopped_service_whose_file_is_gone_is_not_listed() {
+        let named = |name: &str, state| show::Service { name: name.into(), state, ..nginx() };
+        let mut services = vec![
+            named("beacon", State::Stopped),
+            named("tidy", State::Disabled),
+            named("lab-web", State::Running),
+            named("lab-sick", State::Failed),
+            named("logd", State::Stopped),
+        ];
+        without_removed(&mut services, |name| name == "logd");
+        let left: Vec<&str> = services.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(left, ["lab-web", "lab-sick", "logd"]);
     }
 
     fn timer(text: &str) -> manifest::service::Timer {
