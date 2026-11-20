@@ -285,6 +285,66 @@ fn the_second_gate_narrows_what_a_name_may_do() {
 }
 
 #[test]
+fn a_directory_one_may_not_search_hides_its_names_from_every_call() {
+    let vfs = vfs();
+    let root = vfs.root();
+    vfs.make_directory(&K, &root, "home", DIR).unwrap();
+    vfs.make_directory(&K, &root, "home/alice", owned(&ALICE, 0o700)).unwrap();
+    vfs.make_directory(&K, &root, "home/bob", owned(&BOB, 0o700)).unwrap();
+    vfs.make_directory(&K, &root, "home/dropbox", owned(&BOB, 0o711)).unwrap();
+    for path in ["home/bob/notes", "home/dropbox/notes"] {
+        vfs.open(&BOB, &root, path, makes(owned(&BOB, 0o644))).unwrap();
+    }
+    vfs.open(&ALICE, &root, "home/alice/own", makes(owned(&ALICE, 0o644))).unwrap();
+    let reads =
+        OpenFlags { create: Some(owned(&ALICE, 0o644)), want: want::READ, ..OpenFlags::default() };
+    // Bob's notes are 0644, but in his 0700 home: an open that would make
+    // them reads them no more than one that would not.
+    let notes = "home/bob/notes";
+    assert_eq!(vfs.open(&ALICE, &root, notes, opens(want::READ)).err(), Some(Error::Denied));
+    assert_eq!(vfs.open(&ALICE, &root, notes, reads).err(), Some(Error::Denied));
+    // Every call that makes a name says nothing of one that is there.
+    assert_eq!(vfs.make_directory(&ALICE, &root, notes, DIR), Err(Error::Denied));
+    assert_eq!(vfs.make_link(&ALICE, &root, notes, "x", LINK), Err(Error::Denied));
+    let pipe = Access::default_for(Kind::Pipe);
+    assert_eq!(vfs.make_node(&ALICE, &root, notes, Kind::Pipe, 0, pipe), Err(Error::Denied));
+    let binding: crate::SocketBinding = mem::arc(7u32).unwrap();
+    let socket = Access::default_for(Kind::Socket);
+    assert_eq!(vfs.make_socket(&ALICE, &root, notes, binding, socket), Err(Error::Denied));
+    let own = "home/alice/own";
+    assert_eq!(vfs.link(&ALICE, &root, own, &ALICE, &root, notes, true), Err(Error::Denied));
+    assert_eq!(vfs.make_subvolume(&ALICE, &root, notes), Err(Error::Denied));
+    assert_eq!(
+        vfs.snapshot(&ALICE, &root, "home/alice", &ALICE, &root, notes, false),
+        Err(Error::Denied)
+    );
+    // Nor does one that removes or moves a name of one that is not.
+    let missing = "home/bob/missing";
+    assert_eq!(vfs.remove(&ALICE, &root, missing), Err(Error::Denied));
+    assert_eq!(vfs.remove_subvolume(&ALICE, &root, missing), Err(Error::Denied));
+    let moved = "home/alice/moved";
+    assert_eq!(vfs.rename(&ALICE, &root, missing, &ALICE, &root, moved), Err(Error::Denied));
+    assert_eq!(vfs.rename(&ALICE, &root, own, &ALICE, &root, notes), Err(Error::Denied));
+    // The same from the directory itself, as through a descriptor that
+    // only names it.
+    let home_bob = vfs.resolve(&K, &root, "home/bob").unwrap();
+    assert_eq!(vfs.open(&ALICE, &home_bob, "notes", reads).err(), Some(Error::Denied));
+    assert_eq!(vfs.make_directory(&ALICE, &home_bob, "notes", DIR), Err(Error::Denied));
+    assert_eq!(vfs.remove(&ALICE, &home_bob, "missing"), Err(Error::Denied));
+    // Search alone is enough to open what is there, and to learn that a
+    // name is taken before being refused the write, in Linux's order, so
+    // that `mkdir -p` passes what is there.
+    let dropped = "home/dropbox/notes";
+    assert!(vfs.open(&ALICE, &root, dropped, reads).is_ok());
+    assert_eq!(vfs.make_directory(&ALICE, &root, dropped, DIR), Err(Error::Exists));
+    assert_eq!(vfs.remove(&ALICE, &root, "home/dropbox/missing"), Err(Error::NotFound));
+    // Bob, and the bypass, reach his notes as before.
+    assert!(vfs.open(&BOB, &root, notes, reads).is_ok());
+    assert!(vfs.open(&CAROL, &root, notes, reads).is_ok());
+    assert_eq!(vfs.make_directory(&CAROL, &root, notes, DIR), Err(Error::Exists));
+}
+
+#[test]
 fn only_owners_change_modes_and_only_the_bypass_gives_files_away() {
     let file = Access { mode: 0o6755, ..owned(&ALICE, 0) };
     let chown = |owner, group| AccessChange::chown(Kind::File, owner, group);
