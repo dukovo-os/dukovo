@@ -6,14 +6,15 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 # Supported hardware
 
 Dukovo 1.0 runs on 64-bit Intel and AMD PCs, servers, virtual machines
-and clouds. Disks, wired networks and USB work. Wi-Fi, graphics
-acceleration and Bluetooth come in release 1.6, and full audio in 1.7.
+and clouds. Disks, wired networks and USB work. Graphics
+acceleration comes in release 1.10, Wi-Fi and Bluetooth in 1.11, and full
+audio in 1.13.
 
 <div class="hwkinds">
 <div><span class="hwpill hw-ok">Works</span><h3>Virtual machines and clouds</h3><p>QEMU and KVM, VMware, Hyper-V and Azure, AWS, Google Cloud and VirtualBox. Every paravirtual disk and network card they offer has a driver.</p></div>
 <div><span class="hwpill hw-ok">Works</span><h3>Desktops and servers on a wired network</h3><p>NVMe and SATA disks, Intel, Realtek, Broadcom and Killer Ethernet up to 10 Gb/s, and every kind of USB port. The screen is a text console until the desktop arrives in 1.1.</p></div>
-<div><span class="hwpill hw-part">Partly</span><h3>Laptops</h3><p>Everything a desktop has, plus SD card readers and USB-C port status. Connect with an Ethernet port, a USB Ethernet adapter or a phone's USB tethering until Wi-Fi arrives in 1.6.</p></div>
-<div><span class="hwpill hw-plan">1.6</span><h3>Gaming and graphics work</h3><p>Every graphics card shows a picture through the firmware's framebuffer. Acceleration for AMD, Intel and NVIDIA, several monitors and HDR come in 1.6.</p></div>
+<div><span class="hwpill hw-part">Partly</span><h3>Laptops</h3><p>Everything a desktop has, plus SD card readers and USB-C port status. Connect with an Ethernet port, a USB Ethernet adapter or a phone's USB tethering until Wi-Fi arrives in 1.11.</p></div>
+<div><span class="hwpill hw-plan">1.10</span><h3>Gaming and graphics work</h3><p>Every graphics card shows a picture through the firmware's framebuffer. Acceleration for AMD, Intel and NVIDIA comes in 1.10, and several monitors and HDR in 1.11.</p></div>
 </div>
 
 ## Check your machine
@@ -172,7 +173,7 @@ or an ASIX chip, which work), a dock, or a phone's USB tethering.
 **Does my graphics card work?** Every graphics card shows the console
 and, from release 1.1, the desktop, through the picture the firmware sets
 up: one screen at its native resolution, with no 3D acceleration. Native
-drivers come in 1.6.
+drivers come in 1.10.
 
 **My disks are in "RAID On" or Intel RST mode.** Intel VMD, the mode
 recent laptops ship in, works as it is. On older machines, set SATA
@@ -212,7 +213,7 @@ service tag, with the two SSDs it has now in place of the factory disks.
 | Second SSD | 512 GB TEAM T253, 2.5" SATA (in place of the factory 1 TB hard disk) | AHCI driver; kept for `/shared` |
 | USB | Intel xHCI | xHCI driver |
 | Keyboard | Built-in, PS/2 (i8042) | i8042 driver |
-| Touchpad | I2C-HID (Intel Serial IO) | With the window manager, in release 1.1; a USB mouse works until then |
+| Touchpad | I2C-HID (Intel Serial IO) | In release 1.3; a USB mouse works until then |
 | Wired network | Realtek RTL810xE Fast Ethernet (PCI ID `10ec:8136`) | Realtek driver |
 | Wi-Fi and Bluetooth | Qualcomm QCA9377 (Dell Wireless 1810) | After 1.0; needs closed firmware |
 | Audio | Realtek ALC3246 | HDA driver in 1.0 |
@@ -394,7 +395,7 @@ USB when the machine is set up.
 | Platform | AMD FCH, SMU sensors, Framework embedded controller (open source) | Fans, LEDs, sensors and the watchdog |
 | USB | Two USB4 Type-C, two USB-A 3.2 Gen 2 | xHCI; USB4 tunneling after 1.0 |
 | Graphics | Radeon 8060S (RDNA 3.5) | Firmware framebuffer console; GPU driver after 1.0 |
-| Audio | Realtek ALC623 | HDA driver in 1.0; full audio in release 1.7 |
+| Audio | Realtek ALC623 | HDA driver in 1.0; full audio in release 1.13 |
 | Wi-Fi and Bluetooth | MediaTek MT7925 | After 1.0; needs closed firmware |
 | Firmware | Insyde UEFI, UEFI boot only | Turn Secure Boot off; boot the USB stick from the F12 menu |
 | Serial port | None | Screen, crash log, and later netlog and the xHCI debug console |
