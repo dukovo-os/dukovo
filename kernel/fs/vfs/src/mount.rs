@@ -685,7 +685,11 @@ impl Vfs {
         })
     }
 
-    /// The directory `path`'s last name is in, and that name.
+    /// The directory `path`'s last name is in, and that name. `who` must
+    /// be able to search that directory, as each one before it, since
+    /// every caller looks the name up there: without search, what the
+    /// name leads to, and whether it is there at all, are not `who`'s to
+    /// learn, as on Linux (ADR 0214).
     pub fn resolve_parent<'p>(
         &self,
         who: &Who,
@@ -697,6 +701,7 @@ impl Vfs {
         if at.node.kind() != Kind::Directory {
             return Err(Error::NotDirectory);
         }
+        may_search(who, &*at.node)?;
         Ok((at, name))
     }
 
