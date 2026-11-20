@@ -1,0 +1,621 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+Start and exit without the heap, apart from the dynamic linker's own.
+A static program that does nothing began with 47 allocations in nine
+size classes, and each class opens a slab of its own: nine mmaps of
+512 KiB, each a system call, a region in the kernel and a page fault,
+and as many unmapped when the program ends, in a program that is run
+and waited for (fork, exec, wait) every time. What the C library
+itself allocated before main is gone: 16 allocations in five classes are
+left, the dynamic linker's (the main object, its TLS block, its
+lists). Now: __cxa_atexit keeps its handlers in blocks that never
+move, the first in the library's data with room for 32, as glibc's
+`initial` block does, and takes from the heap only past it (it grew a
+vector through three size classes, and a handler that registered
+another while it ran wrote through a reference into the old, freed
+vector); the locale's globals (the C locale and the starting locale,
+whose tables of every category constructors built twice, with a string
+for each, and the archive and the paths) are built the first time
+something asks for them, and never destroyed, so no constructor runs
+before main and no destructor is registered; a thread's table of key
+values (16 KiB, cleared) is allocated by its first pthread_setspecific,
+so that a thread that sets none takes none, and its exit does not look
+at the 1024 keys four times; and environ points to the environment the
+program started with, as in glibc, where each string was putenv()ed in
+turn, into a growing array through as many size classes, comparing every
+name with those before it (the first setenv() or putenv() copies it).
+A name that is there twice is the first one's now, as in glibc, and
+not the last one's. Handlers that atexit() functions register while
+the exit runs are still not called, as before.
+
+--- a/options/lsb/generic/dso_exit.cpp
++++ b/options/lsb/generic/dso_exit.cpp
+@@ -6,8 +6,9 @@
+ #include <mlibc/allocator.hpp>
+ #include <mlibc/file-io.hpp>
+ 
+-#include <frg/eternal.hpp>
+-#include <frg/vector.hpp>
++#include <frg/mutex.hpp>
++#include <frg/utility.hpp>
++#include <mlibc/lock.hpp>
+ 
+ struct ExitHandler {
+ 	void (*function)(void *);
+@@ -15,42 +16,86 @@
+ 	void *dsoHandle;
+ };
+ 
+-using ExitQueue = frg::vector<ExitHandler, MemoryAllocator>;
+-
+-struct ExitQueueWrapper {
+-	ExitQueueWrapper() : queue{getAllocator()} {}
+-	ExitQueue queue;
++// The handlers are kept in blocks that never move, the newest block
++// first, so that a handler may register more while it runs. The first
++// block is in the C library's data, as glibc's `initial` block is: a
++// program that registers no more than initialHandlers handlers (the
++// destructors of its static objects, atexit) takes nothing from the
++// heap, and a program that does not exit through the C library takes
++// nothing. Only the blocks past it are on the heap.
++struct ExitBlock {
++	ExitBlock *older;
++	size_t capacity;
++	size_t used;
++	ExitHandler *handlers;
+ };
+ 
+-constinit mlibc::lazy_eternal<ExitQueueWrapper> global_exit_queue;
++constexpr size_t initialHandlers = 32;
+ 
+-ExitQueue &getExitQueue() {
+-	return global_exit_queue.get().queue;
+-}
++ExitHandler initialHandlerStorage[initialHandlers];
++constinit ExitBlock initialExitBlock{nullptr, initialHandlers, 0, initialHandlerStorage};
++
++constinit ExitBlock *newestExitBlock = &initialExitBlock;
++constinit FutexLock exitLock;
+ 
+ extern "C" int __cxa_atexit(void (*function)(void *), void *argument, void *handle) {
+-	ExitHandler handler;
+-	handler.function = function;
+-	handler.argument = argument;
+-	handler.dsoHandle = handle;
+-	getExitQueue().push(handler);
++	frg::unique_lock guard{exitLock};
++	ExitBlock *block = newestExitBlock;
++	if (block->used == block->capacity) {
++		// As many again as there are in all (at most a block as large as
++		// the first 4096 times over), so that growing is not often.
++		size_t capacity = frg::min(block->capacity * 2, initialHandlers * 4096);
++		auto fresh = static_cast<ExitBlock *>(getAllocator().allocate(
++				sizeof(ExitBlock) + capacity * sizeof(ExitHandler)));
++		// Out of memory: atexit() fails, as it does in glibc.
++		if (!fresh)
++			return -1;
++		fresh->older = block;
++		fresh->capacity = capacity;
++		fresh->used = 0;
++		fresh->handlers = reinterpret_cast<ExitHandler *>(fresh + 1);
++		newestExitBlock = block = fresh;
++	}
++	block->handlers[block->used++] = ExitHandler{function, argument, handle};
+ 	return 0;
+ }
+ 
++// Calls the handlers that `matches`, the newest first, of those
++// registered when it was called: a handler registered by one that runs
++// is not called by this loop.
++template<typename Matches>
++void runExitHandlers(Matches matches) {
++	ExitBlock *block;
++	size_t used;
++	{
++		frg::unique_lock guard{exitLock};
++		block = newestExitBlock;
++		used = block->used;
++	}
++	// Every block but the newest is full, and none moves or goes away.
++	while (block) {
++		for (size_t i = used; i > 0; i--) {
++			auto &handler = block->handlers[i - 1];
++			if (!handler.function)
++				continue;
++
++			if (matches(handler)) {
++				handler.function(handler.argument);
++				handler.function = nullptr;
++			}
++		}
++		block = block->older;
++		if (block)
++			used = block->used;
++	}
++}
++
+ extern "C" void __dlapi_exit();
+ 
+ extern "C" void __cxa_finalize(void *dso) {
+-	ExitQueue &eq = getExitQueue();
+-	for (size_t i = eq.size(); i > 0; i--) {
+-		auto &handler = eq[i - 1];
+-		if (!handler.function)
+-			continue;
+-
+-		if (!dso || handler.dsoHandle == dso) {
+-			handler.function(handler.argument);
+-			handler.function = nullptr;
+-		}
+-	}
++	runExitHandlers([dso](ExitHandler &handler) {
++		return !dso || handler.dsoHandle == dso;
++	});
+ }
+ 
+ // In static builds, these should be provided by the crtbegin.o/crtend.o that
+@@ -75,17 +120,9 @@
+ 	// that would destroy mlibc's global objects including stdout and flushing
+ 	// open FILEs, but we'd like those to be available to [[gnu::destructor]]
+ 	// functions which we invoke below.
+-	ExitQueue &eq = getExitQueue();
+-	for (size_t i = eq.size(); i > 0; i--) {
+-		auto &handler = eq[i - 1];
+-		if (!handler.function)
+-			continue;
+-
+-		if (!handler.dsoHandle) {
+-			handler.function(handler.argument);
+-			handler.function = nullptr;
+-		}
+-	}
++	runExitHandlers([](ExitHandler &handler) {
++		return !handler.dsoHandle;
++	});
+ 
+ 	// Call fini/fini_array functions of each loaded object. This is necessary
+ 	// to implement [[gnu::destructor]]. Note that C++ applications will call
+--- a/options/internal/generic/locale.cpp
++++ b/options/internal/generic/locale.cpp
+@@ -15,27 +15,42 @@
+ 
+ namespace {
+ 
+-mlibc::localeinfo cLocale{};
+-mlibc::localeinfo startingLocale{};
+-
+ thread_local mlibc::localeinfo *current_locale = nullptr;
+-mlibc::localeinfo *current_global_locale = &startingLocale;
+ 
+-// handle to the opened locale-archive file, if any
+-smarter::shared_ptr<file_window> localeArchive;
++// What the locales keep. Not objects of their own: they would be built
++// before main, with the tables of the C locale twice over, and destroyed
++// at exit, by a program that never asks for a locale. It is built the
++// first time something needs it, and never destroyed.
++struct LocaleGlobals {
++	mlibc::localeinfo cLocale{};
++	mlibc::localeinfo startingLocale{};
++
++	// handle to the opened locale-archive file, if any
++	smarter::shared_ptr<file_window> localeArchive;
++
++	// map of (locale name, mapping)
++	frg::hash_map<
++		frg::string<MemoryAllocator>,
++		smarter::shared_ptr<file_window>,
++		frg::hash<frg::string<MemoryAllocator>>,
++		MemoryAllocator
++	> localeFiles{frg::hash<frg::string<MemoryAllocator>>(), getAllocator()};
++
++	// value of LOCPATH environment variable, if set
++	frg::string<MemoryAllocator> cachedLocpath{getAllocator()};
++	// list of paths to inspect for searching locale (non-archive) files
++	frg::vector<frg::string<MemoryAllocator>, MemoryAllocator> locpaths{getAllocator()};
++};
++
++constinit mlibc::lazy_eternal<LocaleGlobals> localeGlobalsInstance;
+ 
+-// map of (locale name, mapping)
+-frg::hash_map<
+-	frg::string<MemoryAllocator>,
+-	smarter::shared_ptr<file_window>,
+-	frg::hash<frg::string<MemoryAllocator>>,
+-	MemoryAllocator
+-> localeFiles{frg::hash<frg::string<MemoryAllocator>>(), getAllocator()};
+-
+-// value of LOCPATH environment variable, if set
+-frg::string<MemoryAllocator> cachedLocpath{getAllocator()};
+-// list of paths to inspect for searching locale (non-archive) files
+-frg::vector<frg::string<MemoryAllocator>, MemoryAllocator> locpaths{getAllocator()};
++LocaleGlobals &localeGlobals() {
++	return localeGlobalsInstance.get();
++}
++
++// The locale the global one is until setlocale() or uselocale() says
++// otherwise: null here, so that it need not be built before it is used.
++mlibc::localeinfo *current_global_locale = nullptr;
+ 
+ std::array<const char *, 13> lcNames{
+ 	"LC_CTYPE",
+@@ -64,7 +79,7 @@
+ 	bool only_digit = true;
+ 
+ 	for (size_t i = 0; i < codeset.size(); i++) {
+-		if (only_digit && !mlibc::isdigit_l(codeset[i], &cLocale))
++		if (only_digit && !mlibc::isdigit_l(codeset[i], &localeGlobals().cLocale))
+ 			only_digit = false;
+ 	}
+ 
+@@ -74,9 +89,9 @@
+ 		normalized += "iso";
+ 
+ 	for(size_t i = 0; i < codeset.size(); i++) {
+-		if (mlibc::isalpha_l(codeset[i], &cLocale))
+-			normalized.push_back(tolower_l(codeset[i], &cLocale));
+-		else if (mlibc::isdigit_l(codeset[i], &cLocale))
++		if (mlibc::isalpha_l(codeset[i], &localeGlobals().cLocale))
++			normalized.push_back(tolower_l(codeset[i], &localeGlobals().cLocale));
++		else if (mlibc::isdigit_l(codeset[i], &localeGlobals().cLocale))
+ 			normalized.push_back(codeset[i]);
+ 	}
+ 
+@@ -305,16 +320,16 @@
+ 	return;
+ #endif
+ 
+-	if (locpaths.empty()) {
++	if (localeGlobals().locpaths.empty()) {
+ 		auto locpath = getenv("LOCPATH");
+ 		if (locpath && strlen(locpath)) {
+-			cachedLocpath = {locpath, getAllocator()};
++			localeGlobals().cachedLocpath = {locpath, getAllocator()};
+ 			size_t off = 0;
+ 			size_t end = 0;
+ 			while(end != size_t(-1)) {
+-				auto view = frg::string_view{cachedLocpath}.sub_string(off, cachedLocpath.size() - off);
++				auto view = frg::string_view{localeGlobals().cachedLocpath}.sub_string(off, localeGlobals().cachedLocpath.size() - off);
+ 				end = view.find_first(':');
+-				locpaths.push_back(
++				localeGlobals().locpaths.push_back(
+ 					frg::string<MemoryAllocator>{
+ 						view.sub_string(0, (end == size_t(-1)) ? view.size() : end),
+ 						getAllocator()
+@@ -324,13 +339,13 @@
+ 					off += end + 1;
+ 			}
+ 		}
+-		locpaths.push_back(frg::string<MemoryAllocator>{"/system/libraries/locale", getAllocator()});
++		localeGlobals().locpaths.push_back(frg::string<MemoryAllocator>{"/system/libraries/locale", getAllocator()});
+ 	}
+ 
+-	if (!cachedLocpath.empty())
++	if (!localeGlobals().cachedLocpath.empty())
+ 		return;
+ 
+-	if (localeArchive)
++	if (localeGlobals().localeArchive)
+ 		return;
+ 
+ 	struct stat info;
+@@ -345,29 +360,29 @@
+ 	if (header->magic != LocaleArchive::HEADER_MAGIC)
+ 		return;
+ 
+-	localeArchive = std::move(window);
++	localeGlobals().localeArchive = std::move(window);
+ }
+ 
+ frg::optional<off_t> findLocaleRecord(frg::string_view name) {
+-	__ensure(localeArchive);
++	__ensure(localeGlobals().localeArchive);
+ 
+-	if (localeArchive->size() < sizeof(LocaleArchive::Header))
++	if (localeGlobals().localeArchive->size() < sizeof(LocaleArchive::Header))
+ 		return frg::null_opt;
+ 
+-	auto header = static_cast<LocaleArchive::Header *>(localeArchive->get());
++	auto header = static_cast<LocaleArchive::Header *>(localeGlobals().localeArchive->get());
+ 
+ 	size_t namehash_total;
+ 	if (!frg::checked_mul(sizeof(LocaleArchive::NameHashEntry), size_t{header->namehash_size}, namehash_total))
+ 		return frg::null_opt;
+ 
+ 	if (header->namehash_size <= 2
+-	    || header->namehash_offset > localeArchive->size()
+-	    || namehash_total > (localeArchive->size() - header->namehash_offset))
++	    || header->namehash_offset > localeGlobals().localeArchive->size()
++	    || namehash_total > (localeGlobals().localeArchive->size() - header->namehash_offset))
+ 		return frg::null_opt;
+ 
+ 	auto namehashtab = frg::span<LocaleArchive::NameHashEntry>{
+ 	    reinterpret_cast<LocaleArchive::NameHashEntry *>(
+-	        (std::byte *)localeArchive->get() + header->namehash_offset
++	        (std::byte *)localeGlobals().localeArchive->get() + header->namehash_offset
+ 	    ),
+ 	    header->namehash_size
+ 	};
+@@ -385,19 +400,19 @@
+ 			if (current_entry_off == 0)
+ 				break;
+ 
+-			if (localeArchive->size() <= current_entry_off)
++			if (localeGlobals().localeArchive->size() <= current_entry_off)
+ 				return frg::null_opt;
+ 
+-			auto current_entry_ptr = (char *)localeArchive->get() + current_entry_off;
++			auto current_entry_ptr = (char *)localeGlobals().localeArchive->get() + current_entry_off;
+ 			frg::string_view current_entry_name{
+ 			    current_entry_ptr,
+-			    mlibc::strnlen(current_entry_ptr, localeArchive->size() - current_entry_off)
++			    mlibc::strnlen(current_entry_ptr, localeGlobals().localeArchive->size() - current_entry_off)
+ 			};
+ 
+ 			if (namehashtab[idx].hashval == hash && e == current_entry_name) {
+ 				if (namehashtab[idx].locrec_offset == 0)
+ 					return frg::null_opt;
+-				if (namehashtab[idx].locrec_offset > localeArchive->size() - sizeof(LocaleArchive::LocaleRecord))
++				if (namehashtab[idx].locrec_offset > localeGlobals().localeArchive->size() - sizeof(LocaleArchive::LocaleRecord))
+ 					return frg::null_opt;
+ 
+ 				return frg::optional<off_t>{namehashtab[idx].locrec_offset};
+@@ -508,7 +523,7 @@
+ 	auto parsedName = parseLocaleName(name);
+ 	auto list = buildLocaleList(parsedName);
+ 
+-	for (auto lp : locpaths) {
++	for (auto lp : localeGlobals().locpaths) {
+ 		for (auto locale : list) {
+ 			frg::string<MemoryAllocator> path{lp, getAllocator()};
+ 			path += '/';
+@@ -519,8 +534,8 @@
+ 			else
+ 				path += lcNames[category];
+ 
+-			auto e = localeFiles.find(path);
+-			if (e != localeFiles.end()) {
++			auto e = localeGlobals().localeFiles.find(path);
++			if (e != localeGlobals().localeFiles.end()) {
+ 				auto &[localeName, window] = *e;
+ 				if (parseCategoryInfo(category, name, {static_cast<const uint8_t *>(window->get()), window->size()}, out))
+ 					return true;
+@@ -530,7 +545,7 @@
+ 					continue;
+ 
+ 				auto window = smarter::allocate_shared<file_window>(getAllocator(), path.data());
+-				localeFiles.insert(path, window);
++				localeGlobals().localeFiles.insert(path, window);
+ 
+ 				if (parseCategoryInfo(category, name, {static_cast<const uint8_t *>(window->get()), window->size()}, out)) {
+ 					return true;
+@@ -543,7 +558,7 @@
+ }
+ 
+ bool findLocaleArchiveRecord(int category, frg::string_view name, mlibc::localeinfo *out) {
+-	if (!localeArchive)
++	if (!localeGlobals().localeArchive)
+ 		return false;
+ 
+ 	__ensure(category != LC_ALL);
+@@ -556,15 +571,15 @@
+ 		return false;
+ 	}
+ 
+-	auto locrec = reinterpret_cast<LocaleArchive::LocaleRecord *>((uint8_t *) localeArchive->get() + *recordOff);
++	auto locrec = reinterpret_cast<LocaleArchive::LocaleRecord *>((uint8_t *) localeGlobals().localeArchive->get() + *recordOff);
+ 	if (locrec->record[category].offset == 0 || locrec->record[category].len == 0)
+ 		return false;
+ 
+-	if (locrec->record[category].offset > localeArchive->size()
+-			|| locrec->record[category].len > localeArchive->size() - locrec->record[category].offset)
++	if (locrec->record[category].offset > localeGlobals().localeArchive->size()
++			|| locrec->record[category].len > localeGlobals().localeArchive->size() - locrec->record[category].offset)
+ 		return false;
+ 
+-	const uint8_t *record = reinterpret_cast<const uint8_t *>(localeArchive->get()) + locrec->record[category].offset;
++	const uint8_t *record = reinterpret_cast<const uint8_t *>(localeGlobals().localeArchive->get()) + locrec->record[category].offset;
+ 	frg::span<const uint8_t> rec{record, locrec->record[category].len};
+ 
+ 	return parseCategoryInfo(category, name, rec, out);
+@@ -647,52 +662,52 @@
+ 		switch (category) {
+ 			case LC_CTYPE:
+ 				info->ctype.localeName = frg::string{name, getAllocator()};
+-				info->ctype = cLocale.ctype;
++				info->ctype = localeGlobals().cLocale.ctype;
+ 				break;
+ 			case LC_NUMERIC:
+ 				info->numeric.localeName = frg::string{name, getAllocator()};
+-				info->numeric = cLocale.numeric;
++				info->numeric = localeGlobals().cLocale.numeric;
+ 				break;
+ 			case LC_TIME:
+ 				info->time.localeName = frg::string{name, getAllocator()};
+-				info->time = cLocale.time;
++				info->time = localeGlobals().cLocale.time;
+ 				break;
+ 			case LC_COLLATE:
+ 				info->collate.localeName = frg::string{name, getAllocator()};
+-				info->collate = cLocale.collate;
++				info->collate = localeGlobals().cLocale.collate;
+ 				break;
+ 			case LC_MONETARY:
+ 				info->monetary.localeName = frg::string{name, getAllocator()};
+-				info->monetary = cLocale.monetary;
++				info->monetary = localeGlobals().cLocale.monetary;
+ 				break;
+ 			case LC_MESSAGES:
+ 				info->messages.localeName = frg::string{name, getAllocator()};
+-				info->messages = cLocale.messages;
++				info->messages = localeGlobals().cLocale.messages;
+ 				break;
+ 			// skip LC_ALL
+ 			case LC_PAPER:
+ 				info->paper.localeName = frg::string{name, getAllocator()};
+-				info->paper = cLocale.paper;
++				info->paper = localeGlobals().cLocale.paper;
+ 				break;
+ 			case LC_NAME:
+ 				info->name.localeName = frg::string{name, getAllocator()};
+-				info->name = cLocale.name;
++				info->name = localeGlobals().cLocale.name;
+ 				break;
+ 			case LC_ADDRESS:
+ 				info->address.localeName = frg::string{name, getAllocator()};
+-				info->address = cLocale.address;
++				info->address = localeGlobals().cLocale.address;
+ 				break;
+ 			case LC_TELEPHONE:
+ 				info->telephone.localeName = frg::string{name, getAllocator()};
+-				info->telephone = cLocale.telephone;
++				info->telephone = localeGlobals().cLocale.telephone;
+ 				break;
+ 			case LC_MEASUREMENT:
+ 				info->measurement.localeName = frg::string{name, getAllocator()};
+-				info->measurement = cLocale.measurement;
++				info->measurement = localeGlobals().cLocale.measurement;
+ 				break;
+ 			case LC_IDENTIFICATION:
+ 				info->identification.localeName = frg::string{name, getAllocator()};
+-				info->identification = cLocale.identification;
++				info->identification = localeGlobals().cLocale.identification;
+ 				break;
+ 			default:
+ 				mlibc::infoLogger() << "mlibc: unhandled defaults for category "
+@@ -788,25 +803,35 @@
+ }
+ #endif // __MLIBC_POSIX_OPTION
+ 
++localeinfo *getGlobalLocale() {
++	// The one an exchange put in place; before, the starting locale,
++	// which the first to ask for it builds.
++	auto loc = __atomic_load_n(&current_global_locale, __ATOMIC_ACQUIRE);
++	if (loc)
++		return loc;
++	loc = &localeGlobals().startingLocale;
++	localeinfo *none = nullptr;
++	if (!__atomic_compare_exchange_n(&current_global_locale, &none, loc, false,
++			__ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
++		return none;
++	return loc;
++}
++
+ localeinfo *useGlobalLocale(localeinfo *loc) {
+-	localeinfo *old = current_global_locale;
+-	current_global_locale = reinterpret_cast<localeinfo *>(loc);
+-	return old;
++	getGlobalLocale();
++	return __atomic_exchange_n(&current_global_locale, reinterpret_cast<localeinfo *>(loc),
++			__ATOMIC_ACQ_REL);
+ }
+ 
+ void freeLocale(localeinfo *loc) {
+-	if(loc && loc != &startingLocale)
++	if(loc && loc != &localeGlobals().startingLocale)
+ 		frg::destruct(getAllocator(), reinterpret_cast<localeinfo *>(loc));
+ }
+ 
+ localeinfo *getActiveLocale() {
+ 	if (current_locale)
+ 		return current_locale;
+-	return current_global_locale;
+-}
+-
+-localeinfo *getGlobalLocale() {
+-	return current_global_locale;
++	return getGlobalLocale();
+ }
+ 
+ char *nl_langinfo(nl_item item) {
+--- a/options/rtld/generic/linker.cpp
++++ b/options/rtld/generic/linker.cpp
+@@ -1480,16 +1480,15 @@
+ 	tcb_ptr->isJoinable = 1;
+ 	memset(&tcb_ptr->returnValue, 0, sizeof(tcb_ptr->returnValue));
+ 	tcb_ptr->cxaThreadExitHandlers = nullptr;
+-	using LocalKeys = frg::array<Tcb::LocalKey, PTHREAD_KEYS_MAX>;
+-	void *keys = getAllocator().allocate(sizeof(LocalKeys));
++	// The values of its keys are in a table the thread's first
++	// pthread_setspecific() allocates: 16 KiB that most threads, and
++	// every program that has one thread, never use.
++	tcb_ptr->localKeys = nullptr;
+ 	void *dtv = getAllocator().allocate(sizeof(void *) * frg::max(runtimeTlsMap->indices.size(), size_t{1}));
+-	if (!keys || !dtv) {
+-		getAllocator().free(keys);
+-		getAllocator().free(dtv);
++	if (!dtv) {
+ 		getAllocator().free(reinterpret_cast<void *>(allocation));
+ 		return nullptr;
+ 	}
+-	tcb_ptr->localKeys = new (keys) LocalKeys{};
+ 	tcb_ptr->dtvSize = runtimeTlsMap->indices.size();
+ 	tcb_ptr->dtvPointers = static_cast<void **>(dtv);
+ 	memset(tcb_ptr->dtvPointers, 0, sizeof(void *) * runtimeTlsMap->indices.size());
+--- a/options/internal/generic/threads.cpp
++++ b/options/internal/generic/threads.cpp
+@@ -345,7 +345,9 @@
+ 
+ 	run_thread_local_destructors();
+ 
+-	for (size_t j = 0; j < __MLIBC_THREAD_DESTRUCTOR_ITERATIONS; j++) {
++	// A thread that never set a key has no values to destroy. Only this
++	// thread sets one, so that it is not set concurrently.
++	for (size_t j = 0; self->localKeys && j < __MLIBC_THREAD_DESTRUCTOR_ITERATIONS; j++) {
+ 		for (size_t i = 0; i < PTHREAD_KEYS_MAX; i++) {
+ 			if (auto v = thread_key_get(i)) {
+ 				key_mutex_.lock();
+@@ -722,6 +724,10 @@
+ 	if (key >= PTHREAD_KEYS_MAX || !key_globals_[key].in_use)
+ 		return nullptr;
+ 
++	// Nothing set yet.
++	if (!self->localKeys)
++		return nullptr;
++
+ 	if (key_globals_[key].generation > (*self->localKeys)[key].generation) {
+ 		(*self->localKeys)[key].value = nullptr;
+ 		(*self->localKeys)[key].generation = key_globals_[key].generation;
+@@ -737,6 +743,14 @@
+ 	if (key >= PTHREAD_KEYS_MAX || !key_globals_[key].in_use)
+ 		return EINVAL;
+ 
++	if (!self->localKeys) {
++		using LocalKeys = frg::array<Tcb::LocalKey, PTHREAD_KEYS_MAX>;
++		void *keys = getAllocator().allocate(sizeof(LocalKeys));
++		if (!keys)
++			return ENOMEM;
++		self->localKeys = new (keys) LocalKeys{};
++	}
++
+ 	(*self->localKeys)[key].value = const_cast<void *>(value);
+ 	(*self->localKeys)[key].generation = key_globals_[key].generation;
+ 
+--- a/options/elf/generic/startup.cpp
++++ b/options/elf/generic/startup.cpp
+@@ -20,6 +20,8 @@
+ 
+ extern "C" uintptr_t *__dlapi_entrystack();
+ 
++extern char **environ;
++
+ namespace {
+ 	const char *secure_ignore[] = {
+ 		"LD_PRELOAD",
+@@ -76,6 +78,16 @@
+ 		return *it != nullptr;
+ 	};
+ 
++	// Without strings to leave out, environ is the array the program
++	// started with, as in glibc and musl: nothing is copied or allocated,
++	// and the first putenv() or setenv() copies it (see
++	// options/ansi/generic/environment.cpp). A name that is there twice
++	// is the first one's, as it is in glibc.
++	if(!mlibc::rtldConfig().secureRequired) {
++		environ = envp;
++		return;
++	}
++
+ 	auto ev = envp;
+ 	while(*ev) {
+ 		frg::string_view view{*ev};
