@@ -81,3 +81,6 @@ catalog-repo (ADR 0381).
   feed` on the host, over HTTP: an update from it, the feed as it was
   signed before and a changed file refused, and `bundle feed` signing
   one and refusing a key the manifest does not name.
+- A publisher who changes the key that signs the bundle moves its ID to
+  the new key with a rollover file the old key signed, which a feed's
+  update carries as it does any file of the bundle ([0592](0592-a-catalog-that-vouches-for-an-apps-publisher-may-take-its-id-and-a-publisher-may-move-its-app-to-a-new-key.md)).

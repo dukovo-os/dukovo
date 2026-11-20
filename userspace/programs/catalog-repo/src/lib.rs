@@ -116,13 +116,16 @@ pub struct Changes {
     pub added: BTreeMap<String, Value>,
     /// Paths taken out.
     pub removed: Vec<String>,
+    /// Paths listed already, signed before the catalog vouched for their
+    /// ID's publisher, that are listed as verified from now on.
+    pub verified: Vec<String>,
 }
 
 impl Changes {
     /// Whether it changes nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.added.is_empty() && self.removed.is_empty()
+        self.added.is_empty() && self.removed.is_empty() && self.verified.is_empty()
     }
 
     /// One line for each change.
@@ -131,14 +134,16 @@ impl Changes {
         let mut lines = Vec::new();
         for (path, info) in &self.added {
             let custom = &info["custom"];
+            let verified = if custom["owner"] == "verified" { ", publisher verified" } else { "" };
             lines.push(format!(
-                "+ {path} ({} {}, {} bytes)",
+                "+ {path} ({} {}, {} bytes{verified})",
                 custom["id"].as_str().unwrap_or("?"),
                 custom["version"].as_str().unwrap_or("?"),
                 info["length"]
             ));
         }
         lines.extend(self.removed.iter().map(|path| format!("- {path}")));
+        lines.extend(self.verified.iter().map(|path| format!("~ {path}: publisher verified")));
         lines
     }
 }
@@ -146,16 +151,15 @@ impl Changes {
 /// A bundle's target: its path, `bundles/ID-VERSION.dkv`, and what
 /// targets lists for it: length, SHA-256, and its ID and version. A
 /// bundle with a line is listed by its full ID, `ID@LINE`, so that its
-/// updates stay in its line (ADR 0387).
+/// updates stay in its line (ADR 0387). A `verified` bundle is one whose
+/// ID's publisher the catalog vouches for: its custom fields say
+/// `"owner": "verified"` (ADR 0592).
 ///
 /// # Errors
 ///
 /// If `data` is not a bundle with an ID and version.
-pub fn bundle_target(data: &[u8]) -> Result<(String, Value), String> {
-    let archive = dkv::zip::Archive::read(data)?;
-    let entry = archive.file(dkv::MANIFEST).ok_or("no manifest.json")?;
-    let manifest: Value = serde_json::from_slice(&archive.read_small(entry, 1 << 20)?)
-        .map_err(|e| format!("manifest.json: {e}"))?;
+pub fn bundle_target(data: &[u8], verified: bool) -> Result<(String, Value), String> {
+    let manifest = read_manifest(data)?;
     let field = |name: &str| {
         manifest[name].as_str().map(str::to_string).ok_or(format!("manifest.json has no {name}"))
     };
@@ -178,8 +182,18 @@ pub fn bundle_target(data: &[u8]) -> Result<(String, Value), String> {
     if let Ok(name) = field("name") {
         custom["name"] = name.into();
     }
+    if verified {
+        custom["owner"] = "verified".into();
+    }
     info["custom"] = custom;
     Ok((format!("bundles/{id}-{version}.{}", dkv::EXTENSION), info))
+}
+
+fn read_manifest(data: &[u8]) -> Result<Value, String> {
+    let archive = dkv::zip::Archive::read(data)?;
+    let entry = archive.file(dkv::MANIFEST).ok_or("no manifest.json")?;
+    serde_json::from_slice(&archive.read_small(entry, 1 << 20)?)
+        .map_err(|e| format!("manifest.json: {e}"))
 }
 
 impl Repo {
@@ -273,20 +287,28 @@ impl Repo {
     }
 
     /// What signing the bundles in `bundles` and taking out `remove`
-    /// would change in targets.
+    /// would change in targets. A bundle whose ID is one of `verified` is
+    /// listed as one whose publisher the catalog vouches for.
     ///
     /// # Errors
     ///
     /// If a bundle cannot be read, or a path already listed would list
     /// other bytes: a version, once signed, is never signed again as
     /// something else.
-    pub fn changes(&self, bundles: &[PathBuf], remove: &[String]) -> Result<Changes, String> {
+    pub fn changes(
+        &self,
+        bundles: &[PathBuf],
+        remove: &[String],
+        verified: &[String],
+    ) -> Result<Changes, String> {
         let listed = self.targets()?.map_or_default(|t| t.signed.signed.targets);
         let mut changes = Changes::default();
         for file in bundles {
             let data = std::fs::read(file).map_err(|e| format!("{}: {e}", file.display()))?;
-            let (path, info) =
-                bundle_target(&data).map_err(|e| format!("{}: {e}", file.display()))?;
+            let named = |e: String| format!("{}: {e}", file.display());
+            let id = read_manifest(&data).map_err(named)?["id"].as_str().map(str::to_string);
+            let verified = id.is_some_and(|id| verified.contains(&id));
+            let (path, info) = bundle_target(&data, verified).map_err(named)?;
             match listed.get(&path) {
                 Some(old)
                     if old.length == data.len() as u64
@@ -312,6 +334,17 @@ impl Repo {
                 return Err(format!("{path} is not listed"));
             }
             changes.removed.push(path.clone());
+        }
+        for (path, target) in &listed {
+            let custom = target.custom.as_ref();
+            let text = |key: &str| custom.and_then(|c| c.get(key)?.as_str());
+            if text("id").is_some_and(|id| verified.iter().any(|v| v == id))
+                && text("owner") != Some("verified")
+                && !changes.added.contains_key(path)
+                && !remove.contains(path)
+            {
+                changes.verified.push(path.clone());
+            }
         }
         Ok(changes)
     }
@@ -356,12 +389,17 @@ impl Repo {
         }
         for file in bundles {
             let data = std::fs::read(file).map_err(|e| format!("{}: {e}", file.display()))?;
-            let (path, _) = bundle_target(&data)?;
+            let (path, _) = bundle_target(&data, false)?;
             if changes.added.contains_key(&path) {
                 write(&store.join(&path), &data)?;
             }
         }
         listed.extend(changes.added.clone());
+        for path in &changes.verified {
+            if let Some(target) = listed.get_mut(path) {
+                target["custom"]["owner"] = "verified".into();
+            }
+        }
         let mut signed = repo::targets(version, &repo::expires_in(days), &listed);
         signed["delegations"] = online_delegations(&root.signed.signed, &keys)?;
         let bytes = repo::sign(&signed, &[signer.as_ref()])?;
@@ -1101,6 +1139,19 @@ mod tests {
     }
 
     #[test]
+    fn a_verified_bundle_is_listed_as_owned() {
+        let dir = scratch("verified");
+        let file = bundle(&dir, "org.dukovo.ripgrep", "14.1.1", b"rg");
+        let data = std::fs::read(&file).unwrap();
+        let (_, plain) = bundle_target(&data, false).unwrap();
+        assert_eq!(plain["custom"].get("owner"), None);
+        let (_, owned) = bundle_target(&data, true).unwrap();
+        assert_eq!(owned["custom"]["owner"], "verified");
+        assert_eq!(owned["custom"]["id"], "org.dukovo.ripgrep");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_catalog_is_signed_and_published_as_the_client_reads_it() {
         let dir = scratch("catalog");
         let repo = Repo::new(&dir.join("catalog"));
@@ -1131,7 +1182,7 @@ mod tests {
 
         let ripgrep = bundle(&dir, "org.dukovo.ripgrep", "14.1.1", b"rg");
         let bat = bundle(&dir, "org.dukovo.bat", "0.25.0", b"bat");
-        let changes = repo.changes(&[ripgrep.clone(), bat.clone()], &[]).unwrap();
+        let changes = repo.changes(&[ripgrep.clone(), bat.clone()], &[], &[]).unwrap();
         assert_eq!(changes.lines().len(), 2);
         assert!(
             changes.lines()[1].starts_with(
@@ -1148,9 +1199,16 @@ mod tests {
             repo.sign_targets(&changes, &[ripgrep.clone(), bat.clone()], &store, &both, 182),
             Ok(1)
         );
-        assert!(repo.changes(std::slice::from_ref(&ripgrep), &[]).unwrap().is_empty());
+        assert!(repo.changes(std::slice::from_ref(&ripgrep), &[], &[]).unwrap().is_empty());
+        // Signed before the catalog vouched for its publisher: the next
+        // batch lists it as verified, with no new bytes.
+        let verified = vec!["org.dukovo.ripgrep".to_string()];
+        assert_eq!(
+            repo.changes(&[], &[], &verified).unwrap().lines(),
+            vec!["~ bundles/org.dukovo.ripgrep-14.1.1.dkv: publisher verified"]
+        );
         let other = bundle(&dir, "org.dukovo.ripgrep", "14.1.1", b"something else");
-        assert!(repo.changes(&[other], &[]).unwrap_err().contains("new version"));
+        assert!(repo.changes(&[other], &[], &[]).unwrap_err().contains("new version"));
 
         let out = dir.join("site");
         assert_eq!(repo.publish(&store, &out, &online_only, (7, 1)), Ok((1, 1)));
@@ -1171,7 +1229,7 @@ mod tests {
         // takes a bundle out, still read back from the first root.
         assert_eq!(repo.sign_root(&both, 365), Ok(2));
         let gone = vec!["bundles/org.dukovo.bat-0.25.0.dkv".to_string()];
-        let changes = repo.changes(&[], &gone).unwrap();
+        let changes = repo.changes(&[], &gone, &[]).unwrap();
         assert_eq!(changes.lines(), vec!["- bundles/org.dukovo.bat-0.25.0.dkv"]);
         assert_eq!(repo.sign_targets(&changes, &[], &store, &both, 182), Ok(2));
         // A new root or targets: refresh signs everything again.
@@ -1218,6 +1276,17 @@ mod tests {
         );
         assert_eq!(repo.check_url(&format!("file://{}", served.display())), Ok(1));
         assert_eq!(repo.refresh(&store, &out, &online_only, (7, 1)), Ok(Refreshed::Timestamp(10)));
+
+        // Marked verified, the target keeps its bytes and gains the owner.
+        let marked = repo.changes(&[], &[], &verified).unwrap();
+        let version = repo.sign_targets(&marked, &[], &store, &both, 182).unwrap();
+        let targets = repo.targets().unwrap().unwrap();
+        assert_eq!(targets.signed.version, version);
+        let ripgrep = &targets.signed.signed.targets["bundles/org.dukovo.ripgrep-14.1.1.dkv"];
+        let custom = ripgrep.custom.as_ref().unwrap();
+        assert_eq!(custom.get("owner").and_then(|o| o.as_str()), Some("verified"));
+        assert_eq!(custom.get("version").and_then(|v| v.as_str()), Some("14.1.1"));
+        assert!(repo.changes(&[], &[], &verified).unwrap().is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1233,7 +1302,7 @@ mod tests {
         keys::new_file_key("online", roles, &online_file).unwrap().write(&repo.keys_dir()).unwrap();
         let both = Signers::new(Some(&helper), std::slice::from_ref(&online_file)).unwrap();
         repo.sign_root(&both, 365).unwrap();
-        let changes = repo.changes(bundles, &[]).unwrap();
+        let changes = repo.changes(bundles, &[], &[]).unwrap();
         let store = dir.join("store");
         repo.sign_targets(&changes, bundles, &store, &both, 182).unwrap();
         let online = Signers::new(None, std::slice::from_ref(&online_file)).unwrap();
@@ -1325,7 +1394,7 @@ mod tests {
         let listed_before = "org.dukovo.ripgrep/14.1.0";
         assert_eq!(read(listed_before), Some(at(listed_before, rollout::LAST)));
         let added = [newer, bat_file];
-        let changes = repo.changes(&added, &[]).unwrap();
+        let changes = repo.changes(&added, &[], &[]).unwrap();
         repo.sign_targets(&changes, &added, &store, &both, 182).unwrap();
 
         // The newest version of each bundle listed after them opens to the
@@ -1369,7 +1438,7 @@ mod tests {
         // A newer version takes the place of the newest: the plan of the
         // one before goes, and the new one opens to the canaries.
         let third = bundle(&dir, "org.dukovo.ripgrep", "14.2.0", b"rg, newer still");
-        let changes = repo.changes(std::slice::from_ref(&third), &[]).unwrap();
+        let changes = repo.changes(std::slice::from_ref(&third), &[], &[]).unwrap();
         repo.sign_targets(&changes, &[third], &store, &both, 182).unwrap();
         let (newest, released) = ("org.dukovo.ripgrep/14.2.0", now + 5 * day);
         rolled(released, &mut plans);
@@ -1391,7 +1460,7 @@ mod tests {
         let now = tuf::time::now();
         repo.sign_rollouts(&store, &online, Some(&mut plans), now).unwrap();
         let added = [newer];
-        let changes = repo.changes(&added, &[]).unwrap();
+        let changes = repo.changes(&added, &[], &[]).unwrap();
         repo.sign_targets(&changes, &added, &store, &both, 182).unwrap();
         plans.releases.insert(
             "org.dukovo.ripgrep/14.1.1".into(),
@@ -1485,7 +1554,7 @@ mod tests {
         // A version listed after the first rollouts, signed by a server
         // that was given no plan.
         let newer = bundle(&dir, "org.dukovo.ripgrep", "14.1.1", b"rg");
-        let changes = repo.changes(std::slice::from_ref(&newer), &[]).unwrap();
+        let changes = repo.changes(std::slice::from_ref(&newer), &[], &[]).unwrap();
         repo.sign_targets(&changes, &[newer], &store, &both, 182).unwrap();
         repo.sign_rollouts(&store, &online, None, now).unwrap().unwrap();
         repo.publish(&store, &out, &online, (7, 1)).unwrap();

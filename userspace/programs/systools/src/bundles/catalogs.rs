@@ -34,6 +34,7 @@ use tuf::metadata::Targets;
 use tuf::{Updater, Url};
 
 use super::protocol::Flags;
+use super::registry::base_id;
 
 /// Where the catalogs are set.
 pub const SETTINGS: &str = "/system/settings/catalogs";
@@ -170,6 +171,9 @@ pub struct Entry {
     pub version: String,
     /// Its name, as the catalog gives it.
     pub name: String,
+    /// Whether the catalog vouches for the ID's publisher (its target's
+    /// `custom.owner` is `verified`).
+    pub owner: bool,
 }
 
 /// What bundled keeps of a catalog's targets, as it last read them.
@@ -213,6 +217,7 @@ impl Index {
                     length: target.length,
                     name: field(&text("name").unwrap_or_else(|| id.clone())),
                     version: field(&version),
+                    owner: text("owner").as_deref() == Some("verified"),
                     id,
                 })
             })
@@ -229,8 +234,14 @@ impl Index {
             format!("read\t{}\texpires\t{}\tversion\t{}\n", self.read, self.expires, self.version);
         for e in &self.entries {
             out += &format!(
-                "{}\t{}\t{}\t{}\t{}\t{}\n",
-                e.sha256, e.length, e.id, e.version, e.path, e.name
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                e.sha256,
+                e.length,
+                e.id,
+                e.version,
+                e.path,
+                e.name,
+                if e.owner { "verified" } else { "-" }
             );
         }
         out
@@ -251,13 +262,20 @@ impl Index {
         };
         let entries = lines
             .map(|line| match line.split('\t').collect::<Vec<_>>().as_slice() {
-                [sha256, length, id, version, path, name] => Ok(Entry {
+                [sha256, length, id, version, path, name, owner @ ..] => Ok(Entry {
                     sha256: (*sha256).into(),
                     length: length.parse().map_err(|_| format!("{length:?} is no length"))?,
                     id: (*id).into(),
                     version: (*version).into(),
                     path: (*path).into(),
                     name: (*name).into(),
+                    // An index written before owners were kept has six
+                    // fields.
+                    owner: match owner {
+                        [] | ["-"] => false,
+                        ["verified"] => true,
+                        _ => return Err(format!("{line:?} is no line of an index")),
+                    },
                 }),
                 _ => Err(format!("{line:?} is no line of an index")),
             })
@@ -283,6 +301,14 @@ impl Index {
         };
         newest(&|e| e.id == id)
             .or_else(|| newest(&|e| e.id.split_once('@').is_some_and(|(base, _)| base == id)))
+    }
+
+    /// Whether it vouches for the publisher of `id`, a bundle it lists
+    /// by that base ID or with lines (`ID@LINE`).
+    #[must_use]
+    pub fn owns(&self, id: &str) -> bool {
+        let id = base_id(id);
+        self.entries.iter().any(|e| e.owner && base_id(&e.id) == id)
     }
 
     /// Whether it lists a file of `id` with this SHA-256 and length.
@@ -689,7 +715,55 @@ mod tests {
             id: id.into(),
             version: version.into(),
             name: id.rsplit('.').next().unwrap().into(),
+            owner: false,
         }
+    }
+
+    #[test]
+    fn an_index_written_without_owners_still_reads() {
+        let text = format!(
+            "read\t1\texpires\t2\tversion\t3\n{}\t10\torg.example.app\t1.0.0\tbundles/a.dkv\tapp\n",
+            "a".repeat(64)
+        );
+        let index = Index::read(&text).unwrap();
+        assert_eq!(index.entries.len(), 1);
+        assert!(!index.entries[0].owner);
+        assert!(!index.owns("org.example.app"));
+        // A name that is the word is a name; a seventh field is one of two.
+        let named = text.replace("\tapp\n", "\tverified\n");
+        assert!(!Index::read(&named).unwrap().entries[0].owner);
+        assert!(Index::read(&text.replace("\tapp\n", "\tapp\tyes\n")).is_err());
+    }
+
+    #[test]
+    fn the_owner_field_is_written_and_read_back() {
+        let mut owned = entry("org.example.app", "1.0.0", 'a');
+        owned.owner = true;
+        let index = Index {
+            read: 1,
+            expires: 2,
+            version: 3,
+            entries: vec![owned, entry("org.example.other", "1.0.0", 'b')],
+        };
+        let text = index.text();
+        assert!(text.lines().nth(1).unwrap().ends_with("\tverified"), "{text}");
+        assert!(text.lines().nth(2).unwrap().ends_with("\t-"), "{text}");
+        assert_eq!(Index::read(&text).unwrap(), index);
+    }
+
+    #[test]
+    fn an_index_owns_an_id_by_its_base_id() {
+        let mut lined = entry("org.example.app@2", "2.0.0", 'a');
+        lined.owner = true;
+        let index = Index {
+            entries: vec![lined, entry("org.example.other", "1.0.0", 'b')],
+            ..Index::default()
+        };
+        assert!(index.owns("org.example.app"));
+        assert!(index.owns("org.example.app@2"));
+        assert!(index.owns("org.example.app@3"));
+        assert!(!index.owns("org.example.other"));
+        assert!(!index.owns("org.example.missing"));
     }
 
     #[test]
@@ -805,7 +879,7 @@ mod tests {
         signers.add(from_minisign(&secret).unwrap());
         repo.sign_root(&signers, 365).unwrap();
         let files = [bundle_file(dir, "1.0.0"), bundle_file(dir, "1.1.0")];
-        let changes = repo.changes(&files, &[]).unwrap();
+        let changes = repo.changes(&files, &[], &[]).unwrap();
         let store = dir.join("store");
         repo.sign_targets(&changes, &files, &store, &signers, 30).unwrap();
         if let Some(plans) = plans {

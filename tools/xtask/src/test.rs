@@ -6279,6 +6279,76 @@ fn make_update_releases(disk: &Disk, path: &Path, updates: &Path) -> Result<(), 
     Ok(())
 }
 
+/// The ID of the bundle a [`CATALOG_SITE`] disk's catalog lists as one
+/// whose publisher it vouches for (ADR 0592): ripgrep's, as the real
+/// catalog does for the bundles of its ports.
+const CATALOG_SITE_VERIFIED: &str = "io.github.burntsushi.ripgrep";
+
+/// The seconds since 1970 at which the publisher of
+/// [`CATALOG_SITE_MOVER`] signs its bundle with its new key and says it
+/// moved there: 2026-10-26.
+const CATALOG_SITE_MOVED: i64 = 1_793_000_000;
+
+/// The ID of a bundle on a [`CATALOG_SITE`] disk that no catalog lists, in
+/// a file of its first key and, once its publisher has moved it, of a
+/// second.
+const CATALOG_SITE_MOVER: &str = "org.example.mover";
+
+/// A test bundle of `id` and `version` that prints `says`.
+fn publisher_bundle(
+    id: &'static str,
+    version: &'static str,
+    says: &'static str,
+) -> crate::bundles::TestBundle {
+    crate::bundles::TestBundle {
+        id,
+        version,
+        script: says,
+        permissions: "{}",
+        services: "",
+        provides: "",
+        line: "",
+        add_ons: "",
+        feed: "",
+        uses: "",
+        posix: "",
+    }
+}
+
+/// A key for a test bundle's publisher, from `byte`: the files of a
+/// [`CATALOG_SITE`] disk are signed by keys the catalog's disk shows, so
+/// that nothing trusts them.
+fn publisher_key(byte: u8) -> Result<dkv::minisign::SecretKey, String> {
+    dkv::minisign::SecretKey::generate(&[byte; 40])
+}
+
+/// Packs the files a [`CATALOG_SITE`] disk holds of publishers other than
+/// the build's (ADR 0592): two files of ripgrep's ID signed by keys the
+/// catalog does not know, whose first is installed before the catalog is
+/// added and whose second is refused after; and three of
+/// [`CATALOG_SITE_MOVER`], the first and the last signed by its first
+/// key and the second, version 2.0.0, by a second key with a rollover
+/// file that the first key signed.
+fn catalog_site_publishers(ctx: &Ctx) -> Result<Vec<PathBuf>, String> {
+    let (first, second) = (publisher_key(0x21)?, publisher_key(0x22)?);
+    let pack = |bundle: &crate::bundles::TestBundle, key, rollover: Option<&str>| {
+        crate::bundles::pack_test_signed(ctx, bundle, key, CATALOG_SITE_MOVED, rollover)
+            .map_err(|e| e.to_string())
+    };
+    let script = "#!/bin/sh\necho impostor\n";
+    let impostor = |version| publisher_bundle(CATALOG_SITE_VERIFIED, version, script);
+    let mover = |version| publisher_bundle(CATALOG_SITE_MOVER, version, "#!/bin/sh\necho mover\n");
+    let link =
+        dkv::rollover::link(&first, CATALOG_SITE_MOVER, &second.public(), CATALOG_SITE_MOVED);
+    Ok(vec![
+        pack(&impostor("0.0.1"), &publisher_key(0x11)?, None)?,
+        pack(&impostor("0.0.2"), &publisher_key(0x12)?, None)?,
+        pack(&mover("1.0.0"), &first, None)?,
+        pack(&mover("2.0.0"), &second, Some(&link))?,
+        pack(&mover("1.0.1"), &first, None)?,
+    ])
+}
+
 /// Two advisories in the OSV format that the [`CATALOG_SITE`] disk's
 /// catalog lists flaws from (ADR 0389): one in every version of a crate
 /// ripgrep links below 999.0.0, rated high by its CVSS vector, and one in
@@ -6312,8 +6382,15 @@ fn make_catalog_site(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> 
         .ok_or_else(|| {
             format!("{} holds no ripgrep bundle (run `./ob ports`)", bundles.display())
         })?;
-    let dir = crate::catalog::test_site(ctx, &[ripgrep], Some(TEST_ADVISORIES), None, &[])
-        .map_err(|e| e.to_string())?;
+    let dir = crate::catalog::test_site(
+        ctx,
+        &[ripgrep],
+        Some(TEST_ADVISORIES),
+        None,
+        &[],
+        &[CATALOG_SITE_VERIFIED],
+    )
+    .map_err(|e| e.to_string())?;
     let image = path.display().to_string();
     host_tool(
         std::process::Command::new("mcopy")
@@ -6321,6 +6398,9 @@ fn make_catalog_site(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> 
             .arg(dir.join("site"))
             .arg("::/catalog"),
     )?;
+    for file in catalog_site_publishers(ctx)? {
+        host_tool(std::process::Command::new("mcopy").args(["-i", &image]).arg(file).arg("::/"))?;
+    }
     host_tool(
         std::process::Command::new("mcopy")
             .args(["-i", &image])
@@ -6358,8 +6438,8 @@ fn make_site(
     }
     let begun: Vec<String> =
         newest.iter().map(|bundle| format!("{}/{}", bundle.id, bundle.version)).collect();
-    let dir =
-        crate::catalog::test_site(ctx, &files, None, paused, &begun).map_err(|e| e.to_string())?;
+    let dir = crate::catalog::test_site(ctx, &files, None, paused, &begun, &[])
+        .map_err(|e| e.to_string())?;
     let mut mkfs = std::process::Command::new(fat_tool("mkfs.fat"));
     mkfs.args(["-F", "32", "-n", disk.label, "-i", "4f525448", "-C"])
         .arg(path)

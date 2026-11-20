@@ -148,7 +148,7 @@ mod tests {
         let mut signers = Signers::default();
         signers.add(from_minisign(key).unwrap());
         repo.sign_root(&signers, 365).unwrap();
-        let changes = repo.changes(&[], &[]).unwrap();
+        let changes = repo.changes(&[], &[], &[]).unwrap();
         repo.sign_targets(&changes, &[], &dir.join("store"), &signers, 30).unwrap();
         repo.publish(&dir.join("store"), &dir.join("site"), &signers, (30, 30)).unwrap();
     }

@@ -17,6 +17,7 @@
 use std::fmt;
 
 use super::minisign::PublicKey;
+use super::rollover::{self, Link};
 
 /// Where bundled keeps them.
 pub const STATE: &str = "/system/state/bundled";
@@ -503,6 +504,23 @@ impl Registry {
         self.installed.push(installed);
     }
 
+    /// Binds `id` to `key` from `since`, in `place` and for everyone,
+    /// wherever it is bound to another key: [`Registry::trust`] said, as
+    /// [`Trust::NewKey`] or [`Trust::Takes`], that each such binding moves
+    /// to it (ADR 0592). Returns what each was before.
+    pub fn rebind(&mut self, place: Place, id: &str, key: &PublicKey, since: u64) -> Vec<Bound> {
+        let mut before = Vec::new();
+        for b in &mut self.bound {
+            let here = b.place == place || b.place == Place::Everyone;
+            if here && b.id == base_id(id) && b.key != *key {
+                before.push(b.clone());
+                b.key = *key;
+                b.since = since;
+            }
+        }
+        before
+    }
+
     /// Forgets the bundle `id` installed in `place`, and the version it
     /// replaced; its binding stays.
     pub fn forget(&mut self, place: Place, id: &str) -> Option<Installed> {
@@ -533,26 +551,67 @@ pub enum Trust {
     /// No ID is bound here yet, and the key is not one this computer
     /// knows: it installs after a warning.
     Unknown,
+    /// Its ID is bound to the key `old`, since then, and the rollover file
+    /// the bundle carries moves it from that key to this one, from
+    /// `moved` (ADR 0592): installing it binds the ID to this key, and
+    /// `old` is refused from then on. `catalog` lists the file, if one
+    /// does.
+    NewKey { old: PublicKey, since: u64, moved: u64, catalog: Option<String> },
+    /// Its ID is bound to the key `old`, since then, but `catalog` lists
+    /// this file and vouches for the ID's publisher (ADR 0592): installing
+    /// it removes the app of the old key, sets its data aside, and binds
+    /// the ID to this key and to the catalog.
+    Takes { catalog: String, old: PublicKey, since: u64 },
+}
+
+impl Trust {
+    /// The catalog the file installs from, which its ID is bound to from
+    /// then on if it is not bound to one.
+    pub fn catalog(&self) -> Option<&str> {
+        match self {
+            Trust::Catalog { name, .. } | Trust::Takes { catalog: name, .. } => Some(name),
+            Trust::NewKey { catalog, .. } => catalog.as_deref(),
+            Trust::Bound { .. } | Trust::BoundForEveryone { .. } => None,
+            Trust::Developer | Trust::Unknown => None,
+        }
+    }
+}
+
+/// What a bundle's file says of itself, and the catalogs of it, for
+/// [`Registry::trust`].
+#[derive(Clone, Copy, Debug)]
+pub struct Claim<'a> {
+    /// Its full ID.
+    pub id: &'a str,
+    /// The key that signed it.
+    pub key: &'a PublicKey,
+    /// The catalogs that list this very file, the one it was fetched from
+    /// first.
+    pub listed: &'a [String],
+    /// The catalogs that vouch for the publisher of its ID (ADR 0592).
+    pub owners: &'a [String],
+    /// The rollover links it carries, read and their signatures checked.
+    pub links: &'a [Link],
+    /// When it was signed, if its signature says.
+    pub signed_at: Option<i64>,
 }
 
 impl Registry {
-    /// Whether a file of `id` signed by `key`, which the catalogs
-    /// `listed` list, may install in `place` for user `asker`: its trust,
-    /// or why not.
+    /// Whether the file `claim` tells of may install in `place` for user
+    /// `asker`: its trust, or why not.
     ///
     /// - An ID bound to a catalog, for everyone or in the place, installs
     ///   only from a file that catalog lists, whatever key signed it.
-    /// - Otherwise an ID bound to a key installs only as that key signs.
+    /// - Otherwise an ID bound to a key installs as that key signs; as
+    ///   another key signs only if the bundle's rollover file moves the ID
+    ///   from the bound key to it, or, for the binding of the place it
+    ///   installs in, if the first catalog that lists the file vouches for
+    ///   the ID's publisher (ADR 0592).
     /// - A file a catalog lists is trusted as that catalog's, the first of
-    ///   `listed`; then the asker's developer key; then nothing.
-    pub fn trust(
-        &self,
-        place: Place,
-        asker: u32,
-        id: &str,
-        key: &PublicKey,
-        listed: &[String],
-    ) -> Result<Trust, String> {
+    ///   `listed`; then the asker's developer key; then, if no catalog
+    ///   vouches for the ID's publisher, nothing.
+    pub fn trust(&self, place: Place, asker: u32, claim: &Claim<'_>) -> Result<Trust, String> {
+        let Claim { id, key, listed, owners, .. } = *claim;
         let everyone = self.catalog_bound(Place::Everyone, id);
         let own = if place == Place::Everyone { None } else { self.catalog_bound(place, id) };
         if let Some(b) = own.or(everyone) {
@@ -568,17 +627,53 @@ impl Registry {
         }
         let everyone = self.bound(Place::Everyone, id);
         let own = if place == Place::Everyone { None } else { self.bound(place, id) };
+        // The catalog that lists the file and vouches for its publisher.
+        let vouching = listed.first().filter(|c| owners.contains(c));
+        let mut moves = None;
         for (binding, whose) in [(everyone, "for everyone"), (own, "here")] {
-            if let Some(b) = binding
-                && b.key != *key
-            {
-                return Err(format!(
-                    "{id} is signed by key {}, but it is bound to key {} {whose}, since its first \
-                     install: only its publisher's key may install it",
-                    key.encoded(),
-                    b.key.encoded()
-                ));
-            }
+            let Some(b) = binding.filter(|b| b.key != *key) else { continue };
+            let chain = rollover::chain(claim.links, base_id(id), &b.key, key, claim.signed_at);
+            moves = Some(match (chain, vouching) {
+                (Ok(moved), _) => Trust::NewKey {
+                    old: b.key,
+                    since: b.since,
+                    moved: u64::try_from(moved).unwrap_or_default(),
+                    catalog: listed.first().cloned(),
+                },
+                // Only the binding of the place it installs in: a person's
+                // install takes nothing from everyone's.
+                (Err(_), Some(catalog)) if b.place == place => {
+                    Trust::Takes { catalog: catalog.clone(), old: b.key, since: b.since }
+                }
+                (Err(why), _) => {
+                    let mut text = format!(
+                        "{id} is signed by key {}, but it is bound to key {} {whose}, since its \
+                         first install: only its publisher's key may install it",
+                        key.encoded(),
+                        b.key.encoded()
+                    );
+                    if !claim.links.is_empty() {
+                        text.push_str(&format!("; its rollover file does not move it: {why}"));
+                    }
+                    if let Some(catalog) = vouching {
+                        text.push_str(&format!(
+                            "; catalog {catalog} vouches for its publisher, and an administrator \
+                             installing it for everyone from {catalog} replaces the app of key {}",
+                            b.key.encoded()
+                        ));
+                    } else if let Some(catalog) = owners.first() {
+                        text.push_str(&format!(
+                            "; catalog {catalog} vouches for its publisher: install it from \
+                             {catalog}"
+                        ));
+                    }
+                    return Err(text);
+                }
+            });
+        }
+        // Taking the ID over is the one to warn of, if both are asked.
+        if let Some(trust) = moves {
+            return Ok(trust);
         }
         if let Some(name) = listed.first() {
             return Ok(Trust::Catalog { name: name.clone(), since: None });
@@ -596,6 +691,12 @@ impl Registry {
         if self.developer_key(asker) == Some(*key) {
             return Ok(Trust::Developer);
         }
+        if let Some(catalog) = owners.first() {
+            return Err(format!(
+                "{id} belongs to the publisher catalog {catalog} vouches for: install it from \
+                 {catalog}"
+            ));
+        }
         Ok(Trust::Unknown)
     }
 }
@@ -605,10 +706,20 @@ mod tests {
     use super::*;
     use crate::bundles::minisign::SecretKey;
 
-    fn key(n: u8) -> PublicKey {
+    fn secret(n: u8) -> SecretKey {
         let mut random = [n; 40];
         random[0] = n.wrapping_add(1);
-        SecretKey::generate(&random).unwrap().public()
+        SecretKey::generate(&random).unwrap()
+    }
+
+    fn key(n: u8) -> PublicKey {
+        secret(n).public()
+    }
+
+    /// A file of `id` signed by `key`, which `listed` list, of an ID no
+    /// catalog vouches for, with no rollover file.
+    fn claim<'a>(id: &'a str, key: &'a PublicKey, listed: &'a [String]) -> Claim<'a> {
+        Claim { id, key, listed, owners: &[], links: &[], signed_at: None }
     }
 
     fn installed(place: Place, id: &str, n: u8) -> Installed {
@@ -709,35 +820,38 @@ mod tests {
         let id = "org.example.notes";
         // Nothing bound: her developer key is hers alone to trust.
         registry.set_developer_key(1000, key(1));
-        assert_eq!(registry.trust(alice, 1000, id, &key(1), &[]), Ok(Trust::Developer));
-        assert_eq!(registry.trust(bob, 1001, id, &key(1), &[]), Ok(Trust::Unknown));
-        assert_eq!(registry.trust(alice, 1000, id, &key(2), &[]), Ok(Trust::Unknown));
+        assert_eq!(registry.trust(alice, 1000, &claim(id, &key(1), &[])), Ok(Trust::Developer));
+        assert_eq!(registry.trust(bob, 1001, &claim(id, &key(1), &[])), Ok(Trust::Unknown));
+        assert_eq!(registry.trust(alice, 1000, &claim(id, &key(2), &[])), Ok(Trust::Unknown));
         // Bound for her: only that key, for her; bob is free.
         registry.record(installed(alice, id, 1), None);
         assert_eq!(
-            registry.trust(alice, 1000, id, &key(1), &[]),
+            registry.trust(alice, 1000, &claim(id, &key(1), &[])),
             Ok(Trust::Bound { since: 1_793_000_000 })
         );
         assert!(
-            registry.trust(alice, 1000, id, &key(2), &[]).unwrap_err().contains("bound to key")
+            registry
+                .trust(alice, 1000, &claim(id, &key(2), &[]))
+                .unwrap_err()
+                .contains("bound to key")
         );
-        assert_eq!(registry.trust(bob, 1001, id, &key(2), &[]), Ok(Trust::Unknown));
+        assert_eq!(registry.trust(bob, 1001, &claim(id, &key(2), &[])), Ok(Trust::Unknown));
         // Bound for everyone: that key, for everyone and each person.
         registry.record(installed(Place::Everyone, "org.example.tea", 3), None);
         let tea = "org.example.tea";
-        assert!(registry.trust(bob, 1001, tea, &key(2), &[]).is_err());
+        assert!(registry.trust(bob, 1001, &claim(tea, &key(2), &[])).is_err());
         assert_eq!(
-            registry.trust(bob, 1001, tea, &key(3), &[]),
+            registry.trust(bob, 1001, &claim(tea, &key(3), &[])),
             Ok(Trust::BoundForEveryone { since: 1_793_000_000 })
         );
         assert_eq!(
-            registry.trust(Place::Everyone, 0, tea, &key(3), &[]),
+            registry.trust(Place::Everyone, 0, &claim(tea, &key(3), &[])),
             Ok(Trust::Bound { since: 1_793_000_000 })
         );
         // Forgetting keeps the binding.
         assert!(registry.forget(alice, id).is_some());
         assert!(registry.installed(alice, id).is_none());
-        assert!(registry.trust(alice, 1000, id, &key(2), &[]).is_err());
+        assert!(registry.trust(alice, 1000, &claim(id, &key(2), &[])).is_err());
     }
 
     #[test]
@@ -748,7 +862,7 @@ mod tests {
         let dukovo = vec!["dukovo".to_string()];
         // Listed: the catalog's, whatever key signed it.
         assert_eq!(
-            registry.trust(alice, 1000, id, &key(1), &dukovo),
+            registry.trust(alice, 1000, &claim(id, &key(1), &dukovo)),
             Ok(Trust::Catalog { name: "dukovo".into(), since: None })
         );
         registry.record(installed(alice, id, 1), Some("dukovo"));
@@ -756,26 +870,131 @@ mod tests {
         // From then on, a file it lists, signed by any key; nothing else,
         // not even one signed by the same key.
         assert_eq!(
-            registry.trust(alice, 1000, id, &key(2), &dukovo),
+            registry.trust(alice, 1000, &claim(id, &key(2), &dukovo)),
             Ok(Trust::Catalog { name: "dukovo".into(), since: Some(1_793_000_000) })
         );
         let other = vec!["feed".to_string()];
         assert!(
-            registry.trust(alice, 1000, id, &key(1), &[]).unwrap_err().contains("catalog dukovo")
+            registry
+                .trust(alice, 1000, &claim(id, &key(1), &[]))
+                .unwrap_err()
+                .contains("catalog dukovo")
         );
-        assert!(registry.trust(alice, 1000, id, &key(1), &other).is_err());
+        assert!(registry.trust(alice, 1000, &claim(id, &key(1), &other)).is_err());
         // An ID bound to a key stays that key's, though a catalog lists it.
         let notes = "org.example.notes";
         registry.record(installed(alice, notes, 3), None);
-        assert!(registry.trust(alice, 1000, notes, &key(4), &dukovo).is_err());
+        assert!(registry.trust(alice, 1000, &claim(notes, &key(4), &dukovo)).is_err());
         assert_eq!(
-            registry.trust(alice, 1000, notes, &key(3), &dukovo),
+            registry.trust(alice, 1000, &claim(notes, &key(3), &dukovo)),
             Ok(Trust::Catalog { name: "dukovo".into(), since: None })
         );
         // The bindings read back.
         let again = Registry::read(&registry.texts()).unwrap();
         assert_eq!(again, registry);
         assert!(registry.texts()[3].starts_with("1000\tio.github.burntsushi.ripgrep\tdukovo\t"));
+    }
+
+    #[test]
+    fn a_rollover_moves_an_id_to_a_new_key_for_good() {
+        let mut registry = Registry::default();
+        let alice = Place::User(1000);
+        let id = "org.example.notes";
+        registry.record(installed(alice, id, 1), None);
+        let text = rollover::link(&secret(1), id, &key(2), 1_794_000_000);
+        let links = rollover::read(&text).unwrap();
+        let new_key = key(2);
+        let moving =
+            Claim { links: &links, signed_at: Some(1_795_000_000), ..claim(id, &new_key, &[]) };
+        // Without the links, refused; with them, a move from the bound key.
+        assert!(registry.trust(alice, 1000, &claim(id, &new_key, &[])).is_err());
+        assert_eq!(
+            registry.trust(alice, 1000, &moving),
+            Ok(Trust::NewKey {
+                old: key(1),
+                since: 1_793_000_000,
+                moved: 1_794_000_000,
+                catalog: None
+            })
+        );
+        // Not when the bundle was signed before the move, nor for another
+        // ID, and saying why.
+        let early = Claim { signed_at: Some(1_793_500_000), ..moving };
+        let error = registry.trust(alice, 1000, &early).unwrap_err();
+        assert!(error.contains("rollover file does not move it"), "{error}");
+        assert!(registry.trust(alice, 1000, &Claim { id: "org.example.tea", ..moving }).is_ok());
+        // Rebound: the new key as bound, and never the old one again.
+        let before = registry.rebind(alice, id, &new_key, 1_795_000_000);
+        assert_eq!(before.iter().map(|b| b.key).collect::<Vec<_>>(), [key(1)]);
+        assert!(registry.rebind(alice, id, &new_key, 1_795_000_000).is_empty());
+        assert_eq!(
+            registry.trust(alice, 1000, &claim(id, &new_key, &[])),
+            Ok(Trust::Bound { since: 1_795_000_000 })
+        );
+        assert!(registry.trust(alice, 1000, &claim(id, &key(1), &[])).is_err());
+        let back = rollover::read(&rollover::link(&secret(2), id, &key(1), 1_796_000_000)).unwrap();
+        let old_key = key(1);
+        let backwards = Claim { links: &back, ..claim(id, &old_key, &[]) };
+        assert!(registry.trust(alice, 1000, &backwards).is_ok());
+        assert_eq!(Registry::read(&registry.texts()).unwrap(), registry);
+    }
+
+    /// [`claim`], of an ID the catalogs `owners` vouch for.
+    fn vouched<'a>(
+        id: &'a str,
+        key: &'a PublicKey,
+        listed: &'a [String],
+        owners: &'a [String],
+    ) -> Claim<'a> {
+        Claim { owners, ..claim(id, key, listed) }
+    }
+
+    #[test]
+    fn a_catalog_that_vouches_for_a_publisher_takes_its_id() {
+        let mut registry = Registry::default();
+        let (alice, bob) = (Place::User(1000), Place::User(1001));
+        let (id, tea) = ("org.example.notes", "org.example.tea");
+        let dukovo = ["dukovo".to_string()];
+        let other = ["other".to_string()];
+        let (real, stranger) = (key(2), key(3));
+        // An impostor bound first, for Alice: the catalog takes it.
+        registry.record(installed(alice, id, 1), None);
+        let takes = Trust::Takes { catalog: "dukovo".into(), old: key(1), since: 1_793_000_000 };
+        assert_eq!(
+            registry.trust(alice, 1000, &vouched(id, &real, &dukovo, &dukovo)),
+            Ok(takes.clone())
+        );
+        // Not a catalog that does not vouch: the refusal names the one that does.
+        let error = registry.trust(alice, 1000, &vouched(id, &real, &other, &dukovo)).unwrap_err();
+        assert!(error.contains("catalog dukovo vouches for its publisher: install it from dukovo"));
+        // Nothing bound for Bob: only from the catalog, or his own key.
+        let error = registry.trust(bob, 1001, &vouched(id, &stranger, &[], &dukovo)).unwrap_err();
+        assert!(error.contains("belongs to the publisher catalog dukovo vouches for"), "{error}");
+        registry.set_developer_key(1001, key(3));
+        assert_eq!(
+            registry.trust(bob, 1001, &vouched(id, &stranger, &[], &dukovo)),
+            Ok(Trust::Developer)
+        );
+        // Bound for everyone: a person's install takes nothing from it; one
+        // for everyone does.
+        registry.record(installed(Place::Everyone, tea, 1), None);
+        let error = registry.trust(bob, 1001, &vouched(tea, &real, &dukovo, &dukovo)).unwrap_err();
+        assert!(error.contains("an administrator installing it for everyone"), "{error}");
+        assert_eq!(
+            registry.trust(Place::Everyone, 0, &vouched(tea, &real, &dukovo, &dukovo)),
+            Ok(takes)
+        );
+        // Taken: bound to the new key and to the catalog, the old key
+        // refused.
+        let mut taken = installed(alice, id, 2);
+        taken.when = 1_795_000_000;
+        assert_eq!(registry.rebind(alice, id, &real, taken.when).len(), 1);
+        registry.record(taken, Some("dukovo"));
+        assert_eq!(
+            registry.trust(alice, 1000, &vouched(id, &real, &dukovo, &dukovo)),
+            Ok(Trust::Catalog { name: "dukovo".into(), since: Some(1_795_000_000) })
+        );
+        assert!(registry.trust(alice, 1000, &claim(id, &key(1), &[])).is_err());
     }
 
     #[test]

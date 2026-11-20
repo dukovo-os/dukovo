@@ -10,6 +10,7 @@
 pub mod base64;
 pub mod flaws;
 pub mod minisign;
+pub mod rollover;
 pub mod sbom;
 pub mod signed;
 pub mod sums;
