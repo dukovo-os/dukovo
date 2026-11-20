@@ -17,6 +17,7 @@
 //! ends it.
 
 use super::super::*;
+use super::install_uefi::wait_for_screen;
 
 /// The catalog's disk's label.
 const LABEL: &str = "WITHDRAW";
@@ -106,6 +107,11 @@ fn catalog_withdraw(vm: &mut Vm, case: &Case) -> Result<(), String> {
          malicious: it sends the keys away; 1 running told to end",
     )?;
     vm.expect_anywhere("bundled went back to org.example.tally 1.0.0 for alice, from 1.1.0")?;
+    // The notice of the stopped version comes on the screen's bottom line,
+    // below the prompt, at a moment of its own, and stays there until a key
+    // is pressed (ADR 0212): Enter takes it off and gives a new prompt.
+    wait_for_screen(vm, "bundled: A version of an installed app was withdrawn", 60)?;
+    vm.press(&["ret"])?;
     // The run ends, and says why.
     answer_prompt(vm, "$", "clear; sleep 1; cat spinner-said")?;
     vm.expect_screen(&[
