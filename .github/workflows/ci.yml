@@ -877,13 +877,14 @@ jobs:
             fi
           }
           # `needs_code` says false only for a pull request whose files
-          # are all documentation that no build or test reads. Markdown
+          # are all documentation that no build or test reads, such as
+          # docs/roadmap.md and docs/deferred.md. Markdown
           # with examples marked as tests counts as code: the
           # docs-examples boot test runs them (ADR 0420).
           needs_code() {
             if [ "$GITHUB_EVENT_NAME" = pull_request ] \
               && ! git diff --name-only "$BASE" HEAD \
-                | grep -qvE '^[^/]+\.md$|^docs/(handbook|adr|design|images)/|^docs/roadmap\.md$|^LICENSES/|^REUSE\.toml$' \
+                | grep -qvE '^[^/]+\.md$|^docs/[^/]+\.md$|^docs/(handbook|adr|design|images)/|^LICENSES/|^REUSE\.toml$' \
               && ! git diff --name-only --diff-filter=d "$BASE" HEAD -- \
                   docs/handbook/src docs/guides docs/tutorials docs/runbooks \
                 | xargs -r -d '\n' grep -lE '^\s*```console test\s*$' | grep -q .; then
