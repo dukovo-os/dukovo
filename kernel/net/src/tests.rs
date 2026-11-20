@@ -8,15 +8,16 @@ use std::boxed::Box;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::vec::Vec;
 
 use smoltcp::iface::{SocketHandle, SocketStorage};
 use smoltcp::socket::{icmp, tcp, udp};
-use smoltcp::wire::{IpAddress, IpEndpoint};
+use smoltcp::wire::{IpAddress, IpEndpoint, IpVersion, Ipv6Address, Ipv6Cidr};
 
 use crate::{
     Across, ConnectError, FRAME, Ipv4Address, Ipv4Cidr, Link, Loopback, Medium, Memory, OtherEnd,
-    PingError, PingMemory, Pinger, Stack, TcpMemory, UdpMemory, parse_cidr,
+    PingError, PingMemory, Pinger, Stack, Tap, TcpMemory, UdpMemory, parse_cidr,
 };
 
 pub(crate) type Queue = Rc<RefCell<VecDeque<Vec<u8>>>>;
@@ -780,6 +781,211 @@ fn a_loopback_connection_passes_its_bytes_straight_across() {
     assert_eq!(lo.socket_mut::<tcp::Socket<'static>>(server).unwrap().state(), tcp::State::Closed);
     // Neither end of a closed connection takes bytes across.
     assert_eq!(lo.room_across(client, &mut client_end), None);
+}
+
+/// A loopback stack with a UDP socket bound to port 40000 and one to port
+/// 53, both to any address: the stack, and the two sockets' handles.
+fn udp_pair() -> (Stack<Loopback>, SocketHandle, SocketHandle) {
+    let mut lo = loopback();
+    let sender = lo.add_socket(udp_memory().socket()).ok().unwrap();
+    lo.socket_mut::<udp::Socket<'static>>(sender).unwrap().bind(40000).unwrap();
+    let receiver = lo.add_socket(udp_memory().socket()).ok().unwrap();
+    lo.socket_mut::<udp::Socket<'static>>(receiver).unwrap().bind(53).unwrap();
+    (lo, sender, receiver)
+}
+
+/// The metadata of a datagram sent to `addr`'s `port`.
+fn to(addr: impl Into<IpAddress>, port: u16) -> udp::UdpMetadata {
+    udp::UdpMetadata::from(IpEndpoint::new(addr.into(), port))
+}
+
+/// The 127.0.0.1 of the loopback test stack.
+fn lo_v4() -> IpAddress {
+    IpAddress::Ipv4(Ipv4Address::new(127, 0, 0, 1))
+}
+
+/// What `on` received: its payload, the endpoint it came from and the
+/// address it was sent to, or `None` if nothing waits.
+fn take_udp(
+    lo: &mut Stack<Loopback>,
+    on: SocketHandle,
+) -> Option<(Vec<u8>, IpEndpoint, Option<IpAddress>)> {
+    let socket = lo.socket_mut::<udp::Socket<'static>>(on).unwrap();
+    let (data, meta) = socket.recv().ok()?;
+    Some((data.to_vec(), meta.endpoint, meta.local_address))
+}
+
+#[test]
+fn a_loopback_datagram_goes_straight_into_the_socket_it_is_for() {
+    let (mut lo, sender, receiver) = udp_pair();
+    assert!(lo.send_datagram_across(sender, &to(lo_v4(), 53), b"query"));
+    let (data, from, local) = take_udp(&mut lo, receiver).unwrap();
+    assert_eq!(data, b"query");
+    assert_eq!(from, IpEndpoint::new(lo_v4(), 40000));
+    assert_eq!(local, Some(lo_v4()));
+    // No packet was made, and none is due.
+    assert!(!lo.link().pending());
+    assert_eq!(lo.poll_delay(1_000_000), None);
+    // The interface counts a packet sent and received, with its headers.
+    let counters = lo.counters();
+    assert_eq!((counters.sent_packets, counters.received_packets), (1, 1));
+    assert_eq!((counters.sent_bytes, counters.received_bytes), (33, 33));
+}
+
+#[test]
+fn a_loopback_datagram_to_the_sockets_own_port_reaches_it() {
+    let (mut lo, sender, _) = udp_pair();
+    assert!(lo.send_datagram_across(sender, &to(lo_v4(), 40000), b"myself"));
+    let (data, from, _) = take_udp(&mut lo, sender).unwrap();
+    assert_eq!(data, b"myself");
+    assert_eq!(from, IpEndpoint::new(lo_v4(), 40000));
+}
+
+#[test]
+fn a_datagram_for_no_socket_goes_in_a_packet_that_brings_back_an_error() {
+    let (mut lo, sender, receiver) = udp_pair();
+    assert!(!lo.send_datagram_across(sender, &to(lo_v4(), 54), b"lost"));
+    assert!(take_udp(&mut lo, receiver).is_none());
+    assert_eq!(lo.counters().sent_packets, 0);
+    // Sent as a packet, it is answered with an ICMP port-unreachable: the
+    // datagram and its error are two packets sent.
+    let socket = lo.socket_mut::<udp::Socket<'static>>(sender).unwrap();
+    socket.send_slice(b"lost", IpEndpoint::new(lo_v4(), 54)).unwrap();
+    lo.poll(1_000_000);
+    assert_eq!(lo.counters().sent_packets, 2);
+    assert!(take_udp(&mut lo, receiver).is_none());
+}
+
+#[test]
+fn a_datagram_goes_in_a_packet_while_a_capture_watches_or_one_is_queued() {
+    static WATCHED: AtomicBool = AtomicBool::new(false);
+    fn see(_: usize, _: &[u8], _: Medium, _: bool) {}
+    let (mut lo, sender, receiver) = udp_pair();
+    lo.set_tap(Some(Tap { number: 1, watched: &WATCHED, see }));
+    // A tap no capture looks at does not stop it.
+    assert!(lo.send_datagram_across(sender, &to(lo_v4(), 53), b"unwatched"));
+    assert!(take_udp(&mut lo, receiver).is_some());
+    WATCHED.store(true, Ordering::Relaxed);
+    assert!(lo.watched());
+    assert!(!lo.send_datagram_across(sender, &to(lo_v4(), 53), b"watched"));
+    WATCHED.store(false, Ordering::Relaxed);
+    assert!(take_udp(&mut lo, receiver).is_none());
+    // A datagram waiting in the sender's buffer goes first.
+    let socket = lo.socket_mut::<udp::Socket<'static>>(sender).unwrap();
+    socket.send_slice(b"first", IpEndpoint::new(lo_v4(), 53)).unwrap();
+    assert!(!lo.send_datagram_across(sender, &to(lo_v4(), 53), b"second"));
+    assert!(take_udp(&mut lo, receiver).is_none());
+    lo.poll(1_000_000);
+    assert_eq!(take_udp(&mut lo, receiver).unwrap().0, b"first");
+    // And a packet in the link's ring goes first too.
+    assert!(lo.link().send(&[0; 20]));
+    assert!(!lo.send_datagram_across(sender, &to(lo_v4(), 53), b"third"));
+}
+
+#[test]
+fn a_datagram_to_a_group_a_broadcast_or_a_stranger_goes_in_a_packet() {
+    let (mut lo, sender, receiver) = udp_pair();
+    let others = [
+        IpAddress::Ipv4(Ipv4Address::new(224, 0, 0, 251)),
+        IpAddress::Ipv4(Ipv4Address::new(255, 255, 255, 255)),
+        IpAddress::Ipv4(Ipv4Address::new(127, 255, 255, 255)),
+        IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 1)),
+        IpAddress::Ipv4(Ipv4Address::new(127, 0, 0, 2)),
+        IpAddress::Ipv6(Ipv6Address::LOCALHOST),
+        IpAddress::Ipv6(Ipv6Address::new(0xff02, 0, 0, 0, 0, 0, 0, 1)),
+    ];
+    for other in others {
+        assert!(!lo.send_datagram_across(sender, &to(other, 53), b"no"), "to {other}");
+    }
+    assert!(take_udp(&mut lo, receiver).is_none());
+    assert_eq!(lo.counters().sent_packets, 0);
+}
+
+#[test]
+fn a_datagram_for_a_full_receive_buffer_is_dropped_as_a_packet_would_be() {
+    let (mut lo, sender, receiver) = udp_pair();
+    // The receive buffer holds four datagrams.
+    for _ in 0..4 {
+        assert!(lo.send_datagram_across(sender, &to(lo_v4(), 53), b"fill"));
+    }
+    assert!(lo.send_datagram_across(sender, &to(lo_v4(), 53), b"dropped"));
+    for _ in 0..4 {
+        assert_eq!(take_udp(&mut lo, receiver).unwrap().0, b"fill");
+    }
+    assert!(take_udp(&mut lo, receiver).is_none());
+    // As a packet's, it is counted sent and received.
+    let counters = lo.counters();
+    assert_eq!((counters.sent_packets, counters.received_packets), (5, 5));
+}
+
+#[test]
+fn a_socket_bound_to_one_address_takes_datagrams_to_that_address_only() {
+    let mut lo = loopback();
+    let (one, two) = (Ipv4Address::new(127, 0, 0, 1), Ipv4Address::new(127, 0, 0, 2));
+    lo.set_ipv4_addresses(&[Ipv4Cidr::new(one, 8), Ipv4Cidr::new(two, 8)]);
+    let sender = lo.add_socket(udp_memory().socket()).ok().unwrap();
+    lo.socket_mut::<udp::Socket<'static>>(sender).unwrap().bind(40000).unwrap();
+    let receiver = lo.add_socket(udp_memory().socket()).ok().unwrap();
+    let socket = lo.socket_mut::<udp::Socket<'static>>(receiver).unwrap();
+    socket.bind((IpAddress::Ipv4(one), 53)).unwrap();
+    // To the address it is bound to, it takes it.
+    assert!(lo.send_datagram_across(sender, &to(one, 53), b"one"));
+    let (data, _, local) = take_udp(&mut lo, receiver).unwrap();
+    assert_eq!((data.as_slice(), local), (&b"one"[..], Some(IpAddress::Ipv4(one))));
+    // To another of the stack's, it does not: no socket takes it.
+    assert!(!lo.send_datagram_across(sender, &to(two, 53), b"two"));
+    assert!(take_udp(&mut lo, receiver).is_none());
+}
+
+#[test]
+fn a_loopback_datagram_goes_straight_across_over_ipv6_too() {
+    let (mut lo, sender, receiver) = udp_pair();
+    let local = Ipv6Address::LOCALHOST;
+    lo.set_ipv6_addresses(&[Ipv6Cidr::new(local, 128)]);
+    assert!(lo.has_address(local));
+    assert!(lo.send_datagram_across(sender, &to(local, 53), b"six"));
+    let (data, from, to) = take_udp(&mut lo, receiver).unwrap();
+    assert_eq!(data, b"six");
+    assert_eq!(from, IpEndpoint::new(local.into(), 40000));
+    assert_eq!(to, Some(IpAddress::Ipv6(local)));
+    // An IPv6 header is 40 bytes.
+    let counters = lo.counters();
+    assert_eq!((counters.sent_packets, counters.sent_bytes), (1, 40 + 8 + 3));
+    assert_eq!((counters.received_packets, counters.received_bytes), (1, 40 + 8 + 3));
+}
+
+#[test]
+fn a_socket_that_takes_one_version_of_ip_only_is_passed_that_version_only() {
+    let (mut lo, sender, receiver) = udp_pair();
+    let local = Ipv6Address::LOCALHOST;
+    lo.set_ipv6_addresses(&[Ipv6Cidr::new(local, 128)]);
+    let socket = lo.socket_mut::<udp::Socket<'static>>(receiver).unwrap();
+    socket.set_version(Some(IpVersion::Ipv6));
+    assert!(!lo.send_datagram_across(sender, &to(lo_v4(), 53), b"four"));
+    assert!(lo.send_datagram_across(sender, &to(local, 53), b"six"));
+    assert_eq!(take_udp(&mut lo, receiver).unwrap().0, b"six");
+    let socket = lo.socket_mut::<udp::Socket<'static>>(receiver).unwrap();
+    socket.set_version(Some(IpVersion::Ipv4));
+    assert!(!lo.send_datagram_across(sender, &to(local, 53), b"six"));
+    assert!(lo.send_datagram_across(sender, &to(lo_v4(), 53), b"four"));
+    assert_eq!(take_udp(&mut lo, receiver).unwrap().0, b"four");
+}
+
+#[test]
+fn a_datagram_goes_to_the_first_socket_bound_to_its_port_as_a_packet_would() {
+    let (mut lo, sender, first) = udp_pair();
+    // A second socket, added later, bound to the same port.
+    let second = lo.add_socket(udp_memory().socket()).ok().unwrap();
+    lo.socket_mut::<udp::Socket<'static>>(second).unwrap().bind(53).unwrap();
+    assert!(lo.send_datagram_across(sender, &to(lo_v4(), 53), b"one"));
+    assert_eq!(take_udp(&mut lo, first).unwrap().0, b"one");
+    assert!(take_udp(&mut lo, second).is_none());
+    // The same as a packet does.
+    let socket = lo.socket_mut::<udp::Socket<'static>>(sender).unwrap();
+    socket.send_slice(b"two", IpEndpoint::new(lo_v4(), 53)).unwrap();
+    lo.poll(1_000_000);
+    assert_eq!(take_udp(&mut lo, first).unwrap().0, b"two");
+    assert!(take_udp(&mut lo, second).is_none());
 }
 
 #[test]

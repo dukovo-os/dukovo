@@ -1452,6 +1452,12 @@ impl InetSocket {
             } else {
                 state.options.time_to_live
             });
+            // Straight into the socket it is for, when that is another of
+            // the loopback interface's, which wakes its reader (ADR 0553);
+            // else in a packet, which the interface's poll sends.
+            if stack.send_datagram_across(part.handle, &meta, bounce) {
+                return Ok(Some(len));
+            }
             let socket = stack
                 .socket_mut::<udp::Socket<'static>>(part.handle)
                 .ok_or(status(Kernel::Unreachable))?;
