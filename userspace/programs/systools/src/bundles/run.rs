@@ -910,7 +910,7 @@ mod sandbox {
     use radix_abi::directory::{self, OpenFlags};
     use radix_abi::{Status, network, process, startup};
 
-    use super::{ALWAYS, DISCOVERY, NETWORK, Plan, SHARED, VOLUMES};
+    use super::{ALWAYS, DISCOVERY, NETWORK, Plan, SHARED, VOLUMES, stopped_line};
     use crate::bundled::APP_DATA;
     use crate::bundles::keyring;
     use crate::bundles::protocol::Answer;
