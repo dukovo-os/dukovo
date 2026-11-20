@@ -585,7 +585,8 @@ fn polling() -> Outcome {
         let mut closed = false;
         while !closed && Instant::now() < until {
             poll.poll(&mut events, Some(Duration::from_secs(1)))?;
-            closed = events.iter().any(|event| event.token() == Token(round) && event.is_read_closed());
+            closed =
+                events.iter().any(|event| event.token() == Token(round) && event.is_read_closed());
         }
         check!(closed);
         check!(poll.registry().deregister(&mut receiver).is_ok());
