@@ -1387,7 +1387,7 @@ fn linux_vm_numbers(
         reboot: false,
         gdb: false,
         qmp: None,
-        extra: disk_args(dir, btrfs)?,
+        extra: disk_args(dir, btrfs, "linux")?,
         write_log: None,
         direct: Some(DirectBoot {
             kernel: kernel.to_path_buf(),
@@ -1584,7 +1584,7 @@ fn radix_posix_numbers(
         test::with_cmdline(base, &accel.cmdline(POSIX_CMDLINE)).map_err(crate::Error::new)?;
     std::fs::write(&image, bytes).context(|| format!("writing {}", image.display()))?;
     let mut extra = accel.extra();
-    extra.extend(disk_args(dir, btrfs)?);
+    extra.extend(disk_args(dir, btrfs, "radix")?);
     let machine = Machine {
         firmware: Firmware::Bios,
         media: Media::Usb,
@@ -1629,8 +1629,28 @@ fn radix_posix_numbers(
 /// on q35's AHCI controller, holding a disc of the same bytes as the
 /// first two, read only: `cd0` on Radix, `/dev/sr0` on Linux. Each boot
 /// gets the same disks, card and disc.
-fn disk_args(dir: &Path, btrfs: &Path) -> Result<Vec<String>> {
+fn disk_args(dir: &Path, btrfs: &Path, label: &str) -> Result<Vec<String>> {
     let mut args = vec!["-device".into(), "sdhci-pci,id=bench-reader".into()];
+    // EXPERIMENT: QEMU's traces of the SD card reader, one file a boot.
+    if let Ok(traces) = std::env::var("OB_SD_TRACE") {
+        static BOOTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let boot = BOOTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::fs::create_dir_all(&traces).context(|| traces.clone())?;
+        args.extend([
+            "-msg".into(),
+            "timestamp=on".into(),
+            "-trace".into(),
+            "sdhci_send_command".into(),
+            "-trace".into(),
+            "sdhci_adma_loop".into(),
+            "-trace".into(),
+            "sdhci_adma_transfer_completed".into(),
+            "-trace".into(),
+            "sdhci_access".into(),
+            "-D".into(),
+            format!("{traces}/{boot:02}-{label}.log"),
+        ]);
+    }
     for (name, device, media) in [
         ("bench-disk", "virtio-blk-pci,drive=bench-disk", ""),
         ("bench-nvme", "nvme,serial=bench,drive=bench-nvme", ""),
