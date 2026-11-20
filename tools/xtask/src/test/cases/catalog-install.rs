@@ -166,7 +166,10 @@ fn catalog_install(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect_screen_without("does not know this key")?;
     answer_prompt(vm, "Install it? [y/N]", "y")?;
     vm.expect_screen(&["installed io.github.burntsushi.ripgrep 15.2.0"])?;
-    vm.expect_anywhere("(from catalog test)")?;
+    // bundled's audit line says the catalog took the ID from the old key.
+    vm.expect_anywhere(
+        "(from catalog test, which vouches for its publisher and took it from key ",
+    )?;
     // Her note is in `.set-aside` of her data folder, in the folder named
     // for the ID and the day, and no longer where the app keeps its data.
     answer_prompt(
