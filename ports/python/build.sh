@@ -54,10 +54,12 @@ cd "$PORT_BUILD/radix"
 # /dev/ptc, AIX's, is not. getaddrinfo answers as the standard says. The
 # C library's backtrace(3) looks for libgcc_s, which a static program
 # cannot load, and says so on standard error each time Python calls it
-# as it starts: without execinfo.h, Python does not.
+# as it starts: without execinfo.h, Python does not. The select module's
+# kqueue names EVFILT_TIMER, which Radix's kqueue(2) does not have
+# (radix-posix(7)), so it is left out, and `selectors` waits with poll.
 MODULE_BUILDTYPE=static PREFIX="$prefix" \
 	ac_cv_file__dev_ptmx=yes ac_cv_file__dev_ptc=no ac_cv_buggy_getaddrinfo=no \
-	ac_cv_header_execinfo_h=no \
+	ac_cv_header_execinfo_h=no ac_cv_func_kqueue=no \
 	ac_cv_func_dlopen=no ac_cv_lib_dl_dlopen=no \
 	x86_64-radix-configure "$PORT_SRC" --bindir="$prefix/bin" --libdir="$prefix/lib" \
 	--datarootdir="$prefix/share" --sysconfdir="$prefix/etc" --localstatedir="$prefix/var" \

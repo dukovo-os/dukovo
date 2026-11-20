@@ -51,6 +51,7 @@ use super::ipc::{Endpoint, EndpointRef};
 use super::memory::{FrameObject, FrameRef, SpaceObject, SpaceRef};
 use super::notify::{Notification, NotificationRef};
 use super::process::{ProcessObject, ProcessRef};
+use super::queue::{EventQueue, QueueRef};
 use super::ring::{RingObject, RingRef};
 use super::{Result, cap_error, error};
 use crate::Arch;
@@ -100,6 +101,8 @@ pub enum Object {
     Firewall,
     /// The kernel's settings (radix-kernel-settings(2)).
     KernelSettings,
+    /// An event queue (radix-event-queue(2)).
+    EventQueue(QueueRef),
 }
 
 impl Object {
@@ -124,6 +127,7 @@ impl Object {
             Object::Devices | Object::Device(_) => ObjectKind::Device,
             Object::Firewall => ObjectKind::Firewall,
             Object::KernelSettings => ObjectKind::KernelSettings,
+            Object::EventQueue(_) => ObjectKind::EventQueue,
         }
     }
 }
@@ -218,6 +222,7 @@ enum Kept {
     Device(Weak<DeviceObject, Kmalloc>),
     Firewall,
     KernelSettings,
+    EventQueue(Weak<EventQueue, Kmalloc>),
 }
 
 impl Kept {
@@ -242,6 +247,7 @@ impl Kept {
             Object::Device(device) => Kept::Device(Arc::downgrade(device)),
             Object::Firewall => Kept::Firewall,
             Object::KernelSettings => Kept::KernelSettings,
+            Object::EventQueue(queue) => Kept::EventQueue(Arc::downgrade(queue)),
         }
     }
 
@@ -267,6 +273,7 @@ impl Kept {
             Kept::Device(device) => Object::Device(device.upgrade()?),
             Kept::Firewall => Object::Firewall,
             Kept::KernelSettings => Object::KernelSettings,
+            Kept::EventQueue(queue) => Object::EventQueue(queue.upgrade()?),
         })
     }
 }
@@ -746,6 +753,9 @@ pub fn released(kept: Option<Recorded>, by: Option<&super::UserThread>) {
         // Its card stops once the store's locks have gone
         // (`device::close_deferred`).
         Object::Device(device) => super::device::released(&device),
+        // Its watches go with its last reference (`queue::EventQueue`'s
+        // drop), which frees only memory.
+        Object::EventQueue(_) => {}
         Object::Space(_)
         | Object::Random
         | Object::KernelLog

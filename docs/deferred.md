@@ -253,7 +253,6 @@ machine with AMT, an AMD machine and a laptop; see
 
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
-| Go's network poller: the runtime takes no descriptor yet, so every file and socket a Go program uses blocks in its thread, and deadlines on them do not work (ADR 0350) | Built on the kernel's event queue | Phase 17 |
 | Go's `net` on Radix: `net.Interfaces` and `InterfaceAddrs` list nothing (no netlink or routing socket; the C library's `getifaddrs` can give them), so IPv4 multicast by interface does not work either (ADR 0350) | Comes with Go's networking | Phase 17 |
 | cgo, and `go` and `gofmt` in `/system` (ADR 0350) | The runtime first | Phase 17 |
 | fzf, lazygit and duf in the catalog | Written in Go | Phase 17 |
@@ -270,6 +269,8 @@ machine with AMT, an AMD machine and a laptop; see
 | The Linux layout (`/dev`, `/proc`, `/sys` as directories) inside Linux programs' view (ADR 0113) | Served by `linuxd` | 18a |
 | nginx on the kernel's event queue, with sendfile and thread pools: it waits with `poll` and copies files through its buffers (ADR 0491) | Built as for a POSIX system until Radix has them | 18a |
 | Valkey on the kernel's event queue: it waits with `poll`, on an event loop of the port's own (ADR 0492) | Built as for a POSIX system until Radix has one | 18a |
+| The `data` of the event queue's read and write events, which `kevent` reports as 0: the bytes to read, the room to write, the connections waiting (ADR 0353) | nginx's kqueue module reads them, and nginx moves to the event queue with the nginx row above | 18a |
+| The event queue's timer, signal, process and file filters (`EVFILT_TIMER`, `EVFILT_SIGNAL`, `EVFILT_PROC`, `EVFILT_VNODE`): a change that names one fails with EINVAL, so PostgreSQL's wait on events, libevent and Python's `select.kqueue`, which name them, are built without kqueue and wait with `poll` (ADR 0353) | Built with `timerfd`, `signalfd` and `pidfd` on the queue | 18a |
 
 ### Releases after 1.0
 
@@ -366,6 +367,8 @@ machine asks for them.
 | A memory filesystem, and so System V keys, for each account or view, as Linux's IPC namespaces: every service shares `/devices/shm`, as Linux's services share one namespace unless told otherwise | ADRs 0490, 0522 |
 | `ipcs` and `ipcrm`; `IPC_INFO`, `SHM_INFO`, `SEM_INFO` and the `*_STAT` commands that take an index | ADR 0490 |
 | `shmat`'s `SHM_EXEC` with write access, which Radix never maps together | ADR 0490 |
+| An event queue's watches ending when one descriptor of their description is closed, as on the BSDs: Radix ends a watch with the description, as Linux's `epoll` does | ADR 0353 |
+| An event queue watching another event queue: adding one to a queue fails with EINVAL | ADR 0353 |
 | The crash dump written to a disk from the panic path through polled drivers, so that a power cycle or a firmware that clears the RAM keeps it | ADR 0483 |
 | A CPU quota for a resource domain (`cpu_max`, as cgroups' `cpu.max`), beside its weight, which only shares the CPUs while they are busy | ADR 0476 |
 | More than 4,032 descriptors in one process, whatever `open_files` says: the capability space's room for them | ADR 0476 |

@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0065. Pipes are kernel file descriptions, and poll is one call over capabilities
 
-- Status: Accepted
+- Status: Accepted; the watches of an event queue are kept per object, so that a change reaches only the queues that watch it, since [0353](0353-an-event-queue-watches-many-descriptors-as-kqueue-does.md)
 - Date: 2026-10-22
 
 ## Context

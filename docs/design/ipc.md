@@ -410,10 +410,14 @@ it, and `ob bench --from` shows it for a real machine, ADR 0124); then
 `execv` of itself and `waitpid` (`posix_fork_exec_wait`); 256 MiB
 through a pipe in 64 KiB writes from a child, both on one CPU, per MiB
 (`posix_pipe_mib`); `kill` of itself with a handler for the signal
-(`posix_signal`); `poll` on a pipe with data to read (`posix_poll`); and
-two threads passing a turn there and back through two semaphores, on
-one CPU and on two (`posix_futex_same_cpu`, `posix_futex_cross_cpu`),
-and two processes doing the same through semaphores in shared memory
+(`posix_signal`); `poll` on a pipe with data to read (`posix_poll`); the
+wait of an event queue (kqueue on Radix, epoll on Linux, each
+edge-triggered) for one ready pipe among 1,000 idle ones, and `poll` on
+those 1,001 pipes with the ready one last (`posix_events_idle`,
+`posix_poll_idle`, ADR 0353); and two threads passing a turn there and
+back through two semaphores, on one CPU and on two
+(`posix_futex_same_cpu`, `posix_futex_cross_cpu`), and two processes
+doing the same through semaphores in shared memory
 (`posix_futex_shared_same_cpu`, `posix_futex_shared_cross_cpu`, ADR
 0110). Given `--network`, it then uses TCP and UDP on the loopback
 interface, at 127.0.0.1 (ADR 0185): a connection made, accepted and

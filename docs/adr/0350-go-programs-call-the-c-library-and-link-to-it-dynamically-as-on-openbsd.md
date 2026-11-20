@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0350. Go programs call the C library and link to it dynamically, as on OpenBSD
 
-- Status: Accepted
+- Status: Accepted; Go's network poller uses the event queue since [0353](0353-an-event-queue-watches-many-descriptors-as-kqueue-does.md)
 - Date: 2026-11-20
 
 ## Context

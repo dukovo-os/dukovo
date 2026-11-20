@@ -415,6 +415,11 @@ const ROWS: &[Row] = &[
     posix("posix_signal", "POSIX: signal sent to itself and handled (`kill`, handler, return)"),
     posix("posix_poll", "POSIX: `poll` on a pipe with data to read"),
     posix(
+        "posix_events_idle",
+        "POSIX: an event queue's wait for one ready pipe among 1000 idle ones (kqueue on Radix, epoll on Linux)",
+    ),
+    posix("posix_poll_idle", "POSIX: `poll` on 1001 pipes, one ready"),
+    posix(
         "posix_futex_same_cpu",
         "POSIX: futex wake and wait each way (semaphores), two threads, one CPU",
     ),

@@ -409,6 +409,7 @@ git-keyring userspace/programs/git-https-test/ userspace/programs/systools/src/a
 git-keyring userspace/programs/systools/src/authd/ userspace/programs/systools/src/git_credential.rs
 git-keyring userspace/programs/systools/src/keyring.rs userspace/programs/systools/src/unlock.rs
 go-runtime ports/go/ userspace/go/ tools/xtask/src/golang.rs tools/xtask/src/ports.rs
+go-runtime kernel/radix/src/user/queue.rs
 gpio kernel/drivers/gpio/ tools/xtask/src/acpi/
 guest-agent userspace/programs/systools/src/guest_agent.rs userspace/programs/systools/src/guest_agent/
 guest-agent userspace/defaults/spark/services/guest-agent.toml userspace/programs/systools/src/ip.rs
@@ -712,7 +713,7 @@ posix ports/netcat/ ports/nvi/ ports/onetrueawk/ ports/openssh/ ports/openssl/ p
 posix ports/pciids/ ports/sed/ ports/tcpdump/ ports/tmux/ ports/tzdata/ ports/usbids/
 posix ports/uutils-coreutils/ ports/uutils-findutils/ ports/xz/ ports/zip/ ports/zstd/
 posix userspace/posix/admin.c userspace/posix/cancel.c userspace/posix/commands.c
-posix userspace/posix/cxx.cpp userspace/posix/datagram.c userspace/posix/dynamic/
+posix userspace/posix/cxx.cpp userspace/posix/datagram.c userspace/posix/dynamic/ userspace/posix/events.c
 posix userspace/posix/exec-helper.c userspace/posix/exec.c userspace/posix/expected/
 posix userspace/posix/files.c userspace/posix/fork.c userspace/posix/format-cases.h
 posix userspace/posix/format.c userspace/posix/hello.c userspace/posix/inet.c userspace/posix/job.c
@@ -720,7 +721,8 @@ posix userspace/posix/library.c userspace/posix/limits.c userspace/posix/locks.c
 posix userspace/posix/pipe.c userspace/posix/poll.c userspace/posix/programs.h userspace/posix/run.c
 posix userspace/posix/shm.c userspace/posix/signal.c
 posix kernel/radix/src/fs/shm/ kernel/radix/src/user/memory/ kernel/radix/src/fs/socket.rs kernel/radix/src/fs/socket/
-posix ports/mlibc/sysdeps/radix/generic/socket.cpp
+posix kernel/radix/src/user/posix/poll.rs kernel/radix/src/user/queue.rs
+posix ports/mlibc/sysdeps/radix/generic/event.cpp ports/mlibc/sysdeps/radix/generic/socket.cpp
 posix userspace/posix/socket.c userspace/posix/spawn.c userspace/posix/thread.c
 posix userspace/posix/time.c userspace/posix/tty.c userspace/posix/utilities.c
 posix userspace/posix/zones.c userspace/programs/acl/ userspace/programs/nukesh/

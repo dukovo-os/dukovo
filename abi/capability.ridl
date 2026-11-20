@@ -72,6 +72,9 @@ enum ObjectKind: u8 {
     firewall = 23;
     /// The kernel's settings (radix-kernel-settings(2)).
     kernel_settings = 24;
+    /// An event queue, which watches many descriptors at once
+    /// (radix-event-queue(2); since Phase 17, ADR 0353).
+    event_queue = 25;
 }
 
 /// What a capability lets its holder do.

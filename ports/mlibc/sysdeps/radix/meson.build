@@ -34,6 +34,7 @@ libc_sources += radix_sources + files(
 	'../../options/linux/generic/sys-random.cpp',
 	'../../options/linux/generic/sys-xattr.cpp',
 	'generic/entry.cpp',
+	'generic/event.cpp',
 	'generic/futex.cpp',
 	'generic/interfaces.cpp',
 	'generic/ipc.cpp',
@@ -126,8 +127,10 @@ if not no_headers
 		subdir: 'sys',
 		follow_symlinks: true,
 	)
-	# And Radix's own: futex(2), as OpenBSD declares it (ADR 0350).
+	# And Radix's own: futex(2), as OpenBSD declares it (ADR 0350), and
+	# kqueue(2) and kevent(2), as the BSDs do (ADR 0353).
 	install_headers(
+		'include/sys/event.h',
 		'include/sys/futex.h',
 		subdir: 'sys',
 	)

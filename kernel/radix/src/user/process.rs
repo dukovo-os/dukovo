@@ -76,6 +76,7 @@ use super::names::Identity;
 use super::notify::{Notification, NotificationRef};
 use super::objects::{self, Found, Object};
 use super::posix::{self, PosixState, ThreadSignals};
+use super::queue::EventQueue;
 use super::{
     Result, UserRef, UserThread, cap_error, default_window, error, set_ready, thread_main,
 };
@@ -1335,6 +1336,14 @@ fn create_for(target: &ProcessRef, kind: AbiKind, size: u32, to: SlotRef) -> Res
             let notification = Notification::new().ok_or(error(Kernel::NoMemory))?;
             let object = Object::Notification(notification);
             install_charged(to, ObjectKind::Notification, object, Some(charge))
+        }
+        AbiKind::EventQueue => {
+            if size != 0 {
+                return Err(Kernel::InvalidArgument.status(1));
+            }
+            let charge = Account::charge(&target.account, size_of::<EventQueue>() as u64)?;
+            let queue = EventQueue::new().ok_or(error(Kernel::NoMemory))?;
+            install_charged(to, ObjectKind::EventQueue, Object::EventQueue(queue), Some(charge))
         }
         _ => Err(Kernel::InvalidArgument.status(0)),
     }
