@@ -468,11 +468,19 @@ const ROWS: &[Row] = &[
     disk("posix_nvme_write_mib", "Disk: 1 MiB written raw to an NVMe disk"),
     disk("posix_sd_read_4k", "SD: 4 KiB read raw from an SD card in a PCI reader (`pread`)"),
     disk("posix_sd_write_4k", "SD: 4 KiB written raw to an SD card in a PCI reader (`pwrite`)"),
-    disk("posix_sd_read_64k", "SD: 64 KiB read raw from an SD card in a PCI reader"),
-    disk("posix_sd_write_64k", "SD: 64 KiB written raw to an SD card in a PCI reader"),
     // QEMU's sdhci-pci moves each byte of a transfer through the card's
-    // emulation one call at a time: 1 MiB takes it over 150 ms, the
-    // same for both systems, beside which neither's own work shows.
+    // emulation one call at a time: 64 KiB takes it some 14 ms and 1 MiB
+    // over 200 ms, the same for both systems, and how fast it goes moves
+    // with how the host runs QEMU's threads by more than either system's
+    // own work, which the 4 KiB rows show (ADR 0552).
+    Row {
+        gate: Gate::Emulated,
+        ..disk("posix_sd_read_64k", "SD: 64 KiB read raw from an SD card in a PCI reader")
+    },
+    Row {
+        gate: Gate::Emulated,
+        ..disk("posix_sd_write_64k", "SD: 64 KiB written raw to an SD card in a PCI reader")
+    },
     Row {
         gate: Gate::Emulated,
         ..disk("posix_sd_read_mib", "SD: 1 MiB read raw from an SD card in a PCI reader")
@@ -2209,6 +2217,8 @@ mod tests {
         assert!(check_gate(&numbers).is_ok());
         assert!(ROWS.iter().any(|r| r.radix == "posix_git_status" && r.gate == Gate::Yet));
         assert!(ROWS.iter().any(|r| r.radix == "posix_sd_read_mib" && r.gate == Gate::Emulated));
+        assert!(ROWS.iter().any(|r| r.radix == "posix_sd_write_64k" && r.gate == Gate::Emulated));
+        assert!(ROWS.iter().any(|r| r.radix == "posix_sd_write_4k" && r.gate == Gate::Held));
     }
 
     #[test]

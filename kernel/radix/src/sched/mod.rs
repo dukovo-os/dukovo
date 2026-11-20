@@ -30,10 +30,12 @@
 //! sharing caches first, then one on the same node. A CPU balances its
 //! load against the others, level by level, at every tick (less often for
 //! farther levels) and whenever it is about to go idle. Idle CPUs wait with
-//! MWAIT where it works (and wakers then need no interrupt), else HLT; in a
-//! virtual machine they poll for a while first, for as long as recent idle
-//! periods suggest (`radix_sched::haltpoll`), since halting and the
-//! interrupt that ends it are each an exit to the hypervisor.
+//! MWAIT where it works (and wakers then need no interrupt), else HLT; every
+//! idle CPU polls for a while first, for as long as recent idle periods
+//! suggest (`radix_sched::haltpoll`): up to 200 µs in a virtual machine
+//! without MWAIT, where halting and the interrupt that ends it are each an
+//! exit to the hypervisor, and up to 8 µs elsewhere, where leaving MWAIT or
+//! HLT takes a microsecond or two.
 //!
 //! Exited threads are freed by the reaper thread once their CPU has
 //! switched away. The correctness argument, and the TLA+ model of blocking
@@ -62,6 +64,7 @@ use radix_klog::{error, info, warn};
 use radix_mm::{FRAMES, Flags, HEAP, Kmalloc};
 use radix_sched::{
     CpuLoad, CpuSet, HaltPoll, LOAD_INTERVAL_NS, LoadAverage, Loads, Place, Split, Topology,
+    haltpoll,
 };
 use radix_sync::{Mutex, Once, SpinLock};
 
@@ -1697,8 +1700,12 @@ fn idle_main(cpu: usize) {
 fn idle_loop(cpu: usize) -> ! {
     let slot = CPUS.get(cpu);
     let (mwait, _) = Arch::idle_mode();
-    let poll_first = !mwait && Arch::virtualized();
-    let mut haltpoll = HaltPoll::new();
+    // Every idle CPU polls a while first, as long as its recent idle
+    // periods say a wake-up from another CPU comes that soon: a virtual
+    // CPU that halts for up to 200 µs, one that waits in hardware for a
+    // few (ADR 0037, ADR 0551).
+    let bounds = if Arch::virtualized() && !mwait { haltpoll::VIRTUAL } else { haltpoll::HARDWARE };
+    let mut haltpoll = HaltPoll::within(bounds);
     loop {
         Arch::disable_interrupts();
         rcu::quiescent(cpu);
@@ -1714,7 +1721,7 @@ fn idle_loop(cpu: usize) -> ! {
         slot.wake.store(0, Ordering::Relaxed);
         let started = Arch::now_ns();
         slot.idle_since.store(started, Ordering::Relaxed);
-        if poll_first && poll(slot, started.saturating_add(haltpoll.limit_ns())) {
+        if poll(slot, started.saturating_add(haltpoll.limit_ns())) {
             slot.polls.fetch_add(1, Ordering::Relaxed);
         } else {
             // Only an idle that watches `wake` (MWAIT) ends on the write
@@ -1741,9 +1748,7 @@ fn idle_loop(cpu: usize) -> ! {
         slot.idle_ns.fetch_add(idle, Ordering::Relaxed);
         slot.idle_since.store(0, Ordering::Relaxed);
         slot.idle_seq.fetch_add(1, Ordering::Release);
-        if poll_first {
-            haltpoll.record(idle, slot.called.load(Ordering::Relaxed));
-        }
+        haltpoll.record(idle, slot.called.load(Ordering::Relaxed));
     }
 }
 
