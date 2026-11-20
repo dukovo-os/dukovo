@@ -196,16 +196,42 @@ fn the_fields_check_what_they_hold() {
     assert!(bad("name", "\"App\"", "\"A\\nB\"").contains("is one line"));
     let long = format!("\"{}\"", "a".repeat(201));
     assert!(bad("summary", "\"Does things\"", &long).contains("longer than 200"));
-    for version in
-        ["\"1\"", "\"17.2\"", "\"1.27.3\"", "\"1.2.3.4\"", "\"1.0.0-beta.1\"", "\"1.0+git.5\""]
-    {
+    for version in [
+        "\"1\"",
+        "\"17.2\"",
+        "\"1.27.3\"",
+        "\"1.2.3.4\"",
+        "\"1.0.0-beta.1\"",
+        "\"1.0+git.5\"",
+        "\"15.2.0_2\"",
+        "\"15.2.0_9999\"",
+        "\"19.0-rc.2_2\"",
+        "\"1.0.0+meta_3\"",
+    ] {
         let text = with("").replace("\"version\": \"1.0\"", &format!("\"version\": {version}"));
         assert!(from_json(&text).is_ok(), "{version}");
     }
-    for version in
-        ["\"\"", "\"v1\"", "\"01.2\"", "\"1..2\"", "\"1.2.3.4.5\"", "\"1.0-\"", "\"1.0+a+b\""]
-    {
-        assert!(bad("version", "\"1.0\"", version).contains("numbers between dots"), "{version}");
+    for version in [
+        "\"\"",
+        "\"v1\"",
+        "\"01.2\"",
+        "\"1..2\"",
+        "\"1.2.3.4.5\"",
+        "\"1.0-\"",
+        "\"1.0+a+b\"",
+        "\"15.2.0_0\"",
+        "\"15.2.0_1\"",
+        "\"15.2.0_01\"",
+        "\"15.2.0_10000\"",
+        "\"15.2.0_\"",
+        "\"15.2.0__2\"",
+        "\"15.2.0_2_3\"",
+        "\"15.2.0_x\"",
+        "\"_2\"",
+    ] {
+        let error = bad("version", "\"1.0\"", version);
+        assert!(error.contains("numbers between dots"), "{version}");
+        assert!(error.contains("a build number from _2 to _9999"), "{version}");
     }
     assert!(bad("version", "\"1.0\"", "1").starts_with("line 6: "));
     for os in ["\"1\"", "\"1.0.0.0\"", "\"1.x\"", "\"1..0\""] {
@@ -704,6 +730,9 @@ fn versions_lines_and_full_ids() {
     assert!(!in_line("3.12.1", "3.13"));
     assert!(!in_line("220.1.0", "22"));
     assert!(!in_line("3", "3.13"));
+    assert!(in_line("3.13.1_2", "3.13"));
+    assert!(in_line("22.0.0-rc.1_2", "22"));
+    assert!(!in_line("3.14.0_2", "3.13"));
     assert_eq!(split_full_id("org.nodejs.node@22"), Ok(("org.nodejs.node", Some("22"))));
     assert_eq!(split_full_id("org.nodejs.node"), Ok(("org.nodejs.node", None)));
     assert_eq!(full_id("org.nodejs.node", Some("22")), "org.nodejs.node@22");

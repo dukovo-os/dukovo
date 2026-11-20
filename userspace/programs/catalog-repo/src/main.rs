@@ -357,7 +357,9 @@ fn sign(
         [] => bundles_in(options.bundles.as_deref()),
         named => named.iter().map(PathBuf::from).collect(),
     };
-    let changes = repo.changes(&bundles, &options.remove, &options.verified)?;
+    let changes =
+        repo.changes(&bundles, &options.remove, &options.verified, options.store.as_deref())?;
+    changes.rebuilds_say_why()?;
     let action = if options.renew { Action::Renew } else { Action::Sign };
     let plan = repo.plan(action, changes)?;
     let days = options.days.unwrap_or(expires_days("targets"));
@@ -637,7 +639,8 @@ fn status_value(repo: &Repo, options: &Options) -> Result<Value, String> {
             })
         })
         .collect();
-    let changes = repo.changes(&bundles_in(options.bundles.as_deref()), &[], &options.verified)?;
+    let bundles = bundles_in(options.bundles.as_deref());
+    let changes = repo.changes(&bundles, &[], &options.verified, options.store.as_deref())?;
     let added: Vec<Value> = changes
         .added
         .iter()
@@ -657,7 +660,15 @@ fn status_value(repo: &Repo, options: &Options) -> Result<Value, String> {
     let rebuilt: Vec<Value> = changes
         .rebuilt
         .iter()
-        .map(|r| json!({ "path": r.path, "id": r.id, "version": r.version }))
+        .map(|r| {
+            json!({
+                "path": r.path,
+                "id": r.id,
+                "version": r.version,
+                "files": r.files.json(),
+                "next": r.next,
+            })
+        })
         .collect();
     Ok(json!({
         "roles": roles,
@@ -817,7 +828,7 @@ mod tests {
         keys::new_file_key("offline", roles, &secret).unwrap().write(&repo.keys_dir()).unwrap();
         let signers = Signers::new(None, std::slice::from_ref(&secret)).unwrap();
         repo.sign_root(&signers, 365).unwrap();
-        let changes = repo.changes(bundles, &[], &[]).unwrap();
+        let changes = repo.changes(bundles, &[], &[], None).unwrap();
         repo.sign_targets(&changes, bundles, &dir.join("store"), &signers, 182).unwrap();
         (repo, secret)
     }
@@ -1014,7 +1025,11 @@ mod tests {
         let unsigned = &status["unsigned"];
         let rg =
             json!([{"path": "bundles/org.dukovo.rg-1.dkv", "id": "org.dukovo.rg", "version": "1"}]);
-        assert_eq!(unsigned["rebuilt"], rg);
+        let kept = json!([{
+            "path": "bundles/org.dukovo.rg-1.dkv", "id": "org.dukovo.rg", "version": "1",
+            "files": null, "next": "1_2"
+        }]);
+        assert_eq!(unsigned["rebuilt"], kept, "without --store, the files are not compared");
         assert_eq!(unsigned["verified"], rg);
         let bat = json!([{
             "path": "bundles/org.dukovo.bat-0.26.1.dkv", "id": "org.dukovo.bat", "version": "0.26.1"

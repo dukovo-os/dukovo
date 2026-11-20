@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0594. The catalog is signed from a plan that was read, and its pull request opens itself
 
-- Status: Accepted
+- Status: Accepted; a version packed again with other files ships as its next build, since [0595](0595-a-rebuild-ships-as-its-versions-next-build.md)
 - Date: 2026-11-20
 
 ## Context

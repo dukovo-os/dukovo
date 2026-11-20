@@ -105,11 +105,28 @@ their dates. It reads no bundle and packs nothing, and is refused when a
 bundle is named or `--remove` is given.
 
 A bundle whose ID and version the targets list already is never signed
-again as other bytes. When the ports pack such a version to other bytes
-(every port does after a change to the C library), `sign` does not fail:
-it lists the version on a line that starts with `=`, keeps the signed
-bytes and signs the rest. A rebuild reaches computers only under a new
-version.
+again as other bytes. Every port packs as other bytes after any commit, so
+`sign` does not fail on such a version: it lists it on a line that starts
+with `=`, keeps the signed bytes and signs the rest. The line says whether
+the files are the same (`packed again with the same files; nothing to
+publish`), differ (`packed again with other files (bin/rg)`) or were not
+compared because the signed bytes are not in `out/catalog/store`.
+
+To publish a version packed again with other files, such as every port
+after a fix to the C library, as its next build (`15.2.0_2`):
+
+1. Read the `=` lines and choose the IDs whose files differ.
+2. `./ob catalog sign --preview --next-build ID --rebuild-reason "TEXT"`,
+   with `--next-build` for each ID. The reason is one line of at most 200
+   bytes, which computers show with the update. The plan lists each
+   rebuild with the version it replaces and the files that differ.
+3. Review the plan, then `./ob catalog sign --expect DIGEST`, which needs
+   no more than the digest: the reasons are kept beside the packs.
+4. Deploy and `./ob catalog pr` as for any batch.
+
+Dukovo Ops does the same with a tick on each rebuild and a field for the
+reason. A build is never given its number twice, a withdrawn one counted
+(ADR 0595).
 
 The PIN is asked for on the terminal. With `DUKOVO_PINENTRY` set, or with
 no terminal attached, `tools/yubikey-piv.py` asks through pinentry, the

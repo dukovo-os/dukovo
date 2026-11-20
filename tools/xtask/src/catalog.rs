@@ -19,6 +19,12 @@
 //! --preview` lists it in `out/catalog/plan.json` with its digest, and
 //! `sign --expect DIGEST` signs only that. `pr` then records what was
 //! published in a pull request (`catalog_pr.rs`).
+//!
+//! A version the targets list, packed again with other files, is
+//! published as its next build (ADR 0595): `sign --next-build ID
+//! --rebuild-reason TEXT` packs it as `VERSION_N`, one past the newest
+//! build `catalog/metadata/targets.json` lists, with the reason in a file
+//! beside it that catalog-repo signs into its target.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -89,13 +95,22 @@ pub fn command(ctx: &Ctx, args: Vec<String>) -> Result<()> {
     }
     let first = args.first().cloned().unwrap_or_default();
     let signing = first == "sign";
+    let (args, next) = if signing { next_builds(args)? } else { (args, None) };
     let args = if signing { with_plan_path(ctx, args) } else { args };
     if signing {
         not_behind_server(ctx)?;
     }
+    // Checked before the ports are built, which can take half an hour.
+    let planned = match &next {
+        Some(next) => planned_builds(ctx, &next.ids)?,
+        None => Vec::new(),
+    };
     if signing && packs_first(&args) {
         crate::userspace::install_headers(ctx)?;
-        crate::ports::build_and_pack(ctx, &[])?;
+        let ports = crate::ports::build_and_pack(ctx, &[])?;
+        if let Some(next) = &next {
+            crate::bundles::pack_next_builds(ctx, &ports, &planned, &next.reason)?;
+        }
     }
     let mut cmd = catalog_repo(ctx)?;
     cmd.args(args);
@@ -114,6 +129,124 @@ pub fn command(ctx: &Ctx, args: Vec<String>) -> Result<()> {
 fn packs_first(args: &[String]) -> bool {
     let named = args.iter().any(|arg| arg.ends_with(&format!(".{}", dkv::EXTENSION)));
     !named && !args.iter().any(|arg| arg == "--renew" || arg == "--expect")
+}
+
+/// What `sign --next-build ID ... --rebuild-reason TEXT` packs as the
+/// next build of versions the catalog lists (ADR 0595).
+#[derive(Debug)]
+struct NextBuilds {
+    /// The bundles' IDs, as their ports' `[bundle]` tables have them.
+    ids: Vec<String>,
+    /// Why they were built again, one line.
+    reason: String,
+}
+
+/// A bundle to pack as a version's next build.
+pub(crate) struct NextBuild {
+    /// Its ID.
+    pub id: String,
+    /// The version it is packed as, such as `15.2.0_2`.
+    pub version: String,
+}
+
+/// The most bytes a rebuild's reason may have: catalog-repo's
+/// `REASON_MAX`, which it checks again when it signs. ob checks it first
+/// so that a reason catalog-repo would refuse stops the batch before the
+/// ports are built.
+const REASON_MAX: usize = 200;
+
+/// `args` without ob's `--next-build ID` and `--rebuild-reason TEXT`,
+/// and what they ask for: none when no `--next-build` is given.
+fn next_builds(args: Vec<String>) -> Result<(Vec<String>, Option<NextBuilds>)> {
+    let mut rest = Vec::new();
+    let mut ids: Vec<String> = Vec::new();
+    let mut reason = None;
+    let mut words = args.into_iter();
+    while let Some(word) = words.next() {
+        match word.as_str() {
+            "--next-build" => {
+                let Some(id) = words.next().filter(|id| !id.starts_with('-')) else {
+                    bail!("--next-build needs the ID of a bundle a port packs");
+                };
+                if ids.contains(&id) {
+                    bail!("--next-build {id} is given twice");
+                }
+                ids.push(id);
+            }
+            "--rebuild-reason" => {
+                let Some(text) = words.next() else {
+                    bail!("--rebuild-reason needs the reason, one line of text");
+                };
+                reason = Some(text);
+            }
+            _ => rest.push(word),
+        }
+    }
+    let reason = match (ids.is_empty(), reason) {
+        (true, None) => return Ok((rest, None)),
+        (true, Some(_)) => {
+            bail!("--rebuild-reason goes with --next-build, which names what was built again")
+        }
+        (false, None) => bail!("say why the bundles were built again: --rebuild-reason TEXT"),
+        (false, Some(reason)) => reason,
+    };
+    if !packs_first(&rest) {
+        bail!("--next-build packs its bundles, so it goes with a plain sign or --preview");
+    }
+    let reason = reason.trim().to_string();
+    if reason.is_empty() {
+        bail!("the reason is empty: say why the bundles were built again");
+    }
+    if reason.chars().any(char::is_control) || reason.len() > REASON_MAX {
+        bail!("the reason is one line of text, at most {REASON_MAX} bytes");
+    }
+    Ok((rest, Some(NextBuilds { ids, reason })))
+}
+
+/// The version each of `ids` is packed as: its port's version, as the
+/// next build of the newest the catalog's targets list.
+fn planned_builds(ctx: &Ctx, ids: &[String]) -> Result<Vec<NextBuild>> {
+    let file = ctx.root.join(REPO).join("metadata/targets.json");
+    let text = std::fs::read(&file).context(|| format!("reading {}", file.display()))?;
+    let targets: Value = serde_json::from_slice(&text)
+        .map_err(|err| crate::Error::new(format!("{}: {err}", file.display())))?;
+    let recipes = crate::ports::recipes(ctx)?;
+    let mut planned = Vec::new();
+    for id in ids {
+        let Some((recipe, _)) =
+            recipes.iter().find(|(recipe, _)| recipe.bundle.as_ref().is_some_and(|b| &b.id == id))
+        else {
+            bail!("no port packs {id}: --next-build takes the ID of a port's bundle");
+        };
+        let version = &recipe.version;
+        let Some(newest) = newest_build(&targets, id, version) else {
+            bail!(
+                "{id} {version} is not in the catalog: it publishes as a new version, without \
+                 --next-build"
+            );
+        };
+        if newest >= manifest::bundle::BUILD_MAX {
+            bail!("{id} {version} has had its last build, {newest}");
+        }
+        let version = manifest::bundle::with_build(version, newest + 1);
+        planned.push(NextBuild { id: id.clone(), version });
+    }
+    Ok(planned)
+}
+
+/// The newest build the targets list of `version` of the bundle `id`,
+/// withdrawn builds among them, so that a withdrawn build's number is
+/// never given again; none when they list no build of it.
+fn newest_build(targets: &Value, id: &str, version: &str) -> Option<u32> {
+    targets["signed"]["targets"]
+        .as_object()?
+        .values()
+        .filter(|target| target["custom"]["id"] == id)
+        .filter_map(|target| {
+            let (of, build) = manifest::bundle::split_build(target["custom"]["version"].as_str()?);
+            (of == version).then_some(build)
+        })
+        .max()
 }
 
 /// `args` with ob's `--preview`, which takes no path, given the plan's:
@@ -802,6 +935,54 @@ mod tests {
             words("sign --renew --preview /src/out/catalog/plan.json")
         );
         assert_eq!(with_plan_path(&ctx, words("sign --yes")), words("sign --yes"));
+    }
+
+    #[test]
+    fn next_builds_are_taken_out_of_the_words_and_checked() {
+        let (rest, next) = next_builds(
+            words("sign --preview --next-build a.b --next-build c.d --rebuild-reason")
+                .into_iter()
+                .chain(["  Linked with the C library fix ".to_string()])
+                .collect(),
+        )
+        .unwrap();
+        assert_eq!(rest, words("sign --preview"));
+        let next = next.unwrap();
+        assert_eq!(next.ids, ["a.b", "c.d"]);
+        assert_eq!(next.reason, "Linked with the C library fix");
+        let (rest, next) = next_builds(words("sign --yes")).unwrap();
+        assert_eq!((rest, next.is_none()), (words("sign --yes"), true));
+        let refused = |text: &str| next_builds(words(text)).err().unwrap().to_string();
+        assert!(refused("sign --next-build a.b").contains("--rebuild-reason TEXT"));
+        assert!(refused("sign --rebuild-reason why").contains("goes with --next-build"));
+        assert!(refused("sign --next-build --yes").contains("needs the ID"));
+        assert!(
+            refused("sign --next-build a.b --next-build a.b --rebuild-reason why")
+                .contains("given twice")
+        );
+        for pinned in ["sign --expect 0123", "sign --renew", "sign out/a-1.dkv"] {
+            let text = format!("{pinned} --next-build a.b --rebuild-reason why");
+            assert!(refused(&text).contains("goes with a plain sign or --preview"), "{pinned}");
+        }
+        let long = format!("sign --next-build a.b --rebuild-reason {}", "x".repeat(201));
+        assert!(refused(&long).contains("at most 200 bytes"));
+        let empty = words("sign --next-build a.b --rebuild-reason").into_iter().chain([" ".into()]);
+        assert!(next_builds(empty.collect()).unwrap_err().to_string().contains("is empty"));
+    }
+
+    #[test]
+    fn the_newest_build_counts_withdrawn_ones_and_no_other_version() {
+        let targets = serde_json::json!({"signed": {"targets": {
+            "bundles/rg-15.2.0.dkv": {"custom": {"id": "rg", "version": "15.2.0"}},
+            "bundles/rg-15.2.0_2.dkv": {"custom": {"id": "rg", "version": "15.2.0_2",
+                "withdrawn": {"kind": "broken", "reason": "it crashes", "since": 1}}},
+            "bundles/rg-15.2.1_5.dkv": {"custom": {"id": "rg", "version": "15.2.1_5"}},
+            "bundles/bat-15.2.0_7.dkv": {"custom": {"id": "bat", "version": "15.2.0_7"}},
+        }}});
+        assert_eq!(newest_build(&targets, "rg", "15.2.0"), Some(2));
+        assert_eq!(newest_build(&targets, "rg", "15.2.1"), Some(5));
+        assert_eq!(newest_build(&targets, "rg", "15.3.0"), None);
+        assert_eq!(newest_build(&targets, "bat", "15.2.0"), Some(7));
     }
 
     #[test]

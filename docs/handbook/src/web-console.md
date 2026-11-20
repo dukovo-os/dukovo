@@ -3032,11 +3032,13 @@ minutes ago.**, or **Not checked yet.**
 | --- | --- |
 | App | Its name and ID, which open its page |
 | Version | The version it runs |
-| Update | **Up to date**, or the version that is offered with **fixes only** or **new version** beside it, **Held at 8.0.3**, **Reaches this machine on day 3 of its waves**, **Could not check** or **Not checked yet**. Under it, when the catalog lists flaws of the version it runs, **2 known flaws, worst high** |
+| Update | **Up to date**, or the version that is offered with **fixes only**, **rebuild** or **new version** beside it, **Held at 8.0.3**, **Reaches this machine on day 3 of its waves**, **Could not check** or **Not checked yet**. Under it, when the catalog lists flaws of the version it runs, **2 known flaws, worst high** |
 
 **fixes only** is an update whose last number goes up and whose other numbers
-stay, 8.0.3 to 8.0.4. Every other change is a **new version**, since a version
-with fewer numbers, or with a tag such as `-alpha.1`, makes no promise of what
+stay, 8.0.3 to 8.0.4. A **rebuild** is the same version built again, such as
+after a fix to the C library, 8.0.3 to 8.0.3_2; the app's page says why the
+catalog built it again. Every other change is a **new version**, since a version with
+fewer numbers, or with a tag such as `-alpha.1`, makes no promise of what
 changes. While an update, a going back or a removal runs, its row says so in
 place of its update, and the buttons that would start another wait.
 
@@ -3056,7 +3058,8 @@ yet.**
 
 The page of an app starts with its name, its version and who makes it. A
 banner under it says what waits and what is wrong: **8.0.4 is available (fixes
-only)**, or that the version it runs has known flaws, each with its ID,
+only)**, or for a rebuild why the catalog built it again, **8.0.3_2 is available
+(rebuild): built again with the C library's fix**, or that the version it runs has known flaws, each with its ID,
 severity, a line about it and where it is fixed, and that the version on offer
 fixes them or that no fix is known. The page does not judge the risk: it says
 that whether a flaw matters depends on what the app may use, which it lists
@@ -4597,8 +4600,8 @@ held set says so, with its reason when it has one, and **Release the hold**.
 ### App updates
 
 **Apps** lists each app that has an update, with its name, **8.0.3 to 8.0.4**,
-**fixes only** or **new version**, and what the update fixes, **Fixes 1 security
-advisory, high**. **Update** takes it, as a task; an update that asks for more
+**fixes only**, **rebuild** or **new version**, and what the update fixes,
+**Fixes 1 security advisory, high**. **Update** takes it, as a task; an update that asks for more
 than the version it replaces stops with its sheet in the row, and **Update
 anyway** takes it as it asks. The card's pill says how many wait, **3 waiting**.
 A held app says **Held at 8.0.3**, with the reason when one was kept, **Held at

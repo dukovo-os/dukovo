@@ -1914,7 +1914,7 @@ _target/userspace/_).
 	*--debug*, *--release*
 		As for *build*.
 
-*catalog* *key* *yubikey* [*--serial* _n_] | *key* *new* _file_ _name_ [_role_]... | *root* [*--days* _n_] | *sign* [*--days* _n_] [*--remove* _path_]... [*--renew*] [*--yes*|*--preview*|*--expect* _digest_] [_bundle_]... | *withdraw* _id_ _version_ *--kind* *broken*|*malicious* *--reason* _text_ [*--yes*|*--preview*|*--expect* _digest_] | *publish* | *status* [*--json*] | *server* *setup* [*--dukovo*] | *deploy* | *check* [_url_] | *verify* | *pr* | *rollout* (*pause* _id_ _version_ _reason_ | *resume* _id_ _version_)
+*catalog* *key* *yubikey* [*--serial* _n_] | *key* *new* _file_ _name_ [_role_]... | *root* [*--days* _n_] | *sign* [*--days* _n_] [*--remove* _path_]... [*--renew*] [*--next-build* _id_]... [*--rebuild-reason* _text_] [*--yes*|*--preview*|*--expect* _digest_] [_bundle_]... | *withdraw* _id_ _version_ *--kind* *broken*|*malicious* *--reason* _text_ [*--yes*|*--preview*|*--expect* _digest_] | *publish* | *status* [*--json*] | *server* *setup* [*--dukovo*] | *deploy* | *check* [_url_] | *verify* | *pr* | *rollout* (*pause* _id_ _version_ _reason_ | *resume* _id_ _version_)
 	Make and sign the catalog's TUF repository in _catalog/_ (ADR 0381),
 	with catalog-repo, which ob builds for this machine. Every command
 	takes *--key* _file_, an Ed25519 secret key that signs in place of a
@@ -1939,8 +1939,62 @@ _target/userspace/_).
 	signed, are never signed again as other bytes: a bundle whose version
 	the targets list already, packed again as other bytes, is not an
 	error but is kept as signed, listed on a line that starts with *=*,
-	and the rest of the batch is signed; a rebuild reaches computers only
-	under a new version. The new bundles wait in _out/catalog/store/_.
+	and the rest of the batch is signed. The new bundles wait in
+	_out/catalog/store/_.
+
+	A pack of a listed version is compared with the newest build the
+	targets list of it, file by file, by the signed _files.sha256_
+	lists, which are read from _out/catalog/store/_; the SBOM is left
+	out, since it holds the packing time, and the manifest counts only
+	when it differs in more than its version. A *=* line says which of
+	three it is:
+
+	_= PATH: packed again with the same files; nothing to publish_
+		The bytes differ, as they do after any commit, and the
+		files do not. Nothing is to be done.
+
+	_= PATH: packed again with other files (bin/rg); --next-build ID publishes them as 15.2.0_2_
+		The files named differ: it is a rebuild, for instance after
+		a fix to the C library. *--next-build* publishes it.
+
+	_= PATH: packed again as other bytes; the signed bytes are not in the store, so the files were not compared; --next-build ID publishes them as 15.2.0_2_
+		The signed bytes are not in _out/catalog/store/_, as on a
+		checkout that did not sign them, so the files are not
+		compared. Publish it only when the files are known to
+		differ.
+
+	*--next-build* _id_
+		Publish the recipe version of _id_ as its next build. After
+		*ob ports* packs everything, ob packs the version of each
+		named _id_ again as one past the newest build the targets
+		list of it, a withdrawn build counted so that no number is
+		given twice, as _out/bundles/ID-VERSION_N.dkv_, with the
+		reason in _ID-VERSION_N.reason_ beside it. The build is
+		_VERSION_N_, with N from 2 to 9999 (*manifest.json*(5)).
+		Packing a bundle removes the other versions' _.dkv_ and
+		_.reason_ files of the same ID from _out/bundles/_. May be
+		given again for each _id_. Needs *--rebuild-reason*, and is
+		refused with *--expect*, *--renew* or a bundle named. It
+		fails with "no port packs ID", with "ID VERSION is not in the
+		catalog: it publishes as a new version, without --next-build"
+		when the targets list no such version, and with "ID VERSION
+		has had its last build, 9999".
+
+	*--rebuild-reason* _text_
+		Why the builds are made: one line of at most 200 bytes,
+		which computers show where they offer the update. It is
+		written to each _.reason_ file, and the target records it as
+		*custom.rebuild.reason*. *sign --expect* _digest_ afterwards
+		needs nothing more: catalog-repo reads the _.reason_ file.
+		A build whose files are the same as those of the version it
+		rebuilds is refused ("PATH has the same files as 15.2.0,
+		which is signed: nothing to rebuild"), and so is one with no
+		reason file.
+
+	A rebuild is listed as _+ PATH (ID 15.2.0_2, N bytes, publisher
+	verified, rebuild of 15.2.0: bin/rg): REASON_, or with _rebuild of
+	15.2.0 (files not compared)_ when the files were not compared.
+
 	*publish* signs a snapshot and timestamp
 	with the online key and lays out what the update server serves in
 	_out/catalog/site/_, every file by its version or SHA-256, then reads
@@ -1972,6 +2026,11 @@ _target/userspace/_).
 	*--expect* is given, since packing again could change what was read.
 	*sign* also refuses a bundle whose bytes changed after the list was
 	made.
+
+	A rebuild is an added bundle in the plan with *change* *"rebuild"*,
+	*replaces* (the version it rebuilds), *files* (the files that
+	differ, or null when they were not compared) and *reason*. The
+	format of the plan and the digest are as for any batch.
 
 	Before *sign* or *withdraw*, ob reads what the update server serves,
 	and refuses, with "this checkout is behind; pull main first", when it
@@ -2029,9 +2088,12 @@ _target/userspace/_).
 	bundles that *sign* would add; with *--json* it prints the same as
 	JSON, and the bundles in _out/bundles/_ not yet signed, as *unsigned*
 	with *added*, *removed*, *verified* (publishers newly marked) and
-	*rebuilt* (versions packed again as other bytes), for Dukovo
-	Ops. *served* of catalog-repo, which *updates status* runs, reads
-	what the server serves without fetching the bundles.
+	*rebuilt* (versions packed again as other bytes, each with *files*,
+	which is _[]_ when the files are the same, the files that differ, or
+	null when they were not compared, and *next*, the build
+	*--next-build* would give it), for Dukovo Ops. *served* of
+	catalog-repo, which *updates status* runs, reads what the server
+	serves without fetching the bundles.
 
 	*verify* checks _catalog/_ offline, as a computer checks what it is
 	served: every root from the first signed by its own keys and by the
