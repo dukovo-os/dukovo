@@ -23,10 +23,3 @@ os TestGetwdDeep the C library joins a relative path to the working folder it ke
 os TestGetwdDeepWithPWDSet the C library joins a relative path to the working folder it keeps, so a name in a folder deeper than 4096 bytes is too long (docs/deferred.md)
 os TestNewFileNonBlock a descriptor in nonblocking mode needs Go's poller (Phase 17 PR 2, the event queue)
 os Test*/anonymous_pipe a pipe's deadlines need Go's poller (Phase 17 PR 2, the event queue)
-os TestRootMulti*/*bs* a name with a slash after it is taken for the name alone, so a call acts on a file, or on a link and not the folder it leads to, where Linux fails with ENOTDIR (docs/deferred.md); bs in a subtest's name is a slash after it
-os TestRootConsistency*/*file*slash* a name with a slash after it is taken for the name alone, so a call acts on a file, or on a link and not the folder it leads to, where Linux fails with ENOTDIR (docs/deferred.md)
-os TestRootConsistency*/from/*file*slash* a name with a slash after it is taken for the name alone, so a call acts on a file, or on a link and not the folder it leads to, where Linux fails with ENOTDIR (docs/deferred.md)
-os TestRootConsistencyRename/from/symlink_slash a name with a slash after it is taken for the name alone, so a call acts on a file, or on a link and not the folder it leads to, where Linux fails with ENOTDIR (docs/deferred.md)
-os TestRootConsistencyRemove/symlink_slash a name with a slash after it is taken for the name alone, so a call acts on a file, or on a link and not the folder it leads to, where Linux fails with ENOTDIR (docs/deferred.md)
-os TestRootConsistencyMkdirAll/*dot mkdir of a name that ends in . fails with EINVAL, where Linux says EEXIST, which MkdirAll in an os.Root takes for a folder that is there (docs/deferred.md)
-os TestRootConsistencyMkdirAll/dot_slash mkdir of ./ fails with EINVAL, where Linux says EEXIST, which MkdirAll in an os.Root takes for a folder that is there (docs/deferred.md)

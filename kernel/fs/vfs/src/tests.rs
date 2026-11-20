@@ -489,7 +489,7 @@ fn paths_stay_beneath_their_directory() {
     let home = vfs.open(&K, &root, "home/user", OpenFlags::default()).unwrap();
     write(&vfs, &home, "notes", b"hi").unwrap();
     assert_eq!(vfs.stat(&K, &home, "notes").unwrap().size, 2);
-    assert_eq!(vfs.stat(&K, &home, "./notes/").unwrap().size, 2);
+    assert_eq!(vfs.stat(&K, &home, "./notes").unwrap().size, 2);
     assert_eq!(vfs.stat(&K, &home, "../user/notes").err(), Some(Error::Outside));
     assert_eq!(vfs.stat(&K, &home, "..").err(), Some(Error::Outside));
     assert_eq!(vfs.stat(&K, &home, "a/../..").err(), Some(Error::NotFound));
@@ -558,9 +558,15 @@ fn symbolic_links_are_followed() {
         String::from(core::str::from_utf8(&out[..n]).unwrap())
     };
     assert_eq!(real(&root, "rel/file"), "a/b/file");
-    assert_eq!(real(&root, "a/up/"), "a/b/file");
+    assert_eq!(real(&root, "a/up"), "a/b/file");
     assert_eq!(real(&root, "rel/.."), "a");
-    assert_eq!(real(&root, "abs/../../b/.."), "a");
+    assert_eq!(real(&root, "rel/../../a/b/.."), "a");
+    // `..` after a file, here the one `abs` leads to, is not there.
+    let mut out = [0u8; 64];
+    assert_eq!(
+        vfs.real_path(&K, &root, "abs/../../b/..", &mut SliceMut(&mut out[..])).err(),
+        Some(Error::NotDirectory)
+    );
     assert_eq!(real(&root, ".."), ".");
     assert_eq!(real(&a, "inside"), "b/file");
     let mut short = [0u8; 3];
@@ -573,6 +579,134 @@ fn symbolic_links_are_followed() {
     assert_eq!(vfs.make_link(&K, &root, "rel", "x", LINK).err(), Some(Error::Exists));
     assert_eq!(vfs.make_link(&K, &root, "empty", "", LINK).err(), Some(Error::BadName));
     assert_eq!(vfs.make_link(&K, &root, "a/b/file/x", "y", LINK).err(), Some(Error::NotDirectory));
+}
+
+#[test]
+fn a_slash_or_a_dot_after_a_file_is_not_a_directory() {
+    let vfs = vfs();
+    let root = vfs.root();
+    vfs.make_directory(&K, &root, "dir", DIR).unwrap();
+    write(&vfs, &root, "file", b"data").unwrap();
+    vfs.make_link(&K, &root, "to-file", "file", LINK).unwrap();
+    vfs.make_link(&K, &root, "to-dir", "dir", LINK).unwrap();
+    vfs.make_link(&K, &root, "to-file-slash", "file/", LINK).unwrap();
+    // A file, or a link to one, with `/`, `/.` or `/..` after it: in
+    // the walk with `..` and links and in the one without.
+    for path in [
+        "file/",
+        "file//",
+        "file/.",
+        "file/..",
+        "file/./",
+        "to-file/",
+        "to-file/.",
+        "dir/../file/",
+        "to-dir/../file/",
+        "to-file-slash",
+        "to-file-slash/",
+    ] {
+        assert_eq!(vfs.stat(&K, &root, path).err(), Some(Error::NotDirectory), "stat {path}");
+        // A link that is the last name is not followed without a `/`.
+        if path != "to-file-slash" {
+            let found = vfs.stat_link(&K, &root, path);
+            assert_eq!(found.err(), Some(Error::NotDirectory), "lstat {path}");
+        }
+        assert_eq!(
+            vfs.open(&K, &root, path, OpenFlags::default()).err(),
+            Some(Error::NotDirectory),
+            "open {path}"
+        );
+    }
+    let mut out = [0u8; 16];
+    assert_eq!(
+        vfs.real_path(&K, &root, "to-file/", &mut SliceMut(&mut out[..])).err(),
+        Some(Error::NotDirectory)
+    );
+    // A directory, or a link to one, takes them.
+    for path in ["dir/", "dir/.", "dir/./", "./dir/", "to-dir/", "to-dir/.", "file/../dir/"] {
+        let found = vfs.stat(&K, &root, path);
+        if path == "file/../dir/" {
+            assert_eq!(found.err(), Some(Error::NotDirectory), "{path}");
+        } else {
+            assert_eq!(found.unwrap().kind, Kind::Directory, "{path}");
+        }
+    }
+    assert_eq!(vfs.stat_link(&K, &root, "to-dir/").unwrap().kind, Kind::Directory);
+    assert_eq!(vfs.stat_link(&K, &root, "to-dir").unwrap().kind, Kind::Symlink);
+    // Removing: a file, or a link, which is not followed, with `/` after
+    // it is not a directory; a directory with one goes.
+    for path in ["file/", "to-file/", "to-dir/"] {
+        assert_eq!(vfs.remove(&K, &root, path).err(), Some(Error::NotDirectory), "remove {path}");
+    }
+    assert_eq!(vfs.stat_link(&K, &root, "to-dir").unwrap().kind, Kind::Symlink);
+    vfs.make_directory(&K, &root, "empty", DIR).unwrap();
+    vfs.remove(&K, &root, "empty/").unwrap();
+    // Renaming: only a directory moves with `/` after either name.
+    assert_eq!(vfs.rename(&K, &root, "file/", &K, &root, "moved").err(), Some(Error::NotDirectory));
+    assert_eq!(vfs.rename(&K, &root, "file", &K, &root, "moved/").err(), Some(Error::NotDirectory));
+    assert_eq!(
+        vfs.rename(&K, &root, "to-dir/", &K, &root, "moved").err(),
+        Some(Error::NotDirectory)
+    );
+    vfs.rename(&K, &root, "dir/", &K, &root, "moved/").unwrap();
+    assert_eq!(vfs.stat(&K, &root, "moved").unwrap().kind, Kind::Directory);
+    vfs.rename(&K, &root, "moved", &K, &root, "dir").unwrap();
+    // Linking: from a file with `/` after it, and to a new name with one,
+    // which asks for a directory that is not there.
+    assert_eq!(
+        vfs.link(&K, &root, "file/", &K, &root, "other", false).err(),
+        Some(Error::NotDirectory)
+    );
+    assert_eq!(
+        vfs.link(&K, &root, "file/.", &K, &root, "other", false).err(),
+        Some(Error::NotDirectory)
+    );
+    assert_eq!(
+        vfs.link(&K, &root, "file", &K, &root, "other/", false).err(),
+        Some(Error::NotFound)
+    );
+    assert_eq!(vfs.link(&K, &root, "file", &K, &root, "dir/", false).err(), Some(Error::Exists));
+    assert_eq!(vfs.make_link(&K, &root, "new/", "file", LINK).err(), Some(Error::NotFound));
+    assert_eq!(vfs.make_link(&K, &root, "file/", "x", LINK).err(), Some(Error::Exists));
+    // An open that makes a file: through a link whose target has a `/`
+    // after it, or of `.`, there is no file to make.
+    let create = OpenFlags { create: Some(FILE), ..OpenFlags::default() };
+    vfs.make_link(&K, &root, "to-new-slash", "new/", LINK).unwrap();
+    for path in ["to-new-slash", "to-file-slash", ".", "dir/.", "dir/.."] {
+        assert_eq!(vfs.open(&K, &root, path, create).err(), Some(Error::IsDirectory), "{path}");
+    }
+    assert_eq!(vfs.open(&K, &root, "file/.", create).err(), Some(Error::NotDirectory));
+    // Nothing above was made or removed.
+    assert_eq!(vfs.stat(&K, &root, "file").unwrap().size, 4);
+    assert_eq!(vfs.stat(&K, &root, "other").err(), Some(Error::NotFound));
+    assert_eq!(vfs.stat(&K, &root, "new").err(), Some(Error::NotFound));
+}
+
+#[test]
+fn making_a_dot_finds_what_is_there() {
+    let vfs = vfs();
+    let root = vfs.root();
+    vfs.make_directory(&K, &root, "dir", DIR).unwrap();
+    write(&vfs, &root, "file", b"data").unwrap();
+    // `.` and `..` lead to a directory that is there: Linux's EEXIST,
+    // which `mkdir -p` and Go's `MkdirAll` take for a directory.
+    for path in [".", "./", "dir/.", "dir/..", "dir/./", "dir/../.", "dir/./.."] {
+        assert_eq!(vfs.make_directory(&K, &root, path, DIR).err(), Some(Error::Exists), "{path}");
+        assert_eq!(vfs.make_link(&K, &root, path, "x", LINK).err(), Some(Error::Exists), "{path}");
+        assert_eq!(
+            vfs.link(&K, &root, "file", &K, &root, path, false).err(),
+            Some(Error::Exists),
+            "{path}"
+        );
+    }
+    // Or the walk fails as it does.
+    assert_eq!(vfs.make_directory(&K, &root, "file/.", DIR).err(), Some(Error::NotDirectory));
+    assert_eq!(vfs.make_directory(&K, &root, "missing/.", DIR).err(), Some(Error::NotFound));
+    let dir = vfs.resolve(&K, &root, "dir").unwrap();
+    assert_eq!(vfs.make_directory(&K, &dir, "..", DIR).err(), Some(Error::Outside));
+    // A `/` after a new directory's name is its own.
+    vfs.make_directory(&K, &root, "new/", DIR).unwrap();
+    assert_eq!(vfs.stat(&K, &root, "new").unwrap().kind, Kind::Directory);
 }
 
 #[test]

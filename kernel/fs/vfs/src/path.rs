@@ -128,6 +128,22 @@ impl<'a> Iterator for Components<'a> {
     }
 }
 
+/// Whether a `/` follows the last component of `path`: the slashes
+/// [`split_last`] leaves off, which make that component a directory's
+/// (POSIX.1-2024 XBD 4.16).
+pub fn ends_in_slash(path: &str) -> bool {
+    path.ends_with('/')
+}
+
+/// Whether the last component of `path` is `.` or `..`, which
+/// [`split_last`] refuses: a path that leads to a directory, if anywhere,
+/// and never names a new entry.
+pub fn ends_in_dot(path: &str) -> bool {
+    let trimmed = path.trim_end_matches('/');
+    let last = trimmed.rsplit('/').next().unwrap_or(trimmed);
+    last == "." || last == ".."
+}
+
 /// Splits `path` into the path of its directory and its last name, for
 /// operations that make or remove an entry: `a/b/c` is `("a/b", "c")`.
 /// Fails if the last component is not a name (`a/..`, `.`, the empty
