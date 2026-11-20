@@ -562,6 +562,15 @@ mod tests {
         git_in(dir, &["init", "--quiet", "--bare", "origin.git"]);
         git_in(dir, &["clone", "--quiet", "origin.git", "tree"]);
         let tree = dir.join("tree");
+        // The commit the tool builds takes its author from the checkout's
+        // settings, as on the signer's computer: a CI runner has none.
+        for (key, value) in [
+            ("user.name", "Ann Example"),
+            ("user.email", "ann@example.org"),
+            ("commit.gpgsign", "false"),
+        ] {
+            git_in(&tree, &["config", key, value]);
+        }
         let metadata = tree.join("catalog/metadata");
         std::fs::create_dir_all(&metadata).unwrap();
         std::fs::write(metadata.join("root.json"), r#"{"signed":{"version":1}}"#).unwrap();
