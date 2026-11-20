@@ -73,8 +73,10 @@ and ADR 0223 (what a removal leaves).
   - what bundled read of the catalogs, which an install from a file reads
     too;
   - the system's log and the audit log in it, which keep what was said
-    while the bundle was there, and the records the system's other
-    services keep as it runs;
+    while the bundle was there, the console's journal of what changed in
+    the settings (ADR 0516), which keeps a service bundle's file as it
+    keeps any change there, and the records the system's other services
+    keep as it runs;
   - in a person's home, the folders `app-data`, `app-data/.snapshots`,
     `applications` and `applications/commands`, which the first install
     and the first run of an app make and which are no one bundle's.
