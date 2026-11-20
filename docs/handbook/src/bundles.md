@@ -17,7 +17,10 @@ bundle(1), bundled(8), manifest.json(5) and service.toml(5).
 - **Installing from a catalog**, by the bundle's ID, with `bundle
   search` to find it; the catalog is a signed repository that vouches
   for each file it lists
-  ([ADR 0383](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0383-bundled-installs-from-the-catalogs-an-administrator-trusts.md)).
+  ([ADR 0383](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0383-bundled-installs-from-the-catalogs-an-administrator-trusts.md)),
+  and may vouch for an app's publisher as well, so that no other key
+  holds its ID
+  ([ADR 0592](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0592-a-catalog-that-vouches-for-an-apps-publisher-may-take-its-id-and-a-publisher-may-move-its-app-to-a-new-key.md)).
 - **Installing from a file**, signed by a key this computer may not
   know, after a warning
   ([ADR 0223](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0223-bundled-installs-seals-and-removes-bundles.md)),
@@ -117,6 +120,35 @@ $ bundle catalog
 when several list it. Once a bundle is installed from a catalog, its ID
 installs only from that catalog's files, whoever offers another.
 
+A catalog can also vouch for the publisher of an app, and Dukovo's does
+for each app built from its own ports. Then a file of that app's ID from
+any other key is refused, so a file someone installed first cannot keep
+the real app out. If you already installed such a file, the sheet of the
+real app warns you:
+
+```
+$ bundle install org.example.notes
+Notes 2.0.0, for yourself
+  org.example.notes, by Example, Inc.
+  Signed by key RW…
+  From catalog dukovo, which this computer trusts: it lists this very
+  file and vouches for the publisher of org.example.notes.
+  Warning: org.example.notes has been the app of key RW…
+  here since 2026-11-01, a key the catalog does not vouch for.
+  Installing this replaces that app: it is removed, and its data
+  is set aside, not deleted. From now on only catalog dukovo
+  may install org.example.notes.
+```
+
+On a yes, the old app is removed, and what it kept is moved, not
+deleted: your `app-data/ID` and its copies go to
+`app-data/.set-aside/ID-DAY/`, as `data` and `snapshots`, where you can
+read them or move them back. An app installed for everyone is replaced
+only by an administrator, with `--for-everyone`, and the data of each
+person's home and of its services (`/shared/services/ID`) is set aside
+the same way, in a `.set-aside` folder beside it. What you allowed the
+old app is forgotten, and the new one asks again.
+
 ## Installing from a file
 
 A `.dkv` file from a website or a friend installs too:
@@ -131,6 +163,13 @@ name on the sheet is then its own word, which nothing has checked.
 Install only what you trust. From then on, only that key may install
 that ID, so another publisher cannot replace the app with one of their
 own.
+
+A publisher who changes its key says so in a `rollover` file, signed by
+the old key, which goes in the bundle's folder before it is signed with
+the new one (`bundle key rollover`, see bundle(1)). Installing that
+bundle shows `A new key for` the app, with the old key and the day the
+publisher moved it. What you allowed the app moves to the new key, and
+from then on a file the old key signs is refused.
 
 A file with no signature at all is refused: nothing says who made it,
 or that it is as they made it. If you trust where it came from, install

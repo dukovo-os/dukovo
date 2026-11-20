@@ -170,6 +170,20 @@ pub struct TestBundle {
 /// Packs `bundle` into out/test/bundles, signed by the build key, and
 /// gives its file.
 pub fn pack_test(ctx: &Ctx, bundle: &TestBundle) -> Result<PathBuf> {
+    pack_test_signed(ctx, bundle, &signing_key(ctx)?, 0, None)
+}
+
+/// [`pack_test`] signed by `key` at the time `signed_at` (seconds since
+/// 1970), with a `rollover` file of the given text beside the manifest
+/// when there is one (ADR 0592): a bundle of another publisher's key, or
+/// one that moved to a new key.
+pub fn pack_test_signed(
+    ctx: &Ctx,
+    bundle: &TestBundle,
+    key: &SecretKey,
+    signed_at: i64,
+    rollover: Option<&str>,
+) -> Result<PathBuf> {
     let name = bundle.id.rsplit('.').next().unwrap_or(bundle.id);
     let folder = ctx.target.join("test-bundles").join(format!("{}-{}", bundle.id, bundle.version));
     if folder.exists() {
@@ -248,7 +262,6 @@ pub fn pack_test(ctx: &Ctx, bundle: &TestBundle) -> Result<PathBuf> {
             &format!("  \"uses\": [{}],\n  \"permissions\":", bundle.uses),
         )
     };
-    let key = signing_key(ctx)?;
     let manifest = if bundle.feed.is_empty() {
         manifest
     } else {
@@ -281,7 +294,11 @@ pub fn pack_test(ctx: &Ctx, bundle: &TestBundle) -> Result<PathBuf> {
         std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755))
             .context(|| format!("writing {}", program.display()))?;
     }
-    dkv::signed::sign_folder(&folder, &key, 0, &crate::licenses::rfc3339(0))
+    if let Some(text) = rollover {
+        let file = folder.join(dkv::rollover::FILE);
+        std::fs::write(&file, text).context(|| format!("writing {}", file.display()))?;
+    }
+    dkv::signed::sign_folder(&folder, key, signed_at, &crate::licenses::rfc3339(signed_at))
         .map_err(|why| Error::new(format!("signing test bundle {}: {why}", bundle.id)))?;
     let dir = ctx.out.join("test/bundles");
     process::create_dir(&dir)?;

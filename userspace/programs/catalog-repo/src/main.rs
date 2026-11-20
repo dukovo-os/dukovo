@@ -21,9 +21,12 @@ usage: catalog-repo --repo DIR [--yubikey-helper PROGRAM] [--key FILE]... COMMAN
        key yubikey [--serial N]          add the key of a YubiKey's slot 9c
        key new FILE NAME [ROLE]...       make an Ed25519 key, its secret in FILE
        root [--days N]                   sign the next root, from keys/
-       sign [--days N] [--remove PATH]... [--yes] [BUNDLE]...
+       sign [--days N] [--remove PATH]... [--verified ID]... [--yes] [BUNDLE]...
                                          sign the next targets: one touch a batch,
-                                         the bundles in --bundles DIR by default
+                                         the bundles in --bundles DIR by default;
+                                         a bundle of an ID given with --verified is
+                                         listed as one whose publisher the catalog
+                                         vouches for
        publish --store DIR --out DIR [--plan FILE]
                                          snapshot, timestamp and the files to serve,
                                          the rollouts of the plan signed first
@@ -53,6 +56,7 @@ struct Options {
     days: Option<i64>,
     serial: Option<u64>,
     remove: Vec<String>,
+    verified: Vec<String>,
     yes: bool,
     json: bool,
     store: Option<PathBuf>,
@@ -74,6 +78,7 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
         days: None,
         serial: None,
         remove: Vec::new(),
+        verified: Vec::new(),
         yes: false,
         json: false,
         store: None,
@@ -97,6 +102,7 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
                 options.serial = Some(value()?.parse().map_err(|_| "--serial takes a number")?);
             }
             "--remove" => options.remove.push(value()?),
+            "--verified" => options.verified.push(value()?),
             "--store" => options.store = Some(value()?.into()),
             "--out" => options.out = Some(value()?.into()),
             "--bundles" => options.bundles = Some(value()?.into()),
@@ -173,7 +179,7 @@ fn run(options: &Options) -> Result<ExitCode, String> {
             if bundles.is_empty() {
                 bundles = bundles_in(options.bundles.as_deref());
             }
-            let changes = repo.changes(&bundles, &options.remove)?;
+            let changes = repo.changes(&bundles, &options.remove, &options.verified)?;
             let store = options.store.as_ref().ok_or("--store is needed")?;
             if changes.is_empty() {
                 println!("Nothing has changed; signing again renews targets' expiry.");
@@ -469,7 +475,7 @@ fn status_json(repo: &Repo, options: &Options) -> Result<(), String> {
             })
         })
         .collect();
-    let changes = repo.changes(&bundles_in(options.bundles.as_deref()), &[])?;
+    let changes = repo.changes(&bundles_in(options.bundles.as_deref()), &[], &options.verified)?;
     let added: Vec<Value> = changes
         .added
         .iter()

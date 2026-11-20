@@ -678,7 +678,7 @@ fn test_catalog(ctx: &Ctx, bundles: &Path) -> std::result::Result<PathBuf, Strin
         .map(|name| bundles.join(name))
         .collect();
     let signed =
-        crate::catalog::test_site(ctx, &files, None, None, &[]).map_err(|e| e.to_string())?;
+        crate::catalog::test_site(ctx, &files, None, None, &[], &[]).map_err(|e| e.to_string())?;
     let folder = ctx.out.join("lab-catalog");
     if folder.exists() {
         std::fs::remove_dir_all(&folder)

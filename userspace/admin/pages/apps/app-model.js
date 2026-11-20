@@ -19,10 +19,11 @@ export function byline(info) {
   const trust = info.trust ?? {};
   const signed = signedWords(trust);
   let source = null;
-  if (trust.kind === 'catalog' && isText(trust.catalog)) source = `${capital(trust.catalog)} catalog`;
+  if (['catalog', 'takes', 'new_key'].includes(trust.kind) && isText(trust.catalog)) source = `${capital(trust.catalog)} catalog`;
   else if (isText(info.update_feed)) source = 'its own feed';
   else if (trust.kind === 'bound') source = 'a file you installed';
   else if (trust.kind === 'bound_for_everyone') source = 'a file installed for everyone';
+  else if (trust.kind === 'new_key') source = 'a file signed by its publisher\'s new key';
   return [source, signed, isText(info.license) ? info.license : null].filter(Boolean).join(' · ');
 }
 

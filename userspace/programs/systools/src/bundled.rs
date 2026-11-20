@@ -73,7 +73,9 @@ use crate::bundles::protocol::{
 use crate::bundles::registry::{self, Installed, Place, Registry, Trust, base_id};
 use crate::bundles::services::{self, Record};
 use crate::bundles::sheet::{self, Facts};
-use crate::bundles::{MANIFEST, confine, documents, signed, sizes, snapshots, sums, tonight};
+use crate::bundles::{
+    MANIFEST, confine, documents, rollover, signed, sizes, snapshots, sums, tonight,
+};
 use crate::util::{self, Fail};
 use crate::{proc, signin, sys};
 
@@ -558,6 +560,62 @@ fn archive_hash(archive: &File) -> Result<(String, u64), String> {
     Ok((sums::hex(&hasher.finish()), length))
 }
 
+/// The rollover links of the checked bundle in `folder`, none if it has
+/// no rollover file (ADR 0592).
+fn read_rollover(folder: &Dir) -> Result<Vec<rollover::Link>, String> {
+    let bytes = match folder.read(rollover::FILE, rollover::FILE_MAX) {
+        Ok((bytes, _)) => bytes,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("its {} file: {e}", rollover::FILE)),
+    };
+    let text =
+        String::from_utf8(bytes).map_err(|_| format!("its {} file is not text", rollover::FILE))?;
+    rollover::read(&text).map_err(|why| format!("its {} file: {why}", rollover::FILE))
+}
+
+/// What people said of the app of each binding `rebound` moved to `key`:
+/// moved with it for a new key its publisher signed, forgotten for an ID
+/// a catalog took (ADR 0592). Each move is a security event.
+fn rebind_grants(
+    shared: &Shared,
+    trust: &Trust,
+    id: &str,
+    rebound: &[registry::Bound],
+    key: &PublicKey,
+) -> Result<(), String> {
+    let mut grants = shared.grants();
+    for old in rebound {
+        let uid = match old.place {
+            Place::User(uid) => Some(uid),
+            Place::Everyone => None,
+        };
+        let changed = match trust {
+            Trust::Takes { catalog, .. } => {
+                audit!(
+                    "{id} taken for {} from key {} by catalog {catalog}, which vouches for its \
+                     publisher",
+                    whom(old.place),
+                    old.key.encoded()
+                );
+                grants.forget_key(uid, id, &old.key)
+            }
+            _ => {
+                audit!(
+                    "{id} moved for {} from key {} to key {}, as the old key signed",
+                    whom(old.place),
+                    old.key.encoded(),
+                    key.encoded()
+                );
+                grants.move_key(uid, id, &old.key, key)
+            }
+        };
+        for uid in changed {
+            save_grants(&grants, uid)?;
+        }
+    }
+    Ok(())
+}
+
 /// The catalogs that list a file of `id` with this SHA-256 and length,
 /// from the indexes they last gave, while those still vouch for it:
 /// `from` first, when it is one.
@@ -581,6 +639,23 @@ fn listing(id: &str, sha256: &str, length: u64, from: Option<&str>) -> Vec<Strin
         listed.insert(0, name);
     }
     listed
+}
+
+/// The catalogs whose index vouches for the publisher of `id`, from the
+/// indexes they last gave, while those still vouch for it.
+fn owners(id: &str) -> Vec<String> {
+    let (catalogs, _) = read_catalogs();
+    let now = tuf::time::now();
+    let state = Path::new(catalogs::STATE);
+    catalogs
+        .iter()
+        .filter(|c| !c.off)
+        .filter(|c| {
+            catalogs::read_index(state, &c.name)
+                .is_some_and(|index| index.current(now) && index.owns(id))
+        })
+        .map(|c| c.name.clone())
+        .collect()
 }
 
 /// What stops an install, `why`: it ends the install with an error, but
@@ -620,6 +695,9 @@ fn install_in(
     };
     still("as it was unpacked")?;
     let checked = signed::check_folder(Path::new(&unpacked))?;
+    // A move to a new key, which the old key signed (ADR 0592): a file
+    // of the checked folder, so its bytes are the signed list's.
+    let links = read_rollover(&folder)?;
     still("as it was checked")?;
     // A bundle with a line is a bundle of its own, ID@LINE (ADR 0387).
     let id = checked.manifest.full_id();
@@ -635,6 +713,16 @@ fn install_in(
     // the unpacked folder came from and has been checked against.
     let (sha256, length) = archive_hash(archive)?;
     let listed = listing(&id, &sha256, length, how.from);
+    // The catalogs that vouch for the publisher of the ID (ADR 0592).
+    let owners = owners(&id);
+    let claim = registry::Claim {
+        id: &id,
+        key: &checked.key,
+        listed: &listed,
+        owners: &owners,
+        links: &links,
+        signed_at: checked.signed_at(),
+    };
     let mut refused = None;
     if let Some(from) = how.from
         && listed.first().map(String::as_str) != Some(from)
@@ -644,7 +732,7 @@ fn install_in(
     }
     let (trust, others, before) = {
         let registry = shared.lock();
-        let trust = match registry.trust(place, asker, &id, &checked.key, &listed) {
+        let trust = match registry.trust(place, asker, &claim) {
             // The sheet still says where the file is from.
             Err(why) if how.sheet_only => {
                 refused.get_or_insert(why);
@@ -652,7 +740,12 @@ fn install_in(
             }
             trusted => trusted?,
         };
-        let before = registry.installed(place, &id).map(|i| i.version.clone());
+        // An ID taken from another key is a new install: the old
+        // publisher's app goes, and nothing of it carries over.
+        let before = registry
+            .installed(place, &id)
+            .filter(|_| !matches!(trust, Trust::Takes { .. }))
+            .map(|i| i.version.clone());
         (trust, commands_in_reach(&registry, place, &id), before)
     };
     for command in &checked.manifest.commands {
@@ -739,7 +832,7 @@ fn install_in(
             more.join(", ")
         ));
     }
-    if !how.update || !more.is_empty() {
+    if !how.update || !more.is_empty() || matches!(trust, Trust::Takes { .. }) {
         if let Some(talk) = talk.as_deref_mut() {
             let mut text = sheet::write(&facts);
             text.push_str(&services::socket_sheet(&wanted));
@@ -757,6 +850,13 @@ fn install_in(
             }
         }
     }
+    // Taken from another key (ADR 0592): the old publisher's app goes, with
+    // its services' accounts, and its data is set aside, before this one's
+    // accounts are made, so that none of them is the old app's.
+    let aside = match &trust {
+        Trust::Takes { .. } => take_over(shared, asker, place, &id, &how)?,
+        _ => Vec::new(),
+    };
     // Its services' accounts and data folders, before it is in place.
     make_accounts(&checked.manifest)?;
     seal(&folder, 0)?;
@@ -765,7 +865,7 @@ fn install_in(
     let version = checked.manifest.version.0.clone();
     let mut registry = shared.lock();
     // Bound since? Another install may have come in between.
-    let trust = registry.trust(place, asker, &id, &checked.key, &listed)?;
+    let trust = registry.trust(place, asker, &claim)?;
     switch_in(places, path, working, &id)?;
     match places.stat_at(&id) {
         Ok(Some(st)) if same(&st, &made) => {}
@@ -773,21 +873,30 @@ fn install_in(
     }
     let when = util::now_ns() / 1_000_000_000;
     let previous = registry.installed(place, &id).map(|i| i.version.clone());
-    let catalog = match &trust {
-        Trust::Catalog { name, .. } => Some(name.as_str()),
-        _ => None,
+    // trust said each binding to another key moves to this one.
+    let rebound = match trust {
+        Trust::NewKey { .. } | Trust::Takes { .. } => {
+            registry.rebind(place, &id, &checked.key, when)
+        }
+        _ => Vec::new(),
     };
     registry.record(
         Installed { place, id: id.clone(), version: version.clone(), key: checked.key, list, when },
-        catalog,
+        trust.catalog(),
     );
     save(&registry)?;
     drop(registry);
+    rebind_grants(shared, &trust, &id, &rebound, &checked.key)?;
     let why = match &trust {
         Trust::Catalog { name, .. } => format!("from catalog {name}"),
         Trust::Developer => "their developer key".into(),
         Trust::Bound { .. } | Trust::BoundForEveryone { .. } => "its key".into(),
         Trust::Unknown => "a key this computer did not know".into(),
+        Trust::NewKey { old, .. } => format!("a new key, which key {} moved it to", old.encoded()),
+        Trust::Takes { catalog, old, .. } => format!(
+            "from catalog {catalog}, which vouches for its publisher and took it from key {}",
+            old.encoded()
+        ),
     };
     let asked_by = match how.tonight {
         Some(by) => format!("bundled, as asked by {} for tonight", whom(Place::User(by))),
@@ -800,10 +909,10 @@ fn install_in(
         whom(place),
         checked.key.encoded()
     );
-    let source = match &trust {
-        Trust::Catalog { name, .. } => format!("from catalog {name}"),
-        _ if how.feed => "from its feed".into(),
-        _ => "from a file".into(),
+    let source = match trust.catalog() {
+        Some(name) => format!("from catalog {name}"),
+        None if how.feed => "from its feed".into(),
+        None => "from a file".into(),
     };
     add_history(&Event {
         when,
@@ -820,8 +929,13 @@ fn install_in(
         .err()
         .map_or_default(|why| format!("; its commands are not linked: {why}"));
     let ran = run_services(&checked.manifest, old.as_ref(), &services::reaches(&wanted));
+    let aside = if aside.is_empty() {
+        String::new()
+    } else {
+        format!("; the data of the app it replaced is set aside in {}", aside.join(", "))
+    };
     let installed = format!(
-        "installed {id} {version}{over}, for {whose}{linked}{}{}",
+        "installed {id} {version}{over}, for {whose}{linked}{}{}{aside}",
         services::skipped(&wanted),
         ran.said
     );
@@ -2146,6 +2260,221 @@ fn remove(
     Ok(format!("removed {id} {}{and}{add_ons}{services}", installed.version))
 }
 
+/// The folder, in a folder of data, that holds what an app's old
+/// publisher left behind when a catalog took its ID (ADR 0592).
+const SET_ASIDE: &str = ".set-aside";
+/// How many names `ID-DAY`, `ID-DAY-2`, … are tried before giving up.
+const SET_ASIDE_NAMES: u32 = 1000;
+
+/// Makes the folder `name` beneath `parent`, which must not be there, as
+/// `parent`'s owner's and 0700: bundled runs as root, and what it sets
+/// aside stays its person's.
+fn make_private(parent: &Dir, name: &str) -> io::Result<Dir> {
+    parent.make(name, 0o700)?;
+    let dir = parent.dir_at(name)?;
+    let owner = parent.stat()?;
+    // SAFETY: plain calls on a descriptor we hold.
+    check(unsafe { libc::fchown(dir.0.as_raw_fd(), owner.st_uid, owner.st_gid) })?;
+    // SAFETY: as above; the mask may have taken bits off the mode made.
+    check(unsafe { libc::fchmod(dir.0.as_raw_fd(), 0o700) })?;
+    Ok(dir)
+}
+
+/// The folder `name` beneath `parent`, made if it is not there, and never
+/// through a link.
+fn private_folder(parent: &Dir, name: &str) -> io::Result<Dir> {
+    match make_private(parent, name) {
+        Ok(dir) => Ok(dir),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => parent.dir_at(name),
+        Err(e) => Err(e),
+    }
+}
+
+/// `base` for the first try at a name, then `base-2`, `base-3`, ….
+fn numbered(base: &str, number: u32) -> String {
+    if number == 1 { base.to_string() } else { format!("{base}-{number}") }
+}
+
+/// Renames `name` in `from` to `new` in `to`, as the descriptors hold them.
+fn move_between(from: &Dir, name: &str, to: &Dir, new: &str) -> io::Result<()> {
+    let (name, new) = (crate::bundles::folder::c_name(name)?, crate::bundles::folder::c_name(new)?);
+    // SAFETY: all four are valid for the call.
+    check(unsafe {
+        libc::renameat(from.0.as_raw_fd(), name.as_ptr(), to.0.as_raw_fd(), new.as_ptr())
+    })
+}
+
+/// Moves the data and the version copies of `id` in `app_data`, which is
+/// `owner`'s, to a new folder `base`, or `base-2`, … in its `.set-aside`:
+/// the data as `data`, the copies as `snapshots`. The folder's name, or
+/// none if the person has nothing of `id`.
+fn set_aside_app_data(
+    app_data: &Dir,
+    owner: u32,
+    id: &str,
+    base: &str,
+) -> io::Result<Option<String>> {
+    // Copies in a folder that is not the person's are not theirs to keep.
+    let copies = app_data
+        .dir_at(crate::bundles::snapshots::SNAPSHOTS)
+        .ok()
+        .filter(|copies| copies.stat().is_ok_and(|st| st.st_uid == owner));
+    let has_data = app_data.stat_at(id)?.is_some();
+    let has_copies = match &copies {
+        Some(copies) => copies.stat_at(id)?.is_some(),
+        None => false,
+    };
+    if !has_data && !has_copies {
+        return Ok(None);
+    }
+    let aside = private_folder(app_data, SET_ASIDE)?;
+    let mut number = 1;
+    let (name, folder) = loop {
+        let name = numbered(base, number);
+        match make_private(&aside, &name) {
+            Ok(folder) => break (name, folder),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists && number < SET_ASIDE_NAMES => {
+                number += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    };
+    if has_data {
+        move_between(app_data, id, &folder, "data")?;
+    }
+    if let Some(copies) = copies.filter(|_| has_copies) {
+        move_between(&copies, id, &folder, "snapshots")?;
+    }
+    Ok(Some(name))
+}
+
+/// Sets `id`'s data aside in the home of `user`: the folder it went to,
+/// as a path, if it had any there.
+fn set_aside_in_home(
+    user: &accounts::User,
+    id: &str,
+    base: &str,
+) -> Result<Option<String>, String> {
+    let folder = format!("{}/{APP_DATA}", user.home.trim_end_matches('/'));
+    let app_data = match Dir::open(&folder) {
+        Ok(dir) => dir,
+        Err(e)
+            if e.kind() == io::ErrorKind::NotFound
+                || matches!(e.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR)) =>
+        {
+            return Ok(None);
+        }
+        Err(e) => return Err(format!("{folder}: {e}")),
+    };
+    // A folder that is not the person's is not theirs to have bundled move
+    // things in.
+    if !app_data.stat().is_ok_and(|st| st.st_uid == user.uid) {
+        return Ok(None);
+    }
+    let name = set_aside_app_data(&app_data, user.uid, id, base)
+        .map_err(|e| format!("{folder}/{id}: {e}"))?;
+    Ok(name.map(|name| format!("{folder}/{SET_ASIDE}/{name}")))
+}
+
+/// Sets the data folder of the services of `id` aside, in `data`, as
+/// `base`, or `base-2`, … in its `.set-aside`: the folder it went to, if
+/// it had one.
+fn set_aside_service_data(data: &Dir, id: &str, base: &str) -> io::Result<Option<String>> {
+    if data.stat_at(id)?.is_none() {
+        return Ok(None);
+    }
+    let aside = private_folder(data, SET_ASIDE)?;
+    for number in 1..=SET_ASIDE_NAMES {
+        let name = numbered(base, number);
+        if aside.stat_at(&name)?.is_none() {
+            move_between(data, id, &aside, &name)?;
+            return Ok(Some(name));
+        }
+    }
+    Err(io::Error::other(format!("{base}: {SET_ASIDE_NAMES} names are taken")))
+}
+
+/// Sets aside what the old publisher's app `id` left in `place`, when a
+/// catalog takes its ID (ADR 0592): for a person, their `app-data/ID` and
+/// its copies, moved to `app-data/.set-aside/ID-DAY/` as `data` and
+/// `snapshots`; for everyone, the same in each home, and the services'
+/// `/shared/services/ID`, moved to `/shared/services/.set-aside/ID-DAY`.
+/// `DAY` is the date of `when`, and a name already there gets `-2`, `-3`.
+/// Everything is renamed beneath descriptors of its folders, never through
+/// a path or a link, and nothing is deleted. The folders it moved data to.
+///
+/// # Errors
+///
+/// A folder it cannot open or a rename that fails stops it; what it moved
+/// before stays where it went.
+fn set_aside(place: Place, id: &str, when: u64) -> Result<Vec<String>, String> {
+    let day = util::time_text(i64::try_from(when).unwrap_or(i64::MAX), "%Y-%m-%d", true);
+    let base = format!("{id}-{day}");
+    let mut moved = Vec::new();
+    match place {
+        Place::User(uid) => moved.extend(set_aside_in_home(&account(uid)?, id, &base)?),
+        Place::Everyone => {
+            let text = fs::read_to_string(accounts::PASSWD)
+                .map_err(|e| format!("{}: {e}", accounts::PASSWD))?;
+            for user in accounts::users(&text).entries() {
+                moved.extend(set_aside_in_home(user, id, &base)?);
+            }
+            let data = match Dir::open(services::DATA) {
+                Ok(dir) => Some(dir),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                Err(e) => return Err(format!("{}: {e}", services::DATA)),
+            };
+            if let Some(data) = data
+                && let Some(name) = set_aside_service_data(&data, id, &base)
+                    .map_err(|e| format!("{}/{id}: {e}", services::DATA))?
+            {
+                moved.push(format!("{}/{SET_ASIDE}/{name}", services::DATA));
+            }
+        }
+    }
+    Ok(moved)
+}
+
+/// Clears the way for a catalog that takes `id` from another key in
+/// `place` (ADR 0592): removes each bundle of its base ID installed
+/// there, with its services' accounts, keeping its data, then sets aside
+/// that data and any data an earlier removal kept under the ID. Only a
+/// person's own install takes an ID over, never an update by itself or
+/// one asked for tonight. The folders the data went to.
+fn take_over(
+    shared: &Shared,
+    asker: u32,
+    place: Place,
+    id: &str,
+    how: &How<'_>,
+) -> Result<Vec<String>, String> {
+    if how.automatic || how.tonight.is_some() {
+        return Err(format!(
+            "{id} is bound to another publisher's key here: taking it over needs a person's \
+             yes, through bundle install"
+        ));
+    }
+    let mut ids: Vec<String> = shared
+        .lock()
+        .installed
+        .iter()
+        .filter(|i| i.place == place && base_id(&i.id) == base_id(id))
+        .map(|i| i.id.clone())
+        .collect();
+    for old in &ids {
+        remove(shared, asker, old, place == Place::Everyone, false)?;
+    }
+    if !ids.iter().any(|old| old == id) {
+        ids.push(id.into());
+    }
+    let when = now();
+    let mut aside = Vec::new();
+    for old in &ids {
+        aside.extend(set_aside(place, old, when)?);
+    }
+    Ok(aside)
+}
+
 /// The bundle `id` that `asker` runs: their own before everyone's.
 fn installed_for(shared: &Shared, asker: u32, id: &str) -> Result<Installed, String> {
     let registry = shared.lock();
@@ -2773,10 +3102,7 @@ fn wave_lines(lines: &[String]) -> impl Iterator<Item = String> + '_ {
 /// The list of known flaws kept of the catalog a bundle is trusted as
 /// coming from, if it is one's (ADR 0389).
 fn kept_flaws(trust: &Trust) -> Option<dkv::flaws::List> {
-    match trust {
-        Trust::Catalog { name, .. } => catalogs::read_flaws(Path::new(catalogs::STATE), name),
-        _ => None,
-    }
+    catalogs::read_flaws(Path::new(catalogs::STATE), trust.catalog()?)
 }
 
 /// The most flaws a history event names.
@@ -4248,6 +4574,7 @@ mod tests {
             id: "org.nginx.nginx".into(),
             version: "1.30.6".into(),
             name: "nginx".into(),
+            owner: false,
         };
         let said = |wanted: Option<&str>| another_file("dukovo", &entry.id, &entry, wanted);
         // None named, the same in either case: it goes on.
@@ -4397,6 +4724,97 @@ mod tests {
         }
         let dir = Dir::open(path.to_str().unwrap()).unwrap();
         (path, dir)
+    }
+
+    /// A home's `app-data` in a folder of a test, with the data and the
+    /// version copies of `id`.
+    fn app_data_with(name: &str, id: &str) -> (std::path::PathBuf, Dir) {
+        let path = std::env::temp_dir().join(format!("bundled-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(path.join(id)).unwrap();
+        fs::write(path.join(id).join("notes"), "mine").unwrap();
+        fs::create_dir_all(path.join(".snapshots").join(id).join("1.0.0")).unwrap();
+        fs::write(path.join(".snapshots").join(id).join("1.0.0").join("notes"), "older").unwrap();
+        let dir = Dir::open(path.to_str().unwrap()).unwrap();
+        (path, dir)
+    }
+
+    #[test]
+    fn a_persons_data_and_copies_are_set_aside_in_a_private_folder_not_deleted() {
+        let id = "org.example.notes";
+        let (path, dir) = app_data_with("aside", id);
+        let owner = dir.stat().unwrap().st_uid;
+        let base = format!("{id}-2026-11-20");
+        let name = set_aside_app_data(&dir, owner, id, &base).unwrap();
+        assert_eq!(name.as_deref(), Some(base.as_str()));
+        let folder = path.join(SET_ASIDE).join(&base);
+        assert_eq!(fs::read_to_string(folder.join("data/notes")).unwrap(), "mine");
+        assert_eq!(fs::read_to_string(folder.join("snapshots/1.0.0/notes")).unwrap(), "older");
+        assert!(!path.join(id).exists());
+        assert!(!path.join(".snapshots").join(id).exists());
+        for made in [path.join(SET_ASIDE), folder] {
+            let st = fs::metadata(made).unwrap();
+            assert_eq!(st.mode() & 0o7777, 0o700);
+            assert_eq!(st.uid(), owner);
+        }
+        // Nothing of the ID is left to set aside, so nothing is made.
+        assert_eq!(set_aside_app_data(&dir, owner, id, &base).unwrap(), None);
+        assert!(!path.join(SET_ASIDE).join(format!("{base}-2")).exists());
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn a_name_already_in_the_set_aside_folder_gets_a_number() {
+        let id = "org.example.notes";
+        let (path, dir) = app_data_with("aside-twice", id);
+        let owner = dir.stat().unwrap().st_uid;
+        let base = format!("{id}-2026-11-20");
+        set_aside_app_data(&dir, owner, id, &base).unwrap();
+        for (number, kept) in [(2, "second"), (3, "third")] {
+            fs::create_dir_all(path.join(id)).unwrap();
+            fs::write(path.join(id).join("notes"), kept).unwrap();
+            let name = set_aside_app_data(&dir, owner, id, &base).unwrap();
+            assert_eq!(name, Some(format!("{base}-{number}")));
+            let folder = path.join(SET_ASIDE).join(format!("{base}-{number}"));
+            assert_eq!(fs::read_to_string(folder.join("data/notes")).unwrap(), kept);
+            assert!(!folder.join("snapshots").exists());
+        }
+        assert_eq!(
+            fs::read_to_string(path.join(SET_ASIDE).join(&base).join("data/notes")).unwrap(),
+            "mine"
+        );
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn a_link_where_the_set_aside_folder_belongs_is_not_followed() {
+        let id = "org.example.notes";
+        let (path, dir) = app_data_with("aside-link", id);
+        let owner = dir.stat().unwrap().st_uid;
+        let elsewhere = path.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, path.join(SET_ASIDE)).unwrap();
+        assert!(set_aside_app_data(&dir, owner, id, "org.example.notes-2026-11-20").is_err());
+        assert!(path.join(id).join("notes").exists());
+        assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn the_services_data_folder_is_set_aside_beside_its_siblings() {
+        let id = "org.example.notes";
+        let (path, dir) = places("aside-services", &[(id, "data")]);
+        let base = format!("{id}-2026-11-20");
+        let first = set_aside_service_data(&dir, id, &base).unwrap();
+        assert_eq!(first.as_deref(), Some(base.as_str()));
+        assert_eq!(version_in(&path.join(SET_ASIDE), &base).as_deref(), Some("data"));
+        assert!(!path.join(id).exists());
+        assert_eq!(fs::metadata(path.join(SET_ASIDE)).unwrap().mode() & 0o7777, 0o700);
+        assert_eq!(set_aside_service_data(&dir, id, &base).unwrap(), None);
+        fs::create_dir_all(path.join(id)).unwrap();
+        let second = set_aside_service_data(&dir, id, &base).unwrap();
+        assert_eq!(second, Some(format!("{base}-2")));
+        let _ = fs::remove_dir_all(path);
     }
 
     fn version_in(path: &Path, folder: &str) -> Option<String> {

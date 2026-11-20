@@ -12,7 +12,8 @@
 //! - `bundle schema` prints the JSON Schema of the manifest, for editors.
 //! - `bundle upgrade-manifest [FOLDER | FILE]` brings a manifest up to the
 //!   newest version this Dukovo reads.
-//! - `bundle key` shows the developer key.
+//! - `bundle key` shows the developer key; `bundle key rollover` writes a
+//!   link that moves an ID from a key to a new one (ADR 0592).
 //! - `bundle sign [FOLDER]` lists and signs a bundle's files.
 //! - `bundle pack [FOLDER]` makes the `.dkv` file of a signed bundle.
 //! - `bundle verify [FOLDER | FILE.dkv]` checks one's signature and files.
@@ -35,7 +36,7 @@
 // The signed list, minisign, the SBOM and the zip of a .dkv file are
 // the dkv crate's, which ob packs the catalog's bundles with too.
 #[allow(unused_imports)]
-pub(crate) use dkv::{base64, minisign, sbom, signed, sums, zip};
+pub(crate) use dkv::{base64, minisign, rollover, sbom, signed, sums, zip};
 pub(crate) mod as_service;
 pub(crate) mod catalogs;
 pub(crate) mod confine;
@@ -78,6 +79,8 @@ const USAGE: &str =
        bundle schema
        bundle upgrade-manifest [FOLDER | FILE]
        bundle key
+       bundle key rollover --id ID --from OLD-SECRET-KEY-FILE --to NEW-PUBLIC-KEY
+                           [--add-to FILE]
        bundle sign [FOLDER] [--key SECRET-KEY-FILE]
        bundle pack [FOLDER] [--key SECRET-KEY-FILE] [--output FILE] [--zstd]
        bundle verify [FOLDER | FILE.dkv] [--key PUBLIC-KEY]
@@ -149,6 +152,9 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let mut yes = false;
     let mut data = None;
     let mut from = None;
+    let mut id = None;
+    let mut to = None;
+    let mut add_to = None;
     let mut check_only = false;
     let mut automatic = None;
     let mut clear = false;
@@ -186,6 +192,9 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             Arg::Long(l) if l == "license" => license = Some(args.text()?),
             Arg::Long(l) if l == "key" => key = Some(args.text()?),
             Arg::Long(l) if l == "from" => from = Some(args.text()?),
+            Arg::Long(l) if l == "id" => id = Some(args.text()?),
+            Arg::Long(l) if l == "to" => to = Some(args.text()?),
+            Arg::Long(l) if l == "add-to" => add_to = Some(args.text()?),
             Arg::Long(l) if l == "sha256" && sha256.is_none() => sha256 = Some(args.text()?),
             Arg::Long(l) if l == "why" && why.is_none() => why = Some(args.text()?),
             Arg::Long(l) if l == "output" => output = Some(args.text()?),
@@ -239,7 +248,9 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     ) || !everyone;
     let yes_ok = matches!(sub, Some("install" | "update")) || !yes;
     let data_ok = sub == Some("remove") || data.is_none();
-    let from_ok = matches!(sub, Some("install" | "sheet")) || from.is_none();
+    let rolling = sub == Some("key") && operands == ["rollover"];
+    let from_ok = matches!(sub, Some("install" | "sheet")) || rolling || from.is_none();
+    let rollover_ok = rolling || (id.is_none() && to.is_none() && add_to.is_none());
     let sha256_ok = sub == Some("install") || sha256.is_none();
     let update_ok = sub == Some("update") || (!check_only && automatic.is_none());
     let automatic_ok = automatic.is_none() || (!check_only && !yes && operands.is_empty());
@@ -257,6 +268,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         || !yes_ok
         || !data_ok
         || !from_ok
+        || !rollover_ok
         || !sha256_ok
         || !update_ok
         || !automatic_ok
@@ -278,6 +290,12 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         }
         (Some("upgrade-manifest"), [] | [_]) => upgrade(folder()),
         (Some("key"), []) => show_key(),
+        (Some("key"), [_]) if rolling => {
+            let (Some(id), Some(from), Some(to)) = (&id, &from, &to) else {
+                return Err(usage(USAGE.into()));
+            };
+            key_rollover(id, from, to, add_to.as_deref())
+        }
         (Some("sign"), [] | [_]) => sign(Path::new(folder()), key.as_deref()).map(|_| 0),
         (Some("pack"), [] | [_]) => {
             let method = if zstd { dkv::zip::Method::Zstd } else { dkv::zip::Method::Deflate };
@@ -643,6 +661,78 @@ fn show_key() -> Result<i32, Fail> {
         Err(why) => eprintln!("bundle: {why}"),
     }
     Ok(0)
+}
+
+/// `bundle key rollover`: a link that moves `id` from the key in the
+/// secret key file `from` to the public key `to`, as of now, printed or,
+/// with `add_to`, added to that file of links.
+fn key_rollover(id: &str, from: &str, to: &str, add_to: Option<&str>) -> Result<i32, Fail> {
+    bundle::check_id(id).map_err(|why| usage(format!("--id: {why}")))?;
+    let text = fs::read_to_string(from).map_err(|e| util::failed(&from, e))?;
+    let secret = SecretKey::read(&text).map_err(|why| fail(format!("{from}: {why}")))?;
+    let to =
+        public_key(to).map_err(|_| usage("--to: the new key, RW..., or a file with it".into()))?;
+    let Some(file) = add_to else {
+        print!("{}", rollover::link(&secret, id, &to, tuf::time::now()));
+        return Ok(0);
+    };
+    let existing = match fs::read_to_string(file) {
+        Ok(text) => Some(text),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(e) => return Err(util::failed(&file, e)),
+    };
+    let whole = rollover_file(existing.as_deref(), &secret, id, &to, tuf::time::now())
+        .map_err(|why| fail(format!("{file}: {why}")))?;
+    fs::write(file, whole).map_err(|e| util::failed(&file, e))?;
+    println!(
+        "{file}: {id} moves from key {} to key {}; put the file at the top of the bundle's \
+         folder and run bundle sign",
+        secret.public().encoded(),
+        to.encoded()
+    );
+    Ok(0)
+}
+
+/// The rollover file that holds `existing`, if there is one, and a link
+/// of `secret`'s key to `to` at `since` after it. The file `existing` must
+/// read as one, and its last link must end at `secret`'s key, for the same
+/// ID and at an earlier time: links make one chain, and a key the chain
+/// has been at is never moved back to.
+fn rollover_file(
+    existing: Option<&str>,
+    secret: &SecretKey,
+    id: &str,
+    to: &PublicKey,
+    since: i64,
+) -> Result<String, String> {
+    let from = secret.public();
+    if *to == from {
+        return Err("the new key is the old one".into());
+    }
+    let link = rollover::link(secret, id, to, since);
+    let Some(existing) = existing else { return Ok(link) };
+    let links = rollover::read(existing)?;
+    if let Some(last) = links.last() {
+        if last.to != from {
+            return Err(format!(
+                "its last link moves to key {}, not to the key you move from, {}",
+                last.to.encoded(),
+                from.encoded()
+            ));
+        }
+        if last.id != id {
+            return Err(format!("it moves {}, not {id}", last.id));
+        }
+        if last.since >= since {
+            return Err("its last link is not earlier than now".into());
+        }
+    }
+    if links.iter().any(|l| l.from == *to || l.to == *to) {
+        return Err("its links have been at that key already; a rollover never moves back".into());
+    }
+    let whole = format!("{existing}\n{link}");
+    rollover::read(&whole)?;
+    Ok(whole)
 }
 
 /// Tells bundled(8) the developer key, which it trusts for this person's
@@ -1707,7 +1797,7 @@ fn feed(folder: &str, files: &[String], key: Option<&str>, days: u32) -> Result<
         repo.sign_root(&signers, FEED_ROOT_DAYS).map_err(fail)?;
     }
     let paths: Vec<PathBuf> = files.iter().map(PathBuf::from).collect();
-    let changes = repo.changes(&paths, &[]).map_err(fail)?;
+    let changes = repo.changes(&paths, &[], &[]).map_err(fail)?;
     let (store, site) = (folder.join("store"), folder.join("site"));
     repo.sign_targets(&changes, &paths, &store, &signers, days).map_err(fail)?;
     repo.publish(&store, &site, &signers, (days, days)).map_err(fail)?;
@@ -1747,4 +1837,83 @@ fn unpack(archive: &str, folder: &str) -> Result<i32, Fail> {
         key_words(&report.key)
     );
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ID: &str = "org.example.app";
+
+    fn key(seed: u8) -> SecretKey {
+        SecretKey::generate(&[seed; 40]).unwrap()
+    }
+
+    #[test]
+    fn a_first_link_is_the_whole_file() {
+        let (old, new) = (key(1), key(2));
+        let text = rollover_file(None, &old, ID, &new.public(), 100).unwrap();
+        let links = rollover::read(&text).unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!((links[0].from, links[0].to), (old.public(), new.public()));
+        assert_eq!(links[0].since, 100);
+    }
+
+    #[test]
+    fn a_link_that_follows_the_last_is_added_after_one_empty_line() {
+        let (a, b, c) = (key(1), key(2), key(3));
+        let first = rollover_file(None, &a, ID, &b.public(), 100).unwrap();
+        let both = rollover_file(Some(&first), &b, ID, &c.public(), 200).unwrap();
+        assert!(both.starts_with(&first));
+        assert_eq!(both, format!("{first}\n{}", rollover::link(&b, ID, &c.public(), 200)));
+        let links = rollover::read(&both).unwrap();
+        assert_eq!(links.iter().map(|l| l.since).collect::<Vec<_>>(), [100, 200]);
+    }
+
+    #[test]
+    fn a_link_that_does_not_follow_the_last_is_refused() {
+        let (a, b, c, d) = (key(1), key(2), key(3), key(4));
+        let first = rollover_file(None, &a, ID, &b.public(), 100).unwrap();
+        let from_other = rollover_file(Some(&first), &c, ID, &d.public(), 200).unwrap_err();
+        assert!(from_other.contains("not to the key you move from"), "{from_other}");
+        let other_id = rollover_file(Some(&first), &b, "org.example.other", &c.public(), 200);
+        assert!(other_id.unwrap_err().contains("not org.example.other"));
+        let early = rollover_file(Some(&first), &b, ID, &c.public(), 100).unwrap_err();
+        assert!(early.contains("not earlier"), "{early}");
+    }
+
+    #[test]
+    fn a_rollover_never_moves_an_id_back() {
+        let (a, b) = (key(1), key(2));
+        let first = rollover_file(None, &a, ID, &b.public(), 100).unwrap();
+        let back = rollover_file(Some(&first), &b, ID, &a.public(), 200).unwrap_err();
+        assert!(back.contains("never moves back"), "{back}");
+        assert!(rollover_file(None, &a, ID, &a.public(), 100).is_err());
+    }
+
+    #[test]
+    fn a_file_that_is_no_rollover_is_refused() {
+        let (a, b) = (key(1), key(2));
+        for text in ["", "\n", "not a link\n"] {
+            assert!(rollover_file(Some(text), &a, ID, &b.public(), 100).is_err(), "{text:?}");
+        }
+        let first = rollover_file(None, &a, ID, &b.public(), 100).unwrap();
+        let cut = first.trim_end_matches('\n');
+        assert!(rollover_file(Some(cut), &b, ID, &key(3).public(), 200).is_err());
+    }
+
+    #[test]
+    fn a_chain_holds_at_most_the_links_a_bundle_may_carry() {
+        let keys: Vec<SecretKey> = (1..=10).map(key).collect();
+        let mut text = None;
+        for (at, pair) in keys.windows(2).take(rollover::LINKS_MAX).enumerate() {
+            let since = i64::try_from(at).unwrap() + 100;
+            text = Some(
+                rollover_file(text.as_deref(), &pair[0], ID, &pair[1].public(), since).unwrap(),
+            );
+        }
+        let last = &keys[rollover::LINKS_MAX];
+        let more = rollover_file(text.as_deref(), last, ID, &keys[9].public(), 500).unwrap_err();
+        assert!(more.contains("more than"), "{more}");
+    }
 }

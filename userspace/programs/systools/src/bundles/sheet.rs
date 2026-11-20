@@ -166,6 +166,38 @@ pub fn write(facts: &Facts<'_>) -> String {
         Trust::BoundForEveryone { since } => {
             let _ = writeln!(o, "  Its key for everyone, since {}.", day(*since));
         }
+        Trust::NewKey { old, since, moved, catalog } => {
+            if let Some(name) = catalog {
+                let _ = writeln!(
+                    o,
+                    "  From catalog {name}, which this computer trusts: it lists this very file."
+                );
+            }
+            let _ = writeln!(
+                o,
+                "  A new key for {}: its key since {} was {},\n  which signed that it \
+                 moved to this one on {}. From now on only\n  this key may install it.",
+                m.id,
+                day(*since),
+                old.encoded(),
+                day(*moved)
+            );
+        }
+        Trust::Takes { catalog, old, since } => {
+            let _ = writeln!(
+                o,
+                "  From catalog {catalog}, which this computer trusts: it lists this very\n  \
+                 file and vouches for the publisher of {}.\n  Warning: {} has been the app of \
+                 key {}\n  here since {}, a key the catalog does not vouch for.\n  Installing \
+                 this replaces that app: it is removed, and its data\n  is set aside, not \
+                 deleted. From now on only catalog {catalog}\n  may install {}.",
+                m.id,
+                m.id,
+                old.encoded(),
+                day(*since),
+                m.id
+            );
+        }
         Trust::Unknown => {
             let _ = writeln!(
                 o,
@@ -183,11 +215,11 @@ pub fn write(facts: &Facts<'_>) -> String {
         let _ = writeln!(o, "  Its publisher takes problem reports at {}", shown(&support.0, 100));
     }
     if let Some(update) = &m.update
-        && !matches!(facts.trust, Trust::Catalog { .. })
+        && facts.trust.catalog().is_none()
     {
         let _ = writeln!(o, "  It updates from its own feed at {}", shown(&update.feed.0, 100));
     }
-    if let Trust::Catalog { name, .. } = facts.trust {
+    if let Some(name) = facts.trust.catalog() {
         flaws(&mut o, name, facts.flaws, &m.full_id(), &m.version.0, facts.all_flaws);
     }
     if m.permissions.0.is_empty() {
@@ -377,13 +409,19 @@ struct Offered {
 }
 
 /// Why the bundle's key is trusted: `catalog`, `developer`, `bound`,
-/// `bound_for_everyone` or `unknown`, with the catalog and since when
-/// where there are any.
+/// `bound_for_everyone`, `new_key`, `takes` or `unknown`, with the catalog
+/// and since when where there are any. `new_key` and `takes` also name the
+/// key they replace, as `old`; `new_key` says when the publisher moved the
+/// app to its new key, as `moved`.
 #[derive(Serialize)]
 struct TrustDetails {
     kind: &'static str,
     catalog: Option<String>,
     since: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    old: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    moved: Option<String>,
 }
 
 /// What the catalog's list of flaws says: `unknown` when it says nothing
@@ -444,8 +482,18 @@ fn trust_details(trust: &Trust) -> TrustDetails {
         Trust::Bound { since } => ("bound", None, Some(*since)),
         Trust::BoundForEveryone { since } => ("bound_for_everyone", None, Some(*since)),
         Trust::Unknown => ("unknown", None, None),
+        Trust::NewKey { moved, catalog, .. } => ("new_key", catalog.clone(), Some(*moved)),
+        Trust::Takes { catalog, since, .. } => ("takes", Some(catalog.clone()), Some(*since)),
     };
-    TrustDetails { kind, catalog, since: since.map(at) }
+    let old = match trust {
+        Trust::NewKey { old, .. } | Trust::Takes { old, .. } => Some(old.encoded()),
+        _ => None,
+    };
+    let moved = match trust {
+        Trust::NewKey { moved, .. } => Some(at(*moved)),
+        _ => None,
+    };
+    TrustDetails { kind, catalog, since: since.map(at), old, moved }
 }
 
 /// The flaws the catalog's list knows of the bundle, as [`flaws`] tells
@@ -453,7 +501,7 @@ fn trust_details(trust: &Trust) -> TrustDetails {
 fn flaws_details(facts: &Facts<'_>) -> FlawsDetails {
     let m = facts.manifest;
     let unknown = FlawsDetails { state: "unknown", list_made: None, known: Vec::new() };
-    let (Trust::Catalog { .. }, Some(list)) = (facts.trust, facts.flaws) else {
+    let (Some(_), Some(list)) = (facts.trust.catalog(), facts.flaws) else {
         return unknown;
     };
     if !list.checked(&m.full_id(), &m.version.0) {
@@ -989,6 +1037,34 @@ mod tests {
         for member in ["for_everyone", "grants", "folder", "data_size", "previous", "used_by"] {
             assert!(refused.get(member).is_none(), "{member}");
         }
+    }
+
+    #[test]
+    fn a_new_key_and_a_take_over_name_the_key_they_replace() {
+        let old = SecretKey::generate(&[6u8; 40]).unwrap().public();
+        let new_key = trust_details(&Trust::NewKey {
+            old,
+            since: 1_790_000_000,
+            moved: 1_793_000_000,
+            catalog: Some("dukovo".into()),
+        });
+        let seen = serde_json::to_value(&new_key).unwrap();
+        assert_eq!(seen["kind"], "new_key");
+        assert_eq!(seen["catalog"], "dukovo");
+        assert_eq!(seen["old"], old.encoded());
+        assert_eq!(seen["moved"], "2026-10-26T07:33:20Z");
+        assert_eq!(seen["since"], seen["moved"]);
+        let takes =
+            trust_details(&Trust::Takes { catalog: "dukovo".into(), old, since: 1_790_000_000 });
+        let seen = serde_json::to_value(&takes).unwrap();
+        assert_eq!(seen["kind"], "takes");
+        assert_eq!(seen["catalog"], "dukovo");
+        assert_eq!(seen["old"], old.encoded());
+        assert_eq!(seen["since"], at(1_790_000_000));
+        assert!(seen.get("moved").is_none());
+        // The kinds that replace nothing carry neither member.
+        let plain = serde_json::to_value(trust_details(&Trust::Unknown)).unwrap();
+        assert!(plain.get("old").is_none() && plain.get("moved").is_none());
     }
 
     /// A bundle called `id` that uses the socket `socket`, or the interface

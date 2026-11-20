@@ -80,9 +80,25 @@ pub fn command(ctx: &Ctx, args: Vec<String>) -> Result<()> {
         crate::userspace::install_headers(ctx)?;
         crate::ports::build_and_pack(ctx, &[])?;
     }
+    let signing = args.first().is_some_and(|word| word == "sign");
     let mut cmd = catalog_repo(ctx)?;
     cmd.args(args);
+    if signing {
+        for id in verified_ids(ctx)? {
+            cmd.args(["--verified", &id]);
+        }
+    }
     process::run(ctx, &mut cmd)
+}
+
+/// The IDs of the bundles the ports build. The catalog vouches for their
+/// publisher itself, so a bundle of one of these IDs is signed as
+/// verified (ADR 0592) and catalog-repo lists it as such; a bundle of any
+/// other ID is not. Each bundle signed as verified is named in the
+/// changes catalog-repo prints before it asks to sign.
+fn verified_ids(ctx: &Ctx) -> Result<Vec<String>> {
+    let recipes = crate::ports::recipes(ctx)?;
+    Ok(recipes.into_iter().filter_map(|(recipe, _)| recipe.bundle.map(|b| b.id)).collect())
 }
 
 /// `ob catalog rollout ...`: on the update server, through sudo as its
@@ -356,13 +372,15 @@ pub fn publish_to(ctx: &Ctx, server: &Server, repo: &Path, store: &Path) -> Resu
 /// just begun, and the waves of that one held, as the server's plan would
 /// be after `ob catalog rollout pause` (ADR 0544). A release the first
 /// rollouts list without a plan has every wave open, so those are planned
-/// before the first are signed.
+/// before the first are signed. A bundle whose ID is one of `verified` is
+/// listed as one whose publisher the catalog vouches for (ADR 0592).
 pub fn test_site(
     ctx: &Ctx,
     bundles: &[PathBuf],
     advisories: Option<&str>,
     paused: Option<(&str, &str, &str)>,
     begun: &[String],
+    verified: &[&str],
 ) -> Result<PathBuf> {
     let dir = ctx.out.join("test/catalog");
     if dir.exists() {
@@ -384,6 +402,9 @@ pub fn test_site(
     run(&[os("root"), os("--key"), test_key.as_os_str()])?;
     let mut sign = vec![os("sign"), os("--yes"), os("--key"), test_key.as_os_str()];
     sign.extend([os("--store"), store.as_os_str()]);
+    for id in verified {
+        sign.extend([os("--verified"), std::ffi::OsStr::new(id)]);
+    }
     sign.extend(bundles.iter().map(|b| b.as_os_str()));
     run(&sign)?;
     let plan = dir.join("rollout.json");

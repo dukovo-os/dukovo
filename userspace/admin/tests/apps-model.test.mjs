@@ -206,6 +206,9 @@ test('the line under an app\'s name says where it came from, that it is signed, 
   assert.equal(byline(valkey({ trust: { kind: 'developer' }, license: 'MIT OR Apache-2.0' })), 'signed by its developer\'s key, trusted by hand · MIT OR Apache-2.0');
   assert.equal(byline(valkey({ trust: { kind: 'bound' }, license: undefined })), 'a file you installed · signed');
   assert.equal(byline(valkey({ trust: { kind: 'bound_for_everyone' } })), 'a file installed for everyone · signed · BSD-3-Clause');
+  assert.equal(byline(valkey({ trust: { kind: 'takes', catalog: 'dukovo' } })), 'Dukovo catalog · signed · BSD-3-Clause');
+  assert.equal(byline(valkey({ trust: { kind: 'new_key', catalog: 'dukovo' } })), 'Dukovo catalog · signed · BSD-3-Clause');
+  assert.equal(byline(valkey({ trust: { kind: 'new_key', catalog: null } })), 'a file signed by its publisher\'s new key · signed · BSD-3-Clause');
   assert.equal(byline(valkey({ trust: { kind: 'unknown' }, update_feed: 'https://example.org/feed' })), 'its own feed · signed · BSD-3-Clause');
 });
 

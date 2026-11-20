@@ -485,6 +485,7 @@ machine asks for them.
 | Views: detaching an entry; devices attached one by one | ADR 0215 |
 | Manual pages inside bundles on `MANPATH` | ADR 0370 |
 | Removing an everyone's line also removes each person's add-ons | ADR 0388 |
+| The proof of a domain for a third-party app's publisher: a file at `https://DOMAIN/.well-known/dukovo-app-ids` that lists the IDs the domain's owner publishes, which a catalog checks before it vouches for the IDs (ADR 0592). Every bundle Dukovo's catalog lists is built from Dukovo's own ports, so the catalog vouches for those IDs itself | ADR 0592; comes with the first third-party app the catalog takes |
 | A wavy underline in the consoles | ADR 0258 |
 | Pairing unpaired diff runs in git's word marks | ADR 0293 |
 | Pseudo-terminal packet mode, `TIOCSTI` and BSD line disciplines | ADR 0066 |

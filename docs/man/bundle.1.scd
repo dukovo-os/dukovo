@@ -19,6 +19,8 @@ bundle - make, check, sign, pack, install, update and run bundles, and say what 
 
 *bundle key*
 
+*bundle key rollover* *--id* _id_ *--from* _old-secret-key-file_ *--to* _new-public-key_ [*--add-to* _file_]
+
 *bundle sign* [_folder_] [*--key* _secret-key-file_]
 
 *bundle pack* [_folder_] [*--key* _secret-key-file_] [*-o* _file_] [*--zstd*]
@@ -130,6 +132,28 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	Prints your developer key, a minisign public key (*RW* and 54 more
 	characters), making the key first if you have none. The developer
 	key signs your own builds; *bundle new* makes it the first time.
+
+*key rollover* *--id* _id_ *--from* _old-secret-key-file_ *--to* _new-public-key_ [*--add-to* _file_]
+	Writes a link of the file _rollover_, with which a bundle moves its
+	ID from one key to another. An ID is bound to the key that signed
+	its first install, and a bundle signed by another key is refused
+	unless it carries a link, signed by the key the ID is bound to,
+	that moves it. The link says that _id_ moves from the key of the
+	minisign secret key _old-secret-key-file_, which must have no
+	password, to _new-public-key_ (*RW*... or a public key file), as of
+	now. It is printed, or with *--add-to* added to _file_, made if it is
+	not there, after one empty line, for a bundle that moves more than
+	once; the file is refused if it is not a rollover file, if its last
+	link does not move to the key _old-secret-key-file_ holds, or if it
+	moves another ID, a key it has been at already, or at a later time.
+	At most 8 links are kept.
+
+	The file _rollover_ goes at the top of the bundle's folder, beside
+	_manifest.json_. *sign*, run with the new key, signs it with the
+	rest of the bundle's files, and the computer follows the links from
+	the key it has bound to the key that signed the bundle. A link never
+	moves an ID back: once the ID is bound to the new key, a bundle the
+	old key signs is refused.
 
 *sign* [_folder_] [*--key* _secret-key-file_]
 	Checks the bundle in _folder_, the current folder unless given, as
@@ -579,6 +603,31 @@ installs, for you or for everyone, only from a file that same catalog
 lists, whatever key signed it. A catalog whose metadata expired vouches
 for nothing until it is read again.
 
+A catalog may also vouch for the publisher of a bundle, not only for
+its files (ADR 0592): Dukovo's does for each bundle built from its own
+ports. A file of such an ID, signed by another key, is refused unless
+that catalog lists it, which keeps a file someone installed first from
+holding the ID against the real app. If the ID is already bound here to
+another key, installing it from that catalog replaces the app: the sheet
+says *Warning*, names the old key and the day it was bound, and says the
+app of that key is removed and its data set aside, not deleted. The old
+bundle is removed, with its services' accounts, and its previous version
+is not kept; its data, in _~/app-data/ID_ and its copies, moves to
+_~/app-data/.set-aside/ID-YYYY-MM-DD/_ as *data* and *snapshots*, and
+for an install for everyone the same in each person's home, and
+_/shared/services/ID_ to _/shared/services/.set-aside/ID-YYYY-MM-DD_;
+a name already there gets *-2*, *-3*. What people allowed the old key's
+app is forgotten. Only an administrator replaces an app installed for
+everyone, with *--for-everyone*; a person's install never takes an ID
+from one. From then on the ID installs only from that catalog's files.
+
+A publisher whose bundle no catalog lists moves it to a new key with a
+rollover file (*key rollover*). A bundle signed by the new key that
+carries it, with links from the key the ID is bound to, installs: the
+sheet says *A new key for* the ID, names the old key and the day the
+publisher moved the bundle, and from then on only the new key may
+install it. What was allowed the old key's app moves to the new key.
+
 A file no catalog lists installs as before: signed by your developer key
 with no warning, or by any other key after one, which also says that no
 catalog this computer trusts lists it.
@@ -807,9 +856,14 @@ bundle you can run, by ID and then yours before everyone's:
 
 *trust*
 	Why the key is trusted, an object: *kind*, one of *catalog*,
-	*developer*, *bound* (its first install here), *bound_for_everyone*
-	and *unknown*; *catalog*, its name for *catalog*; and *since*, from
-	when, when that is known.
+	*developer*, *bound* (its first install here), *bound_for_everyone*,
+	*new_key*, *takes* and *unknown*; *catalog*, its name for *catalog*,
+	for *takes* and for a *new_key* a catalog lists; *since*, from when,
+	when that is known (for *new_key* the time of the move, for *takes*
+	the time the key it replaces was bound); *old*, for *new_key* and
+	*takes*, the key it replaces, as *RW*...; and *moved*, for *new_key*,
+	the time its publisher signed that the ID moved to the key that signed
+	this file.
 
 *files*, *bytes*
 	How many files it has, and the bytes they take.

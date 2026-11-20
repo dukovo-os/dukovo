@@ -94,6 +94,10 @@ anywhere, go through the same checks as Dukovo's own.
 - The boot test `catalog-install` signs a test catalog with throwaway
   keys, puts it on a disk, adds it, searches it, installs from it by ID
   and from the disk by file, and checks the warning and the binding.
+- A catalog may also vouch for the publisher of a bundle, not only for
+  its files: [0592](0592-a-catalog-that-vouches-for-an-apps-publisher-may-take-its-id-and-a-publisher-may-move-its-app-to-a-new-key.md)
+  has such a catalog take an ID that a file of another key was bound to,
+  and refuse a file of that ID from any other key.
 - **Not yet:**
   - Updates, rollback and holds (13e's next pull request).
   - A bundle's own update feed in its manifest.

@@ -26,6 +26,7 @@ use manifest::bundle::permissions::{self, Permission, Takes, Tier};
 use manifest::bundle::{Need, Request as Asked};
 
 use super::minisign::PublicKey;
+use super::registry::base_id;
 
 /// Where bundled keeps the grants: a file for each person, named by their
 /// user number.
@@ -365,6 +366,54 @@ impl Grants {
         Ok(())
     }
 
+    /// Moves what was said of app `id`, any line of it, signed by `from`,
+    /// to `to`, the key its publisher moved it to (ADR 0592): by `uid`, or
+    /// by everyone if `None`. A person has one record of a permission of
+    /// an app, whatever its key, so no two come of it. The people whose
+    /// grants changed.
+    pub fn move_key(
+        &mut self,
+        uid: Option<u32>,
+        id: &str,
+        from: &PublicKey,
+        to: &PublicKey,
+    ) -> Vec<u32> {
+        let mut changed = Vec::new();
+        for (who, records) in &mut self.0 {
+            if uid.is_some_and(|uid| uid != *who) {
+                continue;
+            }
+            let mut moved = false;
+            for r in records.iter_mut() {
+                if base_id(&r.id) == base_id(id) && r.key == *from {
+                    r.key = *to;
+                    moved = true;
+                }
+            }
+            if moved {
+                changed.push(*who);
+            }
+        }
+        changed
+    }
+
+    /// Forgets what was said of app `id`, any line of it, signed by `key`,
+    /// an ID a catalog took from that key (ADR 0592): by `uid`, or by
+    /// everyone if `None`. The people whose grants changed.
+    pub fn forget_key(&mut self, uid: Option<u32>, id: &str, key: &PublicKey) -> Vec<u32> {
+        let mut changed = Vec::new();
+        for (who, records) in &mut self.0 {
+            let before = records.len();
+            if uid.is_none_or(|uid| uid == *who) {
+                records.retain(|r| !(base_id(&r.id) == base_id(id) && r.key == *key));
+            }
+            if records.len() != before {
+                changed.push(*who);
+            }
+        }
+        changed
+    }
+
     /// Forgets what `uid` said of app `id`; whether there was anything.
     pub fn forget(&mut self, uid: u32, id: &str) -> bool {
         let Some(records) = self.0.get_mut(&uid) else { return false };
@@ -399,6 +448,37 @@ mod tests {
             given: words(given),
             asked: words(asked),
         }
+    }
+
+    #[test]
+    fn grants_move_with_their_app_to_a_new_key_or_are_forgotten() {
+        let key = |n: u8| crate::bundles::minisign::SecretKey::generate(&[n; 40]).unwrap().public();
+        let allow = |permission: &str| Grant {
+            permission: permission.into(),
+            said: Said::Allow,
+            since: 1,
+            given: Vec::new(),
+            asked: Vec::new(),
+        };
+        let mut grants = Grants::default();
+        grants.set(1000, "org.example.notes", key(1), allow("network.outbound")).unwrap();
+        grants.set(1000, "org.example.notes@2", key(1), allow("network.outbound")).unwrap();
+        grants.set(1001, "org.example.notes", key(1), allow("network.outbound")).unwrap();
+        grants.set(1001, "org.example.tea", key(1), allow("network.outbound")).unwrap();
+        // One person's, every line of the app, and nothing else.
+        assert_eq!(grants.move_key(Some(1000), "org.example.notes", &key(1), &key(2)), [1000]);
+        assert_eq!(grants.of(1000, "org.example.notes", &key(2)).len(), 1);
+        assert_eq!(grants.of(1000, "org.example.notes@2", &key(2)).len(), 1);
+        assert_eq!(grants.of(1001, "org.example.notes", &key(1)).len(), 1);
+        // Everyone's; then forgotten, the other app's kept.
+        assert_eq!(grants.move_key(None, "org.example.notes", &key(1), &key(2)), [1001]);
+        assert!(grants.move_key(None, "org.example.notes", &key(1), &key(2)).is_empty());
+        assert_eq!(grants.forget_key(None, "org.example.notes", &key(2)), [1000, 1001]);
+        assert!(grants.of(1000, "org.example.notes", &key(2)).is_empty());
+        assert_eq!(grants.of(1001, "org.example.tea", &key(1)).len(), 1);
+        // And they read back.
+        let text = Grants::text(&grants.0[&1001]);
+        assert_eq!(Grants::read(&text).unwrap().len(), 1);
     }
 
     #[test]
