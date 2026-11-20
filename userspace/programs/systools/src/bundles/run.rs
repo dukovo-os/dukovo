@@ -31,7 +31,9 @@
 //! away while it runs, through a connection to bundled: as a view keeps
 //! what is attached to it and a socket outlives the capability it was
 //! made with, the program is stopped, SIGTERM and two seconds later
-//! SIGKILL, and its next run goes without.
+//! SIGKILL, and its next run goes without. Every run follows bundled so,
+//! whether it holds a permission or not: a run of a version a catalog
+//! withdrew as malicious is stopped the same way (ADR 0593).
 
 use std::ffi::OsString;
 use std::fs::File;
@@ -390,12 +392,35 @@ fn ask_person(found: &Found, permission: &str) -> Result<String, String> {
     }
 }
 
-/// Follows what the person takes away from a run of `found`'s bundle:
-/// bundled's answer to `watch`, and the connection to read the rest from.
-fn watch(found: &Found) -> Option<BufReader<UnixStream>> {
-    let (_stream, mut input) = ask(&Request::Watch { id: found.id.clone() }, None).ok()?;
+/// Follows what ends a run of `found`'s bundle: a permission the person
+/// takes away, or a withdrawal of its version. bundled's answer to
+/// `watch`, and the connection to read the rest from; none when bundled
+/// cannot be followed.
+///
+/// # Errors
+///
+/// If bundled stopped the version since it was found (ADR 0593).
+fn watch(found: &Found) -> Result<Option<BufReader<UnixStream>>, String> {
+    let Ok((_stream, mut input)) = ask(&Request::Watch { id: found.id.clone() }, None) else {
+        return Ok(None);
+    };
     match answer(&mut input) {
-        Ok(Answer::Ok(_)) => Some(input),
+        Ok(Answer::Ok(_)) => Ok(Some(input)),
+        Ok(Answer::Withdrawn(why)) => Err(format!("{} was stopped: {why}", found.id)),
+        _ => Ok(None),
+    }
+}
+
+/// What a run of `id` that was given `names` says when `answer` stops it:
+/// a permission it holds taken away, or its version withdrawn (ADR
+/// 0593). `None` for an answer that does not stop it.
+#[cfg_attr(not(target_os = "radix"), allow(dead_code))]
+fn stopped_line(id: &str, names: &[String], answer: &Answer) -> Option<String> {
+    match answer {
+        Answer::Revoked(name) if names.contains(name) => {
+            Some(format!("{id}: stopped, as you took {name} away from it\n"))
+        }
+        Answer::Withdrawn(why) => Some(format!("bundle: {id} was stopped: {why}\n")),
         _ => None,
     }
 }
@@ -829,7 +854,9 @@ fn start(
         keyring: served.as_ref(),
     };
     // Opened before the sandbox takes its slots, as reading anything is.
-    let watching = if given.names.is_empty() { None } else { watch(found) };
+    // Every run follows bundled, for a withdrawal of its version (ADR
+    // 0593) as much as for a permission taken away.
+    let watching = watch(found).map_err(fail)?;
     sandbox::run(&plan, watching).map_err(|why| fail(format!("{}: {why}", found.id)))
 }
 
@@ -970,7 +997,8 @@ mod sandbox {
     }
 
     /// Stops program `number` and what it started when bundled says that
-    /// a permission it was given (`names`) was taken away: SIGTERM, then
+    /// a permission it was given (`names`) was taken away, or that its
+    /// version was withdrawn (ADR 0593): SIGTERM, then
     /// SIGKILL to each that has not ended `STOP_TIME` later. `ended` says
     /// the program was waited for, after which its number is no longer
     /// its.
@@ -993,35 +1021,32 @@ mod sandbox {
         };
         let started = std::thread::Builder::new().name("watch".into()).spawn(move || {
             loop {
-                match Answer::read(&mut input) {
-                    Ok(Some(Answer::Revoked(name))) if names.contains(&name) => {
-                        stopping.store(true, Ordering::SeqCst);
-                        // In one write, as other programs write to the
-                        // same terminal.
-                        let line = format!("{id}: stopped, as you took {name} away from it\n");
-                        let _ = std::io::stderr().write_all(line.as_bytes());
-                        // Each one found before any is signalled: one whose
-                        // parent ends is no longer found as its child.
-                        let mut found = tree(number);
-                        signal(&found, libc::SIGTERM);
-                        std::thread::sleep(STOP_TIME);
-                        found.extend(
-                            tree(number)
-                                .into_iter()
-                                .filter(|n| !found.contains(n))
-                                .collect::<Vec<_>>(),
-                        );
-                        signal(&found, libc::SIGKILL);
-                        return;
-                    }
-                    Ok(Some(_)) => {}
+                let line = match Answer::read(&mut input) {
+                    Ok(Some(answer)) => match stopped_line(&id, &names, &answer) {
+                        Some(line) => line,
+                        None => continue,
+                    },
                     // bundled went away: nothing can be taken away now.
                     _ => return,
-                }
+                };
+                stopping.store(true, Ordering::SeqCst);
+                // In one write, as other programs write to the same
+                // terminal.
+                let _ = std::io::stderr().write_all(line.as_bytes());
+                // Each one found before any is signalled: one whose parent
+                // ends is no longer found as its child.
+                let mut found = tree(number);
+                signal(&found, libc::SIGTERM);
+                std::thread::sleep(STOP_TIME);
+                found.extend(
+                    tree(number).into_iter().filter(|n| !found.contains(n)).collect::<Vec<_>>(),
+                );
+                signal(&found, libc::SIGKILL);
+                return;
             }
         });
         if started.is_err() {
-            eprintln!("bundle: cannot follow what is taken away from the program");
+            eprintln!("bundle: cannot follow what stops the program");
         }
         started.ok()
     }
@@ -1293,6 +1318,24 @@ mod sandbox {
 mod tests {
     use super::*;
     use crate::bundles::grants::Said;
+
+    #[test]
+    fn a_run_stops_for_a_withdrawal_and_for_a_permission_it_holds() {
+        let held = vec!["network.outbound".to_string()];
+        let withdrawn = Answer::Withdrawn("catalog dukovo: it sends the keys away".into());
+        assert_eq!(
+            stopped_line("org.example.app", &[], &withdrawn).as_deref(),
+            Some("bundle: org.example.app was stopped: catalog dukovo: it sends the keys away\n")
+        );
+        let taken = Answer::Revoked("network.outbound".into());
+        assert_eq!(
+            stopped_line("org.example.app", &held, &taken).as_deref(),
+            Some("org.example.app: stopped, as you took network.outbound away from it\n")
+        );
+        // A permission the run does not hold, and any other answer, go on.
+        assert_eq!(stopped_line("org.example.app", &[], &taken), None);
+        assert_eq!(stopped_line("org.example.app", &held, &Answer::Ok(String::new())), None);
+    }
 
     #[test]
     fn a_project_chooses_its_line_then_the_defaults_then_the_newest() {

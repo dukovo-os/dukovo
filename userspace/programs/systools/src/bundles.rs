@@ -1207,6 +1207,7 @@ fn history_line(e: &Event, me: u32) -> String {
         What::Waiting => format!("{to} {}", e.note),
         What::Failed => format!("{to} did not update: {}", e.note),
         What::Flawed => format!("{from} has known flaws: {}", e.note),
+        What::Withdrawn => format!("{from} was withdrawn: {}", e.note),
     };
     let whose = if e.place == Place::Everyone { ", for everyone" } else { "" };
     let by = match e.by {
@@ -1314,8 +1315,9 @@ fn list(json: bool) -> Result<i32, Fail> {
         let held = row.held_reason.as_ref().filter(|_| row.held);
         // Only an app of everyone's is asked for tonight.
         let tonight = if row.tonight.is_some() { ", installs tonight" } else { "" };
+        let withdrawn = row.withdrawn.as_ref().map_or_default(|w| format!(", {}", w.line(&row.id)));
         println!(
-            "{:width$}  {:version_width$}  {whose:9}  {:flaws_width$}  {}{}{tonight}",
+            "{:width$}  {:version_width$}  {whose:9}  {:flaws_width$}  {}{}{tonight}{withdrawn}",
             row.id,
             row.version,
             row.flags.shown(),
@@ -1502,6 +1504,13 @@ fn said_line(grant: &grants::Grant) -> String {
     format!("    {}: {what}, since {when}", grant.permission)
 }
 
+/// `text` with its first letter in capitals, to stand as a line of its own.
+fn sentence(text: &str) -> String {
+    let mut chars = text.chars();
+    let first = chars.next().map(|c| c.to_uppercase().to_string());
+    format!("{}{}", first.unwrap_or_default(), chars.as_str())
+}
+
 /// `bundle info ID`: an installed bundle's sheet, what you said of its
 /// permissions, where it is and when it was installed; with `json`, those
 /// facts as bundled's document.
@@ -1515,6 +1524,8 @@ fn info(id: &str, json: bool) -> Result<i32, Fail> {
             Answer::Ok(_) if json => return Ok(0),
             Answer::Sheet(text) => print!("{text}"),
             Answer::Granted(grant) => said.push(grant),
+            // A withdrawal of its version comes before what the person said.
+            Answer::Note(note) => println!("  {}", sentence(&note)),
             Answer::Ok(what) => {
                 if !said.is_empty() {
                     println!("  You said:");
@@ -1524,9 +1535,7 @@ fn info(id: &str, json: bool) -> Result<i32, Fail> {
                     }
                 }
                 for part in what.split("; ") {
-                    let mut chars = part.chars();
-                    let first = chars.next().map(|c| c.to_uppercase().to_string());
-                    println!("  {}{}", first.unwrap_or_default(), chars.as_str());
+                    println!("  {}", sentence(part));
                 }
                 return Ok(0);
             }

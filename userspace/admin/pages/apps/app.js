@@ -14,7 +14,7 @@ import { windowWords } from '../../lib/tonight-model.js';
 import { copyBox } from '../snapshots/copy-box.js';
 import {
   ASKED_WORDS, bannerOf, byline, dataFolders, fixedWords, flawLine, heldWords, holdRow, linksOf, manageOf, mayUseOf, noFlawsWords,
-  READER_LINE, RISK_WORDS, ruleWords, runsAs, serviceLines, servicesOf, sizeWords, usedByOf,
+  READER_LINE, RISK_WORDS, ruleWords, runsAs, serviceLines, servicesOf, sizeWords, usedByOf, withdrawnRow,
 } from './app-model.js';
 import { ownCommands } from './list-model.js';
 import { onPress } from './list.js';
@@ -111,6 +111,7 @@ export function makeApp(view, act) {
       fact('Flaws', noFlaws),
       fact('Size', size),
       info.held === true && fact('Hold', holdRow(info, hold, view.time, names)),
+      fact('Withdrawn', withdrawnRow(info, view.time)),
       fact('Updates', rule && [rule, links.updates && [' · ', h('a', { href: '/updates' }, 'Change on the Updates page')]]));
   }
 

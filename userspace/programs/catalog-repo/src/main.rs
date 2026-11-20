@@ -27,6 +27,10 @@ usage: catalog-repo --repo DIR [--yubikey-helper PROGRAM] [--key FILE]... COMMAN
                                          a bundle of an ID given with --verified is
                                          listed as one whose publisher the catalog
                                          vouches for
+       withdraw --id ID --version V --kind broken|malicious --reason TEXT
+                [--days N] [--yes] --store DIR
+                                         sign the next targets with that version of
+                                         ID, as the targets list it, withdrawn
        publish --store DIR --out DIR [--plan FILE]
                                          snapshot, timestamp and the files to serve,
                                          the rollouts of the plan signed first
@@ -57,6 +61,10 @@ struct Options {
     serial: Option<u64>,
     remove: Vec<String>,
     verified: Vec<String>,
+    id: Option<String>,
+    version: Option<String>,
+    kind: Option<String>,
+    reason: Option<String>,
     yes: bool,
     json: bool,
     store: Option<PathBuf>,
@@ -79,6 +87,10 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
         serial: None,
         remove: Vec::new(),
         verified: Vec::new(),
+        id: None,
+        version: None,
+        kind: None,
+        reason: None,
         yes: false,
         json: false,
         store: None,
@@ -103,6 +115,10 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
             }
             "--remove" => options.remove.push(value()?),
             "--verified" => options.verified.push(value()?),
+            "--id" => options.id = Some(value()?),
+            "--version" => options.version = Some(value()?),
+            "--kind" => options.kind = Some(value()?),
+            "--reason" => options.reason = Some(value()?),
             "--store" => options.store = Some(value()?.into()),
             "--out" => options.out = Some(value()?.into()),
             "--bundles" => options.bundles = Some(value()?.into()),
@@ -194,6 +210,7 @@ fn run(options: &Options) -> Result<ExitCode, String> {
             let version = repo.sign_targets(&changes, &bundles, store, &signers()?, days)?;
             println!("Signed targets version {version}.");
         }
+        ["withdraw"] => withdraw(&repo, options, &signers()?)?,
         ["publish"] => {
             let store = options.store.as_ref().ok_or("--store is needed")?;
             let out = options.out.as_ref().ok_or("--out is needed")?;
@@ -260,6 +277,31 @@ fn run(options: &Options) -> Result<ExitCode, String> {
         _ => return Err(USAGE.into()),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Signs the next targets with one version withdrawn, since `--now`.
+fn withdraw(repo: &Repo, options: &Options, signers: &Signers) -> Result<(), String> {
+    let needed = |value: &Option<String>, name: &str| {
+        value.clone().ok_or(format!("{name} is needed\n{USAGE}"))
+    };
+    let id = needed(&options.id, "--id")?;
+    let version = needed(&options.version, "--version")?;
+    let kind = needed(&options.kind, "--kind")?;
+    let reason = needed(&options.reason, "--reason")?;
+    let store = options.store.as_ref().ok_or("--store is needed")?;
+    let since = u64::try_from(options.now.unwrap_or_else(tuf::time::now))
+        .map_err(|_| "--now takes seconds since 1970")?;
+    let changes = repo.withdraw(&id, &version, &kind, &reason, since)?;
+    for line in changes.lines() {
+        println!("{line}");
+    }
+    if !options.yes && !confirm("Sign this withdrawal into the catalog?")? {
+        return Err("not signed".into());
+    }
+    let days = options.days.unwrap_or(expires_days("targets"));
+    let signed = repo.sign_targets(&changes, &[], store, signers, days)?;
+    println!("Signed targets version {signed}.");
+    Ok(())
 }
 
 /// The canaries that are not green, by their reports in `--reports` at

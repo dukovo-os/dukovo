@@ -6,9 +6,10 @@
 //! person's developer key, the catalog each ID installed from one is
 //! bound to (ADR 0383), and the version each new one replaced, the IDs
 //! held at their version, and the places that update by themselves (ADR
-//! 0384), and the line of each ID that runs unless a project asks for
-//! another (ADR 0387). Each is a file of lines, tab-separated, read
-//! strictly: a line that does not read is an error, never skipped.
+//! 0384), the line of each ID that runs unless a project asks for
+//! another (ADR 0387), and the versions catalogs and feeds withdrew (ADR
+//! 0593). Each is a file of lines, tab-separated, read strictly: a line
+//! that does not read is an error, never skipped.
 //!
 //! A bundle with a line is kept by its full ID, `ID@LINE`; the key and
 //! catalog an ID is bound to bind all its lines, so bindings are kept by
@@ -16,6 +17,7 @@
 
 use std::fmt;
 
+use super::catalogs::Kind;
 use super::minisign::PublicKey;
 use super::rollover::{self, Link};
 
@@ -37,9 +39,23 @@ pub const HELD: &str = "held";
 pub const AUTOMATIC: &str = "automatic";
 /// The default line of each ID with lines, in each place.
 pub const DEFAULTS: &str = "defaults";
+/// The versions catalogs and feeds withdrew, kept for good.
+pub const WITHDRAWN: &str = "withdrawn";
 /// The files, in the order [`Registry::read`] takes them.
-pub const FILES: [&str; 8] =
-    [INSTALLED, BOUND, DEVELOPER_KEYS, CATALOG_BOUND, PREVIOUS, HELD, AUTOMATIC, DEFAULTS];
+pub const FILES: [&str; 9] = [
+    INSTALLED,
+    BOUND,
+    DEVELOPER_KEYS,
+    CATALOG_BOUND,
+    PREVIOUS,
+    HELD,
+    AUTOMATIC,
+    DEFAULTS,
+    WITHDRAWN,
+];
+/// The most lines [`WITHDRAWN`] keeps, unless more are of versions
+/// installed or kept.
+pub const WITHDRAWN_MAX: usize = 4096;
 
 /// The ID of the full ID `id`: what is before its `@`, if it has a line.
 #[must_use]
@@ -143,6 +159,87 @@ pub struct LineDefault {
     pub line: String,
 }
 
+/// Who withdrew a version.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Source {
+    /// A catalog, by its name.
+    Catalog(String),
+    /// The feed of a bundle installed in this place (ADR 0390), which
+    /// withdraws only versions of that bundle's own ID.
+    Feed(Place),
+}
+
+impl fmt::Display for Source {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Source::Catalog(name) => write!(f, "catalog:{name}"),
+            Source::Feed(place) => write!(f, "feed:{place}"),
+        }
+    }
+}
+
+impl Source {
+    fn parse(text: &str) -> Result<Source, String> {
+        match text.split_once(':') {
+            Some(("catalog", name)) => {
+                super::catalogs::check_name(name)?;
+                Ok(Source::Catalog(name.into()))
+            }
+            Some(("feed", place)) => Ok(Source::Feed(Place::parse(place)?)),
+            _ => Err(format!("{text:?} is neither a catalog nor a feed")),
+        }
+    }
+
+    /// Who it is, in words.
+    #[must_use]
+    pub fn words(&self) -> String {
+        match self {
+            Source::Catalog(name) => format!("catalog {name}"),
+            Source::Feed(_) => "its publisher's feed".into(),
+        }
+    }
+}
+
+/// A version a catalog or feed withdrew (ADR 0593): bundled installs it
+/// nowhere and goes back from it, and stops it at once if it is
+/// malicious.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Withdrawn {
+    pub source: Source,
+    /// The full ID of the bundle.
+    pub id: String,
+    pub version: String,
+    /// The SHA-256 of the `.dkv` file the source listed, in hex.
+    pub sha256: String,
+    pub kind: Kind,
+    /// Since when, as the source says, in seconds since 1970.
+    pub since: u64,
+    /// Why, as the source says: one line.
+    pub reason: String,
+}
+
+impl Withdrawn {
+    /// Whether it may be kept: each field as [`WITHDRAWN`] reads it back.
+    fn check(&self) -> Result<(), String> {
+        if let Source::Catalog(name) = &self.source {
+            super::catalogs::check_name(name)?;
+        }
+        checked_full_id(&self.id)?;
+        field(&self.version)?;
+        checked_hex(&self.sha256)?;
+        field(&self.reason)?;
+        Ok(())
+    }
+
+    /// Its key: a line of the same, of a kind as bad, adds nothing.
+    fn same(&self, other: &Withdrawn) -> bool {
+        self.source == other.source
+            && self.id == other.id
+            && self.version == other.version
+            && self.sha256 == other.sha256
+    }
+}
+
 /// What bundled keeps.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Registry {
@@ -157,6 +254,7 @@ pub struct Registry {
     /// The places that update by themselves, and since when.
     pub automatic: Vec<(Place, u64)>,
     pub defaults: Vec<LineDefault>,
+    pub withdrawn: Vec<Withdrawn>,
 }
 
 /// Splits `line` into exactly `N` tab-separated fields.
@@ -239,9 +337,18 @@ fn installed_text(all: &[Installed]) -> String {
 
 impl Registry {
     /// Reads the files' texts, in the order of [`FILES`].
-    pub fn read(texts: &[String; 8]) -> Result<Registry, String> {
-        let [installed, bound, developer_keys, catalog_bound, previous, held, automatic, defaults] =
-            texts;
+    pub fn read(texts: &[String; 9]) -> Result<Registry, String> {
+        let [
+            installed,
+            bound,
+            developer_keys,
+            catalog_bound,
+            previous,
+            held,
+            automatic,
+            defaults,
+            withdrawn,
+        ] = texts;
         let installed = lines(INSTALLED, installed, read_installed)?;
         let previous = lines(PREVIOUS, previous, read_installed)?;
         let bound = lines(BOUND, bound, |line| {
@@ -284,6 +391,18 @@ impl Registry {
             manifest::bundle::check_version_line(line)?;
             Ok(LineDefault { place: Place::parse(place)?, id: checked_id(id)?, line: line.into() })
         })?;
+        let withdrawn = lines(WITHDRAWN, withdrawn, |line| {
+            let [source, id, version, sha256, kind, since, reason] = fields(line)?;
+            Ok(Withdrawn {
+                source: Source::parse(source)?,
+                id: checked_full_id(id)?,
+                version: version.into(),
+                sha256: checked_hex(sha256)?,
+                kind: Kind::read(kind)?,
+                since: number(since)?,
+                reason: reason.into(),
+            })
+        })?;
         let registry = Registry {
             installed,
             bound,
@@ -293,6 +412,7 @@ impl Registry {
             held,
             automatic,
             defaults,
+            withdrawn,
         };
         registry.check()?;
         Ok(registry)
@@ -342,11 +462,16 @@ impl Registry {
                 return Err(format!("{DEFAULTS}: {} is there twice for {}", d.id, d.place));
             }
         }
+        for (n, w) in self.withdrawn.iter().enumerate() {
+            if self.withdrawn[..n].iter().any(|before| before.same(w) && before.kind == w.kind) {
+                return Err(format!("{WITHDRAWN}: {} {} is there twice", w.id, w.version));
+            }
+        }
         Ok(())
     }
 
     /// The files' texts, in the order of [`FILES`], sorted.
-    pub fn texts(&self) -> [String; 8] {
+    pub fn texts(&self) -> [String; 9] {
         let mut bound: Vec<String> = self
             .bound
             .iter()
@@ -374,6 +499,23 @@ impl Registry {
         let mut defaults: Vec<String> =
             self.defaults.iter().map(|d| format!("{}\t{}\t{}\n", d.place, d.id, d.line)).collect();
         defaults.sort();
+        let mut withdrawn: Vec<String> = self
+            .withdrawn
+            .iter()
+            .map(|w| {
+                format!(
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                    w.source,
+                    w.id,
+                    w.version,
+                    w.sha256,
+                    w.kind.word(),
+                    w.since,
+                    w.reason
+                )
+            })
+            .collect();
+        withdrawn.sort();
         [
             installed_text(&self.installed),
             bound.concat(),
@@ -383,6 +525,7 @@ impl Registry {
             held.concat(),
             automatic.concat(),
             defaults.concat(),
+            withdrawn.concat(),
         ]
     }
 
@@ -533,6 +676,96 @@ impl Registry {
     pub fn set_developer_key(&mut self, user: u32, key: PublicKey) {
         self.developer_keys.retain(|(u, _)| *u != user);
         self.developer_keys.push((user, key));
+    }
+
+    /// Keeps `withdrawn` for good, unless a line of the same, of a kind as
+    /// bad, is kept: a malicious line is added beside a broken one, and
+    /// nothing a source says later takes a line back. Past
+    /// [`WITHDRAWN_MAX`] lines, the oldest of a version installed and kept
+    /// nowhere goes. Whether it was new. One whose fields would not read
+    /// back is not kept: it names no version that could install.
+    pub fn withdraw(&mut self, withdrawn: Withdrawn) -> bool {
+        let known = self.withdrawn.iter().any(|w| w.same(&withdrawn) && w.kind >= withdrawn.kind);
+        if known || withdrawn.check().is_err() {
+            return false;
+        }
+        self.withdrawn.push(withdrawn);
+        while self.withdrawn.len() > WITHDRAWN_MAX {
+            let in_use = |w: &Withdrawn| {
+                self.installed
+                    .iter()
+                    .chain(&self.previous)
+                    .any(|i| i.id == w.id && i.version == w.version)
+            };
+            let oldest = (0..self.withdrawn.len())
+                .filter(|&n| !in_use(&self.withdrawn[n]))
+                .min_by_key(|&n| self.withdrawn[n].since);
+            let Some(oldest) = oldest else { break };
+            self.withdrawn.remove(oldest);
+        }
+        true
+    }
+
+    /// The worst of `lines`: malicious before broken, then the first
+    /// withdrawn.
+    fn worst<'a>(lines: impl Iterator<Item = &'a Withdrawn>) -> Option<&'a Withdrawn> {
+        lines.min_by_key(|w| (std::cmp::Reverse(w.kind), w.since))
+    }
+
+    /// Whether `source` may withdraw a version of what is installed in
+    /// `place`, of the ID `id`: the catalog the ID is bound to there or
+    /// for everyone, or the feed of a bundle of the ID there or for
+    /// everyone.
+    fn speaks_for(&self, source: &Source, place: Place, id: &str) -> bool {
+        match source {
+            Source::Catalog(name) => [place, Place::Everyone]
+                .into_iter()
+                .any(|at| self.catalog_bound(at, id).is_some_and(|b| b.catalog == *name)),
+            Source::Feed(at) => *at == place || *at == Place::Everyone,
+        }
+    }
+
+    /// The withdrawal of `id` at `version` in `place`, if one applies
+    /// (ADR 0593): the worst of a catalog the ID is bound to there or for
+    /// everyone, and of its feed there or for everyone.
+    #[must_use]
+    pub fn withdrawal(&self, place: Place, id: &str, version: &str) -> Option<&Withdrawn> {
+        Registry::worst(self.withdrawn.iter().filter(|w| {
+            w.id == id && w.version == version && self.speaks_for(&w.source, place, id)
+        }))
+    }
+
+    /// The withdrawal of a file of `id` whose SHA-256 is `sha256`, for an
+    /// install of it in `place`, whatever its version: the worst of any
+    /// catalog's, and of its feed's there or for everyone. A feed of
+    /// another place is a bundle another person installed, and refuses
+    /// nothing here.
+    #[must_use]
+    pub fn withdrawn_file(&self, place: Place, id: &str, sha256: &str) -> Option<&Withdrawn> {
+        Registry::worst(self.withdrawn.iter().filter(|w| {
+            let source = match &w.source {
+                Source::Catalog(_) => true,
+                Source::Feed(at) => *at == place || *at == Place::Everyone,
+            };
+            w.id == id && w.sha256 == sha256 && source
+        }))
+    }
+
+    /// The malicious withdrawal of the version of `id` installed in
+    /// `place`, which stops it: it stays installed, but cannot run.
+    #[must_use]
+    pub fn stopped(&self, place: Place, id: &str) -> Option<&Withdrawn> {
+        let installed = self.installed(place, id)?;
+        self.withdrawal(place, id, &installed.version).filter(|w| w.kind == Kind::Malicious)
+    }
+
+    /// Forgets what the feed of `place` withdrew of `id`, or of its
+    /// lines: the ID was taken from its publisher (ADR 0592), and what
+    /// that publisher said of its versions is not said of the new one's.
+    pub fn forget_feed_withdrawals(&mut self, place: Place, id: &str) -> usize {
+        let before = self.withdrawn.len();
+        self.withdrawn.retain(|w| w.source != Source::Feed(place) || base_id(&w.id) != base_id(id));
+        before - self.withdrawn.len()
     }
 }
 
@@ -1034,5 +1267,167 @@ mod tests {
         // Removing forgets the kept version too.
         registry.forget(alice, id);
         assert_eq!(registry.previous(alice, id), None);
+    }
+
+    fn withdrawn(source: Source, version: &str, sha: char, kind: Kind, since: u64) -> Withdrawn {
+        Withdrawn {
+            source,
+            id: "org.example.notes".into(),
+            version: version.into(),
+            sha256: sha.to_string().repeat(64),
+            kind,
+            since,
+            reason: "it loses notes".into(),
+        }
+    }
+
+    fn catalog(name: &str) -> Source {
+        Source::Catalog(name.into())
+    }
+
+    #[test]
+    fn a_withdrawal_is_kept_for_good_and_only_made_worse() {
+        let mut registry = Registry::default();
+        let broken = withdrawn(catalog("dukovo"), "1.0.0", 'a', Kind::Broken, 5);
+        assert!(registry.withdraw(broken.clone()));
+        assert!(!registry.withdraw(broken.clone()));
+        // A later reason or time is the same line.
+        assert!(!registry.withdraw(Withdrawn {
+            reason: "other".into(),
+            since: 9,
+            ..broken.clone()
+        }));
+        // Malicious is added beside it; broken again adds nothing.
+        let malicious = Withdrawn { kind: Kind::Malicious, ..broken.clone() };
+        assert!(registry.withdraw(malicious.clone()));
+        assert!(!registry.withdraw(broken.clone()));
+        assert_eq!(registry.withdrawn.len(), 2);
+        // One that would not read back is not kept.
+        assert!(!registry.withdraw(Withdrawn { version: String::new(), ..broken.clone() }));
+        assert!(!registry.withdraw(Withdrawn { id: "Not An ID".into(), ..broken.clone() }));
+        assert!(!registry.withdraw(Withdrawn { sha256: "ab".into(), ..malicious.clone() }));
+        // Another source, file or version is a line of its own.
+        assert!(registry.withdraw(withdrawn(catalog("other"), "1.0.0", 'a', Kind::Broken, 5)));
+        assert!(registry.withdraw(withdrawn(catalog("dukovo"), "1.0.0", 'b', Kind::Broken, 5)));
+        let feed = withdrawn(Source::Feed(Place::User(1000)), "2.0.0", 'c', Kind::Broken, 6);
+        assert!(registry.withdraw(feed));
+        let texts = registry.texts();
+        assert!(texts[8].starts_with("catalog:dukovo\torg.example.notes\t1.0.0\t"), "{}", texts[8]);
+        assert!(texts[8].contains("\nfeed:1000\torg.example.notes\t2.0.0\t"), "{}", texts[8]);
+        let again = Registry::read(&texts).unwrap();
+        assert_eq!(again.texts(), texts);
+        // A line twice, or one that does not read, is refused.
+        let mut twice = texts.clone();
+        let first = texts[8].lines().next().unwrap();
+        twice[8] = format!("{first}\n{}", texts[8]);
+        assert!(Registry::read(&twice).unwrap_err().contains("twice"));
+        let good = format!(
+            "catalog:dukovo\torg.example.notes\t1.0.0\t{}\tbroken\t5\twhy\n",
+            "a".repeat(64)
+        );
+        let mut texts = Registry::default().texts();
+        texts[8] = good.clone();
+        assert!(Registry::read(&texts).is_ok());
+        for bad in [
+            good.replace("catalog:dukovo", "catalog:Bad"),
+            good.replace("catalog:dukovo", "mirror:dukovo"),
+            good.replace("catalog:dukovo", "feed:me"),
+            good.replace("broken", "bad"),
+            good.replace("\t5\t", "\t05\t"),
+            good.replace("\twhy", "\t"),
+            good.replace("\twhy", ""),
+            good.replace(&"a".repeat(64), "A".repeat(64).as_str()),
+        ] {
+            texts[8] = bad.clone();
+            assert!(Registry::read(&texts).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_withdrawal_applies_where_its_source_speaks_for_the_id() {
+        let alice = Place::User(1000);
+        let bob = Place::User(1001);
+        let id = "org.example.notes";
+        let mut registry = Registry::default();
+        for line in [
+            withdrawn(catalog("dukovo"), "1.0.0", 'a', Kind::Broken, 5),
+            withdrawn(catalog("dukovo"), "1.0.0", 'a', Kind::Malicious, 7),
+            withdrawn(catalog("other"), "2.0.0", 'b', Kind::Malicious, 5),
+            withdrawn(Source::Feed(alice), "3.0.0", 'c', Kind::Broken, 5),
+        ] {
+            registry.withdraw(line);
+        }
+        // Bound to no catalog: no catalog's withdrawal of a version
+        // applies; the feed's of the place does.
+        assert_eq!(registry.withdrawal(alice, id, "1.0.0"), None);
+        assert_eq!(registry.withdrawal(alice, id, "3.0.0").map(|w| w.kind), Some(Kind::Broken));
+        assert_eq!(registry.withdrawal(bob, id, "3.0.0"), None);
+        assert_eq!(registry.withdrawal(Place::Everyone, id, "3.0.0"), None);
+        // Bound to dukovo for everyone: its withdrawals apply in every
+        // place, the worst first; another catalog's do not.
+        registry.record(installed(Place::Everyone, id, 1), Some("dukovo"));
+        for place in [Place::Everyone, alice, bob] {
+            let w = registry.withdrawal(place, id, "1.0.0").unwrap();
+            assert_eq!((w.kind, w.since), (Kind::Malicious, 7));
+            assert_eq!(registry.withdrawal(place, id, "2.0.0"), None);
+        }
+        assert_eq!(registry.stopped(Place::Everyone, id).map(|w| w.since), Some(7));
+        assert_eq!(registry.stopped(alice, id), None);
+        // Bound to other in Bob's place: other's apply there too.
+        registry.catalog_bound.push(CatalogBound {
+            place: bob,
+            id: id.into(),
+            catalog: "other".into(),
+            since: 1,
+        });
+        assert!(registry.withdrawal(bob, id, "2.0.0").is_some());
+        assert_eq!(registry.withdrawal(alice, id, "2.0.0"), None);
+        // A broken withdrawal does not stop it.
+        let mut registry = Registry::default();
+        registry.record(installed(Place::Everyone, id, 1), Some("dukovo"));
+        registry.withdraw(withdrawn(catalog("dukovo"), "1.0.0", 'a', Kind::Broken, 5));
+        assert!(registry.withdrawal(Place::Everyone, id, "1.0.0").is_some());
+        assert_eq!(registry.stopped(Place::Everyone, id), None);
+    }
+
+    #[test]
+    fn a_withdrawn_file_is_refused_by_its_sha256() {
+        let alice = Place::User(1000);
+        let id = "org.example.notes";
+        let mut registry = Registry::default();
+        registry.withdraw(withdrawn(catalog("other"), "1.0.0", 'a', Kind::Broken, 5));
+        registry.withdraw(withdrawn(Source::Feed(alice), "2.0.0", 'b', Kind::Malicious, 5));
+        // Any catalog's, wherever it installs, of that ID alone.
+        for place in [Place::Everyone, alice, Place::User(1001)] {
+            assert!(registry.withdrawn_file(place, id, &"a".repeat(64)).is_some());
+        }
+        assert!(registry.withdrawn_file(alice, "org.example.other", &"a".repeat(64)).is_none());
+        assert!(registry.withdrawn_file(alice, id, &"c".repeat(64)).is_none());
+        // A person's feed, in that person's place alone.
+        assert!(registry.withdrawn_file(alice, id, &"b".repeat(64)).is_some());
+        assert!(registry.withdrawn_file(Place::User(1001), id, &"b".repeat(64)).is_none());
+        assert!(registry.withdrawn_file(Place::Everyone, id, &"b".repeat(64)).is_none());
+        // Taken from its publisher, what its feed said goes.
+        assert_eq!(registry.forget_feed_withdrawals(Place::Everyone, id), 0);
+        assert_eq!(registry.forget_feed_withdrawals(alice, "org.example.notes@2"), 1);
+        assert!(registry.withdrawn_file(alice, id, &"b".repeat(64)).is_none());
+        assert_eq!(registry.withdrawn.len(), 1);
+    }
+
+    #[test]
+    fn past_its_most_the_oldest_unused_withdrawal_goes() {
+        let mut registry = Registry::default();
+        let id = "org.example.notes";
+        registry.record(installed(Place::Everyone, id, 1), None);
+        // The installed version's line is the oldest, and stays.
+        registry.withdraw(withdrawn(Source::Feed(Place::Everyone), "1.0.0", 'a', Kind::Broken, 0));
+        for n in 1..=WITHDRAWN_MAX as u64 {
+            let version = format!("0.{n}.0");
+            registry.withdraw(withdrawn(catalog("dukovo"), &version, 'b', Kind::Broken, n));
+        }
+        assert_eq!(registry.withdrawn.len(), WITHDRAWN_MAX);
+        assert!(registry.withdrawn.iter().any(|w| w.version == "1.0.0"));
+        assert!(!registry.withdrawn.iter().any(|w| w.version == "0.1.0"));
+        assert!(registry.withdrawn.iter().any(|w| w.version == "0.2.0"));
     }
 }

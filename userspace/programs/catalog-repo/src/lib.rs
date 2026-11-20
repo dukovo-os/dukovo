@@ -119,13 +119,25 @@ pub struct Changes {
     /// Paths listed already, signed before the catalog vouched for their
     /// ID's publisher, that are listed as verified from now on.
     pub verified: Vec<String>,
+    /// Paths listed that are withdrawn from now on (ADR 0593), with the
+    /// `custom.withdrawn` object each gets: `kind`, `reason` and `since`.
+    pub withdrawn: BTreeMap<String, Value>,
 }
+
+/// The kinds of withdrawal, the lesser first.
+pub const WITHDRAWAL_KINDS: [&str; 2] = ["broken", "malicious"];
+
+/// The most bytes a withdrawal's reason may have.
+pub const REASON_MAX: usize = 200;
 
 impl Changes {
     /// Whether it changes nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.added.is_empty() && self.removed.is_empty() && self.verified.is_empty()
+        self.added.is_empty()
+            && self.removed.is_empty()
+            && self.verified.is_empty()
+            && self.withdrawn.is_empty()
     }
 
     /// One line for each change.
@@ -144,6 +156,13 @@ impl Changes {
         }
         lines.extend(self.removed.iter().map(|path| format!("- {path}")));
         lines.extend(self.verified.iter().map(|path| format!("~ {path}: publisher verified")));
+        for (path, withdrawal) in &self.withdrawn {
+            lines.push(format!(
+                "! {path} withdrawn as {}: {}",
+                withdrawal["kind"].as_str().unwrap_or("?"),
+                withdrawal["reason"].as_str().unwrap_or("?")
+            ));
+        }
         lines
     }
 }
@@ -349,6 +368,68 @@ impl Repo {
         Ok(changes)
     }
 
+    /// What withdrawing version `version` of the bundle whose full ID, as a
+    /// target's `custom.id` has it, is `id`, as `kind` (`broken` or
+    /// `malicious`), since `since` seconds after 1970, would change in
+    /// targets. The target stays listed (ADR 0593).
+    ///
+    /// # Errors
+    ///
+    /// If no target lists that ID and version, `kind` is neither word, the
+    /// reason is empty, has control characters or is over [`REASON_MAX`]
+    /// bytes, or the version is withdrawn already as `kind` or worse: a
+    /// malicious withdrawal is never made broken again.
+    pub fn withdraw(
+        &self,
+        id: &str,
+        version: &str,
+        kind: &str,
+        reason: &str,
+        since: u64,
+    ) -> Result<Changes, String> {
+        let rank = |word: &str| WITHDRAWAL_KINDS.iter().position(|k| *k == word);
+        let new_rank = rank(kind).ok_or(format!("{kind:?} is neither broken nor malicious"))?;
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err("the reason is empty: say why the version is withdrawn".into());
+        }
+        if reason.chars().any(char::is_control) {
+            return Err("the reason has control characters: give it as one line of text".into());
+        }
+        if reason.len() > REASON_MAX {
+            return Err(format!(
+                "the reason is {} bytes; at most {REASON_MAX} are kept",
+                reason.len()
+            ));
+        }
+        let listed = self.targets()?.map_or_default(|t| t.signed.signed.targets);
+        let mut changes = Changes::default();
+        for (path, target) in &listed {
+            let custom = target.custom.as_ref();
+            let text = |key: &str| custom.and_then(|c| c.get(key)?.as_str());
+            if text("id") != Some(id) || text("version") != Some(version) {
+                continue;
+            }
+            // A field that does not read counts as broken, as clients read
+            // it, so that it can still be made malicious.
+            let old_rank = custom
+                .and_then(|c| c.get("withdrawn"))
+                .map(|w| w.get("kind").and_then(Value::as_str).and_then(rank).unwrap_or_default());
+            if let Some(old) = old_rank.filter(|old| *old >= new_rank) {
+                return Err(format!(
+                    "{id} {version} is withdrawn already as {}; it cannot be withdrawn as {kind}",
+                    WITHDRAWAL_KINDS[old]
+                ));
+            }
+            let withdrawal = json!({ "kind": kind, "reason": reason, "since": since });
+            changes.withdrawn.insert(path.clone(), withdrawal);
+        }
+        if changes.withdrawn.is_empty() {
+            return Err(format!("no target lists {id} {version}"));
+        }
+        Ok(changes)
+    }
+
     /// Signs the next targets with `changes`, with one key: one touch of a
     /// YubiKey for the whole batch. The new bundles' bytes are put in
     /// `store`, to be published. The targets delegate the list of flaws
@@ -398,6 +479,11 @@ impl Repo {
         for path in &changes.verified {
             if let Some(target) = listed.get_mut(path) {
                 target["custom"]["owner"] = "verified".into();
+            }
+        }
+        for (path, withdrawal) in &changes.withdrawn {
+            if let Some(target) = listed.get_mut(path) {
+                target["custom"]["withdrawn"] = withdrawal.clone();
             }
         }
         let mut signed = repo::targets(version, &repo::expires_in(days), &listed);
@@ -1585,6 +1671,105 @@ mod tests {
         let targets = repo.targets().unwrap().unwrap();
         let kept = online_role(&store, ROLLOUT_METADATA, rollout::ROLE, &targets.signed.signed);
         assert!(kept.is_none(), "rollouts are not served for targets that do not delegate them");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The `custom.withdrawn` of the target at `path`, as signed.
+    fn withdrawn_of(repo: &Repo, path: &str) -> Option<Value> {
+        let targets = repo.targets().unwrap().unwrap();
+        targets.signed.signed.targets[path].custom.as_ref()?.get("withdrawn").cloned()
+    }
+
+    #[test]
+    fn a_withdrawal_is_signed_into_the_target_that_stays_listed() {
+        let dir = scratch("withdraw");
+        let old = bundle_in(&dir, "org.nodejs.node", "22", "22.0.0", b"old");
+        let new = bundle_in(&dir, "org.nodejs.node", "22", "22.1.0", b"new");
+        let (repo, store, both, _) = catalog_of(&dir, &[old, new]);
+        let path = "bundles/org.nodejs.node-22.1.0.dkv";
+        let changes = repo
+            .withdraw(
+                "org.nodejs.node@22",
+                "22.1.0",
+                "broken",
+                "it crashes at start",
+                1_700_000_000,
+            )
+            .unwrap();
+        assert!(!changes.is_empty());
+        assert_eq!(changes.lines(), [format!("! {path} withdrawn as broken: it crashes at start")]);
+        assert_eq!(withdrawn_of(&repo, path), None);
+        repo.sign_targets(&changes, &[], &store, &both, 182).unwrap();
+        let expected =
+            json!({"kind": "broken", "reason": "it crashes at start", "since": 1_700_000_000});
+        assert_eq!(withdrawn_of(&repo, path), Some(expected));
+        // The other version and the target's own fields are as they were.
+        assert_eq!(withdrawn_of(&repo, "bundles/org.nodejs.node-22.0.0.dkv"), None);
+        let targets = repo.targets().unwrap().unwrap();
+        let custom = targets.signed.signed.targets[path].custom.as_ref().unwrap();
+        assert_eq!(custom["id"], "org.nodejs.node@22");
+        assert_eq!(custom["version"], "22.1.0");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_withdrawal_is_refused_when_it_names_nothing_or_says_nothing() {
+        let dir = scratch("withdraw-refused");
+        let ripgrep = bundle(&dir, "org.dukovo.ripgrep", "14.1.1", b"rg");
+        let (repo, ..) = catalog_of(&dir, &[ripgrep]);
+        let id = "org.dukovo.ripgrep";
+        let refused = |id: &str, version: &str, kind: &str, reason: &str| {
+            repo.withdraw(id, version, kind, reason, 5).unwrap_err()
+        };
+        assert!(refused(id, "14.1.2", "broken", "it crashes").contains("no target lists"));
+        assert!(refused("org.dukovo.fd", "14.1.1", "broken", "it crashes").contains("no target"));
+        // The full ID is what a target says; the line-less ID is not another's.
+        assert!(refused("org.dukovo.ripgrep@14", "14.1.1", "broken", "x").contains("no target"));
+        assert!(refused(id, "14.1.1", "evil", "it crashes").contains("neither broken nor"));
+        assert!(refused(id, "14.1.1", "broken", "").contains("empty"));
+        assert!(refused(id, "14.1.1", "broken", "  \t ").contains("empty"));
+        assert!(refused(id, "14.1.1", "broken", "two\nlines").contains("control"));
+        let long = "x".repeat(REASON_MAX + 1);
+        assert!(refused(id, "14.1.1", "broken", &long).contains("201 bytes"));
+        let longest = "x".repeat(REASON_MAX);
+        assert!(repo.withdraw(id, "14.1.1", "broken", &longest, 5).is_ok());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_withdrawal_can_get_worse_but_never_better() {
+        let dir = scratch("withdraw-worse");
+        let ripgrep = bundle(&dir, "org.dukovo.ripgrep", "14.1.1", b"rg");
+        let (repo, store, both, _) = catalog_of(&dir, &[ripgrep]);
+        let (id, path) = ("org.dukovo.ripgrep", "bundles/org.dukovo.ripgrep-14.1.1.dkv");
+        let sign = |kind: &str, reason: &str| {
+            let changes = repo.withdraw(id, "14.1.1", kind, reason, 9)?;
+            repo.sign_targets(&changes, &[], &store, &both, 182).map(|_| ())
+        };
+        sign("broken", "it crashes").unwrap();
+        assert!(sign("broken", "again").unwrap_err().contains("already"));
+        sign("malicious", "it steals keys").unwrap();
+        let expected = json!({"kind": "malicious", "reason": "it steals keys", "since": 9});
+        assert_eq!(withdrawn_of(&repo, path), Some(expected.clone()));
+        assert!(sign("broken", "it crashes").unwrap_err().contains("malicious"));
+        assert!(sign("malicious", "again").unwrap_err().contains("already"));
+        assert_eq!(withdrawn_of(&repo, path), Some(expected));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_withdrawal_that_does_not_read_can_still_be_made_malicious() {
+        let dir = scratch("withdraw-unreadable");
+        let ripgrep = bundle(&dir, "org.dukovo.ripgrep", "14.1.1", b"rg");
+        let (repo, ..) = catalog_of(&dir, &[ripgrep]);
+        let path = repo.metadata("targets.json");
+        let mut file: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let target = &mut file["signed"]["targets"]["bundles/org.dukovo.ripgrep-14.1.1.dkv"];
+        target["custom"]["withdrawn"] = json!("gone");
+        std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+        let id = "org.dukovo.ripgrep";
+        assert!(repo.withdraw(id, "14.1.1", "broken", "it crashes", 5).is_err());
+        assert!(repo.withdraw(id, "14.1.1", "malicious", "it steals keys", 5).is_ok());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
