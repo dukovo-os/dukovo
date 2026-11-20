@@ -23,6 +23,7 @@ mod doctor;
 mod elf;
 mod fixture;
 mod frames;
+mod golang;
 mod grub;
 mod grub_theme;
 mod identity;

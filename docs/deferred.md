@@ -254,8 +254,12 @@ machine with AMT, an AMD machine and a laptop; see
 
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
-| The six-part plan for the Go port, and its netpoller: `poll()` now and the kernel event queue with Phase 18, or a kqueue-style queue in Phase 17 | Drafted; waiting for approval | Decision |
+| Go's network poller: the runtime takes no descriptor yet, so every file and socket a Go program uses blocks in its thread, and deadlines on them do not work (ADR 0350) | Built on the kernel's event queue | Phase 17 |
+| Go's `net` on Radix: `net.Interfaces` and `InterfaceAddrs` list nothing (no netlink or routing socket; the C library's `getifaddrs` can give them), so IPv4 multicast by interface does not work either (ADR 0350) | Comes with Go's networking | Phase 17 |
+| cgo, and `go` and `gofmt` in `/system` (ADR 0350) | The runtime first | Phase 17 |
 | fzf, lazygit and duf in the catalog | Written in Go | Phase 17 |
+| Zero-copy file transfers in Go programs (`sendfile`, `splice`, `copy_file_range`): `io.Copy` between files and sockets reads and writes through a buffer (ADR 0350) | The C library has none of them | Need |
+| `go test -fuzz` for Radix: Go's fuzzing shares memory with a mapped file between processes (ADR 0350) | Shared writable mappings of files (see Files and storage) | Need |
 
 ### Phase 18: Linux compatibility and containers
 
@@ -373,6 +377,8 @@ machine asks for them.
 
 | Item | Source |
 | --- | --- |
+| Names relative to a working folder whose path is longer than `PATH_MAX` (4,096 bytes): the C library joins a relative path to the working folder it keeps, as the kernel keeps none, so `mkdir` or `open` of a short name in such a folder fails with `ENAMETOOLONG`, where Linux resolves it from the folder (Go's `TestGetwdDeep`, `userspace/go/skips.txt`) | ADR 0350 |
+| A name with `/` or `/.` after it is taken for the name alone, so `stat`, `open`, `unlink`, `rename` and `link` act on a file, or on a link and not the folder it leads to, where Linux fails with `ENOTDIR`; and `mkdir` of `.`, `./` or a name that ends in `/.` fails with `EINVAL`, where Linux says `EEXIST` (PHP's suite, ADR 0499; Go's `os.Root` tests, which compare a walk through a `Root` with the same call by path, `userspace/go/skips.txt`) | ADRs 0350, 0499 |
 | A name cache for path lookups | storage design note |
 | Shared writable mappings of files other than `/dev/shm`'s, and `msync`, which SQLite's WAL between connections and its memory-mapped I/O need (ADR 0511) | posix design note, ADRs 0110, 0490, 0511, `lab/tests/services/sqlite-skips.txt` |
 | Read-ahead in the background; write clustering; `O_DIRECT` for files | storage design note, ADR 0133 |

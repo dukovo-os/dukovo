@@ -17,6 +17,14 @@
 //!   source and installs it into the sysroot (`out/sysroot`), or, for a
 //!   port of the toolchain, into `out/toolchain`.
 //!
+//! A port that only a release of its own language builds, as Go's compiler
+//! is built by Go, names the oldest release that will do and the release
+//! ob downloads when the host has none (`[bootstrap]`). Its build.sh gets
+//! the tree of one in `$GOROOT_BOOTSTRAP`: the host's, which the
+//! variable of that name points ob at, or the download, which is checked
+//! against the size and SHA-256 the recipe pins and unpacked once into
+//! `target/ports/sources`.
+//!
 //! Sources are fetched once into `target/ports`, with git by commit, as
 //! release archives by checksum (from their home, or from a mirror when
 //! that cannot be reached) and from crates.io by checksum, and checked to
@@ -115,6 +123,32 @@ pub struct Recipe {
     /// (ADR 0370).
     #[serde(default)]
     pub bundle: Option<BundleRecipe>,
+    /// For a port that only a release of its own language builds, as Go's
+    /// compiler is built by Go: the releases that will do, and the one ob
+    /// downloads when the host has none.
+    #[serde(default)]
+    pub bootstrap: Option<Bootstrap>,
+}
+
+/// The toolchain a port builds itself with, which is not the one it
+/// builds: the release of Go that builds Go. ob hands build.sh the tree of
+/// one in `$GOROOT_BOOTSTRAP`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Bootstrap {
+    /// The oldest release that will do, such as `1.24.6`: the host's, which
+    /// `$GOROOT_BOOTSTRAP` names, is refused when older.
+    pub minimum: String,
+    /// The release ob downloads when `$GOROOT_BOOTSTRAP` is not set: the
+    /// zip of Go's toolchain module, which the Go proxy serves.
+    pub url: String,
+    /// The zip's SHA-256, which pins it.
+    pub sha256: String,
+    /// The zip's size in bytes, which a download is refused beyond.
+    pub size: u64,
+    /// The folder of the zip that holds the toolchain's tree, with `bin`
+    /// and `VERSION` in it.
+    pub root: String,
 }
 
 /// What a port that is a catalog bundle says of its bundle; the rest of
@@ -448,6 +482,9 @@ fn check(ctx: &Ctx, recipe: &Recipe, dir: &Path) -> Result<()> {
             "{what}: `{path}` is not a path inside the tree it is taken from"
         )));
     }
+    if let Some(problem) = bootstrap_problem(recipe) {
+        return Err(Error::new(format!("{what}: {problem}")));
+    }
     if !dir.join("build.sh").is_file() {
         return Err(Error::new(format!("{what}: the port has no build.sh")));
     }
@@ -597,6 +634,62 @@ fn word_runs(text: &str) -> Vec<String> {
         digits = kind;
     }
     runs
+}
+
+/// What is wrong with the recipe's `[bootstrap]`, if anything: the oldest
+/// release is a version, the download is an https:// URL of a zip pinned by
+/// its SHA-256 and size, and the tree in the zip is a path inside it.
+fn bootstrap_problem(recipe: &Recipe) -> Option<String> {
+    let bootstrap = recipe.bootstrap.as_ref()?;
+    if dotted_numbers(&bootstrap.minimum).is_none() {
+        return Some(format!(
+            "[bootstrap] minimum `{}` is not numbers set apart by dots, such as 1.24.6",
+            bootstrap.minimum
+        ));
+    }
+    let zip =
+        Path::new(&bootstrap.url).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zip"));
+    if !bootstrap.url.starts_with("https://") || !zip {
+        return Some(format!(
+            "[bootstrap] url `{}` is not an https:// URL of a .zip file",
+            bootstrap.url
+        ));
+    }
+    if !is_hex(&bootstrap.sha256, 64) {
+        return Some(format!("[bootstrap] sha256 `{}` is not a SHA-256", bootstrap.sha256));
+    }
+    if bootstrap.size == 0 {
+        return Some("[bootstrap] size is the zip's size in bytes, not 0".to_string());
+    }
+    if !inside(&bootstrap.root) {
+        return Some(format!("[bootstrap] root `{}` is not a path inside the zip", bootstrap.root));
+    }
+    None
+}
+
+/// The numbers of a version such as `1.24.6`, set apart by dots.
+fn dotted_numbers(text: &str) -> Option<Vec<u64>> {
+    text.split('.')
+        .map(|part| if part.bytes().all(|b| b.is_ascii_digit()) { part.parse().ok() } else { None })
+        .collect()
+}
+
+/// Whether `version`, the first line of a Go tree's VERSION file, such as
+/// `go1.24.7`, is a release of Go that is `minimum`, such as `1.24.6`, or
+/// later; `None` for a version that is no release's, as a tree built from
+/// git has, `devel go1.27-...`. A release candidate or beta, such as
+/// `go1.25rc1`, comes before the release it leads to.
+fn go_release_at_least(version: &str, minimum: &str) -> Option<bool> {
+    let rest = version.split_whitespace().next()?.strip_prefix("go")?;
+    let end = rest.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(rest.len());
+    let (numbers, pre_release) = rest.split_at(end);
+    let mut found = dotted_numbers(numbers)?;
+    let mut wanted = dotted_numbers(minimum)?;
+    // go1.25 is go1.25.0.
+    let len = found.len().max(wanted.len());
+    found.resize(len, 0);
+    wanted.resize(len, 0);
+    Some(if pre_release.is_empty() { found >= wanted } else { found > wanted })
 }
 
 /// The first path `recipe` names that leaves the tree it is taken from:
@@ -1587,6 +1680,172 @@ fn listing(dir: &Path) -> Result<String> {
     Ok(text)
 }
 
+/// The tree of the release of Go that builds the port: the host's, which
+/// `$GOROOT_BOOTSTRAP` names, if it is set, and else the release the recipe
+/// pins, downloaded once.
+fn go_bootstrap(ctx: &Ctx, recipe: &Recipe, bootstrap: &Bootstrap) -> Result<PathBuf> {
+    match std::env::var_os("GOROOT_BOOTSTRAP").filter(|dir| !dir.is_empty()) {
+        Some(dir) => {
+            let dir = PathBuf::from(dir);
+            host_go(recipe, bootstrap, &dir)?;
+            Ok(dir)
+        }
+        None => fetch_bootstrap(ctx, &recipe.name, bootstrap),
+    }
+}
+
+/// Checks that `dir`, which `$GOROOT_BOOTSTRAP` names, is the tree of a
+/// release of Go that is `bootstrap.minimum` or later.
+fn host_go(recipe: &Recipe, bootstrap: &Bootstrap, dir: &Path) -> Result<()> {
+    let hint = format!(
+        "set GOROOT_BOOTSTRAP to the tree of Go {} or later (`go env GOROOT`), or unset it, and \
+         ob downloads the release the recipe pins",
+        bootstrap.minimum
+    );
+    let file = dir.join("VERSION");
+    let text = std::fs::read_to_string(&file).map_err(|err| {
+        Error::new(format!(
+            "GOROOT_BOOTSTRAP is {}, whose VERSION file cannot be read ({err}): it is not the \
+             tree of a Go release",
+            dir.display()
+        ))
+        .hint(hint.clone())
+    })?;
+    let version = text.lines().next().unwrap_or_default();
+    match go_release_at_least(version, &bootstrap.minimum) {
+        Some(true) => {}
+        Some(false) => {
+            return Err(Error::new(format!(
+                "GOROOT_BOOTSTRAP is {version}, and {} {} builds with Go {} or later",
+                recipe.name, recipe.version, bootstrap.minimum
+            ))
+            .hint(hint));
+        }
+        None => {
+            return Err(Error::new(format!(
+                "{} says `{version}`, which is no release of Go",
+                file.display()
+            ))
+            .hint(hint));
+        }
+    }
+    if !dir.join("bin/go").is_file() {
+        return Err(Error::new(format!(
+            "GOROOT_BOOTSTRAP is {}, which has no bin/go",
+            dir.display()
+        ))
+        .hint(hint));
+    }
+    Ok(())
+}
+
+/// Fetches the release of Go that `bootstrap` pins into
+/// `target/ports/sources`, once, checks its size and SHA-256, and unpacks
+/// it there. Returns where it is.
+fn fetch_bootstrap(ctx: &Ctx, name: &str, bootstrap: &Bootstrap) -> Result<PathBuf> {
+    let sources = ctx.target.join("ports/sources");
+    let base = format!("{name}-bootstrap-{}", &bootstrap.sha256[..12]);
+    // As a release archive is: the files unpacked are noted beside it.
+    let dir = sources.join(&base);
+    let files = sources.join(format!("{base}.files"));
+    if dir.is_dir() {
+        if std::fs::read_to_string(&files).ok() == Some(listing(&dir)?) {
+            return Ok(dir);
+        }
+        step(&format!("{} is not the tree ob unpacked; fetching it again", dir.display()));
+    }
+    process::create_dir(&sources)?;
+    let file = sources.join(format!("{base}.download"));
+    step(&format!("Fetching the Go release {name} is built with, from {}", bootstrap.url));
+    let mut cmd = Command::new("curl");
+    cmd.args(["--proto", "=https", "--tlsv1.2", "-fsSL", "--retry", "3", "--max-filesize"])
+        .arg(bootstrap.size.to_string())
+        .arg("-o")
+        .arg(&file)
+        .arg(&bootstrap.url);
+    process::run(ctx, &mut cmd).map_err(|err| {
+        err.hint(format!(
+            "set GOROOT_BOOTSTRAP to the tree of Go {} or later to build without the download",
+            bootstrap.minimum
+        ))
+    })?;
+    let unpacked = unpack_bootstrap(ctx, bootstrap, &file, &sources.join(&base));
+    let _ = std::fs::remove_file(&file);
+    let dir = unpacked?;
+    write_file(&files, &listing(&dir)?)?;
+    Ok(dir)
+}
+
+/// Unpacks `file`, the zip downloaded from `bootstrap.url`, to `dir`, if it
+/// is the size and SHA-256 the recipe pins: the tree of the release,
+/// which the zip holds in a folder of its own, with its programs
+/// executable.
+fn unpack_bootstrap(ctx: &Ctx, bootstrap: &Bootstrap, file: &Path, dir: &Path) -> Result<PathBuf> {
+    let size = std::fs::metadata(file).context(|| format!("reading {}", file.display()))?.len();
+    if size != bootstrap.size {
+        return Err(Error::new(format!(
+            "{} is {size} bytes, not the {} the recipe pins; not using it",
+            bootstrap.url, bootstrap.size
+        )));
+    }
+    let sum = process::sha256(ctx, file)?;
+    if sum != bootstrap.sha256 {
+        return Err(Error::new(format!(
+            "{} has SHA-256 {sum}, not the {} the recipe pins; not using it",
+            bootstrap.url, bootstrap.sha256
+        )));
+    }
+    // Unpacked beside its final place, then moved there: a directory there
+    // is a whole tree.
+    let partial = dir.with_extension("partial");
+    for old in [dir, &partial] {
+        if old.exists() {
+            std::fs::remove_dir_all(old).context(|| format!("removing {}", old.display()))?;
+        }
+    }
+    process::create_dir(&partial)?;
+    // Python's zipfile writes no path outside the folder it is given.
+    let mut cmd = Command::new("python3");
+    cmd.args(["-I", "-m", "zipfile", "-e"]).arg(file).arg(&partial);
+    process::run(ctx, &mut cmd)?;
+    let tree = partial.join(&bootstrap.root);
+    if !tree.join("bin/go").is_file() || !tree.join("VERSION").is_file() {
+        return Err(Error::new(format!(
+            "{} holds no {}/bin/go and VERSION",
+            bootstrap.url, bootstrap.root
+        )));
+    }
+    make_programs_executable(&tree)?;
+    std::fs::rename(&tree, dir).context(|| format!("moving it to {}", dir.display()))?;
+    std::fs::remove_dir_all(&partial).context(|| format!("removing {}", partial.display()))?;
+    Ok(dir.to_path_buf())
+}
+
+/// Makes the files of a Go tree's `bin` and `pkg/tool/*` executable, as the
+/// go command does when it unpacks the zip of a toolchain: a zip keeps no
+/// modes.
+fn make_programs_executable(tree: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let tool = tree.join("pkg/tool");
+    let mut dirs = vec![tree.join("bin")];
+    for entry in std::fs::read_dir(&tool).context(|| format!("reading {}", tool.display()))? {
+        let path = entry.context(|| format!("reading {}", tool.display()))?.path();
+        if path.is_dir() {
+            dirs.push(path);
+        }
+    }
+    for dir in dirs {
+        for entry in std::fs::read_dir(&dir).context(|| format!("reading {}", dir.display()))? {
+            let path = entry.context(|| format!("reading {}", dir.display()))?.path();
+            if path.is_file() {
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                    .context(|| format!("making {} executable", path.display()))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Fetches a crate from crates.io into `target/ports/sources/crates`,
 /// once, checks its SHA-256, and unpacks it there. Returns where it is
 /// unpacked: with a `.cargo-checksum.json` that gives its checksum, as
@@ -1725,6 +1984,9 @@ fn build(ctx: &Ctx, toolchain: &Toolchain, port: &Port) -> Result<()> {
     let mut paths = vec![toolchain.bin()];
     paths.extend(std::env::split_paths(&path));
     let mut cmd = Command::new("sh");
+    if let Some(bootstrap) = &recipe.bootstrap {
+        cmd.env("GOROOT_BOOTSTRAP", go_bootstrap(ctx, recipe, bootstrap)?);
+    }
     cmd.arg(dir.join("build.sh"))
         .current_dir(&work)
         .env(
@@ -2261,5 +2523,277 @@ mod tests {
         let cut = listing(&dir);
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(cut.unwrap(), "0 README\n6 readme\n");
+    }
+
+    /// A recipe for Go 1.27.4 with `bootstrap` for its `[bootstrap]` table.
+    fn go_recipe(bootstrap: &str) -> Recipe {
+        let text = format!(
+            "name = \"go\"\nversion = \"1.27.4\"\nsummary = \"Go\"\nlicense = \"BSD-3-Clause\"\n\
+             homepage = \"https://go.dev\"\ntoolchain = true\n[source]\n\
+             git = \"https://github.com/golang/go.git\"\n\
+             commit = \"7b2881024c95a11ddb86663a616340aa3a88b67f\"\n[bootstrap]\n{bootstrap}\n"
+        );
+        toml::from_str(&text).unwrap()
+    }
+
+    const GO_BOOTSTRAP: &str = "minimum = \"1.24.6\"\n\
+        url = \"https://proxy.golang.org/golang.org/toolchain/@v/v0.0.1-go1.27.4.linux-amd64.zip\"\n\
+        sha256 = \"7ecd542f86ccbbb5017de33ac529872bc48c71f4edb658d63a18d2206f482b9b\"\n\
+        size = 75846323\n\
+        root = \"golang.org/toolchain@v0.0.1-go1.27.4.linux-amd64\"";
+
+    #[test]
+    fn a_bootstrap_is_a_pinned_download_and_the_oldest_release_that_will_do() {
+        let recipe = go_recipe(GO_BOOTSTRAP);
+        assert_eq!(bootstrap_problem(&recipe), None);
+        let bootstrap = recipe.bootstrap.unwrap();
+        assert_eq!(bootstrap.minimum, "1.24.6");
+        assert_eq!(bootstrap.size, 75_846_323);
+        // A recipe without one has none; a key the table does not have is
+        // a mistake.
+        assert!(bootstrap_problem(&curl_recipe(CURL_UPSTREAM)).is_none());
+        assert!(
+            toml::from_str::<Recipe>(&format!(
+                "name = \"x\"\nversion = \"1\"\nsummary = \"x\"\nlicense = \"MIT\"\n\
+             homepage = \"https://x\"\n[bootstrap]\n{GO_BOOTSTRAP}\nmirror = \"https://y\"\n"
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn the_check_refuses_each_wrong_shape_of_bootstrap() {
+        let sha = "7ecd542f86ccbbb5017de33ac529872bc48c71f4edb658d63a18d2206f482b9b";
+        for (from, to, expected) in [
+            ("minimum = \"1.24.6\"", "minimum = \"1.24.x\"", "not numbers set apart by dots"),
+            ("minimum = \"1.24.6\"", "minimum = \"go1.24.6\"", "not numbers set apart by dots"),
+            ("minimum = \"1.24.6\"", "minimum = \"\"", "not numbers set apart by dots"),
+            ("minimum = \"1.24.6\"", "minimum = \"1..6\"", "not numbers set apart by dots"),
+            ("https://proxy", "http://proxy", "not an https:// URL of a .zip file"),
+            (".zip\"", ".tar.gz\"", "not an https:// URL of a .zip file"),
+            (sha, &sha[..63], "not a SHA-256"),
+            (sha, &sha.replace('7', "g"), "not a SHA-256"),
+            ("size = 75846323", "size = 0", "not 0"),
+            ("root = \"golang.org", "root = \"/golang.org", "not a path inside the zip"),
+            ("root = \"golang.org", "root = \"../golang.org", "not a path inside the zip"),
+            ("amd64\"\n", "amd64/\"\n", "not a path inside the zip"),
+        ] {
+            let text = format!("{GO_BOOTSTRAP}\n");
+            assert!(text.contains(from), "{from}");
+            let problem = bootstrap_problem(&go_recipe(&text.replacen(from, to, 1)))
+                .unwrap_or_else(|| panic!("`{to}` was not refused"));
+            assert!(problem.contains(expected), "`{to}` gave `{problem}`, not `{expected}`");
+        }
+    }
+
+    #[test]
+    fn a_go_release_is_compared_with_the_oldest_that_will_do() {
+        for (version, minimum, at_least) in [
+            ("go1.24.6", "1.24.6", true),
+            ("go1.24.7", "1.24.6", true),
+            ("go1.27.4", "1.24.6", true),
+            ("go1.25", "1.24.6", true),
+            ("go1.30.0", "1.24.6", true),
+            ("go2.0", "1.24.6", true),
+            ("go1.24.5", "1.24.6", false),
+            ("go1.24", "1.24.6", false),
+            ("go1.22.12", "1.24.6", false),
+            ("go1.9.9", "1.24.6", false),
+            // go1.25 is go1.25.0.
+            ("go1.25", "1.25.0", true),
+            ("go1.25.0", "1.25", true),
+            // A candidate comes before its release, and after the last
+            // release of the series before it.
+            ("go1.25rc1", "1.25", false),
+            ("go1.25rc1", "1.24.6", true),
+            ("go1.25beta2", "1.25.0", false),
+            // What a VERSION file's first line may carry after the release.
+            ("go1.24.7 X:nocoverageredesign", "1.24.6", true),
+            ("go1.24.6 X:nocoverageredesign", "1.24.6", true),
+        ] {
+            assert_eq!(
+                go_release_at_least(version, minimum),
+                Some(at_least),
+                "{version} against {minimum}"
+            );
+        }
+        for version in ["", "devel go1.27-abc123", "1.24.7", "go", "gox", "go.1", "go1..2", "go-1"]
+        {
+            assert_eq!(go_release_at_least(version, "1.24.6"), None, "`{version}`");
+        }
+    }
+
+    /// A folder under the temporary folder, empty.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ob-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_hosts_go_is_taken_when_it_is_a_release_that_will_do() {
+        let recipe = go_recipe(GO_BOOTSTRAP);
+        let bootstrap = recipe.bootstrap.as_ref().unwrap();
+        let host = scratch("host-go");
+        let refused = |dir: &Path| host_go(&recipe, bootstrap, dir).unwrap_err().to_string();
+        // Nothing there; a tree with no VERSION.
+        assert!(refused(&host).contains("whose VERSION file cannot be read"));
+        std::fs::create_dir_all(host.join("bin")).unwrap();
+        std::fs::write(host.join("bin/go"), "").unwrap();
+        assert!(refused(&host).contains("whose VERSION file cannot be read"));
+        // Too old, not a release, and a release that will do.
+        std::fs::write(host.join("VERSION"), "go1.22.1\ntime 2024-03-05T00:00:00Z\n").unwrap();
+        let old = refused(&host);
+        assert!(old.contains("is go1.22.1, and go 1.27.4 builds with Go 1.24.6 or later"), "{old}");
+        std::fs::write(host.join("VERSION"), "devel go1.27-abc\n").unwrap();
+        assert!(refused(&host).contains("is no release of Go"));
+        std::fs::write(host.join("VERSION"), "go1.24.7\ntime 2025-08-27T15:49:40Z\n").unwrap();
+        host_go(&recipe, bootstrap, &host).unwrap();
+        // A release with no go command in it.
+        std::fs::remove_file(host.join("bin/go")).unwrap();
+        assert!(refused(&host).contains("has no bin/go"));
+        std::fs::remove_dir_all(&host).unwrap();
+    }
+
+    /// A zip as Go's toolchain module has, small: `root` holds a tree with
+    /// a VERSION file, programs in `bin` and `pkg/tool/linux_amd64`, and a
+    /// source file; its modes are those of a file made here, not
+    /// executable. Returns its path, and a [`Bootstrap`] that pins it.
+    fn fake_toolchain_zip(dir: &Path, root: &str) -> (PathBuf, Bootstrap) {
+        let tree = dir.join("tree").join(root);
+        for (file, text) in [
+            ("VERSION", "go1.99.0\n"),
+            ("bin/go", "#!/bin/sh\n"),
+            ("bin/gofmt", "#!/bin/sh\n"),
+            ("pkg/tool/linux_amd64/compile", "compile"),
+            ("pkg/tool/linux_amd64/link", "link"),
+            ("src/fmt/print.go", "package fmt\n"),
+        ] {
+            std::fs::create_dir_all(tree.join(file).parent().unwrap()).unwrap();
+            std::fs::write(tree.join(file), text).unwrap();
+        }
+        let zip = dir.join("toolchain.zip");
+        let top = root.split('/').next().unwrap();
+        let made = Command::new("python3")
+            .args(["-I", "-m", "zipfile", "-c"])
+            .arg(&zip)
+            .arg(top)
+            .current_dir(dir.join("tree"))
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let ctx = test_ctx(dir);
+        let bootstrap = Bootstrap {
+            minimum: "1.24.6".into(),
+            url: "https://example.org/toolchain.zip".into(),
+            sha256: process::sha256(&ctx, &zip).unwrap(),
+            size: std::fs::metadata(&zip).unwrap().len(),
+            root: root.into(),
+        };
+        (zip, bootstrap)
+    }
+
+    fn test_ctx(root: &Path) -> Ctx {
+        Ctx {
+            out: root.join("out"),
+            target: root.join("target"),
+            root: root.to_path_buf(),
+            config: crate::config::Config::default(),
+            verbose: false,
+        }
+    }
+
+    #[test]
+    fn a_toolchain_zip_is_unpacked_with_its_programs_executable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("go-zip");
+        let root = "golang.org/toolchain@v0.0.1-go1.99.0.linux-amd64";
+        let (zip, bootstrap) = fake_toolchain_zip(&dir, root);
+        let ctx = test_ctx(&dir);
+        let into = dir.join("sources/go-bootstrap-abc");
+        let tree = unpack_bootstrap(&ctx, &bootstrap, &zip, &into).unwrap();
+        assert_eq!(tree, into);
+        assert_eq!(std::fs::read_to_string(tree.join("VERSION")).unwrap(), "go1.99.0\n");
+        let executable =
+            |file: &str| tree.join(file).metadata().unwrap().permissions().mode() & 0o777;
+        for program in
+            ["bin/go", "bin/gofmt", "pkg/tool/linux_amd64/compile", "pkg/tool/linux_amd64/link"]
+        {
+            assert_eq!(executable(program), 0o755, "{program}");
+        }
+        // What is not a program is not made one, and nothing is left of the
+        // unpacking beside the tree.
+        assert_eq!(executable("src/fmt/print.go") & 0o111, 0);
+        assert_eq!(executable("VERSION") & 0o111, 0);
+        assert!(!dir.join("sources/go-bootstrap-abc.partial").exists());
+        // Unpacked again over the old tree, it is the same.
+        std::fs::write(tree.join("stray"), "").unwrap();
+        let again = unpack_bootstrap(&ctx, &bootstrap, &zip, &into).unwrap();
+        assert!(!again.join("stray").exists());
+        assert_eq!(listing(&again).unwrap(), listing(&tree).unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_toolchain_zip_of_another_size_or_hash_or_layout_is_refused() {
+        let dir = scratch("go-zip-refused");
+        let root = "golang.org/toolchain@v0.0.1-go1.99.0.linux-amd64";
+        let (zip, bootstrap) = fake_toolchain_zip(&dir, root);
+        let ctx = test_ctx(&dir);
+        let into = dir.join("sources/go-bootstrap-abc");
+        let refused = |pinned: &Bootstrap| {
+            let err = unpack_bootstrap(&ctx, pinned, &zip, &into).unwrap_err().to_string();
+            assert!(!into.exists(), "{err}: a tree was left");
+            err
+        };
+        let size = Bootstrap { size: bootstrap.size + 1, ..clone_of(&bootstrap) };
+        let err = refused(&size);
+        assert!(
+            err.contains(&format!("is {} bytes, not the {}", bootstrap.size, size.size)),
+            "{err}"
+        );
+        let hash = Bootstrap { sha256: "ab".repeat(32), ..clone_of(&bootstrap) };
+        let err = refused(&hash);
+        assert!(err.contains("has SHA-256 ") && err.contains(&"ab".repeat(32)), "{err}");
+        assert!(err.contains("the recipe pins; not using it"), "{err}");
+        // The zip is what the recipe pins, but holds no tree where it says.
+        let elsewhere =
+            Bootstrap { root: "golang.org/toolchain@other".into(), ..clone_of(&bootstrap) };
+        let err = refused(&elsewhere);
+        assert!(err.contains("holds no golang.org/toolchain@other/bin/go and VERSION"), "{err}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn clone_of(bootstrap: &Bootstrap) -> Bootstrap {
+        Bootstrap {
+            minimum: bootstrap.minimum.clone(),
+            url: bootstrap.url.clone(),
+            sha256: bootstrap.sha256.clone(),
+            size: bootstrap.size,
+            root: bootstrap.root.clone(),
+        }
+    }
+
+    #[test]
+    fn an_unpacked_toolchain_is_not_fetched_again() {
+        let dir = scratch("go-zip-cached");
+        let ctx = test_ctx(&dir);
+        let recipe = go_recipe(GO_BOOTSTRAP);
+        let bootstrap = recipe.bootstrap.unwrap();
+        // As fetch_bootstrap leaves it: the tree, and the files it holds
+        // noted beside it. No download is attempted for it: this test has
+        // no network, and a download would fail it.
+        let sources = ctx.target.join("ports/sources");
+        let tree = sources.join(format!("go-bootstrap-{}", &bootstrap.sha256[..12]));
+        std::fs::create_dir_all(tree.join("bin")).unwrap();
+        std::fs::write(tree.join("bin/go"), "go").unwrap();
+        write_file(
+            &sources.join(format!("go-bootstrap-{}.files", &bootstrap.sha256[..12])),
+            &listing(&tree).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(fetch_bootstrap(&ctx, "go", &bootstrap).unwrap(), tree);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The Go toolchain (phase 17): Go's compiler, linker and standard library,
+# patched for GOOS=radix, built from the pinned release's source by its own
+# make.bash into out/toolchain/go, which ob builds programs in Go with
+# (golang.rs) and builds the Go test programs of the boot tests with. It
+# runs on the build machine and never reaches an image. Go's internal
+# linker needs no C library to link, so the port needs no other.
+#
+# Only a release of Go builds Go. The host's, which $GOROOT_BOOTSTRAP
+# names, is used if it is the minimum or later; failing that, ob downloads
+# Go's own toolchain module, checks its size and SHA-256 and unpacks it
+# once into target/ports/sources. The pins are sum.golang.org's for
+# golang.org/toolchain@v0.0.1-go1.27.4.linux-amd64:
+# h1:8Tl0rBb7KdISSdPkZBjlpZxsUBb+004GI/SM2XbmSqI=
+name = "go"
+version = "1.27.4"
+summary = "the Go toolchain, for programs in Go"
+license = "BSD-3-Clause"
+homepage = "https://go.dev"
+toolchain = true
+# The patches are for this release's runtime: only its patch releases are
+# newer ones.
+series = "1.27"
+
+[source]
+git = "https://github.com/golang/go.git"
+commit = "7b2881024c95a11ddb86663a616340aa3a88b67f"
+tag = "go1.27.4"
+
+[bootstrap]
+minimum = "1.24.6"
+url = "https://proxy.golang.org/golang.org/toolchain/@v/v0.0.1-go1.27.4.linux-amd64.zip"
+sha256 = "7ecd542f86ccbbb5017de33ac529872bc48c71f4edb658d63a18d2206f482b9b"
+size = 75846323
+root = "golang.org/toolchain@v0.0.1-go1.27.4.linux-amd64"

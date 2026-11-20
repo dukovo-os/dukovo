@@ -95,6 +95,7 @@ fuse 19
 fuzz 27
 git-https 15
 git-keyring 127
+go-runtime 420
 gpio 11
 hardware-check 150
 help-session 160

@@ -535,6 +535,13 @@ const UPDATE_FULL: u8 = 38;
 /// ([`cases::admin_websites::make_disk`]).
 const WEBSITES_FILES: u8 = 39;
 
+/// [`Disk::fat`] for a FAT32 disk that holds the programs of the
+/// `go-runtime` test, which `ob` builds with the Go toolchain of the go
+/// port: the Go test program, the test binaries of packages of Go's
+/// standard library with their test data, and the scripts that run them
+/// ([`cases::go_runtime::make_disk`]).
+const GO_FILES: u8 = 40;
+
 /// One of the boot tests' updates of an installed system (ADR 0451): this
 /// build's slot, under a version after this one's that updates from it,
 /// with kernel flags of its own, or a command broken.
@@ -1251,6 +1258,13 @@ const fn fat_disk(kib: u64, fat: u8, label: &'static str, table: Table, bus: Bus
 /// `/volumes/<disk>`.
 const fn bundle_files_disk(kib: u64, label: &'static str) -> Disk {
     Disk { fat: BUNDLE_FILES, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
+}
+
+/// A FAT32 virtio disk of `kib` KiB, labelled `label`, holding the Go
+/// programs of the `go-runtime` test ([`GO_FILES`]), which Spark mounts at
+/// `/volumes/<disk>`.
+const fn go_files_disk(kib: u64, label: &'static str) -> Disk {
+    Disk { fat: GO_FILES, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
 }
 
 /// A FAT32 virtio disk of `kib` KiB, labelled `label`, holding the test
@@ -5552,6 +5566,11 @@ fn make_disks(
         }
         if disk.fat == WEBSITES_FILES {
             cases::admin_websites::make_disk(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == GO_FILES {
+            cases::go_runtime::make_disk(ctx, disk, &image.path)?;
             made.push(image);
             continue;
         }

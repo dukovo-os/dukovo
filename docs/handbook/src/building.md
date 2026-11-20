@@ -93,6 +93,15 @@ udftools, UDFclient and genisoimage make and fill the UDF volumes Radix's
 UDF tests read. Fedora and Arch Linux have no UDFclient package: build it
 from <https://www.13thmonkey.org/udfclient/>, or test in the container.
 
+The Go toolchain, which builds programs in Go for Radix, is built from
+source by `./ob ports` (the `go` port), and only a release of Go builds Go.
+`ob` downloads Go's own toolchain module for the release the port pins (about
+75 MB), checks its size and SHA-256, and unpacks it once into
+`target/ports/sources/`. To build without the download, set
+`GOROOT_BOOTSTRAP` to the tree of a Go 1.24.6 or later that you have, such
+as a distribution's `golang` package (`go env GOROOT` prints it): `ob` checks
+its version and uses it.
+
 Debian 12 and Ubuntu 22.04 (Linux Mint 21) have no `rustup` package and
 no Clang 20: install rustup from <https://rustup.rs> and Clang 20 from
 LLVM's packages at <https://apt.llvm.org>, or build in the container.
