@@ -14,6 +14,8 @@ publish.workspace = true
 # The libc crate with its Radix module, which ob patches in from the
 # rust-std port (ADR 0070).
 libc = "0.2.189"
+# mio with its poll(2) selector, as tokio uses it on Radix (ADR 0070).
+mio = { version = "1.2.4", features = ["os-poll", "os-ext"] }
 
 [lints]
 workspace = true

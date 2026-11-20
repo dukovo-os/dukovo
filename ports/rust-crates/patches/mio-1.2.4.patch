@@ -6,6 +6,16 @@ mio waits with poll(2) on Radix and wakes a poll through a pipe, as on
 the Hurd: Radix has no epoll or kqueue. Its socket addresses are Linux's,
 without the Hurd's length fields.
 
+poll(2)'s selector takes a descriptor that hung up out of the poll, as it
+must, or poll would report it again and again; its deregistration then
+found it gone and failed, and tokio keeps the I/O resource of a source
+whose deregistration fails (tokio's runtime/io/driver.rs), so every pipe
+or socket that hung up while registered was kept for as long as the
+program ran: a command's output and errors in each run of admind's
+worker. The selector now remembers a descriptor that hung up until it is
+deregistered, which then succeeds, or until its number is registered
+again.
+
 diff --git a/mio-1.2.4/src/poll.rs b/mio-1.2.4/src/poll.rs
 index 7dc0237..50abc77 100644
 --- a/mio-1.2.4/src/poll.rs
@@ -114,3 +124,84 @@ index 5b9f078..71f8829 100644
          target_os = "illumos",
          target_os = "linux",
          target_os = "netbsd",
+diff --git a/mio-1.2.4/src/sys/unix/selector/poll.rs b/mio-1.2.4/src/sys/unix/selector/poll.rs
+--- a/mio-1.2.4/src/sys/unix/selector/poll.rs
++++ b/mio-1.2.4/src/sys/unix/selector/poll.rs
+@@ -134,6 +134,10 @@
+     /// The map of each file descriptor to data associated with it. This does not include the file
+     /// descriptors created by the internal notify waker.
+     fd_data: HashMap<RawFd, FdData>,
++    /// The file descriptors that hung up and so were taken out of the
++    /// poll, until their deregistration, which then finds them gone and
++    /// succeeds: tokio keeps an I/O resource whose deregistration fails.
++    hung_up: Vec<RawFd>,
+ }
+ 
+ /// Transparent wrapper around `libc::pollfd`, used to support `Debug` derives without adding the
+@@ -180,6 +184,7 @@
+                     Vec::new()
+                 },
+                 fd_data: HashMap::new(),
++                hung_up: Vec::new(),
+             }),
+             pending_removal: Mutex::new(Vec::new()),
+             pending_wake_token: Mutex::new(None),
+@@ -308,7 +313,7 @@
+         }
+ 
+         drop(fds);
+-        let _ = self.deregister_all(&closed_raw_fds);
++        let _ = self.remove_all(&closed_raw_fds, true);
+ 
+         Ok(())
+     }
+@@ -347,6 +352,11 @@
+         drop(pending_removal);
+ 
+         self.modify_fds(|fds| {
++            // A descriptor of the same number as one that hung up and was
++            // closed without deregistration is a new one.
++            if let Some(idx) = fds.hung_up.iter().position(|&hung| hung == fd) {
++                fds.hung_up.swap_remove(idx);
++            }
+             if fds.fd_data.contains_key(&fd) {
+                 return Err(io::Error::new(
+                     io::ErrorKind::AlreadyExists,
+@@ -422,6 +432,12 @@
+     /// at once.  Ok result if all removals were performed, Err if any entries
+     /// were not found.
+     fn deregister_all(&self, targets: &[RawFd]) -> Result<(), ()> {
++        self.remove_all(targets, false)
++    }
++
++    /// Takes `targets` out of the poll: deregistered, or, with `hung_up`,
++    /// because they hung up, so that their deregistration later succeeds.
++    fn remove_all(&self, targets: &[RawFd], hung_up: bool) -> Result<(), ()> {
+         if targets.is_empty() {
+             return Ok(());
+         }
+@@ -436,6 +452,9 @@
+             for target in targets {
+                 match fds.fd_data.remove(target).ok_or(()) {
+                     Ok(data) => {
++                        if hung_up {
++                            fds.hung_up.push(*target);
++                        }
+                         data.shared_record.mark_unregistered();
+                         fds.poll_fds.swap_remove(data.poll_fds_index);
+                         if let Some(swapped_pollfd) = fds.poll_fds.get(data.poll_fds_index) {
+@@ -445,7 +464,13 @@
+                                 .poll_fds_index = data.poll_fds_index;
+                         }
+                     }
+-                    Err(_) => all_successful = false,
++                    // A descriptor that hung up is already out.
++                    Err(_) => match fds.hung_up.iter().position(|hung| hung == target) {
++                        Some(idx) if !hung_up => {
++                            fds.hung_up.swap_remove(idx);
++                        }
++                        _ => all_successful = false,
++                    },
+                 }
+             }
+ 

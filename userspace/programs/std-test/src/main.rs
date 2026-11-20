@@ -85,6 +85,7 @@ fn main() {
     run("processes", processes);
     run("pipes", pipes);
     run("sockets", sockets);
+    run("polling", polling);
     run("panics", panics);
     run("backtraces", backtraces);
     run("memory", memory);
@@ -562,6 +563,46 @@ fn pipes() -> Outcome {
     let (reader, mut writer) = io::pipe()?;
     drop(reader);
     check!(writer.write_all(b"x").err().map(|e| e.kind()) == Some(io::ErrorKind::BrokenPipe));
+    Ok(())
+}
+
+/// mio's poll(2) selector, which tokio waits with: a pipe whose writer has
+/// gone is told as closed, and is deregistered as any other source is,
+/// although the selector took it out of the poll when it hung up: tokio
+/// keeps the I/O resource of a source whose deregistration fails, and a
+/// worker of admind's kept two for every command it ran. Its number may
+/// be registered again.
+fn polling() -> Outcome {
+    use mio::unix::pipe;
+    use mio::{Events, Interest, Poll, Token};
+    let mut poll = Poll::new()?;
+    let mut events = Events::with_capacity(8);
+    for round in 0..3 {
+        let (sender, mut receiver) = pipe::new()?;
+        poll.registry().register(&mut receiver, Token(round), Interest::READABLE)?;
+        drop(sender);
+        let until = Instant::now() + Duration::from_secs(10);
+        let mut closed = false;
+        while !closed && Instant::now() < until {
+            poll.poll(&mut events, Some(Duration::from_secs(1)))?;
+            closed =
+                events.iter().any(|event| event.token() == Token(round) && event.is_read_closed());
+        }
+        check!(closed);
+        check!(poll.registry().deregister(&mut receiver).is_ok());
+        // Gone now: a second deregistration is refused, as on Linux.
+        check!(poll.registry().deregister(&mut receiver).is_err());
+    }
+    // One that hung up and is closed without deregistration leaves its
+    // number free for a new source.
+    let (sender, mut receiver) = pipe::new()?;
+    poll.registry().register(&mut receiver, Token(9), Interest::READABLE)?;
+    drop(sender);
+    poll.poll(&mut events, Some(Duration::from_secs(10)))?;
+    drop(receiver);
+    let (_sender, mut again) = pipe::new()?;
+    check!(poll.registry().register(&mut again, Token(10), Interest::READABLE).is_ok());
+    check!(poll.registry().deregister(&mut again).is_ok());
     Ok(())
 }
 
