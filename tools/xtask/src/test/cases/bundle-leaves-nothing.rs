@@ -228,7 +228,7 @@ fn leaves_nothing(vm: &mut Vm, case: &Case) -> Result<(), String> {
     answer_prompt(
         vm,
         "$",
-        "clear; bundle remove --keep-data io.github.burntsushi.ripgrep | tail -1; elevate bundle \
+        "clear; bundle remove --keep-data io.github.burntsushi.ripgrep | head -1; elevate bundle \
          remove --for-everyone --keep-data org.example.beacon | tr ';' '\\n'; id beacon; echo \
          \"removed $?\"",
     )?;
