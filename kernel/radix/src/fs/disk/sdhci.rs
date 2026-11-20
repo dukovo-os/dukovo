@@ -380,6 +380,11 @@ pub struct SdSlot {
     /// The slot's place, for the log: the controller's address and the
     /// slot's number.
     place: TextBuf<40>,
+    /// EXPERIMENT: when the request in flight started, its bytes past
+    /// its first five descriptors, and picoseconds a byte learnt.
+    submitted_ns: u64,
+    later: u64,
+    rate_ps: u64,
 }
 
 impl SdSlot {
@@ -481,6 +486,8 @@ impl Controller for SdSlot {
             _ => Error::Io,
         })?;
         self.flight = Some(Flight { slot, bounced_read, op, block, count, again: false });
+        self.later = self.descriptors.iter().skip(5).map(|&(_, len)| u64::from(len)).sum();
+        self.submitted_ns = sched::now_ns();
         Ok(())
     }
 
@@ -510,6 +517,12 @@ impl Controller for SdSlot {
         self.flight = None;
         match result {
             Ok(()) => {
+                if self.later > 0 && !flight.again {
+                    let took = sched::now_ns().saturating_sub(self.submitted_ns);
+                    let sample = took.saturating_mul(1000) / self.later;
+                    self.rate_ps =
+                        if self.rate_ps == 0 { sample } else { (self.rate_ps * 7 + sample) / 8 };
+                }
                 if flight.bounced_read {
                     self.copy_back();
                 }
@@ -524,6 +537,13 @@ impl Controller for SdSlot {
 
     fn why(&self, slot: u8) -> Option<&'static str> {
         self.why.filter(|&(failed, _)| failed == slot).map(|(_, why)| why)
+    }
+
+    fn ready_ns(&self) -> u64 {
+        if self.flight.is_none() || self.later == 0 || self.rate_ps == 0 {
+            return 0;
+        }
+        self.submitted_ns + self.later * self.rate_ps / 1000 * 9 / 10
     }
 
     fn reset(lanes: &mut [Part<SdSlot>]) -> bool {
@@ -1098,6 +1118,9 @@ fn new_slot(
         copy,
         why: None,
         place,
+        submitted_ns: 0,
+        later: 0,
+        rate_ps: 0,
     };
     queue::part(controller).ok_or("out of memory")
 }

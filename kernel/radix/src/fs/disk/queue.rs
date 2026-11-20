@@ -244,6 +244,11 @@ pub trait Controller: Send + Sized {
     /// The next finished request: its slot and how it ended.
     fn complete(&mut self) -> Option<(u8, Outcome)>;
 
+    /// EXPERIMENT: when the request in flight is likely done; 0: look now.
+    fn ready_ns(&self) -> u64 {
+        0
+    }
+
     /// What the device said of the request in `slot`, which failed or
     /// was handed back, for the log: an NVMe status.
     fn why(&self, _slot: u8) -> Option<&'static str> {
@@ -645,6 +650,14 @@ impl<C: Controller> Disk<C> {
             wait::wait_until_or_timeout(key, "disk", deadline_ns, woken);
         } else {
             while !woken() && sched::now_ns() < deadline_ns {
+                let ready = {
+                    let queue = self.lanes[lane].queue.lock_irq();
+                    queue.as_ref().map_or(0, |controller| controller.ready_ns())
+                };
+                if ready.min(deadline_ns) > sched::now_ns() {
+                    sched::block_until(ready.min(deadline_ns), "disk");
+                    continue;
+                }
                 self.collect(lane);
                 if !woken() {
                     sched::yield_now();
