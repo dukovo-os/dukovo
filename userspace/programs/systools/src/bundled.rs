@@ -3162,6 +3162,8 @@ struct Pending {
     /// Its catalog, or none for its own feed (ADR 0390).
     catalog: Option<String>,
     newest: String,
+    /// Why the catalog says the newer version was built again, if it did.
+    rebuild_reason: Option<String>,
     held: bool,
     /// Why it waits for this machine's wave, in the lines to say, or none
     /// when it is taken now (ADR 0544).
@@ -3692,7 +3694,15 @@ fn find_updates(
             None
         };
         let catalog = Some(catalog);
-        pending.push(Pending { installed, catalog, newest: entry.version, held, waits, file });
+        pending.push(Pending {
+            installed,
+            catalog,
+            newest: entry.version,
+            rebuild_reason: entry.rebuild_reason,
+            held,
+            waits,
+            file,
+        });
     }
     Ok((pending, notes, current))
 }
@@ -3753,6 +3763,7 @@ fn from_feed(
         installed: installed.clone(),
         catalog: None,
         newest: entry.version,
+        rebuild_reason: entry.rebuild_reason,
         held,
         waits: None,
         file,
@@ -3815,6 +3826,7 @@ fn update(
                 catalog: p.catalog.clone(),
                 held: p.held,
                 held_reason,
+                rebuild_reason: p.rebuild_reason.clone(),
             };
             connection.send(&Answer::Available(available)).map_err(|e| format!("{e}"))?;
         }
@@ -5041,6 +5053,7 @@ mod tests {
             name: "nginx".into(),
             owner: false,
             withdrawn: None,
+            rebuild_reason: None,
         };
         let said = |wanted: Option<&str>| another_file("dukovo", &entry.id, &entry, wanted);
         // None named, the same in either case: it goes on.

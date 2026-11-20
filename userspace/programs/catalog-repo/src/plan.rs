@@ -114,8 +114,10 @@ impl Repo {
     /// targets version it follows and the one it makes, with the expiry
     /// signing now would give over `days`; the keys in `keys/` that the
     /// root names for targets; each change with its bundle's ID and
-    /// version; the bundles packed again, which stay as signed; and the
-    /// digest that signing is held to.
+    /// version, a version's next build with the build it replaces, its
+    /// files that differ and its reason (ADR 0595); the bundles packed
+    /// again, which stay as signed, with their files and the next build
+    /// that would publish them; and the digest that signing is held to.
     ///
     /// # Errors
     ///
@@ -139,7 +141,7 @@ impl Repo {
             .iter()
             .map(|(path, info)| {
                 let custom = &info["custom"];
-                json!({
+                let mut entry = json!({
                     "path": path,
                     "id": custom["id"],
                     "name": custom["name"],
@@ -152,7 +154,14 @@ impl Repo {
                     } else {
                         "new"
                     },
-                })
+                });
+                if let Some(rebuild) = changes.rebuilds.get(path) {
+                    entry["change"] = "rebuild".into();
+                    entry["replaces"] = rebuild.replaces.clone().into();
+                    entry["files"] = rebuild.files.json();
+                    entry["reason"] = custom["rebuild"]["reason"].clone();
+                }
+                entry
             })
             .collect();
         let withdrawn: Vec<Value> = changes
@@ -168,7 +177,15 @@ impl Repo {
         let rebuilt: Vec<Value> = changes
             .rebuilt
             .iter()
-            .map(|r| json!({ "path": r.path, "id": r.id, "version": r.version }))
+            .map(|r| {
+                json!({
+                    "path": r.path,
+                    "id": r.id,
+                    "version": r.version,
+                    "files": r.files.json(),
+                    "next": r.next,
+                })
+            })
             .collect();
         let signers: Vec<Value> = match self.root()? {
             Some(root) => {

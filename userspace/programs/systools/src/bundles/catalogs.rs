@@ -30,7 +30,6 @@
 //!   An index offers no withdrawn version: [`Index::newest`],
 //!   [`Index::lists`] and [`Index::search`] pass over it.
 
-use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
 use dkv::flaws::{List, Severity};
@@ -40,6 +39,9 @@ use tuf::{Updater, Url};
 
 use super::protocol::Flags;
 use super::registry::base_id;
+
+/// How bundle versions order, by precedence and then build (ADR 0595).
+pub use manifest::bundle::compare_versions;
 
 /// Where the catalogs are set.
 pub const SETTINGS: &str = "/system/settings/catalogs";
@@ -181,6 +183,10 @@ pub struct Entry {
     pub owner: bool,
     /// Whether the catalog withdrew this version, and how.
     pub withdrawn: Option<Withdrawal>,
+    /// Why the catalog built this version again, when it is a rebuild
+    /// (its target's `custom.rebuild.reason`): one line, at most
+    /// [`REASON_MAX`] bytes.
+    pub rebuild_reason: Option<String>,
 }
 
 /// How bad a withdrawn version is (ADR 0593), the lesser first.
@@ -279,6 +285,16 @@ fn reason(text: &str) -> String {
     if text.is_empty() { NO_REASON.into() } else { text.into() }
 }
 
+/// The reason a target's `custom.rebuild` gives, when it is a usable
+/// one: text of one line, not empty, at most [`REASON_MAX`] bytes. A
+/// reason that is not is left out rather than cut, since the catalog's
+/// signing tool never writes one and a client does not trust the length.
+fn rebuild_reason(custom: &serde_json::Value) -> Option<String> {
+    let why = custom.get("rebuild")?.get("reason")?.as_str()?;
+    let usable = !why.is_empty() && why.len() <= REASON_MAX && !why.chars().any(char::is_control);
+    usable.then(|| why.into())
+}
+
 /// What bundled keeps of a catalog's targets, as it last read them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Index {
@@ -323,6 +339,7 @@ impl Index {
                     version: field(&version),
                     owner: text("owner").as_deref() == Some("verified"),
                     withdrawn: custom.get("withdrawn").map(|w| Withdrawal::of(w, read)),
+                    rebuild_reason: rebuild_reason(custom),
                     id,
                 })
             })
@@ -351,6 +368,9 @@ impl Index {
             if let Some(w) = &e.withdrawn {
                 out += &format!("\t{}\t{}\t{}", w.kind.word(), w.since, w.reason);
             }
+            if let Some(why) = &e.rebuild_reason {
+                out += &format!("\trebuild\t{why}");
+            }
             out.push('\n');
         }
         out
@@ -373,13 +393,22 @@ impl Index {
             .map(|line| match line.split('\t').collect::<Vec<_>>().as_slice() {
                 [sha256, length, id, version, path, name, rest @ ..] => {
                     // An index written before owners were kept has six
-                    // fields, and one written before withdrawals seven.
-                    let (owner, withdrawn) = match rest {
-                        [] => ("-", None),
-                        [owner] => (*owner, None),
-                        [owner, kind, since, reason] => (*owner, Some((kind, since, reason))),
+                    // fields, and one written before withdrawals seven. The
+                    // rebuild's two fields come last, after a withdrawal's
+                    // three when there is one.
+                    let (owner, withdrawn, rebuilt) = match rest {
+                        [] => ("-", None, None),
+                        [owner] => (*owner, None, None),
+                        [owner, "rebuild", why] => (*owner, None, Some(*why)),
+                        [owner, kind, since, reason] => (*owner, Some((kind, since, reason)), None),
+                        [owner, kind, since, reason, "rebuild", why] => {
+                            (*owner, Some((kind, since, reason)), Some(*why))
+                        }
                         _ => return Err(format!("{line:?} is no line of an index")),
                     };
+                    if rebuilt == Some("") {
+                        return Err(format!("{line:?} is no line of an index"));
+                    }
                     let withdrawn = match withdrawn {
                         None => None,
                         Some((kind, since, why)) if !why.is_empty() => Some(Withdrawal {
@@ -402,6 +431,7 @@ impl Index {
                             _ => return Err(format!("{line:?} is no line of an index")),
                         },
                         withdrawn,
+                        rebuild_reason: rebuilt.map(String::from),
                     })
                 }
                 _ => Err(format!("{line:?} is no line of an index")),
@@ -466,57 +496,6 @@ impl Index {
             }
         }
         hits
-    }
-}
-
-/// Orders two versions as semantic versioning does: by their numbers,
-/// a missing one 0, then a pre-release before the release, pre-releases
-/// by their dot-separated parts, numbers before words; a build is left
-/// out.
-#[must_use]
-pub fn compare_versions(a: &str, b: &str) -> Ordering {
-    fn split(version: &str) -> (Vec<u64>, Option<&str>) {
-        let version = version.split('+').next().unwrap_or_default();
-        let (numbers, pre) = match version.split_once('-') {
-            Some((numbers, pre)) => (numbers, Some(pre)),
-            None => (version, None),
-        };
-        (numbers.split('.').map(|n| n.parse().unwrap_or(0)).collect(), pre)
-    }
-    let (an, ap) = split(a);
-    let (bn, bp) = split(b);
-    for i in 0..an.len().max(bn.len()) {
-        let order = an.get(i).copied().unwrap_or(0).cmp(&bn.get(i).copied().unwrap_or(0));
-        if order.is_ne() {
-            return order;
-        }
-    }
-    match (ap, bp) {
-        (None, None) => Ordering::Equal,
-        (None, Some(_)) => Ordering::Greater,
-        (Some(_), None) => Ordering::Less,
-        (Some(ap), Some(bp)) => {
-            let mut ai = ap.split('.');
-            let mut bi = bp.split('.');
-            loop {
-                match (ai.next(), bi.next()) {
-                    (None, None) => return Ordering::Equal,
-                    (None, Some(_)) => return Ordering::Less,
-                    (Some(_), None) => return Ordering::Greater,
-                    (Some(x), Some(y)) => {
-                        let order = match (x.parse::<u64>(), y.parse::<u64>()) {
-                            (Ok(x), Ok(y)) => x.cmp(&y),
-                            (Ok(_), Err(_)) => Ordering::Less,
-                            (Err(_), Ok(_)) => Ordering::Greater,
-                            (Err(_), Err(_)) => x.cmp(y),
-                        };
-                        if order.is_ne() {
-                            return order;
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -799,31 +778,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn versions_order_as_semantic_versioning_orders_them() {
-        let ordered = [
-            "0.9",
-            "1.0.0-alpha",
-            "1.0.0-alpha.1",
-            "1.0.0-alpha.beta",
-            "1.0.0-beta",
-            "1.0.0-beta.2",
-            "1.0.0-beta.11",
-            "1.0.0-rc.1",
-            "1.0.0",
-            "1.0.1",
-            "1.2",
-            "1.10",
-            "2",
-        ];
-        for pair in ordered.windows(2) {
-            assert_eq!(compare_versions(pair[0], pair[1]), Ordering::Less, "{pair:?}");
-            assert_eq!(compare_versions(pair[1], pair[0]), Ordering::Greater, "{pair:?}");
-        }
-        assert_eq!(compare_versions("1.0", "1.0.0"), Ordering::Equal);
-        assert_eq!(compare_versions("1.0.0+build.5", "1.0.0"), Ordering::Equal);
-    }
-
-    #[test]
     fn names_and_addresses_are_checked() {
         assert!(check_name("dukovo").is_ok());
         assert!(check_name("my-feed2").is_ok());
@@ -848,6 +802,7 @@ mod tests {
             name: id.rsplit('.').next().unwrap().into(),
             owner: false,
             withdrawn: None,
+            rebuild_reason: None,
         }
     }
 
@@ -991,6 +946,67 @@ mod tests {
     }
 
     #[test]
+    fn a_rebuild_reason_is_written_and_read_back_with_or_without_a_withdrawal() {
+        let mut plain = entry("org.example.app", "1.0.0_2", 'a');
+        plain.rebuild_reason = Some("Linked with the C library fix".into());
+        let mut withdrawn = entry("org.example.app", "1.0.0_3", 'b');
+        withdrawn.rebuild_reason = Some("Built with a newer compiler".into());
+        withdrawn.withdrawn =
+            Some(Withdrawal { kind: Kind::Broken, reason: "it crashes".into(), since: 5 });
+        let index = Index {
+            read: 1,
+            expires: 2,
+            version: 3,
+            entries: vec![plain, withdrawn, entry("org.example.other", "1.0.0", 'c')],
+        };
+        let text = index.text();
+        let lines: Vec<_> = text.lines().collect();
+        assert!(lines[1].ends_with("\t-\trebuild\tLinked with the C library fix"), "{text}");
+        assert!(
+            lines[2].ends_with("\tbroken\t5\tit crashes\trebuild\tBuilt with a newer compiler")
+        );
+        assert!(!lines[3].contains("rebuild"), "{text}");
+        assert_eq!(Index::read(&text).unwrap(), index);
+    }
+
+    #[test]
+    fn an_index_line_with_an_empty_rebuild_reason_is_refused() {
+        let head = "read\t1\texpires\t2\tversion\t3\n";
+        let line = format!("{}\t10\torg.example.app\t1.0.0\tbundles/a.dkv\tapp", "a".repeat(64));
+        assert!(Index::read(&format!("{head}{line}\t-\trebuild\t\n")).is_err());
+        assert!(Index::read(&format!("{head}{line}\t-\trebuild\twhy\n")).is_ok());
+    }
+
+    /// The index of one target, `org.example.app` 1.0.0_2, whose `custom`
+    /// holds `extra` after its ID and version.
+    fn index_with(extra: &str) -> Index {
+        let text = format!(
+            r#"{{"targets": {{"bundles/org.example.app-1.0.0_2.dkv": {{"length": 10,
+                "hashes": {{"sha256": "{}"}},
+                "custom": {{"id": "org.example.app", "version": "1.0.0_2"{extra}}}}}}}}}"#,
+            "b".repeat(64)
+        );
+        Index::of(&serde_json::from_str(&text).unwrap(), 4, 5, 9)
+    }
+
+    #[test]
+    fn a_rebuild_reason_is_read_from_the_target_when_it_is_usable() {
+        let reason = |extra: &str| index_with(extra).entries[0].rebuild_reason.clone();
+        let said = |why: &str| format!(r#", "rebuild": {{"reason": "{why}"}}"#);
+        assert_eq!(
+            reason(&said("Linked with the C library fix")).as_deref(),
+            Some("Linked with the C library fix")
+        );
+        assert_eq!(reason(&said(&"a".repeat(REASON_MAX))), Some("a".repeat(REASON_MAX)));
+        assert_eq!(reason(""), None);
+        assert_eq!(reason(&said("")), None);
+        assert_eq!(reason(&said(&"a".repeat(REASON_MAX + 1))), None);
+        assert_eq!(reason(&said("two\\nlines")), None);
+        assert_eq!(reason(r#", "rebuild": {"reason": 7}"#), None);
+        assert_eq!(reason(r#", "rebuild": {}"#), None);
+    }
+
+    #[test]
     fn an_index_owns_an_id_by_its_base_id() {
         let mut lined = entry("org.example.app@2", "2.0.0", 'a');
         lined.owner = true;
@@ -1118,7 +1134,7 @@ mod tests {
         signers.add(from_minisign(&secret).unwrap());
         repo.sign_root(&signers, 365).unwrap();
         let files = [bundle_file(dir, "1.0.0"), bundle_file(dir, "1.1.0")];
-        let changes = repo.changes(&files, &[], &[]).unwrap();
+        let changes = repo.changes(&files, &[], &[], None).unwrap();
         let store = dir.join("store");
         repo.sign_targets(&changes, &files, &store, &signers, 30).unwrap();
         if let Some(plans) = plans {

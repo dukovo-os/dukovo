@@ -11,8 +11,11 @@
 //! bundle update fetches it, checks it as TUF does and installs it; it
 //! runs, and bundle history says it came from its feed. The host then
 //! serves the feed as it was signed before, which TUF refuses as older
-//! than the one trusted; then a newer one that lists 1.2.0, whose file
-//! differs from the one it signs, which is refused and leaves 1.1.0.
+//! than the one trusted; then a newer one that lists 1.1.0_2, the same
+//! version built again, which bundle update --check calls a rebuild and
+//! bundle update installs, and bundle history says so; then a newer one
+//! still that lists 1.2.0, whose file differs from the one it signs, which
+//! is refused and leaves 1.1.0_2.
 //! bundle feed refuses to sign almanac's feed with Alice's developer key,
 //! which its manifest does not name, and signs a feed for a bundle of her
 //! own. The power button ends it.
@@ -46,7 +49,7 @@ const DISKS: &[Disk] = &[
 /// The test.
 pub const CASE: Case = Case {
     name: "bundle-feed",
-    about: "a bundle from no catalog updates from its own feed, a small TUF repository rooted in its manifest's key, over HTTP (ADR 0390): the sheet names the feed; bundle update --check finds the newer version and bundle update installs it, checked as TUF checks; bundle history says so; an old feed served again and a file that differs from the one the feed signs are refused; bundle feed signs a feed, and refuses a key the manifest does not name",
+    about: "a bundle from no catalog updates from its own feed, a small TUF repository rooted in its manifest's key, over HTTP (ADR 0390): the sheet names the feed; bundle update --check finds the newer version and bundle update installs it, checked as TUF checks; bundle history says so; an old feed served again is refused; a rebuild of the installed version (1.1.0_2) is marked as one and installs; a file that differs from the one the feed signs is refused; bundle feed signs a feed, and refuses a key the manifest does not name",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, bundled and netd among
@@ -122,13 +125,28 @@ fn bundle_feed(vm: &mut Vm, case: &Case) -> Result<(), String> {
     serve("old")?;
     answer_prompt(vm, "$", "clear; bundle update --check")?;
     vm.expect_screen(&["its feed: timestamp version 1 is older than", "0 to update, 0 up to date"])?;
+    // A newer one that lists 1.1.0 built again. The row is 19 columns of
+    // ID, 9 of INSTALLED, 7 of NEWEST and two between each.
+    serve("rebuilt")?;
+    answer_prompt(vm, "$", "clear; bundle update --check")?;
+    vm.expect_screen(&[
+        "org.example.almanac  1.1.0      1.1.0_2  its own feed  (rebuild)",
+        "1 to update, 0 up to date",
+    ])?;
+    answer_prompt(vm, "$", "clear; bundle update --yes; almanac")?;
+    vm.expect_screen(&[
+        "installed org.example.almanac 1.1.0_2 in place of 1.1.0, for you",
+        "almanac 1.1.0_2 ran",
+    ])?;
+    answer_prompt(vm, "$", "clear; bundle history org.example.almanac")?;
+    vm.expect_screen(&["updated 1.1.0 to 1.1.0_2, from its feed"])?;
     // A newer one, whose 1.2.0 is not the file it signs.
     serve("changed")?;
     answer_prompt(vm, "$", "clear; bundle update --yes; almanac")?;
     vm.expect_screen(&[
         "org.example.almanac 1.2.0: sha256 is",
         "0 updated, 0 not, 0 up to date",
-        "almanac 1.1.0 ran",
+        "almanac 1.1.0_2 ran",
     ])?;
     vm.expect_screen_without("1.2.0 ran")?;
     // A publisher's side: the key almanac names is not Alice's.

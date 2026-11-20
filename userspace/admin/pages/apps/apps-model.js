@@ -73,9 +73,10 @@ export function checkOf(last) {
 /**
  * The words of the offer `{from, to, state, wave_day}`. Gives `{state, to,
  * kind, pair, words}`: `state` is `update`, `waiting` (its wave has not
- * reached this machine) or `held`; `kind` is `fixes only` or `new version`
- * (lib/version-words.js); `pair` is "8.0.3 to 8.0.4"; `words` is what a cell
- * of a table says: "8.0.4 · fixes only", "Held at 8.0.3".
+ * reached this machine) or `held`; `kind` is `fixes only`, `new version` or
+ * `rebuild` (lib/version-words.js), a rebuild with `rebuildReason` when the
+ * offer says why the version was built again; `pair` is "8.0.3 to 8.0.4"; `words` is
+ * what a cell of a table says: "8.0.4 · fixes only", "Held at 8.0.3".
  */
 export function updateWords(offer) {
   const kind = kindOfUpdate(offer.from, offer.to);
@@ -85,7 +86,8 @@ export function updateWords(offer) {
     const words = Number.isInteger(offer.wave_day) ? `Reaches this machine on day ${offer.wave_day} of its waves` : 'Waits for its wave';
     return { state: 'waiting', to: offer.to, kind, pair, words };
   }
-  return { state: 'update', to: offer.to, kind, pair, words: `${offer.to} · ${kind}` };
+  const update = { state: 'update', to: offer.to, kind, pair, words: `${offer.to} · ${kind}` };
+  return kind === 'rebuild' && isText(offer.rebuild_reason) ? { ...update, rebuildReason: offer.rebuild_reason } : update;
 }
 
 /**

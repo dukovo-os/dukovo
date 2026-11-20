@@ -27,8 +27,11 @@ export function byline(info) {
   return [source, signed, isText(info.license) ? info.license : null].filter(Boolean).join(' · ');
 }
 
-/** The numbers of a version that is nothing but dotted numbers, or null. */
-const numbersOf = (version) => (/^v?\d+(?:\.\d+)*$/.test(String(version ?? '').trim()) ? String(version).trim().replace(/^v/, '').split('.').map(Number) : null);
+/** The numbers of a version that is nothing but dotted numbers, or null; a trailing build ("_2") is not one, so 15.2.0_2 reaches what 15.2.0 does. */
+const numbersOf = (version) => {
+  const text = String(version ?? '').trim().replace(/_(?:[2-9]|[1-9]\d{1,3})$/, '');
+  return /^v?\d+(?:\.\d+)*$/.test(text) ? text.replace(/^v/, '').split('.').map(Number) : null;
+};
 
 /** Whether `version` is `wanted` or later, when both are dotted numbers; false when either is not. */
 function reaches(version, wanted) {
@@ -71,7 +74,7 @@ export const isNewer = (update) => update.state === 'update' || update.state ===
 
 /** How each state of an update starts the banner's first sentence. */
 const LEADS = Object.freeze({
-  update: (update) => `${update.to} is available (${update.kind})`,
+  update: (update) => `${update.to} is available (${update.kind})${update.rebuildReason ? `: ${update.rebuildReason.replace(/\.+$/, '')}` : ''}`,
   waiting: (update) => `${update.to} waits for its wave`,
   held: (update, info) => `${update.to} is available, and ${info.version} is held`,
 });

@@ -541,7 +541,7 @@ finding or removed.
 | Known weak spots to plan for: Wi-Fi, Bluetooth and webcams; large desktop apps; Btrfs maturity | Raised, not yet discussed |
 | Nightly system releases on the update server, and the key that signs them (ADRs 0456, 0467); to decide before 1.0.0-alpha.1 | The server offers stable and beta; a nightly release would be signed at every merge with no person there, and ADR 0457 keeps release keys off servers and out of CI |
 | The update server's online keys kept encrypted at rest, as ADR 0457's table has them (ADRs 0382, 0467); to decide before 1.0.0-alpha.1 | They are files only their system users read; a timer signs with them with nobody there, so a key the server decrypts itself guards only a copy of its disk |
-| A rebuild of a version the catalog lists ships only under a new version; recipes have no build number. | A recipe's version is the upstream one, and a build number changes version order on every machine, so it needs its own design (ADR 0594) |
+| A build taken out of the targets with `--remove` could be given its number again (ADR 0595) | Removing a signed target is rare, and a number given again is still ordered right: it is above every build the targets list |
 
 ## Documentation to bring up to date
 

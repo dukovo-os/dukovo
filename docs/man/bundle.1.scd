@@ -208,6 +208,13 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	*bundle feed* _folder_ again before then. Serve _folder_*/site* at
 	the address *update.feed* names; _folder_*/repository* holds what it
 	signed and _folder_*/store* the files, which are signed once each.
+	To publish a version again with other files, give it the next build
+	number, as in *1.1.0\_2* (*manifest.json*(5)); a file with no other
+	files than the build it follows is refused, and one of a version
+	already signed is kept as it was signed. A file beside it of the
+	same name ending in *.reason* in place of *.dkv*, when there is one,
+	holds one line, at most 200 bytes, that computers show with the
+	update as why it was built again.
 
 *install* _file_*.dkv* [*--unsigned*] [*--for-everyone*] [*--yes*]
 	Installs the bundle for you, in your _applications_ folder, or with
@@ -298,7 +305,10 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	by itself, with its data, and is held (*bundled*(8)). With *--check*,
 	it lists what would update, with the version installed, the newest
 	and the catalog, or *its own feed*, and, for each that waits for its
-	wave, why and how to take it now, and changes nothing.
+	wave, why and how to take it now, and changes nothing. A row whose
+	installed and newest versions differ only in build ends with
+	*(rebuild)*, and, when the catalog gave a reason, *rebuilt:* and the
+	reason are printed under it (UPDATES).
 
 *update* [_id_...] *--for-everyone* *--tonight* [*--yes*]
 	Asks, through *elevate*(8), that the update of each _id_ given, or of
@@ -693,6 +703,25 @@ shown, and you are asked, only when the new version asks for more than
 the one it replaces: a permission the old one did not ask for, more of
 one, or a command that runs with your access. The sheet says which
 version it replaces and marks what is new in this version.
+
+Versions order as *manifest.json*(5) says: as semantic versioning
+orders them, and then by build, the number a version may end in, as in
+*15.2.0_2*; a version with no build number is build 1. A catalog gives
+a version it signed again, with other files, such as after a fix to the
+C library, its next build, so that computers update to it as to any
+newer version. *bundle update --check* marks such a row *(rebuild)*, and
+says why the catalog made it:
+
+```
+$ bundle update --check
+ID                            INSTALLED  NEWEST    CATALOG
+io.github.burntsushi.ripgrep  15.2.0     15.2.0_2  dukovo  (rebuild)
+  rebuilt: built again with the C library's fix
+1 to update, 0 up to date
+```
+
+A rebuild goes out in waves, can be withdrawn and rolled back, as any
+version can.
 
 The version an update replaces is kept beside the new one, sealed as
 it was, to go back to with *bundle rollback*; only the last is kept.

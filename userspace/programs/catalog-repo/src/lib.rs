@@ -125,15 +125,64 @@ pub struct Changes {
     /// Paths listed that are withdrawn from now on (ADR 0593), with the
     /// `custom.withdrawn` object each gets: `kind`, `reason` and `since`.
     pub withdrawn: BTreeMap<String, Value>,
-    /// Paths listed already whose bundle was packed again as other bytes.
-    /// They sign nothing: the catalog keeps the bytes it signed, since a
-    /// version, once signed, is never signed again as something else, and
-    /// a rebuild reaches computers under a new version.
+    /// The added paths that are a version's next build (ADR 0595): the
+    /// build each follows, and how their files compare.
+    pub rebuilds: BTreeMap<String, Rebuild>,
+    /// Bundles packed again as other bytes than the newest build of their
+    /// version that the targets list. They sign nothing: a version, once
+    /// signed, is never signed again as something else, and a rebuild
+    /// reaches computers as the version's next build.
     pub rebuilt: Vec<Rebuilt>,
 }
 
-/// A bundle packed again as other bytes than those the catalog lists for
-/// its version.
+/// How a bundle packed again compares with the signed build it follows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Files {
+    /// The same files: only its signature and SBOM, which hold the
+    /// packing time, and the version in its manifest differ.
+    Same,
+    /// These files differ, are new or are gone, by path, sorted.
+    Other(Vec<String>),
+    /// The signed bytes are not in the store.
+    NotCompared,
+}
+
+impl Files {
+    /// As a plan and `status --json` list it: the paths, `[]` for the same
+    /// files, `null` when not compared.
+    #[must_use]
+    pub fn json(&self) -> Value {
+        match self {
+            Files::Same => json!([]),
+            Files::Other(paths) => json!(paths),
+            Files::NotCompared => Value::Null,
+        }
+    }
+
+    /// The paths in a line: at most [`FILES_SHOWN`], then how many more.
+    fn named(paths: &[String]) -> String {
+        let shown = paths[..paths.len().min(FILES_SHOWN)].join(", ");
+        match paths.len().checked_sub(FILES_SHOWN) {
+            Some(more) if more > 0 => format!("{shown} and {more} more"),
+            _ => shown,
+        }
+    }
+}
+
+/// The most paths a line of [`Changes::lines`] names.
+pub const FILES_SHOWN: usize = 8;
+
+/// A target added as a version's next build.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rebuild {
+    /// The listed build it follows, such as `15.2.0` for `15.2.0_2`.
+    pub replaces: String,
+    /// How its files compare with that build's.
+    pub files: Files,
+}
+
+/// A bundle packed again as other bytes than the newest build of its
+/// version that the targets list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rebuilt {
     /// Its path among the targets.
@@ -144,17 +193,45 @@ pub struct Rebuilt {
     pub id: String,
     /// Its version.
     pub version: String,
-    /// The SHA-256 of the bytes the catalog lists, in hex.
+    /// The SHA-256 of the newest build's bytes, which the catalog lists,
+    /// in hex.
     pub signed_sha256: String,
     /// The SHA-256 of the file packed again, in hex.
     pub packed_sha256: String,
+    /// How its files compare with the newest build's.
+    pub files: Files,
+    /// The version it is published as with `ob catalog sign --next-build`:
+    /// the next build, such as `15.2.0_2`.
+    pub next: String,
 }
+
+/// The extension of the file beside a bundle packed as a version's next
+/// build that says why it was built again: `ID-15.2.0_2.reason` beside
+/// `ID-15.2.0_2.dkv`. Its one line is signed into the target's
+/// `custom.rebuild.reason` (ADR 0595).
+pub const REASON_EXTENSION: &str = "reason";
 
 /// The kinds of withdrawal, the lesser first.
 pub const WITHDRAWAL_KINDS: [&str; 2] = ["broken", "malicious"];
 
-/// The most bytes a withdrawal's reason may have.
+/// The most bytes a withdrawal's or a rebuild's reason may have.
 pub const REASON_MAX: usize = 200;
+
+/// `reason` without the space around it, when it is one line of at most
+/// [`REASON_MAX`] bytes; `why` says what an empty one should have said.
+fn checked_reason<'a>(reason: &'a str, why: &str) -> Result<&'a str, String> {
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return Err(format!("the reason is empty: say why {why}"));
+    }
+    if reason.chars().any(char::is_control) {
+        return Err("the reason has control characters: give it as one line of text".into());
+    }
+    if reason.len() > REASON_MAX {
+        return Err(format!("the reason is {} bytes; at most {REASON_MAX} are kept", reason.len()));
+    }
+    Ok(reason)
+}
 
 impl Changes {
     /// Whether it changes nothing. The bundles packed again change
@@ -167,6 +244,25 @@ impl Changes {
             && self.withdrawn.is_empty()
     }
 
+    /// Checks that each rebuild says why it was built again, as the
+    /// catalog's do; a feed's need not.
+    ///
+    /// # Errors
+    ///
+    /// Names the first rebuild with no reason beside its bundle.
+    pub fn rebuilds_say_why(&self) -> Result<(), String> {
+        let unexplained = self.rebuilds.keys().find(|path| {
+            self.added.get(*path).is_none_or(|info| info["custom"]["rebuild"]["reason"].is_null())
+        });
+        match unexplained {
+            Some(path) => Err(format!(
+                "{path} is a version's next build with no reason beside it: say why it was built \
+                 again with --rebuild-reason TEXT"
+            )),
+            None => Ok(()),
+        }
+    }
+
     /// One line for each change.
     #[must_use]
     pub fn lines(&self) -> Vec<String> {
@@ -174,8 +270,20 @@ impl Changes {
         for (path, info) in &self.added {
             let custom = &info["custom"];
             let verified = if custom["owner"] == "verified" { ", publisher verified" } else { "" };
+            let rebuild = match self.rebuilds.get(path) {
+                Some(Rebuild { replaces, files: Files::Other(paths) }) => {
+                    format!(", rebuild of {replaces}: {}", Files::named(paths))
+                }
+                Some(Rebuild { replaces, .. }) => {
+                    format!(", rebuild of {replaces} (files not compared)")
+                }
+                None => String::new(),
+            };
+            let reason = custom["rebuild"]["reason"]
+                .as_str()
+                .map_or_else(String::new, |reason| format!(": {reason}"));
             lines.push(format!(
-                "+ {path} ({} {}, {} bytes{verified})",
+                "+ {path} ({} {}, {} bytes{verified}{rebuild}){reason}",
                 custom["id"].as_str().unwrap_or("?"),
                 custom["version"].as_str().unwrap_or("?"),
                 info["length"]
@@ -191,11 +299,22 @@ impl Changes {
             ));
         }
         lines.extend(self.rebuilt.iter().map(|rebuilt| {
-            format!(
-                "= {}: packed again as other bytes; the catalog keeps the signed ones (a new \
-                 version publishes the rebuild)",
-                rebuilt.path
-            )
+            let Rebuilt { path, id, next, .. } = rebuilt;
+            match &rebuilt.files {
+                Files::Same => {
+                    format!("= {path}: packed again with the same files; nothing to publish")
+                }
+                Files::Other(paths) => format!(
+                    "= {path}: packed again with other files ({}); --next-build {id} publishes \
+                     them as {next}",
+                    Files::named(paths)
+                ),
+                Files::NotCompared => format!(
+                    "= {path}: packed again as other bytes; the signed bytes are not in the \
+                     store, so the files were not compared; --next-build {id} publishes them as \
+                     {next}"
+                ),
+            }
         }));
         lines
     }
@@ -311,6 +430,115 @@ fn read_manifest(data: &[u8]) -> Result<Value, String> {
         .map_err(|e| format!("manifest.json: {e}"))
 }
 
+/// The newest build the targets list of a version: its path, version,
+/// build number and target.
+struct Build<'a> {
+    path: &'a str,
+    version: &'a str,
+    build: u32,
+    target: &'a TargetFile,
+}
+
+/// The newest build `listed` has of `release` of the bundle whose full ID
+/// is `id`, withdrawn builds among them, so that a withdrawn build's
+/// number is never given again; none when it lists no build of it.
+fn newest_build<'a>(
+    listed: &'a std::collections::HashMap<String, TargetFile>,
+    id: &str,
+    release: &str,
+) -> Option<Build<'a>> {
+    listed
+        .iter()
+        .filter_map(|(path, target)| {
+            let custom = target.custom.as_ref()?;
+            let version = custom.get("version")?.as_str()?;
+            let (of, build) = manifest::bundle::split_build(version);
+            (custom.get("id")?.as_str()? == id && of == release).then_some(Build {
+                path,
+                version,
+                build,
+                target,
+            })
+        })
+        .max_by_key(|build| build.build)
+}
+
+/// How the files of `packed` compare with those of the build at `path`,
+/// listed as `target`, whose bytes `store` keeps: [`Files::NotCompared`]
+/// when there is no store or the store lacks them.
+fn files_against(
+    packed: &[u8],
+    store: Option<&Path>,
+    path: &str,
+    target: &TargetFile,
+) -> Result<Files, String> {
+    let Some(store) = store else { return Ok(Files::NotCompared) };
+    let file = store.join(path);
+    let signed = match std::fs::read(&file) {
+        Ok(signed) => signed,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Files::NotCompared),
+        Err(e) => return Err(format!("{}: {e}", file.display())),
+    };
+    tuf::metadata::check_file(&signed, Some(target.length), Some(&target.hashes)).map_err(|e| {
+        format!("{}: not the bytes the targets list for {path} ({e})", file.display())
+    })?;
+    let paths = changed_files(packed, &signed)?;
+    Ok(if paths.is_empty() { Files::Same } else { Files::Other(paths) })
+}
+
+/// The paths whose SHA-256 differs between the signed lists of two
+/// bundles, or that one lists and the other does not, sorted. The SBOM
+/// is left out, since it holds the packing time, and the manifest counts
+/// only when it differs in more than its version.
+fn changed_files(packed: &[u8], signed: &[u8]) -> Result<Vec<String>, String> {
+    let (packed_files, packed_manifest) = listed_files(packed)?;
+    let (signed_files, signed_manifest) = listed_files(signed)?;
+    let mut changed: Vec<String> = packed_files
+        .iter()
+        .filter(|(path, sha256)| signed_files.get(*path) != Some(sha256))
+        .chain(signed_files.iter().filter(|(path, _)| !packed_files.contains_key(*path)))
+        .map(|(path, _)| path.clone())
+        .filter(|path| path != dkv::sbom::SBOM && path != dkv::MANIFEST)
+        .collect();
+    if packed_manifest != signed_manifest {
+        changed.push(dkv::MANIFEST.to_string());
+    }
+    changed.sort();
+    Ok(changed)
+}
+
+/// What a bundle's signed list says of its files, by path, and its
+/// manifest without its version.
+fn listed_files(data: &[u8]) -> Result<(BTreeMap<String, [u8; 32]>, Value), String> {
+    let archive = dkv::zip::Archive::read(data)?;
+    let entry =
+        archive.file(dkv::sums::LIST).ok_or(format!("the bundle has no {}", dkv::sums::LIST))?;
+    let list = archive.read_small(entry, dkv::signed::LIST_MAX)?;
+    let list =
+        std::str::from_utf8(&list).map_err(|_| format!("{} is not text", dkv::sums::LIST))?;
+    let files = dkv::sums::read(list)?.into_iter().map(|e| (e.path, e.sha256)).collect();
+    let mut manifest = read_manifest(data)?;
+    if let Some(fields) = manifest.as_object_mut() {
+        fields.remove("version");
+    }
+    Ok((files, manifest))
+}
+
+/// The reason in the file beside `bundle`, a version's next build, that
+/// says why it was built again ([`REASON_EXTENSION`]), or `None` when
+/// there is no such file, as beside a feed's bundle.
+fn rebuild_reason(bundle: &Path) -> Result<Option<String>, String> {
+    let file = bundle.with_extension(REASON_EXTENSION);
+    let text = match std::fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {e}", file.display())),
+    };
+    checked_reason(&text, "it was built again")
+        .map(|reason| Some(reason.to_string()))
+        .map_err(|e| format!("{}: {e}", file.display()))
+}
+
 impl Repo {
     /// The repository in `dir`, the source tree's `catalog/`.
     #[must_use]
@@ -403,19 +631,28 @@ impl Repo {
 
     /// What signing the bundles in `bundles` and taking out `remove`
     /// would change in targets. A bundle whose ID is one of `verified` is
-    /// listed as one whose publisher the catalog vouches for. A bundle
-    /// whose path is listed already as other bytes goes in
-    /// [`Changes::rebuilt`] and is not signed: a version, once signed, is
-    /// never signed again as something else.
+    /// listed as one whose publisher the catalog vouches for.
+    ///
+    /// A bundle of a version the targets list already is held to the
+    /// newest build of that version listed (ADR 0595), whose bytes are
+    /// read from `store` to compare their files with the bundle's. A later
+    /// build is added as that build's rebuild, and needs other files; the
+    /// reason beside it ([`REASON_EXTENSION`]), when there is one, is signed
+    /// with it, and [`Changes::rebuilds_say_why`] checks that each has one.
+    /// Any other is kept in [`Changes::rebuilt`] and not signed: a version,
+    /// once signed, is never signed again as something else.
     ///
     /// # Errors
     ///
-    /// If a bundle cannot be read, or a path to take out is not listed.
+    /// If a bundle cannot be read, a later build has the same files as the
+    /// build it follows or a reason that is not one line, the store's bytes
+    /// are not those the targets list, or a path to take out is not listed.
     pub fn changes(
         &self,
         bundles: &[PathBuf],
         remove: &[String],
         verified: &[String],
+        store: Option<&Path>,
     ) -> Result<Changes, String> {
         let listed = self.targets()?.map_or_default(|t| t.signed.signed.targets);
         let mut changes = Changes::default();
@@ -424,31 +661,46 @@ impl Repo {
             let named = |e: String| format!("{}: {e}", file.display());
             let id = read_manifest(&data).map_err(named)?["id"].as_str().map(str::to_string);
             let verified = id.is_some_and(|id| verified.contains(&id));
-            let (path, info) = bundle_target(&data, verified).map_err(named)?;
-            match listed.get(&path) {
-                Some(old)
-                    if old.length == data.len() as u64
-                        && tuf::metadata::check_file(
-                            &data,
-                            Some(old.length),
-                            Some(&old.hashes),
-                        )
-                        .is_ok() => {}
-                Some(old) => {
-                    let custom = &info["custom"];
-                    let field = |key: &str| custom[key].as_str().unwrap_or_default().to_string();
-                    changes.rebuilt.push(Rebuilt {
-                        path,
-                        file: file.clone(),
-                        id: field("id"),
-                        version: field("version"),
-                        signed_sha256: sha256_of(&old.hashes),
-                        packed_sha256: sha256_of_data(&data),
-                    });
+            let (path, mut info) = bundle_target(&data, verified).map_err(named)?;
+            if listed.get(&path).is_some_and(|old| {
+                tuf::metadata::check_file(&data, Some(old.length), Some(&old.hashes)).is_ok()
+            }) {
+                continue;
+            }
+            let custom = &info["custom"];
+            let field = |key: &str| custom[key].as_str().unwrap_or_default().to_string();
+            let (id, version) = (field("id"), field("version"));
+            let (release, build) = manifest::bundle::split_build(&version);
+            let Some(newest) = newest_build(&listed, &id, release) else {
+                changes.added.insert(path, info);
+                continue;
+            };
+            let files = files_against(&data, store, newest.path, newest.target)?;
+            if build > newest.build {
+                if files == Files::Same {
+                    return Err(format!(
+                        "{path} has the same files as {}, which is signed: nothing to rebuild",
+                        newest.version
+                    ));
                 }
-                None => {
-                    changes.added.insert(path, info);
+                if let Some(reason) = rebuild_reason(file).map_err(named)? {
+                    info["custom"]["rebuild"] = json!({ "reason": reason });
                 }
+                changes
+                    .rebuilds
+                    .insert(path.clone(), Rebuild { replaces: newest.version.to_string(), files });
+                changes.added.insert(path, info);
+            } else {
+                changes.rebuilt.push(Rebuilt {
+                    next: manifest::bundle::with_build(release, newest.build + 1),
+                    path,
+                    file: file.clone(),
+                    id,
+                    version,
+                    signed_sha256: sha256_of(&newest.target.hashes),
+                    packed_sha256: sha256_of_data(&data),
+                    files,
+                });
             }
         }
         for path in remove {
@@ -492,19 +744,7 @@ impl Repo {
     ) -> Result<Changes, String> {
         let rank = |word: &str| WITHDRAWAL_KINDS.iter().position(|k| *k == word);
         let new_rank = rank(kind).ok_or(format!("{kind:?} is neither broken nor malicious"))?;
-        let reason = reason.trim();
-        if reason.is_empty() {
-            return Err("the reason is empty: say why the version is withdrawn".into());
-        }
-        if reason.chars().any(char::is_control) {
-            return Err("the reason has control characters: give it as one line of text".into());
-        }
-        if reason.len() > REASON_MAX {
-            return Err(format!(
-                "the reason is {} bytes; at most {REASON_MAX} are kept",
-                reason.len()
-            ));
-        }
+        let reason = checked_reason(reason, "the version is withdrawn")?;
         let listed = self.targets()?.map_or_default(|t| t.signed.signed.targets);
         let mut changes = Changes::default();
         for (path, target) in &listed {
@@ -1030,7 +1270,7 @@ fn newest_versions(targets: &Targets) -> BTreeMap<String, String> {
         let text = |key: &str| custom.and_then(|c| c.get(key)?.as_str());
         let (Some(id), Some(version)) = (text("id"), text("version")) else { continue };
         match newest.get_mut(id) {
-            Some(held) if dkv::flaws::compare(held, version).is_gt() => {}
+            Some(held) if manifest::bundle::compare_versions(held, version).is_gt() => {}
             Some(held) => *held = version.to_string(),
             None => {
                 newest.insert(id.to_string(), version.to_string());
@@ -1231,7 +1471,7 @@ fn served_at(base: &tuf::Url, client: &Path) -> Result<Value, String> {
     };
     bundles.sort_by(|a, b| {
         let ((a_id, a_version), (b_id, b_version)) = (key(a), key(b));
-        a_id.cmp(&b_id).then_with(|| dkv::flaws::compare(&a_version, &b_version))
+        a_id.cmp(&b_id).then_with(|| manifest::bundle::compare_versions(&a_version, &b_version))
     });
     // The rollout of each bundle's newest version (ADR 0544).
     let mut rollouts = Vec::new();
@@ -1379,7 +1619,7 @@ mod tests {
 
         let ripgrep = bundle(&dir, "org.dukovo.ripgrep", "14.1.1", b"rg");
         let bat = bundle(&dir, "org.dukovo.bat", "0.25.0", b"bat");
-        let changes = repo.changes(&[ripgrep.clone(), bat.clone()], &[], &[]).unwrap();
+        let changes = repo.changes(&[ripgrep.clone(), bat.clone()], &[], &[], None).unwrap();
         assert_eq!(changes.lines().len(), 2);
         assert!(
             changes.lines()[1].starts_with(
@@ -1396,16 +1636,16 @@ mod tests {
             repo.sign_targets(&changes, &[ripgrep.clone(), bat.clone()], &store, &both, 182),
             Ok(1)
         );
-        assert!(repo.changes(std::slice::from_ref(&ripgrep), &[], &[]).unwrap().is_empty());
+        assert!(repo.changes(std::slice::from_ref(&ripgrep), &[], &[], None).unwrap().is_empty());
         // Signed before the catalog vouched for its publisher: the next
         // batch lists it as verified, with no new bytes.
         let verified = vec!["org.dukovo.ripgrep".to_string()];
         assert_eq!(
-            repo.changes(&[], &[], &verified).unwrap().lines(),
+            repo.changes(&[], &[], &verified, None).unwrap().lines(),
             vec!["~ bundles/org.dukovo.ripgrep-14.1.1.dkv: publisher verified"]
         );
         let other = bundle(&dir, "org.dukovo.ripgrep", "14.1.1", b"something else");
-        let kept = repo.changes(&[other], &[], &[]).unwrap();
+        let kept = repo.changes(&[other], &[], &[], None).unwrap();
         assert!(kept.is_empty() && kept.rebuilt.len() == 1, "{kept:?}");
 
         let out = dir.join("site");
@@ -1427,7 +1667,7 @@ mod tests {
         // takes a bundle out, still read back from the first root.
         assert_eq!(repo.sign_root(&both, 365), Ok(2));
         let gone = vec!["bundles/org.dukovo.bat-0.25.0.dkv".to_string()];
-        let changes = repo.changes(&[], &gone, &[]).unwrap();
+        let changes = repo.changes(&[], &gone, &[], None).unwrap();
         assert_eq!(changes.lines(), vec!["- bundles/org.dukovo.bat-0.25.0.dkv"]);
         assert_eq!(repo.sign_targets(&changes, &[], &store, &both, 182), Ok(2));
         // A new root or targets: refresh signs everything again.
@@ -1476,7 +1716,7 @@ mod tests {
         assert_eq!(repo.refresh(&store, &out, &online_only, (7, 1)), Ok(Refreshed::Timestamp(10)));
 
         // Marked verified, the target keeps its bytes and gains the owner.
-        let marked = repo.changes(&[], &[], &verified).unwrap();
+        let marked = repo.changes(&[], &[], &verified, None).unwrap();
         let version = repo.sign_targets(&marked, &[], &store, &both, 182).unwrap();
         let targets = repo.targets().unwrap().unwrap();
         assert_eq!(targets.signed.version, version);
@@ -1484,7 +1724,7 @@ mod tests {
         let custom = ripgrep.custom.as_ref().unwrap();
         assert_eq!(custom.get("owner").and_then(|o| o.as_str()), Some("verified"));
         assert_eq!(custom.get("version").and_then(|v| v.as_str()), Some("14.1.1"));
-        assert!(repo.changes(&[], &[], &verified).unwrap().is_empty());
+        assert!(repo.changes(&[], &[], &verified, None).unwrap().is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1500,7 +1740,7 @@ mod tests {
         keys::new_file_key("online", roles, &online_file).unwrap().write(&repo.keys_dir()).unwrap();
         let both = Signers::new(Some(&helper), std::slice::from_ref(&online_file)).unwrap();
         repo.sign_root(&both, 365).unwrap();
-        let changes = repo.changes(bundles, &[], &[]).unwrap();
+        let changes = repo.changes(bundles, &[], &[], None).unwrap();
         let store = dir.join("store");
         repo.sign_targets(&changes, bundles, &store, &both, 182).unwrap();
         let online = Signers::new(None, std::slice::from_ref(&online_file)).unwrap();
@@ -1592,7 +1832,7 @@ mod tests {
         let listed_before = "org.dukovo.ripgrep/14.1.0";
         assert_eq!(read(listed_before), Some(at(listed_before, rollout::LAST)));
         let added = [newer, bat_file];
-        let changes = repo.changes(&added, &[], &[]).unwrap();
+        let changes = repo.changes(&added, &[], &[], None).unwrap();
         repo.sign_targets(&changes, &added, &store, &both, 182).unwrap();
 
         // The newest version of each bundle listed after them opens to the
@@ -1636,7 +1876,7 @@ mod tests {
         // A newer version takes the place of the newest: the plan of the
         // one before goes, and the new one opens to the canaries.
         let third = bundle(&dir, "org.dukovo.ripgrep", "14.2.0", b"rg, newer still");
-        let changes = repo.changes(std::slice::from_ref(&third), &[], &[]).unwrap();
+        let changes = repo.changes(std::slice::from_ref(&third), &[], &[], None).unwrap();
         repo.sign_targets(&changes, &[third], &store, &both, 182).unwrap();
         let (newest, released) = ("org.dukovo.ripgrep/14.2.0", now + 5 * day);
         rolled(released, &mut plans);
@@ -1658,7 +1898,7 @@ mod tests {
         let now = tuf::time::now();
         repo.sign_rollouts(&store, &online, Some(&mut plans), now).unwrap();
         let added = [newer];
-        let changes = repo.changes(&added, &[], &[]).unwrap();
+        let changes = repo.changes(&added, &[], &[], None).unwrap();
         repo.sign_targets(&changes, &added, &store, &both, 182).unwrap();
         plans.releases.insert(
             "org.dukovo.ripgrep/14.1.1".into(),
@@ -1752,7 +1992,7 @@ mod tests {
         // A version listed after the first rollouts, signed by a server
         // that was given no plan.
         let newer = bundle(&dir, "org.dukovo.ripgrep", "14.1.1", b"rg");
-        let changes = repo.changes(std::slice::from_ref(&newer), &[], &[]).unwrap();
+        let changes = repo.changes(std::slice::from_ref(&newer), &[], &[], None).unwrap();
         repo.sign_targets(&changes, &[newer], &store, &both, 182).unwrap();
         repo.sign_rollouts(&store, &online, None, now).unwrap().unwrap();
         repo.publish(&store, &out, &online, (7, 1)).unwrap();
@@ -1891,7 +2131,7 @@ mod tests {
         let signed = bundle(&dir, "org.dukovo.ripgrep", "15.2.0", b"rg");
         let (repo, ..) = catalog_of(&dir, std::slice::from_ref(&signed));
         let packed = bundle(&dir, "org.dukovo.ripgrep", "15.2.0", b"rg, linked again");
-        let changes = repo.changes(std::slice::from_ref(&packed), &[], &[]).unwrap();
+        let changes = repo.changes(std::slice::from_ref(&packed), &[], &[], None).unwrap();
         assert!(changes.added.is_empty());
         assert!(changes.is_empty(), "a version kept as signed signs nothing");
         let path = "bundles/org.dukovo.ripgrep-15.2.0.dkv";
@@ -1905,6 +2145,8 @@ mod tests {
                 version: "15.2.0".into(),
                 signed_sha256: data(&signed)["hashes"]["sha256"].as_str().unwrap().into(),
                 packed_sha256: data(&packed)["hashes"]["sha256"].as_str().unwrap().into(),
+                files: Files::NotCompared,
+                next: "15.2.0_2".into(),
             }]
         );
         assert_eq!(changes.lines().len(), 1);
@@ -1923,7 +2165,7 @@ mod tests {
         let packed = bundle(&dir, "org.dukovo.ripgrep", "15.2.0", b"rg, linked again");
         let bat = bundle(&dir, "org.dukovo.bat", "0.26.1", b"bat");
         let batch = [packed, bat];
-        let changes = repo.changes(&batch, &[], &[]).unwrap();
+        let changes = repo.changes(&batch, &[], &[], None).unwrap();
         assert_eq!(changes.added.keys().collect::<Vec<_>>(), ["bundles/org.dukovo.bat-0.26.1.dkv"]);
         assert_eq!(changes.rebuilt.len(), 1);
         assert_eq!(repo.sign_targets(&changes, &batch, &store, &both, 182), Ok(2));
@@ -1941,7 +2183,7 @@ mod tests {
         let first = bundle(&dir, "org.dukovo.ripgrep", "14.1.1", b"rg");
         let (repo, store, both, _) = catalog_of(&dir, &[first]);
         let bat = bundle(&dir, "org.dukovo.bat", "0.26.1", b"bat");
-        let changes = repo.changes(std::slice::from_ref(&bat), &[], &[]).unwrap();
+        let changes = repo.changes(std::slice::from_ref(&bat), &[], &[], None).unwrap();
         let other = bundle(&dir, "org.dukovo.bat", "0.26.1", b"bat, packed again");
         std::fs::rename(&other, &bat).unwrap();
         let err = repo.sign_targets(&changes, &[bat], &store, &both, 182).unwrap_err();
@@ -1961,7 +2203,7 @@ mod tests {
         let bat = bundle(&dir, "org.dukovo.bat", "0.26.1", b"bat");
         let digest = |action, after, changes| Plan { action, after, changes }.digest().unwrap();
         let listed = |files: &[PathBuf], remove: &[String], verified: &[String]| {
-            repo.changes(files, remove, verified).unwrap()
+            repo.changes(files, remove, verified, None).unwrap()
         };
         let base = digest(Action::Sign, 1, listed(std::slice::from_ref(&bat), &[], &[]));
         assert_eq!(base.len(), 64);
@@ -2016,7 +2258,7 @@ mod tests {
         let again = bundle(&dir, "org.dukovo.old", "1.0", b"old, packed again");
         let remove = ["bundles/org.dukovo.old-1.0.dkv".to_string()];
         let verified = ["org.dukovo.ripgrep".to_string(), "org.dukovo.bat".to_string()];
-        let changes = repo.changes(&[rg_new, bat, again], &remove, &verified).unwrap();
+        let changes = repo.changes(&[rg_new, bat, again], &remove, &verified, None).unwrap();
         let plan = repo.plan(Action::Sign, changes).unwrap();
         let file = dir.join("out/catalog/plan.json");
         let written = repo.write_plan(&plan, 182, &file).unwrap();
@@ -2046,9 +2288,222 @@ mod tests {
         assert_eq!(read["verified"], marked);
         assert_eq!(
             read["rebuilt"],
-            json!([{"path": remove[0], "id": "org.dukovo.old", "version": "1.0"}])
+            json!([{
+                "path": remove[0], "id": "org.dukovo.old", "version": "1.0", "files": null,
+                "next": "1.0_2"
+            }])
         );
         assert_eq!(read["digest"], plan.digest().unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A bundle packed as ob packs one, into `dir/NAME.dkv`: `files`, its
+    /// manifest with `fields` added, an SBOM that holds `packed_at`, as a
+    /// pack's does, and the signed list of them all.
+    fn packed(
+        dir: &Path,
+        name: &str,
+        version: &str,
+        files: &[(&str, &[u8])],
+        fields: &str,
+        packed_at: &str,
+    ) -> PathBuf {
+        let manifest = format!(
+            r#"{{"id": "org.dukovo.ripgrep", "version": "{version}", "name": "Test"{fields}}}"#
+        );
+        let sbom = format!("PackageName: org.dukovo.ripgrep\nCreated: {packed_at}\n");
+        let mut all =
+            vec![(dkv::MANIFEST, manifest.as_bytes()), (dkv::sbom::SBOM, sbom.as_bytes())];
+        all.extend_from_slice(files);
+        let mut entries: Vec<dkv::sums::Entry> = all
+            .iter()
+            .map(|(path, data)| dkv::sums::Entry {
+                path: (*path).to_string(),
+                sha256: dkv::sums::sha256(data),
+            })
+            .collect();
+        let list = dkv::sums::write(&mut entries);
+        all.push((dkv::sums::LIST, list.as_bytes()));
+        let path = dir.join(format!("{name}.dkv"));
+        let mut zip = dkv::zip::Writer::new(std::fs::File::create(&path).unwrap());
+        for (path, data) in all {
+            zip.add(&dkv::zip::Input { path, executable: false, data }).unwrap();
+        }
+        zip.finish().unwrap();
+        path
+    }
+
+    #[test]
+    fn a_version_packed_again_is_compared_file_by_file_with_its_newest_build() {
+        let dir = scratch("builds");
+        let rg: &[(&str, &[u8])] = &[("bin/rg", b"rg"), ("share/rg.1", b"man")];
+        let relinked: &[(&str, &[u8])] = &[("bin/rg", b"rg, linked again"), ("share/rg.1", b"man")];
+        let signed = packed(&dir, "signed", "15.2.0", rg, "", "monday");
+        let (repo, store, both, _) = catalog_of(&dir, std::slice::from_ref(&signed));
+        let path = "bundles/org.dukovo.ripgrep-15.2.0.dkv";
+        let path_2 = "bundles/org.dukovo.ripgrep-15.2.0_2.dkv";
+        let changes = |file: &PathBuf, store: Option<&Path>| {
+            repo.changes(std::slice::from_ref(file), &[], &[], store)
+        };
+
+        // Packed again at another time: only the SBOM and signature differ.
+        let same = packed(&dir, "same", "15.2.0", rg, "", "tuesday");
+        let kept = changes(&same, Some(&store)).unwrap();
+        assert!(kept.is_empty());
+        assert_eq!(
+            (&kept.rebuilt[0].files, kept.rebuilt[0].next.as_str()),
+            (&Files::Same, "15.2.0_2")
+        );
+        assert_eq!(
+            kept.lines(),
+            [format!("= {path}: packed again with the same files; nothing to publish")]
+        );
+
+        // Linked again: its program differs.
+        let other = packed(&dir, "other", "15.2.0", relinked, "", "tuesday");
+        let kept = changes(&other, Some(&store)).unwrap();
+        assert_eq!(kept.rebuilt[0].files, Files::Other(vec!["bin/rg".into()]));
+        assert_eq!(
+            kept.lines(),
+            [format!(
+                "= {path}: packed again with other files (bin/rg); --next-build \
+                 org.dukovo.ripgrep publishes them as 15.2.0_2"
+            )]
+        );
+        let kept = changes(&other, None).unwrap();
+        assert_eq!(
+            kept.lines(),
+            [format!(
+                "= {path}: packed again as other bytes; the signed bytes are not in the store, \
+                 so the files were not compared; --next-build org.dukovo.ripgrep publishes them \
+                 as 15.2.0_2"
+            )]
+        );
+
+        // Its next build: the same files are refused, as is no reason.
+        let again = packed(&dir, "again", "15.2.0_2", rg, "", "tuesday");
+        let err = changes(&again, Some(&store)).unwrap_err();
+        assert_eq!(
+            err,
+            format!("{path_2} has the same files as 15.2.0, which is signed: nothing to rebuild")
+        );
+        let next = packed(&dir, "next", "15.2.0_2", relinked, "", "tuesday");
+        let unexplained = changes(&next, Some(&store)).unwrap();
+        assert_eq!(unexplained.added[path_2]["custom"]["rebuild"], Value::Null);
+        let err = unexplained.rebuilds_say_why().unwrap_err();
+        assert!(err.contains("with no reason beside it: say why it was built again"), "{err}");
+        std::fs::write(dir.join("next.reason"), "  \n").unwrap();
+        let err = changes(&next, Some(&store)).unwrap_err();
+        assert!(err.ends_with("the reason is empty: say why it was built again"), "{err}");
+        std::fs::write(dir.join("next.reason"), "Linked with the C library fix\n").unwrap();
+        let added = changes(&next, Some(&store)).unwrap();
+        assert_eq!(added.rebuilds_say_why(), Ok(()));
+        let rebuild =
+            Rebuild { replaces: "15.2.0".into(), files: Files::Other(vec!["bin/rg".into()]) };
+        assert_eq!(added.rebuilds.get(path_2), Some(&rebuild));
+        assert_eq!(
+            added.added[path_2]["custom"]["rebuild"],
+            json!({ "reason": "Linked with the C library fix" })
+        );
+        let line = &added.lines()[0];
+        assert!(line.starts_with(&format!("+ {path_2} (org.dukovo.ripgrep 15.2.0_2, ")), "{line}");
+        assert!(
+            line.ends_with(" bytes, rebuild of 15.2.0: bin/rg): Linked with the C library fix"),
+            "{line}"
+        );
+        let added_unseen = changes(&next, None).unwrap();
+        assert!(added_unseen.lines()[0].contains(", rebuild of 15.2.0 (files not compared))"));
+
+        // Once 15.2.0_2 is signed, a plain pack of 15.2.0 is held to it.
+        assert_eq!(
+            repo.sign_targets(&added, std::slice::from_ref(&next), &store, &both, 182),
+            Ok(2)
+        );
+        let kept = changes(&other, Some(&store)).unwrap();
+        assert_eq!(kept.rebuilt[0].files, Files::Same);
+        assert_eq!(kept.rebuilt[0].next, "15.2.0_3");
+        let signed_2 = repo::file_info(&std::fs::read(&next).unwrap());
+        assert_eq!(kept.rebuilt[0].signed_sha256, signed_2["hashes"]["sha256"].as_str().unwrap());
+        // A new version is new, whatever was built before it.
+        let newer = packed(&dir, "newer", "15.3.0", rg, "", "tuesday");
+        assert!(changes(&newer, Some(&store)).unwrap().rebuilds.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_store_that_holds_other_bytes_is_not_compared_against() {
+        let dir = scratch("builds-store");
+        let signed = packed(&dir, "signed", "15.2.0", &[("bin/rg", b"rg")], "", "monday");
+        let (repo, store, ..) = catalog_of(&dir, std::slice::from_ref(&signed));
+        let stored = store.join("bundles/org.dukovo.ripgrep-15.2.0.dkv");
+        std::fs::write(&stored, b"not the signed bytes").unwrap();
+        let again = packed(&dir, "again", "15.2.0", &[("bin/rg", b"rg")], "", "tuesday");
+        let err = repo.changes(&[again], &[], &[], Some(&store)).unwrap_err();
+        assert!(err.contains("not the bytes the targets list for bundles/"), "{err}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_files_that_differ_leave_out_the_sbom_and_the_manifests_version() {
+        let dir = scratch("changed-files");
+        let read = |name: &str| std::fs::read(dir.join(format!("{name}.dkv"))).unwrap();
+        let rg: &[(&str, &[u8])] = &[("bin/rg", b"rg"), ("share/rg.1", b"man")];
+        packed(&dir, "a", "15.2.0", rg, "", "monday");
+        packed(&dir, "b", "15.2.0_2", rg, "", "tuesday");
+        assert_eq!(changed_files(&read("b"), &read("a")), Ok(vec![]));
+        packed(&dir, "summary", "15.2.0_2", rg, r#", "summary": "Finds text""#, "monday");
+        assert_eq!(changed_files(&read("summary"), &read("a")), Ok(vec!["manifest.json".into()]));
+        let moved: &[(&str, &[u8])] = &[("bin/rg", b"rg"), ("share/man/rg.1", b"man")];
+        packed(&dir, "moved", "15.2.0", moved, "", "monday");
+        assert_eq!(
+            changed_files(&read("moved"), &read("a")),
+            Ok(vec!["share/man/rg.1".into(), "share/rg.1".into()])
+        );
+        let paths: Vec<String> = (1..=9).map(|n| format!("lib/{n}.so")).collect();
+        assert_eq!(
+            Files::named(&paths),
+            "lib/1.so, lib/2.so, lib/3.so, lib/4.so, lib/5.so, lib/6.so, lib/7.so, lib/8.so and \
+             1 more"
+        );
+        assert_eq!(Files::named(&paths[..8]), paths[..8].join(", "));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_plan_lists_a_rebuild_and_its_digest_is_that_of_its_targets() {
+        use crate::plan::{Action, Plan};
+        let dir = scratch("plan-builds");
+        let signed = packed(&dir, "signed", "15.2.0", &[("bin/rg", b"rg")], "", "monday");
+        let (repo, store, ..) = catalog_of(&dir, std::slice::from_ref(&signed));
+        let next = packed(&dir, "next", "15.2.0_2", &[("bin/rg", b"rg 2")], "", "tuesday");
+        std::fs::write(dir.join("next.reason"), "Linked with the C library fix").unwrap();
+        let changes = repo.changes(&[next], &[], &[], Some(&store)).unwrap();
+        let plan = repo.plan(Action::Sign, changes).unwrap();
+        let read = repo.plan_json(&plan, 182).unwrap();
+        let added = &read["added"][0];
+        assert_eq!(added["change"], "rebuild");
+        assert_eq!(added["replaces"], "15.2.0");
+        assert_eq!(added["files"], json!(["bin/rg"]));
+        assert_eq!(added["reason"], "Linked with the C library fix");
+        let mut unmarked = Changes::default();
+        unmarked.added.clone_from(&plan.changes.added);
+        let digest = Plan { action: Action::Sign, after: 1, changes: unmarked }.digest();
+        assert_eq!(read["digest"], digest.unwrap(), "the rebuild's fields are not signed");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_newest_version_is_the_newest_build() {
+        let dir = scratch("newest-build");
+        let builds: Vec<PathBuf> = ["15.2.0", "15.2.0_9", "15.2.0_10", "15.1.9_30"]
+            .iter()
+            .map(|version| {
+                packed(&dir, version, version, &[("bin/rg", version.as_bytes())], "", "")
+            })
+            .collect();
+        let (repo, ..) = catalog_of(&dir, &builds);
+        let targets = repo.targets().unwrap().unwrap().signed.signed;
+        assert_eq!(newest_versions(&targets)["org.dukovo.ripgrep"], "15.2.0_10");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2062,7 +2517,7 @@ mod tests {
         let bat = bundle(&dir, "org.dukovo.bat", "0.26.1", b"bat");
         let remove = ["bundles/org.dukovo.old-1.0.dkv".to_string()];
         let verified = ["org.dukovo.ripgrep".to_string()];
-        let changes = repo.changes(std::slice::from_ref(&bat), &remove, &verified).unwrap();
+        let changes = repo.changes(std::slice::from_ref(&bat), &remove, &verified, None).unwrap();
         repo.sign_targets(&changes, &[bat], &store, &both, 182).unwrap();
         let withdrawal =
             repo.withdraw("org.dukovo.ripgrep", "14.1.1", "broken", "it crashes", 7).unwrap();

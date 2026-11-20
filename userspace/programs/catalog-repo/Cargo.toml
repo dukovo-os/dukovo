@@ -13,6 +13,9 @@ publish.workspace = true
 [dependencies]
 # The bundles' manifests, read from their .dkv files (ADR 0222).
 dkv = { path = "../dkv" }
+# How bundle versions and their builds order (ADR 0595), as clients order
+# them.
+manifest = { path = "../manifest", features = ["bundle"] }
 serde_json = "1.0.140"
 # The waves a release reaches machines in, which a bundle's update goes
 # through as well (ADR 0544).
