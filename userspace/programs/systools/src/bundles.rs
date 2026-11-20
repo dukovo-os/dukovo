@@ -79,7 +79,7 @@ const USAGE: &str =
        bundle upgrade-manifest [FOLDER | FILE]
        bundle key
        bundle sign [FOLDER] [--key SECRET-KEY-FILE]
-       bundle pack [FOLDER] [--key SECRET-KEY-FILE] [--output FILE]
+       bundle pack [FOLDER] [--key SECRET-KEY-FILE] [--output FILE] [--zstd]
        bundle verify [FOLDER | FILE.dkv] [--key PUBLIC-KEY]
        bundle feed FOLDER [FILE.dkv...] [--key SECRET-KEY-FILE] [--days N]
        bundle unpack FILE.dkv FOLDER
@@ -154,6 +154,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let mut clear = false;
     let mut days = None;
     let mut unsigned = false;
+    let mut zstd = false;
     let mut json = false;
     let mut sha256 = None;
     let mut why = None;
@@ -175,6 +176,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             }
             Arg::Long(l) if l == "for-everyone" => everyone = true,
             Arg::Long(l) if l == "unsigned" => unsigned = true,
+            Arg::Long(l) if l == "zstd" => zstd = true,
             Arg::Long(l) if l == "yes" => yes = true,
             Arg::Short('y') => yes = true,
             Arg::Long(l) if l == "keep-data" && data.is_none() => data = Some(false),
@@ -211,6 +213,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let new_only = name.is_some() || publisher.is_some() || license.is_some();
     let key_ok = matches!(sub, Some("sign" | "pack" | "verify" | "feed")) || key.is_none();
     let output_ok = sub == Some("pack") || output.is_none();
+    let zstd_ok = sub == Some("pack") || !zstd;
     let days_ok = sub == Some("feed") || days.is_none();
     let unsigned_ok = sub == Some("install") || !unsigned;
     let json_ok = matches!(sub, Some("list" | "info" | "search" | "sheet")) || !json;
@@ -222,6 +225,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     }
     if !key_ok
         || !output_ok
+        || !zstd_ok
         || !days_ok
         || !unsigned_ok
         || !json_ok
@@ -275,7 +279,10 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         (Some("upgrade-manifest"), [] | [_]) => upgrade(folder()),
         (Some("key"), []) => show_key(),
         (Some("sign"), [] | [_]) => sign(Path::new(folder()), key.as_deref()).map(|_| 0),
-        (Some("pack"), [] | [_]) => pack(Path::new(folder()), key.as_deref(), output.as_deref()),
+        (Some("pack"), [] | [_]) => {
+            let method = if zstd { dkv::zip::Method::Zstd } else { dkv::zip::Method::Deflate };
+            pack(Path::new(folder()), key.as_deref(), output.as_deref(), method)
+        }
         (Some("verify"), [] | [_]) => verify(folder(), key.as_deref()),
         (Some("feed"), [folder, files @ ..]) => {
             feed(folder, files, key.as_deref(), days.unwrap_or(FEED_DAYS))
@@ -1556,8 +1563,14 @@ fn sign(folder: &Path, key: Option<&str>) -> Result<Manifest, Fail> {
 /// `bundle pack [FOLDER]`: the folder's `.dkv` file, ID-VERSION.dkv unless
 /// `--output` names another. A folder whose signature checks is packed as
 /// it is; one that is not signed, or has changed, is signed first, and
-/// `--key` signs it again with that key.
-fn pack(folder: &Path, key: Option<&str>, output: Option<&str>) -> Result<i32, Fail> {
+/// `--key` signs it again with that key. Its files are packed with
+/// `method`.
+fn pack(
+    folder: &Path,
+    key: Option<&str>,
+    output: Option<&str>,
+    method: dkv::zip::Method,
+) -> Result<i32, Fail> {
     if key.is_some() || signed::check_folder(folder).is_err() {
         sign(folder, key)?;
     }
@@ -1569,7 +1582,7 @@ fn pack(folder: &Path, key: Option<&str>, output: Option<&str>) -> Result<i32, F
     let partial = output.with_extension(format!("{EXTENSION}.partial"));
     let file = File::create(&partial).map_err(|e| util::failed(&partial.display(), e))?;
     let mut out = io::BufWriter::new(file);
-    let packed = signed::pack(folder, &mut out).and_then(|checked| {
+    let packed = signed::pack_with(folder, &mut out, method).and_then(|checked| {
         out.flush().map_err(|e| e.to_string())?;
         Ok(checked)
     });

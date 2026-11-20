@@ -401,6 +401,18 @@ pub fn retired(text: &str) -> Vec<u32> {
     text.lines().filter_map(|line| line.split(':').next()?.parse().ok()).collect()
 }
 
+/// The numbers in the text of [`RETIRED`] that accounts or groups called
+/// `name` had.
+pub fn retired_as(text: &str, name: &str) -> Vec<u32> {
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.split(':');
+            let number = fields.next()?.parse().ok()?;
+            (fields.next()? == name).then_some(number)
+        })
+        .collect()
+}
+
 /// The line of [`RETIRED`] for the number `number`, of the account or
 /// group `name`, removed on `day`.
 pub fn retired_line(number: u32, name: &str, day: &str) -> String {
@@ -473,6 +485,11 @@ pub fn add(
 /// the service's data folder, and [`NO_SHELL`]. `full_name` says whose
 /// service it is. An account of that name that is a service's already,
 /// with that home, is kept as it is. Its user, or why it cannot be made.
+///
+/// `returning` is the number of a removed account of this name whose data
+/// folder `home` still is (ADR 0591). The account takes that number again,
+/// and its group with it, when it is a service's number that no user or
+/// group has now, so that the data it left is its own once more.
 pub fn add_service(
     users: &mut Table<User>,
     groups: &mut Table<Group>,
@@ -480,6 +497,7 @@ pub fn add_service(
     full_name: &str,
     home: &str,
     retired: &[u32],
+    returning: Option<u32>,
 ) -> Result<User, String> {
     check_name(name)?;
     check_full_name(full_name)?;
@@ -492,8 +510,16 @@ pub fn add_service(
     if groups.entries().any(|g| g.name == name) {
         return Err(format!("there is a group {name} already"));
     }
-    let number = free_in(FIRST_SERVICE..=LAST_SERVICE, users, groups, retired)
-        .ok_or("every number of a service's account is taken")?;
+    let free = |n: &u32| {
+        (FIRST_SERVICE..=LAST_SERVICE).contains(n)
+            && !users.entries().any(|u| u.uid == *n)
+            && !groups.entries().any(|g| g.gid == *n)
+    };
+    let number = match returning.filter(free) {
+        Some(number) => number,
+        None => free_in(FIRST_SERVICE..=LAST_SERVICE, users, groups, retired)
+            .ok_or("every number of a service's account is taken")?,
+    };
     groups.push(Group { name: name.into(), gid: number, members: Vec::new() });
     let user = User {
         name: name.into(),

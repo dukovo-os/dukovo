@@ -256,6 +256,10 @@ bundle-keyring tools/xtask/src/bundles.rs userspace/programs/dkv/ userspace/prog
 bundle-keyring userspace/programs/systools/src/authd.rs userspace/programs/systools/src/authd/
 bundle-keyring userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles.rs
 bundle-keyring userspace/programs/systools/src/bundles/ userspace/programs/systools/src/keyring.rs
+bundle-leaves-nothing ports/ripgrep/ tools/xtask/src/bundles.rs userspace/programs/accounts/
+bundle-leaves-nothing userspace/programs/dkv/ userspace/programs/manifest/
+bundle-leaves-nothing userspace/programs/systools/src/authd.rs userspace/programs/systools/src/bundled.rs
+bundle-leaves-nothing userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
 bundle-lines tools/xtask/src/bundles.rs userspace/programs/dkv/ userspace/programs/manifest/
 bundle-lines userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles.rs
 bundle-lines userspace/programs/systools/src/bundles/

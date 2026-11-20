@@ -89,7 +89,7 @@ reports about a catalog app reach its publisher.
   Advisory Database's CC-BY-4.0, and OpenSSF's malicious packages'
   Apache-2.0.
 - **Not yet:** ecosystems other than crates.io, as bundles need them
-  (npm's export has more files than `dkv`'s zip reader takes, which
-  needs ZIP64); telling the person of a new flaw beyond the history and
+  (npm's export no longer waits on the `.dkv` format, since ADR 0590);
+  telling the person of a new flaw beyond the history and
   the log, which 15d's notifications do; and the advisories an update
   fixes, which 15d shows.

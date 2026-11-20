@@ -301,7 +301,7 @@ These come from finished work; the releases themselves are in the
 | yazi in the catalog | Needs tokio support | Port work |
 | socket2's Radix patch to offer TCP keep-alive's interval and count, then admind's own setsockopt for TCP_KEEPINTVL (`probe_every` in admind/serve.rs) removed | The patch predates the kernel's TCP_KEEPINTVL and TCP_KEEPCNT (#360) and leaves them out for Radix; changing it rebuilds the toolchain's crates | The next change to ports/rust-crates |
 | nmap in the catalog | NPSL license | Legal review |
-| Advisories for ecosystems other than crates.io; bundles over 4 GiB (ADRs 0222, 0389) | npm's export and large bundles need ZIP64 in `dkv` | A need |
+| Advisories for ecosystems other than crates.io (ADR 0389) | Each ecosystem's advisories need a source of their own; npm's export no longer waits on the `.dkv` format (ADR 0590) | A need |
 | mlibc functions with no code, which end the program (posix design note) | Each is written when a port needs it, upstream where general | A port |
 | `crypt(3)`, for nginx's `auth_basic` with `$5$` and `$6$` hashes (ADR 0491) | The C library has none; nginx's own schemes, `$apr1$` among them, work | A port that needs it, or upstream |
 | jemalloc for Valkey, with its active defragmentation: Valkey uses the C library's allocator (ADR 0492) | jemalloc has no port for Radix | A jemalloc port |

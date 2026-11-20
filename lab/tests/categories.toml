@@ -61,6 +61,11 @@ title = "Services and logs"
 about = "Spark's services: listed, stopped and started, and what they log; and the catalog's services, such as nginx"
 
 [[category]]
+name = "bundles"
+title = "Bundles"
+about = "The catalogs' bundles as a whole: each installs, runs and is removed, and what a removal leaves"
+
+[[category]]
 name = "monitoring"
 title = "Monitoring and alerts"
 about = "The machine's history and its Prometheus endpoint, read by the lab PC's promtool and checked against free, df and ps, and what reaches the owner: alerts by email and to webhooks, and the early warning of a disk filling"

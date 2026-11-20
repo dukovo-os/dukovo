@@ -416,9 +416,12 @@ it left behind.
 
 Removing a bundle installed for everyone stops its services, with a plain
 *stop*, which closes their sockets, and removes
-their files. Their accounts and data folders stay, for a later install
-to take up; with *--purge*, authd removes the accounts, whose numbers
-are retired, and bundled removes _/shared/services/ID_.
+their files. authd removes their accounts, whose numbers are retired,
+and bundled removes their folders in _/system/live/services_. Their data,
+_/shared/services/ID_, stays, owned by the retired numbers, for a later
+install to take up: authd gives each account its old number again when
+its data folder is still owned by that number. With *--purge* bundled
+removes the data too.
 
 # FILES
 

@@ -279,9 +279,17 @@ fn save(registry: &Registry) -> Result<(), String> {
     Ok(())
 }
 
-/// Writes user `uid`'s grants, whole or not at all.
+/// Writes user `uid`'s grants, whole or not at all. A person with none
+/// has no file, as before their first answer.
 fn save_grants(grants: &Grants, uid: u32) -> Result<(), String> {
     let records = grants.0.get(&uid).map_or(&[][..], Vec::as_slice);
+    if records.is_empty() {
+        let path = format!("{}/{uid}", grants::FOLDER);
+        return match fs::remove_file(&path) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(format!("{path}: {e}")),
+            _ => Ok(()),
+        };
+    }
     write_whole(&format!("{}/{uid}", grants::FOLDER), &Grants::text(records), 0o600)
 }
 
@@ -1312,13 +1320,18 @@ fn drop_service(name: &str) -> Option<String> {
         return Some(format!("{path}: {e}"));
     }
     let _ = fs::remove_file(state(&format!("{}/{name}", services::RECORDS)));
+    // Spark's last good copy of it goes too (ADR 0591).
+    if let Err(why) = crate::servicefiles::forget_good(name) {
+        return Some(why);
+    }
     stopped.filter(|why| !why.starts_with("no service is called"))
 }
 
 /// Stops and takes away the services of bundle `id`, installed for
-/// everyone; with `purge`, their accounts and data folders too, which are
-/// kept otherwise, for a later install to take up. What it did, for the
-/// removal's message.
+/// everyone, with their accounts and live folders. Their data folder
+/// `/shared/services/ID` stays, owned by the retired numbers, for a later
+/// install to take up (ADR 0591); `purge` removes it too. What it did,
+/// for the removal's message.
 fn remove_services(id: &str, purge: bool) -> Result<String, String> {
     let mut accounts: Vec<String> = Vec::new();
     let mut said = String::new();
@@ -1332,14 +1345,6 @@ fn remove_services(id: &str, purge: bool) -> Result<String, String> {
         if !accounts.contains(&record.account) {
             accounts.push(record.account);
         }
-    }
-    let data = format!("{}/{id}", services::DATA);
-    let kept = fs::symlink_metadata(&data).is_ok_and(|st| st.is_dir() && st.uid() == 0);
-    if !purge {
-        if kept {
-            let _ = write!(said, "; its services' data stays in {data}, for --purge to remove");
-        }
-        return Ok(said);
     }
     for name in &accounts {
         let request = accounts::request::Request::Remove { name: name.clone() };
@@ -1361,9 +1366,17 @@ fn remove_services(id: &str, purge: bool) -> Result<String, String> {
             }
         }
     }
-    if kept {
-        fs::remove_dir_all(&data).map_err(|e| format!("{data}: {e}"))?;
-        let _ = write!(said, ", with its services' accounts and data");
+    let data = format!("{}/{id}", services::DATA);
+    let kept = fs::symlink_metadata(&data).is_ok_and(|st| st.is_dir() && st.uid() == 0);
+    if purge {
+        if kept {
+            fs::remove_dir_all(&data).map_err(|e| format!("{data}: {e}"))?;
+        }
+        if !accounts.is_empty() {
+            let _ = write!(said, ", with its services' accounts and data");
+        }
+    } else if kept {
+        let _ = write!(said, "; its services' data stays in {data}, for --purge to remove");
     }
     Ok(said)
 }

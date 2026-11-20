@@ -404,9 +404,8 @@ impl Repo {
             let custom = target.custom.as_ref();
             let text = |key: &str| custom.and_then(|c| c.get(key)?.as_str().map(String::from));
             let (Some(id), Some(version)) = (text("id"), text("version")) else { continue };
-            let data = std::fs::read(store.join(path)).map_err(|e| format!("{path}: {e}"))?;
-            let archive =
-                dkv::zip::Archive::read(data.as_slice()).map_err(|e| format!("{path}: {e}"))?;
+            let file = std::fs::File::open(store.join(path)).map_err(|e| format!("{path}: {e}"))?;
+            let archive = dkv::zip::Archive::read(&file).map_err(|e| format!("{path}: {e}"))?;
             let Some(entry) = archive.file(dkv::sbom::SBOM) else { continue };
             let sbom = archive
                 .read_small(entry, dkv::sbom::SBOM_MAX)
