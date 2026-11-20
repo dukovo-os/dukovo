@@ -512,7 +512,7 @@ machine asks for them.
 | `git status` takes about 2.5 times Linux's time (5.0 ms against 1.98 ms on 1,000 files, with 15 context switches); no work is planned to close it yet | ADR 0294 |
 | Rows still above the 0.90 margin target, though under Linux: Btrfs zstd write, unmapping a page on another CPU, NVMe 1 MiB read (0.92 to 0.94) | Benchmark margin work |
 | smoltcp goes through every socket of an interface's stack for each packet and each poll: an idle socket costs about 110 instructions a round trip on the host, having been passed over in the send loop since it has nothing to send (the network benchmarks run beside 11, ADR 0550), where Linux looks a socket up by its address | ADR 0550 |
-| On real hardware (OptiPlex 7040, i5-6500) rows over Linux that pass under QEMU: `poll` 2.23; shared futex across CPUs 1.38; fork, exec and wait 1.38; pipe 1 MiB 1.12. The network rows (every packet woke every socket's waiters) are fixed by ADR 0550; the lab's next run there confirms them | Lab, performance/ipc, loopback and processes on the OptiPlex, 2026-11-13 |
+| On real hardware (OptiPlex 7040, i5-6500), on 2026-11-20: fork, exec and wait 1.12 times Linux's time, and the UDP round trip on one CPU 1.16 before ADR 0553; the lab's next run there confirms both. A program's start still opens five of mlibc's slabs, the dynamic linker's, each an mmap of its own; handing slabs out of one shared mapping would make them one | Lab, performance/loopback and processes on the OptiPlex; mlibc patch 0092 |
 
 ## Lab findings to confirm
 

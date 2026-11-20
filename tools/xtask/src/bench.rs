@@ -171,7 +171,7 @@ pub const BUDGETS: &[(&str, u64)] = &[
     ("channel_roundtrip_same_cpu", 5_100),     // 4,587
     ("ring_roundtrip_same_cpu", 9_400),        // 8,489
     ("posix_fork_wait", 170_000),              // 153,856, with norandmaps
-    ("posix_fork_exec_wait", 590_000),         // 531,676
+    ("posix_fork_exec_wait", 520_000),         // 465,643, with mlibc starting without the heap
     ("posix_pipe_mib", 2_500_000),             // 2,188,725
     ("posix_signal", 5_900),                   // 5,300
     ("posix_poll", 1_300),                     // 1,092
@@ -179,7 +179,7 @@ pub const BUDGETS: &[(&str, u64)] = &[
     ("posix_futex_shared_same_cpu", 5_800),    // 5,248
     ("posix_tcp_connect", 71_000),             // 64,734, beside 11 idle sockets (ADR 0550)
     ("posix_tcp_roundtrip_same_cpu", 11_000),  // 9,274
-    ("posix_udp_roundtrip_same_cpu", 23_500),  // 21,291, beside 11 idle sockets (ADR 0550)
+    ("posix_udp_roundtrip_same_cpu", 15_000),  // 13,189, straight across (ADR 0553)
     ("posix_tcp_mib", 1_700_000),              // 1,515,375
 ];
 
