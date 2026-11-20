@@ -68,7 +68,8 @@ ext/posix/tests/posix_sysconf.phpt
 # Files: a tmpfs folder takes 32,768 entries, and the test makes 70,000
 # (ENOMEM); fsync(2) and fdatasync(2) of a descriptor that is not a file
 # succeed where Linux answers EINVAL; a path with a slash after a file
-# names the file, where Linux answers ENOTDIR; utimes(2) refuses a time
+# named the file, where Linux answers ENOTDIR, until ADR 0352 (the lab's
+# next run of the suite drops the tests that pass); utimes(2) refuses a time
 # before 1970 and an access time with a modification time (EINVAL); a
 # process whose working folder was removed still gets its path from getcwd().
 ext/standard/tests/file/bug36365.phpt

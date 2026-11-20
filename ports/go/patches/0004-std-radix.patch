@@ -608,6 +608,64 @@ index dca83a52..a66ce295 100644
  
  package os
  
+diff --git a/src/os/root_openat.go b/src/os/root_openat.go
+index ee786176..92eb750d 100644
+--- a/src/os/root_openat.go
++++ b/src/os/root_openat.go
+@@ -109,7 +109,7 @@ func rootChtimes(r *Root, name string, atime time.Time, mtime time.Time) error {
+ func rootMkdir(r *Root, name string, perm FileMode) error {
+ 	flags := uint(doInRootCreatingDirectory)
+ 	switch runtime.GOOS {
+-	case "linux", "windows", "openbsd":
++	case "linux", "radix", "windows", "openbsd":
+ 		// These platforms do not follow "symlink" on "mkdir symlink/".
+ 		// (POSIX.1-2024 4.16 says that the trailing slash should cause
+ 		// resolution to follow the symlink, but we're trying to match
+@@ -185,7 +185,7 @@ func rootMkdirAll(r *Root, fullname string, perm FileMode) error {
+ 	}
+ 	flags := uint(doInRootCreatingDirectory)
+ 	switch runtime.GOOS {
+-	case "linux", "windows", "openbsd":
++	case "linux", "radix", "windows", "openbsd":
+ 		flags |= doInRootNoHandleTerminalSlash // see rootMkdir
+ 	}
+ 	_, err := doInRoot(r, fullname, flags, openDirFunc, openLastComponentFunc)
+diff --git a/src/os/root_test.go b/src/os/root_test.go
+index 353218a0..2addc039 100644
+--- a/src/os/root_test.go
++++ b/src/os/root_test.go
+@@ -1159,8 +1159,9 @@ var rootConsistencyTestCases = []rootConsistencyTest{{
+ 	},
+ 	open: "link/",
+ 	check: func(t *testing.T) {
+-		if runtime.GOOS == "linux" && strings.HasPrefix(t.Name(), "TestRootConsistencyRename/") {
+-			// Linux does not resolve "symlink" in rename("symlink/", "target").
++		if (runtime.GOOS == "linux" || runtime.GOOS == "radix") && strings.HasPrefix(t.Name(), "TestRootConsistencyRename/") {
++			// Linux does not resolve "symlink" in rename("symlink/", "target"),
++			// nor does Radix.
+ 			t.Skip("known inconsistency on linux")
+ 		}
+ 		if strings.HasPrefix(t.Name(), "TestRootConsistencyRemoveAll/") {
+@@ -3292,7 +3293,7 @@ func TestRootMultiRename(t *testing.T) {
+ 			// TODO: check that the file is in its new location
+ 		}
+ 
+-		if runtime.GOOS == "linux" && (test.source.slashSuffix() || test.target.slashSuffix()) {
++		if (runtime.GOOS == "linux" || runtime.GOOS == "radix") && (test.source.slashSuffix() || test.target.slashSuffix()) {
+ 			return "", errSkipRootConsistencyCheck
+ 		}
+ 
+@@ -3390,8 +3391,8 @@ func TestRootMultiRemove(t *testing.T) {
+ 		case test.target.kind == testFileAbsent:
+ 			test.wantError(t, gotErr, errAny)
+ 		case test.target.anySlashSuffix():
+-			if runtime.GOOS == "linux" {
+-				// Linux treats rmdir("symlink/") as an error when
++			if runtime.GOOS == "linux" || runtime.GOOS == "radix" {
++				// Linux and Radix treat rmdir("symlink/") as an error when
+ 				// "symlink" is a symlink to a directory.
+ 				// Root.Remove prefers the POSIX interpretation
+ 				// of resolving the symlink.
 diff --git a/src/os/stat_radix.go b/src/os/stat_radix.go
 new file mode 100644
 index 00000000..83c4301e
