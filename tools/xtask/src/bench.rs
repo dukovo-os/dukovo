@@ -468,11 +468,19 @@ const ROWS: &[Row] = &[
     disk("posix_nvme_write_mib", "Disk: 1 MiB written raw to an NVMe disk"),
     disk("posix_sd_read_4k", "SD: 4 KiB read raw from an SD card in a PCI reader (`pread`)"),
     disk("posix_sd_write_4k", "SD: 4 KiB written raw to an SD card in a PCI reader (`pwrite`)"),
-    disk("posix_sd_read_64k", "SD: 64 KiB read raw from an SD card in a PCI reader"),
-    disk("posix_sd_write_64k", "SD: 64 KiB written raw to an SD card in a PCI reader"),
     // QEMU's sdhci-pci moves each byte of a transfer through the card's
-    // emulation one call at a time: 1 MiB takes it over 150 ms, the
-    // same for both systems, beside which neither's own work shows.
+    // emulation one call at a time: 64 KiB takes it some 14 ms and 1 MiB
+    // over 200 ms, the same for both systems, and how fast it goes moves
+    // with how the host runs QEMU's threads by more than either system's
+    // own work, which the 4 KiB rows show (ADR 0552).
+    Row {
+        gate: Gate::Emulated,
+        ..disk("posix_sd_read_64k", "SD: 64 KiB read raw from an SD card in a PCI reader")
+    },
+    Row {
+        gate: Gate::Emulated,
+        ..disk("posix_sd_write_64k", "SD: 64 KiB written raw to an SD card in a PCI reader")
+    },
     Row {
         gate: Gate::Emulated,
         ..disk("posix_sd_read_mib", "SD: 1 MiB read raw from an SD card in a PCI reader")
@@ -1387,7 +1395,7 @@ fn linux_vm_numbers(
         reboot: false,
         gdb: false,
         qmp: None,
-        extra: disk_args(dir, btrfs, "linux")?,
+        extra: disk_args(dir, btrfs)?,
         write_log: None,
         direct: Some(DirectBoot {
             kernel: kernel.to_path_buf(),
@@ -1584,7 +1592,7 @@ fn radix_posix_numbers(
         test::with_cmdline(base, &accel.cmdline(POSIX_CMDLINE)).map_err(crate::Error::new)?;
     std::fs::write(&image, bytes).context(|| format!("writing {}", image.display()))?;
     let mut extra = accel.extra();
-    extra.extend(disk_args(dir, btrfs, "radix")?);
+    extra.extend(disk_args(dir, btrfs)?);
     let machine = Machine {
         firmware: Firmware::Bios,
         media: Media::Usb,
@@ -1629,28 +1637,8 @@ fn radix_posix_numbers(
 /// on q35's AHCI controller, holding a disc of the same bytes as the
 /// first two, read only: `cd0` on Radix, `/dev/sr0` on Linux. Each boot
 /// gets the same disks, card and disc.
-fn disk_args(dir: &Path, btrfs: &Path, label: &str) -> Result<Vec<String>> {
+fn disk_args(dir: &Path, btrfs: &Path) -> Result<Vec<String>> {
     let mut args = vec!["-device".into(), "sdhci-pci,id=bench-reader".into()];
-    // EXPERIMENT: QEMU's traces of the SD card reader, one file a boot.
-    if let Ok(traces) = std::env::var("OB_SD_TRACE") {
-        static BOOTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let boot = BOOTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        std::fs::create_dir_all(&traces).context(|| traces.clone())?;
-        args.extend([
-            "-msg".into(),
-            "timestamp=on".into(),
-            "-trace".into(),
-            "sdhci_send_command".into(),
-            "-trace".into(),
-            "sdhci_adma_loop".into(),
-            "-trace".into(),
-            "sdhci_adma_transfer_completed".into(),
-            "-trace".into(),
-            "sdhci_access".into(),
-            "-D".into(),
-            format!("{traces}/{boot:02}-{label}.log"),
-        ]);
-    }
     for (name, device, media) in [
         ("bench-disk", "virtio-blk-pci,drive=bench-disk", ""),
         ("bench-nvme", "nvme,serial=bench,drive=bench-nvme", ""),
@@ -2229,6 +2217,8 @@ mod tests {
         assert!(check_gate(&numbers).is_ok());
         assert!(ROWS.iter().any(|r| r.radix == "posix_git_status" && r.gate == Gate::Yet));
         assert!(ROWS.iter().any(|r| r.radix == "posix_sd_read_mib" && r.gate == Gate::Emulated));
+        assert!(ROWS.iter().any(|r| r.radix == "posix_sd_write_64k" && r.gate == Gate::Emulated));
+        assert!(ROWS.iter().any(|r| r.radix == "posix_sd_write_4k" && r.gate == Gate::Held));
     }
 
     #[test]

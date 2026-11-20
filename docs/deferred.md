@@ -536,7 +536,7 @@ finding or removed.
 
 | Item | Why it waits |
 | --- | --- |
-| The SD 1 MiB benchmark rows: printed but not gated | They sit at 1.00 because QEMU's SD emulation takes nearly all of both systems' time |
+| The SD 64 KiB and 1 MiB benchmark rows: printed but not gated (ADR 0552) | QEMU's SD emulation takes nearly all of both systems' time, and its speed moves with the runner; a real reader in the lab would show each system's own work |
 | Printing: the design's open questions | Drafted for a release after 1.0 |
 | Known weak spots to plan for: Wi-Fi, Bluetooth and webcams; large desktop apps; Btrfs maturity | Raised, not yet discussed |
 | Nightly system releases on the update server, and the key that signs them (ADRs 0456, 0467); to decide before 1.0.0-alpha.1 | The server offers stable and beta; a nightly release would be signed at every merge with no person there, and ADR 0457 keeps release keys off servers and out of CI |

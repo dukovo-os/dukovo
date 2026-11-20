@@ -64,26 +64,24 @@ jobs:
       - name: ./ob bench
         id: gate
         run: |
-          # EXPERIMENT: QEMU's SD card reader traces, summarized.
-          nproc
-          OB_SD_TRACE=$PWD/out/sdtrace ./ob bench --runs 1 --summary "$GITHUB_STEP_SUMMARY"
-          grep -h "| SD: " out/bench/report.md || true
-          grep -h "posix_sd" out/bench/boot-posix-bench.log || true
-          ls -la out/sdtrace
-          python3 -I tools/experiments/sdtrace.py out/sdtrace
+          ./ob bench --gate --defer-close --summary "$GITHUB_STEP_SUMMARY"
+          if [ -s out/bench/close.txt ]; then
+            echo "::warning::Over the gate only by a little, at: $(paste -sd ';' out/bench/close.txt). Running the gate again on another runner"
+            echo "close=true" >> "$GITHUB_OUTPUT"
+          fi
 
       # How open and close scale with 1, 4 and 8 workers at once on 4
       # CPUs, next to Linux: every row held to Linux's time, as the
       # operations above are (ADR 0409).
       - name: ./ob bench --scaling --gate
-        if: false
+        if: ${{ !cancelled() }}
         run: ./ob bench --scaling --gate --summary "$GITHUB_STEP_SUMMARY"
 
       # The lab's net boot of real machines, end to end in QEMU (ADR
       # 0429): the disk writer runs on the pinned Linux restored above,
       # and this job has KVM.
       - name: ./ob test lab-writer
-        if: false
+        if: ${{ !cancelled() }}
         run: ./ob test lab-writer
 
       - name: Upload the benchmark numbers

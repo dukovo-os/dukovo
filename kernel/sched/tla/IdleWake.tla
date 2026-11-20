@@ -9,13 +9,13 @@
 (* A waker sets the idle CPU's `need_resched`, then reads its `polling`    *)
 (* flag: if the CPU polls (or waits in MWAIT, which watches the `wake`     *)
 (* word) it writes `wake`; otherwise it sends an interrupt. The idle CPU,  *)
-(* with interrupts masked, checks `need_resched` and then either polls     *)
-(* (under a hypervisor without MWAIT, ADR 0037) or goes straight to its    *)
-(* sleep. Polling sets `polling`, spins with interrupts on until           *)
-(* `need_resched` is set or its time is up, clears `polling` and checks    *)
-(* `need_resched` again. Sleeping sets `polling` only for MWAIT, checks    *)
-(* `need_resched` once more and halts (STI; HLT, so an interrupt that is   *)
-(* already pending ends the halt at once) or waits in MWAIT.              *)
+(* with interrupts masked, checks `need_resched` and then either polls (as *)
+(* long as its recent idle periods suggest, ADR 0037 and ADR 0551) or goes *)
+(* straight to its sleep. Polling sets `polling`, spins with interrupts on *)
+(* until `need_resched` is set or its time is up, clears `polling` and     *)
+(* checks `need_resched` again. Sleeping sets `polling` only for MWAIT,    *)
+(* checks `need_resched` once more and halts (STI; HLT, so an interrupt    *)
+(* that is already pending ends the halt at once) or waits in MWAIT.       *)
 (*                                                                         *)
 (* Every flag access the protocol relies on is sequentially consistent in  *)
 (* the code, so the model's interleaving of single accesses covers every   *)
@@ -36,7 +36,7 @@ CONSTANTS
 
 VARIABLES
     mwait,      \* the CPU waits with MONITOR and MWAIT (else HLT)
-    pollFirst,  \* it polls before sleeping (a virtual CPU without MWAIT)
+    pollFirst,  \* it polls before sleeping (every CPU may, ADR 0551)
     need,       \* its need_resched
     polling,    \* its polling flag
     wake,       \* its wake word
@@ -62,7 +62,7 @@ TypeOK ==
 
 Init ==
     /\ mwait \in BOOLEAN
-    /\ pollFirst \in {FALSE, ~mwait}
+    /\ pollFirst \in BOOLEAN
     /\ need = FALSE
     /\ polling = FALSE
     /\ wake = 0
