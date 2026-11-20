@@ -1914,7 +1914,7 @@ _target/userspace/_).
 	*--debug*, *--release*
 		As for *build*.
 
-*catalog* *key* *yubikey* [*--serial* _n_] | *key* *new* _file_ _name_ [_role_]... | *root* [*--days* _n_] | *sign* [*--days* _n_] [*--remove* _path_]... [*--yes*] [_bundle_]... | *withdraw* _id_ _version_ *--kind* *broken*|*malicious* *--reason* _text_ [*--yes*] | *publish* | *status* [*--json*] | *server* *setup* [*--dukovo*] | *deploy* | *check* [_url_] | *rollout* (*pause* _id_ _version_ _reason_ | *resume* _id_ _version_)
+*catalog* *key* *yubikey* [*--serial* _n_] | *key* *new* _file_ _name_ [_role_]... | *root* [*--days* _n_] | *sign* [*--days* _n_] [*--remove* _path_]... [*--renew*] [*--yes*|*--preview*|*--expect* _digest_] [_bundle_]... | *withdraw* _id_ _version_ *--kind* *broken*|*malicious* *--reason* _text_ [*--yes*|*--preview*|*--expect* _digest_] | *publish* | *status* [*--json*] | *server* *setup* [*--dukovo*] | *deploy* | *check* [_url_] | *verify* | *pr* | *rollout* (*pause* _id_ _version_ _reason_ | *resume* _id_ _version_)
 	Make and sign the catalog's TUF repository in _catalog/_ (ADR 0381),
 	with catalog-repo, which ob builds for this machine. Every command
 	takes *--key* _file_, an Ed25519 secret key that signs in place of a
@@ -1935,15 +1935,48 @@ _target/userspace/_).
 	changes in targets, the bundles in _out/bundles/_, or those named,
 	and the paths
 	*--remove* takes out, asks, and signs the next targets with one touch
-	of a YubiKey, good for half a year; a bundle's ID and version, once
-	signed, are never signed again as other bytes. The new bundles wait
-	in _out/catalog/store/_. *publish* signs a snapshot and timestamp
+	of a YubiKey, good for half a year. A bundle's ID and version, once
+	signed, are never signed again as other bytes: a bundle whose version
+	the targets list already, packed again as other bytes, is not an
+	error but is kept as signed, listed on a line that starts with *=*,
+	and the rest of the batch is signed; a rebuild reaches computers only
+	under a new version. The new bundles wait in _out/catalog/store/_.
+	*publish* signs a snapshot and timestamp
 	with the online key and lays out what the update server serves in
 	_out/catalog/site/_, every file by its version or SHA-256, then reads
 	it all back as a new computer would. *status* says each role's
 	version and expiry, and warns a month before. The YubiKeys need
 	yubikey-manager (the *yubikey-manager* package on Debian, Ubuntu and
 	Linux Mint) and the system's Python.
+
+	*sign --renew* signs the targets again as they are, with no bundle
+	read and none taken out, to renew their expiry; it packs nothing, and
+	is refused when a bundle is named or *--remove* is given.
+
+	*--preview* lists the change, writes the plan to
+	_out/catalog/plan.json_ and prints a line saying which targets
+	version would be signed and until when, then *Plan:* and the plan's
+	absolute path as the last line. It signs nothing and looks for no
+	key, and takes no path of its own in ob. The plan is a JSON file of
+	the action (*sign*, *renew* or *withdraw*), the targets version it
+	follows and makes, the keys that may sign, each bundle added (with
+	its length and SHA-256), taken out, newly marked as verified or
+	withdrawn, the versions kept as signed, and a *digest*: the SHA-256,
+	in 64 lower-case hex digits, of what signing would write, which
+	leaves out the clock (the expiry and a withdrawal's time) and the
+	kept versions. *--expect* _digest_ lists the batch again and signs it
+	with no question only if its digest is _digest_; otherwise it fails
+	with "prepare again", before any key is looked for. Only one of
+	*--yes*, *--preview* and *--expect* may be given. *sign* packs the
+	ports first only when no bundle is named and neither *--renew* nor
+	*--expect* is given, since packing again could change what was read.
+	*sign* also refuses a bundle whose bytes changed after the list was
+	made.
+
+	Before *sign* or *withdraw*, ob reads what the update server serves,
+	and refuses, with "this checkout is behind; pull main first", when it
+	serves a newer targets or root version than _catalog/_ holds; a
+	server it cannot read is warned of, and signing goes on offline.
 
 	*withdraw* pulls a version the targets list (ADR 0593). _id_ is the
 	bundle's full ID as its target has it, which is _ID_@_LINE_ for a
@@ -1990,12 +2023,47 @@ _target/userspace/_).
 	to (ADR 0389); so *sign* needs _catalog/keys/online.json_. *check*
 	reads a catalog served at _url_, by default
 	_https://updates.dukovo.org/catalog/_, as a new computer would, from
-	the first root in _catalog/metadata/_, and fetches every bundle.
+	the first root in _catalog/metadata/_, and fetches every bundle; the
+	one that *deploy* ends with is the same, so none is needed after it.
 	*status* lists the roles' versions and expiry, the keys and the
 	bundles that *sign* would add; with *--json* it prints the same as
-	JSON, and the bundles in _out/bundles/_ not yet signed, for Dukovo
+	JSON, and the bundles in _out/bundles/_ not yet signed, as *unsigned*
+	with *added*, *removed*, *verified* (publishers newly marked) and
+	*rebuilt* (versions packed again as other bytes), for Dukovo
 	Ops. *served* of catalog-repo, which *updates status* runs, reads
 	what the server serves without fetching the bundles.
+
+	*verify* checks _catalog/_ offline, as a computer checks what it is
+	served: every root from the first signed by its own keys and by the
+	one before, the targets signed by the newest root's keys and not
+	expired, and every target under the path its ID and version give. It
+	prints one line, such as _catalog: root 1, targets version 2 signed
+	by c81a7cbb…, 9 bundles, good until 2027-05-20_, and exits 1 with
+	the reason otherwise. CI runs it on every pull request (ADR 0594).
+	*since* of catalog-repo lists what the targets changed since those in
+	a file.
+
+	*pr* records in a pull request what *sign* signed and *deploy*
+	published (ADR 0594). It runs *verify*, fetches _origin/main_, takes
+	the files of _catalog/keys/_ and _catalog/metadata/_ that differ from
+	main's, and refuses when _catalog/_ is older than main, when a
+	version main holds has other bytes, or when the update server does
+	not serve what _catalog/_ holds. It builds one commit on _origin/main_
+	in an index of its own, signed off with *git config* *user.name* and
+	*user.email*, and pushes it, never forced, as _catalog-targets-N_ (or
+	_catalog-root-M_ when only the root changed); a branch of that name on
+	GitHub with no open pull request is refused. It opens the pull
+	request with *gh*, which must be installed (*sudo apt install gh*) and
+	signed in (*gh auth login*), and turns on auto-merge, squashing; when
+	the repository refuses that, it says to merge when the checks pass. An
+	open pull request of that branch is reported, not opened again. An
+	older open catalog pull request is named in the new one and not
+	closed. HEAD, the branch and the working tree are never touched; only
+	the signed files are staged, so that the next *git pull --ff-only*
+	takes main's copies. The last two lines are *Targets version N is
+	live, and this pull request records it:* (*this open pull request*
+	when one was open) and its URL. With nothing differing from main it
+	prints *catalog/ is main's: nothing to propose* and succeeds.
 
 	The newest version of each bundle goes out to computers in waves
 	(ADR 0544), as a system release does (*release*): the targets

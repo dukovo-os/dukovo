@@ -12,7 +12,8 @@ use std::process::ExitCode;
 use serde_json::{Value, json};
 
 use catalog_repo::keys::{self, Signers};
-use catalog_repo::{FLAWS_DAYS, Refreshed, Repo, WARN_DAYS, expires_days};
+use catalog_repo::plan::{self, Action};
+use catalog_repo::{Changes, FLAWS_DAYS, Refreshed, Repo, WARN_DAYS, expires_days};
 use system_release::rollout::{Plan, Plans};
 use system_release::verdict;
 
@@ -21,16 +22,25 @@ usage: catalog-repo --repo DIR [--yubikey-helper PROGRAM] [--key FILE]... COMMAN
        key yubikey [--serial N]          add the key of a YubiKey's slot 9c
        key new FILE NAME [ROLE]...       make an Ed25519 key, its secret in FILE
        root [--days N]                   sign the next root, from keys/
-       sign [--days N] [--remove PATH]... [--verified ID]... [--yes] [BUNDLE]...
+       sign [--days N] [--remove PATH]... [--verified ID]... [--renew]
+            [--yes | --preview FILE | --expect DIGEST] [BUNDLE]...
                                          sign the next targets: one touch a batch,
                                          the bundles in --bundles DIR by default;
                                          a bundle of an ID given with --verified is
                                          listed as one whose publisher the catalog
-                                         vouches for
+                                         vouches for; a version listed already as
+                                         other bytes is kept as signed; --renew
+                                         reads no bundle; --preview writes the plan
+                                         to FILE and signs nothing; --expect signs
+                                         only a plan of that digest
        withdraw --id ID --version V --kind broken|malicious --reason TEXT
-                [--days N] [--yes] --store DIR
+                [--days N] [--yes | --preview FILE | --expect DIGEST] --store DIR
                                          sign the next targets with that version of
                                          ID, as the targets list it, withdrawn
+       since [FILE]                      what targets.json changed since the targets
+                                         in FILE, or since none
+       verify                            check the catalog offline, as a computer
+                                         checks it
        publish --store DIR --out DIR [--plan FILE]
                                          snapshot, timestamp and the files to serve,
                                          the rollouts of the plan signed first
@@ -66,6 +76,9 @@ struct Options {
     kind: Option<String>,
     reason: Option<String>,
     yes: bool,
+    renew: bool,
+    preview: Option<PathBuf>,
+    expect: Option<String>,
     json: bool,
     store: Option<PathBuf>,
     out: Option<PathBuf>,
@@ -92,6 +105,9 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
         kind: None,
         reason: None,
         yes: false,
+        renew: false,
+        preview: None,
+        expect: None,
         json: false,
         store: None,
         out: None,
@@ -128,7 +144,10 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
             "--now" => {
                 options.now = Some(value()?.parse().map_err(|_| "--now takes seconds since 1970")?);
             }
+            "--preview" => options.preview = Some(value()?.into()),
+            "--expect" => options.expect = Some(value()?),
             "--yes" => options.yes = true,
+            "--renew" => options.renew = true,
             "--json" => options.json = true,
             "-h" | "--help" => return Err(USAGE.into()),
             _ if arg.starts_with("--") => return Err(format!("unknown option {arg}\n{USAGE}")),
@@ -190,27 +209,11 @@ fn run(options: &Options) -> Result<ExitCode, String> {
                 repo.sign_root(&signers()?, options.days.unwrap_or(expires_days("root")))?;
             println!("Signed root version {version}.");
         }
-        ["sign", bundles @ ..] => {
-            let mut bundles: Vec<PathBuf> = bundles.iter().map(PathBuf::from).collect();
-            if bundles.is_empty() {
-                bundles = bundles_in(options.bundles.as_deref());
-            }
-            let changes = repo.changes(&bundles, &options.remove, &options.verified)?;
-            let store = options.store.as_ref().ok_or("--store is needed")?;
-            if changes.is_empty() {
-                println!("Nothing has changed; signing again renews targets' expiry.");
-            }
-            for line in changes.lines() {
-                println!("{line}");
-            }
-            if !options.yes && !confirm("Sign these into the catalog?")? {
-                return Err("not signed".into());
-            }
-            let days = options.days.unwrap_or(expires_days("targets"));
-            let version = repo.sign_targets(&changes, &bundles, store, &signers()?, days)?;
-            println!("Signed targets version {version}.");
-        }
-        ["withdraw"] => withdraw(&repo, options, &signers()?)?,
+        ["sign", named @ ..] => sign(&repo, options, named, signers)?,
+        ["withdraw"] => withdraw(&repo, options, signers)?,
+        ["since"] => since(&repo, None)?,
+        ["since", file] => since(&repo, Some(Path::new(file)))?,
+        ["verify"] => println!("{}", repo.verify(tuf::time::now())?.line()),
         ["publish"] => {
             let store = options.store.as_ref().ok_or("--store is needed")?;
             let out = options.out.as_ref().ok_or("--out is needed")?;
@@ -279,8 +282,120 @@ fn run(options: &Options) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Whether `--expect` holds a digest: 64 lower-case hex digits.
+fn is_digest(text: &str) -> bool {
+    text.len() == 64 && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Says what `plan` changes, then settles whether to sign it: with
+/// `--preview`, it writes the plan and signs nothing; with `--expect`, it
+/// signs only when the plan's digest is the one given, which is checked
+/// before any key is looked for; otherwise it asks, unless `--yes`.
+fn settle(
+    repo: &Repo,
+    options: &Options,
+    plan: &plan::Plan,
+    days: i64,
+    ask: &str,
+) -> Result<bool, String> {
+    let given = [options.yes, options.preview.is_some(), options.expect.is_some()];
+    if given.iter().filter(|given| **given).count() > 1 {
+        return Err("give one of --yes, --preview and --expect".into());
+    }
+    if let Some(expected) = &options.expect
+        && !is_digest(expected)
+    {
+        return Err(format!("--expect takes a plan's digest, 64 hex digits, not {expected:?}"));
+    }
+    if plan.changes.is_empty() && plan.action != Action::Withdraw {
+        println!("Nothing has changed; signing again renews targets' expiry.");
+    }
+    for line in plan.changes.lines() {
+        println!("{line}");
+    }
+    if let Some(file) = &options.preview {
+        let written = repo.write_plan(plan, days, file)?;
+        println!(
+            "Targets version {} would be signed, good until {}. Nothing is signed yet.",
+            written["targets"]["version"],
+            written["targets"]["expires"].as_str().unwrap_or("?")
+        );
+        println!("Plan: {}", file.display());
+        return Ok(false);
+    }
+    if let Some(expected) = &options.expect {
+        let digest = plan.digest()?;
+        if digest != *expected {
+            return Err(format!(
+                "what would be signed now is not what was previewed (digest {digest}, previewed \
+                 {expected}): prepare again"
+            ));
+        }
+        return Ok(true);
+    }
+    if !options.yes && !confirm(ask)? {
+        return Err("not signed".into());
+    }
+    Ok(true)
+}
+
+/// `sign [BUNDLE]...`: signs the next targets with the bundles named, or
+/// those in `--bundles`, or with none when `--renew`.
+fn sign(
+    repo: &Repo,
+    options: &Options,
+    named: &[&str],
+    signers: impl Fn() -> Result<Signers, String>,
+) -> Result<(), String> {
+    if options.renew && (!named.is_empty() || !options.remove.is_empty()) {
+        return Err(
+            "--renew signs the targets as they are: name no bundle and take none out".into()
+        );
+    }
+    let bundles: Vec<PathBuf> = match named {
+        _ if options.renew => Vec::new(),
+        [] => bundles_in(options.bundles.as_deref()),
+        named => named.iter().map(PathBuf::from).collect(),
+    };
+    let changes = repo.changes(&bundles, &options.remove, &options.verified)?;
+    let action = if options.renew { Action::Renew } else { Action::Sign };
+    let plan = repo.plan(action, changes)?;
+    let days = options.days.unwrap_or(expires_days("targets"));
+    if !settle(repo, options, &plan, days, "Sign these into the catalog?")? {
+        return Ok(());
+    }
+    let store = options.store.as_ref().ok_or("--store is needed")?;
+    let version = repo.sign_targets(&plan.changes, &bundles, store, &signers()?, days)?;
+    println!("Signed targets version {version}.");
+    Ok(())
+}
+
+/// `since [FILE]`: the lines of what `targets.json` changed since the
+/// targets in FILE, or since none.
+fn since(repo: &Repo, file: Option<&Path>) -> Result<(), String> {
+    let old = match file {
+        Some(file) => {
+            let bytes = std::fs::read(file).map_err(|e| format!("{}: {e}", file.display()))?;
+            let old = tuf::metadata::Signed::<tuf::metadata::Targets>::parse(&bytes)
+                .map_err(|e| format!("{}: {e}", file.display()))?;
+            Some(old)
+        }
+        None => None,
+    };
+    let new = repo.targets()?.ok_or("no targets have been signed yet")?;
+    let changes = Changes::between(old.as_ref().map(|old| &old.signed), &new.signed.signed);
+    for line in changes.lines() {
+        println!("{line}");
+    }
+    Ok(())
+}
+
 /// Signs the next targets with one version withdrawn, since `--now`.
-fn withdraw(repo: &Repo, options: &Options, signers: &Signers) -> Result<(), String> {
+fn withdraw(
+    repo: &Repo,
+    options: &Options,
+    signers: impl Fn() -> Result<Signers, String>,
+) -> Result<(), String> {
     let needed = |value: &Option<String>, name: &str| {
         value.clone().ok_or(format!("{name} is needed\n{USAGE}"))
     };
@@ -288,18 +403,16 @@ fn withdraw(repo: &Repo, options: &Options, signers: &Signers) -> Result<(), Str
     let version = needed(&options.version, "--version")?;
     let kind = needed(&options.kind, "--kind")?;
     let reason = needed(&options.reason, "--reason")?;
-    let store = options.store.as_ref().ok_or("--store is needed")?;
     let since = u64::try_from(options.now.unwrap_or_else(tuf::time::now))
         .map_err(|_| "--now takes seconds since 1970")?;
     let changes = repo.withdraw(&id, &version, &kind, &reason, since)?;
-    for line in changes.lines() {
-        println!("{line}");
-    }
-    if !options.yes && !confirm("Sign this withdrawal into the catalog?")? {
-        return Err("not signed".into());
-    }
+    let plan = repo.plan(Action::Withdraw, changes)?;
     let days = options.days.unwrap_or(expires_days("targets"));
-    let signed = repo.sign_targets(&changes, &[], store, signers, days)?;
+    if !settle(repo, options, &plan, days, "Sign this withdrawal into the catalog?")? {
+        return Ok(());
+    }
+    let store = options.store.as_ref().ok_or("--store is needed")?;
+    let signed = repo.sign_targets(&plan.changes, &[], store, &signers()?, days)?;
     println!("Signed targets version {signed}.");
     Ok(())
 }
@@ -489,9 +602,16 @@ fn served(repo: &Repo, options: &Options, url: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `status --json`: what `status` prints, as JSON, and the bundles in
-/// `--bundles` that `sign` would add or take out of the targets.
+/// `status --json`: what `status` prints, as JSON, and what `sign` would
+/// change with the bundles in `--bundles`: the bundles it would add or
+/// take out, the publishers it would mark verified, and the versions
+/// packed again that it would keep as signed.
 fn status_json(repo: &Repo, options: &Options) -> Result<(), String> {
+    println!("{}", status_value(repo, options)?);
+    Ok(())
+}
+
+fn status_value(repo: &Repo, options: &Options) -> Result<Value, String> {
     let mut roles = Vec::new();
     if let Some(root) = repo.root()? {
         roles.push(json!({
@@ -525,17 +645,32 @@ fn status_json(repo: &Repo, options: &Options) -> Result<(), String> {
             json!({ "path": path, "id": info["custom"]["id"], "version": info["custom"]["version"] })
         })
         .collect();
-    println!(
-        "{}",
-        json!({
-            "roles": roles,
-            "bundles_listed": listed,
-            "keys": keys,
-            "unsigned": { "added": added, "removed": changes.removed },
-            "warn_days": WARN_DAYS,
+    let targets = repo.targets()?.map_or_default(|t| t.signed.signed.targets);
+    let verified: Vec<Value> = changes
+        .verified
+        .iter()
+        .map(|path| {
+            let custom = targets.get(path).and_then(|t| t.custom.clone()).unwrap_or_default();
+            json!({ "path": path, "id": custom["id"], "version": custom["version"] })
         })
-    );
-    Ok(())
+        .collect();
+    let rebuilt: Vec<Value> = changes
+        .rebuilt
+        .iter()
+        .map(|r| json!({ "path": r.path, "id": r.id, "version": r.version }))
+        .collect();
+    Ok(json!({
+        "roles": roles,
+        "bundles_listed": listed,
+        "keys": keys,
+        "unsigned": {
+            "added": added,
+            "removed": changes.removed,
+            "verified": verified,
+            "rebuilt": rebuilt,
+        },
+        "warn_days": WARN_DAYS,
+    }))
 }
 
 fn status(repo: &Repo) -> Result<(), String> {
@@ -671,5 +806,221 @@ mod tests {
         let err = err.unwrap_err();
         assert!(err.contains("./ob release canary NAME red REASON"), "{err}");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A catalog in `dir/catalog` whose root and targets a key file signs,
+    /// with `bundles` signed: its repository and the key file.
+    fn catalog(dir: &Path, bundles: &[PathBuf]) -> (Repo, PathBuf) {
+        let repo = Repo::new(&dir.join("catalog"));
+        let secret = dir.join("offline.key");
+        let roles = catalog_repo::ROLES.iter().map(|r| (*r).to_string()).collect();
+        keys::new_file_key("offline", roles, &secret).unwrap().write(&repo.keys_dir()).unwrap();
+        let signers = Signers::new(None, std::slice::from_ref(&secret)).unwrap();
+        repo.sign_root(&signers, 365).unwrap();
+        let changes = repo.changes(bundles, &[], &[]).unwrap();
+        repo.sign_targets(&changes, bundles, &dir.join("store"), &signers, 182).unwrap();
+        (repo, secret)
+    }
+
+    /// A bundle of `id` and `version` in `dir`, its program `content`.
+    fn bundle(dir: &Path, id: &str, version: &str, content: &[u8]) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let manifest = format!(r#"{{"id": "{id}", "version": "{version}", "name": "Test"}}"#);
+        let path = dir.join(format!("{id}-{version}.dkv"));
+        let mut zip = dkv::zip::Writer::new(std::fs::File::create(&path).unwrap());
+        for (name, data) in [(dkv::MANIFEST, manifest.as_bytes()), ("bin/tool", content)] {
+            zip.add(&dkv::zip::Input { path: name, executable: false, data }).unwrap();
+        }
+        zip.finish().unwrap();
+        path
+    }
+
+    /// `catalog-repo` run on `repo` with `words`, signing through `secret`,
+    /// and how many times the keys were looked for.
+    fn sign_with(repo: &Repo, secret: &Path, words: &[&str]) -> (Result<(), String>, usize) {
+        let options = options(words);
+        let asked = std::cell::Cell::new(0);
+        let signers = || {
+            asked.set(asked.get() + 1);
+            Signers::new(None, &[secret.to_path_buf()])
+        };
+        let named: Vec<&str> = options.rest.iter().skip(1).map(String::as_str).collect();
+        let result = match options.rest.first().map(String::as_str) {
+            Some("sign") => sign(repo, &options, &named, signers),
+            Some("withdraw") => withdraw(repo, &options, signers),
+            _ => Err("no such command here".into()),
+        };
+        (result, asked.get())
+    }
+
+    fn targets_bytes(repo: &Repo) -> Vec<u8> {
+        repo.targets().unwrap().unwrap().bytes
+    }
+
+    #[test]
+    fn a_preview_signs_nothing() {
+        let dir = scratch("preview");
+        let (repo, secret) =
+            catalog(&dir, &[bundle(&dir.join("old"), "org.dukovo.rg", "1", b"rg")]);
+        let bundles = dir.join("bundles");
+        bundle(&bundles, "org.dukovo.bat", "0.26.1", b"bat");
+        let (store, plan) = (dir.join("store"), dir.join("out/catalog/plan.json"));
+        let (store_s, bundles_s, plan_s) = (
+            store.display().to_string(),
+            bundles.display().to_string(),
+            plan.display().to_string(),
+        );
+        let before = targets_bytes(&repo);
+        let words = ["--store", &store_s, "--bundles", &bundles_s, "--preview", &plan_s, "sign"];
+        let (result, asked) = sign_with(&repo, &secret, &words);
+        assert_eq!(result, Ok(()));
+        assert_eq!(asked, 0, "a preview looks for no key");
+        assert_eq!(targets_bytes(&repo), before);
+        assert!(!store.join("bundles/org.dukovo.bat-0.26.1.dkv").exists());
+        let written: Value = serde_json::from_slice(&std::fs::read(&plan).unwrap()).unwrap();
+        for field in ["format", "action", "targets", "signers", "added", "removed", "verified"] {
+            assert!(written.get(field).is_some(), "the plan has {field}");
+        }
+        for field in ["withdrawn", "rebuilt"] {
+            assert!(written.get(field).is_some(), "the plan has {field}");
+        }
+        assert_eq!(written["added"][0]["path"], "bundles/org.dukovo.bat-0.26.1.dkv");
+        assert!(is_digest(written["digest"].as_str().unwrap()));
+        // Signing it as previewed asks for no answer and signs it.
+        let digest = written["digest"].as_str().unwrap().to_string();
+        let words = ["--store", &store_s, "--bundles", &bundles_s, "--expect", &digest, "sign"];
+        let (result, asked) = sign_with(&repo, &secret, &words);
+        assert_eq!(result, Ok(()));
+        assert_eq!(asked, 1);
+        assert_eq!(repo.targets().unwrap().unwrap().signed.version, 2);
+        assert!(store.join("bundles/org.dukovo.bat-0.26.1.dkv").is_file());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_plan_that_moved_is_refused_before_signing() {
+        let dir = scratch("moved");
+        let (repo, secret) =
+            catalog(&dir, &[bundle(&dir.join("old"), "org.dukovo.rg", "1", b"rg")]);
+        let bundles = dir.join("bundles");
+        bundle(&bundles, "org.dukovo.bat", "0.26.1", b"bat");
+        let (store, plan) = (dir.join("store"), dir.join("plan.json"));
+        let (store_s, bundles_s, plan_s) = (
+            store.display().to_string(),
+            bundles.display().to_string(),
+            plan.display().to_string(),
+        );
+        let words = ["--store", &store_s, "--bundles", &bundles_s, "--preview", &plan_s, "sign"];
+        assert_eq!(sign_with(&repo, &secret, &words).0, Ok(()));
+        let written: Value = serde_json::from_slice(&std::fs::read(&plan).unwrap()).unwrap();
+        let digest = written["digest"].as_str().unwrap().to_string();
+        // A bundle more in the folder after the preview: what would be
+        // signed now is not what was read.
+        bundle(&bundles, "org.dukovo.jq", "1.7.1", b"jq");
+        let before = targets_bytes(&repo);
+        let words = ["--store", &store_s, "--bundles", &bundles_s, "--expect", &digest, "sign"];
+        let (result, asked) = sign_with(&repo, &secret, &words);
+        let err = result.unwrap_err();
+        assert!(err.contains("what would be signed now is not what was previewed"), "{err}");
+        assert!(err.ends_with("prepare again"), "{err}");
+        assert_eq!(asked, 0, "no key is looked for");
+        assert_eq!(targets_bytes(&repo), before);
+        // Something else than a digest is refused as such.
+        let words = ["--store", &store_s, "--expect", "ABC", "--renew", "sign"];
+        assert!(sign_with(&repo, &secret, &words).0.unwrap_err().contains("64 hex digits"));
+        // And so is more than one way to settle it.
+        let words = ["--store", &store_s, "--yes", "--expect", &digest, "sign"];
+        assert!(sign_with(&repo, &secret, &words).0.unwrap_err().contains("give one of"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_withdrawal_is_previewed_and_held_to_its_digest() {
+        let dir = scratch("withdraw-plan");
+        let (repo, secret) =
+            catalog(&dir, &[bundle(&dir.join("old"), "org.dukovo.rg", "1", b"rg")]);
+        let (store_s, plan) = (dir.join("store").display().to_string(), dir.join("plan.json"));
+        let plan_s = plan.display().to_string();
+        let withdraw = |reason: &str, settle: [&str; 2], now: &str| {
+            let words = [
+                "--store",
+                &store_s,
+                "--id",
+                "org.dukovo.rg",
+                "--version",
+                "1",
+                "--kind",
+                "broken",
+                "--reason",
+                reason,
+                "--now",
+                now,
+                settle[0],
+                settle[1],
+                "withdraw",
+            ];
+            sign_with(&repo, &secret, &words)
+        };
+        assert_eq!(withdraw("it crashes", ["--preview", &plan_s], "10").0, Ok(()));
+        let written: Value = serde_json::from_slice(&std::fs::read(&plan).unwrap()).unwrap();
+        assert_eq!(written["action"], "withdraw");
+        assert_eq!(written["withdrawn"][0]["reason"], "it crashes");
+        assert_eq!(repo.targets().unwrap().unwrap().signed.version, 1);
+        let digest = written["digest"].as_str().unwrap();
+        let (result, asked) = withdraw("it crashes at start", ["--expect", digest], "20");
+        assert!(result.unwrap_err().contains("prepare again"));
+        assert_eq!(asked, 0);
+        // A minute later, the same withdrawal signs.
+        assert_eq!(withdraw("it crashes", ["--expect", digest], "70"), (Ok(()), 1));
+        assert_eq!(repo.targets().unwrap().unwrap().signed.version, 2);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_renewal_signs_no_bundle_and_refuses_one_named() {
+        let dir = scratch("renew");
+        let (repo, secret) =
+            catalog(&dir, &[bundle(&dir.join("old"), "org.dukovo.rg", "1", b"rg")]);
+        let bundles = dir.join("bundles");
+        let bat = bundle(&bundles, "org.dukovo.bat", "0.26.1", b"bat");
+        let (store_s, bundles_s) =
+            (dir.join("store").display().to_string(), bundles.display().to_string());
+        let bat_s = bat.display().to_string();
+        let named = ["--store", &store_s, "--renew", "--yes", "sign", &bat_s];
+        let (result, asked) = sign_with(&repo, &secret, &named);
+        assert!(result.unwrap_err().contains("name no bundle"));
+        assert_eq!(asked, 0);
+        let removal = ["--store", &store_s, "--renew", "--remove", "x", "--yes", "sign"];
+        assert!(sign_with(&repo, &secret, &removal).0.unwrap_err().contains("take none out"));
+        // With bundles in --bundles, a renewal reads none of them.
+        let words = ["--store", &store_s, "--bundles", &bundles_s, "--renew", "--yes", "sign"];
+        assert_eq!(sign_with(&repo, &secret, &words), (Ok(()), 1));
+        let targets = repo.targets().unwrap().unwrap().signed;
+        assert_eq!(targets.version, 2);
+        assert_eq!(targets.signed.targets.len(), 1, "the targets are renewed as they were");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn status_lists_a_repacked_version_and_pending_marks() {
+        let dir = scratch("status");
+        let (repo, _) = catalog(&dir, &[bundle(&dir.join("old"), "org.dukovo.rg", "1", b"rg")]);
+        let bundles = dir.join("bundles");
+        bundle(&bundles, "org.dukovo.rg", "1", b"rg, linked again");
+        bundle(&bundles, "org.dukovo.bat", "0.26.1", b"bat");
+        let bundles_s = bundles.display().to_string();
+        let words = ["--bundles", &bundles_s, "--verified", "org.dukovo.rg", "--json", "status"];
+        let status = status_value(&repo, &options(&words)).unwrap();
+        let unsigned = &status["unsigned"];
+        let rg =
+            json!([{"path": "bundles/org.dukovo.rg-1.dkv", "id": "org.dukovo.rg", "version": "1"}]);
+        assert_eq!(unsigned["rebuilt"], rg);
+        assert_eq!(unsigned["verified"], rg);
+        let bat = json!([{
+            "path": "bundles/org.dukovo.bat-0.26.1.dkv", "id": "org.dukovo.bat", "version": "0.26.1"
+        }]);
+        assert_eq!(unsigned["added"], bat);
+        assert_eq!(unsigned["removed"], json!([]));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
