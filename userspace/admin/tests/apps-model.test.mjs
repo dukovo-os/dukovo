@@ -15,7 +15,7 @@ import {
 } from '../pages/apps/apps-model.js';
 import {
   bannerOf, byline, dataFolders, fixedWords, flawLine, flawsOf, heldWords, linksOf, manageOf, manageRead, mayUseOf, noFlawsWords,
-  holdRow, NO_PREVIOUS, permissionLine, REMOVE_CHOICES, removeLead, rollbackWords, ruleWords, runsAs, serviceLines, servicesOf, sizeWords, usedByOf, usersWords,
+  holdRow, NO_PREVIOUS, permissionLine, REMOVE_CHOICES, removeLead, rollbackWords, ruleWords, runsAs, serviceLines, servicesOf, sizeWords, usedByOf, usersWords, withdrawnRow,
   versionsOf,
 } from '../pages/apps/app-model.js';
 import {
@@ -367,6 +367,20 @@ test('the hold row says since when, by whom and why, and nothing it does not kno
   assert.equal(holdRow(held, { at: null, by: 1001, why: null }, time, names), 'Held at 8.0.3 by account 1001');
   assert.equal(holdRow(held, { at: null, by: null, why: null }, time, names), 'Held at 8.0.3');
   assert.equal(holdRow(held, null, time, names), 'Held at 8.0.3');
+});
+
+test('the withdrawal row says who withdrew the version, since when and why, and what a stopped one asks', () => {
+  const since = Date.UTC(2026, 10, 2, 3, 6) / 1000;
+  const broken = { source: 'catalog:dukovo', kind: 'broken', reason: 'it crashes at start', since, stopped: false };
+  assert.equal(withdrawnRow(valkey({ withdrawn: broken }), time), 'Withdrawn by catalog dukovo since Nov 2 at 3:06 AM: it crashes at start');
+  assert.equal(
+    withdrawnRow(valkey({ withdrawn: { ...broken, kind: 'malicious', stopped: true } }), time),
+    'Stopped by catalog dukovo since Nov 2 at 3:06 AM: it crashes at start. Remove it, or update it to a version that is not withdrawn.',
+  );
+  assert.equal(withdrawnRow(valkey({ withdrawn: { ...broken, source: 'feed:everyone', since: null, reason: null } }), time), 'Withdrawn by its publisher\'s feed');
+  assert.equal(withdrawnRow(valkey({ withdrawn: null }), time), null);
+  assert.equal(withdrawnRow(valkey({}), time), null, 'an older bundle info says nothing of it');
+  assert.equal(withdrawnRow(valkey({ withdrawn: { reason: 'x' } }), time), null, 'a withdrawal without its source is not told');
 });
 
 test('a row of the list keeps who held the app and why, and what is asked for tonight', () => {

@@ -64,11 +64,13 @@ pub fn command(ctx: &Ctx, args: Vec<String>) -> Result<()> {
         ["deploy"] => return deploy(ctx),
         ["check"] => return check(ctx, URL),
         ["check", url] => return check(ctx, url),
+        ["withdraw", rest @ ..] => return withdraw(ctx, rest),
         ["rollout", "canary", ..] => bail!("{}", crate::release::CANARY_MOVED),
         ["rollout", rest @ ..] if !rest.is_empty() => return rollout(ctx, rest),
         ["server" | "deploy" | "check" | "rollout", ..] => bail!(
             "usage: ./ob catalog server setup [--dukovo] | deploy | check [<url>] | rollout \
-             (pause <id> <version> <reason> | resume <id> <version>)"
+             (pause <id> <version> <reason> | resume <id> <version>) | withdraw <id> <version> \
+             --kind broken|malicious --reason <text>"
         ),
         _ => {}
     }
@@ -100,6 +102,26 @@ fn verified_ids(ctx: &Ctx) -> Result<Vec<String>> {
     let recipes = crate::ports::recipes(ctx)?;
     Ok(recipes.into_iter().filter_map(|(recipe, _)| recipe.bundle.map(|b| b.id)).collect())
 }
+
+/// `ob catalog withdraw ID VERSION --kind K --reason TEXT`: signs the
+/// next targets with that version, as the catalog lists it, withdrawn
+/// (ADR 0593). Like `sign`, it needs the targets key and asks first; the
+/// operator then deploys as after `sign`. The other words are
+/// catalog-repo's: `--yes`, `--key`, `--days`.
+fn withdraw(ctx: &Ctx, args: &[&str]) -> Result<()> {
+    let [id, version, flags @ ..] = args else {
+        bail!("{WITHDRAW_USAGE}");
+    };
+    if id.starts_with('-') || version.starts_with('-') {
+        bail!("{WITHDRAW_USAGE}");
+    }
+    let mut cmd = catalog_repo(ctx)?;
+    cmd.args(["withdraw", "--id", id, "--version", version]).args(flags);
+    process::run(ctx, &mut cmd)
+}
+
+const WITHDRAW_USAGE: &str =
+    "usage: ./ob catalog withdraw <id> <version> --kind broken|malicious --reason <text> [--yes]";
 
 /// `ob catalog rollout ...`: on the update server, through sudo as its
 /// catalog user, pauses or resumes the waves of a bundle's newest
@@ -468,6 +490,57 @@ pub fn test_site(
     std::fs::copy(repo.join("metadata/1.root.json"), &root)
         .context(|| format!("writing {}", root.display()))?;
     Ok(dir)
+}
+
+/// Withdraws a version in the test catalog `test_site` made, as
+/// `ob catalog withdraw` does for the real one (ADR 0593): the targets
+/// are signed again with the test key, with `version` of `id`, the
+/// target's full ID, withdrawn as `kind`, `broken` or `malicious`, for
+/// `reason`; then the site is published again, so that a machine that
+/// reads it sees the new targets. The rollout plan `test_site` kept, if
+/// it made one, is signed again as it was.
+pub fn test_withdraw(ctx: &Ctx, id: &str, version: &str, kind: &str, reason: &str) -> Result<()> {
+    let dir = ctx.out.join("test/catalog");
+    let program = build(ctx, false)?;
+    step(&format!("Withdrawing {id} {version} in the test catalog"));
+    let (repo, store, site) = (dir.join("repo"), dir.join("store"), dir.join("site"));
+    let (test_key, online_key, plan) =
+        (dir.join("test.key"), dir.join("online.key"), dir.join("rollout.json"));
+    let run = |args: &[&std::ffi::OsStr]| {
+        let mut cmd = Command::new(&program);
+        cmd.arg("--repo").arg(&repo).args(args);
+        process::output(ctx, &mut cmd).map(drop)
+    };
+    let word = std::ffi::OsStr::new;
+    run(&[
+        word("withdraw"),
+        word("--yes"),
+        word("--key"),
+        test_key.as_os_str(),
+        word("--store"),
+        store.as_os_str(),
+        word("--id"),
+        word(id),
+        word("--version"),
+        word(version),
+        word("--kind"),
+        word(kind),
+        word("--reason"),
+        word(reason),
+    ])?;
+    let mut publish = vec![
+        word("publish"),
+        word("--key"),
+        online_key.as_os_str(),
+        word("--store"),
+        store.as_os_str(),
+        word("--out"),
+        site.as_os_str(),
+    ];
+    if plan.exists() {
+        publish.extend([word("--plan"), plan.as_os_str()]);
+    }
+    run(&publish)
 }
 
 /// Makes an online key as the update server's setup does, for a boot

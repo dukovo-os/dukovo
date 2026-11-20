@@ -1914,7 +1914,7 @@ _target/userspace/_).
 	*--debug*, *--release*
 		As for *build*.
 
-*catalog* *key* *yubikey* [*--serial* _n_] | *key* *new* _file_ _name_ [_role_]... | *root* [*--days* _n_] | *sign* [*--days* _n_] [*--remove* _path_]... [*--yes*] [_bundle_]... | *publish* | *status* [*--json*] | *server* *setup* [*--dukovo*] | *deploy* | *check* [_url_] | *rollout* (*pause* _id_ _version_ _reason_ | *resume* _id_ _version_)
+*catalog* *key* *yubikey* [*--serial* _n_] | *key* *new* _file_ _name_ [_role_]... | *root* [*--days* _n_] | *sign* [*--days* _n_] [*--remove* _path_]... [*--yes*] [_bundle_]... | *withdraw* _id_ _version_ *--kind* *broken*|*malicious* *--reason* _text_ [*--yes*] | *publish* | *status* [*--json*] | *server* *setup* [*--dukovo*] | *deploy* | *check* [_url_] | *rollout* (*pause* _id_ _version_ _reason_ | *resume* _id_ _version_)
 	Make and sign the catalog's TUF repository in _catalog/_ (ADR 0381),
 	with catalog-repo, which ob builds for this machine. Every command
 	takes *--key* _file_, an Ed25519 secret key that signs in place of a
@@ -1944,6 +1944,19 @@ _target/userspace/_).
 	version and expiry, and warns a month before. The YubiKeys need
 	yubikey-manager (the *yubikey-manager* package on Debian, Ubuntu and
 	Linux Mint) and the system's Python.
+
+	*withdraw* pulls a version the targets list (ADR 0593). _id_ is the
+	bundle's full ID as its target has it, which is _ID_@_LINE_ for a
+	bundle with a line, and _version_ is the version. It lists the
+	change, asks, and signs the next targets with a YubiKey as *sign*
+	does, with the target's custom field *withdrawn* set to the *--kind*,
+	the *--reason* (one line of at most 200 bytes) and the time now; the
+	target stays listed. A deploy then sends it to the server. It
+	refuses a version no target lists, and one withdrawn already as the
+	same kind or a worse one: a malicious withdrawal is never made
+	broken again, but a broken one may be made malicious. Computers keep
+	what they read of it for good and leave that version; *bundle*(1)
+	says how.
 
 	The update server (ADR 0382) is reached with *ssh*(1) as
 	*$OB_UPDATE_SSH*, by default _updates.dukovo.org_, with the login
@@ -2478,6 +2491,12 @@ _recipe.toml_
 	projects the port keeps in its own directory (*bundled*: name,
 	version, license, home page and notice files), each a package of its
 	own in the license manifest;
+	for a port that only a release of its own language builds, as Go's
+	compiler is built by Go, its *[bootstrap]*: the *minimum* release that
+	will do, such as *1.24.6*, and the release *ob* downloads when
+	*GOROOT_BOOTSTRAP* is not set, a zip at an https:// *url* pinned by
+	its *sha256* and *size* in bytes, and the *root* folder in it that
+	holds the tree;
 	and for a port the catalog carries rather than the image, its
 	*[bundle]*: the bundle's *id*, *name*, *description* (a paragraph
 	for the manifest) and *commands* (ADR 0370), and
@@ -2498,8 +2517,10 @@ _build.sh_
 	it into the sysroot, _out/sysroot_, or for a toolchain port into
 	_out/toolchain_. It runs with _out/toolchain/bin_ at the front of
 	*PATH* and gets in its environment the port's directory, source and
-	an empty build directory (*PORT_DIR*, *PORT_SRC*, *PORT_BUILD*), an
-	empty directory for what *ob* needs to know of the build
+	an empty build directory (*PORT_DIR*, *PORT_SRC*, *PORT_BUILD*),
+	for a port with a *[bootstrap]*, *GOROOT_BOOTSTRAP*, the tree of
+	the release that builds it (see below), an empty directory for what
+	*ob* needs to know of the build
 	(*PORT_INFO*: _image_, more files of the sysroot for the image, one a
 	line, such as links and manual pages; and for a program in Rust,
 	_crates.txt_, the crates it links as *cargo tree -e
@@ -2627,7 +2648,42 @@ declares and declares it with as many parameters, each of the same
 kind and size as the crate's, and the same result. Any difference
 fails the build.
 
+The *go* port builds Go's toolchain, the compiler, linker and standard
+library of the Go Authors patched for Radix (_GOOS=radix_), with Go's own
+_make.bash_ from the release's source, into _out/toolchain/go/_, so that
+_out/toolchain/go/bin/go_ is the toolchain; the Go tree is whole there but
+for the repository's history, the compiler's own tests, the API lists and
+the documentation. Only a release of Go builds Go. *ob* gives the build the
+tree *GOROOT_BOOTSTRAP* names, if its _VERSION_ is a release of the
+recipe's *minimum* or later, and refuses it, with the version it found,
+if not. Without the variable it downloads the Go toolchain module the
+recipe's *[bootstrap]* pins, checks its size and SHA-256 and unpacks it
+once into _target/ports/sources/_, with the programs in its _bin_ and
+_pkg/tool_ made executable, as a zip keeps no modes; nothing of that
+release is in the toolchain that is built. When the port has patches, its
+_build.sh_ then builds the whole standard library for Radix, so that a
+patch that does not compile fails the port.
+
+*ob* builds programs in Go with that toolchain and no other, in an
+environment of its own and nothing from the build machine's: *GOOS* is
+*radix*, *GOARCH* *amd64*, *GOAMD64* *v1*, *CGO_ENABLED* 0, *GOROOT* the
+toolchain's tree, *GOTOOLCHAIN* *local*, *GOTELEMETRY* and *GOENV* off,
+*GOFLAGS* _-trimpath -buildvcs=false_, and *GOPROXY*, *GOSUMDB* and *GOWORK*
+off, so that nothing is fetched. The build cache, the module cache and
+*GOPATH* are in _target/go/_, where the standard library for Radix is
+compiled once for the programs built after it. The *go-runtime* boot test
+builds the Go programs of _userspace/go_ and the test binaries of Go's
+standard library this way, and puts them on a disk, with the tests of those
+packages that _userspace/go/skips.txt_ leaves out: a line each of a package, a
+test or a subtest (_Test/sub_, with _\*_ for any run of letters) and the
+reason, which names the feature Radix lacks.
+
 # ENVIRONMENT
+
+*GOROOT_BOOTSTRAP*
+	The tree of a Go release, Go 1.24.6 or later, that builds the *go*
+	port's toolchain, instead of the release *ob* downloads and unpacks
+	(see *PORTS*).
 
 *OB_BUNDLE_KEY*
 	A minisign secret key file, unencrypted, that signs the catalog's
@@ -2724,7 +2780,12 @@ _ports/_
 
 _out/toolchain/_
 	The C toolchain's wrapper scripts and Meson cross files, and the
-	toolchain ports' files.
+	toolchain ports' files: Rust's standard library for Radix, and the Go
+	toolchain in _go/_.
+
+_target/go/_
+	The build cache, module cache and _GOPATH_ of the programs in Go that
+	*ob* builds (see *PORTS*).
 
 _out/sysroot/system/_
 	What the ports and the C test programs install: headers in

@@ -38,6 +38,9 @@ pub enum What {
     /// The daily check found that its catalog knows of flaws in the
     /// installed version (ADR 0389).
     Flawed,
+    /// Its catalog or feed withdrew the installed version (ADR 0593): the
+    /// note says how and why, and whether it was stopped.
+    Withdrawn,
 }
 
 impl What {
@@ -52,6 +55,7 @@ impl What {
             What::Waiting => "waiting",
             What::Failed => "failed",
             What::Flawed => "flawed",
+            What::Withdrawn => "withdrawn",
         }
     }
 
@@ -66,6 +70,7 @@ impl What {
             "waiting" => What::Waiting,
             "failed" => What::Failed,
             "flawed" => What::Flawed,
+            "withdrawn" => What::Withdrawn,
             _ => return Err(format!("{word:?} is not something bundled does")),
         })
     }

@@ -64,6 +64,7 @@ card-reader 70
 catalog-bundles 64
 catalog-install 70
 catalog-waves 70
+catalog-withdraw 120
 certificates 120
 consoles 38
 crash-dump 140
@@ -95,6 +96,7 @@ fuse 19
 fuzz 27
 git-https 15
 git-keyring 127
+go-runtime 420
 gpio 11
 hardware-check 150
 help-session 160

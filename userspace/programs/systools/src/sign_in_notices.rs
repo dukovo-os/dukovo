@@ -5,13 +5,15 @@
 //! when they next sign in, kept until the next start or until whoever
 //! wrote it takes it back. Each writer keeps one file in [`DIR`]: backup
 //! for a backup that failed or is overdue (ADR 0463), bundled for an
-//! installed app whose catalog knows flaws in it (ADR 0389), bisect for
-//! what a search of `changes bisect` found, which the health check of its
-//! last try keeps (ADR 0475), and tune for a virtual machine no profile
-//! was chosen for, once after an install (ADR 0476). consoled and
-//! serial-console show them under the issue text, after a failed start's
-//! notice (ADR 0501). A writer tells the consoles too, once, when its
-//! notice changes, unless it writes before they run, as tune does.
+//! installed app whose catalog knows flaws in it (ADR 0389),
+//! bundled-withdrawn for an installed version a catalog or feed withdrew
+//! (ADR 0593), bisect for what a search of `changes bisect` found, which
+//! the health check of its last try keeps (ADR 0475), and tune for a
+//! virtual machine no profile was chosen for, once after an install (ADR
+//! 0476). consoled and serial-console show them under the issue text,
+//! after a failed start's notice (ADR 0501). A writer tells the consoles
+//! too, once, when its notice changes, unless it writes before they run,
+//! as tune does.
 
 use std::path::Path;
 

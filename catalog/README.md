@@ -165,6 +165,33 @@ server, which has no way to watch a file), for a canary that went
 quiet. `./ob catalog rollout canary` is refused, naming these commands.
 With no canary enrolled nothing is held for canaries.
 
+## Withdrawing a version
+
+Pausing the waves does not take back what computers have reached. A
+version that is broken, or harms, is withdrawn (ADR 0593):
+
+```
+$ ./ob catalog withdraw io.github.burntsushi.ripgrep 15.3.0 --kind broken --reason "crashes on start"
+$ ./ob catalog deploy
+```
+
+`withdraw` takes the bundle's ID as the targets list it, which for a
+bundle with a line is `ID@LINE`, and the version. It lists the change,
+asks, and signs the next targets with a YubiKey, as `sign` does; the
+target stays listed, with the `kind`, the `reason` (at most 200 bytes,
+one line) and the time. Commit `metadata/targets.json` and deploy as
+after `sign`. It refuses a version no target lists, and one withdrawn
+already as the same kind or a worse one: a version withdrawn as
+malicious is never made broken again, but a broken one may be made
+malicious.
+
+Every computer that reads the catalog keeps the withdrawal for good,
+installs and updates to that version nowhere, and leaves it: a broken
+version is replaced by the version kept beside it, or by the next good
+one at once, ahead of the waves; a malicious one is stopped first.
+`bundle list` and `bundle info` say which of a computer's bundles were
+withdrawn, and why.
+
 ## When the server or its key is lost
 
 Remove `/var/lib/dukovo-catalog/online.key` on the server, or start a

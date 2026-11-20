@@ -535,6 +535,21 @@ const UPDATE_FULL: u8 = 38;
 /// ([`cases::admin_websites::make_disk`]).
 const WEBSITES_FILES: u8 = 39;
 
+/// [`Disk::fat`] for a FAT32 disk on the whole disk holding two copies of
+/// a catalog that `ob` signs with throwaway keys ([`make_withdraw_site`],
+/// ADR 0593): `before/`, listing two versions each of the
+/// [`WITHDRAW_BUNDLES`], and `after/`, the same with a version of each
+/// withdrawn; `root.json`, its first root; and the files of tally's two
+/// versions and spinner's first.
+const WITHDRAW_SITE: u8 = 40;
+
+/// [`Disk::fat`] for a FAT32 disk that holds the programs of the
+/// `go-runtime` test, which `ob` builds with the Go toolchain of the go
+/// port: the Go test program, the test binaries of packages of Go's
+/// standard library with their test data, and the scripts that run them
+/// ([`cases::go_runtime::make_disk`]).
+const GO_FILES: u8 = 41;
+
 /// One of the boot tests' updates of an installed system (ADR 0451): this
 /// build's slot, under a version after this one's that updates from it,
 /// with kernel flags of its own, or a command broken.
@@ -851,6 +866,64 @@ const UPDATE_BUNDLES: [crate::bundles::TestBundle; 4] = [
         version: "1.1.0",
         script: "#!/bin/sh\necho \"fetcher 1.1.0\"\n",
         permissions: "{\"network.outbound\": {\"need\": \"required\", \"why\": \"To fetch.\"}}",
+        services: "",
+        provides: "",
+        line: "",
+        add_ons: "",
+        feed: "",
+        uses: "",
+        posix: "",
+    },
+];
+
+/// The bundles of a [`WITHDRAW_SITE`] disk. tally keeps a line for each
+/// run in its data, and shows them. spinner 1.0.0 says it spins and goes
+/// on running; 1.1.0 is its fix.
+const WITHDRAW_BUNDLES: [crate::bundles::TestBundle; 4] = [
+    crate::bundles::TestBundle {
+        id: "org.example.tally",
+        version: "1.0.0",
+        script: "#!/bin/sh\necho \"tally 1.0.0 ran\" >> \"$HOME/tallies\"\ncat \"$HOME/tallies\"\n",
+        permissions: "{}",
+        services: "",
+        provides: "",
+        line: "",
+        add_ons: "",
+        feed: "",
+        uses: "",
+        posix: "",
+    },
+    crate::bundles::TestBundle {
+        id: "org.example.tally",
+        version: "1.1.0",
+        script: "#!/bin/sh\necho \"tally 1.1.0 ran\" >> \"$HOME/tallies\"\ncat \"$HOME/tallies\"\n",
+        permissions: "{}",
+        services: "",
+        provides: "",
+        line: "",
+        add_ons: "",
+        feed: "",
+        uses: "",
+        posix: "",
+    },
+    crate::bundles::TestBundle {
+        id: "org.example.spinner",
+        version: "1.0.0",
+        script: "#!/bin/sh\necho \"spinner 1.0.0 spins\"\nsleep 600\n",
+        permissions: "{}",
+        services: "",
+        provides: "",
+        line: "",
+        add_ons: "",
+        feed: "",
+        uses: "",
+        posix: "",
+    },
+    crate::bundles::TestBundle {
+        id: "org.example.spinner",
+        version: "1.1.0",
+        script: "#!/bin/sh\necho \"spinner 1.1.0 is fixed\"\n",
+        permissions: "{}",
         services: "",
         provides: "",
         line: "",
@@ -1253,6 +1326,13 @@ const fn bundle_files_disk(kib: u64, label: &'static str) -> Disk {
     Disk { fat: BUNDLE_FILES, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
 }
 
+/// A FAT32 virtio disk of `kib` KiB, labelled `label`, holding the Go
+/// programs of the `go-runtime` test ([`GO_FILES`]), which Spark mounts at
+/// `/volumes/<disk>`.
+const fn go_files_disk(kib: u64, label: &'static str) -> Disk {
+    Disk { fat: GO_FILES, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
+}
+
 /// A FAT32 virtio disk of `kib` KiB, labelled `label`, holding the test
 /// updates of the installed system ([`UPDATE_RELEASES`]), which Spark
 /// mounts at `/volumes/<disk>`.
@@ -1298,6 +1378,13 @@ const fn update_site_disk(kib: u64, label: &'static str) -> Disk {
 /// ([`WAVES_SITE`]), which Spark mounts at `/volumes/<disk>`.
 const fn waves_site_disk(kib: u64, label: &'static str) -> Disk {
     Disk { fat: WAVES_SITE, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
+}
+
+/// A virtio disk of `kib` KiB, labelled `label`, holding a test catalog
+/// before and after it withdraws versions ([`WITHDRAW_SITE`]), which Spark
+/// mounts at `/volumes/<disk>`.
+const fn withdraw_site_disk(kib: u64, label: &'static str) -> Disk {
+    Disk { fat: WITHDRAW_SITE, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
 }
 
 /// A virtio disk of `kib` KiB, labelled `label`, holding a test catalog of
@@ -5555,6 +5642,11 @@ fn make_disks(
             made.push(image);
             continue;
         }
+        if disk.fat == GO_FILES {
+            cases::go_runtime::make_disk(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
         if disk.fat == CATALOG_SITE {
             make_catalog_site(ctx, disk, &image.path)?;
             made.push(image);
@@ -5567,6 +5659,11 @@ fn make_disks(
         }
         if disk.fat == WAVES_SITE {
             make_site(ctx, disk, &image.path, &UPDATE_BUNDLES, &["1.0.0"], Some(WAVES_PAUSE))?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == WITHDRAW_SITE {
+            make_withdraw_site(ctx, disk, &image.path)?;
             made.push(image);
             continue;
         }
@@ -6457,6 +6554,46 @@ fn make_site(
         }
     }
     Ok(())
+}
+
+/// Makes a [`WITHDRAW_SITE`] disk: a test catalog of [`WITHDRAW_BUNDLES`]
+/// with no rollouts, as `before/`; then tally 1.1.0 withdrawn as broken
+/// and spinner 1.0.0 as malicious (ADR 0593), as `after/`; its root; and
+/// the files of tally's two versions and spinner's first.
+fn make_withdraw_site(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
+    let files = WITHDRAW_BUNDLES
+        .iter()
+        .map(|bundle| crate::bundles::pack_test(ctx, bundle))
+        .collect::<Result<Vec<PathBuf>>>()
+        .map_err(|e| e.to_string())?;
+    let dir =
+        crate::catalog::test_site(ctx, &files, None, None, &[], &[]).map_err(|e| e.to_string())?;
+    let mut mkfs = std::process::Command::new(fat_tool("mkfs.fat"));
+    mkfs.args(["-F", "32", "-n", disk.label, "-i", "4f525448", "-C"])
+        .arg(path)
+        .arg(disk.kib.to_string());
+    host_tool(&mut mkfs)?;
+    let image = path.display().to_string();
+    let mcopy = |args: &[&str], from: &Path, to: &str| {
+        host_tool(std::process::Command::new("mcopy").args(args).arg(from).arg(to)).map(drop)
+    };
+    mcopy(&["-s", "-i", &image], &dir.join("site"), "::/before")?;
+    mcopy(&["-i", &image], &dir.join("root.json"), "::/")?;
+    // The first three: tally's versions and spinner's first.
+    for file in files.iter().take(3) {
+        mcopy(&["-i", &image], file, "::/")?;
+    }
+    crate::catalog::test_withdraw(ctx, "org.example.tally", "1.1.0", "broken", "it loses tallies")
+        .map_err(|e| e.to_string())?;
+    crate::catalog::test_withdraw(
+        ctx,
+        "org.example.spinner",
+        "1.0.0",
+        "malicious",
+        "it sends the keys away",
+    )
+    .map_err(|e| e.to_string())?;
+    mcopy(&["-s", "-i", &image], &dir.join("site"), "::/after")
 }
 
 /// The numbers of a test bundle's version, such as 1.1.0, to compare.

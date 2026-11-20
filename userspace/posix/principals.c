@@ -167,12 +167,26 @@ static void alice_privacy(void) {
 	errno = 0;
 	CHECK(opendir(TREE "/bob") == NULL && errno == EACCES);
 	CHECK_ERROR(chdir(TREE "/bob"), EACCES);
-	// Naming it only, it may be opened, as statvfs does.
+	// Naming it only, it may be opened, as statvfs does, but what is in
+	// it stays out of reach through that descriptor too.
 	int named = open(TREE "/bob", O_PATH | O_DIRECTORY);
 	CHECK(named >= 0);
+	CHECK_ERROR(openat(named, "notes", O_CREAT | O_RDONLY, 0644), EACCES);
+	CHECK_ERROR(mkdirat(named, "notes", 0755), EACCES);
 	close(named);
 	CHECK_ERROR(open(TREE "/mine", O_CREAT | O_WRONLY, 0644), EACCES);
 	CHECK_ERROR(mkdir(TREE "/bob/mine", 0755), EACCES);
+	// His notes are 0644, but in his 0700 home: no call that names them
+	// reaches them, or says whether they are there, as on Linux.
+	CHECK_ERROR(open(TREE "/bob/notes", O_RDONLY), EACCES);
+	CHECK_ERROR(open(TREE "/bob/notes", O_CREAT | O_RDONLY, 0644), EACCES);
+	CHECK_ERROR(mkdir(TREE "/bob/notes", 0755), EACCES);
+	CHECK_ERROR(symlink("anywhere", TREE "/bob/notes"), EACCES);
+	CHECK_ERROR(mkfifo(TREE "/bob/notes", 0644), EACCES);
+	CHECK_ERROR(link(TREE "/alice/foreign", TREE "/bob/notes"), EACCES);
+	CHECK_ERROR(rename(TREE "/alice/foreign", TREE "/bob/notes"), EACCES);
+	CHECK_ERROR(unlink(TREE "/bob/missing"), EACCES);
+	CHECK_ERROR(rename(TREE "/bob/missing", TREE "/alice/missing"), EACCES);
 	// Root's tree is hers to read.
 	CHECK(stat(TREE "/noexec", &st) == 0 && st.st_uid == 0);
 }

@@ -34,6 +34,7 @@ libc_sources += radix_sources + files(
 	'../../options/linux/generic/sys-random.cpp',
 	'../../options/linux/generic/sys-xattr.cpp',
 	'generic/entry.cpp',
+	'generic/futex.cpp',
 	'generic/interfaces.cpp',
 	'generic/ipc.cpp',
 	'generic/poll.cpp',
@@ -124,6 +125,11 @@ if not no_headers
 		'include/sys/xattr.h',
 		subdir: 'sys',
 		follow_symlinks: true,
+	)
+	# And Radix's own: futex(2), as OpenBSD declares it (ADR 0350).
+	install_headers(
+		'include/sys/futex.h',
+		subdir: 'sys',
 	)
 	# And its malloc.h, of memalign and the glibc option's
 	# malloc_usable_size, and ifaddrs.h, of getifaddrs.

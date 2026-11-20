@@ -643,6 +643,17 @@ jobs:
           path: .cache/memtest
           key: memtest-${{ hashFiles('tools/xtask/src/memtest.rs') }}
 
+      # Go's build cache for Radix, which the go-runtime boot test fills
+      # as it builds its programs with the toolchain of the go port: the
+      # standard library compiled once for each change to the port, not
+      # once in each run. Go's cache is addressed by what is built, so a
+      # key that no longer fits costs a build and nothing else.
+      - name: Cache Go's build cache
+        uses: actions/cache@v4
+        with:
+          path: target/go/cache
+          key: go-build-${{ hashFiles('ports/go/**', 'tools/xtask/src/golang.rs') }}
+
       # The ansible boot test's controller: ansible-core 2.22 needs Python
       # 3.13 or later, and Ubuntu 24.04's python3 is 3.12. Only the name
       # python3.13 is added to the path, where src/ansible.rs looks for it,

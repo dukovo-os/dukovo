@@ -191,7 +191,6 @@ machine with AMT, an AMD machine and a laptop; see
 | troubleshoot of an older start matching on which services had failed and how full the disks were (ADR 0474) | Spark's states and the filesystems' fullness are read as they are now, so only the newest start has them; an older start matches by its record, what changed and its log | A need: a record of each start's failed services and fullness |
 | The `catalog-waves` boot test planting a high flaw whose fix goes ahead of the waves (ADR 0544) | The test bundles carry no SBOM, so the test catalog can list no flaw for them; the rule is proved by `fixes_a_flaw`'s unit tests alone | A test bundle with an SBOM, and advisories for its parts |
 | A bundle's own feed going out in waves (ADR 0544) | A feed is signed by its publisher's key and served from the publisher's own host, where we run no signer; its updates reach every machine at once | A need |
-| Withdrawing a version of a bundle a catalog sent out (ADR 0544) | A pause holds the waves not open yet; a computer that took the version keeps it until `bundle rollback`, and no signed withdrawal says to go back, as one does for a system release (ADR 0469) | A need |
 | The installer installing the install stick's firmware set, and update files carrying one (ADR 0468) | A machine takes the firmware package by staging a set from the update server or a repository folder after it is installed | Phase 16, with the installer's question (16c) |
 | A change of the serial console's settings acting at once (ADR 0481) | `serial` writes the settings for the next start: the kernel and serial-console read the command line, which a start makes | A way to change the kernel's serial settings in a running system, which no plan item asks for yet |
 | GRUB's menu on the second port of a PCI function, on a port at a parity or 7 data bits, on a fifth port, and on a PCI domain other than 0000 (ADR 0481) | GRUB's `pciserial` runs BAR 0's first port only, GRUB's `serial` 8 data bits and no parity, and the menu has four slots; `serial` says which console is left off the menu and why | A GRUB that runs them, or a boot loader of Dukovo's own |
@@ -254,8 +253,12 @@ machine with AMT, an AMD machine and a laptop; see
 
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
-| The six-part plan for the Go port, and its netpoller: `poll()` now and the kernel event queue with Phase 18, or a kqueue-style queue in Phase 17 | Drafted; waiting for approval | Decision |
+| Go's network poller: the runtime takes no descriptor yet, so every file and socket a Go program uses blocks in its thread, and deadlines on them do not work (ADR 0350) | Built on the kernel's event queue | Phase 17 |
+| Go's `net` on Radix: `net.Interfaces` and `InterfaceAddrs` list nothing (no netlink or routing socket; the C library's `getifaddrs` can give them), so IPv4 multicast by interface does not work either (ADR 0350) | Comes with Go's networking | Phase 17 |
+| cgo, and `go` and `gofmt` in `/system` (ADR 0350) | The runtime first | Phase 17 |
 | fzf, lazygit and duf in the catalog | Written in Go | Phase 17 |
+| Zero-copy file transfers in Go programs (`sendfile`, `splice`, `copy_file_range`): `io.Copy` between files and sockets reads and writes through a buffer (ADR 0350) | The C library has none of them | Need |
+| `go test -fuzz` for Radix: Go's fuzzing shares memory with a mapped file between processes (ADR 0350) | Shared writable mappings of files (see Files and storage) | Need |
 
 ### Phase 18: Linux compatibility and containers
 
@@ -373,6 +376,8 @@ machine asks for them.
 
 | Item | Source |
 | --- | --- |
+| Names relative to a working folder whose path is longer than `PATH_MAX` (4,096 bytes): the C library joins a relative path to the working folder it keeps, as the kernel keeps none, so `mkdir` or `open` of a short name in such a folder fails with `ENAMETOOLONG`, where Linux resolves it from the folder (Go's `TestGetwdDeep`, `userspace/go/skips.txt`) | ADR 0350 |
+| A name with `/` or `/.` after it is taken for the name alone, so `stat`, `open`, `unlink`, `rename` and `link` act on a file, or on a link and not the folder it leads to, where Linux fails with `ENOTDIR`; and `mkdir` of `.`, `./` or a name that ends in `/.` fails with `EINVAL`, where Linux says `EEXIST` (PHP's suite, ADR 0499; Go's `os.Root` tests, which compare a walk through a `Root` with the same call by path, `userspace/go/skips.txt`) | ADRs 0350, 0499 |
 | A name cache for path lookups | storage design note |
 | Shared writable mappings of files other than `/dev/shm`'s, and `msync`, which SQLite's WAL between connections and its memory-mapped I/O need (ADR 0511) | posix design note, ADRs 0110, 0490, 0511, `lab/tests/services/sqlite-skips.txt` |
 | Read-ahead in the background; write clustering; `O_DIRECT` for files | storage design note, ADR 0133 |

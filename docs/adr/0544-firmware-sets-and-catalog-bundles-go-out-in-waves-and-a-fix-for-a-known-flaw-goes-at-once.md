@@ -90,3 +90,6 @@ from the machines that run the flawed version.
 - The boot tests `update-online` (a firmware set waiting for its wave,
   and offered to a canary) and `catalog-waves` (a bundle's update waiting,
   held, offered to a canary and taken when named) check it.
+- A computer that took a version keeps it no longer when the catalog
+  withdraws it: it goes back, or stops a malicious one, and takes the
+  next good version at once, ahead of the waves ([0593](0593-a-catalog-or-a-bundles-feed-may-withdraw-a-version-and-machines-leave-it.md)).

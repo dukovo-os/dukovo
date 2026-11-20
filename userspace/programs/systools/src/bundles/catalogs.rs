@@ -24,6 +24,11 @@
 //!   update waits for this machine's wave, unless it ends a known flaw of
 //!   the version that runs ([`waiting`]); a catalog that signs no
 //!   rollouts has every update taken at once.
+//! - A target may say, under the signature of the targets role, that its
+//!   version is withdrawn, broken or malicious (ADR 0593): bundled keeps
+//!   that for good, installs it nowhere, and leaves it ([`Withdrawal`]).
+//!   An index offers no withdrawn version: [`Index::newest`],
+//!   [`Index::lists`] and [`Index::search`] pass over it.
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
@@ -174,6 +179,104 @@ pub struct Entry {
     /// Whether the catalog vouches for the ID's publisher (its target's
     /// `custom.owner` is `verified`).
     pub owner: bool,
+    /// Whether the catalog withdrew this version, and how.
+    pub withdrawn: Option<Withdrawal>,
+}
+
+/// How bad a withdrawn version is (ADR 0593), the lesser first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Kind {
+    /// It does not work as it should: machines go back from it, or take
+    /// the next good version at once.
+    Broken,
+    /// It harms: machines stop it at once, then go back as from a broken
+    /// one.
+    Malicious,
+}
+
+impl Kind {
+    /// The word a target and bundled's files say it by.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Kind::Broken => "broken",
+            Kind::Malicious => "malicious",
+        }
+    }
+
+    /// The kind `word` says.
+    ///
+    /// # Errors
+    ///
+    /// If it is neither word.
+    pub fn read(word: &str) -> Result<Kind, String> {
+        match word {
+            "broken" => Ok(Kind::Broken),
+            "malicious" => Ok(Kind::Malicious),
+            _ => Err(format!("{word:?} is neither broken nor malicious")),
+        }
+    }
+}
+
+/// A version's withdrawal: a target's `custom.withdrawn`, an object of
+/// `kind`, `reason` and `since` (ADR 0593).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Withdrawal {
+    pub kind: Kind,
+    /// Why, as the catalog says it: one line, at most [`REASON_MAX`]
+    /// bytes, never empty.
+    pub reason: String,
+    /// Since when, in seconds since 1970.
+    pub since: u64,
+}
+
+/// The most bytes of a withdrawal's reason that are kept.
+pub const REASON_MAX: usize = 200;
+
+/// What is kept of a reason when a withdrawal gives none.
+const NO_REASON: &str = "no reason was given";
+
+impl Withdrawal {
+    /// The withdrawal a target's `custom.withdrawn` says, read at `read`.
+    /// One that does not read withdraws the version as broken, since
+    /// `read`, saying why: an install of it is refused, and nothing is
+    /// stopped on what nobody can read.
+    #[must_use]
+    pub fn of(value: &serde_json::Value, read: i64) -> Withdrawal {
+        Withdrawal::read_value(value).unwrap_or_else(|why| Withdrawal {
+            kind: Kind::Broken,
+            reason: reason(&format!("its withdrawal does not read: {why}")),
+            since: u64::try_from(read).unwrap_or_default(),
+        })
+    }
+
+    fn read_value(value: &serde_json::Value) -> Result<Withdrawal, String> {
+        let object = value.as_object().ok_or("it is not an object")?;
+        let kind = object.get("kind").and_then(|k| k.as_str()).ok_or("it has no kind")?;
+        let since = object.get("since").ok_or("it has no time")?;
+        let since = since.as_u64().ok_or_else(|| format!("{since} is not a time"))?;
+        let why = match object.get("reason") {
+            None => NO_REASON,
+            Some(text) => text.as_str().ok_or("its reason is not text")?,
+        };
+        Ok(Withdrawal { kind: Kind::read(kind)?, reason: reason(why), since })
+    }
+}
+
+/// A reason as it is kept: control characters as spaces, the ends
+/// trimmed, cut to [`REASON_MAX`] bytes at a character's end; or
+/// [`NO_REASON`].
+fn reason(text: &str) -> String {
+    let text = field(text);
+    let mut text = text.trim();
+    while text.len() > REASON_MAX {
+        let mut end = REASON_MAX;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text = text[..end].trim_end();
+    }
+    if text.is_empty() { NO_REASON.into() } else { text.into() }
 }
 
 /// What bundled keeps of a catalog's targets, as it last read them.
@@ -196,7 +299,8 @@ fn field(text: &str) -> String {
 impl Index {
     /// The index of `targets`, version `version`, read at `read`, good
     /// until `expires`. A target that is not a bundle's, or whose
-    /// `custom` does not say its ID and version, is left out.
+    /// `custom` does not say its ID and version, is left out; one whose
+    /// `custom.withdrawn` is there is withdrawn ([`Withdrawal::of`]).
     #[must_use]
     pub fn of(targets: &Targets, version: u64, read: i64, expires: i64) -> Index {
         let mut entries: Vec<Entry> = targets
@@ -218,6 +322,7 @@ impl Index {
                     name: field(&text("name").unwrap_or_else(|| id.clone())),
                     version: field(&version),
                     owner: text("owner").as_deref() == Some("verified"),
+                    withdrawn: custom.get("withdrawn").map(|w| Withdrawal::of(w, read)),
                     id,
                 })
             })
@@ -234,7 +339,7 @@ impl Index {
             format!("read\t{}\texpires\t{}\tversion\t{}\n", self.read, self.expires, self.version);
         for e in &self.entries {
             out += &format!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 e.sha256,
                 e.length,
                 e.id,
@@ -243,6 +348,10 @@ impl Index {
                 e.name,
                 if e.owner { "verified" } else { "-" }
             );
+            if let Some(w) = &e.withdrawn {
+                out += &format!("\t{}\t{}\t{}", w.kind.word(), w.since, w.reason);
+            }
+            out.push('\n');
         }
         out
     }
@@ -262,21 +371,39 @@ impl Index {
         };
         let entries = lines
             .map(|line| match line.split('\t').collect::<Vec<_>>().as_slice() {
-                [sha256, length, id, version, path, name, owner @ ..] => Ok(Entry {
-                    sha256: (*sha256).into(),
-                    length: length.parse().map_err(|_| format!("{length:?} is no length"))?,
-                    id: (*id).into(),
-                    version: (*version).into(),
-                    path: (*path).into(),
-                    name: (*name).into(),
+                [sha256, length, id, version, path, name, rest @ ..] => {
                     // An index written before owners were kept has six
-                    // fields.
-                    owner: match owner {
-                        [] | ["-"] => false,
-                        ["verified"] => true,
+                    // fields, and one written before withdrawals seven.
+                    let (owner, withdrawn) = match rest {
+                        [] => ("-", None),
+                        [owner] => (*owner, None),
+                        [owner, kind, since, reason] => (*owner, Some((kind, since, reason))),
                         _ => return Err(format!("{line:?} is no line of an index")),
-                    },
-                }),
+                    };
+                    let withdrawn = match withdrawn {
+                        None => None,
+                        Some((kind, since, why)) if !why.is_empty() => Some(Withdrawal {
+                            kind: Kind::read(kind)?,
+                            since: since.parse().map_err(|_| format!("{since:?} is no time"))?,
+                            reason: (*why).into(),
+                        }),
+                        Some(_) => return Err(format!("{line:?} is no line of an index")),
+                    };
+                    Ok(Entry {
+                        sha256: (*sha256).into(),
+                        length: length.parse().map_err(|_| format!("{length:?} is no length"))?,
+                        id: (*id).into(),
+                        version: (*version).into(),
+                        path: (*path).into(),
+                        name: (*name).into(),
+                        owner: match owner {
+                            "-" => false,
+                            "verified" => true,
+                            _ => return Err(format!("{line:?} is no line of an index")),
+                        },
+                        withdrawn,
+                    })
+                }
                 _ => Err(format!("{line:?} is no line of an index")),
             })
             .collect::<Result<_, _>>()?;
@@ -289,14 +416,15 @@ impl Index {
         now < self.expires
     }
 
-    /// The newest version it lists of `id`; of an ID it lists only with
-    /// lines, the newest of its newest line (ADR 0387).
+    /// The newest version it lists of `id`, and has not withdrawn; of an
+    /// ID it lists only with lines, the newest of its newest line (ADR
+    /// 0387).
     #[must_use]
     pub fn newest(&self, id: &str) -> Option<&Entry> {
         let newest = |of: &dyn Fn(&Entry) -> bool| {
             self.entries
                 .iter()
-                .filter(|e| of(e))
+                .filter(|e| e.withdrawn.is_none() && of(e))
                 .max_by(|a, b| compare_versions(&a.version, &b.version))
         };
         newest(&|e| e.id == id)
@@ -311,19 +439,22 @@ impl Index {
         self.entries.iter().any(|e| e.owner && base_id(&e.id) == id)
     }
 
-    /// Whether it lists a file of `id` with this SHA-256 and length.
+    /// Whether it lists a file of `id` with this SHA-256 and length, and
+    /// has not withdrawn it.
     #[must_use]
     pub fn lists(&self, id: &str, sha256: &str, length: u64) -> bool {
-        self.entries.iter().any(|e| e.id == id && e.sha256 == sha256 && e.length == length)
+        self.entries.iter().any(|e| {
+            e.id == id && e.sha256 == sha256 && e.length == length && e.withdrawn.is_none()
+        })
     }
 
     /// The newest version of each bundle whose ID or name holds every one
-    /// of `words`, in any case.
+    /// of `words`, in any case, of those it has not withdrawn.
     #[must_use]
     pub fn search(&self, words: &[String]) -> Vec<&Entry> {
         let words: Vec<String> = words.iter().map(|w| w.to_lowercase()).collect();
         let mut hits: Vec<&Entry> = Vec::new();
-        for entry in &self.entries {
+        for entry in self.entries.iter().filter(|e| e.withdrawn.is_none()) {
             let text = format!("{} {}", entry.id, entry.name).to_lowercase();
             if !words.iter().all(|w| text.contains(w.as_str())) {
                 continue;
@@ -716,6 +847,7 @@ mod tests {
             version: version.into(),
             name: id.rsplit('.').next().unwrap().into(),
             owner: false,
+            withdrawn: None,
         }
     }
 
@@ -749,6 +881,113 @@ mod tests {
         assert!(text.lines().nth(1).unwrap().ends_with("\tverified"), "{text}");
         assert!(text.lines().nth(2).unwrap().ends_with("\t-"), "{text}");
         assert_eq!(Index::read(&text).unwrap(), index);
+    }
+
+    /// Targets listing `org.example.app` 1.0.0, 1.1.0 and 1.2.0, the
+    /// `custom` of 1.1.0 holding `withdrawn` as `field` gives it.
+    fn targets_withdrawing(field: &str) -> Targets {
+        let target = |version: &str, sha: char, extra: &str| {
+            format!(
+                r#""bundles/org.example.app-{version}.dkv": {{"length": 10,
+                    "hashes": {{"sha256": "{}"}},
+                    "custom": {{"id": "org.example.app", "version": "{version}"{extra}}}}}"#,
+                sha.to_string().repeat(64)
+            )
+        };
+        let withdrawn = format!(r#", "withdrawn": {field}"#);
+        let text = format!(
+            r#"{{"targets": {{{}, {}, {}}}}}"#,
+            target("1.0.0", 'a', ""),
+            target("1.1.0", 'b', &withdrawn),
+            target("1.2.0", 'c', "")
+        );
+        serde_json::from_str(&text).unwrap()
+    }
+
+    #[test]
+    fn a_withdrawn_version_is_read_and_offered_no_more() {
+        let read = 1_795_000_000;
+        let field = r#"{"kind": "malicious", "reason": "it sends\tthe keys away", "since": 1794}"#;
+        let index = Index::of(&targets_withdrawing(field), 4, read, read + 10);
+        let withdrawn: Vec<_> = index.entries.iter().map(|e| e.withdrawn.clone()).collect();
+        let expected = Withdrawal {
+            kind: Kind::Malicious,
+            reason: "it sends the keys away".into(),
+            since: 1794,
+        };
+        assert_eq!(withdrawn, [None, Some(expected), None]);
+        assert_eq!(Index::read(&index.text()).unwrap(), index);
+        // The newest it offers is the newest not withdrawn.
+        assert_eq!(index.newest("org.example.app").unwrap().version, "1.2.0");
+        assert!(!index.lists("org.example.app", &"b".repeat(64), 10));
+        assert!(index.lists("org.example.app", &"c".repeat(64), 10));
+        let mut only = index.clone();
+        only.entries.retain(|e| e.version != "1.2.0");
+        assert_eq!(only.newest("org.example.app").unwrap().version, "1.0.0");
+        assert_eq!(only.search(&["example".into()])[0].version, "1.0.0");
+        only.entries.retain(|e| e.version == "1.1.0");
+        assert!(only.newest("org.example.app").is_none());
+        assert!(only.search(&["example".into()]).is_empty());
+        // Broken, with no reason.
+        let index =
+            Index::of(&targets_withdrawing(r#"{"kind": "broken", "since": 7}"#), 4, read, 9);
+        let w = index.entries[1].withdrawn.clone().unwrap();
+        assert_eq!((w.kind, w.reason.as_str(), w.since), (Kind::Broken, NO_REASON, 7));
+    }
+
+    #[test]
+    fn a_withdrawal_that_does_not_read_withdraws_as_broken() {
+        let read = 1_795_000_000;
+        for field in [
+            "true",
+            "null",
+            r#""malicious""#,
+            r#"{"kind": "evil", "since": 1}"#,
+            r#"{"kind": "malicious"}"#,
+            r#"{"kind": "malicious", "since": -1}"#,
+            r#"{"kind": "malicious", "since": "1"}"#,
+            r#"{"kind": "malicious", "since": 1, "reason": 5}"#,
+        ] {
+            let index = Index::of(&targets_withdrawing(field), 4, read, read + 10);
+            let w = index.entries[1].withdrawn.clone().expect(field);
+            assert_eq!((w.kind, w.since), (Kind::Broken, 1_795_000_000), "{field}");
+            assert!(w.reason.starts_with("its withdrawal does not read: "), "{}", w.reason);
+            assert_eq!(Index::read(&index.text()).unwrap(), index, "{field}");
+        }
+    }
+
+    #[test]
+    fn a_reason_is_one_line_cut_to_its_most() {
+        assert_eq!(reason("  two\nlines\t "), "two lines");
+        assert_eq!(reason(" \n "), NO_REASON);
+        let long = "é".repeat(150);
+        let cut = reason(&long);
+        assert_eq!(cut.len(), REASON_MAX);
+        assert!(long.starts_with(&cut));
+        let cut = reason(&format!("a{long}"));
+        assert_eq!(cut.len(), REASON_MAX - 1);
+    }
+
+    #[test]
+    fn an_index_line_with_a_withdrawal_is_read_strictly() {
+        let head = "read\t1\texpires\t2\tversion\t3\n";
+        let line = format!("{}\t10\torg.example.app\t1.0.0\tbundles/a.dkv\tapp", "a".repeat(64));
+        let read = |rest: &str| Index::read(&format!("{head}{line}{rest}\n"));
+        let w = read("\t-\tbroken\t5\tit crashes").unwrap().entries[0].withdrawn.clone();
+        assert_eq!(
+            w.map(|w| (w.kind, w.since, w.reason)),
+            Some((Kind::Broken, 5, "it crashes".into()))
+        );
+        for bad in [
+            "\t-\tbroken\t5",
+            "\t-\tbroken\t5\t",
+            "\t-\tbad\t5\twhy",
+            "\t-\tbroken\t-5\twhy",
+            "\t-\tbroken\t5\twhy\tmore",
+            "\tyes\tbroken\t5\twhy",
+        ] {
+            assert!(read(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

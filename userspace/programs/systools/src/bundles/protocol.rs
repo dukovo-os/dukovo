@@ -12,10 +12,11 @@
 
 use std::io::{self, BufRead, Read};
 
+use super::catalogs::Kind;
 use super::grants::{self, Grant, Said};
 use super::history::Event;
 use super::minisign::PublicKey;
-use super::registry::Place;
+use super::registry::{Place, Source};
 use dkv::flaws::Severity;
 
 /// Where bundled answers.
@@ -456,6 +457,40 @@ pub struct Listed {
     pub update: Option<String>,
     /// While its update is asked for tonight, what was asked.
     pub tonight: Option<Tonight>,
+    /// While a catalog's or its feed's withdrawal applies to this version
+    /// (ADR 0593), what it says. Boxed, so that a listed bundle is not
+    /// the largest answer by far.
+    pub withdrawn: Option<Box<WithdrawnBy>>,
+}
+
+/// A withdrawal that applies to an installed version, as `list` says it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WithdrawnBy {
+    pub source: Source,
+    pub kind: Kind,
+    /// Since when, as the source says, in seconds since 1970.
+    pub since: u64,
+    /// Why, as the source says: one line.
+    pub reason: String,
+    /// Whether it is stopped: a malicious version stays installed, but
+    /// cannot run.
+    pub stopped: bool,
+}
+
+impl WithdrawnBy {
+    /// What `bundle list` and `bundle info` say of bundle `id` in words.
+    #[must_use]
+    pub fn line(&self, id: &str) -> String {
+        let who = self.source.words();
+        if self.stopped {
+            format!(
+                "stopped by {who}: {}; remove it, or `bundle update {id}` takes a fixed version",
+                self.reason
+            )
+        } else {
+            format!("withdrawn by {who}: {}", self.reason)
+        }
+    }
 }
 
 /// An update asked for tonight's window, as `list` says it.
@@ -625,6 +660,10 @@ pub enum Answer {
     Granted(Grant),
     /// A permission the person took away, on a `watch` connection.
     Revoked(String),
+    /// Why the app's version was stopped, on a `watch` connection: a
+    /// catalog or its feed withdrew it as malicious (ADR 0593), and the
+    /// run ends.
+    Withdrawn(String),
     /// A bundle a catalog lists.
     Hit(Hit),
     /// A catalog.
@@ -658,7 +697,7 @@ impl Answer {
             Answer::Question => b"question\n".to_vec(),
             Answer::Document(text) => format!("document {}\n{text}", text.len()).into_bytes(),
             Answer::Listed(l) => format!(
-                "listed\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                "listed\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                 l.place,
                 l.id,
                 one_line(&l.version),
@@ -681,6 +720,12 @@ impl Answer {
                     .and_then(|t| t.missed_ms)
                     .map_or_else(|| "-".into(), |ms| ms.to_string()),
                 l.tonight.as_ref().map_or_else(|| "-".into(), |t| t.starts_ms.to_string()),
+                // Five words for the withdrawal that applies, a dash each for none.
+                l.withdrawn.as_ref().map_or_else(|| "-".into(), |w| w.source.to_string()),
+                l.withdrawn.as_ref().map_or_else(|| "-".into(), |w| w.kind.word().to_string()),
+                l.withdrawn.as_ref().map_or_else(|| "-".into(), |w| w.since.to_string()),
+                l.withdrawn.as_ref().map_or_else(|| "-".into(), |w| w.stopped.to_string()),
+                l.withdrawn.as_ref().map_or_else(|| "-".into(), |w| one_line(&w.reason)),
                 one_line(&l.name)
             )
             .into_bytes(),
@@ -708,6 +753,7 @@ impl Answer {
             )
             .into_bytes(),
             Answer::Revoked(permission) => format!("revoked\t{permission}\n").into_bytes(),
+            Answer::Withdrawn(why) => format!("withdrawn\t{}\n", one_line(why)).into_bytes(),
             Answer::Hit(h) => format!(
                 "hit\t{}\t{}\t{}\t{}\t{}\n",
                 h.catalog,
@@ -918,6 +964,9 @@ impl Answer {
                 held_reason: (!reason.is_empty()).then(|| one_line(reason)),
             })));
         }
+        if let ["withdrawn", why] = words.as_slice() {
+            return Ok(Some(Answer::Withdrawn(one_line(why))));
+        }
         if let ["revoked", permission] = words.as_slice() {
             let permission = checked_permission(permission).map_err(|why| bad(&why))?;
             return Ok(Some(Answer::Revoked(permission)));
@@ -941,9 +990,37 @@ impl Answer {
             asked_by,
             missed,
             starts,
+            withdrawn_source,
+            withdrawn_kind,
+            withdrawn_since,
+            withdrawn_stopped,
+            withdrawn_reason,
             name,
         ] = words.as_slice()
         {
+            let withdrawn = match *withdrawn_source {
+                "-" => None,
+                text => {
+                    let source = match text.split_once(':') {
+                        Some(("catalog", name)) => {
+                            Source::Catalog(checked_catalog(name).map_err(|why| bad(&why))?)
+                        }
+                        Some(("feed", at)) => Source::Feed(place(at)?),
+                        _ => return Err(bad("a withdrawal's source")),
+                    };
+                    Some(WithdrawnBy {
+                        source,
+                        kind: Kind::read(withdrawn_kind).map_err(|why| bad(&why))?,
+                        since: withdrawn_since.parse().map_err(|_| bad("a withdrawal's time"))?,
+                        reason: one_line(withdrawn_reason),
+                        stopped: match *withdrawn_stopped {
+                            "true" => true,
+                            "false" => false,
+                            _ => return Err(bad("neither true nor false")),
+                        },
+                    })
+                }
+            };
             let place = place(place_word)?;
             return Ok(Some(Answer::Listed(Listed {
                 place,
@@ -985,6 +1062,7 @@ impl Answer {
                         starts_ms: starts.parse().map_err(|_| bad("when a window starts"))?,
                     }),
                 },
+                withdrawn: withdrawn.map(Box::new),
             })));
         }
         Err(bad("not an answer bundle knows"))
@@ -1258,6 +1336,13 @@ mod tests {
                 missed_ms: Some(1_793_250_000_000),
                 starts_ms: 1_793_300_000_000,
             }),
+            withdrawn: Some(Box::new(WithdrawnBy {
+                source: Source::Catalog("dukovo".into()),
+                kind: Kind::Malicious,
+                since: 1_793_400_000,
+                reason: "it sends your files away".into(),
+                stopped: true,
+            })),
         };
         let unbound = Listed {
             catalog: None,
@@ -1267,6 +1352,18 @@ mod tests {
             held_reason: None,
             update: None,
             tonight: None,
+            withdrawn: None,
+            ..listed.clone()
+        };
+        // Broken, not stopped, by its own feed, with a reason that is a dash.
+        let by_feed = Listed {
+            withdrawn: Some(Box::new(WithdrawnBy {
+                source: Source::Feed(Place::User(1000)),
+                kind: Kind::Broken,
+                since: 1_793_400_001,
+                reason: "-".into(),
+                stopped: false,
+            })),
             ..listed.clone()
         };
         // Asked, with no window missed yet.
@@ -1282,6 +1379,7 @@ mod tests {
             Answer::Question,
             Answer::Listed(listed),
             Answer::Listed(unbound),
+            Answer::Listed(by_feed),
             Answer::Listed(fresh),
             Answer::Listed(unsaid),
             Answer::Listed(dash),
@@ -1332,6 +1430,7 @@ mod tests {
                 asked: Vec::new(),
             }),
             Answer::Revoked("files.folder".into()),
+            Answer::Withdrawn("catalog dukovo: it sends the keys away".into()),
             Answer::Hit(Hit {
                 catalog: "dukovo".into(),
                 id: "io.github.sharkdp.bat".into(),
@@ -1429,5 +1528,75 @@ mod tests {
         ] {
             assert!(Answer::read(&mut io::Cursor::new(bad.to_vec())).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_listed_bundles_withdrawal_is_read_strictly() {
+        let row = Answer::Listed(Listed {
+            place: Place::Everyone,
+            id: "org.example.notes".into(),
+            version: "0.1.0".into(),
+            key: key(),
+            when: 1_793_000_000,
+            name: "Notes".into(),
+            flags: Flags::None,
+            catalog: None,
+            held: false,
+            held_since: None,
+            held_by: None,
+            held_reason: None,
+            update: None,
+            tonight: None,
+            withdrawn: None,
+        })
+        .bytes();
+        let row = String::from_utf8(row).unwrap();
+        let words: Vec<&str> = row.trim_end().split('\t').collect();
+        // The word before the name is the withdrawal's reason, and four
+        // more come before that: source, kind, time and whether stopped.
+        let at = words.len() - 6;
+        let sound = ["catalog:dukovo", "broken", "5", "false"];
+        let with = |change: [&str; 4]| {
+            let mut changed = words.clone();
+            changed[at..at + 4].copy_from_slice(&change);
+            format!("{}\n", changed.join("\t")).into_bytes()
+        };
+        assert!(Answer::read(&mut io::Cursor::new(with(sound))).is_ok());
+        for bad in [
+            ["depot:x", "-", "-", "-"],
+            ["catalog:Bad Name", "broken", "5", "false"],
+            ["catalog:dukovo", "evil", "5", "false"],
+            ["catalog:dukovo", "broken", "soon", "false"],
+            ["catalog:dukovo", "broken", "5", "maybe"],
+            ["feed:someone", "broken", "5", "false"],
+        ] {
+            let line = with(bad);
+            assert!(Answer::read(&mut io::Cursor::new(line.clone())).is_err(), "{line:?}");
+        }
+    }
+
+    #[test]
+    fn a_withdrawal_says_what_the_person_may_do() {
+        let by = |source: Source, stopped: bool| WithdrawnBy {
+            source,
+            kind: if stopped { Kind::Malicious } else { Kind::Broken },
+            since: 5,
+            reason: "it crashes".into(),
+            stopped,
+        };
+        let id = "org.example.notes";
+        assert_eq!(
+            by(Source::Catalog("dukovo".into()), false).line(id),
+            "withdrawn by catalog dukovo: it crashes"
+        );
+        assert_eq!(
+            by(Source::Catalog("dukovo".into()), true).line(id),
+            "stopped by catalog dukovo: it crashes; remove it, or `bundle update \
+             org.example.notes` takes a fixed version"
+        );
+        assert_eq!(
+            by(Source::Feed(Place::Everyone), false).line(id),
+            "withdrawn by its publisher's feed: it crashes"
+        );
     }
 }

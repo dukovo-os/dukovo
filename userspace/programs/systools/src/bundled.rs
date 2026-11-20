@@ -70,7 +70,9 @@ use crate::bundles::protocol::{
     self, AddOn, Answer, Available, Find, Flags, Found, Hit, LINE_MAX, Lines, Listed, Request,
     Shown,
 };
-use crate::bundles::registry::{self, Installed, Place, Registry, Trust, base_id};
+use crate::bundles::registry::{
+    self, Installed, Place, Registry, Source, Trust, Withdrawn, base_id,
+};
 use crate::bundles::services::{self, Record};
 use crate::bundles::sheet::{self, Facts};
 use crate::bundles::{
@@ -217,6 +219,9 @@ struct Wake {
     updates: bool,
     /// A request for tonight came: look at the requests now.
     tonight: bool,
+    /// A catalog or feed withdrew a version bundled did not know of, or
+    /// bundled started: act on what applies now (ADR 0593).
+    withdrawals: bool,
 }
 
 /// A run of an app, by its runner's `watch` connection.
@@ -715,6 +720,13 @@ fn install_in(
     let listed = listing(&id, &sha256, length, how.from);
     // The catalogs that vouch for the publisher of the ID (ADR 0592).
     let owners = owners(&id);
+    let mut refused = None;
+    // A version a catalog or feed withdrew installs nowhere (ADR 0593).
+    let withdrawn =
+        withdrawn_refusal(&shared.lock(), place, &id, &checked.manifest.version.0, &sha256);
+    if let Some(why) = withdrawn {
+        stop(&how, &mut refused, why)?;
+    }
     let claim = registry::Claim {
         id: &id,
         key: &checked.key,
@@ -723,7 +735,6 @@ fn install_in(
         links: &links,
         signed_at: checked.signed_at(),
     };
-    let mut refused = None;
     if let Some(from) = how.from
         && listed.first().map(String::as_str) != Some(from)
     {
@@ -864,8 +875,12 @@ fn install_in(
     still("as it was sealed")?;
     let version = checked.manifest.version.0.clone();
     let mut registry = shared.lock();
-    // Bound since? Another install may have come in between.
+    // Bound since? Another install may have come in between. Withdrawn
+    // since? A read of a catalog may have.
     let trust = registry.trust(place, asker, &claim)?;
+    if let Some(why) = withdrawn_refusal(&registry, place, &id, &version, &sha256) {
+        return Err(why);
+    }
     switch_in(places, path, working, &id)?;
     match places.stat_at(&id) {
         Ok(Some(st)) if same(&st, &made) => {}
@@ -873,9 +888,12 @@ fn install_in(
     }
     let when = util::now_ns() / 1_000_000_000;
     let previous = registry.installed(place, &id).map(|i| i.version.clone());
-    // trust said each binding to another key moves to this one.
+    // trust said each binding to another key moves to this one. What the
+    // old publisher's feed withdrew is not said of the new one's versions.
     let rebound = match trust {
-        Trust::NewKey { .. } | Trust::Takes { .. } => {
+        Trust::NewKey { .. } => registry.rebind(place, &id, &checked.key, when),
+        Trust::Takes { .. } => {
+            registry.forget_feed_withdrawals(place, &id);
             registry.rebind(place, &id, &checked.key, when)
         }
         _ => Vec::new(),
@@ -946,7 +964,8 @@ fn install_in(
     {
         audit!("{id} {version} failed its health check: {why}; going back to {from}");
         let note = format!("{version} failed its health check: {why}");
-        return Err(match go_back(shared, place, &id, None, note) {
+        let back = Back { by: None, note, hold: true, from: Some(&version) };
+        return Err(match go_back(shared, place, &id, &back) {
             Ok(back) => format!("{installed}; but {why}, so bundled {back}"),
             Err(e) => format!("{installed}; but {why}, and it could not go back: {e}"),
         });
@@ -1597,7 +1616,7 @@ fn commands_in_reach(registry: &Registry, place: Place, id: &str) -> Vec<(String
 
 /// The commands of the bundles installed in `place`, and each command
 /// of a line a second time as `NAME-LINE`, which runs that line (ADR
-/// 0387).
+/// 0387). A stopped one's stay, to say why it does not run (ADR 0593).
 fn commands_of(registry: &Registry, place: Place) -> Vec<String> {
     let mut commands: Vec<String> = registry
         .installed
@@ -1671,12 +1690,15 @@ fn add_on_place(asker: u32) -> Place {
 }
 
 /// The lines with add-ons in reach of `place`, by full ID, and the
-/// folder in their add-ons that holds commands (ADR 0388).
+/// folder in their add-ons that holds commands (ADR 0388); none of a
+/// stopped line (ADR 0593).
 fn add_on_lines(registry: &Registry, place: Place) -> Vec<(String, String)> {
     let mut lines: Vec<(String, String)> = Vec::new();
     for at in [place, Place::Everyone] {
         for installed in registry.installed.iter().filter(|i| i.place == at && i.id.contains('@')) {
-            if lines.iter().any(|(id, _)| *id == installed.id) {
+            if lines.iter().any(|(id, _)| *id == installed.id)
+                || registry.stopped(at, &installed.id).is_some()
+            {
                 continue;
             }
             if let Ok(manifest) = installed_manifest(installed.place, &installed.id)
@@ -1911,6 +1933,9 @@ fn find(
             }
         });
     };
+    if let Some(why) = stopped_refusal(&shared.lock(), &installed) {
+        return Err(why);
+    }
     let answer = Answer::Found(Found {
         place: installed.place,
         id: installed.id.clone(),
@@ -1960,10 +1985,11 @@ fn list(shared: &Shared, connection: &mut Connection, asker: u32) -> Result<Stri
     let (wanted, window, at) = (read_wanted(), window_now(), now());
     for i in &installed {
         let name = installed_manifest(i.place, &i.id).map_or_else(|_| "?".into(), |m| m.name.0);
-        let (bound, held) = {
+        let (bound, held, withdrawn) = {
             let registry = shared.lock();
             let bound = registry.catalog_bound(i.place, &i.id).map(|b| b.catalog.clone());
-            (bound, registry.held(i.place, &i.id).map(|h| h.since))
+            let withdrawn = withdrawn_by(&registry, i.place, &i.id, &i.version);
+            (bound, registry.held(i.place, &i.id).map(|h| h.since), withdrawn)
         };
         let (held_by, held_reason) =
             if held.is_some() { hold_facts(&events, i.place, &i.id) } else { (None, None) };
@@ -2007,10 +2033,29 @@ fn list(shared: &Shared, connection: &mut Connection, asker: u32) -> Result<Stri
                     starts_ms: tonight::starts(window, at, &tonight::local_second_of_day) * 1000,
                 }
             }),
+            withdrawn: withdrawn.map(Box::new),
         };
         connection.send(&Answer::Listed(listed)).map_err(|e| format!("{e}"))?;
     }
     Ok(format!("{} bundles", installed.len()))
+}
+
+/// The withdrawal that applies to the installed `version` of `id` in
+/// `place` (ADR 0593), and whether it stops the bundle.
+fn withdrawn_by(
+    registry: &Registry,
+    place: Place,
+    id: &str,
+    version: &str,
+) -> Option<protocol::WithdrawnBy> {
+    let w = registry.withdrawal(place, id, version)?;
+    Some(protocol::WithdrawnBy {
+        source: w.source.clone(),
+        kind: w.kind,
+        since: w.since,
+        reason: w.reason.clone(),
+        stopped: registry.stopped(place, id).is_some(),
+    })
 }
 
 /// Who held `id` in `place`, and the reason they gave: what the newest
@@ -2076,10 +2121,11 @@ fn info(
         Place::User(_) => account(asker)
             .map_or_else(|_| format!("{APP_DATA}/{id}"), |u| format!("{}/{APP_DATA}/{id}", u.home)),
     };
-    let (kept, held) = {
+    let (kept, held, withdrawn) = {
         let registry = shared.lock();
         let kept = registry.previous(installed.place, id).map(|p| p.version.clone());
-        (kept, registry.held(installed.place, id).is_some())
+        let withdrawn = withdrawn_by(&registry, installed.place, id, &installed.version);
+        (kept, registry.held(installed.place, id).is_some(), withdrawn)
     };
     let data_size = data_size_of(installed.place, &installed.id);
     if json {
@@ -2093,6 +2139,7 @@ fn info(
             data_size,
             previous: kept.as_deref(),
             held,
+            withdrawn: withdrawn.clone(),
             started: &started,
             used_by: &used_by,
         };
@@ -2103,6 +2150,9 @@ fn info(
     }
     connection.send(&Answer::Sheet(sheet::write(&facts))).map_err(|e| format!("{e}"))?;
     send_grants(shared, connection, asker, id, &installed.key)?;
+    if let Some(withdrawn) = &withdrawn {
+        connection.send(&Answer::Note(withdrawn.line(id))).map_err(|e| format!("{e}"))?;
+    }
     let when =
         util::time_text(i64::try_from(installed.when).unwrap_or(0), "%Y-%m-%d %H:%M UTC", true);
     let size = data_size.map_or_default(|d| {
@@ -2725,8 +2775,15 @@ fn watch(shared: &Shared, uid: u32, id: String, stream: UnixStream) {
     let mut watchers = shared.watchers();
     watchers.retain(|w| readable(&w.stream, Instant::now()).is_err());
     let theirs = watchers.iter().filter(|w| w.uid == uid).count();
+    // Every run is followed (ADR 0593), so past the most, the oldest run
+    // of the same app goes first: a build's many runs of one compiler do
+    // not leave another app's run unfollowed.
+    let oldest = || {
+        let same = watchers.iter().position(|w| w.uid == uid && w.id == id);
+        same.or_else(|| watchers.iter().position(|w| w.uid == uid))
+    };
     if theirs >= WATCHERS_MAX
-        && let Some(oldest) = watchers.iter().position(|w| w.uid == uid)
+        && let Some(oldest) = oldest()
     {
         watchers.remove(oldest);
     }
@@ -2756,8 +2813,9 @@ impl Unread {
 type Opened = (Vec<(Catalog, catalogs::Open)>, Vec<Unread>);
 
 /// Reads every catalog that is on anew, or `only`: each one read, and why
-/// each other could not be.
-fn open_catalogs(only: Option<&str>) -> Result<Opened, String> {
+/// each other could not be. What each withdraws is kept
+/// ([`learn_withdrawals`]).
+fn open_catalogs(shared: &Shared, only: Option<&str>) -> Result<Opened, String> {
     let (all, _) = read_catalogs();
     let chosen: Vec<Catalog> = match only {
         Some(name) => {
@@ -2779,11 +2837,71 @@ fn open_catalogs(only: Option<&str>) -> Result<Opened, String> {
     let mut failed = Vec::new();
     for catalog in chosen {
         match catalogs::open(&catalog, state) {
-            Ok(read) => open.push((catalog, read)),
+            Ok(read) => {
+                learn_withdrawals(
+                    shared,
+                    &Source::Catalog(catalog.name.clone()),
+                    &read.index,
+                    None,
+                );
+                open.push((catalog, read));
+            }
             Err(why) => failed.push(Unread { catalog: catalog.name, why }),
         }
     }
     Ok((open, failed))
+}
+
+/// Keeps for good what `index`, just read from `source`, withdraws that
+/// bundled did not know of (ADR 0593), says each in the log, and has the
+/// updater act on it at once ([`act_on_withdrawals`]). A feed withdraws
+/// only versions of `own`, the ID of the bundle whose feed it is, and its
+/// lines; the caller holds no lock of the registry.
+fn learn_withdrawals(shared: &Shared, source: &Source, index: &catalogs::Index, own: Option<&str>) {
+    let said: Vec<Withdrawn> = index
+        .entries
+        .iter()
+        .filter(|e| own.is_none_or(|own| base_id(&e.id) == base_id(own)))
+        .filter_map(|e| {
+            let w = e.withdrawn.as_ref()?;
+            Some(Withdrawn {
+                source: source.clone(),
+                id: e.id.clone(),
+                version: e.version.clone(),
+                sha256: e.sha256.clone(),
+                kind: w.kind,
+                since: w.since,
+                reason: w.reason.clone(),
+            })
+        })
+        .collect();
+    if said.is_empty() {
+        return;
+    }
+    let mut registry = shared.lock();
+    let new: Vec<Withdrawn> = said.into_iter().filter(|w| registry.withdraw(w.clone())).collect();
+    if new.is_empty() {
+        return;
+    }
+    // Kept in memory even if it cannot be written now: the next write
+    // carries it, and the next read says it again.
+    if let Err(why) = save(&registry) {
+        eprintln!("bundled: the withdrawals {} said are not written: {why}", source.words());
+    }
+    drop(registry);
+    for w in &new {
+        audit!(
+            "{} withdrew {} {} as {}: {}",
+            w.source.words(),
+            w.id,
+            w.version,
+            w.kind.word(),
+            w.reason
+        );
+    }
+    let (flags, signal) = &shared.wake;
+    flags.lock().unwrap_or_else(std::sync::PoisonError::into_inner).withdrawals = true;
+    signal.notify_all();
 }
 
 /// `bundle search WORD...`: what the catalogs list, read anew; a catalog
@@ -2794,7 +2912,7 @@ fn search(
     words: &[String],
 ) -> Result<String, String> {
     let _reading = shared.catalogs();
-    let (open, failed) = open_catalogs(None)?;
+    let (open, failed) = open_catalogs(shared, None)?;
     let state = Path::new(catalogs::STATE);
     let (all, _) = read_catalogs();
     let mut notes: Vec<String> = failed.iter().map(Unread::note).collect();
@@ -2837,8 +2955,8 @@ fn none_read(failed: &[Unread]) -> String {
 /// [`open_catalogs`], with an ID at the end of each refusal: one for no
 /// catalog set to be read, and one for the catalog asked for that is not
 /// there or is off.
-fn open_for_asker(only: Option<&str>) -> Result<Opened, String> {
-    open_catalogs(only)
+fn open_for_asker(shared: &Shared, only: Option<&str>) -> Result<Opened, String> {
+    open_catalogs(shared, only)
         .map_err(|why| format!("{why} ({})", if only.is_some() { "APP-101" } else { "APP-103" }))
 }
 
@@ -2861,7 +2979,7 @@ fn search_json(
 ) -> Result<String, String> {
     let (hits, unread, refusal) = {
         let _reading = shared.catalogs();
-        match open_for_asker(None) {
+        match open_for_asker(shared, None) {
             Err(why) => (Vec::new(), Vec::new(), Some(why)),
             Ok((open, failed)) if open.is_empty() => {
                 let why = none_read(&failed);
@@ -2941,7 +3059,7 @@ fn fetch_newest(
     }
     let only = catalog.or(bound.as_deref());
     let _reading = shared.catalogs();
-    let (mut open, failed) = open_for_asker(only)?;
+    let (mut open, failed) = open_for_asker(shared, only)?;
     if open.is_empty() {
         return Err(none_read(&failed));
     }
@@ -3140,10 +3258,13 @@ fn check_flaws(shared: &Shared) {
             let _reading = shared.catalogs();
             catalogs::open(catalog, kept)
         };
-        if let Err(why) = read {
-            eprintln!("bundled: the daily check could not read catalog {name}: {why}");
-            read_all = false;
-            continue;
+        match read {
+            Ok(read) => learn_withdrawals(shared, &Source::Catalog(name.into()), &read.index, None),
+            Err(why) => {
+                eprintln!("bundled: the daily check could not read catalog {name}: {why}");
+                read_all = false;
+                continue;
+            }
         }
         let Some(list) = catalogs::read_flaws(kept, name) else { continue };
         for (i, _) in installed.iter().filter(|(_, c)| c == name) {
@@ -3211,6 +3332,279 @@ fn check_flaws(shared: &Shared) {
     }
 }
 
+/// The daily read of the feed of each installed bundle from no catalog
+/// that names one (ADR 0390), for what it withdraws (ADR 0593).
+fn read_feeds(shared: &Shared) {
+    let from_feeds: Vec<Installed> = {
+        let registry = shared.lock();
+        let installed = registry.installed.iter();
+        installed.filter(|i| registry.catalog_bound(i.place, &i.id).is_none()).cloned().collect()
+    };
+    for installed in from_feeds {
+        let read = {
+            let _reading = shared.catalogs();
+            read_feed(shared, &installed)
+        };
+        if let Err(why) = read {
+            eprintln!("bundled: the daily check, for {}: {why}", whom(installed.place));
+        }
+    }
+}
+
+/// Why a file of `id` at `version`, whose SHA-256 is `sha256`, may not
+/// install in `place`: a catalog or feed withdrew that version of it, or
+/// that file (ADR 0593).
+fn withdrawn_refusal(
+    registry: &Registry,
+    place: Place,
+    id: &str,
+    version: &str,
+    sha256: &str,
+) -> Option<String> {
+    let w = registry
+        .withdrawal(place, id, version)
+        .or_else(|| registry.withdrawn_file(place, id, sha256))?;
+    let day = util::time_text(i64::try_from(w.since).unwrap_or(i64::MAX), "%Y-%m-%d", true);
+    Some(format!("{id} {} was withdrawn by {} on {day}: {}", w.version, w.source.words(), w.reason))
+}
+
+/// Why `installed` may not run: a catalog or feed withdrew its version
+/// as malicious, which stopped it (ADR 0593).
+fn stopped_refusal(registry: &Registry, installed: &Installed) -> Option<String> {
+    let w = registry.stopped(installed.place, &installed.id)?;
+    Some(format!(
+        "{} {} was stopped by {}: {}; remove it, or `bundle update {}` takes a fixed version",
+        installed.id,
+        installed.version,
+        w.source.words(),
+        w.reason,
+        installed.id
+    ))
+}
+
+/// Acts on each withdrawal that applies to an installed version (ADR
+/// 0593). A malicious version is stopped ([`stop_withdrawn`]). Then
+/// bundled goes back from a withdrawn version to the one kept beside it,
+/// with that one's data, if it is not withdrawn too, and does not hold
+/// it there. With nothing good kept, a broken version keeps running and
+/// a malicious one stays stopped, and where the place updates by itself
+/// the next good version is taken at once. Each withdrawal of an
+/// installed version is told once, in the history; the sign-in notice
+/// says those that stay ([`tell_of_withdrawals`]).
+fn act_on_withdrawals(shared: &Shared) {
+    let hit: Vec<(Installed, Withdrawn)> = {
+        let registry = shared.lock();
+        let applies = |i: &Installed| registry.withdrawal(i.place, &i.id, &i.version).cloned();
+        registry.installed.iter().filter_map(|i| Some((i.clone(), applies(i)?))).collect()
+    };
+    let history = history::read(&state(history::HISTORY));
+    let mut updates: Vec<(Place, String)> = Vec::new();
+    for (Installed { place, id, version, .. }, w) in hit {
+        // An install or removal may have come in between.
+        if shared.lock().installed(place, &id).is_none_or(|i| i.version != version) {
+            continue;
+        }
+        let mut note = format!("{}, by {}: {}", w.kind.word(), w.source.words(), w.reason);
+        if w.kind == catalogs::Kind::Malicious {
+            match stop_withdrawn(shared, place, &id, &version, &w) {
+                Ok(_) => note.push_str("; it is stopped"),
+                Err(why) => {
+                    eprintln!("bundled: {id} {version} for {} is not stopped: {why}", whom(place));
+                    let _ = write!(note, "; it could not be stopped: {why}");
+                }
+            }
+        }
+        // Told once for each version and kind.
+        let said = history.iter().any(|e| {
+            e.what == What::Withdrawn
+                && e.place == place
+                && e.id == id
+                && e.from.as_deref() == Some(version.as_str())
+                && e.note.starts_with(w.kind.word())
+        });
+        if !said {
+            add_history(&Event {
+                when: now(),
+                place,
+                id: id.clone(),
+                what: What::Withdrawn,
+                from: Some(version.clone()),
+                to: None,
+                by: None,
+                note,
+            });
+        }
+        let good_kept = {
+            let registry = shared.lock();
+            let kept = registry.previous(place, &id);
+            kept.is_some_and(|then| registry.withdrawal(place, &id, &then.version).is_none())
+        };
+        let mut back = false;
+        if good_kept {
+            let note = format!("{version} was withdrawn by {}: {}", w.source.words(), w.reason);
+            let how = Back { by: None, note, hold: false, from: Some(&version) };
+            match go_back(shared, place, &id, &how) {
+                Ok(_) => back = true,
+                Err(why) => eprintln!(
+                    "bundled: {id} {version} for {} could not go back from its withdrawn \
+                     version: {why}",
+                    whom(place)
+                ),
+            }
+        }
+        if !back && shared.lock().automatic(place).is_some() {
+            updates.push((place, id));
+        }
+    }
+    let mut places: Vec<Place> = updates.iter().map(|(place, _)| *place).collect();
+    places.sort();
+    places.dedup();
+    for place in places {
+        let ids: Vec<String> =
+            updates.iter().filter(|(at, _)| *at == place).map(|(_, id)| id.clone()).collect();
+        update_place(shared, place, &ids);
+    }
+    tell_of_withdrawals(shared);
+}
+
+/// Stops version `version` of bundle `id` in `place`, which `w` withdrew
+/// as malicious (ADR 0593), if it is still the one installed: its folder
+/// is made root's alone, so that no run of it can start; its services are
+/// dropped, their accounts and data kept; and each of its runs is told to
+/// end. Its commands stay, and say why it does not run ([`find`]). It
+/// stays installed, stopped, until it is removed or a good version takes
+/// its place. It is done under the registry's lock, so that a version an
+/// install puts in its place meanwhile is not the one stopped. Whether it
+/// changed anything.
+fn stop_withdrawn(
+    shared: &Shared,
+    place: Place,
+    id: &str,
+    version: &str,
+    w: &Withdrawn,
+) -> Result<bool, String> {
+    let registry = shared.lock();
+    if registry.installed(place, id).is_none_or(|i| i.version != version) {
+        return Ok(false);
+    }
+    let (places, path) = open_place(place)?;
+    let folder = places.dir_at(id).map_err(|e| format!("{path}/{id}: {e}"))?;
+    let st = folder.stat().map_err(|e| format!("{path}/{id}: {e}"))?;
+    if st.st_uid != 0 {
+        return Err(format!("{path}/{id} is not bundled's"));
+    }
+    let mut changed = false;
+    if st.st_mode & 0o7777 != 0o500 {
+        set_root(&folder.0, 0o500).map_err(|e| format!("{path}/{id}: {e}"))?;
+        changed = true;
+    }
+    let mut said = String::new();
+    // Its services, which run for everyone (ADR 0385).
+    if place == Place::Everyone {
+        for (name, record) in records() {
+            if record.id != id {
+                continue;
+            }
+            changed = true;
+            if let Some(why) = drop_service(&name) {
+                let _ = write!(said, "; its service {name} is not wholly stopped: {why}");
+            }
+        }
+    }
+    // Those who run an install of their own of it, not everyone's.
+    let own: Vec<u32> = registry
+        .installed
+        .iter()
+        .filter(|i| i.id == id)
+        .filter_map(|i| match i.place {
+            Place::User(uid) => Some(uid),
+            Place::Everyone => None,
+        })
+        .collect();
+    drop(registry);
+    let why = format!("{} withdrew {version}: {}", w.source.words(), w.reason);
+    let told = tell_stopped(shared, place, id, &own, &why);
+    if changed || told > 0 {
+        audit!(
+            "bundled stopped {id} {version} for {}, which {} withdrew as malicious: {}; {told} \
+             running told to end{said}",
+            whom(place),
+            w.source.words(),
+            w.reason
+        );
+    }
+    Ok(changed || told > 0)
+}
+
+/// Tells each run of bundle `id` of `place` that it was stopped, `why`,
+/// on its `watch` connection, and forgets it: of everyone's, each run but
+/// those of the people in `own`, who run an install of their own. How
+/// many were told.
+fn tell_stopped(shared: &Shared, place: Place, id: &str, own: &[u32], why: &str) -> usize {
+    let line = Answer::Withdrawn(why.into()).bytes();
+    let mut told = 0;
+    shared.watchers().retain(|w| {
+        let theirs = match place {
+            Place::Everyone => !own.contains(&w.uid),
+            Place::User(uid) => w.uid == uid,
+        };
+        if w.id != id || !theirs {
+            return true;
+        }
+        told += usize::from((&w.stream).write_all(&line).is_ok());
+        false
+    });
+    told
+}
+
+/// The sign-in notice of the installed versions a withdrawal applies to.
+const WITHDRAWN_NOTICE: &str = "bundled-withdrawn";
+
+/// Puts each installed version a withdrawal applies to on the sign-in
+/// screens (ADR 0504), and tells notifyd when that changed: at once, of
+/// a stopped one.
+fn tell_of_withdrawals(shared: &Shared) {
+    let (lines, stopped) = {
+        let registry = shared.lock();
+        let mut lines = Vec::new();
+        let mut stopped = false;
+        for i in &registry.installed {
+            let Some(w) = registry.withdrawal(i.place, &i.id, &i.version) else { continue };
+            let left = match w.kind {
+                catalogs::Kind::Malicious => {
+                    stopped = true;
+                    "it is stopped: remove it, or"
+                }
+                catalogs::Kind::Broken => "it runs until",
+            };
+            lines.push(format!(
+                "bundled: {} {} for {} was withdrawn by {}: {}; {left} `bundle update {}` takes \
+                 a fixed version",
+                i.id,
+                i.version,
+                whom(i.place),
+                w.source.words(),
+                w.reason,
+                i.id
+            ));
+        }
+        (lines, stopped)
+    };
+    if crate::sign_in_notices::put(WITHDRAWN_NOTICE, &lines) {
+        let urgency = if stopped {
+            crate::notifyd::Urgency::Critical
+        } else {
+            crate::notifyd::Urgency::Normal
+        };
+        let _ = crate::notifyd::send(
+            "bundled",
+            "A version of an installed app was withdrawn",
+            &lines.join("\n"),
+            urgency,
+        );
+    }
+}
+
 /// The bundles of `place`, or those of `ids`, whose catalogs list a newer
 /// version, each fetched when `fetch` and it is neither held nor waiting
 /// for its wave; what could not be read; and how many are up to date. The
@@ -3247,7 +3641,7 @@ fn find_updates(
     names.dedup();
     let mut open = Vec::new();
     for name in names {
-        match open_catalogs(Some(name)) {
+        match open_catalogs(shared, Some(name)) {
             Ok((read, failed)) => {
                 open.extend(read);
                 notes.extend(failed.iter().map(Unread::note));
@@ -3260,7 +3654,7 @@ fn find_updates(
     let named = !ids.is_empty();
     for (installed, catalog, held) in candidates {
         let Some(catalog) = catalog else {
-            match from_feed(place, &installed, held, fetch, ids.contains(&installed.id)) {
+            match from_feed(shared, &installed, held, fetch, ids.contains(&installed.id)) {
                 Ok(Feeding::Newer(p)) => pending.push(*p),
                 Ok(Feeding::Current) => current += 1,
                 Ok(Feeding::None) => {}
@@ -3277,8 +3671,15 @@ fn find_updates(
             current += 1;
             continue;
         };
-        let waits =
-            if held || named { None } else { waits_for_wave(read, &catalog, &installed, &entry) };
+        // A withdrawn version is left at once, ahead of the waves (ADR
+        // 0593).
+        let withdrawn =
+            shared.lock().withdrawal(place, &installed.id, &installed.version).is_some();
+        let waits = if held || named || withdrawn {
+            None
+        } else {
+            waits_for_wave(read, &catalog, &installed, &entry)
+        };
         let file = if fetch && !held && waits.is_none() {
             match read.fetch(&entry) {
                 Ok(file) => Some(file),
@@ -3306,28 +3707,38 @@ enum Feeding {
     Newer(Box<Pending>),
 }
 
+/// Reads anew the feed of `installed`, from no catalog, if its manifest
+/// names one (ADR 0390), and keeps what it withdraws of the bundle's own
+/// ID (ADR 0593). The caller holds the catalogs.
+fn read_feed(shared: &Shared, installed: &Installed) -> Result<Option<catalogs::Open>, String> {
+    let (place, id) = (installed.place, &installed.id);
+    let manifest = installed_manifest(place, id)?;
+    let Some(update) = &manifest.update else { return Ok(None) };
+    let state = Path::new(feeds::STATE);
+    let open = feeds::open(state, place, id, &update.feed.0, &update.key.0)
+        .map_err(|why| format!("{id}: its feed: {why}"))?;
+    learn_withdrawals(shared, &Source::Feed(place), &open.index, Some(id));
+    Ok(Some(open))
+}
+
 /// What `installed`, from no catalog, has from its own feed (ADR 0390):
 /// a newer version, fetched when `fetch` and it is not held. That it
 /// names no feed is said only when it was `asked` for.
 fn from_feed(
-    place: Place,
+    shared: &Shared,
     installed: &Installed,
     held: bool,
     fetch: bool,
     asked: bool,
 ) -> Result<Feeding, String> {
     let id = &installed.id;
-    let manifest = installed_manifest(place, id)?;
-    let Some(update) = &manifest.update else {
+    let Some(mut open) = read_feed(shared, installed)? else {
         return if asked {
             Err(format!("{id} came from a file and names no feed, so nothing updates it"))
         } else {
             Ok(Feeding::None)
         };
     };
-    let state = Path::new(feeds::STATE);
-    let mut open = feeds::open(state, place, id, &update.feed.0, &update.key.0)
-        .map_err(|why| format!("{id}: its feed: {why}"))?;
     let Some(entry) = open.index.newest(id).cloned().filter(|e| {
         catalogs::compare_versions(&e.version, &installed.version) == std::cmp::Ordering::Greater
     }) else {
@@ -3471,87 +3882,93 @@ fn update(
     Ok(said)
 }
 
-/// Updates the bundles of each place that updates by itself (ADR 0384):
-/// as `bundle update` does, but one that asks for more than the version
-/// it replaces waits for a person's yes, and a held one is left alone.
+/// Updates the bundles of each place that updates by itself (ADR 0384),
+/// as [`update_place`] does.
 fn update_by_themselves(shared: &Shared) {
     let places: Vec<Place> = shared.lock().automatic.iter().map(|(place, _)| *place).collect();
     for place in places {
-        let found = {
-            let _reading = shared.catalogs();
-            find_updates(shared, place, &[], true)
-        };
-        let (pending, notes, _) = match found {
-            Ok(found) => found,
-            Err(why) => {
-                eprintln!("bundled: updating the bundles of {} by themselves: {why}", whom(place));
-                continue;
-            }
-        };
-        for note in notes {
-            eprintln!("bundled: updating by themselves: {note}");
+        update_place(shared, place, &[]);
+    }
+}
+
+/// Updates the bundles of `place`, a place that updates by itself, or
+/// those of `ids` there, whatever their waves say: as `bundle update`
+/// does, but one that asks for more than the version it replaces waits
+/// for a person's yes, and a held one is left alone.
+fn update_place(shared: &Shared, place: Place, ids: &[String]) {
+    let found = {
+        let _reading = shared.catalogs();
+        find_updates(shared, place, ids, true)
+    };
+    let (pending, notes, _) = match found {
+        Ok(found) => found,
+        Err(why) => {
+            eprintln!("bundled: updating the bundles of {} by themselves: {why}", whom(place));
+            return;
         }
-        for p in pending.into_iter().filter(|p| !p.held) {
-            if let Some(lines) = &p.waits {
-                // Taken the day its wave opens; said each day it waits.
-                eprintln!(
-                    "bundled: {} for {} waits: {}",
-                    p.installed.id,
-                    whom(place),
-                    lines.join("; ")
-                );
-                continue;
-            }
-            let Some(file) = p.file else { continue };
-            let (asker, everyone) = match place {
-                Place::Everyone => (0, true),
-                Place::User(uid) => (uid, false),
-            };
-            let how = How {
-                yes: true,
-                from: p.catalog.as_deref(),
-                update: true,
-                automatic: true,
-                feed: p.catalog.is_none(),
-                ..How::default()
-            };
-            let result = File::open(&file)
-                .map_err(|e| format!("{}: {e}", file.display()))
-                .and_then(|archive| install(shared, None, asker, &archive, everyone, how));
-            let _ = fs::remove_file(&file);
-            let id = &p.installed.id;
-            let (from, to) = (&p.installed.version, &p.newest);
-            match result {
-                Ok(_) => eprintln!(
-                    "bundled: updated {id} {from} to {to} for {} by itself, {}",
-                    whom(place),
-                    p.catalog.as_ref().map_or_else(
-                        || "from its feed".to_string(),
-                        |c| format!("from catalog {c}")
-                    )
-                ),
-                Err(why) => {
-                    let waits = why.starts_with(WAITS);
-                    eprintln!("bundled: {id} {to} for {}: {why}", whom(place));
-                    // Said once for each version, not each day.
-                    let said = history::read(&state(history::HISTORY)).iter().any(|e| {
-                        e.what == What::Waiting
-                            && e.place == place
-                            && e.id == *id
-                            && e.to.as_deref() == Some(to.as_str())
+    };
+    for note in notes {
+        eprintln!("bundled: updating by themselves: {note}");
+    }
+    for p in pending.into_iter().filter(|p| !p.held) {
+        if let Some(lines) = &p.waits {
+            // Taken the day its wave opens; said each day it waits.
+            eprintln!(
+                "bundled: {} for {} waits: {}",
+                p.installed.id,
+                whom(place),
+                lines.join("; ")
+            );
+            continue;
+        }
+        let Some(file) = p.file else { continue };
+        let (asker, everyone) = match place {
+            Place::Everyone => (0, true),
+            Place::User(uid) => (uid, false),
+        };
+        let how = How {
+            yes: true,
+            from: p.catalog.as_deref(),
+            update: true,
+            automatic: true,
+            feed: p.catalog.is_none(),
+            ..How::default()
+        };
+        let result = File::open(&file)
+            .map_err(|e| format!("{}: {e}", file.display()))
+            .and_then(|archive| install(shared, None, asker, &archive, everyone, how));
+        let _ = fs::remove_file(&file);
+        let id = &p.installed.id;
+        let (from, to) = (&p.installed.version, &p.newest);
+        match result {
+            Ok(_) => eprintln!(
+                "bundled: updated {id} {from} to {to} for {} by itself, {}",
+                whom(place),
+                p.catalog
+                    .as_ref()
+                    .map_or_else(|| "from its feed".to_string(), |c| format!("from catalog {c}"))
+            ),
+            Err(why) => {
+                let waits = why.starts_with(WAITS);
+                eprintln!("bundled: {id} {to} for {}: {why}", whom(place));
+                // Said once for each version, not each day.
+                let said = history::read(&state(history::HISTORY)).iter().any(|e| {
+                    e.what == What::Waiting
+                        && e.place == place
+                        && e.id == *id
+                        && e.to.as_deref() == Some(to.as_str())
+                });
+                if !said || !waits {
+                    add_history(&Event {
+                        when: now(),
+                        place,
+                        id: id.clone(),
+                        what: if waits { What::Waiting } else { What::Failed },
+                        from: Some(from.clone()),
+                        to: Some(to.clone()),
+                        by: None,
+                        note: why,
                     });
-                    if !said || !waits {
-                        add_history(&Event {
-                            when: now(),
-                            place,
-                            id: id.clone(),
-                            what: if waits { What::Waiting } else { What::Failed },
-                            from: Some(from.clone()),
-                            to: Some(to.clone()),
-                            by: None,
-                            note: why,
-                        });
-                    }
                 }
             }
         }
@@ -3625,16 +4042,24 @@ fn data_size_of(place: Place, id: &str) -> Option<sizes::DataSize> {
 /// once when a place turns updating by themselves on; then measures what
 /// the apps' data takes ([`measure_data`]). While an update waits for
 /// tonight, it wakes too for the start of the window, and at least each
-/// hour, which is when a request is looked at ([`tonight_tick`]).
+/// hour, which is when a request is looked at ([`tonight_tick`]). It acts
+/// on withdrawals ([`act_on_withdrawals`]) as bundled starts, at once
+/// when a read of a catalog or feed learns a new one, and daily.
 fn updater(shared: &Shared) {
     let mut next = Instant::now() + AUTOMATIC_FIRST;
     loop {
         let window_at = waiting_nap().map(|nap| Instant::now() + nap);
         let mut daily = false;
+        let mut withdrawals = false;
         {
             let (flags, signal) = &shared.wake;
             let mut wake = flags.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             loop {
+                if wake.withdrawals {
+                    wake.withdrawals = false;
+                    withdrawals = true;
+                    break;
+                }
                 if wake.updates {
                     wake.updates = false;
                     daily = true;
@@ -3659,9 +4084,16 @@ fn updater(shared: &Shared) {
                     .0;
             }
         }
+        if withdrawals {
+            act_on_withdrawals(shared);
+            continue;
+        }
         if daily {
             next = Instant::now() + AUTOMATIC_EVERY;
             check_flaws(shared);
+            read_feeds(shared);
+            // Again what failed before, and what was just read.
+            act_on_withdrawals(shared);
             if !shared.lock().automatic.is_empty() {
                 update_by_themselves(shared);
             }
@@ -4025,27 +4457,49 @@ fn rollback(shared: &Shared, asker: u32, id: &str, everyone: bool) -> Result<Str
         ));
     }
     let place = if everyone { Place::Everyone } else { Place::User(asker) };
-    go_back(shared, place, id, Some(asker), String::new())
+    let back = Back { by: Some(asker), note: String::new(), hold: true, from: None };
+    go_back(shared, place, id, &back)
+}
+
+/// Why and how bundled goes back to the version a bundle replaced.
+struct Back<'a> {
+    /// Who asked, or none for bundled itself.
+    by: Option<u32>,
+    /// Why, for the history, when bundled itself goes back.
+    note: String,
+    /// Whether to hold the bundle at that version.
+    hold: bool,
+    /// The version to go back from, when it must still be that one.
+    from: Option<&'a str>,
 }
 
 /// Goes back to the version of bundle `id` in `place` that the one there
-/// replaced, and holds it there: for `by`, who asked, or by bundled
-/// itself when a new version failed its health check, which `note`
-/// says, in the history.
-fn go_back(
-    shared: &Shared,
-    place: Place,
-    id: &str,
-    by: Option<u32>,
-    note: String,
-) -> Result<String, String> {
+/// replaced, and holds it there if `back` says: for the person who
+/// asked, or by bundled itself when a new version failed its health
+/// check or was withdrawn, which its note says, in the history. A
+/// version a catalog or feed withdrew is never gone back to (ADR 0593).
+fn go_back(shared: &Shared, place: Place, id: &str, back: &Back<'_>) -> Result<String, String> {
+    let Back { by, ref note, hold, from: only } = *back;
     let mut registry = shared.lock();
     let Some(current) = registry.installed(place, id).cloned() else {
         return Err(format!("{id} is not installed for {}", whose_word(place)));
     };
+    if let Some(only) = only
+        && current.version != only
+    {
+        return Err(format!("{id} is {} now, not {only}", current.version));
+    }
     let Some(then) = registry.previous(place, id).cloned() else {
         return Err(format!("{id} {} replaced no version that is kept", current.version));
     };
+    if let Some(w) = registry.withdrawal(place, id, &then.version) {
+        return Err(format!(
+            "{id} {} was withdrawn by {}: {}; it is not gone back to",
+            then.version,
+            w.source.words(),
+            w.reason
+        ));
+    }
     let (places, path) = open_place(place)?;
     let kept = previous_name(id);
     let folder = format!("{path}/{kept}");
@@ -4081,11 +4535,16 @@ fn go_back(
     places.rename(&swapping, &kept).map_err(|e| format!("{path}/{swapping}: {e}"))?;
     registry.roll_back(place, id);
     // Held, so that no update, by itself or not, undoes it unasked.
-    let held = registry.set_held(place, id, true, now());
+    let held = hold && registry.set_held(place, id, true, now());
     save(&registry)?;
     let linked = link_commands(&registry, place)
         .err()
         .map_or_default(|why| format!("; its commands are not linked: {why}"));
+    // A rollback goes forward again, to a version not withdrawn.
+    let forward = match registry.withdrawal(place, id, &current.version) {
+        Some(_) => String::new(),
+        None => format!("; `bundle rollback {id}` goes forward again"),
+    };
     drop(registry);
     let who = by.map_or_else(|| "bundled".into(), |asker| whom(Place::User(asker)));
     audit!(
@@ -4102,7 +4561,7 @@ fn go_back(
         from: Some(current.version.clone()),
         to: Some(then.version.clone()),
         by,
-        note,
+        note: note.clone(),
     });
     let held =
         if held { format!("; it is held there until `bundle unhold {id}`") } else { String::new() };
@@ -4113,8 +4572,7 @@ fn go_back(
         ("; its data comes back at its next run", String::new())
     };
     Ok(format!(
-        "went back to {id} {}, from {}{data}{held}; `bundle rollback {id}` goes forward \
-         again{linked}{ran}",
+        "went back to {id} {}, from {}{data}{held}{forward}{linked}{ran}",
         then.version, current.version
     ))
 }
@@ -4268,6 +4726,7 @@ fn catalog_add(
     let written = String::from_utf8(bytes).map_err(|_| "its root is not text".to_string())?;
     write_whole(&root_path.display().to_string(), &written, 0o644)?;
     let _ = fs::remove_file(dir.join(catalogs::OFF_FILE));
+    learn_withdrawals(shared, &Source::Catalog(name.into()), &read.index, None);
     let count = read.index.entries.len();
     let lists = format!("{count} bundle{}", if count == 1 { "" } else { "s" });
     audit!("root added catalog {name}, at {url}, which lists {lists}");
@@ -4399,7 +4858,12 @@ fn serve(shared: &Shared, stream: UnixStream) {
         }
         Ok(Request::Revoke { id, permission }) => revoke(shared, asker, &id, &permission),
         Ok(Request::Watch { id }) => {
-            if installed_for(shared, asker, &id).is_ok()
+            let installed = installed_for(shared, asker, &id);
+            // A run of a stopped version that got this far ends too.
+            let stopped = installed.as_ref().ok().and_then(|i| stopped_refusal(&shared.lock(), i));
+            if let Some(why) = stopped {
+                let _ = connection.send(&Answer::Withdrawn(why));
+            } else if installed.is_ok()
                 && connection.send(&Answer::Ok(format!("watching {id}"))).is_ok()
             {
                 watch(shared, asker, id, connection.stream);
@@ -4479,7 +4943,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         .mode(0o700)
         .create(registry::STATE)
         .map_err(|e| util::failed(&registry::STATE, e))?;
-    let mut texts: [String; 8] = Default::default();
+    let mut texts: [String; 9] = Default::default();
     for (text, name) in texts.iter_mut().zip(registry::FILES) {
         *text = read_state(name).map_err(|e| util::failed(&state(name), e))?;
     }
@@ -4531,7 +4995,8 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         watchers: Mutex::new(Vec::new()),
         connections: AtomicUsize::new(0),
         catalogs: Mutex::new(()),
-        wake: (Mutex::new(Wake::default()), Condvar::new()),
+        // What a withdrawal stops or leaves is acted on as it starts.
+        wake: (Mutex::new(Wake { withdrawals: true, ..Wake::default() }), Condvar::new()),
         tonight: Mutex::new(()),
         sheet: Kept::default(),
     });
@@ -4575,6 +5040,7 @@ mod tests {
             version: "1.30.6".into(),
             name: "nginx".into(),
             owner: false,
+            withdrawn: None,
         };
         let said = |wanted: Option<&str>| another_file("dukovo", &entry.id, &entry, wanted);
         // None named, the same in either case: it goes on.
@@ -4817,6 +5283,58 @@ mod tests {
         let _ = fs::remove_dir_all(path);
     }
 
+    #[test]
+    fn a_withdrawn_version_is_refused_and_a_stopped_one_cannot_run() {
+        use crate::bundles::catalogs::Kind;
+        let id = "org.example.notes";
+        let key = crate::bundles::minisign::SecretKey::generate(&[7; 40]).unwrap().public();
+        let installed = Installed {
+            place: Place::Everyone,
+            id: id.into(),
+            version: "1.0.0".into(),
+            key,
+            list: "ab".repeat(32),
+            when: 1,
+        };
+        let mut registry = Registry::default();
+        registry.record(installed.clone(), Some("dukovo"));
+        let line = |kind, version: &str, sha: char| Withdrawn {
+            source: Source::Catalog("dukovo".into()),
+            id: id.into(),
+            version: version.into(),
+            sha256: sha.to_string().repeat(64),
+            kind,
+            since: 1_795_000_000,
+            reason: "it loses notes".into(),
+        };
+        assert_eq!(
+            withdrawn_refusal(&registry, Place::Everyone, id, "1.0.0", &"a".repeat(64)),
+            None
+        );
+        assert_eq!(stopped_refusal(&registry, &installed), None);
+        registry.withdraw(line(Kind::Broken, "1.0.0", 'a'));
+        let said = "org.example.notes 1.0.0 was withdrawn by catalog dukovo on 2026-11-18: it loses \
+                    notes";
+        // By its version where the catalog speaks for it, by its bytes
+        // wherever it is offered.
+        let refused = |place, version, sha: char| {
+            withdrawn_refusal(&registry, place, id, version, &sha.to_string().repeat(64))
+        };
+        assert_eq!(refused(Place::User(1000), "1.0.0", 'z').as_deref(), Some(said));
+        assert_eq!(refused(Place::User(1000), "2.0.0", 'a').as_deref(), Some(said));
+        assert_eq!(refused(Place::User(1000), "2.0.0", 'z'), None);
+        // Broken runs; malicious is stopped.
+        assert_eq!(stopped_refusal(&registry, &installed), None);
+        registry.withdraw(line(Kind::Malicious, "1.0.0", 'a'));
+        assert_eq!(
+            stopped_refusal(&registry, &installed).as_deref(),
+            Some(
+                "org.example.notes 1.0.0 was stopped by catalog dukovo: it loses notes; remove \
+                 it, or `bundle update org.example.notes` takes a fixed version"
+            )
+        );
+    }
+
     fn version_in(path: &Path, folder: &str) -> Option<String> {
         fs::read_to_string(path.join(folder).join("version")).ok()
     }
@@ -4838,5 +5356,48 @@ mod tests {
         assert_eq!(version_in(&path, &previous_name(id)).as_deref(), Some("1.0.0"));
         assert!(!path.join(".installing-1").exists());
         let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn past_the_most_runs_the_oldest_of_the_same_app_is_forgotten_first() {
+        let shared = Shared {
+            registry: Mutex::new(Registry::default()),
+            grants: Mutex::new(Grants::default()),
+            watchers: Mutex::new(Vec::new()),
+            connections: AtomicUsize::new(0),
+            catalogs: Mutex::new(()),
+            wake: (Mutex::new(Wake::default()), Condvar::new()),
+            tonight: Mutex::new(()),
+            sheet: Kept::default(),
+        };
+        // The runner's ends, kept open: a run whose end closed has ended.
+        let mut runners = Vec::new();
+        let mut follow = |id: &str| {
+            let (ours, theirs) = UnixStream::pair().unwrap();
+            watch(&shared, 1000, id.into(), ours);
+            runners.push(theirs);
+        };
+        follow("org.example.mail");
+        for _ in 1..WATCHERS_MAX {
+            follow("org.example.cc");
+        }
+        follow("org.example.cc");
+        let followed: Vec<String> = shared.watchers().iter().map(|w| w.id.clone()).collect();
+        assert_eq!(followed.len(), WATCHERS_MAX);
+        assert_eq!(followed[0], "org.example.mail", "a build's runs leave another app's run");
+        // With no other run of the same app, the person's oldest goes.
+        let mut only = Vec::new();
+        for _ in 0..WATCHERS_MAX {
+            let (ours, theirs) = UnixStream::pair().unwrap();
+            watch(&shared, 1001, "org.example.cc".into(), ours);
+            only.push(theirs);
+        }
+        let (ours, _theirs) = UnixStream::pair().unwrap();
+        watch(&shared, 1001, "org.example.mail".into(), ours);
+        let theirs: Vec<String> =
+            shared.watchers().iter().filter(|w| w.uid == 1001).map(|w| w.id.clone()).collect();
+        assert_eq!(theirs.len(), WATCHERS_MAX);
+        assert_eq!(theirs.last().map(String::as_str), Some("org.example.mail"));
+        drop((runners, only));
     }
 }

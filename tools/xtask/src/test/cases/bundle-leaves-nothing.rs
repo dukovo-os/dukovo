@@ -83,9 +83,10 @@ const OUTLIVES: &[&str] = &[
     // its first one. The bindings of an ID to its publisher's key, for
     // everyone and for each person, and to its catalog, outlive the bundle
     // (ADR 0383), so that a later bundle of the ID from another key is
-    // refused; the history says what bundled did. The rest are empty once
-    // nothing is installed, which `bundle list` shows.
-    "/system/state/bundled/(installed|bound|developer-keys|catalog-bound|previous|held|automatic|defaults|history)",
+    // refused; the versions catalogs and feeds withdrew are kept for good
+    // (ADR 0593); the history says what bundled did. The rest are empty
+    // once nothing is installed, which `bundle list` shows.
+    "/system/state/bundled/(installed|bound|developer-keys|catalog-bound|previous|held|automatic|defaults|withdrawn|history)",
     // One file for each service's file bundled wrote, in a folder that
     // stays.
     "/system/state/bundled/services",
