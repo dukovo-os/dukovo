@@ -46,6 +46,29 @@ pub(crate) const DEFAULTS: &str = "/system/resources/default-settings/spark/serv
 /// runs runs.
 const GOOD: &str = "/system/state/spark/good";
 
+/// Takes away the copies Spark keeps of service `name`'s file and of its
+/// override in [`GOOD`], when the service's file itself is taken away, as
+/// bundled does when it removes a bundle's service (ADR 0591): left there,
+/// a later file of that name that does not read would run the removed
+/// service's copy. One that is not there is no error.
+pub(crate) fn forget_good(name: &str) -> Result<(), String> {
+    forget_good_in(Path::new(GOOD), name)
+}
+
+/// [`forget_good`] for the copies in the folder `good`.
+fn forget_good_in(good: &Path, name: &str) -> Result<(), String> {
+    let file = format!("{name}.toml");
+    for path in [good.join(&file), good.join(service::OVERRIDES).join(&file)] {
+        match fs::remove_file(&path) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => {
+                return Err(format!("{}: {e}", path.display()));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// The editor `service edit` runs when neither VISUAL nor EDITOR names
 /// one.
 const EDITOR: &str = "nano";
@@ -917,6 +940,23 @@ pub(crate) fn name_ok(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_removed_services_good_copies_go_and_the_others_stay() {
+        let good = std::env::temp_dir().join(format!("good-{}", std::process::id()));
+        fs::create_dir_all(good.join(service::OVERRIDES)).unwrap();
+        for path in ["beacon.toml", "web.toml", "settings.d/beacon.toml", "settings.d/web.toml"] {
+            fs::write(good.join(path), "service_version = 1\n").unwrap();
+        }
+        forget_good_in(&good, "beacon").unwrap();
+        assert!(!good.join("beacon.toml").exists());
+        assert!(!good.join("settings.d/beacon.toml").exists());
+        assert!(good.join("web.toml").exists() && good.join("settings.d/web.toml").exists());
+        // Gone already, or never kept: nothing to do.
+        forget_good_in(&good, "beacon").unwrap();
+        forget_good_in(&good.join("none"), "beacon").unwrap();
+        fs::remove_dir_all(&good).unwrap();
+    }
 
     #[test]
     fn a_file_with_a_timer_is_told_to_timerd() {

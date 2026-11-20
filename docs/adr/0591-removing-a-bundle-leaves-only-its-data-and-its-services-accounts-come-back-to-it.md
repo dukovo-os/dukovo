@@ -32,7 +32,8 @@ and ADR 0223 (what a removal leaves).
 ## Decision
 
 - **A removal of a bundle's services takes their accounts, always.**
-  bundled stops each service, takes its file and its record away, has
+  bundled stops each service, takes its file, the last good copy Spark
+  keeps of it in `/system/state/spark/good` and its record away, has
   authd remove the service's account, which retires its number and its
   socket group's, and removes the service's folder in
   `/system/live/services`, which Spark made the account's. Its data,
@@ -67,7 +68,10 @@ and ADR 0223 (what a removal leaves).
   - the folder bundled keeps the records of its service files in;
   - authd's retired numbers (ADR 0220), which are never given again;
   - `/shared/services`, the folder of every service bundle's data, made at
-    the first install of one;
+    the first install of one, and `/system/live/services`, the folder of
+    every service's live folder, which Spark makes for the first;
+  - what bundled read of the catalogs, which an install from a file reads
+    too;
   - the system's log and the audit log in it, which keep what was said
     while the bundle was there, and the records the system's other
     services keep as it runs;

@@ -48,13 +48,13 @@ installed() {
 # What outlives a bundle, as the patterns of a path in a record. bundled's
 # registry files, which it writes whole at each change, hold the bindings
 # of an ID to its publisher's key (ADR 0383) and the history, and are
-# empty otherwise; the folder of the records of its service files, and the
-# folder of the services' data, stay; authd's retired numbers are never
+# empty otherwise; the folder of the records of its service files, the
+# folder of the services' data and that of their live folders stay; authd's retired numbers are never
 # given again (ADR 0220); the logs keep what was said while the bundle was
 # there, and the other records of the system change as it runs; and an
 # app's folders in a person's home are no one bundle's. The boot test
 # bundle-leaves-nothing holds the list, with the reason for each.
-outlives='/system/state/bundled/(installed|bound|developer-keys|catalog-bound|previous|held|automatic|defaults|history|catalogs(/.*)?|services)|/system/state/authd/retired|/shared/services|/system/state/(log|sign-ins|starts|metrics|hardware|reports|crash|timed|timerd|netd|sshd|consoled)(/.*)?|/users/[^/]+/(app-data|app-data/.snapshots|applications|applications/commands)'
+outlives='/system/state/bundled/(installed|bound|developer-keys|catalog-bound|previous|held|automatic|defaults|history|catalogs(/.*)?|services)|/system/state/authd/retired|/shared/services|/system/live/services|/system/state/(log|sign-ins|starts|metrics|hardware|reports|crash|timed|timerd|netd|sshd|consoled)(/.*)?|/users/[^/]+/(app-data|app-data/.snapshots|applications|applications/commands)'
 
 # What a removal that keeps the data of the bundle `$1` leaves besides:
 # its data folder in /shared/services, and its data in each person's

@@ -1320,6 +1320,10 @@ fn drop_service(name: &str) -> Option<String> {
         return Some(format!("{path}: {e}"));
     }
     let _ = fs::remove_file(state(&format!("{}/{name}", services::RECORDS)));
+    // Spark's last good copy of it goes too (ADR 0591).
+    if let Err(why) = crate::servicefiles::forget_good(name) {
+        return Some(why);
+    }
     stopped.filter(|why| !why.starts_with("no service is called"))
 }
 

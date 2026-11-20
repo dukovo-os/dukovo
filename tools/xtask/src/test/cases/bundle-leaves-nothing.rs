@@ -95,8 +95,10 @@ const OUTLIVES: &[&str] = &[
     // ADR 0220: a number once used is never given to another account.
     "/system/state/authd/retired",
     // The folder every service bundle's data is in, made by the first
-    // install of one.
+    // install of one, and the folder of every service's live folder, which
+    // Spark makes for the first.
     "/shared/services",
+    "/system/live/services",
     // What the system's services record whatever is installed: the log,
     // which keeps what was said while the bundle was there, the audit log
     // in it, and the others' state, which changes as the system runs.
