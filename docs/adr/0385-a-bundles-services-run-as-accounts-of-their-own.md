@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0385. A bundle's services run as accounts of their own
 
-- Status: Accepted
+- Status: Accepted; removing a bundle takes its services' accounts too, and keeps only their data, since [0591](0591-removing-a-bundle-leaves-only-its-data-and-its-services-accounts-come-back-to-it.md)
 - Date: 2026-11-03
 
 ## Context
@@ -76,9 +76,10 @@ all, as a Debian package's daemon runs as a system user of its own.
   disabled, starts again each enabled service, takes away the services
   the version before ran that this one does not, and counts a service the
   version before did not run as asking for more (ADR 0384).
-- **Removing** stops each service and takes its file and record away.
-  The accounts and data folders stay, so that installing the bundle again
-  takes them up; `bundle remove --for-everyone --purge` removes them too.
+- **Removing** stops each service and takes its file, record and account
+  away. The data folder stays, so that installing the bundle again gives
+  each account its old number and the data is its own again;
+  `bundle remove --for-everyone --purge` removes it too (ADR 0591).
 
 ## Consequences
 
@@ -88,15 +89,17 @@ all, as a Debian package's daemon runs as a system user of its own.
   system's state and people's homes stay out of its reach, as on Linux
   with a daemon's own user.
 - An account's number is retired when it is removed (ADR 0220), so a
-  purged service's files never become another's. There are 900 numbers;
-  a removal without `--purge` keeps the account and its number.
+  removed service's files never become another's, and a bundle installed
+  again takes the numbers its data folder is owned by (ADR 0591). There
+  are 900 numbers.
 - A person cannot run a service of their own: their bundles have
   commands, which run while they do.
 - The boot test `service-bundle` refuses an install for oneself,
   installs beacon for everyone through elevate, checks its account, that
   it runs as it in its data folder, which Alice cannot read, that Spark
   starts it again after it crashes and at the next boot, and that
-  `--purge` removes its account and data.
+  `--purge` removes its account and data, and a removal without it keeps
+  the data and takes the account (`bundle-leaves-nothing`, ADR 0591).
 - **Sockets** (ADR 0477). A service's manifest names its `sockets`, which
   Spark holds and passes as `sd_listen_fds` does, and a bundle offers a
   socket to others in `provides`, whom `to` names and a consumer's

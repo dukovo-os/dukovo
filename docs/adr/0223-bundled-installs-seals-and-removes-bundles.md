@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0223. bundled installs bundles, seals them, and removes them
 
-- Status: Accepted
+- Status: Accepted; a removal leaves only its data and the records that outlive a bundle since [0591](0591-removing-a-bundle-leaves-only-its-data-and-its-services-accounts-come-back-to-it.md)
 - Date: 2026-10-31
 
 ## Context
@@ -118,6 +118,9 @@ change, so something other than the person must write them: root.
   does not start it.
 - Two people may install the same ID from the same key; from different
   keys, only if neither is bound for everyone.
+- A removal leaves nothing of a bundle but the data the person chose to
+  keep and the records that outlive it, which ADR 0591 lists; a bundle's
+  services' accounts go with it.
 - **Not yet:** catalogs, their keys and TUF metadata, updates side by
   side and rollback (13e); key rotation signed by the old key (13e);
   the per-bundle override for unsigned bundles; read-only Btrfs

@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0222. Bundles are signed with minisign over a list of their files, and travel as .dkv files that a confined unpacker opens
 
-- Status: Accepted
+- Status: Accepted; zip64 and zstd, so a bundle of any size and a million files, since [0590](0590-a-dkv-file-may-hold-any-number-of-bytes-and-a-million-files-deflated-or-zstd-packed.md)
 - Date: 2026-10-31
 
 ## Context
@@ -119,5 +119,8 @@ and 21 of its third review) asks for:
   so a folder that `bundle verify` passes is the publisher's.
 - **Not yet:** trusting keys: the machine's list of developer keys, a
   bundle's ID bound to its key, catalogs' keys, and key rotation signed
-  by the old key (13d.3, 13e); keys with passwords (1.6.1); bundles over
-  4 GiB, which need zip64; the catalog's checks of SBOMs (13e).
+  by the old key (13d.3, 13e); keys with passwords (1.6.1); the catalog's
+  checks of SBOMs (13e).
+- ADR 0590 lifts the limit of 4 GiB and 65,535 files and adds zstd: the
+  reader's refusal of zip64 and of methods other than stored and deflate
+  above no longer holds.

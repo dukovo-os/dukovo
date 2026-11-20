@@ -21,7 +21,7 @@ bundle - make, check, sign, pack, install, update and run bundles, and say what 
 
 *bundle sign* [_folder_] [*--key* _secret-key-file_]
 
-*bundle pack* [_folder_] [*--key* _secret-key-file_] [*-o* _file_]
+*bundle pack* [_folder_] [*--key* _secret-key-file_] [*-o* _file_] [*--zstd*]
 
 *bundle verify* [_folder_ | _file_*.dkv*] [*--key* _public-key_]
 
@@ -141,12 +141,17 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	alone; list the libraries the bundle carries in your own, so that
 	their flaws are found.
 
-*pack* [_folder_] [*--key* _secret-key-file_] [*-o*, *--output* _file_]
+*pack* [_folder_] [*--key* _secret-key-file_] [*-o*, *--output* _file_] [*--zstd*]
 	Packs the bundle in _folder_ into _id_*-*_version_*.dkv* in the
 	current folder, or _file_. A folder whose signature checks is packed
 	as it is; one that is not signed or has changed since is signed
 	first, as *sign* does, and *--key* signs it again with that key. The
-	same folder packs to the same bytes.
+	same folder packs to the same bytes. A file is deflated, or stored
+	when that is not smaller; with *--zstd* it is packed with zstd
+	instead, which unpacks faster than deflate but which many _unzip_
+	programs do not read. A bundle may be of
+	any size and hold up to 1,048,576 files; a file of more than 256 MiB
+	is read twice, not held in memory.
 
 *verify* [_folder_ | _file_*.dkv*] [*--key* _public-key_]
 	Checks a bundle's signature and every file against it: no file more
@@ -161,10 +166,11 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	which must not be there. The archive is read by a process of its own
 	that holds the archive, the new folder and a pipe for its report, and
 	nothing else, not even a root: a path in the archive cannot lead out
-	of the folder. It refuses encryption, zip64, links, device files,
-	set-ID bits, names outside the folder or twice, files that unpack to
-	more than 100 times the archive's size or more than the disk has
-	free, and any file not as it was signed; then it removes the folder.
+	of the folder. It refuses encryption, methods other than stored,
+	deflate and zstd, links, device files, set-ID bits, names outside the
+	folder or twice, files that unpack to more than 100 times the
+	archive's size or more than the disk has free, and any file not as it
+	was signed; then it removes the folder.
 	A program the manifest names may be run once unpacked, as may a file
 	the archive marks so.
 
@@ -347,12 +353,13 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	everyone, through *elevate*(8). It asks whether to delete its
 	settings and data, _~/app-data/id_, and the copies of it kept for
 	going back, too; *--keep-data* and *--purge* answer for scripts. The
-	version kept to go back to goes with it. Its services stop and go;
-	their accounts and data, in _/shared/services/id_, stay unless
-	*--purge*, which takes each account's folder in
-	_/system/live/services_ away with it. Kept data is picked up by a later version from
-	the same publisher; what you said of its permissions goes with its
-	data and stays with kept data.
+	version kept to go back to goes with it. Its services stop and go,
+	with their accounts and the folders they made in
+	_/system/live/services_; only their data, in _/shared/services/id_,
+	stays unless *--purge*. Installing the bundle again gives each
+	account back its number, so the data is its own again. Kept data is
+	picked up by a later version from the same publisher; what you said
+	of its permissions goes with its data and stays with kept data.
 
 *run* [*--command* _name_] _id_ [_argument_...]
 	Runs the bundle's command _name_, or its first command, or with no

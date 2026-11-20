@@ -144,7 +144,7 @@ A test is a file at `lab/tests/<category>/<name>.toml`. The categories,
 their order and their titles on the runner page are in
 `lab/tests/categories.toml`: boot and power, hardware and drivers, sound,
 processes and monitors, disks and filesystems, network, SSH, services and
-logs, system tuning, time and date, monitoring, problem reports, accounts
+logs, bundles, system tuning, time and date, monitoring, problem reports, accounts
 and elevate, commands, the console, the web console, installing, updates,
 startup trouble, stress and soak, security, performance against Linux,
 file sharing, and user journeys. Add one there when a new kind of test

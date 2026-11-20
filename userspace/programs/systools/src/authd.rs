@@ -3265,21 +3265,34 @@ fn add_service(files: Files, name: &str, whose: &str, home: &str, peer: Peer) ->
         return Answer::Refused(format!("{} is not a service's data folder", shown(home)));
     }
     let Files { mut users, mut groups, mut passwords, .. } = files;
-    let retired = match read_text(accounts::RETIRED) {
-        Ok(text) => accounts::retired(&text),
+    let retired_text = match read_text(accounts::RETIRED) {
+        Ok(text) => text,
         Err(err) => return Answer::Refused(format!("cannot read {}: {err}", accounts::RETIRED)),
     };
+    let retired = accounts::retired(&retired_text);
+    // A removed account of this name whose data folder is still its own
+    // comes back to its number, and to its data (ADR 0591). Only bundled,
+    // as root, makes the folder of a bundle in /shared/services, and an
+    // account makes folders only in its own data folder, so the folder
+    // `home` that a number retired under this name owns is that account's.
+    let returning = fs::symlink_metadata(home)
+        .ok()
+        .filter(fs::Metadata::is_dir)
+        .map(|st| st.uid())
+        .filter(|uid| accounts::retired_as(&retired_text, name).contains(uid));
     let had = users.entries().any(|u| u.name == name);
     let full_name = accounts::service_full_name(whose);
-    let user =
-        match accounts::add_service(&mut users, &mut groups, name, &full_name, home, &retired) {
-            Ok(user) => user,
-            Err(why) => return Answer::Refused(why),
-        };
+    let made =
+        accounts::add_service(&mut users, &mut groups, name, &full_name, home, &retired, returning);
+    let user = match made {
+        Ok(user) => user,
+        Err(why) => return Answer::Refused(why),
+    };
     let number = user.uid;
     if had {
         return Answer::Done(number.to_string());
     }
+    let again = if returning == Some(number) { ", with the number it had before" } else { "" };
     // Disabled: no password opens it, ever.
     passwords.retain_entries(|p| p.name != name);
     let mut password = Password { name: name.into(), hash: String::new() };
@@ -3291,8 +3304,8 @@ fn add_service(files: Files, name: &str, whose: &str, home: &str, peer: Peer) ->
     match made {
         Ok(()) => {
             audit!(
-                "made the account {name} ({number}) of a service of {whose}, for process {} \
-                 (user {})",
+                "made the account {name} ({number}) of a service of {whose}{again}, for process \
+                 {} (user {})",
                 peer.process,
                 peer.user
             );

@@ -16,6 +16,7 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use manifest::bundle::{self, Manifest};
 
@@ -416,7 +417,7 @@ pub const NO_SIGNATURE: &str = "it is not signed: it has no signature";
 /// archive signed with `key`, laid out as [`pack`] lays one out, a file at
 /// a time. An archive that carries either is refused: what this signs must
 /// be what nobody signed, never what someone signed and another changed.
-pub fn sign_archive<S: Source + ?Sized>(
+pub fn sign_archive<S: Source + Sync + ?Sized>(
     source: &S,
     key: &SecretKey,
     timestamp: i64,
@@ -491,6 +492,11 @@ pub fn sign_archive<S: Source + ?Sized>(
     }
     for listed in listed.iter().filter(|e| e.path != MANIFEST) {
         let (data, executable) = match archive.file(&listed.path) {
+            Some(entry) if entry.size > zip::LARGE => {
+                let executable = entry.executable || programs.contains(listed.path.as_str());
+                streamed(&mut writer, &archive, entry, executable, listed)?;
+                continue;
+            }
             Some(entry) => {
                 let data = read(entry)?;
                 // As it was hashed: the archive is read twice.
@@ -509,23 +515,87 @@ pub fn sign_archive<S: Source + ?Sized>(
     Ok(Checked { key: key.public(), trusted, manifest, files: listed.len(), bytes })
 }
 
+/// Adds a file of the archive that `listed` names, too big to hold, to
+/// `writer`: unpacked twice, the second time hashing, so that bytes that
+/// are not the list's fail as they do for a file held whole.
+fn streamed<S: Source + Sync + ?Sized, W: Write>(
+    writer: &mut zip::Writer<W>,
+    archive: &Archive<'_, S>,
+    entry: &zip::Entry,
+    executable: bool,
+    listed: &Entry,
+) -> Result<(), String> {
+    let calls = AtomicU8::new(0);
+    let contents = |give: &mut dyn FnMut(&[u8]) -> io::Result<()>| -> io::Result<()> {
+        let hashing = calls.fetch_add(1, Ordering::Relaxed) > 0;
+        let mut hasher = Hasher::default();
+        archive
+            .unpack(entry, &mut |chunk| {
+                if hashing {
+                    hasher.update(chunk);
+                }
+                give(chunk).map_err(|e| e.to_string())
+            })
+            .map_err(io::Error::other)?;
+        if hashing && hasher.finish() != listed.sha256 {
+            return Err(io::Error::other(format!("{}: changed while it was signed", listed.path)));
+        }
+        Ok(())
+    };
+    writer.add_streamed(&listed.path, executable, entry.size, &contents).map_err(|e| e.to_string())
+}
+
+/// Hands the bytes of the file at `path` to `give`, in pieces, from its
+/// start.
+fn read_pieces(path: &Path, give: &mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
+    let mut file = File::open(path)?;
+    let mut buffer = vec![0u8; 64 << 10];
+    loop {
+        match file.read(&mut buffer) {
+            Ok(0) => return Ok(()),
+            Ok(n) => give(&buffer[..n])?,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// Packs the signed bundle in `folder` into a `.dkv` archive written to
-/// `out`: the manifest, the signature and the list first, then the rest
-/// in the list's order. Checks the folder first.
+/// `out`, its files deflated: the manifest, the signature and the list
+/// first, then the rest in the list's order. Checks the folder first.
 pub fn pack(folder: &Path, out: impl Write) -> Result<Checked, String> {
+    pack_with(folder, out, zip::Method::Deflate)
+}
+
+/// [`pack`], packing its files with `method`. A file of more than
+/// [`zip::LARGE`] bytes is read twice from the folder, not held.
+pub fn pack_with(folder: &Path, out: impl Write, method: zip::Method) -> Result<Checked, String> {
     let checked = check_folder(folder)?;
     let list = fs::read_to_string(folder.join(LIST)).map_err(|e| format!("{LIST}: {e}"))?;
     let listed = sums::read(&list)?;
     let files = folder_files(folder)?;
-    let executable = |path: &str| files.iter().any(|(p, _, x)| p == path && *x);
-    let mut writer = zip::Writer::new(out);
+    let mut writer = zip::Writer::with_method(out, method);
     let mut order = vec![MANIFEST.to_string(), SIGNATURE.into(), LIST.into()];
     order.extend(listed.into_iter().map(|e| e.path).filter(|p| p != MANIFEST));
     for path in &order {
-        let data = fs::read(folder.join(path)).map_err(|e| format!("{path}: {e}"))?;
-        writer
-            .add(&zip::Input { path, executable: executable(path), data: &data })
-            .map_err(|e| e.to_string())?;
+        let file = files.iter().find(|(p, _, _)| p == path);
+        let executable = file.is_some_and(|(_, _, x)| *x);
+        let full = folder.join(path);
+        match file {
+            Some((_, size, _)) if *size > zip::LARGE => {
+                let contents =
+                    |give: &mut dyn FnMut(&[u8]) -> io::Result<()>| read_pieces(&full, give);
+                writer
+                    .add_streamed(path, executable, *size, &contents)
+                    .map_err(|e| format!("{path}: {e}"))?;
+            }
+            _ => {
+                let data = fs::read(&full).map_err(|e| format!("{path}: {e}"))?;
+                writer
+                    .add(&zip::Input { path, executable, data: &data })
+                    .map_err(|e| e.to_string())?;
+            }
+        }
     }
     writer.finish().map_err(|e| e.to_string())?;
     Ok(checked)

@@ -52,7 +52,9 @@ an administrator changed stays as it is, and the new version's file is
 written beside it as `NAME.default`, to compare and take over by hand.
 
 `elevate bundle remove --for-everyone ID` stops and removes the services
-and keeps their accounts and data; `--purge` removes those too.
+and their accounts, and keeps their data in `/shared/services/ID`;
+installing the app again gives each account its old number back, so the
+data is its own again. `--purge` removes the data too.
 
 ## Services that wait for each other
 

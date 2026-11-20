@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Removing a bundle leaves only its data (ADR 0591), for every bundle the
+# catalogs list, on a machine with the network. For each, the script
+# every-catalog-app.sh beside this file records the system's paths with
+# their type, mode, owner, group and size, installs the bundle for
+# everyone, runs each of its commands once, removes it, and records
+# again: the two records differ only by the records that outlive a bundle.
+# The first run removes with --purge. The second removes keeping the data,
+# which then is all that differs, installs the bundle again, so that a
+# service's account takes its old number and finds its data, and removes
+# it with --purge. A line for each bundle, and the count of those that
+# left nothing.
+about = "each bundle of the catalogs installs, runs its commands and is removed, and the system's paths differ afterwards only by the records that outlive a bundle; removed keeping its data and installed again, a bundle finds its data, and purged after, nothing is left (ADR 0591)"
+time = "90m"
+host_needs = ["scp"]
+
+[[step]]
+host = "sh {here}/../services/copy-file.sh {here}/every-catalog-app.sh {machine} {machine-port:22}"
+expect = "copied: every-catalog-app.sh"
+# The catalogs are read before the first record, so that what reading
+# them keeps is there already.
+[[step]]
+run = "bundle search --json"
+expect = "\"bundles\""
+[[step]]
+run = "sh /users/lab/every-catalog-app.sh purge"
+root = true
+expect = ["purge ", " of "]
+expect_not = "FAIL-"
+stall = "off"
+[[step]]
+run = "sh /users/lab/every-catalog-app.sh keep"
+root = true
+expect = ["keep ", " of "]
+expect_not = "FAIL-"
+stall = "off"

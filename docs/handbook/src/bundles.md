@@ -303,6 +303,14 @@ then go to the Trash; `--keep-data` keeps them for a later version from
 the same publisher, and `--purge` deletes them. Its commands go with
 it.
 
+An app with services is removed for everyone, with `elevate bundle
+remove --for-everyone ID`. Its services stop and their accounts go; only
+the data they wrote, in `/shared/services/ID`, stays, and installing the
+app again hands it back to the new accounts. `--purge` deletes that data
+too. Besides what an app wrote, a removal leaves only the records that
+outlive it: the history, the publisher's key the ID is bound to, the
+audit log, and the retired account numbers.
+
 ## For publishers
 
 `bundle new ID` starts a bundle and makes your developer key, which

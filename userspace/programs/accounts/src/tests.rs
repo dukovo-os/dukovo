@@ -179,19 +179,44 @@ fn services_get_accounts_of_their_own() {
     let mut groups = groups("root:x:0:\nstaff:x:100:\n");
     let home = "/shared/services/org.example.web";
     // The lowest free number from 100, past a group's and a retired one.
-    let web = add_service(&mut users, &mut groups, "web", "org.example.web", home, &[101]).unwrap();
+    let web =
+        add_service(&mut users, &mut groups, "web", "org.example.web", home, &[101], None).unwrap();
     assert_eq!((web.uid, web.gid, web.shell.as_str()), (102, 102, NO_SHELL));
     assert!(web.is_service() && !web.is_person());
     assert!(users.text().ends_with(
         "web:x:102:102:org.example.web:/shared/services/org.example.web:/system/commands/false\n"
     ));
     // Again, the same: kept; another home, or a person's name: refused.
-    let again = add_service(&mut users, &mut groups, "web", "org.example.web", home, &[]).unwrap();
+    let again =
+        add_service(&mut users, &mut groups, "web", "org.example.web", home, &[], None).unwrap();
     assert_eq!(again, web);
-    assert!(add_service(&mut users, &mut groups, "web", "x", "/shared/services/x", &[]).is_err());
+    assert!(
+        add_service(&mut users, &mut groups, "web", "x", "/shared/services/x", &[], None).is_err()
+    );
     add(&mut users, &mut groups, "alice", "", false, &[]).unwrap();
-    assert!(add_service(&mut users, &mut groups, "alice", "x", home, &[]).is_err());
+    assert!(add_service(&mut users, &mut groups, "alice", "x", home, &[], None).is_err());
     assert_eq!(add(&mut users, &mut groups, "bob", "", false, &[]).unwrap().uid, 1001);
+}
+
+#[test]
+fn a_removed_service_account_comes_back_to_its_number() {
+    let mut users = users("root:x:0:0:root:/:/system/commands/nukesh\n");
+    let mut groups = groups("root:x:0:\nstaff:x:100:\n");
+    let home = "/shared/services/org.example.web/web";
+    let retired_text = "150:web:2026-11-20\n151:web-socket:2026-11-20\n152:db:2026-11-20\n";
+    let retired = retired(retired_text);
+    assert_eq!(retired_as(retired_text, "web"), [150]);
+    let web = add_service(&mut users, &mut groups, "web", "x", home, &retired, Some(150)).unwrap();
+    assert_eq!((web.uid, web.gid), (150, 150));
+    assert!(groups.text().contains("web:x:150:\n"));
+    // A number someone has now, or one outside a service's range: a new one.
+    let other = "/shared/services/org.example.db/db";
+    let db = add_service(&mut users, &mut groups, "db", "x", other, &retired, Some(150)).unwrap();
+    assert_eq!(db.uid, 101);
+    let home = "/shared/services/org.example.mail/mail";
+    let mail =
+        add_service(&mut users, &mut groups, "mail", "x", home, &retired, Some(1000)).unwrap();
+    assert_eq!(mail.uid, 102);
 }
 
 #[test]
@@ -201,9 +226,18 @@ fn a_socket_group_is_its_bundles_and_goes_with_the_service() {
     let home = "/shared/services/org.example.web";
     // No account of the bundle yet: nothing to make a group for.
     assert!(add_socket_group(&users, &mut groups, "web-socket", "org.example.web", &[]).is_err());
-    add_service(&mut users, &mut groups, "web", "A service of org.example.web", home, &[]).unwrap();
-    add_service(&mut users, &mut groups, "other", "A service of org.example.other", home, &[])
+    add_service(&mut users, &mut groups, "web", "A service of org.example.web", home, &[], None)
         .unwrap();
+    add_service(
+        &mut users,
+        &mut groups,
+        "other",
+        "A service of org.example.other",
+        home,
+        &[],
+        None,
+    )
+    .unwrap();
     // A number from a service's range, no members; again, the same.
     let gid = add_socket_group(&users, &mut groups, "web-socket", "org.example.web", &[]).unwrap();
     assert!((FIRST_SERVICE..=LAST_SERVICE).contains(&gid));
