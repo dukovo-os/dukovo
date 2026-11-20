@@ -6,14 +6,14 @@
 //! installs beacon, a test bundle with a service, for everyone, which
 //! starts and writes its data. Before the installs and after each removal
 //! root lists every path of the system's folders and of /shared, with its
-//! type, mode, owner, group and size, and Alice's own app-data and
+//! type, mode, owner, group and a file's size, and Alice's own app-data and
 //! applications folders. Removed without --purge, both leave only beacon's
-//! data in /shared/services, ripgrep's folder in Alice's app-data, what
-//! she allowed ripgrep, and the records that outlive a bundle; beacon's
-//! account is gone. Installed again, beacon's account has the number it
-//! had and starts on its data, and ripgrep runs without asking. Removed
-//! with --purge, nothing differs from before the installs but the records
-//! that outlive a bundle.
+//! data in /shared/services, what she allowed ripgrep, which runs with her
+//! access and so has no data folder of its own, and the records that
+//! outlive a bundle; beacon's account is gone. Installed again, beacon's
+//! account has the number it had and starts on its data, and ripgrep runs
+//! without asking. Removed with --purge, nothing differs from before the
+//! installs but the records that outlive a bundle.
 
 use super::super::*;
 
@@ -65,13 +65,15 @@ pub const CASE: Case = Case {
 /// given, in Alice's home, which the record does not list: the paths of
 /// the system's settings and state, of /applications and of /shared, each
 /// a subvolume of its own, and what runs in /system/live, two levels down,
-/// where each service has a folder of its own.
+/// where each service has a folder of its own. A folder's size is left
+/// out: it counts the names in it, which the record lists itself.
 const RECORD: &[&str] = &[
-    "find /applications /shared /system/settings /system/state -printf \"%p %y %m %U %G %s\\n\" | \
-     sort > \"/users/alice/$1\"",
+    "find /applications /shared /system/settings /system/state \\( -type d -printf \
+     \"%p %y %m %U %G\\n\" \\) -o -printf \"%p %y %m %U %G %s\\n\" | sort > \"/users/alice/$1\"",
     "find /system/live -maxdepth 2 -printf \"%p %y %U %G\\n\" | sort >> \"/users/alice/$1\"",
-    "find /users/alice/app-data /users/alice/applications -printf \"%p %y %m %U %G %s\\n\" \
-     2> /dev/null | sort >> \"/users/alice/$1\"",
+    "find /users/alice/app-data /users/alice/applications \\( -type d -printf \
+     \"%p %y %m %U %G\\n\" \\) -o -printf \"%p %y %m %U %G %s\\n\" 2> /dev/null | sort >> \
+     \"/users/alice/$1\"",
 ];
 
 /// What outlives every bundle, as the patterns of a path in the record,
@@ -87,6 +89,9 @@ const OUTLIVES: &[&str] = &[
     // One file for each service's file bundled wrote, in a folder that
     // stays.
     "/system/state/bundled/services",
+    // What bundled read of the catalogs, which an install from a file
+    // reads too: the catalogs', not a bundle's.
+    "/system/state/bundled/catalogs(/.*)?",
     // ADR 0220: a number once used is never given to another account.
     "/system/state/authd/retired",
     // The folder every service bundle's data is in, made by the first
@@ -102,13 +107,11 @@ const OUTLIVES: &[&str] = &[
 ];
 
 /// What a removal without --purge keeps besides [`OUTLIVES`]: beacon's
-/// data, ripgrep's data and what Alice allowed ripgrep, which stays with
-/// its data. --purge takes all three.
-const DATA_KEPT: &[&str] = &[
-    "/shared/services/org.example.beacon(/.*)?",
-    "/users/alice/app-data/io.github.burntsushi.ripgrep(/.*)?",
-    "/system/state/grants/1000",
-];
+/// data and what Alice allowed ripgrep, which stays as its data would.
+/// ripgrep runs with her access, so it has no folder in her app-data.
+/// --purge takes both.
+const DATA_KEPT: &[&str] =
+    &["/shared/services/org.example.beacon(/.*)?", "/system/state/grants/1000"];
 
 /// The extended pattern for the paths of `lists`, as grep takes it after
 /// the status of a line of diff.
@@ -151,7 +154,7 @@ fn compare(vm: &mut Vm, before: &str, after: &str, allowed: &[&[&str]]) -> Resul
 /// something in: one that missed a place would find nothing left there.
 fn sees_each_place(vm: &mut Vm, name: &str) -> Result<(), String> {
     let places = "/system/state/bundled/installed|/system/settings/spark/services|\
-                  /shared/services/org.example.beacon|/users/alice/app-data/io.github.burntsushi.ripgrep";
+                  /shared/services/org.example.beacon|/system/state/grants/1000";
     answer_prompt(
         vm,
         "$",

@@ -4,10 +4,10 @@
 
 # The machine's side of the lab test bundles/every-catalog-app: each bundle
 # the catalogs list is installed, its commands run once, and it is removed;
-# the system's paths, with their type, mode, owner, group and size, are
-# recorded before the install and after the removal and must differ only by
-# the records that outlive a bundle (ADR 0591), and, after a removal that
-# keeps its data, by that data. Run as root.
+# the system's paths, with their type, mode, owner, group and, for a file,
+# size, are recorded before the install and after the removal and must
+# differ only by the records that outlive a bundle (ADR 0591), and, after
+# a removal that keeps its data, by that data. Run as root.
 #
 #   every-catalog-app.sh purge|keep
 #
@@ -27,11 +27,13 @@ checked=0
 # `$1`: the system's settings and state, /applications, /shared and the
 # homes but the lab account's and root's, each a subvolume of its own, and
 # /system/live to two levels, where Spark and the services keep what is
-# running.
+# running. A folder's size is left out: it counts the names in it, which
+# the record lists itself.
 record() {
 	{
 		find /applications /shared /system/settings /system/state /users \
-			\( -path /users/lab -o -path /users/root \) -prune -o -printf '%p %y %m %U %G %s\n'
+			\( -path /users/lab -o -path /users/root \) -prune -o \
+			\( -type d -printf '%p %y %m %U %G\n' \) -o -printf '%p %y %m %U %G %s\n'
 		find /system/live -maxdepth 2 -printf '%p %y %U %G\n'
 	} 2>/dev/null | sort >"$1"
 }

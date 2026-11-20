@@ -90,9 +90,9 @@ and ADR 0223 (what a removal leaves).
 - A reinstall after a removal without `--purge` is an install that finds
   its data, as an update does.
 - The boot test `bundle-leaves-nothing` records every path of the system
-  and of `/shared`, with its type, mode, owner, group and size, before
-  ripgrep for a person and beacon for everyone are installed and after
-  each removal, with and without `--purge`, and fails on any difference
+  and of `/shared`, with its type, mode, owner, group and a file's size,
+  before ripgrep for a person and beacon for everyone are installed and
+  after each removal, with and without `--purge`, and fails on any difference
   that the lists above and the kept data do not name. It also installs
   beacon again and checks that its account has the number it had and that
   it starts on its data. The lab test `bundles/every-catalog-app` does
