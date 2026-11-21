@@ -13,7 +13,7 @@
 //! for every program built after it.
 //!
 //! [`build_tests`] builds what the `go-runtime` boot test runs: the Go test
-//! program of `userspace/go`, and the test binaries of 22 packages of
+//! program of `userspace/go`, and the test binaries of 25 packages of
 //! Go's standard library, each in a folder with the package's files and test
 //! data, which its tests read.
 //! `userspace/go/skips.txt` names the tests of those packages that Radix cannot
@@ -38,7 +38,7 @@ pub const RUNTIME_TEST: &str = "go-runtime-test";
 /// test runs, as import paths: the runtime and what it carries, the
 /// operating system's side of the library, packages whose tests work files,
 /// text and numbers hard, and a hash and an encoding.
-pub const TEST_PACKAGES: [&str; 22] = [
+pub const TEST_PACKAGES: [&str; 25] = [
     "runtime",
     "sync",
     "sync/atomic",
@@ -61,6 +61,9 @@ pub const TEST_PACKAGES: [&str; 22] = [
     "math/big",
     "crypto/sha256",
     "encoding/json",
+    "net",
+    "net/http",
+    "crypto/tls",
 ];
 
 /// The folder of the toolchain's Go tree.
@@ -119,8 +122,9 @@ fn environment(root: &Path, caches: &Path) -> Vec<(&'static str, OsString)> {
 /// made afresh and laid out as a Go tree is: `go-runtime-test` in it, for
 /// each of [`TEST_PACKAGES`] a folder `src/<path>` with its test binary,
 /// `<last name>.test`, the package's own files and its `testdata`, where the
-/// binary reads them from, and Go's time zone database in `lib/time`, which
-/// the time package's tests read from there.
+/// binary reads them from, the test data the packages share in
+/// `src/testdata`, and Go's time zone database in `lib/time`, which the time
+/// package's tests read from there.
 pub fn build_tests(ctx: &Ctx, toolchain: &Toolchain, dir: &Path) -> Result<()> {
     let root = go_root(toolchain);
     if !root.join("bin/go").is_file() {
@@ -169,6 +173,9 @@ pub fn build_tests(ctx: &Ctx, toolchain: &Toolchain, dir: &Path) -> Result<()> {
             ports::copy_tree(ctx, &testdata, &folder.join("testdata"))?;
         }
     }
+    // The test data the packages share, which net's tests read as
+    // `../testdata`.
+    ports::copy_tree(ctx, &root.join("src/testdata"), &dir.join("src/testdata"))?;
     let zones = dir.join("lib/time");
     process::create_dir(&zones)?;
     process::copy(&root.join("lib/time/zoneinfo.zip"), &zones.join("zoneinfo.zip"))
@@ -369,7 +376,7 @@ mod tests {
             ("os TestExecutable\n", "line 1: a skip is a package, a test and the reason"),
             ("os\n", "line 1: a skip is a package, a test and the reason"),
             ("os TestExecutable   \n", "line 1: a skip is a package, a test and the reason"),
-            ("# c\nnet TestDial no network\n", "line 2: net is not a package the boot test runs"),
+            ("# c\nnet/rpc TestA why\n", "line 2: net/rpc is not a package the boot test runs"),
             ("os Test.* all of them\n", "line 1: `Test.*` is not the name of a test"),
             ("os Test|Other why\n", "line 1: `Test|Other` is not the name of a test"),
             ("os TestA/ why\n", "line 1: `TestA/` is not the name of a test"),

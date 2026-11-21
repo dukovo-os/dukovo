@@ -10,11 +10,6 @@
 # with no reason is an error: nothing is skipped because it fails.
 #
 # package test reason
-os/exec TestExtraFilesRace TCP listeners need Go's poller (Phase 17 PR 3, networking)
-syscall TestPassFD net.FileConn needs Go's poller (Phase 17 PR 3, networking)
-context ExampleAfterFunc_connection TCP listeners need Go's poller (Phase 17 PR 3, networking)
-encoding/json TestHTTPDecoding TCP listeners need Go's poller (Phase 17 PR 3, networking)
 runtime TestTracebackSystem reads its own source at the path a traceback names, which a test binary built by ob, with -trimpath, does not have on the test disk
-os TestLargeCopyViaNetwork TCP listeners need Go's poller (Phase 17 PR 3, networking)
 os TestGetwdDeep the C library joins a relative path to the working folder it keeps, so a name in a folder deeper than 4096 bytes is too long (docs/deferred.md)
 os TestGetwdDeepWithPWDSet the C library joins a relative path to the working folder it keeps, so a name in a folder deeper than 4096 bytes is too long (docs/deferred.md)

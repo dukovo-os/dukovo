@@ -5,7 +5,7 @@
 //! library on the system calls, signals and files Radix gives them. ob builds
 //! the programs with the Go toolchain the go port installs (src/golang.rs),
 //! and a disk holds them, as the boot archive does not: the Go test program,
-//! the test binaries of 22 packages of Go's standard library, each in a
+//! the test binaries of 25 packages of Go's standard library, each in a
 //! folder with the package's files and test data, which its tests read, and
 //! two scripts. alice, the owner, signs in at the console.
 //!
@@ -108,7 +108,7 @@ const DISKS: &[Disk] = &[go_files_disk(512 * 1024, LABEL)];
 /// The test.
 pub const CASE: Case = Case {
     name: "go-runtime",
-    about: "programs in Go run on Radix: go-runtime-test, built by ob with the go port's toolchain and run from a disk, passes its fourteen checks with the machine's CPUs (threads, channels, mutexes, timers, clocks, preemption by signal, a panic and a nil dereference ending with Go's traceback, signals, memory given back, files, processes and pipes, the environment, time zones, random bytes), and the test binaries of 22 packages of Go's standard library, from runtime and sync to os, io, strings, math/big and encoding/json, each in its own folder with its files and test data, pass, but for the tests userspace/go/skips.txt names",
+    about: "programs in Go run on Radix: go-runtime-test, built by ob with the go port's toolchain and run from a disk, passes its fourteen checks with the machine's CPUs (threads, channels, mutexes, timers, clocks, preemption by signal, a panic and a nil dereference ending with Go's traceback, signals, memory given back, files, processes and pipes, the environment, time zones, random bytes), and the test binaries of 25 packages of Go's standard library, from runtime and sync to os, io, strings, math/big, encoding/json, net, net/http and crypto/tls, each in its own folder with its files and test data, pass, but for the tests userspace/go/skips.txt names",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     cmdline: "lockdep",

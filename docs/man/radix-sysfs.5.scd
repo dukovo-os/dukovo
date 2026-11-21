@@ -543,7 +543,8 @@ _/kernel/class/net/_*name*_/ipv4_
 	Radix's own: its IPv4 addresses with their prefixes, a line each,
 	as _10.0.2.15/24_, the first the one it sends from; nothing for a
 	card not set up. *lo* shows 127.0.0.1/8, though it answers each
-	card's addresses too. Linux gives these only over netlink.
+	card's addresses too. Linux gives these only over netlink; the C
+	library's *getifaddrs* and Go's net package read them here.
 
 _/kernel/class/net/_*name*_/ipv6_
 	Radix's own: what its IPv6 has (ADR 0331), a line each: each
@@ -555,8 +556,8 @@ _/kernel/class/net/_*name*_/ipv6_
 	1800_) and the one it was given (_router fe80::1 given_); the DNS
 	servers they advertised (_dns 2001:db8::53 lifetime 600_); the MTU
 	(_mtu 1500_); and whether DHCPv6 is to give addresses (_dhcp
-	managed_) or other settings (_dhcp other_). *ip*(8) and *netd*(8)
-	read it.
+	managed_) or other settings (_dhcp other_). *ip*(8), *netd*(8), the
+	C library's *getifaddrs* and Go's net package read it.
 
 _/kernel/class/net/_*name*_/link_
 	Radix's own: what the interface is (ADR 0333), on its first line:

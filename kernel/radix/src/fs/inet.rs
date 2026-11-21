@@ -568,6 +568,20 @@ impl State {
         Ok((((!ip.is_unspecified()).then_some(ip), given.port), given.scope))
     }
 
+    /// `given` as a place to connect or send to, and its scope: as
+    /// [`State::endpoint`], but all zeros is this machine, as on Linux and
+    /// the BSDs, which programs that dial a listener's address rely on:
+    /// the address it is bound to, else its version's loopback address.
+    fn destination(&self, given: Given) -> Result<(Peer, u32), Status> {
+        let ((ip, port), scope) = self.endpoint(given)?;
+        let own = || match given.ip() {
+            IpAddress::Ipv4(_) => IpAddress::Ipv4(net::LOOPBACK),
+            IpAddress::Ipv6(_) => IpAddress::Ipv6(net::LOOPBACK_IPV6),
+        };
+        let bound = self.local.and_then(|(address, _)| address);
+        Ok(((ip.or(bound).unwrap_or_else(own), port), scope))
+    }
+
     /// Puts a UDP socket bound to `address` and `port` on each interface
     /// it is on, as its parts.
     fn datagram_parts(&mut self, address: Option<IpAddress>, port: u16) -> Result<(), Status> {
@@ -1209,10 +1223,8 @@ impl InetSocket {
         let (to, scope) = {
             let state = self.state.lock();
             // A ping socket's address has no port, as on Linux.
-            match state.endpoint(given)? {
-                ((Some(ip), port), scope) if port != 0 || self.kind == Kind::Ping => {
-                    ((ip, port), scope)
-                }
+            match state.destination(given)? {
+                ((ip, port), scope) if port != 0 || self.kind == Kind::Ping => ((ip, port), scope),
                 _ => return Err(status(Kernel::InvalidArgument)),
             }
         };
@@ -1274,10 +1286,7 @@ impl InetSocket {
     ) -> Result<usize, Status> {
         if self.kind != Kind::Stream {
             let to = match to {
-                Some(given) => match self.state.lock().endpoint(given)? {
-                    ((Some(ip), port), scope) => Some(((ip, port), scope)),
-                    _ => return Err(status(Kernel::InvalidArgument)),
-                },
+                Some(given) => Some(self.state.lock().destination(given)?),
                 None => None,
             };
             if self.kind == Kind::Ping {
@@ -1643,7 +1652,15 @@ impl InetSocket {
             let peer = state.peer.filter(|_| state.phase == Phase::Connected);
             peer.map(|(ip, port)| (Some(ip), port)).ok_or(status(Kernel::NotConnected))?
         } else {
-            state.local.unwrap_or((None, 0))
+            match (state.local.unwrap_or((None, 0)), state.peer) {
+                // A datagram socket connected from any address is at the
+                // one it sends to its peer from, as on Linux.
+                ((None, port), Some(to)) if state.phase == Phase::Connected => {
+                    let interface = state.route(to.0, state.scope).ok();
+                    (interface.and_then(|interface| interface.stack.lock().source_for(to.0)), port)
+                }
+                (local, _) => local,
+            }
         };
         Ok(address_of(endpoint, state.v6, state.scope))
     }

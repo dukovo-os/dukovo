@@ -492,7 +492,11 @@ port, as on a named one (ADR 0415).
 with EINPROGRESS, after which *poll* says the socket is writable once
 it is made and *SO_ERROR* says how it went; connecting again says
 EALREADY until then, and EISCONN once connected. A connection to a port
-no one listens on fails with ECONNREFUSED. A listening socket holds as
+no one listens on fails with ECONNREFUSED. *connect*, *sendto* and
+*sendmsg* to all zeros, 0.0.0.0 or ::, reach this machine, as on Linux:
+the address the socket is bound to, else 127.0.0.1 or ::1. A connected
+UDP socket bound to any address is named by *getsockname* with the
+address it sends to its peer from (ADR 0355). A listening socket holds as
 many connections as its backlog on each interface, up to 128, being made
 or waiting for *accept*; a SYN that comes when it holds that many, or
 faster than it makes room, is not answered, so its client sends it again

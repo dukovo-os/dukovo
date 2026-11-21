@@ -253,7 +253,7 @@ machine with AMT, an AMD machine and a laptop; see
 
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
-| Go's `net` on Radix: `net.Interfaces` and `InterfaceAddrs` list nothing (no netlink or routing socket; the C library's `getifaddrs` can give them), so IPv4 multicast by interface does not work either (ADR 0350) | Comes with Go's networking | Phase 17 |
+| An interface's multicast groups: radix-sysfs does not show the groups an interface has joined, so Go's `net.Interface.MulticastAddrs` lists none, and Go's interface tests name Radix among the systems that list none (ADR 0355) | No program found that reads them | Need |
 | cgo, and `go` and `gofmt` in `/system` (ADR 0350) | The runtime first | Phase 17 |
 | fzf, lazygit and duf in the catalog | Written in Go | Phase 17 |
 | Zero-copy file transfers in Go programs (`sendfile`, `splice`, `copy_file_range`): `io.Copy` between files and sockets reads and writes through a buffer (ADR 0350) | The C library has none of them | Need |
@@ -516,6 +516,7 @@ machine asks for them.
 | --- | --- |
 | `posix_git_status` reported, not gated, until parity | ADR 0294 |
 | `posix_poll_idle` reported, not gated, until parity: `poll` on 1,001 pipes takes 1.52 times Linux's time on CI's runners (9.6 µs against 6.3 µs), from 12.7 before ADR 0354, about 130 instructions a descriptor. Each descriptor reads five cache lines, its slot, its record, the file, the pipe's end and the pipe, where Linux reads two or three; next, the address kept in the slot as well as the record, and a pipe's end named by the address itself | ADR 0354 |
+| On an AMD EPYC 9V45 runner, an event queue's wait for one ready pipe among 1,000 idle ones (`posix_events_idle`) takes 1.10 times Linux's time (326 ns against epoll's 297 ns), where Intel 6975P-C runners give 0.90 to 0.92: the gate on the second runner fails when it lands on that machine. Its first AMD run came with ADR 0354, which does not touch the wait; next, a count of its instructions and cache misses there against epoll's | ADR 0353 |
 | Optical reads reported, not gated, until parity; USB storage rows | ADR 0434 |
 | `git status` takes about 2.5 times Linux's time (5.0 ms against 1.98 ms on 1,000 files, with 15 context switches); no work is planned to close it yet | ADR 0294 |
 | Rows still above the 0.90 margin target, though under Linux: Btrfs zstd write, unmapping a page on another CPU, NVMe 1 MiB read (0.92 to 0.94) | Benchmark margin work |
