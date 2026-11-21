@@ -24,9 +24,9 @@ there. A machine managed over it that has no block, a system installed
 before the block or a disk image written straight to the disk, has no
 boot menu on it, and no Rescue entry: the port the machine is managed
 from shows everything but the menu. The same holds after `serial
-console auto`. The Dukovo Lab reads real machines' consoles over AMT's
-Serial-over-LAN, and its tests wait there for the menu's lines, such as
-the entry being booted.
+console auto`. The Dukovo Lab can read a real machine's console over
+AMT's Serial-over-LAN, and its tests wait on the console for the menu's
+lines, such as the entry being booted.
 
 ## Decision
 
