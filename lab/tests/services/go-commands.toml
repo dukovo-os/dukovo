@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Go's two commands from the catalog (ADR 0356): go and gofmt, installed
+# for everyone. Each runs by its path, as a script runs it, so no question
+# is asked. go builds and runs a program on the machine itself, which
+# compiles the standard packages it needs into the lab account's build
+# cache the first time: on a real machine that is a minute or so.
+about = "Go's commands from the catalog run: go says its version and environment and builds and runs a program, and gofmt sets out source (ADR 0356)"
+time = "10m"
+host_needs = ["scp"]
+
+[[step]]
+host = "sh {here}/copy-bundle.sh dev.go.go {machine} {machine-port:22}"
+expect = "copied: dev.go.go"
+# From nothing: a run before may have left it installed.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge dev.go.go > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/dev.go.go.dkv | tail -1'"
+root = true
+expect = "installed dev.go.go"
+[[step]]
+run = "/applications/dev.go.go/bin/go version"
+expect = "go1.27.4 radix/amd64"
+# The bundle is its own root, no other toolchain is fetched, and C code is
+# not built, as the system has no C compiler.
+[[step]]
+run = "sh -c 'echo $(/applications/dev.go.go/bin/go env GOROOT CGO_ENABLED GOTOOLCHAIN)'"
+expect = "/applications/dev.go.go 0 local"
+# Source with spaces out of place, set out as Go writes it.
+[[step]]
+run = '''sh -c "printf 'package main\nfunc  main( ) {}\n' | /applications/dev.go.go/bin/gofmt"'''
+expect = "func main() {}"
+# A program built and run on the machine prints a sum it works out.
+[[step]]
+run = '''sh -c 'mkdir -p /tmp/lab-go && cd /tmp/lab-go && printf "package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Println(6*7 + 1000) }\n" > sum.go && /applications/dev.go.go/bin/go run sum.go' '''
+expect = "1042"
+# The lab account's build cache and the program go, so that the next run
+# compiles from nothing too.
+[[step]]
+run = "sh -c '/applications/dev.go.go/bin/go clean -cache && rm -rf /tmp/lab-go && echo cleaned: $((40 + 2))'"
+expect = "cleaned: 42"
+[[step]]
+run = "bundle remove --for-everyone --purge dev.go.go"
+root = true
+expect = "removed dev.go.go"
