@@ -71,18 +71,18 @@ jobs:
       # sleep (586 against 512 ns an open and close after it), on Intel:
       # sched_yield, open and close, a chain of SSE adds and one of
       # integer multiplies, timed in the child before and after it sleeps
-      # a millisecond.
+      # a millisecond, and which vector state components it holds in use.
       - name: Scaling, probes before and after a sleep, twice
         run: |
           set -o pipefail
           mkdir -p out/ab
-          git apply tools/experiments/scaling-pp.diff
+          git apply tools/experiments/scaling-px.diff
           for round in 1 2; do
             ./ob bench --scaling --runs 3 --no-linux > "out/ab/s-pp$round.log" 2>&1 || true
             cp out/bench-scaling/report.md "out/ab/s-pp$round.md" || true
             echo "--- pp$round ($(date -u +%H:%M:%S))"
             grep "^| [148] \(threads\|processes\) |" "out/ab/s-pp$round.md" || true
-            grep -h "probe" out/bench-scaling/*.log | sed 's/.*posix-bench: //' || true
+            grep -h "probe\|xinuse" out/bench-scaling/*.log | sed 's/.*posix-bench: //' || true
           done
           git checkout -q -- userspace/posix
 
