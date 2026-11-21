@@ -47,8 +47,8 @@ use std::time::Duration;
 use crate::config::{Firmware, Media};
 use crate::process::{self, step};
 use crate::qemu::{self, DirectBoot, Machine, Serial};
-use crate::test::{self, Built, TestImage, Vm};
-use crate::{Args, Context, Ctx, Result, VERSION, baseline, kernel, userspace};
+use crate::test::{self, Built, TestImage};
+use crate::{Args, Context, Ctx, Result, VERSION, baseline, kernel, pin, userspace};
 
 /// The kernel command line of the benchmark boot.
 const CMDLINE: &str = "qemu-exit selftest=bench";
@@ -1394,7 +1394,7 @@ fn linux_vm_numbers(
         display: false,
         reboot: false,
         gdb: false,
-        qmp: None,
+        qmp: Some(dir.join("linux.qmp")),
         extra: disk_args(dir, btrfs)?,
         write_log: None,
         direct: Some(DirectBoot {
@@ -1403,7 +1403,7 @@ fn linux_vm_numbers(
             cmdline: format!("{LINUX_CMDLINE} {LINUX_INIT_ARGS}"),
         }),
     };
-    let mut vm = Vm::start(ctx, &machine, dir, "linux", TIMEOUT).map_err(crate::Error::new)?;
+    let mut vm = pin::start(ctx, &machine, dir, "linux", TIMEOUT)?;
     let outcome = vm.expect("linux-bench: done");
     let log = vm.log();
     drop(vm);
@@ -1551,12 +1551,12 @@ fn radix_numbers(
         display: false,
         reboot: false,
         gdb: false,
-        qmp: None,
+        qmp: Some(dir.join("bench.qmp")),
         extra: accel.extra(),
         write_log: None,
         direct: None,
     };
-    let mut vm = Vm::start(ctx, &machine, dir, "bench", TIMEOUT).map_err(crate::Error::new)?;
+    let mut vm = pin::start(ctx, &machine, dir, "bench", TIMEOUT)?;
     let outcome = vm
         .expect("selftest bench: passed")
         .and_then(|()| vm.expect("Boot complete."))
@@ -1606,13 +1606,12 @@ fn radix_posix_numbers(
         display: false,
         reboot: false,
         gdb: false,
-        qmp: None,
+        qmp: Some(dir.join("posix-bench.qmp")),
         extra,
         write_log: None,
         direct: None,
     };
-    let mut vm =
-        Vm::start(ctx, &machine, dir, "posix-bench", TIMEOUT).map_err(crate::Error::new)?;
+    let mut vm = pin::start(ctx, &machine, dir, "posix-bench", TIMEOUT)?;
     let outcome = vm.expect("posix-bench: done");
     let log = vm.log();
     drop(vm);

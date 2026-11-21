@@ -12,7 +12,7 @@
 //!
 //! A CPU switches threads only in [`reschedule`]: when the running thread
 //! blocks, yields or exits, and when something more urgent is waiting
-//! (`need_resched`), which a timer interrupt or a wake-up sets. The switch
+//! (`resched`), which a timer interrupt or a wake-up sets. The switch
 //! happens on the way out of the interrupt, when the last spin lock is let
 //! go, or at once, whichever comes first: spin locks and RCU read sections
 //! hold off preemption, nothing else does. No lock is held across the
@@ -63,10 +63,10 @@ use radix_hal::{
 use radix_klog::{error, info, warn};
 use radix_mm::{FRAMES, Flags, HEAP, Kmalloc};
 use radix_sched::{
-    CpuLoad, CpuSet, HaltPoll, LOAD_INTERVAL_NS, LoadAverage, Loads, Place, Split, Topology,
-    haltpoll,
+    CpuLoad, CpuSet, HaltPoll, LOAD_INTERVAL_NS, LoadAverage, Loads, Place, Resched, Split,
+    Topology, haltpoll,
 };
-use radix_sync::{Mutex, Once, SpinLock};
+use radix_sync::{Mutex, Once, SpinLock, SpinLockGuard};
 
 use crate::Arch;
 use crate::domains::{self, DomainError, DomainRef, JoinError};
@@ -96,54 +96,44 @@ const NO_TOKEN: usize = 2;
 /// Room for threads that the scheduler's lists start with.
 const INITIAL_ROOM: usize = 64;
 
-/// The scheduler's state for one CPU.
+/// Starts the field after it on a cache line of its own.
+#[repr(C, align(64))]
+struct LineBreak;
+
+/// The scheduler's state for one CPU, laid out a cache line at a time
+/// (ADR 0556).
+#[repr(C, align(64))]
 struct CpuSched {
-    rq: SpinLock<Option<Rq>>,
-    /// Set when the running thread should give way; cleared by
-    /// [`reschedule`].
-    need_resched: AtomicBool,
-    /// Written by wakers while the CPU idles in MWAIT.
-    wake: AtomicU32,
-    /// Whether the idle thread watches `need_resched` or `wake` without
-    /// needing an interrupt: polling, or waiting in MWAIT.
-    polling: AtomicBool,
-    /// Set by a waker on another CPU, before `need_resched`: the idle loop
-    /// clears it when it goes idle, and so learns which wake-ups polling
-    /// can catch (`radix_sched::haltpoll`).
-    called: AtomicBool,
-    /// The token of the running thread.
-    current: AtomicUsize,
+    // Line 0: what another CPU writes and reads to wake this one, and to
+    // choose it for a thread. A waker reads the published load, then
+    // writes the request word, one line between them; and the idle CPU,
+    // which spins on the word, writes the load only as it starts work.
+    /// Set when the running thread should give way, cleared by
+    /// [`reschedule`]; the idle thread polls it, or watches it in MWAIT
+    /// (ADR 0555). Its inbox holds the threads handed to this CPU.
+    resched: Resched,
     /// The published load: queued threads, and the running real-time
     /// priority.
     running: AtomicU32,
     rt_prio: AtomicU8,
     online: AtomicBool,
-    /// This CPU's sleepers.
-    timers: SpinLock<Option<Vec<(u64, ThreadRef), Kmalloc>>>,
-    /// The earliest sleeper's deadline.
-    timer_next: AtomicU64,
+    _rq: LineBreak,
+    // Lines 1 to 5: the run queue, which other CPUs lock only to queue a
+    // thread on a busy CPU, or to balance.
+    rq: SpinLock<Option<Rq>>,
+    // Then what this CPU alone writes as it switches and takes ticks.
+    /// The token of the running thread.
+    current: AtomicUsize,
     /// When the running thread's slice or quantum ends.
     slice_end: AtomicU64,
+    /// The earliest sleeper's deadline.
+    timer_next: AtomicU64,
     ticks: AtomicU64,
     /// The ticks that found a thread running in user mode, and in the
     /// kernel (`radix_sched::account`); the rest found it idle.
     user_ticks: AtomicU64,
     system_ticks: AtomicU64,
     preemptions: AtomicU64,
-    /// Nanoseconds idle, in periods that have ended; while one is under
-    /// way, when it began (0 while busy). `idle_seq` is odd while an ended
-    /// period moves into `idle_ns`, for readers on other CPUs.
-    idle_ns: AtomicU64,
-    idle_since: AtomicU64,
-    idle_seq: AtomicU64,
-    /// Its busy time as [`cpu_times`] last split it, and the idle time
-    /// it gave then.
-    given: SpinLock<(Split, u64)>,
-    /// Idle periods that ended while polling, and that halted.
-    polls: AtomicU64,
-    halts: AtomicU64,
-    /// Balancing attempts that found nothing to move, by level.
-    balance_failures: [AtomicU32; 4],
     /// Set by a switch away from a thread that has exited, for the thread
     /// switched to, which tells the reaper (`after_switch`).
     left_dead: AtomicBool,
@@ -154,16 +144,40 @@ struct CpuSched {
     /// A thread woken here by [`lazily`] should have run at once: the
     /// running thread gives way at [`pay_owed`], or at its next switch.
     owed: AtomicBool,
+    /// This CPU's sleepers.
+    timers: SpinLock<Option<Vec<(u64, ThreadRef), Kmalloc>>>,
+    /// Balancing attempts that found nothing to move, by level.
+    balance_failures: [AtomicU32; 4],
+    _idle: LineBreak,
+    // What this CPU writes as an idle period ends, in a line of its own.
+    /// Nanoseconds idle, in periods that have ended; while one is under
+    /// way, when it began (0 while busy). `idle_seq` is odd while an ended
+    /// period moves into `idle_ns`, for readers on other CPUs.
+    idle_ns: AtomicU64,
+    idle_since: AtomicU64,
+    idle_seq: AtomicU64,
+    /// Idle periods that ended while polling, and that halted.
+    polls: AtomicU64,
+    halts: AtomicU64,
+    /// Its busy time as [`cpu_times`] last split it, and the idle time
+    /// it gave then.
+    given: SpinLock<(Split, u64)>,
 }
+
+const _: () = {
+    use core::mem::offset_of;
+    assert!(offset_of!(CpuSched, online) < 64, "a waker's reads share the word's line");
+    assert!(offset_of!(CpuSched, rq) == 64, "the run queue starts the next line");
+    assert!(offset_of!(CpuSched, idle_ns).is_multiple_of(64), "idle statistics start a line");
+};
 
 impl CpuSched {
     const fn new() -> CpuSched {
         CpuSched {
+            resched: Resched::new(),
+            _rq: LineBreak,
+            _idle: LineBreak,
             rq: SpinLock::new(None),
-            need_resched: AtomicBool::new(false),
-            wake: AtomicU32::new(0),
-            polling: AtomicBool::new(false),
-            called: AtomicBool::new(false),
             current: AtomicUsize::new(0),
             running: AtomicU32::new(0),
             rt_prio: AtomicU8::new(0),
@@ -866,15 +880,57 @@ pub fn block(reason: &'static str) {
 /// at once. Returns whether it was blocked. Works from interrupt handlers.
 pub fn wake(thread: &ThreadRef) -> bool {
     thread.wake_pending.store(true, Ordering::SeqCst);
-    let mut state = thread.state.lock_irq();
+    // Masked until the thread is queued or handed over: a waker moved to
+    // another CPU meanwhile could find itself on the CPU it hands to.
+    masked(|| wake_masked(thread))
+}
+
+/// Runs `wake` with preemption held off and interrupts masked, and lets
+/// them go in the order a lock taken with `lock_irq` does: interrupts
+/// first, so that letting preemption go gives this CPU at once to a
+/// thread just woken here that should have it. Let go the other way, the
+/// switch would wait for the next lock let go with interrupts on, often
+/// the waker's next system call, or for a tick.
+#[inline(always)]
+fn masked(wake: impl FnOnce() -> bool) -> bool {
+    Arch::preempt_disable();
+    let were = Arch::disable_interrupts();
+    let woke = wake();
+    Arch::restore_interrupts(were);
+    preempt_enable();
+    woke
+}
+
+/// [`wake`], with interrupts masked.
+fn wake_masked(thread: &ThreadRef) -> bool {
+    let mut state = thread.state.lock();
     if !matches!(state.run, Run::Blocked(_)) {
         return false;
     }
     thread.wake_pending.store(false, Ordering::Relaxed);
     state.run = Run::Ready;
-    thread.stats.wakeups.fetch_add(1, Ordering::Relaxed);
-    enqueue_ready(thread, &mut state, false);
+    let target = choose_cpu(thread.cpu.load(Ordering::Relaxed), &state);
+    place_woken(thread, state, target);
     true
+}
+
+/// Puts `thread`, just made ready under its lock `state`, on CPU `target`:
+/// handed to it ([`hand_over`]) once the lock is let go, if `target` is
+/// another CPU and idle; otherwise queued on it. With interrupts masked,
+/// so that a waker moved meanwhile cannot find itself on the CPU it hands
+/// to.
+fn place_woken(thread: &ThreadRef, mut state: SpinLockGuard<'_, State>, target: usize) {
+    if target == Arch::current_cpu() || CPUS.get(target).running.load(Ordering::Relaxed) != 0 {
+        thread.stats.wakeups.fetch_add(1, Ordering::Relaxed);
+        enqueue_on(thread, &mut state, false, target);
+        return;
+    }
+    if target != thread.cpu.load(Ordering::Relaxed) {
+        thread.stats.migrations.fetch_add(1, Ordering::Relaxed);
+    }
+    thread.cpu.store(target, Ordering::Relaxed);
+    drop(state);
+    hand_over(thread, target);
 }
 
 /// Makes a thread that has been asked to stop, or marked as having a
@@ -904,6 +960,97 @@ pub fn interrupt(thread: &ThreadRef) {
     }
 }
 
+/// Puts `thread`, ready now, in idle CPU `target`'s inbox and asks that
+/// CPU to switch, which queues the thread on its own run queue as it does
+/// ([`take_handed`], ADR 0556). Of `target`'s cache lines this writes only
+/// its request word's: queuing the thread here would take `target`'s run
+/// queue lock and write its queue, moving each of those lines here and
+/// then back as `target` picks the thread, one move at a time. With
+/// interrupts masked, and the thread's lock let go, so that `target` finds
+/// it free.
+fn hand_over(thread: &ThreadRef, target: usize) {
+    const _: () = assert!(
+        align_of::<Thread>() >= radix_sched::resched::ENTRY_ALIGN,
+        "a thread's address leaves the request word's flags free"
+    );
+    // The inbox's reference, which `take_handed` takes back.
+    let (entry, _) = ThreadRef::into_raw_with_allocator(thread.clone());
+    let watched = CPUS.get(target).resched.hand_over(entry.addr(), |before| {
+        thread.handed_next.store(before, Ordering::Relaxed);
+    });
+    if !watched {
+        Arch::send_ipi(target, Ipi::Reschedule);
+    }
+}
+
+/// The thread at inbox entry `entry` ([`hand_over`]), on the reference the
+/// inbox holds, which stays held until the handle is taken out of its
+/// `ManuallyDrop`.
+#[allow(unsafe_code)]
+fn handed(entry: usize) -> core::mem::ManuallyDrop<ThreadRef> {
+    // SAFETY: `entry` is the address `hand_over` took from a counted
+    // `ThreadRef` it put in the inbox; that count keeps the thread until
+    // this CPU gives it to its run queue. The allocator handle frees
+    // through the heap, as every `Kmalloc` handle does.
+    let thread =
+        unsafe { ThreadRef::from_raw_in(entry as *const Thread, HEAP.with(Flags::ATOMIC)) };
+    core::mem::ManuallyDrop::new(thread)
+}
+
+/// Queues the threads other CPUs handed to this one ([`hand_over`]), in
+/// the order they were handed over, and withdraws the request to switch,
+/// as a switch begins. Returns whether a switch was asked for. With
+/// interrupts masked and no spin lock held: each thread's lock comes
+/// before the run queue's.
+fn take_handed(cpu: usize, slot: &CpuSched) -> bool {
+    // The inbox links each entry to the one handed over before it; turned
+    // round, the threads join the queue in the order they were woken,
+    // which the real-time FIFO class keeps.
+    let Some(mut newest) = slot.resched.take() else { return false };
+    let mut oldest = 0;
+    while newest != 0 {
+        let thread = handed(newest);
+        let before = thread.handed_next.load(Ordering::Relaxed);
+        thread.handed_next.store(oldest, Ordering::Relaxed);
+        oldest = newest;
+        newest = before;
+    }
+    while oldest != 0 {
+        // Read first: once queued, the thread may run, block and be handed
+        // over again elsewhere.
+        let next = handed(oldest).handed_next.load(Ordering::Relaxed);
+        queue_handed(cpu, slot, oldest);
+        oldest = next;
+    }
+    true
+}
+
+/// Queues the thread at inbox entry `entry` on this CPU, `cpu`, with the
+/// class its state says now: a change of policy or affinity while it was
+/// in the inbox found it on no queue to move it in.
+fn queue_handed(cpu: usize, slot: &CpuSched, entry: usize) {
+    // A view to lock and read it by, while the inbox's reference moves to
+    // the run queue; never dropped, so it gives back no count.
+    let thread = handed(entry);
+    // Counted here, where the thread's statistics are written as it runs:
+    // the waker writes only the thread's first lines.
+    thread.stats.wakeups.fetch_add(1, Ordering::Relaxed);
+    let mut state = thread.state.lock();
+    if !state.affinity.contains(cpu) {
+        enqueue_ready(&thread, &mut state, false);
+        drop(state);
+        drop(core::mem::ManuallyDrop::into_inner(thread));
+        return;
+    }
+    let class = Class::of(&state, false);
+    let mut guard = slot.rq.lock();
+    let Some(rq) = guard.as_mut() else {
+        unreachable!("an online CPU's run queue is there for good")
+    };
+    rq.enqueue(core::mem::ManuallyDrop::into_inner(handed(entry)), class);
+    slot.publish(rq);
+}
+
 /// Like [`wake`], for a waker that is about to block itself, as in IPC: a
 /// thread that may run on this CPU is put on it, where it runs once the
 /// waker blocks, instead of on another CPU that would have to be
@@ -917,22 +1064,29 @@ pub fn wake_sync(thread: &ThreadRef) -> bool {
 /// the reaper, which frees a thread on the CPU it ended on.
 fn wake_here(thread: &ThreadRef) -> bool {
     thread.wake_pending.store(true, Ordering::SeqCst);
-    let mut state = thread.state.lock_irq();
+    // Masked as in `wake`, for a thread that goes to another CPU.
+    masked(|| wake_here_masked(thread))
+}
+
+/// [`wake_here`], with interrupts masked. A thread that may not run here
+/// goes where [`wake`] would put it, handed over if that CPU is idle.
+fn wake_here_masked(thread: &ThreadRef) -> bool {
+    let mut state = thread.state.lock();
     if !matches!(state.run, Run::Blocked(_)) {
         return false;
     }
     thread.wake_pending.store(false, Ordering::Relaxed);
     state.run = Run::Ready;
-    thread.stats.wakeups.fetch_add(1, Ordering::Relaxed);
     let here = Arch::current_cpu();
-    if state.rt_prio() == 0
+    let target = if state.rt_prio() == 0
         && state.affinity.contains(here)
         && CPUS.get(here).online.load(Ordering::Relaxed)
     {
-        enqueue_on(thread, &mut state, false, here);
+        here
     } else {
-        enqueue_ready(thread, &mut state, false);
-    }
+        choose_cpu(thread.cpu.load(Ordering::Relaxed), &state)
+    };
+    place_woken(thread, state, target);
     true
 }
 
@@ -1027,14 +1181,12 @@ fn kick(cpu: usize) {
         }
         // The switch happens when this CPU lets go of its last spin lock or
         // leaves the interrupt it is in.
-        slot.need_resched.store(true, Ordering::SeqCst);
+        slot.resched.request();
         return;
     }
-    slot.called.store(true, Ordering::Relaxed);
-    slot.need_resched.store(true, Ordering::SeqCst);
-    if slot.polling.load(Ordering::SeqCst) {
-        slot.wake.store(1, Ordering::Release);
-    } else {
+    // One write to the word the CPU polls or watches, if it does, which
+    // then needs no interrupt (ADR 0555).
+    if !slot.resched.request_remote() {
         Arch::send_ipi(cpu, Ipi::Reschedule);
     }
 }
@@ -1073,10 +1225,13 @@ fn requeue(thread: &ThreadRef, state: &mut State) {
             continue;
         }
         let Some(rq) = guard.as_mut() else { return };
+        // A thread on no queue though ready was handed to this CPU and
+        // waits in its inbox (`hand_over`): it joins the queue with this
+        // weight and the class its state says then.
+        thread.weight.store(state.policy.weight(), Ordering::Relaxed);
         let running = ThreadRef::ptr_eq(&rq.current, thread);
         if let Some(lag) = rq.dequeue(thread) {
             state.lag_ns = lag;
-            thread.weight.store(state.policy.weight(), Ordering::Relaxed);
             rq.enqueue(thread.clone(), Class::of(state, false));
             if running {
                 // Still the one on the CPU: mark it so, and let the CPU
@@ -1355,7 +1510,7 @@ fn tell_near_stack_end(found: &NearStackEnd) {
 }
 
 /// Lets this CPU run whatever should run now. See the module comment.
-fn reschedule(why: Switch) {
+fn reschedule(mut why: Switch) {
     let were = Arch::disable_interrupts();
     let count = Arch::preempt_count();
     // Holding preemption off keeps the locks' preemption hook from
@@ -1372,6 +1527,9 @@ fn reschedule(why: Switch) {
         Arch::restore_interrupts(were);
         return;
     };
+    // Threads other CPUs woke for this one join its queue before it picks
+    // (ADR 0556). Never under a spin lock: theirs come first.
+    let asked = count == 0 && take_handed(cpu, slot);
     if count != 0 && why != Switch::Preempt {
         error!(
             "Threads: `{}` would sleep or yield with preemption held off ({count}); a spin lock or \
@@ -1386,16 +1544,20 @@ fn reschedule(why: Switch) {
     let mut state = matches!(why, Switch::Block(_) | Switch::Exit).then(|| me.state.lock());
     if matches!(why, Switch::Block(_)) && me.wake_pending.swap(false, Ordering::AcqRel) {
         // Woken since it decided to sleep: carry on.
-        drop(state);
-        Arch::set_preempt_count(count);
-        Arch::restore_interrupts(were);
-        return;
+        state = None;
+        if !asked {
+            Arch::set_preempt_count(count);
+            Arch::restore_interrupts(were);
+            return;
+        }
+        // A switch was asked for, which taking the inbox withdrew, maybe
+        // for a thread just queued from it: choose as if preempted.
+        why = Switch::Preempt;
     }
     let mut guard = slot.rq.lock();
     let Some(rq) = guard.as_mut() else { unreachable!("the run queue was there a moment ago") };
     let now = Arch::now_ns();
     rq.charge(now);
-    slot.need_resched.store(false, Ordering::Relaxed);
     slot.owed.store(false, Ordering::Relaxed);
     let mut moving = None;
     match (why, state.as_mut()) {
@@ -1530,7 +1692,7 @@ fn thread_start(_: usize) -> ! {
 #[inline]
 pub(crate) fn preempt_enable() {
     if Arch::preempt_enable() == 0
-        && CPUS.this().need_resched.load(Ordering::Relaxed)
+        && CPUS.this().resched.pending()
         && Arch::interrupts_enabled()
         && started()
     {
@@ -1563,7 +1725,7 @@ pub fn pay_owed() {
         return;
     }
     slot.owed.store(false, Ordering::Relaxed);
-    slot.need_resched.store(true, Ordering::SeqCst);
+    slot.resched.request();
     if Arch::preempt_count() == 0 && Arch::interrupts_enabled() && started() {
         reschedule(Switch::Preempt);
     }
@@ -1572,7 +1734,7 @@ pub fn pay_owed() {
 /// Called on the way out of an interrupt that came in with preemption
 /// allowed.
 fn on_preempt() {
-    if CPUS.this().need_resched.load(Ordering::Relaxed) {
+    if CPUS.this().resched.pending() {
         reschedule(Switch::Preempt);
     }
 }
@@ -1591,7 +1753,7 @@ fn on_timer(tick: bool) {
         let mut guard = slot.rq.lock();
         if let Some(rq) = guard.as_mut() {
             if rq.charge(now) {
-                slot.need_resched.store(true, Ordering::Relaxed);
+                slot.resched.request();
             }
             slot.slice_end.store(rq.slice_end(now), Ordering::Relaxed);
             idling = rq.idling();
@@ -1736,25 +1898,26 @@ fn idle_loop(cpu: usize) -> ! {
     loop {
         Arch::disable_interrupts();
         rcu::quiescent(cpu);
-        if slot.running.load(Ordering::Relaxed) == 0 {
+        // Pulling work from other CPUs is for when none is on its way: a
+        // thread handed over is not on the run queue yet.
+        if !slot.resched.pending() && slot.running.load(Ordering::Relaxed) == 0 {
             balance::idle(cpu, Arch::now_ns());
         }
-        // Before the check: a wake-up from another CPU after it is noted.
-        slot.called.store(false, Ordering::Relaxed);
-        if slot.need_resched.load(Ordering::SeqCst) || slot.running.load(Ordering::Relaxed) > 0 {
+        // In the same step as the check: a wake-up from another CPU after
+        // it is noted.
+        if slot.resched.go_idle() || slot.running.load(Ordering::Relaxed) > 0 {
             reschedule(Switch::Preempt);
             continue;
         }
-        slot.wake.store(0, Ordering::Relaxed);
         let started = Arch::now_ns();
         slot.idle_since.store(started, Ordering::Relaxed);
         if poll(slot, started.saturating_add(haltpoll.limit_ns())) {
             slot.polls.fetch_add(1, Ordering::Relaxed);
         } else {
-            // Only an idle that watches `wake` (MWAIT) ends on the write
+            // Only an idle that watches the word (MWAIT) ends on the write
             // alone; HLT needs the interrupt, so a waker must send one.
-            slot.polling.store(mwait, Ordering::SeqCst);
-            if !slot.need_resched.load(Ordering::SeqCst) {
+            let pending = if mwait { slot.resched.watch() } else { slot.resched.pending() };
+            if !pending {
                 slot.halts.fetch_add(1, Ordering::Relaxed);
                 // Preemption off, as in `poll`: the interrupt that ends the
                 // halt leaves the switch to this loop, which ends the idle
@@ -1762,10 +1925,12 @@ fn idle_loop(cpu: usize) -> ! {
                 // leave the period open while other threads ran, counting
                 // their time as idle until this CPU next went idle.
                 Arch::preempt_disable();
-                Arch::idle_until(&slot.wake);
+                Arch::idle_until(slot.resched.word());
                 Arch::preempt_enable();
             }
-            slot.polling.store(false, Ordering::SeqCst);
+            if mwait {
+                slot.resched.unwatch();
+            }
         }
         let idle = Arch::now_ns().saturating_sub(started);
         // A reader on another CPU sees the period under way, or ended,
@@ -1775,7 +1940,7 @@ fn idle_loop(cpu: usize) -> ! {
         slot.idle_ns.fetch_add(idle, Ordering::Relaxed);
         slot.idle_since.store(0, Ordering::Relaxed);
         slot.idle_seq.fetch_add(1, Ordering::Release);
-        haltpoll.record(idle, slot.called.load(Ordering::Relaxed));
+        haltpoll.record(idle, slot.resched.remote());
     }
 }
 
@@ -1785,31 +1950,28 @@ fn idle_loop(cpu: usize) -> ! {
 /// disks' queue does, in a virtual machine).
 pub fn cpu_to_itself() -> bool {
     let slot = CPUS.this();
-    slot.running.load(Ordering::Relaxed) <= 1 && !slot.need_resched.load(Ordering::Relaxed)
+    slot.running.load(Ordering::Relaxed) <= 1 && !slot.resched.pending()
 }
 
-/// Polls `need_resched` until `until`, and returns whether it was set.
-/// Wakers see `polling` and skip the interrupt. Interrupts are on while it
-/// polls, so timers and devices are served, but preemption is off: the
-/// idle loop switches, not the interrupt's way out.
+/// Polls for a switch to be asked for until `until`, and returns whether
+/// one was. Wakers see the word watched and skip the interrupt. Interrupts
+/// are on while it polls, so timers and devices are served, but preemption
+/// is off: the idle loop switches, not the interrupt's way out.
 fn poll(slot: &CpuSched, until: u64) -> bool {
     if until <= Arch::now_ns() {
         return false;
     }
-    slot.polling.store(true, Ordering::SeqCst);
+    slot.resched.watch();
     Arch::preempt_disable();
     Arch::enable_interrupts();
-    while !slot.need_resched.load(Ordering::Relaxed) && Arch::now_ns() < until {
+    while !slot.resched.pending() && Arch::now_ns() < until {
         core::hint::spin_loop();
     }
     Arch::disable_interrupts();
     Arch::preempt_enable();
-    // A waker sets `need_resched` before it reads `polling`; this clears
-    // `polling` before it reads `need_resched` (both sequentially
-    // consistent). So either the waker sees `polling` cleared and sends
-    // the interrupt, or this sees its wake-up and does not halt.
-    slot.polling.store(false, Ordering::SeqCst);
-    slot.need_resched.load(Ordering::SeqCst)
+    // Either a waker's request came before this, which sees it, or after,
+    // and the waker sends the interrupt.
+    slot.resched.unwatch()
 }
 
 // ---- The reaper ----
@@ -2075,7 +2237,7 @@ pub fn write_queues(line: &mut dyn FnMut(fmt::Arguments<'_>)) {
             rq.pulled[1],
             rq.pulled[2],
             rq.pulled[3],
-            if slot.need_resched.load(Ordering::Relaxed) { "; switch pending" } else { "" }
+            if slot.resched.pending() { "; switch pending" } else { "" }
         ));
         rq.for_each(|thread, running, weighing| {
             let mut how = radix_klog::TextBuf::<24>::new();
