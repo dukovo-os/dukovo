@@ -303,6 +303,62 @@ fn a_retype_that_fails_unmakes_what_it_made() {
     caps.audit().unwrap();
 }
 
+/// A test's kept value says where its object is: anywhere but null.
+impl Located for u32 {
+    fn address(&self) -> *const () {
+        core::ptr::without_provenance(*self as usize + 1)
+    }
+}
+
+#[test]
+fn a_locked_space_reads_where_its_objects_are() {
+    let caps = Capabilities::<Global, u32>::new(Global).unwrap();
+    let a = caps.create_space(8).unwrap();
+    let b = caps.create_space(8).unwrap();
+    // Each object's kept value names its record and generation, so one
+    // made again in the same record is told apart.
+    let kept_for = |id: ObjectId| id.index << 8 | id.generation & 0xff;
+    let make = |slot: u32| {
+        let made = caps.in_space(a, |space| {
+            space.create_recorded(at(a, slot), ObjectKind::Endpoint, Rights::ALL, |id, kept| {
+                *kept = Some(kept_for(id));
+                Ok(())
+            })
+        });
+        made.unwrap().unwrap().0
+    };
+    let address = |space: SpaceId, slot: u32| {
+        caps.in_space(space, |view| view.address(at(space, slot)).map(<*const ()>::addr)).unwrap()
+    };
+    let first = make(0);
+    let expected = kept_for(first) as usize + 1;
+    assert_eq!(address(a, 0), Ok(expected));
+    assert_eq!(address(a, 1), Err(CapError::Empty));
+    assert_eq!(address(a, 8), Err(CapError::NoSuchSlot));
+    // A copy elsewhere reads the same address, and keeps it once the
+    // original is gone; moved, a capability takes it along.
+    caps.derive(at(a, 0), at(b, 0), Derivation::COPY).unwrap();
+    assert_eq!(address(b, 0), Ok(expected));
+    caps.delete(at(a, 0), &mut |_, _| {}).unwrap();
+    assert_eq!(address(b, 0), Ok(expected));
+    caps.move_cap(at(b, 0), at(b, 5)).unwrap();
+    assert_eq!(address(b, 5), Ok(expected));
+    caps.audit().unwrap();
+    // Memory has nothing kept, so no address.
+    caps.create_memory(at(a, 2), 0x400, 1).unwrap();
+    assert_eq!(address(a, 2), Ok(0));
+    // Gone with its last capability, the object's record holds no address
+    // (the audit checks every free record), and the next object made in
+    // that record has its own.
+    caps.delete(at(b, 5), &mut |_, _| {}).unwrap();
+    caps.audit().unwrap();
+    let second = make(3);
+    assert_eq!(second.index, first.index, "the record is the CPU's spare, so it comes back");
+    assert_ne!(second.generation, first.generation);
+    assert_eq!(address(a, 3), Ok(kept_for(second) as usize + 1));
+    caps.audit().unwrap();
+}
+
 #[test]
 fn object_records_fill_blocks_and_come_back() {
     let caps = Capabilities::<Global, u32>::new(Global).unwrap();

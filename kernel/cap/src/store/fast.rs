@@ -12,7 +12,7 @@
 
 use core::alloc::Allocator;
 
-use super::objects::{Entry, Indexes};
+use super::objects::{Entry, Indexes, Located};
 use super::slots::{Slot, SpaceState, two_slots};
 use super::{Capabilities, Extent, Released, SlotRef, SpaceId};
 use crate::cap::Capability;
@@ -40,7 +40,7 @@ pub struct SpaceView<'v, A: Allocator + Clone, K = ()> {
     pub(super) stale: bool,
 }
 
-impl<A: Allocator + Clone, K> SpaceView<'_, A, K> {
+impl<A: Allocator + Clone, K: Located> SpaceView<'_, A, K> {
     /// The space.
     pub fn space(&self) -> SpaceId {
         self.id
@@ -55,6 +55,19 @@ impl<A: Allocator + Clone, K> SpaceView<'_, A, K> {
     pub fn get(&self, at: SlotRef) -> Result<Capability, CapError> {
         let index = self.index(at)?;
         self.state.slots[index].cap.ok_or(CapError::Empty)
+    }
+
+    /// Where the object the capability in `at` names is
+    /// ([`Located::address`]), read without the object's record's lock:
+    /// null if the capability names no object, or nothing of it is kept.
+    /// The capability holds its object until it leaves the slot, which
+    /// only a holder of this view's lock can make it do, so the object and
+    /// what the kernel keeps of it stay where the address says for as long
+    /// as the view lives (ADR 0354).
+    #[inline]
+    pub fn address(&self, at: SlotRef) -> Result<*const (), CapError> {
+        let cap = self.get(at)?;
+        Ok(cap.id().map_or(core::ptr::null(), |id| self.store.objects.address(id)))
     }
 
     /// The capability in `at`, as [`SpaceView::get`] gives it, for a cache

@@ -176,7 +176,7 @@ pub const BUDGETS: &[(&str, u64)] = &[
     ("posix_signal", 5_900),                   // 5,300
     ("posix_poll", 1_300),                     // 1,092
     ("posix_events_idle", 4_900),              // 4,382, one ready pipe among 1,000 watched
-    ("posix_poll_idle", 720_000),              // 648,728, 1,001 pipes
+    ("posix_poll_idle", 145_000),              // 130,595, 1,001 pipes
     ("posix_futex_same_cpu", 5_300),           // 4,787
     ("posix_futex_shared_same_cpu", 5_800),    // 5,248
     ("posix_tcp_connect", 71_000),             // 64,734, beside 11 idle sockets (ADR 0550)
@@ -420,14 +420,7 @@ const ROWS: &[Row] = &[
         "posix_events_idle",
         "POSIX: an event queue's wait for one ready pipe among 1000 idle ones (kqueue on Radix, epoll on Linux)",
     ),
-    Row {
-        radix: "posix_poll_idle",
-        what: "POSIX: `poll` on 1001 pipes, one ready",
-        linux: Some(("posix_poll_idle", "the same C program, on glibc")),
-        // Reported only until Radix reaches parity (ADR 0353): each
-        // descriptor misses the capability cache.
-        gate: Gate::Yet,
-    },
+    posix("posix_poll_idle", "POSIX: `poll` on 1001 pipes, one ready"),
     posix(
         "posix_futex_same_cpu",
         "POSIX: futex wake and wait each way (semaphores), two threads, one CPU",
@@ -2222,7 +2215,6 @@ mod tests {
         }
         assert!(check_gate(&numbers).is_ok());
         assert!(ROWS.iter().any(|r| r.radix == "posix_git_status" && r.gate == Gate::Yet));
-        assert!(ROWS.iter().any(|r| r.radix == "posix_poll_idle" && r.gate == Gate::Yet));
         assert!(ROWS.iter().any(|r| r.radix == "posix_sd_read_mib" && r.gate == Gate::Emulated));
     }
 

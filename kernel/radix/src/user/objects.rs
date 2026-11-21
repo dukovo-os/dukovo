@@ -34,14 +34,22 @@
 //! switches threads, the borrow is counted ([`count_borrowed`]), so a
 //! revoke from a program, or a thread another process starts in this one,
 //! waits for a grace period before it can empty the slot.
+//!
+//! A call that looks at many objects at once, a `poll` of more descriptors
+//! than a CPU's cache holds, takes its space's lock once and borrows each
+//! object from it instead ([`peek`], ADR 0354): a capability holds its
+//! object while it stays in its slot, and only a holder of that lock takes
+//! it out, so the object's record says where it is ([`Recorded`]'s
+//! address) and nothing but the lock is needed to read it there.
 
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::mem::ManuallyDrop;
+use core::ptr;
 use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use radix_abi::errors::Kernel;
-use radix_cap::{CapError, Capability, ObjectId, ObjectKind, Rights, SlotRef, SpaceId};
+use radix_cap::{CapError, Capability, Located, ObjectId, ObjectKind, Rights, SlotRef, SpaceId};
 use radix_hal::{Cpu, CpuLocal, MAX_CPUS};
 use radix_mm::{Flags, HEAP, Kmalloc};
 
@@ -143,6 +151,104 @@ pub struct Recorded {
     /// What the object costs, charged to the account of the process that
     /// made it (`process.create`), and given back when it goes.
     charge: Option<Charge>,
+}
+
+/// The low bits of a [`Recorded`]'s address, which say what kind of object
+/// it is: the alignment of every object with an address leaves them clear.
+/// [`peek`] tells the kind from them, which the object itself set, never
+/// from the capability that names it.
+const KIND_BITS: usize = 0b111;
+/// An object with nothing for [`peek`] to look at, and no address.
+const OTHER: usize = 1;
+/// A directory, or a file of a filesystem: always ready, with no address.
+const READY: usize = 2;
+/// A file whose node keeps what it is ready for in atomics and behind spin
+/// locks ([`FileObject::polls_now`]), at its address.
+const FILE: usize = 3;
+/// A notification, at its address.
+const NOTIFICATION: usize = 4;
+/// An event queue, at its address.
+const EVENT_QUEUE: usize = 5;
+/// Any other file, whose look may wait for a lock: no address, as it is
+/// looked at with the space's lock let go.
+const LATER: usize = 6;
+
+const _: () = assert!(
+    align_of::<FileObject>() > KIND_BITS
+        && align_of::<Notification>() > KIND_BITS
+        && align_of::<EventQueue>() > KIND_BITS
+);
+
+impl Located for Recorded {
+    /// Where its object is, with its kind in the low bits ([`KIND_BITS`]).
+    fn address(&self) -> *const () {
+        let at = |object: *const (), kind: usize| object.map_addr(|address| address | kind);
+        match &self.object {
+            Object::File(file) if file.polls_now() => at(Arc::as_ptr(file).cast(), FILE),
+            Object::File(file) if file.is_special() => ptr::without_provenance(LATER),
+            Object::File(_) | Object::Directory(_) => ptr::without_provenance(READY),
+            Object::Notification(notification) => {
+                at(Arc::as_ptr(notification).cast(), NOTIFICATION)
+            }
+            Object::EventQueue(queue) => at(Arc::as_ptr(queue).cast(), EVENT_QUEUE),
+            _ => ptr::without_provenance(OTHER),
+        }
+    }
+}
+
+/// An object a capability in a locked space names, as [`peek`] finds it.
+#[derive(Clone, Copy)]
+pub enum Peeked<'a> {
+    /// The slot is empty, or its capability names no kernel object, as a
+    /// memory capability does.
+    Empty,
+    /// A directory, or a file of a filesystem, which is always ready.
+    Ready,
+    /// A file whose node keeps what it is ready for in atomics and behind
+    /// spin locks ([`FileObject::polls_now`]).
+    File(&'a FileObject),
+    /// A notification.
+    Notification(&'a Notification),
+    /// An event queue.
+    EventQueue(&'a EventQueue),
+    /// Any other file, whose look may wait for a lock of its own.
+    Later,
+    /// Any other kernel object.
+    Other,
+}
+
+/// The object the capability in `at` names, borrowed for as long as
+/// `space` is locked, with neither its record's lock nor a reference of
+/// its own (ADR 0354): for a look at many objects at once. The capability
+/// holds the object while it stays in its slot, and only the holder of
+/// `space`'s lock can take it out, so the object lives, at the address its
+/// record keeps, until the lock goes; the borrow cannot outlive it.
+#[allow(unsafe_code)]
+pub fn peek<'a>(space: &'a caps::Space<'_>, at: SlotRef) -> Peeked<'a> {
+    let Ok(address) = space.address(at) else { return Peeked::Empty };
+    let object = address.map_addr(|address| address & !KIND_BITS);
+    match address.addr() & KIND_BITS {
+        OTHER => Peeked::Other,
+        READY => Peeked::Ready,
+        // SAFETY: the kind bits say a file lives at `object`, and it lives
+        // while `space` is locked, as above.
+        FILE => Peeked::File(unsafe { &*object.cast::<FileObject>() }),
+        // SAFETY: as for a file.
+        NOTIFICATION => Peeked::Notification(unsafe { &*object.cast::<Notification>() }),
+        // SAFETY: as for a file.
+        EVENT_QUEUE => Peeked::EventQueue(unsafe { &*object.cast::<EventQueue>() }),
+        LATER => Peeked::Later,
+        // Null: nothing is kept of what the capability names.
+        _ => Peeked::Empty,
+    }
+}
+
+/// The object the capability in `at` names, with a reference of its own,
+/// found with `space` locked, under its record's lock: for an object
+/// [`peek`] found whose look must wait until the space's lock is let go.
+pub fn find_locked(space: &caps::Space<'_>, at: SlotRef) -> Option<Object> {
+    let id = space.get(at).ok()?.id()?;
+    space.with_kept(id, |kept| kept.object.clone())
 }
 
 /// Records `object` in `kept`, the store's place for it in the record of
@@ -280,7 +386,7 @@ impl Kept {
 
 /// Capabilities a CPU keeps, with their objects, in a table indexed by
 /// slot.
-const CACHED: usize = 16;
+pub const CACHED: usize = 16;
 
 /// A capability this CPU found in a slot, the object it designates, and
 /// the store's version then.

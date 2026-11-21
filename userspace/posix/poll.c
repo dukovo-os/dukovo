@@ -2,12 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 // poll, ppoll, select and pselect: readiness, timeouts, the end of a
-// pipe, bad descriptors, waking when another process writes, and the
-// signal mask ppoll and pselect wait with.
+// pipe, bad descriptors, waking when another process writes, the signal
+// mask ppoll and pselect wait with, and more descriptors than the
+// kernel's capability cache holds.
 
+#include <arpa/inet.h>
 #include <fcntl.h>
+#include <netinet/in.h>
 #include <poll.h>
+#include <stdio.h>
+#include <string.h>
 #include <sys/select.h>
+#include <sys/socket.h>
 
 #include "check.h"
 
@@ -179,6 +185,144 @@ static void files(void) {
 	unlink("/tmp/poll-file");
 }
 
+// A UDP socket bound to a port of 127.0.0.1 that the kernel picks.
+static int udp_socket(void) {
+	int fd = socket(AF_INET, SOCK_DGRAM, 0);
+	CHECK(fd >= 0);
+	struct sockaddr_in any;
+	memset(&any, 0, sizeof(any));
+	any.sin_family = AF_INET;
+	any.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	CHECK(bind(fd, (struct sockaddr *)&any, sizeof(any)) == 0);
+	return fd;
+}
+
+// Sends the UDP socket `fd` a datagram from itself.
+static void send_to_self(int fd) {
+	struct sockaddr_in self;
+	socklen_t len = sizeof(self);
+	CHECK(getsockname(fd, (struct sockaddr *)&self, &len) == 0);
+	CHECK(sendto(fd, "d", 1, 0, (struct sockaddr *)&self, len) == 1);
+}
+
+// Whether each of the `count` entries got what `expected` says, naming
+// each one that did not.
+static int all_as_expected(const struct pollfd *entries, const short *expected, int count) {
+	int wrong = 0;
+	for(int i = 0; i < count; i++) {
+		if(entries[i].revents != expected[i]) {
+			printf("poll: entry %d (descriptor %d) got %#x, not %#x\n", i, entries[i].fd,
+					entries[i].revents, expected[i]);
+			wrong++;
+		}
+	}
+	return wrong == 0;
+}
+
+// More entries than the kernel's capability cache holds (16): the kernel
+// looks at them with the descriptor table locked once, and holds the
+// network sockets, whose look waits for a lock of their own, eight at a
+// time to look at with it let go (ADR 0354). Each kind of entry, wherever
+// it is among the others, gets what it would get alone.
+static void many(void) {
+	enum { PAIRS = 10, ENTRIES = 4 * PAIRS + 5 };
+	int pipes[PAIRS][2], udp[PAIRS];
+	struct pollfd entries[ENTRIES];
+	short expected[ENTRIES];
+	int count = 0;
+	for(int i = 0; i < PAIRS; i++) {
+		CHECK(pipe(pipes[i]) == 0);
+		udp[i] = udp_socket();
+		// Every other pipe and socket has something to read.
+		short readable = 0;
+		if(i % 2 == 0) {
+			CHECK(write(pipes[i][1], "p", 1) == 1);
+			send_to_self(udp[i]);
+			struct pollfd arrived = {.fd = udp[i], .events = POLLIN};
+			CHECK(poll(&arrived, 1, 5000) == 1);
+			readable = POLLIN;
+		}
+		entries[count] = (struct pollfd){.fd = pipes[i][0], .events = POLLIN};
+		expected[count++] = readable;
+		entries[count] = (struct pollfd){.fd = udp[i], .events = POLLIN};
+		expected[count++] = readable;
+		entries[count] = (struct pollfd){.fd = pipes[i][1], .events = POLLOUT};
+		expected[count++] = POLLOUT;
+		entries[count] = (struct pollfd){.fd = udp[i], .events = POLLOUT};
+		expected[count++] = POLLOUT;
+	}
+	int pair[2];
+	CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
+	CHECK(write(pair[1], "u", 1) == 1);
+	int directory = open("/tmp", O_RDONLY | O_DIRECTORY);
+	CHECK(directory >= 0);
+	int closed = dup(directory);
+	CHECK(closed >= 0 && close(closed) == 0);
+	entries[count] = (struct pollfd){.fd = pair[0], .events = POLLIN | POLLOUT};
+	expected[count++] = POLLIN | POLLOUT;
+	entries[count] = (struct pollfd){.fd = directory, .events = POLLIN};
+	expected[count++] = POLLIN;
+	entries[count] = (struct pollfd){.fd = -1, .events = POLLIN};
+	expected[count++] = 0;
+	entries[count] = (struct pollfd){.fd = closed, .events = POLLIN};
+	expected[count++] = POLLNVAL;
+	// Past the last slot of the descriptor table.
+	entries[count] = (struct pollfd){.fd = 60000, .events = POLLIN};
+	expected[count++] = POLLNVAL;
+	CHECK(count == ENTRIES);
+	int ready = 0;
+	for(int i = 0; i < count; i++)
+		ready += expected[i] != 0;
+	CHECK(poll(entries, count, 0) == ready);
+	CHECK(all_as_expected(entries, expected, count));
+
+	// A wait on more than 16 holds every object at once, and wakes when
+	// another process makes a pipe ready, then a socket.
+	char byte;
+	for(int i = 0; i < PAIRS; i += 2) {
+		CHECK(read(pipes[i][0], &byte, 1) == 1);
+		CHECK(recv(udp[i], &byte, 1, 0) == 1);
+	}
+	struct pollfd idle[2 * PAIRS + 1];
+	short woken[2 * PAIRS + 1];
+	int idle_count = 0;
+	for(int i = 0; i < PAIRS; i++) {
+		idle[idle_count++] = (struct pollfd){.fd = pipes[i][0], .events = POLLIN};
+		idle[idle_count++] = (struct pollfd){.fd = udp[i], .events = POLLIN};
+	}
+	idle[idle_count++] = (struct pollfd){.fd = -1, .events = POLLIN};
+	for(int round = 0; round < 2; round++) {
+		// Pipe 7's read end, then socket 7.
+		int target = 2 * 7 + round;
+		memset(woken, 0, sizeof(woken));
+		woken[target] = POLLIN;
+		pid_t pid = check_fork();
+		if(pid == 0) {
+			check_sleep_ms(30);
+			if(round == 0)
+				CHECK(write(pipes[7][1], "w", 1) == 1);
+			else
+				send_to_self(udp[7]);
+			check_exit_child();
+		}
+		CHECK(poll(idle, idle_count, 5000) == 1);
+		CHECK(all_as_expected(idle, woken, idle_count));
+		CHECK_CHILD(pid);
+		if(round == 0)
+			CHECK(read(pipes[7][0], &byte, 1) == 1);
+		else
+			CHECK(recv(udp[7], &byte, 1, 0) == 1);
+	}
+	for(int i = 0; i < PAIRS; i++) {
+		close(pipes[i][0]);
+		close(pipes[i][1]);
+		close(udp[i]);
+	}
+	close(pair[0]);
+	close(pair[1]);
+	close(directory);
+}
+
 int main(void) {
 	check_start("poll");
 	RUN(readiness);
@@ -186,5 +330,6 @@ int main(void) {
 	RUN(selects);
 	RUN(masks);
 	RUN(files);
+	RUN(many);
 	return check_end();
 }

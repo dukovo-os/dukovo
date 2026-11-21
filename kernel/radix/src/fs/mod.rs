@@ -561,6 +561,13 @@ impl FileObject {
     pub fn is_special(&self) -> bool {
         self.special != Special::No
     }
+
+    /// Whether `poll` finds what it is ready for in its node's
+    /// [`radix_vfs::Node::poll_events`], with no lock to wait for: a
+    /// pipe's end, a Unix socket and a terminal's side.
+    pub fn polls_now(&self) -> bool {
+        matches!(self.special, Special::Pipe | Special::Socket | Special::Tty)
+    }
 }
 
 /// A description of a device was made: returns its first offset.

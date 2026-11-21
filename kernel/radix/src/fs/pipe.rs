@@ -158,9 +158,10 @@ pub(super) fn storage(size: usize) -> Result<alloc::vec::Vec<u8, Kmalloc>, Statu
 }
 
 /// A pipe.
+// In the order written, so that what `poll` reads of it, its length,
+// capacity and ends, shares a cache line.
+#[repr(C)]
 pub struct Pipe {
-    /// Its buffer.
-    buffer: Mutex<Buffer>,
     /// How many bytes it holds, as the buffer says, for the waits.
     len: AtomicUsize,
     /// How many bytes its buffer holds, as the buffer says, for the waits:
@@ -169,6 +170,8 @@ pub struct Pipe {
     /// How many reading and writing ends are open.
     readers: AtomicU32,
     writers: AtomicU32,
+    /// Its buffer.
+    buffer: Mutex<Buffer>,
     /// How many files ride on its bytes.
     files: AtomicUsize,
     /// How many of those files are Unix sockets: changed only with the
@@ -721,6 +724,10 @@ impl Node for End {
 
     fn set_size(&self, _size: u64) -> radix_vfs::Result<()> {
         Err(radix_vfs::Error::NotSupported)
+    }
+
+    fn poll_events(&self) -> Option<u16> {
+        Some(self.events())
     }
 
     fn as_any(&self) -> &dyn Any {

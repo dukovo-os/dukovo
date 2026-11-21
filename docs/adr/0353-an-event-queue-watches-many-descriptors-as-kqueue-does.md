@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0353. An event queue watches many descriptors, as kqueue does
 
-- Status: Accepted
+- Status: Accepted; `poll` looks at many descriptors under one hold of the space's lock, and its row is gated, since [0354](0354-poll-looks-at-many-descriptors-under-one-hold-of-the-space-s-lock.md)
 - Date: 2026-11-20
 
 ## Context
@@ -126,7 +126,7 @@ kernel object of this kind under them.
   row: `poll` looks each descriptor up past the 16 entries of the CPU's
   capability cache, at about nine times Linux's time, which this change
   does not touch. A look-up of many descriptors at once is to follow as
-  its own change; the row is then gated like the rest.
+  its own change; the row is then gated like the rest (ADR 0354).
 - A port whose build finds `kqueue` uses it unless its kqueue code needs
   more than Radix's queue gives: PHP-FPM waits on the queue, and nginx
   (which reads `data`), PostgreSQL, libevent and Python (which name the

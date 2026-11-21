@@ -12,7 +12,7 @@
 use alloc::vec::Vec;
 use core::alloc::Allocator;
 
-use super::objects::{CpuSpare, Free};
+use super::objects::{CpuSpare, Free, Located};
 use super::slots::{Link, Slot, Tree};
 use super::{Capabilities, Census, Inconsistency, MAX_DEPTH, MAX_SLOTS, SlotRef, SpaceId};
 use crate::object::{ObjectKind, Target};
@@ -23,7 +23,7 @@ struct Copied<A: Allocator> {
     slots: Vec<Slot, A>,
 }
 
-impl<A: Allocator + Clone, K> Capabilities<A, K> {
+impl<A: Allocator + Clone, K: Located> Capabilities<A, K> {
     /// Counts what the store holds.
     pub fn census(&self) -> Census {
         self.count(true).unwrap_or_default()
@@ -237,10 +237,11 @@ impl<A: Allocator + Clone, K> Capabilities<A, K> {
 }
 
 /// The object table's part of the audit: every retyped object lies in its
-/// memory's used part, every object's counts are those found, and every
+/// memory's used part, every object's counts are those found, every
+/// record's address is its object's (null for a free one), and every
 /// record without an object is free once, on the table's list or among a
 /// CPU's spares.
-fn check_objects<A: Allocator + Clone, K>(
+fn check_objects<A: Allocator + Clone, K: Located>(
     objects: &super::objects::Objects<A, K>,
     free: &Free<A>,
     counts: &mut [(u32, u32)],
@@ -283,6 +284,9 @@ fn check_objects<A: Allocator + Clone, K>(
         count.1 = u32::MAX;
     }
     for (index, &(caps, children)) in counts.iter().enumerate() {
+        if !objects.address_holds(index as u32) {
+            return Err(fail("an object's address is not where its record says it is"));
+        }
         let Some(entry) = entry(index as u32) else {
             if children != u32::MAX {
                 return Err(fail("an object index is neither used nor free"));
