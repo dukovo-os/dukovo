@@ -20,7 +20,10 @@
 //! queued mark before it looks at the description, and a change marks the
 //! watch after it changes the description, each with a full barrier
 //! between, as `poll`'s pollers and changes do; so either the look sees
-//! the change, or the change queues the watch again. The TLA+ model
+//! the change, or the change queues the watch again. The queue's waiters
+//! count themselves before they look at the ring, and a watch put on it
+//! wakes them only if one is counted (`WaitCount`), so a queue nobody
+//! waits on takes no lock but its ring's for a change. The TLA+ model
 //! `kernel/radix/tla/EventQueue.tla` checks this, and that a deleted watch
 //! is never reported.
 //!
@@ -65,7 +68,7 @@ use super::posix::signal::{self, Restart, interrupted};
 use super::{Result, UserRef, cap_error, error};
 use crate::Arch;
 use crate::fs::FileObject;
-use crate::sched::{self, wait};
+use crate::sched::{self, wait::WaitCount};
 
 /// An event queue, shared.
 pub type QueueRef = Arc<EventQueue, Kmalloc>;
@@ -113,6 +116,9 @@ struct Ready {
     queued: AtomicUsize,
     /// Set once the queue has gone: nothing goes on the ring after.
     closed: AtomicBool,
+    /// Its waiters (`EventQueue::wait_ready`), whom a watch put on the
+    /// ring wakes.
+    waits: WaitCount,
     /// The pollers of the queue itself, for which it is readable while a
     /// watch is on its ring.
     polled: Polled,
@@ -122,6 +128,16 @@ impl Ready {
     /// What the queue's waiters wait on.
     fn key(&self) -> usize {
         core::ptr::from_ref(&self.queued) as usize
+    }
+
+    /// A watch has gone on the ring: its waiters and pollers look again.
+    fn wake(&self) {
+        self.waits.wake_all(self.key());
+        // `wake_all` took the full barrier that `Polled::changed` would.
+        // The queue's own `Polled` has pollers but no watches, as no queue
+        // watches another (`Watched::of`), so this takes no `Polled`'s
+        // list under the one that may be held.
+        self.polled.changed_by_rmw();
     }
 
     /// Takes the first watch off the ring.
@@ -296,11 +312,7 @@ pub fn changed(watch: &WatchRef) {
         ring.push(watch.clone());
         ready.queued.store(ring.len, Ordering::Release);
     }
-    wait::wake_all(ready.key());
-    // The queue's own `Polled` has pollers but no watches, as no queue
-    // watches another (`Watched::of`), so this takes no `Polled`'s list
-    // under the one that may be held.
-    ready.polled.changed();
+    ready.wake();
 }
 
 /// A queue's watches, by key.
@@ -425,10 +437,11 @@ impl Registry {
                 self.delete(watch);
                 return None;
             };
-            if attach(watch, &object).is_err() {
-                // A Unix socket that connected or listened since: its new
-                // parts would not queue the watch, so it is looked at
-                // again by every call until there is memory to count it
+            // Only a Unix socket gains `Polled`s, once it connects or
+            // listens; nothing else is looked at for new ones.
+            if gains_polled(&object) && attach(watch, &object).is_err() {
+                // Its new parts would not queue the watch, so it is looked
+                // at again by every call until there is memory to count it
                 // in them.
                 changed(watch);
             }
@@ -450,6 +463,7 @@ impl EventQueue {
             ring: SpinLock::new(Ring::new()),
             queued: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
+            waits: WaitCount::new(),
             polled: Polled::new(),
         };
         let registry = Registry {
@@ -500,6 +514,11 @@ impl EventQueue {
     /// back as events at `a.events`, because they failed or asked for a
     /// receipt, as kqueue's `kevent` does.
     fn make_changes(&self, user: &UserRef, a: &WaitArgs) -> Result<u32> {
+        if a.count == 0 {
+            // A wait alone, as Go's poller makes: the registry's lock is
+            // not taken for it.
+            return Ok(0);
+        }
         let mut reported = 0;
         let mut bytes = [0u8; CHANGES_AT_ONCE * QueueEvent::SIZE];
         let mut registry = self.registry.lock();
@@ -681,6 +700,11 @@ impl EventQueue {
     /// many it wrote. A watch it puts back on the ring waits for the next
     /// call.
     fn look(&self, events: u64, capacity: u32) -> Result<u32> {
+        if !self.has_queued() {
+            // Nothing to look at, and no lock taken: a watch put on the
+            // ring after this load wakes a waiter counted before it.
+            return Ok(0);
+        }
         let mut registry = self.registry.lock();
         let mut left = self.ready.queued.load(Ordering::Acquire);
         let mut found = 0;
@@ -743,11 +767,12 @@ impl EventQueue {
                 return Err(interrupted(restart));
             }
             let ready = || self.has_queued() || sched::interrupted();
+            let waits = &self.ready.waits;
             match deadline {
-                None => wait::wait_until(self.ready.key(), "event queue", ready),
+                None => waits.wait_until(self.ready.key(), "event queue", ready),
                 Some(deadline) => {
                     // A last look, as `poll` takes one, when the time runs out.
-                    timed_out = !wait::wait_until_or_timeout(
+                    timed_out = !waits.wait_until_or_timeout(
                         self.ready.key(),
                         "event queue",
                         deadline,
@@ -803,6 +828,12 @@ fn new_watch(
         _charge: charge,
     };
     Arc::try_new_in(watch, kmalloc()).map_err(|_| error(Kernel::NoMemory))
+}
+
+/// Whether `object` may gain `Polled`s after a watch is added: a Unix
+/// socket's connection or listener.
+fn gains_polled(object: &Object) -> bool {
+    matches!(object, Object::File(file) if file.socket().is_some())
 }
 
 /// Counts `watch` in each `Polled` of `object` it is not counted in yet:

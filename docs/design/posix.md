@@ -271,7 +271,9 @@ lock, with two nodes on `pipefs`, a filesystem mounted nowhere. Each end
 is a node, so its open file descriptions are ordinary file capabilities,
 and the pipe learns an end has gone when its node drops. The waits are
 the kernel's wait queue's on the pipe's address, with conditions that
-read only atomic counts kept beside the ring. A write of up to `ATOMIC`
+read only atomic counts kept beside the ring. The pipe counts its
+waiters (`WaitCount`), so a read or write that nobody waits for takes no
+lock of the wait queue. A write of up to `ATOMIC`
 (4,096) bytes waits for room for all of it, so writers never interleave;
 copies to and from user memory are made with the ring's sleeping lock
 held, so a page fault in the copy may sleep.
@@ -789,11 +791,15 @@ have a full barrier between their write and their read (the look's
 `fence`, and `changed`'s barrier or, for a notification, its
 read-modify-write), so either the look sees the change, or `changed`
 finds the mark clear and queues the watch again, and the next look
-reports it. A waiting call reads the ring's count after it is on the
-scheduler's wait table, and `changed` puts the watch on the ring before
-it wakes the table's key, so a change between the call's look and its
-sleep is seen by the condition the sleep rereads, or wakes the call once
-it sleeps. The mark also says that a watch is deleted: a delete sets it
+reports it. A waiting call counts itself among the queue's waiters,
+takes a full barrier, and reads the ring's count after it is on the
+scheduler's wait table; `changed` puts the watch on the ring, takes a
+full barrier, and wakes the table's key if a waiter is counted
+(`WaitCount`). So a change between the call's look and its sleep is seen
+by the condition the sleep rereads, or finds the call counted and wakes
+it once it sleeps, and a change to a queue nobody waits on takes no lock
+of the wait table. A pipe counts its waiters the same way, as each read
+and write is a change. The mark also says that a watch is deleted: a delete sets it
 with the registry held, which every look holds, so no look begins
 between the delete and its return, a deleted watch is never queued
 again, and one deleted while on the ring is dropped by the look that

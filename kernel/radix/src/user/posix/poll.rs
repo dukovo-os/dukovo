@@ -28,8 +28,9 @@
 //! change or the change sees the poller (and moves the generation it waits
 //! on). A notification, whose word changes by a read-modify-write that is
 //! already such a barrier, skips the extra one
-//! ([`Polled::changed_by_rmw`]). The TLA+ model `kernel/radix/tla/Poll.tla`
-//! checks this.
+//! ([`Polled::changed_by_rmw`]), as do a pipe and an event queue, which
+//! have just taken one to wake their own waiters. The TLA+ model
+//! `kernel/radix/tla/Poll.tla` checks this.
 //!
 //! A [`Polled`] also holds the event queues' watches of its object
 //! (radix-event-queue(2), `crate::user::queue`): a change queues each of
@@ -111,10 +112,12 @@ impl Polled {
         self.changed_by_rmw();
     }
 
-    /// As [`Polled::changed`], for a change made by a sequentially
+    /// As [`Polled::changed`], for a change already ordered before what
+    /// it reads as the barrier would order it: one made by a sequentially
     /// consistent read-modify-write that pollers read with sequentially
-    /// consistent loads (a notification's word), which orders as the
-    /// barrier would: only two loads while nobody polls or watches it.
+    /// consistent loads (a notification's word), or one its caller took a
+    /// full barrier after (`WaitCount::wake_all`'s, for a pipe and an
+    /// event queue). Only two loads while nobody polls or watches it.
     pub fn changed_by_rmw(&self) {
         if self.pollers.load(Ordering::SeqCst) > 0 {
             GENERATION.fetch_add(1, Ordering::SeqCst);

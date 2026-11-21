@@ -52,7 +52,7 @@
 //! run queue's.
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering, fence};
 
 use radix_hal::{CpuLocal, MAX_CPUS};
 use radix_mm::Kmalloc;
@@ -297,6 +297,70 @@ pub fn wait_until_or_timeout(
 /// threads it wakes will want.
 pub fn wake_all_lazily(key: usize) {
     super::lazily(|| wake_all(key));
+}
+
+/// How many threads wait on one key through it, so that a wake with
+/// nobody to wake takes no lock: a change that happens often to what is
+/// seldom waited for (a pipe's bytes, an event queue's ring) costs a
+/// barrier and a load, not the table's lock and a look at every waiter.
+///
+/// A waiter counts itself, takes a full barrier, then checks its
+/// condition, with the table locked, as [`wait_until`] does; a waker
+/// changes what the condition reads, takes a full barrier, then reads the
+/// count. One of the two barriers comes first, so either the waiter's
+/// check sees the change or the waker sees the waiter and wakes it.
+/// `kernel/radix/tla/EventQueue.tla` checks this with an event queue's
+/// waiters.
+pub struct WaitCount(AtomicUsize);
+
+impl WaitCount {
+    /// Nobody waits.
+    pub const fn new() -> WaitCount {
+        WaitCount(AtomicUsize::new(0))
+    }
+
+    /// [`wait_until`], counted.
+    pub fn wait_until(&self, key: usize, reason: &'static str, condition: impl Fn() -> bool) {
+        let _counted = self.count();
+        wait_until(key, reason, condition);
+    }
+
+    /// [`wait_until_or_timeout`], counted.
+    pub fn wait_until_or_timeout(
+        &self,
+        key: usize,
+        reason: &'static str,
+        deadline_ns: u64,
+        condition: impl Fn() -> bool,
+    ) -> bool {
+        let _counted = self.count();
+        wait_until_or_timeout(key, reason, deadline_ns, condition)
+    }
+
+    /// [`wake_all`], after a change to what the waiters' conditions read,
+    /// if anyone waits. It takes a full barrier first, whether or not it
+    /// wakes anyone, which a caller may count on for what it reads next.
+    pub fn wake_all(&self, key: usize) {
+        fence(Ordering::SeqCst);
+        if self.0.load(Ordering::Relaxed) > 0 {
+            wake_all(key);
+        }
+    }
+
+    fn count(&self) -> Counted<'_> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        fence(Ordering::SeqCst);
+        Counted(&self.0)
+    }
+}
+
+/// A waiter counted in a [`WaitCount`] until it goes.
+struct Counted<'a>(&'a AtomicUsize);
+
+impl Drop for Counted<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
 }
 
 /// Wakes every thread waiting on `key`.

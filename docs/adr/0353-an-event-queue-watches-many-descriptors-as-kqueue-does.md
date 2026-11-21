@@ -65,10 +65,16 @@ kernel object of this kind under them.
   watch's queued mark before it looks at the description; a change
   marks the watch after it changes the description; a full barrier
   separates each pair, so either the look sees the change or the change
-  queues the watch again. The TLA+ model `kernel/radix/tla/EventQueue.tla`
-  (run by `ob test tla`) checks that no change is lost, that a deleted
-  watch is never reported, that a watch is on the ring at most once, and
-  that the ring's room is exactly what its watches may need.
+  queues the watch again. A waiter counts itself among the queue's
+  waiters before it looks at the ring, and a watch put on the ring wakes
+  the wait table's key only if a waiter is counted, each with a full
+  barrier between (`WaitCount`), so a change to a queue nobody waits on
+  takes no lock of the wait table. A pipe counts its waiters the same
+  way, as every read and write of it is a change. The TLA+ model
+  `kernel/radix/tla/EventQueue.tla` (run by `ob test tla`) checks that no
+  change is lost, that a deleted watch is never reported, that a watch is
+  on the ring at most once, and that the ring's room is exactly what its
+  watches may need.
 - **Locks, outermost first:** the queue's registry (a mutex, held by
   every change and look, so a delete is never overtaken by a report of
   the watch it deletes), a watch's own state, a `Polled`'s list of
@@ -115,6 +121,12 @@ kernel object of this kind under them.
   waiting on one queue, and a queue shared by `fork`. `ob bench` runs a
   wait for one ready pipe among a thousand idle ones, on Radix's event
   queue and on Linux's epoll, next to `poll` on the same pipes.
+- The `poll` row on those 1,001 pipes is reported but not gated until
+  Radix first reaches parity on it, as ADR 0294 has the `git status`
+  row: `poll` looks each descriptor up past the 16 entries of the CPU's
+  capability cache, at about nine times Linux's time, which this change
+  does not touch. A look-up of many descriptors at once is to follow as
+  its own change; the row is then gated like the rest.
 - A port whose build finds `kqueue` uses it unless its kqueue code needs
   more than Radix's queue gives: PHP-FPM waits on the queue, and nginx
   (which reads `data`), PostgreSQL, libevent and Python (which name the

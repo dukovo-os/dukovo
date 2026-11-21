@@ -12,22 +12,26 @@
 (* times: each change makes the object ready and leaves something for a    *)
 (* look to see (`dirty`). After a change, `Polled::changed` calls          *)
 (* `changed`: if the watch has neither mark, it is marked queued, pushed   *)
-(* on the ring, and every waiter is woken. A waiter's call takes the       *)
-(* queue's lock, notes how many watches are on the ring, and takes that    *)
-(* many off, one at a time, until it has reported Capacity of them: it     *)
-(* clears a watch's queued mark, and drops a deleted one, giving back its  *)
-(* room; or else it looks at the object, and reports it if it is ready, as *)
-(* the program then reads all it holds. A level-triggered watch it reported *)
-(* goes back on the ring, and the waiters are woken. A call that reported  *)
-(* nothing waits until the ring holds a watch, and looks again. A deleter  *)
-(* deletes one watch, with the queue's lock held: it marks it deleted, and *)
-(* gives back its room unless it is queued. Every watch is added before    *)
-(* the model starts, and queued for a first look, as `add` does.          *)
+(* on the ring, and, if a waiter is counted (`WaitCount`), every waiter is *)
+(* woken. A waiter's call finds the ring empty without the lock, or takes  *)
+(* the queue's lock, notes how many watches are on the ring, and takes     *)
+(* that many off, one at a time, until it has reported Capacity of them:   *)
+(* it clears a watch's queued mark, and drops a deleted one, giving back   *)
+(* its room; or else it looks at the object, and reports it if it is       *)
+(* ready, as the program then reads all it holds. A level-triggered watch  *)
+(* it reported goes back on the ring, and counted waiters are woken. A     *)
+(* call that reported nothing counts itself, then waits until the ring     *)
+(* holds a watch, no longer counted once the wait ends, and looks again. A *)
+(* deleter deletes one watch, with the queue's lock held: it marks it      *)
+(* deleted, and gives back its room unless it is queued. Every watch is    *)
+(* added before the model starts, and queued for a first look, as `add`    *)
+(* does.                                                                   *)
 (*                                                                         *)
 (* Each critical section of a lock and each atomic access is one step, and *)
 (* the accesses are ordered as sequential consistency orders them: the     *)
-(* marks change by sequentially consistent read-modify-writes, with full   *)
-(* barriers after a change and after a look's clear, so the model's        *)
+(* marks and the count change by sequentially consistent                   *)
+(* read-modify-writes, with full barriers after a change, after a look's   *)
+(* clear, after a waiter counts itself and after a push, so the model's    *)
 (* interleaving covers every execution. Signals and deadlines end a wait   *)
 (* sooner, by the same condition, and are left out.                        *)
 (*                                                                         *)
@@ -40,8 +44,9 @@
 (* watches that may be on it, so that `changed` never finds the ring full. *)
 (* EveryChangeLooked says every change to a watch that is not deleted is   *)
 (* looked at in the end. NoLostWakeup fails if a look reads the object     *)
-(* before it clears the queued mark, and NoReportAfterDelete if a call     *)
-(* lets the lock go between taking a watch off and reporting it.           *)
+(* before it clears the queued mark, or a waiter counts itself after its   *)
+(* condition looks at the ring, and NoReportAfterDelete if a call lets the *)
+(* lock go between taking a watch off and reporting it.                    *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets
 
@@ -62,6 +67,7 @@ VARIABLES
     room,       \* how many watches may be on the ring: `on_ring_max`
     owner,      \* who holds the queue's lock: a waiter, "deleter" or "none"
     queuedW,    \* the waiters queued in the wait table on the ring's key
+    counted,    \* the waiters counted in the queue's `WaitCount`
     asleep,     \* the scheduler has the waiter blocked
     pending,    \* the scheduler holds a wake for its next block
     hand,       \* the watch a waiter has taken off the ring, or "none"
@@ -75,14 +81,14 @@ VARIABLES
     badReport,  \* a watch was reported after its delete returned
     dpc         \* where the deleter is
 
-vars == <<ready, dirty, marks, ring, room, owner, queuedW, asleep, pending, hand, left,
+vars == <<ready, dirty, marks, ring, room, owner, queuedW, counted, asleep, pending, hand, left,
           found, wpc, made, cpc, victim, deleted, badReport, dpc>>
 
 None == "none"
 
-WaiterSteps == {"lock", "pop", "clear", "look", "rwake", "unlock", "wait", "block", "asleep",
-                "woken"}
-ChangerSteps == {"change", "mark", "push", "wake", "next", "done"}
+WaiterSteps == {"peek", "lock", "pop", "clear", "look", "rcheck", "rwake", "unlock", "count",
+                "wait", "uncount", "block", "asleep", "woken"}
+ChangerSteps == {"change", "mark", "push", "check", "wake", "next", "done"}
 DeleterSteps == {"lock", "delete", "done"}
 
 InRing(w) == \E i \in 1..Len(ring) : ring[i] = w
@@ -95,6 +101,7 @@ TypeOK ==
     /\ room \in 0..Cardinality(Watches)
     /\ owner \in Waiters \cup {"deleter", None}
     /\ queuedW \subseteq Waiters
+    /\ counted \subseteq Waiters
     /\ asleep \in [Waiters -> BOOLEAN]
     /\ pending \in [Waiters -> BOOLEAN]
     /\ hand \in [Waiters -> Watches \cup {None}]
@@ -118,12 +125,13 @@ Init ==
     /\ room = Cardinality(Watches)
     /\ owner = None
     /\ queuedW = {}
+    /\ counted = {}
     /\ asleep = [p \in Waiters |-> FALSE]
     /\ pending = [p \in Waiters |-> FALSE]
     /\ hand = [p \in Waiters |-> None]
     /\ left = [p \in Waiters |-> 0]
     /\ found = [p \in Waiters |-> 0]
-    /\ wpc = [p \in Waiters |-> "lock"]
+    /\ wpc = [p \in Waiters |-> "peek"]
     /\ made = [w \in Watches |-> 0]
     /\ cpc = [w \in Watches |-> IF Changes > 0 THEN "change" ELSE "done"]
     /\ victim \in Watches
@@ -141,13 +149,22 @@ WakeAll ==
 ----------------------------------------------------------------------------
 (* A waiter: `wait`'s look (`EventQueue::look`), then `wait_ready`'s wait.  *)
 
+\* `has_queued`, without the lock: a call that finds the ring empty
+\* reports nothing, and waits.
+Peek(p) ==
+    /\ wpc[p] = "peek"
+    /\ found' = [found EXCEPT ![p] = 0]
+    /\ wpc' = [wpc EXCEPT ![p] = IF ring = <<>> THEN "count" ELSE "lock"]
+    /\ UNCHANGED <<counted, ready, dirty, marks, ring, room, owner, queuedW, asleep, pending,
+                   hand, left, made, cpc, victim, deleted, badReport, dpc>>
+
 Lock(p) ==
     /\ wpc[p] = "lock" /\ owner = None
     /\ owner' = p
     /\ left' = [left EXCEPT ![p] = Len(ring)]
     /\ found' = [found EXCEPT ![p] = 0]
     /\ wpc' = [wpc EXCEPT ![p] = "pop"]
-    /\ UNCHANGED <<ready, dirty, marks, ring, room, queuedW, asleep, pending, hand, made, cpc,
+    /\ UNCHANGED <<counted, ready, dirty, marks, ring, room, queuedW, asleep, pending, hand, made, cpc,
                    victim, deleted, badReport, dpc>>
 
 \* `Ready::pop`, under the ring's lock.
@@ -159,8 +176,8 @@ Pop(p) ==
             /\ left' = [left EXCEPT ![p] = left[p] - 1]
             /\ wpc' = [wpc EXCEPT ![p] = "clear"]
        ELSE /\ wpc' = [wpc EXCEPT ![p] = "unlock"]
-            /\ UNCHANGED <<hand, ring, left>>
-    /\ UNCHANGED <<ready, dirty, marks, room, owner, queuedW, asleep, pending, found, made, cpc,
+            /\ UNCHANGED <<counted, hand, ring, left>>
+    /\ UNCHANGED <<counted, ready, dirty, marks, room, owner, queuedW, asleep, pending, found, made, cpc,
                    victim, deleted, badReport, dpc>>
 
 \* The queued mark cleared; a deleted watch gives back its room.
@@ -173,8 +190,8 @@ Clear(p) ==
                /\ hand' = [hand EXCEPT ![p] = None]
                /\ wpc' = [wpc EXCEPT ![p] = "pop"]
           ELSE /\ wpc' = [wpc EXCEPT ![p] = "look"]
-               /\ UNCHANGED <<room, hand>>
-    /\ UNCHANGED <<ready, dirty, ring, owner, queuedW, asleep, pending, left, found, made, cpc,
+               /\ UNCHANGED <<counted, room, hand>>
+    /\ UNCHANGED <<counted, ready, dirty, ring, owner, queuedW, asleep, pending, left, found, made, cpc,
                    victim, deleted, badReport, dpc>>
 
 \* The look, and the report of a ready object, which the program then
@@ -194,16 +211,24 @@ Look(p) ==
        /\ marks' = IF again THEN [marks EXCEPT ![w] = {"queued"}] ELSE marks
        /\ ring' = IF again THEN Append(ring, w) ELSE ring
        /\ hand' = [hand EXCEPT ![p] = None]
-       /\ wpc' = [wpc EXCEPT ![p] = IF again THEN "rwake" ELSE "pop"]
-    /\ UNCHANGED <<room, owner, queuedW, asleep, pending, left, made, cpc, victim, deleted,
+       /\ wpc' = [wpc EXCEPT ![p] = IF again THEN "rcheck" ELSE "pop"]
+    /\ UNCHANGED <<counted, room, owner, queuedW, asleep, pending, left, made, cpc, victim, deleted,
                    dpc>>
+
+\* `WaitCount::wake_all`'s read of the count, after its barrier, for a
+\* watch the look put back: a wake only if a waiter is counted.
+RequeueCheck(p) ==
+    /\ wpc[p] = "rcheck"
+    /\ wpc' = [wpc EXCEPT ![p] = IF counted # {} THEN "rwake" ELSE "pop"]
+    /\ UNCHANGED <<counted, ready, dirty, marks, ring, room, owner, queuedW, asleep, pending,
+                   hand, left, found, made, cpc, victim, deleted, badReport, dpc>>
 
 \* `changed`'s wake, for a watch the look put back.
 RequeueWake(p) ==
     /\ wpc[p] = "rwake"
     /\ WakeAll
     /\ wpc' = [wpc EXCEPT ![p] = "pop"]
-    /\ UNCHANGED <<ready, dirty, marks, ring, room, owner, hand, left, found, made, cpc,
+    /\ UNCHANGED <<counted, ready, dirty, marks, ring, room, owner, hand, left, found, made, cpc,
                    victim, deleted, badReport, dpc>>
 
 \* The lock let go: a call that reported something returns, and the
@@ -211,20 +236,28 @@ RequeueWake(p) ==
 Unlock(p) ==
     /\ wpc[p] = "unlock"
     /\ owner' = None
-    /\ wpc' = [wpc EXCEPT ![p] = IF found[p] > 0 THEN "lock" ELSE "wait"]
-    /\ UNCHANGED <<ready, dirty, marks, ring, room, queuedW, asleep, pending, hand, left, found,
+    /\ wpc' = [wpc EXCEPT ![p] = IF found[p] > 0 THEN "peek" ELSE "count"]
+    /\ UNCHANGED <<counted, ready, dirty, marks, ring, room, queuedW, asleep, pending, hand, left, found,
                    made, cpc, victim, deleted, badReport, dpc>>
+
+\* `WaitCount::wait_until`: counted, with a full barrier after.
+Count(p) ==
+    /\ wpc[p] = "count"
+    /\ counted' = counted \cup {p}
+    /\ wpc' = [wpc EXCEPT ![p] = "wait"]
+    /\ UNCHANGED <<ready, dirty, marks, ring, room, owner, queuedW, asleep, pending, hand, left,
+                   found, made, cpc, victim, deleted, badReport, dpc>>
 
 \* `wait_until`'s critical section: the condition, `has_queued`, then the
 \* queue.
 Wait(p) ==
     /\ wpc[p] = "wait"
     /\ IF ring # <<>>
-       THEN /\ wpc' = [wpc EXCEPT ![p] = "lock"]
+       THEN /\ wpc' = [wpc EXCEPT ![p] = "uncount"]
             /\ UNCHANGED queuedW
        ELSE /\ queuedW' = queuedW \cup {p}
             /\ wpc' = [wpc EXCEPT ![p] = "block"]
-    /\ UNCHANGED <<ready, dirty, marks, ring, room, owner, asleep, pending, hand, left, found,
+    /\ UNCHANGED <<counted, ready, dirty, marks, ring, room, owner, asleep, pending, hand, left, found,
                    made, cpc, victim, deleted, badReport, dpc>>
 
 Block(p) ==
@@ -236,13 +269,21 @@ Block(p) ==
        ELSE /\ asleep' = [asleep EXCEPT ![p] = TRUE]
             /\ wpc' = [wpc EXCEPT ![p] = "asleep"]
             /\ UNCHANGED pending
-    /\ UNCHANGED <<ready, dirty, marks, ring, room, owner, queuedW, hand, left, found, made, cpc,
+    /\ UNCHANGED <<counted, ready, dirty, marks, ring, room, owner, queuedW, hand, left, found, made, cpc,
                    victim, deleted, badReport, dpc>>
+
+\* `wait_until` has returned: no longer counted, and `wait` looks again.
+Uncount(p) ==
+    /\ wpc[p] = "uncount"
+    /\ counted' = counted \ {p}
+    /\ wpc' = [wpc EXCEPT ![p] = "peek"]
+    /\ UNCHANGED <<ready, dirty, marks, ring, room, owner, queuedW, asleep, pending, hand, left,
+                   found, made, cpc, victim, deleted, badReport, dpc>>
 
 Wake(p) ==
     /\ wpc[p] = "asleep" /\ ~asleep[p]
     /\ wpc' = [wpc EXCEPT ![p] = "woken"]
-    /\ UNCHANGED <<ready, dirty, marks, ring, room, owner, queuedW, asleep, pending, hand, left,
+    /\ UNCHANGED <<counted, ready, dirty, marks, ring, room, owner, queuedW, asleep, pending, hand, left,
                    found, made, cpc, victim, deleted, badReport, dpc>>
 
 \* Off the table (if `wake_all` has not taken it off), then the condition
@@ -251,12 +292,12 @@ Woken(p) ==
     /\ wpc[p] = "woken"
     /\ queuedW' = queuedW \ {p}
     /\ wpc' = [wpc EXCEPT ![p] = "wait"]
-    /\ UNCHANGED <<ready, dirty, marks, ring, room, owner, asleep, pending, hand, left, found,
+    /\ UNCHANGED <<counted, ready, dirty, marks, ring, room, owner, asleep, pending, hand, left, found,
                    made, cpc, victim, deleted, badReport, dpc>>
 
 Waiter(p) ==
-    Lock(p) \/ Pop(p) \/ Clear(p) \/ Look(p) \/ RequeueWake(p) \/ Unlock(p) \/ Wait(p)
-    \/ Block(p) \/ Wake(p) \/ Woken(p)
+    Peek(p) \/ Lock(p) \/ Pop(p) \/ Clear(p) \/ Look(p) \/ RequeueCheck(p) \/ RequeueWake(p)
+    \/ Unlock(p) \/ Count(p) \/ Wait(p) \/ Uncount(p) \/ Block(p) \/ Wake(p) \/ Woken(p)
 
 ----------------------------------------------------------------------------
 (* An object's changer: the change, then `Polled::changed` and `changed`.  *)
@@ -267,7 +308,7 @@ Change(w) ==
     /\ dirty' = [dirty EXCEPT ![w] = TRUE]
     /\ made' = [made EXCEPT ![w] = made[w] + 1]
     /\ cpc' = [cpc EXCEPT ![w] = "mark"]
-    /\ UNCHANGED <<marks, ring, room, owner, queuedW, asleep, pending, hand, left, found, wpc,
+    /\ UNCHANGED <<counted, marks, ring, room, owner, queuedW, asleep, pending, hand, left, found, wpc,
                    victim, deleted, badReport, dpc>>
 
 \* The mark, set only on a watch with none.
@@ -278,31 +319,38 @@ Mark(w) ==
             /\ cpc' = [cpc EXCEPT ![w] = "push"]
        ELSE /\ cpc' = [cpc EXCEPT ![w] = "next"]
             /\ UNCHANGED marks
-    /\ UNCHANGED <<ready, dirty, ring, room, owner, queuedW, asleep, pending, hand, left, found,
+    /\ UNCHANGED <<counted, ready, dirty, ring, room, owner, queuedW, asleep, pending, hand, left, found,
                    wpc, made, victim, deleted, badReport, dpc>>
 
 \* Onto the ring, under its lock: the queue has made room.
 Push(w) ==
     /\ cpc[w] = "push"
     /\ ring' = Append(ring, w)
-    /\ cpc' = [cpc EXCEPT ![w] = "wake"]
-    /\ UNCHANGED <<ready, dirty, marks, room, owner, queuedW, asleep, pending, hand, left, found,
+    /\ cpc' = [cpc EXCEPT ![w] = "check"]
+    /\ UNCHANGED <<counted, ready, dirty, marks, room, owner, queuedW, asleep, pending, hand, left, found,
                    wpc, made, victim, deleted, badReport, dpc>>
+
+\* `WaitCount::wake_all`'s read of the count, after its barrier.
+ChangerCheck(w) ==
+    /\ cpc[w] = "check"
+    /\ cpc' = [cpc EXCEPT ![w] = IF counted # {} THEN "wake" ELSE "next"]
+    /\ UNCHANGED <<counted, ready, dirty, marks, ring, room, owner, queuedW, asleep, pending,
+                   hand, left, found, wpc, made, victim, deleted, badReport, dpc>>
 
 ChangerWake(w) ==
     /\ cpc[w] = "wake"
     /\ WakeAll
     /\ cpc' = [cpc EXCEPT ![w] = "next"]
-    /\ UNCHANGED <<ready, dirty, marks, ring, room, owner, hand, left, found, wpc, made, victim,
+    /\ UNCHANGED <<counted, ready, dirty, marks, ring, room, owner, hand, left, found, wpc, made, victim,
                    deleted, badReport, dpc>>
 
 Next_(w) ==
     /\ cpc[w] = "next"
     /\ cpc' = [cpc EXCEPT ![w] = IF made[w] < Changes THEN "change" ELSE "done"]
-    /\ UNCHANGED <<ready, dirty, marks, ring, room, owner, queuedW, asleep, pending, hand, left,
+    /\ UNCHANGED <<counted, ready, dirty, marks, ring, room, owner, queuedW, asleep, pending, hand, left,
                    found, wpc, made, victim, deleted, badReport, dpc>>
 
-Changer(w) == Change(w) \/ Mark(w) \/ Push(w) \/ ChangerWake(w) \/ Next_(w)
+Changer(w) == Change(w) \/ Mark(w) \/ Push(w) \/ ChangerCheck(w) \/ ChangerWake(w) \/ Next_(w)
 
 ----------------------------------------------------------------------------
 (* The deleter: a change with `delete`, under the queue's lock.            *)
@@ -311,7 +359,7 @@ DeleterLock ==
     /\ dpc = "lock" /\ owner = None
     /\ owner' = "deleter"
     /\ dpc' = "delete"
-    /\ UNCHANGED <<ready, dirty, marks, ring, room, queuedW, asleep, pending, hand, left, found,
+    /\ UNCHANGED <<counted, ready, dirty, marks, ring, room, queuedW, asleep, pending, hand, left, found,
                    wpc, made, cpc, victim, deleted, badReport>>
 
 \* `Registry::delete`, and the lock let go: the delete has returned.
@@ -322,7 +370,7 @@ Delete ==
     /\ deleted' = deleted \cup {victim}
     /\ owner' = None
     /\ dpc' = "done"
-    /\ UNCHANGED <<ready, dirty, ring, queuedW, asleep, pending, hand, left, found, wpc, made,
+    /\ UNCHANGED <<counted, ready, dirty, ring, queuedW, asleep, pending, hand, left, found, wpc, made,
                    cpc, victim, badReport>>
 
 Deleter == DeleterLock \/ Delete
@@ -346,8 +394,11 @@ Spec ==
     /\ \A w \in Watches : WF_vars(Changer(w))
     /\ WF_vars(Deleter)
 
-\* Whoever pushed a watch on the ring is still to wake the waiters.
-Waking == (\E w \in Watches : cpc[w] = "wake") \/ (\E p \in Waiters : wpc[p] = "rwake")
+\* Whoever pushed a watch on the ring is still to read the count, or to
+\* wake the waiters it found counted.
+Waking ==
+    \/ \E w \in Watches : cpc[w] \in {"check", "wake"}
+    \/ \E p \in Waiters : wpc[p] \in {"rcheck", "rwake"}
 
 \* Asleep, a waiter is queued; the ring is empty unless its pusher is
 \* still to wake it; and each change no look has seen, to a watch not
@@ -357,12 +408,13 @@ NoLostWakeup ==
     \A p \in Waiters :
         asleep[p] =>
             /\ p \in queuedW
+            /\ p \in counted
             /\ ring # <<>> => Waking
             /\ \A w \in Watches :
                   (dirty[w] /\ "deleted" \notin marks[w]) =>
                       \/ InRing(w)
                       \/ \E q \in Waiters : hand[q] = w
-                      \/ cpc[w] \in {"mark", "push", "wake"}
+                      \/ cpc[w] \in {"mark", "push", "check", "wake"}
 
 NoReportAfterDelete == ~badReport
 
