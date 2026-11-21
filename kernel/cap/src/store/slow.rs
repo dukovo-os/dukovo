@@ -29,7 +29,7 @@ use core::alloc::Allocator;
 use alloc::vec::Vec;
 
 use super::fast::move_unlinked;
-use super::objects::{Entry, Free, Indexes};
+use super::objects::{Entry, Free, Indexes, Located};
 use super::slots::{self, Forest, Link, Marks, Slot, SpaceState, Tree, Trees};
 use super::{
     Capabilities, Extent, MAX_DEPTH, MAX_RETYPE, MAX_SLOTS, Progress, Released, SlotRef, SpaceId,
@@ -77,7 +77,7 @@ pub struct TreeView<'v, A: Allocator + Clone, K = ()> {
     pub(super) stale: bool,
 }
 
-impl<A: Allocator + Clone, K> TreeView<'_, A, K> {
+impl<A: Allocator + Clone, K: Located> TreeView<'_, A, K> {
     // ---- Looking capabilities up ----
 
     /// The capability in `at`.
@@ -668,7 +668,7 @@ impl<A: Allocator + Clone, K> TreeView<'_, A, K> {
     }
 }
 
-impl<A: Allocator + Clone, K> Capabilities<A, K> {
+impl<A: Allocator + Clone, K: Located> Capabilities<A, K> {
     /// Runs `f` with the tree lock and the locks of `spaces` held: the
     /// slow path, for everything that follows or changes a link. A space
     /// named twice is locked once; one that does not exist is named and

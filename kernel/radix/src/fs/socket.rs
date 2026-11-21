@@ -782,6 +782,10 @@ impl Node for Socket {
         Err(radix_vfs::Error::NotSupported)
     }
 
+    fn poll_events(&self) -> Option<u16> {
+        Some(self.events())
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }

@@ -23,10 +23,14 @@
 //! Kernel objects (every kind but the hardware ranges: interrupt lines,
 //! I/O ports and device registers) have a record in the object table
 //! that counts the capabilities naming them and the objects retyped from
-//! them, beside what the kernel keeps of them (`K`). When both counts
-//! reach zero the object is gone, and the store tells the caller through
-//! a [`Released`], with what the kernel kept, so the kernel can close the
-//! object and give its memory back.
+//! them, beside what the kernel keeps of them (`K`) and where that says
+//! the object is ([`Located`]). When both counts reach zero the object is
+//! gone, and the store tells the caller through a [`Released`], with what
+//! the kernel kept, so the kernel can close the object and give its
+//! memory back. Until then a holder of a space's lock may read where the
+//! object a capability in that space names is without the object's own
+//! lock ([`SpaceView::address`], ADR 0354): the capability holds the
+//! object, and the lock holds the capability.
 //!
 //! # Locks (ADR 0369)
 //!
@@ -88,7 +92,7 @@ pub use fast::{Fast, SpaceView};
 pub use slow::TreeView;
 
 use objects::{Entry, Indexes, Objects};
-pub use objects::{OBJECT_BLOCK, OBJECT_BLOCKS};
+pub use objects::{Located, OBJECT_BLOCK, OBJECT_BLOCKS};
 use slots::{Forest, Slot, SpaceState, Tree};
 
 /// The longest chain of derivations: a capability is at most this many
@@ -297,7 +301,7 @@ fn fill<T, A: Allocator>(vec: &mut Vec<T, A>, len: usize, mut value: impl FnMut(
     }
 }
 
-impl<A: Allocator + Clone, K> Capabilities<A, K> {
+impl<A: Allocator + Clone, K: Located> Capabilities<A, K> {
     /// An empty store whose memory comes from `alloc`. Each object's
     /// record keeps a `K` beside it for the kernel: what the kernel keeps
     /// of the object, put there when the object is made and handed back

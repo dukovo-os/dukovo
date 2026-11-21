@@ -176,7 +176,7 @@ pub const BUDGETS: &[(&str, u64)] = &[
     ("posix_signal", 5_900),                   // 5,300
     ("posix_poll", 1_300),                     // 1,092
     ("posix_events_idle", 4_900),              // 4,382, one ready pipe among 1,000 watched
-    ("posix_poll_idle", 720_000),              // 648,728, 1,001 pipes
+    ("posix_poll_idle", 145_000),              // 130,595, 1,001 pipes
     ("posix_futex_same_cpu", 5_300),           // 4,787
     ("posix_futex_shared_same_cpu", 5_800),    // 5,248
     ("posix_tcp_connect", 71_000),             // 64,734, beside 11 idle sockets (ADR 0550)
@@ -424,8 +424,8 @@ const ROWS: &[Row] = &[
         radix: "posix_poll_idle",
         what: "POSIX: `poll` on 1001 pipes, one ready",
         linux: Some(("posix_poll_idle", "the same C program, on glibc")),
-        // Reported only until Radix reaches parity (ADR 0353): each
-        // descriptor misses the capability cache.
+        // Reported only until Radix reaches parity (ADRs 0353, 0354): each
+        // descriptor's slot, record and object are read apart.
         gate: Gate::Yet,
     },
     posix(

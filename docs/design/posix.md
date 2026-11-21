@@ -343,6 +343,19 @@ its jobs and the system's services, and the next thing to replace with
 per-object wait lists when a profile shows many pollers (see the
 limits).
 
+Up to 16 entries, the look at each slot goes through the CPU's capability
+cache, as any system call's look-up does. More than that would miss the
+cache on most of them, so `poll` takes the space's lock once and borrows
+each object from it, without a reference or a lock of its own (ADR
+0354): a capability holds its object while it stays in its slot, and only
+a holder of the space's lock empties a slot. A pipe, a Unix socket, a
+terminal, a file, a notification and an event queue are looked at there,
+as their readiness is kept in atomics and behind spin locks. Anything
+else, whose look may wait for a lock (a network socket, a device), is
+held, eight at a time, and looked at once the space's lock is let go; the
+next entries are looked at under the lock again. A poll that waits holds
+its objects under one hold of the lock too.
+
 A network socket keeps its own `Polled`, and its own count that its
 blocked calls wait on (`net::waiters`, ADR 0550): smoltcp wakes the
 socket whose state a packet changed, so a round trip between two

@@ -515,7 +515,7 @@ machine asks for them.
 | Item | Source |
 | --- | --- |
 | `posix_git_status` reported, not gated, until parity | ADR 0294 |
-| `posix_poll_idle` reported, not gated, until parity: `poll` on 1,001 pipes takes about 9 times Linux's time (99.5 µs against 11.0 µs), as each descriptor misses the 16 entries of the CPU's capability cache and is looked up in the store; a look-up of many descriptors at once is to follow as its own change | ADR 0353 |
+| `posix_poll_idle` reported, not gated, until parity: `poll` on 1,001 pipes takes 1.52 times Linux's time on CI's runners (9.6 µs against 6.3 µs), from 12.7 before ADR 0354, about 130 instructions a descriptor. Each descriptor reads five cache lines, its slot, its record, the file, the pipe's end and the pipe, where Linux reads two or three; next, the address kept in the slot as well as the record, and a pipe's end named by the address itself | ADR 0354 |
 | Optical reads reported, not gated, until parity; USB storage rows | ADR 0434 |
 | `git status` takes about 2.5 times Linux's time (5.0 ms against 1.98 ms on 1,000 files, with 15 context switches); no work is planned to close it yet | ADR 0294 |
 | Rows still above the 0.90 margin target, though under Linux: Btrfs zstd write, unmapping a page on another CPU, NVMe 1 MiB read (0.92 to 0.94) | Benchmark margin work |
