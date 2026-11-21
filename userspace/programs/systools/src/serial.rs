@@ -251,7 +251,7 @@ fn command_line() -> String {
 
 /// The settings `change` makes of the `current` ones, or of a system's
 /// with no block: the firmware's console, the log on every port, and the
-/// menu as an install has always had it.
+/// menu `auto_menu` gives.
 fn apply(current: Option<Settings>, ports: &[Port], change: &Change) -> Result<Settings, Fail> {
     let mut settings = current.unwrap_or_else(|| Settings::new(auto_menu(ports)));
     match change {
@@ -334,12 +334,25 @@ fn menu_of(consoles: &[Console], ports: &[Port]) -> Vec<MenuPort> {
 }
 
 /// The menu when the firmware's console is the console: its port at the
-/// firmware's speed, if GRUB can show it there; else COM1 at 115200 baud,
-/// the menu an install has always had.
+/// firmware's speed, if GRUB can show it there, else COM1 at 115200 baud;
+/// then Intel AMT's Serial-over-LAN port at 115200 baud, if the machine
+/// has one and the firmware's port is not that one. A machine managed
+/// over Serial-over-LAN has its menu there as the stick's has it.
 fn auto_menu(ports: &[Port]) -> Vec<MenuPort> {
     let firmware = ports.iter().find_map(|port| port.menu_port(ports, port.firmware.as_deref()?));
     let com1 = || ports.iter().find(|port| port.name == "ttyS0")?.menu_port(ports, "115200");
-    firmware.or_else(com1).into_iter().collect()
+    let mut menu: Vec<MenuPort> = firmware.or_else(com1).into_iter().collect();
+    let amt = ports
+        .iter()
+        .filter(|port| port.kind == "amt-sol")
+        .find_map(|port| port.menu_port(ports, "115200"));
+    if let Some(amt) = amt
+        && !menu.iter().any(|shown| shown.grub == amt.grub)
+    {
+        menu.push(amt);
+    }
+    menu.truncate(MENU_PORTS);
+    menu
 }
 
 /// What the next start will use, as the boot menu's block says.
@@ -847,17 +860,36 @@ mod tests {
 
     #[test]
     fn the_menu_of_the_firmwares_console_is_its_port_else_com1() {
+        let com1 = MenuPort { grub: "com0".into(), speed: 115_200 };
+        let amt = MenuPort { grub: "pci,00:16.3".into(), speed: 115_200 };
         let mut ports = machine();
-        assert_eq!(auto_menu(&ports), [MenuPort { grub: "com0".into(), speed: 115_200 }]);
+        assert_eq!(auto_menu(&ports), [com1.clone(), amt.clone()]);
         ports[1].firmware = Some("57600n8".to_string());
-        assert_eq!(auto_menu(&ports), [MenuPort { grub: "com1".into(), speed: 57_600 }]);
-        // A firmware port GRUB cannot show leaves COM1's menu.
+        assert_eq!(auto_menu(&ports), [MenuPort { grub: "com1".into(), speed: 57_600 }, amt]);
+        // A firmware port GRUB cannot show leaves COM1's menu, and so does
+        // AMT's port when GRUB cannot name it.
         ports[1].firmware = None;
         ports[2].firmware = Some("115200n8".to_string());
         ports[2].pci = Some("0001:00:16.3".to_string());
-        assert_eq!(auto_menu(&ports), [MenuPort { grub: "com0".into(), speed: 115_200 }]);
+        assert_eq!(auto_menu(&ports), [com1]);
         // No COM1, no firmware port: no menu.
         assert!(auto_menu(&ports[1..2]).is_empty());
+    }
+
+    #[test]
+    fn the_automatic_menu_adds_amt_s_serial_over_lan_port() {
+        let com1 = MenuPort { grub: "com0".into(), speed: 115_200 };
+        let amt = MenuPort { grub: "pci,00:16.3".into(), speed: 115_200 };
+        let mut ports = machine();
+        assert_eq!(auto_menu(&ports), [com1.clone(), amt]);
+        // A machine without the port keeps COM1 alone.
+        ports.pop();
+        assert_eq!(auto_menu(&ports), [com1]);
+        // AMT's port as the firmware's console is listed once, at the
+        // firmware's speed.
+        let mut ports = machine();
+        ports[2].firmware = Some("57600n8".to_string());
+        assert_eq!(auto_menu(&ports), [MenuPort { grub: "pci,00:16.3".into(), speed: 57_600 }]);
     }
 
     #[test]

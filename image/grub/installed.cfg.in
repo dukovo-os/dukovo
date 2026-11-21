@@ -71,10 +71,13 @@ set dukovo_cmdline="@CMDLINE@"
 # kernel's console flags and the ports the menu shows on, each at its
 # speed, in serial.env beside this file; the flags take the place of
 # CONSOLE. Without it, as on a system installed before it, the menu shows
-# on COM1 at 115200 baud. dukovo_serial lists the menu's terminals, which
-# the themed menu below appends again. memtest_console is the memory
-# test's console flag (ADR 0488) for the first of them, when it is COM1
-# to COM4, the ports memtest86+ drives; the menu in the slot passes it.
+# on COM1 and on Intel AMT's Serial-over-LAN port (ADR 0371), each at
+# 115200 baud, where the computer has them; a port it lacks is passed
+# over, and says nothing inside an `if`. dukovo_serial lists the menu's
+# terminals, which the themed menu below appends again. memtest_console
+# is the memory test's console flag (ADR 0488) for the first of them,
+# when it is COM1 to COM4, the ports memtest86+ drives; the menu in the
+# slot passes it.
 set dukovo_serial=""
 set memtest_console=""
 function serial_menu {
@@ -105,6 +108,7 @@ if [ -f "${prefix}/serial.env" ]; then
     serial_menu "${serial_3}" "${serial_3_speed}"
 else
     serial_menu com0 115200
+    serial_menu pci,00:16.3 115200
 fi
 
 # More modules the kernel is started with, such as the CPU's microcode,

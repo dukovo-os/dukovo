@@ -55,7 +55,8 @@ console and is left off the menu, and *serial* says why.
 default of a system with no settings: the port the firmware's ACPI
 table SPCR names, at the firmware's speed, if it names one
 (*dukovo-boot*(7)). The menu shows on that port at that speed, or on
-COM1 at 115200 baud when no port is named.
+COM1 at 115200 baud when no port is named, and on Intel AMT's
+Serial-over-LAN port at 115200 baud when the machine has one.
 
 *console off* gives no port a console and no port the menu, as the
 kernel flag *spcr=off* does with no *console=*. The kernel log and *kdb*
@@ -168,7 +169,7 @@ $ elevate serial log ttyS0,ttyS4
 At the next start (boot/grub/serial.env):
   Consoles:   the firmware's console port
   Kernel log: ttyS0, ttyS4
-  Boot menu:  com0 at 115200 baud
+  Boot menu:  com0 at 115200 baud, pci,00:16.3 at 115200 baud
 The serial console's settings take effect at the next start.
 ```
 
@@ -210,7 +211,8 @@ _boot/grub/serial.env_
 	kernel line, and the ports and speeds the menu shows on, *serial_0*
 	to *serial_3* and *serial_0_speed* to *serial_3_speed*
 	(*dukovo-boot*(7)). A system installed before it has none and starts
-	with the menu on COM1 at 115200 baud.
+	with the menu on COM1 and on Intel AMT's Serial-over-LAN port, each
+	at 115200 baud, where the machine has them.
 
 _/kernel/class/tty_
 	The ports the kernel found (*radix-sysfs*(5)).
