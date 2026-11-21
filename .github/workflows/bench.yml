@@ -67,24 +67,32 @@ jobs:
           ports-prefix: ${{ inputs.ports-prefix }}
           std-stamp: ${{ inputs.std-stamp }}
 
-      # Where a forked process's own thread loses time before its first
-      # sleep (586 against 512 ns an open and close after it), on Intel:
-      # sched_yield, open and close, a chain of SSE adds and one of
-      # integer multiplies, timed in the child before and after it sleeps
-      # a millisecond, and which vector state components it holds in use.
-      - name: Scaling, probes before and after a sleep, twice
+      # Where a forked process's own thread loses time (586 against 512
+      # ns an open and close), on Intel: sched_yield, open and close, a
+      # chain of SSE adds and one of integer multiplies, timed in the child
+      # before and after it sleeps a millisecond, with the vector state
+      # components it holds in use (XINUSE) at each step:
+      #   px: as is
+      #   xs: the kernel saves with XSAVE rather than XSAVEOPT
+      - name: Scaling, px and xs, twice
         run: |
           set -o pipefail
           mkdir -p out/ab
-          git apply tools/experiments/scaling-px.diff
+          leg() {
+            git checkout -q -- kernel userspace/posix
+            git apply tools/experiments/scaling-px.diff
+            if [ -n "$2" ]; then git apply "tools/experiments/$2"; fi
+            ./ob bench --scaling --runs 3 --no-linux > "out/ab/s-$1.log" 2>&1 || true
+            cp out/bench-scaling/report.md "out/ab/s-$1.md" || true
+            echo "--- $1 ($(date -u +%H:%M:%S))"
+            grep "^| [148] \(threads\|processes\) |" "out/ab/s-$1.md" || true
+            grep -h "probe\|xinuse" out/bench-scaling/*.log | sed 's/.*posix-bench: //' | grep "workers=1 " || true
+          }
           for round in 1 2; do
-            ./ob bench --scaling --runs 3 --no-linux > "out/ab/s-pp$round.log" 2>&1 || true
-            cp out/bench-scaling/report.md "out/ab/s-pp$round.md" || true
-            echo "--- pp$round ($(date -u +%H:%M:%S))"
-            grep "^| [148] \(threads\|processes\) |" "out/ab/s-pp$round.md" || true
-            grep -h "probe\|xinuse" out/bench-scaling/*.log | sed 's/.*posix-bench: //' || true
+            leg px$round ""
+            leg xs$round fpu-xsave.diff
           done
-          git checkout -q -- userspace/posix
+          git checkout -q -- kernel userspace/posix
 
       - name: Upload the reports
         if: always()

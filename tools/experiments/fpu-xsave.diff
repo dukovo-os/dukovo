@@ -1,0 +1,16 @@
+diff --git a/kernel/arch/x86_64/src/fpu.rs b/kernel/arch/x86_64/src/fpu.rs
+index 38c8207..37c1143 100644
+--- a/kernel/arch/x86_64/src/fpu.rs
++++ b/kernel/arch/x86_64/src/fpu.rs
+@@ -100,9 +100,8 @@ const AMX: u64 = 1 << 17 | TILE_DATA;
+ /// Chooses how to save extended state, on the boot CPU, then sets this
+ /// CPU up.
+ pub fn init_boot_cpu() {
+-    let mode = if cpu::feature::xsaveopt() {
+-        XSAVEOPT
+-    } else if cpu::feature::xsave() {
++    // Experiment: XSAVE, without XSAVEOPT's optimizations.
++    let mode = if cpu::feature::xsave() {
+         XSAVE
+     } else if cpu::feature::fxsr() {
+         FXSAVE
