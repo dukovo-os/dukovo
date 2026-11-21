@@ -187,9 +187,12 @@ preempt a thread on another CPU asks that CPU to switch, and sends it a
 reschedule IPI unless the CPU watches its request word: an idle CPU
 watches it while it polls it (below) or waits with MWAIT on its line,
 where the waker's write ends the wait; one halted with HLT always gets
-the IPI. The word is alone in its cache line (`radix_sched::Resched`,
-ADR 0555), so the waker's one atomic write is the only traffic on the
-line an idle CPU spins on.
+the IPI. The word (`radix_sched::Resched`, ADR 0555) shares its cache
+line only with the load the CPU publishes (how many threads it runs, its
+highest real-time priority, whether it is online), which a waker reads
+just before it writes the word and which the CPU writes itself as its
+queue changes, so the waker's one atomic write is the only traffic from
+another CPU on the line an idle CPU spins on.
 
 **The inbox** (ADR 0556). A thread woken for another CPU that runs
 nothing is not queued by the waker: the waker lets go of the thread's
@@ -207,8 +210,19 @@ the thread from the waker took the idle CPU's lock and wrote its queue
 and published load there, and the idle CPU then took each of those lines
 back to pick the thread: each line crossed twice, at some 170 ns a
 crossing on CI's Intel runners. A CPU that runs a thread, or the waker's
-own, still gets the thread queued directly. An idle CPU with a switch
-pending does not balance, since a thread on its way is on no queue yet.
+own, still gets the thread queued directly. An IPC call or reply
+(`wake_sync`) puts the woken thread on the waker's CPU when it may run
+there, and otherwise hands it over the same way. An idle CPU with a
+switch pending does not balance, since a thread on its way is on no
+queue yet.
+
+**Layout.** What a wake-up reads and writes of a thread (its lock and
+state, `wake_pending`, its queue flags, its CPU, `handed_next`, its
+weight) fills two cache lines after its saved context (`Thread` is
+`repr(C)` and 64-byte aligned). A CPU's run queue starts the line after
+its request word, and the idle statistics only the CPU writes have a
+line of their own. Compile-time checks keep these offsets, and
+`-Zprint-type-sizes` shows the layouts.
 
 **Idle polling** (ADR 0037, ADR 0551). Under a hypervisor, halting is
 an exit to the host and so is the IPI that ends the halt. An idle CPU
