@@ -52,7 +52,7 @@ use radix_vfs::{
 };
 
 use super::{Description, FileObject, FileRef};
-use crate::sched::{self, wait};
+use crate::sched::{self, wait::WaitCount};
 use crate::user::Fifo;
 use crate::user::names::Identity;
 use crate::user::posix::poll::{self, Polled};
@@ -179,6 +179,8 @@ pub struct Pipe {
     id: u64,
     /// Its pollers.
     polled: Polled,
+    /// Its waits: to read, to write, and a named pipe's open.
+    waits: WaitCount,
     /// How many times an end was opened to read, and to write: a named
     /// pipe's open waits for the other kind's to change.
     opened: [AtomicU32; 2],
@@ -217,6 +219,7 @@ impl Pipe {
             sockets: AtomicUsize::new(0),
             id: next_id(),
             polled: Polled::new(),
+            waits: WaitCount::new(),
             opened: [AtomicU32::new(0), AtomicU32::new(0)],
             named,
         })
@@ -236,9 +239,12 @@ impl Pipe {
     }
 
     /// Something changed: the waits look again, and so do its pollers.
+    /// Each read and write calls it, and nobody waits on most: it takes
+    /// the wait table's lock only when someone does.
     fn changed(&self) {
-        wait::wake_all(self.key());
-        self.polled.changed();
+        self.waits.wake_all(self.key());
+        // `wake_all` took the full barrier that `Polled::changed` would.
+        self.polled.changed_by_rmw();
     }
 
     /// What its pollers count themselves in.
@@ -454,7 +460,7 @@ impl Pipe {
             if non_blocking {
                 return Err(Kernel::WouldBlock.status(0));
             }
-            wait::wait_until(self.key(), "pipe read", || {
+            self.waits.wait_until(self.key(), "pipe read", || {
                 self.len.load(Ordering::Acquire) > 0
                     || self.writers.load(Ordering::Acquire) == 0
                     || sched::interrupted()
@@ -512,7 +518,7 @@ impl Pipe {
     /// [`Pipe::write_files`] waits, or until no end reads the pipe.
     pub(super) fn wait_writable(&self, len: usize) -> Result<(), Status> {
         let room = if len <= ATOMIC { len } else { 1 };
-        wait::wait_until(self.key(), "pipe write", || {
+        self.waits.wait_until(self.key(), "pipe write", || {
             self.free_bytes(self.len.load(Ordering::Acquire)) >= room
                 || self.readers.load(Ordering::Acquire) == 0
                 || sched::interrupted()
@@ -608,7 +614,7 @@ impl Pipe {
                 return if done > 0 { Ok(done) } else { Err(Kernel::WouldBlock.status(0)) };
             }
             let room = if atomic { total - done + keep } else { 1 };
-            wait::wait_until(self.key(), "pipe write", || {
+            self.waits.wait_until(self.key(), "pipe write", || {
                 self.free_bytes(self.len.load(Ordering::Acquire)) >= room
                     || self.readers.load(Ordering::Acquire) == 0
                     || sched::interrupted()
@@ -890,7 +896,7 @@ pub fn open_named(
     if read != write && !non_blocking {
         let theirs = &pipe.opened[1 - mine];
         let seen = theirs.load(Ordering::Acquire);
-        wait::wait_until(pipe.key(), "fifo open", || {
+        pipe.waits.wait_until(pipe.key(), "fifo open", || {
             other.load(Ordering::Acquire) > 0
                 || theirs.load(Ordering::Acquire) != seen
                 || sched::interrupted()

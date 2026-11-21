@@ -28,8 +28,14 @@
 //! change or the change sees the poller (and moves the generation it waits
 //! on). A notification, whose word changes by a read-modify-write that is
 //! already such a barrier, skips the extra one
-//! ([`Polled::changed_by_rmw`]). The TLA+ model `kernel/radix/tla/Poll.tla`
-//! checks this.
+//! ([`Polled::changed_by_rmw`]), as do a pipe and an event queue, which
+//! have just taken one to wake their own waiters. The TLA+ model
+//! `kernel/radix/tla/Poll.tla` checks this.
+//!
+//! A [`Polled`] also holds the event queues' watches of its object
+//! (radix-event-queue(2), `crate::user::queue`): a change queues each of
+//! them for a look by its queue, with the same barrier, so that a queue
+//! looks only at what changed, and nothing else wakes.
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering, fence};
@@ -38,13 +44,15 @@ use radix_abi::errors::Kernel;
 use radix_abi::process::{PollArgs, PollEntry, PollEvents, PollFlags};
 use radix_cap::SpaceId;
 use radix_hal::UserMode;
-use radix_mm::Kmalloc;
+use radix_mm::{Flags, HEAP, Kmalloc};
+use radix_sync::SpinLock;
 
 use super::kmalloc;
 use super::signal::{self, Restart, interrupted};
 use crate::Arch;
 use crate::sched::{self, wait};
 use crate::user::objects::{self, Object};
+use crate::user::queue::{self, WatchRef};
 use crate::user::{Result, UserRef, error};
 
 /// There is data to read, or the end of a stream.
@@ -73,42 +81,108 @@ fn key() -> usize {
 }
 
 /// What a poll may look at keeps one of these: how many threads poll it,
-/// which its changes wake.
-#[derive(Default)]
+/// which its changes wake, and the event queues' watches of it, which its
+/// changes queue.
 pub struct Polled {
     pollers: AtomicUsize,
+    /// How many watches `watches` holds, so that a change to what no
+    /// queue watches takes no lock.
+    watched: AtomicUsize,
+    /// The watches, with those whose queue has deleted them until the
+    /// next one is added. Taken with interrupts masked: the keyboard's
+    /// and the mouse's change in their interrupt handlers.
+    watches: SpinLock<Vec<WatchRef, Kmalloc>>,
 }
 
 impl Polled {
-    /// Nobody polls it yet.
+    /// Nobody polls or watches it yet.
     pub const fn new() -> Polled {
-        Polled { pollers: AtomicUsize::new(0) }
+        Polled {
+            pollers: AtomicUsize::new(0),
+            watched: AtomicUsize::new(0),
+            watches: SpinLock::new(Vec::new_in(HEAP.with(Flags::MAY_SLEEP))),
+        }
     }
 
-    /// It has changed: the threads polling it look again. Costs a barrier
-    /// and a load while nobody polls it.
+    /// It has changed: the threads polling it look again, and the queues
+    /// watching it look at it. Costs a barrier and two loads while nobody
+    /// polls or watches it.
     pub fn changed(&self) {
         fence(Ordering::SeqCst);
         self.changed_by_rmw();
     }
 
-    /// As [`Polled::changed`], for a change made by a sequentially
+    /// As [`Polled::changed`], for a change already ordered before what
+    /// it reads as the barrier would order it: one made by a sequentially
     /// consistent read-modify-write that pollers read with sequentially
-    /// consistent loads (a notification's word), which orders as the
-    /// barrier would: only a load while nobody polls it.
+    /// consistent loads (a notification's word), or one its caller took a
+    /// full barrier after (`WaitCount::wake_all`'s, for a pipe and an
+    /// event queue). Only two loads while nobody polls or watches it.
     pub fn changed_by_rmw(&self) {
         if self.pollers.load(Ordering::SeqCst) > 0 {
             GENERATION.fetch_add(1, Ordering::SeqCst);
             wait::wake_all(key());
         }
+        if self.watched.load(Ordering::SeqCst) > 0 {
+            for watch in self.watches.lock_irq().iter() {
+                queue::changed(watch);
+            }
+        }
+    }
+
+    /// Adds `watch` to its watches, which its changes queue from then on,
+    /// and lets go of those whose queue deleted them: a watch's last
+    /// reference frees memory and gives back its charge, nothing more, so
+    /// it may go with the lock held. Room is made with the lock let go,
+    /// as memory is never allocated under a spin lock.
+    ///
+    /// # Errors
+    ///
+    /// no_memory when there is no room for one more.
+    pub fn watch(&self, watch: &WatchRef) -> Result<()> {
+        let mut room: Vec<WatchRef, Kmalloc> = Vec::new_in(kmalloc());
+        loop {
+            let mut watches = self.watches.lock_irq();
+            watches.retain(|watch| !watch.is_deleted());
+            if watches.len() == watches.capacity() && room.capacity() > watches.len() {
+                while let Some(kept) = watches.pop() {
+                    // `room` holds more than `watches` did.
+                    let _ = room.push_within_capacity(kept);
+                }
+                core::mem::swap(&mut *watches, &mut room);
+            }
+            if watches.len() < watches.capacity() {
+                // Checked just above.
+                let _ = watches.push_within_capacity(watch.clone());
+                self.watched.store(watches.len(), Ordering::SeqCst);
+                return Ok(());
+            }
+            let want = watches.len().saturating_mul(2).max(2);
+            drop(watches);
+            room = Vec::new_in(kmalloc());
+            room.try_reserve_exact(want).map_err(|_| error(Kernel::NoMemory))?;
+        }
+    }
+
+    /// Takes `watch` out of its watches, if it is there: its queue has
+    /// deleted it.
+    pub fn unwatch(&self, watch: &WatchRef) {
+        let taken = {
+            let mut watches = self.watches.lock_irq();
+            let at = watches.iter().position(|held| WatchRef::ptr_eq(held, watch));
+            let taken = at.map(|at| watches.swap_remove(at));
+            self.watched.store(watches.len(), Ordering::SeqCst);
+            taken
+        };
+        drop(taken);
     }
 }
 
 /// Calls `each` with what `object` keeps for its pollers: a pipe end's
-/// pipe, both pipes of a connected socket or a listening one's listener,
-/// its own for a network socket, a terminal, the kernel log or the
-/// keyboard, or a notification.
-fn polled_by(object: &Object, each: &mut dyn FnMut(&Polled)) {
+/// pipe, a Unix socket's own and both pipes of its connection or its
+/// listener, its own for a network socket, a terminal, the kernel log or
+/// the keyboard, a notification, or an event queue.
+pub(crate) fn polled_by(object: &Object, each: &mut dyn FnMut(&Polled)) {
     match object {
         Object::File(file) => {
             if let Some(end) = file.pipe_end() {
@@ -138,6 +212,7 @@ fn polled_by(object: &Object, each: &mut dyn FnMut(&Polled)) {
             }
         }
         Object::Notification(notification) => each(notification.polled()),
+        Object::EventQueue(queue) => each(queue.polled()),
         // Always ready, or never.
         _ => {}
     }
@@ -202,7 +277,7 @@ fn slot_events(cspace: SpaceId, slot: u32, events: u16) -> u16 {
 }
 
 /// What `object` is ready for.
-fn events_of(object: &Object) -> u16 {
+pub(crate) fn events_of(object: &Object) -> u16 {
     match object {
         Object::File(file) => {
             if let Some(end) = file.pipe_end() {
@@ -238,6 +313,9 @@ fn events_of(object: &Object) -> u16 {
             let (set, closed) = notification.peek();
             (if set { READABLE } else { 0 }) | (if closed { HANG_UP } else { 0 })
         }
+        // Readable while a watch waits for a look, though the look may
+        // find it no longer ready.
+        Object::EventQueue(queue) if queue.has_queued() => READABLE,
         _ => 0,
     }
 }

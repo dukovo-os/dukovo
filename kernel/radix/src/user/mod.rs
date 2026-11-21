@@ -65,6 +65,7 @@ mod platform;
 pub(crate) mod posix;
 pub mod power;
 pub mod process;
+pub mod queue;
 pub mod random;
 mod ring;
 mod settings;

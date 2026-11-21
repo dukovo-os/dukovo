@@ -311,8 +311,9 @@ interface process = 0x000a version 11 {
     /// and puts its capability, with every right, in slot `to`: a process
     /// with a capability space of `size` slots (MIN_SLOTS to MAX_SLOTS),
     /// which ends when this one does and acts for this one's name
-    /// (radix-names(2)), an endpoint, or a notification (`size` 0 for
-    /// both). Needs the control right.
+    /// (radix-names(2)), an endpoint, a notification, or an event queue
+    /// (radix-event-queue(2); `size` 0 for the last three). Needs the
+    /// control right.
     method create = 1 (kind: ObjectKind, size: u32, to: slot) -> ()
         raises [no_such_slot, empty_slot, missing_rights, occupied, invalid_argument, no_memory,
                 gone];

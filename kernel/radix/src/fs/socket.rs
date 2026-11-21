@@ -478,6 +478,10 @@ pub struct Socket {
     /// SO_PASSCRED: whether the program asked for the credentials of what
     /// it receives (`receive_unix`).
     pass_credentials: AtomicBool,
+    /// A stream socket's own pollers and watches, which learn when it
+    /// connects or listens, and look at its connection or listener from
+    /// then on.
+    polled: Polled,
 }
 
 impl Socket {
@@ -489,6 +493,7 @@ impl Socket {
             listener: Once::new(),
             datagram,
             pass_credentials: AtomicBool::new(false),
+            polled: Polled::new(),
         }
     }
 
@@ -673,12 +678,15 @@ impl Socket {
     }
 
     /// Calls `each` with what its pollers count themselves in, as
-    /// [`Socket::events`] looks: both pipes of its connection, its
-    /// listener, or a datagram socket's own.
+    /// [`Socket::events`] looks: a stream socket's own, then both pipes of
+    /// its connection or its listener, or a datagram socket's own.
     pub fn polled(&self, each: &mut dyn FnMut(&Polled)) {
         if let Some(datagram) = &self.datagram {
             datagram.polled(each);
-        } else if let Some(end) = self.end.get() {
+            return;
+        }
+        each(&self.polled);
+        if let Some(end) = self.end.get() {
             each(end.rx.polled());
             each(end.tx.polled());
         } else if let Some(listener) = self.listener.get() {
@@ -960,6 +968,8 @@ pub fn listen(socket: &Socket, backlog: u32, process: Peer) -> Result<(), Status
     // It was fresh, so no listener was set.
     let _ = socket.listener.set(listener.clone());
     *binding.listener.lock() = Some(listener);
+    drop(state);
+    socket.polled.changed();
     Ok(())
 }
 
@@ -999,6 +1009,9 @@ pub fn connect(
     };
     // Outside the lock: it may be the last reference to the pipe.
     drop(connecting);
+    if connected.is_ok() {
+        socket.polled.changed();
+    }
     connected
 }
 
@@ -1062,6 +1075,7 @@ pub fn accept(
     // It is new and accepting, so no other call set its end.
     let _ = accepted.end.set(end);
     accepted.state.lock().phase = Phase::Connected;
+    accepted.polled.changed();
     Ok(())
 }
 

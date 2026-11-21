@@ -70,6 +70,7 @@ fn version(kind: ObjectKind) -> u32 {
         ObjectKind::Device => radix_abi::device::VERSION,
         ObjectKind::Firewall => radix_abi::firewall::VERSION,
         ObjectKind::KernelSettings => radix_abi::kernel_settings::VERSION,
+        ObjectKind::EventQueue => radix_abi::event_queue::VERSION,
         _ => 0,
     }
 }
@@ -77,7 +78,7 @@ fn version(kind: ObjectKind) -> u32 {
 /// Whether the methods of a capability of `kind` take the object it
 /// designates from the lookup that found it ([`objects::find`]),
 /// rather than looking it up themselves: messages to an endpoint, and the
-/// file, directory, process and device methods.
+/// file, directory, process, device and event queue methods.
 pub fn takes_object(kind: ObjectKind) -> bool {
     matches!(
         kind,
@@ -86,6 +87,7 @@ pub fn takes_object(kind: ObjectKind) -> bool {
             | ObjectKind::Directory
             | ObjectKind::Process
             | ObjectKind::Device
+            | ObjectKind::EventQueue
     )
 }
 
@@ -176,6 +178,7 @@ pub fn call(
         (ObjectKind::Firewall, _) => super::firewall::method(user, cap, info.label, &args),
         (ObjectKind::KernelSettings, _) => super::settings::method(user, cap, info.label, &args),
         (ObjectKind::Device, _) => super::device::method(user, found, info.label, &args),
+        (ObjectKind::EventQueue, _) => super::queue::method(user, found, info.label, &args),
         (ObjectKind::Directory, _) => {
             super::files::directory_method(user, found, info.label, &args)
         }

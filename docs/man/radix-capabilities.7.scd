@@ -163,6 +163,12 @@ rights listed, plus *copy* and *transfer*, which every kind has.
 	reads the values in _/kernel/settings_ without it
 	(*radix-sysfs*(5)).
 
+*event queue*
+	A queue that watches many descriptors at once, as BSD's kqueue does,
+	made by a process's *create* (see *radix-process*(2),
+	*radix-event-queue*(2) and ADR 0353). Rights: *read*, to wait for
+	its events; *write*, to add, change and delete its watches.
+
 # RIGHTS
 
 The fifteen rights are *read*, *write*, *execute*, *send*, *receive*,
@@ -306,7 +312,7 @@ Operations on capabilities fail with one of these, and change nothing:
 At boot the kernel reports its store:
 
 ```
-Capabilities: ready; 25 object kinds, 15 rights, spaces of up to 65536 slots, derivations up to 64 deep
+Capabilities: ready; 26 object kinds, 15 rights, spaces of up to 65536 slots, derivations up to 64 deep
 ```
 
 The *kdb* command *caps* counts the spaces, capabilities and objects by

@@ -41,7 +41,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef __linux__
+#include <sys/epoll.h>
+#else
+#include <sys/event.h>
+#endif
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -323,6 +329,111 @@ static void poll_ready(uint64_t rounds) {
 	report("posix_poll", started, rounds);
 	close(fds[0]);
 	close(fds[1]);
+}
+
+// How many idle pipes the event rows have beside the active one, which is
+// the last of the pipes.
+#define IDLE_PIPES 1000
+
+static int idle_ends[IDLE_PIPES + 1][2];
+
+// Makes the pipes of the event rows. A process may hold 1024 descriptors
+// at first, which is fewer than the 2002 these take, so the limit goes up
+// to the hard one.
+static void open_idle_pipes(void) {
+	struct rlimit files;
+	if(getrlimit(RLIMIT_NOFILE, &files) != 0)
+		fail("getrlimit");
+	files.rlim_cur = files.rlim_max;
+	if(setrlimit(RLIMIT_NOFILE, &files) != 0)
+		fail("setrlimit");
+	for(int i = 0; i <= IDLE_PIPES; i++)
+		if(pipe(idle_ends[i]) != 0)
+			fail("pipe");
+}
+
+// Closes the pipes of the event rows, so that the next row starts with the
+// descriptors free.
+static void close_idle_pipes(void) {
+	for(int i = 0; i <= IDLE_PIPES; i++) {
+		close(idle_ends[i][0]);
+		close(idle_ends[i][1]);
+	}
+}
+
+// An event queue's wait for one ready pipe among 1000 idle ones, each
+// watched for reading with edge triggering (kqueue's EV_CLEAR on Radix,
+// epoll's EPOLLET on Linux). A round writes a byte to the active pipe,
+// waits without blocking for the one event that makes, and reads the
+// byte.
+static void events_idle(uint64_t rounds) {
+	open_idle_pipes();
+#ifdef __linux__
+	int queue = epoll_create1(0);
+	if(queue < 0)
+		fail("epoll_create1");
+	for(int i = 0; i <= IDLE_PIPES; i++) {
+		struct epoll_event watched = {.events = EPOLLIN | EPOLLET};
+		watched.data.fd = idle_ends[i][0];
+		if(epoll_ctl(queue, EPOLL_CTL_ADD, idle_ends[i][0], &watched) != 0)
+			fail("epoll_ctl");
+	}
+	struct epoll_event ready[64];
+#else
+	int queue = kqueue();
+	if(queue < 0)
+		fail("kqueue");
+	static struct kevent changes[IDLE_PIPES + 1];
+	for(int i = 0; i <= IDLE_PIPES; i++)
+		EV_SET(&changes[i], idle_ends[i][0], EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, NULL);
+	if(kevent(queue, changes, IDLE_PIPES + 1, NULL, 0, NULL) != 0)
+		fail("kevent");
+	struct kevent ready[64];
+	const struct timespec no_wait = {0, 0};
+#endif
+	int active = IDLE_PIPES;
+	char byte;
+	struct mark started = start();
+	for(uint64_t i = 0; i < rounds; i++) {
+		if(write(idle_ends[active][1], "x", 1) != 1)
+			fail("write");
+#ifdef __linux__
+		if(epoll_wait(queue, ready, 64, 0) != 1)
+			fail("epoll_wait");
+#else
+		if(kevent(queue, NULL, 0, ready, 64, &no_wait) != 1)
+			fail("kevent");
+#endif
+		if(read(idle_ends[active][0], &byte, 1) != 1)
+			fail("read");
+	}
+	report("posix_events_idle", started, rounds);
+	close(queue);
+	close_idle_pipes();
+}
+
+// poll on the same 1001 pipes, the active one last: a round writes a
+// byte to it, polls for the one that is ready, and reads the byte.
+static void poll_idle(uint64_t rounds) {
+	open_idle_pipes();
+	static struct pollfd entries[IDLE_PIPES + 1];
+	for(int i = 0; i <= IDLE_PIPES; i++) {
+		entries[i].fd = idle_ends[i][0];
+		entries[i].events = POLLIN;
+	}
+	int active = IDLE_PIPES;
+	char byte;
+	struct mark started = start();
+	for(uint64_t i = 0; i < rounds; i++) {
+		if(write(idle_ends[active][1], "x", 1) != 1)
+			fail("write");
+		if(poll(entries, IDLE_PIPES + 1, 0) != 1)
+			fail("poll");
+		if(read(idle_ends[active][0], &byte, 1) != 1)
+			fail("read");
+	}
+	report("posix_poll_idle", started, rounds);
+	close_idle_pipes();
 }
 
 // Two threads passing a turn there and back through two semaphores, as
@@ -1203,12 +1314,17 @@ int main(int argc, char **argv) {
 		btrfs(btrfs_path);
 	if(git)
 		git_status(git, 50);
-	// Last: the process of idle sockets beside the network rows frees its
-	// memory when it ends, which leaves the pages a later row gets apart.
-	// An SD card's transfer takes a descriptor for each run of pages that
-	// lie together, and QEMU's emulation of each costs time.
+	// After the disks: the process of idle sockets beside the network rows
+	// frees its memory when it ends, which leaves the pages a later row
+	// gets apart. An SD card's transfer takes a descriptor for each run of
+	// pages that lie together, and QEMU's emulation of each costs time.
 	if(networked)
 		network(cpus, count);
+	// Last: each event row makes 1,001 pipes of 64 KiB, whose freeing
+	// leaves pages apart in the same way; TCP's throughput took 46% more
+	// instructions per MiB after them.
+	events_idle(20000);
+	poll_idle(2000);
 	printf("posix-bench: done\n");
 	fflush(stdout);
 	return 0;

@@ -84,10 +84,12 @@ pub enum ObjectKind {
     Firewall = 23,
     /// The kernel's settings (ADR 0476).
     KernelSettings = 24,
+    /// An event queue, which watches many descriptors at once (ADR 0353).
+    EventQueue = 25,
 }
 
 /// How many kinds there are.
-pub const KINDS: usize = 25;
+pub const KINDS: usize = 26;
 
 impl ObjectKind {
     /// Every kind, in the order of their numbers.
@@ -117,6 +119,7 @@ impl ObjectKind {
         ObjectKind::Device,
         ObjectKind::Firewall,
         ObjectKind::KernelSettings,
+        ObjectKind::EventQueue,
     ];
 
     /// The kind numbered `n`.
@@ -185,6 +188,8 @@ impl ObjectKind {
             ObjectKind::Firewall => Rights::READ.union(Rights::CONTROL),
             // Reading lists the settings; control changes them.
             ObjectKind::KernelSettings => Rights::READ.union(Rights::CONTROL),
+            // Reading waits for events; writing changes the watches.
+            ObjectKind::EventQueue => Rights::READ.union(Rights::WRITE),
         };
         own.union(Rights::COPY).union(Rights::TRANSFER)
     }
@@ -250,6 +255,7 @@ impl ObjectKind {
             ObjectKind::Device => "device",
             ObjectKind::Firewall => "firewall",
             ObjectKind::KernelSettings => "kernel settings",
+            ObjectKind::EventQueue => "event queue",
         }
     }
 }

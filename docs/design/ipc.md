@@ -412,8 +412,9 @@ through a pipe in 64 KiB writes from a child, both on one CPU, per MiB
 (`posix_pipe_mib`); `kill` of itself with a handler for the signal
 (`posix_signal`); `poll` on a pipe with data to read (`posix_poll`); and
 two threads passing a turn there and back through two semaphores, on
-one CPU and on two (`posix_futex_same_cpu`, `posix_futex_cross_cpu`),
-and two processes doing the same through semaphores in shared memory
+one CPU and on two
+(`posix_futex_same_cpu`, `posix_futex_cross_cpu`), and two processes
+doing the same through semaphores in shared memory
 (`posix_futex_shared_same_cpu`, `posix_futex_shared_cross_cpu`, ADR
 0110). Given `--network`, it then uses TCP and UDP on the loopback
 interface, at 127.0.0.1 (ADR 0185): a connection made, accepted and
@@ -433,7 +434,12 @@ given `--nvme`, an NVMe disk the same way (`posix_nvme_read_4k` to
 way with a quarter of the rounds (`posix_sd_read_4k` to
 `posix_sd_write_mib`, ADR 0437), and given `--disc`, the disc in an
 optical drive, read 64 KiB and 1 MiB at a time the same way
-(`posix_disc_read_64k`, `posix_disc_read_mib`, ADR 0434). Both systems
+(`posix_disc_read_64k`, `posix_disc_read_mib`, ADR 0434). After all
+of these, as the 1,001 pipes each makes leave the pages of a later row
+apart once they are freed, it times the wait of an event queue (kqueue
+on Radix, epoll on Linux, each edge-triggered) for one ready pipe among
+1,000 idle ones, and `poll` on those 1,001 pipes with the ready one last
+(`posix_events_idle`, `posix_poll_idle`, ADR 0353). Both systems
 get the same virtio disk, NVMe disk and SD card in QEMU's `sdhci-pci`
 reader, each a 64 MiB file on the host made afresh for each boot, and a
 DVD drive on q35's AHCI controller holding a disc of the same bytes:
@@ -469,7 +475,9 @@ runs its own git port, and Linux the same git release built static on
 glibc, which `ob bench` builds once from the port's source into
 `target/bench/linux-git` and puts in the initramfs at `/git`. The row is
 reported but not gated until Radix first reaches parity on it; from
-then on it is gated like the rest. The SD card's two 1 MiB rows are
+then on it is gated like the rest. So is `poll` on the 1,001 pipes
+(`posix_poll_idle`, ADR 0353), which looks each descriptor up past the
+capability cache's 16 entries, at about nine times Linux's time. The SD card's two 1 MiB rows are
 reported but never gated: QEMU's `sdhci-pci` moves each byte of a
 transfer through its emulation of the card one call at a time, over
 150 ms a MiB for both systems, so their ratio is the runner's noise
