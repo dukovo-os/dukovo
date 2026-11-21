@@ -51,7 +51,9 @@ progress() {
 
 # What a stuck suite is doing, then the suite stopped: every process of
 # the lab account that runs PHP's program, orphans of its tests among
-# them. The brackets keep grep from finding its own command line.
+# them. The brackets keep grep from finding its own command line. Each
+# column has its own -o: a header runs to the end of its argument, as
+# POSIX has it.
 stuck() {
 	echo "php suite: $1"
 	echo "--- tests in flight"
@@ -60,7 +62,7 @@ stuck() {
 	tr '\r' '\n' < "$log" | grep -v '^ *$' | tail -n 15
 	echo "--- the lab account's processes"
 	ps -L -u lab -o pid,lwp,ppid,stat,psr,time,wchan,args
-	pids=$(ps -u lab -o pid=,args= | grep '[n]et.php.php/bin/php' | awk '{ print $1 }')
+	pids=$(ps -u lab -o pid= -o args= | grep '[n]et.php.php/bin/php' | awk '{ print $1 }')
 	if [ -n "$pids" ]; then
 		kill -9 $pids
 	fi

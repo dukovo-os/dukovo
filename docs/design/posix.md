@@ -220,6 +220,16 @@ thread with the caller's registers, extended state and thread pointer.
 The child holds its own original capability, so it does not end with
 the caller (ADR 0063).
 
+A signal sent to the child as it starts is taken before its first
+instruction, while the child's memory still holds what the C library
+knew of the parent: its cached process number, its thread number in the
+TCB and its descriptor table. So the C library's `fork` blocks every
+signal, its own included, from before the call until the child has
+dropped the first, set the second and read the third, and then puts the
+caller's mask back, in both processes, as musl's does. A handler that
+ends its process as the signal's default would, with
+`kill(getpid())`, as PHP's do, then ends the child and not the parent.
+
 `exec` has two halves. The first does everything that can fail in a new
 address space no thread runs in: reads the program's headers through
 `radix_elf::read_program`, maps its segments as anonymous regions filled
