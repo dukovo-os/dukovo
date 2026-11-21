@@ -2,7 +2,7 @@
   "signatures": [
     {
       "keyid": "c81a7cbb15da4652dc994461531edbef9ea48c2e21d97df7c8d6fd9fa1b0803e",
-      "sig": "3044022035b06cb862fe17d670c73a769d88905cc08edcd5101f3701fcf4ebca7142ed30022007515659e483a94eef89169919ea94c19f65e11724ab3d369c44dec239db10b8"
+      "sig": "3044022030fe9b25a3d9dc48420cfed9a0d32fd6cda2ef1725ab6bd007645182ecf18a9b0220606aad759eaba37b14cbb9d5c6930f8d01d86d9d5b0ba20fe64b3fa1f0c6fb00"
     }
   ],
   "signed": {
@@ -42,7 +42,7 @@
         }
       ]
     },
-    "expires": "2027-05-22T02:38:53Z",
+    "expires": "2027-05-22T04:44:20Z",
     "spec_version": "1.0.31",
     "targets": {
       "bundles/io.github.burntsushi.ripgrep-15.2.0.dkv": {
@@ -57,6 +57,21 @@
         },
         "length": 2167738
       },
+      "bundles/io.github.burntsushi.ripgrep-15.2.0_2.dkv": {
+        "custom": {
+          "id": "io.github.burntsushi.ripgrep",
+          "name": "ripgrep",
+          "owner": "verified",
+          "rebuild": {
+            "reason": "Built again with the C library fix (#574"
+          },
+          "version": "15.2.0_2"
+        },
+        "hashes": {
+          "sha256": "3192721ca0c081fc67eb9af7ffa05cef862aae86a2389922275d9a992eedbfeb"
+        },
+        "length": 2167519
+      },
       "bundles/io.github.sharkdp.bat-0.26.1.dkv": {
         "custom": {
           "id": "io.github.sharkdp.bat",
@@ -68,6 +83,21 @@
           "sha256": "f15e995f60b0d57f7c357c2d6cccafc61f647825eedfe7144cf38a9179d458b5"
         },
         "length": 3576316
+      },
+      "bundles/io.github.sharkdp.bat-0.26.1_2.dkv": {
+        "custom": {
+          "id": "io.github.sharkdp.bat",
+          "name": "bat",
+          "owner": "verified",
+          "rebuild": {
+            "reason": "Built again with the C library fix (#574"
+          },
+          "version": "0.26.1_2"
+        },
+        "hashes": {
+          "sha256": "2f9792953776d8bc2ea7facdac3c5f7f9593e562c114ff02e0f4b663734281aa"
+        },
+        "length": 3576546
       },
       "bundles/io.valkey.valkey-9.1.3.dkv": {
         "custom": {
@@ -81,6 +111,21 @@
         },
         "length": 7956259
       },
+      "bundles/io.valkey.valkey-9.1.3_2.dkv": {
+        "custom": {
+          "id": "io.valkey.valkey",
+          "name": "Valkey",
+          "owner": "verified",
+          "rebuild": {
+            "reason": "Built again with the C library fix (#574"
+          },
+          "version": "9.1.3_2"
+        },
+        "hashes": {
+          "sha256": "2828ffb50af674151c81e2a38079863bb97d36a63a4db3d07f60133058ae1ce8"
+        },
+        "length": 7956146
+      },
       "bundles/net.php.php-8.5.12.dkv": {
         "custom": {
           "id": "net.php.php",
@@ -93,6 +138,21 @@
         },
         "length": 39106661
       },
+      "bundles/net.php.php-8.5.12_2.dkv": {
+        "custom": {
+          "id": "net.php.php",
+          "name": "PHP",
+          "owner": "verified",
+          "rebuild": {
+            "reason": "Built again with the C library fix (#574"
+          },
+          "version": "8.5.12_2"
+        },
+        "hashes": {
+          "sha256": "c4bd9f1d5da0f35c02f2765371cd75f07c9b96a775d15ca55de6e01747cddf3f"
+        },
+        "length": 39105683
+      },
       "bundles/org.nginx.nginx-1.30.6.dkv": {
         "custom": {
           "id": "org.nginx.nginx",
@@ -104,6 +164,21 @@
           "sha256": "97c3945ac1d84751908585bd571511a6db6cba195bed3b595f3c8623817ff832"
         },
         "length": 3555151
+      },
+      "bundles/org.nginx.nginx-1.30.6_2.dkv": {
+        "custom": {
+          "id": "org.nginx.nginx",
+          "name": "nginx",
+          "owner": "verified",
+          "rebuild": {
+            "reason": "Built again with the C library fix (#574"
+          },
+          "version": "1.30.6_2"
+        },
+        "hashes": {
+          "sha256": "6db6d72e6c7d22668567005bfcdbbd2327b44c0d19ff1e1924e3cf71b19779c7"
+        },
+        "length": 3555873
       },
       "bundles/org.postgresql.postgresql-19.0-rc.2.dkv": {
         "custom": {
@@ -141,6 +216,21 @@
         },
         "length": 30212510
       },
+      "bundles/org.python.python-3.15.2_2.dkv": {
+        "custom": {
+          "id": "org.python.python",
+          "name": "Python",
+          "owner": "verified",
+          "rebuild": {
+            "reason": "Built again with the C library fix (#574"
+          },
+          "version": "3.15.2_2"
+        },
+        "hashes": {
+          "sha256": "a046d47e83ec818ecedbfb22b400864b45d1ab51dd4bf72396cb89ffe021a9e3"
+        },
+        "length": 30212888
+      },
       "bundles/org.sqlite.sqlite-3.54.1.dkv": {
         "custom": {
           "id": "org.sqlite.sqlite",
@@ -152,8 +242,23 @@
           "sha256": "2be158b40594d0760d16b4a8a1ba34ba3b8a9d39ae59c7960306e7530c35b8a6"
         },
         "length": 1308416
+      },
+      "bundles/org.sqlite.sqlite-3.54.1_2.dkv": {
+        "custom": {
+          "id": "org.sqlite.sqlite",
+          "name": "SQLite",
+          "owner": "verified",
+          "rebuild": {
+            "reason": "Built again with the C library fix (#574"
+          },
+          "version": "3.54.1_2"
+        },
+        "hashes": {
+          "sha256": "2ce6990fde0579114ce8e8c64a5412af9945c57cdb367ad1cc0913b829131c9c"
+        },
+        "length": 1308196
       }
     },
-    "version": 5
+    "version": 6
   }
 }
