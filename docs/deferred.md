@@ -350,6 +350,7 @@ machine asks for them.
 | Spark's pet of the hardware watchdog came more than 10 s late while nginx served the lab PC's load on the OptiPlex 7040: what holds Spark's loop up (nginx's access log copied into the system's log is the first suspect) | Lab, services/nginx on the OptiPlex, 2026-11-13 |
 | Transparent huge pages for anonymous memory | ADR 0121 |
 | Batched and lazy TLB shootdowns | ADR 0020 |
+| `getrusage`'s `ru_maxrss`, a process's peak resident memory in KiB, as on Linux and the BSDs: the C library leaves it 0, as the kernel keeps no peak, so Go's `runtime/pprof` heap profiles say `MaxRSS = 0` | Go's test suite, ADR 0358 |
 | Frames grouped by how long they live, and compaction that moves pages to join free blocks, so that large blocks stay likely as memory breaks up: for the heap's slabs, blocks of up to 32 KiB, and for devices' memory; the heap's large requests already fall back to areas | ADR 0524 |
 | A lazy IOMMU mode | ADR 0164 |
 | Memory hot-plug; NUMA tested beyond QEMU's emulated nodes | memory design note |
