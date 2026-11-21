@@ -3,9 +3,10 @@
 
 # Go's own tests of its standard library, run on Dukovo with the go command
 # of the Go bundle (`ob test go-suite`): `go test -short` of every package
-# that has tests, in a machine with 4 CPUs and 6 GiB, which is thought to
-# take an hour or more with KVM. That is too long for a boot test's shard, so it is a job of
-# its own: ci.yml calls it for a pull request that changes the Go port, its
+# that has tests, in a machine with 4 CPUs and 6 GiB: about 9 minutes with
+# KVM, and some 25 of the runner's with the ports restored and the image
+# built. Few changes can break it, so it is a job of its own: ci.yml calls
+# it for a pull request that changes the Go port, its
 # bundle, the Go programs or the code that builds and runs them, and anyone
 # may start it by hand. The script's whole log is kept as an artifact, and
 # when the run fails its end is also printed in the job's own log.
@@ -41,7 +42,7 @@ jobs:
   go-suite:
     name: Go's tests on Dukovo
     runs-on: ubuntu-24.04
-    timeout-minutes: 300
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
 
@@ -104,7 +105,7 @@ jobs:
         run: ./ob ports
 
       - name: ./ob test go-suite
-        timeout-minutes: 240
+        timeout-minutes: 100
         run: ./ob test go-suite
 
       - name: Show the end of the suite's log

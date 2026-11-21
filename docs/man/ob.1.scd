@@ -441,8 +441,9 @@ _target/userspace/_).
 
 	*go-suite* runs Go's own tests of its standard library on Dukovo,
 	with the *go* command of the Go bundle (_dev.go.go_), instead. It is a
-	run of its own, as *soak* is, and not one of the boot tests, as it
-	takes an hour or more with KVM. Before the boot *ob* asks the
+	run of its own, as *soak* is, and not one of the boot tests: its
+	machine is larger than theirs, and CI runs it only for changes to Go.
+	It takes about 10 minutes with KVM. Before the boot *ob* asks the
 	toolchain's *go* for the packages of *std* that have tests and writes
 	them, the skips of _userspace/go/skips.txt_ for them, and the script
 	to the disk of the bundle. The machine has 4 CPUs, 6 GiB of memory
@@ -455,7 +456,7 @@ _target/userspace/_).
 	_out/test/go-suite.log_, which CI keeps as an artifact
 	(_.github/workflows/go-suite.yml_). Plain *ob test* leaves it out.
 	*--timeout* _seconds_ is how long the whole machine may run; without
-	it, 3 hours and 32 minutes. A line of _skips.txt_ whose package is
+	it, 1 hour and 17 minutes. A line of _skips.txt_ whose package is
 	written *suite:*_path_ is a skip that only this run reads.
 
 	*lab-writer* checks the lab's net boot of real machines end to end

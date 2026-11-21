@@ -7,11 +7,12 @@
 //! The `go-runtime` boot test runs the test binaries of 28 packages that ob
 //! builds. This run is the whole of it: `go test -short` of every package
 //! of `std` that has tests, as `go` itself compiles, links and runs them on
-//! Radix. It is thought to take an hour or more even under KVM, longer than
-//! a CI shard may, so it is not one of the boot tests: it is a run of its own, as
-//! `ob soak` is, on the same machine harness, and CI runs it in
+//! Radix: 258 packages. Its machine is larger than a boot test's, and few
+//! changes can break it, so it is not one of the boot tests: it is a run of
+//! its own, as `ob soak` is, on the same machine harness, and CI runs it in
 //! `.github/workflows/go-suite.yml` on pull requests that touch Go and when
-//! someone asks.
+//! someone asks. Its first run in CI took 553 seconds under KVM, the boot
+//! and the bundle's install included.
 //!
 //! The machine has 4 CPUs and 6 GiB of memory, as Go's linker builds each
 //! test binary in memory and `go test` links up to four at once, and a root
@@ -63,16 +64,15 @@ const LOG: &str = "go-suite.log";
 const SCRATCH: &str = "/users/alice/go-suite";
 
 /// What a run is limited to if the person who starts it names no other, in
-/// seconds: the sum of the waits below, which are estimates. None has been
-/// measured: the suite under KVM is thought to take 30 to 90 minutes, and
-/// each wait is generous, a multiple of what the step is thought to take, so
-/// that a slow run still ends with a verdict. CI's timings will tune them.
+/// seconds: the sum of the waits below. Each is generous, several times what
+/// the step took in CI under KVM, where the whole run took 553 seconds, so
+/// that a slower machine, or one without KVM, still ends with a verdict.
 const TOTAL_SECONDS: u64 =
     BOOT_SECONDS + INSTALL_SECONDS + FIRST_RUN_SECONDS + SUITE_SECONDS + SAVE_SECONDS;
 
-// Under the workflow's 5 hours, with the ports and the image built before
-// the machine starts.
-const _: () = assert!(TOTAL_SECONDS < 4 * 3600);
+// Under the 100 minutes go-suite.yml gives the step, which builds the image
+// and the disk before the machine starts.
+const _: () = assert!(TOTAL_SECONDS < 80 * 60);
 
 /// The boot, the owner's account and the root grown over its room.
 const BOOT_SECONDS: u64 = 600;
@@ -81,8 +81,8 @@ const INSTALL_SECONDS: u64 = 900;
 /// The first run of go: a program of tens of MiB read in.
 const FIRST_RUN_SECONDS: u64 = 120;
 /// The script: the packages' tests, which compile and link a few hundred
-/// test binaries, mostly four at a time.
-const SUITE_SECONDS: u64 = 3 * 3600;
+/// test binaries, mostly four at a time, in under 8 minutes in CI.
+const SUITE_SECONDS: u64 = 45 * 60;
 /// Copying the log to the disk and the machine's power off.
 const SAVE_SECONDS: u64 = 300;
 

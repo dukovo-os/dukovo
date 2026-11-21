@@ -21,10 +21,11 @@ its file locks, the programs it starts.
 With the Go bundle (ADR 0356), Dukovo has those commands, and Go's
 distribution carries the tests of every package of its standard library.
 Run on Dukovo with the bundle's `go`, they check the library and the
-commands together, as Go's own builders check a platform. They are a few
-hundred packages; compiling, linking and running them all is thought to
-take an hour or more even with KVM, where a CI shard of the boot tests
-runs its share of them in about 30 minutes, and has 45.
+commands together, as Go's own builders check a platform. They are 258
+packages, and compiling, linking and running them all wants a machine
+larger than a boot test's: 4 CPUs, 6 GiB and a root of 12 GiB. A CI shard
+of the boot tests runs its share of them in about 30 minutes, and has 45;
+few changes outside Go can break Go's tests.
 
 Scheduled CI runs are off for now: no run of this repository's CI starts
 on a timer.
@@ -52,20 +53,21 @@ on a timer.
   the lines that say why, and the count; its whole log is saved as
   `out/test/go-suite.log`, also when a wait runs out.
 - **CI runs it in a job of its own,** `.github/workflows/go-suite.yml`,
-  with five hours for the ports and the run. `ci.yml` calls it for a pull
+  with three hours for the ports and the run. `ci.yml` calls it for a pull
   request that changes the go port, the Go bundle, the Go test programs
   or the code that builds and runs them, and the pull request is green
   only when it passes. Anyone may start it by hand on any branch.
 - **It has no schedule** while scheduled runs are off. Main's runs leave
-  it out, as it takes too long for each change.
+  it out, as few of main's changes can break it.
 
 ## Consequences
 
 - Go's own commands are tested on Dukovo as a person uses them, on every
   change to Go, by Go's own tests.
-- A pull request that changes Go takes an hour or more longer to go green
-  and uses a runner that long. The waits are estimates: CI's timings will
-  tune them.
+- A pull request that changes Go uses one more runner, for about 25
+  minutes: the first run took 553 seconds in the machine, the boot and the
+  bundle's install included, with the ports restored and the image built
+  before it. The waits are several times what each step took.
 - A change elsewhere, such as to the kernel or the C library, that breaks
   a test only the suite runs is found by the next run: the next pull
   request that changes Go, or a run started by hand. The `go-runtime` and
