@@ -40,6 +40,7 @@ pub mod account;
 pub mod cpuset;
 pub mod fair;
 pub mod haltpoll;
+pub mod resched;
 pub mod rt;
 pub mod topology;
 pub mod weight;
@@ -53,6 +54,7 @@ pub use fair::{
     BASE_SLICE_NS, Entity, FairQueue, Placement, mul_div, mul_div_unsigned, virtual_ns,
 };
 pub use haltpoll::HaltPoll;
+pub use resched::Resched;
 pub use rt::{RR_QUANTUM_NS, RtEntry, RtQueue};
 pub use topology::{
     CpuLoad, Level, Loads, MAX_NODES, Place, Topology, interval_ticks, is_cache_hot, should_pull,
