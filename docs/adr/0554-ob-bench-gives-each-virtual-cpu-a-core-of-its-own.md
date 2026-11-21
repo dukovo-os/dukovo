@@ -75,6 +75,16 @@ given each boot than about either system.
     interrupted by the host and took 6.0 µs;
   - Linux's took 12 to 15 µs. Its idle vCPUs halt about twice a round,
     which costs two exits to the host and an interrupt each.
+
+  On Intel Xeon 6975P-C runners, pinned:
+  - Radix's two-CPU IPC rows took 3.8 to 5.1 µs with the request word of
+    [0555](0555-a-cpus-request-to-switch-is-one-word-in-a-cache-line-of-its-own.md),
+    before the wake list of
+    [0556](0556-a-thread-woken-for-an-idle-cpu-is-handed-to-it-and-that-cpu-queues-it.md),
+    and 2.8 to 3.9 µs with it;
+  - Linux's took 6.3 µs for the shared-memory channel and 21 to 22 µs for
+    the endpoint, notification and ring rows: its idle vCPUs halt between
+    rounds there too.
 - QEMU's own threads (the I/O thread, the disk and display emulation) are
   not pinned and may share a CPU with a vCPU on a 4-CPU runner.
 - Machines where pinning is skipped measure as before.
