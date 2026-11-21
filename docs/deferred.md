@@ -535,7 +535,6 @@ finding or removed.
 | A lab test for COM1 as the serial console (console=ttyS0): serial-console running on it and a sign-in over it; hardware/serial-port covers COM1 only when it is not the console | Lab, first real-machine runs |
 | SSH: RSA and P-521 keys and authorized_keys options are not taken; sshd_config takes eight keywords (no `Port`, `ListenAddress`, `MaxAuthTries`); ssh is built without OpenSSL, so ssh-keygen makes ed25519 keys alone | Lab, first real-machine runs |
 | "[elevate] password for lab:" is printed into the output of commands run with sudo -S | Lab, first real-machine runs |
-| PHP's suite stopping with no output at `ext/pcntl/tests/001.phpt`, on the lab's runs of 2026-11-21: the SIGTERM the test sends its child as it starts ran PHP's handler before the C library had dropped the parent's cached process number, so the handler's `kill(getpid())` ended the parent and the child spun on. The C library's `fork` keeps signals blocked until the child knows itself (posix `fork` test `signal_at_start`); the lab's next `services/php` run confirms the suite runs to its end | Lab, `services/php` |
 
 ## Waiting on a decision
 
