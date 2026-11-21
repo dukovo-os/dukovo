@@ -1296,8 +1296,6 @@ int main(int argc, char **argv) {
 	pipe_throughput();
 	signal_delivery(100000);
 	poll_ready(100000);
-	events_idle(20000);
-	poll_idle(2000);
 	futex_pingpong("posix_futex_same_cpu", cpus[0], 50000);
 	if(count > 1)
 		futex_pingpong("posix_futex_cross_cpu", cpus[1], 50000);
@@ -1316,12 +1314,17 @@ int main(int argc, char **argv) {
 		btrfs(btrfs_path);
 	if(git)
 		git_status(git, 50);
-	// Last: the process of idle sockets beside the network rows frees its
-	// memory when it ends, which leaves the pages a later row gets apart.
-	// An SD card's transfer takes a descriptor for each run of pages that
-	// lie together, and QEMU's emulation of each costs time.
+	// After the disks: the process of idle sockets beside the network rows
+	// frees its memory when it ends, which leaves the pages a later row
+	// gets apart. An SD card's transfer takes a descriptor for each run of
+	// pages that lie together, and QEMU's emulation of each costs time.
 	if(networked)
 		network(cpus, count);
+	// Last: each event row makes 1,001 pipes of 64 KiB, whose freeing
+	// leaves pages apart in the same way; TCP's throughput took 46% more
+	// instructions per MiB after them.
+	events_idle(20000);
+	poll_idle(2000);
 	printf("posix-bench: done\n");
 	fflush(stdout);
 	return 0;

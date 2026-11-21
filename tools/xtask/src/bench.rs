@@ -175,6 +175,8 @@ pub const BUDGETS: &[(&str, u64)] = &[
     ("posix_pipe_mib", 2_500_000),             // 2,188,725
     ("posix_signal", 5_900),                   // 5,300
     ("posix_poll", 1_300),                     // 1,092
+    ("posix_events_idle", 4_900),              // 4,382, one ready pipe among 1,000 watched
+    ("posix_poll_idle", 720_000),              // 648,728, 1,001 pipes
     ("posix_futex_same_cpu", 5_300),           // 4,787
     ("posix_futex_shared_same_cpu", 5_800),    // 5,248
     ("posix_tcp_connect", 71_000),             // 64,734, beside 11 idle sockets (ADR 0550)

@@ -410,12 +410,9 @@ it, and `ob bench --from` shows it for a real machine, ADR 0124); then
 `execv` of itself and `waitpid` (`posix_fork_exec_wait`); 256 MiB
 through a pipe in 64 KiB writes from a child, both on one CPU, per MiB
 (`posix_pipe_mib`); `kill` of itself with a handler for the signal
-(`posix_signal`); `poll` on a pipe with data to read (`posix_poll`); the
-wait of an event queue (kqueue on Radix, epoll on Linux, each
-edge-triggered) for one ready pipe among 1,000 idle ones, and `poll` on
-those 1,001 pipes with the ready one last (`posix_events_idle`,
-`posix_poll_idle`, ADR 0353); and two threads passing a turn there and
-back through two semaphores, on one CPU and on two
+(`posix_signal`); `poll` on a pipe with data to read (`posix_poll`); and
+two threads passing a turn there and back through two semaphores, on
+one CPU and on two
 (`posix_futex_same_cpu`, `posix_futex_cross_cpu`), and two processes
 doing the same through semaphores in shared memory
 (`posix_futex_shared_same_cpu`, `posix_futex_shared_cross_cpu`, ADR
@@ -437,7 +434,12 @@ given `--nvme`, an NVMe disk the same way (`posix_nvme_read_4k` to
 way with a quarter of the rounds (`posix_sd_read_4k` to
 `posix_sd_write_mib`, ADR 0437), and given `--disc`, the disc in an
 optical drive, read 64 KiB and 1 MiB at a time the same way
-(`posix_disc_read_64k`, `posix_disc_read_mib`, ADR 0434). Both systems
+(`posix_disc_read_64k`, `posix_disc_read_mib`, ADR 0434). After all
+of these, as the 1,001 pipes each makes leave the pages of a later row
+apart once they are freed, it times the wait of an event queue (kqueue
+on Radix, epoll on Linux, each edge-triggered) for one ready pipe among
+1,000 idle ones, and `poll` on those 1,001 pipes with the ready one last
+(`posix_events_idle`, `posix_poll_idle`, ADR 0353). Both systems
 get the same virtio disk, NVMe disk and SD card in QEMU's `sdhci-pci`
 reader, each a 64 MiB file on the host made afresh for each boot, and a
 DVD drive on q35's AHCI controller holding a disc of the same bytes:
