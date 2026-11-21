@@ -25,6 +25,7 @@
 mod locate;
 pub mod permissions;
 pub mod spdx;
+mod version;
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
@@ -40,6 +41,7 @@ use serde::de::{self, DeserializeOwned, Deserializer, IgnoredAny, MapAccess, Vis
 
 use self::locate::{Step, locate};
 use self::permissions::{PERSONAL_FOLDERS, Takes};
+pub use self::version::{BUILD_MAX, compare_versions, split_build, with_build};
 pub use crate::service::OPEN_FILES_MAX;
 use crate::service::{self, Oom, Ports, Restart, check_account};
 use crate::{Error, line_of};
@@ -957,11 +959,12 @@ text!(
 
 text!(
     /// A version of the bundle: numbers between dots, such as `17.2` or
-    /// `1.27.3`, with a `-` pre-release and a `+` build as semantic
-    /// versioning has them.
+    /// `1.27.3`, with a `-` pre-release and `+` metadata as semantic
+    /// versioning has them, and last, for a rebuild of the same version,
+    /// a build number from `_2` to `_9999` (ADR 0595).
     Version,
-    "A version, such as 1.27.3 or 17.2, as semantic versioning writes it",
-    @pattern "^(0|[1-9][0-9]*)(\\.(0|[1-9][0-9]*)){0,3}(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$",
+    "A version, such as 1.27.3 or 17.2, as semantic versioning writes it; 1.27.3_2 is its second build",
+    @pattern "^(0|[1-9][0-9]*)(\\.(0|[1-9][0-9]*)){0,3}(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?(_([2-9]|[1-9][0-9]{1,3}))?$",
     check_version
 );
 
@@ -1150,8 +1153,17 @@ fn check_text(text: &str) -> Result<(), String> {
     }
 }
 
-fn check_version(version: &str) -> Result<(), String> {
-    let (rest, build) = version.split_once('+').map_or((version, None), |(a, b)| (a, Some(b)));
+/// Checks a bundle's version: one to four numbers between dots, a
+/// pre-release after `-` and metadata after `+` as semantic versioning
+/// writes them, and last, for a rebuild, a build number from `_2` to
+/// `_9999` (ADR 0595).
+///
+/// # Errors
+///
+/// When `version` is none of that, saying what a version is.
+pub fn check_version(version: &str) -> Result<(), String> {
+    let (release, _) = split_build(version);
+    let (rest, metadata) = release.split_once('+').map_or((release, None), |(a, b)| (a, Some(b)));
     let (core, pre) = rest.split_once('-').map_or((rest, None), |(a, b)| (a, Some(b)));
     let tag_ok = |tag: &str| {
         !tag.is_empty()
@@ -1166,13 +1178,14 @@ fn check_version(version: &str) -> Result<(), String> {
     if (1..=4).contains(&parts.len())
         && parts.iter().all(|n| number_ok(n))
         && pre.is_none_or(tag_ok)
-        && build.is_none_or(tag_ok)
+        && metadata.is_none_or(tag_ok)
     {
         Ok(())
     } else {
         Err(format!(
             "version is numbers between dots, such as 1.27.3 or 17.2, perhaps with a -beta.1 \
-             and a +build as semantic versioning has them; not `{}`",
+             and +metadata as semantic versioning has them, and last a build number from _2 to \
+             _9999 for a rebuild of the same version; not `{}`",
             version.escape_debug()
         ))
     }
@@ -1199,10 +1212,11 @@ pub fn check_version_line(line: &str) -> Result<(), String> {
     }
 }
 
-/// Whether `version` is of `line`: its numbers start with the line's.
+/// Whether `version` is of `line`: its numbers start with the line's,
+/// whatever its build.
 #[must_use]
 pub fn in_line(version: &str, line: &str) -> bool {
-    let core = version.split(['-', '+']).next().unwrap_or_default();
+    let core = split_build(version).0.split(['-', '+']).next().unwrap_or_default();
     match (numbers(core), numbers(line)) {
         (Some(v), Some(l)) => v.starts_with(&l),
         _ => false,

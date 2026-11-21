@@ -570,7 +570,7 @@ fn thread_method(
             if !mine {
                 // It ends at its next return to user mode.
                 target.request_stop();
-                crate::sched::wake(&target);
+                crate::sched::interrupt(&target);
                 return answer(label, 0, [0; 8]);
             }
             if a.code != 0 {

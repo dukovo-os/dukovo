@@ -1,0 +1,77 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+realloc moves a block that shrinks a long way into one of the size it
+now needs, and frees the old one. frigg's slab_pool kept a block where
+it was whenever the new size fit in it: a slab object shrunk from
+32 KiB to 100 bytes kept its 32 KiB, and a block too large for a slab
+kept its mapping, the block's pages, a page for its header and the
+256 KiB it is aligned in, with a region of its own in the kernel.
+CPython reads a pipe into a bytes object of 32 KiB and shrinks it to
+what came. Its subprocess test test_print_exception_gh_102056 reads a
+child's standard error 47,000 times, about a hundred bytes at a time,
+and every block kept its 296 KiB mapping until the C library could map
+no more, and Python raised MemoryError. Now a slab object that a
+smaller bucket holds moves there, and a large block moves when a slab
+holds what is left or when it needs half its pages or fewer, so a
+shrunk block keeps at most about twice what it holds. Only the new size
+is copied. When there is no memory for the new block, the block stays
+where it was, as before, so a realloc that shrinks does not fail.
+glibc gives back the tail of a shrunk chunk in place and musl's
+mallocng moves a block that drops two size classes; a frigg block
+cannot give back part of itself, so it moves.
+
+diff -ruN a/subprojects/frigg/include/frg/slab.hpp b/subprojects/frigg/include/frg/slab.hpp
+--- a/subprojects/frigg/include/frg/slab.hpp
++++ b/subprojects/frigg/include/frg/slab.hpp
+@@ -444,6 +444,18 @@
+ 		return true;
+ 	}
+ 
++	// Moves a block that shrinks to `new_size` into a new, smaller block
++	// and returns it, or returns nullptr and leaves the block as it was
++	// when there is no memory for one.
++	void *move_smaller_(void *p, size_t new_size) {
++		void *smaller = allocate(new_size);
++		if(!smaller)
++			return nullptr;
++		memcpy(smaller, p, new_size);
++		free(p);
++		return smaller;
++	}
++
+ 	void free_huge_(frame *sup, void *p) {
+ 		FRG_ASSERT(sup->address == reinterpret_cast<uintptr_t>(p));
+ 
+@@ -626,14 +638,29 @@
+ 	size_t current_size;
+ 	if(sup->type == frame_type::slab) {
+ 		auto slb = static_cast<slab_frame *>(sup);
++		current_size = policy_traits::bucket_to_size(slb->index);
++		// A block that a smaller bucket holds moves there, and its
++		// object goes back to the slab.
++		if(new_size < current_size
++				&& policy_traits::size_to_bucket(new_size) < static_cast<size_t>(slb->index)) {
++			if(auto smaller = move_smaller_(p, new_size))
++				return smaller;
++		}
+ 		if(reallocate_in_slab_(slb, p, new_size))
+ 			return p;
+-		current_size = policy_traits::bucket_to_size(slb->index);
+ 	}else{
+ 		FRG_ASSERT(sup->type == frame_type::large);
++		current_size = sup->length;
++		// A block that a slab holds, or that needs half its pages or
++		// fewer, moves, and its pages go back to the system.
++		if(new_size < current_size
++				&& (new_size <= policy_traits::max_bucket_size
++					|| ((new_size + page_size - 1) & ~(page_size - 1)) <= current_size / 2)) {
++			if(auto smaller = move_smaller_(p, new_size))
++				return smaller;
++		}
+ 		if(reallocate_huge_(sup, p, new_size))
+ 			return p;
+-		current_size = sup->length;
+ 	}
+ 	FRG_ASSERT(current_size < new_size);
+ 

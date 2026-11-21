@@ -542,3 +542,23 @@ test('an update that stopped to ask is told from one that failed, and its sheet 
   assert.equal(sheetOf({ log: ['one', 'two'] }), 'one\ntwo');
   assert.equal(sheetOf(null), '');
 });
+
+test('a rebuild is an update of its own kind, and the banner says why it was built again', () => {
+  const offer = { from: '8.0.3', to: '8.0.3_2', state: 'update', rebuild_reason: 'Linked with the C library fix.' };
+  const update = updateWords(offer);
+  assert.deepEqual([update.kind, update.words, update.rebuildReason], ['rebuild', '8.0.3_2 · rebuild', 'Linked with the C library fix.']);
+  const quiet = valkey({ flaws: { state: 'none', known: [] } });
+  assert.equal(bannerOf(quiet, update).heading, '8.0.3_2 is available (rebuild): Linked with the C library fix.');
+  const unsaid = updateWords({ from: '8.0.3', to: '8.0.3_2', state: 'update' });
+  assert.equal(bannerOf(quiet, unsaid).heading, '8.0.3_2 is available (rebuild).');
+  assert.equal('rebuildReason' in unsaid, false);
+  // A newer version's rebuild is a new version here, and its reason is not this machine's.
+  const newer = updateWords({ ...offer, to: '8.0.4_2' });
+  assert.equal(bannerOf(quiet, newer).heading, '8.0.4_2 is available (fixes only).');
+});
+
+test('a flaw fixed in a version is reached by a rebuild of it', () => {
+  const flaws = (to) => flawsOf(valkey(), to).map((flaw) => [flaw.id, flaw.byOffer]);
+  assert.deepEqual(flaws('8.0.4_2'), [['DKSA-2026-0007', true], ['DKSA-2026-0003', false]]);
+  assert.deepEqual(flaws('8.0.3_2'), [['DKSA-2026-0007', false], ['DKSA-2026-0003', false]]);
+});

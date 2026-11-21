@@ -506,7 +506,9 @@ pub fn set_page_handler(handler: fn(u64, bool) -> bool) {
 }
 
 /// Runs the kernel's return handler and leaves interrupts masked: on the
-/// way back to user mode.
+/// way back to user mode. Callers mask interrupts first, so that the
+/// handler's last look for a stop or a signal comes after any interrupt
+/// another CPU sent to bring one to it.
 #[inline(always)]
 pub fn on_return() {
     radix_user_return();
@@ -949,6 +951,8 @@ extern "C" fn radix_trap_user_machine_check(frame: *mut TrapFrame, page: u64) {
     let (pc, sp) = unsafe { ((*frame).rip, (*frame).rsp) };
     let kind = UserFaultKind::Memory((page != NO_PAGE).then_some(page));
     fault(UserFault { kind, pc, sp, code: 0 });
+    // The way back looks with interrupts masked, as after a system call.
+    cpu::mask_interrupts();
     on_return();
 }
 

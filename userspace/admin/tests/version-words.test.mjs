@@ -57,3 +57,26 @@ test('a version that goes down, stays, differs in length or is not made of numbe
   assert.equal(kindOfUpdate('8.0.3', undefined), 'new version');
   assert.equal(kindOfUpdate('', ''), 'new version');
 });
+
+test('the same version with a higher build is a rebuild', () => {
+  assert.equal(kindOfUpdate('15.2.0', '15.2.0_2'), 'rebuild');
+  assert.equal(kindOfUpdate('15.2.0_2', '15.2.0_3'), 'rebuild');
+  assert.equal(kindOfUpdate('15.2.0_9', '15.2.0_10'), 'rebuild', 'builds are compared as numbers, not as words');
+  assert.equal(kindOfUpdate('2026.11_2', '2026.11_3'), 'rebuild', 'a rebuild needs no place for a fix');
+});
+
+test('a build is taken off before the versions are compared', () => {
+  assert.equal(kindOfUpdate('15.2.0_2', '15.2.1'), 'fixes only');
+  assert.equal(kindOfUpdate('15.2.0', '15.2.1_2'), 'fixes only');
+  assert.equal(kindOfUpdate('15.2.0_2', '15.3.0'), 'new version');
+  assert.equal(kindOfUpdate('15.2.0_3', '15.2.0_2'), 'new version');
+  assert.equal(kindOfUpdate('15.2.0_2', '15.2.0_2'), 'new version');
+  assert.equal(kindOfUpdate('15.2.0_2', '15.2.0'), 'new version');
+});
+
+test('only a build from 2 to 9999 without a leading zero is one', () => {
+  assert.equal(kindOfUpdate('15.2.0', '15.2.0_1'), 'new version');
+  assert.equal(kindOfUpdate('15.2.0', '15.2.0_02'), 'new version');
+  assert.equal(kindOfUpdate('15.2.0', '15.2.0_10000'), 'new version');
+  assert.equal(kindOfUpdate('15.2.0', '15.2.0_9999'), 'rebuild');
+});

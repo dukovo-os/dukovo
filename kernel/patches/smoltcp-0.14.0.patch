@@ -4431,3 +4431,46 @@ To be offered upstream.
      pub(crate) fn poll_at(&self, _cx: &mut Context) -> PollAt {
          if self.tx_buffer.is_empty() {
              PollAt::Ingress
+--- a/src/socket/udp.rs
++++ b/src/socket/udp.rs
+@@ -601,6 +601,40 @@
+         self.rx_buffer.payload_bytes_count()
+     }
+ 
++    /// Whether a datagram to `to`, one of its interface's own addresses,
++    /// is for this socket, as `accepts` says of a packet's. The kernel
++    /// passes datagrams between two sockets of the loopback interface
++    /// straight across (its ADR 0553), and asks this of each socket, in
++    /// the order `process_udp` would, to find the one a packet reaches.
++    pub fn takes_across(&self, to: IpEndpoint) -> bool {
++        self.endpoint.port == to.port
++            && self.version.is_none_or(|version| version == to.addr.version())
++            && self.endpoint.addr.is_none_or(|addr| addr == to.addr)
++    }
++
++    /// Takes a datagram from `from` to `to` straight into the receive
++    /// buffer, as `process` takes a packet's, and wakes the reader; with
++    /// no room, it is dropped, as a packet's would be.
++    pub fn receive_across(&mut self, from: IpEndpoint, to: IpAddress, payload: &[u8]) {
++        let metadata = UdpMetadata {
++            endpoint: from,
++            local_address: Some(to),
++            meta: PacketMeta::default(),
++            hop_limit: None,
++        };
++        match self.rx_buffer.enqueue(payload.len(), metadata) {
++            Ok(buf) => buf.copy_from_slice(payload),
++            Err(_) => net_trace!(
++                "udp:{}:{}: buffer full, dropped incoming datagram",
++                self.endpoint,
++                from
++            ),
++        }
++
++        #[cfg(feature = "async")]
++        self.rx_waker.wake();
++    }
++
+     pub(crate) fn accepts(&self, cx: &mut Context, ip_repr: &IpRepr, repr: &UdpRepr) -> bool {
+         if self.endpoint.port != repr.dst_port {
+             return false;

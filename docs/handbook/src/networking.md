@@ -84,6 +84,11 @@ VLANs, the firewall and WireGuard.
   into the receiver's buffer, in no packet, as Solaris's TCP fusion
   does, so a byte is copied twice, as on Linux
   ([ADR 0186](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0186-a-loopback-connection-passes-its-bytes-straight-across.md)).
+  A UDP datagram to another socket on `lo` goes straight into that
+  socket's receive buffer the same way, when a socket would take it and
+  no capture watches `lo`; one that no socket takes goes as a packet, so
+  that its sender still gets the ICMP error
+  ([ADR 0553](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0553-a-loopback-datagram-goes-straight-to-the-socket-it-is-for.md)).
   `ob bench` holds TCP and UDP over `lo` to Linux's speed.
 - **TCP behaves as Linux's** where a program or the other end can tell
   ([ADR 0187](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0187-tcp-keeps-quiet-connections-and-controls-congestion-as-linux-does.md)):

@@ -637,6 +637,9 @@ pub struct Available {
     pub held: bool,
     /// While it is held, the reason kept with the hold, if one was.
     pub held_reason: Option<String>,
+    /// Why the newest version was built again, when it is a rebuild and
+    /// its catalog says.
+    pub rebuild_reason: Option<String>,
 }
 
 /// What bundled answers.
@@ -778,14 +781,15 @@ impl Answer {
                 .into_bytes()
             }
             Answer::Available(a) => format!(
-                "available\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                "available\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                 a.place,
                 a.id,
                 one_line(&a.from),
                 one_line(&a.to),
                 a.catalog.as_deref().unwrap_or("-"),
                 if a.held { "held" } else { "free" },
-                a.held_reason.as_deref().map_or_else(String::new, one_line)
+                a.held_reason.as_deref().map_or_else(String::new, one_line),
+                a.rebuild_reason.as_deref().map_or_else(String::new, one_line)
             )
             .into_bytes(),
             Answer::Event(e) => format!("event\t{}", e.line()).into_bytes(),
@@ -946,7 +950,7 @@ impl Answer {
                 expires: time(expires)?,
             })));
         }
-        if let ["available", at, id, from, to, catalog, held, reason] = words.as_slice() {
+        if let ["available", at, id, from, to, catalog, held, reason, rebuilt] = words.as_slice() {
             return Ok(Some(Answer::Available(Available {
                 place: place(at)?,
                 id: checked_id(id).map_err(|why| bad(&why))?,
@@ -962,6 +966,7 @@ impl Answer {
                     _ => return Err(bad("neither held nor free")),
                 },
                 held_reason: (!reason.is_empty()).then(|| one_line(reason)),
+                rebuild_reason: (!rebuilt.is_empty()).then(|| one_line(rebuilt)),
             })));
         }
         if let ["withdrawn", why] = words.as_slice() {
@@ -1471,6 +1476,7 @@ mod tests {
                 catalog: Some("dukovo".into()),
                 held: true,
                 held_reason: Some("app tests use this version".into()),
+                rebuild_reason: Some("Linked with the C library fix".into()),
             }),
             Answer::Available(Available {
                 place: Place::Everyone,
@@ -1480,6 +1486,7 @@ mod tests {
                 catalog: None,
                 held: false,
                 held_reason: None,
+                rebuild_reason: None,
             }),
             Answer::Event(crate::bundles::history::Event {
                 when: 1_793_000_000,
@@ -1518,6 +1525,7 @@ mod tests {
             b"granted\tfiles.folder\tallow\t1\tsecrets=read\t-\n",
             b"revoked\tfiles.everything\n",
             b"available\t1000\torg.example.notes\t1\t2\tdukovo\tmaybe\n",
+            b"available\t1000\torg.example.notes\t1\t2\tdukovo\tfree\t\n",
             b"event\t1\t1000\tNotes\tupdated\t-\t-\t1\t-\n",
             b"add-on\t1000\torg.nodejs.node@22\tbin/tsc\n",
             b"add-on\t1000\torg.nodejs.node@22\t/users/alice/../bob/tsc\n",

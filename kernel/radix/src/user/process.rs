@@ -44,7 +44,7 @@
 //!
 //! Lock order: the capability store's locks, then a process's POSIX
 //! state, then its state, then a thread's signals, then a thread's
-//! scheduler state (`sched::wake`).
+//! scheduler state (`sched::wake`, `sched::interrupt`).
 
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
@@ -670,7 +670,7 @@ impl ProcessObject {
         let state = self.state.lock();
         for thread in state.threads.iter().filter(|t| !ThreadRef::ptr_eq(t, me)) {
             thread.request_stop();
-            sched::wake(thread);
+            sched::interrupt(thread);
         }
     }
 
@@ -903,7 +903,7 @@ impl ProcessObject {
             state.code = code;
             for thread in &state.threads {
                 thread.request_stop();
-                sched::wake(thread);
+                sched::interrupt(thread);
             }
         }
         Self::take_finish(&mut state)
@@ -949,7 +949,7 @@ impl ProcessObject {
                 state.code = EXIT_FAULT;
                 for thread in &state.threads {
                     thread.request_stop();
-                    sched::wake(thread);
+                    sched::interrupt(thread);
                 }
             } else if running && state.threads.is_empty() {
                 state.phase = ProcessState::Ending;

@@ -551,6 +551,7 @@ logging kernel/lib/klog/ userspace/defaults/log/ userspace/posix/logtest.c
 logging userspace/programs/systools/src/dmesg.rs userspace/programs/systools/src/log.rs
 logging userspace/programs/systools/src/logd.rs userspace/programs/systools/src/logger.rs
 logging userspace/programs/systools/src/logtrim.rs userspace/programs/systools/src/notifyd.rs
+logging ports/mlibc/patches/0095-syslog-to-the-kernel-log.patch
 ls-apps kernel/fs/btrfs/ ports/uutils-coreutils/ userspace/programs/dkv/
 ls-apps userspace/programs/manifest/ userspace/programs/systools/src/bundled.rs
 ls-apps userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
@@ -718,6 +719,7 @@ posix userspace/posix/exec-helper.c userspace/posix/exec.c userspace/posix/expec
 posix userspace/posix/files.c userspace/posix/fork.c userspace/posix/format-cases.h
 posix userspace/posix/format.c userspace/posix/hello.c userspace/posix/inet.c userspace/posix/job.c
 posix userspace/posix/library.c userspace/posix/limits.c userspace/posix/locks.c
+posix ports/mlibc/patches/0094-fclose-drops-what-it-could-not-write.patch
 posix userspace/posix/pipe.c userspace/posix/poll.c userspace/posix/programs.h userspace/posix/run.c
 posix userspace/posix/shm.c userspace/posix/signal.c
 posix kernel/radix/src/fs/shm/ kernel/radix/src/user/memory/ kernel/radix/src/fs/socket.rs kernel/radix/src/fs/socket/

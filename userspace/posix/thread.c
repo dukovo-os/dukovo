@@ -3,15 +3,18 @@
 
 // POSIX threads: creating and joining them, mutexes and condition
 // variables, thread-local storage, detached threads, signals to a
-// thread, thread names, descriptors two threads open at once, and the
-// memory of threads that have ended, which the process gets back.
+// thread, thread names, descriptors two threads open at once, the
+// memory of threads that have ended, which the process gets back, and a
+// process that exits while another of its threads spins.
 
 #include <fcntl.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdio.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/mman.h>
 
 #include "check.h"
 
@@ -279,23 +282,6 @@ static void *works(void *argument) {
 	return argument;
 }
 
-// The pages of anonymous memory the process holds, from
-// /processes/<pid>/status; -1 if it cannot be read.
-static long anonymous_pages(void) {
-	char path[64];
-	snprintf(path, sizeof(path), "/processes/%d/status", (int)getpid());
-	FILE *status = fopen(path, "r");
-	if(!status)
-		return -1;
-	char line[128];
-	long pages = -1;
-	while(fgets(line, sizeof(line), status))
-		if(sscanf(line, "anonymous_memory: %ld pages", &pages) == 1)
-			break;
-	fclose(status);
-	return pages;
-}
-
 // Waits until `count` threads in all have run works, for at most 10 s.
 static void wait_ended(int count) {
 	for(int i = 0; i < 10000 && atomic_load(&ended) < count; i++)
@@ -321,7 +307,7 @@ static void given_back(void) {
 		CHECK(pthread_join(thread, NULL) == 0);
 	}
 	atomic_store(&ended, 0);
-	long before = anonymous_pages();
+	long before = check_anonymous_pages();
 	CHECK(before > 0);
 	for(int i = 0; i < ENDED; i++) {
 		void *result = NULL;
@@ -340,7 +326,7 @@ static void given_back(void) {
 	// The last detached threads' TCBs are freed by the next create.
 	CHECK(pthread_create(&thread, NULL, works, NULL) == 0);
 	CHECK(pthread_join(thread, NULL) == 0);
-	long after = anonymous_pages();
+	long after = check_anonymous_pages();
 	// 900 threads that kept what they used would hold over 5000 pages.
 	if(after - before > 64)
 		fprintf(stderr, "thread: %ld pages before %d threads ended, %ld after\n", before,
@@ -359,6 +345,87 @@ static void given_back(void) {
 	CHECK(own_stack[0] == 2 && own_stack[sizeof(own_stack) - 1] == 2);
 }
 
+// What the spinning thread and the test share, across the fork.
+struct spinner {
+	atomic_int spinning; // The thread has begun to spin.
+	atomic_int release; // The test waited long enough and lets it go.
+	atomic_int escaped; // The thread was let go: the exit never stopped it.
+	cpu_set_t there; // The CPU it spins on.
+};
+
+static struct spinner *spinner;
+
+// Spins on its own CPU, making no call to the kernel, until the process
+// ends or the test lets it go.
+static void *spins(void *argument) {
+	(void)argument;
+	if(CPU_COUNT(&spinner->there))
+		CHECK(pthread_setaffinity_np(pthread_self(), sizeof(spinner->there), &spinner->there)
+				== 0);
+	atomic_store(&spinner->spinning, 1);
+	while(!atomic_load_explicit(&spinner->release, memory_order_relaxed)) {
+	}
+	atomic_store(&spinner->escaped, 1);
+	return NULL;
+}
+
+// A process ends while another of its threads spins on another CPU,
+// making no call to the kernel: the kernel interrupts that CPU to stop
+// the thread, which, running alone there, has no timer to bring it into
+// the kernel. A child that has not ended in 10 s is let go, so a kernel
+// that misses the thread fails the test and does not hold it.
+static void spinning(void) {
+	spinner = mmap(NULL, sizeof(*spinner), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS,
+			-1, 0);
+	CHECK(spinner != MAP_FAILED);
+	if(spinner == MAP_FAILED)
+		return;
+	// The exiting thread on the first CPU and the spinning one on the
+	// second, when there are two.
+	cpu_set_t all, here;
+	CPU_ZERO(&all);
+	CHECK(sched_getaffinity(0, sizeof(all), &all) == 0);
+	int first = -1, second = -1;
+	for(int cpu = 0; cpu < CPU_SETSIZE && second < 0; cpu++) {
+		if(!CPU_ISSET(cpu, &all))
+			continue;
+		if(first < 0)
+			first = cpu;
+		else
+			second = cpu;
+	}
+	CPU_ZERO(&here);
+	CPU_ZERO(&spinner->there);
+	if(second >= 0) {
+		CPU_SET(first, &here);
+		CPU_SET(second, &spinner->there);
+	}
+	pid_t pid = check_fork();
+	if(pid == 0) {
+		if(second >= 0)
+			CHECK(sched_setaffinity(0, sizeof(here), &here) == 0);
+		pthread_t thread;
+		CHECK(pthread_create(&thread, NULL, spins, NULL) == 0);
+		long long deadline = check_now_ns() + 5000000000LL;
+		while(!atomic_load(&spinner->spinning) && check_now_ns() < deadline)
+			check_sleep_ms(1);
+		CHECK(atomic_load(&spinner->spinning));
+		exit(check_failures > 125 ? 125 : check_failures);
+	}
+	long long deadline = check_now_ns() + 10000000000LL;
+	int status;
+	pid_t got;
+	while((got = waitpid(pid, &status, WNOHANG)) == 0 && check_now_ns() < deadline)
+		check_sleep_ms(1);
+	if(got != pid) {
+		atomic_store(&spinner->release, 1);
+		status = check_wait(pid);
+	}
+	CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	CHECK(!atomic_load(&spinner->escaped));
+	munmap(spinner, sizeof(*spinner));
+}
+
 int main(void) {
 	check_start("thread");
 	RUN(counts);
@@ -369,5 +436,6 @@ int main(void) {
 	RUN(names);
 	RUN(descriptors);
 	RUN(given_back);
+	RUN(spinning);
 	return check_end();
 }

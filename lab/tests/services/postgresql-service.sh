@@ -86,9 +86,11 @@ restarts_without_recovery() {
 		! log postgresql | grep -q 'not properly shut down'
 }
 
-# How many checkpoints a CHECKPOINT has made, in the log.
+# How many checkpoints a CHECKPOINT command has made, in the log. Since
+# PostgreSQL 19 the server names such a checkpoint's flags "fast force
+# wait"; 18 and older named them "immediate force wait".
 checkpoints() {
-	log postgresql | grep -c 'checkpoint starting: immediate force wait'
+	log postgresql | grep -c 'checkpoint starting: fast force wait'
 }
 
 # Spark runs the before hook of every running service that has one, as

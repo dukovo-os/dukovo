@@ -939,12 +939,14 @@ const WITHDRAW_BUNDLES: [crate::bundles::TestBundle; 4] = [
 /// `site` folder (ADR 0390).
 const FEED_ADDRESS: &str = "http://10.0.2.100/almanac";
 
-/// The bundles of a [`FEED_FILES`] disk: three versions of almanac, which
-/// says its version, from its own feed at [`FEED_ADDRESS`].
-const FEED_BUNDLES: [crate::bundles::TestBundle; 3] = [
+/// The bundles of a [`FEED_FILES`] disk: four versions of almanac, which
+/// says its version, from its own feed at [`FEED_ADDRESS`]; the last is
+/// 1.1.0 built again, as its build 2.
+const FEED_BUNDLES: [crate::bundles::TestBundle; 4] = [
     almanac("1.0.0", "#!/bin/sh\necho \"almanac 1.0.0 ran\"\n"),
     almanac("1.1.0", "#!/bin/sh\necho \"almanac 1.1.0 ran\"\n"),
     almanac("1.2.0", "#!/bin/sh\necho \"almanac 1.2.0 ran\"\n"),
+    almanac("1.1.0_2", "#!/bin/sh\necho \"almanac 1.1.0_2 ran\"\n"),
 ];
 
 /// almanac `version`, which runs `script`.
@@ -6643,9 +6645,10 @@ fi
 /// which QEMU runs; `feed`, the feed's repository, which `bundle feed`
 /// signed with the build key twice, listing 1.0.0 and 1.1.0, and
 /// `site/almanac`, what it serves; and in `feeds`, what the test serves
-/// in its place: `old`, as the feed was signed the first time, and
-/// `changed`, signed a third time, adding 1.2.0, whose file served
-/// differs in a byte from the one it signs.
+/// in its place: `old`, as the feed was signed the first time; `rebuilt`,
+/// signed a third time, adding 1.1.0_2, the build 2 of 1.1.0; and
+/// `changed`, signed a fourth time on `rebuilt`, adding 1.2.0, whose file
+/// served differs in a byte from the one it signs.
 fn make_feed_files(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
     let files = FEED_BUNDLES
         .iter()
@@ -6679,9 +6682,13 @@ fn make_feed_files(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
     copy(&feed.join("site"), &dir.join("feeds/old"))?;
     sign(&feed, &[])?;
     copy(&feed.join("site"), &dir.join("site/almanac"))?;
+    let rebuilt = dir.join("rebuilt");
+    copy(&feed, &rebuilt)?;
+    sign(&rebuilt, &files[3..])?;
+    copy(&rebuilt.join("site"), &dir.join("feeds/rebuilt"))?;
     let changed = dir.join("changed");
-    copy(&feed, &changed)?;
-    sign(&changed, &files[2..])?;
+    copy(&rebuilt, &changed)?;
+    sign(&changed, &files[2..3])?;
     let name = files[2].file_name().map_or_default(|n| n.to_string_lossy().into_owned());
     let served = changed.join("site/targets/bundles");
     let file = std::fs::read_dir(&served)

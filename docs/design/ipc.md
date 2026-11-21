@@ -477,11 +477,14 @@ glibc, which `ob bench` builds once from the port's source into
 reported but not gated until Radix first reaches parity on it; from
 then on it is gated like the rest. So is `poll` on the 1,001 pipes
 (`posix_poll_idle`), which looks at them all under one hold of the
-descriptor table's lock (ADR 0354), at 1.52 times Linux's time. The SD card's two 1 MiB rows are
-reported but never gated: QEMU's `sdhci-pci` moves each byte of a
-transfer through its emulation of the card one call at a time, over
-150 ms a MiB for both systems, so their ratio is the runner's noise
-around 1.00 and not either system's work.
+descriptor table's lock (ADR 0354), at 1.52 times Linux's time. The SD
+card's 64 KiB and 1 MiB rows are reported but never gated: QEMU's
+`sdhci-pci` moves each byte of a transfer through its emulation of the
+card one call at a time, some 14 ms for 64 KiB and over 200 ms a MiB for
+both systems, and how fast it goes moves with how the host runs QEMU's
+threads by more than either system's own work, so their ratio is the
+runner's noise around 1.00 and not either system's (ADR 0552). The 4 KiB
+rows, where each system's own work per request shows, are gated.
 
 A yield switches only when the other program may run first (EEVDF on
 both systems), so `context_switch` divides the time by the switches that

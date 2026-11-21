@@ -10,7 +10,10 @@
 // words, pathconf's errors, the syslog mask, fma's sign of zero, dladdr
 // in a static program, and getaddrinfo's service names and IPv6 scopes;
 // and one that PostgreSQL's setup found (ADR 0521): fflush(NULL) keeps
-// what a stream reading a pipe has read ahead.
+// what a stream reading a pipe has read ahead; and what PHP's suite found:
+// a stream whose command ended unread closes without a word; and a block
+// that realloc shrinks a long way gives back what it no longer needs, as
+// CPython's pipe reads want.
 
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -116,6 +119,67 @@ static void allocations(void) {
 	free(odd);
 }
 
+// realloc moves a block that shrinks a long way into one of the size it
+// now needs, and keeps one that shrinks a little where it is. CPython
+// reads a pipe into 32 KiB and shrinks the block to what came: kept
+// whole, each read held the block's pages and the page of its header, so
+// a subprocess whose output came a hundred bytes at a time ran the C
+// library out of memory (Python's test_threading, gh-102056).
+static void shrinks(void) {
+	enum { BLOCKS = 2000, READ = 32 * 1024 + 33, CAME = 105 };
+	static char *blocks[BLOCKS];
+	long before = check_anonymous_pages();
+	CHECK(before > 0);
+	int lost = 0;
+	for(int i = 0; i < BLOCKS; i++) {
+		char *buffer = malloc_(READ);
+		CHECK(buffer != NULL);
+		if(!buffer)
+			break;
+		memset(buffer, 'a' + i % 26, CAME);
+		blocks[i] = realloc_(buffer, CAME);
+		if(!blocks[i] || blocks[i][0] != 'a' + i % 26 || blocks[i][CAME - 1] != 'a' + i % 26
+				|| malloc_usable_size(blocks[i]) != 128)
+			lost++;
+	}
+	CHECK(lost == 0);
+	long after = check_anonymous_pages();
+	// 2000 blocks of 128 bytes take 63 pages; kept whole, over 4000.
+	if(after - before >= 200)
+		fprintf(stderr, "library: %ld pages before %d shrunk reads, %ld after\n", before,
+				BLOCKS, after);
+	CHECK(after - before < 200);
+	for(int i = 0; i < BLOCKS; i++)
+		free(blocks[i]);
+
+	// A slab object that a smaller bucket holds moves there, with what it
+	// held; one that still needs its bucket stays.
+	char *object = malloc_(4096);
+	CHECK(object != NULL);
+	if(object) {
+		memset(object, 'o', 4096);
+		char *half = realloc_(object, 2048);
+		CHECK(half && half != object && malloc_usable_size(half) == 2048 && half[0] == 'o'
+				&& half[2047] == 'o');
+		char *same = realloc_(half, 1500);
+		CHECK(same == half && malloc_usable_size(same) == 2048);
+		free(same);
+	}
+	// A large block that needs half its pages or fewer moves, rounded to
+	// pages; one that needs more stays.
+	char *large = malloc_(1 << 20);
+	CHECK(large != NULL);
+	if(large) {
+		memset(large, 'l', 1 << 20);
+		char *most = realloc_(large, 600 * 1024);
+		CHECK(most == large && malloc_usable_size(most) == 1 << 20);
+		char *less = realloc_(most, 300 * 1024 + 1);
+		CHECK(less && less != most && malloc_usable_size(less) == 304 * 1024
+				&& less[0] == 'l' && less[300 * 1024] == 'l');
+		free(less);
+	}
+}
+
 static void environment(void) {
 	CHECK(setenv("LIBRARY_TEST", "1", 1) == 0);
 	// A copy of the environment, to put back.
@@ -217,6 +281,46 @@ static void popens(void) {
 		check_exit_child();
 	}
 	CHECK_CHILD(child);
+
+	// A command that ends without reading what was written to it: pclose
+	// drops the bytes it cannot write (EPIPE), as glibc does, says nothing
+	// on standard error, and gives the command's status. The command holds
+	// the write end of `exited` until it ends, so the read that finds that
+	// pipe closed shows it has, before anything is written.
+	int exited[2];
+	int made = pipe(exited) == 0;
+	CHECK(made);
+	if(made) {
+		struct sigaction ignore = {.sa_handler = SIG_IGN}, old;
+		CHECK(sigaction(SIGPIPE, &ignore, &old) == 0);
+		FILE *gone = popen("exit 1", "w");
+		close(exited[1]);
+		CHECK(gone != NULL);
+		if(gone) {
+			char byte;
+			CHECK(read(exited[0], &byte, 1) == 0);
+			CHECK(fputs("nobody reads this\n", gone) >= 0);
+			int quiet = open("/tmp/library-pclose", O_RDWR | O_CREAT | O_TRUNC, 0600);
+			int stderr_saved = dup(STDERR_FILENO);
+			if(quiet >= 0 && stderr_saved >= 0) {
+				dup2(quiet, STDERR_FILENO);
+				int status = pclose(gone);
+				dup2(stderr_saved, STDERR_FILENO);
+				CHECK(status == 1 << 8);
+				CHECK(lseek(quiet, 0, SEEK_END) == 0);
+			} else {
+				CHECK(quiet >= 0 && stderr_saved >= 0);
+				pclose(gone);
+			}
+			if(quiet >= 0)
+				close(quiet);
+			if(stderr_saved >= 0)
+				close(stderr_saved);
+			unlink("/tmp/library-pclose");
+		}
+		sigaction(SIGPIPE, &old, NULL);
+		close(exited[0]);
+	}
 }
 
 // fflush(NULL), which a program calls before it forks or runs popen,
@@ -561,6 +665,7 @@ static void found_by_python(void) {
 int main(void) {
 	check_start("library");
 	RUN(allocations);
+	RUN(shrinks);
 	RUN(environment);
 	RUN(popens);
 	RUN(flush_all);

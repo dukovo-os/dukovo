@@ -446,6 +446,9 @@ extern "C" fn radix_trap_dispatch(frame: *mut TrapFrame) {
         if !interrupt {
             // SAFETY: as above, borrowed for the call.
             crate::user::exception(vector, unsafe { &*frame });
+            // The handler may have turned interrupts on to make a page; the
+            // way back looks with them masked, as after a system call.
+            cpu::mask_interrupts();
             crate::user::on_return();
             return;
         }

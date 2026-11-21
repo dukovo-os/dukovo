@@ -135,6 +135,9 @@ pub(crate) struct App {
     catalog: Option<String>,
     /// With `state` `held`: the reason kept with the hold, if one was.
     held_reason: Option<String>,
+    /// Why the newer version was built again, when it is a rebuild and
+    /// its catalog says.
+    rebuild_reason: Option<String>,
     /// With `state` `update`: until when `update later` puts off the
     /// reminder of it, in milliseconds since 1970, while that stands.
     later_until_ms: Option<u64>,
@@ -249,6 +252,7 @@ impl Offer {
             state: if row.held { Found::Held } else { Found::Update },
             catalog: row.catalog.clone(),
             held_reason: row.held_reason.clone().filter(|_| row.held),
+            rebuild_reason: row.rebuild_reason.clone(),
             later_until_ms: None,
         })
     }
@@ -418,6 +422,7 @@ mod tests {
             catalog: Some("dukovo".into()),
             held,
             held_reason: held.then(|| "app tests use this version".into()),
+            rebuild_reason: None,
         }
     }
 
@@ -644,6 +649,19 @@ mod tests {
         assert_eq!(apps["held_reason"], "app tests use this version");
         let apps = serde_json::to_value(Offer::app(&app(false))).unwrap();
         assert_eq!(apps["held_reason"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn an_app_offer_says_why_its_newer_version_was_built_again() {
+        let rebuilt = Available {
+            to: "1.2.0_2".into(),
+            rebuild_reason: Some("Linked with the C library fix".into()),
+            ..app(false)
+        };
+        let offer = serde_json::to_value(Offer::app(&rebuilt)).unwrap();
+        assert_eq!(offer["rebuild_reason"], "Linked with the C library fix");
+        let offer = serde_json::to_value(Offer::app(&app(false))).unwrap();
+        assert_eq!(offer["rebuild_reason"], serde_json::Value::Null);
     }
 
     fn start(number: u64, started: i64, outcome: Outcome, system: &str, firmware: &str) -> Start {

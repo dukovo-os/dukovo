@@ -74,8 +74,19 @@ windows (1.1), *runtime*, the Linux layer (1.3), and *plugins* (1.10).
 *version* = _"version"_
 	Its version: numbers between dots, one to four of them, as
 	semantic versioning writes them, such as *"1.27.3"* or *"17.2"*,
-	with a pre-release after *-* (*"2.0.0-beta.1"*) and a build after
-	*+*. Required.
+	with a pre-release after *-* (*"2.0.0-beta.1"*) and metadata after
+	*+*. It may end in a build number, *\_N* with N from 2 to 9999,
+	written last: *"15.2.0\_2"*, *"19.0-rc.2\_2"*, *"1.0.0+meta\_3"*.
+	Build 1 is the plain version, with no *\_1*; *\_0*, *\_1*, *\_01*,
+	*\_10000*, a bare *\_*, *\_\_2* and *\_2\_3* are refused. Neither a
+	pre-release nor metadata may hold *\_*, so the last *\_* splits a
+	version without doubt. Versions order as semantic versioning
+	orders them (numbers, a missing one counting 0; a pre-release
+	before its release; metadata ignored) and then by build, a missing
+	build counting 1: *15.2.0* < *15.2.0\_2* < *15.2.0\_10* <
+	*15.2.1-rc.1*, and *19.0-rc.2\_2* < *19.0*. A catalog gives a
+	rebuild of a version its build number (*ob*(1), *catalog sign*); a
+	feed's publisher may write one by hand. Required.
 
 *line* = _"line"_
 	The major version line its version is of, such as *"22"* or
