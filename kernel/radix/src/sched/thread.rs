@@ -478,8 +478,8 @@ impl Thread {
     /// Asks it to stop: it sees [`Thread::should_stop`] and exits. Kernel
     /// threads check for it where they can stop cleanly; threads of user
     /// programs are stopped at their next entry into the kernel or return
-    /// from an interrupt. The out-of-memory policy and a process's end use
-    /// it.
+    /// from an interrupt, which [`super::interrupt`] brings about at once.
+    /// The out-of-memory policy and a process's end use it.
     pub fn request_stop(&self) {
         self.stop.store(true, Ordering::Release);
     }
@@ -491,8 +491,9 @@ impl Thread {
 
     /// Marks that it has a signal to take (or a stop to make for job
     /// control) on its way back to user mode, or clears that. Whoever sets
-    /// it then wakes the thread ([`super::wake`]), so that a wait it is in
-    /// ends as interrupted.
+    /// it then interrupts the thread ([`super::interrupt`]), so that a wait
+    /// it is in ends as interrupted, and a thread running in user mode on
+    /// another CPU comes into the kernel to take it.
     pub fn set_signalled(&self, signalled: bool) {
         self.signalled.store(signalled, Ordering::Release);
     }

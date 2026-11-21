@@ -5,11 +5,13 @@
 // sigsuspend, sigtimedwait, default actions, stopping and continuing,
 // faults, interrupted calls, timers set again just after being
 // cancelled, the alternate stack, timers, floating-point state a handler
-// moves, the values sigqueue sends and real-time signals queue, and whom
-// kill reaches.
+// moves, the values sigqueue sends and real-time signals queue, whom
+// kill reaches, and a signal to a process that spins on another CPU.
 
 #include <fcntl.h>
+#include <sched.h>
 #include <setjmp.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <sys/mman.h>
 #include <sys/time.h>
@@ -620,6 +622,174 @@ static void reach(void) {
 	CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM);
 }
 
+// What a spinning child and its parent share.
+struct spinner {
+	atomic_int spinning; // The child has begun to spin.
+	atomic_int handled; // The child's handler has run.
+	atomic_int release; // The parent waited long enough and lets it go.
+	atomic_int escaped; // The child was let go: the signal never came.
+	atomic_int sent; // The parent has sent the signals.
+};
+
+static struct spinner *spinner;
+
+static void on_spinning(int signal) {
+	(void)signal;
+	atomic_store(&spinner->handled, 1);
+}
+
+// A handler that spins, making no call to the kernel, until the parent
+// lets it go.
+static void on_spinning_on(int signal) {
+	(void)signal;
+	atomic_store(&spinner->handled, 1);
+	while(!atomic_load_explicit(&spinner->release, memory_order_relaxed)) {
+	}
+	atomic_store(&spinner->escaped, 1);
+}
+
+// The child: spins in user mode, making no call to the kernel, until the
+// signal ends it or its handler runs, or the parent lets it go.
+static void spin(void) {
+	atomic_store(&spinner->spinning, 1);
+	while(!atomic_load_explicit(&spinner->handled, memory_order_relaxed)
+			&& !atomic_load_explicit(&spinner->release, memory_order_relaxed)) {
+	}
+	if(!atomic_load(&spinner->handled))
+		atomic_store(&spinner->escaped, 1);
+	_exit(0);
+}
+
+// Waits up to 5 s for the spinning child `pid` to end, then lets it go;
+// returns its wait status.
+static int wait_spinner(pid_t pid) {
+	long long deadline = check_now_ns() + 5000000000LL;
+	int status;
+	pid_t got;
+	while((got = waitpid(pid, &status, WNOHANG)) == 0 && check_now_ns() < deadline)
+		check_sleep_ms(1);
+	if(got == pid)
+		return status;
+	atomic_store(&spinner->release, 1);
+	return check_wait(pid);
+}
+
+// A signal reaches a process that spins on another CPU, making no call to
+// the kernel: SIGTERM and SIGKILL end it and a handler runs, whether the
+// child was spinning when the signal came or had only just been forked,
+// as PHP's pcntl tests send SIGTERM. The kernel interrupts the child's
+// CPU, which, running one thread alone, has no timer to bring it into the
+// kernel. And of two signals a child takes at once, the second ends it
+// though the first one's handler would spin, as Linux takes every signal
+// it can on one way back to user mode. A child that the signal has
+// not reached in 5 s is let go, and the rounds stop at the first, so a
+// kernel that loses the signal fails the test and does not hold it.
+static void spinners(void) {
+	spinner = mmap(NULL, sizeof(*spinner), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS,
+			-1, 0);
+	CHECK(spinner != MAP_FAILED);
+	if(spinner == MAP_FAILED)
+		return;
+	// This process on its first CPU and each child on its second, when
+	// it has two.
+	cpu_set_t all, here, there;
+	CPU_ZERO(&all);
+	CHECK(sched_getaffinity(0, sizeof(all), &all) == 0);
+	int first = -1, second = -1;
+	for(int cpu = 0; cpu < CPU_SETSIZE && second < 0; cpu++) {
+		if(!CPU_ISSET(cpu, &all))
+			continue;
+		if(first < 0)
+			first = cpu;
+		else
+			second = cpu;
+	}
+	CPU_ZERO(&here);
+	CPU_ZERO(&there);
+	if(second >= 0) {
+		CPU_SET(first, &here);
+		CPU_SET(second, &there);
+		CHECK(sched_setaffinity(0, sizeof(here), &here) == 0);
+	}
+	handle(SIGUSR1, on_spinning, 0);
+	static const int sent[] = {SIGTERM, SIGKILL, SIGUSR1};
+	for(size_t i = 0; i < sizeof(sent) / sizeof(sent[0]); i++) {
+		for(int round = 0; round < 20; round++) {
+			atomic_store(&spinner->spinning, 0);
+			atomic_store(&spinner->handled, 0);
+			atomic_store(&spinner->release, 0);
+			atomic_store(&spinner->escaped, 0);
+			atomic_store(&spinner->sent, 0);
+			pid_t pid = check_fork();
+			if(pid == 0)
+				spin();
+			if(second >= 0)
+				CHECK(sched_setaffinity(pid, sizeof(there), &there) == 0);
+			// Every other round waits until the child spins; the others
+			// send the signal at once.
+			if(round % 2) {
+				long long deadline = check_now_ns() + 5000000000LL;
+				while(!atomic_load(&spinner->spinning) && check_now_ns() < deadline)
+					check_sleep_ms(1);
+				CHECK(atomic_load(&spinner->spinning));
+			}
+			CHECK(kill(pid, sent[i]) == 0);
+			int status = wait_spinner(pid);
+			int escaped = atomic_load(&spinner->escaped);
+			CHECK(!escaped);
+			if(sent[i] == SIGUSR1)
+				CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0
+						&& atomic_load(&spinner->handled));
+			else
+				CHECK(WIFSIGNALED(status) && WTERMSIG(status) == sent[i]);
+			if(escaped) {
+				printf("signal: signal %d missed a spinning child in round %d\n", sent[i],
+						round);
+				break;
+			}
+		}
+	}
+	signal(SIGUSR1, SIG_DFL);
+
+	// SIGUSR1 and SIGTERM, both pending when the child unblocks them:
+	// SIGUSR1's handler, which would spin, is set up first, and SIGTERM,
+	// which the handler does not block, ends the child before it spins.
+	atomic_store(&spinner->spinning, 0);
+	atomic_store(&spinner->handled, 0);
+	atomic_store(&spinner->release, 0);
+	atomic_store(&spinner->escaped, 0);
+	atomic_store(&spinner->sent, 0);
+	pid_t pid = check_fork();
+	if(pid == 0) {
+		handle(SIGUSR1, on_spinning_on, 0);
+		sigset_t both;
+		sigemptyset(&both);
+		sigaddset(&both, SIGUSR1);
+		sigaddset(&both, SIGTERM);
+		sigprocmask(SIG_BLOCK, &both, NULL);
+		atomic_store(&spinner->spinning, 1);
+		long long deadline = check_now_ns() + 5000000000LL;
+		while(!atomic_load(&spinner->sent) && check_now_ns() < deadline)
+			check_sleep_ms(1);
+		sigprocmask(SIG_UNBLOCK, &both, NULL);
+		_exit(0);
+	}
+	if(second >= 0)
+		CHECK(sched_setaffinity(pid, sizeof(there), &there) == 0);
+	long long deadline = check_now_ns() + 5000000000LL;
+	while(!atomic_load(&spinner->spinning) && check_now_ns() < deadline)
+		check_sleep_ms(1);
+	CHECK(kill(pid, SIGUSR1) == 0);
+	CHECK(kill(pid, SIGTERM) == 0);
+	atomic_store(&spinner->sent, 1);
+	int status = wait_spinner(pid);
+	CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM);
+	CHECK(!atomic_load(&spinner->escaped));
+
+	CHECK(sched_setaffinity(0, sizeof(all), &all) == 0);
+	munmap(spinner, sizeof(*spinner));
+}
+
 int main(void) {
 	check_start("signal");
 	RUN(handlers);
@@ -636,5 +806,6 @@ int main(void) {
 	RUN(nested);
 	RUN(queued);
 	RUN(reach);
+	RUN(spinners);
 	return check_end();
 }

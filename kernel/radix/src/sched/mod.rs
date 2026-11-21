@@ -877,6 +877,33 @@ pub fn wake(thread: &ThreadRef) -> bool {
     true
 }
 
+/// Makes a thread that has been asked to stop, or marked as having a
+/// signal to take, look on its way back to user mode soon: wakes it if it
+/// is blocked, and if it is running on another CPU, interrupts that CPU,
+/// as Linux's `kick_process` does. Call it after setting the stop or the
+/// mark. A CPU that runs one thread alone arms no timer (`Rq::slice_end`),
+/// so without the interrupt a thread spinning in user mode there would go
+/// on until some unrelated interrupt came to that CPU. Works from
+/// interrupt handlers.
+pub fn interrupt(thread: &ThreadRef) {
+    if wake(thread) {
+        return;
+    }
+    // The caller set the stop or the mark before this fence, and a CPU
+    // switching to the thread stores `current` before the switch's locked
+    // compare-and-exchange of the thread's `on_cpu` word, which comes
+    // before the thread's last look on its way to user mode, made with
+    // interrupts masked (`user::on_return`). So either the thread is seen
+    // running here, or that look sees what the caller set. The thread
+    // running here is the caller, which looks on its own way back.
+    atomic::fence(Ordering::SeqCst);
+    let token = thread.token();
+    let cpu = thread.cpu.load(Ordering::Relaxed);
+    if token != current_token() && CPUS.get(cpu).current.load(Ordering::Relaxed) == token {
+        Arch::send_ipi(cpu, Ipi::Reschedule);
+    }
+}
+
 /// Like [`wake`], for a waker that is about to block itself, as in IPC: a
 /// thread that may run on this CPU is put on it, where it runs once the
 /// waker blocks, instead of on another CPU that would have to be

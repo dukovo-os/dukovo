@@ -743,5 +743,6 @@ picking, `AllFinish` fails.
   it by default, so the boot tests exercise HLT; the first boot on real
   hardware is its first run.
 - Stopping is cooperative for kernel threads. A program's thread (Phase
-  5) stops on its next way back to user mode, at the latest after the
-  next tick, or when a wait it is in ends.
+  5) stops on its next way back to user mode, or when a wait it is in
+  ends; one running on another CPU is sent a reschedule IPI to bring it
+  there (`sched::interrupt`).

@@ -9,7 +9,9 @@
 //! default ends the process end it), then makes it pending, for the
 //! process or for one thread, and picks a thread that does not block it:
 //! that thread is marked `signalled` and woken, so that a wait it is in
-//! ends as interrupted. On its way back to user mode ([`deliver`], from
+//! ends as interrupted, or if it runs on another CPU, that CPU is
+//! interrupted (`sched::interrupt`), so that a thread spinning in user
+//! mode takes it at once. On its way back to user mode ([`deliver`], from
 //! `on_return`) the thread takes its signals one at a time: a stop stops
 //! the whole process (each of its threads waits in [`deliver`] until
 //! SIGCONT), a handler gets a frame on the thread's stack
@@ -139,14 +141,15 @@ fn has_work(posix: &PosixState, signals: &ThreadSignals) -> bool {
 }
 
 /// Marks `thread` as having something to do on its way back, and wakes
-/// it. The running thread, signalling itself outside an interrupt, is not
-/// between a wait's look at `signalled` and its sleep, so its next wait
-/// sees the mark: it needs no wake, whose two locked instructions are
-/// most of a signal's cost to itself.
+/// it, or interrupts the CPU it runs on (`sched::interrupt`). The running
+/// thread, signalling itself outside an interrupt, is not between a
+/// wait's look at `signalled` and its sleep, so its next wait sees the
+/// mark: it needs no wake, whose two locked instructions are most of a
+/// signal's cost to itself.
 fn kick(thread: &ThreadRef) {
     thread.set_signalled(true);
     if thread.token() != sched::current_token() || Arch::interrupt_depth() != 0 {
-        sched::wake(thread);
+        sched::interrupt(thread);
     }
 }
 
@@ -593,12 +596,13 @@ enum Step {
 /// user mode: stops for job control, ends the process for a signal that
 /// ends it, or makes the thread run a handler; and makes an interrupted
 /// system call run again when it may. Called with interrupts on; returns
-/// with the thread ready for user mode, or never.
-pub fn deliver(me: &ThreadRef, user: &UserRef) {
+/// with the thread ready for user mode, or never. Returns whether the
+/// thread runs a handler next.
+pub fn deliver(me: &ThreadRef, user: &UserRef) -> bool {
     let process = &user.process;
     loop {
         if me.should_stop() {
-            return;
+            return false;
         }
         let step = {
             let mut posix = process.posix.lock();
@@ -622,7 +626,7 @@ pub fn deliver(me: &ThreadRef, user: &UserRef) {
                             // runs again.
                             Arch::restart_syscall(&regs);
                         }
-                        return;
+                        return false;
                     }
                     Some((signal, info)) => {
                         let mut step = match posix.actions.disposition(signal) {
@@ -702,7 +706,7 @@ pub fn deliver(me: &ThreadRef, user: &UserRef) {
                     kill_process(process, SIGSEGV);
                     exit_current(user.clone(), EXIT_FAULT, Ending::Stop);
                 }
-                return;
+                return true;
             }
         }
     }
