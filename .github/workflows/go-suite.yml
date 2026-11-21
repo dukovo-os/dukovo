@@ -7,7 +7,8 @@
 # take an hour or more with KVM. That is too long for a boot test's shard, so it is a job of
 # its own: ci.yml calls it for a pull request that changes the Go port, its
 # bundle, the Go programs or the code that builds and runs them, and anyone
-# may start it by hand. The script's whole log is kept as an artifact.
+# may start it by hand. The script's whole log is kept as an artifact, and
+# when the run fails its end is also printed in the job's own log.
 #
 # A nightly schedule is to be added when scheduled runs are turned back on.
 name: Go test suite
@@ -105,6 +106,13 @@ jobs:
       - name: ./ob test go-suite
         timeout-minutes: 240
         run: ./ob test go-suite
+
+      - name: Show the end of the suite's log
+        if: failure()
+        run: |
+          if [ -f out/test/go-suite.log ]; then
+            tail -n 200 out/test/go-suite.log
+          fi
 
       - name: Upload the suite's log
         if: always()

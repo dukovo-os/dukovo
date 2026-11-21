@@ -57,6 +57,11 @@ const LOG_FILE: &str = "go-suite.log";
 /// Where the host keeps the log, in the folder of the boot tests' logs.
 const LOG: &str = "go-suite.log";
 
+/// Where the script keeps its log and its other files: a folder of alice's
+/// home, which root reads through `elevate` to save the log. Each account
+/// has a `/tmp` of its own (ADR 0255), so root's is not alice's.
+const SCRATCH: &str = "/users/alice/go-suite";
+
 /// What a run is limited to if the person who starts it names no other, in
 /// seconds: the sum of the waits below, which are estimates. None has been
 /// measured: the suite under KVM is thought to take 30 to 90 minutes, and
@@ -102,6 +107,7 @@ volume=@VOLUME@
 scratch=@SCRATCH@
 log=$scratch/go-suite.log
 failed=$scratch/go-suite.failed
+mkdir -p "$scratch"
 : > "$log"
 # A -skip applies to every package of a call, so a package that has skips has
 # a call of its own, and the others share one, which go test runs in parallel.
@@ -139,9 +145,10 @@ cat "$scratch/go-suite.summary"
 cat "$scratch/go-suite.summary" >> "$log"
 "#;
 
-/// The script with the disk where Spark mounts it and its files in `/tmp`.
+/// The script with the disk where Spark mounts it and its files in
+/// [`SCRATCH`].
 fn script() -> String {
-    script_for(VOLUME, "/tmp")
+    script_for(VOLUME, SCRATCH)
 }
 
 /// [`SCRIPT`] for a disk at `volume` and files in `scratch`.
@@ -301,7 +308,7 @@ fn go_suite(vm: &mut Vm, case: &Case) -> Result<(), String> {
     cases::go_toolchain::succeeds(
         vm,
         "save",
-        &format!("elevate cp /tmp/{LOG_FILE} {VOLUME}/{LOG_FILE}"),
+        &format!("elevate cp {SCRATCH}/{LOG_FILE} {VOLUME}/{LOG_FILE}"),
         SAVE_SECONDS,
     )?;
     vm.press_power_button()?;
@@ -348,7 +355,7 @@ done
     fn the_script_runs_go_test_short_for_every_package_and_skips_in_calls_of_their_own() {
         let text = script();
         assert!(text.contains("volume=/volumes/vdb\n"), "{text}");
-        assert!(text.contains("scratch=/tmp\n"), "{text}");
+        assert!(text.contains(&format!("scratch={SCRATCH}\n")), "{text}");
         assert!(text.contains(&format!("go test -short -timeout {PACKAGE_TIMEOUT} $plain")));
         assert!(text.contains(&format!("-timeout {PACKAGE_TIMEOUT} -run=. \"-skip=$skip\"")));
         assert!(text.contains("echo \"go-suite: $total packages, $count failed\""));
