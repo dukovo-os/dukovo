@@ -1,0 +1,123 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+syslog(3) writes a message that /dev/log does not take where the
+system's log takes it (ADR 0506), and prints nothing of its own. When it
+could not connect to /dev/log, it printed "mlibc: syslog: connect
+returned an error, falling back to infoLogger" in red on standard error,
+then every message there after "mlibc: syslog: ", and left out
+LOG_PERROR and LOG_CONS. It now tries /dev/log for each message, as musl
+does, so that a syslog daemon that starts later takes them; then the
+kernel log, /devices/kmsg, as one line with the message's facility and
+level in front, <N>, as logger(1) writes; then, for a service that does
+not see the kernel log, the same line on standard error, which Spark
+keeps in the log at that level; and only when none of them took it, the
+console, with LOG_CONS. LOG_PERROR copies each message to standard
+error, as glibc does, and then the line does not go there as well. The
+kernel and Spark put the program's name in front of a line and mark it
+with the process, so the line has the ident only when it is not the
+program's name, and no process number. Dukovo only.
+
+diff --git a/options/posix/generic/syslog.cpp b/options/posix/generic/syslog.cpp
+index 4adf84b..e794d35 100644
+--- a/options/posix/generic/syslog.cpp
++++ b/options/posix/generic/syslog.cpp
+@@ -13,7 +13,6 @@
+ 
+ #include <frg/mutex.hpp>
+ #include <mlibc/lock.hpp>
+-#include <mlibc/debug.hpp>
+ 
+ // This syslog implementation is largely taken from musl
+ 
+@@ -23,7 +22,6 @@ static int log_facility = LOG_USER;
+ static int log_fd = -1;
+ static int log_mask = 0xff;
+ 
+-static int use_mlibc_logger = 0;
+ static FutexLock __syslog_lock;
+ 
+ static const struct sockaddr_un log_addr {AF_UNIX, "/dev/log"};
+@@ -36,13 +34,41 @@ void closelog(void) {
+ 
+ static void __openlog() {
+ 	log_fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+-	if(log_fd >= 0) {
+-		int ret = connect(log_fd, (const sockaddr *)&log_addr, sizeof log_addr);
+-		if(ret) {
+-			mlibc::infoLogger() << "\e[31mmlibc: syslog: connect returned an error, falling back to infoLogger\e[39m" << frg::endlog;
+-			use_mlibc_logger = 1;
+-		}
++	if(log_fd >= 0)
++		connect(log_fd, (const sockaddr *)&log_addr, sizeof log_addr);
++}
++
++// Writes a message that /dev/log did not take where the system's log
++// takes it (ADR 0506): to the kernel log, or, where the program cannot
++// see that, as a service whose file does not name it cannot, to standard
++// error, which Spark keeps in the log as the service's; not there with
++// LOG_PERROR, which copies the message there already. Either way it is
++// one line, <N> with the message's facility and level, then the message.
++// The kernel or Spark puts the program's name in front of it and marks
++// it with the process, so the line has the ident only when the ident is
++// not the program's name, and no process number. Says whether it was
++// taken.
++static bool to_the_log(int priority, const char *text, int length) {
++	char line[1088];
++	const char *name = program_invocation_short_name;
++	int n;
++	if(log_ident[0] && !(name && !strcmp(log_ident, name)))
++		n = snprintf(line, sizeof line, "<%d>%s: %.*s", priority, log_ident, length, text);
++	else
++		n = snprintf(line, sizeof line, "<%d>%.*s", priority, length, text);
++	if(n < 0)
++		return false;
++	if(n >= (int)sizeof line)
++		n = sizeof line - 1;
++	int fd = open("/devices/kmsg", O_WRONLY | O_NOCTTY | O_CLOEXEC);
++	if(fd >= 0) {
++		bool taken = write(fd, line, n) == n;
++		close(fd);
++		return taken;
+ 	}
++	if(log_options & LOG_PERROR)
++		return false;
++	return write(STDERR_FILENO, line, n) == n;
+ }
+ 
+ void openlog(const char *ident, int options, int facility) {
+@@ -84,17 +110,12 @@ static void _vsyslog(int priority, const char *message, va_list ap) {
+ 	int pid;
+ 	int l, l2;
+ 	int hlen;
++	int body;
+ 	int fd;
+ 
+ 	if(log_fd < 0)
+ 		__openlog();
+ 
+-	if(use_mlibc_logger) {
+-		vsnprintf(buf, sizeof buf, message, ap);
+-		mlibc::infoLogger() << "mlibc: syslog: " << buf << frg::endlog;
+-		return;
+-	}
+-
+ 	if(!(priority & LOG_FACMASK))
+ 		priority |= log_facility;
+ 
+@@ -105,6 +126,7 @@ static void _vsyslog(int priority, const char *message, va_list ap) {
+ 	pid = (log_options & LOG_PID) ? getpid() : 0;
+ 	l = snprintf(buf, sizeof buf, "<%d>%s %n%s%s%.0d%s: ",
+ 		priority, timebuf, &hlen, log_ident, (pid ? "[" : ""), pid, (pid ? "]" : ""));
++	body = l;
+ 	errno = errno_save;
+ 	l2 = vsnprintf(buf + l, sizeof buf - l, message, ap);
+ 	if(l2 >= 0) {
+@@ -117,6 +139,7 @@ static void _vsyslog(int priority, const char *message, va_list ap) {
+ 		if(send(log_fd, buf, l, 0) < 0 && (!is_lost_conn(errno)
+ 		    || connect(log_fd, (const sockaddr *)&log_addr, sizeof log_addr) < 0
+ 		    || send(log_fd, buf, l, 0) < 0)
++		    && !to_the_log(priority, buf + body, l - body)
+ 		    && (log_options & LOG_CONS)) {
+ 			fd = open("/dev/console", O_WRONLY|O_NOCTTY|O_CLOEXEC);
+ 			if(fd >= 0) {

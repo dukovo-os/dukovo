@@ -701,6 +701,49 @@ static void hard_links(void) {
 	CHECK(rmdir("/tmp/hard/sub") == 0 && rmdir("/tmp/hard") == 0);
 }
 
+// How long one open of the race below may wait, in seconds.
+#define RACE_PATIENCE 10
+
+static void race_alarm(int number) {
+	(void)number;
+}
+
+// Opens the named pipe the way `mode` says, and moves one byte through it
+// and then the end of file: the writer writes one byte and closes, the
+// reader reads it and then reads 0. Gives 0 if all of it went right.
+static int race_side(int mode) {
+	alarm(RACE_PATIENCE);
+	int fd = open("/tmp/special/fifo", mode);
+	alarm(0);
+	if(fd < 0)
+		return 1;
+	char byte;
+	int ok = mode == O_WRONLY ? write(fd, "r", 1) == 1
+			: read(fd, &byte, 1) == 1 && read(fd, &byte, 1) == 0;
+	close(fd);
+	return !ok;
+}
+
+// A reader and a writer open the same named pipe at once, `rounds` times,
+// the child with `child_mode` and this process with the other. A lost
+// wakeup would leave one of them in its open for good, which the alarm
+// turns into a failed open. The first round that fails ends the race, so
+// that a kernel that loses every one does not hold the suite for each.
+static void race_opens(int child_mode, int rounds) {
+	int mode = child_mode == O_WRONLY ? O_RDONLY : O_WRONLY;
+	int before = check_failures;
+	for(int i = 0; i < rounds && check_failures == before; i++) {
+		pid_t pid = fork();
+		CHECK(pid >= 0);
+		if(pid < 0)
+			return;
+		if(pid == 0)
+			_exit(race_side(child_mode));
+		CHECK(race_side(mode) == 0);
+		CHECK_CHILD(pid);
+	}
+}
+
 // Named pipes: an open to read waits for a writer and one to write for a
 // reader, but not with O_NONBLOCK or both ways; the ends share one pipe
 // while any is open. Device nodes open the device of Linux's number for
@@ -735,6 +778,15 @@ static void special_files(void) {
 	CHECK(read(reader, text, 1) == 0);
 	close(reader);
 	CHECK_CHILD(pid);
+	// Opens that race each other, either end first, are not lost; an open
+	// that waits too long is ended by SIGALRM, without SA_RESTART.
+	struct sigaction alarm_action = {.sa_handler = race_alarm};
+	sigemptyset(&alarm_action.sa_mask);
+	struct sigaction alarm_old;
+	CHECK(sigaction(SIGALRM, &alarm_action, &alarm_old) == 0);
+	race_opens(O_WRONLY, 100);
+	race_opens(O_RDONLY, 100);
+	sigaction(SIGALRM, &alarm_old, NULL);
 	// Both ways at once waits for nothing.
 	int both = open("/tmp/special/fifo", O_RDWR);
 	CHECK(both >= 0 && write(both, "x", 1) == 1 && read(both, &byte, 1) == 1 && byte == 'x');

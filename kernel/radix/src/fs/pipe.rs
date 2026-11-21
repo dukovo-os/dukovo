@@ -179,8 +179,9 @@ pub struct Pipe {
     id: u64,
     /// Its pollers.
     polled: Polled,
-    /// How many times an end was opened to read, and to write: a named
-    /// pipe's open waits for the other kind's to change.
+    /// How many times an end was opened to read, and to write, one opened
+    /// both ways counting in both: a named pipe's open that waits for the
+    /// other kind waits for its count to change.
     opened: [AtomicU32; 2],
     /// For a named pipe, its node, kept while the pipe is open so that
     /// [`NAMED`] finds the pipe by the node's address.
@@ -850,11 +851,23 @@ pub fn open_named(
     non_blocking: bool,
 ) -> Result<NodeRef, Status> {
     let key = radix_vfs::address(&at.node);
-    let pipe = {
+    // An open counts itself, and finds whether an end of the other kind is
+    // open and how many times one was opened, in one hold of the table's
+    // lock, which every open of a named pipe takes. Of a reader and a
+    // writer that open at once, one holds it first, and the other finds it
+    // counted and waits for nothing; the first waits for the other's open,
+    // which it sees however soon that end closes again. Apart, a writer
+    // could find the reader counted, go on, write and close, all between
+    // the reader's count and its look, which then found no writer and no
+    // open since: the reader waited for good, as PHP's test gh20582.phpt
+    // found.
+    let theirs = usize::from(!write);
+    let (pipe, seen, waits) = {
         let mut named = NAMED.lock();
         let named = named.get_or_insert_with(|| Vec::new_in(heap()));
         named.retain(|(_, pipe)| pipe.strong_count() > 0);
-        match named.iter().find(|(k, _)| *k == key).and_then(|(_, pipe)| pipe.upgrade()) {
+        let open = named.iter().find(|(k, _)| *k == key).and_then(|(_, pipe)| pipe.upgrade());
+        let pipe = match open {
             Some(pipe) => pipe,
             None => {
                 let pipe = Pipe::with_ends(0, Some(at.node.clone()))?;
@@ -862,21 +875,23 @@ pub fn open_named(
                 let _ = named.push_within_capacity((key, KArc::downgrade(&pipe)));
                 pipe
             }
+        };
+        let other = if write { &pipe.readers } else { &pipe.writers };
+        if write && !read && non_blocking && other.load(Ordering::Acquire) == 0 {
+            return Err(FileError::NoDevice.status(0));
         }
+        let waits = read != write && !non_blocking && other.load(Ordering::Acquire) == 0;
+        if write {
+            pipe.writers.fetch_add(1, Ordering::AcqRel);
+            pipe.opened[1].fetch_add(1, Ordering::AcqRel);
+        }
+        if read {
+            pipe.readers.fetch_add(1, Ordering::AcqRel);
+            pipe.opened[0].fetch_add(1, Ordering::AcqRel);
+        }
+        let seen = pipe.opened[theirs].load(Ordering::Acquire);
+        (pipe, seen, waits)
     };
-    let (other, mine) = if write { (&pipe.readers, 1) } else { (&pipe.writers, 0) };
-    if write && !read && non_blocking && other.load(Ordering::Acquire) == 0 {
-        return Err(FileError::NoDevice.status(0));
-    }
-    // Counted before the wait, so that an open of the other kind waiting
-    // meanwhile sees it.
-    if write {
-        pipe.writers.fetch_add(1, Ordering::AcqRel);
-    }
-    if read {
-        pipe.readers.fetch_add(1, Ordering::AcqRel);
-    }
-    pipe.opened[mine].fetch_add(1, Ordering::AcqRel);
     let end = mem::arc(End { pipe: pipe.clone(), write, reads_too: read && write });
     let end: NodeRef = match end {
         Ok(end) => end,
@@ -886,16 +901,14 @@ pub fn open_named(
             return Err(Kernel::NoMemory.status(0));
         }
     };
+    // An open of the other kind that is waiting goes on.
     pipe.changed();
-    if read != write && !non_blocking {
-        let theirs = &pipe.opened[1 - mine];
-        let seen = theirs.load(Ordering::Acquire);
+    if waits {
+        let opened = &pipe.opened[theirs];
         wait::wait_until(pipe.key(), "fifo open", || {
-            other.load(Ordering::Acquire) > 0
-                || theirs.load(Ordering::Acquire) != seen
-                || sched::interrupted()
+            opened.load(Ordering::Acquire) != seen || sched::interrupted()
         });
-        if other.load(Ordering::Acquire) == 0 && theirs.load(Ordering::Acquire) == seen {
+        if opened.load(Ordering::Acquire) == seen {
             return Err(interrupted(Restart::Always));
         }
     }
