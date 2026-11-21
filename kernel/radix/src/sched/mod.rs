@@ -96,46 +96,44 @@ const NO_TOKEN: usize = 2;
 /// Room for threads that the scheduler's lists start with.
 const INITIAL_ROOM: usize = 64;
 
-/// The scheduler's state for one CPU.
+/// Starts the field after it on a cache line of its own.
+#[repr(C, align(64))]
+struct LineBreak;
+
+/// The scheduler's state for one CPU, laid out a cache line at a time
+/// (ADR 0556).
+#[repr(C, align(64))]
 struct CpuSched {
+    // Line 0: what another CPU writes and reads to wake this one, and to
+    // choose it for a thread. A waker reads the published load, then
+    // writes the request word, one line between them; and the idle CPU,
+    // which spins on the word, writes the load only as it starts work.
     /// Set when the running thread should give way, cleared by
-    /// [`reschedule`]; the idle thread polls it, or watches it in MWAIT.
-    /// In a cache line of its own (ADR 0555).
+    /// [`reschedule`]; the idle thread polls it, or watches it in MWAIT
+    /// (ADR 0555). Its inbox holds the threads handed to this CPU.
     resched: Resched,
-    rq: SpinLock<Option<Rq>>,
-    /// The token of the running thread.
-    current: AtomicUsize,
     /// The published load: queued threads, and the running real-time
     /// priority.
     running: AtomicU32,
     rt_prio: AtomicU8,
     online: AtomicBool,
-    /// This CPU's sleepers.
-    timers: SpinLock<Option<Vec<(u64, ThreadRef), Kmalloc>>>,
-    /// The earliest sleeper's deadline.
-    timer_next: AtomicU64,
+    _rq: LineBreak,
+    // Lines 1 to 5: the run queue, which other CPUs lock only to queue a
+    // thread on a busy CPU, or to balance.
+    rq: SpinLock<Option<Rq>>,
+    // Then what this CPU alone writes as it switches and takes ticks.
+    /// The token of the running thread.
+    current: AtomicUsize,
     /// When the running thread's slice or quantum ends.
     slice_end: AtomicU64,
+    /// The earliest sleeper's deadline.
+    timer_next: AtomicU64,
     ticks: AtomicU64,
     /// The ticks that found a thread running in user mode, and in the
     /// kernel (`radix_sched::account`); the rest found it idle.
     user_ticks: AtomicU64,
     system_ticks: AtomicU64,
     preemptions: AtomicU64,
-    /// Nanoseconds idle, in periods that have ended; while one is under
-    /// way, when it began (0 while busy). `idle_seq` is odd while an ended
-    /// period moves into `idle_ns`, for readers on other CPUs.
-    idle_ns: AtomicU64,
-    idle_since: AtomicU64,
-    idle_seq: AtomicU64,
-    /// Its busy time as [`cpu_times`] last split it, and the idle time
-    /// it gave then.
-    given: SpinLock<(Split, u64)>,
-    /// Idle periods that ended while polling, and that halted.
-    polls: AtomicU64,
-    halts: AtomicU64,
-    /// Balancing attempts that found nothing to move, by level.
-    balance_failures: [AtomicU32; 4],
     /// Set by a switch away from a thread that has exited, for the thread
     /// switched to, which tells the reaper (`after_switch`).
     left_dead: AtomicBool,
@@ -146,12 +144,39 @@ struct CpuSched {
     /// A thread woken here by [`lazily`] should have run at once: the
     /// running thread gives way at [`pay_owed`], or at its next switch.
     owed: AtomicBool,
+    /// This CPU's sleepers.
+    timers: SpinLock<Option<Vec<(u64, ThreadRef), Kmalloc>>>,
+    /// Balancing attempts that found nothing to move, by level.
+    balance_failures: [AtomicU32; 4],
+    _idle: LineBreak,
+    // What this CPU writes as an idle period ends, in a line of its own.
+    /// Nanoseconds idle, in periods that have ended; while one is under
+    /// way, when it began (0 while busy). `idle_seq` is odd while an ended
+    /// period moves into `idle_ns`, for readers on other CPUs.
+    idle_ns: AtomicU64,
+    idle_since: AtomicU64,
+    idle_seq: AtomicU64,
+    /// Idle periods that ended while polling, and that halted.
+    polls: AtomicU64,
+    halts: AtomicU64,
+    /// Its busy time as [`cpu_times`] last split it, and the idle time
+    /// it gave then.
+    given: SpinLock<(Split, u64)>,
 }
+
+const _: () = {
+    use core::mem::offset_of;
+    assert!(offset_of!(CpuSched, online) < 64, "a waker's reads share the word's line");
+    assert!(offset_of!(CpuSched, rq) == 64, "the run queue starts the next line");
+    assert!(offset_of!(CpuSched, idle_ns).is_multiple_of(64), "idle statistics start a line");
+};
 
 impl CpuSched {
     const fn new() -> CpuSched {
         CpuSched {
             resched: Resched::new(),
+            _rq: LineBreak,
+            _idle: LineBreak,
             rq: SpinLock::new(None),
             current: AtomicUsize::new(0),
             running: AtomicU32::new(0),

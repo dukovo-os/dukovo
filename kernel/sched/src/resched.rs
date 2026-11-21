@@ -2,17 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! A CPU's request to switch threads (`need_resched`), and the threads
-//! other CPUs woke for it to queue (its inbox), in one word alone in its
-//! cache line (ADR 0555, ADR 0556).
+//! other CPUs woke for it to queue (its inbox), in one word (ADR 0555,
+//! ADR 0556).
 //!
 //! An idle CPU spins on this word while it polls, and a CPU in MWAIT
-//! watches its line, so a waker's write should be the only traffic the
-//! line sees: whatever else the line held, the two CPUs would pass it
-//! back and forth with each write, and on a large chip each pass takes
-//! some hundreds of nanoseconds. A wake-up from another CPU is therefore
-//! one atomic read-modify-write: it asks for the switch, marks the
-//! request as from another CPU, and learns from the same word whether the
-//! idle CPU watches it or must be sent an interrupt.
+//! watches its line, so the kernel keeps the line for what a waker needs:
+//! this word, and the load the CPU publishes, which a waker reads to
+//! choose the CPU just before it writes the word. Whatever else the line
+//! held, the two CPUs would pass it back and forth with each write, and on
+//! a large chip each pass takes some hundreds of nanoseconds. A wake-up
+//! from another CPU is therefore one atomic read-modify-write: it asks for
+//! the switch, marks the request as from another CPU, and learns from the
+//! same word whether the idle CPU watches it or must be sent an interrupt.
 //!
 //! A thread woken for an idle CPU goes into the same word: the word's
 //! upper bits hold the address of the newest such thread, and each one
@@ -38,8 +39,8 @@ const FLAGS: usize = PENDING | WATCHED | REMOTE;
 /// bits free below it.
 pub const ENTRY_ALIGN: usize = FLAGS + 1;
 
-/// One CPU's request to switch threads, and its inbox.
-#[repr(align(64))]
+/// One CPU's request to switch threads, and its inbox. The kernel gives
+/// it a cache line, shared only with what a waker reads to choose the CPU.
 pub struct Resched(AtomicUsize);
 
 impl Resched {
@@ -159,12 +160,6 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
-
-    #[test]
-    fn the_word_has_its_cache_line_to_itself() {
-        assert_eq!(core::mem::align_of::<Resched>(), 64);
-        assert_eq!(core::mem::size_of::<Resched>(), 64);
-    }
 
     #[test]
     fn a_request_from_this_cpu_is_pending_until_taken() {
