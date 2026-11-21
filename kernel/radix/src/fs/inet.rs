@@ -43,7 +43,9 @@
 //! A socket that is closed takes its parts out of their stacks, all but
 //! a stream socket's connection that has not ended: that one is closed,
 //! its FIN sent, and left to its interface as an orphan (`net::Orphan`),
-//! which goes once the connection has, or is reset after a minute.
+//! which goes once the connection has, or is reset after a minute. A
+//! connection with bytes no one read is reset at the close instead, and
+//! an orphan that receives bytes is reset then, as on Linux.
 //!
 //! A datagram socket joins multicast groups on one interface each
 //! (`socket_group`, ADR 0336): its part there takes the group's
@@ -2072,9 +2074,17 @@ fn release_part(part: Part, connected: bool, port: &mut Option<Held>) {
             let open = stack.socket_mut::<tcp::Socket<'static>>(handle).is_some_and(|socket| {
                 match socket.state() {
                     tcp::State::Closed | tcp::State::Listen => false,
-                    // Its own connection ends as connections do.
+                    // Its own connection ends as connections do, but for
+                    // bytes it received that no one read: they are lost,
+                    // so the other end is told with a reset rather than an
+                    // end, as on Linux (RFC 2525, 2.17), and a writer there
+                    // learns at once that no one reads.
                     _ if connected => {
-                        socket.close();
+                        if socket.recv_queue() > 0 {
+                            socket.abort();
+                        } else {
+                            socket.close();
+                        }
                         true
                     }
                     // A listening socket's that no one took are reset.

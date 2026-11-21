@@ -530,7 +530,12 @@ and *SO_SNDBUF* (fixed sizes), *SO_RCVTIMEO*, *SO_SNDTIMEO*,
 connection, sending RST and throwing away what was not sent, as on
 Linux; with more seconds the linger is kept and read back, but *close*
 returns at once and the connection ends in the background, as with it
-off. *TCP_QUICKACK* acknowledges at once instead of up to 10 ms later,
+off. A *close* of a stream socket with bytes received and not read
+resets the connection too, as does a byte that reaches a connection
+after its *close*: no one is left to read it. The other end's writes
+then fail with EPIPE at once, and its reads with ECONNRESET unless the
+reset came after the end of the stream, as on Linux (ADR 0355).
+*TCP_QUICKACK* acknowledges at once instead of up to 10 ms later,
 and stays set until it is turned off. *SO_OOBINLINE* is kept and read
 back: urgent data always comes inline, as with it set on Linux. A datagram to a broadcast address, 255.255.255.255 or its
 network's, fails with EACCES unless *SO_BROADCAST* is set, as on Linux.

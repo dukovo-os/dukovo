@@ -14,8 +14,9 @@
 //! sequence numbers, windows and timers are as they would have been, and
 //! packets can go between the two again at any time: bytes go across
 //! only while none wait, at either end or in the link's ring, to go the
-//! other way. A connection that cannot pass its bytes across, or whose
-//! other end is somewhere else, sends them in packets, as before.
+//! other way, and while the other end has not sent its FIN. A connection
+//! that cannot pass its bytes across, or whose other end is somewhere
+//! else, sends them in packets, as before.
 
 use smoltcp::iface::SocketHandle;
 use smoltcp::socket::{Socket, tcp};
@@ -86,7 +87,15 @@ impl<L: Link> Stack<L> {
     pub fn room_across(&mut self, handle: SocketHandle, other: &mut OtherEnd) -> Option<usize> {
         let found = self.other_end(handle, other)?;
         let next = self.sockets.try_get::<tcp::Socket<'static>>(handle)?.next_across()?;
-        self.sockets.try_get::<tcp::Socket<'static>>(found)?.room_across(next)
+        let end = self.sockets.try_get::<tcp::Socket<'static>>(found)?;
+        // An end that has sent its FIN, closed or shut for writing, takes
+        // bytes in packets: a poll delivers them, after which the kernel
+        // finds those that reach a closed socket, which no one will read,
+        // and resets its connection.
+        if !end.may_send() {
+            return None;
+        }
+        end.room_across(next)
     }
 
     /// Passes bytes from TCP connection `handle` straight across into its

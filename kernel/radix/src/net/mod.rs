@@ -694,7 +694,16 @@ impl Interface {
             {
                 memory::shed_tcp(stack, orphan.handle, leases, self.name.as_str());
             }
-            if now_ns >= orphan.deadline_ns {
+            // Bytes that came after the program closed the socket have no
+            // one to read them (it closed with none unread, or it would
+            // have been reset then): the connection is reset at once, as
+            // Linux resets an orphan that receives data, so that the other
+            // end, still writing, is not left to its deadline.
+            let unread = state != Some(tcp::State::TimeWait)
+                && stack
+                    .socket_mut::<tcp::Socket<'static>>(orphan.handle)
+                    .is_some_and(|socket| socket.recv_queue() > 0);
+            if unread || now_ns >= orphan.deadline_ns {
                 // Closed now; the stack sends the reset, and the next look
                 // takes it apart.
                 if let Some(socket) = stack.socket_mut::<tcp::Socket<'static>>(orphan.handle) {

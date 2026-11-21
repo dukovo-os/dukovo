@@ -13,7 +13,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 Go's network poller runs on the event queue (ADR 0353), so Go's `net`
 package works on Radix: its sockets are non-blocking, and its deadlines
 hold. The test binaries of `net`, `net/http` and `crypto/tls`, run on
-Radix, then failed in four places.
+Radix, then failed in five places.
 
 - **Interfaces.** `net.Interfaces` and `net.InterfaceAddrs` listed
   nothing (ADR 0350). Go reads them from netlink on Linux and from a
@@ -30,6 +30,14 @@ Radix, then failed in four places.
 - **A connected datagram socket's name.** After `connect`, Linux names a
   UDP socket bound to any address by the address it sends to its peer
   from. Radix named it 0.0.0.0, so a reply sent to that name failed.
+- **A close with bytes unread.** `net/http`'s `TestServerNoWriteTimeout`
+  has a client read a megabyte of an endless response and close its
+  connection; the server's handler must then fail to write. Linux resets
+  a connection closed with bytes received and not read (RFC 2525,
+  section 2.17), and an orphan that receives bytes after its close.
+  Radix sent a FIN and kept taking bytes into the closed socket's buffer
+  until it was full, so the server's write waited out the minute an
+  orphan has to finish closing, and the test ran out of time.
 - **The tests' own files.** `net`'s `sendfile` tests read Go's shared
   test data, `src/testdata`, which the test disk did not have, and its
   `writev` test expects a call count from each system that has `writev`,
@@ -56,6 +64,10 @@ Radix, then failed in four places.
   or ping socket bound to any address and connected gives, as its name,
   the address the routes send to its peer from, found when it is asked;
   where it is bound and what it receives do not change.
+- **A stream socket closed with bytes unread resets its connection**,
+  and so does an orphan that receives a byte after its close (the
+  interface's look at its orphans), as on Linux: no one is left to read
+  them, and the other end learns so at once.
 - **The `go-runtime` boot test runs `net`, `net/http` and `crypto/tls`**,
   25 packages, with Go's shared test data on its disk. Go's own tests
   name Radix among the systems that have `writev`, that have no
@@ -71,6 +83,10 @@ Radix, then failed in four places.
   address reach it, as on Linux.
 - `getsockname` of a connected UDP socket bound to any address takes
   the routes' look and one stack's lock.
+- A program that closes a connection without reading all it was sent
+  resets it, where it used to end it with a FIN: the other end's writes
+  fail with EPIPE, and its reads with ECONNRESET, as they would from
+  Linux.
 - `net.Interface.MulticastAddrs` returns nothing on Radix
   (`docs/deferred.md`).
 
