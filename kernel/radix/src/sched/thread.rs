@@ -283,61 +283,82 @@ pub(super) struct Stats {
 }
 
 /// A kernel thread.
+///
+/// Laid out by hand, a cache line at a time (ADR 0556): a wake-up from
+/// another CPU writes the thread's lock, its state and the words after it,
+/// and the CPU that queues the thread then reads and writes the same ones,
+/// so they share two lines, and each crosses between the CPUs once each
+/// way. Spread over the struct, as the compiler left them, they took four
+/// or five.
+#[repr(C, align(64))]
 pub struct Thread {
-    id: u64,
-    name: NameCell,
+    // Line 0: what the switch saves and restores.
     pub(super) context: Context,
-    pub(super) entry: fn(usize),
-    pub(super) arg: usize,
+    // Lines 1 and 2: what a wake-up writes, and the CPU that queues the
+    // thread reads.
     pub(super) state: SpinLock<State>,
-    /// The CPU whose run queue it is on, or last ran on.
-    pub(super) cpu: AtomicUsize,
     /// Set by [`super::wake`]; a thread that blocks with it set does not
     /// sleep, so a wake that comes before the block is not lost.
     pub(super) wake_pending: AtomicBool,
-    /// While it waits in a CPU's inbox ([`super::hand_over`]), the address
-    /// of the thread handed to that CPU before it, or 0.
-    pub(super) handed_next: AtomicUsize,
-    stop: AtomicBool,
-    /// Set while it has a signal to take, or a stop to make for job
-    /// control, on its way back to user mode (Phase 8): with `stop`, what
-    /// the return path and interruptible waits look at
-    /// ([`Thread::interrupted`]).
-    signalled: AtomicBool,
-    domain: DomainRef,
-    /// Stack pages charged to the domain, given back when it is freed.
-    pub(super) charged: u64,
-    /// Mutexes the lock checker saw it holding when it was switched out.
-    /// Switching threads takes this lock, so anyone else takes it with
-    /// interrupts off.
-    pub(super) lockdep: RawSpinLock<Saved>,
-    // The rest is written under its run queue's lock (and, but for the
-    // balancer's moves, its own).
+    // Written under its run queue's lock (and, but for the balancer's
+    // moves, its own).
     /// [`NOT_QUEUED`], [`FAIR`] or [`REAL_TIME`].
     pub(super) queued: AtomicU8,
     /// The real-time priority it is queued at.
     pub(super) queued_prio: AtomicU8,
     /// Whether it is round robin, while queued real-time.
     pub(super) round_robin: AtomicBool,
-    /// Its nice level's weight.
-    pub(super) weight: AtomicU64,
-    /// Where it may run.
-    allowed: [AtomicU64; WORDS],
-    /// What is left of its round-robin quantum.
-    pub(super) quantum_left_ns: AtomicU64,
-    /// The mutex it waits for, by key, for priority inheritance.
-    pub(super) blocked_on: AtomicUsize,
+    // Seldom written, in what would be padding.
+    stop: AtomicBool,
+    /// Set while it has a signal to take, or a stop to make for job
+    /// control, on its way back to user mode (Phase 8): with `stop`, what
+    /// the return path and interruptible waits look at
+    /// ([`Thread::interrupted`]).
+    signalled: AtomicBool,
     /// Set once the reaper is done with it.
     pub(super) reaped: AtomicBool,
     /// Set once it no longer counts among its domain's threads.
     left: AtomicBool,
+    /// The CPU whose run queue it is on, or last ran on.
+    pub(super) cpu: AtomicUsize,
+    /// While it waits in a CPU's inbox ([`super::hand_over`]), the address
+    /// of the thread handed to that CPU before it, or 0.
+    pub(super) handed_next: AtomicUsize,
+    /// Its nice level's weight.
+    pub(super) weight: AtomicU64,
+    // The rest.
+    id: u64,
+    pub(super) entry: fn(usize),
+    pub(super) arg: usize,
+    /// Stack pages charged to the domain, given back when it is freed.
+    pub(super) charged: u64,
+    /// What is left of its round-robin quantum.
+    pub(super) quantum_left_ns: AtomicU64,
+    /// The mutex it waits for, by key, for priority inheritance.
+    pub(super) blocked_on: AtomicUsize,
+    /// Where it may run.
+    allowed: [AtomicU64; WORDS],
     pub(super) stats: Stats,
+    name: NameCell,
     /// Its CPU time as [`Thread::cpu_times`] last split it.
     split: SpinLock<Split>,
+    domain: DomainRef,
     /// What a thread of a program has besides (Phase 5): set before it
     /// first runs, never for kernel threads.
     pub(super) user: Once<UserRef>,
+    /// Mutexes the lock checker saw it holding when it was switched out.
+    /// Switching threads takes this lock, so anyone else takes it with
+    /// interrupts off.
+    pub(super) lockdep: RawSpinLock<Saved>,
 }
+
+// What a wake-up touches fills lines 1 and 2 (x86-64's context is line 0).
+#[cfg(target_arch = "x86_64")]
+const _: () = assert!(
+    core::mem::offset_of!(Thread, state) == 64
+        && core::mem::offset_of!(Thread, weight) + size_of::<AtomicU64>() <= 192,
+    "a wake-up's fields share two cache lines"
+);
 
 impl Thread {
     /// A thread that is not yet running, from its parts.

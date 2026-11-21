@@ -873,10 +873,10 @@ fn wake_masked(thread: &ThreadRef) -> bool {
     }
     thread.wake_pending.store(false, Ordering::Relaxed);
     state.run = Run::Ready;
-    thread.stats.wakeups.fetch_add(1, Ordering::Relaxed);
     let previous = thread.cpu.load(Ordering::Relaxed);
     let target = choose_cpu(previous, &state);
     if target == Arch::current_cpu() || CPUS.get(target).running.load(Ordering::Relaxed) != 0 {
+        thread.stats.wakeups.fetch_add(1, Ordering::Relaxed);
         enqueue_on(thread, &mut state, false, target);
         return true;
     }
@@ -988,6 +988,9 @@ fn queue_handed(cpu: usize, slot: &CpuSched, entry: usize) {
     // A view to lock and read it by, while the inbox's reference moves to
     // the run queue; never dropped, so it gives back no count.
     let thread = handed(entry);
+    // Counted here, where the thread's statistics are written as it runs:
+    // the waker writes only the thread's first lines.
+    thread.stats.wakeups.fetch_add(1, Ordering::Relaxed);
     let mut state = thread.state.lock();
     if !state.affinity.contains(cpu) {
         enqueue_ready(&thread, &mut state, false);
