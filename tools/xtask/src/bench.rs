@@ -420,7 +420,14 @@ const ROWS: &[Row] = &[
         "posix_events_idle",
         "POSIX: an event queue's wait for one ready pipe among 1000 idle ones (kqueue on Radix, epoll on Linux)",
     ),
-    posix("posix_poll_idle", "POSIX: `poll` on 1001 pipes, one ready"),
+    Row {
+        radix: "posix_poll_idle",
+        what: "POSIX: `poll` on 1001 pipes, one ready",
+        linux: Some(("posix_poll_idle", "the same C program, on glibc")),
+        // Reported only until Radix reaches parity (ADRs 0353, 0354): each
+        // descriptor's slot, record and object are read apart.
+        gate: Gate::Yet,
+    },
     posix(
         "posix_futex_same_cpu",
         "POSIX: futex wake and wait each way (semaphores), two threads, one CPU",
@@ -2215,6 +2222,7 @@ mod tests {
         }
         assert!(check_gate(&numbers).is_ok());
         assert!(ROWS.iter().any(|r| r.radix == "posix_git_status" && r.gate == Gate::Yet));
+        assert!(ROWS.iter().any(|r| r.radix == "posix_poll_idle" && r.gate == Gate::Yet));
         assert!(ROWS.iter().any(|r| r.radix == "posix_sd_read_mib" && r.gate == Gate::Emulated));
     }
 

@@ -12,8 +12,8 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 `poll` on 1,001 pipes with one ready (`posix_poll_idle`, ADR 0353) took
 80.5 µs on CI's runners against Linux's 6.36 µs, 12.7 times, and counted
-under QEMU (`ob bench --instructions`) it ran 648,728 instructions, about
-645 a descriptor. The row was reported but not gated until parity.
+under QEMU (`ob bench --instructions`) it ran about 648,000 instructions,
+about 645 a descriptor. The row was reported but not gated until parity.
 
 `poll` looked each descriptor up with `objects::find_object`. The CPU's
 capability cache (ADR 0369) has 16 entries, indexed by slot, so past 16
@@ -48,21 +48,29 @@ in X's record, until it lets S go.
   address as an opaque word and stays free of `unsafe` code; its audit
   checks every record's address against what it keeps.
 - **The kernel's address says what the object is.** The kernel's kept
-  object (`Recorded`) gives the address of its file, notification or
-  event queue, with the kind in the address's low three bits, or a kind
-  alone for a directory or anything else. The kind comes from the kept
-  object itself, never from the capability's kind, so a capability whose
-  kind and object disagree cannot make one object read as another.
+  object (`Recorded`) gives, with the kind in the address's low three
+  bits, the address of a notification, an event queue, or a file whose
+  events its node reads with atomics and spin locks alone (a pipe's end,
+  a Unix socket, a terminal's side: `FileObject::polls_now`). Anything
+  else is a kind alone: always ready for a directory or plain file, later
+  for any other special file, other for the rest. The kind comes from the
+  kept object itself, never from the capability's kind, so a capability
+  whose kind and object disagree cannot make one object read as another.
   `objects::peek` turns the address back into a reference, `&FileObject`,
   `&Notification` or `&EventQueue`, whose lifetime is the locked view's:
   three marked `unsafe` dereferences, each sound by the rule above.
+- **A node says its events itself.** `radix_vfs::Node` gains
+  `poll_events`, which a node answers only when it can with atomics and
+  spin locks; a pipe's end, a socket and a terminal's side do. A peeked
+  file is asked straight, with no downcast to find its kind, and a pipe
+  keeps what it reads, its length, capacity and ends, in one cache line.
 - **`poll` of more than 16 descriptors looks at them in rounds, each
   under one hold of the space's lock** (`poll::look_space`). It peeks at
-  each slot and asks the object for its events where that takes only
-  atomics and spin locks: a pipe's end, a Unix socket, a terminal's side,
-  a plain file or directory, a notification, an event queue. An object
-  whose look may take a sleeping lock (a network socket, a device, the
-  kernel log, a FUSE file) is held instead, with a counted reference
+  each slot and asks the object for its events where its address allows:
+  a pipe's end, a Unix socket, a terminal's side, a plain file or
+  directory, a notification, an event queue. An object whose look may
+  take a sleeping lock (a network socket, a device, the kernel log, a
+  FUSE file) is held instead, with a counted reference
   taken under its record's lock (`objects::find_locked`), up to eight a
   round; the round then lets the space go, looks at those, and the next
   round goes on from the next entry. A space gone with its process makes
@@ -84,8 +92,13 @@ order.
 
 - `poll` on the 1,001 pipes takes no read-modify-write a descriptor, and
   the loads of one overlap the next's. Counted under QEMU it runs
-  COUNT instructions, from 648,728. The row is gated like the rest from
-  this change on, and `docs/deferred.md` no longer lists it.
+  130,595 instructions, from 648,450, about 130 a descriptor, and on
+  CI's runners it takes 9.6 µs against Linux's 6.3 µs: 1.52 times, from
+  12.7. The row stays reported but not gated until parity
+  (`docs/deferred.md`): each descriptor reads five cache lines, its slot,
+  its record, the file, the pipe's end and the pipe, where Linux reads
+  two or three. Keeping the address in the slot as well as the record,
+  and naming a pipe's end by the address itself, would leave three.
 - `select` and `pselect` gain the same, as the C library builds them on
   `poll`.
 - Other threads of a process wait for the space's lock while one of
@@ -95,7 +108,8 @@ order.
 - The store's record grows by one word, and every insert, unmake and
   release writes it.
 - The kernel crate gains a marked `unsafe` site, the peek's three
-  dereferences.
+  dereferences. `radix_vfs::Node` gains a method, which a node that
+  cannot answer it with atomics and spin locks leaves to its default.
 - The posix boot test's `poll` program polls 45 entries that mix every
   kind of descriptor above, ready and not, past and within the table,
   and waits on 21 of them for a pipe and then a socket another process
