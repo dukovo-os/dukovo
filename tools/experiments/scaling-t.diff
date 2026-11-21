@@ -1,0 +1,14 @@
+diff --git a/userspace/posix/bench.c b/userspace/posix/bench.c
+--- a/userspace/posix/bench.c
++++ b/userspace/posix/bench.c
+@@ -1065,6 +1065,10 @@
+ 			if(child[i] < 0)
+ 				fail("fork");
+ 			if(child[i] == 0) {
++				// Experiment: the child sleeps a millisecond first, a block
++				// and a wake-up, and makes no thread.
++				struct timespec nap = {0, 1000000};
++				nanosleep(&nap, NULL);
+ 				scaling_work(shared, i);
+ 				_exit(0);
+ 			}

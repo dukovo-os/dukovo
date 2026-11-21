@@ -67,13 +67,14 @@ jobs:
           ports-prefix: ${{ inputs.ports-prefix }}
           std-stamp: ${{ inputs.std-stamp }}
 
-      # Why a forked process's own thread opens and closes slower than
-      # one that has had a second thread (588 against 516 ns), on Intel:
+      # Which part of a second thread makes a forked process's own thread
+      # open and close faster (512 against 586 ns), on Intel:
       #   a: as is
-      #   x1, x2, x3: the child keeps 1, 2 or 3 more file objects in the
-      #       kernel first, held by descriptors 40 and up
       #   q: the child first runs a second thread to its end
-      - name: Scaling, a x1 x2 x3 q, twice
+      #   m: the child maps, touches and unmaps a stack-sized region first
+      #   t: the child sleeps a millisecond first
+      #   h: the child allocates and frees 16 KiB first
+      - name: Scaling, a q m t h, twice
         run: |
           set -o pipefail
           mkdir -p out/ab
@@ -87,26 +88,36 @@ jobs:
           }
           for round in 1 2; do
             leg a$round ""
-            leg x1$round scaling-x1.diff
-            leg x2$round scaling-x2.diff
-            leg x3$round scaling-x3.diff
             leg q$round scaling-q.diff
+            leg m$round scaling-m.diff
+            leg t$round scaling-t.diff
+            leg h$round scaling-h.diff
           done
           git checkout -q -- kernel userspace/posix
 
       # The gate, with Linux, on main with #600, the wake list, both
-      # layouts and IPC replies handed over, each vCPU pinned to a core.
-      - name: Gate with the whole change
+      # layouts, IPC replies handed over and a same-CPU wake-up switching
+      # at once again, each vCPU pinned to a core.
+      - name: Gate with the whole change and the fix
         run: |
           mkdir -p out/ab
-          git apply tools/experiments/wakelist-ipc.diff
+          git apply tools/experiments/wakelist-fix.diff
           status=0
           ./ob bench --gate --defer-close --summary out/ab/gate-summary.md > out/ab/gate.log 2>&1 || status=$?
           echo "--- gate exit $status"
           tail -45 out/ab/gate.log
           echo "--- close"
           cat out/bench/close.txt 2>/dev/null || true
-          grep "two CPUs\|each CPU at once\|cross CPU" out/bench/report.md | cut -d'|' -f2-6 || true
+          echo "--- rows"
+          grep "one CPU\|two CPUs\|each CPU at once\|cross CPU" out/bench/report.md | cut -d'|' -f2-6 || true
+
+      # The open/close scaling gate, with Linux, with the same kernel.
+      - name: Scaling gate with the whole change and the fix
+        run: |
+          status=0
+          ./ob bench --scaling --gate > out/ab/scaling-gate.log 2>&1 || status=$?
+          echo "--- scaling gate exit $status"
+          tail -30 out/ab/scaling-gate.log
           git checkout -q -- kernel
 
       - name: Upload the reports
