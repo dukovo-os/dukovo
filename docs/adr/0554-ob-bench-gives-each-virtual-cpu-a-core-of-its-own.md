@@ -85,6 +85,14 @@ given each boot than about either system.
   - Linux's took 6.3 µs for the shared-memory channel and 21 to 22 µs for
     the endpoint, notification and ring rows: its idle vCPUs halt between
     rounds there too.
+- On some Intel Xeon 6975P-C runner hosts, pinned, a forked process's
+  open and close takes about 70 ns more than a thread's, with the kernel
+  before [0555](0555-a-cpus-request-to-switch-is-one-word-in-a-cache-line-of-its-own.md)
+  as with the one after
+  [0556](0556-a-thread-woken-for-an-idle-cpu-is-handed-to-it-and-that-cpu-queues-it.md),
+  so the scaling gate fails its one-process row there (585 against
+  Linux's 530 ns); on other hosts of the same CPU it takes 511 to 515 ns.
+  The cause is still open, in [the deferred list](../deferred.md).
 - QEMU's own threads (the I/O thread, the disk and display emulation) are
   not pinned and may share a CPU with a vCPU on a 4-CPU runner.
 - Machines where pinning is skipped measure as before.
