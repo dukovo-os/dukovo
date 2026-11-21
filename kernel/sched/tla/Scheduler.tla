@@ -13,9 +13,11 @@
 (* again. A waker makes a thread's condition true, then, holding the       *)
 (* table's lock, takes every waiter off it and wakes each one: it sets the *)
 (* thread's `wake_pending` flag and, under the thread's lock, makes a      *)
-(* blocked thread ready on some CPU's run queue. Blocking, under the       *)
-(* thread's lock and its run queue's, sleeps only if no wake came since    *)
-(* the thread queued itself.                                               *)
+(* blocked thread ready on some CPU's run queue, or, for an idle CPU, lets *)
+(* go of the thread's lock and puts it in that CPU's inbox (ADR 0556),     *)
+(* which the CPU empties into its own queue, or another CPU's, when it     *)
+(* next switches. Blocking, under the thread's lock and its run queue's,   *)
+(* sleeps only if no wake came since the thread queued itself.             *)
 (*                                                                         *)
 (* No lock is held across a switch. A CPU that switches picks the next     *)
 (* thread under its run queue's lock, then lets go of the outgoing         *)
@@ -27,7 +29,8 @@
 (*                                                                         *)
 (* The invariants say that a thread's stack is in use by one CPU at most   *)
 (* (OneStackUser), that a blocked thread is on no run queue and a ready    *)
-(* one on exactly one (QueuesConsistent), and that a thread whose          *)
+(* one on exactly one, or in one inbox, or on its way to one           *)
+(* (QueuesConsistent), and that a thread whose                             *)
 (* condition holds is never left blocked with no wake on its way           *)
 (* (WakeOnTheWay). The liveness property AllFinish says every wait ends,   *)
 (* given a fair scheduler. docs/design/scheduler.md maps the model to the *)
@@ -56,6 +59,7 @@ VARIABLES
     run,        \* each thread's state under its lock: "ready" or "blocked"
     pending,    \* wake_pending
     rq,         \* each CPU's run queue (the running thread included)
+    inbox,      \* each CPU's inbox: threads handed to it, not yet queued
     cur,        \* rq.current: what each CPU runs, or is switching to
     sw,         \* the switch under way on each CPU, or None
     oncpu,      \* each thread's `on_cpu` word
@@ -66,15 +70,17 @@ VARIABLES
     table,      \* who holds the wait table's lock: a thread, "waker" or None
     waker       \* the waker's state
 
-vars == <<run, pending, rq, cur, sw, oncpu, pc, round, waiters, signals, table, waker>>
+vars ==
+    <<run, pending, rq, inbox, cur, sw, oncpu, pc, round, waiters, signals, table, waker>>
 
-Wakers == [phase : {"signal", "take", "next", "pend", "lock", "done"},
-           todo : SUBSET Threads, t : Threads \cup {None}]
+Wakers == [phase : {"signal", "take", "next", "pend", "lock", "hand", "done"},
+           todo : SUBSET Threads, t : Threads \cup {None}, to : Cpus \cup {None}]
 
 TypeOK ==
     /\ run \in [Threads -> {"ready", "blocked"}]
     /\ pending \in [Threads -> BOOLEAN]
     /\ rq \in [Cpus -> SUBSET Threads]
+    /\ inbox \in [Cpus -> SUBSET Threads]
     /\ cur \in [Cpus -> Runnable]
     /\ sw \in [Cpus -> Switches \cup {None}]
     /\ oncpu \in [Threads -> BOOLEAN]
@@ -102,6 +108,7 @@ Init ==
     /\ run = [t \in Threads |-> "ready"]
     /\ pending = [t \in Threads |-> FALSE]
     /\ rq = [c \in Cpus |-> IF c = CHOOSE x \in Cpus : TRUE THEN Threads ELSE {}]
+    /\ inbox = [c \in Cpus |-> {}]
     /\ cur = [c \in Cpus |-> Idle(c)]
     /\ sw = [c \in Cpus |-> None]
     /\ oncpu = [t \in Threads |-> FALSE]
@@ -110,7 +117,7 @@ Init ==
     /\ waiters = {}
     /\ signals = [t \in Threads |-> 0]
     /\ table = None
-    /\ waker = [phase |-> "signal", todo |-> {}, t |-> None]
+    /\ waker = [phase |-> "signal", todo |-> {}, t |-> None, to |-> None]
 
 ----------------------------------------------------------------------------
 (* The waiting threads (wait_until).                                       *)
@@ -125,7 +132,7 @@ Check(c, t) ==
        ELSE /\ waiters' = waiters \cup {t}
             /\ pc' = [pc EXCEPT ![t] = "block"]
             /\ UNCHANGED round
-    /\ UNCHANGED <<run, pending, rq, cur, sw, oncpu, signals, table, waker>>
+    /\ UNCHANGED <<run, pending, rq, inbox, cur, sw, oncpu, signals, table, waker>>
 
 \* reschedule(Block), under the thread's lock and its CPU's queue lock:
 \* carries on if a wake came, else sleeps and the CPU switches away.
@@ -141,14 +148,14 @@ Block(c, t) ==
                   /\ cur' = [cur EXCEPT ![c] = next]
                   /\ sw' = [sw EXCEPT ![c] = [prev |-> t, next |-> next, released |-> FALSE]]
             /\ UNCHANGED pending
-    /\ UNCHANGED <<oncpu, round, waiters, signals, table, waker>>
+    /\ UNCHANGED <<inbox, oncpu, round, waiters, signals, table, waker>>
 
 \* Back from blocking: leaves the table, to check again.
 After(c, t) ==
     /\ RunsOn(c, t) /\ pc[t] = "after" /\ table = None
     /\ waiters' = waiters \ {t}
     /\ pc' = [pc EXCEPT ![t] = "check"]
-    /\ UNCHANGED <<run, pending, rq, cur, sw, oncpu, round, signals, table, waker>>
+    /\ UNCHANGED <<run, pending, rq, inbox, cur, sw, oncpu, round, signals, table, waker>>
 
 ----------------------------------------------------------------------------
 (* The CPUs.                                                               *)
@@ -159,14 +166,14 @@ Preempt(c, next) ==
     /\ sw[c] = None /\ next \in rq[c] /\ next # cur[c]
     /\ cur' = [cur EXCEPT ![c] = next]
     /\ sw' = [sw EXCEPT ![c] = [prev |-> cur[c], next |-> next, released |-> FALSE]]
-    /\ UNCHANGED <<run, pending, rq, oncpu, pc, round, waiters, signals, table, waker>>
+    /\ UNCHANGED <<run, pending, rq, inbox, oncpu, pc, round, waiters, signals, table, waker>>
 
 \* The switch saves the outgoing context and lets go of it.
 Release(c) ==
     /\ sw[c] # None /\ ~sw[c].released
     /\ oncpu' = IF sw[c].prev \in Threads THEN [oncpu EXCEPT ![sw[c].prev] = FALSE] ELSE oncpu
     /\ sw' = [sw EXCEPT ![c].released = TRUE]
-    /\ UNCHANGED <<run, pending, rq, cur, pc, round, waiters, signals, table, waker>>
+    /\ UNCHANGED <<run, pending, rq, inbox, cur, pc, round, waiters, signals, table, waker>>
 
 \* Then takes the incoming context, once no other CPU holds it.
 Acquire(c) ==
@@ -174,13 +181,24 @@ Acquire(c) ==
     /\ sw[c].next \in Threads => ~oncpu[sw[c].next]
     /\ oncpu' = IF sw[c].next \in Threads THEN [oncpu EXCEPT ![sw[c].next] = TRUE] ELSE oncpu
     /\ sw' = [sw EXCEPT ![c] = None]
-    /\ UNCHANGED <<run, pending, rq, cur, pc, round, waiters, signals, table, waker>>
+    /\ UNCHANGED <<run, pending, rq, inbox, cur, pc, round, waiters, signals, table, waker>>
 
 \* A balancer on `to` pulls a ready thread that `from` is not running, with
 \* both queues locked: perhaps one `from` is still switching away from.
 Pull(from, to, t) ==
     /\ from # to /\ t \in rq[from] /\ t # cur[from]
     /\ rq' = [rq EXCEPT ![from] = @ \ {t}, ![to] = @ \cup {t}]
+    /\ UNCHANGED <<run, pending, inbox, cur, sw, oncpu, pc, round, waiters, signals, table,
+                   waker>>
+
+\* `take_handed`, as a switch on `c` begins: a thread from its inbox joins
+\* its queue, or, if the thread's affinity changed meanwhile, the queue
+\* placement picks. The model lets it happen at any moment: the inbox's
+\* request for the switch, and that the switch comes, are IdleWake's.
+Drain(c, t, to) ==
+    /\ t \in inbox[c]
+    /\ inbox' = [inbox EXCEPT ![c] = @ \ {t}]
+    /\ rq' = [rq EXCEPT ![to] = @ \cup {t}]
     /\ UNCHANGED <<run, pending, cur, sw, oncpu, pc, round, waiters, signals, table, waker>>
 
 ----------------------------------------------------------------------------
@@ -193,7 +211,7 @@ Signal(t) ==
     /\ signals[t] < round[t] /\ pc[t] # "done"
     /\ signals' = [signals EXCEPT ![t] = @ + 1]
     /\ waker' = [waker EXCEPT !.phase = "take"]
-    /\ UNCHANGED <<run, pending, rq, cur, sw, oncpu, pc, round, waiters, table>>
+    /\ UNCHANGED <<run, pending, rq, inbox, cur, sw, oncpu, pc, round, waiters, table>>
 
 \* wake_all takes the table's lock and every waiter off it.
 Take ==
@@ -201,43 +219,56 @@ Take ==
     /\ table' = "waker"
     /\ waker' = [waker EXCEPT !.phase = "next", !.todo = waiters]
     /\ waiters' = {}
-    /\ UNCHANGED <<run, pending, rq, cur, sw, oncpu, pc, round, signals>>
+    /\ UNCHANGED <<run, pending, rq, inbox, cur, sw, oncpu, pc, round, signals>>
 
 WakerDone ==
     /\ waker.phase = "signal" /\ \A t \in Threads : signals[t] = Rounds
     /\ waker' = [waker EXCEPT !.phase = "done"]
-    /\ UNCHANGED <<run, pending, rq, cur, sw, oncpu, pc, round, waiters, signals, table>>
+    /\ UNCHANGED <<run, pending, rq, inbox, cur, sw, oncpu, pc, round, waiters, signals,
+                   table>>
 
 \* Each waiter in turn, still holding the table's lock.
 NextWaiter ==
     /\ waker.phase = "next"
     /\ IF waker.todo = {}
        THEN /\ table' = None
-            /\ waker' = [phase |-> "signal", todo |-> {}, t |-> None]
+            /\ waker' = [phase |-> "signal", todo |-> {}, t |-> None, to |-> None]
        ELSE /\ \E t \in waker.todo :
-                  waker' = [phase |-> "pend", todo |-> waker.todo \ {t}, t |-> t]
+                  waker' = [phase |-> "pend", todo |-> waker.todo \ {t}, t |-> t, to |-> None]
             /\ UNCHANGED table
-    /\ UNCHANGED <<run, pending, rq, cur, sw, oncpu, pc, round, waiters, signals>>
+    /\ UNCHANGED <<run, pending, rq, inbox, cur, sw, oncpu, pc, round, waiters, signals>>
 
 \* wake(): the flag first, so a thread about to block does not sleep ...
 Pend ==
     /\ waker.phase = "pend"
     /\ pending' = [pending EXCEPT ![waker.t] = TRUE]
     /\ waker' = [waker EXCEPT !.phase = "lock"]
-    /\ UNCHANGED <<run, rq, cur, sw, oncpu, pc, round, waiters, signals, table>>
+    /\ UNCHANGED <<run, rq, inbox, cur, sw, oncpu, pc, round, waiters, signals, table>>
 
 \* ... then, under the thread's lock, a blocked thread becomes ready on
-\* the queue of the CPU that placement picks.
+\* the queue of the CPU that placement picks, or, if that CPU is idle,
+\* ready to hand over to it once the lock is let go.
 Wake ==
     /\ waker.phase = "lock"
     /\ LET t == waker.t IN
        IF run[t] = "blocked"
        THEN /\ run' = [run EXCEPT ![t] = "ready"]
             /\ pending' = [pending EXCEPT ![t] = FALSE]
-            /\ \E c \in Cpus : rq' = [rq EXCEPT ![c] = @ \cup {t}]
-       ELSE UNCHANGED <<run, pending, rq>>
-    /\ waker' = [waker EXCEPT !.phase = "next", !.t = None]
-    /\ UNCHANGED <<cur, sw, oncpu, pc, round, waiters, signals, table>>
+            /\ \E c \in Cpus :
+                  \/ /\ rq' = [rq EXCEPT ![c] = @ \cup {t}]
+                     /\ waker' = [waker EXCEPT !.phase = "next", !.t = None]
+                  \/ /\ waker' = [waker EXCEPT !.phase = "hand", !.to = c]
+                     /\ UNCHANGED rq
+       ELSE /\ waker' = [waker EXCEPT !.phase = "next", !.t = None]
+            /\ UNCHANGED <<run, pending, rq>>
+    /\ UNCHANGED <<inbox, cur, sw, oncpu, pc, round, waiters, signals, table>>
+
+\* `hand_over`: the thread goes in the idle CPU's inbox.
+Hand ==
+    /\ waker.phase = "hand"
+    /\ inbox' = [inbox EXCEPT ![waker.to] = @ \cup {waker.t}]
+    /\ waker' = [waker EXCEPT !.phase = "next", !.t = None, !.to = None]
+    /\ UNCHANGED <<run, pending, rq, cur, sw, oncpu, pc, round, waiters, signals, table>>
 
 ----------------------------------------------------------------------------
 
@@ -248,22 +279,25 @@ Next ==
     \/ \E c \in Cpus, next \in Runnable : Preempt(c, next)
     \/ \E c \in Cpus : Release(c) \/ Acquire(c)
     \/ \E from, to \in Cpus, t \in Threads : Pull(from, to, t)
+    \/ \E c, to \in Cpus, t \in Threads : Drain(c, t, to)
     \/ \E t \in Threads : Signal(t)
-    \/ WakerDone \/ Take \/ NextWaiter \/ Pend \/ Wake
+    \/ WakerDone \/ Take \/ NextWaiter \/ Pend \/ Wake \/ Hand
     \/ Finished /\ UNCHANGED vars
 
 \* What one thread does in its own code, and what the waker does.
 ThreadStep(t) == \E c \in Cpus : Check(c, t) \/ Block(c, t) \/ After(c, t)
 WakerStep ==
     \/ \E t \in Threads : Signal(t)
-    \/ WakerDone \/ Take \/ NextWaiter \/ Pend \/ Wake
+    \/ WakerDone \/ Take \/ NextWaiter \/ Pend \/ Wake \/ Hand
 
 \* A fair scheduler: a thread that keeps getting a CPU gets to run its
 \* code, and one that keeps waiting on a queue gets picked. Switches and
-\* the waker finish what they start. Balancing need not happen.
+\* the waker finish what they start, and a CPU empties its inbox.
+\* Balancing need not happen.
 Fairness ==
     /\ \A t \in Threads : SF_vars(ThreadStep(t)) /\ SF_vars(\E c \in Cpus : Preempt(c, t))
     /\ \A c \in Cpus : WF_vars(Release(c)) /\ WF_vars(Acquire(c))
+    /\ \A c \in Cpus : WF_vars(\E t \in Threads, to \in Cpus : Drain(c, t, to))
     /\ WF_vars(WakerStep)
 
 Spec == Init /\ [][Next]_vars /\ Fairness
@@ -279,13 +313,20 @@ OneStackUser ==
 StackUserHoldsContext ==
     \A c \in Cpus, t \in Threads : OnStack(c, t) => oncpu[t]
 
-\* Blocked threads are on no queue, ready ones on exactly one, and a CPU's
-\* current thread is ready on its own queue.
+\* Where a ready thread waits: on a queue, in an inbox, or with the waker
+\* that hands it over.
+Places(t) ==
+    {<<"rq", c>> : c \in {d \in Cpus : t \in rq[d]}}
+    \cup {<<"inbox", c>> : c \in {d \in Cpus : t \in inbox[d]}}
+    \cup (IF waker.phase = "hand" /\ waker.t = t THEN {<<"hand">>} ELSE {})
+
+\* Blocked threads are nowhere a ready one waits, ready ones in exactly
+\* one such place, and a CPU's current thread is ready on its own queue.
 QueuesConsistent ==
     /\ \A t \in Threads :
           IF run[t] = "blocked"
-          THEN \A c \in Cpus : t \notin rq[c]
-          ELSE Cardinality({c \in Cpus : t \in rq[c]}) = 1
+          THEN Places(t) = {}
+          ELSE Cardinality(Places(t)) = 1
     /\ \A c \in Cpus : cur[c] \in Threads => cur[c] \in rq[c]
 
 \* A blocked thread whose condition holds has a wake on the way: it is
@@ -294,7 +335,7 @@ WakeOnTheWay ==
     \A t \in Threads :
         run[t] = "blocked" /\ Condition(t) =>
             \/ t \in waiters
-            \/ waker.phase \in {"next", "pend", "lock"} /\ t \in waker.todo \cup {waker.t}
+            \/ waker.phase \in {"next", "pend", "lock", "hand"} /\ t \in waker.todo \cup {waker.t}
 
 \* Every wait ends.
 AllFinish == <>Finished

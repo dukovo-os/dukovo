@@ -36,7 +36,7 @@ pub mod user;
 pub mod vmware;
 
 use core::ops::Range;
-use core::sync::atomic::AtomicU32;
+use core::sync::atomic::AtomicUsize;
 
 pub use boot::{
     BootModule, BootParams, Channel, Firmware, Framebuffer, MemoryKind, MemoryRegion, PixelFormat,
@@ -71,7 +71,7 @@ pub trait Cpu {
     /// not send an interrupt, else HLT. Call with interrupts masked; it
     /// returns with them masked, after any interrupt that woke it was
     /// handled. Returns at once if `wake`'s lowest bit is already set.
-    fn idle_until(wake: &AtomicU32);
+    fn idle_until(wake: &AtomicUsize);
 
     /// Whether [`Cpu::idle_until`] notices writes to `wake` without an
     /// interrupt (MWAIT), and its name for the boot report.

@@ -295,6 +295,9 @@ pub struct Thread {
     /// Set by [`super::wake`]; a thread that blocks with it set does not
     /// sleep, so a wake that comes before the block is not lost.
     pub(super) wake_pending: AtomicBool,
+    /// While it waits in a CPU's inbox ([`super::hand_over`]), the address
+    /// of the thread handed to that CPU before it, or 0.
+    pub(super) handed_next: AtomicUsize,
     stop: AtomicBool,
     /// Set while it has a signal to take, or a stop to make for job
     /// control, on its way back to user mode (Phase 8): with `stop`, what
@@ -359,6 +362,7 @@ impl Thread {
             state: SpinLock::new(State { run: Run::New, policy, boost: 0, affinity, lag_ns: 0 }),
             cpu: AtomicUsize::new(affinity.lowest().unwrap_or(0)),
             wake_pending: AtomicBool::new(false),
+            handed_next: AtomicUsize::new(0),
             stop: AtomicBool::new(false),
             signalled: AtomicBool::new(false),
             domain,

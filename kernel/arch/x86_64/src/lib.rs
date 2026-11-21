@@ -71,7 +71,7 @@ mod watchdog;
 
 use core::fmt;
 use core::ops::Range;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use radix_hal::cmdline::CommandLine;
 use radix_hal::{
@@ -99,10 +99,10 @@ impl Cpu for Arch {
         cpu::halt();
     }
 
-    fn idle_until(wake: &AtomicU32) {
+    fn idle_until(wake: &AtomicUsize) {
         time::doorbell_off();
         if IDLE_MWAIT.load(Ordering::Relaxed) {
-            cpu::monitor(core::ptr::from_ref::<AtomicU32>(wake) as usize);
+            cpu::monitor(core::ptr::from_ref::<AtomicUsize>(wake) as usize);
             // A write between the check and MWAIT still ends the wait: the
             // monitor is armed already.
             if wake.load(Ordering::Acquire) & 1 == 0 {

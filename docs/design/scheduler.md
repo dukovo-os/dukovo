@@ -191,6 +191,25 @@ the IPI. The word is alone in its cache line (`radix_sched::Resched`,
 ADR 0555), so the waker's one atomic write is the only traffic on the
 line an idle CPU spins on.
 
+**The inbox** (ADR 0556). A thread woken for another CPU that runs
+nothing is not queued by the waker: the waker lets go of the thread's
+lock and, with interrupts masked, hands the thread over (`hand_over`).
+The request word's upper bits hold the address of the newest thread
+handed over, and each thread the address of the one before it
+(`handed_next`), so one compare-and-swap puts the thread in the inbox,
+asks for the switch and reads whether the word is watched. Every switch
+begins by taking the word (`take_handed`), before any lock: a load of
+its own line, then, only if something was asked for, one exchange that
+withdraws the request and empties the inbox. The CPU queues the threads
+oldest first, each under its own lock and then the run queue's, so its
+run queue's lock and lines never leave its cache for a wake-up. Queuing
+the thread from the waker took the idle CPU's lock and wrote its queue
+and published load there, and the idle CPU then took each of those lines
+back to pick the thread: each line crossed twice, at some 170 ns a
+crossing on CI's Intel runners. A CPU that runs a thread, or the waker's
+own, still gets the thread queued directly. An idle CPU with a switch
+pending does not balance, since a thread on its way is on no queue yet.
+
 **Idle polling** (ADR 0037, ADR 0551). Under a hypervisor, halting is
 an exit to the host and so is the IPI that ends the halt. An idle CPU
 therefore first polls its request word, with interrupts on
@@ -221,7 +240,10 @@ one atomic read-modify-write; the poller stops watching and reads the
 request in another. The two are ordered on the one word, so either the
 poller sees the request or the waker sees the word unwatched and sends
 the IPI. The TLA+ model `kernel/sched/tla/IdleWake.tla` checks that no
-wake-up is lost with polling, MWAIT and HLT.
+wake-up is lost with polling, MWAIT and HLT, that every thread handed to
+the CPU's inbox or queued on it runs, that no switch takes the word while
+the idle thread watches it, and that a request a switch took is acted on
+before the CPU runs on.
 
 **Timers.** Each CPU has a list of its sleeping threads and their
 deadlines, with room for every thread made ahead of time. The local APIC
@@ -249,10 +271,15 @@ Blocking and waking meet under the thread's lock:
   is blocked it clears the flag, makes `t` ready and queues it on the CPU
   that placement picks (`enqueue_ready`), kicking that CPU if `t` should
   preempt what runs there. If `t` is not blocked yet, the flag stays set.
+  If that CPU is another one and runs nothing, the thread goes in its
+  inbox instead (above), once `t`'s lock is let go.
 - `block` takes the running thread's lock and swaps `wake_pending` to
   false. If it was set, a wake came since the caller decided to sleep,
-  and `block` returns at once. Otherwise it marks the thread blocked,
-  takes it off its queue and switches away.
+  and `block` returns at once, unless the switch's start took a request
+  from the request word: that request may have been for a thread it just
+  queued from the inbox, so the CPU chooses again, as if the thread were
+  preempted. Otherwise it marks the thread blocked, takes it off its
+  queue and switches away.
 
 `block` may also return without cause, so every wait loops on its
 condition. The general form is `wait::wait_until(key, reason,
@@ -270,6 +297,9 @@ thread waits at most once at a time. It never allocates under its lock.
 **Lock order.** The wait table, then the registry or a thread's lock,
 then a run queue's lock. A run queue's lock is never held while taking
 another run queue's except in the balancer, which takes two in CPU order.
+A switch queues the threads in its inbox before it takes any lock, each
+thread's lock then the run queue's, so it never holds a thread's lock
+while taking another's.
 
 ## Placement and balancing
 
@@ -517,9 +547,12 @@ as long as that switch's first half. *(TLA+: the liveness property
 `AllFinish` under weak fairness of the switch steps.)*
 
 **3. The queues are consistent.** A blocked thread is on no run queue; a
-ready one is on exactly one; a CPU's current thread is on its own queue.
+ready one is on exactly one, or in one CPU's inbox, or held by the waker
+that hands it over; a CPU's current thread is on its own queue.
 Every change of a thread's state happens under its lock together with the
-run-queue change that matches it (`reschedule`, `enqueue_ready`), the
+run-queue change that matches it (`reschedule`, `enqueue_ready`), or the
+waker keeps the thread until it is in the inbox, which the CPU empties
+into its queue under the thread's lock; the
 balancer moves only threads that are not current, and a thread that may
 no longer stay on its CPU is moved under its own lock after the switch.
 *(TLA+: `QueuesConsistent`; the queues' `check()` audits in the host
@@ -693,6 +726,8 @@ the incoming one). The mapping to the code:
 | `Preempt` | `reschedule(Preempt)` from a tick, a kick or an idle CPU finding work |
 | `Release`, `Acquire` | the two halves of the context switch around `on_cpu` |
 | `Pull` | `balance` and `enqueue_ready` moving a queued thread |
+| `Wake` then `Hand` | `wake` for an idle CPU: ready under the thread's lock, then `hand_over` |
+| `Drain` | `take_handed` queuing a thread from the inbox, here or where its affinity allows |
 
 Each action is atomic in the model because the code it stands for runs
 under the lock that serializes it with every action it races: the
@@ -700,16 +735,19 @@ table's lock for `Check`, `After` and `Take`; a thread's lock for `Block`
 and `Wake`. The model leaves out what has no bearing on these
 properties: which thread a CPU picks (any queued one may be), weights,
 priorities and timers. `Scheduler.cfg` checks the invariants with three
-threads, two CPUs and two waits each under symmetry (about 5.4 million
+threads, two CPUs and two waits each under symmetry (about 8.3 million
 distinct states, two minutes on 4 CPUs); `SchedulerLiveness.cfg` checks
-`AllFinish` as well with two threads, without symmetry (about 180,000
-states). The fairness assumptions are those of a working scheduler: a
-thread that keeps being able to run its code, or keeps being pickable,
-eventually does, and a started switch or wake finishes. Seeding a bug
-breaks the right property: letting `block` ignore `wake_pending`, or the
+`AllFinish` as well with two threads, without symmetry (about 250,000
+states). A CPU may empty its inbox at any moment in the model; that the
+inbox's request brings a switch soon is `IdleWake`'s to check. The
+fairness assumptions are those of a working scheduler: a thread that
+keeps being able to run its code, or keeps being pickable, eventually
+does, a started switch or wake finishes, and a CPU empties its inbox.
+Seeding a bug breaks the right property: letting `block` ignore `wake_pending`, or the
 waker skip setting it, breaks `WakeOnTheWay`; letting a CPU take a
 context without waiting breaks `OneStackUser`; letting the balancer move
-a running thread breaks `QueuesConsistent`; and without fairness in
+a running thread breaks `QueuesConsistent`, and so does letting a CPU
+take a thread from its inbox without queuing it; and without fairness in
 picking, `AllFinish` fails.
 
 ## Troubleshooting

@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0555. A CPU's request to switch is one word in a cache line of its own
 
-- Status: Accepted
+- Status: Accepted; the word is a machine word that holds the CPU's inbox too, and a switch takes it with an exchange, since [0556](0556-a-thread-woken-for-an-idle-cpu-is-handed-to-it-and-that-cpu-queues-it.md)
 - Date: 2026-11-21
 
 ## Context
