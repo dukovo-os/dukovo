@@ -411,7 +411,8 @@ const GRUBLESS: u8 = 18;
 
 /// [`Disk::fat`] for a FAT32 disk on the whole disk holding the `.dkv`
 /// files of the catalog's bundles of ports that `ob` packed into
-/// out/bundles ([`bundle_files_disk`], ADR 0370).
+/// out/bundles, but Go's, which has disks of its own
+/// ([`bundle_files_disk`], ADR 0370).
 const BUNDLE_FILES: u8 = 19;
 
 /// [`Disk::fat`] for a FAT32 disk on the whole disk holding a catalog
@@ -6320,9 +6321,11 @@ fn fsck(disk: &DiskImage, _log: &str) -> Result<(), String> {
 }
 
 /// Makes a [`BUNDLE_FILES`] disk: FAT32 holding every `.dkv` file of
-/// out/bundles, copied in with mtools.
+/// out/bundles but Go's, copied in with mtools. Go's bundle, about 72 MiB,
+/// is on the disks of the two runs that install it
+/// ([`GO_TOOLCHAIN_FILES`]), so that the disks of the others stay small.
 fn make_bundle_files(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
-    make_bundle_disk(ctx, disk, path, |_| true)
+    make_bundle_disk(ctx, disk, path, |name| !name.starts_with(cases::go_toolchain::BUNDLE_PREFIX))
 }
 
 /// Makes a FAT32 disk holding the `.dkv` files of out/bundles whose names

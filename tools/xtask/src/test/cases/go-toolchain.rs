@@ -31,8 +31,8 @@ const VOLUME: &str = "/volumes/vdb";
 pub(in crate::test) const FILE: &str = "dev.go.go-1.27.4.dkv";
 
 /// The start of the name of the bundle file on the disk: the only bundle it
-/// holds.
-const BUNDLE_PREFIX: &str = "dev.go.go-";
+/// holds, and the one the disks of the other bundles leave out.
+pub(in crate::test) const BUNDLE_PREFIX: &str = "dev.go.go-";
 
 /// Where the repository keeps the module that the test builds, and the two
 /// files for gofmt, and the names they have on the disk. The files in the
