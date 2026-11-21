@@ -1,0 +1,60 @@
+diff --git a/userspace/posix/bench.c b/userspace/posix/bench.c
+--- a/userspace/posix/bench.c
++++ b/userspace/posix/bench.c
+@@ -1043,6 +1043,43 @@
+ 	return NULL;
+ }
+ 
++// Experiment: where a forked process's own thread loses time, before
++// and after its first sleep, on the CPU it then works on.
++static void scaling_probe(struct scaling *shared, int index, const char *when) {
++	int dir = shared->dirs[index];
++	uint64_t t0 = now_ns();
++	for(int i = 0; i < 20000; i++)
++		sched_yield();
++	uint64_t t1 = now_ns();
++	for(int i = 0; i < 20000; i++) {
++		int fd = openat(dir, "file", O_RDONLY | O_CLOEXEC);
++		if(fd < 0)
++			fail("openat");
++		close(fd);
++	}
++	uint64_t t2 = now_ns();
++	__asm__ volatile("xorps %%xmm0, %%xmm0\n\t"
++	                 "mov $1000000, %%ecx\n"
++	                 "1:\n\t"
++	                 "addps %%xmm1, %%xmm0\n\t"
++	                 "dec %%ecx\n\t"
++	                 "jnz 1b"
++	                 ::: "xmm0", "xmm1", "ecx", "cc");
++	uint64_t t3 = now_ns();
++	__asm__ volatile("mov $1, %%eax\n\t"
++	                 "mov $1000000, %%ecx\n"
++	                 "1:\n\t"
++	                 "imul %%eax, %%eax\n\t"
++	                 "dec %%ecx\n\t"
++	                 "jnz 1b"
++	                 ::: "eax", "ecx", "cc");
++	uint64_t t4 = now_ns();
++	printf("posix-bench: probe workers=%d %s yield=%.1f openclose=%.1f addps=%.3f imul=%.3f\n",
++	       shared->workers, when, (double)(t1 - t0) / 20000.0, (double)(t2 - t1) / 20000.0,
++	       (double)(t3 - t2) / 1000000.0, (double)(t4 - t3) / 1000000.0);
++	fflush(stdout);
++}
++
+ static void scaling_run(struct scaling *shared, int workers, int threads) {
+ 	shared->ready = 0;
+ 	shared->go = 0;
+@@ -1065,6 +1102,12 @@
+ 			if(child[i] < 0)
+ 				fail("fork");
+ 			if(child[i] == 0) {
++				// Experiment: probes, a millisecond's sleep, probes again.
++				pin(shared->cpus[i % shared->cpu_count]);
++				scaling_probe(shared, i, "before");
++				struct timespec nap = {0, 1000000};
++				nanosleep(&nap, NULL);
++				scaling_probe(shared, i, "after");
+ 				scaling_work(shared, i);
+ 				_exit(0);
+ 			}

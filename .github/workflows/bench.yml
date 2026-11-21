@@ -67,58 +67,24 @@ jobs:
           ports-prefix: ${{ inputs.ports-prefix }}
           std-stamp: ${{ inputs.std-stamp }}
 
-      # Which part of a second thread makes a forked process's own thread
-      # open and close faster (512 against 586 ns), on Intel:
-      #   a: as is
-      #   q: the child first runs a second thread to its end
-      #   m: the child maps, touches and unmaps a stack-sized region first
-      #   t: the child sleeps a millisecond first
-      #   h: the child allocates and frees 16 KiB first
-      - name: Scaling, a q m t h, twice
+      # Where a forked process's own thread loses time before its first
+      # sleep (586 against 512 ns an open and close after it), on Intel:
+      # sched_yield, open and close, a chain of SSE adds and one of
+      # integer multiplies, timed in the child before and after it sleeps
+      # a millisecond.
+      - name: Scaling, probes before and after a sleep, twice
         run: |
           set -o pipefail
           mkdir -p out/ab
-          leg() {
-            git checkout -q -- kernel userspace/posix
-            if [ -n "$2" ]; then git apply "tools/experiments/$2"; fi
-            ./ob bench --scaling --runs 3 --no-linux > "out/ab/s-$1.log" 2>&1 || true
-            cp out/bench-scaling/report.md "out/ab/s-$1.md" || true
-            echo "--- $1 ($(date -u +%H:%M:%S))"
-            grep "^| [148] \(threads\|processes\) |" "out/ab/s-$1.md" || true
-          }
+          git apply tools/experiments/scaling-pp.diff
           for round in 1 2; do
-            leg a$round ""
-            leg q$round scaling-q.diff
-            leg m$round scaling-m.diff
-            leg t$round scaling-t.diff
-            leg h$round scaling-h.diff
+            ./ob bench --scaling --runs 3 --no-linux > "out/ab/s-pp$round.log" 2>&1 || true
+            cp out/bench-scaling/report.md "out/ab/s-pp$round.md" || true
+            echo "--- pp$round ($(date -u +%H:%M:%S))"
+            grep "^| [148] \(threads\|processes\) |" "out/ab/s-pp$round.md" || true
+            grep -h "probe" out/bench-scaling/*.log | sed 's/.*posix-bench: //' || true
           done
-          git checkout -q -- kernel userspace/posix
-
-      # The gate, with Linux, on main with #600, the wake list, both
-      # layouts, IPC replies handed over and a same-CPU wake-up switching
-      # at once again, each vCPU pinned to a core.
-      - name: Gate with the whole change and the fix
-        run: |
-          mkdir -p out/ab
-          git apply tools/experiments/wakelist-fix.diff
-          status=0
-          ./ob bench --gate --defer-close --summary out/ab/gate-summary.md > out/ab/gate.log 2>&1 || status=$?
-          echo "--- gate exit $status"
-          tail -45 out/ab/gate.log
-          echo "--- close"
-          cat out/bench/close.txt 2>/dev/null || true
-          echo "--- rows"
-          grep "one CPU\|two CPUs\|each CPU at once\|cross CPU" out/bench/report.md | cut -d'|' -f2-6 || true
-
-      # The open/close scaling gate, with Linux, with the same kernel.
-      - name: Scaling gate with the whole change and the fix
-        run: |
-          status=0
-          ./ob bench --scaling --gate > out/ab/scaling-gate.log 2>&1 || status=$?
-          echo "--- scaling gate exit $status"
-          tail -30 out/ab/scaling-gate.log
-          git checkout -q -- kernel
+          git checkout -q -- userspace/posix
 
       - name: Upload the reports
         if: always()
