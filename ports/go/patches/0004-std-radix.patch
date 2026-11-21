@@ -7,9 +7,12 @@ ways that macOS and OpenBSD take (the *at functions, writev, accept4,
 pipe2, getrandom) with Linux's structures (stat, dirent, socket
 options); time zones from /system/resources/zoneinfo and root
 certificates from /system/resources/certificates; the host name from
-uname; the program's path from the runtime. Until Radix's event queue and
-networking, net lists no interfaces and has neither sendfile nor splice.
-Dukovo only.
+uname; the program's path from the runtime. net lists the interfaces of
+/kernel/class/net (radix-sysfs(5), ADR 0355), with their addresses but not
+their multicast groups, and has neither sendfile nor splice, which the C
+library lacks; its tests name Radix among the systems that have writev,
+that have no SOCK_SEQPACKET sockets, and whose interfaces list no
+multicast addresses. Dukovo only.
 
 diff --git a/src/archive/tar/stat_actime1.go b/src/archive/tar/stat_actime1.go
 index c4c2480f..f94375b1 100644
@@ -309,19 +312,205 @@ index 00000000..6f2ee278
 +
 +//go:linkname waitid syscall.waitid
 +func waitid(idtype int, id int, info unsafe.Pointer, options int) error
-diff --git a/src/net/interface_stub.go b/src/net/interface_stub.go
-index 4c280c6f..751079af 100644
---- a/src/net/interface_stub.go
-+++ b/src/net/interface_stub.go
-@@ -2,7 +2,7 @@
- // Use of this source code is governed by a BSD-style
- // license that can be found in the LICENSE file.
+diff --git a/src/net/interface_radix.go b/src/net/interface_radix.go
+new file mode 100644
+index 00000000..d7d89c7a
+--- /dev/null
++++ b/src/net/interface_radix.go
+@@ -0,0 +1,180 @@
++// Copyright 2026 The Dukovo contributors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package net
++
++import (
++	"os"
++	"syscall"
++)
++
++// Radix lists its network interfaces in /kernel/class/net, a directory
++// for each, with the files Linux has in /sys/class/net, and the
++// interface's addresses in two files of its own, ipv4 and ipv6
++// (radix-sysfs(5)). The C library's getifaddrs reads the same files.
++const interfacesDir = "/kernel/class/net/"
++
++// If the ifindex is zero, interfaceTable returns mappings of all
++// network interfaces. Otherwise it returns a mapping of a specific
++// interface.
++func interfaceTable(ifindex int) ([]Interface, error) {
++	names, err := interfaceNames()
++	if err != nil {
++		return nil, err
++	}
++	var ift []Interface
++	for _, name := range names {
++		ifi, ok := readInterface(name)
++		// An interface that went after the listing is passed over.
++		if !ok || (ifindex != 0 && ifi.Index != ifindex) {
++			continue
++		}
++		ift = append(ift, ifi)
++		if ifindex != 0 {
++			break
++		}
++	}
++	return ift, nil
++}
++
++// interfaceNames returns the names of the interfaces, in the order the
++// kernel lists them: by number.
++func interfaceNames() ([]string, error) {
++	dir, err := os.Open(interfacesDir)
++	if err != nil {
++		return nil, err
++	}
++	defer dir.Close()
++	return dir.Readdirnames(-1)
++}
++
++// readInterface reads what the interface name is, false if it is gone.
++func readInterface(name string) (Interface, bool) {
++	index, ok := readNumber(name, "ifindex")
++	if !ok || index <= 0 {
++		return Interface{}, false
++	}
++	ifi := Interface{Index: index, Name: name}
++	if mtu, ok := readNumber(name, "mtu"); ok {
++		ifi.MTU = mtu
++	}
++	// A tunnel has no hardware address, and lo's is all zeros, which
++	// Go gives as none, as on Linux.
++	if mac, err := ParseMAC(readField(name, "address")); err == nil {
++		for _, b := range mac {
++			if b != 0 {
++				ifi.HardwareAddr = mac
++				break
++			}
++		}
++	}
++	flags := readField(name, "flags")
++	if len(flags) > 2 && flags[0] == '0' && flags[1] == 'x' {
++		if raw, n, ok := xtoi(flags[2:]); ok && n == len(flags)-2 {
++			ifi.Flags = linkFlags(uint(raw), readField(name, "carrier") == "1")
++		}
++	}
++	return ifi, true
++}
++
++// readField reads the file of the interface name, without its newline;
++// "" if it cannot.
++func readField(name, file string) string {
++	f, err := open(interfacesDir + name + "/" + file)
++	if err != nil {
++		return ""
++	}
++	defer f.close()
++	line, _ := f.readLine()
++	return line
++}
++
++// readNumber reads the decimal number in the file of the interface name.
++func readNumber(name, file string) (int, bool) {
++	text := readField(name, file)
++	n, i, ok := dtoi(text)
++	return n, ok && i == len(text)
++}
++
++// linkFlags turns Linux's flags into Go's; an interface whose carrier is
++// up is running, as the C library's getifaddrs says.
++func linkFlags(raw uint, running bool) Flags {
++	var f Flags
++	if raw&syscall.IFF_UP != 0 {
++		f |= FlagUp
++	}
++	if running {
++		f |= FlagRunning
++	}
++	if raw&syscall.IFF_BROADCAST != 0 {
++		f |= FlagBroadcast
++	}
++	if raw&syscall.IFF_LOOPBACK != 0 {
++		f |= FlagLoopback
++	}
++	if raw&syscall.IFF_POINTOPOINT != 0 {
++		f |= FlagPointToPoint
++	}
++	if raw&syscall.IFF_MULTICAST != 0 {
++		f |= FlagMulticast
++	}
++	return f
++}
++
++// If the ifi is nil, interfaceAddrTable returns addresses for all
++// network interfaces. Otherwise it returns addresses for a specific
++// interface.
++func interfaceAddrTable(ifi *Interface) ([]Addr, error) {
++	var names []string
++	if ifi != nil {
++		names = []string{ifi.Name}
++	} else {
++		var err error
++		if names, err = interfaceNames(); err != nil {
++			return nil, err
++		}
++	}
++	var ifat []Addr
++	for _, name := range names {
++		ifat = appendAddrs(ifat, name)
++	}
++	return ifat, nil
++}
++
++// appendAddrs appends the addresses of the interface name to ifat, in the
++// order of its ipv4 and ipv6 files: a line for each IPv4 one, and for
++// IPv6 a line "address CIDR ..." for each, among lines of other kinds.
++func appendAddrs(ifat []Addr, name string) []Addr {
++	if f, err := open(interfacesDir + name + "/ipv4"); err == nil {
++		for line, ok := f.readLine(); ok; line, ok = f.readLine() {
++			ifat = appendCIDR(ifat, line)
++		}
++		f.close()
++	}
++	if f, err := open(interfacesDir + name + "/ipv6"); err == nil {
++		for line, ok := f.readLine(); ok; line, ok = f.readLine() {
++			if fields := getFields(line); len(fields) > 1 && fields[0] == "address" {
++				ifat = appendCIDR(ifat, fields[1])
++			}
++		}
++		f.close()
++	}
++	return ifat
++}
++
++// appendCIDR appends the address with its prefix that cidr is to ifat;
++// ifat as it is if cidr is not one.
++func appendCIDR(ifat []Addr, cidr string) []Addr {
++	ip, network, err := ParseCIDR(cidr)
++	if err != nil {
++		return ifat
++	}
++	return append(ifat, &IPNet{IP: ip, Mask: network.Mask})
++}
++
++// interfaceMulticastAddrTable returns addresses for a specific
++// interface. Radix does not list the groups an interface has joined.
++func interfaceMulticastAddrTable(ifi *Interface) ([]Addr, error) {
++	return nil, nil
++}
+diff --git a/src/net/interface_test.go b/src/net/interface_test.go
+index 72befca0..6918d17c 100644
+--- a/src/net/interface_test.go
++++ b/src/net/interface_test.go
+@@ -278,7 +278,7 @@ func checkUnicastStats(ifStats *ifStats, uniStats *routeStats) error {
  
--//go:build js || wasip1
-+//go:build js || radix || wasip1
- 
- package net
- 
+ func checkMulticastStats(ifStats *ifStats, uniStats, multiStats *routeStats) error {
+ 	switch runtime.GOOS {
+-	case "aix", "dragonfly", "netbsd", "openbsd", "plan9", "solaris", "illumos":
++	case "aix", "dragonfly", "netbsd", "openbsd", "plan9", "radix", "solaris", "illumos":
+ 	default:
+ 		// Test the existence of connected multicast route
+ 		// clones for IPv4. Unlike IPv6, IPv4 multicast
 diff --git a/src/net/internal/socktest/sys_cloexec.go b/src/net/internal/socktest/sys_cloexec.go
 index d57f44d9..266c9986 100644
 --- a/src/net/internal/socktest/sys_cloexec.go
@@ -335,6 +524,19 @@ index d57f44d9..266c9986 100644
  
  package socktest
  
+diff --git a/src/net/platform_test.go b/src/net/platform_test.go
+index f8317104..7603a0a9 100644
+--- a/src/net/platform_test.go
++++ b/src/net/platform_test.go
+@@ -38,7 +38,7 @@ func testableNetwork(network string) bool {
+ 		return supportsUnixSocket()
+ 	case "unixpacket":
+ 		switch runtime.GOOS {
+-		case "aix", "android", "darwin", "ios", "plan9", "windows":
++		case "aix", "android", "darwin", "ios", "plan9", "radix", "windows":
+ 			return false
+ 		}
+ 	}
 diff --git a/src/net/sock_cloexec.go b/src/net/sock_cloexec.go
 index 043522f0..e81ad1a4 100644
 --- a/src/net/sock_cloexec.go
@@ -444,6 +646,19 @@ index 6b0de875..a3a28a65 100644
  
  package net
  
+diff --git a/src/net/writev_test.go b/src/net/writev_test.go
+index e4e88c4f..6cc31640 100644
+--- a/src/net/writev_test.go
++++ b/src/net/writev_test.go
+@@ -151,7 +151,7 @@ func testBuffer_writeTo(t *testing.T, chunks int, useCopy bool) {
+ 
+ 		var wantSum int
+ 		switch runtime.GOOS {
+-		case "aix", "android", "darwin", "ios", "dragonfly", "freebsd", "illumos", "linux", "netbsd", "openbsd", "solaris":
++		case "aix", "android", "darwin", "ios", "dragonfly", "freebsd", "illumos", "linux", "netbsd", "openbsd", "radix", "solaris":
+ 			var wantMinCalls int
+ 			wantSum = want.Len()
+ 			v := chunks
 diff --git a/src/os/dir_unix.go b/src/os/dir_unix.go
 index 8f1aabec..c79d141c 100644
 --- a/src/os/dir_unix.go

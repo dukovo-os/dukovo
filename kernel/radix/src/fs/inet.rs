@@ -43,7 +43,9 @@
 //! A socket that is closed takes its parts out of their stacks, all but
 //! a stream socket's connection that has not ended: that one is closed,
 //! its FIN sent, and left to its interface as an orphan (`net::Orphan`),
-//! which goes once the connection has, or is reset after a minute.
+//! which goes once the connection has, or is reset after a minute. A
+//! connection with bytes no one read is reset at the close instead, and
+//! an orphan that receives bytes is reset then, as on Linux.
 //!
 //! A datagram socket joins multicast groups on one interface each
 //! (`socket_group`, ADR 0336): its part there takes the group's
@@ -566,6 +568,20 @@ impl State {
             v4 => v4,
         };
         Ok((((!ip.is_unspecified()).then_some(ip), given.port), given.scope))
+    }
+
+    /// `given` as a place to connect or send to, and its scope: as
+    /// [`State::endpoint`], but all zeros is this machine, as on Linux and
+    /// the BSDs, which programs that dial a listener's address rely on:
+    /// the address it is bound to, else its version's loopback address.
+    fn destination(&self, given: Given) -> Result<(Peer, u32), Status> {
+        let ((ip, port), scope) = self.endpoint(given)?;
+        let own = || match given.ip() {
+            IpAddress::Ipv4(_) => IpAddress::Ipv4(net::LOOPBACK),
+            IpAddress::Ipv6(_) => IpAddress::Ipv6(net::LOOPBACK_IPV6),
+        };
+        let bound = self.local.and_then(|(address, _)| address);
+        Ok(((ip.or(bound).unwrap_or_else(own), port), scope))
     }
 
     /// Puts a UDP socket bound to `address` and `port` on each interface
@@ -1209,10 +1225,8 @@ impl InetSocket {
         let (to, scope) = {
             let state = self.state.lock();
             // A ping socket's address has no port, as on Linux.
-            match state.endpoint(given)? {
-                ((Some(ip), port), scope) if port != 0 || self.kind == Kind::Ping => {
-                    ((ip, port), scope)
-                }
+            match state.destination(given)? {
+                ((ip, port), scope) if port != 0 || self.kind == Kind::Ping => ((ip, port), scope),
                 _ => return Err(status(Kernel::InvalidArgument)),
             }
         };
@@ -1274,10 +1288,7 @@ impl InetSocket {
     ) -> Result<usize, Status> {
         if self.kind != Kind::Stream {
             let to = match to {
-                Some(given) => match self.state.lock().endpoint(given)? {
-                    ((Some(ip), port), scope) => Some(((ip, port), scope)),
-                    _ => return Err(status(Kernel::InvalidArgument)),
-                },
+                Some(given) => Some(self.state.lock().destination(given)?),
                 None => None,
             };
             if self.kind == Kind::Ping {
@@ -1643,7 +1654,15 @@ impl InetSocket {
             let peer = state.peer.filter(|_| state.phase == Phase::Connected);
             peer.map(|(ip, port)| (Some(ip), port)).ok_or(status(Kernel::NotConnected))?
         } else {
-            state.local.unwrap_or((None, 0))
+            match (state.local.unwrap_or((None, 0)), state.peer) {
+                // A datagram socket connected from any address is at the
+                // one it sends to its peer from, as on Linux.
+                ((None, port), Some(to)) if state.phase == Phase::Connected => {
+                    let interface = state.route(to.0, state.scope).ok();
+                    (interface.and_then(|interface| interface.stack.lock().source_for(to.0)), port)
+                }
+                (local, _) => local,
+            }
         };
         Ok(address_of(endpoint, state.v6, state.scope))
     }
@@ -2055,9 +2074,17 @@ fn release_part(part: Part, connected: bool, port: &mut Option<Held>) {
             let open = stack.socket_mut::<tcp::Socket<'static>>(handle).is_some_and(|socket| {
                 match socket.state() {
                     tcp::State::Closed | tcp::State::Listen => false,
-                    // Its own connection ends as connections do.
+                    // Its own connection ends as connections do, but for
+                    // bytes it received that no one read: they are lost,
+                    // so the other end is told with a reset rather than an
+                    // end, as on Linux (RFC 2525, 2.17), and a writer there
+                    // learns at once that no one reads.
                     _ if connected => {
-                        socket.close();
+                        if socket.recv_queue() > 0 {
+                            socket.abort();
+                        } else {
+                            socket.close();
+                        }
                         true
                     }
                     // A listening socket's that no one took are reset.

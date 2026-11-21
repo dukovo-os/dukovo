@@ -492,7 +492,11 @@ port, as on a named one (ADR 0415).
 with EINPROGRESS, after which *poll* says the socket is writable once
 it is made and *SO_ERROR* says how it went; connecting again says
 EALREADY until then, and EISCONN once connected. A connection to a port
-no one listens on fails with ECONNREFUSED. A listening socket holds as
+no one listens on fails with ECONNREFUSED. *connect*, *sendto* and
+*sendmsg* to all zeros, 0.0.0.0 or ::, reach this machine, as on Linux:
+the address the socket is bound to, else 127.0.0.1 or ::1. A connected
+UDP socket bound to any address is named by *getsockname* with the
+address it sends to its peer from (ADR 0355). A listening socket holds as
 many connections as its backlog on each interface, up to 128, being made
 or waiting for *accept*; a SYN that comes when it holds that many, or
 faster than it makes room, is not answered, so its client sends it again
@@ -526,7 +530,12 @@ and *SO_SNDBUF* (fixed sizes), *SO_RCVTIMEO*, *SO_SNDTIMEO*,
 connection, sending RST and throwing away what was not sent, as on
 Linux; with more seconds the linger is kept and read back, but *close*
 returns at once and the connection ends in the background, as with it
-off. *TCP_QUICKACK* acknowledges at once instead of up to 10 ms later,
+off. A *close* of a stream socket with bytes received and not read
+resets the connection too, as does a byte that reaches a connection
+after its *close*: no one is left to read it. The other end's writes
+then fail with EPIPE at once, and its reads with ECONNRESET unless the
+reset came after the end of the stream, as on Linux (ADR 0355).
+*TCP_QUICKACK* acknowledges at once instead of up to 10 ms later,
 and stays set until it is turned off. *SO_OOBINLINE* is kept and read
 back: urgent data always comes inline, as with it set on Linux. A datagram to a broadcast address, 255.255.255.255 or its
 network's, fails with EACCES unless *SO_BROADCAST* is set, as on Linux.
