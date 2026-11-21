@@ -1,0 +1,30 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+Skips the check of the byte order of the IP header's length when
+mtr-packet sends its IPv4 probes over an ICMP datagram socket, as it
+does on Radix, which has no raw sockets: the kernel writes that
+socket's IP header, so the order is not mtr's to find. The check pings
+127.0.0.1 from the socket that sends every probe, and binds the socket
+first to the address getsockname() gives a UDP socket connected to
+127.0.0.1, which is 127.0.0.1, as on Linux. Each probe after it then
+went from a socket bound to the loopback address, which the routers'
+errors about them did not reach: mtr named no router. Linux skips the
+check altogether.
+
+--- a/packet/probe_unix.c
++++ b/packet/probe_unix.c
+@@ -149,6 +149,13 @@
+     return;
+ #endif
+ 
++    /*  The kernel writes a datagram socket's IP header, so there is no
++     *  byte order of its length to find; and the ping to localhost
++     *  would bind the socket that sends each probe to 127.0.0.1. */
++    if (!net_state->platform.ip4_socket_raw) {
++        return;
++    }
++
+     memset(&param, 0, sizeof(struct probe_param_t));
+     param.ip_version = 4;
+     param.protocol = IPPROTO_ICMP;

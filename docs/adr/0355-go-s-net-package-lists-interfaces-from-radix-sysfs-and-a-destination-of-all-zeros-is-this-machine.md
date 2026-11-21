@@ -82,7 +82,10 @@ Radix, then failed in five places.
 - Programs in any language that dial a listener at its all-zeros
   address reach it, as on Linux.
 - `getsockname` of a connected UDP socket bound to any address takes
-  the routes' look and one stack's lock.
+  the routes' look and one stack's lock. A program that binds what it
+  learns that way gets the address, as on Linux: mtr's check of the IP
+  header's byte order, which Linux skips, bound its ICMP socket to
+  127.0.0.1 so, and its port skips the check for datagram sockets.
 - A program that closes a connection without reading all it was sent
   resets it, where it used to end it with a FIN: the other end's writes
   fail with EPIPE, and its reads with ECONNRESET, as they would from

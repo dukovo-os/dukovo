@@ -11,7 +11,9 @@
 # under version 2 of the GPL only; queue.h is the University of
 # California's (BSD-3-Clause), in BSDCOPYING. The release archive is the
 # v0.96 tag's, from Ubuntu's pool, which keeps it unchanged. Upstream's
-# fix of CVE-2026-14461, which no release holds, is patches/0001.
+# fix of CVE-2026-14461, which no release holds, is patches/0001;
+# patches/0002 skips the check of an IP header's byte order that a
+# datagram socket does not need, as mtr does on Linux.
 name = "mtr"
 version = "0.96"
 summary = "mtr, which traces the way to a machine and measures each hop"
