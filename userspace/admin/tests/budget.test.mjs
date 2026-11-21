@@ -119,6 +119,10 @@ test('each page with its style sheets is within 150 KB beyond the shell', () => 
 // the window's words and the sheet of an update that asks for more, and the
 // rows of the Apps card that carry them. The question that asks why, and the
 // sheet's reading, are loaded when they are wanted and are not in the row.
+// Updates' row is a further 1,000 more, for the kind a rebuild is and the build
+// number the version words take off before they compare. Apps' row is 1,200
+// more for the same, and for the reason a rebuild's banner gives; Add an
+// app's is 500 more.
 // Apps' row is 5,400 more than it was, for the Size row's every state, the
 // hold row's words, and Tonight, Not tonight and the window's words.
 // Hardware's row is 6,000 more than the plan's: the disks' rows and the memory test at the next restart.
@@ -134,8 +138,8 @@ test('each page with its style sheets is within 150 KB beyond the shell', () => 
 // being got, and the row for settings with no log format; the chart and its model are read
 // when a site that has been counted is shown and are not in the row.
 const PAGE_LIMITS = {
-  updates: 81_700,
-  apps: 61_500,
+  updates: 82_700,
+  apps: 62_700,
   hardware: 61_000,
   certificates: 60_000,
   report: 67_000,
@@ -144,7 +148,7 @@ const PAGE_LIMITS = {
   move: 107_000,
   reliability: 22_000,
   terminal: 149_908,
-  'add-app': 55_500,
+  'add-app': 56_000,
   websites: 84_600,
   databases: 61_000,
 };

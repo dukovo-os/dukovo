@@ -323,7 +323,10 @@ pub enum Ipi {
     /// Does nothing but count; used to test that IPIs arrive.
     Ping,
     /// Makes the target check whether it should switch threads, on its way
-    /// back from the interrupt (see [`Threads::set_preempt_handler`]).
+    /// back from the interrupt (see [`Threads::set_preempt_handler`]); a
+    /// thread it interrupts in user mode also passes the return handler
+    /// ([`UserMode`]) on that way, which takes a stop or a signal sent to
+    /// the thread.
     Reschedule,
 }
 

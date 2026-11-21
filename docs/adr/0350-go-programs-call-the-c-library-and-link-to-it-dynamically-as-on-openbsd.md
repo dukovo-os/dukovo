@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0350. Go programs call the C library and link to it dynamically, as on OpenBSD
 
-- Status: Accepted; Go's network poller uses the event queue since [0353](0353-an-event-queue-watches-many-descriptors-as-kqueue-does.md)
+- Status: Accepted; Go's network poller uses the event queue since [0353](0353-an-event-queue-watches-many-descriptors-as-kqueue-does.md); Go's own commands are a catalog bundle since [0356](0356-go-s-own-commands-are-a-catalog-bundle-built-by-go-s-own-cross-build.md); cgo links through the C toolchain since [0357](0357-a-go-program-with-c-code-is-linked-by-the-c-toolchain-s-linker-on-the-build-machine.md), and Go's own test suite runs on Dukovo since [0358](0358-go-s-own-test-suite-runs-on-dukovo-in-a-ci-job-of-its-own.md)
 - Date: 2026-11-20
 
 ## Context

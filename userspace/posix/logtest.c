@@ -11,7 +11,8 @@
 // program's; that logtrim(8) and journalctl's --vacuum-time trim the
 // log; and that notifyd(8) takes notifications with the sender's process
 // and name as the kernel gives them, refuses a flood, and keeps none of
-// them in the log (ADR 0212).
+// them in the log (ADR 0212); and that syslog(3) reaches the log (ADR
+// 0506).
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -20,6 +21,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <syslog.h>
 
 #include "check.h"
 #include "programs.h"
@@ -115,6 +117,49 @@ static void own_lines(void) {
 	const char *const escaped[] = {LOG, "-g", "escape", "-o", "cat", NULL};
 	CHECK(wait_for("escape ?[31m and?volumed: a second line\n", escaped, 30));
 	CONTAINS("lt?[7m[", LOG, "-g", "escape", "--no-hostname");
+}
+
+// syslog(3), with nothing taking /dev/log, writes to the kernel log: the
+// record has its facility and level, the ident in front of the message
+// unless it is the program's name, and the thread's name and process as
+// the kernel gives them; LOG_PERROR copies the message to standard error,
+// and the C library prints nothing else there.
+static void syslog_lines(void) {
+	int quiet = open("/tmp/logtest-syslog", O_RDWR | O_CREAT | O_TRUNC, 0600);
+	int stderr_saved = dup(STDERR_FILENO);
+	CHECK(quiet >= 0 && stderr_saved >= 0);
+	if(quiet >= 0 && stderr_saved >= 0) {
+		dup2(quiet, STDERR_FILENO);
+		openlog("logtest-syslog", LOG_PERROR, LOG_DAEMON);
+		syslog(LOG_ERR, "line %d from syslog", 1);
+		dup2(stderr_saved, STDERR_FILENO);
+		char seen[256] = "";
+		ssize_t got = pread(quiet, seen, sizeof seen - 1, 0);
+		CHECK(got >= 0);
+		seen[got > 0 ? got : 0] = 0;
+		CHECK(strcmp(seen, "logtest-syslog: line 1 from syslog\n") == 0);
+	}
+	if(quiet >= 0)
+		close(quiet);
+	if(stderr_saved >= 0)
+		close(stderr_saved);
+	unlink("/tmp/logtest-syslog");
+	const char *const json[] = {LOG, "logtest", "-g", "^logtest-syslog: line 1", "-o", "json", NULL};
+	CHECK(wait_for("line 1 from syslog", json, 30));
+	char process[32];
+	snprintf(process, sizeof process, "\"process\":%d", (int)getpid());
+	CHECK(strstr(output, "\"level\":\"error\",\"from\":\"program\",\"name\":\"logtest\""));
+	CHECK(strstr(output, process));
+	CHECK(strstr(output, "\"text\":\"logtest-syslog: line 1 from syslog\""));
+	CONTAINS("daemon:err   : logtest: logtest-syslog: line 1 from syslog", DMESG, "-t", "-x", "-f",
+			"daemon");
+	// The ident is the program's name: the kernel's stamp is all there is.
+	openlog("logtest", 0, LOG_USER);
+	syslog(LOG_WARNING, "line 2 from syslog");
+	closelog();
+	const char *const cat[] = {LOG, "logtest", "-g", "^line 2 from syslog", "-o", "cat", NULL};
+	CHECK(wait_for("line 2 from syslog", cat, 30));
+	OUTPUT("", "line 2 from syslog\n", LOG, "logtest", "-g", "^line 2 from syslog", "-o", "cat");
 }
 
 // A service's lines are the ones Spark wrote for it: a program that
@@ -380,6 +425,7 @@ int main(void) {
 	check_start("logtest");
 	RUN(logd_answers);
 	RUN(own_lines);
+	RUN(syslog_lines);
 	RUN(services);
 	RUN(follow);
 	RUN(restarted);

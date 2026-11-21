@@ -16,7 +16,8 @@
 //! - [`RtQueue`], the FIFO and round-robin real-time classes;
 //! - [`Topology`]: the CPUs' cores, packages and NUMA nodes, and from them
 //!   where a waking thread runs and what load balancing moves;
-//! - [`HaltPoll`]: how long an idle virtual CPU polls before it halts;
+//! - [`HaltPoll`]: how long an idle CPU polls before it halts, within the
+//!   bounds of a virtual CPU or of one that waits in hardware;
 //! - [`account`]: user and system time from the timer's samples, and the
 //!   load averages.
 //!

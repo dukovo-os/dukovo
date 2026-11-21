@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Go's own commands for Dukovo, `go` and `gofmt`, with the compiler, the
+# linker and the standard library they build programs with: a bundle of the
+# Dukovo catalog, not of the image (ADR 0356). Go's own cross build makes
+# it from the same source and the same patches as the go port, whose
+# toolchain, in $TOOLCHAIN/go, builds it, so `patches` is a link to that
+# port's folder: one series for both.
+#
+# Go is under a BSD-3-Clause license. The vendored golang.org/x modules,
+# rsc.io/markdown and demangle carry the same text, google/pprof (Apache-2.0)
+# is built into `go tool pprof` with its svgpan script (BSD-3-Clause), and
+# lib/time/zoneinfo.zip is the time zone database, in the public domain.
+name = "go-radix"
+version = "1.27.4"
+summary = "Go's compiler, tools and standard library, built for Dukovo"
+license = "BSD-3-Clause AND Apache-2.0 AND LicenseRef-tz-public-domain"
+homepage = "https://go.dev"
+depends = ["go"]
+notices = [
+    "LICENSE",
+    "PATENTS",
+    "src/cmd/vendor/github.com/google/pprof/LICENSE",
+    "src/cmd/vendor/github.com/google/pprof/third_party/svgpan/LICENSE",
+]
+# The patches are for this release's runtime: only its patch releases are
+# newer ones.
+series = "1.27"
+
+[source]
+git = "https://github.com/golang/go.git"
+commit = "7b2881024c95a11ddb86663a616340aa3a88b67f"
+tag = "go1.27.4"
+
+[bundle]
+id = "dev.go.go"
+name = "Go"
+commands = ["go", "gofmt"]
+description = """\
+Go is a language for programs that build fast and run as one file. This \
+bundle has Go's own commands: go builds, runs, tests and checks programs \
+and manages their modules, and gofmt sets out their source. Programs are \
+built for Dukovo, in Go alone: cgo is off, as Dukovo has no C compiler \
+yet, and a program with C code is built with ob. GOTOOLCHAIN is local, so \
+a module that asks for a newer Go fails instead of downloading one, since \
+no release of Go from go.dev knows Dukovo. The race detector (-race) is \
+not built."""

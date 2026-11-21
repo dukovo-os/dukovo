@@ -254,7 +254,10 @@ machine with AMT, an AMD machine and a laptop; see
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
 | An interface's multicast groups: radix-sysfs does not show the groups an interface has joined, so Go's `net.Interface.MulticastAddrs` lists none, and Go's interface tests name Radix among the systems that list none (ADR 0355) | No program found that reads them | Need |
-| cgo, and `go` and `gofmt` in `/system` (ADR 0350) | The runtime first | Phase 17 |
+| cgo on Dukovo itself: the bundle's `go` builds with `CGO_ENABLED=0`, so a package with C code builds only with `ob` on the build machine (ADRs 0356, 0357) | Dukovo has no C compiler for `go` to call | Release 1.17 of the roadmap (Clang) |
+| Go's race detector, `go build -race` and `go test -race` (ADR 0357) | No race runtime for Radix | An upstream race runtime for Radix, or a port of it |
+| `go build` as fast as on Linux, held in `ob bench` | The bench's Linux machine has no Go toolchain to compare with | A Go toolchain in the bench's Linux machine |
+| Go's build modes `c-archive`, `c-shared`, `shared` and `plugin` (ADR 0357) | Go's table of platforms does not enable them for Radix, and Dukovo loads no library at run time for Go code | Need |
 | fzf, lazygit and duf in the catalog | Written in Go | Phase 17 |
 | Zero-copy file transfers in Go programs (`sendfile`, `splice`, `copy_file_range`): `io.Copy` between files and sockets reads and writes through a buffer (ADR 0350) | The C library has none of them | Need |
 | `go test -fuzz` for Radix: Go's fuzzing shares memory with a mapped file between processes (ADR 0350) | Shared writable mappings of files (see Files and storage) | Need |
@@ -318,7 +321,7 @@ These come from finished work; the releases themselves are in the
 | PHP's JIT, for PCRE and for opcache (ADR 0499) | Both want memory that is writable and executable at once, which a program's pages never are on Radix; nginx's PCRE2 is built without JIT as well (ADR 0491) | A decision to allow such mappings, or a JIT that does without |
 | PHP's `dl()`, and extensions from PECL (ADR 0499) | `php` is a static program that loads no library at run time | Loading libraries, or building PHP with `-dynamic` (ADR 0071) for a catalog that needs extensions of its own |
 | PHP's `dns_get_record`, `dns_check_record` (`checkdnsrr`) and `dns_get_mx` (`getmxrr`) (ADR 0499) | They need `res_search(3)`, which the C library lacks | `res_search(3)` in the C library, or a resolver of PHP's own |
-| The system's gaps PHP's suite finds (ADR 0499, `lab/tests/services/php-skips.txt`): the C library's `gethostbyname_r(3)` finds nothing (PHP is built to use `gethostbyname(3)`, which does), nor do its `getprotobyname(3)` and `getprotobynumber(3)`; its `getservbyport(3)` ignores the protocol, `wait3(2)` is not implemented and `sysconf(3)` lacks some names; the socket options `TCP_CONGESTION`, `SO_ZEROCOPY`, `IPV6_PKTINFO` and `IPV6_RECVPKTINFO`; the ioctl that gives an interface's address by its number; a SIGCHLD's sender's user number; a tmpfs folder of more than 32,768 entries; `fsync(2)` of a descriptor that is not a file; `utimes(2)` of a time before 1970; `getcwd(3)` in a removed folder; `iconv(3)`, without which libxml2 reads and writes only the encodings it knows itself, not Windows-1251 or SHIFT_JIS; a `locale(1)` command | Found by the suite, not by a program that needs them yet | Kernel and C library work, each removing its lines from the skip list |
+| The system's gaps PHP's suite finds (ADR 0499, `lab/tests/services/php-skips.txt`): the C library's `gethostbyname_r(3)` finds nothing (PHP is built to use `gethostbyname(3)`, which does), nor do its `getprotobyname(3)` and `getprotobynumber(3)`; its `getservbyport(3)` ignores the protocol, `wait3(2)` is not implemented and `sysconf(3)` lacks some names; the socket options `TCP_CONGESTION`, `SO_ZEROCOPY`, `IPV6_PKTINFO` and `IPV6_RECVPKTINFO`; `getaddrinfo(3)` of an empty name, which glibc refuses; the machine's own datagrams to an interface-local IPv6 multicast group one of its sockets joined; the ioctl that gives an interface's address by its number; a SIGCHLD's sender's user number; `fsync(2)` of a descriptor that is not a file; `utimes(2)` of a time before 1970; `getcwd(3)` in a removed folder; `iconv(3)`, without which libxml2 reads and writes only the encodings it knows itself, not Windows-1251 or SHIFT_JIS; a `locale(1)` command | Found by the suite, not by a program that needs them yet | Kernel and C library work, each removing its lines from the skip list |
 | PHP-FPM's slow log, `request_slowlog_timeout` (ADR 0520) | It reads a worker's stack with `ptrace` or `/proc/PID/mem`, which Radix does not offer | `ptrace` or `/proc/PID/mem` |
 | Installing a service bundle's commands for one person, without its services: PHP's `php` and PostgreSQL's `psql` (ADR 0385, ADR 0520, ADR 0522) | A bundle with services installs only for everyone, so a person who is not an administrator cannot have PHP's command line or `psql` for themselves | A decision by the maintainers on how a bundle offers its commands alone |
 | PHP-FPM pools that run as different accounts (ADR 0520) | PHP-FPM must start as root to give a pool another account, and a bundle's service never runs as root (ADR 0385); every pool runs as `php` | A decision to let a service start as root and drop to accounts of its own |
@@ -347,6 +350,8 @@ machine asks for them.
 | Spark's pet of the hardware watchdog came more than 10 s late while nginx served the lab PC's load on the OptiPlex 7040: what holds Spark's loop up (nginx's access log copied into the system's log is the first suspect) | Lab, services/nginx on the OptiPlex, 2026-11-13 |
 | Transparent huge pages for anonymous memory | ADR 0121 |
 | Batched and lazy TLB shootdowns | ADR 0020 |
+| `getrusage`'s `ru_maxrss`, a process's peak resident memory in KiB, as on Linux and the BSDs: the C library leaves it 0, as the kernel keeps no peak, so Go's `runtime/pprof` heap profiles say `MaxRSS = 0` | Go's test suite, ADR 0358 |
+| `/devices/shm`'s directory keeps its names in one array in the order they were made, with an index sorted by name, as tmpfs did before ADR 0367 kept its entries in pieces: it holds at most 32,768 shared memory objects, and removing one moves every one after it | ADR 0367 |
 | Frames grouped by how long they live, and compaction that moves pages to join free blocks, so that large blocks stay likely as memory breaks up: for the heap's slabs, blocks of up to 32 KiB, and for devices' memory; the heap's large requests already fall back to areas | ADR 0524 |
 | A lazy IOMMU mode | ADR 0164 |
 | Memory hot-plug; NUMA tested beyond QEMU's emulated nodes | memory design note |
@@ -509,6 +514,7 @@ machine asks for them.
 | A version of an app older than the one kept: bundled keeps one version back, so an app's page lists the version it runs, the one on offer and the one kept | bundled(8) |
 | A new alert rule tried on last week's history before it is on: no alert rule is the owner's to write, and a script raises an alert with `alerts raise`, so this waits until rules exist | ADR 0485 |
 | An alert when an administrator signs in from a new place or device, and Sign-ins as a kind of alert: no program raises an alert for a sign-in, since authd blocks an address that fails too often but keeps no record of where each administrator signs in from; it waits on a record in authd of the places and devices each administrator signs in from, with its own privacy note | ADR 0485, ADR 0566 |
+| Ops' catalog prepare does not see a lab round reading out/: the lab tool keeps its run lock in its own store, which Ops does not read, so the prepare window warns instead | ADR 0594 |
 
 ### Benchmarks
 
@@ -521,7 +527,7 @@ machine asks for them.
 | `git status` takes about 2.5 times Linux's time (5.0 ms against 1.98 ms on 1,000 files, with 15 context switches); no work is planned to close it yet | ADR 0294 |
 | Rows still above the 0.90 margin target, though under Linux: Btrfs zstd write, unmapping a page on another CPU, NVMe 1 MiB read (0.92 to 0.94) | Benchmark margin work |
 | smoltcp goes through every socket of an interface's stack for each packet and each poll: an idle socket costs about 110 instructions a round trip on the host, having been passed over in the send loop since it has nothing to send (the network benchmarks run beside 11, ADR 0550), where Linux looks a socket up by its address | ADR 0550 |
-| On real hardware (OptiPlex 7040, i5-6500) rows over Linux that pass under QEMU: `poll` 2.23; shared futex across CPUs 1.38; fork, exec and wait 1.38; pipe 1 MiB 1.12. The network rows (every packet woke every socket's waiters) are fixed by ADR 0550; the lab's next run there confirms them | Lab, performance/ipc, loopback and processes on the OptiPlex, 2026-11-13 |
+| On real hardware (OptiPlex 7040, i5-6500), on 2026-11-20: fork, exec and wait 1.12 times Linux's time, and the UDP round trip on one CPU 1.16 before ADR 0553; the lab's next run there confirms both | Lab, performance/loopback and processes on the OptiPlex; mlibc patches 0092 and 0093 |
 
 ## Lab findings to confirm
 
@@ -541,16 +547,18 @@ finding or removed.
 | A lab test for COM1 as the serial console (console=ttyS0): serial-console running on it and a sign-in over it; hardware/serial-port covers COM1 only when it is not the console | Lab, first real-machine runs |
 | SSH: RSA and P-521 keys and authorized_keys options are not taken; sshd_config takes eight keywords (no `Port`, `ListenAddress`, `MaxAuthTries`); ssh is built without OpenSSL, so ssh-keygen makes ed25519 keys alone | Lab, first real-machine runs |
 | "[elevate] password for lab:" is printed into the output of commands run with sudo -S | Lab, first real-machine runs |
+| PHP's `ext/pcntl/tests/001.phpt` sometimes hung: a child spinning right after `fork` missed its SIGTERM, now that the kernel interrupts the CPU of a thread it signals; CPython's `test_threading` `test_print_exception_gh_102056` raised MemoryError reading a pipe, now that realloc gives back what a shrunk block no longer holds (mlibc patch 0096). The lab's next runs of both confirm them | Lab, `services/php` and `services/python` |
 
 ## Waiting on a decision
 
 | Item | Why it waits |
 | --- | --- |
-| The SD 1 MiB benchmark rows: printed but not gated | They sit at 1.00 because QEMU's SD emulation takes nearly all of both systems' time |
+| The SD 64 KiB and 1 MiB benchmark rows: printed but not gated (ADR 0552) | QEMU's SD emulation takes nearly all of both systems' time, and its speed moves with the runner; a real reader in the lab would show each system's own work |
 | Printing: the design's open questions | Drafted for a release after 1.0 |
 | Known weak spots to plan for: Wi-Fi, Bluetooth and webcams; large desktop apps; Btrfs maturity | Raised, not yet discussed |
 | Nightly system releases on the update server, and the key that signs them (ADRs 0456, 0467); to decide before 1.0.0-alpha.1 | The server offers stable and beta; a nightly release would be signed at every merge with no person there, and ADR 0457 keeps release keys off servers and out of CI |
 | The update server's online keys kept encrypted at rest, as ADR 0457's table has them (ADRs 0382, 0467); to decide before 1.0.0-alpha.1 | They are files only their system users read; a timer signs with them with nobody there, so a key the server decrypts itself guards only a copy of its disk |
+| A build taken out of the targets with `--remove` could be given its number again (ADR 0595) | Removing a signed target is rare, and a number given again is still ordered right: it is above every build the targets list |
 
 ## Documentation to bring up to date
 

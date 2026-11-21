@@ -230,15 +230,17 @@ anything.
 
 # IDLE
 
-An idle CPU waits with MWAIT where the CPU offers it, else with HLT. In a
-virtual machine without MWAIT it first polls for a wake-up, for as long
-as its recent idle periods suggest (up to 200 µs, adapting as Linux's
-cpuidle-haltpoll does), because halting and the interrupt that ends a
-halt each leave the guest. A CPU that wakes another one that is polling
-or in MWAIT writes a word instead of sending an interrupt. It learns
-only from wake-ups that other CPUs send: one that its own interrupt
-brings, a disk's or the timer's, comes whether it polls or halts, so a
-CPU whose threads wait only for disks halts at once.
+An idle CPU waits with MWAIT where the CPU offers it, else with HLT, and
+first polls for a wake-up, for as long as its recent idle periods
+suggest (adapting as Linux's cpuidle-haltpoll does). In a virtual
+machine without MWAIT it polls for up to 200 µs, because halting and the
+interrupt that ends a halt each leave the guest; elsewhere for up to
+8 µs, a few times what leaving MWAIT or HLT costs. A CPU that wakes
+another one that is polling or in MWAIT writes a word instead of sending
+an interrupt. It learns only from wake-ups that other CPUs send: one
+that its own interrupt brings, a disk's or the timer's, comes whether it
+polls or halts, so a CPU whose threads wait only for disks halts at
+once.
 
 # DIAGNOSTICS
 

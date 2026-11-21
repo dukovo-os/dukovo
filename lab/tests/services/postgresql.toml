@@ -120,8 +120,11 @@ expect = "hook 1 of 1"
 [[step]]
 run = '''sh -c 'rm -rf /tmp/php-tests && cp -R /applications/net.php.php/tests /tmp/php-tests && chmod -R u+w /tmp/php-tests && grep -v -e "^#" -e "^$" /users/lab/php-skips.txt | sed "s|^|/tmp/php-tests/|" > /tmp/php-skips && find /tmp/php-tests/ext/pgsql/tests /tmp/php-tests/ext/pdo_pgsql/tests -name "*.phpt" | sort | grep -v -F -f /tmp/php-skips > /tmp/php-list && test $(wc -l < /tmp/php-list) -gt 100 && echo listed' '''
 expect = "listed"
+# The count of failures last, after the names of any tests that failed and
+# the start of the difference each one's output has from what it expects,
+# as services/php prints them.
 [[step]]
-run = '''sh -c 'cd /tmp/php-tests && PGSQL_TEST_CONNSTR="host=127.0.0.1 dbname=test user=phptest password=phptest-pw" PDO_PGSQL_TEST_DSN="pgsql:host=127.0.0.1 dbname=test user=phptest password=phptest-pw" TEST_PHP_EXECUTABLE=/applications/net.php.php/bin/php /applications/net.php.php/bin/php run-tests.php -j4 -q -r /tmp/php-list > /tmp/php-pgsql.log 2>&1; grep "^Tests failed" /tmp/php-pgsql.log' '''
+run = '''sh -c 'cd /tmp/php-tests && PGSQL_TEST_CONNSTR="host=127.0.0.1 dbname=test user=phptest password=phptest-pw" PDO_PGSQL_TEST_DSN="pgsql:host=127.0.0.1 dbname=test user=phptest password=phptest-pw" TEST_PHP_EXECUTABLE=/applications/net.php.php/bin/php /applications/net.php.php/bin/php run-tests.php -j4 -q -r /tmp/php-list > /tmp/php-pgsql.log 2>&1; sed -n "/^FAILED TEST SUMMARY/,/^=====/p" /tmp/php-pgsql.log; sed -n "/^FAILED TEST SUMMARY/,/^=====/s/.*\[\(.*\)\.phpt\].*/\1/p" /tmp/php-pgsql.log | while read -r test; do echo "--- $test.diff"; head -n 30 "$test.diff"; done; grep "^Tests failed" /tmp/php-pgsql.log' '''
 expect = "Tests failed    :     0 ("
 
 # pgbench as the role bench, over the network as an application connects:

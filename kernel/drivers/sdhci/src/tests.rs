@@ -90,6 +90,8 @@ struct State {
     /// The data lines the slot has wired to the card: 8, or 4 where the
     /// upper four go nowhere.
     lines: u8,
+    /// Every register access, in order: (offset, whether it writes).
+    accesses: Vec<(usize, bool)>,
 }
 
 struct Sim(Mutex<State>);
@@ -124,6 +126,7 @@ impl State {
             timing: 0,
             switch_error: false,
             lines: 8,
+            accesses: Vec::new(),
         }
     }
 
@@ -315,6 +318,7 @@ impl State {
         if wide {
             table |= self.get(reg::ADMA_ADDRESS + 4, 4) << 32;
         }
+        let first = table;
         let table = self.host(table, wide);
         let count = self.get(reg::BLOCK_COUNT, 2) as usize;
         let multiple = matches!(index, 18 | 25);
@@ -326,6 +330,16 @@ impl State {
         }
         let mut done = 0;
         let mut at = table;
+        // The register is where the engine is, as it goes through the
+        // descriptors: past the last when it ends.
+        let ended = |state: &mut State, descriptors: u64| {
+            let address = first + descriptors * size as u64;
+            state.put(reg::ADMA_ADDRESS, 4, address & 0xffff_ffff);
+            if wide {
+                state.put(reg::ADMA_ADDRESS + 4, 4, address >> 32);
+            }
+        };
+        let mut descriptors = 0;
         loop {
             let mut entry = [0u8; 12];
             radix_hw::fake_memory(at, &mut entry[..size]);
@@ -351,11 +365,13 @@ impl State {
                 self.card.as_mut().unwrap().data[place..place + len].copy_from_slice(&bytes);
             }
             done += len;
+            descriptors += 1;
             if attributes & 2 != 0 {
                 break;
             }
             at += size as u64;
         }
+        ended(self, descriptors);
         if done == total { Ok(()) } else { Err(1 << 9) }
     }
 
@@ -586,6 +602,7 @@ impl Sim {
 impl Registers for Sim {
     fn read(&self, offset: usize, size: usize) -> u64 {
         let mut state = self.0.lock().unwrap();
+        state.accesses.push((offset, false));
         if offset == reg::BUFFER {
             let word = state.buffer.pop_front().unwrap_or(0);
             if state.buffer.is_empty() {
@@ -618,6 +635,7 @@ impl Registers for Sim {
 
     fn write(&self, offset: usize, size: usize, value: u64) {
         let mut state = self.0.lock().unwrap();
+        state.accesses.push((offset, true));
         if matches!(offset, reg::POWER_CONTROL | reg::SOFTWARE_RESET) {
             state.pokes.push((offset, value));
         }
@@ -643,6 +661,14 @@ impl Registers for Sim {
                 state.put(offset, size, value);
                 state.command(value as u16);
             }
+            // A 32-bit write spans Transfer Mode and Command: the mode is
+            // set, and the command's upper byte starts it (1.8).
+            reg::TRANSFER_MODE if size == 4 => {
+                state.put(offset, size, value);
+                state.command((value >> 16) as u16);
+            }
+            // Block Size and Block Count in one write.
+            reg::BLOCK_SIZE if size == 4 => state.put(offset, size, value),
             reg::SDMA_ADDRESS if state.sdma.is_some() => {
                 state.put(offset, size, value);
                 state.sdma_move();
@@ -1418,4 +1444,68 @@ fn the_lines_are_reset_after_each_request_where_the_controller_needs_it() {
     assert_eq!(resets(Quirks::default()), []);
     let jmicron = Quirks { reset_after_request: true, ..Quirks::default() };
     assert_eq!(resets(jmicron), [(reg::SOFTWARE_RESET, 6), (reg::SOFTWARE_RESET, 6)]);
+}
+
+/// The register accesses from the `start` of a request to the `poll` that
+/// returns its result, and the offsets written.
+fn accesses(slot: &mut Slot, sim: &Sim, op: Op, buffers: &[(u64, u32)]) -> (usize, Vec<usize>) {
+    let from = sim.0.lock().unwrap().accesses.len();
+    slot.start(op, 0, 4, buffers, &mut |_| {}).unwrap();
+    assert_eq!(slot.poll(), Some(Ok(())));
+    let state = sim.0.lock().unwrap();
+    let all = &state.accesses[from..];
+    (all.len(), all.iter().filter(|a| a.1).map(|a| a.0).collect())
+}
+
+#[test]
+fn a_request_touches_few_registers() {
+    let (mut slot, sim) = slot(version::V3, 200, true, Some(card(4096, true)));
+    slot.identify(&mut |_| {}).unwrap();
+    let page = Dma::fake(4096);
+    let buffers = [(page.phys(), 2048)];
+    // The first one also writes the DMA select (a read and a write of
+    // Host Control).
+    let (first, _) = accesses(&mut slot, &sim, Op::Read, &buffers);
+    assert_eq!(first, 9 + 2);
+    // A multi-block read and write after it: PRESENT_STATE, NORMAL_STATUS and
+    // RESPONSE are read; the table's address (both halves, as the controller
+    // reaches 64 bits), the argument, the block size and count, the mode with
+    // the command, and the status are written. The table's address is
+    // written each time, as the controller's ADMA System Address moves on
+    // through the descriptors.
+    let (read, writes) = accesses(&mut slot, &sim, Op::Read, &buffers);
+    assert_eq!(read, 9);
+    assert_eq!(
+        writes,
+        [
+            reg::ADMA_ADDRESS,
+            reg::ADMA_ADDRESS + 4,
+            reg::BLOCK_SIZE,
+            reg::ARGUMENT,
+            reg::TRANSFER_MODE,
+            reg::NORMAL_STATUS
+        ]
+    );
+    assert_eq!(accesses(&mut slot, &sim, Op::Write, &buffers).0, 9);
+    // A reset of the lines may lose the select: it is written again, once.
+    slot.abandon(&mut |_| {});
+    let (after, writes) = accesses(&mut slot, &sim, Op::Read, &buffers);
+    assert!(after > 9 && writes.contains(&reg::HOST_CONTROL));
+    assert_eq!(accesses(&mut slot, &sim, Op::Read, &buffers).0, 9);
+    // With 32-bit descriptors, the table's upper half is not written.
+    let (mut narrow, nsim) = slot_with(version::V2, sdma_caps(true), 0, Some(card(4096, true)));
+    narrow.identify(&mut |_| {}).unwrap();
+    nsim.0.lock().unwrap().aliases.push((0x1000_0000, page.phys(), 4096));
+    let low = [(0x1000_0000, 2048)];
+    accesses(&mut narrow, &nsim, Op::Read, &low);
+    assert_eq!(accesses(&mut narrow, &nsim, Op::Read, &low).0, 8);
+    // SDMA writes its buffer's address each time, and nothing else extra.
+    let (mut slot, sim) = slot_with(version::V2, sdma_caps(false), 0, Some(card(4096, true)));
+    slot.identify(&mut |_| {}).unwrap();
+    sim.0.lock().unwrap().aliases.push((0x1000_0000, page.phys(), 4096));
+    let buffers = [(0x1000_0000, 2048)];
+    accesses(&mut slot, &sim, Op::Read, &buffers);
+    let (sdma, writes) = accesses(&mut slot, &sim, Op::Read, &buffers);
+    assert_eq!(sdma, 8);
+    assert_eq!(writes[0], reg::SDMA_ADDRESS);
 }

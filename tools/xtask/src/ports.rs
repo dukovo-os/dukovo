@@ -1387,7 +1387,8 @@ const BUILD_TOOLS: [(&str, &str); 7] = [
 /// ([`crate::userspace::std_cargo`]).
 pub const PORT_TIME: &str = "1767225600";
 
-/// What went into a port's build: its directory's files, the toolchain
+/// What went into a port's build: its directory's files, and those of a
+/// folder in it that is a link to another's, the toolchain
 /// (its version, and the wrappers, cross files and site file ob writes),
 /// what the environment ob gives build.sh names the toolchain's programs
 /// and how its Rust crates are named, the time it is built at
@@ -1405,21 +1406,10 @@ fn inputs_hash(
     let (wrappers, cross) = (toolchain.bin(), toolchain.dir.join("meson"));
     let (autotools, cmake) = (toolchain.autotools(), toolchain.cmake());
     for dir in [dir, &wrappers, &cross, &autotools, &cmake, &headers] {
-        let mut files = Vec::new();
-        list_files(dir, &mut files)?;
-        files.sort();
-        for file in &files {
-            file.strip_prefix(dir).unwrap_or(file).hash(&mut hasher);
-            let bytes = std::fs::read(file).context(|| format!("reading {}", file.display()))?;
-            // The system call headers carry the interface's documentation,
-            // which no port compiles: leaving it out means a change to a
-            // comment in abi/ does not rebuild every port.
-            if *dir == headers {
-                without_c_comments(&bytes).hash(&mut hasher);
-            } else {
-                bytes.hash(&mut hasher);
-            }
-        }
+        // The system call headers carry the interface's documentation,
+        // which no port compiles: leaving it out means a change to a
+        // comment in abi/ does not rebuild every port.
+        hash_folder(dir, dir == headers, &mut hasher)?;
     }
     toolchain.version.hash(&mut hasher);
     toolchain.builtins.hash(&mut hasher);
@@ -1433,6 +1423,36 @@ fn inputs_hash(
         stamps.get(dep).hash(&mut hasher);
     }
     Ok(hasher.finish())
+}
+
+/// Hashes the files of `dir`, each by its path in it and its bytes, or its
+/// C source without comments when `code_only`. A folder in it that is a
+/// link to another folder, as go-radix's `patches` is the go port's (ADR
+/// 0356), counts by where it points and by the files there, so that a
+/// change to them builds the port again.
+fn hash_folder(dir: &Path, code_only: bool, hasher: &mut DefaultHasher) -> Result<()> {
+    let mut files = Vec::new();
+    list_files(dir, &mut files)?;
+    files.sort();
+    for file in &files {
+        file.strip_prefix(dir).unwrap_or(file).hash(hasher);
+        // list_files lists a link itself: one that leads to a folder is
+        // the only kind that is a folder here.
+        if file.is_dir() {
+            let target =
+                std::fs::read_link(file).context(|| format!("reading {}", file.display()))?;
+            target.hash(hasher);
+            hash_folder(file, code_only, hasher)?;
+            continue;
+        }
+        let bytes = std::fs::read(file).context(|| format!("reading {}", file.display()))?;
+        if code_only {
+            without_c_comments(&bytes).hash(hasher);
+        } else {
+            bytes.hash(hasher);
+        }
+    }
+    Ok(())
 }
 
 /// C source as the compiler sees it, for hashing: each comment and each run
@@ -2144,6 +2164,36 @@ mod tests {
         // 56 years from 1970, 14 of them leap years, in seconds.
         let days = 56 * 365 + 14;
         assert_eq!(PORT_TIME.parse::<u64>().unwrap(), days * 86_400);
+    }
+
+    #[test]
+    fn a_folder_linked_from_a_port_counts_by_its_files() {
+        let root = std::env::temp_dir().join(format!("ob-linked-patches-{}", std::process::id()));
+        let (go, radix) = (root.join("go"), root.join("go-radix"));
+        std::fs::create_dir_all(go.join("patches")).unwrap();
+        std::fs::create_dir_all(&radix).unwrap();
+        std::fs::write(go.join("patches/0001-a.patch"), "one\n").unwrap();
+        std::fs::write(radix.join("recipe.toml"), "name = \"go-radix\"\n").unwrap();
+        std::os::unix::fs::symlink("../go/patches", radix.join("patches")).unwrap();
+        let hash = |dir: &Path| {
+            let mut hasher = DefaultHasher::new();
+            hash_folder(dir, false, &mut hasher).unwrap();
+            hasher.finish()
+        };
+        let before = hash(&radix);
+        assert_eq!(hash(&radix), before);
+        // A patch changed, or one added, in the linked folder is a change
+        // to the port that links it.
+        std::fs::write(go.join("patches/0001-a.patch"), "two\n").unwrap();
+        let changed = hash(&radix);
+        assert_ne!(changed, before);
+        std::fs::write(go.join("patches/0002-b.patch"), "three\n").unwrap();
+        assert_ne!(hash(&radix), changed);
+        // A link to a file still counts by the link itself, as before.
+        std::fs::remove_file(go.join("patches/0002-b.patch")).unwrap();
+        std::fs::write(go.join("patches/0001-a.patch"), "one\n").unwrap();
+        assert_eq!(hash(&radix), before);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

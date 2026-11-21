@@ -305,7 +305,7 @@ enum ProcessState: u8 {
 }
 
 /// A process.
-interface process = 0x000a version 11 {
+interface process = 0x000a version 12 {
     kind = process;
     /// Makes a kernel object, charged to this process's resource domain,
     /// and puts its capability, with every right, in slot `to`: a process
@@ -751,4 +751,14 @@ interface process = 0x000a version 11 {
     /// the process that made the pair. (Since Phase 16, ADR 0525.)
     method datagram_pair = 60 (first: slot, second: slot, flags: PipeFlags) -> ()
         raises [no_such_slot, missing_rights, occupied, invalid_argument, no_memory];
+    /// Ends the calling thread as `exit_thread` does, then, once its
+    /// process no longer has it, sets the 32-bit word at `word` to 1 and
+    /// wakes every thread waiting on that word (radix-address-space(2)'s
+    /// `futex_wait`). A C library passes the word its `pthread_join`
+    /// waits on, so that a thread it joins is gone from the process, and
+    /// no call finds it by its number. A word out of line with 4 bytes, or
+    /// one the thread cannot write, is left alone, and the thread ends all
+    /// the same. Does not return. (Since version 12.)
+    method exit_thread_waking = 61 (code: u64, word: addr) -> ()
+        raises [no_such_slot, empty_slot, missing_rights];
 }

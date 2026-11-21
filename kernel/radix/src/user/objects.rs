@@ -847,7 +847,7 @@ pub fn released(kept: Option<Recorded>, by: Option<&super::UserThread>) {
         // it ends at its next return to user mode.
         Object::Thread(thread) => {
             thread.request_stop();
-            crate::sched::wake(&thread);
+            crate::sched::interrupt(&thread);
         }
         // It ends; with no thread left to finish it, the change's caller
         // does once the store's locks have gone (`process::finish_pending`).

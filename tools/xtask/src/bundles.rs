@@ -54,11 +54,15 @@ pub fn dir(ctx: &Ctx) -> PathBuf {
     ctx.out.join(DIR)
 }
 
-/// The `.dkv` file of `port`'s bundle.
-pub fn file(ctx: &Ctx, port: &Port) -> Option<PathBuf> {
-    let spec = port.recipe.bundle.as_ref()?;
-    Some(dir(ctx).join(format!("{}-{}.{}", spec.id, port.recipe.version, dkv::EXTENSION)))
+/// The `.dkv` file of the bundle `id` at `version`.
+fn file(ctx: &Ctx, id: &str, version: &str) -> PathBuf {
+    dir(ctx).join(format!("{id}-{version}.{}", dkv::EXTENSION))
 }
+
+/// The extension of the file beside a bundle packed as a version's next
+/// build that says why it was built again: catalog-repo's
+/// `REASON_EXTENSION`, which signs its line into the target (ADR 0595).
+const REASON_EXTENSION: &str = "reason";
 
 /// Packs the bundle of every port that is one, and returns their files.
 pub fn pack_all(ctx: &Ctx, ports: &Ports) -> Result<Vec<PathBuf>> {
@@ -69,14 +73,43 @@ pub fn pack_all(ctx: &Ctx, ports: &Ports) -> Result<Vec<PathBuf>> {
     let key = signing_key(ctx)?;
     let mut files = Vec::new();
     for port in bundles {
-        files.push(pack(ctx, ports, port, &key)?);
+        files.push(pack(ctx, ports, port, &key, &port.recipe.version)?);
     }
     Ok(files)
 }
 
-/// Packs `port`'s bundle: a copy of what its build.sh installed, with
-/// its manifest, SBOM and licenses, signed by `key`.
-fn pack(ctx: &Ctx, ports: &Ports, port: &Port, key: &SecretKey) -> Result<PathBuf> {
+/// Packs each of `builds` as the next build of a version the catalog
+/// lists (ADR 0595), from what its port installed, with `reason`, why it
+/// was built again, in the file beside it that catalog-repo reads.
+pub fn pack_next_builds(
+    ctx: &Ctx,
+    ports: &Ports,
+    builds: &[crate::catalog::NextBuild],
+    reason: &str,
+) -> Result<()> {
+    if builds.is_empty() {
+        return Ok(());
+    }
+    let key = signing_key(ctx)?;
+    for build in builds {
+        let Some(port) =
+            ports.ports.iter().find(|p| p.recipe.bundle.as_ref().is_some_and(|b| b.id == build.id))
+        else {
+            return Err(Error::new(format!("no port packs {}", build.id)));
+        };
+        let packed = pack(ctx, ports, port, &key, &build.version)?;
+        let note = packed.with_extension(REASON_EXTENSION);
+        std::fs::write(&note, format!("{reason}\n"))
+            .context(|| format!("writing {}", note.display()))?;
+    }
+    Ok(())
+}
+
+/// Packs `port`'s bundle as `version`: a copy of what its build.sh
+/// installed, with its manifest, SBOM and licenses, signed by `key`. The
+/// files of its other versions in `out/bundles` go, with their reasons,
+/// so that only the one packed last is signed.
+fn pack(ctx: &Ctx, ports: &Ports, port: &Port, key: &SecretKey, version: &str) -> Result<PathBuf> {
     let recipe = &port.recipe;
     let spec = recipe.bundle.as_ref().expect("a bundle's port");
     let built = staging(ctx, &recipe.name);
@@ -105,7 +138,7 @@ fn pack(ctx: &Ctx, ports: &Ports, port: &Port, key: &SecretKey) -> Result<PathBu
     }
     process::create_dir(folder.parent().expect("the folder has a parent"))?;
     crate::ports::copy_tree(ctx, &built, &folder)?;
-    let manifest = manifest(port);
+    let manifest = manifest(port, version);
     // The reader bundle(1) installs with must take it.
     dkv::signed::parse_manifest(manifest.as_bytes())
         .map_err(|why| Error::new(format!("port {}: its bundle's {why}", recipe.name)))?;
@@ -116,7 +149,7 @@ fn pack(ctx: &Ctx, ports: &Ports, port: &Port, key: &SecretKey) -> Result<PathBu
     let created = crate::licenses::rfc3339(time);
     dkv::signed::sign_folder(&folder, key, time, &created)
         .map_err(|why| Error::new(format!("signing the bundle of port {}: {why}", recipe.name)))?;
-    let out = file(ctx, port).expect("a bundle's port");
+    let out = file(ctx, &spec.id, version);
     process::create_dir(&dir(ctx))?;
     let partial = out.with_extension("dkv.partial");
     let mut writer = std::io::BufWriter::new(
@@ -127,15 +160,44 @@ fn pack(ctx: &Ctx, ports: &Ports, port: &Port, key: &SecretKey) -> Result<PathBu
     std::io::Write::flush(&mut writer).context(|| format!("writing {}", partial.display()))?;
     drop(writer);
     std::fs::rename(&partial, &out).context(|| format!("writing {}", out.display()))?;
+    remove_other_versions(&dir(ctx), &spec.id, &out)?;
     step(&format!(
-        "Packed {} {} into {}: {} files, signed by {}",
+        "Packed {} {version} into {}: {} files, signed by {}",
         spec.id,
-        recipe.version,
         ctx.display(&out),
         checked.files,
         checked.key.encoded()
     ));
     Ok(out)
+}
+
+/// Removes from `dir` the files of bundle `id` but `kept`: `ID-V.dkv` for
+/// any version `V`, and each one's reason. A name whose rest is no
+/// version, such as `org.nginx.nginx-extra-1.0.0.dkv` beside
+/// `org.nginx.nginx`, is another bundle's and stays. A version packed
+/// before, left there, would be signed with this one, and an earlier
+/// build's reason would be read as this one's.
+fn remove_other_versions(dir: &Path, id: &str, kept: &Path) -> Result<()> {
+    let entries = std::fs::read_dir(dir).context(|| format!("reading {}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.context(|| format!("reading {}", dir.display()))?;
+        let (path, name) = (entry.path(), entry.file_name().to_string_lossy().into_owned());
+        let Some(version) = name
+            .strip_prefix(&format!("{id}-"))
+            .and_then(|rest| {
+                rest.strip_suffix(&format!(".{}", dkv::EXTENSION))
+                    .or_else(|| rest.strip_suffix(&format!(".{REASON_EXTENSION}")))
+            })
+            .filter(|version| manifest::bundle::check_version(version).is_ok())
+        else {
+            continue;
+        };
+        if path != kept {
+            std::fs::remove_file(&path).context(|| format!("removing {}", path.display()))?;
+            step(&format!("Removed {name}, {id} {version}, which this pack replaces"));
+        }
+    }
+    Ok(())
 }
 
 /// A small bundle the boot tests make (ADR 0384): one program, a shell
@@ -327,11 +389,11 @@ pub fn sign_test_feed(ctx: &Ctx, folder: &Path, files: &[PathBuf]) -> Result<()>
     process::output(ctx, &mut cmd).map(drop)
 }
 
-/// The manifest of `port`'s bundle (manifest.json(5)): its identity from
-/// the recipe, a program for each command, run with the access of
+/// The manifest of `port`'s bundle at `version` (manifest.json(5)): its
+/// identity from the recipe, a program for each command, run with the access of
 /// whoever runs it, as command-line tools are, and each alias a command
 /// that runs another program by its own name.
-pub fn manifest(port: &Port) -> String {
+pub fn manifest(port: &Port, version: &str) -> String {
     let recipe = &port.recipe;
     let spec = recipe.bundle.as_ref().expect("a bundle's port");
     let mut o = String::new();
@@ -339,7 +401,7 @@ pub fn manifest(port: &Port) -> String {
     let _ = writeln!(o, "  \"manifest_version\": 1,");
     let _ = writeln!(o, "  \"id\": {},", json(&spec.id));
     let _ = writeln!(o, "  \"name\": {},", json(&spec.name));
-    let _ = writeln!(o, "  \"version\": {},", json(&recipe.version));
+    let _ = writeln!(o, "  \"version\": {},", json(version));
     let _ = writeln!(o, "  \"summary\": {},", json(&sentence(&recipe.summary)));
     if let Some(description) = &spec.description {
         let _ = writeln!(o, "  \"description\": {},", json(description));
@@ -539,9 +601,55 @@ mod tests {
     }
 
     #[test]
+    fn a_next_build_is_packed_with_its_build_in_the_manifest() {
+        let port = port();
+        let text = manifest(&port, "15.2.0_2");
+        assert_eq!(dkv::signed::parse_manifest(text.as_bytes()).unwrap().version.0, "15.2.0_2");
+    }
+
+    #[test]
+    fn a_pack_removes_its_bundles_other_versions_and_no_other_bundle() {
+        let dir = std::env::temp_dir().join(format!("ob-bundles-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = "org.nginx.nginx";
+        let names = [
+            "org.nginx.nginx-1.29.0.dkv",
+            "org.nginx.nginx-1.29.0_2.dkv",
+            "org.nginx.nginx-1.29.0_2.reason",
+            "org.nginx.nginx-1.29.1-rc.2.dkv",
+            "org.nginx.nginx-1.29.1.reason",
+            "org.nginx.nginx-extra-1.0.0.dkv",
+            "org.nginx.nginx-1.29.1.dkv.partial",
+            "org.php.php-8.5.0.dkv",
+        ];
+        for name in names {
+            std::fs::write(dir.join(name), name).unwrap();
+        }
+        let kept = dir.join("org.nginx.nginx-1.29.1.dkv");
+        std::fs::write(&kept, "packed").unwrap();
+        remove_other_versions(&dir, id, &kept).unwrap();
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            [
+                "org.nginx.nginx-1.29.1.dkv",
+                "org.nginx.nginx-1.29.1.dkv.partial",
+                "org.nginx.nginx-extra-1.0.0.dkv",
+                "org.php.php-8.5.0.dkv",
+            ]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn the_manifest_reads() {
         let port = port();
-        let text = manifest(&port);
+        let text = manifest(&port, &port.recipe.version);
         let manifest = dkv::signed::parse_manifest(text.as_bytes()).unwrap();
         assert_eq!(manifest.id.0, "io.github.burntsushi.ripgrep");
         assert!(text.contains("\"summary\": \"Searches files for lines that match a pattern\""));
@@ -556,10 +664,13 @@ mod tests {
     fn the_description_reaches_the_manifest() {
         let mut port = port();
         assert!(
-            dkv::signed::parse_manifest(manifest(&port).as_bytes()).unwrap().description.is_none()
+            dkv::signed::parse_manifest(manifest(&port, &port.recipe.version).as_bytes())
+                .unwrap()
+                .description
+                .is_none()
         );
         port.recipe.bundle.as_mut().unwrap().description = Some("It says \"hello\".".into());
-        let text = manifest(&port);
+        let text = manifest(&port, &port.recipe.version);
         assert!(text.contains("\"description\": \"It says \\\"hello\\\".\""));
         let manifest = dkv::signed::parse_manifest(text.as_bytes()).unwrap();
         assert_eq!(manifest.description.unwrap().0, "It says \"hello\".");
@@ -573,7 +684,7 @@ mod tests {
         let text = std::fs::read_to_string(dir.join("recipe.toml")).unwrap();
         let recipe: Recipe = toml::from_str(&text).unwrap();
         let port = Port { recipe, dir, source: None, extras: Vec::new(), crates: Vec::new() };
-        let text = manifest(&port);
+        let text = manifest(&port, &port.recipe.version);
         let manifest = dkv::signed::parse_manifest(text.as_bytes()).unwrap();
         assert_eq!(manifest.id.0, "org.nginx.nginx");
         assert_eq!(manifest.programs.len(), 2, "nginx and nginx-service");
@@ -629,7 +740,7 @@ mod tests {
         let text = std::fs::read_to_string(dir.join("recipe.toml")).unwrap();
         let recipe: Recipe = toml::from_str(&text).unwrap();
         let port = Port { recipe, dir, source: None, extras: Vec::new(), crates: Vec::new() };
-        let text = manifest(&port);
+        let text = manifest(&port, &port.recipe.version);
         let manifest = dkv::signed::parse_manifest(text.as_bytes()).unwrap();
         let program = |name: &str| {
             let command = manifest.commands.iter().find(|c| c.name.0 == name).unwrap();

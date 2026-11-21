@@ -34,6 +34,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 - [Scheduled jobs: crontab and at](scheduled-jobs.md)
 - [Performance profiles](performance.md)
 - [Python](python.md)
+- [Go](go.md)
 - [PHP](php.md)
 - [PostgreSQL](postgresql.md)
 - [Cloud and virtual machines](cloud.md)
