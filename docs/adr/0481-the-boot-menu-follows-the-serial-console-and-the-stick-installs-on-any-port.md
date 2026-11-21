@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0481. The boot menu follows the serial console, the firmware's console port is a console, and the stick installs on any port
 
-- Status: Accepted
+- Status: Accepted; the default menu also shows on Intel AMT's Serial-over-LAN port since [0371](0371-the-boot-menu-shows-on-intel-amt-s-serial-over-lan-port-by-default.md)
 - Date: 2026-11-13
 
 ## Context

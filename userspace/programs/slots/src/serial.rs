@@ -13,8 +13,9 @@
 //! kernel line, and `serial_0` to `serial_3` with `serial_0_speed` to
 //! `serial_3_speed`, the menu's ports in GRUB's names and their speeds in
 //! baud; a slot the menu does not use is empty. A system with no block
-//! starts as it was installed before the block: the menu on COM1 at 115200
-//! baud, and the console flags the menu's `@CONSOLE@` was filled with.
+//! starts as it was installed before the block: the menu on COM1 and on Intel
+//! AMT's Serial-over-LAN port, each at 115200 baud, where the machine has
+//! them, and the console flags the menu's `@CONSOLE@` was filled with.
 //!
 //! The crate is without the standard library and reads no files. When a
 //! start ignores the settings, `serial` shows what the next start will do

@@ -1812,7 +1812,8 @@ mod tests {
         // The serial console's settings, read from the file beside the menu
         // with the variables the slots crate writes, after the flags they
         // replace and before the slot state is read; a system without the
-        // file shows the menu on COM1 at 115200 baud, as before.
+        // file shows the menu on COM1 and then on Intel AMT's
+        // Serial-over-LAN port, each at 115200 baud (ADR 0371).
         let variables = slots::serial::VARIABLES.join(" ");
         let file = slots::serial::PATH.replace("boot/grub/", "");
         let load = format!(
@@ -1828,9 +1829,12 @@ mod tests {
                 format!("    serial_menu \"${{serial_{slot}}}\" \"${{serial_{slot}_speed}}\"\n");
             assert_eq!(cfg.matches(&menu).count(), 1, "{cfg}");
         }
-        assert!(cfg.contains("else\n    serial_menu com0 115200\nfi\n"), "{cfg}");
-        // The function's definition, the four slots and the fallback.
-        assert_eq!(cfg.matches("serial_menu ").count(), 1 + 4 + 1, "{cfg}");
+        let fallback =
+            "else\n    serial_menu com0 115200\n    serial_menu pci,00:16.3 115200\nfi\n";
+        assert!(cfg.find(fallback).is_some_and(|at| loaded < at), "{cfg}");
+        // The function's definition, the four slots and the fallback's two
+        // ports.
+        assert_eq!(cfg.matches("serial_menu ").count(), 1 + 4 + 2, "{cfg}");
         assert_eq!(cfg.matches("terminal_output --append \"serial_$1\"").count(), 1);
         assert!(!appends_the_plain_serial_terminal(&cfg), "{cfg}");
         assert!(cfg.contains("    set gfxpayload=keep\n    set gfxmode=auto\n"), "{cfg}");

@@ -177,7 +177,8 @@ appends them again after it replaces GRUB's outputs. GRUB runs only a
 PCI function's first port, and only with 8 data bits and no parity, so
 a console on another port, or at another format, has no menu there.
 Without the file, as on a system installed before it, the menu shows on
-COM1 at 115200 baud and the flags are those the installer filled in.
+COM1 and on Intel AMT's Serial-over-LAN port, each at 115200 baud, where
+the machine has them, and the flags are those the installer filled in.
 Each slot's _startup/menu.cfg_ puts *dukovo_console* on its kernel
 lines, so that a slot from an older release follows the settings too.
 A change of the settings takes effect at the next start.
