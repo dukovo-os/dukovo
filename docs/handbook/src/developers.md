@@ -132,8 +132,7 @@ and merge, and every night on main, and fails if Radix is slower than
 Linux at any operation, after measuring both again, up to six more
 times, while one is (ADR 0107). When the only operations still over are
 within 1.10 times Linux's time, CI runs the whole gate once more on
-another runner, and that run decides (ADR 0559). Each virtual CPU of a
-benchmark boot is pinned to a host core of its own (ADR 0554).
+another runner, and that run decides (ADR 0559).
 `./ob bench --instructions` needs neither: it counts the instructions
 each operation takes under QEMU, and with `--gate` fails if one on one
 CPU goes over its budget in `tools/xtask/src/bench.rs`, as CI does

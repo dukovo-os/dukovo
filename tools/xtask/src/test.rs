@@ -7337,13 +7337,13 @@ impl Drop for Vm {
 }
 
 /// A connection to QEMU's machine protocol.
-pub(crate) struct Qmp {
+struct Qmp {
     stream: UnixStream,
     reader: BufReader<UnixStream>,
 }
 
 impl Qmp {
-    pub(crate) fn connect(path: &Path) -> Result<Qmp, String> {
+    fn connect(path: &Path) -> Result<Qmp, String> {
         let deadline = Instant::now() + Duration::from_secs(10);
         let stream = loop {
             match UnixStream::connect(path) {
@@ -7377,7 +7377,7 @@ impl Qmp {
     }
 
     /// As [`Qmp::execute`], giving the reply's line.
-    pub(crate) fn execute_reply(&mut self, command: &str) -> Result<String, String> {
+    fn execute_reply(&mut self, command: &str) -> Result<String, String> {
         writeln!(self.stream, "{command}").map_err(|err| format!("writing to QMP: {err}"))?;
         loop {
             let line = self.read_line()?;

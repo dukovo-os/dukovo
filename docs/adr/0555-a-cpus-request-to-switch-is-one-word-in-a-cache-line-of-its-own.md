@@ -81,8 +81,8 @@ which a change to either side's order would break (the TLA+ model
 ## Consequences
 
 - A remote wake-up writes the idle CPU's request line once. On a CI
-  runner with AMD EPYC 9V74 CPUs, the vCPUs pinned (ADR 0554) and both
-  versions measured in the same job:
+  runner with AMD EPYC 9V74 CPUs, with each vCPU pinned to a core of its
+  own for the measurement and both versions measured in the same job:
   - five of the six two-CPU rows took 1-6% less time than before;
   - the futex row was unchanged;
   - the one-CPU rows were unchanged.

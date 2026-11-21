@@ -39,7 +39,6 @@ mod lint;
 mod manuals;
 mod memtest;
 mod patched;
-mod pin;
 mod ports;
 mod process;
 mod qemu;

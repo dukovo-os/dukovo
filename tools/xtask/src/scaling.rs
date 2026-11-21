@@ -30,8 +30,8 @@ use crate::bench::{self, Counts, Measurement};
 use crate::config::{Firmware, Media, Profile};
 use crate::process::{self, step};
 use crate::qemu::{self, DirectBoot, Machine, Serial};
-use crate::test::{self, Built, TestImage};
-use crate::{Context, Ctx, Result, VERSION, baseline, kernel, pin, userspace};
+use crate::test::{self, Built, TestImage, Vm};
+use crate::{Context, Ctx, Result, VERSION, baseline, kernel, userspace};
 
 /// The CPUs of both virtual machines: as many as a CI runner has.
 const CPUS: u32 = 4;
@@ -239,12 +239,12 @@ fn boot(ctx: &Ctx, dir: &Path, side: Side, kvm: bool) -> Result<(Vec<Measurement
         display: false,
         reboot: false,
         gdb: false,
-        qmp: Some(dir.join(format!("{log}.qmp"))),
+        qmp: None,
         extra: Vec::new(),
         write_log: None,
         direct,
     };
-    let mut vm = pin::start(ctx, &machine, dir, log, bench::TIMEOUT)?;
+    let mut vm = Vm::start(ctx, &machine, dir, log, bench::TIMEOUT).map_err(crate::Error::new)?;
     let outcome = vm.expect(done);
     let text = vm.log();
     drop(vm);
