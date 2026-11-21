@@ -73,7 +73,8 @@ jobs:
       #   q: the child first runs a second thread to its end
       #   s: the child's thread works on a fresh stack
       #   v: the child clears the vector registers' upper halves first
-      - name: Scaling, a q s v a q s v
+      #   k: the kernel never lends a file or directory (ADR 0414)
+      - name: Scaling, a q s v k a q s v k
         run: |
           set -o pipefail
           mkdir -p out/ab
@@ -90,6 +91,7 @@ jobs:
             leg q$round scaling-q.diff
             leg s$round scaling-s.diff
             leg v$round scaling-v.diff
+            leg k$round scaling-k.diff
           done
           git checkout -q -- kernel userspace/posix
 

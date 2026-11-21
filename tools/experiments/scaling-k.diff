@@ -1,0 +1,15 @@
+diff --git a/kernel/radix/src/user/objects.rs b/kernel/radix/src/user/objects.rs
+index b1fbe1c..1d27189 100644
+--- a/kernel/radix/src/user/objects.rs
++++ b/kernel/radix/src/user/objects.rs
+@@ -478,7 +478,9 @@ fn find_in<'a>(
+ /// with preemption off, in the read section that found the capability.
+ #[inline(always)]
+ fn lends(process: Option<&ProcessRef>) -> bool {
+-    process.is_some_and(|own| own.thread_count() == 1) && REVOKES.load(Ordering::Relaxed) == 0
++    // Experiment: never lend.
++    let _ = process;
++    false
+ }
+ 
+ /// Borrows the file or directory object `kept` holds, which capability
