@@ -66,7 +66,7 @@ use radix_sched::{
     CpuLoad, CpuSet, HaltPoll, LOAD_INTERVAL_NS, LoadAverage, Loads, Place, Resched, Split,
     Topology, haltpoll,
 };
-use radix_sync::{Mutex, Once, SpinLock};
+use radix_sync::{Mutex, Once, SpinLock, SpinLockGuard};
 
 use crate::Arch;
 use crate::domains::{self, DomainError, DomainRef, JoinError};
@@ -888,9 +888,7 @@ pub fn wake(thread: &ThreadRef) -> bool {
     woke
 }
 
-/// [`wake`], with interrupts masked. A thread that should go to another
-/// CPU that is idle is handed to it ([`hand_over`]), once the thread's lock
-/// is let go; otherwise it is queued.
+/// [`wake`], with interrupts masked.
 fn wake_masked(thread: &ThreadRef) -> bool {
     let mut state = thread.state.lock();
     if !matches!(state.run, Run::Blocked(_)) {
@@ -898,20 +896,28 @@ fn wake_masked(thread: &ThreadRef) -> bool {
     }
     thread.wake_pending.store(false, Ordering::Relaxed);
     state.run = Run::Ready;
-    let previous = thread.cpu.load(Ordering::Relaxed);
-    let target = choose_cpu(previous, &state);
+    let target = choose_cpu(thread.cpu.load(Ordering::Relaxed), &state);
+    place_woken(thread, state, target);
+    true
+}
+
+/// Puts `thread`, just made ready under its lock `state`, on CPU `target`:
+/// handed to it ([`hand_over`]) once the lock is let go, if `target` is
+/// another CPU and idle; otherwise queued on it. With interrupts masked,
+/// so that a waker moved meanwhile cannot find itself on the CPU it hands
+/// to.
+fn place_woken(thread: &ThreadRef, mut state: SpinLockGuard<'_, State>, target: usize) {
     if target == Arch::current_cpu() || CPUS.get(target).running.load(Ordering::Relaxed) != 0 {
         thread.stats.wakeups.fetch_add(1, Ordering::Relaxed);
         enqueue_on(thread, &mut state, false, target);
-        return true;
+        return;
     }
-    if target != previous {
+    if target != thread.cpu.load(Ordering::Relaxed) {
         thread.stats.migrations.fetch_add(1, Ordering::Relaxed);
     }
     thread.cpu.store(target, Ordering::Relaxed);
     drop(state);
     hand_over(thread, target);
-    true
 }
 
 /// Makes a thread that has been asked to stop, or marked as having a
@@ -1045,22 +1051,32 @@ pub fn wake_sync(thread: &ThreadRef) -> bool {
 /// the reaper, which frees a thread on the CPU it ended on.
 fn wake_here(thread: &ThreadRef) -> bool {
     thread.wake_pending.store(true, Ordering::SeqCst);
-    let mut state = thread.state.lock_irq();
+    // Masked as in `wake`, for a thread that goes to another CPU.
+    let were = Arch::disable_interrupts();
+    let woke = wake_here_masked(thread);
+    Arch::restore_interrupts(were);
+    woke
+}
+
+/// [`wake_here`], with interrupts masked. A thread that may not run here
+/// goes where [`wake`] would put it, handed over if that CPU is idle.
+fn wake_here_masked(thread: &ThreadRef) -> bool {
+    let mut state = thread.state.lock();
     if !matches!(state.run, Run::Blocked(_)) {
         return false;
     }
     thread.wake_pending.store(false, Ordering::Relaxed);
     state.run = Run::Ready;
-    thread.stats.wakeups.fetch_add(1, Ordering::Relaxed);
     let here = Arch::current_cpu();
-    if state.rt_prio() == 0
+    let target = if state.rt_prio() == 0
         && state.affinity.contains(here)
         && CPUS.get(here).online.load(Ordering::Relaxed)
     {
-        enqueue_on(thread, &mut state, false, here);
+        here
     } else {
-        enqueue_ready(thread, &mut state, false);
-    }
+        choose_cpu(thread.cpu.load(Ordering::Relaxed), &state)
+    };
+    place_woken(thread, state, target);
     true
 }
 
