@@ -1,0 +1,76 @@
+diff --git a/userspace/posix/bench.c b/userspace/posix/bench.c
+index cfa92ad..d67a57b 100644
+--- a/userspace/posix/bench.c
++++ b/userspace/posix/bench.c
+@@ -986,8 +986,18 @@ struct scaling {
+ 	int dirs[SCALING_MOST];
+ 	// When the workers were let go, and when each was done.
+ 	uint64_t started, ended[SCALING_MOST];
++	// Experiment: XINUSE at points of the first worker's life.
++	uint64_t xz[6];
+ };
+ 
++// Experiment: the extended state components the CPU holds as in use
++// (XGETBV with ECX = 1; this CPU has it), read without a system call.
++static uint64_t xz_read(void) {
++	uint32_t lo, hi;
++	__asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(1));
++	return ((uint64_t)hi << 32) | lo;
++}
++
+ // The kernel's counts that show where workers wait for each other, as
+ // Radix's /processes/stat lists them: context switches, halts and
+ // interprocessor interrupts, kernel mutexes found taken, sleeps for them,
+@@ -1023,11 +1033,22 @@ struct scaling_worker {
+ };
+ 
+ static void scaling_work(struct scaling *shared, int index) {
++	int first = index == 0 && !shared->threads;
++	if(first)
++		shared->xz[1] = xz_read();
+ 	pin(shared->cpus[index % shared->cpu_count]);
++	if(first)
++		shared->xz[2] = xz_read();
+ 	int dir = shared->dirs[index];
+ 	__atomic_add_fetch(&shared->ready, 1, __ATOMIC_SEQ_CST);
+ 	while(!__atomic_load_n(&shared->go, __ATOMIC_ACQUIRE))
+ 		sched_yield();
++	if(first)
++		shared->xz[3] = xz_read();
++	// Experiment: the upper halves cleared before the loop (VZEROUPPER).
++	__asm__ volatile(".byte 0xc5, 0xf8, 0x77" ::: "memory");
++	if(first)
++		shared->xz[5] = xz_read();
+ 	for(uint64_t i = 0; i < SCALING_ROUNDS; i++) {
+ 		int fd = openat(dir, "file", O_RDONLY | O_CLOEXEC);
+ 		if(fd < 0)
+@@ -1035,6 +1056,8 @@ static void scaling_work(struct scaling *shared, int index) {
+ 		close(fd);
+ 	}
+ 	shared->ended[index] = now_ns();
++	if(first)
++		shared->xz[4] = xz_read();
+ }
+ 
+ static void *scaling_thread(void *argument) {
+@@ -1061,6 +1084,8 @@ static void scaling_run(struct scaling *shared, int workers, int threads) {
+ 			if(pthread_create(&thread[i], NULL, scaling_thread, &worker[i]) != 0)
+ 				fail("pthread_create");
+ 		} else {
++			if(i == 0)
++				shared->xz[0] = xz_read();
+ 			child[i] = fork();
+ 			if(child[i] < 0)
+ 				fail("fork");
+@@ -1084,6 +1109,11 @@ static void scaling_run(struct scaling *shared, int workers, int threads) {
+ 				fail("waitpid");
+ 		}
+ 	}
++	if(!threads)
++		printf("posix-bench: xz workers=%d fork=%#llx start=%#llx pinned=%#llx loop=%#llx end=%#llx cleared=%#llx\n",
++		       workers, (unsigned long long)shared->xz[0], (unsigned long long)shared->xz[1],
++		       (unsigned long long)shared->xz[2], (unsigned long long)shared->xz[3],
++		       (unsigned long long)shared->xz[4], (unsigned long long)shared->xz[5]);
+ 	counted = counted && read_scaling_counts(after);
+ 	uint64_t last = shared->started;
+ 	for(int i = 0; i < workers; i++)

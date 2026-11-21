@@ -1,0 +1,53 @@
+diff --git a/kernel/arch/x86_64/src/fpu.rs b/kernel/arch/x86_64/src/fpu.rs
+index 38c8207..f150b2e 100644
+--- a/kernel/arch/x86_64/src/fpu.rs
++++ b/kernel/arch/x86_64/src/fpu.rs
+@@ -285,6 +285,48 @@ pub unsafe fn save(area: usize) {
+         FXSAVE => unsafe { asm!("fxsave64 [{}]", in(reg) area, options(nostack, preserves_flags)) },
+         _ => {}
+     }
++    if MODE.load(Ordering::Relaxed) >= XSAVE {
++        // SAFETY: as above; the image was just written.
++        unsafe { scrub(area) };
++    }
++}
++
++/// Experiment: drops from the image's XSTATE_BV each of AVX, the opmask,
++/// ZMM_Hi256 and Hi16_ZMM whose saved bytes are all zero, so that the
++/// next restore puts it in its initial state rather than loading zeros.
++unsafe fn scrub(area: usize) {
++    let header = (area + 512) as *mut u64;
++    // SAFETY: the caller's area holds an XSAVE image with its header at 512.
++    let bv = unsafe { header.read_volatile() };
++    let mut keep = bv;
++    for component in [2usize, 5, 6, 7] {
++        if bv & (1 << component) == 0 {
++            continue;
++        }
++        let start = STARTS[component].load(Ordering::Relaxed) as usize;
++        let end = ENDS[component].load(Ordering::Relaxed) as usize;
++        if start == 0 {
++            continue;
++        }
++        let mut zero = true;
++        let mut at = start;
++        while at < end {
++            // SAFETY: within the image, 8-aligned (components start at
++            // multiples of 64 and have sizes that are multiples of 8).
++            if unsafe { ((area + at) as *const u64).read_volatile() } != 0 {
++                zero = false;
++                break;
++            }
++            at += 8;
++        }
++        if zero {
++            keep &= !(1 << component);
++        }
++    }
++    if keep != bv {
++        // SAFETY: as above.
++        unsafe { header.write_volatile(keep) };
++    }
+ }
+ 
+ /// Loads this CPU's extended state from `area`.

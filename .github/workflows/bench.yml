@@ -67,30 +67,31 @@ jobs:
           ports-prefix: ${{ inputs.ports-prefix }}
           std-stamp: ${{ inputs.std-stamp }}
 
-      # Where a forked process's own thread loses time (586 against 512
-      # ns an open and close), on Intel: sched_yield, open and close, a
-      # chain of SSE adds and one of integer multiplies, timed in the child
-      # before and after it sleeps a millisecond, with the vector state
-      # components it holds in use (XINUSE) at each step:
-      #   px: as is
-      #   xs: the kernel saves with XSAVE rather than XSAVEOPT
-      - name: Scaling, px and xs, twice
+      # Why a forked process's own thread is slower (586 against 512 ns an
+      # open and close) on Intel, pinned: the vector state components the
+      # first worker holds in use (XINUSE, read with no system call) before
+      # fork, at its start, once pinned, at the loop and after it:
+      #   z: as is
+      #   zk: the kernel drops from each save the upper halves that are zero
+      #   zv: the worker clears the upper halves (VZEROUPPER) before the loop
+      - name: Scaling, the loop's vector state, a kernel that drops zero upper halves, and VZEROUPPER, twice
         run: |
           set -o pipefail
           mkdir -p out/ab
           leg() {
             git checkout -q -- kernel userspace/posix
-            git apply tools/experiments/scaling-px.diff
-            if [ -n "$2" ]; then git apply "tools/experiments/$2"; fi
+            git apply "tools/experiments/$2"
+            if [ -n "$3" ]; then git apply "tools/experiments/$3"; fi
             ./ob bench --scaling --runs 3 --no-linux > "out/ab/s-$1.log" 2>&1 || true
             cp out/bench-scaling/report.md "out/ab/s-$1.md" || true
             echo "--- $1 ($(date -u +%H:%M:%S))"
             grep "^| [148] \(threads\|processes\) |" "out/ab/s-$1.md" || true
-            grep -h "probe\|xinuse" out/bench-scaling/*.log | sed 's/.*posix-bench: //' | grep "workers=1 " || true
+            grep -h "xz workers" out/bench-scaling/*.log | sed 's/.*posix-bench: //' || true
           }
           for round in 1 2; do
-            leg px$round ""
-            leg xs$round fpu-xsave.diff
+            leg z$round scaling-z.diff ""
+            leg zk$round scaling-z.diff fpu-scrub.diff
+            leg zv$round scaling-zv.diff ""
           done
           git checkout -q -- kernel userspace/posix
 
