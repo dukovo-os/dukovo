@@ -340,7 +340,7 @@ _target/userspace/_).
 		Pass everything after *--* to *qemu-system-x86_64*(1) unchanged,
 		for example *-- -d int* to log interrupts.
 
-*test* [*unit* | *boot* | *kani* | *tla* | *tuf* | *corpus* | *riscv* | *lab-writer*] [*--case* _name_]... [*--affected* _commit_ [*--plan*]] [*--shard* _part_/_parts_] [*--timeout* _seconds_] [*--retry*] [*--image-only*] [*--debug* | *--release*] | *--list* | *replay* [*--case* _name_] [*--points* *all*|_n_] [*--part* _k_/_m_] [*--seed* _n_] [*--log* _path_ [*--point* _n_]] [*--timeout* _seconds_] | *fuzz* [*--target* _name_] [*--seconds* _n_] | *matrix* *--list* [*--full*]
+*test* [*unit* | *boot* | *kani* | *tla* | *tuf* | *corpus* | *riscv* | *lab-writer* | *go-suite*] [*--case* _name_]... [*--affected* _commit_ [*--plan*]] [*--shard* _part_/_parts_] [*--timeout* _seconds_] [*--retry*] [*--image-only*] [*--debug* | *--release*] | *--list* | *replay* [*--case* _name_] [*--points* *all*|_n_] [*--part* _k_/_m_] [*--seed* _n_] [*--log* _path_ [*--point* _n_]] [*--timeout* _seconds_] | *fuzz* [*--target* _name_] [*--seconds* _n_] | *matrix* *--list* [*--full*]
 	Run the unit tests of the build tool and the kernel libraries on this
 	machine, then the boot tests: build a test image and boot it in QEMU
 	once per case below. Each case follows the serial console, types
@@ -438,6 +438,25 @@ _target/userspace/_).
 	*qemu-system-riscv64* (the *qemu-system-misc* package on Debian,
 	Ubuntu and Linux Mint). Plain *ob test* leaves it out, and CI runs it
 	after *lint* on every push.
+
+	*go-suite* runs Go's own tests of its standard library on Dukovo,
+	with the *go* command of the Go bundle (_dev.go.go_), instead. It is a
+	run of its own, as *soak* is, and not one of the boot tests, as it
+	takes an hour or more with KVM. Before the boot *ob* asks the
+	toolchain's *go* for the packages of *std* that have tests and writes
+	them, the skips of _userspace/go/skips.txt_ for them, and the script
+	to the disk of the bundle. The machine has 4 CPUs, 6 GiB of memory
+	and a root grown to 12 GiB. alice installs the bundle and runs
+	*go test -short -timeout 15m* of the packages that have no skip in
+	one call, and of each package that has skips in a call of its own
+	with *-skip*, as a pattern applies to every package of a call. The
+	run passes when no package failed; a package that *go test* does not
+	say *ok* for failed. The script's log is saved as
+	_out/test/go-suite.log_, which CI keeps as an artifact
+	(_.github/workflows/go-suite.yml_). Plain *ob test* leaves it out.
+	*--timeout* _seconds_ is how long the whole machine may run; without
+	it, 3 hours and 32 minutes. A line of _skips.txt_ whose package is
+	written *suite:*_path_ is a skip that only this run reads.
 
 	*lab-writer* checks the lab's net boot of real machines end to end
 	(ADR 0429), in QEMU with OVMF: QEMU's own DHCP and TFTP, on a network

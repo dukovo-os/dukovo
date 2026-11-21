@@ -1,0 +1,21 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+A program that names no standard sees SIGSTKSZ, MINSIGSTKSZ, SS_ONSTACK
+and SS_DISABLE under _DEFAULT_SOURCE, as it sees the sigaltstack(2) they
+go with, and as on glibc and musl. mlibc showed them only to a program
+that defined _XOPEN_SOURCE, so C code that sets up a signal stack of its
+own failed to compile, as the cgo tests in Go's suite did. Meant for
+upstream.
+
+--- a/abis/linux/signal.h
++++ b/abis/linux/signal.h
+@@ -163,7 +163,7 @@
+ #define SIGCANCEL 32
+ #define SIGTIMER  33
+ 
+-#if __MLIBC_XOPEN
++#if defined(_DEFAULT_SOURCE) || __MLIBC_XOPEN
+ 
+ #if defined(__x86_64__) || defined(__i386__) || defined(__riscv) || defined(__m68k__)
+ #define MINSIGSTKSZ 2048

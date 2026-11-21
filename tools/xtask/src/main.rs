@@ -285,7 +285,7 @@ press Ctrl-A then X to quit QEMU. KVM is used when /dev/kvm is accessible.
                        as ./ob image takes them"
         }
         "test" => {
-            "Usage: ./ob test [unit | boot | kani | tla | tuf | corpus | riscv | lab-writer]
+            "Usage: ./ob test [unit | boot | kani | tla | tuf | corpus | riscv | lab-writer | go-suite]
                  [--case <name>]... [--shard <part>/<parts>] [--timeout <seconds>]
                  [--retry] [--debug | --release]
        ./ob test boot --affected <commit> [--shard <part>/<parts> | --list | --plan] [--retry]
@@ -312,7 +312,11 @@ userspace/programs/nukesh/tests/corpus.toml. `riscv` builds the RISC-V smoke
 boot and boots it on QEMU's virt machine under OpenSBI (seconds; it needs
 qemu-system-riscv64). `lab-writer` net boots the lab's disk writer in
 QEMU from a pretend lab, as a real lab machine boots it (ADR 0429), and
-checks what it writes (a minute or two with KVM). `boot --shard 2/5`
+checks what it writes (a minute or two with KVM). `go-suite` runs Go's own
+tests of its standard library on Dukovo, with the Go bundle's `go`: an
+hour or more with KVM, which is why plain `ob test` leaves it out; --timeout
+is how long the machine may run (3 hours 32 minutes without it), and the
+log is out/test/go-suite.log. `boot --shard 2/5`
 runs the second of five shares of the boot tests, as CI's parallel jobs
 do; the shares take about as long by the times in
 tools/xtask/src/test/times.txt. `boot --affected

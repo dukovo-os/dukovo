@@ -10,9 +10,10 @@ certificates from /system/resources/certificates; the host name from
 uname; the program's path from the runtime. net lists the interfaces of
 /kernel/class/net (radix-sysfs(5), ADR 0355), with their addresses but not
 their multicast groups, and has neither sendfile nor splice, which the C
-library lacks; its tests name Radix among the systems that have writev,
-that have no SOCK_SEQPACKET sockets, and whose interfaces list no
-multicast addresses. Dukovo only.
+library lacks. It resolves names in Go in a program with cgo too, as the
+C library has no res_search (ADR 0357). Its tests name Radix among the
+systems that have writev, that have no SOCK_SEQPACKET sockets, and whose
+interfaces list no multicast addresses. Dukovo only.
 
 diff --git a/src/archive/tar/stat_actime1.go b/src/archive/tar/stat_actime1.go
 index c4c2480f..f94375b1 100644
@@ -312,6 +313,75 @@ index 00000000..6f2ee278
 +
 +//go:linkname waitid syscall.waitid
 +func waitid(idtype int, id int, info unsafe.Pointer, options int) error
+diff --git a/src/net/cgo_stub.go b/src/net/cgo_stub.go
+index 640f5a4f..920ad6ba 100644
+--- a/src/net/cgo_stub.go
++++ b/src/net/cgo_stub.go
+@@ -7,9 +7,11 @@
+ // - if using the netgo build tag on a Unix system
+ // - on a Unix system without the cgo resolver functions
+ //   (Darwin always provides the cgo functions, in cgo_unix_syscall.go)
++// - on Radix, whose programs resolve names in Go also with cgo, since
++//   its C library has no res_search
+ // - on wasip1, where cgo is never available
+ 
+-//go:build (netgo && unix) || (unix && !cgo && !darwin) || js || wasip1
++//go:build (netgo && unix) || (unix && !cgo && !darwin) || radix || js || wasip1
+ 
+ package net
+ 
+diff --git a/src/net/cgo_unix.go b/src/net/cgo_unix.go
+index 7d970cfe..be02dff2 100644
+--- a/src/net/cgo_unix.go
++++ b/src/net/cgo_unix.go
+@@ -7,7 +7,7 @@
+ // Instead of C.foo it uses _C_foo, which is defined in either
+ // cgo_unix_cgo.go or cgo_unix_syscall.go
+ 
+-//go:build !netgo && ((cgo && unix) || darwin)
++//go:build !netgo && !radix && ((cgo && unix) || darwin)
+ 
+ package net
+ 
+diff --git a/src/net/cgo_unix_cgo.go b/src/net/cgo_unix_cgo.go
+index c4b8197c..a5c961a5 100644
+--- a/src/net/cgo_unix_cgo.go
++++ b/src/net/cgo_unix_cgo.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build cgo && !netgo && unix && !darwin
++//go:build cgo && !netgo && unix && !(darwin || radix)
+ 
+ package net
+ 
+diff --git a/src/net/cgo_unix_cgo_resn.go b/src/net/cgo_unix_cgo_resn.go
+index 4fc747b5..f6d900fd 100644
+--- a/src/net/cgo_unix_cgo_resn.go
++++ b/src/net/cgo_unix_cgo_resn.go
+@@ -4,7 +4,7 @@
+ 
+ // res_nsearch, for cgo systems where that's available.
+ 
+-//go:build cgo && !netgo && unix && !(darwin || linux || openbsd)
++//go:build cgo && !netgo && unix && !(darwin || linux || openbsd || radix)
+ 
+ package net
+ 
+diff --git a/src/net/cgo_unix_test.go b/src/net/cgo_unix_test.go
+index 9aaeccc5..bc741926 100644
+--- a/src/net/cgo_unix_test.go
++++ b/src/net/cgo_unix_test.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build !netgo && ((cgo && unix) || darwin)
++//go:build !netgo && !radix && ((cgo && unix) || darwin)
+ 
+ package net
+ 
 diff --git a/src/net/interface_radix.go b/src/net/interface_radix.go
 new file mode 100644
 index 00000000..d7d89c7a

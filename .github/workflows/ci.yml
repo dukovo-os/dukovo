@@ -777,6 +777,20 @@ jobs:
       ports-prefix: ${{ needs.ports.outputs.prefix }}
       std-stamp: ${{ needs.ports.outputs.std }}
 
+  # Go's own tests of its standard library on Dukovo (`ob test go-suite`),
+  # an hour or more, so a pull request runs it only when its files reach
+  # Go. Main's runs and the nightly one leave it out until go-suite.yml has
+  # a schedule of its own.
+  go-suite:
+    name: Go test suite
+    needs: [scope, ports]
+    if: github.event_name == 'pull_request' && needs.scope.outputs.go == 'true'
+    uses: ./.github/workflows/go-suite.yml
+    with:
+      ports-key: ${{ needs.ports.outputs.key }}
+      ports-prefix: ${{ needs.ports.outputs.prefix }}
+      std-stamp: ${{ needs.ports.outputs.std }}
+
   # Instructions per operation, counted by QEMU (`ob bench --instructions`,
   # ADR 0045): the same on every runner, so a hot path that grows fails
   # here even when the timings above are within their noise.
@@ -865,6 +879,7 @@ jobs:
       container: ${{ steps.scope.outputs.container }}
       code: ${{ steps.scope.outputs.code }}
       virtualbox: ${{ steps.scope.outputs.virtualbox }}
+      go: ${{ steps.scope.outputs.go }}
       boot-parts: ${{ steps.boot.outputs.parts }}
       boot-shards: ${{ steps.boot.outputs.shards }}
     steps:
@@ -919,6 +934,10 @@ jobs:
             # jobs that test code: the build job still checks the docs.
             # Man pages count as code, since they ship in the image.
             echo "code=$(needs_code)"
+            # Go's test suite on Dukovo runs for a pull request that changes
+            # Go's port or bundle, the Go programs, or the code that builds
+            # the tests and runs the suite.
+            echo "go=$(needs '^(ports/go/|ports/go-radix/|userspace/go/|tools/xtask/src/golang\.rs|tools/xtask/src/test/go_suite\.rs)')"
             # VirtualBox boots the cloud image: cloud-setup, the guest
             # agent, the image, and the drivers VirtualBox's machine uses.
             echo "virtualbox=$(needs '^(userspace/programs/systools/src/(cloud|guest_agent)|userspace/defaults/spark/services/(cloud-setup|guest-agent)\.toml|tools/xtask/src/image\.rs|tools/virtualbox/|kernel/drivers/(ahci|intel)/)')"
@@ -1287,7 +1306,7 @@ jobs:
   passed:
     name: CI passed
     if: always()
-    needs: [build, docs, unit, chkdsk, smb-windows, virtualbox, boot, instructions, scope, ports, kani, tla, corpus, container, checks, workflows]
+    needs: [build, docs, unit, chkdsk, smb-windows, virtualbox, boot, instructions, go-suite, scope, ports, kani, tla, corpus, container, checks, workflows]
     runs-on: ubuntu-24.04
     steps:
       - name: Check that every job passed or was skipped

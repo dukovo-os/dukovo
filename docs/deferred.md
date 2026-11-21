@@ -254,7 +254,10 @@ machine with AMT, an AMD machine and a laptop; see
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
 | An interface's multicast groups: radix-sysfs does not show the groups an interface has joined, so Go's `net.Interface.MulticastAddrs` lists none, and Go's interface tests name Radix among the systems that list none (ADR 0355) | No program found that reads them | Need |
-| cgo, and `go` and `gofmt` in `/system` (ADR 0350) | The runtime first | Phase 17 |
+| cgo on Dukovo itself: the bundle's `go` builds with `CGO_ENABLED=0`, so a package with C code builds only with `ob` on the build machine (ADRs 0356, 0357) | Dukovo has no C compiler for `go` to call | Release 1.17 of the roadmap (Clang) |
+| Go's race detector, `go build -race` and `go test -race` (ADR 0357) | No race runtime for Radix | An upstream race runtime for Radix, or a port of it |
+| `go build` as fast as on Linux, held in `ob bench` | The bench's Linux machine has no Go toolchain to compare with | A Go toolchain in the bench's Linux machine |
+| Go's build modes `c-archive`, `c-shared`, `shared` and `plugin` (ADR 0357) | Go's table of platforms does not enable them for Radix, and Dukovo loads no library at run time for Go code | Need |
 | fzf, lazygit and duf in the catalog | Written in Go | Phase 17 |
 | Zero-copy file transfers in Go programs (`sendfile`, `splice`, `copy_file_range`): `io.Copy` between files and sockets reads and writes through a buffer (ADR 0350) | The C library has none of them | Need |
 | `go test -fuzz` for Radix: Go's fuzzing shares memory with a mapped file between processes (ADR 0350) | Shared writable mappings of files (see Files and storage) | Need |

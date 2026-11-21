@@ -5,9 +5,10 @@
 //! library on the system calls, signals and files Radix gives them. ob builds
 //! the programs with the Go toolchain the go port installs (src/golang.rs),
 //! and a disk holds them, as the boot archive does not: the Go test program,
-//! the test binaries of 25 packages of Go's standard library, each in a
-//! folder with the package's files and test data, which its tests read, and
-//! two scripts. alice, the owner, signs in at the console.
+//! the test binaries of 25 packages of Go's standard library and of the 3
+//! packages of Go's own tests of cgo, each in a folder with the package's
+//! files and test data, which its tests read, and two scripts. alice, the
+//! owner, signs in at the console.
 //!
 //! go-runtime-test runs with the number of CPUs the machine has, and its
 //! fourteen checks each say they are ok: Go's scheduler on as many threads
@@ -25,6 +26,12 @@
 //! the tests that userspace/go/skips.txt names, each with the feature Radix
 //! lacks. Each says ok, or fails with the end of what it printed. Every
 //! package runs before the test ends, so that one run shows them all.
+//!
+//! The last three are Go's tests of cgo, which ob builds with the toolchain's
+//! C compiler and links to the C library like every program: calls from Go
+//! to C and from C to Go, callbacks from threads that C made, signals,
+//! errno, thread-local storage in C and in Go, and handles. They run last,
+//! through the same script and under the same limits.
 //!
 //! Without KVM the packages take many times as long as under it, and a
 //! package's tests may pass the five minutes their binary allows, which
@@ -101,14 +108,15 @@ else
 fi
 "#;
 
-/// A disk for the programs: more than their binaries, about 130 MiB, and
-/// their test data take.
+/// A disk for the programs: the binaries and the test data of the 28
+/// packages take about 150 MiB, the three with cgo about 16 MiB of that
+/// (their binaries are about 6, 5 and 5 MiB, and their files are small).
 const DISKS: &[Disk] = &[go_files_disk(512 * 1024, LABEL)];
 
 /// The test.
 pub const CASE: Case = Case {
     name: "go-runtime",
-    about: "programs in Go run on Radix: go-runtime-test, built by ob with the go port's toolchain and run from a disk, passes its fourteen checks with the machine's CPUs (threads, channels, mutexes, timers, clocks, preemption by signal, a panic and a nil dereference ending with Go's traceback, signals, memory given back, files, processes and pipes, the environment, time zones, random bytes), and the test binaries of 25 packages of Go's standard library, from runtime and sync to os, io, strings, math/big, encoding/json, net, net/http and crypto/tls, each in its own folder with its files and test data, pass, but for the tests userspace/go/skips.txt names",
+    about: "programs in Go run on Radix: go-runtime-test, built by ob with the go port's toolchain and run from a disk, passes its fourteen checks with the machine's CPUs (threads, channels, mutexes, timers, clocks, preemption by signal, a panic and a nil dereference ending with Go's traceback, signals, memory given back, files, processes and pipes, the environment, time zones, random bytes), and the test binaries of 25 packages of Go's standard library, from runtime and sync to os, io, strings, math/big, encoding/json, net, net/http and crypto/tls, and of 3 packages of Go's own tests of cgo (calls both ways, callbacks from C threads, signals, errno, thread-local storage, handles), each in its own folder with its files and test data, pass, but for the tests userspace/go/skips.txt names",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     cmdline: "lockdep",
@@ -172,11 +180,13 @@ fn go_runtime(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect_screen(&["exit code 0"])?;
     vm.expect_screen_without("FAILED")?;
 
-    // The standard library's tests, a package at a time. A package that
-    // fails does not end the test: each is read from the screen when it has
-    // ended, and the failures are reported together.
+    // The standard library's tests and Go's tests of cgo, a package at a
+    // time. A package that fails does not end the test: each is read from
+    // the screen when it has ended, and the failures are reported together.
     let mut failed = Vec::new();
-    for package in golang::TEST_PACKAGES {
+    let packages: Vec<&str> =
+        golang::TEST_PACKAGES.into_iter().chain(golang::CGO_TEST_PACKAGES).collect();
+    for &package in &packages {
         run_within(vm, &format!("clear; sh {VOLUME}/run-test.sh {package}"), PACKAGE_SECONDS)?;
         let screen = vm.screen()?;
         let ok = format!("go-test: {package} ok");
@@ -191,7 +201,7 @@ fn go_runtime(vm: &mut Vm, case: &Case) -> Result<(), String> {
         return Err(format!(
             "the tests of {} of {} packages did not pass: {}",
             failed.len(),
-            golang::TEST_PACKAGES.len(),
+            packages.len(),
             failed.join("; ")
         ));
     }

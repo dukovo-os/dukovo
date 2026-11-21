@@ -550,6 +550,16 @@ const WITHDRAW_SITE: u8 = 40;
 /// ([`cases::go_runtime::make_disk`]).
 const GO_FILES: u8 = 41;
 
+/// [`Disk::fat`] for a [`BUNDLE_FILES`] disk that holds Go's bundle alone,
+/// with the module the `go-toolchain` test builds and the two files for
+/// gofmt ([`cases::go_toolchain::make_disk`]).
+const GO_TOOLCHAIN_FILES: u8 = 42;
+
+/// [`Disk::fat`] for a [`GO_TOOLCHAIN_FILES`] disk that also holds the
+/// list of Go's packages with tests, their skips and the script of `ob
+/// test go-suite` ([`go_suite::make_disk`]).
+const GO_SUITE_FILES: u8 = 43;
+
 /// One of the boot tests' updates of an installed system (ADR 0451): this
 /// build's slot, under a version after this one's that updates from it,
 /// with kernel flags of its own, or a command broken.
@@ -1804,6 +1814,7 @@ const MICROCODE_REVISION: u32 = 0x7f;
 mod affected;
 mod console_client;
 mod fuzz;
+mod go_suite;
 mod matrix;
 mod phase11;
 mod phase12;
@@ -1904,6 +1915,8 @@ fn needs_packing(case: &Case) -> bool {
             disk.fat,
             BUNDLE_FILES
                 | CATALOG_SITE
+                | GO_SUITE_FILES
+                | GO_TOOLCHAIN_FILES
                 | PHP_FILES
                 | POSTGRESQL_FILES
                 | POSTGRESQL_SERVICE_FILES
@@ -3571,12 +3584,15 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         return matrix::command(args);
     }
     // The options first, so that the suite is not taken from a value of one.
-    let timeout = match args.value("--timeout")? {
-        Some(value) => value.parse::<u64>().ok().filter(|&secs| secs > 0).ok_or_else(|| {
-            Error::new(format!("--timeout takes a number of seconds, not `{value}`"))
-        })?,
-        None => 300,
+    let named_timeout = match args.value("--timeout")? {
+        Some(value) => {
+            Some(value.parse::<u64>().ok().filter(|&secs| secs > 0).ok_or_else(|| {
+                Error::new(format!("--timeout takes a number of seconds, not `{value}`"))
+            })?)
+        }
+        None => None,
     };
+    let timeout = named_timeout.unwrap_or(300);
     let mut selected = Vec::new();
     while let Some(name) = args.value("--case")? {
         selected.push(name);
@@ -3704,12 +3720,15 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         Some("corpus") => return corpus::test(ctx, &selected),
         Some("riscv") if selected.is_empty() => return crate::riscv::test(ctx),
         Some("lab-writer") if selected.is_empty() => return crate::lab_net::check(ctx),
-        Some(suite @ ("unit" | "kani" | "tla" | "tuf" | "riscv" | "lab-writer")) => {
+        Some("go-suite") if selected.is_empty() && shard.is_none() && !retry && !image_only => {
+            return go_suite::command(ctx, profile, named_timeout.map(Duration::from_secs));
+        }
+        Some(suite @ ("unit" | "kani" | "tla" | "tuf" | "riscv" | "lab-writer" | "go-suite")) => {
             crate::bail!("--case and --shard select boot tests; they cannot be used with `{suite}`")
         }
         Some(other) => crate::bail!(
             "unknown test suite `{other}`; use `unit`, `boot`, `replay`, `matrix`, `fuzz`, `kani`, \
-             `tla`, `tuf`, `corpus`, `riscv` or `lab-writer`"
+             `tla`, `tuf`, `corpus`, `riscv`, `lab-writer` or `go-suite`"
         ),
     };
     if shard.is_some() && which.as_deref() != Some("boot") {
@@ -5641,6 +5660,16 @@ fn make_disks(
         }
         if disk.fat == WEBSITES_FILES {
             cases::admin_websites::make_disk(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == GO_TOOLCHAIN_FILES {
+            cases::go_toolchain::make_disk(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == GO_SUITE_FILES {
+            go_suite::make_disk(ctx, disk, &image.path)?;
             made.push(image);
             continue;
         }
