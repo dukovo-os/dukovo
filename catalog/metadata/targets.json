@@ -2,7 +2,7 @@
   "signatures": [
     {
       "keyid": "c81a7cbb15da4652dc994461531edbef9ea48c2e21d97df7c8d6fd9fa1b0803e",
-      "sig": "3046022100851846483b97824e4fdf91d9bac4e2ee6953ab04a95390de7561d39abcc08181022100fe7996b516e6a06f6b8b1da1e408d030cb09dbaaa9a360861211b46693839e4e"
+      "sig": "30460221008828f7fd4845ebf037985a04934899227b35e8b6829f7cc821a79047b914ee400221008094f10f64a2fb09e4ad18ba210b64bd7d15cbe0208fac0a182d62854487134a"
     }
   ],
   "signed": {
@@ -42,7 +42,7 @@
         }
       ]
     },
-    "expires": "2027-05-21T19:21:23Z",
+    "expires": "2027-05-22T02:29:53Z",
     "spec_version": "1.0.31",
     "targets": {
       "bundles/io.github.burntsushi.ripgrep-15.2.0.dkv": {
@@ -154,6 +154,6 @@
         "length": 1308416
       }
     },
-    "version": 3
+    "version": 4
   }
 }
