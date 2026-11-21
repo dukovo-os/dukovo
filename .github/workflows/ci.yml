@@ -43,9 +43,10 @@ jobs:
   # The ports, built once for the whole run (ADR 0560): every job below
   # that builds on them restores what this one leaves, instead of each
   # building the ports a stale cache lacks. A change to the system call
-  # interface or the C library builds every port again, about 30
-  # minutes, and before this job each of seven jobs did that at once on
-  # every run until main's next run had saved the ports.
+  # interface or the C library builds every port again, about 50
+  # minutes with Go's toolchain and its bundle, and before this job each
+  # of seven jobs did that at once on every run until main's next run had
+  # saved the ports.
   #
   # The cache holds every folder a port installs into: out/toolchain
   # too, where Rust's standard library, the patched crates and the C++
@@ -114,8 +115,11 @@ jobs:
         id: before
         run: echo "stamps=$(cat out/ports/*.stamp 2>/dev/null | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
 
+      # A port that hangs fails here, not at the job's six hours; a build
+      # of every port, after a change to the C library, takes about 50
+      # minutes.
       - name: ./ob ports
-        timeout-minutes: 45
+        timeout-minutes: 75
         run: ./ob ports
 
       # A restored cache whose ports were all up to date is the one the
