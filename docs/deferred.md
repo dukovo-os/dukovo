@@ -478,6 +478,7 @@ machine asks for them.
 | Sign-in records kept for a time; notices of a failed sign-in streak | ADRs 0253, 0254 |
 | The administrator set split into named areas for delegation | ADR 0219 |
 | A user's own services and their lines in their log; a group that reads the whole log | ADR 0252 |
+| `sh -c 'program'` runs the program in a child and waits, where bash and dash run it in the shell's place: a caller that ends the program by the number it was given (PHP's `proc_terminate`, which run-tests uses for a test that takes too long) ends the shell and the program goes on, and a program that a signal ends gets "Terminated" printed on the stderr it shares with the shell | Lab, `services/php`, 2026-11-21 |
 | Valkey's, PHP-FPM's and PostgreSQL's Unix sockets reached by other bundles' services, as they are on Linux: a bundle offers only a socket that Spark makes and holds for its service (ADR 0477), and these servers make their own sockets in their data or live folders, which are their accounts' alone, so they talk over TCP on the machine itself: nginx and PHP-FPM on 127.0.0.1:9000, where any program on the machine may connect, and PHP's `pgsql` reaches PostgreSQL over 127.0.0.1 with a role's password | ADRs 0477, 0492, 0520, 0522 |
 | Rich and NFSv4 access lists; Btrfs properties | ADR 0256 |
 | Bundles: grants before install (`--grant`), resource limits for the sandbox, programs for other architectures, read-only subvolumes and reflink sharing for sealed bundles, asking people about their data when a bundle is removed for everyone | ADRs 0223 to 0225 |
@@ -534,7 +535,7 @@ finding or removed.
 | A lab test for COM1 as the serial console (console=ttyS0): serial-console running on it and a sign-in over it; hardware/serial-port covers COM1 only when it is not the console | Lab, first real-machine runs |
 | SSH: RSA and P-521 keys and authorized_keys options are not taken; sshd_config takes eight keywords (no `Port`, `ListenAddress`, `MaxAuthTries`); ssh is built without OpenSSL, so ssh-keygen makes ed25519 keys alone | Lab, first real-machine runs |
 | "[elevate] password for lab:" is printed into the output of commands run with sudo -S | Lab, first real-machine runs |
-| PHP's suite sometimes stops with no output: the lab's run of 2026-11-21 on QEMU, with the kernel that interrupts the CPU of a thread it signals, stalled once and passed on its retry, `ext/pcntl/tests/001.phpt` included. Which test hangs is not known: the suite step names the tests in flight and what each process waits for when the suite stops moving (`lab/tests/services/php-suite.sh`), for the lab's next runs to catch it | Lab, `services/php` |
+| PHP's suite stopping with no output at `ext/pcntl/tests/001.phpt`, on the lab's runs of 2026-11-21: the SIGTERM the test sends its child as it starts ran PHP's handler before the C library had dropped the parent's cached process number, so the handler's `kill(getpid())` ended the parent and the child spun on. The C library's `fork` keeps signals blocked until the child knows itself (posix `fork` test `signal_at_start`); the lab's next `services/php` run confirms the suite runs to its end | Lab, `services/php` |
 
 ## Waiting on a decision
 
