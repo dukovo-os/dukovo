@@ -1,0 +1,118 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+The C library's slabs come from shared chunks, not a mapping each.
+frigg's slab_pool mapped every new slab on its own, 512 KiB to cut a
+256 KiB slab out of with the alignment it needs, and a program that
+does nothing still opens five (one for each size of object the
+dynamic linker allocates): five mmaps, five regions in the kernel, and
+five unmaps as it exits, in a program that is run and waited for every
+time. Slabs are never unmapped, since the pool unmaps only the blocks
+too large for a slab, so they need not be mappings of their own. The
+pool now asks a policy that has map_slab() for each slab, with its
+size and alignment, and mlibc's VirtualAllocator cuts them from
+chunks of eight: one mmap per eight slabs, one region for them in the
+kernel, and one unmap at exit. The address of the next slab and the
+number the chunk has left live in one word, in the low bits that the
+slabs' alignment leaves clear, taken with a compare-and-swap, so that
+no lock is held that a fork's child could find held by a thread it
+does not have; a thread that maps a chunk while another has put one in
+gives back all but its first slab. The pool's other two ways to map a
+slab stay for policies that do not have map_slab().
+
+diff -ruN a/options/internal/generic/allocator.cpp b/options/internal/generic/allocator.cpp
+--- a/options/internal/generic/allocator.cpp
++++ b/options/internal/generic/allocator.cpp
+@@ -44,6 +44,48 @@
+ 	__ensure(!mlibc::sysdep<AnonFree>((void *)address, length));
+ }
+ 
++// Slabs never go back to the system: the pool unmaps only blocks too
++// large for a slab. So a slab need not be a mapping of its own, and it
++// is cut from a chunk of eight: a program that uses five sizes of object
++// makes one mmap where it made five, and the kernel keeps one region for
++// them where it kept five.
++//
++// _slabs holds the next slab's address and, in the low bits the slabs'
++// alignment leaves clear, how many the chunk has left. Taking one is a
++// compare-and-swap, so a fork never finds a lock here held by a thread
++// the child does not have.
++uintptr_t VirtualAllocator::map_slab(size_t length, size_t align) {
++	constexpr size_t slabsPerChunk = 8;
++	__ensure(align > slabsPerChunk && !(align & (align - 1)));
++	__ensure(length && !(length & (align - 1)));
++	const uintptr_t left = align - 1;
++
++	auto word = __atomic_load_n(&_slabs, __ATOMIC_ACQUIRE);
++	while(word & left) {
++		auto slab = word & ~left;
++		auto next = (slab + length) | ((word & left) - 1);
++		if(__atomic_compare_exchange_n(&_slabs, &word, next, true,
++				__ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
++			return slab;
++	}
++
++	// The chunk is used up: map the next, with room to align it.
++	size_t reservation = slabsPerChunk * length + align;
++	auto base = map(reservation);
++	if(!base)
++		return 0;
++	auto slab = (base + align - 1) & ~left;
++	auto rest = slab + length;
++	auto count = (base + reservation - rest) / length;
++	if(!__atomic_compare_exchange_n(&_slabs, &word, rest | count, false,
++			__ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
++		// Another thread put in a chunk meanwhile: this one gives back
++		// all but its first slab.
++		unmap(rest, base + reservation - rest);
++	}
++	return slab;
++}
++
+ #else
+ 
+ namespace {
+diff -ruN a/options/internal/include/mlibc/allocator.hpp b/options/internal/include/mlibc/allocator.hpp
+--- a/options/internal/include/mlibc/allocator.hpp
++++ b/options/internal/include/mlibc/allocator.hpp
+@@ -14,6 +14,11 @@
+ 	uintptr_t map(size_t length);
+ 
+ 	void unmap(uintptr_t address, size_t length);
++
++	uintptr_t map_slab(size_t length, size_t align);
++
++private:
++	uintptr_t _slabs = 0;
+ };
+ 
+ typedef frg::slab_pool<VirtualAllocator, FutexLock> MemoryPool;
+diff -ruN a/subprojects/frigg/include/frg/slab.hpp b/subprojects/frigg/include/frg/slab.hpp
+--- a/subprojects/frigg/include/frg/slab.hpp
++++ b/subprojects/frigg/include/frg/slab.hpp
+@@ -97,6 +97,9 @@
+ template<typename Policy>
+ using policy_map_aligned_t = decltype(std::declval<Policy>().map(size_t(0), size_t(0)));
+ 
++template<typename Policy>
++using policy_map_slab_t = decltype(std::declval<Policy>().map_slab(size_t(0), size_t(0)));
++
+ // Common configuration for slab allocators (slab_pool and shared_slab_pool).
+ template<typename Policy>
+ struct slab_policy_traits {
+@@ -729,7 +732,14 @@
+ 	size_t sb_reservation;
+ 	uintptr_t sb_base;
+ 	uintptr_t address;
+-	if constexpr (is_detected_v<policy_map_aligned_t, Policy>) {
++	if constexpr (is_detected_v<policy_map_slab_t, Policy>) {
++		// A policy may hand slabs out of larger mappings, as slabs are never unmapped.
++		sb_reservation = slabsize;
++		sb_base = _plcy.map_slab(slabsize, sb_size);
++		if(!sb_base)
++			return nullptr;
++		address = sb_base;
++	} else if constexpr (is_detected_v<policy_map_aligned_t, Policy>) {
+ 		sb_reservation = slabsize;
+ 		sb_base = _plcy.map(sb_reservation, sb_size);
+ 		if(!sb_base)

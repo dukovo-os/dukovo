@@ -171,7 +171,7 @@ pub const BUDGETS: &[(&str, u64)] = &[
     ("channel_roundtrip_same_cpu", 5_100),     // 4,587
     ("ring_roundtrip_same_cpu", 9_400),        // 8,489
     ("posix_fork_wait", 170_000),              // 153,856, with norandmaps
-    ("posix_fork_exec_wait", 520_000),         // 465,643, with mlibc starting without the heap
+    ("posix_fork_exec_wait", 500_000),         // 452,281, with slabs from one mapping
     ("posix_pipe_mib", 2_500_000),             // 2,188,725
     ("posix_signal", 5_900),                   // 5,300
     ("posix_poll", 1_300),                     // 1,092
