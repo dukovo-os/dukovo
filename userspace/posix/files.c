@@ -13,8 +13,8 @@
 // owners of descriptions and the modes of stdio streams; absolute links
 // beneath directory descriptors, the identity of a named pipe opened by
 // its path, a slash after the name an open makes, a slash or a dot after
-// a file and mkdir of a dot, close_range, and the space a removed tmpfs
-// file gives back.
+// a file and mkdir of a dot, close_range, the space a removed tmpfs
+// file gives back, and a tmpfs folder of 40,000 entries.
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -1088,6 +1088,36 @@ static void tmpfs_space_returns(void) {
 	}
 }
 
+// A tmpfs folder of 40,000 entries, more than the 32,768 it once held:
+// each is made, and each is removed as soon as it is listed, as rm -r
+// does, so that the folder is empty once every one was listed once.
+static void large_folder(void) {
+	enum { ENTRIES = 40000 };
+	CHECK(mkdir("/tmp/files-large", 0755) == 0);
+	int made = 0;
+	for(; made < ENTRIES; made++) {
+		char path[64];
+		snprintf(path, sizeof(path), "/tmp/files-large/%05d", made);
+		if(mkdir(path, 0755) != 0)
+			break;
+	}
+	CHECK(made == ENTRIES);
+	DIR *dir = opendir("/tmp/files-large");
+	CHECK(dir != NULL);
+	int listed = 0, removed = 0;
+	struct dirent *entry;
+	while(dir && (entry = readdir(dir))) {
+		if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
+			continue;
+		listed++;
+		removed += unlinkat(dirfd(dir), entry->d_name, AT_REMOVEDIR) == 0;
+	}
+	if(dir)
+		closedir(dir);
+	CHECK(listed == made && removed == made);
+	CHECK(rmdir("/tmp/files-large") == 0);
+}
+
 // The folders by their plain names and by Unix's (ADRs 0113 and 0114):
 // each Unix name is a link to the folder that holds what it held, and
 // the .hidden of the root and of /system list them, so that ls leaves
@@ -1811,6 +1841,7 @@ int main(void) {
 	RUN(path_forms);
 	RUN(mapped);
 	RUN(tmpfs_space_returns);
+	RUN(large_folder);
 	RUN(folder_names);
 	RUN(named_descriptors);
 	RUN(modes);

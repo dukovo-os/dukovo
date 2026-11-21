@@ -5,7 +5,8 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0367. tmpfs looks names up without the directory's lock
 
-- Status: Accepted; the map holds its nodes weakly
+- Status: Accepted; the map holds its nodes weakly; the map finds the
+  entries, which are kept in pieces
 - Date: 2026-11-04
 
 ## Context
@@ -32,16 +33,31 @@ at.
   name it held. Putting a name in cannot fail: its link is made first
   (`pending`), so the directory's entries and the map change together.
   A table without memory to grow stays as it is.
-- Every tmpfs directory keeps such a map of its names beside its entries
-  and sorted index. It changes them together, under its lock, in
-  `add_name`, `remove`, `rename` and `rename_within`. `lookup` reads the
-  map alone.
+- Every tmpfs directory keeps such a map of its names beside its entries.
+  It changes them together, under its lock, in `add_name`, `remove`,
+  `rename` and `rename_within`. `lookup` reads the map alone.
 - The map holds each node weakly. A removed name's link is freed after a
   grace period, and a strong reference in it would keep the node alive
   that long, with the bytes its file is charged for, where Linux gives
   the space back when `unlink` returns. The entries and the open files own
   the nodes. `lookup` upgrades the reference it finds, and a failed
   upgrade is a name removed after the lookup: not found.
+- **The map finds the entries, and they are kept in pieces.** A
+  directory kept its entries in one array in the order they were made,
+  with an index sorted by name. The array outgrew the heap's largest
+  block, 4 MiB (ADR 0524), at 32,768 entries, so a directory held no
+  more, where Linux's tmpfs holds as many as memory allows; PHP's suite
+  and Go's `TestTempDirInBenchmark` make more. Taking an entry out also
+  moved every entry after it and renumbered the index: for `rm -r` of a
+  directory of 120,000 entries, the same steps take some 24 seconds on
+  a build machine. Now each name in the map also holds its entry's
+  sequence number, which finds the entry, and the entries are in pieces
+  of at most 112 (8 KiB). A new entry goes at the end of the last piece,
+  taking one out moves at most a piece's worth, and two pieces side by
+  side that fit in one are joined, so the pieces have room for at most
+  about twice the entries. The list of pieces, the one allocation that
+  grows with a directory, holds some 3.7 million entries in the largest
+  block, more than a tmpfs's file limit allows on a machine of 28 GiB.
 
 ## Consequences
 
@@ -49,5 +65,10 @@ at.
   by name does too.
 - Listings, and every change to a directory, still take its lock.
 - Each name is kept twice, in the entries and in the map.
+- A change to a directory finds its entry through the map: a hash of
+  the name and a search of the pieces by sequence number, where it
+  searched the sorted index before.
+- `/devices/shm`'s directory still keeps one array with an index sorted
+  by name (`docs/deferred.md`).
 - A lookup that races a change finds the name as one of the two states
   had it.
