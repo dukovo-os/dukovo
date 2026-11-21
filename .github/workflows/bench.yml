@@ -67,14 +67,13 @@ jobs:
           ports-prefix: ${{ inputs.ports-prefix }}
           std-stamp: ${{ inputs.std-stamp }}
 
-      # Why a forked process's own thread opens and closes slower than a
-      # fresh thread in it (588 against 516 ns), on Intel only:
+      # Why a forked process's own thread opens and closes slower than
+      # one that has had a second thread (588 against 516 ns), on Intel:
       #   a: as is
+      #   x1, x2, x3: the child keeps 1, 2 or 3 more file objects in the
+      #       kernel first, held by descriptors 40 and up
       #   q: the child first runs a second thread to its end
-      #   s: the child's thread works on a fresh stack
-      #   v: the child clears the vector registers' upper halves first
-      #   k: the kernel never lends a file or directory (ADR 0414)
-      - name: Scaling, a q s v k a q s v k
+      - name: Scaling, a x1 x2 x3 q, twice
         run: |
           set -o pipefail
           mkdir -p out/ab
@@ -84,39 +83,31 @@ jobs:
             ./ob bench --scaling --runs 3 --no-linux > "out/ab/s-$1.log" 2>&1 || true
             cp out/bench-scaling/report.md "out/ab/s-$1.md" || true
             echo "--- $1 ($(date -u +%H:%M:%S))"
-            grep "^| [148] \(threads\|processes\) | [0-9]* ns" "out/ab/s-$1.md" || true
+            grep "^| [148] \(threads\|processes\) |" "out/ab/s-$1.md" || true
           }
           for round in 1 2; do
             leg a$round ""
+            leg x1$round scaling-x1.diff
+            leg x2$round scaling-x2.diff
+            leg x3$round scaling-x3.diff
             leg q$round scaling-q.diff
-            leg s$round scaling-s.diff
-            leg v$round scaling-v.diff
-            leg k$round scaling-k.diff
           done
           git checkout -q -- kernel userspace/posix
 
-      # The two-CPU round trips, each vCPU pinned to a core:
-      #   t: main with #600, the wake list and the thread's layout
-      #   l: t, and the request word sharing a line with the published load
-      #   e: l, and a thread an IPC reply wakes handed over too
-      - name: Round trips, t l e t l e
+      # The gate, with Linux, on main with #600, the wake list, both
+      # layouts and IPC replies handed over, each vCPU pinned to a core.
+      - name: Gate with the whole change
         run: |
-          set -o pipefail
           mkdir -p out/ab
-          leg() {
-            git checkout -q -- kernel userspace/posix
-            git apply "tools/experiments/$2"
-            ./ob bench --runs 3 --no-linux > "out/ab/$1.log" 2>&1 || true
-            cp out/bench/report.md "out/ab/$1.md" || true
-            echo "--- $1 ($(date -u +%H:%M:%S))"
-            grep -h "pinned vCPUs\|not pinned" "out/ab/$1.log" | head -1 || true
-            grep "two CPUs\|each CPU at once" "out/ab/$1.md" | cut -d'|' -f2-3 || true
-          }
-          for round in 1 2; do
-            leg t$round wakelist-layout.diff
-            leg l$round wakelist-layout-cpu.diff
-            leg e$round wakelist-ipc.diff
-          done
+          git apply tools/experiments/wakelist-ipc.diff
+          status=0
+          ./ob bench --gate --defer-close --summary out/ab/gate-summary.md > out/ab/gate.log 2>&1 || status=$?
+          echo "--- gate exit $status"
+          tail -45 out/ab/gate.log
+          echo "--- close"
+          cat out/bench/close.txt 2>/dev/null || true
+          grep "two CPUs\|each CPU at once\|cross CPU" out/bench/report.md | cut -d'|' -f2-6 || true
+          git checkout -q -- kernel
 
       - name: Upload the reports
         if: always()
