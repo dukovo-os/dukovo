@@ -1,0 +1,27 @@
+diff --git a/userspace/posix/bench.c b/userspace/posix/bench.c
+index cfa92ad..95d1f0f 100644
+--- a/userspace/posix/bench.c
++++ b/userspace/posix/bench.c
+@@ -1043,6 +1043,10 @@ static void *scaling_thread(void *argument) {
+ 	return NULL;
+ }
+ 
++static void *scaling_nothing(void *argument) {
++	return argument;
++}
++
+ static void scaling_run(struct scaling *shared, int workers, int threads) {
+ 	shared->ready = 0;
+ 	shared->go = 0;
+@@ -1065,6 +1069,11 @@ static void scaling_run(struct scaling *shared, int workers, int threads) {
+ 			if(child[i] < 0)
+ 				fail("fork");
+ 			if(child[i] == 0) {
++				// Experiment: the child has had a second thread, then works on its own.
++				pthread_t t;
++				if(pthread_create(&t, NULL, scaling_nothing, NULL) != 0)
++					fail("pthread_create");
++				pthread_join(t, NULL);
+ 				scaling_work(shared, i);
+ 				_exit(0);
+ 			}

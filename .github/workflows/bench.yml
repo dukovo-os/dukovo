@@ -43,13 +43,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Experiment: the two-CPU round trips on one Intel 6975P-C runner, each
-  # vCPU pinned to a core, main (with the switch request in its own line)
-  # against two variants, legs alternating so that a drift of the host's
-  # speed falls on all three alike.
-  #   a: main with #600
-  #   w: a, and a thread woken for an idle CPU handed to it (wake list)
-  #   t: w, and a thread's wake-up fields packed into two cache lines
+  # Experiment, on one Intel 6975P-C runner, legs alternating so that a
+  # drift of the host's speed falls on all variants alike.
   bench:
     name: Linux parity
     runs-on: ubuntu-24.04
@@ -72,51 +67,54 @@ jobs:
           ports-prefix: ${{ inputs.ports-prefix }}
           std-stamp: ${{ inputs.std-stamp }}
 
-      # Why one forked process opens and closes slower since mlibc patch
-      # 0093 (#599), on Intel only:
+      # Why a forked process's own thread opens and closes slower than a
+      # fresh thread in it (588 against 516 ns), on Intel only:
       #   a: as is
-      #   p: the forked worker runs on a fresh thread (its own stack, TCB)
-      #   r: the process maps four more regions first, as before 0093
-      - name: Scaling, a p r a p r
+      #   q: the child first runs a second thread to its end
+      #   s: the child's thread works on a fresh stack
+      #   v: the child clears the vector registers' upper halves first
+      - name: Scaling, a q s v a q s v
         run: |
           set -o pipefail
           mkdir -p out/ab
           leg() {
             git checkout -q -- kernel userspace/posix
             if [ -n "$2" ]; then git apply "tools/experiments/$2"; fi
-            ./ob bench --scaling --runs 3 $3 > "out/ab/s-$1.log" 2>&1 || true
+            ./ob bench --scaling --runs 3 --no-linux > "out/ab/s-$1.log" 2>&1 || true
             cp out/bench-scaling/report.md "out/ab/s-$1.md" || true
             echo "--- $1 ($(date -u +%H:%M:%S))"
             grep "^| [148] \(threads\|processes\) | [0-9]* ns" "out/ab/s-$1.md" || true
-            grep -i "^| *\(switches\|Benchmark\|posix_open\)" "out/ab/s-$1.md" | head -14 || true
           }
-          leg a1 "" ""
-          leg p1 scaling-p.diff --no-linux
-          leg r1 scaling-r.diff --no-linux
-          leg a2 "" --no-linux
-          leg p2 scaling-p.diff --no-linux
-          leg r2 scaling-r.diff --no-linux
+          for round in 1 2; do
+            leg a$round ""
+            leg q$round scaling-q.diff
+            leg s$round scaling-s.diff
+            leg v$round scaling-v.diff
+          done
           git checkout -q -- kernel userspace/posix
 
-      - name: Round trips, a w t a w t
+      # The two-CPU round trips, each vCPU pinned to a core:
+      #   t: main with #600, the wake list and the thread's layout
+      #   l: t, and the request word sharing a line with the published load
+      #   e: l, and a thread an IPC reply wakes handed over too
+      - name: Round trips, t l e t l e
         run: |
           set -o pipefail
           mkdir -p out/ab
           leg() {
             git checkout -q -- kernel userspace/posix
-            if [ -n "$2" ]; then git apply "tools/experiments/$2"; fi
-            ./ob bench --runs 3 $3 > "out/ab/$1.log" 2>&1 || true
+            git apply "tools/experiments/$2"
+            ./ob bench --runs 3 --no-linux > "out/ab/$1.log" 2>&1 || true
             cp out/bench/report.md "out/ab/$1.md" || true
             echo "--- $1 ($(date -u +%H:%M:%S))"
-            grep -h "pinned vCPUs\|not pinned" "out/ab/$1.log" | head -2 || true
-            grep "two CPUs\|each CPU at once" "out/ab/$1.md" | cut -d'|' -f2-4 || true
+            grep -h "pinned vCPUs\|not pinned" "out/ab/$1.log" | head -1 || true
+            grep "two CPUs\|each CPU at once" "out/ab/$1.md" | cut -d'|' -f2-3 || true
           }
-          leg a1 "" ""
-          leg w1 wakelist.diff --no-linux
-          leg t1 wakelist-layout.diff --no-linux
-          leg a2 "" --no-linux
-          leg w2 wakelist.diff --no-linux
-          leg t2 wakelist-layout.diff --no-linux
+          for round in 1 2; do
+            leg t$round wakelist-layout.diff
+            leg l$round wakelist-layout-cpu.diff
+            leg e$round wakelist-ipc.diff
+          done
 
       - name: Upload the reports
         if: always()

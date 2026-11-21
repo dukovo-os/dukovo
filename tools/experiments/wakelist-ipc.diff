@@ -91,10 +91,128 @@ index 6847e38..76316c0 100644
      /// Whether [`Cpu::idle_until`] notices writes to `wake` without an
      /// interrupt (MWAIT), and its name for the boot report.
 diff --git a/kernel/radix/src/sched/mod.rs b/kernel/radix/src/sched/mod.rs
-index 458c734..88aa57f 100644
+index 458c734..ad3c8a6 100644
 --- a/kernel/radix/src/sched/mod.rs
 +++ b/kernel/radix/src/sched/mod.rs
-@@ -855,17 +855,128 @@ pub fn block(reason: &'static str) {
+@@ -66,7 +66,7 @@ use radix_sched::{
+     CpuLoad, CpuSet, HaltPoll, LOAD_INTERVAL_NS, LoadAverage, Loads, Place, Resched, Split,
+     Topology, haltpoll,
+ };
+-use radix_sync::{Mutex, Once, SpinLock};
++use radix_sync::{Mutex, Once, SpinLock, SpinLockGuard};
+ 
+ use crate::Arch;
+ use crate::domains::{self, DomainError, DomainRef, JoinError};
+@@ -96,46 +96,44 @@ const NO_TOKEN: usize = 2;
+ /// Room for threads that the scheduler's lists start with.
+ const INITIAL_ROOM: usize = 64;
+ 
+-/// The scheduler's state for one CPU.
++/// Starts the field after it on a cache line of its own.
++#[repr(C, align(64))]
++struct LineBreak;
++
++/// The scheduler's state for one CPU, laid out a cache line at a time
++/// (ADR 0556).
++#[repr(C, align(64))]
+ struct CpuSched {
++    // Line 0: what another CPU writes and reads to wake this one, and to
++    // choose it for a thread. A waker reads the published load, then
++    // writes the request word, one line between them; and the idle CPU,
++    // which spins on the word, writes the load only as it starts work.
+     /// Set when the running thread should give way, cleared by
+-    /// [`reschedule`]; the idle thread polls it, or watches it in MWAIT.
+-    /// In a cache line of its own (ADR 0555).
++    /// [`reschedule`]; the idle thread polls it, or watches it in MWAIT
++    /// (ADR 0555). Its inbox holds the threads handed to this CPU.
+     resched: Resched,
+-    rq: SpinLock<Option<Rq>>,
+-    /// The token of the running thread.
+-    current: AtomicUsize,
+     /// The published load: queued threads, and the running real-time
+     /// priority.
+     running: AtomicU32,
+     rt_prio: AtomicU8,
+     online: AtomicBool,
+-    /// This CPU's sleepers.
+-    timers: SpinLock<Option<Vec<(u64, ThreadRef), Kmalloc>>>,
+-    /// The earliest sleeper's deadline.
+-    timer_next: AtomicU64,
++    _rq: LineBreak,
++    // Lines 1 to 5: the run queue, which other CPUs lock only to queue a
++    // thread on a busy CPU, or to balance.
++    rq: SpinLock<Option<Rq>>,
++    // Then what this CPU alone writes as it switches and takes ticks.
++    /// The token of the running thread.
++    current: AtomicUsize,
+     /// When the running thread's slice or quantum ends.
+     slice_end: AtomicU64,
++    /// The earliest sleeper's deadline.
++    timer_next: AtomicU64,
+     ticks: AtomicU64,
+     /// The ticks that found a thread running in user mode, and in the
+     /// kernel (`radix_sched::account`); the rest found it idle.
+     user_ticks: AtomicU64,
+     system_ticks: AtomicU64,
+     preemptions: AtomicU64,
+-    /// Nanoseconds idle, in periods that have ended; while one is under
+-    /// way, when it began (0 while busy). `idle_seq` is odd while an ended
+-    /// period moves into `idle_ns`, for readers on other CPUs.
+-    idle_ns: AtomicU64,
+-    idle_since: AtomicU64,
+-    idle_seq: AtomicU64,
+-    /// Its busy time as [`cpu_times`] last split it, and the idle time
+-    /// it gave then.
+-    given: SpinLock<(Split, u64)>,
+-    /// Idle periods that ended while polling, and that halted.
+-    polls: AtomicU64,
+-    halts: AtomicU64,
+-    /// Balancing attempts that found nothing to move, by level.
+-    balance_failures: [AtomicU32; 4],
+     /// Set by a switch away from a thread that has exited, for the thread
+     /// switched to, which tells the reaper (`after_switch`).
+     left_dead: AtomicBool,
+@@ -146,12 +144,39 @@ struct CpuSched {
+     /// A thread woken here by [`lazily`] should have run at once: the
+     /// running thread gives way at [`pay_owed`], or at its next switch.
+     owed: AtomicBool,
++    /// This CPU's sleepers.
++    timers: SpinLock<Option<Vec<(u64, ThreadRef), Kmalloc>>>,
++    /// Balancing attempts that found nothing to move, by level.
++    balance_failures: [AtomicU32; 4],
++    _idle: LineBreak,
++    // What this CPU writes as an idle period ends, in a line of its own.
++    /// Nanoseconds idle, in periods that have ended; while one is under
++    /// way, when it began (0 while busy). `idle_seq` is odd while an ended
++    /// period moves into `idle_ns`, for readers on other CPUs.
++    idle_ns: AtomicU64,
++    idle_since: AtomicU64,
++    idle_seq: AtomicU64,
++    /// Idle periods that ended while polling, and that halted.
++    polls: AtomicU64,
++    halts: AtomicU64,
++    /// Its busy time as [`cpu_times`] last split it, and the idle time
++    /// it gave then.
++    given: SpinLock<(Split, u64)>,
+ }
+ 
++const _: () = {
++    use core::mem::offset_of;
++    assert!(offset_of!(CpuSched, online) < 64, "a waker's reads share the word's line");
++    assert!(offset_of!(CpuSched, rq) == 64, "the run queue starts the next line");
++    assert!(offset_of!(CpuSched, idle_ns).is_multiple_of(64), "idle statistics start a line");
++};
++
+ impl CpuSched {
+     const fn new() -> CpuSched {
+         CpuSched {
+             resched: Resched::new(),
++            _rq: LineBreak,
++            _idle: LineBreak,
+             rq: SpinLock::new(None),
+             current: AtomicUsize::new(0),
+             running: AtomicU32::new(0),
+@@ -855,17 +880,137 @@ pub fn block(reason: &'static str) {
  /// at once. Returns whether it was blocked. Works from interrupt handlers.
  pub fn wake(thread: &ThreadRef) -> bool {
      thread.wake_pending.store(true, Ordering::SeqCst);
@@ -107,9 +225,7 @@ index 458c734..88aa57f 100644
 +    woke
 +}
 +
-+/// [`wake`], with interrupts masked. A thread that should go to another
-+/// CPU that is idle is handed to it ([`hand_over`]), once the thread's lock
-+/// is let go; otherwise it is queued.
++/// [`wake`], with interrupts masked.
 +fn wake_masked(thread: &ThreadRef) -> bool {
 +    let mut state = thread.state.lock();
      if !matches!(state.run, Run::Blocked(_)) {
@@ -117,21 +233,30 @@ index 458c734..88aa57f 100644
      }
      thread.wake_pending.store(false, Ordering::Relaxed);
      state.run = Run::Ready;
-     thread.stats.wakeups.fetch_add(1, Ordering::Relaxed);
+-    thread.stats.wakeups.fetch_add(1, Ordering::Relaxed);
 -    enqueue_ready(thread, &mut state, false);
-+    let previous = thread.cpu.load(Ordering::Relaxed);
-+    let target = choose_cpu(previous, &state);
++    let target = choose_cpu(thread.cpu.load(Ordering::Relaxed), &state);
++    place_woken(thread, state, target);
+     true
+ }
+ 
++/// Puts `thread`, just made ready under its lock `state`, on CPU `target`:
++/// handed to it ([`hand_over`]) once the lock is let go, if `target` is
++/// another CPU and idle; otherwise queued on it. With interrupts masked,
++/// so that a waker moved meanwhile cannot find itself on the CPU it hands
++/// to.
++fn place_woken(thread: &ThreadRef, mut state: SpinLockGuard<'_, State>, target: usize) {
 +    if target == Arch::current_cpu() || CPUS.get(target).running.load(Ordering::Relaxed) != 0 {
++        thread.stats.wakeups.fetch_add(1, Ordering::Relaxed);
 +        enqueue_on(thread, &mut state, false, target);
-+        return true;
++        return;
 +    }
-+    if target != previous {
++    if target != thread.cpu.load(Ordering::Relaxed) {
 +        thread.stats.migrations.fetch_add(1, Ordering::Relaxed);
 +    }
 +    thread.cpu.store(target, Ordering::Relaxed);
 +    drop(state);
 +    hand_over(thread, target);
-+    true
 +}
 +
 +/// Puts `thread`, ready now, in idle CPU `target`'s inbox and asks that
@@ -196,9 +321,9 @@ index 458c734..88aa57f 100644
 +        queue_handed(cpu, slot, oldest);
 +        oldest = next;
 +    }
-     true
- }
- 
++    true
++}
++
 +/// Queues the thread at inbox entry `entry` on this CPU, `cpu`, with the
 +/// class its state says now: a change of policy or affinity while it was
 +/// in the inbox found it on no queue to move it in.
@@ -206,6 +331,9 @@ index 458c734..88aa57f 100644
 +    // A view to lock and read it by, while the inbox's reference moves to
 +    // the run queue; never dropped, so it gives back no count.
 +    let thread = handed(entry);
++    // Counted here, where the thread's statistics are written as it runs:
++    // the waker writes only the thread's first lines.
++    thread.stats.wakeups.fetch_add(1, Ordering::Relaxed);
 +    let mut state = thread.state.lock();
 +    if !state.affinity.contains(cpu) {
 +        enqueue_ready(&thread, &mut state, false);
@@ -225,7 +353,46 @@ index 458c734..88aa57f 100644
  /// Like [`wake`], for a waker that is about to block itself, as in IPC: a
  /// thread that may run on this CPU is put on it, where it runs once the
  /// waker blocks, instead of on another CPU that would have to be
-@@ -1033,10 +1144,13 @@ fn requeue(thread: &ThreadRef, state: &mut State) {
+@@ -879,22 +1024,32 @@ pub fn wake_sync(thread: &ThreadRef) -> bool {
+ /// the reaper, which frees a thread on the CPU it ended on.
+ fn wake_here(thread: &ThreadRef) -> bool {
+     thread.wake_pending.store(true, Ordering::SeqCst);
+-    let mut state = thread.state.lock_irq();
++    // Masked as in `wake`, for a thread that goes to another CPU.
++    let were = Arch::disable_interrupts();
++    let woke = wake_here_masked(thread);
++    Arch::restore_interrupts(were);
++    woke
++}
++
++/// [`wake_here`], with interrupts masked. A thread that may not run here
++/// goes where [`wake`] would put it, handed over if that CPU is idle.
++fn wake_here_masked(thread: &ThreadRef) -> bool {
++    let mut state = thread.state.lock();
+     if !matches!(state.run, Run::Blocked(_)) {
+         return false;
+     }
+     thread.wake_pending.store(false, Ordering::Relaxed);
+     state.run = Run::Ready;
+-    thread.stats.wakeups.fetch_add(1, Ordering::Relaxed);
+     let here = Arch::current_cpu();
+-    if state.rt_prio() == 0
++    let target = if state.rt_prio() == 0
+         && state.affinity.contains(here)
+         && CPUS.get(here).online.load(Ordering::Relaxed)
+     {
+-        enqueue_on(thread, &mut state, false, here);
++        here
+     } else {
+-        enqueue_ready(thread, &mut state, false);
+-    }
++        choose_cpu(thread.cpu.load(Ordering::Relaxed), &state)
++    };
++    place_woken(thread, state, target);
+     true
+ }
+ 
+@@ -1033,10 +1188,13 @@ fn requeue(thread: &ThreadRef, state: &mut State) {
              continue;
          }
          let Some(rq) = guard.as_mut() else { return };
@@ -240,7 +407,7 @@ index 458c734..88aa57f 100644
              rq.enqueue(thread.clone(), Class::of(state, false));
              if running {
                  // Still the one on the CPU: mark it so, and let the CPU
-@@ -1315,7 +1429,7 @@ fn tell_near_stack_end(found: &NearStackEnd) {
+@@ -1315,7 +1473,7 @@ fn tell_near_stack_end(found: &NearStackEnd) {
  }
  
  /// Lets this CPU run whatever should run now. See the module comment.
@@ -249,7 +416,7 @@ index 458c734..88aa57f 100644
      let were = Arch::disable_interrupts();
      let count = Arch::preempt_count();
      // Holding preemption off keeps the locks' preemption hook from
-@@ -1332,6 +1446,9 @@ fn reschedule(why: Switch) {
+@@ -1332,6 +1490,9 @@ fn reschedule(why: Switch) {
          Arch::restore_interrupts(were);
          return;
      };
@@ -259,7 +426,7 @@ index 458c734..88aa57f 100644
      if count != 0 && why != Switch::Preempt {
          error!(
              "Threads: `{}` would sleep or yield with preemption held off ({count}); a spin lock or \
-@@ -1346,16 +1463,20 @@ fn reschedule(why: Switch) {
+@@ -1346,16 +1507,20 @@ fn reschedule(why: Switch) {
      let mut state = matches!(why, Switch::Block(_) | Switch::Exit).then(|| me.state.lock());
      if matches!(why, Switch::Block(_)) && me.wake_pending.swap(false, Ordering::AcqRel) {
          // Woken since it decided to sleep: carry on.
@@ -285,7 +452,7 @@ index 458c734..88aa57f 100644
      slot.owed.store(false, Ordering::Relaxed);
      let mut moving = None;
      match (why, state.as_mut()) {
-@@ -1696,7 +1817,9 @@ fn idle_loop(cpu: usize) -> ! {
+@@ -1696,7 +1861,9 @@ fn idle_loop(cpu: usize) -> ! {
      loop {
          Arch::disable_interrupts();
          rcu::quiescent(cpu);
@@ -297,20 +464,121 @@ index 458c734..88aa57f 100644
          }
          // In the same step as the check: a wake-up from another CPU after
 diff --git a/kernel/radix/src/sched/thread.rs b/kernel/radix/src/sched/thread.rs
-index 7267b63..d39be90 100644
+index 7267b63..326043e 100644
 --- a/kernel/radix/src/sched/thread.rs
 +++ b/kernel/radix/src/sched/thread.rs
-@@ -295,6 +295,9 @@ pub struct Thread {
+@@ -283,59 +283,83 @@ pub(super) struct Stats {
+ }
+ 
+ /// A kernel thread.
++///
++/// Laid out by hand, a cache line at a time (ADR 0556): a wake-up from
++/// another CPU writes the thread's lock, its state and the words after it,
++/// and the CPU that queues the thread then reads and writes the same ones,
++/// so they share two lines, and each crosses between the CPUs once each
++/// way. Spread over the struct, as the compiler left them, they took four
++/// or five.
++#[repr(C, align(64))]
+ pub struct Thread {
+-    id: u64,
+-    name: NameCell,
++    // Line 0: what the switch saves and restores.
+     pub(super) context: Context,
+-    pub(super) entry: fn(usize),
+-    pub(super) arg: usize,
++    // Lines 1 and 2: what a wake-up writes, and the CPU that queues the
++    // thread reads.
+     pub(super) state: SpinLock<State>,
+-    /// The CPU whose run queue it is on, or last ran on.
+-    pub(super) cpu: AtomicUsize,
      /// Set by [`super::wake`]; a thread that blocks with it set does not
      /// sleep, so a wake that comes before the block is not lost.
      pub(super) wake_pending: AtomicBool,
+-    stop: AtomicBool,
+-    /// Set while it has a signal to take, or a stop to make for job
+-    /// control, on its way back to user mode (Phase 8): with `stop`, what
+-    /// the return path and interruptible waits look at
+-    /// ([`Thread::interrupted`]).
+-    signalled: AtomicBool,
+-    domain: DomainRef,
+-    /// Stack pages charged to the domain, given back when it is freed.
+-    pub(super) charged: u64,
+-    /// Mutexes the lock checker saw it holding when it was switched out.
+-    /// Switching threads takes this lock, so anyone else takes it with
+-    /// interrupts off.
+-    pub(super) lockdep: RawSpinLock<Saved>,
+-    // The rest is written under its run queue's lock (and, but for the
+-    // balancer's moves, its own).
++    // Written under its run queue's lock (and, but for the balancer's
++    // moves, its own).
+     /// [`NOT_QUEUED`], [`FAIR`] or [`REAL_TIME`].
+     pub(super) queued: AtomicU8,
+     /// The real-time priority it is queued at.
+     pub(super) queued_prio: AtomicU8,
+     /// Whether it is round robin, while queued real-time.
+     pub(super) round_robin: AtomicBool,
++    // Seldom written, in what would be padding.
++    stop: AtomicBool,
++    /// Set while it has a signal to take, or a stop to make for job
++    /// control, on its way back to user mode (Phase 8): with `stop`, what
++    /// the return path and interruptible waits look at
++    /// ([`Thread::interrupted`]).
++    signalled: AtomicBool,
++    /// Set once the reaper is done with it.
++    pub(super) reaped: AtomicBool,
++    /// Set once it no longer counts among its domain's threads.
++    left: AtomicBool,
++    /// The CPU whose run queue it is on, or last ran on.
++    pub(super) cpu: AtomicUsize,
 +    /// While it waits in a CPU's inbox ([`super::hand_over`]), the address
 +    /// of the thread handed to that CPU before it, or 0.
 +    pub(super) handed_next: AtomicUsize,
-     stop: AtomicBool,
-     /// Set while it has a signal to take, or a stop to make for job
-     /// control, on its way back to user mode (Phase 8): with `stop`, what
-@@ -359,6 +362,7 @@ impl Thread {
+     /// Its nice level's weight.
+     pub(super) weight: AtomicU64,
+-    /// Where it may run.
+-    allowed: [AtomicU64; WORDS],
++    // The rest.
++    id: u64,
++    pub(super) entry: fn(usize),
++    pub(super) arg: usize,
++    /// Stack pages charged to the domain, given back when it is freed.
++    pub(super) charged: u64,
+     /// What is left of its round-robin quantum.
+     pub(super) quantum_left_ns: AtomicU64,
+     /// The mutex it waits for, by key, for priority inheritance.
+     pub(super) blocked_on: AtomicUsize,
+-    /// Set once the reaper is done with it.
+-    pub(super) reaped: AtomicBool,
+-    /// Set once it no longer counts among its domain's threads.
+-    left: AtomicBool,
++    /// Where it may run.
++    allowed: [AtomicU64; WORDS],
+     pub(super) stats: Stats,
++    name: NameCell,
+     /// Its CPU time as [`Thread::cpu_times`] last split it.
+     split: SpinLock<Split>,
++    domain: DomainRef,
+     /// What a thread of a program has besides (Phase 5): set before it
+     /// first runs, never for kernel threads.
+     pub(super) user: Once<UserRef>,
++    /// Mutexes the lock checker saw it holding when it was switched out.
++    /// Switching threads takes this lock, so anyone else takes it with
++    /// interrupts off.
++    pub(super) lockdep: RawSpinLock<Saved>,
+ }
+ 
++// What a wake-up touches fills lines 1 and 2 (x86-64's context is line 0).
++#[cfg(target_arch = "x86_64")]
++const _: () = assert!(
++    core::mem::offset_of!(Thread, state) == 64
++        && core::mem::offset_of!(Thread, weight) + size_of::<AtomicU64>() <= 192,
++    "a wake-up's fields share two cache lines"
++);
++
+ impl Thread {
+     /// A thread that is not yet running, from its parts.
+     #[allow(clippy::too_many_arguments)]
+@@ -359,6 +383,7 @@ impl Thread {
              state: SpinLock::new(State { run: Run::New, policy, boost: 0, affinity, lag_ns: 0 }),
              cpu: AtomicUsize::new(affinity.lowest().unwrap_or(0)),
              wake_pending: AtomicBool::new(false),
@@ -319,25 +587,35 @@ index 7267b63..d39be90 100644
              signalled: AtomicBool::new(false),
              domain,
 diff --git a/kernel/sched/src/resched.rs b/kernel/sched/src/resched.rs
-index dc27075..38c71b5 100644
+index dc27075..fc97d7b 100644
 --- a/kernel/sched/src/resched.rs
 +++ b/kernel/sched/src/resched.rs
-@@ -1,8 +1,9 @@
+@@ -1,37 +1,52 @@
  // SPDX-FileCopyrightText: 2026 The Dukovo contributors
  // SPDX-License-Identifier: Apache-2.0 OR MIT
  
 -//! A CPU's request to switch threads (`need_resched`), in one word alone
 -//! in its cache line (ADR 0555).
 +//! A CPU's request to switch threads (`need_resched`), and the threads
-+//! other CPUs woke for it to queue (its inbox), in one word alone in its
-+//! cache line (ADR 0555, ADR 0556).
++//! other CPUs woke for it to queue (its inbox), in one word (ADR 0555,
++//! ADR 0556).
  //!
  //! An idle CPU spins on this word while it polls, and a CPU in MWAIT
- //! watches its line, so a waker's write should be the only traffic the
-@@ -12,26 +13,39 @@
- //! one atomic read-modify-write: it asks for the switch, marks the
- //! request as from another CPU, and learns from the same word whether the
- //! idle CPU watches it or must be sent an interrupt.
+-//! watches its line, so a waker's write should be the only traffic the
+-//! line sees: whatever else the line held, the two CPUs would pass it
+-//! back and forth with each write, and on a large chip each pass takes
+-//! some hundreds of nanoseconds. A wake-up from another CPU is therefore
+-//! one atomic read-modify-write: it asks for the switch, marks the
+-//! request as from another CPU, and learns from the same word whether the
+-//! idle CPU watches it or must be sent an interrupt.
++//! watches its line, so the kernel keeps the line for what a waker needs:
++//! this word, and the load the CPU publishes, which a waker reads to
++//! choose the CPU just before it writes the word. Whatever else the line
++//! held, the two CPUs would pass it back and forth with each write, and on
++//! a large chip each pass takes some hundreds of nanoseconds. A wake-up
++//! from another CPU is therefore one atomic read-modify-write: it asks for
++//! the switch, marks the request as from another CPU, and learns from the
++//! same word whether the idle CPU watches it or must be sent an interrupt.
 +//!
 +//! A thread woken for an idle CPU goes into the same word: the word's
 +//! upper bits hold the address of the newest such thread, and each one
@@ -368,9 +646,10 @@ index dc27075..38c71b5 100644
 +pub const ENTRY_ALIGN: usize = FLAGS + 1;
  
 -/// One CPU's request to switch threads.
-+/// One CPU's request to switch threads, and its inbox.
- #[repr(align(64))]
+-#[repr(align(64))]
 -pub struct Resched(AtomicU32);
++/// One CPU's request to switch threads, and its inbox. The kernel gives
++/// it a cache line, shared only with what a waker reads to choose the CPU.
 +pub struct Resched(AtomicUsize);
  
  impl Resched {
@@ -382,7 +661,7 @@ index dc27075..38c71b5 100644
      }
  
      /// Whether a switch is asked for.
-@@ -55,14 +69,47 @@ impl Resched {
+@@ -55,14 +70,47 @@ impl Resched {
          self.0.fetch_or(PENDING | REMOTE, Ordering::SeqCst) & WATCHED != 0
      }
  
@@ -397,7 +676,10 @@ index dc27075..38c71b5 100644
 +    /// published, and again each time another CPU's entry gets in first.
 +    /// Returns whether that CPU watches the word; if not, the caller must
 +    /// send it an interrupt.
-+    #[inline]
+     #[inline]
+-    pub fn clear(&self) {
+-        debug_assert_eq!(self.0.load(Ordering::Relaxed) & WATCHED, 0);
+-        self.0.store(0, Ordering::Relaxed);
 +    pub fn hand_over(&self, entry: usize, mut link: impl FnMut(usize)) -> bool {
 +        debug_assert!(entry != 0 && entry & FLAGS == 0, "an inbox entry must be aligned");
 +        // Guessed as an idle CPU that watches the word holds it, with
@@ -421,10 +703,7 @@ index dc27075..38c71b5 100644
 +    /// the owning CPU calls it, never while its idle thread watches the
 +    /// word. A request that comes after it stays pending, for the switch
 +    /// after this one.
-     #[inline]
--    pub fn clear(&self) {
--        debug_assert_eq!(self.0.load(Ordering::Relaxed) & WATCHED, 0);
--        self.0.store(0, Ordering::Relaxed);
++    #[inline]
 +    pub fn take(&self) -> Option<usize> {
 +        // Most switches find nothing asked for: a load of the CPU's own
 +        // line, rather than a locked exchange.
@@ -437,7 +716,7 @@ index dc27075..38c71b5 100644
      }
  
      /// The idle thread starting an idle period: forgets whether the last
-@@ -96,7 +143,7 @@ impl Resched {
+@@ -96,7 +144,7 @@ impl Resched {
  
      /// The word, for `Cpu::idle_until`: a write to its line ends MWAIT,
      /// and its lowest bit is set while a switch is asked for.
@@ -446,10 +725,16 @@ index dc27075..38c71b5 100644
          &self.0
      }
  }
-@@ -120,13 +167,14 @@ mod tests {
-     }
+@@ -114,19 +162,14 @@ mod tests {
+     use std::sync::atomic::AtomicBool;
  
      #[test]
+-    fn the_word_has_its_cache_line_to_itself() {
+-        assert_eq!(core::mem::align_of::<Resched>(), 64);
+-        assert_eq!(core::mem::size_of::<Resched>(), 64);
+-    }
+-
+-    #[test]
 -    fn a_request_from_this_cpu_is_pending_until_cleared() {
 +    fn a_request_from_this_cpu_is_pending_until_taken() {
          let word = Resched::new();
@@ -463,7 +748,7 @@ index dc27075..38c71b5 100644
          assert!(!word.pending());
      }
  
-@@ -135,7 +183,7 @@ mod tests {
+@@ -135,7 +178,7 @@ mod tests {
          let word = Resched::new();
          assert!(!word.request_remote(), "unwatched: interrupt");
          assert!(word.pending() && word.remote());
@@ -472,7 +757,7 @@ index dc27075..38c71b5 100644
          assert!(!word.watch());
          assert!(word.request_remote(), "watched: no interrupt");
          assert!(word.unwatch());
-@@ -155,10 +203,46 @@ mod tests {
+@@ -155,10 +198,46 @@ mod tests {
          let word = Resched::new();
          word.watch();
          assert_eq!(word.word().load(Ordering::Relaxed) & 1, 0);
@@ -520,7 +805,7 @@ index dc27075..38c71b5 100644
      /// The idle side watches, polls a while, then stops watching and would
      /// halt if nothing is pending; the waker requests and would interrupt
      /// if the word was unwatched. A wake-up is never lost: the idle side
-@@ -186,4 +270,47 @@ mod tests {
+@@ -186,4 +265,47 @@ mod tests {
              assert!(seen || interrupted.load(Ordering::SeqCst));
          }
      }
