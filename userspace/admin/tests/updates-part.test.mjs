@@ -84,6 +84,8 @@ test('a check that is a week old or more is a thing to look at, and nothing kept
 });
 
 test('the Overview part reads the last check and the reminders once and says nothing when it cannot', async () => {
+  // The check is minutes old at the fixtures' time, and would be stale a week after it.
+  mock.method(Date, 'now', () => NOW);
   const cx = fakeCx({ '/api/1/updates': last(), '/api/1/updates/settings': settings(), '/api/1/updates/failed': failed() });
   assert.equal((await needs(cx)).length, 3);
   assert.deepEqual(cx.calls.sort(), ['/api/1/updates', '/api/1/updates/settings']);

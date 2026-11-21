@@ -20,6 +20,9 @@ expect = "copied: net.php.php"
 [[step]]
 host = "sh {here}/copy-file.sh {here}/php-skips.txt {machine} {machine-port:22}"
 expect = "copied: php-skips.txt"
+[[step]]
+host = "sh {here}/copy-file.sh {here}/php-suite.sh {machine} {machine-port:22}"
+expect = "copied: php-suite.sh"
 # From nothing: a run before may have left it installed.
 [[step]]
 run = "sh -c 'bundle remove --for-everyone --purge net.php.php > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/net.php.php.dkv | tail -1'"
@@ -35,13 +38,15 @@ expect = "PHP 8.5.12 (cli)"
 [[step]]
 run = '''sh -c 'rm -rf /tmp/php-tests && cp -R /applications/net.php.php/tests /tmp/php-tests && chmod -R u+w /tmp/php-tests && grep -v -e "^#" -e "^$" /users/lab/php-skips.txt | sed "s|^|/tmp/php-tests/|" > /tmp/php-skips && find /tmp/php-tests -name "*.phpt" | sort | grep -v -F -f /tmp/php-skips > /tmp/php-list && test $(wc -l < /tmp/php-list) -gt 15000 && echo listed' '''
 expect = "listed"
-# The suite's count of failures last, after the names of any tests that
-# failed and the start of the difference each one's output has from what
-# it expects, which run-tests.php writes beside the test.
+# The suite (php-suite.sh), which says how far it has got every few
+# minutes, and when it stops moving names the tests in flight and what
+# each process waits for; at its end, the suite's count of failures last,
+# after the names of any tests that failed and the start of the
+# difference each one's output has from what it expects.
 [[step]]
-run = '''sh -c 'cd /tmp/php-tests && TEST_PHP_EXECUTABLE=/applications/net.php.php/bin/php /applications/net.php.php/bin/php run-tests.php -j$(nproc) -q --offline -r /tmp/php-list > /tmp/php-suite.log 2>&1; sed -n "/^FAILED TEST SUMMARY/,/^=====/p" /tmp/php-suite.log; sed -n "/^FAILED TEST SUMMARY/,/^=====/s/.*\[\(.*\)\.phpt\].*/\1/p" /tmp/php-suite.log | while read -r test; do echo "--- $test.diff"; head -n 30 "$test.diff"; done; grep "^Tests failed" /tmp/php-suite.log' '''
+run = "sh /users/lab/php-suite.sh"
 expect = "Tests failed    :     0 ("
 [[step]]
-run = "sh -c 'rm -rf /tmp/php-tests; bundle remove --for-everyone --purge net.php.php'"
+run = "sh -c 'rm -rf /tmp/php-tests /tmp/php-suite.started /tmp/php-suite.ended; bundle remove --for-everyone --purge net.php.php'"
 root = true
 expect = "removed net.php.php"

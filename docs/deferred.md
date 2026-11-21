@@ -389,6 +389,7 @@ machine asks for them.
 | `user.` extended attributes on device nodes, pipes and sockets left out of a send, or refused as Linux refuses them, so that Linux receives every stream Dukovo sends | ADR 0462 |
 | `subvolume send --no-data` and `subvolume receive --max-errors` | ADR 0462 |
 | ext4: several syncs in one transaction, and bench rows | ADR 0141 |
+| `posix_fallocate(3)` only sets a file's length and takes no room, so a later write into the range can still fail with ENOSPC, on a disk or a tmpfs, where Linux's `fallocate(2)` takes the blocks or pages first | C library (`Sysdeps<Fallocate>`), storage design note |
 | FUSE and share mounts: a page cache with writeback | ADR 0226 |
 | A page or partition written raw through two different nodes at once | storage design note |
 
@@ -531,7 +532,7 @@ finding or removed.
 | A lab test for COM1 as the serial console (console=ttyS0): serial-console running on it and a sign-in over it; hardware/serial-port covers COM1 only when it is not the console | Lab, first real-machine runs |
 | SSH: RSA and P-521 keys and authorized_keys options are not taken; sshd_config takes eight keywords (no `Port`, `ListenAddress`, `MaxAuthTries`); ssh is built without OpenSSL, so ssh-keygen makes ed25519 keys alone | Lab, first real-machine runs |
 | "[elevate] password for lab:" is printed into the output of commands run with sudo -S | Lab, first real-machine runs |
-| PHP's `ext/pcntl/tests/001.phpt` sometimes hung: a child spinning right after `fork` missed its SIGTERM, now that the kernel interrupts the CPU of a thread it signals; CPython's `test_threading` `test_print_exception_gh_102056` raised MemoryError reading a pipe, now that realloc gives back what a shrunk block no longer holds (mlibc patch 0096). The lab's next runs of both confirm them | Lab, `services/php` and `services/python` |
+| PHP's suite sometimes stops with no output: the lab's run of 2026-11-21 on QEMU, with the kernel that interrupts the CPU of a thread it signals, stalled once and passed on its retry, `ext/pcntl/tests/001.phpt` included. Which test hangs is not known: the suite step names the tests in flight and what each process waits for when the suite stops moving (`lab/tests/services/php-suite.sh`), for the lab's next runs to catch it | Lab, `services/php` |
 
 ## Waiting on a decision
 
