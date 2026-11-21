@@ -10,7 +10,8 @@
 // words, pathconf's errors, the syslog mask, fma's sign of zero, dladdr
 // in a static program, and getaddrinfo's service names and IPv6 scopes;
 // and one that PostgreSQL's setup found (ADR 0521): fflush(NULL) keeps
-// what a stream reading a pipe has read ahead.
+// what a stream reading a pipe has read ahead; and what PHP's suite found:
+// a stream whose command ended unread closes without a word.
 
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -217,6 +218,46 @@ static void popens(void) {
 		check_exit_child();
 	}
 	CHECK_CHILD(child);
+
+	// A command that ends without reading what was written to it: pclose
+	// drops the bytes it cannot write (EPIPE), as glibc does, says nothing
+	// on standard error, and gives the command's status. The command holds
+	// the write end of `exited` until it ends, so the read that finds that
+	// pipe closed shows it has, before anything is written.
+	int exited[2];
+	int made = pipe(exited) == 0;
+	CHECK(made);
+	if(made) {
+		struct sigaction ignore = {.sa_handler = SIG_IGN}, old;
+		CHECK(sigaction(SIGPIPE, &ignore, &old) == 0);
+		FILE *gone = popen("exit 1", "w");
+		close(exited[1]);
+		CHECK(gone != NULL);
+		if(gone) {
+			char byte;
+			CHECK(read(exited[0], &byte, 1) == 0);
+			CHECK(fputs("nobody reads this\n", gone) >= 0);
+			int quiet = open("/tmp/library-pclose", O_RDWR | O_CREAT | O_TRUNC, 0600);
+			int stderr_saved = dup(STDERR_FILENO);
+			if(quiet >= 0 && stderr_saved >= 0) {
+				dup2(quiet, STDERR_FILENO);
+				int status = pclose(gone);
+				dup2(stderr_saved, STDERR_FILENO);
+				CHECK(status == 1 << 8);
+				CHECK(lseek(quiet, 0, SEEK_END) == 0);
+			} else {
+				CHECK(quiet >= 0 && stderr_saved >= 0);
+				pclose(gone);
+			}
+			if(quiet >= 0)
+				close(quiet);
+			if(stderr_saved >= 0)
+				close(stderr_saved);
+			unlink("/tmp/library-pclose");
+		}
+		sigaction(SIGPIPE, &old, NULL);
+		close(exited[0]);
+	}
 }
 
 // fflush(NULL), which a program calls before it forks or runs popen,

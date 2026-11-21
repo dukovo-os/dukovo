@@ -35,8 +35,11 @@ expect = "PHP 8.5.12 (cli)"
 [[step]]
 run = '''sh -c 'rm -rf /tmp/php-tests && cp -R /applications/net.php.php/tests /tmp/php-tests && chmod -R u+w /tmp/php-tests && grep -v -e "^#" -e "^$" /users/lab/php-skips.txt | sed "s|^|/tmp/php-tests/|" > /tmp/php-skips && find /tmp/php-tests -name "*.phpt" | sort | grep -v -F -f /tmp/php-skips > /tmp/php-list && test $(wc -l < /tmp/php-list) -gt 15000 && echo listed' '''
 expect = "listed"
+# The suite's count of failures last, after the names of any tests that
+# failed and the start of the difference each one's output has from what
+# it expects, which run-tests.php writes beside the test.
 [[step]]
-run = '''sh -c 'cd /tmp/php-tests && TEST_PHP_EXECUTABLE=/applications/net.php.php/bin/php /applications/net.php.php/bin/php run-tests.php -j$(nproc) -q --offline -r /tmp/php-list > /tmp/php-suite.log 2>&1; grep "^Tests failed" /tmp/php-suite.log' '''
+run = '''sh -c 'cd /tmp/php-tests && TEST_PHP_EXECUTABLE=/applications/net.php.php/bin/php /applications/net.php.php/bin/php run-tests.php -j$(nproc) -q --offline -r /tmp/php-list > /tmp/php-suite.log 2>&1; sed -n "/^FAILED TEST SUMMARY/,/^=====/p" /tmp/php-suite.log; sed -n "/^FAILED TEST SUMMARY/,/^=====/s/.*\[\(.*\)\.phpt\].*/\1/p" /tmp/php-suite.log | while read -r test; do echo "--- $test.diff"; head -n 30 "$test.diff"; done; grep "^Tests failed" /tmp/php-suite.log' '''
 expect = "Tests failed    :     0 ("
 [[step]]
 run = "sh -c 'rm -rf /tmp/php-tests; bundle remove --for-everyone --purge net.php.php'"

@@ -1,0 +1,30 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+fclose drops what it could not write, as glibc and musl do, and still
+returns EOF. When the flush failed, as a write to a pipe whose reader has
+gone does (EPIPE), the bytes stayed in the buffer, and the close and the
+stream's end printed "mlibc warning: File is not flushed before closing"
+and "... before destruction" on the program's standard error. PHP's
+mail() writes the message to the command of sendmail_path through popen,
+and a command that ends without reading it (PHP's tests mail/gh10990 and
+mail/gh20257) left those lines in the program's output. Meant for
+upstream.
+
+diff --git a/options/ansi/generic/file-io.cpp b/options/ansi/generic/file-io.cpp
+index 744870e..2cdf8e7 100644
+--- a/options/ansi/generic/file-io.cpp
++++ b/options/ansi/generic/file-io.cpp
+@@ -764,8 +764,11 @@ FILE *fopen(const char *path, const char *mode) {
+ int fclose(FILE *file_base) {
+ 	auto file = static_cast<mlibc::abstract_file *>(file_base);
+ 	int e = 0;
+-	if(file->flush())
++	// What could not be written is dropped, as glibc and musl drop it.
++	if(file->flush()) {
++		file->purge();
+ 		e = EOF;
++	}
+ 	if(file->close())
+ 		e = EOF;
+ 	file->dispose();

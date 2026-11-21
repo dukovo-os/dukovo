@@ -32,10 +32,13 @@ ext/standard/tests/network/dns_get_record_error_conditions.phpt
 # Socket options the kernel does not offer answer ENOPROTOOPT (92):
 # TCP_CONGESTION, SO_ZEROCOPY and IPV6_PKTINFO and IPV6_RECVPKTINFO; the
 # test of an option that must be refused for a different reason expects
-# EACCES.
+# EACCES. gh21161 also finds that the C library's getaddrinfo(3) takes an
+# empty name, which glibc's refuses, so PHP does not warn "Host lookup
+# failed" before the option is refused.
 ext/sockets/tests/socket_tcp_congestion.phpt
 ext/sockets/tests/socket_sendto_zerocopy.phpt
 ext/sockets/tests/socket_set_option_in6_pktinfo.phpt
+ext/sockets/tests/gh21161.phpt
 ext/sockets/tests/socket_sendrecvmsg_multi_msg.phpt
 ext/sockets/tests/socket_sendrecvmsg_multi_msg-unix.phpt
 ext/sockets/tests/socket_set_option_error_socket_option.phpt
@@ -45,6 +48,11 @@ ext/sockets/tests/socket_set_option_error_socket_option.phpt
 ext/sockets/tests/socket_getopt.phpt
 ext/sockets/tests/mcast_ipv4_send.phpt
 ext/sockets/tests/mcast_ipv4_send_error.phpt
+
+# A datagram the machine sends to an interface-local IPv6 multicast group
+# (ff01::114) that its own socket joined never reaches that socket: the
+# receive waits until its time runs out.
+ext/sockets/tests/mcast_ipv6_recv_limited.phpt
 
 # The kernel takes what Linux refuses: sendmsg(2) with flags it has no
 # meaning for succeeds, and socketpair(2) for AF_INET answers "Address
