@@ -55,7 +55,10 @@ at.
   of at most 112 (8 KiB). A new entry goes at the end of the last piece,
   taking one out moves at most a piece's worth, and two pieces side by
   side that fit in one are joined, so the pieces have room for at most
-  about twice the entries. The list of pieces, the one allocation that
+  about twice the entries. A piece's room starts at 4 entries and
+  doubles as it fills, so a directory of a few entries, as most are and
+  as a view's are (ADR 0215), takes a few hundred bytes rather than a
+  whole piece's 8 KiB. The list of pieces, the one allocation that
   grows with a directory, holds some 3.7 million entries in the largest
   block, more than a tmpfs's file limit allows on a machine of 28 GiB.
 

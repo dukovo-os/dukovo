@@ -5,10 +5,11 @@
 //!
 //! Directories list their entries in the order they were made, kept in
 //! pieces of at most 112 so that a large directory needs no large
-//! allocation, and find them by name with a map of names that lookups
-//! also read without the directory's lock ([`RcuMap`], ADR 0367; it holds
-//! its nodes weakly, so that a removed file's space is free at once);
-//! files are page caches with no disk below ([`FileCache`] with a
+//! allocation, with room that grows as a piece fills so that a small one
+//! takes little memory, and find them by name with a map of names that
+//! lookups also read without the directory's lock ([`RcuMap`], ADR 0367;
+//! it holds its nodes weakly, so that a removed file's space is free at
+//! once); files are page caches with no disk below ([`FileCache`] with a
 //! non-persistent backing), so a file's pages are its data and holes read
 //! as zeros. A filesystem has a size limit, charged by the bytes its files
 //! are long, and its files' memory goes when the last reference to them
@@ -111,19 +112,27 @@ const PIECE: usize = 112;
 
 const _: () = assert!(core::mem::size_of::<Entry>() * PIECE <= 8192);
 
+/// The room a new piece is made with, in entries. A piece's room doubles
+/// as it fills, up to [`PIECE`], so that a directory of a few entries
+/// takes a few hundred bytes rather than a whole piece's 8 KiB: most
+/// directories are small, and each view a program sees is a tmpfs of
+/// its own (ADR 0215).
+const FIRST_ROOM: usize = 4;
+
 struct DirState {
     /// The entries in the order they were made in, which listings follow,
-    /// in pieces made with room for [`PIECE`] each, so that taking an
-    /// entry out moves at most a piece's worth. No piece is empty, and two
-    /// pieces side by side hold more than [`PIECE`] entries together: the
-    /// pieces have room for at most about twice the entries, and the list
-    /// of pieces, the one allocation that grows with the directory, holds
-    /// some 3.7 million entries in the heap's largest block (65,536 pieces
-    /// of 40 bytes), more than the file limit gives a tmpfs on a machine of
-    /// 28 GiB. A listing's cursor is the sequence number to go on from, so
-    /// an entry removed while a program lists the directory never makes it
-    /// skip another, as POSIX `readdir` needs (`rm -r` removes as it
-    /// lists). The directory's [`Names`] find an entry by its name.
+    /// in pieces of at most [`PIECE`] entries, so that taking an entry out
+    /// moves at most a piece's worth. No piece is empty or has room for
+    /// more than [`PIECE`], and two pieces side by side hold more than
+    /// [`PIECE`] entries together: the pieces have room for at most about
+    /// twice the entries, and the list of pieces, the one allocation that
+    /// grows with the directory, holds some 3.7 million entries in the
+    /// heap's largest block (65,536 pieces of 40 bytes), more than the file
+    /// limit gives a tmpfs on a machine of 28 GiB. A listing's cursor is
+    /// the sequence number to go on from, so an entry removed while a
+    /// program lists the directory never makes it skip another, as POSIX
+    /// `readdir` needs (`rm -r` removes as it lists). The directory's
+    /// [`Names`] find an entry by its name.
     pieces: KVec<KVec<Entry>>,
     /// The sequence number of the next entry made.
     next_seq: u64,
@@ -169,12 +178,13 @@ impl DirState {
     fn push(&mut self, name: KVec<u8>, node: KArc<TmpNode>) -> Result<()> {
         let entry = Entry { seq: self.next_seq, name, node };
         match self.pieces.last_mut() {
-            // Every piece was made with room for PIECE entries.
             Some(piece) if piece.len() < PIECE => {
+                make_room(piece, 1)?;
                 piece.push_within_capacity(entry).map_err(|_| Error::NoMemory)?;
             }
             _ => {
-                let mut piece = mem::vec_with_capacity(PIECE)?;
+                let mut piece = mem::vec();
+                make_room(&mut piece, 1)?;
                 piece.push_within_capacity(entry).map_err(|_| Error::NoMemory)?;
                 mem::push(&mut self.pieces, piece)?;
             }
@@ -199,22 +209,37 @@ impl DirState {
 
     /// Moves the entries of the piece after `piece` onto the end of
     /// `piece` and takes the emptied piece out, if the two hold at most
-    /// [`PIECE`] entries together; whether it did. It allocates nothing.
+    /// [`PIECE`] entries together; whether it did. Should `piece` need
+    /// more room and the heap have none, the two stay as they are, which
+    /// costs only memory.
     fn join(&mut self, piece: usize) -> bool {
-        let (Some(first), Some(next)) = (self.pieces.get(piece), self.pieces.get(piece + 1)) else {
+        let Some(more) = self.pieces.get(piece + 1).map(KVec::len) else {
             return false;
         };
-        if first.len() + next.len() > PIECE || first.capacity() - first.len() < next.len() {
+        let first = &mut self.pieces[piece];
+        if first.len() + more > PIECE || make_room(first, more).is_err() {
             return false;
         }
         let next = self.pieces.remove(piece + 1);
         let first = &mut self.pieces[piece];
         for entry in next {
-            // Room was checked above.
+            // Room was made above.
             let _ = first.push_within_capacity(entry);
         }
         true
     }
+}
+
+/// Makes room in `piece` for `more` entries, which with its own number at
+/// most [`PIECE`]: its room at least doubles, from [`FIRST_ROOM`], and
+/// stops at [`PIECE`], as a vector's does without the cap.
+fn make_room(piece: &mut KVec<Entry>, more: usize) -> Result<()> {
+    let needed = piece.len() + more;
+    if needed <= piece.capacity() {
+        return Ok(());
+    }
+    let room = needed.max(2 * piece.capacity()).clamp(FIRST_ROOM, PIECE);
+    piece.try_reserve_exact(room - piece.len()).map_err(|_| Error::NoMemory)
 }
 
 /// What a directory's map of names holds for a name: the entry's sequence
@@ -1067,7 +1092,7 @@ mod tests {
     fn check_pieces(dir: &DirState) -> core::result::Result<(), TestCaseError> {
         let mut last = 0;
         for (i, piece) in dir.pieces.iter().enumerate() {
-            prop_assert!(!piece.is_empty() && piece.len() <= PIECE && piece.capacity() >= PIECE);
+            prop_assert!(!piece.is_empty() && piece.len() <= PIECE && piece.capacity() <= PIECE);
             for entry in piece {
                 prop_assert!(entry.seq > last);
                 last = entry.seq;
@@ -1158,5 +1183,27 @@ mod tests {
         }
         assert_eq!(removed, 5000);
         assert!(root.dir().unwrap().lock().is_empty());
+    }
+
+    /// A directory's piece has room for a few entries at first and grows as
+    /// it fills, doubling up to a whole piece.
+    #[test]
+    fn a_small_directory_takes_little_room() {
+        let fs = Tmpfs::new(1 << 20, u64::MAX, 0o755).unwrap();
+        let root = &fs.root;
+        let room =
+            || root.dir().unwrap().lock().pieces.iter().map(KVec::capacity).collect::<Vec<_>>();
+        root.create(&name(0), Kind::File, FILE).unwrap();
+        assert_eq!(room(), [FIRST_ROOM]);
+        let mut rooms = vec![FIRST_ROOM];
+        for n in 1..=PIECE as u16 {
+            root.create(&name(n), Kind::File, FILE).unwrap();
+            let now = room();
+            if now[0] != *rooms.last().unwrap() {
+                rooms.push(now[0]);
+            }
+        }
+        assert_eq!(rooms, [4, 8, 16, 32, 64, PIECE]);
+        assert_eq!(room(), [PIECE, FIRST_ROOM]);
     }
 }
