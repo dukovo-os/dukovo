@@ -5,13 +5,15 @@
 // see, except in shared memory, which both see and whose futexes wake
 // across them, and the parent waits for its children in every way
 // waitpid has. The child's descriptors are capabilities derived from the
-// parent's, which the parent can revoke while the child uses them.
+// parent's, which the parent can revoke while the child uses them. A
+// signal that reaches a child as it starts is the child's to take.
 
 #include <fcntl.h>
 #include <pthread.h>
 #include <radix/radix.h>
 #include <sched.h>
 #include <semaphore.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -394,6 +396,106 @@ static void orphans(void) {
 	close(fds[0]);
 }
 
+// What the handler of a round's child found, in memory the round's parent
+// sees: getpid() there, and what pthread_kill(pthread_self(), 0) gave.
+struct child_found {
+	_Atomic pid_t pid;
+	_Atomic int self;
+};
+static struct child_found *found;
+
+// The handler of a child that a signal reaches as it starts: notes what
+// it finds itself to be, then ends its process as the signal's default
+// would, as PHP's handlers do.
+static void end_as_default(int number) {
+	atomic_store(&found->pid, getpid());
+	atomic_store(&found->self, pthread_kill(pthread_self(), 0));
+	struct sigaction action;
+	memset(&action, 0, sizeof(action));
+	action.sa_handler = SIG_DFL;
+	sigaction(number, &action, NULL);
+	sigset_t set;
+	sigemptyset(&set);
+	sigaddset(&set, number);
+	sigprocmask(SIG_UNBLOCK, &set, NULL);
+	kill(getpid(), number);
+}
+
+// A round of `signal_at_start`, in a child of the test: forks a child
+// that spins, as PHP's pcntl test does, and sends it SIGTERM at once.
+// Exits 0 if the child ended by it, its handler having found the child's
+// own numbers, and otherwise with what went wrong.
+static void signal_round(void) {
+	struct sigaction action;
+	memset(&action, 0, sizeof(action));
+	action.sa_handler = end_as_default;
+	sigemptyset(&action.sa_mask);
+	if(sigaction(SIGTERM, &action, NULL) != 0)
+		_exit(10);
+	atomic_store(&found->pid, 0);
+	atomic_store(&found->self, -1);
+	pid_t pid = fork();
+	if(pid == 0) {
+		long long deadline = check_now_ns() + 2000000000LL;
+		while(check_now_ns() < deadline) {
+		}
+		_exit(3);
+	}
+	if(pid < 0 || kill(pid, SIGTERM) != 0)
+		_exit(11);
+	int status;
+	pid_t got;
+	do {
+		got = waitpid(pid, &status, 0);
+	} while(got < 0 && errno == EINTR);
+	if(got != pid || !WIFSIGNALED(status) || WTERMSIG(status) != SIGTERM)
+		_exit(12);
+	if(atomic_load(&found->pid) != pid)
+		_exit(13);
+	if(atomic_load(&found->self) != 0)
+		_exit(14);
+	_exit(0);
+}
+
+// A signal that reaches a child as it starts, before it has run a line of
+// its own, is taken by the child as itself: its handler finds the child's
+// process and thread numbers, so one that ends its process as the
+// signal's default would, with kill(getpid()), as PHP's handlers do, ends
+// the child and not the parent (PHP's ext/pcntl/tests/001.phpt). In most
+// rounds the signal comes before the child has run; half run on one CPU
+// and half on all, which order parent and child differently. Each round's
+// parent is a child of the test, so a signal that went astray ends that
+// parent, not the test, and the round's child spins for 2 s at most.
+static void signal_at_start(void) {
+	found = mmap(NULL, sizeof(*found), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	CHECK(found != MAP_FAILED);
+	if(found == MAP_FAILED)
+		return;
+	cpu_set_t all, one;
+	CPU_ZERO(&all);
+	CHECK(sched_getaffinity(0, sizeof(all), &all) == 0);
+	int first = 0;
+	while(first < CPU_SETSIZE - 1 && !CPU_ISSET(first, &all))
+		first++;
+	CPU_ZERO(&one);
+	CPU_SET(first, &one);
+	for(int round = 0; round < 40; round++) {
+		pid_t parent = check_fork();
+		if(parent == 0) {
+			if(round % 2 && sched_setaffinity(0, sizeof(one), &one) != 0)
+				_exit(15);
+			signal_round();
+		}
+		int status = check_wait(parent);
+		if(!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+			printf("%s: round %d's parent ended with status %#x\n", check_name, round, status);
+			CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+			break;
+		}
+	}
+	CHECK(munmap(found, sizeof(*found)) == 0);
+}
+
 // Many forks one after another: each child's memory comes back.
 static void many(void) {
 	for(int i = 0; i < 200; i++) {
@@ -424,6 +526,7 @@ int main(void) {
 	RUN(descriptors);
 	RUN(revoked_while_used);
 	RUN(orphans);
+	RUN(signal_at_start);
 	RUN(many);
 	return check_end();
 }
