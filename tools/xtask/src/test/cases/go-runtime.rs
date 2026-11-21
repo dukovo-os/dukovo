@@ -99,7 +99,10 @@ if [ -n "$skip" ]; then
 fi
 "./$(basename "$package").test" "$@" >"$log" 2>&1
 status=$?
-if [ "$status" -eq 0 ] && [ "$(tail -n 1 "$log")" = PASS ]; then
+# Go's testing says PASS once every test has passed. What C code printed
+# may follow it: the C library writes out its buffered output when the
+# program exits.
+if [ "$status" -eq 0 ] && grep -qx PASS "$log"; then
 	echo "go-test: $package ok"
 else
 	echo "go-test: $package FAILED, status $status"
