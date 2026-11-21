@@ -169,15 +169,21 @@ Sending (`send_process`, `send_thread`) does what the signal does at once
 (SIGCONT continues; SIGKILL, and a default action that ends the process,
 end it), makes it pending, picks a thread that does not block it, marks
 that thread `signalled` and wakes it, so a wait it is in ends as
-interrupted. Spark, whose end stops the kernel (`ProcessObject::is_vital`),
+interrupted; a thread running on another CPU gets a reschedule IPI
+there (`sched::interrupt`, as Linux's `kick_process`), since a CPU that
+runs one thread alone arms no timer and a thread spinning in user mode
+would not otherwise come back to the kernel. Spark, whose end stops the kernel (`ProcessObject::is_vital`),
 takes only the signals it has a handler for, as Linux's init
 (`SIGNAL_UNKILLABLE`): the others, SIGKILL and SIGSTOP included, are
 dropped as they are sent, or as they are taken if they were sent while
 blocked. Before this, a reply Spark wrote to a `service` client that had
 just ended raised SIGPIPE and ended Spark, and the system with it. A
 fault Spark has no handler for still ends it. `kill(-1, ...)` leaves
-process 1 out, as Linux's does. On every return to user mode, `on_return` calls `deliver`,
-which takes the thread's signals one at a time: a stop stops the whole
+process 1 out, as Linux's does. On every return to user mode, its first
+included, `on_return` calls `deliver`, and makes its last look at the
+thread's mark with interrupts masked, so a signal sent after the look
+finds the thread in user mode and interrupts it. `deliver` takes the
+thread's signals one at a time: a stop stops the whole
 process (each thread waits in `deliver` until SIGCONT), and a handler gets
 Linux's x86-64 frame on the thread's stack or alternate stack: the
 restorer, a `ucontext_t` as far as its 8-byte signal mask (304 bytes,

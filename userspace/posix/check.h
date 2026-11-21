@@ -138,4 +138,21 @@ static inline void check_sleep_ms(long ms) {
 	}
 }
 
+// The pages of anonymous memory the process holds, from
+// /processes/<pid>/status; -1 if it cannot be read.
+static inline long check_anonymous_pages(void) {
+	char path[64];
+	snprintf(path, sizeof(path), "/processes/%d/status", (int)getpid());
+	FILE *status = fopen(path, "r");
+	if(!status)
+		return -1;
+	char line[128];
+	long pages = -1;
+	while(fgets(line, sizeof(line), status))
+		if(sscanf(line, "anonymous_memory: %ld pages", &pages) == 1)
+			break;
+	fclose(status);
+	return pages;
+}
+
 #endif

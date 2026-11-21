@@ -23,8 +23,9 @@
 //!    left, the allocation fails and its caller gets an error. The kernel
 //!    never panics only because memory ran out.
 //! 2. It asks every thread of that domain and the domains below it to stop
-//!    (`Thread::request_stop`), wakes them so they notice, and logs a
-//!    warning naming the domain, its class and its usage.
+//!    (`Thread::request_stop`), wakes them or interrupts the CPUs they run
+//!    on so they notice (`sched::interrupt`), and logs a warning naming
+//!    the domain, its class and its usage.
 //! 3. If the thread that asked for memory is one of them, its allocation
 //!    fails at once, so it can unwind. Otherwise the policy waits up to a
 //!    second for the domain's threads to exit, then the allocator tries
@@ -184,8 +185,8 @@ fn choose() -> Option<DomainRef> {
 
 /// Stops the threads of `victim` and the domains below it: marks the
 /// domains stopping (for the out-of-memory policy if `oom`), asks the
-/// threads to stop and wakes them. Returns how many there were. Also for
-/// radix-resource-domain(2)'s `stop`.
+/// threads to stop and wakes or interrupts them. Returns how many there
+/// were. Also for radix-resource-domain(2)'s `stop`.
 pub fn stop_threads(victim: &DomainRef, oom: bool) -> u32 {
     domains::for_each(|domain| {
         if domain.is_within(victim) {
@@ -196,7 +197,7 @@ pub fn stop_threads(victim: &DomainRef, oom: bool) -> u32 {
     sched::for_each_thread(|thread| {
         if thread.domain().is_within(victim) {
             thread.request_stop();
-            sched::wake(thread);
+            sched::interrupt(thread);
             stopped += 1;
         }
     });

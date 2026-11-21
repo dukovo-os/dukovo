@@ -531,6 +531,7 @@ finding or removed.
 | A lab test for COM1 as the serial console (console=ttyS0): serial-console running on it and a sign-in over it; hardware/serial-port covers COM1 only when it is not the console | Lab, first real-machine runs |
 | SSH: RSA and P-521 keys and authorized_keys options are not taken; sshd_config takes eight keywords (no `Port`, `ListenAddress`, `MaxAuthTries`); ssh is built without OpenSSL, so ssh-keygen makes ed25519 keys alone | Lab, first real-machine runs |
 | "[elevate] password for lab:" is printed into the output of commands run with sudo -S | Lab, first real-machine runs |
+| PHP's `ext/pcntl/tests/001.phpt` sometimes hung: a child spinning right after `fork` missed its SIGTERM, now that the kernel interrupts the CPU of a thread it signals; CPython's `test_threading` `test_print_exception_gh_102056` raised MemoryError reading a pipe, now that realloc gives back what a shrunk block no longer holds (mlibc patch 0096). The lab's next runs of both confirm them | Lab, `services/php` and `services/python` |
 
 ## Waiting on a decision
 
