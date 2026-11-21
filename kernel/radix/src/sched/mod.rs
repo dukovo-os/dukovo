@@ -882,9 +882,22 @@ pub fn wake(thread: &ThreadRef) -> bool {
     thread.wake_pending.store(true, Ordering::SeqCst);
     // Masked until the thread is queued or handed over: a waker moved to
     // another CPU meanwhile could find itself on the CPU it hands to.
+    masked(|| wake_masked(thread))
+}
+
+/// Runs `wake` with preemption held off and interrupts masked, and lets
+/// them go in the order a lock taken with `lock_irq` does: interrupts
+/// first, so that letting preemption go gives this CPU at once to a
+/// thread just woken here that should have it. Let go the other way, the
+/// switch would wait for the next lock let go with interrupts on, often
+/// the waker's next system call, or for a tick.
+#[inline(always)]
+fn masked(wake: impl FnOnce() -> bool) -> bool {
+    Arch::preempt_disable();
     let were = Arch::disable_interrupts();
-    let woke = wake_masked(thread);
+    let woke = wake();
     Arch::restore_interrupts(were);
+    preempt_enable();
     woke
 }
 
@@ -1052,10 +1065,7 @@ pub fn wake_sync(thread: &ThreadRef) -> bool {
 fn wake_here(thread: &ThreadRef) -> bool {
     thread.wake_pending.store(true, Ordering::SeqCst);
     // Masked as in `wake`, for a thread that goes to another CPU.
-    let were = Arch::disable_interrupts();
-    let woke = wake_here_masked(thread);
-    Arch::restore_interrupts(were);
-    woke
+    masked(|| wake_here_masked(thread))
 }
 
 /// [`wake_here`], with interrupts masked. A thread that may not run here
