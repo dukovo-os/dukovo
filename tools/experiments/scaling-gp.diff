@@ -1,0 +1,17 @@
+diff --git a/userspace/posix/bench.c b/userspace/posix/bench.c
+index cfa92ad..e70f59a 100644
+--- a/userspace/posix/bench.c
++++ b/userspace/posix/bench.c
+@@ -1061,6 +1061,12 @@ static void scaling_run(struct scaling *shared, int workers, int threads) {
+ 			if(pthread_create(&thread[i], NULL, scaling_thread, &worker[i]) != 0)
+ 				fail("pthread_create");
+ 		} else {
++			// Experiment: the parent reads XINUSE (XGETBV with ECX = 1)
++			// just before it forks.
++			{
++				uint32_t lo, hi;
++				__asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(1));
++			}
+ 			child[i] = fork();
+ 			if(child[i] < 0)
+ 				fail("fork");

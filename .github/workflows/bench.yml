@@ -68,30 +68,29 @@ jobs:
           std-stamp: ${{ inputs.std-stamp }}
 
       # Why a forked process's own thread is slower (586 against 512 ns an
-      # open and close) on Intel, pinned: the vector state components the
-      # first worker holds in use (XINUSE, read with no system call) before
-      # fork, at its start, once pinned, at the loop and after it:
-      #   z: as is
-      #   zk: the kernel drops from each save the upper halves that are zero
-      #   zv: the worker clears the upper halves (VZEROUPPER) before the loop
-      - name: Scaling, the loop's vector state, a kernel that drops zero upper halves, and VZEROUPPER, twice
+      # open and close) on Intel, pinned. Every leg that read XINUSE (XGETBV
+      # with ECX = 1) was fast, so here only the legs that say so read it:
+      #   a: as is
+      #   k: the kernel drops from each save the upper halves that are zero
+      #   gp: the parent reads XINUSE just before it forks
+      #   gc: the worker reads XINUSE just before its loop
+      - name: Scaling, as is, a kernel that drops zero upper halves, and XGETBV in the parent or the worker, twice
         run: |
           set -o pipefail
           mkdir -p out/ab
           leg() {
             git checkout -q -- kernel userspace/posix
-            git apply "tools/experiments/$2"
-            if [ -n "$3" ]; then git apply "tools/experiments/$3"; fi
+            if [ -n "$2" ]; then git apply "tools/experiments/$2"; fi
             ./ob bench --scaling --runs 3 --no-linux > "out/ab/s-$1.log" 2>&1 || true
             cp out/bench-scaling/report.md "out/ab/s-$1.md" || true
             echo "--- $1 ($(date -u +%H:%M:%S))"
             grep "^| [148] \(threads\|processes\) |" "out/ab/s-$1.md" || true
-            grep -h "xz workers" out/bench-scaling/*.log | sed 's/.*posix-bench: //' || true
           }
           for round in 1 2; do
-            leg z$round scaling-z.diff ""
-            leg zk$round scaling-z.diff fpu-scrub.diff
-            leg zv$round scaling-zv.diff ""
+            leg a$round ""
+            leg k$round fpu-scrub.diff
+            leg gp$round scaling-gp.diff
+            leg gc$round scaling-gc.diff
           done
           git checkout -q -- kernel userspace/posix
 

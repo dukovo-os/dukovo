@@ -1,0 +1,17 @@
+diff --git a/userspace/posix/bench.c b/userspace/posix/bench.c
+index cfa92ad..fdf7983 100644
+--- a/userspace/posix/bench.c
++++ b/userspace/posix/bench.c
+@@ -1028,6 +1028,12 @@ static void scaling_work(struct scaling *shared, int index) {
+ 	__atomic_add_fetch(&shared->ready, 1, __ATOMIC_SEQ_CST);
+ 	while(!__atomic_load_n(&shared->go, __ATOMIC_ACQUIRE))
+ 		sched_yield();
++	// Experiment: the worker reads XINUSE (XGETBV with ECX = 1) just
++	// before its loop.
++	{
++		uint32_t lo, hi;
++		__asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(1));
++	}
+ 	for(uint64_t i = 0; i < SCALING_ROUNDS; i++) {
+ 		int fd = openat(dir, "file", O_RDONLY | O_CLOEXEC);
+ 		if(fd < 0)
