@@ -684,6 +684,10 @@ pub fn method(
             let a = process::ExitThreadArgs::decode(args)?;
             Ok(Answer::Exit(a.code))
         }
+        process::EXIT_THREAD_WAKING => {
+            let a = process::ExitThreadWakingArgs::decode(args)?;
+            Ok(Answer::ExitWaking(a.code, a.word))
+        }
         process::SET_THREAD_POINTER => {
             let a = process::SetThreadPointerArgs::decode(args)?;
             if a.base >= radix_abi::address_space::USER_TOP {

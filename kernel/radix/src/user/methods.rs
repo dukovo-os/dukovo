@@ -35,6 +35,10 @@ pub enum Answer {
     /// The caller exits, with this code: the system call ends it once it
     /// has let go of what it holds.
     Exit(u64),
+    /// The calling thread exits, with this code, and once its process no
+    /// longer has it, the word at this address becomes 1 and its waiters
+    /// wake: radix-process(2)'s `exit_thread_waking`.
+    ExitWaking(u64, u64),
     /// The caller returns from a signal handler (`signal_return`, Phase
     /// 8): the system call returns these registers in place of results.
     Restore(radix_hal::SyscallRegs),

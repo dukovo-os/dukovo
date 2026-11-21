@@ -34,7 +34,7 @@ use super::memory::{FrameObject, access_of, cap_rights};
 use super::methods::{self, Answer};
 use super::objects::{self, Object};
 use super::process::Ending;
-use super::{EXIT_STOPPED, Result, UserRef, cap_error, error, exit_current};
+use super::{EXIT_STOPPED, Result, UserRef, cap_error, error, exit_current, exit_waking};
 use crate::Arch;
 use crate::fs::kmsg::Shown;
 use crate::sched::{self, ThreadRef};
@@ -45,6 +45,8 @@ enum Done {
     Return,
     /// The caller exits.
     Exit(u64),
+    /// The caller exits, then wakes the joiner waiting on this word.
+    ExitWaking(u64, u64),
     /// It returned from a signal handler (`signal_return`): the number
     /// register gets this, and the argument registers what the frame
     /// saved.
@@ -90,6 +92,10 @@ fn call(me: &ThreadRef, user: &UserRef, regs: &mut SyscallRegs, exiting: impl Fn
         Ok(Done::Exit(code)) => {
             exiting();
             exit_current(user.clone(), code, Ending::Exit)
+        }
+        Ok(Done::ExitWaking(code, word)) => {
+            exiting();
+            exit_waking(user.clone(), code, word)
         }
         Ok(Done::Restore(saved)) => {
             regs.number = saved;
@@ -183,6 +189,7 @@ fn answered(registers: &mut [u64; 10], answer: Result<Answer>) -> Result<Done> {
             results(registers, sys::CapCallResults { badge: 0, info, words }.encode())
         }
         Ok(Answer::Exit(code)) => Ok(Done::Exit(code)),
+        Ok(Answer::ExitWaking(code, word)) => Ok(Done::ExitWaking(code, word)),
         Ok(Answer::Restore(saved)) => {
             *registers = saved.args;
             Ok(Done::Restore(saved.number))

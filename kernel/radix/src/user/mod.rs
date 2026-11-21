@@ -255,17 +255,49 @@ fn set_ready(user: &UserThread) {
 /// ended `how`; its process hears of it (`ProcessObject::thread_exited`),
 /// and may end with it.
 fn exit_current(user: UserRef, status: u64, how: Ending) -> ! {
+    end_thread(user, status, how, None)
+}
+
+/// Ends the running program thread with exit status `status`, as
+/// radix-process(2)'s `exit_thread_waking` does: once its process no
+/// longer has it, the word at `word` becomes 1 and its waiters wake.
+fn exit_waking(user: UserRef, status: u64, word: u64) -> ! {
+    end_thread(user, status, Ending::Exit, Some(word))
+}
+
+/// [`exit_current`], and then, for `exit_waking`, the joiner's word.
+fn end_thread(user: UserRef, status: u64, how: Ending, word: Option<u64>) -> ! {
     ipc::exiting(&user);
     // What its stock holds goes back now, not when the last reference to
     // its side goes.
     user.stock.drain(user.process.account());
     let process = user.process.clone();
+    // The thread's own space: the process lets go of its hold on it when
+    // it ends, which this thread's leaving may make it do.
+    let joiner = word.map(|word| (word, user.space.clone()));
     drop(user);
     if let Some(me) = sched::current() {
         process.thread_exited(&me, status, how);
     }
     drop(process);
+    if let Some((word, space)) = joiner {
+        wake_joiner(&space, word);
+        // Dropped here: `sched::exit` does not return.
+        drop(space);
+    }
     sched::exit()
+}
+
+/// Sets the 32-bit word at `word` in the running thread's memory to 1 and
+/// wakes every thread waiting on it. The word a C library's join waits on
+/// starts at 0, so only its first byte changes, and a reader sees 0 or 1
+/// however the copy goes. A word out of line with 4 bytes, or one the
+/// thread cannot write, is left alone, and wakes nobody.
+fn wake_joiner(space: &SpaceObject, word: u64) {
+    if word.is_multiple_of(4) && Arch::copy_to_user(word, &1u32.to_le_bytes()) {
+        // An aligned word cannot fail.
+        let _ = memory::futex::wake(space, word, u32::MAX);
+    }
 }
 
 /// A fault in user mode: a page the kernel makes on demand (anonymous
