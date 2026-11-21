@@ -65,12 +65,12 @@ pub trait Cpu {
     /// Sleeps until the next interrupt arrives.
     fn wait_for_interrupt();
 
-    /// Sleeps until an interrupt arrives or another CPU writes to `wake`
-    /// (which must then be non-zero), in the CPU's light sleep state:
-    /// MONITOR and MWAIT on x86-64 when it has them, so a waker need not
-    /// send an interrupt, else HLT. Call with interrupts masked; it returns
-    /// with them masked, after any interrupt that woke it was handled.
-    /// Returns at once if `wake` is already non-zero.
+    /// Sleeps until an interrupt arrives or another CPU writes to `wake`'s
+    /// cache line, setting `wake`'s lowest bit, in the CPU's light sleep
+    /// state: MONITOR and MWAIT on x86-64 when it has them, so a waker need
+    /// not send an interrupt, else HLT. Call with interrupts masked; it
+    /// returns with them masked, after any interrupt that woke it was
+    /// handled. Returns at once if `wake`'s lowest bit is already set.
     fn idle_until(wake: &AtomicU32);
 
     /// Whether [`Cpu::idle_until`] notices writes to `wake` without an

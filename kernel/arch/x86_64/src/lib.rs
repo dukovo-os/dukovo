@@ -105,10 +105,10 @@ impl Cpu for Arch {
             cpu::monitor(core::ptr::from_ref::<AtomicU32>(wake) as usize);
             // A write between the check and MWAIT still ends the wait: the
             // monitor is armed already.
-            if wake.load(Ordering::Acquire) == 0 {
+            if wake.load(Ordering::Acquire) & 1 == 0 {
                 cpu::sti_mwait();
             }
-        } else if wake.load(Ordering::Acquire) == 0 {
+        } else if wake.load(Ordering::Acquire) & 1 == 0 {
             cpu::sti_hlt();
         }
         cpu::disable_interrupts();

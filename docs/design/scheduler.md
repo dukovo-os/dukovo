@@ -143,7 +143,7 @@ even out domains.
 
 A CPU switches only in `reschedule`, for one of four reasons: the running
 thread blocks, yields or exits, or something more urgent waits
-(`need_resched`, which a timer interrupt or a wake-up sets). With the
+(a request to switch, which a timer interrupt or a wake-up sets). With the
 thread's lock (for block and exit) and the run queue's lock held, it
 updates the thread's state, charges the running thread's time, picks the
 next thread, makes it `rq.current`, and lets go of both locks. Only then
@@ -178,27 +178,30 @@ only if a dead thread's lock was held while it looked.
 preemption count; nothing else holds off preemption. They reach it, and
 mutexes the running thread's token, through functions the kernel defines
 by name, which fat LTO inlines into each lock, not through the hooks'
-table (ADR 0406). `need_resched` is
+table (ADR 0406). A request to switch is
 acted on as the interrupt that set it returns, if the count is 0, or when
 the last spin lock is let go: the guard restores the interrupt flag
 first and then drops the count, so the reschedule it may trigger runs
 with interrupts in the state the code expects. A wake-up that should
-preempt a thread on another CPU kicks it with a reschedule IPI, or,
-when that CPU is idle in MWAIT, with a write to the line it monitors. An
-idle CPU says it polls that line only when it waits with MWAIT, or while
-it polls `need_resched` (below); one halted with HLT always gets the IPI.
+preempt a thread on another CPU asks that CPU to switch, and sends it a
+reschedule IPI unless the CPU watches its request word: an idle CPU
+watches it while it polls it (below) or waits with MWAIT on its line,
+where the waker's write ends the wait; one halted with HLT always gets
+the IPI. The word is alone in its cache line (`radix_sched::Resched`,
+ADR 0555), so the waker's one atomic write is the only traffic on the
+line an idle CPU spins on.
 
 **Idle polling** (ADR 0037, ADR 0551). Under a hypervisor, halting is
 an exit to the host and so is the IPI that ends the halt. An idle CPU
-therefore first polls `need_resched`, with interrupts on
-and preemption off, and says so in `polling`, so that a waker writes
-the flag instead of sending an IPI. How long it polls adapts as Linux's
+therefore first polls its request word, with interrupts on
+and preemption off, and marks it watched, so that a waker's write to it
+is all a wake-up takes, with no IPI. How long it polls adapts as Linux's
 cpuidle-haltpoll governor does (`radix_sched::haltpoll`): the limit
 starts at 0, doubles (from 50 µs, up to 200 µs) when an idle period
 outlasted it but ended within 200 µs, and halves when one lasted longer.
 Unlike Linux's governor it learns only from wake-ups that other CPUs
-send (ADR 0116): a waker on another CPU marks the CPU it wakes
-(`called`), and a period that the CPU's own interrupt ended, a device's
+send (ADR 0116): a waker on another CPU marks the request as remote
+in the same write, and a period that the CPU's own interrupt ended, a device's
 or the timer's, halves the limit, since that interrupt comes whether the
 CPU polls or halts, and the hypervisor delivers it to a halted CPU
 sooner. So a CPU whose threads wait only for disks halts at once.
@@ -213,11 +216,12 @@ leaves the switch to the idle loop, which ends the idle period first: a
 switch on the interrupt's way out left the period open while other
 threads ran, which counted their time as idle, in `/processes/stat` and in
 what the limit learnt.
-The waker sets `need_resched` before it reads `polling`; the poller
-clears `polling` before it reads `need_resched` again; both are
-sequentially consistent, so one of them sees the other. The TLA+ model
-`kernel/sched/tla/IdleWake.tla` checks that no wake-up is lost with
-polling, MWAIT and HLT, and that either ordering reversed loses one.
+The waker asks for the switch and reads whether the word is watched in
+one atomic read-modify-write; the poller stops watching and reads the
+request in another. The two are ordered on the one word, so either the
+poller sees the request or the waker sees the word unwatched and sends
+the IPI. The TLA+ model `kernel/sched/tla/IdleWake.tla` checks that no
+wake-up is lost with polling, MWAIT and HLT.
 
 **Timers.** Each CPU has a list of its sleeping threads and their
 deadlines, with room for every thread made ahead of time. The local APIC
@@ -566,8 +570,8 @@ shares on real hardware or QEMU within 20 %.)*
 the highest priority queued, first come among equals *(Kani:
 `real_time_picks_the_most_urgent_first_comer`; host test
 `picks_follow_priority_then_arrival`)*, and real-time threads are picked
-before fair ones. A wake-up that makes a more urgent thread ready sets
-`need_resched` on the target CPU and kicks it, and the switch happens as
+before fair ones. A wake-up that makes a more urgent thread ready asks
+the target CPU to switch and kicks it, and the switch happens as
 soon as that CPU's preemption count is 0; spin-locked sections are short
 and bounded, so the delay is bounded too. A sleeping real-time thread's
 timer fires on time because the timer is re-armed for the earliest

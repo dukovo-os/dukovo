@@ -12,7 +12,7 @@
 //!
 //! A CPU switches threads only in [`reschedule`]: when the running thread
 //! blocks, yields or exits, and when something more urgent is waiting
-//! (`need_resched`), which a timer interrupt or a wake-up sets. The switch
+//! (`resched`), which a timer interrupt or a wake-up sets. The switch
 //! happens on the way out of the interrupt, when the last spin lock is let
 //! go, or at once, whichever comes first: spin locks and RCU read sections
 //! hold off preemption, nothing else does. No lock is held across the
@@ -63,8 +63,8 @@ use radix_hal::{
 use radix_klog::{error, info, warn};
 use radix_mm::{FRAMES, Flags, HEAP, Kmalloc};
 use radix_sched::{
-    CpuLoad, CpuSet, HaltPoll, LOAD_INTERVAL_NS, LoadAverage, Loads, Place, Split, Topology,
-    haltpoll,
+    CpuLoad, CpuSet, HaltPoll, LOAD_INTERVAL_NS, LoadAverage, Loads, Place, Resched, Split,
+    Topology, haltpoll,
 };
 use radix_sync::{Mutex, Once, SpinLock};
 
@@ -98,19 +98,11 @@ const INITIAL_ROOM: usize = 64;
 
 /// The scheduler's state for one CPU.
 struct CpuSched {
+    /// Set when the running thread should give way, cleared by
+    /// [`reschedule`]; the idle thread polls it, or watches it in MWAIT.
+    /// In a cache line of its own (ADR 0555).
+    resched: Resched,
     rq: SpinLock<Option<Rq>>,
-    /// Set when the running thread should give way; cleared by
-    /// [`reschedule`].
-    need_resched: AtomicBool,
-    /// Written by wakers while the CPU idles in MWAIT.
-    wake: AtomicU32,
-    /// Whether the idle thread watches `need_resched` or `wake` without
-    /// needing an interrupt: polling, or waiting in MWAIT.
-    polling: AtomicBool,
-    /// Set by a waker on another CPU, before `need_resched`: the idle loop
-    /// clears it when it goes idle, and so learns which wake-ups polling
-    /// can catch (`radix_sched::haltpoll`).
-    called: AtomicBool,
     /// The token of the running thread.
     current: AtomicUsize,
     /// The published load: queued threads, and the running real-time
@@ -159,11 +151,8 @@ struct CpuSched {
 impl CpuSched {
     const fn new() -> CpuSched {
         CpuSched {
+            resched: Resched::new(),
             rq: SpinLock::new(None),
-            need_resched: AtomicBool::new(false),
-            wake: AtomicU32::new(0),
-            polling: AtomicBool::new(false),
-            called: AtomicBool::new(false),
             current: AtomicUsize::new(0),
             running: AtomicU32::new(0),
             rt_prio: AtomicU8::new(0),
@@ -1027,14 +1016,12 @@ fn kick(cpu: usize) {
         }
         // The switch happens when this CPU lets go of its last spin lock or
         // leaves the interrupt it is in.
-        slot.need_resched.store(true, Ordering::SeqCst);
+        slot.resched.request();
         return;
     }
-    slot.called.store(true, Ordering::Relaxed);
-    slot.need_resched.store(true, Ordering::SeqCst);
-    if slot.polling.load(Ordering::SeqCst) {
-        slot.wake.store(1, Ordering::Release);
-    } else {
+    // One write to the word the CPU polls or watches, if it does, which
+    // then needs no interrupt (ADR 0555).
+    if !slot.resched.request_remote() {
         Arch::send_ipi(cpu, Ipi::Reschedule);
     }
 }
@@ -1395,7 +1382,7 @@ fn reschedule(why: Switch) {
     let Some(rq) = guard.as_mut() else { unreachable!("the run queue was there a moment ago") };
     let now = Arch::now_ns();
     rq.charge(now);
-    slot.need_resched.store(false, Ordering::Relaxed);
+    slot.resched.clear();
     slot.owed.store(false, Ordering::Relaxed);
     let mut moving = None;
     match (why, state.as_mut()) {
@@ -1530,7 +1517,7 @@ fn thread_start(_: usize) -> ! {
 #[inline]
 pub(crate) fn preempt_enable() {
     if Arch::preempt_enable() == 0
-        && CPUS.this().need_resched.load(Ordering::Relaxed)
+        && CPUS.this().resched.pending()
         && Arch::interrupts_enabled()
         && started()
     {
@@ -1563,7 +1550,7 @@ pub fn pay_owed() {
         return;
     }
     slot.owed.store(false, Ordering::Relaxed);
-    slot.need_resched.store(true, Ordering::SeqCst);
+    slot.resched.request();
     if Arch::preempt_count() == 0 && Arch::interrupts_enabled() && started() {
         reschedule(Switch::Preempt);
     }
@@ -1572,7 +1559,7 @@ pub fn pay_owed() {
 /// Called on the way out of an interrupt that came in with preemption
 /// allowed.
 fn on_preempt() {
-    if CPUS.this().need_resched.load(Ordering::Relaxed) {
+    if CPUS.this().resched.pending() {
         reschedule(Switch::Preempt);
     }
 }
@@ -1591,7 +1578,7 @@ fn on_timer(tick: bool) {
         let mut guard = slot.rq.lock();
         if let Some(rq) = guard.as_mut() {
             if rq.charge(now) {
-                slot.need_resched.store(true, Ordering::Relaxed);
+                slot.resched.request();
             }
             slot.slice_end.store(rq.slice_end(now), Ordering::Relaxed);
             idling = rq.idling();
@@ -1739,22 +1726,21 @@ fn idle_loop(cpu: usize) -> ! {
         if slot.running.load(Ordering::Relaxed) == 0 {
             balance::idle(cpu, Arch::now_ns());
         }
-        // Before the check: a wake-up from another CPU after it is noted.
-        slot.called.store(false, Ordering::Relaxed);
-        if slot.need_resched.load(Ordering::SeqCst) || slot.running.load(Ordering::Relaxed) > 0 {
+        // In the same step as the check: a wake-up from another CPU after
+        // it is noted.
+        if slot.resched.go_idle() || slot.running.load(Ordering::Relaxed) > 0 {
             reschedule(Switch::Preempt);
             continue;
         }
-        slot.wake.store(0, Ordering::Relaxed);
         let started = Arch::now_ns();
         slot.idle_since.store(started, Ordering::Relaxed);
         if poll(slot, started.saturating_add(haltpoll.limit_ns())) {
             slot.polls.fetch_add(1, Ordering::Relaxed);
         } else {
-            // Only an idle that watches `wake` (MWAIT) ends on the write
+            // Only an idle that watches the word (MWAIT) ends on the write
             // alone; HLT needs the interrupt, so a waker must send one.
-            slot.polling.store(mwait, Ordering::SeqCst);
-            if !slot.need_resched.load(Ordering::SeqCst) {
+            let pending = if mwait { slot.resched.watch() } else { slot.resched.pending() };
+            if !pending {
                 slot.halts.fetch_add(1, Ordering::Relaxed);
                 // Preemption off, as in `poll`: the interrupt that ends the
                 // halt leaves the switch to this loop, which ends the idle
@@ -1762,10 +1748,12 @@ fn idle_loop(cpu: usize) -> ! {
                 // leave the period open while other threads ran, counting
                 // their time as idle until this CPU next went idle.
                 Arch::preempt_disable();
-                Arch::idle_until(&slot.wake);
+                Arch::idle_until(slot.resched.word());
                 Arch::preempt_enable();
             }
-            slot.polling.store(false, Ordering::SeqCst);
+            if mwait {
+                slot.resched.unwatch();
+            }
         }
         let idle = Arch::now_ns().saturating_sub(started);
         // A reader on another CPU sees the period under way, or ended,
@@ -1775,7 +1763,7 @@ fn idle_loop(cpu: usize) -> ! {
         slot.idle_ns.fetch_add(idle, Ordering::Relaxed);
         slot.idle_since.store(0, Ordering::Relaxed);
         slot.idle_seq.fetch_add(1, Ordering::Release);
-        haltpoll.record(idle, slot.called.load(Ordering::Relaxed));
+        haltpoll.record(idle, slot.resched.remote());
     }
 }
 
@@ -1785,31 +1773,28 @@ fn idle_loop(cpu: usize) -> ! {
 /// disks' queue does, in a virtual machine).
 pub fn cpu_to_itself() -> bool {
     let slot = CPUS.this();
-    slot.running.load(Ordering::Relaxed) <= 1 && !slot.need_resched.load(Ordering::Relaxed)
+    slot.running.load(Ordering::Relaxed) <= 1 && !slot.resched.pending()
 }
 
-/// Polls `need_resched` until `until`, and returns whether it was set.
-/// Wakers see `polling` and skip the interrupt. Interrupts are on while it
-/// polls, so timers and devices are served, but preemption is off: the
-/// idle loop switches, not the interrupt's way out.
+/// Polls for a switch to be asked for until `until`, and returns whether
+/// one was. Wakers see the word watched and skip the interrupt. Interrupts
+/// are on while it polls, so timers and devices are served, but preemption
+/// is off: the idle loop switches, not the interrupt's way out.
 fn poll(slot: &CpuSched, until: u64) -> bool {
     if until <= Arch::now_ns() {
         return false;
     }
-    slot.polling.store(true, Ordering::SeqCst);
+    slot.resched.watch();
     Arch::preempt_disable();
     Arch::enable_interrupts();
-    while !slot.need_resched.load(Ordering::Relaxed) && Arch::now_ns() < until {
+    while !slot.resched.pending() && Arch::now_ns() < until {
         core::hint::spin_loop();
     }
     Arch::disable_interrupts();
     Arch::preempt_enable();
-    // A waker sets `need_resched` before it reads `polling`; this clears
-    // `polling` before it reads `need_resched` (both sequentially
-    // consistent). So either the waker sees `polling` cleared and sends
-    // the interrupt, or this sees its wake-up and does not halt.
-    slot.polling.store(false, Ordering::SeqCst);
-    slot.need_resched.load(Ordering::SeqCst)
+    // Either a waker's request came before this, which sees it, or after,
+    // and the waker sends the interrupt.
+    slot.resched.unwatch()
 }
 
 // ---- The reaper ----
@@ -2075,7 +2060,7 @@ pub fn write_queues(line: &mut dyn FnMut(fmt::Arguments<'_>)) {
             rq.pulled[1],
             rq.pulled[2],
             rq.pulled[3],
-            if slot.need_resched.load(Ordering::Relaxed) { "; switch pending" } else { "" }
+            if slot.resched.pending() { "; switch pending" } else { "" }
         ));
         rq.for_each(|thread, running, weighing| {
             let mut how = radix_klog::TextBuf::<24>::new();
