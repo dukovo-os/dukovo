@@ -30,10 +30,20 @@
 //! the count of changes and looks, and a wake moves the count before it
 //! reads how many wait, each sequentially consistent, so either the
 //! waiter sees the change or the wake sees the waiter.
+//!
+//! A listening socket's threads wait in `accept`, and one connection is
+//! for one of them: its receive side wakes one waiter for each change
+//! ([`Waiters::accepts`]), as Linux's exclusive waits in `accept` do, and
+//! its smoltcp sockets have no wakers of their own. Its interface tells it
+//! of each connection made, once, after the poll that made it (ADR 0651).
+//! A waiter woken alone that leaves without looking again, at its
+//! deadline or for a signal, looks once more as it goes, so that a
+//! connection it was woken for is not left with the others asleep
+//! ([`Waiters::wakes_one`]).
 
 use alloc::sync::Arc;
 use core::ptr;
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::task::{RawWaker, RawWakerVTable, Waker};
 
 use radix_mm::{Flags, HEAP, Kmalloc};
@@ -58,23 +68,35 @@ struct Side {
     changes: AtomicU64,
     /// How many threads wait on this side.
     sleepers: AtomicUsize,
+    /// Set once its socket listens: a change wakes one waiter, not all.
+    one: AtomicBool,
 }
 
 impl Side {
     const fn new() -> Side {
-        Side { changes: AtomicU64::new(0), sleepers: AtomicUsize::new(0) }
+        Side {
+            changes: AtomicU64::new(0),
+            sleepers: AtomicUsize::new(0),
+            one: AtomicBool::new(false),
+        }
     }
 
-    /// Moves the count, and wakes the waiters if there are any: lazily
-    /// for a waker that holds its stack's lock ([`sched::lazily`]).
-    fn changed(&self, lazily: bool) {
+    /// Moves the count, and wakes the waiters if there are any: one of
+    /// them on a side that wakes one, unless `all`, and lazily for a waker
+    /// that holds its stack's lock ([`sched::lazily`]).
+    fn changed(&self, lazily: bool, all: bool) {
         self.changes.fetch_add(1, Ordering::SeqCst);
-        if self.sleepers.load(Ordering::SeqCst) > 0 {
-            if lazily {
-                wait::wake_all_lazily(self.key());
-            } else {
-                wait::wake_all(self.key());
+        if self.sleepers.load(Ordering::SeqCst) == 0 {
+            return;
+        }
+        let key = self.key();
+        match (lazily, !all && self.one.load(Ordering::Relaxed)) {
+            (false, false) => wait::wake_all(key),
+            (true, false) => wait::wake_all_lazily(key),
+            (false, true) => {
+                wait::wake_one(key);
             }
+            (true, true) => wait::wake_one_lazily(key),
         }
     }
 
@@ -110,11 +132,11 @@ impl Waiters {
         &self.polled
     }
 
-    /// What the socket can do either way may have changed: its waiters
-    /// look again, and so do its pollers.
+    /// What the socket can do either way may have changed: all its
+    /// waiters look again, and so do its pollers.
     pub fn changed(&self) {
-        self.receive.changed(false);
-        self.send.changed(false);
+        self.receive.changed(false, true);
+        self.send.changed(false, true);
         self.polled.changed();
     }
 
@@ -126,8 +148,21 @@ impl Waiters {
     ///
     /// [`StackGuard`]: super::StackGuard
     pub fn changed_way(&self, way: Way) {
-        self.side(way).changed(true);
+        self.side(way).changed(true, false);
         self.polled.changed();
+    }
+
+    /// Its socket listens: from now on a change to what it can receive,
+    /// a connection made, wakes one of the threads waiting in `accept`.
+    /// [`Waiters::changed`] still wakes them all.
+    pub fn accepts(&self) {
+        self.receive.one.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether a change `way` wakes one waiter, who then looks once more
+    /// if it leaves without a look after its wake.
+    pub fn wakes_one(&self, way: Way) -> bool {
+        self.side(way).one.load(Ordering::Relaxed)
     }
 
     /// Counts the caller among those waiting `way` until the guard drops:

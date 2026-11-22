@@ -8,7 +8,8 @@
 // poll, a listener shared with a child, a socket that listens unbound,
 // more connections at once than an interface's first socket slots, and
 // a connection made while a thread waits in accept and another opens a
-// descriptor.
+// descriptor, and one thread woken for each connection, not all that wait
+// in accept (ADR 0651).
 // UDP: sendto and recvfrom, datagrams kept whole, sendmsg and recvmsg
 // over several buffers, connect, and MSG_DONTWAIT. The errors of
 // addresses in use or not on the machine and of families not there.
@@ -204,6 +205,106 @@ static void accept_while_another_opens(void) {
 		CHECK(close(waiter.accepted) == 0);
 	}
 	CHECK(close(server) == 0);
+}
+
+// The voluntary_switches of process `pid` from /processes/<pid>/status;
+// -1 if it cannot be read.
+static long voluntary_switches(pid_t pid) {
+	char path[64];
+	snprintf(path, sizeof(path), "/processes/%d/status", (int)pid);
+	FILE *status = fopen(path, "r");
+	if(!status)
+		return -1;
+	char line[128];
+	long switches = -1;
+	while(fgets(line, sizeof(line), status))
+		if(sscanf(line, "voluntary_switches: %ld", &switches) == 1)
+			break;
+	fclose(status);
+	return switches;
+}
+
+// A connection wakes one of the processes blocked in accept on a TCP
+// socket, as on Linux, and the steps of its handshake wake none (ADR
+// 0651). Four children block in accept on one listening socket and close
+// what they take, and the parent connects 500 times, waiting each time for
+// the acceptor's close. Each connection costs one child one block, so the
+// children's voluntary switches move by about 500 over the rounds; with
+// every step of every handshake waking all four they moved by more than
+// 750, and this check failed.
+static void accepting(void) {
+	enum { CHILDREN = 4, ROUNDS = 500 };
+	int s = socket(AF_INET, SOCK_STREAM, 0);
+	CHECK(s >= 0);
+	struct sockaddr_in at = loopback(0);
+	CHECK(bind(s, (struct sockaddr *)&at, sizeof(at)) == 0);
+	CHECK(listen(s, 16) == 0);
+	unsigned short port = port_of(s);
+	pid_t pids[CHILDREN];
+	for(int i = 0; i < CHILDREN; i++) {
+		pids[i] = check_fork();
+		if(pids[i] == 0) {
+			for(;;) {
+				int a = accept(s, NULL, NULL);
+				if(a < 0)
+					break;
+				close(a);
+			}
+			check_exit_child();
+		}
+		CHECK(pids[i] > 0);
+	}
+	// The children are asleep once their switches stop moving.
+	long switches[CHILDREN], total = 0;
+	long long deadline = check_now_ns() + 2000000000LL;
+	for(int i = 0; i < CHILDREN; i++)
+		switches[i] = voluntary_switches(pids[i]);
+	for(;;) {
+		check_sleep_ms(50);
+		int still = 1;
+		for(int i = 0; i < CHILDREN; i++) {
+			long now = voluntary_switches(pids[i]);
+			still &= now >= 0 && now == switches[i];
+			switches[i] = now;
+		}
+		if(still)
+			break;
+		if(check_now_ns() >= deadline) {
+			CHECK(0 && "the acceptors' voluntary_switches stopped moving");
+			break;
+		}
+	}
+	for(int i = 0; i < CHILDREN; i++)
+		total -= switches[i];
+	int served = 0;
+	for(int round = 0; round < ROUNDS; round++) {
+		int c = connected(port);
+		char byte;
+		struct pollfd entry = {.fd = c, .events = POLLIN};
+		if(poll(&entry, 1, 5000) != 1 || read(c, &byte, 1) != 0) {
+			CHECK(0 && "a connection accepted and closed by a child");
+			close(c);
+			break;
+		}
+		close(c);
+		served++;
+	}
+	for(int i = 0; i < CHILDREN; i++)
+		total += voluntary_switches(pids[i]);
+	printf("inet: accepting: %d connections made the %d acceptors switch %ld times\n", served,
+			CHILDREN, total);
+	CHECK(served == ROUNDS);
+	if(total > ROUNDS + ROUNDS / 2) {
+		char what[96];
+		snprintf(what, sizeof(what), "the acceptors switched %ld times, more than %d", total,
+				ROUNDS + ROUNDS / 2);
+		check_failed(__FILE__, __LINE__, what, 0);
+	}
+	for(int i = 0; i < CHILDREN; i++) {
+		kill(pids[i], SIGKILL);
+		waitpid(pids[i], NULL, 0);
+	}
+	close(s);
 }
 
 static void tcp(void) {
@@ -1629,6 +1730,7 @@ int main(void) {
 	RUN(short_connections);
 	RUN(many_connections);
 	RUN(accept_while_another_opens);
+	RUN(accepting);
 	RUN(tcp);
 	RUN(non_blocking);
 	RUN(unbound);

@@ -390,7 +390,11 @@ A network socket keeps its own `Polled`, and its own count that its
 blocked calls wait on (`net::waiters`, ADR 0550): smoltcp wakes the
 socket whose state a packet changed, so a round trip between two
 programs wakes them alone, and the pollers of what changed, not every
-thread that waits on the network.
+thread that waits on the network. The handshakes of a listening TCP
+socket wake nobody, and each connection made wakes one thread blocked in
+`accept`, and its pollers, as Linux's exclusive waits do; a waiter that
+leaves at its timeout or for a signal takes a connection that waits as it
+goes (ADR 0651).
 
 What an entry found is written back only where it differs from what
 the entry held when it was copied in. A program polls the same array

@@ -299,6 +299,13 @@ pub fn wake_all_lazily(key: usize) {
     super::lazily(|| wake_all(key));
 }
 
+/// As [`wake_one`], [`super::lazily`].
+pub fn wake_one_lazily(key: usize) {
+    super::lazily(|| {
+        wake_one(key);
+    });
+}
+
 /// How many threads wait on one key through it, so that a wake with
 /// nobody to wake takes no lock: a change that happens often to what is
 /// seldom waited for (a pipe's bytes, an event queue's ring) costs a
