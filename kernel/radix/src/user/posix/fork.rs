@@ -37,6 +37,7 @@ use radix_hal::{SyscallRegs, UserMode};
 use radix_ipc::info::Info;
 
 use super::{OWN_SLOTS, join, tree_error, with_tree};
+use crate::sched::ThreadRef;
 use crate::user::account::Account;
 use crate::user::process::{self, ProcessObject, ProcessRef, Start};
 use crate::user::{Result, UserRef, cap_error, error};
@@ -46,14 +47,33 @@ use crate::{Arch, caps};
 /// and returns its number.
 #[inline(never)]
 pub fn fork(user: &UserRef, label: u32) -> Result<u64> {
-    let parent = &user.process;
-    // The child's thread comes back from this call with 0. (AArch64's
-    // registers are a stub, `()`, until its user mode comes.)
-    #[allow(clippy::let_unit_value)]
-    let mut regs = Arch::user_registers().ok_or(error(Kernel::Gone))?;
+    // The child's thread comes back from this call with 0.
     let words = ForkResults { child: 0 }.encode();
     let reply = CapCallResults { badge: 0, info: Info::reply(label, ForkResults::WORDS), words };
-    Arch::set_results(&mut regs, &SyscallRegs { number: 0, args: reply.encode() });
+    let returns = SyscallRegs { number: 0, args: reply.encode() };
+    fork_returning(user, &returns, None, &mut |_, _| Ok(()))
+}
+
+/// [`fork`], whose child's thread comes back from the system call with
+/// `returns` in the registers a call returns in, on the stack at `stack`
+/// if one is given, and which `prepare` sets up, given the child and its
+/// thread, before the thread starts: how the Linux table forks (ADR 0611),
+/// which returns 0 in rax alone, and may give the child a stack and its
+/// thread pointer and words.
+pub fn fork_returning(
+    user: &UserRef,
+    returns: &SyscallRegs,
+    stack: Option<u64>,
+    prepare: &mut dyn FnMut(&ProcessRef, &ThreadRef) -> Result<()>,
+) -> Result<u64> {
+    let parent = &user.process;
+    // (AArch64's registers are a stub, `()`, until its user mode comes.)
+    #[allow(clippy::let_unit_value)]
+    let mut regs = Arch::user_registers().ok_or(error(Kernel::Gone))?;
+    Arch::set_results(&mut regs, returns);
+    if let Some(stack) = stack {
+        Arch::set_stack_pointer(&mut regs, stack);
+    }
     let thread_pointer = Arch::thread_pointer(&regs);
 
     let slots = caps::store().and_then(|store| store.slots(parent.cspace())).map_err(cap_error)?;
@@ -85,6 +105,7 @@ pub fn fork(user: &UserRef, label: u32) -> Result<u64> {
         }
         let (class, level) = parent.io_priority();
         child.set_io_priority(class, level);
+        child.linux.copy_from(&parent.linux);
         // It has not started: it acts for its parent's name from the first.
         child.name_before_start(parent.identity());
         child.inherit_args(parent);
@@ -118,7 +139,7 @@ pub fn fork(user: &UserRef, label: u32) -> Result<u64> {
             if let Some(user) = thread.user() {
                 user.signals.lock().stack = stack;
             }
-            Ok(())
+            prepare(&child, thread)
         },
     );
     if let Err(err) = started {

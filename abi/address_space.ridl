@@ -54,7 +54,7 @@ flags MapFlags: u32 {
 }
 
 /// A virtual address space.
-interface address_space = 0x0003 version 2 {
+interface address_space = 0x0003 version 3 {
     kind = address_space;
     /// Whether a page is mapped at `address`, and with which rights.
     method query = 1 (address: addr) -> (mapped: bool, rights: Rights)
@@ -123,4 +123,14 @@ interface address_space = 0x0003 version 2 {
     /// no segment is attached there. Needs the control right.
     method detach = 8 (address: addr) -> ()
         raises [no_such_slot, empty_slot, missing_rights, invalid_argument];
+    /// Lets go of the pages of the anonymous memory mapped in the `size`
+    /// bytes from `address` (a page boundary), and keeps the mappings: a
+    /// page touched again is made again, zeroed, or filled from its file,
+    /// or found in the shared memory it maps, as Linux's MADV_DONTNEED
+    /// leaves a private mapping (since version 3). Pages of frames, rings
+    /// and devices are passed over. Fails with not_mapped, having let go
+    /// of nothing, if a page of the range is not mapped. Needs the control
+    /// right.
+    method forget = 9 (address: addr, size: u64) -> ()
+        raises [no_such_slot, empty_slot, missing_rights, invalid_argument, not_mapped];
 }

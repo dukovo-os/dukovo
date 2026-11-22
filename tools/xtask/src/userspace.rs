@@ -815,6 +815,9 @@ pub fn build_for(ctx: &Ctx, profile: Profile, lab: bool) -> Result<Programs> {
     )? {
         files.push((format!("system/{}/{name}", crate::image::SLOT_THEME), theme.join(name)));
     }
+    // Every program in the image must say it is Dukovo's, or the kernel
+    // runs it as a Linux program (ADR 0610).
+    crate::personality::check("the system image", &files)?;
     let epoch = crate::image::source_date_epoch(ctx);
     let archive = write_archive(&files, epoch.clone())?;
     std::fs::write(&bootfs, &archive).context(|| format!("writing {}", bootfs.display()))?;

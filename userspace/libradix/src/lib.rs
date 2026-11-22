@@ -71,8 +71,26 @@ unsafe extern "C" {
     fn radix_program_main() -> u64;
 }
 
+// Dukovo's ELF note (ADR 0610). `exec` gives a program Dukovo's system
+// calls only if it carries this note or names /system/libraries/ld.so as
+// its interpreter, and runs every other x86-64 program as a Linux program.
+// The note is in this block, with `_start`, so that every program that
+// links this crate has it, whichever linker script places it. Its bytes
+// are those of ports/mlibc/sysdeps/radix/x86_64/crt1.S, which does the
+// same for C and Rust's standard library: the name "Dukovo" with its NUL
+// (7 bytes, padded to 8), the type 1 (NT_DUKOVO_ABI) and the version of
+// the system interface, 1.
 core::arch::global_asm!(
     r#"
+    .section .note.dukovo.abi, "a", @note
+    .balign 4
+    .long 7
+    .long 4
+    .long 1
+    .asciz "Dukovo"
+    .balign 4
+    .long 1
+
     .section .text._start, "ax"
     .global _start
 _start:

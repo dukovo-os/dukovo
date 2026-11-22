@@ -6,12 +6,21 @@
 //!
 //! ```text
 //! linux-bench [--rounds <count>] [--posix-bench <program>] [--git <program>]
-//!             [--disc <device>] [--sd <device>] [--only scaling]
+//!             [--disc <device>] [--sd <device>] [--only scaling|linux]
+//! linux-bench --exit <code>
 //! ```
 //!
 //! With `--only scaling` it runs only the POSIX benchmarks' open/close
 //! scaling benchmark (`ob bench --scaling`); as process 1 it gets that
 //! from the kernel command line, after `--`.
+//!
+//! The rows of a static Linux program's own system calls,
+//! `lx_syscall_null`, `lx_clone_thread` and `lx_fork_exec_wait`, touch
+//! nothing but what such a program is given (no `/proc`, `/sys` or `/dev`,
+//! no other program), so that this one static binary runs the same rows
+//! on Linux and, under the Linux personality (ADR 0610), on Dukovo, where
+//! `--only linux` runs them alone. `lx_fork_exec_wait` runs this program
+//! again with `--exit 0`, which ends at once and does nothing else.
 //!
 //! It prints one line per benchmark, in the format of the Radix benchmark
 //! programs:
@@ -149,7 +158,17 @@ fn main() {
     let mut disc = None;
     let mut sd = None;
     let mut scaling = false;
-    let mut args = std::env::args().skip(1);
+    let mut linux = false;
+    // `--exit <code>` is what `lx_fork_exec_wait` runs this program as: it
+    // ends before anything else is set up, so that the row times the
+    // system's fork, exec and wait and not this program's start.
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if let [flag, code] = argv.as_slice()
+        && flag == "--exit"
+    {
+        std::process::exit(code.parse().unwrap_or(2));
+    }
+    let mut args = argv.into_iter();
     while let Some(arg) = args.next() {
         let value = args.next();
         match (arg.as_str(), value) {
@@ -161,6 +180,7 @@ fn main() {
             ("--disc", Some(device)) => disc = Some(PathBuf::from(device)),
             ("--sd", Some(device)) => sd = Some(PathBuf::from(device)),
             ("--only", Some(what)) if what == "scaling" => scaling = true,
+            ("--only", Some(what)) if what == "linux" => linux = true,
             ("--btrfs-log", Some(mode)) if mode == "make" || mode == "list" => {
                 btrfs_log = Some(mode);
             }
@@ -168,7 +188,7 @@ fn main() {
                 eprintln!(
                     "usage: linux-bench [--rounds <count>] [--posix-bench <program>] \
                      [--git <program>] [--disc <device>] [--sd <device>] \
-                     [--btrfs-log make|list] [--only scaling]"
+                     [--btrfs-log make|list] [--only scaling|linux] | --exit <code>"
                 );
                 std::process::exit(2);
             }
@@ -216,6 +236,16 @@ fn main() {
         }
         return;
     }
+    if linux {
+        // `--only linux`: a static program's own calls, as run on Dukovo too.
+        pin(first);
+        linux_rows(rounds);
+        if std::process::id() == 1 {
+            println!("linux-bench: done");
+            power_off();
+        }
+        return;
+    }
     pin(first);
 
     let calls = rounds * 2;
@@ -229,6 +259,7 @@ fn main() {
     report("fresh_page", rounds / 2, fresh_page);
     memory_copy();
     files(rounds / 2);
+    linux_rows(rounds);
 
     for (place, other) in [("same_cpu", Some(first)), ("cross_cpu", cpus.get(1).copied())] {
         let Some(other) = other else {
@@ -335,6 +366,56 @@ fn getppid() {
     // SAFETY: getppid takes no arguments and cannot fail. It is called
     // through syscall(2) so that no library caches its answer.
     unsafe { libc::syscall(libc::SYS_getppid) };
+}
+
+/// The rows of `--only linux`: the three costs a static Linux program pays
+/// on its own, each the same code on Linux and on Dukovo. A thread made and
+/// joined and a program run and waited for take far longer than a call, so
+/// they run fewer times than the rounds the calls do.
+fn linux_rows(rounds: u64) {
+    report("lx_syscall_null", rounds * 2, getppid);
+    report("lx_clone_thread", rounds / 20, || {
+        std::thread::spawn(|| {}).join().expect("a thread that does nothing ends");
+    });
+    if let Some(program) = own_path() {
+        report("lx_fork_exec_wait", rounds / 100, || fork_exec_wait(&program));
+    } else {
+        eprintln!("linux-bench: no path to run this program again, so no lx_fork_exec_wait");
+    }
+}
+
+/// The path this program can be run by again: where the system says it is,
+/// else the absolute path it was started with, as a system with no `/proc`
+/// gives it.
+fn own_path() -> Option<std::ffi::CString> {
+    use std::os::unix::ffi::OsStringExt;
+    let path = std::env::current_exe().ok().or_else(|| {
+        std::env::args_os().next().map(PathBuf::from).filter(|path| path.is_absolute())
+    })?;
+    std::ffi::CString::new(path.into_os_string().into_vec()).ok()
+}
+
+/// Makes a process, has it run `program --exit 0` and waits for it: one
+/// round of `lx_fork_exec_wait`.
+fn fork_exec_wait(program: &std::ffi::CStr) {
+    let args = [program.as_ptr(), c"--exit".as_ptr(), c"0".as_ptr(), std::ptr::null()];
+    // SAFETY: the child runs only execv and _exit, which a process made by
+    // fork may call whatever the other threads were doing, on pointers
+    // that live until it has done so; the parent only waits.
+    unsafe {
+        let pid = libc::fork();
+        assert!(pid >= 0, "fork: {}", std::io::Error::last_os_error());
+        if pid == 0 {
+            libc::execv(program.as_ptr(), args.as_ptr());
+            libc::_exit(127);
+        }
+        let mut status = 0;
+        let got = libc::waitpid(pid, &raw mut status, 0);
+        assert!(
+            got == pid && libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+            "the program run again ended with status {status} (waitpid gave {got})"
+        );
+    }
 }
 
 /// A descriptor to look up: an eventfd, which every Linux has.

@@ -17,7 +17,9 @@
 //!
 //! The calls of a process a trace follows (radix-trace(2)) take a slow
 //! way, which writes each one's record as it returns (`fs::trace`); the
-//! others pay one look at a flag of the process.
+//! others pay one look at a flag of the process. A Linux program's calls
+//! (Phase 18) go to the Linux table (`linux`), after one look at another
+//! flag beside it.
 
 use radix_abi::endpoint::{MessageFlags, NO_SLOT};
 use radix_abi::errors::Kernel;
@@ -63,18 +65,26 @@ pub fn handle(regs: &mut SyscallRegs) {
     };
     // Kept for the log line of a thread stopped in the call.
     let (number, info) = (regs.number, regs.args[1]);
-    // One call site, so that `dispatch` stays inlined in this fast path.
-    let mut begun = if user.process.traced() { begin(user, regs) } else { None };
-    // What `begin` noted holds the trace, which must go with the last
-    // thread that follows it, so that the tracer reads the end of it.
-    let status = call(me, user, regs, || drop(begun.take()));
-    if let Some(begun) = begun {
-        end(user, begun, status, regs);
+    let linux = user.process.linux.on();
+    if linux {
+        // A Linux program's call (ADR 0610), which ends in the methods
+        // below.
+        super::linux::call(me, user, regs);
+    } else {
+        // One call site, so that `dispatch` stays inlined in this fast
+        // path.
+        let mut begun = if user.process.traced() { begin(user, regs) } else { None };
+        // What `begin` noted holds the trace, which must go with the last
+        // thread that follows it, so that the tracer reads the end of it.
+        let status = call(me, user, regs, || drop(begun.take()));
+        if let Some(begun) = begun {
+            end(user, begun, status, regs);
+        }
     }
     if me.should_stop() {
         // A signal that ends a POSIX process is its parent's to report.
         if user.process.posix.lock().ended_by.is_none() {
-            stopped(me, number, info);
+            stopped(me, number, info, linux);
         }
         super::note_domain_stop(me, user);
         exit_current(user.clone(), EXIT_STOPPED, Ending::Stop);
@@ -151,9 +161,15 @@ fn interrupted(
 }
 
 /// Logs that thread `me` was stopped in system call `number`, with info
-/// word `info` (which names a method `cap_call` called).
+/// word `info` (which names a method `cap_call` called), or in Linux call
+/// `number` if `linux`.
 #[cold]
-fn stopped(me: &ThreadRef, number: u64, info: u64) {
+fn stopped(me: &ThreadRef, number: u64, info: u64, linux: bool) {
+    if linux {
+        let name = radix_linux::nr::name(number).unwrap_or("an unknown call");
+        info!("User: thread {} ({}) stopped in Linux's {name}", me.id(), me.name());
+        return;
+    }
     let name = sys::name(number).unwrap_or("an unknown system call");
     if number == sys::CAP_CALL {
         // The label is the info word's low half.

@@ -225,15 +225,23 @@ static bool advice_known(int advice) {
 }
 
 int Sysdeps<Madvise>::operator()(void *addr, size_t length, int advice) {
-	(void)addr;
-	(void)length;
 	// Linux's MADV_DONTNEED, unlike POSIX's, drops the pages, which then
-	// read as zeros: Radix cannot do that in place, so it says so rather
-	// than leave the old contents to a program that counts on zeros.
-	// MADV_FREE lets the pages keep their contents.
-	if(advice == MADV_DONTNEED)
-		return EINVAL;
-	if(advice != MADV_FREE && !advice_known(advice))
+	// read as zeros; MADV_FREE lets them be dropped. The address space's
+	// forget drops them and keeps the mapping (ADR 0611). Linux answers
+	// ENOMEM for a range that is not all mapped.
+	if(advice == MADV_DONTNEED || advice == MADV_FREE) {
+		uint64_t address = reinterpret_cast<uint64_t>(addr);
+		if(address & 4095)
+			return EINVAL;
+		if(!length)
+			return 0;
+		uint64_t status = radix_address_space_forget(radix::SLOT_SPACE, address, length);
+		if(RADIX_STATUS_DOMAIN(status) == RADIX_KERNEL_ERROR_DOMAIN
+				&& RADIX_STATUS_CODE(status) == RADIX_KERNEL_NOT_MAPPED)
+			return ENOMEM;
+		return radix::to_errno(status);
+	}
+	if(!advice_known(advice))
 		return EINVAL;
 	return 0;
 }

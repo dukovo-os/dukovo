@@ -541,6 +541,9 @@ limits kernel/mm/ kernel/radix/src/domains.rs kernel/radix/src/user/posix/limits
 limits userspace/posix/forkbomb.c userspace/posix/hog.c userspace/programs/manifest/src/service.rs
 limits userspace/programs/systools/src/service.rs userspace/spark/src/supervisor.rs
 limits userspace/spark/tests/services/limits/
+linux-programs kernel/lib/linux/ kernel/radix/src/user/linux/ tools/xtask/src/personality.rs
+linux-programs userspace/linux/ userspace/posix/hello.c userspace/posix/locks.c
+linux-programs abi/terminal.ridl kernel/lib/tty/ kernel/radix/src/fs/tty.rs
 live-bios image/grub/live.cfg.in tools/xtask/src/release.rs userspace/programs/system-release/
 live-bios userspace/programs/systools/src/releases.rs
 live-dvd image/grub/live.cfg.in kernel/drivers/ahci/ kernel/drivers/scsi/ kernel/fs/iso9660/
@@ -738,6 +741,7 @@ posix kernel/radix/src/user/posix/poll.rs kernel/radix/src/user/queue.rs
 posix ports/mlibc/sysdeps/radix/generic/event.cpp ports/mlibc/sysdeps/radix/generic/socket.cpp
 posix userspace/posix/socket.c userspace/posix/spawn.c userspace/posix/thread.c
 posix userspace/posix/time.c userspace/posix/tty.c userspace/posix/utilities.c
+posix kernel/lib/tty/ kernel/radix/src/fs/tty.rs
 posix userspace/posix/zones.c userspace/programs/acl/ userspace/programs/nukesh/
 posix userspace/programs/std-test/ userspace/programs/systools/src/balance.rs
 posix userspace/programs/systools/src/blkid.rs userspace/programs/systools/src/column.rs

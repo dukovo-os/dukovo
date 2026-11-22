@@ -547,6 +547,8 @@ impl UserMode for Arch {
 
     fn set_results((): &mut (), _: &SyscallRegs) {}
 
+    fn set_stack_pointer((): &mut (), _: u64) {}
+
     fn thread_pointer((): &()) -> u64 {
         0
     }
@@ -567,6 +569,14 @@ impl UserMode for Arch {
 
     fn push_signal_frame(_: &SignalFrame<'_>) -> bool {
         false
+    }
+
+    fn signal_frame_size() -> u64 {
+        0
+    }
+
+    fn hardware_capabilities() -> u64 {
+        0
     }
 
     fn pop_signal_frame(_: u64, _: &mut SyscallRegs) -> Option<u64> {

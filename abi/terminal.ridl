@@ -25,13 +25,20 @@
 
 module terminal;
 
-/// Reads the settings into a Termios at `buffer`.
+/// Reads the settings into a Termios at `buffer`. A `size` of at least
+/// LINUX_TERMIOS_SIZE but less than a Termios's gets the first
+/// LINUX_TERMIOS_SIZE bytes of one, Linux's kernel `struct termios`, as
+/// Linux's TCGETS does (radix-linux(7)).
 const GET_ATTRIBUTES: u32 = 0x5401;
-/// Sets the settings from a Termios at `buffer`, at once.
+/// Sets the settings from a Termios at `buffer`, at once. From a `size`
+/// of at least LINUX_TERMIOS_SIZE but less than a Termios's, the first
+/// LINUX_TERMIOS_SIZE bytes are read, as Linux's TCSETS reads them: the
+/// special characters past the 19th stay, and both speeds become the one
+/// `cflag` names.
 const SET_ATTRIBUTES: u32 = 0x5402;
-/// Sets the settings once what was written has been sent.
+/// As SET_ATTRIBUTES, once what was written has been sent.
 const SET_ATTRIBUTES_DRAIN: u32 = 0x5403;
-/// Sets the settings once what was written has been sent, dropping the
+/// As SET_ATTRIBUTES, once what was written has been sent, dropping the
 /// input not read yet.
 const SET_ATTRIBUTES_FLUSH: u32 = 0x5404;
 /// Starts (`argument` 1 or 3) or stops (0 or 2) output or input: POSIX's
@@ -73,6 +80,10 @@ const SET_PTY_LOCK: u32 = 0x40045431;
 const GET_LINE_NAME: u32 = 0x80105240;
 /// The bytes GET_LINE_NAME writes.
 const LINE_NAME_SIZE: u32 = 16;
+
+/// The bytes of Linux's kernel `struct termios`, which a Linux program's
+/// TCGETS and TCSETS move: a Termios up to its 19th special character.
+const LINUX_TERMIOS_SIZE: u32 = 36;
 
 /// The number of `c_cc` entries.
 const NCCS: u32 = 32;

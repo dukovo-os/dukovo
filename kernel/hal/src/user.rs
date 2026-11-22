@@ -413,6 +413,10 @@ pub trait UserMode: crate::Threads {
     /// call itself returns them.
     fn set_results(regs: &mut Self::UserRegisters, results: &SyscallRegs);
 
+    /// Makes saved registers' stack pointer `sp`: a Linux program's new
+    /// thread (`clone`) starts on the stack it gave.
+    fn set_stack_pointer(regs: &mut Self::UserRegisters, sp: u64);
+
     /// The thread pointer (x86-64: the FS base) saved registers hold, which
     /// [`UserMode::enter_user_registers`] leaves to the context: a forked
     /// thread's context gets it with [`UserMode::set_thread_pointer`].
@@ -438,6 +442,16 @@ pub trait UserMode: crate::Threads {
     /// state there, and makes it return to user mode in the handler.
     /// Returns `false`, changing nothing, if the frame cannot be written.
     fn push_signal_frame(frame: &SignalFrame<'_>) -> bool;
+
+    /// The most stack [`UserMode::push_signal_frame`] takes, alignment
+    /// included: what a Linux program is told is the least a signal stack
+    /// may have (AT_MINSIGSTKSZ), since it grows with the extended state.
+    fn signal_frame_size() -> u64;
+
+    /// The CPU features a Linux program is told of (AT_HWCAP), in the
+    /// form Linux gives them on this architecture (x86-64: CPUID leaf 1's
+    /// EDX).
+    fn hardware_capabilities() -> u64;
 
     /// Restores what a signal frame saved, given the address of its
     /// context: the registers a system call keeps go into the running

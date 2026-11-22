@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "radix-linux"
+description = "The Linux system call interface's numbers, errors, flags and records, and their translation to Radix's, for the kernel's Linux table"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+radix-abi = { path = "../../abi" }
+
+[dev-dependencies]
+# Host-side property tests: no input makes a decoder panic.
+proptest = { version = "1.7", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

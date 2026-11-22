@@ -461,6 +461,14 @@ fn address_space_method(user: &UserRef, slot: u32, label: u32, args: &[u64; 8]) 
             space.discard(a.address, pages_of(a.size)?)?;
             answer(label, 0, [0; 8])
         }
+        address_space::FORGET => {
+            let a = address_space::ForgetArgs::decode(args)?;
+            if !aligned(a.address) {
+                return Err(Kernel::InvalidArgument.status(0));
+            }
+            space.forget(a.address, pages_of(a.size)?)?;
+            answer(label, 0, [0; 8])
+        }
         address_space::MAP_FILE => {
             let a = address_space::MapFileArgs::decode(args)?;
             let access = anonymous_access(a.rights)?;

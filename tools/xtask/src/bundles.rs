@@ -138,6 +138,9 @@ fn pack(ctx: &Ctx, ports: &Ports, port: &Port, key: &SecretKey, version: &str) -
     }
     process::create_dir(folder.parent().expect("the folder has a parent"))?;
     crate::ports::copy_tree(ctx, &built, &folder)?;
+    // A bundle's programs run as Linux programs unless they say they are
+    // Dukovo's (ADR 0610).
+    crate::personality::check_folder(&format!("the bundle of port {}", recipe.name), &folder)?;
     let manifest = manifest(port, version);
     // The reader bundle(1) installs with must take it.
     dkv::signed::parse_manifest(manifest.as_bytes())

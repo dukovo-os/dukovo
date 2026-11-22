@@ -64,7 +64,8 @@ _target/userspace/_).
 *doctor*
 	Check every host tool the build needs: rustup, the pinned toolchain
 	with its sources and AArch64 target, QEMU, OVMF, the tools that build
-	GRUB (GCC, flex and gawk), xorriso, mtools, dosfstools, exfatprogs, gdisk, fdisk, The
+	GRUB (GCC, flex and gawk), musl's *musl-gcc* (for the Linux programs the
+	*linux-programs* boot test runs), xorriso, mtools, dosfstools, exfatprogs, gdisk, fdisk, The
 	Sleuth Kit, btrfs-progs, e2fsprogs, the tools that build
 	the ports (Clang 20 or later with compiler-rt's builtins, LLD, LLVM's
 	tools, Meson 1.3 or later, Ninja, *localedef*, git, curl and patch,
@@ -95,7 +96,10 @@ _target/userspace/_).
 	*dukovo.toml*(5), and *makewhatis*(8) indexes every page. The build
 	fails if a program in _/system/commands_ has no page; from each program's
 	page it writes the program's completion file for *nukesh*(1) into
-	_/system/resources/nukesh/completions/_.
+	_/system/resources/nukesh/completions/_. It also fails, naming each
+	program, if one in the image has neither Dukovo's ELF note nor
+	Dukovo's dynamic linker as its interpreter, since the kernel would run
+	it as a Linux program (see *radix-posix*(7)).
 
 	*--debug*
 		Build without optimisation.

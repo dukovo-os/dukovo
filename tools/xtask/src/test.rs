@@ -191,6 +191,7 @@ pub const KERNEL_LIBRARIES: &[&str] = &[
     "radix-iso9660",
     "radix-kdb",
     "radix-klog",
+    "radix-linux",
     "radix-lockdep",
     "radix-ksyms",
     "radix-mana",
@@ -569,6 +570,13 @@ const GO_APPS_FILES: u8 = 44;
 /// [`Disk::fat`] for a [`BUNDLE_FILES`] disk that holds Caddy's bundle alone,
 /// with the `caddy` test's script ([`cases::caddy::make_disk`]).
 const CADDY_FILES: u8 = 45;
+
+/// [`Disk::fat`] for a FAT32 disk that holds the static Linux programs of
+/// the `linux-programs` test, which `ob` builds with the host's C compiler
+/// and with musl: linux-core twice and the C test programs of
+/// userspace/posix, each as a Linux program
+/// ([`cases::linux_programs::make_disk`]).
+const LINUX_FILES: u8 = 46;
 
 /// The start of the names of the bundle files of the catalog's programs
 /// built with Go (ADR 0600), about 37 MiB together: they are on the disks
@@ -1371,6 +1379,13 @@ const fn bundle_files_disk(kib: u64, label: &'static str) -> Disk {
 /// `/volumes/<disk>`.
 const fn go_files_disk(kib: u64, label: &'static str) -> Disk {
     Disk { fat: GO_FILES, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
+}
+
+/// A FAT32 virtio disk of `kib` KiB, labelled `label`, holding the Linux
+/// programs of the `linux-programs` test ([`LINUX_FILES`]), which Spark
+/// mounts at `/volumes/<disk>`.
+const fn linux_files_disk(kib: u64, label: &'static str) -> Disk {
+    Disk { fat: LINUX_FILES, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
 }
 
 /// A FAT32 virtio disk of `kib` KiB, labelled `label`, holding the test
@@ -5717,6 +5732,11 @@ fn make_disks(
         }
         if disk.fat == GO_FILES {
             cases::go_runtime::make_disk(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == LINUX_FILES {
+            cases::linux_programs::make_disk(ctx, disk, &image.path)?;
             made.push(image);
             continue;
         }

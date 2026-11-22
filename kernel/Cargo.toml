@@ -79,6 +79,7 @@ members = [
     "lib/iopt",
     "lib/kdb",
     "lib/klog",
+    "lib/linux",
     "lib/lockdep",
     "lib/mca",
     "lib/ksyms",

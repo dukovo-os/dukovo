@@ -54,6 +54,7 @@ mod firewall;
 pub mod init;
 mod ipc;
 pub mod launch;
+mod linux;
 mod loader;
 pub(crate) mod memory;
 mod methods;
@@ -128,6 +129,8 @@ pub struct UserThread {
     /// Bytes charged to its process's account that the files it opens are
     /// charged from (ADR 0405), given back when it ends.
     pub(crate) stock: account::Stock,
+    /// Its Linux words, for a thread of a Linux program (ADR 0611).
+    pub(crate) linux: linux::LinuxThread,
 }
 
 impl Drop for UserThread {
@@ -220,6 +223,9 @@ fn thread_main(_: usize) {
     wait::wait_until(key, "starting", || {
         user.ready.load(Ordering::Acquire) || thread.should_stop()
     });
+    // A Linux thread's CLONE_CHILD_SETTID word (ADR 0611), written while
+    // a fault on it can still be taken.
+    linux::starting(&thread, &user);
     // The last look before user mode is made with interrupts masked, and
     // they stay masked until the thread is there: a stop or a signal sent
     // after the look interrupts this CPU in user mode (`sched::interrupt`),
@@ -265,11 +271,19 @@ fn exit_current(user: UserRef, status: u64, how: Ending) -> ! {
 /// radix-process(2)'s `exit_thread_waking` does: once its process no
 /// longer has it, the word at `word` becomes 1 and its waiters wake.
 fn exit_waking(user: UserRef, status: u64, word: u64) -> ! {
-    end_thread(user, status, Ending::Exit, Some(word))
+    end_thread(user, status, Ending::Exit, Some((word, 1)))
 }
 
-/// [`exit_current`], and then, for `exit_waking`, the joiner's word.
-fn end_thread(user: UserRef, status: u64, how: Ending, word: Option<u64>) -> ! {
+/// Ends the running thread of a Linux program as Linux's `exit` does for
+/// a thread with a clear-child-tid word (ADR 0611): once its process no
+/// longer has it, the word at `word` becomes 0 and its waiters wake.
+fn exit_clearing(user: UserRef, status: u64, word: u64) -> ! {
+    end_thread(user, status, Ending::Exit, Some((word, 0)))
+}
+
+/// [`exit_current`], and then, for [`exit_waking`] and [`exit_clearing`],
+/// the joiner's word and what it becomes.
+fn end_thread(user: UserRef, status: u64, how: Ending, word: Option<(u64, u32)>) -> ! {
     ipc::exiting(&user);
     // What its stock holds goes back now, not when the last reference to
     // its side goes.
@@ -277,27 +291,30 @@ fn end_thread(user: UserRef, status: u64, how: Ending, word: Option<u64>) -> ! {
     let process = user.process.clone();
     // The thread's own space: the process lets go of its hold on it when
     // it ends, which this thread's leaving may make it do.
-    let joiner = word.map(|word| (word, user.space.clone()));
+    let joiner = word.map(|(word, value)| (word, value, user.space.clone()));
     drop(user);
     if let Some(me) = sched::current() {
         process.thread_exited(&me, status, how);
     }
     drop(process);
-    if let Some((word, space)) = joiner {
-        wake_joiner(&space, word);
+    if let Some((word, value, space)) = joiner {
+        wake_joiner(&space, word, value);
         // Dropped here: `sched::exit` does not return.
         drop(space);
     }
     sched::exit()
 }
 
-/// Sets the 32-bit word at `word` in the running thread's memory to 1 and
-/// wakes every thread waiting on it. The word a C library's join waits on
-/// starts at 0, so only its first byte changes, and a reader sees 0 or 1
-/// however the copy goes. A word out of line with 4 bytes, or one the
-/// thread cannot write, is left alone, and wakes nobody.
-fn wake_joiner(space: &SpaceObject, word: u64) {
-    if word.is_multiple_of(4) && Arch::copy_to_user(word, &1u32.to_le_bytes()) {
+/// Sets the 32-bit word at `word` in the running thread's memory to
+/// `value` and wakes every thread waiting on it. The word Dukovo's C
+/// library's join waits on starts at 0 and becomes 1, so only its first
+/// byte changes, and a reader sees 0 or 1 however the copy goes; a Linux
+/// C library's holds the thread's number and becomes 0, and a reader that
+/// sees part of the change waits on a value the word no longer has, which
+/// returns at once. A word out of line with 4 bytes, or one the thread
+/// cannot write, is left alone, and wakes nobody.
+fn wake_joiner(space: &SpaceObject, word: u64, value: u32) {
+    if word.is_multiple_of(4) && Arch::copy_to_user(word, &value.to_le_bytes()) {
         // An aligned word cannot fail.
         let _ = memory::futex::wake(space, word, u32::MAX);
     }

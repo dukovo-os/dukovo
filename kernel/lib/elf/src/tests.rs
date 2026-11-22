@@ -448,8 +448,81 @@ fn read_program_finds_headers_a_segment_loads() {
     assert_eq!(program.relocations(table), Ok(read(&bytes).unwrap().relocations));
 }
 
+/// A note as a linker writes it: name with its NUL and description,
+/// each padded to `align`.
+fn note(name: &[u8], kind: u32, desc: &[u8], align: usize) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(name.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&(desc.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&kind.to_le_bytes());
+    bytes.extend_from_slice(name);
+    bytes.resize(bytes.len().next_multiple_of(align), 0);
+    bytes.extend_from_slice(desc);
+    bytes.resize(bytes.len().next_multiple_of(align), 0);
+    bytes
+}
+
+fn dukovo_note(align: usize) -> Vec<u8> {
+    note(DUKOVO_NOTE_NAME, NT_DUKOVO_ABI, &DUKOVO_ABI_VERSION.to_le_bytes(), align)
+}
+
+#[test]
+fn dukovo_note_marks_a_program() {
+    assert!(marks_dukovo(&dukovo_note(4), 4));
+    assert!(marks_dukovo(&dukovo_note(8), 8));
+    // After a build ID, as a linker that merges note sections puts it.
+    let mut both = note(b"GNU\0", 3, &[0xab; 20], 4);
+    both.extend_from_slice(&dukovo_note(4));
+    assert!(marks_dukovo(&both, 4));
+}
+
+#[test]
+fn other_notes_do_not_mark_a_program() {
+    assert!(!marks_dukovo(&[], 4));
+    assert!(!marks_dukovo(&note(b"GNU\0", 1, &[0, 0, 0, 0, 3, 2, 0, 0], 4), 4));
+    // The name without its NUL, another type, another version, a longer
+    // description.
+    assert!(!marks_dukovo(&note(b"Dukovo", NT_DUKOVO_ABI, &1u32.to_le_bytes(), 4), 4));
+    assert!(!marks_dukovo(&note(DUKOVO_NOTE_NAME, 2, &1u32.to_le_bytes(), 4), 4));
+    assert!(!marks_dukovo(&note(DUKOVO_NOTE_NAME, NT_DUKOVO_ABI, &2u32.to_le_bytes(), 4), 4));
+    assert!(!marks_dukovo(&note(DUKOVO_NOTE_NAME, NT_DUKOVO_ABI, &[1, 0, 0, 0, 0, 0, 0, 0], 4), 4));
+    // Cut off before its description ends.
+    let note = dukovo_note(4);
+    assert!(!marks_dukovo(&note[..note.len() - 1], 4));
+    // Read with the wrong padding, the description is not where it is.
+    assert!(!marks_dukovo(&dukovo_note(8), 4));
+}
+
+#[test]
+fn read_program_finds_note_segments() {
+    let mut head = dynamic_program((0x300, 20));
+    // The PT_TLS header becomes a note segment aligned to 8.
+    let at = HEADER_SIZE + 4 * PHDR_SIZE;
+    head[at..at + 4].copy_from_slice(&PT_NOTE.to_le_bytes());
+    head[at + 48..at + 56].copy_from_slice(&8u64.to_le_bytes());
+    let program = read_program(&head, 0x2100).unwrap();
+    let notes: Vec<_> = program.notes().copied().collect();
+    assert_eq!(notes, [NoteSegment { offset: 0x2000, size: 0x10, align: 8 }]);
+    // A note segment past the end of the file.
+    assert_eq!(read_program(&head, 0x2008), Err(ElfError::Truncated));
+}
+
+#[test]
+fn the_interpreter_or_the_note_makes_a_program_dukovo_s() {
+    assert_eq!(Abi::of(Some(DUKOVO_LOADER), false), Abi::Dukovo);
+    assert_eq!(Abi::of(None, true), Abi::Dukovo);
+    assert_eq!(Abi::of(Some(b"/lib64/ld-linux-x86-64.so.2"), true), Abi::Dukovo);
+    assert_eq!(Abi::of(Some(b"/lib64/ld-linux-x86-64.so.2"), false), Abi::Linux);
+    assert_eq!(Abi::of(None, false), Abi::Linux);
+}
+
 proptest! {
     /// Garbage gives an error, never a panic.
+    #[test]
+    fn notes_never_panic(bytes in proptest::collection::vec(any::<u8>(), 0..256), eight: bool) {
+        let _ = marks_dukovo(&bytes, if eight { 8 } else { 4 });
+    }
+
     #[test]
     fn garbage_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..512)) {
         if let Ok(image) = read(&bytes) {
