@@ -226,6 +226,12 @@ small RISC-V program on QEMU's `virt` machine (it needs QEMU's RISC-V
 emulator, the `qemu-system-misc` package), so that nothing x86-only slips
 into the kernel's common code; CI runs that too.
 
+`./ob test go-suite` runs Go's own tests of its standard library on
+Dukovo, with the `go` command of the Go bundle, in a machine larger than
+the boot tests': about 10 minutes with KVM. `./ob test` leaves it out, and
+CI runs it for changes to Go (ADR 0358); its log is
+`out/test/go-suite.log`.
+
 Tests that pull cables, cut power or need real machines are the Dukovo
 Lab's: `./ob lab run --all` runs them on QEMU (see [Lab tests](lab.md)).
 

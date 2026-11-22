@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! How long an idle CPU polls before it halts, under a hypervisor.
+//! How long an idle CPU polls before it halts.
 //!
 //! A virtual CPU that halts exits to the hypervisor, and waking it takes
 //! an interprocessor interrupt, which is another exit for the CPU that
@@ -15,10 +15,10 @@
 //!
 //! - the limit starts at 0, so a CPU that is idle for long never polls;
 //! - an idle period that another CPU's wake-up ended after the limit but
-//!   within [`MAX_POLL_NS`] means polling longer would have caught it, so
-//!   the limit doubles (to at least [`GROW_START_NS`], at most
-//!   [`MAX_POLL_NS`]);
-//! - an idle period longer than [`MAX_POLL_NS`] means polling only wasted
+//!   within the maximum ([`VIRTUAL`]'s 200 µs) means polling longer would
+//!   have caught it, so the limit doubles (to at least the first step, at
+//!   most the maximum);
+//! - an idle period longer than the maximum means polling only wasted
 //!   time, so the limit halves.
 //!
 //! Unlike Linux's governor, it learns only from wake-ups that other CPUs
@@ -29,31 +29,68 @@
 //! interrupt ended halves the limit too, and a CPU that waits only for
 //! its devices halts at once, as Linux's do (ADR 0116).
 //!
-//! A CPU with MWAIT waits on the word in hardware and needs none of this.
+//! A CPU that waits in hardware, on bare metal or with MWAIT, wakes in a
+//! microsecond or two rather than several, but a thread that answers
+//! another across CPUs in a few microseconds still waits that long twice
+//! a round trip. So it polls too, by the same rule, within the bounds of
+//! [`HARDWARE`]: a few microseconds, as Linux polls before C1 when its
+//! governor expects the CPU to be woken that soon (ADR 0551).
 
-/// The longest a CPU polls, and the idle period beyond which polling does
-/// not pay.
+/// How far a CPU's limit may grow, and the first step it grows to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Bounds {
+    /// The longest the CPU polls, and the idle period beyond which polling
+    /// does not pay.
+    pub max_ns: u64,
+    /// What the limit grows to first.
+    pub grow_ns: u64,
+}
+
+/// A virtual CPU that halts: Linux's cpuidle-haltpoll defaults.
+pub const VIRTUAL: Bounds = Bounds { max_ns: MAX_POLL_NS, grow_ns: GROW_START_NS };
+
+/// A CPU that waits in hardware: a few times the microsecond or two that
+/// waking from MWAIT's or HLT's lightest state takes.
+pub const HARDWARE: Bounds = Bounds { max_ns: 8_000, grow_ns: 2_000 };
+
+/// The longest a virtual CPU polls, and the idle period beyond which
+/// polling does not pay.
 pub const MAX_POLL_NS: u64 = 200_000;
 
-/// What the limit grows to first.
+/// What a virtual CPU's limit grows to first.
 pub const GROW_START_NS: u64 = 50_000;
 
 /// One CPU's polling limit.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HaltPoll {
     limit_ns: u64,
+    bounds: Bounds,
+}
+
+impl Default for HaltPoll {
+    fn default() -> HaltPoll {
+        HaltPoll::new()
+    }
 }
 
 impl HaltPoll {
-    /// A limit of 0: no polling until an idle period shows it would help.
+    /// A limit of 0 within [`VIRTUAL`]'s bounds: no polling until an idle
+    /// period shows it would help.
     pub const fn new() -> HaltPoll {
-        HaltPoll { limit_ns: 0 }
+        HaltPoll::within(VIRTUAL)
     }
 
-    /// A limit learnt before, kept elsewhere: a disk's lane keeps its own
-    /// in an atomic, as its waits on any CPU teach it.
+    /// A limit of 0 within `bounds`.
+    pub const fn within(bounds: Bounds) -> HaltPoll {
+        HaltPoll { limit_ns: 0, bounds }
+    }
+
+    /// A limit learnt before, kept elsewhere, within [`VIRTUAL`]'s bounds:
+    /// a disk's lane keeps its own in an atomic, as its waits on any CPU
+    /// teach it.
     pub const fn with_limit(limit_ns: u64) -> HaltPoll {
-        HaltPoll { limit_ns: if limit_ns > MAX_POLL_NS { MAX_POLL_NS } else { limit_ns } }
+        let limit_ns = if limit_ns > MAX_POLL_NS { MAX_POLL_NS } else { limit_ns };
+        HaltPoll { limit_ns, bounds: VIRTUAL }
     }
 
     /// How long to poll before halting.
@@ -64,10 +101,11 @@ impl HaltPoll {
     /// Learns from an idle period that lasted `idle_ns`, polling and halted
     /// together, and that a wake-up from another CPU ended if `called`.
     pub fn record(&mut self, idle_ns: u64, called: bool) {
-        if idle_ns > MAX_POLL_NS || !called {
+        let Bounds { max_ns, grow_ns } = self.bounds;
+        if idle_ns > max_ns || !called {
             self.limit_ns /= 2;
         } else if idle_ns > self.limit_ns {
-            self.limit_ns = (self.limit_ns * 2).clamp(GROW_START_NS, MAX_POLL_NS);
+            self.limit_ns = (self.limit_ns * 2).clamp(grow_ns, max_ns);
         }
     }
 }
@@ -130,6 +168,94 @@ mod tests {
                 assert_eq!(after, before);
             }
         }
+    }
+
+    #[test]
+    fn a_cpu_that_waits_in_hardware_polls_a_few_microseconds() {
+        let mut poll = HaltPoll::within(HARDWARE);
+        assert_eq!(poll.limit_ns(), 0);
+        // Woken soon after halting: poll next time.
+        poll.record(1_000, true);
+        assert_eq!(poll.limit_ns(), HARDWARE.grow_ns);
+        assert_eq!(poll.limit_ns(), 2_000);
+        // Caught while polling: nothing to learn.
+        poll.record(1_999, true);
+        assert_eq!(poll.limit_ns(), 2_000);
+        // Woken after the limit, within the maximum: double it.
+        poll.record(2_001, true);
+        assert_eq!(poll.limit_ns(), 4_000);
+        poll.record(4_001, true);
+        assert_eq!(poll.limit_ns(), 8_000);
+        poll.record(HARDWARE.max_ns, true);
+        assert_eq!(poll.limit_ns(), 8_000);
+        // Idle for longer than the maximum: polling was wasted.
+        poll.record(8_001, true);
+        assert_eq!(poll.limit_ns(), 4_000);
+        poll.record(u64::MAX, true);
+        assert_eq!(poll.limit_ns(), 2_000);
+        for _ in 0..20 {
+            poll.record(u64::MAX, true);
+        }
+        assert_eq!(poll.limit_ns(), 0);
+    }
+
+    #[test]
+    fn a_hardware_cpu_its_own_interrupts_wake_stops_polling() {
+        let mut poll = HaltPoll::within(HARDWARE);
+        poll.record(3_000, true);
+        poll.record(3_000, true);
+        assert_eq!(poll.limit_ns(), 4_000);
+        poll.record(3_000, false);
+        assert_eq!(poll.limit_ns(), 2_000);
+        poll.record(500, false);
+        assert_eq!(poll.limit_ns(), 1_000);
+        for _ in 0..20 {
+            poll.record(500, false);
+        }
+        assert_eq!(poll.limit_ns(), 0);
+        // Another CPU's wake-up starts it again.
+        poll.record(500, true);
+        assert_eq!(poll.limit_ns(), HARDWARE.grow_ns);
+    }
+
+    #[test]
+    fn the_hardware_limit_stays_within_its_bounds() {
+        let mut poll = HaltPoll::within(HARDWARE);
+        let mut seed = 0x0fed_cba9_8765_4321u64;
+        for _ in 0..100_000 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let before = poll.limit_ns();
+            let idle = seed % (3 * HARDWARE.max_ns);
+            let called = seed & (1 << 40) != 0;
+            poll.record(idle, called);
+            let after = poll.limit_ns();
+            assert!(after <= HARDWARE.max_ns);
+            if idle > HARDWARE.max_ns || !called {
+                assert_eq!(after, before / 2);
+            } else if idle > before {
+                assert!(after > before || after == HARDWARE.max_ns);
+                assert!(after >= HARDWARE.grow_ns);
+            } else {
+                assert_eq!(after, before);
+            }
+        }
+    }
+
+    #[test]
+    fn the_bounds_are_the_ones_given() {
+        assert_eq!(HaltPoll::new(), HaltPoll::within(VIRTUAL));
+        assert_eq!(HaltPoll::default(), HaltPoll::within(VIRTUAL));
+        assert_eq!(HaltPoll::within(HARDWARE).limit_ns(), 0);
+        assert_eq!(VIRTUAL, Bounds { max_ns: 200_000, grow_ns: 50_000 });
+        assert_eq!(HARDWARE, Bounds { max_ns: 8_000, grow_ns: 2_000 });
+        // A limit kept elsewhere stays virtual: it grows by the virtual
+        // step, not the hardware one.
+        let mut poll = HaltPoll::with_limit(0);
+        poll.record(1_000, true);
+        assert_eq!(poll.limit_ns(), VIRTUAL.grow_ns);
+        assert_eq!(HaltPoll::with_limit(HARDWARE.max_ns + 1).limit_ns(), HARDWARE.max_ns + 1);
     }
 
     #[test]

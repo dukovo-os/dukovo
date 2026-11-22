@@ -186,12 +186,11 @@ with interrupts in the state the code expects. A wake-up that should
 preempt a thread on another CPU kicks it with a reschedule IPI, or,
 when that CPU is idle in MWAIT, with a write to the line it monitors. An
 idle CPU says it polls that line only when it waits with MWAIT, or while
-it polls `need_resched` in a virtual machine (below); one halted with
-HLT always gets the IPI.
+it polls `need_resched` (below); one halted with HLT always gets the IPI.
 
-**Idle in a virtual machine** (ADR 0037). Under a hypervisor, halting is
-an exit to the host and so is the IPI that ends the halt. A virtual CPU
-without MWAIT therefore first polls `need_resched`, with interrupts on
+**Idle polling** (ADR 0037, ADR 0551). Under a hypervisor, halting is
+an exit to the host and so is the IPI that ends the halt. An idle CPU
+therefore first polls `need_resched`, with interrupts on
 and preemption off, and says so in `polling`, so that a waker writes
 the flag instead of sending an IPI. How long it polls adapts as Linux's
 cpuidle-haltpoll governor does (`radix_sched::haltpoll`): the limit
@@ -203,6 +202,12 @@ send (ADR 0116): a waker on another CPU marks the CPU it wakes
 or the timer's, halves the limit, since that interrupt comes whether the
 CPU polls or halts, and the hypervisor delivers it to a halted CPU
 sooner. So a CPU whose threads wait only for disks halts at once.
+A CPU that waits in hardware, on bare metal or with MWAIT, polls by the
+same rule within 8 µs, the limit growing from 2 µs (ADR 0551): leaving
+MWAIT's lightest state costs a microsecond or two, which a thread that
+answers another across CPUs in a few microseconds would pay twice a
+round trip. Linux polls before C1 for the same reason when its governor
+expects a wake-up that soon.
 A halt runs with preemption off too, so that the interrupt that ends it
 leaves the switch to the idle loop, which ends the idle period first: a
 switch on the interrupt's way out left the period open while other
@@ -738,5 +743,6 @@ picking, `AllFinish` fails.
   it by default, so the boot tests exercise HLT; the first boot on real
   hardware is its first run.
 - Stopping is cooperative for kernel threads. A program's thread (Phase
-  5) stops on its next way back to user mode, at the latest after the
-  next tick, or when a wait it is in ends.
+  5) stops on its next way back to user mode, or when a wait it is in
+  ends; one running on another CPU is sent a reschedule IPI to bring it
+  there (`sched::interrupt`).

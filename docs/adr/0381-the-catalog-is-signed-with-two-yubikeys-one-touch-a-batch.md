@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0381. The catalog is signed with two YubiKeys, one touch a batch
 
-- Status: Accepted
+- Status: Accepted; a batch is signed from a plan that was read, and its pull request opens itself, since [0594](0594-the-catalog-is-signed-from-a-plan-that-was-read-and-its-pull-request-opens-itself.md); a new build of a version is its next build, `_N`, since [0595](0595-a-rebuild-ships-as-its-versions-next-build.md)
 - Date: 2026-11-03
 
 ## Context

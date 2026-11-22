@@ -81,7 +81,7 @@ use radix_abi::Status;
 use radix_abi::errors::Kernel;
 use radix_abi::startup;
 use radix_cap::{CapError, SpaceId};
-use radix_hal::{Cpu, CpuLocal, UserFault, UserFaultKind, UserMode};
+use radix_hal::{Cpu, CpuLocal, InterruptController, Ipi, UserFault, UserFaultKind, UserMode};
 use radix_klog::{info, warn};
 use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_sync::{Mutex, SpinLock};
@@ -217,10 +217,23 @@ fn thread_main(_: usize) {
     wait::wait_until(key, "starting", || {
         user.ready.load(Ordering::Acquire) || thread.should_stop()
     });
+    // The last look before user mode is made with interrupts masked, and
+    // they stay masked until the thread is there: a stop or a signal sent
+    // after the look interrupts this CPU in user mode (`sched::interrupt`),
+    // where the way back takes it, as it does after a system call.
+    Arch::disable_interrupts();
     if thread.should_stop() {
+        Arch::enable_interrupts();
         note_domain_stop(&thread, &user);
         drop(thread);
         exit_current(user, EXIT_STOPPED, Ending::Stop);
+    }
+    // A thread that has not been in user mode has no frame for a handler
+    // yet: a signal sent to it before the look is taken on its first way
+    // back, which an interrupt of this CPU to itself brings before its
+    // first instruction, as Linux takes a new thread's signals.
+    if thread.is_signalled() {
+        Arch::send_ipi(Arch::current_cpu(), Ipi::Reschedule);
     }
     let start = user.start;
     // Nothing may stay on this stack: user mode abandons it.
@@ -242,17 +255,49 @@ fn set_ready(user: &UserThread) {
 /// ended `how`; its process hears of it (`ProcessObject::thread_exited`),
 /// and may end with it.
 fn exit_current(user: UserRef, status: u64, how: Ending) -> ! {
+    end_thread(user, status, how, None)
+}
+
+/// Ends the running program thread with exit status `status`, as
+/// radix-process(2)'s `exit_thread_waking` does: once its process no
+/// longer has it, the word at `word` becomes 1 and its waiters wake.
+fn exit_waking(user: UserRef, status: u64, word: u64) -> ! {
+    end_thread(user, status, Ending::Exit, Some(word))
+}
+
+/// [`exit_current`], and then, for `exit_waking`, the joiner's word.
+fn end_thread(user: UserRef, status: u64, how: Ending, word: Option<u64>) -> ! {
     ipc::exiting(&user);
     // What its stock holds goes back now, not when the last reference to
     // its side goes.
     user.stock.drain(user.process.account());
     let process = user.process.clone();
+    // The thread's own space: the process lets go of its hold on it when
+    // it ends, which this thread's leaving may make it do.
+    let joiner = word.map(|word| (word, user.space.clone()));
     drop(user);
     if let Some(me) = sched::current() {
         process.thread_exited(&me, status, how);
     }
     drop(process);
+    if let Some((word, space)) = joiner {
+        wake_joiner(&space, word);
+        // Dropped here: `sched::exit` does not return.
+        drop(space);
+    }
     sched::exit()
+}
+
+/// Sets the 32-bit word at `word` in the running thread's memory to 1 and
+/// wakes every thread waiting on it. The word a C library's join waits on
+/// starts at 0, so only its first byte changes, and a reader sees 0 or 1
+/// however the copy goes. A word out of line with 4 bytes, or one the
+/// thread cannot write, is left alone, and wakes nobody.
+fn wake_joiner(space: &SpaceObject, word: u64) {
+    if word.is_multiple_of(4) && Arch::copy_to_user(word, &1u32.to_le_bytes()) {
+        // An aligned word cannot fail.
+        let _ = memory::futex::wake(space, word, u32::MAX);
+    }
 }
 
 /// A fault in user mode: a page the kernel makes on demand (anonymous
@@ -373,8 +418,8 @@ pub extern "Rust" fn radix_user_return() {
 }
 
 /// On the way back to user mode, from a system call, an interrupt or a
-/// fault: a thread asked to stop ends here, and one with signals to take
-/// takes them (`posix::signal::deliver`).
+/// fault, with interrupts masked: a thread asked to stop ends here, and
+/// one with signals to take takes them (`posix::signal::deliver`).
 #[inline(always)]
 fn on_return() {
     let Some(me) = sched::running() else { return };
@@ -385,6 +430,16 @@ fn on_return() {
 
 /// [`on_return`] for a thread with a signal to take or a stop to make:
 /// kept out of line, so that every other return skips its frame.
+///
+/// It takes them with interrupts on, then looks again with interrupts
+/// masked, as they stay until user mode: a stop or a signal sent after
+/// that look interrupts this CPU in user mode (`sched::interrupt`), where
+/// the next way back takes it, but one sent while interrupts were on may
+/// have interrupted this CPU here, to no effect. One handler's frame is
+/// made on each way back; a signal still to take after it is taken on the
+/// handler's own way back, which an interrupt of this CPU to itself brings
+/// before the handler's first instruction, so the handlers nest as
+/// Linux's do.
 #[cold]
 #[inline(never)]
 fn returning_interrupted(me: &ThreadRef) {
@@ -395,10 +450,21 @@ fn returning_interrupted(me: &ThreadRef) {
         note_domain_stop(me, user);
         exit_current(user.clone(), EXIT_STOPPED, Ending::Stop);
     }
-    posix::signal::deliver(me, user);
-    if me.should_stop() {
-        note_domain_stop(me, user);
-        exit_current(user.clone(), EXIT_STOPPED, Ending::Stop);
+    loop {
+        let handler = posix::signal::deliver(me, user);
+        if me.should_stop() {
+            note_domain_stop(me, user);
+            exit_current(user.clone(), EXIT_STOPPED, Ending::Stop);
+        }
+        Arch::disable_interrupts();
+        if !me.should_stop() && !me.is_signalled() {
+            return;
+        }
+        if !me.should_stop() && handler {
+            Arch::send_ipi(Arch::current_cpu(), Ipi::Reschedule);
+            return;
+        }
+        Arch::enable_interrupts();
     }
 }
 

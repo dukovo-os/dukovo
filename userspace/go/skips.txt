@@ -9,6 +9,11 @@
 # package's lines into the -test.skip pattern of its test binary. A line
 # with no reason is an error: nothing is skipped because it fails.
 #
+# The go-suite run (ob test go-suite) reads this file too, for every package
+# of the standard library that has tests, with go's own -skip. The packages
+# the boot test runs are skipped there as here; a package written as
+# suite:path is one only the go-suite run skips tests of.
+#
 # package test reason
 runtime TestTracebackSystem reads its own source at the path a traceback names, which a test binary built by ob, with -trimpath, does not have on the test disk
 os TestGetwdDeep the C library joins a relative path to the working folder it keeps, so a name in a folder deeper than 4096 bytes is too long (docs/deferred.md)

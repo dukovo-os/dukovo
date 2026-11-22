@@ -74,6 +74,8 @@ pub mod quirks;
 #[cfg(test)]
 mod tests;
 
+use core::cell::Cell;
+
 use radix_hw::{Dma, Mmio, device_barrier};
 
 pub use card::{Card, Cid, Csd, Family, Speed};
@@ -394,6 +396,11 @@ pub struct Slot {
     flight: Option<Flight>,
     /// A transfer failed: the card is stopped and the lines reset first.
     stuck: bool,
+    /// The DMA select is in the controller. It is the same for every
+    /// request, so [`Slot::issue`] writes it again only after something
+    /// that may have lost or changed it (a reset, or another write of Host
+    /// Control).
+    dma_set: Cell<bool>,
     /// The card runs in a mode that was tuned.
     tuned: bool,
     /// A transfer in that mode came back garbled: the slot is tuned again
@@ -554,6 +561,7 @@ impl Slot {
         regs.write16(reg::NORMAL_SIGNAL_ENABLE, 0);
         regs.write16(reg::ERROR_SIGNAL_ENABLE, 0);
         regs.write8(reg::TIMEOUT_CONTROL, 0x0e);
+        Self::clear_status(&regs);
         Ok(Slot {
             regs,
             version,
@@ -565,6 +573,7 @@ impl Slot {
             card: None,
             flight: None,
             stuck: false,
+            dma_set: Cell::new(false),
             tuned: false,
             retune: false,
         })
@@ -661,9 +670,23 @@ impl Slot {
         Ok(actual)
     }
 
+    /// Clears the status of a command or transfer, and every error.
+    ///
+    /// [`Slot::issue`] does not clear them before a request, to save two
+    /// register writes of each: whatever ends or abandons a request leaves
+    /// them clear instead, so that none is mistaken for the next
+    /// request's. The paths that wait for a status without a request's
+    /// poll (`command`, `read_block`, `tune`) clear before they send as
+    /// well, as a controller may set a bit after a reset.
+    fn clear_status(regs: &Mmio) {
+        regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
+        regs.write16(reg::ERROR_STATUS, 0xffff);
+    }
+
     /// Resets the command line, and the data line with `data`.
     fn reset_lines(&self, data: bool, delay: &mut dyn FnMut(u32)) {
         let bits = if data { 6 } else { 2 };
+        self.dma_set.set(false);
         self.regs.write8(reg::SOFTWARE_RESET, bits);
         wait(delay, 100_000, || self.regs.read8(reg::SOFTWARE_RESET) & bits == 0);
     }
@@ -683,20 +706,19 @@ impl Slot {
         if !wait(delay, 10_000, || regs.read32(reg::PRESENT_STATE) & busy == 0) {
             return Err(Error::Timeout);
         }
-        regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
-        regs.write16(reg::ERROR_STATUS, 0xffff);
+        Self::clear_status(regs);
         regs.write32(reg::ARGUMENT, argument);
         regs.write16(reg::TRANSFER_MODE, 0);
         regs.write16(reg::COMMAND, u16::from(index) << 8 | response.flags());
         let done = status::COMMAND_COMPLETE | status::ERROR;
         if !wait(delay, 1_000_000, || regs.read16(reg::NORMAL_STATUS) & done != 0) {
             self.reset_lines(true, delay);
+            Self::clear_status(&self.regs);
             return Err(Error::Timeout);
         }
         if regs.read16(reg::NORMAL_STATUS) & status::ERROR != 0 {
             let error = regs.read16(reg::ERROR_STATUS);
-            regs.write16(reg::ERROR_STATUS, 0xffff);
-            regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
+            Self::clear_status(regs);
             self.reset_lines(true, delay);
             return Err(Error::Command(error));
         }
@@ -704,9 +726,13 @@ impl Slot {
         if response == Response::R1b {
             let done = status::TRANSFER_COMPLETE | status::ERROR;
             if !wait(delay, 1_000_000, || regs.read16(reg::NORMAL_STATUS) & done != 0) {
+                self.reset_lines(true, delay);
+                Self::clear_status(&self.regs);
                 return Err(Error::Timeout);
             }
-            regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
+            // An error in the busy wait too, which no request before
+            // the next may leave set.
+            Self::clear_status(regs);
         }
         let long = core::array::from_fn(|i| regs.read32(reg::RESPONSE + 4 * i));
         if matches!(response, Response::R1 | Response::R1b)
@@ -754,6 +780,7 @@ impl Slot {
     /// Turns the card's power and clock off, and its signaling back to
     /// 3.3 V.
     fn power_off(&mut self, delay: &mut dyn FnMut(u32)) {
+        self.dma_set.set(false);
         self.regs.write16(reg::CLOCK_CONTROL, 0);
         if self.version >= version::V3 {
             self.regs.write16(reg::HOST_CONTROL2, 0);
@@ -766,6 +793,7 @@ impl Slot {
     /// if it agreed and then did not.
     fn set_up(&mut self, uhs: bool, delay: &mut dyn FnMut(u32)) -> Result<Option<Card>, Error> {
         self.card = None;
+        self.dma_set.set(false);
         self.tuned = false;
         self.retune = false;
         // The highest voltage it gives: 3.3, 3.0 or 1.8 V.
@@ -786,6 +814,7 @@ impl Slot {
         }
         self.regs.write8(reg::POWER_CONTROL, volts << 1 | 1);
         delay(10_000);
+        self.dma_set.set(false);
         self.regs.write8(reg::HOST_CONTROL, 0);
         self.set_clock(400, delay)?;
         // 74 clocks before the first command.
@@ -835,6 +864,7 @@ impl Slot {
         let khz = self.set_clock(Speed::Default.khz(), delay)?;
         // Every SD memory card has a four-bit bus.
         self.app_command(rca, 6, 2, Response::R1, delay)?;
+        self.dma_set.set(false);
         self.regs.write8(reg::HOST_CONTROL, host::WIDTH_4);
         if !high_capacity {
             self.command(16, BLOCK, Response::R1, delay)?;
@@ -904,6 +934,7 @@ impl Slot {
                 return Ok(None);
             }
             let control = self.regs.read8(reg::HOST_CONTROL);
+            self.dma_set.set(false);
             self.regs.write8(reg::HOST_CONTROL, control | host::HIGH_SPEED);
             let khz = self.set_clock(Speed::High.khz(), delay)?;
             return Ok(Some((Speed::High, khz)));
@@ -998,6 +1029,7 @@ impl Slot {
         regs.write16(reg::HOST_CONTROL2, control2 | mode);
         let control = regs.read8(reg::HOST_CONTROL) & !host::HIGH_SPEED;
         let fast = if mode == 0 { 0 } else { host::HIGH_SPEED };
+        self.dma_set.set(false);
         regs.write8(reg::HOST_CONTROL, control | fast);
         self.set_clock(speed.khz(), delay)
     }
@@ -1015,8 +1047,7 @@ impl Slot {
             if !wait(delay, 10_000, || regs.read32(reg::PRESENT_STATE) & busy == 0) {
                 break;
             }
-            regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
-            regs.write16(reg::ERROR_STATUS, 0xffff);
+            Self::clear_status(regs);
             regs.write16(reg::BLOCK_SIZE, size);
             regs.write16(reg::BLOCK_COUNT, 1);
             regs.write32(reg::ARGUMENT, 0);
@@ -1024,8 +1055,7 @@ impl Slot {
             regs.write16(reg::COMMAND, command << 8 | Response::R1.flags() | DATA_PRESENT);
             let done = status::BUFFER_READ_READY | status::ERROR;
             let came = wait(delay, 10_000, || regs.read16(reg::NORMAL_STATUS) & done != 0);
-            regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
-            regs.write16(reg::ERROR_STATUS, 0xffff);
+            Self::clear_status(regs);
             if !came {
                 self.reset_lines(true, delay);
             }
@@ -1096,8 +1126,7 @@ impl Slot {
         if !wait(delay, 10_000, || regs.read32(reg::PRESENT_STATE) & busy == 0) {
             return Err(Error::Timeout);
         }
-        regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
-        regs.write16(reg::ERROR_STATUS, 0xffff);
+        Self::clear_status(regs);
         regs.write16(reg::BLOCK_SIZE, out.len() as u16);
         regs.write16(reg::BLOCK_COUNT, 1);
         regs.write32(reg::ARGUMENT, argument);
@@ -1106,12 +1135,12 @@ impl Slot {
         let done = status::BUFFER_READ_READY | status::ERROR;
         if !wait(delay, 1_000_000, || regs.read16(reg::NORMAL_STATUS) & done != 0) {
             self.reset_lines(true, delay);
+            Self::clear_status(&self.regs);
             return Err(Error::Timeout);
         }
         if regs.read16(reg::NORMAL_STATUS) & status::ERROR != 0 {
             let error = regs.read16(reg::ERROR_STATUS);
-            regs.write16(reg::ERROR_STATUS, 0xffff);
-            regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
+            Self::clear_status(regs);
             self.reset_lines(true, delay);
             return Err(Error::Command(error));
         }
@@ -1122,8 +1151,7 @@ impl Slot {
         }
         let done = status::TRANSFER_COMPLETE | status::ERROR;
         let ended = wait(delay, 1_000_000, || regs.read16(reg::NORMAL_STATUS) & done != 0);
-        regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
-        regs.write16(reg::ERROR_STATUS, 0xffff);
+        Self::clear_status(regs);
         let card_status = regs.read32(reg::RESPONSE);
         if !ended {
             self.reset_lines(true, delay);
@@ -1246,26 +1274,38 @@ impl Slot {
         // The DMA select: SDMA, 32-bit ADMA2 or 64-bit ADMA2. SDMA stops
         // at each 512 KiB boundary of memory it crosses (Block Size's
         // boundary 7), for the address to be written again.
-        let (dma, boundary) = match sdma {
-            Some(address) => {
-                regs.write32(reg::SDMA_ADDRESS, address);
-                (0b00 << 3, 7 << 12)
-            }
-            None => {
-                let table = self.table.phys();
-                regs.write32(reg::ADMA_ADDRESS, table as u32);
+        let boundary = if sdma.is_some() { 7 << 12 } else { 0 };
+        if let Some(address) = sdma {
+            regs.write32(reg::SDMA_ADDRESS, address);
+        }
+        // The ADMA System Address register is where the engine is: it
+        // moves on through the descriptors, so the table's address is
+        // written for each request.
+        if sdma.is_none() {
+            let table = self.table.phys();
+            regs.write32(reg::ADMA_ADDRESS, table as u32);
+            if self.adma64 {
                 regs.write32(reg::ADMA_ADDRESS + 4, (table >> 32) as u32);
-                (if self.adma64 { 0b11 << 3 } else { 0b10 << 3 }, 0)
             }
-        };
-        regs.write8(reg::HOST_CONTROL, regs.read8(reg::HOST_CONTROL) & !(0b11 << 3) | dma);
-        regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
-        regs.write16(reg::ERROR_STATUS, 0xffff);
-        regs.write16(reg::BLOCK_SIZE, BLOCK as u16 | boundary);
-        regs.write16(reg::BLOCK_COUNT, count);
+        }
+        // The select stays as it was written, until something resets the
+        // controller or writes Host Control.
+        if !self.dma_set.get() {
+            let dma = match sdma {
+                Some(_) => 0b00 << 3,
+                None if self.adma64 => 0b11 << 3,
+                None => 0b10 << 3,
+            };
+            regs.write8(reg::HOST_CONTROL, regs.read8(reg::HOST_CONTROL) & !(0b11 << 3) | dma);
+            self.dma_set.set(true);
+        }
+        // The status is clear already (see `clear_status`). Block Size and
+        // Block Count are one 32-bit write, as are Transfer Mode and
+        // Command, whose upper byte starts the command: the argument goes
+        // before it.
+        regs.write32(reg::BLOCK_SIZE, u32::from(count) << 16 | u32::from(BLOCK as u16 | boundary));
         regs.write32(reg::ARGUMENT, argument);
-        regs.write16(reg::TRANSFER_MODE, mode);
-        regs.write16(reg::COMMAND, command);
+        regs.write32(reg::TRANSFER_MODE, u32::from(command) << 16 | u32::from(mode));
         self.flight = Some(Flight::Sent { status: None });
     }
 
@@ -1278,8 +1318,7 @@ impl Slot {
         let normal = regs.read16(reg::NORMAL_STATUS);
         if normal & status::ERROR != 0 {
             let error = regs.read16(reg::ERROR_STATUS);
-            regs.write16(reg::ERROR_STATUS, 0xffff);
-            regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
+            Self::clear_status(regs);
             self.flight = None;
             self.stuck = true;
             self.retune = self.tuned && error & status::DATA_GARBLED != 0;
@@ -1293,18 +1332,22 @@ impl Slot {
         }
         let mut status = status;
         if normal & status::COMMAND_COMPLETE != 0 {
-            regs.write16(reg::NORMAL_STATUS, status::COMMAND_COMPLETE);
             status = Some(regs.read32(reg::RESPONSE));
             self.flight = Some(Flight::Sent { status });
         }
         if normal & status::TRANSFER_COMPLETE == 0 {
+            if normal & status::COMMAND_COMPLETE != 0 {
+                regs.write16(reg::NORMAL_STATUS, status::COMMAND_COMPLETE);
+            }
             return None;
         }
+        // The one write also clears the command's completion.
         regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
         self.flight = None;
         if self.quirks.reset_after_request {
             // The lines' reset ends within a few of the controller's
             // clocks; the next request waits for them anyway.
+            self.dma_set.set(false);
             regs.write8(reg::SOFTWARE_RESET, 6);
         }
         match status {
@@ -1321,6 +1364,7 @@ impl Slot {
     pub fn abandon(&mut self, delay: &mut dyn FnMut(u32)) {
         self.flight = None;
         self.reset_lines(true, delay);
+        Self::clear_status(&self.regs);
         self.stuck = true;
     }
 }

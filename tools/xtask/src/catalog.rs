@@ -14,9 +14,22 @@
 //! there, with the copying `deploy.rs` does. `rollout` pauses or frees
 //! the waves a bundle's new version goes out in (ADR 0544), on the server
 //! itself.
+//!
+//! A batch is signed from a plan that was read (ADR 0594): `sign
+//! --preview` lists it in `out/catalog/plan.json` with its digest, and
+//! `sign --expect DIGEST` signs only that. `pr` then records what was
+//! published in a pull request (`catalog_pr.rs`).
+//!
+//! A version the targets list, packed again with other files, is
+//! published as its next build (ADR 0595): `sign --next-build ID
+//! --rebuild-reason TEXT` packs it as `VERSION_N`, one past the newest
+//! build `catalog/metadata/targets.json` lists, with the reason in a file
+//! beside it that catalog-repo signs into its target.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use serde_json::Value;
 
 use crate::deploy::{self, Server};
 use crate::process::{self, step};
@@ -34,6 +47,10 @@ pub const HOST: &str = "updates.dukovo.org";
 
 /// Where the server serves the catalog.
 pub const URL: &str = "https://updates.dukovo.org/catalog/";
+
+/// Where `sign --preview` and `withdraw --preview` write the plan, under
+/// `out/`.
+pub const PLAN: &str = "catalog/plan.json";
 
 /// The server's folder a deploy copies into (tools/update-server/): the
 /// same on an Ubuntu server and a Dukovo one, where `/var` is the
@@ -64,33 +81,282 @@ pub fn command(ctx: &Ctx, args: Vec<String>) -> Result<()> {
         ["deploy"] => return deploy(ctx),
         ["check"] => return check(ctx, URL),
         ["check", url] => return check(ctx, url),
+        ["verify"] => return verify(ctx).map(|line| println!("{line}")),
+        ["pr"] => return crate::catalog_pr::propose(ctx),
         ["withdraw", rest @ ..] => return withdraw(ctx, rest),
         ["rollout", "canary", ..] => bail!("{}", crate::release::CANARY_MOVED),
         ["rollout", rest @ ..] if !rest.is_empty() => return rollout(ctx, rest),
-        ["server" | "deploy" | "check" | "rollout", ..] => bail!(
-            "usage: ./ob catalog server setup [--dukovo] | deploy | check [<url>] | rollout \
-             (pause <id> <version> <reason> | resume <id> <version>) | withdraw <id> <version> \
-             --kind broken|malicious --reason <text>"
+        ["server" | "deploy" | "check" | "verify" | "pr" | "rollout", ..] => bail!(
+            "usage: ./ob catalog server setup [--dukovo] | deploy | check [<url>] | verify | pr \
+             | rollout (pause <id> <version> <reason> | resume <id> <version>) | withdraw <id> \
+             <version> --kind broken|malicious --reason <text>"
         ),
         _ => {}
     }
-    // `sign` signs the bundles `ob ports` packs unless it is named others,
-    // so they are packed first, from this tree.
-    if args.first().is_some_and(|word| word == "sign")
-        && !args.iter().any(|arg| arg.ends_with(&format!(".{}", dkv::EXTENSION)))
-    {
-        crate::userspace::install_headers(ctx)?;
-        crate::ports::build_and_pack(ctx, &[])?;
+    let first = args.first().cloned().unwrap_or_default();
+    let signing = first == "sign";
+    let (args, next) = if signing { next_builds(args)? } else { (args, None) };
+    let args = if signing { with_plan_path(ctx, args) } else { args };
+    if signing {
+        not_behind_server(ctx)?;
     }
-    let signing = args.first().is_some_and(|word| word == "sign");
+    // Checked before the ports are built, which can take half an hour.
+    let planned = match &next {
+        Some(next) => planned_builds(ctx, &next.ids)?,
+        None => Vec::new(),
+    };
+    if signing && packs_first(&args) {
+        crate::userspace::install_headers(ctx)?;
+        let ports = crate::ports::build_and_pack(ctx, &[])?;
+        if let Some(next) = &next {
+            crate::bundles::pack_next_builds(ctx, &ports, &planned, &next.reason)?;
+        }
+    }
     let mut cmd = catalog_repo(ctx)?;
     cmd.args(args);
-    if signing {
+    if signing || first == "status" {
         for id in verified_ids(ctx)? {
             cmd.args(["--verified", &id]);
         }
     }
     process::run(ctx, &mut cmd)
+}
+
+/// Whether `sign ARGS` packs the ports first: it signs the bundles `ob
+/// ports` packs in `out/bundles/`, so they are packed from this tree,
+/// unless it is named bundles of its own, renews the targets alone, or
+/// is held to a plan, whose bundles must be the bytes that were read.
+fn packs_first(args: &[String]) -> bool {
+    let named = args.iter().any(|arg| arg.ends_with(&format!(".{}", dkv::EXTENSION)));
+    !named && !args.iter().any(|arg| arg == "--renew" || arg == "--expect")
+}
+
+/// What `sign --next-build ID ... --rebuild-reason TEXT` packs as the
+/// next build of versions the catalog lists (ADR 0595).
+#[derive(Debug)]
+struct NextBuilds {
+    /// The bundles' IDs, as their ports' `[bundle]` tables have them.
+    ids: Vec<String>,
+    /// Why they were built again, one line.
+    reason: String,
+}
+
+/// A bundle to pack as a version's next build.
+pub(crate) struct NextBuild {
+    /// Its ID.
+    pub id: String,
+    /// The version it is packed as, such as `15.2.0_2`.
+    pub version: String,
+}
+
+/// The most bytes a rebuild's reason may have: catalog-repo's
+/// `REASON_MAX`, which it checks again when it signs. ob checks it first
+/// so that a reason catalog-repo would refuse stops the batch before the
+/// ports are built.
+const REASON_MAX: usize = 200;
+
+/// `args` without ob's `--next-build ID` and `--rebuild-reason TEXT`,
+/// and what they ask for: none when no `--next-build` is given.
+fn next_builds(args: Vec<String>) -> Result<(Vec<String>, Option<NextBuilds>)> {
+    let mut rest = Vec::new();
+    let mut ids: Vec<String> = Vec::new();
+    let mut reason = None;
+    let mut words = args.into_iter();
+    while let Some(word) = words.next() {
+        match word.as_str() {
+            "--next-build" => {
+                let Some(id) = words.next().filter(|id| !id.starts_with('-')) else {
+                    bail!("--next-build needs the ID of a bundle a port packs");
+                };
+                if ids.contains(&id) {
+                    bail!("--next-build {id} is given twice");
+                }
+                ids.push(id);
+            }
+            "--rebuild-reason" => {
+                let Some(text) = words.next() else {
+                    bail!("--rebuild-reason needs the reason, one line of text");
+                };
+                reason = Some(text);
+            }
+            _ => rest.push(word),
+        }
+    }
+    let reason = match (ids.is_empty(), reason) {
+        (true, None) => return Ok((rest, None)),
+        (true, Some(_)) => {
+            bail!("--rebuild-reason goes with --next-build, which names what was built again")
+        }
+        (false, None) => bail!("say why the bundles were built again: --rebuild-reason TEXT"),
+        (false, Some(reason)) => reason,
+    };
+    if !packs_first(&rest) {
+        bail!("--next-build packs its bundles, so it goes with a plain sign or --preview");
+    }
+    let reason = reason.trim().to_string();
+    if reason.is_empty() {
+        bail!("the reason is empty: say why the bundles were built again");
+    }
+    if reason.chars().any(char::is_control) || reason.len() > REASON_MAX {
+        bail!("the reason is one line of text, at most {REASON_MAX} bytes");
+    }
+    Ok((rest, Some(NextBuilds { ids, reason })))
+}
+
+/// The version each of `ids` is packed as: its port's version, as the
+/// next build of the newest the catalog's targets list.
+fn planned_builds(ctx: &Ctx, ids: &[String]) -> Result<Vec<NextBuild>> {
+    let file = ctx.root.join(REPO).join("metadata/targets.json");
+    let text = std::fs::read(&file).context(|| format!("reading {}", file.display()))?;
+    let targets: Value = serde_json::from_slice(&text)
+        .map_err(|err| crate::Error::new(format!("{}: {err}", file.display())))?;
+    let recipes = crate::ports::recipes(ctx)?;
+    let mut planned = Vec::new();
+    for id in ids {
+        let Some((recipe, _)) =
+            recipes.iter().find(|(recipe, _)| recipe.bundle.as_ref().is_some_and(|b| &b.id == id))
+        else {
+            bail!("no port packs {id}: --next-build takes the ID of a port's bundle");
+        };
+        let version = &recipe.version;
+        let Some(newest) = newest_build(&targets, id, version) else {
+            bail!(
+                "{id} {version} is not in the catalog: it publishes as a new version, without \
+                 --next-build"
+            );
+        };
+        if newest >= manifest::bundle::BUILD_MAX {
+            bail!("{id} {version} has had its last build, {newest}");
+        }
+        let version = manifest::bundle::with_build(version, newest + 1);
+        planned.push(NextBuild { id: id.clone(), version });
+    }
+    Ok(planned)
+}
+
+/// The newest build the targets list of `version` of the bundle `id`,
+/// withdrawn builds among them, so that a withdrawn build's number is
+/// never given again; none when they list no build of it.
+fn newest_build(targets: &Value, id: &str, version: &str) -> Option<u32> {
+    targets["signed"]["targets"]
+        .as_object()?
+        .values()
+        .filter(|target| target["custom"]["id"] == id)
+        .filter_map(|target| {
+            let (of, build) = manifest::bundle::split_build(target["custom"]["version"].as_str()?);
+            (of == version).then_some(build)
+        })
+        .max()
+}
+
+/// `args` with ob's `--preview`, which takes no path, given the plan's:
+/// `out/catalog/plan.json`, as an absolute path, which catalog-repo
+/// prints last for Dukovo Ops to read.
+fn with_plan_path(ctx: &Ctx, args: Vec<String>) -> Vec<String> {
+    let plan = ctx.out.join(PLAN).display().to_string();
+    args.into_iter()
+        .flat_map(|arg| if arg == "--preview" { vec![arg, plan.clone()] } else { vec![arg] })
+        .collect()
+}
+
+/// The versions of the root and the targets a catalog has: 0 for a role
+/// not signed yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Versions {
+    /// The newest root's version.
+    pub root: u64,
+    /// The targets' version.
+    pub targets: u64,
+}
+
+impl Versions {
+    /// The versions of the root and the targets in `root` and `targets`,
+    /// the metadata files' bytes, if there are any.
+    pub fn of(root: Option<&[u8]>, targets: Option<&[u8]>) -> Result<Versions> {
+        let version = |bytes: Option<&[u8]>, name: &str| -> Result<u64> {
+            let Some(bytes) = bytes else { return Ok(0) };
+            let file: Value = serde_json::from_slice(bytes)
+                .map_err(|err| crate::Error::new(format!("{name}: {err}")))?;
+            file["signed"]["version"]
+                .as_u64()
+                .ok_or_else(|| crate::Error::new(format!("{name} has no version")))
+        };
+        Ok(Versions {
+            root: version(root, "root.json")?,
+            targets: version(targets, "targets.json")?,
+        })
+    }
+
+    /// The versions in this tree's `catalog/metadata/`.
+    pub fn of_tree(ctx: &Ctx) -> Result<Versions> {
+        let read = |name: &str| -> Result<Option<Vec<u8>>> {
+            let path = ctx.root.join(REPO).join("metadata").join(name);
+            match std::fs::read(&path) {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(err) => Err(crate::Error::new(format!("{}: {err}", path.display()))),
+            }
+        };
+        Versions::of(read("root.json")?.as_deref(), read("targets.json")?.as_deref())
+    }
+}
+
+/// The versions of the root and the targets updates.dukovo.org serves,
+/// read as a computer reads them, from catalog/'s first root.
+pub(crate) fn served_versions(ctx: &Ctx) -> Result<Versions> {
+    let mut cmd = catalog_repo(ctx)?;
+    cmd.args(["served", "--json", URL]);
+    let output = process::output(ctx, &mut cmd)?;
+    let served: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|err| crate::Error::new(format!("catalog-repo served: {err}")))?;
+    let version = |name: &str| {
+        served["roles"]
+            .as_array()
+            .and_then(|roles| roles.iter().find(|role| role["role"] == name))
+            .and_then(|role| role["version"].as_u64())
+            .unwrap_or_default()
+    };
+    Ok(Versions { root: version("root"), targets: version("targets") })
+}
+
+/// Refuses to sign in a tree whose catalog is older than what
+/// updates.dukovo.org serves: the targets signed here would follow a
+/// version that is not the newest, and the server would refuse them. A
+/// server that cannot be read is only warned of, as signing needs no
+/// network.
+fn not_behind_server(ctx: &Ctx) -> Result<()> {
+    match served_versions(ctx) {
+        Ok(served) => behind(Versions::of_tree(ctx)?, served),
+        Err(err) => {
+            eprintln!("ob: cannot read what {HOST} serves, so signing goes on offline: {err}");
+            Ok(())
+        }
+    }
+}
+
+/// [`not_behind_server`]'s rule: an error when `served` is newer than
+/// `tree` in either role.
+fn behind(tree: Versions, served: Versions) -> Result<()> {
+    for (role, here, there) in
+        [("targets version", tree.targets, served.targets), ("root", tree.root, served.root)]
+    {
+        if there > here {
+            bail!(
+                "{HOST} serves {role} {there} and catalog/ has {here}: this checkout is behind; \
+                 pull main first"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `ob catalog verify`: checks catalog/ offline as a computer checks
+/// what it is served, and gives catalog-repo's line on it.
+pub(crate) fn verify(ctx: &Ctx) -> Result<String> {
+    let mut cmd = catalog_repo(ctx)?;
+    cmd.arg("verify");
+    let output = process::output(ctx, &mut cmd)?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// The IDs of the bundles the ports build. The catalog vouches for their
@@ -105,8 +371,9 @@ fn verified_ids(ctx: &Ctx) -> Result<Vec<String>> {
 
 /// `ob catalog withdraw ID VERSION --kind K --reason TEXT`: signs the
 /// next targets with that version, as the catalog lists it, withdrawn
-/// (ADR 0593). Like `sign`, it needs the targets key and asks first; the
-/// operator then deploys as after `sign`. The other words are
+/// (ADR 0593). Like `sign`, it needs the targets key and asks first, or
+/// writes the plan with `--preview` and is held to it with `--expect`;
+/// the operator then deploys as after `sign`. The other words are
 /// catalog-repo's: `--yes`, `--key`, `--days`.
 fn withdraw(ctx: &Ctx, args: &[&str]) -> Result<()> {
     let [id, version, flags @ ..] = args else {
@@ -115,13 +382,16 @@ fn withdraw(ctx: &Ctx, args: &[&str]) -> Result<()> {
     if id.starts_with('-') || version.starts_with('-') {
         bail!("{WITHDRAW_USAGE}");
     }
+    not_behind_server(ctx)?;
+    let flags = with_plan_path(ctx, flags.iter().map(|flag| (*flag).to_string()).collect());
     let mut cmd = catalog_repo(ctx)?;
     cmd.args(["withdraw", "--id", id, "--version", version]).args(flags);
     process::run(ctx, &mut cmd)
 }
 
-const WITHDRAW_USAGE: &str =
-    "usage: ./ob catalog withdraw <id> <version> --kind broken|malicious --reason <text> [--yes]";
+const WITHDRAW_USAGE: &str = "usage: ./ob catalog withdraw <id> <version> --kind \
+                              broken|malicious --reason <text> [--yes | --preview | --expect \
+                              <digest>]";
 
 /// `ob catalog rollout ...`: on the update server, through sudo as its
 /// catalog user, pauses or resumes the waves of a bundle's newest
@@ -148,7 +418,7 @@ const ROLLOUT_SCRIPTS: [&str; 2] = [
 
 /// Builds catalog-repo for this machine and gives the command that runs
 /// it with the source tree's paths.
-fn catalog_repo(ctx: &Ctx) -> Result<Command> {
+pub(crate) fn catalog_repo(ctx: &Ctx) -> Result<Command> {
     let program = build(ctx, false)?;
     let mut cmd = Command::new(program);
     cmd.arg("--repo")
@@ -632,4 +902,109 @@ fn check(ctx: &Ctx, url: &str) -> Result<()> {
     let mut cmd = catalog_repo(ctx)?;
     cmd.args(["check", url]);
     process::run(ctx, &mut cmd)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn words(text: &str) -> Vec<String> {
+        text.split(' ').map(str::to_string).collect()
+    }
+
+    #[test]
+    fn sign_packs_the_ports_unless_its_bundles_are_given_or_pinned() {
+        assert!(packs_first(&words("sign")));
+        assert!(packs_first(&words("sign --preview /x/out/catalog/plan.json")));
+        assert!(!packs_first(&words("sign out/a-1.dkv")));
+        assert!(!packs_first(&words("sign --renew --preview /p")));
+        assert!(!packs_first(&words("sign --expect 0123")));
+    }
+
+    #[test]
+    fn obs_preview_writes_the_plan_in_out() {
+        let ctx = Ctx {
+            root: "/src".into(),
+            out: "/src/out".into(),
+            target: "/src/target".into(),
+            config: crate::config::Config::default(),
+            verbose: false,
+        };
+        assert_eq!(
+            with_plan_path(&ctx, words("sign --renew --preview")),
+            words("sign --renew --preview /src/out/catalog/plan.json")
+        );
+        assert_eq!(with_plan_path(&ctx, words("sign --yes")), words("sign --yes"));
+    }
+
+    #[test]
+    fn next_builds_are_taken_out_of_the_words_and_checked() {
+        let (rest, next) = next_builds(
+            words("sign --preview --next-build a.b --next-build c.d --rebuild-reason")
+                .into_iter()
+                .chain(["  Linked with the C library fix ".to_string()])
+                .collect(),
+        )
+        .unwrap();
+        assert_eq!(rest, words("sign --preview"));
+        let next = next.unwrap();
+        assert_eq!(next.ids, ["a.b", "c.d"]);
+        assert_eq!(next.reason, "Linked with the C library fix");
+        let (rest, next) = next_builds(words("sign --yes")).unwrap();
+        assert_eq!((rest, next.is_none()), (words("sign --yes"), true));
+        let refused = |text: &str| next_builds(words(text)).err().unwrap().to_string();
+        assert!(refused("sign --next-build a.b").contains("--rebuild-reason TEXT"));
+        assert!(refused("sign --rebuild-reason why").contains("goes with --next-build"));
+        assert!(refused("sign --next-build --yes").contains("needs the ID"));
+        assert!(
+            refused("sign --next-build a.b --next-build a.b --rebuild-reason why")
+                .contains("given twice")
+        );
+        for pinned in ["sign --expect 0123", "sign --renew", "sign out/a-1.dkv"] {
+            let text = format!("{pinned} --next-build a.b --rebuild-reason why");
+            assert!(refused(&text).contains("goes with a plain sign or --preview"), "{pinned}");
+        }
+        let long = format!("sign --next-build a.b --rebuild-reason {}", "x".repeat(201));
+        assert!(refused(&long).contains("at most 200 bytes"));
+        let empty = words("sign --next-build a.b --rebuild-reason").into_iter().chain([" ".into()]);
+        assert!(next_builds(empty.collect()).unwrap_err().to_string().contains("is empty"));
+    }
+
+    #[test]
+    fn the_newest_build_counts_withdrawn_ones_and_no_other_version() {
+        let targets = serde_json::json!({"signed": {"targets": {
+            "bundles/rg-15.2.0.dkv": {"custom": {"id": "rg", "version": "15.2.0"}},
+            "bundles/rg-15.2.0_2.dkv": {"custom": {"id": "rg", "version": "15.2.0_2",
+                "withdrawn": {"kind": "broken", "reason": "it crashes", "since": 1}}},
+            "bundles/rg-15.2.1_5.dkv": {"custom": {"id": "rg", "version": "15.2.1_5"}},
+            "bundles/bat-15.2.0_7.dkv": {"custom": {"id": "bat", "version": "15.2.0_7"}},
+        }}});
+        assert_eq!(newest_build(&targets, "rg", "15.2.0"), Some(2));
+        assert_eq!(newest_build(&targets, "rg", "15.2.1"), Some(5));
+        assert_eq!(newest_build(&targets, "rg", "15.3.0"), None);
+        assert_eq!(newest_build(&targets, "bat", "15.2.0"), Some(7));
+    }
+
+    #[test]
+    fn a_checkout_behind_the_server_signs_nothing() {
+        let v = |root, targets| Versions { root, targets };
+        assert!(behind(v(1, 3), v(1, 3)).is_ok());
+        assert!(behind(v(1, 4), v(1, 3)).is_ok(), "signed here, not deployed yet");
+        let err = behind(v(1, 3), v(1, 5)).unwrap_err().to_string();
+        assert!(err.contains("serves targets version 5 and catalog/ has 3"), "{err}");
+        assert!(err.contains("pull main first"), "{err}");
+        assert!(behind(v(1, 3), v(2, 3)).is_err());
+    }
+
+    #[test]
+    fn versions_are_read_from_the_metadata_files() {
+        let root = br#"{"signed":{"version":2}}"#;
+        let targets = br#"{"signed":{"version":7}}"#;
+        assert_eq!(
+            Versions::of(Some(root), Some(targets)).unwrap(),
+            Versions { root: 2, targets: 7 }
+        );
+        assert_eq!(Versions::of(None, None).unwrap(), Versions { root: 0, targets: 0 });
+        assert!(Versions::of(Some(b"{}"), None).is_err());
+    }
 }

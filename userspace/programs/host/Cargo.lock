@@ -606,6 +606,7 @@ name = "catalog-repo"
 version = "0.15.0"
 dependencies = [
  "dkv",
+ "manifest",
  "serde_json",
  "system-release",
  "tuf",

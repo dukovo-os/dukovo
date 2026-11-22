@@ -1078,14 +1078,19 @@ fn update(ids: &[String], everyone: bool, check: bool, yes: bool) -> Result<i32,
         let to_width = rows.iter().map(|r| r.to.len()).max().unwrap_or(6).max(6);
         println!("{:width$}  {:from_width$}  {:to_width$}  CATALOG", "ID", "INSTALLED", "NEWEST");
         for row in &rows {
+            let rebuilt = bundle::split_build(&row.from).0 == bundle::split_build(&row.to).0;
+            let rebuild = if rebuilt { "  (rebuild)" } else { "" };
             let held = if row.held { "  (held)" } else { "" };
             println!(
-                "{:width$}  {:from_width$}  {:to_width$}  {}{held}",
+                "{:width$}  {:from_width$}  {:to_width$}  {}{rebuild}{held}",
                 row.id,
                 row.from,
                 row.to,
                 row.catalog.as_deref().unwrap_or("its own feed")
             );
+            if let Some(why) = row.rebuild_reason.as_ref().filter(|_| rebuilt) {
+                println!("  rebuilt: {why}");
+            }
             // Why, only where the hold keeps a reason.
             if let Some(why) = row.held_reason.as_ref().filter(|_| row.held) {
                 println!("  held: {why}");
@@ -1806,8 +1811,10 @@ fn feed(folder: &str, files: &[String], key: Option<&str>, days: u32) -> Result<
         repo.sign_root(&signers, FEED_ROOT_DAYS).map_err(fail)?;
     }
     let paths: Vec<PathBuf> = files.iter().map(PathBuf::from).collect();
-    let changes = repo.changes(&paths, &[], &[]).map_err(fail)?;
     let (store, site) = (folder.join("store"), folder.join("site"));
+    // The store holds what the feed signed, so that a later build of a
+    // version is refused when its files are the same (ADR 0595).
+    let changes = repo.changes(&paths, &[], &[], Some(&store)).map_err(fail)?;
     repo.sign_targets(&changes, &paths, &store, &signers, days).map_err(fail)?;
     repo.publish(&store, &site, &signers, (days, days)).map_err(fail)?;
     let listed = repo.targets().map_err(fail)?.map_or(0, |t| t.signed.signed.targets.len());

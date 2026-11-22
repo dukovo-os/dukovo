@@ -171,7 +171,7 @@ pub const BUDGETS: &[(&str, u64)] = &[
     ("channel_roundtrip_same_cpu", 5_100),     // 4,587
     ("ring_roundtrip_same_cpu", 9_400),        // 8,489
     ("posix_fork_wait", 170_000),              // 153,856, with norandmaps
-    ("posix_fork_exec_wait", 590_000),         // 531,676
+    ("posix_fork_exec_wait", 500_000),         // 452,281, with slabs from one mapping
     ("posix_pipe_mib", 2_500_000),             // 2,188,725
     ("posix_signal", 5_900),                   // 5,300
     ("posix_poll", 1_300),                     // 1,092
@@ -181,7 +181,7 @@ pub const BUDGETS: &[(&str, u64)] = &[
     ("posix_futex_shared_same_cpu", 5_800),    // 5,248
     ("posix_tcp_connect", 71_000),             // 64,734, beside 11 idle sockets (ADR 0550)
     ("posix_tcp_roundtrip_same_cpu", 11_000),  // 9,274
-    ("posix_udp_roundtrip_same_cpu", 23_500),  // 21,291, beside 11 idle sockets (ADR 0550)
+    ("posix_udp_roundtrip_same_cpu", 15_000),  // 13,189, straight across (ADR 0553)
     ("posix_tcp_mib", 1_700_000),              // 1,515,375
 ];
 
@@ -482,11 +482,19 @@ const ROWS: &[Row] = &[
     disk("posix_nvme_write_mib", "Disk: 1 MiB written raw to an NVMe disk"),
     disk("posix_sd_read_4k", "SD: 4 KiB read raw from an SD card in a PCI reader (`pread`)"),
     disk("posix_sd_write_4k", "SD: 4 KiB written raw to an SD card in a PCI reader (`pwrite`)"),
-    disk("posix_sd_read_64k", "SD: 64 KiB read raw from an SD card in a PCI reader"),
-    disk("posix_sd_write_64k", "SD: 64 KiB written raw to an SD card in a PCI reader"),
     // QEMU's sdhci-pci moves each byte of a transfer through the card's
-    // emulation one call at a time: 1 MiB takes it over 150 ms, the
-    // same for both systems, beside which neither's own work shows.
+    // emulation one call at a time: 64 KiB takes it some 14 ms and 1 MiB
+    // over 200 ms, the same for both systems, and how fast it goes moves
+    // with how the host runs QEMU's threads by more than either system's
+    // own work, which the 4 KiB rows show (ADR 0552).
+    Row {
+        gate: Gate::Emulated,
+        ..disk("posix_sd_read_64k", "SD: 64 KiB read raw from an SD card in a PCI reader")
+    },
+    Row {
+        gate: Gate::Emulated,
+        ..disk("posix_sd_write_64k", "SD: 64 KiB written raw to an SD card in a PCI reader")
+    },
     Row {
         gate: Gate::Emulated,
         ..disk("posix_sd_read_mib", "SD: 1 MiB read raw from an SD card in a PCI reader")
@@ -2224,6 +2232,8 @@ mod tests {
         assert!(ROWS.iter().any(|r| r.radix == "posix_git_status" && r.gate == Gate::Yet));
         assert!(ROWS.iter().any(|r| r.radix == "posix_poll_idle" && r.gate == Gate::Yet));
         assert!(ROWS.iter().any(|r| r.radix == "posix_sd_read_mib" && r.gate == Gate::Emulated));
+        assert!(ROWS.iter().any(|r| r.radix == "posix_sd_write_64k" && r.gate == Gate::Emulated));
+        assert!(ROWS.iter().any(|r| r.radix == "posix_sd_write_4k" && r.gate == Gate::Held));
     }
 
     #[test]

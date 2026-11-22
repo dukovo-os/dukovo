@@ -411,7 +411,8 @@ const GRUBLESS: u8 = 18;
 
 /// [`Disk::fat`] for a FAT32 disk on the whole disk holding the `.dkv`
 /// files of the catalog's bundles of ports that `ob` packed into
-/// out/bundles ([`bundle_files_disk`], ADR 0370).
+/// out/bundles, but Go's, which has disks of its own
+/// ([`bundle_files_disk`], ADR 0370).
 const BUNDLE_FILES: u8 = 19;
 
 /// [`Disk::fat`] for a FAT32 disk on the whole disk holding a catalog
@@ -549,6 +550,16 @@ const WITHDRAW_SITE: u8 = 40;
 /// standard library with their test data, and the scripts that run them
 /// ([`cases::go_runtime::make_disk`]).
 const GO_FILES: u8 = 41;
+
+/// [`Disk::fat`] for a [`BUNDLE_FILES`] disk that holds Go's bundle alone,
+/// with the module the `go-toolchain` test builds and the two files for
+/// gofmt ([`cases::go_toolchain::make_disk`]).
+const GO_TOOLCHAIN_FILES: u8 = 42;
+
+/// [`Disk::fat`] for a [`GO_TOOLCHAIN_FILES`] disk that also holds the
+/// list of Go's packages with tests, their skips and the script of `ob
+/// test go-suite` ([`go_suite::make_disk`]).
+const GO_SUITE_FILES: u8 = 43;
 
 /// One of the boot tests' updates of an installed system (ADR 0451): this
 /// build's slot, under a version after this one's that updates from it,
@@ -939,12 +950,14 @@ const WITHDRAW_BUNDLES: [crate::bundles::TestBundle; 4] = [
 /// `site` folder (ADR 0390).
 const FEED_ADDRESS: &str = "http://10.0.2.100/almanac";
 
-/// The bundles of a [`FEED_FILES`] disk: three versions of almanac, which
-/// says its version, from its own feed at [`FEED_ADDRESS`].
-const FEED_BUNDLES: [crate::bundles::TestBundle; 3] = [
+/// The bundles of a [`FEED_FILES`] disk: four versions of almanac, which
+/// says its version, from its own feed at [`FEED_ADDRESS`]; the last is
+/// 1.1.0 built again, as its build 2.
+const FEED_BUNDLES: [crate::bundles::TestBundle; 4] = [
     almanac("1.0.0", "#!/bin/sh\necho \"almanac 1.0.0 ran\"\n"),
     almanac("1.1.0", "#!/bin/sh\necho \"almanac 1.1.0 ran\"\n"),
     almanac("1.2.0", "#!/bin/sh\necho \"almanac 1.2.0 ran\"\n"),
+    almanac("1.1.0_2", "#!/bin/sh\necho \"almanac 1.1.0_2 ran\"\n"),
 ];
 
 /// almanac `version`, which runs `script`.
@@ -1802,6 +1815,7 @@ const MICROCODE_REVISION: u32 = 0x7f;
 mod affected;
 mod console_client;
 mod fuzz;
+mod go_suite;
 mod matrix;
 mod phase11;
 mod phase12;
@@ -1902,6 +1916,8 @@ fn needs_packing(case: &Case) -> bool {
             disk.fat,
             BUNDLE_FILES
                 | CATALOG_SITE
+                | GO_SUITE_FILES
+                | GO_TOOLCHAIN_FILES
                 | PHP_FILES
                 | POSTGRESQL_FILES
                 | POSTGRESQL_SERVICE_FILES
@@ -3569,12 +3585,15 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         return matrix::command(args);
     }
     // The options first, so that the suite is not taken from a value of one.
-    let timeout = match args.value("--timeout")? {
-        Some(value) => value.parse::<u64>().ok().filter(|&secs| secs > 0).ok_or_else(|| {
-            Error::new(format!("--timeout takes a number of seconds, not `{value}`"))
-        })?,
-        None => 300,
+    let named_timeout = match args.value("--timeout")? {
+        Some(value) => {
+            Some(value.parse::<u64>().ok().filter(|&secs| secs > 0).ok_or_else(|| {
+                Error::new(format!("--timeout takes a number of seconds, not `{value}`"))
+            })?)
+        }
+        None => None,
     };
+    let timeout = named_timeout.unwrap_or(300);
     let mut selected = Vec::new();
     while let Some(name) = args.value("--case")? {
         selected.push(name);
@@ -3702,12 +3721,15 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         Some("corpus") => return corpus::test(ctx, &selected),
         Some("riscv") if selected.is_empty() => return crate::riscv::test(ctx),
         Some("lab-writer") if selected.is_empty() => return crate::lab_net::check(ctx),
-        Some(suite @ ("unit" | "kani" | "tla" | "tuf" | "riscv" | "lab-writer")) => {
+        Some("go-suite") if selected.is_empty() && shard.is_none() && !retry && !image_only => {
+            return go_suite::command(ctx, profile, named_timeout.map(Duration::from_secs));
+        }
+        Some(suite @ ("unit" | "kani" | "tla" | "tuf" | "riscv" | "lab-writer" | "go-suite")) => {
             crate::bail!("--case and --shard select boot tests; they cannot be used with `{suite}`")
         }
         Some(other) => crate::bail!(
             "unknown test suite `{other}`; use `unit`, `boot`, `replay`, `matrix`, `fuzz`, `kani`, \
-             `tla`, `tuf`, `corpus`, `riscv` or `lab-writer`"
+             `tla`, `tuf`, `corpus`, `riscv`, `lab-writer` or `go-suite`"
         ),
     };
     if shard.is_some() && which.as_deref() != Some("boot") {
@@ -5642,6 +5664,16 @@ fn make_disks(
             made.push(image);
             continue;
         }
+        if disk.fat == GO_TOOLCHAIN_FILES {
+            cases::go_toolchain::make_disk(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == GO_SUITE_FILES {
+            go_suite::make_disk(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
         if disk.fat == GO_FILES {
             cases::go_runtime::make_disk(ctx, disk, &image.path)?;
             made.push(image);
@@ -6289,9 +6321,11 @@ fn fsck(disk: &DiskImage, _log: &str) -> Result<(), String> {
 }
 
 /// Makes a [`BUNDLE_FILES`] disk: FAT32 holding every `.dkv` file of
-/// out/bundles, copied in with mtools.
+/// out/bundles but Go's, copied in with mtools. Go's bundle, about 72 MiB,
+/// is on the disks of the two runs that install it
+/// ([`GO_TOOLCHAIN_FILES`]), so that the disks of the others stay small.
 fn make_bundle_files(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
-    make_bundle_disk(ctx, disk, path, |_| true)
+    make_bundle_disk(ctx, disk, path, |name| !name.starts_with(cases::go_toolchain::BUNDLE_PREFIX))
 }
 
 /// Makes a FAT32 disk holding the `.dkv` files of out/bundles whose names
@@ -6643,9 +6677,10 @@ fi
 /// which QEMU runs; `feed`, the feed's repository, which `bundle feed`
 /// signed with the build key twice, listing 1.0.0 and 1.1.0, and
 /// `site/almanac`, what it serves; and in `feeds`, what the test serves
-/// in its place: `old`, as the feed was signed the first time, and
-/// `changed`, signed a third time, adding 1.2.0, whose file served
-/// differs in a byte from the one it signs.
+/// in its place: `old`, as the feed was signed the first time; `rebuilt`,
+/// signed a third time, adding 1.1.0_2, the build 2 of 1.1.0; and
+/// `changed`, signed a fourth time on `rebuilt`, adding 1.2.0, whose file
+/// served differs in a byte from the one it signs.
 fn make_feed_files(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
     let files = FEED_BUNDLES
         .iter()
@@ -6679,9 +6714,13 @@ fn make_feed_files(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
     copy(&feed.join("site"), &dir.join("feeds/old"))?;
     sign(&feed, &[])?;
     copy(&feed.join("site"), &dir.join("site/almanac"))?;
+    let rebuilt = dir.join("rebuilt");
+    copy(&feed, &rebuilt)?;
+    sign(&rebuilt, &files[3..])?;
+    copy(&rebuilt.join("site"), &dir.join("feeds/rebuilt"))?;
     let changed = dir.join("changed");
-    copy(&feed, &changed)?;
-    sign(&changed, &files[2..])?;
+    copy(&rebuilt, &changed)?;
+    sign(&changed, &files[2..3])?;
     let name = files[2].file_name().map_or_default(|n| n.to_string_lossy().into_owned());
     let served = changed.join("site/targets/bundles");
     let file = std::fs::read_dir(&served)

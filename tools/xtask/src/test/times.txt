@@ -19,7 +19,7 @@ accounts 26
 acpi-power 31
 acpi-thermal 32
 admin-accounts 480
-admin-actions 490
+admin-actions 1040
 admin-alerts 660
 admin-backups 600
 admin-certificates 480
@@ -97,6 +97,7 @@ fuzz 27
 git-https 15
 git-keyring 127
 go-runtime 240
+go-toolchain 300
 gpio 11
 hardware-check 150
 help-session 160

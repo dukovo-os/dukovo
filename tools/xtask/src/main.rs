@@ -14,6 +14,7 @@ mod bench;
 mod btrfs;
 mod bundles;
 mod catalog;
+mod catalog_pr;
 mod config;
 mod corpus;
 mod deploy;
@@ -284,7 +285,7 @@ press Ctrl-A then X to quit QEMU. KVM is used when /dev/kvm is accessible.
                        as ./ob image takes them"
         }
         "test" => {
-            "Usage: ./ob test [unit | boot | kani | tla | tuf | corpus | riscv | lab-writer]
+            "Usage: ./ob test [unit | boot | kani | tla | tuf | corpus | riscv | lab-writer | go-suite]
                  [--case <name>]... [--shard <part>/<parts>] [--timeout <seconds>]
                  [--retry] [--debug | --release]
        ./ob test boot --affected <commit> [--shard <part>/<parts> | --list | --plan] [--retry]
@@ -311,7 +312,11 @@ userspace/programs/nukesh/tests/corpus.toml. `riscv` builds the RISC-V smoke
 boot and boots it on QEMU's virt machine under OpenSBI (seconds; it needs
 qemu-system-riscv64). `lab-writer` net boots the lab's disk writer in
 QEMU from a pretend lab, as a real lab machine boots it (ADR 0429), and
-checks what it writes (a minute or two with KVM). `boot --shard 2/5`
+checks what it writes (a minute or two with KVM). `go-suite` runs Go's own
+tests of its standard library on Dukovo, with the Go bundle's `go`: an
+hour or more with KVM, which is why plain `ob test` leaves it out; --timeout
+is how long the machine may run (3 hours 32 minutes without it), and the
+log is out/test/go-suite.log. `boot --shard 2/5`
 runs the second of five shares of the boot tests, as CI's parallel jobs
 do; the shares take about as long by the times in
 tools/xtask/src/test/times.txt. `boot --affected
@@ -712,15 +717,18 @@ Formats every Rust source file in the repository with rustfmt."
             "Usage: ./ob catalog key yubikey [--serial <number>]
        ./ob catalog key new <file> <name> [<role>]...
        ./ob catalog root [--days <n>] [--key <file>]...
-       ./ob catalog sign [--days <n>] [--remove <path>]... [--yes] [--key <file>]...
+       ./ob catalog sign [--days <n>] [--remove <path>]... [--renew]
+                         [--yes | --preview | --expect <digest>] [--key <file>]...
                          [<bundle>]...
        ./ob catalog withdraw <id> <version> --kind broken|malicious --reason <text>
-                         [--yes] [--key <file>]...
+                         [--yes | --preview | --expect <digest>] [--key <file>]...
        ./ob catalog publish --key <file>
        ./ob catalog status [--json]
        ./ob catalog server setup [--dukovo]
        ./ob catalog deploy
        ./ob catalog check [<url>]
+       ./ob catalog verify
+       ./ob catalog pr
 
 Makes and signs the catalog's TUF repository in catalog/ (ADR 0381), with
 catalog-repo, which it builds for this machine. Root and targets are signed
@@ -728,9 +736,17 @@ by a YubiKey, either of the catalog's two alone; `key yubikey` adds the
 P-256 key in a YubiKey's slot 9c, made with ykman as catalog/README.md says.
 `root` signs the next root from the keys in catalog/keys/. `sign` lists
 what changes, the bundles in out/bundles/ by default, and signs them into
-the next targets with one touch of a YubiKey. `withdraw` signs the next
-targets with one version the targets list marked as withdrawn, broken or
-malicious (ADR 0593), as `sign` does. `publish` signs a snapshot
+the next targets with one touch of a YubiKey; a version the catalog lists
+already, packed again as other bytes, is kept as signed and named, and the
+rest is signed (ADR 0594). `sign --renew` signs the targets again with no
+bundle. `--preview` lists the change, writes it to out/catalog/plan.json
+with its digest and signs nothing; `--expect` signs only a plan of that
+digest, with no question, and otherwise says to prepare again. `withdraw`
+signs the next targets with one version the targets list marked as
+withdrawn, broken or malicious (ADR 0593), as `sign` does. `verify` checks
+catalog/ offline, as a computer does, and `pr` opens the pull request that
+records what `deploy` published, with auto-merge (it needs `gh`, signed in,
+and git's user.name and user.email). `publish` signs a snapshot
 and timestamp with the online key and lays out what the server serves in
 out/catalog/site/, then reads it back as a client. --key names an Ed25519
 secret key file that signs in place of a YubiKey: the online key, or a
