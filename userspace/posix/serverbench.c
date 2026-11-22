@@ -16,10 +16,20 @@
 // it prints how the machine spent the pass, summed over all CPUs,
 //
 //     BENCHCOUNT group=<name> rounds=<operations> switches=<n> user_ns=<n>
-//         system_ns=<n> idle_ns=<n> [ipis=<n> halts=<n> timer_writes=<n>]
+//         system_ns=<n> idle_ns=<n> [ipis=<n> halts=<n> timer_writes=<n>
+//         preemptions=<n> migrations=<n> faults=<n> polls=<n>
+//         mutex_waits=<n>] [faults=<n> interrupts=<n>]
 //
-// from /processes/stat on Radix (all seven) and from /proc/stat on Linux
-// (the first four; the clock ticks become nanoseconds). A run of
+// from /processes/stat on Radix (all twelve) and from /proc/stat on Linux
+// (the first four; the clock ticks become nanoseconds). The Radix fields
+// after idle_ns are the IPIs sent, the halts of idle CPUs, the writes to
+// the timer, the preemptions (switches away from a thread that could have
+// gone on), the migrations (moves of a thread to another CPU than the one
+// it ran on last), the page faults resolved, the polls (idle periods a
+// wake-up ended while polling) and the mutex waits (threads that slept
+// waiting for a kernel mutex). Linux prints instead its page faults
+// (pgfault in /proc/vmstat) and its interrupts (the total of the intr
+// line of /proc/stat), each left out if its file cannot be read. A run of
 // valkey-benchmark prints three rows and one such line, group
 // server_valkey_run; if neither file can be read there is no line.
 //
@@ -96,16 +106,21 @@ static uint64_t now_ns(void) {
 
 // What the machine had done at a moment, summed over its CPUs: Radix's
 // /processes/stat lists one count a line ("ipis: 12"), Linux's /proc/stat
-// has the context switches and the CPU times in clock ticks, and no ipis,
-// halts or timer writes. `valid` is 0 when neither file could be read.
+// has the context switches and the CPU times in clock ticks, and none of
+// the Radix-only counts; its page faults and interrupts come from
+// /proc/vmstat and the intr line, and `have_faults` and `have_interrupts`
+// say whether they were read. `valid` is 0 when neither file could be read.
 struct counts {
 	int valid;
 	int radix;
+	int have_faults, have_interrupts;
 	uint64_t switches, user_ns, system_ns, idle_ns;
 	uint64_t ipis, halts, timer_writes;
+	uint64_t preemptions, migrations, faults, polls, mutex_waits;
+	uint64_t interrupts;
 };
 
-// Reads Radix's /processes/stat; false if it lacks one of the seven.
+// Reads Radix's /processes/stat; false if it lacks one of the twelve.
 static int read_radix_counts(struct counts *counts) {
 	FILE *file = fopen("/processes/stat", "r");
 	if(!file)
@@ -115,7 +130,9 @@ static int read_radix_counts(struct counts *counts) {
 		uint64_t *value;
 	} fields[] = {{"switches", &counts->switches}, {"user_ns", &counts->user_ns}, {"system_ns", &counts->system_ns},
 	              {"idle_ns", &counts->idle_ns}, {"ipis", &counts->ipis}, {"halts", &counts->halts},
-	              {"timer_writes", &counts->timer_writes}};
+	              {"timer_writes", &counts->timer_writes},
+	              {"preemptions", &counts->preemptions}, {"migrations", &counts->migrations}, {"faults", &counts->faults},
+	              {"polls", &counts->polls}, {"mutex_waits", &counts->mutex_waits}};
 	const unsigned all = (1u << (sizeof(fields) / sizeof(fields[0]))) - 1;
 	unsigned found = 0;
 	char line[256];
@@ -160,6 +177,46 @@ static int read_linux_counts(struct counts *counts) {
 	return have_switches && have_cpu;
 }
 
+// Reads the `pgfault` line of Linux's /proc/vmstat; false if there is none.
+static int read_linux_faults(struct counts *counts) {
+	FILE *file = fopen("/proc/vmstat", "r");
+	if(!file)
+		return 0;
+	int found = 0;
+	char line[256];
+	while(!found && fgets(line, sizeof(line), file)) {
+		if(!strncmp(line, "pgfault ", 8)) {
+			counts->faults = strtoull(line + 8, NULL, 10);
+			found = 1;
+		}
+	}
+	fclose(file);
+	return found;
+}
+
+// Reads the total of Linux's `intr` line of /proc/stat (its first number,
+// the interrupts of all kinds); false if there is none. The line is long,
+// one number for each interrupt, so only its start is read.
+static int read_linux_interrupts(struct counts *counts) {
+	FILE *file = fopen("/proc/stat", "r");
+	if(!file)
+		return 0;
+	int found = 0;
+	char line[64];
+	int start = 1;
+	while(fgets(line, sizeof(line), file)) {
+		size_t length = strlen(line);
+		if(start && !strncmp(line, "intr ", 5)) {
+			counts->interrupts = strtoull(line + 5, NULL, 10);
+			found = 1;
+			break;
+		}
+		start = length > 0 && line[length - 1] == '\n';
+	}
+	fclose(file);
+	return found;
+}
+
 static struct counts counts_now(void) {
 	struct counts counts;
 	memset(&counts, 0, sizeof(counts));
@@ -169,6 +226,8 @@ static struct counts counts_now(void) {
 	}
 	memset(&counts, 0, sizeof(counts));
 	counts.valid = read_linux_counts(&counts);
+	counts.have_faults = read_linux_faults(&counts);
+	counts.have_interrupts = read_linux_interrupts(&counts);
 	return counts;
 }
 
@@ -181,9 +240,19 @@ static void print_counts(const char *group, struct counts before, struct counts 
 	printf("BENCHCOUNT group=%s rounds=%llu switches=%llu user_ns=%llu system_ns=%llu idle_ns=%llu", group, (unsigned long long)rounds,
 	       (unsigned long long)(after.switches - before.switches), (unsigned long long)(after.user_ns - before.user_ns),
 	       (unsigned long long)(after.system_ns - before.system_ns), (unsigned long long)(after.idle_ns - before.idle_ns));
-	if(after.radix)
+	if(after.radix) {
 		printf(" ipis=%llu halts=%llu timer_writes=%llu", (unsigned long long)(after.ipis - before.ipis),
 		       (unsigned long long)(after.halts - before.halts), (unsigned long long)(after.timer_writes - before.timer_writes));
+		printf(" preemptions=%llu migrations=%llu faults=%llu polls=%llu mutex_waits=%llu",
+		       (unsigned long long)(after.preemptions - before.preemptions), (unsigned long long)(after.migrations - before.migrations),
+		       (unsigned long long)(after.faults - before.faults), (unsigned long long)(after.polls - before.polls),
+		       (unsigned long long)(after.mutex_waits - before.mutex_waits));
+	} else {
+		if(before.have_faults && after.have_faults)
+			printf(" faults=%llu", (unsigned long long)(after.faults - before.faults));
+		if(before.have_interrupts && after.have_interrupts)
+			printf(" interrupts=%llu", (unsigned long long)(after.interrupts - before.interrupts));
+	}
 	printf("\n");
 	fflush(stdout);
 }

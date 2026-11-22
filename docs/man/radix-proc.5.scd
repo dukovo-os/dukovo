@@ -234,6 +234,10 @@ _/processes/stat_
 	events that cost an exit to the host under a hypervisor (writes of
 	the timer hardware, interrupts sent to other CPUs, idle periods that
 	halted and idle periods a wake-up ended while the CPU polled);
+	*preemptions*, *migrations* and *faults*, what leaves a thread's
+	memory out of a CPU's caches and TLB (switches away from a thread
+	that could have gone on, moves of a thread to another CPU than the
+	one it ran on last, and page faults resolved), since boot;
 	*mutex_contended*, *mutex_waits*, *mutex_handoffs* and *mutex_wakes*,
 	the times a thread found a kernel mutex taken, the times it slept
 	waiting for one, the times a mutex was handed to a sleeping waiter,
