@@ -110,8 +110,19 @@ impl Path {
     /// calls, the path at the index `buffer`'s address gives.
     #[inline(always)]
     fn take(&mut self, buffer: UserBuffer, paths: Paths<'_>) -> Result<&Path> {
-        let Paths::Given(given) = paths else { return self.copy(buffer) };
-        let bytes = usize::try_from(buffer.address)
+        match paths {
+            Paths::Caller => self.copy(buffer),
+            Paths::Given(given) => self.given(buffer.address, given),
+        }
+    }
+
+    /// Copies the path at `index` in `given`, in the kernel's memory, into
+    /// this one, and gives it back. Out of line, unlike [`Path::copy`]:
+    /// inlined into each method that takes a path, it would add its own
+    /// short path to the frame of `directory_call` for each of them.
+    #[inline(never)]
+    fn given(&mut self, index: u64, given: &[&[u8]]) -> Result<&Path> {
+        let bytes = usize::try_from(index)
             .ok()
             .and_then(|index| given.get(index))
             .ok_or(Kernel::InvalidArgument.status(0))?;
@@ -123,9 +134,10 @@ impl Path {
             radix_mm::bytes::extend(&mut copy, bytes).map_err(|_| error(Kernel::NoMemory))?;
             *self = Path::Long(copy);
         } else {
-            let mut short = [0; 128];
-            short[..bytes.len()].copy_from_slice(bytes);
-            *self = Path::Short(short, bytes.len());
+            *self = Path::Short([0; 128], bytes.len());
+            if let Path::Short(short, _) = self {
+                short[..bytes.len()].copy_from_slice(bytes);
+            }
         }
         Ok(self)
     }
