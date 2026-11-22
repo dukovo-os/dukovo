@@ -45,6 +45,7 @@
 
 mod actions;
 mod coverage;
+mod servers;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -706,6 +707,10 @@ const KIT_FILE: &str = "kit.toml";
 /// What Linux's init, linux-bench, prints once every benchmark has run.
 const KIT_DONE: &str = "linux-bench: done";
 
+/// How long the kit's benchmarks take beside the test's own time, as
+/// dukovo-lab reads a duration: the POSIX benchmarks and the servers'.
+const KIT_TIME: &str = "15m";
+
 /// Builds the Linux kit that performance tests hold Dukovo to, and gives
 /// its folder, `out/lab-linux`, for dukovo-lab's `--linux`: the kernel
 /// `ob bench` holds Radix to (`--linux-kernel`'s, else the pinned
@@ -727,6 +732,7 @@ pub fn linux_kit(ctx: &Ctx) -> Result<PathBuf> {
         }
     };
     let initrd = bench::linux_init(ctx, &dir, Some(&posix), None, &kernel, modules.as_deref())?;
+    add_servers(ctx, &dir, &initrd)?;
     // dukovo-lab takes the kit's files from beside its kit.toml.
     let copy = dir.join("vmlinuz");
     std::fs::copy(&kernel, &copy).context(|| {
@@ -736,6 +742,27 @@ pub fn linux_kit(ctx: &Ctx) -> Result<PathBuf> {
     std::fs::write(dir.join(KIT_FILE), kit_file("vmlinuz", &initrd_name))
         .context(|| format!("writing {}", dir.join(KIT_FILE).display()))?;
     Ok(dir)
+}
+
+/// Appends the servers of [`servers::linux_servers`] to the initramfs at
+/// `initrd`, which Linux unpacks as two archives, one after the other. A
+/// server that will not build only leaves the server benchmarks' rows out
+/// of the kit: the tests that need them fail saying the kit measures no
+/// such row.
+fn add_servers(ctx: &Ctx, dir: &Path, initrd: &Path) -> Result<()> {
+    let part = match servers::linux_servers(ctx, dir) {
+        Ok(part) => part,
+        Err(why) => {
+            eprintln!("    note: the server benchmarks' rows will be missing: {why}");
+            return Ok(());
+        }
+    };
+    let bytes = std::fs::read(&part).context(|| format!("reading {}", part.display()))?;
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(initrd)
+        .context(|| format!("opening {}", initrd.display()))?;
+    std::io::Write::write_all(&mut file, &bytes).context(|| format!("writing {}", initrd.display()))
 }
 
 /// The kit's `kit.toml`, naming its kernel and initramfs, the files beside
@@ -751,7 +778,8 @@ fn kit_file(kernel: &str, initrd: &str) -> String {
          kernel = \"{kernel}\"\n\
          initrd = \"{initrd}\"\n\
          cmdline = \"{} linux-bench.clock=base\"\n\
-         done = \"{KIT_DONE}\"\n",
+         done = \"{KIT_DONE}\"\n\
+         time = \"{KIT_TIME}\"\n",
         bench::LINUX_CMDLINE
     )
 }
@@ -1234,6 +1262,9 @@ mod tests {
             "{kit}"
         );
         assert!(kit.contains("done = \"linux-bench: done\"\n"), "{kit}");
+        // The servers' benchmarks run on the test's clock but are the kit's
+        // time, which dukovo-lab adds to the test's.
+        assert!(kit.contains("time = \"15m\"\n"), "{kit}");
     }
 
     #[test]

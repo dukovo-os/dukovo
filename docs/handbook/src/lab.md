@@ -373,6 +373,79 @@ differ by more than 3% it reports an error and not a comparison of the
 rows. A step's note ends with every `BENCH` line Dukovo printed, so the
 run's bundle keeps the three clock rows.
 
+### Server rows
+
+`performance/nginx`, `php`, `valkey` and `postgresql` hold the servers of
+the catalog to the same servers on Linux (ADR 0546). Each installs its
+bundles, puts the machine in the benchmark profile, and runs
+`/system/tests/posix/serverbench` with the server's name. The program starts
+one worker of the server on the machine, drives it itself over the loopback
+or a Unix socket with its data in `/tmp`, and prints each row after a
+warm-up pass and three measured passes, of which the lab keeps the fastest.
+The rows are one operation each:
+
+| Row | One operation |
+| --- | --- |
+| `server_nginx_small` | a GET of a 1 KiB file, 8 keep-alive connections |
+| `server_nginx_connect` | the same GET on a new connection that nginx closes, 8 at a time |
+| `server_nginx_large_mib` | one MiB of a 1 MiB file, 8 keep-alive connections |
+| `server_php_fpm` | a GET of a PHP page through nginx and PHP-FPM on a Unix socket |
+| `server_php_compute` | one pass of a loop of sorting, strings, regular expressions, hashes and JSON, timed inside PHP |
+| `server_valkey_set`, `_get`, `_lpush` | a command of `valkey-benchmark`, 8 connections, 64-byte values, 100000 keys |
+| `server_valkey_get_pipelined` | a GET with 16 in a pipeline |
+| `server_postgresql_select` | a select-only pgbench transaction, 8 clients on 2 threads |
+| `server_postgresql_tpcb` | a TPC-B-like pgbench transaction, 8 clients on 2 threads |
+
+The Linux kit builds the same release and commit of each server that the
+port does, with the host's compiler at `-O2`, without the port's patches,
+which adapt a program to Dukovo, and with only what the benchmarks use. Each
+is built with the prefix of its bundle, so that the paths are the same on
+both systems, and is linked to the host's C library, which the kit carries
+with it. nginx waits with `poll` on Dukovo and `epoll` on Linux, as each
+does on its own system. A server that cannot be built for Linux leaves its
+rows out, `./ob lab` says why when it builds the kit, and the test fails and
+names the missing row. `./ob lab run --preset server` runs these with the
+rest of what a server release is held to.
+
+## The week-long soak
+
+`stress/server-week` keeps a small web shop up for a week on one machine
+(ADR 0546): nginx, PHP-FPM, PostgreSQL and Valkey from the catalog, set up
+with `website add --kind php`, `database add --site`, `firewall` and
+`backup`, and a PHP page that reads items through Valkey from PostgreSQL,
+lists the newest writes and writes. The lab PC sends it 20 requests a
+second, and signs in over SSH and to the web console's API every five
+minutes. The machine checks itself 24 times a day, and between the days it
+has an update and its rollback, two power cuts and its cable out for two
+minutes, after which every write the page had acknowledged must be in
+PostgreSQL. The week is held when no service went down, the memory in use
+and the processes stayed flat day by day (the rule of `ob soak`), and day
+7's 99th percentile of the page's own time is within 20% of day 1's.
+
+The test has `only_by_name = true`, so `all`, a category or the `server`
+preset never starts it. Name it:
+
+```
+./ob lab run stress/server-week
+```
+
+It holds the one machine it runs on for about seven and a half days, and no
+other machine: the lab PC stays free for other runs on other machines. The
+page times its own work and the verdict reads only that, so a busy lab PC
+does not move it; the round trip the lab PC measures is shown beside it and
+never judged. A restart of the lab PC ends the run.
+
+To follow it, read `/tmp/lab-server-week/minutes.csv` on the lab PC, which
+gets a line a minute (the minute, the requests, the errors, the writes
+acknowledged, the sign-ins tried and failed, and two histograms of the
+latencies), and the test's log in the run's logs folder, which is written
+after each step with a last line that says `Still running` and when. A day
+prints its 24 checks, and the log keeps them. On a real machine, run with
+`--with-person` for a person to pull the cable between days 4 and 5; without
+one the step is left out and the log says so. A QEMU run of the test itself
+uses a copy whose days are shorter: every script takes its day's length in
+minutes.
+
 ## Security tests
 
 The tests in `lab/tests/security` probe the machine the way someone on

@@ -1,0 +1,202 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# A small web shop on one machine for a week (ADR 0546): nginx, PHP-FPM,
+# PostgreSQL and Valkey from the catalog, set up with the system's own
+# commands (`website add --kind php`, `database add --site`, `firewall`,
+# `backup`), and one PHP page, server-week.php, that reads items through
+# Valkey from PostgreSQL, lists the newest writes and writes. The lab PC
+# sends it 20 requests a second over 4 connections, 70% reads, 20% lists and
+# 10% writes, and every 5 minutes signs in over SSH and to the web console's
+# API (server-week-load.py). The machine checks itself 24 times a day
+# (server-week-machine.sh); the days are server-week.sh's, which holds each
+# to the soak's rule for the memory in use (tools/xtask/src/test/soak.rs).
+#
+# Between days the machine is hurt as a server's life hurts it: an update
+# to a bridge release and a rollback of it, two power cuts, and the cable
+# out for two minutes. After each, every write the page acknowledged must be
+# in PostgreSQL (`back`). The week is held when day 7's 99th percentile of
+# the page's own time is within 20% of day 1's. The lab PC may run other
+# machines' tests during the week, so the page times itself, from its first
+# line to just before it prints, and sends the time as X-Took-Us, and the
+# round trip the lab PC measures is shown and never judged. The test holds
+# only its own machine: others stay free for other runs. Alerts by email are
+# left out, as no mail sink stays up for a week.
+#
+# It runs only when a run names it (`./ob lab run stress/server-week`), on
+# one machine, for 7 days and some hours. Its log is written after each step
+# and /tmp/lab-server-week/minutes.csv grows by a line a minute, so a run
+# can be followed. Where a machine has no cable control the cable step is
+# left out; with --with-person a person pulls the cable.
+about = "A web shop of nginx, PHP-FPM, PostgreSQL and Valkey serves 20 requests a second for a week through an update and its rollback, two power cuts and a pulled cable: no acknowledged write is lost, no service goes down, memory and processes stay flat, and the last day's 99th percentile is within 20% of the first's (ADR 0546)"
+time = "180h"
+fresh = true
+only_by_name = true
+# The days are long steps that print a line every hour, and the load runs in
+# a step of its own: the quiet is the test.
+stall = "off"
+host_needs = ["python3", "scp", "ssh", "curl"]
+
+[[step]]
+host = "sh {here}/server-week.sh prepare shop-week.example.org week-admin lab-week-password-1"
+expect = "prepared"
+[[step]]
+host = "sh {here}/../services/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
+expect = "copied: org.nginx.nginx"
+[[step]]
+host = "sh {here}/../services/copy-bundle.sh net.php.php {machine} {machine-port:22}"
+expect = "copied: net.php.php"
+[[step]]
+host = "sh {here}/../services/copy-bundle.sh org.postgresql.postgresql {machine} {machine-port:22}"
+expect = "copied: org.postgresql.postgresql"
+[[step]]
+host = "sh {here}/../services/copy-bundle.sh io.valkey.valkey {machine} {machine-port:22}"
+expect = "copied: io.valkey.valkey"
+[[step]]
+host = "sh {here}/../services/copy-file.sh {here}/server-week.php {machine} {machine-port:22}"
+expect = "copied: server-week.php"
+[[step]]
+host = "sh {here}/../services/copy-file.sh {here}/server-week-machine.sh {machine} {machine-port:22}"
+expect = "copied: server-week-machine.sh"
+# The shop, which the machine makes with its own commands.
+[[step]]
+run = "sh /users/lab/server-week-machine.sh setup shop-week.example.org week-admin lab-week-password-1"
+root = true
+expect = "setup done"
+[[step]]
+host = "sh {here}/server-week.sh page {machine} {machine-port:80}"
+expect = "page answers"
+[[step]]
+host = "python3 {here}/server-week-load.py probe {machine} {machine-port:22} {machine-port:9090} week-admin lab-week-password-1"
+expect = "signed in over SSH, signed in to the console"
+# The customers, until the test ends.
+[[step]]
+host = "python3 {here}/server-week-load.py /tmp/lab-server-week {machine} {machine-port:80} {machine-port:22} {machine-port:9090} shop-week.example.org week-admin lab-week-password-1"
+background = true
+ready = "load running"
+# Day 1, which day 7 is held to.
+[[step]]
+host = "sh {here}/server-week.sh day 1 1440 {machine} {machine-port:22}"
+expect = "day 1 held"
+# An update to the bridge release of the test update server, as
+# updates/online does it, and the machine restarts into it.
+[[step]]
+host = "sh {here}/../updates/update-server.sh serve {port:updates}"
+background = true
+ready = "serving updates"
+[[step]]
+run = '''sh -c 'printf "stable = 10\n" > /system/settings/sysupdate/health.toml && printf "server = \"http://{peer}:{port:updates}/system/\"\ncanary = true\n" > /system/settings/sysupdate/updates.toml && echo "set: $((6 * 7))"' '''
+root = true
+expect = "set: 42"
+[[step]]
+run = "sysupdate check"
+root = true
+expect = ["sysupdate: the stable channel offers Dukovo ", "-test.bridge comes first"]
+[[step]]
+run = "sysupdate download"
+root = true
+expect = "sysupdate: fetched "
+[[step]]
+run = "sysupdate stage"
+root = true
+expect = "-test.bridge in slot B: it starts at the next restart"
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot b, @system.b"
+[[step]]
+serial = "proved itself: it is now the default"
+[[step]]
+wait = "ready"
+[[step]]
+host = "sh {here}/server-week.sh back {machine} {machine-port:22} {machine-port:80}"
+expect = "acknowledged writes all kept"
+[[step]]
+host = "sh {here}/server-week.sh day 2 1440 {machine} {machine-port:22}"
+expect = "day 2 held"
+# The update is undone, as startup/bisect does it, keeping the settings
+# of the shop.
+[[step]]
+run = "sysupdate rollback --keep-settings"
+root = true
+expect = "starts from the next restart on"
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+serial = "is seen through"
+[[step]]
+wait = "ready"
+[[step]]
+host = "sh {here}/server-week.sh back {machine} {machine-port:22} {machine-port:80}"
+expect = "acknowledged writes all kept"
+[[step]]
+host = "sh {here}/server-week.sh day 3 1440 {machine} {machine-port:22}"
+expect = "day 3 held"
+# The power cord out, with no warning.
+[[step]]
+power = "cut"
+[[step]]
+power = "on"
+[[step]]
+wait = "ready"
+[[step]]
+host = "sh {here}/server-week.sh back {machine} {machine-port:22} {machine-port:80}"
+expect = "acknowledged writes all kept"
+[[step]]
+host = "sh {here}/server-week.sh day 4 1440 {machine} {machine-port:22}"
+expect = "day 4 held"
+# The cable out for two minutes, where the machine has one to pull. The
+# load goes on and counts the errors.
+[[step]]
+link = "down"
+optional = true
+[[step]]
+wait = "2m"
+[[step]]
+link = "up"
+optional = true
+[[step]]
+host = "sh {here}/server-week.sh back {machine} {machine-port:22} {machine-port:80}"
+expect = "acknowledged writes all kept"
+[[step]]
+host = "sh {here}/server-week.sh day 5 1440 {machine} {machine-port:22}"
+expect = "day 5 held"
+# The power cord out again.
+[[step]]
+power = "cut"
+[[step]]
+power = "on"
+[[step]]
+wait = "ready"
+[[step]]
+host = "sh {here}/server-week.sh back {machine} {machine-port:22} {machine-port:80}"
+expect = "acknowledged writes all kept"
+[[step]]
+host = "sh {here}/server-week.sh day 6 1440 {machine} {machine-port:22}"
+expect = "day 6 held"
+[[step]]
+host = "sh {here}/server-week.sh day 7 1440 {machine} {machine-port:22}"
+expect = "day 7 held"
+[[step]]
+host = "sh {here}/server-week.sh verdict"
+expect = "week held"
+# The machine as it was.
+[[step]]
+run = "sh /users/lab/server-week-machine.sh teardown shop-week.example.org week-admin"
+root = true
+expect = "restored"
+[[step]]
+run = "sh -c 'rm -f /users/lab/server-week-machine.sh /users/lab/server-week.php /users/lab/org.nginx.nginx.dkv /users/lab/net.php.php.dkv /users/lab/org.postgresql.postgresql.dkv /users/lab/io.valkey.valkey.dkv /system/settings/sysupdate/health.toml /system/settings/sysupdate/updates.toml; echo cleaned'"
+root = true
+expect = "cleaned"
+[[step]]
+host = "sh {here}/server-week.sh finish"
+expect = "gone"
