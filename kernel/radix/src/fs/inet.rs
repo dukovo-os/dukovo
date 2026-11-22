@@ -72,6 +72,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
+use core::task::Waker;
 
 use radix_abi::Status;
 use radix_abi::errors::{File, Kernel};
@@ -940,14 +941,25 @@ impl InetSocket {
             if non_blocking {
                 return Err(status(Kernel::WouldBlock));
             }
-            if !self.waiters.sleep(way, reason, seen, deadline) {
-                return Err(status(late));
-            }
-            if sched::interrupted() {
+            let left = if !self.waiters.sleep(way, reason, seen, deadline) {
+                status(late)
+            } else if sched::interrupted() {
                 // As on Linux, a call with a timeout is not made again.
                 let restart = if timeout_ns > 0 { Restart::Never } else { Restart::Always };
-                return Err(interrupted(restart));
+                interrupted(restart)
+            } else {
+                continue;
+            };
+            // A waiter woken alone may have been woken for what is there
+            // now: it takes it as it goes, as Linux's `accept` takes a
+            // connection that came before its signal, so that no other
+            // waiter is left asleep with it there.
+            if self.waiters.wakes_one(way)
+                && let Ok(Some(done)) = attempt(&mut self.state.lock())
+            {
+                return Ok(done);
             }
+            return Err(left);
         }
     }
 
@@ -1129,6 +1141,8 @@ impl InetSocket {
         }
         state.pools = pools;
         state.phase = Phase::Listening;
+        // Each connection made is for one thread waiting in `accept`.
+        self.waiters.accepts();
         let versions = match address {
             None => state.versions(),
             Some(IpAddress::Ipv4(_)) => Versions::Ipv4,
@@ -1199,18 +1213,14 @@ impl InetSocket {
 
     /// Takes back `part`, a connection [`take`](Self::take) took that did
     /// not go where it was going, to the front of the connections that
-    /// wait, so that the next `accept` takes it. One that can no longer
-    /// wait, as there is no memory for it, is reset.
+    /// wait, so that the next `accept` takes it, and wakes a thread waiting
+    /// in `accept` for it. One that can no longer wait, as there is no
+    /// memory for it, is reset.
     fn give_back(&self, part: Part) {
         let state = self.state.lock();
         let pool = state.pools.iter().find(|pool| core::ptr::eq(pool.interface, part.interface));
         match pool {
-            Some(pool) if state.phase == Phase::Listening => {
-                pool.give_back(part);
-                drop(state);
-                // Another thread may wait in `accept` for it.
-                self.waiters.changed();
-            }
+            Some(pool) if state.phase == Phase::Listening => pool.give_back(part),
             _ => {
                 drop(state);
                 release_part(part, false, &mut None);
@@ -2175,12 +2185,18 @@ struct Shape {
 /// which connections came, up to the backlog; a SYN that comes while none
 /// listens is held, not refused, and as many more listen until its peer
 /// sends it again.
+///
+/// Its sockets have no wakers: each step of a handshake, and each segment
+/// that comes before `accept`, would wake every thread in `accept` and
+/// every poller. It counts the connections made after each poll instead,
+/// and wakes one thread for each new one (ADR 0651).
 struct ListenPool {
     interface: &'static Interface,
     shape: Shape,
     members: Mutex<Members>,
-    /// The listening socket's wakers, which each of its sockets has: one
-    /// whose connection is made wakes `accept`.
+    /// The listening socket's wakers, whose receive waker it wakes once
+    /// for each connection made: one thread in `accept` looks, and its
+    /// pollers do.
     wakers: Wakers,
 }
 
@@ -2195,6 +2211,9 @@ struct Members {
     /// Until when it keeps more than [`POOL`] sockets listening, for the
     /// SYNs it held to come again.
     held_until_ns: u64,
+    /// How many of its connections were made, as it last counted them
+    /// ([`was_made`]): `accept` was told of each.
+    made: usize,
 }
 
 impl ListenPool {
@@ -2208,7 +2227,7 @@ impl ListenPool {
     ) -> Result<Arc<ListenPool, Kmalloc>, Status> {
         let mut parts = Vec::new_in(kmalloc());
         parts.try_reserve(POOL).map_err(|_| status(Kernel::NoMemory))?;
-        let members = Mutex::new(Members { parts, backlog, held_until_ns: 0 });
+        let members = Mutex::new(Members { parts, backlog, held_until_ns: 0, made: 0 });
         let pool = ListenPool { interface, shape, members, wakers: wakers.clone() };
         let pool = Arc::try_new_in(pool, kmalloc()).map_err(|_| status(Kernel::NoMemory))?;
         let made = {
@@ -2250,7 +2269,6 @@ impl ListenPool {
         socket.set_pooled(true);
         match self.interface.add_socket(stack, socket) {
             Ok(handle) => {
-                stack.set_wakers(handle, &self.wakers.receive, &self.wakers.send);
                 let leases = Leases::Tcp(leases);
                 let part =
                     Part { interface: self.interface, handle, leases, other: OtherEnd::default() };
@@ -2265,18 +2283,25 @@ impl ListenPool {
         }
     }
 
-    /// Has [`POOL`] of its sockets listen on `stack`, its interface's, and
-    /// one more for each SYN they held since it last looked, as its
-    /// backlog allows; lets go of those past [`POOL`] that still listen
-    /// once the SYNs held had time to come again, at `now_ns`.
+    /// Wakes a thread in `accept` for each connection made since it last
+    /// counted them, and has [`POOL`] of its sockets listen on `stack`, its
+    /// interface's, and one more for each SYN they held since it last
+    /// looked, as its backlog allows; lets go of those past [`POOL`] that
+    /// still listen once the SYNs held had time to come again, at `now_ns`.
     fn top_up(&self, members: &mut Members, stack: &mut Stack<Card>, now_ns: u64) {
-        let (mut listening, mut held) = (0, 0);
+        let (mut listening, mut held, mut made) = (0, 0, 0);
         for part in &members.parts {
             if let Some(socket) = stack.socket_mut::<tcp::Socket<'static>>(part.handle) {
                 listening += usize::from(socket.state() == tcp::State::Listen);
                 held += usize::from(socket.take_held_syns());
+                made += usize::from(was_made(socket));
             }
         }
+        // `take` took one if there are fewer: no one is woken for that.
+        for _ in members.made..made {
+            self.wakers.receive.wake_by_ref();
+        }
+        members.made = made;
         if held > 0 {
             members.held_until_ns = now_ns.saturating_add(HELD_NS);
         }
@@ -2323,7 +2348,8 @@ impl ListenPool {
 
     /// Takes `part` back, a connection [`take`](Self::take) took that did
     /// not go where it was going, to the front, so that the next `accept`
-    /// takes it; resets it if there is no memory for that.
+    /// takes it, and wakes a thread in `accept` for it; resets it if there
+    /// is no memory for that.
     fn give_back(&self, part: Part) {
         {
             let mut stack = self.interface.stack.lock();
@@ -2332,10 +2358,12 @@ impl ListenPool {
                 if let Some(socket) = stack.socket_mut::<tcp::Socket<'static>>(part.handle) {
                     socket.set_pooled(true);
                 }
-                stack.set_wakers(part.handle, &self.wakers.receive, &self.wakers.send);
+                // The socket it was to be no longer hears of it.
+                stack.set_wakers(part.handle, Waker::noop(), Waker::noop());
                 // Room was reserved just now.
                 let _ = members.parts.push_within_capacity(part);
                 members.parts.rotate_right(1);
+                self.top_up(&mut members, &mut stack, sched::now_ns());
                 return;
             }
         }
@@ -2358,9 +2386,13 @@ impl net::Pool for ListenPool {
 /// Whether `part`, a listening socket's on `stack`, has a connection that
 /// was made and waits for `accept`.
 fn waits(stack: &mut Stack<Card>, part: &Part) -> bool {
-    stack.socket_mut::<tcp::Socket<'static>>(part.handle).is_some_and(|socket| {
-        !matches!(socket.state(), tcp::State::Listen | tcp::State::SynReceived)
-    })
+    stack.socket_mut::<tcp::Socket<'static>>(part.handle).is_some_and(|socket| was_made(socket))
+}
+
+/// Whether `socket`, one of a listening socket's, has a connection that was
+/// made, even one closed since: it neither listens nor is being connected.
+fn was_made(socket: &tcp::Socket<'static>) -> bool {
+    !matches!(socket.state(), tcp::State::Listen | tcp::State::SynReceived)
 }
 
 /// Takes a listening socket's `pools` away: their interfaces refill them

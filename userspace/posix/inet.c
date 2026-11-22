@@ -230,7 +230,8 @@ static long voluntary_switches(pid_t pid) {
 // what they take, and the parent connects 500 times, waiting each time for
 // the acceptor's close. Each connection costs one child one block, so the
 // children's voluntary switches move by about 500 over the rounds; with
-// every step of every handshake waking all four they moved by about XXXX.
+// every step of every handshake waking all four they moved by more than
+// 750, and this check failed.
 static void accepting(void) {
 	enum { CHILDREN = 4, ROUNDS = 500 };
 	int s = socket(AF_INET, SOCK_STREAM, 0);
@@ -293,7 +294,12 @@ static void accepting(void) {
 	printf("inet: accepting: %d connections made the %d acceptors switch %ld times\n", served,
 			CHILDREN, total);
 	CHECK(served == ROUNDS);
-	CHECK(total <= ROUNDS + ROUNDS / 2);
+	if(total > ROUNDS + ROUNDS / 2) {
+		char what[96];
+		snprintf(what, sizeof(what), "the acceptors switched %ld times, more than %d", total,
+				ROUNDS + ROUNDS / 2);
+		check_failed(__FILE__, __LINE__, what, 0);
+	}
 	for(int i = 0; i < CHILDREN; i++) {
 		kill(pids[i], SIGKILL);
 		waitpid(pids[i], NULL, 0);
