@@ -15,7 +15,8 @@
 # MACHINE is the machine's address and the ports the lab PC's that reach its
 # ports 22 and 80, as {machine} and {machine-port:N} give them. Everything
 # the test keeps on the lab PC is in /tmp/lab-server-week, which prepare
-# makes and finish takes away: info (what prepare was told), acked.txt and
+# makes afresh and finish leaves for reading after the run, as the run's
+# bundle keeps none of it: info (what prepare was told), acked.txt and
 # minutes.csv (server-week-load.py's, whose header says what they hold),
 # and for each day N, day-N.start and day-N.end (seconds since 1970) and
 # day-N.checks.
@@ -28,12 +29,13 @@
 # check) and says what it found. The day fails at the first check where a
 # service is not running, the items are not as setup made them, the machine
 # does not answer in 3 tries a minute apart, or, once two hours of the day
-# have gone, the last backup is over two hours old. At its end the memory in use is held as `ob soak`
-# holds a soak (tools/xtask/src/test/soak.rs): the mean of the checks of the
-# last quarter may be at most the mean of the second quarter, plus the
-# larger of a twentieth of it and 8 MiB; the processes may be at most 2
-# more; and more than 2 SSH or console sign-ins of the load in a row that
-# failed fail the day. It says `day N held` or why not.
+# have gone, the last backup is over two hours old. At its end the memory
+# in use is held as `ob soak` holds a soak (tools/xtask/src/test/soak.rs):
+# the mean of the checks of the last quarter may be at most the mean of the
+# second quarter, plus the larger of a twentieth of it and 8 MiB; the
+# processes may be at most 2 more; and more than 2 SSH or console sign-ins
+# of the load in a row that failed fail the day. It says `day N held` or
+# why not.
 #
 # back follows a fault: it waits up to 120 seconds for the page to answer
 # and then reads the writes PostgreSQL holds. Every write the load had
@@ -303,8 +305,7 @@ command=${1:-}
 case "$command" in
 prepare) prepare "${2:?site}" "${3:?account}" "${4:?password}" ;;
 finish)
-	rm -rf "$dir"
-	echo "gone"
+	echo "kept in $dir until the next run: $(wc -l <"$dir/minutes.csv" | tr -d ' ') minutes"
 	exit 0
 	;;
 page | day | back | verdict) ;;
