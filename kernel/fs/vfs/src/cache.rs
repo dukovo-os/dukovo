@@ -14,10 +14,10 @@
 //!
 //! What lies below is the file's [`Backing`]: the filesystem's view of
 //! where its data lives on the disk. tmpfs has no disk: its pages are the
-//! only copy, a page never written is a hole that reads as zeros, and
-//! nothing is written back. A disk filesystem reads and writes pages
-//! through its backing, which also allocates space when the file grows
-//! and frees it when it shrinks.
+//! only copy, a page never written is a hole that reads as zeros and
+//! holds no memory, and nothing is written back. A disk filesystem reads
+//! and writes pages through its backing, which also allocates space when
+//! the file grows and frees it when it shrinks.
 //!
 //! When a file grows past its end, the bytes between the old end and the
 //! new data must read as zeros, though the disk may hold anything there:
@@ -179,7 +179,10 @@ pub trait Backing {
     /// a filesystem that writes every change to a new place (Btrfs) must;
     /// by default there is nothing to do. Fails with [`Error::NoSpace`]
     /// when there is none, so that the write fails as on Linux, not the
-    /// write-back after it.
+    /// write-back after it. Without a disk, a page the cache holds has
+    /// changed and is never written back, so this is called once for each
+    /// page as the cache makes it, and [`Backing::release_pages`] as it
+    /// goes: tmpfs charges its limit so.
     fn reserve_pages(&self, _pages: usize) -> Result<()> {
         Ok(())
     }
@@ -431,7 +434,11 @@ impl FileCache {
             let size = state.size;
             // A page written whole need not be read first.
             let whole = within == 0 && (n == PAGE_SIZE || at + n as u64 >= size);
-            let made = whole && state.pages.get(index).is_none();
+            // A page made here goes again if the write fails: one made to
+            // be written whole holds none of the file's bytes, and without
+            // a disk a missing page is a hole, which a page of zeros left
+            // in its place would fill with memory the file was not charged.
+            let made = (whole || !backing.persistent()) && state.pages.get(index).is_none();
             let slot = match load(&mut state, index, backing, true, !whole) {
                 Ok(Some(slot)) => slot,
                 Ok(None) => unreachable!("loading to write always makes a page"),
@@ -453,8 +460,8 @@ impl FileCache {
             let copied = data.get_now(from + done, bytes);
             if !matches!(copied, Ok(true)) {
                 if made {
-                    // A page made to be written whole holds none of the
-                    // file's bytes: it goes, and the file keeps its own.
+                    // The page holds none of the file's bytes: it goes,
+                    // and the file keeps its own.
                     drop(state.pages.remove(index));
                     backing.release_pages(1);
                 } else {
@@ -481,10 +488,10 @@ impl FileCache {
             done += n;
         }
         let new_end = start + done as u64;
-        if new_end > state.size {
-            state.size = new_end;
-        }
+        // A write that copied nothing leaves the file as it was, its
+        // length too though it started past the end, as on Linux.
         if done > 0 {
+            state.size = state.size.max(new_end);
             state.modified = crate::now();
         }
         // Room reserved past what was written is given back.

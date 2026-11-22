@@ -45,6 +45,7 @@
 
 mod actions;
 mod coverage;
+mod servers;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -706,6 +707,10 @@ const KIT_FILE: &str = "kit.toml";
 /// What Linux's init, linux-bench, prints once every benchmark has run.
 const KIT_DONE: &str = "linux-bench: done";
 
+/// How long the kit's benchmarks take beside the test's own time, as
+/// dukovo-lab reads a duration: the POSIX benchmarks and the servers'.
+const KIT_TIME: &str = "15m";
+
 /// Builds the Linux kit that performance tests hold Dukovo to, and gives
 /// its folder, `out/lab-linux`, for dukovo-lab's `--linux`: the kernel
 /// `ob bench` holds Radix to (`--linux-kernel`'s, else the pinned
@@ -727,6 +732,7 @@ pub fn linux_kit(ctx: &Ctx) -> Result<PathBuf> {
         }
     };
     let initrd = bench::linux_init(ctx, &dir, Some(&posix), None, &kernel, modules.as_deref())?;
+    add_servers(ctx, &dir, &initrd)?;
     // dukovo-lab takes the kit's files from beside its kit.toml.
     let copy = dir.join("vmlinuz");
     std::fs::copy(&kernel, &copy).context(|| {
@@ -738,16 +744,42 @@ pub fn linux_kit(ctx: &Ctx) -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// Appends the servers of [`servers::linux_servers`] to the initramfs at
+/// `initrd`, which Linux unpacks as two archives, one after the other. A
+/// server that will not build only leaves the server benchmarks' rows out
+/// of the kit: the tests that need them fail saying the kit measures no
+/// such row.
+fn add_servers(ctx: &Ctx, dir: &Path, initrd: &Path) -> Result<()> {
+    let part = match servers::linux_servers(ctx, dir) {
+        Ok(part) => part,
+        Err(why) => {
+            eprintln!("    note: the server benchmarks' rows will be missing: {why}");
+            return Ok(());
+        }
+    };
+    let bytes = std::fs::read(&part).context(|| format!("reading {}", part.display()))?;
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(initrd)
+        .context(|| format!("opening {}", initrd.display()))?;
+    std::io::Write::write_all(&mut file, &bytes).context(|| format!("writing {}", initrd.display()))
+}
+
 /// The kit's `kit.toml`, naming its kernel and initramfs, the files beside
-/// it, in the form dukovo-lab's `--linux` reads.
+/// it, in the form dukovo-lab's `--linux` reads. Its command line ends with
+/// `linux-bench.clock=base`, which has linux-bench hold the CPUs at their
+/// base frequency, as Dukovo's `benchmark` profile does (ADR 0557). It is a
+/// word, not an argument after `--`: the lab appends `console=` to the end
+/// of the command line, which after `--` would reach init.
 fn kit_file(kernel: &str, initrd: &str) -> String {
     format!(
         "# The Linux that the lab's performance tests hold Dukovo to: `ob lab` makes\n\
          # this folder, and dukovo-lab boots it with --linux.\n\
          kernel = \"{kernel}\"\n\
          initrd = \"{initrd}\"\n\
-         cmdline = \"{}\"\n\
-         done = \"{KIT_DONE}\"\n",
+         cmdline = \"{} linux-bench.clock=base\"\n\
+         done = \"{KIT_DONE}\"\n\
+         time = \"{KIT_TIME}\"\n",
         bench::LINUX_CMDLINE
     )
 }
@@ -1215,15 +1247,24 @@ mod tests {
     }
 
     #[test]
-    fn the_linux_kit_names_its_files_and_sends_linux_to_the_serial_port() {
+    fn the_linux_kit_names_its_files_holds_the_clock_and_sends_linux_to_the_serial_port() {
         let kit = kit_file("vmlinuz", "linux-bench.cpio");
         assert!(kit.contains("kernel = \"vmlinuz\"\n"), "{kit}");
         assert!(kit.contains("initrd = \"linux-bench.cpio\"\n"), "{kit}");
         // dukovo-lab reads Linux's numbers from the first serial port, and
         // stops waiting at the line linux-bench prints last.
         assert!(bench::LINUX_CMDLINE.contains("console=ttyS0"));
-        assert!(kit.contains(&format!("cmdline = \"{}\"\n", bench::LINUX_CMDLINE)), "{kit}");
+        assert!(
+            kit.contains(&format!(
+                "cmdline = \"{} linux-bench.clock=base\"\n",
+                bench::LINUX_CMDLINE
+            )),
+            "{kit}"
+        );
         assert!(kit.contains("done = \"linux-bench: done\"\n"), "{kit}");
+        // The servers' benchmarks run on the test's clock but are the kit's
+        // time, which dukovo-lab adds to the test's.
+        assert!(kit.contains("time = \"15m\"\n"), "{kit}");
     }
 
     #[test]

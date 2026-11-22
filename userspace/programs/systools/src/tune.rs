@@ -614,6 +614,8 @@ description = "Most work done a second"
             setting("sched.slice_us", "3000", "3000"),
             setting("disk.read_ahead_kib", "128", "128"),
             setting("net.congestion", "cubic", "cubic"),
+            setting("cpu.boost", "on", "on"),
+            setting("cpu.speed", "chosen", "chosen"),
         ]
     }
 
@@ -852,8 +854,9 @@ description = "Most work done a second"
     }
 
     /// The profiles Dukovo ships, as tune(8) finds them.
-    const SHIPPED: [(&str, &str); 6] = [
+    const SHIPPED: [(&str, &str); 7] = [
         ("balanced", include_str!("../../../tune/balanced.toml")),
+        ("benchmark", include_str!("../../../tune/benchmark.toml")),
         ("low-latency", include_str!("../../../tune/low-latency.toml")),
         ("power-saver", include_str!("../../../tune/power-saver.toml")),
         ("throughput", include_str!("../../../tune/throughput.toml")),
@@ -888,11 +891,14 @@ description = "Most work done a second"
     #[test]
     fn every_shipped_setting_is_one_the_kernel_takes() {
         let words = ["firmware", "performance", "balance_performance", "balance_power", "power"];
+        let speeds = ["chosen", "highest"];
         for (name, _) in SHIPPED {
             for (setting, value) in sets(name) {
                 let number: u64 = value.parse().unwrap_or(0);
                 let takes = match setting.as_str() {
                     "cpu.energy_preference" => words.contains(&value.as_str()),
+                    "cpu.boost" => ["on", "off"].contains(&value.as_str()),
+                    "cpu.speed" => speeds.contains(&value.as_str()),
                     "sched.slice_us" => (500..=20_000).contains(&number),
                     "disk.read_ahead_kib" => number <= 1024 && number.is_multiple_of(4),
                     _ => false,
@@ -908,6 +914,14 @@ description = "Most work done a second"
             list.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect()
         };
         assert_eq!(sets("balanced"), pairs(&[]));
+        assert_eq!(
+            sets("benchmark"),
+            pairs(&[
+                ("cpu.boost", "off"),
+                ("cpu.energy_preference", "performance"),
+                ("cpu.speed", "highest")
+            ])
+        );
         assert_eq!(
             sets("throughput"),
             pairs(&[

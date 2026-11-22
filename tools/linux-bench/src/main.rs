@@ -48,6 +48,12 @@
 //! booting system does, and `git status` with the git given with
 //! `--git`, or at `/git` as process 1 (ADR 0294).
 //!
+//! As process 1 it also runs `/server-bench` (`userspace/posix/serverbench.c`,
+//! built for Linux, with the servers it runs under `/applications`) when
+//! the initramfs holds one, on a tmpfs at `/tmp`, with the environment
+//! `TZ=UTC` and `PATH=/usr/bin:/bin` and nothing else: nginx, PHP, Valkey
+//! and PostgreSQL, whose rows print in the same format as the rest.
+//!
 //! After the TLB shootdowns it prints how many TLB interrupts reached the
 //! other CPU (the `TLB` line of `/proc/interrupts`), as Radix prints its
 //! kernel's events:
@@ -58,13 +64,21 @@
 //!
 //! `ob bench` runs it on the host, and also as the init process of a Linux
 //! virtual machine set up like the one Radix runs in: as process 1 it
-//! mounts `/proc` and `/dev`, loads the kernel modules of the initramfs
+//! mounts `/proc`, `/dev` and `/sys`, loads the kernel modules of the initramfs
 //! (Btrfs, where the kernel has it as a module), mounts the Btrfs disk,
 //! prints `linux-bench: done` at the end and powers the machine off.
 //!
 //! With `--btrfs-log make` or `--btrfs-log list`, as process 1, it
 //! makes or lists the Btrfs log of `ob fixture btrfs-log` instead
 //! ([`btrfs_log`]).
+//!
+//! As process 1 it also prints what Linux does with the CPUs' clock and
+//! idle states (`linux-bench: CPU frequency:` and `linux-bench: idle:`),
+//! and holds every CPU at its base frequency when the kernel command line
+//! has `linux-bench.clock=base` ([`hold_clock`]), so that the lab's
+//! performance tests run Linux at the clock Dukovo runs at (ADR 0557).
+//! If the lines show a different clock than the rows ran at, start with
+//! `/sys/devices/system/cpu/cpufreq` on the twin.
 
 mod btrfs_log;
 
@@ -76,11 +90,32 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::Instant;
 
+/// The kernel command line word that has process 1 hold the CPUs at their
+/// base frequency. A word with a dot is left to modules, so Linux neither
+/// warns about it nor passes it to init, and it stays clear of `--`: the
+/// lab appends `console=` to the end of a kit's command line, which after
+/// `--` would reach init.
+const CLOCK_WORD: &str = "linux-bench.clock=base";
+
+/// Where Linux keeps the CPUs' frequency policies, one folder each.
+const CPUFREQ: &str = "/sys/devices/system/cpu/cpufreq";
+
+/// Where intel_pstate keeps its own switches, when it is the driver.
+const INTEL_PSTATE: &str = "/sys/devices/system/cpu/intel_pstate";
+
+/// Where the CPU idle states are described.
+const CPUIDLE: &str = "/sys/devices/system/cpu/cpuidle";
+
 /// Where the POSIX benchmarks are in the virtual machine's initramfs.
 const POSIX_BENCH: &str = "/posix-bench";
 
 /// Where git is in the initramfs, for the git benchmark.
 const GIT: &str = "/git";
+
+/// Where the server benchmarks are in the initramfs, when `ob lab` made
+/// the kit with them, and the servers they run.
+const SERVER_BENCH: &str = "/server-bench";
+const SERVERS: [&str; 4] = ["nginx", "php", "valkey", "postgresql"];
 
 /// The virtual machine's disks, for the POSIX benchmarks' disk benchmarks:
 /// a virtio disk and an NVMe one.
@@ -142,7 +177,15 @@ fn main() {
     if std::process::id() == 1 {
         mount("proc", "/proc");
         mount("devtmpfs", "/dev");
+        mount("sysfs", "/sys");
         load_modules();
+        report_cpu_frequency();
+        report_idle();
+        if std::fs::read_to_string("/proc/cmdline")
+            .is_ok_and(|line| line.split_whitespace().any(|word| word == CLOCK_WORD))
+        {
+            hold_clock();
+        }
     }
     if let Some(mode) = btrfs_log {
         if mode == "make" {
@@ -251,6 +294,10 @@ fn main() {
             disks.push(("--git", git.as_path()));
         }
         posix_bench(&program, &cpus, &disks, network);
+    }
+
+    if std::process::id() == 1 {
+        server_bench(&cpus);
     }
 
     if std::process::id() == 1 {
@@ -617,7 +664,7 @@ fn tlb_column(text: &str, cpu: usize) -> Option<u64> {
 }
 
 /// Mounts a filesystem of kind `kind` on `at`, which the virtual
-/// machine's init finds empty: `/proc`, and `/dev` as the kernel's
+/// machine's init finds empty: `/proc`, `/sys`, and `/dev` as the kernel's
 /// devtmpfs, where its disk is.
 fn mount(kind: &str, at: &str) {
     let _ = std::fs::create_dir_all(at);
@@ -625,13 +672,197 @@ fn mount(kind: &str, at: &str) {
         return;
     };
     // SAFETY: the strings are NUL-terminated and live through the call;
-    // procfs and devtmpfs take no data.
+    // procfs, sysfs and devtmpfs take no data.
     let result = unsafe {
         libc::mount(kind_c.as_ptr(), at_c.as_ptr(), kind_c.as_ptr(), 0, std::ptr::null())
     };
     if result != 0 {
         eprintln!("linux-bench: cannot mount {at}: {}", std::io::Error::last_os_error());
     }
+}
+
+/// The text of the file at `path` without its final newline, or `None`
+/// where the file is not there or cannot be read.
+fn read_sysfs(path: &str) -> Option<String> {
+    Some(std::fs::read_to_string(path).ok()?.trim().to_string())
+}
+
+/// A frequency in kHz, as the files of cpufreq give it, in MHz.
+fn megahertz(path: &str) -> Option<u64> {
+    Some(read_sysfs(path)?.parse::<u64>().ok()? / 1000)
+}
+
+/// The folders of the CPUs' frequency policies (`policy0`, `policy1`, ...),
+/// in the order of their numbers.
+fn policies() -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(CPUFREQ) else { return Vec::new() };
+    let mut found: Vec<(u32, PathBuf)> = entries
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            let number = path.file_name()?.to_str()?.strip_prefix("policy")?.parse().ok()?;
+            Some((number, path))
+        })
+        .collect();
+    found.sort();
+    found.into_iter().map(|(_, path)| path).collect()
+}
+
+/// Whether Linux lets the CPUs run above their base frequency, from
+/// intel_pstate's `no_turbo` or cpufreq's `boost`; `None` where neither is
+/// there.
+fn turbo_allowed() -> Option<bool> {
+    if let Some(no_turbo) = read_sysfs(&format!("{INTEL_PSTATE}/no_turbo")) {
+        return Some(no_turbo == "0");
+    }
+    Some(read_sysfs(&format!("{CPUFREQ}/boost"))? == "1")
+}
+
+/// Prints the facts of the first CPU's frequency policy on one line, so a
+/// run's output says which clock Linux ran the rows at.
+fn report_cpu_frequency() {
+    let policy = format!("{CPUFREQ}/policy0");
+    if !Path::new(&policy).exists() {
+        println!(
+            "linux-bench: CPU frequency: no cpufreq driver; the CPUs run at the clock the \
+             firmware or the host gives them"
+        );
+        return;
+    }
+    let file = |name: &str| read_sysfs(&format!("{policy}/{name}")).unwrap_or_default();
+    let mut line = file("scaling_driver");
+    if let Some(status) = read_sysfs(&format!("{INTEL_PSTATE}/status")) {
+        line += &format!(" ({status})");
+    }
+    line += &format!(", {}", file("scaling_governor"));
+    if let Some(preference) = read_sysfs(&format!("{policy}/energy_performance_preference")) {
+        line += &format!(", energy preference {preference}");
+    }
+    let mhz = |name: &str| megahertz(&format!("{policy}/{name}")).unwrap_or_default();
+    line += &format!(
+        ", {} to {} MHz of {} to {}",
+        mhz("scaling_min_freq"),
+        mhz("scaling_max_freq"),
+        mhz("cpuinfo_min_freq"),
+        mhz("cpuinfo_max_freq")
+    );
+    if let Some(base) = megahertz(&format!("{policy}/base_frequency")) {
+        line += &format!(", base {base} MHz");
+    }
+    if let Some(turbo) = turbo_allowed() {
+        line += if turbo { ", turbo on" } else { ", turbo off" };
+    }
+    println!("linux-bench: CPU frequency: {line}");
+}
+
+/// Prints the idle driver and governor, and the first CPU's idle states in
+/// the order Linux enters them as it goes deeper.
+fn report_idle() {
+    let driver = read_sysfs(&format!("{CPUIDLE}/current_driver")).filter(|name| name != "none");
+    let Some(driver) = driver else {
+        println!("linux-bench: idle: no cpuidle driver");
+        return;
+    };
+    let governor = read_sysfs(&format!("{CPUIDLE}/current_governor"))
+        .or_else(|| read_sysfs(&format!("{CPUIDLE}/current_governor_ro")))
+        .unwrap_or_default();
+    let cpu0 = "/sys/devices/system/cpu/cpu0/cpuidle";
+    let mut states: Vec<(u32, String)> = std::fs::read_dir(cpu0)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            let number = path.file_name()?.to_str()?.strip_prefix("state")?.parse().ok()?;
+            Some((number, read_sysfs(path.join("name").to_str()?)?))
+        })
+        .collect();
+    states.sort();
+    let names: Vec<String> = states.into_iter().map(|(_, name)| name).collect();
+    println!("linux-bench: idle: {driver}, {governor}: {}", names.join(" "));
+}
+
+/// Holds every CPU at its base frequency: turbo off, the performance
+/// governor and the minimum at the maximum, as Dukovo's `benchmark`
+/// profile does (ADR 0557), then prints what the policies read back as.
+/// It runs before any benchmark, so linux-bench's own rows run at the
+/// held clock too.
+fn hold_clock() {
+    let policies = policies();
+    if policies.is_empty() {
+        println!("linux-bench: CPU frequency not held: no cpufreq driver");
+        return;
+    }
+    let turbo_off = if Path::new(&format!("{INTEL_PSTATE}/no_turbo")).exists() {
+        Some((format!("{INTEL_PSTATE}/no_turbo"), "1"))
+    } else if Path::new(&format!("{CPUFREQ}/boost")).exists() {
+        Some((format!("{CPUFREQ}/boost"), "0"))
+    } else {
+        None
+    };
+    if let Some((path, value)) = turbo_off
+        && let Err(err) = std::fs::write(&path, value)
+    {
+        println!("linux-bench: CPU frequency not held: cannot write {path}: {err}");
+        return;
+    }
+    for policy in &policies {
+        if let Err(why) = hold_policy(policy) {
+            println!("linux-bench: CPU frequency not held: {why}");
+            return;
+        }
+    }
+    let mut held = None;
+    let mut cpus = 0;
+    for policy in &policies {
+        let limits = (
+            megahertz(&format!("{}/scaling_min_freq", policy.display())),
+            megahertz(&format!("{}/scaling_max_freq", policy.display())),
+        );
+        let (Some(min), Some(max)) = limits else {
+            println!(
+                "linux-bench: CPU frequency not held: cannot read the limits of {}",
+                policy.display()
+            );
+            return;
+        };
+        if min != max {
+            println!(
+                "linux-bench: CPU frequency not held: {} may run {min} to {max} MHz",
+                policy.display()
+            );
+            return;
+        }
+        if let Some(other) = held.filter(|&mhz| mhz != min) {
+            println!(
+                "linux-bench: CPU frequency not held: the policies differ: {other} MHz and {min} MHz"
+            );
+            return;
+        }
+        held = Some(min);
+        cpus += read_sysfs(&format!("{}/related_cpus", policy.display()))
+            .map_or(1, |list| list.split_whitespace().count());
+    }
+    let turbo = if turbo_allowed() == Some(false) { "turbo off, " } else { "" };
+    println!(
+        "linux-bench: CPU frequency held at {} MHz on {cpus} CPUs ({turbo}performance)",
+        held.unwrap_or_default()
+    );
+}
+
+/// Gives one frequency policy the performance governor and its maximum
+/// as its minimum. The governor alone has intel_pstate ask the CPU for
+/// its highest level as the minimum too, but `scaling_min_freq` does not
+/// show it; setting the minimum does the same on every driver, and it
+/// can be read back.
+fn hold_policy(policy: &Path) -> Result<(), String> {
+    let path = |name: &str| policy.join(name);
+    let write = |name: &str, value: &str| {
+        std::fs::write(path(name), value)
+            .map_err(|err| format!("cannot write {}: {err}", path(name).display()))
+    };
+    write("scaling_governor", "performance")?;
+    let max = std::fs::read_to_string(path("scaling_max_freq"))
+        .map_err(|err| format!("cannot read {}: {err}", path("scaling_max_freq").display()))?;
+    write("scaling_min_freq", max.trim())
 }
 
 /// Loads the kernel modules in [`MODULES`], in the order of their names.
@@ -926,6 +1157,33 @@ fn posix_bench(program: &Path, cpus: &[usize], disks: &[(&str, &Path)], network:
         Ok(status) if status.success() => {}
         Ok(status) => eprintln!("linux-bench: {} failed: {status}", program.display()),
         Err(err) => eprintln!("linux-bench: cannot run {}: {err}", program.display()),
+    }
+}
+
+/// Runs the server benchmarks at [`SERVER_BENCH`] on every CPU of `cpus`,
+/// if the initramfs holds them (an empty file or none stands for no
+/// servers). The servers keep their files in `/tmp` and take shared
+/// memory from `/dev/shm`, so both are made tmpfs, as on Radix; the
+/// benchmarks drive the servers over the loopback interface.
+fn server_bench(cpus: &[usize]) {
+    if !Path::new(SERVER_BENCH).metadata().is_ok_and(|meta| meta.len() > 0) {
+        return;
+    }
+    if !loopback_up() {
+        eprintln!("linux-bench: the loopback interface is down, so no server benchmarks");
+        return;
+    }
+    // A tmpfs holds its root folder at mode 1777 unless told otherwise.
+    mount("tmpfs", "/tmp");
+    mount("tmpfs", "/dev/shm");
+    allow(cpus);
+    std::io::stdout().flush().ok();
+    let mut command = std::process::Command::new(SERVER_BENCH);
+    command.args(SERVERS).env_clear().env("TZ", "UTC").env("PATH", "/usr/bin:/bin");
+    match command.status() {
+        Ok(status) if status.success() => {}
+        Ok(status) => eprintln!("linux-bench: {SERVER_BENCH} failed: {status}"),
+        Err(err) => eprintln!("linux-bench: cannot run {SERVER_BENCH}: {err}"),
     }
 }
 

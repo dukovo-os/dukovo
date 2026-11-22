@@ -11,10 +11,12 @@
 //! it holds its nodes weakly, so that a removed file's space is free at
 //! once); files are page caches with no disk below ([`FileCache`] with a
 //! non-persistent backing), so a file's pages are its data and holes read
-//! as zeros. A filesystem has a size limit, charged by the bytes its files
-//! are long, and its files' memory goes when the last reference to them
-//! does: a file removed while a program has it open lives until the
-//! program lets go, as on Linux.
+//! as zeros. A filesystem has a size limit, charged by the pages its files
+//! hold, as Linux's tmpfs charges its blocks: a hole costs nothing, so a
+//! byte written far past a file's end costs one page and a file made
+//! longer with `ftruncate` costs none. Its files' memory goes when the
+//! last reference to them does: a file removed while a program has it
+//! open lives until the program lets go, as on Linux.
 //!
 //! A node keeps its extended attributes in memory too, charged to the
 //! limit by their names' and values' bytes, at most [`ATTRIBUTES_MAX`]
@@ -45,11 +47,16 @@ use crate::{
 /// some more.
 pub const ATTRIBUTES_MAX: u64 = 128 << 10;
 
+/// The bytes a file's page is charged: the whole page, however few of
+/// them the file holds.
+const PAGE: u64 = radix_block::PAGE_SIZE as u64;
+
 /// What every node of one tmpfs shares.
 struct Shared {
-    /// The most bytes its files may hold together.
+    /// The most bytes it may be charged: its files' pages, its links'
+    /// targets and its extended attributes together.
     max: u64,
-    /// The bytes they hold.
+    /// The bytes it is charged.
     used: AtomicU64,
     /// The most files and directories it may hold, its root included.
     max_files: u64,
@@ -565,11 +572,14 @@ impl Attributes {
     }
 }
 
-/// The backing of a tmpfs file: no disk, and growth charged to the
-/// filesystem's limit.
+/// The backing of a tmpfs file: no disk, and each page the file holds
+/// charged to the filesystem's limit. The page cache reserves room for a
+/// page as it first changes and gives it back when the page goes
+/// ([`Backing::reserve_pages`]); a page with no disk below stays changed
+/// until it goes, so that is when the file gains and loses it.
 struct Charge<'a> {
     shared: &'a Shared,
-    /// The bytes this file is charged.
+    /// The bytes this file's pages are charged, a page's size each.
     charged: &'a AtomicU64,
 }
 
@@ -578,27 +588,29 @@ impl Backing for Charge<'_> {
         false
     }
 
-    fn reserve(&self, size: u64) -> Result<()> {
-        let had = self.charged.load(Ordering::Relaxed);
-        if size <= had {
-            return Ok(());
-        }
-        let more = size - had;
-        let used = self.shared.used.fetch_add(more, Ordering::Relaxed);
-        if used + more > self.shared.max {
-            self.shared.used.fetch_sub(more, Ordering::Relaxed);
-            return Err(Error::NoSpace);
-        }
-        self.charged.store(size, Ordering::Relaxed);
+    // A file's length costs nothing, its pages being charged as they are
+    // made, so a file grows as far as the largest size allows, as on
+    // Linux.
+    fn reserve(&self, _size: u64) -> Result<()> {
         Ok(())
     }
 
-    fn truncate(&self, size: u64) -> Result<()> {
-        let had = self.charged.load(Ordering::Relaxed);
-        if size < had {
-            self.shared.used.fetch_sub(had - size, Ordering::Relaxed);
-            self.charged.store(size, Ordering::Relaxed);
-        }
+    fn reserve_pages(&self, pages: usize) -> Result<()> {
+        let bytes = pages as u64 * PAGE;
+        self.shared.charge(bytes)?;
+        self.charged.fetch_add(bytes, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn release_pages(&self, pages: usize) {
+        let bytes = pages as u64 * PAGE;
+        self.charged.fetch_sub(bytes, Ordering::Relaxed);
+        self.shared.used.fetch_sub(bytes, Ordering::Relaxed);
+    }
+
+    // The pages a cut takes are given back as they go, by
+    // `release_pages`.
+    fn truncate(&self, _size: u64) -> Result<()> {
         Ok(())
     }
 }

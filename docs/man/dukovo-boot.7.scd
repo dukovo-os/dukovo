@@ -177,7 +177,8 @@ appends them again after it replaces GRUB's outputs. GRUB runs only a
 PCI function's first port, and only with 8 data bits and no parity, so
 a console on another port, or at another format, has no menu there.
 Without the file, as on a system installed before it, the menu shows on
-COM1 at 115200 baud and the flags are those the installer filled in.
+COM1 and on Intel AMT's Serial-over-LAN port, each at 115200 baud, where
+the machine has them, and the flags are those the installer filled in.
 Each slot's _startup/menu.cfg_ puts *dukovo_console* on its kernel
 lines, so that a slot from an older release follows the settings too.
 A change of the settings takes effect at the next start.
@@ -1092,9 +1093,12 @@ own speed, within a range of performance levels and an energy preference
 the kernel asks for: Intel's hardware P-states (HWP) and AMD's CPPC
 (ADR 0202). Once the machine checks are on, unless *pstate=off*, each
 CPU's work thread turns its control on and asks for every level from its
-lowest to its highest, at the CPU's own choice, with the firmware's
-energy preference or the one *epp* names, as Linux's _intel_pstate_ and
-_amd-pstate-epp_ drivers do. The log says what the CPUs can do:
+most efficient to its highest, at the CPU's own choice, with the
+firmware's energy preference or the one *epp* names, as Linux's
+_intel_pstate_ and _amd-pstate-epp_ drivers do (ADR 0557). The kernel
+settings *cpu.boost* and *cpu.speed* keep the CPUs at or below their base
+frequency, or hold them at one speed (*tune*(8)). The log says what the
+CPUs can do:
 
 	CPU frequency: Intel's HWP on 8 CPUs, 400 to 3400 MHz, base 1800 MHz, energy preference balance_performance
 

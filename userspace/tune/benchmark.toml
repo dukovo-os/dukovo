@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# For a machine whose timings are compared with another's (ADR 0557).
+#
+# A profile lists the kernel settings it sets (radix-kernel-settings(2)),
+# each with the reason it gives that value. Every setting it does not list
+# is put back to the value the kernel started with, so a profile changes
+# nothing it does not name. tune(8) explains how one is chosen, and
+# `tune show benchmark` says what this one sets.
+
+description = "Steady timings: CPUs at their base frequency"
+
+[settings]
+# Turbo bins depend on heat and on how many CPUs work, so timings drift.
+"cpu.boost" = "off"
+# Each CPU is held at its highest level, so its clock never falls or climbs.
+"cpu.speed" = "highest"
+# The CPUs ask for the most speed, where the hardware takes the request.
+"cpu.energy_preference" = "performance"

@@ -77,7 +77,7 @@ fn pull(cpu: usize, level: Level, now: u64) -> bool {
             drop(high);
             drop(low);
             if preempt {
-                CPUS.get(cpu).need_resched.store(true, Ordering::Relaxed);
+                CPUS.get(cpu).resched.request();
             }
             true
         }

@@ -1071,21 +1071,43 @@ static void mapped(void) {
 	CHECK(!close(fd) && !unlink("/tmp/mapped"));
 }
 
-// A tmpfs charges a file by its length and gives the bytes back when the
-// file is removed, so that a program that writes a large file and removes
-// it can write another at once, as on Linux (tmpfs.rs: the directory's
-// name map must not keep the node until an RCU grace period ends).
-static void tmpfs_space_returns(void) {
-	struct statvfs vfs;
-	CHECK(statvfs("/tmp", &vfs) == 0 && vfs.f_bavail > 0);
-	off_t reach = (off_t)((uint64_t)vfs.f_bavail * vfs.f_frsize / 10 * 6);
-	static const char *const names[] = {"/tmp/space-a", "/tmp/space-b"};
-	for(int i = 0; i < 2; i++) {
-		int fd = open(names[i], O_RDWR | O_CREAT | O_TRUNC, 0644);
-		CHECK(fd >= 0);
-		CHECK(pwrite(fd, "x", 1, reach) == 1);
-		CHECK(!close(fd) && !unlink(names[i]));
-	}
+// A tmpfs charges a file by the pages it holds, as Linux's does: a byte
+// written far past the end costs one page and the hole before it none, so
+// a sparse file longer than the limit of /tmp fits (CPython's test_io
+// writes at 2 GiB); a longer length costs nothing, and a cut gives back
+// the pages it takes. A removed file's pages come back at once, so that a
+// program that writes a large file and removes it can write another (the
+// directory's name map must not keep the node until an RCU grace period
+// ends). Checked against Linux 6.18's tmpfs.
+static void tmpfs_space(void) {
+	struct statvfs before, now;
+	CHECK(statvfs("/tmp", &before) == 0 && before.f_frsize == 4096);
+	int fd = open("/tmp/space-sparse", O_RDWR | O_CREAT | O_TRUNC, 0644);
+	CHECK(fd >= 0);
+	// Past the limit of /tmp on any machine with less than 8 GiB of
+	// memory, the boot test's among them.
+	const off_t far = (off_t)4 << 30;
+	struct stat st;
+	CHECK(pwrite(fd, "x", 1, far) == 1);
+	CHECK(fstat(fd, &st) == 0 && st.st_size == far + 1 && st.st_blocks == 8);
+	CHECK(statvfs("/tmp", &now) == 0 && now.f_bfree == before.f_bfree - 1);
+	CHECK(ftruncate(fd, 2 * far) == 0);
+	CHECK(fstat(fd, &st) == 0 && st.st_size == 2 * far && st.st_blocks == 8);
+	char byte = 1;
+	CHECK(pread(fd, &byte, 1, far - 1) == 1 && byte == 0);
+	CHECK(pwrite(fd, "y", 1, 5) == 1 && fstat(fd, &st) == 0 && st.st_blocks == 16);
+	CHECK(ftruncate(fd, far) == 0 && fstat(fd, &st) == 0 && st.st_blocks == 8);
+	CHECK(statvfs("/tmp", &now) == 0 && now.f_bfree == before.f_bfree - 1);
+	CHECK(!close(fd) && !unlink("/tmp/space-sparse"));
+	CHECK(statvfs("/tmp", &now) == 0 && now.f_bfree == before.f_bfree);
+	static char block[1 << 20];
+	memset(block, 'w', sizeof(block));
+	fd = open("/tmp/space-dense", O_RDWR | O_CREAT | O_TRUNC, 0644);
+	CHECK(fd >= 0 && write(fd, block, sizeof(block)) == sizeof(block));
+	CHECK(fstat(fd, &st) == 0 && st.st_blocks == sizeof(block) / 512);
+	CHECK(statvfs("/tmp", &now) == 0 && now.f_bfree == before.f_bfree - sizeof(block) / 4096);
+	CHECK(!close(fd) && !unlink("/tmp/space-dense"));
+	CHECK(statvfs("/tmp", &now) == 0 && now.f_bfree == before.f_bfree);
 }
 
 // A tmpfs folder of 40,000 entries, more than the 32,768 it once held:
@@ -1840,7 +1862,7 @@ int main(void) {
 	RUN(climbing);
 	RUN(path_forms);
 	RUN(mapped);
-	RUN(tmpfs_space_returns);
+	RUN(tmpfs_space);
 	RUN(large_folder);
 	RUN(folder_names);
 	RUN(named_descriptors);

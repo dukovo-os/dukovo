@@ -725,7 +725,15 @@ disk missing while the others hold a copy of all of it (ADR 0153).
 tmpfs is a page cache with nothing below it: its pages are the only copy,
 nothing is written back, and a tmpfs has a size limit (half of memory,
 as on Linux, for those programs mount; 1 MiB for the root, which holds
-only mount points). Like Linux's `nr_inodes`, a tmpfs also holds at
+only mount points). The limit is charged by the pages a tmpfs's files
+hold, as Linux charges its blocks, and by the bytes of its links'
+targets and extended attributes. A hole in a file holds no page, so a
+byte written far past a file's end costs one page, a length set with
+`ftruncate` costs nothing, and a file may be longer than the limit. The
+page cache charges a page as it makes it for a write, and gives the
+charge back as the page goes, when the file is cut or dropped
+(`Backing::reserve_pages` and `release_pages`); a write that fails takes
+back the page it made. Like Linux's `nr_inodes`, a tmpfs also holds at
 most one file or directory for every two pages of memory, counted until
 the node is dropped, so that empty files cannot use up the kernel's heap.
 Each node counts its names, for hard links, and keeps a change time

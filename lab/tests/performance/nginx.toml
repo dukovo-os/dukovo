@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# nginx's own benchmark, serverbench, starts the bundle's nginx with one
+# worker and drives it from the same program over the loopback, with the
+# page's files in /tmp (ADR 0546).
+
+about = "nginx from the catalog serves a small file, new connections and a large file to a client on the machine no slower than the same nginx on Linux (ADR 0546)"
+time = "20m"
+host_needs = ["scp"]
+
+[[step]]
+host = "sh {here}/../services/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
+expect = "copied: org.nginx.nginx"
+# From nothing: a run before may have left it installed.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+root = true
+expect = "installed org.nginx.nginx"
+# Both systems run at the base clock for the rows (ADR 0557).
+[[step]]
+run = "tune set benchmark"
+root = true
+expect = "the profile is benchmark"
+# One operation of each row: a GET of a 1 KiB file on one of 8 keep-alive
+# connections; the same GET on a new connection that nginx closes, 8 at a
+# time; one MiB of a 1 MiB file on one of 8 keep-alive connections. Linux's
+# numbers come from the same nginx release, built for Linux in the Linux
+# kit with the same settings (ADR 0546). Every row is held to parity.
+[[step]]
+bench = "/system/tests/posix/serverbench nginx"
+rows = [
+    "server_nginx_small",
+    "server_nginx_connect",
+    "server_nginx_large_mib",
+]
+[[step]]
+run = "tune set balanced"
+root = true
+expect = "the profile is balanced"
+[[step]]
+run = "bundle remove --for-everyone --purge org.nginx.nginx"
+root = true
+expect = "removed org.nginx.nginx"

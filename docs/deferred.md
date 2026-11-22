@@ -58,6 +58,7 @@ machine with AMT, an AMD machine and a laptop; see
 
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
+| A restart of the lab PC during `stress/server-week` ends the run: the lab does not pick a run up again, and the log it wrote as it went keeps what was done | A run that survives a restart of the lab PC | Lab harness |
 | The installer's tests on a real lab machine: booting it from the install stick or DVD | The `amt` driver boots only the lab image, written to the disk by the net-booted writer (ADR 0429); a stick a person plugs in still needs the machine told to boot from it | Lab harness |
 | The security range's attacker on a real lab machine | The attacker runs on a private QEMU network; a real machine needs a second network of its own for it | Lab harness |
 | The power button and a graceful off on a real lab machine (`power = "button"` and `"off"`) | AMT asks the system to shut down only when an agent in the system answers AMT, which Dukovo has none of | A decision by the maintainers |
@@ -71,6 +72,7 @@ machine with AMT, an AMD machine and a laptop; see
 | A lab image without the lab account, to test the first boot's "no account yet" page (ADR 0401) | The lab image always has its account | Lab harness |
 | A Stop for one test, which skips the test that is running and goes on with the run (`dukovo-lab stop` ends a whole run, and a run refuses a machine another run holds) | Left out of the harness's first parts | Lab harness |
 | A lab test of a keyring entry set and read back | Needs a console sign-in with a password, which tests cannot type yet | Lab harness |
+| A real lab machine's console over Intel AMT's Serial-over-LAN for a whole run, with no serial cable (lab `amt` driver, dukovo-os/lab's docs/real-machines.md) | On the lab's OptiPlex 7040 (AMT 11.8, I219-LM), the net-booted writer's download stalled at 40 to 50% of the image in all five boots of the first run with a session open, where the cable takes 14 seconds; its Linux says `Reset blocked by ME` as e1000e starts. The lab's one AMT machine keeps its serial cable | Real hardware: an AMT machine without a serial port |
 | A lab test of `whois` | Needs a reachable whois server | Lab harness |
 | Receive-side scaling, checksum and segmentation offloads for the server cards and virtio-net; GSO and multi-queue tunnels (ADR 0339) | Measured against Linux on 10 GbE, and the lab's network is 1 GbE; moved out of Phase 16 so it does not hold 1.0.0-alpha.1 | 10 GbE in the lab: two Intel X520, X540 or X550 cards and a cable |
 | Intel's I217, I218 and I219s of Cannon Lake and later, and Realtek's RTL8127, on real chips (ADRs 0580, 0581) | No lab machine has one and QEMU emulates none; the unit tests check FreeBSD's and OpenBSD's sequences | A machine or card with one |
@@ -405,6 +407,7 @@ machine asks for them.
 | `user.` extended attributes on device nodes, pipes and sockets left out of a send, or refused as Linux refuses them, so that Linux receives every stream Dukovo sends | ADR 0462 |
 | `subvolume send --no-data` and `subvolume receive --max-errors` | ADR 0462 |
 | ext4: several syncs in one transaction, and bench rows | ADR 0141 |
+| `posix_fallocate(3)` only sets a file's length and takes no room, so a later write into the range can still fail with ENOSPC, on a disk or a tmpfs, where Linux's `fallocate(2)` takes the blocks or pages first | C library (`Sysdeps<Fallocate>`), storage design note |
 | FUSE and share mounts: a page cache with writeback | ADR 0226 |
 | A page or partition written raw through two different nodes at once | storage design note |
 
@@ -492,6 +495,7 @@ machine asks for them.
 | Sign-in records kept for a time; notices of a failed sign-in streak | ADRs 0253, 0254 |
 | The administrator set split into named areas for delegation | ADR 0219 |
 | A user's own services and their lines in their log; a group that reads the whole log | ADR 0252 |
+| `sh -c 'program'` runs the program in a child and waits, where bash and dash run it in the shell's place: a caller that ends the program by the number it was given (PHP's `proc_terminate`, which run-tests uses for a test that takes too long) ends the shell and the program goes on, and a program that a signal ends gets "Terminated" printed on the stderr it shares with the shell | Lab, `services/php`, 2026-11-21 |
 | Valkey's, PHP-FPM's and PostgreSQL's Unix sockets reached by other bundles' services, as they are on Linux: a bundle offers only a socket that Spark makes and holds for its service (ADR 0477), and these servers make their own sockets in their data or live folders, which are their accounts' alone, so they talk over TCP on the machine itself: nginx and PHP-FPM on 127.0.0.1:9000, where any program on the machine may connect, and PHP's `pgsql` reaches PostgreSQL over 127.0.0.1 with a role's password | ADRs 0477, 0492, 0520, 0522 |
 | Rich and NFSv4 access lists; Btrfs properties | ADR 0256 |
 | Bundles: grants before install (`--grant`), resource limits for the sandbox, programs for other architectures, read-only subvolumes and reflink sharing for sealed bundles, asking people about their data when a bundle is removed for everyone | ADRs 0223 to 0225 |
@@ -530,7 +534,11 @@ machine asks for them.
 | `git status` takes about 2.5 times Linux's time (5.0 ms against 1.98 ms on 1,000 files, with 15 context switches); no work is planned to close it yet | ADR 0294 |
 | Rows still above the 0.90 margin target, though under Linux: Btrfs zstd write, unmapping a page on another CPU, NVMe 1 MiB read (0.92 to 0.94) | Benchmark margin work |
 | smoltcp goes through every socket of an interface's stack for each packet and each poll: an idle socket costs about 110 instructions a round trip on the host, having been passed over in the send loop since it has nothing to send (the network benchmarks run beside 11, ADR 0550), where Linux looks a socket up by its address | ADR 0550 |
+| On some Intel Xeon 6975P-C runner hosts, with the vCPUs pinned, a forked process's open and close takes about 70 ns more than a thread's: one process 585 against 512 ns, 1.10 times Linux's 530, which fails the scaling gate's one-process row there. The kernel before ADR 0555 does the same in one job, and other hosts of the same CPU give 511 to 515 ns. In the child a chain of SSE adds takes 3 cycles rather than 2 while integer multiplies are unchanged, as when the vector registers' upper halves are held as in use. A 1 ms sleep or a second thread before the child pins itself made it fast; VZEROUPPER at the child's start, reading XINUSE before the fork or before the loop, and a kernel that drops all-zero upper halves from each save did not | ADR 0554 |
 | On real hardware (OptiPlex 7040, i5-6500), on 2026-11-20: fork, exec and wait 1.12 times Linux's time, and the UDP round trip on one CPU 1.16 before ADR 0553; the lab's next run there confirms both | Lab, performance/loopback and processes on the OptiPlex; mlibc patches 0092 and 0093 |
+| TLS rows of the server benchmarks (nginx over HTTPS, PostgreSQL over TLS): the handshake and record costs are OpenSSL's arithmetic, the same code on both systems, and the Linux kit's servers are built without OpenSSL | ADR 0546 |
+| The server benchmarks over the network card: they run client and server on the machine, over the loopback or a Unix socket, so that they need no peer; the card's path is measured by its own rows | ADR 0546 |
+| At the CPUs' default clocks, Dukovo's and Linux's differ on real hardware: Dukovo idles in C1 with the firmware's C1E promotion left on and no deeper state, so idle cores count as active and the busy core reaches the four-core turbo level (3.3 GHz on the OptiPlex 7040) where Linux, whose intel_idle turns the promotion off and uses deeper states, can reach 3.6 GHz. The lab's performance tests hold both systems at the base frequency instead; what the default clocks cost is measured with `cpu_cycle_cold`, `cpu_cycle` and `cpu_cycle_end` once that run is in, and deep idle states come with laptop power | ADR 0557; the first OptiPlex run with the clocks held |
 
 ## Lab findings to confirm
 
@@ -550,7 +558,6 @@ finding or removed.
 | A lab test for COM1 as the serial console (console=ttyS0): serial-console running on it and a sign-in over it; hardware/serial-port covers COM1 only when it is not the console | Lab, first real-machine runs |
 | SSH: RSA and P-521 keys and authorized_keys options are not taken; sshd_config takes eight keywords (no `Port`, `ListenAddress`, `MaxAuthTries`); ssh is built without OpenSSL, so ssh-keygen makes ed25519 keys alone | Lab, first real-machine runs |
 | "[elevate] password for lab:" is printed into the output of commands run with sudo -S | Lab, first real-machine runs |
-| PHP's `ext/pcntl/tests/001.phpt` sometimes hung: a child spinning right after `fork` missed its SIGTERM, now that the kernel interrupts the CPU of a thread it signals; CPython's `test_threading` `test_print_exception_gh_102056` raised MemoryError reading a pipe, now that realloc gives back what a shrunk block no longer holds (mlibc patch 0096). The lab's next runs of both confirm them | Lab, `services/php` and `services/python` |
 
 ## Waiting on a decision
 

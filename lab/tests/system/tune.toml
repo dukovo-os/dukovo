@@ -29,14 +29,14 @@ expect = "the profile is balanced"
 [[step]]
 run = '''sh -c 'for f in /kernel/settings/*; do echo "$f $(cat $f)"; done > /tmp/tune-start; echo "saved $(wc -l < /tmp/tune-start)"' '''
 root = true
-expect = "saved 4"
+expect = "saved 6"
 
 [[step]]
 run = "tune"
-expect = ["Profile: balanced, chosen by an administrator", "disk.read_ahead_kib    128", "net.congestion         cubic", "sched.slice_us         3000", "* set by the profile"]
+expect = ["Profile: balanced, chosen by an administrator", "cpu.boost              on", "cpu.speed              chosen", "disk.read_ahead_kib    128", "net.congestion         cubic", "sched.slice_us         3000", "* set by the profile"]
 [[step]]
 run = "tune list"
-expect = ["balanced     The default: every setting at its start value  (in use)", "low-latency  Quick answers", "power-saver  Less power", "throughput   Most work done a second", "vm-guest     A virtual machine", "vm-host      A machine that runs virtual machines"]
+expect = ["balanced     The default: every setting at its start value  (in use)", "benchmark    Steady timings: CPUs at their base frequency", "low-latency  Quick answers", "power-saver  Less power", "throughput   Most work done a second", "vm-guest     A virtual machine", "vm-host      A machine that runs virtual machines"]
 [[step]]
 run = "tune show throughput"
 expect = ["throughput: Most work done a second", "disk.read_ahead_kib    1024         Reads further ahead", "sched.slice_us         6000         Fewer thread switches", "Every other setting is at its start value."]

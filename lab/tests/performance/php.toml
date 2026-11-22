@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# serverbench starts the bundle's nginx and PHP-FPM, which meet on a Unix
+# socket, and drives nginx from the same program over the loopback; the
+# compute row runs a PHP script of the program's own with the bundle's php
+# (ADR 0546).
+
+about = "PHP-FPM behind nginx serves a page through FastCGI, and PHP's command runs a loop of its own, no slower than the same PHP on Linux (ADR 0546)"
+time = "20m"
+host_needs = ["scp"]
+
+[[step]]
+host = "sh {here}/../services/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
+expect = "copied: org.nginx.nginx"
+[[step]]
+host = "sh {here}/../services/copy-bundle.sh net.php.php {machine} {machine-port:22}"
+expect = "copied: net.php.php"
+# From nothing: a run before may have left it installed.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+root = true
+expect = "installed org.nginx.nginx"
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge net.php.php > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/net.php.php.dkv | tail -1'"
+root = true
+expect = "installed net.php.php"
+# Both systems run at the base clock for the rows (ADR 0557).
+[[step]]
+run = "tune set benchmark"
+root = true
+expect = "the profile is benchmark"
+# One operation of each row: a GET of a PHP page that builds and encodes
+# an array of 50 records, through nginx and PHP-FPM, on one of 8 keep-alive
+# connections; one pass of the compute script's loop, timed inside PHP with
+# hrtime(). Linux's numbers come from the same PHP and nginx releases,
+# built for Linux in the Linux kit (ADR 0546). Every row is held to parity.
+[[step]]
+bench = "/system/tests/posix/serverbench php"
+rows = [
+    "server_php_fpm",
+    "server_php_compute",
+]
+[[step]]
+run = "tune set balanced"
+root = true
+expect = "the profile is balanced"
+[[step]]
+run = "bundle remove --for-everyone --purge org.nginx.nginx"
+root = true
+expect = "removed org.nginx.nginx"
+[[step]]
+run = "bundle remove --for-everyone --purge net.php.php"
+root = true
+expect = "removed net.php.php"

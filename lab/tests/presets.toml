@@ -30,3 +30,58 @@ tests = [
     "security/web-attacks",
     "security/flood",
 ]
+
+# Storage is named test by test, to leave out the audio CD, disc burning,
+# floppy, CompactFlash, memory card reader and SD slot tests, whose media a
+# server has none of. The optical drive's own test stays. The week-long
+# soak, stress/server-week, runs only when a run names it.
+[[preset]]
+name = "server"
+title = "Server release"
+about = "What a server release is held to: every category but sound, and the storage tests a server has the media for (not audio CDs, disc burning, floppies, CompactFlash or card readers), the server benchmarks among them; the week-long soak runs on its own, by name"
+tests = [
+    "boot",
+    "install",
+    "updates",
+    "startup",
+    "hardware",
+    "processes",
+    "network",
+    "ssh",
+    "services",
+    "bundles",
+    "monitoring",
+    "reports",
+    "system",
+    "time",
+    "accounts",
+    "commands",
+    "console",
+    "web-console",
+    "stress",
+    "security",
+    "performance",
+    "sharing",
+    "journeys",
+    "storage/backup",
+    "storage/block-devices",
+    "storage/btrfs-maintenance",
+    "storage/btrfs-stick",
+    "storage/disk-info",
+    "storage/exfat-stick",
+    "storage/fat-stick",
+    "storage/grow-partition",
+    "storage/idle-read",
+    "storage/io-weight",
+    "storage/machine-restore",
+    "storage/make-and-identify",
+    "storage/mount-read-only",
+    "storage/ntfs-resize",
+    "storage/optical",
+    "storage/restic-backup",
+    "storage/root-filesystem",
+    "storage/send-receive",
+    "storage/snapshot-stick",
+    "storage/swap",
+    "storage/trim-and-scrub",
+]

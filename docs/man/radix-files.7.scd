@@ -150,10 +150,12 @@ changed, kept by tmpfs and Btrfs; FAT and exFAT give *modified*.
 *mount* takes a filesystem kind by name:
 
 *tmpfs*
-	Files in memory only. A tmpfs a program mounts may grow to half of
-	memory and hold one file or directory for every two pages of it, as
-	on Linux; nothing in it survives a reboot. It keeps symbolic links,
-	hard links and the special files below.
+	Files in memory only. The pages a tmpfs's files hold may take up to
+	half of memory, in one a program mounts, and it may hold one file or
+	directory for every two pages of it, as on Linux; a hole in a file
+	holds no page, so a sparse file may be longer than that. Nothing in
+	it survives a reboot. It keeps symbolic links, hard links and the
+	special files below.
 
 *fat*
 	FAT12, FAT16 or FAT32, read-write, with long names, on the block

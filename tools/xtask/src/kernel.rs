@@ -158,7 +158,7 @@ pub fn copy_for_image(ctx: &Ctx, from: &Path, to: &Path) -> Result<()> {
 }
 
 /// The pinned toolchain's `llvm-objcopy`, from its `llvm-tools` component.
-fn objcopy(ctx: &Ctx) -> Result<PathBuf> {
+pub(crate) fn objcopy(ctx: &Ctx) -> Result<PathBuf> {
     let Some(sysroot) = doctor::sysroot(ctx) else {
         bail!("cannot find the pinned toolchain; run `./ob setup`");
     };

@@ -16,7 +16,7 @@
 #![forbid(unsafe_code)]
 
 use core::ops::Range;
-use core::sync::atomic::AtomicU32;
+use core::sync::atomic::AtomicUsize;
 
 use radix_hal::{
     Aml, BootParams, Cpu, CpuInfo, CpuLocal, CpuPlace, Devices, Dma, Fault, FaultTest,
@@ -42,7 +42,7 @@ impl Cpu for Arch {
         core::hint::spin_loop();
     }
 
-    fn idle_until(_wake: &AtomicU32) {
+    fn idle_until(_wake: &AtomicUsize) {
         core::hint::spin_loop();
     }
 

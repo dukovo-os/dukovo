@@ -466,16 +466,83 @@ fn tmpfs_has_a_size_limit() {
     assert_eq!(vfs.root().mount.fs.info().free, 1);
 }
 
+/// A tmpfs charges a file by the pages it holds, as Linux's does, not by
+/// its length: a byte far past the end costs one page, the hole before it
+/// and a longer length nothing, and a cut gives back the pages it takes.
+#[test]
+fn tmpfs_charges_the_pages_a_file_holds() {
+    let vfs = Vfs::new(tmpfs(4 * 4096), "tmpfs").unwrap();
+    let root = vfs.root();
+    let free = || vfs.root().mount.fs.info().free;
+    let file = vfs.open(&K, &root, "sparse", create()).unwrap();
+    let far = 1 << 40;
+    assert_eq!(file.node.write(far, &Slice(b"x")), Ok(1));
+    let stat = file.node.stat();
+    assert_eq!((stat.size, stat.allocated, free()), (far + 1, 4096, 3));
+    file.node.set_size(far * 2).unwrap();
+    assert_eq!((file.node.stat().allocated, free()), (4096, 3));
+    assert_eq!(file.node.write(4096 + 10, &Slice(&[7u8; 8192])), Ok(8192));
+    assert_eq!((file.node.stat().allocated, free()), (4 * 4096, 0));
+    // Full: a write into a hole fails, and takes no page with it.
+    assert_eq!(file.node.write(0, &Slice(b"y")), Err(Error::NoSpace));
+    assert_eq!(file.node.write(8 * 4096, &Slice(&[1u8; 4096])), Err(Error::NoSpace));
+    assert_eq!((file.node.stat().allocated, free()), (4 * 4096, 0));
+    // A write over pages it holds still goes in.
+    assert_eq!(file.node.write(4096, &Slice(&[9u8; 100])), Ok(100));
+    // A cut one byte into page 3 keeps it and the pages before it; the
+    // far page goes.
+    file.node.set_size(3 * 4096 + 1).unwrap();
+    assert_eq!((file.node.stat().allocated, free()), (3 * 4096, 1));
+    let mut bytes = std::vec![0u8; 3 * 4096 + 1];
+    assert_eq!(file.node.read(0, &mut SliceMut(&mut bytes[..])), Ok(3 * 4096 + 1));
+    assert!(bytes[..4096].iter().all(|&b| b == 0));
+    assert!(bytes[4096..4196].iter().all(|&b| b == 9));
+    assert!(bytes[4196..].iter().all(|&b| b == 7));
+    drop(file);
+    vfs.remove(&K, &root, "sparse").unwrap();
+    assert_eq!(free(), 4);
+}
+
+/// A write into a hole that faults before it copies a byte leaves the
+/// hole as it was, and the limit as it was: the page made for it goes,
+/// with its charge.
+#[test]
+fn tmpfs_takes_back_the_page_of_a_failed_write() {
+    let vfs = Vfs::new(tmpfs(2 * 4096), "tmpfs").unwrap();
+    let root = vfs.root();
+    let file = vfs.open(&K, &root, "f", create()).unwrap();
+    assert_eq!(file.node.write(0, &Slice(&[1u8; 4096])), Ok(4096));
+    let data = [5u8; 100];
+    let bad =
+        LazyIn { data: &data, skew: 0, made: std::cell::RefCell::new(std::vec![false]), bad: true };
+    // Past the end: the file keeps its length, as on Linux.
+    assert_eq!(file.node.write(3 * 4096 + 10, &bad), Err(Error::BadAddress));
+    let stat = file.node.stat();
+    assert_eq!((stat.size, stat.allocated), (4096, 4096));
+    assert_eq!(vfs.root().mount.fs.info().free, 1);
+    // Inside the file: a hole in the middle stays a hole.
+    file.node.set_size(4 * 4096).unwrap();
+    assert_eq!(file.node.write(2 * 4096 + 10, &bad), Err(Error::BadAddress));
+    let stat = file.node.stat();
+    assert_eq!((stat.size, stat.allocated), (4 * 4096, 4096));
+    assert_eq!(vfs.root().mount.fs.info().free, 1);
+}
+
+/// A removed file's pages are free at once, and a write that runs out of
+/// room partway writes what fits, as on Linux, the next one failing.
 #[test]
 fn tmpfs_gives_a_removed_files_space_back_at_once() {
     let vfs = Vfs::new(tmpfs(1 << 20), "tmpfs").unwrap();
     let root = vfs.root();
     let big = std::vec![1u8; 700 << 10];
     write(&vfs, &root, "a", &big).unwrap();
-    assert_eq!(write(&vfs, &root, "b", &big), Err(Error::NoSpace));
+    let b = vfs.open(&K, &root, "b", create()).unwrap();
+    let left = (1 << 20) - big.len();
+    assert_eq!(b.node.write(0, &Slice(&big)), Ok(left));
+    assert_eq!(b.node.write(APPEND, &Slice(&big)), Err(Error::NoSpace));
     vfs.remove(&K, &root, "a").unwrap();
     assert_eq!(vfs.stat(&K, &root, "a").err(), Some(Error::NotFound));
-    write(&vfs, &root, "b", &big).unwrap();
+    assert_eq!(b.node.write(0, &Slice(&big)), Ok(big.len()));
     assert_eq!(vfs.stat(&K, &root, "b").unwrap().size, big.len() as u64);
 }
 
@@ -1798,6 +1865,15 @@ fn a_write_from_a_bad_buffer_makes_up_nothing() {
     let result = cache.write(at, &bad(4096 - 50, std::vec![true, false, false], &new), &disk);
     assert_eq!(result, Err(Error::BadAddress));
     assert_eq!(cache.size(), old.len() as u64);
+    // Past the end, from a buffer with no page at all: nothing is written,
+    // and the file keeps its length and gives back the room reserved.
+    let past = old.len() as u64 + 2 * 4096 + 7;
+    assert_eq!(
+        cache.write(past, &bad(0, std::vec![false; 3], &new), &disk),
+        Err(Error::BadAddress)
+    );
+    assert_eq!(cache.size(), old.len() as u64);
+    assert_eq!(*disk.reserved.lock().unwrap(), old.len() as u64);
     let mut expected = old.clone();
     expected[..4096].fill(7);
     // What the copy did get to inside the file is there.

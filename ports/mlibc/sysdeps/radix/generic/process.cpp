@@ -12,6 +12,7 @@
 #include <mlibc/all-sysdeps.hpp>
 #include <mlibc/sigset.hpp>
 #include <mlibc/tcb.hpp>
+#include <mlibc/thread.hpp>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
@@ -149,15 +150,35 @@ int exec_fd(int fd, const char *execfn, char *const argv[], char *const envp[]) 
 
 namespace mlibc {
 
+// Every signal, the C library's own too, stays blocked from before the
+// call until the child knows itself, as in musl. A signal sent to the
+// child as it starts is taken before its first instruction, and a handler
+// run then would find the parent's process number in the cache, the
+// parent's thread number in the TCB and the parent's descriptor table:
+// kill(getpid()), with which PHP's handlers end their process as the
+// signal's default would, and raise() would signal the parent. What came
+// meanwhile is taken once the mask is back, in the child as in the parent.
 int Sysdeps<Fork>::operator()(pid_t *child) {
+	struct radix_process_signal_mask_results before;
+	if(uint64_t status = radix_process_signal_mask(radix::SLOT_PROCESS, RADIX_MASK_HOW_BLOCK,
+			~uint64_t{0}, &before); status)
+		return radix::to_errno(status);
 	struct radix_process_fork_results r;
 	uint64_t status = radix_process_fork(radix::SLOT_PROCESS, &r);
-	if(status)
-		return radix::to_errno(status);
-	if(!r.child) {
+	if(!status && !r.child) {
 		radix::forget_pid();
 		radix::read_fd_table();
+		// mlibc's fork sets it too, but only once this has returned and
+		// a handler could have run: pthread_kill(pthread_self()) is
+		// async-signal-safe.
+		__atomic_store_n(&mlibc::get_current_tcb()->tid, sysdep<FutexTid>(), __ATOMIC_RELAXED);
 	}
+	// It cannot fail where blocking did not a moment ago: the child's
+	// SLOT_PROCESS holds its own process.
+	struct radix_process_signal_mask_results after;
+	radix_process_signal_mask(radix::SLOT_PROCESS, RADIX_MASK_HOW_SET, before.old, &after);
+	if(status)
+		return radix::to_errno(status);
 	*child = static_cast<pid_t>(r.child);
 	return 0;
 }

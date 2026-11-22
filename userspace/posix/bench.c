@@ -134,12 +134,17 @@ static void settle(void) {
 	while(nanosleep(&pause, &pause) != 0 && errno == EINTR) {}
 }
 
-static struct mark start(void) {
-	settle();
+// Marks the moment a benchmark starts timing, with no pause before it.
+static struct mark mark_now(void) {
 	struct mark mark;
 	mark.counted = read_events(&mark.kernel);
 	mark.ns = now_ns();
 	return mark;
+}
+
+static struct mark start(void) {
+	settle();
+	return mark_now();
 }
 
 // Prints the time per operation since `started`, and on Radix the
@@ -149,7 +154,11 @@ static struct mark start(void) {
 static void report(const char *name, struct mark started, uint64_t count) {
 	uint64_t elapsed = now_ns() - started.ns;
 	double ns = (double)elapsed / (double)count;
-	printf("BENCH name=%s ns=%.2f iterations=%llu\n", name, ns, (unsigned long long)count);
+	// A time under 10 ns, as a clock row's fraction of a nanosecond, gets
+	// four decimals: at two, a cycle of 0.195 ns prints as 0.19 or 0.20,
+	// 5% apart, and the lab holds the two systems' clocks to 3%.
+	printf("BENCH name=%s ns=%.*f iterations=%llu\n", name, ns < 10 ? 4 : 2, ns,
+	       (unsigned long long)count);
 	struct kernel_state now;
 	if(started.counted && read_events(&now)) {
 		printf("BENCHCOUNT group=%s rounds=%llu", name, (unsigned long long)count);
@@ -300,18 +309,33 @@ static void signal_delivery(uint64_t rounds) {
 
 // A chain of additions, each waiting for the one before, so one clock
 // cycle each on any x86-64 processor: the time of one is the processor's
-// clock cycle, which says how fast each system runs it. `ob bench
-// --from` shows it beside the rows (ADR 0124); no row compares it.
-static void cpu_cycle(uint64_t rounds) {
+// clock cycle, which says how fast each system runs it. The settle pause
+// lets the clock fall, and a processor whose energy preference is the
+// default takes tens of milliseconds to climb back, so a row that starts
+// right after the pause reads the clock it starts at, while one that
+// first runs the additions for `warm_ms` reads the clock the other rows
+// run at once they are under way. `ob bench --from` shows the rows beside
+// the others (ADR 0124); no row compares them, and the lab compares the
+// settled one between the two systems (ADR 0557).
+static void clock_row(const char *name, unsigned warm_ms, uint64_t rounds) {
 #ifdef __x86_64__
-	uint64_t x = 0;
-	struct mark started = start();
+	settle();
+	uint64_t x = 0, warmed = 0;
+	uint64_t end = now_ns() + (uint64_t)warm_ms * 1000000u;
+	while(warm_ms && now_ns() < end) {
+		for(int i = 0; i < 100000; i++)
+			__asm__ volatile(".rept 100\n\taddq $1, %0\n\t.endr" : "+r"(x));
+		warmed += 100000;
+	}
+	struct mark started = mark_now();
 	for(uint64_t i = 0; i < rounds; i++)
 		__asm__ volatile(".rept 100\n\taddq $1, %0\n\t.endr" : "+r"(x));
-	report("cpu_cycle", started, rounds * 100);
-	if(x != rounds * 100)
-		fail("cpu_cycle");
+	report(name, started, rounds * 100);
+	if(x != (warmed + rounds) * 100)
+		fail(name);
 #else
+	(void)name;
+	(void)warm_ms;
 	(void)rounds;
 #endif
 }
@@ -1290,7 +1314,8 @@ int main(int argc, char **argv) {
 		fail("finding a CPU");
 	home_cpu = cpus[0];
 	pin(home_cpu);
-	cpu_cycle(1000000);
+	clock_row("cpu_cycle_cold", 0, 100000);
+	clock_row("cpu_cycle", 250, 1000000);
 	fork_wait(2000);
 	fork_exec_wait(self, 500);
 	pipe_throughput();
@@ -1320,11 +1345,14 @@ int main(int argc, char **argv) {
 	// pages that lie together, and QEMU's emulation of each costs time.
 	if(networked)
 		network(cpus, count);
-	// Last: each event row makes 1,001 pipes of 64 KiB, whose freeing
-	// leaves pages apart in the same way; TCP's throughput took 46% more
-	// instructions per MiB after them.
+	// After the network rows: each event row makes 1,001 pipes of 64 KiB,
+	// whose freeing leaves pages apart in the same way; TCP's throughput
+	// took 46% more instructions per MiB after them.
 	events_idle(20000);
 	poll_idle(2000);
+	// Last: the settled clock again, which shows whether it held through
+	// the run.
+	clock_row("cpu_cycle_end", 250, 1000000);
 	printf("posix-bench: done\n");
 	fflush(stdout);
 	return 0;
