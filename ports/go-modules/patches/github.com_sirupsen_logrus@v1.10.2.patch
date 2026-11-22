@@ -1,0 +1,16 @@
+SPDX-FileCopyrightText: 2014 Simon Eskildsen
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT
+
+A terminal on Radix is a file TCGETS answers, as on Linux, asked
+through golang.org/x/sys/unix.
+
+diff -ruN a/github.com_sirupsen_logrus@v1.10.2/terminal_check_unix.go b/github.com_sirupsen_logrus@v1.10.2/terminal_check_unix.go
+--- a/github.com_sirupsen_logrus@v1.10.2/terminal_check_unix.go
++++ b/github.com_sirupsen_logrus@v1.10.2/terminal_check_unix.go
+@@ -1,4 +1,4 @@
+-//go:build (linux || aix || zos) && !tinygo
++//go:build (linux || radix || aix || zos) && !tinygo
+ 
+ package logrus
+ 

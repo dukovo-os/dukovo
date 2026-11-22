@@ -1,0 +1,85 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Caddy's service (ADR 0601): runs as the account caddy, in its data folder
+# ($HOME), and keeps Caddy in the foreground, as Spark's services are, its
+# log on its standard error output, which the system's log keeps.
+#
+# Its settings are $HOME/conf/Caddyfile, and what Caddy keeps for itself
+# is in $HOME/data and $HOME/config. The first start copies into $HOME/conf
+# the settings the bundle brings. After that, a file the administrator has
+# not changed takes the bundle's new version on an update; a changed one
+# stays, and the bundle's version is written beside it as NAME.default, as
+# the service files' are (ADR 0386).
+#
+# Spark holds Caddy's listening sockets (ADR 0477) and passes them as
+# descriptors 3 and on, which the Caddyfile binds by number (fd/3), so that
+# a restart or an update refuses no connection. Spark sends SIGHUP when the
+# certificates it copied for Caddy change and on `service caddy reload`
+# (ADR 0512); Caddy takes no signal as "read your settings again", so this
+# shell runs Caddy as its child and has it reload through its admin API on
+# SIGHUP, and passes TERM and INT, Caddy's stops, on to it.
+set -eu
+
+bundle=$(cd "$(dirname "$0")/.." && pwd)
+caddy="$bundle/bin/caddy"
+settings="$HOME/conf/Caddyfile"
+mkdir -p "$HOME/conf" "$HOME/data" "$HOME/config"
+
+# Copies $1 to $2 as a file of the account's, which it may change: the
+# bundle's files are read-only, and so would a copy of one be.
+copy() {
+	rm -f "$2"
+	cp "$1" "$2"
+	chmod 0600 "$2"
+}
+
+# What the bundle brought last time, to tell an administrator's change
+# from an older version of the bundle's file.
+mkdir -p "$HOME/conf/.bundle"
+for shipped in "$bundle"/conf/*; do
+	name=${shipped##*/}
+	file="$HOME/conf/$name"
+	last="$HOME/conf/.bundle/$name"
+	if [ ! -e "$file" ]; then
+		copy "$shipped" "$file"
+		rm -f "$file.default"
+	elif cmp -s "$shipped" "$file"; then
+		rm -f "$file.default"
+	elif [ -e "$last" ] && cmp -s "$last" "$file"; then
+		# Unchanged since the bundle wrote it: the new version.
+		copy "$shipped" "$file"
+		rm -f "$file.default"
+	else
+		copy "$shipped" "$file.default"
+	fi
+	copy "$shipped" "$last"
+done
+
+# Caddy's certificates and locks, and the copy of its settings it keeps,
+# go in the data folder, not in hidden folders of it.
+export XDG_DATA_HOME="$HOME/data" XDG_CONFIG_HOME="$HOME/config"
+
+# Reads the settings and the certificates again. --force reloads settings
+# that have not changed, as certificates may have. Settings that do not
+# read leave Caddy as it was, and both say why in the log.
+reload() {
+	"$caddy" reload --config "$settings" --adapter caddyfile --force ||
+		echo "caddy-service: Caddy kept the settings it had" >&2
+}
+
+"$caddy" run --config "$settings" --adapter caddyfile &
+child=$!
+trap reload HUP
+trap 'kill -TERM "$child" 2> /dev/null || :' TERM
+trap 'kill -INT "$child" 2> /dev/null || :' INT
+
+# A signal this shell traps ends wait early; Caddy's own end is the one
+# whose status the service ends with.
+while :; do
+	status=0
+	wait "$child" || status=$?
+	kill -0 "$child" 2> /dev/null || break
+done
+exit "$status"

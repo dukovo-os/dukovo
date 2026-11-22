@@ -177,7 +177,16 @@ audits. It then asks OSV, in one batch, about:
   tag its `[upstream]` names;
 - each crate a recipe lists (`[[crate]]`), by its name and version on
   crates.io, unless a `Cargo.lock` that cargo-audit read lists it, since
-  the RustSec database has answered for those.
+  the RustSec database has answered for those;
+- in OSV's Go ecosystem, by path and version: each Go module that the
+  go-modules port patches (`[[module]]`); each bundle's port in Go, by the
+  module its `go.mod` names, at the tag its recipe pins; each module that
+  `go.mod` requires, read from the port's source at the pinned commit as
+  a Rust port's `Cargo.lock` is, under the name a `replace` in it gives,
+  but one that go-modules patches in its place; and Go's standard library,
+  as OSV's Go package `stdlib` at the go port's version. As a `Cargo.lock`
+  does, `go.mod` names what the program's tests need too, so a finding in
+  a module only a test needs is stated in `security/vex.json`.
 
 The `sbom-scan` job runs it every day and reads its JSON.
 
@@ -275,7 +284,9 @@ adds it, with:
 - the product, as the issue's table names it in the column Product: a
   package URL with the recipe's version, `pkg:generic/<port>@<version>`
   for a port, `pkg:generic/<repository>@<commit>` for an extra source,
-  with the commit pinned, or `pkg:cargo/<name>@<version>` for a crate;
+  with the commit pinned, `pkg:cargo/<name>@<version>` for a crate, or
+  `pkg:golang/<module path>@<version>` for a Go module (`pkg:golang/stdlib@<version>`
+  for Go's standard library);
 - the status, `not_affected` or `fixed`;
 - the reason, in `status_notes` or `impact_statement`. A statement of
   `not_affected` also has a `justification`, one of OpenVEX's, or an

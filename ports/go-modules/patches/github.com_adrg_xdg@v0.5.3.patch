@@ -1,0 +1,34 @@
+SPDX-FileCopyrightText: 2014 Adrian-George Bostan
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT
+
+Radix keeps a user's folders as other Unix systems do: its XDG
+variables, or the defaults under the home folder.
+
+diff -ruN a/github.com_adrg_xdg@v0.5.3/internal/pathutil/pathutil_unix.go b/github.com_adrg_xdg@v0.5.3/internal/pathutil/pathutil_unix.go
+--- a/github.com_adrg_xdg@v0.5.3/internal/pathutil/pathutil_unix.go
++++ b/github.com_adrg_xdg@v0.5.3/internal/pathutil/pathutil_unix.go
+@@ -1,4 +1,4 @@
+-//go:build aix || darwin || dragonfly || freebsd || (js && wasm) || nacl || linux || netbsd || openbsd || solaris
++//go:build aix || darwin || dragonfly || freebsd || (js && wasm) || nacl || linux || netbsd || openbsd || radix || solaris
+ 
+ package pathutil
+ 
+diff -ruN a/github.com_adrg_xdg@v0.5.3/internal/userdirs/config_unix.go b/github.com_adrg_xdg@v0.5.3/internal/userdirs/config_unix.go
+--- a/github.com_adrg_xdg@v0.5.3/internal/userdirs/config_unix.go
++++ b/github.com_adrg_xdg@v0.5.3/internal/userdirs/config_unix.go
+@@ -1,4 +1,4 @@
+-//go:build aix || dragonfly || freebsd || (js && wasm) || nacl || linux || netbsd || openbsd || solaris
++//go:build aix || dragonfly || freebsd || (js && wasm) || nacl || linux || netbsd || openbsd || radix || solaris
+ 
+ package userdirs
+ 
+diff -ruN a/github.com_adrg_xdg@v0.5.3/paths_unix.go b/github.com_adrg_xdg@v0.5.3/paths_unix.go
+--- a/github.com_adrg_xdg@v0.5.3/paths_unix.go
++++ b/github.com_adrg_xdg@v0.5.3/paths_unix.go
+@@ -1,4 +1,4 @@
+-//go:build aix || dragonfly || freebsd || (js && wasm) || nacl || linux || netbsd || openbsd || solaris
++//go:build aix || dragonfly || freebsd || (js && wasm) || nacl || linux || netbsd || openbsd || radix || solaris
+ 
+ package xdg
+ 

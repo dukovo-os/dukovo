@@ -44,7 +44,7 @@
 //! way, on LLVM's libc++ once the llvm-runtimes port has built it; and a
 //! CMake toolchain file for ports that build with CMake (ADR 0090).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -106,6 +106,18 @@ pub struct Recipe {
     /// Crates from crates.io, unpacked inside the port's source tree.
     #[serde(default, rename = "crate")]
     pub crates: Vec<Crate>,
+    /// Go modules from Go's module proxy, unpacked inside the port's
+    /// source tree.
+    #[serde(default, rename = "module")]
+    pub modules: Vec<GoModule>,
+    /// For a port in Go: the license of a module its programs link that
+    /// the module's own files do not state in words `licenses::go_license`
+    /// reads, as an SPDX expression by the module's path (the replacing
+    /// module's, for one go.mod replaces). The recipe says in a comment
+    /// above each line where the license is stated. A path no program
+    /// links is an error, so that an entry does not outlive its module.
+    #[serde(default, rename = "go-licenses")]
+    pub go_licenses: BTreeMap<String, String>,
     /// Files of the sysroot the boot archive holds, as paths beneath it;
     /// one that ends in `/` is a directory, with everything in it.
     #[serde(default)]
@@ -321,6 +333,197 @@ impl Crate {
     }
 }
 
+/// A Go module from Go's module proxy unpacked inside a port's tree: the
+/// modules the go-modules port patches for Radix (ADR 0600).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct GoModule {
+    /// Its path, such as `golang.org/x/sys`.
+    pub path: String,
+    /// Its version, such as `v0.50.0`.
+    pub version: String,
+    /// The SHA-256 of the proxy's zip of it, which the proxy never
+    /// changes once it has served it.
+    pub sha256: String,
+    /// SPDX license expression, as its license files say.
+    pub license: String,
+    /// Whether the patched module takes the place of every version of it
+    /// a program selects, not only of this one: for a module that
+    /// requires no other, whose code is newer than the versions it
+    /// replaces.
+    #[serde(default)]
+    pub all_versions: bool,
+}
+
+impl GoModule {
+    /// Where it goes in the port's source, a name of one component:
+    /// `golang.org_x_sys@v0.50.0`.
+    pub fn dir(&self) -> String {
+        format!("{}@{}", self.path.replace('/', "_"), self.version)
+    }
+
+    /// Its zip's URL on Go's module proxy.
+    pub fn url(&self) -> String {
+        go_proxy_url(&self.path, &self.version)
+    }
+}
+
+/// A module path or version as Go's module proxy and module cache spell
+/// it: an upper-case letter is `!` and the letter in lower case, since
+/// file systems that ignore case would make two modules one.
+fn go_escaped(text: &str) -> String {
+    text.chars().fold(String::new(), |mut out, c| {
+        if c.is_ascii_uppercase() {
+            out.push('!');
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+        out
+    })
+}
+
+/// The URL of a module's zip on Go's module proxy.
+pub fn go_proxy_url(path: &str, version: &str) -> String {
+    format!("{GO_PROXY}/{}/@v/{}.zip", go_escaped(path), go_escaped(version))
+}
+
+/// Where Go's module cache, [`go_module_cache`], unpacks a module of the
+/// proxy: a folder `<escaped path>@<escaped version>`, with the path's
+/// parts as folders.
+pub fn go_cached_module(ctx: &Ctx, path: &str, version: &str) -> PathBuf {
+    go_module_cache(ctx).join(format!("{}@{}", go_escaped(path), go_escaped(version)))
+}
+
+/// The list of a port's Go modules that ob writes into its source for its
+/// build.sh: a line `PATH VERSION FOLDER all|one` for each.
+pub const GO_MODULE_LIST: &str = "modules.list";
+
+/// Go's module proxy, the one place Go for Radix fetches modules from.
+pub const GO_PROXY: &str = "https://proxy.golang.org";
+
+/// The port of Go's own toolchain, whose source holds the standard library
+/// and runtime every program in Go carries.
+pub const GO_PORT: &str = "go";
+
+/// The port of the modules patched for Radix, which programs in Go are
+/// built with in place of the proxy's.
+pub const GO_MODULES_PORT: &str = "go-modules";
+
+/// A module that programs in Go link, as `go version -m` names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkedModule {
+    /// A module of Go's module proxy, by the path and version of the code
+    /// that is linked: the replacement's, where go.mod replaces the module
+    /// with another.
+    Proxy { path: String, version: String },
+    /// A module the go-modules port patched, which takes the place of the
+    /// versions of it that the programs name: `folder` is its
+    /// [`GoModule::dir`].
+    Patched { folder: String, named: BTreeSet<String> },
+}
+
+/// A `dep` line of `go version -m`, with the `=>` line after it, if any.
+struct GoDep<'a> {
+    path: &'a str,
+    version: &'a str,
+    /// The path and version that take its place; a folder's version is
+    /// `(devel)`.
+    replacement: Option<(&'a str, &'a str)>,
+    line: usize,
+}
+
+/// The `dep` lines of what `go version -m` printed. The lines are tab
+/// separated and start with a tab: `dep PATH VERSION SUM`, and after a
+/// module that is replaced `=> PATH VERSION SUM`, where a replacement by a
+/// folder has `(devel)` for its version and no sum. The line that names a
+/// program, `path`, `mod` and `build` lines are not modules.
+fn go_deps(text: &str) -> Result<Vec<GoDep<'_>>, String> {
+    let mut deps: Vec<GoDep> = Vec::new();
+    // Whether the line before was a `dep` line, which a `=>` line follows.
+    let mut after_dep = false;
+    for (n, line) in text.lines().enumerate() {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let field = |i: usize| fields.get(i).copied().filter(|field| !field.is_empty());
+        let kind = if fields[0].is_empty() { field(1) } else { None };
+        let line_number = n + 1;
+        match kind {
+            Some("dep") => {
+                let (Some(path), Some(version)) = (field(2), field(3)) else {
+                    return Err(format!("line {line_number}: a dep line has no path and version"));
+                };
+                deps.push(GoDep { path, version, replacement: None, line: line_number });
+                after_dep = true;
+                continue;
+            }
+            Some("=>") if after_dep => {
+                let (Some(path), Some(version)) = (field(2), field(3)) else {
+                    return Err(format!("line {line_number}: a `=>` line has no path and version"));
+                };
+                deps.last_mut().expect("a dep line came before").replacement =
+                    Some((path, version));
+            }
+            Some("=>") => return Err(format!("line {line_number}: a `=>` line replaces no dep")),
+            _ => {}
+        }
+        after_dep = false;
+    }
+    Ok(deps)
+}
+
+/// The modules that the programs `go version -m` described in `text` link,
+/// once each, in the order they are first named. `text` is what a port's
+/// build.sh leaves in `$PORT_INFO/modules.txt`.
+///
+/// # Errors
+///
+/// A line that is not in the form `go version -m` prints, or a module
+/// replaced by a folder that is not one of the go-modules port's: the
+/// license of its code cannot be known.
+pub fn linked_go_modules(text: &str) -> Result<Vec<LinkedModule>, String> {
+    let mut modules: Vec<LinkedModule> = Vec::new();
+    for dep in go_deps(text)? {
+        match linked_module(&dep)? {
+            LinkedModule::Patched { folder, named } => {
+                let known = modules.iter_mut().find_map(|have| match have {
+                    LinkedModule::Patched { folder: other, named } if *other == folder => {
+                        Some(named)
+                    }
+                    _ => None,
+                });
+                match known {
+                    Some(have) => have.extend(named),
+                    None => modules.push(LinkedModule::Patched { folder, named }),
+                }
+            }
+            proxy if !modules.contains(&proxy) => modules.push(proxy),
+            _ => {}
+        }
+    }
+    Ok(modules)
+}
+
+/// The module whose code a `dep` line links.
+fn linked_module(dep: &GoDep) -> Result<LinkedModule, String> {
+    let Some((target, version)) = dep.replacement else {
+        return Ok(LinkedModule::Proxy { path: dep.path.into(), version: dep.version.into() });
+    };
+    if let Some(folder) = target.strip_prefix(&format!("./{}/", Toolchain::GO_LINK)) {
+        let named = BTreeSet::from([dep.version.to_string()]);
+        return Ok(LinkedModule::Patched { folder: folder.into(), named });
+    }
+    // Go reads a replacement that starts with `.` or `/` as a folder, which
+    // no module's path does.
+    if target.starts_with(['.', '/']) {
+        return Err(format!(
+            "line {}: {} {} is replaced by the folder {target}, which is not one of \
+             {GO_MODULES_PORT}'s, so its code and license are not known",
+            dep.line, dep.path, dep.version
+        ));
+    }
+    Ok(LinkedModule::Proxy { path: target.into(), version: version.into() })
+}
+
 /// Code from another project that a port keeps in its own directory, as
 /// ports/mlibc keeps musl's in `musl/`.
 #[derive(Debug, Deserialize)]
@@ -348,6 +551,8 @@ pub struct Port {
     pub extras: Vec<PathBuf>,
     /// The crates, unpacked, in the recipe's order.
     pub crates: Vec<PathBuf>,
+    /// The Go modules, unpacked, in the recipe's order.
+    pub modules: Vec<PathBuf>,
 }
 
 /// Reads every recipe in `ports/`, in an order that builds each port
@@ -423,10 +628,14 @@ fn check(ctx: &Ctx, recipe: &Recipe, dir: &Path) -> Result<()> {
     if source.rust_src && !recipe.toolchain {
         return Err(Error::new(format!("{what}: only a toolchain port builds rust-src")));
     }
-    if kinds == 0 && recipe.crates.is_empty() && recipe.extra.is_empty() {
+    if kinds == 0
+        && recipe.crates.is_empty()
+        && recipe.modules.is_empty()
+        && recipe.extra.is_empty()
+    {
         return Err(Error::new(format!(
-            "{what}: a port needs a source: git and commit, url and sha256, rust-src, crates or \
-             extra sources"
+            "{what}: a port needs a source: git and commit, url and sha256, rust-src, crates, Go \
+             modules or extra sources"
         )));
     }
     if !git && (!source.commit.is_empty() || source.tag.is_some()) {
@@ -467,6 +676,9 @@ fn check(ctx: &Ctx, recipe: &Recipe, dir: &Path) -> Result<()> {
                 krate.name, krate.version
             )));
         }
+    }
+    if let Some(problem) = modules_problem(recipe) {
+        return Err(Error::new(format!("{what}: {problem}")));
     }
     if let Some(problem) = upstream_problem(recipe) {
         return Err(Error::new(format!("{what}: {problem}")));
@@ -546,8 +758,8 @@ fn data_only_problem(recipe: &Recipe) -> Option<String> {
             "data_only goes with a source, git or url, that the data comes from".to_string(),
         );
     }
-    if !recipe.crates.is_empty() {
-        return Some("a port that takes only data builds no crates".to_string());
+    if !recipe.crates.is_empty() || !recipe.modules.is_empty() {
+        return Some("a port that takes only data builds no crates or Go modules".to_string());
     }
     None
 }
@@ -634,6 +846,35 @@ fn word_runs(text: &str) -> Vec<String> {
         digits = kind;
     }
     runs
+}
+
+/// What is wrong with the recipe's Go modules, if anything: each is a
+/// module path, a version and a SHA-256, and no two go to one place.
+fn modules_problem(recipe: &Recipe) -> Option<String> {
+    let mut dirs = std::collections::BTreeSet::new();
+    for module in &recipe.modules {
+        let what = format!("module `{}` `{}`", module.path, module.version);
+        // Go's own rules are wider; these are what a path and a version
+        // of the proxy's are made of, and keep the place a plain name.
+        let path_ok = !module.path.is_empty()
+            && module.path.split('/').all(|part| {
+                !part.is_empty()
+                    && !part.starts_with('.')
+                    && part.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.~".contains(&b))
+            });
+        let version_ok = module.version.starts_with('v')
+            && module.version.bytes().all(|b| b.is_ascii_alphanumeric() || b"-.+".contains(&b));
+        if !path_ok || !version_ok {
+            return Some(format!("{what} is not a Go module's path and version"));
+        }
+        if !is_hex(&module.sha256, 64) {
+            return Some(format!("{what}: `{}` is not a SHA-256", module.sha256));
+        }
+        if !dirs.insert(module.dir()) {
+            return Some(format!("{what} goes where another module does, {}", module.dir()));
+        }
+    }
+    None
 }
 
 /// What is wrong with the recipe's `[bootstrap]`, if anything: the oldest
@@ -803,6 +1044,20 @@ pub fn find_toolchain(ctx: &Ctx) -> Result<Toolchain> {
 }
 
 impl Toolchain {
+    /// A toolchain of nothing but its folder, for tests of what reads no
+    /// program of it.
+    #[cfg(test)]
+    pub fn bare(dir: PathBuf) -> Self {
+        Self {
+            dir,
+            version: String::new(),
+            clang: PathBuf::new(),
+            resource: PathBuf::new(),
+            builtins: PathBuf::new(),
+            tools: BTreeMap::new(),
+        }
+    }
+
     pub fn bin(&self) -> PathBuf {
         self.dir.join("bin")
     }
@@ -878,6 +1133,17 @@ impl Toolchain {
         self.rust().join("patches")
     }
 
+    /// Go for Radix: the wrapper that builds programs in Go (ADR 0600).
+    pub fn go(&self) -> PathBuf {
+        self.bin().join(format!("{TRIPLE}-go"))
+    }
+
+    /// The Go modules the go-modules port patches for Radix, each in a
+    /// folder named as [`GoModule::dir`] names it, and their `list`.
+    pub fn go_modules(&self) -> PathBuf {
+        self.dir.join("go-modules")
+    }
+
     /// The autoconf site file for Radix, and what else configure scripts
     /// need beyond the wrappers.
     pub fn autotools(&self) -> PathBuf {
@@ -911,6 +1177,7 @@ impl Toolchain {
         // `ld.lld-20`).
         write_script(&self.bin().join("ld.lld"), &script("ld", &self.tools["ld"]))?;
         write_script(&self.cargo(), &self.cargo_script(ctx)?)?;
+        write_script(&self.go(), &self.go_script(ctx))?;
         // Ports with GNU configure scripts (autoconf's) run them with this.
         write_script(
             &self.bin().join(format!("{TRIPLE}-configure")),
@@ -1197,6 +1464,142 @@ exec cargo "$command" "$@"
         ))
     }
 
+    /// The link to the toolchain's patched Go modules that Go for Radix
+    /// makes in a module's folder, and gives them through.
+    pub const GO_LINK: &str = ".radix-go";
+
+    /// Go for programs in Go (ADR 0600), as `go` is used in a module's
+    /// folder: `x86_64-radix-go build -o prog ./cmd/prog`. It builds for
+    /// GOOS=radix with the toolchain's Go, and gives the program the
+    /// modules the go-modules port patches for Radix in place of the
+    /// proxy's, those its go.sum names, through a module file of its own
+    /// beside go.mod, `.radix-go.mod`: go.mod and its `replace` lines. A
+    /// patched module whose code needs a newer Go than go.mod's `go` line
+    /// raises it there, with `godebug default=` the old line, so the
+    /// program keeps the run-time defaults of the Go it names. Every other
+    /// module comes from Go's module proxy, checked against go.sum, which
+    /// nothing changes: one go.sum does not name stops the build. With
+    /// `--host` first, it builds for the build machine instead, with the
+    /// same modules: a generator a program runs as it builds, say.
+    fn go_script(&self, ctx: &Ctx) -> String {
+        let go_root = self.dir.join("go");
+        let caches = ctx.target.join("go");
+        format!(
+            r#"#!/bin/sh
+# Written by ob (ob(1), PORTS): Go for Radix's programs.
+set -eu
+me={TRIPLE}-go
+modules='{modules}'
+host=
+if [ "${{1:-}}" = --host ]; then
+	host=yes
+	shift
+fi
+# The module: go.mod here or above.
+dir=$(pwd)
+until [ -f "$dir/go.mod" ]; do
+	if [ "$dir" = / ]; then
+		echo "$me: no go.mod in $(pwd) or above" >&2
+		exit 1
+	fi
+	dir=$(dirname "$dir")
+done
+case $dir in
+*[[:space:]]*)
+	echo "$me: $dir holds a space, which GOFLAGS cannot" >&2
+	exit 1
+	;;
+esac
+# The patched modules are given through a link to them in the module's
+# folder, so that the program's build information names them by a path
+# from there, whatever the folder is (ADR 0535).
+link=$dir/{link}
+if [ -e "$link" ] && [ ! -L "$link" ]; then
+	echo "$me: $link is in the way" >&2
+	exit 1
+fi
+ln -sfn "$modules" "$link"
+sum=$dir/go.sum
+[ -f "$sum" ] || sum=/dev/null
+# go.sum names a module as `PATH VERSION h1:...` or `PATH VERSION/go.mod
+# h1:...`; the list, as `PATH VERSION FOLDER all|one GO`, GO being the
+# oldest Go its code builds with. Go compares versions such as 1.22 and
+# 1.19.0 number by number.
+awk -v list="$modules/list" -v me="$me" '
+function older(a, b, x, y, n, m, i) {{
+	n = split(a, x, ".")
+	m = split(b, y, ".")
+	for (i = 1; i <= (n > m ? n : m); i++) {{
+		if (x[i] + 0 != y[i] + 0) return x[i] + 0 < y[i] + 0
+	}}
+	return 0
+}}
+BEGIN {{
+	while ((getline line < list) > 0) {{
+		split(line, f, " ")
+		count++
+		path[count] = f[1]; version[count] = f[2]; folder[count] = f[3]
+		every[count] = f[4] == "all"; needs[count] = f[5]
+	}}
+}}
+FILENAME == ARGV[1] {{
+	v = $2
+	sub(/\/go\.mod$/, "", v)
+	named[$1] = 1
+	named[$1 " " v] = 1
+	next
+}}
+/^go[ \t]/ {{ go = $2 }}
+/^replace[ \t]*\(/ {{ block = 1; lines[++total] = $0; next }}
+block && /^[ \t]*\)/ {{ block = 0 }}
+block && NF {{ replaced[$1] = 1 }}
+$1 == "replace" && !block {{ replaced[$2] = 1 }}
+{{ lines[++total] = $0 }}
+END {{
+	old = go == "" ? "1.16" : go
+	top = old
+	for (i = 1; i <= count; i++) {{
+		if (!(every[i] ? named[path[i]] : named[path[i] " " version[i]])) continue
+		if (path[i] in replaced) {{
+			print me ": go.mod replaces " path[i] ", which Radix needs patched" > "/dev/stderr"
+			exit 1
+		}}
+		use[i] = 1
+		if (older(top, needs[i])) top = needs[i]
+	}}
+	for (j = 1; j <= total; j++) {{
+		if (top != old && lines[j] ~ /^go[ \t]/) print "go " top
+		else print lines[j]
+	}}
+	if (top != old) {{
+		if (go == "") print "go " top
+		print "godebug default=go" old
+	}}
+	for (i = 1; i <= count; i++) {{
+		if (use[i]) print "replace " path[i] (every[i] ? "" : " " version[i]) " => ./{link}/" folder[i]
+	}}
+}}' "$sum" "$dir/go.mod" >"$dir/.radix-go.mod"
+cp "$sum" "$dir/.radix-go.sum"
+unset GOBIN GODEBUG GOEXPERIMENT GOFIPS140 GOINSECURE GONOPROXY GONOSUMDB GOPRIVATE GOVCS
+unset GOOS GOARCH GOAMD64
+[ -n "$host" ] || export GOOS=radix GOARCH=amd64 GOAMD64=v1
+export CGO_ENABLED=0
+export GOROOT='{root}' GOTOOLCHAIN=local GOTELEMETRY=off GOENV=off GOWORK=off
+export GOPROXY={proxy} GOSUMDB=off
+export GOFLAGS="-mod=readonly -modfile=$dir/.radix-go.mod -trimpath -buildvcs=false -modcacherw"
+export GOCACHE='{cache}' GOMODCACHE='{modcache}' GOPATH='{path}'
+exec '{root}/bin/go' "$@"
+"#,
+            modules = self.go_modules().display(),
+            link = Self::GO_LINK,
+            root = go_root.display(),
+            proxy = GO_PROXY,
+            cache = caches.join("cache").display(),
+            modcache = go_module_cache(ctx).display(),
+            path = caches.join("path").display(),
+        )
+    }
+
     /// The cross file the C library is built with: Clang for no OS, so
     /// that nothing of Linux's (ifuncs, say) leaks in; `unknown-attributes`
     /// as an error makes mlibc's ifunc check fail, as it must there. The
@@ -1320,19 +1723,25 @@ fn build_ports(ctx: &Ctx, rebuild: &[String], pack: bool) -> Result<Ports> {
         for krate in &recipe.crates {
             crates.push(fetch_crate(ctx, krate)?);
         }
-        let port = Port { recipe, dir, source, extras, crates };
+        let mut modules = Vec::new();
+        for module in &recipe.modules {
+            modules.push(fetch_go_module(ctx, module)?);
+        }
+        let port = Port { recipe, dir, source, extras, crates, modules };
         let recipe = &port.recipe;
         let stamp = inputs_hash(ctx, &port.dir, &toolchain, recipe, &stamps)?;
         let stamp_file = ctx.out.join("ports").join(format!("{}.stamp", recipe.name));
         let built = std::fs::read_to_string(&stamp_file).ok() == Some(format!("{stamp:016x}\n"));
         // A bundle's port is packed from the folder it installed into, and
         // its licenses from the sources of the crates it linked, in
-        // Cargo's registry. A cache can bring the stamp back without
-        // either: CI's prunes the registry to the workspace's crates.
+        // Cargo's registry, and of the Go modules, in Go's module cache. A
+        // cache can bring the stamp back without either: CI's prunes the
+        // registry to the workspace's crates.
         let staged = !pack
             || recipe.bundle.is_none()
             || (crate::bundles::staging(ctx, &recipe.name).is_dir()
-                && crate::licenses::crates_fetched(ctx, &recipe.name));
+                && crate::licenses::crates_fetched(ctx, &recipe.name)
+                && crate::licenses::go_modules_fetched(ctx, &recipe.name));
         if built && staged && !rebuild.contains(&recipe.name) {
             step(&format!("Port {} {} is up to date", recipe.name, recipe.version));
         } else {
@@ -1924,6 +2333,75 @@ pub fn fetch_crate(ctx: &Ctx, krate: &Crate) -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// Go's module cache for the ports' programs in Go: the modules Go for
+/// Radix fetches from Go's module proxy, each checked against the
+/// program's go.sum.
+pub fn go_module_cache(ctx: &Ctx) -> PathBuf {
+    ctx.target.join("ports/sources/go-mod")
+}
+
+/// Fetches a Go module's zip from Go's module proxy into
+/// `target/ports/sources/go-modules`, once, checks its SHA-256, and
+/// unpacks the module there. Returns where it is unpacked. Go's own
+/// module cache is not used: what is in it was checked against a go.sum,
+/// and these are checked against the recipe.
+pub fn fetch_go_module(ctx: &Ctx, module: &GoModule) -> Result<PathBuf> {
+    let modules = ctx.target.join("ports/sources/go-modules");
+    let name = module.dir();
+    let dir = modules.join(&name);
+    // The SHA-256 it was unpacked from is noted beside it, as a crate's
+    // is in it, and so are the files unpacked.
+    let marker = modules.join(format!("{name}.sha256"));
+    let files = modules.join(format!("{name}.files"));
+    if std::fs::read_to_string(&marker).ok().as_deref() == Some(module.sha256.as_str())
+        && std::fs::read_to_string(&files).ok() == Some(listing(&dir)?)
+    {
+        return Ok(dir);
+    }
+    let url = module.url();
+    step(&format!("Fetching Go module {} {} from Go's module proxy", module.path, module.version));
+    process::create_dir(&modules)?;
+    let file = modules.join(format!("{name}.zip"));
+    let mut cmd = Command::new("curl");
+    cmd.args(["--proto", "=https", "--tlsv1.2", "-fsSL", "--retry", "3", "-o"])
+        .arg(&file)
+        .arg(&url);
+    process::run(ctx, &mut cmd)?;
+    let sum = process::sha256(ctx, &file)?;
+    if sum != module.sha256 {
+        let _ = std::fs::remove_file(&file);
+        return Err(Error::new(format!(
+            "{url} has SHA-256 {sum}, not the {} the recipe pins; not using it",
+            module.sha256
+        )));
+    }
+    // Unpacked beside its final place, then moved there: a directory
+    // there is a whole module. A module's zip holds it in a folder named
+    // `<path>@<version>`, as the proxy spells them.
+    let partial = modules.join(format!("{name}.partial"));
+    for old in [&dir, &partial] {
+        if old.exists() {
+            std::fs::remove_dir_all(old).context(|| format!("removing {}", old.display()))?;
+        }
+    }
+    let _ = std::fs::remove_file(&marker);
+    process::create_dir(&partial)?;
+    // Python's zipfile writes no path outside the folder it is given.
+    let mut cmd = Command::new("python3");
+    cmd.args(["-I", "-m", "zipfile", "-e"]).arg(&file).arg(&partial);
+    process::run(ctx, &mut cmd)?;
+    let unpacked = partial.join(format!("{}@{}", module.path, module.version));
+    if !unpacked.is_dir() {
+        return Err(Error::new(format!("{url} holds no {}@{}/", module.path, module.version)));
+    }
+    std::fs::rename(&unpacked, &dir).context(|| format!("moving it to {}", dir.display()))?;
+    std::fs::remove_dir_all(&partial).context(|| format!("removing {}", partial.display()))?;
+    let _ = std::fs::remove_file(&file);
+    write_file(&files, &listing(&dir)?)?;
+    write_file(&marker, &module.sha256)?;
+    Ok(dir)
+}
+
 /// Copies the tree of `repo`'s checked-out commit, without its `.git`, to
 /// `to`; with `paths`, only those directories of it.
 pub fn export(ctx: &Ctx, repo: &Path, to: &Path, paths: &[String]) -> Result<()> {
@@ -1983,7 +2461,20 @@ fn build(ctx: &Ctx, toolchain: &Toolchain, port: &Port) -> Result<()> {
     for (krate, source) in recipe.crates.iter().zip(&port.crates) {
         copy_tree(ctx, source, &src.join(krate.path()))?;
     }
+    for (module, source) in recipe.modules.iter().zip(&port.modules) {
+        copy_tree(ctx, source, &src.join(module.dir()))?;
+    }
     apply_patches(ctx, dir, &src)?;
+    if !recipe.modules.is_empty() {
+        // Each module's path, version, folder, and whether it takes the
+        // place of every version, for build.sh to install them by.
+        let mut list = String::new();
+        for m in &recipe.modules {
+            let versions = if m.all_versions { "all" } else { "one" };
+            let _ = writeln!(list, "{} {} {} {versions}", m.path, m.version, m.dir());
+        }
+        write_file(&src.join(GO_MODULE_LIST), &list)?;
+    }
     process::create_dir(&build_dir)?;
     let info = info_dir(ctx, &recipe.name);
     if info.exists() {
@@ -2022,6 +2513,7 @@ fn build(ctx: &Ctx, toolchain: &Toolchain, port: &Port) -> Result<()> {
         .env("SYSROOT", &sysroot)
         .env("TOOLCHAIN", &toolchain.dir)
         .env("CARGO_RADIX", toolchain.cargo())
+        .env("GO_RADIX", toolchain.go())
         .env("RUST_TARGET", ctx.root.join(crate::userspace::STD_TARGET_SPEC))
         .env("PREFIX", "/system")
         .env("JOBS", jobs.to_string())
@@ -2110,6 +2602,21 @@ pub fn apply_patches(ctx: &Ctx, dir: &Path, src: &Path) -> Result<()> {
 /// `Cargo.lock`, for the license manifest.
 pub fn info_dir(ctx: &Ctx, name: &str) -> PathBuf {
     ctx.out.join("ports").join(name)
+}
+
+/// The modules the programs of the port `name` link, from the
+/// `modules.txt` its build.sh left in its info folder: what `go version
+/// -m` printed for each program it installed. None for a port that left
+/// none, as a port that is not in Go.
+pub fn go_modules_linked(ctx: &Ctx, name: &str) -> Result<Option<Vec<LinkedModule>>> {
+    let file = info_dir(ctx, name).join("modules.txt");
+    if !file.is_file() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&file).context(|| format!("reading {}", file.display()))?;
+    linked_go_modules(&text)
+        .map(Some)
+        .map_err(|err| Error::new(format!("{}: {err}", file.display())))
 }
 
 /// What of the sysroot a port puts in the image: what its recipe names,
@@ -2742,6 +3249,328 @@ mod tests {
             root: root.into(),
         };
         (zip, bootstrap)
+    }
+
+    /// A toolchain of nothing but its folder, for the scripts it writes.
+    fn bare_toolchain(root: &Path) -> Toolchain {
+        Toolchain::bare(root.join("out/toolchain"))
+    }
+
+    /// Go for Radix in `root`, over a Go that prints how it was run, with
+    /// three patched modules: x/sys for every version, two of go-isatty.
+    fn go_for_radix(root: &Path) -> Toolchain {
+        let toolchain = bare_toolchain(root);
+        let bin = toolchain.dir.join("go/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        write_script(
+            &bin.join("go"),
+            "#!/bin/sh\necho \"GOFLAGS=$GOFLAGS\"\necho \"GOOS=$GOOS GOPROXY=$GOPROXY \
+             GOSUMDB=$GOSUMDB GOTOOLCHAIN=$GOTOOLCHAIN\"\necho \"args=$*\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(toolchain.go_modules()).unwrap();
+        std::fs::write(
+            toolchain.go_modules().join("list"),
+            "golang.org/x/sys v0.50.0 golang.org_x_sys@v0.50.0 all 1.22\n\
+             github.com/mattn/go-isatty v0.0.20 github.com_mattn_go-isatty@v0.0.20 one 1.15\n\
+             github.com/mattn/go-isatty v0.0.24 github.com_mattn_go-isatty@v0.0.24 one 1.15\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(toolchain.bin()).unwrap();
+        write_script(&toolchain.go(), &toolchain.go_script(&test_ctx(root))).unwrap();
+        toolchain
+    }
+
+    /// A program's module in `root`/app with `go_mod` and `go_sum`, and a
+    /// folder in it to run from.
+    fn go_program(root: &Path, go_mod: &str, go_sum: &str) -> PathBuf {
+        let app = root.join("app");
+        std::fs::create_dir_all(app.join("cmd/app")).unwrap();
+        std::fs::write(app.join("go.mod"), go_mod).unwrap();
+        std::fs::write(app.join("go.sum"), go_sum).unwrap();
+        app
+    }
+
+    const APP_GO_SUM: &str = "github.com/mattn/go-isatty v0.0.20 h1:one=\n\
+        github.com/mattn/go-isatty v0.0.20/go.mod h1:two=\n\
+        golang.org/x/sys v0.30.0/go.mod h1:three=\n";
+
+    #[test]
+    fn go_for_radix_gives_a_program_the_patched_modules_its_go_sum_names() {
+        let root = scratch("radix-go");
+        let toolchain = go_for_radix(&root);
+        let go_mod = "module example.com/app\n\ngo 1.19\n\nrequire (\n\
+                      \tgithub.com/mattn/go-isatty v0.0.20\n\tgolang.org/x/sys v0.30.0\n)\n";
+        let app = go_program(&root, go_mod, APP_GO_SUM);
+        let out = Command::new("sh")
+            .arg(toolchain.go())
+            .args(["build", "./cmd/app"])
+            .current_dir(app.join("cmd/app"))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        // x/sys at any version, go-isatty at the one go.sum names; the
+        // patched modules need Go 1.22, so the line is raised and the
+        // program keeps Go 1.19's run-time defaults.
+        assert_eq!(
+            std::fs::read_to_string(app.join(".radix-go.mod")).unwrap(),
+            "module example.com/app\n\ngo 1.22\n\nrequire (\n\
+             \tgithub.com/mattn/go-isatty v0.0.20\n\tgolang.org/x/sys v0.30.0\n)\n\
+             godebug default=go1.19\n\
+             replace golang.org/x/sys => ./.radix-go/golang.org_x_sys@v0.50.0\n\
+             replace github.com/mattn/go-isatty v0.0.20 => \
+             ./.radix-go/github.com_mattn_go-isatty@v0.0.20\n"
+        );
+        assert_eq!(std::fs::read_to_string(app.join(".radix-go.sum")).unwrap(), APP_GO_SUM);
+        assert_eq!(std::fs::read_link(app.join(".radix-go")).unwrap(), toolchain.go_modules());
+        let printed = String::from_utf8_lossy(&out.stdout);
+        let modfile = app.join(".radix-go.mod");
+        assert!(
+            printed.contains(&format!(
+                "GOFLAGS=-mod=readonly -modfile={} -trimpath -buildvcs=false -modcacherw\n",
+                modfile.display()
+            )),
+            "{printed}"
+        );
+        assert!(
+            printed.contains(
+                "GOOS=radix GOPROXY=https://proxy.golang.org GOSUMDB=off GOTOOLCHAIN=local\n"
+            ),
+            "{printed}"
+        );
+        assert!(printed.contains("args=build ./cmd/app\n"), "{printed}");
+        // For the build machine, with the same modules.
+        let out = Command::new("sh")
+            .arg(toolchain.go())
+            .args(["--host", "run", "./gen"])
+            .current_dir(&app)
+            .env("GOOS", "plan9")
+            .output()
+            .unwrap();
+        let printed = String::from_utf8_lossy(&out.stdout);
+        assert!(printed.contains("GOOS= GOPROXY=https://proxy.golang.org"), "{printed}");
+        assert!(printed.contains(&format!("-modfile={}", modfile.display())), "{printed}");
+        assert!(printed.contains("args=run ./gen\n"), "{printed}");
+        // go.mod itself is as it was.
+        assert_eq!(std::fs::read_to_string(app.join("go.mod")).unwrap(), go_mod);
+    }
+
+    #[test]
+    fn go_for_radix_keeps_a_go_line_newer_than_the_patched_modules_need() {
+        let root = scratch("radix-go-newer");
+        let toolchain = go_for_radix(&root);
+        let go_mod = "module example.com/app\n\ngo 1.26.0\n";
+        let app = go_program(&root, go_mod, "golang.org/x/sys v0.48.0 h1:four=\n");
+        let out = Command::new("sh").arg(toolchain.go()).arg("version").current_dir(&app).output();
+        assert!(out.unwrap().status.success());
+        assert_eq!(
+            std::fs::read_to_string(app.join(".radix-go.mod")).unwrap(),
+            "module example.com/app\n\ngo 1.26.0\n\
+             replace golang.org/x/sys => ./.radix-go/golang.org_x_sys@v0.50.0\n"
+        );
+    }
+
+    #[test]
+    fn go_for_radix_refuses_a_program_that_replaces_a_patched_module() {
+        for replace in [
+            "replace github.com/mattn/go-isatty => github.com/someone/isatty v1.0.0\n",
+            "replace (\n\tgithub.com/mattn/go-isatty v0.0.20 => ../isatty\n)\n",
+        ] {
+            let root = scratch("radix-go-replaced");
+            let toolchain = go_for_radix(&root);
+            let go_mod = format!("module example.com/app\n\ngo 1.24\n\n{replace}");
+            let app = go_program(&root, &go_mod, APP_GO_SUM);
+            let out =
+                Command::new("sh").arg(toolchain.go()).arg("build").current_dir(&app).output();
+            let out = out.unwrap();
+            assert!(!out.status.success(), "{replace}");
+            let said = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                said.contains(
+                    "x86_64-radix-go: go.mod replaces github.com/mattn/go-isatty, which Radix \
+                     needs patched"
+                ),
+                "{said}"
+            );
+            assert!(out.stdout.is_empty(), "Go ran: {}", String::from_utf8_lossy(&out.stdout));
+        }
+    }
+
+    #[test]
+    fn a_go_modules_proxy_url_spells_capitals_as_the_proxy_does() {
+        let module = |path: &str, version: &str| GoModule {
+            path: path.into(),
+            version: version.into(),
+            sha256: "0".repeat(64),
+            license: "MIT".into(),
+            all_versions: false,
+        };
+        let bloom = module("github.com/AndreasBriese/bbloom", "v0.0.0-20190825152654-46b345b51c96");
+        assert_eq!(
+            bloom.url(),
+            "https://proxy.golang.org/github.com/!andreas!briese/bbloom/@v/\
+             v0.0.0-20190825152654-46b345b51c96.zip"
+        );
+        assert_eq!(
+            bloom.dir(),
+            "github.com_AndreasBriese_bbloom@v0.0.0-20190825152654-46b345b51c96"
+        );
+        let recipe = |modules: Vec<GoModule>| Recipe { modules, ..go_recipe(GO_BOOTSTRAP) };
+        assert_eq!(modules_problem(&recipe(vec![module("golang.org/x/sys", "v0.50.0")])), None);
+        for (path, version) in [
+            ("", "v1.0.0"),
+            ("a//b", "v1.0.0"),
+            ("a/../b", "v1.0.0"),
+            ("a b", "v1"),
+            ("a", "1.0.0"),
+        ] {
+            let problem = modules_problem(&recipe(vec![module(path, version)])).unwrap();
+            assert!(problem.contains("is not a Go module's path and version"), "{problem}");
+        }
+        let twice = recipe(vec![module("a/b", "v1.0.0"), module("a_b", "v1.0.0")]);
+        assert!(modules_problem(&twice).unwrap().contains("goes where another module does"));
+        let mut unsure = module("a/b", "v1.0.0");
+        unsure.sha256 = "abc".into();
+        assert!(modules_problem(&recipe(vec![unsure])).unwrap().contains("is not a SHA-256"));
+    }
+
+    /// What `go version -m` printed for micro, trimmed: a module from the
+    /// proxy, one the go-modules port patched, one replaced by another of
+    /// the proxy's, and the lines that are no module.
+    const MICRO_MODULES: &str = "/out/bundle/bin/micro: go1.27.4\n\
+        \tpath\tgithub.com/zyedidia/micro/v2/cmd/micro\n\
+        \tmod\tgithub.com/zyedidia/micro/v2\t(devel)\t\n\
+        \tdep\tgithub.com/blang/semver\tv3.5.1+incompatible\th1:cQNTCjp1=\n\
+        \tdep\tgithub.com/creack/pty\tv1.1.18\n\
+        \t=>\t./.radix-go/github.com_creack_pty@v1.1.18\t(devel)\t\n\
+        \t\n\
+        \tdep\tgithub.com/kballard/go-shellquote\tv0.0.0-20180428030007-95032a82bc51\n\
+        \t=>\tgithub.com/micro-editor/go-shellquote\tv0.0.0-20250101105543-feb6c39314f5\th1:D7BP=\n\
+        \tdep\tgolang.org/x/sys\tv0.30.0\n\
+        \t=>\t./.radix-go/golang.org_x_sys@v0.50.0\t(devel)\t\n\
+        \t\n\
+        \tbuild\t-buildmode=exe\n\
+        \tbuild\tCGO_ENABLED=0\n";
+
+    fn proxy(path: &str, version: &str) -> LinkedModule {
+        LinkedModule::Proxy { path: path.into(), version: version.into() }
+    }
+
+    fn patched(folder: &str, named: &[&str]) -> LinkedModule {
+        LinkedModule::Patched {
+            folder: folder.into(),
+            named: named.iter().map(ToString::to_string).collect(),
+        }
+    }
+
+    #[test]
+    fn a_module_a_go_program_links_is_the_proxys_or_a_patched_one_or_the_one_that_replaces_it() {
+        assert_eq!(
+            linked_go_modules(MICRO_MODULES).unwrap(),
+            [
+                proxy("github.com/blang/semver", "v3.5.1+incompatible"),
+                patched("github.com_creack_pty@v1.1.18", &["v1.1.18"]),
+                // The code is the replacing module's, not the one go.mod names.
+                proxy(
+                    "github.com/micro-editor/go-shellquote",
+                    "v0.0.0-20250101105543-feb6c39314f5"
+                ),
+                patched("golang.org_x_sys@v0.50.0", &["v0.30.0"]),
+            ]
+        );
+        // No program, no module.
+        assert!(linked_go_modules("").unwrap().is_empty());
+        assert!(linked_go_modules("/bin/x: go1.27.4\n\tpath\texample.com/x\n").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_module_two_programs_link_is_listed_once_and_a_patched_one_names_each_version() {
+        let text = format!(
+            "{MICRO_MODULES}/out/bundle/bin/other: go1.27.4\n\
+             \tpath\texample.com/other\n\
+             \tdep\tgithub.com/blang/semver\tv3.5.1+incompatible\th1:cQNTCjp1=\n\
+             \tdep\tgithub.com/blang/semver\tv4.0.0\th1:other=\n\
+             \tdep\tgolang.org/x/sys\tv0.35.0\n\
+             \t=>\t./.radix-go/golang.org_x_sys@v0.50.0\t(devel)\t\n\
+             \tdep\tgolang.org/x/sys\tv0.30.0\n\
+             \t=>\t./.radix-go/golang.org_x_sys@v0.50.0\t(devel)\t\n"
+        );
+        assert_eq!(
+            linked_go_modules(&text).unwrap(),
+            [
+                proxy("github.com/blang/semver", "v3.5.1+incompatible"),
+                patched("github.com_creack_pty@v1.1.18", &["v1.1.18"]),
+                proxy(
+                    "github.com/micro-editor/go-shellquote",
+                    "v0.0.0-20250101105543-feb6c39314f5"
+                ),
+                patched("golang.org_x_sys@v0.50.0", &["v0.30.0", "v0.35.0"]),
+                proxy("github.com/blang/semver", "v4.0.0"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_modules_file_that_go_did_not_print_or_names_an_unknown_folder_is_refused() {
+        for (text, expected) in [
+            ("\tdep\tgithub.com/a/b\n", "line 1: a dep line has no path and version"),
+            ("\tpath\tx\n\tdep\t\tv1.0.0\n", "line 2: a dep line has no path and version"),
+            ("\tdep\ta/b\tv1.0.0\n\t=>\tc/d\n", "line 2: a `=>` line has no path and version"),
+            ("\t=>\tc/d\tv1.0.0\n", "line 1: a `=>` line replaces no dep"),
+            (
+                "\tdep\ta/b\tv1.0.0\n\tbuild\tx=y\n\t=>\tc/d\tv1.0.0\n",
+                "line 3: a `=>` line replaces no dep",
+            ),
+            (
+                "\tdep\ta/b\tv1.0.0\n\t=>\t./vendor/b\t(devel)\t\n",
+                "line 1: a/b v1.0.0 is replaced by the folder ./vendor/b, which is not one of go-modules's",
+            ),
+            ("\tdep\ta/b\tv1.0.0\n\t=>\t/src/b\t(devel)\t\n", "is replaced by the folder /src/b"),
+        ] {
+            let err = linked_go_modules(text).unwrap_err();
+            assert!(err.contains(expected), "`{err}` does not say `{expected}`");
+        }
+    }
+
+    #[test]
+    fn a_port_lists_its_modules_in_its_info_folder_or_has_none() {
+        let root = scratch("go-linked");
+        let ctx = test_ctx(&root);
+        assert_eq!(go_modules_linked(&ctx, "micro").unwrap(), None);
+        let info = info_dir(&ctx, "micro");
+        std::fs::create_dir_all(&info).unwrap();
+        std::fs::write(info.join("modules.txt"), MICRO_MODULES).unwrap();
+        assert_eq!(go_modules_linked(&ctx, "micro").unwrap().unwrap().len(), 4);
+        std::fs::write(info.join("modules.txt"), "\tdep\ta/b\n").unwrap();
+        let err = go_modules_linked(&ctx, "micro").unwrap_err().to_string();
+        assert!(err.contains("modules.txt: line 1: a dep line has no path and version"), "{err}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_module_is_in_the_cache_by_its_escaped_path_and_version() {
+        let ctx = test_ctx(Path::new("/src"));
+        assert_eq!(
+            go_cached_module(
+                &ctx,
+                "github.com/AndreasBriese/bbloom",
+                "v0.0.0-20190825152654-46b345b51c96"
+            ),
+            Path::new(
+                "/src/target/ports/sources/go-mod/github.com/!andreas!briese/bbloom@\
+                 v0.0.0-20190825152654-46b345b51c96"
+            )
+        );
+        assert_eq!(
+            go_cached_module(&ctx, "github.com/blang/semver", "v3.5.1+incompatible"),
+            Path::new(
+                "/src/target/ports/sources/go-mod/github.com/blang/semver@v3.5.1+incompatible"
+            )
+        );
+        assert_eq!(
+            go_proxy_url("github.com/Masterminds/semver/v3", "v3.2.0"),
+            "https://proxy.golang.org/github.com/!masterminds/semver/v3/@v/v3.2.0.zip"
+        );
     }
 
     fn test_ctx(root: &Path) -> Ctx {

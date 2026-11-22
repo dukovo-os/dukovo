@@ -1,0 +1,18 @@
+SPDX-FileCopyrightText: Yasuhiro MATSUMOTO
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT
+
+A terminal on Radix is a file TCGETS answers, as on Linux, asked
+through golang.org/x/sys/unix.
+
+diff -ruN a/github.com_mattn_go-isatty@v0.0.20/isatty_tcgets.go b/github.com_mattn_go-isatty@v0.0.20/isatty_tcgets.go
+--- a/github.com_mattn_go-isatty@v0.0.20/isatty_tcgets.go
++++ b/github.com_mattn_go-isatty@v0.0.20/isatty_tcgets.go
+@@ -1,5 +1,5 @@
+-//go:build (linux || aix || zos) && !appengine && !tinygo
+-// +build linux aix zos
++//go:build (linux || radix || aix || zos) && !appengine && !tinygo
++// +build linux radix aix zos
+ // +build !appengine
+ // +build !tinygo
+ 

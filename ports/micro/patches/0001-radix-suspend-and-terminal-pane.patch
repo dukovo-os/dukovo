@@ -1,0 +1,30 @@
+SPDX-FileCopyrightText: 2016 Zachary Yedidia, et al.
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT
+
+Radix: suspend and the terminal pane, as on other Unix systems
+
+Radix has SIGTSTP and job control, and pseudo-terminals through
+creack/pty (Radix's go-modules port), so micro may suspend itself and
+run a shell in a pane there.
+
+diff --git a/internal/action/actions_posix.go b/internal/action/actions_posix.go
+index 59f04ed..48c3802 100644
+--- a/internal/action/actions_posix.go
++++ b/internal/action/actions_posix.go
+@@ -1,4 +1,4 @@
+-//go:build linux || darwin || dragonfly || solaris || openbsd || netbsd || freebsd
++//go:build linux || radix || darwin || dragonfly || solaris || openbsd || netbsd || freebsd
+ 
+ package action
+ 
+diff --git a/internal/action/terminal_supported.go b/internal/action/terminal_supported.go
+index e24ae71..4fa90f8 100644
+--- a/internal/action/terminal_supported.go
++++ b/internal/action/terminal_supported.go
+@@ -1,4 +1,4 @@
+-//go:build linux || darwin || dragonfly || solaris || openbsd || netbsd || freebsd
++//go:build linux || radix || darwin || dragonfly || solaris || openbsd || netbsd || freebsd
+ 
+ package action
+ 

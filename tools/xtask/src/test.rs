@@ -561,6 +561,33 @@ const GO_TOOLCHAIN_FILES: u8 = 42;
 /// test go-suite` ([`go_suite::make_disk`]).
 const GO_SUITE_FILES: u8 = 43;
 
+/// [`Disk::fat`] for a [`BUNDLE_FILES`] disk that holds the bundles of the
+/// catalog's commands built with Go ([`GO_APP_BUNDLES`]) but Caddy's, for
+/// the `go-commands` test.
+const GO_APPS_FILES: u8 = 44;
+
+/// [`Disk::fat`] for a [`BUNDLE_FILES`] disk that holds Caddy's bundle alone,
+/// with the `caddy` test's script ([`cases::caddy::make_disk`]).
+const CADDY_FILES: u8 = 45;
+
+/// The start of the names of the bundle files of the catalog's programs
+/// built with Go (ADR 0600), about 37 MiB together: they are on the disks
+/// of the tests that install them ([`GO_APPS_FILES`]), so that the disks of
+/// the others stay small, as Go's own bundle is
+/// ([`cases::go_toolchain::BUNDLE_PREFIX`]).
+const GO_APP_BUNDLES: &[&str] = &[
+    "com.caddyserver.caddy-",
+    "io.github.jesseduffield.lazygit-",
+    "io.github.junegunn.fzf-",
+    "io.github.muesli.duf-",
+    "io.github.zyedidia.micro-",
+];
+
+/// Whether the bundle file `name` is one of [`GO_APP_BUNDLES`].
+fn is_go_app_bundle(name: &str) -> bool {
+    GO_APP_BUNDLES.iter().any(|prefix| name.starts_with(prefix))
+}
+
 /// One of the boot tests' updates of an installed system (ADR 0451): this
 /// build's slot, under a version after this one's that updates from it,
 /// with kernel flags of its own, or a command broken.
@@ -1915,7 +1942,9 @@ fn needs_packing(case: &Case) -> bool {
         matches!(
             disk.fat,
             BUNDLE_FILES
+                | CADDY_FILES
                 | CATALOG_SITE
+                | GO_APPS_FILES
                 | GO_SUITE_FILES
                 | GO_TOOLCHAIN_FILES
                 | PHP_FILES
@@ -5644,6 +5673,18 @@ fn make_disks(
             made.push(image);
             continue;
         }
+        if disk.fat == GO_APPS_FILES {
+            make_bundle_disk(ctx, disk, &image.path, |name| {
+                is_go_app_bundle(name) && !name.starts_with(cases::caddy::BUNDLE_PREFIX)
+            })?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == CADDY_FILES {
+            cases::caddy::make_disk(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
         if disk.fat == PHP_FILES {
             cases::php::make_disk(ctx, disk, &image.path)?;
             made.push(image);
@@ -6321,11 +6362,15 @@ fn fsck(disk: &DiskImage, _log: &str) -> Result<(), String> {
 }
 
 /// Makes a [`BUNDLE_FILES`] disk: FAT32 holding every `.dkv` file of
-/// out/bundles but Go's, copied in with mtools. Go's bundle, about 72 MiB,
-/// is on the disks of the two runs that install it
-/// ([`GO_TOOLCHAIN_FILES`]), so that the disks of the others stay small.
+/// out/bundles but Go's and those of the programs built with it, copied in
+/// with mtools. Go's bundle, about 72 MiB, is on the disks of the two runs
+/// that install it ([`GO_TOOLCHAIN_FILES`]), and the programs' on the disks
+/// of theirs ([`GO_APPS_FILES`]), so that the disks of the others stay
+/// small.
 fn make_bundle_files(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
-    make_bundle_disk(ctx, disk, path, |name| !name.starts_with(cases::go_toolchain::BUNDLE_PREFIX))
+    make_bundle_disk(ctx, disk, path, |name| {
+        !name.starts_with(cases::go_toolchain::BUNDLE_PREFIX) && !is_go_app_bundle(name)
+    })
 }
 
 /// Makes a FAT32 disk holding the `.dkv` files of out/bundles whose names
@@ -6372,6 +6417,12 @@ fn make_bundle_files_with(
     files: &[(&str, &str)],
 ) -> Result<(), String> {
     make_bundle_files(ctx, disk, path)?;
+    add_disk_files(path, files)
+}
+
+/// Adds `files`, each a name and its text, to the FAT32 disk image at
+/// `path`, with mtools.
+fn add_disk_files(path: &Path, files: &[(&str, &str)]) -> Result<(), String> {
     let image = path.display().to_string();
     for (name, text) in files {
         let source = path.with_extension(name);
@@ -9201,7 +9252,24 @@ fn posix(vm: &mut Vm, case: &Case) -> Result<(), String> {
     let failed: Vec<&str> =
         log.lines().filter(|line| line.contains(": FAILED")).map(str::trim).collect();
     if !failed.is_empty() {
-        return Err(format!("POSIX tests failed: {}", failed.join("; ")));
+        // What the kernel said of a test it ended: the fault, its address
+        // and the program counter, which the runner's line does not give.
+        let crashes: Vec<&str> = log
+            .lines()
+            .filter(|line| {
+                line.contains("User: ")
+                    && (line.contains(" ended: ")
+                        || line.contains(" ended by signal ")
+                        || line.contains(" has no stack for signal "))
+            })
+            .map(str::trim)
+            .collect();
+        let mut report = format!("POSIX tests failed: {}", failed.join("; "));
+        if !crashes.is_empty() {
+            report.push_str("; the kernel: ");
+            report.push_str(&crashes.join("; "));
+        }
+        return Err(report);
     }
     let summary = log
         .lines()
@@ -12664,7 +12732,15 @@ mod tests {
     fn case_files_are_named_as_their_cases_and_describe_them() {
         for &(name, case, text) in cases::FILES {
             assert_eq!(case.name, name, "test/cases/{name}.rs holds the case `{}`", case.name);
-            assert!(!file_doc(text).is_empty(), "test/cases/{name}.rs has no `//!` description");
+            let doc = file_doc(text);
+            assert!(!doc.is_empty(), "test/cases/{name}.rs has no `//!` description");
+            // dukovo-boot-tests(7) indents each line, and scdoc takes an
+            // indented line that starts with a backtick for a literal block.
+            let quoted = doc.lines().find(|line| line.starts_with('`'));
+            assert!(
+                quoted.is_none(),
+                "test/cases/{name}.rs: a `//!` line starts with `: {quoted:?}"
+            );
         }
         assert_eq!(file_doc("// SPDX\n\n//! One\n//!\n//! two\nuse x;"), "One\n\ntwo");
     }

@@ -26,7 +26,16 @@
 //!     each port. A port whose `[upstream]` says `none` has no commit to
 //!     ask by, and is listed as not covered, with its reason;
 //!   - each crate a recipe lists (`[[crate]]`), by its crates.io name and
-//!     version, unless a Cargo.lock that cargo-audit read lists it.
+//!     version, unless a Cargo.lock that cargo-audit read lists it;
+//!   - in OSV's Go ecosystem, by path and version: each Go module that the
+//!     go-modules port patches (`[[module]]`); each bundle's port in Go,
+//!     by its go.mod's module at the tag its recipe pins; each module its
+//!     go.mod requires, at the commit the recipe pins (`upstream::
+//!     bundle_locks`), as a replacement in it names, but one go-modules
+//!     patches in its place; and Go's standard library, `stdlib`, at the
+//!     go port's version. go.mod names every module that the program's
+//!     packages and their tests need, as a Cargo.lock names every crate,
+//!     so a module only a test needs is asked about too.
 //!
 //! A finding has the severity its advisory gives, which is the severity
 //! its database names or the base score of its CVSS 3 vector, and none
@@ -47,8 +56,9 @@ use std::process::{Command, Stdio};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::ports::{self, Recipe, Upstream};
+use crate::ports::{self, GoModule, Recipe, Upstream};
 use crate::process::{self, step};
+use crate::upstream::LockKind;
 use crate::{Context, Ctx, Error, Result, bail, release, upstream, vex};
 
 /// Where the advisories are in the source tree.
@@ -305,6 +315,9 @@ enum Query {
     Commit(String),
     /// The advisories of a crate of crates.io at a version.
     Crate { name: String, version: String },
+    /// The advisories of a module of Go's module proxy at a version, as Go
+    /// writes it, or of `stdlib`, Go's standard library.
+    Go { path: String, version: String },
 }
 
 impl Query {
@@ -316,6 +329,12 @@ impl Query {
             Self::Crate { name, version } => json!({
                 "package": { "ecosystem": "crates.io", "name": name },
                 "version": version,
+            }),
+            // OSV's records of Go give versions without the `v` Go writes
+            // before them.
+            Self::Go { path, version } => json!({
+                "package": { "ecosystem": "Go", "name": path },
+                "version": version.strip_prefix('v').unwrap_or(version),
             }),
         };
         if let Some(token) = token {
@@ -360,6 +379,9 @@ struct Plan {
     archives: Vec<ArchivePort>,
     /// The crates that recipes list.
     crates: Vec<Asked>,
+    /// The Go modules that recipes patch or the programs of ports link,
+    /// and Go's standard library.
+    go_modules: Vec<Asked>,
     /// Ports with no repository to ask by.
     not_covered: Vec<NotCovered>,
 }
@@ -408,19 +430,33 @@ fn scan(ctx: &Ctx, args: &[&str]) -> Result<()> {
         findings.extend(audit_lock(ctx, &lock, &location)?);
         locked.extend(locked_crates(&lock, &location)?);
     }
+    let mut go_mods = GoMods::new();
     for found in upstream::bundle_locks(ctx)? {
-        let location = format!("{} {} (its Cargo.lock)", found.port, found.version);
-        findings.extend(audit_lock(ctx, &found.lock, &location)?);
-        locked.extend(locked_crates(&found.lock, &location)?);
+        match found.kind {
+            LockKind::Cargo => {
+                let location = format!("{} {} (its Cargo.lock)", found.port, found.version);
+                findings.extend(audit_lock(ctx, &found.lock, &location)?);
+                locked.extend(locked_crates(&found.lock, &location)?);
+            }
+            LockKind::GoMod => {
+                let text = std::fs::read_to_string(&found.lock)
+                    .context(|| format!("reading {}", found.lock.display()))?;
+                let go_mod = go_mod(&text).map_err(|err| {
+                    Error::new(format!("{} {}: go.mod: {err}", found.port, found.version))
+                })?;
+                go_mods.insert(found.port, go_mod);
+            }
+        }
     }
 
     let recipes: Vec<Recipe> = ports::recipes(ctx)?.into_iter().map(|(recipe, _)| recipe).collect();
-    let plan = plan(&recipes);
+    let plan = plan(&recipes, &go_mods);
     step(&format!("Finding the commits of {} release tags", plan.archives.len()));
     let mut asked = plan.commits;
     asked.extend(resolve_archives(&plan.archives, &|git, tag| ls_remote(ctx, git, tag))?);
     asked.extend(unlocked(plan.crates, &locked));
-    step(&format!("Asking OSV about {} ports, sources and crates", asked.len()));
+    asked.extend(plan.go_modules);
+    step(&format!("Asking OSV about {} ports, sources, crates and Go modules", asked.len()));
     let osv_url = options.osv_url;
     let ask = |path: &str, body: Option<&str>| curl(ctx, &format!("{osv_url}{path}"), body);
     findings.extend(osv_findings(&ask, &asked)?);
@@ -617,15 +653,131 @@ fn round_up(value: f64) -> f64 {
     }
 }
 
+/// What a Go program's go.mod names: its own module's path, and the
+/// modules it requires, by the path and version of the code that is
+/// built.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct GoMod {
+    module: String,
+    requires: Vec<(String, String)>,
+}
+
+/// A `replace` of go.mod: the module `path`, at the version `at` alone
+/// or at all, is the module and version `by`, or a folder when `by` is
+/// none.
+struct Replacement {
+    path: String,
+    at: Option<String>,
+    by: Option<(String, String)>,
+}
+
+/// The go.mod of each bundle's port in Go, by the port's name.
+type GoMods = BTreeMap<String, GoMod>;
+
+/// Reads a go.mod: its `module`, and each `require`, single or in a
+/// block, as its `replace` directives name it: a module replaced by
+/// another, at every version or at the one required, is the other, and a
+/// module replaced by a folder is left out, its code being the
+/// program's. `//` starts a comment, as `// indirect`; any other
+/// directive is not a module the program builds with.
+fn go_mod(text: &str) -> Result<GoMod, String> {
+    let mut module = None;
+    let mut required = Vec::new();
+    let mut replaced: Vec<Replacement> = Vec::new();
+    let mut block: Option<String> = None;
+    for (n, line) in text.lines().enumerate() {
+        let line = line.split_once("//").map_or(line, |(code, _)| code).trim();
+        if line.is_empty() {
+            continue;
+        }
+        let at = |what: &str| format!("line {}: {what}", n + 1);
+        let (verb, rest) = match &block {
+            Some(_) if line == ")" => {
+                block = None;
+                continue;
+            }
+            Some(verb) => (verb.clone(), line),
+            None => {
+                let (verb, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+                let rest = rest.trim();
+                if rest == "(" {
+                    block = Some(verb.to_string());
+                    continue;
+                }
+                (verb.to_string(), rest)
+            }
+        };
+        let words: Vec<&str> = rest.split_whitespace().map(unquoted).collect();
+        match verb.as_str() {
+            "module" => match words[..] {
+                [path] => module = Some(path.to_string()),
+                _ => return Err(at("`module` names no one path")),
+            },
+            "require" => match words[..] {
+                [path, version] => required.push((path.to_string(), version.to_string())),
+                _ => return Err(at("a requirement is a path and a version")),
+            },
+            "replace" => {
+                let Some(arrow) = words.iter().position(|&word| word == "=>") else {
+                    return Err(at("a replacement has no `=>`"));
+                };
+                let (path, version) = match words[..arrow] {
+                    [path] => (path.to_string(), None),
+                    [path, version] => (path.to_string(), Some(version.to_string())),
+                    _ => return Err(at("a replacement replaces one path, at a version or all")),
+                };
+                let by = match words[arrow + 1..] {
+                    [_folder] => None,
+                    [path, version] => Some((path.to_string(), version.to_string())),
+                    _ => return Err(at("a replacement is a folder or a path and a version")),
+                };
+                replaced.push(Replacement { path, at: version, by });
+            }
+            _ => {}
+        }
+    }
+    if block.is_some() {
+        return Err("a block has no `)`".to_string());
+    }
+    let module = module.ok_or("there is no `module` line")?;
+    let mut requires = Vec::new();
+    for (path, version) in required {
+        // A replacement of the version required wins over one of them all.
+        let replacement = replaced
+            .iter()
+            .filter(|r| r.path == path && r.at.as_ref().is_none_or(|at| *at == version))
+            .max_by_key(|r| r.at.is_some());
+        match replacement {
+            None => requires.push((path, version)),
+            Some(Replacement { by: Some(by), .. }) => requires.push(by.clone()),
+            Some(Replacement { by: None, .. }) => {}
+        }
+    }
+    Ok(GoMod { module, requires })
+}
+
+/// A word of go.mod, which may be quoted.
+fn unquoted(word: &str) -> &str {
+    for quote in ['"', '`'] {
+        if let Some(inner) = word.strip_prefix(quote).and_then(|w| w.strip_suffix(quote)) {
+            return inner;
+        }
+    }
+    word
+}
+
 /// What the recipes pin, and how OSV is asked about each part: a port, and
 /// each extra source, that pins a git commit by that commit; a port that
 /// pins a release archive by the tag its `[upstream]` names, which is a
 /// commit once resolved, or as not covered when it says `none`; each
-/// crate a recipe lists by its name and version. A port that takes only
-/// data from its source is not asked about, and is listed as not covered
-/// with its reason. A port of other sources has none of these.
-fn plan(recipes: &[Recipe]) -> Plan {
+/// crate a recipe lists by its name and version; and Go's modules, from
+/// the recipes and each Go bundle's `go_mods` (see [`go_asked`]). A port that takes only data from its source is not
+/// asked about, and is listed as not covered with its reason. A port of
+/// other sources has none of these.
+fn plan(recipes: &[Recipe], go_mods: &GoMods) -> Plan {
     let mut plan = Plan::default();
+    let patched: Vec<&GoModule> = recipes.iter().flat_map(|recipe| &recipe.modules).collect();
+    let mut seen = BTreeSet::new();
     for recipe in recipes {
         let source = &recipe.source;
         let location = format!("ports/{}/recipe.toml", recipe.name);
@@ -683,8 +835,52 @@ fn plan(recipes: &[Recipe]) -> Plan {
                 query: Query::Crate { name: krate.name.clone(), version: krate.version.clone() },
             });
         }
+        let go_mod = go_mods.get(&recipe.name);
+        plan.go_modules.extend(go_asked(recipe, go_mod, &patched, &mut seen));
     }
     plan
+}
+
+/// What a recipe pins of Go, to ask OSV about: the modules it patches for
+/// Radix (the go-modules port); for a port in Go, the module of its
+/// `go_mod`, at the tag the recipe pins, or its version as Go writes one,
+/// and each module the go.mod requires but one that a module of `patched`
+/// takes the place of, which is asked about by the recipe that patches it,
+/// at the version that is built; and, for the port of Go's toolchain, its
+/// standard library, OSV's Go package `stdlib`, at the version of the
+/// port. A module and version are asked once, whatever number of ports
+/// name them: `seen` has those asked already.
+fn go_asked(
+    recipe: &Recipe,
+    go_mod: Option<&GoMod>,
+    patched: &[&GoModule],
+    seen: &mut BTreeSet<(String, String)>,
+) -> Vec<Asked> {
+    let mut modules: Vec<(String, String)> =
+        recipe.modules.iter().map(|m| (m.path.clone(), m.version.clone())).collect();
+    if let Some(go_mod) = go_mod {
+        let tag = recipe.source.tag.clone().filter(|tag| tag.starts_with('v'));
+        modules
+            .push((go_mod.module.clone(), tag.unwrap_or_else(|| format!("v{}", recipe.version))));
+        let in_place = |(path, version): &(String, String)| {
+            patched.iter().any(|m| m.path == *path && (m.all_versions || m.version == *version))
+        };
+        modules.extend(go_mod.requires.iter().filter(|module| !in_place(module)).cloned());
+    }
+    if recipe.name == ports::GO_PORT {
+        modules.push(("stdlib".to_string(), recipe.version.clone()));
+    }
+    let location = format!("ports/{}/recipe.toml", recipe.name);
+    modules
+        .into_iter()
+        .filter(|module| seen.insert(module.clone()))
+        .map(|(path, version)| Asked {
+            component: format!("{path} {version}"),
+            product: vex::go_product(&path, &version),
+            location: location.clone(),
+            query: Query::Go { path, version },
+        })
+        .collect()
 }
 
 /// The name of the repository at `git`, the last part of its URL without
@@ -1373,7 +1569,7 @@ mod tests {
                  commit = \"{other}\"\nlicense = \"BSD-3-Clause\""
             ),
         );
-        let plan = plan(&[lua(), nginx]);
+        let plan = plan(&[lua(), nginx], &GoMods::new());
         let asked: Vec<_> =
             plan.commits.iter().map(|a| (&*a.component, &*a.location, &a.query)).collect();
         assert_eq!(
@@ -1430,7 +1626,7 @@ mod tests {
         // Nothing to ask about: a git source with no commit, a port of no source.
         let loose = recipe("loose", "git = \"https://example.org/loose.git\"");
         let none = recipe("rust-src", "");
-        let plan = plan(&[curl, zip, bare, loose, none]);
+        let plan = plan(&[curl, zip, bare, loose, none], &GoMods::new());
         assert_eq!(
             plan.archives,
             [ArchivePort {
@@ -1464,7 +1660,7 @@ mod tests {
             "rust-src = true\n[[crate]]\nname = \"tokio\"\nversion = \"1.54.1\"\nsha256 = \"ab\"\n\
              license = \"MIT\"",
         );
-        let plan = plan(&[crates]);
+        let plan = plan(&[crates], &GoMods::new());
         assert_eq!(
             plan.crates,
             [Asked {
@@ -1681,6 +1877,260 @@ source = "registry+https://registry.example.org/index"
                 "version": "1.54.1",
                 "page_token": "t2"
             })
+        );
+    }
+
+    #[test]
+    fn a_go_module_is_asked_in_osvs_go_ecosystem_without_the_v_of_its_version() {
+        let query =
+            |path: &str, version: &str| Query::Go { path: path.into(), version: version.into() };
+        assert_eq!(
+            query("golang.org/x/text", "v0.22.0").json(None),
+            json!({"package": {"ecosystem": "Go", "name": "golang.org/x/text"}, "version": "0.22.0"})
+        );
+        assert_eq!(
+            query("github.com/blang/semver", "v3.5.1+incompatible").json(Some("t3")),
+            json!({
+                "package": {"ecosystem": "Go", "name": "github.com/blang/semver"},
+                "version": "3.5.1+incompatible",
+                "page_token": "t3"
+            })
+        );
+        assert_eq!(
+            query("github.com/dustin/go-humanize", "v0.0.0-20151120183258-bcc4c8345a21").json(None)
+                ["version"],
+            "0.0.0-20151120183258-bcc4c8345a21"
+        );
+        // The standard library has Go's release, which has no `v`.
+        assert_eq!(
+            query("stdlib", "1.27.4").json(None),
+            json!({"package": {"ecosystem": "Go", "name": "stdlib"}, "version": "1.27.4"})
+        );
+    }
+
+    const MICRO_GO_MOD: &str = "module github.com/zyedidia/micro/v2\n\
+        \n\
+        go 1.19 // as old as that\n\
+        \n\
+        require (\n\
+        \tgithub.com/blang/semver v3.5.1+incompatible\n\
+        \tgithub.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51\n\
+        \tgithub.com/mattn/go-isatty v0.0.20\n\
+        \tgolang.org/x/sys v0.30.0 // indirect\n\
+        \tlayeh.com/gopher-luar v1.0.11\n\
+        \tgithub.com/zyedidia/tcell/v2 v2.0.10\n\
+        )\n\
+        \n\
+        replace github.com/kballard/go-shellquote => github.com/micro-editor/go-shellquote v0.0.0-20250101105543-feb6c39314f5\n\
+        \n\
+        replace (\n\
+        \tlayeh.com/gopher-luar v1.0.11 => \"github.com/layeh/gopher-luar\" v1.0.11\n\
+        \tgithub.com/zyedidia/tcell/v2 => ../tcell\n\
+        )\n";
+
+    const FZF_GO_MOD: &str = "module github.com/junegunn/fzf\n\
+        go 1.23.0\n\
+        toolchain go1.24.1\n\
+        require github.com/blang/semver v3.5.1+incompatible\n\
+        require (\n\
+        \tgithub.com/Masterminds/semver v3.2.0\n\
+        \tgithub.com/mattn/go-isatty v0.0.19\n\
+        \tgolang.org/x/sys v0.35.0\n\
+        )\n\
+        retract (\n\
+        \tv0.1.0 // a mistake\n\
+        )\n\
+        tool golang.org/x/tools/cmd/stringer\n";
+
+    #[test]
+    fn a_go_mod_names_its_module_and_what_it_requires_as_replaced() {
+        let micro = go_mod(MICRO_GO_MOD).unwrap();
+        assert_eq!(micro.module, "github.com/zyedidia/micro/v2");
+        let owned = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+            list.iter().map(|&(p, v)| (p.to_string(), v.to_string())).collect()
+        };
+        assert_eq!(
+            micro.requires,
+            owned(&[
+                ("github.com/blang/semver", "v3.5.1+incompatible"),
+                // Replaced at every version, by another module, quoted.
+                ("github.com/micro-editor/go-shellquote", "v0.0.0-20250101105543-feb6c39314f5"),
+                ("github.com/mattn/go-isatty", "v0.0.20"),
+                ("golang.org/x/sys", "v0.30.0"),
+                // Replaced at the version required.
+                ("github.com/layeh/gopher-luar", "v1.0.11"),
+                // tcell is replaced by a folder: the program's own code.
+            ])
+        );
+        let fzf = go_mod(FZF_GO_MOD).unwrap();
+        assert_eq!(fzf.module, "github.com/junegunn/fzf");
+        assert_eq!(fzf.requires.len(), 4, "retract and tool are not requirements");
+
+        // A replacement of the version required wins over one of every
+        // version, and one of another version does not apply.
+        let replaced = go_mod(
+            "module m\nrequire a v1.0.0\nreplace a v1.0.0 => b v2.0.0\nreplace a => c v3.0.0\n\
+             replace a v0.9.0 => d v4.0.0\n",
+        )
+        .unwrap();
+        assert_eq!(replaced.requires, owned(&[("b", "v2.0.0")]));
+
+        // What is not go.mod is said, with its line.
+        let refused = |text: &str| go_mod(text).unwrap_err();
+        assert_eq!(refused("go 1.22\n"), "there is no `module` line");
+        assert_eq!(
+            refused("module m\nrequire a\n"),
+            "line 2: a requirement is a path and a version"
+        );
+        assert_eq!(refused("module m\nreplace a b v1\n"), "line 2: a replacement has no `=>`");
+        assert_eq!(refused("module m\nrequire (\na v1\n"), "a block has no `)`");
+    }
+
+    fn go_ports() -> Vec<Recipe> {
+        let git = format!("git = \"https://example.org/x.git\"\ncommit = \"{COMMIT}\"");
+        let tagged = format!("{git}\ntag = \"v2.0.15\"");
+        let modules = "\n[[module]]\npath = \"golang.org/x/sys\"\nversion = \"v0.50.0\"\n\
+             sha256 = \"ab\"\nlicense = \"BSD-3-Clause\"\nall-versions = true\n[[module]]\n\
+             path = \"github.com/mattn/go-isatty\"\nversion = \"v0.0.20\"\nsha256 = \"ab\"\n\
+             license = \"MIT\"";
+        vec![
+            recipe("go", &git),
+            recipe("go-modules", modules),
+            recipe("micro", &tagged),
+            recipe("fzf", &git),
+        ]
+    }
+
+    fn go_mods() -> GoMods {
+        GoMods::from([
+            ("micro".to_string(), go_mod(MICRO_GO_MOD).unwrap()),
+            ("fzf".to_string(), go_mod(FZF_GO_MOD).unwrap()),
+        ])
+    }
+
+    #[test]
+    fn the_go_modules_patched_a_port_and_its_go_mod_name_and_the_standard_library_are_asked_once() {
+        let plan = plan(&go_ports(), &go_mods());
+        let go =
+            |component: &str, product: &str, location: &str, path: &str, version: &str| Asked {
+                component: component.to_string(),
+                product: product.to_string(),
+                location: format!("ports/{location}/recipe.toml"),
+                query: Query::Go { path: path.to_string(), version: version.to_string() },
+            };
+        assert_eq!(
+            plan.go_modules,
+            [
+                // Go's standard library, at the version of the port of Go.
+                go("stdlib 1.2.3", "pkg:golang/stdlib@1.2.3", "go", "stdlib", "1.2.3"),
+                // The modules patched for Radix, at the version built: the
+                // versions go.mod names, which they take the place of, are
+                // not the code that is built.
+                go(
+                    "golang.org/x/sys v0.50.0",
+                    "pkg:golang/golang.org/x/sys@v0.50.0",
+                    "go-modules",
+                    "golang.org/x/sys",
+                    "v0.50.0"
+                ),
+                go(
+                    "github.com/mattn/go-isatty v0.0.20",
+                    "pkg:golang/github.com/mattn/go-isatty@v0.0.20",
+                    "go-modules",
+                    "github.com/mattn/go-isatty",
+                    "v0.0.20"
+                ),
+                // The program's own module, at the tag its recipe pins.
+                go(
+                    "github.com/zyedidia/micro/v2 v2.0.15",
+                    "pkg:golang/github.com/zyedidia/micro/v2@v2.0.15",
+                    "micro",
+                    "github.com/zyedidia/micro/v2",
+                    "v2.0.15"
+                ),
+                // What go.mod requires, under the port that names it first,
+                // as replaced.
+                go(
+                    "github.com/blang/semver v3.5.1+incompatible",
+                    "pkg:golang/github.com/blang/semver@v3.5.1%2Bincompatible",
+                    "micro",
+                    "github.com/blang/semver",
+                    "v3.5.1+incompatible"
+                ),
+                go(
+                    "github.com/micro-editor/go-shellquote v0.0.0-20250101105543-feb6c39314f5",
+                    "pkg:golang/github.com/micro-editor/go-shellquote@v0.0.0-20250101105543-feb6c39314f5",
+                    "micro",
+                    "github.com/micro-editor/go-shellquote",
+                    "v0.0.0-20250101105543-feb6c39314f5"
+                ),
+                go(
+                    "github.com/layeh/gopher-luar v1.0.11",
+                    "pkg:golang/github.com/layeh/gopher-luar@v1.0.11",
+                    "micro",
+                    "github.com/layeh/gopher-luar",
+                    "v1.0.11"
+                ),
+                // A port with no tag, at its version as Go writes it.
+                go(
+                    "github.com/junegunn/fzf v1.2.3",
+                    "pkg:golang/github.com/junegunn/fzf@v1.2.3",
+                    "fzf",
+                    "github.com/junegunn/fzf",
+                    "v1.2.3"
+                ),
+                go(
+                    "github.com/Masterminds/semver v3.2.0",
+                    "pkg:golang/github.com/Masterminds/semver@v3.2.0",
+                    "fzf",
+                    "github.com/Masterminds/semver",
+                    "v3.2.0"
+                ),
+                // go-isatty v0.0.19 is not the version go-modules patches,
+                // so it is the proxy's.
+                go(
+                    "github.com/mattn/go-isatty v0.0.19",
+                    "pkg:golang/github.com/mattn/go-isatty@v0.0.19",
+                    "fzf",
+                    "github.com/mattn/go-isatty",
+                    "v0.0.19"
+                ),
+            ]
+        );
+        // The ports and their commits are asked as they were, and a port
+        // with no go.mod has no modules of its own to ask about.
+        assert_eq!(plan.commits.len(), 3);
+        let bare = super::plan(&go_ports(), &GoMods::new());
+        assert_eq!(bare.go_modules.len(), 3);
+        assert!(bare.go_modules.iter().all(|asked| matches!(&asked.query, Query::Go { .. })));
+    }
+
+    #[test]
+    fn a_finding_in_a_go_module_is_reported_under_its_package_url_which_a_statement_names() {
+        let asked = plan(&go_ports(), &go_mods()).go_modules;
+        // OSV has an answer for each module asked about, and names an advisory
+        // of one of them.
+        let masterminds =
+            asked.iter().position(|a| a.component.starts_with("github.com/Masterminds")).unwrap();
+        let mut results = vec![json!({}); asked.len()];
+        results[masterminds] = json!({"vulns": [{"id": "GO-2026-1"}]});
+        let batch = json!({ "results": results }).to_string();
+        let record =
+            json!({"id": "GO-2026-1", "aliases": ["CVE-2026-9"], "summary": "Overflow in semver"})
+                .to_string();
+        let osv = FakeOsv::new(vec![("/v1/querybatch", batch), ("/v1/vulns/GO-2026-1", record)]);
+        let found = osv_findings(&|path, body| osv.ask(path, body), &asked).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].component, "github.com/Masterminds/semver v3.2.0");
+        assert_eq!(found[0].product, "pkg:golang/github.com/Masterminds/semver@v3.2.0");
+        assert_eq!(found[0].location, "ports/fzf/recipe.toml");
+        // A statement that names the product as the report does clears it.
+        let cleared = statements("CVE-2026-9", "fixed", &[&found[0].product]);
+        let report = report(&cleared, found, Vec::new());
+        assert!(report.findings.is_empty() && report.unused_statements.is_empty());
+        assert_eq!(
+            report.not_affected[0].product,
+            "pkg:golang/github.com/Masterminds/semver@v3.2.0"
         );
     }
 
@@ -1951,7 +2401,7 @@ source = "registry+https://registry.example.org/index"
                  version = \"0.31.3\"\nsha256 = \"ab\"\nlicense = \"MIT\"",
             ),
         ];
-        let plan = plan(&recipes);
+        let plan = plan(&recipes, &GoMods::new());
         let ls = |_: &str, _: &str| -> Result<String> { Ok(ANNOTATED.to_string()) };
         let mut asked = plan.commits;
         asked.extend(resolve_archives(&plan.archives, &ls).unwrap());
@@ -2054,7 +2504,7 @@ source = "registry+https://registry.example.org/index"
              [source]\ngit = \"https://example.org/glibc.git\"\ncommit = \"{COMMIT}\"\n"
         ))
         .unwrap();
-        let plan = plan(&[locales, lua()]);
+        let plan = plan(&[locales, lua()], &GoMods::new());
         assert_eq!(plan.commits.len(), 1);
         assert_eq!(plan.commits[0].product, "pkg:generic/lua@1.2.3");
         assert_eq!(

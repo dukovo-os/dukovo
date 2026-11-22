@@ -1,0 +1,25 @@
+SPDX-FileCopyrightText: 2013 James Gray
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT
+
+micro's terminal pane on Radix: a pseudo-terminal from creack/pty, and
+its size set with TIOCSWINSZ, as on Linux.
+
+diff -ruN a/github.com_micro-editor_terminal@v0.0.0-20250324214352-e587e959c6b5/ioctl_posix.go b/github.com_micro-editor_terminal@v0.0.0-20250324214352-e587e959c6b5/ioctl_posix.go
+--- a/github.com_micro-editor_terminal@v0.0.0-20250324214352-e587e959c6b5/ioctl_posix.go
++++ b/github.com_micro-editor_terminal@v0.0.0-20250324214352-e587e959c6b5/ioctl_posix.go
+@@ -1,4 +1,4 @@
+-//go:build linux || darwin || dragonfly || solaris || openbsd || netbsd || freebsd
++//go:build linux || radix || darwin || dragonfly || solaris || openbsd || netbsd || freebsd
+ 
+ package terminal
+ 
+diff -ruN a/github.com_micro-editor_terminal@v0.0.0-20250324214352-e587e959c6b5/vt_posix.go b/github.com_micro-editor_terminal@v0.0.0-20250324214352-e587e959c6b5/vt_posix.go
+--- a/github.com_micro-editor_terminal@v0.0.0-20250324214352-e587e959c6b5/vt_posix.go
++++ b/github.com_micro-editor_terminal@v0.0.0-20250324214352-e587e959c6b5/vt_posix.go
+@@ -1,4 +1,4 @@
+-//go:build linux || darwin || dragonfly || solaris || openbsd || netbsd || freebsd
++//go:build linux || radix || darwin || dragonfly || solaris || openbsd || netbsd || freebsd
+ 
+ package terminal
+ 

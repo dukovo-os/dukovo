@@ -2,25 +2,30 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-# The lab PC's side of services/nginx's certificate: nginx serves the
-# machine's own certificate, which certd keeps.
+# The lab PC's side of services/nginx's certificate, which services/caddy
+# uses too: the web server serves the machine's own certificate, which
+# certd keeps.
 #
-#   nginx-cert.sh trust|served MACHINE SSH-PORT HTTPS-PORT
+#   nginx-cert.sh trust|served MACHINE SSH-PORT HTTPS-PORT [PAGE]
 #
 # `trust` fetches the certificate as `cert show this-machine --pem` gives
-# it, and asks for nginx's page over HTTPS with that certificate as the
-# only authority and the machine's own name, with no -k: the certificate
-# must name the machine. `served` compares the fingerprint of the
-# certificate nginx serves now with the one `cert show this-machine`
-# gives, which a renewal changes. MACHINE is the machine's address and the
-# ports the lab PC's that reach its SSH and its port 443, as {machine},
-# {machine-port:22} and {machine-port:443} give them.
+# it, and asks for the server's page over HTTPS with that certificate as
+# the only authority and the machine's own name, with no -k: the
+# certificate must name the machine. `served` compares the fingerprint of
+# the certificate the server serves now with the one `cert show
+# this-machine` gives, which a renewal changes. MACHINE is the machine's
+# address and the ports the lab PC's that reach its SSH and its port 443,
+# as {machine}, {machine-port:22} and {machine-port:443} give them. PAGE is
+# the path of the page `trust` asks for, such as /lab-caddy.html, and is /
+# when it is left out, which is nginx's front page; `served` asks for no
+# page.
 set -eu
 
 mode="$1"
 machine="$2"
 ssh_port="$3"
 https_port="$4"
+page="${5:-/}"
 key="${XDG_CONFIG_HOME:-$HOME/.config}/dukovo-lab/lab_ed25519"
 
 on_machine() {
@@ -35,7 +40,7 @@ trust)
 	# The machine's name is known to --resolve alone, so a proxy in the lab
 	# PC's environment, which would be asked for it, is not used.
 	curl -sS --noproxy '*' --cacert this-machine.pem --resolve "$name:$https_port:$machine" \
-		"https://$name:$https_port/"
+		"https://$name:$https_port$page"
 	;;
 served)
 	want=$(on_machine cert show this-machine | sed -n 's/^SHA-256: *//p')
@@ -44,7 +49,7 @@ served)
 	if [ -n "$want" ] && [ "$want" = "$got" ]; then
 		echo "serving the fingerprint cert show gives: $got"
 	else
-		echo "nginx serves $got, and cert show says $want"
+		echo "the server serves $got, and cert show says $want"
 		exit 1
 	fi
 	;;

@@ -1,0 +1,133 @@
+SPDX-FileCopyrightText: 2020 Christian Muehlhaeuser
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT
+
+Radix's mounts and filesystems
+
+Radix lists its mounts in /processes/mounts, as "source /path kind rw|ro",
+with the filesystem's label after them if it has one, escaping a space,
+tab, newline or backslash in a field as Linux's /proc/mounts does. Sizes
+come from statvfs(3), in fragments. A filesystem is special when no disk is
+behind it, and a network share is served through FUSE, so it is FUSE's.
+A mount statvfs fails on is left out with a warning, as on Linux.
+
+diff --git a/filesystems_radix.go b/filesystems_radix.go
+new file mode 100644
+index 0000000..d277a3e
+--- /dev/null
++++ b/filesystems_radix.go
+@@ -0,0 +1,29 @@
++//go:build radix
++// +build radix
++
++package main
++
++// Radix serves a network share through FUSE and has no filesystem of its own
++// for one, so a share is reported by isFuseFs.
++func isNetworkFs(m Mount) bool {
++	return false
++}
++
++func isFuseFs(m Mount) bool {
++	return m.Fstype == "fuse"
++}
++
++// The special filesystems are the ones with no disk behind them: memory files,
++// the kernel's views of itself and its devices, and the boot archive.
++func isSpecialFs(m Mount) bool {
++	switch m.Fstype {
++	case "tmpfs", "proc", "sys", "dev", "shm", "pipefs", "bootfs":
++		return true
++	}
++
++	return false
++}
++
++func isHiddenFs(m Mount) bool {
++	return false
++}
+diff --git a/mounts_radix.go b/mounts_radix.go
+new file mode 100644
+index 0000000..ddf01af
+--- /dev/null
++++ b/mounts_radix.go
+@@ -0,0 +1,79 @@
++//go:build radix
++// +build radix
++
++package main
++
++import (
++	"fmt"
++	"strings"
++
++	"golang.org/x/sys/unix"
++)
++
++// Radix lists its mounts in /processes/mounts, one per line, as
++// "device /mountpoint type rw|ro", with the filesystem's label after them if
++// it has one. A space, tab, newline or backslash in a field is written as
++// Linux's /proc/mounts writes it, an octal escape such as \040.
++const mountsFile = "/processes/mounts"
++
++const (
++	mountsDevice    = 0
++	mountsPoint     = 1
++	mountsFstype    = 2
++	mountsOptions   = 3
++	mountsMinFields = 4
++)
++
++func mounts() ([]Mount, []string, error) {
++	var warnings []string
++
++	lines, err := readLines(mountsFile)
++	if err != nil {
++		return nil, nil, fmt.Errorf("reading %q: %w", mountsFile, err)
++	}
++
++	ret := make([]Mount, 0, len(lines))
++	for _, line := range lines {
++		// Only a space or tab separates fields: the kernel escapes both inside
++		// one, and strings.Fields would also split at other Unicode spaces.
++		fields := strings.FieldsFunc(line, func(r rune) bool { return r == ' ' || r == '\t' })
++		if len(fields) == 0 {
++			continue
++		}
++		if len(fields) < mountsMinFields {
++			warnings = append(warnings, fmt.Sprintf("found invalid mounts line: %s", line))
++			continue
++		}
++
++		device := unescapeFstab(fields[mountsDevice])
++		mountPoint := unescapeFstab(fields[mountsPoint])
++		fstype := fields[mountsFstype]
++
++		var stat unix.Statvfs_t
++		if err := unix.Statvfs(mountPoint, &stat); err != nil {
++			warnings = append(warnings, fmt.Sprintf("%s: %s", mountPoint, err))
++			continue
++		}
++
++		d := Mount{
++			Device:     device,
++			Mountpoint: mountPoint,
++			Fstype:     fstype,
++			Type:       fstype,
++			Opts:       fields[mountsOptions],
++			Total:      stat.Blocks * stat.Frsize,
++			Free:       stat.Bavail * stat.Frsize,
++			Used:       (stat.Blocks - stat.Bfree) * stat.Frsize,
++			Inodes:     stat.Files,
++			InodesFree: stat.Ffree,
++			InodesUsed: stat.Files - stat.Ffree,
++			Blocks:     stat.Blocks,
++			BlockSize:  stat.Frsize,
++		}
++		d.DeviceType = deviceType(d)
++
++		ret = append(ret, d)
++	}
++
++	return ret, warnings, nil
++}

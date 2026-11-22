@@ -1,0 +1,69 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Caddy, the web server and reverse proxy: a service bundle of the Dukovo
+# catalog, not of the image (ADRs 0370, 0385 and 0601), built with Go for
+# Radix (ADR 0600). Its service runs as the account caddy once an
+# administrator enables it; its settings are a Caddyfile in its data
+# folder, its sites in /shared/www, and its log in the system's. Its
+# command, caddy, formats and checks Caddyfiles and serves a folder for
+# whoever runs it.
+name = "caddy"
+version = "2.11.9"
+summary = "web server and reverse proxy"
+license = "Apache-2.0"
+homepage = "https://caddyserver.com"
+depends = ["go", "go-modules"]
+
+[source]
+git = "https://github.com/caddyserver/caddy.git"
+commit = "0d98caea58f794f88e709b1bef2880996a471bca"
+tag = "v2.11.9"
+
+[bundle]
+id = "com.caddyserver.caddy"
+name = "Caddy"
+commands = ["caddy"]
+programs = ["caddy-service"]
+
+# caddy-service sets the data folder up and runs Caddy, as Spark's service,
+# and turns Spark's SIGHUP into a reload of Caddy's settings and
+# certificates, which Caddy does not do on SIGHUP itself (ADR 0601). It
+# starts after the network is up, for a site bound to an address, and after
+# the resolver, for the names of the servers it passes requests on to; it
+# is ready once it listens (ADR 0470).
+[[bundle.services]]
+name = "caddy"
+program = "caddy-service"
+account = "caddy"
+restart = "on-failure"
+start = "when-enabled"
+limits = { open_files = 65536 }
+after = ["netd", "resolved"]
+ready = { when = "listening", timeout = 30 }
+# Spark makes port 80, for IPv6 and IPv4 together, and holds it across a
+# restart and an update, so that no client is refused (ADR 0477); Caddy
+# takes it as descriptor 3, which its Caddyfile binds (fd/3). Port 443 is
+# added to the service's file by the administrator who turns HTTPS on, as
+# the Caddyfile says. TERM is Caddy's graceful stop: it finishes the
+# requests in flight, for up to the grace period its Caddyfile sets.
+sockets = [{ port = 80, name = "http" }]
+stop = { signal = "SIGTERM", timeout = 30 }
+
+[bundle.permissions."network.listen"]
+ports = [80, 443]
+need = "required"
+why = "Serves websites over HTTP and HTTPS"
+
+[bundle.permissions."network.outbound"]
+need = "optional"
+why = "Passes requests on to other servers, as a reverse proxy"
+
+[bundle.permissions."files.shared"]
+folders = { www = "read" }
+need = "required"
+why = "Reads the sites it serves from /shared/www"
+
+[bundle.data]
+settings = true
+data = true

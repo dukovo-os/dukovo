@@ -281,6 +281,12 @@ bundles userspace/programs/systools/src/bundles.rs userspace/programs/systools/s
 bundles userspace/programs/systools/src/elevate.rs userspace/programs/systools/src/login.rs
 bundles userspace/programs/systools/src/prompt.rs userspace/programs/systools/src/sessions.rs
 bundles userspace/programs/systools/src/signin.rs
+caddy ports/caddy/ ports/go/ ports/go-modules/ ports/curl/ tools/xtask/src/ports.rs
+caddy tools/xtask/src/bundles.rs tools/xtask/src/licenses.rs userspace/programs/dkv/
+caddy userspace/programs/manifest/ userspace/programs/systools/src/bundled.rs
+caddy userspace/programs/systools/src/bundles/ userspace/programs/systools/src/authd.rs
+caddy userspace/programs/systools/src/cert.rs userspace/programs/systools/src/certd.rs
+caddy userspace/spark/src/certificates.rs userspace/posix/connectloop.c
 caps kernel/cap/
 card-reader kernel/drivers/scsi/ kernel/drivers/usb/ kernel/drivers/usbhc/ kernel/drivers/xhci/
 card-reader userspace/programs/systools/src/eject.rs userspace/programs/systools/src/mkfs.rs
@@ -408,6 +414,10 @@ git-keyring ports/ca-certificates/ ports/curl/ ports/git/ ports/rustls-ffi/
 git-keyring userspace/programs/git-https-test/ userspace/programs/systools/src/authd.rs
 git-keyring userspace/programs/systools/src/authd/ userspace/programs/systools/src/git_credential.rs
 git-keyring userspace/programs/systools/src/keyring.rs userspace/programs/systools/src/unlock.rs
+go-commands ports/duf/ ports/fzf/ ports/lazygit/ ports/micro/ ports/go/ ports/go-modules/
+go-commands ports/git/ tools/xtask/src/ports.rs tools/xtask/src/bundles.rs tools/xtask/src/licenses.rs
+go-commands userspace/programs/dkv/ userspace/programs/manifest/
+go-commands userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles/
 go-runtime ports/go/ userspace/go/ tools/xtask/src/golang.rs tools/xtask/src/ports.rs
 go-runtime kernel/radix/src/user/queue.rs
 go-toolchain ports/go/ ports/go-radix/ userspace/go/ tools/xtask/src/golang.rs tools/xtask/src/bundles.rs

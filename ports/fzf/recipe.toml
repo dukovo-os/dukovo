@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# fzf, which reads a list of lines and lets whoever runs it pick from them
+# by typing part of what they want: a bundle of the Dukovo catalog, not of
+# the image (ADR 0370), built with Go for Radix (ADR 0600). Its command runs
+# with the access of whoever runs it, as command-line tools do. fzf-tmux and
+# the key bindings for bash, zsh and fish are left out: Dukovo's shell is
+# Nukesh.
+name = "fzf"
+version = "0.75.0"
+summary = "picks lines from a list as you type part of them"
+license = "MIT"
+homepage = "https://github.com/junegunn/fzf"
+depends = ["go", "go-modules"]
+
+[source]
+git = "https://github.com/junegunn/fzf.git"
+commit = "c7bf2b8eea25952dd257a466c0afa72faae206fb"
+tag = "v0.75.0"
+
+[bundle]
+id = "io.github.junegunn.fzf"
+name = "fzf"
+commands = ["fzf"]
