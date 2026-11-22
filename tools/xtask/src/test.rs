@@ -9252,7 +9252,24 @@ fn posix(vm: &mut Vm, case: &Case) -> Result<(), String> {
     let failed: Vec<&str> =
         log.lines().filter(|line| line.contains(": FAILED")).map(str::trim).collect();
     if !failed.is_empty() {
-        return Err(format!("POSIX tests failed: {}", failed.join("; ")));
+        // What the kernel said of a test it ended: the fault, its address
+        // and the program counter, which the runner's line does not give.
+        let crashes: Vec<&str> = log
+            .lines()
+            .filter(|line| {
+                line.contains("User: ")
+                    && (line.contains(" ended: ")
+                        || line.contains(" ended by signal ")
+                        || line.contains(" has no stack for signal "))
+            })
+            .map(str::trim)
+            .collect();
+        let mut report = format!("POSIX tests failed: {}", failed.join("; "));
+        if !crashes.is_empty() {
+            report.push_str("; the kernel: ");
+            report.push_str(&crashes.join("; "));
+        }
+        return Err(report);
     }
     let summary = log
         .lines()
