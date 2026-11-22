@@ -4,10 +4,11 @@
 // What a static Linux program relies on, asked of the system through the
 // calls themselves: threads from the C library and from a raw clone, the
 // process calls, the working directory, the memory calls, directories and
-// file status, signals that interrupt a blocked read, futexes with
-// absolute timeouts, what an unprivileged program may not do, the
-// descriptor and identity rules, and a pseudo-terminal's settings. Where a C library would hide a call's own
-// rules (the raw clone, brk, getcwd, getdents64, statx, futex), the program
+// file status, signals that interrupt a blocked read, interval timers,
+// futexes with absolute timeouts, what an unprivileged program may not do,
+// the descriptor and identity rules, and a pseudo-terminal's settings.
+// Where a C library would hide a call's own rules (the raw clone, brk,
+// getcwd, getdents64, statx, futex, the interval timers), the program
 // makes the call itself, so that it is the system's answer that is checked.
 //
 // Each case prints one line, `linux-core: <case> ok`, or says what failed
@@ -52,6 +53,7 @@
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <sys/syscall.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
@@ -1172,11 +1174,59 @@ static void signal_set_size(void) {
 	CHECK_ERROR(syscall(SYS_rt_sigaction, (long)SIGUSR1, NULL, NULL, 4L), EINVAL);
 }
 
-// The three signal cases.
+// The interval timers, made as raw calls, since glibc's alarm is the alarm
+// call and musl's is setitimer. A timer set for 200 ms reads back as set,
+// and reading it leaves it set; alarm returns what was left of it rounded
+// to a second, never 0 while it was set, and alarm(0) turns it off. A
+// timer that is not one of the three, or a time that is not valid, is
+// EINVAL. A timer of 20 ms that runs again every 20 ms sends SIGALRM
+// again and again, ending a pause each time, until it is turned off,
+// which reads its interval back.
+static void signal_timers(void) {
+	struct sigaction act, old;
+	memset(&act, 0, sizeof(act));
+	act.sa_sigaction = on_signal;
+	act.sa_flags = SA_SIGINFO;
+	sigemptyset(&act.sa_mask);
+	CHECK(sigaction(SIGALRM, &act, &old) == 0);
+	signal_hits = 0;
+	signal_seen = 0;
+	struct itimerval once = {{0, 0}, {0, 200000}};
+	struct itimerval got;
+	CHECK(syscall(SYS_setitimer, (long)ITIMER_REAL, &once, NULL) == 0);
+	CHECK(syscall(SYS_getitimer, (long)ITIMER_REAL, &got) == 0);
+	CHECK(got.it_value.tv_sec == 0 && got.it_value.tv_usec > 0 &&
+			got.it_value.tv_usec <= 200000);
+	CHECK(got.it_interval.tv_sec == 0 && got.it_interval.tv_usec == 0);
+	CHECK(syscall(SYS_alarm, 0L) == 1);
+	CHECK(syscall(SYS_getitimer, (long)ITIMER_REAL, &got) == 0);
+	CHECK(got.it_value.tv_sec == 0 && got.it_value.tv_usec == 0);
+	CHECK(syscall(SYS_alarm, 5L) == 0);
+	CHECK(syscall(SYS_alarm, 0L) == 5);
+	CHECK_ERROR(syscall(SYS_setitimer, 3L, &once, NULL), EINVAL);
+	CHECK_ERROR(syscall(SYS_getitimer, -1L, &got), EINVAL);
+	struct itimerval bad = {{0, 0}, {0, 1000000}};
+	CHECK_ERROR(syscall(SYS_setitimer, (long)ITIMER_REAL, &bad, NULL), EINVAL);
+	struct itimerval every = {{0, 20000}, {0, 20000}};
+	CHECK(syscall(SYS_setitimer, (long)ITIMER_REAL, &every, NULL) == 0);
+	long long before = now_ns(CLOCK_MONOTONIC);
+	CHECK_ERROR(syscall(SYS_pause), EINTR);
+	CHECK(signal_hits >= 1);
+	while(signal_hits < 3 && now_ns(CLOCK_MONOTONIC) - before < 5000000000LL)
+		sleep_ms(10);
+	struct itimerval off = {{0, 0}, {0, 0}};
+	CHECK(syscall(SYS_setitimer, (long)ITIMER_REAL, &off, &got) == 0);
+	CHECK(got.it_interval.tv_sec == 0 && got.it_interval.tv_usec == 20000);
+	CHECK(signal_hits >= 3 && signal_seen == SIGALRM);
+	CHECK(sigaction(SIGALRM, &old, NULL) == 0);
+}
+
+// The four signal cases.
 static void signals(void) {
 	signal_restart();
 	signal_interrupts();
 	signal_set_size();
+	signal_timers();
 }
 
 // The futex calls with a bit set and an absolute timeout: a wait on the

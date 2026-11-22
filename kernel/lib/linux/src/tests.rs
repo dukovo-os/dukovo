@@ -941,6 +941,51 @@ fn a_time_is_written_as_timespec_and_timeval() {
     assert_eq!((i64_at(&out, 0), i64_at(&out, 8)), (7, 1_234));
 }
 
+fn itimerval_bytes(interval: (i64, i64), value: (i64, i64)) -> [u8; ITIMERVAL_SIZE] {
+    let mut bytes = [0; ITIMERVAL_SIZE];
+    bytes[..16].copy_from_slice(&timespec_bytes(interval.0, interval.1));
+    bytes[16..].copy_from_slice(&timespec_bytes(value.0, value.1));
+    bytes
+}
+
+#[test]
+fn an_itimerval_is_read_as_value_then_interval() {
+    // The interval comes first in the record, the value second.
+    let bytes = itimerval_bytes((0, 250_000), (2, 500_000));
+    assert_eq!(itimerval(&bytes), Ok((2_500_000_000, 250_000_000)));
+    assert_eq!(itimerval(&[0; ITIMERVAL_SIZE]), Ok((0, 0)));
+    for (interval, value) in [((0, 0), (-1, 0)), ((0, 1_000_000), (1, 0)), ((-1, 0), (0, 0))] {
+        assert_eq!(itimerval(&itimerval_bytes(interval, value)), Err(EINVAL), "{interval:?}");
+    }
+}
+
+#[test]
+fn an_itimerval_is_written_with_a_set_timer_never_0() {
+    let mut out = [0xaa; ITIMERVAL_SIZE];
+    put_itimerval(1_500_000_000, 10_000_000, &mut out);
+    assert_eq!(
+        [i64_at(&out, 0), i64_at(&out, 8), i64_at(&out, 16), i64_at(&out, 24)],
+        [0, 10_000, 1, 500_000]
+    );
+    // Under a microsecond left reads as one; nothing left reads as 0.
+    put_itimerval(999, 0, &mut out);
+    assert_eq!((i64_at(&out, 16), i64_at(&out, 24)), (0, 1));
+    put_itimerval(0, 0, &mut out);
+    assert_eq!(out, [0; ITIMERVAL_SIZE]);
+}
+
+#[test]
+fn alarm_rounds_what_is_left_to_the_nearest_second_never_0() {
+    assert_eq!(alarm_left(0), 0);
+    assert_eq!(alarm_left(1), 1);
+    assert_eq!(alarm_left(499_999_999), 1);
+    assert_eq!(alarm_left(1_499_999_999), 1);
+    assert_eq!(alarm_left(1_500_000_000), 2);
+    assert_eq!(alarm_left(3_000_000_000), 3);
+    // Cut to an unsigned int, as Linux returns it.
+    assert_eq!(alarm_left((1 << 32) * 1_000_000_000 + 5), 0);
+}
+
 #[test]
 fn a_time_counts_nanoseconds_since_1970_and_saturates() {
     assert_eq!(Time { sec: 2, nsec: 5 }.as_ns(), 2_000_000_005);

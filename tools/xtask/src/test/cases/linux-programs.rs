@@ -134,7 +134,7 @@ const DISKS: &[Disk] = &[linux_files_disk(64 * 1024, LABEL)];
 /// The test.
 pub const CASE: Case = Case {
     name: "linux-programs",
-    about: "static Linux programs run on Dukovo under the Linux personality (ADR 0610): linux-core, built from userspace/linux/core.c with the build machine's C library and with musl, passes its 23 cases twice, making the calls itself (threads from the C library and from a raw clone, fork, vfork, execve of itself and of a program of Dukovo with the working directory crossing, arch_prctl, brk, madvise, mremap, uname, getcwd, getdents64, statx, signals and restarts, futexes with absolute deadlines, refused calls, identities, descriptors, umask, terminal settings), and the C test programs of userspace/posix that pass on Linux each run alone and pass on Dukovo",
+    about: "static Linux programs run on Dukovo under the Linux personality (ADR 0610): linux-core, built from userspace/linux/core.c with the build machine's C library and with musl, passes its 23 cases twice, making the calls itself (threads from the C library and from a raw clone, fork, vfork, execve of itself and of a program of Dukovo with the working directory crossing, arch_prctl, brk, madvise, mremap, uname, getcwd, getdents64, statx, signals and restarts, interval timers and pause, futexes with absolute deadlines, refused calls, identities, descriptors, umask, terminal settings), and the C test programs of userspace/posix that pass on Linux each run alone and pass on Dukovo",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     cmdline: "lockdep",

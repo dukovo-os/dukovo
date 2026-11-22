@@ -62,8 +62,8 @@ call otherwise. A call a signal interrupts fails with EINTR or runs again
 as Linux's would, *SA_RESTART* included.
 
 The table has Linux's calls for files and descriptors, paths and
-directories, processes and threads, memory, signals, futexes, clocks and
-sleeping, sockets, *poll* and *select*, identities, limits and
+directories, processes and threads, memory, signals and interval timers,
+futexes, clocks and sleeping, sockets, *poll* and *select*, identities, limits and
 scheduling, and *getrandom*. A number it does not know is ENOSYS, as on
 a Linux too old for the call.
 

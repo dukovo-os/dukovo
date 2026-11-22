@@ -4,15 +4,16 @@
 //! The records of Linux's x86-64 system call interface that the kernel
 //! writes to, or reads from, a program's memory: `struct stat` and `struct
 //! statx`, `linux_dirent64`, the kernel's `struct sigaction`, `struct
-//! utsname`, `timespec` and `timeval`, `struct rusage` and `struct sysinfo`,
-//! `struct flock` and `struct iovec`, and `utimensat`'s times.
+//! utsname`, `timespec` and `timeval`, `struct itimerval`, `struct rusage`
+//! and `struct sysinfo`, `struct flock` and `struct iovec`, and
+//! `utimensat`'s times.
 //!
 //! Each is built in, or read from, a byte array or slice of the record's
 //! exact size, little-endian as the CPU is, so the kernel fills a local
 //! buffer and copies it out in one go. The layouts are those of the x86-64
 //! uapi (`asm/stat.h`, `linux/stat.h`, `linux/dirent.h`, `asm/signal.h`,
-//! `linux/utsname.h`, `linux/time_types.h`, `linux/resource.h` and
-//! `linux/sysinfo.h`), and the host tests check every field's offset. A
+//! `linux/utsname.h`, `linux/time_types.h`, `linux/time.h`,
+//! `linux/resource.h` and `linux/sysinfo.h`), and the host tests check every field's offset. A
 //! writer sets every byte of its record, padding and fields it has no value
 //! for included, so no kernel memory leaks through one.
 
@@ -383,6 +384,41 @@ pub fn put_timeval(time: Time, out: &mut [u8; TIMESPEC_SIZE]) {
 fn put_timeval_at(out: &mut [u8], at: usize, time: Time) {
     put(out, at, time.sec.to_le_bytes());
     put(out, at + 8, i64::from(time.nsec / 1000).to_le_bytes());
+}
+
+/// The size of `struct itimerval`: the interval, then the value, each a
+/// `struct timeval`.
+pub const ITIMERVAL_SIZE: usize = 32;
+
+/// Reads a `struct itimerval` as `setitimer` takes it: the value and the
+/// interval, in nanoseconds.
+///
+/// # Errors
+///
+/// EINVAL if either `struct timeval` is not valid ([`timeval`]).
+pub fn itimerval(bytes: &[u8; ITIMERVAL_SIZE]) -> Result<(u64, u64), i32> {
+    let interval = timeval(&get(bytes, 0))?;
+    let value = timeval(&get(bytes, 16))?;
+    Ok((value.as_ns(), interval.as_ns()))
+}
+
+/// Writes a `struct itimerval` for a timer with `value_ns` left and an
+/// interval of `interval_ns`. A timer under a microsecond from expiring
+/// reads as one microsecond, never 0, so that a program setting it again
+/// with what it read does not turn it off.
+pub fn put_itimerval(value_ns: u64, interval_ns: u64, out: &mut [u8; ITIMERVAL_SIZE]) {
+    let value = if value_ns > 0 && value_ns < 1000 { 1000 } else { value_ns };
+    put_timeval_at(out, 0, Time::from_ns(interval_ns));
+    put_timeval_at(out, 16, Time::from_ns(value));
+}
+
+/// What `alarm` returns for a timer with `value_ns` left: the whole
+/// seconds rounded to the nearest, and never 0 for a timer still set, as
+/// Linux rounds it; cut to an `unsigned int`, as Linux returns it.
+pub fn alarm_left(value_ns: u64) -> u32 {
+    let time = Time::from_ns(value_ns);
+    let rounds_up = (time.sec == 0 && time.nsec != 0) || time.nsec >= NANOS / 2;
+    (time.sec as u64).wrapping_add(u64::from(rounds_up)) as u32
 }
 
 /// Writes `struct rusage` for a process that ran `user_ns` nanoseconds in

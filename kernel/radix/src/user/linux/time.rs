@@ -1,14 +1,16 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Linux's calls for clocks, sleeps, futexes and random bytes (ADR 0610).
+//! Linux's calls for clocks, sleeps, interval timers, futexes and random
+//! bytes (ADR 0610).
 //!
-//! The clocks are the process's native `clock` and `cpu_time` methods,
-//! and random bytes the native random capability's `read`. A sleep, and a
-//! futex wait, wait on the kernel's clock as the native ones do, until a
-//! deadline in it: a relative time from now, a CLOCK_MONOTONIC or
-//! CLOCK_BOOTTIME time as it is, and a CLOCK_REALTIME time as far from now
-//! as it is from the wall clock's now. A signal ends either wait as the
+//! The clocks are the process's native `clock` and `cpu_time` methods, the
+//! interval timers of `setitimer`, `getitimer` and `alarm` its native
+//! `set_timer`, and random bytes the native random capability's `read`. A
+//! sleep, and a futex wait, wait on the kernel's clock as the native ones
+//! do, until a deadline in it: a relative time from now, a CLOCK_MONOTONIC
+//! or CLOCK_BOOTTIME time as it is, and a CLOCK_REALTIME time as far from
+//! now as it is from the wall clock's now. A signal ends either wait as the
 //! native one's ends it: the call runs again if no handler ran, and fails
 //! with EINTR if one did.
 //!
@@ -20,14 +22,14 @@
 //! again where they meant to. The other commands are ENOSYS.
 
 use radix_abi::errors::Kernel;
-use radix_abi::process::{self as abi, ClockKind};
+use radix_abi::process::{self as abi, ClockKind, TimerKind};
 use radix_abi::random;
 use radix_abi::startup::{SLOT_PROCESS, SLOT_RANDOM};
 use radix_abi::{Status, UserBuffer};
 use radix_hal::Timer;
 use radix_linux::errno::{EAGAIN, EFAULT, EINVAL, ENOSYS, EOPNOTSUPP};
 use radix_linux::futex::{self, Command, FUTEX_BITSET_MATCH_ANY};
-use radix_linux::records::{self, TIMESPEC_SIZE, Time};
+use radix_linux::records::{self, ITIMERVAL_SIZE, TIMESPEC_SIZE, Time};
 
 use super::{Args, Error, Result, copy_in, copy_out, fail, is, results};
 use crate::Arch;
@@ -158,6 +160,76 @@ pub fn clock_nanosleep(user: &UserRef, a: &Args) -> Result<u64> {
         return sleep_until(user, deadline_of(kind, time), 0);
     }
     sleep_until(user, sched::now_ns().saturating_add(time.as_ns()), rem)
+}
+
+/// Sets the process's interval timer `which` (Linux's ITIMER_REAL,
+/// ITIMER_VIRTUAL and ITIMER_PROF, which `TimerKind` numbers alike) to
+/// expire in `value_ns` (0: never), then every `interval_ns`: the native
+/// `set_timer`. Returns what was left of the old one and its interval.
+/// Linux takes `which` as an `int`.
+fn set_timer(
+    me: &ThreadRef,
+    user: &UserRef,
+    which: u64,
+    value_ns: u64,
+    interval_ns: u64,
+) -> Result<(u64, u64)> {
+    let timer = u32::try_from(which as i32)
+        .ok()
+        .and_then(TimerKind::from_raw)
+        .ok_or(Error::Errno(EINVAL))?;
+    let args = abi::SetTimerArgs { timer, value_ns, interval_ns };
+    let words = results(me, user, SLOT_PROCESS, abi::SET_TIMER, args.encode())?;
+    let old = abi::SetTimerResults::decode(&words)?;
+    Ok((old.value_ns, old.interval_ns))
+}
+
+/// Writes a timer with `value_ns` left and an interval of `interval_ns`
+/// as a `struct itimerval` at `address`.
+fn put_itimerval(address: u64, value_ns: u64, interval_ns: u64) -> Result<u64> {
+    let mut bytes = [0u8; ITIMERVAL_SIZE];
+    records::put_itimerval(value_ns, interval_ns, &mut bytes);
+    copy_out(address, &bytes).map(|()| 0)
+}
+
+/// `setitimer(which, new, old)`. A null `new` turns the timer off, as
+/// Linux still takes it. The timer is set before `old` is written, as on
+/// Linux, so an `old` that cannot be written is EFAULT with the timer set.
+pub fn setitimer(me: &ThreadRef, user: &UserRef, which: u64, new: u64, old: u64) -> Result<u64> {
+    let (value_ns, interval_ns) = if new == 0 {
+        (0, 0)
+    } else {
+        let mut bytes = [0u8; ITIMERVAL_SIZE];
+        copy_in(new, &mut bytes)?;
+        records::itimerval(&bytes).map_err(Error::Errno)?
+    };
+    let (left, interval) = set_timer(me, user, which, value_ns, interval_ns)?;
+    if old == 0 {
+        return Ok(0);
+    }
+    put_itimerval(old, left, interval)
+}
+
+/// `getitimer(which, value)`. The native interface reads a timer only by
+/// setting it, as Dukovo's C library reads it: off, then on again with
+/// what was left and its interval. A timer that was due sends its signal
+/// at the first, which then answers the time to its next expiry.
+pub fn getitimer(me: &ThreadRef, user: &UserRef, which: u64, value: u64) -> Result<u64> {
+    let (left, interval) = set_timer(me, user, which, 0, 0)?;
+    if left != 0 {
+        set_timer(me, user, which, left, interval)?;
+    }
+    put_itimerval(value, left, interval)
+}
+
+/// `alarm(seconds)`: ITIMER_REAL set to expire in `seconds` (0: turned
+/// off), with no interval. Returns the seconds that were left of it,
+/// rounded as Linux rounds them. Linux takes `seconds` as an `unsigned
+/// int`.
+pub fn alarm(me: &ThreadRef, user: &UserRef, seconds: u64) -> Result<u64> {
+    let value_ns = u64::from(seconds as u32).saturating_mul(1_000_000_000);
+    let (left, _) = set_timer(me, user, TimerKind::Real as u64, value_ns, 0)?;
+    Ok(u64::from(records::alarm_left(left)))
 }
 
 /// FUTEX_REQUEUE and FUTEX_CMP_REQUEUE.

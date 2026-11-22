@@ -293,6 +293,7 @@ fn dispatch(me: &ThreadRef, user: &UserRef, regs: &SyscallRegs) -> Result<Done> 
         nr::RT_SIGPENDING => signals::rt_sigpending(me, user, a[0], a[1])?,
         nr::RT_SIGTIMEDWAIT => signals::rt_sigtimedwait(me, user, a[0], a[1], a[2], a[3])?,
         nr::RT_SIGSUSPEND => signals::rt_sigsuspend(me, user, a[0], a[1])?,
+        nr::PAUSE => signals::pause(me, user)?,
         nr::GETPRIORITY => system::getpriority(me, user, a[0], a[1])?,
         nr::SETPRIORITY => system::setpriority(me, user, a[0], a[1], a[2])?,
         nr::SCHED_GETPARAM => system::sched_getparam(me, user, a[0], a[1])?,
@@ -352,6 +353,9 @@ fn dispatch(me: &ThreadRef, user: &UserRef, regs: &SyscallRegs) -> Result<Done> 
         nr::CLOCK_GETRES => time::clock_getres(me, user, a[0], a[1])?,
         nr::NANOSLEEP => time::nanosleep(user, a[0], a[1])?,
         nr::CLOCK_NANOSLEEP => time::clock_nanosleep(user, a)?,
+        nr::SETITIMER => time::setitimer(me, user, a[0], a[1], a[2])?,
+        nr::GETITIMER => time::getitimer(me, user, a[0], a[1])?,
+        nr::ALARM => time::alarm(me, user, a[0])?,
         nr::GETRANDOM => time::getrandom(me, user, a[0], a[1], a[2])?,
         nr::SCHED_YIELD => {
             crate::sched::yield_now();

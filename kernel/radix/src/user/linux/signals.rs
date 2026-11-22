@@ -205,6 +205,17 @@ pub fn rt_sigsuspend(me: &ThreadRef, user: &UserRef, mask: u64, size: u64) -> Re
     fail(EINTR)
 }
 
+/// `pause()`: `rt_sigsuspend` with the mask as it is, which the native
+/// `signal_mask` reads.
+pub fn pause(me: &ThreadRef, user: &UserRef) -> Result<u64> {
+    let args = abi::SignalMaskArgs { how: MaskHow::Query, set: 0 };
+    let words = results(me, user, SLOT_PROCESS, abi::SIGNAL_MASK, args.encode())?;
+    let args = abi::SignalSuspendArgs { mask: abi::SignalMaskResults::decode(&words)?.old };
+    results(me, user, SLOT_PROCESS, abi::SIGNAL_SUSPEND, args.encode())?;
+    // The method never returns otherwise.
+    fail(EINTR)
+}
+
 /// `rt_sigtimedwait(set, info, timeout, sigsetsize)`: the native
 /// `signal_wait`, which takes a pending signal of the set without running
 /// its handler; EAGAIN when the time runs out, as Linux gives it. A null
