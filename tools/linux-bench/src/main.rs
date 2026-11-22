@@ -810,42 +810,57 @@ fn hold_clock() {
             return;
         }
     }
+    // A write to `scaling_min_freq` changes a frequency request whose
+    // policy update runs later, as deferred work, so the limits may read
+    // as they were for a moment after the writes.
+    let mut tries = 1;
+    let (held, cpus) = loop {
+        match held_clock(&policies) {
+            Ok(held) => break held,
+            Err(_) if tries < HOLD_TRIES => {
+                tries += 1;
+                std::thread::sleep(HOLD_PAUSE);
+            }
+            Err(why) => {
+                println!("linux-bench: CPU frequency not held: {why}");
+                return;
+            }
+        }
+    };
+    let turbo = if turbo_allowed() == Some(false) { "turbo off, " } else { "" };
+    println!("linux-bench: CPU frequency held at {held} MHz on {cpus} CPUs ({turbo}performance)");
+}
+
+/// How many times, [`HOLD_PAUSE`] apart, [`hold_clock`] reads the limits
+/// back before it says the clock is not held: about a second in all.
+const HOLD_TRIES: u32 = 20;
+const HOLD_PAUSE: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// The frequency every policy in `policies` is held at, as its minimum
+/// and maximum read back, and how many CPUs they cover; or why they are
+/// not held at one frequency.
+fn held_clock(policies: &[PathBuf]) -> Result<(u64, usize), String> {
     let mut held = None;
     let mut cpus = 0;
-    for policy in &policies {
+    for policy in policies {
         let limits = (
             megahertz(&format!("{}/scaling_min_freq", policy.display())),
             megahertz(&format!("{}/scaling_max_freq", policy.display())),
         );
         let (Some(min), Some(max)) = limits else {
-            println!(
-                "linux-bench: CPU frequency not held: cannot read the limits of {}",
-                policy.display()
-            );
-            return;
+            return Err(format!("cannot read the limits of {}", policy.display()));
         };
         if min != max {
-            println!(
-                "linux-bench: CPU frequency not held: {} may run {min} to {max} MHz",
-                policy.display()
-            );
-            return;
+            return Err(format!("{} may run {min} to {max} MHz", policy.display()));
         }
         if let Some(other) = held.filter(|&mhz| mhz != min) {
-            println!(
-                "linux-bench: CPU frequency not held: the policies differ: {other} MHz and {min} MHz"
-            );
-            return;
+            return Err(format!("the policies differ: {other} MHz and {min} MHz"));
         }
         held = Some(min);
         cpus += read_sysfs(&format!("{}/related_cpus", policy.display()))
             .map_or(1, |list| list.split_whitespace().count());
     }
-    let turbo = if turbo_allowed() == Some(false) { "turbo off, " } else { "" };
-    println!(
-        "linux-bench: CPU frequency held at {} MHz on {cpus} CPUs ({turbo}performance)",
-        held.unwrap_or_default()
-    );
+    held.map(|mhz| (mhz, cpus)).ok_or_else(|| "no cpufreq policy".to_string())
 }
 
 /// Gives one frequency policy the performance governor and its maximum
