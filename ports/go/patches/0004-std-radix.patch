@@ -1,0 +1,1136 @@
+SPDX-FileCopyrightText: The Go Authors
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: BSD-3-Clause
+
+The rest of Go's standard library on Radix (ADR 0350): the C library's
+ways that macOS and OpenBSD take (the *at functions, writev, accept4,
+pipe2, getrandom) with Linux's structures (stat, dirent, socket
+options); time zones from /system/resources/zoneinfo and root
+certificates from /system/resources/certificates; the host name from
+uname; the program's path from the runtime. net lists the interfaces of
+/kernel/class/net (radix-sysfs(5), ADR 0355), with their addresses but not
+their multicast groups, and has neither sendfile nor splice, which the C
+library lacks. It resolves names in Go in a program with cgo too, as the
+C library has no res_search (ADR 0357). Its tests name Radix among the
+systems that have writev, that have no SOCK_SEQPACKET sockets, and whose
+interfaces list no multicast addresses. Dukovo only.
+
+diff --git a/src/archive/tar/stat_actime1.go b/src/archive/tar/stat_actime1.go
+index c4c2480f..f94375b1 100644
+--- a/src/archive/tar/stat_actime1.go
++++ b/src/archive/tar/stat_actime1.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build aix || linux || dragonfly || openbsd || solaris
++//go:build aix || dragonfly || linux || openbsd || radix || solaris
+ 
+ package tar
+ 
+diff --git a/src/crypto/internal/sysrand/rand_getrandom.go b/src/crypto/internal/sysrand/rand_getrandom.go
+index 11e9683a..af87fd6e 100644
+--- a/src/crypto/internal/sysrand/rand_getrandom.go
++++ b/src/crypto/internal/sysrand/rand_getrandom.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build dragonfly || freebsd || linux || solaris
++//go:build dragonfly || freebsd || linux || radix || solaris
+ 
+ package sysrand
+ 
+diff --git a/src/crypto/x509/root_radix.go b/src/crypto/x509/root_radix.go
+new file mode 100644
+index 00000000..427d5714
+--- /dev/null
++++ b/src/crypto/x509/root_radix.go
+@@ -0,0 +1,13 @@
++// Copyright 2026 The Dukovo contributors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package x509
++
++// The roots of the system are one file of PEM certificates.
++var certFiles = []string{
++	"/system/resources/certificates/ca-certificates.crt",
++}
++
++// The system keeps no folder of certificates.
++var certDirectories []string
+diff --git a/src/crypto/x509/root_unix.go b/src/crypto/x509/root_unix.go
+index 3f84b55f..9cfcf90e 100644
+--- a/src/crypto/x509/root_unix.go
++++ b/src/crypto/x509/root_unix.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build aix || dragonfly || freebsd || (js && wasm) || linux || netbsd || openbsd || solaris || wasip1
++//go:build aix || dragonfly || freebsd || (js && wasm) || linux || netbsd || openbsd || radix || solaris || wasip1
+ 
+ package x509
+ 
+diff --git a/src/internal/poll/fd_fsync_posix.go b/src/internal/poll/fd_fsync_posix.go
+index 469ca75b..6ef37659 100644
+--- a/src/internal/poll/fd_fsync_posix.go
++++ b/src/internal/poll/fd_fsync_posix.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build aix || dragonfly || freebsd || (js && wasm) || linux || netbsd || openbsd || solaris || wasip1
++//go:build aix || dragonfly || freebsd || (js && wasm) || linux || netbsd || openbsd || radix || solaris || wasip1
+ 
+ package poll
+ 
+diff --git a/src/internal/poll/fd_writev_libc.go b/src/internal/poll/fd_writev_libc.go
+index a9531f6e..4cd88b09 100644
+--- a/src/internal/poll/fd_writev_libc.go
++++ b/src/internal/poll/fd_writev_libc.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build aix || darwin || openbsd || solaris
++//go:build aix || darwin || openbsd || radix || solaris
+ 
+ package poll
+ 
+diff --git a/src/internal/poll/hook_cloexec.go b/src/internal/poll/hook_cloexec.go
+index 5b3cdcec..24000b0d 100644
+--- a/src/internal/poll/hook_cloexec.go
++++ b/src/internal/poll/hook_cloexec.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build dragonfly || freebsd || linux || netbsd || openbsd || solaris
++//go:build dragonfly || freebsd || linux || netbsd || openbsd || radix || solaris
+ 
+ package poll
+ 
+diff --git a/src/internal/poll/iovec_unix.go b/src/internal/poll/iovec_unix.go
+index 3f2833e7..1c02c0ab 100644
+--- a/src/internal/poll/iovec_unix.go
++++ b/src/internal/poll/iovec_unix.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build aix || darwin || dragonfly || freebsd || linux || netbsd || openbsd
++//go:build aix || darwin || dragonfly || freebsd || linux || netbsd || openbsd || radix
+ 
+ package poll
+ 
+diff --git a/src/internal/poll/sock_cloexec.go b/src/internal/poll/sock_cloexec.go
+index 466ee313..5f2061a4 100644
+--- a/src/internal/poll/sock_cloexec.go
++++ b/src/internal/poll/sock_cloexec.go
+@@ -5,7 +5,7 @@
+ // This file implements accept for platforms that provide a fast path for
+ // setting SetNonblock and CloseOnExec.
+ 
+-//go:build dragonfly || freebsd || linux || netbsd || openbsd
++//go:build dragonfly || freebsd || linux || netbsd || openbsd || radix
+ 
+ package poll
+ 
+diff --git a/src/internal/syscall/unix/at_libc2.go b/src/internal/syscall/unix/at_libc2.go
+index 7b80898d..f823d080 100644
+--- a/src/internal/syscall/unix/at_libc2.go
++++ b/src/internal/syscall/unix/at_libc2.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build darwin || openbsd
++//go:build darwin || openbsd || radix
+ 
+ package unix
+ 
+diff --git a/src/internal/syscall/unix/at_radix.go b/src/internal/syscall/unix/at_radix.go
+new file mode 100644
+index 00000000..0e3c4f42
+--- /dev/null
++++ b/src/internal/syscall/unix/at_radix.go
+@@ -0,0 +1,52 @@
++// Copyright 2026 The Dukovo contributors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++// The C library's functions, wrapped in package syscall.
++
++package unix
++
++import (
++	"syscall"
++	_ "unsafe" // for linkname
++)
++
++const (
++	AT_EACCESS          = 0x200
++	AT_FDCWD            = -0x64
++	AT_REMOVEDIR        = 0x200
++	AT_SYMLINK_NOFOLLOW = 0x100
++
++	UTIME_OMIT = 0x3ffffffe
++)
++
++func Readlinkat(dirfd int, path string, buf []byte) (int, error) {
++	return readlinkat(dirfd, path, buf)
++}
++
++func Mkdirat(dirfd int, path string, mode uint32) error {
++	return syscall.Mkdirat(dirfd, path, mode)
++}
++
++func Fchmodat(dirfd int, path string, mode uint32, flags int) error {
++	return syscall.Fchmodat(dirfd, path, mode, flags)
++}
++
++func Fchownat(dirfd int, path string, uid, gid int, flags int) error {
++	return syscall.Fchownat(dirfd, path, uid, gid, flags)
++}
++
++func Renameat(olddirfd int, oldpath string, newdirfd int, newpath string) error {
++	return syscall.Renameat(olddirfd, oldpath, newdirfd, newpath)
++}
++
++func Linkat(olddirfd int, oldpath string, newdirfd int, newpath string, flag int) error {
++	return syscall.Linkat(olddirfd, oldpath, newdirfd, newpath, flag)
++}
++
++func Symlinkat(oldpath string, newdirfd int, newpath string) error {
++	return syscall.Symlinkat(oldpath, newdirfd, newpath)
++}
++
++//go:linkname readlinkat syscall.readlinkat
++func readlinkat(dirfd int, path string, buf []byte) (int, error)
+diff --git a/src/internal/syscall/unix/faccessat_syscall.go b/src/internal/syscall/unix/faccessat_syscall.go
+index 865e40b2..2c35a4a8 100644
+--- a/src/internal/syscall/unix/faccessat_syscall.go
++++ b/src/internal/syscall/unix/faccessat_syscall.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build aix || linux
++//go:build aix || linux || radix
+ 
+ package unix
+ 
+diff --git a/src/internal/syscall/unix/getrandom_radix.go b/src/internal/syscall/unix/getrandom_radix.go
+new file mode 100644
+index 00000000..afe0a62e
+--- /dev/null
++++ b/src/internal/syscall/unix/getrandom_radix.go
+@@ -0,0 +1,34 @@
++// Copyright 2026 The Dukovo contributors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package unix
++
++import _ "unsafe" // for linkname
++
++// GetRandomFlag is a flag supported by the getrandom function.
++type GetRandomFlag uintptr
++
++const (
++	// GRND_NONBLOCK means return EAGAIN rather than blocking.
++	GRND_NONBLOCK GetRandomFlag = 0x0001
++
++	// GRND_RANDOM means use the /dev/random pool instead of /dev/urandom.
++	GRND_RANDOM GetRandomFlag = 0x0002
++)
++
++// GetRandom calls the C library's getrandom function.
++func GetRandom(p []byte, flags GetRandomFlag) (n int, err error) {
++	if len(p) == 0 {
++		return 0, nil
++	}
++	return getrandom(p, int(flags))
++}
++
++// syscall.getrandom hands buf to the C library for the call alone, so buf
++// does not escape, and crypto/rand.Read of a buffer on the stack allocates
++// nothing.
++//
++//go:linkname getrandom syscall.getrandom
++//go:noescape
++func getrandom(buf []byte, flags int) (n int, err error)
+diff --git a/src/internal/syscall/unix/tcsetpgrp_bsd.go b/src/internal/syscall/unix/tcsetpgrp_bsd.go
+index bac614df..bd4d369e 100644
+--- a/src/internal/syscall/unix/tcsetpgrp_bsd.go
++++ b/src/internal/syscall/unix/tcsetpgrp_bsd.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build darwin || dragonfly || freebsd || netbsd || openbsd
++//go:build darwin || dragonfly || freebsd || netbsd || openbsd || radix
+ 
+ package unix
+ 
+diff --git a/src/internal/syscall/unix/waitid_radix.go b/src/internal/syscall/unix/waitid_radix.go
+new file mode 100644
+index 00000000..6f2ee278
+--- /dev/null
++++ b/src/internal/syscall/unix/waitid_radix.go
+@@ -0,0 +1,37 @@
++// Copyright 2026 The Dukovo contributors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package unix
++
++import (
++	"syscall"
++	"unsafe"
++)
++
++const P_PID = 1
++
++// SiginfoChild is the siginfo_t that waitid fills in for a child: the C
++// library's, Linux's 128 bytes.
++type SiginfoChild struct {
++	Signo  int32
++	Errno  int32
++	Code   int32
++	_      int32
++	Pid    int32
++	Uid    uint32
++	Status int32
++	_      [128 - 7*4]byte
++}
++
++// Waitid calls the C library's waitid, which takes no rusage: one asked
++// for is refused with EINVAL.
++func Waitid(idType int, id int, info *SiginfoChild, options int, rusage *syscall.Rusage) error {
++	if rusage != nil {
++		return syscall.EINVAL
++	}
++	return waitid(idType, id, unsafe.Pointer(info), options)
++}
++
++//go:linkname waitid syscall.waitid
++func waitid(idtype int, id int, info unsafe.Pointer, options int) error
+diff --git a/src/net/cgo_stub.go b/src/net/cgo_stub.go
+index 640f5a4f..920ad6ba 100644
+--- a/src/net/cgo_stub.go
++++ b/src/net/cgo_stub.go
+@@ -7,9 +7,11 @@
+ // - if using the netgo build tag on a Unix system
+ // - on a Unix system without the cgo resolver functions
+ //   (Darwin always provides the cgo functions, in cgo_unix_syscall.go)
++// - on Radix, whose programs resolve names in Go also with cgo, since
++//   its C library has no res_search
+ // - on wasip1, where cgo is never available
+ 
+-//go:build (netgo && unix) || (unix && !cgo && !darwin) || js || wasip1
++//go:build (netgo && unix) || (unix && !cgo && !darwin) || radix || js || wasip1
+ 
+ package net
+ 
+diff --git a/src/net/cgo_unix.go b/src/net/cgo_unix.go
+index 7d970cfe..be02dff2 100644
+--- a/src/net/cgo_unix.go
++++ b/src/net/cgo_unix.go
+@@ -7,7 +7,7 @@
+ // Instead of C.foo it uses _C_foo, which is defined in either
+ // cgo_unix_cgo.go or cgo_unix_syscall.go
+ 
+-//go:build !netgo && ((cgo && unix) || darwin)
++//go:build !netgo && !radix && ((cgo && unix) || darwin)
+ 
+ package net
+ 
+diff --git a/src/net/cgo_unix_cgo.go b/src/net/cgo_unix_cgo.go
+index c4b8197c..a5c961a5 100644
+--- a/src/net/cgo_unix_cgo.go
++++ b/src/net/cgo_unix_cgo.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build cgo && !netgo && unix && !darwin
++//go:build cgo && !netgo && unix && !(darwin || radix)
+ 
+ package net
+ 
+diff --git a/src/net/cgo_unix_cgo_resn.go b/src/net/cgo_unix_cgo_resn.go
+index 4fc747b5..f6d900fd 100644
+--- a/src/net/cgo_unix_cgo_resn.go
++++ b/src/net/cgo_unix_cgo_resn.go
+@@ -4,7 +4,7 @@
+ 
+ // res_nsearch, for cgo systems where that's available.
+ 
+-//go:build cgo && !netgo && unix && !(darwin || linux || openbsd)
++//go:build cgo && !netgo && unix && !(darwin || linux || openbsd || radix)
+ 
+ package net
+ 
+diff --git a/src/net/cgo_unix_test.go b/src/net/cgo_unix_test.go
+index 9aaeccc5..bc741926 100644
+--- a/src/net/cgo_unix_test.go
++++ b/src/net/cgo_unix_test.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build !netgo && ((cgo && unix) || darwin)
++//go:build !netgo && !radix && ((cgo && unix) || darwin)
+ 
+ package net
+ 
+diff --git a/src/net/interface_radix.go b/src/net/interface_radix.go
+new file mode 100644
+index 00000000..d7d89c7a
+--- /dev/null
++++ b/src/net/interface_radix.go
+@@ -0,0 +1,180 @@
++// Copyright 2026 The Dukovo contributors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package net
++
++import (
++	"os"
++	"syscall"
++)
++
++// Radix lists its network interfaces in /kernel/class/net, a directory
++// for each, with the files Linux has in /sys/class/net, and the
++// interface's addresses in two files of its own, ipv4 and ipv6
++// (radix-sysfs(5)). The C library's getifaddrs reads the same files.
++const interfacesDir = "/kernel/class/net/"
++
++// If the ifindex is zero, interfaceTable returns mappings of all
++// network interfaces. Otherwise it returns a mapping of a specific
++// interface.
++func interfaceTable(ifindex int) ([]Interface, error) {
++	names, err := interfaceNames()
++	if err != nil {
++		return nil, err
++	}
++	var ift []Interface
++	for _, name := range names {
++		ifi, ok := readInterface(name)
++		// An interface that went after the listing is passed over.
++		if !ok || (ifindex != 0 && ifi.Index != ifindex) {
++			continue
++		}
++		ift = append(ift, ifi)
++		if ifindex != 0 {
++			break
++		}
++	}
++	return ift, nil
++}
++
++// interfaceNames returns the names of the interfaces, in the order the
++// kernel lists them: by number.
++func interfaceNames() ([]string, error) {
++	dir, err := os.Open(interfacesDir)
++	if err != nil {
++		return nil, err
++	}
++	defer dir.Close()
++	return dir.Readdirnames(-1)
++}
++
++// readInterface reads what the interface name is, false if it is gone.
++func readInterface(name string) (Interface, bool) {
++	index, ok := readNumber(name, "ifindex")
++	if !ok || index <= 0 {
++		return Interface{}, false
++	}
++	ifi := Interface{Index: index, Name: name}
++	if mtu, ok := readNumber(name, "mtu"); ok {
++		ifi.MTU = mtu
++	}
++	// A tunnel has no hardware address, and lo's is all zeros, which
++	// Go gives as none, as on Linux.
++	if mac, err := ParseMAC(readField(name, "address")); err == nil {
++		for _, b := range mac {
++			if b != 0 {
++				ifi.HardwareAddr = mac
++				break
++			}
++		}
++	}
++	flags := readField(name, "flags")
++	if len(flags) > 2 && flags[0] == '0' && flags[1] == 'x' {
++		if raw, n, ok := xtoi(flags[2:]); ok && n == len(flags)-2 {
++			ifi.Flags = linkFlags(uint(raw), readField(name, "carrier") == "1")
++		}
++	}
++	return ifi, true
++}
++
++// readField reads the file of the interface name, without its newline;
++// "" if it cannot.
++func readField(name, file string) string {
++	f, err := open(interfacesDir + name + "/" + file)
++	if err != nil {
++		return ""
++	}
++	defer f.close()
++	line, _ := f.readLine()
++	return line
++}
++
++// readNumber reads the decimal number in the file of the interface name.
++func readNumber(name, file string) (int, bool) {
++	text := readField(name, file)
++	n, i, ok := dtoi(text)
++	return n, ok && i == len(text)
++}
++
++// linkFlags turns Linux's flags into Go's; an interface whose carrier is
++// up is running, as the C library's getifaddrs says.
++func linkFlags(raw uint, running bool) Flags {
++	var f Flags
++	if raw&syscall.IFF_UP != 0 {
++		f |= FlagUp
++	}
++	if running {
++		f |= FlagRunning
++	}
++	if raw&syscall.IFF_BROADCAST != 0 {
++		f |= FlagBroadcast
++	}
++	if raw&syscall.IFF_LOOPBACK != 0 {
++		f |= FlagLoopback
++	}
++	if raw&syscall.IFF_POINTOPOINT != 0 {
++		f |= FlagPointToPoint
++	}
++	if raw&syscall.IFF_MULTICAST != 0 {
++		f |= FlagMulticast
++	}
++	return f
++}
++
++// If the ifi is nil, interfaceAddrTable returns addresses for all
++// network interfaces. Otherwise it returns addresses for a specific
++// interface.
++func interfaceAddrTable(ifi *Interface) ([]Addr, error) {
++	var names []string
++	if ifi != nil {
++		names = []string{ifi.Name}
++	} else {
++		var err error
++		if names, err = interfaceNames(); err != nil {
++			return nil, err
++		}
++	}
++	var ifat []Addr
++	for _, name := range names {
++		ifat = appendAddrs(ifat, name)
++	}
++	return ifat, nil
++}
++
++// appendAddrs appends the addresses of the interface name to ifat, in the
++// order of its ipv4 and ipv6 files: a line for each IPv4 one, and for
++// IPv6 a line "address CIDR ..." for each, among lines of other kinds.
++func appendAddrs(ifat []Addr, name string) []Addr {
++	if f, err := open(interfacesDir + name + "/ipv4"); err == nil {
++		for line, ok := f.readLine(); ok; line, ok = f.readLine() {
++			ifat = appendCIDR(ifat, line)
++		}
++		f.close()
++	}
++	if f, err := open(interfacesDir + name + "/ipv6"); err == nil {
++		for line, ok := f.readLine(); ok; line, ok = f.readLine() {
++			if fields := getFields(line); len(fields) > 1 && fields[0] == "address" {
++				ifat = appendCIDR(ifat, fields[1])
++			}
++		}
++		f.close()
++	}
++	return ifat
++}
++
++// appendCIDR appends the address with its prefix that cidr is to ifat;
++// ifat as it is if cidr is not one.
++func appendCIDR(ifat []Addr, cidr string) []Addr {
++	ip, network, err := ParseCIDR(cidr)
++	if err != nil {
++		return ifat
++	}
++	return append(ifat, &IPNet{IP: ip, Mask: network.Mask})
++}
++
++// interfaceMulticastAddrTable returns addresses for a specific
++// interface. Radix does not list the groups an interface has joined.
++func interfaceMulticastAddrTable(ifi *Interface) ([]Addr, error) {
++	return nil, nil
++}
+diff --git a/src/net/interface_test.go b/src/net/interface_test.go
+index 72befca0..6918d17c 100644
+--- a/src/net/interface_test.go
++++ b/src/net/interface_test.go
+@@ -278,7 +278,7 @@ func checkUnicastStats(ifStats *ifStats, uniStats *routeStats) error {
+ 
+ func checkMulticastStats(ifStats *ifStats, uniStats, multiStats *routeStats) error {
+ 	switch runtime.GOOS {
+-	case "aix", "dragonfly", "netbsd", "openbsd", "plan9", "solaris", "illumos":
++	case "aix", "dragonfly", "netbsd", "openbsd", "plan9", "radix", "solaris", "illumos":
+ 	default:
+ 		// Test the existence of connected multicast route
+ 		// clones for IPv4. Unlike IPv6, IPv4 multicast
+diff --git a/src/net/internal/socktest/sys_cloexec.go b/src/net/internal/socktest/sys_cloexec.go
+index d57f44d9..266c9986 100644
+--- a/src/net/internal/socktest/sys_cloexec.go
++++ b/src/net/internal/socktest/sys_cloexec.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build dragonfly || freebsd || linux || netbsd || openbsd || solaris
++//go:build dragonfly || freebsd || linux || netbsd || openbsd || radix || solaris
+ 
+ package socktest
+ 
+diff --git a/src/net/platform_test.go b/src/net/platform_test.go
+index f8317104..7603a0a9 100644
+--- a/src/net/platform_test.go
++++ b/src/net/platform_test.go
+@@ -38,7 +38,7 @@ func testableNetwork(network string) bool {
+ 		return supportsUnixSocket()
+ 	case "unixpacket":
+ 		switch runtime.GOOS {
+-		case "aix", "android", "darwin", "ios", "plan9", "windows":
++		case "aix", "android", "darwin", "ios", "plan9", "radix", "windows":
+ 			return false
+ 		}
+ 	}
+diff --git a/src/net/sock_cloexec.go b/src/net/sock_cloexec.go
+index 043522f0..e81ad1a4 100644
+--- a/src/net/sock_cloexec.go
++++ b/src/net/sock_cloexec.go
+@@ -5,7 +5,7 @@
+ // This file implements sysSocket for platforms that provide a fast path for
+ // setting SetNonblock and CloseOnExec.
+ 
+-//go:build dragonfly || freebsd || linux || netbsd || openbsd
++//go:build dragonfly || freebsd || linux || netbsd || openbsd || radix
+ 
+ package net
+ 
+diff --git a/src/net/sock_stub.go b/src/net/sock_stub.go
+index fd86fa92..b10af000 100644
+--- a/src/net/sock_stub.go
++++ b/src/net/sock_stub.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build aix || js || solaris || wasip1
++//go:build aix || js || radix || solaris || wasip1
+ 
+ package net
+ 
+diff --git a/src/net/sockopt_radix.go b/src/net/sockopt_radix.go
+new file mode 100644
+index 00000000..e9914c66
+--- /dev/null
++++ b/src/net/sockopt_radix.go
+@@ -0,0 +1,38 @@
++// Copyright 2026 The Dukovo contributors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++// Radix's sockets take Linux's options, and sockopt_linux.go is named for
++// linux and cannot be joined by a build line.
++
++package net
++
++import (
++	"os"
++	"syscall"
++)
++
++func setDefaultSockopts(s, family, sotype int, ipv6only bool) error {
++	if family == syscall.AF_INET6 && sotype != syscall.SOCK_RAW {
++		// Allow both IP versions even if the OS default
++		// is otherwise. Note that some operating systems
++		// never admit this option.
++		syscall.SetsockoptInt(s, syscall.IPPROTO_IPV6, syscall.IPV6_V6ONLY, boolint(ipv6only))
++	}
++	if (sotype == syscall.SOCK_DGRAM || sotype == syscall.SOCK_RAW) && family != syscall.AF_UNIX {
++		// Allow broadcast.
++		return os.NewSyscallError("setsockopt", syscall.SetsockoptInt(s, syscall.SOL_SOCKET, syscall.SO_BROADCAST, 1))
++	}
++	return nil
++}
++
++func setDefaultListenerSockopts(s int) error {
++	// Allow reuse of recently-used addresses.
++	return os.NewSyscallError("setsockopt", syscall.SetsockoptInt(s, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1))
++}
++
++func setDefaultMulticastSockopts(s int) error {
++	// Allow multicast UDP and raw IP datagram sockets to listen
++	// concurrently across multiple listeners.
++	return os.NewSyscallError("setsockopt", syscall.SetsockoptInt(s, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1))
++}
+diff --git a/src/net/sockoptip4_bsdvar.go b/src/net/sockoptip4_bsdvar.go
+index 3e9ba1ee..0d0e43fa 100644
+--- a/src/net/sockoptip4_bsdvar.go
++++ b/src/net/sockoptip4_bsdvar.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build aix || darwin || dragonfly || freebsd || netbsd || openbsd || solaris
++//go:build aix || darwin || dragonfly || freebsd || netbsd || openbsd || radix || solaris
+ 
+ package net
+ 
+diff --git a/src/net/tcpsockopt_unix.go b/src/net/tcpsockopt_unix.go
+index 1f761789..9fa68e02 100644
+--- a/src/net/tcpsockopt_unix.go
++++ b/src/net/tcpsockopt_unix.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build aix || dragonfly || freebsd || illumos || linux || netbsd
++//go:build aix || dragonfly || freebsd || illumos || linux || netbsd || radix
+ 
+ package net
+ 
+diff --git a/src/net/unixsock_readmsg_cmsg_cloexec.go b/src/net/unixsock_readmsg_cmsg_cloexec.go
+index 6b0de875..a3a28a65 100644
+--- a/src/net/unixsock_readmsg_cmsg_cloexec.go
++++ b/src/net/unixsock_readmsg_cmsg_cloexec.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build dragonfly || linux || netbsd || openbsd
++//go:build dragonfly || linux || netbsd || openbsd || radix
+ 
+ package net
+ 
+diff --git a/src/net/writev_test.go b/src/net/writev_test.go
+index e4e88c4f..6cc31640 100644
+--- a/src/net/writev_test.go
++++ b/src/net/writev_test.go
+@@ -151,7 +151,7 @@ func testBuffer_writeTo(t *testing.T, chunks int, useCopy bool) {
+ 
+ 		var wantSum int
+ 		switch runtime.GOOS {
+-		case "aix", "android", "darwin", "ios", "dragonfly", "freebsd", "illumos", "linux", "netbsd", "openbsd", "solaris":
++		case "aix", "android", "darwin", "ios", "dragonfly", "freebsd", "illumos", "linux", "netbsd", "openbsd", "radix", "solaris":
+ 			var wantMinCalls int
+ 			wantSum = want.Len()
+ 			v := chunks
+diff --git a/src/os/dir_unix.go b/src/os/dir_unix.go
+index 8f1aabec..c79d141c 100644
+--- a/src/os/dir_unix.go
++++ b/src/os/dir_unix.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build aix || dragonfly || freebsd || (js && wasm) || wasip1 || linux || netbsd || openbsd || solaris
++//go:build aix || dragonfly || freebsd || (js && wasm) || wasip1 || linux || netbsd || openbsd || radix || solaris
+ 
+ package os
+ 
+diff --git a/src/os/dirent_radix.go b/src/os/dirent_radix.go
+new file mode 100644
+index 00000000..1bcdcefd
+--- /dev/null
++++ b/src/os/dirent_radix.go
+@@ -0,0 +1,54 @@
++// Copyright 2026 The Dukovo contributors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++// Radix's directory entries have Linux's layout, but dirent_linux.go is
++// named for linux and cannot be joined by a build line.
++
++package os
++
++import (
++	"syscall"
++	"unsafe"
++)
++
++func direntIno(buf []byte) (uint64, bool) {
++	return readInt(buf, unsafe.Offsetof(syscall.Dirent{}.Ino), unsafe.Sizeof(syscall.Dirent{}.Ino))
++}
++
++func direntReclen(buf []byte) (uint64, bool) {
++	return readInt(buf, unsafe.Offsetof(syscall.Dirent{}.Reclen), unsafe.Sizeof(syscall.Dirent{}.Reclen))
++}
++
++func direntNamlen(buf []byte) (uint64, bool) {
++	reclen, ok := direntReclen(buf)
++	if !ok {
++		return 0, false
++	}
++	return reclen - uint64(unsafe.Offsetof(syscall.Dirent{}.Name)), true
++}
++
++func direntType(buf []byte) FileMode {
++	off := unsafe.Offsetof(syscall.Dirent{}.Type)
++	if off >= uintptr(len(buf)) {
++		return ^FileMode(0) // unknown
++	}
++	typ := buf[off]
++	switch typ {
++	case syscall.DT_BLK:
++		return ModeDevice
++	case syscall.DT_CHR:
++		return ModeDevice | ModeCharDevice
++	case syscall.DT_DIR:
++		return ModeDir
++	case syscall.DT_FIFO:
++		return ModeNamedPipe
++	case syscall.DT_LNK:
++		return ModeSymlink
++	case syscall.DT_REG:
++		return 0
++	case syscall.DT_SOCK:
++		return ModeSocket
++	}
++	return ^FileMode(0) // unknown
++}
+diff --git a/src/os/eloop_other.go b/src/os/eloop_other.go
+index aace57bd..a8e81b24 100644
+--- a/src/os/eloop_other.go
++++ b/src/os/eloop_other.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build aix || darwin || dragonfly || freebsd || linux || openbsd || solaris || wasip1
++//go:build aix || darwin || dragonfly || freebsd || linux || openbsd || radix || solaris || wasip1
+ 
+ package os
+ 
+diff --git a/src/os/executable_radix.go b/src/os/executable_radix.go
+new file mode 100644
+index 00000000..e55b08d1
+--- /dev/null
++++ b/src/os/executable_radix.go
+@@ -0,0 +1,32 @@
++// Copyright 2026 The Dukovo contributors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package os
++
++import _ "unsafe" // for linkname
++
++// executablePath is the path the program was run as. The kernel gives it
++// in the auxiliary vector, as Radix has no /proc/self/exe.
++//
++//go:linkname executablePath
++var executablePath string // set by sysauxv in ../runtime/os_radix.go
++
++var initCwd, initCwdErr = Getwd()
++
++func executable() (string, error) {
++	path := executablePath
++	if len(path) == 0 {
++		return "", ErrNotExist
++	}
++	if path[0] == '/' {
++		return path, nil
++	}
++	if initCwdErr != nil {
++		return "", initCwdErr
++	}
++	if len(path) > 2 && path[0:2] == "./" {
++		path = path[2:]
++	}
++	return initCwd + "/" + path, nil
++}
+diff --git a/src/os/fifo_test.go b/src/os/fifo_test.go
+index 111dd2aa..f52059bf 100644
+--- a/src/os/fifo_test.go
++++ b/src/os/fifo_test.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build darwin || dragonfly || freebsd || (linux && !android) || netbsd || openbsd
++//go:build darwin || dragonfly || freebsd || (linux && !android) || netbsd || openbsd || radix
+ 
+ package os_test
+ 
+diff --git a/src/os/os_test.go b/src/os/os_test.go
+index 62c85443..23ced481 100644
+--- a/src/os/os_test.go
++++ b/src/os/os_test.go
+@@ -1677,6 +1677,9 @@ func TestChdirAndGetwd(t *testing.T) {
+ 		dirs = []string{"/system/bin"}
+ 	case "plan9":
+ 		dirs = []string{"/", "/usr"}
++	case "radix":
++		// Dukovo has no /usr: programs are in /system/commands.
++		dirs = []string{"/", "/system/commands", "/tmp"}
+ 	case "ios", "windows", "wasip1":
+ 		dirs = nil
+ 		for _, dir := range []string{t.TempDir(), t.TempDir()} {
+diff --git a/src/os/pipe2_unix.go b/src/os/pipe2_unix.go
+index dca83a52..a66ce295 100644
+--- a/src/os/pipe2_unix.go
++++ b/src/os/pipe2_unix.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build dragonfly || freebsd || linux || netbsd || openbsd || solaris
++//go:build dragonfly || freebsd || linux || netbsd || openbsd || radix || solaris
+ 
+ package os
+ 
+diff --git a/src/os/root_openat.go b/src/os/root_openat.go
+index ee786176..92eb750d 100644
+--- a/src/os/root_openat.go
++++ b/src/os/root_openat.go
+@@ -109,7 +109,7 @@ func rootChtimes(r *Root, name string, atime time.Time, mtime time.Time) error {
+ func rootMkdir(r *Root, name string, perm FileMode) error {
+ 	flags := uint(doInRootCreatingDirectory)
+ 	switch runtime.GOOS {
+-	case "linux", "windows", "openbsd":
++	case "linux", "radix", "windows", "openbsd":
+ 		// These platforms do not follow "symlink" on "mkdir symlink/".
+ 		// (POSIX.1-2024 4.16 says that the trailing slash should cause
+ 		// resolution to follow the symlink, but we're trying to match
+@@ -185,7 +185,7 @@ func rootMkdirAll(r *Root, fullname string, perm FileMode) error {
+ 	}
+ 	flags := uint(doInRootCreatingDirectory)
+ 	switch runtime.GOOS {
+-	case "linux", "windows", "openbsd":
++	case "linux", "radix", "windows", "openbsd":
+ 		flags |= doInRootNoHandleTerminalSlash // see rootMkdir
+ 	}
+ 	_, err := doInRoot(r, fullname, flags, openDirFunc, openLastComponentFunc)
+diff --git a/src/os/root_test.go b/src/os/root_test.go
+index 353218a0..2addc039 100644
+--- a/src/os/root_test.go
++++ b/src/os/root_test.go
+@@ -1159,8 +1159,9 @@ var rootConsistencyTestCases = []rootConsistencyTest{{
+ 	},
+ 	open: "link/",
+ 	check: func(t *testing.T) {
+-		if runtime.GOOS == "linux" && strings.HasPrefix(t.Name(), "TestRootConsistencyRename/") {
+-			// Linux does not resolve "symlink" in rename("symlink/", "target").
++		if (runtime.GOOS == "linux" || runtime.GOOS == "radix") && strings.HasPrefix(t.Name(), "TestRootConsistencyRename/") {
++			// Linux does not resolve "symlink" in rename("symlink/", "target"),
++			// nor does Radix.
+ 			t.Skip("known inconsistency on linux")
+ 		}
+ 		if strings.HasPrefix(t.Name(), "TestRootConsistencyRemoveAll/") {
+@@ -3292,7 +3293,7 @@ func TestRootMultiRename(t *testing.T) {
+ 			// TODO: check that the file is in its new location
+ 		}
+ 
+-		if runtime.GOOS == "linux" && (test.source.slashSuffix() || test.target.slashSuffix()) {
++		if (runtime.GOOS == "linux" || runtime.GOOS == "radix") && (test.source.slashSuffix() || test.target.slashSuffix()) {
+ 			return "", errSkipRootConsistencyCheck
+ 		}
+ 
+@@ -3390,8 +3391,8 @@ func TestRootMultiRemove(t *testing.T) {
+ 		case test.target.kind == testFileAbsent:
+ 			test.wantError(t, gotErr, errAny)
+ 		case test.target.anySlashSuffix():
+-			if runtime.GOOS == "linux" {
+-				// Linux treats rmdir("symlink/") as an error when
++			if runtime.GOOS == "linux" || runtime.GOOS == "radix" {
++				// Linux and Radix treat rmdir("symlink/") as an error when
+ 				// "symlink" is a symlink to a directory.
+ 				// Root.Remove prefers the POSIX interpretation
+ 				// of resolving the symlink.
+diff --git a/src/os/stat_radix.go b/src/os/stat_radix.go
+new file mode 100644
+index 00000000..83c4301e
+--- /dev/null
++++ b/src/os/stat_radix.go
+@@ -0,0 +1,51 @@
++// Copyright 2026 The Dukovo contributors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++// Radix's file status has Linux's layout, but stat_linux.go is named for
++// linux and cannot be joined by a build line.
++
++package os
++
++import (
++	"internal/filepathlite"
++	"syscall"
++	"time"
++)
++
++func fillFileStatFromSys(fs *fileStat, name string) {
++	fs.name = filepathlite.Base(name)
++	fs.size = fs.sys.Size
++	fs.modTime = time.Unix(fs.sys.Mtim.Unix())
++	fs.mode = FileMode(fs.sys.Mode & 0777)
++	switch fs.sys.Mode & syscall.S_IFMT {
++	case syscall.S_IFBLK:
++		fs.mode |= ModeDevice
++	case syscall.S_IFCHR:
++		fs.mode |= ModeDevice | ModeCharDevice
++	case syscall.S_IFDIR:
++		fs.mode |= ModeDir
++	case syscall.S_IFIFO:
++		fs.mode |= ModeNamedPipe
++	case syscall.S_IFLNK:
++		fs.mode |= ModeSymlink
++	case syscall.S_IFREG:
++		// nothing to do
++	case syscall.S_IFSOCK:
++		fs.mode |= ModeSocket
++	}
++	if fs.sys.Mode&syscall.S_ISGID != 0 {
++		fs.mode |= ModeSetgid
++	}
++	if fs.sys.Mode&syscall.S_ISUID != 0 {
++		fs.mode |= ModeSetuid
++	}
++	if fs.sys.Mode&syscall.S_ISVTX != 0 {
++		fs.mode |= ModeSticky
++	}
++}
++
++// For testing.
++func atime(fi FileInfo) time.Time {
++	return time.Unix(fi.Sys().(*syscall.Stat_t).Atim.Unix())
++}
+diff --git a/src/os/statat_unix.go b/src/os/statat_unix.go
+index 8552e490..8f33a5fc 100644
+--- a/src/os/statat_unix.go
++++ b/src/os/statat_unix.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build aix || darwin || dragonfly || freebsd || wasip1 || linux || netbsd || openbsd || solaris
++//go:build aix || darwin || dragonfly || freebsd || wasip1 || linux || netbsd || openbsd || radix || solaris
+ 
+ package os
+ 
+diff --git a/src/os/sys_radix.go b/src/os/sys_radix.go
+new file mode 100644
+index 00000000..00843025
+--- /dev/null
++++ b/src/os/sys_radix.go
+@@ -0,0 +1,25 @@
++// Copyright 2026 The Dukovo contributors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package os
++
++import "syscall"
++
++// The C library's uname gives the machine's name, from
++// /system/settings/hostname: Radix has no /proc.
++func hostname() (name string, err error) {
++	var u syscall.Utsname
++	if errno := syscall.Uname(&u); errno != nil {
++		return "", NewSyscallError("uname", errno)
++	}
++	b := make([]byte, len(u.Nodename))
++	i := 0
++	for ; i < len(u.Nodename); i++ {
++		if u.Nodename[i] == 0 {
++			break
++		}
++		b[i] = byte(u.Nodename[i])
++	}
++	return string(b[:i]), nil
++}
+diff --git a/src/os/wait_waitid.go b/src/os/wait_waitid.go
+index 832dbe90..9b5f36d1 100644
+--- a/src/os/wait_waitid.go
++++ b/src/os/wait_waitid.go
+@@ -5,7 +5,7 @@
+ // We used to use this code for Darwin, but according to issue #19314
+ // waitid returns if the process is stopped, even when using WEXITED.
+ 
+-//go:build linux
++//go:build linux || radix
+ 
+ package os
+ 
+diff --git a/src/time/zoneinfo_sources_radix.go b/src/time/zoneinfo_sources_radix.go
+new file mode 100644
+index 00000000..3d9dc366
+--- /dev/null
++++ b/src/time/zoneinfo_sources_radix.go
+@@ -0,0 +1,14 @@
++// Copyright 2026 The Dukovo contributors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package time
++
++// Radix keeps its time zone files in /system/resources/zoneinfo. The others
++// are the C library's other places to look.
++var platformZoneSources = []string{
++	"/system/resources/zoneinfo/",
++	"/usr/share/zoneinfo/",
++	"/share/zoneinfo/",
++	"/etc/zoneinfo/",
++}
+diff --git a/src/time/zoneinfo_sources_unix.go b/src/time/zoneinfo_sources_unix.go
+new file mode 100644
+index 00000000..138f0735
+--- /dev/null
++++ b/src/time/zoneinfo_sources_unix.go
+@@ -0,0 +1,17 @@
++// Copyright 2009 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++//go:build unix && !android && !ios && !radix
++
++package time
++
++// Many systems use /usr/share/zoneinfo, Solaris 2 has
++// /usr/share/lib/zoneinfo, IRIX 6 has /usr/lib/locale/TZ,
++// NixOS has /etc/zoneinfo.
++var platformZoneSources = []string{
++	"/usr/share/zoneinfo/",
++	"/usr/share/lib/zoneinfo/",
++	"/usr/lib/locale/TZ/",
++	"/etc/zoneinfo",
++}
+diff --git a/src/time/zoneinfo_unix.go b/src/time/zoneinfo_unix.go
+index b52c67d0..6bf77a29 100644
+--- a/src/time/zoneinfo_unix.go
++++ b/src/time/zoneinfo_unix.go
+@@ -15,16 +15,6 @@ import (
+ 	"syscall"
+ )
+ 
+-// Many systems use /usr/share/zoneinfo, Solaris 2 has
+-// /usr/share/lib/zoneinfo, IRIX 6 has /usr/lib/locale/TZ,
+-// NixOS has /etc/zoneinfo.
+-var platformZoneSources = []string{
+-	"/usr/share/zoneinfo/",
+-	"/usr/share/lib/zoneinfo/",
+-	"/usr/lib/locale/TZ/",
+-	"/etc/zoneinfo",
+-}
+-
+ func initLocal() {
+ 	// consult $TZ to find the time zone to use.
+ 	// no $TZ means use the system default /etc/localtime.

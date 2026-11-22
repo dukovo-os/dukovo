@@ -7,10 +7,10 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 This note describes Radix's POSIX layer as of Phase 8: anonymous memory
 and copy-on-write, the process tree, signals, `fork` and `exec`, file
-descriptors and paths, pipes and `poll`, pseudo-terminals, clocks and
-timers, futexes, file locks, scheduling and limits; then the C library
-(mlibc and its Radix system layer), the toolchain and ports, Rust's
-standard library, dynamic linking and the locale. It ends with the lock
+descriptors and paths, pipes, `poll` and event queues, pseudo-terminals,
+clocks and timers, futexes, file locks, scheduling and limits; then the
+C library (mlibc and its Radix system layer), the toolchain and ports,
+Rust's standard library, dynamic linking and the locale. It ends with the lock
 order, the arguments that no wake-up or timer is lost and that every
 lock goes with its owner, which TLA+ models check, and the known
 limits. The
@@ -23,7 +23,8 @@ ADRs 0060 to 0075.
 ```text
 kernel/lib/posix        radix-posix: the process tree, signal sets, actions
                         and pending queues, wait statuses, exec blocks, #!
-                        lines and the System V initial stack (host-tested)
+                        lines, the System V initial stack and the rules of an
+                        event queue's watches (host-tested)
 kernel/lib/tty          radix-tty: byte rings and the line discipline
                         (Ldisc, Settings), POSIX's terminal interface
                         (host-tested)
@@ -33,6 +34,7 @@ kernel/lib/elf          radix-elf: read_program, for exec (interpreters and
                         thread-local storage allowed)
 kernel/radix/src/user/memory/anon.rs    anonymous regions, faults, fork
 kernel/radix/src/user/memory/futex.rs   futex_wait and futex_wake
+kernel/radix/src/user/queue.rs  event queues, as radix-event-queue(2)
 kernel/radix/src/user/posix/            the tree, signals, fork, exec,
                         timers, poll, priority and limits, as radix-process(2)
 kernel/radix/src/fs/pipe.rs   pipes, on the detached pipefs
@@ -285,7 +287,9 @@ lock, with two nodes on `pipefs`, a filesystem mounted nowhere. Each end
 is a node, so its open file descriptions are ordinary file capabilities,
 and the pipe learns an end has gone when its node drops. The waits are
 the kernel's wait queue's on the pipe's address, with conditions that
-read only atomic counts kept beside the ring. A write of up to `ATOMIC`
+read only atomic counts kept beside the ring. The pipe counts its
+waiters (`WaitCount`), so a read or write that nobody waits for takes no
+lock of the wait queue. A write of up to `ATOMIC`
 (4,096) bytes waits for room for all of it, so writers never interleave;
 copies to and from user memory are made with the ring's sleeping lock
 held, so a page fault in the copy may sleep.
@@ -355,6 +359,19 @@ its jobs and the system's services, and the next thing to replace with
 per-object wait lists when a profile shows many pollers (see the
 limits).
 
+Up to 16 entries, the look at each slot goes through the CPU's capability
+cache, as any system call's look-up does. More than that would miss the
+cache on most of them, so `poll` takes the space's lock once and borrows
+each object from it, without a reference or a lock of its own (ADR
+0354): a capability holds its object while it stays in its slot, and only
+a holder of the space's lock empties a slot. A pipe, a Unix socket, a
+terminal, a file, a notification and an event queue are looked at there,
+as their readiness is kept in atomics and behind spin locks. Anything
+else, whose look may wait for a lock (a network socket, a device), is
+held, eight at a time, and looked at once the space's lock is let go; the
+next entries are looked at under the lock again. A poll that waits holds
+its objects under one hold of the lock too.
+
 A network socket keeps its own `Polled`, and its own count that its
 blocked calls wait on (`net::waiters`, ADR 0550): smoltcp wakes the
 socket whose state a packet changed, so a round trip between two
@@ -370,6 +387,90 @@ second thread that rewrites `revents` while the poll runs races with it
 on any system. One difference from Linux follows: a poll of an array in
 read-only memory that changes nothing succeeds, where Linux's fails
 with `EFAULT`.
+
+## Event queues
+
+An event queue (ADR 0353, radix-event-queue(2)) watches many descriptors
+at once and hands out what became of them, as BSD's kqueue does. The C
+library's `kqueue` makes one with radix-process(2)'s `create`, in the
+lowest free descriptor, and `kevent` is its one method, `wait`: it makes
+its changes in order, then waits up to a timeout for events. Go's
+network poller is built on it, and a program with thousands of idle
+descriptors pays for the ones that change, where `poll` looks at every
+one.
+
+A watch is named by its `ident` and `filter`, and a queue holds at most
+one of each pair. The `read` and `write` filters watch the description
+in the slot `ident` names, less the call's base: a pipe, a socket, a
+terminal, a device that `poll` waits for, or a notification. A file or a
+directory, always ready, cannot be watched (`add` fails with EPERM, as
+Linux's `epoll_ctl` does), nor can another event queue (EINVAL). The
+`user` filter watches an event of the program's own, which a change with
+`USER_TRIGGER` makes ready, and whose flags and value the changes set. A
+watch holds its description weakly, so that watching keeps nothing open:
+it ends when it is deleted, when a oneshot watch is reported, when an
+`add` of its `ident` finds another description in the slot (a watch of
+that one takes its place), when its queue goes, and when its description
+goes, which is when the last descriptor of it in every process closes.
+Each watch is charged to the account of the process that added it. A
+watch is level-triggered unless it has `clear` (reported once, then
+again only after a change), `oneshot` (deleted when reported) or
+`dispatch` (disabled when reported, and looked at again when enabled).
+
+What a change asks of a queue, what it does to a watch's state, and what
+a look at a watch reports and leaves, are plain data in `radix-posix`'s
+`watch` module, with host tests: a change is read from the 32 bytes of
+the C library's `struct kevent`, and a user event's flags and value
+follow FreeBSD's `EVFILT_USER`, but for one difference: an event with
+`clear` forgets its flags and value when it is reported, as it forgets
+that it was triggered, so that each report carries only what came since
+the one before. The kernel's `queue.rs` keeps each watch's state, which
+only a holder of the queue's registry changes, finds what each
+description is ready for (`poll`'s own `events_of`) and carries out what
+the module decides. A change that fails, or asks for a receipt, comes
+back as an event with `error` and the status in `data`, while the call
+has room for it; with none, the call stops there and fails with the
+status, or returns the receipts written so far.
+
+A call costs the watches that changed or are ready, not those that are
+watched. Each description a queue can watch keeps its watches in its
+`Polled`, which `poll` already uses for its pollers: `changed` queues
+each watch of it on its queue's ready ring, once, in the order they were
+queued, and wakes the queue's waiters. The ring has a slot for every
+watch that may be on it, made when the watch is added, so a change
+allocates nothing and may run with any lock held, in an interrupt
+handler too. `wait` takes the watches off the ring, looks at each
+description, reports the ready ones, up to the room the caller gave, and
+puts a level-triggered watch it reported back on the ring for the next
+call. A Unix stream socket has a `Polled` of its own, which its `listen`
+and `connect` change once the listener or the end is set, beside those
+of the pipes of its connection. A watch added before then is counted in
+the ones it gains when the queue next looks at it. A queue is itself
+something to `poll`: it reads as ready while a watch waits for a look,
+which may find none ready, and then `kevent` returns 0.
+
+Several threads may wait on one queue, and each event goes to one of
+them. A signal that is caught interrupts the wait (EINTR); `kevent` is a
+cancellation point when it may wait. `fork` shares the queue, as a copy
+of the capability is the same queue: Linux's epoll descriptor does the
+same, where BSD's children do not inherit a kqueue.
+
+The locks of the queue, from first to last:
+
+1. the queue's registry, a mutex, which every change and every look
+   holds, so that a delete is never overtaken by a report of the watch;
+2. a watch's state;
+3. a `Polled`'s list of watches, taken with interrupts masked, since the
+   keyboard and the mouse change in their interrupt handlers;
+4. the queue's ready ring, taken the same way;
+5. the scheduler's wait table.
+
+A change to a watched description (`Polled::changed`) takes only the
+last three, so it may run under any other lock. Closing a queue, which
+may happen with the capability store's locks held, takes only spin locks
+and frees only memory. Looking at a description takes its object's
+locks, so it is never done under a spin lock of the queue, and user
+memory is copied to and from only with no spin lock held.
 
 ## Terminals
 
@@ -685,6 +786,11 @@ capability store, and a futex bucket with none at all. The file locks'
 with the tree or a terminal locked, since sending one may end a process,
 whose finish takes the tree.
 
+An event queue's locks are a chain of their own (Event queues, above).
+The last three of it, which a change to a watched object takes, are
+leaves, as `TABLE` is: they are taken after every lock on this list, so a
+change may be made under any of them.
+
 ## Correctness
 
 The kernel's waits follow one pattern: read a word, decide to wait, and
@@ -705,6 +811,31 @@ it, and the poller's condition (generation moved) is true when it is
 queued or it is woken once queued. The poller looks at the objects it
 counted itself in, not at its slots again, so no change it waits for is
 to an object it is not counted in.
+
+**No event queue misses a change.** A look takes a watch off the ring
+and clears its queued mark, then reads what its description is ready
+for; a change is made, then `changed` finds each watch of the
+description, sets its mark and puts it on its queue's ring. Both sides
+have a full barrier between their write and their read (the look's
+`fence`, and `changed`'s barrier or, for a notification, its
+read-modify-write), so either the look sees the change, or `changed`
+finds the mark clear and queues the watch again, and the next look
+reports it. A waiting call counts itself among the queue's waiters,
+takes a full barrier, and reads the ring's count after it is on the
+scheduler's wait table; `changed` puts the watch on the ring, takes a
+full barrier, and wakes the table's key if a waiter is counted
+(`WaitCount`). So a change between the call's look and its sleep is seen
+by the condition the sleep rereads, or finds the call counted and wakes
+it once it sleeps, and a change to a queue nobody waits on takes no lock
+of the wait table. A pipe counts its waiters the same way, as each read
+and write is a change. The mark also says that a watch is deleted: a delete sets it
+with the registry held, which every look holds, so no look begins
+between the delete and its return, a deleted watch is never queued
+again, and one deleted while on the ring is dropped by the look that
+takes it off. So a watch is on the ring at most once, no change it waits
+for is lost between a look and a sleep, and no call reports a watch
+after the delete of it has returned. `kernel/radix/tla/EventQueue.tla`
+checks these.
 
 **No signal is missed by a thread about to wait.** A sender sets the
 pending bit and the target thread's `signalled` flag with the process's
@@ -787,14 +918,21 @@ time. It checks the others with a model each, beside it: `Poll.tla`
 object it looks at is ready with no wake on its way, and every poll
 ends), `Timers.tla` (two processes setting and turning off their timers
 at any moment of the timer thread's look: a set timer's process is
-always listed, and every expired timer fires) and `FileLocks.tla`
+always listed, and every expired timer fires), `FileLocks.tla`
 (three processes locking one of two files: none sleeps while its lock is
-free with no wake on its way, and every lock is taken). Each fails when
+free with no wake on its way, and every lock is taken) and
+`EventQueue.tla` (two threads waiting on a queue of two watches, one
+level-triggered and one with `clear`, each changed twice, and a delete of
+either: no waiter sleeps while a watch is on the ring with no wake on its
+way, no watch is on the ring twice, none is reported once its delete has
+returned, and every change is looked at in the end). Each fails when
 its order is broken: the poller counting itself after it looks, or
 `changed` reading the count before the change; the setter letting the
 list go before it sets the timer, the race above; a waiter reading
 `CHANGES` after it looks, or a release waking before it moves
-`CHANGES`.
+`CHANGES`; a look reading the object before it clears the watch's queued
+mark, or a call letting the registry go between taking a watch off the
+ring and reporting it.
 
 ## Known limits
 
@@ -808,7 +946,22 @@ list go before it sets the timer, the race above; a waiter reading
   0511).
 - `clock_gettime` is a capability call; there is no read-only clock page
   (vDSO). The instruction budgets will show when it matters.
-- `poll` wakes every poller on a change to anything polled.
+- `poll` wakes every poller on a change to anything polled. An event
+  queue does not: a change reaches only the queues that watch it.
+- An event queue (`kqueue` and `kevent`) differs from BSD's. The `data`
+  of a read or write event is 0, where BSD gives the bytes to read, the
+  room to write or the connections waiting. The filters are read, write
+  and user: timers, signals, processes and files (`EVFILT_TIMER`,
+  `EVFILT_SIGNAL`, `EVFILT_PROC`, `EVFILT_VNODE`) fail with EINVAL. A
+  watch ends with its description, not when one of the description's
+  descriptors is closed, so a description a child still holds after
+  `fork` stays watched until the watch is deleted or another description
+  is added with its `ident`. `fork` shares the queue, where BSD's
+  children do not inherit it. A delete names the watch by its `ident`
+  and `filter`, so one whose descriptor has closed is deleted, where BSD
+  says EBADF; if its description has gone too, the delete says ENOENT,
+  as for a watch the queue does not hold. An event queue cannot watch
+  another.
 - A directory descriptor's path is the one it was opened by, and one from
   before exec has none (ADR 0089); `getcwd` is the C library's string.
 - Hard links, named pipes, device nodes and socket names work on tmpfs

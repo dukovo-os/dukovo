@@ -975,6 +975,15 @@ pub trait Node: Send + Sync + Any {
         None
     }
 
+    /// What a `poll` of it finds now, in POSIX's bits (`POLLIN`,
+    /// `POLLOUT`...), for a node that keeps what they come from in atomics
+    /// and behind spin locks, so that a look at it waits for no lock: a
+    /// pipe's end, a socket's, a terminal's side. `None` for every other
+    /// node, which the caller looks at in its own way.
+    fn poll_events(&self) -> Option<u16> {
+        None
+    }
+
     /// The node itself, for a filesystem to find its own type behind a
     /// [`NodeRef`] (`rename` does).
     fn as_any(&self) -> &dyn Any;

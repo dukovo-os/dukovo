@@ -345,6 +345,34 @@ fn may_search(who: &Who, node: &dyn crate::Node) -> Result<()> {
     who.check(node, want::EXECUTE)
 }
 
+/// Whether the place a walk is at, the last of `chain`, is a directory,
+/// in which `.`, `..` and a `/` after its name may follow.
+fn in_directory(chain: &[Step]) -> bool {
+    chain.last().is_some_and(|(at, _)| at.node.kind() == Kind::Directory)
+}
+
+/// Fails `path` with [`Error::NotDirectory`] when a `/` follows its last
+/// name and `node`, the entry of that name, which is not followed if it
+/// is a symbolic link, is not a directory, as Linux's `unlink`, `rmdir`
+/// and `rename` do.
+fn slash_is_a_directory(path: &str, node: &dyn crate::Node) -> Result<()> {
+    if path::ends_in_slash(path) && node.kind() != Kind::Directory {
+        return Err(Error::NotDirectory);
+    }
+    Ok(())
+}
+
+/// Fails the new entry `path`, which is not a directory, with
+/// [`Error::NotFound`] when a `/` follows its name: it asks for a
+/// directory that is not there, as Linux's `link`, `symlink` and `mknod`
+/// have it.
+fn new_name_takes_no_slash(path: &str) -> Result<()> {
+    if path::ends_in_slash(path) {
+        return Err(Error::NotFound);
+    }
+    Ok(())
+}
+
 /// Whether `who` may change the entries of the directory at `dir`: write
 /// and search it.
 fn may_change(who: &Who, dir: &Location) -> Result<()> {
@@ -522,6 +550,11 @@ impl Vfs {
                     may_search(who, &*here.node)?;
                 }
                 match component {
+                    // `.` and `..` are a directory's entries, as names are:
+                    // after a file, they are not there.
+                    Component::Current | Component::Parent if !in_directory(&chain) => {
+                        return Err(Error::NotDirectory);
+                    }
                     Component::Current => {}
                     Component::Parent if chain.len() == 1 && at_root => {}
                     Component::Parent if chain.len() == 1 => return Err(Error::Outside),
@@ -565,6 +598,10 @@ impl Vfs {
                         mem::push(&mut chain, (next, start..names.len()))?;
                     }
                 }
+            }
+            // A `/` after the last name makes it a directory's.
+            if components.trailing_slash() && !in_directory(&chain) {
+                return Err(Error::NotDirectory);
             }
             return f(&chain, &names);
         }
@@ -645,6 +682,9 @@ impl Vfs {
             let here = node.as_ref().unwrap_or(&base.node);
             may_search(who, &**here)?;
             match component {
+                Component::Current if here.kind() != Kind::Directory => {
+                    return Err(Error::NotDirectory);
+                }
                 Component::Current => {}
                 // Only `..` and symbolic links need the chain: `..` to
                 // step back along, and a link to start again from.
@@ -668,6 +708,12 @@ impl Vfs {
                     }
                 }
             }
+        }
+        // A `/` after the last name makes it a directory's; a symbolic link
+        // there was followed, by the walk.
+        if components.trailing_slash() && node.as_ref().is_some_and(|n| n.kind() != Kind::Directory)
+        {
+            return Err(Error::NotDirectory);
         }
         Ok(end(Reached { mount, node, read_only }))
     }
@@ -705,12 +751,32 @@ impl Vfs {
         Ok((at, name))
     }
 
+    /// The directory the new entry `path` goes in, and its name, as
+    /// [`Vfs::resolve_parent`] finds them, for the operations that make
+    /// one. A path whose last component is `.` or `..` leads to a
+    /// directory that is there, and fails with [`Error::Exists`] when it
+    /// does, as Linux's `mkdir`, `link`, `symlink` and `mknod` do, or as
+    /// its walk fails.
+    fn resolve_new<'p>(
+        &self,
+        who: &Who,
+        base: &Location,
+        path: &'p str,
+    ) -> Result<(Location, &'p str)> {
+        if path::ends_in_dot(path) {
+            self.resolve(who, base, path)?;
+            return Err(Error::Exists);
+        }
+        self.resolve_parent(who, base, path)
+    }
+
     /// Opens `path` beneath `base` for `who`, following symbolic links
     /// unless `flags.no_follow` says not to follow one that is the last
     /// name. A file made through a symbolic link is made where the link
-    /// points, as POSIX has it. With `flags.create`, a path with a `/`
-    /// after its last name fails with [`Error::IsDirectory`], whether or
-    /// not the name exists. One that is there must let `who` do what
+    /// points, as POSIX has it. With `flags.create`, a path, or a link's
+    /// target, with a `/` after its last name fails with
+    /// [`Error::IsDirectory`], whether or not the name exists, as does
+    /// one whose last component is `.` or `..`. One that is there must let `who` do what
     /// `flags.want` asks, and write it to truncate it; one the open makes
     /// is `who`'s whatever its mode, and its directory must let `who`
     /// change it.
@@ -723,12 +789,6 @@ impl Vfs {
     ) -> Result<Location> {
         let mut made = false;
         let at = if let Some(access) = flags.create {
-            // A name an open makes has no `/` after it. Linux fails such a
-            // path with EISDIR before it looks anything up, whether or not
-            // the name exists.
-            if path.ends_with('/') {
-                return Err(Error::IsDirectory);
-            }
             // The path again with the link's target for its last name,
             // once a link stood there.
             let mut owned: Option<KVec<u8>> = None;
@@ -738,6 +798,18 @@ impl Vfs {
                     Some(bytes) => core::str::from_utf8(bytes).map_err(|_| Error::BadName)?,
                     None => path,
                 };
+                // A name an open makes has no `/` after it, in the path or
+                // in a link's target. Linux fails such a path with EISDIR
+                // before it looks the name up, whether or not it exists.
+                if path::ends_in_slash(text) {
+                    return Err(Error::IsDirectory);
+                }
+                // `.` and `..` are a directory, which an open neither makes
+                // nor cuts, if the walk finds one there.
+                if path::ends_in_dot(text) {
+                    self.resolve(who, base, text)?;
+                    return Err(Error::IsDirectory);
+                }
                 let (dir, name) = self.resolve_parent(who, base, text)?;
                 match dir.node.lookup(name) {
                     Ok(_) if flags.exclusive => return Err(Error::Exists),
@@ -817,11 +889,12 @@ impl Vfs {
         if target.len() > PATH_MAX {
             return Err(Error::NameTooLong);
         }
-        let (dir, name) = self.resolve_parent(who, base, path)?;
+        let (dir, name) = self.resolve_new(who, base, path)?;
         // In Linux's order of errors, so `mkdir -p` passes what is there.
         if dir.node.lookup(name).is_ok() {
             return Err(Error::Exists);
         }
+        new_name_takes_no_slash(path)?;
         dir.writable()?;
         may_change(who, &dir)?;
         let made = made_with(who, &dir, Access { mode: 0o777, ..access }, Kind::Symlink)?;
@@ -847,11 +920,12 @@ impl Vfs {
         follow: bool,
     ) -> Result<()> {
         let from = self.resolve_as(who, base, path, follow)?;
-        let (dir, name) = self.resolve_parent(to_who, to_base, to)?;
+        let (dir, name) = self.resolve_new(to_who, to_base, to)?;
         // In Linux's order of errors.
         if dir.node.lookup(name).is_ok() {
             return Err(Error::Exists);
         }
+        new_name_takes_no_slash(to)?;
         dir.writable()?;
         if !MountRef::ptr_eq(&from.mount, &dir.mount) {
             return Err(Error::CrossMount);
@@ -882,11 +956,12 @@ impl Vfs {
         device: u64,
         access: Access,
     ) -> Result<()> {
-        let (dir, name) = self.resolve_parent(who, base, path)?;
+        let (dir, name) = self.resolve_new(who, base, path)?;
         // In Linux's order of errors, so `mkdir -p` passes what is there.
         if dir.node.lookup(name).is_ok() {
             return Err(Error::Exists);
         }
+        new_name_takes_no_slash(path)?;
         dir.writable()?;
         may_change(who, &dir)?;
         let made = made_with(who, &dir, access, kind)?;
@@ -904,11 +979,12 @@ impl Vfs {
         binding: crate::SocketBinding,
         access: Access,
     ) -> Result<()> {
-        let (dir, name) = self.resolve_parent(who, base, path)?;
+        let (dir, name) = self.resolve_new(who, base, path)?;
         // In Linux's order of errors, so `mkdir -p` passes what is there.
         if dir.node.lookup(name).is_ok() {
             return Err(Error::Exists);
         }
+        new_name_takes_no_slash(path)?;
         dir.writable()?;
         may_change(who, &dir)?;
         let made = made_with(who, &dir, access, Kind::Socket)?;
@@ -968,7 +1044,7 @@ impl Vfs {
         path: &str,
         access: Access,
     ) -> Result<()> {
-        let (dir, name) = self.resolve_parent(who, base, path)?;
+        let (dir, name) = self.resolve_new(who, base, path)?;
         // In Linux's order of errors, so `mkdir -p` passes what is there,
         // a place attached to a view among them.
         if dir.node.lookup(name).is_ok() {
@@ -986,6 +1062,7 @@ impl Vfs {
         let (dir, name) = self.resolve_parent(who, base, path)?;
         dir.writable()?;
         let node = dir.node.lookup(name)?;
+        slash_is_a_directory(path, &*node)?;
         may_remove(who, &dir, &*node)?;
         let mounted = self.mounted_on(&dir.mount, &node).is_some();
         // Let go of it first: held here, a file no one has open would look
@@ -1001,7 +1078,7 @@ impl Vfs {
     /// Makes `path` beneath `base` a new, empty subvolume
     /// ([`crate::Node::make_subvolume`]).
     pub fn make_subvolume(&self, who: &Who, base: &Location, path: &str) -> Result<()> {
-        let (dir, name) = self.resolve_parent(who, base, path)?;
+        let (dir, name) = self.resolve_new(who, base, path)?;
         dir.writable()?;
         if dir.node.lookup(name).is_ok() {
             return Err(Error::Exists);
@@ -1026,7 +1103,7 @@ impl Vfs {
         read_only: bool,
     ) -> Result<()> {
         let from = self.resolve(who, base, source)?;
-        let (dir, name) = self.resolve_parent(to_who, to_base, to)?;
+        let (dir, name) = self.resolve_new(to_who, to_base, to)?;
         if dir.node.lookup(name).is_ok() {
             return Err(Error::Exists);
         }
@@ -1097,6 +1174,7 @@ impl Vfs {
         let (dir, name) = self.resolve_parent(who, base, path)?;
         dir.writable()?;
         let node = dir.node.lookup(name)?;
+        slash_is_a_directory(path, &*node)?;
         may_remove(who, &dir, &*node)?;
         who.check(&*node, want::WRITE | want::EXECUTE)?;
         let mounted = self.mounted_on(&dir.mount, &node).is_some();
@@ -1129,6 +1207,10 @@ impl Vfs {
         }
         source.writable()?;
         let moving = source.node.lookup(from_name)?;
+        // A `/` after either name is a directory's: only a directory
+        // moves with one, as on Linux.
+        slash_is_a_directory(from, &*moving)?;
+        slash_is_a_directory(to, &*moving)?;
         if self.mounted_on(&source.mount, &moving).is_some() {
             return Err(Error::InUse);
         }

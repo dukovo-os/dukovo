@@ -1,0 +1,665 @@
+SPDX-FileCopyrightText: The Go Authors
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: BSD-3-Clause
+
+Radix as a Go target (ADR 0350): GOOS=radix, a Unix, on amd64. The
+compiler, assembler and linker treat it as OpenBSD where a program calls
+the C library: a dynamically linked ELF program whose interpreter is
+/system/libraries/ld.so and which needs libc.so, linked by Go's own
+linker, position-independent by default; the goroutine pointer in
+thread-local storage at -8(FS), reached through initial exec in
+position-independent code; and the larger stack guard that C library
+calls need.
+
+cgo is supported (ADR 0357). A program with C code is linked by the C
+toolchain's linker, since Go's linker links only Go code to the C
+library; the C threads of cgo's own tests are built for Radix too. Go's
+linker builds its output in memory and writes it at the end, because
+Radix refuses a shared writable mapping of a file. The go command locks
+files with flock, and its local telemetry counters record no kernel
+version. Dukovo only.
+
+diff --git a/src/cmd/cgo/internal/test/cthread_unix.c b/src/cmd/cgo/internal/test/cthread_unix.c
+index 1901c643..d46cc266 100644
+--- a/src/cmd/cgo/internal/test/cthread_unix.c
++++ b/src/cmd/cgo/internal/test/cthread_unix.c
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build aix || darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris
++//go:build aix || darwin || dragonfly || freebsd || linux || netbsd || openbsd || radix || solaris
+ 
+ #include <pthread.h>
+ #include "_cgo_export.h"
+diff --git a/src/cmd/dist/build.go b/src/cmd/dist/build.go
+index 78d55bec..0d7b625e 100644
+--- a/src/cmd/dist/build.go
++++ b/src/cmd/dist/build.go
+@@ -102,6 +102,7 @@ var okgoos = []string{
+ 	"netbsd",
+ 	"openbsd",
+ 	"plan9",
++	"radix",
+ 	"windows",
+ 	"aix",
+ }
+@@ -1090,6 +1091,7 @@ var unixOS = map[string]bool{
+ 	"linux":     true,
+ 	"netbsd":    true,
+ 	"openbsd":   true,
++	"radix":     true,
+ 	"solaris":   true,
+ }
+ 
+@@ -1827,6 +1829,7 @@ var cgoEnabled = map[string]bool{
+ 	"plan9/386":       false,
+ 	"plan9/amd64":     false,
+ 	"plan9/arm":       false,
++	"radix/amd64":     true,
+ 	"solaris/amd64":   true,
+ 	"windows/386":     true,
+ 	"windows/amd64":   true,
+diff --git a/src/cmd/go/internal/lockedfile/internal/filelock/filelock_unix.go b/src/cmd/go/internal/lockedfile/internal/filelock/filelock_unix.go
+index 6f73b1bf..2ac4425d 100644
+--- a/src/cmd/go/internal/lockedfile/internal/filelock/filelock_unix.go
++++ b/src/cmd/go/internal/lockedfile/internal/filelock/filelock_unix.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build darwin || dragonfly || freebsd || illumos || linux || netbsd || openbsd
++//go:build darwin || dragonfly || freebsd || illumos || linux || netbsd || openbsd || radix
+ 
+ package filelock
+ 
+diff --git a/src/cmd/go/internal/telemetrystats/version_other.go b/src/cmd/go/internal/telemetrystats/version_other.go
+index efce5fcf..6ab143af 100644
+--- a/src/cmd/go/internal/telemetrystats/version_other.go
++++ b/src/cmd/go/internal/telemetrystats/version_other.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build !cmd_go_bootstrap && !unix && !windows
++//go:build !cmd_go_bootstrap && ((!unix && !windows) || radix)
+ 
+ package telemetrystats
+ 
+diff --git a/src/cmd/go/internal/telemetrystats/version_unix.go b/src/cmd/go/internal/telemetrystats/version_unix.go
+index 517e7829..8cd99b0c 100644
+--- a/src/cmd/go/internal/telemetrystats/version_unix.go
++++ b/src/cmd/go/internal/telemetrystats/version_unix.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build !cmd_go_bootstrap && unix
++//go:build !cmd_go_bootstrap && unix && !radix
+ 
+ package telemetrystats
+ 
+diff --git a/src/cmd/internal/obj/x86/asm6.go b/src/cmd/internal/obj/x86/asm6.go
+index 64617303..72074e49 100644
+--- a/src/cmd/internal/obj/x86/asm6.go
++++ b/src/cmd/internal/obj/x86/asm6.go
+@@ -2563,6 +2563,7 @@ func prefixof(ctxt *obj.Link, a *obj.Addr) int {
+ 				objabi.Hfreebsd,
+ 				objabi.Hnetbsd,
+ 				objabi.Hopenbsd,
++				objabi.Hradix,
+ 				objabi.Hsolaris:
+ 				return 0x64 // FS
+ 
+@@ -5146,9 +5147,9 @@ func (ab *AsmBuf) doasm(ctxt *obj.Link, cursym *obj.LSym, p *obj.Prog) {
+ 					default:
+ 						log.Fatalf("unknown TLS base location for %v", ctxt.Headtype)
+ 
+-					case objabi.Hlinux, objabi.Hfreebsd:
++					case objabi.Hlinux, objabi.Hfreebsd, objabi.Hradix:
+ 						if !ctxt.Flag_shared {
+-							log.Fatalf("unknown TLS base location for linux/freebsd without -shared")
++							log.Fatalf("unknown TLS base location for %v without -shared", ctxt.Headtype)
+ 						}
+ 						// Note that this is not generating the same insn as the other cases.
+ 						//     MOV TLS, R_to
+diff --git a/src/cmd/internal/obj/x86/obj6.go b/src/cmd/internal/obj/x86/obj6.go
+index 8125acfa..bce2b09f 100644
+--- a/src/cmd/internal/obj/x86/obj6.go
++++ b/src/cmd/internal/obj/x86/obj6.go
+@@ -62,7 +62,7 @@ func CanUse1InsnTLS(ctxt *obj.Link) bool {
+ 	switch ctxt.Headtype {
+ 	case objabi.Hplan9, objabi.Hwindows:
+ 		return false
+-	case objabi.Hlinux, objabi.Hfreebsd:
++	case objabi.Hlinux, objabi.Hfreebsd, objabi.Hradix:
+ 		return !ctxt.Flag_shared
+ 	}
+ 
+diff --git a/src/cmd/internal/objabi/head.go b/src/cmd/internal/objabi/head.go
+index 3109b5cb..473c2546 100644
+--- a/src/cmd/internal/objabi/head.go
++++ b/src/cmd/internal/objabi/head.go
+@@ -49,6 +49,7 @@ const (
+ 	Hwasip1
+ 	Hwindows
+ 	Haix
++	Hradix
+ )
+ 
+ func (h *HeadType) Set(s string) error {
+@@ -71,6 +72,8 @@ func (h *HeadType) Set(s string) error {
+ 		*h = Hopenbsd
+ 	case "plan9":
+ 		*h = Hplan9
++	case "radix":
++		*h = Hradix
+ 	case "illumos", "solaris":
+ 		*h = Hsolaris
+ 	case "wasip1":
+@@ -103,6 +106,8 @@ func (h HeadType) String() string {
+ 		return "openbsd"
+ 	case Hplan9:
+ 		return "plan9"
++	case Hradix:
++		return "radix"
+ 	case Hsolaris:
+ 		return "solaris"
+ 	case Hwasip1:
+diff --git a/src/cmd/internal/objabi/stack.go b/src/cmd/internal/objabi/stack.go
+index 6a1edd46..ee541af5 100644
+--- a/src/cmd/internal/objabi/stack.go
++++ b/src/cmd/internal/objabi/stack.go
+@@ -20,8 +20,8 @@ func StackNosplit(race bool) int {
+ func stackGuardMultiplier(race bool) int {
+ 	// This arithmetic must match that in internal/runtime/sys/consts.go:StackGuardMultiplier.
+ 	n := 1
+-	// On AIX and OpenBSD, a larger stack is needed for syscalls.
+-	if buildcfg.GOOS == "aix" || buildcfg.GOOS == "openbsd" {
++	// On AIX, OpenBSD and Radix, a larger stack is needed for syscalls.
++	if buildcfg.GOOS == "aix" || buildcfg.GOOS == "openbsd" || buildcfg.GOOS == "radix" {
+ 		n += 1
+ 	}
+ 	// The race build also needs more stack.
+diff --git a/src/cmd/link/internal/amd64/obj.go b/src/cmd/link/internal/amd64/obj.go
+index 3a6141b9..a6c31c22 100644
+--- a/src/cmd/link/internal/amd64/obj.go
++++ b/src/cmd/link/internal/amd64/obj.go
+@@ -69,6 +69,7 @@ func Init() (*sys.Arch, ld.Arch) {
+ 			Netbsddynld:    "/libexec/ld.elf_so",
+ 			Dragonflydynld: "/usr/libexec/ld-elf.so.2",
+ 			Solarisdynld:   "/lib/amd64/ld.so.1",
++			Radixdynld:     "/system/libraries/ld.so",
+ 
+ 			Reloc1:    elfreloc1,
+ 			RelocSize: 24,
+@@ -107,6 +108,7 @@ func archinit(ctxt *ld.Link) {
+ 		objabi.Hnetbsd,    /* netbsd */
+ 		objabi.Hopenbsd,   /* openbsd */
+ 		objabi.Hdragonfly, /* dragonfly */
++		objabi.Hradix,     /* radix */
+ 		objabi.Hsolaris:   /* solaris */
+ 		ld.Elfinit(ctxt)
+ 
+diff --git a/src/cmd/link/internal/ld/asmb.go b/src/cmd/link/internal/ld/asmb.go
+index 2088e13b..2b42f0a5 100644
+--- a/src/cmd/link/internal/ld/asmb.go
++++ b/src/cmd/link/internal/ld/asmb.go
+@@ -111,6 +111,7 @@ func asmb2(ctxt *Link) {
+ 		objabi.Hlinux,
+ 		objabi.Hnetbsd,
+ 		objabi.Hopenbsd,
++		objabi.Hradix,
+ 		objabi.Hsolaris:
+ 		asmbElf(ctxt)
+ 	}
+diff --git a/src/cmd/link/internal/ld/data.go b/src/cmd/link/internal/ld/data.go
+index 4a27db5a..2a79e57a 100644
+--- a/src/cmd/link/internal/ld/data.go
++++ b/src/cmd/link/internal/ld/data.go
+@@ -251,8 +251,8 @@ func (st *relocSymState) relocsym(s loader.Sym, P []byte) {
+ 		}
+ 
+ 		// We need to be able to reference dynimport symbols when linking against
+-		// shared libraries, and AIX, Darwin, OpenBSD and Solaris always need it.
+-		if !target.IsAIX() && !target.IsDarwin() && !target.IsSolaris() && !target.IsOpenbsd() && rs != 0 && rst == sym.SDYNIMPORT && !target.IsDynlinkingGo() && !ldr.AttrSubSymbol(rs) {
++		// shared libraries, and AIX, Darwin, OpenBSD, Radix and Solaris always need it.
++		if !target.IsAIX() && !target.IsDarwin() && !target.IsSolaris() && !target.IsOpenbsd() && !target.IsRadix() && rs != 0 && rst == sym.SDYNIMPORT && !target.IsDynlinkingGo() && !ldr.AttrSubSymbol(rs) {
+ 			if !(target.IsPPC64() && target.IsExternal() && ldr.SymName(rs) == ".TOC.") {
+ 				st.err.Errorf(s, "unhandled relocation for %s (type %d (%s) rtype %d (%s))", ldr.SymName(rs), rst, rst, rt, sym.RelocName(target.Arch, rt))
+ 			}
+diff --git a/src/cmd/link/internal/ld/elf.go b/src/cmd/link/internal/ld/elf.go
+index 949ca6a3..a0ed5cb1 100644
+--- a/src/cmd/link/internal/ld/elf.go
++++ b/src/cmd/link/internal/ld/elf.go
+@@ -152,6 +152,7 @@ type ELFArch struct {
+ 	Openbsddynld   string
+ 	Dragonflydynld string
+ 	Solarisdynld   string
++	Radixdynld     string
+ 
+ 	Reloc1    func(*Link, *OutBuf, *loader.Loader, loader.Sym, loader.ExtReloc, int, int64) bool
+ 	RelocSize uint32 // size of an ELF relocation record, must match Reloc1.
+@@ -1858,6 +1859,9 @@ func asmbElf(ctxt *Link) {
+ 
+ 			case objabi.Hsolaris:
+ 				interpreter = thearch.ELF.Solarisdynld
++
++			case objabi.Hradix:
++				interpreter = thearch.ELF.Radixdynld
+ 			}
+ 		}
+ 
+@@ -2083,7 +2087,7 @@ func asmbElf(ctxt *Link) {
+ 		}
+ 	}
+ 
+-	if ctxt.HeadType == objabi.Hlinux || ctxt.HeadType == objabi.Hfreebsd {
++	if ctxt.HeadType == objabi.Hlinux || ctxt.HeadType == objabi.Hfreebsd || ctxt.HeadType == objabi.Hradix {
+ 		ph := newElfPhdr()
+ 		ph.Type = elf.PT_GNU_STACK
+ 		ph.Flags = elf.PF_W + elf.PF_R
+diff --git a/src/cmd/link/internal/ld/outbuf_mmap.go b/src/cmd/link/internal/ld/outbuf_mmap.go
+index e92a06dc..4d282f87 100644
+--- a/src/cmd/link/internal/ld/outbuf_mmap.go
++++ b/src/cmd/link/internal/ld/outbuf_mmap.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build unix
++//go:build unix && !radix
+ 
+ package ld
+ 
+diff --git a/src/cmd/link/internal/ld/outbuf_nommap.go b/src/cmd/link/internal/ld/outbuf_nommap.go
+index ee63ca18..b9f8fdd8 100644
+--- a/src/cmd/link/internal/ld/outbuf_nommap.go
++++ b/src/cmd/link/internal/ld/outbuf_nommap.go
+@@ -2,7 +2,11 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build !unix && !windows
++// Radix refuses a shared writable mapping of a file (ENODEV) until its
++// page cache maps its own pages, so the output is built in memory and
++// written when the linker closes it.
++
++//go:build (!unix && !windows) || radix
+ 
+ package ld
+ 
+diff --git a/src/cmd/link/internal/ld/sym.go b/src/cmd/link/internal/ld/sym.go
+index 6ae11060..17b2c8b3 100644
+--- a/src/cmd/link/internal/ld/sym.go
++++ b/src/cmd/link/internal/ld/sym.go
+@@ -83,6 +83,7 @@ func (ctxt *Link) computeTLSOffset() {
+ 		objabi.Hnetbsd,
+ 		objabi.Hopenbsd,
+ 		objabi.Hdragonfly,
++		objabi.Hradix,
+ 		objabi.Hsolaris:
+ 		/*
+ 		 * ELF uses TLS offset negative from FS.
+diff --git a/src/cmd/link/internal/ld/target.go b/src/cmd/link/internal/ld/target.go
+index d0ce99f3..4fa20086 100644
+--- a/src/cmd/link/internal/ld/target.go
++++ b/src/cmd/link/internal/ld/target.go
+@@ -176,6 +176,11 @@ func (t *Target) IsOpenbsd() bool {
+ 	return t.HeadType == objabi.Hopenbsd
+ }
+ 
++func (t *Target) IsRadix() bool {
++	t.mustSetHeadType()
++	return t.HeadType == objabi.Hradix
++}
++
+ func (t *Target) IsFreebsd() bool {
+ 	t.mustSetHeadType()
+ 	return t.HeadType == objabi.Hfreebsd
+@@ -198,7 +203,7 @@ func (t *Target) IsBigEndian() bool {
+ func (t *Target) UsesLibc() bool {
+ 	t.mustSetHeadType()
+ 	switch t.HeadType {
+-	case objabi.Haix, objabi.Hdarwin, objabi.Hopenbsd, objabi.Hsolaris, objabi.Hwindows:
++	case objabi.Haix, objabi.Hdarwin, objabi.Hopenbsd, objabi.Hradix, objabi.Hsolaris, objabi.Hwindows:
+ 		// platforms where we use libc for syscalls.
+ 		return true
+ 	}
+diff --git a/src/internal/goos/zgoos_aix.go b/src/internal/goos/zgoos_aix.go
+index 24e05c93..baea6b01 100644
+--- a/src/internal/goos/zgoos_aix.go
++++ b/src/internal/goos/zgoos_aix.go
+@@ -20,6 +20,7 @@ const IsNacl = 0
+ const IsNetbsd = 0
+ const IsOpenbsd = 0
+ const IsPlan9 = 0
++const IsRadix = 0
+ const IsSolaris = 0
+ const IsWasip1 = 0
+ const IsWindows = 0
+diff --git a/src/internal/goos/zgoos_android.go b/src/internal/goos/zgoos_android.go
+index 3c4a3185..a0e0414a 100644
+--- a/src/internal/goos/zgoos_android.go
++++ b/src/internal/goos/zgoos_android.go
+@@ -20,6 +20,7 @@ const IsNacl = 0
+ const IsNetbsd = 0
+ const IsOpenbsd = 0
+ const IsPlan9 = 0
++const IsRadix = 0
+ const IsSolaris = 0
+ const IsWasip1 = 0
+ const IsWindows = 0
+diff --git a/src/internal/goos/zgoos_darwin.go b/src/internal/goos/zgoos_darwin.go
+index 10b14998..725955ff 100644
+--- a/src/internal/goos/zgoos_darwin.go
++++ b/src/internal/goos/zgoos_darwin.go
+@@ -20,6 +20,7 @@ const IsNacl = 0
+ const IsNetbsd = 0
+ const IsOpenbsd = 0
+ const IsPlan9 = 0
++const IsRadix = 0
+ const IsSolaris = 0
+ const IsWasip1 = 0
+ const IsWindows = 0
+diff --git a/src/internal/goos/zgoos_dragonfly.go b/src/internal/goos/zgoos_dragonfly.go
+index b92d1269..ee9dd8f4 100644
+--- a/src/internal/goos/zgoos_dragonfly.go
++++ b/src/internal/goos/zgoos_dragonfly.go
+@@ -20,6 +20,7 @@ const IsNacl = 0
+ const IsNetbsd = 0
+ const IsOpenbsd = 0
+ const IsPlan9 = 0
++const IsRadix = 0
+ const IsSolaris = 0
+ const IsWasip1 = 0
+ const IsWindows = 0
+diff --git a/src/internal/goos/zgoos_freebsd.go b/src/internal/goos/zgoos_freebsd.go
+index f547591a..fa68e3c7 100644
+--- a/src/internal/goos/zgoos_freebsd.go
++++ b/src/internal/goos/zgoos_freebsd.go
+@@ -20,6 +20,7 @@ const IsNacl = 0
+ const IsNetbsd = 0
+ const IsOpenbsd = 0
+ const IsPlan9 = 0
++const IsRadix = 0
+ const IsSolaris = 0
+ const IsWasip1 = 0
+ const IsWindows = 0
+diff --git a/src/internal/goos/zgoos_hurd.go b/src/internal/goos/zgoos_hurd.go
+index 1189d65d..7fe9fb14 100644
+--- a/src/internal/goos/zgoos_hurd.go
++++ b/src/internal/goos/zgoos_hurd.go
+@@ -20,6 +20,7 @@ const IsNacl = 0
+ const IsNetbsd = 0
+ const IsOpenbsd = 0
+ const IsPlan9 = 0
++const IsRadix = 0
+ const IsSolaris = 0
+ const IsWasip1 = 0
+ const IsWindows = 0
+diff --git a/src/internal/goos/zgoos_illumos.go b/src/internal/goos/zgoos_illumos.go
+index 4f025408..2f2ac43a 100644
+--- a/src/internal/goos/zgoos_illumos.go
++++ b/src/internal/goos/zgoos_illumos.go
+@@ -20,6 +20,7 @@ const IsNacl = 0
+ const IsNetbsd = 0
+ const IsOpenbsd = 0
+ const IsPlan9 = 0
++const IsRadix = 0
+ const IsSolaris = 0
+ const IsWasip1 = 0
+ const IsWindows = 0
+diff --git a/src/internal/goos/zgoos_ios.go b/src/internal/goos/zgoos_ios.go
+index 02f3586f..1ce39b2c 100644
+--- a/src/internal/goos/zgoos_ios.go
++++ b/src/internal/goos/zgoos_ios.go
+@@ -20,6 +20,7 @@ const IsNacl = 0
+ const IsNetbsd = 0
+ const IsOpenbsd = 0
+ const IsPlan9 = 0
++const IsRadix = 0
+ const IsSolaris = 0
+ const IsWasip1 = 0
+ const IsWindows = 0
+diff --git a/src/internal/goos/zgoos_js.go b/src/internal/goos/zgoos_js.go
+index 48187418..d6b47ffc 100644
+--- a/src/internal/goos/zgoos_js.go
++++ b/src/internal/goos/zgoos_js.go
+@@ -20,6 +20,7 @@ const IsNacl = 0
+ const IsNetbsd = 0
+ const IsOpenbsd = 0
+ const IsPlan9 = 0
++const IsRadix = 0
+ const IsSolaris = 0
+ const IsWasip1 = 0
+ const IsWindows = 0
+diff --git a/src/internal/goos/zgoos_linux.go b/src/internal/goos/zgoos_linux.go
+index 6f4d4e07..2c331ea8 100644
+--- a/src/internal/goos/zgoos_linux.go
++++ b/src/internal/goos/zgoos_linux.go
+@@ -20,6 +20,7 @@ const IsNacl = 0
+ const IsNetbsd = 0
+ const IsOpenbsd = 0
+ const IsPlan9 = 0
++const IsRadix = 0
+ const IsSolaris = 0
+ const IsWasip1 = 0
+ const IsWindows = 0
+diff --git a/src/internal/goos/zgoos_netbsd.go b/src/internal/goos/zgoos_netbsd.go
+index 948603df..a6fcbeee 100644
+--- a/src/internal/goos/zgoos_netbsd.go
++++ b/src/internal/goos/zgoos_netbsd.go
+@@ -20,6 +20,7 @@ const IsNacl = 0
+ const IsNetbsd = 1
+ const IsOpenbsd = 0
+ const IsPlan9 = 0
++const IsRadix = 0
+ const IsSolaris = 0
+ const IsWasip1 = 0
+ const IsWindows = 0
+diff --git a/src/internal/goos/zgoos_openbsd.go b/src/internal/goos/zgoos_openbsd.go
+index f4b20145..7543236c 100644
+--- a/src/internal/goos/zgoos_openbsd.go
++++ b/src/internal/goos/zgoos_openbsd.go
+@@ -20,6 +20,7 @@ const IsNacl = 0
+ const IsNetbsd = 0
+ const IsOpenbsd = 1
+ const IsPlan9 = 0
++const IsRadix = 0
+ const IsSolaris = 0
+ const IsWasip1 = 0
+ const IsWindows = 0
+diff --git a/src/internal/goos/zgoos_plan9.go b/src/internal/goos/zgoos_plan9.go
+index 95572dff..4272cc46 100644
+--- a/src/internal/goos/zgoos_plan9.go
++++ b/src/internal/goos/zgoos_plan9.go
+@@ -20,6 +20,7 @@ const IsNacl = 0
+ const IsNetbsd = 0
+ const IsOpenbsd = 0
+ const IsPlan9 = 1
++const IsRadix = 0
+ const IsSolaris = 0
+ const IsWasip1 = 0
+ const IsWindows = 0
+diff --git a/src/internal/goos/zgoos_radix.go b/src/internal/goos/zgoos_radix.go
+new file mode 100644
+index 00000000..bb6a0ce4
+--- /dev/null
++++ b/src/internal/goos/zgoos_radix.go
+@@ -0,0 +1,27 @@
++// Code generated by gengoos.go using 'go generate'. DO NOT EDIT.
++
++//go:build radix
++
++package goos
++
++const GOOS = `radix`
++
++const IsAix = 0
++const IsAndroid = 0
++const IsDarwin = 0
++const IsDragonfly = 0
++const IsFreebsd = 0
++const IsHurd = 0
++const IsIllumos = 0
++const IsIos = 0
++const IsJs = 0
++const IsLinux = 0
++const IsNacl = 0
++const IsNetbsd = 0
++const IsOpenbsd = 0
++const IsPlan9 = 0
++const IsRadix = 1
++const IsSolaris = 0
++const IsWasip1 = 0
++const IsWindows = 0
++const IsZos = 0
+diff --git a/src/internal/goos/zgoos_solaris.go b/src/internal/goos/zgoos_solaris.go
+index c7058260..f2b61e46 100644
+--- a/src/internal/goos/zgoos_solaris.go
++++ b/src/internal/goos/zgoos_solaris.go
+@@ -20,6 +20,7 @@ const IsNacl = 0
+ const IsNetbsd = 0
+ const IsOpenbsd = 0
+ const IsPlan9 = 0
++const IsRadix = 0
+ const IsSolaris = 1
+ const IsWasip1 = 0
+ const IsWindows = 0
+diff --git a/src/internal/goos/zgoos_wasip1.go b/src/internal/goos/zgoos_wasip1.go
+index ae35eeba..585a1d13 100644
+--- a/src/internal/goos/zgoos_wasip1.go
++++ b/src/internal/goos/zgoos_wasip1.go
+@@ -20,6 +20,7 @@ const IsNacl = 0
+ const IsNetbsd = 0
+ const IsOpenbsd = 0
+ const IsPlan9 = 0
++const IsRadix = 0
+ const IsSolaris = 0
+ const IsWasip1 = 1
+ const IsWindows = 0
+diff --git a/src/internal/goos/zgoos_windows.go b/src/internal/goos/zgoos_windows.go
+index f89f4cf8..c8c6a74a 100644
+--- a/src/internal/goos/zgoos_windows.go
++++ b/src/internal/goos/zgoos_windows.go
+@@ -20,6 +20,7 @@ const IsNacl = 0
+ const IsNetbsd = 0
+ const IsOpenbsd = 0
+ const IsPlan9 = 0
++const IsRadix = 0
+ const IsSolaris = 0
+ const IsWasip1 = 0
+ const IsWindows = 1
+diff --git a/src/internal/goos/zgoos_zos.go b/src/internal/goos/zgoos_zos.go
+index 29fb0f8b..820be5ea 100644
+--- a/src/internal/goos/zgoos_zos.go
++++ b/src/internal/goos/zgoos_zos.go
+@@ -20,6 +20,7 @@ const IsNacl = 0
+ const IsNetbsd = 0
+ const IsOpenbsd = 0
+ const IsPlan9 = 0
++const IsRadix = 0
+ const IsSolaris = 0
+ const IsWasip1 = 0
+ const IsWindows = 0
+diff --git a/src/internal/platform/supported.go b/src/internal/platform/supported.go
+index 321733a4..7ae9c252 100644
+--- a/src/internal/platform/supported.go
++++ b/src/internal/platform/supported.go
+@@ -116,6 +116,11 @@ func MustLinkExternal(goos, goarch string, withCgo bool) bool {
+ 		switch goos {
+ 		case "android":
+ 			return true
++		case "radix":
++			// Go's linker links a program in Go alone to the C library
++			// itself; C code and the C library's start files it leaves
++			// to the C toolchain's linker.
++			return true
+ 		case "dragonfly":
+ 			// It seems that on Dragonfly thread local storage is
+ 			// set up by the dynamic linker, so internal cgo linking
+@@ -203,6 +208,7 @@ func BuildModeSupported(compiler, buildmode, goos, goarch string) bool {
+ 			"ios/amd64", "ios/arm64",
+ 			"aix/ppc64",
+ 			"openbsd/arm64",
++			"radix/amd64",
+ 			"windows/386", "windows/amd64", "windows/arm64":
+ 			return true
+ 		}
+@@ -235,6 +241,7 @@ func InternalLinkPIESupported(goos, goarch string) bool {
+ 	case "android/arm64",
+ 		"darwin/amd64", "darwin/arm64",
+ 		"linux/amd64", "linux/arm64", "linux/loong64", "linux/ppc64", "linux/ppc64le", "linux/s390x",
++		"radix/amd64",
+ 		"windows/386", "windows/amd64", "windows/arm64":
+ 		return true
+ 	}
+@@ -257,6 +264,10 @@ func DefaultPIE(goos, goarch string, isRace bool) bool {
+ 		return true
+ 	case "darwin":
+ 		return true
++	case "radix":
++		// Dukovo places position-independent programs at random, and
++		// its own programs are all built so.
++		return true
+ 	}
+ 	return false
+ }
+diff --git a/src/internal/platform/zosarch.go b/src/internal/platform/zosarch.go
+index ec6368e8..b928d37b 100644
+--- a/src/internal/platform/zosarch.go
++++ b/src/internal/platform/zosarch.go
+@@ -52,6 +52,7 @@ var List = []OSArch{
+ 	{"plan9", "386"},
+ 	{"plan9", "amd64"},
+ 	{"plan9", "arm"},
++	{"radix", "amd64"},
+ 	{"solaris", "amd64"},
+ 	{"wasip1", "wasm"},
+ 	{"windows", "386"},
+@@ -104,6 +105,7 @@ var distInfo = map[OSArch]osArchInfo{
+ 	{"plan9", "386"}:       {},
+ 	{"plan9", "amd64"}:     {},
+ 	{"plan9", "arm"}:       {},
++	{"radix", "amd64"}:     {CgoSupported: true},
+ 	{"solaris", "amd64"}:   {CgoSupported: true},
+ 	{"wasip1", "wasm"}:     {},
+ 	{"windows", "386"}:     {CgoSupported: true, FirstClass: true},
+diff --git a/src/internal/runtime/sys/consts.go b/src/internal/runtime/sys/consts.go
+index 96e630ed..6066e8ba 100644
+--- a/src/internal/runtime/sys/consts.go
++++ b/src/internal/runtime/sys/consts.go
+@@ -9,10 +9,10 @@ import (
+ 	"internal/goos"
+ )
+ 
+-// AIX and OpenBSD require a larger stack for syscalls.
++// AIX, OpenBSD and Radix require a larger stack for syscalls.
+ // The race build also needs more stack. See issue 54291.
+ // This arithmetic must match that in cmd/internal/objabi/stack.go:stackGuardMultiplier.
+-const StackGuardMultiplier = 1 + goos.IsAix + goos.IsOpenbsd + isRace
++const StackGuardMultiplier = 1 + goos.IsAix + goos.IsOpenbsd + goos.IsRadix + isRace
+ 
+ // DefaultPhysPageSize is the default physical page size.
+ const DefaultPhysPageSize = goarch.DefaultPhysPageSize
+diff --git a/src/internal/syslist/syslist.go b/src/internal/syslist/syslist.go
+index 2349b6ea..10cd0382 100644
+--- a/src/internal/syslist/syslist.go
++++ b/src/internal/syslist/syslist.go
+@@ -29,6 +29,7 @@ var KnownOS = map[string]bool{
+ 	"netbsd":    true,
+ 	"openbsd":   true,
+ 	"plan9":     true,
++	"radix":     true,
+ 	"solaris":   true,
+ 	"wasip1":    true,
+ 	"windows":   true,
+@@ -50,6 +51,7 @@ var UnixOS = map[string]bool{
+ 	"linux":     true,
+ 	"netbsd":    true,
+ 	"openbsd":   true,
++	"radix":     true,
+ 	"solaris":   true,
+ }
+ 

@@ -1,0 +1,25 @@
+SPDX-FileCopyrightText: The tcell contributors
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0
+
+Radix's terminals are Linux's to micro's tcell: termios through
+golang.org/x/term, and the terminal at /dev/tty.
+
+diff -ruN a/github.com_micro-editor_tcell_v2@v2.0.13/tscreen_unix.go b/github.com_micro-editor_tcell_v2@v2.0.13/tscreen_unix.go
+--- a/github.com_micro-editor_tcell_v2@v2.0.13/tscreen_unix.go
++++ b/github.com_micro-editor_tcell_v2@v2.0.13/tscreen_unix.go
+@@ -1,4 +1,4 @@
+-// +build aix darwin dragonfly freebsd linux netbsd openbsd solaris zos
++// +build aix darwin dragonfly freebsd linux netbsd openbsd radix solaris zos
+ 
+ // Copyright 2019 The TCell Authors
+ //
+diff -ruN a/github.com_micro-editor_tcell_v2@v2.0.13/tscreen_unix_other.go b/github.com_micro-editor_tcell_v2@v2.0.13/tscreen_unix_other.go
+--- a/github.com_micro-editor_tcell_v2@v2.0.13/tscreen_unix_other.go
++++ b/github.com_micro-editor_tcell_v2@v2.0.13/tscreen_unix_other.go
+@@ -1,4 +1,4 @@
+-// +build aix dragonfly freebsd linux netbsd openbsd solaris zos
++// +build aix dragonfly freebsd linux netbsd openbsd radix solaris zos
+ 
+ package tcell
+ 

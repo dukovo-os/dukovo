@@ -5,11 +5,13 @@
 # Builds libevent for Radix (ob(1), PORTS): the static libraries, without
 # OpenSSL, their headers and pkg-config files in the sysroot for the ports
 # built on it. Nothing of it goes in the image by itself. Radix has poll
-# and select, which libevent finds, and no epoll, eventfd or timerfd.
+# and select, which libevent finds, and no epoll, eventfd or timerfd. Its
+# kqueue(2) has no EVFILT_SIGNAL, which libevent's kqueue backend needs,
+# so configure is told there is no kqueue.
 set -eu
 
 cd "$PORT_BUILD"
-x86_64-radix-configure "$PORT_SRC" --disable-shared --disable-openssl --disable-samples \
+ac_cv_func_kqueue=no x86_64-radix-configure "$PORT_SRC" --disable-shared --disable-openssl --disable-samples \
 	--disable-libevent-regress --disable-debug-mode >configure.log 2>&1 || {
 	tail -n 40 configure.log >&2
 	exit 1

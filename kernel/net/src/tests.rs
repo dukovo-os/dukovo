@@ -774,6 +774,10 @@ fn a_loopback_connection_passes_its_bytes_straight_across() {
     lo.poll(5_000_000);
     let server_socket = lo.socket_mut::<tcp::Socket<'static>>(server).unwrap();
     assert_eq!(server_socket.recv_slice(&mut [0; 8]), Err(tcp::RecvError::Finished));
+    // Bytes to an end that sent its FIN go in packets, for a poll to
+    // deliver where the kernel looks for those no one will read.
+    assert_eq!(lo.room_across(server, &mut server_end), None);
+    let server_socket = lo.socket_mut::<tcp::Socket<'static>>(server).unwrap();
     server_socket.close();
     lo.poll(6_000_000);
     let client_state = lo.socket_mut::<tcp::Socket<'static>>(client).unwrap().state();

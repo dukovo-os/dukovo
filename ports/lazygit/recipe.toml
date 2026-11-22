@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# lazygit, a terminal interface to git: a bundle of the Dukovo catalog, not
+# of the image (ADR 0370), built with Go for Radix (ADR 0600). It runs the
+# system's git (ports/git). Its command runs with the access of whoever runs
+# it, as command-line tools do. It does not notice files that change while
+# it runs until it is next focused or refreshed, as Radix's event queue
+# does not watch files (ADR 0353).
+name = "lazygit"
+version = "0.66.3"
+summary = "a terminal interface to git"
+license = "MIT"
+homepage = "https://github.com/jesseduffield/lazygit"
+depends = ["go", "go-modules"]
+
+[source]
+git = "https://github.com/jesseduffield/lazygit.git"
+commit = "e0fbfd50c36e1ef88c52297ca34750e640b4f5f4"
+tag = "v0.66.3"
+
+[bundle]
+id = "io.github.jesseduffield.lazygit"
+name = "lazygit"
+commands = ["lazygit"]
+
+# The licenses of linked modules that their files do not state in words ob
+# reads (ob(1), PORTS), each with where it is stated.
+[go-licenses]
+# kr/logfmt has no license file: its Readme holds the MIT license, as its
+# copyright holders (Keith Rarick and Blake Mizerany, 2013) wrote it.
+"github.com/kr/logfmt" = "MIT"

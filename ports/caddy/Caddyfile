@@ -1,0 +1,90 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Caddy's settings on Dukovo:
+# /shared/services/com.caddyserver.caddy/caddy/conf/Caddyfile
+#
+# After a change, check them, have Caddy read them again, which drops no
+# request, and see what it said:
+#
+#     elevate caddy validate --config /shared/services/com.caddyserver.caddy/caddy/conf/Caddyfile
+#     elevate service caddy reload
+#     elevate log caddy | tail
+#
+# Settings that do not read leave Caddy running as it was, and its log
+# says what is wrong.
+#
+# An update of the bundle leaves a file you changed as it is and writes its
+# own version beside it as Caddyfile.default. caddy(8) and
+# https://caddyserver.com/docs/caddyfile say what each setting does.
+{
+	# Caddy's admin API, through which `service caddy reload` has it read
+	# these settings again: a socket in its live folder, which only its
+	# account reaches, never a port.
+	admin unix//system/live/services/caddy/admin.sock
+	# Spark holds Caddy's ports and passes them on (ADR 0477), and certd(8)
+	# keeps the machine's certificates, so Caddy neither gets certificates
+	# itself nor opens ports to send HTTP on to HTTPS.
+	auto_https off
+	# How long a reload or a stop waits for the requests in flight: less
+	# than the 30 seconds Spark waits for Caddy to stop.
+	grace_period 20s
+	servers {
+		# HTTP/3 needs a UDP socket, which Spark holds for no service yet.
+		protocols h1 h2
+	}
+}
+
+# The sites in /shared/www, which the account caddy reads, over HTTP, on the
+# port 80 Spark holds for it: the first socket of its service file, which
+# it passes as descriptor 3.
+http:// {
+	bind fd/3
+	# The answers to an ACME authority's check of a name, which certd(8)
+	# puts in a folder while `cert get` gets a certificate (ADR 0513).
+	# Caddy's service file has to let it read the folder; add it once, and
+	# restart Caddy:
+	#
+	#     elevate service edit caddy      # add files.read = ["/system/live/certd"]
+	#     elevate service caddy restart
+	handle_path /.well-known/acme-challenge/* {
+		root * /system/live/certd/acme-challenge
+		file_server
+	}
+	# The folders of the websites that website(8) adds are nginx's to
+	# serve, under their own names, never here.
+	respond /sites/* 404
+	root * /shared/www
+	file_server
+}
+
+# The same sites over HTTPS, with the machine's own certificate, which
+# certd(8) makes and keeps. Spark has to copy the certificate for Caddy and
+# hold port 443 for it, as its second socket, which it passes as descriptor
+# 4: add these lines to Caddy's service file, the first after its line
+# `secrets = []` and the rest at its end, remove the # signs below, and
+# restart Caddy (a certificate that changes later is read again without a
+# restart):
+#
+#     certificates = ["this-machine"]
+#
+#     [[sockets]]
+#     port = 443
+#     name = "https"
+#
+#     elevate service edit caddy
+#     elevate service caddy restart
+#
+# A certificate from an ACME authority goes in with `elevate cert get NAME
+# --name example.com`, and one you have from elsewhere with `elevate cert
+# add NAME --chain FILE --key FILE`; name it in the service file instead of
+# this-machine, and in the tls line below. `cert list` shows what there is,
+# and cert(8) the rest.
+#
+#https:// {
+#	bind fd/4
+#	tls /system/live/certificates/caddy/this-machine/fullchain.pem /system/live/certificates/caddy/this-machine/key.pem
+#	respond /sites/* 404
+#	root * /shared/www
+#	file_server
+#}

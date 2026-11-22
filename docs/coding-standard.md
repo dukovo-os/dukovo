@@ -68,8 +68,9 @@ Only the trusted computing base may use `unsafe`. Today that is:
 - the kernel crate `kernel/radix`, which is `#![deny(unsafe_code)]` and
   allows it only at marked sites: exporting its entry point, putting the
   locks into panic mode, the context switch and borrowing the running
-  thread, per-CPU data, building an open file in place, and handing half
-  of a `join` on the caller's stack to another CPU's helper (ADR 0133).
+  thread, per-CPU data, building an open file in place, handing half
+  of a `join` on the caller's stack to another CPU's helper (ADR 0133),
+  and borrowing an object from a locked capability space (ADR 0354).
 
 Every other kernel crate, including the other libraries under
 `kernel/lib/`, the HAL, the AArch64 stubs and the system call interface

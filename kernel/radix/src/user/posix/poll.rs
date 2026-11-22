@@ -9,7 +9,13 @@
 //! or a terminal's side says what it is ready for
 //! ([`crate::fs::pipe::Pipe::events`], [`crate::fs::tty::Handle::events`]),
 //! a notification is readable while bits are set, other files and
-//! directories are always ready, and an empty slot is invalid. If none is
+//! directories are always ready, and an empty slot is invalid. Up to as
+//! many slots as a CPU's capability cache holds are found through it
+//! ([`objects::find_object`]); more would miss it and take their space's
+//! lock one by one, so they are looked at with that lock taken once for
+//! them all, and each object borrowed from it ([`look_space`], ADR 0354).
+//! An object whose look may wait for a lock of its own, as a network
+//! socket's does, is held and looked at with the space's lock let go. If none is
 //! ready, and the poll may wait, the thread holds the objects its entries
 //! designate, as Linux's `poll` holds its files (a slot closed meanwhile
 //! does not change what it waits for), counts itself among the pollers of
@@ -28,24 +34,35 @@
 //! change or the change sees the poller (and moves the generation it waits
 //! on). A notification, whose word changes by a read-modify-write that is
 //! already such a barrier, skips the extra one
-//! ([`Polled::changed_by_rmw`]). The TLA+ model `kernel/radix/tla/Poll.tla`
-//! checks this.
+//! ([`Polled::changed_by_rmw`]), as do a pipe and an event queue, which
+//! have just taken one to wake their own waiters. The TLA+ model
+//! `kernel/radix/tla/Poll.tla` checks this.
+//!
+//! A [`Polled`] also holds the event queues' watches of its object
+//! (radix-event-queue(2), `crate::user::queue`): a change queues each of
+//! them for a look by its queue, with the same barrier, so that a queue
+//! looks only at what changed, and nothing else wakes.
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering, fence};
 
 use radix_abi::errors::Kernel;
 use radix_abi::process::{PollArgs, PollEntry, PollEvents, PollFlags};
-use radix_cap::SpaceId;
+use radix_cap::{SlotRef, SpaceId};
 use radix_hal::UserMode;
-use radix_mm::Kmalloc;
+use radix_mm::{Flags, HEAP, Kmalloc};
+use radix_sync::SpinLock;
 
 use super::kmalloc;
 use super::signal::{self, Restart, interrupted};
-use crate::Arch;
+use crate::fs::FileObject;
 use crate::sched::{self, wait};
-use crate::user::objects::{self, Object};
+use crate::user::notify::Notification;
+use crate::user::objects::{self, Object, Peeked};
+use crate::user::queue::EventQueue;
+use crate::user::queue::{self, WatchRef};
 use crate::user::{Result, UserRef, error};
+use crate::{Arch, caps};
 
 /// There is data to read, or the end of a stream.
 pub const READABLE: u16 = PollEvents::READABLE.0 as u16;
@@ -73,42 +90,108 @@ fn key() -> usize {
 }
 
 /// What a poll may look at keeps one of these: how many threads poll it,
-/// which its changes wake.
-#[derive(Default)]
+/// which its changes wake, and the event queues' watches of it, which its
+/// changes queue.
 pub struct Polled {
     pollers: AtomicUsize,
+    /// How many watches `watches` holds, so that a change to what no
+    /// queue watches takes no lock.
+    watched: AtomicUsize,
+    /// The watches, with those whose queue has deleted them until the
+    /// next one is added. Taken with interrupts masked: the keyboard's
+    /// and the mouse's change in their interrupt handlers.
+    watches: SpinLock<Vec<WatchRef, Kmalloc>>,
 }
 
 impl Polled {
-    /// Nobody polls it yet.
+    /// Nobody polls or watches it yet.
     pub const fn new() -> Polled {
-        Polled { pollers: AtomicUsize::new(0) }
+        Polled {
+            pollers: AtomicUsize::new(0),
+            watched: AtomicUsize::new(0),
+            watches: SpinLock::new(Vec::new_in(HEAP.with(Flags::MAY_SLEEP))),
+        }
     }
 
-    /// It has changed: the threads polling it look again. Costs a barrier
-    /// and a load while nobody polls it.
+    /// It has changed: the threads polling it look again, and the queues
+    /// watching it look at it. Costs a barrier and two loads while nobody
+    /// polls or watches it.
     pub fn changed(&self) {
         fence(Ordering::SeqCst);
         self.changed_by_rmw();
     }
 
-    /// As [`Polled::changed`], for a change made by a sequentially
+    /// As [`Polled::changed`], for a change already ordered before what
+    /// it reads as the barrier would order it: one made by a sequentially
     /// consistent read-modify-write that pollers read with sequentially
-    /// consistent loads (a notification's word), which orders as the
-    /// barrier would: only a load while nobody polls it.
+    /// consistent loads (a notification's word), or one its caller took a
+    /// full barrier after (`WaitCount::wake_all`'s, for a pipe and an
+    /// event queue). Only two loads while nobody polls or watches it.
     pub fn changed_by_rmw(&self) {
         if self.pollers.load(Ordering::SeqCst) > 0 {
             GENERATION.fetch_add(1, Ordering::SeqCst);
             wait::wake_all(key());
         }
+        if self.watched.load(Ordering::SeqCst) > 0 {
+            for watch in self.watches.lock_irq().iter() {
+                queue::changed(watch);
+            }
+        }
+    }
+
+    /// Adds `watch` to its watches, which its changes queue from then on,
+    /// and lets go of those whose queue deleted them: a watch's last
+    /// reference frees memory and gives back its charge, nothing more, so
+    /// it may go with the lock held. Room is made with the lock let go,
+    /// as memory is never allocated under a spin lock.
+    ///
+    /// # Errors
+    ///
+    /// no_memory when there is no room for one more.
+    pub fn watch(&self, watch: &WatchRef) -> Result<()> {
+        let mut room: Vec<WatchRef, Kmalloc> = Vec::new_in(kmalloc());
+        loop {
+            let mut watches = self.watches.lock_irq();
+            watches.retain(|watch| !watch.is_deleted());
+            if watches.len() == watches.capacity() && room.capacity() > watches.len() {
+                while let Some(kept) = watches.pop() {
+                    // `room` holds more than `watches` did.
+                    let _ = room.push_within_capacity(kept);
+                }
+                core::mem::swap(&mut *watches, &mut room);
+            }
+            if watches.len() < watches.capacity() {
+                // Checked just above.
+                let _ = watches.push_within_capacity(watch.clone());
+                self.watched.store(watches.len(), Ordering::SeqCst);
+                return Ok(());
+            }
+            let want = watches.len().saturating_mul(2).max(2);
+            drop(watches);
+            room = Vec::new_in(kmalloc());
+            room.try_reserve_exact(want).map_err(|_| error(Kernel::NoMemory))?;
+        }
+    }
+
+    /// Takes `watch` out of its watches, if it is there: its queue has
+    /// deleted it.
+    pub fn unwatch(&self, watch: &WatchRef) {
+        let taken = {
+            let mut watches = self.watches.lock_irq();
+            let at = watches.iter().position(|held| WatchRef::ptr_eq(held, watch));
+            let taken = at.map(|at| watches.swap_remove(at));
+            self.watched.store(watches.len(), Ordering::SeqCst);
+            taken
+        };
+        drop(taken);
     }
 }
 
 /// Calls `each` with what `object` keeps for its pollers: a pipe end's
-/// pipe, both pipes of a connected socket or a listening one's listener,
-/// its own for a network socket, a terminal, the kernel log or the
-/// keyboard, or a notification.
-fn polled_by(object: &Object, each: &mut dyn FnMut(&Polled)) {
+/// pipe, a Unix socket's own and both pipes of its connection or its
+/// listener, its own for a network socket, a terminal, the kernel log or
+/// the keyboard, a notification, or an event queue.
+pub(crate) fn polled_by(object: &Object, each: &mut dyn FnMut(&Polled)) {
     match object {
         Object::File(file) => {
             if let Some(end) = file.pipe_end() {
@@ -138,6 +221,7 @@ fn polled_by(object: &Object, each: &mut dyn FnMut(&Polled)) {
             }
         }
         Object::Notification(notification) => each(notification.polled()),
+        Object::EventQueue(queue) => each(queue.polled()),
         // Always ready, or never.
         _ => {}
     }
@@ -189,6 +273,12 @@ fn entries_of(entries: &[u8]) -> core::slice::Iter<'_, [u8; PollEntry::SIZE]> {
     entries.as_chunks::<{ PollEntry::SIZE }>().0.iter()
 }
 
+/// The slot of descriptor `fd`, which is not negative, past `base`; `None`
+/// past the last slot there can be.
+fn slot_of(base: u32, fd: i32) -> Option<u32> {
+    base.checked_add(fd as u32)
+}
+
 /// What slot `slot` of `cspace` is ready for, among `events` and those
 /// always reported.
 fn slot_events(cspace: SpaceId, slot: u32, events: u16) -> u16 {
@@ -202,56 +292,93 @@ fn slot_events(cspace: SpaceId, slot: u32, events: u16) -> u16 {
 }
 
 /// What `object` is ready for.
-fn events_of(object: &Object) -> u16 {
+pub(crate) fn events_of(object: &Object) -> u16 {
     match object {
-        Object::File(file) => {
-            if let Some(end) = file.pipe_end() {
-                end.events()
-            } else if let Some(socket) = file.socket() {
-                socket.events()
-            } else if let Some(socket) = file.inet() {
-                socket.events()
-            } else if let Some(handle) = file.tty_handle() {
-                handle.events()
-            } else if file.is_kmsg() {
-                crate::fs::kmsg::events(file) | WRITABLE
-            } else if file.is_keyboard() {
-                crate::fs::keyboard::events(file)
-            } else if file.is_mouse() {
-                crate::fs::mouse::events(file)
-            } else if file.fuse_channel().is_some() {
-                crate::fs::fuse::events(file)
-            } else if file.is_tunnel() {
-                crate::fs::tunnel::events(file)
-            } else if file.is_capture() {
-                crate::fs::capture::events(file)
-            } else if file.is_audio() {
-                crate::audio::events(file)
-            } else if file.is_crashes() {
-                crate::fs::crashes::events(file)
-            } else {
-                READABLE | WRITABLE
-            }
-        }
+        Object::File(file) => file_events(file),
         Object::Directory(_) => READABLE | WRITABLE,
-        Object::Notification(notification) => {
-            let (set, closed) = notification.peek();
-            (if set { READABLE } else { 0 }) | (if closed { HANG_UP } else { 0 })
-        }
+        Object::Notification(notification) => notification_events(notification),
+        Object::EventQueue(queue) => queue_events(queue),
         _ => 0,
     }
+}
+
+/// What `file` is ready for.
+fn file_events(file: &FileObject) -> u16 {
+    if let Some(events) = file_events_now(file) {
+        events
+    } else if let Some(socket) = file.inet() {
+        socket.events()
+    } else if file.is_kmsg() {
+        crate::fs::kmsg::events(file) | WRITABLE
+    } else if file.is_keyboard() {
+        crate::fs::keyboard::events(file)
+    } else if file.is_mouse() {
+        crate::fs::mouse::events(file)
+    } else if file.fuse_channel().is_some() {
+        crate::fs::fuse::events(file)
+    } else if file.is_tunnel() {
+        crate::fs::tunnel::events(file)
+    } else if file.is_capture() {
+        crate::fs::capture::events(file)
+    } else if file.is_audio() {
+        crate::audio::events(file)
+    } else if file.is_crashes() {
+        crate::fs::crashes::events(file)
+    } else {
+        READABLE | WRITABLE
+    }
+}
+
+/// What `file` is ready for, if a look finds it without waiting for a
+/// lock: a pipe's end, a Unix socket and a terminal's side keep it in
+/// atomics and behind spin locks ([`FileObject::polls_now`]), and a file
+/// or directory of a filesystem is always ready. `None` for every other
+/// kind, whose look may wait for a lock (a network socket's, an audio
+/// output's) and so must not be done with a capability space locked
+/// ([`look_space`]).
+fn file_events_now(file: &FileObject) -> Option<u16> {
+    if file.is_special() { file.at.node.poll_events() } else { Some(READABLE | WRITABLE) }
+}
+
+/// What `notification` is ready for: readable while bits are set.
+fn notification_events(notification: &Notification) -> u16 {
+    let (set, closed) = notification.peek();
+    (if set { READABLE } else { 0 }) | (if closed { HANG_UP } else { 0 })
+}
+
+/// What `queue` is ready for: readable while a watch waits for a look,
+/// though the look may find it no longer ready.
+fn queue_events(queue: &EventQueue) -> u16 {
+    if queue.has_queued() { READABLE } else { 0 }
+}
+
+/// What an object borrowed from a locked space is ready for, if a look
+/// finds it without waiting for a lock ([`file_events_now`]).
+fn peeked_events(peeked: Peeked<'_>) -> Option<u16> {
+    Some(match peeked {
+        Peeked::Empty => INVALID,
+        Peeked::Ready => READABLE | WRITABLE,
+        Peeked::File(file) => return file.at.node.poll_events(),
+        Peeked::Notification(notification) => notification_events(notification),
+        Peeked::EventQueue(queue) => queue_events(queue),
+        Peeked::Later => return None,
+        Peeked::Other => 0,
+    })
 }
 
 /// Looks at every entry's slot, writing the events found in `found`;
 /// returns how many found any.
 fn look(cspace: SpaceId, base: u32, entries: &[u8], found: &mut [u16]) -> u32 {
+    if found.len() > objects::CACHED {
+        return look_space(cspace, base, entries, found);
+    }
     let mut ready = 0;
     for (entry, found) in entries_of(entries).zip(found.iter_mut()) {
         let (fd, events) = entry_of(*entry);
         *found = if fd < 0 {
             0
         } else {
-            match base.checked_add(fd as u32) {
+            match slot_of(base, fd) {
                 Some(slot) => slot_events(cspace, slot, events),
                 None => INVALID,
             }
@@ -259,6 +386,100 @@ fn look(cspace: SpaceId, base: u32, entries: &[u8], found: &mut [u16]) -> u32 {
         ready += u32::from(*found != 0);
     }
     ready
+}
+
+/// How many objects whose look waits for a lock [`look_space`] holds at a
+/// time, to look at once the space's lock is let go.
+const LATER: usize = 8;
+
+/// [`look`], for more entries than a CPU's capability cache holds, which
+/// would miss on most of them and take the space's lock for each (ADR
+/// 0354). The lock is taken once, and each entry's object borrowed from
+/// it ([`objects::peek`]), with neither a lock nor a reference of its own.
+/// An object whose look may wait for a lock ([`file_events_now`]) is held
+/// instead, up to [`LATER`] of them; then the space's lock goes while they
+/// are looked at, and is taken again for the entries after them.
+fn look_space(cspace: SpaceId, base: u32, entries: &[u8], found: &mut [u16]) -> u32 {
+    let entries = entries_of(entries).as_slice();
+    let mut next = 0;
+    while next < found.len() {
+        let mut later: [Option<(usize, Object)>; LATER] = [const { None }; LATER];
+        let looked = caps::in_space(cspace, |space| {
+            let mut held = 0;
+            while next < found.len() && held < LATER {
+                let (fd, events) = entry_of(entries[next]);
+                found[next] = if fd < 0 {
+                    0
+                } else if let Some(slot) = slot_of(base, fd) {
+                    let at = SlotRef::new(cspace, slot);
+                    match peeked_events(objects::peek(space, at)) {
+                        Some(found) => found & (events | ALWAYS),
+                        None => match objects::find_locked(space, at) {
+                            Some(object) => {
+                                later[held] = Some((next, object));
+                                held += 1;
+                                0
+                            }
+                            None => INVALID,
+                        },
+                    }
+                } else {
+                    INVALID
+                };
+                next += 1;
+            }
+        });
+        if looked.is_err() {
+            // The space has gone with its process: no slot holds anything.
+            for (entry, found) in entries[next..].iter().zip(&mut found[next..]) {
+                *found = if entry_of(*entry).0 < 0 { 0 } else { INVALID };
+            }
+            break;
+        }
+        for (at, object) in later.iter().flatten() {
+            let (_, events) = entry_of(entries[*at]);
+            found[*at] = events_of(object) & (events | ALWAYS);
+        }
+    }
+    found.iter().map(|&found| u32::from(found != 0)).sum()
+}
+
+/// Holds in `held` the object each entry's slot names, for a poll that
+/// waits, writing INVALID in `found` for each slot emptied since the first
+/// look; returns how many were. More entries than a CPU's capability cache
+/// holds are found with their space's lock taken once ([`look_space`]).
+fn hold(
+    cspace: SpaceId,
+    base: u32,
+    entries: &[u8],
+    held: &mut [Option<Object>],
+    found: &mut [u16],
+) -> u32 {
+    let many = found.len() > objects::CACHED;
+    let mut each = |find: &mut dyn FnMut(u32) -> Option<Object>| {
+        let mut emptied = 0;
+        for ((entry, held), found) in entries_of(entries).zip(held.iter_mut()).zip(found.iter_mut())
+        {
+            let (fd, _) = entry_of(*entry);
+            if fd < 0 {
+                continue;
+            }
+            *held = slot_of(base, fd).and_then(&mut *find);
+            if held.is_none() {
+                *found = INVALID;
+                emptied += 1;
+            }
+        }
+        emptied
+    };
+    if !many {
+        return each(&mut |slot| objects::find_object(cspace, slot));
+    }
+    caps::in_space(cspace, |space| {
+        each(&mut |slot| objects::find_locked(space, SlotRef::new(cspace, slot)))
+    })
+    // The space has gone with its process: no slot holds anything.
+    .unwrap_or_else(|_| each(&mut |_| None))
 }
 
 /// As [`look`], at the objects `held` for the entries (none for one left
@@ -355,23 +576,9 @@ fn wait_ready(
         }
         &mut held_heap
     };
-    let mut ready = 0;
-    for ((entry, held), found) in entries_of(entries).zip(held.iter_mut()).zip(found.iter_mut()) {
-        let (fd, _) = entry_of(*entry);
-        if fd < 0 {
-            continue;
-        }
-        let object =
-            a.base.checked_add(fd as u32).and_then(|slot| objects::find_object(cspace, slot));
-        if object.is_none() {
-            // Emptied since the first look.
-            *found = INVALID;
-            ready += 1;
-        }
-        *held = object;
-    }
-    if ready > 0 {
-        return Ok(ready);
+    let emptied = hold(cspace, a.base, entries, held, found);
+    if emptied > 0 {
+        return Ok(emptied);
     }
     let masked = a.flags.contains(PollFlags::MASK);
     if masked {

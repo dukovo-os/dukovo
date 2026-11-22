@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# micro, a text editor for the terminal whose keys are those of other
+# programs (Ctrl-S saves, Ctrl-Q quits, the mouse selects): a bundle of the
+# Dukovo catalog, not of the image (ADR 0370), built with Go for Radix (ADR
+# 0600). Its command runs with the access of whoever runs it, as
+# command-line tools do. Its clipboard is its own: Dukovo has no display
+# server for it to share one with. It does not notice a file another
+# program changes while it is open, as Radix's event queue does not watch
+# files (ADR 0353).
+name = "micro"
+version = "2.0.15"
+summary = "a text editor for the terminal, with the keys other programs use"
+license = "MIT"
+homepage = "https://micro-editor.github.io"
+depends = ["go", "go-modules"]
+
+[source]
+git = "https://github.com/zyedidia/micro.git"
+commit = "6a62575bcfdf4965f187eedafceb3400316e612b"
+tag = "v2.0.15"
+
+[bundle]
+id = "io.github.zyedidia.micro"
+name = "micro"
+commands = ["micro"]

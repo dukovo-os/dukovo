@@ -74,8 +74,10 @@ cd "$PORT_BUILD/radix"
 #   functions through it;
 # - the C library's headers have no <sys/epoll.h> and no <sys/signalfd.h>,
 #   and Radix has neither call (radix-posix(7)); configure takes them if
-#   they come. The wait on events (waiteventset.c) then uses poll(2) and
-#   the self-pipe, as it does on a system without them;
+#   they come. Radix's kqueue(2) has no EVFILT_SIGNAL or EVFILT_PROC,
+#   which the wait on events (waiteventset.c) uses with it, so configure
+#   is told there is no kqueue. The wait then uses poll(2) and the
+#   self-pipe, as it does on a system without them;
 # - nothing here for sync_file_range: the C library does not have it, so
 #   configure leaves it out and the settings *_flush_after are 0 as on
 #   any system without it. posix_fadvise(2) is there and checks its
@@ -109,7 +111,7 @@ cd "$PORT_BUILD/radix"
 LDFLAGS_EX="-dynamic -Wl,-rpath,'\$\$ORIGIN/../lib'" \
 	LDFLAGS_SL="-Wl,-rpath,'\$\$ORIGIN/..' -Wl,--exclude-libs=libssl.a -Wl,--exclude-libs=libcrypto.a" \
 	pgac_cv_prog_cc_LDFLAGS_EX_BE__Wl___export_dynamic=yes \
-	ac_cv_header_sys_epoll_h=no ac_cv_header_sys_signalfd_h=no \
+	ac_cv_header_sys_epoll_h=no ac_cv_header_sys_signalfd_h=no ac_cv_func_kqueue=no \
 	ac_cv_header_execinfo_h=no ac_cv_func_backtrace_symbols=no \
 	PREFIX="$prefix" \
 	x86_64-radix-configure "$PORT_SRC" --with-template=linux \

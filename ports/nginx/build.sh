@@ -10,10 +10,12 @@
 # nginx's configure is its own, not Autoconf's: patch 0001 lets it
 # configure a cross build (NGX_CROSS=yes), and --crossbuild names a
 # system it has no file of, so it builds as for a POSIX system, with
-# poll; select is left out, so that nginx does not choose it. PCRE2 is
-# built here from its sources, as a static library, and OpenSSL's
-# libraries come from the openssl port, which keeps them for bundles in
-# its folder beside its stamp.
+# poll; select is left out, so that nginx does not choose it, and so is
+# kqueue (NGX_KQUEUE_CHECKED), whose module reads the bytes each event
+# says are waiting, which Radix's kqueue(2) does not give (radix-posix(7)).
+# PCRE2 is built here from its sources, as a static library, and
+# OpenSSL's libraries come from the openssl port, which keeps them for
+# bundles in its folder beside its stamp.
 set -eu
 
 openssl="$PORT_INFO/../openssl/for-bundles"
@@ -49,7 +51,7 @@ id=org.nginx.nginx
 home="/shared/services/$id/nginx"
 live=/system/live/services/nginx
 cd "$PORT_SRC"
-NGX_CROSS=yes CC="$CC" ./auto/configure --crossbuild=Radix::x86_64 \
+NGX_CROSS=yes NGX_KQUEUE_CHECKED=YES CC="$CC" ./auto/configure --crossbuild=Radix::x86_64 \
 	--builddir="$PORT_BUILD/objs" \
 	--prefix="/applications/$id" --sbin-path="/applications/$id/bin/nginx" \
 	--conf-path="$home/conf/nginx.conf" --error-log-path=stderr \

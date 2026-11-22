@@ -93,6 +93,15 @@ udftools, UDFclient and genisoimage make and fill the UDF volumes Radix's
 UDF tests read. Fedora and Arch Linux have no UDFclient package: build it
 from <https://www.13thmonkey.org/udfclient/>, or test in the container.
 
+The Go toolchain, which builds programs in Go for Radix, is built from
+source by `./ob ports` (the `go` port), and only a release of Go builds Go.
+`ob` downloads Go's own toolchain module for the release the port pins (about
+75 MB), checks its size and SHA-256, and unpacks it once into
+`target/ports/sources/`. To build without the download, set
+`GOROOT_BOOTSTRAP` to the tree of a Go 1.24.6 or later that you have, such
+as a distribution's `golang` package (`go env GOROOT` prints it): `ob` checks
+its version and uses it.
+
 Debian 12 and Ubuntu 22.04 (Linux Mint 21) have no `rustup` package and
 no Clang 20: install rustup from <https://rustup.rs> and Clang 20 from
 LLVM's packages at <https://apt.llvm.org>, or build in the container.
@@ -126,7 +135,7 @@ found and ends like this:
 [    0.351867]   node 0 DMA32  0x000000100000-0x00003fedbfff  1006 MiB managed,  1006 MiB free,   4 MiB reserve
 [    0.383220] Scheduler: EEVDF fair class (3 ms slices) and FIFO and round-robin real-time classes; timer APIC one-shot, idle with HLT; extended state XSAVEOPT on every switch: x87, SSE, AVX, PKRU; 2696-byte areas
 [    0.419834] Lock checker: off (the lockdep flag turns it on)
-[    0.445393] Capabilities: ready; 25 object kinds, 15 rights, spaces of up to 65536 slots, derivations up to 64 deep
+[    0.445393] Capabilities: ready; 26 object kinds, 15 rights, spaces of up to 65536 slots, derivations up to 64 deep
 [    0.469304] User mode: SYSCALL/SYSRET entry, user half 0x10000-0x7ffffffff000; SMEP on, SMAP on (lifted for user copies only)
 [    0.494239] Files: the root is a tmpfs; Spark mounts the rest
 ...
@@ -216,6 +225,12 @@ against placeholders of its hardware layer, and `./ob test riscv` boots a
 small RISC-V program on QEMU's `virt` machine (it needs QEMU's RISC-V
 emulator, the `qemu-system-misc` package), so that nothing x86-only slips
 into the kernel's common code; CI runs that too.
+
+`./ob test go-suite` runs Go's own tests of its standard library on
+Dukovo, with the `go` command of the Go bundle, in a machine larger than
+the boot tests': about 10 minutes with KVM. `./ob test` leaves it out, and
+CI runs it for changes to Go (ADR 0358); its log is
+`out/test/go-suite.log`.
 
 Tests that pull cables, cut power or need real machines are the Dukovo
 Lab's: `./ob lab run --all` runs them on QEMU (see [Lab tests](lab.md)).

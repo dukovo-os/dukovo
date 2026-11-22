@@ -22,7 +22,9 @@
 //! - [`exec`]: the block of arguments and environment `exec` takes, `#!`
 //!   lines, and the System V initial stack a program starts with;
 //! - [`ipc`]: System V IPC's permissions, keys and numbers, and what a
-//!   semaphore operation does (ADR 0490).
+//!   semaphore operation does (ADR 0490);
+//! - [`watch`]: what a change does to an event queue's watch, and what a
+//!   look at one reports, as kqueue's (ADR 0353).
 //!
 //! The kernel (`radix::user::posix`) holds a [`tree::Tree`] behind a lock,
 //! keeps a [`signal::Actions`] in each process and a [`signal::Pending`]
@@ -41,6 +43,7 @@ pub mod ipc;
 pub mod signal;
 pub mod status;
 pub mod tree;
+pub mod watch;
 
 #[cfg(test)]
 mod tests;

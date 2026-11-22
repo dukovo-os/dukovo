@@ -145,6 +145,10 @@ int Sysdeps<VmMap>::operator()(void *hint, size_t size, int prot, int flags, int
 		void **window) {
 	if(!size)
 		return EINVAL;
+	// More than all the addresses a program has, which the kernel calls an
+	// invalid size: Linux's and POSIX's ENOMEM.
+	if(size > RADIX_ADDRESS_SPACE_USER_TOP)
+		return ENOMEM;
 	// Linux's MAP_HUGETLB, which <sys/mman.h> has only with mlibc's Linux
 	// interfaces: Radix has no huge pages to give, so the answers are
 	// Linux's when none is reserved, ENOMEM for memory and EINVAL for a

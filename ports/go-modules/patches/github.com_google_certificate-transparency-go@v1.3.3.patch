@@ -1,0 +1,52 @@
+SPDX-FileCopyrightText: The Go Authors
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0
+
+The roots of Radix are one file of PEM certificates,
+/system/resources/certificates/ca-certificates.crt, as Go's own
+crypto/x509 reads them on Radix; root_unix.go's folders are Linux's and
+the BSDs'.
+
+diff -ruN a/github.com_google_certificate-transparency-go@v1.3.3/x509/root_radix.go b/github.com_google_certificate-transparency-go@v1.3.3/x509/root_radix.go
+--- a/github.com_google_certificate-transparency-go@v1.3.3/x509/root_radix.go
++++ b/github.com_google_certificate-transparency-go@v1.3.3/x509/root_radix.go
+@@ -0,0 +1,39 @@
++// Copyright 2026 The Dukovo contributors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package x509
++
++import (
++	"os"
++)
++
++// Radix keeps its roots in one file of PEM certificates and has no folder of
++// them. This file takes the place of root_unix.go, whose certDirectories name
++// Linux and BSD locations.
++var certFiles = []string{
++	"/system/resources/certificates/ca-certificates.crt",
++}
++
++func (c *Certificate) systemVerify(opts *VerifyOptions) (chains [][]*Certificate, err error) {
++	return nil, nil
++}
++
++func loadSystemRoots() (*CertPool, error) {
++	roots := NewCertPool()
++	var bestErr error
++	for _, file := range certFiles {
++		data, err := os.ReadFile(file)
++		if err == nil {
++			roots.AppendCertsFromPEM(data)
++			return roots, nil
++		}
++		if bestErr == nil || (os.IsNotExist(bestErr) && !os.IsNotExist(err)) {
++			bestErr = err
++		}
++	}
++	if bestErr == nil {
++		return roots, nil
++	}
++	return nil, bestErr
++}

@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "accounts"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "argon2 0.5.3",
  "base64ct",
@@ -15,7 +15,7 @@ dependencies = [
 
 [[package]]
 name = "acl"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "libc",
 ]
@@ -289,7 +289,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "audio"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "md-5",
 ]
@@ -603,7 +603,7 @@ dependencies = [
 
 [[package]]
 name = "catalog-repo"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "dkv",
  "manifest",
@@ -797,7 +797,7 @@ dependencies = [
 
 [[package]]
 name = "consoled"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "accounts",
  "keymap",
@@ -1348,7 +1348,7 @@ dependencies = [
 
 [[package]]
 name = "disk"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "radix-block",
  "radix-btrfs",
@@ -1374,7 +1374,7 @@ dependencies = [
 
 [[package]]
 name = "dkv"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "blake2 0.10.6",
  "ed25519-compact",
@@ -1397,7 +1397,7 @@ dependencies = [
 
 [[package]]
 name = "dukovo-install"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "accounts",
  "disk",
@@ -1750,7 +1750,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "fuse-test"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "fuser",
  "libc",
@@ -1932,7 +1932,7 @@ dependencies = [
 
 [[package]]
 name = "git-https-test"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "rustls",
 ]
@@ -2649,7 +2649,7 @@ dependencies = [
 
 [[package]]
 name = "kerberos"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "aes 0.9.3",
  "hmac 0.13.0",
@@ -2661,7 +2661,7 @@ dependencies = [
 
 [[package]]
 name = "keymap"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "radix-abi",
 ]
@@ -2763,7 +2763,7 @@ checksum = "0ca88d725a0a943b096803bd34e73a4437208b6077654cc4ecb2947a5f91618d"
 
 [[package]]
 name = "manifest"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "radix-abi",
  "schemars 1.2.3",
@@ -2887,21 +2887,21 @@ dependencies = [
 
 [[package]]
 name = "monitoring-test"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "rustls",
 ]
 
 [[package]]
 name = "netproto"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "aes-siv",
 ]
 
 [[package]]
 name = "netservices-test"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "netproto",
  "ring",
@@ -2910,7 +2910,7 @@ dependencies = [
 
 [[package]]
 name = "nfs"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "accounts",
  "fuser",
@@ -2922,7 +2922,7 @@ dependencies = [
 
 [[package]]
 name = "nfsd"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "accounts",
  "kerberos",
@@ -2971,7 +2971,7 @@ dependencies = [
 
 [[package]]
 name = "nukesh"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "crossterm",
  "indexmap 2.14.2",
@@ -3547,14 +3547,14 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "radix-abi"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "ridlc",
 ]
 
 [[package]]
 name = "radix-bitlocker"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "aes 0.8.4",
  "ccm 0.5.0",
@@ -3564,7 +3564,7 @@ dependencies = [
 
 [[package]]
 name = "radix-block"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "radix-hw",
  "radix-mm",
@@ -3573,11 +3573,11 @@ dependencies = [
 
 [[package]]
 name = "radix-bootfs"
-version = "0.16.0"
+version = "0.17.0"
 
 [[package]]
 name = "radix-btrfs"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "radix-block",
  "radix-hw",
@@ -3587,7 +3587,7 @@ dependencies = [
 
 [[package]]
 name = "radix-fat"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "radix-block",
  "radix-hw",
@@ -3597,7 +3597,7 @@ dependencies = [
 
 [[package]]
 name = "radix-fbcon"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "radix-hal",
  "radix-klog",
@@ -3605,7 +3605,7 @@ dependencies = [
 
 [[package]]
 name = "radix-hal"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "radix-hw",
  "radix-pstate",
@@ -3615,11 +3615,11 @@ dependencies = [
 
 [[package]]
 name = "radix-hw"
-version = "0.16.0"
+version = "0.17.0"
 
 [[package]]
 name = "radix-intel-net"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "radix-hw",
  "radix-nic",
@@ -3627,7 +3627,7 @@ dependencies = [
 
 [[package]]
 name = "radix-iso9660"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "radix-block",
  "radix-hw",
@@ -3637,28 +3637,28 @@ dependencies = [
 
 [[package]]
 name = "radix-klog"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "radix-sync",
 ]
 
 [[package]]
 name = "radix-mm"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "radix-sync",
 ]
 
 [[package]]
 name = "radix-nic"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "radix-hw",
 ]
 
 [[package]]
 name = "radix-ntfs"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "radix-block",
  "radix-hw",
@@ -3668,30 +3668,30 @@ dependencies = [
 
 [[package]]
 name = "radix-pstate"
-version = "0.16.0"
+version = "0.17.0"
 
 [[package]]
 name = "radix-sensors"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "radix-hw",
 ]
 
 [[package]]
 name = "radix-smbios"
-version = "0.16.0"
+version = "0.17.0"
 
 [[package]]
 name = "radix-spd"
-version = "0.16.0"
+version = "0.17.0"
 
 [[package]]
 name = "radix-sync"
-version = "0.16.0"
+version = "0.17.0"
 
 [[package]]
 name = "radix-udf"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "radix-block",
  "radix-hw",
@@ -3701,7 +3701,7 @@ dependencies = [
 
 [[package]]
 name = "radix-vfs"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "radix-block",
  "radix-bootfs",
@@ -3711,7 +3711,7 @@ dependencies = [
 
 [[package]]
 name = "radix-vmware"
-version = "0.16.0"
+version = "0.17.0"
 
 [[package]]
 name = "rand"
@@ -3935,7 +3935,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "report-test"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "serde_json",
 ]
@@ -3952,7 +3952,7 @@ dependencies = [
 
 [[package]]
 name = "ridlc"
-version = "0.16.0"
+version = "0.17.0"
 
 [[package]]
 name = "ring"
@@ -4738,7 +4738,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "slots"
-version = "0.16.0"
+version = "0.17.0"
 
 [[package]]
 name = "smallvec"
@@ -4748,7 +4748,7 @@ checksum = "5b3dc8af474f516a851ff4bd12db780f948b9250ad37211e4eec0bccea54e01b"
 
 [[package]]
 name = "smb"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "fuser",
  "libc",
@@ -4787,7 +4787,7 @@ dependencies = [
 
 [[package]]
 name = "smbd"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "accounts",
  "acl",
@@ -4836,7 +4836,7 @@ dependencies = [
 
 [[package]]
 name = "spark-api"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4869,7 +4869,7 @@ checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
 
 [[package]]
 name = "sqlite-test"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "rusqlite",
 ]
@@ -4933,7 +4933,7 @@ dependencies = [
 
 [[package]]
 name = "sshd"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "accounts",
  "libc",
@@ -4955,7 +4955,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "std-test"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "libc",
  "mio",
@@ -5038,7 +5038,7 @@ dependencies = [
 
 [[package]]
 name = "system-release"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "httparse",
  "radix-bootfs",
@@ -5051,7 +5051,7 @@ dependencies = [
 
 [[package]]
 name = "systools"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "accounts",
  "acl",
@@ -5218,7 +5218,7 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tls-test"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "ring",
  "rustls",
@@ -5407,7 +5407,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tuf"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "base64 0.22.1",
  "ring",

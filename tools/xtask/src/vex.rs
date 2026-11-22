@@ -10,10 +10,11 @@
 //! A statement names the advisory, by its ID and any aliases, and each
 //! product it is about, by the package URL the scan gives the part:
 //! `pkg:generic/<port>@<version>` for a port,
-//! `pkg:generic/<repository>@<commit>` for an extra source, and
-//! `pkg:cargo/<crate>@<version>` for a crate. The version is part of the
-//! name, so a statement lapses when the part moves to another version,
-//! and the advisory is weighed again then. A statement whose status is
+//! `pkg:generic/<repository>@<commit>` for an extra source,
+//! `pkg:cargo/<crate>@<version>` for a crate, and
+//! `pkg:golang/<module path>@<version>` for a Go module. The version is
+//! part of the name, so a statement lapses when the part moves to another
+//! version, and the advisory is weighed again then. A statement whose status is
 //! `not_affected` or `fixed` clears the advisory in its products; one that
 //! is `affected` or `under_investigation` clears nothing. Each says why,
 //! in `status_notes` or `impact_statement`, which the scan's issue quotes.
@@ -152,6 +153,14 @@ pub fn port_product(name: &str, version: &str) -> String {
 /// The package URL the scan gives a crate of crates.io.
 pub fn crate_product(name: &str, version: &str) -> String {
     format!("pkg:cargo/{}@{}", encode(name), encode(version))
+}
+
+/// The package URL the scan gives a Go module, or `stdlib`, Go's standard
+/// library: the parts of its path are those of a package URL's namespace
+/// and name, set apart by `/`, and the version is Go's, with its `v`.
+pub fn go_product(path: &str, version: &str) -> String {
+    let path: Vec<String> = path.split('/').map(encode).collect();
+    format!("pkg:golang/{}@{}", path.join("/"), encode(version))
 }
 
 /// Text as one part of a package URL: what is not a letter, a digit or
@@ -322,7 +331,8 @@ fn products(products: Option<&Value>) -> std::result::Result<Vec<String>, String
 
 /// Whether `id` is a package URL of a type, a name and a version, written
 /// as the scan writes them: `pkg:<type>/<name>@<version>`, of letters,
-/// digits, `-._~` and percent-encoded bytes.
+/// digits, `-._~` and percent-encoded bytes, the name of parts set apart by
+/// `/`, as a Go module's is.
 fn product_named(id: &str) -> bool {
     let Some((kind, rest)) = id.strip_prefix("pkg:").and_then(|rest| rest.split_once('/')) else {
         return false;
@@ -333,7 +343,10 @@ fn product_named(id: &str) -> bool {
     let part = |text: &str| {
         !text.is_empty() && text.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~%".contains(&b))
     };
-    !kind.is_empty() && kind.bytes().all(|b| b.is_ascii_lowercase()) && part(name) && part(version)
+    !kind.is_empty()
+        && kind.bytes().all(|b| b.is_ascii_lowercase())
+        && name.split('/').all(part)
+        && part(version)
 }
 
 #[cfg(test)]
@@ -419,7 +432,21 @@ mod tests {
     fn products_are_named_as_the_scan_names_them() {
         assert_eq!(port_product("espeak-ng", "1.52.0"), "pkg:generic/espeak-ng@1.52.0");
         assert_eq!(crate_product("rsa", "0.9.8+wasi"), "pkg:cargo/rsa@0.9.8%2Bwasi");
-        for id in ["pkg:generic/espeak-ng@1.52.0", "pkg:cargo/rsa@0.9.8%2Bwasi"] {
+        assert_eq!(
+            go_product("golang.org/x/text", "v0.22.0"),
+            "pkg:golang/golang.org/x/text@v0.22.0"
+        );
+        assert_eq!(go_product("stdlib", "1.27.4"), "pkg:golang/stdlib@1.27.4");
+        assert_eq!(
+            go_product("github.com/blang/semver", "v3.5.1+incompatible"),
+            "pkg:golang/github.com/blang/semver@v3.5.1%2Bincompatible"
+        );
+        for id in [
+            "pkg:generic/espeak-ng@1.52.0",
+            "pkg:cargo/rsa@0.9.8%2Bwasi",
+            "pkg:golang/golang.org/x/text@v0.22.0",
+            "pkg:golang/github.com/blang/semver@v3.5.1%2Bincompatible",
+        ] {
             assert!(product_named(id), "{id}");
         }
         for id in [
@@ -429,6 +456,9 @@ mod tests {
             "pkg:Generic/x@1",
             "pkg:generic/x@",
             "pkg:generic/x y@1",
+            "pkg:golang/golang.org//x@v1",
+            "pkg:golang//x@v1",
+            "pkg:golang/x/@v1",
         ] {
             assert!(!product_named(id), "{id}");
         }

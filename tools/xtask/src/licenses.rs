@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::ports::{Port, Ports, Toolchain};
+use crate::ports::{self, LinkedModule, Port, Ports, Recipe, Toolchain};
 use crate::process::{self, step};
 use crate::{Context, Ctx, Error, Result, VERSION, kernel, patched, userspace};
 
@@ -134,7 +134,10 @@ const KEPT_NOTICES: &[(&str, &str, &str)] =
     &[("boringtun", "0.7.1", "userspace/programs/systools/notices/LICENSE-boringtun.md")];
 
 /// Names of the files in a source tree that hold license terms or notices.
-const NOTICE_PREFIXES: &[&str] = &["LICENSE", "LICENCE", "COPYING", "COPYRIGHT", "NOTICE"];
+/// PATENTS is the patent grant that Go's tree and the golang.org/x modules
+/// keep beside their LICENSE, which is a grant to whoever gets the code.
+const NOTICE_PREFIXES: &[&str] =
+    &["LICENSE", "LICENCE", "COPYING", "COPYRIGHT", "NOTICE", "PATENTS"];
 
 /// Where in rust-src each crate of `-Zbuild-std` lives.
 const SYSROOT_CRATES: &[(&str, &str)] = &[
@@ -194,8 +197,10 @@ impl Package {
         spdx_id(&format!("{}-{}", self.name, self.version))
     }
 
+    /// Where its notices go among a bundle's or an image's: a Go module's
+    /// path has slashes, which would make a folder inside a folder.
     fn notice_dir(&self) -> String {
-        format!("notices/{}-{}", self.name, self.version)
+        format!("notices/{}-{}", self.name.replace('/', "_"), self.version)
     }
 
     /// Its package URL, by which advisories name it (ADR 0389): a crate's
@@ -312,7 +317,10 @@ pub fn install(ctx: &Ctx, staging: &Path, extras: &Extras<'_>) -> Result<String>
 /// recombination operators of the genetic query optimizer, which SPDX has
 /// no identifiers for, and the double metaphone code of fuzzystrmatch
 /// under the terms of Perl itself: the Artistic License of Perl 5 or the
-/// GPL, of which the allow-list has the first.
+/// GPL, of which the allow-list has the first. lazygit's bundle (ADR 0600)
+/// links github.com/integrii/flaggy, which is under the Unlicense alone: it
+/// dedicates the code to the public domain, as CC0-1.0 does, which the
+/// ports' list allows.
 const BUNDLE_EXTRA_ALLOW: &[&str] = &[
     "MPL-2.0",
     "BSD-3-Clause WITH PCRE2-exception",
@@ -329,6 +337,7 @@ const BUNDLE_EXTRA_ALLOW: &[&str] = &[
     "Artistic-1.0-Perl",
     "LicenseRef-pg-dump-Warner",
     "LicenseRef-geqo-Whitley",
+    "Unlicense",
 ];
 
 /// What a bundle says of its licenses (ADR 0370): every component of the
@@ -870,12 +879,18 @@ fn declared_notices(dir: &Path) -> Result<Vec<PathBuf>> {
 
 /// The license and notice files at the top of a source tree, sorted.
 fn notice_files(dir: &Path) -> Vec<PathBuf> {
+    top_files(dir, NOTICE_PREFIXES)
+}
+
+/// The files at the top of a source tree whose names, in upper case, begin
+/// with one of `prefixes`, sorted.
+fn top_files(dir: &Path, prefixes: &[&str]) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
         .map(|entry| entry.path())
-        .filter(|path| path.is_file() && is_notice(path))
+        .filter(|path| path.is_file() && begins_with_one_of(path, prefixes))
         .collect();
     files.sort();
     files
@@ -905,10 +920,10 @@ fn notice_names(notices: &[PathBuf]) -> Vec<String> {
     names
 }
 
-fn is_notice(path: &Path) -> bool {
+fn begins_with_one_of(path: &Path, prefixes: &[&str]) -> bool {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
     let upper = name.to_ascii_uppercase();
-    NOTICE_PREFIXES.iter().any(|prefix| upper.starts_with(prefix))
+    prefixes.iter().any(|prefix| upper.starts_with(prefix))
 }
 
 /// Whether every crates.io crate the port `name` linked, as its
@@ -935,6 +950,193 @@ fn registry_dir(name: &str, version: &str) -> Option<PathBuf> {
         .flatten()
         .map(|index| index.path().join(format!("{name}-{version}")))
         .find(|dir| dir.is_dir())
+}
+
+/// Whether every module of Go's module proxy that the port `name` linked,
+/// as its `modules.txt` lists them, is unpacked in Go's module cache, where
+/// its license files are read from; true for a port that lists none.
+/// Building the port again fetches them. A `modules.txt` that cannot be
+/// read is reported where the licenses are read.
+pub fn go_modules_fetched(ctx: &Ctx, name: &str) -> bool {
+    let Ok(Some(linked)) = ports::go_modules_linked(ctx, name) else { return true };
+    linked.iter().all(|module| match module {
+        LinkedModule::Proxy { path, version } => {
+            ports::go_cached_module(ctx, path, version).is_dir()
+        }
+        LinkedModule::Patched { .. } => true,
+    })
+}
+
+/// The files of a Go module that state its license: those at the top of its
+/// folder whose names begin with one of these. A NOTICE file lists what a
+/// project keeps of others' work and grants nothing itself.
+const GO_LICENSE_PREFIXES: &[&str] = &["LICENSE", "LICENCE", "COPYING", "UNLICENSE"];
+
+/// The licenses [`go_license`] knows, in the order it lists those that a
+/// module's files state together.
+const GO_LICENSE_ORDER: &[&str] = &[
+    "Apache-2.0",
+    "MIT",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "ISC",
+    "0BSD",
+    "MPL-2.0",
+    "Unlicense",
+    "CC0-1.0",
+];
+
+/// The words that make a text, with its whitespace collapsed, a license:
+/// all of its phrases, in the case the license's text has them. 0BSD is
+/// ISC's grant without ISC's condition, so ISC is told by that condition
+/// and 0BSD by the sentence ending where ISC's goes on. The BSD licenses
+/// are told apart by [`bsd_license`].
+const GO_PHRASES: &[(&str, &[&str])] = &[
+    ("Apache-2.0", &["Apache License", "Version 2.0"]),
+    (
+        "MIT",
+        &[
+            "Permission is hereby granted, free of charge",
+            "The above copyright notice and this permission notice shall be included",
+        ],
+    ),
+    (
+        "ISC",
+        &[
+            "Permission to use, copy, modify, and/or distribute",
+            "provided that the above copyright notice and this permission notice appear in all copies",
+        ],
+    ),
+    (
+        "0BSD",
+        &[
+            "Permission to use, copy, modify, and/or distribute",
+            "with or without fee is hereby granted.",
+        ],
+    ),
+    ("MPL-2.0", &["Mozilla Public License", "2.0"]),
+    ("Unlicense", &["This is free and unencumbered software released into the public domain"]),
+    ("CC0-1.0", &["CC0 1.0 Universal"]),
+];
+
+/// Licenses that the files of a module linked into a program in Go must not
+/// name: the copyleft ones put terms on the whole program, which only a
+/// person can weigh, and the source-available ones limit what it may be
+/// used for. A module under one has its license given under `[go-licenses]`
+/// by a person who read its terms. Each is as it is said, with the words
+/// that name it, in lower case.
+const GO_REFUSED: &[(&str, &[&str])] = &[
+    (
+        "the GNU GPL, LGPL or AGPL",
+        &[
+            "gnu general public license",
+            "gnu lesser general public license",
+            "gnu library general public license",
+            "gnu affero general public license",
+            "gpl",
+        ],
+    ),
+    ("the Eclipse Public License", &["eclipse public license"]),
+    (
+        "the Common Development and Distribution License",
+        &["common development and distribution license", "cddl"],
+    ),
+    ("the Server Side Public License", &["server side public license", "sspl"]),
+    ("the Business Source License", &["business source license", "busl"]),
+    ("the Commons Clause", &["commons clause"]),
+    ("a Creative Commons ShareAlike license", &["attribution-sharealike", "cc by-sa", "cc-by-sa"]),
+];
+
+/// The sentence of the MPL-2.0 that names the GPL, LGPL and AGPL as the
+/// "Secondary Licenses" its code may also be distributed under: the text
+/// of the MPL-2.0 holds it, and the license is none of those.
+const MPL_SECONDARY_LICENSES: &str = "means either the GNU General Public License, Version 2.0, \
+    the GNU Lesser General Public License, Version 2.1, the GNU Affero General Public License, \
+    Version 3.0, or any later versions of those licenses.";
+
+/// The SPDX expression that the license files of the Go module unpacked in
+/// `dir` state, read by their words (see [`GO_PHRASES`]): a license for
+/// each that a file holds, joined with AND in the order of
+/// [`GO_LICENSE_ORDER`], since a file may carry a second license for code
+/// it copied.
+///
+/// # Errors
+///
+/// The reason, as a sentence about the module, why no license is read: it
+/// has no license file, none of its files states a license that is known,
+/// or one names a license a bundle does not take, or the advertising
+/// clause of the original BSD license.
+pub fn go_license(dir: &Path) -> Result<String, String> {
+    let files = top_files(dir, GO_LICENSE_PREFIXES);
+    if files.is_empty() {
+        return Err("it has no LICENSE, LICENCE, COPYING or UNLICENSE file".into());
+    }
+    let mut found = BTreeSet::new();
+    let mut names = Vec::new();
+    for file in &files {
+        let name = file.file_name().expect("a license file has a name").to_string_lossy();
+        let bytes = std::fs::read(file).map_err(|err| format!("{name} cannot be read: {err}"))?;
+        let text = String::from_utf8_lossy(&bytes).split_whitespace().collect::<Vec<_>>().join(" ");
+        found.extend(licenses_stated(&name, &text)?);
+        names.push(name.into_owned());
+    }
+    let ids: Vec<&str> = GO_LICENSE_ORDER.iter().copied().filter(|id| found.contains(id)).collect();
+    if ids.is_empty() {
+        return Err(format!(
+            "its license files ({}) hold none of {} in words that are known",
+            names.join(", "),
+            GO_LICENSE_ORDER.join(", ")
+        ));
+    }
+    Ok(ids.join(" AND "))
+}
+
+/// The licenses that the text of the license file `file` states, its
+/// whitespace collapsed; or why it is refused.
+fn licenses_stated(file: &str, text: &str) -> Result<Vec<&'static str>, String> {
+    let lower = text.replace(MPL_SECONDARY_LICENSES, "").to_lowercase();
+    for (refused, words) in GO_REFUSED {
+        if words.iter().any(|word| lower.contains(word)) {
+            return Err(format!("{file} names {refused}"));
+        }
+    }
+    let mut found: Vec<&str> = GO_PHRASES
+        .iter()
+        .filter(|(_, phrases)| phrases.iter().all(|phrase| text.contains(phrase)))
+        .map(|(id, _)| *id)
+        .collect();
+    if let Some(bsd) = bsd_license(file, text)? {
+        found.push(bsd);
+    }
+    Ok(found)
+}
+
+/// The BSD license that `text` states: with the clause that bars using the
+/// names of the authors to endorse what is made of the code, BSD-3-Clause,
+/// and without it, BSD-2-Clause. The original license's fourth clause, on
+/// advertising, is refused: it asks every advertisement of a product to
+/// credit the authors.
+fn bsd_license(file: &str, text: &str) -> Result<Option<&'static str>, String> {
+    if !text.contains("Redistribution and use in source and binary forms") {
+        return Ok(None);
+    }
+    if text.contains("advertising materials") {
+        return Err(format!("{file} has the BSD license's clause on advertising"));
+    }
+    if text.contains("endorse or promote products derived from") {
+        Ok(Some("BSD-3-Clause"))
+    } else {
+        Ok(Some("BSD-2-Clause"))
+    }
+}
+
+/// A Go module's notices: its license files, an UNLICENSE among them, and
+/// the other notice files at the top of its folder, sorted.
+fn go_notices(dir: &Path) -> Vec<PathBuf> {
+    let mut files = notice_files(dir);
+    files.extend(top_files(dir, &["UNLICENSE"]));
+    files.sort();
+    files
 }
 
 /// (name, version) to checksum, from a Cargo.lock.
@@ -1178,7 +1380,176 @@ fn port_packages(ctx: &Ctx, ports: &Ports, port: &Port, packages: &mut Vec<Packa
             packages.push(package);
         }
     }
+    go_packages(ctx, ports, port, packages)
+}
+
+/// A port in Go, which lists the modules its programs link in
+/// `modules.txt`: each of them, and Go's standard library and runtime,
+/// that every program carries; each added to `packages` unless it is there
+/// already.
+fn go_packages(ctx: &Ctx, ports: &Ports, port: &Port, packages: &mut Vec<Package>) -> Result<()> {
+    let linked = ports::go_modules_linked(ctx, &port.recipe.name)?;
+    go_module_packages(ctx, ports, port, linked.as_deref().unwrap_or_default(), packages)?;
+    if linked.is_none() {
+        return Ok(());
+    }
+    let name = ports::GO_PORT;
+    let Some(go) = ports.ports.iter().find(|p| p.recipe.name == name) else {
+        crate::bail!(
+            "port {}: its programs are in Go, and there is no port {name} to take the standard \
+             library from",
+            port.recipe.name
+        );
+    };
+    let mut standard = Vec::new();
+    port_packages(ctx, ports, go, &mut standard)?;
+    for package in standard {
+        if !packages.iter().any(|p| p.name == package.name && p.version == package.version) {
+            packages.push(package);
+        }
+    }
     Ok(())
+}
+
+/// The packages of the Go modules `linked`, which the programs of `port`
+/// link. The licenses that cannot be known are reported together.
+fn go_module_packages(
+    ctx: &Ctx,
+    ports: &Ports,
+    port: &Port,
+    linked: &[LinkedModule],
+    packages: &mut Vec<Package>,
+) -> Result<()> {
+    let recipe = &port.recipe;
+    let mut unread = Vec::new();
+    let mut proxied = Vec::new();
+    for module in linked {
+        let package = match module {
+            LinkedModule::Patched { folder, named } => {
+                patched_go_module(ports, port, folder, named)?
+            }
+            LinkedModule::Proxy { path, version } => {
+                proxied.push(path.as_str());
+                let dir = ports::go_cached_module(ctx, path, version);
+                if !dir.is_dir() {
+                    return Err(Error::new(format!(
+                        "port {}: Go module {path} {version}, which its programs link, is not in \
+                         {}",
+                        recipe.name,
+                        ports::go_module_cache(ctx).display()
+                    ))
+                    .hint(format!("build the port again: ./ob ports --rebuild {}", recipe.name)));
+                }
+                let license = match recipe.go_licenses.get(path) {
+                    Some(license) => Ok(license.clone()),
+                    None => go_license(&dir),
+                };
+                match license {
+                    Ok(license) => proxy_go_module(recipe, path, version, license, &dir),
+                    Err(why) => {
+                        unread.push(format!("{path} {version}: {why}"));
+                        continue;
+                    }
+                }
+            }
+        };
+        if !packages.iter().any(|p| p.name == package.name && p.version == package.version) {
+            packages.push(package);
+        }
+    }
+    if !unread.is_empty() {
+        return Err(Error::new(format!(
+            "port {}: the license of a Go module its programs link is not known:\n  {}",
+            recipe.name,
+            unread.join("\n  ")
+        ))
+        .hint(
+            "a recipe gives the license of a module whose files do not state it in known words \
+             under [go-licenses], with a comment saying where it is stated",
+        ));
+    }
+    if let Some(path) = recipe.go_licenses.keys().find(|path| !proxied.contains(&path.as_str())) {
+        return Err(Error::new(format!(
+            "port {}: [go-licenses] gives a license for {path}, which none of its programs links \
+             from Go's module proxy",
+            recipe.name
+        ))
+        .hint(format!(
+            "remove the line; a module patched by ports/{} has the license its recipe gives",
+            ports::GO_MODULES_PORT
+        )));
+    }
+    Ok(())
+}
+
+/// The package of a module the go-modules port patched for Radix, in the
+/// folder `folder`, which takes the place of the versions `named` of it
+/// that the programs of `port` name.
+fn patched_go_module(
+    ports: &Ports,
+    port: &Port,
+    folder: &str,
+    named: &BTreeSet<String>,
+) -> Result<Package> {
+    let recipe = &port.recipe;
+    let patching = ports::GO_MODULES_PORT;
+    let Some(patched) = ports.ports.iter().find(|p| p.recipe.name == patching) else {
+        crate::bail!(
+            "port {}: its programs link {folder}, and there is no port {patching}",
+            recipe.name
+        );
+    };
+    let modules = patched.recipe.modules.iter().zip(&patched.modules);
+    let Some((module, tree)) = modules.into_iter().find(|(module, _)| module.dir() == folder)
+    else {
+        return Err(Error::new(format!(
+            "port {}: its programs link {folder}, which ports/{patching} does not patch",
+            recipe.name
+        ))
+        .hint(format!("build the port again: ./ob ports --rebuild {}", recipe.name)));
+    };
+    let named: Vec<&str> = named.iter().map(String::as_str).collect();
+    Ok(Package {
+        name: module.path.clone(),
+        version: module.version.clone(),
+        license: module.license.clone(),
+        area: Area::Port,
+        download: module.url(),
+        sha256: Some(module.sha256.clone()),
+        notices: go_notices(tree),
+        comment: format!(
+            "A Go module from Go's module proxy, patched for Radix by ports/{patching}. It \
+             stands in for the version of it that {name} {version} names ({}), and is built into \
+             {name} {version} by ports/{name} of Dukovo.",
+            named.join(", "),
+            name = recipe.name,
+            version = recipe.version,
+        ),
+    })
+}
+
+/// The package of a module of Go's module proxy that the programs of the
+/// port `recipe` link, unpacked in `dir`.
+fn proxy_go_module(
+    recipe: &Recipe,
+    path: &str,
+    version: &str,
+    license: String,
+    dir: &Path,
+) -> Package {
+    Package {
+        name: path.to_string(),
+        version: version.to_string(),
+        license,
+        area: Area::Port,
+        download: ports::go_proxy_url(path, version),
+        sha256: None,
+        notices: go_notices(dir),
+        comment: format!(
+            "A Go module from Go's module proxy, built into {} {} by ports/{} of Dukovo.",
+            recipe.name, recipe.version, recipe.name
+        ),
+    }
 }
 
 /// GRUB, which `./ob` builds from the GNU project's pinned tarball for
@@ -1766,6 +2137,623 @@ mod tests {
         assert_eq!(rfc3339(0), "1970-01-01T00:00:00Z");
         assert_eq!(rfc3339(1_792_537_558), "2026-10-20T23:05:58Z");
         assert_eq!(rfc3339(951_782_400), "2000-02-29T00:00:00Z");
+    }
+
+    /// A folder under the temporary folder, empty.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ob-licenses-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The folder `name` in `root`, with `files` in it, each a name and a text.
+    fn folder_with(root: &Path, name: &str, files: &[(&str, &str)]) -> PathBuf {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (file, text) in files {
+            std::fs::write(dir.join(file), text).unwrap();
+        }
+        dir
+    }
+
+    /// The text of the license `id`, as the repository keeps it.
+    fn text_of(id: &str) -> String {
+        std::fs::read_to_string(text_source(&root(), id)).unwrap()
+    }
+
+    #[test]
+    fn go_license_reads_each_license_by_its_words() {
+        let scratch = scratch("go-each");
+        // The texts are the licenses' own, so the words are the ones the
+        // licenses use: 0BSD's text must not read as ISC, nor the
+        // MPL-2.0's, which names the GPL, as refused.
+        for id in [
+            "Apache-2.0",
+            "MIT",
+            "BSD-3-Clause",
+            "BSD-2-Clause",
+            "ISC",
+            "0BSD",
+            "MPL-2.0",
+            "Unlicense",
+            "CC0-1.0",
+        ] {
+            let dir = folder_with(&scratch, id, &[("LICENSE", &text_of(id))]);
+            assert_eq!(go_license(&dir).as_deref(), Ok(id), "{id}");
+        }
+        // The notice alone, in the words of the Apache license's appendix.
+        let short = "Licensed under the Apache License, Version 2.0 (the \"License\");";
+        let dir = folder_with(&scratch, "short", &[("LICENSE.md", short)]);
+        assert_eq!(go_license(&dir).as_deref(), Ok("Apache-2.0"));
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    #[test]
+    fn the_bsd_license_is_three_clause_for_the_names_it_bars_and_two_clause_without() {
+        let scratch = scratch("go-bsd");
+        let three = text_of("BSD-3-Clause");
+        let wrapped = three.replace("may be used to endorse", "may be\n\tused to\n  endorse");
+        let dir = folder_with(&scratch, "wrapped", &[("LICENSE", &wrapped)]);
+        assert_eq!(go_license(&dir).as_deref(), Ok("BSD-3-Clause"));
+        // One of the variants: the author's name, in the singular.
+        let single = three.replace(
+            "Neither the name of the copyright holder nor the names of its",
+            "The name of the author may not be used to endorse or promote products derived\n\
+             from this software, nor may the names of its",
+        );
+        assert_ne!(single, three, "the variant is not in the text");
+        let dir = folder_with(&scratch, "single", &[("LICENSE", &single)]);
+        assert_eq!(go_license(&dir).as_deref(), Ok("BSD-3-Clause"));
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    #[test]
+    fn go_license_joins_the_licenses_a_module_states_in_a_fixed_order() {
+        let scratch = scratch("go-joined");
+        let (mit, bsd, apache) = (text_of("MIT"), text_of("BSD-3-Clause"), text_of("Apache-2.0"));
+        // A file that carries a second license for code it copied, in either
+        // order of the two texts.
+        for both in [format!("{mit}\n\n{bsd}"), format!("{bsd}\n\n{mit}")] {
+            let dir = folder_with(&scratch, "one-file", &[("LICENSE", &both)]);
+            assert_eq!(go_license(&dir).as_deref(), Ok("MIT AND BSD-3-Clause"));
+        }
+        // Two files, and a NOTICE that names nothing the module is under.
+        let notice = "This product includes software developed at Canonical Ltd.";
+        let files =
+            [("LICENSE", apache.as_str()), ("LICENSE.libyaml", mit.as_str()), ("NOTICE", notice)];
+        let dir = folder_with(&scratch, "two-files", &files);
+        assert_eq!(go_license(&dir).as_deref(), Ok("Apache-2.0 AND MIT"));
+        // A license two files state is named once.
+        let dir = folder_with(&scratch, "twice", &[("LICENSE", &mit), ("COPYING", &mit)]);
+        assert_eq!(go_license(&dir).as_deref(), Ok("MIT"));
+        let (cc0, unlicense) = (text_of("CC0-1.0"), text_of("Unlicense"));
+        let files = [
+            ("LICENSE", cc0.as_str()),
+            ("COPYING", unlicense.as_str()),
+            ("LICENCE", apache.as_str()),
+        ];
+        let dir = folder_with(&scratch, "three", &files);
+        assert_eq!(go_license(&dir).as_deref(), Ok("Apache-2.0 AND Unlicense AND CC0-1.0"));
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    #[test]
+    fn go_license_reads_the_files_at_the_top_of_the_module_by_their_names_in_upper_case() {
+        let scratch = scratch("go-names");
+        let (mit, gpl) = (text_of("MIT"), text_of("GPL-2.0-only"));
+        let files = [
+            ("license.md", mit.as_str()),
+            ("LICENCE", &text_of("Apache-2.0")),
+            ("COPYING.txt", &text_of("BSD-2-Clause")),
+            ("UNLICENSE", &text_of("Unlicense")),
+            // Not license files: what a project keeps of others' work, its
+            // documentation, and files that are not at the top.
+            ("NOTICE", &gpl),
+            ("COPYRIGHT", &gpl),
+            ("README", &gpl),
+            ("PATENTS", &gpl),
+        ];
+        let dir = folder_with(&scratch, "module", &files);
+        folder_with(&dir, "sub", &[("LICENSE", &gpl)]);
+        folder_with(&dir, "LICENSES", &[("GPL-2.0-only.txt", &gpl)]);
+        assert_eq!(
+            go_license(&dir).as_deref(),
+            Ok("Apache-2.0 AND MIT AND BSD-2-Clause AND Unlicense")
+        );
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    #[test]
+    fn go_license_refuses_the_licenses_a_bundle_does_not_take_and_names_the_file() {
+        let scratch = scratch("go-refused");
+        let copyleft = "the GNU GPL, LGPL or AGPL";
+        let mit_or_gpl =
+            format!("{}\n\nThis code may also be used under the GPL, version 2.", text_of("MIT"));
+        let texts: [(String, &str); 12] = [
+            (text_of("GPL-2.0-only"), copyleft),
+            (text_of("LGPL-2.1-or-later"), copyleft),
+            (text_of("GPL-3.0-or-later"), copyleft),
+            // A module that offers the code under the GPL too names it,
+            // whatever else it states.
+            (mit_or_gpl, copyleft),
+            ("GNU AFFERO GENERAL PUBLIC LICENSE Version 3".into(), copyleft),
+            ("Eclipse Public License - v 2.0".into(), "the Eclipse Public License"),
+            (
+                "COMMON DEVELOPMENT AND DISTRIBUTION LICENSE (CDDL) Version 1.0".into(),
+                "the Common Development and Distribution License",
+            ),
+            (
+                "Server Side Public License VERSION 1, OCTOBER 16, 2018".into(),
+                "the Server Side Public License",
+            ),
+            ("Business Source License 1.1".into(), "the Business Source License"),
+            ("\"Commons Clause\" License Condition v1.0".into(), "the Commons Clause"),
+            (
+                "Creative Commons Attribution-ShareAlike 4.0 International".into(),
+                "a Creative Commons ShareAlike license",
+            ),
+            ("Licensed under CC BY-SA 3.0".into(), "a Creative Commons ShareAlike license"),
+        ];
+        for (n, (text, named)) in texts.iter().enumerate() {
+            let dir = folder_with(&scratch, &format!("module{n}"), &[("COPYING", text)]);
+            assert_eq!(go_license(&dir), Err(format!("COPYING names {named}")), "{text}");
+        }
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    #[test]
+    fn a_bsd_license_with_the_clause_on_advertising_is_refused() {
+        let scratch = scratch("go-bsd4");
+        for id in ["BSD-4-Clause", "BSD-4-Clause-UC", "BSD-4-Clause-Shortened"] {
+            let dir = folder_with(&scratch, id, &[("LICENSE", &text_of(id))]);
+            assert_eq!(
+                go_license(&dir),
+                Err("LICENSE has the BSD license's clause on advertising".into()),
+                "{id}"
+            );
+        }
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    #[test]
+    fn the_mpl_2_0_is_not_refused_for_naming_the_licenses_its_code_may_also_be_distributed_under() {
+        let scratch = scratch("go-mpl");
+        let mpl = text_of("MPL-2.0");
+        // The reason for the rule: the license's own text names them.
+        assert!(mpl.contains("GNU General Public License"));
+        let dir = folder_with(&scratch, "plain", &[("LICENSE", &mpl)]);
+        assert_eq!(go_license(&dir).as_deref(), Ok("MPL-2.0"));
+        // A module that offers its code under the GPL as well says so
+        // beside the text, and is refused as any that names it.
+        let dual =
+            format!("{mpl}\n\nThis code is also available under the GNU General Public License.");
+        let dir = folder_with(&scratch, "dual", &[("LICENSE", &dual)]);
+        assert_eq!(go_license(&dir), Err("LICENSE names the GNU GPL, LGPL or AGPL".into()));
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    #[test]
+    fn go_license_refuses_a_module_with_no_license_file_or_none_in_words_it_knows() {
+        let scratch = scratch("go-none");
+        let none = "it has no LICENSE, LICENCE, COPYING or UNLICENSE file";
+        let dir = folder_with(&scratch, "empty", &[]);
+        assert_eq!(go_license(&dir), Err(none.into()));
+        // Another file's text is no license file, nor is a NOTICE: it lists
+        // what the project keeps of others' work.
+        let mit = text_of("MIT");
+        let dir = folder_with(&scratch, "readme", &[("README.md", &mit), ("NOTICE", &mit)]);
+        assert_eq!(go_license(&dir), Err(none.into()));
+        // A license file of words that are not known: MIT-0 asks for no
+        // notice, and a copyright line is no license.
+        let files = [
+            ("LICENSE", "Copyright 2020 Some One. All rights reserved."),
+            ("COPYING", &text_of("MIT-0")),
+        ];
+        let dir = folder_with(&scratch, "unknown", &files);
+        let err = go_license(&dir).unwrap_err();
+        assert_eq!(
+            err,
+            "its license files (COPYING, LICENSE) hold none of Apache-2.0, MIT, BSD-3-Clause, \
+             BSD-2-Clause, ISC, 0BSD, MPL-2.0, Unlicense, CC0-1.0 in words that are known"
+        );
+        // A typo in a phrase is a phrase not found: micro-editor/terminal's
+        // MIT license says "thismssion notice".
+        let typo = mit.replace("this permission", "thismssion");
+        let dir = folder_with(&scratch, "typo", &[("LICENSE", &typo)]);
+        assert!(
+            go_license(&dir).unwrap_err().starts_with("its license files (LICENSE) hold none of")
+        );
+        // What a NOTICE names does not count against a module.
+        let files = [("LICENSE", mit.as_str()), ("NOTICE", &text_of("GPL-3.0-or-later"))];
+        let dir = folder_with(&scratch, "notice", &files);
+        assert_eq!(go_license(&dir).as_deref(), Ok("MIT"));
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    #[test]
+    fn a_go_modules_notices_are_its_license_and_notice_files_with_its_patent_grant() {
+        let scratch = scratch("go-notices");
+        let files = [
+            ("LICENSE", "a"),
+            ("PATENTS", "b"),
+            ("NOTICE", "c"),
+            ("UNLICENSE", "d"),
+            ("COPYRIGHT", "e"),
+            ("README.md", "f"),
+        ];
+        let dir = folder_with(&scratch, "module", &files);
+        folder_with(&dir, "sub", &[("LICENSE", "g")]);
+        let names = |files: Vec<PathBuf>| -> Vec<String> {
+            files.iter().map(|f| f.file_name().unwrap().to_string_lossy().into_owned()).collect()
+        };
+        assert_eq!(
+            names(go_notices(&dir)),
+            ["COPYRIGHT", "LICENSE", "NOTICE", "PATENTS", "UNLICENSE"]
+        );
+        // Go's tree keeps the grant beside its LICENSE as well, and the notices
+        // of a port in C or Rust are those of its names.
+        assert_eq!(names(notice_files(&dir)), ["COPYRIGHT", "LICENSE", "NOTICE", "PATENTS"]);
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    /// A recipe of the port `name`, `rest` being what follows its fixed keys.
+    fn recipe(name: &str, version: &str, license: &str, rest: &str) -> Recipe {
+        toml::from_str(&format!(
+            "name = \"{name}\"\nversion = \"{version}\"\nsummary = \"s\"\nlicense = \"{license}\"\n\
+             homepage = \"https://example.org\"\n{rest}"
+        ))
+        .unwrap()
+    }
+
+    fn port(recipe: Recipe, root: &Path, source: Option<PathBuf>, modules: Vec<PathBuf>) -> Port {
+        let dir = root.join("ports").join(&recipe.name);
+        Port { recipe, dir, source, extras: Vec::new(), crates: Vec::new(), modules }
+    }
+
+    fn context(root: &Path) -> Ctx {
+        Ctx {
+            out: root.join("out"),
+            target: root.join("target"),
+            root: root.to_path_buf(),
+            config: crate::config::Config::default(),
+            verbose: false,
+        }
+    }
+
+    /// What `go version -m` printed for two programs of one port: modules
+    /// from the proxy, one of them named in capitals, a patched one under
+    /// two versions, one patched alone, and one replaced by another's.
+    const MODULES: &str = "/out/bundle/bin/tool: go1.27.4\n\
+        \tpath\texample.com/tool/cmd/tool\n\
+        \tmod\texample.com/tool\t(devel)\t\n\
+        \tdep\tgithub.com/BurntSushi/toml\tv1.3.2\th1:x=\n\
+        \tdep\tgithub.com/creack/pty\tv1.1.18\n\
+        \t=>\t./.radix-go/github.com_creack_pty@v1.1.18\t(devel)\t\n\
+        \t\n\
+        \tdep\tgithub.com/kballard/go-shellquote\tv0.0.0-20180428030007-95032a82bc51\n\
+        \t=>\tgithub.com/micro-editor/go-shellquote\tv0.0.0-20250101105543-feb6c39314f5\th1:y=\n\
+        \tdep\tgithub.com/kr/logfmt\tv0.0.0-20140226030751-b84e30acd515\th1:z=\n\
+        \tdep\tgolang.org/x/sys\tv0.30.0\n\
+        \t=>\t./.radix-go/golang.org_x_sys@v0.50.0\t(devel)\t\n\
+        \t\n\
+        /out/bundle/bin/other: go1.27.4\n\
+        \tpath\texample.com/tool/cmd/other\n\
+        \tdep\tgithub.com/BurntSushi/toml\tv1.3.2\th1:x=\n\
+        \tdep\tgolang.org/x/sys\tv0.35.0\n\
+        \t=>\t./.radix-go/golang.org_x_sys@v0.50.0\t(devel)\t\n\
+        \t\n";
+
+    /// A port `tool` in Go that links [`MODULES`], with the go and go-modules
+    /// ports it is built with, and Go's module cache holding what it links
+    /// from the proxy. Returns the context and the ports; the tool is last.
+    fn go_bundle(root: &Path) -> (Ctx, Ports) {
+        let ctx = context(root);
+        let cached = |path: &str, version: &str, files: &[(&str, &str)]| {
+            let dir = ports::go_cached_module(&ctx, path, version);
+            std::fs::create_dir_all(&dir).unwrap();
+            for (file, text) in files {
+                std::fs::write(dir.join(file), text).unwrap();
+            }
+        };
+        let (mit, bsd) = (text_of("MIT"), text_of("BSD-3-Clause"));
+        cached("github.com/BurntSushi/toml", "v1.3.2", &[("COPYING", &mit)]);
+        cached(
+            "github.com/micro-editor/go-shellquote",
+            "v0.0.0-20250101105543-feb6c39314f5",
+            &[("LICENSE.txt", &mit)],
+        );
+        // The words of an MIT license are in its Readme, not in a license file.
+        cached("github.com/kr/logfmt", "v0.0.0-20140226030751-b84e30acd515", &[("Readme", &mit)]);
+        let tree = |name: &str, license: &str| {
+            folder_with(
+                root,
+                name,
+                &[("LICENSE", license), ("PATENTS", "grant"), ("main.go", "package x")],
+            )
+        };
+        let go_source = tree("go-source", &bsd);
+        let sys = tree("sys", &bsd);
+        let pty = tree("pty", &mit);
+        let sha = "ab".repeat(32);
+        let go = recipe(
+            "go",
+            "1.27.4",
+            "BSD-3-Clause",
+            "toolchain = true\n[source]\ngit = \"https://github.com/golang/go.git\"\n\
+             commit = \"7b2881024c95a11ddb86663a616340aa3a88b67f\"\ntag = \"go1.27.4\"\n",
+        );
+        let patching = recipe(
+            "go-modules",
+            "1",
+            "BSD-3-Clause AND MIT",
+            &format!(
+                "toolchain = true\n\
+                 [[module]]\npath = \"golang.org/x/sys\"\nversion = \"v0.50.0\"\nsha256 = \"{sha}\"\n\
+                 license = \"BSD-3-Clause\"\nall-versions = true\n\
+                 [[module]]\npath = \"github.com/creack/pty\"\nversion = \"v1.1.18\"\n\
+                 sha256 = \"{sha}\"\nlicense = \"MIT\"\n"
+            ),
+        );
+        let tool = recipe(
+            "tool",
+            "2.0",
+            "MIT",
+            "depends = [\"go\", \"go-modules\"]\n\
+             [go-licenses]\n\"github.com/kr/logfmt\" = \"MIT\"\n",
+        );
+        let info = ports::info_dir(&ctx, "tool");
+        std::fs::create_dir_all(&info).unwrap();
+        std::fs::write(info.join("modules.txt"), MODULES).unwrap();
+        let ports = Ports {
+            toolchain: Toolchain::bare(root.join("out/toolchain")),
+            ports: vec![
+                port(go, root, Some(go_source), vec![]),
+                port(patching, root, None, vec![sys, pty]),
+                port(tool, root, None, vec![]),
+            ],
+        };
+        (ctx, ports)
+    }
+
+    /// The licenses the recipe of the port `go_bundle` lists last gives its modules.
+    fn go_licenses(ports: &mut Ports) -> &mut std::collections::BTreeMap<String, String> {
+        &mut ports.ports.last_mut().unwrap().recipe.go_licenses
+    }
+
+    /// The packages `port_packages` gives a port, by name, version and license.
+    fn listed(ctx: &Ctx, ports: &Ports, name: &str) -> Result<Vec<Package>> {
+        let port = ports.ports.iter().find(|p| p.recipe.name == name).unwrap();
+        let mut packages = Vec::new();
+        port_packages(ctx, ports, port, &mut packages)?;
+        Ok(packages)
+    }
+
+    fn named(packages: &[Package]) -> Vec<(&str, &str, &str)> {
+        packages.iter().map(|p| (&*p.name, &*p.version, &*p.license)).collect()
+    }
+
+    fn notice_names_of(package: &Package) -> Vec<String> {
+        package
+            .notices
+            .iter()
+            .map(|n| n.file_name().unwrap().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_port_in_go_has_a_package_for_each_module_its_programs_link_and_one_for_go() {
+        let root = scratch("go-packages");
+        let (ctx, ports) = go_bundle(&root);
+        let packages = listed(&ctx, &ports, "tool").unwrap();
+        // In the order the modules are named, each once, and Go's standard
+        // library and runtime last.
+        assert_eq!(
+            named(&packages),
+            [
+                ("github.com/BurntSushi/toml", "v1.3.2", "MIT"),
+                ("github.com/creack/pty", "v1.1.18", "MIT"),
+                (
+                    "github.com/micro-editor/go-shellquote",
+                    "v0.0.0-20250101105543-feb6c39314f5",
+                    "MIT"
+                ),
+                ("github.com/kr/logfmt", "v0.0.0-20140226030751-b84e30acd515", "MIT"),
+                ("golang.org/x/sys", "v0.50.0", "BSD-3-Clause"),
+                ("go", "1.27.4", "BSD-3-Clause"),
+            ]
+        );
+        assert!(packages.iter().all(|p| p.area == Area::Port));
+        // A module of the proxy: its zip's URL, with the capitals spelled as
+        // the proxy does, no checksum, and the notices of its folder.
+        let toml = &packages[0];
+        assert_eq!(
+            toml.download,
+            "https://proxy.golang.org/github.com/!burnt!sushi/toml/@v/v1.3.2.zip"
+        );
+        assert_eq!(toml.sha256, None);
+        assert_eq!(notice_names_of(toml), ["COPYING"]);
+        assert_eq!(
+            toml.comment,
+            "A Go module from Go's module proxy, built into tool 2.0 by ports/tool of Dukovo."
+        );
+        // The replacing module's code is what is linked.
+        assert!(packages[2].download.contains("/github.com/micro-editor/go-shellquote/@v/"));
+        // A patched module: the go-modules recipe's license, SHA-256 and
+        // notices, the proxy's URL, and the versions it stands in for.
+        let sys = &packages[4];
+        assert_eq!(sys.sha256.as_deref(), Some("ab".repeat(32).as_str()));
+        assert_eq!(sys.download, "https://proxy.golang.org/golang.org/x/sys/@v/v0.50.0.zip");
+        assert_eq!(notice_names_of(sys), ["LICENSE", "PATENTS"]);
+        assert_eq!(
+            sys.comment,
+            "A Go module from Go's module proxy, patched for Radix by ports/go-modules. It stands \
+             in for the version of it that tool 2.0 names (v0.30.0, v0.35.0), and is built into \
+             tool 2.0 by ports/tool of Dukovo."
+        );
+        // The standard library comes with its patent grant.
+        let go = &packages[5];
+        assert_eq!(
+            go.download,
+            "git+https://github.com/golang/go.git@7b2881024c95a11ddb86663a616340aa3a88b67f"
+        );
+        assert_eq!(notice_names_of(go), ["LICENSE", "PATENTS"]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_package_is_listed_once_though_a_bundle_names_its_port_and_a_port_it_links() {
+        let root = scratch("go-once");
+        let (ctx, ports) = go_bundle(&root);
+        let tool = ports.ports.iter().find(|p| p.recipe.name == "tool").unwrap();
+        let mut packages = Vec::new();
+        port_packages(&ctx, &ports, tool, &mut packages).unwrap();
+        let count = packages.len();
+        port_packages(&ctx, &ports, tool, &mut packages).unwrap();
+        assert_eq!(packages.len(), count);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_license_a_recipe_gives_a_go_module_is_used_and_the_files_are_not_read() {
+        let root = scratch("go-override");
+        let (ctx, mut ports) = go_bundle(&root);
+        // logfmt's files state nothing, and the recipe says why it is MIT.
+        let without = go_licenses(&mut ports).remove("github.com/kr/logfmt");
+        assert_eq!(without.as_deref(), Some("MIT"));
+        let err = listed(&ctx, &ports, "tool").unwrap_err().to_string();
+        assert!(
+            err.contains("port tool: the license of a Go module its programs link is not known:")
+                && err.contains(
+                    "github.com/kr/logfmt v0.0.0-20140226030751-b84e30acd515: it has no LICENSE"
+                ),
+            "{err}"
+        );
+        // A module whose files are readable gets the recipe's license when it
+        // gives one.
+        go_licenses(&mut ports).insert("github.com/kr/logfmt".into(), "MIT".into());
+        go_licenses(&mut ports).insert("github.com/BurntSushi/toml".into(), "ISC".into());
+        let packages = listed(&ctx, &ports, "tool").unwrap();
+        assert_eq!(named(&packages)[0], ("github.com/BurntSushi/toml", "v1.3.2", "ISC"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_license_in_go_licenses_that_no_program_links_is_an_error() {
+        let root = scratch("go-unused");
+        let (ctx, mut ports) = go_bundle(&root);
+        // A module no program links, one the go-modules port patches, whose
+        // license is its recipe's, and one go.mod replaces, whose path is
+        // not the code's.
+        for path in
+            ["github.com/gone/module", "golang.org/x/sys", "github.com/kballard/go-shellquote"]
+        {
+            go_licenses(&mut ports).insert(path.into(), "MIT".into());
+            let err = format!("{:?}", listed(&ctx, &ports, "tool").unwrap_err());
+            assert!(
+                err.contains(&format!(
+                    "port tool: [go-licenses] gives a license for {path}, which none of its \
+                     programs links from Go's module proxy"
+                )),
+                "{err}"
+            );
+            go_licenses(&mut ports).remove(path);
+        }
+        // A port that lists no modules has none to give a license to.
+        std::fs::remove_file(ports::info_dir(&ctx, "tool").join("modules.txt")).unwrap();
+        go_licenses(&mut ports).insert("github.com/gone/module".into(), "MIT".into());
+        assert!(listed(&ctx, &ports, "tool").is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_module_missing_from_the_cache_or_the_patched_ones_is_an_error_that_says_to_build_again() {
+        let root = scratch("go-missing");
+        let (ctx, ports) = go_bundle(&root);
+        let cached = ports::go_cached_module(&ctx, "github.com/BurntSushi/toml", "v1.3.2");
+        std::fs::remove_dir_all(&cached).unwrap();
+        let err = format!("{:?}", listed(&ctx, &ports, "tool").unwrap_err());
+        assert!(
+            err.contains(
+                "Go module github.com/BurntSushi/toml v1.3.2, which its programs link, is not in"
+            ),
+            "{err}"
+        );
+        assert!(err.contains("./ob ports --rebuild tool"), "{err}");
+        // A patched module that go-modules does not have any more.
+        let info = ports::info_dir(&ctx, "tool");
+        std::fs::write(
+            info.join("modules.txt"),
+            "\tdep\ta/b\tv1.0.0\n\t=>\t./.radix-go/a_b@v1.0.0\t(devel)\t\n",
+        )
+        .unwrap();
+        let err = format!("{:?}", listed(&ctx, &ports, "tool").unwrap_err());
+        assert!(
+            err.contains("its programs link a_b@v1.0.0, which ports/go-modules does not patch"),
+            "{err}"
+        );
+        assert!(err.contains("./ob ports --rebuild tool"), "{err}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn every_module_whose_license_is_not_known_is_named_at_once() {
+        let root = scratch("go-unread");
+        let (ctx, mut ports) = go_bundle(&root);
+        go_licenses(&mut ports).clear();
+        let toml = ports::go_cached_module(&ctx, "github.com/BurntSushi/toml", "v1.3.2");
+        std::fs::write(toml.join("COPYING"), text_of("GPL-2.0-only")).unwrap();
+        let err = listed(&ctx, &ports, "tool").unwrap_err().to_string();
+        assert!(
+            err.contains(
+                "github.com/BurntSushi/toml v1.3.2: COPYING names the GNU GPL, LGPL or AGPL"
+            ),
+            "{err}"
+        );
+        assert!(
+            err.contains(
+                "github.com/kr/logfmt v0.0.0-20140226030751-b84e30acd515: it has no LICENSE"
+            ),
+            "{err}"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_port_not_in_go_has_no_go_packages() {
+        let root = scratch("go-not");
+        let (ctx, mut ports) = go_bundle(&root);
+        std::fs::remove_file(ports::info_dir(&ctx, "tool").join("modules.txt")).unwrap();
+        go_licenses(&mut ports).clear();
+        assert!(listed(&ctx, &ports, "tool").unwrap().is_empty());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn go_modules_are_fetched_when_the_proxys_modules_a_port_linked_are_in_the_cache() {
+        let root = scratch("go-fetched");
+        let ctx = context(&root);
+        // No list: nothing to be missing.
+        assert!(go_modules_fetched(&ctx, "tool"));
+        let info = ports::info_dir(&ctx, "tool");
+        std::fs::create_dir_all(&info).unwrap();
+        std::fs::write(info.join("modules.txt"), MODULES).unwrap();
+        assert!(!go_modules_fetched(&ctx, "tool"));
+        // The three of the proxy's, and the patched ones are not in the cache.
+        let cached = [
+            ("github.com/BurntSushi/toml", "v1.3.2"),
+            ("github.com/micro-editor/go-shellquote", "v0.0.0-20250101105543-feb6c39314f5"),
+            ("github.com/kr/logfmt", "v0.0.0-20140226030751-b84e30acd515"),
+        ];
+        for (n, (path, version)) in cached.iter().enumerate() {
+            assert!(!go_modules_fetched(&ctx, "tool"), "{n}");
+            std::fs::create_dir_all(ports::go_cached_module(&ctx, path, version)).unwrap();
+        }
+        assert!(go_modules_fetched(&ctx, "tool"));
+        // A list that cannot be read is reported with the licenses.
+        std::fs::write(info.join("modules.txt"), "\tdep\ta\n").unwrap();
+        assert!(go_modules_fetched(&ctx, "tool"));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

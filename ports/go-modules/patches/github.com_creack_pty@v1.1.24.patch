@@ -1,0 +1,140 @@
+SPDX-FileCopyrightText: 2011 Keith Rarick
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT
+
+Pseudo-terminals on Radix: /devices/ptmx (/dev is a link to /devices),
+and the terminal /devices/pts/N, N from TIOCGPTN, unlocked with
+TIOCSPTLCK, as Radix's C library's posix_openpt, ptsname and unlockpt
+do. syscall.Syscall fails on Radix, and this module does not require
+golang.org/x/sys, so ioctl is package syscall's ioctlPtr, which Radix's
+Go gives for linkname. Its pointer is passed as a uintptr, so ioctl is
+marked //go:uintptrescapes: what it points to stays alive, and on the
+heap, until the call returns.
+
+diff -ruN a/github.com_creack_pty@v1.1.24/ioctl.go b/github.com_creack_pty@v1.1.24/ioctl.go
+--- a/github.com_creack_pty@v1.1.24/ioctl.go
++++ b/github.com_creack_pty@v1.1.24/ioctl.go
+@@ -1,5 +1,5 @@
+-//go:build !windows && go1.12
+-// +build !windows,go1.12
++//go:build !windows && go1.12 && !radix
++// +build !windows,go1.12,!radix
+ 
+ package pty
+ 
+diff -ruN a/github.com_creack_pty@v1.1.24/ioctl_inner.go b/github.com_creack_pty@v1.1.24/ioctl_inner.go
+--- a/github.com_creack_pty@v1.1.24/ioctl_inner.go
++++ b/github.com_creack_pty@v1.1.24/ioctl_inner.go
+@@ -1,5 +1,5 @@
+-//go:build !windows && !solaris && !aix
+-// +build !windows,!solaris,!aix
++//go:build !windows && !solaris && !aix && !radix
++// +build !windows,!solaris,!aix,!radix
+ 
+ package pty
+ 
+diff -ruN a/github.com_creack_pty@v1.1.24/ioctl_radix.go b/github.com_creack_pty@v1.1.24/ioctl_radix.go
+--- a/github.com_creack_pty@v1.1.24/ioctl_radix.go
++++ b/github.com_creack_pty@v1.1.24/ioctl_radix.go
+@@ -0,0 +1,31 @@
++//go:build radix
++// +build radix
++
++package pty
++
++import (
++	"os"
++	"syscall"
++	"unsafe"
++)
++
++const (
++	TIOCGWINSZ = syscall.TIOCGWINSZ
++	TIOCSWINSZ = syscall.TIOCSWINSZ
++)
++
++// Radix programs reach ioctl only through the C library. Package syscall
++// exports no ioctl, but pushes its ioctlPtr for linkname, and this module
++// requires no golang.org/x/sys/unix.
++//
++//go:linkname ioctlPtr syscall.ioctlPtr
++func ioctlPtr(fd int, req uint, arg unsafe.Pointer) (err error)
++
++// ptr is the address of a Go object that the caller converted to a uintptr in
++// the call. uintptrescapes keeps the object on the heap and alive until the
++// call returns, so the stack cannot move it before ioctlPtr reads it.
++//
++//go:uintptrescapes
++func ioctl(f *os.File, cmd, ptr uintptr) error {
++	return ioctlPtr(int(f.Fd()), uint(cmd), unsafe.Pointer(ptr))
++}
+diff -ruN a/github.com_creack_pty@v1.1.24/pty_radix.go b/github.com_creack_pty@v1.1.24/pty_radix.go
+--- a/github.com_creack_pty@v1.1.24/pty_radix.go
++++ b/github.com_creack_pty@v1.1.24/pty_radix.go
+@@ -0,0 +1,55 @@
++//go:build radix
++// +build radix
++
++package pty
++
++import (
++	"os"
++	"strconv"
++	"syscall"
++	"unsafe"
++)
++
++// Radix names its devices under /devices; /dev is only a link to it.
++func open() (pty, tty *os.File, err error) {
++	p, err := os.OpenFile("/devices/ptmx", os.O_RDWR, 0)
++	if err != nil {
++		return nil, nil, err
++	}
++	// In case of error after this point, make sure we close the ptmx fd.
++	defer func() {
++		if err != nil {
++			_ = p.Close() // Best effort.
++		}
++	}()
++
++	sname, err := ptsname(p)
++	if err != nil {
++		return nil, nil, err
++	}
++
++	if err := unlockpt(p); err != nil {
++		return nil, nil, err
++	}
++
++	t, err := os.OpenFile(sname, os.O_RDWR|syscall.O_NOCTTY, 0) //nolint:gosec // Expected Open from a variable.
++	if err != nil {
++		return nil, nil, err
++	}
++	return p, t, nil
++}
++
++func ptsname(f *os.File) (string, error) {
++	var n _C_uint
++	err := ioctl(f, syscall.TIOCGPTN, uintptr(unsafe.Pointer(&n))) //nolint:gosec // Expected unsafe pointer for Syscall call.
++	if err != nil {
++		return "", err
++	}
++	return "/devices/pts/" + strconv.Itoa(int(n)), nil
++}
++
++func unlockpt(f *os.File) error {
++	var u _C_int
++	// use TIOCSPTLCK with a pointer to zero to clear the lock.
++	return ioctl(f, syscall.TIOCSPTLCK, uintptr(unsafe.Pointer(&u))) //nolint:gosec // Expected unsafe pointer for Syscall call.
++}
+diff -ruN a/github.com_creack_pty@v1.1.24/pty_unsupported.go b/github.com_creack_pty@v1.1.24/pty_unsupported.go
+--- a/github.com_creack_pty@v1.1.24/pty_unsupported.go
++++ b/github.com_creack_pty@v1.1.24/pty_unsupported.go
+@@ -1,5 +1,5 @@
+-//go:build !linux && !darwin && !freebsd && !dragonfly && !netbsd && !openbsd && !solaris && !zos
+-// +build !linux,!darwin,!freebsd,!dragonfly,!netbsd,!openbsd,!solaris,!zos
++//go:build !linux && !darwin && !freebsd && !dragonfly && !netbsd && !openbsd && !solaris && !zos && !radix
++// +build !linux,!darwin,!freebsd,!dragonfly,!netbsd,!openbsd,!solaris,!zos,!radix
+ 
+ package pty
+ 

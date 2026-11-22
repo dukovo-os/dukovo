@@ -93,12 +93,14 @@ int Sysdeps<PrepareStack>::operator()(void **stack, void *entry, void *arg, void
 
 // The thread's last steps, in registers alone: it discards the `size`
 // bytes at `stack`, its stack and the guard below it, when there are any;
-// then sets *did_exit, after which its joiner, or the next pthread_create
-// for a detached thread, may free the TCB that holds it; then wakes the
-// joiner and ends. The system call takes its arguments in registers and
-// keeps rbx, so nothing here reads or writes memory but *did_exit, and
-// the caller has every signal blocked, so no handler runs on the stack
-// once it is gone.
+// then ends with exit_thread_waking (radix-process(2)), which, once the
+// process no longer has the thread, sets *did_exit and wakes the joiner.
+// So pthread_join returns only when no call finds the thread by its
+// number, and its joiner, or the next pthread_create for a detached
+// thread, frees the TCB that holds *did_exit only then. A system call
+// takes its arguments in registers and keeps rbx, so nothing here reads
+// or writes memory, and the caller has every signal blocked, so no
+// handler runs on the stack once it is gone.
 [[noreturn]] void Sysdeps<ThreadExitUnmapping>::operator()(void *stack, size_t size,
 		int *did_exit) {
 	register uint64_t rax asm("rax") = RADIX_SYSCALL_CAP_CALL;
@@ -112,27 +114,18 @@ int Sysdeps<PrepareStack>::operator()(void **stack, void *entry, void *arg, void
 		"jz 1f\n\t"
 		"syscall\n"
 		"1:\n\t"
-		"movl $1, (%%rbx)\n\t"
-		"mov %[call], %%eax\n\t"
-		"mov %[space], %%edi\n\t"
-		"movabs %[wake], %%rsi\n\t"
-		"mov %%rbx, %%rdx\n\t"
-		"mov %[everyone], %%r10d\n\t"
-		"syscall\n\t"
 		"mov %[call], %%eax\n\t"
 		"mov %[process], %%edi\n\t"
 		"movabs %[exit], %%rsi\n\t"
 		"xor %%edx, %%edx\n\t"
+		"mov %%rbx, %%r10\n\t"
 		"syscall\n\t"
 		"ud2"
 		:
 		: "r"(rax), "r"(rdi), "r"(rsi), "r"(rdx), "r"(r10), "r"(rbx),
 		  [call] "i"(RADIX_SYSCALL_CAP_CALL),
-		  [space] "i"(radix::SLOT_SPACE),
-		  [wake] "i"(RADIX_ADDRESS_SPACE_FUTEX_WAKE | (uint64_t{2} << 32)),
-		  [everyone] "i"(INT32_MAX),
 		  [process] "i"(radix::SLOT_PROCESS),
-		  [exit] "i"(RADIX_PROCESS_EXIT_THREAD | (uint64_t{1} << 32))
+		  [exit] "i"(RADIX_PROCESS_EXIT_THREAD_WAKING | (uint64_t{2} << 32))
 		: "memory");
 	__builtin_unreachable();
 }

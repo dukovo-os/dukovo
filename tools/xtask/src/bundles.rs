@@ -597,7 +597,14 @@ mod tests {
             commands = ["rg"]
         "#;
         let recipe: Recipe = toml::from_str(text).unwrap();
-        Port { recipe, dir: PathBuf::new(), source: None, extras: Vec::new(), crates: Vec::new() }
+        Port {
+            recipe,
+            dir: PathBuf::new(),
+            source: None,
+            extras: Vec::new(),
+            crates: Vec::new(),
+            modules: Vec::new(),
+        }
     }
 
     #[test]
@@ -683,7 +690,14 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ports/nginx");
         let text = std::fs::read_to_string(dir.join("recipe.toml")).unwrap();
         let recipe: Recipe = toml::from_str(&text).unwrap();
-        let port = Port { recipe, dir, source: None, extras: Vec::new(), crates: Vec::new() };
+        let port = Port {
+            recipe,
+            dir,
+            source: None,
+            extras: Vec::new(),
+            crates: Vec::new(),
+            modules: Vec::new(),
+        };
         let text = manifest(&port, &port.recipe.version);
         let manifest = dkv::signed::parse_manifest(text.as_bytes()).unwrap();
         assert_eq!(manifest.id.0, "org.nginx.nginx");
@@ -739,7 +753,14 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ports/valkey");
         let text = std::fs::read_to_string(dir.join("recipe.toml")).unwrap();
         let recipe: Recipe = toml::from_str(&text).unwrap();
-        let port = Port { recipe, dir, source: None, extras: Vec::new(), crates: Vec::new() };
+        let port = Port {
+            recipe,
+            dir,
+            source: None,
+            extras: Vec::new(),
+            crates: Vec::new(),
+            modules: Vec::new(),
+        };
         let text = manifest(&port, &port.recipe.version);
         let manifest = dkv::signed::parse_manifest(text.as_bytes()).unwrap();
         let program = |name: &str| {

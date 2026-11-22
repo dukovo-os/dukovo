@@ -1,0 +1,18 @@
+SPDX-FileCopyrightText: Yasuhiro MATSUMOTO
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT
+
+A terminal on Radix is a file TIOCGWINSZ answers, as on Linux, asked
+through golang.org/x/sys/unix.
+
+diff -ruN a/github.com_mattn_go-isatty@v0.0.24/isatty_tiocgwinsz.go b/github.com_mattn_go-isatty@v0.0.24/isatty_tiocgwinsz.go
+--- a/github.com_mattn_go-isatty@v0.0.24/isatty_tiocgwinsz.go
++++ b/github.com_mattn_go-isatty@v0.0.24/isatty_tiocgwinsz.go
+@@ -1,5 +1,5 @@
+-//go:build (linux || aix || zos) && !appengine && !tinygo
+-// +build linux aix zos
++//go:build (linux || radix || aix || zos) && !appengine && !tinygo
++// +build linux radix aix zos
+ // +build !appengine
+ // +build !tinygo
+ 

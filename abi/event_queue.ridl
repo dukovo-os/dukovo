@@ -1,0 +1,174 @@
+// SPDX-FileCopyrightText: 2026 The Dukovo contributors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! Event queues (Phase 17, ADR 0353).
+//!
+//! An event queue watches many descriptors at once and hands out what
+//! became of them, as BSD's kqueue does: a program adds a watch for each
+//! descriptor and way it cares about, and `wait` returns the watches that
+//! are ready, however many others wait idle. radix-process(2)'s `create`
+//! makes one (ObjectKind event_queue), and the C library's kqueue(2) and
+//! kevent(2) are its interface (radix-posix(7)).
+//!
+//! A watch is named by its `ident` and `filter`, and a queue holds at most
+//! one of each pair. The `read` and `write` filters watch the descriptor
+//! `ident` (the slot less `wait`'s `base`): `read` is ready while it can be
+//! read without waiting or has reached its end, and `write` while it can
+//! be written without waiting or no longer reads what is written. Pipes,
+//! sockets, terminals and the devices that `poll` waits for can be
+//! watched, as can notifications; files and directories, which are always
+//! ready, cannot, as with Linux's epoll. The `user` filter watches an
+//! event of the program's own, numbered `ident`, which a change with
+//! USER_TRIGGER makes ready.
+//!
+//! A watch holds the description its descriptor named when it was added,
+//! not the slot: it lasts until it is deleted, until a oneshot watch is
+//! reported, until another description is added with its `ident` and
+//! `filter`, until the queue goes, or until the description itself goes,
+//! when the last of its descriptors in every process closes. A description
+//! closed in this process but open in another, after `fork`, is still
+//! watched, as on Linux and unlike BSD, until the watch is deleted or its
+//! descriptor number added again.
+//!
+//! A watch is level-triggered: each `wait` reports it again while it is
+//! ready. With `clear` it is edge-triggered instead: reported once, then
+//! again only after its descriptor changes. Events of a ready descriptor
+//! are reported once a call, in the order the watches became ready.
+//! Several threads may wait on one queue: each event goes to one of them.
+//! A copy of the capability, as `fork` makes, is the same queue.
+
+module event_queue;
+
+/// What a watch watches: kqueue's filters, whose numbers are negative in
+/// the C library's 16-bit `filter`.
+enum QueueFilter: u16 {
+    /// A descriptor that can be read, or has reached its end
+    /// (EVFILT_READ, -1).
+    read = 0xffff;
+    /// A descriptor that can be written, or reads no more
+    /// (EVFILT_WRITE, -2).
+    write = 0xfffe;
+    /// An event of the program's own (EVFILT_USER, -11).
+    user = 0xfff5;
+}
+
+/// What a change does, and what an event says, as kqueue's EV_ flags: a
+/// QueueEvent's `flags`, in 16 bits.
+flags QueueFlags: u32 {
+    /// Adds the watch, or changes the value and user flags of the one
+    /// with its `ident` and `filter`, whose `oneshot`, `clear` and
+    /// `dispatch` stay as they were added (EV_ADD). Either way the watch
+    /// is enabled, unless the change also has `disable` and not `enable`.
+    add = 0;
+    /// Deletes the watch (EV_DELETE).
+    delete = 1;
+    /// Lets the watch be reported again (EV_ENABLE). It wins over
+    /// `disable` in the same change.
+    enable = 2;
+    /// Keeps the watch but reports it no more until it is enabled
+    /// (EV_DISABLE).
+    disable = 3;
+    /// Deletes the watch once it is reported (EV_ONESHOT).
+    oneshot = 4;
+    /// Reports the watch only when what it watches changes, not for as
+    /// long as it is ready (EV_CLEAR); a user event is reset once
+    /// reported.
+    clear = 5;
+    /// Reports the change itself as an event, with `error` and the status
+    /// in `data`, 0 when it worked (EV_RECEIPT).
+    receipt = 6;
+    /// Disables the watch once it is reported (EV_DISPATCH).
+    dispatch = 7;
+    /// In an event: the change failed, with the kernel's status in `data`
+    /// (EV_ERROR).
+    error = 14;
+    /// In an event: the descriptor has reached its end, or has failed, or
+    /// its other end has gone (EV_EOF).
+    eof = 15;
+}
+
+/// In a `user` change's `fflags`: makes the event ready (NOTE_TRIGGER).
+const USER_TRIGGER: u32 = 0x01000000;
+/// In a `user` change's `fflags`: the low 24 bits are the event's own
+/// flags, which `USER_CONTROL` says what to do with (NOTE_FFLAGSMASK).
+const USER_FLAGS: u32 = 0x00ffffff;
+/// In a `user` change's `fflags`: the two bits that say how the change's
+/// own flags apply to the event's (NOTE_FFCTRLMASK): neither leaves them
+/// as they are, USER_AND keeps those in both, USER_OR adds them, and both
+/// together (USER_COPY) replace them.
+const USER_CONTROL: u32 = 0xc0000000;
+/// Keeps the event's flags that are also the change's (NOTE_FFAND).
+const USER_AND: u32 = 0x40000000;
+/// Adds the change's flags to the event's (NOTE_FFOR).
+const USER_OR: u32 = 0x80000000;
+/// Replaces the event's flags with the change's (NOTE_FFCOPY).
+const USER_COPY: u32 = 0xc0000000;
+
+/// One change `wait` makes, or one event it reports: the C library's
+/// `struct kevent`.
+struct QueueEvent {
+    /// A descriptor for `read` and `write`; any number for `user`.
+    ident: u64;
+    /// The QueueFilter, as 16 bits.
+    filter: u16;
+    /// QueueFlags.
+    flags: u16;
+    /// A user event's flags (see USER_TRIGGER); 0 for the other filters.
+    fflags: u32;
+    /// In a change of a user event: the value its events report. In an
+    /// event: that value for a user event, the status of a change that
+    /// failed (`error`), and 0 otherwise.
+    data: i64;
+    /// The program's own value: each event carries the one its watch was
+    /// last added with.
+    udata: u64;
+}
+
+/// How `wait` waits.
+flags QueueWaitFlags: u32 {
+    /// Wait with `mask` as the calling thread's signal mask, and put the
+    /// old one back after, as `ppoll` does.
+    mask = 0;
+    /// Wait as long as it takes: `timeout_ns` is ignored.
+    forever = 1;
+}
+
+/// The most changes one `wait` takes: as many as the most descriptors a
+/// process may have, twice over.
+const CHANGES_MAX: u32 = 8192;
+
+/// An event queue.
+interface event_queue = 0x0034 version 1 {
+    kind = event_queue;
+    /// Makes the `count` changes at `changes`, in order, then, if
+    /// `capacity` is not 0, waits until a watch is ready, at most
+    /// `timeout_ns` nanoseconds (unless forever; 0 does not wait), and
+    /// writes up to `capacity` events at `events`. Returns how many
+    /// events it wrote. A descriptor's `ident` is its slot less `base`.
+    ///
+    /// A change of filter 0 is passed over. A change with neither add
+    /// nor delete changes the value and enabling of a watch the queue
+    /// holds, and makes a user event ready with USER_TRIGGER; `add`
+    /// together with `delete` is invalid. A change that fails, and one
+    /// that asks for a receipt, is reported as an event with the error
+    /// flag and its status (or 0) in `data`, while `capacity` has room;
+    /// once it has none, `wait` stops there, and fails with the status of
+    /// a change that failed, or returns the events written before a
+    /// receipt. When any such event was written, `wait` returns them and
+    /// reports no watch. A change can fail with
+    /// invalid_argument (an unknown filter, add with delete, or a watch
+    /// of an event queue), empty_slot or no_such_slot (an add for a
+    /// descriptor that is not open), not_permitted (an add for a file or
+    /// directory, which is always ready), not_found (a watch the queue
+    /// does not hold, other than by add) and no_memory.
+    ///
+    /// Fails with interrupted if a signal comes while it waits, with
+    /// bad_address if `changes` or `events` cannot be read or written,
+    /// and with invalid_argument if `count` is more than CHANGES_MAX.
+    /// Making changes needs the write right, and waiting for events the
+    /// read right. (Since Phase 17, ADR 0353.)
+    method wait = 1 (changes: addr, count: u32, events: addr, capacity: u32, base: u32,
+                     timeout_ns: u64, mask: u64, flags: QueueWaitFlags) -> (found: u32)
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
+                not_permitted, not_found, no_memory, bad_address, interrupted];
+}

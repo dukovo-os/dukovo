@@ -7,7 +7,12 @@
 use std::alloc::Global;
 
 use proptest::prelude::*;
-use radix_abi::process::{EXEC_VERSION, ExecHeader};
+use radix_abi::errors::Kernel;
+use radix_abi::event_queue::{
+    QueueEvent, QueueFilter, QueueFlags, USER_AND, USER_CONTROL, USER_COPY, USER_FLAGS, USER_OR,
+    USER_TRIGGER,
+};
+use radix_abi::process::{EXEC_VERSION, ExecHeader, PollEvents};
 use radix_abi::signal::{
     ActionFlags, IGNORE, SIGCHLD, SIGCONT, SIGINT, SIGKILL, SIGNALS, SIGRTMIN, SIGSEGV, SIGSTOP,
     SIGTERM, SIGTSTP, SIGUSR1,
@@ -21,6 +26,7 @@ use crate::ipc::{
 use crate::signal::{self, Action, ActionError, Actions, Disposition, Info, Pending};
 use crate::status::{self, Ended};
 use crate::tree::{Found, Life, Tree, TreeError, WaitFor, Which};
+use crate::watch::{self, Asks, Invalid, State, Then};
 
 type T = Tree<u64, Global>;
 
@@ -658,4 +664,661 @@ proptest! {
             prop_assert_eq!(i32::from(undone[n]), (i32::from(values[n]) + adjust[n]).clamp(0, SEMVMX));
         }
     }
+}
+
+// Event queues' watches (ADR 0353).
+
+/// The descriptor of the read and write watches these tests make.
+const DESCRIPTOR: u64 = 7;
+
+/// The number of the user event these tests make, as a program picks one.
+const EVENT: u64 = 0xee1e_b9f4;
+
+fn all_flags(each: &[QueueFlags]) -> QueueFlags {
+    each.iter().fold(QueueFlags::NONE, |all, flag| all.union(*flag))
+}
+
+fn all_events(each: &[PollEvents]) -> PollEvents {
+    each.iter().fold(PollEvents::NONE, |all, event| all.union(*event))
+}
+
+/// An event's 16 bits of flags.
+fn bits(of: QueueFlags) -> u16 {
+    u16::try_from(of.bits()).unwrap()
+}
+
+/// A change as a C program's `EV_SET` makes it, with the flags `with`.
+fn change(ident: u64, filter: QueueFilter, with: QueueFlags) -> QueueEvent {
+    QueueEvent { ident, filter: filter.raw(), flags: bits(with), ..QueueEvent::default() }
+}
+
+/// A change of the user event, with its `fflags` and `data`.
+fn user_change(with: QueueFlags, fflags: u32, data: i64) -> QueueEvent {
+    QueueEvent { fflags, data, ..change(EVENT, QueueFilter::User, with) }
+}
+
+/// The watch that adding the descriptor with `with` makes.
+fn watch_of(filter: QueueFilter, with: QueueFlags) -> State {
+    State::added(&change(DESCRIPTOR, filter, with), filter)
+}
+
+/// The watch that adding the user event with `with`, `fflags` and `data` makes.
+fn user_watch(with: QueueFlags, fflags: u32, data: i64) -> State {
+    State::added(&user_change(with, fflags, data), QueueFilter::User)
+}
+
+/// What a look at the descriptor's watch reports when the descriptor is ready as `ready` says.
+fn look_at(
+    state: &mut State,
+    filter: QueueFilter,
+    ready: PollEvents,
+) -> Option<(QueueEvent, Then)> {
+    state.report(DESCRIPTOR, filter, ready)
+}
+
+/// What a look at the user event reports, which no descriptor's readiness changes.
+fn look_at_event(state: &mut State) -> Option<(QueueEvent, Then)> {
+    state.report(EVENT, QueueFilter::User, PollEvents::NONE)
+}
+
+/// The flags a triggered user event reports after a change of `fflags`.
+fn flags_after_change(state: &mut State, fflags: u32) -> u32 {
+    state.change(&user_change(QueueFlags::NONE, fflags, 0), QueueFilter::User, false);
+    look_at_event(state).unwrap().0.fflags
+}
+
+#[test]
+fn the_flags_filters_and_notes_have_bsds_numbers() {
+    let flags = [
+        (QueueFlags::ADD, 0x1),
+        (QueueFlags::DELETE, 0x2),
+        (QueueFlags::ENABLE, 0x4),
+        (QueueFlags::DISABLE, 0x8),
+        (QueueFlags::ONESHOT, 0x10),
+        (QueueFlags::CLEAR, 0x20),
+        (QueueFlags::RECEIPT, 0x40),
+        (QueueFlags::DISPATCH, 0x80),
+        (QueueFlags::ERROR, 0x4000),
+        (QueueFlags::EOF, 0x8000),
+    ];
+    for (flag, number) in flags {
+        assert_eq!(flag.bits(), number);
+    }
+    // EVFILT_READ, EVFILT_WRITE and EVFILT_USER, as the C library's 16-bit `short`.
+    assert_eq!(QueueFilter::Read.raw(), (-1i16) as u16);
+    assert_eq!(QueueFilter::Write.raw(), (-2i16) as u16);
+    assert_eq!(QueueFilter::User.raw(), (-11i16) as u16);
+    // NOTE_TRIGGER, NOTE_FFLAGSMASK, NOTE_FFAND, NOTE_FFOR, NOTE_FFCOPY and NOTE_FFCTRLMASK.
+    assert_eq!(USER_TRIGGER, 0x0100_0000);
+    assert_eq!(USER_FLAGS, 0x00ff_ffff);
+    assert_eq!(USER_AND, 0x4000_0000);
+    assert_eq!(USER_OR, 0x8000_0000);
+    assert_eq!(USER_COPY, 0xc000_0000);
+    assert_eq!(USER_CONTROL, USER_AND | USER_OR);
+}
+
+#[test]
+fn a_kevent_is_32_bytes_with_each_field_at_its_offset() {
+    // struct kevent { uintptr_t ident; short filter; unsigned short flags;
+    //                 unsigned int fflags; int64_t data; void *udata; }
+    assert_eq!(QueueEvent::SIZE, 32);
+    let offsets = [
+        QueueEvent::OFFSET_IDENT,
+        QueueEvent::OFFSET_FILTER,
+        QueueEvent::OFFSET_FLAGS,
+        QueueEvent::OFFSET_FFLAGS,
+        QueueEvent::OFFSET_DATA,
+        QueueEvent::OFFSET_UDATA,
+    ];
+    assert_eq!(offsets, [0, 8, 10, 12, 16, 24]);
+    let event = QueueEvent {
+        ident: 0x0807_0605_0403_0201,
+        filter: 0xfff5,
+        flags: 0x4021,
+        fflags: 0x0b0a_0908,
+        data: -2,
+        udata: 0x1f1e_1d1c_1b1a_1918,
+    };
+    let bytes = watch::write(&event);
+    assert_eq!(bytes[0..8], [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(bytes[8..10], [0xf5, 0xff]);
+    assert_eq!(bytes[10..12], [0x21, 0x40]);
+    assert_eq!(bytes[12..16], [8, 9, 10, 11]);
+    assert_eq!(bytes[16..24], [0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+    assert_eq!(bytes[24..32], [0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f]);
+}
+
+#[test]
+fn a_change_is_read_from_the_bytes_a_c_program_leaves() {
+    let mut bytes = [0u8; QueueEvent::SIZE];
+    bytes[0..8].copy_from_slice(&9u64.to_le_bytes());
+    bytes[8..10].copy_from_slice(&(-1i16).to_le_bytes());
+    bytes[10..12].copy_from_slice(&0x21u16.to_le_bytes());
+    bytes[12..16].copy_from_slice(&USER_TRIGGER.to_le_bytes());
+    bytes[16..24].copy_from_slice(&(-5i64).to_le_bytes());
+    bytes[24..32].copy_from_slice(&0xdead_beef_u64.to_le_bytes());
+    let expected = QueueEvent {
+        ident: 9,
+        filter: QueueFilter::Read.raw(),
+        flags: 0x21,
+        fflags: USER_TRIGGER,
+        data: -5,
+        udata: 0xdead_beef,
+    };
+    assert_eq!(watch::read(&bytes), expected);
+    assert_eq!(watch::write(&expected), bytes);
+}
+
+#[test]
+fn an_event_is_read_back_as_it_was_written_whatever_its_values() {
+    let largest = QueueEvent {
+        ident: u64::MAX,
+        filter: u16::MAX,
+        flags: u16::MAX,
+        fflags: u32::MAX,
+        data: i64::MAX,
+        udata: u64::MAX,
+    };
+    for event in [QueueEvent::default(), largest, QueueEvent { data: i64::MIN, ..largest }] {
+        assert_eq!(watch::read(&watch::write(&event)), event);
+    }
+}
+
+#[test]
+fn a_change_asks_to_add_delete_or_change_a_watch() {
+    let read = QueueFilter::Read;
+    let asks = |with| watch::asks(&change(DESCRIPTOR, read, with));
+    assert_eq!(asks(QueueFlags::ADD), Ok(Some((read, Asks::Add))));
+    assert_eq!(asks(QueueFlags::DELETE), Ok(Some((read, Asks::Delete))));
+    assert_eq!(asks(QueueFlags::NONE), Ok(Some((read, Asks::Change))));
+    // The other flags say how, not what.
+    let others = [
+        QueueFlags::ENABLE,
+        QueueFlags::DISABLE,
+        QueueFlags::ONESHOT,
+        QueueFlags::CLEAR,
+        QueueFlags::RECEIPT,
+        QueueFlags::DISPATCH,
+    ];
+    for other in others {
+        assert_eq!(asks(other), Ok(Some((read, Asks::Change))));
+        assert_eq!(asks(other.union(QueueFlags::ADD)), Ok(Some((read, Asks::Add))));
+        assert_eq!(asks(other.union(QueueFlags::DELETE)), Ok(Some((read, Asks::Delete))));
+    }
+}
+
+#[test]
+fn a_change_asks_of_the_watch_of_its_filter() {
+    for filter in QueueFilter::ALL {
+        let asked = watch::asks(&change(DESCRIPTOR, filter, QueueFlags::ADD));
+        assert_eq!(asked, Ok(Some((filter, Asks::Add))));
+    }
+}
+
+#[test]
+fn a_change_that_adds_and_deletes_is_invalid() {
+    let both = all_flags(&[QueueFlags::ADD, QueueFlags::DELETE]);
+    for filter in QueueFilter::ALL {
+        assert_eq!(watch::asks(&change(DESCRIPTOR, filter, both)), Err(Invalid));
+    }
+}
+
+#[test]
+fn a_change_of_filter_zero_is_passed_over() {
+    let passed = QueueEvent { filter: 0, ..QueueEvent::default() };
+    assert_eq!(watch::asks(&passed), Ok(None));
+    // Whatever else it says, even what would be invalid.
+    let both = all_flags(&[QueueFlags::ADD, QueueFlags::DELETE]);
+    for with in [QueueFlags::ADD, QueueFlags::DELETE, both] {
+        let passed = QueueEvent { flags: bits(with), ..passed };
+        assert_eq!(watch::asks(&passed), Ok(None));
+    }
+}
+
+#[test]
+fn a_change_of_an_unknown_filter_is_invalid() {
+    // 0xfff9 is -7 as a C program's `short`; the others lie next to the known filters.
+    let add = change(DESCRIPTOR, QueueFilter::Read, QueueFlags::ADD);
+    for filter in [1, 3, 0x7fff, 0xfff4, 0xfff6, 0xfff9, 0xfffd] {
+        let unknown = QueueEvent { filter, ..add };
+        assert_eq!(watch::asks(&unknown), Err(Invalid), "filter {filter:#x}");
+    }
+}
+
+#[test]
+fn flags_outside_the_low_byte_make_no_difference() {
+    // A program may leave `error`, `eof` or EV_FLAG1 in a change's flags. FreeBSD clears them,
+    // and they change nothing here.
+    for low in 0..=0xffu16 {
+        for high in [0x0100, 0x2000, 0x4000, 0x8000, 0xff00] {
+            for filter in QueueFilter::ALL {
+                let none = change(DESCRIPTOR, filter, QueueFlags::NONE);
+                let plain = QueueEvent { flags: low, ..none };
+                let noisy = QueueEvent { flags: low | high, ..plain };
+                assert_eq!(watch::asks(&noisy), watch::asks(&plain));
+                assert_eq!(State::added(&noisy, filter), State::added(&plain, filter));
+                for adding in [false, true] {
+                    for first in [QueueFlags::NONE, QueueFlags::DISABLE] {
+                        let mut with_noise = watch_of(filter, first);
+                        let mut without = with_noise;
+                        with_noise.change(&noisy, filter, adding);
+                        without.change(&plain, filter, adding);
+                        assert_eq!(with_noise, without);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn an_added_watch_is_enabled_unless_its_change_disables_it() {
+    for filter in QueueFilter::ALL {
+        assert!(watch_of(filter, QueueFlags::ADD).enabled());
+        assert!(watch_of(filter, all_flags(&[QueueFlags::ADD, QueueFlags::ENABLE])).enabled());
+        assert!(!watch_of(filter, all_flags(&[QueueFlags::ADD, QueueFlags::DISABLE])).enabled());
+    }
+}
+
+#[test]
+fn a_change_sets_the_udata_the_events_carry() {
+    let read = QueueFilter::Read;
+    let ready = PollEvents::READABLE;
+    let added = QueueEvent { udata: 0x11, ..change(DESCRIPTOR, read, QueueFlags::ADD) };
+    let mut state = State::added(&added, read);
+    assert_eq!(look_at(&mut state, read, ready).unwrap().0.udata, 0x11);
+    let plain = QueueEvent { udata: 0x22, ..change(DESCRIPTOR, read, QueueFlags::NONE) };
+    state.change(&plain, read, false);
+    assert_eq!(look_at(&mut state, read, ready).unwrap().0.udata, 0x22);
+    let again = QueueEvent { udata: 0x33, ..added };
+    state.change(&again, read, true);
+    assert_eq!(look_at(&mut state, read, ready).unwrap().0.udata, 0x33);
+}
+
+#[test]
+fn enable_wins_over_disable_in_one_change() {
+    let read = QueueFilter::Read;
+    let both = change(DESCRIPTOR, read, all_flags(&[QueueFlags::ENABLE, QueueFlags::DISABLE]));
+    let adding = all_flags(&[QueueFlags::ADD, QueueFlags::ENABLE, QueueFlags::DISABLE]);
+    assert!(watch_of(read, adding).enabled());
+    for added in [QueueFlags::ADD, all_flags(&[QueueFlags::ADD, QueueFlags::DISABLE])] {
+        let mut state = watch_of(read, added);
+        state.change(&both, read, false);
+        assert!(state.enabled());
+        let mut state = watch_of(read, added);
+        state.change(&change(DESCRIPTOR, read, adding), read, true);
+        assert!(state.enabled());
+    }
+}
+
+#[test]
+fn a_change_with_neither_enable_nor_disable_leaves_the_watch_as_it_is() {
+    let read = QueueFilter::Read;
+    for added in [QueueFlags::ADD, all_flags(&[QueueFlags::ADD, QueueFlags::DISABLE])] {
+        let mut state = watch_of(read, added);
+        let before = state.enabled();
+        state.change(&change(DESCRIPTOR, read, QueueFlags::NONE), read, false);
+        assert_eq!(state.enabled(), before);
+    }
+}
+
+#[test]
+fn an_add_of_a_held_watch_enables_it_unless_it_disables_it() {
+    let read = QueueFilter::Read;
+    let mut state = watch_of(read, all_flags(&[QueueFlags::ADD, QueueFlags::DISABLE]));
+    assert!(!state.enabled());
+    state.change(&change(DESCRIPTOR, read, QueueFlags::ADD), read, true);
+    assert!(state.enabled());
+    let disabling = change(DESCRIPTOR, read, all_flags(&[QueueFlags::ADD, QueueFlags::DISABLE]));
+    state.change(&disabling, read, true);
+    assert!(!state.enabled());
+}
+
+#[test]
+fn a_held_watch_keeps_the_options_it_was_first_added_with() {
+    let read = QueueFilter::Read;
+    let ready = PollEvents::READABLE;
+    let options = all_flags(&[QueueFlags::ONESHOT, QueueFlags::CLEAR, QueueFlags::DISPATCH]);
+    let mut clear = watch_of(read, all_flags(&[QueueFlags::ADD, QueueFlags::CLEAR]));
+    let others = all_flags(&[QueueFlags::ADD, QueueFlags::ONESHOT, QueueFlags::DISPATCH]);
+    clear.change(&change(DESCRIPTOR, read, others), read, true);
+    let (event, then) = look_at(&mut clear, read, ready).unwrap();
+    assert_eq!((event.flags, then), (bits(QueueFlags::CLEAR), Then::AwaitChange));
+    // One added with none gains none, from a change that adds or one that only changes.
+    let mut plain = watch_of(read, QueueFlags::ADD);
+    plain.change(&change(DESCRIPTOR, read, options.union(QueueFlags::ADD)), read, true);
+    plain.change(&change(DESCRIPTOR, read, options), read, false);
+    let (event, then) = look_at(&mut plain, read, ready).unwrap();
+    assert_eq!((event.flags, then), (0, Then::LookAgain));
+}
+
+#[test]
+fn a_user_events_flags_change_as_the_control_bits_say() {
+    let mut state = user_watch(QueueFlags::ADD, USER_TRIGGER | USER_COPY | 5, 0);
+    assert_eq!(look_at_event(&mut state).unwrap().0.fflags, 5);
+    // OR adds, AND keeps what both have, no control bit leaves them, COPY replaces them.
+    assert_eq!(flags_after_change(&mut state, USER_OR | 2), 7);
+    assert_eq!(flags_after_change(&mut state, USER_AND | 6), 6);
+    assert_eq!(flags_after_change(&mut state, 0xff), 6);
+    assert_eq!(flags_after_change(&mut state, USER_COPY | 0x30), 0x30);
+    assert_eq!(flags_after_change(&mut state, USER_COPY), 0);
+}
+
+#[test]
+fn a_user_event_starts_with_no_flags_of_its_own() {
+    // The change that adds the event applies its flags to none: NOP and AND leave none, OR and
+    // COPY give the change's.
+    for (control, expected) in [(0, 0), (USER_AND, 0), (USER_OR, 0b110), (USER_COPY, 0b110)] {
+        let mut state = user_watch(QueueFlags::ADD, USER_TRIGGER | control | 0b110, 0);
+        assert_eq!(look_at_event(&mut state).unwrap().0.fflags, expected, "control {control:#x}");
+    }
+}
+
+#[test]
+fn a_user_events_own_flags_are_the_low_24_bits_of_fflags() {
+    let mut state = user_watch(QueueFlags::ADD, USER_TRIGGER | USER_COPY | USER_FLAGS, 0);
+    assert_eq!(look_at_event(&mut state).unwrap().0.fflags, 0x00ff_ffff);
+}
+
+#[test]
+fn a_user_event_is_ready_once_a_change_triggers_it() {
+    let mut state = user_watch(QueueFlags::ADD, 0, 0);
+    // Its trigger alone makes it ready, whatever the descriptors are ready for.
+    let everything = all_events(&[PollEvents::READABLE, PollEvents::WRITABLE, PollEvents::HANG_UP]);
+    assert_eq!(state.report(EVENT, QueueFilter::User, everything), None);
+    // Setting its flags is not triggering it.
+    state.change(&user_change(QueueFlags::NONE, USER_OR | 1, 0), QueueFilter::User, false);
+    assert_eq!(look_at_event(&mut state), None);
+    state.change(&user_change(QueueFlags::NONE, USER_TRIGGER, 0), QueueFilter::User, false);
+    assert!(look_at_event(&mut state).is_some());
+    // A later change that does not trigger leaves it triggered.
+    state.change(&user_change(QueueFlags::NONE, 0, 0), QueueFilter::User, false);
+    assert!(look_at_event(&mut state).is_some());
+}
+
+#[test]
+fn an_add_of_a_held_user_event_can_trigger_it() {
+    let mut state = user_watch(QueueFlags::ADD, 0, 0);
+    state.change(&user_change(QueueFlags::ADD, USER_TRIGGER, 0), QueueFilter::User, true);
+    assert!(look_at_event(&mut state).is_some());
+}
+
+#[test]
+fn a_user_event_can_be_triggered_as_it_is_added() {
+    let mut state = user_watch(QueueFlags::ADD, USER_TRIGGER, 0);
+    assert!(look_at_event(&mut state).is_some());
+}
+
+#[test]
+fn every_change_of_a_user_event_sets_its_data() {
+    let user = QueueFilter::User;
+    let mut state = user_watch(QueueFlags::ADD, USER_TRIGGER, 11);
+    assert_eq!(look_at_event(&mut state).unwrap().0.data, 11);
+    // Even one that triggers nothing and touches no flags, and an add of the held event.
+    state.change(&user_change(QueueFlags::NONE, 0, -3), user, false);
+    assert_eq!(look_at_event(&mut state).unwrap().0.data, -3);
+    state.change(&user_change(QueueFlags::NONE, USER_TRIGGER, i64::MAX), user, false);
+    assert_eq!(look_at_event(&mut state).unwrap().0.data, i64::MAX);
+    state.change(&user_change(QueueFlags::ADD, 0, 0), user, true);
+    assert_eq!(look_at_event(&mut state).unwrap().0.data, 0);
+}
+
+#[test]
+fn a_disabled_watch_reports_nothing_though_it_is_ready() {
+    let ready = all_events(&[
+        PollEvents::READABLE,
+        PollEvents::WRITABLE,
+        PollEvents::HANG_UP,
+        PollEvents::ERROR,
+    ]);
+    for filter in [QueueFilter::Read, QueueFilter::Write] {
+        let mut state = watch_of(filter, all_flags(&[QueueFlags::ADD, QueueFlags::DISABLE]));
+        assert_eq!(look_at(&mut state, filter, ready), None);
+        state.change(&change(DESCRIPTOR, filter, QueueFlags::ENABLE), filter, false);
+        assert!(look_at(&mut state, filter, ready).is_some());
+        state.change(&change(DESCRIPTOR, filter, QueueFlags::DISABLE), filter, false);
+        assert!(!state.enabled());
+        assert_eq!(look_at(&mut state, filter, ready), None);
+    }
+    // A triggered user event is disabled the same way.
+    let mut event = user_watch(all_flags(&[QueueFlags::ADD, QueueFlags::DISABLE]), USER_TRIGGER, 0);
+    assert_eq!(look_at_event(&mut event), None);
+    event.change(&user_change(QueueFlags::ENABLE, 0, 0), QueueFilter::User, false);
+    assert!(look_at_event(&mut event).is_some());
+}
+
+#[test]
+fn a_watch_reports_nothing_while_its_descriptor_is_not_ready() {
+    let mut read = watch_of(QueueFilter::Read, QueueFlags::ADD);
+    let mut write = watch_of(QueueFilter::Write, QueueFlags::ADD);
+    for quiet in [PollEvents::NONE, PollEvents::PRIORITY, PollEvents::INVALID] {
+        assert_eq!(look_at(&mut read, QueueFilter::Read, quiet), None);
+        assert_eq!(look_at(&mut write, QueueFilter::Write, quiet), None);
+    }
+    // A read watch is not ready for writing, nor a write watch for reading.
+    assert_eq!(look_at(&mut read, QueueFilter::Read, PollEvents::WRITABLE), None);
+    assert_eq!(look_at(&mut write, QueueFilter::Write, PollEvents::READABLE), None);
+}
+
+#[test]
+fn a_read_watch_is_ready_when_readable_hung_up_or_failed() {
+    let readable = all_events(&[PollEvents::READABLE, PollEvents::WRITABLE]);
+    for ready in [PollEvents::READABLE, PollEvents::HANG_UP, PollEvents::ERROR, readable] {
+        let mut state = watch_of(QueueFilter::Read, QueueFlags::ADD);
+        assert!(look_at(&mut state, QueueFilter::Read, ready).is_some(), "{ready:?}");
+    }
+}
+
+#[test]
+fn a_write_watch_is_ready_when_writable_hung_up_or_failed() {
+    let writable = all_events(&[PollEvents::READABLE, PollEvents::WRITABLE]);
+    for ready in [PollEvents::WRITABLE, PollEvents::HANG_UP, PollEvents::ERROR, writable] {
+        let mut state = watch_of(QueueFilter::Write, QueueFlags::ADD);
+        assert!(look_at(&mut state, QueueFilter::Write, ready).is_some(), "{ready:?}");
+    }
+}
+
+#[test]
+fn a_hung_up_or_failed_descriptor_reports_eof_and_a_merely_ready_one_does_not() {
+    let (read, write) = (QueueFilter::Read, QueueFilter::Write);
+    let kinds = [(read, PollEvents::READABLE), (write, PollEvents::WRITABLE)];
+    for (filter, ready) in kinds {
+        let mut state = watch_of(filter, QueueFlags::ADD);
+        assert_eq!(look_at(&mut state, filter, ready).unwrap().0.flags, 0);
+        let ended = [
+            PollEvents::HANG_UP,
+            PollEvents::ERROR,
+            all_events(&[ready, PollEvents::HANG_UP]),
+            all_events(&[ready, PollEvents::ERROR]),
+        ];
+        for events in ended {
+            let flags = look_at(&mut state, filter, events).unwrap().0.flags;
+            assert_eq!(flags, bits(QueueFlags::EOF), "{filter:?} {events:?}");
+        }
+    }
+}
+
+#[test]
+fn a_user_event_never_reports_eof() {
+    let mut state = user_watch(QueueFlags::ADD, USER_TRIGGER, 0);
+    let ended = all_events(&[PollEvents::HANG_UP, PollEvents::ERROR]);
+    let (event, _) = state.report(EVENT, QueueFilter::User, ended).unwrap();
+    assert_eq!(event.flags, 0);
+}
+
+#[test]
+fn an_event_carries_the_watchs_key_and_udata() {
+    // The key is the one the queue holds the watch under, not the added change's.
+    let add = change(DESCRIPTOR, QueueFilter::Write, QueueFlags::ADD);
+    let mut state = State::added(&QueueEvent { udata: 0xfeed, ..add }, QueueFilter::Write);
+    let (event, _) = state.report(42, QueueFilter::Write, PollEvents::WRITABLE).unwrap();
+    let expected =
+        QueueEvent { ident: 42, filter: 0xfffe, flags: 0, fflags: 0, data: 0, udata: 0xfeed };
+    assert_eq!(event, expected);
+    let user = QueueEvent { udata: 0xbeef, ..user_change(QueueFlags::ADD, USER_TRIGGER, 0) };
+    let mut state = State::added(&user, QueueFilter::User);
+    let (event, _) = look_at_event(&mut state).unwrap();
+    assert_eq!((event.ident, event.filter, event.udata), (EVENT, 0xfff5, 0xbeef));
+}
+
+#[test]
+fn an_event_carries_the_oneshot_clear_and_dispatch_it_was_added_with() {
+    let (oneshot, clear, dispatch) = (QueueFlags::ONESHOT, QueueFlags::CLEAR, QueueFlags::DISPATCH);
+    let combinations = [
+        (oneshot, 0x10),
+        (clear, 0x20),
+        (dispatch, 0x80),
+        (all_flags(&[oneshot, clear]), 0x30),
+        (all_flags(&[clear, dispatch]), 0xa0),
+        (all_flags(&[oneshot, clear, dispatch]), 0xb0),
+    ];
+    let read = QueueFilter::Read;
+    for (options, expected) in combinations {
+        let added = options.union(QueueFlags::ADD);
+        let (event, _) = look_at(&mut watch_of(read, added), read, PollEvents::READABLE).unwrap();
+        assert_eq!(event.flags, expected);
+        // Beside `eof`, when the descriptor has hung up.
+        let (event, _) = look_at(&mut watch_of(read, added), read, PollEvents::HANG_UP).unwrap();
+        assert_eq!(event.flags, expected | 0x8000);
+    }
+}
+
+#[test]
+fn a_read_or_write_event_has_no_fflags_and_no_data() {
+    for filter in [QueueFilter::Read, QueueFilter::Write] {
+        // A program may leave anything in them, and a trigger means nothing here.
+        let noisy = QueueEvent {
+            fflags: USER_TRIGGER | USER_COPY | 5,
+            data: 9,
+            ..change(DESCRIPTOR, filter, QueueFlags::ADD)
+        };
+        let mut state = State::added(&noisy, filter);
+        state.change(&QueueEvent { flags: 0, ..noisy }, filter, false);
+        assert_eq!(look_at(&mut state, filter, PollEvents::NONE), None);
+        let ready = all_events(&[PollEvents::READABLE, PollEvents::WRITABLE]);
+        let (event, _) = look_at(&mut state, filter, ready).unwrap();
+        assert_eq!((event.fflags, event.data), (0, 0));
+    }
+}
+
+#[test]
+fn a_level_triggered_watch_is_looked_at_again_for_as_long_as_it_is_ready() {
+    let ready = all_events(&[PollEvents::READABLE, PollEvents::WRITABLE]);
+    for filter in [QueueFilter::Read, QueueFilter::Write] {
+        let mut state = watch_of(filter, QueueFlags::ADD);
+        for _ in 0..3 {
+            let (_, then) = look_at(&mut state, filter, ready).unwrap();
+            assert_eq!(then, Then::LookAgain);
+        }
+        assert!(state.enabled());
+    }
+}
+
+#[test]
+fn a_clear_watch_is_looked_at_again_only_after_a_change() {
+    let ready = PollEvents::READABLE;
+    let mut state = watch_of(QueueFilter::Read, all_flags(&[QueueFlags::ADD, QueueFlags::CLEAR]));
+    let (_, then) = look_at(&mut state, QueueFilter::Read, ready).unwrap();
+    assert_eq!(then, Then::AwaitChange);
+    // The watch stays enabled: the queue looks again after a change, and reports what it finds.
+    assert!(state.enabled());
+    assert!(look_at(&mut state, QueueFilter::Read, ready).is_some());
+}
+
+#[test]
+fn a_clear_user_event_forgets_its_trigger_flags_and_value_when_reported() {
+    let user = QueueFilter::User;
+    let clear = all_flags(&[QueueFlags::ADD, QueueFlags::CLEAR]);
+    let mut state = user_watch(clear, USER_TRIGGER | USER_COPY | 5, 42);
+    let (event, then) = look_at_event(&mut state).unwrap();
+    assert_eq!((event.fflags, event.data, then), (5, 42, Then::AwaitChange));
+    assert_eq!(look_at_event(&mut state), None);
+    // The next trigger reports only what comes with it: its flags OR into none, not into 5.
+    state.change(&user_change(QueueFlags::NONE, USER_TRIGGER | USER_OR | 2, 7), user, false);
+    let (event, _) = look_at_event(&mut state).unwrap();
+    assert_eq!((event.fflags, event.data), (2, 7));
+    // A trigger with no flags and no value reports none, not the last ones.
+    assert_eq!(look_at_event(&mut state), None);
+    state.change(&user_change(QueueFlags::NONE, USER_TRIGGER, 0), user, false);
+    let (event, _) = look_at_event(&mut state).unwrap();
+    assert_eq!((event.fflags, event.data), (0, 0));
+}
+
+#[test]
+fn a_user_event_without_clear_keeps_its_trigger_flags_and_value() {
+    let mut state = user_watch(QueueFlags::ADD, USER_TRIGGER | USER_COPY | 5, 42);
+    for _ in 0..3 {
+        let (event, then) = look_at_event(&mut state).unwrap();
+        assert_eq!((event.fflags, event.data, then), (5, 42, Then::LookAgain));
+    }
+}
+
+#[test]
+fn a_dispatch_watch_is_disabled_when_reported_and_looked_at_again_when_enabled() {
+    let read = QueueFilter::Read;
+    let ready = PollEvents::READABLE;
+    let mut state = watch_of(read, all_flags(&[QueueFlags::ADD, QueueFlags::DISPATCH]));
+    let (_, then) = look_at(&mut state, read, ready).unwrap();
+    assert_eq!(then, Then::AwaitChange);
+    assert!(!state.enabled());
+    assert_eq!(look_at(&mut state, read, ready), None);
+    state.change(&change(DESCRIPTOR, read, QueueFlags::ENABLE), read, false);
+    assert!(state.enabled());
+    assert!(look_at(&mut state, read, ready).is_some());
+}
+
+#[test]
+fn a_dispatch_user_event_with_clear_is_disabled_and_forgets_its_trigger() {
+    let flags = all_flags(&[QueueFlags::ADD, QueueFlags::DISPATCH, QueueFlags::CLEAR]);
+    let mut state = user_watch(flags, USER_TRIGGER | USER_COPY | 3, 8);
+    let (_, then) = look_at_event(&mut state).unwrap();
+    assert_eq!(then, Then::AwaitChange);
+    assert!(!state.enabled());
+    // Enabling it does not make it ready: nothing has triggered it since.
+    state.change(&user_change(QueueFlags::ENABLE, 0, 0), QueueFilter::User, false);
+    assert!(state.enabled());
+    assert_eq!(look_at_event(&mut state), None);
+}
+
+#[test]
+fn a_oneshot_watch_is_deleted_when_reported() {
+    let ready = all_events(&[PollEvents::READABLE, PollEvents::WRITABLE]);
+    for filter in [QueueFilter::Read, QueueFilter::Write] {
+        let mut state = watch_of(filter, all_flags(&[QueueFlags::ADD, QueueFlags::ONESHOT]));
+        let (event, then) = look_at(&mut state, filter, ready).unwrap();
+        assert_eq!((event.flags, then), (0x10, Then::Delete));
+    }
+    let mut event = user_watch(all_flags(&[QueueFlags::ADD, QueueFlags::ONESHOT]), USER_TRIGGER, 0);
+    assert_eq!(look_at_event(&mut event).unwrap().1, Then::Delete);
+}
+
+#[test]
+fn oneshot_wins_over_dispatch_and_clear() {
+    let oneshot = all_flags(&[QueueFlags::ADD, QueueFlags::ONESHOT]);
+    let (clear, dispatch) = (QueueFlags::CLEAR, QueueFlags::DISPATCH);
+    for others in [dispatch, clear, all_flags(&[dispatch, clear])] {
+        let mut state = watch_of(QueueFilter::Read, oneshot.union(others));
+        let (event, then) = look_at(&mut state, QueueFilter::Read, PollEvents::READABLE).unwrap();
+        assert_eq!(then, Then::Delete);
+        // It is still reported with every option it was added with.
+        assert_eq!(event.flags, bits(QueueFlags::ONESHOT.union(others)));
+    }
+}
+
+#[test]
+fn an_error_event_is_the_change_with_the_error_flag_and_the_status_in_data() {
+    let failed = QueueEvent {
+        ident: 12,
+        filter: QueueFilter::Write.raw(),
+        flags: bits(all_flags(&[QueueFlags::ADD, QueueFlags::ONESHOT, QueueFlags::RECEIPT])),
+        fflags: 0x1234,
+        data: 99,
+        udata: 0xcafe,
+    };
+    let status = Kernel::InvalidArgument.status(1).0;
+    let reported = watch::error_event(&failed, status);
+    assert_eq!(reported, QueueEvent { flags: 0x4000, data: status as i64, ..failed });
+    // A receipt for a change that worked says 0, and the status is a bit pattern.
+    assert_eq!(watch::error_event(&failed, 0).data, 0);
+    assert_eq!(watch::error_event(&failed, u64::MAX).data, -1);
 }

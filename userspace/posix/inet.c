@@ -14,7 +14,9 @@
 // addresses in use or not on the machine and of families not there.
 // AF_INET6 over ::1 (ADR 0332): a connection, its addresses and its
 // data, IPV6_V6ONLY, and an IPv4 client reaching a socket bound to ::
-// as ::ffff:127.0.0.1. And
+// as ::ffff:127.0.0.1. All zeros as a destination, for TCP and UDP, a
+// connected UDP socket's name, and the reset of a connection closed with
+// bytes unread or receiving after its close (ADR 0355). And
 // the interfaces' names and numbers (if_nametoindex, if_indextoname,
 // if_nameindex) and SO_BINDTODEVICE, of lo, the only interface this boot
 // has; the interfaces boot test binds to a card. And
@@ -876,6 +878,112 @@ static void ipv6(void) {
 	close(any);
 }
 
+// All zeros as a destination is this machine, as on Linux (ADR 0355):
+// Go dials ":port", and a listener's "[::]:port", this way. A connected
+// UDP socket bound to any address is named by the address it sends from.
+static void all_zeros(void) {
+	int server = listener();
+	unsigned short port = port_of(server);
+	int client = socket(AF_INET, SOCK_STREAM, 0);
+	struct sockaddr_in to = loopback(port);
+	to.sin_addr.s_addr = htonl(INADDR_ANY);
+	CHECK(client >= 0 && connect(client, (struct sockaddr *)&to, sizeof(to)) == 0);
+	struct sockaddr_in peer;
+	socklen_t len = sizeof(peer);
+	int accepted = accept(server, (struct sockaddr *)&peer, &len);
+	CHECK(accepted >= 0 && peer.sin_addr.s_addr == htonl(INADDR_LOOPBACK));
+	close(accepted);
+	close(client);
+	close(server);
+	// IPv6's all zeros is ::1.
+	int six = socket(AF_INET6, SOCK_STREAM, 0);
+	struct sockaddr_in6 at;
+	memset(&at, 0, sizeof(at));
+	at.sin6_family = AF_INET6;
+	at.sin6_addr = in6addr_loopback;
+	CHECK(six >= 0 && bind(six, (struct sockaddr *)&at, sizeof(at)) == 0 && listen(six, 1) == 0);
+	len = sizeof(at);
+	CHECK(getsockname(six, (struct sockaddr *)&at, &len) == 0);
+	at.sin6_addr = in6addr_any;
+	client = socket(AF_INET6, SOCK_STREAM, 0);
+	CHECK(client >= 0 && connect(client, (struct sockaddr *)&at, sizeof(at)) == 0);
+	accepted = accept(six, NULL, NULL);
+	CHECK(accepted >= 0);
+	close(accepted);
+	close(client);
+	close(six);
+	// A datagram to 0.0.0.0 reaches a socket on 127.0.0.1.
+	int a = socket(AF_INET, SOCK_DGRAM, 0);
+	struct sockaddr_in here = loopback(0);
+	CHECK(a >= 0 && bind(a, (struct sockaddr *)&here, sizeof(here)) == 0);
+	int b = socket(AF_INET, SOCK_DGRAM, 0);
+	to = loopback(port_of(a));
+	to.sin_addr.s_addr = htonl(INADDR_ANY);
+	CHECK(b >= 0 && sendto(b, "zero", 4, 0, (struct sockaddr *)&to, sizeof(to)) == 4);
+	char buffer[8];
+	CHECK(recv(a, buffer, sizeof(buffer), 0) == 4 && !memcmp(buffer, "zero", 4));
+	// b, bound to any address by that send, connects to a: its name is
+	// 127.0.0.1 then, and a's reply to that name reaches it.
+	to = loopback(port_of(a));
+	CHECK(connect(b, (struct sockaddr *)&to, sizeof(to)) == 0);
+	struct sockaddr_in name;
+	len = sizeof(name);
+	CHECK(getsockname(b, (struct sockaddr *)&name, &len) == 0);
+	CHECK(name.sin_addr.s_addr == htonl(INADDR_LOOPBACK) && name.sin_port != 0);
+	CHECK(sendto(a, "back", 4, 0, (struct sockaddr *)&name, sizeof(name)) == 4);
+	waiting_for(b, 4);
+	CHECK(recv(b, buffer, sizeof(buffer), 0) == 4 && !memcmp(buffer, "back", 4));
+	close(a);
+	close(b);
+}
+
+// Waits up to 5 s for the connection of `fd` to be reset: its peer is
+// gone then (ENOTCONN).
+static void waiting_for_reset(int fd) {
+	struct sockaddr_in peer;
+	socklen_t len = sizeof(peer);
+	for(int i = 0; i < 5000; i++) {
+		len = sizeof(peer);
+		if(getpeername(fd, (struct sockaddr *)&peer, &len) != 0)
+			break;
+		check_sleep_ms(1);
+	}
+	CHECK_ERROR(getpeername(fd, (struct sockaddr *)&peer, &len), ENOTCONN);
+}
+
+// A close with bytes received and not read resets the connection, and so
+// does a byte that reaches it after its close, as on Linux (ADR 0355):
+// the other end, still writing, learns at once that no one reads.
+static void close_unread(void) {
+	int server = listener();
+	unsigned short port = port_of(server);
+	int client = connected(port);
+	int accepted = accept(server, NULL, NULL);
+	CHECK(accepted >= 0);
+	CHECK(send(accepted, "unread", 6, 0) == 6);
+	waiting_for(client, 6);
+	close(client);
+	waiting_for_reset(accepted);
+	char buffer[8];
+	CHECK_ERROR(recv(accepted, buffer, sizeof(buffer), 0), ECONNRESET);
+	CHECK_ERROR(send(accepted, "x", 1, MSG_NOSIGNAL), EPIPE);
+	close(accepted);
+	// Closed with nothing unread, it ends with a FIN; a byte after that
+	// resets it. The reset of an end that had its FIN fails a write with
+	// EPIPE, and a read still finds the end of the stream, as on Linux.
+	client = connected(port);
+	accepted = accept(server, NULL, NULL);
+	CHECK(accepted >= 0);
+	close(client);
+	CHECK(recv(accepted, buffer, sizeof(buffer), 0) == 0);
+	CHECK(send(accepted, "late", 4, 0) == 4);
+	waiting_for_reset(accepted);
+	CHECK_ERROR(send(accepted, "x", 1, MSG_NOSIGNAL), EPIPE);
+	CHECK(recv(accepted, buffer, sizeof(buffer), 0) == 0);
+	close(accepted);
+	close(server);
+}
+
 static void interfaces(void) {
 	CHECK(if_nametoindex("lo") == 1);
 	CHECK(if_nametoindex("net0") == 0 && errno == ENODEV);
@@ -1532,6 +1640,8 @@ int main(void) {
 	RUN(errors);
 	RUN(icmp_errors);
 	RUN(ipv6);
+	RUN(all_zeros);
+	RUN(close_unread);
 	RUN(interfaces);
 	RUN(ping_sockets);
 	RUN(packet_info);

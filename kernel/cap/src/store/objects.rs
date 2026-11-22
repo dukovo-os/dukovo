@@ -15,7 +15,11 @@
 //! itself and what it was charged) lives in its record too: it is put
 //! there before the object's first capability is placed, so nobody finds
 //! the capability without it, and taken out when the object goes, so the
-//! kernel can close it.
+//! kernel can close it. Beside it the record holds where that object is
+//! ([`Located`]), which a holder of a capability to it and of its space's
+//! lock reads without the record's lock ([`Objects::address`]): the
+//! capability holds the object until it leaves its slot, and only a
+//! holder of that lock empties the slot (ADR 0354).
 //!
 //! Free records are found by index. Each CPU keeps a few spare indexes
 //! ([`CpuSpare`], ADR 0405), so operations make and release objects
@@ -30,7 +34,7 @@
 
 use alloc::vec::Vec;
 use core::alloc::Allocator;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, Ordering};
 
 use radix_sync::cpu::{CPUS, HeldCpu};
 use radix_sync::{Mutex, MutexGuard, Once, SpinLock, SpinLockGuard};
@@ -51,6 +55,21 @@ pub const OBJECT_BLOCKS: usize = 2048;
 /// the table's at once.
 const SPARE: usize = 8;
 const BATCH: usize = SPARE / 2;
+
+/// What the kernel keeps of an object (the store's `K`) says where the
+/// object is, for a reader that holds a capability to it in a locked
+/// space and takes no record's lock ([`crate::SpaceView::address`]).
+pub trait Located {
+    /// Where the object is, as the kernel reads it back: null for one such
+    /// a reader has no use for. It must not change while the object lives.
+    fn address(&self) -> *const ();
+}
+
+impl Located for () {
+    fn address(&self) -> *const () {
+        core::ptr::null()
+    }
+}
 
 /// What the table knows about one object.
 #[derive(Clone, Copy, Debug)]
@@ -91,6 +110,13 @@ pub(super) struct Record<K> {
     /// the record is free, and the index came to that reader through a
     /// lock (its space's or the table's) taken after the last change.
     generation: AtomicU32,
+    /// Where the object is ([`Located::address`]), or null while the
+    /// record is free. It is set with the record locked before the
+    /// object's first capability is placed, and set back to null with the
+    /// record locked once its last one has left its slot; a holder of a
+    /// capability to the object in a locked space reads it without the
+    /// lock ([`Objects::address`]).
+    address: AtomicPtr<()>,
     inner: SpinLock<Inner<K>>,
 }
 
@@ -127,6 +153,18 @@ impl<K> Record<K> {
     #[inline]
     fn next_generation(&self) {
         self.generation.store(bump(self.generation()), Ordering::Relaxed);
+    }
+
+    /// Sets where the object `kept` is kept for is, or null for none, with
+    /// the record locked and no capability to the object in any slot: as
+    /// it is made, or once it has gone.
+    #[inline]
+    fn set_address(&self, kept: Option<&K>)
+    where
+        K: Located,
+    {
+        let address = kept.map_or(core::ptr::null(), Located::address);
+        self.address.store(address.cast_mut(), Ordering::Relaxed);
     }
 
     /// Locks the record if it is of `generation`. Always inlined: it is
@@ -250,7 +288,7 @@ pub(super) struct Objects<A: Allocator, K> {
     pub(super) free: Mutex<Free<A>>,
 }
 
-impl<A: Allocator + Clone, K> Objects<A, K> {
+impl<A: Allocator + Clone, K: Located> Objects<A, K> {
     /// An empty table. Fails if there is no memory for its list of blocks
     /// and the CPUs' spares.
     pub(super) fn new(alloc: A) -> Result<Self, CapError> {
@@ -402,7 +440,11 @@ impl<A: Allocator + Clone, K> Objects<A, K> {
             // Every record's lock is made on this line: one class for the
             // lock-order checker.
             let inner = SpinLock::new(Inner { entry: None, kept: None });
-            let _ = block.push_within_capacity(Record { generation: AtomicU32::new(1), inner });
+            let _ = block.push_within_capacity(Record {
+                generation: AtomicU32::new(1),
+                address: AtomicPtr::new(core::ptr::null_mut()),
+                inner,
+            });
         }
         // Only the table's lock holder makes blocks, so nobody else can
         // have set it meanwhile.
@@ -435,6 +477,7 @@ impl<A: Allocator + Clone, K> Objects<A, K> {
             Ok(made) => {
                 let mut inner = record.lock();
                 inner.entry = Some(entry);
+                record.set_address(kept.as_ref());
                 inner.kept = kept;
                 Ok((id, made))
             }
@@ -456,6 +499,7 @@ impl<A: Allocator + Clone, K> Objects<A, K> {
                 return;
             }
             record.next_generation();
+            record.set_address(None);
             inner.kept.take()
         };
         drop(kept);
@@ -504,6 +548,7 @@ impl<A: Allocator + Clone, K> Objects<A, K> {
                 let gone = (entry.kind, entry.extent, entry.origin);
                 inner.entry = None;
                 record.next_generation();
+                record.set_address(None);
                 (gone, inner.kept.take())
             };
             let (kind, extent, origin) = gone;
@@ -514,6 +559,30 @@ impl<A: Allocator + Clone, K> Objects<A, K> {
             id = origin;
             capability = false;
         }
+    }
+
+    /// Where the object `id` is ([`Located::address`]), read without its
+    /// record's lock, for a holder of the lock of a space where a
+    /// capability names it ([`crate::SpaceView::address`]). The object
+    /// lives while that capability stays in its slot, and only a holder of
+    /// that lock takes it out, so the address was set before the capability
+    /// was placed (the space's lock orders the two) and stays until it
+    /// goes; the record's generation is the name's throughout.
+    #[inline]
+    pub(super) fn address(&self, id: ObjectId) -> *const () {
+        let Some(record) = self.record(id.index) else { return core::ptr::null() };
+        debug_assert_eq!(record.generation(), id.generation, "a capability outlived its object");
+        record.address.load(Ordering::Relaxed)
+    }
+
+    /// Whether record `index`'s address is what its kept value says, null
+    /// for a free record: for the audit.
+    pub(super) fn address_holds(&self, index: u32) -> bool {
+        let Some(record) = self.record(index) else { return true };
+        let inner = record.lock();
+        let kept = if inner.entry.is_some() { inner.kept.as_ref() } else { None };
+        let expected = kept.map_or(core::ptr::null(), Located::address);
+        core::ptr::eq(record.address.load(Ordering::Relaxed), expected)
     }
 
     /// The entry of the object `id`, if it lives.

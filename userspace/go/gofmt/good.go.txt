@@ -1,0 +1,17 @@
+// SPDX-FileCopyrightText: 2026 The Dukovo contributors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+package main
+
+import (
+	"fmt"
+	"os"
+)
+
+func main() {
+	for i, arg := range os.Args {
+		if i > 0 {
+			fmt.Println(i, arg)
+		}
+	}
+}

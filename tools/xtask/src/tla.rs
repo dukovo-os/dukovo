@@ -39,6 +39,7 @@ pub const MODELS: &[(&str, &str)] = &[
     ("kernel/radix/tla/Futex.tla", "Futex.cfg"),
     ("kernel/radix/tla/Futex.tla", "FutexBatch.cfg"),
     ("kernel/radix/tla/Poll.tla", "Poll.cfg"),
+    ("kernel/radix/tla/EventQueue.tla", "EventQueue.cfg"),
     ("kernel/radix/tla/Timers.tla", "Timers.cfg"),
     ("kernel/radix/tla/FileLocks.tla", "FileLocks.cfg"),
     ("kernel/radix/tla/Join.tla", "Join.cfg"),

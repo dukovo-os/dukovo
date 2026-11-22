@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The tests of Go's standard library that the go-runtime boot test does not
+# run, one a line: the package's import path, the test's name, and the
+# reason, which names the feature Radix lacks and the change that brings
+# it. A test may be a subtest, Test/sub, as go test -run names it, and a *
+# stands for any run of letters in a name. The boot test turns each
+# package's lines into the -test.skip pattern of its test binary. A line
+# with no reason is an error: nothing is skipped because it fails.
+#
+# The go-suite run (ob test go-suite) reads this file too, for every package
+# of the standard library that has tests, with go's own -skip. The packages
+# the boot test runs are skipped there as here; a package written as
+# suite:path is one only the go-suite run skips tests of.
+#
+# package test reason
+runtime TestTracebackSystem reads its own source at the path a traceback names, which a test binary built by ob, with -trimpath, does not have on the test disk
+os TestGetwdDeep the C library joins a relative path to the working folder it keeps, so a name in a folder deeper than 4096 bytes is too long (docs/deferred.md)
+os TestGetwdDeepWithPWDSet the C library joins a relative path to the working folder it keeps, so a name in a folder deeper than 4096 bytes is too long (docs/deferred.md)

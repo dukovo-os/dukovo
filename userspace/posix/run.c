@@ -59,6 +59,7 @@ static const struct test TESTS[] = {
 		{"datagram", NULL, NULL},
 		{"inet", NULL, NULL},
 		{"poll", NULL, NULL},
+		{"events", NULL, NULL},
 		{"tty", NULL, NULL},
 		{"job", NULL, NULL},
 		{"time", NULL, NULL},

@@ -1,0 +1,2478 @@
+SPDX-FileCopyrightText: The Go Authors
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: BSD-3-Clause
+
+Go's runtime on Radix (ADR 0350). A program starts in the C library's
+__mlibc_entry, which calls the runtime's C entry; threads are the C
+library's pthreads; locks wait on the C library's futex(); memory comes
+from mmap, and memory given back is mapped anew with MAP_FIXED, as mlibc
+refuses MADV_DONTNEED; signals go through sigaction with Linux's
+ucontext, and the C library's own signals (32 to 34) are left to it;
+goroutines are preempted with tgkill; the profiler uses setitimer. The
+network poller is the BSDs' kqueue one, on the C library's kqueue and
+kevent over Radix's event queue (ADR 0353). The path the program was run
+as comes from AT_EXECFN. Dukovo only.
+
+diff --git a/src/runtime/asm_amd64.s b/src/runtime/asm_amd64.s
+index 559fe25a..1583dddc 100644
+--- a/src/runtime/asm_amd64.s
++++ b/src/runtime/asm_amd64.s
+@@ -241,6 +241,10 @@ needtls:
+ 	// skip TLS setup on OpenBSD
+ 	JMP ok
+ #endif
++#ifdef GOOS_radix
++	// skip TLS setup on Radix: the C library set the thread's TLS up
++	JMP ok
++#endif
+ 
+ #ifdef GOOS_windows
+ 	CALL	runtime·wintls(SB)
+diff --git a/src/runtime/auxv_none.go b/src/runtime/auxv_none.go
+index 5d473cab..d6ca9269 100644
+--- a/src/runtime/auxv_none.go
++++ b/src/runtime/auxv_none.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build !linux && !darwin && !dragonfly && !freebsd && !netbsd && !solaris
++//go:build !linux && !darwin && !dragonfly && !freebsd && !netbsd && !radix && !solaris
+ 
+ package runtime
+ 
+diff --git a/src/runtime/defs_radix.go b/src/runtime/defs_radix.go
+new file mode 100644
+index 00000000..894af74c
+--- /dev/null
++++ b/src/runtime/defs_radix.go
+@@ -0,0 +1,169 @@
++// Copyright 2026 The Dukovo contributors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++//go:build ignore
++
++/*
++Input to cgo, with the Radix toolchain's C compiler.
++
++CC=x86_64-radix-cc GOARCH=amd64 go tool cgo -godefs defs_radix.go
++
++Radix takes Linux's numbers and structures for its POSIX interface,
++and its C library (mlibc) declares them as Linux's do, so the values
++are Linux's apart from the C library's own: its sigset_t (128 bytes),
++struct sigaction (whose mask comes last) and sysconf's names.
++*/
++
++package runtime
++
++/*
++#include <errno.h>
++#include <fcntl.h>
++#include <pthread.h>
++#include <signal.h>
++#include <sys/auxv.h>
++#include <sys/event.h>
++#include <sys/futex.h>
++#include <sys/mman.h>
++#include <sys/time.h>
++#include <time.h>
++#include <ucontext.h>
++#include <unistd.h>
++*/
++import "C"
++
++const (
++	EINTR     = C.EINTR
++	EAGAIN    = C.EAGAIN
++	ENOMEM    = C.ENOMEM
++	ENOSYS    = C.ENOSYS
++	ESRCH     = C.ESRCH
++	ETIMEDOUT = C.ETIMEDOUT
++
++	O_RDONLY   = C.O_RDONLY
++	O_WRONLY   = C.O_WRONLY
++	O_CREAT    = C.O_CREAT
++	O_TRUNC    = C.O_TRUNC
++	O_NONBLOCK = C.O_NONBLOCK
++	O_CLOEXEC  = C.O_CLOEXEC
++
++	F_GETFL = C.F_GETFL
++	F_SETFL = C.F_SETFL
++
++	EV_ADD       = C.EV_ADD
++	EV_DELETE    = C.EV_DELETE
++	EV_CLEAR     = C.EV_CLEAR
++	EV_ERROR     = C.EV_ERROR
++	EV_EOF       = C.EV_EOF
++	EVFILT_READ  = C.EVFILT_READ
++	EVFILT_WRITE = C.EVFILT_WRITE
++	EVFILT_USER  = C.EVFILT_USER
++	NOTE_TRIGGER = C.NOTE_TRIGGER
++
++	PROT_NONE  = C.PROT_NONE
++	PROT_READ  = C.PROT_READ
++	PROT_WRITE = C.PROT_WRITE
++	PROT_EXEC  = C.PROT_EXEC
++
++	MAP_ANON    = C.MAP_ANONYMOUS
++	MAP_PRIVATE = C.MAP_PRIVATE
++	MAP_FIXED   = C.MAP_FIXED
++
++	MADV_FREE = C.MADV_FREE
++
++	SA_RESTART = C.SA_RESTART
++	SA_ONSTACK = C.SA_ONSTACK
++	SA_SIGINFO = C.SA_SIGINFO
++
++	SI_KERNEL = C.SI_KERNEL
++	SI_TIMER  = C.SI_TIMER
++	SI_TKILL  = C.SI_TKILL
++	SI_USER   = C.SI_USER
++
++	SIGHUP    = C.SIGHUP
++	SIGINT    = C.SIGINT
++	SIGQUIT   = C.SIGQUIT
++	SIGILL    = C.SIGILL
++	SIGTRAP   = C.SIGTRAP
++	SIGABRT   = C.SIGABRT
++	SIGBUS    = C.SIGBUS
++	SIGFPE    = C.SIGFPE
++	SIGKILL   = C.SIGKILL
++	SIGUSR1   = C.SIGUSR1
++	SIGSEGV   = C.SIGSEGV
++	SIGUSR2   = C.SIGUSR2
++	SIGPIPE   = C.SIGPIPE
++	SIGALRM   = C.SIGALRM
++	SIGSTKFLT = C.SIGSTKFLT
++	SIGCHLD   = C.SIGCHLD
++	SIGCONT   = C.SIGCONT
++	SIGSTOP   = C.SIGSTOP
++	SIGTSTP   = C.SIGTSTP
++	SIGTTIN   = C.SIGTTIN
++	SIGTTOU   = C.SIGTTOU
++	SIGURG    = C.SIGURG
++	SIGXCPU   = C.SIGXCPU
++	SIGXFSZ   = C.SIGXFSZ
++	SIGVTALRM = C.SIGVTALRM
++	SIGPROF   = C.SIGPROF
++	SIGWINCH  = C.SIGWINCH
++	SIGIO     = C.SIGIO
++	SIGPWR    = C.SIGPWR
++	SIGSYS    = C.SIGSYS
++	SIGCANCEL = C.SIGCANCEL
++	SIGTIMER  = C.SIGTIMER
++	SIGRTMIN  = C.SIGRTMIN
++
++	FPE_INTDIV = C.FPE_INTDIV
++	FPE_INTOVF = C.FPE_INTOVF
++	FPE_FLTDIV = C.FPE_FLTDIV
++	FPE_FLTOVF = C.FPE_FLTOVF
++	FPE_FLTUND = C.FPE_FLTUND
++	FPE_FLTRES = C.FPE_FLTRES
++	FPE_FLTINV = C.FPE_FLTINV
++	FPE_FLTSUB = C.FPE_FLTSUB
++
++	BUS_ADRALN = C.BUS_ADRALN
++	BUS_ADRERR = C.BUS_ADRERR
++	BUS_OBJERR = C.BUS_OBJERR
++
++	SEGV_MAPERR = C.SEGV_MAPERR
++	SEGV_ACCERR = C.SEGV_ACCERR
++
++	ITIMER_REAL    = C.ITIMER_REAL
++	ITIMER_VIRTUAL = C.ITIMER_VIRTUAL
++	ITIMER_PROF    = C.ITIMER_PROF
++
++	CLOCK_REALTIME  = C.CLOCK_REALTIME
++	CLOCK_MONOTONIC = C.CLOCK_MONOTONIC
++
++	SIG_BLOCK   = C.SIG_BLOCK
++	SIG_UNBLOCK = C.SIG_UNBLOCK
++	SIG_SETMASK = C.SIG_SETMASK
++
++	PTHREAD_CREATE_DETACHED = C.PTHREAD_CREATE_DETACHED
++
++	SC_NPROCESSORS_ONLN = C._SC_NPROCESSORS_ONLN
++
++	FUTEX_WAIT_PRIVATE = C.FUTEX_WAIT_PRIVATE
++	FUTEX_WAKE_PRIVATE = C.FUTEX_WAKE_PRIVATE
++
++	AT_NULL   = C.AT_NULL
++	AT_PAGESZ = C.AT_PAGESZ
++	AT_RANDOM = C.AT_RANDOM
++	AT_SECURE = C.AT_SECURE
++	AT_EXECFN = C.AT_EXECFN
++)
++
++type Sigset C.sigset_t
++type Sigaction C.struct_sigaction
++type Siginfo C.siginfo_t
++type StackT C.stack_t
++type Timespec C.struct_timespec
++type Kevent C.struct_kevent
++type Timeval C.struct_timeval
++type Itimerval C.struct_itimerval
++type Mcontext C.mcontext_t
++type Ucontext C.ucontext_t
++type PthreadAttr C.pthread_attr_t
+diff --git a/src/runtime/defs_radix_amd64.go b/src/runtime/defs_radix_amd64.go
+new file mode 100644
+index 00000000..39ba4875
+--- /dev/null
++++ b/src/runtime/defs_radix_amd64.go
+@@ -0,0 +1,256 @@
++// Copyright 2026 The Dukovo contributors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++// Generated by cgo -godefs from defs_radix.go, then edited for the runtime.
++
++package runtime
++
++import "unsafe"
++
++const (
++	_EINTR     = 0x4
++	_EAGAIN    = 0xb
++	_ENOMEM    = 0xc
++	_ENOSYS    = 0x26
++	_ESRCH     = 0x3
++	_ETIMEDOUT = 0x6e
++
++	_O_RDONLY   = 0x0
++	_O_WRONLY   = 0x1
++	_O_CREAT    = 0x40
++	_O_TRUNC    = 0x200
++	_O_NONBLOCK = 0x800
++	_O_CLOEXEC  = 0x80000
++
++	_F_GETFL = 0x3
++	_F_SETFL = 0x4
++
++	_EV_ADD       = 0x1
++	_EV_DELETE    = 0x2
++	_EV_CLEAR     = 0x20
++	_EV_ERROR     = 0x4000
++	_EV_EOF       = 0x8000
++	_EVFILT_READ  = -0x1
++	_EVFILT_WRITE = -0x2
++	_EVFILT_USER  = -0xb
++	_NOTE_TRIGGER = 0x1000000
++
++	_PROT_NONE  = 0x0
++	_PROT_READ  = 0x1
++	_PROT_WRITE = 0x2
++	_PROT_EXEC  = 0x4
++
++	_MAP_ANON    = 0x20
++	_MAP_PRIVATE = 0x2
++	_MAP_FIXED   = 0x10
++
++	_MADV_FREE = 0x8
++
++	_SA_RESTART = 0x10000000
++	_SA_ONSTACK = 0x8000000
++	_SA_SIGINFO = 0x4
++
++	_SI_KERNEL = 0x80
++	_SI_TIMER  = -0x2
++	_SI_TKILL  = -0x6
++	_SI_USER   = 0x0
++
++	_SIGHUP    = 0x1
++	_SIGINT    = 0x2
++	_SIGQUIT   = 0x3
++	_SIGILL    = 0x4
++	_SIGTRAP   = 0x5
++	_SIGABRT   = 0x6
++	_SIGBUS    = 0x7
++	_SIGFPE    = 0x8
++	_SIGKILL   = 0x9
++	_SIGUSR1   = 0xa
++	_SIGSEGV   = 0xb
++	_SIGUSR2   = 0xc
++	_SIGPIPE   = 0xd
++	_SIGALRM   = 0xe
++	_SIGSTKFLT = 0x10
++	_SIGCHLD   = 0x11
++	_SIGCONT   = 0x12
++	_SIGSTOP   = 0x13
++	_SIGTSTP   = 0x14
++	_SIGTTIN   = 0x15
++	_SIGTTOU   = 0x16
++	_SIGURG    = 0x17
++	_SIGXCPU   = 0x18
++	_SIGXFSZ   = 0x19
++	_SIGVTALRM = 0x1a
++	_SIGPROF   = 0x1b
++	_SIGWINCH  = 0x1c
++	_SIGIO     = 0x1d
++	_SIGPWR    = 0x1e
++	_SIGSYS    = 0x1f
++	_SIGCANCEL = 0x20
++	_SIGTIMER  = 0x21
++	_SIGRTMIN  = 0x23
++
++	_FPE_INTDIV = 0x1
++	_FPE_INTOVF = 0x2
++	_FPE_FLTDIV = 0x3
++	_FPE_FLTOVF = 0x4
++	_FPE_FLTUND = 0x5
++	_FPE_FLTRES = 0x6
++	_FPE_FLTINV = 0x7
++	_FPE_FLTSUB = 0x8
++
++	_BUS_ADRALN = 0x1
++	_BUS_ADRERR = 0x2
++	_BUS_OBJERR = 0x3
++
++	_SEGV_MAPERR = 0x1
++	_SEGV_ACCERR = 0x2
++
++	_ITIMER_REAL    = 0x0
++	_ITIMER_VIRTUAL = 0x1
++	_ITIMER_PROF    = 0x2
++
++	_CLOCK_REALTIME  = 0x0
++	_CLOCK_MONOTONIC = 0x1
++
++	_SIG_BLOCK   = 0x0
++	_SIG_UNBLOCK = 0x1
++	_SIG_SETMASK = 0x2
++
++	_PTHREAD_CREATE_DETACHED = 0x1
++
++	_SC_NPROCESSORS_ONLN = 0x54
++
++	_FUTEX_WAIT_PRIVATE = 0x81
++	_FUTEX_WAKE_PRIVATE = 0x82
++
++	_AT_NULL   = 0x0
++	_AT_PAGESZ = 0x6
++	_AT_RANDOM = 0x19
++	_AT_SECURE = 0x17
++	_AT_EXECFN = 0x1f
++)
++
++// csigset is the C library's sigset_t, of which the kernel's 64 signals
++// are the first word. The runtime's own sigset is that word.
++type csigset struct {
++	__sig [16]uint64
++}
++
++// sigactiont is the C library's struct sigaction. The C library sets
++// the restorer itself.
++type sigactiont struct {
++	sa_handler  uintptr
++	sa_flags    int32
++	_           [4]byte
++	sa_restorer uintptr
++	sa_mask     csigset
++}
++
++// siginfo is siginfo_t as Linux lays it out; si_addr is the only field
++// of its union the runtime uses.
++type siginfo struct {
++	si_signo int32
++	si_errno int32
++	si_code  int32
++	_        [4]byte
++	si_addr  uint64
++	_        [104]byte
++}
++
++type stackt struct {
++	ss_sp     *byte
++	ss_flags  int32
++	pad_cgo_0 [4]byte
++	ss_size   uintptr
++}
++
++type timespec struct {
++	tv_sec  int64
++	tv_nsec int64
++}
++
++//go:nosplit
++func (ts *timespec) setNsec(ns int64) {
++	ts.tv_sec = ns / 1e9
++	ts.tv_nsec = ns % 1e9
++}
++
++type keventt struct {
++	ident  uint64
++	filter int16
++	flags  uint16
++	fflags uint32
++	data   int64
++	udata  *byte
++}
++
++type timeval struct {
++	tv_sec  int64
++	tv_usec int64
++}
++
++func (tv *timeval) set_usec(x int32) {
++	tv.tv_usec = int64(x)
++}
++
++type itimerval struct {
++	it_interval timeval
++	it_value    timeval
++}
++
++// mcontext and ucontext are the C library's mcontext_t and ucontext_t,
++// as far as the signal mask: Linux's, which is how the kernel writes a
++// signal handler's frame.
++type mcontext struct {
++	gregs       [23]uint64
++	fpregs      unsafe.Pointer
++	__reserved1 [8]uint64
++}
++
++type ucontext struct {
++	uc_flags    uint64
++	uc_link     *ucontext
++	uc_stack    stackt
++	uc_mcontext mcontext
++	uc_sigmask  uint64
++}
++
++// sigcontext is mcontext's general registers by name, as Linux's
++// struct sigcontext has them.
++type sigcontext struct {
++	r8      uint64
++	r9      uint64
++	r10     uint64
++	r11     uint64
++	r12     uint64
++	r13     uint64
++	r14     uint64
++	r15     uint64
++	rdi     uint64
++	rsi     uint64
++	rbp     uint64
++	rbx     uint64
++	rdx     uint64
++	rax     uint64
++	rcx     uint64
++	rsp     uint64
++	rip     uint64
++	eflags  uint64
++	cs      uint16
++	gs      uint16
++	fs      uint16
++	__pad0  uint16
++	err     uint64
++	trapno  uint64
++	oldmask uint64
++	cr2     uint64
++	fpstate unsafe.Pointer
++	_       [8]uint64
++}
++
++// pthreadattr is the C library's pthread_attr_t, a pointer to what
++// pthread_attr_init allocates.
++type pthreadattr struct {
++	__heap_ptr *byte
++}
+diff --git a/src/runtime/export_pipe2_test.go b/src/runtime/export_pipe2_test.go
+index 8d49009b..d6933c44 100644
+--- a/src/runtime/export_pipe2_test.go
++++ b/src/runtime/export_pipe2_test.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build dragonfly || freebsd || linux || netbsd || openbsd || solaris
++//go:build dragonfly || freebsd || linux || netbsd || openbsd || radix || solaris
+ 
+ package runtime
+ 
+diff --git a/src/runtime/lock_futex.go b/src/runtime/lock_futex.go
+index 1cf146b4..7e7e3a4f 100644
+--- a/src/runtime/lock_futex.go
++++ b/src/runtime/lock_futex.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build dragonfly || freebsd || linux
++//go:build dragonfly || freebsd || linux || radix
+ 
+ package runtime
+ 
+diff --git a/src/runtime/mem_radix.go b/src/runtime/mem_radix.go
+new file mode 100644
+index 00000000..0778e29d
+--- /dev/null
++++ b/src/runtime/mem_radix.go
+@@ -0,0 +1,84 @@
++// Copyright 2026 The Dukovo contributors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package runtime
++
++import (
++	"unsafe"
++)
++
++// Don't split the stack as this function may be invoked without a valid G,
++// which prevents us from allocating more stack.
++//
++//go:nosplit
++func sysAllocOS(n uintptr, _ string) unsafe.Pointer {
++	v, err := mmap(nil, n, _PROT_READ|_PROT_WRITE, _MAP_ANON|_MAP_PRIVATE, -1, 0)
++	if err != 0 {
++		return nil
++	}
++	return v
++}
++
++// sysUnusedOS gives the pages back to the kernel. Radix's madvise keeps
++// a page's contents whatever the advice, so the range is mapped again
++// instead: fresh anonymous memory, whose pages the kernel makes only
++// when they are touched and which read as zeros. A mapping at a fixed
++// address replaces the old one in one step, so nothing else can take
++// the range meanwhile.
++func sysUnusedOS(v unsafe.Pointer, n uintptr) {
++	p, err := mmap(v, n, _PROT_READ|_PROT_WRITE, _MAP_ANON|_MAP_FIXED|_MAP_PRIVATE, -1, 0)
++	if p != v || err != 0 {
++		print("runtime: mmap(", v, ", ", n, ") returned ", p, ", ", err, "\n")
++		throw("runtime: cannot release pages to the kernel")
++	}
++}
++
++func sysUsedOS(v unsafe.Pointer, n uintptr) {
++}
++
++func sysHugePageOS(v unsafe.Pointer, n uintptr) {
++}
++
++func sysNoHugePageOS(v unsafe.Pointer, n uintptr) {
++}
++
++func sysHugePageCollapseOS(v unsafe.Pointer, n uintptr) {
++}
++
++// Don't split the stack as this function may be invoked without a valid G,
++// which prevents us from allocating more stack.
++//
++//go:nosplit
++func sysFreeOS(v unsafe.Pointer, n uintptr) {
++	munmap(v, n)
++}
++
++func sysFaultOS(v unsafe.Pointer, n uintptr) {
++	mmap(v, n, _PROT_NONE, _MAP_ANON|_MAP_PRIVATE|_MAP_FIXED, -1, 0)
++}
++
++func sysReserveOS(v unsafe.Pointer, n uintptr, _ string) unsafe.Pointer {
++	p, err := mmap(v, n, _PROT_NONE, _MAP_ANON|_MAP_PRIVATE, -1, 0)
++	if err != 0 {
++		return nil
++	}
++	return p
++}
++
++func sysMapOS(v unsafe.Pointer, n uintptr, _ string) {
++	p, err := mmap(v, n, _PROT_READ|_PROT_WRITE, _MAP_ANON|_MAP_FIXED|_MAP_PRIVATE, -1, 0)
++	if err == _ENOMEM {
++		throw("runtime: out of memory")
++	}
++	if p != v || err != 0 {
++		print("runtime: mmap(", v, ", ", n, ") returned ", p, ", ", err, "\n")
++		throw("runtime: cannot map pages in arena address space")
++	}
++}
++
++// needZeroAfterSysUnusedOS reports false: sysUnusedOS leaves pages that
++// read as zeros.
++func needZeroAfterSysUnusedOS() bool {
++	return false
++}
+diff --git a/src/runtime/mmap.go b/src/runtime/mmap.go
+index 9a7b2985..6d51cdc0 100644
+--- a/src/runtime/mmap.go
++++ b/src/runtime/mmap.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build !aix && !darwin && !js && !((linux && (amd64 || arm64 || loong64)) || (freebsd && amd64)) && !openbsd && !plan9 && !solaris && !windows
++//go:build !aix && !darwin && !js && !((linux && (amd64 || arm64 || loong64)) || (freebsd && amd64)) && !openbsd && !plan9 && !radix && !solaris && !windows
+ 
+ package runtime
+ 
+diff --git a/src/runtime/nbpipe_pipe2.go b/src/runtime/nbpipe_pipe2.go
+index 22d60b4a..b3e8724d 100644
+--- a/src/runtime/nbpipe_pipe2.go
++++ b/src/runtime/nbpipe_pipe2.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build dragonfly || freebsd || linux || netbsd || openbsd || solaris
++//go:build dragonfly || freebsd || linux || netbsd || openbsd || radix || solaris
+ 
+ package runtime
+ 
+diff --git a/src/runtime/netpoll_kqueue.go b/src/runtime/netpoll_kqueue.go
+index db4dddc2..54721743 100644
+--- a/src/runtime/netpoll_kqueue.go
++++ b/src/runtime/netpoll_kqueue.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build darwin || dragonfly || freebsd || netbsd || openbsd
++//go:build darwin || dragonfly || freebsd || netbsd || openbsd || radix
+ 
+ package runtime
+ 
+diff --git a/src/runtime/netpoll_kqueue_event.go b/src/runtime/netpoll_kqueue_event.go
+index 852a00a5..28ebb704 100644
+--- a/src/runtime/netpoll_kqueue_event.go
++++ b/src/runtime/netpoll_kqueue_event.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build darwin || dragonfly || freebsd
++//go:build darwin || dragonfly || freebsd || radix
+ 
+ package runtime
+ 
+diff --git a/src/runtime/os_radix.go b/src/runtime/os_radix.go
+new file mode 100644
+index 00000000..dad76b18
+--- /dev/null
++++ b/src/runtime/os_radix.go
+@@ -0,0 +1,369 @@
++// Copyright 2026 The Dukovo contributors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++// Radix is the kernel of Dukovo. It takes Linux's numbers and structures
++// for its POSIX interface, and its programs reach it through the C
++// library (mlibc), as OpenBSD's do: threads are the C library's
++// pthreads, locks wait on its futex(2) and signals go through its
++// sigaction.
++
++package runtime
++
++import (
++	"internal/abi"
++	"internal/goarch"
++	"unsafe"
++)
++
++const (
++	_SS_DISABLE = 2
++	_NSIG       = 65
++)
++
++type mOS struct {
++	waitsema uint32 // semaphore for parking on locks
++}
++
++// sigset is the kernel's signal mask: signal n is bit n-1. The C
++// library's sigset_t, which holds it in its first word, is csigset.
++type sigset uint64
++
++var sigset_all = ^sigset(0)
++
++//go:nosplit
++//go:nowritebarrierrec
++func sigaddset(mask *sigset, i int) {
++	*mask |= 1 << (uint32(i) - 1)
++}
++
++func sigdelset(mask *sigset, i int) {
++	*mask &^= 1 << (uint32(i) - 1)
++}
++
++// futexsleep sleeps while *addr holds val, for at most ns nanoseconds
++// if ns is not negative. It may wake early, as a futex wait does.
++//
++//go:nosplit
++func futexsleep(addr *uint32, val uint32, ns int64) {
++	var ts timespec
++	var tsp *timespec
++	if ns >= 0 {
++		ts.setNsec(ns)
++		tsp = &ts
++	}
++	futex(unsafe.Pointer(addr), _FUTEX_WAIT_PRIVATE, val, unsafe.Pointer(tsp), nil)
++}
++
++// futexwakeup wakes at most cnt of the threads sleeping on addr.
++//
++//go:nosplit
++func futexwakeup(addr *uint32, cnt uint32) {
++	ret := futex(unsafe.Pointer(addr), _FUTEX_WAKE_PRIVATE, cnt, nil, nil)
++	if ret >= 0 {
++		return
++	}
++
++	// futexwakeup can be called on a signal stack.
++	systemstack(func() {
++		print("futexwakeup addr=", addr, " returned ", ret, "\n")
++	})
++	*(*int32)(unsafe.Pointer(uintptr(0x1006))) = 0x1006
++}
++
++// cpuSetSize is the size of the CPU set getCPUCount asks for: as many
++// CPUs as glibc's cpu_set_t holds.
++const cpuSetSize = 1024 / 8
++
++func getCPUCount() int32 {
++	// The CPUs the process may run on, as on Linux, which a CPU set
++	// can make fewer than the machine has.
++	var set [cpuSetSize]byte
++	if sched_getaffinity(0, uintptr(len(set)), &set[0]) == 0 {
++		n := int32(0)
++		for _, v := range set {
++			for v != 0 {
++				n += int32(v & 1)
++				v >>= 1
++			}
++		}
++		if n > 0 {
++			return n
++		}
++	}
++	if n := sysconf(_SC_NPROCESSORS_ONLN); n > 0 {
++		return int32(n)
++	}
++	return 1
++}
++
++// mstart_stub provides glue code to call mstart from pthread_create.
++func mstart_stub()
++
++// May run with m.p==nil, so write barriers are not allowed.
++//
++//go:nowritebarrierrec
++func newosproc(mp *m) {
++	if false {
++		print("newosproc m=", mp, " g=", mp.g0, " id=", mp.id, " ostk=", &mp, "\n")
++	}
++
++	// Initialize an attribute object.
++	var attr pthreadattr
++	if err := pthread_attr_init(&attr); err != 0 {
++		writeErrStr(failthreadcreate)
++		exit(1)
++	}
++
++	// Find out OS stack size for our own stack guard.
++	var stacksize uintptr
++	if pthread_attr_getstacksize(&attr, &stacksize) != 0 {
++		writeErrStr(failthreadcreate)
++		exit(1)
++	}
++	mp.g0.stack.hi = stacksize // for mstart
++
++	// Tell the pthread library we won't join with this thread.
++	if pthread_attr_setdetachstate(&attr, _PTHREAD_CREATE_DETACHED) != 0 {
++		writeErrStr(failthreadcreate)
++		exit(1)
++	}
++
++	// Finally, create the thread. It starts at mstart_stub, which does some low-level
++	// setup and then calls mstart.
++	var oset sigset
++	sigprocmask(_SIG_SETMASK, &sigset_all, &oset)
++	err := retryOnEAGAIN(func() int32 {
++		return pthread_create(&attr, abi.FuncPCABI0(mstart_stub), unsafe.Pointer(mp))
++	})
++	sigprocmask(_SIG_SETMASK, &oset, nil)
++	if err != 0 {
++		writeErrStr(failthreadcreate)
++		exit(1)
++	}
++
++	pthread_attr_destroy(&attr)
++}
++
++//go:nowritebarrierrec
++//go:nosplit
++func newosproc0(stacksize uintptr, fn unsafe.Pointer) {
++	throw("bad newosproc0")
++}
++
++func sysargs(argc int32, argv **byte) {
++	n := argc + 1
++
++	// skip over argv, envp to get to auxv
++	for argv_index(argv, n) != nil {
++		n++
++	}
++
++	// skip NULL separator
++	n++
++
++	// now argv+n is auxv
++	auxvp := (*[1 << 28]uintptr)(add(unsafe.Pointer(argv), uintptr(n)*goarch.PtrSize))
++	pairs := sysauxv(auxvp[:])
++	auxv = auxvp[: pairs*2 : pairs*2]
++}
++
++// secureMode holds the value of AT_SECURE passed in the auxiliary vector.
++var secureMode bool
++
++func initSecureMode() {
++	// sysargs has set secureMode.
++}
++
++func isSecureMode() bool {
++	return secureMode
++}
++
++func sysauxv(auxv []uintptr) (pairs int) {
++	// The auxiliary vector entries the kernel gives the program, with
++	// Linux's numbers.
++	var i int
++	for ; auxv[i] != _AT_NULL; i += 2 {
++		tag, val := auxv[i], auxv[i+1]
++		switch tag {
++		case _AT_RANDOM:
++			// 16 random bytes from the kernel.
++			startupRand = (*[16]byte)(unsafe.Pointer(val))[:]
++
++		case _AT_PAGESZ:
++			physPageSize = val
++
++		case _AT_SECURE:
++			secureMode = val == 1
++
++		case _AT_EXECFN:
++			// The path the program was run as, kept on the initial
++			// stack for the program's life.
++			executablePath = gostringnocopy((*byte)(unsafe.Pointer(val)))
++		}
++	}
++	return i / 2
++}
++
++// executablePath is the path the program was run as, from AT_EXECFN:
++// Radix has no /proc/self/exe. os.Executable makes it absolute.
++//
++//go:linkname executablePath os.executablePath
++var executablePath string
++
++func osinit() {
++	numCPUStartup = getCPUCount()
++}
++
++var urandom_dev = []byte("/dev/urandom\x00")
++
++func readRandom(r []byte) int {
++	// The kernel gives every program AT_RANDOM, which populates
++	// startupRand, so this fallback should be unreachable.
++	fd := open(&urandom_dev[0], 0 /* O_RDONLY */, 0)
++	n := read(fd, unsafe.Pointer(&r[0]), int32(len(r)))
++	closefd(fd)
++	return int(n)
++}
++
++func goenvs() {
++	goenvs_unix()
++}
++
++// Called to do synchronous initialization of Go code built with
++// -buildmode=c-archive or -buildmode=c-shared, which Radix does not have.
++//
++//go:nosplit
++//go:nowritebarrierrec
++func libpreinit() {}
++
++// Called to initialize a new m (including the bootstrap m).
++// Called on the parent thread (main thread in case of bootstrap), can allocate memory.
++func mpreinit(mp *m) {
++	mp.gsignal = malg(32 * 1024)
++	mp.gsignal.m = mp
++}
++
++// Called to initialize a new m (including the bootstrap m).
++// Called on the new thread, cannot allocate memory.
++func minit() {
++	// The thread's id, which signalM sends preemption signals to and
++	// debuggers show.
++	getg().m.procid = uint64(gettid())
++	minitSignals()
++}
++
++// Called from dropm to undo the effect of an minit.
++//
++//go:nosplit
++func unminit() {
++	unminitSignals()
++	getg().m.procid = 0
++}
++
++// Called from mexit, but not from dropm, to undo the effect of thread-owned
++// resources in minit, semacreate, or elsewhere. Do not take locks after calling this.
++//
++// This always runs without a P, so //go:nowritebarrierrec is required.
++//
++//go:nowritebarrierrec
++func mdestroy(mp *m) {
++}
++
++func sigtramp()
++
++//go:nosplit
++//go:nowritebarrierrec
++func setsig(i uint32, fn uintptr) {
++	var sa sigactiont
++	sa.sa_flags = _SA_SIGINFO | _SA_ONSTACK | _SA_RESTART
++	sa.sa_mask.__sig[0] = uint64(sigset_all)
++	if fn == abi.FuncPCABIInternal(sighandler) { // abi.FuncPCABIInternal(sighandler) matches the callers in signal_unix.go
++		fn = abi.FuncPCABI0(sigtramp)
++	}
++	sa.sa_handler = fn
++	sigaction(i, &sa, nil)
++}
++
++// setsigstack makes the handler of signal i, which is not the
++// runtime's, run on the signal stack: the C library's handlers of its
++// own signals, SIGCANCEL and SIGTIMER, may run on a goroutine's thread.
++//
++//go:nosplit
++//go:nowritebarrierrec
++func setsigstack(i uint32) {
++	var sa sigactiont
++	sigaction(i, nil, &sa)
++	if sa.sa_flags&_SA_ONSTACK != 0 {
++		return
++	}
++	sa.sa_flags |= _SA_ONSTACK
++	sigaction(i, &sa, nil)
++}
++
++//go:nosplit
++//go:nowritebarrierrec
++func getsig(i uint32) uintptr {
++	var sa sigactiont
++	sigaction(i, nil, &sa)
++	return sa.sa_handler
++}
++
++// setSignalstackSP sets the ss_sp field of a stackt.
++//
++//go:nosplit
++func setSignalstackSP(s *stackt, sp uintptr) {
++	*(*uintptr)(unsafe.Pointer(&s.ss_sp)) = sp
++}
++
++//go:nosplit
++func (c *sigctxt) fixsigcode(sig uint32) {
++}
++
++// sigFromUser reports whether the signal was sent because of a call
++// to kill or tgkill.
++//
++//go:nosplit
++func (c *sigctxt) sigFromUser() bool {
++	code := int32(c.sigcode())
++	return code == _SI_USER || code == _SI_TKILL
++}
++
++// sigFromSeccomp reports whether the signal was sent from seccomp,
++// which Radix does not have.
++//
++//go:nosplit
++func (c *sigctxt) sigFromSeccomp() bool {
++	return false
++}
++
++func setProcessCPUProfiler(hz int32) {
++	setProcessCPUProfilerTimer(hz)
++}
++
++func setThreadCPUProfiler(hz int32) {
++	setThreadCPUProfilerHz(hz)
++}
++
++//go:nosplit
++func validSIGPROF(mp *m, c *sigctxt) bool {
++	return true
++}
++
++//go:nosplit
++func raise(sig uint32) {
++	tgkill(gettid(), sig)
++}
++
++func signalM(mp *m, sig int) {
++	tgkill(int32(mp.procid), uint32(sig))
++}
++
++// sigPerThreadSyscall is only used on linux, so we assign a bogus signal
++// number.
++const sigPerThreadSyscall = 1 << 31
++
++//go:nosplit
++func runPerThreadSyscall() {
++	throw("runPerThreadSyscall only valid on linux")
++}
+diff --git a/src/runtime/os_unix_nonlinux.go b/src/runtime/os_unix_nonlinux.go
+index 0e8b61c3..f52bc83c 100644
+--- a/src/runtime/os_unix_nonlinux.go
++++ b/src/runtime/os_unix_nonlinux.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build unix && !linux
++//go:build unix && !linux && !radix
+ 
+ package runtime
+ 
+diff --git a/src/runtime/pprof/pprof_rusage.go b/src/runtime/pprof/pprof_rusage.go
+index aa429fb0..86243330 100644
+--- a/src/runtime/pprof/pprof_rusage.go
++++ b/src/runtime/pprof/pprof_rusage.go
+@@ -17,7 +17,7 @@ import (
+ func addMaxRSS(w io.Writer) {
+ 	var rssToBytes uintptr
+ 	switch runtime.GOOS {
+-	case "aix", "android", "dragonfly", "freebsd", "linux", "netbsd", "openbsd":
++	case "aix", "android", "dragonfly", "freebsd", "linux", "netbsd", "openbsd", "radix":
+ 		rssToBytes = 1024
+ 	case "darwin", "ios":
+ 		rssToBytes = 1
+diff --git a/src/runtime/proc.go b/src/runtime/proc.go
+index b8d4d150..ba886697 100644
+--- a/src/runtime/proc.go
++++ b/src/runtime/proc.go
+@@ -807,7 +807,7 @@ func getGodebugEarly() (string, bool) {
+ 	const prefix = "GODEBUG="
+ 	var env string
+ 	switch GOOS {
+-	case "aix", "darwin", "ios", "dragonfly", "freebsd", "netbsd", "openbsd", "illumos", "solaris", "linux":
++	case "aix", "darwin", "ios", "dragonfly", "freebsd", "netbsd", "openbsd", "illumos", "solaris", "linux", "radix":
+ 		// Similar to goenv_unix but extracts the environment value for
+ 		// GODEBUG directly.
+ 		// TODO(moehrmann): remove when general goenvs() can be called before cpuinit()
+@@ -1843,7 +1843,7 @@ func startTheWorldWithSema(now int64, w worldStop) int64 {
+ // via libcall.
+ func usesLibcall() bool {
+ 	switch GOOS {
+-	case "aix", "darwin", "illumos", "ios", "openbsd", "solaris", "windows":
++	case "aix", "darwin", "illumos", "ios", "openbsd", "radix", "solaris", "windows":
+ 		return true
+ 	}
+ 	return false
+@@ -1853,7 +1853,7 @@ func usesLibcall() bool {
+ // system-allocated stack.
+ func mStackIsSystemAllocated() bool {
+ 	switch GOOS {
+-	case "aix", "darwin", "plan9", "illumos", "ios", "openbsd", "solaris", "windows":
++	case "aix", "darwin", "plan9", "illumos", "ios", "openbsd", "radix", "solaris", "windows":
+ 		return true
+ 	}
+ 	return false
+diff --git a/src/runtime/rt0_radix_amd64.s b/src/runtime/rt0_radix_amd64.s
+new file mode 100644
+index 00000000..c6cf138a
+--- /dev/null
++++ b/src/runtime/rt0_radix_amd64.s
+@@ -0,0 +1,21 @@
++// Copyright 2026 The Dukovo contributors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++#include "textflag.h"
++
++// _rt0_amd64_radix is a Go program's first instruction. A Go program
++// starts the C library as a C program's crt1.o does: __mlibc_entry
++// reads the descriptors and working directory the program was given,
++// finishes the dynamic linker's work and calls main, the C-ABI entry
++// that asm_amd64.s gives external linking, which goes on to rt0_go.
++// The kernel starts the program with the stack pointer on argc, then
++// argv, envp and the auxiliary vector, which __mlibc_entry reads.
++TEXT _rt0_amd64_radix(SB),NOSPLIT|NOFRAME|TOPFRAME,$0
++	XORL	BP, BP
++	LEAQ	main(SB), DI	// arg 1 - main
++	MOVQ	SP, SI		// arg 2 - the stack the program started with
++	ANDQ	$~15, SP
++	CALL	libc___mlibc_entry(SB)
++	MOVL	$0xf1, 0xf1	// crash: __mlibc_entry does not return
++	RET
+diff --git a/src/runtime/signal_amd64.go b/src/runtime/signal_amd64.go
+index 8ade2088..760ff2e8 100644
+--- a/src/runtime/signal_amd64.go
++++ b/src/runtime/signal_amd64.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build amd64 && (darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris)
++//go:build amd64 && (darwin || dragonfly || freebsd || linux || netbsd || openbsd || radix || solaris)
+ 
+ package runtime
+ 
+diff --git a/src/runtime/signal_radix.go b/src/runtime/signal_radix.go
+new file mode 100644
+index 00000000..2da053e2
+--- /dev/null
++++ b/src/runtime/signal_radix.go
+@@ -0,0 +1,76 @@
++// Copyright 2026 The Dukovo contributors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package runtime
++
++// Radix's signals have Linux's numbers. The C library keeps 32 up to
++// SIGRTMIN (35) for itself: SIGCANCEL (32), SIGTIMER (33) and 34, which
++// no program can block.
++var sigtable = [...]sigTabT{
++	/* 0 */ {0, "SIGNONE: no trap"},
++	/* 1 */ {_SigNotify + _SigKill, "SIGHUP: terminal line hangup"},
++	/* 2 */ {_SigNotify + _SigKill, "SIGINT: interrupt"},
++	/* 3 */ {_SigNotify + _SigThrow, "SIGQUIT: quit"},
++	/* 4 */ {_SigThrow + _SigUnblock, "SIGILL: illegal instruction"},
++	/* 5 */ {_SigThrow + _SigUnblock, "SIGTRAP: trace trap"},
++	/* 6 */ {_SigNotify + _SigThrow, "SIGABRT: abort"},
++	/* 7 */ {_SigPanic + _SigUnblock, "SIGBUS: bus error"},
++	/* 8 */ {_SigPanic + _SigUnblock, "SIGFPE: floating-point exception"},
++	/* 9 */ {0, "SIGKILL: kill"},
++	/* 10 */ {_SigNotify, "SIGUSR1: user-defined signal 1"},
++	/* 11 */ {_SigPanic + _SigUnblock, "SIGSEGV: segmentation violation"},
++	/* 12 */ {_SigNotify, "SIGUSR2: user-defined signal 2"},
++	/* 13 */ {_SigNotify, "SIGPIPE: write to broken pipe"},
++	/* 14 */ {_SigNotify, "SIGALRM: alarm clock"},
++	/* 15 */ {_SigNotify + _SigKill, "SIGTERM: termination"},
++	/* 16 */ {_SigThrow + _SigUnblock, "SIGSTKFLT: stack fault"},
++	/* 17 */ {_SigNotify + _SigUnblock + _SigIgn, "SIGCHLD: child status has changed"},
++	/* 18 */ {_SigNotify + _SigDefault + _SigIgn, "SIGCONT: continue"},
++	/* 19 */ {0, "SIGSTOP: stop, unblockable"},
++	/* 20 */ {_SigNotify + _SigDefault + _SigIgn, "SIGTSTP: keyboard stop"},
++	/* 21 */ {_SigNotify + _SigDefault + _SigIgn, "SIGTTIN: background read from tty"},
++	/* 22 */ {_SigNotify + _SigDefault + _SigIgn, "SIGTTOU: background write to tty"},
++	/* 23 */ {_SigNotify + _SigIgn, "SIGURG: urgent condition on socket"},
++	/* 24 */ {_SigNotify, "SIGXCPU: cpu limit exceeded"},
++	/* 25 */ {_SigNotify, "SIGXFSZ: file size limit exceeded"},
++	/* 26 */ {_SigNotify, "SIGVTALRM: virtual alarm clock"},
++	/* 27 */ {_SigNotify + _SigUnblock, "SIGPROF: profiling alarm clock"},
++	/* 28 */ {_SigNotify + _SigIgn, "SIGWINCH: window size change"},
++	/* 29 */ {_SigNotify, "SIGIO: i/o now possible"},
++	/* 30 */ {_SigNotify, "SIGPWR: power failure restart"},
++	/* 31 */ {_SigThrow, "SIGSYS: bad system call"},
++	/* 32 */ {_SigSetStack + _SigUnblock, "signal 32"}, /* the C library's SIGCANCEL */
++	/* 33 */ {_SigSetStack + _SigUnblock, "signal 33"}, /* the C library's SIGTIMER */
++	/* 34 */ {_SigSetStack + _SigUnblock, "signal 34"}, /* kept by the C library */
++	/* 35 */ {_SigNotify, "signal 35"},
++	/* 36 */ {_SigNotify, "signal 36"},
++	/* 37 */ {_SigNotify, "signal 37"},
++	/* 38 */ {_SigNotify, "signal 38"},
++	/* 39 */ {_SigNotify, "signal 39"},
++	/* 40 */ {_SigNotify, "signal 40"},
++	/* 41 */ {_SigNotify, "signal 41"},
++	/* 42 */ {_SigNotify, "signal 42"},
++	/* 43 */ {_SigNotify, "signal 43"},
++	/* 44 */ {_SigNotify, "signal 44"},
++	/* 45 */ {_SigNotify, "signal 45"},
++	/* 46 */ {_SigNotify, "signal 46"},
++	/* 47 */ {_SigNotify, "signal 47"},
++	/* 48 */ {_SigNotify, "signal 48"},
++	/* 49 */ {_SigNotify, "signal 49"},
++	/* 50 */ {_SigNotify, "signal 50"},
++	/* 51 */ {_SigNotify, "signal 51"},
++	/* 52 */ {_SigNotify, "signal 52"},
++	/* 53 */ {_SigNotify, "signal 53"},
++	/* 54 */ {_SigNotify, "signal 54"},
++	/* 55 */ {_SigNotify, "signal 55"},
++	/* 56 */ {_SigNotify, "signal 56"},
++	/* 57 */ {_SigNotify, "signal 57"},
++	/* 58 */ {_SigNotify, "signal 58"},
++	/* 59 */ {_SigNotify, "signal 59"},
++	/* 60 */ {_SigNotify, "signal 60"},
++	/* 61 */ {_SigNotify, "signal 61"},
++	/* 62 */ {_SigNotify, "signal 62"},
++	/* 63 */ {_SigNotify, "signal 63"},
++	/* 64 */ {_SigNotify, "signal 64"},
++}
+diff --git a/src/runtime/signal_radix_amd64.go b/src/runtime/signal_radix_amd64.go
+new file mode 100644
+index 00000000..a6efc8a1
+--- /dev/null
++++ b/src/runtime/signal_radix_amd64.go
+@@ -0,0 +1,59 @@
++// Copyright 2026 The Dukovo contributors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package runtime
++
++import (
++	"internal/goarch"
++	"unsafe"
++)
++
++// A signal handler's frame has Linux's layout on Radix: its ucontext's
++// mcontext holds the registers in Linux's order, which sigreturn
++// restores.
++type sigctxt struct {
++	info *siginfo
++	ctxt unsafe.Pointer
++}
++
++//go:nosplit
++//go:nowritebarrierrec
++func (c *sigctxt) regs() *sigcontext {
++	return (*sigcontext)(unsafe.Pointer(&(*ucontext)(c.ctxt).uc_mcontext))
++}
++
++func (c *sigctxt) rax() uint64 { return c.regs().rax }
++func (c *sigctxt) rbx() uint64 { return c.regs().rbx }
++func (c *sigctxt) rcx() uint64 { return c.regs().rcx }
++func (c *sigctxt) rdx() uint64 { return c.regs().rdx }
++func (c *sigctxt) rdi() uint64 { return c.regs().rdi }
++func (c *sigctxt) rsi() uint64 { return c.regs().rsi }
++func (c *sigctxt) rbp() uint64 { return c.regs().rbp }
++func (c *sigctxt) rsp() uint64 { return c.regs().rsp }
++func (c *sigctxt) r8() uint64  { return c.regs().r8 }
++func (c *sigctxt) r9() uint64  { return c.regs().r9 }
++func (c *sigctxt) r10() uint64 { return c.regs().r10 }
++func (c *sigctxt) r11() uint64 { return c.regs().r11 }
++func (c *sigctxt) r12() uint64 { return c.regs().r12 }
++func (c *sigctxt) r13() uint64 { return c.regs().r13 }
++func (c *sigctxt) r14() uint64 { return c.regs().r14 }
++func (c *sigctxt) r15() uint64 { return c.regs().r15 }
++
++//go:nosplit
++//go:nowritebarrierrec
++func (c *sigctxt) rip() uint64 { return c.regs().rip }
++
++func (c *sigctxt) rflags() uint64  { return c.regs().eflags }
++func (c *sigctxt) cs() uint64      { return uint64(c.regs().cs) }
++func (c *sigctxt) fs() uint64      { return uint64(c.regs().fs) }
++func (c *sigctxt) gs() uint64      { return uint64(c.regs().gs) }
++func (c *sigctxt) sigcode() uint64 { return uint64(c.info.si_code) }
++func (c *sigctxt) sigaddr() uint64 { return c.info.si_addr }
++
++func (c *sigctxt) set_rip(x uint64)     { c.regs().rip = x }
++func (c *sigctxt) set_rsp(x uint64)     { c.regs().rsp = x }
++func (c *sigctxt) set_sigcode(x uint64) { c.info.si_code = int32(x) }
++func (c *sigctxt) set_sigaddr(x uint64) {
++	*(*uintptr)(add(unsafe.Pointer(c.info), 2*goarch.PtrSize)) = uintptr(x)
++}
+diff --git a/src/runtime/stubs2.go b/src/runtime/stubs2.go
+index 39bde15b..01a54b10 100644
+--- a/src/runtime/stubs2.go
++++ b/src/runtime/stubs2.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build !aix && !darwin && !js && !openbsd && !plan9 && !solaris && !wasip1 && !windows
++//go:build !aix && !darwin && !js && !openbsd && !plan9 && !radix && !solaris && !wasip1 && !windows
+ 
+ package runtime
+ 
+diff --git a/src/runtime/stubs3.go b/src/runtime/stubs3.go
+index c3749f34..82a15368 100644
+--- a/src/runtime/stubs3.go
++++ b/src/runtime/stubs3.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build !aix && !darwin && !freebsd && !openbsd && !plan9 && !solaris && !wasip1
++//go:build !aix && !darwin && !freebsd && !openbsd && !plan9 && !radix && !solaris && !wasip1
+ 
+ package runtime
+ 
+diff --git a/src/runtime/sys_libc.go b/src/runtime/sys_libc.go
+index 214e8793..efe58d03 100644
+--- a/src/runtime/sys_libc.go
++++ b/src/runtime/sys_libc.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build darwin || openbsd
++//go:build darwin || openbsd || radix
+ 
+ package runtime
+ 
+diff --git a/src/runtime/sys_radix.go b/src/runtime/sys_radix.go
+new file mode 100644
+index 00000000..f8e73fc8
+--- /dev/null
++++ b/src/runtime/sys_radix.go
+@@ -0,0 +1,486 @@
++// Copyright 2026 The Dukovo contributors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package runtime
++
++import (
++	"internal/abi"
++	"internal/runtime/atomic"
++	"unsafe"
++)
++
++// The *_trampoline functions convert from the Go calling convention to
++// the C calling convention and then call the C library's function.
++// They are in sys_radix_amd64.s.
++
++//go:nosplit
++//go:cgo_unsafe_args
++func pthread_attr_init(attr *pthreadattr) int32 {
++	ret := libcCall(unsafe.Pointer(abi.FuncPCABI0(pthread_attr_init_trampoline)), unsafe.Pointer(&attr))
++	KeepAlive(attr)
++	return ret
++}
++func pthread_attr_init_trampoline()
++
++//go:nosplit
++//go:cgo_unsafe_args
++func pthread_attr_destroy(attr *pthreadattr) int32 {
++	ret := libcCall(unsafe.Pointer(abi.FuncPCABI0(pthread_attr_destroy_trampoline)), unsafe.Pointer(&attr))
++	KeepAlive(attr)
++	return ret
++}
++func pthread_attr_destroy_trampoline()
++
++//go:nosplit
++//go:cgo_unsafe_args
++func pthread_attr_getstacksize(attr *pthreadattr, size *uintptr) int32 {
++	ret := libcCall(unsafe.Pointer(abi.FuncPCABI0(pthread_attr_getstacksize_trampoline)), unsafe.Pointer(&attr))
++	KeepAlive(attr)
++	KeepAlive(size)
++	return ret
++}
++func pthread_attr_getstacksize_trampoline()
++
++//go:nosplit
++//go:cgo_unsafe_args
++func pthread_attr_setdetachstate(attr *pthreadattr, state int) int32 {
++	ret := libcCall(unsafe.Pointer(abi.FuncPCABI0(pthread_attr_setdetachstate_trampoline)), unsafe.Pointer(&attr))
++	KeepAlive(attr)
++	return ret
++}
++func pthread_attr_setdetachstate_trampoline()
++
++//go:nosplit
++//go:cgo_unsafe_args
++func pthread_create(attr *pthreadattr, start uintptr, arg unsafe.Pointer) int32 {
++	ret := libcCall(unsafe.Pointer(abi.FuncPCABI0(pthread_create_trampoline)), unsafe.Pointer(&attr))
++	KeepAlive(attr)
++	KeepAlive(arg) // Just for consistency. Arg of course needs to be kept alive for the start function.
++	return ret
++}
++func pthread_create_trampoline()
++
++// futex is sys/futex.h's futex: it returns what the C library's does,
++// or the negative errno.
++//
++//go:nosplit
++//go:cgo_unsafe_args
++func futex(addr unsafe.Pointer, op int32, val uint32, ts, addr2 unsafe.Pointer) int32 {
++	ret := libcCall(unsafe.Pointer(abi.FuncPCABI0(futex_trampoline)), unsafe.Pointer(&addr))
++	KeepAlive(addr)
++	KeepAlive(ts)
++	KeepAlive(addr2)
++	return ret
++}
++func futex_trampoline()
++
++//go:nosplit
++func osyield() {
++	libcCall(unsafe.Pointer(abi.FuncPCABI0(sched_yield_trampoline)), unsafe.Pointer(nil))
++}
++func sched_yield_trampoline()
++
++//go:nosplit
++func osyield_no_g() {
++	asmcgocall_no_g(unsafe.Pointer(abi.FuncPCABI0(sched_yield_trampoline)), unsafe.Pointer(nil))
++}
++
++// This is exported via linkname to assembly in runtime/cgo.
++//
++//go:linkname exit
++//go:nosplit
++//go:cgo_unsafe_args
++func exit(code int32) {
++	libcCall(unsafe.Pointer(abi.FuncPCABI0(exit_trampoline)), unsafe.Pointer(&code))
++}
++func exit_trampoline()
++
++//go:nosplit
++//go:cgo_unsafe_args
++func gettid() (tid int32) {
++	libcCall(unsafe.Pointer(abi.FuncPCABI0(gettid_trampoline)), unsafe.Pointer(&tid))
++	return
++}
++func gettid_trampoline()
++
++//go:nosplit
++//go:cgo_unsafe_args
++func raiseproc(sig uint32) {
++	libcCall(unsafe.Pointer(abi.FuncPCABI0(raiseproc_trampoline)), unsafe.Pointer(&sig))
++}
++func raiseproc_trampoline()
++
++// tgkill sends sig to the process's thread tid.
++//
++//go:nosplit
++//go:cgo_unsafe_args
++func tgkill(tid int32, sig uint32) {
++	libcCall(unsafe.Pointer(abi.FuncPCABI0(tgkill_trampoline)), unsafe.Pointer(&tid))
++}
++func tgkill_trampoline()
++
++// mmap is used to do low-level memory allocation via mmap. Don't allow stack
++// splits, since this function (used by sysAlloc) is called in a lot of low-level
++// parts of the runtime and callers often assume it won't acquire any locks.
++//
++//go:nosplit
++func mmap(addr unsafe.Pointer, n uintptr, prot, flags, fd int32, off uint32) (unsafe.Pointer, int) {
++	args := struct {
++		addr            unsafe.Pointer
++		n               uintptr
++		prot, flags, fd int32
++		off             uint32
++		ret1            unsafe.Pointer
++		ret2            int
++	}{addr, n, prot, flags, fd, off, nil, 0}
++	libcCall(unsafe.Pointer(abi.FuncPCABI0(mmap_trampoline)), unsafe.Pointer(&args))
++	KeepAlive(addr) // Just for consistency. Hopefully addr is not a Go address.
++	return args.ret1, args.ret2
++}
++func mmap_trampoline()
++
++//go:nosplit
++//go:cgo_unsafe_args
++func munmap(addr unsafe.Pointer, n uintptr) {
++	libcCall(unsafe.Pointer(abi.FuncPCABI0(munmap_trampoline)), unsafe.Pointer(&addr))
++	KeepAlive(addr) // Just for consistency. Hopefully addr is not a Go address.
++}
++func munmap_trampoline()
++
++//go:nosplit
++//go:cgo_unsafe_args
++func open(name *byte, mode, perm int32) (ret int32) {
++	ret = libcCall(unsafe.Pointer(abi.FuncPCABI0(open_trampoline)), unsafe.Pointer(&name))
++	KeepAlive(name)
++	return
++}
++func open_trampoline()
++
++//go:nosplit
++//go:cgo_unsafe_args
++func closefd(fd int32) int32 {
++	return libcCall(unsafe.Pointer(abi.FuncPCABI0(close_trampoline)), unsafe.Pointer(&fd))
++}
++func close_trampoline()
++
++//go:nosplit
++//go:cgo_unsafe_args
++func read(fd int32, p unsafe.Pointer, n int32) int32 {
++	ret := libcCall(unsafe.Pointer(abi.FuncPCABI0(read_trampoline)), unsafe.Pointer(&fd))
++	KeepAlive(p)
++	return ret
++}
++func read_trampoline()
++
++//go:nosplit
++//go:cgo_unsafe_args
++func write1(fd uintptr, p unsafe.Pointer, n int32) int32 {
++	ret := libcCall(unsafe.Pointer(abi.FuncPCABI0(write_trampoline)), unsafe.Pointer(&fd))
++	KeepAlive(p)
++	return ret
++}
++func write_trampoline()
++
++func pipe2(flags int32) (r, w int32, errno int32) {
++	var p [2]int32
++	args := struct {
++		p     unsafe.Pointer
++		flags int32
++	}{noescape(unsafe.Pointer(&p)), flags}
++	errno = libcCall(unsafe.Pointer(abi.FuncPCABI0(pipe2_trampoline)), unsafe.Pointer(&args))
++	return p[0], p[1], errno
++}
++func pipe2_trampoline()
++
++//go:nosplit
++//go:cgo_unsafe_args
++func kqueue() int32 {
++	return libcCall(unsafe.Pointer(abi.FuncPCABI0(kqueue_trampoline)), nil)
++}
++func kqueue_trampoline()
++
++//go:nosplit
++//go:cgo_unsafe_args
++func kevent(kq int32, ch *keventt, nch int32, ev *keventt, nev int32, ts *timespec) int32 {
++	ret := libcCall(unsafe.Pointer(abi.FuncPCABI0(kevent_trampoline)), unsafe.Pointer(&kq))
++	KeepAlive(ch)
++	KeepAlive(ev)
++	KeepAlive(ts)
++	return ret
++}
++func kevent_trampoline()
++
++//go:nosplit
++//go:cgo_unsafe_args
++func setitimer(mode int32, new, old *itimerval) {
++	libcCall(unsafe.Pointer(abi.FuncPCABI0(setitimer_trampoline)), unsafe.Pointer(&mode))
++	KeepAlive(new)
++	KeepAlive(old)
++}
++func setitimer_trampoline()
++
++//go:nosplit
++//go:cgo_unsafe_args
++func usleep(usec uint32) {
++	libcCall(unsafe.Pointer(abi.FuncPCABI0(usleep_trampoline)), unsafe.Pointer(&usec))
++}
++func usleep_trampoline()
++
++//go:nosplit
++//go:cgo_unsafe_args
++func usleep_no_g(usec uint32) {
++	asmcgocall_no_g(unsafe.Pointer(abi.FuncPCABI0(usleep_trampoline)), unsafe.Pointer(&usec))
++}
++
++//go:nosplit
++func sysconf(name int32) int64 {
++	args := struct {
++		name int32
++		ret  int64
++	}{name, 0}
++	libcCall(unsafe.Pointer(abi.FuncPCABI0(sysconf_trampoline)), unsafe.Pointer(&args))
++	return args.ret
++}
++func sysconf_trampoline()
++
++// sched_getaffinity is the C library's, which returns 0 or -1.
++//
++//go:nosplit
++//go:cgo_unsafe_args
++func sched_getaffinity(pid int32, size uintptr, set *byte) int32 {
++	ret := libcCall(unsafe.Pointer(abi.FuncPCABI0(sched_getaffinity_trampoline)), unsafe.Pointer(&pid))
++	KeepAlive(set)
++	return ret
++}
++func sched_getaffinity_trampoline()
++
++//go:nosplit
++//go:cgo_unsafe_args
++func fcntl(fd, cmd, arg int32) (ret int32, errno int32) {
++	args := struct {
++		fd, cmd, arg int32
++		ret, errno   int32
++	}{fd, cmd, arg, 0, 0}
++	libcCall(unsafe.Pointer(abi.FuncPCABI0(fcntl_trampoline)), unsafe.Pointer(&args))
++	return args.ret, args.errno
++}
++func fcntl_trampoline()
++
++//go:nosplit
++func nanotime1() int64 {
++	var ts timespec
++	args := struct {
++		clock_id int32
++		tp       unsafe.Pointer
++	}{_CLOCK_MONOTONIC, unsafe.Pointer(&ts)}
++	if errno := libcCall(unsafe.Pointer(abi.FuncPCABI0(clock_gettime_trampoline)), unsafe.Pointer(&args)); errno < 0 {
++		// Avoid growing the nosplit stack.
++		systemstack(func() {
++			println("runtime: errno", -errno)
++			throw("clock_gettime failed")
++		})
++	}
++	return ts.tv_sec*1e9 + int64(ts.tv_nsec)
++}
++func clock_gettime_trampoline()
++
++//go:nosplit
++func walltime() (int64, int32) {
++	var ts timespec
++	args := struct {
++		clock_id int32
++		tp       unsafe.Pointer
++	}{_CLOCK_REALTIME, unsafe.Pointer(&ts)}
++	if errno := libcCall(unsafe.Pointer(abi.FuncPCABI0(clock_gettime_trampoline)), unsafe.Pointer(&args)); errno < 0 {
++		// Avoid growing the nosplit stack.
++		systemstack(func() {
++			println("runtime: errno", -errno)
++			throw("clock_gettime failed")
++		})
++	}
++	return ts.tv_sec, int32(ts.tv_nsec)
++}
++
++//go:nosplit
++//go:cgo_unsafe_args
++func sigaction(sig uint32, new *sigactiont, old *sigactiont) {
++	libcCall(unsafe.Pointer(abi.FuncPCABI0(sigaction_trampoline)), unsafe.Pointer(&sig))
++	KeepAlive(new)
++	KeepAlive(old)
++}
++func sigaction_trampoline()
++
++//go:nosplit
++//go:cgo_unsafe_args
++func sigprocmask(how uint32, new *sigset, old *sigset) {
++	// sigprocmask is called from sigsave, which is called from needm.
++	// As such, we have to be able to run with no g here.
++	asmcgocall_no_g(unsafe.Pointer(abi.FuncPCABI0(sigprocmask_trampoline)), unsafe.Pointer(&how))
++	KeepAlive(new)
++	KeepAlive(old)
++}
++func sigprocmask_trampoline()
++
++//go:nosplit
++//go:cgo_unsafe_args
++func sigaltstack(new *stackt, old *stackt) {
++	libcCall(unsafe.Pointer(abi.FuncPCABI0(sigaltstack_trampoline)), unsafe.Pointer(&new))
++	KeepAlive(new)
++	KeepAlive(old)
++}
++func sigaltstack_trampoline()
++
++// Not used on Radix, but must be defined.
++func exitThread(wait *atomic.Uint32) {
++	throw("exitThread")
++}
++
++// The X versions of syscall expect the libc call to return a 64-bit result.
++// Otherwise (the non-X version) expects a 32-bit result.
++// This distinction is required because an error is indicated by returning -1,
++// and we need to know whether to check 32 or 64 bits of the result.
++// (Some libc functions that return 32 bits put junk in the upper 32 bits of AX.)
++
++//go:linkname syscall_syscall syscall.syscall
++//go:nosplit
++//go:cgo_unsafe_args
++func syscall_syscall(fn, a1, a2, a3 uintptr) (r1, r2, err uintptr) {
++	entersyscall()
++	libcCall(unsafe.Pointer(abi.FuncPCABI0(syscall)), unsafe.Pointer(&fn))
++	exitsyscall()
++	return
++}
++func syscall()
++
++//go:linkname syscall_syscallX syscall.syscallX
++//go:nosplit
++//go:cgo_unsafe_args
++func syscall_syscallX(fn, a1, a2, a3 uintptr) (r1, r2, err uintptr) {
++	entersyscall()
++	libcCall(unsafe.Pointer(abi.FuncPCABI0(syscallX)), unsafe.Pointer(&fn))
++	exitsyscall()
++	return
++}
++func syscallX()
++
++//go:linkname syscall_syscall6 syscall.syscall6
++//go:nosplit
++//go:cgo_unsafe_args
++func syscall_syscall6(fn, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2, err uintptr) {
++	entersyscall()
++	libcCall(unsafe.Pointer(abi.FuncPCABI0(syscall6)), unsafe.Pointer(&fn))
++	exitsyscall()
++	return
++}
++func syscall6()
++
++//go:linkname syscall_syscall6X syscall.syscall6X
++//go:nosplit
++//go:cgo_unsafe_args
++func syscall_syscall6X(fn, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2, err uintptr) {
++	entersyscall()
++	libcCall(unsafe.Pointer(abi.FuncPCABI0(syscall6X)), unsafe.Pointer(&fn))
++	exitsyscall()
++	return
++}
++func syscall6X()
++
++//go:linkname syscall_syscall10 syscall.syscall10
++//go:nosplit
++//go:cgo_unsafe_args
++func syscall_syscall10(fn, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10 uintptr) (r1, r2, err uintptr) {
++	entersyscall()
++	libcCall(unsafe.Pointer(abi.FuncPCABI0(syscall10)), unsafe.Pointer(&fn))
++	exitsyscall()
++	return
++}
++func syscall10()
++
++//go:linkname syscall_syscall10X syscall.syscall10X
++//go:nosplit
++//go:cgo_unsafe_args
++func syscall_syscall10X(fn, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10 uintptr) (r1, r2, err uintptr) {
++	entersyscall()
++	libcCall(unsafe.Pointer(abi.FuncPCABI0(syscall10X)), unsafe.Pointer(&fn))
++	exitsyscall()
++	return
++}
++func syscall10X()
++
++//go:linkname syscall_rawSyscall syscall.rawSyscall
++//go:nosplit
++//go:cgo_unsafe_args
++func syscall_rawSyscall(fn, a1, a2, a3 uintptr) (r1, r2, err uintptr) {
++	libcCall(unsafe.Pointer(abi.FuncPCABI0(syscall)), unsafe.Pointer(&fn))
++	return
++}
++
++//go:linkname syscall_rawSyscall6 syscall.rawSyscall6
++//go:nosplit
++//go:cgo_unsafe_args
++func syscall_rawSyscall6(fn, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2, err uintptr) {
++	libcCall(unsafe.Pointer(abi.FuncPCABI0(syscall6)), unsafe.Pointer(&fn))
++	return
++}
++
++//go:linkname syscall_rawSyscall6X syscall.rawSyscall6X
++//go:nosplit
++//go:cgo_unsafe_args
++func syscall_rawSyscall6X(fn, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2, err uintptr) {
++	libcCall(unsafe.Pointer(abi.FuncPCABI0(syscall6X)), unsafe.Pointer(&fn))
++	return
++}
++
++//go:linkname syscall_rawSyscall10X syscall.rawSyscall10X
++//go:nosplit
++//go:cgo_unsafe_args
++func syscall_rawSyscall10X(fn, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10 uintptr) (r1, r2, err uintptr) {
++	libcCall(unsafe.Pointer(abi.FuncPCABI0(syscall10X)), unsafe.Pointer(&fn))
++	return
++}
++
++// Tell the linker that the libc_* functions are to be found
++// in a system library, with the libc_ prefix missing.
++
++//go:cgo_import_dynamic libc___mlibc_entry __mlibc_entry "libc.so"
++
++//go:cgo_import_dynamic libc_pthread_attr_init pthread_attr_init "libc.so"
++//go:cgo_import_dynamic libc_pthread_attr_destroy pthread_attr_destroy "libc.so"
++//go:cgo_import_dynamic libc_pthread_attr_getstacksize pthread_attr_getstacksize "libc.so"
++//go:cgo_import_dynamic libc_pthread_attr_setdetachstate pthread_attr_setdetachstate "libc.so"
++//go:cgo_import_dynamic libc_pthread_create pthread_create "libc.so"
++//go:cgo_import_dynamic libc_pthread_sigmask pthread_sigmask "libc.so"
++
++//go:cgo_import_dynamic libc_futex futex "libc.so"
++//go:cgo_import_dynamic libc_sched_yield sched_yield "libc.so"
++
++//go:cgo_import_dynamic libc_errno __errno_location "libc.so"
++//go:cgo_import_dynamic libc_exit exit "libc.so"
++//go:cgo_import_dynamic libc_gettid gettid "libc.so"
++//go:cgo_import_dynamic libc_getpid getpid "libc.so"
++//go:cgo_import_dynamic libc_kill kill "libc.so"
++//go:cgo_import_dynamic libc_tgkill tgkill "libc.so"
++
++//go:cgo_import_dynamic libc_mmap mmap "libc.so"
++//go:cgo_import_dynamic libc_munmap munmap "libc.so"
++
++//go:cgo_import_dynamic libc_open open "libc.so"
++//go:cgo_import_dynamic libc_close close "libc.so"
++//go:cgo_import_dynamic libc_read read "libc.so"
++//go:cgo_import_dynamic libc_write write "libc.so"
++//go:cgo_import_dynamic libc_pipe2 pipe2 "libc.so"
++//go:cgo_import_dynamic libc_kqueue kqueue "libc.so"
++//go:cgo_import_dynamic libc_kevent kevent "libc.so"
++//go:cgo_import_dynamic libc_fcntl fcntl "libc.so"
++
++//go:cgo_import_dynamic libc_clock_gettime clock_gettime "libc.so"
++//go:cgo_import_dynamic libc_setitimer setitimer "libc.so"
++//go:cgo_import_dynamic libc_usleep usleep "libc.so"
++//go:cgo_import_dynamic libc_sysconf sysconf "libc.so"
++//go:cgo_import_dynamic libc_sched_getaffinity sched_getaffinity "libc.so"
++
++//go:cgo_import_dynamic libc_sigaction sigaction "libc.so"
++//go:cgo_import_dynamic libc_sigaltstack sigaltstack "libc.so"
++
++//go:cgo_import_dynamic _ _ "libc.so"
+diff --git a/src/runtime/sys_radix_amd64.s b/src/runtime/sys_radix_amd64.s
+new file mode 100644
+index 00000000..a7055572
+--- /dev/null
++++ b/src/runtime/sys_radix_amd64.s
+@@ -0,0 +1,661 @@
++// Copyright 2026 The Dukovo contributors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++//
++// System calls and other system things for AMD64, Radix.
++// Radix programs reach the kernel through the C library, as on
++// OpenBSD: these trampolines go from Go's calling convention to C's
++// and call it.
++
++#include "go_asm.h"
++#include "go_tls.h"
++#include "textflag.h"
++#include "cgo/abi_amd64.h"
++
++TEXT runtime·settls(SB),NOSPLIT,$0
++	// Nothing to do: the C library set the thread's TLS up.
++	RET
++
++// mstart_stub is the first function a thread that pthread_create
++// started runs: it does some low-level setup and then calls mstart.
++// Called with the C calling convention.
++TEXT runtime·mstart_stub(SB),NOSPLIT,$0
++	// DI points to the m.
++	// We are already on m's g0 stack.
++
++	// Transition from C ABI to Go ABI.
++	PUSH_REGS_HOST_TO_ABI0()
++
++	// Load g and save it to TLS.
++	MOVQ	m_g0(DI), DX	// g
++	get_tls(CX)
++	MOVQ	DX, g(CX)
++
++	CALL	runtime·mstart(SB)
++
++	POP_REGS_HOST_TO_ABI0()
++
++	// Go is all done with this OS thread. Nothing joins it, so the
++	// value it returns does not matter.
++	XORL	AX, AX
++	RET
++
++TEXT runtime·sigfwd(SB),NOSPLIT,$0-32
++	MOVQ	fn+0(FP),    AX
++	MOVL	sig+8(FP),   DI
++	MOVQ	info+16(FP), SI
++	MOVQ	ctx+24(FP),  DX
++	MOVQ	SP, BX		// callee-saved
++	ANDQ	$~15, SP	// alignment for x86_64 ABI
++	CALL	AX
++	MOVQ	BX, SP
++	RET
++
++// The signal handler, called with the C calling convention. It returns
++// to the C library's restorer, which the C library's sigaction sets.
++TEXT runtime·sigtramp(SB),NOSPLIT|TOPFRAME|NOFRAME,$0
++	// Transition from C ABI to Go ABI.
++	PUSH_REGS_HOST_TO_ABI0()
++
++	// Set up ABIInternal environment: g in R14, cleared X15.
++	get_tls(R12)
++	MOVQ	g(R12), R14
++	PXOR	X15, X15
++
++	// Reserve space for spill slots.
++	NOP	SP		// disable vet stack checking
++	ADJSP	$24
++
++	// Call into the Go signal handler.
++	MOVQ	DI, AX	// sig
++	MOVQ	SI, BX	// info
++	MOVQ	DX, CX	// ctx
++	CALL	·sigtrampgo<ABIInternal>(SB)
++
++	ADJSP	$-24
++
++	POP_REGS_HOST_TO_ABI0()
++	RET
++
++// These trampolines help convert from Go calling convention to C calling
++// convention. They should be called with asmcgocall.
++// A pointer to the arguments is passed in DI.
++// A single int32 result is returned in AX.
++// (For more results, make an args/results structure.)
++TEXT runtime·pthread_attr_init_trampoline(SB),NOSPLIT,$0
++	MOVQ	0(DI), DI		// arg 1 - attr
++	CALL	libc_pthread_attr_init(SB)
++	RET
++
++TEXT runtime·pthread_attr_destroy_trampoline(SB),NOSPLIT,$0
++	MOVQ	0(DI), DI		// arg 1 - attr
++	CALL	libc_pthread_attr_destroy(SB)
++	RET
++
++TEXT runtime·pthread_attr_getstacksize_trampoline(SB),NOSPLIT,$0
++	MOVQ	8(DI), SI		// arg 2 - stacksize
++	MOVQ	0(DI), DI		// arg 1 - attr
++	CALL	libc_pthread_attr_getstacksize(SB)
++	RET
++
++TEXT runtime·pthread_attr_setdetachstate_trampoline(SB),NOSPLIT,$0
++	MOVQ	8(DI), SI		// arg 2 - detachstate
++	MOVQ	0(DI), DI		// arg 1 - attr
++	CALL	libc_pthread_attr_setdetachstate(SB)
++	RET
++
++TEXT runtime·pthread_create_trampoline(SB),NOSPLIT,$16
++	MOVQ	0(DI), SI		// arg 2 - attr
++	MOVQ	8(DI), DX		// arg 3 - start
++	MOVQ	16(DI), CX		// arg 4 - arg
++	MOVQ	SP, DI			// arg 1 - &thread (discarded)
++	CALL	libc_pthread_create(SB)
++	RET
++
++// tgkill sends a signal to one of the process's threads.
++TEXT runtime·tgkill_trampoline(SB),NOSPLIT,$0
++	MOVQ	DI, BX			// BX is caller-save
++	CALL	libc_getpid(SB)
++	MOVL	AX, DI			// arg 1 - pid
++	MOVL	0(BX), SI		// arg 2 - tid
++	MOVL	4(BX), DX		// arg 3 - signal
++	CALL	libc_tgkill(SB)
++	RET
++
++TEXT runtime·raiseproc_trampoline(SB),NOSPLIT,$0
++	MOVL	0(DI), BX		// signal
++	CALL	libc_getpid(SB)
++	MOVL	AX, DI			// arg 1 - pid
++	MOVL	BX, SI			// arg 2 - signal
++	CALL	libc_kill(SB)
++	RET
++
++TEXT runtime·gettid_trampoline(SB),NOSPLIT,$0
++	MOVQ	DI, BX			// BX is caller-save
++	CALL	libc_gettid(SB)
++	MOVL	AX, 0(BX)		// return value
++	RET
++
++TEXT runtime·exit_trampoline(SB),NOSPLIT,$0
++	MOVL	0(DI), DI		// arg 1 - exit status
++	CALL	libc_exit(SB)
++	MOVL	$0xf1, 0xf1		// crash
++	RET
++
++TEXT runtime·sched_yield_trampoline(SB),NOSPLIT,$0
++	CALL	libc_sched_yield(SB)
++	RET
++
++TEXT runtime·futex_trampoline(SB),NOSPLIT,$0
++	MOVL	8(DI), SI		// arg 2 - op
++	MOVL	12(DI), DX		// arg 3 - val
++	MOVQ	16(DI), CX		// arg 4 - timeout
++	MOVQ	24(DI), R8		// arg 5 - addr2
++	MOVQ	0(DI), DI		// arg 1 - addr
++	CALL	libc_futex(SB)
++	CMPL	AX, $-1
++	JNE	ok
++	CALL	libc_errno(SB)
++	MOVL	(AX), AX		// errno
++	NEGL	AX			// caller expects negative errno value
++ok:
++	RET
++
++TEXT runtime·mmap_trampoline(SB),NOSPLIT,$0
++	MOVQ	DI, BX
++	MOVQ	0(BX), DI		// arg 1 - addr
++	MOVQ	8(BX), SI		// arg 2 - len
++	MOVL	16(BX), DX		// arg 3 - prot
++	MOVL	20(BX), CX		// arg 4 - flags
++	MOVL	24(BX), R8		// arg 5 - fd
++	MOVL	28(BX), R9		// arg 6 - offset
++	CALL	libc_mmap(SB)
++	XORL	DX, DX
++	CMPQ	AX, $-1
++	JNE	ok
++	CALL	libc_errno(SB)
++	MOVLQSX	(AX), DX		// errno
++	XORQ	AX, AX
++ok:
++	MOVQ	AX, 32(BX)
++	MOVQ	DX, 40(BX)
++	RET
++
++TEXT runtime·munmap_trampoline(SB),NOSPLIT,$0
++	MOVQ	8(DI), SI		// arg 2 - len
++	MOVQ	0(DI), DI		// arg 1 - addr
++	CALL	libc_munmap(SB)
++	TESTQ	AX, AX
++	JEQ	2(PC)
++	MOVL	$0xf1, 0xf1		// crash
++	RET
++
++TEXT runtime·open_trampoline(SB),NOSPLIT,$0
++	MOVL	8(DI), SI		// arg 2 - flags
++	MOVL	12(DI), DX		// arg 3 - mode
++	MOVQ	0(DI), DI		// arg 1 - path
++	XORL	AX, AX			// vararg: say "no float args"
++	CALL	libc_open(SB)
++	RET
++
++TEXT runtime·close_trampoline(SB),NOSPLIT,$0
++	MOVL	0(DI), DI		// arg 1 - fd
++	CALL	libc_close(SB)
++	RET
++
++TEXT runtime·read_trampoline(SB),NOSPLIT,$0
++	MOVQ	8(DI), SI		// arg 2 - buf
++	MOVL	16(DI), DX		// arg 3 - count
++	MOVL	0(DI), DI		// arg 1 - fd
++	CALL	libc_read(SB)
++	TESTL	AX, AX
++	JGE	noerr
++	CALL	libc_errno(SB)
++	MOVL	(AX), AX		// errno
++	NEGL	AX			// caller expects negative errno value
++noerr:
++	RET
++
++TEXT runtime·write_trampoline(SB),NOSPLIT,$0
++	MOVQ	8(DI), SI		// arg 2 - buf
++	MOVL	16(DI), DX		// arg 3 - count
++	MOVL	0(DI), DI		// arg 1 - fd
++	CALL	libc_write(SB)
++	TESTL	AX, AX
++	JGE	noerr
++	CALL	libc_errno(SB)
++	MOVL	(AX), AX		// errno
++	NEGL	AX			// caller expects negative errno value
++noerr:
++	RET
++
++TEXT runtime·pipe2_trampoline(SB),NOSPLIT,$0
++	MOVL	8(DI), SI		// arg 2 - flags
++	MOVQ	0(DI), DI		// arg 1 - filedes
++	CALL	libc_pipe2(SB)
++	TESTL	AX, AX
++	JEQ	3(PC)
++	CALL	libc_errno(SB)
++	MOVL	(AX), AX		// errno
++	NEGL	AX			// caller expects negative errno value
++	RET
++
++TEXT runtime·kqueue_trampoline(SB),NOSPLIT,$0
++	CALL	libc_kqueue(SB)
++	TESTL	AX, AX
++	JGE	noerr
++	CALL	libc_errno(SB)
++	MOVL	(AX), AX		// errno
++	NEGL	AX			// caller expects negative errno value
++noerr:
++	RET
++
++TEXT runtime·kevent_trampoline(SB),NOSPLIT,$0
++	MOVQ	8(DI), SI		// arg 2 - changelist
++	MOVL	16(DI), DX		// arg 3 - nchanges
++	MOVQ	24(DI), CX		// arg 4 - eventlist
++	MOVL	32(DI), R8		// arg 5 - nevents
++	MOVQ	40(DI), R9		// arg 6 - timeout
++	MOVL	0(DI), DI		// arg 1 - kq
++	CALL	libc_kevent(SB)
++	TESTL	AX, AX
++	JGE	noerr
++	CALL	libc_errno(SB)
++	MOVL	(AX), AX		// errno
++	NEGL	AX			// caller expects negative errno value
++noerr:
++	RET
++
++TEXT runtime·setitimer_trampoline(SB),NOSPLIT,$0
++	MOVQ	8(DI), SI		// arg 2 - new
++	MOVQ	16(DI), DX		// arg 3 - old
++	MOVL	0(DI), DI		// arg 1 - which
++	CALL	libc_setitimer(SB)
++	RET
++
++TEXT runtime·usleep_trampoline(SB),NOSPLIT,$0
++	MOVL	0(DI), DI		// arg 1 - usec
++	CALL	libc_usleep(SB)
++	RET
++
++TEXT runtime·sysconf_trampoline(SB),NOSPLIT,$0
++	MOVQ	DI, BX			// BX is caller-save
++	MOVL	0(BX), DI		// arg 1 - name
++	CALL	libc_sysconf(SB)
++	MOVQ	AX, 8(BX)		// return value
++	RET
++
++TEXT runtime·sched_getaffinity_trampoline(SB),NOSPLIT,$0
++	MOVQ	8(DI), SI		// arg 2 - size
++	MOVQ	16(DI), DX		// arg 3 - set
++	MOVL	0(DI), DI		// arg 1 - pid
++	CALL	libc_sched_getaffinity(SB)
++	RET
++
++TEXT runtime·fcntl_trampoline(SB),NOSPLIT,$0
++	MOVQ	DI, BX
++	MOVL	0(BX), DI		// arg 1 - fd
++	MOVL	4(BX), SI		// arg 2 - cmd
++	MOVL	8(BX), DX		// arg 3 - arg
++	XORL	AX, AX			// vararg: say "no float args"
++	CALL	libc_fcntl(SB)
++	XORL	DX, DX
++	CMPL	AX, $-1
++	JNE	noerr
++	CALL	libc_errno(SB)
++	MOVL	(AX), DX
++	MOVL	$-1, AX
++noerr:
++	MOVL	AX, 12(BX)
++	MOVL	DX, 16(BX)
++	RET
++
++TEXT runtime·clock_gettime_trampoline(SB),NOSPLIT,$0
++	MOVQ	8(DI), SI		// arg 2 - tp
++	MOVL	0(DI), DI		// arg 1 - clock_id
++	CALL	libc_clock_gettime(SB)
++	TESTL	AX, AX
++	JEQ	noerr
++	CALL	libc_errno(SB)
++	MOVL	(AX), AX		// errno
++	NEGL	AX			// caller expects negative errno value
++noerr:
++	RET
++
++TEXT runtime·sigaction_trampoline(SB),NOSPLIT,$0
++	MOVQ	8(DI), SI		// arg 2 - new
++	MOVQ	16(DI), DX		// arg 3 - old
++	MOVL	0(DI), DI		// arg 1 - sig
++	CALL	libc_sigaction(SB)
++	TESTL	AX, AX
++	JEQ	2(PC)
++	MOVL	$0xf1, 0xf1		// crash
++	RET
++
++// sigprocmask_trampoline sets the thread's signal mask. The runtime's
++// sigset is the kernel's 64-bit mask; the C library's sigset_t is 128
++// bytes, of which that mask is the first 8. The C library's sets go
++// on this frame: the new one at 0(SP), the old one at 128(SP).
++TEXT runtime·sigprocmask_trampoline(SB),NOSPLIT,$272
++	MOVQ	DI, 256(SP)		// the arguments
++	XORL	SI, SI			// no new set
++	MOVQ	8(DI), AX		// new
++	TESTQ	AX, AX
++	JEQ	call
++	MOVQ	(AX), AX
++	MOVQ	AX, 0(SP)		// the kernel's mask
++	LEAQ	8(SP), DI		// and the rest of the C library's set,
++	MOVL	$15, CX			// 15 words of zeros
++	XORL	AX, AX
++	CLD
++	REP;	STOSQ
++	LEAQ	0(SP), SI		// arg 2 - new
++call:
++	MOVQ	256(SP), DI
++	LEAQ	128(SP), DX		// arg 3 - old
++	MOVL	0(DI), DI		// arg 1 - how
++	CALL	libc_pthread_sigmask(SB)
++	TESTL	AX, AX
++	JEQ	2(PC)
++	MOVL	$0xf1, 0xf1		// crash
++	MOVQ	256(SP), DI
++	MOVQ	16(DI), DX		// old
++	TESTQ	DX, DX
++	JEQ	done
++	MOVQ	128(SP), AX
++	MOVQ	AX, (DX)
++done:
++	RET
++
++TEXT runtime·sigaltstack_trampoline(SB),NOSPLIT,$0
++	MOVQ	8(DI), SI		// arg 2 - old
++	MOVQ	0(DI), DI		// arg 1 - new
++	CALL	libc_sigaltstack(SB)
++	TESTQ	AX, AX
++	JEQ	2(PC)
++	MOVL	$0xf1, 0xf1		// crash
++	RET
++
++// syscall calls a function in libc on behalf of the syscall package.
++// syscall takes a pointer to a struct like:
++// struct {
++//	fn    uintptr
++//	a1    uintptr
++//	a2    uintptr
++//	a3    uintptr
++//	r1    uintptr
++//	r2    uintptr
++//	err   uintptr
++// }
++// syscall must be called on the g0 stack with the
++// C calling convention (use libcCall).
++//
++// syscall expects a 32-bit result and tests for 32-bit -1
++// to decide there was an error.
++TEXT runtime·syscall(SB),NOSPLIT,$16
++	MOVQ	(0*8)(DI), CX // fn
++	MOVQ	(2*8)(DI), SI // a2
++	MOVQ	(3*8)(DI), DX // a3
++	MOVQ	DI, (SP)
++	MOVQ	(1*8)(DI), DI // a1
++	XORL	AX, AX	      // vararg: say "no float args"
++
++	CALL	CX
++
++	MOVQ	(SP), DI
++	MOVQ	AX, (4*8)(DI) // r1
++	MOVQ	DX, (5*8)(DI) // r2
++
++	// Standard libc functions return -1 on error
++	// and set errno.
++	CMPL	AX, $-1	      // Note: high 32 bits are junk
++	JNE	ok
++
++	// Get error code from libc.
++	CALL	libc_errno(SB)
++	MOVLQSX	(AX), AX
++	MOVQ	(SP), DI
++	MOVQ	AX, (6*8)(DI) // err
++
++ok:
++	XORL	AX, AX        // no error (it's ignored anyway)
++	RET
++
++// syscallX calls a function in libc on behalf of the syscall package.
++// syscallX takes a pointer to a struct like:
++// struct {
++//	fn    uintptr
++//	a1    uintptr
++//	a2    uintptr
++//	a3    uintptr
++//	r1    uintptr
++//	r2    uintptr
++//	err   uintptr
++// }
++// syscallX must be called on the g0 stack with the
++// C calling convention (use libcCall).
++//
++// syscallX is like syscall but expects a 64-bit result
++// and tests for 64-bit -1 to decide there was an error.
++TEXT runtime·syscallX(SB),NOSPLIT,$16
++	MOVQ	(0*8)(DI), CX // fn
++	MOVQ	(2*8)(DI), SI // a2
++	MOVQ	(3*8)(DI), DX // a3
++	MOVQ	DI, (SP)
++	MOVQ	(1*8)(DI), DI // a1
++	XORL	AX, AX	      // vararg: say "no float args"
++
++	CALL	CX
++
++	MOVQ	(SP), DI
++	MOVQ	AX, (4*8)(DI) // r1
++	MOVQ	DX, (5*8)(DI) // r2
++
++	// Standard libc functions return -1 on error
++	// and set errno.
++	CMPQ	AX, $-1
++	JNE	ok
++
++	// Get error code from libc.
++	CALL	libc_errno(SB)
++	MOVLQSX	(AX), AX
++	MOVQ	(SP), DI
++	MOVQ	AX, (6*8)(DI) // err
++
++ok:
++	XORL	AX, AX        // no error (it's ignored anyway)
++	RET
++
++// syscall6 calls a function in libc on behalf of the syscall package.
++// syscall6 takes a pointer to a struct like:
++// struct {
++//	fn    uintptr
++//	a1    uintptr
++//	a2    uintptr
++//	a3    uintptr
++//	a4    uintptr
++//	a5    uintptr
++//	a6    uintptr
++//	r1    uintptr
++//	r2    uintptr
++//	err   uintptr
++// }
++// syscall6 must be called on the g0 stack with the
++// C calling convention (use libcCall).
++//
++// syscall6 expects a 32-bit result and tests for 32-bit -1
++// to decide there was an error.
++TEXT runtime·syscall6(SB),NOSPLIT,$16
++	MOVQ	(0*8)(DI), R11// fn
++	MOVQ	(2*8)(DI), SI // a2
++	MOVQ	(3*8)(DI), DX // a3
++	MOVQ	(4*8)(DI), CX // a4
++	MOVQ	(5*8)(DI), R8 // a5
++	MOVQ	(6*8)(DI), R9 // a6
++	MOVQ	DI, (SP)
++	MOVQ	(1*8)(DI), DI // a1
++	XORL	AX, AX	      // vararg: say "no float args"
++
++	CALL	R11
++
++	MOVQ	(SP), DI
++	MOVQ	AX, (7*8)(DI) // r1
++	MOVQ	DX, (8*8)(DI) // r2
++
++	CMPL	AX, $-1
++	JNE	ok
++
++	CALL	libc_errno(SB)
++	MOVLQSX	(AX), AX
++	MOVQ	(SP), DI
++	MOVQ	AX, (9*8)(DI) // err
++
++ok:
++	XORL	AX, AX        // no error (it's ignored anyway)
++	RET
++
++// syscall6X calls a function in libc on behalf of the syscall package.
++// syscall6X takes a pointer to a struct like:
++// struct {
++//	fn    uintptr
++//	a1    uintptr
++//	a2    uintptr
++//	a3    uintptr
++//	a4    uintptr
++//	a5    uintptr
++//	a6    uintptr
++//	r1    uintptr
++//	r2    uintptr
++//	err   uintptr
++// }
++// syscall6X must be called on the g0 stack with the
++// C calling convention (use libcCall).
++//
++// syscall6X is like syscall6 but expects a 64-bit result
++// and tests for 64-bit -1 to decide there was an error.
++TEXT runtime·syscall6X(SB),NOSPLIT,$16
++	MOVQ	(0*8)(DI), R11// fn
++	MOVQ	(2*8)(DI), SI // a2
++	MOVQ	(3*8)(DI), DX // a3
++	MOVQ	(4*8)(DI), CX // a4
++	MOVQ	(5*8)(DI), R8 // a5
++	MOVQ	(6*8)(DI), R9 // a6
++	MOVQ	DI, (SP)
++	MOVQ	(1*8)(DI), DI // a1
++	XORL	AX, AX	      // vararg: say "no float args"
++
++	CALL	R11
++
++	MOVQ	(SP), DI
++	MOVQ	AX, (7*8)(DI) // r1
++	MOVQ	DX, (8*8)(DI) // r2
++
++	CMPQ	AX, $-1
++	JNE	ok
++
++	CALL	libc_errno(SB)
++	MOVLQSX	(AX), AX
++	MOVQ	(SP), DI
++	MOVQ	AX, (9*8)(DI) // err
++
++ok:
++	XORL	AX, AX        // no error (it's ignored anyway)
++	RET
++
++// syscall10 calls a function in libc on behalf of the syscall package.
++// syscall10 takes a pointer to a struct like:
++// struct {
++//	fn    uintptr
++//	a1    uintptr
++//	a2    uintptr
++//	a3    uintptr
++//	a4    uintptr
++//	a5    uintptr
++//	a6    uintptr
++//	a7    uintptr
++//	a8    uintptr
++//	a9    uintptr
++//	a10   uintptr
++//	r1    uintptr
++//	r2    uintptr
++//	err   uintptr
++// }
++// syscall10 must be called on the g0 stack with the
++// C calling convention (use libcCall).
++TEXT runtime·syscall10(SB),NOSPLIT,$48
++	// Arguments a1 to a6 get passed in registers, with a7 onwards being
++	// passed via the stack per the x86-64 System V ABI.
++	MOVQ	(7*8)(DI), R10	// a7
++	MOVQ	(8*8)(DI), R11	// a8
++	MOVQ	(9*8)(DI), R12	// a9
++	MOVQ	(10*8)(DI), R13	// a10
++	MOVQ	R10, (0*8)(SP)	// a7
++	MOVQ	R11, (1*8)(SP)	// a8
++	MOVQ	R12, (2*8)(SP)	// a9
++	MOVQ	R13, (3*8)(SP)	// a10
++	MOVQ	(0*8)(DI), R11	// fn
++	MOVQ	(2*8)(DI), SI	// a2
++	MOVQ	(3*8)(DI), DX	// a3
++	MOVQ	(4*8)(DI), CX	// a4
++	MOVQ	(5*8)(DI), R8	// a5
++	MOVQ	(6*8)(DI), R9	// a6
++	MOVQ	DI, (4*8)(SP)
++	MOVQ	(1*8)(DI), DI	// a1
++	XORL	AX, AX	     	// vararg: say "no float args"
++
++	CALL	R11
++
++	MOVQ	(4*8)(SP), DI
++	MOVQ	AX, (11*8)(DI) // r1
++	MOVQ	DX, (12*8)(DI) // r2
++
++	CMPL	AX, $-1
++	JNE	ok
++
++	CALL	libc_errno(SB)
++	MOVLQSX	(AX), AX
++	MOVQ	(4*8)(SP), DI
++	MOVQ	AX, (13*8)(DI) // err
++
++ok:
++	XORL	AX, AX        // no error (it's ignored anyway)
++	RET
++
++// syscall10X is like syscall10 but expects a 64-bit result
++// and tests for 64-bit -1 to decide there was an error.
++TEXT runtime·syscall10X(SB),NOSPLIT,$48
++	MOVQ	(7*8)(DI), R10	// a7
++	MOVQ	(8*8)(DI), R11	// a8
++	MOVQ	(9*8)(DI), R12	// a9
++	MOVQ	(10*8)(DI), R13	// a10
++	MOVQ	R10, (0*8)(SP)	// a7
++	MOVQ	R11, (1*8)(SP)	// a8
++	MOVQ	R12, (2*8)(SP)	// a9
++	MOVQ	R13, (3*8)(SP)	// a10
++	MOVQ	(0*8)(DI), R11	// fn
++	MOVQ	(2*8)(DI), SI	// a2
++	MOVQ	(3*8)(DI), DX	// a3
++	MOVQ	(4*8)(DI), CX	// a4
++	MOVQ	(5*8)(DI), R8	// a5
++	MOVQ	(6*8)(DI), R9	// a6
++	MOVQ	DI, (4*8)(SP)
++	MOVQ	(1*8)(DI), DI	// a1
++	XORL	AX, AX	     	// vararg: say "no float args"
++
++	CALL	R11
++
++	MOVQ	(4*8)(SP), DI
++	MOVQ	AX, (11*8)(DI) // r1
++	MOVQ	DX, (12*8)(DI) // r2
++
++	CMPQ	AX, $-1
++	JNE	ok
++
++	CALL	libc_errno(SB)
++	MOVLQSX	(AX), AX
++	MOVQ	(4*8)(SP), DI
++	MOVQ	AX, (13*8)(DI) // err
++
++ok:
++	XORL	AX, AX        // no error (it's ignored anyway)
++	RET
+diff --git a/src/runtime/timestub2.go b/src/runtime/timestub2.go
+index 336bac4b..13f943d7 100644
+--- a/src/runtime/timestub2.go
++++ b/src/runtime/timestub2.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build !aix && !darwin && !freebsd && !openbsd && !solaris && !wasip1 && !windows && !(linux && amd64) && !plan9
++//go:build !aix && !darwin && !freebsd && !openbsd && !radix && !solaris && !wasip1 && !windows && !(linux && amd64) && !plan9
+ 
+ package runtime
+ 

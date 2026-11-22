@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-about = "Pipes, signals, poll and futexes take no longer than on Linux"
+about = "Pipes, signals, poll, event queues and futexes take no longer than on Linux"
 time = "10m"
 
 # Both systems run at the base clock for the rows (ADR 0557): the
@@ -23,6 +23,8 @@ rows = [
     "posix_pipe_mib",
     "posix_signal",
     "posix_poll",
+    "posix_events_idle",
+    "posix_poll_idle",
     "posix_futex_same_cpu",
     "posix_futex_cross_cpu",
     "posix_futex_shared_same_cpu",

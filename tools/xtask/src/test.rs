@@ -411,7 +411,8 @@ const GRUBLESS: u8 = 18;
 
 /// [`Disk::fat`] for a FAT32 disk on the whole disk holding the `.dkv`
 /// files of the catalog's bundles of ports that `ob` packed into
-/// out/bundles ([`bundle_files_disk`], ADR 0370).
+/// out/bundles, but Go's, which has disks of its own
+/// ([`bundle_files_disk`], ADR 0370).
 const BUNDLE_FILES: u8 = 19;
 
 /// [`Disk::fat`] for a FAT32 disk on the whole disk holding a catalog
@@ -542,6 +543,50 @@ const WEBSITES_FILES: u8 = 39;
 /// withdrawn; `root.json`, its first root; and the files of tally's two
 /// versions and spinner's first.
 const WITHDRAW_SITE: u8 = 40;
+
+/// [`Disk::fat`] for a FAT32 disk that holds the programs of the
+/// `go-runtime` test, which `ob` builds with the Go toolchain of the go
+/// port: the Go test program, the test binaries of packages of Go's
+/// standard library with their test data, and the scripts that run them
+/// ([`cases::go_runtime::make_disk`]).
+const GO_FILES: u8 = 41;
+
+/// [`Disk::fat`] for a [`BUNDLE_FILES`] disk that holds Go's bundle alone,
+/// with the module the `go-toolchain` test builds and the two files for
+/// gofmt ([`cases::go_toolchain::make_disk`]).
+const GO_TOOLCHAIN_FILES: u8 = 42;
+
+/// [`Disk::fat`] for a [`GO_TOOLCHAIN_FILES`] disk that also holds the
+/// list of Go's packages with tests, their skips and the script of `ob
+/// test go-suite` ([`go_suite::make_disk`]).
+const GO_SUITE_FILES: u8 = 43;
+
+/// [`Disk::fat`] for a [`BUNDLE_FILES`] disk that holds the bundles of the
+/// catalog's commands built with Go ([`GO_APP_BUNDLES`]) but Caddy's, for
+/// the `go-commands` test.
+const GO_APPS_FILES: u8 = 44;
+
+/// [`Disk::fat`] for a [`BUNDLE_FILES`] disk that holds Caddy's bundle alone,
+/// with the `caddy` test's script ([`cases::caddy::make_disk`]).
+const CADDY_FILES: u8 = 45;
+
+/// The start of the names of the bundle files of the catalog's programs
+/// built with Go (ADR 0600), about 37 MiB together: they are on the disks
+/// of the tests that install them ([`GO_APPS_FILES`]), so that the disks of
+/// the others stay small, as Go's own bundle is
+/// ([`cases::go_toolchain::BUNDLE_PREFIX`]).
+const GO_APP_BUNDLES: &[&str] = &[
+    "com.caddyserver.caddy-",
+    "io.github.jesseduffield.lazygit-",
+    "io.github.junegunn.fzf-",
+    "io.github.muesli.duf-",
+    "io.github.zyedidia.micro-",
+];
+
+/// Whether the bundle file `name` is one of [`GO_APP_BUNDLES`].
+fn is_go_app_bundle(name: &str) -> bool {
+    GO_APP_BUNDLES.iter().any(|prefix| name.starts_with(prefix))
+}
 
 /// One of the boot tests' updates of an installed system (ADR 0451): this
 /// build's slot, under a version after this one's that updates from it,
@@ -1321,6 +1366,13 @@ const fn bundle_files_disk(kib: u64, label: &'static str) -> Disk {
     Disk { fat: BUNDLE_FILES, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
 }
 
+/// A FAT32 virtio disk of `kib` KiB, labelled `label`, holding the Go
+/// programs of the `go-runtime` test ([`GO_FILES`]), which Spark mounts at
+/// `/volumes/<disk>`.
+const fn go_files_disk(kib: u64, label: &'static str) -> Disk {
+    Disk { fat: GO_FILES, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
+}
+
 /// A FAT32 virtio disk of `kib` KiB, labelled `label`, holding the test
 /// updates of the installed system ([`UPDATE_RELEASES`]), which Spark
 /// mounts at `/volumes/<disk>`.
@@ -1790,6 +1842,7 @@ const MICROCODE_REVISION: u32 = 0x7f;
 mod affected;
 mod console_client;
 mod fuzz;
+mod go_suite;
 mod matrix;
 mod phase11;
 mod phase12;
@@ -1889,7 +1942,11 @@ fn needs_packing(case: &Case) -> bool {
         matches!(
             disk.fat,
             BUNDLE_FILES
+                | CADDY_FILES
                 | CATALOG_SITE
+                | GO_APPS_FILES
+                | GO_SUITE_FILES
+                | GO_TOOLCHAIN_FILES
                 | PHP_FILES
                 | POSTGRESQL_FILES
                 | POSTGRESQL_SERVICE_FILES
@@ -3557,12 +3614,15 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         return matrix::command(args);
     }
     // The options first, so that the suite is not taken from a value of one.
-    let timeout = match args.value("--timeout")? {
-        Some(value) => value.parse::<u64>().ok().filter(|&secs| secs > 0).ok_or_else(|| {
-            Error::new(format!("--timeout takes a number of seconds, not `{value}`"))
-        })?,
-        None => 300,
+    let named_timeout = match args.value("--timeout")? {
+        Some(value) => {
+            Some(value.parse::<u64>().ok().filter(|&secs| secs > 0).ok_or_else(|| {
+                Error::new(format!("--timeout takes a number of seconds, not `{value}`"))
+            })?)
+        }
+        None => None,
     };
+    let timeout = named_timeout.unwrap_or(300);
     let mut selected = Vec::new();
     while let Some(name) = args.value("--case")? {
         selected.push(name);
@@ -3690,12 +3750,15 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         Some("corpus") => return corpus::test(ctx, &selected),
         Some("riscv") if selected.is_empty() => return crate::riscv::test(ctx),
         Some("lab-writer") if selected.is_empty() => return crate::lab_net::check(ctx),
-        Some(suite @ ("unit" | "kani" | "tla" | "tuf" | "riscv" | "lab-writer")) => {
+        Some("go-suite") if selected.is_empty() && shard.is_none() && !retry && !image_only => {
+            return go_suite::command(ctx, profile, named_timeout.map(Duration::from_secs));
+        }
+        Some(suite @ ("unit" | "kani" | "tla" | "tuf" | "riscv" | "lab-writer" | "go-suite")) => {
             crate::bail!("--case and --shard select boot tests; they cannot be used with `{suite}`")
         }
         Some(other) => crate::bail!(
             "unknown test suite `{other}`; use `unit`, `boot`, `replay`, `matrix`, `fuzz`, `kani`, \
-             `tla`, `tuf`, `corpus`, `riscv` or `lab-writer`"
+             `tla`, `tuf`, `corpus`, `riscv`, `lab-writer` or `go-suite`"
         ),
     };
     if shard.is_some() && which.as_deref() != Some("boot") {
@@ -5610,6 +5673,18 @@ fn make_disks(
             made.push(image);
             continue;
         }
+        if disk.fat == GO_APPS_FILES {
+            make_bundle_disk(ctx, disk, &image.path, |name| {
+                is_go_app_bundle(name) && !name.starts_with(cases::caddy::BUNDLE_PREFIX)
+            })?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == CADDY_FILES {
+            cases::caddy::make_disk(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
         if disk.fat == PHP_FILES {
             cases::php::make_disk(ctx, disk, &image.path)?;
             made.push(image);
@@ -5627,6 +5702,21 @@ fn make_disks(
         }
         if disk.fat == WEBSITES_FILES {
             cases::admin_websites::make_disk(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == GO_TOOLCHAIN_FILES {
+            cases::go_toolchain::make_disk(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == GO_SUITE_FILES {
+            go_suite::make_disk(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == GO_FILES {
+            cases::go_runtime::make_disk(ctx, disk, &image.path)?;
             made.push(image);
             continue;
         }
@@ -6272,9 +6362,15 @@ fn fsck(disk: &DiskImage, _log: &str) -> Result<(), String> {
 }
 
 /// Makes a [`BUNDLE_FILES`] disk: FAT32 holding every `.dkv` file of
-/// out/bundles, copied in with mtools.
+/// out/bundles but Go's and those of the programs built with it, copied in
+/// with mtools. Go's bundle, about 72 MiB, is on the disks of the two runs
+/// that install it ([`GO_TOOLCHAIN_FILES`]), and the programs' on the disks
+/// of theirs ([`GO_APPS_FILES`]), so that the disks of the others stay
+/// small.
 fn make_bundle_files(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
-    make_bundle_disk(ctx, disk, path, |_| true)
+    make_bundle_disk(ctx, disk, path, |name| {
+        !name.starts_with(cases::go_toolchain::BUNDLE_PREFIX) && !is_go_app_bundle(name)
+    })
 }
 
 /// Makes a FAT32 disk holding the `.dkv` files of out/bundles whose names
@@ -6321,6 +6417,12 @@ fn make_bundle_files_with(
     files: &[(&str, &str)],
 ) -> Result<(), String> {
     make_bundle_files(ctx, disk, path)?;
+    add_disk_files(path, files)
+}
+
+/// Adds `files`, each a name and its text, to the FAT32 disk image at
+/// `path`, with mtools.
+fn add_disk_files(path: &Path, files: &[(&str, &str)]) -> Result<(), String> {
     let image = path.display().to_string();
     for (name, text) in files {
         let source = path.with_extension(name);
@@ -7600,7 +7702,7 @@ fn boot_report(vm: &mut Vm, case: &Case) -> Result<(), String> {
     } else {
         vm.expect("Lock checker: ")?;
     }
-    vm.expect("Capabilities: ready; 25 object kinds, 15 rights")?;
+    vm.expect("Capabilities: ready; 26 object kinds, 15 rights")?;
     vm.expect("User mode: SYSCALL/SYSRET entry, user half ")?;
     vm.expect("Files: the root is a tmpfs; Spark mounts the rest")?;
     // Every test image carries the user test programs.
@@ -9150,7 +9252,24 @@ fn posix(vm: &mut Vm, case: &Case) -> Result<(), String> {
     let failed: Vec<&str> =
         log.lines().filter(|line| line.contains(": FAILED")).map(str::trim).collect();
     if !failed.is_empty() {
-        return Err(format!("POSIX tests failed: {}", failed.join("; ")));
+        // What the kernel said of a test it ended: the fault, its address
+        // and the program counter, which the runner's line does not give.
+        let crashes: Vec<&str> = log
+            .lines()
+            .filter(|line| {
+                line.contains("User: ")
+                    && (line.contains(" ended: ")
+                        || line.contains(" ended by signal ")
+                        || line.contains(" has no stack for signal "))
+            })
+            .map(str::trim)
+            .collect();
+        let mut report = format!("POSIX tests failed: {}", failed.join("; "));
+        if !crashes.is_empty() {
+            report.push_str("; the kernel: ");
+            report.push_str(&crashes.join("; "));
+        }
+        return Err(report);
     }
     let summary = log
         .lines()
@@ -12613,7 +12732,15 @@ mod tests {
     fn case_files_are_named_as_their_cases_and_describe_them() {
         for &(name, case, text) in cases::FILES {
             assert_eq!(case.name, name, "test/cases/{name}.rs holds the case `{}`", case.name);
-            assert!(!file_doc(text).is_empty(), "test/cases/{name}.rs has no `//!` description");
+            let doc = file_doc(text);
+            assert!(!doc.is_empty(), "test/cases/{name}.rs has no `//!` description");
+            // dukovo-boot-tests(7) indents each line, and scdoc takes an
+            // indented line that starts with a backtick for a literal block.
+            let quoted = doc.lines().find(|line| line.starts_with('`'));
+            assert!(
+                quoted.is_none(),
+                "test/cases/{name}.rs: a `//!` line starts with `: {quoted:?}"
+            );
         }
         assert_eq!(file_doc("// SPDX\n\n//! One\n//!\n//! two\nuse x;"), "One\n\ntwo");
     }

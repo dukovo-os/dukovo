@@ -1,0 +1,16 @@
+SPDX-FileCopyrightText: The jibber_jabber contributors
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0
+
+Radix gives the language and territory in LC_ALL and LANG, as other
+Unix systems do.
+
+diff -ruN a/github.com_cloudfoundry_jibber_jabber@v0.0.0-20151120183258-bcc4c8345a21/jibber_jabber_unix.go b/github.com_cloudfoundry_jibber_jabber@v0.0.0-20151120183258-bcc4c8345a21/jibber_jabber_unix.go
+--- a/github.com_cloudfoundry_jibber_jabber@v0.0.0-20151120183258-bcc4c8345a21/jibber_jabber_unix.go
++++ b/github.com_cloudfoundry_jibber_jabber@v0.0.0-20151120183258-bcc4c8345a21/jibber_jabber_unix.go
+@@ -1,4 +1,4 @@
+-// +build darwin freebsd linux netbsd openbsd
++// +build darwin freebsd linux netbsd openbsd radix
+ 
+ package jibber_jabber
+ 

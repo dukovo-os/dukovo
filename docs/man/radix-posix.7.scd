@@ -326,6 +326,48 @@ terminals say when they can be read or written, or have hung up; other
 files are always ready. *select* and *pselect* are the C library's, on *poll*.
 There is no *epoll*, *eventfd*, *signalfd* or *timerfd*.
 
+*kqueue* and *kevent* (_<sys/event.h>_, as the BSDs declare them, with
+*struct kevent* and *EV_SET*) watch many descriptors at once on the
+kernel's event queue (*radix-event-queue*(2)), which radix-process(2)'s
+*create* makes. *kqueue* returns a queue in the lowest free descriptor.
+*kevent* makes its changes in order, then waits up to its timeout (as
+long as it takes for NULL, not at all for {0, 0}) for events; it is a
+cancellation point when it may wait, and a caught signal ends the wait
+with EINTR. A watch is named by its _ident_ and _filter_ (a queue holds
+one for each pair): *EVFILT_READ* and *EVFILT_WRITE* watch a descriptor
+that *poll* can wait for, and *EVFILT_USER* an event of the program's
+own, which *NOTE_TRIGGER* makes ready. The flags are those the BSDs'
+manual pages for *kqueue* give: *EV_ADD*, *EV_DELETE*, *EV_ENABLE*,
+*EV_DISABLE*, *EV_ONESHOT*, *EV_CLEAR*, *EV_DISPATCH* and *EV_RECEIPT*,
+with *EV_ERROR* in an event for a change that failed (its error number
+is _data_) and *EV_EOF* for a descriptor that has hung up or failed. A
+wait costs the watches that changed or are ready, not the ones that only
+wait, however many there are. Radix differs from the BSDs in these ways:
+
+- The _data_ and _fflags_ of a read or write event are 0, where the BSDs
+  give the bytes to read, the room to write or the connections waiting.
+- The filters are those three. *EVFILT_TIMER*, *EVFILT_SIGNAL*,
+  *EVFILT_PROC* and *EVFILT_VNODE* fail with EINVAL.
+- A watch belongs to the open file description its descriptor named when
+  it was added, and ends when that description goes, which is when the
+  last descriptor of it in every process is closed. Closing one of
+  several descriptors of it (after *dup* or *fork*) does not end the
+  watch, as with Linux's *epoll*, where the BSDs end it. A watch also ends
+  when it is deleted, when a oneshot watch is reported, and when its
+  _ident_ is added again for a descriptor that holds another description.
+- *EV_DELETE* removes a watch whether or not its descriptor is still
+  open, where the BSDs fail with EBADF for a closed one. It fails with
+  ENOENT when the queue holds no such watch, and when the description
+  has gone.
+- A file or a directory, which is always ready, cannot be watched:
+  *EV_ADD* fails with EPERM, as Linux's *epoll_ctl* does. Nor can another
+  event queue (EINVAL).
+- *fork* shares the queue, as it shares an *epoll* descriptor on Linux;
+  the BSDs do not inherit a kqueue. *kqueue* sets no close-on-exec flag:
+  *fcntl* does.
+- A user event with *EV_CLEAR* forgets its flags and value when it is
+  reported, as it forgets that it was triggered.
+
 # SOCKETS
 
 Sockets are *AF_UNIX* stream and datagram sockets and *AF_INET* stream
@@ -450,7 +492,11 @@ port, as on a named one (ADR 0415).
 with EINPROGRESS, after which *poll* says the socket is writable once
 it is made and *SO_ERROR* says how it went; connecting again says
 EALREADY until then, and EISCONN once connected. A connection to a port
-no one listens on fails with ECONNREFUSED. A listening socket holds as
+no one listens on fails with ECONNREFUSED. *connect*, *sendto* and
+*sendmsg* to all zeros, 0.0.0.0 or ::, reach this machine, as on Linux:
+the address the socket is bound to, else 127.0.0.1 or ::1. A connected
+UDP socket bound to any address is named by *getsockname* with the
+address it sends to its peer from (ADR 0355). A listening socket holds as
 many connections as its backlog on each interface, up to 128, being made
 or waiting for *accept*; a SYN that comes when it holds that many, or
 faster than it makes room, is not answered, so its client sends it again
@@ -484,7 +530,12 @@ and *SO_SNDBUF* (fixed sizes), *SO_RCVTIMEO*, *SO_SNDTIMEO*,
 connection, sending RST and throwing away what was not sent, as on
 Linux; with more seconds the linger is kept and read back, but *close*
 returns at once and the connection ends in the background, as with it
-off. *TCP_QUICKACK* acknowledges at once instead of up to 10 ms later,
+off. A *close* of a stream socket with bytes received and not read
+resets the connection too, as does a byte that reaches a connection
+after its *close*: no one is left to read it. The other end's writes
+then fail with EPIPE at once, and its reads with ECONNRESET unless the
+reset came after the end of the stream, as on Linux (ADR 0355).
+*TCP_QUICKACK* acknowledges at once instead of up to 10 ms later,
 and stays set until it is turned off. *SO_OOBINLINE* is kept and read
 back: urgent data always comes inline, as with it set on Linux. A datagram to a broadcast address, 255.255.255.255 or its
 network's, fails with EACCES unless *SO_BROADCAST* is set, as on Linux.
@@ -834,7 +885,7 @@ a session of its own with the terminal as the controlling one and runs
 each test as a shell runs a job, in a process group of its own, in the
 foreground. The tests are:
 
-*hello*, *fork*, *exec*, *signal*, *pipe*, *socket*, *datagram*, *inet*, *poll*, *tty*, *job*, *time*, *files*, *locks*, *shm*, *thread*, *cancel*, *spawn*, *limits*, *format*
+*hello*, *fork*, *exec*, *signal*, *pipe*, *socket*, *datagram*, *inet*, *poll*, *events*, *tty*, *job*, *time*, *files*, *locks*, *shm*, *thread*, *cancel*, *spawn*, *limits*, *format*
 	C programs in _userspace/posix_, one per area. *inet* runs TCP and
 	UDP over the loopback interface, makes 300 connections in a row, more
 	than the interface has sockets, and checks that a child with no
@@ -849,7 +900,12 @@ foreground. The tests are:
 	closed. *shm* shares memory across processes: files in _/dev/shm_
 	opened by name, their sizes and SIGBUS, process-shared and named
 	semaphores, and System V segments and semaphore sets with their
-	counts, waits, undos and removals.
+	counts, waits, undos and removals. *events* makes event queues and
+	checks the descriptors they take and refuse, a change's errors and
+	receipts, level, edge, oneshot, dispatch and disabled watches on pipes
+	and sockets, user events, the threads and signals that end a wait,
+	timeouts, what a watch holds across *close*, *dup2* and *fork*, *poll*
+	on a queue, and a thousand watches at once.
 
 *library*
 	The C library's corners, as glibc 2.39 has them: allocations near
@@ -944,7 +1000,8 @@ passed*; the boot test fails on any failure.
   */dev/shm*.
 - *clock_gettime* is a system call; there is no vDSO.
 - A *poll* waits for a change anywhere, so many pollers on a busy system
-  wake for each other's changes.
+  wake for each other's changes. An event queue does not: a change
+  reaches only the queues that watch it.
 - No System V message queues, POSIX message queues or POSIX
   asynchronous I/O
   (Radix's own is its rings, *radix-ring*(2)), and no *epoll*,

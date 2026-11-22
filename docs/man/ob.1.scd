@@ -340,7 +340,7 @@ _target/userspace/_).
 		Pass everything after *--* to *qemu-system-x86_64*(1) unchanged,
 		for example *-- -d int* to log interrupts.
 
-*test* [*unit* | *boot* | *kani* | *tla* | *tuf* | *corpus* | *riscv* | *lab-writer*] [*--case* _name_]... [*--affected* _commit_ [*--plan*]] [*--shard* _part_/_parts_] [*--timeout* _seconds_] [*--retry*] [*--image-only*] [*--debug* | *--release*] | *--list* | *replay* [*--case* _name_] [*--points* *all*|_n_] [*--part* _k_/_m_] [*--seed* _n_] [*--log* _path_ [*--point* _n_]] [*--timeout* _seconds_] | *fuzz* [*--target* _name_] [*--seconds* _n_] | *matrix* *--list* [*--full*]
+*test* [*unit* | *boot* | *kani* | *tla* | *tuf* | *corpus* | *riscv* | *lab-writer* | *go-suite*] [*--case* _name_]... [*--affected* _commit_ [*--plan*]] [*--shard* _part_/_parts_] [*--timeout* _seconds_] [*--retry*] [*--image-only*] [*--debug* | *--release*] | *--list* | *replay* [*--case* _name_] [*--points* *all*|_n_] [*--part* _k_/_m_] [*--seed* _n_] [*--log* _path_ [*--point* _n_]] [*--timeout* _seconds_] | *fuzz* [*--target* _name_] [*--seconds* _n_] | *matrix* *--list* [*--full*]
 	Run the unit tests of the build tool and the kernel libraries on this
 	machine, then the boot tests: build a test image and boot it in QEMU
 	once per case below. Each case follows the serial console, types
@@ -438,6 +438,26 @@ _target/userspace/_).
 	*qemu-system-riscv64* (the *qemu-system-misc* package on Debian,
 	Ubuntu and Linux Mint). Plain *ob test* leaves it out, and CI runs it
 	after *lint* on every push.
+
+	*go-suite* runs Go's own tests of its standard library on Dukovo,
+	with the *go* command of the Go bundle (_dev.go.go_), instead. It is a
+	run of its own, as *soak* is, and not one of the boot tests: its
+	machine is larger than theirs, and CI runs it only for changes to Go.
+	It takes about 10 minutes with KVM. Before the boot *ob* asks the
+	toolchain's *go* for the packages of *std* that have tests and writes
+	them, the skips of _userspace/go/skips.txt_ for them, and the script
+	to the disk of the bundle. The machine has 4 CPUs, 6 GiB of memory
+	and a root grown to 12 GiB. alice installs the bundle and runs
+	*go test -short -timeout 15m* of the packages that have no skip in
+	one call, and of each package that has skips in a call of its own
+	with *-skip*, as a pattern applies to every package of a call. The
+	run passes when no package failed; a package that *go test* does not
+	say *ok* for failed. The script's log is saved as
+	_out/test/go-suite.log_, which CI keeps as an artifact
+	(_.github/workflows/go-suite.yml_). Plain *ob test* leaves it out.
+	*--timeout* _seconds_ is how long the whole machine may run; without
+	it, 1 hour and 17 minutes. A line of _skips.txt_ whose package is
+	written *suite:*_path_ is a skip that only this run reads.
 
 	*lab-writer* checks the lab's net boot of real machines end to end
 	(ADR 0429), in QEMU with OVMF: QEMU's own DHCP and TFTP, on a network
@@ -2507,7 +2527,16 @@ _target/userspace/_).
 	*[upstream]* names, which *git ls-remote* resolves, once for each
 	port (for an annotated tag, the commit it points to); and each crate a
 	recipe lists (*[[crate]]*), by its name and version on crates.io,
-	unless a _Cargo.lock_ it audited lists that crate. A port whose
+	unless a _Cargo.lock_ it audited lists that crate; and in OSV's Go
+	ecosystem, by path and version, once each: each Go module the
+	go-modules port patches (*[[module]]*); each bundle's port in Go, by
+	the module its _go.mod_ names, at the tag its recipe pins; each module
+	that _go.mod_ requires, from the port's source at the pinned commit
+	with its patches, as *ports audit* reads a Rust port's _Cargo.lock_,
+	and as a *replace* in it names, but one the go-modules port patches
+	in its place; and Go's standard library, as OSV's Go package *stdlib*
+	at the version of the go port. As a _Cargo.lock_ does, _go.mod_ names
+	what the program's tests need too. A port whose
 	*[upstream]* says *none* has no commit to ask by, and a port with
 	*data_only* takes only data from its source, so the scan does not ask
 	about the project's flaws; each is listed as not asked about, with its
@@ -2521,8 +2550,11 @@ _target/userspace/_).
 	Each finding has a product, a package URL:
 	_pkg:generic/<port>@<version>_, with the recipe's version, for a port;
 	_pkg:generic/<repository>@<commit>_, with the name of its repository
-	and the commit pinned, for an extra source; and
-	_pkg:cargo/<name>@<version>_ for a crate. A statement of _security/vex.json_ (OpenVEX, ADR 0537) names an
+	and the commit pinned, for an extra source;
+	_pkg:cargo/<name>@<version>_ for a crate; and
+	_pkg:golang/<module path>@<version>_ for a Go module, with the
+	parts of its path set apart by _/_ and its version as Go writes it,
+	and _pkg:golang/stdlib@<version>_ for the standard library. A statement of _security/vex.json_ (OpenVEX, ADR 0537) names an
 	advisory, by its ID or one of its aliases, and a product, and has a
 	status of _not_affected_ or _fixed_ and the reason. A finding that a
 	statement names in this way is left out of the findings and listed as
@@ -2611,6 +2643,14 @@ _recipe.toml_
 	only those); crates from crates.io unpacked inside it (*[[crate]]*:
 	name, version, the SHA-256 of the _.crate_ file that Cargo.lock
 	records too, license, and a *path* other than _<name>-<version>_);
+	Go modules from Go's module proxy unpacked inside it (*[[module]]*:
+	path, version, the SHA-256 of the proxy's zip of it, license, and
+	*all-versions = true* for one that takes the place of every version
+	of its path, ADR 0600), as the *go-modules* port, which patches them
+	for Radix, names them; for a program in Go, its *[go-licenses]*: the
+	license of a module it links whose license files *ob* cannot read,
+	by the module's path, each with a comment above it that says where
+	the license is stated;
 	the ports it *depends* on; whether it belongs to the
 	*toolchain*, so that what it installs is only used to build and
 	never reaches an image; the files of the sysroot it puts in the boot
@@ -2621,6 +2661,12 @@ _recipe.toml_
 	projects the port keeps in its own directory (*bundled*: name,
 	version, license, home page and notice files), each a package of its
 	own in the license manifest;
+	for a port that only a release of its own language builds, as Go's
+	compiler is built by Go, its *[bootstrap]*: the *minimum* release that
+	will do, such as *1.24.6*, and the release *ob* downloads when
+	*GOROOT_BOOTSTRAP* is not set, a zip at an https:// *url* pinned by
+	its *sha256* and *size* in bytes, and the *root* folder in it that
+	holds the tree;
 	and for a port the catalog carries rather than the image, its
 	*[bundle]*: the bundle's *id*, *name*, *description* (a paragraph
 	for the manifest) and *commands* (ADR 0370), and
@@ -2641,18 +2687,22 @@ _build.sh_
 	it into the sysroot, _out/sysroot_, or for a toolchain port into
 	_out/toolchain_. It runs with _out/toolchain/bin_ at the front of
 	*PATH* and gets in its environment the port's directory, source and
-	an empty build directory (*PORT_DIR*, *PORT_SRC*, *PORT_BUILD*), an
-	empty directory for what *ob* needs to know of the build
+	an empty build directory (*PORT_DIR*, *PORT_SRC*, *PORT_BUILD*),
+	for a port with a *[bootstrap]*, *GOROOT_BOOTSTRAP*, the tree of
+	the release that builds it (see below), an empty directory for what
+	*ob* needs to know of the build
 	(*PORT_INFO*: _image_, more files of the sysroot for the image, one a
 	line, such as links and manual pages; and for a program in Rust,
 	_crates.txt_, the crates it links as *cargo tree -e
 	normal,no-proc-macro --prefix none --format '{p}|{l}'* lists them,
-	and its _Cargo.lock_; and what other builds take from the port:
+	and its _Cargo.lock_; for a program in Go, _modules.txt_, what *go
+	version -m* says of each program it installs; and what other builds
+	take from the port:
 	_for-bundles/_, which the ports of bundles build from, and
 	_for-lab/_, what the lab's tests use, which *lab* names in
 	*DUKOVO_LAB_PORTS*), for a bundle's port an empty folder for the
 	bundle (*PORT_BUNDLE*), *SYSROOT*, *TOOLCHAIN*, Cargo for Radix
-	(*CARGO_RADIX*), *PREFIX* (_/system_), *JOBS*, *HOST*
+	(*CARGO_RADIX*), Go for Radix (*GO_RADIX*), *PREFIX* (_/system_), *JOBS*, *HOST*
 	(*x86_64-radix*), the toolchain's programs as *CC*, *CXX*, *AR*,
 	*RANLIB*, *NM*, *STRIP* and *OBJCOPY*, by their names (such as
 	*x86_64-radix-cc*), which *PATH* finds in the toolchain's _bin/_
@@ -2670,8 +2720,11 @@ _build.sh_
 Sources are fetched once into _target/ports/_: with git by commit, and
 checked to be that commit; release archives from their *url* or, when
 that cannot be reached, from each of their *mirrors* in turn, the first
-copy whose SHA-256 is the one pinned; and crates from crates.io, checked
-against their SHA-256. An unpacked archive or crate is used again only
+copy whose SHA-256 is the one pinned; crates from crates.io, checked
+against their SHA-256; and Go modules from proxy.golang.org, checked
+against theirs. The modules a program in Go names in its _go.mod_ are
+fetched by Go itself into Go's module cache,
+_target/ports/sources/go-mod_, checked against the program's _go.sum_. An unpacked archive or crate is used again only
 while it holds the files, of the same sizes, that *ob* noted when it
 unpacked it, and a clone only while it has its commit; else the source
 is fetched again. A build uses nothing the recipe does not name. A
@@ -2694,8 +2747,14 @@ recipe's services, permissions and data folder. It writes
 _sbom.spdx_, listing every component the port builds in as the image's
 manifest does, and _licenses/_ with their texts and notices, after
 checking them against the ports' allow-list, MPL-2.0, PCRE2's license
-with its exception, the Boost license and those of PHP and what it
-bundles. It then signs the folder and packs it into
+with its exception, the Boost license, those of PHP and what it
+bundles, and the Unlicense. For a program in Go, each module
+_modules.txt_ names is a component: one the *go-modules* port patched,
+with that recipe's license, and any other with the license its files
+state, which *ob* reads by phrase from its folder in the module cache;
+a text it cannot read, or one of a license the lists do not allow,
+fails the bundle unless *[go-licenses]* gives the module's license. Go's
+standard library and runtime, in every program, are a component too. It then signs the folder and packs it into
 _out/bundles/ID-VERSION.dkv_ with the code *bundle*(1) packs with. The
 key is the file *OB_BUNDLE_KEY* names, or the build's own,
 _out/bundles/build.key_, made the first time; Dukovo trusts neither, and
@@ -2703,8 +2762,9 @@ the catalog signs what it publishes with its own keys (ADR 0370).
 *ports* packs the bundles, as does a boot test that installs them; *build*
 and *image* do not. The folder a bundle's port installs into is
 _out/ports/NAME/bundle/_, beside its stamp. When it is gone, or Cargo's
-registry lacks a crate the port links, whose notices the bundle carries,
-as after a restored cache, packing builds the port again first.
+registry lacks a crate the port links, or Go's module cache a module,
+whose notices the bundle carries, as after a restored cache, packing
+builds the port again first.
 
 The toolchain is the host's Clang, LLD and LLVM tools, made to target
 Radix by the scripts and Meson cross files *ob* writes into
@@ -2761,6 +2821,28 @@ the programs on Rust's standard library itself, it gives Cargo
 and _include_, and *SQLITE3_STATIC*, so that libsqlite3-sys links the
 sqlite port's _libsqlite3.a_ instead of building a copy (ADR 0511).
 
+_bin/x86_64-radix-go_ is Go for programs in Go (ADR 0600), used as *go*
+is, in a module's folder or one below it: it builds for *radix/amd64*
+with cgo off, against the program's own _go.sum_, and gives the program
+the modules the go-modules port patched for Radix in place of the module
+proxy's, each one _go.sum_ names at the version the port patched, or at
+any version for one the port marks *all-versions*. It writes
+_.radix-go.mod_, the program's _go.mod_ with a *replace* for each, and
+_.radix-go.sum_, a copy of _go.sum_, beside _go.mod_, and runs the go
+port's *go* with *-modfile* naming them, *-mod=readonly*, *-trimpath*
+and *-buildvcs=false*, *GOWORK*, *GOSUMDB* and *GOTELEMETRY* off,
+*GOTOOLCHAIN=local*, the module proxy as *GOPROXY*, and its caches in
+_target/_, so that a module _go.sum_ does not pin stops the build and
+nothing is written to _go.sum_. The patched modules are reached through
+a link to the toolchain's folder of them, _.radix-go_, beside _go.mod_,
+so that the paths recorded in the program do not depend on where the
+checkout is (ADR 0535). When the program names an older Go than a
+patched module needs, it raises the *go* line in _.radix-go.mod_ and
+adds a *godebug* line, so that the program keeps the defaults of the Go
+it names. A program whose _go.mod_ replaces a module the port patches is
+refused. With *--host* first, it builds for the build machine instead,
+as a program's generator of its own sources needs.
+
 After building Rust's standard library, *ob* checks its *libc* crate
 against the C library: the size and alignment of every structure and
 type, the offset and size of every field and the value of every
@@ -2770,7 +2852,42 @@ declares and declares it with as many parameters, each of the same
 kind and size as the crate's, and the same result. Any difference
 fails the build.
 
+The *go* port builds Go's toolchain, the compiler, linker and standard
+library of the Go Authors patched for Radix (_GOOS=radix_), with Go's own
+_make.bash_ from the release's source, into _out/toolchain/go/_, so that
+_out/toolchain/go/bin/go_ is the toolchain; the Go tree is whole there but
+for the repository's history, the compiler's own tests, the API lists and
+the documentation. Only a release of Go builds Go. *ob* gives the build the
+tree *GOROOT_BOOTSTRAP* names, if its _VERSION_ is a release of the
+recipe's *minimum* or later, and refuses it, with the version it found,
+if not. Without the variable it downloads the Go toolchain module the
+recipe's *[bootstrap]* pins, checks its size and SHA-256 and unpacks it
+once into _target/ports/sources/_, with the programs in its _bin_ and
+_pkg/tool_ made executable, as a zip keeps no modes; nothing of that
+release is in the toolchain that is built. When the port has patches, its
+_build.sh_ then builds the whole standard library for Radix, so that a
+patch that does not compile fails the port.
+
+*ob* builds programs in Go with that toolchain and no other, in an
+environment of its own and nothing from the build machine's: *GOOS* is
+*radix*, *GOARCH* *amd64*, *GOAMD64* *v1*, *CGO_ENABLED* 0, *GOROOT* the
+toolchain's tree, *GOTOOLCHAIN* *local*, *GOTELEMETRY* and *GOENV* off,
+*GOFLAGS* _-trimpath -buildvcs=false_, and *GOPROXY*, *GOSUMDB* and *GOWORK*
+off, so that nothing is fetched. The build cache, the module cache and
+*GOPATH* are in _target/go/_, where the standard library for Radix is
+compiled once for the programs built after it. The *go-runtime* boot test
+builds the Go programs of _userspace/go_ and the test binaries of Go's
+standard library this way, and puts them on a disk, with the tests of those
+packages that _userspace/go/skips.txt_ leaves out: a line each of a package, a
+test or a subtest (_Test/sub_, with _\*_ for any run of letters) and the
+reason, which names the feature Radix lacks.
+
 # ENVIRONMENT
+
+*GOROOT_BOOTSTRAP*
+	The tree of a Go release, Go 1.24.6 or later, that builds the *go*
+	port's toolchain, instead of the release *ob* downloads and unpacks
+	(see *PORTS*).
 
 *OB_BUNDLE_KEY*
 	A minisign secret key file, unencrypted, that signs the catalog's
@@ -2867,7 +2984,12 @@ _ports/_
 
 _out/toolchain/_
 	The C toolchain's wrapper scripts and Meson cross files, and the
-	toolchain ports' files.
+	toolchain ports' files: Rust's standard library for Radix, and the Go
+	toolchain in _go/_.
+
+_target/go/_
+	The build cache, module cache and _GOPATH_ of the programs in Go that
+	*ob* builds (see *PORTS*).
 
 _out/sysroot/system/_
 	What the ports and the C test programs install: headers in

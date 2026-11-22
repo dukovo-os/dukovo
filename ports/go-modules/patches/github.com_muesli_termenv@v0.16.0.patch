@@ -1,0 +1,41 @@
+SPDX-FileCopyrightText: 2019 Christian Muehlhaeuser
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT
+
+Radix's terminals take Linux's TCGETS and TCSETS: constants_linux.go
+is Linux's alone by its name, so constants_radix.go gives them.
+
+diff -ruN a/github.com_muesli_termenv@v0.16.0/constants_radix.go b/github.com_muesli_termenv@v0.16.0/constants_radix.go
+--- a/github.com_muesli_termenv@v0.16.0/constants_radix.go
++++ b/github.com_muesli_termenv@v0.16.0/constants_radix.go
+@@ -0,0 +1,8 @@
++package termenv
++
++import "golang.org/x/sys/unix"
++
++const (
++	tcgetattr = unix.TCGETS
++	tcsetattr = unix.TCSETS
++)
+diff -ruN a/github.com_muesli_termenv@v0.16.0/termenv_posix.go b/github.com_muesli_termenv@v0.16.0/termenv_posix.go
+--- a/github.com_muesli_termenv@v0.16.0/termenv_posix.go
++++ b/github.com_muesli_termenv@v0.16.0/termenv_posix.go
+@@ -1,5 +1,5 @@
+-//go:build darwin || dragonfly || freebsd || linux || netbsd || openbsd || zos
+-// +build darwin dragonfly freebsd linux netbsd openbsd zos
++//go:build darwin || dragonfly || freebsd || linux || netbsd || openbsd || radix || zos
++// +build darwin dragonfly freebsd linux netbsd openbsd radix zos
+ 
+ package termenv
+ 
+diff -ruN a/github.com_muesli_termenv@v0.16.0/termenv_unix.go b/github.com_muesli_termenv@v0.16.0/termenv_unix.go
+--- a/github.com_muesli_termenv@v0.16.0/termenv_unix.go
++++ b/github.com_muesli_termenv@v0.16.0/termenv_unix.go
+@@ -1,5 +1,5 @@
+-//go:build darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris || zos
+-// +build darwin dragonfly freebsd linux netbsd openbsd solaris zos
++//go:build darwin || dragonfly || freebsd || linux || netbsd || openbsd || radix || solaris || zos
++// +build darwin dragonfly freebsd linux netbsd openbsd radix solaris zos
+ 
+ package termenv
+ 

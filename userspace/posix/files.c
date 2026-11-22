@@ -12,8 +12,9 @@
 // and the read-only /system; what each refuses, with Linux's errors; the
 // owners of descriptions and the modes of stdio streams; absolute links
 // beneath directory descriptors, the identity of a named pipe opened by
-// its path, a slash after the name an open makes, close_range, and the
-// space a removed tmpfs file gives back.
+// its path, a slash after the name an open makes, a slash or a dot after
+// a file and mkdir of a dot, close_range, the space a removed tmpfs
+// file gives back, and a tmpfs folder of 40,000 entries.
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -1109,6 +1110,36 @@ static void tmpfs_space(void) {
 	CHECK(statvfs("/tmp", &now) == 0 && now.f_bfree == before.f_bfree);
 }
 
+// A tmpfs folder of 40,000 entries, more than the 32,768 it once held:
+// each is made, and each is removed as soon as it is listed, as rm -r
+// does, so that the folder is empty once every one was listed once.
+static void large_folder(void) {
+	enum { ENTRIES = 40000 };
+	CHECK(mkdir("/tmp/files-large", 0755) == 0);
+	int made = 0;
+	for(; made < ENTRIES; made++) {
+		char path[64];
+		snprintf(path, sizeof(path), "/tmp/files-large/%05d", made);
+		if(mkdir(path, 0755) != 0)
+			break;
+	}
+	CHECK(made == ENTRIES);
+	DIR *dir = opendir("/tmp/files-large");
+	CHECK(dir != NULL);
+	int listed = 0, removed = 0;
+	struct dirent *entry;
+	while(dir && (entry = readdir(dir))) {
+		if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
+			continue;
+		listed++;
+		removed += unlinkat(dirfd(dir), entry->d_name, AT_REMOVEDIR) == 0;
+	}
+	if(dir)
+		closedir(dir);
+	CHECK(listed == made && removed == made);
+	CHECK(rmdir("/tmp/files-large") == 0);
+}
+
 // The folders by their plain names and by Unix's (ADRs 0113 and 0114):
 // each Unix name is a link to the folder that holds what it held, and
 // the .hidden of the root and of /system list them, so that ls leaves
@@ -1527,7 +1558,9 @@ static void refusals(void) {
 
 // A path that ends in a slash names a directory, and an open that makes
 // the name it ends in has none to make: EISDIR before anything is looked
-// up, whether or not the name is there (ADR 0498), as on Linux.
+// up, whether or not the name is there (ADR 0498), as on Linux. A path
+// that ends in a slash, `/.` or `/..` after a file is not a directory
+// (ADR 0352).
 static void trailing_slashes(void) {
 	CHECK(mkdir("/tmp/files-slash", 0755) == 0);
 	CHECK(mkdir("/tmp/files-slash/dir", 0755) == 0);
@@ -1554,6 +1587,46 @@ static void trailing_slashes(void) {
 	CHECK(fd >= 0);
 	close(fd);
 	CHECK_ERROR(open("/tmp/files-slash/none/", O_RDONLY), ENOENT);
+	// A file, or a link to one, with a slash, `/.` or `/..` after it is
+	// not a directory to any call, and a link with a slash after it is the
+	// directory it leads to, never the link (ADR 0352).
+	CHECK(symlink("file", "/tmp/files-slash/to-file") == 0);
+	CHECK(symlink("dir", "/tmp/files-slash/to-dir") == 0);
+	struct stat st;
+	CHECK_ERROR(stat("/tmp/files-slash/file/", &st), ENOTDIR);
+	CHECK_ERROR(stat("/tmp/files-slash/file/.", &st), ENOTDIR);
+	CHECK_ERROR(stat("/tmp/files-slash/file/..", &st), ENOTDIR);
+	CHECK_ERROR(lstat("/tmp/files-slash/to-file/", &st), ENOTDIR);
+	CHECK_ERROR(open("/tmp/files-slash/file/", O_RDONLY), ENOTDIR);
+	CHECK_ERROR(access("/tmp/files-slash/to-file/", F_OK), ENOTDIR);
+	CHECK_ERROR(chmod("/tmp/files-slash/file/", 0600), ENOTDIR);
+	CHECK_ERROR(unlink("/tmp/files-slash/file/"), ENOTDIR);
+	CHECK_ERROR(rmdir("/tmp/files-slash/to-dir/"), ENOTDIR);
+	CHECK_ERROR(rename("/tmp/files-slash/file/", "/tmp/files-slash/moved"), ENOTDIR);
+	CHECK_ERROR(rename("/tmp/files-slash/file", "/tmp/files-slash/moved/"), ENOTDIR);
+	CHECK_ERROR(link("/tmp/files-slash/file/", "/tmp/files-slash/other"), ENOTDIR);
+	// A new name with a slash after it asks for a directory, which only
+	// mkdir makes.
+	CHECK_ERROR(link("/tmp/files-slash/file", "/tmp/files-slash/other/"), ENOENT);
+	CHECK_ERROR(symlink("file", "/tmp/files-slash/other/"), ENOENT);
+	CHECK(lstat("/tmp/files-slash/to-dir", &st) == 0 && S_ISLNK(st.st_mode));
+	CHECK(stat("/tmp/files-slash/file", &st) == 0 && S_ISREG(st.st_mode));
+	CHECK_ERROR(access("/tmp/files-slash/moved", F_OK), ENOENT);
+	CHECK_ERROR(access("/tmp/files-slash/other", F_OK), ENOENT);
+	CHECK(rename("/tmp/files-slash/dir/", "/tmp/files-slash/moved/") == 0);
+	CHECK(rename("/tmp/files-slash/moved", "/tmp/files-slash/dir") == 0);
+	// mkdir of `.`, or of a path that ends in `/.` or `/..`, finds the
+	// directory that is there, as `mkdir -p` expects: EEXIST.
+	base = open("/tmp/files-slash", O_RDONLY | O_DIRECTORY);
+	CHECK(base >= 0);
+	CHECK_ERROR(mkdirat(base, ".", 0755), EEXIST);
+	CHECK_ERROR(mkdirat(base, "./", 0755), EEXIST);
+	CHECK_ERROR(mkdir("/tmp/files-slash/dir/.", 0755), EEXIST);
+	CHECK_ERROR(mkdir("/tmp/files-slash/dir/..", 0755), EEXIST);
+	CHECK_ERROR(mkdir("/tmp/files-slash/file/.", 0755), ENOTDIR);
+	CHECK_ERROR(mkdir("/tmp/files-slash/none/.", 0755), ENOENT);
+	close(base);
+	CHECK(unlink("/tmp/files-slash/to-file") == 0 && unlink("/tmp/files-slash/to-dir") == 0);
 	CHECK(unlink("/tmp/files-slash/file") == 0);
 	CHECK(rmdir("/tmp/files-slash/dir") == 0 && rmdir("/tmp/files-slash") == 0);
 }
@@ -1790,6 +1863,7 @@ int main(void) {
 	RUN(path_forms);
 	RUN(mapped);
 	RUN(tmpfs_space);
+	RUN(large_folder);
 	RUN(folder_names);
 	RUN(named_descriptors);
 	RUN(modes);
