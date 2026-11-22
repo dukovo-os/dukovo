@@ -199,4 +199,4 @@ root = true
 expect = "cleaned"
 [[step]]
 host = "sh {here}/server-week.sh finish"
-expect = "gone"
+expect = "kept in /tmp/lab-server-week"

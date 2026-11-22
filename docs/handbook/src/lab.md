@@ -438,7 +438,8 @@ never judged. A restart of the lab PC ends the run.
 To follow it, read `/tmp/lab-server-week/minutes.csv` on the lab PC, which
 gets a line a minute (the minute, the requests, the errors, the writes
 acknowledged, the sign-ins tried and failed, and two histograms of the
-latencies), and the test's log in the run's logs folder, which is written
+latencies) and stays there after the run until the next one starts, and
+the test's log in the run's logs folder, which is written
 after each step with a last line that says `Still running` and when. A day
 prints its 24 checks, and the log keeps them. On a real machine, run with
 `--with-person` for a person to pull the cable between days 4 and 5; without
