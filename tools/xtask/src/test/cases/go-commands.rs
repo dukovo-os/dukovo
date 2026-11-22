@@ -10,7 +10,7 @@
 //! a line, saves it with Ctrl-S and quits with Ctrl-Q, and the file holds
 //! the line: Phase 17's exit test. fzf filters a list given -f, and in a
 //! pipe shows the list and picks the line whose start she types; duf shows
-//! the root's Btrfs; in a new git repository lazygit greets her once, shows
+//! /users on Btrfs; in a new git repository lazygit greets her once, shows
 //! its status and the file she made, and q quits it. The power button ends
 //! it.
 
@@ -47,7 +47,7 @@ const DISKS: &[Disk] = &[
 /// The test.
 pub const CASE: Case = Case {
     name: "go-commands",
-    about: "the catalog's commands built with Go run (ADR 0600): micro, fzf, duf and lazygit, installed for one person from their .dkv files, each asking at its first run whether it may run with her access; micro opens a file, takes a typed line, saves it with Ctrl-S and quits with Ctrl-Q, and the file holds the line (Phase 17's exit test); fzf filters with -f and picks a typed line from a pipe; duf shows the root's Btrfs; lazygit greets her once in a new repository, shows its status and her file, and quits on q",
+    about: "the catalog's commands built with Go run (ADR 0600): micro, fzf, duf and lazygit, installed for one person from their .dkv files, each asking at its first run whether it may run with her access; micro opens a file, takes a typed line, saves it with Ctrl-S and quits with Ctrl-Q, and the file holds the line (Phase 17's exit test); fzf filters with -f and picks a typed line from a pipe; duf shows /users on Btrfs; lazygit greets her once in a new repository, shows its status and her file, and quits on q",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, bundled among them.
@@ -124,10 +124,11 @@ fn go_commands(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.press(&["ret"])?;
     vm.expect_screen(&["picked: cherry"])?;
 
-    // duf: the root, Btrfs, from /processes/mounts, with its sizes from
-    // statvfs.
-    answer_prompt(vm, "$", "clear; duf /")?;
-    vm.expect_screen(&["1 local device", "btrfs"])?;
+    // duf: /users, a subvolume of the root's Btrfs, from /processes/mounts,
+    // with its sizes from statvfs. `/` itself is the tmpfs of her view
+    // (ADR 0215), which duf counts as a special device.
+    answer_prompt(vm, "$", "clear; duf /users")?;
+    vm.expect_screen(&["1 local device", "/users", "btrfs"])?;
 
     // lazygit, in a new repository with a file in it: its greeting once,
     // confirmed with Enter, then its panels, the status and the file among

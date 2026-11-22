@@ -6,10 +6,10 @@
 # its path, as a script runs it, so no question is asked, and says its
 # version. Each also does one thing without a terminal: micro lists the
 # default of an option, fzf filters a list it is given, duf lists the
-# mounts as JSON, with the root's filesystem Btrfs, and lazygit prints its
+# mounts as JSON, with /users on Btrfs, and lazygit prints its
 # default settings. What they show on a terminal, the boot test
 # go-commands checks.
-about = "The catalog's programs built with Go run: micro, fzf, duf and lazygit say their versions, and micro lists an option's default, fzf filters a list, duf lists the root's Btrfs as JSON and lazygit prints its default settings (ADR 0600)"
+about = "The catalog's programs built with Go run: micro, fzf, duf and lazygit say their versions, and micro lists an option's default, fzf filters a list, duf lists /users on Btrfs as JSON and lazygit prints its default settings (ADR 0600)"
 time = "5m"
 host_needs = ["scp"]
 
@@ -60,9 +60,10 @@ expect = "banana"
 [[step]]
 run = "/applications/io.github.muesli.duf/bin/duf --version"
 expect = "duf 0.9.1"
-# duf lists every mount as JSON, and the root's filesystem is Btrfs.
+# duf lists every mount as JSON, and /users, a subvolume of the root's
+# filesystem, is Btrfs. / itself is a tmpfs, the account's view (ADR 0215).
 [[step]]
-run = '''sh -c '/applications/io.github.muesli.duf/bin/duf --json | jq -r ".[] | select(.mount_point == \"/\") | .fs_type"' '''
+run = '''sh -c '/applications/io.github.muesli.duf/bin/duf --json | jq -r ".[] | select(.mount_point == \"/users\") | .fs_type"' '''
 expect = "btrfs"
 [[step]]
 run = "/applications/io.github.jesseduffield.lazygit/bin/lazygit --version"
