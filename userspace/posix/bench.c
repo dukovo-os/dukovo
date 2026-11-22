@@ -148,7 +148,11 @@ static struct mark start(void) {
 static void report(const char *name, struct mark started, uint64_t count) {
 	uint64_t elapsed = now_ns() - started.ns;
 	double ns = (double)elapsed / (double)count;
-	printf("BENCH name=%s ns=%.2f iterations=%llu\n", name, ns, (unsigned long long)count);
+	// A time under 10 ns, as a clock row's fraction of a nanosecond, gets
+	// four decimals: at two, a cycle of 0.195 ns prints as 0.19 or 0.20,
+	// 5% apart, and the lab holds the two systems' clocks to 3%.
+	printf("BENCH name=%s ns=%.*f iterations=%llu\n", name, ns < 10 ? 4 : 2, ns,
+	       (unsigned long long)count);
 	struct kernel_state now;
 	if(started.counted && read_events(&now)) {
 		printf("BENCHCOUNT group=%s rounds=%llu", name, (unsigned long long)count);

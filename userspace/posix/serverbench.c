@@ -101,8 +101,12 @@ static size_t log_count;
 // What the servers and tools run with.
 static char *environment[5];
 
+// A time under 10 ns, as the clock row's fraction of a nanosecond, gets
+// four decimals, as in bench.c: the lab holds the two systems' clocks to
+// 3%, finer than two decimals of 0.2 ns.
 static void print_row(const char *name, double ns, uint64_t iterations) {
-	printf("BENCH name=%s ns=%.2f iterations=%llu\n", name, ns, (unsigned long long)iterations);
+	printf("BENCH name=%s ns=%.*f iterations=%llu\n", name, ns < 10 ? 4 : 2, ns,
+	       (unsigned long long)iterations);
 	fflush(stdout);
 }
 
