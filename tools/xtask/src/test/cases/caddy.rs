@@ -8,10 +8,10 @@
 //! caddy, and the service waits until she enables it. Enabled, it takes
 //! the port Spark holds for it and serves the page she puts in /shared/www,
 //! a 404 for a page that is not there and for the folders of website(8)'s
-//! sites; its settings are the account's, as is its admin API's socket.
-//! `caddy version` asks, in her pane, whether Caddy may run with her
-//! access, and then with root's through elevate; `caddy validate` passes
-//! the settings it copied. Settings that do not read fail validate, and a
+//! sites; its settings are the account's, as is its admin API's socket. The
+//! command `caddy version` asks, in her pane, whether Caddy may run with
+//! her access, and then with root's through elevate; `caddy validate`
+//! passes the settings it copied. Settings that do not read fail validate, and a
 //! reload leaves Caddy serving as it was, its log saying so; mended, it
 //! serves after a restart. With the machine's own certificate from certd(8)
 //! named in its service file, port 443 added to its sockets and the HTTPS

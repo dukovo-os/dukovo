@@ -12715,7 +12715,15 @@ mod tests {
     fn case_files_are_named_as_their_cases_and_describe_them() {
         for &(name, case, text) in cases::FILES {
             assert_eq!(case.name, name, "test/cases/{name}.rs holds the case `{}`", case.name);
-            assert!(!file_doc(text).is_empty(), "test/cases/{name}.rs has no `//!` description");
+            let doc = file_doc(text);
+            assert!(!doc.is_empty(), "test/cases/{name}.rs has no `//!` description");
+            // dukovo-boot-tests(7) indents each line, and scdoc takes an
+            // indented line that starts with a backtick for a literal block.
+            let quoted = doc.lines().find(|line| line.starts_with('`'));
+            assert!(
+                quoted.is_none(),
+                "test/cases/{name}.rs: a `//!` line starts with `: {quoted:?}"
+            );
         }
         assert_eq!(file_doc("// SPDX\n\n//! One\n//!\n//! two\nuse x;"), "One\n\ntwo");
     }
