@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# serverbench starts the bundle's valkey-server with one thread and no
+# saving, and runs the bundle's valkey-benchmark against it over the
+# loopback (ADR 0546).
+
+about = "Valkey from the catalog answers SET, GET, LPUSH and pipelined GET from valkey-benchmark on the machine no slower than the same Valkey on Linux (ADR 0546)"
+time = "20m"
+host_needs = ["scp"]
+
+[[step]]
+host = "sh {here}/../services/copy-bundle.sh io.valkey.valkey {machine} {machine-port:22}"
+expect = "copied: io.valkey.valkey"
+# From nothing: a run before may have left it installed.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge io.valkey.valkey > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/io.valkey.valkey.dkv | tail -1'"
+root = true
+expect = "installed io.valkey.valkey"
+# Both systems run at the base clock for the rows (ADR 0557).
+[[step]]
+run = "tune set benchmark"
+root = true
+expect = "the profile is benchmark"
+# One operation of each row: a SET, a GET and an LPUSH of a 64-byte value
+# on one of 8 connections, over 100000 random keys; a GET in a pipeline of
+# 16. Linux's numbers come from the same Valkey release, built for Linux
+# in the Linux kit (ADR 0546). Every row is held to parity.
+[[step]]
+bench = "/system/tests/posix/serverbench valkey"
+rows = [
+    "server_valkey_set",
+    "server_valkey_get",
+    "server_valkey_lpush",
+    "server_valkey_get_pipelined",
+]
+[[step]]
+run = "tune set balanced"
+root = true
+expect = "the profile is balanced"
+[[step]]
+run = "bundle remove --for-everyone --purge io.valkey.valkey"
+root = true
+expect = "removed io.valkey.valkey"

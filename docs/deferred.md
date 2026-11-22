@@ -58,6 +58,7 @@ machine with AMT, an AMD machine and a laptop; see
 
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
+| A restart of the lab PC during `stress/server-week` ends the run: the lab does not pick a run up again, and the log it wrote as it went keeps what was done | A run that survives a restart of the lab PC | Lab harness |
 | The installer's tests on a real lab machine: booting it from the install stick or DVD | The `amt` driver boots only the lab image, written to the disk by the net-booted writer (ADR 0429); a stick a person plugs in still needs the machine told to boot from it | Lab harness |
 | The security range's attacker on a real lab machine | The attacker runs on a private QEMU network; a real machine needs a second network of its own for it | Lab harness |
 | The power button and a graceful off on a real lab machine (`power = "button"` and `"off"`) | AMT asks the system to shut down only when an agent in the system answers AMT, which Dukovo has none of | A decision by the maintainers |
@@ -517,6 +518,8 @@ machine asks for them.
 | smoltcp goes through every socket of an interface's stack for each packet and each poll: an idle socket costs about 110 instructions a round trip on the host, having been passed over in the send loop since it has nothing to send (the network benchmarks run beside 11, ADR 0550), where Linux looks a socket up by its address | ADR 0550 |
 | On some Intel Xeon 6975P-C runner hosts, with the vCPUs pinned, a forked process's open and close takes about 70 ns more than a thread's: one process 585 against 512 ns, 1.10 times Linux's 530, which fails the scaling gate's one-process row there. The kernel before ADR 0555 does the same in one job, and other hosts of the same CPU give 511 to 515 ns. In the child a chain of SSE adds takes 3 cycles rather than 2 while integer multiplies are unchanged, as when the vector registers' upper halves are held as in use. A 1 ms sleep or a second thread before the child pins itself made it fast; VZEROUPPER at the child's start, reading XINUSE before the fork or before the loop, and a kernel that drops all-zero upper halves from each save did not | ADR 0554 |
 | On real hardware (OptiPlex 7040, i5-6500), on 2026-11-20: fork, exec and wait 1.12 times Linux's time, and the UDP round trip on one CPU 1.16 before ADR 0553; the lab's next run there confirms both | Lab, performance/loopback and processes on the OptiPlex; mlibc patches 0092 and 0093 |
+| TLS rows of the server benchmarks (nginx over HTTPS, PostgreSQL over TLS): the handshake and record costs are OpenSSL's arithmetic, the same code on both systems, and the Linux kit's servers are built without OpenSSL | ADR 0546 |
+| The server benchmarks over the network card: they run client and server on the machine, over the loopback or a Unix socket, so that they need no peer; the card's path is measured by its own rows | ADR 0546 |
 
 ## Lab findings to confirm
 

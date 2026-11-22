@@ -48,6 +48,12 @@
 //! booting system does, and `git status` with the git given with
 //! `--git`, or at `/git` as process 1 (ADR 0294).
 //!
+//! As process 1 it also runs `/server-bench` (`userspace/posix/serverbench.c`,
+//! built for Linux, with the servers it runs under `/applications`) when
+//! the initramfs holds one, on a tmpfs at `/tmp`, with the environment
+//! `TZ=UTC` and `PATH=/usr/bin:/bin` and nothing else: nginx, PHP, Valkey
+//! and PostgreSQL, whose rows print in the same format as the rest.
+//!
 //! After the TLB shootdowns it prints how many TLB interrupts reached the
 //! other CPU (the `TLB` line of `/proc/interrupts`), as Radix prints its
 //! kernel's events:
@@ -81,6 +87,11 @@ const POSIX_BENCH: &str = "/posix-bench";
 
 /// Where git is in the initramfs, for the git benchmark.
 const GIT: &str = "/git";
+
+/// Where the server benchmarks are in the initramfs, when `ob lab` made
+/// the kit with them, and the servers they run.
+const SERVER_BENCH: &str = "/server-bench";
+const SERVERS: [&str; 4] = ["nginx", "php", "valkey", "postgresql"];
 
 /// The virtual machine's disks, for the POSIX benchmarks' disk benchmarks:
 /// a virtio disk and an NVMe one.
@@ -251,6 +262,10 @@ fn main() {
             disks.push(("--git", git.as_path()));
         }
         posix_bench(&program, &cpus, &disks, network);
+    }
+
+    if std::process::id() == 1 {
+        server_bench(&cpus);
     }
 
     if std::process::id() == 1 {
@@ -926,6 +941,33 @@ fn posix_bench(program: &Path, cpus: &[usize], disks: &[(&str, &Path)], network:
         Ok(status) if status.success() => {}
         Ok(status) => eprintln!("linux-bench: {} failed: {status}", program.display()),
         Err(err) => eprintln!("linux-bench: cannot run {}: {err}", program.display()),
+    }
+}
+
+/// Runs the server benchmarks at [`SERVER_BENCH`] on every CPU of `cpus`,
+/// if the initramfs holds them (an empty file or none stands for no
+/// servers). The servers keep their files in `/tmp` and take shared
+/// memory from `/dev/shm`, so both are made tmpfs, as on Radix; the
+/// benchmarks drive the servers over the loopback interface.
+fn server_bench(cpus: &[usize]) {
+    if !Path::new(SERVER_BENCH).metadata().is_ok_and(|meta| meta.len() > 0) {
+        return;
+    }
+    if !loopback_up() {
+        eprintln!("linux-bench: the loopback interface is down, so no server benchmarks");
+        return;
+    }
+    // A tmpfs holds its root folder at mode 1777 unless told otherwise.
+    mount("tmpfs", "/tmp");
+    mount("tmpfs", "/dev/shm");
+    allow(cpus);
+    std::io::stdout().flush().ok();
+    let mut command = std::process::Command::new(SERVER_BENCH);
+    command.args(SERVERS).env_clear().env("TZ", "UTC").env("PATH", "/usr/bin:/bin");
+    match command.status() {
+        Ok(status) if status.success() => {}
+        Ok(status) => eprintln!("linux-bench: {SERVER_BENCH} failed: {status}"),
+        Err(err) => eprintln!("linux-bench: cannot run {SERVER_BENCH}: {err}"),
     }
 }
 

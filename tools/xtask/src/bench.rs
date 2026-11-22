@@ -1474,6 +1474,59 @@ pub(crate) fn newc_entry(
     pad(out);
 }
 
+/// A "newc" cpio archive of the files beneath `root`, which Linux unpacks
+/// at `/`: each folder with mode 0755 and each file with its own
+/// permission bits, all owned by 0:0, in the order of their names with a
+/// folder before what it holds, numbered from `first_ino`. A symbolic
+/// link is archived as what it points to, since the archive keeps none
+/// (the trees made for it hold none). The archive ends with the trailer,
+/// so it can follow another that does.
+///
+/// # Errors
+///
+/// Fails when a file cannot be read, has a name that is not UTF-8, or is
+/// neither a file nor a folder.
+pub(crate) fn newc_tree(root: &Path, first_ino: u32) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut ino = first_ino;
+    newc_folder(root, Path::new(""), &mut ino, &mut out)?;
+    newc_entry(&mut out, 0, "TRAILER!!!", 0, (0, 0), &[]);
+    Ok(out)
+}
+
+/// The entries of the folder `root`/`inside` and of everything beneath
+/// it, named from `root`, for [`newc_tree`].
+fn newc_folder(root: &Path, inside: &Path, ino: &mut u32, out: &mut Vec<u8>) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = root.join(inside);
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(&folder).context(|| format!("reading {}", folder.display()))? {
+        names.push(entry.context(|| format!("reading {}", folder.display()))?.file_name());
+    }
+    names.sort();
+    for name in names {
+        let path = folder.join(&name);
+        let relative = inside.join(&name);
+        let Some(archived) = relative.to_str() else {
+            crate::bail!("{} has a name that is not UTF-8", path.display());
+        };
+        let meta = std::fs::metadata(&path).context(|| format!("reading {}", path.display()))?;
+        if meta.is_dir() {
+            newc_entry(out, *ino, archived, 0o040_755, (0, 0), &[]);
+            *ino += 1;
+            newc_folder(root, &relative, ino, out)?;
+        } else if meta.is_file() {
+            let bytes = std::fs::read(&path).context(|| format!("reading {}", path.display()))?;
+            let mode = 0o100_000 | (meta.permissions().mode() & 0o777);
+            newc_entry(out, *ino, archived, mode, (0, 0), &bytes);
+            *ino += 1;
+        } else {
+            crate::bail!("{} is neither a file nor a folder", path.display());
+        }
+    }
+    Ok(())
+}
+
 /// Prints a failed boot's log, from the first sign of trouble or its last
 /// lines: CI keeps the log as an artifact, but the job's own output is
 /// where people look first.
@@ -2010,6 +2063,74 @@ fn results_json(ctx: &Ctx, numbers: &Numbers, kvm: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The entries of a "newc" archive as (name, mode, inode, data), up to
+    /// the trailer, which must come last and fill the archive to a
+    /// multiple of 4 bytes.
+    fn read_newc(archive: &[u8]) -> Vec<(String, u32, u32, Vec<u8>)> {
+        let field = |at: usize, n: usize| {
+            let text = std::str::from_utf8(&archive[at + 6 + n * 8..at + 14 + n * 8]).unwrap();
+            u32::from_str_radix(text, 16).unwrap()
+        };
+        let mut entries = Vec::new();
+        let mut at = 0;
+        loop {
+            assert_eq!(&archive[at..at + 6], b"070701");
+            let (ino, mode, size, name_size) =
+                (field(at, 0), field(at, 1), field(at, 6), field(at, 11));
+            let name_at = at + 110;
+            let name = std::str::from_utf8(&archive[name_at..name_at + name_size as usize - 1]);
+            let data_at = (name_at + name_size as usize).next_multiple_of(4);
+            let data = archive[data_at..data_at + size as usize].to_vec();
+            at = (data_at + size as usize).next_multiple_of(4);
+            if name == Ok("TRAILER!!!") {
+                assert_eq!(at, archive.len(), "the trailer is the last entry");
+                return entries;
+            }
+            entries.push((name.unwrap().to_string(), mode, ino, data));
+        }
+    }
+
+    #[test]
+    fn a_tree_becomes_an_archive_of_its_folders_and_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("ob-newc-tree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::create_dir_all(root.join("etc")).unwrap();
+        std::fs::write(root.join("bin/tool"), b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(root.join("bin/tool"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        std::fs::write(root.join("etc/passwd"), b"root:x:0:0\n").unwrap();
+        std::fs::set_permissions(root.join("etc/passwd"), std::fs::Permissions::from_mode(0o640))
+            .unwrap();
+        std::fs::write(root.join("empty"), b"").unwrap();
+        std::fs::set_permissions(root.join("empty"), std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+        // A link is archived as the file it points to.
+        std::os::unix::fs::symlink("tool", root.join("bin/alias")).unwrap();
+        let archive = newc_tree(&root, 100).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(archive.len() % 4, 0);
+        let entries = read_newc(&archive);
+        let shown: Vec<_> =
+            entries.iter().map(|(name, mode, ino, _)| (name.as_str(), *mode, *ino)).collect();
+        assert_eq!(
+            shown,
+            [
+                ("bin", 0o040_755, 100),
+                ("bin/alias", 0o100_755, 101),
+                ("bin/tool", 0o100_755, 102),
+                ("empty", 0o100_644, 103),
+                ("etc", 0o040_755, 104),
+                ("etc/passwd", 0o100_640, 105),
+            ]
+        );
+        assert_eq!(entries[1].3, b"#!/bin/sh\n");
+        assert_eq!(entries[2].3, b"#!/bin/sh\n");
+        assert_eq!(entries[3].3, b"");
+        assert_eq!(entries[5].3, b"root:x:0:0\n");
+    }
 
     #[test]
     fn reads_a_machines_numbers() {

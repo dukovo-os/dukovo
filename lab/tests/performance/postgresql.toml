@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# serverbench makes a cluster in /tmp, starts the bundle's postgres on a
+# Unix socket, fills it with pgbench's tables of scale 10 and runs the
+# bundle's pgbench against it (ADR 0546).
+
+about = "PostgreSQL from the catalog runs pgbench's select-only and TPC-B-like transactions on the machine no slower than the same PostgreSQL on Linux (ADR 0546)"
+time = "20m"
+host_needs = ["scp"]
+
+[[step]]
+host = "sh {here}/../services/copy-bundle.sh org.postgresql.postgresql {machine} {machine-port:22}"
+expect = "copied: org.postgresql.postgresql"
+# From nothing: a run before may have left it installed.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge org.postgresql.postgresql > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.postgresql.postgresql.dkv | tail -1'"
+root = true
+expect = "installed org.postgresql.postgresql"
+# Both systems run at the base clock for the rows (ADR 0557).
+[[step]]
+run = "tune set benchmark"
+root = true
+expect = "the profile is benchmark"
+# One operation of each row: a select-only transaction, and a TPC-B-like
+# transaction (the default script), each on one of 8 clients on 2 threads.
+# Linux's numbers come from the same PostgreSQL release, built for Linux in
+# the Linux kit (ADR 0546). Every row is held to parity.
+[[step]]
+bench = "/system/tests/posix/serverbench postgresql"
+rows = [
+    "server_postgresql_select",
+    "server_postgresql_tpcb",
+]
+[[step]]
+run = "tune set balanced"
+root = true
+expect = "the profile is balanced"
+[[step]]
+run = "bundle remove --for-everyone --purge org.postgresql.postgresql"
+root = true
+expect = "removed org.postgresql.postgresql"
