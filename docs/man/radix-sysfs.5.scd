@@ -619,7 +619,10 @@ _/kernel/devices/system/cpu/cpufreq/policy_*n*_/scaling_cur_freq_
 
 _/kernel/devices/system/cpu/cpufreq/policy_*n*_/scaling_governor_, _scaling_available_governors_
 	*powersave*: the CPU picks its speed within the range itself, which
-	Linux's drivers call so.
+	Linux's drivers call so; *performance* while the CPUs are held at
+	the top of the range (*cpu.speed* *highest*, ADR 0557).
+	_scaling_available_governors_ lists *performance powersave*, as
+	Linux's intel_pstate does.
 
 _/kernel/devices/system/cpu/cpufreq/policy_*n*_/energy_performance_preference_
 	Where the CPU takes one, the energy preference it is asked for:
@@ -664,7 +667,10 @@ _/kernel/settings/_*name*
 	The value of one of the kernel's settings (*radix-kernel-settings*(2),
 	ADR 0476), one file for each, named as the setting is: *cpu.energy_preference*
 	(*firmware*, *performance*, *balance_performance*, *balance_power* or
-	*power*), *sched.slice_us* (the fair scheduling class's base slice in
+	*power*), *cpu.boost* (*on* or *off*: whether the CPUs may run above
+	their base frequency), *cpu.speed* (*chosen* or *highest*: whether
+	each CPU picks its speed or is held at the top of its range),
+	*sched.slice_us* (the fair scheduling class's base slice in
 	microseconds), *disk.read_ahead_kib* (how far ahead the page cache
 	reads, in KiB) and *net.congestion* (*cubic* or *reno*, for new TCP
 	sockets). Everyone reads them. Radix's own, and, as everything of

@@ -403,8 +403,15 @@ The POSIX benchmarks (ADR 0106) are one C program,
 the test image and `linux-bench` runs last on Linux, built from the same
 file with the same compiler. It times, with `clock_gettime`, first a
 chain of additions, each waiting for the one before, one clock cycle
-each, which gives the processor's clock (`cpu_cycle`; no row compares
-it, and `ob bench --from` shows it for a real machine, ADR 0124); then
+each, which gives the processor's clock, three times: right after the
+pause every row starts with, when the clock may have fallen
+(`cpu_cycle_cold`, 10 million additions); after 250 ms of the additions,
+the clock the rows run at once they are under way (`cpu_cycle`, 100
+million); and as the last row of the run, whether the clock held
+(`cpu_cycle_end`). No row compares them, `ob bench --from` shows
+`cpu_cycle` for a real machine (ADR 0124), and the lab holds the two
+systems' `cpu_cycle` to each other before it compares any row, as the
+performance tests run both at the CPUs' base frequency (ADR 0557); then
 `fork` and `waitpid` of a child that exits at once (`posix_fork_wait`);
 `fork`,
 `execv` of itself and `waitpid` (`posix_fork_exec_wait`); 256 MiB

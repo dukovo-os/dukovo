@@ -5,15 +5,17 @@
 //! The tune service applies the default at boot and, as QEMU's CPUs show
 //! a hypervisor, leaves one notice for the sign-in screens that *elevate
 //! tune set vm-guest* suits the machine. *tune* shows the profile in use
-//! and each kernel setting's value, *tune list* and *tune show* the
-//! profiles and what each sets and why, and *tune recommend* says
-//! vm-guest. *tune set throughput* sets the slice and the read-ahead in
-//! /kernel/settings, and says in one line that the CPUs cannot have an
-//! energy preference, which QEMU's lack, while the rest was set; *tune*
-//! then marks what the profile set. *tune set balanced* leaves every file
-//! of /kernel/settings at the value it started with, and a profile that
-//! is no profile is refused. Choosing a profile ends the notice, and
-//! vm-guest sets what it lists and nothing else.
+//! and each kernel setting's value, including whether the CPUs may boost
+//! and how they are held, *tune list* and *tune show* the profiles
+//! (benchmark among them, ADR 0557) and what each sets and why, and
+//! *tune recommend* says vm-guest. *tune set throughput* sets the slice
+//! and the read-ahead in /kernel/settings, and says in one line that the
+//! CPUs cannot have an energy preference, which QEMU's lack, while the
+//! rest was set; *tune* then marks what the profile set. *tune set
+//! balanced* leaves every file of /kernel/settings at the value it
+//! started with, and a profile that is no profile is refused. Choosing a
+//! profile ends the notice, and vm-guest sets what it lists and nothing
+//! else.
 
 use super::super::*;
 
@@ -60,7 +62,9 @@ fn tune(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     answer_prompt(vm, "#", &format!("clear; tune; {SETTINGS} > /tmp/start"))?;
     vm.expect_screen(&[
         "Profile: balanced, the default; The default: every setting at its start value",
+        "cpu.boost              on",
         "cpu.energy_preference  firmware",
+        "cpu.speed              chosen",
         "disk.read_ahead_kib    128",
         "net.congestion         cubic",
         "sched.slice_us         3000",
@@ -69,11 +73,20 @@ fn tune(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     answer_prompt(vm, "#", "clear; tune list")?;
     vm.expect_screen(&[
         "balanced     The default: every setting at its start value  (in use)",
+        "benchmark    Steady timings: CPUs at their base frequency",
         "low-latency  Quick answers",
         "power-saver  Less power",
         "throughput   Most work done a second",
         "vm-guest     A virtual machine",
         "vm-host      A machine that runs virtual machines",
+    ])?;
+    answer_prompt(vm, "#", "clear; tune show benchmark")?;
+    vm.expect_screen(&[
+        "benchmark: Steady timings: CPUs at their base frequency",
+        "cpu.boost              off          Turbo bins depend on heat",
+        "cpu.energy_preference  performance  The CPUs ask for the most speed",
+        "cpu.speed              highest      Each CPU is held at its highest",
+        "Every other setting is at its start value.",
     ])?;
     answer_prompt(vm, "#", "clear; tune show throughput")?;
     vm.expect_screen(&[

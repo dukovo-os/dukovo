@@ -10,10 +10,14 @@
 //! choice, with the firmware's energy preference or the one `epp=` names,
 //! as Linux's `intel_pstate` and `amd-pstate-epp` drivers do in their
 //! active mode; the kernel setting `cpu.energy_preference` changes it
-//! later ([`set_preference`], ADR 0476). `pstate=off` leaves the CPUs to
-//! the firmware. The thermal
-//! zones' passive cooling caps every CPU's highest level ([`cool`], ADR
-//! 0203).
+//! later ([`set_preference`], ADR 0476). The settings `cpu.boost` and
+//! `cpu.speed` keep the CPUs at their base frequency or below, and hold
+//! them at the top of what they may run at ([`set_boost`], [`set_held`],
+//! ADR 0557), which together keep the clock steady for measuring.
+//! `pstate=off` leaves the CPUs to the firmware. The thermal zones'
+//! passive cooling caps every CPU's highest level ([`cool`], ADR 0203).
+//! Every change asks every CPU again for what all of them together allow
+//! ([`radix_pstate::Request::at`]).
 //!
 //! `/kernel/devices/system/cpu/cpufreq` shows each CPU's levels and
 //! request as frequencies ([`write_file`]), and the frequency it runs at,
@@ -21,11 +25,11 @@
 //! file asks and kept for [`MEASURE_LIFE_NS`].
 
 use core::fmt::{self, Write};
-use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
 use radix_hal::{Cpu, CpuLocal, MAX_CPUS, Timer, UserMode};
 use radix_klog::{error, info, warn};
-use radix_pstate::{Driver, Levels, Preference, Request, Scale};
+use radix_pstate::{Driver, Levels, Preference, Request, Scale, Speed};
 use radix_sync::{Mutex, Once};
 
 use crate::{Arch, work};
@@ -48,8 +52,17 @@ static PREFERENCE: AtomicU16 = AtomicU16::new(FIRMWARE_PREFERENCE);
 /// Each CPU's energy preference as its firmware left it, which
 /// [`FIRMWARE_PREFERENCE`] asks for again.
 static FIRMWARE_PREFERENCES: [AtomicU8; MAX_CPUS] = [const { AtomicU8::new(0) }; MAX_CPUS];
-/// One change of the energy preference at a time.
-static PREFERRING: Mutex<()> = Mutex::new(());
+/// Whether the CPUs may run above their base frequency (`cpu.boost`).
+static BOOST: AtomicBool = AtomicBool::new(Speed::BOOT.boost);
+/// Whether the CPUs are held at the highest level they may run at
+/// (`cpu.speed`).
+static HELD: AtomicBool = AtomicBool::new(Speed::BOOT.held);
+/// One change of what the CPUs are asked for at a time, of a setting or
+/// of passive cooling: each asks every CPU again, and two at once could
+/// leave a CPU with the request of the one that read the values first.
+/// Neither the settings' callers nor the thermal thread is a work thread,
+/// which [`on_every_cpu`] waits for while it is held.
+static ASKING: Mutex<()> = Mutex::new(());
 /// Whether the CPUs' highest levels differ, as AMD's do on CPUs that rank
 /// their cores.
 static RANKED: Once<bool> = Once::new();
@@ -99,8 +112,6 @@ static ZONE_STEPS: [AtomicU8; crate::acpi::thermal::MAX_ZONES] =
     [const { AtomicU8::new(0) }; crate::acpi::thermal::MAX_ZONES];
 /// The step every CPU is cooled at: the most any zone asks for.
 static STEP: AtomicU8 = AtomicU8::new(0);
-/// One change of the step at a time.
-static COOLING: Mutex<()> = Mutex::new(());
 
 /// Turns every CPU's control on, unless `off` (`pstate=off`), with the
 /// energy preference `epp` names (`epp=`). Called once, at the end of
@@ -180,22 +191,16 @@ pub fn start(off: bool, epp: Option<&str>) {
     }
 }
 
-/// On each CPU, from [`start`]: turns its control on and asks for every
-/// level.
+/// On each CPU, from [`start`]: turns its control on and asks for what
+/// the speed at boot allows.
 fn start_here() {
     let cpu = Arch::current_cpu();
-    let Some(&driver) = DRIVER.get() else { return };
     let Some((levels, firmware)) = Arch::start_performance() else { return };
     if !levels.valid() {
         return;
     }
-    let preference = match PREFERENCE.load(Ordering::Relaxed) {
-        FIRMWARE_PREFERENCE => None,
-        value => Some(value as u8),
-    };
-    let request =
-        Request::at_boot(levels, firmware, preference.filter(|_| driver.has_preference()));
     FIRMWARE_PREFERENCES[cpu].store(firmware.preference, Ordering::Relaxed);
+    let request = Request::at(levels, speed(), preference_here(cpu));
     Arch::request_performance(request);
     let Some((scale, ranked_top)) = Arch::performance_scale(levels) else { return };
     REQUESTS[cpu].store(pack(request), Ordering::Relaxed);
@@ -222,25 +227,78 @@ pub fn set_preference(preference: Option<Preference>) -> bool {
     let Some(driver) = driver().filter(|driver| driver.has_preference()) else {
         return preference.is_none();
     };
-    let _one = PREFERRING.lock();
+    let _one = ASKING.lock();
     let value = preference.map_or(FIRMWARE_PREFERENCE, |p| u16::from(p.value(driver)));
     if PREFERENCE.swap(value, Ordering::Relaxed) != value {
-        on_every_cpu(prefer_here);
+        on_every_cpu(ask_here);
     }
     true
 }
 
-/// On each CPU, from [`set_preference`]: asks for the preference.
-fn prefer_here() {
-    let cpu = Arch::current_cpu();
-    if CONTROLS[cpu].get().is_none() {
-        return;
+/// Whether the CPUs may run above their base frequency.
+pub fn boost() -> bool {
+    BOOST.load(Ordering::Relaxed)
+}
+
+/// Lets every CPU run above its base frequency, or keeps it at most at
+/// that frequency, its nominal level, as Linux's `no_turbo` does (the
+/// setting `cpu.boost`, ADR 0557). Returns false, and changes nothing,
+/// for keeping it there where the CPUs' speed is the firmware's.
+pub fn set_boost(boost: bool) -> bool {
+    change(&BOOST, boost, Speed::BOOT.boost)
+}
+
+/// Whether the CPUs are held at the highest level they may run at.
+pub fn held() -> bool {
+    HELD.load(Ordering::Relaxed)
+}
+
+/// Holds every CPU at the highest level it may run at, as Linux's
+/// performance governor does, or lets each pick its own speed again (the
+/// setting `cpu.speed`, ADR 0557). Returns false, and changes nothing,
+/// for holding them where the CPUs' speed is the firmware's.
+pub fn set_held(held: bool) -> bool {
+    change(&HELD, held, Speed::BOOT.held)
+}
+
+/// Sets `setting` to `value`, and asks every CPU again when that changes
+/// it. Where the CPUs' speed is the firmware's, only `at_boot`, the value
+/// the setting starts with, can be had.
+fn change(setting: &AtomicBool, value: bool, at_boot: bool) -> bool {
+    if driver().is_none() {
+        return value == at_boot;
     }
-    let preference = match PREFERENCE.load(Ordering::Relaxed) {
+    let _one = ASKING.lock();
+    if setting.swap(value, Ordering::Relaxed) != value {
+        on_every_cpu(ask_here);
+    }
+    true
+}
+
+/// How fast the kernel lets the CPUs run now.
+fn speed() -> Speed {
+    Speed {
+        boost: BOOST.load(Ordering::Relaxed),
+        held: HELD.load(Ordering::Relaxed),
+        cooling_step: STEP.load(Ordering::Relaxed),
+    }
+}
+
+/// The energy preference CPU `cpu` is asked for: the one set, or its
+/// firmware's.
+fn preference_here(cpu: usize) -> u8 {
+    match PREFERENCE.load(Ordering::Relaxed) {
         FIRMWARE_PREFERENCE => FIRMWARE_PREFERENCES[cpu].load(Ordering::Relaxed),
         value => value as u8,
-    };
-    let request = Request { preference, ..request(cpu) };
+    }
+}
+
+/// On each CPU, after a setting or passive cooling changed: asks for what
+/// they all allow now.
+fn ask_here() {
+    let cpu = Arch::current_cpu();
+    let Some(control) = CONTROLS[cpu].get() else { return };
+    let request = Request::at(control.levels, speed(), preference_here(cpu));
     Arch::request_performance(request);
     REQUESTS[cpu].store(pack(request), Ordering::Relaxed);
 }
@@ -349,7 +407,12 @@ pub fn write_file(cpu: usize, file: File, out: &mut dyn Write) -> fmt::Result {
         File::AffectedCpus | File::RelatedCpus => writeln!(out, "{cpu}"),
         File::CpuinfoMaxFreq => writeln!(out, "{}", control.khz(control.levels.highest)),
         File::CpuinfoMinFreq => writeln!(out, "{}", control.khz(control.levels.lowest)),
-        File::ScalingAvailableGovernors | File::ScalingGovernor => writeln!(out, "powersave"),
+        // Linux's intel_pstate and amd-pstate-epp offer these two: the
+        // performance governor holds a CPU at the top of its range.
+        File::ScalingAvailableGovernors => writeln!(out, "performance powersave"),
+        File::ScalingGovernor => {
+            writeln!(out, "{}", if held() { "performance" } else { "powersave" })
+        }
         File::ScalingCurFreq => {
             measure();
             match RUNNING_KHZ[cpu].load(Ordering::Relaxed) {
@@ -386,10 +449,10 @@ pub fn cool(zone: usize, step: u8) -> bool {
     if driver().is_none() {
         return false;
     }
-    let _one = COOLING.lock();
+    let _one = ASKING.lock();
     let wanted = ZONE_STEPS.iter().map(|step| step.load(Ordering::Relaxed)).max().unwrap_or(0);
     if STEP.swap(wanted, Ordering::Relaxed) != wanted {
-        on_every_cpu(cool_here);
+        on_every_cpu(ask_here);
     }
     true
 }
@@ -397,17 +460,6 @@ pub fn cool(zone: usize, step: u8) -> bool {
 /// The step every CPU is cooled at.
 pub fn step() -> u8 {
     STEP.load(Ordering::Relaxed)
-}
-
-/// On each CPU, from [`cool`]: asks for its highest level at the step.
-fn cool_here() {
-    let cpu = Arch::current_cpu();
-    let Some(control) = CONTROLS[cpu].get() else { return };
-    let current = request(cpu);
-    let max = radix_pstate::cooled(control.levels, STEP.load(Ordering::Relaxed)).max(current.min);
-    let request = Request { max, ..current };
-    Arch::request_performance(request);
-    REQUESTS[cpu].store(pack(request), Ordering::Relaxed);
 }
 
 /// Measures the frequency every CPU runs at, unless the last measurement
