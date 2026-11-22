@@ -10,8 +10,9 @@
 // backlog, and connections from another process. And descriptors passed
 // with SCM_RIGHTS: pipes, files and directories, between processes too,
 // MSG_CTRUNC, MSG_CMSG_CLOEXEC, the bytes they ride on, and the limits.
-// And MSG_PEEK, of bytes and of descriptors (ADR 0341). The datagram
-// sockets are datagram.c's.
+// And MSG_PEEK, of bytes and of descriptors (ADR 0341). And that a
+// connection wakes one of the processes blocked in accept (ADR 0650). The
+// datagram sockets are datagram.c's.
 
 #include <fcntl.h>
 #include <limits.h>
@@ -537,6 +538,99 @@ static void backlog(void) {
 	CHECK(unlink(NAME) == 0);
 }
 
+// The voluntary_switches of process `pid` from /processes/<pid>/status;
+// -1 if it cannot be read.
+static long voluntary_switches(pid_t pid) {
+	char path[64];
+	snprintf(path, sizeof(path), "/processes/%d/status", (int)pid);
+	FILE *status = fopen(path, "r");
+	if(!status)
+		return -1;
+	char line[128];
+	long switches = -1;
+	while(fgets(line, sizeof(line), status))
+		if(sscanf(line, "voluntary_switches: %ld", &switches) == 1)
+			break;
+	fclose(status);
+	return switches;
+}
+
+// A connection wakes one of the processes blocked in accept, as on Linux,
+// not all of them (ADR 0650). Four children block in accept on one
+// listening socket and close what they take, and the parent connects 500
+// times, waiting each time for the acceptor's close. Each connection
+// costs one child one block, so the children's voluntary switches move
+// by about 500 over the rounds; with every connection waking all four
+// they moved by about 2,000.
+static void accepting(void) {
+	enum { CHILDREN = 4, ROUNDS = 500 };
+	unlink(NAME);
+	int s = listening(16);
+	pid_t pids[CHILDREN];
+	for(int i = 0; i < CHILDREN; i++) {
+		pids[i] = check_fork();
+		if(pids[i] == 0) {
+			for(;;) {
+				int a = accept(s, NULL, NULL);
+				if(a < 0)
+					break;
+				close(a);
+			}
+			check_exit_child();
+		}
+		CHECK(pids[i] > 0);
+	}
+	// The children are asleep once their switches stop moving.
+	long switches[CHILDREN], total = 0;
+	long long deadline = check_now_ns() + 2000000000LL;
+	for(int i = 0; i < CHILDREN; i++)
+		switches[i] = voluntary_switches(pids[i]);
+	for(;;) {
+		check_sleep_ms(50);
+		int still = 1;
+		for(int i = 0; i < CHILDREN; i++) {
+			long now = voluntary_switches(pids[i]);
+			still &= now >= 0 && now == switches[i];
+			switches[i] = now;
+		}
+		if(still)
+			break;
+		if(check_now_ns() >= deadline) {
+			CHECK(0 && "the acceptors' voluntary_switches stopped moving");
+			break;
+		}
+	}
+	for(int i = 0; i < CHILDREN; i++)
+		total -= switches[i];
+	int served = 0;
+	for(int round = 0; round < ROUNDS; round++) {
+		int error;
+		int c = connected(0, &error);
+		char byte;
+		struct pollfd entry = {.fd = c, .events = POLLIN};
+		if(c < 0 || poll(&entry, 1, 5000) != 1 || read(c, &byte, 1) != 0) {
+			CHECK(0 && "a connection accepted and closed by a child");
+			if(c >= 0)
+				close(c);
+			break;
+		}
+		close(c);
+		served++;
+	}
+	for(int i = 0; i < CHILDREN; i++)
+		total += voluntary_switches(pids[i]);
+	printf("socket: accepting: %d connections made the %d acceptors switch %ld times\n", served,
+			CHILDREN, total);
+	CHECK(served == ROUNDS);
+	CHECK(total <= ROUNDS + ROUNDS / 2);
+	for(int i = 0; i < CHILDREN; i++) {
+		kill(pids[i], SIGKILL);
+		waitpid(pids[i], NULL, 0);
+	}
+	close(s);
+	CHECK(unlink(NAME) == 0);
+}
+
 // Sends one byte, `byte`, with the `count` descriptors of `fds`.
 static ssize_t send_fds(int socket, char byte, const int *fds, int count) {
 	union {
@@ -794,6 +888,7 @@ int main(void) {
 	RUN(duplicated);
 	RUN(named);
 	RUN(backlog);
+	RUN(accepting);
 	RUN(passing);
 	RUN(peeking);
 	RUN(between);

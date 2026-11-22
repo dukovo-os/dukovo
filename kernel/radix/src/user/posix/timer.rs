@@ -8,13 +8,21 @@
 //!
 //! A timer holds when it expires, on the kernel's clock or on its
 //! process's CPU time, and its interval. One kernel thread runs them all:
-//! it sleeps until the next timer on the kernel's clock is due, or for
-//! [`CPU_TICK_NS`] while a CPU-time timer is armed, since CPU time is only
-//! counted at ticks; then it sends the signal of each timer that has
-//! expired. The processes with an armed timer are listed in [`ARMED`], by
-//! weak references, so a process that has gone drops out of the list.
-//! The TLA+ model `kernel/radix/tla/Timers.tla` checks that no set timer
-//! is left out of the list or slept through.
+//! it sends the signal of each timer that has expired, then sleeps until
+//! it must look again ([`NEXT_LOOK`]): when the next timer on the kernel's
+//! clock is due, and for a CPU-time timer once its process could have
+//! used what is left of it on every CPU, but no sooner than [`CPU_TICK_NS`],
+//! since CPU time is only counted at ticks ([`cpu_look_by`]). The
+//! processes with an armed timer are listed in [`ARMED`], by weak
+//! references, so a process that has gone drops out of the list.
+//!
+//! Setting a timer wakes the thread only if the thread would otherwise
+//! sleep past the time it must look at the new timer, and turning one off
+//! never does (ADR 0650): PHP sets a 30-second CPU-time timer at the start
+//! of each request and turns it off at the end, and each of those calls
+//! used to wake the thread, often on another CPU. The TLA+ model
+//! `kernel/radix/tla/Timers.tla` checks that no set timer is left out of
+//! the list or slept through.
 //!
 //! An interval timer is set again by its interval at once (an expiry
 //! missed while the signal was pending counts once). A POSIX timer with
@@ -118,6 +126,15 @@ impl PosixTimer {
         self.timer.expires != 0 && self.notify != TimerNotify::None
     }
 
+    /// When the timer thread must look at it, its clock reading `now`
+    /// ([`look_by`]): one that sends no signal, never.
+    fn look_by(&self, now: u64) -> u64 {
+        if !self.set() {
+            return u64::MAX;
+        }
+        look_by(self.timer.expires, self.on_cpu_time().then_some(now))
+    }
+
     /// What its signal carries, before its overrun is known.
     fn info(&self, number: usize) -> Info {
         Info { code: SI_TIMER, pid: number as u64, status: self.value }
@@ -139,6 +156,15 @@ static ARMED: Mutex<Option<Vec<Weak<ProcessObject, Kmalloc>, Kmalloc>>> = Mutex:
 
 /// Moves whenever a timer is set, so that the thread looks again.
 static CHANGES: AtomicU64 = AtomicU64::new(0);
+
+/// When the thread looks at the timers next, on the kernel's clock, unless
+/// it is woken (`u64::MAX`: only when woken). The thread writes it after
+/// each look, before its wait reads [`CHANGES`]; a setter moves `CHANGES`,
+/// then reads it ([`changed_by`]). Both are sequentially consistent, so
+/// either the thread's wait sees `CHANGES` move and it looks again, or the
+/// setter reads the time the thread will sleep until. It starts at 0: the
+/// thread looks as soon as it runs.
+static NEXT_LOOK: AtomicU64 = AtomicU64::new(0);
 
 /// Whether the thread has been started.
 static STARTED: AtomicBool = AtomicBool::new(false);
@@ -184,7 +210,7 @@ pub fn set(
         None
     };
     let now = now_for(process, index);
-    let old = {
+    let (old, look_by) = {
         let mut posix = process.posix.lock();
         let timer = &mut posix.timers[index];
         let old = *timer;
@@ -193,19 +219,65 @@ pub fn set(
         } else {
             Timer { expires: now.saturating_add(value_ns).max(1), interval: interval_ns }
         };
-        old
+        (old, look_by(timer.expires, (index != 0).then_some(now)))
     };
     drop(armed);
-    changed();
-    // A timer due now is still a little way off.
-    let left = if old.expires == 0 { 0 } else { old.expires.saturating_sub(now).max(1) };
+    changed_by(look_by);
+    if old.expires == 0 || now < old.expires {
+        return Ok((old.expires.saturating_sub(now), old.interval));
+    }
+    // It was due, and the thread had not sent its signal yet: the thread
+    // looks only by the time it must, and CPU time moves at ticks. Its
+    // signal goes now, as it would have at its time, and what was left is
+    // the time to the expiry after (none for one without an interval).
+    // Otherwise `getitimer`, which sets the timer again with what it read,
+    // would move a due timer a little way off at each read, and a program
+    // reading it over and over would never see it fire.
+    let info = Info { code: SI_KERNEL, pid: 0, status: 0 };
+    signal::send_process(process, ITIMER_SIGNALS[index], info);
+    let mut next = old;
+    next.next_after(now, 0);
+    let left = if next.expires == 0 { 0 } else { next.expires.saturating_sub(now).max(1) };
     Ok((left, old.interval))
 }
 
-/// Has the timer thread look at the timers again.
+/// Has the timer thread look at the timers again at once.
 fn changed() {
-    CHANGES.fetch_add(1, Ordering::AcqRel);
-    wait::wake_all(changes_key());
+    changed_by(0);
+}
+
+/// Has the timer thread look at the timers again by `look_by`, on the
+/// kernel's clock (`u64::MAX`: whenever it next looks, for a timer turned
+/// off): the thread is woken only if it would sleep past then
+/// ([`NEXT_LOOK`]).
+fn changed_by(look_by: u64) {
+    CHANGES.fetch_add(1, Ordering::SeqCst);
+    if look_by < NEXT_LOOK.load(Ordering::SeqCst) {
+        wait::wake_all(changes_key());
+    }
+}
+
+/// When the thread must look at a timer that expires at `expires` (0: one
+/// turned off, never), on the kernel's clock, or on CPU time when `cpu`
+/// holds what its process has used.
+fn look_by(expires: u64, cpu: Option<u64>) -> u64 {
+    match (expires, cpu) {
+        (0, _) => u64::MAX,
+        (expires, None) => expires,
+        (expires, Some(cpu)) => cpu_look_by(sched::now_ns(), cpu, expires),
+    }
+}
+
+/// When the thread must look at a timer on CPU time that expires at
+/// `expires`, its process's CPU time being `cpu` and the kernel's clock
+/// `now`: once the process could have used what is left with every CPU at
+/// once, but no sooner than [`CPU_TICK_NS`] from now, since CPU time is
+/// counted at ticks. So a timer far off is looked at a few times as it
+/// nears rather than at every tick: on two CPUs, a process with one thread
+/// has used at most half of what was left at each look.
+fn cpu_look_by(now: u64, cpu: u64, expires: u64) -> u64 {
+    let cpus = (<Arch as radix_hal::Smp>::cpu_count() as u64).max(1);
+    now.saturating_add((expires.saturating_sub(cpu) / cpus).max(CPU_TICK_NS))
 }
 
 /// The POSIX timer methods of radix-process(2), called by `user`'s
@@ -350,7 +422,7 @@ fn set_posix(
         None
     };
     let wall = <Arch as radix_hal::Timer>::wall_clock_ns().unwrap_or(0);
-    let old = {
+    let (old, look_by) = {
         let mut posix = process.posix.lock();
         let timer = posix_timer(&mut posix, number)?;
         let now = posix_now(process, timer);
@@ -368,10 +440,10 @@ fn set_posix(
         };
         timer.fired = false;
         timer.overrun = 0;
-        old
+        (old, timer.look_by(now))
     };
     drop(armed);
-    changed();
+    changed_by(look_by);
     Ok(old)
 }
 
@@ -422,7 +494,7 @@ pub fn taken(process: &ProcessObject, posix: &mut PosixState, signal: u32, mut i
     if timer.timer.expires != 0 {
         let now = posix_now(process, timer);
         overrun = timer.timer.next_after(now, 0).min(OVERRUN_MAX);
-        changed();
+        changed_by(timer.look_by(now));
     }
     timer.overrun = overrun as u32;
     info.pid |= overrun << 32;
@@ -491,7 +563,8 @@ fn register(process: &ProcessRef) -> Result<ArmedGuard> {
 
 /// Starts the timer thread, once.
 fn start() -> Result<()> {
-    if STARTED.swap(true, Ordering::AcqRel) {
+    // Read first: every setitimer comes here.
+    if STARTED.load(Ordering::Acquire) || STARTED.swap(true, Ordering::AcqRel) {
         return Ok(());
     }
     match sched::spawn("timers", run, 0, Options::new().policy(Policy::Fair { nice: -5 })) {
@@ -507,9 +580,11 @@ fn start() -> Result<()> {
 /// The timer thread.
 fn run(_: usize) {
     loop {
-        let seen = CHANGES.load(Ordering::Acquire);
+        let seen = CHANGES.load(Ordering::SeqCst);
         let deadline = expire_due();
-        let changed = || CHANGES.load(Ordering::Acquire) != seen;
+        // Before the wait reads CHANGES ([`NEXT_LOOK`]).
+        NEXT_LOOK.store(deadline.unwrap_or(u64::MAX), Ordering::SeqCst);
+        let changed = || CHANGES.load(Ordering::SeqCst) != seen;
         match deadline {
             Some(deadline) => {
                 wait::wait_until_or_timeout(changes_key(), "timers", deadline, changed);
@@ -554,7 +629,6 @@ fn expire_due() -> Option<u64> {
         }
     }
     let mut next = u64::MAX;
-    let mut keep_looking = false;
     for process in &processes {
         let real = sched::now_ns();
         let cpu = cpu_ns(process);
@@ -577,11 +651,10 @@ fn expire_due() -> Option<u64> {
                 }
                 if timer.expires != 0 {
                     armed = true;
-                    if index == 0 {
-                        next = next.min(timer.expires);
-                    } else {
-                        keep_looking = true;
-                    }
+                    next = next.min(match index {
+                        0 => timer.expires,
+                        _ => cpu_look_by(real, now, timer.expires),
+                    });
                 }
             }
             for (number, slot) in posix.posix_timers.iter_mut().enumerate() {
@@ -610,7 +683,7 @@ fn expire_due() -> Option<u64> {
                     // No room to send it this time: at once, next time.
                     next = real;
                 } else if timer.on_cpu_time() {
-                    keep_looking = true;
+                    next = next.min(cpu_look_by(real, cpu, timer.timer.expires));
                 } else {
                     next = next.min(timer.timer.expires);
                 }
@@ -624,15 +697,11 @@ fn expire_due() -> Option<u64> {
             if send(process, fire) != Sent::Queued {
                 dropped(process, fire.number);
                 next = next.min(sched::now_ns().saturating_add(DROPPED_NS));
-                keep_looking = true;
             }
         }
         if !armed {
             unregister(process);
         }
-    }
-    if keep_looking {
-        next = next.min(sched::now_ns().saturating_add(CPU_TICK_NS));
     }
     (next != u64::MAX).then_some(next)
 }

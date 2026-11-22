@@ -347,6 +347,14 @@ impl WaitCount {
         }
     }
 
+    /// [`wake_one`], with no lock taken while nobody waits.
+    pub fn wake_one(&self, key: usize) {
+        fence(Ordering::SeqCst);
+        if self.0.load(Ordering::Relaxed) > 0 {
+            wake_one(key);
+        }
+    }
+
     fn count(&self) -> Counted<'_> {
         self.0.fetch_add(1, Ordering::SeqCst);
         fence(Ordering::SeqCst);
@@ -377,6 +385,29 @@ pub fn wake_all(key: usize) {
             index += 1;
         }
     }
+}
+
+/// Wakes the thread that has waited longest on `key`, if one waits, and
+/// returns whether one did: for a change only one waiter can use, such as
+/// a connection for `accept`, so that the others sleep on. Each such
+/// change wakes one, after it is made. A waiter it wakes takes the change
+/// unless another thread took it first, so the change is used either way;
+/// one that gives a change back wakes another.
+pub fn wake_one(key: usize) -> bool {
+    let mut table = TABLE.lock_irq();
+    let Some(table) = table.as_mut() else { return false };
+    let first = table
+        .waiters
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| w.key == key && w.owner == 0)
+        .min_by_key(|(_, w)| w.seq)
+        .map(|(index, _)| index);
+    let Some(index) = first else { return false };
+    let waiter = table.waiters.swap_remove(index);
+    count(|c| &c.wakeups);
+    super::wake(&waiter.thread);
+    true
 }
 
 /// The hook behind a contended [`radix_sync::Mutex`]: spins while the
