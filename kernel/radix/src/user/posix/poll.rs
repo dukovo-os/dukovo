@@ -18,25 +18,26 @@
 //! socket's does, is held and looked at with the space's lock let go. If none is
 //! ready, and the poll may wait, the thread holds the objects its entries
 //! designate, as Linux's `poll` holds its files (a slot closed meanwhile
-//! does not change what it waits for), counts itself among the pollers of
-//! each ([`Polled`]), and waits for a change to any of them: whatever a
-//! poll looks at calls [`Polled::changed`] after it changes, which, while
-//! anyone polls it, moves [`GENERATION`] and wakes the pollers. A woken
-//! poller does not know which of its objects changed, so it looks at them
-//! all again, and every poller wakes for a change to anything polled
-//! (docs/design/posix.md lists that limit); a change to what nobody polls,
-//! such as a pipe that is only read and written, wakes nobody.
+//! does not change what it waits for), adds itself to the pollers of each
+//! ([`Polled`]), and sleeps until one of them changes: whatever a poll
+//! looks at calls [`Polled::changed`] after it changes, which tells each
+//! thread polling it to look again and wakes it. A woken poller does not
+//! know which of its objects changed, so it looks at them all again, as
+//! Linux's does. A change wakes only the threads that poll what changed,
+//! and a change to what nobody polls, such as a pipe that is only read and
+//! written, wakes nobody (ADR 0558).
 //!
-//! No wake-up is lost between a poller's look and its wait: a poller
-//! counts itself in each object's [`Polled`] before it reads the
-//! generation and looks, and [`Polled::changed`] reads the count after the
+//! No wake-up is lost between a poller's look and its sleep: a poller
+//! adds itself to each object's [`Polled`], then clears its flag
+//! ([`crate::user::UserThread`]'s `poll_changed`), before it looks, and
+//! [`Polled::changed`] reads the object's count of pollers after the
 //! change, each with a full barrier between, so either the poller sees the
-//! change or the change sees the poller (and moves the generation it waits
-//! on). A notification, whose word changes by a read-modify-write that is
-//! already such a barrier, skips the extra one
-//! ([`Polled::changed_by_rmw`]), as do a pipe and an event queue, which
-//! have just taken one to wake their own waiters. The TLA+ model
-//! `kernel/radix/tla/Poll.tla` checks this.
+//! change or the change sees the poller, sets its flag and wakes it; a
+//! wake that comes before the sleep makes the sleep return at once. A
+//! notification, whose word changes by a read-modify-write that is already
+//! such a barrier, skips the extra one ([`Polled::changed_by_rmw`]), as do
+//! a pipe and an event queue, which have just taken one to wake their own
+//! waiters. The TLA+ model `kernel/radix/tla/Poll.tla` checks this.
 //!
 //! A [`Polled`] also holds the event queues' watches of its object
 //! (radix-event-queue(2), `crate::user::queue`): a change queues each of
@@ -44,7 +45,7 @@
 //! looks only at what changed, and nothing else wakes.
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering, fence};
+use core::sync::atomic::{AtomicUsize, Ordering, fence};
 
 use radix_abi::errors::Kernel;
 use radix_abi::process::{PollArgs, PollEntry, PollEvents, PollFlags};
@@ -56,7 +57,7 @@ use radix_sync::SpinLock;
 use super::kmalloc;
 use super::signal::{self, Restart, interrupted};
 use crate::fs::FileObject;
-use crate::sched::{self, wait};
+use crate::sched::{self, ThreadRef};
 use crate::user::notify::Notification;
 use crate::user::objects::{self, Object, Peeked};
 use crate::user::queue::EventQueue;
@@ -82,25 +83,28 @@ const ALWAYS: u16 = ERROR | HANG_UP | INVALID;
 /// open files allows.
 pub const ENTRIES_MAX: u32 = 4096;
 
-/// Moves whenever something polled changes.
-static GENERATION: AtomicU64 = AtomicU64::new(0);
-
-fn key() -> usize {
-    &raw const GENERATION as usize
-}
-
-/// What a poll may look at keeps one of these: how many threads poll it,
+/// What a poll may look at keeps one of these: the threads polling it,
 /// which its changes wake, and the event queues' watches of it, which its
 /// changes queue.
 pub struct Polled {
+    /// How many threads `lists` holds, so that a change to what nobody
+    /// polls takes no lock.
     pollers: AtomicUsize,
-    /// How many watches `watches` holds, so that a change to what no
-    /// queue watches takes no lock.
+    /// How many watches `lists` holds, likewise.
     watched: AtomicUsize,
+    /// Taken with interrupts masked: the keyboard's and the mouse's
+    /// change in their interrupt handlers.
+    lists: SpinLock<Lists>,
+}
+
+/// Whom a change to a [`Polled`]'s object reaches.
+struct Lists {
+    /// The threads waiting in `poll` for it to change, once for each time
+    /// a poll names it.
+    pollers: Vec<ThreadRef, Kmalloc>,
     /// The watches, with those whose queue has deleted them until the
-    /// next one is added. Taken with interrupts masked: the keyboard's
-    /// and the mouse's change in their interrupt handlers.
-    watches: SpinLock<Vec<WatchRef, Kmalloc>>,
+    /// next one is added.
+    watches: Vec<WatchRef, Kmalloc>,
 }
 
 impl Polled {
@@ -109,7 +113,10 @@ impl Polled {
         Polled {
             pollers: AtomicUsize::new(0),
             watched: AtomicUsize::new(0),
-            watches: SpinLock::new(Vec::new_in(HEAP.with(Flags::MAY_SLEEP))),
+            lists: SpinLock::new(Lists {
+                pollers: Vec::new_in(HEAP.with(Flags::MAY_SLEEP)),
+                watches: Vec::new_in(HEAP.with(Flags::MAY_SLEEP)),
+            }),
         }
     }
 
@@ -128,62 +135,119 @@ impl Polled {
     /// full barrier after (`WaitCount::wake_all`'s, for a pipe and an
     /// event queue). Only two loads while nobody polls or watches it.
     pub fn changed_by_rmw(&self) {
-        if self.pollers.load(Ordering::SeqCst) > 0 {
-            GENERATION.fetch_add(1, Ordering::SeqCst);
-            wait::wake_all(key());
+        if self.pollers.load(Ordering::SeqCst) == 0 && self.watched.load(Ordering::SeqCst) == 0 {
+            return;
         }
-        if self.watched.load(Ordering::SeqCst) > 0 {
-            for watch in self.watches.lock_irq().iter() {
-                queue::changed(watch);
-            }
+        let lists = self.lists.lock_irq();
+        for thread in &lists.pollers {
+            wake_poller(thread);
+        }
+        for watch in &lists.watches {
+            queue::changed(watch);
         }
     }
 
     /// Adds `watch` to its watches, which its changes queue from then on,
     /// and lets go of those whose queue deleted them: a watch's last
     /// reference frees memory and gives back its charge, nothing more, so
-    /// it may go with the lock held. Room is made with the lock let go,
-    /// as memory is never allocated under a spin lock.
+    /// it may go with the lock held.
     ///
     /// # Errors
     ///
     /// no_memory when there is no room for one more.
     pub fn watch(&self, watch: &WatchRef) -> Result<()> {
-        let mut room: Vec<WatchRef, Kmalloc> = Vec::new_in(kmalloc());
-        loop {
-            let mut watches = self.watches.lock_irq();
-            watches.retain(|watch| !watch.is_deleted());
-            if watches.len() == watches.capacity() && room.capacity() > watches.len() {
-                while let Some(kept) = watches.pop() {
-                    // `room` holds more than `watches` did.
-                    let _ = room.push_within_capacity(kept);
-                }
-                core::mem::swap(&mut *watches, &mut room);
-            }
-            if watches.len() < watches.capacity() {
-                // Checked just above.
-                let _ = watches.push_within_capacity(watch.clone());
-                self.watched.store(watches.len(), Ordering::SeqCst);
-                return Ok(());
-            }
-            let want = watches.len().saturating_mul(2).max(2);
-            drop(watches);
-            room = Vec::new_in(kmalloc());
-            room.try_reserve_exact(want).map_err(|_| error(Kernel::NoMemory))?;
-        }
+        let tidy = |watches: &mut Vec<WatchRef, Kmalloc>| watches.retain(|held| !held.is_deleted());
+        self.push(|lists| &mut lists.watches, &self.watched, watch.clone(), tidy)
     }
 
     /// Takes `watch` out of its watches, if it is there: its queue has
     /// deleted it.
     pub fn unwatch(&self, watch: &WatchRef) {
         let taken = {
-            let mut watches = self.watches.lock_irq();
-            let at = watches.iter().position(|held| WatchRef::ptr_eq(held, watch));
-            let taken = at.map(|at| watches.swap_remove(at));
-            self.watched.store(watches.len(), Ordering::SeqCst);
+            let mut lists = self.lists.lock_irq();
+            let at = lists.watches.iter().position(|held| WatchRef::ptr_eq(held, watch));
+            let taken = at.map(|at| lists.watches.swap_remove(at));
+            self.watched.store(lists.watches.len(), Ordering::SeqCst);
             taken
         };
         drop(taken);
+    }
+
+    /// Adds `thread`, about to wait in `poll`, to its pollers, which its
+    /// changes wake from then on.
+    ///
+    /// # Errors
+    ///
+    /// no_memory when there is no room for one more.
+    fn add_poller(&self, thread: &ThreadRef) -> Result<()> {
+        self.push(|lists| &mut lists.pollers, &self.pollers, thread.clone(), |_| {})
+    }
+
+    /// Takes `thread` off its pollers, once: its poll has looked for the
+    /// last time.
+    fn remove_poller(&self, thread: &ThreadRef) {
+        let taken = {
+            let mut lists = self.lists.lock_irq();
+            let at = lists.pollers.iter().position(|held| ThreadRef::ptr_eq(held, thread));
+            let taken = at.map(|at| lists.pollers.swap_remove(at));
+            // No change needs to reach the poll any more: a count left
+            // high a while longer costs a look at the list.
+            self.pollers.store(lists.pollers.len(), Ordering::Relaxed);
+            taken
+        };
+        drop(taken);
+    }
+
+    /// Pushes `item` onto the list that `list` picks, once `tidy` has let
+    /// go of what that list no longer needs, and stores the list's new
+    /// length in `count`, all with the lock held. Room is made with the
+    /// lock let go, as memory is never allocated under a spin lock, and
+    /// kept: a list that has grown for its object's pollers or watches
+    /// does not allocate again for as many.
+    ///
+    /// # Errors
+    ///
+    /// no_memory when there is no room for one more.
+    fn push<T>(
+        &self,
+        list: fn(&mut Lists) -> &mut Vec<T, Kmalloc>,
+        count: &AtomicUsize,
+        item: T,
+        tidy: fn(&mut Vec<T, Kmalloc>),
+    ) -> Result<()> {
+        let mut room: Vec<T, Kmalloc> = Vec::new_in(kmalloc());
+        loop {
+            let mut lists = self.lists.lock_irq();
+            let held = list(&mut lists);
+            tidy(held);
+            if held.len() == held.capacity() && room.capacity() > held.len() {
+                while let Some(kept) = held.pop() {
+                    // `room` holds more than `held` did.
+                    let _ = room.push_within_capacity(kept);
+                }
+                core::mem::swap(held, &mut room);
+            }
+            if held.len() < held.capacity() {
+                // Checked just above.
+                let _ = held.push_within_capacity(item);
+                count.store(held.len(), Ordering::SeqCst);
+                return Ok(());
+            }
+            let want = held.len().saturating_mul(2).max(2);
+            drop(lists);
+            room = Vec::new_in(kmalloc());
+            room.try_reserve_exact(want).map_err(|_| error(Kernel::NoMemory))?;
+        }
+    }
+}
+
+/// Tells `thread`, which polls an object that has changed, to look again,
+/// and wakes it, unless a change has told it already since its last look.
+fn wake_poller(thread: &ThreadRef) {
+    if let Some(user) = thread.user()
+        && !user.poll_changed.swap(true, Ordering::SeqCst)
+    {
+        sched::wake(thread);
     }
 }
 
@@ -227,30 +291,54 @@ pub(crate) fn polled_by(object: &Object, each: &mut dyn FnMut(&Polled)) {
     }
 }
 
-/// Counts the running thread among the pollers of `objects` while it
-/// lives.
+/// Keeps a thread among the pollers of `objects` while it lives: in each
+/// [`Polled`] that [`polled_by`] names for them.
 struct Polling<'a> {
     objects: &'a [Option<Object>],
+    thread: ThreadRef,
+    /// How many of those [`Polled`]s, in [`polled_by`]'s order, hold it.
+    added: usize,
 }
 
 impl<'a> Polling<'a> {
-    fn new(objects: &'a [Option<Object>]) -> Polling<'a> {
+    /// Adds `thread` to the pollers of each of `objects`.
+    ///
+    /// # Errors
+    ///
+    /// no_memory when the pollers of one have no room for one more; the
+    /// thread is then taken off those it was added to.
+    fn new(objects: &'a [Option<Object>], thread: ThreadRef) -> Result<Polling<'a>> {
+        let mut polling = Polling { objects, thread, added: 0 };
+        let mut failed = None;
         for object in objects.iter().flatten() {
             polled_by(object, &mut |polled| {
-                polled.pollers.fetch_add(1, Ordering::SeqCst);
+                if failed.is_none() {
+                    match polled.add_poller(&polling.thread) {
+                        Ok(()) => polling.added += 1,
+                        Err(status) => failed = Some(status),
+                    }
+                }
             });
+            if let Some(status) = failed {
+                return Err(status);
+            }
         }
-        Polling { objects }
+        Ok(polling)
     }
 }
 
 impl Drop for Polling<'_> {
     fn drop(&mut self) {
-        // The poll has looked for the last time, so no change needs to
-        // reach it: a count left high a while longer costs a wake-up.
+        let mut left = self.added;
         for object in self.objects.iter().flatten() {
+            if left == 0 {
+                break;
+            }
             polled_by(object, &mut |polled| {
-                polled.pollers.fetch_sub(1, Ordering::Relaxed);
+                if left > 0 {
+                    left -= 1;
+                    polled.remove_poller(&self.thread);
+                }
             });
         }
     }
@@ -580,15 +668,19 @@ fn wait_ready(
     if emptied > 0 {
         return Ok(emptied);
     }
+    let me = sched::current().ok_or(error(Kernel::Gone))?;
+    let polling = Polling::new(held, me)?;
     let masked = a.flags.contains(PollFlags::MASK);
     if masked {
         signal::begin_masked_wait(user, a.mask);
     }
     let deadline = (!a.flags.contains(PollFlags::FOREVER))
         .then(|| sched::now_ns().saturating_add(a.timeout_ns));
-    let polling = Polling::new(held);
     let ready = loop {
-        let seen = GENERATION.load(Ordering::SeqCst);
+        // Cleared, and the barrier taken, before the look: a change the
+        // look misses sets it again (the module's doc says why).
+        user.poll_changed.store(false, Ordering::SeqCst);
+        fence(Ordering::SeqCst);
         let ready = look_held(held, entries, found);
         if ready > 0 {
             break ready;
@@ -597,14 +689,8 @@ fn wait_ready(
             // The mask stays until the handler has run.
             return Err(interrupted(Restart::NoHandler));
         }
-        let changed = || GENERATION.load(Ordering::Acquire) != seen || sched::interrupted();
-        match deadline {
-            None => wait::wait_until(key(), "poll", changed),
-            Some(deadline) => {
-                if !wait::wait_until_or_timeout(key(), "poll", deadline, changed) {
-                    break look_held(held, entries, found);
-                }
-            }
+        if !sleep_until_changed(user, deadline) {
+            break look_held(held, entries, found);
         }
     };
     drop(polling);
@@ -612,4 +698,28 @@ fn wait_ready(
         signal::end_masked_wait(user);
     }
     Ok(ready)
+}
+
+/// Sleeps until something the running thread polls has changed, it has a
+/// signal to take or a stop to make, or the kernel's clock reaches
+/// `deadline`; returns false only for the deadline. A poller sleeps
+/// outside the scheduler's wait table: nothing but a change
+/// ([`wake_poller`]), a signal or a stop ([`sched::interrupt`]) and its
+/// deadline wakes it, and a wake that comes before the sleep makes the
+/// sleep return at once.
+fn sleep_until_changed(user: &UserRef, deadline: Option<u64>) -> bool {
+    loop {
+        if user.poll_changed.load(Ordering::Acquire) || sched::interrupted() {
+            return true;
+        }
+        match deadline {
+            None => sched::block("poll"),
+            Some(deadline) => {
+                if sched::now_ns() >= deadline {
+                    return false;
+                }
+                sched::block_until(deadline, "poll");
+            }
+        }
+    }
 }

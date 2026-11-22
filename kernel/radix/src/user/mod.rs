@@ -119,6 +119,9 @@ pub struct UserThread {
     pub(crate) signals: SpinLock<ThreadSignals>,
     /// Set by the `futex_wake` that takes it off a futex's waiters.
     pub(crate) futex_woken: AtomicBool,
+    /// Set by a change to what it polls while it waits in `poll`, which
+    /// then looks again; cleared before each look (`posix::poll`).
+    pub(crate) poll_changed: AtomicBool,
     /// Its scheduling as POSIX names it, which its scheduler side follows
     /// (Phase 8).
     pub(crate) scheduling: Mutex<Scheduling>,

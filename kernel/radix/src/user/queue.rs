@@ -134,9 +134,10 @@ impl Ready {
     fn wake(&self) {
         self.waits.wake_all(self.key());
         // `wake_all` took the full barrier that `Polled::changed` would.
-        // The queue's own `Polled` has pollers but no watches, as no queue
-        // watches another (`Watched::of`), so this takes no `Polled`'s
-        // list under the one that may be held.
+        // This may take the queue's own `Polled`'s lock under a watched
+        // object's: it holds pollers but no watches, as no queue watches
+        // another (`Watched::of`), so nothing under it takes another
+        // `Polled`'s lock.
         self.polled.changed_by_rmw();
     }
 
