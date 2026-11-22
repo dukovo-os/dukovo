@@ -33,6 +33,13 @@
 //! process `create` made, which has not started, the process instead
 //! joins the tree as the caller's child (`posix_spawn`'s way), and the
 //! call returns.
+//!
+//! Since Phase 18 the program says which system it is written for (ADR
+//! 0610): one that names Dukovo's dynamic linker or carries Dukovo's ELF
+//! note is Dukovo's, and any other is a Linux program, whose system calls
+//! go to the Linux table (`user::linux`). A Linux program gets no start-up
+//! page, an auxiliary vector as Linux gives one, and a break past the end
+//! of its image.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -44,7 +51,7 @@ use radix_abi::process::{self, EXEC_MAX, EXIT_STOPPED, LimitKind, ProcessState};
 use radix_abi::startup::{self, Startup};
 use radix_abi::{Status, UserBuffer};
 use radix_cap::{Derivation, ObjectKind, Rights, SlotRef};
-use radix_elf::{Access, ElfError, Kind, Program};
+use radix_elf::{Abi, Access, DUKOVO_LOADER, ElfError, Kind, NOTE_MAX, Program, marks_dukovo};
 use radix_hal::{UserAccess, UserMode};
 use radix_klog::warn;
 use radix_mm::Kmalloc;
@@ -57,6 +64,7 @@ use crate::fs::{self, FileRef};
 use crate::sched::{self, Name, wait};
 use crate::user::memory::{Anon, FileSource, Placement, ProgramPages, SpaceObject, SpaceRef};
 use crate::user::methods::{Answer, answer};
+use crate::user::names::Identity;
 use crate::user::objects::{self, Object};
 use crate::user::process::{ARGS_KEPT, ProcessObject, ProcessRef, Start};
 use crate::user::{Result, UserRef, cap_error, error};
@@ -146,6 +154,38 @@ impl File {
     }
 }
 
+/// Which system `program`, read from `file`, is written for (ADR 0610):
+/// Dukovo's if it names Dukovo's dynamic linker (`interpreter`, its path
+/// without the NUL) or one of its note segments carries Dukovo's note,
+/// and Linux's otherwise. A note in the first bytes, where linkers put
+/// them, is read from those; others from the file.
+#[inline(never)]
+fn abi_of(file: &File, program: &Program, interpreter: Option<&[u8]>) -> Result<Abi> {
+    if interpreter == Some(DUKOVO_LOADER) {
+        return Ok(Abi::Dukovo);
+    }
+    let mut read = None;
+    for note in program.notes() {
+        let len = note.size.min(NOTE_MAX) as usize;
+        let start = note.offset as usize;
+        let bytes = match file.head.get(start..start.saturating_add(len)) {
+            Some(bytes) => bytes,
+            None => {
+                let buffer = match &mut read {
+                    Some(buffer) => buffer,
+                    None => read.insert(zeroed(NOTE_MAX as usize)?),
+                };
+                read_exact(&file.node, note.offset, &mut buffer[..len])?;
+                &buffer[..len]
+            }
+        };
+        if marks_dukovo(bytes, note.align) {
+            return Ok(Abi::Dukovo);
+        }
+    }
+    Ok(Abi::of(interpreter, false))
+}
+
 /// The directory a process finds interpreters from, its SLOT_ROOT, and
 /// whether its capability has the bypass right.
 fn root_of(process: &ProcessObject) -> Result<(FileRef, bool)> {
@@ -169,6 +209,29 @@ fn open_from(process: &ProcessObject, path: &[u8]) -> Result<File> {
     let who = root.name.who(bypass).ok_or_else(|| fs::status(radix_vfs::Error::Denied))?;
     let at = vfs.open(&who, &root.at, path, flags).map_err(fs::status)?;
     File::open(&at)
+}
+
+/// Reads the start of the file at `path` beneath `process`'s root into
+/// `out`, as the name the process acts for may read it, and returns how
+/// many bytes it read: how the Linux table's `uname` reads the machine's
+/// name, from the file Dukovo's C library reads it from (ADR 0611).
+pub(in crate::user) fn read_from_root(
+    process: &ProcessObject,
+    path: &[u8],
+    out: &mut [u8],
+) -> Result<usize> {
+    let path = radix_vfs::path::parse(path).map_err(fs::status)?;
+    let (root, bypass) = root_of(process)?;
+    let vfs = fs::vfs().ok_or(error(Kernel::Gone))?;
+    let flags = OpenFlags { want: want::READ, ..OpenFlags::default() };
+    let who = root.name.who(bypass).ok_or_else(|| fs::status(radix_vfs::Error::Denied))?;
+    let at = vfs.open(&who, &root.at, path, flags).map_err(fs::status)?;
+    // Only a regular file: a device or a pipe there could make the caller
+    // wait.
+    if at.node.stat().kind != radix_vfs::Kind::File {
+        return Err(error(Kernel::InvalidArgument));
+    }
+    at.node.read(0, &mut SliceMut(out)).map_err(fs::status)
 }
 
 /// Where a program was mapped.
@@ -323,6 +386,27 @@ pub fn exec(
     file: u32,
     block: UserBuffer,
 ) -> Result<Answer> {
+    exec_from(user, target, slot, label, file, Strings::Caller(block))
+}
+
+/// Where `exec`'s block of strings is.
+pub enum Strings {
+    /// In the caller's memory.
+    Caller(UserBuffer),
+    /// In the kernel's: the Linux table's `execve` (ADR 0611) builds it.
+    Given(Vec<u8, Kmalloc>),
+}
+
+/// [`exec`], with the block where `block` says.
+#[inline(never)]
+pub fn exec_from(
+    user: &UserRef,
+    target: &ProcessRef,
+    slot: u32,
+    label: u32,
+    file: u32,
+    block: Strings,
+) -> Result<Answer> {
     let own = ProcessRef::ptr_eq(target, &user.process);
     if !own && target.state().0 != ProcessState::Created {
         return Err(Kernel::InvalidArgument.status(0));
@@ -332,7 +416,10 @@ pub fn exec(
     let who = file.name.who(cap.rights().contains(Rights::BYPASS));
     let who = who.ok_or_else(|| fs::status(radix_vfs::Error::Denied))?;
     who.check(&*file.at.node, want::EXECUTE).map_err(fs::status)?;
-    let bytes = copy_block(block)?;
+    let bytes = match block {
+        Strings::Caller(buffer) => copy_block(buffer)?,
+        Strings::Given(bytes) => bytes,
+    };
     let block = Block::read(&bytes).map_err(|err| match err {
         BlockError::TooLong => error(Kernel::ArgumentsTooLong),
         BlockError::Malformed => Kernel::InvalidArgument.status(1),
@@ -361,11 +448,19 @@ pub fn exec(
         script = Some((interpreter, argument));
     }
     let program = program_file.program()?;
-    let interpreter = match program.interpreter {
+    let interpreter_path = match program.interpreter {
         Some((offset, len)) => {
             let mut path = zeroed(len as usize)?;
             read_exact(&program_file.node, offset, &mut path)?;
-            let path = path.split(|&b| b == 0).next().unwrap_or(&[]);
+            let end = path.iter().position(|&b| b == 0).unwrap_or(path.len());
+            path.truncate(end);
+            Some(path)
+        }
+        None => None,
+    };
+    let linux = abi_of(&program_file, &program, interpreter_path.as_deref())? == Abi::Linux;
+    let interpreter = match &interpreter_path {
+        Some(path) => {
             let file = open_from(target, path)?;
             let found = file.program()?;
             if found.image.kind != Kind::Relocatable || found.interpreter.is_some() {
@@ -394,7 +489,16 @@ pub fn exec(
     if program.image.kind == Kind::Relocatable && interpreter.is_none() {
         relocate(&space, &program_file, &program, main.bias)?;
     }
-    map_startup(&space, main.bias)?;
+    // A Linux program's break starts past its image, a random number of
+    // pages on, as Linux places it; a Dukovo program has none, and has
+    // the start-up page.
+    let brk = if linux {
+        let end = program.image.span().end.wrapping_add(main.bias).next_multiple_of(PAGE_SIZE);
+        end + crate::user::random::place(BREAK_WINDOW / PAGE_SIZE) * PAGE_SIZE
+    } else {
+        map_startup(&space, main.bias)?;
+        0
+    };
 
     // The room RLIMIT_STACK gives it, made as it is touched.
     let stack_bytes = super::limits::stack_bytes(&user.process.posix.lock().limits, PAGE_SIZE);
@@ -406,6 +510,7 @@ pub fn exec(
         &program,
         (&main, loader.as_ref()),
         stack_bytes,
+        linux.then(|| target.identity()).as_ref(),
     )?;
     let entry = loader.as_ref().map_or(main.entry, |loader| loader.entry);
     let run_as = execfn.or(block.args().next()).unwrap_or(b"");
@@ -424,12 +529,26 @@ pub fn exec(
         super::set_directory(target, cwd);
     }
 
+    let start = Begin { space: &space, at: [entry, sp, 0], linux, brk };
     if own {
-        replace_own(user, target, &space, [entry, sp, 0], name, run_as)
+        replace_own(user, target, &start, name, run_as)
     } else {
-        start_created(user, target, slot, &space, [entry, sp, 0], name, run_as)?;
+        start_created(user, target, slot, &start, name, run_as)?;
         answer(label, 0, [0; 8])
     }
+}
+
+/// How far past a Linux program's image its break may start: 32 MiB, as
+/// Linux randomizes it.
+const BREAK_WINDOW: u64 = 32 << 20;
+
+/// How the new program begins: its address space, where its thread
+/// starts, whether it is a Linux program and, for one, its break.
+struct Begin<'a> {
+    space: &'a SpaceRef,
+    at: [u64; 3],
+    linux: bool,
+    brk: u64,
 }
 
 /// A script's interpreter, and the argument its `#!` line gives it.
@@ -478,6 +597,12 @@ fn keep_args(
 /// environment and its auxiliary vector, below a random top with
 /// `stack_bytes` of room, of which they may take a quarter, as on Linux.
 /// Returns the stack pointer it starts with.
+///
+/// A Linux program (`linux`, with the name its process acts for) is told
+/// its user and group, the CPU's features and the most a signal's frame
+/// takes, as Linux tells a program, and nothing of Radix's: no start-up
+/// page and no working directory, which the kernel keeps for it.
+#[allow(clippy::too_many_arguments)]
 #[inline(never)]
 fn build_stack(
     space: &SpaceObject,
@@ -487,6 +612,7 @@ fn build_stack(
     program: &Program,
     (main, loader): (&Mapped, Option<&Mapped>),
     stack_bytes: u64,
+    linux: Option<&Identity>,
 ) -> Result<u64> {
     let mut args: Vec<&[u8], Kmalloc> = Vec::new_in(kmalloc());
     let mut env: Vec<&[u8], Kmalloc> = Vec::new_in(kmalloc());
@@ -512,7 +638,8 @@ fn build_stack(
     for var in block.env() {
         let _ = env.push_within_capacity(var);
     }
-    let auxv = [
+    let (user, group) = linux.map_or((0, 0), |name| (name.user, name.group));
+    let common = [
         (aux::AT_PHDR, main.headers.unwrap_or(0)),
         (aux::AT_PHENT, Program::HEADER_SIZE),
         (aux::AT_PHNUM, u64::from(program.header_count)),
@@ -520,15 +647,30 @@ fn build_stack(
         (aux::AT_BASE, loader.map_or(0, |loader| loader.bias)),
         (aux::AT_FLAGS, 0),
         (aux::AT_ENTRY, main.entry),
-        (aux::AT_UID, 0),
-        (aux::AT_EUID, 0),
-        (aux::AT_GID, 0),
-        (aux::AT_EGID, 0),
-        (aux::AT_HWCAP, 0),
+        (aux::AT_UID, u64::from(user)),
+        (aux::AT_EUID, u64::from(user)),
+        (aux::AT_GID, u64::from(group)),
+        (aux::AT_EGID, u64::from(group)),
         (aux::AT_CLKTCK, 100),
         (aux::AT_SECURE, 0),
-        (aux::AT_RADIX_STARTUP, startup::STARTUP_ADDRESS),
     ];
+    let own = if linux.is_some() {
+        [
+            (aux::AT_HWCAP, Arch::hardware_capabilities()),
+            (aux::AT_HWCAP2, 0),
+            (aux::AT_MINSIGSTKSZ, Arch::signal_frame_size()),
+        ]
+    } else {
+        [
+            (aux::AT_HWCAP, 0),
+            (aux::AT_RADIX_STARTUP, startup::STARTUP_ADDRESS),
+            // Its place in the vector, taken by nothing.
+            (aux::AT_IGNORE, 0),
+        ]
+    };
+    let mut auxv = [(0, 0); 16];
+    auxv[..common.len()].copy_from_slice(&common);
+    auxv[common.len()..].copy_from_slice(&own);
     let mut random = [0u8; 16];
     crate::user::random::fill(&mut random);
     let stack = Stack {
@@ -536,7 +678,8 @@ fn build_stack(
         env: &env,
         aux: &auxv,
         execfn: run_as,
-        cwd,
+        // A Linux program's working directory is the kernel's to keep.
+        cwd: cwd.filter(|_| linux.is_none()),
         platform: b"x86_64",
         random,
     };
@@ -615,8 +758,7 @@ fn install_space(process: &ProcessRef, space: &SpaceRef, empty_thread: bool) -> 
 fn replace_own(
     user: &UserRef,
     process: &ProcessRef,
-    space: &SpaceRef,
-    start: [u64; 3],
+    start: &Begin<'_>,
     name: Name,
     path: &[u8],
 ) -> Result<Answer> {
@@ -641,7 +783,7 @@ fn replace_own(
             member.execed = true;
         }
     });
-    if let Err(err) = install_space(process, space, true) {
+    if let Err(err) = install_space(process, start.space, true) {
         // Past saving: the old program's capabilities may be gone.
         warn!("User: process {} could not run its new program: {:#x}", process.number(), err.0);
         process.posix.lock().ended_by.get_or_insert(radix_abi::signal::SIGKILL);
@@ -659,6 +801,11 @@ fn replace_own(
         (signals.mask, pending)
     };
     process.posix.lock().actions.reset_for_exec();
+    // No thread of the old program is left to make a call of the system
+    // it was written for.
+    process.linux.start(start.linux, start.brk);
+    // A parent waiting since a `vfork` goes on (`linux::process`).
+    wait::wake_all(process.threads_key());
     process.set_name(name);
     crate::fs::trace::exec(process, me.id(), path);
     // The new program's thread has the process's number, as on Linux,
@@ -669,7 +816,7 @@ fn replace_own(
     process.number_next_thread();
     let started = ProcessObject::start(
         process,
-        Start::Fresh(start),
+        Start::Fresh(start.at),
         startup::SLOT_THREAD,
         None,
         Some(&me),
@@ -703,12 +850,11 @@ fn start_created(
     user: &UserRef,
     process: &ProcessRef,
     slot: u32,
-    space: &SpaceRef,
-    start: [u64; 3],
+    start: &Begin<'_>,
     name: Name,
     path: &[u8],
 ) -> Result<()> {
-    install_space(process, space, false)?;
+    install_space(process, start.space, false)?;
     let me = &user.process;
     let own = SlotRef::new(process.cspace(), startup::SLOT_PROCESS);
     if matches!(caps::get(own), Err(radix_cap::CapError::Empty)) {
@@ -739,10 +885,11 @@ fn start_created(
     process.set_name(name);
     crate::fs::trace::forked(me, process);
     crate::fs::trace::exec(process, process.number(), path);
+    process.linux.start(start.linux, start.brk);
     let mask = user.signals.lock().mask;
     ProcessObject::start(
         process,
-        Start::Fresh(start),
+        Start::Fresh(start.at),
         startup::SLOT_THREAD,
         None,
         None,

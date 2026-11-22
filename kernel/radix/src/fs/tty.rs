@@ -58,7 +58,7 @@ use radix_abi::terminal::{self as abi, TOSTOP, WindowSize};
 use radix_hal::UserMode;
 use radix_mm::Kmalloc;
 use radix_sync::{Mutex, Once};
-use radix_tty::{Ldisc, Received, Ring, Settings, TERMIOS_SIZE};
+use radix_tty::{Ldisc, Received, Ring, Settings, TERMIOS_SIZE, termios_size};
 use radix_vfs::synthetic::FixedDir;
 use radix_vfs::{In, KArc, Kind, Node, NodeRef, Out, Stat, mem, next_id};
 
@@ -620,20 +620,28 @@ impl Tty {
         };
         let process = &user.process;
         match request {
+            // A whole `struct termios`, or Linux's kernel one (its start).
             abi::GET_ATTRIBUTES => {
+                let Some(length) = termios_size(size) else {
+                    return Err(Kernel::BadAddress.status(0));
+                };
                 let bytes = this.state.lock().ldisc.settings.to_bytes();
-                put(&bytes)
+                put(&bytes[..length])
             }
             abi::SET_ATTRIBUTES | abi::SET_ATTRIBUTES_DRAIN | abi::SET_ATTRIBUTES_FLUSH => {
                 let mut bytes = [0u8; TERMIOS_SIZE];
-                if size < TERMIOS_SIZE as u64 || !Arch::copy_from_user(&mut bytes, buffer) {
+                let Some(length) = termios_size(size) else {
+                    return Err(Kernel::BadAddress.status(0));
+                };
+                if !Arch::copy_from_user(&mut bytes[..length], buffer) {
                     return Err(Kernel::BadAddress.status(0));
                 }
                 if !master {
                     this.job_control(user, SIGTTOU)?;
                 }
                 let mut state = this.state.lock();
-                state.ldisc.set(Settings::from_bytes(&bytes));
+                let settings = state.ldisc.settings.with(&bytes[..length]);
+                state.ldisc.set(settings);
                 if request == abi::SET_ATTRIBUTES_FLUSH {
                     state.ldisc.flush_input();
                 }

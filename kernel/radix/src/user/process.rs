@@ -209,6 +209,10 @@ pub struct ProcessObject {
     trace: SpinLock<Option<TraceRef>>,
     /// Whether one does: what each of its system calls looks at first.
     traced: AtomicBool,
+    /// Its Linux side: whether its program is a Linux program, which each
+    /// of its system calls looks at as it looks at `traced`, and that
+    /// program's break (ADR 0611).
+    pub linux: super::linux::LinuxProcess,
 }
 
 struct State {
@@ -376,6 +380,7 @@ fn allocate(
         sem_undo: AtomicBool::new(false),
         trace: SpinLock::new(None),
         traced: AtomicBool::new(false),
+        linux: super::linux::LinuxProcess::new(),
     };
     Arc::try_new_in(process, kmalloc()).map_err(|_| error(Kernel::NoMemory))
 }
@@ -802,6 +807,7 @@ impl ProcessObject {
             poll_changed: AtomicBool::new(false),
             scheduling: Mutex::new(scheduling),
             stock: super::account::Stock::new(),
+            linux: super::linux::LinuxThread::new(),
         };
         let user: UserRef =
             Arc::try_new_in(user, kmalloc()).map_err(|_| error(Kernel::NoMemory))?;
@@ -1149,6 +1155,27 @@ pub fn install(at: SlotRef, kind: ObjectKind, object: Object) -> Result<()> {
 /// The process interface, on the process `found` in slot `slot`, kept
 /// out of line, as [`super::methods::call`] says.
 #[inline(never)]
+/// The caller's own process, if `found` is a capability to it with the
+/// rights `needs`, as the process methods that act on their caller check
+/// it: for the Linux table (ADR 0610), which does such a method's work
+/// with its records in the kernel's memory.
+pub(super) fn own_process<'a>(
+    user: &'a UserRef,
+    found: &Found,
+    needs: Rights,
+) -> Result<&'a ProcessRef> {
+    found.cap.check(ObjectKind::Process, needs).map_err(cap_error)?;
+    let own = match &found.object {
+        Some(Object::Process(target)) => ProcessRef::ptr_eq(target, &user.process),
+        None => found.held,
+        _ => false,
+    };
+    if !own {
+        return Err(error(Kernel::InvalidArgument));
+    }
+    Ok(&user.process)
+}
+
 pub fn method(
     user: &UserRef,
     slot: u32,

@@ -1033,6 +1033,10 @@ impl UserMode for Arch {
         regs.set_results(results);
     }
 
+    fn set_stack_pointer(regs: &mut Self::UserRegisters, sp: u64) {
+        regs.rsp = sp;
+    }
+
     fn thread_pointer(regs: &Self::UserRegisters) -> u64 {
         regs.fs_base
     }
@@ -1055,6 +1059,14 @@ impl UserMode for Arch {
 
     fn push_signal_frame(frame: &SignalFrame<'_>) -> bool {
         user::push_signal_frame(frame)
+    }
+
+    fn signal_frame_size() -> u64 {
+        user::signal_frame_size()
+    }
+
+    fn hardware_capabilities() -> u64 {
+        u64::from(cpu::cpuid(1, 0).edx)
     }
 
     fn pop_signal_frame(context: u64, regs: &mut SyscallRegs) -> Option<u64> {

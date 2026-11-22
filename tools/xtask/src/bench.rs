@@ -281,6 +281,20 @@ const fn btrfs(name: &'static str, what: &'static str) -> Row {
     }
 }
 
+/// A row of the static Linux program `linux-bench --only linux`, which is
+/// run unchanged on Linux and, under the Linux personality (ADR 0610), on
+/// Radix: the one program prints both columns' numbers. Reported only until
+/// Radix measures it and reaches parity: a gated row with no Radix number
+/// fails the gate, and Radix has no run of it yet.
+const fn linux_program(name: &'static str, what: &'static str) -> Row {
+    Row {
+        radix: name,
+        what,
+        linux: Some((name, "the same static program, on Linux")),
+        gate: Gate::Yet,
+    }
+}
+
 /// The report's rows, in order.
 const ROWS: &[Row] = &[
     row("syscall_null", "System call, entry and exit only", "getppid", "getppid(2)"),
@@ -526,6 +540,15 @@ const ROWS: &[Row] = &[
         // Reported only until Radix reaches parity (ADR 0294).
         gate: Gate::Yet,
     },
+    linux_program("lx_syscall_null", "Linux program: system call, entry and exit only (`getppid`)"),
+    linux_program(
+        "lx_clone_thread",
+        "Linux program: thread made and joined (`clone`, `exit`, a futex wake)",
+    ),
+    linux_program(
+        "lx_fork_exec_wait",
+        "Linux program: program run and waited for (`fork`, `execve`, `wait4`)",
+    ),
 ];
 
 /// `ob bench`.
@@ -2253,8 +2276,12 @@ mod tests {
             include_str!("../../../userspace/usertests/src/pairs.rs"),
             include_str!("../../../userspace/posix/bench.c"),
         ];
+        // The lx_ rows are measured by linux-bench itself, run on Radix too.
+        let linux_bench = [include_str!("../../linux-bench/src/main.rs")];
         for row in ROWS {
-            assert!(prints(&programs, row.radix), "{}", row.radix);
+            let source: &[&str] =
+                if row.radix.starts_with("lx_") { &linux_bench } else { &programs };
+            assert!(prints(source, row.radix), "{}", row.radix);
         }
     }
 

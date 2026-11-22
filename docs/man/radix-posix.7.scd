@@ -64,6 +64,20 @@ System programs are static, one file each with nothing to resolve at
 start. Bundles may ship private libraries and load plugins with *dlopen*
 (see *DYNAMIC LINKING*).
 
+Every program these tools link carries Dukovo's ELF note, in a *PT_NOTE*
+segment: a note named "Dukovo" of type 1, whose description is the
+version of the system interface. *exec* reads it to tell which system a
+program is written for. A program with the note, or whose interpreter is
+_/system/libraries/ld.so_, gets Dukovo's system calls; every other
+x86-64 program runs as a Linux program, with Linux's (*radix-linux*(7),
+ADR 0610). The C
+library's start files, _crt1.o_ and _Scrt1.o_, write the note, so
+*x86_64-radix-cc* and the Rust target need nothing more; programs in Go
+name the dynamic linker; and programs on *libradix*, which has no C
+library, get the note from it, which _userspace/link.ld_ keeps.
+*ob build* stops, naming each program of the system image or of a bundle
+it packs that has neither the note nor the dynamic linker.
+
 # STARTING A PROGRAM
 
 A POSIX program starts from radix-process(2)'s *exec*: in its own
@@ -732,8 +746,10 @@ own copy of the file's pages, filled as they are touched; a shared
 writable mapping of a file fails with ENODEV, and a read-only one cannot
 be made writable (EACCES). *mprotect* and *munmap*
 work as on Linux, *msync* has nothing to write back, and
-*posix_madvise* takes advice. Linux's *madvise* and its *MADV_* names
-are not there, as they are not POSIX's. There is no program break:
+*posix_madvise* takes advice. Linux's *madvise* takes Linux's: with
+*MADV_DONTNEED* or *MADV_FREE* the pages go, and a page of private
+anonymous memory reads as zeros when touched again (*radix-address-space*(2)'s
+*forget*); the rest is advice. There is no program break:
 *malloc* maps memory, and *sbrk* fails. There are no huge pages, and
 <sys/mman.h> has no *MAP_HUGETLB*; *mmap* given Linux's number for it
 fails with ENOMEM, or EINVAL for a file, as on Linux when none is
@@ -1019,4 +1035,5 @@ passed*; the boot test fails on any failure.
 *radix-process*(2), *radix-signal*(2), *radix-terminal*(2),
 *radix-file*(2), *radix-directory*(2), *radix-address-space*(2),
 *radix-startup*(2), *radix-errors*(2), *radix-processes*(7),
-*radix-files*(7), *radix-scheduling*(7), *spark*(8), *ob*(1)
+*radix-files*(7), *radix-linux*(7), *radix-scheduling*(7), *spark*(8),
+*ob*(1)

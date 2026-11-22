@@ -1917,7 +1917,7 @@ fn without_c_comments(source: &[u8]) -> Vec<u8> {
     out
 }
 
-fn list_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+pub fn list_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     for entry in std::fs::read_dir(dir).context(|| format!("reading {}", dir.display()))? {
         let entry = entry.context(|| format!("reading {}", dir.display()))?;
         let path = entry.path();

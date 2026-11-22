@@ -130,14 +130,10 @@ pub fn method(user: &UserRef, label: u32, args: &[u64; 8]) -> Result<Answer> {
         }
         process::AFFINITY => {
             let a = process::AffinityArgs::decode(args)?;
-            let (thread, _, _) = thread_named(user, a.thread)?;
-            let size = (MAX_CPUS / 8) as u64;
+            let bytes = affinity_of(user, a.thread)?;
+            let size = bytes.len() as u64;
             if a.cpus.len < size {
                 return Err(Kernel::InvalidArgument.status(1));
-            }
-            let mut bytes = [0u8; MAX_CPUS / 8];
-            for (chunk, word) in bytes.chunks_mut(8).zip(thread.cpu_mask().words()) {
-                chunk.copy_from_slice(&word.to_le_bytes());
             }
             if !radix_ipc::range::user_bytes(a.cpus.address, size)
                 || !Arch::copy_to_user(a.cpus.address, &bytes)
@@ -252,6 +248,18 @@ fn processes_named(
 /// whether `user`'s process may change it: a thread of its own process,
 /// the first thread of another process with that number, or another
 /// thread of another process by its own number, as Linux's thread IDs.
+/// The CPUs the thread `number` names may run on, a bit for each, as
+/// `affinity` writes them: for it, and for the Linux table (ADR 0610),
+/// which gives its program as many of the bytes as it has room for.
+pub(crate) fn affinity_of(user: &UserRef, number: u64) -> Result<[u8; MAX_CPUS / 8]> {
+    let (thread, _, _) = thread_named(user, number)?;
+    let mut bytes = [0u8; MAX_CPUS / 8];
+    for (chunk, word) in bytes.chunks_mut(8).zip(thread.cpu_mask().words()) {
+        chunk.copy_from_slice(&word.to_le_bytes());
+    }
+    Ok(bytes)
+}
+
 pub(super) fn thread_named(user: &UserRef, number: u64) -> Result<Named> {
     let me = &user.process;
     if number == 0 {

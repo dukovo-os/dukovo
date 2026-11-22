@@ -169,7 +169,10 @@ pub mod aux {
     pub const AT_FLAGS: u64 = 8;
     /// The program's entry point.
     pub const AT_ENTRY: u64 = 9;
-    /// User and group numbers (0 until Phase 13 brings users).
+    /// Nothing: an entry to pass over.
+    pub const AT_IGNORE: u64 = 1;
+    /// User and group numbers: a Linux program's (Phase 18); 0 for a
+    /// Dukovo program, whose C library asks its process.
     pub const AT_UID: u64 = 11;
     /// See [`AT_UID`].
     pub const AT_EUID: u64 = 12;
@@ -187,8 +190,12 @@ pub mod aux {
     pub const AT_SECURE: u64 = 23;
     /// 16 random bytes.
     pub const AT_RANDOM: u64 = 25;
+    /// More CPU features (0 on x86-64 here).
+    pub const AT_HWCAP2: u64 = 26;
     /// The path the program was run as.
     pub const AT_EXECFN: u64 = 31;
+    /// The least stack a signal's handler needs, the frame included.
+    pub const AT_MINSIGSTKSZ: u64 = 51;
     /// Radix's own (Phase 8): the working directory, a string the C
     /// library keeps, since the kernel keeps none.
     pub const AT_RADIX_CWD: u64 = radix_abi::process::AUX_CWD;

@@ -708,6 +708,13 @@ pub fn restart_syscall(original: &SyscallRegs) {
     }
 }
 
+/// The most stack [`push_signal_frame`] takes: the extended state,
+/// aligned to 64 bytes, the frame below it, aligned to 16, and the
+/// restorer's address; see the HAL.
+pub fn signal_frame_size() -> u64 {
+    fpu::image_size() as u64 + 63 + layout::FRAME as u64 + 15 + 8
+}
+
 /// Writes a signal handler's frame on the running thread's stack; see the
 /// HAL. Called on the way back to user mode, with interrupts on, so that
 /// writing the frame may make the stack's pages.

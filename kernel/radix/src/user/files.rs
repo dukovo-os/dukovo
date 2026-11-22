@@ -24,6 +24,7 @@
 //! network capabilities, whose rights and ports allow it (ADR 0183).
 
 use core::mem::size_of;
+use core::ops::Range;
 
 use radix_abi::capability::SlotFlags;
 use radix_abi::directory::{
@@ -105,6 +106,30 @@ impl Path {
         Ok(self)
     }
 
+    /// [`Path::copy`], from where `paths` says: for the Linux table's
+    /// calls, the path at the index `buffer`'s address gives.
+    #[inline(always)]
+    fn take(&mut self, buffer: UserBuffer, paths: Paths<'_>) -> Result<&Path> {
+        let Paths::Given(given) = paths else { return self.copy(buffer) };
+        let bytes = usize::try_from(buffer.address)
+            .ok()
+            .and_then(|index| given.get(index))
+            .ok_or(Kernel::InvalidArgument.status(0))?;
+        if bytes.len() > PATH_MAX {
+            return Err(fs::status(radix_vfs::Error::NameTooLong));
+        }
+        if bytes.len() > 128 {
+            let mut copy = alloc::vec::Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
+            radix_mm::bytes::extend(&mut copy, bytes).map_err(|_| error(Kernel::NoMemory))?;
+            *self = Path::Long(copy);
+        } else {
+            let mut short = [0; 128];
+            short[..bytes.len()].copy_from_slice(bytes);
+            *self = Path::Short(short, bytes.len());
+        }
+        Ok(self)
+    }
+
     fn bytes(&self) -> &[u8] {
         match self {
             Path::Empty => &[],
@@ -133,6 +158,39 @@ impl Path {
         core::str::from_utf8(self.bytes()).map_err(|_| fs::status(radix_vfs::Error::BadName))
     }
 }
+
+/// Where the paths a directory method's arguments name are.
+#[derive(Clone, Copy)]
+pub enum Paths<'a> {
+    /// In the caller's memory, where the arguments say: a program's own
+    /// calls.
+    Caller,
+    /// In the kernel's: the Linux table's calls (ADR 0611), which join a
+    /// relative path to the working directory first. A path argument's
+    /// address is the index of its path here.
+    Given(&'a [&'a [u8]]),
+}
+
+/// The methods the Linux table calls with [`Paths::Given`]: those whose
+/// paths [`Path::take`] reads.
+const GIVEN_PATHS: [u32; 16] = [
+    directory::OPEN,
+    directory::MAKE_DIRECTORY,
+    directory::REMOVE,
+    directory::RENAME,
+    directory::STAT,
+    directory::SET_TIMES,
+    directory::SET_ACCESS,
+    directory::MAKE_LINK,
+    directory::LINK,
+    directory::MAKE_NODE,
+    directory::READ_LINK,
+    directory::REAL_PATH,
+    directory::BIND_SOCKET,
+    directory::CONNECT_SOCKET,
+    directory::SEND_DATAGRAM,
+    directory::CHECK_ACCESS,
+];
 
 /// A caller's buffer to read into, checked to be in user memory.
 struct UserOut {
@@ -225,6 +283,137 @@ impl In for UserIn {
         with: radix_vfs::Borrower<'_>,
     ) -> Option<radix_vfs::Result<usize>> {
         lend(self.address, self.len, (at, len, align), false, with)
+    }
+}
+
+/// A caller's buffers taken as one, in order: the parts of a Linux
+/// program's `iovec` array (ADR 0610), each checked to be in user memory,
+/// the whole cut at [`IO_MAX`]. Its bytes are copied to and from the
+/// parts, never lent.
+pub(super) struct Buffers<'a> {
+    parts: &'a [UserBuffer],
+    /// The bytes of the parts passed over, which are no longer in it.
+    skipped: usize,
+    len: usize,
+}
+
+impl<'a> Buffers<'a> {
+    /// `parts` as one buffer; bad_address if one of them is not in user
+    /// memory.
+    pub(super) fn new(parts: &'a [UserBuffer]) -> Result<Buffers<'a>> {
+        let mut len = 0u64;
+        for part in parts {
+            if !radix_ipc::range::user_bytes(part.address, part.len) {
+                return Err(error(Kernel::BadAddress));
+            }
+            len = len.saturating_add(part.len);
+        }
+        Ok(Buffers { parts, skipped: 0, len: len.min(IO_MAX) as usize })
+    }
+
+    /// Passes over its first `n` bytes, which it then no longer holds.
+    pub(super) fn skip(&mut self, n: usize) {
+        let n = n.min(self.len);
+        self.skipped += n;
+        self.len -= n;
+    }
+
+    /// Whether `len` bytes from `at` are all in it.
+    fn holds(&self, at: usize, len: usize) -> bool {
+        at.checked_add(len).is_some_and(|end| end <= self.len)
+    }
+
+    /// Calls `each` with the address in its part of each piece of the
+    /// `len` bytes from `at`, which [`Buffers::holds`], and the range of
+    /// those bytes the piece is, until `each` says false: whether it never
+    /// did.
+    fn pieces(
+        &self,
+        at: usize,
+        len: usize,
+        mut each: impl FnMut(u64, Range<usize>) -> bool,
+    ) -> bool {
+        let (mut from, end) = (self.skipped + at, self.skipped + at + len);
+        let mut start = 0;
+        for part in self.parts {
+            if from >= end {
+                break;
+            }
+            let part_end = start + part.len as usize;
+            if from < part_end {
+                let n = part_end.min(end) - from;
+                let done = from - self.skipped - at;
+                if !each(part.address + (from - start) as u64, done..done + n) {
+                    return false;
+                }
+                from += n;
+            }
+            start = part_end;
+        }
+        true
+    }
+}
+
+impl Out for Buffers<'_> {
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn put(&mut self, at: usize, bytes: &[u8]) -> radix_vfs::Result<()> {
+        let copied = |address, range: Range<usize>| Arch::copy_to_user(address, &bytes[range]);
+        if !self.holds(at, bytes.len()) || !self.pieces(at, bytes.len(), copied) {
+            return Err(radix_vfs::Error::BadAddress);
+        }
+        Ok(())
+    }
+
+    fn put_now(&mut self, at: usize, bytes: &[u8]) -> radix_vfs::Result<bool> {
+        if !self.holds(at, bytes.len()) {
+            return Err(radix_vfs::Error::BadAddress);
+        }
+        let copy = |address, range: Range<usize>| super::copy_to_user_now(address, &bytes[range]);
+        Ok(self.pieces(at, bytes.len(), copy))
+    }
+
+    fn fault_in(&mut self, at: usize, len: usize) -> radix_vfs::Result<()> {
+        let made = |address, range: Range<usize>| super::fault_in(address, range.len(), true);
+        if !self.holds(at, len) || !self.pieces(at, len, made) {
+            return Err(radix_vfs::Error::BadAddress);
+        }
+        Ok(())
+    }
+}
+
+impl In for Buffers<'_> {
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn get(&self, at: usize, out: &mut [u8]) -> radix_vfs::Result<()> {
+        let len = out.len();
+        let copied = |address, range: Range<usize>| Arch::copy_from_user(&mut out[range], address);
+        if !self.holds(at, len) || !self.pieces(at, len, copied) {
+            return Err(radix_vfs::Error::BadAddress);
+        }
+        Ok(())
+    }
+
+    fn get_now(&self, at: usize, out: &mut [u8]) -> radix_vfs::Result<bool> {
+        let len = out.len();
+        if !self.holds(at, len) {
+            return Err(radix_vfs::Error::BadAddress);
+        }
+        let copy =
+            |address, range: Range<usize>| super::copy_from_user_now(&mut out[range], address);
+        Ok(self.pieces(at, len, copy))
+    }
+
+    fn fault_in(&self, at: usize, len: usize) -> radix_vfs::Result<()> {
+        let made = |address, range: Range<usize>| super::fault_in(address, range.len(), false);
+        if !self.holds(at, len) || !self.pieces(at, len, made) {
+            return Err(radix_vfs::Error::BadAddress);
+        }
+        Ok(())
     }
 }
 
@@ -402,6 +591,57 @@ fn clone_file(user: &UserRef, found: &Found, file: &FileRef, a: &file::ControlAr
     })
 }
 
+/// `send_datagram`: sends `data` as one datagram from the Unix socket in
+/// the caller's slot `socket_slot` to the socket `path` names beneath the
+/// directory `found` designates, with the files `files` gives. The bytes
+/// it sent.
+fn send_datagram_of(
+    user: &UserRef,
+    found: &Found,
+    path: &Path,
+    socket_slot: u32,
+    data: &dyn radix_vfs::In,
+    files: impl FnOnce() -> Result<Option<pipe::Files>>,
+    flags: SocketFlags,
+) -> Result<u64> {
+    let dir = directory_of(found, Rights::WRITE)?;
+    let (_, file) = objects::file(user.cspace, socket_slot, Rights::WRITE)?;
+    let socket = file.socket().ok_or(error(Kernel::NotSocket))?;
+    let files = files()?;
+    let non_blocking = flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
+    let who = who(found.cap.rights(), dir)?;
+    // Looked up once the datagram is known to be able to go, as on Linux.
+    let mut find = || {
+        let named = vfs()?.resolve(&who, &dir.at, path.as_str()?).map_err(fs::status)?;
+        // As unix(7) has it, sending needs write permission on the
+        // socket's name, as connecting does.
+        who.check(&*named.node, want::WRITE).map_err(fs::status)?;
+        Ok(named.node)
+    };
+    let sender = socket::Peer::of(&user.process);
+    let count = socket::send_datagram(socket, data, files, sender, non_blocking, &mut find)? as u64;
+    user.process.note_written(count);
+    Ok(count)
+}
+
+/// [`send_datagram_of`] for the Linux table (ADR 0610): the path and the
+/// slots of the files in the kernel's memory.
+pub(super) fn send_datagram_given(
+    user: &UserRef,
+    found: &Found,
+    path: &[u8],
+    socket_slot: u32,
+    data: &dyn radix_vfs::In,
+    slots: &[u32],
+    flags: SocketFlags,
+) -> Result<u64> {
+    let mut taken = Path::Empty;
+    let given = [path];
+    let path = taken.take(UserBuffer { address: 0, len: 0 }, Paths::Given(&given))?;
+    let files = || files_of_slots(user, slots);
+    send_datagram_of(user, found, path, socket_slot, data, files, flags)
+}
+
 /// The directory interface, on the directory `found` in a slot.
 pub fn directory_method(
     user: &UserRef,
@@ -409,7 +649,24 @@ pub fn directory_method(
     label: u32,
     args: &[u64; 8],
 ) -> Result<Answer> {
+    directory_call(user, found, label, args, Paths::Caller)
+}
+
+/// The directory interface, with the paths where `paths` says: the
+/// caller's own, or the Linux table's (ADR 0611), for the methods in
+/// [`GIVEN_PATHS`]. Out of line: the interface's one copy, for both.
+#[inline(never)]
+pub(super) fn directory_call(
+    user: &UserRef,
+    found: &Found,
+    label: u32,
+    args: &[u64; 8],
+    paths: Paths<'_>,
+) -> Result<Answer> {
     let cspace = user.cspace;
+    if matches!(paths, Paths::Given(_)) && !GIVEN_PATHS.contains(&label) {
+        return Err(error(Kernel::NoSuchMethod));
+    }
     match label {
         directory::OPEN => {
             let a = directory::OpenArgs::decode(args)?;
@@ -443,7 +700,7 @@ pub fn directory_method(
                 }
             }
             let mut path = Path::Empty;
-            let path = path.copy(a.path)?;
+            let path = path.take(a.path, paths)?;
             let create = if a.flags.contains(OpenFlags::CREATE) {
                 Some(made_access(&dir.name, a.mode)?)
             } else {
@@ -514,7 +771,7 @@ pub fn directory_method(
             let a = directory::MakeDirectoryArgs::decode(args)?;
             let dir = directory_of(found, Rights::WRITE)?;
             let mut path = Path::Empty;
-            let path = path.copy(a.path)?;
+            let path = path.take(a.path, paths)?;
             // As Linux, mkdir takes no set-user-ID or set-group-ID bit
             // from its mode; the directory's own comes from its parent.
             let mut access = made_access(&dir.name, a.mode)?;
@@ -527,7 +784,7 @@ pub fn directory_method(
             let a = directory::RemoveArgs::decode(args)?;
             let dir = directory_of(found, Rights::WRITE)?;
             let mut path = Path::Empty;
-            let path = path.copy(a.path)?;
+            let path = path.take(a.path, paths)?;
             vfs()?
                 .remove(&who(found.cap.rights(), dir)?, &dir.at, path.as_str()?)
                 .map_err(fs::status)?;
@@ -538,7 +795,7 @@ pub fn directory_method(
             let dir = directory_of(found, Rights::WRITE)?;
             let (to_cap, to_dir) = objects::directory(cspace, a.to_dir, Rights::WRITE)?;
             let (mut from, mut to) = (Path::Empty, Path::Empty);
-            let (from, to) = (from.copy(a.from)?, to.copy(a.to)?);
+            let (from, to) = (from.take(a.from, paths)?, to.take(a.to, paths)?);
             let (who, to_who) = (who(found.cap.rights(), dir)?, who(to_cap.rights(), &to_dir)?);
             vfs()?
                 .rename(&who, &dir.at, from.as_str()?, &to_who, &to_dir.at, to.as_str()?)
@@ -556,7 +813,7 @@ pub fn directory_method(
             let a = directory::StatArgs::decode(args)?;
             let dir = directory_of(found, Rights::READ)?;
             let mut path = Path::Empty;
-            let path = path.copy(a.path)?;
+            let path = path.take(a.path, paths)?;
             let who = who(found.cap.rights(), dir)?;
             let follow = !a.flags.contains(PathFlags::NO_FOLLOW);
             vfs()?
@@ -570,7 +827,7 @@ pub fn directory_method(
             let a = directory::SetTimesArgs::decode(args)?;
             let dir = directory_of(found, Rights::WRITE)?;
             let mut path = Path::Empty;
-            let path = path.copy(a.path)?;
+            let path = path.take(a.path, paths)?;
             let who = who(found.cap.rights(), dir)?;
             let at = resolve(&who, &dir.at, path.as_str()?, a.flags)?;
             set_times(&who, &at, a.accessed, a.modified)?;
@@ -580,7 +837,7 @@ pub fn directory_method(
             let a = directory::SetAccessArgs::decode(args)?;
             let dir = directory_of(found, Rights::WRITE)?;
             let mut path = Path::Empty;
-            let path = path.copy(a.path)?;
+            let path = path.take(a.path, paths)?;
             let who = who(found.cap.rights(), dir)?;
             let at = resolve(&who, &dir.at, path.as_str()?, a.flags)?;
             set_access(&who, &at, a.owner, a.group, a.mode)?;
@@ -590,7 +847,7 @@ pub fn directory_method(
             let a = directory::MakeLinkArgs::decode(args)?;
             let dir = directory_of(found, Rights::WRITE)?;
             let (mut path, mut target) = (Path::Empty, Path::Empty);
-            let (path, target) = (path.copy(a.path)?, target.copy(a.target)?);
+            let (path, target) = (path.take(a.path, paths)?, target.take(a.target, paths)?);
             let access = made_access(&dir.name, 0o777)?;
             let who = who(found.cap.rights(), dir)?;
             vfs()?
@@ -603,7 +860,7 @@ pub fn directory_method(
             let dir = directory_of(found, Rights::READ)?;
             let (to_cap, to_dir) = objects::directory(cspace, a.to_dir, Rights::WRITE)?;
             let (mut from, mut to) = (Path::Empty, Path::Empty);
-            let (from, to) = (from.copy(a.path)?, to.copy(a.to)?);
+            let (from, to) = (from.take(a.path, paths)?, to.take(a.to, paths)?);
             let follow = a.flags.contains(LinkFlags::FOLLOW);
             let (who, to_who) = (who(found.cap.rights(), dir)?, who(to_cap.rights(), &to_dir)?);
             vfs()?
@@ -623,7 +880,7 @@ pub fn directory_method(
                 _ => return Err(error(Kernel::InvalidArgument)),
             };
             let mut path = Path::Empty;
-            let path = path.copy(a.path)?;
+            let path = path.take(a.path, paths)?;
             let access = made_access(&dir.name, a.mode)?;
             let who = making(user, who(found.cap.rights(), dir)?);
             vfs()?
@@ -849,7 +1106,7 @@ pub fn directory_method(
             let a = directory::ReadLinkArgs::decode(args)?;
             let dir = directory_of(found, Rights::READ)?;
             let mut path = Path::Empty;
-            let path = path.copy(a.path)?;
+            let path = path.take(a.path, paths)?;
             let (address, len) = user_range(a.buffer)?;
             let mut out = UserOut { address, len };
             let who = who(found.cap.rights(), dir)?;
@@ -862,7 +1119,7 @@ pub fn directory_method(
             let a = directory::RealPathArgs::decode(args)?;
             let dir = directory_of(found, Rights::READ)?;
             let mut path = Path::Empty;
-            let path = path.copy(a.path)?;
+            let path = path.take(a.path, paths)?;
             let (address, len) = user_range(a.buffer)?;
             let mut out = UserOut { address, len };
             let who = who(found.cap.rights(), dir)?;
@@ -904,9 +1161,9 @@ pub fn directory_method(
             let (_, file) = objects::file(cspace, a.socket, Rights::WRITE)?;
             let socket = file.socket().ok_or(error(Kernel::NotSocket))?;
             let mut path = Path::Empty;
-            let path = path.copy(a.path)?;
+            let path = path.take(a.path, paths)?;
             let mut name = Path::Empty;
-            let name = name.copy(a.name)?;
+            let name = name.take(a.name, paths)?;
             let name = socket::Name::of(name.bytes()).ok_or(Kernel::InvalidArgument.status(2))?;
             let access = made_access(&dir.name, 0o777)?;
             let who = making(user, who(found.cap.rights(), dir)?);
@@ -919,7 +1176,7 @@ pub fn directory_method(
             let (_, file) = objects::file(cspace, a.socket, Rights::WRITE)?;
             let socket = file.socket().ok_or(error(Kernel::NotSocket))?;
             let mut path = Path::Empty;
-            let path = path.copy(a.path)?;
+            let path = path.take(a.path, paths)?;
             let who = who(found.cap.rights(), dir)?;
             let named = vfs()?.resolve(&who, &dir.at, path.as_str()?).map_err(fs::status)?;
             // As unix(7) has it, connecting needs write permission on the
@@ -931,31 +1188,12 @@ pub fn directory_method(
         }
         directory::SEND_DATAGRAM => {
             let a = directory::SendDatagramArgs::decode(args)?;
-            let dir = directory_of(found, Rights::WRITE)?;
-            let (_, file) = objects::file(cspace, a.socket, Rights::WRITE)?;
-            let socket = file.socket().ok_or(error(Kernel::NotSocket))?;
             let mut path = Path::Empty;
-            let path = path.copy(a.path)?;
-            let files = files_to_send(user, a.slots)?;
+            let path = path.take(a.path, paths)?;
             let (address, len) = user_range(a.data)?;
             let data = UserIn { address, len };
-            let non_blocking =
-                a.flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
-            let who = who(found.cap.rights(), dir)?;
-            // Looked up once the datagram is known to be able to go, as on
-            // Linux.
-            let mut find = || {
-                let named = vfs()?.resolve(&who, &dir.at, path.as_str()?).map_err(fs::status)?;
-                // As unix(7) has it, sending needs write permission on the
-                // socket's name, as connecting does.
-                who.check(&*named.node, want::WRITE).map_err(fs::status)?;
-                Ok(named.node)
-            };
-            let sender = socket::Peer::of(&user.process);
-            let count =
-                socket::send_datagram(socket, &data, files, sender, non_blocking, &mut find)?
-                    as u64;
-            user.process.note_written(count);
+            let files = || files_to_send(user, a.slots);
+            let count = send_datagram_of(user, found, path, a.socket, &data, files, a.flags)?;
             let results = directory::SendDatagramResults { count };
             answer(label, directory::SendDatagramResults::WORDS, results.encode())
         }
@@ -973,7 +1211,7 @@ pub fn directory_method(
             let wanted =
                 asked.iter().filter(|(bit, _)| a.want & bit != 0).fold(0, |w, (_, b)| w | b);
             let mut path = Path::Empty;
-            let path = path.copy(a.path)?;
+            let path = path.take(a.path, paths)?;
             let who = who(found.cap.rights(), dir)?;
             let at = resolve(&who, &dir.at, path.as_str()?, a.flags)?;
             // A device, pipe or socket is written elsewhere than its mount,
@@ -1864,6 +2102,54 @@ pub fn install_file(
     made
 }
 
+/// The Linux table's listing (ADR 0611): the entries of the directory in
+/// `user`'s slot `slot` from `cursor`, given to `f` as `list` gives them
+/// (the cursor after each, its name and its kind) until it returns false,
+/// with the checks `list` makes.
+pub(super) fn list_with(
+    user: &UserRef,
+    slot: u32,
+    cursor: u64,
+    f: &mut dyn FnMut(u64, &str, Kind) -> bool,
+) -> Result<()> {
+    let (cap, dir) = objects::directory(user.cspace, slot, Rights::READ)?;
+    vfs()?.list(&who(cap.rights(), &dir)?, &dir.at, cursor, f).map_err(fs::status)
+}
+
+/// The Linux table's `chdir` and `fchdir` (ADR 0611): where `path` leads
+/// beneath the directory in `user`'s slot `slot`, as a path from that
+/// directory (`/` and then the names, links and `..` worked out), if it
+/// is a directory the caller may search, as Dukovo's C library finds out
+/// with `stat`, `check_access` and `real_path` before `set_directory`.
+pub(super) fn directory_path(
+    user: &UserRef,
+    slot: u32,
+    path: &[u8],
+) -> Result<alloc::vec::Vec<u8, radix_mm::Kmalloc>> {
+    let (cap, dir) = objects::directory(user.cspace, slot, Rights::READ)?;
+    let who = who(cap.rights(), &dir)?;
+    let path = radix_vfs::path::parse(path).map_err(fs::status)?;
+    let vfs = vfs()?;
+    let at = vfs.resolve(&who, &dir.at, path).map_err(fs::status)?;
+    if at.node.kind() != Kind::Directory {
+        return Err(FileError::NotDirectory.status(0));
+    }
+    who.check(&*at.node, want::EXECUTE).map_err(fs::status)?;
+    let mut out = radix_mm::bytes::zeroed(PATH_MAX + 1, HEAP.with(Flags::MAY_SLEEP))
+        .map_err(|_| error(Kernel::NoMemory))?;
+    out[0] = b'/';
+    let len = vfs
+        .real_path(&who, &dir.at, path, &mut radix_vfs::SliceMut(&mut out[1..]))
+        .map_err(fs::status)?;
+    if len > PATH_MAX {
+        return Err(fs::status(radix_vfs::Error::NameTooLong));
+    }
+    // The directory itself is `.`, which the root's path does without.
+    let len = if out[1..=len] == *b"." { 1 } else { len + 1 };
+    out.truncate(len);
+    Ok(out)
+}
+
 /// Writes the directory's entries from `cursor` into the caller's buffer
 /// as DirEntry records.
 fn list(
@@ -2106,43 +2392,14 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
         file::LOCK | file::LOCK_HOLDER => lock_method(user, found, ObjectKind::File, label, args),
         file::SEND => {
             let a = file::SendArgs::decode(args)?;
-            let (file, socket) = any_socket_of(found, Rights::WRITE)?;
             let (address, len) = user_range(a.data)?;
-            let data = UserIn { address, len };
-            let non_blocking =
-                a.flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
-            let signal = !a.flags.contains(SocketFlags::NO_SIGNAL);
-            let count = match socket {
-                AnySocket::Unix(socket) => {
-                    let sender = socket::Peer::of(&user.process);
-                    socket.send(&data, None, sender, non_blocking, signal)?
-                }
-                AnySocket::Inet(socket) => socket.send(&data, None, non_blocking, signal)?,
-            } as u64;
-            user.process.note_written(count);
+            let count = send_of(user, found, &UserIn { address, len }, a.flags)?;
             answer(label, file::SendResults::WORDS, file::SendResults { count }.encode())
         }
         file::RECEIVE => {
             let a = file::ReceiveArgs::decode(args)?;
-            let (file, socket) = any_socket_of(found, Rights::READ)?;
             let (address, len) = user_range(a.buffer)?;
-            let mut out = UserOut { address, len };
-            let non_blocking =
-                a.flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
-            let peek = a.flags.contains(SocketFlags::PEEK);
-            let count = match socket {
-                AnySocket::Unix(socket) => {
-                    let mut received = socket.receive(&mut out, non_blocking, peek)?;
-                    received.close_files();
-                    user.process.note_read(received.count as u64);
-                    unix_count(&received, a.flags)
-                }
-                AnySocket::Inet(socket) => {
-                    let count = socket.receive(&mut out, non_blocking, peek)?.count as u64;
-                    user.process.note_read(count);
-                    count
-                }
-            };
+            let count = receive_of(user, found, &mut UserOut { address, len }, a.flags)?;
             answer(label, file::ReceiveResults::WORDS, file::ReceiveResults { count }.encode())
         }
         file::SHUTDOWN => {
@@ -2186,18 +2443,8 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
         file::SOCKET_NAME => {
             let a = file::SocketNameArgs::decode(args)?;
             let (address, len) = user_range(a.buffer)?;
-            let named;
-            let inet_named;
-            let bytes = match any_socket_of(found, Rights::NONE)?.1 {
-                AnySocket::Unix(socket) => {
-                    named = socket.name(a.peer)?;
-                    named.bytes()
-                }
-                AnySocket::Inet(socket) => {
-                    inet_named = socket.name(a.peer)?;
-                    &inet_named[..]
-                }
-            };
+            let name = socket_name_of(found, a.peer)?;
+            let bytes = name.bytes();
             let fits = &bytes[..bytes.len().min(len)];
             if !fits.is_empty() && !Arch::copy_to_user(address, fits) {
                 return Err(error(Kernel::BadAddress));
@@ -2227,64 +2474,29 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
         }
         file::BIND_ADDRESS => {
             let a = file::BindAddressArgs::decode(args)?;
-            let (_, socket) = inet_of(found, Rights::WRITE)?;
-            let authority = network(user, a.network, Rights::NONE)?;
-            if !authority.rights.contains(Rights::SEND)
-                && !authority.rights.contains(Rights::LOCAL)
-                && !authority.rights.contains(Rights::RECEIVE)
-            {
-                return Err(Kernel::MissingRights.status(u32::from(Rights::SEND.bits())));
-            }
-            let owner = Owner {
-                program: user.process.posix.lock().program,
-                process: user.process.number(),
-            };
-            socket.bind(address_in(a.address)?, authority, owner)?;
+            bind_address_of(user, found, a.network, || address_in(a.address))?;
             answer(label, 0, [0; 8])
         }
         file::CONNECT_ADDRESS => {
             let a = file::ConnectAddressArgs::decode(args)?;
-            let (file, socket) = inet_of(found, Rights::WRITE)?;
-            let to = address_in(a.address)?;
-            network_to(user, a.network, &to)?;
-            socket.connect(to, file.description().non_blocking)?;
+            connect_address_of(user, found, a.network, || address_in(a.address))?;
             answer(label, 0, [0; 8])
         }
         file::SEND_TO => {
             let a = file::SendToArgs::decode(args)?;
-            let (file, socket) = inet_of(found, Rights::WRITE)?;
-            // A stream socket sends to where it is connected, as on Linux.
-            let to = match socket.kind() {
-                inet::Kind::Stream => None,
-                inet::Kind::Datagram | inet::Kind::Ping => {
-                    let to = address_in(a.address)?;
-                    network_to(user, a.network, &to)?;
-                    Some(to)
-                }
-            };
             let (address, len) = user_range(a.data)?;
             let data = UserIn { address, len };
-            let non_blocking =
-                a.flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
-            let signal = !a.flags.contains(SocketFlags::NO_SIGNAL);
-            let count = socket.send(&data, to, non_blocking, signal)? as u64;
-            user.process.note_written(count);
+            let to = || address_in(a.address);
+            let count = send_to_of(user, found, a.network, to, &data, a.flags)?;
             answer(label, file::SendToResults::WORDS, file::SendToResults { count }.encode())
         }
         file::RECEIVE_FROM => {
             let a = file::ReceiveFromArgs::decode(args)?;
-            let (file, socket) = inet_of(found, Rights::READ)?;
             let (address, len) = user_range(a.buffer)?;
             user_range(a.address)?;
             let mut out = UserOut { address, len };
-            let non_blocking =
-                a.flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
-            let peek = a.flags.contains(SocketFlags::PEEK);
-            let received = socket.receive(&mut out, non_blocking, peek)?;
-            let from = received.from.map_or((None, 0), |(ip, port)| (Some(ip), port));
-            put_address(inet::address_of(from, socket.is_ipv6(), received.scope), a.address)?;
-            user.process.note_read(received.count as u64);
-            let count = received_count(&received, a.flags);
+            let (count, from) = receive_from_of(user, found, &mut out, a.flags)?;
+            put_address(from, a.address)?;
             answer(
                 label,
                 file::ReceiveFromResults::WORDS,
@@ -2357,20 +2569,9 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
         }
         file::SEND_FILES => {
             let a = file::SendFilesArgs::decode(args)?;
-            let (file, socket) = socket_of(found, Rights::WRITE)?;
             let (address, len) = user_range(a.data)?;
-            // A datagram may be empty; a stream's files ride on a byte.
-            if len == 0 && !socket.is_datagram() {
-                return Err(Kernel::InvalidArgument.status(0));
-            }
-            let files = files_to_send(user, a.slots)?;
-            let data = UserIn { address, len };
-            let non_blocking =
-                a.flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
-            let signal = !a.flags.contains(SocketFlags::NO_SIGNAL);
-            let sender = socket::Peer::of(&user.process);
-            let count = socket.send(&data, files, sender, non_blocking, signal)? as u64;
-            user.process.note_written(count);
+            let files = || files_to_send(user, a.slots);
+            let count = send_files_of(user, found, &UserIn { address, len }, files, a.flags)?;
             answer(label, file::SendFilesResults::WORDS, file::SendFilesResults { count }.encode())
         }
         file::RECEIVE_FILES => {
@@ -2494,6 +2695,239 @@ fn inet_of(found: &Found, needs: Rights) -> Result<(&FileRef, &inet::InetSocket)
     }
 }
 
+/// The name of a socket, as radix-file(2)'s `socket_name` gives it: a
+/// Unix socket's, as it was bound, or a network socket's Address.
+pub(super) enum SocketName {
+    Unix(socket::Name),
+    Inet([u8; radix_abi::network::Address::SIZE]),
+}
+
+impl SocketName {
+    /// Its bytes.
+    pub(super) fn bytes(&self) -> &[u8] {
+        match self {
+            SocketName::Unix(name) => name.bytes(),
+            SocketName::Inet(address) => address,
+        }
+    }
+}
+
+// The socket methods' work, with the caller's records in the kernel's
+// memory: the native methods read and write the caller's around them, and
+// the Linux table (ADR 0610), whose records are Linux's, calls them with
+// its own. Each checks what its method checks, in the same order.
+
+/// `socket_name`: the name of the socket `found` designates, or with
+/// `peer` of the socket at the other end of its connection.
+pub(super) fn socket_name_of(found: &Found, peer: bool) -> Result<SocketName> {
+    match any_socket_of(found, Rights::NONE)?.1 {
+        AnySocket::Unix(socket) => Ok(SocketName::Unix(socket.name(peer)?)),
+        AnySocket::Inet(socket) => Ok(SocketName::Inet(socket.name(peer)?)),
+    }
+}
+
+/// `bind_address`: binds the network socket `found` designates to the
+/// address `address` gives, through the network capability in the
+/// caller's slot `network_slot`.
+pub(super) fn bind_address_of(
+    user: &UserRef,
+    found: &Found,
+    network_slot: u32,
+    address: impl FnOnce() -> Result<inet::Given>,
+) -> Result<()> {
+    let (_, socket) = inet_of(found, Rights::WRITE)?;
+    let authority = network(user, network_slot, Rights::NONE)?;
+    if !authority.rights.contains(Rights::SEND)
+        && !authority.rights.contains(Rights::LOCAL)
+        && !authority.rights.contains(Rights::RECEIVE)
+    {
+        return Err(Kernel::MissingRights.status(u32::from(Rights::SEND.bits())));
+    }
+    let owner =
+        Owner { program: user.process.posix.lock().program, process: user.process.number() };
+    socket.bind(address()?, authority, owner)
+}
+
+/// `connect_address`: connects the network socket `found` designates to
+/// the address `to` gives, through the network capability in the caller's
+/// slot `network_slot`.
+pub(super) fn connect_address_of(
+    user: &UserRef,
+    found: &Found,
+    network_slot: u32,
+    to: impl FnOnce() -> Result<inet::Given>,
+) -> Result<()> {
+    let (file, socket) = inet_of(found, Rights::WRITE)?;
+    let to = to()?;
+    network_to(user, network_slot, &to)?;
+    socket.connect(to, file.description().non_blocking)
+}
+
+/// `send`: sends `data` on the socket `found` designates, of either
+/// family. The bytes it sent.
+pub(super) fn send_of(
+    user: &UserRef,
+    found: &Found,
+    data: &dyn radix_vfs::In,
+    flags: SocketFlags,
+) -> Result<u64> {
+    let (file, socket) = any_socket_of(found, Rights::WRITE)?;
+    let non_blocking = flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
+    let signal = !flags.contains(SocketFlags::NO_SIGNAL);
+    let count = match socket {
+        AnySocket::Unix(socket) => {
+            let sender = socket::Peer::of(&user.process);
+            socket.send(data, None, sender, non_blocking, signal)?
+        }
+        AnySocket::Inet(socket) => socket.send(data, None, non_blocking, signal)?,
+    } as u64;
+    user.process.note_written(count);
+    Ok(count)
+}
+
+/// `receive`: receives into `out` on the socket `found` designates, of
+/// either family. The bytes it received, or with whole_size a datagram's
+/// whole size.
+pub(super) fn receive_of(
+    user: &UserRef,
+    found: &Found,
+    out: &mut dyn radix_vfs::Out,
+    flags: SocketFlags,
+) -> Result<u64> {
+    let (file, socket) = any_socket_of(found, Rights::READ)?;
+    let non_blocking = flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
+    let peek = flags.contains(SocketFlags::PEEK);
+    match socket {
+        AnySocket::Unix(socket) => {
+            let mut received = socket.receive(out, non_blocking, peek)?;
+            received.close_files();
+            user.process.note_read(received.count as u64);
+            Ok(unix_count(&received, flags))
+        }
+        AnySocket::Inet(socket) => {
+            let count = socket.receive(out, non_blocking, peek)?.count as u64;
+            user.process.note_read(count);
+            Ok(count)
+        }
+    }
+}
+
+/// `send_to`: sends `data` from the network socket `found` designates to
+/// the address `to` gives, through the network capability in the caller's
+/// slot `network_slot`; a stream socket sends to where it is connected,
+/// as on Linux, and `to` is not asked. The bytes it sent.
+pub(super) fn send_to_of(
+    user: &UserRef,
+    found: &Found,
+    network_slot: u32,
+    to: impl FnOnce() -> Result<inet::Given>,
+    data: &dyn radix_vfs::In,
+    flags: SocketFlags,
+) -> Result<u64> {
+    let (file, socket) = inet_of(found, Rights::WRITE)?;
+    let to = match socket.kind() {
+        inet::Kind::Stream => None,
+        inet::Kind::Datagram | inet::Kind::Ping => {
+            let to = to()?;
+            network_to(user, network_slot, &to)?;
+            Some(to)
+        }
+    };
+    let non_blocking = flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
+    let signal = !flags.contains(SocketFlags::NO_SIGNAL);
+    let count = socket.send(data, to, non_blocking, signal)? as u64;
+    user.process.note_written(count);
+    Ok(count)
+}
+
+/// `receive_from`: receives into `out` on the network socket `found`
+/// designates. The count `received_count` gives, and the sender's
+/// Address.
+pub(super) fn receive_from_of(
+    user: &UserRef,
+    found: &Found,
+    out: &mut dyn radix_vfs::Out,
+    flags: SocketFlags,
+) -> Result<(u64, [u8; radix_abi::network::Address::SIZE])> {
+    let (file, socket) = inet_of(found, Rights::READ)?;
+    let non_blocking = flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
+    let peek = flags.contains(SocketFlags::PEEK);
+    let received = socket.receive(out, non_blocking, peek)?;
+    let from = received.from.map_or((None, 0), |(ip, port)| (Some(ip), port));
+    let address = inet::address_of(from, socket.is_ipv6(), received.scope);
+    user.process.note_read(received.count as u64);
+    Ok((received_count(&received, flags), address))
+}
+
+/// `send_files`: sends `data` on the Unix socket `found` designates, with
+/// the files `files` gives riding on its first byte. The bytes it sent.
+pub(super) fn send_files_of(
+    user: &UserRef,
+    found: &Found,
+    data: &dyn radix_vfs::In,
+    files: impl FnOnce() -> Result<Option<pipe::Files>>,
+    flags: SocketFlags,
+) -> Result<u64> {
+    let (file, socket) = socket_of(found, Rights::WRITE)?;
+    // A datagram may be empty; a stream's files ride on a byte.
+    if data.is_empty() && !socket.is_datagram() {
+        return Err(Kernel::InvalidArgument.status(0));
+    }
+    let files = files()?;
+    let non_blocking = flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
+    let signal = !flags.contains(SocketFlags::NO_SIGNAL);
+    let sender = socket::Peer::of(&user.process);
+    let count = socket.send(data, files, sender, non_blocking, signal)? as u64;
+    user.process.note_written(count);
+    Ok(count)
+}
+
+/// What [`receive_unix_of`] received.
+pub(super) struct UnixReceived {
+    /// The bytes, or with whole_size a datagram's whole size.
+    pub(super) count: u64,
+    /// The sender's name.
+    pub(super) from: socket::Name,
+    /// The slots of the files that came, in order.
+    pub(super) slots: alloc::vec::Vec<u32, radix_mm::Kmalloc>,
+    /// How many files were closed for want of room or of a free slot.
+    pub(super) lost: u32,
+    /// The sender's process, user and group.
+    pub(super) sender: socket::Peer,
+    /// Whether the socket asks for its senders' credentials.
+    pub(super) credentials: bool,
+}
+
+/// `receive_unix`: receives into `out` on the Unix socket `found`
+/// designates, with room for `room` files, which go in the caller's free
+/// slots.
+pub(super) fn receive_unix_of(
+    user: &UserRef,
+    found: &Found,
+    out: &mut dyn radix_vfs::Out,
+    room: usize,
+    flags: SocketFlags,
+) -> Result<UnixReceived> {
+    let (file, socket) = socket_of(found, Rights::READ)?;
+    let mut slots = alloc::vec::Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
+    slots.try_reserve_exact(room).map_err(|_| error(Kernel::NoMemory))?;
+    let mut put = |_, slot| {
+        // Room was reserved for every file there is room for.
+        let _ = slots.push_within_capacity(slot);
+        Ok(())
+    };
+    let (received, _, lost) =
+        receive_unix_into(user, file, socket, out, (room as u64, &mut put), flags)?;
+    Ok(UnixReceived {
+        count: unix_count(&received, flags),
+        from: received.from,
+        slots,
+        lost,
+        sender: received.sender,
+        credentials: socket.passes_credentials(),
+    })
+}
+
 /// `owner`: the owner of `file`'s description as it was, after making
 /// `new` its owner if that is given. A new owner must be there; an old
 /// one that has ended reads as none, with the kind it had.
@@ -2569,9 +3003,28 @@ fn receive_unix(
     if !slots.len.is_multiple_of(4) || !radix_ipc::range::user_bytes(slots.address, slots.len) {
         return Err(error(Kernel::BadAddress));
     }
-    let mut out = UserOut { address, len };
+    let mut put = |at: u32, slot: u32| {
+        if !Arch::copy_to_user(slots.address + u64::from(at) * 4, &slot.to_le_bytes()) {
+            return Err(error(Kernel::BadAddress));
+        }
+        Ok(())
+    };
+    let out = &mut UserOut { address, len };
+    receive_unix_into(user, file, socket, out, (slots.len / 4, &mut put), flags)
+}
+
+/// [`receive_unix`] into `out`, with room for `slots.0` files, whose slots'
+/// numbers `slots.1` takes in turn, with their place among them.
+fn receive_unix_into(
+    user: &UserRef,
+    file: &FileRef,
+    socket: &socket::Socket,
+    out: &mut dyn radix_vfs::Out,
+    slots: (u64, &mut dyn FnMut(u32, u32) -> Result<()>),
+    flags: SocketFlags,
+) -> Result<(socket::Received, u32, u32)> {
     let non_blocking = flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
-    let mut received = socket.receive(&mut out, non_blocking, flags.contains(SocketFlags::PEEK))?;
+    let mut received = socket.receive(out, non_blocking, flags.contains(SocketFlags::PEEK))?;
     let close_on_exec = flags.contains(SocketFlags::CLOSE_ON_EXEC);
     let (files, lost) = match received.files.take() {
         Some(files) => install_received(user, files, slots, close_on_exec)?,
@@ -2620,8 +3073,32 @@ fn address_in(buffer: UserBuffer) -> Result<inet::Given> {
 /// must be a file or directory capability with the copy right, and no
 /// socket's.
 fn files_to_send(user: &UserRef, slots: UserBuffer) -> Result<Option<pipe::Files>> {
-    let count = slots.len / 4;
-    if !slots.len.is_multiple_of(4) || count > file::SEND_FILES_MAX {
+    if !slots.len.is_multiple_of(4) {
+        return Err(Kernel::InvalidArgument.status(1));
+    }
+    files_in_slots(user, slots.len / 4, |i| {
+        let mut number = [0; 4];
+        if !Arch::copy_from_user(&mut number, slots.address + i * 4) {
+            return Err(error(Kernel::BadAddress));
+        }
+        Ok(u32::from_le_bytes(number))
+    })
+}
+
+/// [`files_to_send`], for slots' numbers in the kernel's memory: the Linux
+/// table's descriptors (ADR 0610).
+pub(super) fn files_of_slots(user: &UserRef, slots: &[u32]) -> Result<Option<pipe::Files>> {
+    files_in_slots(user, slots.len() as u64, |i| Ok(slots[i as usize]))
+}
+
+/// The files in the caller's `count` slots whose numbers `slot` gives in
+/// turn, as [`files_to_send`] takes them.
+fn files_in_slots(
+    user: &UserRef,
+    count: u64,
+    slot: impl Fn(u64) -> Result<u32>,
+) -> Result<Option<pipe::Files>> {
+    if count > file::SEND_FILES_MAX {
         return Err(Kernel::InvalidArgument.status(1));
     }
     if count == 0 {
@@ -2630,13 +3107,10 @@ fn files_to_send(user: &UserRef, slots: UserBuffer) -> Result<Option<pipe::Files
     let mut files = alloc::vec::Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
     files.try_reserve_exact(count as usize).map_err(|_| error(Kernel::NoMemory))?;
     for i in 0..count {
-        let mut number = [0; 4];
-        if !Arch::copy_from_user(&mut number, slots.address + i * 4) {
-            return Err(error(Kernel::BadAddress));
-        }
+        let number = slot(i)?;
         let is_file = |kind| matches!(kind, ObjectKind::File | ObjectKind::Directory);
         let mut place = None;
-        let found = objects::find(user.cspace, u32::from_le_bytes(number), is_file, &mut place)?;
+        let found = objects::find(user.cspace, number, is_file, &mut place)?;
         let kind = found.cap.kind();
         if !is_file(kind) {
             return Err(error(Kernel::WrongKind));
@@ -2659,10 +3133,9 @@ fn files_to_send(user: &UserRef, slots: UserBuffer) -> Result<Option<pipe::Files
 fn install_received(
     user: &UserRef,
     files: pipe::Files,
-    slots: UserBuffer,
+    (room, put_slot): (u64, &mut dyn FnMut(u32, u32) -> Result<()>),
     close_on_exec: bool,
 ) -> Result<(u32, u32)> {
-    let room = slots.len / 4;
     let limit = user.process.posix.lock().limits.get(LimitKind::Files).current;
     let end = (u64::from(SLOT_FD_BASE) + limit).min(u64::from(MAX_SLOTS)) as u32;
     let (mut put, mut lost) = (0u32, 0u32);
@@ -2693,9 +3166,7 @@ fn install_received(
             lost += 1;
             continue;
         };
-        if !Arch::copy_to_user(slots.address + u64::from(put) * 4, &slot.to_le_bytes()) {
-            return Err(error(Kernel::BadAddress));
-        }
+        put_slot(put, slot)?;
         put += 1;
         from = slot + 1;
     }
@@ -2708,7 +3179,7 @@ fn install_received(
 /// The lowest free slot of the caller's space from `from` below `end`,
 /// growing the space when every slot it has is taken, as the C library
 /// does for a new descriptor (radix-posix(7)).
-fn free_slot(user: &UserRef, mut from: u32, end: u32) -> Option<u32> {
+pub(super) fn free_slot(user: &UserRef, mut from: u32, end: u32) -> Option<u32> {
     while from < end {
         let (used, slots) = caps::store()
             .and_then(|store| Ok((store.used_slots(user.cspace, from)?, store.slots(user.cspace)?)))
@@ -3149,12 +3620,35 @@ fn refused_as_not_permitted(err: radix_vfs::Error) -> radix_abi::Status {
 /// Writes what `node`, on `mount`, is to the caller's `buffer` as a
 /// FileStatus.
 fn put_status(mount: &Mount, node: &NodeRef, buffer: UserBuffer) -> Result<()> {
-    use directory::FileStatus as S;
-    let (stat, access, mount) = (node.stat(), node.access(), mount.id);
     let (address, len) = user_range(buffer)?;
-    if len < S::SIZE {
+    if len < directory::FileStatus::SIZE {
         return Err(error(Kernel::InvalidArgument));
     }
+    let bytes = status_bytes(mount, node);
+    UserOut { address, len }.put(0, &bytes).map_err(fs::status)
+}
+
+/// The status of what `path` names beneath the directory `found` holds,
+/// in the kernel's memory: radix-directory(2)'s `stat`, with its checks,
+/// for the Linux table's `unlink` and `rmdir`, which must know what they
+/// would remove (ADR 0611). A link is not followed unless `follow`.
+pub(super) fn status_given(
+    found: &Found,
+    path: &[u8],
+    follow: bool,
+) -> Result<[u8; directory::FileStatus::SIZE]> {
+    let dir = directory_of(found, Rights::READ)?;
+    let mut taken = Path::Empty;
+    let path =
+        taken.take(UserBuffer { address: 0, len: path.len() as u64 }, Paths::Given(&[path]))?;
+    let who = who(found.cap.rights(), dir)?;
+    vfs()?.look_at(&who, &dir.at, path.as_str()?, follow, status_bytes).map_err(fs::status)
+}
+
+/// What `node`, on `mount`, is, as a FileStatus.
+fn status_bytes(mount: &Mount, node: &NodeRef) -> [u8; directory::FileStatus::SIZE] {
+    use directory::FileStatus as S;
+    let (stat, access, mount) = (node.stat(), node.access(), mount.id);
     let mut bytes = [0u8; S::SIZE];
     for (at, value) in [
         (S::OFFSET_SIZE, stat.size),
@@ -3178,7 +3672,7 @@ fn put_status(mount: &Mount, node: &NodeRef, buffer: UserBuffer) -> Result<()> {
     }
     bytes[S::OFFSET_MODE..S::OFFSET_MODE + 2].copy_from_slice(&access.mode.to_le_bytes());
     bytes[S::OFFSET_KIND] = file_kind(stat.kind).raw();
-    UserOut { address, len }.put(0, &bytes).map_err(fs::status)
+    bytes
 }
 
 /// Writes what Btrfs keeps of a subvolume to `out`, as a SubvolumeInfo

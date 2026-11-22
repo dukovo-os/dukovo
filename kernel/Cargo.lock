@@ -285,6 +285,7 @@ dependencies = [
  "radix-kdb",
  "radix-klog",
  "radix-ksyms",
+ "radix-linux",
  "radix-lockdep",
  "radix-mana",
  "radix-mca",
@@ -669,6 +670,14 @@ dependencies = [
 [[package]]
 name = "radix-ksyms"
 version = "0.17.0"
+
+[[package]]
+name = "radix-linux"
+version = "0.17.0"
+dependencies = [
+ "proptest",
+ "radix-abi",
+]
 
 [[package]]
 name = "radix-lockdep"

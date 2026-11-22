@@ -123,6 +123,7 @@ ipc 12
 kdb 10
 kerberos 62
 keyring 71
+linux-programs 300
 live-bios 41
 live-uefi 49
 lockdep 12

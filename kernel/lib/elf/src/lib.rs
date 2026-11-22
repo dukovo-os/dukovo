@@ -32,6 +32,11 @@
 //! ([`read_program`]): they may then name an interpreter (`PT_INTERP`, the
 //! dynamic linker, which does what a static loader cannot) and use
 //! thread-local storage, which their C library sets up.
+//!
+//! Since Phase 18 a program says which system it is written for: one
+//! built for Dukovo carries Dukovo's ELF note, and every other x86-64
+//! program is a Linux program, which the kernel runs with Linux's system
+//! calls ([`Program::notes`], [`marks_dukovo`], ADR 0610).
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
@@ -60,6 +65,7 @@ const DYN_SIZE: u64 = 16;
 const PT_LOAD: u32 = 1;
 const PT_DYNAMIC: u32 = 2;
 const PT_INTERP: u32 = 3;
+const PT_NOTE: u32 = 4;
 const PT_PHDR: u32 = 6;
 const PT_TLS: u32 = 7;
 const PT_GNU_STACK: u32 = 0x6474_e551;
@@ -475,6 +481,7 @@ struct Phdr {
     vaddr: u64,
     filesz: u64,
     memsz: u64,
+    align: u64,
 }
 
 fn phdr_at(bytes: &[u8], at: usize) -> Result<Phdr, ElfError> {
@@ -485,6 +492,7 @@ fn phdr_at(bytes: &[u8], at: usize) -> Result<Phdr, ElfError> {
         vaddr: u64_at(bytes, at + 16)?,
         filesz: u64_at(bytes, at + 32)?,
         memsz: u64_at(bytes, at + 40)?,
+        align: u64_at(bytes, at + 48)?,
     })
 }
 
@@ -520,6 +528,22 @@ pub struct Program {
     pub header_count: u16,
     /// Where its dynamic table is in the file, and its size.
     pub dynamic: Option<(u64, u64)>,
+    /// Its first [`MAX_NOTE_SEGMENTS`] note segments, which say which
+    /// system it is written for ([`marks_dukovo`]).
+    pub notes: [Option<NoteSegment>; MAX_NOTE_SEGMENTS],
+}
+
+/// A note segment of a program's file (`PT_NOTE`): where it is, its
+/// size, and the alignment its notes are padded to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NoteSegment {
+    /// Where the segment starts in the file.
+    pub offset: u64,
+    /// Its size in the file, in bytes.
+    pub size: u64,
+    /// 4 or 8: a segment of notes aligned to 8 (as `.note.gnu.property`
+    /// is) pads each note's name and description to 8 bytes.
+    pub align: u64,
 }
 
 impl Program {
@@ -533,6 +557,90 @@ impl Program {
     pub fn relocations(&self, table: &[u8]) -> Result<(u64, u64), ElfError> {
         relocations(table, &self.image, 0, table.len() as u64)
     }
+
+    /// Its note segments, in the order of its program headers.
+    pub fn notes(&self) -> impl Iterator<Item = &NoteSegment> {
+        self.notes.iter().flatten()
+    }
+}
+
+/// The most note segments of a program that are looked at. A linker
+/// makes one for each alignment its notes have: two, nearly always.
+pub const MAX_NOTE_SEGMENTS: usize = 4;
+
+/// The most bytes of a note segment looked at for Dukovo's note. Dukovo's
+/// linker scripts and start files put it first; a build ID or another
+/// note or two before it take under a hundred bytes.
+pub const NOTE_MAX: u64 = 256;
+
+/// The name of the note that marks a program built for Dukovo, with its
+/// NUL, as the ELF format counts a note's name.
+pub const DUKOVO_NOTE_NAME: &[u8] = b"Dukovo\0";
+
+/// The type of Dukovo's note that says which version of Dukovo's system
+/// interface a program is built for: its description is that version, a
+/// 32-bit little-endian number.
+pub const NT_DUKOVO_ABI: u32 = 1;
+
+/// The version of Dukovo's system interface programs are built for.
+pub const DUKOVO_ABI_VERSION: u32 = 1;
+
+/// The path of Dukovo's dynamic linker: a program that names it as its
+/// interpreter is Dukovo's, with or without the note (programs built
+/// before Phase 18 have none).
+pub const DUKOVO_LOADER: &[u8] = b"/system/libraries/ld.so";
+
+/// The system a program is written for (ADR 0610).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Abi {
+    /// Dukovo's own: its system calls are Radix's.
+    Dukovo,
+    /// Linux's: its system calls are Linux's, which the kernel's Linux
+    /// table serves.
+    Linux,
+}
+
+impl Abi {
+    /// The system a program is written for: Dukovo's if its notes include
+    /// Dukovo's (`marked`) or its interpreter (its path, without the NUL)
+    /// is Dukovo's dynamic linker, and Linux's otherwise.
+    pub fn of(interpreter: Option<&[u8]>, marked: bool) -> Abi {
+        if marked || interpreter == Some(DUKOVO_LOADER) { Abi::Dukovo } else { Abi::Linux }
+    }
+}
+
+/// Whether the notes in `segment`, the bytes of a note segment whose
+/// notes are padded to `align`, or its first bytes, include Dukovo's
+/// note for a version of the interface this kernel runs. Any input gives
+/// an answer; a note cut off at the end of the bytes is not looked at.
+pub fn marks_dukovo(segment: &[u8], align: u64) -> bool {
+    // A note's description, and the next note, start at the next
+    // multiple of the alignment, counted from the segment's start.
+    let pad = if align == 8 { 8 } else { 4 };
+    let after = |at: usize, len: u32| at.checked_add(len as usize)?.checked_next_multiple_of(pad);
+    let mut at = 0usize;
+    while let (Ok(name_size), Ok(desc_size), Ok(kind)) =
+        (u32_at(segment, at), u32_at(segment, at + 4), u32_at(segment, at + 8))
+    {
+        let name_at = at + 12;
+        let (Some(desc_at), Some(name_end)) =
+            (after(name_at, name_size), name_at.checked_add(name_size as usize))
+        else {
+            return false;
+        };
+        if segment.get(name_at..name_end) == Some(DUKOVO_NOTE_NAME)
+            && kind == NT_DUKOVO_ABI
+            && desc_size == 4
+            && u32_at(segment, desc_at) == Ok(DUKOVO_ABI_VERSION)
+        {
+            return true;
+        }
+        match after(desc_at, desc_size) {
+            Some(next) => at = next,
+            None => return false,
+        }
+    }
+    false
 }
 
 /// The most bytes an interpreter's path may take.
@@ -550,6 +658,7 @@ pub fn read_program(head: &[u8], file_size: u64) -> Result<Program, ElfError> {
         headers: extra.headers,
         header_count: extra.header_count,
         dynamic: extra.dynamic,
+        notes: extra.notes,
     })
 }
 
@@ -560,6 +669,7 @@ struct Extra {
     interpreter: Option<(u64, u64)>,
     headers: Option<u64>,
     header_count: u16,
+    notes: [Option<NoteSegment>; MAX_NOTE_SEGMENTS],
 }
 
 /// Reads the headers in `bytes`, of a file `file_size` bytes long; with
@@ -624,6 +734,19 @@ fn parse(bytes: &[u8], file_size: u64, exec: bool) -> Result<(Image, Extra), Elf
                 continue;
             }
             PT_INTERP => return Err(ElfError::Dynamic),
+            PT_NOTE if exec => {
+                if !in_file(phdr.offset, phdr.filesz) {
+                    return Err(ElfError::Truncated);
+                }
+                let segment =
+                    NoteSegment { offset: phdr.offset, size: phdr.filesz, align: phdr.align };
+                // Notes past the first few are not read: a program with
+                // more is not Dukovo's, whose linkers make one or two.
+                if let Some(free) = extra.notes.iter_mut().find(|n| n.is_none()) {
+                    *free = Some(segment);
+                }
+                continue;
+            }
             PT_PHDR if exec => {
                 extra.headers = Some(phdr.vaddr);
                 continue;

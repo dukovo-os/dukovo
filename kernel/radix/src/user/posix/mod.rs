@@ -36,8 +36,8 @@
 //! POSIX state, then its state (its thread list), then a thread's signals,
 //! then a thread's scheduler state.
 
-mod exec;
-mod fork;
+pub(super) mod exec;
+pub(super) mod fork;
 pub mod limits;
 pub mod poll;
 pub mod priority;

@@ -262,6 +262,17 @@ fn requirements() -> Vec<Requirement> {
             fallback: None,
         },
         Requirement {
+            name: "musl-gcc",
+            purpose: "builds the static Linux test programs the linux-programs boot test runs",
+            found: |_| process::find_program("musl-gcc").map(|path| path.display().to_string()),
+            packages: Packages {
+                apt: Some("musl-tools"),
+                dnf: Some("musl-gcc"),
+                pacman: Some("musl"),
+            },
+            fallback: None,
+        },
+        Requirement {
             name: "flex",
             purpose: "builds GRUB's lexer",
             found: |_| program_version("flex", "--version"),

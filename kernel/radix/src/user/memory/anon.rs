@@ -725,6 +725,35 @@ impl SpaceObject {
         self.cut(&mut regions, start, end)
     }
 
+    /// Lets go of the pages of anonymous memory from `start`, `pages`
+    /// pages, and keeps its regions, as radix-address-space(2)'s `forget`
+    /// does: a page touched again is made again by
+    /// [`resolve`](Self::resolve). The regions of frames, rings and devices are passed
+    /// over; a page that no region maps fails the whole with not_mapped.
+    pub fn forget(&self, start: u64, pages: u64) -> Result<()> {
+        let end =
+            radix_ipc::range::user_pages(start, pages).ok_or(Kernel::InvalidArgument.status(0))?;
+        let regions = self.regions.lock();
+        let first = first_after(&regions, start);
+        let meets = || regions[first..].iter().take_while(|r| r.start < end);
+        let mut covered = start;
+        for region in meets() {
+            if region.start > covered {
+                break;
+            }
+            covered = region.end();
+        }
+        if covered < end {
+            return Err(error(Kernel::NotMapped));
+        }
+        for region in meets() {
+            if let Backing::Anon(_) = region.backing {
+                self.release_range(region.start.max(start), region.end().min(end));
+            }
+        }
+        Ok(())
+    }
+
     /// Maps page `page` of shared `region` with `access`: the mapping's
     /// page, made now if no space has touched it yet. The page is charged
     /// to the space.

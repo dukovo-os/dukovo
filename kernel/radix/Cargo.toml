@@ -62,6 +62,7 @@ radix-intel-net = { path = "../drivers/intel" }
 radix-ipc = { path = "../ipc" }
 radix-kdb = { path = "../lib/kdb" }
 radix-klog = { path = "../lib/klog" }
+radix-linux = { path = "../lib/linux" }
 radix-lockdep = { path = "../lib/lockdep" }
 radix-ksyms = { path = "../lib/ksyms" }
 radix-mca = { path = "../lib/mca" }

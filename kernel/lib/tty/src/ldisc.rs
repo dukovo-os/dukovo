@@ -16,6 +16,23 @@ use crate::Ring;
 /// The size of the C library's `struct termios`.
 pub const TERMIOS_SIZE: usize = Termios::SIZE;
 
+/// The size of Linux's kernel `struct termios`: the C library's up to its
+/// 19th special character.
+pub const LINUX_TERMIOS_SIZE: usize = radix_abi::terminal::LINUX_TERMIOS_SIZE as usize;
+
+/// How many bytes of a `struct termios` a buffer of `size` bytes takes:
+/// the whole record, or Linux's kernel record when it has room for that
+/// and not the whole; `None` when it has room for neither.
+pub fn termios_size(size: u64) -> Option<usize> {
+    if size >= TERMIOS_SIZE as u64 {
+        Some(TERMIOS_SIZE)
+    } else if size >= LINUX_TERMIOS_SIZE as u64 {
+        Some(LINUX_TERMIOS_SIZE)
+    } else {
+        None
+    }
+}
+
 /// The value of a `c_cc` entry that is turned off (POSIX's
 /// `_POSIX_VDISABLE`).
 const DISABLED: u8 = 0;
@@ -107,6 +124,23 @@ impl Settings {
         put(Termios::OFFSET_OSPEED, self.ospeed);
         out[Termios::OFFSET_CC..Termios::OFFSET_CC + 32].copy_from_slice(&self.cc);
         out
+    }
+
+    /// These settings with the ones `bytes` holds, which are a whole
+    /// `struct termios` or the first [`LINUX_TERMIOS_SIZE`] of one, as
+    /// [`termios_size`] gives them. From Linux's kernel record, the special
+    /// characters past its 19 stay and both speeds become the one the
+    /// control flags name, as Linux's `TCSETS` takes them.
+    pub fn with(&self, bytes: &[u8]) -> Settings {
+        let mut whole = self.to_bytes();
+        let given = bytes.len().min(TERMIOS_SIZE);
+        whole[..given].copy_from_slice(&bytes[..given]);
+        let mut settings = Settings::from_bytes(&whole);
+        if given < TERMIOS_SIZE {
+            settings.ispeed = settings.cflag & crate::line::cflag::CBAUD;
+            settings.ospeed = settings.ispeed;
+        }
+        settings
     }
 
     /// The settings a `struct termios` holds.

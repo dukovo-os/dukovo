@@ -469,6 +469,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "radix-elf"
+version = "0.17.0"
+
+[[package]]
 name = "radix-fat"
 version = "0.17.0"
 dependencies = [
@@ -839,6 +843,7 @@ dependencies = [
  "radix-bitlocker",
  "radix-bootfs",
  "radix-btrfs",
+ "radix-elf",
  "radix-fat",
  "radix-fbcon",
  "radix-hal",

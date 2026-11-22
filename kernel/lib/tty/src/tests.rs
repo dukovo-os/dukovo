@@ -7,7 +7,7 @@ use proptest::prelude::*;
 use radix_abi::signal::{SIGINT, SIGTSTP};
 use radix_abi::terminal::{ECHO, ICANON, ISIG, VLNEXT, VMIN, VTIME};
 
-use crate::{Ldisc, Received, Ring, Settings, TERMIOS_SIZE};
+use crate::{LINUX_TERMIOS_SIZE, Ldisc, Received, Ring, Settings, TERMIOS_SIZE, termios_size};
 
 /// Types `bytes`, collecting the echo and the signals.
 fn typed(ldisc: &mut Ldisc<[u8; 64]>, bytes: &[u8]) -> (Vec<u8>, Vec<u32>) {
@@ -269,6 +269,41 @@ fn settings_round_trip_through_struct_termios() {
     assert_eq!(bytes.len(), TERMIOS_SIZE);
     assert_eq!(TERMIOS_SIZE, 60);
     assert_eq!(Settings::from_bytes(&bytes), settings);
+}
+
+#[test]
+fn a_buffer_takes_the_whole_record_or_linux_s_kernel_one() {
+    assert_eq!(LINUX_TERMIOS_SIZE, 36);
+    assert_eq!(termios_size(0), None);
+    assert_eq!(termios_size(35), None);
+    assert_eq!(termios_size(36), Some(LINUX_TERMIOS_SIZE));
+    assert_eq!(termios_size(59), Some(LINUX_TERMIOS_SIZE));
+    assert_eq!(termios_size(60), Some(TERMIOS_SIZE));
+    assert_eq!(termios_size(u64::MAX), Some(TERMIOS_SIZE));
+}
+
+#[test]
+fn linux_s_kernel_record_keeps_the_last_special_characters_and_takes_the_speed_from_cflag() {
+    let mut old = Settings::new();
+    old.cc[20] = 7;
+    old.cc[31] = 9;
+    let mut new = old;
+    new.lflag &= !(ICANON | ECHO);
+    new.cc[VMIN as usize] = 0;
+    new.cc[20] = 1;
+    new.ispeed = 0;
+    // B9600, with CS8 | CREAD.
+    new.cflag = 0o60 | 0o200 | 0o15;
+    let short = &new.to_bytes()[..LINUX_TERMIOS_SIZE];
+    let taken = old.with(short);
+    assert_eq!(taken.lflag, new.lflag);
+    assert_eq!(taken.cflag, new.cflag);
+    assert_eq!(taken.cc[VMIN as usize], 0);
+    assert_eq!(taken.cc[20], 7);
+    assert_eq!(taken.cc[31], 9);
+    assert_eq!((taken.ispeed, taken.ospeed), (0o15, 0o15));
+    // The whole record is taken as it is.
+    assert_eq!(old.with(&new.to_bytes()), new);
 }
 
 proptest! {

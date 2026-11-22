@@ -584,7 +584,7 @@ fn look_held(held: &[Option<Object>], entries: &[u8], found: &mut [u16]) -> u32 
 
 /// The most entries a call keeps on its kernel stack; a call with more
 /// copies them into the heap.
-const ON_STACK: usize = 8;
+pub(crate) const ON_STACK: usize = 8;
 
 /// `poll`, for `user`'s thread.
 #[inline(never)]
@@ -616,16 +616,7 @@ pub fn poll(user: &UserRef, a: PollArgs) -> Result<u32> {
     if !Arch::copy_from_user(entries, a.entries) {
         return Err(error(Kernel::BadAddress));
     }
-    let cspace = user.process.cspace();
-    // A first look, without counting as a poller: what is ready, or a
-    // poll that does not wait, returns at once. One with a signal mask
-    // goes on to take it, so that a signal the mask lets through
-    // interrupts it, as on Linux.
-    let mut ready = look(cspace, a.base, entries, found);
-    let waits = a.flags.contains(PollFlags::FOREVER) || a.timeout_ns > 0;
-    if ready == 0 && (waits || a.flags.contains(PollFlags::MASK)) {
-        ready = wait_ready(user, &a, cspace, entries, found)?;
-    }
+    let ready = poll_entries(user, &a, entries, found)?;
     // An array polled again mostly holds what it found last time, as an
     // entry left as ready or as idle as it was: only events that differ
     // from what an entry held are written, and nothing at all, not even
@@ -638,6 +629,33 @@ pub fn poll(user: &UserRef, a: PollArgs) -> Result<u32> {
         if !Arch::copy_to_user(at, &found.to_le_bytes()) {
             return Err(error(Kernel::BadAddress));
         }
+    }
+    Ok(ready)
+}
+
+/// `poll` of `entries`, in the kernel's memory, as `a` says (its
+/// `entries` and `count` aside): writes what each is ready for in `found`
+/// (all 0 to begin with) and returns how many are. The Linux table
+/// (ADR 0610) calls it with entries it made from a program's.
+pub(crate) fn poll_entries(
+    user: &UserRef,
+    a: &PollArgs,
+    entries: &[u8],
+    found: &mut [u16],
+) -> Result<u32> {
+    debug_assert_eq!(entries.len(), found.len() * PollEntry::SIZE);
+    if found.len() > ENTRIES_MAX as usize {
+        return Err(Kernel::InvalidArgument.status(1));
+    }
+    let cspace = user.process.cspace();
+    // A first look, without counting as a poller: what is ready, or a
+    // poll that does not wait, returns at once. One with a signal mask
+    // goes on to take it, so that a signal the mask lets through
+    // interrupts it, as on Linux.
+    let ready = look(cspace, a.base, entries, found);
+    let waits = a.flags.contains(PollFlags::FOREVER) || a.timeout_ns > 0;
+    if ready == 0 && (waits || a.flags.contains(PollFlags::MASK)) {
+        return wait_ready(user, a, cspace, entries, found);
     }
     Ok(ready)
 }
