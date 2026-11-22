@@ -98,6 +98,12 @@ the reason. The profiles Dukovo has:
 *balanced*
 	Sets nothing. The default.
 
+*benchmark*
+	Steady timings: the CPUs are held at their base frequency, for
+	timings that are compared with another system's (ADR 0557). Turbo
+	is off, each CPU is held at its highest level, and the energy
+	preference is *performance*.
+
 *throughput*
 	Most work done a second, for servers and builds: the CPUs lean to
 	speed, the slice is 6000 microseconds, and reads go 1024 KiB ahead.
@@ -128,6 +134,17 @@ the reason. The profiles Dukovo has:
 	value), *performance*, *balance_performance*, *balance_power* or
 	*power*. Only CPUs with a hardware power control take any but
 	*firmware*; QEMU's usually have none.
+
+*cpu.boost*
+	Whether the CPUs may run above their base frequency: *on* (the
+	start value) or *off*. Only CPUs with a hardware power control take
+	*off*; QEMU's usually have none.
+
+*cpu.speed*
+	Whether each CPU picks its speed within its range, *chosen* (the
+	start value), or is held at the top of it, *highest*, which is the
+	base frequency while *cpu.boost* is *off*. Only CPUs with a
+	hardware power control take *highest*.
 
 *sched.slice_us*
 	The base slice of the fair scheduling class, 500 to 20000

@@ -46,7 +46,7 @@ The same from a terminal, a command at a time:
 ```
 
 `./ob lab run` and `./ob lab ui` build the lab image,
-`out/dukovo-0.15.0-x86_64-lab.img`, first; `--no-build` tests the one
+`out/dukovo-0.16.0-x86_64-lab.img`, first; `--no-build` tests the one
 already there. The runner page picks machines and tests, runs them,
 shows each run as it goes and what failed, and lists past runs; each of
 its buttons is a `dukovo-lab` command, which it shows. After a rebuild,
@@ -334,6 +334,7 @@ rows = ["posix_fork_wait", "posix_fork_exec_wait"]
 ```
 
 Linux's numbers come from the machine's Linux twin, booted once a run
+(on a real machine, before the boot of the first test that measures)
 from a kit that `./ob lab` builds in `out/lab-linux`: the same Linux
 kernel `./ob bench` holds Radix to (ADR 0290) and an initramfs whose
 first program is `tools/linux-bench`, running the same POSIX benchmarks
@@ -344,6 +345,33 @@ parity, unless the step gives a `limit`. On QEMU without KVM the numbers
 are kept but the steps skip, as an emulator's numbers say nothing about
 either system. When the kit cannot be built (no network for the kernel,
 say), `./ob lab` says so and the performance tests skip.
+
+Both systems run the rows at the machine's base frequency, because a
+row measures the clock it ran at as much as the code (ADR 0557). A
+performance test chooses Dukovo's `benchmark` profile before its `bench`
+step and `balanced` after it (`tune set benchmark`, see
+[Performance profiles](performance.md)), which turns the turbo levels
+off and holds each CPU at its highest level. The Linux kit's command
+line ends with `linux-bench.clock=base`, which has `linux-bench` do the
+same as the twin's process 1, before any row, and print what it found
+and did:
+
+```
+linux-bench: CPU frequency: intel_pstate (active), powersave, energy preference balance_performance, 800 to 3600 MHz of 800 to 3600, base 3200 MHz, turbo on
+linux-bench: idle: intel_idle, menu: POLL C1 C1E C3 C6 C7s C8 C9 C10
+linux-bench: CPU frequency held at 3200 MHz on 4 CPUs (turbo off, performance)
+```
+
+The first line is the twin's clock policy as Linux started it, the
+second its idle states, and the third what it held the CPUs at, or
+`linux-bench: CPU frequency not held:` and the reason. The POSIX
+benchmarks time a chain of additions three times, which gives the clock:
+`cpu_cycle_cold` right after a pause, `cpu_cycle` after the CPU has run
+for 250 ms, and `cpu_cycle_end` as the last row of the run. The lab
+puts both systems' `cpu_cycle` clocks above each table, and when they
+differ by more than 3% it reports an error and not a comparison of the
+rows. A step's note ends with every `BENCH` line Dukovo printed, so the
+run's bundle keeps the three clock rows.
 
 ## Security tests
 
