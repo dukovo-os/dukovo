@@ -4,7 +4,8 @@
 // poll, ppoll, select and pselect: readiness, timeouts, the end of a
 // pipe, bad descriptors, waking when another process writes, the signal
 // mask ppoll and pselect wait with, and more descriptors than the
-// kernel's capability cache holds.
+// kernel's capability cache holds, and a poller that sleeps through
+// other processes' polls.
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -323,6 +324,91 @@ static void many(void) {
 	close(directory);
 }
 
+// The voluntary_switches of process `pid` from /processes/<pid>/status;
+// -1 if it cannot be read.
+static long voluntary_switches(pid_t pid) {
+	char path[64];
+	snprintf(path, sizeof(path), "/processes/%d/status", (int)pid);
+	FILE *status = fopen(path, "r");
+	if(!status)
+		return -1;
+	char line[128];
+	long switches = -1;
+	while(fgets(line, sizeof(line), status))
+		if(sscanf(line, "voluntary_switches: %ld", &switches) == 1)
+			break;
+	fclose(status);
+	return switches;
+}
+
+// A poll wakes only for what it polls. Before ADR 0558 every change to a
+// polled pipe woke every poller in the system, so a process asleep in
+// poll on a pipe nothing writes woke twice for each round of two other
+// processes. Here the child sleeps in poll on such a pipe while the parent
+// and a second child pass a byte back and forth over two other pipes,
+// each waiting in poll before it reads; the sleeper's voluntary switches
+// may move by at most 2 (a late first sleep) over all the rounds.
+static void bystanders(void) {
+	enum { ROUNDS = 2000 };
+	int idle[2], to_child[2], to_parent[2];
+	CHECK(pipe(idle) == 0);
+	CHECK(pipe(to_child) == 0);
+	CHECK(pipe(to_parent) == 0);
+	pid_t sleeper = check_fork();
+	if(sleeper == 0) {
+		struct pollfd entry = {.fd = idle[0], .events = POLLIN};
+		poll(&entry, 1, -1);
+		check_exit_child();
+	}
+	CHECK(sleeper > 0);
+	// The sleeper is asleep once its switches stop moving.
+	long switches = voluntary_switches(sleeper);
+	long long deadline = check_now_ns() + 2000000000LL;
+	for(;;) {
+		check_sleep_ms(50);
+		long now = voluntary_switches(sleeper);
+		if(now >= 0 && now == switches)
+			break;
+		switches = now;
+		if(check_now_ns() >= deadline) {
+			CHECK(0 && "the sleeper's voluntary_switches stopped moving");
+			break;
+		}
+	}
+	pid_t partner = check_fork();
+	if(partner == 0) {
+		struct pollfd entry = {.fd = to_child[0], .events = POLLIN};
+		char byte;
+		for(int round = 0; round < ROUNDS; round++) {
+			CHECK(poll(&entry, 1, 5000) == 1);
+			CHECK(read(to_child[0], &byte, 1) == 1);
+			CHECK(write(to_parent[1], &byte, 1) == 1);
+		}
+		check_exit_child();
+	}
+	CHECK(partner > 0);
+	struct pollfd entry = {.fd = to_parent[0], .events = POLLIN};
+	char byte = 'b';
+	for(int round = 0; round < ROUNDS; round++) {
+		CHECK(write(to_child[1], &byte, 1) == 1);
+		if(poll(&entry, 1, 5000) != 1 || read(to_parent[0], &byte, 1) != 1) {
+			CHECK(0 && "a round of bytes between the parent and its partner");
+			break;
+		}
+	}
+	long after = voluntary_switches(sleeper);
+	CHECK(after >= 0 && after - switches <= 2);
+	CHECK_CHILD(partner);
+	kill(sleeper, SIGKILL);
+	waitpid(sleeper, NULL, 0);
+	close(idle[0]);
+	close(idle[1]);
+	close(to_child[0]);
+	close(to_child[1]);
+	close(to_parent[0]);
+	close(to_parent[1]);
+}
+
 int main(void) {
 	check_start("poll");
 	RUN(readiness);
@@ -331,5 +417,6 @@ int main(void) {
 	RUN(masks);
 	RUN(files);
 	RUN(many);
+	RUN(bystanders);
 	return check_end();
 }

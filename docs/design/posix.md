@@ -346,18 +346,27 @@ poll does not wait (a `ppoll` with a signal mask takes the mask first,
 so that a signal the mask lets through interrupts it, as on Linux).
 Otherwise it holds the objects its entries designate, as Linux's poll
 holds its files (a descriptor closed meanwhile does not change what it
-waits for), counts itself among each one's pollers, looks again, and
-waits for a change to any of them. Everything a poll looks at (pipes,
-socket listeners, terminals, the kernel log, the keyboard and
-notifications) keeps a count of its pollers (`Polled`) and calls
-`changed` on it after it changes, which, while the count is not 0, moves
-the global `GENERATION` and wakes every poller. A woken poller looks at
-all its objects again. A change to what nobody polls, such as the pipe
-between two programs that only read and write it, costs a barrier and a
-load; a change to anything polled wakes every poller: fine for a shell,
-its jobs and the system's services, and the next thing to replace with
-per-object wait lists when a profile shows many pollers (see the
-limits).
+waits for), adds itself to each one's pollers, looks again, and waits
+for a change to any of them. Everything a poll looks at (pipes,
+socket listeners, terminals, the kernel log, the keyboard,
+notifications and event queues) keeps a `Polled`, which holds the threads
+waiting in `poll` on it, once for each time a poll names it, and calls
+`changed` on it after it changes (ADR 0558). A poll that waits adds the
+thread to each object it holds, clears the thread's `poll_changed` flag,
+then looks. `changed` reads the count of pollers after the change and,
+while it is not 0, takes the object's lock, sets the flag of each poller
+on its list and wakes the poller unless the flag was already set. A
+poller sleeps outside the scheduler's wait table until its flag is set, a
+signal or a stop reaches it, or its deadline passes; a woken poller looks
+at all its objects again and takes itself off their lists when the poll
+ends. So a change wakes only the threads polling what changed, as the
+wait queues of Linux's files do. A change to what nobody polls, such as
+the pipe between two programs that only read and write it, costs a
+barrier and two loads. A poll that does not wait (a timeout of 0 with no
+signal mask, or something ready at the first look) adds itself nowhere.
+A poll that waits may fail with `ENOMEM` when an object's list cannot
+grow; a list keeps its room once it has grown, so a busy object stops
+allocating after its first polls.
 
 Up to 16 entries, the look at each slot goes through the CPU's capability
 cache, as any system call's look-up does. More than that would miss the
@@ -791,6 +800,13 @@ The last three of it, which a change to a watched object takes, are
 leaves, as `TABLE` is: they are taken after every lock on this list, so a
 change may be made under any of them.
 
+A `Polled`'s lock is taken with interrupts masked: by a change, under
+whatever lock its caller holds, and by a poller with none. Under it a
+change wakes threads (a thread's scheduler state, then a run queue) and
+queues the event queues' watches. An event queue's own `Polled` lock may
+be taken under a watched object's and holds no watches, so it is the last
+`Polled` lock taken.
+
 ## Correctness
 
 The kernel's waits follow one pattern: read a word, decide to wait, and
@@ -799,18 +815,22 @@ after the waiter is queued. Each argument below shows that the change a
 waiter needs either happens before it reads the word, or wakes it after
 it is queued.
 
-**No poll misses a change.** A poller increments the pollers count of
-each object it holds, then reads `GENERATION` and looks at them; a
-change is made, then `changed` reads the changed object's count, and
-moves the generation and wakes if any poller is counted. Both sides have
-a sequentially consistent operation between their write and their read
-(the poller's increment, and `changed`'s barrier or the notification's
-read-modify-write). So either the poller's look sees the change, or
-`changed` sees the poller and moves the generation after the poller read
-it, and the poller's condition (generation moved) is true when it is
-queued or it is woken once queued. The poller looks at the objects it
-counted itself in, not at its slots again, so no change it waits for is
-to an object it is not counted in.
+**No poll misses a change.** A poller adds itself to the list of each
+object it holds (the push, then the count, under the object's lock),
+clears its `poll_changed` flag, takes a full barrier and looks; a change
+is made, then `changed` takes a full barrier (or is a sequentially
+consistent read-modify-write, as a notification's is), reads the object's
+count of pollers, takes the lock and swaps each poller's flag to set,
+waking the poller if it was clear. If the poller's look misses the change,
+its barrier comes before the change's in the order of sequentially
+consistent operations, so the change's read of the count sees the add, the
+lock shows the entry, and the swap reads the flag the poller cleared, or
+one another change set and woke for. The poller is then woken, and a wake
+that comes before it sleeps makes the sleep return at once. A flag set
+before the poller cleared it belongs to a change made before the clear's
+barrier, which the look sees. The poller looks at the objects it added
+itself to, not at its slots again, so no change it waits for is to an
+object it is not on the list of.
 
 **No event queue misses a change.** A look takes a watch off the ring
 and clears its queued mark, then reads what its description is ready
@@ -946,8 +966,6 @@ ring and reporting it.
   0511).
 - `clock_gettime` is a capability call; there is no read-only clock page
   (vDSO). The instruction budgets will show when it matters.
-- `poll` wakes every poller on a change to anything polled. An event
-  queue does not: a change reaches only the queues that watch it.
 - An event queue (`kqueue` and `kevent`) differs from BSD's. The `data`
   of a read or write event is 0, where BSD gives the bytes to read, the
   room to write or the connections waiting. The filters are read, write
