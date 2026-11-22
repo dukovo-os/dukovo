@@ -492,7 +492,9 @@ mod tests {
         let bare = elf(ET_EXEC, &Parts::default());
         assert_eq!(judged_with_mode(&bare, 0o644), Verdict::NotAProgram);
         assert_eq!(judged_with_mode(&bare, 0o744), linux(None));
-        assert_eq!(judged_with_mode(&bare, 0o001), linux(None));
+        // Any one execute bit is enough; the owner may still read it, as
+        // the check runs as an ordinary account in CI.
+        assert_eq!(judged_with_mode(&bare, 0o401), linux(None));
     }
 
     #[test]
