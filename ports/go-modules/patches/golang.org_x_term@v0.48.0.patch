@@ -1,0 +1,62 @@
+SPDX-FileCopyrightText: The Go Authors
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: BSD-3-Clause
+
+Package term for Radix (ADR 0600): its terminals take Linux's TCGETS and
+TCSETS through golang.org/x/sys/unix, as Linux's do.
+
+go.mod names Go 1.22 and requires nothing: Radix's golang.org/x/sys
+takes the place of every version of that module, so that a program
+whose go.mod names an older Go, or an older x/sys, may take this one in
+place of any version of x/term.
+
+diff -ruN a/golang.org_x_term@v0.48.0/go.mod b/golang.org_x_term@v0.48.0/go.mod
+--- a/golang.org_x_term@v0.48.0/go.mod
++++ b/golang.org_x_term@v0.48.0/go.mod
+@@ -1,5 +1,7 @@
+ module golang.org/x/term
+ 
+-go 1.26.0
+-
+-require golang.org/x/sys v0.50.0
++// Radix: the oldest Go whose language this code builds with, in place of
++// the newest it was released for, and no requirement of golang.org/x/sys,
++// which Radix's takes the place of at every version: a program that names
++// an older Go, or an older x/sys, may take it (ADR 0600).
++go 1.22
+diff -ruN a/golang.org_x_term@v0.48.0/term_unix.go b/golang.org_x_term@v0.48.0/term_unix.go
+--- a/golang.org_x_term@v0.48.0/term_unix.go
++++ b/golang.org_x_term@v0.48.0/term_unix.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build aix || darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris || zos
++//go:build aix || darwin || dragonfly || freebsd || linux || netbsd || openbsd || radix || solaris || zos
+ 
+ package term
+ 
+diff -ruN a/golang.org_x_term@v0.48.0/term_unix_other.go b/golang.org_x_term@v0.48.0/term_unix_other.go
+--- a/golang.org_x_term@v0.48.0/term_unix_other.go
++++ b/golang.org_x_term@v0.48.0/term_unix_other.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build aix || linux || solaris || zos
++//go:build aix || linux || radix || solaris || zos
+ 
+ package term
+ 
+diff -ruN a/golang.org_x_term@v0.48.0/term_unsupported.go b/golang.org_x_term@v0.48.0/term_unsupported.go
+--- a/golang.org_x_term@v0.48.0/term_unsupported.go
++++ b/golang.org_x_term@v0.48.0/term_unsupported.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build !aix && !darwin && !dragonfly && !freebsd && !linux && !netbsd && !openbsd && !zos && !windows && !solaris && !plan9
++//go:build !aix && !darwin && !dragonfly && !freebsd && !linux && !netbsd && !openbsd && !radix && !zos && !windows && !solaris && !plan9
+ 
+ package term
+ 

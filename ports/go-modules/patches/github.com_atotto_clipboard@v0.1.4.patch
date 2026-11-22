@@ -1,0 +1,20 @@
+SPDX-FileCopyrightText: 2013 Ato Araki
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: BSD-3-Clause
+
+Radix has no display server, so none of xsel, xclip, wl-copy or
+termux-clipboard is there, and the clipboard is unsupported, as the
+module already says when it finds none.
+
+diff -ruN a/github.com_atotto_clipboard@v0.1.4/clipboard_unix.go b/github.com_atotto_clipboard@v0.1.4/clipboard_unix.go
+--- a/github.com_atotto_clipboard@v0.1.4/clipboard_unix.go
++++ b/github.com_atotto_clipboard@v0.1.4/clipboard_unix.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-// +build freebsd linux netbsd openbsd solaris dragonfly
++// +build freebsd linux netbsd openbsd radix solaris dragonfly
+ 
+ package clipboard
+ 

@@ -17,7 +17,8 @@
 //!   unmaintained or unsound is shown, not failed on, since a port often
 //!   cannot leave it. CI runs `ob security scan` each day instead, which
 //!   audits these locks with every other Cargo.lock of the system, and
-//!   takes the locks from [`bundle_locks`].
+//!   takes the locks from [`bundle_locks`], with the go.mod of each
+//!   bundle's port in Go.
 
 use std::cmp::Ordering;
 use std::fmt::Write as _;
@@ -238,19 +239,31 @@ fn compare(a: &[u64], b: &[u64]) -> Ordering {
     Ordering::Equal
 }
 
-/// Whether `recipe` is a bundle's port in Rust: one with a Cargo.lock.
-fn rust_bundle(recipe: &Recipe) -> bool {
+/// Whether `recipe` is a bundle's port from git, whose source may pin
+/// what it builds with in a Cargo.lock or a go.mod.
+fn git_bundle(recipe: &Recipe) -> bool {
     recipe.bundle.is_some() && !recipe.source.git.is_empty()
 }
 
-/// The Cargo.lock of a bundle's port in Rust.
+/// What pins the modules or crates a bundle's port builds with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LockKind {
+    /// A Cargo.lock: the port is in Rust.
+    Cargo,
+    /// A go.mod, whose modules go.sum pins by hash: the port is in Go.
+    GoMod,
+}
+
+/// The Cargo.lock or go.mod of a bundle's port.
 pub struct PortLock {
     /// The port's name.
     pub port: String,
     /// The port's version.
     pub version: String,
-    /// The lock file, in the port's source as it builds.
+    /// The file, in the port's source as it builds.
     pub lock: PathBuf,
+    /// Which file it is.
+    pub kind: LockKind,
 }
 
 /// Fails, with the command that installs it, unless cargo-audit is.
@@ -263,15 +276,15 @@ pub fn require_cargo_audit() -> Result<()> {
     }
 }
 
-/// The Cargo.lock of each bundle's port in Rust, from the port's source at
-/// the commit its recipe pins, fetched, with the port's patches applied
-/// since they may move crates, as the port builds. The source is exported
-/// into `ports/audit/<port>` of the target folder. A bundle whose source
-/// has no Cargo.lock is not in Rust and is left out.
+/// The Cargo.lock of each bundle's port in Rust, and the go.mod of each in
+/// Go, from the port's source at the commit its recipe pins, fetched, with
+/// the port's patches applied since they may move crates or modules, as
+/// the port builds. The source is exported into `ports/audit/<port>` of
+/// the target folder. A bundle whose source has neither is left out.
 pub fn bundle_locks(ctx: &Ctx) -> Result<Vec<PortLock>> {
     let mut locks = Vec::new();
     for (recipe, _) in ports::recipes(ctx)? {
-        if !rust_bundle(&recipe) {
+        if !git_bundle(&recipe) {
             continue;
         }
         let source = &recipe.source;
@@ -282,9 +295,12 @@ pub fn bundle_locks(ctx: &Ctx) -> Result<Vec<PortLock>> {
         }
         ports::export(ctx, &fetched, &dir, &source.paths)?;
         ports::apply_patches(ctx, &ctx.root.join("ports").join(&recipe.name), &dir)?;
-        let lock = dir.join("Cargo.lock");
-        if lock.is_file() {
-            locks.push(PortLock { port: recipe.name, version: recipe.version, lock });
+        for (file, kind) in [("Cargo.lock", LockKind::Cargo), ("go.mod", LockKind::GoMod)] {
+            let lock = dir.join(file);
+            if lock.is_file() {
+                let (port, version) = (recipe.name.clone(), recipe.version.clone());
+                locks.push(PortLock { port, version, lock, kind });
+            }
         }
     }
     Ok(locks)
@@ -295,7 +311,7 @@ pub fn bundle_locks(ctx: &Ctx) -> Result<Vec<PortLock>> {
 pub fn audit(ctx: &Ctx) -> Result<()> {
     require_cargo_audit()?;
     let mut failed = Vec::new();
-    for found in bundle_locks(ctx)? {
+    for found in bundle_locks(ctx)?.into_iter().filter(|found| found.kind == LockKind::Cargo) {
         step(&format!("Auditing the crates of {} {}", found.port, found.version));
         let mut cmd = Command::new("cargo");
         cmd.args(["audit", "--file"]).arg(&found.lock);

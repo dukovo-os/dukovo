@@ -59,6 +59,7 @@ bundle-lines 100
 bundle-run 112
 bundle-update 68
 bundles 116
+caddy 300
 caps 15
 card-reader 70
 catalog-bundles 64
@@ -96,6 +97,7 @@ fuse 19
 fuzz 27
 git-https 15
 git-keyring 127
+go-commands 240
 go-runtime 240
 go-toolchain 300
 gpio 11

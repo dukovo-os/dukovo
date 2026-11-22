@@ -1,0 +1,90 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The four programs from the catalog that are built with Go (ADR 0600),
+# each installed for everyone: micro, fzf, duf and lazygit. Each runs by
+# its path, as a script runs it, so no question is asked, and says its
+# version. Each also does one thing without a terminal: micro lists the
+# default of an option, fzf filters a list it is given, duf lists the
+# mounts as JSON, with the root's filesystem Btrfs, and lazygit prints its
+# default settings. What they show on a terminal, the boot test
+# go-commands checks.
+about = "The catalog's programs built with Go run: micro, fzf, duf and lazygit say their versions, and micro lists an option's default, fzf filters a list, duf lists the root's Btrfs as JSON and lazygit prints its default settings (ADR 0600)"
+time = "5m"
+host_needs = ["scp"]
+
+[[step]]
+host = "sh {here}/copy-bundle.sh io.github.zyedidia.micro {machine} {machine-port:22}"
+expect = "copied: io.github.zyedidia.micro"
+[[step]]
+host = "sh {here}/copy-bundle.sh io.github.junegunn.fzf {machine} {machine-port:22}"
+expect = "copied: io.github.junegunn.fzf"
+[[step]]
+host = "sh {here}/copy-bundle.sh io.github.muesli.duf {machine} {machine-port:22}"
+expect = "copied: io.github.muesli.duf"
+[[step]]
+host = "sh {here}/copy-bundle.sh io.github.jesseduffield.lazygit {machine} {machine-port:22}"
+expect = "copied: io.github.jesseduffield.lazygit"
+# From nothing: a run before may have left any of them installed.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge io.github.zyedidia.micro > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/io.github.zyedidia.micro.dkv | tail -1'"
+root = true
+expect = "installed io.github.zyedidia.micro"
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge io.github.junegunn.fzf > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/io.github.junegunn.fzf.dkv | tail -1'"
+root = true
+expect = "installed io.github.junegunn.fzf"
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge io.github.muesli.duf > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/io.github.muesli.duf.dkv | tail -1'"
+root = true
+expect = "installed io.github.muesli.duf"
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge io.github.jesseduffield.lazygit > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/io.github.jesseduffield.lazygit.dkv | tail -1'"
+root = true
+expect = "installed io.github.jesseduffield.lazygit"
+[[step]]
+run = "/applications/io.github.zyedidia.micro/bin/micro -version"
+expect = "Version: 2.0.15"
+# micro's options, as it lists them, with the tab width's default.
+[[step]]
+run = '''sh -c "/applications/io.github.zyedidia.micro/bin/micro -options | grep -A 1 -e -tabsize"'''
+expect = "Default value: '4'"
+[[step]]
+run = "/applications/io.github.junegunn.fzf/bin/fzf --version"
+expect = "0.75.0 (c7bf2b8)"
+# A list on the standard input, filtered by the letters n, a and n, which
+# only banana has in that order.
+[[step]]
+run = '''sh -c "printf 'apple\nbanana\ncherry\n' | /applications/io.github.junegunn.fzf/bin/fzf -f nan"'''
+expect = "banana"
+[[step]]
+run = "/applications/io.github.muesli.duf/bin/duf --version"
+expect = "duf 0.9.1"
+# duf lists every mount as JSON, and the root's filesystem is Btrfs.
+[[step]]
+run = '''sh -c '/applications/io.github.muesli.duf/bin/duf --json | jq -r ".[] | select(.mount_point == \"/\") | .fs_type"' '''
+expect = "btrfs"
+[[step]]
+run = "/applications/io.github.jesseduffield.lazygit/bin/lazygit --version"
+expect = "version=0.66.3, os=radix"
+# The settings lazygit starts from, as YAML, with the number of lines the
+# panels scroll by.
+[[step]]
+run = "sh -c '/applications/io.github.jesseduffield.lazygit/bin/lazygit --config | grep scrollHeight'"
+expect = "scrollHeight: 2"
+[[step]]
+run = "bundle remove --for-everyone --purge io.github.zyedidia.micro"
+root = true
+expect = "removed io.github.zyedidia.micro"
+[[step]]
+run = "bundle remove --for-everyone --purge io.github.junegunn.fzf"
+root = true
+expect = "removed io.github.junegunn.fzf"
+[[step]]
+run = "bundle remove --for-everyone --purge io.github.muesli.duf"
+root = true
+expect = "removed io.github.muesli.duf"
+[[step]]
+run = "bundle remove --for-everyone --purge io.github.jesseduffield.lazygit"
+root = true
+expect = "removed io.github.jesseduffield.lazygit"

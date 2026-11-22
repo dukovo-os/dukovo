@@ -2,22 +2,26 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-# The lab PC's side of services/nginx: it asks the machine's nginx for its
-# page over HTTP and HTTPS, 16 requests at a time, for 20 seconds, while
-# the machine has it reload its settings, and counts the requests that got
-# no 200: a reload must lose none.
+# The lab PC's side of services/nginx, which services/caddy uses too: it
+# asks the machine's web server for a page over HTTP and HTTPS, 16 requests
+# at a time, for 20 seconds, while the machine has it reload its settings,
+# and counts the requests that got no 200: a reload must lose none.
 #
-#   nginx-load.sh MACHINE HTTP-PORT HTTPS-PORT
+#   nginx-load.sh MACHINE HTTP-PORT HTTPS-PORT [PAGE]
 #
 # MACHINE is the machine's address and the ports the lab PC's that reach
 # its ports 80 and 443, as {machine} and {machine-port:N} give them. An
-# HTTPS-PORT of - asks over HTTP alone, for a machine whose nginx does
-# not serve HTTPS.
+# HTTPS-PORT of - asks over HTTP alone, for a machine whose web server
+# does not serve HTTPS. PAGE is the path of the page it asks for, such as
+# /lab-caddy.html, and is / when it is left out, which is nginx's front
+# page.
 set -eu
 
 machine="$1"
 http="$2"
 https="$3"
+# Read before the loop, which sets the arguments anew.
+page="${4:-/}"
 
 : > codes
 end=$(($(date +%s) + 20))
@@ -25,9 +29,9 @@ while [ "$(date +%s)" -lt "$end" ]; do
 	# Each code goes to the standard error output (curl's %{stderr}),
 	# the pages to nowhere; one that never came back is 000.
 	if [ "$https" = - ]; then
-		set -- "http://$machine:$http/?n=[1-400]"
+		set -- "http://$machine:$http$page?n=[1-400]"
 	else
-		set -- "http://$machine:$http/?n=[1-200]" "https://$machine:$https/?n=[1-200]"
+		set -- "http://$machine:$http$page?n=[1-200]" "https://$machine:$https$page?n=[1-200]"
 	fi
 	curl -sk --parallel --parallel-max 16 -w '%{stderr}%{http_code}\n' "$@" \
 		>/dev/null 2>>codes || true

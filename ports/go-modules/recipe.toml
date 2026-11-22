@@ -1,0 +1,121 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Go modules from Go's module proxy that programs in Go need and that do
+# not build or work on Radix as they are (ADR 0600): each patched in
+# patches/<path, / as _>@<version>.patch and installed into the toolchain,
+# where Go for Radix (x86_64-radix-go, ob(1), PORTS) gives a program the
+# patched module in place of the proxy's when its go.sum names that
+# version. golang.org/x/sys and x/term take the place of every version a
+# program names: they require no other module, and their code is newer.
+# Any other module is patched at each version a program names.
+name = "go-modules"
+version = "1"
+summary = "Go modules patched for Radix, for programs in Go"
+license = "BSD-3-Clause AND MIT AND Apache-2.0"
+homepage = "https://proxy.golang.org"
+toolchain = true
+
+[[module]]
+path = "golang.org/x/sys"
+version = "v0.50.0"
+sha256 = "b115e8a144a7c9d1df3ffb8af20b283e162844b5b624a97ee342955cca69b9e6"
+license = "BSD-3-Clause"
+all-versions = true
+
+[[module]]
+path = "golang.org/x/term"
+version = "v0.48.0"
+sha256 = "3f6dfe1b6031005d556ad54027c191636299aa4496fd631d1b1dcd23ada8bec7"
+license = "BSD-3-Clause"
+all-versions = true
+
+[[module]]
+path = "github.com/adrg/xdg"
+version = "v0.5.3"
+sha256 = "52847b48afcd46cfd312bc857a8df08643cfffc4103d59a40c3ce648e0196c13"
+license = "MIT"
+
+[[module]]
+path = "github.com/atotto/clipboard"
+version = "v0.1.4"
+sha256 = "d67b2c36c662751309fd2ec351df3651584bea840bd27be9a90702c3a238b43f"
+license = "BSD-3-Clause"
+
+[[module]]
+path = "github.com/chzyer/readline"
+version = "v1.5.1"
+sha256 = "ce25854a8beae5c20bdde840d5142e6fbd1f86f0e58442705b8fb21dfce48501"
+license = "MIT"
+
+[[module]]
+path = "github.com/cloudfoundry/jibber_jabber"
+version = "v0.0.0-20151120183258-bcc4c8345a21"
+sha256 = "ccdd12db6e21484997c713ec6a62ce3b12d4ff5df59fd0a3ad94d32836ca883a"
+license = "Apache-2.0"
+
+[[module]]
+path = "github.com/creack/pty"
+version = "v1.1.18"
+sha256 = "7dcada7782e04f0d4b47d50d4ef35f36f2c80f909231019149480429bdb176e5"
+license = "MIT"
+
+[[module]]
+path = "github.com/creack/pty"
+version = "v1.1.24"
+sha256 = "754e25253e76a5583b80d57d3add3afe68fc4d9f2a490968a9d1eda8c8fd8815"
+license = "MIT"
+
+[[module]]
+path = "github.com/gdamore/tcell/v3"
+version = "v3.6.0"
+sha256 = "f8455638cccdd7de893d8c35d503eba0e2120377ad5efad4a03ed5b9848d3da2"
+license = "Apache-2.0"
+
+[[module]]
+path = "github.com/google/certificate-transparency-go"
+version = "v1.3.3"
+sha256 = "2728bdcc12bd62dfa29cbc5211dd4e25ca471a806dd0ab2400177a9a45733641"
+license = "Apache-2.0"
+
+[[module]]
+path = "github.com/mattn/go-isatty"
+version = "v0.0.20"
+sha256 = "f2d5f89ca451577e17464b9bb596dc0d0ecececb5eaa63622c41b57cd0b7b8cc"
+license = "MIT"
+
+[[module]]
+path = "github.com/mattn/go-isatty"
+version = "v0.0.24"
+sha256 = "4fcffec0bae0ad4af7bf96e2497a817d85de64af19ffe31d82bda362148234b8"
+license = "MIT"
+
+[[module]]
+path = "github.com/micro-editor/tcell/v2"
+version = "v2.0.13"
+sha256 = "913dd2ae109a38456833a751246acc7873a945525fd0f875cb8a40918b7202fe"
+license = "Apache-2.0"
+
+[[module]]
+path = "github.com/micro-editor/terminal"
+version = "v0.0.0-20250324214352-e587e959c6b5"
+sha256 = "3bccfe55084c4462d8333913870f6b8f08089eeb27bd4779948ba515e3282745"
+license = "MIT"
+
+[[module]]
+path = "github.com/muesli/termenv"
+version = "v0.16.0"
+sha256 = "ba02d3ebd9c1d87e2c2133b1f2bb61a7001b3765196e8016029ce9fe54c5c0fc"
+license = "MIT"
+
+[[module]]
+path = "github.com/prometheus/client_golang"
+version = "v1.24.1"
+sha256 = "90b627e392d9936cf410ed23066d6198fecc11130bbab2e17dda627da3a86fc3"
+license = "Apache-2.0"
+
+[[module]]
+path = "github.com/sirupsen/logrus"
+version = "v1.10.2"
+sha256 = "73a40737da86682dd536ec2c87dff0f589eeeed81873362b08ed009818747b52"
+license = "MIT"

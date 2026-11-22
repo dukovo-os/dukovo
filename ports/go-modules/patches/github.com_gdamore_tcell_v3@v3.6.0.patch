@@ -1,0 +1,64 @@
+SPDX-FileCopyrightText: The tcell contributors
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0
+
+Radix's terminals are Linux's to tcell: TCGETS and TCSETS through
+golang.org/x/sys/unix, and non-blocking reads through VMIN and VTIME.
+gpm_linux.go, which reads /proc, stays Linux's.
+
+diff -ruN a/github.com_gdamore_tcell_v3@v3.6.0/tscreen_unix.go b/github.com_gdamore_tcell_v3@v3.6.0/tscreen_unix.go
+--- a/github.com_gdamore_tcell_v3@v3.6.0/tscreen_unix.go
++++ b/github.com_gdamore_tcell_v3@v3.6.0/tscreen_unix.go
+@@ -12,8 +12,8 @@
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
+ 
+-//go:build aix || darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris || zos
+-// +build aix darwin dragonfly freebsd linux netbsd openbsd solaris zos
++//go:build aix || darwin || dragonfly || freebsd || linux || netbsd || openbsd || radix || solaris || zos
++// +build aix darwin dragonfly freebsd linux netbsd openbsd radix solaris zos
+ 
+ package tcell
+ 
+diff -ruN a/github.com_gdamore_tcell_v3@v3.6.0/tty/nonblock_unix.go b/github.com_gdamore_tcell_v3@v3.6.0/tty/nonblock_unix.go
+--- a/github.com_gdamore_tcell_v3@v3.6.0/tty/nonblock_unix.go
++++ b/github.com_gdamore_tcell_v3@v3.6.0/tty/nonblock_unix.go
+@@ -12,8 +12,8 @@
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
+ 
+-//go:build linux || aix || zos || solaris
+-// +build linux aix zos solaris
++//go:build linux || radix || aix || zos || solaris
++// +build linux radix aix zos solaris
+ 
+ package tty
+ 
+diff -ruN a/github.com_gdamore_tcell_v3@v3.6.0/tty/stdin_unix.go b/github.com_gdamore_tcell_v3@v3.6.0/tty/stdin_unix.go
+--- a/github.com_gdamore_tcell_v3@v3.6.0/tty/stdin_unix.go
++++ b/github.com_gdamore_tcell_v3@v3.6.0/tty/stdin_unix.go
+@@ -12,8 +12,8 @@
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
+ 
+-//go:build aix || darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris || zos
+-// +build aix darwin dragonfly freebsd linux netbsd openbsd solaris zos
++//go:build aix || darwin || dragonfly || freebsd || linux || netbsd || openbsd || radix || solaris || zos
++// +build aix darwin dragonfly freebsd linux netbsd openbsd radix solaris zos
+ 
+ package tty
+ 
+diff -ruN a/github.com_gdamore_tcell_v3@v3.6.0/tty/tty_unix.go b/github.com_gdamore_tcell_v3@v3.6.0/tty/tty_unix.go
+--- a/github.com_gdamore_tcell_v3@v3.6.0/tty/tty_unix.go
++++ b/github.com_gdamore_tcell_v3@v3.6.0/tty/tty_unix.go
+@@ -12,8 +12,8 @@
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
+ 
+-//go:build aix || darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris || zos
+-// +build aix darwin dragonfly freebsd linux netbsd openbsd solaris zos
++//go:build aix || darwin || dragonfly || freebsd || linux || netbsd || openbsd || radix || solaris || zos
++// +build aix darwin dragonfly freebsd linux netbsd openbsd radix solaris zos
+ 
+ package tty
+ 

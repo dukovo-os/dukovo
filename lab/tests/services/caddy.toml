@@ -1,0 +1,106 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Caddy from the catalog, on the machine's own network card (ADRs 0600 and
+# 0601): installed for everyone and enabled, it serves the lab PC a page of
+# its own in /shared/www over HTTP and answers 404 for the folders of
+# website(8)'s sites. With the machine's own certificate, which certd
+# keeps and Spark gives it (ADR 0512), and port 443 as its second socket,
+# it serves the same page over HTTPS to a client that trusts that
+# certificate alone, with no -k; the lab PC then keeps 16 requests at a
+# time coming for 20 seconds while the machine has Caddy reload its
+# settings five times, and again while the machine makes the certificate
+# anew twice, 10 seconds apart, and no request may go without its page. The
+# certificate Caddy serves afterwards is the new one.
+#
+# The page is lab-caddy.html and not index.html: nginx serves /shared/www
+# too, and its test expects nginx's welcome page at "/" while the folder
+# has no index file. Caddy's settings have no log directive, and Caddy
+# logs no request without one, so its log is not read for requests.
+about = "Caddy from the catalog serves a page to the lab PC over HTTP and, with the machine's own certificate from certd, over HTTPS to a client that trusts it; reloads and renewals of the certificate under load lose no request (ADRs 0601, 0512)"
+time = "7m"
+host_needs = ["curl", "scp", "ssh", "openssl"]
+
+[[step]]
+host = "sh {here}/copy-bundle.sh com.caddyserver.caddy {machine} {machine-port:22}"
+expect = "copied: com.caddyserver.caddy"
+# From nothing: a run before may have left it installed.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge com.caddyserver.caddy > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/com.caddyserver.caddy.dkv | tail -1'"
+root = true
+expect = "installed com.caddyserver.caddy"
+# The page, and a page in a folder of website(8)'s sites, which Caddy does
+# not serve; a run before may have left either.
+[[step]]
+run = '''sh -c 'rm -rf /shared/www/lab-caddy.html /shared/www/sites/lab-caddy && mkdir -p /shared/www/sites/lab-caddy && echo "<p>Hello from Caddy on Dukovo</p>" > /shared/www/lab-caddy.html && echo shop > /shared/www/sites/lab-caddy/index.html && echo pages-put' '''
+root = true
+expect = "pages-put"
+[[step]]
+run = "service caddy enable"
+root = true
+# Spark counts it ready once it listens (ADR 0470), which takes seconds
+# on a slow machine.
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! service caddy status > /dev/null; do sleep 1; i=$((i + 1)); done; service caddy status'"
+root = true
+expect = "Active: active (running)"
+[[step]]
+host = "curl -s http://{machine}:{machine-port:80}/lab-caddy.html"
+expect = "Hello from Caddy on Dukovo"
+# The sites of website(8) are nginx's: Caddy's settings answer 404 for
+# them, though the file is there.
+[[step]]
+host = "curl -s -o /dev/null -w 'sites %{http_code}' http://{machine}:{machine-port:80}/sites/lab-caddy/index.html"
+expect = "sites 404"
+# The machine's own certificate, which certd made, named in Caddy's service
+# file, port 443 as its second socket, and the HTTPS site its settings hold
+# turned on, as their comments say; a restart has Spark copy the
+# certificate for Caddy and hold the port.
+[[step]]
+run = '''sh -c 'sed -i "/^secrets = /a certificates = [\"this-machine\"]" /system/settings/spark/services/caddy.toml && printf "\n[[sockets]]\nport = 443\nname = \"https\"\n" >> /system/settings/spark/services/caddy.toml && sed -i "/^#https:\/\/ {/,/^#}/s/^#//" /shared/services/com.caddyserver.caddy/caddy/conf/Caddyfile && service caddy restart && echo restarted' '''
+root = true
+expect = "restarted"
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! service caddy status > /dev/null; do sleep 1; i=$((i + 1)); done; service caddy status'"
+root = true
+expect = "Active: active (running)"
+# The lab PC trusts that certificate and no other, and the machine's name.
+[[step]]
+host = "sh {here}/nginx-cert.sh trust {machine} {machine-port:22} {machine-port:443} /lab-caddy.html"
+expect = "Hello from Caddy on Dukovo"
+# Five reloads, two seconds apart, by a shell of the machine's own so that
+# the step returns, while the lab PC asks. The shell ignores the hangup that
+# ends the step's elevate, and counts the reloads in a file for a step to
+# check.
+[[step]]
+run = "sh -c 'trap \"\" HUP; rm -f /users/lab/caddy-reloads; (for i in 1 2 3 4 5; do sleep 2; service caddy reload && echo reloaded >> /users/lab/caddy-reloads; done) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+host = "sh {here}/nginx-load.sh {machine} {machine-port:80} {machine-port:443} /lab-caddy.html"
+expect = "lost 0"
+[[step]]
+run = "sh -c 'echo reloads $(grep -c reloaded /users/lab/caddy-reloads)'"
+root = true
+expect = "reloads 5"
+# Two renewals of the certificate, 10 seconds apart, by a shell of the
+# machine's own, while the lab PC asks: Spark has Caddy read the new
+# certificate on SIGHUP, which loses no request. The machine's own
+# certificate is the one Caddy serves afterwards.
+[[step]]
+run = "sh -c 'trap \"\" HUP; (sleep 3; cert renew this-machine; sleep 10; cert renew this-machine) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+host = "sh {here}/nginx-load.sh {machine} {machine-port:80} {machine-port:443} /lab-caddy.html"
+expect = "lost 0"
+# The second SIGHUP comes 10 seconds after the first: wait for it, which
+# polls the fingerprint Caddy serves up to a bound.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 30 ]; do sh {here}/nginx-cert.sh served {machine} {machine-port:22} {machine-port:443} && exit 0; sleep 2; i=$((i + 1)); done; sh {here}/nginx-cert.sh served {machine} {machine-port:22} {machine-port:443}'"
+expect = "serving the fingerprint cert show gives"
+# The pages and the count of reloads go, and the bundle with its data and
+# its service file. The folder of the sites goes too, if nothing else is
+# in it.
+[[step]]
+run = "sh -c 'rm -rf /shared/www/lab-caddy.html /shared/www/sites/lab-caddy /users/lab/caddy-reloads; rmdir /shared/www/sites 2> /dev/null; bundle remove --for-everyone --purge com.caddyserver.caddy'"
+root = true
+expect = "removed com.caddyserver.caddy"

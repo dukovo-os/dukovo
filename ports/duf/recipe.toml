@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# duf, which shows each mounted filesystem's size, use and free space in a
+# table: a bundle of the Dukovo catalog, not of the image (ADR 0370), built
+# with Go for Radix (ADR 0600). Its command runs with the access of whoever
+# runs it, as command-line tools do.
+name = "duf"
+version = "0.9.1"
+summary = "shows each disk's size and free space, in a table"
+license = "MIT"
+homepage = "https://github.com/muesli/duf"
+depends = ["go", "go-modules"]
+
+[source]
+git = "https://github.com/muesli/duf.git"
+commit = "b2f01a1ecbfd1af63015b83296c50a95260f97b1"
+tag = "v0.9.1"
+
+[bundle]
+id = "io.github.muesli.duf"
+name = "duf"
+commands = ["duf"]

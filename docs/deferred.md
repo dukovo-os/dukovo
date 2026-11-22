@@ -258,7 +258,10 @@ machine with AMT, an AMD machine and a laptop; see
 | Go's race detector, `go build -race` and `go test -race` (ADR 0357) | No race runtime for Radix | An upstream race runtime for Radix, or a port of it |
 | `go build` as fast as on Linux, held in `ob bench` | The bench's Linux machine has no Go toolchain to compare with | A Go toolchain in the bench's Linux machine |
 | Go's build modes `c-archive`, `c-shared`, `shared` and `plugin` (ADR 0357) | Go's table of platforms does not enable them for Radix, and Dukovo loads no library at run time for Go code | Need |
-| fzf, lazygit and duf in the catalog | Written in Go | Phase 17 |
+| File watching in Go programs: fsnotify has no backend for Radix, so micro and lazygit do not see a file another program changes until they are asked to look again (ADR 0600) | Radix's kqueue has no `EVFILT_VNODE`, and Radix has no inotify (ADR 0353) | Need |
+| A clipboard for micro and lazygit: their clipboard modules take their "unsupported" paths (ADR 0600) | Dukovo has no display server | Release 1.1 of the roadmap (windowd) |
+| Caddy as a choice of the admin app's Websites and of `website(8)`, beside nginx (ADR 0601) | nginx serves them (ADR 0491) | Need |
+| HTTP/3 from Caddy's service, over a UDP socket on port 443 that Spark holds and Caddy binds as `fdgram/N` (ADR 0601) | Spark's UDP sockets are not yet tried with Caddy | Need |
 | Zero-copy file transfers in Go programs (`sendfile`, `splice`, `copy_file_range`): `io.Copy` between files and sockets reads and writes through a buffer (ADR 0350) | The C library has none of them | Need |
 | `go test -fuzz` for Radix: Go's fuzzing shares memory with a mapped file between processes (ADR 0350) | Shared writable mappings of files (see Files and storage) | Need |
 

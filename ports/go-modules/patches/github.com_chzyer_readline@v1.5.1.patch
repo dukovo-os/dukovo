@@ -1,0 +1,41 @@
+SPDX-FileCopyrightText: 2015 Chzyer
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT
+
+Radix's terminals take Linux's TCGETS and TCSETS through
+golang.org/x/sys/unix (term_nosyscall6.go); the files that call the
+kernel through syscall.Syscall6 are not for Radix, where it fails.
+
+diff -ruN a/github.com_chzyer_readline@v1.5.1/term.go b/github.com_chzyer_readline@v1.5.1/term.go
+--- a/github.com_chzyer_readline@v1.5.1/term.go
++++ b/github.com_chzyer_readline@v1.5.1/term.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-// +build aix darwin dragonfly freebsd linux,!appengine netbsd openbsd os400 solaris
++// +build aix darwin dragonfly freebsd linux,!appengine netbsd openbsd os400 radix solaris
+ 
+ // Package terminal provides support functions for dealing with terminals, as
+ // commonly found on UNIX systems.
+diff -ruN a/github.com_chzyer_readline@v1.5.1/term_nosyscall6.go b/github.com_chzyer_readline@v1.5.1/term_nosyscall6.go
+--- a/github.com_chzyer_readline@v1.5.1/term_nosyscall6.go
++++ b/github.com_chzyer_readline@v1.5.1/term_nosyscall6.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-// +build aix os400 solaris
++// +build aix os400 radix solaris
+ 
+ package readline
+ 
+diff -ruN a/github.com_chzyer_readline@v1.5.1/utils_unix.go b/github.com_chzyer_readline@v1.5.1/utils_unix.go
+--- a/github.com_chzyer_readline@v1.5.1/utils_unix.go
++++ b/github.com_chzyer_readline@v1.5.1/utils_unix.go
+@@ -1,4 +1,4 @@
+-// +build aix darwin dragonfly freebsd linux,!appengine netbsd openbsd os400 solaris
++// +build aix darwin dragonfly freebsd linux,!appengine netbsd openbsd os400 radix solaris
+ 
+ package readline
+ 
