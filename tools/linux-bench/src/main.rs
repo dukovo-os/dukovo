@@ -53,6 +53,9 @@
 //! the initramfs holds one, on a tmpfs at `/tmp`, with the environment
 //! `TZ=UTC` and `PATH=/usr/bin:/bin` and nothing else: nginx, PHP, Valkey
 //! and PostgreSQL, whose rows print in the same format as the rest.
+//! It prints a `BENCHCOUNT` line after each measured pass too, with the
+//! context switches and the CPU time (user, system, idle) of the pass from
+//! `/proc/stat`.
 //!
 //! After the TLB shootdowns it prints how many TLB interrupts reached the
 //! other CPU (the `TLB` line of `/proc/interrupts`), as Radix prints its

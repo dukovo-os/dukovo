@@ -12,11 +12,22 @@
 //     BENCH name=<name> ns=<nanoseconds per operation> iterations=<count>
 //
 // A row runs one warm-up pass and then PASSES measured ones; the lab keeps
-// the fastest line of a row. The servers run as the account `bench` (the
-// program drops root first, since PostgreSQL's initdb refuses root), with
-// their data in a folder it makes in /tmp and removes at the end, with
-// the servers stopped. A failure prints the end of the server's log, then
-// "serverbench: <row> failed: <why>", and exits 1.
+// the fastest line of a row. After the line or lines of each measured pass
+// it prints how the machine spent the pass, summed over all CPUs,
+//
+//     BENCHCOUNT group=<name> rounds=<operations> switches=<n> user_ns=<n>
+//         system_ns=<n> idle_ns=<n> [ipis=<n> halts=<n> timer_writes=<n>]
+//
+// from /processes/stat on Radix (all seven) and from /proc/stat on Linux
+// (the first four; the clock ticks become nanoseconds). A run of
+// valkey-benchmark prints three rows and one such line, group
+// server_valkey_run; if neither file can be read there is no line.
+//
+// The servers run as the account `bench` (the program drops root first,
+// since PostgreSQL's initdb refuses root), with their data in a folder it
+// makes in /tmp and removes at the end, with the servers stopped. A
+// failure prints the end of the server's log, then "serverbench: <row>
+// failed: <why>", and exits 1.
 //
 //     serverbench [--applications DIR] nginx|php|valkey|postgresql...
 //
@@ -81,6 +92,100 @@ static uint64_t now_ns(void) {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
+}
+
+// What the machine had done at a moment, summed over its CPUs: Radix's
+// /processes/stat lists one count a line ("ipis: 12"), Linux's /proc/stat
+// has the context switches and the CPU times in clock ticks, and no ipis,
+// halts or timer writes. `valid` is 0 when neither file could be read.
+struct counts {
+	int valid;
+	int radix;
+	uint64_t switches, user_ns, system_ns, idle_ns;
+	uint64_t ipis, halts, timer_writes;
+};
+
+// Reads Radix's /processes/stat; false if it lacks one of the seven.
+static int read_radix_counts(struct counts *counts) {
+	FILE *file = fopen("/processes/stat", "r");
+	if(!file)
+		return 0;
+	const struct {
+		const char *name;
+		uint64_t *value;
+	} fields[] = {{"switches", &counts->switches}, {"user_ns", &counts->user_ns}, {"system_ns", &counts->system_ns},
+	              {"idle_ns", &counts->idle_ns}, {"ipis", &counts->ipis}, {"halts", &counts->halts},
+	              {"timer_writes", &counts->timer_writes}};
+	const unsigned all = (1u << (sizeof(fields) / sizeof(fields[0]))) - 1;
+	unsigned found = 0;
+	char line[256];
+	while(fgets(line, sizeof(line), file)) {
+		for(size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+			size_t length = strlen(fields[i].name);
+			if(!strncmp(line, fields[i].name, length) && line[length] == ':') {
+				*fields[i].value = strtoull(line + length + 1, NULL, 10);
+				found |= 1u << i;
+			}
+		}
+	}
+	fclose(file);
+	return found == all;
+}
+
+// Reads Linux's /proc/stat; false if it lacks `ctxt` or the `cpu ` line.
+static int read_linux_counts(struct counts *counts) {
+	FILE *file = fopen("/proc/stat", "r");
+	if(!file)
+		return 0;
+	long hz = sysconf(_SC_CLK_TCK);
+	if(hz <= 0)
+		hz = 100;
+	int have_switches = 0, have_cpu = 0;
+	char line[512];
+	while(fgets(line, sizeof(line), file)) {
+		unsigned long long user, nice, system, idle, iowait = 0, irq = 0, softirq = 0;
+		if(!strncmp(line, "ctxt ", 5)) {
+			counts->switches = strtoull(line + 5, NULL, 10);
+			have_switches = 1;
+		} else if(!strncmp(line, "cpu ", 4) &&
+		          sscanf(line + 4, "%llu %llu %llu %llu %llu %llu %llu", &user, &nice, &system, &idle, &iowait, &irq, &softirq) >= 4) {
+			uint64_t ns_per_tick = 1000000000u / (uint64_t)hz;
+			counts->user_ns = (user + nice) * ns_per_tick;
+			counts->system_ns = (system + irq + softirq) * ns_per_tick;
+			counts->idle_ns = (idle + iowait) * ns_per_tick;
+			have_cpu = 1;
+		}
+	}
+	fclose(file);
+	return have_switches && have_cpu;
+}
+
+static struct counts counts_now(void) {
+	struct counts counts;
+	memset(&counts, 0, sizeof(counts));
+	if(read_radix_counts(&counts)) {
+		counts.valid = counts.radix = 1;
+		return counts;
+	}
+	memset(&counts, 0, sizeof(counts));
+	counts.valid = read_linux_counts(&counts);
+	return counts;
+}
+
+// Prints what the machine did between `before` and `after`, as the
+// BENCHCOUNT line of a pass of `rounds` operations; nothing if either
+// reading failed.
+static void print_counts(const char *group, struct counts before, struct counts after, uint64_t rounds) {
+	if(!before.valid || !after.valid || before.radix != after.radix)
+		return;
+	printf("BENCHCOUNT group=%s rounds=%llu switches=%llu user_ns=%llu system_ns=%llu idle_ns=%llu", group, (unsigned long long)rounds,
+	       (unsigned long long)(after.switches - before.switches), (unsigned long long)(after.user_ns - before.user_ns),
+	       (unsigned long long)(after.system_ns - before.system_ns), (unsigned long long)(after.idle_ns - before.idle_ns));
+	if(after.radix)
+		printf(" ipis=%llu halts=%llu timer_writes=%llu", (unsigned long long)(after.ipis - before.ipis),
+		       (unsigned long long)(after.halts - before.halts), (unsigned long long)(after.timer_writes - before.timer_writes));
+	printf("\n");
+	fflush(stdout);
 }
 
 // The folder the program runs in, and where it keeps its applications.
@@ -645,9 +750,12 @@ static void http_row(const char *row, const char *path, int keep_alive, uint64_t
 	http_row_now = row;
 	http_pass(path, keep_alive, requests, expected);
 	for(int pass = 0; pass < PASSES; pass++) {
+		struct counts before = counts_now();
 		uint64_t started = now_ns();
 		http_pass(path, keep_alive, requests, expected);
+		struct counts after = counts_now();
 		report(row, started, requests);
+		print_counts(row, before, after, requests);
 	}
 }
 
@@ -717,8 +825,13 @@ static void php_rows(void) {
 	write_file("compute.php", compute_php, sizeof(compute_php) - 1);
 	// The first run is the warm-up pass.
 	compute_ns();
-	for(int pass = 0; pass < PASSES; pass++)
-		print_row("server_php_compute", compute_ns() / PHP_COMPUTE_PASSES, PHP_COMPUTE_PASSES);
+	for(int pass = 0; pass < PASSES; pass++) {
+		struct counts before = counts_now();
+		double ns = compute_ns();
+		struct counts after = counts_now();
+		print_row("server_php_compute", ns / PHP_COMPUTE_PASSES, PHP_COMPUTE_PASSES);
+		print_counts("server_php_compute", before, after, PHP_COMPUTE_PASSES);
+	}
 }
 
 // Reads a rate from valkey-benchmark's CSV, which has a line
@@ -756,15 +869,21 @@ static void valkey_rows(void) {
 	wait_ready(valkey, valkey_ready);
 	valkey_benchmark("set,get,lpush", VALKEY_REQUESTS, 1);
 	for(int pass = 0; pass < PASSES; pass++) {
+		struct counts before = counts_now();
 		valkey_benchmark("set,get,lpush", VALKEY_REQUESTS, 1);
+		struct counts after = counts_now();
 		print_row("server_valkey_set", 1e9 / csv_rate("valkey-benchmark", "SET"), VALKEY_REQUESTS);
 		print_row("server_valkey_get", 1e9 / csv_rate("valkey-benchmark", "GET"), VALKEY_REQUESTS);
 		print_row("server_valkey_lpush", 1e9 / csv_rate("valkey-benchmark", "LPUSH"), VALKEY_REQUESTS);
+		print_counts("server_valkey_run", before, after, 3 * (uint64_t)VALKEY_REQUESTS);
 	}
 	valkey_benchmark("get", VALKEY_PIPELINED_REQUESTS, VALKEY_PIPELINE);
 	for(int pass = 0; pass < PASSES; pass++) {
+		struct counts before = counts_now();
 		valkey_benchmark("get", VALKEY_PIPELINED_REQUESTS, VALKEY_PIPELINE);
+		struct counts after = counts_now();
 		print_row("server_valkey_get_pipelined", 1e9 / csv_rate("valkey-benchmark", "GET"), VALKEY_PIPELINED_REQUESTS);
+		print_counts("server_valkey_get_pipelined", before, after, VALKEY_PIPELINED_REQUESTS);
 	}
 	stop_server(valkey);
 }
@@ -793,8 +912,14 @@ static double pgbench_tps(int select_only, int per_client) {
 
 static void pgbench_row(const char *row, int select_only, int per_client) {
 	pgbench_tps(select_only, per_client);
-	for(int pass = 0; pass < PASSES; pass++)
-		print_row(row, 1e9 / pgbench_tps(select_only, per_client), (uint64_t)CONNECTIONS * (uint64_t)per_client);
+	uint64_t rounds = (uint64_t)CONNECTIONS * (uint64_t)per_client;
+	for(int pass = 0; pass < PASSES; pass++) {
+		struct counts before = counts_now();
+		double tps = pgbench_tps(select_only, per_client);
+		struct counts after = counts_now();
+		print_row(row, 1e9 / tps, rounds);
+		print_counts(row, before, after, rounds);
+	}
 }
 
 static void postgresql_rows(void) {

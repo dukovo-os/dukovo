@@ -382,6 +382,10 @@ bundles, puts the machine in the benchmark profile, and runs
 one worker of the server on the machine, drives it itself over the loopback
 or a Unix socket with its data in `/tmp`, and prints each row after a
 warm-up pass and three measured passes, of which the lab keeps the fastest.
+Each measured pass is followed by a `BENCHCOUNT` line with the machine's
+context switches and CPU time (user, system and idle, over all CPUs) during
+the pass, and on Dukovo its IPIs, halts and timer writes; the run's note keeps
+it, so that a slow row shows where its time went.
 The rows are one operation each:
 
 | Row | One operation |
