@@ -65,7 +65,9 @@ on_machine() {
 }
 
 # Runs the machine script as root: elevate takes the lab password from its
-# standard input, as the lab's own root steps give it.
+# standard input, as the lab's own root steps give it, and writes its
+# prompt, with no newline, to the standard error, which callers keep apart
+# from the answer they read.
 as_root() {
 	on_machine "elevate -S sh /users/lab/server-week-machine.sh $*" <"$password_file"
 }
@@ -152,7 +154,7 @@ judge_day() {
 # all three.
 ask_check() {
 	tries=1
-	until answer=$(as_root check 2>&1) && printf '%s\n' "$answer" | grep -q '^check '; do
+	until answer=$(as_root check 2>"$dir/check.err") && printf '%s\n' "$answer" | grep -q '^check '; do
 		if [ "$tries" -ge 3 ]; then
 			return 1
 		fi
@@ -179,7 +181,7 @@ day() {
 		now=$(date +%s)
 		[ "$due" -le "$now" ] || sleep $((due - now))
 		if ! ask_check; then
-			echo "day $n failed: check $i got no answer in 3 tries a minute apart, the last: $answer"
+			echo "day $n failed: check $i got no answer in 3 tries a minute apart, the last: $answer $(tail -n 3 "$dir/check.err" | tr '\n' ' ')"
 			exit 1
 		fi
 		result=$(printf '%s\n' "$answer" | grep '^check ' | tail -n 1)
