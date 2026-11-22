@@ -520,6 +520,7 @@ machine asks for them.
 | On real hardware (OptiPlex 7040, i5-6500), on 2026-11-20: fork, exec and wait 1.12 times Linux's time, and the UDP round trip on one CPU 1.16 before ADR 0553; the lab's next run there confirms both | Lab, performance/loopback and processes on the OptiPlex; mlibc patches 0092 and 0093 |
 | TLS rows of the server benchmarks (nginx over HTTPS, PostgreSQL over TLS): the handshake and record costs are OpenSSL's arithmetic, the same code on both systems, and the Linux kit's servers are built without OpenSSL | ADR 0546 |
 | The server benchmarks over the network card: they run client and server on the machine, over the loopback or a Unix socket, so that they need no peer; the card's path is measured by its own rows | ADR 0546 |
+| At the CPUs' default clocks, Dukovo's and Linux's differ on real hardware: Dukovo idles in C1 with the firmware's C1E promotion left on and no deeper state, so idle cores count as active and the busy core reaches the four-core turbo level (3.3 GHz on the OptiPlex 7040) where Linux, whose intel_idle turns the promotion off and uses deeper states, can reach 3.6 GHz. The lab's performance tests hold both systems at the base frequency instead; what the default clocks cost is measured with `cpu_cycle_cold`, `cpu_cycle` and `cpu_cycle_end` once that run is in, and deep idle states come with laptop power | ADR 0557; the first OptiPlex run with the clocks held |
 
 ## Lab findings to confirm
 

@@ -1093,9 +1093,12 @@ own speed, within a range of performance levels and an energy preference
 the kernel asks for: Intel's hardware P-states (HWP) and AMD's CPPC
 (ADR 0202). Once the machine checks are on, unless *pstate=off*, each
 CPU's work thread turns its control on and asks for every level from its
-lowest to its highest, at the CPU's own choice, with the firmware's
-energy preference or the one *epp* names, as Linux's _intel_pstate_ and
-_amd-pstate-epp_ drivers do. The log says what the CPUs can do:
+most efficient to its highest, at the CPU's own choice, with the
+firmware's energy preference or the one *epp* names, as Linux's
+_intel_pstate_ and _amd-pstate-epp_ drivers do (ADR 0557). The kernel
+settings *cpu.boost* and *cpu.speed* keep the CPUs at or below their base
+frequency, or hold them at one speed (*tune*(8)). The log says what the
+CPUs can do:
 
 	CPU frequency: Intel's HWP on 8 CPUs, 400 to 3400 MHz, base 1800 MHz, energy preference balance_performance
 

@@ -11,6 +11,10 @@
 //!
 //! - `cpu.energy_preference`: what HWP or CPPC weighs the CPUs' speed
 //!   against their power with ([`pstate::set_preference`]);
+//! - `cpu.boost`: whether the CPUs may run above their base frequency
+//!   ([`pstate::set_boost`]);
+//! - `cpu.speed`: whether each CPU picks its own speed or is held at the
+//!   highest it may run at ([`pstate::set_held`]);
 //! - `sched.slice_us`: the fair class's base slice, each thread's from its
 //!   next turn ([`sched::set_slice_ns`]);
 //! - `disk.read_ahead_kib`: the page cache's read-ahead
@@ -75,12 +79,24 @@ struct Setting {
 }
 
 /// Every setting, in the order `list` numbers them.
-static SETTINGS: [Setting; 4] = [
+static SETTINGS: [Setting; 6] = [
     Setting {
         name: "cpu.energy_preference",
         takes: Takes::Words("firmware performance balance_performance balance_power power"),
         get: |out| out.write_str(pstate::preference().map_or("firmware", Preference::name)),
         set: |value| pstate::set_preference(Preference::parse(value)),
+    },
+    Setting {
+        name: "cpu.boost",
+        takes: Takes::Words("on off"),
+        get: |out| out.write_str(if pstate::boost() { "on" } else { "off" }),
+        set: |value| pstate::set_boost(value == "on"),
+    },
+    Setting {
+        name: "cpu.speed",
+        takes: Takes::Words("chosen highest"),
+        get: |out| out.write_str(if pstate::held() { "highest" } else { "chosen" }),
+        set: |value| pstate::set_held(value == "highest"),
     },
     Setting {
         name: "sched.slice_us",
@@ -116,10 +132,10 @@ static SETTINGS: [Setting; 4] = [
 ];
 
 /// The values the settings had when the kernel started.
-static STARTS: [Once<TextBuf<32>>; 4] = [const { Once::new() }; 4];
+static STARTS: [Once<TextBuf<32>>; SETTINGS.len()] = [const { Once::new() }; SETTINGS.len()];
 
 /// Keeps each setting's value at start. Called once the CPUs' speed
-/// control has started, which the energy preference depends on.
+/// control has started, which the CPU settings depend on.
 pub fn init() {
     for (setting, start) in SETTINGS.iter().zip(&STARTS) {
         let mut value = TextBuf::new();

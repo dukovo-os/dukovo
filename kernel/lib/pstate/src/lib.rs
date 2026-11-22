@@ -14,7 +14,9 @@
 //! [`Request`] is what the CPU is asked for: its lowest and highest level,
 //! a desired one (0, the CPU's choice), and an energy preference from 0
 //! (all for performance) to 255 (all for saving power), whose usual values
-//! Linux names ([`Preference`]).
+//! Linux names ([`Preference`]). [`Request::at`] works it out from the
+//! levels and the [`Speed`] the kernel allows: with or without boost,
+//! held at the top or left to the CPU, and cooled or not.
 //!
 //! Frequencies are for people, a level times a [`Scale`]: Intel's levels
 //! are 100 MHz apart, but on hybrid CPUs; AMD's count fractions of the
@@ -226,23 +228,50 @@ pub struct Request {
     pub preference: u8,
 }
 
-impl Request {
-    /// The request at boot, as Linux's: every level from the lowest to the
-    /// highest, at the CPU's choice, with `preference` if given, else the
-    /// firmware's.
-    pub fn at_boot(levels: Levels, firmware: Request, preference: Option<u8>) -> Request {
-        Request {
-            min: levels.lowest,
-            max: levels.highest,
-            desired: 0,
-            preference: preference.unwrap_or(firmware.preference),
-        }
-    }
+/// How fast the kernel lets a CPU run: the settings `cpu.boost` and
+/// `cpu.speed` (ADR 0557) and passive cooling's step (ADR 0203).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Speed {
+    /// The CPU may run above its base frequency, its nominal level.
+    pub boost: bool,
+    /// The CPU is held at the highest level it may run at, as Linux's
+    /// performance governor holds it, rather than picking its own.
+    pub held: bool,
+    /// Passive cooling's step: each takes a fifth of the highest level off
+    /// ([`cooled`]).
+    pub cooling_step: u8,
+}
 
-    /// The request with its highest level at most `level`, but not below
-    /// its lowest.
-    pub fn capped(self, level: u8) -> Request {
-        Request { max: self.max.min(level).max(self.min), ..self }
+impl Speed {
+    /// The speed at boot: boosted, picked by the CPU, not cooled.
+    pub const BOOT: Speed = Speed { boost: true, held: false, cooling_step: 0 };
+}
+
+impl Request {
+    /// What a CPU with `levels` is asked for at `speed`, with the energy
+    /// preference `preference`.
+    ///
+    /// Its highest level is the highest, or the nominal one without
+    /// boost, and no more than cooling allows. Its lowest is the most
+    /// efficient level, where Linux's drivers start a CPU's range too
+    /// (intel_pstate at the processor's maximum efficiency ratio,
+    /// amd-pstate at the lowest nonlinear level): below it a CPU does no
+    /// more work for its energy, only less work. Cooling below that level
+    /// wins, as a lower maximum pulls the minimum down with it in Linux's
+    /// cpufreq. A held CPU's lowest level is its highest; any other's
+    /// desired level is 0, the CPU's choice between them.
+    pub fn at(levels: Levels, speed: Speed, preference: u8) -> Request {
+        let top = if speed.boost { levels.highest } else { levels.nominal };
+        let max = top.min(cooled(levels, speed.cooling_step));
+        // Firmware may report a most efficient level outside the range,
+        // or none (0); the lowest level is the floor then.
+        let floor = if (levels.lowest..=levels.highest).contains(&levels.efficient) {
+            levels.efficient
+        } else {
+            levels.lowest
+        };
+        let min = if speed.held { max } else { floor.min(max) };
+        Request { min, max, desired: 0, preference }
     }
 }
 
@@ -444,20 +473,18 @@ mod tests {
         assert!(levels.valid());
         assert_eq!(request, Request { min: 8, max: 18, desired: 0, preference: 0x80 });
 
-        let boot = Request::at_boot(levels, request, None);
-        assert_eq!(boot, Request { min: 4, max: 34, desired: 0, preference: 0x80 });
+        let boot = Request::at(levels, Speed::BOOT, request.preference);
+        assert_eq!(boot, Request { min: 8, max: 34, desired: 0, preference: 0x80 });
         driver.set_request(&mut cpu, boot);
-        assert_eq!(cpu.registers[&HWP_REQUEST], fields(&[4, 34, 0, 0x80, 1]));
+        assert_eq!(cpu.registers[&HWP_REQUEST], fields(&[8, 34, 0, 0x80, 1]));
 
-        let power = Request::at_boot(levels, request, Some(Preference::Power.value(driver)));
-        driver.set_request(&mut cpu, power.capped(20));
-        assert_eq!(cpu.registers[&HWP_REQUEST], fields(&[4, 20, 0, 0xff, 1]));
+        let cooled = Speed { cooling_step: 2, ..Speed::BOOT };
+        driver.set_request(&mut cpu, Request::at(levels, cooled, Preference::Power.value(driver)));
+        assert_eq!(cpu.registers[&HWP_REQUEST], fields(&[8, 20, 0, 0xff, 1]));
         assert_eq!(
             driver.request(&mut cpu),
-            Request { min: 4, max: 20, desired: 0, preference: 0xff }
+            Request { min: 8, max: 20, desired: 0, preference: 0xff }
         );
-        // A cap never goes below the lowest level asked for.
-        assert_eq!(power.capped(1).max, 4);
     }
 
     #[test]
@@ -483,10 +510,66 @@ mod tests {
         assert_eq!(levels, Levels { lowest: 18, efficient: 50, nominal: 120, highest: 196 });
         assert_eq!(request, Request { min: 18, max: 196, desired: 0, preference: 0x80 });
 
-        let saving =
-            Request::at_boot(levels, request, Some(Preference::BalancePower.value(driver)));
-        driver.set_request(&mut cpu, saving.capped(150));
-        assert_eq!(cpu.registers[&CPPC_REQUEST], fields(&[150, 18, 0, 0xbf]));
+        let unboosted = Speed { boost: false, ..Speed::BOOT };
+        let saving = Request::at(levels, unboosted, Preference::BalancePower.value(driver));
+        driver.set_request(&mut cpu, saving);
+        assert_eq!(cpu.registers[&CPPC_REQUEST], fields(&[120, 50, 0, 0xbf]));
+    }
+
+    #[test]
+    fn a_cpu_is_asked_for_its_most_efficient_level_to_its_highest() {
+        let levels = Levels { lowest: 1, efficient: 8, nominal: 32, highest: 36 };
+        let asked = Request::at(levels, Speed::BOOT, 0x80);
+        assert_eq!(asked, Request { min: 8, max: 36, desired: 0, preference: 0x80 });
+        // A most efficient level the firmware left out, or put outside the
+        // range, leaves the lowest as the floor.
+        for efficient in [0, 37] {
+            let odd = Levels { efficient, ..levels };
+            assert_eq!(Request::at(odd, Speed::BOOT, 0x80).min, 1);
+        }
+    }
+
+    #[test]
+    fn without_boost_a_cpu_runs_at_most_at_its_base_level() {
+        let levels = Levels { lowest: 1, efficient: 8, nominal: 32, highest: 36 };
+        let unboosted = Speed { boost: false, ..Speed::BOOT };
+        assert_eq!(Request::at(levels, unboosted, 0).max, 32);
+        // Cooling below the base level still cools.
+        let cooled = Speed { cooling_step: 2, ..unboosted };
+        assert_eq!(Request::at(levels, cooled, 0).max, 21);
+    }
+
+    #[test]
+    fn a_held_cpu_is_asked_for_one_level() {
+        let levels = Levels { lowest: 1, efficient: 8, nominal: 32, highest: 36 };
+        let held = Speed { held: true, ..Speed::BOOT };
+        assert_eq!(
+            Request::at(levels, held, 0),
+            Request { min: 36, max: 36, desired: 0, preference: 0 }
+        );
+        // Held without boost: the base frequency, what the lab measures at.
+        let base = Speed { boost: false, ..held };
+        assert_eq!(
+            Request::at(levels, base, 0),
+            Request { min: 32, max: 32, desired: 0, preference: 0 }
+        );
+        // Held while cooled: at the level cooling allows.
+        let cooled = Speed { cooling_step: 3, ..base };
+        assert_eq!(
+            (Request::at(levels, cooled, 0).min, Request::at(levels, cooled, 0).max),
+            (14, 14)
+        );
+    }
+
+    #[test]
+    fn cooling_below_the_most_efficient_level_takes_the_lowest_down_with_it() {
+        let levels = Levels { lowest: 4, efficient: 8, nominal: 18, highest: 34 };
+        let cooled = Speed { cooling_step: 4, ..Speed::BOOT };
+        let asked = Request::at(levels, cooled, 0x80);
+        assert_eq!((asked.min, asked.max), (6, 6));
+        // Never below the lowest level.
+        let coldest = Speed { cooling_step: 9, ..Speed::BOOT };
+        assert_eq!(Request::at(levels, coldest, 0x80).max, 4);
     }
 
     #[test]

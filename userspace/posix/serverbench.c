@@ -813,16 +813,25 @@ static void postgresql_rows(void) {
 
 // A chain of additions, each waiting for the one before, so one clock
 // cycle each on any x86-64 processor: the time of one is the processor's
-// clock cycle, which says how fast each system runs it. `ob bench
-// --from` shows it beside the rows (ADR 0124); no row compares it.
+// clock cycle, which says how fast each system runs it. As bench.c's row
+// of the same name, the chain first runs for 250 ms, so that a processor
+// that lets its clock fall when idle has climbed back to the clock the
+// rows run at; the lab compares the two systems' clocks from it before
+// it compares any row (ADR 0557).
 static void cpu_cycle(uint64_t rounds) {
 #ifdef __x86_64__
-	uint64_t x = 0;
+	uint64_t x = 0, warmed = 0;
+	uint64_t warm_until = now_ns() + 250 * 1000000ull;
+	while(now_ns() < warm_until) {
+		for(int i = 0; i < 100000; i++)
+			__asm__ volatile(".rept 100\n\taddq $1, %0\n\t.endr" : "+r"(x));
+		warmed += 100000;
+	}
 	uint64_t started = now_ns();
 	for(uint64_t i = 0; i < rounds; i++)
 		__asm__ volatile(".rept 100\n\taddq $1, %0\n\t.endr" : "+r"(x));
 	report("cpu_cycle", started, rounds * 100);
-	if(x != rounds * 100)
+	if(x != (warmed + rounds) * 100)
 		fail("cpu_cycle", "the sum is wrong");
 #else
 	(void)rounds;

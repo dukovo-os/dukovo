@@ -4,6 +4,15 @@
 about = "TCP and UDP over the loopback interface take no longer than on Linux"
 time = "10m"
 
+# Both systems run at the base clock for the rows (ADR 0557): the
+# benchmark profile holds Dukovo's CPUs there, and the Linux kit holds
+# the twin's own. The balanced profile is back at the end, since a
+# passed test shares its boot with the next test.
+[[step]]
+run = "tune set benchmark"
+root = true
+expect = "the profile is benchmark"
+
 # The POSIX benchmarks: the C program `ob bench` runs on both systems
 # (userspace/posix/bench.c), here on the machine under test, against the
 # same program built for Linux in the Linux kit. Every row is held to
@@ -19,3 +28,8 @@ rows = [
     "posix_udp_roundtrip_cross_cpu",
     "posix_tcp_mib",
 ]
+
+[[step]]
+run = "tune set balanced"
+root = true
+expect = "the profile is balanced"
