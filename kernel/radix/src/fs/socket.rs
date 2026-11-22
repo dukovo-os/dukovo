@@ -57,7 +57,7 @@ use self::datagram::{Datagram, Inbox};
 use self::flight::Queue;
 use super::pipe::{self, Files, Pipe};
 use super::{Description, FileObject, FileRef};
-use crate::sched::{self, wait};
+use crate::sched::{self, wait::WaitCount};
 use crate::user::Fifo;
 use crate::user::posix::poll::{self, Polled};
 use crate::user::posix::signal::{Restart, interrupted};
@@ -269,6 +269,12 @@ pub struct Listener {
     waiting: AtomicUsize,
     /// How many may wait at once.
     backlog: AtomicUsize,
+    /// The threads blocked in `accept`, woken one per connection
+    /// ([`Listener::accept_key`]).
+    accepting: WaitCount,
+    /// The threads blocked in `connect` until there is room in the queue,
+    /// all woken when room is made ([`Listener::connect_key`]).
+    connecting: WaitCount,
     /// Whether the socket has gone.
     closed: AtomicBool,
     /// The socket's name, and its process, as they were when it began to
@@ -280,13 +286,37 @@ pub struct Listener {
 }
 
 impl Listener {
-    fn key(&self) -> usize {
-        core::ptr::from_ref::<Listener>(self) as usize
+    /// What threads blocked in `accept` wait on.
+    fn accept_key(&self) -> usize {
+        core::ptr::from_ref(&self.accepting) as usize
     }
 
-    /// Something changed: the waits look again, and so do its pollers.
+    /// What threads blocked in `connect`, waiting for room, wait on.
+    fn connect_key(&self) -> usize {
+        core::ptr::from_ref(&self.connecting) as usize
+    }
+
+    /// A connection was queued: one thread blocked in `accept` takes it,
+    /// and the pollers look again. Waking every accept for each connection
+    /// (PHP-FPM's workers all block in it) had all but one find nothing
+    /// and sleep again (ADR 0650).
+    fn queued(&self) {
+        self.accepting.wake_one(self.accept_key());
+        self.polled.changed();
+    }
+
+    /// A connection was taken: there is room for one more, and the pollers
+    /// look again.
+    fn taken(&self) {
+        self.connecting.wake_all(self.connect_key());
+        self.polled.changed();
+    }
+
+    /// Something else changed (the backlog, or the socket went): every
+    /// wait looks again, and so do the pollers.
     fn changed(&self) {
-        wait::wake_all(self.key());
+        self.accepting.wake_all(self.accept_key());
+        self.connecting.wake_all(self.connect_key());
         self.polled.changed();
     }
 
@@ -310,14 +340,14 @@ impl Listener {
                     }
                     self.waiting.store(queue.len(), Ordering::Release);
                     drop(queue);
-                    self.changed();
+                    self.queued();
                     return Ok(());
                 }
             }
             if non_blocking {
                 return Err(Kernel::WouldBlock.status(0));
             }
-            wait::wait_until(self.key(), "socket connect", || {
+            self.connecting.wait_until(self.connect_key(), "socket connect", || {
                 self.waiting.load(Ordering::Acquire) < self.backlog.load(Ordering::Acquire)
                     || self.closed.load(Ordering::Acquire)
                     || sched::interrupted()
@@ -337,14 +367,16 @@ impl Listener {
                 if let Some(end) = queue.pop_front() {
                     self.waiting.store(queue.len(), Ordering::Release);
                     drop(queue);
-                    self.changed();
+                    self.taken();
                     return Ok(end);
                 }
             }
             if non_blocking {
                 return Err(Kernel::WouldBlock.status(0));
             }
-            wait::wait_until(self.key(), "socket accept", || {
+            // Woken alone for a connection: one interrupted meanwhile still
+            // takes it, rather than leave it to threads that sleep on.
+            self.accepting.wait_until(self.accept_key(), "socket accept", || {
                 self.waiting.load(Ordering::Acquire) > 0 || sched::interrupted()
             });
             if sched::interrupted() && self.waiting.load(Ordering::Acquire) == 0 {
@@ -374,11 +406,14 @@ impl Listener {
         };
         // Outside the locks, as the other end then sees the end; a Unix
         // socket riding in it goes now (`pipe::Passed`).
+        // Back in the queue, it wakes an accept, as a new one would.
         if lost.is_some() {
             drop(lost);
             super::drop_deferred();
+            self.polled.changed();
+        } else {
+            self.queued();
         }
-        self.changed();
     }
 
     /// The socket has gone: the connections that wait go too, and the
@@ -953,6 +988,8 @@ pub fn listen(socket: &Socket, backlog: u32, process: Peer) -> Result<(), Status
         queue: Mutex::new(Fifo::new()),
         waiting: AtomicUsize::new(0),
         backlog: AtomicUsize::new(backlog),
+        accepting: WaitCount::new(),
+        connecting: WaitCount::new(),
         closed: AtomicBool::new(false),
         name,
         process,

@@ -4,7 +4,7 @@
 ------------------------------- MODULE Timers -------------------------------
 (***************************************************************************)
 (* A model of how the timer thread finds the timers it must fire           *)
-(* (kernel/radix/src/user/posix/timer.rs: `set`, `register`, `changed`,    *)
+(* (kernel/radix/src/user/posix/timer.rs: `set`, `register`, `changed_by`, *)
 (* `run`, `expire_due` and `unregister`), with the wait table's            *)
 (* `wait_until_or_timeout` and `wake_all` (sched/wait.rs) and the          *)
 (* scheduler's `block` and `wake` beneath them.                            *)
@@ -13,23 +13,38 @@
 (* times, or turns it off. Setting it puts the process in `ARMED`, the     *)
 (* list the timer thread looks at, unless it is there, and sets the timer  *)
 (* with the list still locked; turning it off only clears it. Either then  *)
-(* moves `CHANGES` and wakes the timer thread. A set timer expires when    *)
-(* its time comes. The timer thread reads `CHANGES`, takes the list, and   *)
-(* looks at each process's timer in turn: it fires an expired one, notes   *)
-(* a set one for its next deadline, and takes a process whose timer is     *)
-(* off out of the list, after checking again under the list's lock that    *)
-(* it is off. Then it waits until `CHANGES` moves or, if it saw a timer    *)
-(* set, until its deadline; a deadline is the first expiry it saw, which   *)
-(* a timer set again later may have moved, so it may pass at any moment.   *)
+(* moves `CHANGES`, and then reads `NEXT_LOOK`, when the timer thread will *)
+(* look next (ADR 0650). A timer turned off wakes nobody; a timer set      *)
+(* wakes the thread unless the thread will look by the time the timer is  *)
+(* due anyway, which it can only be if `NEXT_LOOK` is a deadline. A set    *)
+(* timer expires when its time comes. The timer thread reads `CHANGES`,    *)
+(* takes the list, and looks at each process's timer in turn: it fires an *)
+(* expired one, notes a set one for its next deadline, and takes a process *)
+(* whose timer is off out of the list, after checking again under the     *)
+(* list's lock that it is off. Then it writes its deadline, or none, to    *)
+(* `NEXT_LOOK`, and waits until `CHANGES` moves or, if it saw a timer set, *)
+(* until its deadline; a deadline is the first time it must look again for *)
+(* a timer it saw, which a timer set again later may have moved, so it may *)
+(* pass at any moment.                                                     *)
 (*                                                                         *)
-(* Each critical section is one step: the list's and the process's locks   *)
-(* (`unregister` holds both), and the wait table's. `CHANGES` moves by a   *)
-(* read-modify-write and is read with acquire, after the timer is set      *)
-(* under its process's lock, so the model's interleaving covers every      *)
-(* execution. A timer with an interval is set again as it fires, under     *)
-(* the same lock, and its process stays in the list; here a timer fires    *)
-(* once. A POSIX timer waiting for its signal to be taken counts as set,   *)
-(* so it is the same.                                                      *)
+(* A setter that skips its wake because the deadline the thread wrote in  *)
+(* this pass comes no later than its timer is due marks the timer `late`:  *)
+(* it cannot expire before that deadline passes. Once the thread begins   *)
+(* another pass, its late timers may expire at any moment, which allows   *)
+(* more than can happen. A setter that read a deadline of an earlier pass *)
+(* knows nothing of when its timer is due against what the thread will    *)
+(* sleep with, so its timer is not late.                                   *)
+(*                                                                         *)
+(* Each critical section is one step: the list's and the process's locks  *)
+(* (`unregister` holds both), and the wait table's. `CHANGES` and          *)
+(* `NEXT_LOOK` are sequentially consistent: the setter moves `CHANGES`     *)
+(* after it sets the timer under its process's lock, then reads            *)
+(* `NEXT_LOOK`; the thread writes `NEXT_LOOK`, then reads `CHANGES` in the *)
+(* wait's critical section. So the model's interleaving covers every       *)
+(* execution. A timer with an interval is set again as it fires, under the *)
+(* same lock, and its process stays in the list; here a timer fires once.  *)
+(* A POSIX timer waiting for its signal to be taken counts as set, so it   *)
+(* is the same.                                                            *)
 (*                                                                         *)
 (* Listed says a process whose timer is set is in the list;                *)
 (* EveryTimerFires says an expired timer fires (or is turned off). Both    *)
@@ -37,7 +52,8 @@
 (* can then see the timer off and take the process out after the setter    *)
 (* found it listed, as the `signal` test's `rearms` part once showed.      *)
 (* EveryTimerFires also fails if the thread reads `CHANGES` after it       *)
-(* looks.                                                                  *)
+(* looks, if a setter reads `NEXT_LOOK` before it moves `CHANGES`, and if  *)
+(* the thread writes `NEXT_LOOK` after the wait reads `CHANGES`.           *)
 (***************************************************************************)
 EXTENDS Naturals
 
@@ -58,15 +74,24 @@ VARIABLES
     target,     \* the process it is taking out of the list
     deadline,   \* it saw a timer set, so it waits with a deadline
     passed,     \* that deadline has passed
+    published,  \* NEXT_LOOK is a deadline, not "never"
+    fresh,      \* the thread wrote NEXT_LOOK in this pass
+    late,       \* each timer a setter set without a wake, judged against
+                \* a deadline of this pass: it is due no sooner
+    act,        \* what each process's thread did this round: "set" or "off"
     tpc,        \* where the timer thread is
     spc,        \* where each process's thread is
     rounds      \* how many times each process's thread has set or cleared
 
 vars == <<timer, list, owner, changes, queued, asleep, pending, seen, snap, target,
-          deadline, passed, tpc, spc, rounds>>
+          deadline, passed, published, fresh, late, act, tpc, spc, rounds>>
 
-ThreadSteps == {"seen", "take", "look", "unregister", "wait", "block", "asleep", "woken"}
-SetterSteps == {"idle", "register", "set", "unlock", "changed", "wake", "done"}
+\* What the thread's steps before `Publish` leave alone.
+nextlook == <<published, fresh>>
+
+ThreadSteps == {"seen", "take", "look", "unregister", "publish", "wait", "block", "asleep",
+                "woken"}
+SetterSteps == {"idle", "register", "set", "unlock", "changed", "next", "wake", "done"}
 None == "none"
 
 TypeOK ==
@@ -82,10 +107,16 @@ TypeOK ==
     /\ target \in Procs \cup {None}
     /\ deadline \in BOOLEAN
     /\ passed \in BOOLEAN
+    /\ published \in BOOLEAN
+    /\ fresh \in BOOLEAN
+    /\ late \in [Procs -> BOOLEAN]
+    /\ act \in [Procs -> {"set", "off"}]
     /\ tpc \in ThreadSteps
     /\ spc \in [Procs -> SetterSteps]
     /\ rounds \in [Procs -> 0..Rounds]
 
+\* NEXT_LOOK starts at 0, a deadline that has passed: the thread looks at
+\* once when it starts, so a setter before then skips its wake.
 Init ==
     /\ timer = [p \in Procs |-> "off"]
     /\ list = {}
@@ -99,6 +130,10 @@ Init ==
     /\ target = None
     /\ deadline = FALSE
     /\ passed = FALSE
+    /\ published = TRUE
+    /\ fresh = FALSE
+    /\ late = [p \in Procs |-> FALSE]
+    /\ act = [p \in Procs |-> "off"]
     /\ tpc = "seen"
     /\ spc = [p \in Procs |-> "idle"]
     /\ rounds = [p \in Procs |-> 0]
@@ -112,20 +147,22 @@ SchedWake ==
          /\ UNCHANGED asleep
 
 ----------------------------------------------------------------------------
-(* A process's thread (`set`, and `changed`).                              *)
+(* A process's thread (`set`, and `changed_by`).                           *)
 
 \* A timer set needs the list; one turned off does not.
 Choose(p) ==
     /\ spc[p] = "idle"
     /\ IF rounds[p] = Rounds
        THEN /\ spc' = [spc EXCEPT ![p] = "done"]
-            /\ UNCHANGED timer
+            /\ UNCHANGED <<timer, act>>
        ELSE \/ /\ spc' = [spc EXCEPT ![p] = "register"]
+               /\ act' = [act EXCEPT ![p] = "set"]
                /\ UNCHANGED timer
             \/ /\ timer' = [timer EXCEPT ![p] = "off"]
+               /\ act' = [act EXCEPT ![p] = "off"]
                /\ spc' = [spc EXCEPT ![p] = "changed"]
     /\ UNCHANGED <<list, owner, changes, queued, asleep, pending, seen, snap, target,
-                   deadline, passed, tpc, rounds>>
+                   deadline, passed, published, fresh, late, tpc, rounds>>
 
 \* `register`: the list locked, the process put in it.
 Register(p) ==
@@ -134,29 +171,48 @@ Register(p) ==
     /\ list' = list \cup {p}
     /\ spc' = [spc EXCEPT ![p] = "set"]
     /\ UNCHANGED <<timer, changes, queued, asleep, pending, seen, snap, target,
-                   deadline, passed, tpc, rounds>>
+                   deadline, passed, published, fresh, late, act, tpc, rounds>>
 
-\* The timer, under the process's lock, the list still locked.
+\* The timer, under the process's lock, the list still locked. It is not
+\* late until its setter skips the wake.
 Set(p) ==
     /\ spc[p] = "set"
     /\ timer' = [timer EXCEPT ![p] = "set"]
+    /\ late' = [late EXCEPT ![p] = FALSE]
     /\ spc' = [spc EXCEPT ![p] = "unlock"]
     /\ UNCHANGED <<list, owner, changes, queued, asleep, pending, seen, snap, target,
-                   deadline, passed, tpc, rounds>>
+                   deadline, passed, published, fresh, act, tpc, rounds>>
 
 Unlock(p) ==
     /\ spc[p] = "unlock"
     /\ owner' = None
     /\ spc' = [spc EXCEPT ![p] = "changed"]
     /\ UNCHANGED <<timer, list, changes, queued, asleep, pending, seen, snap, target,
-                   deadline, passed, tpc, rounds>>
+                   deadline, passed, published, fresh, late, act, tpc, rounds>>
 
 Changed(p) ==
     /\ spc[p] = "changed"
     /\ changes' = changes + 1
-    /\ spc' = [spc EXCEPT ![p] = "wake"]
+    /\ spc' = [spc EXCEPT ![p] = "next"]
     /\ UNCHANGED <<timer, list, owner, queued, asleep, pending, seen, snap, target,
-                   deadline, passed, tpc, rounds>>
+                   deadline, passed, published, fresh, late, act, tpc, rounds>>
+
+\* `NEXT_LOOK`, read: a timer turned off wakes nobody; a timer set wakes
+\* the thread, unless `NEXT_LOOK` is a deadline no later than the timer is
+\* due, which it may or may not be.
+ReadNext(p) ==
+    /\ spc[p] = "next"
+    /\ \/ /\ act[p] = "off" \/ published
+          /\ spc' = [spc EXCEPT ![p] = "idle"]
+          /\ rounds' = [rounds EXCEPT ![p] = rounds[p] + 1]
+          /\ late' = IF act[p] = "set" /\ fresh
+                     THEN [late EXCEPT ![p] = TRUE]
+                     ELSE late
+       \/ /\ act[p] = "set"
+          /\ spc' = [spc EXCEPT ![p] = "wake"]
+          /\ UNCHANGED <<late, rounds>>
+    /\ UNCHANGED <<timer, list, owner, changes, queued, asleep, pending, seen, snap,
+                   target, deadline, passed, published, fresh, act, tpc>>
 
 \* `wake_all`'s critical section.
 WakeAll(p) ==
@@ -168,27 +224,33 @@ WakeAll(p) ==
     /\ spc' = [spc EXCEPT ![p] = "idle"]
     /\ rounds' = [rounds EXCEPT ![p] = rounds[p] + 1]
     /\ UNCHANGED <<timer, list, owner, changes, seen, snap, target, deadline, passed,
-                   tpc>>
+                   published, fresh, late, act, tpc>>
 
 Setter(p) ==
-    Choose(p) \/ Register(p) \/ Set(p) \/ Unlock(p) \/ Changed(p) \/ WakeAll(p)
+    Choose(p) \/ Register(p) \/ Set(p) \/ Unlock(p) \/ Changed(p) \/ ReadNext(p) \/ WakeAll(p)
 
-\* Its time comes.
+\* Its time comes; a late timer's, only once the deadline it was judged
+\* against has passed.
 Expire(p) ==
     /\ timer[p] = "set"
+    /\ ~late[p] \/ passed
     /\ timer' = [timer EXCEPT ![p] = "expired"]
     /\ UNCHANGED <<list, owner, changes, queued, asleep, pending, seen, snap, target,
-                   deadline, passed, tpc, spc, rounds>>
+                   deadline, passed, published, fresh, late, act, tpc, spc, rounds>>
 
 ----------------------------------------------------------------------------
 (* The timer thread (`run` and `expire_due`).                              *)
 
+\* A new pass: what it wrote to NEXT_LOOK is of the last one, and the
+\* timers judged late against it may expire at any moment from here.
 Seen ==
     /\ tpc = "seen"
     /\ seen' = changes
+    /\ fresh' = FALSE
+    /\ late' = [p \in Procs |-> FALSE]
     /\ tpc' = "take"
     /\ UNCHANGED <<timer, list, owner, changes, queued, asleep, pending, snap, target,
-                   deadline, passed, spc, rounds>>
+                   deadline, passed, published, act, spc, rounds>>
 
 \* The list, locked: what it holds now.
 Take ==
@@ -198,7 +260,7 @@ Take ==
     /\ passed' = FALSE
     /\ tpc' = "look"
     /\ UNCHANGED <<timer, list, owner, changes, queued, asleep, pending, seen, target,
-                   spc, rounds>>
+                   published, fresh, late, act, spc, rounds>>
 
 \* One process's timers, under its lock: an expired one fires, a set one
 \* is noted for the deadline, and a process with none set goes on to
@@ -206,7 +268,7 @@ Take ==
 Look ==
     /\ tpc = "look"
     /\ IF snap = {}
-       THEN /\ tpc' = "wait"
+       THEN /\ tpc' = "publish"
             /\ UNCHANGED <<timer, snap, target, deadline>>
        ELSE \E p \in snap :
               LET after == IF timer[p] = "expired" THEN "off" ELSE timer[p]
@@ -217,8 +279,8 @@ Look ==
                     THEN /\ target' = p
                          /\ tpc' = "unregister"
                     ELSE UNCHANGED <<target, tpc>>
-    /\ UNCHANGED <<list, owner, changes, queued, asleep, pending, seen, passed, spc,
-                   rounds>>
+    /\ UNCHANGED <<list, owner, changes, queued, asleep, pending, seen, passed, nextlook,
+                   late, act, spc, rounds>>
 
 \* `unregister`: the list's lock, then the process's: out only if its
 \* timer is still off.
@@ -228,7 +290,16 @@ Unregister ==
     /\ target' = None
     /\ tpc' = "look"
     /\ UNCHANGED <<timer, owner, changes, queued, asleep, pending, seen, snap, deadline,
-                   passed, spc, rounds>>
+                   passed, nextlook, late, act, spc, rounds>>
+
+\* NEXT_LOOK, written: its deadline, or none.
+Publish ==
+    /\ tpc = "publish"
+    /\ published' = deadline
+    /\ fresh' = TRUE
+    /\ tpc' = "wait"
+    /\ UNCHANGED <<timer, list, owner, changes, queued, asleep, pending, seen, snap,
+                   target, deadline, passed, late, act, spc, rounds>>
 
 \* `wait_until_or_timeout`'s critical section: the condition, the
 \* deadline, then the queue.
@@ -240,7 +311,7 @@ Wait ==
        ELSE /\ queued' = TRUE
             /\ tpc' = "block"
     /\ UNCHANGED <<timer, list, owner, changes, asleep, pending, seen, snap, target,
-                   deadline, passed, spc, rounds>>
+                   deadline, passed, nextlook, late, act, spc, rounds>>
 
 \* `sleep_until_inner`'s block, which a deadline that has passed ends at
 \* once.
@@ -254,13 +325,13 @@ Block ==
             /\ tpc' = "asleep"
             /\ UNCHANGED pending
     /\ UNCHANGED <<timer, list, owner, changes, queued, seen, snap, target, deadline,
-                   passed, spc, rounds>>
+                   passed, nextlook, late, act, spc, rounds>>
 
 Wake ==
     /\ tpc = "asleep" /\ ~asleep
     /\ tpc' = "woken"
     /\ UNCHANGED <<timer, list, owner, changes, queued, asleep, pending, seen, snap,
-                   target, deadline, passed, spc, rounds>>
+                   target, deadline, passed, nextlook, late, act, spc, rounds>>
 
 \* The deadline passes, and wakes the thread if it sleeps.
 Timeout ==
@@ -268,7 +339,7 @@ Timeout ==
     /\ passed' = TRUE
     /\ asleep' = FALSE
     /\ UNCHANGED <<timer, list, owner, changes, queued, pending, seen, snap, target,
-                   deadline, tpc, spc, rounds>>
+                   deadline, nextlook, late, act, tpc, spc, rounds>>
 
 \* Off the table, then the condition again.
 Woken ==
@@ -276,9 +347,9 @@ Woken ==
     /\ queued' = FALSE
     /\ tpc' = "wait"
     /\ UNCHANGED <<timer, list, owner, changes, asleep, pending, seen, snap, target,
-                   deadline, passed, spc, rounds>>
+                   deadline, passed, nextlook, late, act, spc, rounds>>
 
-Thread == Seen \/ Take \/ Look \/ Unregister \/ Wait \/ Block \/ Wake \/ Woken
+Thread == Seen \/ Take \/ Look \/ Unregister \/ Publish \/ Wait \/ Block \/ Wake \/ Woken
 
 ----------------------------------------------------------------------------
 

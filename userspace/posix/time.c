@@ -4,7 +4,9 @@
 // Clocks and timers: the clocks clock_gettime reads, sleeping, CPU time
 // as times and getrusage count it and as the CPU-time clocks of threads
 // and processes read it, the interval timers, and POSIX's timers
-// (timer_create), with their overruns.
+// (timer_create), with their overruns. And that setting or turning off a
+// timer wakes no thread, and a nearer timer set while the kernel's timer
+// thread waits for a far one still fires on time (ADR 0650).
 
 #include <poll.h>
 #include <pthread.h>
@@ -390,6 +392,38 @@ static void timers(void) {
 	signal(SIGPROF, SIG_DFL);
 }
 
+// The `switches:` line of /processes/stat: the context switches of all the
+// CPUs together; -1 if it cannot be read. The `cpuN:` lines are not it.
+static long long kernel_switches(void) {
+	FILE *stat = fopen("/processes/stat", "r");
+	if(!stat)
+		return -1;
+	char line[256];
+	long long switches = -1;
+	while(fgets(line, sizeof(line), stat))
+		if(sscanf(line, "switches: %lld", &switches) == 1)
+			break;
+	fclose(stat);
+	return switches;
+}
+
+// Spins until `alarms` moves or 2 s pass; true if it moved.
+static int spin_for_alarm(void) {
+	long long start = check_now_ns();
+	while(!alarms && check_now_ns() - start < 2000000000LL)
+		;
+	return alarms != 0;
+}
+
+// Waits until `alarms` moves or 3 s pass, a millisecond at a time, since
+// pause would wait for ever if the signal never came; true if it moved.
+static int wait_for_alarm(void) {
+	long long start = check_now_ns();
+	while(!alarms && check_now_ns() - start < 3000000000LL)
+		check_sleep_ms(1);
+	return alarms != 0;
+}
+
 // A timer on `clock` that sends `signal` carrying `value`.
 static timer_t timer_for(clockid_t clock, int signal, int value) {
 	struct sigevent event = {0};
@@ -539,6 +573,77 @@ static void posix_timers(void) {
 	sigprocmask(SIG_UNBLOCK, &set, NULL);
 }
 
+// The kernel has one thread that sends the signals of timers when they
+// are due. Setting a timer wakes it only if the timer is due before the
+// time it plans to look. Turning timers off and setting far ones wakes
+// nobody, and a nearer one set while it waits for a far one still fires
+// on time (ADR 0650).
+static void timer_wakes(void) {
+	struct sigaction action = {0};
+	action.sa_handler = on_alarm;
+	action.sa_flags = SA_RESTART;
+	sigemptyset(&action.sa_mask);
+	sigaction(SIGALRM, &action, NULL);
+	sigaction(SIGPROF, &action, NULL);
+	struct itimerval far = {{0, 0}, {30, 0}}, off = {{0, 0}, {0, 0}};
+	// Setting a far timer and turning it off, over and over, never
+	// blocks. Before ADR 0650 each set woke the timer thread, and
+	// that was at least 2 switches.
+	enum { ROUNDS = 2000 };
+	long long before = kernel_switches();
+	for(int i = 0; i < ROUNDS; i++) {
+		CHECK(setitimer(ITIMER_PROF, &far, NULL) == 0);
+		CHECK(setitimer(ITIMER_PROF, &off, NULL) == 0);
+	}
+	long long after = kernel_switches();
+	printf("time: timer_wakes: %d sets and offs made %lld switches\n", ROUNDS, after - before);
+	CHECK(before >= 0 && after >= before && after - before < 1000);
+	// A nearer CPU-time timer set while the thread waits for a far one.
+	alarms = 0;
+	struct itimerval soon = {{0, 0}, {0, 20000}};
+	CHECK(setitimer(ITIMER_PROF, &far, NULL) == 0);
+	CHECK(setitimer(ITIMER_PROF, &soon, NULL) == 0);
+	CHECK(spin_for_alarm());
+	CHECK(alarms == 1);
+	CHECK(setitimer(ITIMER_PROF, &off, NULL) == 0);
+	// And a nearer real-time one.
+	alarms = 0;
+	struct itimerval ten = {{0, 0}, {10, 0}}, thirty_ms = {{0, 0}, {0, 30000}};
+	long long start = check_now_ns();
+	CHECK(setitimer(ITIMER_REAL, &ten, NULL) == 0);
+	CHECK(setitimer(ITIMER_REAL, &thirty_ms, NULL) == 0);
+	CHECK(wait_for_alarm());
+	long long took = check_now_ns() - start;
+	CHECK(alarms == 1 && took >= 30000000LL && took < 2000000000LL);
+	CHECK(setitimer(ITIMER_REAL, &off, NULL) == 0);
+	// The same with POSIX timers.
+	alarms = 0;
+	timer_t cpu = timer_for(CLOCK_PROCESS_CPUTIME_ID, SIGPROF, 1);
+	CHECK(timer_ms(cpu, 0, 30000, 0) == 0);
+	CHECK(timer_ms(cpu, 0, 20, 0) == 0);
+	CHECK(spin_for_alarm());
+	CHECK(alarms == 1);
+	CHECK(timer_delete(cpu) == 0);
+	alarms = 0;
+	timer_t real = timer_for(CLOCK_MONOTONIC, SIGALRM, 2);
+	start = check_now_ns();
+	CHECK(timer_ms(real, 0, 10000, 0) == 0);
+	CHECK(timer_ms(real, 0, 30, 0) == 0);
+	CHECK(wait_for_alarm());
+	took = check_now_ns() - start;
+	CHECK(alarms == 1 && took >= 30000000LL && took < 2000000000LL);
+	CHECK(timer_delete(real) == 0);
+	// A timer set and then turned off does not fire.
+	alarms = 0;
+	struct itimerval fifty_ms = {{0, 0}, {0, 50000}};
+	CHECK(setitimer(ITIMER_REAL, &fifty_ms, NULL) == 0);
+	CHECK(setitimer(ITIMER_REAL, &off, NULL) == 0);
+	check_sleep_ms(100);
+	CHECK(alarms == 0);
+	signal(SIGALRM, SIG_DFL);
+	signal(SIGPROF, SIG_DFL);
+}
+
 int main(void) {
 	check_start("time");
 	RUN(clocks);
@@ -547,6 +652,7 @@ int main(void) {
 	RUN(cpu_time);
 	RUN(cpu_clocks);
 	RUN(timers);
+	RUN(timer_wakes);
 	RUN(posix_timers);
 	return check_end();
 }

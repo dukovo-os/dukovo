@@ -312,7 +312,12 @@ the socket listens; `connect_socket` makes the two pipes, keeps one end
 and queues the other at the listener, and `accept` gives the queued end
 a socket of its own. The socket's state is a spin lock taken only to
 move its phase; the listener's queue is a sleeping lock, and its waits
-read an atomic count beside it. Files sent with `send_files` ride on a
+read an atomic count beside it. The threads blocked in `accept` and those
+waiting in `connect` for room in the backlog wait on two keys of their
+own: a queued connection wakes one blocked accept, as Linux's exclusive
+waits do, and an accept woken so that a signal interrupted meanwhile
+still takes a waiting connection; an accept that makes room wakes all the
+connects (ADR 0650). Files sent with `send_files` ride on a
 byte of the pipe: each pipe keeps a queue of attachments, each the
 position of its byte in all that was written and the files, and a read
 ends before the next attachment's byte unless it starts there, so the
@@ -509,9 +514,17 @@ Each process's `PosixState` holds its three interval timers and its
 POSIX timers. One kernel thread runs them all (`expire_due`): it copies
 the processes in `ARMED` (weak references, so a process that ended drops
 out), sends the signal of each timer that has expired, and sleeps until
-the next timer on the kernel's clock, or for `CPU_TICK_NS` (10 ms) while a
-CPU-time timer is armed. A process whose timers are all off is taken out
-of `ARMED` (`unregister`). A POSIX timer with an interval waits until its
+it must look again (`NEXT_LOOK`): when the next timer on the kernel's
+clock is due, and for a CPU-time timer once its process could have used
+what is left of it on every CPU, but no sooner than `CPU_TICK_NS`
+(10 ms), since CPU time is only counted at ticks. A setter wakes the
+thread only if its timer is due before `NEXT_LOOK`; turning a timer off,
+or setting it later than the thread plans to look, wakes nobody
+(ADR 0650). An interval timer that `setitimer` replaces while it is due,
+its signal not yet sent, sends the signal then: `getitimer` sets the
+timer again with what it read, and would otherwise keep moving a due
+timer on. A process whose timers are all off is taken out of `ARMED`
+(`unregister`). A POSIX timer with an interval waits until its
 signal is taken, then counts the expiries missed meanwhile as overruns
 (`taken`); one whose signal was dropped while pending is set again
 (`discarded`).
@@ -878,6 +891,13 @@ setter put the process in (it was already there) and set the timer, and
 `rearms` part set and cleared timers 300 times with varying gaps, and
 hung on that kernel within a few runs.
 
+A setter that skips its wake does not leave a timer slept through. The
+setter moves `CHANGES` and then reads `NEXT_LOOK`; the thread writes
+`NEXT_LOOK` and then its wait reads `CHANGES`; both are sequentially
+consistent. So either the wait sees `CHANGES` move and the thread looks
+again, or the setter sees the time the thread sleeps until and wakes it
+if its timer is due sooner.
+
 **No futex wake is lost.** `futex_wait` compares the word and queues the
 waiter in one critical section of the bucket's lock; a waker changes the
 word and then takes that lock to wake. If the waker's change came before
@@ -938,7 +958,8 @@ time. It checks the others with a model each, beside it: `Poll.tla`
 object it looks at is ready with no wake on its way, and every poll
 ends), `Timers.tla` (two processes setting and turning off their timers
 at any moment of the timer thread's look: a set timer's process is
-always listed, and every expired timer fires), `FileLocks.tla`
+always listed, and every expired timer fires, also when a setter skips
+its wake because the thread plans to look in time), `FileLocks.tla`
 (three processes locking one of two files: none sleeps while its lock is
 free with no wake on its way, and every lock is taken) and
 `EventQueue.tla` (two threads waiting on a queue of two watches, one
@@ -948,7 +969,9 @@ way, no watch is on the ring twice, none is reported once its delete has
 returned, and every change is looked at in the end). Each fails when
 its order is broken: the poller counting itself after it looks, or
 `changed` reading the count before the change; the setter letting the
-list go before it sets the timer, the race above; a waiter reading
+list go before it sets the timer, the race above; a setter reading
+`NEXT_LOOK` before it moves `CHANGES`, the thread writing `NEXT_LOOK`
+after its wait reads `CHANGES`; a waiter reading
 `CHANGES` after it looks, or a release waking before it moves
 `CHANGES`; a look reading the object before it clears the watch's queued
 mark, or a call letting the registry go between taking a watch off the
