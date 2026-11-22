@@ -27,8 +27,8 @@ first line of _/system/settings/hostname_ (*hostname*(5)).
 $ hostnamectl
   Static hostname: web01
           Boot ID: 00112233445566778899aabbccddeeff
- Operating System: Dukovo Server 0.16.0
-           Kernel: Radix 0.16.0
+ Operating System: Dukovo Server 0.17.0
+           Kernel: Radix 0.17.0
      Architecture: x86-64
   Hardware Vendor: Dell Inc.
    Hardware Model: OptiPlex 7040
@@ -49,7 +49,7 @@ machine ID, so no line shows one, and no icon or chassis.
 ```
 {"format":1,"name":"duke-nas.example.org","first":"duke-nas",
  "domain":"example.org","local":"duke-nas.local",
- "release":"Dukovo Server 0.16.0"}
+ "release":"Dukovo Server 0.17.0"}
 ```
 
 *domain* is the rest of the name after its first word, null for a name
