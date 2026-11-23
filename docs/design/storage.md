@@ -323,6 +323,16 @@ on its own), which frees it. Many
 threads have requests in flight at once, up to the slots the controller
 has.
 
+An idle-class request takes a slot only while the disk has nothing else
+to do, or once it has waited a fifth of a second for that, as BFQ serves
+its idle class; then it goes as the default best-effort level. A request
+less urgent than that default goes at it while its thread holds a lock
+another thread waits for: Btrfs holds its transaction's lock while it
+reads, so an idle-class reader of a disk that never emptied held every
+other program of the filesystem for as long as the disk stayed busy (ADR
+0548). The domains' shares of a disk (ADR 0476) order waiting requests
+by the same lent rank.
+
 A request the controller says goes alone (an ATA flush or TRIM, or any
 command to a disk without NCQ) waits for the disk to empty, and while
 it waits, requests of its rank and below that come after it wait behind
@@ -763,13 +773,31 @@ opened, so that a reader sees one snapshot. They are read-only.
 
 The writeback thread wakes every five seconds and syncs every filesystem
 with changes (`Vfs::sync_all`), so a power cut loses at most that much,
-as with Linux's flusher threads. When the frame allocator's free pages
-fall below 1/64 of memory at a wake-up, it also drops clean cached pages,
-and the out-of-memory policy asks it to (`writeback::reclaim`) before it
-stops a resource domain (ADR 0029). Dropping pages takes the caches'
-locks, so it only ever happens in this thread, which holds none, and
-never inside an allocation. Programs' anonymous memory is not cached
-data: with a swap area on, the swap thread writes it out, after the
+as with Linux's flusher threads. The reclaim thread beside it drops clean
+cached pages: when less than a 32nd of memory is free at its look each
+second, when a writer finds it so, and when the out-of-memory policy asks
+(`writeback::reclaim`) before it stops a resource domain (ADR 0029), as
+Linux's kswapd does. Dropping pages takes the caches' locks, so it only
+ever happens in this thread, which holds none, and never inside an
+allocation. It is a thread of its own so that a write-back, which takes
+seconds on a slow disk, never holds it up, and it passes over a cache
+whose lock is held rather than wait for it (ADR 0547).
+
+Dirty pages cannot be dropped, so writers are held to a limit of them
+(ADR 0547). Each file's cache adds the pages of a file on a disk that it
+makes dirty to one count, `radix_vfs::cache::dirty_pages`, and takes them
+out as they are written or go. After each write to a file, with no lock
+held, `writeback::throttle` looks at it: over a tenth of memory it asks
+the thread for an immediate `Vfs::sync_all`, and over a fifth the writer
+waits for the thread in 100 ms slices until the count is under, or until
+30 seconds have gone with no page written. `/processes/meminfo` shows
+the count as `dirty`. Each time the caches have grown by a 256th of
+memory, the writer also looks at free memory, and when it is short waits
+for the reclaim thread: a writer that fills the caches with what it
+wrote would otherwise run memory out while it holds its file's cache,
+whose clean pages the reclaim thread then cannot take.
+
+Programs' anonymous memory is not cached data: with a swap area on, the swap thread writes it out, after the
 page cache has given back what it can (ADR 0152).
 
 ## The hierarchy

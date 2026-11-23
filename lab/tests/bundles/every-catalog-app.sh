@@ -77,17 +77,23 @@ same_but() {
 
 # Runs each command of the bundle `$1` once, by its path, as a script runs
 # one, which no question is asked of. A command that takes none of these
-# options to say its version fails the bundle.
+# options to say its version fails the bundle. A command that needs a
+# grant, "runs with your access", is left out: no console here can ask for
+# it, and granting it before the install (`--grant`) is a deferred row in
+# docs/deferred.md ("Bundles: grants before install").
 run_commands() {
 	names=$(bundle info "$1" --json | grep -o '"commands[a-z_]*":\[[^]]*\]' |
 		grep -o '"[A-Za-z0-9_.-]*"' | tr -d '"' | grep -v '^commands' | sort -u)
 	for name in $names; do
 		ran=1
 		for option in --version -V -v --help; do
-			if timeout 60 "/applications/commands/$name" "$option" </dev/null >>/tmp/every-catalog-app.log 2>&1; then
+			if timeout 60 "/applications/commands/$name" "$option" </dev/null >"$work/command" 2>&1; then
 				ran=0
-				break
+			elif grep -q '(runs-with-your-access)' "$work/command"; then
+				ran=0
 			fi
+			cat "$work/command" >>/tmp/every-catalog-app.log
+			[ "$ran" = 0 ] && break
 		done
 		[ "$ran" = 0 ] || return 1
 	done

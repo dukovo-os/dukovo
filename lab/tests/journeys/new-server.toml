@@ -161,17 +161,20 @@ host = "sh -c 'ssh -p {machine-port:22} -i /tmp/lab-journey-new-server/stranger 
 expect = ["Permission denied", "status=255"]
 expect_not = "let-in\n"
 
-# The firewall rules from the console.
+# The firewall rules from the console, for the browser's own address: the
+# step opens the machine by its address, not through the lab's forward to its
+# loopback, so that the console sees the lab PC's address ({peer}).
 [[step]]
 browser = "new-server-firewall.mjs"
 engines = ["chromium"]
 port = 9090
+by_address = true
 # From SSH: the machine's own list, which rule decides, and what each listener
 # is reached from. The machine reaches its own ports whatever the rules say.
 [[step]]
 run = "firewall list"
 root = true
-expect = ["allow tcp 8081 from 10.0.2.2", "allow tcp 8084-8085 from 10.0.2.2"]
+expect = ["allow tcp 8081 from {peer}", "allow tcp 8084-8085 from {peer}"]
 [[step]]
 run = "sh -c 'firewall test tcp 8082 from {peer}; firewall test tcp 8085 from {peer}'"
 root = true
@@ -281,7 +284,7 @@ expect_not = "let-in\n"
 [[step]]
 run = "firewall list"
 root = true
-expect = ["allow tcp 8081 from 10.0.2.2", "allow tcp 8084-8085 from 10.0.2.2"]
+expect = ["allow tcp 8081 from {peer}", "allow tcp 8084-8085 from {peer}"]
 [[step]]
 run = '''sh -c 'for p in 8081 8082 8084 8085; do sh -c "while true; do echo hello-$p | nc -l 0.0.0.0 $p; done" < /dev/null > /dev/null 2>&1 & done; sleep 2; ss -tln' '''
 expect = ["0.0.0.0:8081", "0.0.0.0:8085"]

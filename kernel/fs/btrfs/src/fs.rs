@@ -37,8 +37,8 @@
 //! reading the disk: a node is read first, and when another was added
 //! for the same inode meanwhile, that one is used and the new one
 //! dropped, which only frees memory. Shrinking only tries the
-//! workspaces' and the packers' locks, as a reader or a writer that holds
-//! one may be making memory.
+//! workspaces', the packers' and the page caches' locks, as a reader or a
+//! writer that holds one may be making memory.
 
 use alloc::sync::Weak;
 use core::fmt;

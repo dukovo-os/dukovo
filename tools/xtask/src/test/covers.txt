@@ -361,6 +361,7 @@ disk-check image/crosscheck/ tools/linux-bench/ tools/xtask/src/bench.rs userspa
 disk-check userspace/posix/disktest.c userspace/programs/systools/src/nvme.rs
 disk-errors kernel/drivers/ahci/ kernel/drivers/nvme/ kernel/fs/block/
 disk-errors userspace/programs/systools/src/nvme.rs userspace/storage/
+dirty-limit kernel/fs/vfs/src/cache.rs kernel/radix/src/fs/writeback.rs kernel/fs/btrfs/
 disk-grow kernel/fs/block/ kernel/fs/btrfs/src/balance.rs kernel/fs/btrfs/src/grow.rs
 disk-grow userspace/programs/disk/src/table.rs userspace/programs/systools/src/device.rs
 disk-grow userspace/programs/systools/src/rdisk.rs
@@ -446,6 +447,8 @@ hyperv kernel/drivers/hyperv/ kernel/radix/src/hyperv.rs kernel/arch/x86_64/src/
 hyperv kernel/arch/x86_64/src/time.rs kernel/radix/src/fs/disk/storvsc.rs
 hyperv kernel/drivers/mana/ kernel/radix/src/vpci.rs
 i2c kernel/drivers/i2c/ tools/xtask/src/acpi/
+idle-reader-lock kernel/fs/btrfs/ kernel/radix/src/fs/disk/queue.rs kernel/radix/src/sched/wait.rs
+idle-reader-lock userspace/spark/tests/services/io-weight/
 install-beside image/grub/installed.cfg.in kernel/fs/ntfs/ tools/xtask/src/grub.rs
 install-beside tools/xtask/src/grub_theme.rs userspace/programs/consoled/ userspace/programs/disk/
 install-beside userspace/programs/installer/ userspace/programs/systools/src/efiboot.rs

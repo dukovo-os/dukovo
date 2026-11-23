@@ -26,7 +26,11 @@
 //! (radix-process(2)'s `io_priority`, ionice(1)): one takes room only
 //! while no more urgent one waits for it, in any lane, the real-time
 //! class before best effort, and level 0 before 7 in each; the idle class
-//! takes room only while the disk has nothing else to do. A request the
+//! takes room only while the disk has nothing else to do, or once it has
+//! waited a fifth of a second for that, as BFQ has it. A request less
+//! urgent than the default goes at the default while its thread holds a
+//! lock another thread waits for, as a filesystem's reader holds the
+//! filesystem's ([`lent_rank`], ADR 0548). A request the
 //! device takes only with nothing else in flight (an AHCI disk's flush or
 //! TRIM) holds back those of its rank and below that come after it, so
 //! that the device empties for it. Once in flight, every request is the
@@ -320,6 +324,51 @@ fn running_rank() -> usize {
         .and_then(|me| me.user().map(|user| user.process.io_priority()))
         .unwrap_or((IoClass::None.raw(), 0));
     (priority::io_rank(class.0, class.1) as usize).min(IDLE)
+}
+
+/// The rank of a process that has set no I/O priority, and of the
+/// kernel's own threads: the middle of best effort.
+fn default_rank() -> usize {
+    priority::io_rank(IoClass::None.raw(), 0) as usize
+}
+
+/// How long an idle-class request waits for the disk to be free before it
+/// goes as the default rank: BFQ's `BFQ_CL_IDLE_TIMEOUT`, a fifth of a
+/// second. A disk that never empties would otherwise shut the idle class
+/// out for as long as it is busy (ADR 0548).
+const IDLE_GRACE_NS: u64 = 200_000_000;
+
+/// How often a request less urgent than the default looks again, while it
+/// waits, whether it has waited out its grace or another thread waits for
+/// a lock its thread holds ([`lent_rank`]).
+const LOOK_NS: u64 = 10_000_000;
+
+/// The rank a request of `rank` that has waited since `since` goes at now
+/// (ADR 0548). A request less urgent than the default goes at the default
+/// while its thread holds a lock that another thread waits for: the other
+/// waits for the request too, and a filesystem holds its lock while it
+/// reads, so an idle-class reader of a busy disk held every other program
+/// of the filesystem for as long as the disk was busy. An idle-class one
+/// that has waited [`IDLE_GRACE_NS`] goes at the default too.
+fn lent_rank(rank: usize, since: u64) -> usize {
+    let default = default_rank();
+    if rank <= default {
+        return rank;
+    }
+    if rank == IDLE && sched::now_ns().saturating_sub(since) >= IDLE_GRACE_NS {
+        return default;
+    }
+    match sched::running() {
+        Some(me) if wait::holds_wanted_lock(&me) => default,
+        _ => rank,
+    }
+}
+
+/// When a request of `rank` that waits looks again at the latest: in
+/// [`LOOK_NS`] for one less urgent than the default, whose rank may be
+/// lent meanwhile ([`lent_rank`]), and only once woken for the rest.
+fn look_again(rank: usize) -> u64 {
+    if rank > default_rank() { sched::now_ns().saturating_add(LOOK_NS) } else { u64::MAX }
 }
 
 /// Waits `us` microseconds, asleep: for a controller that needs time
@@ -768,7 +817,8 @@ impl<C: Controller> Disk<C> {
     /// pages, of rank `rank`, while a domain has a disk I/O weight other
     /// than the default (ADR 0476): up to [`SHARE_DEPTH`] go at once, and
     /// those that wait go by rank, then in proportion to their domains'
-    /// weights ([`Shares`]). The wait counts in the domain's wait time.
+    /// weights ([`Shares`]), at the rank the request is lent while it
+    /// waits ([`lent_rank`]). The wait counts in the domain's wait time.
     /// Returns the turn, to give back once the request is done
     /// ([`Disk::turn_done`]); `None` when the request goes as it comes:
     /// no domain has a weight, or the shares of [`radix_block::share::SHARES`]
@@ -779,12 +829,13 @@ impl<C: Controller> Disk<C> {
         }
         let me = sched::running()?;
         let domain = me.domain();
-        let ticket =
+        let start = sched::now_ns();
+        let mut rank = lent_rank(rank, start);
+        let mut ticket =
             self.shares.lock_irq().arrive(domain.id(), rank as u8, domain.flat_io_weight())?;
         let cost = Shares::cost(pages, self.info.rotational);
-        let start = sched::now_ns();
         let mut waited = false;
-        loop {
+        let turn = loop {
             let mut shares = self.shares.lock_irq();
             if shares.may_go(ticket) {
                 shares.go(ticket, cost);
@@ -793,19 +844,35 @@ impl<C: Controller> Disk<C> {
                 if more {
                     wait::wake_all(self.shares_key());
                 }
-                break;
+                break Some(ticket);
             }
             drop(shares);
             waited = true;
             // Taken under the waiters' table, never the other way round.
-            wait::wait_until(self.shares_key(), "disk turn", || {
+            wait::wait_until_or_timeout(self.shares_key(), "disk turn", look_again(rank), || {
                 self.shares.lock_irq().may_go(ticket)
             });
-        }
+            // Lent a rank meanwhile: the request waits again at that one.
+            let lent = lent_rank(rank, start);
+            if lent != rank {
+                rank = lent;
+                let mut shares = self.shares.lock_irq();
+                shares.leave(ticket);
+                let next = shares.arrive(domain.id(), rank as u8, domain.flat_io_weight());
+                drop(shares);
+                // Its leaving may let another go.
+                wait::wake_all(self.shares_key());
+                match next {
+                    Some(next) => ticket = next,
+                    // No share is free: it goes as if no weight were set.
+                    None => break None,
+                }
+            }
+        };
         if waited {
             domain.count_disk_wait(sched::now_ns().saturating_sub(start), 0);
         }
-        Some(ticket)
+        turn
     }
 
     /// Gives back the turn of a request that is done
@@ -824,7 +891,8 @@ impl<C: Controller> Disk<C> {
     /// Whether a request of rank `rank` may take room now: no more urgent
     /// one waits for it, and for the idle class, no other request waits or
     /// is in flight in any lane, as Linux's idle class is served only when
-    /// the disk is otherwise idle.
+    /// the disk is otherwise idle. A request that waits looks again at the
+    /// rank it is lent ([`lent_rank`]).
     fn may_go(&self, rank: usize) -> bool {
         let others = |range: core::ops::Range<usize>| {
             self.waiting[range].iter().any(|count| count.load(Ordering::Acquire) > 0)
@@ -885,8 +953,10 @@ impl<C: Controller> Disk<C> {
         waits: bool,
     ) -> Result<Option<usize>, Error> {
         let this = &self.lanes[lane];
+        let since = sched::now_ns();
+        let mut rank = lent_rank(rank, since);
         self.waiting[rank].fetch_add(1, Ordering::AcqRel);
-        let waiting = Waiting(&self.waiting[rank]);
+        let mut waiting = Waiting(&self.waiting[rank]);
         let mut lone = None;
         let slot = loop {
             let seen = this.events.load(Ordering::Acquire);
@@ -925,8 +995,17 @@ impl<C: Controller> Disk<C> {
             self.kick(lane);
             let room = || this.events.load(Ordering::SeqCst) != seen;
             this.room_waiters.fetch_add(1, Ordering::SeqCst);
-            self.wait(lane, self.key(lane), u64::MAX, room);
+            self.wait(lane, self.key(lane), look_again(rank), room);
             this.room_waiters.fetch_sub(1, Ordering::Relaxed);
+            // Lent a rank meanwhile: the request waits again at that one,
+            // counted there, and holds back no one at its old rank.
+            let lent = lent_rank(rank, since);
+            if lent != rank {
+                rank = lent;
+                lone = None;
+                self.waiting[rank].fetch_add(1, Ordering::AcqRel);
+                waiting = Waiting(&self.waiting[rank]);
+            }
         };
         drop(lone);
         drop(waiting);

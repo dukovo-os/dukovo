@@ -629,6 +629,9 @@ fn meminfo(text: &mut Text) -> fmt::Result {
         }
         writeln!(text, "{}: {} KiB", key.as_str(), kib(FRAMES.owner_pages(owner)))?;
     }
+    // Of the page cache, what waits to be written to a disk (ADR 0547), as
+    // Linux's Dirty.
+    writeln!(text, "dirty: {} KiB", kib(radix_vfs::cache::dirty_pages() as u64))?;
     // The swap areas on (ADR 0152): the pages they hold, and those free.
     let (slots, used) = crate::swap::totals();
     writeln!(text, "swap_total: {} KiB", kib(slots))?;

@@ -1,0 +1,156 @@
+SPDX-FileCopyrightText: The PHP Group
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: PHP-3.01
+
+pg_trace() gives libpq a file of the link's own
+
+pg_trace() handed libpq the FILE of the stream it opened and left the
+stream to be closed with the request's other resources. A link held by a
+global variable and by the default link outlives zend_call_destructors(),
+and is freed only after zend_close_rsrc_list() has closed the streams, so
+its PQuntrace() flushed a FILE that fclose() had freed. glibc's freed
+FILE still holds what fflush() reads, and nothing shows; valgrind shows
+the read after free. mlibc's does not, and PHP ended with SIGSEGV at a
+call to address 0: ext/pgsql/tests/pg_trace.phpt failed with Termsig=11.
+A persistent link kept tracing to the closed file into the next request.
+
+libpq now gets a FILE on a copy of the stream's descriptor, which the link
+keeps until pg_untrace(), the next pg_trace() or its end, and closes after
+PQuntrace(). The stream is closed at once.
+
+diff --git a/ext/pgsql/pgsql.c b/ext/pgsql/pgsql.c
+index fdf19496..17cf0f7f 100644
+--- a/ext/pgsql/pgsql.c
++++ b/ext/pgsql/pgsql.c
+@@ -18,7 +18,11 @@
+    +----------------------------------------------------------------------+
+  */
+ 
++#include <errno.h>
++#include <fcntl.h>
+ #include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
+ 
+ #define PHP_PGSQL_PRIVATE 1
+ 
+@@ -173,6 +177,18 @@ static zend_function *pgsql_link_get_constructor(zend_object *object) {
+ 	return NULL;
+ }
+ 
++/* Stops libpq writing the link's trace, and closes the trace's file. */
++static void pgsql_link_untrace(pgsql_link_handle *link)
++{
++	if (link->conn) {
++		PQuntrace(link->conn);
++	}
++	if (link->trace) {
++		fclose(link->trace);
++		link->trace = NULL;
++	}
++}
++
+ static void pgsql_link_free(pgsql_link_handle *link)
+ {
+ 	PGresult *res;
+@@ -181,8 +197,11 @@ static void pgsql_link_free(pgsql_link_handle *link)
+ 		PQclear(res);
+ 	}
+ 	if (!link->persistent) {
+-		PQuntrace(link->conn);
++		pgsql_link_untrace(link);
+ 		PQfinish(link->conn);
++	} else if (link->trace) {
++		/* The connection outlives the request; its trace does not. */
++		pgsql_link_untrace(link);
+ 	}
+ 	PGG(num_links)--;
+ 
+@@ -767,6 +786,7 @@ static void php_pgsql_do_connect(INTERNAL_FUNCTION_PARAMETERS, int persistent)
+ 		link->conn = pgsql;
+ 		link->hash = zend_string_copy(str.s);
+ 		link->notices = NULL;
++		link->trace = NULL;
+ 		link->persistent = 1;
+ 	} else { /* Non persistent connection */
+ 		zval *index_ptr;
+@@ -818,6 +838,7 @@ static void php_pgsql_do_connect(INTERNAL_FUNCTION_PARAMETERS, int persistent)
+ 		link->conn = pgsql;
+ 		link->hash = zend_string_copy(str.s);
+ 		link->notices = NULL;
++		link->trace = NULL;
+ 		link->persistent = 0;
+ 
+ 		/* add it to the hash */
+@@ -2397,6 +2418,7 @@ PHP_FUNCTION(pg_trace)
+ 	FILE *fp = NULL;
+ 	php_stream *stream;
+ 	pgsql_link_handle *link;
++	int fd, own;
+ 
+ 	ZEND_PARSE_PARAMETERS_START(1, 4)
+ 		Z_PARAM_PATH(z_filename, z_filename_len)
+@@ -2422,11 +2444,28 @@ PHP_FUNCTION(pg_trace)
+ 		RETURN_FALSE;
+ 	}
+ 
+-	if (FAILURE == php_stream_cast(stream, PHP_STREAM_AS_STDIO, (void**)&fp, REPORT_ERRORS))	{
++	/* libpq writes the trace until pg_untrace() or the link's end, which may
++	 * come after the request's streams are closed: a link held by a global
++	 * variable and by the default link outlives zend_call_destructors(), and
++	 * is freed only after the resources are. So libpq gets a file of the
++	 * link's own, on a copy of the stream's descriptor, not the stream's. */
++	if (FAILURE == php_stream_cast(stream, PHP_STREAM_AS_FD, (void**)&fd, REPORT_ERRORS))	{
+ 		php_stream_close(stream);
+ 		RETURN_FALSE;
+ 	}
+-	php_stream_auto_cleanup(stream);
++	own = fcntl(fd, F_DUPFD_CLOEXEC, 0);
++	fp = own < 0 ? NULL : fdopen(own, mode[0] == 'a' ? "a" : "w");
++	if (!fp) {
++		php_error_docref(NULL, E_WARNING, "Cannot write the trace to \"%s\": %s", z_filename, strerror(errno));
++		if (own >= 0) {
++			close(own);
++		}
++		php_stream_close(stream);
++		RETURN_FALSE;
++	}
++	php_stream_close(stream);
++	pgsql_link_untrace(link);
++	link->trace = fp;
+ 	PQtrace(pgsql, fp);
+ 	if (trace_mode > 0) {
+ #ifdef PQTRACE_REGRESS_MODE
+@@ -2449,7 +2488,6 @@ PHP_FUNCTION(pg_trace)
+ PHP_FUNCTION(pg_untrace)
+ {
+ 	zval *pgsql_link = NULL;
+-	PGconn *pgsql;
+ 	pgsql_link_handle *link;
+ 
+ 	ZEND_PARSE_PARAMETERS_START(0, 1)
+@@ -2465,9 +2503,7 @@ PHP_FUNCTION(pg_untrace)
+ 		CHECK_PGSQL_LINK(link);
+ 	}
+ 
+-	pgsql = link->conn;
+-
+-	PQuntrace(pgsql);
++	pgsql_link_untrace(link);
+ 	RETURN_TRUE;
+ }
+ /* }}} */
+diff --git a/ext/pgsql/php_pgsql.h b/ext/pgsql/php_pgsql.h
+index 7a5770cb..3fada4f7 100644
+--- a/ext/pgsql/php_pgsql.h
++++ b/ext/pgsql/php_pgsql.h
+@@ -141,6 +141,9 @@ typedef struct pgsql_link_handle {
+ 	PGconn *conn;
+ 	zend_string *hash;
+ 	HashTable *notices;
++	/* The file pg_trace() gave libpq: the link's own, so that it is open for
++	 * as long as libpq may write to it. */
++	FILE *trace;
+ 	bool persistent;
+ 	zend_object std;
+ } pgsql_link_handle;

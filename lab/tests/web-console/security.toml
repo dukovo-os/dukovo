@@ -52,6 +52,16 @@ time = "40m"
 host_needs = ["curl", "ssh", "ssh-keygen"]
 fresh = true
 
+# The script brings the lab PC's WireGuard client up and down with `sudo -n
+# wg-quick`, which is the lab PC's root, as a `host` step with `root = true`
+# is: a lab whose sudo asks for a password, or that cannot give one at all, as
+# under no-new-privileges, skips the test with that said, which this step makes
+# happen before the machine is changed, rather than fail at the script's sudo.
+[[step]]
+host = "id -u"
+root = true
+expect = "0"
+
 [[step]]
 run = "sh -c 'for engine in chromium firefox webkit; do echo lab-console-password | user add --admin wc-sec-$engine || exit 1; echo lab-console-password | user add wc-sec-r-$engine || exit 1; user set --console --yes wc-sec-r-$engine || exit 1; done'"
 root = true

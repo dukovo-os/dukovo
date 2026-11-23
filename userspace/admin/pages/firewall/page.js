@@ -112,7 +112,9 @@ export async function show(view) {
     if (!hashDone) {
       hashDone = true;
       const mode = modeOfHash(location.hash);
-      if (mode && admin() && !trial) add.open(mode, document.querySelector('main h1'));
+      // A form opened before the first read answered put #add in the
+      // address itself: opening it again would empty what was typed.
+      if (mode && admin() && !trial && !add.isOpen()) add.open(mode, document.querySelector('main h1'));
     }
   }
 
