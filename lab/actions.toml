@@ -827,6 +827,18 @@ compares = false
 tests = { checks = "admind::actions::storage::tests", route = "admin-storage", same_as_command = "admin-storage", browser = "web-console/storage", ansible = "web-console/ansible" }
 
 [[action]]
+id = "storage.raid"
+title = "Show the RAID controllers"
+area = "storage"
+changes = false
+method = "GET"
+path = "/api/1/storage/raid"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::storage::tests", route = "admin-storage", same_as_command = "admin-storage", browser = "web-console/storage", ansible = "web-console/ansible" }
+
+[[action]]
 id = "storage.usage"
 title = "Show the disks' use over time"
 area = "storage"

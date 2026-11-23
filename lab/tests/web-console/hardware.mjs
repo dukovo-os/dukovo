@@ -11,7 +11,7 @@
 // what `hardware last` says (`GET /api/1/hardware/check`), a failure first,
 // and the checks before it come from `hardware history`
 // (`GET /api/1/hardware/history`). Check the hardware
-// (`POST /api/1/hardware/check`, a task) opens a dialog with the seven areas,
+// (`POST /api/1/hardware/check`, a task) opens a dialog with the eight areas,
 // all on, and the full check, which is only read here: its words come with its
 // box and it is never started, since it takes hours. With no area chosen
 // nothing is sent. The check runs to its end, the page says the step it is on
@@ -143,7 +143,7 @@ const BAD_TIME = "A time is written HH:MM, from 00:00 to 23:59, such as 03:00. N
 // The areas of the check dialog, in the words of their boxes. A check of one
 // engine is the whole quick check and the others' is shorter, so that three
 // engines fit in the test's time: the boxes work the same in each.
-const AREAS = ["Memory", "Disks", "Processors", "Sensors", "Battery", "Network cards", "Hardware errors"];
+const AREAS = ["Memory", "Disks", "Processors", "Sensors", "Battery", "Network cards", "Hardware errors", "RAID controllers"];
 const SOME = ["Memory", "Processors"];
 
 /** What a result is called on the card, and the order the card lists them in. */
@@ -519,7 +519,7 @@ async function openCheck(t, page) {
   return dialog;
 }
 
-/** The seven areas are boxes, all on; the full check's box brings its words and takes them away; and with no area chosen, Check now sends nothing. */
+/** The eight areas are boxes, all on; the full check's box brings its words and takes them away; and with no area chosen, Check now sends nothing. */
 async function checkDialogAsked(t, page, dialog) {
   for (const area of AREAS) {
     const box = dialog.getByRole("checkbox", { name: area, exact: true });

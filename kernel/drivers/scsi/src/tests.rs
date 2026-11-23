@@ -11,6 +11,7 @@ use std::vec::Vec;
 
 use crate::*;
 
+mod health;
 mod mmc;
 mod recording;
 
@@ -26,6 +27,9 @@ struct Sim {
     becoming: u32,
     /// Not ready until a START STOP UNIT.
     stopped: bool,
+    /// Fails TEST UNIT READY as an internal target failure, as QEMU's
+    /// MegaRAID models fail every command that moves no data.
+    tur_fails: bool,
     no_medium: bool,
     protected: bool,
     /// UNIT ATTENTIONs to answer the next commands with, as after a reset.
@@ -71,6 +75,7 @@ impl Sim {
             physical_exponent: 0,
             becoming: 0,
             stopped: false,
+            tur_fails: false,
             no_medium: false,
             protected: false,
             attentions: 0,
@@ -125,7 +130,9 @@ impl Sim {
                 Reply::Good { residue: 0 }
             }
             op::TEST_UNIT_READY => {
-                if self.no_medium {
+                if self.tur_fails {
+                    Sim::sense(key::HARDWARE_ERROR, 0x44, 0)
+                } else if self.no_medium {
                     Sim::sense(key::NOT_READY, 0x3a, 0)
                 } else if self.stopped {
                     Sim::sense(key::NOT_READY, 0x04, 0x02)
@@ -336,6 +343,18 @@ fn a_disk_becoming_ready_is_waited_for_and_one_stopped_is_started_once() {
         ))
     );
     assert_eq!(waited, 100_000);
+}
+
+#[test]
+fn a_disk_that_fails_test_unit_ready_as_a_hardware_error_is_asked_its_capacity() {
+    let mut sim = Sim { tur_fails: true, ..Sim::stick() };
+    let (found, waited) = probe_sim(&mut sim);
+    assert_eq!(found.unwrap().capacity.blocks, 0x40_0000);
+    assert_eq!(waited, 0);
+    assert_eq!(
+        sim.sent,
+        [op::INQUIRY, op::TEST_UNIT_READY, op::READ_CAPACITY_10, op::MODE_SENSE_6]
+    );
 }
 
 #[test]

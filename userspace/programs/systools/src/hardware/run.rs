@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The run of `hardware check`: the areas that take no time (the sensors
-//! and the battery) first, while the machine is at rest; then each disk
+//! The run of `hardware check`: the areas that take no time (the sensors,
+//! the battery and the RAID controllers) first, while the machine is at rest; then each disk
 //! on a thread of its own, since a disk's self-test takes most of the
 //! time and runs by itself, alongside the memory test and the load; and
 //! last the network, whose counts are read at the start and at the end.
@@ -22,7 +22,8 @@ use std::thread;
 
 use super::check::{Area, Check};
 use super::plan::Plan;
-use super::{battery, cpu, disks, errors, memory, monitors, network, ras};
+use super::{battery, cpu, disks, errors, memory, monitors, network, raid, ras};
+use crate::raid::ROOT as RAID;
 use crate::sensors::HWMON;
 
 /// Where the lines that say how far a run is go.
@@ -107,7 +108,11 @@ fn emit_all(sink: &Sink, checks: Vec<Check>) {
 fn timed_checks(plan: &Plan, cards: usize) -> usize {
     let mut count = 0;
     if plan.has(Area::Disks) {
-        count += if plan.disks.is_empty() { 1 } else { plan.disks.len() * disks::CHECKS };
+        count += if plan.disks.is_empty() {
+            1
+        } else {
+            plan.disks.iter().map(|(disk, _)| disks::checks_of(disk)).sum()
+        };
     }
     if plan.has(Area::Memory) {
         count += memory::CHECKS;
@@ -140,15 +145,18 @@ pub(crate) fn execute(plan: &Plan, stop: &AtomicBool, sink: &Sink) {
     };
     let hardware_errors =
         if plan.has(Area::Errors) { errors::run(Path::new(ras::DIR)) } else { Vec::new() };
+    let raid = if plan.has(Area::Raid) { raid::run(Path::new(RAID)) } else { Vec::new() };
     sink.expect(
         sensors.len()
             + battery.len()
             + hardware_errors.len()
+            + raid.len()
             + timed_checks(plan, network_before.len()),
     );
     emit_all(sink, sensors);
     emit_all(sink, battery);
     emit_all(sink, hardware_errors);
+    emit_all(sink, raid);
     thread::scope(|scope| {
         if plan.has(Area::Disks) {
             if plan.disks.is_empty() {

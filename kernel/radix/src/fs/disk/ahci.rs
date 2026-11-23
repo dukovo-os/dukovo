@@ -91,8 +91,10 @@ pub struct SataPort {
     name: Name,
 }
 
-fn port_op(op: Op) -> radix_ahci::Op {
-    match op {
+/// The port's op for `op`; `None` for a SCSI query, which a SATA port
+/// does not take.
+fn port_op(op: Op) -> Option<radix_ahci::Op> {
+    Some(match op {
         Op::Read => radix_ahci::Op::Read,
         Op::Write => radix_ahci::Op::Write,
         Op::WriteThrough => radix_ahci::Op::WriteThrough,
@@ -100,31 +102,33 @@ fn port_op(op: Op) -> radix_ahci::Op {
         Op::Discard(count) => radix_ahci::Op::Trim(count),
         Op::Smart(feature, low) => radix_ahci::Op::Smart(feature, low),
         Op::PowerMode => radix_ahci::Op::PowerMode,
-    }
+        Op::Query(_) => return None,
+    })
 }
 
 /// `request`'s op and first sector as the disk counts them: in its own
 /// logical sectors, which are a block layer's sector or eight.
-fn in_disk_sectors(request: &Request<'_>) -> (radix_ahci::Op, u64) {
+fn in_disk_sectors(request: &Request<'_>) -> Option<(radix_ahci::Op, u64)> {
     let unit = request.unit;
-    let op = match port_op(request.op) {
+    let op = match port_op(request.op)? {
         radix_ahci::Op::Trim(count) => radix_ahci::Op::Trim(count / unit),
         op => op,
     };
-    (op, request.sector / unit)
+    Some((op, request.sector / unit))
 }
 
 impl Controller for SataPort {
     fn room(&self, op: Op, _segments: usize) -> bool {
-        self.port.room(port_op(op))
+        // A query has no room to wait for: it is refused when submitted.
+        port_op(op).is_none_or(|op| self.port.room(op))
     }
 
     fn alone(&self, op: Op) -> bool {
-        self.port.alone(port_op(op))
+        port_op(op).is_some_and(|op| self.port.alone(op))
     }
 
     fn submit(&mut self, slot: u8, request: &Request<'_>, _more: bool) -> Result<(), Error> {
-        let (op, sector) = in_disk_sectors(request);
+        let (op, sector) = in_disk_sectors(request).ok_or(Error::Unsupported)?;
         let tag = self.port.submit(op, sector, request.data).map_err(|err| match err {
             radix_ahci::Error::BadRequest => Error::OutOfRange,
             _ => Error::Io,

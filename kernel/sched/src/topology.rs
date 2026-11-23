@@ -21,6 +21,16 @@
 //! Loads are counts of runnable threads; weights are left to the fair queues
 //! on each CPU. Only threads waiting in a queue move: a thread alone on its
 //! CPU stays where it is.
+//!
+//! Each CPU's span at each level, and which of its levels add CPUs to the
+//! one below, are worked out once, when the topology is complete
+//! ([`Topology::finish`]): every wake-up that looks for an idle CPU and
+//! every balancing attempt reads them, and working them out costs a look
+//! at every CPU, which on a server of a hundred CPUs is thousands of
+//! instructions each time.
+
+use alloc::vec::Vec;
+use core::alloc::Allocator;
 
 use crate::cpuset::{CpuSet, MAX_CPUS};
 
@@ -43,6 +53,16 @@ pub enum Level {
 impl Level {
     /// Every level, closest first.
     pub const ALL: [Level; 4] = [Level::Core, Level::Package, Level::Node, Level::Machine];
+
+    /// Its place in [`Level::ALL`].
+    pub const fn index(self) -> usize {
+        match self {
+            Level::Core => 0,
+            Level::Package => 1,
+            Level::Node => 2,
+            Level::Machine => 3,
+        }
+    }
 
     /// Lower-case name.
     pub const fn name(self) -> &'static str {
@@ -133,42 +153,73 @@ pub const fn should_pull(from: u32, from_cpus: u32, to: u32, to_cpus: u32) -> bo
     (from as u64 - 1) * to_cpus as u64 >= (to as u64 + 1) * from_cpus as u64
 }
 
+/// What [`Topology::finish`] works out for one CPU.
+#[derive(Clone, Copy)]
+struct Known {
+    /// Its span at each level, in [`Level::ALL`]'s order.
+    spans: [CpuSet; 4],
+    /// Bit `i` set when level `Level::ALL[i]` adds CPUs to the one below.
+    grows: u8,
+}
+
 /// The machine's CPUs, packages and nodes.
-#[derive(Clone)]
-pub struct Topology {
+pub struct Topology<A: Allocator> {
     cpus: usize,
     places: [Place; MAX_CPUS],
     distance: [[u8; MAX_NODES]; MAX_NODES],
+    /// Each CPU's spans and levels, from [`Topology::finish`]. Empty before
+    /// it, after a change of the CPUs or their places, or when there was
+    /// no memory for them: they are then worked out each time.
+    known: Vec<Known, A>,
 }
 
-impl Topology {
-    /// `cpus` CPUs, each its own core in one package on one node.
-    pub const fn flat(cpus: usize) -> Topology {
-        let cpus = if cpus > MAX_CPUS { MAX_CPUS } else { cpus };
+impl<A: Allocator> Topology<A> {
+    /// `cpus` CPUs, each its own core in one package on one node, keeping
+    /// what [`Topology::finish`] works out in memory from `alloc`.
+    pub fn flat_in(cpus: usize, alloc: A) -> Topology<A> {
+        let cpus = cpus.min(MAX_CPUS);
         let mut places = [Place { package: 0, core: 0, node: 0 }; MAX_CPUS];
-        let mut i = 0;
-        while i < MAX_CPUS {
-            places[i].core = i as u32;
-            i += 1;
+        for (i, place) in places.iter_mut().enumerate() {
+            place.core = i as u32;
         }
         let mut distance = [[20u8; MAX_NODES]; MAX_NODES];
-        let mut n = 0;
-        while n < MAX_NODES {
-            distance[n][n] = 10;
-            n += 1;
+        for (n, row) in distance.iter_mut().enumerate() {
+            row[n] = 10;
         }
-        Topology { cpus, places, distance }
+        Topology { cpus, places, distance, known: Vec::new_in(alloc) }
+    }
+
+    /// Works out each CPU's spans and levels once, for every later look:
+    /// call it when the CPUs and their places are all set. Returns false
+    /// when there is no memory for them, which leaves them to be worked
+    /// out each time, as before.
+    pub fn finish(&mut self) -> bool {
+        self.known.clear();
+        if self.known.try_reserve_exact(self.cpus).is_err() {
+            return false;
+        }
+        for cpu in 0..self.cpus {
+            let known = Known {
+                spans: Level::ALL.map(|level| self.span_of(cpu, level)),
+                grows: self.grows_of(cpu),
+            };
+            // Reserved just above.
+            let _ = self.known.push_within_capacity(known);
+        }
+        true
     }
 
     /// Sets how many CPUs there are.
     pub fn set_cpus(&mut self, cpus: usize) {
         self.cpus = cpus.min(MAX_CPUS);
+        self.known.clear();
     }
 
     /// Records where CPU `cpu` sits.
     pub fn set_place(&mut self, cpu: usize, place: Place) {
         if let Some(slot) = self.places.get_mut(cpu) {
             *slot = Place { node: place.node.min(MAX_NODES as u8 - 1), ..place };
+            self.known.clear();
         }
     }
 
@@ -208,6 +259,14 @@ impl Topology {
 
     /// The CPUs that share `level` with `cpu`.
     pub fn span(&self, cpu: usize, level: Level) -> CpuSet {
+        match self.known.get(cpu) {
+            Some(known) => known.spans[level.index()],
+            None => self.span_of(cpu, level),
+        }
+    }
+
+    /// [`Topology::span`], worked out from the places.
+    fn span_of(&self, cpu: usize, level: Level) -> CpuSet {
         let mut set = CpuSet::EMPTY;
         for other in 0..self.cpus {
             if self.shares(cpu, other, level) {
@@ -219,13 +278,26 @@ impl Topology {
 
     /// The levels of `cpu` that add CPUs to the one below, closest first.
     pub fn levels(&self, cpu: usize) -> impl Iterator<Item = Level> + '_ {
+        let grows = match self.known.get(cpu) {
+            Some(known) => known.grows,
+            None => self.grows_of(cpu),
+        };
+        Level::ALL.into_iter().filter(move |level| grows & (1 << level.index()) != 0)
+    }
+
+    /// [`Topology::levels`] as bits of [`Level::ALL`], worked out from the
+    /// places.
+    fn grows_of(&self, cpu: usize) -> u8 {
         let mut below = CpuSet::single(cpu);
-        Level::ALL.into_iter().filter(move |&level| {
-            let span = self.span(cpu, level).or(&below);
-            let grows = span.len() > below.len();
+        let mut grows = 0;
+        for level in Level::ALL {
+            let span = self.span_of(cpu, level).or(&below);
+            if span.len() > below.len() {
+                grows |= 1 << level.index();
+            }
             below = span;
-            grows
-        })
+        }
+        grows
     }
 
     /// The CPU an underloaded `this` should pull a thread from, comparing
@@ -370,14 +442,27 @@ impl Topology {
 
 #[cfg(test)]
 mod tests {
+    use std::alloc::Global;
+
     use proptest::prelude::*;
 
     use super::*;
 
+    fn flat(cpus: usize) -> Topology<Global> {
+        Topology::flat_in(cpus, Global)
+    }
+
     /// Two packages of two cores with two hardware threads each; one node
-    /// per package.
-    fn machine() -> Topology {
-        let mut topology = Topology::flat(8);
+    /// per package; finished.
+    fn machine() -> Topology<Global> {
+        let mut topology = unfinished_machine();
+        assert!(topology.finish());
+        topology
+    }
+
+    /// [`machine`], with its spans worked out each time.
+    fn unfinished_machine() -> Topology<Global> {
+        let mut topology = flat(8);
         for cpu in 0..8 {
             topology.set_place(
                 cpu,
@@ -410,15 +495,30 @@ mod tests {
             [Level::Core, Level::Package, Level::Machine]
         );
         // One package over two nodes counts as one per node.
-        let mut split = Topology::flat(4);
+        let mut split = flat(4);
         for cpu in 0..4 {
             split.set_place(cpu, Place { package: 0, core: cpu as u32, node: (cpu / 2) as u8 });
         }
         assert_eq!(split.span(3, Level::Package).to_string(), "2-3");
         assert_eq!(split.levels(3).collect::<Vec<_>>(), [Level::Package, Level::Machine]);
-        let flat = Topology::flat(4);
-        assert_eq!(flat.levels(2).collect::<Vec<_>>(), [Level::Package]);
-        assert_eq!(Topology::flat(1).levels(0).count(), 0);
+        let four = flat(4);
+        assert_eq!(four.levels(2).collect::<Vec<_>>(), [Level::Package]);
+        assert_eq!(flat(1).levels(0).count(), 0);
+    }
+
+    #[test]
+    fn a_change_of_place_forgets_what_finish_worked_out() {
+        let mut topology = flat(4);
+        assert!(topology.finish());
+        assert_eq!(topology.span(3, Level::Package).to_string(), "0-3");
+        topology.set_place(3, Place { package: 1, core: 0, node: 0 });
+        assert_eq!(topology.span(3, Level::Package).to_string(), "3");
+        assert_eq!(topology.span(0, Level::Package).to_string(), "0-2");
+        assert!(topology.finish());
+        assert_eq!(topology.span(0, Level::Package).to_string(), "0-2");
+        assert_eq!(topology.levels(3).collect::<Vec<_>>(), [Level::Node]);
+        topology.set_cpus(2);
+        assert_eq!(topology.span(0, Level::Machine).to_string(), "0-1");
     }
 
     #[test]
@@ -497,6 +597,48 @@ mod tests {
     }
 
     proptest! {
+        /// What `finish` works out answers as the places do.
+        #[test]
+        fn finished_answers_as_worked_out(
+            cpus in 1usize..16,
+            places in prop::collection::vec((0u32..3, 0u32..4, 0u8..3), 16),
+            running in prop::collection::vec(0u32..4, 16),
+            words in any::<u64>(),
+        ) {
+            let mut worked_out = flat(cpus);
+            for (cpu, &(package, core, node)) in places.iter().enumerate().take(cpus) {
+                worked_out.set_place(cpu, Place { package, core, node });
+            }
+            worked_out.set_distance(0, 1, 21);
+            let mut finished = flat(cpus);
+            for cpu in 0..cpus {
+                finished.set_place(cpu, worked_out.place(cpu));
+            }
+            finished.set_distance(0, 1, 21);
+            prop_assert!(finished.finish());
+            let loads = loads(&running);
+            let allowed = CpuSet::from_words([words & 0xffff, 0, 0, 0]).and(&CpuSet::first(cpus));
+            for cpu in 0..cpus {
+                for level in Level::ALL {
+                    prop_assert_eq!(finished.span(cpu, level), worked_out.span(cpu, level));
+                    prop_assert_eq!(
+                        finished.find_busiest(cpu, level, &*loads),
+                        worked_out.find_busiest(cpu, level, &*loads)
+                    );
+                }
+                prop_assert_eq!(
+                    finished.levels(cpu).collect::<Vec<_>>(),
+                    worked_out.levels(cpu).collect::<Vec<_>>()
+                );
+                if !allowed.is_empty() {
+                    prop_assert_eq!(
+                        finished.select_cpu(cpu, &allowed, &*loads),
+                        worked_out.select_cpu(cpu, &allowed, &*loads)
+                    );
+                }
+            }
+        }
+
         #[test]
         fn placement_respects_affinity(prev in 0usize..8, words in any::<u64>(), running in prop::collection::vec(0u32..4, 8)) {
             let topology = machine();

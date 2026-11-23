@@ -12,7 +12,9 @@
 //! controllers ([`nvme`], whose namespaces are named `nvme0n1` and on),
 //! SD card readers ([`sdhci`], whose cards are named `mmcblk0` and on),
 //! Intel VMDs ([`vmd`], the NVMe controllers behind which are walked as
-//! a PCI segment of their own and named as the others are),
+//! a PCI segment of their own and named as the others are), MegaRAID
+//! RAID controllers ([`megaraid`], whose volumes and pass-through disks
+//! are named `sda` and on),
 //! and xHCI controllers (`crate::usb`), whose sticks and USB disks
 //! ([`usb`]) are named `sda` and on too: each `sd` disk takes the first
 //! letter free, as on Linux, the SATA disks found at boot first, and a
@@ -26,8 +28,8 @@
 //! the one before ([`replace`]), with its own partitions.
 //! Requests to every disk go through the same queue
 //! ([`queue`]), whatever drives it. Before the machine is powered off,
-//! [`shutdown`] empties every disk's write cache and shuts the NVMe
-//! controllers down.
+//! [`shutdown`] empties every disk's write cache and shuts the NVMe and
+//! RAID controllers down.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -54,12 +56,14 @@ mod ahci;
 mod floppy;
 mod handed;
 mod ide;
+pub mod megaraid;
 mod nvme;
 mod optical;
 mod optical_port;
 mod pvscsi;
 mod queue;
 pub mod removable;
+mod scsi_health;
 mod sdhci;
 pub mod storvsc;
 pub mod usb;
@@ -325,7 +329,7 @@ pub fn init() {
     let mut ide = 0;
     let mut cards = 0;
     let mut controllers = 0;
-    let (mut adapters, mut scsi, mut vmware) = (0, 0, 0);
+    let (mut adapters, mut scsi, mut vmware, mut raids) = (0, 0, 0, 0);
     for segment in segments.iter().flatten() {
         let PciSegment { base, segment: number, first_bus, last_bus } = *segment;
         let mut map_bus = |bus: u8| {
@@ -368,6 +372,16 @@ pub fn init() {
                         );
                     }
                     vmware += 1;
+                } else if function.vendor_id() == radix_megaraid::VENDOR
+                    && radix_megaraid::Family::of(function.device_id()).is_some()
+                {
+                    if let Err(why) = megaraid::bind(&function, raids, &mut scsi) {
+                        warn!(
+                            "Disk: could not set up the MegaRAID controller at {}: {why}",
+                            function.address()
+                        );
+                    }
+                    raids += 1;
                 } else if device_type(&function) == Some(radix_virtio::device_type::CONSOLE) {
                     crate::vports::bind(&function);
                 } else if device_type(&function) == Some(radix_virtio::device_type::NET) {
@@ -896,9 +910,10 @@ pub fn wait_for_discs() {
 }
 
 /// Readies every disk for the power to go: empties each one's write
-/// cache, and tells each NVMe controller to shut down. Runs once the
-/// filesystems have written back what they hold, before the machine is
-/// powered off, restarted or halted; requests after it may fail.
+/// cache, and tells each NVMe controller and RAID controller to shut
+/// down. Runs once the filesystems have written back what they hold,
+/// before the machine is powered off, restarted or halted; requests after
+/// it may fail.
 pub fn shutdown() {
     for_each(|entry| {
         if let Err(err) = entry.device.flush() {
@@ -906,6 +921,7 @@ pub fn shutdown() {
         }
     });
     nvme::shutdown();
+    megaraid::shutdown();
 }
 
 /// The name a disk or partition was registered under.
@@ -1519,6 +1535,8 @@ fn health(device: &DeviceRef, argument: u64) -> Result<(), Status> {
             page.bytes_mut()[516..1024].fill(0);
             (request::HEALTH_NVME, 0)
         }
+        // The record is its entries, which the page holds as they are.
+        Health::Scsi => (request::HEALTH_SCSI, 0),
         // A disk in standby is not woken to be read.
         Health::Asleep => return Err(Kernel::WouldBlock.status(0)),
     };
@@ -1557,6 +1575,7 @@ fn self_test(device: &DeviceRef, argument: u64, may_write: bool) -> Result<(), S
     let state = device.self_test(test, &mut page).map_err(block_status)?;
     let kind = match state.kind {
         Health::Nvme => request::HEALTH_NVME,
+        Health::Scsi => request::HEALTH_SCSI,
         Health::Ata | Health::AtaOff | Health::Asleep => request::HEALTH_ATA,
     };
     let mut head = [0u8; 16];

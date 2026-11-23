@@ -206,9 +206,9 @@ test('the memory test runs the memory area alone', () => {
   assert.equal(Object.isFrozen(MEMORY_TEST_ARGS), true);
 });
 
-test('the areas of the dialog are the seven the action takes, and all of them are left out of the arguments', () => {
+test('the areas of the dialog are the eight the action takes, and all of them are left out of the arguments', () => {
   const ids = AREAS.map((area) => area.id);
-  assert.deepEqual(ids, ['memory', 'disks', 'cpu', 'sensors', 'battery', 'network', 'errors']);
+  assert.deepEqual(ids, ['memory', 'disks', 'cpu', 'sensors', 'battery', 'network', 'errors', 'raid']);
   assert.deepEqual(checkArgs(ids, false), {});
   assert.deepEqual(checkArgs(ids, true), { full: true });
   assert.deepEqual(checkArgs(['network', 'memory'], false), { areas: 'memory network' }, 'in the order the command checks them');
@@ -349,6 +349,11 @@ test('the disks that keep no health record are counted from the storage answer',
   none.disks.push({ name: 'vda', model: null, health: null });
   assert.equal(noRecordWords(none), '2 disks keep no health record (USB or virtual) and are not read.');
   assert.equal(noRecordWords(null), null);
+  // A RAID controller's volume has its member disks read through the controller.
+  none.disks.push({ name: 'sdd', model: 'PERC H740P Adp', health: null });
+  const raid = { controllers: [{ n: 0, volumes: [{ target: 0, os: 'sdd' }, { target: 1, os: null }] }] };
+  assert.equal(noRecordWords(none, raid), '2 disks keep no health record (USB or virtual) and are not read.');
+  assert.equal(noRecordWords({ disks: [{ name: 'sdd', health: null }] }, raid), null);
 });
 
 test('the times of the changes of the system come from the update history, and only those that are times', () => {

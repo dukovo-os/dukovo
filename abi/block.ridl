@@ -218,17 +218,25 @@ const MMC_TIMEOUT_MAX: u32 = 600;
 
 /// What the disk says of its health (diskhealth(8), ADR 0157): Dukovo's
 /// own request, as Linux leaves it to commands passed through raw. It
-/// writes HEALTH_SIZE bytes: a u32 kind, HEALTH_ATA or HEALTH_NVME; a u32
-/// of flags; 512 bytes, a SATA disk's SMART data (SMART READ DATA) or an
-/// NVMe controller's SMART / Health Information log; then 512 bytes: a
-/// SATA disk's SMART thresholds; for an NVMe controller its warning and
-/// critical composite temperatures (WCTEMP, CCTEMP) as two u16 in kelvin,
-/// 0 where it gives none, then zeros. A partition answers for its disk.
+/// writes HEALTH_SIZE bytes: a u32 kind, HEALTH_ATA, HEALTH_NVME or
+/// HEALTH_SCSI; a u32 of flags; 512 bytes, a SATA disk's SMART data (SMART
+/// READ DATA) or an NVMe controller's SMART / Health Information log; then
+/// 512 bytes: a SATA disk's SMART thresholds; for an NVMe controller its
+/// warning and critical composite temperatures (WCTEMP, CCTEMP) as two u16
+/// in kelvin, 0 where it gives none, then zeros. For a SCSI or SAS disk
+/// the 1024 bytes are entries, each a page code (u8), a subpage (u8), a
+/// length (u16) and that many bytes of the disk's log page as it returned
+/// it, from its 4-byte header on, cut to what fits; the record ends at the
+/// first entry whose page code and length are 0, or at its end. The first
+/// entry, page code 0xF0, is the number of grown defects, a u32. A SATA
+/// disk behind a SCSI controller answers as a SATA disk. A partition
+/// answers for its disk.
 /// A SATA disk is asked its power mode first (CHECK POWER MODE), and one in
 /// standby, or one that does not say, is not read: GET_HEALTH fails with
 /// would_block, so that asking never wakes a disk. Fails with
 /// not_supported on a device that keeps no such record, such as a virtio
-/// or USB disk, and io if the disk does not answer.
+/// disk of QEMU's, a USB disk, or a SCSI disk that has no log pages, and
+/// io if the disk does not answer.
 const GET_HEALTH: u32 = 0x84085203;
 /// The bytes GET_HEALTH writes.
 const HEALTH_SIZE: u32 = 1032;
@@ -236,6 +244,8 @@ const HEALTH_SIZE: u32 = 1032;
 const HEALTH_ATA: u32 = 1;
 /// GET_HEALTH's kind for an NVMe controller's health log.
 const HEALTH_NVME: u32 = 2;
+/// GET_HEALTH's kind for a SCSI disk's log pages and grown defect count.
+const HEALTH_SCSI: u32 = 3;
 /// GET_HEALTH's flag for a SATA disk whose SMART is off: its 1024 bytes
 /// are zeros.
 const HEALTH_SMART_OFF: u32 = 1;

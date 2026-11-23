@@ -3,8 +3,9 @@
 
 //! diskhealth(8): what each disk says of its health (ADR 0157), read with
 //! radix-block(2)'s GET_HEALTH: a SATA disk's SMART attributes, as
-//! smartctl(8) shows them with `-A`, or an NVMe controller's SMART /
-//! Health Information log, and a verdict from them. With `--watch`, as
+//! smartctl(8) shows them with `-A`, an NVMe controller's SMART /
+//! Health Information log, or a SCSI or SAS disk's log pages and grown
+//! defects (ADR 0665), and a verdict from them. With `--watch`, as
 //! Spark's diskhealth service, it looks again every 10 minutes and writes
 //! a line, which Spark puts in the kernel log, whenever a disk's verdict
 //! or its reasons change.
@@ -31,7 +32,7 @@
 //! gives them, else by its kind.
 
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
@@ -44,6 +45,7 @@ use serde::{Deserialize, Serialize};
 use crate::alerts::protocol::{About, Alert, Severity, key_part};
 use crate::args::{Arg, Args};
 use crate::disk_errors;
+use crate::raid;
 use crate::selftest::{self, Outcome};
 use crate::sys::{self, SYS};
 use crate::util::{self, Fail};
@@ -136,6 +138,49 @@ pub(crate) enum Record {
     /// A SATA disk whose SMART is off.
     AtaOff,
     Nvme(NvmeLog),
+    Scsi(ScsiLog),
+}
+
+/// What a SCSI or SAS disk said of its health, from the log pages in
+/// GET_HEALTH's record (`scsi_log`); a field is `None` where the disk has
+/// no such page or the record cut it off.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ScsiLog {
+    /// The additional sense code and qualifier of the disk's own warning
+    /// (informational exceptions, 0x2F); `None` while it has none.
+    pub(crate) trip: Option<(u8, u8)>,
+    /// The temperature in degrees Celsius, and the temperature the disk
+    /// gives as its limit (temperature, 0x0D).
+    pub(crate) celsius: Option<i64>,
+    pub(crate) limit_celsius: Option<i64>,
+    /// Minutes powered on (background scan, 0x15).
+    pub(crate) minutes: Option<u64>,
+    /// Start-stop and load-unload cycles (0x0E).
+    pub(crate) start_stop: Option<u64>,
+    pub(crate) load_unload: Option<u64>,
+    /// Errors that were not corrected, of reads, writes and verifies
+    /// (0x03, 0x02, 0x05).
+    pub(crate) read_errors: Option<u64>,
+    pub(crate) write_errors: Option<u64>,
+    pub(crate) verify_errors: Option<u64>,
+    /// Errors that are not the medium's (0x06).
+    pub(crate) non_medium: Option<u64>,
+    /// A solid state disk's share of its endurance used, in percent
+    /// (0x11).
+    pub(crate) used: Option<u8>,
+    /// The disk's log of its tests (0x10), the newest first.
+    pub(crate) tests: Option<Vec<selftest::Logged>>,
+    /// Blocks the disk moved to spares as they grew bad.
+    pub(crate) defects: Option<u64>,
+}
+
+impl ScsiLog {
+    /// The errors of every kind the disk could not correct, where it
+    /// counts any.
+    fn uncorrected(&self) -> Option<u64> {
+        let all = [self.read_errors, self.write_errors, self.verify_errors];
+        all.iter().any(Option::is_some).then(|| all.iter().flatten().sum())
+    }
 }
 
 /// The verdict on a disk and what it rests on.
@@ -337,8 +382,201 @@ fn nvme_report(log: &NvmeLog) -> Report {
     report
 }
 
+/// The entries of a SCSI disk's record (ADR 0665, radix-block(2)): the log
+/// page code and the page, from its header on, of each, up to the record's
+/// end or its first entry of code and length 0. An entry cut off by the
+/// end of the record is left out.
+fn scsi_entries(record: &[u8]) -> Vec<(u8, &[u8])> {
+    let mut found = Vec::new();
+    let mut at = 0;
+    while let Some(head) = record.get(at..at + 4) {
+        let length = usize::from(u16::from_le_bytes([head[2], head[3]]));
+        if head[0] == 0 && length == 0 {
+            break;
+        }
+        let Some(page) = record.get(at + 4..at + 4 + length) else { break };
+        found.push((head[0], page));
+        at += 4 + length;
+    }
+    found
+}
+
+/// The parameters of log page `page`, from its header on, as (code,
+/// value): one whose value is cut off by the end of the page, which the
+/// record may do, is left out.
+fn scsi_params(page: &[u8]) -> Vec<(u16, &[u8])> {
+    let mut found = Vec::new();
+    let mut at = 4;
+    while let Some(head) = page.get(at..at + 4) {
+        let Some(value) = page.get(at + 4..at + 4 + usize::from(head[3])) else { break };
+        found.push((u16::from_be_bytes([head[0], head[1]]), value));
+        at += 4 + usize::from(head[3]);
+    }
+    found
+}
+
+/// A parameter's value as a number, big-endian, of at most its last 8
+/// bytes.
+fn scsi_number(value: &[u8]) -> u64 {
+    let value = &value[value.len().saturating_sub(8)..];
+    value.iter().fold(0, |n, &byte| n << 8 | u64::from(byte))
+}
+
+/// What a SCSI disk said in `record`, the 1024 bytes GET_HEALTH gave.
+fn scsi_log(record: &[u8]) -> ScsiLog {
+    let entries = scsi_entries(record);
+    let params =
+        |code: u8| entries.iter().find(|(c, _)| *c == code).map(|(_, page)| scsi_params(page));
+    let value = |code: u8, parameter: u16| {
+        params(code)?.into_iter().find(|(p, _)| *p == parameter).map(|(_, value)| value)
+    };
+    let number = |code: u8, parameter: u16| value(code, parameter).map(scsi_number);
+    // A temperature of FFh is one the disk does not give.
+    let degrees = |byte: Option<&u8>| byte.copied().filter(|&c| c != 0xff).map(i64::from);
+    let ie = value(0x2f, 0);
+    let celsius = value(0x0d, 0).and_then(|v| degrees(v.get(1)));
+    // The informational exceptions page repeats the temperature.
+    let celsius = celsius.or_else(|| ie.and_then(|v| degrees(v.get(2))));
+    let limit = value(0x0d, 1).and_then(|v| degrees(v.get(1)));
+    let tests = entries.iter().find(|(c, _)| *c == 0x10).map(|(_, page)| scsi_tests(page));
+    ScsiLog {
+        trip: ie.and_then(|v| Some((*v.first()?, *v.get(1)?))).filter(|&(asc, _)| asc != 0),
+        celsius,
+        limit_celsius: limit,
+        // The first four bytes of its status parameter.
+        minutes: value(0x15, 0).filter(|v| v.len() >= 4).map(|v| scsi_number(&v[..4])),
+        start_stop: number(0x0e, 4),
+        load_unload: number(0x0e, 6),
+        read_errors: number(0x03, 6),
+        write_errors: number(0x02, 6),
+        verify_errors: number(0x05, 6),
+        non_medium: number(0x06, 0),
+        used: value(0x11, 1).and_then(|v| v.last().copied()),
+        tests,
+        // The record's own entry: a u32, little-endian.
+        defects: entries
+            .iter()
+            .find(|(c, _)| *c == 0xf0)
+            .and_then(|(_, count)| Some(u32::from_le_bytes(count.get(..4)?.try_into().ok()?)))
+            .map(u64::from),
+    }
+}
+
+/// The tests in a self-test results page (0x10): twenty parameters of 20
+/// bytes, the newest first, an unused one all zeros.
+fn scsi_tests(page: &[u8]) -> Vec<selftest::Logged> {
+    scsi_params(page)
+        .into_iter()
+        .filter(|(parameter, value)| (1..=20).contains(parameter) && value.len() >= 16)
+        .filter_map(|(_, v)| {
+            let (code, result, number) = (v[0] >> 5, v[0] & 0xf, v[1]);
+            if code == 0 && number == 0 {
+                return None;
+            }
+            let hours = u64::from(u16::from_be_bytes([v[2], v[3]]));
+            let lba = u64::from_be_bytes([v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11]]);
+            let kind = match code {
+                1 | 4 => selftest::Kind::Short,
+                2 | 5 => selftest::Kind::Extended,
+                _ => selftest::Kind::Other,
+            };
+            let outcome = match result {
+                0 => Some(Outcome::Passed),
+                // Aborted by SEND DIAGNOSTIC; by anything else, as a reset.
+                1 => Some(Outcome::Aborted),
+                2 => Some(Outcome::Interrupted),
+                3 => Some(Outcome::Failed { first_bad_sector: None }),
+                4..=7 => {
+                    // All ones says it does not give where.
+                    Some(Outcome::Failed { first_bad_sector: (lba != u64::MAX).then_some(lba) })
+                }
+                0xf => None,
+                other => Some(Outcome::Other(other)),
+            };
+            Some(selftest::Logged {
+                kind,
+                outcome,
+                power_on_hours: outcome.is_some().then_some(hours),
+            })
+        })
+        .collect()
+}
+
+/// Words for the additional sense code and qualifier a disk's
+/// informational exceptions page gives, as SPC-6 names them.
+fn trip_words(asc: u8, ascq: u8) -> String {
+    match (asc, ascq) {
+        (0x5d, 0x00) => "the drive predicts its own failure".to_string(),
+        (0x5d, 0xff) => "the drive predicts its own failure, as a test".to_string(),
+        (0x5d, 0x10..=0x16) => {
+            let part = match ascq {
+                0x10 => "hardware",
+                0x11 => "media",
+                0x12 => "its controller",
+                0x13 => "its channel",
+                0x14 => "its servo",
+                0x15 => "its spindle",
+                _ => "its firmware",
+            };
+            format!("the drive predicts its own failure, of {part}")
+        }
+        (0x5d, _) => "the drive predicts its own failure".to_string(),
+        (0x0b, 0x01) => "the drive is over its temperature limit".to_string(),
+        (0x0b, 0x02) => "the drive's enclosure is degraded".to_string(),
+        (0x0b, 0x03) => "a background self-test failed".to_string(),
+        (0x0b, 0x04 | 0x05) => "a background scan found a medium error".to_string(),
+        (0x0b, _) => "the drive warns of a condition".to_string(),
+        _ => "the drive warns of a condition it does not name".to_string(),
+    }
+}
+
+/// The verdict on a SCSI disk from its record: failing when its own
+/// warning says it will fail (a code of 5Dh, or any other but the 0Bh of
+/// its temperature and background tests, which is a warning); a warning
+/// when it could not correct a read, write or verify, has moved blocks to
+/// spares as they grew bad, or has used its solid state endurance.
+fn scsi_report(log: &ScsiLog) -> Report {
+    let mut report = Report::new();
+    if let Some((asc, ascq)) = log.trip {
+        let verdict = if asc == 0x0b { Verdict::Warning } else { Verdict::Failing };
+        let words = trip_words(asc, ascq);
+        report.add(verdict, format!("{words} ({asc:02X}/{ascq:02X})"));
+    }
+    let uncorrected =
+        [(log.read_errors, "reads"), (log.write_errors, "writes"), (log.verify_errors, "verifies")];
+    for (count, what) in uncorrected {
+        if let Some(count) = count.filter(|&count| count > 0) {
+            report.add(Verdict::Warning, format!("{count} {what} could not be corrected"));
+        }
+    }
+    if let Some(defects) = log.defects.filter(|&defects| defects > 0) {
+        report.add(
+            Verdict::Warning,
+            format!("{defects} blocks were moved to spares as they grew bad"),
+        );
+    }
+    if let Some(used) = log.used.filter(|&used| used >= 100) {
+        report.add(Verdict::Warning, format!("it has used {used}% of its rated endurance"));
+    }
+    report.celsius = log.celsius;
+    report.hours = log.minutes.map(|minutes| minutes / 60);
+    report.used = log.used;
+    report
+}
+
+/// The disks behind the RAID controllers in `root`, by name (`raid0:bay4`):
+/// those the system does not see as disks of its own.
+fn members(root: &Path) -> Vec<String> {
+    let controllers = raid::read(root);
+    controllers
+        .iter()
+        .flat_map(|controller| controller.members().filter_map(|disk| controller.member_name(disk)))
+        .collect()
+}
+
 /// The whole disks the kernel has, by name, in order: the entries of
-/// `/kernel/block` that are not partitions.
+/// `/kernel/block` that are not partitions, then the disks behind RAID
+/// controllers.
 pub(crate) fn disks() -> io::Result<Vec<String>> {
     let mut names = Vec::new();
     for entry in fs::read_dir(BLOCKS)? {
@@ -348,23 +586,47 @@ pub(crate) fn disks() -> io::Result<Vec<String>> {
         }
     }
     names.sort();
+    names.extend(members(Path::new(raid::ROOT)));
     Ok(names)
 }
 
-/// Every name `/kernel/block` has, the partitions too, as a name asked
-/// for must be one of these: a partition answers for its disk.
+/// Every name `/kernel/block` has, the partitions too, and the disks
+/// behind RAID controllers, as a name asked for must be one of these: a
+/// partition answers for its disk.
 fn block_names() -> io::Result<Vec<String>> {
     let mut names = Vec::new();
     for entry in fs::read_dir(BLOCKS)? {
         names.push(entry?.file_name().to_string_lossy().into_owned());
     }
+    names.extend(members(Path::new(raid::ROOT)));
     Ok(names)
 }
 
-/// A line of what the kernel shows of disk `name`'s device.
+/// A line of what the kernel shows of disk `name`'s device. A disk behind
+/// a RAID controller has what the controller says of it: its vendor and
+/// model, its serial number and its firmware.
 pub(crate) fn device_text(name: &str, what: &str) -> String {
+    if raid::is_member_name(name) {
+        return member_text(Path::new(raid::ROOT), name, what);
+    }
     let path = format!("{BLOCKS}/{name}/device/{what}");
     fs::read_to_string(path).map_or_default(|text| text.trim().to_string())
+}
+
+/// [`device_text`] for the disk `name` behind a controller of `root`.
+fn member_text(root: &Path, name: &str, what: &str) -> String {
+    let Some((_, disk)) = raid::member(root, name) else { return String::new() };
+    let text = match what {
+        "model" => {
+            let parts: Vec<&str> =
+                [disk.vendor.as_deref(), disk.model.as_deref()].into_iter().flatten().collect();
+            (!parts.is_empty()).then(|| parts.join(" "))
+        }
+        "serial" => disk.serial,
+        "firmware_rev" => disk.revision,
+        _ => None,
+    };
+    text.unwrap_or_default()
 }
 
 /// What a look at a disk found.
@@ -380,6 +642,9 @@ pub(crate) enum Reading {
 
 /// Asks disk `name` of its health.
 pub(crate) fn read(name: &str) -> Result<Reading, Fail> {
+    if raid::is_member_name(name) {
+        return read_member(Path::new(raid::ROOT), name);
+    }
     let path = format!("/devices/{name}");
     let device = File::open(&path).map_err(|e| util::failed(&path, e))?;
     let mut value = [0u8; block::HEALTH_SIZE as usize];
@@ -396,14 +661,54 @@ pub(crate) fn read(name: &str) -> Result<Reading, Fail> {
         }
         Err(status) => return Err(util::failed(&path, sys::io_error(status))),
     }
+    Ok(Reading::Record(record_of(&value)))
+}
+
+/// What the 1032 bytes of an answer to GET_HEALTH, which a RAID
+/// controller's `health` files hold as well, say: the kind, the flags and
+/// the record.
+fn record_of(value: &[u8; block::HEALTH_SIZE as usize]) -> Record {
     let word =
         |at: usize| u32::from_le_bytes([value[at], value[at + 1], value[at + 2], value[at + 3]]);
     let (data, thresholds) = (&value[8..520], &value[520..1032]);
-    Ok(Reading::Record(match word(0) {
+    match word(0) {
         block::HEALTH_NVME => Record::Nvme(nvme_log(data, thresholds)),
+        block::HEALTH_SCSI => Record::Scsi(scsi_log(&value[8..1032])),
         _ if word(4) & block::HEALTH_SMART_OFF != 0 => Record::AtaOff,
         _ => Record::Ata(attributes(data, thresholds)),
-    }))
+    }
+}
+
+/// Asks the disk `name` behind a controller of `root` of its health, by
+/// opening its `health` file. The driver fails the open as a block
+/// disk's GET_HEALTH fails: "unsupported" for a disk that keeps no
+/// record; "would block", which a disk in standby gives, is taken the
+/// same way here.
+fn read_member(root: &Path, name: &str) -> Result<Reading, Fail> {
+    let Some((controller, disk)) = raid::member(root, name) else {
+        return Err(disk_errors::no_such_disk(name));
+    };
+    let path = raid::health_path(root, controller.n, disk.id);
+    let answer = File::open(&path).and_then(|mut file| {
+        let mut value = [0u8; block::HEALTH_SIZE as usize];
+        file.read_exact(&mut value)?;
+        Ok(value)
+    });
+    member_reading(answer, &path)
+}
+
+/// What a look at a member disk found, from the answer of its `health`
+/// file at `path`.
+fn member_reading(
+    answer: io::Result<[u8; block::HEALTH_SIZE as usize]>,
+    path: &Path,
+) -> Result<Reading, Fail> {
+    match answer {
+        Ok(value) => Ok(Reading::Record(record_of(&value))),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(Reading::Asleep),
+        Err(error) if error.kind() == io::ErrorKind::Unsupported => Ok(Reading::None),
+        Err(error) => Err(util::failed(&path.display(), error)),
+    }
 }
 
 /// The words that say why a disk was not read.
@@ -421,6 +726,7 @@ pub(crate) fn report(record: &Record) -> (&'static str, Report) {
             ("SATA", report)
         }
         Record::Nvme(log) => ("NVMe", nvme_report(log)),
+        Record::Scsi(log) => ("SCSI", scsi_report(log)),
     }
 }
 
@@ -477,6 +783,8 @@ pub(crate) struct Limits {
 pub(crate) fn kind_of(record: &Record, rotational: Option<bool>) -> DiskKind {
     match record {
         Record::Nvme(_) => DiskKind::Nvme,
+        // A SCSI disk that counts its endurance is flash.
+        Record::Scsi(ScsiLog { used: Some(_), .. }) => DiskKind::Ssd,
         _ if rotational == Some(false) => DiskKind::Ssd,
         _ => DiskKind::Hdd,
     }
@@ -484,6 +792,14 @@ pub(crate) fn kind_of(record: &Record, rotational: Option<bool>) -> DiskKind {
 
 /// Whether the kernel says disk `name` spins.
 fn rotational(name: &str) -> Option<bool> {
+    if raid::is_member_name(name) {
+        let (_, disk) = raid::member(Path::new(raid::ROOT), name)?;
+        return match disk.media.as_deref() {
+            Some("hdd") => Some(true),
+            Some("ssd") => Some(false),
+            _ => None,
+        };
+    }
     let text = fs::read_to_string(format!("{BLOCKS}/{name}/queue/rotational")).ok()?;
     match text.trim() {
         "1" => Some(true),
@@ -500,7 +816,8 @@ fn rotational(name: &str) -> Option<bool> {
 /// the threshold of its airflow temperature (attribute 190), which counts
 /// down from 100 as the disk warms, so the threshold is a temperature
 /// only where the value follows 100 less the temperature. The threshold of
-/// attribute 194 is 0 on nearly every disk and is no limit.
+/// attribute 194 is 0 on nearly every disk and is no limit. A SCSI disk
+/// says its limit as the reference temperature of its temperature page.
 pub(crate) fn limits_of(record: &Record, kind: DiskKind) -> Option<Limits> {
     let celsius = report(record).1.celsius?;
     let (kind_warning, kind_critical) = LIMITS_BY_KIND
@@ -539,6 +856,11 @@ pub(crate) fn limits_of(record: &Record, kind: DiskKind) -> Option<Limits> {
                 Limits { warning_c: critical_c - 5, critical_c, from: LimitsFrom::Disk }
             }))
         }
+        Record::Scsi(log) => {
+            Some(log.limit_celsius.filter(|limit| *limit > 0).map_or(by_kind, |critical_c| {
+                Limits { warning_c: critical_c - 5, critical_c, from: LimitsFrom::Disk }
+            }))
+        }
         Record::AtaOff => None,
     }
 }
@@ -573,12 +895,16 @@ pub(crate) struct Summary {
     pub(crate) temperature_c: Option<i64>,
     /// A SATA disk's sectors moved to spares, waiting to be moved, and
     /// not readable offline; null for an NVMe drive, for a disk whose
-    /// SMART is off, and for one that does not list the attribute.
+    /// SMART is off, and for one that does not list the attribute. A SCSI
+    /// disk's grown defects are the sectors moved, and the others are
+    /// null.
     pub(crate) moved: Option<u64>,
     pub(crate) waiting: Option<u64>,
     pub(crate) offline: Option<u64>,
     /// An NVMe drive's media errors and its share of its rated
-    /// endurance used, in percent; null for a SATA disk.
+    /// endurance used, in percent; null for a SATA disk. A SCSI disk's
+    /// media errors are the reads, writes and verifies it could not
+    /// correct, and the share is a solid state disk's.
     pub(crate) media_errors: Option<u64>,
     pub(crate) used_percent: Option<u8>,
 }
@@ -596,7 +922,12 @@ fn summary(disk: &str, model: &str, serial: &str, record: &Record) -> Summary {
     };
     let media_errors = match record {
         Record::Nvme(log) => Some(u64::try_from(log.media_errors).unwrap_or(u64::MAX)),
+        Record::Scsi(log) => log.uncorrected(),
         _ => None,
+    };
+    let moved = match record {
+        Record::Scsi(log) => log.defects,
+        _ => count(5),
     };
     Summary {
         disk: disk.to_string(),
@@ -606,7 +937,7 @@ fn summary(disk: &str, model: &str, serial: &str, record: &Record) -> Summary {
         reasons: judged.reasons,
         hours: judged.hours,
         temperature_c: judged.celsius,
-        moved: count(5),
+        moved,
         waiting: count(197),
         offline: count(198),
         media_errors,
@@ -643,7 +974,8 @@ struct SelfTest {
 struct Detail {
     #[serde(flatten)]
     summary: Summary,
-    /// Null for an NVMe drive, and for a SATA disk whose SMART is off.
+    /// Null for an NVMe or SCSI disk, and for a SATA disk whose SMART is
+    /// off.
     attributes: Option<Vec<AttributeJson>>,
     /// The disk's last tests, at most five, the newest first; null where
     /// the disk keeps no log or it could not be read.
@@ -687,7 +1019,12 @@ fn detail(
                 })
                 .collect(),
         ),
-        Record::AtaOff | Record::Nvme(_) => None,
+        Record::AtaOff | Record::Nvme(_) | Record::Scsi(_) => None,
+    };
+    // A SCSI disk's log of tests comes with the rest of its record.
+    let tests = match record {
+        Record::Scsi(log) => log.tests.as_deref(),
+        _ => tests,
     };
     Detail {
         summary: summary(disk, model, serial, record),
@@ -837,6 +1174,52 @@ fn details(out: &mut impl Write, name: &str, record: Option<&Record>) -> io::Res
                 writeln!(out, "{:<34}{value}", format!("{label}:"))?;
             }
         }
+        Record::Scsi(log) => scsi_lines(out, log, &report)?,
+    }
+    Ok(())
+}
+
+/// The lines of a SCSI disk's record in `diskhealth NAME`: what the disk
+/// gave, one to a line, in the shape of an NVMe drive's.
+fn scsi_lines(out: &mut impl Write, log: &ScsiLog, report: &Report) -> io::Result<()> {
+    let number = |n: Option<u64>| n.map(|n| grouped(u128::from(n)));
+    let trip = log.trip.map_or("none".to_string(), |(asc, ascq)| {
+        format!("{asc:02X}/{ascq:02X}, {}", trip_words(asc, ascq))
+    });
+    let lines = [
+        ("SMART trip", Some(trip)),
+        ("Temperature", report.celsius.map(|c| format!("{c} °C"))),
+        ("Temperature limit", log.limit_celsius.map(|c| format!("{c} °C"))),
+        ("Power-on hours", report.hours.map(|h| grouped(u128::from(h)))),
+        ("Start-stop cycles", number(log.start_stop)),
+        ("Load-unload cycles", number(log.load_unload)),
+        ("Uncorrected read errors", number(log.read_errors)),
+        ("Uncorrected write errors", number(log.write_errors)),
+        ("Uncorrected verify errors", number(log.verify_errors)),
+        ("Non-medium errors", number(log.non_medium)),
+        ("Percentage used", log.used.map(|used| format!("{used}%"))),
+        ("Grown defects", number(log.defects)),
+    ];
+    for (label, value) in lines {
+        if let Some(value) = value {
+            writeln!(out, "{:<34}{value}", format!("{label}:"))?;
+        }
+    }
+    for (i, test) in log.tests.iter().flatten().enumerate() {
+        let how = match test.outcome {
+            None => "running".to_string(),
+            Some(Outcome::Passed) => "passed".to_string(),
+            Some(Outcome::Aborted) => "aborted".to_string(),
+            Some(Outcome::Interrupted) => "interrupted".to_string(),
+            Some(Outcome::Failed { first_bad_sector: Some(lba) }) => {
+                format!("failed at block {lba}")
+            }
+            Some(Outcome::Failed { first_bad_sector: None }) => "failed".to_string(),
+            Some(Outcome::Other(code)) => format!("ended with status {code:#x}"),
+        };
+        let at = test.power_on_hours.map_or(String::new(), |h| format!(", at {h} hours"));
+        let label = if i == 0 { "Self-tests:" } else { "" };
+        writeln!(out, "{label:<34}{}, {how}{at}", test.kind.name())?;
     }
     Ok(())
 }
@@ -899,6 +1282,15 @@ impl Counts {
                 })
             }
             Record::AtaOff => None,
+            // The blocks it moved to spares, and what it could not correct,
+            // rise as an ATA disk's reallocated sectors and a drive's media
+            // errors do.
+            Record::Scsi(log) => Some(Counts {
+                reallocated: log.defects.unwrap_or(0),
+                media_errors: log.uncorrected().unwrap_or(0),
+                used: log.used,
+                ..Counts::default()
+            }),
             Record::Nvme(log) => Some(Counts {
                 media_errors: u64::try_from(log.media_errors).unwrap_or(u64::MAX),
                 used: Some(log.used),
@@ -1304,7 +1696,10 @@ fn json(out: &mut impl Write, rows: &[(String, Option<Record>)]) -> Result<(), F
     let mut found = Vec::new();
     for (name, record) in rows {
         let Some(record) = record else { continue };
-        let tests = match selftest::history(name) {
+        // A disk behind a controller has no device of its own to ask; its
+        // record holds the log of its tests where it keeps one.
+        let history = if raid::is_member_name(name) { Ok(None) } else { selftest::history(name) };
+        let tests = match history {
             Ok(tests) => tests,
             Err(fail) => {
                 eprintln!("diskhealth: {}", fail.message);
@@ -2119,5 +2514,410 @@ mod tests {
             asleep_words("sda"),
             "sda is asleep (standby): it is not read, so as not to wake it"
         );
+    }
+
+    /// A log page of `code` with `params`, each a code and its value, as a
+    /// disk returns it.
+    fn log_page(code: u8, params: &[(u16, Vec<u8>)]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for (parameter, value) in params {
+            body.extend(parameter.to_be_bytes());
+            body.extend([0x03, value.len() as u8]);
+            body.extend(value);
+        }
+        let mut page = vec![code, 0];
+        page.extend((body.len() as u16).to_be_bytes());
+        page.extend(body);
+        page
+    }
+
+    /// GET_HEALTH's 1024 bytes of a SCSI disk with `pages` as entries and
+    /// `defects` as the first.
+    fn scsi_record(defects: Option<u32>, pages: &[Vec<u8>]) -> Vec<u8> {
+        let mut record = Vec::new();
+        if let Some(count) = defects {
+            record.extend([0xf0, 0, 4, 0]);
+            record.extend(count.to_le_bytes());
+        }
+        for page in pages {
+            record.extend([page[0], 0]);
+            record.extend((page.len() as u16).to_le_bytes());
+            record.extend(page);
+        }
+        record.resize(1024, 0);
+        record
+    }
+
+    /// A self-test result: the test's code and result, its number, its
+    /// hours and the first block that failed.
+    fn test_result(code: u8, result: u8, number: u8, hours: u16, lba: u64) -> Vec<u8> {
+        let mut value = vec![code << 5 | result, number];
+        value.extend(hours.to_be_bytes());
+        value.extend(lba.to_be_bytes());
+        value.extend([0, 0, 0, 0]);
+        value
+    }
+
+    /// The pages a SAS hard disk with `trip` as its warning, `uncorrected`
+    /// reads it could not correct and `tests` in its log has.
+    fn sas_pages(trip: (u8, u8), uncorrected: u64, tests: &[Vec<u8>]) -> Vec<Vec<u8>> {
+        let zeros = |n: usize| vec![0u8; n];
+        let mut log: Vec<(u16, Vec<u8>)> =
+            tests.iter().enumerate().map(|(i, test)| (i as u16 + 1, test.clone())).collect();
+        log.extend((tests.len() as u16 + 1..=20).map(|n| (n, zeros(16))));
+        let mut minutes = (60u32 * 21_804).to_be_bytes().to_vec();
+        minutes.extend(zeros(8));
+        vec![
+            log_page(0x2f, &[(0, vec![trip.0, trip.1, 41])]),
+            log_page(0x0d, &[(0, vec![0, 41]), (1, vec![0, 65])]),
+            log_page(
+                0x03,
+                &[(0, zeros(8)), (5, zeros(8)), (6, uncorrected.to_be_bytes().to_vec())],
+            ),
+            log_page(0x02, &[(6, zeros(8))]),
+            log_page(0x05, &[(6, zeros(8))]),
+            log_page(0x06, &[(0, 3u32.to_be_bytes().to_vec())]),
+            log_page(
+                0x0e,
+                &[(4, 120u32.to_be_bytes().to_vec()), (6, 1500u32.to_be_bytes().to_vec())],
+            ),
+            log_page(0x15, &[(0, minutes)]),
+            log_page(0x10, &log),
+        ]
+    }
+
+    fn healthy_sas() -> Record {
+        let passed = test_result(1, 0, 2, 21_700, 0);
+        let record = scsi_record(Some(0), &sas_pages((0, 0), 0, &[passed]));
+        Record::Scsi(scsi_log(&record))
+    }
+
+    fn tripped_sas() -> Record {
+        let failed = test_result(2, 5, 3, 21_790, 0x1234);
+        let passed = test_result(1, 0, 2, 21_700, 0);
+        let record = scsi_record(Some(17), &sas_pages((0x5d, 0x10), 2, &[failed, passed]));
+        Record::Scsi(scsi_log(&record))
+    }
+
+    fn sas_ssd() -> Record {
+        let record = scsi_record(
+            Some(0),
+            &[
+                log_page(0x2f, &[(0, vec![0, 0, 0xff])]),
+                log_page(0x0d, &[(0, vec![0, 33])]),
+                log_page(0x11, &[(1, vec![0, 0, 0, 4])]),
+            ],
+        );
+        Record::Scsi(scsi_log(&record))
+    }
+
+    #[test]
+    fn a_healthy_sas_disk_passes() {
+        let Record::Scsi(log) = healthy_sas() else { unreachable!() };
+        assert_eq!(log.trip, None);
+        assert_eq!((log.celsius, log.limit_celsius), (Some(41), Some(65)));
+        assert_eq!(log.minutes, Some(60 * 21_804));
+        assert_eq!((log.start_stop, log.load_unload), (Some(120), Some(1500)));
+        assert_eq!(
+            (log.read_errors, log.write_errors, log.verify_errors),
+            (Some(0), Some(0), Some(0))
+        );
+        assert_eq!((log.non_medium, log.used, log.defects), (Some(3), None, Some(0)));
+        let tests = log.tests.as_ref().unwrap();
+        assert_eq!(tests.len(), 1);
+        assert_eq!(
+            tests[0],
+            selftest::Logged {
+                kind: selftest::Kind::Short,
+                outcome: Some(Outcome::Passed),
+                power_on_hours: Some(21_700),
+            }
+        );
+        let (kind, report) = report(&healthy_sas());
+        assert_eq!(kind, "SCSI");
+        assert_eq!(report.verdict, Verdict::Passed);
+        assert!(report.reasons.is_empty());
+        assert_eq!((report.celsius, report.hours, report.used), (Some(41), Some(21_804), None));
+        // A hard disk, which says its limit.
+        let record = healthy_sas();
+        let kind = kind_of(&record, Some(true));
+        assert_eq!(kind, DiskKind::Hdd);
+        let limits = limits_of(&record, kind).unwrap();
+        assert_eq!((limits.warning_c, limits.critical_c, limits.from), (60, 65, LimitsFrom::Disk));
+    }
+
+    #[test]
+    fn a_sas_disk_that_predicts_its_failure_fails() {
+        let Record::Scsi(log) = tripped_sas() else { unreachable!() };
+        assert_eq!(log.trip, Some((0x5d, 0x10)));
+        assert_eq!((log.read_errors, log.defects), (Some(2), Some(17)));
+        let tests = log.tests.as_ref().unwrap();
+        assert_eq!(tests.len(), 2);
+        assert_eq!(tests[0].kind, selftest::Kind::Extended);
+        assert_eq!(tests[0].outcome, Some(Outcome::Failed { first_bad_sector: Some(0x1234) }));
+        let report = report(&tripped_sas()).1;
+        assert_eq!(report.verdict, Verdict::Failing);
+        assert_eq!(
+            report.reasons,
+            [
+                "the drive predicts its own failure, of hardware (5D/10)",
+                "2 reads could not be corrected",
+                "17 blocks were moved to spares as they grew bad",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_sas_ssd_says_how_much_of_it_is_used() {
+        let record = sas_ssd();
+        let Record::Scsi(log) = &record else { unreachable!() };
+        // An FFh temperature in the warning page is none.
+        assert_eq!((log.trip, log.celsius, log.limit_celsius), (None, Some(33), None));
+        assert_eq!((log.used, log.minutes, log.tests.as_ref()), (Some(4), None, None));
+        let judged = report(&record).1;
+        assert_eq!((judged.verdict, judged.used, judged.hours), (Verdict::Passed, Some(4), None));
+        let kind = kind_of(&record, None);
+        assert_eq!(kind, DiskKind::Ssd);
+        let limits = limits_of(&record, kind).unwrap();
+        assert_eq!((limits.critical_c, limits.from), (70, LimitsFrom::Kind));
+        // Used up, it warns.
+        let worn = scsi_record(None, &[log_page(0x11, &[(1, vec![0, 0, 0, 100])])]);
+        let judged = report(&Record::Scsi(scsi_log(&worn))).1;
+        assert_eq!(judged.verdict, Verdict::Warning);
+        assert_eq!(judged.reasons, ["it has used 100% of its rated endurance"]);
+    }
+
+    #[test]
+    fn a_temperature_warning_is_a_warning_and_another_code_fails() {
+        let trip = |asc, ascq| {
+            let page = log_page(0x2f, &[(0, vec![asc, ascq, 70])]);
+            report(&Record::Scsi(scsi_log(&scsi_record(None, &[page])))).1
+        };
+        let hot = trip(0x0b, 0x01);
+        assert_eq!(hot.verdict, Verdict::Warning);
+        assert_eq!(hot.reasons, ["the drive is over its temperature limit (0B/01)"]);
+        assert_eq!(trip(0x5d, 0x00).verdict, Verdict::Failing);
+        assert_eq!(trip(0x5d, 0xff).reasons.len(), 1);
+        assert_eq!(trip(0x3f, 0x0e).verdict, Verdict::Failing);
+    }
+
+    #[test]
+    fn a_record_cut_short_gives_what_is_whole() {
+        // An entry whose length runs past the record ends the list; what
+        // came before it counts.
+        let mut record = scsi_record(Some(5), &[]);
+        record[8..12].copy_from_slice(&[0x0d, 0, 0xff, 0x7f]);
+        assert_eq!(scsi_log(&record).defects, Some(5));
+        // A page cut as the record cuts the one that does not fit keeps the
+        // parameters that are whole.
+        let mut page = log_page(0x0d, &[(0, vec![0, 41]), (1, vec![0, 65])]);
+        page.truncate(4 + 6 + 5);
+        let log = scsi_log(&scsi_record(None, &[page]));
+        assert_eq!((log.celsius, log.limit_celsius), (Some(41), None));
+        // A temperature of FFh is none.
+        let page = log_page(0x0d, &[(0, vec![0, 0xff])]);
+        assert_eq!(scsi_log(&scsi_record(None, &[page])).celsius, None);
+        // An empty record, a disk that gave nothing.
+        assert_eq!(scsi_log(&[0u8; 1024]), ScsiLog::default());
+        assert_eq!(report(&Record::Scsi(ScsiLog::default())).1.verdict, Verdict::Passed);
+    }
+
+    #[test]
+    fn the_self_test_results_have_their_outcomes() {
+        let log = |tests: &[Vec<u8>]| {
+            let params: Vec<(u16, Vec<u8>)> =
+                tests.iter().enumerate().map(|(i, t)| (i as u16 + 1, t.clone())).collect();
+            scsi_tests(&log_page(0x10, &params))
+        };
+        let found = log(&[
+            test_result(1, 0xf, 9, 0, 0),
+            test_result(2, 0, 8, 500, 0),
+            test_result(4, 1, 7, 400, 0),
+            test_result(5, 2, 6, 300, 0),
+            test_result(6, 3, 5, 200, 0),
+            test_result(1, 7, 4, 100, u64::MAX),
+            test_result(1, 0xa, 3, 50, 0),
+            vec![0; 16],
+        ]);
+        let outcomes: Vec<_> = found.iter().map(|t| t.outcome).collect();
+        assert_eq!(
+            outcomes,
+            [
+                None,
+                Some(Outcome::Passed),
+                Some(Outcome::Aborted),
+                Some(Outcome::Interrupted),
+                Some(Outcome::Failed { first_bad_sector: None }),
+                Some(Outcome::Failed { first_bad_sector: None }),
+                Some(Outcome::Other(0xa)),
+            ]
+        );
+        let kinds: Vec<_> = found.iter().map(|t| t.kind).collect();
+        assert_eq!(
+            kinds[..5],
+            [
+                selftest::Kind::Short,
+                selftest::Kind::Extended,
+                selftest::Kind::Short,
+                selftest::Kind::Extended,
+                selftest::Kind::Other
+            ]
+        );
+        // A test that runs has no hours; the others have.
+        assert_eq!(found[0].power_on_hours, None);
+        assert_eq!(found[1].power_on_hours, Some(500));
+    }
+
+    #[test]
+    fn a_sas_disk_has_its_counts_in_the_json_and_in_the_early_warning() {
+        let found = summary("sdc", "SEAGATE ST", "ZA1", &tripped_sas());
+        assert_eq!(
+            serde_json::to_value(&found).unwrap(),
+            json!({
+                "disk": "sdc", "model": "SEAGATE ST", "serial": "ZA1", "verdict": "failing",
+                "reasons": [
+                    "the drive predicts its own failure, of hardware (5D/10)",
+                    "2 reads could not be corrected",
+                    "17 blocks were moved to spares as they grew bad",
+                ],
+                "hours": 21804, "temperature_c": 41,
+                "moved": 17, "waiting": null, "offline": null,
+                "media_errors": 2, "used_percent": null,
+            })
+        );
+        let ssd = summary("sdd", "", "", &sas_ssd());
+        assert_eq!(ssd.used_percent, Some(4));
+        assert_eq!((ssd.moved, ssd.media_errors), (Some(0), None));
+        assert_eq!(
+            Counts::of(&tripped_sas()),
+            Some(Counts { reallocated: 17, media_errors: 2, ..Counts::default() })
+        );
+        // Its own log of tests is the JSON's, and it has no attributes.
+        let detail = serde_json::to_value(detail("sdc", "", "", &tripped_sas(), None)).unwrap();
+        assert_eq!(detail["attributes"], Value::Null);
+        assert_eq!(
+            detail["self_tests"],
+            json!([
+                {"kind": "extended", "result": "failed", "at_hours": 21790},
+                {"kind": "short", "result": "passed", "at_hours": 21700},
+            ])
+        );
+    }
+
+    #[test]
+    fn a_sas_disk_shows_the_lines_its_pages_give() {
+        let mut out = Vec::new();
+        let record = tripped_sas();
+        let judged = report(&record).1;
+        let Record::Scsi(log) = &record else { unreachable!() };
+        scsi_lines(&mut out, log, &judged).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        for line in [
+            "SMART trip:                       5D/10, the drive predicts its own failure, of hardware",
+            "Temperature:                      41 °C",
+            "Temperature limit:                65 °C",
+            "Power-on hours:                   21,804",
+            "Start-stop cycles:                120",
+            "Load-unload cycles:               1,500",
+            "Uncorrected read errors:          2",
+            "Non-medium errors:                3",
+            "Grown defects:                    17",
+            "Self-tests:                       extended, failed at block 4660, at 21790 hours",
+            "                                  short, passed, at 21700 hours",
+        ] {
+            assert!(text.lines().any(|found| found == line), "{line}\n{text}");
+        }
+        // A disk with no such page has no such line.
+        let mut out = Vec::new();
+        let Record::Scsi(log) = sas_ssd() else { unreachable!() };
+        scsi_lines(&mut out, &log, &Report::new()).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("SMART trip:                       none\n"), "{text}");
+        assert!(!text.contains("Start-stop") && text.contains("Percentage used:"), "{text}");
+    }
+    /// The files of a controller 0 with a disk behind it in bay 4 and one
+    /// passed through as sdb.
+    fn controller_with_members() -> crate::raid::fixture::Tree {
+        let tree = crate::raid::fixture::Tree::new();
+        tree.put(
+            0,
+            "disks",
+            "id=4\tenclosure=32\tindex=0\tslot=4\tstate=online\tmedia=ssd\tvendor=ATA\t\
+             model=INTEL SSDSC2KB480G8\tserial=BTYF0001\trevision=XCV1\tos=-\n\
+             id=5\tenclosure=32\tindex=0\tslot=5\tstate=jbod\tmedia=hdd\tos=sdb\n",
+        );
+        tree
+    }
+
+    /// An answer of GET_HEALTH for a SAS disk with `record`, 1024 bytes.
+    fn scsi_answer(record: &[u8]) -> [u8; block::HEALTH_SIZE as usize] {
+        let mut value = [0u8; block::HEALTH_SIZE as usize];
+        value[..4].copy_from_slice(&block::HEALTH_SCSI.to_le_bytes());
+        value[8..].copy_from_slice(record);
+        value
+    }
+
+    /// The record of a SAS disk whose own warning says it will fail, at 41
+    /// degrees.
+    fn tripped_record() -> Vec<u8> {
+        scsi_record(None, &[log_page(0x2f, &[(0, vec![0x5d, 0x00, 41])])])
+    }
+
+    #[test]
+    fn the_disks_behind_a_controller_are_listed_by_bay_and_a_passed_through_one_is_not() {
+        let tree = controller_with_members();
+        assert_eq!(members(tree.path()), ["raid0:bay4"]);
+        assert!(members(&tree.path().join("nowhere")).is_empty());
+    }
+
+    #[test]
+    fn a_member_disk_has_the_model_serial_and_firmware_its_controller_gives() {
+        let tree = controller_with_members();
+        let text = |what| member_text(tree.path(), "raid0:bay4", what);
+        assert_eq!(text("model"), "ATA INTEL SSDSC2KB480G8");
+        assert_eq!(text("serial"), "BTYF0001");
+        assert_eq!(text("firmware_rev"), "XCV1");
+        assert_eq!(text("size"), "");
+        assert_eq!(member_text(tree.path(), "raid0:bay9", "model"), "");
+    }
+
+    #[test]
+    fn a_member_disk_is_read_from_its_health_file_as_a_block_disk_is_from_its_answer() {
+        let tree = controller_with_members();
+        let health = raid::health_path(tree.path(), 0, 4);
+        fs::create_dir_all(health.parent().unwrap()).unwrap();
+        let answer = scsi_answer(&tripped_record());
+        fs::write(&health, answer).unwrap();
+        let Ok(Reading::Record(record)) = read_member(tree.path(), "raid0:bay4") else {
+            panic!("the disk gave no record");
+        };
+        let (kind, report) = report(&record);
+        assert_eq!((kind, report.celsius, report.verdict), ("SCSI", Some(41), Verdict::Failing));
+        // A disk passed through is not a member, and neither is one that is not there.
+        assert!(read_member(tree.path(), "raid0:bay5").is_err());
+        assert!(read_member(tree.path(), "raid0:bay8").is_err());
+        // A file that is not there, or cut short, is a failure of its own.
+        fs::write(&health, &answer[..100]).unwrap();
+        assert!(read_member(tree.path(), "raid0:bay4").is_err());
+    }
+
+    #[test]
+    fn a_member_disk_asleep_or_with_no_record_is_told_from_one_that_failed_to_read() {
+        let path = Path::new("/kernel/raid/0/health/4");
+        let answer = |kind| Err(io::Error::from(kind));
+        assert!(matches!(
+            member_reading(answer(io::ErrorKind::WouldBlock), path),
+            Ok(Reading::Asleep)
+        ));
+        assert!(matches!(
+            member_reading(answer(io::ErrorKind::Unsupported), path),
+            Ok(Reading::None)
+        ));
+        let failed = member_reading(answer(io::ErrorKind::PermissionDenied), path).err().unwrap();
+        assert!(failed.message.starts_with("/kernel/raid/0/health/4"), "{}", failed.message);
+        assert!(matches!(
+            member_reading(Ok(scsi_answer(&tripped_record())), path),
+            Ok(Reading::Record(Record::Scsi(_)))
+        ));
     }
 }

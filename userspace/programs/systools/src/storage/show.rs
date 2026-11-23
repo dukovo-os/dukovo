@@ -527,7 +527,7 @@ fn shown(bytes: Option<u64>) -> String {
 
 /// Rows of cells lined up in columns, the last unpadded; the columns
 /// marked in `right` have their cells to the right.
-fn lined(rows: &[Vec<String>], right: &[bool]) -> String {
+pub(super) fn lined(rows: &[Vec<String>], right: &[bool]) -> String {
     let columns = right.len();
     let mut widths = vec![0; columns];
     for row in rows {

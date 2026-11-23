@@ -98,6 +98,10 @@ means and what to do.
 | Memory is nearly used up | Less than 5 percent is available for 5 minutes | MET-105 |
 | A sensor is close to its limit | It is within 5 degrees of its critical temperature for 5 minutes | MET-106 |
 | A certificate is about to end | One in `/system/settings/ssl` ends within 14 days; critical within 3 | MET-107 |
+| A RAID volume lost a disk | A volume of a RAID controller is degraded or offline; critical, a warning when only partly degraded | MET-111 |
+| A disk behind a RAID controller failed | The controller says a disk failed (critical), or expects it to fail (a warning) | MET-112 |
+| A RAID controller's battery needs replacing | It failed or is missing (critical), or it is worn or its last test failed (a warning) | MET-113 |
+| A RAID controller is in fault | The controller reports a fault; critical | MET-114 |
 
 A filesystem mounted read-only is not checked, since freeing space on it
 is not something its owner can do. A filesystem that fills at a steady

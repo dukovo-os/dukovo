@@ -173,3 +173,25 @@ test('a machine with one disk has no disk that is left, and a mount to use when 
   assert.deepEqual(stepsOf({ disks: [], volumes: [] }, null), { mount: '/volumes/data', survivor: null });
   assert.deepEqual(stepsOf(null, 'sdb'), { mount: '/volumes/data', survivor: null });
 });
+
+test('the panel of a disk that is a RAID volume has no health record and no self-test, and says whose it is', () => {
+  const answer = show();
+  const raid = {
+    controller: 'PERC H740P Mini', n: 0, target: 0, name: 'boot', level: 'RAID 1', bays: 'Bays 0 and 1', members: ['Bay 0', 'Bay 1'], failedBays: [], replace: false,
+    health: { word: 'Optimal', tone: 'ok', note: 'A RAID 1 volume.' }, line: 'A RAID 1 volume on PERC H740P Mini, made of bays 0 and 1',
+  };
+  const found = detail(answer, 'sdc', { raid });
+  assert.equal(found.hasHealth, false);
+  assert.equal(found.raid.replace, false);
+  assert.equal(found.line, 'A RAID 1 volume on PERC H740P Mini, made of bays 0 and 1 · 4 TB');
+  assert.deepEqual(found.health, raid.health);
+  assert.deepEqual(row(found, 'Health'), { label: 'Health', value: 'Optimal: the controller\'s word for the volume', tone: undefined });
+  assert.equal(row(found, 'Member disks').value, 'Bays 0 and 1.');
+  assert.equal(row(found, 'Last full check'), undefined);
+  const failing = detail(answer, 'sdc', { raid: { ...raid, replace: true, failedBays: ['Bay 4'], health: { word: 'Degraded', tone: 'warn', note: '' } } });
+  assert.equal(failing.raid.replace, true);
+  assert.deepEqual(failing.raid.bays, ['Bay 4']);
+  assert.equal(row(failing, 'Health').tone, 'warn');
+  assert.equal(detail(answer, 'sdc').raid, null);
+  assert.equal(row(detail(answer, 'sdc'), 'Health').value, 'Not checked: this disk does not report its health');
+});

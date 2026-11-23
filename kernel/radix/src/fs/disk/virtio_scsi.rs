@@ -34,12 +34,13 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use radix_block::{DeviceRef, Error, Info, SECTOR};
+use radix_block::{DeviceRef, Error, Health, Info, Page, SECTOR};
 use radix_hal::Devices;
 use radix_hw::Dma;
 use radix_hw::pci::{Bar, Function, MsiX};
 use radix_klog::{info, warn};
 use radix_mm::{Flags, HEAP, Kmalloc};
+use radix_scsi::health::{SMART_READ_DATA, SMART_READ_THRESHOLDS};
 use radix_scsi::{
     Absent, Cdb, Data, Found, Inquiry, Meaning, Reply, SERIAL_PAGE, Sense, Transport as Commands,
     TransportError, device_type, probe, reported_luns, unit_serial,
@@ -49,6 +50,7 @@ use radix_virtio::Transport;
 use radix_virtio::scsi::{Address, Answer, Direction, Scsi, response, scsi_status};
 
 use super::queue::{self, Controller, Disk, Op, Outcome, Request, SLOTS, Volume};
+use super::scsi_health::{self, ATA_VENDOR, query_cdb};
 use super::{Entry, Ident, Name, SERIAL, Size, partitions, register};
 use crate::{Arch, sched};
 
@@ -69,6 +71,9 @@ struct Owner {
     slot: u8,
     /// It is a flush, which a disk that has no cache to flush may refuse.
     flush: bool,
+    /// It asks a health question, which a disk may refuse or answer in
+    /// fewer bytes than the buffer holds.
+    query: bool,
 }
 
 /// An adapter's queue and what its disks have to collect.
@@ -94,7 +99,7 @@ impl Shared {
             let Some(&owner) = self.owner.get(usize::from(head)) else { continue };
             let at = usize::from(owner.disk) * SLOTS + usize::from(owner.slot);
             if let Some(outcome) = self.outcome.get_mut(at) {
-                *outcome = judge(&answer, owner.flush);
+                *outcome = judge(&answer, owner.flush, owner.query);
                 self.ended[usize::from(owner.disk)] |= 1 << owner.slot;
                 mail |= 1 << owner.disk;
             }
@@ -130,6 +135,9 @@ pub struct ScsiLun {
     unit: u64,
     /// Whether its reads and writes take 16-byte commands.
     sixteen: bool,
+    /// Whether it is a SATA disk behind the adapter (its INQUIRY vendor is
+    /// "ATA"), whose health is SMART.
+    ata: bool,
 }
 
 impl Controller for ScsiLun {
@@ -156,6 +164,10 @@ impl Controller for ScsiLun {
                 (cdb.ok_or(Error::OutOfRange)?, direction)
             }
             Op::Flush => (Cdb::synchronize_cache(), Direction::ToDevice),
+            Op::Query(query) => (query_cdb(query, data), Direction::FromDevice),
+            Op::Smart(feature @ (SMART_READ_DATA | SMART_READ_THRESHOLDS), _) => {
+                (Cdb::smart_read(feature), Direction::FromDevice)
+            }
             Op::Discard(_) | Op::Smart(..) | Op::PowerMode => return Err(Error::Unsupported),
         };
         let mut shared = self.adapter.shared.lock_irq();
@@ -166,8 +178,9 @@ impl Controller for ScsiLun {
             },
         )?;
         let flush = op == Op::Flush;
+        let query = matches!(op, Op::Query(_) | Op::Smart(..));
         if let Some(owner) = shared.owner.get_mut(usize::from(head)) {
-            *owner = Owner { disk: self.number, slot, flush };
+            *owner = Owner { disk: self.number, slot, flush, query };
         }
         shared.held = more;
         if !more {
@@ -192,11 +205,17 @@ impl Controller for ScsiLun {
         let at = usize::from(self.number) * SLOTS + usize::from(slot);
         self.adapter.shared.lock_irq().outcome.get(at).and_then(|&(_, why)| why)
     }
+
+    fn health(disk: &Disk<Self>, _target: u32, page: &mut Page) -> Result<Health, Error> {
+        let ata = disk.controller(|lane| lane.ata).ok_or(Error::Io)?;
+        scsi_health::health(disk, page, ata)
+    }
 }
 
 /// How a command that ended with `answer` ends its request, and why for
-/// the log: a `flush` the disk does not take did not need doing.
-fn judge(answer: &Answer, flush: bool) -> (Outcome, Option<&'static str>) {
+/// the log: a `flush` the disk does not take did not need doing, and a
+/// `query` it does not take or answers short is answered as it is.
+fn judge(answer: &Answer, flush: bool, query: bool) -> (Outcome, Option<&'static str>) {
     match answer.response {
         response::OK => {}
         response::ABORTED | response::RESET => {
@@ -210,7 +229,7 @@ fn judge(answer: &Answer, flush: bool) -> (Outcome, Option<&'static str>) {
         _ => return (Outcome::Failed, Some("the adapter failed the command")),
     }
     let sense = match answer.status {
-        scsi_status::GOOD if answer.residual == 0 => return (Outcome::Done, None),
+        scsi_status::GOOD if answer.residual == 0 || query => return (Outcome::Done, None),
         scsi_status::GOOD => return (Outcome::Retry, Some("it moved less than asked")),
         scsi_status::BUSY | scsi_status::TASK_SET_FULL => {
             return (Outcome::Retry, Some("the disk is busy"));
@@ -223,7 +242,7 @@ fn judge(answer: &Answer, flush: bool) -> (Outcome, Option<&'static str>) {
     };
     match sense.meaning() {
         Meaning::Fine => (Outcome::Done, None),
-        Meaning::Unsupported if flush => (Outcome::Done, None),
+        Meaning::Unsupported if flush || query => (Outcome::Done, None),
         Meaning::Attention | Meaning::Aborted => (Outcome::Retry, Some(sense.key_name())),
         Meaning::BecomingReady => (Outcome::Retry, Some("it is becoming ready")),
         Meaning::WriteProtected => (Outcome::Failed, Some("it is write-protected")),
@@ -553,7 +572,7 @@ fn new_adapter(scsi: Scsi) -> Result<Arc<Adapter, Kmalloc>, &'static str> {
     let size = usize::from(radix_virtio::queue::MAX_SIZE);
     owner.try_reserve_exact(size).map_err(|_| "out of memory")?;
     for _ in 0..size {
-        let _ = owner.push_within_capacity(Owner { disk: 0, slot: 0, flush: false });
+        let _ = owner.push_within_capacity(Owner { disk: 0, slot: 0, flush: false, query: false });
     }
     let mut outcome = Vec::new_in(heap);
     outcome.try_reserve_exact(MAX_DISKS * SLOTS).map_err(|_| "out of memory")?;
@@ -597,6 +616,7 @@ fn add(
         at,
         unit,
         sixteen: found.sixteen,
+        ata: found.inquiry.vendor() == ATA_VENDOR,
     };
     let part = queue::part(controller).ok_or("out of memory")?;
     let once = core::iter::once(part);

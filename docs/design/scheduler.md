@@ -106,6 +106,16 @@ ADR 0041, kept the CPU with a thread that was owed time while it was the
 only eligible one: two programs yielding to each other on one CPU could
 make tens of thousands of yields without a switch, up to the lag limit.
 
+A woken entity takes the CPU from the running one when it is the pick and
+its deadline is earlier, but not while the running one is still eligible
+and has not used up the slice it was picked with (run to parity, Linux's
+`RUN_TO_PARITY`, its default since 6.6; ADR 0654). A thread that wakes
+another and is about to wait itself, as a client sending a request, gets
+to its wait first, and the two switch once. The protection ends when the
+running entity's deadline passes (`charge` gives it a new one), when it
+yields, and as soon as it runs ahead of `V`, so it never keeps the CPU
+past its share. Real-time threads still preempt at once.
+
 The queue keeps `W = Σ w` and `S = Σ w (v − v₀)` for a base `v₀`, the
 smallest `v` (moved by `rebase`), so `V = v₀ + S / W` and eligibility,
 `(v − v₀) · W ≤ S`, are exact integer arithmetic in `i128`. Virtual times
@@ -324,7 +334,10 @@ package, of its node, and the machine. Each level holds the one below: a
 package that spans nodes (AMD's NPS modes, or QEMU's default topology
 when it emulates nodes) counts as one package per node, since its
 last-level caches do not span nodes either. Levels that add no CPUs are
-skipped.
+skipped. Each CPU's spans, and which of its levels add CPUs, are worked
+out once when the scheduler starts (`Topology::finish`, ADR 0654), so
+placement and balancing cost the same on a server of a hundred CPUs as
+on four, apart from reading each CPU's load.
 
 **Placement.** A waking fair thread goes to an idle CPU it may use, as
 close as possible to where it last ran (walking the levels outwards),

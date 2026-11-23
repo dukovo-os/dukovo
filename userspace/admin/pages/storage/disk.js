@@ -29,7 +29,8 @@ function rowsList(rows, hardware) {
     h('dd', { class: row.tone ?? null },
       row.tone && [icon('warn'), h('span', { class: 'sr-only' }, 'Worth a look: ')],
       row.items ? h('ul', { class: 'sto-items' }, row.items.map((item) => h('li', {}, item))) : row.value,
-      row.hardware && hardware && [' ', h('a', { href: '/hardware#disks' }, 'Run one on the Hardware page')]),
+      row.hardware && hardware && [' ', h('a', { href: '/hardware#disks' }, 'Run one on the Hardware page')],
+      row.link && [' ', h('a', { href: row.link.href }, row.link.text)]),
   ]));
 }
 
@@ -50,7 +51,8 @@ function attributesTable(checked) {
  * detail)` opens the steps to replace a disk; `reread()` reads the disks
  * again after an action; `links` says which pages exist. `set(answer)` draws
  * the disk as `answer` (`storage show`) has it. Gives `{element, set, check,
- * heading}`; `check()` runs Check now as if it was pressed.
+ * heading}`; `check()` runs Check now as if it was pressed. `set(answer, raid)`
+ * takes raid-model.js's `raidVolumes` too, for a disk that is a RAID volume.
  */
 export function makeDisk(view, {
   name, scrubber, steps, reread, links,
@@ -67,6 +69,7 @@ export function makeDisk(view, {
   const element = h('section', { class: 'card sto-disk-card', id: 'disk', 'aria-labelledby': 'sto-disk-h' }, heading, note, rowsBox, errors, controls, result, said);
 
   let answer = null;
+  let raids = null;
   let checked = null;
   let last = null;
   let working = false;
@@ -147,6 +150,12 @@ export function makeDisk(view, {
       replace.addEventListener('click', () => steps('replace', { disk: name, answer }));
       buttons.push(h('div', { class: 'sto-action' }, replace));
     }
+    // The steps for a RAID volume only tell what to do at the bay; the console does not touch the controller.
+    if (detail.raid?.replace) {
+      const replace = h('button', { class: 'btn', type: 'button', 'data-action': 'replace' }, 'How to replace the failed disk');
+      replace.addEventListener('click', () => steps('replace', { disk: name, answer, raid: { bays: detail.raid.bays, volume: raids?.get(name) ?? null } }));
+      buttons.push(h('div', { class: 'sto-action' }, replace));
+    }
     return buttons;
   }
 
@@ -157,7 +166,7 @@ export function makeDisk(view, {
     const disk = findDisk(answer, name);
     if (disk === null) return;
     const admin = view.session.admin === true;
-    const detail = detailOf(disk, answer, { time: view.time, now: Math.floor(Date.now() / 1000), checked, admin });
+    const detail = detailOf(disk, answer, { time: view.time, now: Math.floor(Date.now() / 1000), checked, admin, raid: raids?.get(name) ?? null });
     const key = JSON.stringify([detail, admin, links]);
     state.className = `st ${detail.health.tone}`;
     state.textContent = detail.health.word;
@@ -190,8 +199,9 @@ export function makeDisk(view, {
     element,
     heading,
     check,
-    set(next) {
+    set(next, nextRaids = null) {
       answer = next;
+      raids = nextRaids;
       draw();
     },
   };

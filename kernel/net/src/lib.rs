@@ -1200,9 +1200,18 @@ impl<L: Link> Stack<L> {
 
     /// The socket `handle` of the stack: `None` if the stack has no such
     /// socket, or it is of another kind. smoltcp's own `get_mut` panics
-    /// then; the kernel's calls do not (ADR 0182).
+    /// then; the kernel's calls do not (ADR 0182). The next poll looks at
+    /// whether the socket has anything to send, as a call through it may
+    /// have given it something: what only looks at a socket takes it with
+    /// [`socket`](Self::socket) instead (ADR 0653).
     pub fn socket_mut<S: AnySocket<'static>>(&mut self, handle: SocketHandle) -> Option<&mut S> {
         self.sockets.try_get_mut(handle)
+    }
+
+    /// The socket `handle` of the stack, to look at: `None` if the stack
+    /// has no such socket, or it is of another kind.
+    pub fn socket<S: AnySocket<'static>>(&self, handle: SocketHandle) -> Option<&S> {
+        self.sockets.try_get(handle)
     }
 
     /// Registers `receive` and `send` with socket `handle`, to be woken

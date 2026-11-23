@@ -123,6 +123,7 @@ machine with AMT, an AMD machine and a laptop; see
 | Machine checks that end only the program that read bad memory (ADR 0168) | Not checked on a machine yet | A machine with error injection |
 | The jitter entropy test's strict limit (random design note) | If real machines fail it, adopt jitterentropy's rules | Real machines |
 | HD Audio and USB audio on real codecs and devices (`sound/hda`, `sound/usb`, ADRs 0322, 0323) | QEMU's codecs are simulated | Lab |
+| The MegaRAID Fusion transport on a real card: the PERC H740P's bring-up, LD I/O, the pass-through of SMART and log pages to member disks, the event wait, the battery and the cache flush at shutdown (ADR 0664) | QEMU models only the older MFI parts; Fusion is tested against the crate's simulated firmware | The reference server (Dell PowerEdge R740) |
 
 ## Waiting on a phase
 
@@ -295,6 +296,10 @@ machine with AMT, an AMD machine and a laptop; see
 | The second memory error section format of UEFI 2.10 (ADR 0662) | Recorded as a memory error, not decoded; firmware seen so far uses the first | A machine that uses it |
 | Arm's GHES notifications: GPIO, SEA, SEI and SDEI (ADR 0662) | Dukovo is x86-64 until 1.17 | Arm servers (1.17) |
 | The raw record of a hardware error in the web console: a machine check's bank and registers, a PCIe error's status registers, shown when its row is chosen (ADR 0662) | `/kernel/ras/errors` keeps each error's decoded line, not the record it came from; `hardware errors` and the Hardware errors card show that line | Phase 19 step 4b, which reads the PCIe error registers |
+| Self-tests of SCSI and SAS disks: starting and aborting one (SEND DIAGNOSTIC) through `SELF_TEST`, and following it (ADR 0665) | `SELF_TEST` knows only SATA and NVMe; a SCSI disk's log of tests is shown with its health, but nothing starts a test | Phase 19 step 15, once the SAS disks of the reference server are in the lab |
+| Changing a MegaRAID controller's configuration: making and deleting volumes, hot spares, starting a patrol read or a check, importing a foreign configuration (ADR 0664) | The driver shows what the firmware has; changing it needs its own commands, their checks and the console's forms | Phase 19 steps S1 to S4 |
+| MegaRAID volumes and pass-through disks made or added while the machine runs (ADR 0664) | The controller's thread logs the event, and the disk is used from the next boot; adding a disk at run time is disk hot-swap's work | Phase 19 step 14 |
+| Resetting a MegaRAID controller whose firmware faulted, and taking its commands back (ADR 0664) | A fault is shown in `/kernel/raid/<n>/controller` and its disks fail their commands until the next boot; a reset needs a card to fault on | Phase 19 step 15, on the reference server's H740P |
 | SFP+ modules: their information, and fiber ports | No driver reads a module's EEPROM, and the cards with cages are the server cards | Phase 19 step 12 |
 | IPMI over SMBus (SSIF) (ADR 0661) | The kernel finds the BMC through its KCS ports only, and the SMBus controller drivers that SSIF rides on are not written | A server whose BMC offers SSIF alone, and an SMBus controller driver |
 | IPMI's BT interface and memory-mapped KCS (ADR 0661) | Only KCS on I/O ports is found, from ACPI and SMBIOS; QEMU's `isa-ipmi-bt` and a mapped KCS are not tried | A machine that has one |
@@ -434,6 +439,10 @@ machine asks for them.
 | `posix_fallocate(3)` only sets a file's length and takes no room, so a later write into the range can still fail with ENOSPC, on a disk or a tmpfs, where Linux's `fallocate(2)` takes the blocks or pages first | C library (`Sysdeps<Fallocate>`), storage design note |
 | FUSE and share mounts: a page cache with writeback | ADR 0226 |
 | A page or partition written raw through two different nodes at once | storage design note |
+| MegaRAID's fast path: reads and writes of a volume sent straight to its disks by the controller's RAID map, as Linux's driver does, and a reply queue for each CPU | ADR 0664: every request goes through the firmware, one reply queue; waits on a benchmark on the reference server that shows the firmware's path is the limit |
+| MegaRAID tri-mode cards' NVMe disks, and the older MFI parts' own read and write frames for volumes | ADR 0664: a tri-mode card with NVMe disks, or an MFI card that refuses SCSI I/O frames for volumes |
+| A QEMU MegaRAID pass-through disk at a LUN other than 0 | ADR 0664: QEMU numbers a pass-through disk by its SCSI ID and LUN, and the driver asks LUN 0, which every real controller uses |
+| Ending the controller's wait for its next event at shutdown, before its firmware is shut down | ADR 0664: real firmware ends the wait as it shuts down; QEMU's model holds it, which does no harm |
 
 ### Networking and sharing
 

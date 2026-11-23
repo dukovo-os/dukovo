@@ -35,6 +35,7 @@ const READS = {
   history: '/api/1/hardware/history',
   about: '/api/1/console/about',
   storage: '/api/1/storage',
+  raid: '/api/1/storage/raid',
   tasks: '/api/1/tasks',
   memtest: '/api/1/hardware/memtest',
 };
@@ -51,7 +52,7 @@ export async function show(view) {
   const admin = view.session.admin === true;
   // `last` is null when no check was kept, and undefined when it could not be read.
   const data = {
-    machine: null, inventory: null, access: admin ? 'locked' : 'reader', about: null, last: null, history: null, storage: null, ended: null,
+    machine: null, inventory: null, access: admin ? 'locked' : 'reader', about: null, last: null, history: null, storage: null, raid: null, ended: null,
     // The memory test at the start: its answer, or undefined when it could not be read.
     memtest: null,
     // The temperatures: null until read, undefined when they could not be.
@@ -281,6 +282,7 @@ export async function show(view) {
     data.history = Array.isArray(got.history) ? got.history : null;
     data.about = got.about ?? null;
     data.storage = got.storage ?? null;
+    data.raid = got.raid ?? null;
     data.memtest = got.memtest;
     if (Array.isArray(got.tasks?.tasks)) {
       tasks.clear();

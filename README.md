@@ -43,7 +43,7 @@ The window manager (`windowd`) and the desktop follow from release 1.1
 
 > [!NOTE]
 > Dukovo is under active development and has no public release yet. The
-> first public release will be 1.0.0, a beta for full testing.
+> first public release will be 1.0.0-alpha.1, for testers.
 
 ## Highlights
 
@@ -58,9 +58,9 @@ The window manager (`windowd`) and the desktop follow from release 1.1
 
 ## Status
 
-Phases 0 to 15 of the [roadmap](docs/roadmap.md) are done; Phase 16 is
-under way. Each phase ends in something that boots and is tested in QEMU,
-and on real machines in the project's test lab.
+Phases 0 to 17 of the [roadmap](docs/roadmap.md) are done; Phases 18
+and 19 are under way. Each phase ends in something that boots and is
+tested in QEMU, and on real machines in the project's test lab.
 
 | Phase | What it brings | Status |
 | --- | --- | --- |
@@ -71,9 +71,15 @@ and on real machines in the project's test lab.
 | 13 | Users, SSH, bundles, the catalog, logging and file sharing | Done |
 | 14 | The installer, `rdisk`, USB media and cloud images | Done |
 | 15 | Atomic updates and snapshots | Done |
-| 16 | Server platform and the Dukovo Admin web console | Under way |
-| 17 | Go toolchain | Planned |
-| 18 | Linux containers through Podman: **Release 1.0** | Planned |
+| 16 | Server platform and the Dukovo Admin web console | Done |
+| 17 | Go toolchain and Go apps | Done |
+| 18 | Linux containers through Podman | Under way |
+| 19 | Server hardware: RAID controllers, fast network cards, the BMC, firmware updates: **Release 1.0** | Under way |
+
+Five releases lead to 1.0.0: 1.0.0-alpha.1 (Phases 0 to 17),
+1.0.0-alpha.2 (containers and the reference server's hardware),
+1.0.0-beta.1 (every 1.0 feature), the release candidates and 1.0.0
+([Releases to 1.0](docs/roadmap.md#releases-to-10)).
 
 After 1.0, releases 1.1 to 1.31 add the desktop, the UI kit and an SDK,
 Settings and the Store, everyday apps, more hardware, Linux desktop apps, developer tools, a local AI

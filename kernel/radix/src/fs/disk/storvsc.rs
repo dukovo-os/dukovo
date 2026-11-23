@@ -28,7 +28,7 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use radix_block::{DeviceRef, Error, Info, SECTOR};
+use radix_block::{DeviceRef, Error, Health, Info, Page, SECTOR};
 use radix_hal::Hyperv;
 use radix_hw::Dma;
 use radix_hyperv::ring::{self, COMPLETION, INBAND, Range, Rings};
@@ -36,6 +36,7 @@ use radix_hyperv::storage::{self, Direction, Reply as Answer, operation, srb_sta
 use radix_hyperv::{Guid, PAGE};
 use radix_klog::{info, warn};
 use radix_mm::{Flags, HEAP, Kmalloc};
+use radix_scsi::health::{SMART_READ_DATA, SMART_READ_THRESHOLDS};
 use radix_scsi::{
     Absent, Cdb, Data, Found, Meaning, Reply, Sense, Transport as Commands, TransportError,
     device_type, probe,
@@ -43,6 +44,7 @@ use radix_scsi::{
 use radix_sync::{Once, SpinLock};
 
 use super::queue::{self, Controller as Lane, Disk, Op, Outcome, Request, SLOTS, Volume};
+use super::scsi_health::{self, ATA_VENDOR, query_cdb};
 use super::virtio_scsi::{ident, serial_number, units};
 use super::{Entry, Name, SERIAL, Size, partitions, register};
 use crate::hyperv::{self, Channel};
@@ -78,6 +80,9 @@ struct InFlight {
     asked: u32,
     /// It is a flush, which a disk that has no cache to flush may refuse.
     flush: bool,
+    /// It asks a health question, which a disk may refuse or answer in
+    /// fewer bytes than the buffer holds.
+    query: bool,
 }
 
 /// A controller's channel and what its disks have to collect.
@@ -197,7 +202,7 @@ fn judge(reply: &Answer, asked: InFlight) -> (Outcome, Option<&'static str>) {
         GOOD if reply.srb_status == srb_status::ERROR => {
             return (Outcome::Retry, Some("the host failed the command, and did not say why"));
         }
-        GOOD if reply.transferred < asked.asked => {
+        GOOD if reply.transferred < asked.asked && !asked.query => {
             return (Outcome::Retry, Some("it moved less than asked"));
         }
         GOOD => return (Outcome::Done, None),
@@ -211,7 +216,7 @@ fn judge(reply: &Answer, asked: InFlight) -> (Outcome, Option<&'static str>) {
     };
     match sense.meaning() {
         Meaning::Fine => (Outcome::Done, None),
-        Meaning::Unsupported if asked.flush => (Outcome::Done, None),
+        Meaning::Unsupported if asked.flush || asked.query => (Outcome::Done, None),
         Meaning::Attention | Meaning::Aborted => (Outcome::Retry, Some(sense.key_name())),
         Meaning::BecomingReady => (Outcome::Retry, Some("it is becoming ready")),
         Meaning::WriteProtected => (Outcome::Failed, Some("it is write-protected")),
@@ -279,6 +284,9 @@ pub struct StorLun {
     unit: u64,
     /// Whether its reads and writes take 16-byte commands.
     sixteen: bool,
+    /// Whether it is a SATA disk behind the controller (its INQUIRY vendor
+    /// is "ATA"), whose health is SMART.
+    ata: bool,
 }
 
 impl Lane for StorLun {
@@ -305,6 +313,10 @@ impl Lane for StorLun {
                 (cdb.ok_or(Error::OutOfRange)?, direction)
             }
             Op::Flush => (Cdb::synchronize_cache(), Direction::None),
+            Op::Query(query) => (query_cdb(query, data), Direction::In),
+            Op::Smart(feature @ (SMART_READ_DATA | SMART_READ_THRESHOLDS), _) => {
+                (Cdb::smart_read(feature), Direction::In)
+            }
             Op::Discard(_) | Op::Smart(..) | Op::PowerMode => return Err(Error::Unsupported),
         };
         let asked = data.iter().map(|&(_, len)| len).sum::<u32>();
@@ -314,7 +326,8 @@ impl Lane for StorLun {
         let mut shared = self.controller.shared.lock_irq();
         let signal = send(&shared.rings, &packet, data, transaction)?;
         if let Some(place) = shared.in_flight.get_mut(at) {
-            *place = InFlight { asked, flush: op == Op::Flush };
+            let query = matches!(op, Op::Query(_) | Op::Smart(..));
+            *place = InFlight { asked, flush: op == Op::Flush, query };
         }
         shared.signal |= signal;
         if !more {
@@ -334,6 +347,11 @@ impl Lane for StorLun {
     fn why(&self, slot: u8) -> Option<&'static str> {
         let at = usize::from(self.number) * SLOTS + usize::from(slot);
         self.controller.shared.lock_irq().outcome.get(at).and_then(|&(_, why)| why)
+    }
+
+    fn health(disk: &Disk<Self>, _target: u32, page: &mut Page) -> Result<Health, Error> {
+        let ata = disk.controller(|lane| lane.ata).ok_or(Error::Io)?;
+        scsi_health::health(disk, page, ata)
     }
 }
 
@@ -677,6 +695,7 @@ fn add(
         lun,
         unit,
         sixteen: found.sixteen,
+        ata: found.inquiry.vendor() == ATA_VENDOR,
     };
     let part = queue::part(lane).ok_or("out of memory")?;
     let once = core::iter::once(part);

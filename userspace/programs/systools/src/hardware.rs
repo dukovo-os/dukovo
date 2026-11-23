@@ -7,18 +7,20 @@
 //! the machine is, and `hardware memtest` asks for the memory to be
 //! tested at the next start.
 //!
-//! A check looks at seven areas: the memory (the errors the memory
+//! A check looks at eight areas: the memory (the errors the memory
 //! controller counted, and a test of a share of the free memory), the
 //! disks (what each says of its health, its own self-test, and a read of
 //! the disk), the CPUs (all of them under load, which must give the same
 //! answers; their temperature; the machine checks), the hardware
-//! monitors' temperatures and fans, the battery's capacity, and the
-//! network cards' links, and the hardware errors the kernel has heard of
-//! (`hardware errors` lists them). A quick check takes about three
-//! minutes; a full one, which `--full` asks for, takes hours, mostly for the disks.
+//! monitors' temperatures and fans, the battery's capacity, the network
+//! cards' links, the hardware errors the kernel has heard of (`hardware
+//! errors` lists them), and the RAID controllers (their volumes, the disks
+//! behind them, their batteries; the disks area reads those disks' health
+//! too). A quick check takes about three minutes; a full one, which
+//! `--full` asks for, takes hours, mostly for the disks.
 //!
 //! Where to look: `check` holds a check's result and its exit status,
-//! and the IDs of what it finds (HW-101 to HW-162, each with a page in
+//! and the IDs of what it finds (HW-101 to HW-175, each with a page in
 //! docs/errors); `plan` what a run does and how long it takes; `run` the
 //! order it does it in; `saved` the result kept in
 //! `/system/state/hardware/last.json`; `history` the line of each kept
@@ -41,6 +43,7 @@ pub(crate) mod memtest;
 mod monitors;
 mod network;
 mod plan;
+mod raid;
 pub(crate) mod ras;
 mod run;
 pub(crate) mod saved;
@@ -373,7 +376,7 @@ mod tests {
         assert_eq!(
             message(&["video"]),
             "no area named video; the areas are memory, disks, cpu, sensors, battery, network, \
-             errors"
+             errors, raid"
         );
         assert_eq!(message(&["--time", "0"]), "--time takes a number of seconds above 0");
         assert_eq!(message(&["--time", "soon"]), "'soon' is not a valid number");

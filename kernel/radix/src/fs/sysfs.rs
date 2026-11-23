@@ -46,6 +46,10 @@
 //!   from 1 (ADR 0234), `Synopsys DesignWare I2C adapter` as on Linux,
 //!   and `i2c-<_HID>:<nn>/name` for each device the firmware names on
 //!   one, its ACPI name (`PNP0C50:00`, the `nn`th of its `_HID`);
+//! - `/kernel/raid/<n>`, for each RAID controller the kernel drives
+//!   (ADR 0664, [`raid`]): its `controller`, `volumes`, `disks`,
+//!   `battery` and `events`, as its firmware last told them, and each
+//!   physical disk's `health/<device id>`, asked when opened;
 //! - `/kernel/firmware/memmap/<n>/start`, `end` (its last byte, in
 //!   hexadecimal) and `type` (Linux's names: `System RAM`, `Reserved`,
 //!   `ACPI Tables`...), for each range of the firmware's memory map
@@ -171,6 +175,7 @@ use super::disk::removable::Disc;
 use crate::acpi::{devices, thermal, ucsi};
 
 mod net;
+mod raid;
 mod usb;
 use crate::{Arch, hwmon, i2c, pstate, serial};
 
@@ -221,6 +226,7 @@ pub fn make() -> Result<FsRef> {
     if i2c::found() {
         i2c_bus(&bus)?;
     }
+    raid::add(&root)?;
     let filesystems = root.add_dir("fs", next_id())?;
     let btrfs: radix_vfs::mem::KBox<dyn Listing> = mem::boxed(BtrfsVolumes)?;
     filesystems.add("btrfs", ListedDir::make(next_id(), btrfs)?)?;

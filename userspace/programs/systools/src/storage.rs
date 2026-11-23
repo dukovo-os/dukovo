@@ -12,14 +12,17 @@
 //! same files they read, so that a person who may not open a disk sees it
 //! all the same. `storage grow DISK` gives the last partition of a disk
 //! the room after it, and the Btrfs filesystem on it the room of the
-//! partition. The command line is a list of words and the option
-//! `--json`, which may come before the words or after them: [`parse`]
-//! reads it, and [`main`] gives the words to the command they name.
+//! partition. `storage raid` shows the RAID controllers, their volumes,
+//! disks and batteries, and `storage raid events` what they logged. The
+//! command line is a list of words and the option `--json`, which may
+//! come before the words or after them: [`parse`] reads it, and [`main`]
+//! gives the words to the command they name.
 //!
 //! When a disk is missing from the answer, run `lsblk` for what the kernel
 //! has, and `diskhealth` for what the disk says of itself.
 
 mod grow;
+mod raid;
 mod show;
 
 pub(crate) use show::BTRFS;
@@ -32,8 +35,9 @@ use crate::probe;
 use crate::util::{Fail, usage};
 
 const USAGE: &str = "Usage: storage [show] [--json]\n       \
+                     storage raid [events] [--json]\n       \
                      storage grow DISK\n  \
-                     --json  the disks, volumes and filesystems as JSON\n  \
+                     --json  the disks, volumes and filesystems, or the RAID controllers, as JSON\n  \
                      DISK    a disk's name, as `storage show` gives it (sda, vdb, nvme0n1)";
 
 /// The bytes in a sector as `/kernel/block` counts them.
@@ -166,6 +170,11 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let words: Vec<&str> = command.words.iter().map(String::as_str).collect();
     match words.as_slice() {
         [] | ["show"] => show::run(command.json),
+        ["raid"] => raid::run(command.json),
+        ["raid", "events"] if command.json => {
+            Err(usage(format!("{USAGE}\n--json goes with raid, whose document has the events")))
+        }
+        ["raid", "events"] => raid::run_events(),
         ["grow", _] if command.json => Err(usage(format!("{USAGE}\n--json goes with show"))),
         ["grow", disk] => grow::run(disk),
         _ => Err(usage(format!("{USAGE}\nno such command: {}", words.join(" ")))),

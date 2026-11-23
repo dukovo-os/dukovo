@@ -310,7 +310,9 @@ pub fn eject<T: Transport + ?Sized>(transport: &mut T, lun: u8) -> Result<(), Ab
 }
 
 /// Waits for the device to be ready, starting it once if it asks to be,
-/// for up to [`READY_MS`].
+/// for up to [`READY_MS`]. Only a device that says it is not ready holds
+/// the probe up, as in Linux's `sd`: one that fails TEST UNIT READY in
+/// another way goes on to READ CAPACITY, which says whether it works.
 pub(crate) fn ready<T: Transport + ?Sized>(
     transport: &mut T,
     lun: u8,
@@ -325,7 +327,11 @@ pub(crate) fn ready<T: Transport + ?Sized>(
         };
         match sense.map(|s| s.meaning()) {
             Some(Meaning::NoMedium) => return Err(Absent::NoMedium),
-            Some(Meaning::Error) => return Err(Absent::Failed("TEST UNIT READY", sense)),
+            // Not ready in a way no waiting mends: manual intervention,
+            // standby.
+            Some(Meaning::Error) if sense.is_some_and(|s| s.key == key::NOT_READY) => {
+                return Err(Absent::Failed("TEST UNIT READY", sense));
+            }
             Some(Meaning::BecomingReady) => {}
             Some(Meaning::NeedsStart) if !started => {
                 // As Linux: whatever it answers, the next look says.
@@ -333,8 +339,10 @@ pub(crate) fn ready<T: Transport + ?Sized>(
                 ask(transport, lun, &Cdb::start_stop_unit(true, false), &mut [])?;
             }
             Some(Meaning::NeedsStart) => {}
-            // Anything else, as a device that does not take the command:
-            // reading its capacity says whether it works.
+            // Anything else, as a device that does not take the command, or
+            // that fails it as a hardware error (QEMU's MegaRAID models fail
+            // every command that moves no data so): reading its capacity
+            // says whether it works.
             _ => return Ok(()),
         }
         if waited >= READY_MS {

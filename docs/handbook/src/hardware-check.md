@@ -80,6 +80,7 @@ administrator, or because every check was skipped.
 | Battery | How much each battery holds when full, against what it held new |
 | Network | Each card's link: its speed and duplex, and the receive errors it counted during the check |
 | Errors | The hardware errors the kernel has heard of since the start, from the processors and from the firmware (see "Hardware errors" below) |
+| RAID | Each RAID controller: whether it is in fault, whether each volume is optimal, whether a disk behind it has failed or is expected to, and whether its battery holds. The disks area reads the health of those disks too, as `raid0:bay4` |
 
 To check only some areas, name them: `elevate hardware check memory disks`.
 `--disk sdb` checks one disk, `--time 30` runs the processors for 30
@@ -288,6 +289,11 @@ waits.
 | HW-153 | A card counted receive errors during the check | Replace the cable; try another port |
 | HW-161 | An error was not corrected, or the firmware recorded one from before this start | Back up; find the part with `hardware errors`; replace it if it reports again |
 | HW-162 | A memory device corrected many errors in a day | Test the memory; replace the module if it keeps on |
+| HW-171 | A RAID volume is degraded or offline | Replace the failed disk now |
+| HW-172 | A disk behind a RAID controller has failed | Replace it in its bay |
+| HW-173 | A disk behind a RAID controller is predicted to fail | Back up, and replace it before it fails |
+| HW-174 | A RAID controller's battery failed, is gone or is worn | Replace the battery |
+| HW-175 | A RAID controller reports a fault | Back up, restart, and contact its maker if it comes back |
 
 Most of these say the same first thing: **back up what is on the disk, now**.
 A disk that is failing may be readable today and not tomorrow, and a
@@ -304,7 +310,7 @@ check is what to run when that alert comes, or to look before it does.
 | `no check has run yet` from `hardware last` | Run `elevate hardware check` first |
 | A line says `skipped` and why | It is not a fault: the machine has no such part, or the part keeps no record, or a self-test was already running; the line says which |
 | Every check says `skipped` and the status is 3 | Nothing could be checked: the lines say why |
-| It says `no area named` or `no disk named` | The areas are memory, disks, cpu, sensors, battery and network; `--disk` takes a name from `lsblk` |
+| It says `no area named` or `no disk named` | The areas are memory, disks, cpu, sensors, battery, network and raid; `--disk` takes a name from `lsblk` |
 | The check ends at once with `not run: a full check was not confirmed` | A full check asks; answer `y`, or give `--yes` |
 | A disk's self-test line says it was aborted or interrupted | A reset or another program stopped it: run the check again |
 | The disk scan takes long | A disk with bad sectors does, since each failed read is tried again several times; Ctrl-C stops it |

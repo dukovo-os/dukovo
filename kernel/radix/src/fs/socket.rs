@@ -532,7 +532,10 @@ impl Socket {
         }
     }
 
-    /// A connected stream socket, with `end`.
+    /// A connected stream socket, with `end`. Kept out of line: inlined in
+    /// `make_pair`, which makes two, its sockets would take that call's
+    /// frame past the kernel's budget (ADR 0058).
+    #[inline(never)]
     fn connected_with(end: End, name: Name) -> Socket {
         let socket = Socket::new(Phase::Connected, name, None);
         // It is new, so its end is not set.

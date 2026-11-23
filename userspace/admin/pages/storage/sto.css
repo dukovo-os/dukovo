@@ -70,6 +70,50 @@
 .sto-key { margin: 0; }
 .disk > .st { justify-self: end; }
 
+/* The RAID cards (read side): the controllers, the front bays drawn as the server has them, the volumes with their task bars and the physical disks.
+   A bay says its state in words; the border and the lights only repeat it. */
+.sto-raid:empty, .sto-raid-slot:empty { display: none; }
+.sto-raid { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.sto-raid-top { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; }
+.sto-raid-body { display: flex; flex-direction: column; gap: .857rem; min-width: 0; }
+.sto-raid-sub { font: 600 .929rem var(--font-ui); margin: 0; }
+.sto-ctl { display: flex; flex-direction: column; gap: .571rem; min-width: 0; }
+.sto-ctl-head { display: flex; flex-wrap: wrap; align-items: center; gap: .286rem .714rem; }
+.sto-ctl-head h3 { font: 600 1rem var(--font-ui); margin: 0; }
+.sto-note { display: block; color: var(--muted); font-size: .857rem; }
+.sto-chassis { display: flex; flex-direction: column; gap: .357rem; padding: .571rem; border: 1px solid var(--control); border-radius: .357rem; background: var(--sunken); }
+.sto-front { display: flex; flex-direction: column; gap: .571rem; min-width: 0; }
+.sto-bays { list-style: none; margin: 0; padding: 0; display: grid; gap: .357rem; grid-template-columns: repeat(var(--bays, 8), minmax(0, 1fr)); }
+.bay { display: flex; flex-direction: column; align-items: flex-start; gap: .071rem; min-width: 0; min-height: 8rem; padding: .429rem .5rem .357rem; border: 1px solid var(--control); border-radius: .214rem; background: var(--bg); color: var(--text); font-size: .857rem; line-height: 1.3; overflow-wrap: anywhere; }
+.bay .ledrow { display: flex; gap: .286rem; margin-bottom: .214rem; }
+.bay .word { font-weight: 600; }
+.bay .sub { color: var(--muted); }
+.bay .grip { margin-top: auto; width: 100%; height: .643rem; background: repeating-linear-gradient(90deg, var(--control) 0 1px, transparent 1px .357rem); opacity: .55; }
+.led { display: inline-block; width: .643rem; height: .643rem; border-radius: 50%; border: 1.5px solid var(--control); flex: none; }
+.led.ok { background: var(--ok); border-color: var(--ok); }
+.led.warn { background: var(--warn); border-color: var(--warn); }
+.led.bad { background: var(--bad); border-color: var(--bad); }
+.bay.use, .swatch.use { background: var(--sel-1); border-color: var(--sel-b); }
+.bay.fail, .swatch.fail { background: var(--bad-soft); border: 2px solid var(--bad); }
+.bay.fail .word { color: var(--bad); font-weight: 700; }
+.bay.rebuild, .swatch.rebuild { background: var(--warn-soft); border: 2px dashed var(--warn); }
+.bay.rebuild .word { color: var(--warn); font-weight: 700; }
+.bay.spare, .swatch.spare { border-style: dashed; }
+.bay.empty, .swatch.empty { background: transparent; border-style: dotted; }
+.bay.empty .word { color: var(--muted); font-weight: 400; }
+.sto-legend { display: flex; flex-wrap: wrap; gap: .286rem .857rem; list-style: none; margin: 0; padding: 0; font-size: .857rem; color: var(--muted); }
+.sto-legend li { display: flex; align-items: center; gap: .357rem; }
+.swatch { display: inline-block; width: 1rem; height: .714rem; border: 1px solid var(--control); border-radius: .143rem; background: var(--bg); }
+.sto-vols, .sto-pd { display: flex; flex-direction: column; gap: .857rem; min-width: 0; }
+.sto-volume { display: flex; flex-direction: column; gap: .571rem; padding: .714rem .857rem; border: 1px solid var(--border); border-radius: .357rem; background: var(--bg); min-width: 0; }
+.sto-task { display: flex; flex-direction: column; gap: .286rem; }
+.sto-task p { margin: 0; }
+.sto-stack { display: flex; flex-wrap: wrap; align-items: center; gap: .286rem .429rem; margin: 0; }
+.sto-stack .to { color: var(--muted); }
+.sto-pd-table td small, .sto-pd-table th small { display: block; color: var(--muted); font-size: .857rem; }
+.sto-pd-table th[scope="row"] { text-align: left; font-weight: 600; font-size: 1rem; color: var(--text); background: none; white-space: nowrap; }
+.sto-pd-table { min-width: 44rem; }
+
 /* The panel of one disk */
 .sto-side { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
 .sto-split { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 1rem; align-items: start; }
@@ -118,12 +162,14 @@ ul.sto-steps-list { list-style: none; padding-left: 0; }
    with a way back, and the buttons are 44 px tall and fill the width. */
 @container (max-width: 51.4rem) {
   .sto-cards { grid-template-columns: minmax(0, 1fr); }
+  .sto-bays { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bay { min-height: 5.5rem; }
   .disk { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name health" "map map"; row-gap: .571rem; }
   .disk > .sto-disk-name { grid-area: name; }
   .disk > .sto-map { grid-area: map; }
   .disk > .st { grid-area: health; }
   .sto-split { grid-template-columns: minmax(0, 1fr); }
-  .sto-opened .sto-banner, .sto-opened .sto-top, .sto-opened .sto-list, .sto-opened #log { display: none; }
+  .sto-opened .sto-banner, .sto-opened .sto-top, .sto-opened .sto-raid-slot, .sto-opened .sto-list, .sto-opened #log { display: none; }
   .sto-opened .sto-back { display: inline-flex; align-self: flex-start; align-items: center; min-height: 3.143rem; }
   .sto-buttons, .sto-action, .sto-grow { align-items: stretch; width: 100%; }
   .sto-buttons .btn, .sto-action .btn, .sto-grow .btn, .sto-form .btns .btn, .sto-log-body .btns .btn { width: 100%; min-height: 3.143rem; box-sizing: border-box; }
@@ -145,5 +191,18 @@ ul.sto-steps-list { list-style: none; padding-left: 0; }
   .dk .sto-io .chart .grid-line { stroke: GrayText; forced-color-adjust: none; }
   .dk .sto-io .key, .dk .sto-io .key.second { border-top-color: CanvasText; }
   .dk .sto-io .tbl-box, .dk .sto-check .tbl-box { border: 1px solid CanvasText; }
+  .dk .bay, .dk .swatch { forced-color-adjust: none; background: Canvas; color: CanvasText; border-color: CanvasText; }
+  .dk .bay.fail, .dk .swatch.fail { border-width: 3px; }
+  .dk .bay.rebuild, .dk .swatch.rebuild { border-style: dashed; }
+  .dk .bay.empty, .dk .swatch.empty { border-style: dotted; color: GrayText; }
+  .dk .led { forced-color-adjust: none; border-color: CanvasText; }
+  .dk .led.ok, .dk .led.warn, .dk .led.bad { background: CanvasText; }
+  .dk .sto-chassis { border-color: CanvasText; }
   .dk .sto-rows dd.warn, .dk .sto-rows dd.bad { forced-color-adjust: none; color: CanvasText; }
+}
+
+/* The table of physical disks turns into a card for each disk where the console's own tables do. */
+@media (max-width: 480px) {
+  .sto-pd-table { min-width: 0; }
+  .sto-pd-table.stack th[scope="row"] { display: block; border: 0; padding: .286rem .571rem; white-space: normal; }
 }

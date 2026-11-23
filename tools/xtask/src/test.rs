@@ -132,6 +132,10 @@ pub const HYPERV: &str = "<hyperv>";
 /// In a case's `qemu`, its [`Bus::Scsi`] disks are on VMware's PVSCSI
 /// adapter (QEMU's `pvscsi`, ADR 0424) instead of a virtio SCSI one.
 pub const PVSCSI: &str = "<pvscsi>";
+/// In a case's `qemu`, its [`Bus::Scsi`] disks are volumes of QEMU's
+/// MegaRAID SAS 2108 model (`megasas-gen2`, ADR 0664) instead of disks of
+/// a virtio SCSI adapter.
+pub const MEGARAID: &str = "<megaraid>";
 /// The CPU of a [`HYPERV`] case: the host's, with Hyper-V's CPUID leaves,
 /// its hypercalls, reference counter, frequency registers and SynIC.
 const HYPERV_CPU: &str =
@@ -200,6 +204,7 @@ pub const KERNEL_LIBRARIES: &[&str] = &[
     "radix-ksyms",
     "radix-mana",
     "radix-mca",
+    "radix-megaraid",
     "radix-microcode",
     "radix-mm",
     "radix-net",
@@ -5227,9 +5232,14 @@ fn run_case(
         extra.extend(["-device".into(), "piix3-ide,id=pata".into()]);
     }
     let pvscsi = extra.iter().any(|arg| arg == PVSCSI);
-    extra.retain(|arg| arg != PVSCSI);
+    let megaraid = extra.iter().any(|arg| arg == MEGARAID);
+    extra.retain(|arg| arg != PVSCSI && arg != MEGARAID);
     if case.disks.iter().any(|disk| matches!(disk.bus, Bus::Scsi(_))) {
-        let adapter = if pvscsi { "pvscsi,id=scsi0" } else { "virtio-scsi-pci,id=scsi0" };
+        let adapter = match (pvscsi, megaraid) {
+            (true, _) => "pvscsi,id=scsi0",
+            (_, true) => "megasas-gen2,id=scsi0",
+            _ => "virtio-scsi-pci,id=scsi0",
+        };
         extra.extend(["-device".into(), adapter.into()]);
     }
     // First, so that a drive of the case's own arguments has its
@@ -9335,6 +9345,17 @@ fn posix(vm: &mut Vm, case: &Case) -> Result<(), String> {
 /// The kernel's lines for a case's disks, up to the end of the boot.
 /// The disks are found while the other CPUs start, so their lines come
 /// among those `boot_report` checks: looked for anywhere before here.
+/// The failure of a boot whose kernel never said a line with `start`,
+/// with the last lines it said of disks: a run on CI shows those without
+/// the serial log, which only the job's artifacts keep.
+fn never_said_of_disks(log: &str, start: &str) -> String {
+    const MOST: usize = 16;
+    let said: Vec<&str> =
+        log.lines().filter_map(|line| line.find("Disk: ").map(|at| &line[at..])).collect();
+    let last = &said[said.len().saturating_sub(MOST)..];
+    format!("the kernel never said \"{start}...\"; of disks it said: {}", last.join(" | "))
+}
+
 fn disks_found(vm: &mut Vm, case: &Case) -> Result<(), String> {
     boot_report(vm, case)?;
     vm.expect("Boot complete.")?;
@@ -9342,7 +9363,7 @@ fn disks_found(vm: &mut Vm, case: &Case) -> Result<(), String> {
     let line_of = |start: &str| {
         log.lines()
             .find_map(|line| line.find(start).map(|at| &line[at..]))
-            .ok_or_else(|| format!("the kernel never said \"{start}...\""))
+            .ok_or_else(|| never_said_of_disks(&log, start))
     };
     let lanes = case.cpus.clamp(1, 16);
     for n in nvme_controllers(case.disks) {
@@ -9493,6 +9514,14 @@ fn disks_found(vm: &mut Vm, case: &Case) -> Result<(), String> {
                      block{sectors}{ro}, write cache, MSI",
                     disk.sector
                 ),
+            ),
+            // A volume of the controller's: QEMU's MFI models keep no cache
+            // the host flushes.
+            Bus::Scsi(target) if case.qemu.contains(&MEGARAID) => (
+                line_of(&format!(
+                    "Disk: {name} is volume {target} of {size} on the MegaRAID controller at "
+                ))?,
+                format!(": QEMU QEMU HARDDISK, {} bytes a block{sectors}{ro}, MSI", disk.sector),
             ),
             Bus::Scsi(target) => (
                 line_of(&format!(

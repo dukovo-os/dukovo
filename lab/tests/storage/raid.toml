@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# storage raid (ADR 0664) on any machine. One with no RAID controller says
+# so in one line, with the exit status 0, in the text and in the JSON, and
+# so do its events. One with a controller lists it with its volumes, disks
+# and battery, and the JSON agrees with the text. QEMU has no controller,
+# so the boot test `megaraid` and a lab machine with one (a Dell PERC)
+# cover the other branch.
+about = "storage raid says in one line that there is no RAID controller, as text and as JSON, and on a machine that has one lists it with its volumes, disks and battery"
+time = "2m"
+
+# Anyone may run it.
+[[step]]
+run = "sh"
+input = '''
+if ls /kernel/raid/0/controller > /dev/null 2>&1; then
+    storage raid | grep -q "^Controller 0: " || exit 1
+    storage raid | grep -q "^Volumes" || exit 1
+    storage raid --json | grep -q "\"controllers\":\[{\"n\":0" || exit 1
+    storage raid events > /dev/null || exit 1
+    echo "storage raid: a controller is listed"
+else
+    storage raid | grep -qx "No RAID controller was found." || exit 1
+    storage raid events | grep -qx "No RAID controller was found." || exit 1
+    storage raid --json | grep -qx "{\"format\":1,\"controllers\":\[\]}" || exit 1
+    echo "storage raid: no controller is said in one line"
+fi
+'''
+exit = 0
+expect = "storage raid: "
+
+# A mistake in the command line is refused, not guessed at.
+[[step]]
+run = "storage raid events --json"
+exit = 1
+expect = "--json goes with raid"
+[[step]]
+run = "storage raid volumes"
+exit = 1
+expect = "no such command: raid volumes"
