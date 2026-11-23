@@ -10,7 +10,7 @@
 //! [`UdpPlaces`]) before the leases end: a call that has the slices as
 //! arguments must not free them, as a lease's end says.
 //!
-//! A few buffers of sockets that closed are kept to make new sockets with
+//! Buffers of sockets that closed are kept to make new sockets with
 //! ([`SPARES`]), so that a program that opens and closes connections does
 //! not have the heap make and zero 128 KiB for each (ADR 0185). What a
 //! closed socket left in a buffer stays out of reach: smoltcp reads only
@@ -46,8 +46,12 @@ pub const PING_MESSAGES: usize = 16;
 pub const PING_MAX: usize = PING_BUFFER / 4;
 
 /// How many buffers of [`TCP_BUFFER`] bytes are kept once their sockets
-/// closed: four sockets' worth, 512 KiB.
-const SPARES: usize = 8;
+/// closed: 32 sockets' worth, 4 MiB. A server's connections end in
+/// bursts, each taking four buffers with it, its socket's and the one its
+/// listening socket made to take the next; with fewer kept, most of the
+/// next burst's were made again from the heap and zeroed, 128 KiB a
+/// connection (ADR 0653).
+const SPARES: usize = 64;
 
 /// The buffers kept, from sockets that closed. A leaf lock: taken last,
 /// and with the stack's lock held as a socket comes out of its stack.

@@ -1657,8 +1657,8 @@ impl InetSocket {
         // a TLS client finds a server that wrote and reset this way.
         if peer && self.kind == Kind::Stream && state.phase == Phase::Connected {
             let open = state.parts.first().is_some_and(|part| {
-                let mut stack = part.interface.stack.lock();
-                stack.socket_mut::<tcp::Socket<'static>>(part.handle).is_some_and(|socket| {
+                let stack = part.interface.stack.lock();
+                stack.socket::<tcp::Socket<'static>>(part.handle).is_some_and(|socket| {
                     !matches!(socket.state(), tcp::State::Closed | tcp::State::TimeWait)
                 })
             });
@@ -1989,8 +1989,8 @@ impl InetSocket {
             let mut stack = part.interface.stack.lock();
             pending += match self.kind {
                 Kind::Stream => stack
-                    .socket_mut::<tcp::Socket<'static>>(part.handle)
-                    .map_or(0, |s| s.recv_queue()),
+                    .socket::<tcp::Socket<'static>>(part.handle)
+                    .map_or(0, tcp::Socket::recv_queue),
                 Kind::Datagram => stack
                     .socket_mut::<udp::Socket<'static>>(part.handle)
                     .and_then(|socket| socket.peek().ok().map(|(data, _)| data.len()))
@@ -2013,14 +2013,14 @@ impl InetSocket {
         if self.kind != Kind::Stream {
             let mut events = poll::WRITABLE;
             for part in &state.parts {
-                let mut stack = part.interface.stack.lock();
+                let stack = part.interface.stack.lock();
                 let can_receive = match self.kind {
                     Kind::Datagram => stack
-                        .socket_mut::<udp::Socket<'static>>(part.handle)
-                        .is_some_and(|s| s.can_recv()),
+                        .socket::<udp::Socket<'static>>(part.handle)
+                        .is_some_and(udp::Socket::can_recv),
                     _ => stack
-                        .socket_mut::<icmp::Socket<'static>>(part.handle)
-                        .is_some_and(|s| s.can_recv()),
+                        .socket::<icmp::Socket<'static>>(part.handle)
+                        .is_some_and(icmp::Socket::can_recv),
                 };
                 if can_receive {
                     events |= poll::READABLE;
@@ -2337,7 +2337,7 @@ impl ListenPool {
     fn take(&self) -> Option<Part> {
         let mut stack = self.interface.stack.lock();
         let mut members = self.members.lock();
-        let index = members.parts.iter().position(|part| waits(&mut stack, part))?;
+        let index = members.parts.iter().position(|part| waits(&stack, part))?;
         let part = members.parts.remove(index);
         if let Some(socket) = stack.socket_mut::<tcp::Socket<'static>>(part.handle) {
             socket.set_pooled(false);
@@ -2372,8 +2372,8 @@ impl ListenPool {
 
     /// Whether a connection was made that waits for `accept`.
     fn has_waiting(&self) -> bool {
-        let mut stack = self.interface.stack.lock();
-        self.members.lock().parts.iter().any(|part| waits(&mut stack, part))
+        let stack = self.interface.stack.lock();
+        self.members.lock().parts.iter().any(|part| waits(&stack, part))
     }
 }
 
@@ -2385,8 +2385,8 @@ impl net::Pool for ListenPool {
 
 /// Whether `part`, a listening socket's on `stack`, has a connection that
 /// was made and waits for `accept`.
-fn waits(stack: &mut Stack<Card>, part: &Part) -> bool {
-    stack.socket_mut::<tcp::Socket<'static>>(part.handle).is_some_and(|socket| was_made(socket))
+fn waits(stack: &Stack<Card>, part: &Part) -> bool {
+    stack.socket::<tcp::Socket<'static>>(part.handle).is_some_and(was_made)
 }
 
 /// Whether `socket`, one of a listening socket's, has a connection that was
@@ -2414,7 +2414,7 @@ fn connection_events(state: &mut State) -> u16 {
     // A connection whose bytes go straight across can send as many as the
     // other end has room for (ADR 0186).
     let across = stack.room_across(part.handle, &mut part.other);
-    let Some(socket) = stack.socket_mut::<tcp::Socket<'static>>(part.handle) else {
+    let Some(socket) = stack.socket::<tcp::Socket<'static>>(part.handle) else {
         return poll::HANG_UP;
     };
     let mut events = 0;
