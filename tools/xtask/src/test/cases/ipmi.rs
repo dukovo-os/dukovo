@@ -145,9 +145,12 @@ fn checksum(bytes: &[u8]) -> u8 {
 }
 
 /// `command` as root: alice, the owner, is an administrator, and elevate
-/// reads her password from its standard input with `-S`.
+/// reads her password from its standard input with `-S`. Its prompt is
+/// empty, as it goes to the standard error, which the output files hold:
+/// elevate's own `[elevate] password for alice: ` would begin the
+/// command's first line.
 fn as_root(command: &str) -> String {
-    format!("echo '{PASSWORD}' | elevate -S {command}")
+    format!("echo '{PASSWORD}' | elevate -S -p '' {command}")
 }
 
 /// Runs `command` as root with its output in `/tmp/<name>` and its exit

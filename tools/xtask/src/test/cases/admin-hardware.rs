@@ -9,13 +9,14 @@
 //!
 //! What the machine is. `GET /api/1/hardware` is what the command `hardware
 //! show --json` prints in alice's pane, for bob and for alice: the same
-//! document, whose memory has no `ecc` and no `modules` since a person is
-//! not told what only the firmware's tables say, and which has no serial
-//! number or ID of the machine anywhere. `GET /api/1/hardware/inventory`
-//! is ADM-122 for bob and ADM-106 for alice while locked; unlocked, it is
-//! the same document with the memory's slots and modules filled in, from
-//! the tables of QEMU's SMBIOS, which add up to at least the memory the
-//! kernel counts.
+//! document, whose memory has no `ecc` and no `modules` and whose
+//! processor has no `sockets` since a person is not told what only the
+//! firmware's tables say, and which has no serial number or ID of the
+//! machine anywhere. `GET /api/1/hardware/inventory` is ADM-122 for bob
+//! and ADM-106 for alice while locked; unlocked, it is the same document
+//! with the memory's slots and modules and the processor's one socket
+//! filled in, from the tables of QEMU's SMBIOS, whose modules add up to at
+//! least the memory the kernel counts.
 //!
 //! Before any check. `GET /api/1/hardware/check` is `null`, and so is what
 //! the command `hardware last --json` prints, which ends with status 3;
@@ -72,7 +73,7 @@ const CHECK_SECONDS: u64 = 420;
 /// The test.
 pub const CASE: Case = Case {
     name: "admin-hardware",
-    about: "The web console's Hardware: GET /api/1/hardware is what hardware show --json prints in alice's pane, for bob and for alice, with no memory modules and no serial number; hardware.inventory is ADM-122 for bob and ADM-106 for alice locked, and unlocked the same document with the memory's slots and modules from the tables of QEMU's SMBIOS; before any check hardware.last is null and hardware last --json prints null and ends with status 3, and hardware.history is the empty list; hardware.check is ADM-122 for bob and ADM-106 for alice locked, an area that is none, an area named twice and a disk with another area are ADM-125 with their fields, none of them starts a check, and for the sensors and the processors it is a task that counts each check as a step, to the last; bob then reads the result it kept, as hardware last --json prints it in alice's pane, and the history has its one line, as hardware history --json prints it; hardware.sensors, hardware.highest and hardware.devices are the same document for bob and for alice, as the commands print it in alice's pane with status 0: QEMU has no sensor, and its virtio network card is driven by radix-virtio and working; hardware.bmc-sensors, hardware.bmc-events and hardware.identify are ADM-122 for bob and ADM-106 for alice locked",
+    about: "The web console's Hardware: GET /api/1/hardware is what hardware show --json prints in alice's pane, for bob and for alice, with no memory modules, no sockets and no serial number; hardware.inventory is ADM-122 for bob and ADM-106 for alice locked, and unlocked the same document with the memory's slots and modules and the one socket from the tables of QEMU's SMBIOS; before any check hardware.last is null and hardware last --json prints null and ends with status 3, and hardware.history is the empty list; hardware.check is ADM-122 for bob and ADM-106 for alice locked, an area that is none, an area named twice and a disk with another area are ADM-125 with their fields, none of them starts a check, and for the sensors and the processors it is a task that counts each check as a step, to the last; bob then reads the result it kept, as hardware last --json prints it in alice's pane, and the history has its one line, as hardware history --json prints it; hardware.sensors, hardware.highest and hardware.devices are the same document for bob and for alice, as the commands print it in alice's pane with status 0: QEMU has no sensor, and its virtio network card is driven by radix-virtio and working; hardware.bmc-sensors, hardware.bmc-events and hardware.identify are ADM-122 for bob and ADM-106 for alice locked",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, admind among them.
@@ -241,13 +242,14 @@ fn has_member(value: &Value, needle: &str) -> bool {
     }
 }
 
-/// `report` without what only the firmware's tables say of the memory,
-/// which a person who may not read them is not told.
+/// `report` without what only the firmware's tables say of the memory and
+/// the processor, which a person who may not read them is not told.
 fn without_the_tables(report: &Value) -> Value {
     let mut report = report.clone();
     for member in ["ecc", "slots", "modules"] {
         report["memory"][member] = Value::Null;
     }
+    report["processor"]["sockets"] = Value::Null;
     report
 }
 
@@ -325,6 +327,9 @@ fn what_the_machine_is(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
     if !bob["memory"]["ecc"].is_null() || !bob["memory"]["modules"].is_null() {
         return Err(format!("a person is told what only the tables say: {}", bob["memory"]));
     }
+    if !bob["processor"]["sockets"].is_null() {
+        return Err(format!("a person is told the sockets the tables list: {}", bob["processor"]));
+    }
     for needle in ["serial", "uuid"] {
         if has_member(&bob, needle) {
             return Err(format!("hardware show has a member with {needle} in its name: {bob}"));
@@ -337,6 +342,10 @@ fn what_the_machine_is(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
     let inventory = test.read(Who::Alice, "/api/1/hardware/inventory")?;
     if without_the_tables(&inventory) != without_the_tables(&bob) {
         return Err(format!("the inventory is {inventory}, and the show {bob}"));
+    }
+    // QEMU's tables list a socket for each the machine was given: one.
+    if inventory["processor"]["sockets"] != json!(1) {
+        return Err(format!("the inventory's processor is {}", inventory["processor"]));
     }
     let Some(modules) = inventory["memory"]["modules"].as_array() else {
         return Err(format!(

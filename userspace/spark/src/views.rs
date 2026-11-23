@@ -193,8 +193,13 @@ pub fn build(
                 }
                 Missing::LeaveOut => {
                     if !optional {
+                        let what = if within(path, "devices") {
+                            "is not a device of this machine"
+                        } else {
+                            "is not there yet"
+                        };
                         println!(
-                            "spark: {}: {} is not there yet; its view leaves it out",
+                            "spark: {}: {} {what}; its view leaves it out",
                             spec.name, place.path
                         );
                     }
@@ -327,9 +332,15 @@ enum Missing {
 /// without a place every service gets that this system lacks. So does
 /// a place of /system/state held read-only: state another service keeps,
 /// which it may not have written yet on a new system, as troubleshoot's
-/// signatures before the first update. Any other place that is not there
-/// is a mistake in the file, and the service does not start.
+/// signatures before the first update. So does a place in /devices:
+/// the kernel adds a device for the hardware the machine has, and a
+/// service may use one where it is there, as metricsd(8) reads a server's
+/// BMC. Any other place that is not there is a mistake in the file, and
+/// the service does not start.
 fn when_missing(path: &str, write: bool, optional: bool) -> Missing {
+    if within(path, "devices") {
+        return Missing::LeaveOut;
+    }
     if let Some(rest) = path.strip_prefix("system/live/") {
         let folder = rest.strip_prefix(BUNDLE_SERVICES).unwrap_or(rest);
         return if folder.contains('/') { Missing::LeaveOut } else { Missing::Make };
