@@ -12,7 +12,7 @@
 //! registers are, adds /devices/ipmi0, and names the BMC's watchdog as
 //! the machine's. alice, the owner, signs in; as an administrator,
 //! through elevate, ipmitool(1) answers *mc info*, *sdr list* and *sdr
-//! get* with the converted nominal readings, and *fru print* with the
+//! get* with the converted nominal readings, and *fru print 0* with the
 //! board's maker, which proves Linux's ioctls on /devices/ipmi0 against
 //! the tool administrators use; bmc(8) shows the BMC, its sensor and its
 //! FRU, and asks for the identify light for five seconds. The power
@@ -231,10 +231,14 @@ fn ipmi(vm: &mut Vm, case: &Case) -> Result<(), String> {
             ("maximum", "Normal Maximum +: 30\\.000$"),
         ],
     )?;
+    // FRU 0 by its number: QEMU's BMC answers Get Device ID with a sensor
+    // device, an SDR repository and a SEL but not FRU inventory, and
+    // ipmitool's `fru print` with no number reads the BMC's own FRU only
+    // when that bit is set, as a server's BMC sets it.
     run_and_find(
         vm,
         "fruprint",
-        "ipmitool fru print",
+        "ipmitool fru print 0",
         &[("maker", &format!("Board Mfg +: {}$", BOARD_FIELDS[0]))],
     )?;
 
