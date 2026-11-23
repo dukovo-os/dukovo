@@ -4,7 +4,7 @@
 //! PCIe errors are reported to the kernel and counted per function
 //! (Phase 19, ADR 0663). QEMU's q35 machine under UEFI has an extra root
 //! port, `aerport`, with an e1000e behind it (`aernic`, MAC address
-//! 52:54:00:12:34:71, on the user network). The firmware's `_OSC` gives
+//! 52:54:00:12:34:71, on the user network). The firmware's \_OSC gives
 //! the kernel AER and the PCIe capability (QEMU masks DPC off), so the
 //! kernel turns the error reporting of the card and the root port on,
 //! logs how many root ports it watches, and takes the root port's error
