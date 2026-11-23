@@ -34,6 +34,21 @@ pub fn explain(error: &Error, names: &[String], retry_after: Option<&str>, now: 
     }
 }
 
+/// Whether the authority refused a new order for what it says of the
+/// certificate the order replaces (the `replaces` of RFC 9773): the kind
+/// `alreadyReplaced`, or a detail that is about the replaced certificate, as
+/// Pebble's "could not find an order for the given certificate". The
+/// member is only a hint of renewal information, so the order may be asked
+/// again without it.
+pub fn refuses_the_replaced(error: &Error) -> bool {
+    let Error::Api(problem) = error else { return false };
+    if kind(problem) == "alreadyReplaced" {
+        return true;
+    }
+    let detail = problem.detail.as_deref().unwrap_or_default().to_ascii_lowercase();
+    detail.contains("replace") || detail.contains("for the given certificate")
+}
+
 /// The kind of a problem, without the prefix: `connection`, `dns`, and so
 /// on.
 fn kind(problem: &Problem) -> &str {
@@ -202,6 +217,25 @@ mod tests {
         assert_eq!(words("rejectedIdentifier"), "the authority does not issue for a.example");
         assert!(words("badNonce").starts_with("the authority kept refusing the request's nonce"));
         assert_eq!(words("serverInternal"), "the authority refused (serverInternal)");
+    }
+
+    #[test]
+    fn a_refusal_about_the_replaced_certificate_is_told_from_any_other() {
+        let about = |json: &str| refuses_the_replaced(&problem(json));
+        // The kind RFC 9773 gives, and what Pebble says of a certificate it
+        // has no order for.
+        assert!(about(r#"{"type":"urn:ietf:params:acme:error:alreadyReplaced"}"#));
+        assert!(about(
+            r#"{"type":"urn:ietf:params:acme:error:malformed","detail":"could not find an order for the given certificate"}"#
+        ));
+        assert!(about(
+            r#"{"type":"urn:ietf:params:acme:error:malformed","detail":"Cannot replace the certificate: it is not ours"}"#
+        ));
+        // A refusal of anything else is final, and so is a failure that is no
+        // answer of the authority's.
+        assert!(!about(r#"{"type":"urn:ietf:params:acme:error:rateLimited","detail":"too many"}"#));
+        assert!(!about(r#"{"type":"urn:ietf:params:acme:error:rejectedIdentifier"}"#));
+        assert!(!refuses_the_replaced(&Error::Str("the answer is cut short")));
     }
 
     #[test]
