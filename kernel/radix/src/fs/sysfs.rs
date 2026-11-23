@@ -138,9 +138,20 @@
 //! - `/kernel/devices/system/edac/mc/mc0`, while the machine-check banks
 //!   are read (ADR 0169): Linux's EDAC counts of the memory errors they
 //!   reported, `ce_count` and `ue_count`, `ce_noinfo_count` and
-//!   `ue_noinfo_count` for those without a channel, and a `dimm<n>` for
-//!   each bank and channel that had one (`dimm_label`, `dimm_location`,
-//!   `dimm_ce_count`, `dimm_ue_count`), in the order they first did.
+//!   `ue_noinfo_count` for those without a channel, and a `dimm<n>`
+//!   (`dimm_label`, `dimm_location`, `dimm_ce_count`, `dimm_ue_count`) for
+//!   each populated memory device the SMBIOS tables list, in their order,
+//!   whose counts are the errors the firmware's reports name it for, and
+//!   then for each bank and channel that had an error, in the order they
+//!   first did.
+//! - `/kernel/ras`: `errors`, a line for each of the last 256 hardware
+//!   errors reported, by the machine-check banks, the firmware or PCIe
+//!   devices (its number, its time in seconds since boot, the source,
+//!   the severity, the kind, how many errors it stands for, the memory
+//!   device if known, the part, and what it was), the oldest first, and
+//!   `counts`, the errors counted since boot, in all, by severity and by
+//!   kind, recorded and dropped, and for each memory device (its SMBIOS
+//!   handle and locator) ([`crate::ras`]).
 //!
 //! Every file ends with a newline. The tree is read-only.
 
@@ -270,11 +281,16 @@ pub fn make() -> Result<FsRef> {
     }
     let system = root.add_dir("devices", next_id())?.add_dir("system", next_id())?;
     cpu(&system)?;
-    if crate::mce::on() {
+    if crate::mce::on() || crate::apei::on() {
         let mc = system.add_dir("edac", next_id())?.add_dir("mc", next_id())?;
         let mc0: radix_vfs::mem::KBox<dyn Listing> = mem::boxed(MemoryController)?;
         mc.add("mc0", ListedDir::make(next_id(), mc0)?)?;
     }
+    // The record is there whether or not anything reports to it, so that
+    // a reader can tell "no errors" from "not read".
+    let ras = root.add_dir("ras", next_id())?;
+    ras.add("errors", value(crate::ras::write_errors)?)?;
+    ras.add("counts", value(crate::ras::write_counts)?)?;
     // Another thread may have made one meanwhile; either will do.
     let root = match ROOT.set(root) {
         Ok(root) => root.clone(),
@@ -935,6 +951,34 @@ const MC_FILES: [&str; 6] = [
     "ue_noinfo_count",
 ];
 
+/// A populated memory device's `dimm<n>`: its locator as its label and
+/// location (its handle if the tables give none), and its errors, which the
+/// firmware's reports name it for ([`crate::ras`]).
+fn device_dir(device: crate::dmi::Dimm) -> Result<NodeRef> {
+    let dir = FixedDir::new(next_id())?;
+    let label = move |text: &mut Text| match device.locator {
+        Some(locator) => writeln!(text, "{locator}"),
+        None => writeln!(text, "handle {:#06x}", device.handle),
+    };
+    dir.add("dimm_label", value(label)?)?;
+    dir.add("dimm_location", value(label)?)?;
+    let counter = move |corrected: bool| {
+        value(move |text| {
+            let counts = crate::ras::dimm_counts(device.handle);
+            writeln!(text, "{}", if corrected { counts.corrected } else { counts.uncorrected })
+        })
+    };
+    dir.add("dimm_ce_count", counter(true)?)?;
+    dir.add("dimm_ue_count", counter(false)?)?;
+    Ok(dir)
+}
+
+/// How many memory devices the SMBIOS tables list as populated: the first
+/// `dimm<n>` are theirs, and the rest the banks' channels.
+fn devices() -> usize {
+    crate::dmi::dimms().map_or(0, crate::dmi::Dimms::len)
+}
+
 /// The channel `dimm<n>` names: `n` without leading zeros.
 fn dimm_index(name: &str) -> Option<usize> {
     let digits = name.strip_prefix("dimm")?;
@@ -951,7 +995,7 @@ impl Listing for MemoryController {
                 return;
             }
         }
-        for index in 0..crate::mce::memory_errors().channels().len() {
+        for index in 0..devices() + crate::mce::memory_errors().channels().len() {
             let mut name = TextBuf::<16>::new();
             let _ = write!(name, "dimm{index}");
             if !f(name.as_str(), Kind::Directory) {
@@ -962,20 +1006,49 @@ impl Listing for MemoryController {
 
     fn lookup(&self, name: &str) -> Result<NodeRef> {
         use crate::mce::memory_errors;
-        let count = |pick: fn(&crate::mce::MemoryErrors) -> u64| {
-            value(move |text| writeln!(text, "{}", pick(&memory_errors())))
+        // The banks' counts and the firmware's, added.
+        let count = |banks: fn(&crate::mce::MemoryErrors) -> u64,
+                     firmware: fn(
+            (radix_mca::record::Counts, radix_mca::record::Counts),
+        ) -> u64| {
+            value(move |text| {
+                let total =
+                    banks(&memory_errors()).saturating_add(firmware(crate::ras::memory_errors()));
+                writeln!(text, "{total}")
+            })
         };
         match name {
-            "mc_name" => value(|text| writeln!(text, "Machine check banks")),
+            "mc_name" => value(|text| {
+                let name = match (crate::mce::on(), crate::apei::on()) {
+                    (true, true) => "Machine check banks and firmware reports",
+                    (false, true) => "Firmware reports",
+                    _ => "Machine check banks",
+                };
+                writeln!(text, "{name}")
+            }),
             "seconds_since_reset" => {
                 value(|text| writeln!(text, "{}", crate::sched::now_ns() / 1_000_000_000))
             }
-            "ce_count" => count(|errors| errors.corrected),
-            "ce_noinfo_count" => count(|errors| errors.corrected_unplaced),
-            "ue_count" => count(|errors| errors.uncorrected),
-            "ue_noinfo_count" => count(|errors| errors.uncorrected_unplaced),
+            "ce_count" => count(
+                |errors| errors.corrected,
+                |(placed, unplaced)| placed.corrected + unplaced.corrected,
+            ),
+            "ce_noinfo_count" => {
+                count(|errors| errors.corrected_unplaced, |(_, unplaced)| unplaced.corrected)
+            }
+            "ue_count" => count(
+                |errors| errors.uncorrected,
+                |(placed, unplaced)| placed.uncorrected + unplaced.uncorrected,
+            ),
+            "ue_noinfo_count" => {
+                count(|errors| errors.uncorrected_unplaced, |(_, unplaced)| unplaced.uncorrected)
+            }
             _ => {
                 let index = dimm_index(name).ok_or(Error::NotFound)?;
+                if let Some(device) = crate::dmi::dimms().and_then(|dimms| dimms.nth(index)) {
+                    return device_dir(*device);
+                }
+                let index = index - devices();
                 let place = *memory_errors().channels().get(index).ok_or(Error::NotFound)?;
                 let (bank, channel) = (place.bank, place.channel);
                 let dir = FixedDir::new(next_id())?;

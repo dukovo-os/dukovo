@@ -42,6 +42,28 @@ DefinitionBlock ("dsdt.aml", "DSDT", 2, "DUKOVO", "TESTDSDT", 1)
 
     Scope (_SB)
     {
+        // The platform-wide _OSC grants only APEI support (bit 4); WHEA's
+        // gives the buffer back as it came; any other UUID is refused
+        // with "unrecognized UUID" (bit 2).
+        Method (_OSC, 4, Serialized)
+        {
+            CreateDWordField (Arg3, 0, CDW1)
+            If (Arg0 == ToUUID ("0811b06e-4a27-44f9-8d60-3cbbc22e7b48"))
+            {
+                CreateDWordField (Arg3, 4, CDW2)
+                CDW2 &= 0x10
+                Return (Arg3)
+            }
+
+            If (Arg0 == ToUUID ("ed855e0c-6c90-47bf-a62a-26de0fc5ad5c"))
+            {
+                Return (Arg3)
+            }
+
+            CDW1 |= 0x04
+            Return (Arg3)
+        }
+
         Device (DEV0)
         {
             Name (_HID, "DKV0001")

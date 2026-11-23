@@ -12,7 +12,7 @@
 use core::sync::atomic::Ordering;
 
 use radix_bootinfo::{BootInfo, EfiMemoryMap, MULTIBOOT2_MAGIC, framebuffer_type};
-use radix_hal::cmdline::CommandLine;
+use radix_hal::cmdline::{CommandLine, parse_memreserve};
 use radix_hal::{BootModule, BootParams, Channel, Firmware, Framebuffer, PixelFormat};
 use radix_sync::{Once, TakeOnce};
 
@@ -170,6 +170,46 @@ fn framebuffer(info: &BootInfo<'_>) -> (Option<Framebuffer>, bool) {
     }
 }
 
+/// Most ranges `memreserve=` keeps out of use.
+const MAX_MEMRESERVE: usize = 8;
+/// The reservations kept free for the ones made after `memreserve=`'s:
+/// the crash log's, and room to spare.
+const RESERVATIONS_AFTER: usize = 4;
+
+/// Keeps the ranges `memreserve=` names out of the frame allocator: up to
+/// [`MAX_MEMRESERVE`], and fewer when boot modules have filled the
+/// reservation table.
+fn reserve_from_flags(flags: &CommandLine<'_>) {
+    let mut kept = 0;
+    for value in flags.memreserve_values() {
+        let ranges = match parse_memreserve(value) {
+            Ok(ranges) => ranges,
+            Err(err) => {
+                radix_klog::warn!("Memory: memreserve={value} is refused: {err}");
+                continue;
+            }
+        };
+        for range in ranges {
+            if kept == MAX_MEMRESERVE || memory::reservations_free() <= RESERVATIONS_AFTER {
+                radix_klog::warn!(
+                    "Memory: no room for more memreserve ranges; {:#x}-{:#x} and the rest \
+                     are not kept out of use",
+                    range.start,
+                    range.end
+                );
+                return;
+            }
+            memory::reserve("memreserve", range.start, range.end);
+            radix_klog::info!(
+                "Memory: {:#x}-{:#x} kept out of use (memreserve)",
+                range.start,
+                range.end
+            );
+            kept += 1;
+        }
+    }
+}
+
 /// Called by the boot trampoline in long mode with the Multiboot2 magic,
 /// the physical address of the boot information and the KASLR slide.
 #[unsafe(no_mangle)]
@@ -226,6 +266,7 @@ extern "C" fn radix_arch_entry(magic: u32, info_phys: u32, slide: u64) -> ! {
         };
         memory::reserve(name, u64::from(module.start), u64::from(module.end));
     }
+    reserve_from_flags(&flags);
     if flags.value("crashlog") != Some("off")
         && let Some(start) = memory::choose_crash_log_region()
     {

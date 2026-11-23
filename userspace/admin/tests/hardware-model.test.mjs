@@ -206,9 +206,9 @@ test('the memory test runs the memory area alone', () => {
   assert.equal(Object.isFrozen(MEMORY_TEST_ARGS), true);
 });
 
-test('the areas of the dialog are the six the action takes, and all of them are left out of the arguments', () => {
+test('the areas of the dialog are the seven the action takes, and all of them are left out of the arguments', () => {
   const ids = AREAS.map((area) => area.id);
-  assert.deepEqual(ids, ['memory', 'disks', 'cpu', 'sensors', 'battery', 'network']);
+  assert.deepEqual(ids, ['memory', 'disks', 'cpu', 'sensors', 'battery', 'network', 'errors']);
   assert.deepEqual(checkArgs(ids, false), {});
   assert.deepEqual(checkArgs(ids, true), { full: true });
   assert.deepEqual(checkArgs(['network', 'memory'], false), { areas: 'memory network' }, 'in the order the command checks them');

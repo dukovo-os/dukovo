@@ -19,6 +19,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use super::check::{Area, Check, Problem, counted};
+use super::errors;
+use super::ras::{self, Record};
 use crate::util;
 
 /// Where the kernel counts the memory controller's errors.
@@ -240,8 +242,10 @@ pub(crate) fn read_errors(dir: &Path) -> Option<Errors> {
 }
 
 /// The check of the memory errors: uncorrected ones fail it, corrected
-/// ones warn.
-pub(crate) fn errors_check(errors: Option<Errors>) -> Check {
+/// ones warn. `dimms` names the memory devices that have errors, as
+/// [`super::errors::dimms_with_errors`] says them, and is empty when the
+/// kernel says none.
+pub(crate) fn errors_check(errors: Option<Errors>, dimms: &str) -> Check {
     const NAME: &str = "memory errors";
     let Some(Errors { corrected, uncorrected }) = errors else {
         return Check::skipped(
@@ -253,15 +257,27 @@ pub(crate) fn errors_check(errors: Option<Errors>) -> Check {
     if uncorrected > 0 {
         let also =
             if corrected > 0 { format!(" and {corrected} corrected") } else { String::new() };
-        let detail =
-            format!("{}{also} counted since the start", counted(uncorrected, "uncorrected error"));
+        let detail = format!(
+            "{}{also} counted since the start{}",
+            counted(uncorrected, "uncorrected error"),
+            named(dimms)
+        );
         return Check::failed(Area::Memory, NAME, Problem::MemoryUncorrected, detail);
     }
     if corrected > 0 {
-        let detail = format!("{} counted since the start", counted(corrected, "corrected error"));
+        let detail = format!(
+            "{} counted since the start{}",
+            counted(corrected, "corrected error"),
+            named(dimms)
+        );
         return Check::warning(Area::Memory, NAME, Problem::MemoryCorrected, detail);
     }
     Check::passed(Area::Memory, NAME, "none counted since the start".into())
+}
+
+/// The memory devices of a detail: `; DIMM_A1 3 corrected`, or nothing.
+fn named(dimms: &str) -> String {
+    if dimms.is_empty() { String::new() } else { format!("; {dimms}") }
 }
 
 /// Takes `bytes` of anonymous memory and touches all of it, so that the
@@ -317,7 +333,9 @@ pub(crate) fn run(bytes: u64, threads: usize, stop: &AtomicBool) -> Vec<Check> {
         }
         Err(why) => Check::skipped(Area::Memory, "memory test", why),
     };
-    let checks: [Check; CHECKS] = [test, errors_check(read_errors(Path::new(EDAC)))];
+    let record = Record::read(Path::new(ras::DIR));
+    let dimms = errors::dimms_with_errors(&record);
+    let checks: [Check; CHECKS] = [test, errors_check(read_errors(Path::new(EDAC)), &dimms)];
     checks.into()
 }
 
@@ -432,19 +450,30 @@ mod tests {
     #[test]
     fn the_errors_the_controller_counted_decide_the_check() {
         use super::super::check::Outcome;
-        let outcome =
-            |corrected, uncorrected| errors_check(Some(Errors { corrected, uncorrected })).outcome;
+        let outcome = |corrected, uncorrected| {
+            errors_check(Some(Errors { corrected, uncorrected }), "").outcome
+        };
         assert_eq!(outcome(0, 0), Outcome::Passed);
         assert_eq!(outcome(3, 0), Outcome::Warning);
         assert_eq!(outcome(3, 1), Outcome::Failed);
         assert_eq!(outcome(0, 2), Outcome::Failed);
-        let both = errors_check(Some(Errors { corrected: 3, uncorrected: 1 }));
+        let both = errors_check(Some(Errors { corrected: 3, uncorrected: 1 }), "");
         assert_eq!(both.id.as_deref(), Some("HW-102"));
         assert!(both.detail.starts_with("1 uncorrected error and 3 corrected"), "{}", both.detail);
-        let few = errors_check(Some(Errors { corrected: 5, uncorrected: 0 }));
+        let few = errors_check(Some(Errors { corrected: 5, uncorrected: 0 }), "");
         assert_eq!(few.detail, "5 corrected errors counted since the start");
         assert_eq!(few.id.as_deref(), Some("HW-101"));
-        assert_eq!(errors_check(None).outcome, Outcome::Skipped);
+        assert_eq!(errors_check(None, "").outcome, Outcome::Skipped);
+        // The devices that have errors are named after the count.
+        let named =
+            errors_check(Some(Errors { corrected: 5, uncorrected: 0 }), "DIMM_A1 5 corrected");
+        assert_eq!(named.detail, "5 corrected errors counted since the start; DIMM_A1 5 corrected");
+        let wrong =
+            errors_check(Some(Errors { corrected: 0, uncorrected: 1 }), "DIMM_B1 1 uncorrected");
+        assert_eq!(
+            wrong.detail,
+            "1 uncorrected error counted since the start; DIMM_B1 1 uncorrected"
+        );
     }
 
     #[test]

@@ -277,6 +277,11 @@ pub fn reserve(name: &'static str, start: u64, end: u64) {
     reservations.len += 1;
 }
 
+/// How many more reservations [`reserve`] takes.
+pub fn reservations_free() -> usize {
+    MAX_RESERVATIONS - RESERVATIONS.lock().len
+}
+
 static RESERVATIONS_SNAPSHOT: Once<Reservations> = Once::new();
 
 /// The reservations made so far, sorted by address, frozen for the boot

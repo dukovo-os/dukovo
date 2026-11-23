@@ -42,7 +42,8 @@ cpu      load                   passed   4 CPUs ran 148,203 rounds in 60 seconds
 cpu      temperature            passed   hottest is Package id 0 at 71.0 °C (high limit 100.0 °C)
 cpu      machine checks         passed   none in the kernel's log since the start
 network  enp1s0                 passed   link up at 1000 Mb/s, full duplex; no receive errors during the check
-9 passed, 0 warnings, 0 FAILED, 2 skipped
+errors   hardware errors        passed   none heard of since the start
+10 passed, 0 warnings, 0 FAILED, 2 skipped
 ```
 
 Each line is one check, and each ends in one of four ways:
@@ -78,6 +79,7 @@ administrator, or because every check was skipped.
 | Sensors | The temperatures and fans of the hardware monitors, at rest, against the limits each monitor gives |
 | Battery | How much each battery holds when full, against what it held new |
 | Network | Each card's link: its speed and duplex, and the receive errors it counted during the check |
+| Errors | The hardware errors the kernel has heard of since the start, from the processors and from the firmware (see "Hardware errors" below) |
 
 To check only some areas, name them: `elevate hardware check memory disks`.
 `--disk sdb` checks one disk, `--time 30` runs the processors for 30
@@ -92,6 +94,44 @@ The check leaves a disk's own test of itself to the disk: it starts the
 test, asks how far it is every five seconds, and reads the result from the
 disk's own log. If the person presses Ctrl-C, the check stops at once and
 aborts the self-tests it started.
+
+## Hardware errors
+
+The kernel records every hardware error it hears of. Some come from the
+processors, which find them in the memory, the caches and the buses, and some
+from the firmware, which reports them in its own words. The kernel keeps the
+last 256 in `/kernel/ras/errors`, and counts all of them in
+`/kernel/ras/counts`. Anyone may read both, and `hardware errors` shows them:
+
+```
+$ hardware errors
+TIME    SOURCE  SEVERITY   KIND    PART    WHAT
+40.002  ghes3   corrected  memory  DIMM 0  memory error: type single-bit ECC, address 0x12345000
+
+Memory devices with errors since this boot:
+  DIMM_A1 (16G): 1 corrected, 0 uncorrected
+```
+
+A machine with none says **No hardware errors since this boot.** `--since 3600`
+shows only the last hour, and `--json` gives the same for another program.
+
+Each error says how bad it was. A **corrected** error was made right by the
+hardware and lost nothing. A **recoverable** error was not corrected, and the
+machine went on. A **fatal** one was not corrected, and the machine could not
+go on. The firmware also keeps a record of the error that ended the last run,
+if one did, and the kernel reads it at the start: it has the source `bert`, and
+the check says it is from before this start.
+
+The errors area of the check passes when none is heard of or only a few are
+corrected. It **fails** when this start has an error that was not corrected, or
+the firmware recorded one from before it
+([HW-161](../../errors/HW-161.md)). It **warns** when one memory device had 24
+corrected errors or more in the last 24 hours
+([HW-162](../../errors/HW-162.md)); the memory line of the check names the
+devices that have errors, too. The history that `metricsd` keeps has them as
+`ras.corrected`, `ras.uncorrected` and `ras.dimm{NAME}`, and it alerts for each
+error that was not corrected, and for a memory device over the line, which
+`dimm_corrected_per_day` in `/system/settings/metrics.toml` sets.
 
 ## The full check
 
@@ -246,6 +286,8 @@ waits.
 | HW-141 | A battery holds under 80% of what it held new | Replace the battery |
 | HW-152 | A network link is at half duplex | Check the cable and the switch port |
 | HW-153 | A card counted receive errors during the check | Replace the cable; try another port |
+| HW-161 | An error was not corrected, or the firmware recorded one from before this start | Back up; find the part with `hardware errors`; replace it if it reports again |
+| HW-162 | A memory device corrected many errors in a day | Test the memory; replace the module if it keeps on |
 
 Most of these say the same first thing: **back up what is on the disk, now**.
 A disk that is failing may be readable today and not tomorrow, and a

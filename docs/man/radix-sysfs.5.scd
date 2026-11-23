@@ -654,25 +654,60 @@ _/kernel/devices/system/cpu/cpufreq/policy_*n*_/amd_pstate_highest_perf_, _amd_p
 
 _/kernel/devices/system/edac/mc/mc0/ce_count_, _ue_count_
 	While the CPUs' machine-check banks are read (*dukovo-boot*(7)'s
-	*MACHINE CHECKS*): how many memory errors the memory controllers
-	corrected, and how many they did not, since boot, as Linux's EDAC
-	counts them. Radix shows them as one memory controller, whose DIMMs
-	are the banks' channels.
+	*MACHINE CHECKS*), or the firmware's error reports are (ADR 0662):
+	how many memory errors were corrected, and how many were not, since
+	boot, as Linux's EDAC counts them. Radix shows them as one memory
+	controller, whose DIMMs are the memory devices and the banks'
+	channels.
 
 _/kernel/devices/system/edac/mc/mc0/ce_noinfo_count_, _ue_noinfo_count_
-	Those whose bank said no channel.
+	Those that named no channel and no memory device.
 
 _/kernel/devices/system/edac/mc/mc0/mc_name_, _seconds_since_reset_
-	*Machine check banks*, and the seconds since the counts began: since
-	boot.
+	*Machine check banks*, *Firmware reports* or *Machine check banks and
+	firmware reports*, by which are read, and the seconds since the counts
+	began: since boot.
 
 _/kernel/devices/system/edac/mc/mc0/dimm_*n*_/dimm_label_, _dimm_location_
-	A bank and channel that had an error, such as _bank 7 channel 1_,
-	numbered from 0 in the order they first did. Linux's
+	Each populated memory device the SMBIOS tables list, numbered from 0
+	in their order, labelled with its locator (such as _DIMM_A1_); then
+	each bank and channel that had an error, such as _bank 7 channel 1_,
+	numbered on from there in the order they first did. Linux's
 	*ras-mc-ctl --error-count* and *edac-util* read these.
 
 _/kernel/devices/system/edac/mc/mc0/dimm_*n*_/dimm_ce_count_, _dimm_ue_count_
-	Its corrected and uncorrected errors.
+	Its corrected and uncorrected errors. A memory device's are those the
+	firmware's error reports named it for (_/kernel/ras/counts_ has
+	them too), a bank and channel's those the bank said.
+
+_/kernel/ras/errors_
+	A line for each of the last 256 hardware errors reported, the oldest
+	first, by the CPUs' machine-check banks or by the firmware (ADR
+	0662). A line has, apart by spaces: the error's number (the boot's
+	first is 1); its time in seconds since boot, to the millisecond; who
+	reported it, *mce* (a machine-check bank), *ghes*_n_ (the firmware's
+	error source _n_), *bert* (the firmware's record of an error that ended
+	the last boot) or *aer* (a PCIe device); how bad it was,
+	*informational*, *corrected*, *recoverable* (not corrected, and the
+	machine went on) or *fatal*; its kind, *memory*, *pcie*, *processor*
+	or *other*; *x*_count_, the errors it stands for; *dimm=*_handle_, the
+	SMBIOS handle of the memory device it names, or _-_; the part, by the
+	name on the board where it is known (_DIMM_A1_, _PCIe 0000:3b:00.0_,
+	_CPU 3 bank 7 channel 1_); then a colon and what the error was. The
+	record takes every error. The log does not: each part has at most ten
+	lines of corrected errors a minute, and the first line after that
+	says how many were left out. Errors that were not corrected always
+	have a line.
+
+_/kernel/ras/counts_
+	The errors counted since boot, a line each: *corrected* and
+	*uncorrected* in all; *severity* and *kind* with each name above and
+	its count; *recorded* (all the record has taken) and *dropped* (those
+	it no longer holds); and a *dimm* line for each populated memory
+	device the tables list, with its SMBIOS handle, locator and size
+	(_16384M_) where they say, and its *corrected* and *uncorrected*
+	counts, then one for any other device an error named. *dimm other*
+	counts those of devices past the 64 the kernel keeps apart.
 
 _/kernel/settings/_*name*
 	The value of one of the kernel's settings (*radix-kernel-settings*(2),

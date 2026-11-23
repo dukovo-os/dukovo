@@ -18,12 +18,20 @@ pub(crate) enum Area {
     Sensors,
     Battery,
     Network,
+    Errors,
 }
 
 impl Area {
     /// Every area.
-    pub(crate) const ALL: [Area; 6] =
-        [Area::Memory, Area::Disks, Area::Cpu, Area::Sensors, Area::Battery, Area::Network];
+    pub(crate) const ALL: [Area; 7] = [
+        Area::Memory,
+        Area::Disks,
+        Area::Cpu,
+        Area::Sensors,
+        Area::Battery,
+        Area::Network,
+        Area::Errors,
+    ];
 
     /// The area `name` names on the command line.
     pub(crate) fn parse(name: &str) -> Option<Area> {
@@ -38,6 +46,7 @@ impl Area {
             Area::Sensors => "sensors",
             Area::Battery => "battery",
             Area::Network => "network",
+            Area::Errors => "errors",
         }
     }
 }
@@ -87,12 +96,14 @@ pub(crate) enum Problem {
     BatteryWorn,
     LinkHalfDuplex,
     LinkErrors,
+    HardwareError,
+    DimmCorrectedRate,
 }
 
 impl Problem {
     /// Every problem, for the tests that check each one's ID and advice.
     #[cfg(test)]
-    pub(crate) const ALL: [Problem; 16] = [
+    pub(crate) const ALL: [Problem; 18] = [
         Problem::MemoryCorrected,
         Problem::MemoryUncorrected,
         Problem::MemoryTest,
@@ -109,6 +120,8 @@ impl Problem {
         Problem::BatteryWorn,
         Problem::LinkHalfDuplex,
         Problem::LinkErrors,
+        Problem::HardwareError,
+        Problem::DimmCorrectedRate,
     ];
 
     pub(crate) fn id(self) -> &'static str {
@@ -129,6 +142,8 @@ impl Problem {
             Problem::BatteryWorn => "HW-141",
             Problem::LinkHalfDuplex => "HW-152",
             Problem::LinkErrors => "HW-153",
+            Problem::HardwareError => "HW-161",
+            Problem::DimmCorrectedRate => "HW-162",
         }
     }
 
@@ -178,6 +193,14 @@ impl Problem {
                 "Check the cable and the switch port: both ends must agree on full duplex."
             }
             Problem::LinkErrors => "Replace the cable, and try another port of the switch.",
+            Problem::HardwareError => {
+                "Back up what matters, and run hardware errors to see which part reported it; \
+                 replace that part if it keeps reporting."
+            }
+            Problem::DimmCorrectedRate => {
+                "Run Test the memory from the start menu, and replace the memory module named \
+                 if the errors keep coming."
+            }
         }
     }
 }

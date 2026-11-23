@@ -13,7 +13,7 @@ audio in 1.13.
 <div class="hwkinds">
 <div><span class="hwpill hw-ok">Works</span><h3>Virtual machines and clouds</h3><p>QEMU and KVM, VMware, Hyper-V and Azure, AWS, Google Cloud and VirtualBox. Every paravirtual disk and network card they offer has a driver.</p></div>
 <div><span class="hwpill hw-ok">Works</span><h3>Desktops on a wired network</h3><p>NVMe and SATA disks, Intel, Realtek, Broadcom and Killer Ethernet up to 10 Gb/s, and every kind of USB port. The screen is a text console until the desktop arrives in 1.1.</p></div>
-<div><span class="hwpill hw-part">Partly</span><h3>Servers</h3><p>One- and two-socket Xeon and EPYC servers work with their onboard SATA and NVMe disks and 1 to 10 Gb/s ports, every PCIe slot found and each device on its NUMA node. The BMC's sensors, event log, watchdog and identify light work through IPMI. RAID and SAS controllers, 25 to 100 Gb/s cards, storage networks over iSCSI and NVMe over TCP, hardware error reporting and disk hot-swap come before 1.0.</p></div>
+<div><span class="hwpill hw-part">Partly</span><h3>Servers</h3><p>One- and two-socket Xeon and EPYC servers work with their onboard SATA and NVMe disks and 1 to 10 Gb/s ports, every PCIe slot found and each device on its NUMA node. The BMC's sensors, event log, watchdog and identify light work through IPMI, and the firmware's hardware error reports are read, with a failing memory module named by its slot. RAID and SAS controllers, 25 to 100 Gb/s cards, storage networks over iSCSI and NVMe over TCP, PCIe error recovery and disk hot-swap come before 1.0.</p></div>
 <div><span class="hwpill hw-part">Partly</span><h3>Laptops</h3><p>Everything a desktop has, plus SD card readers and USB-C port status. Connect with an Ethernet port, a USB Ethernet adapter or a phone's USB tethering until Wi-Fi arrives in 1.11.</p></div>
 <div><span class="hwpill hw-plan">1.10</span><h3>Gaming and graphics work</h3><p>Every graphics card shows a picture through the firmware's framebuffer. Acceleration for AMD, Intel and NVIDIA comes in 1.10, and several monitors and HDR in 1.11.</p></div>
 </div>
@@ -164,7 +164,8 @@ the exact chips.
 | More than 256 CPU threads and more than 8 NUMA nodes | Planned, 1.0 | |
 | Serial-over-LAN on a BMC (iDRAC, iLO and any BMC that offers a serial port as COM2) | Works | uart(4) |
 | IPMI: BMC sensors, event log, watchdog and the identify light | Works | radix-ipmi(4) |
-| Hardware error reporting: APEI, PCIe AER, and a failing memory module named by its slot | Planned, 1.0 | |
+| Hardware errors the firmware reports (APEI): memory, PCIe and processor errors, a failing memory module named by its slot, the errors that ended the last boot, and a bad page taken out of use | Works | `/kernel/ras`, radix-sysfs(5) |
+| PCIe error reporting and recovery the kernel handles itself (AER, DPC), and memory modules named by slot where the firmware reports no errors | Planned, 1.0 | |
 | Link aggregation (LACP and active-backup), LLDP, jumbo frames, a queue per CPU, checksum and segmentation offloads | Planned, 1.0 | |
 | Disks on a storage network over iSCSI and NVMe over TCP | Planned, 1.0 | |
 | Multipath: several paths to one storage network disk, kept up when one goes down | Planned, 1.0 | |

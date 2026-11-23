@@ -162,7 +162,7 @@ test('Check the hardware asks which areas, and a quick check is all of them', as
   const dialog = world.dialog();
   assert.equal(dialog.querySelector('h2').textContent, 'Check the hardware');
   assert.match(dialog.textContent, /A quick check takes about 3 minutes/);
-  assert.equal(dialog.querySelectorAll('input').filter((one) => one.getAttribute('type') === 'checkbox').length, 7);
+  assert.equal(dialog.querySelectorAll('input').filter((one) => one.getAttribute('type') === 'checkbox').length, 8);
   assert.ok(buttonOf(dialog, 'Check now'));
   await world.submit();
   assert.deepEqual(world.ran('hardware.check'), [{}]);
@@ -177,9 +177,9 @@ test('a check of some areas names them, and a full check says so', async (contex
   const boxes = world.dialog().querySelectorAll('input').filter((one) => one.getAttribute('type') === 'checkbox');
   boxes[2].checked = false;
   boxes[4].checked = false;
-  boxes[6].checked = true;
+  boxes[7].checked = true;
   await world.submit();
-  assert.deepEqual(world.ran('hardware.check'), [{ areas: 'memory disks sensors network', full: true }]);
+  assert.deepEqual(world.ran('hardware.check'), [{ areas: 'memory disks sensors network errors', full: true }]);
 });
 
 test('a dialog with no area chosen sends nothing and says so', async (context) => {
@@ -603,7 +603,7 @@ test('Temperatures and fans is a table of the processor, the disks and the zones
 test('the cards come in the order of the phone, with the temperatures, the devices and the restart across both columns', async (context) => {
   const world = await openHardware(context);
   const cards = world.view.main.querySelector('.hw').children.filter((one) => one.tag === 'section');
-  assert.deepEqual(cards.map((one) => one.id), ['machine', 'check', 'temps', 'disks', 'memory', 'devices', 'power']);
+  assert.deepEqual(cards.map((one) => one.id), ['machine', 'check', 'errors', 'temps', 'disks', 'memory', 'devices', 'power']);
   assert.deepEqual(cards.filter((one) => one.classes.has('hw-wide')).map((one) => one.id), ['temps', 'devices', 'power']);
 });
 
@@ -906,7 +906,7 @@ test('a machine with no BMC has no BMC card, and asks for none of its reads', as
 test('a server has a BMC card after the temperatures, with the BMC, its address, what is not well, the rest to open and the last ten entries', async (context) => {
   const world = await openHardware(context, { world: server() });
   const cards = world.view.main.querySelector('.hw').children.filter((one) => one.tag === 'section').map((one) => one.id);
-  assert.deepEqual(cards, ['machine', 'check', 'temps', 'bmc', 'disks', 'memory', 'devices', 'power']);
+  assert.deepEqual(cards, ['machine', 'check', 'errors', 'temps', 'bmc', 'disks', 'memory', 'devices', 'power']);
   const card = world.card('bmc');
   assert.match(text(card), /Maker\s*Dell/);
   assert.match(text(card), /LAN address\s*10\.1\.2\.3/);

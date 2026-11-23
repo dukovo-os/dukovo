@@ -6,6 +6,8 @@
 //! on a thread of its own, since a disk's self-test takes most of the
 //! time and runs by itself, alongside the memory test and the load; and
 //! last the network, whose counts are read at the start and at the end.
+//! The hardware errors, which take no time either, are read with the
+//! sensors and the battery.
 //!
 //! A check is given as soon as it ends, and the run keeps them in the
 //! order of the areas for what it saves. When the person asks for the
@@ -20,7 +22,7 @@ use std::thread;
 
 use super::check::{Area, Check};
 use super::plan::Plan;
-use super::{battery, cpu, disks, memory, monitors, network};
+use super::{battery, cpu, disks, errors, memory, monitors, network, ras};
 use crate::sensors::HWMON;
 
 /// Where the lines that say how far a run is go.
@@ -136,9 +138,17 @@ pub(crate) fn execute(plan: &Plan, stop: &AtomicBool, sink: &Sink) {
     } else {
         Vec::new()
     };
-    sink.expect(sensors.len() + battery.len() + timed_checks(plan, network_before.len()));
+    let hardware_errors =
+        if plan.has(Area::Errors) { errors::run(Path::new(ras::DIR)) } else { Vec::new() };
+    sink.expect(
+        sensors.len()
+            + battery.len()
+            + hardware_errors.len()
+            + timed_checks(plan, network_before.len()),
+    );
     emit_all(sink, sensors);
     emit_all(sink, battery);
+    emit_all(sink, hardware_errors);
     thread::scope(|scope| {
         if plan.has(Area::Disks) {
             if plan.disks.is_empty() {
@@ -184,17 +194,17 @@ mod tests {
         // A machine that shows none of /kernel's classes, as a build
         // machine does, has nothing for these areas.
         let options = Options {
-            areas: vec![Area::Disks, Area::Sensors, Area::Battery, Area::Network],
+            areas: vec![Area::Disks, Area::Sensors, Area::Battery, Area::Network, Area::Errors],
             ..Options::default()
         };
         let plan = plan::build(&options, 1, 0, Vec::new());
         let sink = Sink::new(false, Steps::Off);
         execute(&plan, &AtomicBool::new(false), &sink);
         // Each area gave the one check the run counted on.
-        assert_eq!(sink.planned.load(Ordering::Relaxed), 4);
+        assert_eq!(sink.planned.load(Ordering::Relaxed), 5);
         let checks = sink.into_checks();
         let areas: Vec<Area> = checks.iter().map(|check| check.area).collect();
-        assert_eq!(areas, [Area::Disks, Area::Sensors, Area::Battery, Area::Network]);
+        assert_eq!(areas, [Area::Disks, Area::Sensors, Area::Battery, Area::Network, Area::Errors]);
         assert!(checks.iter().all(|check| check.outcome == Outcome::Skipped));
         assert_eq!(checks[0].detail, "this machine has no disk to check");
     }

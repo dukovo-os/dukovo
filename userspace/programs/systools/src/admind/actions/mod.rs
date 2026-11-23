@@ -1254,6 +1254,7 @@ registry![
     hardware::BmcSensors,
     hardware::BmcEvents,
     hardware::Identify,
+    hardware::Errors,
     hardware::Memtest,
     hardware::MemtestCancel,
     hardware::MemtestStatus,

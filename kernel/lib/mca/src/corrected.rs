@@ -130,6 +130,22 @@ pub fn release_cmci(msrs: &mut impl Msrs, claimed: u32) {
     }
 }
 
+/// AMD: stops the error counter of each bank of `banks` (one bit each)
+/// whose MCA_MISC0 has one the firmware left unlocked, and its interrupt,
+/// for the firmware to handle the bank's errors first.
+pub fn silence_thresholds(msrs: &mut impl Msrs, banks: u32) {
+    for bank in (0..32).filter(|bank| banks & (1 << bank) != 0) {
+        let register = MC0_MISC + 4 * bank;
+        let misc = msrs.read(register);
+        if misc & (MISC_VALID | MISC_COUNTER) != MISC_VALID | MISC_COUNTER
+            || misc & MISC_LOCKED != 0
+        {
+            continue;
+        }
+        msrs.write(register, misc & !(MISC_INTERRUPT_TYPE | MISC_COUNTING));
+    }
+}
+
 /// How many errors a bank's error stands for: with CMCI, the corrected
 /// errors its status counted since the bank was last read (when they
 /// overflow the count, at least that many); otherwise one.
@@ -402,6 +418,29 @@ mod tests {
         release_cmci(&mut machine.cpu(0), 0b11_1111);
         assert_eq!(machine.get(0, MC0_CTL2 + 2), 0x55 << 16);
         assert_eq!(claim_cmci(&mut machine.cpu(1), 0..8), 0b11_0000);
+    }
+
+    #[test]
+    fn banks_left_to_the_firmware_stop_counting_and_interrupting() {
+        let mut machine = Machine::new(&[4], &[]);
+        assert_eq!(claim_cmci(&mut machine.cpu(0), 0..6), 0b11_1111);
+        release_cmci(&mut machine.cpu(0), 0b01_0100);
+        for bank in 0..6u32 {
+            let ctl2 = machine.get(0, MC0_CTL2 + bank);
+            let silenced = [2, 4].contains(&bank);
+            assert_eq!(ctl2 & (CTL2_CMCI | CTL2_THRESHOLD) == 0, silenced, "bank {bank}");
+        }
+        let mut amd = Machine::new(&[], &[]);
+        amd.set(0, MC0_MISC + 8, MISC_VALID | MISC_COUNTER | MISC_INTERRUPT | 2 << 52);
+        amd.set(0, MC0_MISC + 12, MISC_VALID | MISC_COUNTER | MISC_LOCKED);
+        let found = arm_thresholds(&mut amd.cpu(0), 0..4, 4);
+        assert_eq!(found.counting, 0b100);
+        let before = amd.get(0, MC0_MISC + 12);
+        silence_thresholds(&mut amd.cpu(0), 0b1100);
+        let silenced = amd.get(0, MC0_MISC + 8);
+        assert_eq!(silenced & (MISC_COUNTING | MISC_INTERRUPT_TYPE), 0);
+        // A locked counter is the firmware's already.
+        assert_eq!(amd.get(0, MC0_MISC + 12), before);
     }
 
     #[test]

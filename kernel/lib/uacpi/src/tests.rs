@@ -540,6 +540,28 @@ fn a_machine_runs_its_firmwares_aml_from_start_to_power_off() {
     assert_eq!(touchpad.dsm(&hid_over_i2c, 1, 1), Ok(0x20));
     assert!(touchpad.dsm(&hid_over_i2c, 1, 2).is_err());
     assert!(touchpad.dsm(&[0; 16], 1, 1).is_err());
+    // \_SB's _OSCs: the platform-wide one grants APEI support alone; the
+    // WHEA one gives back what it was given; an unknown UUID is refused.
+    let system_bus = find_node("\\_SB").unwrap();
+    let platform = [
+        0x6e, 0xb0, 0x11, 0x08, 0x27, 0x4a, 0xf9, 0x44, 0x8d, 0x60, 0x3c, 0xbb, 0xc2, 0x2e, 0x7b,
+        0x48,
+    ];
+    let whea = [
+        0x0c, 0x5e, 0x85, 0xed, 0x90, 0x6c, 0xbf, 0x47, 0xa6, 0x2a, 0x26, 0xde, 0x0f, 0xc5, 0xad,
+        0x5c,
+    ];
+    let mut dwords = [1, 0x10 | 0x20, 0];
+    assert_eq!(system_bus.osc(&platform, 1, &mut dwords[..2]), Ok(()));
+    assert_eq!(dwords, [1, 0x10, 0]);
+    let mut dwords = [1, 1, 0];
+    assert_eq!(system_bus.osc(&whea, 1, &mut dwords), Ok(()));
+    assert_eq!(dwords, [1, 1, 0]);
+    let mut dwords = [0, 1];
+    assert_eq!(system_bus.osc(&[0; 16], 1, &mut dwords), Ok(()));
+    assert_eq!(dwords[0] & 0x04, 0x04);
+    assert!(system_bus.osc(&whea, 1, &mut [0; OSC_DWORDS + 1]).is_err());
+    assert!(i2c.osc(&whea, 1, &mut [0; 3]).is_err_and(Error::is_not_found));
     let absent = i2c.find("TPD1").unwrap();
     assert!(!absent.present() && all.contains(&absent));
     assert_eq!(absent.hid().unwrap().as_str(), "SYNA0000");

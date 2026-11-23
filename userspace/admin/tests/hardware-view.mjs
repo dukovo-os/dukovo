@@ -9,6 +9,7 @@
 import { ApiError } from '../api.js';
 import { setUnlockSeconds } from '../unlock.js';
 import { usePage } from './fake-dom.mjs';
+import { noErrors } from './hardware-errors-fixtures.mjs';
 import {
   about, devices, diskHealth, highest, history, inventory, last, memtest, NOW, sensors, show, storage, time, updates,
 } from './hardware-fixtures.mjs';
@@ -48,6 +49,7 @@ export const reads = () => ({
   '/api/1/hardware/sensors': sensors(),
   '/api/1/hardware/highest': highest(),
   '/api/1/hardware/devices': devices(),
+  '/api/1/hardware/errors': noErrors(),
   '/api/1/hardware/memtest': memtest(),
   '/api/1/updates/history': updates(),
   '/api/1/storage/disks/sda/health': diskHealth('sda'),

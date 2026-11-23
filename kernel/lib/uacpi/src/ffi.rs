@@ -349,6 +349,18 @@ pub fn eval_integer(path: &CStr) -> Result<u64, Error> {
     Ok(value)
 }
 
+/// The node at the absolute `path`, as `\_SB`; `None` if there is none
+/// or uACPI has not loaded the namespace.
+pub fn find_node(path: &str) -> Option<Node> {
+    // SAFETY: the root is uACPI's, there from its start on.
+    let root = NonNull::new(unsafe { uacpi_namespace_root() }).map(Node)?;
+    root.find(path)
+}
+
+/// The most dwords [`Node::osc`] passes: the PCI host bridge's `_OSC`
+/// takes five, the others fewer.
+pub const OSC_DWORDS: usize = 8;
+
 /// A device of the namespace, as [`find_devices`] finds it. The kernel
 /// never unloads a table, so a node stays for good.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -539,6 +551,56 @@ impl Node {
     /// mailbox to and from the firmware.
     pub fn dsm_run(self, uuid: &[u8; 16], revision: u64, function: u64) -> Result<(), Error> {
         self.eval_dsm(uuid, revision, function).map(drop)
+    }
+
+    /// Evaluates the device's `_OSC` (ACPI 6.5, 6.2.11) for the interface
+    /// `uuid`, given as the 16 bytes of its buffer, at `revision`, with
+    /// `dwords` as the capabilities buffer, and writes back the dwords
+    /// the firmware returned, as many as both hold. The first dword's
+    /// bits 1 to 4 are the firmware's complaints: failure, unknown UUID,
+    /// unknown revision, capabilities masked. At most [`OSC_DWORDS`]
+    /// dwords. From a thread that may sleep.
+    pub fn osc(self, uuid: &[u8; 16], revision: u64, dwords: &mut [u32]) -> Result<(), Error> {
+        if dwords.len() > OSC_DWORDS {
+            return Err(Error(INVALID_ARGUMENT));
+        }
+        let mut capabilities = [0u8; OSC_DWORDS * 4];
+        for (bytes, dword) in capabilities.as_chunks_mut::<4>().0.iter_mut().zip(dwords.iter()) {
+            *bytes = dword.to_le_bytes();
+        }
+        let capabilities = &capabilities[..dwords.len() * 4];
+        let created = |object: Handle| NonNull::new(object).map(Object).ok_or(Error(OUT_OF_MEMORY));
+        // SAFETY: uACPI copies the bytes into a new buffer, and hands
+        // over new objects, or null.
+        let uuid = created(unsafe {
+            uacpi_object_create_buffer(DataView { bytes: uuid.as_ptr(), len: uuid.len() })
+        })?;
+        // SAFETY: as above.
+        let revision = created(unsafe { uacpi_object_create_integer(revision) })?;
+        // SAFETY: as above.
+        let count = created(unsafe { uacpi_object_create_integer(dwords.len() as u64) })?;
+        // SAFETY: as above.
+        let capabilities = created(unsafe {
+            uacpi_object_create_buffer(DataView {
+                bytes: capabilities.as_ptr(),
+                len: capabilities.len(),
+            })
+        })?;
+        let objects =
+            [uuid.0.as_ptr(), revision.0.as_ptr(), count.0.as_ptr(), capabilities.0.as_ptr()];
+        let args = ObjectArray { objects: objects.as_ptr(), count: objects.len() };
+        let mut object = ptr::null_mut();
+        // SAFETY: `args` holds live objects; uACPI writes `object` only on
+        // success, with a reference we then own.
+        check(unsafe {
+            uacpi_eval(self.0.as_ptr(), c"_OSC".as_ptr(), &raw const args, &raw mut object)
+        })?;
+        let object = NonNull::new(object).map(Object).ok_or(Error(INVALID_ARGUMENT))?;
+        let returned = view(object.0.as_ptr()).ok_or(Error(INVALID_ARGUMENT))?;
+        for (dword, bytes) in dwords.iter_mut().zip(returned.as_chunks::<4>().0) {
+            *dword = u32::from_le_bytes(*bytes);
+        }
+        Ok(())
     }
 
     /// Evaluates `_DSM`; what it returned, if anything.

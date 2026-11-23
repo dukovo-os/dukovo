@@ -32,3 +32,6 @@
 # The days before a certificate in /system/settings/ssl ends that are a
 # warning, from 4 to 365. It is critical within 3.
 # certificate-days = 14
+# The corrected errors one memory device has in a day that are a warning,
+# from 1 to 100000.
+# dimm_corrected_per_day = 24

@@ -16,8 +16,9 @@ metricsd - keep the machine's history, warn early, and answer Prometheus
 metricsd reads the machine once a step (ADR 0484): the processors,
 load, memory and swap, each disk's reads and writes, each filesystem's
 use, each network card, the temperatures, including those of the disks,
-what each service uses, each Btrfs volume's missing disks, and on a server
-its BMC's temperatures, fans and power (see *THE BMC*). It keeps each reading in a history of
+what each service uses, each Btrfs volume's missing disks, the hardware
+errors the kernel has heard of, and on a server its BMC's temperatures,
+fans and power (see *THE BMC*). It keeps each reading in a history of
 two weeks at the step and a year at one record an hour, and writes the
 newest reading as text, so that *metrics*(1) and the web console show
 the machine's past and now with nothing to install. Spark runs *metricsd
@@ -25,8 +26,9 @@ run* as the *metricsd* service, after the network (*spark*(8)).
 
 metricsd also warns before trouble turns into lost data: a filesystem
 nearly full or filling fast, a Btrfs volume with a disk missing, memory
-nearly used up, a sensor close to its limit, a certificate about to end.
-It gives its warnings to *alertd*(8), which tells the owner of each once
+nearly used up, a sensor close to its limit, a certificate about to end,
+a hardware error that was not corrected, a memory device that corrects
+many errors. It gives its warnings to *alertd*(8), which tells the owner of each once
 (*alerts*(8)).
 
 When *metrics.toml*(5) names an address, metricsd answers a Prometheus
@@ -98,6 +100,12 @@ at a step, or no value yet, is missing for it.
 |  btrfs.missing, btrfs.behind
 :  the volume's label, else its UUID
 :  disks
+|  ras.corrected, ras.uncorrected
+:  none
+:  hardware errors the kernel counted in the step, corrected and not
+|  ras.dimm
+:  the memory device's place on the board, else its handle
+:  corrected errors of the device in the step
 
 Rates are over the real time between two readings, on the monotonic
 clock. The first reading after metricsd starts has no rates, and a
@@ -123,7 +131,13 @@ the series has a point for each step that reading is not older than 15
 minutes, and has none for a disk that sleeps, which is not read so as
 not to wake it. *service.cpu* and *service.memory* are those of
 the processes of a service's resource domain (*spark*(8)); the processes
-of sessions and apps count in *cpu* and *memory.used* only.
+of sessions and apps count in *cpu* and *memory.used* only. The
+*ras* series are the differences of the counts in _/kernel/ras/counts_
+(*hardware errors* shows them): the first step after metricsd starts and
+the first after the machine starts again have no value, and a machine
+whose kernel keeps no such record has no *ras* series. A memory device
+is the place its locator names in the firmware's tables, such as
+*DIMM_A1*, and its handle, as *0x1100*, where the tables give none.
 
 # THE BMC
 
@@ -232,6 +246,14 @@ set in *metrics.toml*(5).
 :  a disk is at its warning temperature, the disk's own or the usual for its kind (*diskhealth*(8)), for 5 steps in a row
 :  warning; critical at its critical temperature
 :  it is 3 degrees below the line it was raised at; a critical one is a warning again 3 degrees below its critical temperature
+|  ras:_number_
+:  the kernel recorded an error that was not corrected (recoverable or fatal), or the firmware recorded one from before this start (the BERT); _number_ is the error's number in _/kernel/ras/errors_
+:  critical
+:  metricsd or the machine starts again; the newest 20 are kept
+|  ras-dimm:_locator_
+:  a memory device had *dimm_corrected_per_day* (24) corrected errors or more in the last 24 hours
+:  warning
+:  it is under three quarters of that
 |  certificate:_file_
 :  the first certificate in a *.pem* or *.crt* file of _/system/settings/ssl_ ends within *certificate-days* (14)
 :  warning; critical within 3 days, or once it has ended
@@ -245,14 +267,26 @@ that holds only a key is skipped, and the certificates are read at start
 and then once an hour, not at each step. After a restart the line of a
 filesystem's filling starts from the history, not from nothing.
 
+A hardware error is alerted once. metricsd keeps the number of the last
+error it alerted, and the start of the machine it was in, in
+_/system/state/metrics/ras-seen_, so that a restart of metricsd does not
+alert again for it; a machine that starts again numbers its errors from 1,
+which the start time tells. A memory device's count is made from the times
+in the record, or, when the record has dropped its oldest lines, from the
+count since the start scaled to a day, and the title says "about" then.
+A corrected error alone is no alert: it is in the history, and a device
+with many of them is the warning.
+
 Each title names the thing and the number: "/data is 93% full (1.2 TB of
 1.3 TB)", "/data will be full in about 2 days at the last 6 hours' rate",
 "Btrfs volume data is missing 1 of its 2 disks; its data has no second
 copy until it is replaced". Each detail says what to do, and ends with an
 error ID, *MET-101* for a full filesystem, *MET-102* for a filling one,
 *MET-103* and *MET-104* for a missing and a lagging disk, *MET-105* for
-memory, *MET-106* for a sensor, *MET-107* for a certificate and *MET-108*
-for a disk that is too hot, whose title has the disk's model. The
+memory, *MET-106* for a sensor, *MET-107* for a certificate, *MET-108*
+for a disk that is too hot, whose title has the disk's model, *MET-109*
+for a hardware error and *MET-110* for a memory device with many
+corrected errors. The
 support center has a page for each.
 
 # PROMETHEUS
@@ -316,6 +350,13 @@ _/system/state/metrics/minutes/_YYYY-MM-DD_
 
 _/system/state/metrics/hours/_YYYY-MM
 	A UTC month's hours.
+
+_/system/state/metrics/ras-seen_
+	The number of the last hardware error alerted, and the start of the
+	machine it came in.
+
+_/kernel/ras/errors_, _/kernel/ras/counts_
+	The kernel's record of hardware errors (*radix-sysfs*(5)).
 
 _/system/live/metrics/now_
 	The newest row as text, for *metrics now*.

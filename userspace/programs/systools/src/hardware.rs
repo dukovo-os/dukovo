@@ -7,23 +7,25 @@
 //! the machine is, and `hardware memtest` asks for the memory to be
 //! tested at the next start.
 //!
-//! A check looks at six areas: the memory (the errors the memory
+//! A check looks at seven areas: the memory (the errors the memory
 //! controller counted, and a test of a share of the free memory), the
 //! disks (what each says of its health, its own self-test, and a read of
 //! the disk), the CPUs (all of them under load, which must give the same
 //! answers; their temperature; the machine checks), the hardware
 //! monitors' temperatures and fans, the battery's capacity, and the
-//! network cards' links. A quick check takes about three minutes; a full
-//! one, which `--full` asks for, takes hours, mostly for the disks.
+//! network cards' links, and the hardware errors the kernel has heard of
+//! (`hardware errors` lists them). A quick check takes about three
+//! minutes; a full one, which `--full` asks for, takes hours, mostly for the disks.
 //!
 //! Where to look: `check` holds a check's result and its exit status,
-//! and the IDs of what it finds (HW-101 to HW-153, each with a page in
+//! and the IDs of what it finds (HW-101 to HW-162, each with a page in
 //! docs/errors); `plan` what a run does and how long it takes; `run` the
 //! order it does it in; `saved` the result kept in
 //! `/system/state/hardware/last.json`; `history` the line of each kept
 //! result, in `/system/state/hardware/history`; `show` what the machine
 //! is; `sensors` and `devices` the temperatures and the devices it has;
-//! `memtest` the memory test at the next start; one module for each area;
+//! `errors` and `ras` the kernel's record of hardware errors, the command
+//! and the area, and the reading of it; `memtest` the memory test at the next start; one module for each area;
 //! and `drivetest` and `scan` for a disk's self-test and read scan.
 
 mod battery;
@@ -32,12 +34,14 @@ mod cpu;
 mod devices;
 mod disks;
 mod drivetest;
+pub(crate) mod errors;
 mod history;
 mod memory;
 pub(crate) mod memtest;
 mod monitors;
 mod network;
 mod plan;
+pub(crate) mod ras;
 mod run;
 pub(crate) mod saved;
 mod scan;
@@ -60,8 +64,9 @@ use saved::Saved;
 const USAGE: &str = "usage: hardware check [AREA...] [--full] [--disk DISK] [--time SECONDS] \
                      [--yes] [--progress] [--json]\n       hardware last [--json]\n       \
                      hardware history [--json]\n       hardware show [--json]\n       hardware \
-                     sensors [--json]\n       hardware devices [--json]\n       hardware memtest \
-                     --next-start | --cancel | --status [--json]";
+                     sensors [--json]\n       hardware devices [--json]\n       hardware errors \
+                     [--json] [--since SECONDS]\n       hardware memtest --next-start | --cancel | \
+                     --status [--json]";
 
 /// Set by SIGINT, SIGTERM or SIGHUP: the check stops, and aborts the
 /// self-tests it started.
@@ -81,6 +86,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         Some(command) if command == "show" => show_command(args),
         Some(command) if command == "sensors" => sensors_command(args),
         Some(command) if command == "devices" => devices_command(args),
+        Some(command) if command == "errors" => errors::command(args),
         // A refusal of memtest is a status 1 of its own, as `changes bisect`'s.
         Some(command) if command == "memtest" => {
             return memtest::main(args)
@@ -366,7 +372,8 @@ mod tests {
         let message = |items: &[&str]| options(items).unwrap_err().message;
         assert_eq!(
             message(&["video"]),
-            "no area named video; the areas are memory, disks, cpu, sensors, battery, network"
+            "no area named video; the areas are memory, disks, cpu, sensors, battery, network, \
+             errors"
         );
         assert_eq!(message(&["--time", "0"]), "--time takes a number of seconds above 0");
         assert_eq!(message(&["--time", "soon"]), "'soon' is not a valid number");
@@ -390,6 +397,9 @@ mod tests {
         assert_eq!(ended(&["show", "memory"]), Err(3));
         assert_eq!(ended(&["sensors", "--now"]), Err(3));
         assert_eq!(ended(&["devices", "pci"]), Err(3));
+        assert_eq!(ended(&["errors", "--now"]), Err(3));
+        assert_eq!(ended(&["errors", "--since", "soon"]), Err(3));
+        assert_eq!(ended(&["errors", "memory"]), Err(3));
     }
 
     fn folder(call: &str) -> std::path::PathBuf {

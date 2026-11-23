@@ -6,8 +6,8 @@ hardware(8) "Dukovo" "Dukovo Manual"
 # NAME
 
 hardware - check the memory, the disks, the processors, the sensors, the
-battery and the network cards for faults, and say what the machine is and
-has
+battery, the network cards and the hardware errors for faults, and say
+what the machine is and has
 
 # SYNOPSIS
 
@@ -22,6 +22,8 @@ has
 *hardware sensors* [*--json*]
 
 *hardware devices* [*--json*]
+
+*hardware errors* [*--json*] [*--since* _seconds_]
 
 *hardware memtest* *--next-start*
 
@@ -64,7 +66,8 @@ cpu      load                   passed   4 CPUs ran 148,203 rounds in 60 seconds
 cpu      temperature            passed   hottest is Package id 0 at 71.0 °C (high limit 100.0 °C)
 cpu      machine checks         passed   none in the kernel's log since the start
 network  enp1s0                 passed   link up at 1000 Mb/s, full duplex; no receive errors during the check
-8 passed, 0 warnings, 1 FAILED, 2 skipped
+errors   hardware errors        passed   none heard of since the start
+9 passed, 0 warnings, 1 FAILED, 2 skipped
 ```
 
 A check that was skipped did not run, and says why; it is not a fault.
@@ -121,6 +124,16 @@ doing, and where it is. Bridges and hubs, which work and need nothing,
 are marked hidden. No serial number is read. It needs no rights. See
 *DEVICES*.
 
+*hardware errors* lists the hardware errors the kernel has heard of
+since the start: those the processors' machine-check banks reported and
+those the firmware did (ACPI's error sources and the record of errors
+before this start). It reads the kernel's record in _/kernel/ras_ and
+needs no rights. Each line has the time, the source, how bad it was, the
+kind of part, the part and what it was, and under them come the memory
+devices that have errors and how many. *--since* _seconds_ lists only
+the errors of the last that many seconds. On a kernel that keeps no
+record the list is empty, which is no error. See *HARDWARE ERRORS*.
+
 *hardware memtest* asks the kernel to test the free memory at the next
 start only, before it starts the first program. *--next-start* asks, and
 says about how long the test takes and how to restart; *--cancel* takes
@@ -135,7 +148,8 @@ start after it is the usual one. See *THE MEMORY TEST AT THE START*.
 # AREAS
 
 With no _area_, every one is checked. Name one or more to check only
-those: *memory*, *disks*, *cpu*, *sensors*, *battery*, *network*.
+those: *memory*, *disks*, *cpu*, *sensors*, *battery*, *network*,
+*errors*.
 
 *memory*
 	The memory controller's counts of the errors it found since the
@@ -151,7 +165,8 @@ those: *memory*, *disks*, *cpu*, *sensors*, *battery*, *network*.
 	that reads back wrong fails the check, with what it read. A running
 	system cannot test the memory it uses itself, nor the memory of
 	other programs, so the line says that *Test the memory* in the start
-	menu tests all of it.
+	menu tests all of it. When a memory device has errors, the line
+	names it, as _DIMM_A1 3 corrected_.
 
 *disks*
 	Each whole disk that is not a drive for media that comes and goes,
@@ -205,6 +220,19 @@ those: *memory*, *disks*, *cpu*, *sensors*, *battery*, *network*.
 	counts at its end. Half duplex is a warning, and so are receive
 	errors that rose. A card with no link is skipped: *netcheck*(8) looks
 	at what is above it.
+
+*errors*
+	The kernel's record of hardware errors (_/kernel/ras_), which
+	*hardware errors* shows. The check fails (*HW-161*) when this start
+	has an error that was not corrected, which is recoverable or fatal,
+	or when the firmware recorded any error from before this start (the
+	_bert_ source). It warns (*HW-162*) when one memory device had 24 or
+	more corrected errors in the last 24 hours. The hours are counted
+	from the times of the record's lines. When the record has dropped
+	its oldest lines, which it does after 256, the count of the device
+	since the start stands in for them, scaled down to a day when the
+	start was longer ago, and the line says so. Otherwise the check
+	passes, and says how many corrected errors were heard of.
 
 # OPTIONS
 
@@ -469,6 +497,76 @@ The text lists the devices that are not hidden, under *Network*,
 *Storage*, *USB*, *Display* and *Other*, a line for each: its name and
 numbers, what it is to the system, its driver and state, and where it is.
 
+# HARDWARE ERRORS
+
+*hardware errors --json* prints one line of JSON. Where a member is not
+told it is _null_. On a kernel that keeps no record, _errors_ is empty and
+every count is 0.
+
+```
+{"format":1,"errors":[{"seq":2,"seconds":40.002,"source":"ghes3","severity":"corrected","kind":"memory","count":1,"dimm":4352,"part":"DIMM 0","what":"memory error: type single-bit ECC, address 0x12345000"}],"counts":{"corrected":1,"uncorrected":0,"by_severity":{"informational":0,"corrected":1,"recoverable":0,"fatal":0},"by_kind":{"memory":1,"pcie":0,"processor":0,"other":0},"recorded":1,"dropped":0,"dimms":[{"handle":4352,"locator":"DIMM_A1","bytes":17179869184,"corrected":1,"uncorrected":0}],"other_dimms":{"corrected":0,"uncorrected":0}},"skipped":0}
+```
+
+_format_ is the version of the document, 1. A member of _errors_ is a line
+of the kernel's record, the last 256, oldest first:
+
+_seq_
+	Its number, from 1 at each start.
+
+_seconds_
+	When it came, in seconds since the start.
+
+_source_
+	Where the report came from: *mce*, a processor's machine-check bank;
+	*ghes*_n_, one of the firmware's error sources; *bert*, the firmware's
+	record of an error before this start; or *aer*, a PCIe device's own
+	report.
+
+_severity_
+	*informational*, *corrected*, *recoverable* (not corrected, and the
+	machine went on) or *fatal*.
+
+_kind_
+	*memory*, *pcie*, *processor* or *other*.
+
+_count_
+	How many errors the line stands for.
+
+_dimm_
+	The memory device's handle in the firmware's tables, a number, or
+	_null_.
+
+_part_, _what_
+	The part by the name the kernel knows it by, such as _DIMM 0_ or
+	_0000:3b:00.0_, which is empty if it has none, and what it was.
+
+_counts_ are the totals since the start, which outlive the lines that were
+dropped: _corrected_ and _uncorrected_, the counts by _severity_ and by
+_kind_, how many errors were _recorded_ and how many lines were _dropped_
+to make room, and _dimms_, a member for each populated memory device with
+its _handle_, its _locator_ (its place on the board) and size in _bytes_
+where the tables say them, and its errors; _other_dimms_ counts the errors
+of devices the tables do not list. _skipped_ is how many lines of the
+record this program did not understand: it leaves them out, and reads the
+rest.
+
+The text is a table of the errors with the time, the source, the
+severity, the kind, the part and what it was, then the memory devices
+that have errors:
+
+```
+$ hardware errors
+TIME    SOURCE  SEVERITY   KIND    PART    WHAT
+40.002  ghes3   corrected  memory  DIMM 0  memory error: type single-bit ECC, address 0x12345000
+
+Memory devices with errors since this boot:
+  DIMM_A1 (16G): 1 corrected, 0 uncorrected
+```
+
+A machine with none says *No hardware errors since this boot.* The
+errors that came before this start, from the firmware, have the source
+*bert*, and their time is that of the start, not of the error.
+
 # THE MEMORY TEST AT THE START
 
 *hardware memtest --next-start* writes the file _/system/state/hardware/memtest-asked.json_
@@ -608,6 +706,14 @@ support center says what it means and what to do.
 :  network
 :  warning
 :  Receive errors were counted during the check
+|  HW-161
+:  errors
+:  failure
+:  An error was not corrected, or the firmware recorded one from before this start
+|  HW-162
+:  errors
+:  warning
+:  A memory device had many corrected errors in a day
 
 # EXIT STATUS
 
@@ -629,8 +735,8 @@ support center says what it means and what to do.
 	could be made (every one was skipped).
 
 *hardware last* gives the status the saved check ended with, or 3 when
-none is saved. *hardware history*, *hardware show*, *hardware sensors*
-and *hardware devices* give 0, or 3 when the command line is wrong or
+none is saved. *hardware history*, *hardware show*, *hardware sensors*,
+*hardware devices* and *hardware errors* give 0, or 3 when the command line is wrong or
 what they read cannot be read.
 
 *hardware memtest*: 0 when it did what was asked, or when there was
@@ -675,6 +781,9 @@ _/devices/ipmi0_
 	The BMC's interface, which *hardware show* and *hardware sensors* ask
 	for the BMC's name and sensors when the caller may open it, and which
 	only root may (*bmc*(8), *radix-ipmi*(4)).
+
+_/kernel/ras/errors_, _/kernel/ras/counts_
+	What *hardware errors* and the errors area read (*radix-sysfs*(5)).
 
 _/kernel/devices/system/edac_, _/kernel/class/hwmon_,
 _/kernel/class/power_supply_, _/kernel/class/net_, _/kernel/block_
@@ -730,6 +839,12 @@ The temperatures, and what the machine's cards and disks are:
 ```
 hardware sensors
 hardware devices
+```
+
+The hardware errors of the last hour:
+
+```
+hardware errors --since 3600
 ```
 
 The memory tested at the next start, and the restart that takes it:

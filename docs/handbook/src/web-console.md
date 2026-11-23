@@ -4319,12 +4319,12 @@ machine down. Anyone who signs in can look at it. Checking the hardware, testing
 the memory, reading the disks' own tests and the memory modules, restarting
 and shutting down are for administrators, who unlock the console first (see
 "Unlocking the console"). The page is at `/hardware`, and its cards have
-addresses of their own: `#machine`, `#check`, `#temps`, `#disks`, `#memory`,
-`#devices` and `#power`.
+addresses of their own: `#machine`, `#check`, `#errors`, `#temps`, `#disks`,
+`#memory`, `#devices` and `#power`.
 
 It reads `hardware show`, `hardware last`, `hardware history`, `hardware
-sensors`, `hardware devices`, `hardware memtest --status`, `metrics show` and
-`shutdown --show`, and runs `hardware check`, `hardware memtest`, `shutdown -r`, `shutdown -P` and
+sensors`, `hardware devices`, `hardware errors`, `hardware memtest --status`,
+`metrics show` and `shutdown --show`, and runs `hardware check`, `hardware memtest`, `shutdown -r`, `shutdown -P` and
 `shutdown -c` (hardware(8), diskhealth(8), shutdown(8)). "Checking the
 hardware" says what a check looks at and what each result means.
 
@@ -4350,10 +4350,30 @@ what they do not say:
 | Firmware | The firmware's version and date, **BIOS 1.24.0, Jul 12, 2023**, with a link to the firmware sets on the Updates page. The machine's own firmware is its maker's to update |
 | Up for | How long the machine has run. After a start that fell back to the version before it says so, with **What happened** |
 
+### Hardware errors
+
+**Hardware errors** says what the kernel has heard of in hardware errors since
+this start, from the processors and from the firmware. A machine with none says
+**No hardware errors since this boot.** and nothing else. Otherwise the card has
+a word beside its name, **Not corrected** or **Corrected**, a line that says the
+worst of the errors and how many came before this start, such as **Corrected,
+and 1 fatal before this start**, and a table, **The last ten hardware errors**,
+with **When**, **Part**, **What happened**, **Severity** (**Fatal**, **Not
+corrected**, **Corrected**, **Informational**) and **Found by** (**The firmware**
+or **The kernel**). Its rows are under **Before this start**, the firmware's
+record of the run before, and **Since this start**, newest first. Under the
+table, **Memory devices with errors** lists each device by its place on the
+board, with its size and its counts. **Show all 37** lists every error the
+record keeps, and then reads **Show the last ten**; **Save as a file** keeps the
+answer as `hardware-errors.json` on your own machine. The page reads it again
+every minute. It is what `hardware errors` says (hardware(8)), and "Hardware
+errors" in the chapter "Checking the hardware" says what to do about it.
+
 ### Checking the hardware
 
 **Check the hardware**, at the top of the page, asks **What to check**: **Memory**,
-**Disks**, **Processors**, **Sensors**, **Battery** and **Network cards**, each
+**Disks**, **Processors**, **Sensors**, **Battery**, **Network cards** and
+**Hardware errors**, each
 ticked, and **A full check, which takes hours**. A quick check takes about 3
 minutes; **Check now** starts it as a task and the lead line says its steps (see
 "Tasks"). The button waits while a check runs. It runs `hardware check`, with

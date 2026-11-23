@@ -159,6 +159,15 @@ pub trait Cpu {
     /// during a storm of them.
     fn mask_corrected_errors(masked: bool);
 
+    /// Leaves the machine-check banks `banks` (one bit each) to the
+    /// firmware, which handles their errors first (ACPI's HEST says which):
+    /// the kernel's interrupts for corrected errors from them are turned
+    /// off on the running CPU, and its polls skip them, on every CPU,
+    /// including those started later, once any CPU has recorded the mask.
+    /// Bits above the CPU's banks are ignored. Calls add to the banks
+    /// already left, never give one back.
+    fn leave_banks_to_firmware(banks: u32);
+
     /// The running CPU's control of its own speed (ADR 0202), Intel's HWP
     /// or AMD's CPPC, if CPUID says it has one.
     fn performance_driver() -> Option<radix_pstate::Driver>;
@@ -571,6 +580,13 @@ impl core::fmt::Display for SmbusError {
 pub trait Devices {
     /// Calls `found` with each PCI segment the firmware describes.
     fn pci_segments(found: &mut dyn FnMut(PciSegment));
+
+    /// The whole firmware table with `signature` (`HEST`, `BERT`, `EINJ`
+    /// or `MCFG`, as ACPI names them), header included, if the firmware
+    /// has one whose length and checksum are right. The tables are mapped
+    /// for the rest of the kernel's life. `None` for any other signature,
+    /// and on machines without ACPI.
+    fn firmware_table(signature: &[u8; 4]) -> Option<&'static [u8]>;
 
     /// Maps `len` bytes of device registers from physical address `phys`,
     /// uncached, for the rest of the kernel's life. `None` when the
@@ -1026,6 +1042,16 @@ pub trait Platform {
     /// Registers the function a breakpoint instruction calls. Without one,
     /// breakpoints are logged and skipped.
     fn set_breakpoint_handler(handler: fn(&Fault));
+
+    /// Registers the function a non-maskable interrupt calls, in the NMI
+    /// handler, unless the panic path is stopping the CPUs: it takes no
+    /// lock, allocates nothing, and returns whether the NMI was one it
+    /// expected (the firmware's error reports, ADR 0662). Without one, or
+    /// when it returns false, the NMI is only traced. Once only; a
+    /// platform without NMIs ignores it.
+    fn set_nmi_handler(handler: fn() -> bool) {
+        let _ = handler;
+    }
 
     /// Restarts the machine without powering it off, so RAM keeps its
     /// contents where the hardware allows.

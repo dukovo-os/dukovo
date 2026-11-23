@@ -22,12 +22,15 @@
 //! AMD's Zen has banks of a scalable architecture, whose registers of
 //! their own name the block of the chip each belongs to ([`smca`]).
 //!
+//! The record the kernel keeps of the errors read ([`record`]) is here too.
+//!
 //! The architecture reads and writes the registers; this crate only reads
 //! their values, so its tests run on the host.
 
 #![cfg_attr(not(test), no_std)]
 
 pub mod corrected;
+pub mod record;
 pub mod smca;
 
 use core::fmt;

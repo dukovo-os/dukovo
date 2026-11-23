@@ -661,6 +661,7 @@ fn dukovo_metrics(out: &mut String, snapshot: &Snapshot, alerts: Option<(u64, u6
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hardware::ras::Record;
     use crate::metricsd::sample::Temperature;
     use crate::proc::{CpuTimes, Memory};
     use std::os::unix::net::UnixListener;
@@ -769,6 +770,7 @@ mod tests {
                 missing: 1,
                 behind: 0,
             }],
+            ras: Record::default(),
         }
     }
 

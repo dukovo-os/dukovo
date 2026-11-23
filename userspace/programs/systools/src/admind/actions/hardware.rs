@@ -29,10 +29,10 @@
 //! lights the identify light for 15 seconds, and is an administrator's
 //! change that ends by itself.
 //!
-//! `hardware.sensors`, `hardware.highest` and `hardware.devices` run as the
-//! person, as the commands answer anyone; with no history, the highest is
-//! `[]`. `hardware.memtest` asks
-//! the start menu for the memory to be tested at the next start, and
+//! `hardware.sensors`, `hardware.highest`, `hardware.devices` and
+//! `hardware.errors` run as the person, as the commands answer anyone; with
+//! no history, the highest is `[]`. `hardware.memtest` asks the start menu
+//! for the memory to be tested at the next start, and
 //! `hardware.memtest-cancel` takes that back; each is the other's undo.
 //! Both write the start menu's block on the EFI system partitions and a
 //! file of `/system/state/hardware`, which admind may not name, so their
@@ -72,16 +72,16 @@ const MEMTEST_TESTS: Tests = Tests {
 };
 
 /// The areas `hardware check` has, in the order it checks them.
-const AREAS: [&str; 6] = ["memory", "disks", "cpu", "sensors", "battery", "network"];
+const AREAS: [&str; 7] = ["memory", "disks", "cpu", "sensors", "battery", "network", "errors"];
 
 /// What a list of areas is made of: the words of [`AREAS`], with one space
 /// between them. That each is there once is the rule that only `check`
 /// says.
-const AREAS_PATTERN: &str = "^(memory|disks|cpu|sensors|battery|network)\
-                             ( (memory|disks|cpu|sensors|battery|network))*$";
+const AREAS_PATTERN: &str = "^(memory|disks|cpu|sensors|battery|network|errors)\
+                             ( (memory|disks|cpu|sensors|battery|network|errors))*$";
 
-/// The most characters of a list of areas: all six, with their spaces.
-const AREAS_MAX: usize = 40;
+/// The most characters of a list of areas: all seven, with their spaces.
+const AREAS_MAX: usize = 47;
 
 /// What a disk's name is made of: the schema's words, which the rule
 /// [`is_disk_name`] says exactly.
@@ -198,8 +198,8 @@ fn reads() -> Examples<Nothing> {
 #[serde(deny_unknown_fields)]
 pub struct Areas {
     /// The areas, as `hardware check` names them, with a space between:
-    /// memory, disks, cpu, sensors, battery and network. Left out, all of
-    /// them.
+    /// memory, disks, cpu, sensors, battery, network and errors. Left out,
+    /// all of them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub areas: Option<String>,
     /// One disk's name, to check that disk alone.
@@ -221,7 +221,7 @@ impl Args for Areas {
     const FIELDS: &'static [Field] = &[
         Field::text(
             "areas",
-            "What to check, as words with a space between: memory, disks, cpu, sensors, battery and network. Left out, all of them.",
+            "What to check, as words with a space between: memory, disks, cpu, sensors, battery, network and errors. Left out, all of them.",
             1,
             AREAS_MAX,
             Some(AREAS_PATTERN),
@@ -494,6 +494,32 @@ impl Action for Identify {
     }
 }
 
+/// `hardware errors --json`: the hardware errors the kernel has heard of
+/// since the start, from the machine-check banks and the firmware, and the
+/// counts by severity, kind and memory device. The files it reads are
+/// world-readable, so it runs as the person; on a kernel that keeps no
+/// record it says an empty one.
+pub struct Errors;
+
+impl Action for Errors {
+    const ID: &'static str = "hardware.errors";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/hardware/errors";
+    const RUNS: Runs = Runs::AsThePerson;
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Show the hardware errors";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["hardware", "errors", "--json"].map(String::from).to_vec()
+    }
+
+    fn examples() -> Examples<Nothing> {
+        reads()
+    }
+}
+
 /// The read that says what is asked, which each change of the memory
 /// test uses as its probe.
 fn memtest_shown() -> Vec<String> {
@@ -645,7 +671,7 @@ mod tests {
 
     /// Each action of the page: its id, its address, whether it changes
     /// anything, who runs it, and the command its first example makes.
-    const ACTIONS: [(&str, &str, bool, Runs, &[&str]); 14] = [
+    const ACTIONS: [(&str, &str, bool, Runs, &[&str]); 15] = [
         (
             "hardware.show",
             "/api/1/hardware",
@@ -724,6 +750,13 @@ mod tests {
             &["bmc", "identify", "15"],
         ),
         (
+            "hardware.errors",
+            "/api/1/hardware/errors",
+            false,
+            Runs::AsThePerson,
+            &["hardware", "errors", "--json"],
+        ),
+        (
             "hardware.memtest",
             "/api/1/hardware/memtest/next-start",
             true,
@@ -747,7 +780,7 @@ mod tests {
     ];
 
     /// The reads that take nothing.
-    const READS: [&str; 10] = [
+    const READS: [&str; 11] = [
         "hardware.show",
         "hardware.inventory",
         "hardware.bmc-sensors",
@@ -757,6 +790,7 @@ mod tests {
         "hardware.sensors",
         "hardware.highest",
         "hardware.devices",
+        "hardware.errors",
         "hardware.memtest-status",
     ];
 
@@ -928,7 +962,8 @@ mod tests {
     #[test]
     fn an_area_that_is_not_one_or_is_named_twice_is_refused_in_words_the_page_shows() {
         let end = "Nothing was done.";
-        let unknown = format!("The areas are memory, disks, cpu, sensors, battery, network. {end}");
+        let unknown =
+            format!("The areas are memory, disks, cpu, sensors, battery, network, errors. {end}");
         for areas in [
             "gpu",
             "",
@@ -1071,6 +1106,7 @@ mod tests {
             ("/api/1/hardware/sensors", "hardware.sensors"),
             ("/api/1/hardware/highest", "hardware.highest"),
             ("/api/1/hardware/devices", "hardware.devices"),
+            ("/api/1/hardware/errors", "hardware.errors"),
             ("/api/1/hardware/memtest", "hardware.memtest-status"),
             ("/api/1/hardware/bmc/sensors", "hardware.bmc-sensors"),
             ("/api/1/hardware/bmc/events", "hardware.bmc-events"),
@@ -1118,6 +1154,7 @@ mod tests {
             "/api/1/hardware/bmc/",
             "/api/1/hardware/bmc/sensors/x",
             "/api/1/hardware/bmc/identify/15",
+            "/api/1/hardware/errors/x",
         ] {
             assert!(matches!(find(REGISTRY, false, path), Found::None), "{path}");
             assert!(matches!(find(REGISTRY, true, path), Found::None), "{path}");
@@ -1139,6 +1176,7 @@ mod tests {
             ("hardware.sensors", true, true, true),
             ("hardware.highest", true, true, true),
             ("hardware.devices", true, true, true),
+            ("hardware.errors", true, true, true),
             ("hardware.memtest-status", true, true, true),
             ("hardware.inventory", false, true, false),
             ("hardware.check", false, true, false),
@@ -1183,6 +1221,7 @@ mod tests {
             "hardware.sensors",
             "hardware.highest",
             "hardware.devices",
+            "hardware.errors",
             "hardware.memtest-status",
         ] {
             for list in ["hardware", "hardware:read", "*"] {
@@ -1221,7 +1260,7 @@ mod tests {
         assert_eq!(schema["required"], json!([]));
         assert_eq!(schema["additionalProperties"], false);
         let areas = &schema["properties"]["areas"];
-        assert_eq!((&areas["minLength"], &areas["maxLength"]), (&json!(1), &json!(40)));
+        assert_eq!((&areas["minLength"], &areas["maxLength"]), (&json!(1), &json!(47)));
         assert_eq!(areas["pattern"], AREAS_PATTERN);
         let disk = &schema["properties"]["disk"];
         assert_eq!((&disk["minLength"], &disk["maxLength"]), (&json!(1), &json!(32)));
@@ -1347,14 +1386,19 @@ mod tests {
         // one call covers every sensor and every disk.
         assert_eq!(argv("hardware.sensors", json!({})), ["hardware", "sensors", "--json"]);
         assert_eq!(argv("hardware.devices", json!({})), ["hardware", "devices", "--json"]);
+        assert_eq!(argv("hardware.errors", json!({})), ["hardware", "errors", "--json"]);
         assert_eq!(
             argv("hardware.memtest-status", json!({})),
             ["hardware", "memtest", "--status", "--json"]
         );
         // Each is a read that anyone may ask, as the command answers anyone.
-        for id in
-            ["hardware.sensors", "hardware.highest", "hardware.devices", "hardware.memtest-status"]
-        {
+        for id in [
+            "hardware.sensors",
+            "hardware.highest",
+            "hardware.devices",
+            "hardware.errors",
+            "hardware.memtest-status",
+        ] {
             assert_eq!(action(id).runs(), Runs::AsThePerson, "{id}");
             assert!(!action(id).changes() && !action(id).long(), "{id}");
             assert_eq!(action(id).answers(), [0], "{id}");
