@@ -64,9 +64,14 @@ consequences left epoll answering ENOSYS until this step.
   `radix_linux::epoll`'s, with host tests.
 - **Dukovo's C library** has epoll too (mlibc's `linux-epoll` option over
   `sysdeps/radix/generic/event.cpp`), on the same filter.
-- `kernel/radix/tla/EventQueueExclusive.tla` checks the exclusive rule
-  with two queues and one change: no change is lost to a queue that is
-  woken, and at most one exclusive watch is queued per change.
+- `kernel/radix/tla/EventQueueExclusive.tla` checks the exclusive rule,
+  with one description watched by two exclusive queues, and by three
+  with a non-exclusive one between them (4,543 and 82,417 states): a
+  change queues the exclusive watches in order until it queues one where
+  a thread waits, and none after it, it always queues the non-exclusive
+  ones, and no thread sleeps while a change it should report is on its
+  ring. The check fails if the walk stops at an exclusive watch where no
+  thread waits.
 
 ## Consequences
 

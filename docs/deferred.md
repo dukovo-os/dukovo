@@ -546,7 +546,7 @@ machine asks for them.
 | Item | Source |
 | --- | --- |
 | `posix_git_status` reported, not gated, until parity | ADR 0294 |
-| `lx_syscall_null`, `lx_clone_thread` and `lx_fork_exec_wait` have a Linux number and no Radix one: `ob bench` does not yet run the same static `linux-bench --only linux` on Radix, under the Linux personality; then they are gated at parity | ADR 0610 |
+| `lx_syscall_null`, `lx_clone_thread`, `lx_fork_exec_wait`, `lx_epoll_wait`, `lx_futex_wake` and `lx_clock_gettime` have a Linux number and no Radix one: `ob bench` does not yet run the same static `linux-bench --only linux` on Radix, under the Linux personality; then they are gated at parity | ADR 0610 |
 | `posix_poll_idle` reported, not gated, until parity: `poll` on 1,001 pipes takes 1.52 times Linux's time on CI's runners (9.6 µs against 6.3 µs), from 12.7 before ADR 0354, about 130 instructions a descriptor. Each descriptor reads five cache lines, its slot, its record, the file, the pipe's end and the pipe, where Linux reads two or three; next, the address kept in the slot as well as the record, and a pipe's end named by the address itself | ADR 0354 |
 | On an AMD EPYC 9V45 runner, an event queue's wait for one ready pipe among 1,000 idle ones (`posix_events_idle`) takes 1.10 times Linux's time (326 ns against epoll's 297 ns), where Intel 6975P-C runners give 0.90 to 0.92: the gate on the second runner fails when it lands on that machine. Its first AMD run came with ADR 0354, which does not touch the wait; next, a count of its instructions and cache misses there against epoll's | ADR 0353 |
 | Optical reads reported, not gated, until parity; USB storage rows | ADR 0434 |

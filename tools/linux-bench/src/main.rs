@@ -15,12 +15,15 @@
 //! from the kernel command line, after `--`.
 //!
 //! The rows of a static Linux program's own system calls,
-//! `lx_syscall_null`, `lx_clone_thread` and `lx_fork_exec_wait`, touch
-//! nothing but what such a program is given (no `/proc`, `/sys` or `/dev`,
-//! no other program), so that this one static binary runs the same rows
-//! on Linux and, under the Linux personality (ADR 0610), on Dukovo, where
+//! `lx_syscall_null`, `lx_clone_thread`, `lx_fork_exec_wait`,
+//! `lx_epoll_wait`, `lx_futex_wake` and `lx_clock_gettime`, touch nothing
+//! but what such a program is given (no `/proc`, `/sys` or `/dev`, no
+//! other program), so that this one static binary runs the same rows on
+//! Linux and, under the Linux personality (ADR 0610), on Dukovo, where
 //! `--only linux` runs them alone. `lx_fork_exec_wait` runs this program
 //! again with `--exit 0`, which ends at once and does nothing else.
+//! `lx_clock_gettime` is answered by the vDSO on both (ADR 0616) and
+//! enters no system call.
 //!
 //! It prints one line per benchmark, in the format of the Radix benchmark
 //! programs:
@@ -368,8 +371,8 @@ fn getppid() {
     unsafe { libc::syscall(libc::SYS_getppid) };
 }
 
-/// The rows of `--only linux`: the three costs a static Linux program pays
-/// on its own, each the same code on Linux and on Dukovo. A thread made and
+/// The rows of `--only linux`: the costs a static Linux program pays on
+/// its own, each the same code on Linux and on Dukovo. A thread made and
 /// joined and a program run and waited for take far longer than a call, so
 /// they run fewer times than the rounds the calls do.
 fn linux_rows(rounds: u64) {
@@ -382,6 +385,10 @@ fn linux_rows(rounds: u64) {
     } else {
         eprintln!("linux-bench: no path to run this program again, so no lx_fork_exec_wait");
     }
+    report("lx_epoll_wait", rounds, epoll_idle());
+    let nobody = AtomicU32::new(0);
+    report("lx_futex_wake", rounds * 2, || futex_wake(&nobody));
+    report("lx_clock_gettime", rounds * 2, clock_gettime);
 }
 
 /// The path this program can be run by again: where the system says it is,
@@ -444,6 +451,74 @@ fn getrandom_64() {
     // SAFETY: `bytes` is 64 writable bytes.
     let got = unsafe { libc::getrandom(bytes.as_mut_ptr().cast(), bytes.len(), 0) };
     assert_eq!(got, 64, "getrandom returned {got}");
+}
+
+/// How many idle pipes `lx_epoll_wait` watches beside the one that is made
+/// ready, as the POSIX benchmarks' `posix_events_idle` does.
+const IDLE_PIPES: usize = 1000;
+
+/// An epoll instance watching the read ends of 1,001 pipes for reading,
+/// edge-triggered, and a round that writes a byte to the last pipe, asks
+/// without waiting for the one event that makes, and reads the byte back:
+/// `posix_events_idle`'s round, as a static Linux program makes it. The
+/// pipes take 2,002 descriptors, more than the 1,024 a process may hold at
+/// first, so the limit goes up to the hard one.
+fn epoll_idle() -> impl FnMut() {
+    let mut files = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: `files` is a writable rlimit.
+    let got = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut files) };
+    assert_eq!(got, 0, "getrlimit: {}", std::io::Error::last_os_error());
+    files.rlim_cur = files.rlim_max;
+    // SAFETY: `files` is a valid rlimit.
+    let set = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const files) };
+    assert_eq!(set, 0, "setrlimit: {}", std::io::Error::last_os_error());
+    // SAFETY: epoll_create1 takes no pointers; a negative result is an
+    // error.
+    let epoll = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
+    assert!(epoll >= 0, "epoll_create1: {}", std::io::Error::last_os_error());
+    // SAFETY: a new descriptor that nothing else owns.
+    let epoll = unsafe { OwnedFd::from_raw_fd(epoll) };
+    let pipes: Vec<_> = (0..=IDLE_PIPES)
+        .map(|_| {
+            let (reader, writer) = std::io::pipe().expect("cannot make a pipe");
+            let mut watch = libc::epoll_event {
+                events: (libc::EPOLLIN | libc::EPOLLET) as u32,
+                u64: reader.as_raw_fd() as u64,
+            };
+            // SAFETY: `watch` is a valid event and both descriptors are
+            // open.
+            let added = unsafe {
+                libc::epoll_ctl(
+                    epoll.as_raw_fd(),
+                    libc::EPOLL_CTL_ADD,
+                    reader.as_raw_fd(),
+                    &raw mut watch,
+                )
+            };
+            assert_eq!(added, 0, "epoll_ctl: {}", std::io::Error::last_os_error());
+            (reader, writer)
+        })
+        .collect();
+    let mut ready = [libc::epoll_event { events: 0, u64: 0 }; 64];
+    move || {
+        let (reader, writer) = &pipes[IDLE_PIPES];
+        let mut byte = [0u8];
+        (&*writer).write_all(b"x").expect("a write to a pipe with room");
+        // SAFETY: `ready` has room for the 64 events asked for at most.
+        let count = unsafe { libc::epoll_wait(epoll.as_raw_fd(), ready.as_mut_ptr(), 64, 0) };
+        assert_eq!(count, 1, "epoll_wait returned {count}");
+        (&*reader).read_exact(&mut byte).expect("the byte just written");
+    }
+}
+
+/// The time of the monotonic clock through the C library, which reads the
+/// vDSO's page, on Linux and on Dukovo alike, and enters no system call.
+fn clock_gettime() {
+    let mut now = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: `now` is a writable timespec.
+    let done = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut now) };
+    assert_eq!(done, 0, "clock_gettime: {}", std::io::Error::last_os_error());
+    std::hint::black_box(now);
 }
 
 const PAGE: usize = 4096;

@@ -61,15 +61,20 @@ plus an offset, slewed by `adjtime` at most 500 ppm (radix-hal's
   `AT_SYSINFO_EHDR`, and so does a Dukovo program, whose C library looks
   up `__dukovo_clock_read` by the vDSO's hash table and reads the clocks
   through it, falling back to the system call when it says no.
-- `kernel/radix/tla/ClockPage.tla` checks the page's sequence lock: a
-  reader that finds the same even sequence before and after never returns
-  a half-written page.
+- `kernel/radix/tla/ClockPage.tla` checks the page's sequence lock with
+  two writers and a reader (48,479 states): a reader that finds the same
+  even sequence before and after never returns a half-written page, nor
+  one older than the last write that ended before it began. The check
+  fails if the reader does not read the sequence again, or goes on when
+  it is odd.
 
 ## Consequences
 
 - `clock_gettime(CLOCK_MONOTONIC)` and `CLOCK_REALTIME`, `gettimeofday`,
   `time` and `getcpu` cost no system call for a Linux program or a Dukovo
-  one; linux-bench's `lx_clock_gettime` row is gated at Linux's speed.
+  one. linux-bench's `lx_clock_gettime` row measures it, and is held to
+  Linux's speed once `ob bench` runs linux-bench on Dukovo
+  (docs/deferred.md).
 - The page shows only what every process may know (the clock), and it is
   read-only; the TSC is readable from user mode already.
 - `getcpu`'s node is always 0, as Radix has one memory node per machine

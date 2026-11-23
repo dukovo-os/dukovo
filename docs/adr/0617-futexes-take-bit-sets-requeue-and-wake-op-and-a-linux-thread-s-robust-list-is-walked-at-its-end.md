@@ -54,9 +54,13 @@ this step, with the robust list kept but never walked.
   word's change are `radix_linux::futex`'s, with host tests. The
   priority inheritance operations are ENOSYS, as on a Linux built without
   them.
-- `kernel/radix/tla/FutexRequeue.tla` checks the requeue: no waiter is
-  lost or woken twice, a moved waiter is woken by a wake of the second
-  word, and a waiter that times out leaves whichever list it is in.
+- `kernel/radix/tla/FutexRequeue.tla` checks the requeue with three
+  waiters, one or two of them interrupted, and a move that may wake a
+  waiter for want of memory (34,995 and 135,081 states): no wake-up is
+  lost, a wait ends as woken exactly when a wake or a requeue took the
+  waiter off a list, a waiter is in one list at most and its bucket names
+  it, and every wait ends. The check fails if a waiter that leaves does
+  not read its bucket again once the list is locked.
 
 ## Consequences
 
