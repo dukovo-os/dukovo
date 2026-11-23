@@ -7,7 +7,8 @@
 //! the machine: the processors, memory, disks, filesystems, network
 //! cards, temperatures (a disk's from what diskhealth(8) last read of it,
 //! never from asking the disk), each service's use of both and each Btrfs
-//! volume's missing disks. It keeps one row of that in the history,
+//! volume's missing disks, and the hardware errors the kernel has heard
+//! of. It keeps one row of that in the history,
 //! two weeks at the step and a year at one record an hour, and writes the
 //! newest row as text for `metrics now`. Nothing leaves the machine
 //! unless the owner names a Prometheus server in metrics.toml(5).
@@ -17,6 +18,7 @@
 //!   and power to the row, and tells of the entries its event log gains;
 //! - [`store`] is the history's files, which `metrics` and the console
 //!   read;
+//! - [`ras`] makes the series and the alerts of the hardware errors;
 //! - [`settings`] reads `/system/settings/metrics.toml`.
 //!
 //! metricsd never ends because of what it reads or writes: a source that
@@ -28,6 +30,7 @@
 pub(crate) mod bmc;
 mod command;
 mod prometheus;
+mod ras;
 pub(crate) mod sample;
 mod settings;
 mod store;
@@ -253,6 +256,7 @@ impl Daemon {
         );
         // The line of a filesystem's filling goes on from the history.
         warnings.backfill(&places.state, unix_seconds());
+        warnings.keep_ras_in(&places.state);
         let mut daemon = Daemon {
             places,
             reader: Arc::new(Mutex::new(Reader::new(sources))),

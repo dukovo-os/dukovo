@@ -89,6 +89,10 @@ static CMCI: AtomicBool = AtomicBool::new(false);
 /// The banks some CPU claimed for CMCI, or whose AMD counter interrupts,
 /// one bit each; 0 if none does.
 static INTERRUPTING: AtomicU32 = AtomicU32::new(0);
+/// The banks the firmware handles first (ACPI's HEST), one bit each: the
+/// kernel neither polls them nor lets them interrupt. See
+/// [`leave_to_firmware`].
+static FIRMWARE: AtomicU32 = AtomicU32::new(0);
 /// AMD: the extended LVT entry the counters raise; [`NO_LVT`] if none.
 static THRESHOLD_LVT: AtomicU8 = AtomicU8::new(NO_LVT);
 const NO_LVT: u8 = u8::MAX;
@@ -186,7 +190,14 @@ pub fn init_cpu_interrupt() {
         return;
     }
     if AMD.load(Ordering::Relaxed) {
-        let found = corrected::arm_thresholds(&mut Registers, 0..banks, apic::extended_lvts());
+        let mut found = corrected::arm_thresholds(&mut Registers, 0..banks, apic::extended_lvts());
+        // Banks the firmware keeps (it may have been told after the
+        // thresholds were armed) neither count nor interrupt.
+        let firmware = FIRMWARE.load(Ordering::Relaxed);
+        if firmware != 0 {
+            corrected::silence_thresholds(&mut Registers, firmware);
+            found.interrupting &= !firmware;
+        }
         if let Some(lvt) = found.lvt.filter(|_| found.interrupting != 0) {
             THRESHOLD_LVT.store(lvt, Ordering::Relaxed);
             apic::set_extended_lvt(lvt, VECTOR_CORRECTED_ERROR, false);
@@ -194,12 +205,40 @@ pub fn init_cpu_interrupt() {
         }
     } else if CMCI.load(Ordering::Relaxed) && apic::has_cmci() {
         let first = usize::from(SKIP_BANK0.load(Ordering::Relaxed));
-        let claimed = corrected::claim_cmci(&mut Registers, first..banks);
+        let mut claimed = corrected::claim_cmci(&mut Registers, first..banks);
+        let firmware = FIRMWARE.load(Ordering::Relaxed);
+        if claimed & firmware != 0 {
+            corrected::release_cmci(&mut Registers, claimed & firmware);
+            claimed &= !firmware;
+        }
         if claimed != 0 {
             apic::set_cmci(VECTOR_CORRECTED_ERROR, false);
             INTERRUPTING.fetch_or(claimed, Ordering::Relaxed);
         }
     }
+}
+
+/// Leaves the banks of `banks` (one bit each) to the firmware, which
+/// handles their errors first (ACPI's HEST names them): from now on no CPU
+/// polls them or lets them interrupt, and on the running CPU their CMCI
+/// and error counters are turned off. CPUs started later read the mask in
+/// [`init_cpu_interrupt`]. The caller runs this on every CPU running; the
+/// mask is recorded first, so that a poll on another CPU skips the banks
+/// at once.
+pub fn leave_to_firmware(banks: u32) {
+    let count = BANKS.load(Ordering::Acquire);
+    let valid = if count >= 32 { u32::MAX } else { (1u32 << count) - 1 };
+    let banks = banks & valid;
+    if banks == 0 {
+        return;
+    }
+    FIRMWARE.fetch_or(banks, Ordering::AcqRel);
+    if AMD.load(Ordering::Relaxed) {
+        corrected::silence_thresholds(&mut Registers, banks);
+    } else if CMCI.load(Ordering::Relaxed) {
+        corrected::release_cmci(&mut Registers, banks);
+    }
+    INTERRUPTING.fetch_and(!banks, Ordering::Relaxed);
 }
 
 /// What interrupts for corrected errors, for the log.
@@ -311,7 +350,11 @@ pub fn poll(found: &mut radix_hal::MachineCheckFound<'_>) {
     let scalable = SCALABLE.load(Ordering::Relaxed);
     let mca = mca();
     let cmci = CMCI.load(Ordering::Relaxed);
+    let firmware = FIRMWARE.load(Ordering::Relaxed);
     for bank in 0..banks() {
+        if firmware & (1 << bank) != 0 {
+            continue;
+        }
         let (error, deferred, counted) = {
             let _one = POLLING.lock();
             let error = read(bank);

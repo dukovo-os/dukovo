@@ -343,6 +343,14 @@ pub fn set_breakpoint_handler(handler: fn(&Fault)) {
     let _ = BREAKPOINT_HANDLER.set(handler);
 }
 
+/// What an NMI calls before it is traced as unexpected (ADR 0662).
+static NMI_HANDLER: Once<fn() -> bool> = Once::new();
+
+/// Registers the NMI handler's function (`Platform::set_nmi_handler`).
+pub fn set_nmi_handler(handler: fn() -> bool) {
+    let _ = NMI_HANDLER.set(handler);
+}
+
 /// The function called on the way back to a preemptible thread.
 static PREEMPT_HANDLER: Once<fn()> = Once::new();
 
@@ -574,6 +582,11 @@ fn nmi(frame: &TrapFrame) {
         cpu.stopped.store(true, Ordering::Release);
         STOPPED.fetch_add(1, Ordering::AcqRel);
         cpu::halt_forever();
+    }
+    // The firmware's error reports come by NMI on some servers; their
+    // reader takes no lock.
+    if NMI_HANDLER.get().is_some_and(|handler| handler()) {
+        return;
     }
     // Logging could deadlock on a lock this CPU holds, so only record it.
     radix_klog::tracepoint!("nmi.unexpected", frame.rip);

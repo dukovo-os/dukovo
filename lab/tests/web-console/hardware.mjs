@@ -11,7 +11,7 @@
 // what `hardware last` says (`GET /api/1/hardware/check`), a failure first,
 // and the checks before it come from `hardware history`
 // (`GET /api/1/hardware/history`). Check the hardware
-// (`POST /api/1/hardware/check`, a task) opens a dialog with the six areas,
+// (`POST /api/1/hardware/check`, a task) opens a dialog with the seven areas,
 // all on, and the full check, which is only read here: its words come with its
 // box and it is never started, since it takes hours. With no area chosen
 // nothing is sent. The check runs to its end, the page says the step it is on
@@ -45,6 +45,12 @@
 // is the machine's own (`GET /api/1/hardware/memtest`). The test is never let
 // run here, since it restarts the machine: Restart now and test is read and
 // never pressed, and the machine ends with nothing asked.
+//
+// The Hardware errors card holds what `hardware errors` says
+// (`GET /api/1/hardware/errors`): one calm line on a machine that has heard of no
+// hardware error since this start, which QEMU's is, and else the newest ten
+// errors, newest first, each with a state word for how bad it was, and a line for
+// each memory device that has errors. The page reads it again every minute.
 //
 // A reader sees every fact and no button but the ones that change only the
 // look of the page or read a list, is told who may change the machine, and is
@@ -93,6 +99,7 @@ const ROUTES = {
   sensors: "GET /api/1/hardware/sensors",
   highest: "GET /api/1/hardware/highest",
   devices: "GET /api/1/hardware/devices",
+  errors: "GET /api/1/hardware/errors",
   storage: "GET /api/1/storage",
   asked: "GET /api/1/hardware/memtest", // hardware.memtest-status
   ask: "POST /api/1/hardware/memtest/next-start",
@@ -129,12 +136,14 @@ const ALERT = "An alert goes out when a sensor stays within 5 °C of its critica
 const LOCKED_TESTS = "Unlock to see the disks' own tests";
 const READER_TESTS = "Administrators see the disks' own tests";
 const NO_DEVICES = "The system lists no device.";
+const NO_ERRORS = "No hardware errors since this boot.";
+const ERRORS_NOT_READ = "The hardware errors could not be read.";
 const BAD_TIME = "A time is written HH:MM, from 00:00 to 23:59, such as 03:00. Nothing was set.";
 
 // The areas of the check dialog, in the words of their boxes. A check of one
 // engine is the whole quick check and the others' is shorter, so that three
 // engines fit in the test's time: the boxes work the same in each.
-const AREAS = ["Memory", "Disks", "Processors", "Sensors", "Battery", "Network cards"];
+const AREAS = ["Memory", "Disks", "Processors", "Sensors", "Battery", "Network cards", "Hardware errors"];
 const SOME = ["Memory", "Processors"];
 
 /** What a result is called on the card, and the order the card lists them in. */
@@ -510,7 +519,7 @@ async function openCheck(t, page) {
   return dialog;
 }
 
-/** The six areas are boxes, all on; the full check's box brings its words and takes them away; and with no area chosen, Check now sends nothing. */
+/** The seven areas are boxes, all on; the full check's box brings its words and takes them away; and with no area chosen, Check now sends nothing. */
 async function checkDialogAsked(t, page, dialog) {
   for (const area of AREAS) {
     const box = dialog.getByRole("checkbox", { name: area, exact: true });
@@ -780,6 +789,47 @@ async function disksAsAnswered(t, page, access, seen = null) {
     }
   }
   return access === "ok" ? withLog : [];
+}
+
+// --- Hardware errors ---
+
+/**
+ * The Hardware errors card holds what `hardware errors` says: the one calm line
+ * when the record is empty, else at most ten rows, the newest first, and the
+ * memory devices that have errors. An error that came while the page was open
+ * is read at the next minute, so the check waits for the answer it was given.
+ */
+async function errorsAsAnswered(t, page) {
+  const where = "the Hardware errors card";
+  const body = card(page, "errors");
+  await t.see(body);
+  await eventually(async () => {
+    const answer = await readOf(page, ROUTES.errors);
+    ensure(Array.isArray(answer?.errors) && answer.counts !== null && typeof answer.counts === "object", `${ROUTES.errors} does not give errors and counts: ${JSON.stringify(answer)}`);
+    const words = await body.innerText();
+    ensure(!words.includes("Reading the hardware errors"), `${where} is still reading`);
+    ensure(!words.includes(ERRORS_NOT_READ), `${where} says it could not read, and ${ROUTES.errors} answers`);
+    const rows = (await rowsOf(body)).filter((row) => "What happened" in row);
+    if (answer.errors.length === 0 && !(answer.counts.recorded > 0)) {
+      ensure(words.includes(NO_ERRORS), `${where} does not say ${JSON.stringify(NO_ERRORS)} of a record that holds none: ${JSON.stringify(words)}`);
+      ensure(rows.length === 0, `${where} has ${rows.length} rows, and ${ROUTES.errors} has no error`);
+      return;
+    }
+    ensure(!words.includes(NO_ERRORS), `${where} says there is no error, and ${ROUTES.errors} has ${answer.errors.length}`);
+    ensure(rows.length === Math.min(10, answer.errors.length), `${where} has ${rows.length} rows, and ${ROUTES.errors} has ${answer.errors.length} errors, of which it lists ten at most`);
+    const newest = [...answer.errors].sort((a, b) => b.seq - a.seq).slice(0, 10);
+    newest.forEach((error, at) => {
+      const found = rows.find((row) => row["What happened"].startsWith(error.what.slice(0, 20)) && row.Part === (error.part || "Not named"));
+      ensure(found !== undefined, `${where} has no row for the error ${error.seq}, ${error.part}`);
+      const word = error.severity === "recoverable" ? "not corrected" : error.severity;
+      ensure(found.Severity.toLowerCase() === word, `${where} says ${JSON.stringify(found.Severity)} for the error ${error.seq}, and ${ROUTES.errors} says ${error.severity}`);
+      const firmware = error.source === "bert" || error.source.startsWith("ghes");
+      ensure(found["Found by"] === (firmware ? "The firmware" : error.source === "mce" || error.source === "aer" ? "The kernel" : error.source), `${where} says ${JSON.stringify(found["Found by"])} for who found the error ${error.seq}, from ${error.source}`);
+    });
+    ensure((await body.locator("caption").innerText()) === "The last ten hardware errors" || answer.errors.length > 10, `${where} has the caption ${JSON.stringify(await body.locator("caption").innerText())}`);
+    const devices = (answer.counts.dimms ?? []).filter((dimm) => dimm.corrected + dimm.uncorrected > 0);
+    for (const dimm of devices) ensure(words.includes(dimm.locator ?? "Memory device"), `${where} does not name the memory device ${dimm.locator ?? dimm.handle}, which has errors`);
+  });
 }
 
 // --- Devices ---
@@ -1061,6 +1111,7 @@ async function administrator(t) {
   await checkToItsEnd(t, page, t.engine === "chromium" ? AREAS : SOME);
   await memoryTest(t, page);
 
+  await errorsAsAnswered(t, page);
   await temperaturesAsAnswered(t, page);
   await temperatureUnit(t, page);
   await lookAll(t, page, "hardware-temps");
@@ -1088,11 +1139,12 @@ async function reader(t) {
   await t.see(card(page, "memory").getByText(READER_TEST, { exact: true }));
   await t.see(card(page, "power").getByText(READER_POWER, { exact: true }));
   ensure((await checkNow(page).count()) === 0, "a reader has Check the hardware");
-  // The unit of the temperatures and the list of devices change nothing of the machine: a reader has those buttons and no other.
+  // The unit of the temperatures and the list of devices, and the errors' Show all and Save as a file, change nothing of the machine: a reader has those buttons and no other.
   const buttons = await page.locator("main .hw button").evaluateAll((all) => all.map((one) => one.textContent.trim()));
-  const others = buttons.filter((name) => !["°C", "°F", "Show the devices"].includes(name));
+  const others = buttons.filter((name) => !["°C", "°F", "Show the devices", "Save as a file"].includes(name) && !/^Show (all \d+|the last ten)$/.test(name));
   ensure(others.length === 0, `a reader's page has these buttons: ${others.join(", ")}`);
   ensure((await readPower(page)) === null, "the machine has a restart set, which a reader reads and no one set");
+  await errorsAsAnswered(t, page);
   await temperaturesAsAnswered(t, page);
   await disksAsAnswered(t, page, "reader");
   await nextWordsAsAnswered(t, page);

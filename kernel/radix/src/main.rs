@@ -52,6 +52,7 @@
 extern crate alloc;
 
 mod acpi;
+mod apei;
 mod audio;
 mod caps;
 mod captest;
@@ -79,6 +80,7 @@ mod oom;
 mod panic;
 mod percpu;
 mod pstate;
+mod ras;
 mod report;
 mod sched;
 mod schedtest;
@@ -320,6 +322,8 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     i2c::find();
     crosec::find();
     mce::start(flags.value("mce-poll"));
+    // After the machine checks, whose banks the firmware may take.
+    apei::start();
     pstate::start(flags.value("pstate") == Some("off"), flags.value("epp"));
     settings::init();
     acpi::thermal::start();

@@ -40,6 +40,7 @@ filesystem = 90
 filling-days = 3
 temperature-margin = 5
 certificate-days = 14
+dimm_corrected_per_day = 24
 ```
 
 # THE [prometheus] TABLE
@@ -87,9 +88,15 @@ network that the machine does not trust.
 	days is a warning, and critical within 3 days. From 4 to 365. The
 	default is 14.
 
+*dimm_corrected_per_day =* _errors_
+	A memory device that had this many corrected errors or more in the
+	last 24 hours is a warning (*MET-110*), and is cleared under three
+	quarters of it. From 1 to 100000. The default is 24. *hardware
+	check* uses 24 for its own warning.
+
 The numbers are whole numbers. The other warnings, a disk of a Btrfs
-volume that is missing or behind, and memory nearly used up, have no
-settings.
+volume that is missing or behind, memory nearly used up, and a hardware
+error that was not corrected, have no settings.
 
 # EXAMPLES
 

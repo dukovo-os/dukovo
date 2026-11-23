@@ -8,7 +8,7 @@
 //! the load, memory, each disk's, card's and filesystem's numbers, the
 //! temperatures (the disks' from what diskhealth(8) last read, never from
 //! the disks), what each service uses, and each Btrfs volume's missing
-//! disks. [`series`] turns the snapshot and the one before it into the
+//! disks, and the kernel's record of hardware errors. [`series`] turns the snapshot and the one before it into the
 //! history's rows, the names and units of which are in metricsd(8), and
 //! the Prometheus endpoint writes a snapshot out as it is. The files read
 //! are those of radix-proc(5) and radix-sysfs(5), so that a source that is
@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::diskhealth::{self, Live};
+use crate::hardware::ras::Record;
 use crate::proc::{self, CpuTimes, Memory, Process};
 use crate::sensors::{self, Kind};
 use crate::util;
@@ -218,6 +219,8 @@ pub struct Snapshot {
     /// The services that have processes now.
     pub services: Vec<Service>,
     pub volumes: Vec<Volume>,
+    /// The kernel's record of hardware errors; empty where it keeps none.
+    pub ras: Record,
 }
 
 /// Reads the system into snapshots, reusing its buffers.
@@ -265,6 +268,7 @@ impl Reader {
             zones: read_zones(&kernel.join("class/thermal")),
             services: self.clock.count(&running, &names),
             volumes: read_volumes(&kernel.join("fs/btrfs")),
+            ras: Record::read(&kernel.join("ras")),
         }
     }
 }
@@ -607,6 +611,7 @@ pub fn series(before: Option<&Snapshot>, now: &Snapshot) -> Vec<(String, f32)> {
         row.push((named("temp", &zone.instance), zone.celsius));
     }
     service_levels(before, now, seconds, &mut row);
+    super::ras::levels(before, now, &mut row);
     for volume in &now.volumes {
         row.push((named("btrfs.missing", volume.name()), volume.missing as f64));
         row.push((named("btrfs.behind", volume.name()), volume.behind as f64));

@@ -73,7 +73,7 @@ const CHECK_SECONDS: u64 = 420;
 /// The test.
 pub const CASE: Case = Case {
     name: "admin-hardware",
-    about: "The web console's Hardware: GET /api/1/hardware is what hardware show --json prints in alice's pane, for bob and for alice, with no memory modules, no sockets and no serial number; hardware.inventory is ADM-122 for bob and ADM-106 for alice locked, and unlocked the same document with the memory's slots and modules and the one socket from the tables of QEMU's SMBIOS; before any check hardware.last is null and hardware last --json prints null and ends with status 3, and hardware.history is the empty list; hardware.check is ADM-122 for bob and ADM-106 for alice locked, an area that is none, an area named twice and a disk with another area are ADM-125 with their fields, none of them starts a check, and for the sensors and the processors it is a task that counts each check as a step, to the last; bob then reads the result it kept, as hardware last --json prints it in alice's pane, and the history has its one line, as hardware history --json prints it; hardware.sensors, hardware.highest and hardware.devices are the same document for bob and for alice, as the commands print it in alice's pane with status 0: QEMU has no sensor, and its virtio network card is driven by radix-virtio and working; hardware.bmc-sensors, hardware.bmc-events and hardware.identify are ADM-122 for bob and ADM-106 for alice locked",
+    about: "The web console's Hardware: GET /api/1/hardware is what hardware show --json prints in alice's pane, for bob and for alice, with no memory modules, no sockets and no serial number; hardware.inventory is ADM-122 for bob and ADM-106 for alice locked, and unlocked the same document with the memory's slots and modules and the one socket from the tables of QEMU's SMBIOS; before any check hardware.last is null and hardware last --json prints null and ends with status 3, and hardware.history is the empty list; hardware.check is ADM-122 for bob and ADM-106 for alice locked, an area that is none, an area named twice and a disk with another area are ADM-125 with their fields, none of them starts a check, and for the sensors and the processors it is a task that counts each check as a step, to the last; bob then reads the result it kept, as hardware last --json prints it in alice's pane, and the history has its one line, as hardware history --json prints it; hardware.sensors, hardware.highest, hardware.devices and hardware.errors are the same document for bob and for alice, as the commands print it in alice's pane with status 0: QEMU has no sensor, and its virtio network card is driven by radix-virtio and working; hardware.bmc-sensors, hardware.bmc-events and hardware.identify are ADM-122 for bob and ADM-106 for alice locked",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, admind among them.
@@ -604,8 +604,18 @@ fn sensors_and_devices(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
         }
     }
 
+    // The hardware errors the kernel has heard of: a list and the counts,
+    // empty or not, the same for both and as the command prints it.
+    let path = "/api/1/hardware/errors";
+    let errors = read_as_printed(vm, test, path, "hardware errors --json", as_it_is)?;
+    if errors["format"] != json!(1) || !errors["errors"].is_array() || !errors["counts"].is_object()
+    {
+        return Err(format!("hardware errors has the document {errors}"));
+    }
+
     // What a read is not given is refused, not ignored.
     for path in [
+        "/api/1/hardware/errors?all=true",
         "/api/1/hardware/sensors?all=true",
         "/api/1/hardware/highest?since=1d",
         "/api/1/hardware/devices?all=true",

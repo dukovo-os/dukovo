@@ -243,6 +243,10 @@ impl Cpu for Arch {
         mce::mask_corrected(masked);
     }
 
+    fn leave_banks_to_firmware(banks: u32) {
+        mce::leave_to_firmware(banks);
+    }
+
     fn performance_driver() -> Option<radix_pstate::Driver> {
         pstate::driver()
     }
@@ -462,6 +466,18 @@ impl Devices for Arch {
                 last_bus: window.end_bus,
             });
         }
+    }
+
+    fn firmware_table(signature: &[u8; 4]) -> Option<&'static [u8]> {
+        let acpi = acpi::get()?;
+        let table = match signature {
+            b"MCFG" => &acpi.mcfg,
+            b"HEST" => &acpi.hest,
+            b"BERT" => &acpi.bert,
+            b"EINJ" => &acpi.einj,
+            _ => return None,
+        };
+        table.as_ref().map(|sdt| sdt.bytes)
     }
 
     fn map_device(phys: u64, len: usize) -> Option<radix_hal::Mmio> {
@@ -1284,6 +1300,10 @@ impl Platform for Arch {
 
     fn set_breakpoint_handler(handler: fn(&Fault)) {
         interrupts::set_breakpoint_handler(handler);
+    }
+
+    fn set_nmi_handler(handler: fn() -> bool) {
+        interrupts::set_nmi_handler(handler);
     }
 
     fn reset() -> ! {

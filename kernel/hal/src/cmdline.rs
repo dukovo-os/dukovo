@@ -101,6 +101,12 @@ pub const FLAGS: &[Flag] = &[
         summary: "read the CPUs' machine-check banks this often (300 by default)",
     },
     Flag {
+        name: "memreserve",
+        value: Some("start,length"),
+        summary: "keep the kernel off this range of physical memory, such as 0x20000000,4M; \
+                  several ranges are separated by ; or given by repeating the flag",
+    },
+    Flag {
         name: "ip",
         value: Some("address/prefix"),
         summary: "give the first network card this IPv4 address, such as 10.0.2.15/24",
@@ -326,6 +332,69 @@ pub const SELFTESTS: &[&str] = &[
     "i2c",
 ];
 
+/// Why a `memreserve=` value is refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemReserveError {
+    /// A range is not `start,length`.
+    Shape,
+    /// A number is not decimal or `0x` hex, with an optional K, M or G.
+    Number,
+    /// The length is zero, or the range ends past the address space.
+    Range,
+}
+
+impl core::fmt::Display for MemReserveError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            MemReserveError::Shape => "a range is not start,length",
+            MemReserveError::Number => {
+                "a number is not decimal or 0x hex with an optional K, M or G"
+            }
+            MemReserveError::Range => "a range is empty or ends past the address space",
+        })
+    }
+}
+
+/// A number of `memreserve=`: decimal or `0x` hex, then an optional K, M
+/// or G (powers of 1024, either case).
+fn memreserve_number(text: &str) -> Result<u64, MemReserveError> {
+    let (digits, scale) = match text.as_bytes().last() {
+        Some(b'k' | b'K') => (&text[..text.len() - 1], 1 << 10),
+        Some(b'm' | b'M') => (&text[..text.len() - 1], 1 << 20),
+        Some(b'g' | b'G') => (&text[..text.len() - 1], 1 << 30),
+        _ => (text, 1),
+    };
+    let value = match digits.strip_prefix("0x").or_else(|| digits.strip_prefix("0X")) {
+        Some(hex) if hex.bytes().all(|b| b.is_ascii_hexdigit()) => u64::from_str_radix(hex, 16),
+        Some(_) => return Err(MemReserveError::Number),
+        None if digits.bytes().all(|b| b.is_ascii_digit()) => digits.parse(),
+        None => return Err(MemReserveError::Number),
+    };
+    value.ok().and_then(|value| value.checked_mul(scale)).ok_or(MemReserveError::Number)
+}
+
+/// One `start,length` of `memreserve=`, as the pages it covers: the range
+/// is rounded outward to whole 4 KiB pages.
+fn memreserve_range(item: &str) -> Result<core::ops::Range<u64>, MemReserveError> {
+    let (start, length) = item.split_once(',').ok_or(MemReserveError::Shape)?;
+    let (start, length) = (memreserve_number(start)?, memreserve_number(length)?);
+    let end = start.checked_add(length).filter(|_| length > 0).ok_or(MemReserveError::Range)?;
+    let end = end.checked_add(0xfff).ok_or(MemReserveError::Range)? & !0xfff;
+    Ok((start & !0xfff)..end)
+}
+
+/// The page ranges a `memreserve=` value gives: `start,length` pairs
+/// separated by `;`. A value with any malformed pair is refused whole, so
+/// that no half of it is reserved.
+pub fn parse_memreserve(
+    value: &str,
+) -> Result<impl Iterator<Item = core::ops::Range<u64>> + '_, MemReserveError> {
+    for item in value.split(';') {
+        memreserve_range(item)?;
+    }
+    Ok(value.split(';').filter_map(|item| memreserve_range(item).ok()))
+}
+
 /// A parsed view of the command line.
 #[derive(Clone, Copy, Debug)]
 pub struct CommandLine<'a> {
@@ -366,6 +435,11 @@ impl<'a> CommandLine<'a> {
     /// The value of the last `name=value` flag.
     pub fn value(&self, name: &str) -> Option<&'a str> {
         self.flags().filter(|&(flag, _)| flag == name).filter_map(|(_, value)| value).last()
+    }
+
+    /// Every `memreserve=` value, in order: the flag may be repeated.
+    pub fn memreserve_values(&self) -> impl Iterator<Item = &'a str> + 'a {
+        self.flags().filter(|&(flag, _)| flag == "memreserve").filter_map(|(_, value)| value)
     }
 
     /// What the last `console=` flag for serial port `name` gives as its
@@ -490,6 +564,62 @@ mod tests {
         assert!(!CommandLine::new("console=tty0").firmware_console());
         assert!(!CommandLine::new("spcr=off").firmware_console());
         assert!(CommandLine::new("spcr=on -- console=ttyS0 spcr=off").firmware_console());
+    }
+
+    fn ranges_of(value: &str) -> Result<Vec<core::ops::Range<u64>>, MemReserveError> {
+        parse_memreserve(value).map(Iterator::collect)
+    }
+
+    fn refused_by(value: &str) -> Option<MemReserveError> {
+        parse_memreserve(value).err()
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn memreserve_takes_hex_decimal_and_suffixes() {
+        let ranges = ranges_of;
+        assert_eq!(ranges("0x1000,0x2000"), Ok(vec![0x1000..0x3000]));
+        assert_eq!(ranges("4096,8192"), Ok(vec![0x1000..0x3000]));
+        assert_eq!(ranges("512M,4k"), Ok(vec![0x2000_0000..0x2000_1000]));
+        assert_eq!(ranges("0x1G,1m"), Ok(vec![0x4000_0000..0x4010_0000]));
+        assert_eq!(ranges("0X2000K,1K"), Ok(vec![0x80_0000..0x80_1000]));
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn memreserve_rounds_outward() {
+        let ranges = ranges_of;
+        assert_eq!(ranges("0x1800,0x1000"), Ok(vec![0x1000..0x3000]));
+        assert_eq!(ranges("0x1fff,1"), Ok(vec![0x1000..0x2000]));
+        assert_eq!(ranges("0x2000,1"), Ok(vec![0x2000..0x3000]));
+    }
+
+    #[test]
+    fn memreserve_takes_several_ranges() {
+        let ranges = ranges_of;
+        assert_eq!(ranges("0x1000,1;0x5000,0x2000"), Ok(vec![0x1000..0x2000, 0x5000..0x7000]));
+        let line = CommandLine::new("memreserve=0x1000,1 kdb memreserve=0x5000,1;0x9000,1");
+        assert_eq!(line.memreserve_values().collect::<Vec<_>>(), ["0x1000,1", "0x5000,1;0x9000,1"]);
+        assert_eq!(line.unknown().count(), 0);
+    }
+
+    #[test]
+    fn memreserve_refuses_malformed_values_whole() {
+        let refused = refused_by;
+        assert_eq!(refused(""), Some(MemReserveError::Shape));
+        assert_eq!(refused("0x1000"), Some(MemReserveError::Shape));
+        assert_eq!(refused("0x1000,"), Some(MemReserveError::Number));
+        assert_eq!(refused("0x,4k"), Some(MemReserveError::Number));
+        assert_eq!(refused("12ab,4k"), Some(MemReserveError::Number));
+        assert_eq!(refused("1,2,3"), Some(MemReserveError::Number));
+        assert_eq!(refused("-1,4k"), Some(MemReserveError::Number));
+        assert_eq!(refused("0x1000,0"), Some(MemReserveError::Range));
+        assert_eq!(refused("0xfffffffffffff000,0x2000"), Some(MemReserveError::Range));
+        assert_eq!(refused("0xfffffffffffffff0,0x8"), Some(MemReserveError::Range));
+        assert_eq!(refused("99999999999G,1"), Some(MemReserveError::Number));
+        // One bad range refuses the good one before it.
+        assert_eq!(refused("0x1000,1;oops"), Some(MemReserveError::Shape));
+        assert_eq!(refused("0x1000,1;"), Some(MemReserveError::Shape));
     }
 
     #[test]

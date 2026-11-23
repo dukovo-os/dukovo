@@ -6,12 +6,14 @@
 // devices, and restarting or shutting it down. The page reads what it shows
 // when it opens and again when a check of its own ends; the memory's modules
 // and the disks' own tests only for an administrator whose console is
-// unlocked. The temperatures are read apart from the rest, since the cards do
-// not wait for them, and again every minute. A machine with a BMC, which an
-// administrator whose console is unlocked sees named in `hardware show`, has a
-// BMC card of its own, and its temperatures and fans join the temperatures'.
-// The dialog that checks, the dialog that asks for the memory test, the
-// restart's dialogs and the list of devices are read when a button asks.
+// unlocked. The temperatures and the hardware errors are read apart from the
+// rest, since the cards do not wait for them, and the errors card's own module
+// comes with its answer; both are read again every minute. A machine with a
+// BMC, which an administrator whose console is unlocked sees named in
+// `hardware show`, has a BMC card of its own, and its temperatures and fans
+// join the temperatures'. The dialog that checks, the dialog that asks for the
+// memory test, the restart's dialogs and the list of devices are read when a
+// button asks.
 
 import { fill, h } from '../../dom.js';
 import { stepWords } from '../../lib/tasks-words.js';
@@ -40,6 +42,7 @@ const TEMPS = { sensors: '/api/1/hardware/sensors', highest: '/api/1/hardware/hi
 // What an administrator reads of a BMC: the same sensors with the BMC's own, and its log.
 const BMC_SENSORS = '/api/1/hardware/bmc/sensors';
 const BMC_EVENTS = '/api/1/hardware/bmc/events';
+const ERRORS = '/api/1/hardware/errors';
 const TEMPS_MS = 60_000;
 const CHECK = 'hardware.check';
 const running = (task) => task.state === 'running' || task.state === 'waiting';
@@ -55,11 +58,14 @@ export async function show(view) {
     sensors: null, highest: null, updates: null,
     // The BMC's event log: null until read, undefined when it could not be.
     events: null,
+    // The hardware errors: null until read, undefined when they could not be.
+    errors: null,
   };
   const tasks = new Map();
   let line = null;
   let latest = 0;
   let latestTemps = 0;
+  let latestErrors = 0;
   let loaded = false;
 
   const lead = h('p', { id: 'hw-lead', class: 'hw-lead' }, 'Reading the hardware…');
@@ -146,6 +152,9 @@ export async function show(view) {
   const tempsCard = makeCard('temps', 'Temperatures and fans');
   fill(tempsCard.body, h('p', { class: 'muted' }, 'Reading the temperatures…'));
   let temps = null;
+  // The errors' own module comes with their first answer too; a machine with none draws one line.
+  const errorsCard = makeCard('errors', 'Hardware errors', h('div', { class: 'btns', hidden: true }));
+  fill(errorsCard.body, h('p', { class: 'muted' }, 'Reading the hardware errors…'));
   const devicesCard = makeCard('devices', 'Devices');
   fill(devicesCard.body,
     h('p', {}, 'Every card and port the system can tell of, with the driver that took it. The list is read when you ask.'),
@@ -158,7 +167,7 @@ export async function show(view) {
   ctx.pendingHost = power.host;
 
   // The cards come in when the first read is in, so that none says "Not checked yet" before it knows.
-  const order = [machine, check, tempsCard, disks, memory, devicesCard, power].map((one) => one.element);
+  const order = [machine, check, errorsCard, tempsCard, disks, memory, devicesCard, power].map((one) => one.element);
   let cards = order;
   tempsCard.element.classList.add('hw-wide');
   devicesCard.element.classList.add('hw-wide');
@@ -205,7 +214,7 @@ export async function show(view) {
       bmc = (await import('./bmc.js')).makeBmc(ctx);
       bmc.element.classList.add('hw-wide');
       // The card is between the temperatures and the disks; appending moves each card to its place.
-      order.splice(3, 0, bmc.element);
+      order.splice(order.indexOf(tempsCard.element) + 1, 0, bmc.element);
       if (cards === null) host.append(...order);
     }
     await readEvents();
@@ -244,6 +253,21 @@ export async function show(view) {
     }
   }
 
+  /** Reads the hardware errors and draws them; one that cannot be read leaves what was read before. Only the last read to ask is drawn. */
+  async function readErrors() {
+    latestErrors += 1;
+    const mine = latestErrors;
+    const [module, found] = await Promise.allSettled([import('./errors.js'), view.api.get(ERRORS)]);
+    if (mine !== latestErrors || view.signal.aborted) return;
+    const first = data.errors === null;
+    if (found.status === 'fulfilled') data.errors = found.value;
+    else if (first) data.errors = undefined;
+    const failed = [module, found].find((one) => one.status === 'rejected');
+    if (failed === undefined) fill(errorsCard.errors);
+    else if (first) view.problem(failed.reason, { slot: errorsCard.errors });
+    if (module.status === 'fulfilled') module.value.drawErrors(ctx, errorsCard, data.errors);
+  }
+
   /** Reads everything again; only the last read to ask is drawn. */
   async function read() {
     latest += 1;
@@ -276,6 +300,7 @@ export async function show(view) {
     temps?.draw();
     disks.read(false);
     if (first) readTemps(Object.keys(TEMPS));
+    readErrors();
     for (const name of ['machine', 'last']) if (found[names.indexOf(name)].status === 'rejected') view.problem(found[names.indexOf(name)].reason, { slot: name === 'machine' ? machine.errors : check.errors });
     const status = await view.api.get('/api/1/power').catch(() => null);
     if (mine !== latest || view.signal.aborted) return;
@@ -312,7 +337,9 @@ export async function show(view) {
   view.on('online', () => read());
   view.every(TEMPS_MS, () => {
     if (data.inventory?.bmc && isUnlocked()) readEvents();
-    return readTemps(['sensors']);
+    const reading = readTemps(['sensors']);
+    readErrors();
+    return reading;
   });
 
   await read();

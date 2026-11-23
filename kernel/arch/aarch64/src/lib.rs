@@ -94,6 +94,8 @@ impl Cpu for Arch {
 
     fn mask_corrected_errors(_masked: bool) {}
 
+    fn leave_banks_to_firmware(_banks: u32) {}
+
     fn performance_driver() -> Option<radix_pstate::Driver> {
         None
     }
@@ -260,6 +262,10 @@ static WALL_CLOCK: radix_hal::clock::WallClock = radix_hal::clock::WallClock::ne
 
 impl Devices for Arch {
     fn pci_segments(_found: &mut dyn FnMut(PciSegment)) {}
+
+    fn firmware_table(_signature: &[u8; 4]) -> Option<&'static [u8]> {
+        None
+    }
 
     fn map_device(_phys: u64, _len: usize) -> Option<Mmio> {
         None

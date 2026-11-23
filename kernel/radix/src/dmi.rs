@@ -25,6 +25,50 @@ use crate::Arch;
 
 static IDS: Once<Ids<'static>> = Once::new();
 static MEMORY: Once<Memory> = Once::new();
+static DIMMS: Once<Dimms> = Once::new();
+
+/// The most populated memory devices kept apart, for the errors counted
+/// by device ([`crate::ras`]); devices past them are counted together.
+pub const MAX_DIMMS: usize = 64;
+
+/// A populated memory device: its SMBIOS handle, which the errors the
+/// firmware reports name, and what the tables call it.
+#[derive(Clone, Copy, Debug)]
+pub struct Dimm {
+    pub handle: u16,
+    /// Where it is on the board (`DIMM_A1`), if the tables say.
+    pub locator: Option<Str<'static>>,
+    /// Its size in bytes, if they say.
+    pub size: Option<u64>,
+}
+
+/// The populated memory devices, in the tables' order.
+pub struct Dimms {
+    devices: [Option<Dimm>; MAX_DIMMS],
+    len: usize,
+}
+
+impl Dimms {
+    /// The devices, in the order of the tables.
+    pub fn all(&self) -> impl Iterator<Item = &Dimm> {
+        self.devices[..self.len].iter().flatten()
+    }
+
+    /// How many devices there are.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// The `index`th device.
+    pub fn nth(&self, index: usize) -> Option<&Dimm> {
+        self.devices[..self.len].get(index)?.as_ref()
+    }
+
+    /// The device with SMBIOS handle `handle`.
+    pub fn by_handle(&self, handle: u16) -> Option<&Dimm> {
+        self.all().find(|dimm| dimm.handle == handle)
+    }
+}
 
 /// The memory devices the tables list, as the SMBus's SPD EEPROMs are
 /// found by them (ADR 0232).
@@ -52,9 +96,16 @@ pub fn init() {
     let (mut slots, mut filled) = (0, 0);
     let mut memory = Memory { slots: 0, modules: 0, kind: None };
     let mut mixed = false;
-    for device in table.of(kind::MEMORY_DEVICE).filter_map(|s| MemoryDevice::parse(&s)) {
+    let mut dimms = Dimms { devices: [None; MAX_DIMMS], len: 0 };
+    for structure in table.of(kind::MEMORY_DEVICE) {
+        let Some(device) = MemoryDevice::parse(&structure) else { continue };
         slots += 1;
         filled += usize::from(device.is_present());
+        if device.is_present() && dimms.len < MAX_DIMMS {
+            dimms.devices[dimms.len] =
+                Some(Dimm { handle: structure.handle, locator: device.locator, size: device.size });
+            dimms.len += 1;
+        }
         // Kinds 1 and 2 are "Other" and "Unknown".
         if device.is_present() && device.kind > 2 {
             memory.modules += 1;
@@ -71,6 +122,17 @@ pub fn init() {
     }
     let _ = IDS.set(ids);
     let _ = MEMORY.set(memory);
+    let _ = DIMMS.set(dimms);
+}
+
+/// The populated memory devices the tables list, if there are tables.
+pub fn dimms() -> Option<&'static Dimms> {
+    DIMMS.get()
+}
+
+/// The populated memory device with SMBIOS handle `handle`.
+pub fn dimm_by_handle(handle: u16) -> Option<Dimm> {
+    DIMMS.get()?.by_handle(handle).copied()
 }
 
 /// The memory devices the tables list, if there are tables.

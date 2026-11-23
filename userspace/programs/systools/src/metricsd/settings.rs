@@ -25,8 +25,13 @@ pub const FILE: &str = "/system/settings/metrics.toml";
 
 /// The settings of `[prometheus]`, and of `[warnings]`.
 const PROMETHEUS_KEYS: [&str; 2] = ["listen", "allow"];
-const WARNINGS_KEYS: [&str; 4] =
-    ["filesystem", "filling-days", "temperature-margin", "certificate-days"];
+const WARNINGS_KEYS: [&str; 5] = [
+    "filesystem",
+    "filling-days",
+    "temperature-margin",
+    "certificate-days",
+    "dimm_corrected_per_day",
+];
 
 /// The values each warning setting may have.
 const FILESYSTEM: RangeInclusive<u32> = 20..=96;
@@ -35,6 +40,8 @@ const TEMPERATURE_MARGIN: RangeInclusive<u32> = 1..=30;
 /// A certificate is critical within 3 days, so a warning has to come
 /// before that.
 const CERTIFICATE_DAYS: RangeInclusive<u32> = 4..=365;
+/// The corrected errors of one memory device in a day that are a warning.
+const DIMM_CORRECTED_PER_DAY: RangeInclusive<u32> = 1..=100_000;
 
 /// A network the endpoint answers: an address and the length of its
 /// prefix, as `192.168.1.0/24` or `fd00::/8`. An address alone is the
@@ -80,11 +87,20 @@ pub struct Thresholds {
     pub temperature_margin: u32,
     /// The days before a certificate ends that are a warning.
     pub certificate_days: u32,
+    /// The corrected errors a memory device has in a day that are a
+    /// warning.
+    pub dimm_corrected_per_day: u32,
 }
 
 impl Default for Thresholds {
     fn default() -> Thresholds {
-        Thresholds { filesystem: 90, filling_days: 3, temperature_margin: 5, certificate_days: 14 }
+        Thresholds {
+            filesystem: 90,
+            filling_days: 3,
+            temperature_margin: 5,
+            certificate_days: 14,
+            dimm_corrected_per_day: 24,
+        }
     }
 }
 
@@ -210,6 +226,12 @@ fn warnings(section: &Table, thresholds: &mut Thresholds, wrong: &mut Vec<String
         "a number of days",
         &mut thresholds.certificate_days,
     );
+    set(
+        "dimm_corrected_per_day",
+        &DIMM_CORRECTED_PER_DAY,
+        "a number of corrected errors",
+        &mut thresholds.dimm_corrected_per_day,
+    );
 }
 
 /// The whole number `key` of `section` holds, if it has one in `range`;
@@ -266,7 +288,8 @@ mod tests {
                 filesystem: 90,
                 filling_days: 3,
                 temperature_margin: 5,
-                certificate_days: 14
+                certificate_days: 14,
+                dimm_corrected_per_day: 24
             }
         );
         // The file the system ships holds only comments, so says what the
@@ -299,7 +322,8 @@ mod tests {
              listen = [\"192.168.1.10:9100\"]\n\
              allow = [\"192.168.1.0/24\", \"fd00::/8\"]\n\
              [warnings]\n\
-             filesystem = 85\nfilling-days = 5\ntemperature-margin = 8\ncertificate-days = 30\n",
+             filesystem = 85\nfilling-days = 5\ntemperature-margin = 8\ncertificate-days = 30\n\
+             dimm_corrected_per_day = 48\n",
         );
         assert!(wrong.is_empty(), "{wrong:?}");
         assert_eq!(settings.listen, ["192.168.1.10:9100".parse::<SocketAddr>().unwrap()]);
@@ -310,7 +334,8 @@ mod tests {
                 filesystem: 85,
                 filling_days: 5,
                 temperature_margin: 8,
-                certificate_days: 30
+                certificate_days: 30,
+                dimm_corrected_per_day: 48
             }
         );
     }
@@ -367,10 +392,10 @@ mod tests {
     fn a_wrong_threshold_keeps_its_default() {
         let (settings, wrong) = read_settings(
             "[warnings]\nfilesystem = 120\nfilling-days = \"three\"\n\
-             temperature-margin = 2.5\ncertificate-days = 3\n",
+             temperature-margin = 2.5\ncertificate-days = 3\ndimm_corrected_per_day = 0\n",
         );
         assert_eq!(settings.warnings, Thresholds::default());
-        assert_eq!(wrong.len(), 4, "{wrong:?}");
+        assert_eq!(wrong.len(), 5, "{wrong:?}");
         assert!(
             wrong[0].contains(
                 "[warnings] filesystem is 120, but it is a percentage, a whole number from 20 to 96"
@@ -380,6 +405,7 @@ mod tests {
         assert!(wrong.iter().any(|w| w.contains("filling-days is \"three\"")));
         assert!(wrong.iter().any(|w| w.contains("temperature-margin is 2.5")));
         assert!(wrong.iter().any(|w| w.contains("certificate-days is 3,")));
+        assert!(wrong.iter().any(|w| w.contains("dimm_corrected_per_day is 0,")));
         // One wrong setting does not take the others with it.
         let (settings, wrong) = read_settings("[warnings]\nfilesystem = 50\nfilling-days = 0\n");
         assert_eq!((settings.warnings.filesystem, settings.warnings.filling_days), (50, 3));

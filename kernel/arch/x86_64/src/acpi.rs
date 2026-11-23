@@ -57,6 +57,12 @@ pub struct Acpi {
     pub hpet: Option<Hpet>,
     /// The MCFG table.
     pub mcfg: Option<Sdt<'static>>,
+    /// The HEST: the hardware errors the firmware handles first.
+    pub hest: Option<Sdt<'static>>,
+    /// The BERT: the errors the firmware found before the kernel started.
+    pub bert: Option<Sdt<'static>>,
+    /// The EINJ: the firmware's way to inject errors, for testing.
+    pub einj: Option<Sdt<'static>>,
     /// The SRAT: which NUMA domain each CPU and range of memory is in.
     pub srat: Option<Srat<'static>>,
     /// The SLIT: distances between NUMA domains.
@@ -114,10 +120,27 @@ pub fn init(copy: Option<&[u8]>) -> Result<&'static Acpi, &'static str> {
     let fadt = tables.find(&memory, b"FACP").and_then(|sdt| Fadt::parse(&sdt).ok());
     let hpet = tables.find(&memory, b"HPET").and_then(|sdt| Hpet::parse(&sdt).ok());
     let mcfg = tables.find(&memory, b"MCFG");
+    let hest = tables.find(&memory, b"HEST");
+    let bert = tables.find(&memory, b"BERT");
+    let einj = tables.find(&memory, b"EINJ");
     let srat = tables.find(&memory, b"SRAT").and_then(|sdt| Srat::parse(&sdt).ok());
     let slit = tables.find(&memory, b"SLIT").and_then(|sdt| Slit::parse(&sdt).ok());
     let spcr = tables.find(&memory, b"SPCR").and_then(|sdt| Spcr::parse(&sdt).ok());
-    let acpi = Acpi { rsdp_address, rsdp, tables, madt, fadt, hpet, mcfg, srat, slit, spcr };
+    let acpi = Acpi {
+        rsdp_address,
+        rsdp,
+        tables,
+        madt,
+        fadt,
+        hpet,
+        mcfg,
+        hest,
+        bert,
+        einj,
+        srat,
+        slit,
+        spcr,
+    };
     Ok(ACPI.call_once(|| acpi))
 }
 

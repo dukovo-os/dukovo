@@ -646,6 +646,19 @@ them to *init*, and the kernel does not read them.
 	*memtest*=fault runs the same test and flips one bit after the
 	first step, so that the boot tests see a page taken out of use.
 
+*memreserve*=_start_,_length_
+	Keep the kernel off this range of physical memory: it is never given
+	to the frame allocator, so nothing in the kernel or in a program
+	uses it. Each number is decimal or hex (*0x*...), with an optional
+	*K*, *M* or *G* (powers of 1024); the range is rounded outward to
+	whole pages. Give several ranges by separating them with *;* or by
+	repeating the flag, up to 8 (fewer when many boot modules were loaded;
+	the kernel warns of each it has no room for). A value that is not written this way is
+	refused with a warning, and none of its ranges is kept. The kernel
+	logs each range kept. Use it to keep the kernel off memory known to
+	be bad, or off memory something else fills before boot, as the boot
+	tests do. Example: *memreserve=0x20000000,4M*.
+
 *usb*=off
 	Leave the USB controllers as the firmware left them: none is reset
 	or driven, and no USB device is found. See *USB*.

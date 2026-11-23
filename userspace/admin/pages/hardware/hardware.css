@@ -35,3 +35,8 @@
   .hw summary { display: flex; align-items: center; }
   .hw-at > .btn { flex: 1 1 100%; }
 }
+.hw .tbl tr.hw-grp th { background: var(--page); color: var(--muted); font-weight: 600; }
+@media (max-width: 480px) {
+  .hw .tbl.stack tr.hw-grp { display: block; border: 0; padding: 0; margin: .571rem .571rem 0; background: none; }
+  .hw .tbl.stack tr.hw-grp th { display: block; padding: .286rem .571rem; border: 0; }
+}

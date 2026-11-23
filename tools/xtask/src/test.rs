@@ -5193,6 +5193,18 @@ fn run_case(
         args
     });
     for arg in &mut extra {
+        // The `apei` case's tables, and the files its `loader` devices put
+        // in memory.
+        if let Some((name, bytes, address)) = cases::apei::file_for(arg) {
+            let path = dir.join(name);
+            std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+            let file = qemu::option_value(&path);
+            *arg = match address {
+                Some(address) => format!("loader,file={file},addr={address:#x},force-raw=on"),
+                None => format!("file={file}"),
+            };
+            continue;
+        }
         let (name, bytes) = match arg.as_str() {
             POWER_TABLE => ("power.aml", POWER_AML.to_vec()),
             THERMAL_TABLE => ("thermal.aml", THERMAL_AML.to_vec()),
@@ -8339,9 +8351,12 @@ fn machine_check(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect_screen(&[&format!("{RELEASE} {VERSION} (tty1)"), "# "])?;
     vm.type_text(
         "cd /kernel/devices/system/edac/mc/mc0; echo edac $(cat ce_count ce_noinfo_count \
-         ue_count dimm0/dimm_ce_count dimm0/dimm_label) $(ls | wc -l) $(ls -d dimm*)\n",
+         ue_count dimm1/dimm_ce_count dimm1/dimm_label dimm0/dimm_label) $(ls | wc -l) \
+         $(ls -d dimm*)\n",
     )?;
-    vm.expect_screen(&["edac 3 1 0 2 bank 3 channel 1 7 dimm0"])?;
+    // dimm0 is QEMU's one memory device in its SMBIOS tables; the bank and
+    // channel that had errors come after it.
+    vm.expect_screen(&["edac 3 1 0 2 bank 3 channel 1 DIMM 0 8 dimm0 dimm1"])?;
     // CPU 0, bank 1: VAL, UC, EN, ADDRV and PCC, a memory read error, with
     // only MCIP in MCG_STATUS: the interrupted code cannot restart.
     let fatal = "bank 1: uncorrected memory read error, address 0x9876000; the processor's \

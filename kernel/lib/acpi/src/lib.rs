@@ -13,7 +13,9 @@
 //! describes AMD's IOMMUs, and the resource templates devices' `_CRS`
 //! methods return ([`resources`]); Phase 16 the SPCR, the serial port the
 //! firmware sends its console to ([`Spcr`]), and the FPDT, how long the
-//! firmware and the boot loader took ([`Fpdt`], [`BootTimes`]).
+//! firmware and the boot loader took ([`Fpdt`], [`BootTimes`]); Phase 19
+//! the hardware error tables, the HEST ([`hest`]) and the BERT ([`bert`]),
+//! and the error records they lead to ([`cper`]).
 //! Everything here works on byte slices
 //! and is unit-tested on the build host; the kernel supplies a [`Memory`]
 //! that maps physical addresses for it. The
@@ -26,9 +28,12 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+pub mod bert;
+pub mod cper;
 mod dmar;
 mod fadt;
 mod fpdt;
+pub mod hest;
 mod ivrs;
 mod madt;
 mod numa;

@@ -32,6 +32,7 @@ use std::time::{Duration, Instant};
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::pem::PemObject;
 
+use super::ras::Watch;
 use super::sample::{DISK_CHIP, Filesystem, Snapshot, Temperature, Volume};
 use super::settings::Thresholds;
 use super::size_text;
@@ -298,6 +299,8 @@ pub struct Warnings {
     sensors: HashMap<String, SensorState>,
     /// The certificates' alerts, and when they were read.
     certificates: Option<(Vec<Alert>, Instant)>,
+    /// The hardware errors' alerts, and the last error alerted.
+    ras: Watch,
     sender: Sender,
 }
 
@@ -311,8 +314,15 @@ impl Warnings {
             memory: MemoryState::default(),
             sensors: HashMap::new(),
             certificates: None,
+            ras: Watch::default(),
             sender: Sender::default(),
         }
+    }
+
+    /// Keeps the number of the last hardware error alerted in the state
+    /// folder `dir`, so that a restart does not alert for it again.
+    pub fn keep_ras_in(&mut self, dir: &Path) {
+        self.ras.keep_in(dir);
     }
 
     /// Takes new thresholds, as after a reload. The certificates are read
@@ -347,6 +357,7 @@ impl Warnings {
         alerts.extend(self.memory_alerts(snapshot));
         alerts.extend(self.temperature_alerts(&snapshot.temperatures));
         alerts.extend(self.certificate_alerts(snapshot.at, now));
+        alerts.extend(self.ras.alerts(snapshot, self.thresholds.dimm_corrected_per_day));
         // Two things whose names are one key once cut down are one alert,
         // the worse of them.
         alerts.sort_by(|a, b| a.key.cmp(&b.key).then(b.severity.cmp(&a.severity)));

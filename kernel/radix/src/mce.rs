@@ -33,10 +33,12 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use radix_hal::{Cpu, CpuLocal, MachineCheck};
 use radix_klog::{error, info, warn};
 use radix_mca::corrected::{STORM_INTERRUPTS, STORM_READ_NS, Storm};
+use radix_mca::record::{Kind, Log, Severity, Source};
 use radix_mm::{FRAMES, Retired};
 use radix_sync::{Once, SpinLock};
 
 use crate::Arch;
+use crate::ras::{self, Report};
 use crate::sched::{self, Options, Policy, ThreadRef};
 use crate::work;
 
@@ -177,6 +179,38 @@ pub fn start(seconds: Option<&str>) {
     }
 }
 
+/// The banks being left to the firmware, and those the `mce` thread has
+/// had every CPU leave.
+static LEAVING: AtomicU32 = AtomicU32::new(0);
+static LEFT: AtomicU32 = AtomicU32::new(0);
+
+/// Leaves the machine-check banks `banks` to the firmware, which handles
+/// their errors first (ACPI's HEST names them), and says so in the log:
+/// the kernel neither reads them nor lets them interrupt. Banks the CPUs
+/// do not have are ignored. The calling CPU turns its interrupts for them
+/// off at once, which also tells every CPU's poll to skip them; the
+/// `mce` thread has the others do the same, and CPUs started later find
+/// the banks left. Callable from any thread, any time after [`start`].
+pub fn firmware_first(banks: &[u8]) {
+    let mask = banks.iter().filter(|&&bank| bank < 32).fold(0u32, |mask, &bank| mask | 1 << bank);
+    if mask == 0 || !on() {
+        return;
+    }
+    if LEAVING.fetch_or(mask, Ordering::AcqRel) & mask == mask {
+        return;
+    }
+    Arch::leave_banks_to_firmware(mask);
+    info!("Machine check: the firmware handles the errors of banks {mask:#x} first");
+    if let Some(thread) = THREAD.get() {
+        sched::wake(thread);
+    }
+}
+
+/// On every CPU: leaves the banks [`firmware_first`] was given.
+fn leave() {
+    Arch::leave_banks_to_firmware(LEAVING.load(Ordering::Acquire));
+}
+
 /// In an interrupt handler: a CPU's banks corrected errors.
 fn on_interrupt() {
     INTERRUPTS.fetch_add(1, Ordering::Relaxed);
@@ -201,6 +235,10 @@ fn run(seconds: usize) {
             );
             work::on_all(HOME, || Arch::mask_corrected_errors(true));
         }
+        let leaving = LEAVING.load(Ordering::Acquire);
+        if leaving != LEFT.swap(leaving, Ordering::Relaxed) {
+            work::on_all(HOME, leave);
+        }
         if interrupts > 0 || now >= next {
             FOUND_CORRECTED.store(false, Ordering::Relaxed);
             work::on_all(HOME, read);
@@ -213,6 +251,24 @@ fn run(seconds: usize) {
             next = now.saturating_add(wait);
         }
         sched::block_until(next, "mce");
+    }
+}
+
+/// The part a bank's error is in, for the record: "CPU 3 bank 7", with
+/// the memory channel when the bank names one.
+struct BankPart {
+    cpu: usize,
+    bank: usize,
+    channel: Option<u8>,
+}
+
+impl fmt::Display for BankPart {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "CPU {} bank {}", self.cpu, self.bank)?;
+        match self.channel {
+            Some(channel) => write!(f, " channel {channel}"),
+            None => Ok(()),
+        }
     }
 }
 
@@ -236,9 +292,35 @@ pub(crate) fn read() {
     Arch::poll_machine_checks(&mut |found: &MachineCheck<'_>| {
         let MachineCheck { bank, corrected, count, memory, page, what } = *found;
         let times = Times(count);
+        // Every error is recorded and counted; a bank that corrects them
+        // by the thousand has only some lines in the log. An uncorrected
+        // error always has its line.
+        let report = Report {
+            source: Source::MachineCheck,
+            severity: if corrected { Severity::Corrected } else { Severity::Recoverable },
+            kind: if memory.is_some() { Kind::Memory } else { Kind::Processor },
+            count,
+            dimm: None,
+            part: &BankPart { cpu, bank, channel: memory.flatten() },
+            what,
+            key: ras::KEY_BANK | bank as u64,
+        };
+        let limit = ras::record(&report);
         if corrected {
             FOUND_CORRECTED.store(true, Ordering::Relaxed);
-            warn!("Machine check: CPU {cpu} bank {bank}{when}: {what}{times}");
+            match limit {
+                Log::Line { left_out } => {
+                    if left_out > 0 {
+                        warn!(
+                            "Machine check: CPU {cpu} bank {bank}: {left_out} more corrected \
+                             errors in the last minute were left out of the log \
+                             (/kernel/ras/errors has them)"
+                        );
+                    }
+                    warn!("Machine check: CPU {cpu} bank {bank}{when}: {what}{times}");
+                }
+                Log::Skip => {}
+            }
         } else {
             error!("Machine check: CPU {cpu} bank {bank}{when}: {what}{times}");
         }
