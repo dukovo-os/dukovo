@@ -885,7 +885,7 @@ a session of its own with the terminal as the controlling one and runs
 each test as a shell runs a job, in a process group of its own, in the
 foreground. The tests are:
 
-*hello*, *fork*, *exec*, *signal*, *pipe*, *socket*, *datagram*, *inet*, *poll*, *events*, *tty*, *job*, *time*, *files*, *locks*, *shm*, *thread*, *cancel*, *spawn*, *limits*, *format*
+*hello*, *fork*, *exec*, *signal*, *pipe*, *socket*, *datagram*, *inet*, *poll*, *events*, *tty*, *job*, *time*, *files*, *locks*, *shm*, *thread*, *cancel*, *spawn*, *limits*, *format*, *strings*
 	C programs in _userspace/posix_, one per area. *inet* runs TCP and
 	UDP over the loopback interface, makes 300 connections in a row, more
 	than the interface has sockets, and checks that a child with no
@@ -905,7 +905,10 @@ foreground. The tests are:
 	receipts, level, edge, oneshot, dispatch and disabled watches on pipes
 	and sockets, user events, the threads and signals that end a wait,
 	timeouts, what a watch holds across *close*, *dup2* and *fork*, *poll*
-	on a queue, and a thousand watches at once.
+	on a queue, and a thousand watches at once. *strings* checks the
+	C library's string functions at every alignment and length against
+	plain loops, with each buffer against pages that fault on any
+	access, so that a read or write past its end is caught.
 
 *library*
 	The C library's corners, as glibc 2.39 has them: allocations near

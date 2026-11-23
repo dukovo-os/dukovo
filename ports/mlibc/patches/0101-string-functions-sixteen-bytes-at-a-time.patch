@@ -1,0 +1,608 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+memcpy, memmove, memset, strlen, memcmp, memchr, strchr, strchrnul,
+strncmp and strcpy for x86-64 that work sixteen bytes at a time with
+SSE2, which every x86-64 processor has, and strcmp as mlibc's own SSE2
+version. The portable versions look at one byte at a time (strlen,
+memcmp, memchr, strchr, strchrnul, strncmp, strcpy, and memmove when it
+copies downwards) or move eight (memcpy, memset). mlibc chooses among
+its SSE2, SSE4.2 and AVX2 strcmp with an ifunc, which the Radix
+toolchain does not build ("C++ compiler supports ifunc: NO"), so strcmp
+was the byte loop as well. In PostgreSQL's select-only pgbench these
+functions were 13% of the instructions in user mode.
+
+A function that reads a string of unknown length loads 16 aligned
+bytes, which never cross a page, and masks off the bytes before the
+string. One that compares two strings loads 16 bytes unaligned only
+where both have 16 left in their page, and goes a byte at a time to the
+end of the page otherwise. Copies of up to 64 bytes read every byte
+into registers before writing any; longer ones read their first and
+last pieces, copy 64 bytes a loop to aligned stores, upwards or
+downwards by which way the two overlap, then write the pieces. memcpy is
+memmove. memcmp returns the difference of the first bytes that differ,
+as glibc does, where the portable version returned -1 or 1.
+
+options/ansi/x86_64/essential.cpp has memcpy, memmove, memset and
+strlen, built into the dynamic linker too as essential.cpp is, and
+options/ansi/x86_64/string.cpp the rest; MLIBC_ARCH_HAS_STRING_FUNCTIONS
+leaves out the portable versions.
+
+diff -ruN a/options/ansi/generic/string.cpp b/options/ansi/generic/string.cpp
+--- a/options/ansi/generic/string.cpp
++++ b/options/ansi/generic/string.cpp
+@@ -17,7 +17,10 @@
+ // memcpy() is defined in options/internals.
+ // memmove() is defined in options/internals.
+ // strlen() is defined in options/internals.
++// x86-64 has its own memcmp, memchr, strchr, strchrnul, strncmp and strcpy,
++// with SSE2, in options/ansi/x86_64/string.cpp.
+ 
++#ifndef MLIBC_ARCH_HAS_STRING_FUNCTIONS
+ char *strcpy(char *__restrict dest, const char *src) {
+ 	char *dest_bytes = (char *)dest;
+ 	char *src_bytes = (char *)src;
+@@ -26,6 +29,7 @@
+ 	*dest_bytes = 0;
+ 	return dest;
+ }
++#endif
+ char *strncpy(char *__restrict dest, const char *src, size_t max_size) {
+ 	auto dest_bytes = static_cast<char *>(dest);
+ 	auto src_bytes = static_cast<const char *>(src);
+@@ -58,6 +62,7 @@
+ 	return dest;
+ }
+ 
++#ifndef MLIBC_ARCH_HAS_STRING_FUNCTIONS
+ int memcmp(const void *a, const void *b, size_t size) {
+ 	for(size_t i = 0; i < size; i++) {
+ 		auto a_byte = static_cast<const unsigned char *>(a)[i];
+@@ -69,6 +74,7 @@
+ 	}
+ 	return 0;
+ }
++#endif
+ 
+ extern "C" [[gnu::visibility("protected")]]
+ int __mlibc_strcmp_default(const char *a, const char *b) {
+@@ -87,7 +93,8 @@
+ 	}
+ }
+ 
+-#if !defined(MLIBC_ARCH_HAS_STRCMP) || !MLIBC_IFUNCS_SUPPORTED
++// x86-64 has SSE2's, in strcmp.cpp.
++#if !defined(MLIBC_ARCH_HAS_STRCMP)
+ int strcmp(const char *a, const char *b) __attribute__((alias("__mlibc_strcmp_default")));
+ #endif
+ 
+@@ -96,6 +103,7 @@
+ 	return mlibc::strcoll<char>(a, b, l);
+ }
+ 
++#ifndef MLIBC_ARCH_HAS_STRING_FUNCTIONS
+ int strncmp(const char *a, const char *b, size_t max_size) {
+ 	size_t i = 0;
+ 	while(true) {
+@@ -113,6 +121,7 @@
+ 		i++;
+ 	}
+ }
++#endif
+ 
+ size_t strxfrm(char *__restrict dest, const char *__restrict src, size_t n) {
+ 	auto l = mlibc::getActiveLocale();
+@@ -134,6 +143,7 @@
+ 	return mlibc::do_xfrm<char>(reinterpret_cast<const uint8_t *>(src), dest, n, mlibc::coll_context<char>::from_localeinfo(l));
+ }
+ 
++#ifndef MLIBC_ARCH_HAS_STRING_FUNCTIONS
+ void *memchr(const void *s, int c, size_t size) {
+ 	auto s_bytes = static_cast<const unsigned char *>(s);
+ 	for(size_t i = 0; i < size; i++)
+@@ -154,6 +164,7 @@
+ 		return const_cast<char *>(&s[i]);
+ 	return nullptr;
+ }
++#endif
+ size_t strcspn(const char *s, const char *chrs) {
+ 	size_t n = 0;
+ 	while(true) {
+@@ -246,6 +257,7 @@
+         return strtok_r(s, delimiter, &saved);
+ }
+ 
++#ifndef MLIBC_ARCH_HAS_STRING_FUNCTIONS
+ // This is a GNU extension.
+ char *strchrnul(const char *s, int c) {
+ 	const unsigned char target = static_cast<unsigned char>(c);
+@@ -257,6 +269,7 @@
+ 	}
+ 	return const_cast<char *>(s + i);
+ }
++#endif
+ 
+ double wcstod(const wchar_t *__restrict string, wchar_t **__restrict end) {
+ 	return mlibc::strtofp<double, wchar_t>(string, end, mlibc::getActiveLocale());
+diff -ruN a/options/ansi/x86_64/essential.cpp b/options/ansi/x86_64/essential.cpp
+--- a/options/ansi/x86_64/essential.cpp
++++ b/options/ansi/x86_64/essential.cpp
+@@ -0,0 +1,227 @@
++// memcpy, memmove, memset and strlen for x86-64, sixteen bytes at a time
++// with SSE2, which every x86-64 processor has. The portable versions in
++// options/internal/generic/essential.cpp move eight bytes at a time,
++// memmove one when it copies backwards, and strlen reads one. The
++// dynamic linker has these too.
++
++#include <emmintrin.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <string.h>
++
++namespace {
++
++using Vector = __m128i;
++
++[[gnu::always_inline]] inline Vector load(const unsigned char *p) {
++	return _mm_loadu_si128(reinterpret_cast<const Vector *>(p));
++}
++
++[[gnu::always_inline]] inline void store(unsigned char *p, Vector v) {
++	_mm_storeu_si128(reinterpret_cast<Vector *>(p), v);
++}
++
++[[gnu::always_inline]] inline void store_aligned(unsigned char *p, Vector v) {
++	_mm_store_si128(reinterpret_cast<Vector *>(p), v);
++}
++
++template<typename T>
++[[gnu::always_inline]] inline T load_word(const unsigned char *p) {
++	T word;
++	__builtin_memcpy(&word, p, sizeof(word));
++	return word;
++}
++
++template<typename T>
++[[gnu::always_inline]] inline void store_word(unsigned char *p, T word) {
++	__builtin_memcpy(p, &word, sizeof(word));
++}
++
++// Copies up to 64 bytes. Every byte is read before any is written, so
++// the two may overlap either way. The first and the last piece of each
++// size overlap in the middle when n is not twice the size.
++[[gnu::always_inline]] inline void copy_short(unsigned char *d, const unsigned char *s, size_t n) {
++	if(n >= 32) {
++		auto a = load(s);
++		auto b = load(s + 16);
++		auto c = load(s + n - 32);
++		auto e = load(s + n - 16);
++		store(d, a);
++		store(d + 16, b);
++		store(d + n - 32, c);
++		store(d + n - 16, e);
++	} else if(n >= 16) {
++		auto a = load(s);
++		auto b = load(s + n - 16);
++		store(d, a);
++		store(d + n - 16, b);
++	} else if(n >= 8) {
++		auto a = load_word<uint64_t>(s);
++		auto b = load_word<uint64_t>(s + n - 8);
++		store_word(d, a);
++		store_word(d + n - 8, b);
++	} else if(n >= 4) {
++		auto a = load_word<uint32_t>(s);
++		auto b = load_word<uint32_t>(s + n - 4);
++		store_word(d, a);
++		store_word(d + n - 4, b);
++	} else if(n >= 2) {
++		auto a = load_word<uint16_t>(s);
++		auto b = load_word<uint16_t>(s + n - 2);
++		store_word(d, a);
++		store_word(d + n - 2, b);
++	} else if(n) {
++		*d = *s;
++	}
++}
++
++// Copies more than 64 bytes upwards, 64 at a time to aligned stores. The
++// first 16 bytes and the last 64 are read before the loop, and written
++// after it: a destination below an overlapping source then works, as the
++// loop writes only below where it reads next.
++void copy_up(unsigned char *d, const unsigned char *s, size_t n) {
++	auto head = load(s);
++	auto t0 = load(s + n - 64);
++	auto t1 = load(s + n - 48);
++	auto t2 = load(s + n - 32);
++	auto t3 = load(s + n - 16);
++	// From 1 to 16 bytes on, to the next 16-byte boundary.
++	size_t skip = 16 - (reinterpret_cast<uintptr_t>(d) & 15);
++	unsigned char *to = d + skip;
++	const unsigned char *from = s + skip;
++	// The loop stops once 64 bytes or fewer are left: the tail has them.
++	unsigned char *end = d + n - 64;
++	while(to < end) {
++		auto a = load(from);
++		auto b = load(from + 16);
++		auto c = load(from + 32);
++		auto e = load(from + 48);
++		store_aligned(to, a);
++		store_aligned(to + 16, b);
++		store_aligned(to + 32, c);
++		store_aligned(to + 48, e);
++		to += 64;
++		from += 64;
++	}
++	store(d, head);
++	store(d + n - 64, t0);
++	store(d + n - 48, t1);
++	store(d + n - 32, t2);
++	store(d + n - 16, t3);
++}
++
++// Copies more than 64 bytes downwards, to a destination above an
++// overlapping source: copy_up turned around.
++void copy_down(unsigned char *d, const unsigned char *s, size_t n) {
++	auto h0 = load(s);
++	auto h1 = load(s + 16);
++	auto h2 = load(s + 32);
++	auto h3 = load(s + 48);
++	auto tail = load(s + n - 16);
++	// The last 16-byte boundary in the destination, from 0 to 15 bytes
++	// before its end.
++	auto to = reinterpret_cast<unsigned char *>(
++			reinterpret_cast<uintptr_t>(d + n) & ~uintptr_t{15});
++	const unsigned char *from = s + (to - d);
++	// The loop stops once 64 bytes or fewer are left: the head has them.
++	unsigned char *start = d + 64;
++	while(to > start) {
++		to -= 64;
++		from -= 64;
++		auto a = load(from);
++		auto b = load(from + 16);
++		auto c = load(from + 32);
++		auto e = load(from + 48);
++		store_aligned(to, a);
++		store_aligned(to + 16, b);
++		store_aligned(to + 32, c);
++		store_aligned(to + 48, e);
++	}
++	store(d + n - 16, tail);
++	store(d, h0);
++	store(d + 16, h1);
++	store(d + 32, h2);
++	store(d + 48, h3);
++}
++
++[[gnu::always_inline]] inline void move(void *dest, const void *src, size_t n) {
++	auto d = static_cast<unsigned char *>(dest);
++	auto s = static_cast<const unsigned char *>(src);
++	if(n <= 64)
++		copy_short(d, s, n);
++	// Upwards when the destination starts below the source or at or past
++	// its end; the difference wraps around when it is below.
++	else if(reinterpret_cast<uintptr_t>(d) - reinterpret_cast<uintptr_t>(s) >= n)
++		copy_up(d, s, n);
++	else
++		copy_down(d, s, n);
++}
++
++} // namespace
++
++void *memcpy(void *__restrict dest, const void *__restrict src, size_t n) {
++	move(dest, src, n);
++	return dest;
++}
++
++void *memmove(void *dest, const void *src, size_t n) {
++	move(dest, src, n);
++	return dest;
++}
++
++void *memset(void *dest, int c, size_t n) {
++	auto d = static_cast<unsigned char *>(dest);
++	auto byte = static_cast<unsigned char>(c);
++	if(n < 16) {
++		uint64_t word = byte * 0x0101010101010101;
++		if(n >= 8) {
++			store_word(d, word);
++			store_word(d + n - 8, word);
++		} else if(n >= 4) {
++			store_word(d, static_cast<uint32_t>(word));
++			store_word(d + n - 4, static_cast<uint32_t>(word));
++		} else if(n >= 2) {
++			store_word(d, static_cast<uint16_t>(word));
++			store_word(d + n - 2, static_cast<uint16_t>(word));
++		} else if(n) {
++			*d = byte;
++		}
++		return dest;
++	}
++	auto v = _mm_set1_epi8(static_cast<char>(byte));
++	store(d, v);
++	store(d + n - 16, v);
++	if(n <= 32)
++		return dest;
++	// Between the first 16 bytes and the last 16, aligned.
++	auto to = reinterpret_cast<unsigned char *>(
++			(reinterpret_cast<uintptr_t>(d) + 16) & ~uintptr_t{15});
++	unsigned char *end = d + n - 16;
++	for(; end - to >= 64; to += 64) {
++		store_aligned(to, v);
++		store_aligned(to + 16, v);
++		store_aligned(to + 32, v);
++		store_aligned(to + 48, v);
++	}
++	for(; to < end; to += 16)
++		store_aligned(to, v);
++	return dest;
++}
++
++size_t strlen(const char *s) {
++	// An aligned load never crosses a page, so the block the string
++	// starts in can be read whole: its bytes before the string are
++	// shifted out of the mask.
++	auto offset = reinterpret_cast<uintptr_t>(s) & 15;
++	auto block = reinterpret_cast<const Vector *>(reinterpret_cast<uintptr_t>(s) - offset);
++	auto zero = _mm_setzero_si128();
++	unsigned int mask = _mm_movemask_epi8(_mm_cmpeq_epi8(_mm_load_si128(block), zero)) >> offset;
++	if(mask)
++		return __builtin_ctz(mask);
++	while(true) {
++		block++;
++		mask = _mm_movemask_epi8(_mm_cmpeq_epi8(_mm_load_si128(block), zero));
++		if(mask)
++			return reinterpret_cast<const char *>(block) + __builtin_ctz(mask) - s;
++	}
++}
+diff -ruN a/options/ansi/x86_64/meson.build b/options/ansi/x86_64/meson.build
+--- a/options/ansi/x86_64/meson.build
++++ b/options/ansi/x86_64/meson.build
+@@ -1,9 +1,15 @@
+ ansi_sources += files(
+-	'strcmp.cpp'
++	'strcmp.cpp',
++	'string.cpp',
+ )
+ 
++# memcpy, memmove, memset and strlen, which the dynamic linker has too.
++internal_sources += files('essential.cpp')
++rtld_sources += files('essential.cpp')
++
+ arch_defines = [
+ 	'-DMLIBC_ARCH_HAS_STRCMP=1',
++	'-DMLIBC_ARCH_HAS_STRING_FUNCTIONS=1',
+ ]
+ 
+ libc_cpp_args += arch_defines
+diff -ruN a/options/ansi/x86_64/strcmp.cpp b/options/ansi/x86_64/strcmp.cpp
+--- a/options/ansi/x86_64/strcmp.cpp
++++ b/options/ansi/x86_64/strcmp.cpp
+@@ -170,4 +170,7 @@
+ 
+ #if MLIBC_IFUNCS_SUPPORTED
+ extern "C" int strcmp(const char *a, const char *b) __attribute__((ifunc("__mlibc_resolve_strcmp")));
++#else
++// Without ifuncs, SSE2's, which every x86-64 processor has.
++extern "C" int strcmp(const char *a, const char *b) __attribute__((alias("__mlibc_strcmp_sse2")));
+ #endif
+diff -ruN a/options/ansi/x86_64/string.cpp b/options/ansi/x86_64/string.cpp
+--- a/options/ansi/x86_64/string.cpp
++++ b/options/ansi/x86_64/string.cpp
+@@ -0,0 +1,197 @@
++// memcmp, memchr, strchr, strchrnul, strncmp and strcpy for x86-64,
++// sixteen bytes at a time with SSE2, which every x86-64 processor has;
++// the portable versions in options/ansi/generic/string.cpp look at one
++// byte at a time. strcmp is __mlibc_strcmp_sse2, in strcmp.cpp.
++//
++// A function may read past the end of what it looks at, but never into
++// another page, where the bytes may not be mapped: an aligned 16-byte
++// load never crosses one, and an unaligned one is made only where the
++// page has 16 bytes left.
++
++#include <emmintrin.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <string.h>
++
++namespace {
++
++using Vector = __m128i;
++
++constexpr uintptr_t page_size = 4096;
++
++[[gnu::always_inline]] inline Vector load(const unsigned char *p) {
++	return _mm_loadu_si128(reinterpret_cast<const Vector *>(p));
++}
++
++[[gnu::always_inline]] inline Vector load_aligned(const unsigned char *p) {
++	return _mm_load_si128(reinterpret_cast<const Vector *>(p));
++}
++
++// A bit for each of the 16 bytes at which a and b are equal.
++[[gnu::always_inline]] inline unsigned int equal(Vector a, Vector b) {
++	return _mm_movemask_epi8(_mm_cmpeq_epi8(a, b));
++}
++
++// The bytes from p to the end of its page.
++[[gnu::always_inline]] inline size_t page_left(const unsigned char *p) {
++	return page_size - (reinterpret_cast<uintptr_t>(p) & (page_size - 1));
++}
++
++template<typename T>
++[[gnu::always_inline]] inline T load_word(const unsigned char *p) {
++	T word;
++	__builtin_memcpy(&word, p, sizeof(word));
++	return word;
++}
++
++// Compares n bytes, from sizeof(T) to twice that, as two words that
++// overlap in the middle.
++template<typename T>
++int compare_words(const unsigned char *a, const unsigned char *b, size_t n) {
++	size_t at = 0;
++	T x = load_word<T>(a);
++	T y = load_word<T>(b);
++	if(x == y) {
++		at = n - sizeof(T);
++		x = load_word<T>(a + at);
++		y = load_word<T>(b + at);
++		if(x == y)
++			return 0;
++	}
++	// The first byte that differs holds the lowest bit that does, as
++	// x86-64 is little-endian.
++	at += __builtin_ctzll(x ^ y) / 8;
++	return a[at] - b[at];
++}
++
++// The first c, or the end of the string when or_end is true or c is 0;
++// nullptr when the string ends first and or_end is false.
++template<bool or_end>
++char *find(const char *string, int c) {
++	auto s = reinterpret_cast<const unsigned char *>(string);
++	auto byte = static_cast<unsigned char>(c);
++	auto wanted = _mm_set1_epi8(static_cast<char>(byte));
++	auto zero = _mm_setzero_si128();
++	// The bytes of the first block before the string are masked off.
++	auto offset = reinterpret_cast<uintptr_t>(s) & 15;
++	auto block = s - offset;
++	auto chunk = load_aligned(block);
++	unsigned int mask = (equal(chunk, wanted) | equal(chunk, zero)) & (0xffffu << offset);
++	while(!mask) {
++		block += 16;
++		chunk = load_aligned(block);
++		mask = equal(chunk, wanted) | equal(chunk, zero);
++	}
++	auto found = block + __builtin_ctz(mask);
++	if(!or_end && *found != byte)
++		return nullptr;
++	return const_cast<char *>(reinterpret_cast<const char *>(found));
++}
++
++} // namespace
++
++int memcmp(const void *left, const void *right, size_t n) {
++	auto a = static_cast<const unsigned char *>(left);
++	auto b = static_cast<const unsigned char *>(right);
++	if(n >= 16) {
++		size_t i = 0;
++		while(true) {
++			unsigned int mask = ~equal(load(a + i), load(b + i)) & 0xffff;
++			if(mask) {
++				i += __builtin_ctz(mask);
++				return a[i] - b[i];
++			}
++			if(i + 16 == n)
++				return 0;
++			i += 16;
++			// The last 16 bytes, overlapping those before.
++			if(n - i < 16)
++				i = n - 16;
++		}
++	}
++	if(n >= 8)
++		return compare_words<uint64_t>(a, b, n);
++	if(n >= 4)
++		return compare_words<uint32_t>(a, b, n);
++	for(size_t i = 0; i < n; i++) {
++		if(a[i] != b[i])
++			return a[i] - b[i];
++	}
++	return 0;
++}
++
++void *memchr(const void *memory, int c, size_t n) {
++	if(!n)
++		return nullptr;
++	auto s = static_cast<const unsigned char *>(memory);
++	auto wanted = _mm_set1_epi8(static_cast<char>(c));
++	// Counted from the start of the block s is in, whose bytes before s
++	// are masked off. An n that runs past the end of memory runs to it.
++	auto offset = reinterpret_cast<uintptr_t>(s) & 15;
++	auto block = s - offset;
++	size_t end = n + offset;
++	if(end < n)
++		end = SIZE_MAX;
++	unsigned int mask = equal(load_aligned(block), wanted) & (0xffffu << offset);
++	size_t at = 0;
++	while(true) {
++		if(mask) {
++			size_t found = at + __builtin_ctz(mask);
++			if(found >= end)
++				return nullptr;
++			return const_cast<unsigned char *>(block + found);
++		}
++		at += 16;
++		if(at >= end)
++			return nullptr;
++		mask = equal(load_aligned(block + at), wanted);
++	}
++}
++
++char *strchr(const char *s, int c) {
++	return find<false>(s, c);
++}
++
++// This is a GNU extension.
++char *strchrnul(const char *s, int c) {
++	return find<true>(s, c);
++}
++
++int strncmp(const char *left, const char *right, size_t n) {
++	auto a = reinterpret_cast<const unsigned char *>(left);
++	auto b = reinterpret_cast<const unsigned char *>(right);
++	auto zero = _mm_setzero_si128();
++	while(n) {
++		size_t room = page_left(a) < page_left(b) ? page_left(a) : page_left(b);
++		if(room >= 16) {
++			auto x = load(a);
++			// A byte that differs, or the end of both strings.
++			unsigned int mask = (~equal(x, load(b)) | equal(x, zero)) & 0xffff;
++			if(n < 16)
++				mask &= (1u << n) - 1;
++			if(mask) {
++				auto i = __builtin_ctz(mask);
++				return a[i] - b[i];
++			}
++			if(n <= 16)
++				return 0;
++			a += 16;
++			b += 16;
++			n -= 16;
++			continue;
++		}
++		// Up to the end of the page that ends first, a byte at a time.
++		for(; room && n; room--, n--) {
++			if(*a != *b || !*a)
++				return *a - *b;
++			a++;
++			b++;
++		}
++	}
++	return 0;
++}
++
++char *strcpy(char *__restrict dest, const char *src) {
++	memcpy(dest, src, strlen(src) + 1);
++	return dest;
++}
+diff -ruN a/options/internal/generic/essential.cpp b/options/internal/generic/essential.cpp
+--- a/options/internal/generic/essential.cpp
++++ b/options/internal/generic/essential.cpp
+@@ -1,6 +1,9 @@
+ #include <string.h>
+ #include <stdint.h>
+ 
++// x86-64 has its own, with SSE2, in options/ansi/x86_64/essential.cpp.
++#ifndef MLIBC_ARCH_HAS_STRING_FUNCTIONS
++
+ namespace {
+ 	template<typename T>
+ 	[[gnu::always_inline]]
+@@ -213,3 +216,5 @@
+ 		len++;
+ 	return len;
+ }
++
++#endif // !MLIBC_ARCH_HAS_STRING_FUNCTIONS
