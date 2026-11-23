@@ -1474,9 +1474,11 @@ fn futex_constants_are_linuxs() {
 
 #[test]
 fn other_futex_commands_keep_their_number_without_the_flags() {
-    for (raw, number) in
-        [(2, 2), (6 | 128 | 256, 6), (7, 7), (11 | 128, 11), (13, 13), (0x8000_0001, 0x8000_0001)]
+    let both = futex::FUTEX_PRIVATE_FLAG | futex::FUTEX_CLOCK_REALTIME;
+    for (number, flags) in
+        [(2, 0), (6, both), (7, 0), (11, futex::FUTEX_PRIVATE_FLAG), (13, 0), (0x8000_0001, 0)]
     {
+        let raw = number | flags;
         assert_eq!(futex::op(raw).command, futex::Command::Other(number), "{raw:#x}");
     }
 }

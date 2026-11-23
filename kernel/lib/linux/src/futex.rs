@@ -367,9 +367,10 @@ mod tests {
 
     #[test]
     fn a_word_of_another_owner_is_left() {
-        assert_eq!(death(77, 1234, false, false), Death::Leave);
+        let other = 77;
+        assert_eq!(death(other, 1234, false, false), Death::Leave);
         assert_eq!(death(0, 1234, false, false), Death::Leave);
-        assert_eq!(death(77 | FUTEX_WAITERS, 1234, false, true), Death::Leave);
+        assert_eq!(death(other | FUTEX_WAITERS, 1234, false, true), Death::Leave);
     }
 
     #[test]
