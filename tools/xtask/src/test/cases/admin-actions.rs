@@ -17,7 +17,8 @@
 //! dukovo-check has kept no result, metrics.usage, metrics.around and
 //! service.usage are ADM-123 on a machine whose history metricsd has not
 //! written yet, which it does every 10 minutes, and reliability.start is
-//! ADM-123 on a machine that keeps no record of its starts. This guest has no Btrfs root and no
+//! ADM-123 on a machine that keeps no record of its starts, and
+//! hardware.bmc-events ADM-123 on a machine with no BMC. This guest has no Btrfs root and no
 //! backup place, so snapshots.browse is ADM-123 or BAK-105, backups.show
 //! is BAK-101 and move.plan, which finds no backups, ADM-123: admin-backups
 //! and admin-move call them with what they need, and accounts.show, which
@@ -549,6 +550,9 @@ fn seen(document: &Value, name: &str) -> Result<Seen, String> {
 ///   begins (startup(8)). The guest did not start from a Dukovo root on a
 ///   disk, so it has no health check and keeps no record: `startup --start
 ///   1` ends with status 1, ADM-123, 422.
+/// - `hardware.bmc-events` reads the BMC's event log, and this guest has no
+///   BMC: bmc ends with its own words, ADM-123, 422. The lab test
+///   web-console/hardware reads the log of a server's BMC.
 /// - `snapshots.browse` and `snapshots.browse-all` browse `lab-before` of
 ///   `/users`. This guest's root is not Btrfs, so `/users` is no place snap
 ///   knows and it ends with its own words: ADM-123, 422; on a Btrfs root
@@ -581,7 +585,7 @@ fn may_refuse(id: &str) -> &'static [(u16, &'static str)] {
         "checks.last" | "metrics.usage" | "metrics.around" | "service.usage" | "storage.usage" => {
             &[(422, "ADM-123")]
         }
-        "reliability.start" => &[(422, "ADM-123")],
+        "reliability.start" | "hardware.bmc-events" => &[(422, "ADM-123")],
         "storage.health" => &[(422, "DSK-101")],
         "snapshots.browse" | "snapshots.browse-all" => &[(422, "ADM-123"), (422, "BAK-105")],
         "backups.show" | "backups.key" => &[(422, "BAK-101")],

@@ -13,6 +13,8 @@
 //! unless the owner names a Prometheus server in metrics.toml(5).
 //!
 //! - [`sample`] reads the machine and makes the row of two readings;
+//! - [`bmc`] adds the baseboard management controller's temperatures, fans
+//!   and power to the row, and tells of the entries its event log gains;
 //! - [`store`] is the history's files, which `metrics` and the console
 //!   read;
 //! - [`settings`] reads `/system/settings/metrics.toml`.
@@ -23,6 +25,7 @@
 //! log (`log metricsd`) and again when it is over. SIGTERM writes the rows
 //! waiting and ends, SIGHUP reads metrics.toml again.
 
+pub(crate) mod bmc;
 mod command;
 mod prometheus;
 pub(crate) mod sample;
@@ -225,6 +228,8 @@ struct Daemon {
     warnings: Warnings,
     /// How the alerts reach alertd.
     set_alerts: SetAlerts,
+    /// The machine's BMC, which a machine without one leaves idle.
+    bmc: bmc::Bmc,
     said: Said,
 }
 
@@ -242,6 +247,10 @@ type SetAlerts = Box<dyn FnMut(&[Alert]) -> Result<(), String>>;
 impl Daemon {
     fn new(places: Places, sources: Sources, set_alerts: SetAlerts) -> Daemon {
         let mut warnings = Warnings::new(Thresholds::default(), &places.ssl);
+        let bmc = bmc::Bmc::system(
+            &places.state,
+            Box::new(|alert| client::event(alert, client::Screen::Tell)),
+        );
         // The line of a filesystem's filling goes on from the history.
         warnings.backfill(&places.state, unix_seconds());
         let mut daemon = Daemon {
@@ -254,6 +263,7 @@ impl Daemon {
             unwritten: 0,
             warnings,
             set_alerts,
+            bmc,
             said: Said::default(),
         };
         daemon.reload();
@@ -319,7 +329,8 @@ impl Daemon {
     /// writes it as text.
     fn step(&mut self) {
         let snapshot = self.reader.lock().unwrap_or_else(PoisonError::into_inner).read();
-        let row = sample::series(self.previous.as_ref(), &snapshot);
+        let mut row = sample::series(self.previous.as_ref(), &snapshot);
+        row.extend(self.bmc.step());
         self.write_now(&row);
         self.keep(snapshot.at, &row);
         self.warn(&snapshot);

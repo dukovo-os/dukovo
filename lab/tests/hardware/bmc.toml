@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# bmc(8) on any lab machine. On one with a BMC that Dukovo reaches (the
+# R740's iDRAC), it names the BMC, lists its sensors with readings, reads
+# its event log without changing it, shows its network port and blinks the
+# identify light for a few seconds. On one with none (the OptiPlexes, and
+# QEMU without an IPMI device), it says so in one line and fails, as its
+# page says. Each answer is checked where the machine gives it, so the
+# test passes only when every command a machine can run did what it says.
+about = "bmc names the BMC, lists its sensors, event log and network port and blinks the identify light where there is a BMC, and says in one line where there is none"
+time = "3m"
+
+# A user who is no administrator is refused, or told there is no BMC.
+[[step]]
+run = "sh -c 'bmc 2>&1; true'"
+expect_not = "Radix panic"
+
+[[step]]
+run = "sh"
+root = true
+input = '''
+verdict=good
+if [ -e /devices/ipmi0 ]; then
+  bmc > /tmp/bmc-summary || verdict="bmc failed"
+  grep -q 'IPMI' /tmp/bmc-summary || verdict="bmc named no IPMI version"
+  bmc sensors > /tmp/bmc-sensors || verdict="bmc sensors failed"
+  [ -s /tmp/bmc-sensors ] || verdict="bmc sensors listed nothing"
+  bmc events > /tmp/bmc-events || verdict="bmc events failed"
+  bmc events > /tmp/bmc-events-again || verdict="bmc events failed again"
+  bmc lan > /tmp/bmc-lan || verdict="bmc lan failed"
+  bmc identify 5 > /dev/null || verdict="bmc identify failed"
+  bmc --json | grep -q '{' || verdict="bmc --json gave no object"
+  echo "bmc with a BMC: $verdict"
+else
+  out=$(bmc 2>&1)
+  status=$?
+  [ "$status" = 1 ] || verdict="bmc ended with $status"
+  case "$out" in
+    *"this machine has no BMC that Dukovo reaches"*) ;;
+    *) verdict="bmc said: $out" ;;
+  esac
+  echo "bmc without a BMC: $verdict"
+fi
+'''
+expect = ": good"
+
+# The event log was read twice, and the second read lists at least as
+# much as the first: reading it changes nothing.
+[[step]]
+run = "sh"
+root = true
+input = '''
+if [ -e /devices/ipmi0 ]; then
+  a=$(wc -l < /tmp/bmc-events); b=$(wc -l < /tmp/bmc-events-again)
+  [ "$b" -ge "$a" ] && echo "events-kept" || echo "events-lost $a $b"
+else
+  echo "events-kept"
+fi
+rm -f /tmp/bmc-summary /tmp/bmc-sensors /tmp/bmc-events /tmp/bmc-events-again /tmp/bmc-lan
+'''
+expect = "events-kept"

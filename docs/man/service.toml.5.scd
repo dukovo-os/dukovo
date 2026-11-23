@@ -391,14 +391,19 @@ override:
 		except a place in _/system/state_ or deeper in _/system/live_
 		than a folder of it: that is state or a socket another service
 		makes, which may not be there yet, and the view goes without it
-		until a later start (see below).
+		until a later start (see below). A place in _/devices_ that is
+		not there is a device this machine does not have, and the view
+		goes without it too.
 
 	*files.read-write* = [_"path"_, ...]
 		Places it may read and change. Spark makes a directory for one
 		that is not there yet, as systemd's StateDirectory= does, unless
 		it is deeper in _/system/live_ than a folder of it, as a
 		service's socket is: a directory there would keep its service
-		from making the socket, so the view goes without it.
+		from making the socket, so the view goes without it. Nor does it
+		make one in _/devices_, where the kernel adds the devices the
+		machine has: the view goes without a device that is not there,
+		as *metricsd*(8)'s goes without a BMC on a machine that has none.
 
 	A socket either list names, such as _/system/live/log/query_, is
 	reached through its folder: a socket cannot be opened to be
@@ -816,9 +821,10 @@ A place it names that is not there, a secret that is not set, or a
 certificate that certd does not keep, keeps it from starting, and Spark
 says why in the log and in the answer to *service* _name_ *start*. A
 folder of _/system/live_ is made instead, as is a place it may change
-elsewhere. A place held read-only in _/system/state_, and one deeper in
-_/system/live_, is left out of the view instead, and Spark says so in
-the log: the update health check's view names troubleshoot's
+elsewhere but in _/devices_. A place held read-only in _/system/state_,
+one deeper in _/system/live_, and a device of _/devices_ that the
+machine does not have, are left out of the view instead, and Spark says
+so in the log: the update health check's view names troubleshoot's
 signatures, which are not there until an update keeps a newer set, and
 the log's query socket, which is not there while *logd*(8) restarts.
 

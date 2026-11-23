@@ -14,6 +14,7 @@ import { devicesOf, hiddenWords } from '../pages/hardware/devices-model.js';
 import {
   disksOf, pillOf, testArgs, testsOf,
 } from '../pages/hardware/disks-model.js';
+import { bmcRows, eventRows, EVENTS_SHOWN, sensorGroups, showAllWords } from '../pages/hardware/bmc-model.js';
 import { askedWords, startRun } from '../pages/hardware/memtest-lines.js';
 import {
   hereWords, nextWords, quietMinutes, testMinutes,
@@ -26,7 +27,7 @@ import {
   modelWords, moduleWords, processorWords, stateOf, summaryWords, tookBackWords, upWords,
 } from '../pages/hardware/model.js';
 import {
-  about, asked, broken, clean, devices, diskHealth, highest, history, inventory, last, NOW, sensors, show, skipped, startTest, storage, task, time, updates,
+  about, asked, bmcEvents, bmcOf, bmcSensors, broken, clean, devices, diskHealth, highest, history, inventory, last, NOW, sensors, show, skipped, startTest, storage, task, time, updates,
 } from './hardware-fixtures.mjs';
 
 test('amounts of memory are in GiB from one and in MiB below it, and none for no memory', () => {
@@ -48,6 +49,10 @@ test('the processor says its cores, its threads when they differ, and its clock'
   assert.equal(processorWords(show().processor), 'Intel Core i5-6500 · 4 cores, 3.2 GHz, up to 3.6 GHz');
   assert.equal(processorWords({ model: 'Intel Xeon E-2236', cores: 6, threads: 12, base_mhz: 3400, max_mhz: 4800 }), 'Intel Xeon E-2236 · 6 cores, 12 threads, 3.4 GHz, up to 4.8 GHz');
   assert.equal(processorWords({ model: 'ARM Cortex-A72', cores: 1, threads: 1, base_mhz: null, max_mhz: 1500 }), 'ARM Cortex-A72 · 1 core, 1.5 GHz');
+  assert.equal(processorWords({
+    model: 'Intel Xeon Gold 6152', sockets: 2, cores: 44, threads: 88, base_mhz: 2100, max_mhz: 3700,
+  }), '2 × Intel Xeon Gold 6152 · 44 cores, 88 threads, 2.1 GHz, up to 3.7 GHz');
+  assert.equal(processorWords({ model: 'Intel Xeon Silver 4110', sockets: 1, cores: 8 }), 'Intel Xeon Silver 4110 · 8 cores');
   assert.equal(processorWords({ model: 'QEMU Virtual CPU', cores: 2, threads: 2, base_mhz: 2000, max_mhz: 2000 }), 'QEMU Virtual CPU · 2 cores, 2 GHz');
   assert.equal(processorWords({ model: null, cores: null, threads: null, base_mhz: null, max_mhz: null }), null);
   assert.equal(processorWords(undefined), null);
@@ -507,4 +512,66 @@ test('the line of a test at a start copes with one error, one place, a small mem
 test('a test at a start that was never kept, or whose result is not known, is not said', () => {
   for (const answer of [null, undefined, {}, { result: 'passed' }, { at_ms: 'now', result: 'passed' }]) assert.equal(startRun(answer, time, NOW_SECONDS), null);
   assert.equal(startRun({ ...startTest('passed'), result: 'exploded' }, time, NOW_SECONDS), null);
+});
+
+test('the BMC card names the BMC and its address, and says none set for a BMC with no address', () => {
+  assert.deepEqual(bmcRows(bmcOf()), [['Maker', 'Dell'], ['Firmware', '6.10'], ['IPMI', '2.0'], ['LAN address', '10.1.2.3']]);
+  assert.equal(bmcRows({ ...bmcOf(), lan_address: null }).at(-1)[1], 'none set');
+  assert.deepEqual(bmcRows(undefined), []);
+});
+
+test('a server\'s BMC lists its power, currents and voltages by kind, with what is not well named first', () => {
+  const { total, attention, groups } = sensorGroups(bmcSensors());
+  // 3 power sensors, 2 currents and 31 voltages: the temperatures and fans belong to the other card.
+  assert.equal(total, 36);
+  assert.deepEqual(groups.map((group) => [group.id, group.title, group.items.length]), [['power', 'Power', 3], ['currents', 'Currents', 2], ['voltages', 'Voltages', 31]]);
+  assert.deepEqual(attention.map((item) => [item.kind, item.name, item.words, item.tone]), [['Voltages', 'Voltage 31', 'unavailable', 'off']]);
+  assert.equal(groups[0].items[0].words, '210 W');
+  assert.equal(groups[1].items[0].words, '0.6 A');
+  assert.equal(showAllWords(total), 'Show all 36 sensors');
+});
+
+test('a sensor over a threshold says its value and its state, and one with no reading says only the state', () => {
+  const answer = { bmc: { power: [{ name: 'A', value: 1234.5678, unit: 'W', status: 'critical' }, { name: 'B', value: null, unit: 'W', status: 'not-reachable' }, { name: 'C', value: null, unit: 'W', status: 'ok' }] } };
+  const { attention, groups } = sensorGroups(answer);
+  assert.deepEqual(attention.map((item) => [item.name, item.words, item.tone]), [['A', '1,234.568 W, critical', 'bad'], ['B', 'not reachable', 'off']]);
+  assert.equal(groups[0].items[2].words, 'no reading');
+  assert.deepEqual(sensorGroups({ format: 1 }), { total: 0, attention: [], groups: [] });
+  assert.deepEqual(sensorGroups(null), { total: 0, attention: [], groups: [] });
+});
+
+test('the BMC card shows the last ten entries of the log, newest first, with the clock of one that has none as a time since the start', () => {
+  const rows = eventRows(bmcEvents(14), time);
+  assert.equal(rows.length, EVENTS_SHOWN);
+  assert.equal(rows[0].key, 14);
+  assert.equal(rows[0].words, 'Fan2B RPM: lower critical going low, asserted');
+  assert.equal(rows[0].tone, 'bad');
+  assert.equal(rows[1].tone, null);
+  // A short log shows all of it, and the entry made before the clock was set is last.
+  const short = eventRows(bmcEvents(2), time);
+  assert.deepEqual(short.map((row) => row.key), [2, 1]);
+  assert.equal(short[1].when, 'start +0:01:40');
+  assert.equal(short[1].words, 'OS Watchdog: hard reset, SMS or OS timer, asserted');
+  assert.deepEqual(eventRows({ events: [] }, time), []);
+  assert.deepEqual(eventRows(undefined, time), []);
+});
+
+test('the BMC\'s temperatures and fans join the Temperatures and fans card under the BMC\'s own names, with their state', () => {
+  const answer = bmcSensors();
+  const { rows, none } = tempRows(answer, [], { unit: 'C', time, now: NOW / 1000 });
+  assert.equal(none, false);
+  assert.equal(rows.length, 11);
+  assert.deepEqual([rows[0].name, rows[0].small, rows[0].now.text], ['Inlet Temp', 'BMC', '22 °C']);
+  const hot = rows.find((row) => row.name === 'CPU2 Temp');
+  assert.deepEqual([hot.now.tone, hot.now.words], ['warn', 'warning']);
+  assert.equal(rows[0].key, 'bmc.temp{Inlet Temp}');
+  const fans = fanRows(answer);
+  assert.equal(fans.length, 20);
+  assert.equal(fans[0].name, 'Fan1A RPM (BMC)');
+  assert.equal(fans[0].words, '7,000 RPM');
+  assert.deepEqual([fans[3].words, fans[3].tone], ['7,030 RPM, critical', 'bad']);
+  // The voltages, currents and power are not in this card.
+  assert.equal(rows.length + fans.length, 31);
+  // A machine whose answer has no BMC is as before.
+  assert.deepEqual(tempRows(sensors(), highest(), { unit: 'C', time, now: NOW / 1000 }).rows.length, tempRows({ ...sensors(), bmc: undefined }, highest(), { unit: 'C', time, now: NOW / 1000 }).rows.length);
 });

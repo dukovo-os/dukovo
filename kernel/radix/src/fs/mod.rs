@@ -48,6 +48,7 @@ mod events;
 pub mod framebuffer;
 pub mod fuse;
 pub mod inet;
+pub mod ipmi;
 pub mod keyboard;
 pub mod kmsg;
 pub mod locks;
@@ -172,6 +173,8 @@ enum Special {
     Audio,
     /// `/devices/crashes` (ADR 0530).
     Crashes,
+    /// `/devices/ipmi0` (ADR 0661).
+    Ipmi,
 }
 
 /// The most bytes of a path an [`Opened`] keeps.
@@ -427,6 +430,7 @@ impl FileObject {
             Kind::CharDevice if capture::end_of(&at.node).is_some() => Special::Capture,
             Kind::CharDevice if crate::audio::is_audio(&at.node) => Special::Audio,
             Kind::CharDevice if crashes::is_crashes(&at.node) => Special::Crashes,
+            Kind::CharDevice if ipmi::is_ipmi(&at.node) => Special::Ipmi,
             _ => Special::No,
         };
         // The devices are the last kinds: one comparison for the others.
@@ -555,6 +559,11 @@ impl FileObject {
         self.special == Special::Crashes
     }
 
+    /// Whether it is of `/devices/ipmi0`.
+    pub fn is_ipmi(&self) -> bool {
+        self.special == Special::Ipmi
+    }
+
     /// Whether its reads and writes are a pipe's, a socket's, a terminal's
     /// or a device's, not a node's: one comparison, for the paths that
     /// plain files take.
@@ -590,6 +599,7 @@ impl Drop for FileObject {
             Special::Kmsg => kmsg::closed(),
             Special::Framebuffer => framebuffer::closed(self.address()),
             Special::Audio => crate::audio::closed(self),
+            Special::Ipmi => ipmi::closed(self),
             _ => {}
         }
         if self.locked.load(Ordering::Acquire) {

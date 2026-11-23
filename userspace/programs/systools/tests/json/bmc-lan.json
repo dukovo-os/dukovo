@@ -1,0 +1,11 @@
+{
+  "format": 1,
+  "channel": 1,
+  "source": "static",
+  "address": "10.1.2.3",
+  "mask": "255.255.255.0",
+  "prefix": 24,
+  "gateway": "10.1.2.1",
+  "mac": "00:11:22:33:44:55",
+  "vlan": 291
+}

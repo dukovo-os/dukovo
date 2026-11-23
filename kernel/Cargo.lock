@@ -281,6 +281,7 @@ dependencies = [
  "radix-input",
  "radix-intel-net",
  "radix-ipc",
+ "radix-ipmi",
  "radix-iso9660",
  "radix-kdb",
  "radix-klog",
@@ -644,6 +645,10 @@ dependencies = [
  "proptest",
  "radix-abi",
 ]
+
+[[package]]
+name = "radix-ipmi"
+version = "0.17.0"
 
 [[package]]
 name = "radix-iso9660"

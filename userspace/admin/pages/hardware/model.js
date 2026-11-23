@@ -32,17 +32,19 @@ export function modelWords(machine) {
 
 const clockWords = (mhz) => `${Number((mhz / 1000).toFixed(2))} GHz`;
 
-/** "Intel Core i5-6500 · 4 cores, 3.2 GHz, up to 3.6 GHz"; threads only when a core runs more than one. */
+/** "Intel Core i5-6500 · 4 cores, 3.2 GHz, up to 3.6 GHz"; threads only when a core runs more than one, and the sockets when there are two or more: "2 × Intel Xeon Gold 6152 · 44 cores, …". */
 export function processorWords(processor) {
   const {
-    model, cores, threads, base_mhz: base, max_mhz: max,
+    model, sockets, cores, threads, base_mhz: base, max_mhz: max,
   } = processor ?? {};
   const details = [];
   if (cores > 0) details.push(counted(cores, 'core'));
   if (threads > 0 && threads !== cores) details.push(counted(threads, 'thread'));
   if (base > 0 && max > base) details.push(clockWords(base), `up to ${clockWords(max)}`);
   else if (base > 0 || max > 0) details.push(clockWords(base > 0 ? base : max));
-  return [orNothing(model), details.join(', ')].filter(Boolean).join(' · ') || null;
+  const name = orNothing(model);
+  const named = name && sockets > 1 ? `${sockets} × ${name}` : name;
+  return [named, details.join(', ')].filter(Boolean).join(' · ') || null;
 }
 
 /** "DDR4-2133": a module's kind and the speed it runs at. */

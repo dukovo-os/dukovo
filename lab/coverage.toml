@@ -36,6 +36,7 @@ alerts = ["journeys/new-server", "monitoring/alerts-email", "monitoring/alerts-w
 at = ["services/crontab"]
 atq = ["services/crontab"]
 atrm = ["services/crontab"]
+bmc = ["hardware/bmc"]
 backup = ["journeys/data-safety", "web-console/snapshots"]
 "backup find" = ["web-console/move"]
 batch = ["services/crontab"]

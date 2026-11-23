@@ -89,11 +89,15 @@ of case, its processor with the cores and threads and the clock it is
 rated at, the memory the kernel counts, and the firmware's vendor,
 version and date. It needs no rights, and no serial number or ID of the
 machine is read, so that what it prints can be shown or put in a report
-as it is. What only SMBIOS's tables say of the memory, whether it
-corrects errors, how many slots the board has and each module in them,
-is told when the program holds the platform capability that reads those
-tables whole (*hwinfo*(8)), as a command run with *elevate*(8) does; for
-anyone else those three are _null_. See *WHAT THE MACHINE IS*.
+as it is. What only SMBIOS's tables say, how many sockets hold a
+processor (a machine of two or more says "2 × " before the model), and
+of the memory whether it corrects errors, how many slots the board has
+and each module in them, is told when the program holds the platform
+capability that reads those tables whole (*hwinfo*(8)), as a command run
+with *elevate*(8) does; for anyone else those four are _null_. On a server whose BMC the program may
+ask (it is root's: run the command with *elevate*(8)), the document has a
+_bmc_ member that names it, and the text a line for it; on any other
+machine the member is left out. See *WHAT THE MACHINE IS*.
 
 *hardware sensors* says what the machine's temperatures and fans read:
 each sensor of the hardware monitors, as *sensors*(1) reads it, each
@@ -102,7 +106,12 @@ it. Each has the name of the series that *metricsd*(8) keeps its history
 under, so that *metrics show* gives the points. A disk is never asked, so
 that it is not woken: a disk that sleeps says since when, and is shown as
 asleep. On a machine with no sensor and no zone the lists are empty, and
-the text says so. It needs no rights. See *SENSORS*.
+the text says so. It needs no rights. On a server whose BMC the program may
+ask, which only root may (run it with *elevate*(8)), the BMC's sensors are a
+group of their own, by kind: temperatures, fans, voltages, currents and
+power, each with its reading, unit and status. On a machine with no BMC, and
+for anyone the BMC's interface is closed to, nothing changes: there is no
+such group. See *SENSORS*.
 
 *hardware devices* lists every PCI function and USB device the kernel
 found, as the Hardware page shows them: what it is called, its vendor and
@@ -300,6 +309,7 @@ does not say is _null_.
   "chassis": "Mini Tower",
   "processor": {
     "model": "Intel Core i5-6500",
+    "sockets": null,
     "cores": 4,
     "threads": 4,
     "base_mhz": 3200,
@@ -318,6 +328,19 @@ does not say is _null_.
   }
 }
 ```
+
+On a server with a BMC that the program may ask, the document ends with
+a _bmc_ member, which a machine with no BMC does not have:
+
+```
+"bmc": {"maker": "Dell", "firmware": "6.10", "ipmi_version": "2.0",
+        "lan_address": "10.1.2.3"}
+```
+
+_maker_ is the BMC's maker (the number of the enterprise for one the program
+has no name for), _firmware_ its firmware revision, _ipmi_version_ the IPMI
+version it speaks, and _lan_address_ the address of its network port, or
+_null_ when it has none set.
 
 _format_ is the version of the document, 1. _memory.bytes_ is what the
 kernel counts. For a program that holds the platform capability, _ecc_ is
@@ -351,6 +374,27 @@ fan), whether the monitor's _alarm_ is set and whether it says the sensor
 is faulty. _series_ is the name *metricsd*(8) keeps a temperature's
 history under, and _null_ for a fan. A member of _zones_ is a thermal zone
 of the firmware, with its _value_ in degrees Celsius.
+
+For a caller who may ask the BMC, the document has one more member, _bmc_,
+which a machine with no BMC does not have. It holds five lists, _temperatures_,
+_fans_, _voltages_, _currents_ and _power_, of the BMC's numeric sensors, each
+with its _name_ as the BMC gives it, its _value_ (null when the BMC gives
+none) in its _unit_ (always °C for a temperature), and its _status_: *ok*,
+*warning*, *critical* or *non-recoverable* for the worst threshold the
+sensor has crossed, *unavailable* when the BMC has no reading or scanning of
+the sensor is off, and *not-reachable* for a sensor that another controller
+owns, which only the BMC's own are read of. _series_ is the name
+*metricsd*(8) keeps a temperature, a fan or a power sensor's history under,
+*bmc.temp{name}*, *bmc.fan{name}* and *bmc.power{name}*, and _null_ for a
+voltage and a current. Two sensors of one kind with one name are told apart
+by their numbers, as *bmc.temp{Temp #4}*.
+
+```
+"bmc":{"temperatures":[{"name":"Inlet Temp","series":"bmc.temp{Inlet Temp}","value":22.0,"unit":"°C","status":"ok"}],"fans":[],"voltages":[],"currents":[],"power":[]}
+```
+
+The text has a line for each, named *bmc/*_name_, with its status in
+parentheses when it is not *ok*.
 
 A member of _disks_ is what the *diskhealth* service wrote of the disk
 at its last look, _checked_ms_ milliseconds since 1970: its _kind_
@@ -627,6 +671,11 @@ _/system/live/diskhealth/_
 _/kernel/class/dmi/id_, _/kernel/cpus_
 	What *hardware show* reads of the firmware and the processors.
 
+_/devices/ipmi0_
+	The BMC's interface, which *hardware show* and *hardware sensors* ask
+	for the BMC's name and sensors when the caller may open it, and which
+	only root may (*bmc*(8), *radix-ipmi*(4)).
+
 _/kernel/devices/system/edac_, _/kernel/class/hwmon_,
 _/kernel/class/power_supply_, _/kernel/class/net_, _/kernel/block_
 	What the checks read (*radix-sysfs*(5)).
@@ -696,4 +745,5 @@ hardware memtest --status
 *diskhealth*(8), *sensors*(1), *nic*(8), *netcheck*(8), *dmesg*(1),
 *elevate*(8), *hwinfo*(8), *lscpu*(1), *lspci*(8), *lsusb*(8),
 *radix-block*(2), *radix-sysfs*(5), *log*(1), *metrics*(1), *metricsd*(8),
-*changes*(1), *alertd*(8), *shutdown*(8), *systools*(1)
+*changes*(1), *alertd*(8), *shutdown*(8), *systools*(1), *bmc*(8),
+*radix-ipmi*(4)

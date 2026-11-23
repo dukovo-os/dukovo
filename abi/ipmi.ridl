@@ -1,0 +1,85 @@
+// SPDX-FileCopyrightText: 2026 The Dukovo contributors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! The BMC's IPMI interface (Phase 19, ADR 0661), as Linux's _/dev/ipmi0_.
+//!
+//! _/devices/ipmi0_ (radix-files(7)) is there on a machine whose BMC the
+//! kernel reaches through its KCS interface. It is root's alone, mode
+//! 0600: a service is given it by its service file (service.toml(5)).
+//! Programs talk to the BMC through `control` with Linux's requests and
+//! structures, so ipmitool(1) and other tools written for Linux work
+//! unchanged.
+//!
+//! SEND_COMMAND takes an `ipmi_req` at `buffer`: the address (only the
+//! system interface's, the BMC itself: an `ipmi_system_interface_addr`
+//! of type SYSTEM_INTERFACE_ADDRESS on channel BMC_CHANNEL), the caller's
+//! message id, and the message: network function, command and data. The
+//! kernel sends it and waits for the BMC's answer, then keeps the answer
+//! for this description. A BMC that does not answer, or whose interface
+//! fails, gives an answer of its own whose completion code is
+//! TIMEOUT_COMPLETION_CODE, as Linux's does. Another address fails with
+//! not_supported (EOPNOTSUPP), data over DATA_MAX less two bytes (the
+//! message's network function and command) with message_too_long, and a
+//! description with QUEUE_MAX answers not yet received with busy.
+//!
+//! RECEIVE_MESSAGE and RECEIVE_MESSAGE_TRUNCATED take an `ipmi_recv` at
+//! `buffer` and fill it in with the oldest answer kept: RESPONSE_RECEIVE
+//! as its type, the address, the message id given with the command, the
+//! network function (the request's plus one), the command, and the data,
+//! the completion code first. The data is written to the buffer the
+//! `ipmi_recv` points at, at most its `data_len` bytes, and `data_len` is
+//! set to the bytes written. An answer that does not fit fails
+//! RECEIVE_MESSAGE with message_too_long (EMSGSIZE) and stays kept;
+//! RECEIVE_MESSAGE_TRUNCATED writes what fits, takes the answer, and
+//! fails with message_too_long. With no answer kept, both fail with
+//! would_block (EAGAIN); `poll` finds the file readable while one is.
+//!
+//! The address and LUN requests keep what they are given for the
+//! description, as Linux's do; the timing requests keep their values and
+//! the kernel's own timing stands. SET_GETS_EVENTS is taken, and no
+//! events are delivered yet.
+
+module ipmi;
+
+/// Sends a command (IPMICTL_SEND_COMMAND).
+const SEND_COMMAND: u32 = 0x8028690d;
+/// As SEND_COMMAND, from an `ipmi_req_settime`, whose retry count and
+/// time are kept and not used (IPMICTL_SEND_COMMAND_SETTIME).
+const SEND_COMMAND_SETTIME: u32 = 0x80306915;
+/// Receives an answer, truncated to the buffer if need be
+/// (IPMICTL_RECEIVE_MSG_TRUNC).
+const RECEIVE_MESSAGE_TRUNCATED: u32 = 0xc030690b;
+/// Receives an answer that fits the buffer (IPMICTL_RECEIVE_MSG).
+const RECEIVE_MESSAGE: u32 = 0xc030690c;
+/// Asks for the BMC's events, from the int at `buffer`
+/// (IPMICTL_SET_GETS_EVENTS_CMD).
+const SET_GETS_EVENTS: u32 = 0x80046910;
+/// Sets the description's IPMB address from the unsigned int at `buffer`
+/// (IPMICTL_SET_MY_ADDRESS_CMD).
+const SET_MY_ADDRESS: u32 = 0x80046911;
+/// Writes the description's IPMB address, 0x20 at first, to the unsigned
+/// int at `buffer` (IPMICTL_GET_MY_ADDRESS_CMD).
+const GET_MY_ADDRESS: u32 = 0x80046912;
+/// Sets the description's LUN (IPMICTL_SET_MY_LUN_CMD).
+const SET_MY_LUN: u32 = 0x80046913;
+/// Writes the description's LUN, 2 at first (IPMICTL_GET_MY_LUN_CMD).
+const GET_MY_LUN: u32 = 0x80046914;
+/// Sets the retry count and time, an `ipmi_timing_parms`
+/// (IPMICTL_SET_TIMING_PARMS_CMD).
+const SET_TIMING: u32 = 0x80086916;
+/// Writes the retry count and time (IPMICTL_GET_TIMING_PARMS_CMD).
+const GET_TIMING: u32 = 0x80086917;
+
+/// The address type of the BMC itself (IPMI_SYSTEM_INTERFACE_ADDR_TYPE).
+const SYSTEM_INTERFACE_ADDRESS: u32 = 0x0c;
+/// The system interface's channel (IPMI_BMC_CHANNEL).
+const BMC_CHANNEL: u32 = 0x0f;
+/// An answer to a command the description sent (IPMI_RESPONSE_RECV_TYPE).
+const RESPONSE_RECEIVE: u32 = 1;
+/// The completion code of an answer the BMC did not give in time.
+const TIMEOUT_COMPLETION_CODE: u32 = 0xc3;
+/// The most answers a description keeps before SEND_COMMAND fails.
+const QUEUE_MAX: u32 = 16;
+/// The most bytes of a message: its network function and command, then
+/// its data (for an answer, the completion code and the data after it).
+const DATA_MAX: u32 = 272;

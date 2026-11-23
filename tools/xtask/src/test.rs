@@ -142,6 +142,10 @@ const HYPERV_DEVICES: [&str; 4] = ["-device", "vmbus-bridge", "-device", "hv-bal
 /// The SMBIOS memory device of the `smbus` case, which QEMU gives in place
 /// of its own ([`ddr4_device`]).
 const DDR4_DEVICE: &str = "file=ddr4.smbios";
+/// The BMC of the `ipmi` and `ipmi-watchdog` cases, as `-device`'s argument:
+/// QEMU's `ipmi-bmc-sim` with the sensor data repository and FRU data
+/// `run_case` makes ([`cases::ipmi`]).
+const IPMI_BMC: &str = "<ipmi bmc>";
 /// The release's name, which the kernel's banner gives after its version
 /// (`BANNER` in kernel/radix/src/main.rs) and the console's greeting
 /// begins with (userspace/defaults/issue), as the welcome banner's version line
@@ -187,6 +191,7 @@ pub const KERNEL_LIBRARIES: &[&str] = &[
     "radix-input",
     "radix-intel-net",
     "radix-iopt",
+    "radix-ipmi",
     "radix-ipc",
     "radix-iso9660",
     "radix-kdb",
@@ -5169,6 +5174,8 @@ fn run_case(
             *arg = format!("stream,id=cable,server=off,addr.type=unix,addr.path={cable}");
         } else if *arg == CABLE_DUMP {
             *arg = format!("filter-dump,id=dump,netdev=cable,file={dump}");
+        } else if *arg == IPMI_BMC {
+            *arg = ipmi_bmc_device(dir)?;
         }
     }
     let hyperv = extra.iter().any(|arg| arg == HYPERV);
@@ -8586,6 +8593,21 @@ fn smbus(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect("Power: `spark` asked to power off the machine; syncing the filesystems")?;
     // QEMU ends when the guest enters ACPI's S5.
     vm.expect_exit(QEMU_EXIT_POWER_OFF)
+}
+
+/// QEMU's BMC simulator with the sensor data repository and the FRU data
+/// of [`cases::ipmi`], which it writes to files in `dir`.
+fn ipmi_bmc_device(dir: &Path) -> Result<String, String> {
+    let mut device = String::from("ipmi-bmc-sim,id=bmc0");
+    for (option, name, bytes) in [
+        ("sdrfile", "ipmi.sdr", cases::ipmi::sdr_file()),
+        ("frudatafile", "ipmi.fru", cases::ipmi::fru_file()),
+    ] {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        device.push_str(&format!(",{option}={}", qemu::option_value(&path)));
+    }
+    Ok(device)
 }
 
 /// An SMBIOS memory device (type 17, of SMBIOS 2.8's 40 bytes): a 1 GiB

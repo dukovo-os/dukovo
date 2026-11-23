@@ -1,0 +1,29 @@
+{
+  "format": 1,
+  "chassis": {
+    "type": "rack-mount chassis",
+    "part_number": "CH-PART-1",
+    "serial_number": "CH-SERIAL",
+    "custom": ["rack 12"]
+  },
+  "board": {
+    "manufactured": "2022-03-01T10:00:00Z",
+    "manufacturer": "Contoso",
+    "product_name": "MB 4000",
+    "serial_number": "123-45",
+    "part_number": "DEAD",
+    "file_id": "",
+    "custom": []
+  },
+  "product": {
+    "manufacturer": "Contoso Systems",
+    "name": "Rack Server 1U",
+    "part_number": "RS-1U",
+    "version": "v2",
+    "serial_number": "SN-0001",
+    "asset_tag": "ASSET-7",
+    "file_id": "file.fru",
+    "custom": ["extra one"]
+  },
+  "notes": []
+}

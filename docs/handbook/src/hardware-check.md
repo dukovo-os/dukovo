@@ -179,6 +179,53 @@ restarts or shuts the machine down. See [Hardware](web-console.md#hardware),
 [Checking the hardware](web-console.md#checking-the-hardware) and [Testing the
 memory](web-console.md#testing-the-memory) in the chapter on the console.
 
+## Server management
+
+A server has a baseboard management controller (BMC), such as Dell's iDRAC,
+HPE's iLO or Lenovo's XClarity Controller: a small computer on the board that
+watches the fans, power supplies, temperatures and voltages whether the
+system runs or not, and keeps a log of what it saw. Dukovo talks to it through
+the KCS interface that servers have, at `/devices/ipmi0`. The file belongs to
+root, so run these with `elevate`. A machine with no BMC has no such file, and
+none of what follows is there.
+
+- `bmc` says what the BMC is: its maker, firmware, the IPMI version it speaks
+  and the address of its network port. `bmc sensors` lists every sensor it
+  has with what it reads now, `bmc events` its event log, `bmc fru` the
+  inventory of the board, and `bmc lan` its network settings, which `bmc lan
+  set` changes. `bmc identify` lights the machine's identify light, for 15
+  seconds or the number you give, to find it in a rack. Each takes `--json`.
+  See bmc(8).
+- `ipmitool`, the tool server administrators script against, works as it is
+  on `/dev/ipmi0`: `ipmitool sdr list`, `ipmitool sel list`,
+  `ipmitool chassis identify`. Only its in-band `open` interface is there,
+  which is the one that matters on the server itself.
+- The BMC's watchdog is the machine's watchdog when the BMC has one: Spark
+  starts it, and a machine that hangs is restarted by the BMC with the
+  expiry in the BMC's event log, where `bmc events` shows it. See
+  watchdog(8) and radix-ipmi(4).
+- `hardware show` names the BMC, and `hardware sensors`, run with `elevate`,
+  has the BMC's temperatures, fans, voltages, currents and power in a group of
+  their own.
+- metricsd keeps the BMC's temperatures, fans and power as the series
+  `bmc.temp{name}`, `bmc.fan{name}` and `bmc.power{name}` in `metrics show`,
+  writes each new entry of the event log to the log, and raises an alert, about
+  hardware, for an entry that is critical or non-recoverable. It does not
+  replay the log when it starts: the entries there at its first start count as
+  seen. See metricsd(8).
+- The web console's **Hardware** page, for an administrator whose console is
+  unlocked, has the BMC's temperatures and fans among the **Temperatures and
+  fans**, and a **Baseboard management controller** card: the maker, the
+  firmware and the BMC's address, what is not well among its power, current and
+  voltage sensors with the rest under **Show all** sensors, the last ten entries of
+  the event log, and **Identify**, which lights the identify light for 15
+  seconds.
+
+The BMC's sensors that belong to other controllers on the board are listed as
+not reachable; only the BMC's own are read. A BMC that is reached only through
+SSIF, BT or memory-mapped KCS is not found yet; `docs/deferred.md` lists what
+waits.
+
 ## What to do with a result
 
 | ID | What it says | What to do |

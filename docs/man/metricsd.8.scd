@@ -16,7 +16,8 @@ metricsd - keep the machine's history, warn early, and answer Prometheus
 metricsd reads the machine once a step (ADR 0484): the processors,
 load, memory and swap, each disk's reads and writes, each filesystem's
 use, each network card, the temperatures, including those of the disks,
-what each service uses, and each Btrfs volume's missing disks. It keeps each reading in a history of
+what each service uses, each Btrfs volume's missing disks, and on a server
+its BMC's temperatures, fans and power (see *THE BMC*). It keeps each reading in a history of
 two weeks at the step and a year at one record an hour, and writes the
 newest reading as text, so that *metrics*(1) and the web console show
 the machine's past and now with nothing to install. Spark runs *metricsd
@@ -79,6 +80,15 @@ at a step, or no value yet, is missing for it.
 |  temp
 :  chip/label, or chip/tempN without a label; zone/type for a thermal zone; disk/name for a disk
 :  degrees Celsius
+|  bmc.temp
+:  the BMC's sensor, by the name the BMC gives it
+:  degrees Celsius
+|  bmc.fan
+:  the BMC's sensor
+:  revolutions a minute
+|  bmc.power
+:  the BMC's sensor
+:  watts, or the unit the sensor has
 |  service.cpu
 :  the service
 :  percent of one processor
@@ -114,6 +124,37 @@ minutes, and has none for a disk that sleeps, which is not read so as
 not to wake it. *service.cpu* and *service.memory* are those of
 the processes of a service's resource domain (*spark*(8)); the processes
 of sessions and apps count in *cpu* and *memory.used* only.
+
+# THE BMC
+
+A server's baseboard management controller (*bmc*(8)) is asked through
+_/devices/ipmi0_ at each step, when the machine has one and the service file
+gives it. The sensor data repository is read when metricsd starts, and again
+when the BMC says its repository changed; each step after that sends
+only Get Sensor Reading for the temperatures, fans and power sensors, which
+are the series *bmc.temp{name}*, *bmc.fan{name}* and *bmc.power{name}*. A
+sensor's name is as the BMC gives it, with braces and control characters
+made underscores, and two sensors of one kind with one name are told apart
+by their numbers: *bmc.temp{Temp #4}*. A sensor the BMC has no reading for
+at a step, or that another controller owns, has no value for it. Voltages and
+currents are not kept.
+
+Each step also asks the BMC whether its event log changed, and reads it
+only when it did. Each entry that is new since the last look is written to
+the log (*log*(1)) as *BMC event log, record* _id_, with its time, its
+sensor and what happened, at the priority its severity has: informational,
+warning, error for a critical one and critical for a non-recoverable one. An
+entry that is critical or non-recoverable is also told to *alertd*(8), once,
+as an alert about hardware, whose key is *bmc-event:*_id_. The place the log
+was read to is kept in _bmc-events_ of the history's folder, so that a
+restart tells only of what came after it. With no such file, as at the first
+start, the entries that are there are taken as seen: a machine's start does
+not replay its log. A log that was erased and filled again is new from its
+first entry.
+
+A machine with no _/devices/ipmi0_ has no such series and entries. A BMC
+that metricsd may not open, or that does not answer, is said once in the log
+and tried again at each step.
 
 # THE HISTORY
 
@@ -288,9 +329,16 @@ _/system/live/alerts/socket_
 _/system/live/diskhealth/_
 	What each disk's temperature is read from (*diskhealth*(8)).
 
+_/system/state/metrics/bmc-events_
+	The last entry of the BMC's event log that was looked at: its number
+	and time, or *empty*.
+
+_/devices/ipmi0_
+	The BMC's interface (*radix-ipmi*(4)).
+
 _/system/settings/spark/services/metricsd.toml_
 	Its service. It holds the history, the newest row and the port 9100
-	to listen on (*service.toml*(5)). It reads each filesystem's space
+	to listen on, and the BMC's interface (*service.toml*(5)). It reads each filesystem's space
 	from the kernel's _/kernel/fs/space_ (*radix-sysfs*(5)), so it needs
 	no view of the mounts themselves.
 
@@ -328,6 +376,6 @@ $ curl http://192.168.1.10:9100/metrics
 # SEE ALSO
 
 *metrics*(1), *metrics.toml*(5), *alertd*(8), *alerts*(8), *diskhealth*(8),
-*hardware*(8), *log*(1),
+*hardware*(8), *bmc*(8), *radix-ipmi*(4), *log*(1),
 *dukovo-privacy*(7), *radix-proc*(5), *radix-sysfs*(5), *service*(8),
 *spark*(8), *systools*(1)

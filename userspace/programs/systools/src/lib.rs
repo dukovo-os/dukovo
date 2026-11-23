@@ -64,6 +64,9 @@
 //! `hardware` checks the memory, the disks, the processors, the sensors,
 //! the battery and the network cards for faults, and keeps what it found
 //! (ADR 0488).
+//! `bmc` shows a server's baseboard management controller, its sensors,
+//! event log, inventory and network settings, through the kernel's IPMI
+//! interface, and blinks its identify light.
 //! `help-session` shares the owner's screen with a helper who signs in over
 //! SSH as `help`, and ends at a key (ADR 0540).
 //! `dukovo-check` looks at the computer's security and health, a line for
@@ -115,6 +118,7 @@ mod backup_errors;
 mod balance;
 mod blkid;
 mod blockdev;
+mod bmc;
 mod braille;
 mod btrfs;
 mod bundled;
@@ -164,6 +168,7 @@ mod hostnamectl;
 mod hwinfo;
 mod iostat;
 mod ip;
+mod ipmi;
 mod jobs;
 mod journalctl;
 mod json;
@@ -305,6 +310,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("balance", balance::main),
     ("batch", at::batch),
     ("blkid", blkid::main),
+    ("bmc", bmc::main),
     ("braille", braille::main),
     ("brailled", braille::daemon),
     ("btrfsck", btrfs::fsck_btrfs),

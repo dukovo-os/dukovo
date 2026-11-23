@@ -290,6 +290,13 @@ machine with AMT, an AMD machine and a laptop; see
 | NUMA tested beyond QEMU's emulated nodes: every device on its node, and memory placement, on two sockets | QEMU's nodes are emulated, and the lab has no two-socket machine yet | Phase 19 step 15, on the reference server |
 | Machine-check counts by DIMM slot | The kernel counts errors by bank, and names no memory module | Phase 19 step 4 |
 | SFP+ modules: their information, and fiber ports | No driver reads a module's EEPROM, and the cards with cages are the server cards | Phase 19 step 12 |
+| IPMI over SMBus (SSIF) (ADR 0661) | The kernel finds the BMC through its KCS ports only, and the SMBus controller drivers that SSIF rides on are not written | A server whose BMC offers SSIF alone, and an SMBus controller driver |
+| IPMI's BT interface and memory-mapped KCS (ADR 0661) | Only KCS on I/O ports is found, from ACPI and SMBIOS; QEMU's `isa-ipmi-bt` and a mapped KCS are not tried | A machine that has one |
+| The SPMI table as a way to find the BMC (ADR 0661) | ACPI's `IPI0001` device and SMBIOS's type 38 find every BMC seen so far, so SPMI is not read | A BMC that only SPMI describes |
+| IPMB bridging to other controllers (ADR 0661) | Only the system interface, the BMC itself, is addressed; a sensor owned by another controller is listed in `bmc sensors` and `hardware sensors` as not reachable, and `ipmitool` commands to another address fail with EOPNOTSUPP | Phase 19 step 15, on a server with sensors behind another controller |
+| The ACPI IPMI operation region (ADR 0661) | Firmware's AML that reaches the BMC through the region gets no answer, which the kernel only notes in its debug log | A machine whose AML needs it |
+| The BMC's asynchronous events (ADR 0661) | `IPMICTL_SET_GETS_EVENTS_CMD` is accepted and no event is delivered; metricsd looks at the event log each minute instead | A program that needs an event at once |
+| FRU devices other than 0, and FRU multi-records (ADR 0661) | `bmc fru` reads the inventory of device 0 and its chassis, board and product areas, which every server seen so far puts its inventory in | A server whose inventory is elsewhere |
 
 ### Releases after 1.0
 

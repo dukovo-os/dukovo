@@ -219,7 +219,10 @@ changed, kept by tmpfs and Btrfs; FAT and exFAT give *modified*.
 	end to it panics the kernel on purpose (*radix-debug*(7),
 	*dumps*(8), ADR 0483). _crashes_ gives the records of the programs
 	that crashed, one for each read, to root alone (mode 0400):
-	*reportd*(8) reads them (*radix-crashes*(4), ADR 0530).
+	*reportd*(8) reads them (*radix-crashes*(4), ADR 0530). On a server
+	whose BMC the kernel reaches, _ipmi0_ takes Linux's IPMI ioctls, to
+	root alone (mode 0600): *bmc*(8) and *ipmitool*(1) use it
+	(*radix-ipmi*(4), ADR 0661).
 
 *bootfs*
 	The boot archive (*radix-processes*(7)), read-only, with the

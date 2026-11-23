@@ -84,6 +84,8 @@ error that starts with the tool's name.
 :  keep the accounts and check passwords
 |  *blkid*(8)
 :  what each disk and partition holds: filesystems, labels and UUIDs
+|  *bmc*(8)
+:  a server's baseboard management controller: sensors, event log, inventory and network
 |  *bundle*(1)
 :  make, check, sign and pack bundles; install, list, remove and run them
 |  *bundled*(8)

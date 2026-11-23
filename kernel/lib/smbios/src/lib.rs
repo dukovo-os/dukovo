@@ -53,6 +53,8 @@ pub mod kind {
     pub const MEMORY_ARRAY: u8 = 16;
     /// Memory device: a module, or the chips of soldered memory.
     pub const MEMORY_DEVICE: u8 = 17;
+    /// IPMI device information: where a server's BMC interface is.
+    pub const IPMI_DEVICE: u8 = 38;
     /// End of table.
     pub const END: u8 = 127;
 }

@@ -33,6 +33,7 @@ members = [
     "drivers/i2c",
     "drivers/ide",
     "drivers/intel",
+    "drivers/ipmi",
     "drivers/mana",
     "drivers/nic",
     "drivers/nvme",

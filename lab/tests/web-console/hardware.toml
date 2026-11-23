@@ -42,7 +42,11 @@
 # page, by id: power.status, power.restart, power.shutdown, power.cancel,
 # hardware.show, hardware.inventory, hardware.last, hardware.history,
 # hardware.check, hardware.sensors, hardware.highest, hardware.devices,
-# hardware.memtest, hardware.memtest-cancel, hardware.memtest-status.
+# hardware.memtest, hardware.memtest-cancel, hardware.memtest-status,
+# hardware.bmc-sensors, hardware.bmc-events, hardware.identify. The last three
+# are the BMC card's, which a machine with a BMC has: a lab machine in QEMU has
+# none, so the browser steps hold only that the card is not there, and the
+# card's drawing is held by the page's own tests (userspace/admin/tests).
 about = "The web console's Hardware page in each engine: This machine from hardware show and the slots once unlocked, Check the hardware run to its end and held to hardware last and hardware history, the temperatures and fans from hardware sensors, the disks' own tests, the devices from hardware devices held to lspci, the memory test asked for the next restart and taken back, Restart and Shut down asked and cancelled, a restart at a time and its Cancel, a shut down with the typed name taken back within its minute, a reader, and the phone"
 time = "30m"
 host_needs = ["curl"]

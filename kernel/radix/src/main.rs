@@ -69,6 +69,7 @@ mod hyperv;
 mod i2c;
 mod iommutest;
 mod ioports;
+mod ipmi;
 mod join;
 mod kdb;
 mod mce;
@@ -304,6 +305,9 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     // After the PCI scan, which the AML's PCI regions reach through, and
     // before the power button.
     acpi::start(flags.value("aml") == Some("off"));
+    // After uACPI, whose namespace may say where the BMC is (SMBIOS
+    // otherwise), and before the watchdog, which prefers the BMC's.
+    ipmi::find();
     console::progress(400);
     user::power::start();
     // After the power thread, which the host's buttons wake.

@@ -42,6 +42,15 @@ function nearLimit(celsius, limit) {
   return limit - celsius <= NEAR ? { tone: 'warn', words: 'near its limit' } : null;
 }
 
+/** How a BMC sensor's status reads: the tone and the words, or null for `ok`. */
+export const BMC_STATUS = Object.freeze({
+  warning: { tone: 'warn', words: 'warning' },
+  critical: { tone: 'bad', words: 'critical' },
+  'non-recoverable': { tone: 'bad', words: 'non-recoverable' },
+  unavailable: { tone: 'off', words: 'unavailable' },
+  'not-reachable': { tone: 'off', words: 'not reachable' },
+});
+
 /** The same against a disk's warning and critical limits. */
 function overLimit(celsius, warning, critical) {
   if (critical !== null && celsius >= critical) return { tone: 'bad', words: 'over its critical limit' };
@@ -120,16 +129,31 @@ export function tempRows(answer, highest, {
     };
   }
 
+  /** A temperature of the BMC, named as the BMC names it, with the status the BMC gives it. */
+  function bmcRow(sensor) {
+    const value = number(sensor.value);
+    const state = BMC_STATUS[sensor.status] ?? null;
+    return {
+      key: sensor.series ?? `bmc/${sensor.name}`,
+      name: sensor.name,
+      small: 'BMC',
+      now: value === null ? { text: '—', muted: true, ...state } : { text: deg(value), ...state },
+      highest: { text: '—', muted: true },
+      limit: { text: '—', muted: true },
+    };
+  }
+
   const PROCESSOR = /^(coretemp|k10temp|zenpower)/;
   const temps = list(answer?.sensors).filter((sensor) => sensor.kind === 'temp');
   const sensorsOf = (processor) => temps.filter((sensor) => PROCESSOR.test(sensor.chip ?? '') === processor)
     .map((sensor) => (processor ? sensorRow(sensor, `Processor (${sensor.label})`) : sensorRow(sensor, sensor.label, sensor.chip)));
+  const bmcTemps = list(answer?.bmc?.temperatures).map(bmcRow);
   const zones = list(answer?.zones).map((zone) => sensorRow(zone, `Zone ${/^temp\{zone\/(.*)\}$/.exec(zone.series ?? '')?.[1] ?? ''}`.trim()));
   return {
     // The disks come after the processor's rows and before the thermal zones'.
-    rows: [...sensorsOf(true), ...list(answer?.disks).map(diskRow), ...sensorsOf(false), ...zones],
+    rows: [...sensorsOf(true), ...list(answer?.disks).map(diskRow), ...sensorsOf(false), ...bmcTemps, ...zones],
     // A machine that reads no temperature says so, and the disks' rows stand alone.
-    none: temps.length === 0 && zones.length === 0,
+    none: temps.length === 0 && zones.length === 0 && bmcTemps.length === 0,
   };
 }
 
@@ -157,8 +181,22 @@ function fanOf(fan) {
   };
 }
 
-/** The fans of `answer` as lines, in the order the kernel lists them. */
-export const fanRows = (answer) => list(answer?.sensors).filter((sensor) => sensor.kind === 'fan').map(fanOf);
+/** A fan of the BMC: its speed, or what the BMC says is wrong with it. */
+function bmcFanOf(fan) {
+  const value = number(fan.value);
+  const state = BMC_STATUS[fan.status] ?? null;
+  let words = value === null ? 'no reading' : rpm(value);
+  if (state !== null) words = value === null ? state.words : `${words}, ${state.words}`;
+  return {
+    key: fan.series ?? `bmc/${fan.name}`, name: `${fan.name} (BMC)`, words, tone: state?.tone ?? 'ok',
+  };
+}
+
+/** The fans of `answer` as lines, in the order the kernel lists them, and then the BMC's. */
+export const fanRows = (answer) => [
+  ...list(answer?.sensors).filter((sensor) => sensor.kind === 'fan').map(fanOf),
+  ...list(answer?.bmc?.fans).map(bmcFanOf),
+];
 
 export const NO_TEMPERATURE = 'The kernel reads no temperature on this machine.';
 export const NO_FAN = 'No fan speed can be read on this machine.';
