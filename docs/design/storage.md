@@ -323,6 +323,16 @@ on its own), which frees it. Many
 threads have requests in flight at once, up to the slots the controller
 has.
 
+An idle-class request takes a slot only while the disk has nothing else
+to do, or once it has waited a fifth of a second for that, as BFQ serves
+its idle class; then it goes as the default best-effort level. A request
+less urgent than that default goes at it while its thread holds a lock
+another thread waits for: Btrfs holds its transaction's lock while it
+reads, so an idle-class reader of a disk that never emptied held every
+other program of the filesystem for as long as the disk stayed busy (ADR
+0548). The domains' shares of a disk (ADR 0476) order waiting requests
+by the same lent rank.
+
 A request the controller says goes alone (an ATA flush or TRIM, or any
 command to a disk without NCQ) waits for the disk to empty, and while
 it waits, requests of its rank and below that come after it wait behind

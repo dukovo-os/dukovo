@@ -716,6 +716,14 @@ pub fn mutex_counts() -> MutexCounts {
     }
 }
 
+/// Whether another thread waits for a mutex that `thread` holds: then
+/// what `thread` waits for, the other waits for too, which the disk queue
+/// asks before it keeps a request of little urgency waiting (ADR 0548).
+pub fn holds_wanted_lock(thread: &ThreadRef) -> bool {
+    let token = thread.token();
+    TABLE.lock_irq().as_ref().is_some_and(|table| table.waiters.iter().any(|w| w.owner == token))
+}
+
 /// How many threads wait in the table now, or `None` if it is locked.
 pub fn waiting() -> Option<usize> {
     TABLE.try_lock_irq().map(|t| t.as_ref().map_or(0, |t| t.waiters.len()))
