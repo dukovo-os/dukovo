@@ -17,7 +17,7 @@ const tableOf = (title, rows) => h('div', { class: 'tbl-box' }, h('table', { cla
   h('caption', {}, title),
   h('thead', {}, h('tr', {}, COLUMNS.map((name) => h('th', { scope: 'col' }, name)))),
   h('tbody', {}, rows.map((row) => h('tr', {},
-    h('td', { 'data-label': COLUMNS[0] }, h('b', {}, row.name), row.small && h('small', {}, row.small)),
+    h('td', { 'data-label': COLUMNS[0] }, h('b', {}, row.name), row.small && h('small', {}, row.small), (row.notes ?? []).map((note) => h('small', {}, note))),
     h('td', { 'data-label': COLUMNS[1], class: row.driver.muted ? 'muted' : null }, row.driver.text),
     h('td', { 'data-label': COLUMNS[2] }, row.state ? h('span', { class: `st ${row.state.tone}` }, row.state.word) : h('span', { class: 'muted' }, '—')),
     h('td', { 'data-label': COLUMNS[3] }, row.where))))));

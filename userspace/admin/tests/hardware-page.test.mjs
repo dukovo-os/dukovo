@@ -855,6 +855,18 @@ test('a device with no cable has a warning state, and one no driver took is not 
   assert.equal(world.card('devices').querySelectorAll('td').find((cell) => cell.textContent === 'Not told').getAttribute('data-label'), 'Driver');
 });
 
+test('a failed device has a danger badge, and the counts and the owner are under its name', async (context) => {
+  const answer = devices();
+  answer.devices[0].pcie_errors = { owner: 'kernel', corrected: 2, nonfatal: 1, fatal: 1, failed: true };
+  const world = await openHardware(context, { world: { reads: { '/api/1/hardware/devices': answer } } });
+  await world.press(world.card('devices'), 'Show the devices');
+  const failed = world.card('devices').querySelectorAll('.st').find((one) => one.textContent === 'Failed');
+  assert.ok(failed.classes.has('bad'));
+  const row = text(world.card('devices').querySelector('tbody tr'));
+  assert.match(row, /PCIe errors: 2 corrected, 1 non-fatal, 1 fatal/);
+  assert.match(row, /Errors handled by: the kernel/);
+});
+
 test('the card says how to report a device that needs a driver, and moves focus to its heading when it has drawn', async (context) => {
   const world = await openHardware(context);
   await world.press(world.card('devices'), 'Show the devices');

@@ -33,14 +33,43 @@ function conditionOf(device) {
   return { driver: { text: driver }, state: known ?? STATES.working };
 }
 
-/** A device as a row: `{name, small, driver, state, where}`. */
+const count = (value) => (Number.isFinite(value) && value > 0 ? Math.floor(value) : 0);
+
+/** Who handles a function's PCIe errors, as the answer names them. */
+const OWNERS = Object.freeze({ kernel: 'the kernel', firmware: 'the firmware' });
+
+/**
+ * What the answer's `pcie_errors` says of a device: `{failed, notes}`, where
+ * `notes` are lines for under its name (the counts, and who handles the
+ * errors). A device without the field has neither.
+ */
+function pcieOf(device) {
+  const errors = device.pcie_errors;
+  if (errors === null || typeof errors !== 'object') return { failed: false, notes: [] };
+  const counts = [[count(errors.corrected), 'corrected'], [count(errors.nonfatal), 'non-fatal'], [count(errors.fatal), 'fatal']]
+    .filter(([n]) => n > 0).map(([n, word]) => `${n} ${word}`);
+  const notes = [];
+  if (counts.length > 0) notes.push(`PCIe errors: ${counts.join(', ')}`);
+  if (OWNERS[errors.owner]) notes.push(`Errors handled by: ${OWNERS[errors.owner]}`);
+  return { failed: errors.failed === true, notes };
+}
+
+/**
+ * A device as a row: `{name, small, driver, state, where}`, and `notes` when
+ * it has PCIe errors to tell of. A device the kernel stopped after a fatal
+ * error is "Failed" whatever else is known of it.
+ */
 function rowOf(device) {
   const names = Array.isArray(device.names) ? device.names.filter(Boolean).join(', ') : '';
+  const { failed, notes } = pcieOf(device);
+  const condition = conditionOf(device);
   return {
     name: device.name || device.ids || 'Unnamed device',
     small: [names, device.ids].filter(Boolean).join(' · '),
-    ...conditionOf(device),
+    ...condition,
+    ...(failed ? { state: { word: 'Failed', tone: 'bad' } } : {}),
     where: device.where ?? '',
+    ...(notes.length > 0 ? { notes } : {}),
   };
 }
 

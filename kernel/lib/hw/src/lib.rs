@@ -23,6 +23,8 @@
 //! - [`pci`], PCI configuration space through the PCI Express enhanced
 //!   configuration access mechanism (ECAM): finding functions, sizing
 //!   their base address registers and setting up MSI and MSI-X;
+//! - [`pcie`], the register layouts and texts of PCI Express error
+//!   handling: the PCIe capability, AER, DPC and the host bridge's `_OSC`;
 //! - [`crc32c`], CRC-32C with the processor's instruction for it, which
 //!   checks what disks give the filesystems;
 //! - [`bmi2`], BMI2's shifts, with which the filesystems' zstd decoder
@@ -40,6 +42,7 @@
 pub mod bmi2;
 pub mod crc32c;
 pub mod pci;
+pub mod pcie;
 
 #[cfg(any(test, feature = "fake"))]
 extern crate std;

@@ -203,6 +203,43 @@ _/kernel/bus/pci/devices/_*address*_/numa_node_
 	bus, not only the first, so a second socket's devices are listed
 	with the node they belong to.
 
+_/kernel/bus/pci/devices/_*address*_/error_state_
+	*normal*, or *failed* after the function had a fatal PCIe error or a
+	containment the kernel could not recover it from. A failed function's
+	driver cannot use it until the machine restarts. Every function has
+	it.
+
+_/kernel/bus/pci/devices/_*address*_/aer_owner_
+	Who handles the PCIe errors of a function that has the Advanced
+	Error Reporting capability: *kernel*, when the firmware's \_OSC
+	gave the kernel AER, or *firmware*, when the firmware kept it and
+	reports them through its own error records (*/kernel/ras/errors*
+	has them then, from the firmware).
+
+_/kernel/bus/pci/devices/_*address*_/aer_dev_correctable_, _aer_dev_nonfatal_, _aer_dev_fatal_
+	The errors the function reported since boot, as Linux's files of
+	the same names: a line _Name count_ for each named bit of the
+	error status register, in bit order (*RxErr*, *BadTLP*, *BadDLLP*,
+	*Rollover*, *Timeout*, *NonFatalErr*, *CorrIntErr* and *HeaderOF*
+	for the correctable ones; *DLP*, *SDES*, *TLP*, *FCP*, *CmpltTO*,
+	*CmpltAbrt*, *UnxCmplt*, *RxOF*, *MalfTLP*, *ECRC*, *UnsupReq*,
+	*ACSViol*, *UncorrIntErr* and the rest for the uncorrectable ones),
+	a line _dev_cor_errs_bit[n] count_ (_dev_nonfatal_errs_bit[n]_,
+	_dev_fatal_errs_bit[n]_) for a bit without a name, only when its
+	count is not 0, and last _TOTAL_ERR_COR_, _TOTAL_ERR_NONFATAL_ or
+	_TOTAL_ERR_FATAL_ with the number of reports. A report with
+	several bits set counts each bit and the total once. They are on
+	each function that has the capability. The errors the firmware
+	reports through its own records are counted here too, from the
+	record's registers.
+
+_/kernel/bus/pci/devices/_*address*_/aer_rootport_total_err_cor_, _aer_rootport_total_err_nonfatal_, _aer_rootport_total_err_fatal_
+	On a root port and a root complex event collector that has the
+	capability: the number of error messages of each kind the port
+	received from the devices below it since boot, as Linux's files,
+	one number and a newline. *hardware*(8) shows each device's counts
+	as _pcie_errors_ in *hardware devices --json*.
+
 _/kernel/bus/usb/devices/_*name*_/idVendor_, _idProduct_, _bcdDevice_, _version_
 	A USB device's vendor and product IDs and its release, in
 	hexadecimal with four digits, and the USB version it speaks, as

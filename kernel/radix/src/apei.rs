@@ -759,6 +759,19 @@ fn one(origin: Origin, entry: &ErrorEntry<'_>) {
             (Kind::Memory, None, origin.key(), None)
         }
         Section::Pcie(pcie) => {
+            // Counted by function too, for its files, as the kernel's own
+            // AER counts them (ADR 0663); not those of the last boot.
+            if let (Some(id), Some(aer)) = (pcie.device_id, pcie.aer)
+                && origin != Origin::LastBoot
+            {
+                let address = radix_hw::pci::Address {
+                    segment: id.segment,
+                    bus: id.primary_bus,
+                    device: id.device & 0x1f,
+                    function: id.function & 0x7,
+                };
+                crate::pcie::count_firmware(address, aer, severity);
+            }
             let key = pcie.device_id.map_or(origin.key(), |id| {
                 ras::KEY_PCIE
                     | u64::from(id.segment) << 16

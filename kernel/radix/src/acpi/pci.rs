@@ -20,14 +20,18 @@
 //! names that the scan found nothing on, and a root the scan found that
 //! no host bridge names (uncore buses on a Xeon E5 are like that), are
 //! logged too. The boot test `pci-roots` covers it.
+//!
+//! Each host bridge is then asked, through its `_OSC`, for control of
+//! PCIe error handling ([`pcie::osc`], ADR 0663), and says what it gives
+//! in a line of its own.
 
 use radix_acpi::resources::{Buses, Resource, Resources};
 use radix_hal::Devices;
 use radix_klog::{debug, info};
 use radix_uacpi::Node;
 
-use crate::Arch;
 use crate::fs::disk;
+use crate::{Arch, pcie};
 
 /// The most host bridges remembered for the check against the scan.
 const MAX_BRIDGES: usize = 64;
@@ -45,20 +49,21 @@ fn proximity_domain(bridge: Node) -> Option<u32> {
     None
 }
 
-/// The root bus of `bridge`: the first bus its `_CRS` decodes, else its
-/// `_BBN`, else 0 as the ACPI specification has it. A value that does not
-/// fit a bus number is read as absent.
-fn root_bus(bridge: Node) -> u8 {
+/// The buses of `bridge`, first (its root bus) and last: those its `_CRS`
+/// decodes, else its `_BBN` alone, else bus 0 as the ACPI specification
+/// has it. A value that does not fit a bus number is read as absent.
+fn buses(bridge: Node) -> (u8, u8) {
     let decoded = bridge.bytes(c"_CRS", |bytes| {
         Resources::new(bytes).find_map(|resource| match resource {
-            Ok(Resource::Buses(Buses { first, .. })) => Some(first),
+            Ok(Resource::Buses(Buses { first, last })) => Some((first, last.max(first))),
             _ => None,
         })
     });
-    if let Ok(Some(first)) = decoded {
-        return first;
+    if let Ok(Some(buses)) = decoded {
+        return buses;
     }
-    bridge.integer(c"_BBN").ok().and_then(|n| u8::try_from(n).ok()).unwrap_or(0)
+    let root = bridge.integer(c"_BBN").ok().and_then(|n| u8::try_from(n).ok()).unwrap_or(0);
+    (root, root)
 }
 
 /// Finds the host bridges, gives their root buses their nodes, and logs
@@ -73,7 +78,8 @@ pub fn find() {
         // A bridge without `_SEG` is segment 0, as in the ACPI
         // specification. A value that does not fit is read as absent.
         let segment = bridge.integer(c"_SEG").ok().and_then(|n| u16::try_from(n).ok());
-        let (segment, root) = (segment.unwrap_or(0), root_bus(bridge));
+        let (segment, buses) = (segment.unwrap_or(0), buses(bridge));
+        let root = buses.0;
         let node = proximity_domain(bridge).and_then(<Arch as Devices>::numa_node_of_domain);
         let name = bridge.name_text();
         match node {
@@ -87,6 +93,8 @@ pub fn find() {
                 info!("PCI: ACPI host bridge {name} is root bus {segment:04x}:{root:02x}, no node");
             }
         }
+        // Who handles its PCIe errors (ADR 0663).
+        pcie::osc::negotiate(bridge, &name, segment, buses);
         if !disk::has_pci_root(segment, root) {
             info!(
                 "PCI: the firmware names root bus {segment:04x}:{root:02x}, which has no devices"

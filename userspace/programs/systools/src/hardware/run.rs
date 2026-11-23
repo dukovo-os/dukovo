@@ -22,7 +22,7 @@ use std::thread;
 
 use super::check::{Area, Check};
 use super::plan::Plan;
-use super::{battery, cpu, disks, errors, memory, monitors, network, raid, ras};
+use super::{battery, cpu, devices, disks, errors, memory, monitors, network, raid, ras};
 use crate::raid::ROOT as RAID;
 use crate::sensors::HWMON;
 
@@ -143,8 +143,11 @@ pub(crate) fn execute(plan: &Plan, stop: &AtomicBool, sink: &Sink) {
     } else {
         Vec::new()
     };
-    let hardware_errors =
-        if plan.has(Area::Errors) { errors::run(Path::new(ras::DIR)) } else { Vec::new() };
+    let hardware_errors = if plan.has(Area::Errors) {
+        errors::run(Path::new(ras::DIR), &devices::Sources::system())
+    } else {
+        Vec::new()
+    };
     let raid = if plan.has(Area::Raid) { raid::run(Path::new(RAID)) } else { Vec::new() };
     sink.expect(
         sensors.len()

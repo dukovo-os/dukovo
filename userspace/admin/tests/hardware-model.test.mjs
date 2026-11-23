@@ -447,6 +447,25 @@ test('the system says "No driver" only where it knows none took the device, and 
   assert.deepEqual(devicesOf({ devices: [{ group: 'usb', driver: 'usbhid', state: 'asleep' }] }).groups[0].rows[0].state, { word: 'asleep', tone: 'off' });
 });
 
+const withErrors = (pcie_errors, more = {}) => devicesOf({ devices: [{ name: 'Intel e1000e', group: 'network', driver: 'e1000e', state: 'working', ids: '8086:10d3', where: 'PCI 0000:03:00.0', pcie_errors, ...more }] }).groups[0].rows[0];
+
+test('a device with PCIe errors shows its counts and who handles them, and a device without the field shows neither', () => {
+  const row = withErrors({ owner: 'kernel', corrected: 2, nonfatal: 1, fatal: 0, failed: false });
+  assert.deepEqual(row.notes, ['PCIe errors: 2 corrected, 1 non-fatal', 'Errors handled by: the kernel']);
+  assert.deepEqual(row.state, { word: 'Working', tone: 'ok' });
+  assert.deepEqual(withErrors({ owner: 'firmware', corrected: 0, nonfatal: 0, fatal: 0, failed: false }).notes, ['Errors handled by: the firmware']);
+  assert.deepEqual(withErrors({ owner: null, corrected: 0, nonfatal: 0, fatal: 1, failed: false }).notes, ['PCIe errors: 1 fatal']);
+  assert.equal('notes' in withErrors(undefined), false);
+  assert.equal('notes' in withErrors({ owner: null, corrected: 0, nonfatal: 0, fatal: 0, failed: false }), false);
+});
+
+test('a device the kernel stopped after a fatal error is Failed, whatever else is known of it', () => {
+  const row = withErrors({ owner: 'kernel', corrected: 0, nonfatal: 0, fatal: 1, failed: true });
+  assert.deepEqual(row.state, { word: 'Failed', tone: 'bad' });
+  assert.deepEqual(row.notes, ['PCIe errors: 1 fatal', 'Errors handled by: the kernel']);
+  assert.deepEqual(withErrors({ owner: null, corrected: 0, nonfatal: 0, fatal: 0, failed: true }, { driver: null, state: null }).state, { word: 'Failed', tone: 'bad' });
+});
+
 test('an answer that is not a list of devices has none, and the folded line counts the hidden ones', () => {
   for (const answer of [null, {}, { devices: null }, []]) assert.deepEqual(devicesOf(answer), { groups: [], hidden: [] });
   assert.equal(hiddenWords(23), 'Hidden: 23 devices that work and need nothing, such as USB hubs and bridges');
