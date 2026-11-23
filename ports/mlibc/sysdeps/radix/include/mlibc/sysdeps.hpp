@@ -112,6 +112,7 @@ struct RadixSysdepTags :
 	Lremovexattr,
 	Lsetxattr,
 	Madvise,
+	MemfdCreate,
 	Mkdir,
 	Mkdirat,
 	Mkfifoat,

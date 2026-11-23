@@ -44,6 +44,8 @@
 //!   times.
 //! - [`system`]: the records and rules of the calls for limits, times,
 //!   resource usage, scheduling, `prctl`, `waitid` and `siginfo_t`.
+//! - [`memfd`]: the flags of `memfd_create` and the seal commands of
+//!   `fcntl`.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
@@ -53,6 +55,7 @@ pub mod epoll;
 pub mod errno;
 pub mod flags;
 pub mod futex;
+pub mod memfd;
 pub mod nr;
 pub mod poll;
 pub mod records;

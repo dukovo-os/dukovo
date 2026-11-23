@@ -22,8 +22,11 @@ use radix_abi::errors::Kernel;
 use radix_abi::file::{self, DescriptionFlags, LockOwner, Whence};
 use radix_abi::process;
 use radix_abi::startup::{SLOT_FD_BASE, SLOT_PROCESS};
-use radix_linux::errno::{EBADF, EBUSY, EINVAL, EIO, ENOLCK, ENOMEM, ENOTTY, ENXIO, EOPNOTSUPP};
+use radix_linux::errno::{
+    EBADF, EBUSY, EINVAL, EIO, ENOLCK, ENOMEM, ENOTTY, ENXIO, EOPNOTSUPP, EPERM,
+};
 use radix_linux::flags::{self, Seek};
+use radix_linux::memfd;
 use radix_linux::records::{self, FLOCK_SIZE, Flock, IOVEC_SIZE, Iovec};
 use radix_mm::Kmalloc;
 
@@ -407,8 +410,35 @@ pub fn fcntl(me: &ThreadRef, user: &UserRef, fd: u64, command: u64, argument: u6
         | flags::F_OFD_SETLKW => record_lock(me, user, slot, command, argument),
         flags::F_GETPIPE_SZ => pipe_size(me, user, slot, false, 0),
         flags::F_SETPIPE_SZ => pipe_size(me, user, slot, true, argument as u32),
+        memfd::F_ADD_SEALS => seals(me, user, slot, Some(argument as u32)),
+        memfd::F_GET_SEALS => seals(me, user, slot, None),
         _ => fail(EINVAL),
     }
+}
+
+/// `F_ADD_SEALS` of `add`, or with none `F_GET_SEALS`: the native `seal`,
+/// which gives the seals the memory file has. As Linux has it, in this
+/// order for adding: EPERM if the descriptor is not open for writing,
+/// EINVAL for a bit that is no seal, EINVAL for any file but a memory
+/// file (for reading too), EPERM if the file is sealed with `F_SEAL_SEAL`
+/// (also for `add` of 0), and EBUSY for `F_SEAL_WRITE` with a writable
+/// shared mapping.
+fn seals(me: &ThreadRef, user: &UserRef, slot: u32, add: Option<u32>) -> Result<u64> {
+    if add.is_some() && !files::rights_of(me, user, slot)?.contains(Rights::WRITE) {
+        return fail(EPERM);
+    }
+    let adding = add.map(memfd::seals).transpose().map_err(Error::Errno)?;
+    let args = file::SealArgs { add: adding.unwrap_or(file::Seals::NONE) };
+    let words = match results(me, user, slot, file::SEAL, args.encode()) {
+        Ok(words) => words,
+        Err(Error::Native(status)) if files::other_kind(status) => return fail(EINVAL),
+        Err(err) => return Err(err),
+    };
+    let Ok(done) = file::SealResults::decode(&words) else { return fail(EIO) };
+    if adding == Some(file::Seals::NONE) && done.seals.contains(file::Seals::SEAL) {
+        return fail(EPERM);
+    }
+    Ok(u64::from(done.seals.bits()))
 }
 
 /// The native `status_flags` of the descriptor in `slot`: its flags as

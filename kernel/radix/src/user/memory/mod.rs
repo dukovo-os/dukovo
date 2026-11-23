@@ -308,6 +308,41 @@ pub fn unmap_past(pages: &SharedRef, from: u64) {
     }
 }
 
+/// Whether any space maps `pages`, a memory file's, shared in a way that
+/// is or may be made writable: a region whose file was opened for writing
+/// (not [`Anon::read_only`]), whatever its access now, as Linux counts a
+/// shared mapping that may write. The file adds the seal write only if
+/// none does.
+///
+/// It is walked as [`unmap_past`] walks, with the spaces' list held, and
+/// each space's regions locked in turn. The mapping path
+/// ([`SpaceObject::map_anonymous_at`]) reads the file's seals with its
+/// space's regions locked, so the seal must be set, provisionally, before
+/// this looks: a mapping made before the look is in its space's regions
+/// when that space is locked here, and one made after reads the seal and
+/// is refused or made read-only for good.
+pub fn has_writable_mapping(pages: &SharedRef) -> bool {
+    let spaces = SPACES.lock();
+    let Some(spaces) = spaces.as_ref() else { return false };
+    for space in spaces.iter().filter_map(Weak::upgrade) {
+        if !space.may_share.load(Ordering::Acquire) {
+            continue;
+        }
+        let regions = space.regions.lock();
+        let writable = regions.iter().any(|region| match &region.backing {
+            Backing::Anon(anon) => {
+                !anon.read_only
+                    && anon.shared.as_ref().is_some_and(|shared| Arc::ptr_eq(shared, pages))
+            }
+            _ => false,
+        });
+        if writable {
+            return true;
+        }
+    }
+    false
+}
+
 /// Pages a step of zeroing a new frame clears: 256 KiB, a few tens of
 /// microseconds, which is as long as deleting the frame may wait for it.
 pub const ZERO_STEP: u64 = 64;

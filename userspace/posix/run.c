@@ -84,6 +84,8 @@ static const struct test TESTS[] = {
 		{"libc", NULL, LIBC},
 		{"libc-test", NULL, LIBC_TEST},
 		{"lua", "/system/tests/lua/testes", LUA},
+		// Memory files and their seals (ADR 0614).
+		{"memfd", NULL, NULL},
 };
 
 enum { COUNT = sizeof(TESTS) / sizeof(TESTS[0]) };

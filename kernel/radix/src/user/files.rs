@@ -2642,6 +2642,14 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
             let results = file::OwnerResults { kind: owner.kind, id: owner.id };
             answer(label, file::OwnerResults::WORDS, results.encode())
         }
+        // A memory file's seals (ADR 0614): adding needs the write right.
+        file::SEAL => {
+            let a = file::SealArgs::decode(args)?;
+            let needs = if a.add == file::Seals::NONE { Rights::NONE } else { Rights::WRITE };
+            let file = file_of(found, needs)?;
+            let seals = crate::fs::shm::seal(&file.at.node, a.add)?;
+            answer(label, file::SealResults::WORDS, file::SealResults { seals }.encode())
+        }
         file::FILESYSTEM_INFO => {
             file::FilesystemInfoArgs::decode(args)?;
             let file = file_of(found, Rights::NONE)?;

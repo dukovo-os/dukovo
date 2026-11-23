@@ -15,13 +15,16 @@
 
 use core::cmp::Ordering;
 
+use radix_abi::UserBuffer;
 use radix_abi::address_space::{self as abi, MapFlags, PAGE_SIZE, USER_TOP};
 use radix_abi::capability::Rights;
 use radix_abi::errors::{File, Kernel};
-use radix_abi::startup::SLOT_SPACE;
-use radix_linux::errno::{EACCES, EBADF, EINVAL, ENODEV, ENOMEM, EOPNOTSUPP, EPERM};
+use radix_abi::process::{self, MemoryFileArgs};
+use radix_abi::startup::{SLOT_PROCESS, SLOT_SPACE};
+use radix_linux::errno::{EACCES, EBADF, EINVAL, ENAMETOOLONG, ENODEV, ENOMEM, EOPNOTSUPP, EPERM};
+use radix_linux::memfd;
 
-use super::{Args, Error, Result, fail, is, paths, results};
+use super::{Args, Error, Result, fail, files, is, method, paths, results};
 use crate::sched::ThreadRef;
 use crate::user::UserRef;
 
@@ -320,8 +323,24 @@ pub fn mremap(me: &ThreadRef, user: &UserRef, a: &Args) -> Result<u64> {
     Ok(address)
 }
 
-/// `memfd_create` (ADR 0614).
-pub fn memfd_create(me: &ThreadRef, user: &UserRef, name: u64, how: u64) -> Result<u64> {
-    let _ = (me, user, name, how);
-    fail(radix_linux::errno::ENOSYS)
+/// `memfd_create` (ADR 0614): the native `memory_file` (radix-process(2))
+/// in the lowest free descriptor. As Linux's, in this order: EINVAL for a
+/// flag it does not know (`MFD_HUGETLB` among them) or for `MFD_EXEC` with
+/// `MFD_NOEXEC_SEAL`; EFAULT for a name that cannot be read; EINVAL for a
+/// name of more than 249 bytes; EMFILE for no free descriptor. The native
+/// method reads the name again from the program's memory.
+pub fn memfd_create(me: &ThreadRef, user: &UserRef, address: u64, how: u64) -> Result<u64> {
+    let flags = memfd::flags(how as u32).map_err(Error::Errno)?;
+    let len = paths::read_string(address, memfd::MFD_NAME_MAX)
+        .map_err(|err| match err {
+            Error::Errno(ENAMETOOLONG) => Error::Errno(EINVAL),
+            err => err,
+        })?
+        .len();
+    let slot = files::into_free(user, 0, |slot| {
+        let name = UserBuffer { address, len: len as u64 };
+        let args = MemoryFileArgs { name, to: slot, flags };
+        method(me, user, SLOT_PROCESS, process::MEMORY_FILE, args.encode()).map(|_| slot)
+    })?;
+    Ok(files::descriptor(slot))
 }

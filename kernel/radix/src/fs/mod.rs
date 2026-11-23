@@ -217,6 +217,24 @@ impl Opened {
         opened
     }
 
+    /// The path made of `parts` as they are, for a file that no directory
+    /// holds, whose name is no path to work out: a memory file's
+    /// `/memfd:NAME (deleted)`, where NAME may hold slashes. A longer one
+    /// is cut.
+    pub fn verbatim(parts: &[&[u8]]) -> Opened {
+        let mut opened = Opened { len: 0, state: Opened::WHOLE, bytes: [0; OPENED_MAX] };
+        for part in parts {
+            let at = usize::from(opened.len);
+            let taken = part.len().min(OPENED_MAX - at);
+            opened.bytes[at..at + taken].copy_from_slice(&part[..taken]);
+            opened.len += taken as u8;
+            if taken < part.len() {
+                opened.state = Opened::CUT;
+            }
+        }
+        opened
+    }
+
     /// Writes at `place`, which is not yet written, where an object for
     /// `at` was opened ([`Opened::set`]): a path from a directory starts
     /// as a copy of the directory's, put in place of the zeros it would

@@ -23,6 +23,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <sys/file.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <sys/statvfs.h>
@@ -309,6 +310,40 @@ int rights_of(int fd, uint64_t *rights) {
 	if(uint64_t status = radix_capability_info(slot, &info); status)
 		return radix::to_errno(status);
 	*rights = info.rights;
+	return 0;
+}
+
+// Linux's seals of a memory file, which are the kernel's bits, and
+// memfd_create's flags beyond the ones mlibc's headers have.
+constexpr unsigned int SEAL_SEAL = 0x1;
+constexpr unsigned int SEALS_ALL = 0x3f;
+constexpr unsigned int MEMFD_NOEXEC_SEAL = 0x8;
+constexpr unsigned int MEMFD_EXEC = 0x10;
+// The longest name memfd_create takes, without its NUL.
+constexpr size_t MEMFD_NAME_MAX = 249;
+
+// F_ADD_SEALS of `add` for descriptor `fd`, or with `adding` false
+// F_GET_SEALS: the seals the memory file has, in `*seals`. As on Linux, in
+// this order for adding: EPERM if the descriptor is not open for writing,
+// EINVAL for a bit that is no seal, EINVAL for any file but a memory file
+// (for reading too), EPERM if the file is sealed with F_SEAL_SEAL (adding
+// none too), and EBUSY for F_SEAL_WRITE with a writable shared mapping.
+int file_seals(int fd, uint32_t slot, bool adding, unsigned int add, int *seals) {
+	if(adding) {
+		uint64_t rights;
+		if(int e = rights_of(fd, &rights); e)
+			return e;
+		if(!(rights & RADIX_RIGHTS_WRITE))
+			return EPERM;
+		if(add & ~SEALS_ALL)
+			return EINVAL;
+	}
+	struct radix_file_seal_results r;
+	if(uint64_t status = radix_file_seal(slot, adding ? add : 0, &r); status)
+		return description_errno(status, EINVAL);
+	if(adding && !add && (r.seals & SEAL_SEAL))
+		return EPERM;
+	*seals = static_cast<int>(r.seals);
 	return 0;
 }
 
@@ -925,6 +960,12 @@ int Sysdeps<Fcntl>::operator()(int fd, int request, va_list args, int *result) {
 	case F_OFD_SETLKW:
 		*result = 0;
 		return record_lock(fd, request, va_arg(args, struct flock *));
+	case F_ADD_SEALS:
+	case F_GET_SEALS: {
+		bool adding = request == F_ADD_SEALS;
+		unsigned int add = adding ? va_arg(args, unsigned int) : 0;
+		return file_seals(fd, slot, adding, add, result);
+	}
 	case F_GETPIPE_SZ:
 	case F_SETPIPE_SZ: {
 		// Linux reads the size as unsigned, so that a negative one is a size
@@ -1501,6 +1542,47 @@ int Sysdeps<Pipe>::operator()(int *fds, int flags) {
 		write_end.keep();
 		fds[0] = static_cast<int>(read_slot - radix::FD_BASE);
 		fds[1] = static_cast<int>(write_slot - radix::FD_BASE);
+		return 0;
+	}
+}
+
+// A memory file in the lowest free descriptor (radix-process(2)'s
+// `memory_file`). As on Linux, in this order: EINVAL for a flag it does
+// not know (MFD_HUGETLB among them) or MFD_EXEC with MFD_NOEXEC_SEAL,
+// EFAULT for no name, EINVAL for a name of more than 249 bytes.
+int Sysdeps<MemfdCreate>::operator()(const char *name, int flags, int *fd) {
+	unsigned int known = MFD_CLOEXEC | MFD_ALLOW_SEALING | MEMFD_NOEXEC_SEAL | MEMFD_EXEC;
+	unsigned int asked = static_cast<unsigned int>(flags);
+	if((asked & ~known) || ((asked & MEMFD_EXEC) && (asked & MEMFD_NOEXEC_SEAL)))
+		return EINVAL;
+	if(!name)
+		return EFAULT;
+	size_t len = strnlen(name, MEMFD_NAME_MAX + 1);
+	if(len > MEMFD_NAME_MAX)
+		return EINVAL;
+	uint32_t memory_flags = 0;
+	if(asked & MFD_CLOEXEC)
+		memory_flags |= RADIX_MEMORY_FILE_FLAGS_CLOSE_ON_EXEC;
+	if(asked & MFD_ALLOW_SEALING)
+		memory_flags |= RADIX_MEMORY_FILE_FLAGS_ALLOW_SEALING;
+	if(asked & MEMFD_NOEXEC_SEAL)
+		memory_flags |= RADIX_MEMORY_FILE_FLAGS_NO_EXEC;
+	for(;;) {
+		radix::SlotClaim claim;
+		if(int e = radix::free_slot(0, &claim); e)
+			return e;
+		uint32_t slot = claim.slot();
+		uint64_t status = radix_process_memory_file(radix::SLOT_PROCESS, name, len, slot,
+				memory_flags);
+		// Something else filled it first: that one stays taken.
+		if(is(status, RADIX_KERNEL_OCCUPIED)) {
+			claim.keep_if_full();
+			continue;
+		}
+		if(status)
+			return radix::to_errno(status);
+		claim.keep();
+		*fd = static_cast<int>(slot - radix::FD_BASE);
 		return 0;
 	}
 }

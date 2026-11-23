@@ -73,7 +73,7 @@ const POSIX_SOURCES: &str = "userspace/posix";
 /// The test programs of userspace/posix that pass on a Linux machine, built
 /// there as static programs with its C library: what they check is Linux's
 /// behaviour as much as Dukovo's.
-const ON_LINUX: &[&str] = &["hello", "locks", "epoll"];
+const ON_LINUX: &[&str] = &["hello", "locks", "epoll", "memfd"];
 
 /// The script that runs one of the two linux-core programs,
 /// `run-core.sh PROGRAM`, from the folder of the script. It names the

@@ -631,6 +631,12 @@ pub fn method(
             crate::fs::pipe::make(user, a.read, a.write, a.flags)?;
             answer(label, 0, [0; 8])
         }
+        // A memory file, as Linux's memfd_create (ADR 0614).
+        process::MEMORY_FILE => {
+            let a = process::MemoryFileArgs::decode(args)?;
+            crate::fs::shm::memory_file(user, a.name, a.to, a.flags)?;
+            answer(label, 0, [0; 8])
+        }
         process::SOCKET_PAIR => {
             let a = process::SocketPairArgs::decode(args)?;
             crate::fs::socket::make_pair(user, a.first, a.second, a.flags)?;
