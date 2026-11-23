@@ -64,8 +64,9 @@ flags QueueFlags: u32 {
     /// with its `ident` and `filter`, whose `oneshot`, `clear` and
     /// `dispatch` stay as they were added (EV_ADD), but for a `poll`
     /// watch, which every change that names it gives its events,
-    /// `oneshot`, `clear` and `dispatch` anew, as Linux's EPOLL_CTL_MOD. Either way the watch
-    /// is enabled, unless the change also has `disable` and not `enable`.
+    /// `oneshot`, `clear` and `dispatch` anew, as Linux's EPOLL_CTL_MOD.
+    /// Either way the watch is enabled, unless the change also has
+    /// `disable` and not `enable`.
     add = 0;
     /// Deletes the watch (EV_DELETE).
     delete = 1;

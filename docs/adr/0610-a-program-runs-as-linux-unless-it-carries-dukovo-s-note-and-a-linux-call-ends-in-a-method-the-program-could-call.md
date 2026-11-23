@@ -113,9 +113,13 @@ come from Dukovo's toolchain, which can mark them.
 - Static Linux programs run: the `linux-programs` boot test runs one
   built with glibc and one built with musl through threads, `fork`,
   `vfork`, `execve` both ways between Linux and Dukovo programs, memory,
-  signals, futexes, directories and descriptors. The calls a later step
-  brings (`epoll`, `eventfd`, `timerfd`, `signalfd`, `memfd`, `pidfd`,
-  the vDSO) answer ENOSYS until then, as on an older Linux.
+  signals, futexes, directories and descriptors. `epoll` ([0612](0612-epoll-is-the-event-queue-s-poll-filter-with-linux-s-rules.md)),
+  `eventfd`, `timerfd`, `signalfd` and `pidfd` ([0613](0613-events-timers-signals-and-processes-are-files-of-the-kernel-s-own.md)),
+  `memfd` ([0614](0614-a-memory-file-is-a-file-of-a-memory-filesystem-no-directory-holds-with-seals.md)),
+  inotify ([0615](0615-file-watches-follow-a-node-and-its-directory-s-changes-reach-them.md))
+  and the vDSO ([0616](0616-a-clock-page-and-a-vdso-read-the-time-without-a-system-call.md))
+  came in the step after; until then they answered ENOSYS, as on an
+  older Linux.
 - A Linux call costs a Radix call's path plus one flag and a translation.
   linux-bench's `lx_` rows measure the same static program on Linux and
   on Dukovo.

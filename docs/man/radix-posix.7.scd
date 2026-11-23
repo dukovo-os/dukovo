@@ -338,7 +338,28 @@ charged for (ADR 0497).
 *poll* and *ppoll* take *struct pollfd* as it is. Pipes, sockets and
 terminals say when they can be read or written, or have hung up; other
 files are always ready. *select* and *pselect* are the C library's, on *poll*.
-There is no *epoll*, *eventfd*, *signalfd* or *timerfd*.
+*POLLRDHUP* says a stream socket's reading side has been shut, by its
+peer or itself.
+
+*epoll_create1*, *epoll_ctl* and *epoll_wait* (_<sys/epoll.h>_) are
+Linux's, on the kernel's event queue: an epoll descriptor is a queue, and
+each registration its *poll* watch of a descriptor (ADR 0612). *EPOLLET*,
+*EPOLLONESHOT* and *EPOLLEXCLUSIVE* work as on Linux; an epoll descriptor
+cannot watch another (EINVAL), nor a file or directory (EPERM).
+
+The kernel's own files are Linux's too, each a descriptor that *read*,
+*poll* and *epoll* take (ADR 0613): *eventfd* (_<sys/eventfd.h>_), a
+counter that 8-byte writes add to and reads take; *timerfd_create*,
+*timerfd_settime* and *timerfd_gettime* (_<sys/timerfd.h>_), a timer on
+*CLOCK_REALTIME*, *CLOCK_MONOTONIC* or *CLOCK_BOOTTIME* whose reads count
+its expiries, with *TFD_TIMER_CANCEL_ON_SET*; *signalfd* (_<sys/signalfd.h>_),
+whose reads take the calling thread's pending signals of its mask as
+*struct signalfd_siginfo*; and *pidfd_open*, *pidfd_send_signal* and
+*waitid*'s *P_PIDFD* (_<sys/pidfd.h>_), a process's file, readable once it
+has exited. *memfd_create* makes a file in memory that no directory holds,
+which *fcntl*'s *F_ADD_SEALS* seals (ADR 0614). *inotify_init1*,
+*inotify_add_watch* and *inotify_rm_watch* (_<sys/inotify.h>_) watch files
+and directories, as on Linux (ADR 0615).
 
 *kqueue* and *kevent* (_<sys/event.h>_, as the BSDs declare them, with
 *struct kevent* and *EV_SET*) watch many descriptors at once on the
@@ -632,7 +653,9 @@ from the hardware's wall clock, *CLOCK_MONOTONIC* and *CLOCK_BOOTTIME*
 from the scheduler's clock, their *\_COARSE* and *\_RAW* forms, and
 *CLOCK_PROCESS_CPUTIME_ID* and *CLOCK_THREAD_CPUTIME_ID*. Every clock
 counts in nanoseconds. Nobody may set the clock yet (*clock_settime*
-fails with EPERM).
+fails with EPERM). The real-time, monotonic and boot-time clocks are read
+without a system call, through the vDSO that *exec* maps into every
+program (*radix-vdso*(7)), and so are *gettimeofday* and *time*.
 
 *nanosleep* and *clock_nanosleep* sleep as timed futex waits, and tell
 how long was left when a signal ends them. *alarm* and *setitimer*'s
@@ -1014,14 +1037,14 @@ passed*; the boot test fails on any failure.
   the stack's, never a socket's.
 - A shared writable mapping of a file fails with ENODEV, but for one in
   */dev/shm*.
-- *clock_gettime* is a system call; there is no vDSO.
 - A *poll* waits for a change anywhere, so many pollers on a busy system
   wake for each other's changes. An event queue does not: a change
   reaches only the queues that watch it.
 - No System V message queues, POSIX message queues or POSIX
   asynchronous I/O
-  (Radix's own is its rings, *radix-ring*(2)), and no *epoll*,
-  *eventfd*, *signalfd*, *timerfd* or *inotify*.
+  (Radix's own is its rings, *radix-ring*(2)).
+- The ports are built without *epoll*, *eventfd*, *signalfd*, *timerfd*
+  and *memfd_create* until each has a boot test of its path over them.
 - CPU time is split between user mode and the kernel by the timer's
   samples, 100 a second, as on Linux, so a program that runs for less
   than a tick may show all its time as one or the other.
@@ -1035,5 +1058,5 @@ passed*; the boot test fails on any failure.
 *radix-process*(2), *radix-signal*(2), *radix-terminal*(2),
 *radix-file*(2), *radix-directory*(2), *radix-address-space*(2),
 *radix-startup*(2), *radix-errors*(2), *radix-processes*(7),
-*radix-files*(7), *radix-linux*(7), *radix-scheduling*(7), *spark*(8),
-*ob*(1)
+*radix-files*(7), *radix-linux*(7), *radix-scheduling*(7),
+*radix-vdso*(7), *spark*(8), *ob*(1)

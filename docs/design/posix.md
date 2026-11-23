@@ -987,8 +987,9 @@ ring and reporting it.
   `mprotect` cannot make it writable (EACCES). SQLite's WAL index
   between connections and its memory-mapped I/O need such mappings (ADR
   0511).
-- `clock_gettime` is a capability call; there is no read-only clock page
-  (vDSO). The instruction budgets will show when it matters.
+- `clock_gettime`, and `gettimeofday` and `time` on it, read the clock
+  page through the vDSO, without a call, where the kernel shares its
+  counter (ADR 0616); a process's or thread's CPU clock is a call.
 - An event queue (`kqueue` and `kevent`) differs from BSD's. The `data`
   of a read or write event is 0, where BSD gives the bytes to read, the
   room to write or the connections waiting. The filters are read, write
@@ -1023,9 +1024,11 @@ ring and reporting it.
   `wait`'s times; ADR 0092); CPU-time timers fire within a tick (10 ms).
 - `AF_UNIX` sockets are streams and datagrams, without sequenced
   packets, abstract names or autobind. No System V message queues, POSIX
-  message queues, POSIX asynchronous I/O, `epoll`, `eventfd`, `signalfd`,
-  `timerfd` or `inotify`. Linux's `madvise` is not declared;
-  `posix_madvise` is advice only.
+  message queues or POSIX asynchronous I/O. `epoll`, `eventfd`,
+  `signalfd`, `timerfd`, `pidfd_open`, `inotify` and `memfd_create` are
+  there (ADRs 0612 to 0615), but the ports are built without them until
+  each has a boot test (docs/deferred.md). Linux's `madvise` is not
+  declared; `posix_madvise` is advice only.
 - mlibc's hard-coded paths outside `/system` stay as they are until the
   phases that bring them: `/bin/sh` for `system`, `popen` and `wordexp`
   (Phase 9 decides where the shell is), `/etc/localtime`, `/etc/hosts`,
