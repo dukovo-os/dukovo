@@ -8,6 +8,16 @@ fresh = true
 [[step]]
 host = "sh {here}/copy-update.sh firmware {machine} {machine-port:22}"
 expect = "copied: firmware"
+# The test restarts the machine a few seconds after it stages the firmware,
+# and the start of this boot counts as good only once its essential services
+# have run steadily, which takes seconds after the machine is ready (health.rs:
+# SEEN_STEADY, or `stable` if less). A restart before that leaves no good
+# start for the next one to be compared with, and `changes --failed` then
+# has no change to name. So the test waits, up to 3 minutes, until the first
+# start is good.
+[[step]]
+run = '''sh -c 'i=0; while [ $i -lt 180 ] && ! changes --list | grep -q "slot A: good"; do sleep 1; i=$((i + 1)); done; changes --list' '''
+expect = "slot A: good"
 [[step]]
 run = '''sh -c 'printf "stable = 10\n" > /system/settings/sysupdate/health.toml' '''
 root = true

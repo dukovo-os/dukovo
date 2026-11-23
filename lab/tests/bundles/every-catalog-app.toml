@@ -7,7 +7,8 @@
 # their type, mode, owner, group and a file's size, installs the bundle for
 # everyone, runs each of its commands once, removes it, and records
 # again: the two records differ only by the records that outlive a bundle.
-# The first run removes with --purge. The second removes keeping the data,
+# A command that needs the grant "runs with your access" is left out, as
+# the script says. The first run removes with --purge. The second removes keeping the data,
 # which then is all that differs, installs the bundle again, so that a
 # service's account takes its old number and finds its data, and removes
 # it with --purge. A line for each bundle, and the count of those that
@@ -16,6 +17,13 @@ about = "each bundle of the catalogs installs, runs its commands and is removed,
 time = "90m"
 host_needs = ["scp"]
 
+# The catalogs are on the internet. A machine on the lab network of a real
+# one has none and no DNS, and reading them there fails (APP-103), which is
+# the lab's, not Dukovo's: the test is skipped there. netcheck exits with 2
+# for a warning, as a clock not yet set, which does not stop the catalogs.
+[[step]]
+run = '''sh -c 'netcheck --internet >/dev/null 2>&1; [ $? -le 2 ]' '''
+or_skip = "the machine has no internet (no DNS on the lab network), where the catalogs are read from"
 [[step]]
 host = "sh {here}/../services/copy-file.sh {here}/every-catalog-app.sh {machine} {machine-port:22}"
 expect = "copied: every-catalog-app.sh"

@@ -111,7 +111,11 @@ input = "{password}\n"
 expect = ["\"rebooted\": true", "unreachable: 0", "failed: 0"]
 [[step]]
 wait = "ready"
+# The new start is an update being tried until its services have run steadily
+# for the stable period (10 seconds, set above), which ends some time after the
+# machine is ready, so status is asked again, for up to 3 minutes, until the
+# update is the default.
 [[step]]
-run = "sysupdate status"
+run = '''sh -c 'i=0; while [ $i -lt 180 ] && ! sysupdate status | grep -q -e "-test.bridge, the default"; do sleep 2; i=$((i + 2)); done; sysupdate status' '''
 root = true
 expect = ["Running:  slot B", "-test.bridge, the default"]
