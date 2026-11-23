@@ -69,6 +69,16 @@ uintptr_t first_stack_top;
 using ClockRead = int (*)(int clock, uint64_t *ns);
 ClockRead vdso_clock_read;
 
+// Whether the strings `a` and `b` are the same. (The dynamic linker, which
+// has this code too, has no strcmp.)
+bool same(const char *a, const char *b) {
+	while(*a && *a == *b) {
+		a++;
+		b++;
+	}
+	return *a == *b;
+}
+
 // The address of the function `name` that the vDSO whose ELF header is at
 // `base` exports, or null: found in its dynamic symbols, which its hash
 // table counts, as a dynamic linker finds a name. The vDSO is mapped as
@@ -107,7 +117,7 @@ void *vdso_function(uintptr_t base, const char *name) {
 	for(uint32_t i = 1; i < hash[1]; i++) {
 		const Elf64_Sym &symbol = symbols[i];
 		if(symbol.st_shndx != SHN_UNDEF && ELF64_ST_TYPE(symbol.st_info) == STT_FUNC
-				&& !strcmp(strings + symbol.st_name, name))
+				&& same(strings + symbol.st_name, name))
 			return reinterpret_cast<void *>(bias + symbol.st_value);
 	}
 	return nullptr;

@@ -1554,7 +1554,11 @@ int Sysdeps<MemfdCreate>::operator()(const char *name, int flags, int *fd) {
 		return EINVAL;
 	if(!name)
 		return EFAULT;
-	size_t len = strnlen(name, MEMFD_NAME_MAX + 1);
+	// The name's length, counted only as far as one byte too many. (The
+	// dynamic linker, which has this code too, has no strnlen.)
+	size_t len = 0;
+	while(len <= MEMFD_NAME_MAX && name[len])
+		len++;
 	if(len > MEMFD_NAME_MAX)
 		return EINVAL;
 	uint32_t memory_flags = 0;
