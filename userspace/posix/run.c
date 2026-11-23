@@ -71,6 +71,7 @@ static const struct test TESTS[] = {
 		{"spawn", NULL, NULL},
 		{"limits", NULL, NULL},
 		{"format", NULL, NULL},
+		{"strings", NULL, NULL},
 		{"zones", NULL, NULL},
 		{"library", NULL, NULL},
 		{"dynamic", NULL, NULL},

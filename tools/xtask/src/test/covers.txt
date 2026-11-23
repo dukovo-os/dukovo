@@ -734,8 +734,9 @@ posix userspace/posix/files.c userspace/posix/fork.c userspace/posix/format-case
 posix userspace/posix/format.c userspace/posix/hello.c userspace/posix/inet.c userspace/posix/job.c
 posix userspace/posix/library.c userspace/posix/limits.c userspace/posix/locks.c
 posix ports/mlibc/patches/0094-fclose-drops-what-it-could-not-write.patch
+posix ports/mlibc/patches/0101-string-functions-sixteen-bytes-at-a-time.patch
 posix userspace/posix/pipe.c userspace/posix/poll.c userspace/posix/programs.h userspace/posix/run.c
-posix userspace/posix/shm.c userspace/posix/signal.c
+posix userspace/posix/shm.c userspace/posix/signal.c userspace/posix/strings.c
 posix kernel/radix/src/fs/shm/ kernel/radix/src/user/memory/ kernel/radix/src/fs/socket.rs kernel/radix/src/fs/socket/
 posix kernel/radix/src/user/posix/poll.rs kernel/radix/src/user/queue.rs
 posix ports/mlibc/sysdeps/radix/generic/event.cpp ports/mlibc/sysdeps/radix/generic/socket.cpp
