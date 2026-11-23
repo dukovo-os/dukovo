@@ -441,6 +441,10 @@ impl Timer for Arch {
         rtc::WALL_CLOCK.slew_left(time::now_ns())
     }
 
+    fn clock_page() -> Option<u64> {
+        time::clock_page()
+    }
+
     fn rtc_seconds() -> Option<u64> {
         rtc::seconds()
     }
@@ -1278,6 +1282,8 @@ impl Platform for Arch {
         }
         time::start_tick();
         rtc::init(acpi.and_then(|acpi| acpi.fadt.as_ref()).map_or(0, |fadt| fadt.century));
+        time::set_cpu_number(percpu::current_index());
+        time::share_clock();
         // Under a hypervisor MWAIT is usually not passed through, and when
         // it is emulated it may spin; HLT lets the host run something else.
         IDLE_MWAIT.store(cpu::feature::monitor() && !cpu::feature::hypervisor(), Ordering::Relaxed);

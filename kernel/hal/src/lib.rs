@@ -404,6 +404,14 @@ pub trait Timer {
     /// The slew still to come, in nanoseconds.
     fn wall_clock_slew_ns() -> i64;
 
+    /// The physical address of the clock page ([`clock::ClockPage`]),
+    /// which programs map read-only and read both clocks from, once it
+    /// names the counter the monotonic clock runs on: `None` where
+    /// programs have no vDSO to read it with.
+    fn clock_page() -> Option<u64> {
+        None
+    }
+
     /// The real-time clock read now: seconds since 1970, if the machine
     /// has one the kernel reaches and it holds a valid date.
     fn rtc_seconds() -> Option<u64>;

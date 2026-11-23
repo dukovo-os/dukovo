@@ -500,6 +500,9 @@ pub fn exec_from(
         0
     };
 
+    // Every program reads the clocks through the vDSO (ADR 0613).
+    let vdso = crate::user::vdso::map(&space)?;
+
     // The room RLIMIT_STACK gives it, made as it is touched.
     let stack_bytes = super::limits::stack_bytes(&user.process.posix.lock().limits, PAGE_SIZE);
     let sp = build_stack(
@@ -508,7 +511,7 @@ pub fn exec_from(
         script.as_ref(),
         (cwd, execfn),
         &program,
-        (&main, loader.as_ref()),
+        (&main, loader.as_ref(), vdso),
         stack_bytes,
         linux.then(|| target.identity()).as_ref(),
     )?;
@@ -596,7 +599,8 @@ fn keep_args(
 /// its arguments (the script's interpreter's first, for a script), its
 /// environment and its auxiliary vector, below a random top with
 /// `stack_bytes` of room, of which they may take a quarter, as on Linux.
-/// Returns the stack pointer it starts with.
+/// The vector names the vDSO, at `vdso`, if the program has one. Returns
+/// the stack pointer it starts with.
 ///
 /// A Linux program (`linux`, with the name its process acts for) is told
 /// its user and group, the CPU's features and the most a signal's frame
@@ -610,7 +614,7 @@ fn build_stack(
     script: Option<&Script>,
     (cwd, execfn): (Option<&[u8]>, Option<&[u8]>),
     program: &Program,
-    (main, loader): (&Mapped, Option<&Mapped>),
+    (main, loader, vdso): (&Mapped, Option<&Mapped>, Option<u64>),
     stack_bytes: u64,
     linux: Option<&Identity>,
 ) -> Result<u64> {
@@ -668,9 +672,11 @@ fn build_stack(
             (aux::AT_IGNORE, 0),
         ]
     };
-    let mut auxv = [(0, 0); 16];
+    let vdso = vdso.map_or((aux::AT_IGNORE, 0), |at| (aux::AT_SYSINFO_EHDR, at));
+    let mut auxv = [(0, 0); 17];
     auxv[..common.len()].copy_from_slice(&common);
-    auxv[common.len()..].copy_from_slice(&own);
+    auxv[common.len()..common.len() + own.len()].copy_from_slice(&own);
+    auxv[common.len() + own.len()] = vdso;
     let mut random = [0u8; 16];
     crate::user::random::fill(&mut random);
     let stack = Stack {

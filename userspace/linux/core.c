@@ -8,7 +8,8 @@
 // futexes with absolute timeouts, bit sets, requeues and wake-ops, robust
 // futex lists, what an unprivileged program may not do, the descriptor and
 // identity rules, a pseudo-terminal's settings, waits on thousands of
-// descriptors, vectored reads and writes, a descriptor's owner, and getcpu.
+// descriptors, vectored reads and writes, a descriptor's owner, getcpu,
+// and the vDSO.
 // Where a C library would hide a call's own rules (the raw clone, brk,
 // getcwd, getdents64, statx, futex, the interval timers), the program
 // makes the call itself, so that it is the system's answer that is checked.
@@ -37,6 +38,7 @@
 
 #include <errno.h>
 #include <dirent.h>
+#include <elf.h>
 #include <fcntl.h>
 #include <ftw.h>
 #include <limits.h>
@@ -2080,6 +2082,130 @@ static void getcpu_case(void) {
 	CHECK(sched_setaffinity(0, sizeof(allowed), &allowed) == 0);
 }
 
+// The address of the function `name` the vDSO exports, or null: looked up
+// through its hash table, as a C library looks it up.
+static void *vdso_function(const char *name) {
+	uintptr_t base = getauxval(AT_SYSINFO_EHDR);
+	if(!base)
+		return NULL;
+	const Elf64_Ehdr *header = (const Elf64_Ehdr *)base;
+	const Elf64_Phdr *segments = (const Elf64_Phdr *)(base + header->e_phoff);
+	const Elf64_Dyn *dynamic = NULL;
+	uintptr_t bias = 0;
+	int loaded = 0;
+	for(int i = 0; i < header->e_phnum; i++) {
+		if(segments[i].p_type == PT_LOAD && !loaded) {
+			bias = base + segments[i].p_offset - segments[i].p_vaddr;
+			loaded = 1;
+		} else if(segments[i].p_type == PT_DYNAMIC) {
+			dynamic = (const Elf64_Dyn *)(base + segments[i].p_offset);
+		}
+	}
+	if(!loaded || !dynamic)
+		return NULL;
+	const uint32_t *hash = NULL;
+	const Elf64_Sym *symbols = NULL;
+	const char *strings = NULL;
+	for(; dynamic->d_tag != DT_NULL; dynamic++) {
+		uintptr_t at = bias + dynamic->d_un.d_ptr;
+		if(dynamic->d_tag == DT_HASH)
+			hash = (const uint32_t *)at;
+		else if(dynamic->d_tag == DT_SYMTAB)
+			symbols = (const Elf64_Sym *)at;
+		else if(dynamic->d_tag == DT_STRTAB)
+			strings = (const char *)at;
+	}
+	if(!hash || !symbols || !strings)
+		return NULL;
+	for(uint32_t i = 1; i < hash[1]; i++) {
+		if(symbols[i].st_shndx != SHN_UNDEF && !strcmp(strings + symbols[i].st_name, name))
+			return (void *)(bias + symbols[i].st_value);
+	}
+	return NULL;
+}
+
+static long long timespec_ns(const struct timespec *ts) {
+	return ts->tv_sec * 1000000000LL + ts->tv_nsec;
+}
+
+// The vDSO (ADR 0613): AT_SYSINFO_EHDR names it, it exports Linux's
+// functions, and what they read agrees with the system calls around
+// them, in the program and in a child it forks. On Dukovo the clock page
+// below it can be read but not written, and neither can it be made
+// writable.
+static void vdso_case(void) {
+	uintptr_t base = getauxval(AT_SYSINFO_EHDR);
+	CHECK(base != 0 && base % PAGE == 0);
+	int (*gettime)(clockid_t, struct timespec *) = vdso_function("__vdso_clock_gettime");
+	int (*getres)(clockid_t, struct timespec *) = vdso_function("__vdso_clock_getres");
+	int (*timeofday)(struct timeval *, void *) = vdso_function("__vdso_gettimeofday");
+	time_t (*seconds)(time_t *) = vdso_function("__vdso_time");
+	long (*cpu_of)(unsigned *, unsigned *, void *) = vdso_function("__vdso_getcpu");
+	CHECK(gettime && getres && timeofday && seconds && cpu_of);
+	if(!gettime || !getres || !timeofday || !seconds || !cpu_of)
+		return;
+	static const clockid_t clocks[] = {CLOCK_MONOTONIC, CLOCK_MONOTONIC_RAW, CLOCK_BOOTTIME};
+	for(size_t i = 0; i < sizeof(clocks) / sizeof(clocks[0]); i++) {
+		struct timespec before, read, after;
+		CHECK(syscall(SYS_clock_gettime, clocks[i], &before) == 0);
+		CHECK(gettime(clocks[i], &read) == 0);
+		CHECK(syscall(SYS_clock_gettime, clocks[i], &after) == 0);
+		CHECK(timespec_ns(&before) <= timespec_ns(&read));
+		CHECK(timespec_ns(&read) <= timespec_ns(&after));
+		CHECK(read.tv_nsec >= 0 && read.tv_nsec < 1000000000);
+	}
+	// The time of day, to the second: a clock set in between moves it.
+	struct timespec wall;
+	CHECK(gettime(CLOCK_REALTIME, &wall) == 0);
+	time_t now = syscall(SYS_time, NULL);
+	CHECK(now - wall.tv_sec >= 0 && now - wall.tv_sec <= 1);
+	time_t told = 0;
+	CHECK(seconds(&told) - now >= 0 && told - now <= 1);
+	struct timeval tv;
+	CHECK(timeofday(&tv, NULL) == 0 && tv.tv_sec - now >= 0 && tv.tv_sec - now <= 1);
+	CHECK(tv.tv_usec >= 0 && tv.tv_usec < 1000000);
+	// What it cannot read it asks the kernel for.
+	struct timespec cpu_time, res, kernel_res;
+	CHECK(gettime(CLOCK_PROCESS_CPUTIME_ID, &cpu_time) == 0);
+	CHECK(gettime(12345, &cpu_time) == -EINVAL);
+	CHECK(getres(CLOCK_MONOTONIC, &res) == 0);
+	CHECK(syscall(SYS_clock_getres, CLOCK_MONOTONIC, &kernel_res) == 0);
+	CHECK(timespec_ns(&res) == timespec_ns(&kernel_res));
+	// The CPU it runs on, pinned there.
+	cpu_set_t allowed, only;
+	CHECK(sched_getaffinity(0, sizeof(allowed), &allowed) == 0);
+	unsigned here = ~0u, cpu = ~0u, node = ~0u;
+	CHECK(syscall(SYS_getcpu, &here, NULL, NULL) == 0);
+	CPU_ZERO(&only);
+	CPU_SET(here, &only);
+	if(sched_setaffinity(0, sizeof(only), &only) == 0) {
+		for(int tries = 0; tries < 100 && cpu != here; tries++) {
+			CHECK(cpu_of(&cpu, &node, NULL) == 0);
+			if(cpu != here)
+				sleep_ms(1);
+		}
+		CHECK(cpu == here);
+		CHECK(node < 1024 && (!on_dukovo || node == 0));
+		CHECK(sched_setaffinity(0, sizeof(allowed), &allowed) == 0);
+	}
+	// A child reads it too, from where the parent's clock was.
+	struct timespec parent;
+	CHECK(gettime(CLOCK_MONOTONIC, &parent) == 0);
+	pid_t child = fork();
+	if(child == 0) {
+		struct timespec mine;
+		_exit(gettime(CLOCK_MONOTONIC, &mine) == 0 && timespec_ns(&mine) >= timespec_ns(&parent)
+				? 0 : 1);
+	}
+	CHECK(child > 0 && wait_raw(child) == 0);
+	if(on_dukovo) {
+		volatile char *page = (volatile char *)(base - PAGE);
+		CHECK(!faults(page));
+		CHECK(mprotect((void *)(base - PAGE), PAGE, PROT_READ | PROT_WRITE) != 0);
+		CHECK(mprotect((void *)base, PAGE, PROT_READ | PROT_WRITE) != 0);
+	}
+}
+
 #ifndef RWF_HIPRI
 #define RWF_HIPRI 0x1
 #define RWF_DSYNC 0x2
@@ -2254,6 +2380,7 @@ static const struct test_case CASES[] = {
 	{"owner", owner},
 	{"fionread_file", fionread_file},
 	{"getcpu", getcpu_case},
+	{"vdso", vdso_case},
 	{"vectored_flags", vectored_flags},
 	{"wait_time_left", wait_time_left},
 	{"sigtimedwait_eintr", sigtimedwait_eintr},

@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Calendar arithmetic for the wall clock, the time of day kept on the
-//! kernel's monotonic clock ([`WallClock`]), and the fixed-point scale
-//! that turns a counter's ticks into nanoseconds.
+//! kernel's monotonic clock ([`WallClock`]), the page programs read both
+//! clocks from themselves ([`ClockPage`]), and the fixed-point scale that
+//! turns a counter's ticks into nanoseconds.
 
 use core::hint;
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering, fence};
@@ -35,15 +36,25 @@ pub struct WallClock {
     slew_start: AtomicU64,
     /// How far the slew moves the time of day in all, in nanoseconds.
     slew: AtomicI64,
+    /// The page programs read it from, which the writer that changes the
+    /// fields copies them to.
+    page: ClockPage,
 }
 
-/// The fields, as one reading of them saw them.
-#[derive(Clone, Copy)]
-struct Fields {
-    known: bool,
-    offset: i64,
-    slew_start: u64,
-    slew: i64,
+/// A wall clock's fields, as one reading of them saw them: what a program
+/// that reads the time of day from the [`ClockPage`] works it out from,
+/// as [`WallClock::read`] does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Fields {
+    /// Whether the time of day is known at all.
+    pub known: bool,
+    /// Nanoseconds since 1970 when the monotonic clock read 0, before the
+    /// slew.
+    pub offset: i64,
+    /// When the slew started, on the monotonic clock.
+    pub slew_start: u64,
+    /// How far the slew moves the time of day in all, in nanoseconds.
+    pub slew: i64,
 }
 
 impl Fields {
@@ -52,6 +63,17 @@ impl Fields {
         let most = now.saturating_sub(self.slew_start) / (1_000_000_000 / SLEW_RATE_NS);
         let most = i64::try_from(most).unwrap_or(i64::MAX);
         self.slew.clamp(-most, most)
+    }
+
+    /// The time of day when the monotonic clock reads `now`, if it is
+    /// known: [`WallClock::read`]'s arithmetic, which the clock page's
+    /// readers repeat.
+    pub fn at(self, now: u64) -> Option<u64> {
+        if !self.known {
+            return None;
+        }
+        let at = i128::from(self.offset) + i128::from(now) + i128::from(self.applied(now));
+        Some(u64::try_from(at.max(0)).unwrap_or(u64::MAX))
     }
 }
 
@@ -65,10 +87,12 @@ impl WallClock {
             offset: AtomicI64::new(0),
             slew_start: AtomicU64::new(0),
             slew: AtomicI64::new(0),
+            page: ClockPage::new(),
         }
     }
 
-    fn fields(&self) -> Fields {
+    /// Its fields, as one reading saw them.
+    pub fn fields(&self) -> Fields {
         loop {
             if let Some(fields) = self.fields_once() {
                 return fields;
@@ -93,8 +117,8 @@ impl WallClock {
         (self.sequence.load(Ordering::Relaxed) == before).then_some(fields)
     }
 
-    /// Changes the fields with `change`, which gets them as they are.
-    fn write(&self, change: impl FnOnce(Fields) -> Fields) {
+    /// Runs `write` as the only writer: writers take turns.
+    fn as_writer<T>(&self, write: impl FnOnce() -> T) -> T {
         while self
             .writing
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -102,26 +126,46 @@ impl WallClock {
         {
             hint::spin_loop();
         }
-        let new = change(self.fields());
-        self.sequence.fetch_add(1, Ordering::Relaxed);
-        fence(Ordering::Release);
-        self.known.store(new.known, Ordering::Relaxed);
-        self.offset.store(new.offset, Ordering::Relaxed);
-        self.slew_start.store(new.slew_start, Ordering::Relaxed);
-        self.slew.store(new.slew, Ordering::Relaxed);
-        self.sequence.fetch_add(1, Ordering::Release);
+        let result = write();
         self.writing.store(false, Ordering::Release);
+        result
+    }
+
+    /// Changes the fields with `change`, which gets them as they are, and
+    /// copies them to its clock page while no other writer runs: the page
+    /// always holds what the clock's last change made.
+    fn write(&self, change: impl FnOnce(Fields) -> Fields) {
+        self.as_writer(|| {
+            let new = change(self.fields());
+            self.sequence.fetch_add(1, Ordering::Relaxed);
+            fence(Ordering::Release);
+            self.known.store(new.known, Ordering::Relaxed);
+            self.offset.store(new.offset, Ordering::Relaxed);
+            self.slew_start.store(new.slew_start, Ordering::Relaxed);
+            self.slew.store(new.slew, Ordering::Relaxed);
+            self.sequence.fetch_add(1, Ordering::Release);
+            self.page.write(|page| page.set_wall(new));
+        });
+    }
+
+    /// The page programs read it from, with the counter the monotonic
+    /// clock runs on: one that tells them to ask the kernel until
+    /// [`WallClock::set_counter`] names the counter.
+    pub fn page(&self) -> &ClockPage {
+        &self.page
+    }
+
+    /// Writes `counter`, the counter the monotonic clock runs on, as
+    /// programs may read it, into its page. Called when the monotonic
+    /// clock has its scale.
+    pub fn set_counter(&self, counter: Counter) {
+        self.as_writer(|| self.page.write(|page| page.set_counter(counter)));
     }
 
     /// The time of day when the monotonic clock reads `now`: nanoseconds
     /// since 1970, if it is known.
     pub fn read(&self, now: u64) -> Option<u64> {
-        let fields = self.fields();
-        if !fields.known {
-            return None;
-        }
-        let at = i128::from(fields.offset) + i128::from(now) + i128::from(fields.applied(now));
-        Some(u64::try_from(at.max(0)).unwrap_or(u64::MAX))
+        self.fields().at(now)
     }
 
     /// [`WallClock::read`], but `None` if a change stays half made for a
@@ -134,11 +178,7 @@ impl WallClock {
             }
             fields
         })?;
-        if !fields.known {
-            return None;
-        }
-        let at = i128::from(fields.offset) + i128::from(now) + i128::from(fields.applied(now));
-        Some(u64::try_from(at.max(0)).unwrap_or(u64::MAX))
+        fields.at(now)
     }
 
     /// Sets the time of day to `ns` when the monotonic clock reads `now`,
@@ -180,6 +220,151 @@ impl WallClock {
 impl Default for WallClock {
     fn default() -> WallClock {
         WallClock::new()
+    }
+}
+
+/// The counter the kernel's monotonic clock runs on, as programs may read
+/// it themselves: the clock reads `ticks_to_ns(counter - start,
+/// ns_per_tick)` ([`ticks_to_ns`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Counter {
+    /// The counter's value when the clock read 0.
+    pub start: u64,
+    /// Its scale: nanoseconds per tick, times 2^32.
+    pub ns_per_tick: u64,
+    /// The page's flags: [`ClockPage::COUNTER`] if programs may read the
+    /// counter (none ask the kernel for the time), and how they find the
+    /// number of the CPU they run on.
+    pub flags: u64,
+}
+
+/// The clock page (ADR 0613): one page the kernel keeps and every program
+/// maps read-only, from which its vDSO reads the monotonic clock and the
+/// time of day without a system call. It holds the counter the monotonic
+/// clock runs on ([`Counter`]) and the wall clock's fields ([`Fields`]),
+/// from which a reader works the time out as the kernel does.
+///
+/// Readers never wait for the writer, as [`WallClock`]'s don't: a
+/// sequence count, odd while the page is written, sends a reader that
+/// overlapped a write round again (`kernel/radix/tla/ClockPage.tla`). The
+/// page is a [`WallClock`]'s, whose writers take turns and write it.
+///
+/// Its layout is fixed: the vDSO's C reads it at these offsets
+/// (`kernel/lib/vdso/src/clock_page.h`), which both sides check.
+#[repr(C, align(4096))]
+pub struct ClockPage {
+    sequence: AtomicU64,
+    counter_start: AtomicU64,
+    ns_per_tick: AtomicU64,
+    flags: AtomicU64,
+    wall_known: AtomicU64,
+    wall_offset: AtomicI64,
+    wall_slew_start: AtomicU64,
+    wall_slew: AtomicI64,
+}
+
+// The offsets the vDSO reads the fields at.
+const _: () = {
+    use core::mem::offset_of;
+    assert!(offset_of!(ClockPage, sequence) == 0);
+    assert!(offset_of!(ClockPage, counter_start) == 8);
+    assert!(offset_of!(ClockPage, ns_per_tick) == 16);
+    assert!(offset_of!(ClockPage, flags) == 24);
+    assert!(offset_of!(ClockPage, wall_known) == 32);
+    assert!(offset_of!(ClockPage, wall_offset) == 40);
+    assert!(offset_of!(ClockPage, wall_slew_start) == 48);
+    assert!(offset_of!(ClockPage, wall_slew) == 56);
+    assert!(size_of::<ClockPage>() == 4096);
+};
+
+impl Default for ClockPage {
+    fn default() -> ClockPage {
+        ClockPage::new()
+    }
+}
+
+/// What one reading of a [`ClockPage`] saw.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Reading {
+    /// The counter, and the page's flags.
+    pub counter: Counter,
+    /// The wall clock's fields.
+    pub wall: Fields,
+}
+
+impl ClockPage {
+    /// The flag that says programs may read the counter the monotonic
+    /// clock runs on: without it, they ask the kernel for the time.
+    pub const COUNTER: u64 = 1 << 0;
+    /// The flag that says a program reads the number of the CPU it runs
+    /// on with RDPID (x86-64), from IA32_TSC_AUX.
+    pub const CPU_RDPID: u64 = 1 << 1;
+    /// The flag that says a program reads the number of the CPU it runs
+    /// on with RDTSCP (x86-64), from IA32_TSC_AUX.
+    pub const CPU_RDTSCP: u64 = 1 << 2;
+
+    /// A page that tells programs to ask the kernel.
+    pub const fn new() -> ClockPage {
+        ClockPage {
+            sequence: AtomicU64::new(0),
+            counter_start: AtomicU64::new(0),
+            ns_per_tick: AtomicU64::new(0),
+            flags: AtomicU64::new(0),
+            wall_known: AtomicU64::new(0),
+            wall_offset: AtomicI64::new(0),
+            wall_slew_start: AtomicU64::new(0),
+            wall_slew: AtomicI64::new(0),
+        }
+    }
+
+    /// Runs `change` as a write of the page: the sequence count is odd
+    /// while it runs. Its caller is the only writer.
+    fn write(&self, change: impl FnOnce(&ClockPage)) {
+        self.sequence.fetch_add(1, Ordering::Relaxed);
+        fence(Ordering::Release);
+        change(self);
+        self.sequence.fetch_add(1, Ordering::Release);
+    }
+
+    fn set_counter(&self, counter: Counter) {
+        self.counter_start.store(counter.start, Ordering::Relaxed);
+        self.ns_per_tick.store(counter.ns_per_tick, Ordering::Relaxed);
+        self.flags.store(counter.flags, Ordering::Relaxed);
+    }
+
+    fn set_wall(&self, fields: Fields) {
+        self.wall_known.store(u64::from(fields.known), Ordering::Relaxed);
+        self.wall_offset.store(fields.offset, Ordering::Relaxed);
+        self.wall_slew_start.store(fields.slew_start, Ordering::Relaxed);
+        self.wall_slew.store(fields.slew, Ordering::Relaxed);
+    }
+
+    /// Reads the page as a program does: the fields one write left, never
+    /// some of one and some of another.
+    pub fn read(&self) -> Reading {
+        loop {
+            let before = self.sequence.load(Ordering::Acquire);
+            if before & 1 == 0 {
+                let reading = Reading {
+                    counter: Counter {
+                        start: self.counter_start.load(Ordering::Relaxed),
+                        ns_per_tick: self.ns_per_tick.load(Ordering::Relaxed),
+                        flags: self.flags.load(Ordering::Relaxed),
+                    },
+                    wall: Fields {
+                        known: self.wall_known.load(Ordering::Relaxed) != 0,
+                        offset: self.wall_offset.load(Ordering::Relaxed),
+                        slew_start: self.wall_slew_start.load(Ordering::Relaxed),
+                        slew: self.wall_slew.load(Ordering::Relaxed),
+                    },
+                };
+                fence(Ordering::Acquire);
+                if self.sequence.load(Ordering::Relaxed) == before {
+                    return reading;
+                }
+            }
+            hint::spin_loop();
+        }
     }
 }
 
@@ -295,6 +480,48 @@ mod tests {
         // A CPU stopped in the middle of a change: the count stays odd.
         clock.sequence.fetch_add(1, Ordering::AcqRel);
         assert_eq!(clock.read_without_waiting(3_000), None);
+    }
+
+    #[test]
+    fn the_clock_page_mirrors_the_wall_clock() {
+        let clock = WallClock::new();
+        assert_eq!(clock.page().read(), Reading::default());
+        clock.set(1_000, 1_700_000_000_000_000_000);
+        assert_eq!(clock.page().read().wall, clock.fields());
+        let counter = Counter { start: 77, ns_per_tick: 3 << 31, flags: ClockPage::COUNTER };
+        clock.set_counter(counter);
+        assert_eq!(clock.slew(2_000, -4_000), Some(0));
+        let reading = clock.page().read();
+        assert_eq!(reading.counter, counter);
+        assert_eq!(reading.wall, clock.fields());
+        for now in [0, 2_000, 3_000, 1_000_000_000, 9_000_000_000] {
+            assert_eq!(reading.wall.at(now), clock.read(now));
+        }
+        assert_eq!(clock.page().sequence.load(Ordering::Relaxed) % 2, 0);
+    }
+
+    #[test]
+    fn a_reader_of_the_clock_page_never_sees_half_a_write() {
+        static CLOCK: WallClock = WallClock::new();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                // Each write's fields are one number, which no two share.
+                for n in 1..20_000u64 {
+                    CLOCK.set(n, n * 2);
+                }
+            });
+            for _ in 0..2 {
+                scope.spawn(|| {
+                    for _ in 0..20_000 {
+                        let wall = CLOCK.page().read().wall;
+                        if wall.known {
+                            assert_eq!(wall.offset.cast_unsigned(), wall.slew_start, "{wall:?}");
+                            assert_eq!(wall.slew, 0);
+                        }
+                    }
+                });
+            }
+        });
     }
 
     #[test]

@@ -64,6 +64,55 @@ static_assert(AT_RADIX_STARTUP == RADIX_PROCESS_AUX_STARTUP);
 constexpr size_t FIRST_STACK_BYTES = 8 << 20;
 uintptr_t first_stack_top;
 
+// The vDSO's clock (ADR 0613), which start-up finds: null if the program
+// has no vDSO.
+using ClockRead = int (*)(int clock, uint64_t *ns);
+ClockRead vdso_clock_read;
+
+// The address of the function `name` that the vDSO whose ELF header is at
+// `base` exports, or null: found in its dynamic symbols, which its hash
+// table counts, as a dynamic linker finds a name. The vDSO is mapped as
+// it is, so an address in it is its load address plus the one it gives.
+void *vdso_function(uintptr_t base, const char *name) {
+	auto header = reinterpret_cast<const Elf64_Ehdr *>(base);
+	auto segments = reinterpret_cast<const Elf64_Phdr *>(base + header->e_phoff);
+	const Elf64_Dyn *dynamic = nullptr;
+	uintptr_t bias = 0;
+	bool loaded = false;
+	for(size_t i = 0; i < header->e_phnum; i++) {
+		if(segments[i].p_type == PT_LOAD && !loaded) {
+			bias = base + segments[i].p_offset - segments[i].p_vaddr;
+			loaded = true;
+		} else if(segments[i].p_type == PT_DYNAMIC) {
+			dynamic = reinterpret_cast<const Elf64_Dyn *>(base + segments[i].p_offset);
+		}
+	}
+	if(!loaded || !dynamic)
+		return nullptr;
+	const uint32_t *hash = nullptr;
+	const Elf64_Sym *symbols = nullptr;
+	const char *strings = nullptr;
+	for(; dynamic->d_tag != DT_NULL; dynamic++) {
+		uintptr_t at = bias + dynamic->d_un.d_ptr;
+		if(dynamic->d_tag == DT_HASH)
+			hash = reinterpret_cast<const uint32_t *>(at);
+		else if(dynamic->d_tag == DT_SYMTAB)
+			symbols = reinterpret_cast<const Elf64_Sym *>(at);
+		else if(dynamic->d_tag == DT_STRTAB)
+			strings = reinterpret_cast<const char *>(at);
+	}
+	if(!hash || !symbols || !strings)
+		return nullptr;
+	// The hash table's second word counts the symbols.
+	for(uint32_t i = 1; i < hash[1]; i++) {
+		const Elf64_Sym &symbol = symbols[i];
+		if(symbol.st_shndx != SHN_UNDEF && ELF64_ST_TYPE(symbol.st_info) == STT_FUNC
+				&& !strcmp(strings + symbol.st_name, name))
+			return reinterpret_cast<void *>(bias + symbol.st_value);
+	}
+	return nullptr;
+}
+
 } // namespace
 
 int to_errno(uint64_t status) {
@@ -408,6 +457,9 @@ void init_from_auxv(const uintptr_t *auxv) {
 			last = dir;
 		} else if(auxv[0] == AT_EXECFN && !last) {
 			last = reinterpret_cast<const char *>(auxv[1]);
+		} else if(auxv[0] == AT_SYSINFO_EHDR && auxv[1]) {
+			vdso_clock_read = reinterpret_cast<ClockRead>(
+					vdso_function(auxv[1], "__dukovo_clock_read"));
 		}
 	}
 	// The working directory's string is the stack's last, or with none
@@ -415,6 +467,10 @@ void init_from_auxv(const uintptr_t *auxv) {
 	// top, as on Linux.
 	if(last)
 		first_stack_top = reinterpret_cast<uintptr_t>(last) + strlen(last) + 1 + 8;
+}
+
+bool vdso_clock(enum radix_clock_kind kind, uint64_t *ns) {
+	return vdso_clock_read && vdso_clock_read(static_cast<int>(kind), ns) == 0;
 }
 
 int first_stack(void **base, size_t *size) {

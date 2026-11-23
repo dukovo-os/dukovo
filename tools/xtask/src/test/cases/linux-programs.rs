@@ -26,9 +26,10 @@
 //! through the C library's restorer, one that interrupts a blocked read and
 //! one that a restart leaves, futexes with a deadline in absolute time,
 //! futex bit sets, requeues and wake-ops, a robust list marking the locks
-//! of a thread that ends, the calls the personality refuses, the identities, the lowest free
-//! descriptor, the umask, and a pseudo-terminal's settings through the C
-//! library's termios calls. The same file runs on a Linux machine, which
+//! of a thread that ends, the calls the personality refuses, the
+//! identities, the lowest free descriptor, the umask, a pseudo-terminal's
+//! settings through the C library's termios calls, and the vDSO's clocks
+//! and CPU number against the calls'. The same file runs on a Linux machine, which
 //! is how its expectations are known to be Linux's.
 //!
 //! Then the test programs of userspace/posix that pass on a Linux machine as
@@ -55,7 +56,7 @@ const CORE_MUSL: &str = "linux-core-musl";
 
 /// How many cases linux-core has: the table of userspace/linux/core.c, which
 /// a unit test counts.
-const CORE_CASES: usize = 36;
+const CORE_CASES: usize = 37;
 
 /// How long a run of linux-core may take, in seconds: the program ends a
 /// case that takes thirty and the script ends the program at 250, so that a
@@ -135,7 +136,7 @@ const DISKS: &[Disk] = &[linux_files_disk(64 * 1024, LABEL)];
 /// The test.
 pub const CASE: Case = Case {
     name: "linux-programs",
-    about: "static Linux programs run on Dukovo under the Linux personality (ADR 0610): linux-core, built from userspace/linux/core.c with the build machine's C library and with musl, passes its 36 cases twice, making the calls itself (threads from the C library and from a raw clone, fork, vfork, execve of itself and of a program of Dukovo with the working directory crossing, arch_prctl, brk, madvise, mremap, uname, getcwd, getdents64, statx, signals and restarts, interval timers and pause, futexes with absolute deadlines, bit sets, requeues and wake-ops, robust lists, refused calls, identities, descriptors, umask, terminal settings, waits on thousands of descriptors, vectored I/O, descriptor owners, getcpu), and the C test programs of userspace/posix that pass on Linux each run alone and pass on Dukovo",
+    about: "static Linux programs run on Dukovo under the Linux personality (ADR 0610): linux-core, built from userspace/linux/core.c with the build machine's C library and with musl, passes its 37 cases twice, making the calls itself (threads from the C library and from a raw clone, fork, vfork, execve of itself and of a program of Dukovo with the working directory crossing, arch_prctl, brk, madvise, mremap, uname, getcwd, getdents64, statx, signals and restarts, interval timers and pause, futexes with absolute deadlines, bit sets, requeues and wake-ops, robust lists, refused calls, identities, descriptors, umask, terminal settings, waits on thousands of descriptors, vectored I/O, descriptor owners, getcpu, the vDSO), and the C test programs of userspace/posix that pass on Linux each run alone and pass on Dukovo",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     cmdline: "lockdep",

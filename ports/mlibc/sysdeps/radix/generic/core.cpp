@@ -348,12 +348,16 @@ int Sysdeps<ClockGet>::operator()(int clock, time_t *secs, long *nanos) {
 	enum radix_clock_kind kind;
 	if(int e = radix::clock_kind(clock, &kind); e)
 		return e;
-	struct radix_process_clock_results r;
-	uint64_t status = radix_process_clock(radix::SLOT_PROCESS, kind, &r);
-	if(status)
-		return radix::to_errno(status);
-	*secs = static_cast<time_t>(r.ns / 1000000000);
-	*nanos = static_cast<long>(r.ns % 1000000000);
+	uint64_t ns;
+	if(!radix::vdso_clock(kind, &ns)) {
+		struct radix_process_clock_results r;
+		uint64_t status = radix_process_clock(radix::SLOT_PROCESS, kind, &r);
+		if(status)
+			return radix::to_errno(status);
+		ns = r.ns;
+	}
+	*secs = static_cast<time_t>(ns / 1000000000);
+	*nanos = static_cast<long>(ns % 1000000000);
 	return 0;
 }
 

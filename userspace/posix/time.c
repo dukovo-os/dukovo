@@ -6,14 +6,20 @@
 // and processes read it, the interval timers, and POSIX's timers
 // (timer_create), with their overruns. And that setting or turning off a
 // timer wakes no thread, and a nearer timer set while the kernel's timer
-// thread waits for a far one still fires on time (ADR 0650).
+// thread waits for a far one still fires on time (ADR 0650). And that the
+// clocks are read through the vDSO (ADR 0613), whose clock page programs
+// can read but never write.
 
 #include <poll.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdint.h>
+#include <sys/auxv.h>
+#include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/time.h>
 #include <sys/times.h>
+#include <sys/wait.h>
 
 #include "check.h"
 
@@ -22,8 +28,9 @@ static long long ns(const struct timespec *ts) {
 }
 
 // The CPU time in `usage`, user and system, in microseconds. A spin's
-// time is both: each clock read is a system call on Radix, and the
-// kernel splits a thread's time by where the timer finds it.
+// time may be either: a clock is read in user mode through the vDSO, and
+// in the kernel where the vDSO cannot read it, and the kernel splits a
+// thread's time by where the timer finds it.
 static long long cpu_us(const struct rusage *usage) {
 	return (usage->ru_utime.tv_sec + usage->ru_stime.tv_sec) * 1000000LL +
 			usage->ru_utime.tv_usec + usage->ru_stime.tv_usec;
@@ -79,6 +86,46 @@ static void clocks(void) {
 		last = t;
 	}
 	CHECK(back == 0);
+}
+
+// Whether writing a byte at `address` kills a child with SIGSEGV.
+static int write_faults(volatile char *address) {
+	pid_t pid = check_fork();
+	if(pid == 0) {
+		*address = 1;
+		_exit(0);
+	}
+	int status = 0;
+	CHECK(waitpid(pid, &status, 0) == pid);
+	return WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV;
+}
+
+// The vDSO and its clock page, the page below it: there, readable, never
+// writable, and the clocks it reads agree with a sleep the kernel times.
+static void vdso(void) {
+	uintptr_t base = getauxval(AT_SYSINFO_EHDR);
+	CHECK(base != 0 && base % 4096 == 0);
+	if(!base)
+		return;
+	volatile char *page = (volatile char *)(base - 4096);
+	(void)*page;
+	CHECK(write_faults(page));
+	CHECK(write_faults((volatile char *)base));
+	CHECK(mprotect((void *)(base - 4096), 4096, PROT_READ | PROT_WRITE) != 0);
+	CHECK(mprotect((void *)base, 4096, PROT_READ | PROT_WRITE | PROT_EXEC) != 0);
+	// A sleep of 20 ms, timed by the kernel's clock, takes at least 20 ms
+	// of the one the vDSO reads.
+	long long before = check_now_ns();
+	struct timespec sleep = {0, 20000000};
+	CHECK(nanosleep(&sleep, NULL) == 0);
+	CHECK(check_now_ns() - before >= 20000000);
+	// A forked child's clock goes on from its parent's.
+	long long parent = check_now_ns();
+	pid_t pid = check_fork();
+	if(pid == 0)
+		_exit(check_now_ns() >= parent ? 0 : 1);
+	int status = 0;
+	CHECK(waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
 
 static void sleeps(void) {
@@ -647,6 +694,7 @@ static void timer_wakes(void) {
 int main(void) {
 	check_start("time");
 	RUN(clocks);
+	RUN(vdso);
 	RUN(sleeps);
 	RUN(interrupted_sleeps);
 	RUN(cpu_time);

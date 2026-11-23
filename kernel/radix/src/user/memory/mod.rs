@@ -468,6 +468,25 @@ impl SpaceObject {
         Ok(start)
     }
 
+    /// Maps the clock page, `clock`'s one page, read-only, and the vDSO,
+    /// `image`'s pages, read and execute, right above it (ADR 0613), where
+    /// the kernel places anonymous memory given no hint; returns where the
+    /// vDSO went. For a space nothing runs in yet, whose end takes away
+    /// the clock page if the vDSO cannot be mapped.
+    pub fn map_vdso(&self, clock: &FrameRef, image: &FrameRef) -> Result<u64> {
+        let pages = image.pages + 1;
+        let mut regions = self.regions.lock();
+        let start = Self::free_range(&regions, pages, self.anon_top)
+            .or_else(|| Self::free_range(&regions, pages, ANONYMOUS_TOP))
+            .ok_or(error(Kernel::NoMemory))?;
+        let read = UserAccess::Read;
+        self.map_in(&mut regions, start, 1, &Backing::Frame(clock.clone()), 0, read)?;
+        let code = start + PAGE_SIZE;
+        let run = UserAccess::ReadExecute;
+        self.map_in(&mut regions, code, image.pages, &Backing::Frame(image.clone()), 0, run)?;
+        Ok(code)
+    }
+
     /// [`map`](Self::map), with the regions locked.
     fn map_in(
         &self,
@@ -787,6 +806,16 @@ impl FrameObject {
             spaces: Mutex::new(Vec::new_in(kmalloc())),
         };
         Arc::try_new_in(frame, kmalloc()).ok()
+    }
+
+    /// A frame for the `pages` pages from `phys` that the kernel filled
+    /// and keeps for good: the clock page and the vDSO (ADR 0613), which
+    /// every program maps. It is never zeroed, and never closed, as no
+    /// capability names it.
+    pub fn kept(phys: u64, pages: u64) -> Option<FrameRef> {
+        let frame = FrameObject::new(phys, pages)?;
+        frame.zeroed.store(pages, Ordering::Release);
+        Some(frame)
     }
 
     /// Zeroes the pages not zeroed yet, a step of [`ZERO_STEP`] pages at a

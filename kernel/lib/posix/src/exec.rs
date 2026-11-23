@@ -194,6 +194,8 @@ pub mod aux {
     pub const AT_HWCAP2: u64 = 26;
     /// The path the program was run as.
     pub const AT_EXECFN: u64 = 31;
+    /// Where the vDSO's ELF header is (ADR 0613).
+    pub const AT_SYSINFO_EHDR: u64 = 33;
     /// The least stack a signal's handler needs, the frame included.
     pub const AT_MINSIGSTKSZ: u64 = 51;
     /// Radix's own (Phase 8): the working directory, a string the C
