@@ -11,6 +11,7 @@ import { h, icon, uniqueId } from '../../dom.js';
 import { COPIED, copyText, PRESS_CTRL_C } from '../../lib/copy.js';
 import { head, openModal } from '../../shell/dialogs.js';
 import { stepsOf } from './disk-detail.js';
+import { replaceSteps as raidReplaceSteps } from './raid-model.js';
 
 /** A command in a box with a button that copies it. */
 function code(command) {
@@ -65,12 +66,25 @@ function newSteps(mount, backups) {
   ];
 }
 
+/** The steps to replace the failed disk of a RAID volume: words only, since the controller does the copying. */
+function raidSteps(raid) {
+  const { intro, steps } = raidReplaceSteps(raid);
+  return [
+    h('p', {}, intro),
+    h('ol', { class: 'sto-steps-list' }, steps.map((words) => h('li', {}, h('p', {}, words)))),
+    h('p', { class: 'small muted' }, 'The handbook\'s Storage section has the same steps with more about each.'),
+  ];
+}
+
 /**
  * Opens the steps `kind` (`replace` or `new`). `answer` is `storage show`'s
  * and `disk` the name of the disk whose page is open, or null; `backups` says
- * whether the Snapshots page exists. Resolves when the dialog closes.
+ * whether the Snapshots page exists. `raid` (`{bays, volume}`, from
+ * raid-model.js) makes the replace steps those of a failed disk in a
+ * controller's bay, in place of a mirror's. Resolves when the dialog closes.
  */
-export function openSteps(kind, { answer, disk = null, backups = false }) {
+export function openSteps(kind, { answer, disk = null, backups = false, raid = null }) {
+  if (kind === 'replace' && raid) return openModal(dialog('Replace a failed disk', raidSteps(raid)));
   const { mount, survivor } = stepsOf(answer, disk);
   if (kind === 'new') return openModal(dialog('Use a new disk', newSteps(mount, backups)));
   return openModal(dialog('Replace a mirror disk', replaceSteps(mount, survivor)));

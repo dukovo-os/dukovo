@@ -19,11 +19,12 @@ pub(crate) enum Area {
     Battery,
     Network,
     Errors,
+    Raid,
 }
 
 impl Area {
     /// Every area.
-    pub(crate) const ALL: [Area; 7] = [
+    pub(crate) const ALL: [Area; 8] = [
         Area::Memory,
         Area::Disks,
         Area::Cpu,
@@ -31,6 +32,7 @@ impl Area {
         Area::Battery,
         Area::Network,
         Area::Errors,
+        Area::Raid,
     ];
 
     /// The area `name` names on the command line.
@@ -47,6 +49,7 @@ impl Area {
             Area::Battery => "battery",
             Area::Network => "network",
             Area::Errors => "errors",
+            Area::Raid => "raid",
         }
     }
 }
@@ -98,12 +101,17 @@ pub(crate) enum Problem {
     LinkErrors,
     HardwareError,
     DimmCorrectedRate,
+    RaidVolume,
+    RaidDiskFailed,
+    RaidDiskPredicted,
+    RaidBattery,
+    RaidController,
 }
 
 impl Problem {
     /// Every problem, for the tests that check each one's ID and advice.
     #[cfg(test)]
-    pub(crate) const ALL: [Problem; 18] = [
+    pub(crate) const ALL: [Problem; 23] = [
         Problem::MemoryCorrected,
         Problem::MemoryUncorrected,
         Problem::MemoryTest,
@@ -122,6 +130,11 @@ impl Problem {
         Problem::LinkErrors,
         Problem::HardwareError,
         Problem::DimmCorrectedRate,
+        Problem::RaidVolume,
+        Problem::RaidDiskFailed,
+        Problem::RaidDiskPredicted,
+        Problem::RaidBattery,
+        Problem::RaidController,
     ];
 
     pub(crate) fn id(self) -> &'static str {
@@ -144,6 +157,11 @@ impl Problem {
             Problem::LinkErrors => "HW-153",
             Problem::HardwareError => "HW-161",
             Problem::DimmCorrectedRate => "HW-162",
+            Problem::RaidVolume => "HW-171",
+            Problem::RaidDiskFailed => "HW-172",
+            Problem::RaidDiskPredicted => "HW-173",
+            Problem::RaidBattery => "HW-174",
+            Problem::RaidController => "HW-175",
         }
     }
 
@@ -200,6 +218,25 @@ impl Problem {
             Problem::DimmCorrectedRate => {
                 "Run Test the memory from the start menu, and replace the memory module named \
                  if the errors keep coming."
+            }
+            Problem::RaidVolume => {
+                "Replace the failed disk now: a second failure before the volume is whole again \
+                 can lose its data."
+            }
+            Problem::RaidDiskFailed => {
+                "Replace the disk in its bay; the controller rebuilds the volume on the new disk."
+            }
+            Problem::RaidDiskPredicted => {
+                "Make sure what is on the volume is backed up, and replace the disk in its bay \
+                 before it fails."
+            }
+            Problem::RaidBattery => {
+                "Replace the controller's battery; until then its cache writes straight to the \
+                 disks, which is slower."
+            }
+            Problem::RaidController => {
+                "Back up what you can and restart the machine; if the controller is in fault \
+                 again, contact its maker."
             }
         }
     }

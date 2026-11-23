@@ -32,6 +32,8 @@ window.HW_IDS = {
     ['gve', '1ae0', '0042'],
     ['mana', '1414', '00ba']
   ],
+  // MegaRAID SAS RAID controllers (class 0104).
+  raid: [['megaraid', '1000', '0060 007c 0078 0079 002f 0071 0073 005b 005d 005f 00ce 00cf 0052 0053 0014 0015 0016 0017 001b 001c 10e1 10e2 10e5 10e6']],
   // Intel VMD domains, whose disks the kernel reaches (class 0104).
   vmd: [['vmd', '8086', '201d 28c0 9a0b 4c3d 467f a77f 7d0b ad0b b06f b60b']],
   // Realtek's card readers, which have no standard class.

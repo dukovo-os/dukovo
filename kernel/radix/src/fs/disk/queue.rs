@@ -167,12 +167,19 @@ pub enum Op {
     /// register: reads a 512-byte page of its SMART record into the one
     /// buffer, or, with no buffer, starts or aborts a self-test. Only the
     /// AHCI driver's [`Controller::health`] and [`Controller::self_test`]
-    /// ask for it.
+    /// ask for it, and a SCSI lane's, which sends READ DATA or READ
+    /// THRESHOLDS (the feature) to a SATA disk behind the SCSI layer as
+    /// ATA PASS-THROUGH(16), the LBA low register unused.
     Smart(u8, u8),
     /// CHECK POWER MODE on a SATA disk, with no buffer: whether it is in
     /// standby, asked without waking it. Only the AHCI driver's
     /// [`Controller::health`] asks for it.
     PowerMode,
+    /// A query of a SCSI disk's health, which reads its answer into the
+    /// one buffer, as many bytes as the buffer holds: LOG SENSE of a page,
+    /// or READ DEFECT DATA of the grown defect list's header. Only the
+    /// health of a SCSI disk ([`super::scsi_health`]) asks for it.
+    Query(radix_scsi::health::Query),
 }
 
 /// A request: what it does, to which of the disk's volumes, and the
@@ -1303,6 +1310,7 @@ impl<C: Controller> Disk<C> {
             Op::Flush => what.write_str("a flush"),
             Op::Smart(..) => what.write_str("a SMART command"),
             Op::PowerMode => what.write_str("a check of the power mode"),
+            Op::Query(_) => what.write_str("a health query"),
         };
         let mut after = TextBuf::<16>::new();
         if tries > 1 {

@@ -345,3 +345,11 @@ test('a volume that is full now says now', () => {
   const [need] = needsOf(answer, usage30d({ used: 2_000_397_795_328, perDay: 1e9 }));
   assert.equal(need.title, 'Data is full now');
 });
+
+test('a disk that is a RAID volume has the volume\'s state as its health in the list, and the others are as they were', () => {
+  const health = { word: 'Degraded', tone: 'warn', note: 'A RAID 5 volume.' };
+  const rows = rowsOf(show(), new Map([['sdc', { health }]]));
+  assert.deepEqual(rows.find((one) => one.name === 'sdc').health, health);
+  assert.deepEqual(rows.find((one) => one.name === 'sda').health, rowsOf(show()).find((one) => one.name === 'sda').health);
+  assert.equal(rowsOf(show()).find((one) => one.name === 'sdc').health.word, 'Not checked');
+});

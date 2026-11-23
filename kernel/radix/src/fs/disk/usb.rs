@@ -1031,7 +1031,7 @@ impl<'a> Stick<'a> {
                 return self.after(at, judge(reply, true));
             }
             Op::Discard(_) => return (Outcome::Failed, Some("it does not discard")),
-            Op::Smart(..) | Op::PowerMode => {
+            Op::Smart(..) | Op::PowerMode | Op::Query(_) => {
                 return (Outcome::Failed, Some("it is sent no ATA command"));
             }
         };
@@ -1249,7 +1249,7 @@ impl Queued<'_> {
                         medium.finish(job, Outcome::Failed, Some("it does not discard"));
                         continue;
                     }
-                    Op::Smart(..) | Op::PowerMode => {
+                    Op::Smart(..) | Op::PowerMode | Op::Query(_) => {
                         medium.finish(job, Outcome::Failed, Some("it is sent no ATA command"));
                         continue;
                     }

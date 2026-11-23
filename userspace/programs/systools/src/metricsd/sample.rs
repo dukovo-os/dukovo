@@ -7,9 +7,10 @@
 //! A [`Reader`] reads everything once into a [`Snapshot`]: the CPUs' times,
 //! the load, memory, each disk's, card's and filesystem's numbers, the
 //! temperatures (the disks' from what diskhealth(8) last read, never from
-//! the disks), what each service uses, and each Btrfs volume's missing
-//! disks, and the kernel's record of hardware errors. [`series`] turns the snapshot and the one before it into the
-//! history's rows, the names and units of which are in metricsd(8), and
+//! the disks), what each service uses, each Btrfs volume's missing disks,
+//! the kernel's record of hardware errors, and each RAID controller's
+//! volumes, disks and battery. [`series`] turns the snapshot and the one
+//! before it into the history's rows, the names and units of which are in metricsd(8), and
 //! the Prometheus endpoint writes a snapshot out as it is. The files read
 //! are those of radix-proc(5) and radix-sysfs(5), so that a source that is
 //! not there, such as a machine without a sensor, only has no series.
@@ -32,6 +33,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::diskhealth::{self, Live};
 use crate::hardware::ras::Record;
 use crate::proc::{self, CpuTimes, Memory, Process};
+use crate::raid;
 use crate::sensors::{self, Kind};
 use crate::util;
 
@@ -221,6 +223,8 @@ pub struct Snapshot {
     pub volumes: Vec<Volume>,
     /// The kernel's record of hardware errors; empty where it keeps none.
     pub ras: Record,
+    /// The RAID controllers, from `/kernel/raid`.
+    pub raid: Vec<raid::Controller>,
 }
 
 /// Reads the system into snapshots, reusing its buffers.
@@ -269,6 +273,7 @@ impl Reader {
             services: self.clock.count(&running, &names),
             volumes: read_volumes(&kernel.join("fs/btrfs")),
             ras: Record::read(&kernel.join("ras")),
+            raid: raid::read(&kernel.join("raid")),
         }
     }
 }

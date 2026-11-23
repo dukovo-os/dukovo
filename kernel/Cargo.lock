@@ -289,6 +289,7 @@ dependencies = [
  "radix-lockdep",
  "radix-mana",
  "radix-mca",
+ "radix-megaraid",
  "radix-mm",
  "radix-net",
  "radix-nic",
@@ -693,6 +694,13 @@ dependencies = [
 [[package]]
 name = "radix-mca"
 version = "0.17.0"
+
+[[package]]
+name = "radix-megaraid"
+version = "0.17.0"
+dependencies = [
+ "radix-hw",
+]
 
 [[package]]
 name = "radix-microcode"

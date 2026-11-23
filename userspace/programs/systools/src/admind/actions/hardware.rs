@@ -72,16 +72,17 @@ const MEMTEST_TESTS: Tests = Tests {
 };
 
 /// The areas `hardware check` has, in the order it checks them.
-const AREAS: [&str; 7] = ["memory", "disks", "cpu", "sensors", "battery", "network", "errors"];
+const AREAS: [&str; 8] =
+    ["memory", "disks", "cpu", "sensors", "battery", "network", "errors", "raid"];
 
 /// What a list of areas is made of: the words of [`AREAS`], with one space
 /// between them. That each is there once is the rule that only `check`
 /// says.
-const AREAS_PATTERN: &str = "^(memory|disks|cpu|sensors|battery|network|errors)\
-                             ( (memory|disks|cpu|sensors|battery|network|errors))*$";
+const AREAS_PATTERN: &str = "^(memory|disks|cpu|sensors|battery|network|errors|raid)\
+                             ( (memory|disks|cpu|sensors|battery|network|errors|raid))*$";
 
-/// The most characters of a list of areas: all seven, with their spaces.
-const AREAS_MAX: usize = 47;
+/// The most characters of a list of areas: all eight, with their spaces.
+const AREAS_MAX: usize = 52;
 
 /// What a disk's name is made of: the schema's words, which the rule
 /// [`is_disk_name`] says exactly.
@@ -962,8 +963,9 @@ mod tests {
     #[test]
     fn an_area_that_is_not_one_or_is_named_twice_is_refused_in_words_the_page_shows() {
         let end = "Nothing was done.";
-        let unknown =
-            format!("The areas are memory, disks, cpu, sensors, battery, network, errors. {end}");
+        let unknown = format!(
+            "The areas are memory, disks, cpu, sensors, battery, network, errors, raid. {end}"
+        );
         for areas in [
             "gpu",
             "",
@@ -1260,7 +1262,7 @@ mod tests {
         assert_eq!(schema["required"], json!([]));
         assert_eq!(schema["additionalProperties"], false);
         let areas = &schema["properties"]["areas"];
-        assert_eq!((&areas["minLength"], &areas["maxLength"]), (&json!(1), &json!(47)));
+        assert_eq!((&areas["minLength"], &areas["maxLength"]), (&json!(1), &json!(52)));
         assert_eq!(areas["pattern"], AREAS_PATTERN);
         let disk = &schema["properties"]["disk"];
         assert_eq!((&disk["minLength"], &disk["maxLength"]), (&json!(1), &json!(32)));

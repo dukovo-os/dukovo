@@ -252,9 +252,11 @@ const connectionOf = (disk) => (disk.bus === 'usb' ? 'USB' : disk.removable ? 'R
  * kind, percent, number}` (`kind` the class that colours it; `number` the
  * number a narrow part shows, null for the others), `label` the bar's name
  * for a screen reader, `key` the words of the numbered parts, and `health`
- * `{word, tone, note}`.
+ * `{word, tone, note}`. `raids` is raid-model.js's `raidVolumes` of the
+ * answer of `storage.raid`: a disk that is a RAID volume says so, with the
+ * volume's state as its health, in place of "Not checked".
  */
-export function rowsOf(answer) {
+export function rowsOf(answer, raids = null) {
   const disks = listOf(answer, 'disks');
   const drawn = new Map(scaled(disks).map((one) => [one.name, one.parts]));
   return disks.map((disk) => {
@@ -275,7 +277,7 @@ export function rowsOf(answer) {
       label: `${disk.name}, ${bytesWords(disk.size)}: ${parts.map((part) => `${part.label.replace(' · ', ', ')} (${bytesWords(part.bytes)})`).join('; ')}`,
       key: parts.filter((part) => part.number !== null).map((part) => `${part.number} ${part.label}`),
       empty: (disk.partitions ?? []).length === 0,
-      health: healthWords(disk.health ?? null),
+      health: raids?.get(disk.name)?.health ?? healthWords(disk.health ?? null),
     };
   });
 }

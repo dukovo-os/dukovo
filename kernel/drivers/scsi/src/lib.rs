@@ -25,6 +25,10 @@
 //!   commands a program sends one to burn a disc (ADR 0449).
 //! - For a USB floppy drive (ADR 0436), [`ufi`]: formatting its disk a
 //!   track at a time.
+//! - For a disk's health (ADR 0665), [`health`]: the log pages and the
+//!   defect count that say how a SAS disk is, and the record they are
+//!   packed into; for a SATA disk behind a SCSI layer, SMART through ATA
+//!   PASS-THROUGH(16).
 //!
 //! The crate knows nothing of the kernel or of USB, so its tests run on
 //! the host. Nothing a device sends is trusted without checking its
@@ -35,6 +39,7 @@
 
 use core::fmt;
 
+pub mod health;
 pub mod mmc;
 mod probe;
 pub mod recording;
@@ -67,6 +72,13 @@ pub mod op {
     pub const PREVENT_ALLOW_MEDIUM_REMOVAL: u8 = 0x1e;
     /// READ CAPACITY(10): the last block and the block length.
     pub const READ_CAPACITY_10: u8 = 0x25;
+    /// READ DEFECT DATA(10): the lists of blocks the disk replaced.
+    pub const READ_DEFECT_DATA_10: u8 = 0x37;
+    /// LOG SENSE: a log page of the device's counters.
+    pub const LOG_SENSE: u8 = 0x4d;
+    /// ATA PASS-THROUGH(16): an ATA command to a SATA disk behind the
+    /// SCSI layer (SAT-5).
+    pub const ATA_PASS_THROUGH_16: u8 = 0x85;
     /// READ(10).
     pub const READ_10: u8 = 0x28;
     /// WRITE(10).
@@ -285,6 +297,43 @@ impl Cdb {
         bytes[2..10].copy_from_slice(&lba.to_be_bytes());
         bytes[10..14].copy_from_slice(&blocks.to_be_bytes());
         Some(Cdb::new(&bytes))
+    }
+
+    /// LOG SENSE(10) of log page `page`, subpage 0, its cumulative
+    /// values (PC 01b), at most `length` bytes (SPC-6, 6.7).
+    pub fn log_sense(page: u8, length: u16) -> Cdb {
+        let [high, low] = length.to_be_bytes();
+        Cdb::new(&[op::LOG_SENSE, 0, 0x40 | page & 0x3f, 0, 0, 0, 0, high, low, 0])
+    }
+
+    /// READ DEFECT DATA(10) of the grown defect list alone (GLIST, not
+    /// PLIST), in the address descriptor format the drive chooses
+    /// ([`health::DEFECT_FORMAT`]), at most `length` bytes; 4 asks for
+    /// the header, whose list length says how many defects there are
+    /// (SBC-4, 5.9).
+    pub fn read_defect_data_10(length: u16) -> Cdb {
+        let [high, low] = length.to_be_bytes();
+        let list = 0x08 | health::DEFECT_FORMAT;
+        Cdb::new(&[op::READ_DEFECT_DATA_10, 0, list, 0, 0, 0, 0, high, low, 0])
+    }
+
+    /// ATA PASS-THROUGH(16) of the SMART command with `feature`
+    /// ([`health::SMART_READ_DATA`] or [`health::SMART_READ_THRESHOLDS`]):
+    /// PIO data-in of one 512-byte sector, as the SMART key LBA mid 4Fh and
+    /// LBA high C2h and the command B0h say it (SAT-5, 12.2): the protocol
+    /// PIO data-in, T_DIR from the device, BYT_BLOK set and T_LENGTH 2, the
+    /// length in the sector count.
+    pub fn smart_read(feature: u8) -> Cdb {
+        let mut bytes = [0; 16];
+        bytes[0] = op::ATA_PASS_THROUGH_16;
+        bytes[1] = 4 << 1;
+        bytes[2] = 1 << 3 | 1 << 2 | 2;
+        bytes[4] = feature;
+        bytes[6] = 1;
+        bytes[10] = 0x4f;
+        bytes[12] = 0xc2;
+        bytes[14] = 0xb0;
+        Cdb::new(&bytes)
     }
 
     /// SYNCHRONIZE CACHE(10) of every block.

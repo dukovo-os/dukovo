@@ -74,7 +74,8 @@ that runs hot. The system's own alerts, by the first word of their keys
 
 *data*
 	*fs-full*, *fs-filling*, *btrfs-missing*, *btrfs-behind*, *smart*,
-	*smart-rising*, *backup-failed* and *backup-overdue*.
+	*smart-rising*, *raid-volume*, *raid-disk*, *backup-failed* and
+	*backup-overdue*.
 
 *stopped*
 	*service*, *memory:low*, *certificate*, *update-fell-back*,
@@ -82,7 +83,7 @@ that runs hot. The system's own alerts, by the first word of their keys
 	*update-not-staged* and *kernel-panic*.
 
 *hardware*
-	*temp*.
+	*temp*, *raid-battery* and *raid-controller*.
 
 A channel's *about* in *alerts.toml*(5), and *alerts channel*, name the
 kinds it is told of; a channel that names none is told of every kind.
@@ -276,8 +277,10 @@ The system's services and root's scripts raise alerts. These raise them:
 	A file system that is nearly full, and one that the last hours
 	say will be before long, from *metricsd*(8), which also raises
 	*btrfs-missing:*_volume_, *btrfs-behind:*_volume_, *memory:low*,
-	*temp:*_sensor_, which for a disk is *temp:disk/*_name_, and
-	*certificate:*_file_, the early warnings of its own.
+	*temp:*_sensor_, which for a disk is *temp:disk/*_name_,
+	*certificate:*_file_, and for a RAID controller *raid-volume:*_n_-_target_,
+	*raid-disk:*_n_-_id_, *raid-battery:*_n_ and *raid-controller:*_n_, the
+	early warnings of its own.
 
 *smart:*_serial_, *smart-rising:*_serial_
 	A disk that *diskhealth*(8) finds failing, and the early warning

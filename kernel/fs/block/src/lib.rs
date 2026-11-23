@@ -342,6 +342,9 @@ pub enum Health {
     Asleep,
     /// An NVMe controller's SMART / Health Information log.
     Nvme,
+    /// A SCSI disk's log pages and grown defect count, packed as
+    /// `radix_scsi::health` does.
+    Scsi,
 }
 
 /// What [`BlockDevice::self_test`] asks of a disk before it says how its

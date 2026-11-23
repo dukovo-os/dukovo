@@ -205,9 +205,13 @@ export const NO_FAN = 'No fan speed can be read on this machine.';
 export const ALERT_WORDS = 'An alert goes out when a sensor stays within 5 °C of its critical limit for 5 minutes (metricsd).';
 export const ALERT_WITH_DISKS = 'Disks are read every 10 minutes, but a sleeping one. An alert goes out when a sensor stays within 5 °C of its critical limit, or a disk at its warning limit, for 5 minutes (metricsd).';
 
-/** The line about the disks that keep no health record, from `storage show`; null when every disk keeps one. */
-export function noRecordWords(storage) {
-  const count = list(storage?.disks).filter((disk) => !disk.health).length;
+/** The names of the RAID controllers' volumes in `raid`, the answer of `storage.raid`: their member disks are read through the controller. */
+const raidVolumeNames = (raid) => new Set(list(raid?.controllers).flatMap((one) => list(one.volumes)).map((volume) => volume.os).filter((os) => typeof os === 'string' && os !== ''));
+
+/** The line about the disks that keep no health record, from `storage show`; null when every disk keeps one. A RAID volume (`raid` is the answer of `storage.raid`) is not counted: its member disks are read through its controller. */
+export function noRecordWords(storage, raid = null) {
+  const volumes = raidVolumeNames(raid);
+  const count = list(storage?.disks).filter((disk) => !disk.health && !volumes.has(disk.name)).length;
   if (count === 0) return null;
   return count === 1 ? '1 disk keeps no health record (USB or virtual) and is not read.' : `${count} disks keep no health record (USB or virtual) and are not read.`;
 }

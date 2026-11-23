@@ -3,8 +3,10 @@
 
 //! The disks area of `hardware check`: for each whole disk that is not
 //! a drive for media that comes and goes, what the disk says of its health
-//! (diskhealth's verdict and early warning, from SMART or the NVMe log),
-//! its own self-test, and a scan that reads it.
+//! (diskhealth's verdict and early warning, from SMART, the NVMe log or a
+//! SCSI disk's log pages), its own self-test, and a scan that reads it.
+//! A disk behind a RAID controller (`raid0:bay4`) has the first only: it
+//! is not a device the system can start a test on or read.
 //!
 //! One thread takes a disk through the three in that order, so that the
 //! reads of the scan do not meet a self-test under way, and the disks go
@@ -23,6 +25,7 @@ use super::drivetest;
 use super::scan::{self, PIECE, Range, SLOW, Scan};
 use crate::diskhealth::{self, Reading, Record, Verdict};
 use crate::probe;
+use crate::raid;
 use crate::selftest::Test;
 use crate::util::{self, Fail, fail};
 
@@ -59,6 +62,16 @@ impl Disk {
     }
 }
 
+/// Whether `disk` is one behind a RAID controller.
+fn is_member(disk: &Disk) -> bool {
+    raid::is_member_name(&disk.name)
+}
+
+/// How many checks [`check`] gives for `disk`.
+pub(crate) fn checks_of(disk: &Disk) -> usize {
+    if is_member(disk) { 1 } else { CHECKS }
+}
+
 /// The disks to check: `only` if it names one, else every whole disk
 /// that is not a drive for media that comes and goes (a CD or floppy
 /// drive).
@@ -87,6 +100,9 @@ pub(crate) fn estimate(disk: &Disk, test_minutes: u32, full: bool) -> Duration {
 /// Its minutes of self-test: what the disk says, or nothing for a disk
 /// that runs none.
 pub(crate) fn test_minutes(disk: &Disk, full: bool) -> u32 {
+    if is_member(disk) {
+        return 0;
+    }
     let test = if full { Test::Extended } else { Test::Short };
     match crate::selftest::state(&disk.name) {
         Ok(Some(state)) => drivetest::minutes(state.minutes, test),
@@ -234,14 +250,17 @@ fn read_scan(disk: &Disk, full: bool, stop: &AtomicBool) -> Check {
     scan_verdict(disk, &found)
 }
 
-/// How many checks [`check`] gives for a disk: its health, its self-test
-/// and its read scan.
-pub(crate) const CHECKS: usize = 3;
+/// How many checks [`check`] gives for a disk of the system: its health,
+/// its self-test and its read scan.
+const CHECKS: usize = 3;
 
 /// Takes `disk` through its checks, giving each line to `emit` when it
 /// is done.
 pub(crate) fn check(disk: &Disk, full: bool, stop: &AtomicBool, emit: &(dyn Fn(Check) + Sync)) {
     emit(health(disk));
+    if is_member(disk) {
+        return;
+    }
     emit(drivetest::run(&disk.name, full, stop));
     emit(read_scan(disk, full, stop));
 }
@@ -279,6 +298,22 @@ mod tests {
         assert!(given.iter().all(|check| check.outcome == Outcome::Skipped));
         let names: Vec<&str> = given.iter().map(|check| check.name.as_str()).collect();
         assert_eq!(names, ["nodisk health", "nodisk self-test", "nodisk read scan"]);
+    }
+
+    #[test]
+    fn a_disk_behind_a_controller_gives_its_health_line_and_no_more() {
+        let behind = Disk { name: "raid0:bay4".into(), ..disk() };
+        assert_eq!((checks_of(&behind), checks_of(&disk())), (1, CHECKS));
+        assert_eq!(test_minutes(&behind, true), 0);
+        let given = std::sync::Mutex::new(Vec::new());
+        let stop = AtomicBool::new(true);
+        check(&behind, true, &stop, &|check| given.lock().unwrap().push(check));
+        let given = given.into_inner().unwrap();
+        assert_eq!(given.len(), 1);
+        assert_eq!(
+            (given[0].name.as_str(), given[0].outcome),
+            ("raid0:bay4 health", Outcome::Skipped)
+        );
     }
 
     #[test]

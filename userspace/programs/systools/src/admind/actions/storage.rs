@@ -13,6 +13,10 @@
 //! make the page's two charts: what the disks read and write over the last
 //! hour, and what the filesystems used and have over the last 30 days.
 //!
+//! `storage.raid` runs `storage raid --json` as the person too: the
+//! RAID controllers, their volumes, disks and battery, which the kernel
+//! shows to anyone.
+//!
 //! The rest are an administrator's: `storage.health` is `diskhealth --json
 //! DISK`, which opens the disk, so it is root's, and its answer comes with
 //! the status bits of `diskhealth` that tell a state, which are the
@@ -114,6 +118,29 @@ impl Action for Show {
             bad: vec![json!({ "all": true }), json!({ "disk": "vda" })],
             undo: None,
         }
+    }
+}
+
+/// `storage raid --json`: the RAID controllers with their volumes, disks,
+/// battery and last events; `{"controllers": []}` on a machine with none.
+pub struct Raid;
+
+impl Action for Raid {
+    const ID: &'static str = "storage.raid";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/storage/raid";
+    const RUNS: Runs = Runs::AsThePerson;
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Show the RAID controllers";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["storage", "raid", "--json"].map(String::from).to_vec()
+    }
+
+    fn examples() -> Examples<Nothing> {
+        Examples { good: vec![Nothing {}], bad: vec![json!({ "controller": 0 })], undo: None }
     }
 }
 
@@ -654,13 +681,20 @@ mod tests {
 
     /// Each action of the page: its id, its address, whether it changes
     /// anything, who runs it, and the command its first example makes.
-    const ACTIONS: [(&str, &str, bool, Runs, &[&str]); 8] = [
+    const ACTIONS: [(&str, &str, bool, Runs, &[&str]); 9] = [
         (
             "storage.show",
             "/api/1/storage",
             false,
             Runs::AsThePerson,
             &["storage", "show", "--json"],
+        ),
+        (
+            "storage.raid",
+            "/api/1/storage/raid",
+            false,
+            Runs::AsThePerson,
+            &["storage", "raid", "--json"],
         ),
         (
             "storage.usage",

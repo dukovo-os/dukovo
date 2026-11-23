@@ -38,7 +38,7 @@ test('an administrator sees each card, and a read for each thing the page says',
   assert.equal(world.view.headed.buttons.length, 1);
   assert.equal(world.view.headed.buttons[0].textContent, 'Check the hardware');
   for (const id of ['machine', 'check', 'memory', 'power']) assert.ok(world.card(id), id);
-  assert.deepEqual(world.calls.slice(0, 6).sort(), ['/api/1/console/about', '/api/1/hardware', '/api/1/hardware/check', '/api/1/hardware/history', '/api/1/storage', '/api/1/tasks']);
+  assert.deepEqual(world.calls.slice(0, 7).sort(), ['/api/1/console/about', '/api/1/hardware', '/api/1/hardware/check', '/api/1/hardware/history', '/api/1/storage', '/api/1/storage/raid', '/api/1/tasks']);
   assert.ok(world.calls.includes('/api/1/hardware/inventory'), 'an unlocked administrator reads the modules at once');
   assert.ok(world.calls.includes('/api/1/power'));
 });
@@ -162,7 +162,7 @@ test('Check the hardware asks which areas, and a quick check is all of them', as
   const dialog = world.dialog();
   assert.equal(dialog.querySelector('h2').textContent, 'Check the hardware');
   assert.match(dialog.textContent, /A quick check takes about 3 minutes/);
-  assert.equal(dialog.querySelectorAll('input').filter((one) => one.getAttribute('type') === 'checkbox').length, 8);
+  assert.equal(dialog.querySelectorAll('input').filter((one) => one.getAttribute('type') === 'checkbox').length, 9, 'eight areas and the full check');
   assert.ok(buttonOf(dialog, 'Check now'));
   await world.submit();
   assert.deepEqual(world.ran('hardware.check'), [{}]);
@@ -177,9 +177,9 @@ test('a check of some areas names them, and a full check says so', async (contex
   const boxes = world.dialog().querySelectorAll('input').filter((one) => one.getAttribute('type') === 'checkbox');
   boxes[2].checked = false;
   boxes[4].checked = false;
-  boxes[7].checked = true;
+  boxes[8].checked = true;
   await world.submit();
-  assert.deepEqual(world.ran('hardware.check'), [{ areas: 'memory disks sensors network errors', full: true }]);
+  assert.deepEqual(world.ran('hardware.check'), [{ areas: 'memory disks sensors network errors raid', full: true }]);
 });
 
 test('a dialog with no area chosen sends nothing and says so', async (context) => {

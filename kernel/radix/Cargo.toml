@@ -68,6 +68,7 @@ radix-ksyms = { path = "../lib/ksyms" }
 radix-mca = { path = "../lib/mca" }
 radix-mm = { path = "../mm" }
 radix-net = { path = "../net" }
+radix-megaraid = { path = "../drivers/megaraid" }
 radix-nic = { path = "../drivers/nic" }
 radix-posix = { path = "../lib/posix" }
 radix-pstate = { path = "../lib/pstate" }

@@ -6,8 +6,8 @@ hardware(8) "Dukovo" "Dukovo Manual"
 # NAME
 
 hardware - check the memory, the disks, the processors, the sensors, the
-battery, the network cards and the hardware errors for faults, and say
-what the machine is and has
+battery, the network cards, the hardware errors and the RAID controllers
+for faults, and say what the machine is and has
 
 # SYNOPSIS
 
@@ -149,7 +149,7 @@ start after it is the usual one. See *THE MEMORY TEST AT THE START*.
 
 With no _area_, every one is checked. Name one or more to check only
 those: *memory*, *disks*, *cpu*, *sensors*, *battery*, *network*,
-*errors*.
+*errors*, *raid*.
 
 *memory*
 	The memory controller's counts of the errors it found since the
@@ -233,6 +233,22 @@ those: *memory*, *disks*, *cpu*, *sensors*, *battery*, *network*,
 	since the start stands in for them, scaled down to a day when the
 	start was longer ago, and the line says so. Otherwise the check
 	passes, and says how many corrected errors were heard of.
+
+*raid*
+	Each RAID controller in _/kernel/raid_ (*storage*(8)), from what the
+	driver last heard of it, so that this area takes no time. A line for
+	the controller, which fails when it reports a fault; a line for each
+	volume, which passes when it is optimal, is a warning when it is
+	partly degraded, and fails when it is degraded or offline, with the
+	rebuild that runs on it, if one does; a line for each disk that has
+	failed or that the controller or the disk itself expects to fail, and
+	one for the disks that are fine; and a line for the battery, which
+	fails when it has failed or is gone and is a warning when it is worn
+	or its last test of its capacity failed. A controller with no battery
+	skips that line, and a machine with no controller skips the area. The
+	*disks* area checks the health of the disks behind a controller as
+	well, named as *raid0:bay4* (*diskhealth*(8)); a disk behind a
+	controller has no self-test and no read scan of its own.
 
 # OPTIONS
 
@@ -714,6 +730,26 @@ support center says what it means and what to do.
 :  errors
 :  warning
 :  A memory device had many corrected errors in a day
+|  HW-171
+:  raid
+:  failure or warning
+:  A volume is degraded or offline, or partly degraded
+|  HW-172
+:  raid
+:  failure
+:  A disk behind the controller has failed
+|  HW-173
+:  raid
+:  failure
+:  A disk behind the controller is predicted to fail
+|  HW-174
+:  raid
+:  failure or warning
+:  The controller's battery has failed or is gone, or is worn
+|  HW-175
+:  raid
+:  failure
+:  The controller reports a fault
 
 # EXIT STATUS
 

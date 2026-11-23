@@ -85,7 +85,7 @@ impl Controller for NvmeLane {
             Op::WriteThrough => radix_nvme::Op::WriteThrough,
             Op::Flush => radix_nvme::Op::Flush,
             Op::Discard(count) => radix_nvme::Op::Deallocate(count / request.unit),
-            Op::Smart(..) | Op::PowerMode => return Err(Error::Unsupported),
+            Op::Smart(..) | Op::PowerMode | Op::Query(_) => return Err(Error::Unsupported),
         };
         // The namespace counts in its own blocks, the request in sectors.
         let Request { target, sector, data, unit, .. } = *request;

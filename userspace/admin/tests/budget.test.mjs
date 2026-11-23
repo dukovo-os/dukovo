@@ -128,6 +128,8 @@ test('each page with its style sheets is within 150 KB beyond the shell', () => 
 // Hardware's row is 6,000 more than the plan's: the disks' rows and the memory test at the next restart, and 2,000 more for the BMC's temperatures and fans in the temperatures' rows and the page's reads of a BMC; the BMC card and its model are read when the page finds a BMC and are not in the row.
 // It is 1,700 more than that for the Hardware errors card's frame, its buttons' place and its read; the card's rows and words
 // are read with its first answer and are not in the row.
+// Storage's row is what the page brings now, with 1,000 of room: the RAID cards' words and drawing (raid-model.js and raid.js) are read
+// with the first answer that lists a controller and are not in it; the row holds the read, the banner, the disk cards' words and the sheet's rules.
 // Alerts' is 5,000 more than 60,000: 4,000 for the kinds of alert each channel is told of and 1,000 for the card of Set up a phone.
 // Security's is 2,500 more than 147,000: 1,500 for the rows of its Alerts card, one for each kind of alert, and 1,000 for the steps' rules in pages.css.
 // Add an app, Websites and Databases each keep about 1,000 of room over what
@@ -153,6 +155,7 @@ const PAGE_LIMITS = {
   'add-app': 56_000,
   websites: 84_600,
   databases: 61_000,
+  storage: 111_000,
 };
 
 // The parts the Overview reads from a page, each a graph the shell starts

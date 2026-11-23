@@ -13,7 +13,7 @@ audio in 1.13.
 <div class="hwkinds">
 <div><span class="hwpill hw-ok">Works</span><h3>Virtual machines and clouds</h3><p>QEMU and KVM, VMware, Hyper-V and Azure, AWS, Google Cloud and VirtualBox. Every paravirtual disk and network card they offer has a driver.</p></div>
 <div><span class="hwpill hw-ok">Works</span><h3>Desktops on a wired network</h3><p>NVMe and SATA disks, Intel, Realtek, Broadcom and Killer Ethernet up to 10 Gb/s, and every kind of USB port. The screen is a text console until the desktop arrives in 1.1.</p></div>
-<div><span class="hwpill hw-part">Partly</span><h3>Servers</h3><p>One- and two-socket Xeon and EPYC servers work with their onboard SATA and NVMe disks and 1 to 10 Gb/s ports, every PCIe slot found and each device on its NUMA node. The BMC's sensors, event log, watchdog and identify light work through IPMI, and the firmware's hardware error reports are read, with a failing memory module named by its slot. RAID and SAS controllers, 25 to 100 Gb/s cards, storage networks over iSCSI and NVMe over TCP, PCIe error recovery and disk hot-swap come before 1.0.</p></div>
+<div><span class="hwpill hw-part">Partly</span><h3>Servers</h3><p>One- and two-socket Xeon and EPYC servers work with their onboard SATA and NVMe disks and 1 to 10 Gb/s ports, every PCIe slot found and each device on its NUMA node, and with the disks behind a Broadcom MegaRAID controller (Dell PERC). The BMC's sensors, event log, watchdog and identify light work through IPMI, and the firmware's hardware error reports are read, with a failing memory module named by its slot. Other RAID controllers, SAS host bus adapters, 25 to 100 Gb/s cards, storage networks over iSCSI and NVMe over TCP, PCIe error recovery and disk hot-swap come before 1.0.</p></div>
 <div><span class="hwpill hw-part">Partly</span><h3>Laptops</h3><p>Everything a desktop has, plus SD card readers and USB-C port status. Connect with an Ethernet port, a USB Ethernet adapter or a phone's USB tethering until Wi-Fi arrives in 1.11.</p></div>
 <div><span class="hwpill hw-plan">1.10</span><h3>Gaming and graphics work</h3><p>Every graphics card shows a picture through the firmware's framebuffer. Acceleration for AMD, Intel and NVIDIA comes in 1.10, and several monitors and HDR in 1.11.</p></div>
 </div>
@@ -61,7 +61,7 @@ the exact chips.
 | USB sticks and disks: bulk-only, UAS and USB floppy drives | Works | usb-storage |
 | SD card readers on PCI and in chipsets, and Realtek's RTS5209, RTS5227, RTS5229, RTS522A, RTS5249, RTS525A, RTL8402, RTL8411 and RTL8411B | Works | sdhci, rtsx |
 | PC floppy drives | Works | fdc |
-| Broadcom MegaRAID RAID controllers: Dell PERC 9 to 11 (H740P included), Lenovo, and Broadcom 93xx to 95xx | Planned, 1.0 | |
+| Broadcom MegaRAID RAID controllers: Dell PERC 9 to 11 (H740P included), Lenovo, and Broadcom 93xx to 95xx | Works | megaraid |
 | Broadcom SAS HBAs: Dell HBA330 and HBA355i, LSI 9207 to 9500 | Planned, 1.0 | |
 | HPE Smart Array Gen10 and later, Microchip SmartRAID and SmartHBA | Planned, 1.0 | |
 | Dell PERC 12 and Broadcom 9600 | Planned, 1.0 | |

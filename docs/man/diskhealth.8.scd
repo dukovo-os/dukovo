@@ -17,12 +17,16 @@ diskhealth - what each disk says of its health
 
 diskhealth reads what each disk keeps of its own health, with
 *radix-block*(2)'s *GET_HEALTH* (ADR 0157): a SATA disk's SMART
-attributes and their thresholds, which Linux's *smartctl -A* shows, or
-an NVMe controller's SMART / Health Information log. With no _disk_, it
+attributes and their thresholds, which Linux's *smartctl -A* shows, an
+NVMe controller's SMART / Health Information log, or a SCSI or SAS disk's
+log pages and its count of grown defects (ADR 0665). A SATA disk behind a
+SCSI controller, as a hypervisor's, is read as a SATA disk. With no
+_disk_, it
 shows every disk the kernel has (_/kernel/block_, *radix-sysfs*(5)) in
 a table: its kind, a verdict, its temperature, its hours powered on, the
 share of an NVMe drive's rated endurance it has used, and its model. A
-virtio disk keeps no such record, and shows dashes.
+disk that keeps no such record, as QEMU's virtio and SCSI disks and USB
+disks, shows dashes.
 
 ```
 $ diskhealth
@@ -36,20 +40,52 @@ The verdict is *FAILING* when the disk says it is about to fail: for a
 SATA disk, an attribute that warns of failure (pre-fail) at or below
 its threshold, as the disk's own SMART RETURN STATUS would say; for an
 NVMe drive, a critical warning that its spare capacity is short, its
-reliability degraded, it went read-only or its backup failed. It is
-*WARNING* when an attribute that tells of age is at or below its
-threshold, when sectors were reallocated, wait to be or could not be
-read, when SMART is off, or when an NVMe drive is too hot, has used its
-rated endurance or has had media errors; and *PASSED* otherwise. Each
-reason is given with *-a*.
+reliability degraded, it went read-only or its backup failed; for a
+SCSI disk, its own warning that it will fail (an additional sense code of
+5Dh in its informational exceptions page, which says why: hardware, media,
+its controller, channel, servo, spindle or firmware). It is *WARNING* when
+an attribute that tells of age is at or below its threshold, when sectors
+were reallocated, wait to be or could not be read, when SMART is off, or
+when an NVMe drive is too hot, has used its rated endurance or has had
+media errors; for a SCSI disk, when it could not correct a read, write or
+verify, has moved blocks to spares as they grew bad (its grown defects),
+has used 100% of a solid state disk's endurance, or warns of its
+temperature or a background test that failed (0Bh); and *PASSED*
+otherwise. Each reason is given with *-a*.
 
 Named disks, as _sda_ or _/devices/sda_, or *-a*, show each disk's
 reasons and then its attributes, by ID, with their type, value, worst
-value, threshold and raw value, or the fields of its NVMe log. A
-partition answers for its disk. What an attribute's raw value counts is
+value, threshold and raw value, the fields of its NVMe log, or what a SCSI
+disk's log pages say, each on a line, those the disk keeps: its SMART trip
+(*none*, or the code and what it means, as *5D/10, the drive predicts its
+own failure, of hardware*), its temperature and the limit it gives, hours
+powered on (from its background scan page, which counts minutes), start-stop
+and load-unload cycles, the reads, writes and verifies it could not correct,
+errors that are not the medium's, the share of a solid state disk's
+endurance used, its grown defects, and its log of self-tests, the newest
+first. A partition answers for its disk. What an attribute's raw value counts is
 the disk maker's choice; the names are those most disks share. A name
 the kernel does not list is refused (*DSK-101*, with its page in the
 support center).
+
+The disks behind a RAID controller (ADR 0664) are listed after the
+others, as *raid*_n_*:*_bay_, for the controller's number and the disk's
+bay: *raid0:bay4* is the disk in bay 4 of the first controller, and
+*raid0:bay4-2* the one in bay 4 of its second backplane (*storage raid*
+says the bays, *storage*(8)). A disk with no slot is not listed. A disk
+that the controller passes through to the system is a disk of the
+system, and is listed by its own name, as *sda*. The record of a member
+disk is read through the controller, from
+_/kernel/raid/n/health/id_, which holds the same 1032 bytes as
+GET_HEALTH, so that its SATA, NVMe or SCSI record is read and judged as a
+disk's of the system is; the model, serial number and firmware shown are
+those the controller gives. Opening that file fails as a disk's
+GET_HEALTH does: a disk in standby is not woken and is reported as
+asleep, and a disk that keeps no record, as one behind a controller that
+does not pass the request on, shows dashes. A member disk has no
+self-test to start and no log of tests of its own to ask for, apart from
+what a SCSI disk's log pages hold, and *--watch* keeps its live file and
+alerts as for any disk.
 
 # OPTIONS
 
@@ -79,8 +115,10 @@ diskhealth: sda: WARNING: 8 sectors were reallocated
 	FAILING, as critical; and the early warning *smart-rising:*_serial_
 	for a week after a count rises from one look to the next
 	(reallocated sectors, sectors waiting to be reallocated, offline
-	uncorrectable sectors, an NVMe drive's media errors), and while an
-	NVMe drive has used 90% or more of its rated endurance. Disks
+	uncorrectable sectors, an NVMe drive's media errors, a SCSI disk's
+	grown defects and the errors it could not correct), and while an
+	NVMe drive or solid state disk has used 90% or more of its rated
+	endurance. Disks
 	often fail within weeks of these counts starting to rise. A disk
 	with no serial number is named by its device name.
 
@@ -95,9 +133,10 @@ diskhealth: sda: WARNING: 8 sectors were reallocated
 # TEMPERATURES
 
 A disk's warning and critical temperatures are its own where it says
-them: an NVMe drive's, from its health log, and a SATA disk's critical
-one, from the threshold of its airflow temperature attribute (190) where
-that counts down from 100 as the disk warms. A limit the disk does not
+them: an NVMe drive's, from its health log, a SATA disk's critical one,
+from the threshold of its airflow temperature attribute (190) where that
+counts down from 100 as the disk warms, and a SCSI disk's, from the
+reference temperature of its temperature page. A limit the disk does not
 give is the usual for its kind: a hard disk is warm at 50 °C and hot at
 60 °C, a solid-state disk at 65 °C and 70 °C, and an NVMe drive at 70 °C
 and 80 °C. The live file says which: _from_ is *disk* or *kind*.
@@ -136,18 +175,23 @@ order:
 	A SATA disk's counts of sectors moved to spares (attribute 5),
 	sectors waiting to be moved (197) and sectors that could not be read
 	offline (198). *null* for an NVMe drive, for a disk whose SMART is
-	off, and for a disk that does not list the attribute.
+	off, and for a disk that does not list the attribute. For a SCSI
+	disk, *moved* is its grown defects, and the others are *null*.
 
 *media_errors*, *used_percent*
 	An NVMe drive's count of media and data integrity errors, and its
 	share of its rated endurance used, in percent. *null* for a SATA
-	disk.
+	disk. For a SCSI disk, *media_errors* is the reads, writes and
+	verifies it could not correct, *null* if it counts none, and
+	*used_percent* a solid state disk's share, *null* for a disk that
+	has none.
 
 *attributes*
 	A SATA disk's SMART attributes, objects of *id*, *name* (the name the
 	table gives it), *prefail* (whether it tells of failure, not of age),
 	*value*, *worst*, *threshold* and *raw*, as the *-a* listing gives
-	them. *null* for an NVMe drive and for a disk whose SMART is off.
+	them. *null* for an NVMe or SCSI disk and for a disk whose SMART is
+	off.
 
 *self_tests*
 	The last tests in the disk's own log (*hardware*(8) starts them), at
@@ -158,7 +202,8 @@ order:
 	cut short by a reset is *aborted*. A test that ended with a status
 	this has no word for is left out. The array is *null* when the disk
 	keeps no log or the log cannot be read, which is said on standard
-	error.
+	error. A SCSI disk's log is the one in its record, and is *null* for
+	a disk with no self-test results page.
 
 # THE LIVE FILES
 
@@ -177,7 +222,8 @@ file is one line with the object above without *attributes* and
 	is kept for a week, as the alert is.
 
 *kind*
-	*hdd* for a SATA disk that spins, *ssd* for one of flash, or *nvme*.
+	*hdd* for a SATA or SCSI disk that spins, *ssd* for one of flash
+	(a SCSI disk that counts a solid state disk's wear is), or *nvme*.
 	Missing from a file an older service wrote.
 
 *asleep_ms*
@@ -202,6 +248,9 @@ does not list (*DSK-101*); with 2 if a disk could not be read, 4 if one
 warns and 8 if one is failing.
 
 # FILES
+
+_/kernel/raid/n/health/id_
+	The health of a disk behind a RAID controller (above).
 
 _/system/state/diskhealth/serial_
 	What a disk counted at the service's last look, and its last rise,

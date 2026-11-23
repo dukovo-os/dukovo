@@ -347,6 +347,128 @@ _/kernel/fs/space_
 	/volumes/backup 4096 488378646 401235117 0 0
 	```
 
+_/kernel/raid/_*n*_/controller_
+	Radix's own (ADR 0664): a RAID controller the kernel drives
+	(*megaraid*(4)), *n* its number, 0 first, in PCI order. The folder is
+	there only when there is a controller. Every file but _health_ shows
+	what the controller last said, which its thread asks again after each
+	burst of events and every 30 seconds while a task runs, so reading
+	never waits on the controller. All are read-only.
+
+	Two forms of line are used. A key line is a key, a space and a value,
+	which is the rest of the line and may hold spaces. A record line is
+	one record, its fields separated by a TAB, each *key*=*value*. A
+	field the kernel does not know is *-*. A reader ignores keys it does
+	not know and does not depend on the order of fields. Numbers are
+	decimal, sizes are in bytes and temperatures in whole degrees C.
+
+	_controller_ has key lines: *model*, the product name (*PERC H740P
+	Mini*); *serial*; *package*, the firmware package version, and
+	*firmware*, its application version or *-*; *interface*, *mfi* or
+	*fusion*; *chip*, from *SAS1078* to *SAS3908*; *pci*, the PCI
+	address; *numa*, the NUMA node or *-*; *cache*, the bytes of cache
+	memory or *-*; *mode*, *raid* (volumes and no pass-through disks),
+	*hba* (pass-through disks only, or nothing) or *mixed*; *battery*,
+	*none*, *battery*, or *other* for a module of a type the kernel does
+	not know (a CacheVault among them); *temperature*, the
+	controller's own, or *-*; *state*, *operational* or *fault*; *fault*,
+	the firmware's fault code in hexadecimal when the state is *fault*,
+	else *-*; *volumes*, *degraded* and *offline*, how many volumes there
+	are, how many are degraded or partly so and how many are offline;
+	*disks*, *critical* and *failed*, how many physical disks are there,
+	how many the controller calls critical (predicted to fail) and how
+	many have failed; and *commands*, how many commands the driver keeps
+	in flight.
+
+	```
+	model PERC H740P Mini
+	interface fusion
+	chip SAS3508
+	pci 0000:3b:00.0
+	mode mixed
+	battery battery
+	state operational
+	fault -
+	volumes 1
+	```
+
+_/kernel/raid/_*n*_/volumes_
+	A record line for each volume, by target. Fields: *target*, the
+	volume's target ID; *name*, or *-* when it has none; *level*, one of
+	*raid0*, *raid1*, *raid5*, *raid6*, *raid00*, *raid10*, *raid50*,
+	*raid60*, *raid1e* and *other*; *size*; *stripe*, the stripe size or
+	*-*; *state*, *optimal*, *partly-degraded*, *degraded* or *offline*;
+	*write*, the write policy in force, *back* or *through*;
+	*default-write*, the policy set for the volume (*back* set while
+	*write* is *through* means the battery forces it); *read*, *ahead* or
+	*none*; *disk-cache*, *on*, *off* or *default*; *disks*, the device
+	IDs of its member disks, comma-separated, in span order; *os*, the
+	*sd* name it has, or *-*; *task*, *none*, *check*, *init*,
+	*background-init* or *reconstruct*; and *percent* and *elapsed*, the
+	task's progress, 0 to 100, and the seconds it has run, or *-*.
+
+_/kernel/raid/_*n*_/disks_
+	A record line for each physical disk, by device ID. Fields: *id*, the
+	device ID; *enclosure*, the enclosure's device ID, or *-* for a disk
+	attached directly; *index*, the enclosure's index, 0 first, or *-*;
+	*slot*, in its enclosure; *state*, one of *unconfigured-good*,
+	*unconfigured-bad*, *hot-spare*, *offline*, *failed*, *rebuilding*,
+	*online*, *copyback*, *jbod* and *other*; *interface*, *sas*, *sata*,
+	*nvme* or *-*; *media*, *hdd*, *ssd* or *-*; *vendor*, *model*,
+	*serial* and *revision*, as INQUIRY gives them; *size*, as the
+	controller uses it, and *raw-size*; *media-errors*, *other-errors*
+	and *predictive*, counts; *smart-alert*, *yes* when the controller
+	flags the drive's own failure prediction, else *no*; *temperature*,
+	or *-*; *volume*, the target ID of the volume it is in, or *-*;
+	*spare*, *global*, *dedicated* or *-*; *os*, the *sd* name when the
+	disk is passed through, or *-*; *task*, *none*, *rebuild*, *patrol*,
+	*clear* or *copyback*; and *percent* and *elapsed*, as in _volumes_.
+
+	```
+	id=0	enclosure=32	index=0	slot=0	state=online	interface=sas	media=hdd	volume=0	os=-
+	id=4	enclosure=32	index=0	slot=4	state=jbod	interface=sata	media=ssd	volume=-	os=sdb
+	```
+
+_/kernel/raid/_*n*_/battery_
+	The battery or flash module that keeps the controller's cache,
+	absent when the controller's *battery* is *none*. Key lines: *type*,
+	*battery* or *other*, as in _controller_; *state*, *optimal*, *charging*,
+	*discharging*, *learning*, *degraded*, *failed* or *missing*;
+	*charge*, in percent, or *-*; *temperature*, *voltage* in millivolts
+	and *current* in milliamps (negative while it discharges), each or
+	*-*; *learn*, *none*, *active*, *requested*, *failed* or *timed-out*;
+	*write-through*, *yes* when a volume set to write back writes through
+	now because of the battery, else *no*; and *flags*, the firmware's
+	status bits that are set, comma-separated (*pack-missing*,
+	*voltage-low*, *temperature-high*, *charging*, *discharging*,
+	*learn-requested*, *learn-active*, *learn-failed*, *learn-timeout*,
+	*i2c-errors*), or *-*.
+
+_/kernel/raid/_*n*_/events_
+	The last 256 events the controller told of, a record line each,
+	oldest first. Fields: *seq*, the sequence number; *time*, seconds
+	since 2000-01-01 by the controller's clock, or *boot+N* when the
+	controller counted N seconds since its own start; *class*, *debug*,
+	*progress*, *info*, *warning*, *critical*, *fatal* or *dead*;
+	*locale*, a comma-separated list of *volume*, *disk*, *enclosure*,
+	*battery*, *sas*, *controller*, *config* and *cluster*; *code*, the
+	event code in hexadecimal (*0x0051*); *volume*, *disk*, *enclosure*
+	and *slot*, what the event names, each or *-*; *percent*, the
+	progress it carries, or *-*; and *text*, the firmware's own
+	description, or *-*. *text* is always last and may hold *=*.
+
+_/kernel/raid/_*n*_/health/*id*_
+	One file for each physical disk the controller has, in a volume or
+	not, binary: the disk's health record, as *GET_HEALTH* writes it
+	(*radix-block*(2)), 1032 bytes: a kind, 32 bits little-endian (1 for
+	ATA, 2 for NVMe, 3 for SCSI), flags, 32 bits, and the record of 1024
+	bytes. Unlike the others it is read anew at each open: the driver
+	asks the disk through the controller. Only root may read it. Opening
+	it fails with *ENOTSUP* for a disk that keeps no record (QEMU's
+	disks keep none), with *EIO* when the controller is lost and with
+	*ENOENT* for a disk that is no longer there. *diskhealth*(8) reads
+	it.
+
 _/kernel/class/dmi/id/sys_vendor_, _product_name_, _product_version_, _product_family_, _product_sku_
 	Where the firmware has SMBIOS tables (ADR 0231), what it calls the
 	machine: who made it, its product name, version, family and SKU, as
@@ -732,4 +854,4 @@ virtio function for each of its four disks in _/kernel/bus/pci/devices_.
 # SEE ALSO
 
 *radix-proc*(5), *radix-block*(2), *radix-kernel-settings*(2), *radix-files*(7),
-*dukovo-boot*(7), *ob*(1), *tune*(8), *spark*(8), *watchdog*(8), *lspci*(8), *lsmem*(1), *ip*(8)
+*dukovo-boot*(7), *ob*(1), *tune*(8), *spark*(8), *watchdog*(8), *lspci*(8), *lsmem*(1), *ip*(8), *megaraid*(4), *storage*(8), *diskhealth*(8)

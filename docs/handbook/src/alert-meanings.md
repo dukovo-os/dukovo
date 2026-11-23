@@ -205,4 +205,8 @@ full or will be soon (`df -h` and `du` show what is using it),
 `btrfs-missing:VOLUME` and `btrfs-behind:VOLUME` for a Btrfs volume that
 lacks a disk or has one that is behind, `memory:low`, `temp:SENSOR` for a
 part that is hot, and `certificate:FILE` for a certificate in
-`/system/settings/ssl` that ends soon.
+`/system/settings/ssl` that ends soon. A machine with a RAID controller
+also has `raid-volume:N-TARGET` for a volume that is degraded or offline,
+`raid-disk:N-ID` for a disk that failed or is expected to, `raid-battery:N`
+for a battery that failed or wears out, and `raid-controller:N` for a
+controller in fault (`storage raid` shows each).

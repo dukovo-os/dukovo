@@ -17,8 +17,9 @@ metricsd reads the machine once a step (ADR 0484): the processors,
 load, memory and swap, each disk's reads and writes, each filesystem's
 use, each network card, the temperatures, including those of the disks,
 what each service uses, each Btrfs volume's missing disks, the hardware
-errors the kernel has heard of, and on a server its BMC's temperatures,
-fans and power (see *THE BMC*). It keeps each reading in a history of
+errors the kernel has heard of, each RAID controller's volumes, disks and
+battery, and on a server its BMC's temperatures, fans and power (see *THE
+BMC*). It keeps each reading in a history of
 two weeks at the step and a year at one record an hour, and writes the
 newest reading as text, so that *metrics*(1) and the web console show
 the machine's past and now with nothing to install. Spark runs *metricsd
@@ -28,7 +29,8 @@ metricsd also warns before trouble turns into lost data: a filesystem
 nearly full or filling fast, a Btrfs volume with a disk missing, memory
 nearly used up, a sensor close to its limit, a certificate about to end,
 a hardware error that was not corrected, a memory device that corrects
-many errors. It gives its warnings to *alertd*(8), which tells the owner of each once
+many errors, a RAID volume that lost a disk, and a RAID controller's
+disk, battery or fault. It gives its warnings to *alertd*(8), which tells the owner of each once
 (*alerts*(8)).
 
 When *metrics.toml*(5) names an address, metricsd answers a Prometheus
@@ -258,6 +260,22 @@ set in *metrics.toml*(5).
 :  the first certificate in a *.pem* or *.crt* file of _/system/settings/ssl_ ends within *certificate-days* (14)
 :  warning; critical within 3 days, or once it has ended
 :  it is renewed, or the file is gone
+|  raid-volume:_controller_-_target_
+:  a volume of a RAID controller (*storage raid*, *storage*(8)) is degraded or offline, or partly degraded
+:  critical; a warning when it is partly degraded
+:  the volume is optimal again
+|  raid-disk:_controller_-_id_
+:  a disk behind a RAID controller has failed, or the controller or the disk itself expects it to fail
+:  critical when it failed; a warning when it is expected to
+:  the disk is replaced, or no longer expected to fail
+|  raid-battery:_controller_
+:  the controller's battery has failed or is missing, or is worn, or its last test of its capacity failed
+:  critical when it failed or is gone; a warning when it is worn
+:  the battery is replaced, or its state is good again
+|  raid-controller:_controller_
+:  the controller reports a fault
+:  critical
+:  it no longer does
 
 A filesystem mounted read-only is not checked, since freeing space on it
 is not something its owner can do. A sensor with neither a critical
@@ -286,8 +304,10 @@ error ID, *MET-101* for a full filesystem, *MET-102* for a filling one,
 memory, *MET-106* for a sensor, *MET-107* for a certificate, *MET-108*
 for a disk that is too hot, whose title has the disk's model, *MET-109*
 for a hardware error and *MET-110* for a memory device with many
-corrected errors. The
-support center has a page for each.
+corrected errors. A RAID volume that is degraded or offline is
+*MET-111*, a disk behind a RAID controller that failed or is expected to
+*MET-112*, a controller's battery *MET-113* and a controller in fault
+*MET-114*. The support center has a page for each.
 
 # PROMETHEUS
 

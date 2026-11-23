@@ -8,7 +8,12 @@
 // when a change or a task says that something moved and after each of its
 // own actions; what is drawn changes only when what it says does, so that
 // a button in hand stays in hand. The use over 30 days, for the projection,
-// and the reads and writes of the last hour are read beside it.
+// and the reads and writes of the last hour are read beside it. A machine
+// with a RAID controller also has `storage.raid` read with the disks: its
+// cards, banner and the words of a disk that is a RAID volume come from
+// raid-model.js and raid.js, which are read only when an answer lists a
+// controller; a machine with none, or an answer that cannot be read, shows
+// the page as it was.
 
 import { fill, h, icon } from '../../dom.js';
 import { PAGES } from '../../pages.js';
@@ -19,6 +24,9 @@ import {
 } from './model.js';
 import { makeScrubber } from './scrub.js';
 import { makeUse } from './use.js';
+
+/** The answer of `storage.raid`. */
+const RAID = '/api/1/storage/raid';
 
 /** How often `storage show` is read again while the tab is shown. */
 const READ_MS = 30_000;
@@ -61,12 +69,18 @@ export async function show(view) {
   let diskCode = null;
   let loadingDisk = null;
   let missing = false;
+  let raid = null;
+  let raidCode = null;
+  let loadingRaid = null;
+  let lastPill = null;
 
   const useNew = h('button', { class: 'btn', type: 'button' }, icon('plus'), 'Use a new disk…');
   useNew.addEventListener('click', () => steps('new', { answer, backups: links.backups }));
-  view.head(name === null
-    ? { title: 'Storage', commands: true, buttons: [useNew] }
-    : { title: name, crumbs: [{ title: 'Storage', path: '/storage' }], commands: true, buttons: [useNew] });
+  /** The page's head, with the pill of a RAID disk that failed or a volume that is not in order. */
+  const drawHead = (pill = null) => view.head(name === null
+    ? { title: 'Storage', commands: true, buttons: [useNew], pill }
+    : { title: name, crumbs: [{ title: 'Storage', path: '/storage' }], commands: true, buttons: [useNew], pill });
+  drawHead();
 
   const scrubber = makeScrubber(view, { changed: () => read(), repaint: () => answer && draw() });
   const use = makeUse(view);
@@ -74,17 +88,18 @@ export async function show(view) {
   const logCard = h('section', { class: 'card', id: 'log', 'aria-labelledby': 'sto-log-h' },
     h('h2', { id: 'sto-log-h' }, 'The log\'s own space'), h('div', { class: 'sto-log-body', 'aria-hidden': 'true' }, bars()));
   const banner = h('div', { class: 'sto-banner' });
+  const raidSlot = h('div', { class: 'sto-raid-slot' });
   const side = h('div', { class: 'sto-side' }, name !== null && h('section', { class: 'card', 'aria-hidden': 'true' }, bars()));
   const list = h('div', { class: 'sto-list' }, disks.element);
   const content = h('div', { class: `sto${name === null ? '' : ' sto-opened'}` });
   view.main.append(content);
   use.frame();
   disks.frame();
-  fill(content, banner, h('div', { class: 'sto-top' }, use.element), name === null ? list : h('div', { class: 'sto-split' }, list, side), logCard);
+  fill(content, banner, h('div', { class: 'sto-top' }, use.element), raidSlot, name === null ? list : h('div', { class: 'sto-split' }, list, side), logCard);
 
   /** The banner, the worst thing first, when what it says has changed. */
   function drawBanner() {
-    const found = bannersOf(answer, { scrubbing: scrubber.mounts(), time: view.time })[0] ?? null;
+    const found = raidBannerOf() ?? bannersOf(answer, { scrubbing: scrubber.mounts(), time: view.time })[0] ?? null;
     const key = JSON.stringify(found);
     if (key === lastBanner) return;
     lastBanner = key;
@@ -93,8 +108,13 @@ export async function show(view) {
       return;
     }
     // A reader cannot check a disk or scrub a volume, and so is not offered them.
-    const buttons = found.buttons.filter((one) => view.session.admin || one.id === 'replace' || one.id === 'open').map((one) => {
+    const buttons = found.buttons.filter((one) => view.session.admin || ['replace', 'open', 'raid-replace'].includes(one.id)).map((one) => {
       if (one.id === 'scrub') return scrubber.button(one.mount, one.label, { kind: 'small' });
+      if (one.id === 'raid-replace') {
+        const how = h('button', { class: 'btn small', type: 'button' }, one.label);
+        how.addEventListener('click', () => steps('replace', { answer, raid: { bays: one.bays, volume: null } }));
+        return how;
+      }
       if (one.id === 'open') return h('a', { class: 'btn small', href: diskHref(one.disk) }, one.label);
       const button = h('button', { class: 'btn small', type: 'button' }, one.label);
       button.addEventListener('click', () => {
@@ -112,6 +132,46 @@ export async function show(view) {
       h('div', {}, h('p', {}, h('b', {}, found.lead), ' ', found.detail), buttons.length > 0 && h('div', { class: 'btns' }, buttons))));
     scrubber.paint();
   }
+
+  /** The worst thing the controllers say, as a banner of this page's shape, or null. */
+  function raidBannerOf() {
+    if (raidCode === null) return null;
+    const found = raidCode.model.raidBanners(raid, { time: view.time })[0];
+    if (!found) return null;
+    return {
+      id: found.id,
+      tone: found.tone,
+      lead: found.lead,
+      detail: found.detail,
+      buttons: found.replace ? [{ id: 'raid-replace', label: 'How to replace the failed disk', bays: found.replace.bays }] : [],
+    };
+  }
+
+  /** Draws the RAID cards, and the head's pill when it has changed. A disk's page has no room for them: the list is the way to them. */
+  function drawRaid() {
+    if (raidCode === null) return;
+    raidCode.view.set(name === null ? raid : { controllers: [] }, { storage: answer, time: view.time });
+    const pill = raidCode.model.headPill(raid);
+    const key = JSON.stringify(pill);
+    if (key === lastPill) return;
+    lastPill = key;
+    drawHead(pill);
+  }
+
+  /** Reads the code of the RAID cards the first time an answer lists a controller, and draws them when it is here. */
+  function loadRaid() {
+    loadingRaid ??= Promise.all([import('./raid-model.js'), import('./raid.js')]).then(([model, code]) => {
+      raidCode = { model, view: code.makeRaid() };
+      raidSlot.append(raidCode.view.element);
+      if (answer !== null && !view.signal.aborted) draw();
+    }, (error) => {
+      loadingRaid = null;
+      view.problem(error);
+    });
+  }
+
+  /** The RAID volumes by the disk name they appear as, for the disk cards; none when there is no RAID. */
+  const raidsOf = () => (raidCode === null ? null : raidCode.model.raidVolumes(raid));
 
   /** The panel of the disk `name`, made when the page first has it, or the words that say there is none. */
   function drawPanel() {
@@ -138,7 +198,7 @@ export async function show(view) {
         panel.check();
       }
     }
-    panel.set(answer);
+    panel.set(answer, raidsOf());
   }
 
   /** Reads the code of a disk's panel the first time it is wanted, and draws the panel when it is here. */
@@ -163,7 +223,8 @@ export async function show(view) {
   function draw() {
     drawBanner();
     use.set(cardsOf(answer, usage30, { scrubbing: scrubber.mounts() }));
-    disks.set(rowsOf(answer), name);
+    drawRaid();
+    disks.set(rowsOf(answer, raidsOf()), name);
     drawPanel();
   }
 
@@ -175,11 +236,22 @@ export async function show(view) {
     return reading;
   }
 
+  /** The RAID answer, or undefined when it cannot be read (an older admind has no such route): the page is then as it was. */
+  function readRaid() {
+    return view.api.get(RAID).catch((error) => {
+      if (error?.name === 'AbortError') throw error;
+      return undefined;
+    });
+  }
+
   async function readDisks(mine) {
     try {
-      const found = await view.api.get('/api/1/storage');
+      const [found, raidFound] = await Promise.all([view.api.get('/api/1/storage'), readRaid()]);
       if (mine !== latest) return reading;
       answer = found;
+      // An answer that could not be read leaves what was read before, so that a controller that answers late does not take the cards away.
+      if (raidFound !== undefined) raid = raidFound;
+      if (Array.isArray(raid?.controllers) && raid.controllers.length > 0) loadRaid();
       if (failed) {
         failed = false;
         view.slot.replaceChildren();

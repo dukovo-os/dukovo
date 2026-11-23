@@ -98,9 +98,12 @@ export function growOf(disk, answer) {
  * `checked` is the answer of `storage.health` for it when it has been read
  * (the self-tests are in it); `admin` whether the person is an
  * administrator, who reads them. `time` is lib/time.js's, `now` Unix
- * seconds.
+ * seconds. `raid` is the disk's entry of raid-model.js's `raidVolumes`
+ * when the disk is a RAID volume of a controller, else null: such a disk
+ * has no health record of its own, and says whose it is and where its
+ * member disks are.
  */
-export function detailOf(disk, answer, { time, now, checked = null, admin = false }) {
+export function detailOf(disk, answer, { time, now, checked = null, admin = false, raid = null }) {
   const volumes = volumesOfDisk(disk, answer);
   const health = disk.health ?? null;
   const usedWords = [];
@@ -119,6 +122,10 @@ export function detailOf(disk, answer, { time, now, checked = null, admin = fals
     if (Number.isFinite(health.temperature_c)) rows.push({ label: 'Temperature', value: `${health.temperature_c} °C` });
     rows.push(...countRows(health));
     if (health.rose) rows.push({ label: 'Early warning', value: `${health.rose.title}. ${seenWords(health.rose, time)}`, tone: 'warn' });
+  } else if (raid) {
+    rows.push({ label: 'Health', value: `${raid.health.word}: the controller's word for the volume`, tone: raid.health.tone === 'ok' || raid.health.tone === 'off' ? undefined : raid.health.tone });
+    rows.push({ label: 'On the controller', value: `${raid.name}, ${raid.level}, ${raid.controller}` });
+    rows.push({ label: 'Member disks', value: `${raid.bays}.`, link: { href: '/storage#bays', text: 'See the bays' } });
   } else {
     rows.push({ label: 'Health', value: 'Not checked: this disk does not report its health' });
   }
@@ -132,10 +139,12 @@ export function detailOf(disk, answer, { time, now, checked = null, admin = fals
   const volume = volumes.find((one) => one.missing === 0) ?? volumes[0] ?? null;
   return {
     name: disk.name,
-    line: `${disk.model || 'Disk'} · ${bytesWords(disk.size)}`,
-    health: healthWords(health),
+    line: raid ? `${raid.line} · ${bytesWords(disk.size)}` : `${disk.model || 'Disk'} · ${bytesWords(disk.size)}`,
+    health: raid ? raid.health : healthWords(health),
     hasHealth: health !== null,
     mirror: volumes.some((one) => isMirror(one)),
+    // A RAID volume's disk is replaced at the bay of the member that failed, never as a mirror.
+    raid: raid ? { replace: raid.replace, bays: raid.failedBays } : null,
     rows,
     scrub: scrubOf(volume),
     grow: growOf(disk, answer),

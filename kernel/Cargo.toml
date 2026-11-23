@@ -35,6 +35,7 @@ members = [
     "drivers/intel",
     "drivers/ipmi",
     "drivers/mana",
+    "drivers/megaraid",
     "drivers/nic",
     "drivers/nvme",
     "drivers/pvscsi",

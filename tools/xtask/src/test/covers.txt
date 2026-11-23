@@ -594,6 +594,8 @@ machine-restore userspace/programs/systools/src/backup.rs userspace/programs/sys
 machine-restore userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles/
 machine-restore userspace/programs/systools/src/snap.rs userspace/programs/systools/src/subvolume/
 machine-restore userspace/spark/src/main.rs
+megaraid kernel/drivers/megaraid/ kernel/radix/src/fs/disk/megaraid.rs kernel/radix/src/fs/sysfs/raid.rs
+megaraid userspace/programs/systools/src/raid.rs userspace/programs/systools/src/storage/raid.rs
 memory-test image/grub/installed.cfg.in image/grub/menu.cfg image/grub/rescue.cfg
 memory-test tools/xtask/src/grub.rs tools/xtask/src/image.rs tools/xtask/src/memtest.rs
 memory-test-bios image/grub/installed.cfg.in image/grub/menu.cfg image/grub/rescue.cfg
@@ -925,6 +927,8 @@ storage-ide kernel/drivers/ide/ kernel/fs/block/ userspace/storage/
 storage-ide kernel/radix/src/fs/disk/ide.rs
 storage-nvme kernel/drivers/nvme/ kernel/fs/block/ userspace/programs/systools/src/nvme.rs
 storage-nvme userspace/storage/
+storage-megaraid kernel/drivers/megaraid/ kernel/drivers/scsi/ kernel/fs/block/ userspace/storage/
+storage-megaraid kernel/radix/src/fs/disk/megaraid.rs
 storage-pvscsi kernel/drivers/pvscsi/ kernel/drivers/scsi/ kernel/fs/block/ userspace/storage/
 storage-pvscsi kernel/radix/src/fs/disk/pvscsi.rs kernel/radix/src/fs/disk/virtio_scsi.rs
 storage-sata kernel/drivers/ahci/ kernel/fs/block/ userspace/storage/

@@ -3,7 +3,9 @@
 
 //! The early warnings of metricsd(8): what the owner is told before a
 //! disk is full, a volume has lost its second copy, a certificate has
-//! ended or a sensor has overheated (ADR 0484).
+//! ended or a sensor has overheated (ADR 0484), and when a RAID volume is
+//! degraded, a disk behind a RAID controller has failed, its battery has
+//! failed or the controller is in fault (ADR 0664).
 //!
 //! After each step [`Warnings::check`] works out the whole set of problems
 //! the reading shows, and [`Warnings::report`] sends it to alertd(8) as
@@ -39,6 +41,7 @@ use super::size_text;
 use super::store::{self, Selector};
 use crate::alerts::protocol::{About, Alert, DETAIL_MAX, KEY_MAX, Severity, TITLE_MAX};
 use crate::logd;
+use crate::raid::{self, Battery, Controller, Disk};
 
 /// The folder of the system's certificates, where `*.pem` and `*.crt`
 /// files are checked.
@@ -86,6 +89,10 @@ const MEMORY: &str = "MET-105";
 const HOT: &str = "MET-106";
 const CERTIFICATE: &str = "MET-107";
 const DISK_HOT: &str = "MET-108";
+const RAID_VOLUME: &str = "MET-111";
+const RAID_DISK: &str = "MET-112";
+const RAID_BATTERY: &str = "MET-113";
+const RAID_CONTROLLER: &str = "MET-114";
 
 /// How bad a check finds a thing, which it keeps from one step to the
 /// next for its hysteresis.
@@ -354,6 +361,7 @@ impl Warnings {
     pub fn check(&mut self, snapshot: &Snapshot, now: Instant) -> Vec<Alert> {
         let mut alerts = self.filesystem_alerts(snapshot);
         alerts.extend(volume_alerts(&snapshot.volumes));
+        alerts.extend(raid_alerts(&snapshot.raid));
         alerts.extend(self.memory_alerts(snapshot));
         alerts.extend(self.temperature_alerts(&snapshot.temperatures));
         alerts.extend(self.certificate_alerts(snapshot.at, now));
@@ -637,6 +645,112 @@ fn volume_alerts(volumes: &[Volume]) -> Vec<Alert> {
     alerts
 }
 
+/// The alerts of the RAID controllers: a critical one for a volume that
+/// is degraded or offline (a warning when it is only partly degraded), for
+/// a disk that failed (a warning when it is predicted to fail), for a
+/// battery that failed or is gone (a warning when it is worn), and for a
+/// controller in fault. Each is gone from the set when its cause is.
+fn raid_alerts(controllers: &[Controller]) -> Vec<Alert> {
+    let mut alerts = Vec::new();
+    for controller in controllers {
+        alerts.extend(raid_controller_alert(controller));
+        alerts.extend(
+            controller.volumes.iter().filter_map(|volume| raid_volume_alert(controller, volume)),
+        );
+        alerts.extend(controller.disks.iter().filter_map(|disk| raid_disk_alert(controller, disk)));
+        alerts.extend(controller.battery.as_ref().and_then(|b| raid_battery_alert(controller, b)));
+    }
+    alerts
+}
+
+fn raid_volume_alert(controller: &Controller, volume: &raid::Volume) -> Option<Alert> {
+    let (level, what) = match volume.state.as_deref() {
+        Some("degraded") => (Level::Critical, "is degraded: a disk is missing or has failed"),
+        Some("partly-degraded") => {
+            (Level::Warning, "is partly degraded: a disk is missing or has failed")
+        }
+        Some("offline") => (Level::Critical, "is offline: its data cannot be read"),
+        _ => (Level::Clear, ""),
+    };
+    let name = match volume.name.as_deref().filter(|name| !name.is_empty()) {
+        Some(name) => format!("{name} ({} volume {})", volume.level_words(), volume.target),
+        None => format!("{} volume {}", volume.level_words(), volume.target),
+    };
+    alert(
+        key("raid-volume", &format!("{}-{}", controller.n, volume.target)),
+        level,
+        &format!("{name} of RAID controller {} {what}", controller.n),
+        "`storage raid` shows which disk. Put a new disk in its bay and the controller rebuilds \
+         the volume; another failure before then can lose its data.",
+        RAID_VOLUME,
+        About::Data,
+    )
+}
+
+fn raid_disk_alert(controller: &Controller, disk: &Disk) -> Option<Alert> {
+    let place = disk.bay.clone().unwrap_or_else(|| format!("disk {}", disk.id));
+    let (level, what, advice) = if disk.has_failed() {
+        (
+            Level::Critical,
+            "has failed",
+            "Replace it: `storage raid` shows which bay. The controller rebuilds the volume on \
+             the new disk.",
+        )
+    } else if disk.is_predicted_to_fail() {
+        (
+            Level::Warning,
+            "is predicted to fail",
+            "Make sure what is on it is backed up, and replace it before it fails: `storage \
+             raid` shows which bay.",
+        )
+    } else {
+        (Level::Clear, "", "")
+    };
+    alert(
+        key("raid-disk", &format!("{}-{}", controller.n, disk.id)),
+        level,
+        &format!("The disk in {place} of RAID controller {} {what}", controller.n),
+        advice,
+        RAID_DISK,
+        About::Data,
+    )
+}
+
+fn raid_battery_alert(controller: &Controller, battery: &Battery) -> Option<Alert> {
+    let (level, what) = if battery.has_failed() {
+        (Level::Critical, "has failed or is missing")
+    } else if battery.is_worn() {
+        (Level::Warning, "is worn or failed its test of its capacity")
+    } else {
+        (Level::Clear, "")
+    };
+    alert(
+        key("raid-battery", &controller.n.to_string()),
+        level,
+        &format!("The battery of RAID controller {} {what}", controller.n),
+        "Replace it. Until then the controller writes straight to the disks, which is slower; \
+         `storage raid` shows its state.",
+        RAID_BATTERY,
+        About::Hardware,
+    )
+}
+
+fn raid_controller_alert(controller: &Controller) -> Option<Alert> {
+    let level = if controller.is_in_fault() { Level::Critical } else { Level::Clear };
+    let model = controller.controller.model.as_deref().unwrap_or("RAID controller");
+    let code =
+        controller.controller.fault.as_ref().map_or_else(String::new, |c| format!(" (code {c})"));
+    alert(
+        key("raid-controller", &controller.n.to_string()),
+        level,
+        &format!("RAID controller {} ({model}) reports a fault{code}", controller.n),
+        "Back up what you can and restart the machine; if the controller is in fault again, \
+         contact its maker.",
+        RAID_CONTROLLER,
+        About::Hardware,
+    )
+}
+
 /// The alerts of the certificates in the PEM files `*.pem` and `*.crt`
 /// of `dir`: the first certificate of each file, a warning when it ends
 /// within `days` days of `now`, seconds since 1970, and critical when it
@@ -895,6 +1009,131 @@ mod tests {
             }
         }
         assert!(cleared);
+    }
+
+    /// The snapshot of the RAID controllers in `tree`.
+    fn raid_snapshot(tree: &crate::raid::fixture::Tree) -> Snapshot {
+        Snapshot { raid: crate::raid::read(tree.path()), ..snapshot(Vec::new()) }
+    }
+
+    #[test]
+    fn a_healthy_controller_with_a_disk_rebuilding_has_no_alert() {
+        let tree = crate::raid::fixture::Tree::new();
+        tree.h740p();
+        assert!(said(&mut warnings(), &raid_snapshot(&tree)).is_empty());
+    }
+
+    #[test]
+    fn a_degraded_or_offline_volume_is_critical_and_clears_with_its_cause() {
+        let tree = crate::raid::fixture::Tree::new();
+        tree.h740p();
+        let mut w = warnings();
+        let volume = |state: &str| {
+            tree.put(0, "volumes", &format!("target=0\tlevel=raid1\tstate={state}\n"));
+            raid_snapshot(&tree)
+        };
+        let degraded = w.check(&volume("degraded"), Instant::now());
+        assert_eq!(degraded.len(), 1);
+        assert_eq!(
+            (degraded[0].key.as_str(), degraded[0].severity),
+            ("raid-volume:0-0", Severity::Critical)
+        );
+        assert_eq!(
+            degraded[0].title,
+            "RAID 1 volume 0 of RAID controller 0 is degraded: a disk is missing or has failed"
+        );
+        assert!(
+            degraded[0].detail.contains("`storage raid`")
+                && degraded[0].detail.ends_with("(MET-111)")
+        );
+        assert_eq!(degraded[0].kind(), Some(About::Data));
+        assert_eq!(said(&mut w, &volume("offline")), ["raid-volume:0-0 critical"]);
+        assert_eq!(said(&mut w, &volume("partly-degraded")), ["raid-volume:0-0 warning"]);
+        assert!(said(&mut w, &volume("optimal")).is_empty());
+    }
+
+    #[test]
+    fn a_failed_disk_is_critical_and_one_predicted_to_fail_a_warning() {
+        let tree = crate::raid::fixture::Tree::new();
+        let mut w = warnings();
+        let disks = |state: &str, extra: &str| {
+            let line = format!("id=4\tenclosure=32\tindex=0\tslot=4\tstate={state}\t{extra}\n");
+            tree.put(0, "disks", &line);
+            raid_snapshot(&tree)
+        };
+        let failed = w.check(&disks("failed", "smart-alert=no"), Instant::now());
+        assert_eq!(
+            (failed[0].key.as_str(), failed[0].severity),
+            ("raid-disk:0-4", Severity::Critical)
+        );
+        assert_eq!(failed[0].title, "The disk in Bay 4 of RAID controller 0 has failed");
+        assert!(failed[0].detail.ends_with("(MET-112)"));
+        let predicted = w.check(&disks("online", "smart-alert=yes"), Instant::now());
+        assert_eq!(predicted[0].severity, Severity::Warning);
+        assert_eq!(
+            predicted[0].title,
+            "The disk in Bay 4 of RAID controller 0 is predicted to fail"
+        );
+        assert_eq!(said(&mut w, &disks("online", "predictive=2")), ["raid-disk:0-4 warning"]);
+        assert!(said(&mut w, &disks("online", "predictive=0\tsmart-alert=no")).is_empty());
+    }
+
+    #[test]
+    fn a_battery_that_failed_is_critical_and_a_worn_one_a_warning() {
+        let tree = crate::raid::fixture::Tree::new();
+        let mut w = warnings();
+        let battery = |text: &str| {
+            tree.put(0, "battery", text);
+            raid_snapshot(&tree)
+        };
+        let failed = w.check(&battery("state missing\n"), Instant::now());
+        assert_eq!(
+            (failed[0].key.as_str(), failed[0].severity),
+            ("raid-battery:0", Severity::Critical)
+        );
+        assert_eq!(failed[0].title, "The battery of RAID controller 0 has failed or is missing");
+        assert!(failed[0].detail.ends_with("(MET-113)"));
+        assert_eq!(said(&mut w, &battery("state failed\n")), ["raid-battery:0 critical"]);
+        assert_eq!(
+            said(&mut w, &battery("state optimal\nlearn failed\n")),
+            ["raid-battery:0 warning"]
+        );
+        assert_eq!(said(&mut w, &battery("state degraded\n")), ["raid-battery:0 warning"]);
+        assert!(
+            said(&mut w, &battery("state charging\nlearn active\nwrite-through yes\n")).is_empty()
+        );
+    }
+
+    #[test]
+    fn a_controller_in_fault_is_critical_until_it_is_not() {
+        let tree = crate::raid::fixture::Tree::new();
+        let mut w = warnings();
+        tree.put(0, "controller", "model PERC H740P Mini\nstate fault\nfault 0x00002000\n");
+        let alerts = w.check(&raid_snapshot(&tree), Instant::now());
+        assert_eq!(
+            (alerts[0].key.as_str(), alerts[0].severity),
+            ("raid-controller:0", Severity::Critical)
+        );
+        assert_eq!(
+            alerts[0].title,
+            "RAID controller 0 (PERC H740P Mini) reports a fault (code 0x00002000)"
+        );
+        assert!(alerts[0].detail.ends_with("(MET-114)"));
+        tree.put(0, "controller", "model PERC H740P Mini\nstate operational\nfault -\n");
+        assert!(said(&mut w, &raid_snapshot(&tree)).is_empty());
+    }
+
+    #[test]
+    fn each_controller_has_alerts_of_its_own_and_a_named_volume_is_named() {
+        let tree = crate::raid::fixture::Tree::new();
+        tree.put(0, "volumes", "target=1\tname=data\tlevel=raid5\tstate=degraded\n");
+        tree.put(1, "controller", "model B\nstate fault\n");
+        let alerts = warnings().check(&raid_snapshot(&tree), Instant::now());
+        let keys: Vec<_> = alerts.iter().map(|a| a.key.as_str()).collect();
+        assert_eq!(keys, ["raid-controller:1", "raid-volume:0-1"]);
+        assert!(
+            alerts[1].title.starts_with("data (RAID 5 volume 1) of RAID controller 0 is degraded")
+        );
     }
 
     fn volume(missing: u64, behind: u64) -> Volume {

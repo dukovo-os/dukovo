@@ -63,7 +63,7 @@ export function makeTemps(ctx, card) {
       unit, time: view.time, now: Math.floor(Date.now() / 1000), starts: startTimes(data.updates),
     });
     const fans = fanRows(data.sensors);
-    const noRecord = noRecordWords(data.storage);
+    const noRecord = noRecordWords(data.storage, data.raid);
     fill(rows,
       none && h('p', {}, NO_TEMPERATURE),
       found.length > 0 && tableOf(found),

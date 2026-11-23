@@ -132,6 +132,10 @@ pub const HYPERV: &str = "<hyperv>";
 /// In a case's `qemu`, its [`Bus::Scsi`] disks are on VMware's PVSCSI
 /// adapter (QEMU's `pvscsi`, ADR 0424) instead of a virtio SCSI one.
 pub const PVSCSI: &str = "<pvscsi>";
+/// In a case's `qemu`, its [`Bus::Scsi`] disks are volumes of QEMU's
+/// MegaRAID SAS 2108 model (`megasas-gen2`, ADR 0664) instead of disks of
+/// a virtio SCSI adapter.
+pub const MEGARAID: &str = "<megaraid>";
 /// The CPU of a [`HYPERV`] case: the host's, with Hyper-V's CPUID leaves,
 /// its hypercalls, reference counter, frequency registers and SynIC.
 const HYPERV_CPU: &str =
@@ -200,6 +204,7 @@ pub const KERNEL_LIBRARIES: &[&str] = &[
     "radix-ksyms",
     "radix-mana",
     "radix-mca",
+    "radix-megaraid",
     "radix-microcode",
     "radix-mm",
     "radix-net",
@@ -5227,9 +5232,14 @@ fn run_case(
         extra.extend(["-device".into(), "piix3-ide,id=pata".into()]);
     }
     let pvscsi = extra.iter().any(|arg| arg == PVSCSI);
-    extra.retain(|arg| arg != PVSCSI);
+    let megaraid = extra.iter().any(|arg| arg == MEGARAID);
+    extra.retain(|arg| arg != PVSCSI && arg != MEGARAID);
     if case.disks.iter().any(|disk| matches!(disk.bus, Bus::Scsi(_))) {
-        let adapter = if pvscsi { "pvscsi,id=scsi0" } else { "virtio-scsi-pci,id=scsi0" };
+        let adapter = match (pvscsi, megaraid) {
+            (true, _) => "pvscsi,id=scsi0",
+            (_, true) => "megasas-gen2,id=scsi0",
+            _ => "virtio-scsi-pci,id=scsi0",
+        };
         extra.extend(["-device".into(), adapter.into()]);
     }
     // First, so that a drive of the case's own arguments has its
@@ -9493,6 +9503,14 @@ fn disks_found(vm: &mut Vm, case: &Case) -> Result<(), String> {
                      block{sectors}{ro}, write cache, MSI",
                     disk.sector
                 ),
+            ),
+            // A volume of the controller's: QEMU's MFI models keep no cache
+            // the host flushes.
+            Bus::Scsi(target) if case.qemu.contains(&MEGARAID) => (
+                line_of(&format!(
+                    "Disk: {name} is volume {target} of {size} on the MegaRAID controller at "
+                ))?,
+                format!(": QEMU QEMU HARDDISK, {} bytes a block{sectors}{ro}, MSI", disk.sector),
             ),
             Bus::Scsi(target) => (
                 line_of(&format!(

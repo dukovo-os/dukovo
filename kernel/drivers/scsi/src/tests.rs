@@ -11,6 +11,7 @@ use std::vec::Vec;
 
 use crate::*;
 
+mod health;
 mod mmc;
 mod recording;
 

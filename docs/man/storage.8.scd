@@ -5,11 +5,13 @@ storage(8) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-storage - show the disks and the filesystems on them, and grow a disk's last partition and its filesystem
+storage - show the disks and the filesystems on them and the RAID controllers, and grow a disk's last partition and its filesystem
 
 # SYNOPSIS
 
 *storage* [*show*] [*--json*]
+
+*storage raid* [*events*] [*--json*]
 
 *storage grow* _disk_
 
@@ -35,11 +37,18 @@ A disk the service has not looked at has no health, and a volume that
 was never scrubbed has no scrub result: they are left null, as is
 everything else the machine does not say, and do not stop the command.
 
+*raid* runs as anyone too. It shows the RAID controllers of the machine
+(Broadcom MegaRAID, Dell PERC; ADR 0664) from what the driver keeps in
+_/kernel/raid_ (*radix-sysfs*(5)), which it refreshes from the controller
+and never makes a reader wait for: each controller, its volumes, the disks
+behind it by bay, and its battery. A machine with no controller is told
+so, and the exit status is 0.
+
 *grow* needs root, and gives a disk's last partition the free space after
 it, and the Btrfs filesystem on that partition the room of the partition.
 
-*storage --help* prints a summary. *--json* goes with *show* alone, and
-may come before the words or after them.
+*storage --help* prints a summary. *--json* goes with *show* and *raid*,
+and may come before the words or after them.
 
 # COMMANDS
 
@@ -49,6 +58,33 @@ With no command, *storage* does *show*.
 	The disks in the order of their names, each with its partitions, then
 	the Btrfs volumes, then, in JSON only, the other filesystems. Without
 	*--json* it prints a short table of the disks and one of the volumes.
+
+*raid* [*--json*]
+	Each controller, in the order of its number, with its model, its
+	firmware, its cache and its temperature, and whether it works or is in
+	fault; then its volumes, each with its level, size, the name the
+	system has for it, and its state in words ("Working normally",
+	"Degraded: one disk is missing", "Partly degraded", "Offline") and,
+	under it, what runs on it: a check or an initialization with how far
+	it is, and a disk that is rebuilding, as "Rebuilding Bay 3, 42%,
+	about 1 h 10 min left". The time left is a guess from the percent
+	done and the time the task has run, and is left out until the task has
+	run long enough to guess from. A volume that writes straight to disk
+	though it is set to write back, because of the battery, says so. Then
+	the disks, a line each: bay, state, interface and media, size, model,
+	temperature, what it is used for (a volume, a spare, or its name for
+	the system when it is passed through) and a note when it is expected
+	to fail or has medium errors; and last the battery: its state, its
+	charge and its temperature. With *--json*, the document described
+	under *JSON, RAID*.
+
+*raid events*
+	The last 50 events of each controller's log, the newest last: the
+	time, in local time, its class (*info*, *warning*, *critical* and so
+	on) and the controller's own description. An event the controller
+	stamped with the time since it started, as it does before the machine
+	has told it the time, has that time: "start +00:01:35". *--json* is
+	refused: the events are in the document of *raid --json*.
 
 *grow* _disk_
 	Gives _disk_'s last partition, the one that ends last on the disk,
@@ -243,7 +279,76 @@ A filesystem has these fields, in this order: *mount*, *type* (the
 *filesystem* of its device), *device* (the disk or partition it is on),
 and *size*, *used* and *free* in bytes, as for a volume, or *null*.
 
+# JSON, RAID
+
+*storage raid --json* is one line with an object whose first field is
+*format*, 1, and then *controllers*, an array with an object for each
+controller, in the order of their numbers; an empty array on a machine
+with none. The web console's *storage.raid* route gives the same. Each
+controller has these fields, in this order:
+
+*n*
+	The controller's number, 0 first, in PCI order.
+
+*controller*
+	An object: *model*, *serial*, *package* (the firmware package),
+	*firmware*, *interface* (*mfi* or *fusion*), *chip*, *pci* (its PCI
+	address), *numa*, *cache* (bytes), *mode* (*raid*, *hba* or *mixed*),
+	*battery* (*none*, *battery* or *cachevault*), *temperature* (degrees
+	Celsius), *state* (*operational* or *fault*), *fault* (the
+	firmware's code when it is in fault), *volumes*, *degraded*,
+	*offline*, *disks*, *critical* and *failed* (counts) and *commands*.
+
+*volumes*
+	An array with an object for each volume: *target*, *name*, *level*
+	(*raid0*, *raid1*, *raid5*, *raid6*, *raid10* and the others the
+	controller makes), *size* and *stripe* (bytes), *state* (*optimal*,
+	*partly-degraded*, *degraded* or *offline*), *write* and
+	*default_write* (*back* or *through*: the policy now, and the one set
+	for it), *read*, *disk_cache*, *disks* (the device IDs of its member
+	disks, in the order of its spans), *os* (its name as a disk of the
+	system), *task* (*none*, *check*, *init*, *background-init* or
+	*reconstruct*), *percent* and *elapsed* (seconds) of the task.
+
+*disks*
+	An array with an object for each physical disk, in the order of
+	their device IDs: *id*, *enclosure* (its device ID), *index*, *slot*,
+	*bay*, *state* (*online*, *failed*, *rebuilding*, *hot-spare*,
+	*jbod* and the others), *interface*, *media*, *vendor*, *model*,
+	*serial*, *revision*, *size* and *raw_size* (bytes), *media_errors*,
+	*other_errors*, *predictive*, *smart_alert* (a boolean), *temperature*,
+	*volume* (the target of the volume it is in), *spare* (*global* or
+	*dedicated*), *os* (its name as a disk of the system, when it is
+	passed through), *task* (*none*, *rebuild*, *patrol*, *clear* or
+	*copyback*), *percent* and *elapsed*. *bay* is "Bay 4" from the slot
+	when the controller's disks are in one enclosure, which is the
+	machine's backplane; "Bay 4, backplane 2" when they are in more; and
+	"Slot 4" for a disk attached directly.
+
+*battery*
+	An object, or *null* when the controller has none: *type*, *state*
+	(*optimal*, *charging*, *discharging*, *learning*, *degraded*,
+	*failed* or *missing*), *charge* (percent), *temperature*, *voltage*
+	(millivolts), *current* (milliamps, negative while it discharges),
+	*learn* (*none*, *active*, *requested*, *failed* or *timed-out*, the
+	test of its capacity), *write_through* (a boolean: a volume set to
+	write back writes through now for the battery's sake) and *flags*
+	(an array of the status bits that are set).
+
+*events*
+	The newest 50 events, the oldest first: *seq*, *time* (RFC 3339 in
+	UTC, or *null*), *boot_relative* (the seconds since the controller
+	started, for an event that has no *time*), *class*, *locale* (an
+	array), *code*, *volume*, *disk*, *enclosure*, *slot*, *bay*,
+	*percent* and *text*, the controller's description.
+
+A value the controller does not give is *null*; sizes are bytes.
+
 # FILES
+
+_/kernel/raid/n/_
+	What the driver keeps of each controller: _controller_, _volumes_,
+	_disks_, _battery_ and _events_ (*radix-sysfs*(5)).
 
 _/kernel/block_, _/processes/mounts_, _/kernel/fs/btrfs_
 	The disks and partitions, the mounts, and the Btrfs volumes
@@ -257,7 +362,7 @@ _/system/state/scrub/_*uuid*_.json_
 
 # EXIT STATUS
 
-0 when the machine was shown, even with no disk, and when a disk was
+0 when the machine was shown, even with no disk or no RAID controller, and when a disk was
 grown or has no room to grow. 1 for a disk the machine does not have
 (*DSK-101*), for a last partition that is not Btrfs, for a disk with no
 partition, when *grow* does not run as root, and when a step of *grow*
@@ -267,4 +372,4 @@ line, which also prints its usage.
 # SEE ALSO
 
 *lsblk*(8), *blkid*(8), *df*(1), *rdisk*(8), *device*(8), *diskhealth*(8),
-*scrub*(8), *logtrim*(8), *radix-sysfs*(5), *elevate*(8), *systools*(1)
+*scrub*(8), *logtrim*(8), *hardware*(8), *radix-sysfs*(5), *elevate*(8), *systools*(1)

@@ -1172,6 +1172,7 @@ registry![
     alerts::PushRemove,
     alerts::ChannelAboutSet,
     storage::Show,
+    storage::Raid,
     storage::Usage,
     storage::Health,
     storage::Scrub,

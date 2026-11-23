@@ -16,6 +16,15 @@
 // (`POST /api/1/storage/log/trim`). The last hour of reads and writes is
 // `GET /api/1/storage/usage/{range}`.
 //
+// A machine with a RAID controller (Broadcom MegaRAID or Dell PERC) has four cards more,
+// from `storage raid` (`GET /api/1/storage/raid`, admind's `storage.raid`): Controllers,
+// Bays, RAID volumes and Physical disks, and a banner when a disk failed or a volume is
+// degraded or offline. They only show; no button of theirs changes a controller. The lab's
+// machines under QEMU have none, so the test holds the page to what the route answers: with
+// `{"controllers": []}` the page shows no RAID card and is as it is without the route, and
+// with a controller (a lab PC that has one) the four cards are there, the bays are the disks
+// the route lists, and the cards have no button.
+//
 // The disks are what the machine has: the lab machine's own disk, and a memory
 // card in the card reader and a USB stick that storage.toml puts in and makes
 // into a mirror of two disks in RAID1, each with room after its partition. The
@@ -70,6 +79,7 @@ const ROUTES = {
   log: "GET /api/1/storage/log",
   limits: "POST /api/1/storage/log/limits", // storage.log-set
   trim: "POST /api/1/storage/log/trim", // storage.log-trim
+  raid: "GET /api/1/storage/raid", // storage.raid
 };
 
 /** The path of a route as the table names it, for `disk`: `GET /api/1/storage/disks/{disk}/health` is `/api/1/storage/disks/sdb/health`. */
@@ -176,6 +186,32 @@ async function mirrorShown(t, page, answer) {
   await t.see(card.locator(".pill", { hasText: "Mirror healthy" }));
   await t.see(card.getByText(new RegExp(`on (${names[0]} and ${names[1]}|${names[1]} and ${names[0]}), each a full copy`)));
   return { volume, names };
+}
+
+/**
+ * The RAID cards are held to `GET /api/1/storage/raid`: a machine with no controller shows none of them, and
+ * one with a controller shows Controllers, Bays, RAID volumes and Physical disks, a bay for each disk the
+ * route lists, a row of the table for each, and no button that changes it.
+ */
+async function raidAsAnswered(t, page) {
+  const answer = await fetchAsPage(page, "GET", pathOf(ROUTES.raid));
+  ensure(answer.status === 200 && Array.isArray(answer.json?.controllers), `${ROUTES.raid} was answered ${answer.status}: ${answer.text}`);
+  const { controllers } = answer.json;
+  if (controllers.length === 0) {
+    await sleep(1000);
+    const cards = await page.locator("section.sto-raid-card").count();
+    ensure(cards === 0, `${ROUTES.raid} lists no controller and the page has ${cards} RAID cards`);
+    ensure((await page.getByRole("heading", { level: 2, name: "Controllers", exact: true }).count()) === 0, "the page has a Controllers card and the machine has no controller");
+    return;
+  }
+  for (const id of ["controllers", "bays", "volumes", "physical"]) await t.see(page.locator(`section.sto-raid-card#${id}`));
+  const disks = controllers.reduce((sum, one) => sum + one.disks.length, 0);
+  const rows = await page.locator("#physical tbody tr").count();
+  ensure(rows === disks, `the Physical disks card has ${rows} rows and ${ROUTES.raid} lists ${disks} disks`);
+  const bays = await page.locator("#bays li.bay:not(.empty)").count();
+  ensure(bays === disks, `the Bays card draws ${bays} bays with a disk and ${ROUTES.raid} lists ${disks} disks`);
+  const buttons = await page.locator(".sto-raid button").count();
+  ensure(buttons === 0, `the RAID cards have ${buttons} buttons, and they only show`);
 }
 
 /** Nothing is wrong with the machine, so there is no banner. */
@@ -315,6 +351,7 @@ async function administrator(t) {
   const answer = await disksAsAnswered(t, page);
   const mirror = await mirrorShown(t, page, answer);
   await noBanner(page);
+  await raidAsAnswered(t, page);
   await t.see(page.getByRole("heading", { level: 2, name: "Reads and writes, last hour", exact: true }));
   await logUnlocks(t, page);
   await lookAll(t, page, "storage-list");
@@ -338,6 +375,7 @@ async function administrator(t) {
   mustHaveCalled(a.seen, [
     routeFor(ROUTES.show),
     routeFor(ROUTES.usage),
+    routeFor(ROUTES.raid),
     routeFor(ROUTES.scrub),
     ...(grew === null ? [] : [routeFor(ROUTES.grow, grew)]),
     routeFor(ROUTES.log),
@@ -356,6 +394,7 @@ async function reader(t) {
   await openStorage(t, page);
   const answer = await disksAsAnswered(t, page);
   await mirrorShown(t, page, answer);
+  await raidAsAnswered(t, page);
   await t.see(logCard(page).getByText(LOG_READER));
   for (const name of ["Trim now", "Change…", "Unlock"]) {
     ensure((await logCard(page).getByRole("button", { name, exact: true }).count()) === 0, `a reader's log card has ${name}`);

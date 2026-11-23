@@ -215,6 +215,7 @@ mod proc;
 mod prompt;
 mod ps;
 mod quota;
+mod raid;
 mod rdisk;
 mod reach;
 mod reader;

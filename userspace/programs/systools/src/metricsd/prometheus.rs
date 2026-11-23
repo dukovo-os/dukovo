@@ -771,6 +771,7 @@ mod tests {
                 behind: 0,
             }],
             ras: Record::default(),
+            raid: Vec::new(),
         }
     }
 

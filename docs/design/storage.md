@@ -433,7 +433,12 @@ disk): a SATA disk's SMART data and thresholds, two 512-byte pages that
 the AHCI driver reads as commands that go out alone through the disk's
 queue (`Op::Smart`), or an NVMe controller's SMART / Health Information
 log, which the NVMe driver reads on the admin queue under the
-controller's lock (`Controller::health`). Only those commands are sent;
+controller's lock (`Controller::health`), or a SCSI or SAS disk's log pages
+and grown defect count (ADR 0665), which `scsi_health` reads through the
+disk's queue as `Op::Query` and packs with `radix_scsi::health::gather`;
+a SATA disk behind a SCSI controller answers as a SATA disk, its SMART pages
+read as ATA PASS-THROUGH(16) (`Op::Smart` on a SCSI lane). Only those
+commands are sent;
 there is no pass-through of raw ones. The kernel hands the record over
 as it is, and diskhealth(8) judges it; Spark's diskhealth service looks
 at every disk at boot and every ten minutes and logs a disk's verdict
