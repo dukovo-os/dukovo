@@ -5,7 +5,8 @@
 // calls themselves: threads from the C library and from a raw clone, the
 // process calls, the working directory, the memory calls, directories and
 // file status, signals that interrupt a blocked read, interval timers,
-// futexes with absolute timeouts, what an unprivileged program may not do,
+// futexes with absolute timeouts, bit sets, requeues and wake-ops, robust
+// futex lists, what an unprivileged program may not do,
 // the descriptor and identity rules, and a pseudo-terminal's settings.
 // Where a C library would hide a call's own rules (the raw clone, brk,
 // getcwd, getdents64, statx, futex, the interval timers), the program
@@ -42,6 +43,7 @@
 #include <sched.h>
 #include <setjmp.h>
 #include <signal.h>
+#include <stddef.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -64,11 +66,26 @@
 // The kernel's own numbers for the futex operations, which the C libraries'
 // headers do not all carry (musl's has no linux/futex.h at all).
 #define FUTEX_WAIT 0
+#define FUTEX_WAKE 1
+#define FUTEX_REQUEUE 3
+#define FUTEX_CMP_REQUEUE 4
+#define FUTEX_WAKE_OP 5
 #define FUTEX_WAIT_BITSET 9
 #define FUTEX_WAKE_BITSET 10
 #define FUTEX_PRIVATE_FLAG 128
 #define FUTEX_CLOCK_REALTIME 256
 #define FUTEX_BITSET_MATCH_ANY 0xffffffffU
+#define FUTEX_OP_SET 0
+#define FUTEX_OP_ADD 1
+#define FUTEX_OP_OR 2
+#define FUTEX_OP_OPARG_SHIFT 8
+#define FUTEX_OP_CMP_EQ 0
+#define FUTEX_OP_CMP_GT 4
+#define FUTEX_OP(op, oparg, cmp, cmparg) \
+	((((unsigned)(op) & 0xf) << 28) | (((unsigned)(cmp) & 0xf) << 24) | \
+			(((unsigned)(oparg) & 0xfff) << 12) | ((unsigned)(cmparg) & 0xfff))
+#define FUTEX_WAITERS 0x80000000U
+#define FUTEX_OWNER_DIED 0x40000000U
 
 // The kernel's statx record, as linux/stat.h has it: the C libraries' own
 // headers have it only in newer releases, and the call's layout is what the
@@ -1309,6 +1326,250 @@ static void futex_bitset(void) {
 	CHECK(waiter.result == 0);
 }
 
+// A futex call with a second word and a second count, made without the C
+// library: the count goes where the timeout would.
+static long futex_two(int *word, int operation, int count, long count2, int *second,
+		unsigned value) {
+	return syscall(SYS_futex, word, operation | FUTEX_PRIVATE_FLAG, count, (void *)count2, second,
+			value);
+}
+
+// How many threads wait on a futex word, with FUTEX_PRIVATE_FLAG or not as
+// `private` says: a requeue of the word to itself that wakes none leaves
+// them all where they are, and counts them.
+static long futex_waiters_as(int *word, int private) {
+	return syscall(SYS_futex, word, FUTEX_REQUEUE | private, 0, (void *)(long)INT_MAX, word, 0);
+}
+
+static long futex_waiters(int *word) {
+	return futex_waiters_as(word, FUTEX_PRIVATE_FLAG);
+}
+
+// Waits until `count` threads wait on `word`, for up to three seconds;
+// whether they do.
+static int until_waiting_as(int *word, long count, int private) {
+	for(int tries = 0; tries < 3000; tries++) {
+		if(futex_waiters_as(word, private) == count)
+			return 1;
+		sleep_ms(1);
+	}
+	return 0;
+}
+
+static int until_waiting(int *word, long count) {
+	return until_waiting_as(word, count, FUTEX_PRIVATE_FLAG);
+}
+
+// A thread that waits on a futex word that holds `expected`, with the bit
+// set `bits`, for up to ten seconds, and keeps what the call answered: as
+// a private futex, or as a shared one if `private` is 0.
+struct sleeper {
+	int *word;
+	int expected;
+	unsigned bits;
+	int private;
+	pthread_t thread;
+	atomic_int done;
+	long result;
+	int error;
+};
+
+static void *sleep_on(void *argument) {
+	struct sleeper *sleeper = argument;
+	struct timespec limit = timespec_of(now_ns(CLOCK_MONOTONIC) + 10000000000LL);
+	sleeper->result = futex_call(sleeper->word, FUTEX_WAIT_BITSET | sleeper->private,
+			sleeper->expected, &limit, sleeper->bits);
+	sleeper->error = errno;
+	atomic_store(&sleeper->done, 1);
+	return NULL;
+}
+
+// Starts `sleeper` waiting on `word` while it holds `expected`, with
+// FUTEX_PRIVATE_FLAG or not as `private` says.
+static void start_sleeper_as(struct sleeper *sleeper, int *word, int expected, unsigned bits,
+		int private) {
+	sleeper->word = word;
+	sleeper->expected = expected;
+	sleeper->bits = bits;
+	sleeper->private = private;
+	sleeper->result = -2;
+	sleeper->error = 0;
+	atomic_store(&sleeper->done, 0);
+	CHECK(pthread_create(&sleeper->thread, NULL, sleep_on, sleeper) == 0);
+}
+
+// Starts `sleeper` waiting on `word` as a private futex.
+static void start_sleeper(struct sleeper *sleeper, int *word, int expected, unsigned bits) {
+	start_sleeper_as(sleeper, word, expected, bits, FUTEX_PRIVATE_FLAG);
+}
+
+// Joins `sleeper`, and checks that a wake, not its time or an error, ended
+// its wait.
+static void check_woken(struct sleeper *sleeper) {
+	CHECK(pthread_join(sleeper->thread, NULL) == 0);
+	CHECK(sleeper->result == 0);
+}
+
+// Bit sets: a wake wakes only the waiters whose bit sets share a bit with
+// its own, and a set of no bits is EINVAL for a wait and a wake.
+static void futex_sets(void) {
+	static int word;
+	word = 0;
+	CHECK_ERROR(futex_call(&word, FUTEX_WAIT_BITSET | FUTEX_PRIVATE_FLAG, 0, NULL, 0), EINVAL);
+	CHECK_ERROR(futex_call(&word, FUTEX_WAKE_BITSET | FUTEX_PRIVATE_FLAG, 1, NULL, 0), EINVAL);
+	static struct sleeper one, two;
+	start_sleeper(&one, &word, 0, 1);
+	start_sleeper(&two, &word, 0, 2 | 4);
+	CHECK(until_waiting(&word, 2));
+	CHECK(futex_call(&word, FUTEX_WAKE_BITSET | FUTEX_PRIVATE_FLAG, INT_MAX, NULL, 8) == 0);
+	CHECK(futex_call(&word, FUTEX_WAKE_BITSET | FUTEX_PRIVATE_FLAG, INT_MAX, NULL, 4) == 1);
+	check_woken(&two);
+	CHECK(!atomic_load(&one.done));
+	CHECK(futex_waiters(&word) == 1);
+	CHECK(futex_call(&word, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, INT_MAX, NULL, 0) == 1);
+	check_woken(&one);
+}
+
+// Requeues: FUTEX_CMP_REQUEUE checks the word first (EAGAIN), negative
+// counts are EINVAL, moved waiters wait on the second word without waking,
+// and the call returns how many it woke and moved together.
+static void futex_requeue(void) {
+	static int first, second;
+	first = 0;
+	second = 0;
+	static struct sleeper sleepers[3];
+	for(int i = 0; i < 3; i++)
+		start_sleeper(&sleepers[i], &first, 0, FUTEX_BITSET_MATCH_ANY);
+	CHECK(until_waiting(&first, 3));
+	CHECK_ERROR(futex_two(&first, FUTEX_CMP_REQUEUE, 0, INT_MAX, &second, 1), EAGAIN);
+	CHECK_ERROR(futex_two(&first, FUTEX_CMP_REQUEUE, -1, 1, &second, 0), EINVAL);
+	CHECK_ERROR(futex_two(&first, FUTEX_REQUEUE, 1, -1, &second, 0), EINVAL);
+	CHECK(futex_waiters(&first) == 3);
+	// None woken, two moved.
+	CHECK(futex_two(&first, FUTEX_CMP_REQUEUE, 0, 2, &second, 0) == 2);
+	CHECK(futex_waiters(&first) == 1);
+	CHECK(futex_waiters(&second) == 2);
+	for(int i = 0; i < 3; i++)
+		CHECK(!atomic_load(&sleepers[i].done));
+	// One woken on the second word, one moved back.
+	CHECK(futex_two(&second, FUTEX_REQUEUE, 1, INT_MAX, &first, 0) == 2);
+	CHECK(futex_waiters(&second) == 0);
+	CHECK(futex_waiters(&first) == 2);
+	CHECK(futex_call(&first, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, INT_MAX, NULL, 0) == 2);
+	for(int i = 0; i < 3; i++)
+		check_woken(&sleepers[i]);
+}
+
+// FUTEX_WAKE_OP: the operation changes the second word, the first word's
+// waiters wake, and the second's only if the comparison of its old value
+// holds; an unknown operation is ENOSYS, and a second word that cannot be
+// written EFAULT.
+static void futex_wake_op(void) {
+	static int first, second;
+	first = 0;
+	second = 5;
+	CHECK_ERROR(futex_two(&first, FUTEX_WAKE_OP, 1, 1, &second, FUTEX_OP(7, 0, 0, 0)),
+			ENOSYS);
+	CHECK_ERROR(futex_two(&first, FUTEX_WAKE_OP, 1, 1, NULL, FUTEX_OP(FUTEX_OP_SET, 0, 0, 0)),
+			EFAULT);
+	CHECK(second == 5);
+	static struct sleeper on_first, on_second;
+	start_sleeper(&on_first, &first, 0, FUTEX_BITSET_MATCH_ANY);
+	start_sleeper(&on_second, &second, 5, FUTEX_BITSET_MATCH_ANY);
+	CHECK(until_waiting(&first, 1) && until_waiting(&second, 1));
+	// 5 + 2, and 5 > 4: both wake.
+	CHECK(futex_two(&first, FUTEX_WAKE_OP, 1, 1, &second,
+			      FUTEX_OP(FUTEX_OP_ADD, 2, FUTEX_OP_CMP_GT, 4)) == 2);
+	CHECK(second == 7);
+	check_woken(&on_first);
+	check_woken(&on_second);
+	start_sleeper(&on_second, &second, 7, FUTEX_BITSET_MATCH_ANY);
+	CHECK(until_waiting(&second, 1));
+	// 7 is not 0: the word changes and no one wakes.
+	CHECK(futex_two(&first, FUTEX_WAKE_OP, 1, 1, &second,
+			      FUTEX_OP(FUTEX_OP_OR | FUTEX_OP_OPARG_SHIFT, 4, FUTEX_OP_CMP_EQ, 0)) == 0);
+	CHECK(second == (7 | 16));
+	CHECK(!atomic_load(&on_second.done));
+	CHECK(futex_waiters(&second) == 1);
+	CHECK(futex_call(&second, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, 1, NULL, 0) == 1);
+	check_woken(&on_second);
+}
+
+// The kernel's robust list records, as linux/futex.h has them.
+struct linux_robust_list {
+	struct linux_robust_list *next;
+};
+
+struct linux_robust_list_head {
+	struct linux_robust_list list;
+	long futex_offset;
+	struct linux_robust_list *list_op_pending;
+};
+
+// A robust lock: its list entry, and its word.
+struct robust_lock {
+	struct linux_robust_list entry;
+	int word;
+};
+
+// What the owner of the robust locks does: takes the locks, names them in
+// its robust list, and ends once told to.
+static struct robust_locks {
+	struct linux_robust_list_head head;
+	struct robust_lock waited, held, other, pending;
+	atomic_int ready, go;
+	int tid;
+	long set;
+} robust;
+
+static void *robust_owner(void *argument) {
+	(void)argument;
+	robust.tid = (int)syscall(SYS_gettid);
+	robust.waited.word = robust.tid | (int)FUTEX_WAITERS;
+	robust.held.word = robust.tid;
+	robust.other.word = 77;
+	robust.pending.word = 0;
+	robust.head.futex_offset = (long)offsetof(struct robust_lock, word);
+	robust.head.list.next = &robust.waited.entry;
+	robust.waited.entry.next = &robust.held.entry;
+	robust.held.entry.next = &robust.other.entry;
+	robust.other.entry.next = &robust.head.list;
+	robust.head.list_op_pending = &robust.pending.entry;
+	robust.set = syscall(SYS_set_robust_list, &robust.head, sizeof(robust.head));
+	atomic_store(&robust.ready, 1);
+	while(!atomic_load(&robust.go))
+		sleep_ms(1);
+	return NULL;
+}
+
+// A robust list: when its thread ends, each lock word it owns gets
+// FUTEX_OWNER_DIED, keeping FUTEX_WAITERS, and a waiter on one with
+// FUTEX_WAITERS wakes; a word another thread owns, and a pending entry's
+// word that no one owns, are left as they are. A head of another size is
+// EINVAL.
+static void robust_list(void) {
+	CHECK_ERROR(syscall(SYS_set_robust_list, &robust.head, sizeof(robust.head) + 1), EINVAL);
+	memset(&robust, 0, sizeof(robust));
+	pthread_t owner;
+	CHECK(pthread_create(&owner, NULL, robust_owner, NULL) == 0);
+	while(!atomic_load(&robust.ready))
+		sleep_ms(1);
+	CHECK(robust.set == 0);
+	// The kernel wakes a robust lock's waiter as a shared futex's, as a C
+	// library's robust mutexes wait.
+	static struct sleeper sleeper;
+	start_sleeper_as(&sleeper, &robust.waited.word, robust.tid | (int)FUTEX_WAITERS,
+			FUTEX_BITSET_MATCH_ANY, 0);
+	CHECK(until_waiting_as(&robust.waited.word, 1, 0));
+	atomic_store(&robust.go, 1);
+	CHECK(pthread_join(owner, NULL) == 0);
+	check_woken(&sleeper);
+	CHECK((unsigned)robust.waited.word == (FUTEX_WAITERS | FUTEX_OWNER_DIED));
+	CHECK((unsigned)robust.held.word == FUTEX_OWNER_DIED);
+	CHECK(robust.other.word == 77);
+	CHECK(robust.pending.word == 0);
+}
+
 // What an unprivileged program may not do. io_uring is not there on Dukovo,
 // and Linux may or may not have it, with a call that makes no ring; a
 // new user namespace is refused on Dukovo and Linux may allow one, in which
@@ -1528,6 +1789,10 @@ static const struct test_case CASES[] = {
 	{"statx", statx_case},
 	{"signals", signals},
 	{"futex_bitset", futex_bitset},
+	{"futex_sets", futex_sets},
+	{"futex_requeue", futex_requeue},
+	{"futex_wake_op", futex_wake_op},
+	{"robust_list", robust_list},
 	{"refused", refused},
 	{"ids", ids},
 	{"fd_lowest", fd_lowest},

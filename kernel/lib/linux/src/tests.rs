@@ -1430,8 +1430,16 @@ fn futex_constants_are_linuxs() {
     assert_eq!(futex::FUTEX_PRIVATE_FLAG, 128);
     assert_eq!(futex::FUTEX_CLOCK_REALTIME, 256);
     assert_eq!(
-        [futex::FUTEX_WAIT, futex::FUTEX_WAKE, futex::FUTEX_WAIT_BITSET, futex::FUTEX_WAKE_BITSET],
-        [0, 1, 9, 10]
+        [
+            futex::FUTEX_WAIT,
+            futex::FUTEX_WAKE,
+            futex::FUTEX_REQUEUE,
+            futex::FUTEX_CMP_REQUEUE,
+            futex::FUTEX_WAKE_OP,
+            futex::FUTEX_WAIT_BITSET,
+            futex::FUTEX_WAKE_BITSET
+        ],
+        [0, 1, 3, 4, 5, 9, 10]
     );
     assert_eq!(futex::FUTEX_BITSET_MATCH_ANY, 0xffff_ffff);
 }
@@ -1439,7 +1447,7 @@ fn futex_constants_are_linuxs() {
 #[test]
 fn other_futex_commands_keep_their_number_without_the_flags() {
     for (raw, number) in
-        [(2, 2), (3 | 128, 3), (5, 5), (6 | 128 | 256, 6), (13, 13), (0x8000_0001, 0x8000_0001)]
+        [(2, 2), (6 | 128 | 256, 6), (7, 7), (11 | 128, 11), (13, 13), (0x8000_0001, 0x8000_0001)]
     {
         assert_eq!(futex::op(raw).command, futex::Command::Other(number), "{raw:#x}");
     }

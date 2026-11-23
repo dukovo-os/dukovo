@@ -804,6 +804,7 @@ impl ProcessObject {
             process: process.clone(),
             signals: SpinLock::new(signals),
             futex_woken: AtomicBool::new(false),
+            futex_bucket: AtomicUsize::new(0),
             poll_changed: AtomicBool::new(false),
             scheduling: Mutex::new(scheduling),
             stock: super::account::Stock::new(),

@@ -154,8 +154,12 @@ interface address_space = 0x0003 version 4 {
         raises [no_such_slot, empty_slot, missing_rights, invalid_argument, not_mapped];
     /// Waits as `futex_wait` does, with the bit set `bits` (not 0): only
     /// a wake whose bits share one with it wakes the thread, as Linux's
-    /// FUTEX_WAIT_BITSET. `futex_wait` waits with FUTEX_ALL. Fails as
-    /// `futex_wait` does, and with invalid_argument for `bits` 0. (Since
+    /// FUTEX_WAIT_BITSET. `futex_wait` waits with FUTEX_ALL. `timeout_ns`
+    /// is a time from now unless `flags` has absolute (0 from now ends the
+    /// wait at once, once the word is found to hold `expected`); a time on
+    /// the wall clock is taken as a time on the monotonic clock once, as
+    /// the wait begins. Fails as `futex_wait` does, and with
+    /// invalid_argument for `bits` 0 or realtime without absolute. (Since
     /// version 4, ADR 0617.)
     method futex_wait_set = 10 (address: addr, expected: u32, bits: u32, timeout_ns: u64,
                                 flags: FutexWaitFlags) -> ()
@@ -174,8 +178,12 @@ interface address_space = 0x0003 version 4 {
     /// at `address` holds `expected`, and fails with would_block if it
     /// does not, as FUTEX_CMP_REQUEUE. Returns how many it woke and how
     /// many it moved. `address` and `to` may be in this address space or
-    /// in shared memory, each as `futex_wake` takes it; the same word is
-    /// invalid_argument. (Since version 4, ADR 0617.)
+    /// in shared memory, each as `futex_wake` takes it, and may be the
+    /// same word, whose moved threads stay where they are. A thread there
+    /// is no memory to move is woken instead, and counted as moved: a
+    /// waiter allows for an early wake-up anyway. With `compare`, this
+    /// must be the caller's own address space (invalid_argument
+    /// otherwise). (Since version 4, ADR 0617.)
     method futex_requeue = 12 (address: addr, count: u32, to: addr, moved: u32,
                                expected: u32, compare: bool) -> (woken: u32, moved: u32)
         raises [no_such_slot, empty_slot, missing_rights, invalid_argument, bad_address,
@@ -185,8 +193,11 @@ interface address_space = 0x0003 version 4 {
     /// argument, in one atomic step, then wakes up to `count` threads
     /// waiting on `address` and, if the word's old value compares true,
     /// up to `count_to` of those waiting on `to`; returns how many it
-    /// woke in all. An unknown operation or comparison fails with
-    /// not_supported, as Linux's ENOSYS. (Since version 4, ADR 0617.)
+    /// woke in all. This must be the caller's own address space
+    /// (invalid_argument otherwise). A word `to` that cannot be written
+    /// fails with bad_address, and an unknown operation or comparison with
+    /// not_supported, as Linux's ENOSYS, each having changed nothing.
+    /// (Since version 4, ADR 0617.)
     method futex_wake_op = 13 (address: addr, count: u32, to: addr, count_to: u32,
                                operation: u32) -> (woken: u32)
         raises [no_such_slot, empty_slot, missing_rights, invalid_argument, bad_address,

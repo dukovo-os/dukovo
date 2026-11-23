@@ -55,12 +55,12 @@ use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering, fence};
 
+use radix_abi::capability::SlotFlags;
 use radix_abi::errors::{File, Kernel};
 use radix_abi::event_queue::{
     self as abi, CHANGES_MAX, QueueEvent, QueueFilter, QueueFlags, QueueWaitFlags, WaitArgs,
     WaitResults,
 };
-use radix_abi::capability::SlotFlags;
 use radix_abi::process::{PipeFlags, PollEvents};
 use radix_cap::{ObjectKind, Rights, SlotRef};
 use radix_hal::UserMode;
@@ -75,9 +75,9 @@ use super::objects::{self, Found, Object};
 use super::posix::poll::{self, Polled};
 use super::posix::signal::{self, Restart, interrupted};
 use super::{Result, UserRef, cap_error, error};
+use crate::Arch;
 use crate::caps;
 use crate::fs::FileObject;
-use crate::Arch;
 use crate::sched::{self, wait::WaitCount};
 
 /// An event queue, shared.

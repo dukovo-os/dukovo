@@ -74,7 +74,7 @@ mod syscall;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 pub use radix_abi::process::{EXIT_FAULT, EXIT_STOPPED};
 
@@ -120,6 +120,9 @@ pub struct UserThread {
     pub(crate) signals: SpinLock<ThreadSignals>,
     /// Set by the `futex_wake` that takes it off a futex's waiters.
     pub(crate) futex_woken: AtomicBool,
+    /// The list of futex waiters it is in while it waits, which a requeue
+    /// may change (`memory::futex`).
+    pub(crate) futex_bucket: AtomicUsize,
     /// Set by a change to what it polls while it waits in `poll`, which
     /// then looks again; cleared before each look (`posix::poll`).
     pub(crate) poll_changed: AtomicBool,
@@ -284,6 +287,11 @@ fn exit_clearing(user: UserRef, status: u64, word: u64) -> ! {
 /// [`exit_current`], and then, for [`exit_waking`] and [`exit_clearing`],
 /// the joiner's word and what it becomes.
 fn end_thread(user: UserRef, status: u64, how: Ending, word: Option<(u64, u32)>) -> ! {
+    // The robust locks a Linux thread holds are marked as its owner's
+    // (ADR 0617) before its joiner hears of its end, as on Linux.
+    if let Some(me) = sched::current() {
+        linux::ending(&me, &user);
+    }
     ipc::exiting(&user);
     // What its stock holds goes back now, not when the last reference to
     // its side goes.
@@ -316,7 +324,7 @@ fn end_thread(user: UserRef, status: u64, how: Ending, word: Option<(u64, u32)>)
 fn wake_joiner(space: &SpaceObject, word: u64, value: u32) {
     if word.is_multiple_of(4) && Arch::copy_to_user(word, &value.to_le_bytes()) {
         // An aligned word cannot fail.
-        let _ = memory::futex::wake(space, word, u32::MAX);
+        let _ = memory::futex::wake(space, word, u32::MAX, radix_abi::address_space::FUTEX_ALL);
     }
 }
 

@@ -1085,6 +1085,10 @@ impl UserMode for Arch {
         user::copy_to_user(dst, src)
     }
 
+    fn user_compare_exchange(address: u64, expected: u32, new: u32) -> Option<u32> {
+        user::compare_exchange(address, expected, new)
+    }
+
     fn new_shared(pages: usize) -> Option<Self::Shared> {
         user::Shared::new(pages)
     }

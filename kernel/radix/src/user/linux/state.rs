@@ -88,8 +88,8 @@ pub struct LinuxThread {
     /// When the thread exits, the kernel writes 0 there and wakes a
     /// thread waiting on it, which is how a C library's join waits.
     pub clear_child_tid: AtomicU64,
-    /// `set_robust_list`'s head, kept for `get_robust_list`. The kernel
-    /// does not walk the list at a thread's end yet (docs/deferred.md).
+    /// `set_robust_list`'s head: 0 for none. The kernel walks the list
+    /// when the thread ends or runs `exec`, and forgets it (`robust`).
     pub robust_list: AtomicU64,
     /// The length `set_robust_list` was given with the head.
     pub robust_len: AtomicU64,

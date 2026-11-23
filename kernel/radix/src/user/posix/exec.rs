@@ -783,6 +783,9 @@ fn replace_own(
             member.execed = true;
         }
     });
+    // The robust locks a Linux thread holds are marked as its owner's,
+    // in the old program's memory, which the thread leaves now (ADR 0617).
+    crate::user::linux::ending(&me, user);
     if let Err(err) = install_space(process, start.space, true) {
         // Past saving: the old program's capabilities may be gone.
         warn!("User: process {} could not run its new program: {:#x}", process.number(), err.0);

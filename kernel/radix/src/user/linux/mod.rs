@@ -46,6 +46,7 @@ mod notify;
 mod paths;
 mod poll;
 mod process;
+mod robust;
 mod signals;
 mod sockets;
 mod state;
@@ -60,6 +61,7 @@ use radix_linux::errno::{self, EINTR, ENOSYS, EPERM};
 use radix_linux::nr;
 use radix_mm::{Flags, HEAP, Kmalloc};
 
+pub use robust::ending;
 pub use state::{LinuxProcess, LinuxThread, starting};
 
 use super::methods::{self, Answer};

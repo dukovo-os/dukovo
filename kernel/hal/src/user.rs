@@ -476,6 +476,16 @@ pub trait UserMode: crate::Threads {
     /// [`UserMode::copy_from_user`]; a page must be writable.
     fn copy_to_user(dst: u64, src: &[u8]) -> bool;
 
+    /// Compares the 32-bit word of the running thread's user memory at
+    /// `address` (4-byte aligned) with `expected` and, if they are equal,
+    /// writes `new` there, as one atomic step that other CPUs see whole:
+    /// what a futex's wake-op and a robust list's owner-died mark need.
+    /// Returns the word as it was, which is `expected` if `new` was
+    /// written; `None` if the word is not wholly below
+    /// [`UserMode::USER_TOP`], not aligned, or on a page that cannot be
+    /// made writable.
+    fn user_compare_exchange(address: u64, expected: u32, new: u32) -> Option<u32>;
+
     /// `pages` pages of zeroed kernel memory that can be mapped into
     /// address spaces. `None` when memory runs out.
     fn new_shared(pages: usize) -> Option<Self::Shared>;

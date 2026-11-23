@@ -21,7 +21,8 @@ use radix_klog::info;
 use radix_mm::{Flags, HEAP};
 
 use super::memory::{
-    Anon, FileSource, Placement, ProgramPages, SharedPages, cap_rights, frame_made, futex,
+    Anon, FileSource, Placement, ProgramPages, SharedPages, SpaceObject, cap_rights, frame_made,
+    futex,
 };
 use super::objects::{self, Found, Object};
 use super::{Result, UserRef, cap_error, error};
@@ -545,23 +546,60 @@ fn address_space_method(user: &UserRef, slot: u32, label: u32, args: &[u64; 8]) 
         }
         address_space::FUTEX_WAIT => {
             let a = address_space::FutexWaitArgs::decode(args)?;
-            // The word is read where the caller runs.
-            if !core::ptr::eq(&raw const *space, user.space()) {
-                return Err(Kernel::InvalidArgument.status(0));
-            }
+            callers(&space, user)?;
             let deadline =
                 (a.timeout_ns != 0).then(|| crate::sched::now_ns().saturating_add(a.timeout_ns));
-            futex::wait(&space, a.address, a.expected, deadline, user)?;
+            futex::wait(&space, a.address, a.expected, address_space::FUTEX_ALL, deadline, user)?;
             answer(label, 0, [0; 8])
         }
         address_space::FUTEX_WAKE => {
             let a = address_space::FutexWakeArgs::decode(args)?;
-            let woken = futex::wake(&space, a.address, a.count)?;
+            let woken = futex::wake(&space, a.address, a.count, address_space::FUTEX_ALL)?;
             let results = address_space::FutexWakeResults { woken };
             answer(label, address_space::FutexWakeResults::WORDS, results.encode())
         }
+        address_space::FUTEX_WAIT_SET => {
+            let a = address_space::FutexWaitSetArgs::decode(args)?;
+            callers(&space, user)?;
+            let deadline = futex::deadline(a.timeout_ns, a.flags)?;
+            futex::wait(&space, a.address, a.expected, a.bits, deadline, user)?;
+            answer(label, 0, [0; 8])
+        }
+        address_space::FUTEX_WAKE_SET => {
+            let a = address_space::FutexWakeSetArgs::decode(args)?;
+            let woken = futex::wake(&space, a.address, a.count, a.bits)?;
+            let results = address_space::FutexWakeSetResults { woken };
+            answer(label, address_space::FutexWakeSetResults::WORDS, results.encode())
+        }
+        address_space::FUTEX_REQUEUE => {
+            let a = address_space::FutexRequeueArgs::decode(args)?;
+            if a.compare {
+                callers(&space, user)?;
+            }
+            let expected = a.compare.then_some(a.expected);
+            let (woken, moved) =
+                futex::requeue(&space, a.address, a.count, a.to, a.moved, expected)?;
+            let results = address_space::FutexRequeueResults { woken, moved };
+            answer(label, address_space::FutexRequeueResults::WORDS, results.encode())
+        }
+        address_space::FUTEX_WAKE_OP => {
+            let a = address_space::FutexWakeOpArgs::decode(args)?;
+            callers(&space, user)?;
+            let operation = radix_linux::futex::WakeOp::decode(a.operation)
+                .ok_or(Kernel::NotSupported.status(0))?;
+            let woken = futex::wake_op(&space, a.address, a.count, a.to, a.count_to, operation)?;
+            let results = address_space::FutexWakeOpResults { woken };
+            answer(label, address_space::FutexWakeOpResults::WORDS, results.encode())
+        }
         _ => Err(error(Kernel::NoSuchMethod)),
     }
+}
+
+/// Fails with invalid_argument unless `space` is the running thread's,
+/// `user`'s: a futex call that reads or writes a word does it where the
+/// caller runs.
+fn callers(space: &SpaceObject, user: &UserRef) -> Result<()> {
+    if core::ptr::eq(space, user.space()) { Ok(()) } else { Err(Kernel::InvalidArgument.status(0)) }
 }
 
 /// The thread interface, kept out of line, as [`call`] says.

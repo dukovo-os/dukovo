@@ -583,6 +583,10 @@ impl UserMode for Arch {
         false
     }
 
+    fn user_compare_exchange(_: u64, _: u32, _: u32) -> Option<u32> {
+        None
+    }
+
     fn new_shared(_: usize) -> Option<Shared> {
         None
     }
