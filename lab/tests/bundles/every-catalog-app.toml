@@ -21,8 +21,11 @@ host_needs = ["scp"]
 # one has none and no DNS, and reading them there fails (APP-103), which is
 # the lab's, not Dukovo's: the test is skipped there. netcheck exits with 2
 # for a warning, as a clock not yet set, which does not stop the catalogs.
+# Its internet layer checks the update server the machine follows, which
+# on the lab network is the lab PC's, so the catalogs' own name is looked
+# up too.
 [[step]]
-run = '''sh -c 'netcheck --internet >/dev/null 2>&1; [ $? -le 2 ]' '''
+run = '''sh -c 'netcheck --internet >/dev/null 2>&1; [ $? -le 2 ] && host updates.dukovo.org >/dev/null 2>&1' '''
 or_skip = "the machine has no internet (no DNS on the lab network), where the catalogs are read from"
 [[step]]
 host = "sh {here}/../services/copy-file.sh {here}/every-catalog-app.sh {machine} {machine-port:22}"
