@@ -5,7 +5,9 @@
 //! PERC H330 to H755 and PERC 6 to H800, Lenovo's and Broadcom's own, and
 //! QEMU's `megasas` and `megasas-gen2`. Each volume the controller's
 //! firmware builds, and each disk it passes through to the host (JBOD),
-//! takes the first `sd` letter free, as a SATA disk does.
+//! takes the first `sd` letter free, as a SATA disk does: the volumes in
+//! the order of their target IDs, then the disks in the order of their
+//! device IDs.
 //!
 //! [`bind`] maps the controller's registers, gives it one interrupt
 //! (MSI-X entry 0, or MSI) and brings its firmware up. Then, its
@@ -59,8 +61,7 @@ use radix_hw::Dma;
 use radix_hw::pci::{Bar, Function, Msi, MsiX};
 use radix_klog::{TextBuf, info, warn};
 use radix_megaraid::dcmd::{
-    Class, CtrlInfo, EventDetail, EventLogState, LdList, PdInfo, PdList, event, locale, mbox,
-    opcode,
+    Class, CtrlInfo, EventDetail, EventLogState, LdList, PdList, event, locale, mbox, opcode,
 };
 use radix_megaraid::frame::status;
 use radix_megaraid::regs::{REGISTERS, State};
@@ -1043,8 +1044,8 @@ fn scan(
         let _ = write!(facts.package, "{}", info.package_version());
     }
     // The volumes, then the disks passed through, each asked what it is
-    // through a page of the memory past the lists.
-    let (lists, rest) = scratch.split_at_mut(PdList::LEN.max(LdList::LEN));
+    // through the controller's memory.
+    let lists = &mut scratch[..PdList::LEN.max(LdList::LEN)];
     let page = memory;
     let mut targets: Vec<Target, Kmalloc> = Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
     targets.try_reserve_exact(MAX_DISKS * 2).map_err(|_| "out of memory")?;
@@ -1055,22 +1056,26 @@ fn scan(
         facts.volumes += 1;
         let _ = targets.push_within_capacity(Target::Volume(u16::from(volume.target_id)));
     }
-    let len = scan_dcmd(raid, memory, opcode::PD_GET_LIST, &[0; 12], PdList::LEN)?;
+    // The disks passed through are the ones the firmware lists as handed
+    // to the host, as Linux's driver takes them, whatever PD_GET_INFO says
+    // of their state (QEMU's models say there that every disk is offline).
+    // A firmware with none to hand over may answer with no bytes at all,
+    // which read as an empty list, the answer's memory being zeroed first.
+    let mailbox = mbox::pd_list_query_exposed();
+    let len = scan_dcmd(raid, memory, opcode::PD_LIST_QUERY, &mailbox, PdList::LEN)?;
     memory.read(0, &mut lists[..len]);
     let disks = PdList::parse(&lists[..len]).map_err(|_| "its list of disks is not valid")?;
-    let info = &mut rest[..PdInfo::LEN];
     for disk in disks.iter().filter(|disk| disk.scsi_device_type == device_type::DISK) {
-        let mailbox = mbox::pd_info(disk.device_id);
-        let Ok(len) = scan_dcmd(raid, memory, opcode::PD_GET_INFO, &mailbox, PdInfo::LEN) else {
-            continue;
-        };
-        memory.read(0, &mut info[..len]);
-        let passed = PdInfo::parse(&info[..len]).is_ok_and(|pd| pd.state().is_jbod());
-        if passed {
-            facts.disks += 1;
-            let _ = targets.push_within_capacity(Target::Disk(disk.device_id));
-        }
+        facts.disks += 1;
+        let _ = targets.push_within_capacity(Target::Disk(disk.device_id));
     }
+    // The volumes by target ID, then the disks by device ID, whatever
+    // order the firmware lists them in (QEMU's models list the newest
+    // first): the names then follow the numbers.
+    targets.sort_unstable_by_key(|&target| match target {
+        Target::Volume(id) => (0, id),
+        Target::Disk(id) => (1, id),
+    });
     for &target in &targets {
         let mut commands = Scan { raid: &mut *raid, page, target, broken: false };
         let mut wait = |ms: u32| queue::delay(ms.saturating_mul(1000));

@@ -41,7 +41,8 @@ its firmware up. It asks the firmware what the controller is, and for
 its volumes and its physical disks, and then asks each volume, and each
 disk the controller passes through to the host (JBOD), what it is.
 Every one of them becomes a disk with an *sd* name, *sda*, *sdb*..., the
-first free, as a SATA disk does. A
+first free, as a SATA disk does: the volumes in the order of their
+targets, then the disks in the order of their device IDs. A
 disk that is a member of a volume is not one itself; the volume is. A
 controller with no volume and no pass-through disk is kept: its disks are
 shown in _/kernel/raid_ all the same.

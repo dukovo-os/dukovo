@@ -41,13 +41,16 @@ QEMU models two MFI parts, `megasas` (SAS1078) and `megasas-gen2`
 frames, the opcodes and the structures they answer with are documented in
 FreeBSD's `mrsas` and `mfi` drivers, which LSI and Avago wrote.
 
-QEMU's models differ from a controller's firmware in two ways. They fail
+QEMU's models differ from a controller's firmware in three ways. They fail
 every SCSI command that moves no data, TEST UNIT READY among them, as an
 internal target failure; Linux's `sd` goes on to READ CAPACITY whatever
 TEST UNIT READY says, unless the disk is not ready, so Linux does not
-notice. And they read only the first byte of PD_GET_INFO's mailbox, so of
-the disks they number `id << 8 | lun`, only one at SCSI ID 0 can be asked
-about.
+notice. They read only the first byte of PD_GET_INFO's mailbox, so of the
+disks they number `id << 8 | lun`, only one at SCSI ID 0 can be asked
+about. And their PD_GET_INFO drops the INQUIRY answer it asks the disk
+for, so it says that every disk is offline; Linux's driver takes the disks
+it passes through from PD_LIST_QUERY's list of those handed to the host,
+and does not ask.
 
 ## Decision
 
@@ -59,13 +62,16 @@ about.
   function, gives it one interrupt (MSI-X entry 0, or MSI) and one reply
   queue, and adds the disks. Up to four controllers are driven, with up to
   32 volumes and pass-through disks each.
-- **Volumes and pass-through disks are SCSI disks.** Each takes the first
-  free `sd` name, is probed by `radix_scsi::probe` (which, as `sd` does,
-  asks a disk that fails TEST UNIT READY other than as not ready for its
-  capacity), and its reads and
-  writes go to the firmware as LD I/O (Fusion) or SCSI I/O frames (MFI),
-  sharing the controller's commands as PVSCSI's disks share the
-  adapter's. Two commands are kept from the disks: one for a management
+- **Volumes and pass-through disks are SCSI disks.** The volumes are
+  LD_GET_LIST's; the disks passed through are those PD_LIST_QUERY lists as
+  handed to the host, as Linux takes them. Each takes the first free `sd`
+  name, the volumes in the order of their targets and then the disks in the
+  order of their device IDs, whatever order the firmware lists them in.
+  Each is probed by `radix_scsi::probe` (which, as `sd` does, asks a disk
+  that fails TEST UNIT READY other than as not ready for its capacity), and
+  its reads and writes go to the firmware as LD I/O (Fusion) or SCSI I/O
+  frames (MFI), sharing the controller's commands as PVSCSI's disks share
+  the adapter's. Two commands are kept from the disks: one for a management
   command, one for the wait on the next event.
 - **The firmware's cache is the volume's.** A firmware that refuses
   SYNCHRONIZE CACHE for a volume keeps its cache with a battery or flash,

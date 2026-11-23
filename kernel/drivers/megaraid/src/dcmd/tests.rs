@@ -114,6 +114,8 @@ fn mailboxes() {
     assert_eq!(mbox::ld_info(0x0102), [2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     assert_eq!(mbox::pd_info(0xabcd), [0xcd, 0xab, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     assert_eq!(mbox::pd_list_query_all(), [0; 12]);
+    // The disks handed to the host, as Linux's driver asks for them.
+    assert_eq!(mbox::pd_list_query_exposed(), [5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     assert_eq!(
         mbox::event(0x0403_0201, locale::ALL, Class::Info.as_i8()),
         [1, 2, 3, 4, 0xff, 0xff, 0, 0, 0, 0, 0, 0]

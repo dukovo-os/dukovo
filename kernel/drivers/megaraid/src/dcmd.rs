@@ -65,6 +65,9 @@ pub mod mbox {
     pub const SHUTDOWN_SPIN_DOWN: u8 = 0x01;
     /// The PD list query that asks for every device.
     pub const PD_QUERY_ALL: u16 = 0;
+    /// The PD list query that asks for the devices the firmware hands
+    /// the host: the disks it passes through.
+    pub const PD_QUERY_EXPOSED_TO_HOST: u16 = 5;
 
     /// `LD_GET_INFO` for the logical drive with target ID `target`.
     pub fn ld_info(target: u16) -> Mailbox {
@@ -84,6 +87,13 @@ pub mod mbox {
     pub fn pd_list_query_all() -> Mailbox {
         let mut m = [0; 12];
         m[..2].copy_from_slice(&PD_QUERY_ALL.to_le_bytes());
+        m
+    }
+
+    /// `PD_LIST_QUERY` for the devices the firmware hands the host.
+    pub fn pd_list_query_exposed() -> Mailbox {
+        let mut m = [0; 12];
+        m[..2].copy_from_slice(&PD_QUERY_EXPOSED_TO_HOST.to_le_bytes());
         m
     }
 

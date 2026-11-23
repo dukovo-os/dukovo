@@ -13,14 +13,17 @@
 //! The disk's health file fails to open, as QEMU's disks keep no log
 //! pages.
 //!
-//! QEMU's models differ from a controller's firmware in two ways the
+//! QEMU's models differ from a controller's firmware in three ways the
 //! kernel meets here. They fail every SCSI command that moves no data,
 //! TEST UNIT READY among them, as an internal target failure, so the
-//! probe goes on to READ CAPACITY, as Linux's does. And they read only
-//! the first byte of PD_GET_INFO's mailbox, so of the disks they number
-//! by SCSI ID and LUN (`id << 8 | lun`), only one at SCSI ID 0 can be
-//! asked about: the disk is there, and the unit tests of `radix-megaraid`
-//! take a disk numbered above 255 through to its SCSI ID and LUN.
+//! probe goes on to READ CAPACITY, as Linux's does. They read only the
+//! first byte of PD_GET_INFO's mailbox, so of the disks they number by
+//! SCSI ID and LUN (`id << 8 | lun`), only one at SCSI ID 0 can be asked
+//! about: the disk is there, and the unit tests of `radix-megaraid` take
+//! a disk numbered above 255 through to its SCSI ID and LUN. And their
+//! PD_GET_INFO drops the INQUIRY answer it asks the disk for and says
+//! that every disk is offline, so the disk's line in `disks` is checked
+//! for its number and name and not its state, which the unit tests check.
 
 use super::super::*;
 
@@ -63,7 +66,7 @@ pub const CASE: Case = Case {
 /// screen shows a line only once the command has run.
 const READ_FILES: &str = "clear; \
     echo \"first $(grep -c '^chip SAS1078$' /kernel/raid/0/controller) $(grep -c '^mode raid$' /kernel/raid/0/controller) $(grep -c 'os=sda' /kernel/raid/0/volumes)\"; \
-    echo \"second $(grep -c '^chip SAS2108$' /kernel/raid/1/controller) $(grep -c '^mode hba$' /kernel/raid/1/controller) $(grep -c '^id=0.*state=jbod.*os=sdb' /kernel/raid/1/disks)\"; \
+    echo \"second $(grep -c '^chip SAS2108$' /kernel/raid/1/controller) $(grep -c '^mode hba$' /kernel/raid/1/controller) $(grep -c '^id=0.*os=sdb' /kernel/raid/1/disks)\"; \
     echo \"running $(cat /kernel/raid/*/controller | grep -c '^state operational$')\"; \
     echo \"health $(cat /kernel/raid/1/health/0 > /dev/null 2>&1; echo $?)\"; \
     echo \"named $(storage raid | grep -c -E '^Controller (0: LSI MegaRAID SAS 8708EM2|1: LSI MegaRAID SAS 9260-8i)')\"";
