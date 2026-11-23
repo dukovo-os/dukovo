@@ -12,8 +12,12 @@
 #include <stdint.h>
 #include <sys/eventfd.h>
 #include <sys/signalfd.h>
-#include <sys/syscall.h>
 #include <sys/timerfd.h>
+#ifdef __radix__
+#include <sys/pidfd.h>
+#else
+#include <sys/syscall.h>
+#endif
 
 #include "check.h"
 
@@ -21,14 +25,22 @@
 #define P_PIDFD 3
 #endif
 
-// pidfd_open and pidfd_send_signal, which a C library may lack: Dukovo's
-// has them, and Linux's system calls are the same.
+// pidfd_open and pidfd_send_signal: Dukovo's C library has them, and on
+// Linux they are the system calls, as a C library there may lack them.
 static int open_pidfd(pid_t pid, unsigned int flags) {
+#ifdef __radix__
+	return pidfd_open(pid, flags);
+#else
 	return (int)syscall(SYS_pidfd_open, pid, flags);
+#endif
 }
 
 static int signal_pidfd(int pidfd, int sig, siginfo_t *info, unsigned int flags) {
+#ifdef __radix__
+	return pidfd_send_signal(pidfd, sig, info, flags);
+#else
 	return (int)syscall(SYS_pidfd_send_signal, pidfd, sig, info, flags);
+#endif
 }
 
 // Whether `fd` says it is ready for `events` within `ms` milliseconds:

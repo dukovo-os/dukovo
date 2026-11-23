@@ -34,6 +34,8 @@ int watch_errno(uint64_t status) {
 
 } // namespace
 
+namespace mlibc {
+
 int Sysdeps<InotifyCreate>::operator()(int flags, int *fd) {
 	if(flags & ~(IN_NONBLOCK | IN_CLOEXEC))
 		return EINVAL;
@@ -72,3 +74,5 @@ int Sysdeps<InotifyRmWatch>::operator()(int ifd, int wd) {
 	uint64_t status = radix_file_watch_remove(slot, static_cast<uint32_t>(wd));
 	return status ? watch_errno(status) : 0;
 }
+
+} // namespace mlibc

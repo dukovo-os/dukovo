@@ -36,7 +36,7 @@ libc_sources += radix_sources + files(
 	# The Linux option's getrandom (patch 0023), memalign (0035),
 	# extended attribute calls (0050, ADR 0256), getifaddrs (0054, ADR
 	# 0336), inotify (0120, ADR 0615), and pidfd_open and the calls with it
-	# (ADR 0613), which need nothing of Linux's.
+	# (0121, ADR 0613), which need nothing of Linux's.
 	'../../options/linux/generic/ifaddrs.cpp',
 	'../../options/linux/generic/malloc.cpp',
 	'../../options/linux/generic/sys-inotify.cpp',

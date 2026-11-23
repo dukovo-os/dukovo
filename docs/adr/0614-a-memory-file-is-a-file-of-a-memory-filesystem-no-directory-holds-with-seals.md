@@ -48,7 +48,8 @@ must hold.
   `MFD_NOEXEC_SEAL`, `MFD_EXEC`) and the seal bits are checked in
   `radix_linux::memfd`, with host tests. `MFD_HUGETLB` is EINVAL, as on a
   Linux without huge pages. Dukovo's C library's `memfd_create` and
-  `fcntl` make the same calls.
+  `fcntl` make the same calls; mlibc patch 0121 takes `memfd_create` and
+  its flags out of mlibc's Linux option.
 
 ## Consequences
 

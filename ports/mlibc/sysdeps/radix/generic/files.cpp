@@ -313,12 +313,9 @@ int rights_of(int fd, uint64_t *rights) {
 	return 0;
 }
 
-// Linux's seals of a memory file, which are the kernel's bits, and
-// memfd_create's flags beyond the ones mlibc's headers have.
+// Linux's seals of a memory file, which are the kernel's bits.
 constexpr unsigned int SEAL_SEAL = 0x1;
 constexpr unsigned int SEALS_ALL = 0x3f;
-constexpr unsigned int MEMFD_NOEXEC_SEAL = 0x8;
-constexpr unsigned int MEMFD_EXEC = 0x10;
 // The longest name memfd_create takes, without its NUL.
 constexpr size_t MEMFD_NAME_MAX = 249;
 
@@ -1551,9 +1548,9 @@ int Sysdeps<Pipe>::operator()(int *fds, int flags) {
 // not know (MFD_HUGETLB among them) or MFD_EXEC with MFD_NOEXEC_SEAL,
 // EFAULT for no name, EINVAL for a name of more than 249 bytes.
 int Sysdeps<MemfdCreate>::operator()(const char *name, int flags, int *fd) {
-	unsigned int known = MFD_CLOEXEC | MFD_ALLOW_SEALING | MEMFD_NOEXEC_SEAL | MEMFD_EXEC;
+	unsigned int known = MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL | MFD_EXEC;
 	unsigned int asked = static_cast<unsigned int>(flags);
-	if((asked & ~known) || ((asked & MEMFD_EXEC) && (asked & MEMFD_NOEXEC_SEAL)))
+	if((asked & ~known) || ((asked & MFD_EXEC) && (asked & MFD_NOEXEC_SEAL)))
 		return EINVAL;
 	if(!name)
 		return EFAULT;
@@ -1565,7 +1562,7 @@ int Sysdeps<MemfdCreate>::operator()(const char *name, int flags, int *fd) {
 		memory_flags |= RADIX_MEMORY_FILE_FLAGS_CLOSE_ON_EXEC;
 	if(asked & MFD_ALLOW_SEALING)
 		memory_flags |= RADIX_MEMORY_FILE_FLAGS_ALLOW_SEALING;
-	if(asked & MEMFD_NOEXEC_SEAL)
+	if(asked & MFD_NOEXEC_SEAL)
 		memory_flags |= RADIX_MEMORY_FILE_FLAGS_NO_EXEC;
 	for(;;) {
 		radix::SlotClaim claim;

@@ -69,7 +69,8 @@ the event queue and `poll` watch files.
   `radix_linux::kernel_files`'s, with host tests. Dukovo's C library makes
   the same calls (`sysdeps/radix/generic/kernel_files.cpp`, mlibc's
   `linux-eventfd`, `linux-signalfd` and `linux-timerfd` options and its
-  `pidfd_open` calls).
+  `pidfd_open` calls, which mlibc patch 0121 takes out of its Linux
+  option).
 
 ## Consequences
 
