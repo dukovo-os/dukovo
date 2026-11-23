@@ -13,7 +13,7 @@ audio in 1.13.
 <div class="hwkinds">
 <div><span class="hwpill hw-ok">Works</span><h3>Virtual machines and clouds</h3><p>QEMU and KVM, VMware, Hyper-V and Azure, AWS, Google Cloud and VirtualBox. Every paravirtual disk and network card they offer has a driver.</p></div>
 <div><span class="hwpill hw-ok">Works</span><h3>Desktops on a wired network</h3><p>NVMe and SATA disks, Intel, Realtek, Broadcom and Killer Ethernet up to 10 Gb/s, and every kind of USB port. The screen is a text console until the desktop arrives in 1.1.</p></div>
-<div><span class="hwpill hw-part">Partly</span><h3>Servers</h3><p>One- and two-socket Xeon and EPYC servers work with their onboard SATA and NVMe disks and 1 to 10 Gb/s ports, every PCIe slot found and each device on its NUMA node. RAID and SAS controllers, 25 to 100 Gb/s cards, storage networks over iSCSI and NVMe over TCP, IPMI, hardware error reporting and disk hot-swap come before 1.0.</p></div>
+<div><span class="hwpill hw-part">Partly</span><h3>Servers</h3><p>One- and two-socket Xeon and EPYC servers work with their onboard SATA and NVMe disks and 1 to 10 Gb/s ports, every PCIe slot found and each device on its NUMA node. RAID and SAS controllers (Dell PERC, Broadcom, HPE Smart Array from Gen8), 10 to 100 Gb/s cards (Intel, Broadcom, QLogic, Mellanox), storage networks over iSCSI and NVMe over TCP, installs over the network, IPMI, hardware error reporting and disk hot-swap come before 1.0.</p></div>
 <div><span class="hwpill hw-part">Partly</span><h3>Laptops</h3><p>Everything a desktop has, plus SD card readers and USB-C port status. Connect with an Ethernet port, a USB Ethernet adapter or a phone's USB tethering until Wi-Fi arrives in 1.11.</p></div>
 <div><span class="hwpill hw-plan">1.10</span><h3>Gaming and graphics work</h3><p>Every graphics card shows a picture through the firmware's framebuffer. Acceleration for AMD, Intel and NVIDIA comes in 1.10, and several monitors and HDR in 1.11.</p></div>
 </div>
@@ -62,11 +62,15 @@ the exact chips.
 | SD card readers on PCI and in chipsets, and Realtek's RTS5209, RTS5227, RTS5229, RTS522A, RTS5249, RTS525A, RTL8402, RTL8411 and RTL8411B | Works | sdhci, rtsx |
 | PC floppy drives | Works | fdc |
 | Broadcom MegaRAID RAID controllers: Dell PERC 9 to 11 (H740P included), Lenovo, and Broadcom 93xx to 95xx | Planned, 1.0 | |
-| Broadcom SAS HBAs: Dell HBA330 and HBA355i, LSI 9207 to 9500 | Planned, 1.0 | |
+| Broadcom SAS HBAs: Dell HBA330 and HBA355i, LSI 9207, 9211 and 9300 to 9500 | Planned, 1.0 | |
 | HPE Smart Array Gen10 and later, Microchip SmartRAID and SmartHBA | Planned, 1.0 | |
 | Dell PERC 12 and Broadcom 9600 | Planned, 1.0 | |
 | Hot-swap of NVMe and SAS or SATA disks, with the drive bay lights | Planned, 1.0 | |
-| HPE Gen8 and Gen9 Smart Array and Adaptec RAID | Planned, 1.12 | |
+| HPE Gen8 and Gen9 Smart Array: P420i, P440ar, P840, H240 and the rest | Planned, 1.0 | |
+| Disk health behind RAID and SAS controllers: SMART, temperatures, predicted failures, degraded arrays and the cache battery | Planned, 1.0 | |
+| Adaptec RAID | Planned, 1.12 | |
+| Intel firmware RAID on SATA (Intel RST and VROC SATA volumes, Dell S140 and S150) | Planned, 1.12 | |
+| LTO tape drives | Planned, 1.12 | |
 | SES enclosure management beyond the drive bay lights | Planned, 1.12 | |
 | UFS storage, in a few laptops from 2022 | Not yet | |
 
@@ -78,6 +82,7 @@ the exact chips.
 | Intel I210, I211, I350, 82576 and 82580 | Works | igb(4) |
 | Intel I225 and I226, 2.5 Gb/s | Works | igc(4) |
 | Intel 82599, X540 and X550, 10 Gb/s | Works | ixgbe(4) |
+| Intel X552 and X553 (Xeon D, Atom C3000) and E610, 10 Gb/s | Planned, 1.0 | |
 | Realtek RTL8111, RTL8168, RTL8169 and RTL810x | Works | re(4) |
 | Realtek RTL8125, RTL8126 and RTL8127, 2.5, 5 and 10 Gb/s, and Killer E3000 and E5000 | Works | rge(4) |
 | Atheros AR813x, AR815x, AR816x and AR817x, Killer E2200, E2400 and E2500 | Works | alc(4) |
@@ -88,7 +93,10 @@ the exact chips.
 | Broadcom NetXtreme-E, 10 to 200 Gb/s | Planned, 1.0 | |
 | NVIDIA Mellanox ConnectX-4 Lx to ConnectX-7 | Planned, 1.0 | |
 | SFP+ modules and fiber ports on the cards that work | Planned, 1.0 | |
-| QLogic and Marvell FastLinQ | Planned, 1.12 | |
+| Broadcom and QLogic 57800, 57810 and 57840, 1 and 10 Gb/s (many Dell 13th and 14th generation and HPE Gen8 and Gen9 servers) | Planned, 1.0 | |
+| Marvell FastLinQ 41000 and 45000 | Planned, 1.12 | |
+| NVIDIA Mellanox ConnectX-3 and ConnectX-3 Pro | Planned, 1.12 | |
+| Cisco UCS virtual interface cards | Planned, 1.12 | |
 | Marvell AQtion | Planned, 1.12 | |
 | SR-IOV virtual functions, used inside a guest | Planned, 1.12 | |
 
@@ -168,6 +176,7 @@ the exact chips.
 | Link aggregation (LACP and active-backup), LLDP, jumbo frames, a queue per CPU, checksum and segmentation offloads | Planned, 1.0 | |
 | Disks on a storage network over iSCSI and NVMe over TCP | Planned, 1.0 | |
 | Multipath: several paths to one storage network disk, kept up when one goes down | Planned, 1.0 | |
+| Installs over the network: the installer started by PXE or UEFI HTTP boot, with its answers fetched from a server | Planned, 1.0 | |
 | Fibre Channel | Planned, 1.22 | |
 | The Redfish host interface | Planned, 1.22 | |
 | SR-IOV physical functions and device passthrough to virtual machines | Planned, 1.23 | |
@@ -183,6 +192,7 @@ the exact chips.
 | Amazon Web Services: ENA network and NVMe disks | Works | ena(4) |
 | Google Cloud: gVNIC network, NVMe and virtio disks | Works | gve(4) |
 | VirtualBox: its Intel network card and AHCI disks | Works | e1000(4) |
+| Xen and XCP-ng paravirtual disks and network | Planned, 1.12 | |
 
 ## How drivers reach a machine
 
