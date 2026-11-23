@@ -768,8 +768,19 @@ fall below 1/64 of memory at a wake-up, it also drops clean cached pages,
 and the out-of-memory policy asks it to (`writeback::reclaim`) before it
 stops a resource domain (ADR 0029). Dropping pages takes the caches'
 locks, so it only ever happens in this thread, which holds none, and
-never inside an allocation. Programs' anonymous memory is not cached
-data: with a swap area on, the swap thread writes it out, after the
+never inside an allocation.
+
+Dirty pages cannot be dropped, so writers are held to a limit of them
+(ADR 0547). Each file's cache adds the pages of a file on a disk that it
+makes dirty to one count, `radix_vfs::cache::dirty_pages`, and takes them
+out as they are written or go. After each write to a file, with no lock
+held, `writeback::throttle` looks at it: over a tenth of memory it asks
+the thread for an immediate `Vfs::sync_all`, and over a fifth the writer
+waits for the thread in 100 ms slices until the count is under, or until
+30 seconds have gone with no page written. `/processes/meminfo` shows
+the count as `dirty`.
+
+Programs' anonymous memory is not cached data: with a swap area on, the swap thread writes it out, after the
 page cache has given back what it can (ADR 0152).
 
 ## The hierarchy

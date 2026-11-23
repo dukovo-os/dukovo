@@ -1826,6 +1826,9 @@ proptest! {
                 }
             }
             prop_assert_eq!(cache.size(), model.len() as u64);
+            // Every dirty page of a file on a disk counts toward the
+            // writers' limit, and no other.
+            prop_assert_eq!(cache.counted_pages(), cache.dirty_pages());
         }
         // After a sync and dropping every page, the disk alone has it.
         cache.sync(&disk).unwrap();
@@ -1836,6 +1839,33 @@ proptest! {
         prop_assert_eq!(n, model.len());
         prop_assert_eq!(out, model);
     }
+}
+
+/// The pages of files on disks that wait to be written count toward the
+/// limit writers are held to, until they are written or gone; a tmpfs
+/// file's, which have nowhere to go, never do.
+#[test]
+fn dirty_pages_of_files_on_disks_are_counted_until_written() {
+    let disk = FakeDisk { limit: 1 << 20, ..FakeDisk::default() };
+    let cache = FileCache::new(0, 0);
+    let data = std::vec![1u8; 5 * 4096];
+    assert_eq!(cache.write(0, &Slice(&data), &disk), Ok(data.len()));
+    assert_eq!(cache.counted_pages(), 5);
+    // Other tests' files count too, but never less than this one's.
+    assert!(crate::cache::dirty_pages() >= 5);
+    // Rewriting a dirty page counts it once.
+    assert_eq!(cache.write(4096, &Slice(&data[..100]), &disk), Ok(100));
+    assert_eq!(cache.counted_pages(), 5);
+    // Cutting the file takes its dirty pages past the end out.
+    cache.set_size(2 * 4096, &disk).unwrap();
+    assert_eq!(cache.counted_pages(), 2);
+    cache.sync(&disk).unwrap();
+    assert_eq!(cache.counted_pages(), 0);
+
+    let tmpfs = FileCache::new(0, 0);
+    assert_eq!(tmpfs.write(0, &Slice(&data), &Memory), Ok(data.len()));
+    assert_eq!(tmpfs.dirty_pages(), 5);
+    assert_eq!(tmpfs.counted_pages(), 0);
 }
 
 /// A write from a bad buffer, one whose pages cannot be made, keeps what

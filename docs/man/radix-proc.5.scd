@@ -216,7 +216,10 @@ _/processes/meminfo_
 	*mapped_areas* is the kernel's stacks and the other memory it maps
 	with guard pages. The page cache is the files' data in memory
 	(*radix-files*(7)), which the kernel gives back when memory runs low.
-	Then *swap_total* and *swap_free*, the room of the swap areas on and
+	Then *dirty*, the page cache's data that waits to be written to a
+	disk (Linux's *Dirty*): a write that leaves it over a tenth of memory
+	has it written at once, and one that leaves it over a fifth waits
+	until it is under (*radix-files*(7)). Then *swap_total* and *swap_free*, the room of the swap areas on and
 	how much of it is free (*swapon*(8)), and *hardware_corrupted*, the
 	memory a machine check said went bad, which is out of use for good or
 	leaves use when freed (Linux's *HardwareCorrupted*; *dukovo-boot*(7)).

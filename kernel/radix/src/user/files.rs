@@ -2988,6 +2988,8 @@ pub fn write(
             written
         }
     } as u64;
+    // With no lock held: the writeback thread may need the file's.
+    fs::writeback::throttle();
     user.process.note_written(written);
     Ok(written)
 }

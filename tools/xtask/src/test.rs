@@ -570,6 +570,11 @@ const GO_APPS_FILES: u8 = 44;
 /// with the `caddy` test's script ([`cases::caddy::make_disk`]).
 const CADDY_FILES: u8 = 45;
 
+/// [`Disk::fat`] for a disk of zeros, sparse on the host, that a test makes
+/// a Btrfs on and fills, which the host then checks with `btrfs check`
+/// ([`btrfs_checked`]): `dirty-limit`'s, larger than the machine's memory.
+const ZEROS: u8 = 46;
+
 /// The start of the names of the bundle files of the catalog's programs
 /// built with Go (ADR 0600), about 37 MiB together: they are on the disks
 /// of the tests that install them ([`GO_APPS_FILES`]), so that the disks of
@@ -5564,6 +5569,14 @@ fn make_disks(
                 None
             };
             made.push(DiskImage { btrfs: tool, ..image });
+            continue;
+        }
+        if disk.fat == ZEROS {
+            std::fs::File::create(&image.path)
+                .and_then(|file| file.set_len(image.bytes))
+                .map_err(|err| format!("making {}: {err}", image.path.display()))?;
+            let tool = btrfs::tool(ctx).map_err(|err| err.to_string())?;
+            made.push(DiskImage { btrfs: Some(tool), ..image });
             continue;
         }
         if disk.fat == SWAP {
