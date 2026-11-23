@@ -855,4 +855,11 @@ interface process = 0x000a version 13 {
     /// 13, ADR 0615.)
     method watch_file = 67 (to: slot, flags: PipeFlags) -> ()
         raises [no_such_slot, missing_rights, occupied, no_memory];
+    /// Makes an event queue (radix-event-queue(2)) in slot `to`, as
+    /// `create` does, closed by `exec` with close_on_exec, which `create`
+    /// cannot ask for: Linux's epoll_create1(2) with EPOLL_CLOEXEC.
+    /// non_blocking is invalid_argument: a queue's `wait` says how long it
+    /// waits. (Since version 13, ADR 0612.)
+    method event_queue = 68 (to: slot, flags: PipeFlags) -> ()
+        raises [no_such_slot, missing_rights, occupied, invalid_argument, no_memory];
 }

@@ -27,6 +27,14 @@
 //! `kernel/radix/tla/EventQueue.tla` checks this, and that a deleted watch
 //! is never reported.
 //!
+//! The `poll` filter is Linux's epoll on the same machinery (ADR 0612):
+//! its watch asks for any of a description's events, a change sets them
+//! anew, and an exclusive one (EPOLLEXCLUSIVE) is queued by a change only
+//! until one is queued where a thread waits ([`Polled::changed`]). The
+//! Linux table makes its changes and waits through [`change_given`] and
+//! [`wait_given`], with the records in the kernel's memory, and with the
+//! same checks as `wait`.
+//!
 //! A watch holds its description weakly, so that watching keeps nothing
 //! open: once the description goes, its watches go at their next look, or
 //! when their key is used again. A watch a change deletes is marked, never
@@ -52,8 +60,9 @@ use radix_abi::event_queue::{
     self as abi, CHANGES_MAX, QueueEvent, QueueFilter, QueueFlags, QueueWaitFlags, WaitArgs,
     WaitResults,
 };
-use radix_abi::process::PollEvents;
-use radix_cap::{ObjectKind, Rights};
+use radix_abi::capability::SlotFlags;
+use radix_abi::process::{PipeFlags, PollEvents};
+use radix_cap::{ObjectKind, Rights, SlotRef};
 use radix_hal::UserMode;
 use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_posix::watch::{self, Asks, State, Then};
@@ -66,8 +75,9 @@ use super::objects::{self, Found, Object};
 use super::posix::poll::{self, Polled};
 use super::posix::signal::{self, Restart, interrupted};
 use super::{Result, UserRef, cap_error, error};
-use crate::Arch;
+use crate::caps;
 use crate::fs::FileObject;
+use crate::Arch;
 use crate::sched::{self, wait::WaitCount};
 
 /// An event queue, shared.
@@ -99,6 +109,11 @@ const WATCH_BYTES: u64 = (size_of::<Watch>() + 5 * size_of::<usize>()) as u64;
 
 /// How many changes `wait` copies in at a time, on the kernel stack.
 const CHANGES_AT_ONCE: usize = 8;
+
+/// Where a wait's events go, by their index: the program's array of
+/// `struct kevent`, or the Linux table's of `struct epoll_event`. It
+/// fails with bad_address if the program's memory cannot be written.
+pub type Sink<'a> = dyn FnMut(u32, &QueueEvent) -> Result<()> + 'a;
 
 /// An event queue.
 pub struct EventQueue {
@@ -264,6 +279,10 @@ impl Watched {
 pub struct Watch {
     ident: u64,
     filter: QueueFilter,
+    /// Whether a change queues it only if no other exclusive watch of its
+    /// description was queued where a thread waits (`exclusive`): fixed
+    /// when it is added.
+    exclusive: bool,
     watched: Watched,
     /// Its queue's ring.
     ready: ReadyRef,
@@ -291,35 +310,49 @@ impl Watch {
     pub fn is_deleted(&self) -> bool {
         self.marks.load(Ordering::Relaxed) & DELETED != 0
     }
+
+    /// Whether it is exclusive (epoll's EPOLLEXCLUSIVE).
+    pub fn is_exclusive(&self) -> bool {
+        self.exclusive
+    }
 }
 
 /// What a change to a watched description does to `watch`: puts it on its
 /// queue's ring, unless it is on it already or deleted, and wakes the
 /// queue's waiters and pollers. Called with any lock held, interrupts
 /// masked or not, so it takes only the ring's lock and the wait table's.
-pub fn changed(watch: &WatchRef) {
+///
+/// Returns whether the watch is on the ring, by this call or before it,
+/// and a thread was counted waiting on its queue then: whether the change
+/// reached a waiter, for an exclusive watch ([`Polled::changed`]).
+pub fn changed(watch: &WatchRef) -> bool {
+    let ready = &watch.ready;
     let marked = watch
         .marks
         .try_update(Ordering::SeqCst, Ordering::SeqCst, |marks| (marks == 0).then_some(QUEUED));
-    if marked.is_err() {
-        return;
+    match marked {
+        Ok(_) => {}
+        // Already on the ring: a waiter there will take it.
+        Err(marks) if marks & DELETED == 0 => return ready.waits.waiting(),
+        Err(_) => return false,
     }
-    let ready = &watch.ready;
     {
         let mut ring = ready.ring.lock_irq();
         if ready.closed.load(Ordering::Relaxed) {
-            return;
+            return false;
         }
         ring.push(watch.clone());
         ready.queued.store(ring.len, Ordering::Release);
     }
     ready.wake();
+    ready.waits.waiting()
 }
 
 /// A queue's watches, by key.
 struct Registry {
-    /// Descriptors' watches, by descriptor: `read`'s, then `write`'s.
-    descriptors: Vec<[Option<WatchRef>; 2], Kmalloc>,
+    /// Descriptors' watches, by descriptor: `read`'s, `write`'s and
+    /// `poll`'s.
+    descriptors: Vec<[Option<WatchRef>; 3], Kmalloc>,
     /// User events' watches, in order of `ident`.
     users: Vec<WatchRef, Kmalloc>,
     /// How many watches may be on the ring at once: those held, and those
@@ -327,9 +360,13 @@ struct Registry {
     on_ring_max: usize,
 }
 
-/// A descriptor watch's place in its descriptor's pair.
+/// A descriptor watch's place in its descriptor's watches.
 fn pair_index(filter: QueueFilter) -> usize {
-    usize::from(filter == QueueFilter::Write)
+    match filter {
+        QueueFilter::Write => 1,
+        QueueFilter::Poll => 2,
+        QueueFilter::Read | QueueFilter::User => 0,
+    }
 }
 
 impl Registry {
@@ -366,7 +403,7 @@ impl Registry {
             self.descriptors.try_reserve(index + 1 - self.descriptors.len()).map_err(no_memory)?;
             while self.descriptors.len() <= index {
                 // Room was reserved above.
-                let _ = self.descriptors.push_within_capacity([None, None]);
+                let _ = self.descriptors.push_within_capacity([None, None, None]);
             }
         }
         Ok(())
@@ -503,12 +540,41 @@ impl EventQueue {
         if reported > 0 || a.capacity == 0 {
             return Ok(reported);
         }
-        let waits = a.flags.contains(QueueWaitFlags::FOREVER) || a.timeout_ns > 0;
-        if waits || a.flags.contains(QueueWaitFlags::MASK) {
-            self.wait_ready(user, a)
-        } else {
-            self.look(a.events, a.capacity)
+        let mut sink = |index: u32, event: &QueueEvent| {
+            let at = a.events + u64::from(index) * QueueEvent::SIZE as u64;
+            if Arch::copy_to_user(at, &watch::write(event)) {
+                Ok(())
+            } else {
+                Err(error(Kernel::BadAddress))
+            }
+        };
+        let forever = a.flags.contains(QueueWaitFlags::FOREVER);
+        let timeout = (!forever).then_some(a.timeout_ns);
+        let mask = a.flags.contains(QueueWaitFlags::MASK).then_some(a.mask);
+        // The changes were made: a call restarted would make them again.
+        let restart = if a.count == 0 { Restart::NoHandler } else { Restart::Never };
+        self.wait_for(user, &mut sink, a.capacity, timeout, mask, restart)
+    }
+
+    /// Writes the events of the watches that are ready, at most `capacity`
+    /// of them, through `sink`, waiting for one for at most `timeout`
+    /// nanoseconds (`None`: as long as it takes; 0: not at all), with
+    /// `mask` as the thread's signal mask while it waits, if one is given;
+    /// returns how many it wrote. A signal ends the wait with interrupted,
+    /// which `restart` says the call may be run again after.
+    fn wait_for(
+        &self,
+        user: &UserRef,
+        sink: &mut Sink<'_>,
+        capacity: u32,
+        timeout: Option<u64>,
+        mask: Option<u64>,
+        restart: Restart,
+    ) -> Result<u32> {
+        if timeout == Some(0) && mask.is_none() {
+            return self.look(sink, capacity);
         }
+        self.wait_ready(user, sink, capacity, timeout, mask, restart)
     }
 
     /// Makes `a`'s changes, in order; returns how many of them it wrote
@@ -572,6 +638,12 @@ impl EventQueue {
             Asks::Add if filter == QueueFilter::User => self.add(user, registry, change, filter),
             Asks::Add => self.add_descriptor(user, registry, base, change, filter),
             Asks::Delete => {
+                if filter == QueueFilter::Poll {
+                    let watch = registry.get(change.ident, filter).ok_or_else(not_found)?;
+                    if !names_watched(user, base, change.ident, watch)? {
+                        return Err(not_found());
+                    }
+                }
                 let watch = registry.take(change.ident, filter).ok_or_else(not_found)?;
                 let gone = watch.watched.has_gone();
                 registry.delete(&watch);
@@ -581,6 +653,15 @@ impl EventQueue {
             }
             Asks::Change => {
                 let watch = registry.live(change.ident, filter).ok_or_else(not_found)?;
+                if filter == QueueFilter::Poll {
+                    if !names_watched(user, base, change.ident, &watch)? {
+                        return Err(not_found());
+                    }
+                    // epoll_ctl's EPOLL_CTL_MOD of an exclusive watch.
+                    if watch.exclusive {
+                        return Err(error(Kernel::InvalidArgument));
+                    }
+                }
                 let enabled = {
                     let mut held = watch.held.lock();
                     held.state.change(change, filter, false);
@@ -615,6 +696,14 @@ impl EventQueue {
         if let Some(held) = registry.live(change.ident, filter)
             && held.watched.is(&object)
         {
+            // epoll_ctl's EPOLL_CTL_ADD of what it watches already.
+            if watch::creates(change) {
+                return Err(File::Exists.status(0));
+            }
+            // An exclusive watch is changed by no add.
+            if held.exclusive || watch::exclusive(change) {
+                return Err(error(Kernel::InvalidArgument));
+            }
             let enabled = {
                 let mut held = held.held.lock();
                 held.state.change(change, filter, true);
@@ -697,10 +786,10 @@ impl EventQueue {
     }
 
     /// Takes watches off the ring, as many as are on it, and writes the
-    /// events of those ready, at most `capacity`, at `events`; returns how
-    /// many it wrote. A watch it puts back on the ring waits for the next
-    /// call.
-    fn look(&self, events: u64, capacity: u32) -> Result<u32> {
+    /// events of those ready, at most `capacity`, through `sink`; returns
+    /// how many it wrote. A watch it puts back on the ring waits for the
+    /// next call.
+    fn look(&self, sink: &mut Sink<'_>, capacity: u32) -> Result<u32> {
         if !self.has_queued() {
             // Nothing to look at, and no lock taken: a watch put on the
             // ring after this load wakes a waiter counted before it.
@@ -722,34 +811,41 @@ impl EventQueue {
             }
             let Some((event, then)) = registry.look_at(&watch) else { continue };
             match then {
-                Then::LookAgain => changed(&watch),
+                Then::LookAgain => {
+                    changed(&watch);
+                }
                 Then::AwaitChange => {}
                 Then::Delete => {
                     registry.take(watch.ident, watch.filter);
                     registry.delete(&watch);
                 }
             }
-            let at = events + u64::from(found) * QueueEvent::SIZE as u64;
-            if !Arch::copy_to_user(at, &watch::write(&event)) {
-                return Err(error(Kernel::BadAddress));
-            }
+            sink(found, &event)?;
             found += 1;
         }
         Ok(found)
     }
 
-    /// Waits, as `a` says, until a watch is ready, and writes the events
-    /// of those that are; returns how many, 0 if the time ran out.
-    fn wait_ready(&self, user: &UserRef, a: &WaitArgs) -> Result<u32> {
-        let masked = a.flags.contains(QueueWaitFlags::MASK);
-        if masked {
-            signal::begin_masked_wait(user, a.mask);
+    /// Waits, as [`EventQueue::wait_for`] says, until a watch is ready,
+    /// and writes the events of those that are; returns how many, 0 if the
+    /// time ran out.
+    fn wait_ready(
+        &self,
+        user: &UserRef,
+        sink: &mut Sink<'_>,
+        capacity: u32,
+        timeout: Option<u64>,
+        mask: Option<u64>,
+        restart: Restart,
+    ) -> Result<u32> {
+        let masked = mask.is_some();
+        if let Some(mask) = mask {
+            signal::begin_masked_wait(user, mask);
         }
-        let deadline = (!a.flags.contains(QueueWaitFlags::FOREVER))
-            .then(|| sched::now_ns().saturating_add(a.timeout_ns));
+        let deadline = timeout.map(|timeout| sched::now_ns().saturating_add(timeout));
         let mut timed_out = false;
         let found = loop {
-            let found = match self.look(a.events, a.capacity) {
+            let found = match self.look(sink, capacity) {
                 Ok(found) => found,
                 Err(status) => {
                     if masked {
@@ -762,9 +858,7 @@ impl EventQueue {
                 break found;
             }
             if sched::interrupted() {
-                // The changes were made: a call restarted would make them
-                // again. The mask stays until the handler has run.
-                let restart = if a.count == 0 { Restart::NoHandler } else { Restart::Never };
+                // The mask stays until the handler has run.
                 return Err(interrupted(restart));
             }
             let ready = || self.has_queued() || sched::interrupted();
@@ -822,6 +916,7 @@ fn new_watch(
     let watch = Watch {
         ident: change.ident,
         filter,
+        exclusive: watch::exclusive(change),
         watched,
         ready: ready.clone(),
         marks: AtomicU8::new(0),
@@ -829,6 +924,24 @@ fn new_watch(
         _charge: charge,
     };
     Arc::try_new_in(watch, kmalloc()).map_err(|_| error(Kernel::NoMemory))
+}
+
+/// Whether the descriptor `ident`, the slot `base + ident` of `user`'s
+/// process, names the description `watch` watches: a `poll` watch is
+/// found by both, as Linux's epoll finds a registration by descriptor and
+/// file.
+///
+/// # Errors
+///
+/// no_such_slot and empty_slot for a descriptor that is not open.
+fn names_watched(user: &UserRef, base: u32, ident: u64, watch: &WatchRef) -> Result<bool> {
+    let slot = u32::try_from(ident)
+        .ok()
+        .and_then(|fd| base.checked_add(fd))
+        .ok_or(error(Kernel::NoSuchSlot))?;
+    let object =
+        objects::find_object(user.process.cspace(), slot).ok_or(error(Kernel::EmptySlot))?;
+    Ok(watch.watched.is(&object))
 }
 
 /// Whether `object` may gain `Polled`s after a watch is added: a Unix
@@ -890,4 +1003,72 @@ pub fn method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -> Res
         }
         _ => Err(error(Kernel::NoSuchMethod)),
     }
+}
+
+/// The queue `found` holds, if its capability has `rights`, as `wait`
+/// checks it.
+fn queue_of(found: &Found, rights: Rights) -> Result<&QueueRef> {
+    found.cap.check(ObjectKind::EventQueue, rights).map_err(cap_error)?;
+    let Some(Object::EventQueue(queue)) = &found.object else {
+        return Err(error(Kernel::Gone));
+    };
+    Ok(queue)
+}
+
+/// The Linux table's `epoll_ctl` (ADR 0612): makes `change`, in the
+/// kernel's memory, on the queue `found` holds, for `user`, as `wait`
+/// makes one of its changes, with the right it needs (write). Returns the
+/// change's status rather than an event.
+pub fn change_given(user: &UserRef, found: &Found, change: &QueueEvent, base: u32) -> Result<()> {
+    let queue = queue_of(found, Rights::WRITE)?;
+    let asked = watch::asks(change).map_err(|watch::Invalid| error(Kernel::InvalidArgument))?;
+    let Some((filter, asks)) = asked else { return Ok(()) };
+    let mut registry = queue.registry.lock();
+    queue.make(user, &mut registry, base, change, filter, asks)
+}
+
+/// The Linux table's `epoll_wait` (ADR 0612): waits on the queue `found`
+/// holds, as `wait` with no changes does, with the right it needs (read),
+/// giving `sink` the events. A signal ends the wait for good, as Linux's
+/// epoll_wait is never run again (signal(7)).
+pub fn wait_given(
+    user: &UserRef,
+    found: &Found,
+    sink: &mut Sink<'_>,
+    capacity: u32,
+    timeout: Option<u64>,
+    mask: Option<u64>,
+) -> Result<u32> {
+    let queue = queue_of(found, Rights::READ)?;
+    queue.wait_for(user, sink, capacity, timeout, mask, Restart::Never)
+}
+
+/// radix-process(2)'s `event_queue`: a new queue, charged to `user`'s
+/// process, in its slot `to`, closed by `exec` if `flags` say so, placed
+/// and flagged under one hold of the space's lock, as a file is
+/// (`install_file`), so that no `exec` finds it without its flag.
+///
+/// # Errors
+///
+/// invalid_argument for non_blocking, which a queue has no use for;
+/// occupied for a slot that holds something; no_memory.
+pub fn make_in(user: &UserRef, to: u32, flags: PipeFlags) -> Result<()> {
+    if flags.contains(PipeFlags::NON_BLOCKING) {
+        return Err(Kernel::InvalidArgument.status(2));
+    }
+    // From the thread's own stock of its process's charges (ADR 0405).
+    let bytes = size_of::<EventQueue>() as u64;
+    let charge = Account::charge_from(user.process.account(), &user.stock, bytes)?;
+    let queue = EventQueue::new().ok_or(error(Kernel::NoMemory))?;
+    let mut object = Some(Object::EventQueue(queue));
+    let close_on_exec = flags.contains(PipeFlags::CLOSE_ON_EXEC);
+    let slot_flags = if close_on_exec { SlotFlags::CLOSE_ON_EXEC.0 as u8 } else { 0 };
+    let kind = ObjectKind::EventQueue;
+    let record = |_, kept: &mut _| objects::record(kept, &mut object, Some(charge));
+    let at = SlotRef::new(user.process.cspace(), to);
+    let made =
+        caps::create_in(at, kind, kind.rights(), slot_flags, record).map(drop).map_err(cap_error);
+    // Not made: it goes now, with the store's locks gone.
+    drop(object);
+    made
 }

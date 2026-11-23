@@ -20,9 +20,10 @@ namespace {
 
 static_assert(sizeof(struct pollfd) == sizeof(struct radix_poll_entry), "pollfd is the kernel's");
 
-// The events the kernel knows, which are POSIX's: POLLIN, POLLPRI,
-// POLLOUT, POLLERR, POLLHUP and POLLNVAL.
-constexpr short KERNEL_EVENTS = POLLIN | POLLPRI | POLLOUT | POLLERR | POLLHUP | POLLNVAL;
+// The events the kernel knows: POSIX's POLLIN, POLLPRI, POLLOUT, POLLERR,
+// POLLHUP and POLLNVAL, and Linux's POLLRDHUP (ADR 0612).
+constexpr short KERNEL_EVENTS =
+		POLLIN | POLLPRI | POLLOUT | POLLERR | POLLHUP | POLLNVAL | POLLRDHUP;
 
 // The events the kernel knows that stand for `events`: the normal and
 // priority band events are the plain ones.

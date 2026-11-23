@@ -4,12 +4,13 @@
 # mlibc's system layer for Radix (ADR 0068), built as mlibc's
 # sysdeps/radix: ports/mlibc/build.sh puts it there.
 
-# Not mlibc's Linux interfaces: they need Linux's own headers, which are
-# GPL-2.0 (ADR 0068), and Linux's file descriptor kinds (epoll, timerfd,
-# signalfd, eventfd), which the kernel does not have.
+# Not mlibc's Linux interfaces as a whole: they need Linux's own headers,
+# which are GPL-2.0 (ADR 0068). Its epoll, eventfd, signalfd and timerfd
+# options need none, and the kernel has what they wrap (ADR 0612, 0613).
 sysdep_supported_options = {
 	'posix': true,
 	'linux': false,
+	'linux-epoll': true,
 	'glibc': true,
 	'bsd': true,
 }

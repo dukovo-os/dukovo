@@ -133,7 +133,7 @@ fn poll_array(user: &UserRef, fds: u64, nfds: u64, wait: &Wait) -> Result<u64> {
 
 /// The wait of the `timespec`, or with `micros` `timeval`, at `address`:
 /// for ever if there is none, or it is longer than a wait goes on.
-fn read_wait(address: u64, micros: bool) -> Result<Option<u64>> {
+pub(super) fn read_wait(address: u64, micros: bool) -> Result<Option<u64>> {
     if address == 0 {
         return Ok(None);
     }
@@ -146,7 +146,7 @@ fn read_wait(address: u64, micros: bool) -> Result<Option<u64>> {
 /// The signal mask at `address`, if the program gave one: its size,
 /// `size`, must be the kernel's, as `ppoll` and `pselect6` check it only
 /// when there is a mask.
-fn read_mask(address: u64, size: u64) -> Result<Option<u64>> {
+pub(super) fn read_mask(address: u64, size: u64) -> Result<Option<u64>> {
     if address == 0 {
         return Ok(None);
     }

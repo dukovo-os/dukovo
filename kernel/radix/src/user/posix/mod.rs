@@ -651,6 +651,11 @@ pub fn method(
             crate::fs::socket::make_datagram_pair(user, a.first, a.second, a.flags)?;
             answer(label, 0, [0; 8])
         }
+        process::EVENT_QUEUE => {
+            let a = process::EventQueueArgs::decode(args)?;
+            crate::user::queue::make_in(user, a.to, a.flags)?;
+            answer(label, 0, [0; 8])
+        }
         process::POLL => {
             let a = process::PollArgs::decode(args)?;
             let ready = poll::poll(user, a)?;

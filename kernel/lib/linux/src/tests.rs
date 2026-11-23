@@ -331,6 +331,7 @@ fn kernel_errnos() -> Vec<(Kernel, i32)> {
         (Kernel::Prohibited, EACCES),
         (Kernel::TooManyThreads, EAGAIN),
         (Kernel::WrongType, EPROTOTYPE),
+        (Kernel::Cancelled, ECANCELED),
     ]
 }
 
@@ -397,7 +398,7 @@ fn success_cancellation_and_unknown_errors_map_as_the_c_library_maps_them() {
     assert_eq!(from_status(Status::OK), 0);
     assert_eq!(from_status(Status(u64::MAX)), ECANCELED);
     // A code past the last of its domain, and a domain no one defines.
-    assert_eq!(from_status(Status::new(Kernel::DOMAIN, 59, 0)), EIO);
+    assert_eq!(from_status(Status::new(Kernel::DOMAIN, 60, 0)), EIO);
     assert_eq!(from_status(Status::new(Kernel::DOMAIN, 0, 0)), EIO);
     assert_eq!(from_status(Status::new(File::DOMAIN, 28, 0)), EIO);
     assert_eq!(from_status(Status::new(0, 5, 0)), EIO);

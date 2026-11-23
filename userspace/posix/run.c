@@ -60,6 +60,7 @@ static const struct test TESTS[] = {
 		{"inet", NULL, NULL},
 		{"poll", NULL, NULL},
 		{"events", NULL, NULL},
+		{"epoll", NULL, NULL},
 		{"tty", NULL, NULL},
 		{"job", NULL, NULL},
 		{"time", NULL, NULL},

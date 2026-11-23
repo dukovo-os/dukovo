@@ -4,11 +4,22 @@
 // kqueue(2) and kevent(2), sys/event.h's (ADR 0353): the event queue's
 // one method, `wait`, is kevent itself, with its changes and its wait in
 // one call. The kernel's QueueEvent is `struct kevent` as it stands.
+//
+// epoll(7) (ADR 0612): an epoll instance is an event queue too, and a
+// registration its `poll` watch of a descriptor, which asks for Linux's
+// events as they stand and reports those found in `fflags`: EPOLLET is the
+// watch's EV_CLEAR, EPOLLONESHOT its EV_DISPATCH (a watch disabled once
+// reported, until EPOLL_CTL_MOD enables it), and EPOLLEXCLUSIVE the
+// kernel's own exclusive flag. The kernel's Linux table makes the same
+// changes for a Linux program (kernel/lib/linux/src/epoll.rs).
 
 #include <errno.h>
+#include <mlibc/all-sysdeps.hpp>
 #include <mlibc/threads.hpp>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
+#include <sys/epoll.h>
 #include <sys/event.h>
 #include <time.h>
 
@@ -53,6 +64,30 @@ int wait_time(const struct timespec *timeout, uint64_t *ns, radix_queue_wait_fla
 	else
 		*ns = secs * NS_PER_SEC + nanos;
 	return 0;
+}
+
+// The flags of `struct epoll_event` that are not events.
+constexpr uint32_t EPOLL_INPUT_FLAGS = EPOLLEXCLUSIVE | EPOLLWAKEUP | EPOLLONESHOT | EPOLLET;
+
+// What a registration with EPOLLEXCLUSIVE may ask for besides, as Linux's
+// EPOLLEXCLUSIVE_OK_BITS.
+constexpr uint32_t EPOLL_EXCLUSIVE_OK = EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP | EPOLLWAKEUP
+		| EPOLLET | EPOLLEXCLUSIVE;
+
+// The most events one epoll_wait reads from the kernel, on the stack: a
+// call returns at most this many, as Linux's may return fewer than asked.
+constexpr int EPOLL_AT_ONCE = 64;
+
+// The most events epoll_wait takes, as Linux's EP_MAX_EVENTS.
+constexpr int EPOLL_MAX_EVENTS = INT32_MAX / static_cast<int>(sizeof(struct epoll_event));
+
+// The kernel's status for a call on a descriptor that is not an event
+// queue as epoll's errno: EINVAL, where kevent says EBADF.
+int epoll_errno(uint64_t status) {
+	if(RADIX_STATUS_DOMAIN(status) == RADIX_KERNEL_ERROR_DOMAIN
+			&& RADIX_STATUS_CODE(status) == RADIX_KERNEL_NO_SUCH_METHOD)
+		return EINVAL;
+	return radix::to_errno(status);
 }
 
 } // namespace
@@ -118,3 +153,96 @@ int kevent(int kq, const struct kevent *changelist, int nchanges, struct kevent 
 	}
 	return static_cast<int>(r.found);
 }
+
+namespace mlibc {
+
+int Sysdeps<EpollCreate>::operator()(int flags, int *fd) {
+	if(flags & ~EPOLL_CLOEXEC)
+		return EINVAL;
+	radix_pipe_flags_t pipe_flags = (flags & EPOLL_CLOEXEC) ? RADIX_PIPE_FLAGS_CLOSE_ON_EXEC : 0;
+	return radix::place(0, fd, [pipe_flags](uint32_t slot) {
+		return radix_process_event_queue(radix::SLOT_PROCESS, slot, pipe_flags);
+	});
+}
+
+int Sysdeps<EpollCtl>::operator()(int epfd, int mode, int fd, struct epoll_event *ev) {
+	uint32_t flags;
+	switch(mode) {
+	case EPOLL_CTL_ADD:
+		flags = RADIX_QUEUE_FLAGS_ADD | RADIX_QUEUE_FLAGS_CREATE | RADIX_QUEUE_FLAGS_ENABLE;
+		break;
+	case EPOLL_CTL_MOD:
+		flags = RADIX_QUEUE_FLAGS_ENABLE;
+		break;
+	case EPOLL_CTL_DEL:
+		flags = RADIX_QUEUE_FLAGS_DELETE;
+		break;
+	default:
+		return EINVAL;
+	}
+	if(radix::slot_of(epfd) == radix::NO_SLOT || radix::slot_of(fd) == radix::NO_SLOT)
+		return EBADF;
+	struct radix_queue_event change;
+	memset(&change, 0, sizeof(change));
+	change.ident = static_cast<uint64_t>(fd);
+	change.filter = RADIX_QUEUE_FILTER_POLL;
+	if(mode != EPOLL_CTL_DEL) {
+		if(!ev)
+			return EFAULT;
+		uint32_t events = ev->events;
+		if((events & EPOLLEXCLUSIVE)
+				&& (mode == EPOLL_CTL_MOD || (events & ~EPOLL_EXCLUSIVE_OK)))
+			return EINVAL;
+		if(events & EPOLLET)
+			flags |= RADIX_QUEUE_FLAGS_CLEAR;
+		if(events & EPOLLONESHOT)
+			flags |= RADIX_QUEUE_FLAGS_DISPATCH;
+		if(events & EPOLLEXCLUSIVE)
+			flags |= RADIX_QUEUE_FLAGS_EXCLUSIVE;
+		// EPOLLWAKEUP is dropped, as Linux drops it for a program without
+		// CAP_BLOCK_SUSPEND.
+		change.fflags = events & ~EPOLL_INPUT_FLAGS;
+		change.udata = ev->data.u64;
+	}
+	change.flags = static_cast<uint16_t>(flags);
+	// With no room for events, a change that fails fails the call.
+	struct radix_event_queue_wait_results r;
+	uint64_t status = radix_event_queue_wait(radix::slot_of(epfd),
+			reinterpret_cast<uint64_t>(&change), 1, 0, 0, radix::FD_BASE, 0, 0, 0, &r);
+	return status ? epoll_errno(status) : 0;
+}
+
+int Sysdeps<EpollPwait>::operator()(int epfd, struct epoll_event *ev, int n, int timeout,
+		const sigset_t *sigmask, int *raised) {
+	if(n <= 0 || n > EPOLL_MAX_EVENTS)
+		return EINVAL;
+	uint32_t flags = 0;
+	uint64_t ns = 0;
+	if(timeout < 0)
+		flags |= RADIX_QUEUE_WAIT_FLAGS_FOREVER;
+	else
+		ns = static_cast<uint64_t>(timeout) * 1000000;
+	uint64_t mask = 0;
+	if(sigmask) {
+		flags |= RADIX_QUEUE_WAIT_FLAGS_MASK;
+		memcpy(&mask, sigmask, sizeof(mask));
+	}
+	struct radix_queue_event found[EPOLL_AT_ONCE];
+	auto capacity = static_cast<uint32_t>(n < EPOLL_AT_ONCE ? n : EPOLL_AT_ONCE);
+	struct radix_event_queue_wait_results r;
+	uint64_t status = radix_event_queue_wait_with(radix::cancellable_masked, radix::slot_of(epfd),
+			0, 0, reinterpret_cast<uint64_t>(found), capacity, radix::FD_BASE, ns, mask, flags,
+			&r);
+	if(status == radix::CANCELED)
+		mlibc::thread_testcancel();
+	if(status)
+		return epoll_errno(status);
+	for(uint32_t i = 0; i < r.found; i++) {
+		ev[i].events = found[i].fflags;
+		ev[i].data.u64 = found[i].udata;
+	}
+	*raised = static_cast<int>(r.found);
+	return 0;
+}
+
+} // namespace mlibc

@@ -347,6 +347,12 @@ impl WaitCount {
         }
     }
 
+    /// Whether anyone was counted when it was read: a hint, which a waiter
+    /// that counts itself just after makes stale.
+    pub fn waiting(&self) -> bool {
+        self.0.load(Ordering::SeqCst) > 0
+    }
+
     /// [`wake_one`], with no lock taken while nobody waits.
     pub fn wake_one(&self, key: usize) {
         fence(Ordering::SeqCst);

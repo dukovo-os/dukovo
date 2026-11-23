@@ -321,9 +321,9 @@ fn dispatch(me: &ThreadRef, user: &UserRef, regs: &SyscallRegs) -> Result<Done> 
         // epoll (ADR 0612).
         nr::EPOLL_CREATE => events::epoll_create(me, user, a[0])?,
         nr::EPOLL_CREATE1 => events::epoll_create1(me, user, a[0])?,
-        nr::EPOLL_CTL => events::epoll_ctl(me, user, a)?,
+        nr::EPOLL_CTL => events::epoll_ctl(user, a)?,
         nr::EPOLL_WAIT | nr::EPOLL_PWAIT | nr::EPOLL_PWAIT2 => {
-            events::epoll_wait(me, user, a, regs.number)?
+            events::epoll_wait(user, a, regs.number)?
         }
         // Files of the kernel's own (ADR 0613).
         nr::EVENTFD => kernel_files::eventfd2(me, user, a[0], 0)?,

@@ -75,6 +75,8 @@ pub const ERROR: u16 = PollEvents::ERROR.0 as u16;
 pub const HANG_UP: u16 = PollEvents::HANG_UP.0 as u16;
 /// The slot holds no capability.
 pub const INVALID: u16 = PollEvents::INVALID.0 as u16;
+/// A stream socket reads no more: Linux's POLLRDHUP (ADR 0612).
+pub const READ_HANG_UP: u16 = PollEvents::READ_HANG_UP.0 as u16;
 
 /// The events reported whether asked for or not.
 const ALWAYS: u16 = ERROR | HANG_UP | INVALID;
@@ -142,8 +144,16 @@ impl Polled {
         for thread in &lists.pollers {
             wake_poller(thread);
         }
+        // An exclusive watch (epoll's EPOLLEXCLUSIVE, ADR 0612) is queued
+        // only until one of them is queued where a thread waits to take
+        // it: the change wakes one of their waiters, not all.
+        let mut taken = false;
         for watch in &lists.watches {
-            queue::changed(watch);
+            if !watch.is_exclusive() {
+                queue::changed(watch);
+            } else if !taken {
+                taken = queue::changed(watch);
+            }
         }
     }
 

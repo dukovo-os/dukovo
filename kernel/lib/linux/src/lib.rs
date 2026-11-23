@@ -33,6 +33,8 @@
 //! - [`clone`]: the arguments of `clone` and `clone3`, Linux's rules for
 //!   them and Dukovo's, and whether they make a thread or a process.
 //! - [`futex`]: the command and flags in a futex call's `op`.
+//! - [`epoll`]: `struct epoll_event`, and the event queue change each
+//!   `epoll_ctl` makes.
 //! - [`signals`]: Linux's signal flags and `sigprocmask` operations, which
 //!   equal the native ones, so that the table passes them through.
 //! - [`sockets`]: the socket addresses, `msghdr`, control messages, `MSG_`
@@ -47,6 +49,7 @@
 #![forbid(unsafe_code)]
 
 pub mod clone;
+pub mod epoll;
 pub mod errno;
 pub mod flags;
 pub mod futex;
