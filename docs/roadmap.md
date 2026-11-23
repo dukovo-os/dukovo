@@ -507,11 +507,11 @@ A server subset of the Linux binary compatibility layer, outside the TCB except 
 
 ### Phase 19: Server hardware (XL)
 
-Real servers are not virtual machines: they have two sockets, several PCI root buses, a RAID controller in front of the disks, 10 to 100 Gb/s network cards and a management controller (BMC). This phase makes Dukovo run on them, tested on the lab's two-socket reference server (a Dell PowerEdge R740 with a PERC H740P). The phase lands before the first release candidate: the steps the reference server needs in 1.0.0-alpha.2 and the rest in 1.0.0-beta.1. Step 1 went to main by itself, and the later steps share a phase branch. The phase also carries the last web console work before 1.0: the console's pages for a server, several servers from one console, and hosting many websites. Needs Phases 10 to 12 and 16.
+Real servers are not virtual machines: they have two sockets, several PCI root buses, a RAID controller in front of the disks, 10 to 100 Gb/s network cards and a management controller (BMC). This phase makes Dukovo run on them, tested on the lab's two-socket reference server (a Dell PowerEdge R740 with a PERC H740P). The phase lands before the first release candidate: the steps the reference server needs in 1.0.0-alpha.2 and the rest in 1.0.0-beta.1. It is listed below in two parts, each with an exit of its own: the first part is the reference server itself, the second every other server. Step 1 went to main by itself, the rest of the first part shares the branch `phase/19-server-hw`, and the second part a branch started from it. The phase also carries the last web console work before 1.0: the console's pages for a server, several servers from one console, and hosting many websites. Needs Phases 10 to 12 and 16.
+
+**Part 1: the reference server.** Its own hardware, end to end, on the two-socket R740, and the web console's pages for it.
 
 - **19a Every PCI root bus, NUMA nodes, server-sized tables and a TSC check (M):** the PCI scan finds every root bus, not only each window's first, so the second socket's and every EPYC quadrant's devices bind; each device shows its NUMA node (`numa_node`, from the ACPI host bridge's `_PXM`); the tables for PCI functions, IOMMU units and the buses the firmware's AML may reach are server-sized; each CPU's `IA32_TSC_ADJUST` matches its package's, and each package's counter is measured against the boot CPU's (ADR 0660). This is step 1.
-
-- **19b More than 256 CPU threads and more than 8 NUMA nodes (M):** the per-CPU TLB-tracking array in each address space's frame is redesigned first, then the CPU limit and the node limit rise. This is step 1b.
 
 - **19c Lab: Redfish BMCs (M):** a lab driver for Dell iDRAC and other Redfish BMCs (power, one-time network boot, the console over IPMI Serial-over-LAN, the screen through the BMC where it offers one, and the BMC's event log), so servers join the hardware lab. This is step 2.
 
@@ -519,15 +519,27 @@ Real servers are not virtual machines: they have two sockets, several PCI root b
 
 - **19e Hardware error reporting (L):** APEI (HEST, GHES and BERT), PCIe AER and DPC, and memory errors named by DIMM slot, decoded from the memory controller where the firmware reports none; this is also where the kernel asks the firmware for native PCIe error control (`_OSC`). These are steps 4 (APEI and DIMM names) and 4b (PCIe AER and DPC).
 
-- **19f RAID and SAS controllers (XL):** Broadcom MegaRAID (Dell PERC 9 to 11 including the H740P, Lenovo, and Broadcom 93xx to 95xx) through both its MFI and Fusion interfaces, with the SAS disk layer (SAS addresses, expanders and enclosure slots); Broadcom SAS HBAs (`mpt3sas`: Dell HBA330 and HBA355i, LSI 9207, 9211 and 9300 to 9500); HPE Smart Array Gen10 and later and Microchip SmartRAID and SmartHBA (`smartpqi`); Dell PERC 12 and Broadcom 9600 (`mpi3mr`); HPE Smart Array Gen8 and Gen9 (`hpsa`). Each reports the health of the disks behind it: SMART, temperatures, predicted failures, degraded arrays and the cache battery. These are steps 5 to 8 and 21.
+- **19f MegaRAID controllers (L):** Broadcom MegaRAID (Dell PERC 9 to 11 including the H740P, Lenovo, Supermicro, and Broadcom 93xx to 95xx) through both its MFI and Fusion interfaces, with the SAS disk layer the controllers and the host bus adapters share (SAS addresses, expanders and enclosure slots). It reports the health of the disks behind it: SMART and SCSI log pages, temperatures, predicted failures, degraded volumes and the cache battery. This is step 5.
 
-- **19g Server network cards (L):** Intel X710, XL710, XXV710 and X722 (`i40e`); Broadcom NetXtreme-E (`bnxt`); NVIDIA Mellanox ConnectX-4 Lx to 7 (`mlx5`); Intel E810 (`ice`); Broadcom and QLogic 57800, 57810 and 57840 (`bnx2x`), the only onboard network of many Dell 13th and 14th generation and HPE Gen8 and Gen9 servers. These are steps 9 to 11, 16 and 20.
+- **19r The reference server's own network card (L):** whichever driver of 19g the reference server's onboard ports need, known when it arrives. This is one of steps 9 to 11 and 20.
 
 - **19h Server networking (M):** a queue per CPU, receive-side scaling, checksum and segmentation offloads, jumbo frames and SFP module information, with Intel's X552, X553 and E610 added to `ixgbe`, then link aggregation (LACP and active-backup) and LLDP. These are steps 12 and 13.
 
 - **19i Disk hot-swap (M):** hot-swap of NVMe and SAS or SATA disks through PCIe native hot-plug, with the drive bay lights. This is step 14.
 
+- **19n The web console on a server (L):** a Server page for the chassis and its BMC (power and its cost, cooling, the event log, the BMC's settings and accounts, inventory and firmware), the Hardware page for servers (processors by socket, a map of the memory slots, devices by slot), RAID volumes and disks by bay on the Storage page, and network disks. These are web console steps S1 to S5, beside the console parts that ride the hardware steps.
+
 - **19j Lab tests, documentation and the campaign (L):** lab tests, handbook and man pages, and installs from the BMC's virtual media, and a full test campaign on the two-socket reference server. This is step 15.
+
+- **Exit (milestone: 1.0.0-alpha.2, with Phase 18):** the reference server installs to its PERC H740P and shows in the web console, every PCIe slot is found with its device on its NUMA node, its BMC answers `ipmitool` and the `bmc` command, a disk pulled from a bay is rebuilt onto its replacement, the firmware's error reports reach the log and the alerts, its onboard ports pass the network gates, and the campaign on the server passes.
+
+**Part 2: every other server.** The controllers, cards and storage networks the reference server does not have, and the rest of the console work.
+
+- **19q Other RAID and SAS controllers (XL):** Broadcom SAS host bus adapters (`mpt3sas`: Dell HBA330 and HBA355i, LSI 9207, 9211 and 9300 to 9500); HPE Smart Array Gen8 and Gen9 (`hpsa`), the only way to the disks of those generations; HPE Smart Array Gen10 and later and Microchip SmartRAID and SmartHBA (`smartpqi`); Dell PERC 12 and Broadcom 9600 (`mpi3mr`). Each reports its disks' health as MegaRAID does. These are steps 6 to 8 and 21.
+
+- **19g Server network cards (L):** Intel X710, XL710, XXV710 and X722 (`i40e`); Broadcom NetXtreme-E (`bnxt`); NVIDIA Mellanox ConnectX-4 Lx to 7 (`mlx5`); Intel E810 (`ice`); Broadcom and QLogic 57800, 57810 and 57840 (`bnx2x`), the only onboard network of many Dell 13th and 14th generation and HPE Gen8 and Gen9 servers. These are steps 9 to 11, 16 and 20, less the one the reference server's own ports need (19r).
+
+- **19b More than 256 CPU threads and more than 8 NUMA nodes (M):** the per-CPU TLB-tracking array in each address space's frame is redesigned first, then the CPU limit and the node limit rise. This is step 1b.
 
 - **19k Network storage (L):** disks on a storage network: an iSCSI initiator and an NVMe over TCP initiator, each tested against Linux's targets, and multipath, which joins the paths to one disk into one device that survives a path going down. These are steps 17 to 19.
 
@@ -535,17 +547,15 @@ Real servers are not virtual machines: they have two sockets, several PCI root b
 
 - **19m Firmware updates (L):** every part's firmware version and whether a newer one exists (the system firmware and capsule devices from UEFI's ESRT, the BMC's inventory through the Redfish host interface, NVMe drives, RAID controllers and network cards), checked against LVFS and the server makers' catalogs; updates through UEFI capsules, the BMC's Redfish UpdateService and NVMe firmware commands, all staged for one restart and checked after it, with the `firmware` command and a Firmware section on the web console's Updates page. Dukovo's own code does this rather than a port of fwupd, and each machine downloads firmware from LVFS or the maker, so the project never redistributes it. These are steps 23 to 26.
 
-- **19n The web console on a server (L):** a Server page for the chassis and its BMC (power and its cost, cooling, the event log, the BMC's settings and accounts, inventory and firmware), the Hardware page for servers (processors by socket, a map of the memory slots, devices by slot), RAID volumes and disks by bay on the Storage page, and network disks. These are web console steps S1 to S5, beside the console parts that ride the hardware steps.
-
 - **19o Several servers from one web console (M):** a server joins another's console with a one-time code, and that console opens every page for it; a Fleet page with a racks view, rolling updates that stop at the first machine that comes back unhealthy, the settings that differ between machines, and an Ansible inventory from the fleet's groups. Joining a directory stays in release 1.22. These are web console steps FL1 to FL3.
 
 - **19p Hosting many websites (M):** each PHP site gets a PHP pool of its own, run as the site's owner on a socket only nginx reaches; a site can be changed after it is added; sites that pass requests to an app on a port, and redirect sites; each site's own logs, a password or a list of addresses to protect it, and backups of a site with its database. These are web console steps W1 to W5.
 
-- **Exit (milestone: 1.0.0-beta.1):** every PCIe slot of the reference server is found with its NUMA node, the PERC H740P and its disks work, the 10 GbE ports pass the network gates, a disk from a Linux iSCSI target and one over NVMe over TCP stay up through multipath while a path is pulled, and the reference server's BIOS and BMC update from the web console. The release candidates then pass the full acceptance list in the Release 1.0 section, followed by a final code and performance audit.
+- **Exit (milestone: 1.0.0-beta.1):** the controllers and cards no lab machine has pass against simulated devices, and in the lab where a card can be had; a disk from a Linux iSCSI target and one over NVMe over TCP stay up through multipath while a path is pulled; a server installs itself over PXE or UEFI HTTP boot with no media; the reference server's BIOS and BMC update from the web console, which also shows several servers and hosts many websites. The release candidates then pass the full acceptance list in the Release 1.0 section, followed by a final code and performance audit.
 
 Left for later releases: Marvell FastLinQ 41000 and 45000, Marvell AQtion, NVIDIA Mellanox ConnectX-3 and Cisco UCS VIC cards, SR-IOV virtual functions inside a guest, Xen guest drivers, Adaptec controllers, Intel firmware SATA RAID, LTO tape drives and SES enclosure management (release 1.12); Fibre Channel (release 1.22); SR-IOV physical functions and device passthrough (release 1.23); RDMA and PTP (release 1.28).
 
-**Status:** step 1 (19a) is in: every PCI root bus is scanned and each device knows its NUMA node (ADR 0660). Step 2 (19c) is in the lab: a server joins it through its BMC's Redfish and IPMI Serial-over-LAN.
+**Status:** the first part is under way. Step 1 (19a) is in: every PCI root bus is scanned and each device knows its NUMA node (ADR 0660). Step 2 (19c) is in the lab: a server joins it through its BMC's Redfish and IPMI Serial-over-LAN. Step 3 (19d) is on the phase branch: the kernel talks to a server's BMC through IPMI, for `ipmitool` and the `bmc` command. Steps 4 and 5 (19e and 19f) are being built, and the reference server arrives in late November.
 
 ## Installer, rdisk and USB install media
 
