@@ -216,7 +216,7 @@ impl CpuSched {
 }
 
 static CPUS: PerCpu<CpuSched> = PerCpu::new([const { Slot::new(CpuSched::new()) }; MAX_CPUS]);
-static TOPOLOGY: Once<Topology> = Once::new();
+static TOPOLOGY: Once<Topology<Kmalloc>> = Once::new();
 /// Every thread until the reaper frees it.
 static REGISTRY: SpinLock<Option<Vec<ThreadRef, Kmalloc>>> = SpinLock::new(None);
 /// Exited threads waiting for the reaper.
@@ -400,7 +400,7 @@ impl Default for Options {
 /// `Arch::init` and `domains::init`, with interrupts off.
 pub fn init(lockdep: Option<bool>) {
     let cpu = Arch::current_cpu();
-    let mut topology = Topology::flat(Arch::cpu_count());
+    let mut topology = Topology::flat_in(Arch::cpu_count(), kmalloc());
     for index in 0..Arch::cpu_count() {
         if let Some(place) = Arch::cpu_place(index) {
             topology.set_place(
@@ -415,6 +415,8 @@ pub fn init(lockdep: Option<bool>) {
             topology.set_distance(a, b, FRAMES.distance(a, b));
         }
     }
+    // Without memory for them, the spans are worked out at each look.
+    let _ = topology.finish();
     let _ = TOPOLOGY.set(topology);
     if Arch::tick_hz() > 0 {
         TICK_NS.store(1_000_000_000 / u64::from(Arch::tick_hz()), Ordering::Relaxed);
