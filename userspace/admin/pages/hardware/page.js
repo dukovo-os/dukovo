@@ -7,9 +7,11 @@
 // when it opens and again when a check of its own ends; the memory's modules
 // and the disks' own tests only for an administrator whose console is
 // unlocked. The temperatures are read apart from the rest, since the cards do
-// not wait for them, and again every minute. The dialog that checks, the
-// dialog that asks for the memory test, the restart's dialogs and the list of
-// devices are read when a button asks.
+// not wait for them, and again every minute. A machine with a BMC, which an
+// administrator whose console is unlocked sees named in `hardware show`, has a
+// BMC card of its own, and its temperatures and fans join the temperatures'.
+// The dialog that checks, the dialog that asks for the memory test, the
+// restart's dialogs and the list of devices are read when a button asks.
 
 import { fill, h } from '../../dom.js';
 import { stepWords } from '../../lib/tasks-words.js';
@@ -35,6 +37,9 @@ const READS = {
   memtest: '/api/1/hardware/memtest',
 };
 const TEMPS = { sensors: '/api/1/hardware/sensors', highest: '/api/1/hardware/highest', updates: '/api/1/updates/history' };
+// What an administrator reads of a BMC: the same sensors with the BMC's own, and its log.
+const BMC_SENSORS = '/api/1/hardware/bmc/sensors';
+const BMC_EVENTS = '/api/1/hardware/bmc/events';
 const TEMPS_MS = 60_000;
 const CHECK = 'hardware.check';
 const running = (task) => task.state === 'running' || task.state === 'waiting';
@@ -48,6 +53,8 @@ export async function show(view) {
     memtest: null,
     // The temperatures: null until read, undefined when they could not be.
     sensors: null, highest: null, updates: null,
+    // The BMC's event log: null until read, undefined when it could not be.
+    events: null,
   };
   const tasks = new Map();
   let line = null;
@@ -143,13 +150,16 @@ export async function show(view) {
   fill(devicesCard.body,
     h('p', {}, 'Every card and port the system can tell of, with the driver that took it. The list is read when you ask.'),
     h('div', { class: 'btns' }, button('Show the devices', async (one) => (await import('./devices.js')).drawDevices(ctx, devicesCard, one))));
+  // The BMC card's own module comes when the page finds the machine has a BMC.
+  let bmc = null;
   const disks = makeDisks(ctx);
   const memory = makeMemory(ctx);
   const power = makePower(ctx);
   ctx.pendingHost = power.host;
 
   // The cards come in when the first read is in, so that none says "Not checked yet" before it knows.
-  let cards = [machine, check, tempsCard, disks, memory, devicesCard, power].map((one) => one.element);
+  const order = [machine, check, tempsCard, disks, memory, devicesCard, power].map((one) => one.element);
+  let cards = order;
   tempsCard.element.classList.add('hw-wide');
   devicesCard.element.classList.add('hw-wide');
   power.element.classList.add('hw-wide');
@@ -180,6 +190,7 @@ export async function show(view) {
     try {
       data.inventory = await view.api.get('/api/1/hardware/inventory');
       data.access = 'ok';
+      await readBmc();
       return true;
     } catch (error) {
       if (error?.id !== 'ADM-106' && error?.id !== 'ADM-122') view.problem(error, { slot: machine.errors });
@@ -187,11 +198,36 @@ export async function show(view) {
     }
   }
 
+  /** Reads the BMC's log, if the machine has a BMC, and shows its card with the sensors read so far; the temperatures are read again for the BMC's own. */
+  async function readBmc() {
+    if (!data.inventory?.bmc) return;
+    if (bmc === null) {
+      bmc = (await import('./bmc.js')).makeBmc(ctx);
+      bmc.element.classList.add('hw-wide');
+      // The card is between the temperatures and the disks; appending moves each card to its place.
+      order.splice(3, 0, bmc.element);
+      if (cards === null) host.append(...order);
+    }
+    await readEvents();
+    if (data.sensors !== null) readTemps(['sensors']);
+  }
+
+  async function readEvents() {
+    try {
+      data.events = await view.api.get(BMC_EVENTS);
+    } catch {
+      data.events = undefined;
+    }
+    bmc.draw();
+  }
+
   /** Reads the temperatures, `names` of `TEMPS`, the sensors first; one that cannot be read leaves what was read before. Only the last read to ask is drawn. */
   async function readTemps(names) {
     latestTemps += 1;
     const mine = latestTemps;
-    const [module, ...found] = await Promise.allSettled([import('./sensors.js'), ...names.map((name) => view.api.get(TEMPS[name]))]);
+    // An administrator reads the sensors with the BMC's, and those without them when the console has locked since.
+    const ask = (name) => (name === 'sensors' && data.inventory?.bmc ? view.api.get(BMC_SENSORS).catch(() => view.api.get(TEMPS[name])) : view.api.get(TEMPS[name]));
+    const [module, ...found] = await Promise.allSettled([import('./sensors.js'), ...names.map(ask)]);
     if (mine !== latestTemps || view.signal.aborted) return;
     const first = data.sensors === null;
     names.forEach((name, at) => {
@@ -204,6 +240,7 @@ export async function show(view) {
     if (module.status === 'fulfilled') {
       temps ??= module.value.makeTemps(ctx, tempsCard);
       temps.draw();
+      bmc?.draw();
     }
   }
 
@@ -273,7 +310,10 @@ export async function show(view) {
     if (data.access !== 'ok' && await readInventory(false)) drawAll();
   });
   view.on('online', () => read());
-  view.every(TEMPS_MS, () => readTemps(['sensors']));
+  view.every(TEMPS_MS, () => {
+    if (data.inventory?.bmc && isUnlocked()) readEvents();
+    return readTemps(['sensors']);
+  });
 
   await read();
   const wanted = globalThis.location?.hash?.slice(1);

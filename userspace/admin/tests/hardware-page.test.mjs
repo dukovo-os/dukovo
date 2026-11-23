@@ -9,8 +9,9 @@ import assert from 'node:assert/strict';
 import test, { afterEach, beforeEach } from 'node:test';
 
 import { ApiError } from '../api.js';
+import { setUnlockSeconds } from '../unlock.js';
 import {
-  about, asked, broken, clean, devices, diskHealth, inventory, last, memtest, NOW, sensors, show, skipped, startTest, storage, task,
+  about, asked, bmcEvents, bmcOf, bmcSensors, broken, clean, devices, diskHealth, inventory, last, memtest, NOW, sensors, show, skipped, startTest, storage, task,
 } from './hardware-fixtures.mjs';
 import {
   buttonOf, openHardware, refusal, settle, useStore,
@@ -884,4 +885,72 @@ test('a machine whose list is empty says so', async (context) => {
   await world.press(world.card('devices'), 'Show the devices');
   assert.match(text(world.card('devices')), /The system lists no device\./);
   assert.equal(world.card('devices').querySelectorAll('table').length, 0);
+});
+
+/** A server: its BMC is named by `hardware show` as an administrator gets it, and the sensors and log are the BMC's. */
+const server = (more = {}) => ({
+  reads: {
+    '/api/1/hardware/inventory': { ...inventory(), bmc: bmcOf() },
+    '/api/1/hardware/bmc/sensors': bmcSensors(),
+    '/api/1/hardware/bmc/events': bmcEvents(14),
+    ...more,
+  },
+});
+
+test('a machine with no BMC has no BMC card, and asks for none of its reads', async (context) => {
+  const world = await openHardware(context);
+  assert.equal(world.card('bmc'), null);
+  assert.ok(!world.calls.some((path) => path.includes('/bmc/')), world.calls.join(' '));
+});
+
+test('a server has a BMC card after the temperatures, with the BMC, its address, what is not well, the rest to open and the last ten entries', async (context) => {
+  const world = await openHardware(context, { world: server() });
+  const cards = world.view.main.querySelector('.hw').children.filter((one) => one.tag === 'section').map((one) => one.id);
+  assert.deepEqual(cards, ['machine', 'check', 'temps', 'bmc', 'disks', 'memory', 'devices', 'power']);
+  const card = world.card('bmc');
+  assert.match(text(card), /Maker\s*Dell/);
+  assert.match(text(card), /LAN address\s*10\.1\.2\.3/);
+  assert.match(text(card), /Voltages: Voltage 31 · unavailable/);
+  // The rest is under a list that opens, with each kind apart: 3 power, 2 currents and 31 voltages.
+  const all = card.querySelector('details');
+  assert.equal(all.querySelector('summary').textContent, 'Show all 36 sensors');
+  assert.deepEqual(all.querySelectorAll('h3').map((one) => one.textContent), ['Power', 'Currents', 'Voltages']);
+  assert.equal(all.querySelectorAll('li').length, 36);
+  // Ten entries of the 14, the newest first.
+  const entries = card.querySelectorAll('tbody tr');
+  assert.equal(entries.length, 10);
+  assert.match(entries[0].textContent, /^Yesterday 8:30 AM/);
+  // The BMC's temperatures and fans are in the temperatures card, and its voltages are not.
+  const temps = text(world.card('temps'));
+  assert.match(temps, /Inlet Temp/);
+  assert.match(temps, /Fan1A RPM \(BMC\)/);
+  assert.ok(!temps.includes('Voltage 1'), temps);
+  assert.ok(world.calls.includes('/api/1/hardware/bmc/sensors'));
+});
+
+test('the Identify button lights the light and shows the answer in the card', async (context) => {
+  const world = await openHardware(context, { world: server() });
+  const card = world.card('bmc');
+  await world.press(card, 'Identify');
+  assert.deepEqual(world.ran('hardware.identify'), [{}]);
+  assert.equal(world.ranWith('hardware.identify')[0][2].where.slot, card.querySelector('.hw-errors'));
+});
+
+test('a reader and a locked administrator are shown no BMC', async (context) => {
+  for (const options of [{ session: { admin: false } }, { unlocked: false }]) {
+    const world = await openHardware(context, { ...options, world: server() });
+    assert.equal(world.card('bmc'), null);
+    assert.ok(!world.calls.some((path) => path.includes('/bmc/')), world.calls.join(' '));
+  }
+});
+
+test('the BMC card comes in when the console unlocks, and a log that cannot be read is said so', async (context) => {
+  const world = await openHardware(context, { unlocked: false, world: server({ '/api/1/hardware/bmc/events': refusal('ADM-500', 'the BMC does not answer', 500) }) });
+  assert.equal(world.card('bmc'), null);
+  setUnlockSeconds(900);
+  await world.emit('unlock');
+  const card = world.card('bmc');
+  assert.ok(card, 'the card is there');
+  assert.match(text(card), /The event log could not be read\./);
+  assert.match(text(card), /Show all 36 sensors/);
 });

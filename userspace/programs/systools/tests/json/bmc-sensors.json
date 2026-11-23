@@ -1,0 +1,134 @@
+{
+  "format": 1,
+  "sensors": [
+    {
+      "number": 4,
+      "name": "Inlet Temp",
+      "type": "temperature",
+      "entity": "air inlet",
+      "entity_instance": 1,
+      "unit": "°C",
+      "status": "ok",
+      "value": 30.0,
+      "raw": 100,
+      "state": "ok",
+      "asserted": [],
+      "thresholds": {
+        "lower_non_recoverable": null,
+        "lower_critical": 0.0,
+        "lower_non_critical": null,
+        "upper_non_critical": 35.0,
+        "upper_critical": 40.0,
+        "upper_non_recoverable": null
+      }
+    },
+    {
+      "number": 9,
+      "name": "PS Status",
+      "type": "power supply",
+      "entity": "power supply",
+      "entity_instance": 1,
+      "unit": "",
+      "status": "ok",
+      "value": null,
+      "raw": null,
+      "state": null,
+      "asserted": [
+        "presence detected",
+        "failure detected"
+      ],
+      "thresholds": {
+        "lower_non_recoverable": null,
+        "lower_critical": null,
+        "lower_non_critical": null,
+        "upper_non_critical": null,
+        "upper_critical": null,
+        "upper_non_recoverable": null
+      }
+    },
+    {
+      "number": 5,
+      "name": "Exhaust Temp",
+      "type": "temperature",
+      "entity": "air inlet",
+      "entity_instance": 1,
+      "unit": "°C",
+      "status": "not_reachable",
+      "value": null,
+      "raw": null,
+      "state": null,
+      "asserted": [],
+      "thresholds": {
+        "lower_non_recoverable": null,
+        "lower_critical": 0.0,
+        "lower_non_critical": null,
+        "upper_non_critical": 35.0,
+        "upper_critical": 40.0,
+        "upper_non_recoverable": null
+      }
+    },
+    {
+      "number": 6,
+      "name": "Fan Curve",
+      "type": "fan",
+      "entity": "air inlet",
+      "entity_instance": 1,
+      "unit": "RPM",
+      "status": "ok",
+      "value": 200.0,
+      "raw": 50,
+      "state": "upper non-critical",
+      "asserted": [],
+      "thresholds": {
+        "lower_non_recoverable": null,
+        "lower_critical": null,
+        "lower_non_critical": null,
+        "upper_non_critical": null,
+        "upper_critical": null,
+        "upper_non_recoverable": null
+      }
+    },
+    {
+      "number": 7,
+      "name": "Idle Temp",
+      "type": "temperature",
+      "entity": "air inlet",
+      "entity_instance": 1,
+      "unit": "°C",
+      "status": "scanning_disabled",
+      "value": null,
+      "raw": null,
+      "state": null,
+      "asserted": [],
+      "thresholds": {
+        "lower_non_recoverable": null,
+        "lower_critical": 0.0,
+        "lower_non_critical": null,
+        "upper_non_critical": 35.0,
+        "upper_critical": 40.0,
+        "upper_non_recoverable": null
+      }
+    },
+    {
+      "number": 8,
+      "name": "Gone Temp",
+      "type": "temperature",
+      "entity": "air inlet",
+      "entity_instance": 1,
+      "unit": "°C",
+      "status": "unavailable",
+      "value": null,
+      "raw": null,
+      "state": null,
+      "asserted": [],
+      "thresholds": {
+        "lower_non_recoverable": null,
+        "lower_critical": 0.0,
+        "lower_non_critical": null,
+        "upper_non_critical": 35.0,
+        "upper_critical": 40.0,
+        "upper_non_recoverable": null
+      }
+    }
+  ]
+}

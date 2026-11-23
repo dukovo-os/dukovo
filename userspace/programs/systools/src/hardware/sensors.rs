@@ -11,6 +11,11 @@
 //! called. A disk is never asked: what the diskhealth service last read of
 //! it is in its live file, and a disk that sleeps says since when, so that
 //! it is not woken to be looked at.
+//!
+//! A machine with a BMC whose interface the caller may open has a group of
+//! its own, `bmc`, with the BMC's numeric sensors by kind. The interface
+//! belongs to root, so a caller who is not an administrator sees the
+//! group missing, as on a machine with no BMC.
 
 use std::fmt::Write as _;
 use std::fs;
@@ -19,6 +24,8 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::diskhealth::{self, DiskKind, LimitsFrom, Live};
+use crate::ipmi::{self, Kind as BmcKind, Measured};
+use crate::metricsd::bmc as bmc_series;
 use crate::metricsd::sample::{self, DISK_CHIP};
 use crate::sensors::{self, Chip, Feature, HWMON, Kind};
 use crate::util;
@@ -56,6 +63,36 @@ pub(crate) struct Sensors {
     sensors: Vec<Sensor>,
     zones: Vec<Zone>,
     disks: Vec<Disk>,
+    /// The BMC's sensors; left out of the document on a machine with no
+    /// BMC that the caller may ask.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bmc: Option<Bmc>,
+}
+
+/// The BMC's numeric sensors by kind.
+#[derive(Debug, PartialEq, Serialize)]
+pub(crate) struct Bmc {
+    temperatures: Vec<BmcSensor>,
+    fans: Vec<BmcSensor>,
+    voltages: Vec<BmcSensor>,
+    currents: Vec<BmcSensor>,
+    power: Vec<BmcSensor>,
+}
+
+/// A sensor of the BMC.
+#[derive(Debug, PartialEq, Serialize)]
+struct BmcSensor {
+    name: String,
+    /// What metricsd calls its series, `bmc.temp{name}`; null for a
+    /// voltage and a current, which it keeps none of.
+    series: Option<String>,
+    /// In `unit`; null when the BMC gives no reading.
+    value: Option<f64>,
+    /// `°C` for a temperature, else as the sensor's record has it.
+    unit: String,
+    /// `ok`, `warning`, `critical` or `non-recoverable` for the worst
+    /// threshold crossed, or `unavailable` or `not-reachable`.
+    status: &'static str,
 }
 
 /// A temperature or a fan of a hardware monitor.
@@ -198,10 +235,79 @@ pub(crate) fn gather(sources: &Sources) -> Sensors {
             })
             .collect(),
         disks: disks(&sources.disks),
+        bmc: None,
+    }
+}
+
+/// The BMC's sensors, from the repository it describes them in and what
+/// each reads now.
+///
+/// # Errors
+///
+/// If the BMC does not answer.
+pub(crate) fn bmc_group(link: &mut dyn ipmi::Transport) -> Result<Bmc, ipmi::Error> {
+    let found = ipmi::sensors(link)?;
+    let measured = ipmi::measure(link, &found)?;
+    let names = bmc_series::series_names(&measured);
+    let mut group = Bmc {
+        temperatures: Vec::new(),
+        fans: Vec::new(),
+        voltages: Vec::new(),
+        currents: Vec::new(),
+        power: Vec::new(),
+    };
+    for (reading, series) in measured.into_iter().zip(names) {
+        let list = match reading.kind {
+            BmcKind::Temperature => &mut group.temperatures,
+            BmcKind::Fan => &mut group.fans,
+            BmcKind::Voltage => &mut group.voltages,
+            BmcKind::Current => &mut group.currents,
+            BmcKind::Power => &mut group.power,
+        };
+        list.push(bmc_sensor(reading, series));
+    }
+    Ok(group)
+}
+
+fn bmc_sensor(reading: Measured, series: Option<String>) -> BmcSensor {
+    BmcSensor {
+        name: reading.name,
+        series,
+        // Three decimals are all a BMC's conversion is good for.
+        value: reading.value.map(|value| (value * 1000.0).round() / 1000.0),
+        unit: reading.unit,
+        status: reading.status.name(),
+    }
+}
+
+/// The BMC's sensors as this machine gives them to the caller: none when
+/// the machine has no BMC or the caller may not open its interface, and
+/// none, with the reason said, when the BMC does not answer.
+pub(crate) fn bmc_of_machine() -> Option<Bmc> {
+    let mut device = match ipmi::Device::open_if_allowed() {
+        Ok(device) => device?,
+        Err(error) => {
+            eprintln!("hardware: cannot open the BMC: {}", util::strip_os_error(&error));
+            return None;
+        }
+    };
+    match bmc_group(&mut device) {
+        Ok(group) => Some(group),
+        Err(error) => {
+            eprintln!("hardware: the BMC's sensors are not shown: {error}");
+            None
+        }
     }
 }
 
 impl Sensors {
+    /// The sensors, with the BMC's among them when there are any.
+    #[must_use]
+    pub(crate) fn with_bmc(mut self, bmc: Option<Bmc>) -> Sensors {
+        self.bmc = bmc;
+        self
+    }
+
     /// The JSON the command prints, on one line.
     ///
     /// # Errors
@@ -224,6 +330,14 @@ impl Sensors {
         }
         for disk in &self.disks {
             rows.push((disk.disk.clone(), disk_words(disk, now_ms)));
+        }
+        if let Some(bmc) = &self.bmc {
+            for sensor in [&bmc.temperatures, &bmc.fans, &bmc.voltages, &bmc.currents, &bmc.power]
+                .into_iter()
+                .flatten()
+            {
+                rows.push((format!("bmc/{}", sensor.name), bmc_words(sensor)));
+            }
         }
         if rows.is_empty() {
             return "No temperature or fan speed can be read on this machine.\n".to_string();
@@ -257,6 +371,20 @@ fn sensor_words(sensor: &Sensor) -> String {
         words.push_str(" ALARM");
     }
     words
+}
+
+/// What a BMC sensor reads, and its status where that is not `ok`.
+fn bmc_words(sensor: &BmcSensor) -> String {
+    let Some(value) = sensor.value else {
+        return sensor.status.replace('-', " ");
+    };
+    let number = format!("{value:.3}");
+    let number = number.trim_end_matches('0').trim_end_matches('.');
+    let reading = format!("{number} {}", sensor.unit);
+    match sensor.status {
+        "ok" => reading,
+        status => format!("{} ({status})", reading.trim_end()),
+    }
 }
 
 /// What a disk reads and where its limits are, or that it sleeps.
@@ -514,5 +642,95 @@ mod tests {
         );
         let text = gather(&machine.sources()).text(1_794_564_000_000);
         assert!(text.trim_end().ends_with("gives no temperature"), "{text}");
+    }
+
+    /// A BMC with a temperature, a fan, a voltage and a power sensor, a
+    /// sensor of another controller, and a power supply's states.
+    fn bmc() -> ipmi::sim::Sim {
+        use ipmi::sim;
+        let record = |id, number, name, sensor_type, unit| {
+            let mut bytes = sim::full_record(id, number, name);
+            bytes[12] = sensor_type;
+            bytes[21] = unit;
+            bytes
+        };
+        let mut other = record(5, 5, "PSU Temp", 0x01, 1);
+        other[5] = 0x30;
+        let mut bmc = ipmi::sim::Sim::new();
+        bmc.sdr = vec![
+            record(1, 1, "Inlet Temp", 0x01, 1),
+            record(2, 2, "Fan1", 0x04, 18),
+            record(3, 3, "12V", 0x02, 4),
+            record(4, 4, "Pwr Consumption", 0x0B, 6),
+            other,
+            sim::compact_record(6, 9, "PS Status", 1),
+        ];
+        // Raw 100 is 30 in the unit of a sensor of the simulator's constants.
+        bmc.readings.insert(1, vec![100, 0x40, 0b01_0000]);
+        bmc.readings.insert(2, vec![100, 0x40, 0]);
+        bmc.readings.insert(3, vec![100, 0x20, 0]);
+        bmc.readings.insert(4, vec![110, 0x40, 0]);
+        bmc
+    }
+
+    #[test]
+    fn the_bmc_has_a_group_of_its_own_by_kind() {
+        let machine = Machine::new("bmc");
+        let group = bmc_group(&mut bmc()).unwrap();
+        let found = gather(&machine.sources()).with_bmc(Some(group));
+        let value: Value = serde_json::from_str(&found.json().unwrap()).unwrap();
+        let bmc = &value["bmc"];
+        assert_eq!(
+            bmc["temperatures"],
+            json!([
+                {"name": "Inlet Temp", "series": "bmc.temp{Inlet Temp}", "value": 30.0,
+                    "unit": "°C", "status": "critical"},
+                {"name": "PSU Temp", "series": "bmc.temp{PSU Temp}", "value": null,
+                    "unit": "°C", "status": "not-reachable"},
+            ])
+        );
+        assert_eq!(bmc["fans"][0]["series"], json!("bmc.fan{Fan1}"));
+        assert_eq!(bmc["fans"][0]["status"], json!("ok"));
+        // The BMC says the voltage's reading is unavailable; a voltage has
+        // no series.
+        assert_eq!(
+            bmc["voltages"],
+            json!([{"name": "12V", "series": null, "value": null, "unit": "V",
+                "status": "unavailable"}])
+        );
+        assert_eq!(bmc["currents"], json!([]));
+        assert_eq!(bmc["power"][0]["series"], json!("bmc.power{Pwr Consumption}"));
+        assert_eq!(bmc["power"][0]["unit"], json!("W"));
+        // The monitors' lists are as before.
+        assert_eq!(value["sensors"], json!([]));
+    }
+
+    #[test]
+    fn a_machine_with_no_bmc_has_no_member_and_the_same_text() {
+        let machine = Machine::new("nobmc");
+        machine.board();
+        let found = gather(&machine.sources());
+        let value: Value = serde_json::from_str(&found.json().unwrap()).unwrap();
+        assert!(value.get("bmc").is_none());
+        let with_none = gather(&machine.sources()).with_bmc(None);
+        assert_eq!(found, with_none);
+        assert_eq!(found.text(0), with_none.text(0));
+    }
+
+    #[test]
+    fn the_text_has_a_line_for_each_bmc_sensor_with_its_status() {
+        let machine = Machine::new("bmctext");
+        let group = bmc_group(&mut bmc()).unwrap();
+        let text = gather(&machine.sources()).with_bmc(Some(group)).text(0);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 5, "{text}");
+        assert!(lines[0].starts_with("bmc/Inlet Temp") && lines[0].ends_with("30 °C (critical)"));
+        assert!(lines[1].starts_with("bmc/PSU Temp") && lines[1].ends_with("not reachable"));
+        assert!(lines[2].starts_with("bmc/Fan1") && lines[2].ends_with("30 RPM"), "{text}");
+        assert!(lines[3].ends_with("unavailable"), "{text}");
+        assert!(
+            lines[4].starts_with("bmc/Pwr Consumption") && lines[4].ends_with("35 W"),
+            "{text}"
+        );
     }
 }

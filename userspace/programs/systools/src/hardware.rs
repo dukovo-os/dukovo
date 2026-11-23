@@ -294,7 +294,8 @@ fn list(file: &Path, json: bool, out: &mut dyn Write) -> Result<i32, Fail> {
 fn show_command(args: &mut Args) -> Result<i32, Fail> {
     let json = json_only(args)?;
     let tables = hwinfo::read_tables().ok();
-    let show = show::gather(&Sources::machine(), &lscpu::summary(&lscpu::cpuid), tables.as_ref());
+    let show = show::gather(&Sources::machine(), &lscpu::summary(&lscpu::cpuid), tables.as_ref())
+        .with_bmc(show::bmc_of_machine());
     let mut out = io::stdout().lock();
     if json {
         let text = show.json().map_err(|error| fail(format!("cannot write JSON: {error}")))?;
@@ -309,7 +310,7 @@ fn show_command(args: &mut Args) -> Result<i32, Fail> {
 /// disks' last readings say, which is nothing on a machine with none.
 fn sensors_command(args: &mut Args) -> Result<i32, Fail> {
     let json = json_only(args)?;
-    let found = sensors::gather(&sensors::Sources::system());
+    let found = sensors::gather(&sensors::Sources::system()).with_bmc(sensors::bmc_of_machine());
     let mut out = io::stdout().lock();
     if json {
         let text = found.json().map_err(|error| fail(format!("cannot write JSON: {error}")))?;

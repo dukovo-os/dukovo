@@ -1,0 +1,23 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+Logs the missing registry of IANA's enterprise numbers at the level of
+-v, not as an error. ipmitool reads the registry at every start to name
+the manufacturer of a BMC, and says "IANA PEN registry open failed" on
+the standard error when the file is not there. The port does not ship
+the registry: the build must not download it, and a copy pinned in the
+port would age. Without it ipmitool names the manufacturers its own
+table holds and shows the others by number, which every command still
+works with, so a start with no registry is not an error to show.
+
+--- a/lib/ipmi_strings.c
++++ b/lib/ipmi_strings.c
+@@ -1515,7 +1515,7 @@
+ 		 */
+ 		in = fopen(IANADIR PATH_SEPARATOR IANA_PEN_REGISTRY, "r");
+ 		if (!in) {
+-			lperror(LOG_ERR, "IANA PEN registry open failed");
++			lperror(LOG_INFO, "IANA PEN registry open failed");
+ 			return -1;
+ 		}
+ 	}

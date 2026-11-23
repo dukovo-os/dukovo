@@ -4390,6 +4390,25 @@ disk at its warning limit, for 5 minutes (metricsd(8)). The page reads the
 temperatures again every minute. "Disk temperatures" says how a disk's is read
 and when it sleeps.
 
+On a server, an administrator whose console is unlocked also has the BMC's
+temperatures in the table, marked **BMC**, and its fans among the lines, named
+as the BMC names them and with **(BMC)** after the name. A BMC sensor over a
+threshold shows **warning**, **critical** or **non-recoverable**, and one the BMC
+cannot read says **unavailable** or **not reachable**.
+
+### Baseboard management controller
+
+A machine with a BMC has the card **Baseboard management controller** after the
+temperatures, for an administrator whose console is unlocked; no one else and no
+other machine has it. It names the BMC's maker, firmware, IPMI version and the
+address of its network port. The BMC's power, current and voltage sensors come
+next: what is not well is listed first, each with its kind, and **Show all** and
+the number of sensors opens every one, by kind. The last ten entries of the BMC's
+event log follow, the newest first; a critical one is in red. **Identify** lights
+the machine's identify light for 15 seconds (`bmc identify 15`), to find it in a
+rack. The same is in the chapter on checking the hardware, under "Server
+management".
+
 ### Disks
 
 **Disks** lists each disk with its name, which opens its page under Storage, its

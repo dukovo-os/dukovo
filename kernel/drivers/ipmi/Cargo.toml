@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "radix-ipmi"
+description = "The baseboard management controller's KCS interface for the Radix kernel: IPMI messages, Get Device ID, and where firmware says the interface is"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+bench = false
+
+[lints]
+workspace = true

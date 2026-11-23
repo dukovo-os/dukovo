@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# ipmitool (ADR 0661): the administrator's command line for a server's
+# baseboard management controller (BMC): `ipmitool mc info`, `sdr list`,
+# `sensor`, `sel list`, `fru print`, `chassis identify`, `lan print`. It
+# is built with its `open` interface only, which reaches the BMC of this
+# machine through /devices/ipmi0 with Linux's ioctls (the folder /dev is
+# a link to /devices); the LAN, LAN plus, serial, USB, D-Bus, Intel IMB,
+# FreeIPMI and BMC interfaces, the interactive shell and ipmievd are not
+# built. Its code is under Sun Microsystems' BSD-style license in
+# COPYING, and its other authors' (Pigeon Point Systems', Dell's,
+# Intel's, Kontron's, Pentair's, Quanta's, Alexander Amelkin's) of the
+# same terms; the MD5 code of the LAN plugin's folder, which the firmware
+# upgrade command links, is L. Peter Deutsch's under the zlib license.
+# The release archive is the IPMITOOL_1_8_19 tag's, from Ubuntu's pool,
+# which keeps it unchanged: it has no configure, so build.sh compiles the
+# sources itself, which also keeps the build from downloading IANA's
+# registry of enterprise numbers, as Makefile.am does at `make install`.
+# patches/0001 makes a start without that registry quiet.
+name = "ipmitool"
+version = "1.8.19"
+summary = "ipmitool, which reads and controls a server's BMC over IPMI"
+license = "BSD-3-Clause AND Zlib"
+homepage = "https://github.com/ipmitool/ipmitool"
+depends = ["mlibc"]
+notices = ["COPYING", "src/plugins/lan/md5.c"]
+image = [
+    "system/commands/ipmitool",
+    "system/resources/man/man1/ipmitool.1",
+]
+
+[source]
+url = "https://archive.ubuntu.com/ubuntu/pool/universe/i/ipmitool/ipmitool_1.8.19.orig.tar.gz"
+sha256 = "48b010e7bcdf93e4e4b6e43c53c7f60aa6873d574cbd45a8d86fa7aaeebaff9c"
+
+[upstream]
+git = "https://github.com/ipmitool/ipmitool.git"
+tag = "IPMITOOL_1_8_19"

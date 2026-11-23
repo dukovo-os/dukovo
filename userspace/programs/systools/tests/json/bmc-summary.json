@@ -1,0 +1,21 @@
+{
+  "format": 1,
+  "manufacturer_id": 674,
+  "manufacturer": "Dell",
+  "product_id": 256,
+  "device_id": 32,
+  "firmware": "3.20",
+  "ipmi_version": "2.0",
+  "functions": ["sensor device", "SDR repository", "SEL", "FRU inventory"],
+  "guid": "00112233-4455-6677-8899-aabbccddeeff",
+  "lan": {
+    "channel": 1,
+    "source": "static",
+    "address": "10.1.2.3",
+    "mask": "255.255.255.0",
+    "prefix": 24,
+    "gateway": "10.1.2.1",
+    "mac": "00:11:22:33:44:55",
+    "vlan": 291
+  }
+}

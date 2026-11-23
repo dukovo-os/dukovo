@@ -18,11 +18,13 @@
 use std::fmt::Write as _;
 
 use radix_smbios::memory::{self, MemoryArray, MemoryDevice};
+use radix_smbios::processor::Processor as SmbiosProcessor;
 use radix_smbios::{Entry, Table, chassis_name, kind};
 use serde::Serialize;
 
 use crate::admin_about::{Sources, dmi};
 use crate::hwinfo::{self, Tables};
+use crate::ipmi;
 use crate::lscpu::Summary;
 use crate::{dukofetch, proc};
 
@@ -44,6 +46,24 @@ pub(crate) struct Show {
     processor: Processor,
     memory: Memory,
     firmware: Firmware,
+    /// The baseboard management controller; left out of the document on a
+    /// machine with none that the caller may ask.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bmc: Option<Bmc>,
+}
+
+/// The machine's baseboard management controller, as it says itself.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct Bmc {
+    /// Its maker: `Dell`, or `enterprise 12345` for a number the program
+    /// has no name for.
+    maker: String,
+    firmware: String,
+    /// `2.0`.
+    ipmi_version: String,
+    /// The address of its network port; null when it has no port or no
+    /// address.
+    lan_address: Option<String>,
 }
 
 /// The processor, as its own CPUID and the kernel say it.
@@ -51,6 +71,9 @@ pub(crate) struct Show {
 struct Processor {
     /// Its name without its marks, as `Intel Core i5-6500`.
     model: Option<String>,
+    /// The sockets with a processor in them, as the firmware's tables say;
+    /// null when they are not read or list none.
+    sockets: Option<u32>,
     /// The cores, all the machine's processors together.
     cores: Option<u32>,
     /// The CPUs the kernel runs, which a core may run two or more of.
@@ -103,6 +126,19 @@ struct Firmware {
     date: Option<String>,
 }
 
+/// The sockets the tables list with a processor in them, if they list
+/// any that has one.
+fn sockets(tables: &Tables) -> Option<u32> {
+    let entry = Entry::parse(&tables.entry)?;
+    let table = Table::new(&tables.structures, entry.count);
+    let populated = table
+        .of(kind::PROCESSOR)
+        .filter_map(|s| SmbiosProcessor::parse(&s))
+        .filter(|processor| processor.populated)
+        .count();
+    u32::try_from(populated).ok().filter(|&n| n > 0)
+}
+
 /// What the tables say of the memory.
 struct Installed {
     ecc: Option<bool>,
@@ -135,6 +171,7 @@ pub(crate) fn gather(sources: &Sources, cpu: &Summary, tables: Option<&Tables>) 
             .map(String::from),
         processor: Processor {
             model: cpu.name.as_deref().map(dukofetch::cpu_name).filter(|name| !name.is_empty()),
+            sockets: tables.and_then(sockets),
             cores: threads.map(|threads| threads.div_ceil(cpu.threads_per_core.max(1))),
             threads,
             base_mhz: cpu.base_mhz,
@@ -146,6 +183,46 @@ pub(crate) fn gather(sources: &Sources, cpu: &Summary, tables: Option<&Tables>) 
             version: dmi(sources, "bios_version"),
             date: dmi(sources, "bios_date"),
         },
+        bmc: None,
+    }
+}
+
+/// The BMC that `link` talks to.
+///
+/// # Errors
+///
+/// If the BMC does not answer.
+pub(crate) fn bmc_of(link: &mut dyn ipmi::Transport) -> Result<Bmc, ipmi::Error> {
+    let id = ipmi::device_id(link)?;
+    let lan = match ipmi::find_lan_channel(link)? {
+        Some(channel) => Some(ipmi::read_lan(link, channel)?),
+        None => None,
+    };
+    Ok(Bmc {
+        maker: id.manufacturer_name(),
+        firmware: id.firmware,
+        ipmi_version: id.ipmi_version,
+        lan_address: lan.and_then(|lan| lan.address).map(|address| address.to_string()),
+    })
+}
+
+/// The BMC as this machine has it for the caller: none when there is none
+/// or the caller may not open its interface, and none, with the reason
+/// said, when it does not answer.
+pub(crate) fn bmc_of_machine() -> Option<Bmc> {
+    let mut device = match ipmi::Device::open_if_allowed() {
+        Ok(device) => device?,
+        Err(error) => {
+            eprintln!("hardware: cannot open the BMC: {}", crate::util::strip_os_error(&error));
+            return None;
+        }
+    };
+    match bmc_of(&mut device) {
+        Ok(bmc) => Some(bmc),
+        Err(error) => {
+            eprintln!("hardware: the BMC is not shown: {error}");
+            None
+        }
     }
 }
 
@@ -204,6 +281,13 @@ fn clock(mhz: u32) -> String {
 }
 
 impl Show {
+    /// What the machine says, with its BMC when it has one.
+    #[must_use]
+    pub(crate) fn with_bmc(mut self, bmc: Option<Bmc>) -> Show {
+        self.bmc = bmc;
+        self
+    }
+
     /// The JSON the command prints.
     ///
     /// # Errors
@@ -225,7 +309,12 @@ impl Show {
             rows.push(("Machine", format!("{}{case}", machine.join(" "))));
         }
         let processor = &self.processor;
-        let mut parts: Vec<String> = processor.model.iter().cloned().collect();
+        // A machine of two or more sockets: `2 × Intel Xeon Gold 6152`.
+        let model = processor.model.as_ref().map(|model| match processor.sockets {
+            Some(sockets) if sockets > 1 => format!("{sockets} × {model}"),
+            _ => model.clone(),
+        });
+        let mut parts: Vec<String> = model.into_iter().collect();
         if let Some(cores) = processor.cores {
             parts.push(format!("{cores} core{}", if cores == 1 { "" } else { "s" }));
         }
@@ -279,6 +368,15 @@ impl Show {
             .collect();
         if !parts.is_empty() {
             rows.push(("Firmware", parts.join(", ")));
+        }
+        if let Some(bmc) = &self.bmc {
+            rows.push((
+                "BMC",
+                format!("{}, firmware {}, IPMI {}", bmc.maker, bmc.firmware, bmc.ipmi_version),
+            ));
+            if let Some(address) = &bmc.lan_address {
+                rows.push(("BMC LAN", address.clone()));
+            }
         }
         let width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
         rows.iter().fold(String::new(), |mut text, (label, value)| {
@@ -401,6 +499,7 @@ mod tests {
         array.extend_from_slice(&(64u32 << 20).to_le_bytes());
         array.extend_from_slice(&[0xfe, 0xff, 4, 0]);
         t.extend(structure(16, &array, &[]));
+        t.extend(structure(4, &processor(true), &["CPU 1"]));
         let strings = |slot, bank| [slot, bank, "Samsung", "SERIAL-DIMM", "M378A1K43BB2-CRC"];
         t.extend(structure(17, &device(8192, true, 2133, 2133), &strings("DIMM A1", "BANK 0")));
         t.extend(structure(17, &device(0, false, 0, 0), &["DIMM A2", "BANK 1"]));
@@ -408,6 +507,15 @@ mod tests {
         t.extend(structure(17, &device(0, false, 0, 0), &["DIMM B2", "BANK 3"]));
         t.extend(structure(127, &[], &[]));
         Tables { entry: entry(), structures: t }
+    }
+
+    /// A processor's structure (type 4): its socket's name is string 1,
+    /// and the status at 0x18 has bit 6 set when a processor is in it.
+    fn processor(populated: bool) -> Vec<u8> {
+        let mut fields = vec![0u8; 0x26];
+        fields[0x04 - 4] = 1;
+        fields[0x18 - 4] = if populated { 0x41 } else { 0 };
+        fields
     }
 
     fn json_of(show: &Show) -> Value {
@@ -427,7 +535,7 @@ mod tests {
                 "model": "OptiPlex 7040",
                 "chassis": "Mini Tower",
                 "processor": {
-                    "model": "Intel Core i5-6500", "cores": 4, "threads": 4,
+                    "model": "Intel Core i5-6500", "sockets": null, "cores": 4, "threads": 4,
                     "base_mhz": 3200, "max_mhz": 3600
                 },
                 "memory": {
@@ -525,7 +633,8 @@ mod tests {
         assert_eq!(
             value["processor"],
             json!({
-                "model": null, "cores": null, "threads": null, "base_mhz": null, "max_mhz": null
+                "model": null, "sockets": null, "cores": null, "threads": null,
+                "base_mhz": null, "max_mhz": null
             })
         );
         assert_eq!(value["memory"]["bytes"], Value::Null);
@@ -592,6 +701,59 @@ mod tests {
              Module     DIMM A1: 8 GiB DDR4, 2133 MT/s, Samsung M378A1K43BB2-CRC\n\
              Module     DIMM B1: 8 GiB DDR4, 2400 MT/s, Samsung M378A1K43BB2-CRC\n\
              Firmware   Dell Inc., 1.24.0, 07/12/2023\n"
+        );
+        let _ = fs::remove_dir_all(&machine.root);
+    }
+
+    #[test]
+    fn a_machine_of_two_sockets_says_so_before_the_model() {
+        let machine = Machine::new("sockets");
+        machine.optiplex();
+        let of = |populated: &[bool]| {
+            let mut t = Vec::new();
+            for (at, &full) in populated.iter().enumerate() {
+                t.extend(structure(4, &processor(full), &[&format!("CPU {}", at + 1)]));
+            }
+            t.extend(structure(127, &[], &[]));
+            gather(&machine.sources(), &i5(), Some(&Tables { entry: entry(), structures: t }))
+        };
+        let two = of(&[true, true]);
+        assert_eq!(json_of(&two)["processor"]["sockets"], 2);
+        assert!(
+            two.text().contains("Processor  2 × Intel Core i5-6500, 4 cores,"),
+            "{}",
+            two.text()
+        );
+        // An empty socket is not counted, and one processor is not said.
+        let one = of(&[true, false]);
+        assert_eq!(json_of(&one)["processor"]["sockets"], 1);
+        assert!(one.text().contains("Processor  Intel Core i5-6500, 4 cores,"), "{}", one.text());
+        // Tables that list no processor in a socket say nothing of them.
+        assert_eq!(json_of(&of(&[false]))["processor"]["sockets"], Value::Null);
+        assert_eq!(json_of(&of(&[]))["processor"]["sockets"], Value::Null);
+        let _ = fs::remove_dir_all(&machine.root);
+    }
+
+    #[test]
+    fn the_bmc_is_named_when_there_is_one_and_left_out_when_there_is_not() {
+        let machine = Machine::new("bmc");
+        machine.optiplex();
+        let bare = gather(&machine.sources(), &i5(), None);
+        assert!(json_of(&bare).get("bmc").is_none());
+        assert!(!bare.text().contains("BMC"));
+        let mut sim = ipmi::sim::Sim::new();
+        let bmc = bmc_of(&mut sim).unwrap();
+        let show = gather(&machine.sources(), &i5(), None).with_bmc(Some(bmc));
+        assert_eq!(
+            json_of(&show)["bmc"],
+            json!({ "maker": "Dell", "firmware": "3.20", "ipmi_version": "2.0",
+                "lan_address": "10.1.2.3" })
+        );
+        assert!(
+            show.text()
+                .ends_with("BMC        Dell, firmware 3.20, IPMI 2.0\nBMC LAN    10.1.2.3\n"),
+            "{}",
+            show.text()
         );
         let _ = fs::remove_dir_all(&machine.root);
     }

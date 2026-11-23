@@ -2086,6 +2086,26 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
                     crate::audio::control(file, a.request, may_write, &mut copy_in, &mut copy_out)?;
                     0
                 }
+                Target::Ipmi => {
+                    // The BMC can restart the machine: a description
+                    // opened to read only may not send to it.
+                    found.cap.check(ObjectKind::File, Rights::WRITE).map_err(cap_error)?;
+                    let size = a.size;
+                    let copy_in = |bytes: &mut [u8]| {
+                        if size < bytes.len() as u64 || !Arch::copy_from_user(bytes, a.buffer) {
+                            return Err(error(Kernel::BadAddress));
+                        }
+                        Ok(())
+                    };
+                    let copy_out = |bytes: &[u8]| {
+                        if size < bytes.len() as u64 || !Arch::copy_to_user(a.buffer, bytes) {
+                            return Err(error(Kernel::BadAddress));
+                        }
+                        Ok(())
+                    };
+                    fs::ipmi::control(file, a.request, a.size, copy_in, copy_out)?;
+                    0
+                }
                 Target::Node if matches!(a.request, file::CLONE | file::CLONE_RANGE) => {
                     clone_file(user, found, file, &a)?;
                     0
@@ -2846,6 +2866,8 @@ enum Target<'a> {
     Audio,
     /// `/devices/crashes` (ADR 0530).
     Crashes,
+    /// `/devices/ipmi0` (ADR 0661).
+    Ipmi,
     /// A file of the tree, through its node.
     Node,
 }
@@ -2877,6 +2899,8 @@ fn target(file: &FileObject) -> Target<'_> {
         Target::Audio
     } else if file.is_crashes() {
         Target::Crashes
+    } else if file.is_ipmi() {
+        Target::Ipmi
     } else {
         Target::Node
     }
@@ -2943,6 +2967,7 @@ fn read_special(
         Target::Capture => fs::capture::read(file, out, non_blocking).map(|n| n as u64),
         Target::Crashes => fs::crashes::read(file, out, non_blocking).map(|n| n as u64),
         Target::Framebuffer | Target::Audio | Target::Node => Ok(0),
+        Target::Ipmi => Err(error(Kernel::InvalidArgument)),
     }
 }
 
@@ -3062,7 +3087,9 @@ fn write_special(
             Ok(written)
         }
         Target::Framebuffer => fs::framebuffer::write(file, offset, data).map(|n| n as u64),
-        Target::Keyboard | Target::Mouse | Target::Crashes => Err(error(Kernel::InvalidArgument)),
+        Target::Keyboard | Target::Mouse | Target::Crashes | Target::Ipmi => {
+            Err(error(Kernel::InvalidArgument))
+        }
         Target::Node => Ok(0),
     }
 }

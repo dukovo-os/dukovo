@@ -23,6 +23,12 @@
 //! takes, and the check of them is the command's own rule: each once, and
 //! with a disk, the disks alone.
 //!
+//! `hardware.bmc-sensors` is `hardware.sensors` run as an administrator, which
+//! adds the BMC's sensors, and `hardware.bmc-events` reads its event log,
+//! also as one: the BMC's interface belongs to root. `hardware.identify`
+//! lights the identify light for 15 seconds, and is an administrator's
+//! change that ends by itself.
+//!
 //! `hardware.sensors`, `hardware.highest` and `hardware.devices` run as the
 //! person, as the commands answer anyone; with no history, the highest is
 //! `[]`. `hardware.memtest` asks
@@ -409,6 +415,85 @@ impl Action for Devices {
     }
 }
 
+/// `hardware sensors --json`, as an administrator: the same document, with
+/// the BMC's sensors by kind, which only an administrator may ask the BMC
+/// for. A machine with no BMC gives the document without them.
+pub struct BmcSensors;
+
+impl Action for BmcSensors {
+    const ID: &'static str = "hardware.bmc-sensors";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/hardware/bmc/sensors";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Show the BMC's sensors";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["hardware", "sensors", "--json"].map(String::from).to_vec()
+    }
+
+    fn examples() -> Examples<Nothing> {
+        reads()
+    }
+}
+
+/// `bmc events --json`: the BMC's event log, oldest first. The log is not
+/// changed.
+pub struct BmcEvents;
+
+impl Action for BmcEvents {
+    const ID: &'static str = "hardware.bmc-events";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/hardware/bmc/events";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Show the BMC's event log";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["bmc", "events", "--json"].map(String::from).to_vec()
+    }
+
+    fn examples() -> Examples<Nothing> {
+        reads()
+    }
+}
+
+/// How long the identify light stays on, in seconds: `bmc identify`'s own
+/// default, which the page does not ask to change.
+const IDENTIFY_SECONDS: &str = "15";
+
+/// `bmc identify 15`: turns on the light that finds the machine in a rack
+/// for 15 seconds. It ends by itself, and asked again it lights it for
+/// another 15.
+pub struct Identify;
+
+impl Action for Identify {
+    const ID: &'static str = "hardware.identify";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = true;
+    const PATH: &'static str = "/api/1/hardware/bmc/identify";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Light the identify light";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["bmc", "identify", IDENTIFY_SECONDS].map(String::from).to_vec()
+    }
+
+    fn examples() -> Examples<Nothing> {
+        Examples {
+            good: vec![Nothing {}],
+            bad: vec![json!({ "seconds": 60 }), json!({ "on": true })],
+            undo: None,
+        }
+    }
+}
+
 /// The read that says what is asked, which each change of the memory
 /// test uses as its probe.
 fn memtest_shown() -> Vec<String> {
@@ -560,7 +645,7 @@ mod tests {
 
     /// Each action of the page: its id, its address, whether it changes
     /// anything, who runs it, and the command its first example makes.
-    const ACTIONS: [(&str, &str, bool, Runs, &[&str]); 11] = [
+    const ACTIONS: [(&str, &str, bool, Runs, &[&str]); 14] = [
         (
             "hardware.show",
             "/api/1/hardware",
@@ -618,6 +703,27 @@ mod tests {
             &["hardware", "devices", "--json"],
         ),
         (
+            "hardware.bmc-sensors",
+            "/api/1/hardware/bmc/sensors",
+            false,
+            Runs::AsAdministrator,
+            &["hardware", "sensors", "--json"],
+        ),
+        (
+            "hardware.bmc-events",
+            "/api/1/hardware/bmc/events",
+            false,
+            Runs::AsAdministrator,
+            &["bmc", "events", "--json"],
+        ),
+        (
+            "hardware.identify",
+            "/api/1/hardware/bmc/identify",
+            true,
+            Runs::AsAdministrator,
+            &["bmc", "identify", "15"],
+        ),
+        (
             "hardware.memtest",
             "/api/1/hardware/memtest/next-start",
             true,
@@ -641,9 +747,11 @@ mod tests {
     ];
 
     /// The reads that take nothing.
-    const READS: [&str; 8] = [
+    const READS: [&str; 10] = [
         "hardware.show",
         "hardware.inventory",
+        "hardware.bmc-sensors",
+        "hardware.bmc-events",
         "hardware.last",
         "hardware.history",
         "hardware.sensors",
@@ -651,6 +759,9 @@ mod tests {
         "hardware.devices",
         "hardware.memtest-status",
     ];
+
+    /// The BMC's actions, which only an administrator runs.
+    const BMC: [&str; 3] = ["hardware.bmc-sensors", "hardware.bmc-events", "hardware.identify"];
 
     /// The changes of the memory test at the next start.
     const MEMTEST: [&str; 2] = ["hardware.memtest", "hardware.memtest-cancel"];
@@ -961,6 +1072,8 @@ mod tests {
             ("/api/1/hardware/highest", "hardware.highest"),
             ("/api/1/hardware/devices", "hardware.devices"),
             ("/api/1/hardware/memtest", "hardware.memtest-status"),
+            ("/api/1/hardware/bmc/sensors", "hardware.bmc-sensors"),
+            ("/api/1/hardware/bmc/events", "hardware.bmc-events"),
         ] {
             let found = find(REGISTRY, false, path);
             let Found::Action(action, params) = found else { panic!("{path}: {found:?}") };
@@ -981,6 +1094,7 @@ mod tests {
         for (path, id) in [
             ("/api/1/hardware/memtest/next-start", "hardware.memtest"),
             ("/api/1/hardware/memtest/cancel", "hardware.memtest-cancel"),
+            ("/api/1/hardware/bmc/identify", "hardware.identify"),
         ] {
             let Found::Action(found, params) = find(REGISTRY, true, path) else { panic!("{path}") };
             assert_eq!((found.id(), params.is_empty()), (id, true), "{path}");
@@ -1000,6 +1114,10 @@ mod tests {
             "/api/1/hardware/sensors/x",
             "/api/1/hardware/highest/x",
             "/api/1/hardware/devices/x",
+            "/api/1/hardware/bmc",
+            "/api/1/hardware/bmc/",
+            "/api/1/hardware/bmc/sensors/x",
+            "/api/1/hardware/bmc/identify/15",
         ] {
             assert!(matches!(find(REGISTRY, false, path), Found::None), "{path}");
             assert!(matches!(find(REGISTRY, true, path), Found::None), "{path}");
@@ -1026,6 +1144,9 @@ mod tests {
             ("hardware.check", false, true, false),
             ("hardware.memtest", false, true, false),
             ("hardware.memtest-cancel", false, true, false),
+            ("hardware.bmc-sensors", false, true, false),
+            ("hardware.bmc-events", false, true, false),
+            ("hardware.identify", false, true, false),
         ] {
             let action = action(id);
             let session = |admin, unlocked| {
@@ -1043,7 +1164,7 @@ mod tests {
         assert_eq!(refused("hardware.check", false, true).kind, Kind::NotAdmin);
         assert_eq!(refused("hardware.inventory", true, false).kind, Kind::Locked);
         assert_eq!(refused("hardware.check", true, false).kind, Kind::Locked);
-        for id in MEMTEST {
+        for id in MEMTEST.into_iter().chain(BMC) {
             assert_eq!(refused(id, false, true).kind, Kind::NotAdmin, "{id}");
             assert_eq!(refused(id, true, false).kind, Kind::Locked, "{id}");
         }
@@ -1071,9 +1192,15 @@ mod tests {
                 assert_eq!(call(list, id).unwrap_err().kind, Kind::OutOfScope, "{id} {list}");
             }
         }
-        for id in
-            ["hardware.inventory", "hardware.check", "hardware.memtest", "hardware.memtest-cancel"]
-        {
+        for id in [
+            "hardware.inventory",
+            "hardware.check",
+            "hardware.memtest",
+            "hardware.memtest-cancel",
+            "hardware.bmc-sensors",
+            "hardware.bmc-events",
+            "hardware.identify",
+        ] {
             for list in ["hardware", "*"] {
                 assert!(call(list, id).is_ok(), "{id} {list}");
             }
@@ -1100,7 +1227,7 @@ mod tests {
         assert_eq!((&disk["minLength"], &disk["maxLength"]), (&json!(1), &json!(32)));
         assert_eq!(disk["pattern"], "^[a-z0-9]+$");
         assert_eq!(schema["properties"]["full"]["type"], "boolean");
-        for id in READS.into_iter().chain(MEMTEST) {
+        for id in READS.into_iter().chain(MEMTEST).chain(["hardware.identify"]) {
             assert_eq!(super::super::schema(action(id).fields())["properties"], json!({}), "{id}");
         }
     }
@@ -1232,5 +1359,27 @@ mod tests {
             assert!(!action(id).changes() && !action(id).long(), "{id}");
             assert_eq!(action(id).answers(), [0], "{id}");
         }
+    }
+
+    #[test]
+    fn the_bmc_is_read_and_lit_by_an_administrator_and_no_one_else() {
+        assert_eq!(argv("hardware.bmc-sensors", json!({})), ["hardware", "sensors", "--json"]);
+        assert_eq!(argv("hardware.bmc-events", json!({})), ["bmc", "events", "--json"]);
+        // The light is 15 seconds, and no argument changes that.
+        assert_eq!(argv("hardware.identify", json!({})), ["bmc", "identify", "15"]);
+        for args in [json!({ "seconds": 60 }), json!({ "on": true }), json!({ "off": true })] {
+            assert_eq!(
+                action("hardware.identify").prepare(args).unwrap_err().kind,
+                Kind::BadRequest
+            );
+        }
+        for id in BMC {
+            assert_eq!(action(id).runs(), Runs::AsAdministrator, "{id}");
+            assert!(!action(id).long() && action(id).restarts().is_none(), "{id}");
+            assert_eq!(action(id).answers(), [0], "{id}");
+        }
+        assert!(action("hardware.identify").changes());
+        assert!(!action("hardware.bmc-sensors").changes());
+        assert!(!action("hardware.bmc-events").changes());
     }
 }

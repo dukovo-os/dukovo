@@ -110,6 +110,7 @@ admin-hardware userspace/programs/systools/src/authd/ userspace/programs/account
 admin-hardware userspace/programs/systools/src/hardware.rs userspace/programs/systools/src/hardware/ userspace/programs/systools/src/hwinfo.rs
 admin-hardware userspace/programs/systools/src/lscpu.rs userspace/programs/systools/src/admin_about.rs userspace/programs/systools/src/dukofetch.rs
 admin-hardware userspace/programs/systools/src/sensors.rs userspace/programs/systools/src/nic.rs kernel/lib/smbios/ kernel/lib/sensors/
+admin-hardware userspace/programs/systools/src/ipmi.rs userspace/programs/systools/src/ipmi/
 admin-hardware userspace/programs/systools/src/metricsd.rs userspace/programs/systools/src/metricsd/ userspace/programs/systools/src/lspci.rs
 admin-hardware userspace/programs/systools/src/lsusb.rs userspace/programs/systools/src/diskhealth.rs ports/pciids/ ports/usbids/
 admin-hardware kernel/radix/src/fs/sysfs/net.rs userspace/defaults/spark/services/metricsd.toml userspace/defaults/spark/services/diskhealth.toml
@@ -507,6 +508,11 @@ install-uefi userspace/programs/systools/src/dig.rs userspace/programs/systools/
 install-uefi userspace/programs/systools/src/feature.rs userspace/programs/systools/src/mkfs.rs
 install-uefi userspace/programs/systools/src/rdisk.rs
 install-uefi image/grub/menu.cfg userspace/programs/slots/ image/grub/rescue.cfg
+ipmi abi/ipmi.ridl kernel/drivers/ipmi/ kernel/lib/smbios/ kernel/radix/src/ipmi.rs
+ipmi kernel/radix/src/fs/ipmi.rs kernel/radix/src/watchdog.rs ports/ipmitool/
+ipmi userspace/programs/systools/src/bmc.rs userspace/programs/systools/src/bmc/
+ipmi userspace/programs/systools/src/ipmi.rs userspace/programs/systools/src/ipmi/
+ipmi-watchdog abi/ipmi.ridl kernel/drivers/ipmi/ kernel/radix/src/ipmi.rs kernel/radix/src/watchdog.rs
 install-web image/grub/installed.cfg.in ports/openssl/ tools/xtask/src/grub.rs
 install-web tools/xtask/src/grub_theme.rs userspace/programs/consoled/ userspace/programs/disk/
 install-web userspace/programs/installer/ userspace/programs/systools/src/efiboot.rs
@@ -724,7 +730,7 @@ postgresql-service userspace/programs/systools/src/bundled.rs
 postgresql-service userspace/programs/systools/src/bundles/ userspace/spark/src/supervisor/
 posix docs/man/ kernel/lib/posix/ ports/7zip/ ports/bc/ ports/bzip2/ ports/curl/ ports/db1/
 posix ports/diffutils/ ports/file/ ports/git/ ports/grep/ ports/gzip/ ports/iperf3/ ports/jq/
-posix ports/less/ ports/libarchive/ ports/libc-test/ ports/libevent/ ports/libpcap/ ports/locales/
+posix ports/ipmitool/ ports/less/ ports/libarchive/ ports/libc-test/ ports/libevent/ ports/libpcap/ ports/locales/
 posix ports/lua/ ports/lz4/ ports/mandoc/ ports/mlibc-tests/ ports/mtr/ ports/nano/ ports/ncurses/
 posix ports/netcat/ ports/nvi/ ports/onetrueawk/ ports/openssh/ ports/openssl/ ports/patch/
 posix ports/pciids/ ports/sed/ ports/tcpdump/ ports/tmux/ ports/tzdata/ ports/usbids/

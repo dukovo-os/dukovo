@@ -42,6 +42,7 @@ radix-btrfs = { path = "../fs/btrfs" }
 radix-exfat = { path = "../fs/exfat" }
 radix-ext4 = { path = "../fs/ext4" }
 radix-fuse = { path = "../fs/fuse" }
+radix-ipmi = { path = "../drivers/ipmi" }
 radix-iso9660 = { path = "../fs/iso9660" }
 radix-ntfs = { path = "../fs/ntfs" }
 radix-udf = { path = "../fs/udf" }

@@ -253,3 +253,59 @@ export const startTest = (result = 'passed', more = {}) => {
 export const task = (more = {}) => ({
   id: 41, action: 'hardware.check', args: {}, state: 'running', step: 4, steps: 11, words: 'disks sda self-test passed', started: Math.floor(NOW / 1000) - 120, ...more,
 });
+
+const sensorOf = (name, unit, value, status = 'ok', series = null) => ({
+  name, series, value, unit, status,
+});
+
+/**
+ * The `bmc` member of `hardware show` as an administrator gets it, on a
+ * server whose BMC is a Dell's.
+ */
+export const bmcOf = () => plain({
+  maker: 'Dell', firmware: '6.10', ipmi_version: '2.0', lan_address: '10.1.2.3',
+});
+
+/**
+ * `hardware sensors --json` as an administrator gets it on a 2U server with
+ * a Dell's BMC: 20 fans, 11 temperatures, 2 power supplies with their watts
+ * and amps, the board's draw and 31 voltages, 66 numeric sensors in all. A
+ * fan under its limit and one of the power supplies' inputs that the BMC
+ * says is unavailable are the two that are not well, besides a temperature
+ * at its warning level.
+ */
+export const bmcSensors = (more = {}) => {
+  const fans = Array.from({ length: 20 }, (_, at) => sensorOf(`Fan${Math.floor(at / 2) + 1}${at % 2 === 0 ? 'A' : 'B'} RPM`, 'RPM', 7000 + at * 10, at === 3 ? 'critical' : 'ok', `bmc.fan{Fan${Math.floor(at / 2) + 1}${at % 2 === 0 ? 'A' : 'B'} RPM}`));
+  const temperatures = [
+    ['Inlet Temp', 22], ['Exhaust Temp', 38], ['CPU1 Temp', 51], ['CPU2 Temp', 53], ['DIMM A Temp', 40], ['DIMM B Temp', 41], ['PCIe Temp', 36],
+    ['Riser1 Temp', 35], ['Riser2 Temp', 34], ['PSU1 Temp', 33], ['PSU2 Temp', 34],
+  ].map(([name, value]) => sensorOf(name, '°C', value, name === 'CPU2 Temp' ? 'warning' : 'ok', `bmc.temp{${name}}`));
+  const voltages = Array.from({ length: 31 }, (_, at) => sensorOf(`Voltage ${at + 1}`, 'V', at === 30 ? null : 1 + at / 10, at === 30 ? 'unavailable' : 'ok'));
+  return plain({
+    format: 1,
+    sensors: [],
+    zones: [],
+    disks: [],
+    bmc: {
+      temperatures,
+      fans,
+      voltages,
+      currents: [sensorOf('Current 1', 'A', 0.6), sensorOf('Current 2', 'A', 0.5)],
+      power: [sensorOf('Pwr Consumption', 'W', 210, 'ok', 'bmc.power{Pwr Consumption}'), sensorOf('PS1 Input Power', 'W', 110), sensorOf('PS2 Input Power', 'W', 100)],
+    },
+    ...more,
+  });
+};
+
+/** `bmc events --json` with `count` entries: a fan going under its limit, as a log fills over weeks, and a watchdog reset before the BMC's clock was set. */
+export const bmcEvents = (count = 14) => plain({
+  events: [
+    {
+      id: 1, record_type: 2, time: null, since_start: 100, sensor_type: 'watchdog 2', sensor_number: 0, sensor: 'OS Watchdog', direction: 'asserted', event: 'hard reset, SMS or OS timer', severity: 'info',
+    },
+    ...Array.from({ length: count - 1 }, (_, at) => ({
+      id: at + 2, record_type: 2, time: new Date(Date.UTC(2026, 10, 1 + at, 8, 30, 0)).toISOString(), since_start: null, sensor_type: 'fan', sensor_number: 5, sensor: 'Fan2B RPM', direction: at % 2 === 0 ? 'asserted' : 'deasserted', event: 'lower critical going low', severity: at % 2 === 0 ? 'critical' : 'info',
+    })),
+  ],
+  cleared: false,
+});

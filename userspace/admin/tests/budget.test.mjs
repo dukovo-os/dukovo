@@ -125,7 +125,7 @@ test('each page with its style sheets is within 150 KB beyond the shell', () => 
 // app's is 500 more.
 // Apps' row is 5,400 more than it was, for the Size row's every state, the
 // hold row's words, and Tonight, Not tonight and the window's words.
-// Hardware's row is 6,000 more than the plan's: the disks' rows and the memory test at the next restart.
+// Hardware's row is 6,000 more than the plan's: the disks' rows and the memory test at the next restart, and 2,000 more for the BMC's temperatures and fans in the temperatures' rows and the page's reads of a BMC; the BMC card and its model are read when the page finds a BMC and are not in the row.
 // Alerts' is 5,000 more than 60,000: 4,000 for the kinds of alert each channel is told of and 1,000 for the card of Set up a phone.
 // Security's is 2,500 more than 147,000: 1,500 for the rows of its Alerts card, one for each kind of alert, and 1,000 for the steps' rules in pages.css.
 // Add an app, Websites and Databases each keep about 1,000 of room over what
@@ -140,7 +140,7 @@ test('each page with its style sheets is within 150 KB beyond the shell', () => 
 const PAGE_LIMITS = {
   updates: 82_700,
   apps: 62_700,
-  hardware: 61_000,
+  hardware: 63_000,
   certificates: 60_000,
   report: 67_000,
   alerts: 65_000,

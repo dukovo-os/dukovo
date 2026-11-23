@@ -3,8 +3,9 @@
 #
 # The machine's history and early warnings: metricsd(8) reads the
 # processors, memory, disks, filesystems, network cards, temperatures and
-# what each service uses once a minute, keeps two weeks of that at the
-# minute and a year at an hour in /system/state/metrics, and tells alertd(8)
+# what each service uses, and a server's BMC, once a minute, keeps two
+# weeks of that at the minute and a year at an hour in
+# /system/state/metrics, and tells alertd(8)
 # of a filesystem that is filling, a Btrfs volume that lost a disk, memory
 # or a certificate that runs out, and a sensor that is too hot. With
 # `listen` in /system/settings/metrics.toml (metrics.toml(5)) it also
@@ -32,8 +33,10 @@ memory = "32M"
 # (radix-sysfs(5)), so it needs no view of the mounts themselves. And
 # every process, whose use it counts toward each one's service (ADR 0473),
 # and the summaries diskhealth(8) writes, which have each disk's
-# temperature.
+# temperature. And the BMC's interface, /devices/ipmi0, where a machine has
+# one: its temperatures, fans and power are series, and its event log's new
+# entries are told (ADR 0661).
 [permissions]
 network.listen = [9100]
-files.read-write = ["/system/state/metrics", "/system/live/metrics"]
+files.read-write = ["/system/state/metrics", "/system/live/metrics", "/devices/ipmi0"]
 files.read = ["/processes", "/system/live/diskhealth"]
