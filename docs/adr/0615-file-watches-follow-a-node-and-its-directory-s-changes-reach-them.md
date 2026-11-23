@@ -46,7 +46,12 @@ a change but to look.
   first at what the name led to, with a second walk made only while
   something is watched. A move gives its two records one cookie. A
   removed node's watches get `IN_DELETE_SELF` and then `IN_IGNORED`, as do
-  `IN_ONESHOT` watches once they fire.
+  `IN_ONESHOT` watches once they fire. A directory's events carry
+  `IN_ISDIR` but for `IN_DELETE_SELF` and `IN_MOVE_SELF`, as on Linux.
+- **`truncate` opens nothing.** radix-directory(2)'s `set_size` (version
+  13) sets the size of the file at a path, so that `truncate(2)`, in the
+  C library and in the Linux table, is heard as `IN_MODIFY` alone, as on
+  Linux, and not as an open, a change and a close.
 - **Every hook costs one load while nothing is watched** (`WATCHED`). The
   table's lock is a spin lock, under which the watches to tell are only
   collected: the event is built before it is taken, and queued, with

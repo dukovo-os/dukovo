@@ -1,0 +1,24 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+epoll_create refuses a size below 1 with EINVAL, as Linux does (ADR
+0612): the size is otherwise a hint that both ignore, and mlibc's wrapper
+made an instance whatever the size.
+
+diff --git a/options/linux-epoll/generic/epoll.cpp b/options/linux-epoll/generic/epoll.cpp
+--- a/options/linux-epoll/generic/epoll.cpp
++++ b/options/linux-epoll/generic/epoll.cpp
+@@ -5,7 +5,12 @@
+ #include <mlibc/all-sysdeps.hpp>
+ #include <stddef.h>
+ 
+-int epoll_create(int) {
++int epoll_create(int size) {
++	// The size is a hint that Linux ignores, but for refusing one below 1.
++	if (size <= 0) {
++		errno = EINVAL;
++		return -1;
++	}
+ 	int fd;
+ 	if (int e = mlibc::sysdep_or_enosys<EpollCreate>(0, &fd); e) {
+ 		errno = e;

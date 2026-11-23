@@ -1049,6 +1049,42 @@ fn a_user_event_can_be_triggered_as_it_is_added() {
     assert!(look_at_event(&mut state).is_some());
 }
 
+proptest! {
+    /// `ready`, the look an exclusive watch is given as it is added, says
+    /// what a report would, for any filter, options, events asked for and
+    /// readiness.
+    #[test]
+    fn ready_says_what_a_report_would(
+        filter in prop::sample::select(vec![
+            QueueFilter::Read,
+            QueueFilter::Write,
+            QueueFilter::Poll,
+            QueueFilter::User,
+        ]),
+        options in prop::sample::select(vec![
+            QueueFlags::NONE,
+            QueueFlags::CLEAR,
+            QueueFlags::ONESHOT,
+            QueueFlags::DISPATCH,
+            QueueFlags::DISABLE,
+        ]),
+        asked in any::<u32>(),
+        ready in any::<u32>(),
+        triggered in any::<bool>(),
+    ) {
+        let with = QueueFlags::ADD.union(options);
+        let added = if filter == QueueFilter::User {
+            user_change(with, if triggered { USER_TRIGGER } else { 0 }, 0)
+        } else {
+            QueueEvent { fflags: asked, ..change(DESCRIPTOR, filter, with) }
+        };
+        let mut state = State::added(&added, filter);
+        let events = PollEvents(ready);
+        let said = state.ready(filter, events);
+        prop_assert_eq!(said, state.report(added.ident, filter, events).is_some());
+    }
+}
+
 #[test]
 fn every_change_of_a_user_event_sets_its_data() {
     let user = QueueFilter::User;

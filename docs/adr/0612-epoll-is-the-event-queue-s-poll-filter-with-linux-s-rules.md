@@ -45,8 +45,12 @@ consequences left epoll answering ENOSYS until this step.
 - **`exclusive`** (`EPOLLEXCLUSIVE`) is fixed when the watch is added: a
   change to the description queues every non-exclusive watch of it and
   exclusive ones only until one of them is queued where a thread waits,
-  so one waiter wakes. It is invalid with a change of a held watch, and
-  with events other than readable, writable, error and hang-up.
+  so one waiter wakes. Its add looks at the description at once, as
+  Linux's epoll looks at a new registration, where other watches wait on
+  the ring for the queue's next look: one left there would be reported
+  for a change that woke another queue's waiter. It is invalid with a
+  change of a held watch, and with events other than readable, writable,
+  error and hang-up.
 - **`POLLRDHUP`** (`PollEvents::read_hang_up`, radix-process(2)) is new: a
   stream socket whose reading side has been shut by its peer's
   `shutdown(SHUT_WR)` or close, or by its own `SHUT_RD`. Unix and TCP

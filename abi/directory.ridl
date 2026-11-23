@@ -576,7 +576,7 @@ struct ScrubProgress {
 }
 
 /// A directory.
-interface directory = 0x000b version 12 {
+interface directory = 0x000b version 13 {
     kind = directory;
     /// Opens the file or directory at `path` (`.` for this one) and puts
     /// a capability to it with `rights` in slot `to`. Returns what it is.
@@ -1280,4 +1280,16 @@ interface directory = 0x000b version 12 {
                 outside, io, corrupt, too_many_links, not_socket, not_supported, connected,
                 refused, wrong_type, not_permitted, message_too_long, too_many, would_block,
                 gone, interrupted, denied];
+    /// Makes the file at `path` `size` bytes long, cut or grown with zeros,
+    /// as radix-file(2)'s `set_size` does, without opening it: truncate(2),
+    /// which watches hear as a change of the file alone (ADR 0615). A
+    /// symbolic link is followed. A directory fails with is_directory, any
+    /// other file but a regular one with invalid_argument, and a file the
+    /// caller may not write with denied. Needs the write right. (Since
+    /// Phase 18, ADR 0615.)
+    method set_size = 56 (path: in bytes, size: u64) -> ()
+        raises [no_such_slot, empty_slot, missing_rights, invalid_argument, no_memory,
+                bad_address, not_found, not_directory, is_directory, name_too_long, bad_name,
+                outside, read_only, no_space, quota_exceeded, too_big, io, corrupt,
+                too_many_links, denied];
 }

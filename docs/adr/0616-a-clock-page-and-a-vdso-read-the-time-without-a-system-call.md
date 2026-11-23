@@ -60,7 +60,10 @@ plus an offset, slewed by `adjtime` at most 500 ppm (radix-hal's
   anonymous memory only. A Linux program gets
   `AT_SYSINFO_EHDR`, and so does a Dukovo program, whose C library looks
   up `__dukovo_clock_read` by the vDSO's hash table and reads the clocks
-  through it, falling back to the system call when it says no.
+  through it, falling back to the system call when it says no. Its
+  dynamic linker lists the vDSO after the program (mlibc patch 0123), so
+  that `dl_iterate_phdr` gives the program first, as glibc does, which
+  Rust's backtraces take for the program.
 - `kernel/radix/tla/ClockPage.tla` checks the page's sequence lock with
   two writers and a reader (48,479 states): a reader that finds the same
   even sequence before and after never returns a half-written page, nor

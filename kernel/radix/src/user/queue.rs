@@ -459,7 +459,14 @@ impl Registry {
         if let Some(replaced) = self.put(watch.clone()) {
             self.delete(&replaced);
         }
-        if watch.held.lock().state.enabled() {
+        if !watch.held.lock().state.enabled() {
+            return;
+        }
+        // A new watch goes on the ring for the next wait to look at, but an
+        // exclusive one is looked at now, as Linux's epoll looks at a new
+        // registration: left on the ring, it would be reported for a change
+        // that woke another queue's waiter in its place.
+        if !watch.exclusive || ready_now(watch) {
             changed(watch);
         }
     }
@@ -979,6 +986,21 @@ fn attach(watch: &WatchRef, object: &Object) -> Result<()> {
         }
     });
     attached
+}
+
+/// Whether `watch`, just added and counted in its description's
+/// `Polled`s, is ready now; also when that takes a look to tell, because
+/// the description has gone or its new parts could not count the watch.
+/// A change made before the watch was counted is seen here, through the
+/// barrier, and one made after queues the watch.
+fn ready_now(watch: &WatchRef) -> bool {
+    let Some(object) = watch.watched.upgrade() else { return true };
+    if gains_polled(&object) && attach(watch, &object).is_err() {
+        return true;
+    }
+    fence(Ordering::SeqCst);
+    let events = PollEvents(u32::from(poll::events_of(&object)));
+    watch.held.lock().state.ready(watch.filter, events)
 }
 
 /// Calls the method `label` on the queue `found` holds, for `user`.

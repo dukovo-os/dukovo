@@ -319,12 +319,13 @@ constexpr unsigned int SEALS_ALL = 0x3f;
 // The longest name memfd_create takes, without its NUL.
 constexpr size_t MEMFD_NAME_MAX = 249;
 
-// F_ADD_SEALS of `add` for descriptor `fd`, or with `adding` false
-// F_GET_SEALS: the seals the memory file has, in `*seals`. As on Linux, in
-// this order for adding: EPERM if the descriptor is not open for writing,
-// EINVAL for a bit that is no seal, EINVAL for any file but a memory file
-// (for reading too), EPERM if the file is sealed with F_SEAL_SEAL (adding
-// none too), and EBUSY for F_SEAL_WRITE with a writable shared mapping.
+// F_ADD_SEALS of `add` for descriptor `fd`, which gives 0 in `*seals`, or
+// with `adding` false F_GET_SEALS: the seals the memory file has, in
+// `*seals`. As on Linux, in this order for adding: EPERM if the descriptor
+// is not open for writing, EINVAL for a bit that is no seal, EINVAL for any
+// file but a memory file (for reading too), EPERM if the file is sealed
+// with F_SEAL_SEAL (adding none too), and EBUSY for F_SEAL_WRITE with a
+// writable shared mapping.
 int file_seals(int fd, uint32_t slot, bool adding, unsigned int add, int *seals) {
 	if(adding) {
 		uint64_t rights;
@@ -340,7 +341,7 @@ int file_seals(int fd, uint32_t slot, bool adding, unsigned int add, int *seals)
 		return description_errno(status, EINVAL);
 	if(adding && !add && (r.seals & SEAL_SEAL))
 		return EPERM;
-	*seals = static_cast<int>(r.seals);
+	*seals = adding ? 0 : static_cast<int>(r.seals);
 	return 0;
 }
 
@@ -1148,15 +1149,17 @@ int Sysdeps<Renameat>::operator()(int olddirfd, const char *old_path, int newdir
 	});
 }
 
+// The directory's set_size, which opens nothing, so that watches hear of
+// the change alone, as on Linux (ADR 0615).
 int Sysdeps<Truncate>::operator()(const char *path, off_t length) {
 	if(length < 0)
 		return EINVAL;
-	int fd;
-	if(int e = sysdep<Open>(path, O_WRONLY | O_CLOEXEC, 0, &fd); e)
-		return e;
-	int e = sysdep<Ftruncate>(fd, length);
-	sysdep<Close>(fd);
-	return e;
+	return radix::at(AT_FDCWD, path, [&](const radix::Path &resolved) {
+		if(int from = named_fd(resolved); from >= 0)
+			return sysdep<Ftruncate>(from, static_cast<size_t>(length));
+		return radix::to_errno(radix_directory_set_size(resolved.dir, resolved.text,
+				resolved.len, static_cast<uint64_t>(length)));
+	});
 }
 
 // As on Linux, a negative length, a descriptor not open for writing and

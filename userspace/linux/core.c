@@ -1788,13 +1788,16 @@ static int set_file_limit(rlim_t limit, struct rlimit *saved) {
 
 // poll and ppoll take as many entries as the soft RLIMIT_NOFILE says, which
 // a program raises to wait on thousands of descriptors, and fail with
-// EINVAL past it. An entry with a negative descriptor is left out. A
-// socket whose peer has gone reports POLLRDHUP only to a poll that asks.
+// EINVAL past it, even by one entry that a fixed table of 4,096 would
+// hold. 4,000 fits under the hard limit of 4,096 that a program has unless
+// whoever started it gave it more. An entry with a negative descriptor is
+// left out. A socket whose peer has gone reports POLLRDHUP only to a poll
+// that asks.
 static void poll_many(void) {
-	enum { ENTRIES = 5000 };
+	enum { ENTRIES = 4000 };
 	struct rlimit saved;
 	if(!set_file_limit(ENTRIES, &saved)) {
-		skip("the hard limit on descriptors is below 5000");
+		skip("the hard limit on descriptors is below 4000");
 		return;
 	}
 	int fds[2];
@@ -1854,8 +1857,8 @@ static int bit_is_set(const unsigned char *set, int fd) {
 static void select_large(void) {
 	enum { NFDS = 2000, FIRST = 1500, SECOND = 1999 };
 	struct rlimit saved;
-	if(!set_file_limit(5000, &saved)) {
-		skip("the hard limit on descriptors is below 5000");
+	if(!set_file_limit(NFDS, &saved)) {
+		skip("the hard limit on descriptors is below 2000");
 		return;
 	}
 	int fds[2];

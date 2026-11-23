@@ -295,21 +295,7 @@ impl State {
             return None;
         }
         let user = filter == QueueFilter::User;
-        let mut found = 0;
-        let ready = match filter {
-            QueueFilter::User => self.triggered,
-            QueueFilter::Read => !events.intersection(PollEvents::READABLE.union(ENDED)).is_empty(),
-            QueueFilter::Write => {
-                !events.intersection(PollEvents::WRITABLE.union(ENDED)).is_empty()
-            }
-            QueueFilter::Poll => {
-                found = polled(events) & (self.asked | ALWAYS.bits());
-                found != 0
-            }
-        };
-        if !ready {
-            return None;
-        }
+        let found = self.found(filter, events)?;
         let mut flags = self.options;
         if !user && !events.intersection(ENDED).is_empty() {
             flags = flags.union(QueueFlags::EOF);
@@ -324,6 +310,30 @@ impl State {
             udata: self.udata,
         };
         Some((event, self.reported()))
+    }
+
+    /// Whether a look at the watch of `filter` would report it now, with
+    /// `events` what its descriptor is found ready for: what
+    /// [`State::report`] says, with none of a report's effects.
+    pub fn ready(&self, filter: QueueFilter, events: PollEvents) -> bool {
+        self.enabled && self.found(filter, events).is_some()
+    }
+
+    /// What the watch of `filter` is ready for, given `events`: a `poll`
+    /// watch's events, 0 for the others, or None when it is not ready.
+    fn found(&self, filter: QueueFilter, events: PollEvents) -> Option<u32> {
+        let ready = match filter {
+            QueueFilter::User => self.triggered,
+            QueueFilter::Read => !events.intersection(PollEvents::READABLE.union(ENDED)).is_empty(),
+            QueueFilter::Write => {
+                !events.intersection(PollEvents::WRITABLE.union(ENDED)).is_empty()
+            }
+            QueueFilter::Poll => {
+                let found = polled(events) & (self.asked | ALWAYS.bits());
+                return (found != 0).then_some(found);
+            }
+        };
+        ready.then_some(0)
     }
 
     /// What a report leaves of the watch, and what becomes of it.

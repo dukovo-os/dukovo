@@ -187,7 +187,7 @@ pub enum Paths<'a> {
 
 /// The methods the Linux table calls with [`Paths::Given`]: those whose
 /// paths [`Path::take`] reads.
-const GIVEN_PATHS: [u32; 16] = [
+const GIVEN_PATHS: [u32; 17] = [
     directory::OPEN,
     directory::MAKE_DIRECTORY,
     directory::REMOVE,
@@ -204,6 +204,7 @@ const GIVEN_PATHS: [u32; 16] = [
     directory::CONNECT_SOCKET,
     directory::SEND_DATAGRAM,
     directory::CHECK_ACCESS,
+    directory::SET_SIZE,
 ];
 
 /// A caller's buffer to read into, checked to be in user memory.
@@ -960,6 +961,29 @@ pub(super) fn directory_call(
             set_access(&who, &at, a.owner, a.group, a.mode)?;
             if notify::watched() {
                 notices::changed(vfs()?, &who, &dir.at, path.as_str()?, &at, IN_ATTRIB);
+            }
+            answer(label, 0, [0; 8])
+        }
+        directory::SET_SIZE => {
+            let a = directory::SetSizeArgs::decode(args)?;
+            let dir = directory_of(found, Rights::WRITE)?;
+            let mut path = Path::Empty;
+            let path = path.take(a.path, paths)?;
+            let who = who(found.cap.rights(), dir)?;
+            let at = vfs()?.resolve(&who, &dir.at, path.as_str()?).map_err(fs::status)?;
+            // In Linux's order: what the file is, then whether the caller
+            // may write it, then whether its filesystem may change.
+            match at.node.kind() {
+                Kind::File => {}
+                Kind::Directory => return Err(FileError::IsDirectory.status(0)),
+                _ => return Err(error(Kernel::InvalidArgument)),
+            }
+            who.check(&*at.node, want::WRITE).map_err(fs::status)?;
+            at.writable().map_err(fs::status)?;
+            grows_within_file_size(user, &at.node, a.size)?;
+            at.node.set_size(a.size).map_err(fs::status)?;
+            if notify::watched() {
+                notices::changed(vfs()?, &who, &dir.at, path.as_str()?, &at, IN_MODIFY);
             }
             answer(label, 0, [0; 8])
         }

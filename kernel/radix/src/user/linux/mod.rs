@@ -228,7 +228,7 @@ fn dispatch(me: &ThreadRef, user: &UserRef, regs: &SyscallRegs) -> Result<Done> 
         nr::FCNTL => descriptors::fcntl(me, user, a[0], a[1], a[2])?,
         nr::FLOCK => descriptors::flock(me, user, a[0], a[1])?,
         nr::FSYNC | nr::FDATASYNC => descriptors::fsync(me, user, a[0])?,
-        nr::TRUNCATE => names::truncate(me, user, a[0], a[1])?,
+        nr::TRUNCATE => names::truncate(user, a[0], a[1])?,
         nr::FTRUNCATE => descriptors::ftruncate(me, user, a[0], a[1])?,
         nr::FALLOCATE => descriptors::fallocate(me, user, a[0], a[1], a[2], a[3])?,
         nr::RENAME => names::rename(user, paths::AT_FDCWD, a[0], paths::AT_FDCWD, a[1], 0)?,

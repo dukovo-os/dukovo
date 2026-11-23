@@ -80,10 +80,12 @@ fn directory_bit(node: &NodeRef) -> u32 {
 
 /// Tells the watches of `node` that `bits` happened to it, and, if it
 /// has an entry, those of its directory with its name; `ends` if the
-/// node is gone.
+/// node is gone. `IN_ISDIR` goes with them for a directory, but for
+/// `IN_DELETE_SELF` and `IN_MOVE_SELF`, which Linux tells without it.
 fn tell_node(node: &NodeRef, entry: Option<&Entry>, bits: u32, ends: bool) {
+    let itself = bits & (IN_DELETE_SELF | IN_MOVE_SELF) != 0;
     let notice = Notice {
-        bits: bits | directory_bit(node),
+        bits: if itself { bits } else { bits | directory_bit(node) },
         cookie: 0,
         name: entry.map(|entry| &entry.name[..]),
         of_node: true,

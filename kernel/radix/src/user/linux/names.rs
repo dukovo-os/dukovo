@@ -55,19 +55,18 @@ pub fn faccessat(user: &UserRef, dirfd: u64, address: u64, mode: u64, how: u64) 
     Ok(0)
 }
 
-/// `truncate`: opens the file to write, as Dukovo's C library does, makes
-/// it `length` bytes long (the native `set_size`) and closes it. `length`
-/// may not be negative.
-pub fn truncate(me: &ThreadRef, user: &UserRef, address: u64, length: u64) -> Result<u64> {
+/// `truncate`: the native `set_size` of the directory the path is beneath,
+/// which makes the file `length` bytes long without opening it, so that
+/// watches hear of the change alone, as on Linux. `length` may not be
+/// negative.
+pub fn truncate(user: &UserRef, address: u64, length: u64) -> Result<u64> {
     if length > i64::MAX as u64 {
         return fail(EINVAL);
     }
-    let path = paths::read(address)?;
-    let open = flags::O_WRONLY | flags::O_CLOEXEC;
-    let slot = files::open_path(me, user, paths::AT_FDCWD, &path, open)?;
-    let resized = super::descriptors::resize(me, user, slot, length);
-    files::delete(me, user, slot);
-    resized?;
+    at(user, paths::AT_FDCWD, address, false, |place| {
+        let args = directory::SetSizeArgs { path: given(0, place.path.len()), size: length };
+        directory(user, place, directory::SET_SIZE, args.encode(), &[]).map(drop)
+    })?;
     Ok(0)
 }
 
