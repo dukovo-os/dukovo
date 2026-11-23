@@ -511,10 +511,14 @@ mod tests {
 
     /// A processor's structure (type 4): its socket's name is string 1,
     /// and the status at 0x18 has bit 6 set when a processor is in it.
+    /// `fields` starts after the 4-byte header, so offset `n` is `n - 4`.
     fn processor(populated: bool) -> Vec<u8> {
+        // The socket designation (0x04) and the status (0x18).
+        const SOCKET: usize = 0;
+        const STATUS: usize = 0x14;
         let mut fields = vec![0u8; 0x26];
-        fields[0x04 - 4] = 1;
-        fields[0x18 - 4] = if populated { 0x41 } else { 0 };
+        fields[SOCKET] = 1;
+        fields[STATUS] = if populated { 0x41 } else { 0 };
         fields
     }
 
