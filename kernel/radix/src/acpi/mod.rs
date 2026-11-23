@@ -21,12 +21,14 @@
 //! zones and watches them, slowing the CPUs at their passive trip points
 //! and powering off at their critical ones (ADR 0203). `ucsi` finds the
 //! firmware's USB-C ports and watches what is plugged into them (ADR
-//! 0248).
+//! 0248). `pci` reads each PCI host bridge's root bus and NUMA node
+//! from the namespace.
 //!
 //! With `aml=off`, or if uACPI cannot start, no AML runs, and the kernel
 //! hears the fixed power button by itself as before (ADR 0142).
 
 pub mod devices;
+mod pci;
 pub mod thermal;
 pub mod ucsi;
 
@@ -60,8 +62,9 @@ static MAY_SLEEP: Kmalloc = HEAP.with(Flags::MAY_SLEEP);
 static ATOMIC: Kmalloc = HEAP.with(Flags::ATOMIC);
 
 /// The most PCI buses whose configuration space AML reaches, each mapped
-/// once and kept.
-const MAX_BUSES: usize = 16;
+/// once and kept (a megabyte of address space each). A server's AML
+/// reaches a few buses on each of its root buses.
+const MAX_BUSES: usize = 64;
 
 /// The buses mapped so far: segment, bus, and its configuration space.
 static BUSES: SpinLock<[Option<(u16, u8, Mmio)>; MAX_BUSES]> =
@@ -127,6 +130,7 @@ pub fn start(off: bool) {
             devices::find();
             thermal::find();
             ucsi::find();
+            pci::find();
         }
         Err(err) => error!("ACPI: uACPI {err}; no AML runs"),
     }

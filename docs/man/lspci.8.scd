@@ -40,7 +40,8 @@ does not name shows its numbers: _Device 8086:2922_, or _Class 0106_.
 *-v*
 	The programming interface after each function, with its name, then
 	the subsystem (the board's vendor and model) on a line of its own,
-	and a blank line after each function. Linux's lspci shows more:
+	the NUMA node when the kernel knows it, and a blank line after each
+	function. Linux's lspci shows more:
 	the function's resources and capabilities.
 
 *-m*, *-mm*

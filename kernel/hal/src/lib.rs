@@ -577,6 +577,19 @@ pub trait Devices {
     /// mapping window or memory for page tables runs out.
     fn map_device(phys: u64, len: usize) -> Option<radix_hw::Mmio>;
 
+    /// Whether a device answers on the PCI bus whose configuration space
+    /// is the [`radix_hw::pci::BUS_SIZE`] bytes at physical address
+    /// `phys` ([`radix_hw::pci::bus_answers`]). The bus is mapped only
+    /// while it is looked at, so asking about every bus of a segment
+    /// leaves no lasting mapping behind. False when it cannot be mapped.
+    fn pci_bus_answers(phys: u64) -> bool;
+
+    /// The NUMA node of ACPI proximity domain `domain`: its place among
+    /// the domains the SRAT names, which is how the memory manager
+    /// numbers nodes. `None` when the SRAT does not name `domain`, or the
+    /// machine has no SRAT.
+    fn numa_node_of_domain(domain: u32) -> Option<u8>;
+
     /// Allocates `pages` pages of zeroed, physically contiguous memory for
     /// the PCI function `source` to read and write, below 4 GiB if
     /// `below_4g`. Behind an IOMMU, `source` reaches it, at its physical

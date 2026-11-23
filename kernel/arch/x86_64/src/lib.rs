@@ -64,6 +64,7 @@ mod smp;
 mod space;
 mod thread;
 mod time;
+mod tsc_sync;
 mod user;
 mod vga;
 mod vmware;
@@ -465,6 +466,14 @@ impl Devices for Arch {
 
     fn map_device(phys: u64, len: usize) -> Option<radix_hal::Mmio> {
         devices::map(phys, len)
+    }
+
+    fn pci_bus_answers(phys: u64) -> bool {
+        devices::pci_bus_answers(phys)
+    }
+
+    fn numa_node_of_domain(domain: u32) -> Option<u8> {
+        memory::numa_node_of_domain(domain)
     }
 
     fn alloc_dma(

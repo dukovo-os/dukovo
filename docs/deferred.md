@@ -74,7 +74,7 @@ machine with AMT, an AMD machine and a laptop; see
 | A lab test of a keyring entry set and read back | Needs a console sign-in with a password, which tests cannot type yet | Lab harness |
 | A real lab machine's console over Intel AMT's Serial-over-LAN for a whole run, with no serial cable (lab `amt` driver, dukovo-os/lab's docs/real-machines.md) | On the lab's OptiPlex 7040 (AMT 11.8, I219-LM), the net-booted writer's download stalled at 40 to 50% of the image in all five boots of the first run with a session open, where the cable takes 14 seconds; its Linux says `Reset blocked by ME` as e1000e starts. The lab's one AMT machine keeps its serial cable | Real hardware: an AMT machine without a serial port |
 | A lab test of `whois` | Needs a reachable whois server | Lab harness |
-| Receive-side scaling, checksum and segmentation offloads for the server cards and virtio-net; GSO and multi-queue tunnels (ADR 0339) | Measured against Linux on 10 GbE, and the lab's network is 1 GbE; moved out of Phase 16 so it does not hold 1.0.0-alpha.1 | 10 GbE in the lab: two Intel X520, X540 or X550 cards and a cable |
+| Receive-side scaling, checksum and segmentation offloads for the server cards and virtio-net; GSO and multi-queue tunnels (ADR 0339) | Measured against Linux on 10 GbE, and the lab's network is 1 GbE; moved out of Phase 16 so it does not hold 1.0.0-alpha.1 | Phase 19 step 12 (a queue per CPU, RSS and offloads), measured on the reference server's 10 GbE ports |
 | Intel's I217, I218 and I219s of Cannon Lake and later, and Realtek's RTL8127, on real chips (ADRs 0580, 0581) | No lab machine has one and QEMU emulates none; the unit tests check FreeBSD's and OpenBSD's sequences | A machine or card with one |
 | `services/log-forward` on the Mint lab PC, where it skips: AppArmor's profile for rsyslogd lets it read no configuration outside /etc; a local rule in `/etc/apparmor.d/local/usr.sbin.rsyslogd` allowing `/run/user/*/dukovo-lab/** rw,` lets it run | AppArmor's rules are the lab PC owner's to change, never a test's | A local AppArmor rule on the lab PC |
 
@@ -280,6 +280,17 @@ machine with AMT, an AMD machine and a laptop; see
 | The `data` of the event queue's read and write events, which `kevent` reports as 0: the bytes to read, the room to write, the connections waiting (ADR 0353) | nginx's kqueue module reads them, and nginx moves to the event queue with the nginx row above | 18a |
 | The event queue's timer, signal, process and file filters (`EVFILT_TIMER`, `EVFILT_SIGNAL`, `EVFILT_PROC`, `EVFILT_VNODE`): a change that names one fails with EINVAL, so PostgreSQL's wait on events, libevent and Python's `select.kqueue`, which name them, are built without kqueue and wait with `poll` (ADR 0353) | Built with `timerfd`, `signalfd` and `pidfd` on the queue | 18a |
 
+### Phase 19: server hardware
+
+| Item | Why it waits | Waits on |
+| --- | --- | --- |
+| Native PCIe control through `_OSC` (ADR 0660) | Taking control of PCIe errors and hot-plug before anything handles them would hide errors the firmware reports today; the firmware keeps control until then | Phase 19 steps 4 (hardware error reporting) and 14 (disk hot-swap), each asking for the control it handles |
+| More than 256 CPU threads and more than 8 NUMA nodes (ADR 0660) | Each address space's 4 KiB frame holds one 64-bit word per CPU to track which CPUs loaded its TLB generation (`Space::seen`), and that frame is full at 256 CPUs; the array needs a new design before the limit can rise | Phase 19 step 1b |
+| Correcting a TSC warp between packages (ADR 0660) | The kernel measures the first CPU of each other package against the boot CPU and logs the result, but does not correct it, as Linux's `tsc_sync` does; no machine seen so far shows a warp to test a correction on | A machine that shows a warp between packages |
+| NUMA tested beyond QEMU's emulated nodes: every device on its node, and memory placement, on two sockets | QEMU's nodes are emulated, and the lab has no two-socket machine yet | Phase 19 step 15, on the reference server |
+| Machine-check counts by DIMM slot | The kernel counts errors by bank, and names no memory module | Phase 19 step 4 |
+| SFP+ modules: their information, and fiber ports | No driver reads a module's EEPROM, and the cards with cages are the server cards | Phase 19 step 12 |
+
 ### Releases after 1.0
 
 These come from finished work; the releases themselves are in the
@@ -359,7 +370,7 @@ machine asks for them.
 | `/devices/shm`'s directory keeps its names in one array in the order they were made, with an index sorted by name, as tmpfs did before ADR 0367 kept its entries in pieces: it holds at most 32,768 shared memory objects, and removing one moves every one after it | ADR 0367 |
 | Frames grouped by how long they live, and compaction that moves pages to join free blocks, so that large blocks stay likely as memory breaks up: for the heap's slabs, blocks of up to 32 KiB, and for devices' memory; the heap's large requests already fall back to areas | ADR 0524 |
 | A lazy IOMMU mode | ADR 0164 |
-| Memory hot-plug; NUMA tested beyond QEMU's emulated nodes | memory design note |
+| Memory hot-plug | memory design note |
 | Swap files; zram or zswap; read-ahead on swap-in; reading the dirty bit so clean pages are not written | ADR 0152, memory design note |
 | Lower page tables charged to the process's resource domain | processes design note |
 | Kernel objects (threads, page tables) retyped from a process's own memory | capabilities design note |
@@ -420,7 +431,7 @@ machine asks for them.
 | An interface MTU below 1500 from DHCP's option 26 | ADR 0197 |
 | A ping socket bound to an address its echo requests do not go from: Radix sends them from the outgoing interface's own address, where Linux sends from the bound one or refuses with EINVAL when no route goes from it, so the routers' errors about them do not reach the socket (mtr's was, bound to 127.0.0.1, until its patch 0002) | ADR 0345 |
 | RSA keys made by certd: `this-machine` has an ECDSA P-256 key, since ring makes no RSA keys and every browser takes ECDSA; a certificate with an RSA key added by `cert add` works | ADR 0512 |
-| ENA's low-latency queues; gVNIC's DQO queue format; SFP+ modules; fiber and SerDes gigabit cards | ADR 0197 |
+| ENA's low-latency queues; gVNIC's DQO queue format; fiber and SerDes gigabit cards | ADR 0197 |
 | Legacy INTx interrupts through `_PRT`, for cards and SD controllers without MSI | ADRs 0197, 0198, 0437 |
 | MSI-X with several queues in driver programs | ADR 0198 |
 | Intel PCH Ethernet: Energy Efficient Ethernet, wake on LAN, jumbo frames, 82577 and 82578 | ADRs 0361, 0580 |
@@ -461,7 +472,7 @@ machine asks for them.
 | --- | --- |
 | IOMMU: devices behind a PCIe-to-PCI bridge, the display controller's DMA, 5- and 6-level AMD tables, HPET MSIs, posted interrupts, 128-bit AMD-Vi entries | ADRs 0164 to 0166 |
 | Watchdogs of Intel Atom SoCs and AMD SB700 and SB800 | ADR 0167 |
-| Machine checks: bad pages dropped from the file cache, a kernel copy from user memory ending its call, counts by DIMM, Zen's data-fabric address translation and deferred-error interrupt, retiring a page after many corrected errors, resetting the counts | ADRs 0168, 0169, 0204 |
+| Machine checks: bad pages dropped from the file cache, a kernel copy from user memory ending its call, Zen's data-fabric address translation and deferred-error interrupt, retiring a page after many corrected errors, resetting the counts | ADRs 0168, 0169, 0204 |
 | ACPI: the ECDT, controllers in GPE block devices, burst mode, battery alarms and charge limits | ADR 0201 |
 | CPU frequency: writable preference and range, HWP interrupts, energy-performance bias, preferred cores in the scheduler, CPPC through shared memory | ADR 0202 |
 | Thermal: active trip points and fans, `_PSL`, throttling states, hibernating at the hot trip point, writable modes | ADR 0203 |

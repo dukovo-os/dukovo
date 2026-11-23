@@ -8,8 +8,10 @@
 //! of a window in which every function's 4 KiB of configuration space sits
 //! at `bus << 20 | device << 15 | function << 12`. [`scan`] walks the
 //! buses a segment decodes from its first one, following PCI-to-PCI
-//! bridges to the buses behind them, and reports every function present
-//! with its base address registers (BARs) already sized. A function's
+//! bridges to the buses behind them, then every other root bus a device
+//! answers on (a multi-socket or EPYC server has several), and reports
+//! every function present with its base address registers (BARs) already
+//! sized and the root bus it is under. A function's
 //! capability list leads to its MSI and MSI-X capabilities, which
 //! [`Msi`] and [`MsiX`] program; drivers use only message-signalled
 //! interrupts, which need no firmware routing tables (ADR 0052).
@@ -20,6 +22,7 @@
 //! the PCI Express Base Specification describe the registers.
 
 use core::fmt;
+use core::ops::RangeInclusive;
 
 use crate::{Mmio, MsiMessage};
 
@@ -442,36 +445,93 @@ impl Iterator for Capabilities<'_> {
     }
 }
 
-/// Walks the buses of one PCI segment from `first_bus`, following bridges
-/// to the buses behind them while they stay within `last_bus`, and calls
-/// `found` for every function present. `map_bus` gives the ECAM window of
-/// a bus ([`BUS_SIZE`] bytes), or `None` if it cannot be mapped. Each bus
+/// Walks every bus of one PCI segment that holds a device, and calls
+/// `found` for every function present with the root bus it was found
+/// under. `map_bus` gives the ECAM window of a bus ([`BUS_SIZE`] bytes)
+/// to keep, or `None` if it cannot be mapped; `answers` says whether any
+/// device answers on a bus, looking without keeping a mapping. Each bus
 /// is visited once, however the bridges point.
+///
+/// The walk starts at `first_bus` and follows PCI-to-PCI bridges to the
+/// buses behind them while they stay within `last_bus`. A machine may
+/// have more than one root bus in a segment, each behind a host bridge
+/// of its own that no bridge leads to: a two-socket Xeon has its second
+/// socket's at bus 0x80, Xeon Scalable one per PCIe stack, and EPYC one
+/// per quadrant. So every bus the walk did not reach, in ascending order,
+/// is asked whether a device answers on it, and one that does is walked
+/// as a root too, as Linux's peer bridge fixup does: buses behind a root
+/// are numbered above it, so each root is walked before its children are
+/// asked about.
 pub fn scan(
     segment: u16,
     first_bus: u8,
     last_bus: u8,
     map_bus: &mut dyn FnMut(u8) -> Option<Mmio>,
-    found: &mut dyn FnMut(Function),
+    answers: &mut dyn FnMut(u8) -> bool,
+    found: &mut dyn FnMut(Function, u8),
 ) {
-    let mut visited = [0u64; 4];
+    let mut visited = Buses([0; 4]);
+    let window = first_bus..=last_bus;
+    walk(segment, first_bus, &window, &mut visited, map_bus, found);
+    for bus in window.clone() {
+        if !visited.has(bus) && answers(bus) {
+            walk(segment, bus, &window, &mut visited, map_bus, found);
+        }
+    }
+}
+
+/// Whether a device answers on a bus whose configuration space `read32`
+/// reads, at offsets within [`BUS_SIZE`]: whether some device's function
+/// 0 has a vendor and device ID that is not all ones or all zeroes (what
+/// an absent device reads as, or a misbehaving bridge forwards), as Linux
+/// tells a peer root bus.
+pub fn bus_answers(read32: &mut dyn FnMut(usize) -> u32) -> bool {
+    (0..32).any(|device| {
+        let address = Address { segment: 0, bus: 0, device, function: 0 };
+        let ids = read32(address.offset_in_bus() + VENDOR_ID);
+        !matches!(ids, 0xffff_ffff | 0 | 0x0000_ffff | 0xffff_0000)
+    })
+}
+
+/// A set of bus numbers.
+struct Buses([u64; 4]);
+
+impl Buses {
+    fn has(&self, bus: u8) -> bool {
+        self.0[usize::from(bus / 64)] & (1 << (bus % 64)) != 0
+    }
+
+    fn add(&mut self, bus: u8) {
+        self.0[usize::from(bus / 64)] |= 1 << (bus % 64);
+    }
+}
+
+/// Walks the buses from `root`, following bridges to the buses behind
+/// them while they stay within `window` and have not been visited.
+fn walk(
+    segment: u16,
+    root: u8,
+    window: &RangeInclusive<u8>,
+    visited: &mut Buses,
+    map_bus: &mut dyn FnMut(u8) -> Option<Mmio>,
+    found: &mut dyn FnMut(Function, u8),
+) {
     let mut pending = [0u8; 256];
     let mut count = 0;
-    pending[count] = first_bus;
+    pending[count] = root;
     count += 1;
     while count > 0 {
         count -= 1;
         let bus = pending[count];
-        let bit = 1u64 << (bus % 64);
-        if visited[usize::from(bus / 64)] & bit != 0 || !(first_bus..=last_bus).contains(&bus) {
+        if visited.has(bus) || !window.contains(&bus) {
             continue;
         }
-        visited[usize::from(bus / 64)] |= bit;
-        let Some(window) = map_bus(bus) else { continue };
+        visited.add(bus);
+        let Some(bus_window) = map_bus(bus) else { continue };
         for device in 0..32 {
             for function in 0..8 {
                 let address = Address { segment, bus, device, function };
-                let Some(config) = window.window(address.offset_in_bus(), CONFIG_SIZE) else {
+                let Some(config) = bus_window.window(address.offset_in_bus(), CONFIG_SIZE) else {
                     continue;
                 };
                 let Some(found_function) = Function::probe(address, config) else {
@@ -487,7 +547,7 @@ pub fn scan(
                     pending[count] = secondary;
                     count += 1;
                 }
-                found(found_function);
+                found(found_function, root);
                 if function == 0 && !more {
                     break;
                 }

@@ -34,6 +34,9 @@ pub(crate) struct Function {
     class: u32,
     revision: u8,
     subsystem: Option<(u16, u16)>,
+    /// The NUMA node, when the kernel knows it (`numa_node` reads -1 when
+    /// it does not).
+    numa_node: Option<u32>,
 }
 
 impl Function {
@@ -104,6 +107,9 @@ pub(crate) fn functions(dir: &Path) -> io::Result<Vec<Function>> {
             class,
             revision: read("revision").unwrap_or(0) as u8,
             subsystem,
+            numa_node: fs::read_to_string(path.join("numa_node"))
+                .ok()
+                .and_then(|text| text.trim().parse().ok()),
         });
     }
     found.sort_by_key(|f| (f.domain, f.bus, f.slot, f.func));
@@ -427,6 +433,9 @@ fn lines(functions: &[Function], names: &Names, show: &Show) -> Vec<String> {
                     vendor_device(vendor, name, (sv, sd), show.numbers)
                 ));
             }
+            if let Some(node) = f.numa_node {
+                out.push(format!("\tNUMA node: {node}"));
+            }
             out.push(String::new());
         }
     }
@@ -515,6 +524,7 @@ C ff  Unassigned class
             class,
             revision,
             subsystem: sub,
+            numa_node: None,
         }
     }
 
@@ -645,6 +655,8 @@ C ff  Unassigned class
             }
             fs::write(path.join("subsystem_vendor"), "0x1af4\n").unwrap();
             fs::write(path.join("subsystem_device"), "0x1100\n").unwrap();
+            let node = if name.ends_with("1f.2") { "1\n" } else { "-1\n" };
+            fs::write(path.join("numa_node"), node).unwrap();
         }
         // Not a function.
         fs::create_dir_all(dir.join("stray")).unwrap();
@@ -655,5 +667,15 @@ C ff  Unassigned class
         assert_eq!((found[1].slot, found[1].func, found[1].revision), (0x1f, 2, 2));
         assert_eq!(found[1].class, 0x010601);
         assert_eq!(found[1].subsystem, Some((0x1af4, 0x1100)));
+        assert_eq!((found[0].numa_node, found[1].numa_node), (None, Some(1)));
+    }
+
+    #[test]
+    fn verbose_shows_the_numa_node_when_known() {
+        let mut f = q35();
+        f[1].numa_node = Some(1);
+        let verbose = lines(&f, &Names::default(), &show(Ids::Names, true, false));
+        assert_eq!(verbose.iter().filter(|line| line.contains("NUMA node")).count(), 1);
+        assert!(verbose.contains(&"\tNUMA node: 1".to_string()));
     }
 }
