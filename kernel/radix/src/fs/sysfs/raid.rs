@@ -18,10 +18,12 @@
 //! may read it, and it fails to open (ENOTSUP) for a disk that keeps no
 //! record.
 
+use alloc::vec::Vec;
 use core::any::Any;
 use core::fmt::Write;
 
 use radix_klog::TextBuf;
+use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_vfs::synthetic::{FixedDir, ListedDir, Listing, read_bytes};
 use radix_vfs::{Access, Error, Kind, Node, NodeRef, Out, Result, Stat, mem, next_id};
 
@@ -106,10 +108,15 @@ struct HealthFile {
 }
 
 impl HealthFile {
-    /// What the disk says now.
-    fn read_now(&self) -> Result<[u8; HEALTH_SIZE]> {
-        let mut bytes = [0u8; HEALTH_SIZE];
-        self.adapter.health(self.device, &mut bytes)?;
+    /// What the disk says now, on the heap: a record in the frame, and a
+    /// copy of it in the frame of whoever keeps it, would be over a stack
+    /// frame's budget (ADR 0058).
+    fn read_now(&self) -> Result<Vec<u8, Kmalloc>> {
+        let mut bytes = radix_mm::bytes::zeroed(HEALTH_SIZE, HEAP.with(Flags::MAY_SLEEP))
+            .map_err(|_| Error::NoMemory)?;
+        let record: &mut [u8; HEALTH_SIZE] =
+            bytes.as_mut_slice().try_into().map_err(|_| Error::NoMemory)?;
+        self.adapter.health(self.device, record)?;
         Ok(bytes)
     }
 }
@@ -153,7 +160,7 @@ impl Node for HealthFile {
 /// A disk's health record as one handle read it.
 struct Record {
     id: u64,
-    bytes: [u8; HEALTH_SIZE],
+    bytes: Vec<u8, Kmalloc>,
     taken: u64,
 }
 
