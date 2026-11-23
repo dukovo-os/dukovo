@@ -73,7 +73,20 @@ fn fill(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     // `dd` ends with status 1, shown as 101 so that the line typed does
     // not hold what the test waits for.
     vm.type_text(&format!("{FILL}\n"))?;
-    wait_for_screen(vm, "filled: 1", FILL_SECONDS)?;
+    wait_for_screen(vm, "filled: 1", FILL_SECONDS).map_err(|err| {
+        // What the kernel said of memory and of the files while the disk
+        // filled, which the end of the serial log may no longer hold.
+        let log = vm.log();
+        let said: Vec<&str> = log
+            .lines()
+            .filter(|line| line.contains("Out of memory") || line.contains("Files: "))
+            .take(8)
+            .collect();
+        format!(
+            "{err}; the kernel said: {}",
+            if said.is_empty() { "nothing of memory".into() } else { said.join(" | ") }
+        )
+    })?;
     vm.expect_screen(&["No space left on device", "most dirty ", "under: 42", "filled: 101"])?;
     // The system goes on, and the room comes back.
     vm.type_text(

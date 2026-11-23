@@ -58,6 +58,22 @@ for a time it works out from each disk's measured speed.
   went in 30 s; writers go on`). A thread asked to stop stops waiting
   within 100 ms. Each later write over the limit waits again, so memory
   then fills by a write every 30 seconds, not at the speed of memory.
+- **Reclaim in a thread of its own.** Clean pages can be dropped, but
+  only by a thread that holds no cache's lock, which was the writeback
+  thread: while it wrote a fifth of memory back, seconds on a slow disk,
+  no clean page went, and the out-of-memory policy, which waits a fifth of
+  a second for a reclaim, stopped a domain. A reclaim thread now drops
+  them beside it, as Linux's kswapd does beside its flushers: when asked,
+  and when less than a 32nd of memory is free at its look each second. It
+  passes over a cache whose lock is held, as while it is written back or
+  while a writer that holds it waits for memory, so it never waits.
+- **Writers look at free memory.** Once the dirty pages are held, what a
+  writer wrote stays cached clean, and a writer that fills memory with it
+  runs memory out while it holds its own file's cache, whose clean pages
+  are then the ones the reclaim thread cannot take. So each time the
+  caches have grown by a 256th of memory, a writer looks at free memory
+  after its write, with no lock held, and when less than a 32nd is free
+  it waits for the reclaim thread, a second at most.
 - **What can be seen.** `/processes/meminfo` gives `dirty`, as Linux's
   `Dirty`, and kdb's `mem` the dirty pages and how many writers waited and
   gave up.
@@ -80,6 +96,10 @@ for a time it works out from each disk's measured speed.
   later change, which the count per disk would need first.
 - A write to a tmpfs file also waits while the disks' dirty data is over
   the limit, though its own pages are not counted.
+- A writer that fills the caches drops their older clean pages as it
+  goes, a quarter at a time, as Linux's reclaim does; the reclaim thread
+  looks at free memory once a second, which takes the frame allocator's
+  locks.
 - Only `write` makes pages dirty: a program's mapping of a file is its own
   copy, and a shared writable one is refused (radix-posix(7)). Shared
   mappings of files, when they come, are to be held to the limit where

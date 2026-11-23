@@ -1,18 +1,25 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The writeback thread.
+//! The writeback thread, and the reclaim thread beside it.
 //!
-//! Every [`INTERVAL_NS`] it writes each filesystem whose changes in memory
-//! are due to its disk (`Vfs::sync_due`): every change for most, those 30 s
-//! old for Btrfs, so at most that much work is lost when the power goes,
-//! as with Linux's flusher threads. Powering off writes every change
-//! (`Vfs::sync_all`). It also drops clean
-//! cached pages, which the disk has, when memory runs short: when the
-//! frame allocator's free pages fall below 1/64 of memory at a wake-up,
-//! and whenever the out-of-memory policy asks ([`reclaim`]) before it
-//! stops a resource domain. Dropping pages takes the caches' locks, so it
-//! runs here, in a thread that holds none, never inside an allocation.
+//! Every [`INTERVAL_NS`] the writeback thread writes each filesystem whose
+//! changes in memory are due to its disk (`Vfs::sync_due`): every change
+//! for most, those 30 s old for Btrfs, so at most that much work is lost
+//! when the power goes, as with Linux's flusher threads. Powering off
+//! writes every change (`Vfs::sync_all`).
+//!
+//! The reclaim thread drops clean cached pages, which the disk has, when
+//! memory runs short: when less than a 32nd of memory is free at its look
+//! each second, when a writer finds it so ([`throttle`]), and whenever the
+//! out-of-memory policy asks ([`reclaim`]) before it stops a resource
+//! domain, as Linux's kswapd does beside its flushers. Dropping pages
+//! takes the caches' locks, so it runs in a thread that holds none, never
+//! inside an allocation, and in a thread of its own: a write-back of a
+//! fifth of memory takes seconds on a slow disk, and the out-of-memory
+//! policy waits a fifth of a second for a reclaim. It passes over a cache
+//! whose lock is held, as by the write-back or by a writer that waits for
+//! memory, so it never waits for one either.
 //!
 //! Unwritten data cannot fill memory either, as it did when a program
 //! wrote a file faster than its disk took it: once the pages of files
@@ -36,6 +43,22 @@ pub const INTERVAL_NS: u64 = 5_000_000_000;
 /// The fewest pages a reclaim drops, when the caches hold that many.
 const RECLAIM_MIN: usize = 256;
 
+/// How often the reclaim thread looks at free memory by itself.
+const RECLAIM_LOOK_NS: u64 = 1_000_000_000;
+
+/// Memory over the free pages under which memory is short, and clean
+/// cached pages are dropped: a 32nd of it.
+const SHORT_SHARE: usize = 32;
+
+/// Memory over the growth of the caches after which a writer looks at
+/// free memory again ([`throttle`]): a 256th of it, so that a writer that
+/// fills the caches finds memory short before it has run out.
+const LOOK_SHARE: usize = 256;
+
+/// How long a writer that finds memory short waits for the reclaim
+/// thread, at most.
+const WRITER_RECLAIM_NS: u64 = 1_000_000_000;
+
 /// Memory over the dirty pages that have the thread write back at once:
 /// a tenth of it.
 const BACKGROUND_SHARE: usize = 10;
@@ -54,6 +77,10 @@ const WAIT_STUCK_NS: u64 = 30_000_000_000;
 /// until the thread starts.
 static BACKGROUND_LIMIT: AtomicUsize = AtomicUsize::new(usize::MAX);
 static WAIT_LIMIT: AtomicUsize = AtomicUsize::new(usize::MAX);
+/// The memory the kernel manages, in pages, as last worked out.
+static MANAGED: AtomicUsize = AtomicUsize::new(0);
+/// The pages the caches hold at which a writer next looks at free memory.
+static NEXT_LOOK: AtomicUsize = AtomicUsize::new(0);
 
 /// Write-backs of everything asked for by writers, and done.
 static FLUSH_ASKED: AtomicU64 = AtomicU64::new(0);
@@ -71,6 +98,7 @@ static DROPPED: AtomicU64 = AtomicU64::new(0);
 static FAILED: AtomicU64 = AtomicU64::new(0);
 
 static THREAD: Once<ThreadRef> = Once::new();
+static RECLAIMER: Once<ThreadRef> = Once::new();
 
 fn asked_key() -> usize {
     &raw const ASKED as usize
@@ -78,6 +106,10 @@ fn asked_key() -> usize {
 
 fn done_key() -> usize {
     &raw const DONE as usize
+}
+
+fn flush_asked_key() -> usize {
+    &raw const FLUSH_ASKED as usize
 }
 
 fn flushed_key() -> usize {
@@ -89,13 +121,14 @@ fn flushed_key() -> usize {
 /// returns the background limit.
 fn set_limits() -> usize {
     let managed = FRAMES.managed_pages() as usize;
+    MANAGED.store(managed, Ordering::Relaxed);
     let background = managed / BACKGROUND_SHARE;
     BACKGROUND_LIMIT.store(background, Ordering::Relaxed);
     WAIT_LIMIT.store(managed / WAIT_SHARE, Ordering::Relaxed);
     background
 }
 
-/// Starts the thread.
+/// Starts the threads.
 pub fn start() {
     set_limits();
     match sched::spawn("writeback", run, 0, Options::new().policy(Policy::Fair { nice: 0 })) {
@@ -104,22 +137,30 @@ pub fn start() {
         }
         Err(err) => error!("Files: could not start the writeback thread: {err}"),
     }
+    match sched::spawn("reclaim", run_reclaim, 0, Options::new().policy(Policy::Fair { nice: 0 })) {
+        Ok(thread) => {
+            let _ = RECLAIMER.set(thread);
+        }
+        Err(err) => error!("Files: could not start the reclaim thread: {err}"),
+    }
+}
+
+/// Whether memory is short: less than a [`SHORT_SHARE`] of what the
+/// kernel manages is free. Takes the frame allocator's locks.
+fn short() -> bool {
+    (FRAMES.free_pages() as usize) < MANAGED.load(Ordering::Relaxed) / SHORT_SHARE
 }
 
 fn run(_: usize) {
     let mut next_sync = sched::now_ns().saturating_add(INTERVAL_NS);
     loop {
-        wait::wait_until_or_timeout(asked_key(), "writeback", next_sync, || {
-            ASKED.load(Ordering::Acquire) != DONE.load(Ordering::Acquire)
-                || FLUSH_ASKED.load(Ordering::Acquire) != FLUSH_DONE.load(Ordering::Acquire)
+        wait::wait_until_or_timeout(flush_asked_key(), "writeback", next_sync, || {
+            FLUSH_ASKED.load(Ordering::Acquire) != FLUSH_DONE.load(Ordering::Acquire)
         });
-        let asked = ASKED.load(Ordering::Acquire);
         let flush = FLUSH_ASKED.load(Ordering::Acquire);
         let Some(vfs) = super::vfs() else {
             // No files, for now or for good: an ask is answered with
-            // nothing dropped, and the next look waits its turn.
-            DONE.store(asked, Ordering::Release);
-            wait::wake_all(done_key());
+            // nothing written, and the next look waits its turn.
             FLUSH_DONE.store(flush, Ordering::Release);
             wait::wake_all(flushed_key());
             if sched::now_ns() >= next_sync {
@@ -128,7 +169,7 @@ fn run(_: usize) {
             continue;
         };
         // Too much unwritten data: every filesystem goes to its disk now,
-        // before clean pages are dropped, so that its pages can go too.
+        // so that its pages can be dropped too.
         if flush != FLUSH_DONE.load(Ordering::Acquire)
             || radix_vfs::cache::dirty_pages() >= set_limits()
         {
@@ -139,14 +180,6 @@ fn run(_: usize) {
             }
             FLUSH_DONE.store(flush, Ordering::Release);
             wait::wake_all(flushed_key());
-        }
-        let short = FRAMES.free_pages() < FRAMES.managed_pages() / 64;
-        if asked != DONE.load(Ordering::Acquire) || short {
-            let cached = radix_block::mem::pages() as usize;
-            let dropped = vfs.shrink((cached / 4).max(RECLAIM_MIN));
-            DROPPED.fetch_add(dropped as u64, Ordering::AcqRel);
-            DONE.store(asked, Ordering::Release);
-            wait::wake_all(done_key());
         }
         if sched::now_ns() >= next_sync {
             if let Err(err) = vfs.sync_due() {
@@ -162,11 +195,34 @@ fn run(_: usize) {
     }
 }
 
-/// Asks the thread to drop clean cached pages and waits for it, up to
-/// `timeout_ns`. Returns whether any went. The writeback thread itself
-/// gets `false` at once: it cannot wait for itself.
+/// The reclaim thread: drops a quarter of the clean cached pages, 256 at
+/// least, when asked ([`reclaim`]) or when memory is short at its look.
+fn run_reclaim(_: usize) {
+    loop {
+        let deadline = sched::now_ns().saturating_add(RECLAIM_LOOK_NS);
+        wait::wait_until_or_timeout(asked_key(), "reclaim", deadline, || {
+            ASKED.load(Ordering::Acquire) != DONE.load(Ordering::Acquire)
+        });
+        let asked = ASKED.load(Ordering::Acquire);
+        if asked != DONE.load(Ordering::Acquire) || short() {
+            // No files, for now or for good: an ask is answered with
+            // nothing dropped.
+            if let Some(vfs) = super::vfs() {
+                let cached = radix_block::mem::pages() as usize;
+                let dropped = vfs.shrink((cached / 4).max(RECLAIM_MIN));
+                DROPPED.fetch_add(dropped as u64, Ordering::AcqRel);
+            }
+            DONE.store(asked, Ordering::Release);
+            wait::wake_all(done_key());
+        }
+    }
+}
+
+/// Asks the reclaim thread to drop clean cached pages and waits for it,
+/// up to `timeout_ns`. Returns whether any went. The reclaim thread
+/// itself gets `false` at once: it cannot wait for itself.
 pub fn reclaim(timeout_ns: u64) -> bool {
-    let Some(thread) = THREAD.get() else { return false };
+    let Some(thread) = RECLAIMER.get() else { return false };
     if sched::current().is_some_and(|me| ThreadRef::ptr_eq(&me, thread)) {
         return false;
     }
@@ -185,12 +241,30 @@ pub fn reclaim(timeout_ns: u64) -> bool {
 /// write everything back; past a fifth it waits until the thread has
 /// brought them under, looking again every [`WAIT_SLICE_NS`]. Only a stop
 /// cuts the wait short, or [`WAIT_STUCK_NS`] in which the dirty pages did
-/// not go down. The caller holds no lock: the thread takes the files'.
+/// not go down. Each time the caches have grown by a [`LOOK_SHARE`] of
+/// memory, it also looks at free memory, and when memory is short it
+/// waits for the reclaim thread to drop clean pages: a writer filling
+/// the caches would otherwise run memory out while holding its file's
+/// cache, whose clean pages the reclaim thread then cannot drop. The
+/// caller holds no lock: the threads take the files'.
 #[inline]
 pub fn throttle() {
     if radix_vfs::cache::dirty_pages() >= BACKGROUND_LIMIT.load(Ordering::Relaxed) {
         hold();
     }
+    if radix_block::mem::pages() as usize >= NEXT_LOOK.load(Ordering::Relaxed) {
+        look_at_memory();
+    }
+}
+
+/// [`throttle`]'s look at free memory once the caches have grown enough.
+#[cold]
+fn look_at_memory() {
+    let step = (MANAGED.load(Ordering::Relaxed) / LOOK_SHARE).max(1);
+    if short() {
+        reclaim(WRITER_RECLAIM_NS);
+    }
+    NEXT_LOOK.store((radix_block::mem::pages() as usize).saturating_add(step), Ordering::Relaxed);
 }
 
 /// [`throttle`]'s work once the dirty pages are over the background
@@ -249,7 +323,7 @@ fn ask_flush() -> u64 {
         return asked;
     }
     let ticket = FLUSH_ASKED.fetch_add(1, Ordering::AcqRel) + 1;
-    wait::wake_all(asked_key());
+    wait::wake_all(flush_asked_key());
     ticket
 }
 

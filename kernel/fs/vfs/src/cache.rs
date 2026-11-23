@@ -733,12 +733,14 @@ impl FileCache {
     }
 
     /// Drops up to `max` clean pages, which the disk has; returns how many
-    /// went. Pages of a file without a disk are never dropped.
+    /// went. Pages of a file without a disk are never dropped. A cache
+    /// whose lock is held is passed over, as while it is written back or
+    /// a writer that holds it waits for memory: shrinking never waits.
     pub fn shrink(&self, max: usize, backing: &dyn Backing) -> usize {
         if !backing.persistent() || max == 0 {
             return 0;
         }
-        let mut state = self.state.lock();
+        let Some(mut state) = self.state.try_lock() else { return 0 };
         let mut dropped = 0;
         state.pages.retain(
             |_, slot| {

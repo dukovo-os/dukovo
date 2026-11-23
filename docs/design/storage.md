@@ -773,12 +773,15 @@ opened, so that a reader sees one snapshot. They are read-only.
 
 The writeback thread wakes every five seconds and syncs every filesystem
 with changes (`Vfs::sync_all`), so a power cut loses at most that much,
-as with Linux's flusher threads. When the frame allocator's free pages
-fall below 1/64 of memory at a wake-up, it also drops clean cached pages,
-and the out-of-memory policy asks it to (`writeback::reclaim`) before it
-stops a resource domain (ADR 0029). Dropping pages takes the caches'
-locks, so it only ever happens in this thread, which holds none, and
-never inside an allocation.
+as with Linux's flusher threads. The reclaim thread beside it drops clean
+cached pages: when less than a 32nd of memory is free at its look each
+second, when a writer finds it so, and when the out-of-memory policy asks
+(`writeback::reclaim`) before it stops a resource domain (ADR 0029), as
+Linux's kswapd does. Dropping pages takes the caches' locks, so it only
+ever happens in this thread, which holds none, and never inside an
+allocation. It is a thread of its own so that a write-back, which takes
+seconds on a slow disk, never holds it up, and it passes over a cache
+whose lock is held rather than wait for it (ADR 0547).
 
 Dirty pages cannot be dropped, so writers are held to a limit of them
 (ADR 0547). Each file's cache adds the pages of a file on a disk that it
@@ -788,7 +791,11 @@ held, `writeback::throttle` looks at it: over a tenth of memory it asks
 the thread for an immediate `Vfs::sync_all`, and over a fifth the writer
 waits for the thread in 100 ms slices until the count is under, or until
 30 seconds have gone with no page written. `/processes/meminfo` shows
-the count as `dirty`.
+the count as `dirty`. Each time the caches have grown by a 256th of
+memory, the writer also looks at free memory, and when it is short waits
+for the reclaim thread: a writer that fills the caches with what it
+wrote would otherwise run memory out while it holds its file's cache,
+whose clean pages the reclaim thread then cannot take.
 
 Programs' anonymous memory is not cached data: with a swap area on, the swap thread writes it out, after the
 page cache has given back what it can (ADR 0152).
