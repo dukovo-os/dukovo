@@ -2281,7 +2281,9 @@ static void alarm_in(long ms) {
 
 // What the waits that give back their time left say when a signal cuts them
 // short: ppoll, pselect6 and select write the time left in their timeout, so
-// that the call made again waits only that, and poll fails with EINTR.
+// that the call made again waits only that, and poll fails with EINTR. Each
+// is the system call itself: musl's select hands the kernel a copy of the
+// timeout and gives back none of it.
 static void wait_time_left(void) {
 	struct sigaction act, old;
 	memset(&act, 0, sizeof(act));
@@ -2307,7 +2309,7 @@ static void wait_time_left(void) {
 
 	struct timeval time = {2, 0};
 	alarm_in(100);
-	CHECK_ERROR(select(0, NULL, NULL, NULL, &time), EINTR);
+	CHECK_ERROR(syscall(SYS_select, 0L, NULL, NULL, NULL, &time), EINTR);
 	ns = ((long long)time.tv_sec * 1000000 + time.tv_usec) * 1000;
 	CHECK(signal_hits == 3 && ns < whole - spent && ns > least);
 
