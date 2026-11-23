@@ -59,7 +59,7 @@ use radix_abi::address_space::{ANONYMOUS_TOP, PAGE_SIZE};
 use radix_abi::capability::Rights as AbiRights;
 use radix_abi::errors::Kernel;
 use radix_cap::CapError;
-use radix_hal::{MapPageError, PageEdit, UserAccess, UserMode};
+use radix_hal::{MAX_CPUS, MapPageError, PageEdit, Smp, UserAccess, UserMode};
 use radix_ipc::range::user_pages;
 use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_sync::Mutex;
@@ -74,6 +74,7 @@ use super::ring::RingRef;
 use super::{Result, error};
 use crate::Arch;
 use crate::domains::DomainRef;
+use crate::percpu::{PerCpu, Slot};
 
 /// An address space, shared.
 pub type SpaceRef = Arc<SpaceObject, Kmalloc>;
@@ -235,6 +236,16 @@ static SPACES: Mutex<Option<Vec<Weak<SpaceObject, Kmalloc>, Kmalloc>>> = Mutex::
 
 /// Where the swap thread goes on in [`SPACES`].
 static NEXT_SPACE: AtomicUsize = AtomicUsize::new(0);
+
+/// Page faults resolved in any space, counted by the CPU that resolved
+/// them, for the benchmarks ([`faults_resolved`]).
+static FAULTS: PerCpu<AtomicU64> = PerCpu::new([const { Slot::new(AtomicU64::new(0)) }; MAX_CPUS]);
+
+/// The page faults resolved in every space since boot, minor and major.
+pub fn faults_resolved() -> u64 {
+    let cpus = Arch::cpu_count().min(MAX_CPUS);
+    (0..cpus).map(|cpu| FAULTS.get(cpu).load(Ordering::Relaxed)).sum()
+}
 
 /// The space at or after place `at` of [`SPACES`] that is still there,
 /// and the place after it.

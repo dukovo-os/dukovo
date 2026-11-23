@@ -133,7 +133,12 @@ struct CpuSched {
     /// kernel (`radix_sched::account`); the rest found it idle.
     user_ticks: AtomicU64,
     system_ticks: AtomicU64,
+    /// Switches away from a thread that could have gone on: not from the
+    /// idle thread, which gives way whenever work comes.
     preemptions: AtomicU64,
+    /// Threads this CPU moved to another CPU than the one they ran on
+    /// last, as it woke them or balanced ([`count_migration`]).
+    migrations: AtomicU64,
     /// Set by a switch away from a thread that has exited, for the thread
     /// switched to, which tells the reaper (`after_switch`).
     left_dead: AtomicBool,
@@ -189,6 +194,7 @@ impl CpuSched {
             user_ticks: AtomicU64::new(0),
             system_ticks: AtomicU64::new(0),
             preemptions: AtomicU64::new(0),
+            migrations: AtomicU64::new(0),
             idle_ns: AtomicU64::new(0),
             idle_since: AtomicU64::new(0),
             idle_seq: AtomicU64::new(0),
@@ -926,7 +932,7 @@ fn place_woken(thread: &ThreadRef, mut state: SpinLockGuard<'_, State>, target: 
         return;
     }
     if target != thread.cpu.load(Ordering::Relaxed) {
-        thread.stats.migrations.fetch_add(1, Ordering::Relaxed);
+        count_migration(thread);
     }
     thread.cpu.store(target, Ordering::Relaxed);
     drop(state);
@@ -1110,7 +1116,7 @@ fn enqueue_on(thread: &ThreadRef, state: &mut State, new: bool, target: usize) {
         panic!("Scheduler: CPU {target} has no run queue");
     };
     if target != previous && !new {
-        thread.stats.migrations.fetch_add(1, Ordering::Relaxed);
+        count_migration(thread);
     }
     thread.cpu.store(target, Ordering::Relaxed);
     rq.enqueue(thread.clone(), Class::of(state, new));
@@ -1580,10 +1586,11 @@ fn reschedule(mut why: Switch) {
             }
         }
     }
+    let idled = rq.idling();
     let next = rq.pick();
     let switching = !ThreadRef::ptr_eq(&next, &me);
     if switching {
-        slot.preemptions.fetch_add(u64::from(why == Switch::Preempt), Ordering::Relaxed);
+        slot.preemptions.fetch_add(u64::from(why == Switch::Preempt && !idled), Ordering::Relaxed);
         match why {
             Switch::Block(_) => me.stats.voluntary.fetch_add(1, Ordering::Relaxed),
             Switch::Preempt | Switch::Yield => me.stats.involuntary.fetch_add(1, Ordering::Relaxed),
@@ -2067,8 +2074,16 @@ pub fn thread_count() -> usize {
 /// `cpu`.
 fn adopt(rq: &mut Rq, cpu: usize, thread: ThreadRef, class: Class) {
     thread.cpu.store(cpu, Ordering::Relaxed);
-    thread.stats.migrations.fetch_add(1, Ordering::Relaxed);
+    count_migration(&thread);
     rq.enqueue(thread, class);
+}
+
+/// Counts a move of `thread` to another CPU than the one it ran on last:
+/// in its own statistics, and in those of the CPU that moved it, which
+/// alone writes them.
+fn count_migration(thread: &ThreadRef) {
+    thread.stats.migrations.fetch_add(1, Ordering::Relaxed);
+    CPUS.get(Arch::current_cpu()).migrations.fetch_add(1, Ordering::Relaxed);
 }
 
 // ---- Reports ----
@@ -2086,8 +2101,13 @@ pub fn pulled(cpu: usize) -> Option<[u64; 4]> {
 /// CPUs, for the benchmarks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counters {
-    /// Context switches.
+    /// Context switches, the ones that took the CPU from a thread that
+    /// could have gone on, and moves of threads to another CPU than the
+    /// one they ran on last, each of which leaves the thread's memory in
+    /// the other CPU's caches.
     pub switches: u64,
+    pub preemptions: u64,
+    pub migrations: u64,
     /// Writes of the timer hardware.
     pub timer_writes: u64,
     /// Interprocessor interrupts sent.
@@ -2106,6 +2126,8 @@ impl Counters {
     pub fn since(&self, earlier: &Counters) -> Counters {
         Counters {
             switches: self.switches.wrapping_sub(earlier.switches),
+            preemptions: self.preemptions.wrapping_sub(earlier.preemptions),
+            migrations: self.migrations.wrapping_sub(earlier.migrations),
             timer_writes: self.timer_writes.wrapping_sub(earlier.timer_writes),
             ipis: self.ipis.wrapping_sub(earlier.ipis),
             halts: self.halts.wrapping_sub(earlier.halts),
@@ -2128,6 +2150,8 @@ pub fn counters() -> Counters {
     for cpu in online().iter() {
         let slot = CPUS.get(cpu);
         total.switches += slot.rq.lock_irq().as_ref().map_or(0, |rq| rq.switches);
+        total.preemptions += slot.preemptions.load(Ordering::Relaxed);
+        total.migrations += slot.migrations.load(Ordering::Relaxed);
         total.timer_writes += Arch::timer_writes(cpu);
         total.ipis += Arch::ipis_sent(cpu);
         total.halts += slot.halts.load(Ordering::Relaxed);

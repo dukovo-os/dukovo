@@ -55,7 +55,9 @@
 //! and PostgreSQL, whose rows print in the same format as the rest.
 //! It prints a `BENCHCOUNT` line after each measured pass too, with the
 //! context switches and the CPU time (user, system, idle) of the pass from
-//! `/proc/stat`.
+//! `/proc/stat`, and the page faults (`pgfault` in `/proc/vmstat`) and the
+//! interrupts (the total of the `intr` line of `/proc/stat`) of the pass,
+//! each left out if its file cannot be read.
 //!
 //! After the TLB shootdowns it prints how many TLB interrupts reached the
 //! other CPU (the `TLB` line of `/proc/interrupts`), as Radix prints its

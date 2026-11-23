@@ -688,6 +688,12 @@ fn stat(text: &mut Text) -> fmt::Result {
     writeln!(text, "ipis: {}", events.ipis)?;
     writeln!(text, "halts: {}", events.halts)?;
     writeln!(text, "polls: {}", events.polls)?;
+    // What leaves a thread's memory out of the CPU's caches and TLB: a
+    // switch away from a thread that could have gone on, a move to
+    // another CPU, and a page fault, all since boot.
+    writeln!(text, "preemptions: {}", events.preemptions)?;
+    writeln!(text, "migrations: {}", events.migrations)?;
+    writeln!(text, "faults: {}", crate::user::memory::faults_resolved())?;
     // Lock contention, for `ob bench --scaling`: threads that found a
     // mutex taken, threads that slept for one, mutexes handed to a
     // sleeper or let go with one woken to try again, and how often the

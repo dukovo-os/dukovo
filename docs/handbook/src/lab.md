@@ -384,8 +384,13 @@ or a Unix socket with its data in `/tmp`, and prints each row after a
 warm-up pass and three measured passes, of which the lab keeps the fastest.
 Each measured pass is followed by a `BENCHCOUNT` line with the machine's
 context switches and CPU time (user, system and idle, over all CPUs) during
-the pass, and on Dukovo its IPIs, halts and timer writes; the run's note keeps
-it, so that a slow row shows where its time went.
+the pass, and on Dukovo its IPIs, halts and timer writes, preemptions
+(switches away from a thread that could have gone on), migrations (moves of a
+thread to another CPU than the one it ran on last), page faults resolved,
+polls (idle periods a wake-up ended while polling) and mutex waits (threads
+that slept waiting for a kernel mutex); on Linux the line has instead its page
+faults (`pgfault`) and its interrupts. The run's note keeps it, so that a slow
+row shows where its time went.
 The rows are one operation each:
 
 | Row | One operation |
