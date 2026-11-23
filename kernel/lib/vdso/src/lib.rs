@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The vDSO (ADR 0613): a small shared object the kernel maps into every
+//! The vDSO (ADR 0616): a small shared object the kernel maps into every
 //! program it runs with `exec`, right above the clock page
 //! (`radix_hal::clock::ClockPage`), and names in the auxiliary vector's
 //! AT_SYSINFO_EHDR. Its functions read the monotonic clock and the time

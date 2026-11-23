@@ -500,7 +500,7 @@ pub fn exec_from(
         0
     };
 
-    // Every program reads the clocks through the vDSO (ADR 0613).
+    // Every program reads the clocks through the vDSO (ADR 0616).
     let vdso = crate::user::vdso::map(&space)?;
 
     // The room RLIMIT_STACK gives it, made as it is touched.

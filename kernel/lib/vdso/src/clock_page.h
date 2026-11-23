@@ -2,7 +2,7 @@
  * SPDX-FileCopyrightText: 2026 The Dukovo contributors
  * SPDX-License-Identifier: Apache-2.0 OR MIT
  *
- * The clock page as the vDSO reads it (ADR 0613): the layout of
+ * The clock page as the vDSO reads it (ADR 0616): the layout of
  * radix_hal::clock::ClockPage, which the kernel writes. Both sides check
  * the offsets: the Rust with const assertions, this file with the static
  * ones below.

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The vDSO and the clock page (ADR 0613): what `exec` maps into every
+//! The vDSO and the clock page (ADR 0616): what `exec` maps into every
 //! program so that it reads the clocks without a system call.
 //!
 //! At boot, once the clock is calibrated, the vDSO's image

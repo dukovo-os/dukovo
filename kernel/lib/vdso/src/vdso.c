@@ -2,7 +2,7 @@
  * SPDX-FileCopyrightText: 2026 The Dukovo contributors
  * SPDX-License-Identifier: Apache-2.0 OR MIT
  *
- * The vDSO (ADR 0613): the code every program finds mapped, through
+ * The vDSO (ADR 0616): the code every program finds mapped, through
  * AT_SYSINFO_EHDR, that reads the clocks without a system call.
  *
  * The clock page (clock_page.h) is the page right below the image, where

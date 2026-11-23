@@ -7,7 +7,7 @@
 // (timer_create), with their overruns. And that setting or turning off a
 // timer wakes no thread, and a nearer timer set while the kernel's timer
 // thread waits for a far one still fires on time (ADR 0650). And that the
-// clocks are read through the vDSO (ADR 0613), whose clock page programs
+// clocks are read through the vDSO (ADR 0616), whose clock page programs
 // can read but never write.
 
 #include <poll.h>

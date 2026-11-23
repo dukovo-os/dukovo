@@ -2128,7 +2128,7 @@ static long long timespec_ns(const struct timespec *ts) {
 	return ts->tv_sec * 1000000000LL + ts->tv_nsec;
 }
 
-// The vDSO (ADR 0613): AT_SYSINFO_EHDR names it, it exports Linux's
+// The vDSO (ADR 0616): AT_SYSINFO_EHDR names it, it exports Linux's
 // functions, and what they read agrees with the system calls around
 // them, in the program and in a child it forks. On Dukovo the clock page
 // below it can be read but not written, and neither can it be made

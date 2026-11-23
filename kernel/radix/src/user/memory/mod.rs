@@ -469,7 +469,7 @@ impl SpaceObject {
     }
 
     /// Maps the clock page, `clock`'s one page, read-only, and the vDSO,
-    /// `image`'s pages, read and execute, right above it (ADR 0613), where
+    /// `image`'s pages, read and execute, right above it (ADR 0616), where
     /// the kernel places anonymous memory given no hint; returns where the
     /// vDSO went. For a space nothing runs in yet, whose end takes away
     /// the clock page if the vDSO cannot be mapped.
@@ -809,7 +809,7 @@ impl FrameObject {
     }
 
     /// A frame for the `pages` pages from `phys` that the kernel filled
-    /// and keeps for good: the clock page and the vDSO (ADR 0613), which
+    /// and keeps for good: the clock page and the vDSO (ADR 0616), which
     /// every program maps. It is never zeroed, and never closed, as no
     /// capability names it.
     pub fn kept(phys: u64, pages: u64) -> Option<FrameRef> {

@@ -2,7 +2,7 @@
  * SPDX-FileCopyrightText: 2026 The Dukovo contributors
  * SPDX-License-Identifier: Apache-2.0 OR MIT
  *
- * The vDSO's layout (ADR 0613): one loadable segment, read and execute,
+ * The vDSO's layout (ADR 0616): one loadable segment, read and execute,
  * from the ELF header on, so that the image is mapped as it is, and the
  * clock page in the page below it. Nothing is writable: build.rs refuses
  * an image with a writable segment or a relocation.

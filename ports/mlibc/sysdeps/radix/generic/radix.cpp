@@ -64,7 +64,7 @@ static_assert(AT_RADIX_STARTUP == RADIX_PROCESS_AUX_STARTUP);
 constexpr size_t FIRST_STACK_BYTES = 8 << 20;
 uintptr_t first_stack_top;
 
-// The vDSO's clock (ADR 0613), which start-up finds: null if the program
+// The vDSO's clock (ADR 0616), which start-up finds: null if the program
 // has no vDSO.
 using ClockRead = int (*)(int clock, uint64_t *ns);
 ClockRead vdso_clock_read;

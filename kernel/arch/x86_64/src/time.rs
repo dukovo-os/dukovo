@@ -110,7 +110,7 @@ pub fn record_start() {
 const IA32_TSC_AUX: u32 = 0xc000_0103;
 
 /// Puts this CPU's number, `index`, in IA32_TSC_AUX, where the vDSO's
-/// `getcpu` reads it with RDPID or RDTSCP (ADR 0613), if the processor
+/// `getcpu` reads it with RDPID or RDTSCP (ADR 0616), if the processor
 /// has either. Called on every CPU as it starts.
 pub fn set_cpu_number(index: usize) {
     if cpu::feature::rdtscp() || cpu::feature::rdpid() {

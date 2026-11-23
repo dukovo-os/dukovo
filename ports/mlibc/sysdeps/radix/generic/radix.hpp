@@ -339,7 +339,7 @@ int set_cwd(const char *path);
 // Called at start-up with the auxiliary vector's entries.
 void init_from_auxv(const uintptr_t *auxv);
 
-// Reads clock `kind` in nanoseconds at `ns` through the vDSO (ADR 0613),
+// Reads clock `kind` in nanoseconds at `ns` through the vDSO (ADR 0616),
 // with no system call. Returns false if the program has no vDSO or the
 // vDSO cannot read that clock now: the kernel's `clock` method must.
 bool vdso_clock(enum radix_clock_kind kind, uint64_t *ns);

@@ -238,7 +238,7 @@ pub struct Counter {
     pub flags: u64,
 }
 
-/// The clock page (ADR 0613): one page the kernel keeps and every program
+/// The clock page (ADR 0616): one page the kernel keeps and every program
 /// maps read-only, from which its vDSO reads the monotonic clock and the
 /// time of day without a system call. It holds the counter the monotonic
 /// clock runs on ([`Counter`]) and the wall clock's fields ([`Fields`]),

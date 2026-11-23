@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Builds the vDSO (ADR 0613) from `src/vdso.c` with Clang and links it
+//! Builds the vDSO (ADR 0616) from `src/vdso.c` with Clang and links it
 //! with the Rust toolchain's own LLD into a shared object whose one
 //! segment is read and execute, laid out by `src/vdso.lds`, with the names
 //! `src/vdso.map` exports. The image is then checked: it must work
