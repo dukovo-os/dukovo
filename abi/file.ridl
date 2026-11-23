@@ -358,9 +358,12 @@ interface file = 0x000c version 14 {
     kind = file;
     /// Reads from byte `offset` into `buffer`; returns how many bytes it
     /// read, fewer than asked at the end of the file. Needs the read right.
+    /// A timer file's read fails with cancelled, once, after the wall clock
+    /// was set under a timer armed with cancel_on_set. (cancelled since
+    /// Phase 18, ADR 0613.)
     method read = 1 (offset: u64, buffer: out bytes) -> (count: u64)
         raises [no_such_slot, empty_slot, missing_rights, invalid_argument, bad_address, no_memory,
-                is_directory, io, corrupt];
+                is_directory, io, corrupt, cancelled];
     /// Writes `data` at byte `offset` (APPEND: at the end), growing the
     /// file if need be; returns how many bytes it wrote. Needs the write
     /// right.

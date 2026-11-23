@@ -273,24 +273,53 @@ pub fn send_process(process: &ProcessRef, signal: u32, info: Info) -> Sent {
     result
 }
 
-/// A signal was queued for `process` or one of its threads: its threads
-/// in `signal_wait` look again. The count of them is read after the
-/// event moves, and a waiter counts itself before it reads the events,
-/// each in the single order of sequentially consistent operations, so
-/// either the sender sees the waiter or the waiter sees the signal.
-fn signal_sent(process: &ProcessObject) {
+/// A signal was queued for `process` or one of its threads, or a signal
+/// file's mask changed: its threads in `signal_wait` and in a signal file's
+/// read look again, and so do the polls of its signal files. The count of
+/// the waiters is read after the event moves, and a waiter counts itself
+/// before it reads the events, each in the single order of sequentially
+/// consistent operations, so either the sender sees the waiter or the
+/// waiter sees the signal.
+pub(crate) fn signal_sent(process: &ProcessObject) {
     process.signal_events.fetch_add(1, Ordering::SeqCst);
     if process.signal_waiters.load(Ordering::SeqCst) > 0 {
         wait::wake_all(signal_key(process));
     }
+    process.polled.changed();
+}
+
+/// Takes the first signal of `set` pending for the running thread, whose
+/// program side is `user`: one sent to the thread alone before one sent to
+/// its process, and for a POSIX timer's signal with its overrun
+/// ([`timer::taken`]). `signal_wait` and signal files (`fs::signal_file`)
+/// take signals so.
+pub fn take_pending(user: &UserThread, set: u64) -> Option<(u32, Info)> {
+    let process = &user.process;
+    let mut posix = process.posix.lock();
+    let mut signals = user.signals.lock();
+    let taken = signals.pending.take(set).or_else(|| posix.pending.take(set));
+    if let Some(me) = sched::running() {
+        me.set_signalled(has_work(&posix, &signals));
+    }
+    drop(signals);
+    taken.map(|(signal, info)| (signal, timer::taken(process, &mut posix, signal, info)))
+}
+
+/// The signals of the running thread, whose program side is `user`, that
+/// are pending, whether blocked or not: those sent to it and to its
+/// process.
+pub fn pending_set(user: &UserThread) -> u64 {
+    let posix = user.process.posix.lock();
+    let signals = user.signals.lock();
+    signals.pending.set() | posix.pending.set()
 }
 
 /// Counts the running thread among its process's threads in
 /// `signal_wait` while it lives.
-struct Waiting<'a>(&'a ProcessObject);
+pub(crate) struct Waiting<'a>(&'a ProcessObject);
 
 impl<'a> Waiting<'a> {
-    fn new(process: &'a ProcessObject) -> Waiting<'a> {
+    pub(crate) fn new(process: &'a ProcessObject) -> Waiting<'a> {
         process.signal_waiters.fetch_add(1, Ordering::SeqCst);
         Waiting(process)
     }
@@ -913,19 +942,7 @@ pub fn method(user: &UserRef, label: u32, args: &[u64; 8]) -> Result<Answer> {
             let _waiting = Waiting::new(process);
             loop {
                 let seen = process.signal_events.load(Ordering::SeqCst);
-                let taken = {
-                    let mut posix = process.posix.lock();
-                    let mut signals = user.signals.lock();
-                    let taken = signals.pending.take(set).or_else(|| posix.pending.take(set));
-                    if let Some(me) = sched::running() {
-                        me.set_signalled(has_work(&posix, &signals));
-                    }
-                    drop(signals);
-                    taken.map(|(signal, info)| {
-                        (signal, timer::taken(process, &mut posix, signal, info))
-                    })
-                };
-                if let Some((signal, info)) = taken {
+                if let Some((signal, info)) = take_pending(user, set) {
                     let results = process::SignalWaitResults {
                         signal,
                         code: info.code,

@@ -46,10 +46,11 @@
 //! state, then its state, then a thread's signals, then a thread's
 //! scheduler state (`sched::wake`, `sched::interrupt`).
 
+use alloc::boxed::Box;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::mem::size_of;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use radix_abi::endpoint::NO_SLOT;
 use radix_abi::startup;
@@ -75,6 +76,7 @@ use super::methods::{Answer, answer};
 use super::names::Identity;
 use super::notify::{Notification, NotificationRef};
 use super::objects::{self, Found, Object};
+use super::posix::poll::Polled;
 use super::posix::{self, PosixState, ThreadSignals};
 use super::queue::EventQueue;
 use super::{
@@ -88,6 +90,11 @@ use crate::sched::{self, Name, Options, SpawnError, ThreadRef, wait};
 
 /// A process, shared.
 pub type ProcessRef = Arc<ProcessObject, Kmalloc>;
+
+/// What `ProcessObject::exited` holds once the process has exited.
+const EXITED: u8 = 1;
+/// What it holds besides, once its parent has waited for it.
+const REAPED: u8 = 2;
 
 /// How a thread of a process ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,10 +142,15 @@ pub struct ProcessObject {
     /// Set, with the state locked, once its phase has left created and
     /// running: what a signal's sender looks at without the lock.
     ending: AtomicBool,
-    /// Set, with the state locked, once it has exited: what a waiter for
-    /// its end looks at, with the wait table's lock held, which interrupt
-    /// handlers take and the state's lock must not be taken under.
-    exited: AtomicBool,
+    /// [`EXITED`], set with the state locked, once it has exited: what a
+    /// waiter for its end looks at, with the wait table's lock held, which
+    /// interrupt handlers take and the state's lock must not be taken
+    /// under. With [`REAPED`] once its parent has waited for it (it is no
+    /// zombie any more), set before `polled` is changed for that: a process
+    /// file for it holds a weak reference, which keeps finding the process
+    /// while anything else holds it. One byte for both: the object is built
+    /// on the stack (ADR 0058), where each field costs its size twice.
+    exited: AtomicU8,
     /// How many of its threads have not exited, set with the state locked
     /// whenever it changes, for the same reason: `exec` waits on it.
     live_threads: AtomicUsize,
@@ -194,6 +206,14 @@ pub struct ProcessObject {
     /// How many of its threads are in `signal_wait`: a signal sent while
     /// none is wakes no one.
     pub signal_waiters: AtomicU32,
+    /// What polls of a signal file (`fs::signal_file`) made by this
+    /// process's threads, and of a process file (`fs::process_file`) for
+    /// it, look at: changed whenever a signal is queued for the process or
+    /// one of its threads, once it has exited, and once its parent has
+    /// waited for it. One for both, which costs a poll that looks again
+    /// for nothing, and on the heap: the object is built on the stack (ADR
+    /// 0058), where each field costs its size twice.
+    pub polled: Box<Polled, Kmalloc>,
     /// Whether a signal has stopped it: what its stopped threads wait on.
     pub stopped: AtomicBool,
     /// Whether it is a POSIX child: `exec` started it after `create`, so
@@ -334,6 +354,7 @@ fn allocate(
     posix: PosixState,
     identity: Identity,
 ) -> Result<ProcessRef> {
+    let polled = Box::try_new_in(Polled::new(), kmalloc()).map_err(|_| error(Kernel::NoMemory))?;
     let process = ProcessObject {
         number: if FIRST_MADE.swap(true, Ordering::Relaxed) { sched::take_number() } else { 1 },
         numbered: AtomicBool::new(false),
@@ -351,7 +372,7 @@ fn allocate(
             finishing: false,
         }),
         ending: AtomicBool::new(false),
-        exited: AtomicBool::new(false),
+        exited: AtomicU8::new(0),
         live_threads: AtomicUsize::new(0),
         on_exit,
         pending: SpinLock::new(None),
@@ -374,6 +395,7 @@ fn allocate(
         child_notify: SpinLock::new(None),
         signal_events: AtomicU64::new(0),
         signal_waiters: AtomicU32::new(0),
+        polled,
         stopped: AtomicBool::new(false),
         posix_child: AtomicBool::new(false),
         record_locks: AtomicBool::new(false),
@@ -750,6 +772,23 @@ impl ProcessObject {
         self.ending.load(Ordering::Acquire)
     }
 
+    /// Whether it has exited, read without a lock.
+    pub fn has_exited(&self) -> bool {
+        self.exited.load(Ordering::Acquire) != 0
+    }
+
+    /// Whether its parent has waited for it, or it never had one to: a
+    /// process file for it is hung up.
+    pub fn is_reaped(&self) -> bool {
+        self.exited.load(Ordering::Acquire) & REAPED != 0
+    }
+
+    /// Its parent has waited for it: the process files for it are hung up.
+    pub fn reaped(&self) {
+        self.exited.fetch_or(REAPED, Ordering::SeqCst);
+        self.polled.changed();
+    }
+
     /// Where it is in its life, and its exit code once it has exited.
     pub fn state(&self) -> (ProcessState, Option<u64>) {
         let state = self.state.lock();
@@ -765,7 +804,7 @@ impl ProcessObject {
     /// `deadline_ns`. Returns whether it exited.
     pub fn wait_until(&self, deadline_ns: u64) -> bool {
         wait::wait_until_or_timeout(self.key(), "process", deadline_ns, || {
-            self.exited.load(Ordering::Acquire)
+            self.exited.load(Ordering::Acquire) != 0
         })
     }
 
@@ -1032,7 +1071,7 @@ impl ProcessObject {
         let (code, notify) = {
             let mut state = self.state.lock();
             state.phase = ProcessState::Exited;
-            self.exited.store(true, Ordering::Release);
+            self.exited.fetch_or(EXITED, Ordering::Release);
             (state.code, state.notify.take())
         };
         if let Some((notification, badge)) = notify {
@@ -1044,6 +1083,7 @@ impl ProcessObject {
             info!("User: process {} ({name}) exited with code {code:#x}", self.number);
         }
         wait::wake_all(self.key());
+        self.polled.changed();
         if let Some(on_exit) = self.on_exit {
             on_exit(self, code);
         }

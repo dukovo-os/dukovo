@@ -530,10 +530,30 @@ fn child_flags(wait: &lx::WaitFor) -> ChildWaitFlags {
 /// the record is zeros. A child's user is the caller's, as Radix has no
 /// set-user-ID.
 pub fn waitid(me: &ThreadRef, user: &UserRef, a: &Args) -> Result<u64> {
-    let wait = lx::waitid(a[0] as u32, a[1] as u32, a[3] as u32).map_err(Error::Errno)?;
+    let (idtype, id, options, eagain) = if a[0] as u32 == radix_linux::kernel_files::P_PIDFD {
+        // The options first, as Linux checks them before the descriptor.
+        lx::waitid(lx::P_PID, 1, a[3] as u32).map_err(Error::Errno)?;
+        // The process file's process, which waits like a `P_PID` one, and
+        // not at all for a file that does not wait, which then fails with
+        // EAGAIN where a plain WNOHANG gives an empty record (ADR 0613).
+        let (pid, non_blocking) = super::kernel_files::process_of(me, user, a[1])?;
+        let no_hang = a[3] as u32 & lx::WNOHANG != 0;
+        (
+            lx::P_PID,
+            pid as u32,
+            a[3] as u32 | if non_blocking { lx::WNOHANG } else { 0 },
+            non_blocking && !no_hang,
+        )
+    } else {
+        (a[0] as u32, a[1] as u32, a[3] as u32, false)
+    };
+    let wait = lx::waitid(idtype, id, options).map_err(Error::Errno)?;
     let args = abi::WaitArgs { pid: wait.pid, flags: child_flags(&wait) };
     let found =
         abi::WaitResults::decode(&results(me, user, SLOT_PROCESS, abi::WAIT, args.encode())?)?;
+    if found.pid == 0 && eagain {
+        return fail(radix_linux::errno::EAGAIN);
+    }
     let info = if found.pid == 0 {
         [0u8; lx::SIGINFO_SIZE]
     } else {

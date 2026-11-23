@@ -2832,6 +2832,9 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
         | file::SET_ATTRIBUTE
         | file::LIST_ATTRIBUTES
         | file::REMOVE_ATTRIBUTE => attribute_method(found, label, args),
+        file::TIMER_SET | file::TIMER_GET | file::SET_SIGNAL_MASK | file::PROCESS_OF => {
+            kernel_file_method(user, found, label, args)
+        }
         _ => Err(error(Kernel::NoSuchMethod)),
     }
 }
@@ -2883,6 +2886,49 @@ pub(super) fn watch_add_given(
     let given = [path];
     let path = taken.take(UserBuffer { address: 0, len: 0 }, Paths::Given(&given))?;
     watch_add_of(user, found, directory, path, events)
+}
+
+/// radix-file(2)'s `timer_set`, `timer_get`, `set_signal_mask` and
+/// `process_of` (ADR 0613): what the kernel's own files take beyond reads
+/// and writes. Out of line, so that `file_method`'s frame stays small. A
+/// file of another kind fails with invalid_argument, as the methods say.
+#[inline(never)]
+fn kernel_file_method(
+    user: &UserRef,
+    found: &Found,
+    label: u32,
+    args: &[u64; 8],
+) -> Result<Answer> {
+    let file = file_of(found, Rights::NONE)?;
+    let wrong = || error(Kernel::InvalidArgument);
+    match label {
+        file::TIMER_SET => {
+            let a = file::TimerSetArgs::decode(args)?;
+            file.timer_file().ok_or_else(wrong)?;
+            let (value_ns, interval_ns) =
+                fs::timer_file::set(&file.at.node, a.flags, a.value_ns, a.interval_ns)?;
+            let results = file::TimerSetResults { value_ns, interval_ns };
+            answer(label, file::TimerSetResults::WORDS, results.encode())
+        }
+        file::TIMER_GET => {
+            file::TimerGetArgs::decode(args)?;
+            let (value_ns, interval_ns) = file.timer_file().ok_or_else(wrong)?.get();
+            let results = file::TimerGetResults { value_ns, interval_ns };
+            answer(label, file::TimerGetResults::WORDS, results.encode())
+        }
+        file::SET_SIGNAL_MASK => {
+            let a = file::SetSignalMaskArgs::decode(args)?;
+            file.signal_file().ok_or_else(wrong)?;
+            fs::signal_file::set_mask(&file.at.node, user, a.mask)?;
+            answer(label, 0, [0; 8])
+        }
+        _ => {
+            file::ProcessOfArgs::decode(args)?;
+            let (pid, exited) = file.process_file().ok_or_else(wrong)?.of();
+            let results = file::ProcessOfResults { pid, exited };
+            answer(label, file::ProcessOfResults::WORDS, results.encode())
+        }
+    }
 }
 
 /// The file `found` designates and the socket it is of, if its
@@ -3551,6 +3597,14 @@ enum Target<'a> {
     Audio,
     /// `/devices/crashes` (ADR 0530).
     Crashes,
+    /// An event counter (ADR 0613).
+    Counter(&'a fs::counter::Counter),
+    /// A timer file (ADR 0613).
+    TimerFile(&'a fs::timer_file::TimerFile),
+    /// A signal file (ADR 0613).
+    SignalFile(&'a fs::signal_file::SignalFile),
+    /// A process file (ADR 0613).
+    ProcessFile,
     /// A file of the tree, through its node.
     Node,
 }
@@ -3584,6 +3638,14 @@ fn target(file: &FileObject) -> Target<'_> {
         Target::Audio
     } else if file.is_crashes() {
         Target::Crashes
+    } else if let Some(counter) = file.counter() {
+        Target::Counter(counter)
+    } else if let Some(timer) = file.timer_file() {
+        Target::TimerFile(timer)
+    } else if let Some(signals) = file.signal_file() {
+        Target::SignalFile(signals)
+    } else if file.process_file().is_some() {
+        Target::ProcessFile
     } else {
         Target::Node
     }
@@ -3676,6 +3738,10 @@ fn read_special(
         Target::Tunnel => fs::tunnel::read(file, out, non_blocking).map(|n| n as u64),
         Target::Capture => fs::capture::read(file, out, non_blocking).map(|n| n as u64),
         Target::Crashes => fs::crashes::read(file, out, non_blocking).map(|n| n as u64),
+        Target::Counter(counter) => counter.read(out, non_blocking).map(|n| n as u64),
+        Target::TimerFile(timer) => timer.read(out, non_blocking).map(|n| n as u64),
+        Target::SignalFile(signals) => signals.read(user, out, non_blocking).map(|n| n as u64),
+        Target::ProcessFile => Err(error(Kernel::InvalidArgument)),
         Target::Framebuffer | Target::Audio | Target::Node => Ok(0),
     }
 }
@@ -3835,6 +3901,10 @@ fn write_special(
         }
         Target::Framebuffer => fs::framebuffer::write(file, offset, data).map(|n| n as u64),
         Target::Keyboard | Target::Mouse | Target::Crashes | Target::Watch => {
+            Err(error(Kernel::InvalidArgument))
+        }
+        Target::Counter(counter) => counter.write(data, non_blocking).map(|n| n as u64),
+        Target::TimerFile(_) | Target::SignalFile(_) | Target::ProcessFile => {
             Err(error(Kernel::InvalidArgument))
         }
         Target::Node => Ok(0),

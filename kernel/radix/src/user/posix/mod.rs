@@ -243,7 +243,7 @@ pub(super) fn stop_key(process: &ProcessObject) -> usize {
 
 /// What `signal_wait` waits on, for a signal sent to `process` or one of
 /// its threads.
-pub(super) fn signal_key(process: &ProcessObject) -> usize {
+pub(crate) fn signal_key(process: &ProcessObject) -> usize {
     process.key() + 3
 }
 
@@ -277,6 +277,22 @@ pub fn ids_of(process: &ProcessRef) -> Result<(u64, u64, u64)> {
         join(tree, process)?;
         let member = tree.get(process.number()).ok_or(error(Kernel::NoSuchProcess))?;
         Ok((member.pid, member.group, member.session))
+    })
+}
+
+/// The process numbered `pid`, ended and unreaped included, as `kill` finds
+/// its targets but without asking whether `me` may signal it: a process file
+/// names a process, and `pidfd_send_signal` asks then. Puts `me` in the
+/// tree if it is not there.
+///
+/// # Errors
+///
+/// no_such_process if no member of the tree is numbered `pid`.
+pub(crate) fn find_process(me: &ProcessRef, pid: u64) -> Result<ProcessRef> {
+    with_tree(|tree| {
+        join(tree, me)?;
+        let member = tree.get(pid).ok_or(error(Kernel::NoSuchProcess))?;
+        Ok(member.handle.clone())
     })
 }
 
@@ -431,6 +447,10 @@ pub fn exited(process: &ProcessObject) {
         groups.retain(|&(group, was)| !was && tree.orphaned(group) && tree.has_stopped(group));
         (parent, groups)
     });
+    // Hung up for the process files that hold them, before they go.
+    for process in leftover.iter().chain(gone.iter()) {
+        process.reaped();
+    }
     drop(leftover);
     drop(gone);
     if let Some(parent) = parent {
@@ -758,6 +778,27 @@ pub fn method(
                 process::ThreadIdResults { thread }.encode(),
             )
         }
+        // The kernel's own files (ADR 0613).
+        process::EVENT_COUNTER => {
+            let a = process::EventCounterArgs::decode(args)?;
+            crate::fs::counter::make(user, a.to, a.initial, a.flags)?;
+            answer(label, 0, [0; 8])
+        }
+        process::TIMER_FILE => {
+            let a = process::TimerFileArgs::decode(args)?;
+            crate::fs::timer_file::make(user, a.to, a.clock, a.flags)?;
+            answer(label, 0, [0; 8])
+        }
+        process::SIGNAL_FILE => {
+            let a = process::SignalFileArgs::decode(args)?;
+            crate::fs::signal_file::make(user, a.to, a.mask, a.flags)?;
+            answer(label, 0, [0; 8])
+        }
+        process::PROCESS_FILE => {
+            let a = process::ProcessFileArgs::decode(args)?;
+            crate::fs::process_file::make(user, a.pid, a.to, a.flags)?;
+            answer(label, 0, [0; 8])
+        }
         _ => Err(error(Kernel::NoSuchMethod)),
     }
 }
@@ -788,6 +829,9 @@ fn wait_child(me: &ProcessRef, pid: i64, flags: ChildWaitFlags) -> Result<(u64, 
                     let mut posix = me.posix.lock();
                     posix.children_ns.0 += times.0;
                     posix.children_ns.1 += times.1;
+                }
+                if let Some(process) = &reaped {
+                    process.reaped();
                 }
                 drop(reaped);
                 return Ok((pid, status, times.0, times.1.saturating_sub(times.0)));

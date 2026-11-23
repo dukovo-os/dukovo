@@ -294,6 +294,15 @@ pub(crate) fn polled_by(object: &Object, each: &mut dyn FnMut(&Polled)) {
                 each(&crate::audio::POLLED);
             } else if file.is_crashes() {
                 each(&crate::fs::crashes::POLLED);
+            // The kernel's own files (ADR 0613).
+            } else if let Some(counter) = file.counter() {
+                each(counter.polled());
+            } else if let Some(timer) = file.timer_file() {
+                each(timer.polled());
+            } else if file.signal_file().is_some() {
+                crate::fs::signal_file::SignalFile::polled(each);
+            } else if let Some(process) = file.process_file() {
+                process.polled(each);
             }
         }
         Object::Notification(notification) => each(notification.polled()),
@@ -424,6 +433,15 @@ fn file_events(file: &FileObject) -> u16 {
         crate::audio::events(file)
     } else if file.is_crashes() {
         crate::fs::crashes::events(file)
+    // The kernel's own files (ADR 0613).
+    } else if let Some(counter) = file.counter() {
+        counter.events()
+    } else if let Some(timer) = file.timer_file() {
+        timer.events()
+    } else if let Some(signals) = file.signal_file() {
+        signals.events()
+    } else if let Some(process) = file.process_file() {
+        process.events()
     } else {
         READABLE | WRITABLE
     }

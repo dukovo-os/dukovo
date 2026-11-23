@@ -48,6 +48,8 @@
 //!   records.
 //! - [`system`]: the records and rules of the calls for limits, times,
 //!   resource usage, scheduling, `prctl`, `waitid` and `siginfo_t`.
+//! - [`kernel_files`]: the flags and records of `eventfd`, `timerfd`,
+//!   `signalfd` and `pidfd`.
 //! - [`memfd`]: the flags of `memfd_create` and the seal commands of
 //!   `fcntl`.
 
@@ -60,6 +62,7 @@ pub mod epoll;
 pub mod errno;
 pub mod flags;
 pub mod futex;
+pub mod kernel_files;
 pub mod memfd;
 pub mod notify;
 pub mod nr;

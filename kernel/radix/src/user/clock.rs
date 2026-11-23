@@ -53,6 +53,8 @@ pub fn method(user: &UserRef, cap: &Capability, label: u32, args: &[u64; 8]) -> 
             }
             let before = <Arch as Timer>::wall_clock_ns();
             <Arch as Timer>::set_wall_clock_ns(a.ns);
+            // Timer files armed with cancel_on_set are cancelled (ADR 0613).
+            crate::fs::timer_file::clock_was_set();
             let written = <Arch as Timer>::write_rtc(rounded_seconds(a.ns));
             let name = user.process.name();
             let (y, mo, d) = civil_from_days((a.ns / 86_400_000_000_000) as i64);

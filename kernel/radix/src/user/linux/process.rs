@@ -32,7 +32,10 @@ use radix_linux::{flags, records};
 use radix_mm::Kmalloc;
 use radix_posix::exec::STRINGS_MAX;
 
-use super::{Done, Error, Result, copy_in, copy_out, fail, files, kmalloc, paths, results, state};
+use super::{
+    Done, Error, Result, copy_in, copy_out, fail, files, kernel_files, kmalloc, paths, results,
+    state,
+};
 use crate::Arch;
 use crate::sched::{ThreadRef, wait};
 use crate::user::methods::Answer;
@@ -98,11 +101,15 @@ pub fn fork(me: &ThreadRef, user: &UserRef, regs: &SyscallRegs, vfork: bool) -> 
 
 /// The words a new task's thread number goes to (0: none): its
 /// CLONE_CHILD_SETTID and CLONE_CHILD_CLEARTID words, in its memory, and
-/// its CLONE_PARENT_SETTID word, in the caller's.
+/// its CLONE_PARENT_SETTID word and the one CLONE_PIDFD puts the descriptor
+/// of a process file at, in the caller's.
 struct Words {
     set: u64,
     clear: u64,
     parent: u64,
+    /// Where CLONE_PIDFD puts the new process's descriptor, in the caller's
+    /// memory.
+    pidfd: u64,
 }
 
 /// A new thread or process, as `args` ask, which comes back from the call
@@ -125,6 +132,7 @@ fn new_task(me: &ThreadRef, user: &UserRef, regs: &SyscallRegs, args: &CloneArgs
         set: word(clone::CLONE_CHILD_SETTID, args.child_tid),
         clear: word(clone::CLONE_CHILD_CLEARTID, args.child_tid),
         parent: word(clone::CLONE_PARENT_SETTID, args.parent_tid),
+        pidfd: word(clone::CLONE_PIDFD, args.pidfd),
     };
     let returns = SyscallRegs { number: 0, args: regs.args };
     let stack = Some(args.child_stack()).filter(|&stack| stack != 0);
@@ -132,7 +140,7 @@ fn new_task(me: &ThreadRef, user: &UserRef, regs: &SyscallRegs, args: &CloneArgs
         Kind::Thread => thread(user, &returns, stack, tls, &words),
         Kind::Process { vfork } => {
             let clear_handlers = has(clone::CLONE_CLEAR_SIGHAND);
-            let child = process(user, &returns, stack, tls, &words, clear_handlers)?;
+            let child = process(me, user, &returns, stack, tls, &words, clear_handlers)?;
             if vfork {
                 wait_for_exec(me, &child);
             }
@@ -189,6 +197,7 @@ fn thread(
 /// handlers and alternate signal stack, which `clear_handlers`
 /// (CLONE_CLEAR_SIGHAND) sets back to the default as `exec` does.
 fn process(
+    me: &ThreadRef,
     user: &UserRef,
     returns: &SyscallRegs,
     stack: Option<u64>,
@@ -197,7 +206,12 @@ fn process(
     clear_handlers: bool,
 ) -> Result<ProcessRef> {
     let mut made = None;
-    fork_returning(user, returns, stack, &mut |child, thread| {
+    // What failed in making the process file for CLONE_PIDFD, which ends the
+    // fork with the error Linux gives, and the slot of the one made, which a
+    // fork that fails after it closes.
+    let mut pidfd_failed = None;
+    let mut pidfd_slot = None;
+    let forked = fork_returning(user, returns, stack, &mut |child, thread| {
         if let Some(tls) = tls {
             thread.set_thread_pointer(tls);
         }
@@ -208,9 +222,30 @@ fn process(
         if clear_handlers {
             child.posix.lock().actions.reset_for_exec();
         }
+        // Last of the preparations: Linux makes it before the child runs,
+        // and fails the call if it cannot.
+        if words.pidfd != 0 {
+            match kernel_files::clone_pidfd(me, user, child.number(), words.pidfd) {
+                Ok(slot) => pidfd_slot = Some(slot),
+                Err(err) => {
+                    pidfd_failed = Some(err);
+                    return Err(error(Kernel::Gone));
+                }
+            }
+        }
         made = Some(child.clone());
         Ok(())
-    })?;
+    });
+    if let Some(err) = pidfd_failed {
+        return Err(err);
+    }
+    if let Err(err) = forked {
+        // The child never ran: its process file goes with it.
+        if let Some(slot) = pidfd_slot {
+            kernel_files::clone_pidfd_failed(me, user, slot);
+        }
+        return Err(err.into());
+    }
     let child = made.ok_or(error(Kernel::Gone))?;
     // In the caller's memory, which the child's is a copy of from before.
     put_tid(words.parent, child.number() as u32);
@@ -417,7 +452,7 @@ pub fn wait4(
 }
 
 /// Whether `signal`, a Linux `int`, is a signal or 0; EINVAL if not.
-fn signal_number(signal: u64) -> Result<u32> {
+pub(super) fn signal_number(signal: u64) -> Result<u32> {
     match u32::try_from(signal as i32) {
         Ok(signal) if signal <= radix_abi::signal::SIGRTMAX => Ok(signal),
         _ => fail(EINVAL),

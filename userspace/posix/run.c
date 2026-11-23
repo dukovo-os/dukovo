@@ -88,6 +88,8 @@ static const struct test TESTS[] = {
 		{"memfd", NULL, NULL},
 		// inotify's watch files (ADR 0615).
 		{"inotify", NULL, NULL},
+		// The kernel's own files: eventfd, timerfd, signalfd and pidfd (ADR 0613).
+		{"kernelfiles", NULL, NULL},
 };
 
 enum { COUNT = sizeof(TESTS) / sizeof(TESTS[0]) };

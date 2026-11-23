@@ -1334,11 +1334,38 @@ fn linuxs_rules_come_before_the_namespace_refusal() {
 }
 
 #[test]
-fn descriptors_for_processes_the_parent_and_cgroups_come_later() {
-    for later in [clone::CLONE_PIDFD, clone::CLONE_PARENT, clone::CLONE_INTO_CGROUP] {
+fn the_parent_and_cgroups_come_later() {
+    for later in [clone::CLONE_PARENT, clone::CLONE_INTO_CGROUP] {
         assert_eq!(classify(&request(later)), Err(EINVAL), "{later:#x}");
         assert_eq!(classify(&request(THREAD | later)), Err(EINVAL), "{later:#x} in a thread");
     }
+}
+
+#[test]
+fn a_process_may_ask_for_a_descriptor_for_its_child() {
+    assert_eq!(classify(&request(clone::CLONE_PIDFD)), Ok(Kind::Process { vfork: false }));
+    let vfork = clone::CLONE_PIDFD | clone::CLONE_VM | clone::CLONE_VFORK;
+    assert_eq!(classify(&request(vfork)), Ok(Kind::Process { vfork: true }));
+}
+
+#[test]
+fn a_descriptor_for_a_thread_or_with_the_detached_flag_is_invalid() {
+    assert_eq!(classify(&request(THREAD | clone::CLONE_PIDFD)), Err(EINVAL));
+    assert_eq!(classify(&request(clone::CLONE_PIDFD | clone::CLONE_DETACHED)), Err(EINVAL));
+}
+
+#[test]
+fn the_descriptor_and_the_parents_thread_number_may_not_share_a_word() {
+    let both = clone::CLONE_PIDFD | clone::CLONE_PARENT_SETTID;
+    // `clone` has one word for both.
+    let raw = CloneArgs::from_clone(both, 0, 0x7000, 0, 0);
+    assert_eq!(classify(&raw), Err(EINVAL));
+    // `clone3` has two, which differ.
+    let apart =
+        CloneArgs { flags: both, pidfd: 0x7000, parent_tid: 0x7008, ..CloneArgs::default() };
+    assert_eq!(classify(&apart), Ok(Kind::Process { vfork: false }));
+    let same = CloneArgs { flags: both, pidfd: 0x7000, parent_tid: 0x7000, ..CloneArgs::default() };
+    assert_eq!(classify(&same), Err(EINVAL));
 }
 
 #[test]
@@ -1381,8 +1408,9 @@ proptest! {
         if result.is_ok() {
             let later = CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS | CLONE_NEWIPC
                 | CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNET | CLONE_NEWTIME
-                | CLONE_PIDFD | CLONE_PARENT | CLONE_INTO_CGROUP;
+                | CLONE_PARENT | CLONE_INTO_CGROUP;
             prop_assert_eq!(flags & later, 0);
+            prop_assert!(flags & CLONE_PIDFD == 0 || flags & CLONE_THREAD == 0);
             prop_assert!(exit_signal <= 64);
         }
     }

@@ -219,7 +219,8 @@ pub struct WaitFor {
 ///
 /// EINVAL for an option Linux does not take, for none of `WEXITED`,
 /// `WSTOPPED` and `WCONTINUED`, for an `idtype` other than `P_ALL`, `P_PID`
-/// and `P_PGID` (a pidfd needs a descriptor the kernel does not have), for a
+/// and `P_PGID` (the table turns `P_PIDFD`, whose `id` is a descriptor,
+/// into `P_PID` with the process's number before it asks), for a
 /// `P_PID` of no process (an `id` that is 0 or negative as an `int`) and for
 /// a negative `P_PGID`.
 pub fn waitid(idtype: u32, id: u32, options: u32) -> Result<WaitFor, i32> {
@@ -470,7 +471,8 @@ mod tests {
         assert_eq!(waitid(P_PID, 0, WEXITED), Err(EINVAL));
         assert_eq!(waitid(P_PID, u32::MAX, WEXITED), Err(EINVAL));
         assert_eq!(waitid(P_PGID, u32::MAX, WEXITED), Err(EINVAL));
-        // P_PIDFD, and a type that does not exist.
+        // P_PIDFD, which the table has turned into P_PID by now, and a type that
+        // does not exist.
         assert_eq!(waitid(3, 5, WEXITED), Err(EINVAL));
         assert_eq!(waitid(9, 5, WEXITED), Err(EINVAL));
     }

@@ -547,7 +547,7 @@ fn set_owner(me: &ThreadRef, user: &UserRef, slot: u32, owner: (OwnerKind, u64))
 
 /// The native `status_flags` of the descriptor in `slot`: its flags as
 /// they were, and with `set` its flags now those.
-fn status_flags(
+pub(super) fn status_flags(
     me: &ThreadRef,
     user: &UserRef,
     slot: u32,

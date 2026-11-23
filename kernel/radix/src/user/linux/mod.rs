@@ -342,6 +342,9 @@ fn dispatch(me: &ThreadRef, user: &UserRef, regs: &SyscallRegs) -> Result<Done> 
         nr::SIGNALFD4 => kernel_files::signalfd4(me, user, a)?,
         nr::PIDFD_OPEN => kernel_files::pidfd_open(me, user, a[0], a[1])?,
         nr::PIDFD_SEND_SIGNAL => kernel_files::pidfd_send_signal(me, user, a)?,
+        // Taking a descriptor from another process needs ptrace's right, which
+        // no process has (as ptrace is EPERM).
+        nr::PIDFD_GETFD => return fail(EPERM),
         // Memory files (ADR 0614).
         nr::MEMFD_CREATE => memory::memfd_create(me, user, a[0], a[1])?,
         // Watches (ADR 0615).

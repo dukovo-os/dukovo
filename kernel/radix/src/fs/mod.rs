@@ -40,6 +40,7 @@
 //! with any of the store's locks held.
 
 pub mod capture;
+pub mod counter;
 pub mod crashdump;
 pub mod crashes;
 pub mod devfs;
@@ -53,11 +54,15 @@ pub mod kmsg;
 pub mod locks;
 pub mod mouse;
 pub mod notify;
+mod own_file;
 pub mod pipe;
+pub mod process_file;
 pub mod procfs;
 pub mod shm;
+pub mod signal_file;
 pub mod socket;
 pub mod sysfs;
+pub mod timer_file;
 pub mod trace;
 pub mod tty;
 pub mod tunnel;
@@ -168,6 +173,14 @@ enum Special {
     Tty,
     /// A watch file (ADR 0615).
     Watch,
+    /// An event counter (ADR 0613).
+    Counter,
+    /// A timer file (ADR 0613).
+    TimerFile,
+    /// A signal file (ADR 0613).
+    SignalFile,
+    /// A process file (ADR 0613).
+    ProcessFile,
     /// `/devices/kmsg`.
     Kmsg,
     /// `/devices/kbd`.
@@ -454,6 +467,14 @@ impl FileObject {
             Kind::Socket if inet::socket_of(&at.node).is_some() => Special::Inet,
             Kind::CharDevice if tty::handle_of(&at.node).is_some() => Special::Tty,
             Kind::CharDevice if watch_file::watch_file_of(&at.node).is_some() => Special::Watch,
+            Kind::CharDevice if counter::counter_of(&at.node).is_some() => Special::Counter,
+            Kind::CharDevice if timer_file::timer_of(&at.node).is_some() => Special::TimerFile,
+            Kind::CharDevice if signal_file::signal_file_of(&at.node).is_some() => {
+                Special::SignalFile
+            }
+            Kind::CharDevice if process_file::process_file_of(&at.node).is_some() => {
+                Special::ProcessFile
+            }
             Kind::CharDevice if kmsg::is_kmsg(&at.node) => Special::Kmsg,
             Kind::CharDevice if keyboard::is_keyboard(&at.node) => Special::Keyboard,
             Kind::CharDevice if mouse::is_mouse(&at.node) => Special::Mouse,
@@ -580,6 +601,34 @@ impl FileObject {
     /// The watch file it is of, if it is of one.
     pub fn watch_file(&self) -> Option<&watch_file::WatchFile> {
         if self.special == Special::Watch { watch_file::watch_file_of(&self.at.node) } else { None }
+    }
+
+    /// The event counter it is of, if it is of one.
+    pub fn counter(&self) -> Option<&counter::Counter> {
+        if self.special == Special::Counter { counter::counter_of(&self.at.node) } else { None }
+    }
+
+    /// The timer file it is of, if it is of one.
+    pub fn timer_file(&self) -> Option<&timer_file::TimerFile> {
+        if self.special == Special::TimerFile { timer_file::timer_of(&self.at.node) } else { None }
+    }
+
+    /// The signal file it is of, if it is of one.
+    pub fn signal_file(&self) -> Option<&signal_file::SignalFile> {
+        if self.special == Special::SignalFile {
+            signal_file::signal_file_of(&self.at.node)
+        } else {
+            None
+        }
+    }
+
+    /// The process file it is of, if it is of one.
+    pub fn process_file(&self) -> Option<&process_file::ProcessFile> {
+        if self.special == Special::ProcessFile {
+            process_file::process_file_of(&self.at.node)
+        } else {
+            None
+        }
     }
 
     /// Whether it is of `/devices/kmsg`.
