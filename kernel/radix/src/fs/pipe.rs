@@ -42,7 +42,7 @@ use radix_abi::process::PipeFlags;
 use radix_abi::signal::SIGPIPE;
 use radix_cap::{ObjectKind, Rights, SlotRef};
 use radix_mm::{Kmalloc, PAGE_SIZE};
-use radix_sync::{Mutex, Once};
+use radix_sync::{Mutex, Once, SpinLock};
 use radix_tty::Ring;
 use radix_vfs::mount::{Location, MountRef};
 use radix_vfs::synthetic::FixedDir;
@@ -147,14 +147,46 @@ fn heap() -> Kmalloc {
 }
 
 /// Zeroed storage for a buffer of `size` bytes.
-pub(super) fn storage(size: usize) -> Result<alloc::vec::Vec<u8, Kmalloc>, Status> {
-    let mut storage = alloc::vec::Vec::new_in(heap());
-    storage.try_reserve_exact(size).map_err(|_| Kernel::NoMemory.status(0))?;
-    while storage.len() < size {
-        // Room was reserved above.
-        let _ = storage.push_within_capacity(0);
+pub(super) fn storage(size: usize) -> Result<Vec<u8, Kmalloc>, Status> {
+    radix_mm::bytes::zeroed(size, heap()).map_err(|_| Kernel::NoMemory.status(0))
+}
+
+/// How many buffers of [`DEFAULT_CAPACITY`] bytes are kept once their
+/// pipes are gone: sixteen Unix connections' worth, 2 MiB. Each
+/// connection between Unix sockets is two pipes, and a FastCGI server
+/// such as PHP-FPM takes a new connection for each request; with none
+/// kept, each request had the heap make and zero 128 KiB (ADR 0655).
+const SPARES: usize = 32;
+
+/// The buffers kept, from pipes that are gone. A leaf lock, held only to
+/// take a buffer or put one back, and never while the heap frees one.
+static SPARE: SpinLock<[Option<Vec<u8, Kmalloc>>; SPARES]> =
+    SpinLock::new([const { None }; SPARES]);
+
+/// A buffer of [`DEFAULT_CAPACITY`] bytes for a new pipe: a spare one, or
+/// one made from the heap, zeroed. What a spare held for the pipe it came
+/// from stays out of reach: a ring reads only the bytes written to it
+/// since it was made.
+fn new_buffer() -> Result<Vec<u8, Kmalloc>, Status> {
+    let spare = SPARE.lock().iter_mut().find_map(Option::take);
+    spare.map_or_else(|| storage(DEFAULT_CAPACITY), Ok)
+}
+
+/// Keeps `buffer`, from a pipe that is gone or has a new buffer, if it is
+/// of [`DEFAULT_CAPACITY`] bytes and there is room among the spares; else
+/// it goes back to the heap.
+fn keep(buffer: Vec<u8, Kmalloc>) {
+    if buffer.len() != DEFAULT_CAPACITY {
+        return;
     }
-    Ok(storage)
+    let mut spare = SPARE.lock();
+    if let Some(slot) = spare.iter_mut().find(|slot| slot.is_none()) {
+        *slot = Some(buffer);
+        return;
+    }
+    // Freed without the lock.
+    drop(spare);
+    drop(buffer);
 }
 
 /// A pipe.
@@ -199,6 +231,16 @@ type ByNode = Vec<(usize, Weak<Pipe, Kmalloc>), Kmalloc>;
 /// The named pipes open now, by the address of their node.
 static NAMED: Mutex<Option<ByNode>> = Mutex::new(None);
 
+impl Drop for Pipe {
+    /// Its buffer is kept for a new pipe, if there is room among the
+    /// spares.
+    fn drop(&mut self) {
+        let empty = Ring::new(Vec::new_in(heap()));
+        let ring = core::mem::replace(&mut self.buffer.get_mut().ring, empty);
+        keep(ring.into_inner());
+    }
+}
+
 impl Pipe {
     /// A new, empty pipe, with one end reading it and one writing it.
     pub(super) fn new() -> Result<KArc<Pipe>, Status> {
@@ -208,11 +250,7 @@ impl Pipe {
     /// A new, empty pipe, with `ends` ends reading it and as many writing
     /// it, the pipe `named` is if any.
     fn with_ends(ends: u32, named: Option<NodeRef>) -> Result<KArc<Pipe>, Status> {
-        let buffer = Buffer {
-            ring: Ring::new(storage(DEFAULT_CAPACITY)?),
-            taken: 0,
-            attachments: Fifo::new(),
-        };
+        let buffer = Buffer { ring: Ring::new(new_buffer()?), taken: 0, attachments: Fifo::new() };
         mem::arc(Pipe {
             buffer: Mutex::new(buffer),
             len: AtomicUsize::new(0),
@@ -339,7 +377,7 @@ impl Pipe {
         let old = core::mem::replace(&mut buffer.ring, ring);
         self.capacity.store(wanted, Ordering::Release);
         drop(buffer);
-        drop(old);
+        keep(old.into_inner());
         self.changed();
         Ok(wanted)
     }

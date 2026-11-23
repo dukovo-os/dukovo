@@ -19,6 +19,12 @@ impl<B: AsRef<[u8]> + AsMut<[u8]>> Ring<B> {
         Ring { buf, head: 0, len: 0 }
     }
 
+    /// Its storage, to make another ring over: a new ring reads only what
+    /// is written to it, so the bytes this one held there stay unread.
+    pub fn into_inner(self) -> B {
+        self.buf
+    }
+
     /// How many bytes it can hold.
     pub fn capacity(&self) -> usize {
         self.buf.as_ref().len()
