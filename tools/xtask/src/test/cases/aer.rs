@@ -150,6 +150,18 @@ fn has_lines(lines: &[String], wanted: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
+/// Has QEMU's monitor make the card send `error`. QEMU answers `OK id:
+/// aernic` and where the card is when it sent the message.
+fn inject(vm: &mut Vm, error: &str) -> Result<(), String> {
+    let command = format!("pcie_aer_inject_error aernic {error}");
+    let said = vm.monitor_output(&command, 0)?;
+    if said.starts_with("OK id: aernic ") {
+        Ok(())
+    } else {
+        Err(format!("QEMU's monitor, asked to `{command}`, said: {}", said.trim()))
+    }
+}
+
 fn aer(vm: &mut Vm, case: &Case) -> Result<(), String> {
     boot_report(vm, case)?;
     // The kernel's lines come while it starts, among the ones boot_report
@@ -169,13 +181,19 @@ fn aer(vm: &mut Vm, case: &Case) -> Result<(), String> {
         ));
     }
 
+    // The card's interface, by its MAC address in the kernel's line, has
+    // its address from netd before the errors: its driver is running.
+    vm.expect_anywhere(&format!("MAC {MAC}"))?;
+    let nic = word_after(&vm.log(), &format!("MAC {MAC}"), "Net: ")?;
+    vm.expect_anywhere(&format!("netd: {nic} has 10.0.2."))?;
+
     // A correctable receiver error, then, once it is logged, an
     // uncorrectable completion timeout, which the default severity
     // makes non-fatal.
-    vm.monitor("pcie_aer_inject_error aernic RCVR")?;
+    inject(vm, "RCVR")?;
     vm.expect_anywhere("(8086:10d3) corrected error: RxErr; via ")
         .map_err(|err| format!("{err}\n{}", pcie_log(vm)))?;
-    vm.monitor("pcie_aer_inject_error aernic COMP_TIME")?;
+    inject(vm, "COMP_TIME")?;
     vm.expect_anywhere("(8086:10d3) uncorrected non-fatal error: CmpltTO")
         .map_err(|err| format!("{err}\n{}", pcie_log(vm)))?;
     let log = vm.log();
@@ -184,13 +202,9 @@ fn aer(vm: &mut Vm, case: &Case) -> Result<(), String> {
     if let Some(line) = log.lines().find(|line| line.contains("marked failed")) {
         return Err(format!("the kernel marked a device failed: {}", line.trim()));
     }
-    // The card's interface, by its MAC address in the kernel's line, and
-    // its address from netd, before and after the errors.
-    let nic = word_after(&log, &format!("MAC {MAC}"), "Net: ")?;
     if !log.contains(&format!("Net: {nic} is an Intel 82574L network card at {addr}")) {
         return Err(format!("{nic} is not the 82574L at {addr} that the errors came from"));
     }
-    vm.expect_anywhere(&format!("netd: {nic} has 10.0.2."))?;
 
     vm.expect("spark: started consoled (/system/commands/consoled) as process ")?;
     vm.expect_screen(&[&format!("{RELEASE} {VERSION} (tty1)"), "# "])?;
