@@ -669,7 +669,7 @@ impl Interface {
         let mut index = 0;
         while index < orphans.len() {
             let orphan = &mut orphans[index];
-            let state = stack.socket::<tcp::Socket<'static>>(orphan.handle).map(|s| s.state());
+            let state = stack.socket::<tcp::Socket<'static>>(orphan.handle).map(tcp::Socket::state);
             // On the loopback link a connection in TIME_WAIT goes at once,
             // with its memory and socket slot, rather than holding them for
             // its ten seconds, which short connections to the machine itself

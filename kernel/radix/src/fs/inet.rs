@@ -1988,9 +1988,9 @@ impl InetSocket {
         for part in &state.parts {
             let mut stack = part.interface.stack.lock();
             pending += match self.kind {
-                Kind::Stream => {
-                    stack.socket::<tcp::Socket<'static>>(part.handle).map_or(0, |s| s.recv_queue())
-                }
+                Kind::Stream => stack
+                    .socket::<tcp::Socket<'static>>(part.handle)
+                    .map_or(0, tcp::Socket::recv_queue),
                 Kind::Datagram => stack
                     .socket_mut::<udp::Socket<'static>>(part.handle)
                     .and_then(|socket| socket.peek().ok().map(|(data, _)| data.len()))
@@ -2017,10 +2017,10 @@ impl InetSocket {
                 let can_receive = match self.kind {
                     Kind::Datagram => stack
                         .socket::<udp::Socket<'static>>(part.handle)
-                        .is_some_and(|s| s.can_recv()),
+                        .is_some_and(udp::Socket::can_recv),
                     _ => stack
                         .socket::<icmp::Socket<'static>>(part.handle)
-                        .is_some_and(|s| s.can_recv()),
+                        .is_some_and(icmp::Socket::can_recv),
                 };
                 if can_receive {
                     events |= poll::READABLE;
@@ -2386,7 +2386,7 @@ impl net::Pool for ListenPool {
 /// Whether `part`, a listening socket's on `stack`, has a connection that
 /// was made and waits for `accept`.
 fn waits(stack: &Stack<Card>, part: &Part) -> bool {
-    stack.socket::<tcp::Socket<'static>>(part.handle).is_some_and(|socket| was_made(socket))
+    stack.socket::<tcp::Socket<'static>>(part.handle).is_some_and(was_made)
 }
 
 /// Whether `socket`, one of a listening socket's, has a connection that was
