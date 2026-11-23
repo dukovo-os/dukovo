@@ -292,7 +292,12 @@ waiters (`WaitCount`), so a read or write that nobody waits for takes no
 lock of the wait queue. A write of up to `ATOMIC`
 (4,096) bytes waits for room for all of it, so writers never interleave;
 copies to and from user memory are made with the ring's sleeping lock
-held, so a page fault in the copy may sleep.
+held, so a page fault in the copy may sleep. The buffers of pipes that
+are gone are kept for new ones, up to 32 of them (2 MiB), so that a
+server that takes a Unix connection for each request does not have the
+heap make and zero two 64 KiB buffers for each (ADR 0655); a ring reads
+only what was written to it, so what a buffer held before stays out of
+reach.
 
 ## Sockets
 

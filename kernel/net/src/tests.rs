@@ -427,6 +427,66 @@ fn a_quiet_connection_stays_open_past_its_timeout() {
     }
 }
 
+/// Two stacks on the wire with a connection made between a client on `a`
+/// and a server on `b`, polled until it is quiet: both ends' handles.
+fn quiet_pair(
+    a: &mut Stack<End>,
+    b: &mut Stack<End>,
+    now: &mut u64,
+) -> (SocketHandle, SocketHandle) {
+    let server = b.add_socket(tcp_memory().socket()).ok().unwrap();
+    b.socket_mut::<tcp::Socket<'static>>(server).unwrap().listen(7).unwrap();
+    let client = a.add_socket(tcp_memory().socket()).ok().unwrap();
+    a.connect(client, (Ipv4Address::new(10, 0, 0, 2).into(), 7), None, 49152).unwrap();
+    run(a, b, now, 10);
+    for (stack, handle) in [(&mut *a, client), (&mut *b, server)] {
+        let state = stack.socket_mut::<tcp::Socket<'static>>(handle).unwrap().state();
+        assert_eq!(state, tcp::State::Established);
+    }
+    // Polled with nothing to send, each end's answer is that it waits.
+    run(a, b, now, 5);
+    (client, server)
+}
+
+#[test]
+fn a_quiet_connection_sends_what_its_program_gives_it_later() {
+    // A connection polled until it has nothing to send is skipped by later
+    // polls; bytes its program puts in afterwards, through socket_mut, are
+    // still sent, each way.
+    let (mut a, mut b) = pair();
+    let mut now = 0;
+    let (client, server) = quiet_pair(&mut a, &mut b, &mut now);
+    a.socket_mut::<tcp::Socket<'static>>(client).unwrap().send_slice(b"first").unwrap();
+    run(&mut a, &mut b, &mut now, 5);
+    let mut got = [0; 16];
+    let len = b.socket_mut::<tcp::Socket<'static>>(server).unwrap().recv_slice(&mut got).unwrap();
+    assert_eq!(&got[..len], b"first");
+    // Quiet again, now with the bytes sent and acknowledged.
+    now += 1_000_000_000;
+    run(&mut a, &mut b, &mut now, 5);
+    b.socket_mut::<tcp::Socket<'static>>(server).unwrap().send_slice(b"second").unwrap();
+    run(&mut a, &mut b, &mut now, 5);
+    let len = a.socket_mut::<tcp::Socket<'static>>(client).unwrap().recv_slice(&mut got).unwrap();
+    assert_eq!(&got[..len], b"second");
+    assert_eq!(a.socket::<tcp::Socket<'static>>(client).unwrap().recv_queue(), 0);
+}
+
+#[test]
+fn a_quiet_connection_is_reset_once_its_address_is_gone() {
+    // A connection polled until it is quiet is skipped by later polls, but
+    // not once the interface's addresses change: with its local address
+    // gone, the next poll resets it.
+    let (mut a, mut b) = pair();
+    let mut now = 0;
+    let (client, _server) = quiet_pair(&mut a, &mut b, &mut now);
+    a.set_ipv4_addresses(&[]);
+    assert_eq!(a.ipv4(), None);
+    run(&mut a, &mut b, &mut now, 5);
+    let socket = a.socket::<tcp::Socket<'static>>(client).unwrap();
+    assert!(!socket.is_open());
+    assert_eq!(socket.state(), tcp::State::Closed);
+}
+
 #[test]
 fn sends_udp_datagrams_and_gives_their_memory_back() {
     let (mut a, mut b) = pair();
