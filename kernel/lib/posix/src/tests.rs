@@ -888,9 +888,9 @@ fn a_change_of_an_unknown_filter_is_invalid() {
 #[test]
 fn flags_outside_the_low_byte_make_no_difference() {
     // A program may leave `error`, `eof` or EV_FLAG1 in a change's flags. FreeBSD clears them,
-    // and they change nothing here.
+    // and they change nothing here. `exclusive` and `create` (0x0c00) are the queue's own.
     for low in 0..=0xffu16 {
-        for high in [0x0100, 0x2000, 0x4000, 0x8000, 0xff00] {
+        for high in [0x0100, 0x2000, 0x4000, 0x8000, 0xf300] {
             for filter in QueueFilter::ALL {
                 let none = change(DESCRIPTOR, filter, QueueFlags::NONE);
                 let plain = QueueEvent { flags: low, ..none };

@@ -37,9 +37,12 @@
 //! does not know answers ENOSYS.
 
 mod descriptors;
+mod events;
 mod files;
+mod kernel_files;
 mod memory;
 mod names;
+mod notify;
 mod paths;
 mod poll;
 mod process;
@@ -312,6 +315,33 @@ fn dispatch(me: &ThreadRef, user: &UserRef, regs: &SyscallRegs) -> Result<Done> 
         nr::RECVMMSG => sockets::recvmmsg(me, user, a[0], a[1], a[2], a[3], a[4])?,
         nr::PRLIMIT64 => system::prlimit64(me, user, a)?,
         nr::SENDMMSG => sockets::sendmmsg(me, user, a[0], a[1], a[2], a[3])?,
+        nr::PREADV2 => descriptors::preadv2(me, user, a)?,
+        nr::PWRITEV2 => descriptors::pwritev2(me, user, a)?,
+        nr::GETCPU => system::getcpu(me, user, a[0], a[1])?,
+        // epoll (ADR 0612).
+        nr::EPOLL_CREATE => events::epoll_create(me, user, a[0])?,
+        nr::EPOLL_CREATE1 => events::epoll_create1(me, user, a[0])?,
+        nr::EPOLL_CTL => events::epoll_ctl(me, user, a)?,
+        nr::EPOLL_WAIT | nr::EPOLL_PWAIT | nr::EPOLL_PWAIT2 => {
+            events::epoll_wait(me, user, a, regs.number)?
+        }
+        // Files of the kernel's own (ADR 0613).
+        nr::EVENTFD => kernel_files::eventfd2(me, user, a[0], 0)?,
+        nr::EVENTFD2 => kernel_files::eventfd2(me, user, a[0], a[1])?,
+        nr::TIMERFD_CREATE => kernel_files::timerfd_create(me, user, a[0], a[1])?,
+        nr::TIMERFD_SETTIME => kernel_files::timerfd_settime(me, user, a)?,
+        nr::TIMERFD_GETTIME => kernel_files::timerfd_gettime(me, user, a[0], a[1])?,
+        nr::SIGNALFD => kernel_files::signalfd4(me, user, &[a[0], a[1], a[2], 0, 0, 0])?,
+        nr::SIGNALFD4 => kernel_files::signalfd4(me, user, a)?,
+        nr::PIDFD_OPEN => kernel_files::pidfd_open(me, user, a[0], a[1])?,
+        nr::PIDFD_SEND_SIGNAL => kernel_files::pidfd_send_signal(me, user, a)?,
+        // Memory files (ADR 0614).
+        nr::MEMFD_CREATE => memory::memfd_create(me, user, a[0], a[1])?,
+        // Watches (ADR 0615).
+        nr::INOTIFY_INIT => notify::inotify_init1(me, user, 0)?,
+        nr::INOTIFY_INIT1 => notify::inotify_init1(me, user, a[0])?,
+        nr::INOTIFY_ADD_WATCH => notify::inotify_add_watch(me, user, a[0], a[1], a[2])?,
+        nr::INOTIFY_RM_WATCH => notify::inotify_rm_watch(me, user, a[0], a[1])?,
         // Processes and threads.
         nr::GETPID => process::getpid(user),
         nr::GETTID => process::gettid(me),

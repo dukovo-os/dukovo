@@ -19,6 +19,13 @@
 //! with one difference: a user event with `clear` forgets its flags and
 //! value when it is reported, as it forgets that it was triggered, so that
 //! each report carries only what came since the one before.
+//!
+//! The `poll` filter (ADR 0612) is Linux's epoll on the same watches: it
+//! asks for any of a descriptor's [`PollEvents`] and reports those found,
+//! and every change that names it sets what it asks for and its options
+//! anew, as EPOLL_CTL_MOD does. epoll's EPOLLET is `clear`, and its
+//! EPOLLONESHOT is `dispatch`: a watch disabled once reported, which a
+//! change enables again.
 
 use radix_abi::event_queue::{
     QueueEvent, QueueFilter, QueueFlags, USER_AND, USER_CONTROL, USER_COPY, USER_FLAGS, USER_OR,
@@ -26,9 +33,11 @@ use radix_abi::event_queue::{
 };
 use radix_abi::process::PollEvents;
 
-/// The flags a change may carry. The others, among them `error` and
-/// `eof`, are cleared, as FreeBSD clears its EV_SYSFLAGS.
-const CHANGE_FLAGS: QueueFlags = QueueFlags(0x00ff);
+/// The flags a change may carry: kqueue's, and `exclusive` and `create`.
+/// The others, among them `error` and `eof`, are cleared, as FreeBSD
+/// clears its EV_SYSFLAGS.
+const CHANGE_FLAGS: QueueFlags =
+    QueueFlags(0x00ff).union(QueueFlags::EXCLUSIVE).union(QueueFlags::CREATE);
 
 /// The flags a watch keeps from when it was added, and reports in each of
 /// its events.
@@ -37,6 +46,17 @@ const OPTIONS: QueueFlags =
 
 /// The events with which a descriptor reads or writes no more: `eof`.
 const ENDED: PollEvents = PollEvents::HANG_UP.union(PollEvents::ERROR);
+
+/// The events a `poll` watch reports whether asked for or not, as epoll
+/// does: an error, and the other end gone.
+const ALWAYS: PollEvents = ENDED;
+
+/// Linux's POLLRDNORM and POLLWRNORM, which a `poll` watch may ask for:
+/// a descriptor that can be read, or written, is ready for them too, as
+/// Linux's pipes and sockets report them.
+pub const READ_NORMAL: u32 = 0x40;
+/// See [`READ_NORMAL`].
+pub const WRITE_NORMAL: u32 = 0x100;
 
 /// A change `wait` cannot make, whatever the queue holds: the kernel's
 /// invalid_argument.
@@ -93,8 +113,10 @@ pub fn write(event: &QueueEvent) -> [u8; QueueEvent::SIZE] {
 ///
 /// # Errors
 ///
-/// [`Invalid`] for a filter the queue does not know, or `add` together
-/// with `delete`.
+/// [`Invalid`] for a filter the queue does not know, `add` together
+/// with `delete`, `create` without `add`, and `exclusive` but with `add`
+/// of a `poll` watch that is neither `oneshot` nor `dispatch` (epoll's
+/// EPOLLEXCLUSIVE with EPOLLONESHOT is EINVAL).
 pub fn asks(change: &QueueEvent) -> Result<Option<(QueueFilter, Asks)>, Invalid> {
     if change.filter == 0 {
         return Ok(None);
@@ -107,7 +129,28 @@ pub fn asks(change: &QueueEvent) -> Result<Option<(QueueFilter, Asks)>, Invalid>
         (false, true) => Asks::Delete,
         (false, false) => Asks::Change,
     };
+    if flags.contains(QueueFlags::CREATE) && asks != Asks::Add {
+        return Err(Invalid);
+    }
+    if flags.contains(QueueFlags::EXCLUSIVE)
+        && (filter != QueueFilter::Poll
+            || asks != Asks::Add
+            || !flags.intersection(QueueFlags::ONESHOT.union(QueueFlags::DISPATCH)).is_empty())
+    {
+        return Err(Invalid);
+    }
     Ok(Some((filter, asks)))
+}
+
+/// Whether `change` adds its watch only if the queue holds none for the
+/// same description (`create`).
+pub fn creates(change: &QueueEvent) -> bool {
+    flags_of(change).contains(QueueFlags::CREATE)
+}
+
+/// Whether the watch `change` adds is exclusive (`exclusive`).
+pub fn exclusive(change: &QueueEvent) -> bool {
+    flags_of(change).contains(QueueFlags::EXCLUSIVE)
 }
 
 /// The event that reports `change` itself, with `status`, the kernel's
@@ -157,8 +200,12 @@ pub enum Then {
 /// What a watch keeps between looks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct State {
-    /// Its `oneshot`, `clear` and `dispatch`, as it was added.
+    /// Its `oneshot`, `clear` and `dispatch`, as it was added, or for a
+    /// `poll` watch as last changed.
     options: QueueFlags,
+    /// A `poll` watch's: the events it asks for, Linux's bits (a
+    /// [`PollEvents`] with [`READ_NORMAL`] and [`WRITE_NORMAL`]).
+    asked: u32,
     /// Whether it may be reported.
     enabled: bool,
     /// The program's own value, which its events carry.
@@ -177,6 +224,7 @@ impl State {
         let flags = flags_of(change);
         let mut state = State {
             options: flags.intersection(OPTIONS),
+            asked: if filter == QueueFilter::Poll { change.fflags } else { 0 },
             enabled: flags.contains(QueueFlags::ENABLE) || !flags.contains(QueueFlags::DISABLE),
             udata: change.udata,
             triggered: false,
@@ -193,12 +241,18 @@ impl State {
     /// or a plain change names: sets its value, triggers a user event and
     /// sets its flags and value, and enables or disables it. `enable`
     /// wins over `disable`, as on FreeBSD; an `add` enables it unless it
-    /// has `disable`. Its options stay as they were added.
+    /// has `disable`. Its options stay as they were added, but a `poll`
+    /// watch's, which take the change's, with the events it asks for.
     pub fn change(&mut self, change: &QueueEvent, filter: QueueFilter, adding: bool) {
         let flags = flags_of(change);
         self.udata = change.udata;
-        if filter == QueueFilter::User {
-            self.touch(change);
+        match filter {
+            QueueFilter::User => self.touch(change),
+            QueueFilter::Poll => {
+                self.options = flags.intersection(OPTIONS);
+                self.asked = change.fflags;
+            }
+            QueueFilter::Read | QueueFilter::Write => {}
         }
         if flags.contains(QueueFlags::ENABLE) || (adding && !flags.contains(QueueFlags::DISABLE)) {
             self.enabled = true;
@@ -226,7 +280,9 @@ impl State {
     /// What a look at the watch of `ident` and `filter` reports, if it is
     /// enabled and ready, and what becomes of it then: a `read` or `write`
     /// watch is ready for what its descriptor was found ready for,
-    /// `events`, and a user event once triggered (`events` aside). A
+    /// `events`, a `poll` watch for any of `events` it asks for, or an
+    /// error or hang-up, and a user event once triggered (`events` aside).
+    /// A `poll` watch's event carries what it was ready for in `fflags`. A
     /// reported watch with `dispatch` is disabled, and a user event with
     /// `clear` forgets what triggered it.
     pub fn report(
@@ -239,11 +295,16 @@ impl State {
             return None;
         }
         let user = filter == QueueFilter::User;
+        let mut found = 0;
         let ready = match filter {
             QueueFilter::User => self.triggered,
             QueueFilter::Read => !events.intersection(PollEvents::READABLE.union(ENDED)).is_empty(),
             QueueFilter::Write => {
                 !events.intersection(PollEvents::WRITABLE.union(ENDED)).is_empty()
+            }
+            QueueFilter::Poll => {
+                found = polled(events) & (self.asked | ALWAYS.bits());
+                found != 0
             }
         };
         if !ready {
@@ -258,7 +319,7 @@ impl State {
             filter: filter.raw(),
             // Every flag of an event is in the low 16 bits.
             flags: flags.bits() as u16,
-            fflags: if user { self.fflags } else { 0 },
+            fflags: if user { self.fflags } else { found },
             data: if user { self.value } else { 0 },
             udata: self.udata,
         };
@@ -285,4 +346,18 @@ impl State {
             Then::LookAgain
         }
     }
+}
+
+/// What a descriptor ready for `events` is ready for, in Linux's bits:
+/// those events, with POLLRDNORM when readable and POLLWRNORM when
+/// writable.
+fn polled(events: PollEvents) -> u32 {
+    let mut bits = events.bits();
+    if events.contains(PollEvents::READABLE) {
+        bits |= READ_NORMAL;
+    }
+    if events.contains(PollEvents::WRITABLE) {
+        bits |= WRITE_NORMAL;
+    }
+    bits
 }

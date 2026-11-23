@@ -762,3 +762,15 @@ pub fn fchown(me: &ThreadRef, user: &UserRef, fd: u64, owner: u64, group: u64) -
     files::set_access(me, user, slot, owner as u32, group as u32, directory::KEEP)?;
     Ok(0)
 }
+
+/// `preadv2` (Linux's flags RWF_*).
+pub fn preadv2(me: &ThreadRef, user: &UserRef, a: &super::Args) -> Result<u64> {
+    let _ = (me, user, a);
+    fail(radix_linux::errno::ENOSYS)
+}
+
+/// `pwritev2` (Linux's flags RWF_*).
+pub fn pwritev2(me: &ThreadRef, user: &UserRef, a: &super::Args) -> Result<u64> {
+    let _ = (me, user, a);
+    fail(radix_linux::errno::ENOSYS)
+}

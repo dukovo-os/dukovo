@@ -548,3 +548,9 @@ pub fn waitid(me: &ThreadRef, user: &UserRef, a: &Args) -> Result<u64> {
     }
     Ok(0)
 }
+
+/// `getcpu`: the CPU the thread runs on, and NUMA node 0.
+pub fn getcpu(me: &ThreadRef, user: &UserRef, cpu: u64, node: u64) -> Result<u64> {
+    let _ = (me, user, cpu, node);
+    fail(radix_linux::errno::ENOSYS)
+}

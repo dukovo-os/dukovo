@@ -131,6 +131,35 @@ flags PollEvents: u32 {
     hang_up = 4;
     /// The slot holds no capability (reported whether asked for or not).
     invalid = 5;
+    /// A stream socket reads no more: its peer has shut its writing side
+    /// or gone, or it has shut its own reading side (Linux's POLLRDHUP).
+    /// Reported only when asked for. (Since version 13, ADR 0612.)
+    read_hang_up = 13;
+}
+
+/// How `event_counter` makes an event counter. (Since version 13, ADR
+/// 0613.)
+flags CounterFlags: u32 {
+    /// Reads and writes do not wait (radix-file(2)'s non_blocking).
+    non_blocking = 0;
+    /// The slot is closed by `exec`.
+    close_on_exec = 1;
+    /// Each read takes 1 from the count and reads 1, as Linux's
+    /// EFD_SEMAPHORE, instead of taking the whole count.
+    semaphore = 2;
+}
+
+/// How `memory_file` makes a memory file. (Since version 13, ADR 0614.)
+flags MemoryFileFlags: u32 {
+    /// The slot is closed by `exec`.
+    close_on_exec = 0;
+    /// Seals may be added (radix-file(2)'s `seal`); without it the file
+    /// begins sealed with SEAL_SEAL, as Linux's memfd without
+    /// MFD_ALLOW_SEALING.
+    allow_sealing = 1;
+    /// The file begins sealed with SEAL_EXEC: it can never be mapped to
+    /// run, as Linux's MFD_NOEXEC_SEAL. Implies allow_sealing.
+    no_exec = 2;
 }
 
 /// One entry of the array `poll` takes, as POSIX's `struct pollfd`.
@@ -305,7 +334,7 @@ enum ProcessState: u8 {
 }
 
 /// A process.
-interface process = 0x000a version 12 {
+interface process = 0x000a version 13 {
     kind = process;
     /// Makes a kernel object, charged to this process's resource domain,
     /// and puts its capability, with every right, in slot `to`: a process
@@ -761,4 +790,69 @@ interface process = 0x000a version 12 {
     /// the same. Does not return. (Since version 12.)
     method exit_thread_waking = 61 (code: u64, word: addr) -> ()
         raises [no_such_slot, empty_slot, missing_rights];
+    /// Makes an event counter in slot `to`, as Linux's eventfd(2): a
+    /// file whose 8-byte reads take the count, as a u64, and set it to 0
+    /// (with semaphore, take 1 and read 1), waiting while it is 0, and
+    /// whose 8-byte writes add a u64 to it, waiting while that would take
+    /// it past 2^64 - 2. A read or write of fewer than 8 bytes, and a
+    /// write of 2^64 - 1, fail with invalid_argument. It is readable while
+    /// the count is not 0, and writable while it is below 2^64 - 2, for
+    /// `poll` and event queues. The count begins at `initial`. (Since
+    /// version 13, ADR 0613.)
+    method event_counter = 62 (to: slot, initial: u32, flags: CounterFlags) -> ()
+        raises [no_such_slot, missing_rights, occupied, no_memory];
+    /// Makes a timer file in slot `to`, as Linux's timerfd_create(2): a
+    /// file that radix-file(2)'s `timer_set` arms on `clock` (realtime,
+    /// monotonic or boottime; any other fails with invalid_argument).
+    /// Its 8-byte read gives, as a u64, how many times it has expired
+    /// since the last read, and sets that to 0, waiting while it is 0; a
+    /// read of fewer than 8 bytes fails with invalid_argument. It is
+    /// readable while it has expired since the last read. (Since version
+    /// 13, ADR 0613.)
+    method timer_file = 63 (to: slot, clock: ClockKind, flags: PipeFlags) -> ()
+        raises [no_such_slot, missing_rights, occupied, invalid_argument, no_memory];
+    /// Makes a signal file in slot `to`, as Linux's signalfd(2): its
+    /// reads take the signals of `mask` (a bit for each signal, bit 0 for
+    /// signal 1; SIGKILL and SIGSTOP are left out) pending for the calling
+    /// thread, its own first then its process's, as `signal_wait` would,
+    /// writing each as Linux's 128-byte `struct signalfd_siginfo`, as many
+    /// as fit, and wait while none is. A read of fewer than 128 bytes fails
+    /// with invalid_argument. It is readable while such a signal is pending
+    /// for the thread that looks. The signals should be blocked, as with
+    /// `signal_wait`, or they are handled first. radix-file(2)'s
+    /// `set_signal_mask` changes the mask. (Since version 13, ADR 0613.)
+    method signal_file = 64 (to: slot, mask: u64, flags: PipeFlags) -> ()
+        raises [no_such_slot, missing_rights, occupied, no_memory];
+    /// Makes a process file for process `pid` in slot `to`, as Linux's
+    /// pidfd_open(2): it is readable once that process has exited, and
+    /// with hang_up once it has been waited for; radix-file(2)'s
+    /// `process_of` gives its number, which no other process has since
+    /// boot, so that `wait`, `kill` and `signal_queue` by that number
+    /// reach only it. Reads and writes fail with invalid_argument. Any
+    /// process may be named, as on Linux; one that is not there, or not in
+    /// the caller's namespace, fails with no_such_process. The slot is
+    /// always closed by `exec`, as Linux's pidfds are. (Since version 13,
+    /// ADR 0613.)
+    method process_file = 65 (pid: u64, to: slot, flags: PipeFlags) -> ()
+        raises [no_such_slot, missing_rights, occupied, no_such_process, no_memory];
+    /// Makes a memory file in slot `to`, as Linux's memfd_create(2): an
+    /// empty file, read-write, in memory of the kernel's own that no
+    /// directory holds, which goes when its last description and mapping
+    /// go. `name` (at most 249 bytes, no NUL) is only for its path in
+    /// radix-file(2)'s `path`, `/memfd:NAME (deleted)`. It is sized,
+    /// read, written and mapped as a file of /devices/shm, and charged
+    /// alike; radix-file(2)'s `seal` seals it. (Since version 13, ADR
+    /// 0614.)
+    method memory_file = 66 (name: in bytes, to: slot, flags: MemoryFileFlags) -> ()
+        raises [no_such_slot, missing_rights, occupied, invalid_argument, bad_address,
+                no_memory];
+    /// Makes a watch file in slot `to`, as Linux's inotify_init1(2):
+    /// radix-file(2)'s `watch_add` adds watches of files and directories
+    /// to it, and its reads give what became of them, as Linux's `struct
+    /// inotify_event` records, as many whole ones as fit, waiting while
+    /// there are none. A read too small for the first fails with
+    /// invalid_argument. It is readable while it holds one. (Since version
+    /// 13, ADR 0615.)
+    method watch_file = 67 (to: slot, flags: PipeFlags) -> ()
+        raises [no_such_slot, missing_rights, occupied, no_memory];
 }

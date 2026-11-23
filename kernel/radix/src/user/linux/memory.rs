@@ -319,3 +319,9 @@ pub fn mremap(me: &ThreadRef, user: &UserRef, a: &Args) -> Result<u64> {
     }
     Ok(address)
 }
+
+/// `memfd_create` (ADR 0614).
+pub fn memfd_create(me: &ThreadRef, user: &UserRef, name: u64, how: u64) -> Result<u64> {
+    let _ = (me, user, name, how);
+    fail(radix_linux::errno::ENOSYS)
+}

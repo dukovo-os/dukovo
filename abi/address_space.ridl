@@ -53,8 +53,27 @@ flags MapFlags: u32 {
     shared = 2;
 }
 
+/// How `futex_wait_set` waits. (Since version 4, ADR 0617.)
+flags FutexWaitFlags: u32 {
+    /// `timeout_ns` is a time on the clock, not a time from now.
+    absolute = 0;
+    /// With absolute: the clock is the wall clock, in nanoseconds since
+    /// 1970, rather than the monotonic one, as Linux's
+    /// FUTEX_CLOCK_REALTIME.
+    realtime = 1;
+    /// Wait as long as it takes: `timeout_ns` is ignored.
+    forever = 2;
+}
+
+/// The bit set that `futex_wait` waits with, and `futex_wake` wakes:
+/// all of them, as Linux's FUTEX_BITSET_MATCH_ANY.
+const FUTEX_ALL: u32 = 0xffffffff;
+/// The most entries of a robust list that are looked at when a thread
+/// ends, as Linux's ROBUST_LIST_LIMIT. (Since version 4, ADR 0617.)
+const ROBUST_LIST_MAX: u32 = 2048;
+
 /// A virtual address space.
-interface address_space = 0x0003 version 3 {
+interface address_space = 0x0003 version 4 {
     kind = address_space;
     /// Whether a page is mapped at `address`, and with which rights.
     method query = 1 (address: addr) -> (mapped: bool, rights: Rights)
@@ -133,4 +152,43 @@ interface address_space = 0x0003 version 3 {
     /// right.
     method forget = 9 (address: addr, size: u64) -> ()
         raises [no_such_slot, empty_slot, missing_rights, invalid_argument, not_mapped];
+    /// Waits as `futex_wait` does, with the bit set `bits` (not 0): only
+    /// a wake whose bits share one with it wakes the thread, as Linux's
+    /// FUTEX_WAIT_BITSET. `futex_wait` waits with FUTEX_ALL. Fails as
+    /// `futex_wait` does, and with invalid_argument for `bits` 0. (Since
+    /// version 4, ADR 0617.)
+    method futex_wait_set = 10 (address: addr, expected: u32, bits: u32, timeout_ns: u64,
+                                flags: FutexWaitFlags) -> ()
+        raises [no_such_slot, empty_slot, missing_rights, invalid_argument, bad_address,
+                would_block, timed_out, interrupted];
+    /// Wakes up to `count` of the threads waiting on the word at
+    /// `address` whose bit sets share a bit with `bits` (not 0), as
+    /// Linux's FUTEX_WAKE_BITSET, and returns how many it woke. (Since
+    /// version 4, ADR 0617.)
+    method futex_wake_set = 11 (address: addr, count: u32, bits: u32) -> (woken: u32)
+        raises [no_such_slot, empty_slot, missing_rights, invalid_argument];
+    /// Wakes up to `count` of the threads waiting on the word at
+    /// `address`, and moves up to `moved` of the others to wait on the
+    /// word at `to` instead, where `futex_wake` of `to` wakes them, as
+    /// Linux's FUTEX_REQUEUE; with `compare`, first checks that the word
+    /// at `address` holds `expected`, and fails with would_block if it
+    /// does not, as FUTEX_CMP_REQUEUE. Returns how many it woke and how
+    /// many it moved. `address` and `to` may be in this address space or
+    /// in shared memory, each as `futex_wake` takes it; the same word is
+    /// invalid_argument. (Since version 4, ADR 0617.)
+    method futex_requeue = 12 (address: addr, count: u32, to: addr, moved: u32,
+                               expected: u32, compare: bool) -> (woken: u32, moved: u32)
+        raises [no_such_slot, empty_slot, missing_rights, invalid_argument, bad_address,
+                would_block];
+    /// Changes the word at `to` by `operation`, Linux's FUTEX_WAKE_OP
+    /// encoding of an operation, an argument, a comparison and its
+    /// argument, in one atomic step, then wakes up to `count` threads
+    /// waiting on `address` and, if the word's old value compares true,
+    /// up to `count_to` of those waiting on `to`; returns how many it
+    /// woke in all. An unknown operation or comparison fails with
+    /// not_supported, as Linux's ENOSYS. (Since version 4, ADR 0617.)
+    method futex_wake_op = 13 (address: addr, count: u32, to: addr, count_to: u32,
+                               operation: u32) -> (woken: u32)
+        raises [no_such_slot, empty_slot, missing_rights, invalid_argument, bad_address,
+                not_supported];
 }
