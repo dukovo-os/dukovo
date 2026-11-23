@@ -303,7 +303,15 @@ which `./ob lab` names, with the other ports' such files, in
 Python bundles `./ob lab` also signs a catalog with throwaway keys, in
 `out/lab-catalog`, which it names in `DUKOVO_LAB_CATALOG` for the web
 console's test of adding an app (`lab/tests/web-console/add-app-catalog.sh`
-copies it over). With an image given by `--image`, `./ob lab` packs no
+copies it over). `web-console/apps` and `web-console/ansible` install
+nginx and Python from that catalog as well, by the name `labtest`: an
+app installed from a catalog stays bound to it after it is removed (ADR
+0383), so a test of the same boot that installed one from a file would be
+refused. `bundles/every-catalog-app` reads the catalogs the system has,
+which are on the internet, and is skipped on a machine with none, as the
+real machines on the lab network have; it leaves out the commands that
+need the grant "runs with your access", which no console in a test can
+give. With an image given by `--image`, `./ob lab` packs no
 bundles but names the ones this tree packed already, if any. Without the
 bundles or the ports' builds those tests are skipped too.
 
@@ -341,7 +349,11 @@ first program is `tools/linux-bench`, running the same POSIX benchmarks
 built from the same file. So the lab and CI measure against the same
 Linux, and the lab adds the machines CI cannot: each real machine in
 the lab, under its own firmware and devices. A row passes at 1.00,
-parity, unless the step gives a `limit`. On QEMU without KVM the numbers
+parity, unless the step gives a `limit`. A test holds the rows that
+`./ob bench --gate` holds and leaves out one it only reports, as
+`performance/ipc` does `posix_poll_idle` (the row's gate is `Gate::Yet`
+in `tools/xtask/src/bench.rs`, and it joins the test's `rows` with the
+gate). On QEMU without KVM the numbers
 are kept but the steps skip, as an emulator's numbers say nothing about
 either system. When the kit cannot be built (no network for the kernel,
 say), `./ob lab` says so and the performance tests skip.
