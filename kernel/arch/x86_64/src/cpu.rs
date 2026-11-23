@@ -153,6 +153,11 @@ pub mod feature {
         cpuid(1, 0).ecx & (1 << 17) != 0
     }
 
+    /// The IA32_TSC_ADJUST MSR (CPUID 7, EBX bit 1).
+    pub fn tsc_adjust() -> bool {
+        leaf7_ebx() & (1 << 1) != 0
+    }
+
     /// Supervisor-mode execution prevention (CPUID 7, EBX bit 7).
     pub fn smep() -> bool {
         leaf7_ebx() & (1 << 7) != 0
@@ -259,6 +264,7 @@ pub mod msr {
     pub const FS_BASE: u32 = 0xc000_0100;
     pub const GS_BASE: u32 = 0xc000_0101;
     pub const KERNEL_GS_BASE: u32 = 0xc000_0102;
+    pub const TSC_ADJUST: u32 = 0x3b;
     pub const TSC_DEADLINE: u32 = 0x6e0;
     pub const XFD: u32 = 0x1c4;
     pub const XFD_ERR: u32 = 0x1c5;

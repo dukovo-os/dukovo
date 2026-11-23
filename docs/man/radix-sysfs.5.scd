@@ -193,6 +193,16 @@ _/kernel/bus/pci/devices/_*address*_/subsystem_vendor_, _subsystem_device_
 	found is listed, whether or not a driver uses it. *lspci*(8) reads
 	them.
 
+_/kernel/bus/pci/devices/_*address*_/numa_node_
+	The NUMA node the function is closest to, in decimal, as Linux's
+	file: *0* or *1* on a two-socket server. The firmware gives each
+	PCI root bus a node (the proximity domain of its ACPI host bridge), and every
+	function on that bus has it. The file reads *-1* when the node is not
+	known: the firmware names none, the machine has no NUMA tables,
+	ACPI is off (*aml=off*) or has not started. The scan finds every root
+	bus, not only the first, so a second socket's devices are listed
+	with the node they belong to.
+
 _/kernel/bus/usb/devices/_*name*_/idVendor_, _idProduct_, _bcdDevice_, _version_
 	A USB device's vendor and product IDs and its release, in
 	hexadecimal with four digits, and the USB version it speaks, as

@@ -29,7 +29,8 @@
 //!   ADR 0436);
 //! - `/kernel/bus/pci/devices/<address>/vendor`, `device`, `class`,
 //!   `revision`, `subsystem_vendor` and `subsystem_device`, in
-//!   hexadecimal, for every PCI function the scan found;
+//!   hexadecimal, and `numa_node` in decimal (`-1` when the firmware
+//!   names none), for every PCI function the scan found;
 //! - `/kernel/bus/usb/devices`: each controller's root hub (`usb1`),
 //!   each USB device (`1-3.2`) and each of its interfaces (`1-3.2:1.0`),
 //!   with Linux's files (ADR 0230, [`usb`]);
@@ -906,6 +907,15 @@ impl Listing for PciDevices {
         let (vendor, device) = function.subsystem;
         dir.add("subsystem_vendor", value(move |text| writeln!(text, "{vendor:#06x}"))?)?;
         dir.add("subsystem_device", value(move |text| writeln!(text, "{device:#06x}"))?)?;
+        // Read when asked: uACPI gives the nodes after the scan lists the
+        // function.
+        dir.add(
+            "numa_node",
+            value(move |text| match disk::numa_node(&function) {
+                Some(node) => writeln!(text, "{node}"),
+                None => writeln!(text, "-1"),
+            })?,
+        )?;
         Ok(dir)
     }
 }

@@ -699,6 +699,8 @@ optical-ide kernel/drivers/ide/ kernel/drivers/scsi/ kernel/fs/iso9660/ kernel/f
 optical-ide kernel/radix/src/fs/disk/handed.rs kernel/radix/src/fs/disk/ide.rs kernel/radix/src/fs/disk/optical.rs
 optical-ide userspace/programs/systools/src/eject.rs userspace/programs/systools/src/volumed.rs
 page-fault kernel/mm/
+pci-roots kernel/lib/hw/src/pci.rs kernel/radix/src/acpi/pci.rs kernel/radix/src/fs/disk/mod.rs
+pci-roots kernel/radix/src/fs/sysfs.rs
 pci-serial kernel/drivers/uart/ kernel/radix/src/serial/
 php ports/bzip2/ ports/curl/ ports/libxml2/ ports/openssl/ ports/php/ ports/postgresql/
 php ports/rustls-ffi/ ports/zlib/ ports/zstd/ tools/xtask/src/bundles.rs tools/xtask/src/licenses.rs

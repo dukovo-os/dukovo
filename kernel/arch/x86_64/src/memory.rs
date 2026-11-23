@@ -489,11 +489,14 @@ static MM_PLATFORM: MmPlatform = MmPlatform;
 struct Nodes {
     domains: [u32; MAX_NODES],
     count: usize,
+    /// How many of `domains` the SRAT named: 0 without an SRAT, where
+    /// `domains` still holds domain 0 as the one node.
+    named: usize,
 }
 
 impl Nodes {
     fn from_srat(srat: Option<&Srat<'_>>) -> Nodes {
-        let mut nodes = Nodes { domains: [0; MAX_NODES], count: 1 };
+        let mut nodes = Nodes { domains: [0; MAX_NODES], count: 1, named: 0 };
         let Some(srat) = srat else { return nodes };
         nodes.count = 0;
         for entry in srat.entries() {
@@ -505,6 +508,7 @@ impl Nodes {
                 nodes.count += 1;
             }
         }
+        nodes.named = nodes.count;
         nodes.count = nodes.count.max(1);
         nodes
     }
@@ -513,6 +517,21 @@ impl Nodes {
     fn of(&self, domain: u32) -> usize {
         self.domains[..self.count].iter().position(|&d| d == domain).unwrap_or(0)
     }
+
+    /// The node of `domain`, or `None` when the SRAT does not name it.
+    fn of_known(&self, domain: u32) -> Option<usize> {
+        self.domains[..self.named].iter().position(|&d| d == domain)
+    }
+}
+
+/// The nodes the SRAT gave, kept for [`numa_node_of_domain`].
+static NODES: Once<Nodes> = Once::new();
+
+/// The NUMA node of ACPI proximity domain `domain`, or `None` when the
+/// SRAT does not name it, there is no SRAT, or the nodes are not set up
+/// yet.
+pub fn numa_node_of_domain(domain: u32) -> Option<u8> {
+    u8::try_from(NODES.get()?.of_known(domain)?).ok()
 }
 
 /// The node of physical address `phys`, and the next address where the
@@ -562,7 +581,7 @@ pub fn handover() -> Option<&'static Handover> {
 /// the SRAT; distances from the SLIT. Called once, by the boot CPU, after
 /// ACPI and before the other CPUs start.
 pub fn start_frame_allocator(srat: Option<&Srat<'_>>, slit: Option<&Slit<'_>>) {
-    let nodes = Nodes::from_srat(srat);
+    let nodes = NODES.call_once(|| Nodes::from_srat(srat));
     for cpu in (0..radix_hal::MAX_CPUS).filter_map(percpu::get) {
         let apic_id = cpu.apic_id.load(Ordering::Relaxed);
         let domain = srat.into_iter().flat_map(radix_acpi::Srat::entries).find_map(|e| match e {
@@ -585,7 +604,7 @@ pub fn start_frame_allocator(srat: Option<&Srat<'_>>, slit: Option<&Slit<'_>>) {
         let mut start = region.start.max(1 << 20).next_multiple_of(PAGE);
         let end = region.end & !(PAGE - 1);
         while start < end {
-            let (node, boundary) = node_at(&nodes, srat, start);
+            let (node, boundary) = node_at(nodes, srat, start);
             let limit = if start < FOUR_GIB { FOUR_GIB } else { u64::MAX };
             let piece_end = end.min(boundary).min(limit);
             let pages = (piece_end - start) / PAGE;

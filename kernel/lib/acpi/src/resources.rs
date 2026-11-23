@@ -4,7 +4,8 @@
 //! Resource templates: what a device's `_CRS` method returns, a buffer of
 //! resource descriptors that say which registers, ports, interrupts, GPIO
 //! pins and serial bus connections the device uses (ACPI Specification
-//! 6.5, section 6.4 "Resource Data Types for ACPI").
+//! 6.5, section 6.4 "Resource Data Types for ACPI"). A PCI host
+//! bridge's names the bus numbers it decodes as well.
 //!
 //! A descriptor is small, its first byte holding its type in bits 6:3
 //! and its length in bits 2:0, or large, bit 7 set with its type in bits
@@ -29,6 +30,8 @@ pub enum Resource<'a> {
     Gpio(Gpio<'a>),
     /// A connection on an I2C bus.
     I2c(I2c<'a>),
+    /// Bus numbers a PCI host bridge decodes.
+    Buses(Buses),
     /// A descriptor of another kind: its small type, or a large one's
     /// type with bit 7 set.
     Other(u8),
@@ -44,6 +47,16 @@ pub struct Memory {
     pub length: u64,
     /// Whether it may be written.
     pub writable: bool,
+}
+
+/// The bus numbers a PCI host bridge decodes (a bus number Address Space
+/// descriptor, `WordBusNumber` in ASL): its root bus is the first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Buses {
+    /// The first bus number: the root bus.
+    pub first: u8,
+    /// The last bus number, which bridges below the root may be given.
+    pub last: u8,
 }
 
 /// A range of I/O ports (I/O Port or Fixed Location I/O Port, or an I/O
@@ -331,8 +344,8 @@ fn large(kind: u8, bytes: &[u8]) -> Option<Resource<'_>> {
     })
 }
 
-/// A Word, DWord or QWord Address Space descriptor: memory and I/O ranges
-/// as resources, bus numbers as others.
+/// A Word, DWord or QWord Address Space descriptor: a range of memory,
+/// I/O ports or bus numbers.
 fn space(kind: u8, bytes: &[u8]) -> Option<Resource<'_>> {
     let size = match kind {
         WORD_SPACE => 2,
@@ -353,6 +366,20 @@ fn space(kind: u8, bytes: &[u8]) -> Option<Resource<'_>> {
     Some(match space {
         0 => Resource::Memory(Memory { base, length, writable: specific & 1 != 0 }),
         1 => Resource::Io(Io { base: u16::try_from(base).ok()?, length: length as u16 }),
+        // The last bus is the first plus the length, as Linux reads it;
+        // the maximum stands in for a length of 0. Numbers past 255 are
+        // not buses, so the descriptor is an error.
+        2 => {
+            let last = match length {
+                0 => field(2)?,
+                _ => base.checked_add(length - 1)?,
+            };
+            let (first, last) = (u8::try_from(base).ok()?, u8::try_from(last).ok()?);
+            if last < first {
+                return None;
+            }
+            Resource::Buses(Buses { first, last })
+        }
         _ => Resource::Other(kind | 0x80),
     })
 }
@@ -573,6 +600,27 @@ mod tests {
             })
         );
         assert_eq!(resources.len(), 9);
+    }
+
+    /// A host bridge's bus numbers: `WordBusNumber (ResourceProducer,
+    /// MinFixed, MaxFixed, PosDecode, 0, 0x40, 0x7F, 0, 0x40)`, then one
+    /// for 0x80 to 0x9F with a length of 0, then one past bus 255.
+    const HOST_BRIDGE: &[u8] = &[
+        0x88, 0x0d, 0x00, 0x02, 0x0c, 0x00, 0x00, 0x00, 0x40, 0x00, 0x7f, 0x00, //
+        0x00, 0x00, 0x40, 0x00, //
+        0x88, 0x0d, 0x00, 0x02, 0x0c, 0x00, 0x00, 0x00, 0x80, 0x00, 0x9f, 0x00, //
+        0x00, 0x00, 0x00, 0x00, //
+        0x88, 0x0d, 0x00, 0x02, 0x0c, 0x00, 0x00, 0x00, 0xf0, 0x00, 0x0f, 0x01, //
+        0x00, 0x00, 0x20, 0x00, 0x79, 0x00,
+    ];
+
+    #[test]
+    fn reads_a_host_bridges_bus_numbers() {
+        let walked: Vec<_> = Resources::new(HOST_BRIDGE).collect();
+        assert_eq!(walked[0], Ok(Resource::Buses(Buses { first: 0x40, last: 0x7f })));
+        assert_eq!(walked[1], Ok(Resource::Buses(Buses { first: 0x80, last: 0x9f })));
+        assert_eq!(walked[2], Err(Error(32)));
+        assert_eq!(walked.len(), 3);
     }
 
     #[test]

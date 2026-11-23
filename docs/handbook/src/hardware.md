@@ -12,7 +12,8 @@ audio in 1.13.
 
 <div class="hwkinds">
 <div><span class="hwpill hw-ok">Works</span><h3>Virtual machines and clouds</h3><p>QEMU and KVM, VMware, Hyper-V and Azure, AWS, Google Cloud and VirtualBox. Every paravirtual disk and network card they offer has a driver.</p></div>
-<div><span class="hwpill hw-ok">Works</span><h3>Desktops and servers on a wired network</h3><p>NVMe and SATA disks, Intel, Realtek, Broadcom and Killer Ethernet up to 10 Gb/s, and every kind of USB port. The screen is a text console until the desktop arrives in 1.1.</p></div>
+<div><span class="hwpill hw-ok">Works</span><h3>Desktops on a wired network</h3><p>NVMe and SATA disks, Intel, Realtek, Broadcom and Killer Ethernet up to 10 Gb/s, and every kind of USB port. The screen is a text console until the desktop arrives in 1.1.</p></div>
+<div><span class="hwpill hw-part">Partly</span><h3>Servers</h3><p>One- and two-socket Xeon and EPYC servers work with their onboard SATA and NVMe disks and 1 to 10 Gb/s ports, every PCIe slot found and each device on its NUMA node. RAID and SAS controllers, 25 to 100 Gb/s cards, storage networks over iSCSI and NVMe over TCP, IPMI, hardware error reporting and disk hot-swap come before 1.0.</p></div>
 <div><span class="hwpill hw-part">Partly</span><h3>Laptops</h3><p>Everything a desktop has, plus SD card readers and USB-C port status. Connect with an Ethernet port, a USB Ethernet adapter or a phone's USB tethering until Wi-Fi arrives in 1.11.</p></div>
 <div><span class="hwpill hw-plan">1.10</span><h3>Gaming and graphics work</h3><p>Every graphics card shows a picture through the firmware's framebuffer. Acceleration for AMD, Intel and NVIDIA comes in 1.10, and several monitors and HDR in 1.11.</p></div>
 </div>
@@ -60,7 +61,13 @@ the exact chips.
 | USB sticks and disks: bulk-only, UAS and USB floppy drives | Works | usb-storage |
 | SD card readers on PCI and in chipsets, and Realtek's RTS5209, RTS5227, RTS5229, RTS522A, RTS5249, RTS525A, RTL8402, RTL8411 and RTL8411B | Works | sdhci, rtsx |
 | PC floppy drives | Works | fdc |
-| Hardware RAID and SAS HBAs: Broadcom MegaRAID and mpt3sas, Microchip SmartPQI | Planned, 1.12 | |
+| Broadcom MegaRAID RAID controllers: Dell PERC 9 to 11 (H740P included), Lenovo, and Broadcom 93xx to 95xx | Planned, 1.0 | |
+| Broadcom SAS HBAs: Dell HBA330 and HBA355i, LSI 9207 to 9500 | Planned, 1.0 | |
+| HPE Smart Array Gen10 and later, Microchip SmartRAID and SmartHBA | Planned, 1.0 | |
+| Dell PERC 12 and Broadcom 9600 | Planned, 1.0 | |
+| Hot-swap of NVMe and SAS or SATA disks, with the drive bay lights | Planned, 1.0 | |
+| HPE Gen8 and Gen9 Smart Array and Adaptec RAID | Planned, 1.12 | |
+| SES enclosure management beyond the drive bay lights | Planned, 1.12 | |
 | UFS storage, in a few laptops from 2022 | Not yet | |
 
 ### Wired network
@@ -76,7 +83,14 @@ the exact chips.
 | Atheros AR813x, AR815x, AR816x and AR817x, Killer E2200, E2400 and E2500 | Works | alc(4) |
 | Broadcom NetXtreme: BCM5717 to BCM5720 in servers, BCM5761, BCM5762, the BCM57765 family and BCM57780 | Works | bge(4) |
 | USB Ethernet adapters and docks (CDC ECM and NCM), ASIX AX88179 and AX88179A, and phones' USB tethering | Works | cdc_ether(4) |
-| Intel X710 and E810, Broadcom NetXtreme-E, Mellanox ConnectX: 25 to 100 Gb/s | Planned, 1.12 | |
+| Intel X710, XL710, XXV710 and X722, 10 to 40 Gb/s | Planned, 1.0 | |
+| Intel E810, 10 to 100 Gb/s | Planned, 1.0 | |
+| Broadcom NetXtreme-E, 10 to 200 Gb/s | Planned, 1.0 | |
+| NVIDIA Mellanox ConnectX-4 Lx to ConnectX-7 | Planned, 1.0 | |
+| SFP+ modules and fiber ports on the cards that work | Planned, 1.0 | |
+| QLogic and Marvell FastLinQ | Planned, 1.12 | |
+| Marvell AQtion | Planned, 1.12 | |
+| SR-IOV virtual functions, used inside a guest | Planned, 1.12 | |
 
 ### Wireless
 
@@ -142,6 +156,23 @@ the exact chips.
 | 64-bit ARM | Planned, 1.17 | |
 | RISC-V | Planned, 1.18 | |
 
+### Servers
+
+| Device | Status | Driver |
+| --- | --- | --- |
+| Two or more sockets (Xeon, EPYC): every PCI root bus is scanned and each device shows its NUMA node. Up to 256 CPU threads are used; more come in 1.0 | Partly | |
+| More than 256 CPU threads and more than 8 NUMA nodes | Planned, 1.0 | |
+| Serial-over-LAN on a BMC (iDRAC, iLO and any BMC that offers a serial port as COM2) | Works | uart(4) |
+| IPMI: BMC sensors, event log, watchdog and the identify light | Planned, 1.0 | |
+| Hardware error reporting: APEI, PCIe AER, and a failing memory module named by its slot | Planned, 1.0 | |
+| Link aggregation (LACP and active-backup), LLDP, jumbo frames, a queue per CPU, checksum and segmentation offloads | Planned, 1.0 | |
+| Disks on a storage network over iSCSI and NVMe over TCP | Planned, 1.0 | |
+| Multipath: several paths to one storage network disk, kept up when one goes down | Planned, 1.0 | |
+| Fibre Channel | Planned, 1.22 | |
+| The Redfish host interface | Planned, 1.22 | |
+| SR-IOV physical functions and device passthrough to virtual machines | Planned, 1.23 | |
+| RDMA and PTP | Planned, 1.28 | |
+
 ### Virtual machines and clouds
 
 | Device | Status | Driver |
@@ -178,8 +209,9 @@ drivers come in 1.10.
 **My disks are in "RAID On" or Intel RST mode.** Intel VMD, the mode
 recent laptops ship in, works as it is. On older machines, set SATA
 Operation to AHCI in the firmware setup, as for the Dell below. Hardware
-RAID cards come in 1.12; until then Btrfs RAID across plain disks covers
-most uses.
+RAID cards come before 1.0; until then, use disks on NVMe slots or on
+the board's own SATA controller in AHCI mode, and Btrfs RAID across plain
+disks covers most uses.
 
 **Do I need to turn off Secure Boot?** Yes, for 1.0. Signed boot comes in
 release 1.2. Cloud images boot without it.

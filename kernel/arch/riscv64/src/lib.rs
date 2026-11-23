@@ -275,6 +275,14 @@ impl Devices for Arch {
         None
     }
 
+    fn pci_bus_answers(_phys: u64) -> bool {
+        false
+    }
+
+    fn numa_node_of_domain(_domain: u32) -> Option<u8> {
+        None
+    }
+
     fn alloc_dma(_source: radix_hal::PciAddress, _pages: usize, _below_4g: bool) -> Option<Dma> {
         None
     }
