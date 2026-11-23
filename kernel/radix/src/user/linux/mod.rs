@@ -166,8 +166,13 @@ pub fn call(me: &ThreadRef, user: &UserRef, regs: &mut SyscallRegs) {
         Err(Error::Errno(errno)) => regs.number = negative(errno),
         Err(Error::Native(status)) if is(status, Kernel::Interrupted) => {
             // Kept with the registers it was made with, which this leaves
-            // as they were, to run again if the signal allows.
-            posix::signal::call_failed(me, user, number, &regs.args, status);
+            // as they were, to run again if the signal allows; a `poll`
+            // keeps its timeout as what is left of it.
+            let mut args = regs.args;
+            if let Some(left) = user.linux.take_poll_left() {
+                args[2] = left;
+            }
+            posix::signal::call_failed(me, user, number, &args, status);
             regs.number = negative(EINTR);
         }
         Err(Error::Native(status)) => regs.number = negative(errno::from_status(status)),
@@ -319,7 +324,7 @@ fn dispatch(me: &ThreadRef, user: &UserRef, regs: &SyscallRegs) -> Result<Done> 
         nr::SENDMMSG => sockets::sendmmsg(me, user, a[0], a[1], a[2], a[3])?,
         nr::PREADV2 => descriptors::preadv2(me, user, a)?,
         nr::PWRITEV2 => descriptors::pwritev2(me, user, a)?,
-        nr::GETCPU => system::getcpu(me, user, a[0], a[1])?,
+        nr::GETCPU => system::getcpu(a[0], a[1])?,
         // epoll (ADR 0612).
         nr::EPOLL_CREATE => events::epoll_create(me, user, a[0])?,
         nr::EPOLL_CREATE1 => events::epoll_create1(me, user, a[0])?,

@@ -654,20 +654,33 @@ pub(crate) fn poll_entries(
     found: &mut [u16],
 ) -> Result<u32> {
     debug_assert_eq!(entries.len(), found.len() * PollEntry::SIZE);
-    if found.len() > ENTRIES_MAX as usize {
-        return Err(Kernel::InvalidArgument.status(1));
-    }
     let cspace = user.process.cspace();
+    // The signal mask is in place from the first look, as on Linux, so
+    // that no signal the mask blocks runs a handler between the call's
+    // entry and its wait.
+    let masked = a.flags.contains(PollFlags::MASK);
+    if masked {
+        signal::begin_masked_wait(user, a.mask);
+    }
     // A first look, without counting as a poller: what is ready, or a
     // poll that does not wait, returns at once. One with a signal mask
     // goes on to take it, so that a signal the mask lets through
     // interrupts it, as on Linux.
     let ready = look(cspace, a.base, entries, found);
     let waits = a.flags.contains(PollFlags::FOREVER) || a.timeout_ns > 0;
-    if ready == 0 && (waits || a.flags.contains(PollFlags::MASK)) {
-        return wait_ready(user, a, cspace, entries, found);
+    let done = if ready == 0 && (waits || masked) {
+        wait_ready(user, a, cspace, entries, found)
+    } else {
+        Ok(ready)
+    };
+    // The mask stays after an interrupt until the handler has run.
+    let interrupted = done
+        .as_ref()
+        .is_err_and(|status| matches!(Kernel::from_status(*status), Some(Kernel::Interrupted)));
+    if masked && !interrupted {
+        signal::end_masked_wait(user);
     }
-    Ok(ready)
+    done
 }
 
 /// Waits, as `a` says, until one of `entries` is ready, writing what
@@ -698,10 +711,6 @@ fn wait_ready(
     }
     let me = sched::current().ok_or(error(Kernel::Gone))?;
     let polling = Polling::new(held, me)?;
-    let masked = a.flags.contains(PollFlags::MASK);
-    if masked {
-        signal::begin_masked_wait(user, a.mask);
-    }
     let deadline = (!a.flags.contains(PollFlags::FOREVER))
         .then(|| sched::now_ns().saturating_add(a.timeout_ns));
     let ready = loop {
@@ -722,9 +731,6 @@ fn wait_ready(
         }
     };
     drop(polling);
-    if masked {
-        signal::end_masked_wait(user);
-    }
     Ok(ready)
 }
 

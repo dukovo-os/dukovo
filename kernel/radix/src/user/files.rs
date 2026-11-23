@@ -429,6 +429,40 @@ impl In for Buffers<'_> {
     }
 }
 
+/// The first `len` bytes of `data`, which RLIMIT_FSIZE lets a write
+/// take. Its bytes are copied, never lent.
+struct Cut<'a> {
+    data: &'a dyn In,
+    len: usize,
+}
+
+impl In for Cut<'_> {
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn get(&self, at: usize, out: &mut [u8]) -> radix_vfs::Result<()> {
+        if at.checked_add(out.len()).is_none_or(|end| end > self.len) {
+            return Err(radix_vfs::Error::BadAddress);
+        }
+        self.data.get(at, out)
+    }
+
+    fn get_now(&self, at: usize, out: &mut [u8]) -> radix_vfs::Result<bool> {
+        if at.checked_add(out.len()).is_none_or(|end| end > self.len) {
+            return Err(radix_vfs::Error::BadAddress);
+        }
+        self.data.get_now(at, out)
+    }
+
+    fn fault_in(&self, at: usize, len: usize) -> radix_vfs::Result<()> {
+        if at.checked_add(len).is_none_or(|end| end > self.len) {
+            return Err(radix_vfs::Error::BadAddress);
+        }
+        self.data.fault_in(at, len)
+    }
+}
+
 /// [`Out::lend`] and [`In::lend`] for a caller's buffer of `size` bytes
 /// at `address`: `len` bytes from `at`, as far as
 /// [`radix_block::MAX_FRAMES`] parts of pages reach, if their address is
@@ -573,6 +607,21 @@ fn file_of(found: &Found, needs: Rights) -> Result<&FileRef> {
     }
 }
 
+/// Whether `terminal::READABLE` has an answer for `file`: any pipe or
+/// socket does, and of the nodes of a filesystem a regular file.
+fn has_unread_count(file: &FileObject) -> bool {
+    !matches!(target(file), Target::Node) || file.at.node.stat().kind == radix_vfs::Kind::File
+}
+
+/// How many bytes of the regular file `file` are left to read from its
+/// description's offset, as Linux's FIONREAD counts them: none at or
+/// past its end. At most `i32::MAX`, which a 32-bit count holds.
+fn unread_in_file(file: &FileObject) -> usize {
+    let size = file.at.node.stat().size;
+    let at = *file.offset.lock();
+    usize::try_from(size.saturating_sub(at).min(i32::MAX as u64)).unwrap_or(0)
+}
+
 /// `control`'s CLONE and CLONE_RANGE (ADR 0139): the file `file`, which
 /// `found` holds open for writing, takes the data of the one the request
 /// names, open for reading, as Linux's FICLONE and FICLONERANGE.
@@ -592,6 +641,26 @@ fn clone_file(user: &UserRef, found: &Found, file: &FileRef, a: &file::ControlAr
             *word = u64::from_le_bytes(*chunk);
         }
     }
+    clone_range(user, file, range)
+}
+
+/// [`clone_file`]'s work for the Linux table (ADR 0611), whose
+/// `FICLONERANGE` record is in the kernel's memory with its source
+/// descriptor turned into a slot: the file `found` designates, open for
+/// writing, takes the data `range` names. A file that is not one of a
+/// filesystem is not_terminal, as `control` answers.
+pub(super) fn clone_range_of(user: &UserRef, found: &Found, range: [u64; 4]) -> Result<()> {
+    let file = file_of(found, Rights::NONE)?;
+    if !matches!(target(file), Target::Node) {
+        return Err(error(Kernel::NotTerminal));
+    }
+    found.cap.check(ObjectKind::File, Rights::WRITE).map_err(cap_error)?;
+    clone_range(user, file, range)
+}
+
+/// Makes `file` share the data `range` names: Linux's struct
+/// file_clone_range as four words, the slot of the source first.
+fn clone_range(user: &UserRef, file: &FileRef, range: [u64; 4]) -> Result<()> {
     let slot = u32::try_from(range[0]).map_err(|_| error(Kernel::NoSuchSlot))?;
     let (_, source) = objects::file(user.cspace, slot, Rights::READ)?;
     file.at.writable().map_err(fs::status)?;
@@ -2308,13 +2377,14 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
                 Target::Tty(handle) => {
                     handle.control(user, a.request, a.argument, a.buffer, a.size)?
                 }
-                Target::Pipe(_) | Target::Socket(_) | Target::Inet(_)
-                    if a.request == terminal::READABLE =>
+                Target::Pipe(_) | Target::Socket(_) | Target::Inet(_) | Target::Node
+                    if a.request == terminal::READABLE && has_unread_count(file) =>
                 {
                     let len = match target(file) {
                         Target::Pipe(end) => end.pipe().len(),
                         Target::Socket(socket) => socket.pending(),
                         Target::Inet(socket) => socket.pending(),
+                        Target::Node => unread_in_file(file),
                         _ => 0,
                     } as u32;
                     if a.size < 4 || !Arch::copy_to_user(a.buffer, &len.to_le_bytes()) {
@@ -3387,25 +3457,48 @@ pub fn read(
     len: usize,
     never_wait: bool,
 ) -> Result<u64> {
-    let mut out = UserOut { address, len };
+    read_into(user, file, offset, &mut UserOut { address, len }, never_wait)
+}
+
+/// [`read`] into `out`, which is the caller's memory in one buffer or
+/// several.
+fn read_into(
+    user: &UserThread,
+    file: &FileObject,
+    offset: u64,
+    out: &mut dyn Out,
+    never_wait: bool,
+) -> Result<u64> {
     if file.is_special() {
-        let read = read_special(user, file, &mut out, never_wait)?;
+        let read = read_special(user, file, out, never_wait)?;
         user.process.note_read(read);
         return Ok(read);
     }
     let read = if offset == file::CURRENT {
         let mut at = file.offset.lock();
-        let read = file.at.node.read(*at, &mut out);
+        let read = file.at.node.read(*at, out);
         if let Ok(n) = read {
             *at += n as u64;
         }
         read
     } else {
-        file.at.node.read(offset, &mut out)
+        file.at.node.read(offset, out)
     };
     let read = read.map_err(fs::status)? as u64;
     user.process.note_read(read);
     Ok(read)
+}
+
+/// `read` on the file `found` designates, into the caller's `buffers` as
+/// one: for the Linux table's `readv` (ADR 0611), whose buffers of one
+/// call are a single read, as a pipe or a file sees it.
+pub(super) fn read_buffers(
+    user: &UserRef,
+    found: &Found,
+    offset: u64,
+    buffers: &mut Buffers<'_>,
+) -> Result<u64> {
+    read_into(user, file_of(found, Rights::READ)?, offset, buffers, false)
 }
 
 /// [`read`] from a pipe or a terminal: kept out of line, so that reads of
@@ -3414,7 +3507,7 @@ pub fn read(
 fn read_special(
     user: &UserThread,
     file: &FileObject,
-    out: &mut UserOut,
+    out: &mut dyn Out,
     never_wait: bool,
 ) -> Result<u64> {
     let non_blocking = never_wait || file.description().non_blocking;
@@ -3450,37 +3543,74 @@ pub fn write(
     len: usize,
     never_wait: bool,
 ) -> Result<u64> {
-    let data = UserIn { address, len };
+    write_from(user, file, offset, &UserIn { address, len }, never_wait, false)
+}
+
+/// [`write`] of `data`, which is the caller's memory in one buffer or
+/// several. With `appends` a write at CURRENT goes to the end of the
+/// file as an appending description's does, which is what Linux's
+/// RWF_APPEND asks of one call; the description's offset then moves to
+/// the new end.
+fn write_from(
+    user: &UserThread,
+    file: &FileObject,
+    offset: u64,
+    data: &dyn In,
+    never_wait: bool,
+    appends: bool,
+) -> Result<u64> {
     if file.is_special() {
-        let written = write_special(user, file, offset, &data, never_wait)?;
+        let written = write_special(user, file, offset, data, never_wait)?;
         user.process.note_written(written);
         return Ok(written);
     }
     file.at.writable().map_err(fs::status)?;
     let node = &file.at.node;
+    let len = data.len();
     let written = if offset != file::CURRENT {
         let starts_at = || if offset == file::APPEND { node.stat().size } else { offset };
-        let data = UserIn { address, len: within_file_size(user, len, starts_at)? };
-        node.write(offset, &data).map_err(fs::status)?
+        write_within(node, offset, data, within_file_size(user, len, starts_at)?)?
     } else {
         let mut at = file.offset.lock();
-        if file.description().append {
+        if appends || file.description().append {
             // Another appender may move the end between this size and the
             // write, which matters only at the limit: the write may then
             // end a little past it.
-            let data = UserIn { address, len: within_file_size(user, len, || node.stat().size)? };
-            let written = node.write(file::APPEND, &data).map_err(fs::status)?;
+            let room = within_file_size(user, len, || node.stat().size)?;
+            let written = write_within(node, file::APPEND, data, room)?;
             *at = node.stat().size;
             written
         } else {
-            let data = UserIn { address, len: within_file_size(user, len, || *at)? };
-            let written = node.write(*at, &data).map_err(fs::status)?;
+            let room = within_file_size(user, len, || *at)?;
+            let written = write_within(node, *at, data, room)?;
             *at += written as u64;
             written
         }
     } as u64;
     user.process.note_written(written);
     Ok(written)
+}
+
+/// Writes the first `room` bytes of `data` to `node` at `offset`.
+fn write_within(node: &NodeRef, offset: u64, data: &dyn In, room: usize) -> Result<usize> {
+    if room == data.len() {
+        return node.write(offset, data).map_err(fs::status);
+    }
+    node.write(offset, &Cut { data, len: room }).map_err(fs::status)
+}
+
+/// `write` on the file `found` designates, from the caller's `buffers` as
+/// one: for the Linux table's `writev` (ADR 0611), whose buffers of one
+/// call are a single write, which a pipe keeps whole up to PIPE_BUF
+/// bytes. `appends` is [`write_from`]'s.
+pub(super) fn write_buffers(
+    user: &UserRef,
+    found: &Found,
+    offset: u64,
+    buffers: &Buffers<'_>,
+    appends: bool,
+) -> Result<u64> {
+    write_from(user, file_of(found, Rights::WRITE)?, offset, buffers, false, appends)
 }
 
 /// How many of `len` bytes may be written at the position `pos` gives
@@ -3527,7 +3657,7 @@ fn write_special(
     user: &UserThread,
     file: &FileObject,
     offset: u64,
-    data: &UserIn,
+    data: &dyn In,
     never_wait: bool,
 ) -> Result<u64> {
     let non_blocking = never_wait || file.description().non_blocking;

@@ -32,6 +32,8 @@
 //!   read from an array of the record's size.
 //! - [`clone`]: the arguments of `clone` and `clone3`, Linux's rules for
 //!   them and Dukovo's, and whether they make a thread or a process.
+//! - [`descriptors`]: the owner of `F_SETOWN` and `F_SETOWN_EX`, the flags
+//!   of `preadv2` and `pwritev2`, and the record of `FICLONERANGE`.
 //! - [`futex`]: the command and flags in a futex call's `op`.
 //! - [`epoll`]: `struct epoll_event`, and the event queue change each
 //!   `epoll_ctl` makes.
@@ -51,6 +53,7 @@
 #![forbid(unsafe_code)]
 
 pub mod clone;
+pub mod descriptors;
 pub mod epoll;
 pub mod errno;
 pub mod flags;

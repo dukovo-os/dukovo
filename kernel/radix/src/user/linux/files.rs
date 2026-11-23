@@ -30,7 +30,7 @@ use super::{Error, Result, fail, is, method, results};
 use crate::Arch;
 use crate::sched::ThreadRef;
 use crate::user::UserRef;
-use crate::user::files::{Paths, directory_call, free_slot};
+use crate::user::files::{self as native, Buffers, Paths, directory_call, free_slot};
 use crate::user::methods::Answer;
 use crate::user::objects;
 
@@ -44,11 +44,15 @@ pub const NO_FOLLOW: u64 = flags::AT_SYMLINK_NOFOLLOW as u64;
 /// thread took the one found first.
 pub(super) const TAKEN_TRIES: usize = 8;
 
+/// `user`'s process's soft RLIMIT_NOFILE, as it was set.
+pub(super) fn file_limit(user: &UserRef) -> u64 {
+    user.process.posix.lock().limits.get(LimitKind::Files).current
+}
+
 /// How many descriptors `user`'s process may have: its soft
 /// RLIMIT_NOFILE, as far as its capability space can number them.
 pub(super) fn descriptor_limit(user: &UserRef) -> u32 {
-    let limit = user.process.posix.lock().limits.get(LimitKind::Files).current;
-    u32::try_from(limit).unwrap_or(u32::MAX).min(process::MAX_SLOTS - SLOT_FD_BASE)
+    u32::try_from(file_limit(user)).unwrap_or(u32::MAX).min(process::MAX_SLOTS - SLOT_FD_BASE)
 }
 
 /// The lowest free descriptor of `user`'s process from `min`, below its
@@ -547,6 +551,34 @@ pub(super) fn move_bytes(
             fail(if label == file::WRITE { EBADF } else { EISDIR })
         }
         Err(err) => Err(err),
+    }
+}
+
+/// [`move_bytes`] for the buffers `parts` as one, a `readv` or `writev`
+/// that is a single native read or write of all of them: `appends` makes
+/// a write at CURRENT go to the end of the file for this call alone.
+pub(super) fn move_buffers(
+    user: &UserRef,
+    slot: u32,
+    label: u32,
+    offset: u64,
+    parts: &[UserBuffer],
+    appends: bool,
+) -> Result<u64> {
+    let mut buffers = Buffers::new(parts)?;
+    let moved = on_object(user, slot, |found| {
+        if label == file::WRITE {
+            native::write_buffers(user, found, offset, &buffers, appends)
+        } else {
+            native::read_buffers(user, found, offset, &mut buffers)
+        }
+    });
+    match moved {
+        Err(Error::Native(status)) if is(status, Kernel::MissingRights) => fail(EBADF),
+        Err(_) if matches!(kind_of(user, slot), Ok(ObjectKind::Directory)) => {
+            fail(if label == file::WRITE { EBADF } else { EISDIR })
+        }
+        moved => moved,
     }
 }
 

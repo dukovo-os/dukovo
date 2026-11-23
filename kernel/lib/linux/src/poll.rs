@@ -6,7 +6,8 @@
 //!
 //! The process's native `poll` takes Linux's `struct pollfd` array as it
 //! is, with the events POSIX names: `POLLIN`, `POLLPRI`, `POLLOUT`,
-//! `POLLERR`, `POLLHUP` and `POLLNVAL`. A program may also ask for the
+//! `POLLERR`, `POLLHUP` and `POLLNVAL`, and Linux's `POLLRDHUP`. A program
+//! may also ask for the
 //! normal and priority band events, which are the plain ones here, and
 //! `select`'s sets become such an array. This is Dukovo's C library's
 //! `poll.cpp` with Linux's raw values (a timeout left in `select`'s
@@ -36,8 +37,13 @@ pub const POLLWRNORM: u16 = 0x100;
 /// `POLLWRBAND`: writing priority data will not wait, which is `POLLOUT`.
 pub const POLLWRBAND: u16 = 0x200;
 
-/// The events the kernel knows, which are POSIX's basic ones.
-const NATIVE: u16 = POLLIN | POLLPRI | POLLOUT | POLLERR | POLLHUP | POLLNVAL;
+/// `POLLRDHUP`: a stream socket reads no more, as the native
+/// `read_hang_up` (bit 13 of `PollEvents`).
+pub const POLLRDHUP: u16 = 0x2000;
+
+/// The events the kernel knows, which are POSIX's basic ones and
+/// `POLLRDHUP`.
+const NATIVE: u16 = POLLIN | POLLPRI | POLLOUT | POLLERR | POLLHUP | POLLNVAL | POLLRDHUP;
 
 /// The size of a `struct pollfd`.
 pub const POLLFD_SIZE: usize = 8;
@@ -107,9 +113,6 @@ pub fn found_events(events: u16, found: u16) -> u16 {
     }
     out
 }
-
-/// The most descriptors `select` takes, `FD_SETSIZE`.
-pub const FD_SETSIZE: usize = 1024;
 
 /// The bytes of a descriptor set for `nfds` descriptors: a whole number of
 /// 64-bit words, as `select` reads them.
@@ -203,7 +206,17 @@ mod tests {
 
     #[test]
     fn events_the_kernel_does_not_know_are_left_out() {
-        assert_eq!(native_events(POLLIN | 0x2000), POLLIN);
+        assert_eq!(native_events(POLLIN | 0x4000), POLLIN);
+        assert_eq!(native_events(0x400), 0);
+    }
+
+    #[test]
+    fn a_read_hang_up_is_asked_for_and_found_as_the_kernel_has_it() {
+        // Bit 13 of the native PollEvents is Linux's POLLRDHUP.
+        assert_eq!(POLLRDHUP, 1 << 13);
+        assert_eq!(native_events(POLLIN | POLLRDHUP), POLLIN | POLLRDHUP);
+        assert_eq!(found_events(POLLRDHUP, POLLRDHUP | POLLIN), POLLRDHUP);
+        assert_eq!(found_events(POLLIN, POLLRDHUP | POLLIN), POLLIN);
     }
 
     #[test]
@@ -212,7 +225,7 @@ mod tests {
         assert_eq!(native_events(POLLRDBAND), POLLPRI);
         assert_eq!(native_events(POLLWRNORM | POLLWRBAND), POLLOUT);
         // What the kernel does not know is not asked for.
-        assert_eq!(native_events(0x2000 | 0x400), 0);
+        assert_eq!(native_events(0x4000 | 0x400), 0);
     }
 
     #[test]
@@ -232,7 +245,7 @@ mod tests {
         assert_eq!(set_bytes(1), 8);
         assert_eq!(set_bytes(64), 8);
         assert_eq!(set_bytes(65), 16);
-        assert_eq!(set_bytes(FD_SETSIZE), 128);
+        assert_eq!(set_bytes(1024), 128);
         let mut set = [0u8; 16];
         add_to_set(&mut set, 0);
         add_to_set(&mut set, 9);

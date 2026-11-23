@@ -16,12 +16,14 @@
 
 use alloc::vec::Vec;
 
+use radix_abi::UserBuffer;
 use radix_abi::capability::{self, Rights, SlotFlags};
 use radix_abi::directory;
 use radix_abi::errors::Kernel;
-use radix_abi::file::{self, DescriptionFlags, LockOwner, Whence};
+use radix_abi::file::{self, DescriptionFlags, LockOwner, OwnerKind, Whence};
 use radix_abi::process;
 use radix_abi::startup::{SLOT_FD_BASE, SLOT_PROCESS};
+use radix_linux::descriptors::{self, CloneRange, FILE_CLONE_RANGE_SIZE, OwnerEx, Rwf};
 use radix_linux::errno::{
     EBADF, EBUSY, EINVAL, EIO, ENOLCK, ENOMEM, ENOTTY, ENXIO, EOPNOTSUPP, EPERM,
 };
@@ -42,21 +44,30 @@ const IOV_MAX: u64 = 1024;
 /// How many `struct iovec`s are read from the program at a time.
 const IOVECS_AT_ONCE: usize = 16;
 
-/// A buffer of the program's memory a vectored call moves bytes to or
-/// from: its address and its length.
-type Segment = (u64, u64);
-
-/// `readv`: reads into the buffers in turn, at the description's offset.
-pub fn readv(me: &ThreadRef, user: &UserRef, fd: u64, vector: u64, count: u64) -> Result<u64> {
-    vectored(me, user, fd, file::READ, None, vector, count)
+/// What a vectored call does besides moving its buffers.
+struct Vectored {
+    /// Whether it writes: else it reads.
+    write: bool,
+    /// Where it moves them: the offset it was given, or the
+    /// description's.
+    offset: Option<u64>,
+    /// The sync and the append `preadv2` and `pwritev2` ask for.
+    how: Rwf,
 }
 
-/// `writev`: writes the buffers in turn, at the description's offset. Each
-/// buffer is one native write, so the buffers of one call are not kept
-/// together in a pipe against other writers as Linux keeps up to PIPE_BUF
-/// bytes of them.
+/// `readv`: reads into the buffers as one read, at the description's
+/// offset.
+pub fn readv(me: &ThreadRef, user: &UserRef, fd: u64, vector: u64, count: u64) -> Result<u64> {
+    let call = Vectored { write: false, offset: None, how: Rwf::default() };
+    vectored(me, user, fd, &call, vector, count)
+}
+
+/// `writev`: writes the buffers as one write, at the description's offset,
+/// which a pipe keeps whole against other writers up to PIPE_BUF bytes, as
+/// Linux does.
 pub fn writev(me: &ThreadRef, user: &UserRef, fd: u64, vector: u64, count: u64) -> Result<u64> {
-    vectored(me, user, fd, file::WRITE, None, vector, count)
+    let call = Vectored { write: true, offset: None, how: Rwf::default() };
+    vectored(me, user, fd, &call, vector, count)
 }
 
 /// `preadv`: `readv` at `offset`, which may not be negative. The raw call
@@ -70,7 +81,8 @@ pub fn preadv(
     count: u64,
     offset: u64,
 ) -> Result<u64> {
-    vectored(me, user, fd, file::READ, Some(offset), vector, count)
+    let call = Vectored { write: false, offset: Some(offset), how: Rwf::default() };
+    vectored(me, user, fd, &call, vector, count)
 }
 
 /// `pwritev`: `writev` at `offset`, which may not be negative.
@@ -82,62 +94,101 @@ pub fn pwritev(
     count: u64,
     offset: u64,
 ) -> Result<u64> {
-    vectored(me, user, fd, file::WRITE, Some(offset), vector, count)
+    let call = Vectored { write: true, offset: Some(offset), how: Rwf::default() };
+    vectored(me, user, fd, &call, vector, count)
 }
 
-/// The `readv` or `writev` (`label`) of the `count` buffers at `vector`,
-/// at `offset` or the description's, as Dukovo's C library does: one
-/// native read or write each, stopping at the first that moves fewer bytes
-/// than its buffer holds, and returning the bytes moved if an error comes
-/// after some.
+/// `preadv2(fd, vector, count, offset, offset_high, flags)`: `preadv`, at
+/// the description's offset for an offset of -1, with the flags of
+/// [`radix_linux::descriptors::rw_flags`]: EOPNOTSUPP for one that is not
+/// done, as Linux's is for one it does not know.
+pub fn preadv2(me: &ThreadRef, user: &UserRef, a: &super::Args) -> Result<u64> {
+    vectored_with_flags(me, user, a, false)
+}
+
+/// `pwritev2`: as [`preadv2`], for a write.
+pub fn pwritev2(me: &ThreadRef, user: &UserRef, a: &super::Args) -> Result<u64> {
+    vectored_with_flags(me, user, a, true)
+}
+
+/// [`preadv2`] and [`pwritev2`]: the call with `a`'s offset, which is the
+/// description's if -1 and may not be negative otherwise, and its flags.
+fn vectored_with_flags(
+    me: &ThreadRef,
+    user: &UserRef,
+    a: &super::Args,
+    write: bool,
+) -> Result<u64> {
+    let offset = match a[3] as i64 {
+        -1 => None,
+        offset if offset < 0 => return fail(EINVAL),
+        offset => Some(offset as u64),
+    };
+    // Linux looks at the buffers before it looks at the flags.
+    let slot = paths::slot_of(a[0])?;
+    let segments = segments(a[1], a[2])?;
+    let how = descriptors::rw_flags(a[5] as u32, write).map_err(Error::Errno)?;
+    transfer(me, user, slot, &Vectored { write, offset, how }, &segments)
+}
+
+/// The `readv` or `writev` the `count` buffers at `vector` and `call` say:
+/// one native read or write of all the buffers, which the buffers' bytes
+/// of one call are for the file, the pipe or the socket that takes them.
 fn vectored(
     me: &ThreadRef,
     user: &UserRef,
     fd: u64,
-    label: u32,
-    offset: Option<u64>,
+    call: &Vectored,
     vector: u64,
     count: u64,
 ) -> Result<u64> {
-    if offset.is_some_and(|offset| offset > i64::MAX as u64) {
+    if call.offset.is_some_and(|offset| offset > i64::MAX as u64) {
         return fail(EINVAL);
     }
     let slot = paths::slot_of(fd)?;
-    let segments = segments(vector, count)?;
-    if segments.is_empty() {
+    transfer(me, user, slot, call, &segments(vector, count)?)
+}
+
+/// [`vectored`], on the descriptor in `slot` and the `parts` it moves
+/// to or from. A sync a write asked for follows a write that moved bytes,
+/// and its failure is the call's, as Linux's is.
+fn transfer(
+    me: &ThreadRef,
+    user: &UserRef,
+    slot: u32,
+    call: &Vectored,
+    parts: &[UserBuffer],
+) -> Result<u64> {
+    let label = if call.write { file::WRITE } else { file::READ };
+    if parts.is_empty() {
         // Nothing to move: a call of none, which checks the descriptor as
         // the call does.
-        return files::move_bytes(me, user, slot, label, offset.unwrap_or(file::CURRENT), 0, 0);
+        let at = call.offset.unwrap_or(file::CURRENT);
+        return files::move_bytes(me, user, slot, label, at, 0, 0);
     }
-    let mut total = 0u64;
-    for &(base, len) in &segments {
-        let at = match offset {
-            None => Some(file::CURRENT),
-            Some(offset) => offset.checked_add(total).filter(|at| *at <= i64::MAX as u64),
-        };
-        let moved = match at {
-            Some(at) => files::move_bytes(me, user, slot, label, at, base, len),
-            None => fail(EINVAL),
-        };
-        match moved {
-            Ok(moved) => {
-                total += moved;
-                if moved < len {
-                    break;
-                }
-            }
-            Err(_) if total > 0 => break,
-            Err(err) => return Err(err),
-        }
+    let total = parts.iter().fold(0u64, |total, part| total.saturating_add(part.len));
+    if call.offset.is_some_and(|offset| offset.saturating_add(total) > i64::MAX as u64) {
+        return fail(EINVAL);
     }
-    Ok(total)
+    // A write RWF_APPEND appends goes to the end whatever the offset it was
+    // given; without one it appends where the description does.
+    let (at, appends) = match call.offset {
+        Some(_) if call.how.append => (file::APPEND, false),
+        Some(offset) => (offset, false),
+        None => (file::CURRENT, call.how.append),
+    };
+    let moved = files::move_buffers(user, slot, label, at, parts, appends)?;
+    if call.how.sync && moved > 0 {
+        method(me, user, slot, file::SYNC, [0; 8])?;
+    }
+    Ok(moved)
 }
 
 /// The buffers of the `count` `struct iovec`s at `vector`, as Linux
 /// reads them: a length that is negative as a signed number is EINVAL,
 /// and what lies past MAX_RW_COUNT bytes in all is cut off. Buffers with
 /// no bytes are left out.
-fn segments(vector: u64, count: u64) -> Result<Vec<Segment, Kmalloc>> {
+fn segments(vector: u64, count: u64) -> Result<Vec<UserBuffer, Kmalloc>> {
     if count > IOV_MAX {
         return fail(EINVAL);
     }
@@ -160,7 +211,7 @@ fn segments(vector: u64, count: u64) -> Result<Vec<Segment, Kmalloc>> {
             left -= len;
             if len > 0 {
                 // Room for every one was reserved above.
-                let _ = segments.push_within_capacity((iovec.base, len));
+                let _ = segments.push_within_capacity(UserBuffer { address: iovec.base, len });
             }
         }
         done += n;
@@ -412,6 +463,18 @@ pub fn fcntl(me: &ThreadRef, user: &UserRef, fd: u64, command: u64, argument: u6
         flags::F_SETPIPE_SZ => pipe_size(me, user, slot, true, argument as u32),
         memfd::F_ADD_SEALS => seals(me, user, slot, Some(argument as u32)),
         memfd::F_GET_SEALS => seals(me, user, slot, None),
+        descriptors::F_GETOWN => get_owner(me, user, slot, None),
+        descriptors::F_GETOWN_EX => get_owner(me, user, slot, Some(argument)),
+        descriptors::F_SETOWN => {
+            let owner = descriptors::owner_of_pid(argument as i32).map_err(Error::Errno)?;
+            set_owner(me, user, slot, owner)
+        }
+        descriptors::F_SETOWN_EX => {
+            let mut bytes = [0u8; descriptors::F_OWNER_EX_SIZE];
+            copy_in(argument, &mut bytes)?;
+            let owner = descriptors::owner_of_ex(OwnerEx::read(&bytes)).map_err(Error::Errno)?;
+            set_owner(me, user, slot, owner)
+        }
         _ => fail(EINVAL),
     }
 }
@@ -439,6 +502,47 @@ fn seals(me: &ThreadRef, user: &UserRef, slot: u32, add: Option<u32>) -> Result<
         return fail(EPERM);
     }
     Ok(u64::from(done.seals.bits()))
+}
+
+/// The native `owner` of the descriptor in `slot`, which with `new` makes
+/// that the description's owner. A directory has no owner to read or
+/// change, which Linux's signal-driven I/O does not reach for it either:
+/// EINVAL.
+fn description_owner(
+    me: &ThreadRef,
+    user: &UserRef,
+    slot: u32,
+    new: Option<(OwnerKind, u64)>,
+) -> Result<file::OwnerResults> {
+    let (kind, id) = new.unwrap_or((OwnerKind::Thread, 0));
+    let args = file::OwnerArgs { set: new.is_some(), kind, id };
+    match results(me, user, slot, file::OWNER, args.encode()) {
+        Ok(words) => file::OwnerResults::decode(&words).or_else(|_| fail(EIO)),
+        Err(Error::Native(status)) if files::other_kind(status) => fail(EINVAL),
+        Err(err) => Err(err),
+    }
+}
+
+/// `F_GETOWN`, which gives the owner's number (a process group's negated),
+/// and with an address `F_GETOWN_EX`, which writes it there as a `struct
+/// f_owner_ex` and gives 0. A description that has none, or whose owner
+/// has ended, reads as 0.
+fn get_owner(me: &ThreadRef, user: &UserRef, slot: u32, record: Option<u64>) -> Result<u64> {
+    let owner = description_owner(me, user, slot, None)?;
+    let Some(address) = record else {
+        // The number goes back as the 32-bit `int` it is.
+        return Ok(u64::from(descriptors::owner_number(owner.kind, owner.id) as u32));
+    };
+    let record = OwnerEx { kind: descriptors::owner_type(owner.kind), pid: owner.id as i32 };
+    copy_out(address, &record.to_bytes())?;
+    Ok(0)
+}
+
+/// `F_SETOWN` and `F_SETOWN_EX`: `owner` becomes the description's owner,
+/// which the kernel only keeps: it sends the owner nothing.
+fn set_owner(me: &ThreadRef, user: &UserRef, slot: u32, owner: (OwnerKind, u64)) -> Result<u64> {
+    description_owner(me, user, slot, Some(owner))?;
+    Ok(0)
 }
 
 /// The native `status_flags` of the descriptor in `slot`: its flags as
@@ -645,10 +749,11 @@ fn new_pipe(me: &ThreadRef, user: &UserRef, pipe_flags: process::PipeFlags) -> R
 /// `ioctl`: the requests Dukovo's C library takes (`Ioctl`): the native
 /// `control` for a terminal's, which are Linux's numbers, with the size
 /// of the record each moves; FIONBIO, FIOCLEX and FIONCLEX, which are the
-/// descriptor's flags; and FICLONE, whose argument is a descriptor, which
-/// the native request wants as a slot. Any other request is the native
-/// `control`'s to answer, and a descriptor that is not a terminal answers
-/// ENOTTY. FICLONERANGE, which has a descriptor in a record, is ENOTTY too.
+/// descriptor's flags; FICLONE, whose argument is a descriptor, which the
+/// native request wants as a slot; and FICLONERANGE, which has one in a
+/// record. Any other request is the native `control`'s to answer (FIONREAD
+/// among them, which a regular file answers too), and a descriptor that is
+/// not a terminal answers ENOTTY.
 pub fn ioctl(me: &ThreadRef, user: &UserRef, fd: u64, request: u64, argument: u64) -> Result<u64> {
     let slot = paths::slot_of(fd)?;
     let request = request as u32;
@@ -664,8 +769,27 @@ pub fn ioctl(me: &ThreadRef, user: &UserRef, fd: u64, request: u64, argument: u6
             let source = paths::slot_of(argument)?;
             control(me, user, slot, request, u64::from(source), 0, 0)
         }
-        file::CLONE_RANGE => fail(ENOTTY),
+        file::CLONE_RANGE => clone_range(user, slot, argument),
         _ => control(me, user, slot, request, argument, argument, flags::ioctl_size(request)),
+    }
+}
+
+/// FICLONERANGE: the native clone request, with the `struct
+/// file_clone_range` at `address` and its source descriptor turned into a
+/// slot. A source that is no descriptor is EBADF, as Linux has it; its
+/// number is read as an `int`, as Linux's `fdget` takes it.
+fn clone_range(user: &UserRef, slot: u32, address: u64) -> Result<u64> {
+    let mut bytes = [0u8; FILE_CLONE_RANGE_SIZE];
+    copy_in(address, &mut bytes)?;
+    let range = CloneRange::read(&bytes);
+    let source = paths::slot_of(range.src_fd as u64)?;
+    let words = [u64::from(source), range.src_offset, range.src_length, range.dest_offset];
+    match files::on_object(user, slot, |found| {
+        crate::user::files::clone_range_of(user, found, words)
+    }) {
+        Ok(()) => Ok(0),
+        Err(Error::Native(status)) if files::other_kind(status) => fail(ENOTTY),
+        Err(err) => Err(err),
     }
 }
 
@@ -791,16 +915,4 @@ pub fn fchown(me: &ThreadRef, user: &UserRef, fd: u64, owner: u64, group: u64) -
     let slot = paths::slot_of(fd)?;
     files::set_access(me, user, slot, owner as u32, group as u32, directory::KEEP)?;
     Ok(0)
-}
-
-/// `preadv2` (Linux's flags RWF_*).
-pub fn preadv2(me: &ThreadRef, user: &UserRef, a: &super::Args) -> Result<u64> {
-    let _ = (me, user, a);
-    fail(radix_linux::errno::ENOSYS)
-}
-
-/// `pwritev2` (Linux's flags RWF_*).
-pub fn pwritev2(me: &ThreadRef, user: &UserRef, a: &super::Args) -> Result<u64> {
-    let _ = (me, user, a);
-    fail(radix_linux::errno::ENOSYS)
 }

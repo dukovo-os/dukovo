@@ -6,8 +6,9 @@
 // process calls, the working directory, the memory calls, directories and
 // file status, signals that interrupt a blocked read, interval timers,
 // futexes with absolute timeouts, bit sets, requeues and wake-ops, robust
-// futex lists, what an unprivileged program may not do,
-// the descriptor and identity rules, and a pseudo-terminal's settings.
+// futex lists, what an unprivileged program may not do, the descriptor and
+// identity rules, a pseudo-terminal's settings, waits on thousands of
+// descriptors, vectored reads and writes, a descriptor's owner, and getcpu.
 // Where a C library would hide a call's own rules (the raw clone, brk,
 // getcwd, getdents64, statx, futex, the interval timers), the program
 // makes the call itself, so that it is the system's answer that is checked.
@@ -39,6 +40,7 @@
 #include <fcntl.h>
 #include <ftw.h>
 #include <limits.h>
+#include <poll.h>
 #include <pthread.h>
 #include <sched.h>
 #include <setjmp.h>
@@ -52,11 +54,14 @@
 #include <sys/auxv.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
+#include <sys/select.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -1765,6 +1770,451 @@ static void terminal(void) {
 	close(master);
 }
 
+// Waiting on many descriptors, vectored I/O and the calls on a descriptor
+// that older programs rarely make. Each case makes the call itself where the
+// C library's wrapper would hide the rule it checks.
+
+// The soft RLIMIT_NOFILE set to `limit`, and `saved` is what it was; the
+// hard limit stays. Returns 0 if the hard limit is below `limit`, which a
+// case cannot go on without.
+static int set_file_limit(rlim_t limit, struct rlimit *saved) {
+	if(getrlimit(RLIMIT_NOFILE, saved) != 0 || saved->rlim_max < limit)
+		return 0;
+	struct rlimit set = {limit, saved->rlim_max};
+	return setrlimit(RLIMIT_NOFILE, &set) == 0;
+}
+
+// poll and ppoll take as many entries as the soft RLIMIT_NOFILE says, which
+// a program raises to wait on thousands of descriptors, and fail with
+// EINVAL past it. An entry with a negative descriptor is left out. A
+// socket whose peer has gone reports POLLRDHUP only to a poll that asks.
+static void poll_many(void) {
+	enum { ENTRIES = 5000 };
+	struct rlimit saved;
+	if(!set_file_limit(ENTRIES, &saved)) {
+		skip("the hard limit on descriptors is below 5000");
+		return;
+	}
+	int fds[2];
+	CHECK(pipe(fds) == 0);
+	CHECK(write(fds[1], "x", 1) == 1);
+	struct pollfd *list = calloc(ENTRIES + 1, sizeof(*list));
+	CHECK(list != NULL);
+	if(list) {
+		for(int i = 0; i <= ENTRIES; i++)
+			list[i].fd = -1;
+		list[0].fd = fds[0];
+		list[0].events = POLLIN;
+		list[ENTRIES - 1].fd = fds[1];
+		list[ENTRIES - 1].events = POLLOUT;
+		list[ENTRIES / 2].fd = fds[0];
+		list[ENTRIES / 2].events = POLLOUT;
+		CHECK(poll(list, ENTRIES, 0) == 2);
+		CHECK(list[0].revents == POLLIN && list[ENTRIES - 1].revents == POLLOUT);
+		CHECK(list[ENTRIES / 2].revents == 0 && list[1].revents == 0);
+		CHECK_ERROR(poll(list, ENTRIES + 1, 0), EINVAL);
+
+		struct timespec none = {0, 0};
+		CHECK(ppoll(list, ENTRIES, &none, NULL) == 2);
+		CHECK(list[0].revents == POLLIN && list[ENTRIES - 1].revents == POLLOUT);
+		CHECK_ERROR(ppoll(list, ENTRIES + 1, &none, NULL), EINVAL);
+		free(list);
+	}
+	close(fds[0]);
+	close(fds[1]);
+
+	int pair[2];
+	CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
+	CHECK(close(pair[1]) == 0);
+	struct pollfd asked = {pair[0], POLLIN | POLLRDHUP, 0};
+	CHECK(poll(&asked, 1, 0) == 1);
+	CHECK((asked.revents & POLLRDHUP) != 0);
+	struct pollfd unasked = {pair[0], POLLIN, 0};
+	CHECK(poll(&unasked, 1, 0) == 1);
+	CHECK((unasked.revents & POLLRDHUP) == 0);
+	close(pair[0]);
+	CHECK(setrlimit(RLIMIT_NOFILE, &saved) == 0);
+}
+
+// Sets the bit of descriptor `fd` in the descriptor set of `bytes` bytes.
+static void set_bit(unsigned char *set, int fd) {
+	set[fd / 8] |= (unsigned char)(1 << (fd % 8));
+}
+
+// Whether the bit of descriptor `fd` is set in the descriptor set.
+static int bit_is_set(const unsigned char *set, int fd) {
+	return (set[fd / 8] >> (fd % 8)) & 1;
+}
+
+// select takes as many descriptors as `nfds` says, past FD_SETSIZE, in sets
+// the program makes as large as it needs, when it may have that many
+// descriptors; a descriptor that is not open is EBADF.
+static void select_large(void) {
+	enum { NFDS = 2000, FIRST = 1500, SECOND = 1999 };
+	struct rlimit saved;
+	if(!set_file_limit(5000, &saved)) {
+		skip("the hard limit on descriptors is below 5000");
+		return;
+	}
+	int fds[2];
+	CHECK(pipe(fds) == 0);
+	CHECK(write(fds[1], "x", 1) == 1);
+	CHECK(dup2(fds[0], FIRST) == FIRST);
+	CHECK(dup2(fds[1], SECOND) == SECOND);
+	size_t bytes = (NFDS + 63) / 64 * 8;
+	unsigned char *read_set = calloc(1, bytes), *write_set = calloc(1, bytes);
+	CHECK(read_set != NULL && write_set != NULL);
+	if(read_set && write_set) {
+		struct timeval none = {0, 0};
+		set_bit(read_set, FIRST);
+		set_bit(write_set, SECOND);
+		CHECK(select(NFDS, (fd_set *)read_set, (fd_set *)write_set, NULL, &none) == 2);
+		CHECK(bit_is_set(read_set, FIRST) && bit_is_set(write_set, SECOND));
+
+		memset(read_set, 0, bytes);
+		set_bit(read_set, FIRST);
+		struct timespec at_once = {0, 0};
+		long ready = syscall(SYS_pselect6, (long)NFDS, read_set, NULL, NULL, &at_once, NULL);
+		CHECK(ready == 1 && bit_is_set(read_set, FIRST));
+
+		memset(read_set, 0, bytes);
+		set_bit(read_set, 1700);
+		CHECK_ERROR(select(NFDS, (fd_set *)read_set, NULL, NULL, &none), EBADF);
+	}
+	free(read_set);
+	free(write_set);
+	close(FIRST);
+	close(SECOND);
+	close(fds[0]);
+	close(fds[1]);
+	CHECK(setrlimit(RLIMIT_NOFILE, &saved) == 0);
+}
+
+// writev of two buffers is one write: a process blocked in a read of a pipe
+// gets both, for a write of up to PIPE_BUF bytes, never the first alone.
+// The parent waits for the reader's answer before each round, so that the
+// reader is blocked in its read every time.
+static void writev_pipe(void) {
+	enum { PART = 100, ROUNDS = 200 };
+	int data[2], answer[2];
+	CHECK(pipe(data) == 0 && pipe(answer) == 0);
+	fflush(stdout);
+	pid_t pid = fork();
+	if(pid == 0) {
+		close(data[1]);
+		close(answer[0]);
+		for(int round = 0; round < ROUNDS; round++) {
+			char got[4 * PART];
+			ssize_t n = read(data[0], got, sizeof(got));
+			char whole = n == 2 * PART ? 'y' : 'n';
+			for(int i = 0; whole == 'y' && i < PART; i++)
+				if(got[i] != 'a' || got[PART + i] != 'b')
+					whole = 'n';
+			if(write(answer[1], &whole, 1) != 1)
+				_exit(2);
+		}
+		_exit(0);
+	}
+	CHECK(pid > 0);
+	close(data[0]);
+	close(answer[1]);
+	char first[PART], second[PART];
+	memset(first, 'a', sizeof(first));
+	memset(second, 'b', sizeof(second));
+	struct iovec parts[2] = {{first, sizeof(first)}, {second, sizeof(second)}};
+	for(int round = 0; round < ROUNDS; round++) {
+		CHECK(writev(data[1], parts, 2) == 2 * PART);
+		char whole = 0;
+		CHECK(read(answer[0], &whole, 1) == 1 && whole == 'y');
+		if(whole != 'y')
+			break;
+	}
+	CHECK_EXITED(pid, 0);
+	close(data[1]);
+	close(answer[0]);
+
+	// readv scatters one read over its buffers, and a buffer of no bytes
+	// is passed over.
+	int fds[2];
+	CHECK(pipe(fds) == 0);
+	CHECK(write(fds[1], "abcdefgh", 8) == 8);
+	char one[2], two[3], three[8];
+	struct iovec scattered[4] = {{one, sizeof(one)}, {NULL, 0}, {two, sizeof(two)},
+			{three, sizeof(three)}};
+	CHECK(readv(fds[0], scattered, 4) == 8);
+	CHECK(memcmp(one, "ab", 2) == 0 && memcmp(two, "cde", 3) == 0 && memcmp(three, "fgh", 3) == 0);
+	CHECK(writev(fds[1], scattered, 0) == 0);
+	volatile int negative = -1;
+	CHECK_ERROR(writev(fds[1], scattered, negative), EINVAL);
+	close(fds[0]);
+	close(fds[1]);
+}
+
+// F_SETOWN and F_GETOWN keep a description's owner: a process, or with a
+// negative number a process group; F_SETOWN_EX and F_GETOWN_EX give it as a
+// kind and a number. The owner is kept with the description, so a copy made
+// by dup sees it.
+static void owner(void) {
+	int fds[2];
+	CHECK(pipe(fds) == 0);
+	int fd = fds[0];
+	CHECK(fcntl(fd, F_GETOWN) == 0);
+	pid_t self = getpid(), group = getpgrp();
+	CHECK(fcntl(fd, F_SETOWN, self) == 0);
+	CHECK(fcntl(fd, F_GETOWN) == self);
+	struct f_owner_ex ex;
+	memset(&ex, 0xff, sizeof(ex));
+	CHECK(fcntl(fd, F_GETOWN_EX, &ex) == 0);
+	CHECK(ex.type == F_OWNER_PID && ex.pid == self);
+
+	CHECK(fcntl(fd, F_SETOWN, -group) == 0);
+	CHECK(fcntl(fd, F_GETOWN) == -group);
+	CHECK(fcntl(fd, F_GETOWN_EX, &ex) == 0);
+	CHECK(ex.type == F_OWNER_PGRP && ex.pid == group);
+
+	pid_t thread = (pid_t)syscall(SYS_gettid);
+	ex.type = F_OWNER_TID;
+	ex.pid = thread;
+	CHECK(fcntl(fd, F_SETOWN_EX, &ex) == 0);
+	memset(&ex, 0xff, sizeof(ex));
+	CHECK(fcntl(fd, F_GETOWN_EX, &ex) == 0);
+	CHECK(ex.type == F_OWNER_TID && ex.pid == thread);
+	int copy = dup(fd);
+	CHECK(copy >= 0);
+	CHECK(fcntl(copy, F_GETOWN) == thread);
+
+	ex.type = 99;
+	ex.pid = self;
+	CHECK_ERROR(fcntl(fd, F_SETOWN_EX, &ex), EINVAL);
+	ex.type = F_OWNER_PID;
+	ex.pid = -1;
+	CHECK_ERROR(fcntl(fd, F_SETOWN_EX, &ex), ESRCH);
+	CHECK_ERROR(fcntl(fd, F_SETOWN_EX, NULL), EFAULT);
+	CHECK_ERROR(fcntl(fd, F_GETOWN_EX, NULL), EFAULT);
+	CHECK_ERROR(fcntl(fd, F_SETOWN, 2000000000), ESRCH);
+	CHECK_ERROR(fcntl(fd, F_SETOWN, INT_MIN), EINVAL);
+	CHECK(fcntl(fd, F_GETOWN) == thread);
+
+	CHECK(fcntl(fd, F_SETOWN, 0) == 0);
+	CHECK(fcntl(fd, F_GETOWN) == 0);
+	CHECK_ERROR(fcntl(-1, F_GETOWN), EBADF);
+	close(copy);
+	close(fds[0]);
+	close(fds[1]);
+}
+
+// FIONREAD on a file is its size less the description's offset, and no
+// offset a read or a seek moves it past the end gives a different count; a
+// pread leaves it as it was.
+static void fionread_file(void) {
+	char directory[512], path[PATH_MAX];
+	make_directory(directory, sizeof(directory), "readable");
+	snprintf(path, sizeof(path), "%s/file", directory);
+	make_file(path, 1000, 'f', 0644);
+	int fd = open(path, O_RDONLY);
+	CHECK(fd >= 0);
+	int count = -1;
+	CHECK(ioctl(fd, FIONREAD, &count) == 0 && count == 1000);
+	char chunk[300];
+	CHECK(read(fd, chunk, sizeof(chunk)) == (ssize_t)sizeof(chunk));
+	CHECK(ioctl(fd, FIONREAD, &count) == 0 && count == 700);
+	CHECK(pread(fd, chunk, 10, 0) == 10);
+	CHECK(ioctl(fd, FIONREAD, &count) == 0 && count == 700);
+	CHECK(lseek(fd, 100, SEEK_SET) == 100);
+	CHECK(ioctl(fd, FIONREAD, &count) == 0 && count == 900);
+	CHECK(lseek(fd, 0, SEEK_END) == 1000);
+	CHECK(ioctl(fd, FIONREAD, &count) == 0 && count == 0);
+	close(fd);
+
+	int fds[2];
+	CHECK(pipe(fds) == 0);
+	CHECK(write(fds[1], "hello", 5) == 5);
+	CHECK(ioctl(fds[0], FIONREAD, &count) == 0 && count == 5);
+	close(fds[0]);
+	close(fds[1]);
+}
+
+// getcpu names the CPU the thread runs on, which a thread pinned to one
+// finds again, and a NUMA node; either pointer may be null, and one that
+// cannot be written is EFAULT.
+static void getcpu_case(void) {
+	unsigned cpu = ~0u, node = ~0u;
+	CHECK(syscall(SYS_getcpu, &cpu, &node, NULL) == 0);
+	CHECK(cpu < 4096 && node < 1024);
+	if(on_dukovo)
+		CHECK(node == 0);
+	CHECK(syscall(SYS_getcpu, &cpu, NULL, NULL) == 0);
+	CHECK(syscall(SYS_getcpu, NULL, &node, NULL) == 0);
+	CHECK(syscall(SYS_getcpu, NULL, NULL, NULL) == 0);
+	CHECK_ERROR(syscall(SYS_getcpu, (unsigned *)8, NULL, NULL), EFAULT);
+	CHECK_ERROR(syscall(SYS_getcpu, NULL, (unsigned *)8, NULL), EFAULT);
+
+	cpu_set_t allowed;
+	CHECK(sched_getaffinity(0, sizeof(allowed), &allowed) == 0);
+	int first = -1, last = -1;
+	for(int i = 0; i < CPU_SETSIZE; i++) {
+		if(!CPU_ISSET(i, &allowed))
+			continue;
+		if(first < 0)
+			first = i;
+		last = i;
+	}
+	CHECK(first >= 0);
+	int wanted[2] = {first, last};
+	for(int round = 0; first >= 0 && round < 2; round++) {
+		cpu_set_t only;
+		CPU_ZERO(&only);
+		CPU_SET(wanted[round], &only);
+		CHECK(sched_setaffinity(0, sizeof(only), &only) == 0);
+		// The thread is on the CPU as the call returns on Linux; give
+		// another system a moment to move it.
+		for(int tries = 0; tries < 100; tries++) {
+			cpu = ~0u;
+			CHECK(syscall(SYS_getcpu, &cpu, NULL, NULL) == 0);
+			if(cpu == (unsigned)wanted[round])
+				break;
+			sleep_ms(1);
+		}
+		CHECK(cpu == (unsigned)wanted[round]);
+	}
+	CHECK(sched_setaffinity(0, sizeof(allowed), &allowed) == 0);
+}
+
+#ifndef RWF_HIPRI
+#define RWF_HIPRI 0x1
+#define RWF_DSYNC 0x2
+#define RWF_SYNC 0x4
+#define RWF_APPEND 0x10
+#endif
+
+// preadv2 and pwritev2 with the raw call, whose offset is a whole number.
+static ssize_t preadv2_raw(int fd, const struct iovec *parts, int count, long long offset, int flags) {
+	return syscall(SYS_preadv2, (long)fd, parts, (long)count, (long)offset, 0L, (long)flags);
+}
+
+static ssize_t pwritev2_raw(int fd, const struct iovec *parts, int count, long long offset,
+		int flags) {
+	return syscall(SYS_pwritev2, (long)fd, parts, (long)count, (long)offset, 0L, (long)flags);
+}
+
+// preadv2 and pwritev2 move their buffers at the offset they are given, or
+// at the description's for -1, which then moves; the flags that are only
+// hints, and those that sync or append a write, are taken, and one nobody
+// knows is EOPNOTSUPP.
+static void vectored_flags(void) {
+	char directory[512], path[PATH_MAX];
+	make_directory(directory, sizeof(directory), "vectored");
+	snprintf(path, sizeof(path), "%s/file", directory);
+	int fd = open(path, O_RDWR | O_CREAT | O_EXCL, 0644);
+	CHECK(fd >= 0);
+	CHECK(write(fd, "0123456789", 10) == 10);
+	CHECK(lseek(fd, 0, SEEK_SET) == 0);
+
+	char a[3], b[3];
+	struct iovec parts[2] = {{a, sizeof(a)}, {b, sizeof(b)}};
+	CHECK(preadv2_raw(fd, parts, 2, 2, 0) == 6);
+	CHECK(memcmp(a, "234", 3) == 0 && memcmp(b, "567", 3) == 0);
+	CHECK(lseek(fd, 0, SEEK_CUR) == 0);
+	CHECK(preadv2_raw(fd, parts, 2, -1, 0) == 6);
+	CHECK(memcmp(a, "012", 3) == 0 && memcmp(b, "345", 3) == 0);
+	CHECK(lseek(fd, 0, SEEK_CUR) == 6);
+	CHECK(preadv2_raw(fd, parts, 2, 4, RWF_HIPRI) == 6);
+	CHECK(memcmp(a, "456", 3) == 0 && memcmp(b, "789", 3) == 0);
+	CHECK_ERROR(preadv2_raw(fd, parts, 2, 0, 0x8000), EOPNOTSUPP);
+	CHECK_ERROR(preadv2_raw(fd, parts, 2, -2, 0), EINVAL);
+
+	char text[10];
+	struct iovec out[2] = {{"AB", 2}, {"C", 1}};
+	CHECK(pwritev2_raw(fd, out, 2, 2, 0) == 3);
+	CHECK(pread(fd, text, 10, 0) == 10 && memcmp(text, "01ABC56789", 10) == 0);
+	CHECK(lseek(fd, 0, SEEK_CUR) == 6);
+	CHECK(pwritev2_raw(fd, out, 2, -1, RWF_DSYNC) == 3);
+	CHECK(lseek(fd, 0, SEEK_CUR) == 9);
+	CHECK(pwritev2_raw(fd, out, 2, 0, RWF_SYNC | RWF_HIPRI) == 3);
+	CHECK_ERROR(pwritev2_raw(fd, out, 2, 0, 0x8000), EOPNOTSUPP);
+
+	// An append goes to the end whatever the offset, and leaves the
+	// description's offset where it was; with -1 it moves it to the end.
+	struct iovec tail[1] = {{"Z", 1}};
+	CHECK(pwritev2_raw(fd, tail, 1, 0, RWF_APPEND) == 1);
+	struct stat st;
+	CHECK(fstat(fd, &st) == 0 && st.st_size == 11);
+	CHECK(lseek(fd, 0, SEEK_CUR) == 9);
+	CHECK(pwritev2_raw(fd, tail, 1, -1, RWF_APPEND) == 1);
+	CHECK(fstat(fd, &st) == 0 && st.st_size == 12);
+	CHECK(lseek(fd, 0, SEEK_CUR) == 12);
+	CHECK(pread(fd, text, 2, 10) == 2 && memcmp(text, "ZZ", 2) == 0);
+	close(fd);
+}
+
+// Arms a one-shot SIGALRM in `ms` milliseconds, which on_signal notes.
+static void alarm_in(long ms) {
+	struct itimerval once = {{0, 0}, {ms / 1000, (ms % 1000) * 1000}};
+	CHECK(syscall(SYS_setitimer, (long)ITIMER_REAL, &once, NULL) == 0);
+}
+
+// What the waits that give back their time left say when a signal cuts them
+// short: ppoll, pselect6 and select write the time left in their timeout, so
+// that the call made again waits only that, and poll fails with EINTR.
+static void wait_time_left(void) {
+	struct sigaction act, old;
+	memset(&act, 0, sizeof(act));
+	act.sa_sigaction = on_signal;
+	act.sa_flags = SA_SIGINFO;
+	sigemptyset(&act.sa_mask);
+	CHECK(sigaction(SIGALRM, &act, &old) == 0);
+	const long long whole = 2000000000LL, least = 500000000LL, spent = 50000000LL;
+
+	signal_hits = 0;
+	struct timespec left = {2, 0};
+	alarm_in(100);
+	CHECK_ERROR(syscall(SYS_ppoll, NULL, 0L, &left, NULL, 8L), EINTR);
+	long long ns = (long long)left.tv_sec * 1000000000LL + left.tv_nsec;
+	CHECK(signal_hits == 1 && ns < whole - spent && ns > least);
+
+	left.tv_sec = 2;
+	left.tv_nsec = 0;
+	alarm_in(100);
+	CHECK_ERROR(syscall(SYS_pselect6, 0L, NULL, NULL, NULL, &left, NULL), EINTR);
+	ns = (long long)left.tv_sec * 1000000000LL + left.tv_nsec;
+	CHECK(signal_hits == 2 && ns < whole - spent && ns > least);
+
+	struct timeval time = {2, 0};
+	alarm_in(100);
+	CHECK_ERROR(select(0, NULL, NULL, NULL, &time), EINTR);
+	ns = ((long long)time.tv_sec * 1000000 + time.tv_usec) * 1000;
+	CHECK(signal_hits == 3 && ns < whole - spent && ns > least);
+
+	alarm_in(100);
+	CHECK_ERROR(poll(NULL, 0, 2000), EINTR);
+	CHECK(signal_hits == 4);
+	CHECK(sigaction(SIGALRM, &old, NULL) == 0);
+}
+
+// A signal that is not in the set a rt_sigtimedwait waits for ends the wait
+// with EINTR, which the call never makes again.
+static void sigtimedwait_eintr(void) {
+	struct sigaction act, old;
+	memset(&act, 0, sizeof(act));
+	act.sa_sigaction = on_signal;
+	act.sa_flags = SA_SIGINFO | SA_RESTART;
+	sigemptyset(&act.sa_mask);
+	CHECK(sigaction(SIGALRM, &act, &old) == 0);
+	sigset_t waited, before;
+	sigemptyset(&waited);
+	sigaddset(&waited, SIGUSR2);
+	CHECK(pthread_sigmask(SIG_BLOCK, &waited, &before) == 0);
+	signal_hits = 0;
+	struct timespec limit = {2, 0};
+	long long began = now_ns(CLOCK_MONOTONIC);
+	alarm_in(100);
+	CHECK_ERROR(syscall(SYS_rt_sigtimedwait, &waited, NULL, &limit, 8L), EINTR);
+	CHECK(signal_hits == 1);
+	CHECK(now_ns(CLOCK_MONOTONIC) - began < 1500 * 1000000LL);
+	CHECK(pthread_sigmask(SIG_SETMASK, &before, NULL) == 0);
+	CHECK(sigaction(SIGALRM, &old, NULL) == 0);
+}
+
 struct test_case {
 	const char *name;
 	void (*run)(void);
@@ -1798,6 +2248,15 @@ static const struct test_case CASES[] = {
 	{"fd_lowest", fd_lowest},
 	{"umask", umask_case},
 	{"terminal", terminal},
+	{"poll_many", poll_many},
+	{"select_large", select_large},
+	{"writev_pipe", writev_pipe},
+	{"owner", owner},
+	{"fionread_file", fionread_file},
+	{"getcpu", getcpu_case},
+	{"vectored_flags", vectored_flags},
+	{"wait_time_left", wait_time_left},
+	{"sigtimedwait_eintr", sigtimedwait_eintr},
 };
 
 enum { CASE_COUNT = sizeof(CASES) / sizeof(CASES[0]) };

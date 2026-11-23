@@ -21,6 +21,7 @@ use radix_abi::process::{
 };
 use radix_abi::startup::SLOT_PROCESS;
 use radix_cap::Rights;
+use radix_hal::CpuLocal;
 use radix_linux::errno::{EINVAL, EPERM, ESRCH};
 use radix_linux::records::{self, RUSAGE_SIZE, SYSINFO_SIZE, Time};
 use radix_linux::system::{self as lx, Rlimit, Usage};
@@ -28,6 +29,7 @@ use radix_linux::system::{self as lx, Rlimit, Usage};
 use super::files::on_object;
 use super::process::identity;
 use super::{Args, Error, Result, copy_in, copy_out, fail, results};
+use crate::Arch;
 use crate::sched::{self, ThreadRef};
 use crate::user::UserRef;
 use crate::user::posix::exec;
@@ -549,8 +551,18 @@ pub fn waitid(me: &ThreadRef, user: &UserRef, a: &Args) -> Result<u64> {
     Ok(0)
 }
 
-/// `getcpu`: the CPU the thread runs on, and NUMA node 0.
-pub fn getcpu(me: &ThreadRef, user: &UserRef, cpu: u64, node: u64) -> Result<u64> {
-    let _ = (me, user, cpu, node);
-    fail(radix_linux::errno::ENOSYS)
+/// `getcpu(cpu, node, cache)`: the number of the CPU the thread runs on at
+/// `cpu` and the NUMA node, always 0, at `node`, each a 32-bit number a
+/// null pointer leaves out. EFAULT for one that cannot be written, as
+/// Linux's is; the third argument is unused, as it is there. The thread
+/// may move to another CPU before it reads the answer, as on Linux.
+pub fn getcpu(cpu: u64, node: u64) -> Result<u64> {
+    let here = Arch::current_cpu() as u32;
+    if cpu != 0 {
+        copy_out(cpu, &here.to_le_bytes())?;
+    }
+    if node != 0 {
+        copy_out(node, &0u32.to_le_bytes())?;
+    }
+    Ok(0)
 }
