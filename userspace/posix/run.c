@@ -86,6 +86,8 @@ static const struct test TESTS[] = {
 		{"lua", "/system/tests/lua/testes", LUA},
 		// Memory files and their seals (ADR 0614).
 		{"memfd", NULL, NULL},
+		// inotify's watch files (ADR 0615).
+		{"inotify", NULL, NULL},
 };
 
 enum { COUNT = sizeof(TESTS) / sizeof(TESTS[0]) };

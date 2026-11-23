@@ -44,7 +44,7 @@
 //! state, a frame's state, an address space's regions; an endpoint, then
 //! a thread's IPC state; a ring's queues. None is held across a block.
 
-mod account;
+pub(crate) mod account;
 mod clock;
 pub mod crash;
 pub mod device;
@@ -60,6 +60,7 @@ pub(crate) mod memory;
 mod methods;
 pub mod names;
 pub mod network;
+mod notices;
 mod notify;
 pub mod objects;
 mod platform;
@@ -583,6 +584,16 @@ impl<T> Fifo<T> {
 
     pub(crate) fn len(&self) -> usize {
         self.items.len() - self.head
+    }
+
+    /// The item at the back, the one added last.
+    pub(crate) fn back(&self) -> Option<&T> {
+        self.items[self.head..].last().and_then(Option::as_ref)
+    }
+
+    /// The item at the front.
+    pub(crate) fn front(&self) -> Option<&T> {
+        self.items.get(self.head).and_then(Option::as_ref)
     }
 
     /// The items, from the front.

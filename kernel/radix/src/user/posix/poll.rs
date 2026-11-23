@@ -276,6 +276,8 @@ pub(crate) fn polled_by(object: &Object, each: &mut dyn FnMut(&Polled)) {
                 socket.polled(each);
             } else if let Some(handle) = file.tty_handle() {
                 each(handle.polled());
+            } else if let Some(watches) = file.watch_file() {
+                each(watches.polled());
             } else if file.is_kmsg() {
                 each(&crate::fs::kmsg::POLLED);
             } else if file.is_keyboard() {

@@ -637,6 +637,11 @@ pub fn method(
             crate::fs::shm::memory_file(user, a.name, a.to, a.flags)?;
             answer(label, 0, [0; 8])
         }
+        process::WATCH_FILE => {
+            let a = process::WatchFileArgs::decode(args)?;
+            crate::fs::watch_file::make(user, a.to, a.flags)?;
+            answer(label, 0, [0; 8])
+        }
         process::SOCKET_PAIR => {
             let a = process::SocketPairArgs::decode(args)?;
             crate::fs::socket::make_pair(user, a.first, a.second, a.flags)?;

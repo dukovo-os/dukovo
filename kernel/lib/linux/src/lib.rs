@@ -44,6 +44,8 @@
 //!   them.
 //! - [`poll`]: the events of `poll` and `ppoll`, and `select`'s sets and
 //!   times.
+//! - [`notify`]: inotify's `IN_` bits and its `struct inotify_event`
+//!   records.
 //! - [`system`]: the records and rules of the calls for limits, times,
 //!   resource usage, scheduling, `prctl`, `waitid` and `siginfo_t`.
 //! - [`memfd`]: the flags of `memfd_create` and the seal commands of
@@ -59,6 +61,7 @@ pub mod errno;
 pub mod flags;
 pub mod futex;
 pub mod memfd;
+pub mod notify;
 pub mod nr;
 pub mod poll;
 pub mod records;

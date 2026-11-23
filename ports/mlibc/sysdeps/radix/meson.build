@@ -28,10 +28,11 @@ rtld_dso_sources += radix_sources
 
 libc_sources += radix_sources + files(
 	# The Linux option's getrandom (patch 0023), memalign (0035),
-	# extended attribute calls (0050, ADR 0256) and getifaddrs (0054, ADR
-	# 0336), which need nothing of Linux's.
+	# extended attribute calls (0050, ADR 0256), getifaddrs (0054, ADR
+	# 0336) and inotify (0120, ADR 0615), which need nothing of Linux's.
 	'../../options/linux/generic/ifaddrs.cpp',
 	'../../options/linux/generic/malloc.cpp',
+	'../../options/linux/generic/sys-inotify.cpp',
 	'../../options/linux/generic/sys-random.cpp',
 	'../../options/linux/generic/sys-xattr.cpp',
 	'generic/entry.cpp',
@@ -39,6 +40,7 @@ libc_sources += radix_sources + files(
 	'generic/futex.cpp',
 	'generic/interfaces.cpp',
 	'generic/ipc.cpp',
+	'generic/notify.cpp',
 	'generic/poll.cpp',
 	'generic/process.cpp',
 	'generic/socket.cpp',
@@ -122,6 +124,7 @@ if not no_headers
 	# Headers of the Linux option that other systems have too: build.sh
 	# links them to it.
 	install_headers(
+		'include/sys/inotify.h',
 		'include/sys/random.h',
 		'include/sys/sysmacros.h',
 		'include/sys/xattr.h',

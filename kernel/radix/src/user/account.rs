@@ -32,7 +32,7 @@
 
 use alloc::sync::Arc;
 use core::mem::ManuallyDrop;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use radix_abi::errors::Kernel;
 use radix_mm::{Flags, HEAP, Kmalloc, PAGE_SIZE};
@@ -56,6 +56,9 @@ pub struct Account {
     /// of what the account holds once no change is under way (opening a
     /// file charges and gives back one object's bytes, on its fast path).
     bytes: AtomicU64,
+    /// How many watches of watch files its process's calls hold now
+    /// (`WATCHES_MAX`).
+    watches: AtomicU32,
 }
 
 /// The bit of an account's `bytes` that says its domain holds a page more
@@ -149,7 +152,7 @@ impl Stock {
 impl Account {
     /// A new account in `domain`, with nothing charged.
     pub fn new(domain: DomainRef) -> Option<AccountRef> {
-        let account = Account { domain, bytes: AtomicU64::new(0) };
+        let account = Account { domain, bytes: AtomicU64::new(0), watches: AtomicU32::new(0) };
         Arc::try_new_in(account, HEAP.with(Flags::MAY_SLEEP)).ok()
     }
 
@@ -225,6 +228,36 @@ impl Account {
         charge.bytes = bytes;
         stock.bytes.store(stock.bytes.load(Ordering::Relaxed) + BATCH, Ordering::Relaxed);
         Ok(charge)
+    }
+}
+
+/// One of an account's [`WATCHES_MAX`] watches, given back when it is
+/// dropped.
+///
+/// [`WATCHES_MAX`]: radix_abi::file::WATCHES_MAX
+pub struct WatchSlot {
+    account: AccountRef,
+}
+
+impl Account {
+    /// Counts one more watch of a watch file against the account.
+    ///
+    /// # Errors
+    ///
+    /// `no_room` once the account holds `WATCHES_MAX`.
+    pub fn take_watch(account: &AccountRef) -> Result<WatchSlot> {
+        let held = account.watches.fetch_add(1, Ordering::Relaxed);
+        if held >= radix_abi::file::WATCHES_MAX {
+            account.watches.fetch_sub(1, Ordering::Relaxed);
+            return Err(error(Kernel::NoRoom));
+        }
+        Ok(WatchSlot { account: account.clone() })
+    }
+}
+
+impl Drop for WatchSlot {
+    fn drop(&mut self) {
+        self.account.watches.fetch_sub(1, Ordering::Relaxed);
     }
 }
 

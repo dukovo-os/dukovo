@@ -39,6 +39,7 @@ use radix_abi::{UserBuffer, file, terminal};
 use radix_cap::{CapError, ObjectKind, Rights, SlotRef};
 use radix_hal::UserMode;
 use radix_klog::info;
+use radix_linux::notify::{IN_ACCESS, IN_ATTRIB, IN_MODIFY};
 use radix_mm::{Flags, HEAP};
 use radix_vfs::attributes;
 use radix_vfs::mount::{Location, Mount, OpenFlags as VfsOpen};
@@ -50,9 +51,10 @@ use super::account::Account;
 use super::memory::cap_rights;
 use super::methods::{Answer, answer};
 use super::names::Identity;
+use super::notices;
 use super::objects::{self, Found, Object};
 use super::{Result, UserRef, UserThread, cap_error, error};
-use crate::fs::{self, Description, FileObject, FileRef, inet, locks, pipe, socket, tty};
+use crate::fs::{self, Description, FileObject, FileRef, inet, locks, notify, pipe, socket, tty};
 use crate::net::firewall::Owner;
 use crate::net::{self, Reach};
 use crate::{Arch, caps};
@@ -800,6 +802,12 @@ pub(super) fn directory_call(
             if flags.create.is_some() {
                 who = making(user, who);
             }
+            let opening = if notify::watched() {
+                let creates = flags.create.is_some();
+                notices::before_open(vfs()?, &who, &dir.at, path.as_str()?, creates)
+            } else {
+                None
+            };
             let mut at = vfs()?.open(&who, &dir.at, path.as_str()?, flags).map_err(fs::status)?;
             let kind = at.node.kind();
             let description = Description {
@@ -834,8 +842,12 @@ pub(super) fn directory_call(
             let rights = wanted.union(Rights::COPY).union(Rights::TRANSFER).union(bypass);
             // The bytes the VFS took as a path above.
             let from = Some((&dir.opened, path.bytes()));
-            let object = FileObject::opened_as(at, known, description, from, dir.name.clone())
+            let mut object = FileObject::opened_as(at, known, description, from, dir.name.clone())
                 .ok_or(error(Kernel::NoMemory))?;
+            if let Some(opening) = opening {
+                let cut = a.flags.contains(OpenFlags::TRUNCATE) && kind == Kind::File;
+                notices::opened(&mut object, &opening, wanted.contains(Rights::WRITE), cut);
+            }
             let terminal = object.tty_handle().is_some().then(|| object.at.node.clone());
             install_file(user, to, object_kind, rights, object, close_on_exec)?;
             if let Some(node) = terminal
@@ -859,6 +871,9 @@ pub(super) fn directory_call(
             access.mode &= !(radix_vfs::mode::SET_USER | radix_vfs::mode::SET_GROUP);
             let who = making(user, who(found.cap.rights(), dir)?);
             vfs()?.make_directory(&who, &dir.at, path.as_str()?, access).map_err(fs::status)?;
+            if notify::watched() {
+                notices::made(vfs()?, &who, &dir.at, path.as_str()?, true);
+            }
             answer(label, 0, [0; 8])
         }
         directory::REMOVE => {
@@ -866,9 +881,16 @@ pub(super) fn directory_call(
             let dir = directory_of(found, Rights::WRITE)?;
             let mut path = Path::Empty;
             let path = path.take(a.path, paths)?;
-            vfs()?
-                .remove(&who(found.cap.rights(), dir)?, &dir.at, path.as_str()?)
-                .map_err(fs::status)?;
+            let who = who(found.cap.rights(), dir)?;
+            let removing = if notify::watched() {
+                notices::before_remove(vfs()?, &who, &dir.at, path.as_str()?)
+            } else {
+                None
+            };
+            vfs()?.remove(&who, &dir.at, path.as_str()?).map_err(fs::status)?;
+            if let Some(removing) = removing {
+                notices::removed(&removing);
+            }
             answer(label, 0, [0; 8])
         }
         directory::RENAME => {
@@ -878,9 +900,17 @@ pub(super) fn directory_call(
             let (mut from, mut to) = (Path::Empty, Path::Empty);
             let (from, to) = (from.take(a.from, paths)?, to.take(a.to, paths)?);
             let (who, to_who) = (who(found.cap.rights(), dir)?, who(to_cap.rights(), &to_dir)?);
-            vfs()?
-                .rename(&who, &dir.at, from.as_str()?, &to_who, &to_dir.at, to.as_str()?)
-                .map_err(fs::status)?;
+            let (from, to) = (from.as_str()?, to.as_str()?);
+            let moving = if notify::watched() {
+                let sides = ((&who, &dir.at, from), (&to_who, &to_dir.at, to));
+                notices::before_rename(vfs()?, sides.0, sides.1)
+            } else {
+                None
+            };
+            vfs()?.rename(&who, &dir.at, from, &to_who, &to_dir.at, to).map_err(fs::status)?;
+            if let Some(moving) = moving {
+                notices::renamed(moving);
+            }
             answer(label, 0, [0; 8])
         }
         directory::LIST => {
@@ -888,6 +918,9 @@ pub(super) fn directory_call(
             let dir = directory_of(found, Rights::READ)?;
             let (address, len) = user_range(a.buffer)?;
             let results = list(&who(found.cap.rights(), dir)?, &dir.at, a.cursor, address, len)?;
+            if notify::watched() {
+                notify::of_file(dir, IN_ACCESS);
+            }
             answer(label, directory::ListResults::WORDS, results.encode())
         }
         directory::STAT => {
@@ -912,6 +945,9 @@ pub(super) fn directory_call(
             let who = who(found.cap.rights(), dir)?;
             let at = resolve(&who, &dir.at, path.as_str()?, a.flags)?;
             set_times(&who, &at, a.accessed, a.modified)?;
+            if notify::watched() {
+                notices::changed(vfs()?, &who, &dir.at, path.as_str()?, &at, IN_ATTRIB);
+            }
             answer(label, 0, [0; 8])
         }
         directory::SET_ACCESS => {
@@ -922,6 +958,9 @@ pub(super) fn directory_call(
             let who = who(found.cap.rights(), dir)?;
             let at = resolve(&who, &dir.at, path.as_str()?, a.flags)?;
             set_access(&who, &at, a.owner, a.group, a.mode)?;
+            if notify::watched() {
+                notices::changed(vfs()?, &who, &dir.at, path.as_str()?, &at, IN_ATTRIB);
+            }
             answer(label, 0, [0; 8])
         }
         directory::MAKE_LINK => {
@@ -934,6 +973,9 @@ pub(super) fn directory_call(
             vfs()?
                 .make_link(&who, &dir.at, path.as_str()?, target.as_target()?, access)
                 .map_err(refused_as_not_permitted)?;
+            if notify::watched() {
+                notices::made(vfs()?, &who, &dir.at, path.as_str()?, false);
+            }
             answer(label, 0, [0; 8])
         }
         directory::LINK => {
@@ -947,6 +989,11 @@ pub(super) fn directory_call(
             vfs()?
                 .link(&who, &dir.at, from.as_str()?, &to_who, &to_dir.at, to.as_str()?, follow)
                 .map_err(refused_as_not_permitted)?;
+            if notify::watched() {
+                let old = (&who, &dir.at, from.as_str()?);
+                let new = (&to_who, &to_dir.at, to.as_str()?);
+                notices::linked(vfs()?, old, new, follow);
+            }
             answer(label, 0, [0; 8])
         }
         directory::MAKE_NODE => {
@@ -967,6 +1014,9 @@ pub(super) fn directory_call(
             vfs()?
                 .make_node(&who, &dir.at, path.as_str()?, kind, a.device, access)
                 .map_err(refused_as_not_permitted)?;
+            if notify::watched() {
+                notices::made(vfs()?, &who, &dir.at, path.as_str()?, false);
+            }
             answer(label, 0, [0; 8])
         }
         directory::MAKE_SUBVOLUME => {
@@ -1249,6 +1299,9 @@ pub(super) fn directory_call(
             let access = made_access(&dir.name, 0o777)?;
             let who = making(user, who(found.cap.rights(), dir)?);
             socket::bind(socket, vfs()?, &who, &dir.at, path.as_str()?, name, access)?;
+            if notify::watched() {
+                notices::made(vfs()?, &who, &dir.at, path.as_str()?, false);
+            }
             answer(label, 0, [0; 8])
         }
         directory::CONNECT_SOCKET => {
@@ -1975,6 +2028,9 @@ fn attribute_method(found: &Found, label: u32, args: &[u64; 8]) -> Result<Answer
             let who = who(found.cap.rights(), dir)?;
             let at = resolve(&who, &dir.at, path.as_str()?, follow)?;
             attributes::set(&who, &at, name.bytes(), &value, how).map_err(attribute_status)?;
+            if notify::watched() {
+                notices::changed(vfs()?, &who, &dir.at, path.as_str()?, &at, IN_ATTRIB);
+            }
             answer(label, 0, [0; 8])
         }
         directory::LIST_ATTRIBUTES => {
@@ -1997,6 +2053,9 @@ fn attribute_method(found: &Found, label: u32, args: &[u64; 8]) -> Result<Answer
             let who = who(found.cap.rights(), dir)?;
             let at = resolve(&who, &dir.at, path.as_str()?, a.flags)?;
             attributes::remove(&who, &at, name.bytes()).map_err(attribute_status)?;
+            if notify::watched() {
+                notices::changed(vfs()?, &who, &dir.at, path.as_str()?, &at, IN_ATTRIB);
+            }
             answer(label, 0, [0; 8])
         }
         file::GET_ATTRIBUTE => {
@@ -2020,6 +2079,9 @@ fn attribute_method(found: &Found, label: u32, args: &[u64; 8]) -> Result<Answer
             let how = setting(a.flags)?;
             let who = who(found.cap.rights(), file)?;
             attributes::set(&who, &file.at, name.bytes(), &value, how).map_err(attribute_status)?;
+            if notify::watched() {
+                notify::of_file(file, IN_ATTRIB);
+            }
             answer(label, 0, [0; 8])
         }
         file::LIST_ATTRIBUTES => {
@@ -2036,6 +2098,9 @@ fn attribute_method(found: &Found, label: u32, args: &[u64; 8]) -> Result<Answer
             let name = AttributeName::copy(a.name)?;
             let who = who(found.cap.rights(), file)?;
             attributes::remove(&who, &file.at, name.bytes()).map_err(attribute_status)?;
+            if notify::watched() {
+                notify::of_file(file, IN_ATTRIB);
+            }
             answer(label, 0, [0; 8])
         }
         _ => Err(error(Kernel::NoSuchMethod)),
@@ -2317,12 +2382,18 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
             let a = file::SetTimesArgs::decode(args)?;
             let file = file_of(found, Rights::WRITE)?;
             set_times(&who(found.cap.rights(), file)?, &file.at, a.accessed, a.modified)?;
+            if notify::watched() {
+                notify::of_file(file, IN_ATTRIB);
+            }
             answer(label, 0, [0; 8])
         }
         file::SET_ACCESS => {
             let a = file::SetAccessArgs::decode(args)?;
             let file = file_of(found, Rights::WRITE)?;
             set_access(&who(found.cap.rights(), file)?, &file.at, a.owner, a.group, a.mode)?;
+            if notify::watched() {
+                notify::of_file(file, IN_ATTRIB);
+            }
             answer(label, 0, [0; 8])
         }
         file::SET_SIZE => {
@@ -2331,6 +2402,9 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
             file.at.writable().map_err(fs::status)?;
             grows_within_file_size(user, &file.at.node, a.size)?;
             file.at.node.set_size(a.size).map_err(fs::status)?;
+            if notify::watched() {
+                notify::of_file(file, IN_MODIFY);
+            }
             answer(label, 0, [0; 8])
         }
         file::SYNC => {
@@ -2377,7 +2451,11 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
                 Target::Tty(handle) => {
                     handle.control(user, a.request, a.argument, a.buffer, a.size)?
                 }
-                Target::Pipe(_) | Target::Socket(_) | Target::Inet(_) | Target::Node
+                Target::Pipe(_)
+                | Target::Socket(_)
+                | Target::Inet(_)
+                | Target::Node
+                | Target::Watch
                     if a.request == terminal::READABLE && has_unread_count(file) =>
                 {
                     let len = match target(file) {
@@ -2385,6 +2463,9 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
                         Target::Socket(socket) => socket.pending(),
                         Target::Inet(socket) => socket.pending(),
                         Target::Node => unread_in_file(file),
+                        Target::Watch => {
+                            file.watch_file().map_or(0, crate::fs::watch_file::WatchFile::pending)
+                        }
                         _ => 0,
                     } as u32;
                     if a.size < 4 || !Arch::copy_to_user(a.buffer, &len.to_le_bytes()) {
@@ -2720,6 +2801,18 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
             let seals = crate::fs::shm::seal(&file.at.node, a.add)?;
             answer(label, file::SealResults::WORDS, file::SealResults { seals }.encode())
         }
+        file::WATCH_ADD => {
+            let a = file::WatchAddArgs::decode(args)?;
+            let mut path = Path::Empty;
+            let path = path.copy(a.path)?;
+            let watch = watch_add_of(user, found, a.directory, path, a.events)?;
+            answer(label, file::WatchAddResults::WORDS, file::WatchAddResults { watch }.encode())
+        }
+        file::WATCH_REMOVE => {
+            let a = file::WatchRemoveArgs::decode(args)?;
+            fs::watch_file::remove(file_of(found, Rights::NONE)?, a.watch)?;
+            answer(label, 0, [0; 8])
+        }
         file::FILESYSTEM_INFO => {
             file::FilesystemInfoArgs::decode(args)?;
             let file = file_of(found, Rights::NONE)?;
@@ -2741,6 +2834,55 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
         | file::REMOVE_ATTRIBUTE => attribute_method(found, label, args),
         _ => Err(error(Kernel::NoSuchMethod)),
     }
+}
+
+/// `watch_add`: adds to the watch file `found` designates a watch of the
+/// node `path` leads to beneath the caller's directory in slot `directory`,
+/// for the Linux `events` of the mask, and returns its number. The node is
+/// found as `open` finds it, but for a symbolic link that is the last name,
+/// which is followed unless the mask says IN_DONT_FOLLOW (a watch of the link
+/// itself), and it must be readable by the caller (denied).
+fn watch_add_of(
+    user: &UserRef,
+    found: &Found,
+    directory: u32,
+    path: &Path,
+    events: u32,
+) -> Result<u32> {
+    use radix_linux::notify::{IN_DONT_FOLLOW, IN_ONLYDIR};
+    let file = file_of(found, Rights::NONE)?;
+    if file.watch_file().is_none() || radix_linux::notify::check_mask(events).is_err() {
+        return Err(error(Kernel::InvalidArgument));
+    }
+    let (cap, dir) = objects::directory(user.cspace, directory, Rights::READ)?;
+    let who = who(cap.rights(), &dir)?;
+    let (vfs, path) = (vfs()?, path.as_str()?);
+    let at = if events & IN_DONT_FOLLOW != 0 {
+        vfs.resolve_link(&who, &dir.at, path)
+    } else {
+        vfs.resolve(&who, &dir.at, path)
+    }
+    .map_err(fs::status)?;
+    if events & IN_ONLYDIR != 0 && at.node.kind() != Kind::Directory {
+        return Err(fs::status(radix_vfs::Error::NotDirectory));
+    }
+    who.check(&*at.node, want::READ).map_err(fs::status)?;
+    fs::watch_file::add(user, file, &at.node, events)
+}
+
+/// [`watch_add_of`] for the Linux table (ADR 0610): the path in the
+/// kernel's memory.
+pub(super) fn watch_add_given(
+    user: &UserRef,
+    found: &Found,
+    directory: u32,
+    path: &[u8],
+    events: u32,
+) -> Result<u32> {
+    let mut taken = Path::Empty;
+    let given = [path];
+    let path = taken.take(UserBuffer { address: 0, len: 0 }, Paths::Given(&given))?;
+    watch_add_of(user, found, directory, path, events)
 }
 
 /// The file `found` designates and the socket it is of, if its
@@ -3389,6 +3531,8 @@ enum Target<'a> {
     Inet(&'a inet::InetSocket),
     /// A side of a terminal.
     Tty(&'a tty::Handle),
+    /// A watch file.
+    Watch,
     /// `/devices/kmsg`.
     Kmsg,
     /// `/devices/kbd`.
@@ -3420,6 +3564,8 @@ fn target(file: &FileObject) -> Target<'_> {
         Target::Inet(socket)
     } else if let Some(handle) = file.tty_handle() {
         Target::Tty(handle)
+    } else if file.watch_file().is_some() {
+        Target::Watch
     } else if file.is_kmsg() {
         Target::Kmsg
     } else if file.is_keyboard() {
@@ -3486,6 +3632,9 @@ fn read_into(
     };
     let read = read.map_err(fs::status)? as u64;
     user.process.note_read(read);
+    if read > 0 && notify::watched() {
+        notify::of_file(file, IN_ACCESS);
+    }
     Ok(read)
 }
 
@@ -3519,6 +3668,7 @@ fn read_special(
         }),
         Target::Inet(socket) => socket.receive(out, non_blocking, false).map(|r| r.count as u64),
         Target::Tty(handle) => handle.read(user, out, non_blocking).map(|n| n as u64),
+        Target::Watch => fs::watch_file::read(file, out, non_blocking).map(|n| n as u64),
         Target::Kmsg => fs::kmsg::read(file, out, non_blocking).map(|n| n as u64),
         Target::Keyboard => fs::keyboard::read(file, out, non_blocking).map(|n| n as u64),
         Target::Mouse => fs::mouse::read(file, out, non_blocking).map(|n| n as u64),
@@ -3588,6 +3738,9 @@ fn write_from(
         }
     } as u64;
     user.process.note_written(written);
+    if written > 0 && notify::watched() {
+        notify::of_file(file, IN_MODIFY);
+    }
     Ok(written)
 }
 
@@ -3681,7 +3834,9 @@ fn write_special(
             Ok(written)
         }
         Target::Framebuffer => fs::framebuffer::write(file, offset, data).map(|n| n as u64),
-        Target::Keyboard | Target::Mouse | Target::Crashes => Err(error(Kernel::InvalidArgument)),
+        Target::Keyboard | Target::Mouse | Target::Crashes | Target::Watch => {
+            Err(error(Kernel::InvalidArgument))
+        }
         Target::Node => Ok(0),
     }
 }
