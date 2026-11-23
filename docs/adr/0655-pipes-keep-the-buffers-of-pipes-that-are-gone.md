@@ -63,7 +63,9 @@ programs then read back from further away.
 - Up to 2 MiB stays with the kernel after a burst of Unix connections or
   pipes, until pipes are made again. The posix `datagram` test's check
   that sockets give their memory back measures after rounds that make
-  what the kernel keeps, so the spares are made before it looks.
+  what the kernel keeps, so the spares are made before it looks. The
+  capability selftest, whose last step makes three pipes, makes and
+  drops three before it counts the heap, for the same reason.
 - `Socket::connected_with` is kept out of line. With this change the
   compiler began to inline it twice in `make_pair`, and the two sockets
   took that call's frame past the kernel's budget of 2 KiB (ADR 0058).

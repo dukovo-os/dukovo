@@ -171,6 +171,10 @@ pub fn run() {
     // Made once, when the first pipe is, and kept: before the heap is
     // counted, for the pipes of the last step.
     let _ = crate::fs::pipe::mount();
+    // The three pipes of the last step take their buffers from the ones
+    // that pipes that are gone leave, and give them back (ADR 0655): three
+    // are made and gone first, so those buffers are there when it counts.
+    drop([(); 3].map(|()| crate::fs::pipe::for_kernel()));
     HEAP.drain();
     let before = (census().ok(), frames(), HEAP.stats(), blocks());
     let started = Arch::now_ns();
