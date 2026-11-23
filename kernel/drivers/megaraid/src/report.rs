@@ -180,14 +180,14 @@ impl<'a> Record<'a> {
     }
 
     /// Writes a field of the host's name for `target`, or `-` if it has
-    /// none.
-    fn os(&mut self, key: &str, os: &OsName<'_>, target: Option<Target>) -> fmt::Result {
+    /// none; returns whether it has one.
+    fn os(&mut self, key: &str, os: &OsName<'_>, target: Target) -> Result<bool, fmt::Error> {
         self.begin(key)?;
-        let named = match target {
-            Some(t) => os(t, &mut Clean(&mut *self.out))?,
-            None => false,
-        };
-        if named { Ok(()) } else { self.out.write_char('-') }
+        let named = os(target, &mut Clean(&mut *self.out))?;
+        if !named {
+            self.out.write_char('-')?;
+        }
+        Ok(named)
     }
 
     /// Writes a field of device IDs, comma-separated, or `-` if `each`
@@ -465,7 +465,7 @@ fn write_volume(
         (Some(config), Some(c)) => each_member(config, c.spans(), emit),
         _ => Ok(()),
     })?;
-    rec.os("os", os, Some(Target::Volume(target)))?;
+    rec.os("os", os, Target::Volume(target))?;
     put_task(&mut rec, info.map(|i| volume_task(&i)), tally)?;
     rec.finish()?;
     Ok(())
@@ -488,10 +488,6 @@ fn write_disk(
         .and_then(|b| PdInfo::parse(b).ok());
     let state = info.map(|i| i.state());
     tally.disks += 1;
-    let jbod = state.is_some_and(|s| s.is_jbod());
-    if jbod {
-        tally.jbod += 1;
-    }
     let attached = addr.enclosure_device_id != NO_ENCLOSURE;
 
     let mut rec = Record::new(out);
@@ -521,7 +517,14 @@ fn write_disk(
     rec.put("volume", Dash(config.and_then(|c| volume_of(c, id))))?;
     let spare = config.and_then(|c| c.spares().find(|s| s.device_id() == id));
     rec.put("spare", spare.map_or("-", |s| if s.is_dedicated() { "dedicated" } else { "global" }))?;
-    rec.os("os", os, jbod.then_some(Target::Disk(id)))?;
+    // The name the host gave it, which only a disk the firmware hands the
+    // host has, whatever state PD_GET_INFO says it is in (QEMU's models
+    // say there that every disk is offline). A disk is passed through if
+    // either says so.
+    let named = rec.os("os", os, Target::Disk(id))?;
+    if named || state.is_some_and(|s| s.is_jbod()) {
+        tally.jbod += 1;
+    }
     put_task(&mut rec, info.map(|i| disk_task(&i)), tally)?;
     rec.finish()?;
     Ok(())

@@ -243,6 +243,8 @@ fn bbu_status(kind: u8, flags: u32) -> Vec<u8> {
 struct Fw {
     answers: Vec<(u32, Option<[u8; 12]>, Vec<u8>)>,
     asked: Vec<u32>,
+    /// The disks the host has, as passed through.
+    host: Vec<u16>,
 }
 
 impl Fw {
@@ -274,8 +276,12 @@ impl Fw {
         );
     }
 
+    /// A disk, which the host has if the firmware passes it through.
     fn disk(&mut self, pd: &Pd<'_>) {
         self.with(opcode::PD_GET_INFO, crate::dcmd::mbox::pd_info(pd.id), pd_info(pd));
+        if pd.state == 0x40 {
+            self.host.push(pd.id);
+        }
     }
 
     /// Runs the commands: the answer is copied as far as the room goes.
@@ -309,11 +315,19 @@ const PLACE: Place<'static> = Place {
     commands: 256,
 };
 
-/// The names the host gives: `sd` and a letter by ID, volumes first.
-fn os_name(target: Target, out: &mut dyn core::fmt::Write) -> Result<bool, core::fmt::Error> {
+/// The names the host gives: `sd` and a letter by ID, volumes first, of
+/// every volume and of the disks it has (`host`).
+fn os_name(
+    host: &[u16],
+    target: Target,
+    out: &mut dyn core::fmt::Write,
+) -> Result<bool, core::fmt::Error> {
     match target {
         Target::Volume(t) => write!(out, "sd{}", char::from(b'a' + t as u8))?,
-        Target::Disk(id) => write!(out, "sd{}", char::from(b'k' + id as u8))?,
+        Target::Disk(id) if host.contains(&id) => {
+            write!(out, "sd{}", char::from(b'k' + id as u8))?;
+        }
+        Target::Disk(_) => return Ok(false),
     }
     Ok(true)
 }
@@ -321,12 +335,14 @@ fn os_name(target: Target, out: &mut dyn core::fmt::Write) -> Result<bool, core:
 fn run_with(fw: &mut Fw, scratch: usize) -> (Result<Summary, Failed>, Out) {
     let mut out = Out::default();
     let mut scratch = vec![0u8; scratch];
+    let host = fw.host.clone();
+    let os = |target: Target, out: &mut dyn core::fmt::Write| os_name(&host, target, out);
     let mut fetch = |op: u32, m: &[u8; 12], buf: &mut [u8]| fw.run(op, m, buf);
     let result = gather(
         &mut fetch,
         &mut scratch,
         &PLACE,
-        &os_name,
+        &os,
         &mut Files {
             controller: &mut out.controller,
             volumes: &mut out.volumes,
@@ -462,6 +478,24 @@ fn jbod_disks_only() {
     assert!(disks[0].contains("\tvolume=-\tspare=-\tos=sdk\ttask=none"));
     assert!(disks[1].contains("\tinterface=sata\tmedia=hdd\t"));
     assert!(disks[1].contains("\tos=sdl\t"));
+}
+
+#[test]
+fn a_disk_the_host_has_is_passed_through_whatever_its_state_says() {
+    // QEMU's models say in PD_GET_INFO that every disk is offline, while
+    // they hand the host the disk in JBOD mode.
+    let mut fw = Fw::new(ctrl_info(false), ld_list(&[]), pd_list(&[(0, 0xffff, 0, 0, 0)]));
+    fw.disk(&Pd { id: 0, state: 0x10, ..Pd::default() });
+    fw.host.push(0);
+    fw.any(opcode::CFG_READ, config(&[], &[], &[]));
+    let (result, out) = run(&mut fw);
+    assert_eq!(result.map(|s| s.disks), Ok(1));
+    assert!(out.controller.contains(
+        "mode hba
+"
+    ));
+    assert!(out.disks.starts_with("id=0	enclosure=-	index=-	slot=0	state=offline	"));
+    assert!(out.disks.contains("	volume=-	spare=-	os=sdk	"));
 }
 
 #[test]
