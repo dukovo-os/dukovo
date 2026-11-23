@@ -3,15 +3,24 @@
 
 //! Two MegaRAID controllers of QEMU's (ADR 0664): a SAS 1078
 //! (`megasas`) in RAID mode with one volume at target 0, and a SAS 2108
-//! (`megasas-gen2`) in JBOD mode passing one disk through, at SCSI ID 2,
-//! which the firmware numbers 512. The kernel brings both firmwares up,
+//! (`megasas-gen2`) in JBOD mode passing one disk through, at SCSI ID 0,
+//! which the firmware numbers 0. The kernel brings both firmwares up,
 //! names the volume `sda` and the disk `sdb`, and logs what each
 //! controller is and has. From the console as root, the first
 //! controller's folder in `/kernel/raid` says it is a SAS1078 in RAID
 //! mode whose volume is `sda`, the second's that it is a SAS2108 passing
-//! disk 512 through as `sdb`, both run, and *storage raid* names both.
+//! disk 0 through as `sdb`, both run, and *storage raid* names both.
 //! The disk's health file fails to open, as QEMU's disks keep no log
 //! pages.
+//!
+//! QEMU's models differ from a controller's firmware in two ways the
+//! kernel meets here. They fail every SCSI command that moves no data,
+//! TEST UNIT READY among them, as an internal target failure, so the
+//! probe goes on to READ CAPACITY, as Linux's does. And they read only
+//! the first byte of PD_GET_INFO's mailbox, so of the disks they number
+//! by SCSI ID and LUN (`id << 8 | lun`), only one at SCSI ID 0 can be
+//! asked about: the disk is there, and the unit tests of `radix-megaraid`
+//! take a disk numbered above 255 through to its SCSI ID and LUN.
 
 use super::super::*;
 
@@ -29,7 +38,7 @@ const CONTROLLERS: &[&str] = &[
     "-drive",
     "driver=null-co,if=none,id=raiddisk,size=64M,read-zeroes=on",
     "-device",
-    "scsi-hd,drive=raiddisk,bus=raid1.0,scsi-id=2,lun=0",
+    "scsi-hd,drive=raiddisk,bus=raid1.0,scsi-id=0,lun=0",
 ];
 
 pub const CASE: Case = Case {
@@ -54,17 +63,27 @@ pub const CASE: Case = Case {
 /// screen shows a line only once the command has run.
 const READ_FILES: &str = "clear; \
     echo \"first $(grep -c '^chip SAS1078$' /kernel/raid/0/controller) $(grep -c '^mode raid$' /kernel/raid/0/controller) $(grep -c 'os=sda' /kernel/raid/0/volumes)\"; \
-    echo \"second $(grep -c '^chip SAS2108$' /kernel/raid/1/controller) $(grep -c '^mode hba$' /kernel/raid/1/controller) $(grep -c 'id=512.*state=jbod.*os=sdb' /kernel/raid/1/disks)\"; \
+    echo \"second $(grep -c '^chip SAS2108$' /kernel/raid/1/controller) $(grep -c '^mode hba$' /kernel/raid/1/controller) $(grep -c '^id=0.*state=jbod.*os=sdb' /kernel/raid/1/disks)\"; \
     echo \"running $(cat /kernel/raid/*/controller | grep -c '^state operational$')\"; \
-    echo \"health $(cat /kernel/raid/1/health/512 > /dev/null 2>&1; echo $?)\"; \
+    echo \"health $(cat /kernel/raid/1/health/0 > /dev/null 2>&1; echo $?)\"; \
     echo \"named $(storage raid | grep -c -E '^Controller (0: LSI MegaRAID SAS 8708EM2|1: LSI MegaRAID SAS 9260-8i)')\"";
 
-/// Checks that the kernel's log has a line with every one of `needles`.
+/// Checks that the kernel's log has a line with every one of `needles`;
+/// fails with what it said of the controllers, which a run on CI shows
+/// without the serial log.
 fn said(log: &str, needles: &[&str]) -> Result<(), String> {
     if log.lines().any(|line| needles.iter().all(|needle| line.contains(needle))) {
         return Ok(());
     }
-    Err(format!("the kernel never said a line with {needles:?}"))
+    let of_them: Vec<&str> = log
+        .lines()
+        .filter_map(|line| line.find("Disk: ").map(|at| &line[at..]))
+        .filter(|line| line.contains("MegaRAID"))
+        .collect();
+    Err(format!(
+        "the kernel never said a line with {needles:?}; of the controllers it said: {}",
+        of_them.join(" | ")
+    ))
 }
 
 fn megaraid(vm: &mut Vm, case: &Case) -> Result<(), String> {
@@ -88,7 +107,7 @@ fn megaraid(vm: &mut Vm, case: &Case) -> Result<(), String> {
         ],
     )?;
     said(&log, &["Disk: sda is volume 0 of ", " on the MegaRAID controller at "])?;
-    said(&log, &["Disk: sdb is pass-through disk 512 of ", " on the MegaRAID controller at "])?;
+    said(&log, &["Disk: sdb is pass-through disk 0 of ", " on the MegaRAID controller at "])?;
     if let Some(line) = log.lines().find(|line| {
         line.contains("MegaRAID controller at")
             && (line.contains("could not") || line.contains("did not"))

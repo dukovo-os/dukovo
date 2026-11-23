@@ -307,10 +307,9 @@ impl Cdb {
     }
 
     /// READ DEFECT DATA(10) of the grown defect list alone (GLIST, not
-    /// PLIST), in the address descriptor format the drive chooses
-    /// ([`health::DEFECT_FORMAT`]), at most `length` bytes; 4 asks for
-    /// the header, whose list length says how many defects there are
-    /// (SBC-4, 5.9).
+    /// PLIST), in the bytes from index format ([`health::DEFECT_FORMAT`]),
+    /// at most `length` bytes; 4 asks for the header, whose list length
+    /// says how many defects there are (SBC-4, 5.9).
     pub fn read_defect_data_10(length: u16) -> Cdb {
         let [high, low] = length.to_be_bytes();
         let list = 0x08 | health::DEFECT_FORMAT;

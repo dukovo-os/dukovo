@@ -9345,6 +9345,17 @@ fn posix(vm: &mut Vm, case: &Case) -> Result<(), String> {
 /// The kernel's lines for a case's disks, up to the end of the boot.
 /// The disks are found while the other CPUs start, so their lines come
 /// among those `boot_report` checks: looked for anywhere before here.
+/// The failure of a boot whose kernel never said a line with `start`,
+/// with the last lines it said of disks: a run on CI shows those without
+/// the serial log, which only the job's artifacts keep.
+fn never_said_of_disks(log: &str, start: &str) -> String {
+    const MOST: usize = 16;
+    let said: Vec<&str> =
+        log.lines().filter_map(|line| line.find("Disk: ").map(|at| &line[at..])).collect();
+    let last = &said[said.len().saturating_sub(MOST)..];
+    format!("the kernel never said \"{start}...\"; of disks it said: {}", last.join(" | "))
+}
+
 fn disks_found(vm: &mut Vm, case: &Case) -> Result<(), String> {
     boot_report(vm, case)?;
     vm.expect("Boot complete.")?;
@@ -9352,7 +9363,7 @@ fn disks_found(vm: &mut Vm, case: &Case) -> Result<(), String> {
     let line_of = |start: &str| {
         log.lines()
             .find_map(|line| line.find(start).map(|at| &line[at..]))
-            .ok_or_else(|| format!("the kernel never said \"{start}...\""))
+            .ok_or_else(|| never_said_of_disks(&log, start))
     };
     let lanes = case.cpus.clamp(1, 16);
     for n in nvme_controllers(case.disks) {

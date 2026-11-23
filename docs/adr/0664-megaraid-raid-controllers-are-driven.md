@@ -41,6 +41,14 @@ QEMU models two MFI parts, `megasas` (SAS1078) and `megasas-gen2`
 frames, the opcodes and the structures they answer with are documented in
 FreeBSD's `mrsas` and `mfi` drivers, which LSI and Avago wrote.
 
+QEMU's models differ from a controller's firmware in two ways. They fail
+every SCSI command that moves no data, TEST UNIT READY among them, as an
+internal target failure; Linux's `sd` goes on to READ CAPACITY whatever
+TEST UNIT READY says, unless the disk is not ready, so Linux does not
+notice. And they read only the first byte of PD_GET_INFO's mailbox, so of
+the disks they number `id << 8 | lun`, only one at SCSI ID 0 can be asked
+about.
+
 ## Decision
 
 - **One crate for the controller.** `radix-megaraid` (no_std, no unsafe,
@@ -52,7 +60,9 @@ FreeBSD's `mrsas` and `mfi` drivers, which LSI and Avago wrote.
   queue, and adds the disks. Up to four controllers are driven, with up to
   32 volumes and pass-through disks each.
 - **Volumes and pass-through disks are SCSI disks.** Each takes the first
-  free `sd` name, is probed by `radix_scsi::probe`, and its reads and
+  free `sd` name, is probed by `radix_scsi::probe` (which, as `sd` does,
+  asks a disk that fails TEST UNIT READY other than as not ready for its
+  capacity), and its reads and
   writes go to the firmware as LD I/O (Fusion) or SCSI I/O frames (MFI),
   sharing the controller's commands as PVSCSI's disks share the
   adapter's. Two commands are kept from the disks: one for a management
@@ -98,7 +108,7 @@ FreeBSD's `mrsas` and `mfi` drivers, which LSI and Avago wrote.
   watched as a directly attached disk's is.
 - QEMU tests the MFI transport, volumes and JBOD, and the files: the
   `megaraid` boot test runs a SAS1078 with a volume and a SAS2108 passing a
-  disk through, and `storage-megaraid` runs the storage suite on four
+  disk at SCSI ID 0 through, and `storage-megaraid` runs the storage suite on four
   volumes. Fusion runs only against the crate's simulated firmware until a
   card is in the lab: the R740's H740P, with `lab/tests/storage/raid.toml`.
 - The fast path that sends a volume's reads straight to its disks (the

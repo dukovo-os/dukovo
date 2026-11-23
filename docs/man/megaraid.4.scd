@@ -53,8 +53,8 @@ tried again. The kernel log names the controller and each disk as they
 are found:
 
 ```
-Disk: sdb is pass-through disk 512 of 64 MiB on the MegaRAID controller at 0000:00:05.0: QEMU QEMU HARDDISK, 512 bytes a block, MSI vector 0x31
-Disk: MegaRAID SAS2108 controller at 0000:00:05.0: LSI MegaRAID SAS 9260-8i, firmware package 20.10.1-0123, 0 volumes, 1 pass-through disk, MSI vector 0x31
+Disk: sdb is pass-through disk 0 of 64 MiB on the MegaRAID controller at 0000:00:05.0: QEMU QEMU HARDDISK, 512 bytes a block, MSI-X vector 0x31
+Disk: MegaRAID SAS2108 controller at 0000:00:05.0: LSI MegaRAID SAS 9260-8i, firmware package 20.10.1-0123, 0 volumes, 1 pass-through disk, MSI-X vector 0x31
 ```
 
 A pass-through disk is numbered by its device ID, a volume by its target.

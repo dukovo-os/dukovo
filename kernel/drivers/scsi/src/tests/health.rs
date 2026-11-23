@@ -84,7 +84,7 @@ fn the_commands_are_the_bytes_a_disk_takes() {
     );
     assert_eq!(
         Cdb::read_defect_data_10(4).bytes(),
-        [op::READ_DEFECT_DATA_10, 0, 0x0f, 0, 0, 0, 0, 0, 4, 0]
+        [op::READ_DEFECT_DATA_10, 0, 0x0c, 0, 0, 0, 0, 0, 4, 0]
     );
     for feature in [SMART_READ_DATA, SMART_READ_THRESHOLDS] {
         let cdb = Cdb::smart_read(feature);

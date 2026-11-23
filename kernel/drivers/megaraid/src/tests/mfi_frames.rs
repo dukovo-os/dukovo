@@ -46,6 +46,21 @@ fn a_volume_read_is_an_ld_frame_with_its_fields() {
 }
 
 #[test]
+fn a_disk_numbered_above_255_goes_to_its_scsi_id_and_lun() {
+    // QEMU numbers a disk `id << 8 | lun`: 0x0203 is SCSI ID 2, LUN 3.
+    for (family, _) in MFI_FAMILIES {
+        let (sim, mut raid) = up(family);
+        let memory = buffer(4096);
+        let run = [(memory.phys(), 512)];
+        raid.submit(Target::Disk(0x0203), 0, &read10(0, 1), &run, Direction::FromDevice).unwrap();
+        raid.complete().unwrap();
+        let f = sim.lock().seen[0].frame.clone();
+        assert_eq!(f[header::CMD], cmd::PD_SCSI_IO, "{family:?}");
+        assert_eq!((f[header::TARGET], f[header::LUN]), (2, 3), "{family:?}");
+    }
+}
+
+#[test]
 fn a_disk_write_is_a_pd_frame_with_the_write_flag() {
     for (family, _) in MFI_FAMILIES {
         let (sim, mut raid) = up(family);
