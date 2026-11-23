@@ -15,7 +15,7 @@
 //! working-directory printer of the Dukovo system and the folder the shell
 //! is in. Each makes the calls itself, so that it is the kernel's answer
 //! that is checked, and says one line for a case that went wrong and, at
-//! the end, that all 23 cases passed on Dukovo: threads from the C library
+//! the end, that all 36 cases passed on Dukovo: threads from the C library
 //! and from a raw clone (a new thread word, the cleared word that wakes a
 //! join), a fork that sets the child's thread word, a vfork whose parent
 //! resumes after the child's exec, programs started from a Linux one (itself
@@ -24,10 +24,12 @@
 //! back reading as zeros, mremap shrinking, growing and failing, the names
 //! uname gives, getcwd's length, the records of getdents64, statx, signals
 //! through the C library's restorer, one that interrupts a blocked read and
-//! one that a restart leaves, futexes with a deadline in absolute time, the
-//! calls the personality refuses, the identities, the lowest free
-//! descriptor, the umask, and a pseudo-terminal's settings through the C
-//! library's termios calls. The same file runs on a Linux machine, which
+//! one that a restart leaves, futexes with a deadline in absolute time,
+//! futex bit sets, requeues and wake-ops, a robust list marking the locks
+//! of a thread that ends, the calls the personality refuses, the
+//! identities, the lowest free descriptor, the umask, a pseudo-terminal's
+//! settings through the C library's termios calls, and the vDSO's clocks
+//! and CPU number against the calls'. The same file runs on a Linux machine, which
 //! is how its expectations are known to be Linux's.
 //!
 //! Then the test programs of userspace/posix that pass on a Linux machine as
@@ -54,7 +56,7 @@ const CORE_MUSL: &str = "linux-core-musl";
 
 /// How many cases linux-core has: the table of userspace/linux/core.c, which
 /// a unit test counts.
-const CORE_CASES: usize = 23;
+const CORE_CASES: usize = 37;
 
 /// How long a run of linux-core may take, in seconds: the program ends a
 /// case that takes thirty and the script ends the program at 250, so that a
@@ -72,7 +74,7 @@ const POSIX_SOURCES: &str = "userspace/posix";
 /// The test programs of userspace/posix that pass on a Linux machine, built
 /// there as static programs with its C library: what they check is Linux's
 /// behaviour as much as Dukovo's.
-const ON_LINUX: &[&str] = &["hello", "locks"];
+const ON_LINUX: &[&str] = &["hello", "locks", "epoll", "memfd", "inotify", "kernelfiles"];
 
 /// The script that runs one of the two linux-core programs,
 /// `run-core.sh PROGRAM`, from the folder of the script. It names the
@@ -96,8 +98,9 @@ echo "$program: exit status $status"
 /// named, or every program in the posix folder beside the script, each from
 /// /tmp, alone, for at most 120 seconds. It says a line for each program,
 /// "linux-posix: NAME ok" or "linux-posix: NAME FAILED, status N" with the
-/// first failed check the program printed, and a last line that says every
-/// test passed or how many failed.
+/// first four failed checks the program printed, each without the build
+/// machine's folder of its source so that its line number fits the screen,
+/// and a last line that says every test passed or how many failed.
 const RUN_POSIX: &str = r#"#!/bin/sh
 dir=$(cd "$(dirname "$0")" && pwd)/posix
 cd /tmp || exit 1
@@ -117,7 +120,7 @@ for name in $tests; do
 	else
 		failed=$((failed + 1))
 		echo "linux-posix: $name FAILED, status $status"
-		grep -m 1 FAILED "$log" | cut -c 1-78
+		grep FAILED "$log" | sed 's|/[^ ]*/userspace/posix/||' | head -n 4 | cut -c 1-78
 	fi
 done
 if [ "$failed" -eq 0 ]; then
@@ -134,7 +137,7 @@ const DISKS: &[Disk] = &[linux_files_disk(64 * 1024, LABEL)];
 /// The test.
 pub const CASE: Case = Case {
     name: "linux-programs",
-    about: "static Linux programs run on Dukovo under the Linux personality (ADR 0610): linux-core, built from userspace/linux/core.c with the build machine's C library and with musl, passes its 23 cases twice, making the calls itself (threads from the C library and from a raw clone, fork, vfork, execve of itself and of a program of Dukovo with the working directory crossing, arch_prctl, brk, madvise, mremap, uname, getcwd, getdents64, statx, signals and restarts, interval timers and pause, futexes with absolute deadlines, refused calls, identities, descriptors, umask, terminal settings), and the C test programs of userspace/posix that pass on Linux each run alone and pass on Dukovo",
+    about: "static Linux programs run on Dukovo under the Linux personality (ADR 0610): linux-core, built from userspace/linux/core.c with the build machine's C library and with musl, passes its 37 cases twice, making the calls itself (threads from the C library and from a raw clone, fork, vfork, execve of itself and of a program of Dukovo with the working directory crossing, arch_prctl, brk, madvise, mremap, uname, getcwd, getdents64, statx, signals and restarts, interval timers and pause, futexes with absolute deadlines, bit sets, requeues and wake-ops, robust lists, refused calls, identities, descriptors, umask, terminal settings, waits on thousands of descriptors, vectored I/O, descriptor owners, getcpu, the vDSO), and the C test programs of userspace/posix that pass on Linux each run alone and pass on Dukovo",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     cmdline: "lockdep",
@@ -286,14 +289,18 @@ fn linux_programs(vm: &mut Vm, case: &Case) -> Result<(), String> {
     }
 
     // The C test programs, one at a time. A program that fails does not end
-    // the test: each says a line, and the failures are reported together.
+    // the test: each says a line, and the failures are reported together,
+    // with the checks that failed.
     run_within(vm, &format!("clear; sh {VOLUME}/run-posix.sh"), POSIX_SECONDS)?;
     let screen = vm.screen()?;
     if !screen.iter().any(|line| line.trim() == "linux-posix: every test passed") {
         let failed: Vec<&str> = screen
             .iter()
             .map(|line| line.trim())
-            .filter(|line| line.starts_with("linux-posix: ") && line.contains(" FAILED"))
+            .filter(|line| {
+                (line.starts_with("linux-posix: ") && line.contains(" FAILED"))
+                    || line.contains(": FAILED: ")
+            })
             .collect();
         return Err(format!(
             "the C test programs did not all pass: {}; the screen shows: {}",
@@ -343,5 +350,30 @@ mod tests {
         assert_eq!(RUN_CORE.matches("timeout -k").count(), 1);
         assert_eq!(RUN_POSIX.matches("timeout -k").count(), 1);
         assert!(musl_missing().contains("musl-tools"));
+    }
+
+    #[test]
+    fn a_failed_check_is_shown_without_the_build_machines_folder() {
+        // A line the C programs' check.h prints, through the script's
+        // pipe, which reads the program's log.
+        let line = "kernelfiles: FAILED: /home/runner/work/dukovo/dukovo/userspace/posix/\
+                    kernelfiles.c:333: sigqueue(getpid(), SIGUSR1, value) == 0 (errno 38)";
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "printf '%s\\n' \"$0\" | {}",
+                RUN_POSIX
+                    .lines()
+                    .find(|line| line.contains("grep FAILED"))
+                    .expect("the line that shows the failed checks")
+                    .trim()
+                    .replace("\"$log\"", "")
+            ))
+            .arg(line)
+            .output()
+            .expect("sh runs");
+        let shown = String::from_utf8(output.stdout).unwrap();
+        assert!(shown.starts_with("kernelfiles: FAILED: kernelfiles.c:333: sigqueue("), "{shown}");
+        assert!(shown.trim_end().len() <= 78, "{shown}");
     }
 }

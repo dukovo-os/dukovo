@@ -9,10 +9,15 @@
 # a library for each: HTTP/2 and HTTP/3 (nghttp2, ngtcp2), brotli,
 # international domain names (libidn2), the public suffix list
 # (libpsl), SSH (libssh2), LDAP and RTMP.
+#
+# The C library has eventfd (ADR 0613), which curl's multi interface wakes
+# itself with in place of a socket pair when configure finds it; it is told
+# there is none until a boot test covers that path.
 set -eu
 
 cd "$PORT_BUILD"
-x86_64-radix-configure "$PORT_SRC" --disable-shared --enable-static \
+ac_cv_header_sys_eventfd_h=no ac_cv_func_eventfd=no \
+	x86_64-radix-configure "$PORT_SRC" --disable-shared --enable-static \
 	--with-rustls --without-openssl --with-zlib --with-zstd \
 	--without-brotli --without-nghttp2 --without-nghttp3 --without-ngtcp2 \
 	--without-libidn2 --without-libpsl --without-libssh2 --without-libssh \

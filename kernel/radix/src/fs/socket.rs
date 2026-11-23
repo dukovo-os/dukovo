@@ -236,14 +236,18 @@ impl End {
 
     /// The events `poll` finds on it, as Linux's for a stream socket: it
     /// is readable while data waits or once a read would return the end,
-    /// writable while [`pipe::ATOMIC`] bytes fit or once a write would
-    /// fail, and hung up once nothing can come or go either way.
+    /// when it reads no more too (POLLRDHUP), writable while
+    /// [`pipe::ATOMIC`] bytes fit or once a write would fail, and hung up
+    /// once nothing can come or go either way.
     pub fn events(&self) -> u16 {
         let read_done = self.shut_read.load(Ordering::Acquire) || self.rx.writers() == 0;
         let write_done = self.shut_write.load(Ordering::Acquire) || self.tx.readers() == 0;
         let mut events = 0;
-        if self.rx.len() > 0 || read_done {
+        if self.rx.len() > 0 {
             events |= poll::READABLE;
+        }
+        if read_done {
+            events |= poll::READABLE | poll::READ_HANG_UP;
         }
         if self.tx.has_room() || write_done {
             events |= poll::WRITABLE;

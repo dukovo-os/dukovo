@@ -1,0 +1,33 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+The dynamic linker lists the vDSO after the program (ADR 0616): it put
+the vDSO in its repository first, so dl_iterate_phdr gave it before the
+program, against the comment beside it and what glibc does, and a
+program that takes the first object for itself, as Rust's backtraces do,
+found no symbols.
+
+diff --git a/options/rtld/generic/main.cpp b/options/rtld/generic/main.cpp
+--- a/options/rtld/generic/main.cpp
++++ b/options/rtld/generic/main.cpp
+@@ -628,9 +628,6 @@
+ 
+ 	globalScope.initialize(true);
+ 
+-	if (vdsoBase)
+-		setupVdso(vdsoBase);
+-
+ 	// Add the dynamic linker, as well as the exectuable to the repository.
+ 	// We inject the executable first such that it is the first entry in dl_iterate_phdr.
+ #ifndef MLIBC_STATIC_BUILD
+@@ -644,6 +641,10 @@
+ 	globalDebugInterface.base = (void*)executableSO->baseAddress;
+ #endif
+ 
++	// The vDSO after the executable, which dl_iterate_phdr gives first.
++	if (vdsoBase)
++		setupVdso(vdsoBase);
++
+ #ifndef MLIBC_STATIC_BUILD
+ 	auto ldso_soname = reinterpret_cast<const char *>(ldso_base + strtab_offset + soname_str);
+ 	auto ldso = initialRepository->injectObjectFromDts(ldso_soname,

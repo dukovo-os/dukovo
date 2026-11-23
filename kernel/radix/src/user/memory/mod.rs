@@ -308,6 +308,41 @@ pub fn unmap_past(pages: &SharedRef, from: u64) {
     }
 }
 
+/// Whether any space maps `pages`, a memory file's, shared in a way that
+/// is or may be made writable: a region whose file was opened for writing
+/// (not [`Anon::read_only`]), whatever its access now, as Linux counts a
+/// shared mapping that may write. The file adds the seal write only if
+/// none does.
+///
+/// It is walked as [`unmap_past`] walks, with the spaces' list held, and
+/// each space's regions locked in turn. The mapping path
+/// ([`SpaceObject::map_anonymous_at`]) reads the file's seals with its
+/// space's regions locked, so the seal must be set, provisionally, before
+/// this looks: a mapping made before the look is in its space's regions
+/// when that space is locked here, and one made after reads the seal and
+/// is refused or made read-only for good.
+pub fn has_writable_mapping(pages: &SharedRef) -> bool {
+    let spaces = SPACES.lock();
+    let Some(spaces) = spaces.as_ref() else { return false };
+    for space in spaces.iter().filter_map(Weak::upgrade) {
+        if !space.may_share.load(Ordering::Acquire) {
+            continue;
+        }
+        let regions = space.regions.lock();
+        let writable = regions.iter().any(|region| match &region.backing {
+            Backing::Anon(anon) => {
+                !anon.read_only
+                    && anon.shared.as_ref().is_some_and(|shared| Arc::ptr_eq(shared, pages))
+            }
+            _ => false,
+        });
+        if writable {
+            return true;
+        }
+    }
+    false
+}
+
 /// Pages a step of zeroing a new frame clears: 256 KiB, a few tens of
 /// microseconds, which is as long as deleting the frame may wait for it.
 pub const ZERO_STEP: u64 = 64;
@@ -431,6 +466,25 @@ impl SpaceObject {
         };
         self.map_in(&mut regions, start, pages, backing, offset, access)?;
         Ok(start)
+    }
+
+    /// Maps the clock page, `clock`'s one page, read-only, and the vDSO,
+    /// `image`'s pages, read and execute, right above it (ADR 0616), where
+    /// the kernel places anonymous memory given no hint; returns where the
+    /// vDSO went. For a space nothing runs in yet, whose end takes away
+    /// the clock page if the vDSO cannot be mapped.
+    pub fn map_vdso(&self, clock: &FrameRef, image: &FrameRef) -> Result<u64> {
+        let pages = image.pages + 1;
+        let mut regions = self.regions.lock();
+        let start = Self::free_range(&regions, pages, self.anon_top)
+            .or_else(|| Self::free_range(&regions, pages, ANONYMOUS_TOP))
+            .ok_or(error(Kernel::NoMemory))?;
+        let read = UserAccess::Read;
+        self.map_in(&mut regions, start, 1, &Backing::Frame(clock.clone()), 0, read)?;
+        let code = start + PAGE_SIZE;
+        let run = UserAccess::ReadExecute;
+        self.map_in(&mut regions, code, image.pages, &Backing::Frame(image.clone()), 0, run)?;
+        Ok(code)
     }
 
     /// [`map`](Self::map), with the regions locked.
@@ -752,6 +806,16 @@ impl FrameObject {
             spaces: Mutex::new(Vec::new_in(kmalloc())),
         };
         Arc::try_new_in(frame, kmalloc()).ok()
+    }
+
+    /// A frame for the `pages` pages from `phys` that the kernel filled
+    /// and keeps for good: the clock page and the vDSO (ADR 0616), which
+    /// every program maps. It is never zeroed, and never closed, as no
+    /// capability names it.
+    pub fn kept(phys: u64, pages: u64) -> Option<FrameRef> {
+        let frame = FrameObject::new(phys, pages)?;
+        frame.zeroed.store(pages, Ordering::Release);
+        Some(frame)
     }
 
     /// Zeroes the pages not zeroed yet, a step of [`ZERO_STEP`] pages at a

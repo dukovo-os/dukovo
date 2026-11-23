@@ -44,7 +44,7 @@
 //! state, a frame's state, an address space's regions; an endpoint, then
 //! a thread's IPC state; a ring's queues. None is held across a block.
 
-mod account;
+pub(crate) mod account;
 mod clock;
 pub mod crash;
 pub mod device;
@@ -60,6 +60,7 @@ pub(crate) mod memory;
 mod methods;
 pub mod names;
 pub mod network;
+mod notices;
 mod notify;
 pub mod objects;
 mod platform;
@@ -71,10 +72,11 @@ pub mod random;
 mod ring;
 mod settings;
 mod syscall;
+mod vdso;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 pub use radix_abi::process::{EXIT_FAULT, EXIT_STOPPED};
 
@@ -120,6 +122,9 @@ pub struct UserThread {
     pub(crate) signals: SpinLock<ThreadSignals>,
     /// Set by the `futex_wake` that takes it off a futex's waiters.
     pub(crate) futex_woken: AtomicBool,
+    /// The list of futex waiters it is in while it waits, which a requeue
+    /// may change (`memory::futex`).
+    pub(crate) futex_bucket: AtomicUsize,
     /// Set by a change to what it polls while it waits in `poll`, which
     /// then looks again; cleared before each look (`posix::poll`).
     pub(crate) poll_changed: AtomicBool,
@@ -204,6 +209,7 @@ fn runs(user: &UserThread) -> bool {
 /// boot. The system call and return handlers the architecture calls by
 /// name ([`radix_syscall`], [`radix_user_return`]).
 pub fn init() {
+    vdso::init();
     Arch::set_user_fault_handler(on_fault);
     Arch::set_user_page_handler(on_user_page);
     Arch::describe_user_mode(&mut |args| info!("{args}"));
@@ -284,6 +290,11 @@ fn exit_clearing(user: UserRef, status: u64, word: u64) -> ! {
 /// [`exit_current`], and then, for [`exit_waking`] and [`exit_clearing`],
 /// the joiner's word and what it becomes.
 fn end_thread(user: UserRef, status: u64, how: Ending, word: Option<(u64, u32)>) -> ! {
+    // The robust locks a Linux thread holds are marked as its owner's
+    // (ADR 0617) before its joiner hears of its end, as on Linux.
+    if let Some(me) = sched::current() {
+        linux::ending(&me, &user);
+    }
     ipc::exiting(&user);
     // What its stock holds goes back now, not when the last reference to
     // its side goes.
@@ -316,7 +327,7 @@ fn end_thread(user: UserRef, status: u64, how: Ending, word: Option<(u64, u32)>)
 fn wake_joiner(space: &SpaceObject, word: u64, value: u32) {
     if word.is_multiple_of(4) && Arch::copy_to_user(word, &value.to_le_bytes()) {
         // An aligned word cannot fail.
-        let _ = memory::futex::wake(space, word, u32::MAX);
+        let _ = memory::futex::wake(space, word, u32::MAX, radix_abi::address_space::FUTEX_ALL);
     }
 }
 
@@ -575,6 +586,16 @@ impl<T> Fifo<T> {
 
     pub(crate) fn len(&self) -> usize {
         self.items.len() - self.head
+    }
+
+    /// The item at the back, the one added last.
+    pub(crate) fn back(&self) -> Option<&T> {
+        self.items[self.head..].last().and_then(Option::as_ref)
+    }
+
+    /// The item at the front.
+    pub(crate) fn front(&self) -> Option<&T> {
+        self.items.get(self.head).and_then(Option::as_ref)
     }
 
     /// The items, from the front.

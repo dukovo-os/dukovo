@@ -315,6 +315,7 @@ dependencies = [
  "radix-udf",
  "radix-usb",
  "radix-usbhc",
+ "radix-vdso",
  "radix-vfs",
  "radix-virtio",
  "radix-vmd",
@@ -901,6 +902,13 @@ version = "0.17.0"
 dependencies = [
  "radix-hw",
  "radix-usb",
+]
+
+[[package]]
+name = "radix-vdso"
+version = "0.17.0"
+dependencies = [
+ "radix-hal",
 ]
 
 [[package]]

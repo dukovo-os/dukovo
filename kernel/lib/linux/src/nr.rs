@@ -391,4 +391,6 @@ calls! {
     OPENAT2 = 437,
     PIDFD_GETFD = 438,
     FACCESSAT2 = 439,
+    EPOLL_PWAIT2 = 441,
+    FUTEX_WAITV = 449,
 }

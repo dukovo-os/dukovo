@@ -46,7 +46,9 @@
 (* looked at in the end. NoLostWakeup fails if a look reads the object     *)
 (* before it clears the queued mark, or a waiter counts itself after its   *)
 (* condition looks at the ring, and NoReportAfterDelete if a call lets the *)
-(* lock go between taking a watch off and reporting it.                    *)
+(* lock go between taking a watch off and reporting it. Exclusive watches, *)
+(* which several queues keep of one description, are in                    *)
+(* EventQueueExclusive.tla.                                                *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets
 

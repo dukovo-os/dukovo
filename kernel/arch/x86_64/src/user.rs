@@ -37,7 +37,8 @@
 //! [`SyscallFrame`] or a [`TrapFrame`] at the top of its kernel stack.
 //!
 //! The kernel reads and writes user memory only through
-//! [`copy_from_user`] and [`copy_to_user`], which check that the range is
+//! [`copy_from_user`] and [`copy_to_user`] (and one atomic word at a time
+//! through [`compare_exchange`], for futexes), which check that the range is
 //! in the user half and lift SMAP for the one `rep movsb` that copies, or
 //! for a loop that copies from the end when the destination is a little
 //! ahead of the source within a page ([`BACKWARD_WINDOW`]). A fault on a
@@ -449,6 +450,39 @@ radix_user_copy_back_end:
     backward_window = const BACKWARD_WINDOW,
 );
 
+// A compare-exchange of a 32-bit word of user memory: RDI the address,
+// ESI the value expected, EDX the new one. Returns the word as it was in
+// EAX, with bit 32 of RAX clear, or bit 32 set if a fault stopped it
+// (`fixup` resumes at `radix_user_cmpxchg_fault`). The `lock cmpxchg`
+// faults before it writes, so after a page is made it runs again whole.
+core::arch::global_asm!(
+    r#"
+    .global radix_user_cmpxchg
+radix_user_cmpxchg:
+    mov eax, esi
+    cmp byte ptr [rip + {smap}], 0
+    je 2f
+    stac
+2:
+    .global radix_user_cmpxchg_insn
+radix_user_cmpxchg_insn:
+    lock cmpxchg dword ptr [rdi], edx
+    mov eax, eax
+    jmp 3f
+    .global radix_user_cmpxchg_fault
+radix_user_cmpxchg_fault:
+    mov eax, 1
+    shl rax, 32
+3:
+    cmp byte ptr [rip + {smap}], 0
+    je 4f
+    clac
+4:
+    ret
+    "#,
+    smap = sym paging::SMAP,
+);
+
 /// Copies of at least this many bytes go backward when the destination
 /// is a little ahead of the source within a page ([`BACKWARD_WINDOW`]).
 const BACKWARD_MIN: usize = 512;
@@ -478,6 +512,11 @@ unsafe extern "C" {
     static radix_user_copy_insn: u8;
     static radix_user_copy_done: u8;
     static radix_user_copy_back: u8;
+    /// Compares and exchanges the 32-bit word at `address`; see the
+    /// assembly above.
+    fn radix_user_cmpxchg(address: u64, expected: u32, new: u32) -> u64;
+    static radix_user_cmpxchg_insn: u8;
+    static radix_user_cmpxchg_fault: u8;
     static radix_user_copy_back_end: u8;
 }
 
@@ -993,16 +1032,24 @@ pub fn exception(vector: u8, frame: &TrapFrame) {
 
 /// Where a fault in kernel mode at `rip` resumes, if it is a copy
 /// instruction of a user copy (`rep movsb`, or a load or store of the
-/// backward copy): for a page fault on a user address (`page`: the address
-/// and whether it was a write) that the copy may sleep for, the same
-/// instruction again once the user page handler has made the page;
-/// otherwise the copy's end, so that it reports what was left.
+/// backward copy) or the `lock cmpxchg` of [`compare_exchange`]: for a
+/// page fault on a user address (`page`: the address and whether it was a
+/// write) that the copy may sleep for, the same instruction again once the
+/// user page handler has made the page; otherwise the copy's end, so that
+/// it reports what was left, or the compare-exchange's fault exit.
 pub fn fixup(rip: u64, page: Option<(u64, bool)>, may_sleep: bool) -> Option<u64> {
     let insn = &raw const radix_user_copy_insn as u64;
     let back = &raw const radix_user_copy_back as u64..&raw const radix_user_copy_back_end as u64;
-    if rip != insn && !back.contains(&rip) {
+    let cmpxchg = &raw const radix_user_cmpxchg_insn as u64;
+    if rip != insn && rip != cmpxchg && !back.contains(&rip) {
         return None;
     }
+    // A compare-exchange that cannot go on ends at its own exit.
+    let done = if rip == cmpxchg {
+        &raw const radix_user_cmpxchg_fault as u64
+    } else {
+        &raw const radix_user_copy_done as u64
+    };
     if let Some((address, write)) = page {
         if address >= USER_TOP {
             return None;
@@ -1016,7 +1063,7 @@ pub fn fixup(rip: u64, page: Option<(u64, bool)>, may_sleep: bool) -> Option<u64
             }
         }
     }
-    Some(&raw const radix_user_copy_done as u64)
+    Some(done)
 }
 
 /// Whether `len` bytes from `address` lie wholly in the user half.
@@ -1044,6 +1091,20 @@ pub fn copy_to_user(dst: u64, src: &[u8]) -> bool {
     // SAFETY: as in `copy_from_user`, the other way round: the kernel side
     // is `src`, which is only read.
     unsafe { radix_user_copy(dst as *mut u8, src.as_ptr(), src.len()) == 0 }
+}
+
+/// Compares and exchanges the 32-bit word of user memory at `address`;
+/// see the HAL.
+pub fn compare_exchange(address: u64, expected: u32, new: u32) -> Option<u32> {
+    if !address.is_multiple_of(4) || !user_range(address, 4) {
+        return None;
+    }
+    // SAFETY: the word is aligned and in the user half (checked above),
+    // where a fault ends the instruction's routine instead of stopping the
+    // kernel (`fixup`); it touches no kernel memory.
+    let result = unsafe { radix_user_cmpxchg(address, expected, new) };
+    // Bit 32 is the fault's; the low half is the word as it was.
+    if result >> 32 == 0 { Some(result as u32) } else { None }
 }
 
 /// Leaves for user mode; see the HAL.

@@ -75,6 +75,8 @@ pub const ERROR: u16 = PollEvents::ERROR.0 as u16;
 pub const HANG_UP: u16 = PollEvents::HANG_UP.0 as u16;
 /// The slot holds no capability.
 pub const INVALID: u16 = PollEvents::INVALID.0 as u16;
+/// A stream socket reads no more: Linux's POLLRDHUP (ADR 0612).
+pub const READ_HANG_UP: u16 = PollEvents::READ_HANG_UP.0 as u16;
 
 /// The events reported whether asked for or not.
 const ALWAYS: u16 = ERROR | HANG_UP | INVALID;
@@ -142,8 +144,16 @@ impl Polled {
         for thread in &lists.pollers {
             wake_poller(thread);
         }
+        // An exclusive watch (epoll's EPOLLEXCLUSIVE, ADR 0612) is queued
+        // only until one of them is queued where a thread waits to take
+        // it: the change wakes one of their waiters, not all.
+        let mut taken = false;
         for watch in &lists.watches {
-            queue::changed(watch);
+            if !watch.is_exclusive() {
+                queue::changed(watch);
+            } else if !taken {
+                taken = queue::changed(watch);
+            }
         }
     }
 
@@ -266,6 +276,8 @@ pub(crate) fn polled_by(object: &Object, each: &mut dyn FnMut(&Polled)) {
                 socket.polled(each);
             } else if let Some(handle) = file.tty_handle() {
                 each(handle.polled());
+            } else if let Some(watches) = file.watch_file() {
+                each(watches.polled());
             } else if file.is_kmsg() {
                 each(&crate::fs::kmsg::POLLED);
             } else if file.is_keyboard() {
@@ -282,6 +294,15 @@ pub(crate) fn polled_by(object: &Object, each: &mut dyn FnMut(&Polled)) {
                 each(&crate::audio::POLLED);
             } else if file.is_crashes() {
                 each(&crate::fs::crashes::POLLED);
+            // The kernel's own files (ADR 0613).
+            } else if let Some(counter) = file.counter() {
+                each(counter.polled());
+            } else if let Some(timer) = file.timer_file() {
+                each(timer.polled());
+            } else if file.signal_file().is_some() {
+                crate::fs::signal_file::SignalFile::polled(each);
+            } else if let Some(process) = file.process_file() {
+                process.polled(each);
             }
         }
         Object::Notification(notification) => each(notification.polled()),
@@ -412,6 +433,15 @@ fn file_events(file: &FileObject) -> u16 {
         crate::audio::events(file)
     } else if file.is_crashes() {
         crate::fs::crashes::events(file)
+    // The kernel's own files (ADR 0613).
+    } else if let Some(counter) = file.counter() {
+        counter.events()
+    } else if let Some(timer) = file.timer_file() {
+        timer.events()
+    } else if let Some(signals) = file.signal_file() {
+        signals.events()
+    } else if let Some(process) = file.process_file() {
+        process.events()
     } else {
         READABLE | WRITABLE
     }
@@ -644,20 +674,33 @@ pub(crate) fn poll_entries(
     found: &mut [u16],
 ) -> Result<u32> {
     debug_assert_eq!(entries.len(), found.len() * PollEntry::SIZE);
-    if found.len() > ENTRIES_MAX as usize {
-        return Err(Kernel::InvalidArgument.status(1));
-    }
     let cspace = user.process.cspace();
+    // The signal mask is in place from the first look, as on Linux, so
+    // that no signal the mask blocks runs a handler between the call's
+    // entry and its wait.
+    let masked = a.flags.contains(PollFlags::MASK);
+    if masked {
+        signal::begin_masked_wait(user, a.mask);
+    }
     // A first look, without counting as a poller: what is ready, or a
     // poll that does not wait, returns at once. One with a signal mask
     // goes on to take it, so that a signal the mask lets through
     // interrupts it, as on Linux.
     let ready = look(cspace, a.base, entries, found);
     let waits = a.flags.contains(PollFlags::FOREVER) || a.timeout_ns > 0;
-    if ready == 0 && (waits || a.flags.contains(PollFlags::MASK)) {
-        return wait_ready(user, a, cspace, entries, found);
+    let done = if ready == 0 && (waits || masked) {
+        wait_ready(user, a, cspace, entries, found)
+    } else {
+        Ok(ready)
+    };
+    // The mask stays after an interrupt until the handler has run.
+    let interrupted = done
+        .as_ref()
+        .is_err_and(|status| matches!(Kernel::from_status(*status), Some(Kernel::Interrupted)));
+    if masked && !interrupted {
+        signal::end_masked_wait(user);
     }
-    Ok(ready)
+    done
 }
 
 /// Waits, as `a` says, until one of `entries` is ready, writing what
@@ -688,10 +731,6 @@ fn wait_ready(
     }
     let me = sched::current().ok_or(error(Kernel::Gone))?;
     let polling = Polling::new(held, me)?;
-    let masked = a.flags.contains(PollFlags::MASK);
-    if masked {
-        signal::begin_masked_wait(user, a.mask);
-    }
     let deadline = (!a.flags.contains(PollFlags::FOREVER))
         .then(|| sched::now_ns().saturating_add(a.timeout_ns));
     let ready = loop {
@@ -712,9 +751,6 @@ fn wait_ready(
         }
     };
     drop(polling);
-    if masked {
-        signal::end_masked_wait(user);
-    }
     Ok(ready)
 }
 

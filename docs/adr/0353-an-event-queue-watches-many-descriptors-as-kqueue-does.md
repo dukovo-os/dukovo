@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0353. An event queue watches many descriptors, as kqueue does
 
-- Status: Accepted; `poll` looks at many descriptors under one hold of the space's lock since [0354](0354-poll-looks-at-many-descriptors-under-one-hold-of-the-space-s-lock.md)
+- Status: Accepted; `poll` looks at many descriptors under one hold of the space's lock since [0354](0354-poll-looks-at-many-descriptors-under-one-hold-of-the-space-s-lock.md); a `poll` filter serves Linux's epoll since [0612](0612-epoll-is-the-event-queue-s-poll-filter-with-linux-s-rules.md)
 - Date: 2026-11-20
 
 ## Context

@@ -40,6 +40,7 @@
 //! with any of the store's locks held.
 
 pub mod capture;
+pub mod counter;
 pub mod crashdump;
 pub mod crashes;
 pub mod devfs;
@@ -52,14 +53,20 @@ pub mod keyboard;
 pub mod kmsg;
 pub mod locks;
 pub mod mouse;
+pub mod notify;
+mod own_file;
 pub mod pipe;
+pub mod process_file;
 pub mod procfs;
 pub mod shm;
+pub mod signal_file;
 pub mod socket;
 pub mod sysfs;
+pub mod timer_file;
 pub mod trace;
 pub mod tty;
 pub mod tunnel;
+pub mod watch_file;
 pub mod writeback;
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -84,6 +91,16 @@ pub type FileRef = alloc::sync::Arc<FileObject, Kmalloc>;
 /// absolute symbolic link. No bit of radix-file(2)'s DescriptionFlags is
 /// this one, so `status_flags` never shows or sets it.
 const ABSOLUTE_LINKS_LEAVE: u32 = 1 << 31;
+
+/// The bit that says a description was opened for writing, which its last
+/// close tells the watches of its file as IN_CLOSE_WRITE. Kept with
+/// [`OPEN_TOLD`] in the flags word, as [`ABSOLUTE_LINKS_LEAVE`] is, and
+/// never shown or set by `status_flags` either.
+const OPENED_FOR_WRITING: u32 = 1 << 30;
+
+/// The bit that says the watches were told of the description's open, so
+/// that its last close is told to them too.
+const OPEN_TOLD: u32 = 1 << 29;
 
 /// An open file description's status flags (radix-file(2)'s
 /// DescriptionFlags).
@@ -154,6 +171,16 @@ enum Special {
     Inet,
     /// A side of a terminal.
     Tty,
+    /// A watch file (ADR 0615).
+    Watch,
+    /// An event counter (ADR 0613).
+    Counter,
+    /// A timer file (ADR 0613).
+    TimerFile,
+    /// A signal file (ADR 0613).
+    SignalFile,
+    /// A process file (ADR 0613).
+    ProcessFile,
     /// `/devices/kmsg`.
     Kmsg,
     /// `/devices/kbd`.
@@ -214,6 +241,24 @@ impl Opened {
         let mut opened = Opened { len: 1, state: Opened::WHOLE, bytes: [0; OPENED_MAX] };
         opened.bytes[0] = b'/';
         opened.join(path);
+        opened
+    }
+
+    /// The path made of `parts` as they are, for a file that no directory
+    /// holds, whose name is no path to work out: a memory file's
+    /// `/memfd:NAME (deleted)`, where NAME may hold slashes. A longer one
+    /// is cut.
+    pub fn verbatim(parts: &[&[u8]]) -> Opened {
+        let mut opened = Opened { len: 0, state: Opened::WHOLE, bytes: [0; OPENED_MAX] };
+        for part in parts {
+            let at = usize::from(opened.len);
+            let taken = part.len().min(OPENED_MAX - at);
+            opened.bytes[at..at + taken].copy_from_slice(&part[..taken]);
+            opened.len += taken as u8;
+            if taken < part.len() {
+                opened.state = Opened::CUT;
+            }
+        }
         opened
     }
 
@@ -363,6 +408,9 @@ pub struct FileObject {
     next: SpinLock<Link>,
     /// Where it was opened.
     pub opened: Opened,
+    /// The directory it was opened in, held, if the watches were told of
+    /// the open (`open_told`).
+    parent: Option<NodeRef>,
     /// The name it acts for (ADR 0214): what the second gate checks on
     /// the files opened or made through it, which take it too.
     pub name: Identity,
@@ -418,6 +466,15 @@ impl FileObject {
             Kind::Socket if socket::socket_of(&at.node).is_some() => Special::Socket,
             Kind::Socket if inet::socket_of(&at.node).is_some() => Special::Inet,
             Kind::CharDevice if tty::handle_of(&at.node).is_some() => Special::Tty,
+            Kind::CharDevice if watch_file::watch_file_of(&at.node).is_some() => Special::Watch,
+            Kind::CharDevice if counter::counter_of(&at.node).is_some() => Special::Counter,
+            Kind::CharDevice if timer_file::timer_of(&at.node).is_some() => Special::TimerFile,
+            Kind::CharDevice if signal_file::signal_file_of(&at.node).is_some() => {
+                Special::SignalFile
+            }
+            Kind::CharDevice if process_file::process_file_of(&at.node).is_some() => {
+                Special::ProcessFile
+            }
             Kind::CharDevice if kmsg::is_kmsg(&at.node) => Special::Kmsg,
             Kind::CharDevice if keyboard::is_keyboard(&at.node) => Special::Keyboard,
             Kind::CharDevice if mouse::is_mouse(&at.node) => Special::Mouse,
@@ -454,6 +511,7 @@ impl FileObject {
             (&raw mut (*place).special).write(special);
             (&raw mut (*place).next).write(SpinLock::new(Link { queued: false, next: None }));
             (&raw mut (*place).name).write(name);
+            (&raw mut (*place).parent).write(None);
             Opened::write_at(&raw mut (*place).opened, &(*place).at, from);
         }
         // SAFETY: written just above.
@@ -465,9 +523,39 @@ impl FileObject {
         Description::from_bits(self.flags.load(Ordering::Acquire))
     }
 
-    /// Changes its status flags.
+    /// Changes its status flags. The bits of the word that are not one of a
+    /// [`Description`]'s stay.
     pub fn set_description(&self, description: Description) {
-        self.flags.store(description.bits(), Ordering::Release);
+        let kept = OPENED_FOR_WRITING | OPEN_TOLD;
+        let _ = self.flags.try_update(Ordering::Release, Ordering::Acquire, |old| {
+            Some(description.bits() | (old & kept))
+        });
+    }
+
+    /// Notes that the watches of its file were told of its open (for
+    /// writing, if `for_writing`), and sets the directory it was opened
+    /// in, whose watches hear its changes with its name: its last close
+    /// is told to them as well. Called once, by the open that made it,
+    /// while nothing else refers to it.
+    pub fn open_told(&mut self, directory: Option<NodeRef>, for_writing: bool) {
+        self.parent = directory;
+        let bits = OPEN_TOLD | if for_writing { OPENED_FOR_WRITING } else { 0 };
+        *self.flags.get_mut() |= bits;
+    }
+
+    /// The directory it was opened in, if the watches were told it was
+    /// opened there.
+    pub fn parent(&self) -> Option<&NodeRef> {
+        self.parent.as_ref()
+    }
+
+    /// The last name of the path it was opened by, which its directory's
+    /// watches hear its changes with: none if the path is not known,
+    /// was cut, or is `/`.
+    pub fn last_name(&self) -> Option<&[u8]> {
+        let (path, cut) = self.opened.path()?;
+        let name = path.rsplit(|&byte| byte == b'/').next()?;
+        (!cut && !name.is_empty()).then_some(name)
     }
 
     /// Its owner.
@@ -508,6 +596,39 @@ impl FileObject {
     /// The side of a terminal it is of, if it is of one.
     pub fn tty_handle(&self) -> Option<&tty::Handle> {
         if self.special == Special::Tty { tty::handle_of(&self.at.node) } else { None }
+    }
+
+    /// The watch file it is of, if it is of one.
+    pub fn watch_file(&self) -> Option<&watch_file::WatchFile> {
+        if self.special == Special::Watch { watch_file::watch_file_of(&self.at.node) } else { None }
+    }
+
+    /// The event counter it is of, if it is of one.
+    pub fn counter(&self) -> Option<&counter::Counter> {
+        if self.special == Special::Counter { counter::counter_of(&self.at.node) } else { None }
+    }
+
+    /// The timer file it is of, if it is of one.
+    pub fn timer_file(&self) -> Option<&timer_file::TimerFile> {
+        if self.special == Special::TimerFile { timer_file::timer_of(&self.at.node) } else { None }
+    }
+
+    /// The signal file it is of, if it is of one.
+    pub fn signal_file(&self) -> Option<&signal_file::SignalFile> {
+        if self.special == Special::SignalFile {
+            signal_file::signal_file_of(&self.at.node)
+        } else {
+            None
+        }
+    }
+
+    /// The process file it is of, if it is of one.
+    pub fn process_file(&self) -> Option<&process_file::ProcessFile> {
+        if self.special == Special::ProcessFile {
+            process_file::process_file_of(&self.at.node)
+        } else {
+            None
+        }
     }
 
     /// Whether it is of `/devices/kmsg`.
@@ -595,6 +716,15 @@ impl Drop for FileObject {
         if self.locked.load(Ordering::Acquire) {
             locks::description_gone(&self.at.node, self.address());
         }
+        let bits = self.flags.load(Ordering::Acquire);
+        if bits & OPEN_TOLD != 0 && notify::watched() {
+            let closed = if bits & OPENED_FOR_WRITING != 0 {
+                radix_linux::notify::IN_CLOSE_WRITE
+            } else {
+                radix_linux::notify::IN_CLOSE_NOWRITE
+            };
+            notify::of_file(self, closed);
+        }
     }
 }
 
@@ -612,7 +742,10 @@ static ANY_DROPPED: AtomicBool = AtomicBool::new(false);
 /// last description going may hang the terminal up and send signals, is
 /// on `dev`, whose drops are light otherwise.
 pub fn release(file: FileRef) {
-    if file.at.mount.fs.light_drops() && file.tty_handle().is_none() {
+    // Its close is told to the watches of its file, which takes locks
+    // and memory: later too.
+    let tells = file.flags.load(Ordering::Relaxed) & OPEN_TOLD != 0 && notify::watched();
+    if file.at.mount.fs.light_drops() && file.tty_handle().is_none() && !tells {
         drop(file);
     } else {
         defer_drop(file);

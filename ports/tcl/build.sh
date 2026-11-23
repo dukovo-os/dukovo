@@ -19,13 +19,19 @@
 # carries and TCL_LIBRARY names. The prefix is given again after the
 # options x86_64-radix-configure passes, as the last of each wins: Tcl's
 # files belong in one folder of the toolchain, not in /system.
+#
+# Because the build machine says Linux, Tcl's notifier looks for epoll and
+# eventfd, which the C library has (ADR 0612, 0613): configure is told
+# there are neither, and the notifier waits with select, until a test
+# runs testfixture over them.
 set -eu
 
 tcl="$TOOLCHAIN/radix-tcl"
 rm -rf "$tcl"
 
 cd "$PORT_BUILD"
-x86_64-radix-configure "$PORT_SRC/unix" --prefix="$tcl" --exec-prefix="$tcl" \
+ac_cv_header_sys_epoll_h=no ac_cv_header_sys_eventfd_h=no \
+	x86_64-radix-configure "$PORT_SRC/unix" --prefix="$tcl" --exec-prefix="$tcl" \
 	--bindir="$tcl/bin" --sbindir="$tcl/bin" --libdir="$tcl/lib" --libexecdir="$tcl/lib" \
 	--datarootdir="$tcl/share" --mandir="$tcl/share/man" --disable-shared --disable-load \
 	--disable-zipfs >configure.log 2>&1 || {

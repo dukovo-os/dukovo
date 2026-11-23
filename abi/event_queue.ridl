@@ -50,6 +50,11 @@ enum QueueFilter: u16 {
     write = 0xfffe;
     /// An event of the program's own (EVFILT_USER, -11).
     user = 0xfff5;
+    /// A descriptor's PollEvents, as Linux's epoll watches them (-32,
+    /// which kqueue does not use). A change's `fflags` holds the events
+    /// asked for; an event's, those found of them, with error and
+    /// hang_up, which are always reported. (Since version 2, ADR 0612.)
+    poll = 0xffe0;
 }
 
 /// What a change does, and what an event says, as kqueue's EV_ flags: a
@@ -57,8 +62,11 @@ enum QueueFilter: u16 {
 flags QueueFlags: u32 {
     /// Adds the watch, or changes the value and user flags of the one
     /// with its `ident` and `filter`, whose `oneshot`, `clear` and
-    /// `dispatch` stay as they were added (EV_ADD). Either way the watch
-    /// is enabled, unless the change also has `disable` and not `enable`.
+    /// `dispatch` stay as they were added (EV_ADD), but for a `poll`
+    /// watch, which every change that names it gives its events,
+    /// `oneshot`, `clear` and `dispatch` anew, as Linux's EPOLL_CTL_MOD.
+    /// Either way the watch is enabled, unless the change also has
+    /// `disable` and not `enable`.
     add = 0;
     /// Deletes the watch (EV_DELETE).
     delete = 1;
@@ -79,6 +87,18 @@ flags QueueFlags: u32 {
     receipt = 6;
     /// Disables the watch once it is reported (EV_DISPATCH).
     dispatch = 7;
+    /// With `add`, of a `poll` watch: when its descriptor changes, the
+    /// change readies only one of the exclusive watches of that
+    /// description, in this queue or another, with the non-exclusive ones,
+    /// as Linux's EPOLLEXCLUSIVE, so that one of many waiting threads is
+    /// woken. Valid only with `add`, and not for a watch the queue holds.
+    /// (Since version 2, ADR 0612.)
+    exclusive = 10;
+    /// With `add`: fails with exists if the queue holds a watch of the
+    /// `ident` and `filter` for the description the descriptor names, as
+    /// Linux's EPOLL_CTL_ADD; one for another description is replaced, as
+    /// without it. (Since version 2, ADR 0612.)
+    create = 11;
     /// In an event: the change failed, with the kernel's status in `data`
     /// (EV_ERROR).
     error = 14;
@@ -113,7 +133,8 @@ struct QueueEvent {
     filter: u16;
     /// QueueFlags.
     flags: u16;
-    /// A user event's flags (see USER_TRIGGER); 0 for the other filters.
+    /// A user event's flags (see USER_TRIGGER); a `poll` watch's
+    /// PollEvents; 0 for the other filters.
     fflags: u32;
     /// In a change of a user event: the value its events report. In an
     /// event: that value for a user event, the status of a change that
@@ -138,7 +159,7 @@ flags QueueWaitFlags: u32 {
 const CHANGES_MAX: u32 = 8192;
 
 /// An event queue.
-interface event_queue = 0x0034 version 1 {
+interface event_queue = 0x0034 version 2 {
     kind = event_queue;
     /// Makes the `count` changes at `changes`, in order, then, if
     /// `capacity` is not 0, waits until a watch is ready, at most
@@ -160,7 +181,9 @@ interface event_queue = 0x0034 version 1 {
     /// of an event queue), empty_slot or no_such_slot (an add for a
     /// descriptor that is not open), not_permitted (an add for a file or
     /// directory, which is always ready), not_found (a watch the queue
-    /// does not hold, other than by add) and no_memory.
+    /// does not hold, other than by add, or a `poll` watch whose
+    /// descriptor names another description now), exists (an add with
+    /// `create` of a watch the queue holds) and no_memory.
     ///
     /// Fails with interrupted if a signal comes while it waits, with
     /// bad_address if `changes` or `events` cannot be read or written,
@@ -170,5 +193,5 @@ interface event_queue = 0x0034 version 1 {
     method wait = 1 (changes: addr, count: u32, events: addr, capacity: u32, base: u32,
                      timeout_ns: u64, mask: u64, flags: QueueWaitFlags) -> (found: u32)
         raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
-                not_permitted, not_found, no_memory, bad_address, interrupted];
+                not_permitted, not_found, exists, no_memory, bad_address, interrupted];
 }

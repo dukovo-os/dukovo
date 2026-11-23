@@ -25,9 +25,10 @@ sed -n "s|^		'include/abi-bits/\(.*\)',$|\1|p" "$PORT_SRC/sysdeps/radix/meson.bu
 	done
 # Headers of the Linux option that other systems have too and that need
 # nothing of Linux's: getrandom's and the device number macros' (patch
-# 0023), and the extended attribute calls' (0050, ADR 0256).
+# 0023), the extended attribute calls' (0050, ADR 0256), inotify's (0120,
+# ADR 0615) and pidfd_open's (0121, ADR 0613).
 mkdir -p "$PORT_SRC/sysdeps/radix/include/sys"
-for header in random.h sysmacros.h xattr.h; do
+for header in inotify.h pidfd.h random.h sysmacros.h xattr.h; do
 	ln -s "../../../../options/linux/include/sys/$header" "$PORT_SRC/sysdeps/radix/include/sys/$header"
 done
 # And malloc.h, of memalign (0035), and ifaddrs.h, of getifaddrs (0054,

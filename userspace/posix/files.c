@@ -1531,6 +1531,14 @@ static void refusals(void) {
 	struct stat st;
 	CHECK(posix_fallocate(fd, 0, 100) == 0 && fstat(fd, &st) == 0 && st.st_size == 100);
 	CHECK(posix_fallocate(fd, 10, 20) == 0 && fstat(fd, &st) == 0 && st.st_size == 100);
+	// truncate cuts a regular file by its name, and nothing else: a
+	// directory is EISDIR and a named pipe EINVAL, as on Linux.
+	CHECK(truncate("/tmp/files-r/f", 1) == 0 && fstat(fd, &st) == 0 && st.st_size == 1);
+	CHECK_ERROR(truncate("/tmp/files-r", 0), EISDIR);
+	CHECK_ERROR(truncate("/tmp/files-r/none", 0), ENOENT);
+	CHECK(mkfifo("/tmp/files-r/fifo", 0644) == 0);
+	CHECK_ERROR(truncate("/tmp/files-r/fifo", 0), EINVAL);
+	CHECK(unlink("/tmp/files-r/fifo") == 0);
 	// More vectors than IOV_MAX, or fewer than none; a sum past
 	// SSIZE_MAX fails rather than overrunning anything.
 	static struct iovec many[IOV_MAX + 1];

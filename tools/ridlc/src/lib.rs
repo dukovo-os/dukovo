@@ -506,6 +506,7 @@ pub const ERRNOS: &[(&str, i32)] = &[
     ("EINPROGRESS", 115),
     ("EUCLEAN", 117),
     ("EDQUOT", 122),
+    ("ECANCELED", 125),
 ];
 
 /// The number of an errno name.

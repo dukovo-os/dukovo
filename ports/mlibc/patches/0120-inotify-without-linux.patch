@@ -1,0 +1,82 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+The inotify calls without the Linux option (ADR 0615): their sysdep tags
+and signatures leave the Linux option's block, so a system layer without
+that option can implement them, and <abi-bits/inotify.h> no longer
+refuses to be included without it. The Radix system layer builds the
+Linux option's inotify_init, inotify_init1, inotify_add_watch and
+inotify_rm_watch (options/linux/generic/sys-inotify.cpp) and installs its
+<sys/inotify.h> (ports/mlibc/build.sh), which need nothing of Linux's and
+nothing under the GPL: both files are mlibc's own, under the MIT license.
+
+diff --git a/abis/linux/inotify.h b/abis/linux/inotify.h
+--- a/abis/linux/inotify.h
++++ b/abis/linux/inotify.h
+@@ -2,10 +2,6 @@
+ #define _ABIBITS_INOTIFY_H
+ 
+ #include <mlibc-config.h>
+-
+-#if !__MLIBC_LINUX_OPTION
+-#  error "<sys/inotify.h> is inherently Linux specific. Enable the Linux option or do not use this header."
+-#endif /* !__MLIBC_LINUX_OPTION */
+ 
+ #include <abi-bits/fcntl.h>
+ 
+diff --git a/options/internal/include/mlibc/sysdep-signatures.hpp b/options/internal/include/mlibc/sysdep-signatures.hpp
+--- a/options/internal/include/mlibc/sysdep-signatures.hpp
++++ b/options/internal/include/mlibc/sysdep-signatures.hpp
+@@ -295,9 +295,6 @@
+ #endif // __MLIBC_POSIX_OPTION
+ 
+ #if __MLIBC_LINUX_OPTION
+-SYSDEP_FUNC(InotifyCreate, int flags, int *fd);
+-SYSDEP_FUNC(InotifyAddWatch, int ifd, const char *path, uint32_t mask, int *wd);
+-SYSDEP_FUNC(InotifyRmWatch, int ifd, int wd);
+ SYSDEP_FUNC(Mount, const char *source, const char *target, const char *fstype, unsigned long flags, const void *data);
+ SYSDEP_FUNC(Umount2, const char *target, int flags);
+ SYSDEP_FUNC(Ptrace, long req, pid_t pid, void *addr, void *data, long *out);
+@@ -348,6 +345,10 @@
+ SYSDEP_FUNC(Lremovexattr, const char *path, const char *name);
+ SYSDEP_FUNC(Fremovexattr, int fd, const char *name);
+ 
++SYSDEP_FUNC(InotifyCreate, int flags, int *fd);
++SYSDEP_FUNC(InotifyAddWatch, int ifd, const char *path, uint32_t mask, int *wd);
++SYSDEP_FUNC(InotifyRmWatch, int ifd, int wd);
++
+ #if __MLIBC_LINUX_EPOLL_OPTION
+ SYSDEP_FUNC(EpollCreate, int flags, int *fd);
+ SYSDEP_FUNC(EpollCtl, int epfd, int mode, int fd, struct epoll_event *ev);
+diff --git a/options/internal/include/mlibc/sysdep-tags.hpp b/options/internal/include/mlibc/sysdep-tags.hpp
+--- a/options/internal/include/mlibc/sysdep-tags.hpp
++++ b/options/internal/include/mlibc/sysdep-tags.hpp
+@@ -632,12 +632,6 @@
+ #include <bits/ssize_t.h>
+ #include <bits/size_t.h>
+ 
+-// int sys_inotify_create(int flags, int *fd);
+-struct InotifyCreate {};
+-// int sys_inotify_add_watch(int ifd, const char *path, uint32_t mask, int *wd);
+-struct InotifyAddWatch {};
+-// int sys_inotify_rm_watch(int ifd, int wd);
+-struct InotifyRmWatch {};
+ // int sys_mount(const char *source, const char *target, const char *fstype, unsigned long flags, const void *data);
+ struct Mount {};
+ // int sys_umount2(const char *target, int flags);
+@@ -740,6 +734,15 @@
+ // int sys_fremovexattr(int fd, const char *name);
+ struct Fremovexattr {};
+ 
++// The inotify calls, which the Radix system layer has without the Linux
++// option.
++// int sys_inotify_create(int flags, int *fd);
++struct InotifyCreate {};
++// int sys_inotify_add_watch(int ifd, const char *path, uint32_t mask, int *wd);
++struct InotifyAddWatch {};
++// int sys_inotify_rm_watch(int ifd, int wd);
++struct InotifyRmWatch {};
++
+ #if __MLIBC_LINUX_EPOLL_OPTION
+ #include <sys/epoll.h>
+ 

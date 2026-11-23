@@ -37,12 +37,16 @@
 //! does not know answers ENOSYS.
 
 mod descriptors;
+mod events;
 mod files;
+mod kernel_files;
 mod memory;
 mod names;
+mod notify;
 mod paths;
 mod poll;
 mod process;
+mod robust;
 mod signals;
 mod sockets;
 mod state;
@@ -57,6 +61,7 @@ use radix_linux::errno::{self, EINTR, ENOSYS, EPERM};
 use radix_linux::nr;
 use radix_mm::{Flags, HEAP, Kmalloc};
 
+pub use robust::ending;
 pub use state::{LinuxProcess, LinuxThread, starting};
 
 use super::methods::{self, Answer};
@@ -161,8 +166,13 @@ pub fn call(me: &ThreadRef, user: &UserRef, regs: &mut SyscallRegs) {
         Err(Error::Errno(errno)) => regs.number = negative(errno),
         Err(Error::Native(status)) if is(status, Kernel::Interrupted) => {
             // Kept with the registers it was made with, which this leaves
-            // as they were, to run again if the signal allows.
-            posix::signal::call_failed(me, user, number, &regs.args, status);
+            // as they were, to run again if the signal allows; a `poll`
+            // keeps its timeout as what is left of it.
+            let mut args = regs.args;
+            if let Some(left) = user.linux.take_poll_left() {
+                args[2] = left;
+            }
+            posix::signal::call_failed(me, user, number, &args, status);
             regs.number = negative(EINTR);
         }
         Err(Error::Native(status)) => regs.number = negative(errno::from_status(status)),
@@ -218,7 +228,7 @@ fn dispatch(me: &ThreadRef, user: &UserRef, regs: &SyscallRegs) -> Result<Done> 
         nr::FCNTL => descriptors::fcntl(me, user, a[0], a[1], a[2])?,
         nr::FLOCK => descriptors::flock(me, user, a[0], a[1])?,
         nr::FSYNC | nr::FDATASYNC => descriptors::fsync(me, user, a[0])?,
-        nr::TRUNCATE => names::truncate(me, user, a[0], a[1])?,
+        nr::TRUNCATE => names::truncate(user, a[0], a[1])?,
         nr::FTRUNCATE => descriptors::ftruncate(me, user, a[0], a[1])?,
         nr::FALLOCATE => descriptors::fallocate(me, user, a[0], a[1], a[2], a[3])?,
         nr::RENAME => names::rename(user, paths::AT_FDCWD, a[0], paths::AT_FDCWD, a[1], 0)?,
@@ -312,6 +322,36 @@ fn dispatch(me: &ThreadRef, user: &UserRef, regs: &SyscallRegs) -> Result<Done> 
         nr::RECVMMSG => sockets::recvmmsg(me, user, a[0], a[1], a[2], a[3], a[4])?,
         nr::PRLIMIT64 => system::prlimit64(me, user, a)?,
         nr::SENDMMSG => sockets::sendmmsg(me, user, a[0], a[1], a[2], a[3])?,
+        nr::PREADV2 => descriptors::preadv2(me, user, a)?,
+        nr::PWRITEV2 => descriptors::pwritev2(me, user, a)?,
+        nr::GETCPU => system::getcpu(a[0], a[1])?,
+        // epoll (ADR 0612).
+        nr::EPOLL_CREATE => events::epoll_create(me, user, a[0])?,
+        nr::EPOLL_CREATE1 => events::epoll_create1(me, user, a[0])?,
+        nr::EPOLL_CTL => events::epoll_ctl(user, a)?,
+        nr::EPOLL_WAIT | nr::EPOLL_PWAIT | nr::EPOLL_PWAIT2 => {
+            events::epoll_wait(user, a, regs.number)?
+        }
+        // Files of the kernel's own (ADR 0613).
+        nr::EVENTFD => kernel_files::eventfd2(me, user, a[0], 0)?,
+        nr::EVENTFD2 => kernel_files::eventfd2(me, user, a[0], a[1])?,
+        nr::TIMERFD_CREATE => kernel_files::timerfd_create(me, user, a[0], a[1])?,
+        nr::TIMERFD_SETTIME => kernel_files::timerfd_settime(me, user, a)?,
+        nr::TIMERFD_GETTIME => kernel_files::timerfd_gettime(me, user, a[0], a[1])?,
+        nr::SIGNALFD => kernel_files::signalfd4(me, user, &[a[0], a[1], a[2], 0, 0, 0])?,
+        nr::SIGNALFD4 => kernel_files::signalfd4(me, user, a)?,
+        nr::PIDFD_OPEN => kernel_files::pidfd_open(me, user, a[0], a[1])?,
+        nr::PIDFD_SEND_SIGNAL => kernel_files::pidfd_send_signal(me, user, a)?,
+        // Taking a descriptor from another process needs ptrace's right, which
+        // no process has (as ptrace is EPERM).
+        nr::PIDFD_GETFD => return fail(EPERM),
+        // Memory files (ADR 0614).
+        nr::MEMFD_CREATE => memory::memfd_create(me, user, a[0], a[1])?,
+        // Watches (ADR 0615).
+        nr::INOTIFY_INIT => notify::inotify_init1(me, user, 0)?,
+        nr::INOTIFY_INIT1 => notify::inotify_init1(me, user, a[0])?,
+        nr::INOTIFY_ADD_WATCH => notify::inotify_add_watch(me, user, a[0], a[1], a[2])?,
+        nr::INOTIFY_RM_WATCH => notify::inotify_rm_watch(me, user, a[0], a[1])?,
         // Processes and threads.
         nr::GETPID => process::getpid(user),
         nr::GETTID => process::gettid(me),
@@ -326,6 +366,7 @@ fn dispatch(me: &ThreadRef, user: &UserRef, regs: &SyscallRegs) -> Result<Done> 
         nr::EXIT_GROUP => return process::exit_group(me, user, a[0]),
         nr::WAIT4 => process::wait4(me, user, a[0], a[1], a[2], a[3])?,
         nr::KILL => process::kill(me, user, a[0], a[1])?,
+        nr::RT_SIGQUEUEINFO => process::rt_sigqueueinfo(me, user, a[0], a[1], a[2])?,
         nr::TGKILL => process::tgkill(me, user, Some(a[0]), a[1], a[2])?,
         nr::TKILL => process::tgkill(me, user, None, a[0], a[1])?,
         nr::ARCH_PRCTL => process::arch_prctl(me, user, a[0], a[1])?,

@@ -737,6 +737,8 @@ fn set_clock(unix_ns: u64, sync: bool) {
         return;
     }
     <Arch as Timer>::set_wall_clock_ns(unix_ns);
+    // Timer files armed with cancel_on_set are cancelled (ADR 0613).
+    crate::fs::timer_file::clock_was_set();
     match before {
         Some(before) => info!(
             "Time: Hyper-V set the clock ({:+} ms)",

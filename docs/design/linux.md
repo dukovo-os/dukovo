@@ -6,10 +6,11 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 # Linux programs: the personality and the Linux table
 
 This note describes how Radix runs static x86-64 Linux programs, as of
-Phase 18's first step: how `exec` picks the personality, the path of a
-Linux call, what the kernel keeps for a Linux program, the locks, and how
-a call is added. The user-facing description is radix-linux(7); the
-decisions are ADRs 0610 and 0611.
+Phase 18's second step: how `exec` picks the personality, the path of a
+Linux call, what the kernel keeps for a Linux program, the files of the
+kernel's own and the vDSO, the locks, and how a call is added. The
+user-facing description is radix-linux(7) and radix-vdso(7); the
+decisions are ADRs 0610 to 0617.
 
 ## Crates and files
 
@@ -19,19 +20,27 @@ kernel/lib/linux            radix-linux: Linux's call numbers and names,
                             other flags, clone's flags (classify), signal
                             numbers and records, struct stat, statx,
                             linux_dirent64, utsname, sockaddr and the other
-                            records (host-tested, no unsafe)
+                            records; epoll, the futex operations and the
+                            robust list's rule, eventfd, timerfd, signalfd
+                            and pidfd (kernel_files), memfd and inotify
+                            (notify) (host-tested, no unsafe)
+kernel/lib/vdso             radix-vdso: the vDSO, a C shared object built
+                            with clang and LLD and checked as it is built
+                            (ADR 0616)
 kernel/lib/elf              Dukovo's note, Abi::of: which personality a
                             program gets
 kernel/radix/src/user/linux the table:
   mod.rs                    call, dispatch, method, results, errors
   state.rs                  LinuxProcess (on, execed, brk), LinuxThread
                             (the thread-number words, the robust list)
+  robust.rs                 the robust list's walk at a thread's end
   paths.rs                  descriptors to slots, paths to Place
   files.rs                  open, read, write, stat, getdents64, cwd
   descriptors.rs            dup, fcntl, pipe, ioctl, vectored I/O, locks
   names.rs                  the path calls: mkdir, unlink, rename, links,
                             modes, owners, times, access
-  memory.rs                 mmap, munmap, mprotect, madvise, brk, mremap
+  memory.rs                 mmap, munmap, mprotect, madvise, brk, mremap,
+                            memfd_create
   process.rs                ids, clone, fork, vfork, execve, exit, wait4,
                             kill, arch_prctl, the thread words, uname
   signals.rs                sigaction, masks, sigreturn, sigaltstack,
@@ -39,6 +48,9 @@ kernel/radix/src/user/linux the table:
   time.rs                   clocks, sleeping, futex, getrandom
   sockets.rs                the socket calls
   poll.rs                   poll, ppoll, select, pselect6
+  events.rs                 epoll on the event queue's poll filter
+  kernel_files.rs           eventfd, timerfd, signalfd, pidfd
+  notify.rs                 inotify
   system.rs                 process groups, sessions, identities, limits,
                             usage, scheduling, prctl, waitid
 tools/xtask/src/personality.rs  ob build's check that every program of
@@ -119,6 +131,27 @@ program for a record of its own.
 - A thread's words: `LinuxThread`. The `CLONE_CHILD_SETTID` word is
   written by the new thread itself in `thread_main` (`linux::starting`).
 
+## Files of the kernel's own and the vDSO
+
+eventfd, timerfd, signalfd, pidfd, inotify's watch files and memory files
+are files: each a node of a filesystem of the kernel's (the pipes' one, or
+a memory filesystem no directory holds), made by a method of the process
+in a slot, and recognised by `FileObject::opened_as`, so `read`, `write`,
+`poll`, the event queue and `close` reach them through the paths every
+file takes (`user/files.rs`'s `Target`, `posix::poll::polled_by` and
+`file_events`). Their own methods are radix-file(2)'s `timer_set`,
+`timer_get`, `set_signal_mask`, `process_of`, `seal`, `watch_add` and
+`watch_remove`. Dukovo's C library makes the same calls, so a fix to one
+reaches both kinds of program.
+
+epoll is the event queue's `poll` filter (ADR 0612): the table makes one
+change of the queue per `epoll_ctl` and waits with `queue::wait_given`,
+writing `struct epoll_event` records into the program's array.
+
+`exec` maps the clock page and the vDSO (`user/vdso.rs`) into every
+program and gives `AT_SYSINFO_EHDR`: glibc, musl and Dukovo's C library
+read the clocks without a call (ADR 0616).
+
 ## Locks
 
 - `LinuxProcess::brk` (a sleeping mutex) is taken before any lock of the
@@ -127,6 +160,12 @@ program for a record of its own.
   which may sleep on the filesystem, as a read holds it.
 - No table function holds a spin lock across a copy to or from the
   program, an allocation, a method call or a wait.
+- The futex calls on two words lock both waiter lists, the one first in
+  the table first (ADR 0617).
+- The timer files' list (`fs::timer_file::ARMED`, a sleeping mutex) is
+  taken before a timer file's state, a spin lock; the watches' table
+  (`fs::notify`) is a spin lock under which nothing is allocated, freed,
+  queued or woken (ADR 0615).
 
 ## Adding a call
 

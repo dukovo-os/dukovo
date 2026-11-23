@@ -173,6 +173,10 @@ errors kernel = 1 {
     /// socket (radix-directory(2)'s `connect_socket` and `send_datagram`).
     /// (Since Phase 16, ADR 0525.)
     wrong_type = 58 => EPROTOTYPE;
+    /// A realtime timer file armed with cancel_on_set was cancelled: the
+    /// wall clock was set (radix-file(2)'s `timer_set`). (Since Phase 18,
+    /// ADR 0613.)
+    cancelled = 59 => ECANCELED;
 }
 
 /// Errors of files and directories (radix-directory(2), radix-file(2)).

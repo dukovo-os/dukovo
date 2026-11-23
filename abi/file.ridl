@@ -118,6 +118,43 @@ enum OwnerKind: u32 {
     group = 2;
 }
 
+/// How `timer_set` arms a timer file. (Since version 14, ADR 0613.)
+flags TimerSetFlags: u32 {
+    /// `value_ns` is a time on the timer's clock, not a time from now
+    /// (Linux's TFD_TIMER_ABSTIME).
+    absolute = 0;
+    /// With absolute, of a realtime timer: a read fails with cancelled,
+    /// once, when the wall clock is set, as Linux's
+    /// TFD_TIMER_CANCEL_ON_SET.
+    cancel_on_set = 1;
+}
+
+/// The seals of a memory file, as Linux's F_SEAL_ bits. (Since version
+/// 14, ADR 0614.)
+flags Seals: u32 {
+    /// No more seals may be added.
+    seal = 0;
+    /// The file may not shrink.
+    shrink = 1;
+    /// The file may not grow.
+    grow = 2;
+    /// The file may not be written, nor mapped shared and writable.
+    write = 3;
+    /// As write, but mappings made before stay writable.
+    future_write = 4;
+    /// The file's mode may not gain or lose execute permission.
+    exec = 5;
+}
+
+/// The most watches one account's watch files may hold, together
+/// (Linux's fs.inotify.max_user_watches is larger; this is per account).
+/// (Since version 14, ADR 0615.)
+const WATCHES_MAX: u32 = 8192;
+/// The most events a watch file holds unread; past it one overflow
+/// event (Linux's IN_Q_OVERFLOW) stands for those lost. (Since version
+/// 14, ADR 0615.)
+const WATCH_QUEUE_MAX: u32 = 16384;
+
 /// An open file description's status flags.
 flags DescriptionFlags: u32 {
     /// Writes at CURRENT go at the end of the file.
@@ -317,13 +354,16 @@ const SOCKET_NAME_MAX: u64 = 107;
 const PIPE_SIZE_MAX: u64 = 1048576;
 
 /// A file.
-interface file = 0x000c version 13 {
+interface file = 0x000c version 14 {
     kind = file;
     /// Reads from byte `offset` into `buffer`; returns how many bytes it
     /// read, fewer than asked at the end of the file. Needs the read right.
+    /// A timer file's read fails with cancelled, once, after the wall clock
+    /// was set under a timer armed with cancel_on_set. (cancelled since
+    /// Phase 18, ADR 0613.)
     method read = 1 (offset: u64, buffer: out bytes) -> (count: u64)
         raises [no_such_slot, empty_slot, missing_rights, invalid_argument, bad_address, no_memory,
-                is_directory, io, corrupt];
+                is_directory, io, corrupt, cancelled];
     /// Writes `data` at byte `offset` (APPEND: at the end), growing the
     /// file if need be; returns how many bytes it wrote. Needs the write
     /// right.
@@ -720,4 +760,62 @@ interface file = 0x000c version 13 {
     /// 0525.)
     method disconnect = 38 () -> ()
         raises [no_such_slot, empty_slot, not_socket, not_supported];
+    /// Arms a timer file (radix-process(2)'s `timer_file`) to expire
+    /// `value_ns` from now (or, with absolute, at `value_ns` on its
+    /// clock: nanoseconds since 1970 for realtime), then every
+    /// `interval_ns` (0: once), as Linux's timerfd_settime(2); `value_ns`
+    /// 0 disarms it. Returns what was left of the old setting and its
+    /// interval, as `timer_get`. Expiries not yet read are forgotten.
+    /// Anything but a timer file fails with invalid_argument. (Since
+    /// version 14, ADR 0613.)
+    method timer_set = 39 (flags: TimerSetFlags, value_ns: u64, interval_ns: u64)
+        -> (value_ns: u64, interval_ns: u64)
+        raises [no_such_slot, empty_slot, invalid_argument];
+    /// How long until a timer file expires (0: disarmed) and its
+    /// interval, as Linux's timerfd_gettime(2). Anything but a timer file
+    /// fails with invalid_argument. (Since version 14, ADR 0613.)
+    method timer_get = 40 () -> (value_ns: u64, interval_ns: u64)
+        raises [no_such_slot, empty_slot, invalid_argument];
+    /// Sets the signals a signal file (radix-process(2)'s `signal_file`)
+    /// reads to `mask`, as Linux's signalfd(2) on a signalfd. Anything
+    /// but a signal file fails with invalid_argument. (Since version 14,
+    /// ADR 0613.)
+    method set_signal_mask = 41 (mask: u64) -> ()
+        raises [no_such_slot, empty_slot, invalid_argument];
+    /// The number of the process a process file (radix-process(2)'s
+    /// `process_file`) is for, and whether it has exited. Anything but a
+    /// process file fails with invalid_argument. (Since version 14, ADR
+    /// 0613.)
+    method process_of = 42 () -> (pid: u64, exited: bool)
+        raises [no_such_slot, empty_slot, invalid_argument];
+    /// Adds the Seals `add` to a memory file (radix-process(2)'s
+    /// `memory_file`), and returns its seals; `add` 0 only reads them, as
+    /// Linux's F_GET_SEALS. Fails with not_permitted if the file is
+    /// sealed with seal, with busy if write is added while the file is
+    /// mapped shared and writable, and with invalid_argument for any other
+    /// file. Needs the write right to add. (Since version 14, ADR 0614.)
+    method seal = 43 (add: Seals) -> (seals: Seals)
+        raises [no_such_slot, empty_slot, missing_rights, invalid_argument, not_permitted,
+                busy];
+    /// Adds to a watch file (radix-process(2)'s `watch_file`) a watch of
+    /// the file or directory at `path` beneath directory `directory`, for
+    /// the events of `events` (Linux's IN_ bits, with its IN_ONLYDIR,
+    /// IN_DONT_FOLLOW, IN_EXCL_UNLINK, IN_MASK_ADD, IN_MASK_CREATE and
+    /// IN_ONESHOT), and returns its number; a file it watches already
+    /// keeps its number and takes the new events, as inotify_add_watch(2).
+    /// The caller must be able to read the file (denied). Fails with
+    /// invalid_argument for `events` with none of the events, or anything
+    /// but a watch file; exists with IN_MASK_CREATE for a file watched
+    /// already; no_room past WATCHES_MAX; and as radix-directory(2)'s
+    /// `open` does for `path`. (Since version 14, ADR 0615.)
+    method watch_add = 44 (directory: slot, path: in bytes, events: u32) -> (watch: u32)
+        raises [no_such_slot, empty_slot, wrong_kind, invalid_argument, bad_address, no_room,
+                no_memory, not_found, exists, not_directory, name_too_long, too_many_links,
+                denied];
+    /// Removes watch `watch` from a watch file, which then reads an
+    /// IN_IGNORED event for it, as inotify_rm_watch(2). Fails with
+    /// invalid_argument for a watch it does not hold, or anything but a
+    /// watch file. (Since version 14, ADR 0615.)
+    method watch_remove = 45 (watch: u32) -> ()
+        raises [no_such_slot, empty_slot, invalid_argument];
 }

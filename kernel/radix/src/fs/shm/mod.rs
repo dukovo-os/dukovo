@@ -22,6 +22,13 @@
 //! memory, as a tmpfs may ([`Room`]), and it may hold a file for every
 //! two pages of memory.
 //!
+//! Memory files (`memfd`, radix-process(2)'s `memory_file`) are files of a
+//! second filesystem of this kind, which no directory of any tree holds
+//! ([`memory_file`]): a program with no `/devices/shm` in its sandbox has
+//! them all the same. A memory file has no name in a directory, goes when
+//! its last description and mapping go, and may be sealed ([`seal`]): its
+//! [`SharedPages`] keep the seals, so that the mapping paths see them.
+//!
 //! The filesystem keeps System V IPC's objects too ([`ipc`]): a C library
 //! names them through the directory capability of `/devices/shm`, so a
 //! sandbox that has no `/devices/shm` has no System V IPC, and the
@@ -33,9 +40,16 @@ pub mod ipc;
 use core::any::Any;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+use radix_abi::Status;
 use radix_abi::address_space::PAGE_SIZE;
+use radix_abi::errors::Kernel;
+use radix_abi::file::Seals;
+use radix_abi::process::MemoryFileFlags;
+use radix_cap::{ObjectKind, Rights, SlotRef};
 use radix_hal::UserMode;
-use radix_sync::Mutex;
+use radix_mm::FRAMES;
+use radix_sync::{Mutex, Once};
+use radix_vfs::mount::{Location, MountRef};
 use radix_vfs::path::check_name;
 use radix_vfs::{
     APPEND, Access, AccessChange, Error, FileSystem, FsInfo, FsKind, In, KArc, KVec, Kind, ListFn,
@@ -44,8 +58,11 @@ use radix_vfs::{
 
 pub use ipc::{Attachment, SegmentRef};
 
+use super::{FileObject, Opened};
 use crate::Arch;
-use crate::user::memory::{Lack, Room, RoomRef, SharedPages, SharedRef, unmap_past, unshare_page};
+use crate::user::memory::{
+    Lack, Room, RoomRef, SharedPages, SharedRef, has_writable_mapping, unmap_past, unshare_page,
+};
 
 /// The mode of the root: everyone makes files, and only a file's owner
 /// removes it.
@@ -56,6 +73,13 @@ const MAX_SIZE: u64 = i64::MAX as u64;
 
 /// The bytes a read or write copies at a time, through the stack.
 const STEP: usize = 256;
+
+/// The longest name `memory_file` takes, as Linux's: its NAME_MAX of 255
+/// less the `memfd:` its path starts with.
+const NAME_MAX: usize = 249;
+
+/// The seals that forbid writing a file.
+const WRITE_SEALS: Seals = Seals::WRITE.union(Seals::FUTURE_WRITE);
 
 /// What every node of one memory filesystem shares.
 struct Shared {
@@ -297,7 +321,7 @@ impl Node for ShmDir {
         }
         check_name(name)?;
         self.shared.count_file()?;
-        let file = match ShmFile::new(&self.shared, access) {
+        let file = match ShmFile::new(&self.shared, access, false) {
             Ok(file) => file,
             Err(err) => {
                 self.shared.files.fetch_sub(1, Ordering::Relaxed);
@@ -423,12 +447,14 @@ pub struct ShmFile {
     resize: Mutex<()>,
     pages: SharedRef,
     shared: KArc<Shared>,
+    /// Whether it is a memory file, the only kind that takes seals.
+    memfd: bool,
     /// Itself, so that `link` can name it again.
     me: radix_sync::Once<alloc::sync::Weak<ShmFile, radix_vfs::mem::Alloc>>,
 }
 
 impl ShmFile {
-    fn new(shared: &KArc<Shared>, access: Access) -> Result<KArc<ShmFile>> {
+    fn new(shared: &KArc<Shared>, access: Access, memfd: bool) -> Result<KArc<ShmFile>> {
         let pages = SharedPages::in_room(shared.room.clone(), 0).map_err(|_| Error::NoMemory)?;
         let created = now();
         let file = mem::arc(ShmFile {
@@ -443,6 +469,7 @@ impl ShmFile {
             resize: Mutex::new(()),
             pages,
             shared: shared.clone(),
+            memfd,
             me: radix_sync::Once::new(),
         })?;
         let _ = file.me.set(KArc::downgrade(&file));
@@ -462,6 +489,60 @@ impl ShmFile {
     fn touched(&self, time: u64) {
         self.modified.store(time, Ordering::Relaxed);
         self.changed.store(time, Ordering::Relaxed);
+    }
+
+    /// Where a write from `offset` to `end` of a file of `size` bytes may
+    /// end, its seals taken into account. Linux checks each page it
+    /// writes: a file sealed with write or future_write takes no write,
+    /// and one sealed with grow takes the pages that end inside it, then
+    /// fails the one that would pass its end.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotPermitted`] if the seals let it write nothing.
+    fn writable_end(&self, offset: u64, end: u64, size: u64) -> Result<u64> {
+        let seals = self.pages.seals();
+        if seals.intersection(WRITE_SEALS) != Seals::NONE {
+            return Err(Error::NotPermitted);
+        }
+        if !seals.contains(Seals::GROW) || end <= size {
+            return Ok(end);
+        }
+        let whole_pages = size / PAGE_SIZE * PAGE_SIZE;
+        if whole_pages <= offset { Err(Error::NotPermitted) } else { Ok(whole_pages) }
+    }
+
+    /// Adds the seals `add` and gives the file's seals; the contract of
+    /// [`seal`].
+    fn add_seals(&self, add: Seals) -> core::result::Result<Seals, Status> {
+        // Held so that no write, resize or other seal runs meanwhile. The
+        // lock order is this one, then the spaces' list and each space's
+        // regions (in `has_writable_mapping`), as in `set_size`.
+        let _resize = self.resize.lock();
+        let seals = self.pages.seals();
+        if add == Seals::NONE {
+            return Ok(seals);
+        }
+        if seals.contains(Seals::SEAL) {
+            return Err(Kernel::NotPermitted.status(0));
+        }
+        if add.contains(Seals::WRITE) && !seals.contains(Seals::WRITE) {
+            // The seal is set before the look for mappings, and taken
+            // back if one is found. A mapping made meanwhile reads the
+            // seal with its space's regions locked and is refused or made
+            // read-only, so none is made between the look and the seal; one
+            // made before is in its space's regions when the look locks
+            // them. A mapping refused for a seal that is taken back is
+            // refused all the same, as when two programs race for it.
+            self.pages.set_seals(seals.union(Seals::WRITE));
+            if has_writable_mapping(&self.pages) {
+                self.pages.set_seals(seals);
+                return Err(Kernel::Busy.status(0));
+            }
+        }
+        let seals = seals.union(add);
+        self.pages.set_seals(seals);
+        Ok(seals)
     }
 }
 
@@ -502,9 +583,15 @@ impl Node for ShmFile {
         *self.access.lock()
     }
 
+    // As Linux's shmem_setattr: a file sealed with exec keeps its execute
+    // bits.
     fn set_access(&self, change: &AccessChange) -> Result<()> {
         let mut access = self.access.lock();
-        *access = change.apply(*access);
+        let changed = change.apply(*access);
+        if self.pages.seals().contains(Seals::EXEC) && (changed.mode ^ access.mode) & 0o111 != 0 {
+            return Err(Error::NotPermitted);
+        }
+        *access = changed;
         self.changed.store(now(), Ordering::Relaxed);
         Ok(())
     }
@@ -545,6 +632,8 @@ impl Node for ShmFile {
         if len == 0 {
             return Ok(0);
         }
+        let end = self.writable_end(offset, end, size)?;
+        let len = end - offset;
         self.pages.grow(pages_for(end));
         let mut done = 0u64;
         let mut failed = None;
@@ -596,6 +685,12 @@ impl Node for ShmFile {
         }
         let _resize = self.resize.lock();
         let old = self.size.load(Ordering::Acquire);
+        let seals = self.pages.seals();
+        if (size < old && seals.contains(Seals::SHRINK))
+            || (size > old && seals.contains(Seals::GROW))
+        {
+            return Err(Error::NotPermitted);
+        }
         if size >= old {
             self.pages.grow(pages_for(size));
             self.size.store(size, Ordering::Release);
@@ -648,4 +743,128 @@ fn copy_in(data: &dyn In, at: usize, phys: u64, len: usize) -> Result<()> {
         done += n;
     }
     Ok(())
+}
+
+/// What the memory files live in: a memory filesystem of its own that no
+/// tree mounts, sized as `/devices/shm`, and the mount their locations
+/// name.
+struct MemoryFiles {
+    fs: KArc<ShmFs>,
+    mount: MountRef,
+}
+
+/// The memory filesystem of memory files, made when first needed.
+fn memory_files() -> Result<&'static MemoryFiles> {
+    static MEMORY_FILES: Once<MemoryFiles> = Once::new();
+    if let Some(memory) = MEMORY_FILES.get() {
+        return Ok(memory);
+    }
+    // As a tmpfs, and as `/devices/shm`: half of memory, and a file for
+    // every two pages.
+    let pages = FRAMES.managed_pages() / 2;
+    let fs = ShmFs::new(pages, pages)?;
+    let mount = radix_vfs::mount::Mount::detached(fs.clone(), "memfd")?;
+    match MEMORY_FILES.set(MemoryFiles { fs, mount }) {
+        Ok(memory) => {
+            // Never unmounted, and every memory file holds it: counted on
+            // each CPU for good, as the pipes' mount is.
+            MountRef::count_on_cpus(&memory.mount);
+            Ok(memory)
+        }
+        // Another thread made it first; this one's is dropped.
+        Err(_) => MEMORY_FILES.get().ok_or(Error::NoMemory),
+    }
+}
+
+/// Makes a memory file for `user`'s process in slot `to` (radix-process(2)'s
+/// `memory_file`): empty, open for reading and writing, in no directory,
+/// with the path `/memfd:NAME (deleted)`. It has the mode 0777 and the
+/// owner and group of the process, or with `no_exec` the mode 0666 and the
+/// seal exec, as Linux's MFD_NOEXEC_SEAL; without `allow_sealing` it
+/// begins sealed with seal.
+///
+/// # Errors
+///
+/// EINVAL's status for a name of more than [`NAME_MAX`] bytes or with a
+/// NUL in it, EFAULT's if it cannot be read, ENOSPC's if the filesystem
+/// holds as many files as it may, and the slot's if the file cannot go
+/// there.
+#[inline(never)]
+pub fn memory_file(
+    user: &crate::user::UserRef,
+    name: radix_abi::UserBuffer,
+    to: u32,
+    flags: MemoryFileFlags,
+) -> core::result::Result<(), Status> {
+    let Some(len) = usize::try_from(name.len).ok().filter(|&len| len <= NAME_MAX) else {
+        return Err(Kernel::InvalidArgument.status(0));
+    };
+    if !radix_ipc::range::user_bytes(name.address, name.len) {
+        return Err(Kernel::BadAddress.status(0));
+    }
+    let mut bytes = [0u8; NAME_MAX];
+    if !Arch::copy_from_user(&mut bytes[..len], name.address) {
+        return Err(Kernel::BadAddress.status(0));
+    }
+    let name = &bytes[..len];
+    if name.contains(&0) {
+        return Err(Kernel::InvalidArgument.status(0));
+    }
+    let memory = memory_files().map_err(super::status)?;
+    let no_exec = flags.contains(MemoryFileFlags::NO_EXEC);
+    let seals = if no_exec {
+        Seals::EXEC
+    } else if flags.contains(MemoryFileFlags::ALLOW_SEALING) {
+        Seals::NONE
+    } else {
+        Seals::SEAL
+    };
+    let identity = user.process.identity();
+    let mode = if no_exec { 0o666 } else { 0o777 };
+    let access = Access { owner: identity.user, group: identity.group, mode };
+    let shared = &memory.fs.root.shared;
+    shared.count_file().map_err(super::status)?;
+    let file = match ShmFile::new(shared, access, true) {
+        Ok(file) => file,
+        Err(err) => {
+            shared.files.fetch_sub(1, Ordering::Relaxed);
+            return Err(super::status(err));
+        }
+    };
+    file.pages.set_seals(seals);
+    // From here, the file uncounts itself when it goes, made or not.
+    let node: NodeRef = file;
+    let mut object = FileObject::new(Location::new(memory.mount.clone(), node), identity)
+        .ok_or(Kernel::NoMemory.status(0))?;
+    // Nothing else refers to the object yet.
+    let Some(made) = alloc::sync::Arc::get_mut(&mut object) else {
+        return Err(Kernel::NoMemory.status(0));
+    };
+    made.opened = Opened::verbatim(&[b"/memfd:", name, b" (deleted)"]);
+    let rights = Rights::COPY.union(Rights::TRANSFER).union(Rights::READ).union(Rights::WRITE);
+    crate::user::files::install_file(
+        user,
+        SlotRef::new(user.process.cspace(), to),
+        ObjectKind::File,
+        rights,
+        object,
+        flags.contains(MemoryFileFlags::CLOSE_ON_EXEC),
+    )
+}
+
+/// Adds the seals `add` to the memory file `node` is, and gives its seals
+/// (radix-file(2)'s `seal`); no `add` only reads them.
+///
+/// Write is added only if no space maps the file shared in a way that
+/// may write (EBUSY's status if one does), and nothing is added once the
+/// file is sealed with seal (EPERM's).
+///
+/// # Errors
+///
+/// EINVAL's status if `node` is no memory file, and those above.
+pub fn seal(node: &NodeRef, add: Seals) -> core::result::Result<Seals, Status> {
+    let file = radix_vfs::downcast::<ShmFile>(&**node)
+        .filter(|file| file.memfd)
+        .ok_or(Kernel::InvalidArgument.status(0))?;
+    file.add_seals(add)
 }

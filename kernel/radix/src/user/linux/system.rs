@@ -21,6 +21,7 @@ use radix_abi::process::{
 };
 use radix_abi::startup::SLOT_PROCESS;
 use radix_cap::Rights;
+use radix_hal::CpuLocal;
 use radix_linux::errno::{EINVAL, EPERM, ESRCH};
 use radix_linux::records::{self, RUSAGE_SIZE, SYSINFO_SIZE, Time};
 use radix_linux::system::{self as lx, Rlimit, Usage};
@@ -28,6 +29,7 @@ use radix_linux::system::{self as lx, Rlimit, Usage};
 use super::files::on_object;
 use super::process::identity;
 use super::{Args, Error, Result, copy_in, copy_out, fail, results};
+use crate::Arch;
 use crate::sched::{self, ThreadRef};
 use crate::user::UserRef;
 use crate::user::posix::exec;
@@ -528,10 +530,30 @@ fn child_flags(wait: &lx::WaitFor) -> ChildWaitFlags {
 /// the record is zeros. A child's user is the caller's, as Radix has no
 /// set-user-ID.
 pub fn waitid(me: &ThreadRef, user: &UserRef, a: &Args) -> Result<u64> {
-    let wait = lx::waitid(a[0] as u32, a[1] as u32, a[3] as u32).map_err(Error::Errno)?;
+    let (idtype, id, options, eagain) = if a[0] as u32 == radix_linux::kernel_files::P_PIDFD {
+        // The options first, as Linux checks them before the descriptor.
+        lx::waitid(lx::P_PID, 1, a[3] as u32).map_err(Error::Errno)?;
+        // The process file's process, which waits like a `P_PID` one, and
+        // not at all for a file that does not wait, which then fails with
+        // EAGAIN where a plain WNOHANG gives an empty record (ADR 0613).
+        let (pid, non_blocking) = super::kernel_files::process_of(me, user, a[1])?;
+        let no_hang = a[3] as u32 & lx::WNOHANG != 0;
+        (
+            lx::P_PID,
+            pid as u32,
+            a[3] as u32 | if non_blocking { lx::WNOHANG } else { 0 },
+            non_blocking && !no_hang,
+        )
+    } else {
+        (a[0] as u32, a[1] as u32, a[3] as u32, false)
+    };
+    let wait = lx::waitid(idtype, id, options).map_err(Error::Errno)?;
     let args = abi::WaitArgs { pid: wait.pid, flags: child_flags(&wait) };
     let found =
         abi::WaitResults::decode(&results(me, user, SLOT_PROCESS, abi::WAIT, args.encode())?)?;
+    if found.pid == 0 && eagain {
+        return fail(radix_linux::errno::EAGAIN);
+    }
     let info = if found.pid == 0 {
         [0u8; lx::SIGINFO_SIZE]
     } else {
@@ -545,6 +567,22 @@ pub fn waitid(me: &ThreadRef, user: &UserRef, a: &Args) -> Result<u64> {
         let mut out = [0u8; RUSAGE_SIZE];
         records::put_rusage(found.user_ns, found.system_ns, 0, &mut out);
         copy_out(a[4], &out)?;
+    }
+    Ok(0)
+}
+
+/// `getcpu(cpu, node, cache)`: the number of the CPU the thread runs on at
+/// `cpu` and the NUMA node, always 0, at `node`, each a 32-bit number a
+/// null pointer leaves out. EFAULT for one that cannot be written, as
+/// Linux's is; the third argument is unused, as it is there. The thread
+/// may move to another CPU before it reads the answer, as on Linux.
+pub fn getcpu(cpu: u64, node: u64) -> Result<u64> {
+    let here = Arch::current_cpu() as u32;
+    if cpu != 0 {
+        copy_out(cpu, &here.to_le_bytes())?;
+    }
+    if node != 0 {
+        copy_out(node, &0u32.to_le_bytes())?;
     }
     Ok(0)
 }

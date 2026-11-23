@@ -220,7 +220,9 @@ pub fn pause(me: &ThreadRef, user: &UserRef) -> Result<u64> {
 /// `signal_wait`, which takes a pending signal of the set without running
 /// its handler; EAGAIN when the time runs out, as Linux gives it. A null
 /// timeout waits for ever. The `siginfo_t` is the signal's, with the
-/// caller's own user, as the signal's sender's is not known.
+/// caller's own user, as the signal's sender's is not known. A signal that
+/// is not in the set ends the wait with EINTR, which is never run again,
+/// as Linux's is, a stop and continue included.
 pub fn rt_sigtimedwait(
     me: &ThreadRef,
     user: &UserRef,
@@ -244,6 +246,7 @@ pub fn rt_sigtimedwait(
     };
     let words = match results(me, user, SLOT_PROCESS, abi::SIGNAL_WAIT, args.encode()) {
         Err(Error::Native(status)) if is(status, Kernel::TimedOut) => return fail(EAGAIN),
+        Err(Error::Native(status)) if is(status, Kernel::Interrupted) => return fail(EINTR),
         done => done?,
     };
     let got = abi::SignalWaitResults::decode(&words)?;

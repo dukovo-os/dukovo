@@ -4,14 +4,21 @@
 # mlibc's system layer for Radix (ADR 0068), built as mlibc's
 # sysdeps/radix: ports/mlibc/build.sh puts it there.
 
-# Not mlibc's Linux interfaces: they need Linux's own headers, which are
-# GPL-2.0 (ADR 0068), and Linux's file descriptor kinds (epoll, timerfd,
-# signalfd, eventfd), which the kernel does not have.
+# Not mlibc's Linux interfaces as a whole: they need Linux's own headers,
+# which are GPL-2.0 (ADR 0068). Its epoll, eventfd, signalfd and timerfd
+# options need none, and the kernel has what they wrap (ADR 0612, 0613).
 sysdep_supported_options = {
 	'posix': true,
 	'linux': false,
+	'linux-epoll': true,
 	'glibc': true,
 	'bsd': true,
+	# The kernel's own files (ADR 0613): eventfd, signalfd and timerfd,
+	# whose generic code only needs the sysdeps of generic/kernel_files.cpp,
+	# without the rest of the Linux option, which needs Linux's headers.
+	'linux-eventfd': true,
+	'linux-signalfd': true,
+	'linux-timerfd': true,
 }
 
 radix_sources = files(
@@ -27,10 +34,13 @@ rtld_dso_sources += radix_sources
 
 libc_sources += radix_sources + files(
 	# The Linux option's getrandom (patch 0023), memalign (0035),
-	# extended attribute calls (0050, ADR 0256) and getifaddrs (0054, ADR
-	# 0336), which need nothing of Linux's.
+	# extended attribute calls (0050, ADR 0256), getifaddrs (0054, ADR
+	# 0336), inotify (0120, ADR 0615), and pidfd_open and the calls with it
+	# (0121, ADR 0613), which need nothing of Linux's.
 	'../../options/linux/generic/ifaddrs.cpp',
 	'../../options/linux/generic/malloc.cpp',
+	'../../options/linux/generic/sys-inotify.cpp',
+	'../../options/linux/generic/sys-pidfd.cpp',
 	'../../options/linux/generic/sys-random.cpp',
 	'../../options/linux/generic/sys-xattr.cpp',
 	'generic/entry.cpp',
@@ -38,10 +48,13 @@ libc_sources += radix_sources + files(
 	'generic/futex.cpp',
 	'generic/interfaces.cpp',
 	'generic/ipc.cpp',
+	'generic/notify.cpp',
 	'generic/poll.cpp',
 	'generic/process.cpp',
 	'generic/socket.cpp',
 	'generic/terminal.cpp',
+	# The sysdeps of eventfd, signalfd, timerfd and pidfd (ADR 0613).
+	'generic/kernel_files.cpp',
 	'x86_64/cancel.S',
 	'x86_64/signal.S',
 	'x86_64/thread-entry.S',
@@ -121,6 +134,8 @@ if not no_headers
 	# Headers of the Linux option that other systems have too: build.sh
 	# links them to it.
 	install_headers(
+		'include/sys/inotify.h',
+		'include/sys/pidfd.h',
 		'include/sys/random.h',
 		'include/sys/sysmacros.h',
 		'include/sys/xattr.h',

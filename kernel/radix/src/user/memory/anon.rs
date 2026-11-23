@@ -53,10 +53,11 @@
 //! swapped-out page stays counted and charged, a fork shares its slot as
 //! it shares a page, and unmapping it frees the slot.
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use radix_abi::address_space::{ANONYMOUS_TOP, PAGE_SIZE, USER_START};
 use radix_abi::errors::Kernel;
+use radix_abi::file::Seals;
 use radix_hal::{PageEdit, Scanned, UserAccess, UserMode};
 use radix_mm::{FRAMES, Flags, Owner};
 use radix_vfs::{NodeRef, Out};
@@ -190,6 +191,11 @@ pub struct SharedPages {
     end: AtomicU64,
     /// How many pages it has made and holds.
     made: AtomicU64,
+    /// A memory file's seals, as [`Seals`] bits (radix-file(2)'s `seal`);
+    /// none for any other pages. A mapping reads them with the space's
+    /// regions locked, and the file changes them with its resize lock held
+    /// ([`crate::fs::shm::seal`]).
+    seals: AtomicU32,
 }
 
 pub type SharedRef = Arc<SharedPages, Kmalloc>;
@@ -214,6 +220,7 @@ impl SharedPages {
             room,
             end: AtomicU64::new(end),
             made: AtomicU64::new(0),
+            seals: AtomicU32::new(0),
         };
         Arc::try_new_in(pages, super::kmalloc()).map_err(|_| error(Kernel::NoMemory))
     }
@@ -226,6 +233,23 @@ impl SharedPages {
     /// How many pages it holds.
     pub fn made(&self) -> u64 {
         self.made.load(Ordering::Relaxed)
+    }
+
+    /// The seals of the memory file whose pages these are.
+    pub fn seals(&self) -> Seals {
+        Seals(self.seals.load(Ordering::Acquire))
+    }
+
+    /// Gives the memory file the seals `seals`, which its caller has
+    /// checked and serialised with the file's other changes.
+    pub fn set_seals(&self, seals: Seals) {
+        self.seals.store(seals.bits(), Ordering::Release);
+    }
+
+    /// Whether a shared mapping of the pages may not be written: the file
+    /// is sealed with write or future_write.
+    fn deny_writing(&self) -> bool {
+        self.seals().intersection(Seals::WRITE.union(Seals::FUTURE_WRITE)) != Seals::NONE
     }
 
     /// The frame of page `index`, zeroed and charged if it is new, counted
@@ -617,7 +641,7 @@ impl SpaceObject {
     pub fn map_anonymous_at(
         &self,
         pages: u64,
-        anon: Anon,
+        mut anon: Anon,
         placement: Placement,
         offset: u64,
     ) -> Result<u64> {
@@ -625,6 +649,19 @@ impl SpaceObject {
             return Err(Kernel::InvalidArgument.status(1));
         }
         let mut regions = self.regions.lock();
+        // Read with the regions locked, so that a seal that forbids writing
+        // either is seen here, or finds this mapping when it looks for
+        // writable ones (`has_writable_mapping`). As on Linux, a
+        // writable shared mapping of such a file is refused, and a
+        // read-only one can never be made writable.
+        if let Some(shared) = &anon.shared
+            && shared.deny_writing()
+        {
+            if anon.access == Some(UserAccess::ReadWrite) {
+                return Err(error(Kernel::NotPermitted));
+            }
+            anon.read_only = true;
+        }
         let range = |start: u64| radix_ipc::range::user_pages(start, pages).map(|end| (start, end));
         let (start, end) = match placement {
             Placement::Fixed(at) | Placement::FixedNoReplace(at) => {
@@ -677,12 +714,17 @@ impl SpaceObject {
         // All of it anonymous, with no gap.
         let mut covered = start;
         let mut read_only = false;
+        let mut sealed = false;
         for region in &regions[first_after(&regions, start)..] {
             let Backing::Anon(anon) = &region.backing else { break };
             if covered >= end || region.start > covered {
                 break;
             }
             read_only |= anon.read_only;
+            // A mapping that is writable already stays so, whatever the
+            // seals the file got after it was made.
+            sealed |= anon.access != Some(UserAccess::ReadWrite)
+                && anon.shared.as_ref().is_some_and(|shared| shared.deny_writing());
             covered = region.end();
         }
         if covered < end {
@@ -692,6 +734,11 @@ impl SpaceObject {
         // so, as Linux's mprotect refuses with EACCES.
         if read_only && access == Some(UserAccess::ReadWrite) {
             return Err(error(Kernel::MissingRights));
+        }
+        // A read-only mapping made before a future_write seal cannot be
+        // made writable after it, which Linux's `mprotect` allows.
+        if sealed && access == Some(UserAccess::ReadWrite) {
+            return Err(error(Kernel::NotPermitted));
         }
         Self::split_at(&mut regions, start)?;
         Self::split_at(&mut regions, end)?;

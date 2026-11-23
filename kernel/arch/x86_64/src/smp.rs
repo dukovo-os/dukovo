@@ -401,6 +401,7 @@ extern "C" fn ap_entry(index: usize) -> ! {
     apic::enable();
     paging::init_cpu();
     fpu::init_cpu();
+    time::set_cpu_number(index);
     microcode::load(false);
     mce::init_cpu();
     let madt = acpi::get().and_then(|acpi| acpi.madt.as_ref());

@@ -543,6 +543,7 @@ limits userspace/programs/systools/src/service.rs userspace/spark/src/supervisor
 limits userspace/spark/tests/services/limits/
 linux-programs kernel/lib/linux/ kernel/radix/src/user/linux/ tools/xtask/src/personality.rs
 linux-programs userspace/linux/ userspace/posix/hello.c userspace/posix/locks.c
+linux-programs userspace/posix/epoll.c kernel/radix/src/user/queue.rs
 linux-programs abi/terminal.ridl kernel/lib/tty/ kernel/radix/src/fs/tty.rs
 live-bios image/grub/live.cfg.in tools/xtask/src/release.rs userspace/programs/system-release/
 live-bios userspace/programs/systools/src/releases.rs
@@ -735,9 +736,10 @@ posix userspace/posix/format.c userspace/posix/hello.c userspace/posix/inet.c us
 posix userspace/posix/library.c userspace/posix/limits.c userspace/posix/locks.c
 posix ports/mlibc/patches/0094-fclose-drops-what-it-could-not-write.patch
 posix userspace/posix/pipe.c userspace/posix/poll.c userspace/posix/programs.h userspace/posix/run.c
-posix userspace/posix/shm.c userspace/posix/signal.c
+posix userspace/posix/shm.c userspace/posix/signal.c userspace/posix/memfd.c
 posix kernel/radix/src/fs/shm/ kernel/radix/src/user/memory/ kernel/radix/src/fs/socket.rs kernel/radix/src/fs/socket/
 posix kernel/radix/src/user/posix/poll.rs kernel/radix/src/user/queue.rs
+posix userspace/posix/epoll.c kernel/lib/linux/src/epoll.rs kernel/radix/src/user/linux/events.rs
 posix ports/mlibc/sysdeps/radix/generic/event.cpp ports/mlibc/sysdeps/radix/generic/socket.cpp
 posix userspace/posix/socket.c userspace/posix/spawn.c userspace/posix/thread.c
 posix userspace/posix/time.c userspace/posix/tty.c userspace/posix/utilities.c

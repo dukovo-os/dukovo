@@ -23,6 +23,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <sys/file.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <sys/statvfs.h>
@@ -309,6 +310,38 @@ int rights_of(int fd, uint64_t *rights) {
 	if(uint64_t status = radix_capability_info(slot, &info); status)
 		return radix::to_errno(status);
 	*rights = info.rights;
+	return 0;
+}
+
+// Linux's seals of a memory file, which are the kernel's bits.
+constexpr unsigned int SEAL_SEAL = 0x1;
+constexpr unsigned int SEALS_ALL = 0x3f;
+// The longest name memfd_create takes, without its NUL.
+constexpr size_t MEMFD_NAME_MAX = 249;
+
+// F_ADD_SEALS of `add` for descriptor `fd`, which gives 0 in `*seals`, or
+// with `adding` false F_GET_SEALS: the seals the memory file has, in
+// `*seals`. As on Linux, in this order for adding: EPERM if the descriptor
+// is not open for writing, EINVAL for a bit that is no seal, EINVAL for any
+// file but a memory file (for reading too), EPERM if the file is sealed
+// with F_SEAL_SEAL (adding none too), and EBUSY for F_SEAL_WRITE with a
+// writable shared mapping.
+int file_seals(int fd, uint32_t slot, bool adding, unsigned int add, int *seals) {
+	if(adding) {
+		uint64_t rights;
+		if(int e = rights_of(fd, &rights); e)
+			return e;
+		if(!(rights & RADIX_RIGHTS_WRITE))
+			return EPERM;
+		if(add & ~SEALS_ALL)
+			return EINVAL;
+	}
+	struct radix_file_seal_results r;
+	if(uint64_t status = radix_file_seal(slot, adding ? add : 0, &r); status)
+		return description_errno(status, EINVAL);
+	if(adding && !add && (r.seals & SEAL_SEAL))
+		return EPERM;
+	*seals = adding ? 0 : static_cast<int>(r.seals);
 	return 0;
 }
 
@@ -925,6 +958,12 @@ int Sysdeps<Fcntl>::operator()(int fd, int request, va_list args, int *result) {
 	case F_OFD_SETLKW:
 		*result = 0;
 		return record_lock(fd, request, va_arg(args, struct flock *));
+	case F_ADD_SEALS:
+	case F_GET_SEALS: {
+		bool adding = request == F_ADD_SEALS;
+		unsigned int add = adding ? va_arg(args, unsigned int) : 0;
+		return file_seals(fd, slot, adding, add, result);
+	}
 	case F_GETPIPE_SZ:
 	case F_SETPIPE_SZ: {
 		// Linux reads the size as unsigned, so that a negative one is a size
@@ -1110,15 +1149,17 @@ int Sysdeps<Renameat>::operator()(int olddirfd, const char *old_path, int newdir
 	});
 }
 
+// The directory's set_size, which opens nothing, so that watches hear of
+// the change alone, as on Linux (ADR 0615).
 int Sysdeps<Truncate>::operator()(const char *path, off_t length) {
 	if(length < 0)
 		return EINVAL;
-	int fd;
-	if(int e = sysdep<Open>(path, O_WRONLY | O_CLOEXEC, 0, &fd); e)
-		return e;
-	int e = sysdep<Ftruncate>(fd, length);
-	sysdep<Close>(fd);
-	return e;
+	return radix::at(AT_FDCWD, path, [&](const radix::Path &resolved) {
+		if(int from = named_fd(resolved); from >= 0)
+			return sysdep<Ftruncate>(from, static_cast<size_t>(length));
+		return radix::to_errno(radix_directory_set_size(resolved.dir, resolved.text,
+				resolved.len, static_cast<uint64_t>(length)));
+	});
 }
 
 // As on Linux, a negative length, a descriptor not open for writing and
@@ -1501,6 +1542,51 @@ int Sysdeps<Pipe>::operator()(int *fds, int flags) {
 		write_end.keep();
 		fds[0] = static_cast<int>(read_slot - radix::FD_BASE);
 		fds[1] = static_cast<int>(write_slot - radix::FD_BASE);
+		return 0;
+	}
+}
+
+// A memory file in the lowest free descriptor (radix-process(2)'s
+// `memory_file`). As on Linux, in this order: EINVAL for a flag it does
+// not know (MFD_HUGETLB among them) or MFD_EXEC with MFD_NOEXEC_SEAL,
+// EFAULT for no name, EINVAL for a name of more than 249 bytes.
+int Sysdeps<MemfdCreate>::operator()(const char *name, int flags, int *fd) {
+	unsigned int known = MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL | MFD_EXEC;
+	unsigned int asked = static_cast<unsigned int>(flags);
+	if((asked & ~known) || ((asked & MFD_EXEC) && (asked & MFD_NOEXEC_SEAL)))
+		return EINVAL;
+	if(!name)
+		return EFAULT;
+	// The name's length, counted only as far as one byte too many. (The
+	// dynamic linker, which has this code too, has no strnlen.)
+	size_t len = 0;
+	while(len <= MEMFD_NAME_MAX && name[len])
+		len++;
+	if(len > MEMFD_NAME_MAX)
+		return EINVAL;
+	uint32_t memory_flags = 0;
+	if(asked & MFD_CLOEXEC)
+		memory_flags |= RADIX_MEMORY_FILE_FLAGS_CLOSE_ON_EXEC;
+	if(asked & MFD_ALLOW_SEALING)
+		memory_flags |= RADIX_MEMORY_FILE_FLAGS_ALLOW_SEALING;
+	if(asked & MFD_NOEXEC_SEAL)
+		memory_flags |= RADIX_MEMORY_FILE_FLAGS_NO_EXEC;
+	for(;;) {
+		radix::SlotClaim claim;
+		if(int e = radix::free_slot(0, &claim); e)
+			return e;
+		uint32_t slot = claim.slot();
+		uint64_t status = radix_process_memory_file(radix::SLOT_PROCESS, name, len, slot,
+				memory_flags);
+		// Something else filled it first: that one stays taken.
+		if(is(status, RADIX_KERNEL_OCCUPIED)) {
+			claim.keep_if_full();
+			continue;
+		}
+		if(status)
+			return radix::to_errno(status);
+		claim.keep();
+		*fd = static_cast<int>(slot - radix::FD_BASE);
 		return 0;
 	}
 }

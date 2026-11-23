@@ -45,8 +45,9 @@ and auxiliary vector on the stack, with no start-up page. The auxiliary
 vector gives the process's user and group numbers (*AT_UID*, *AT_EUID*,
 *AT_GID*, *AT_EGID*), the processor's features as Linux gives them
 (*AT_HWCAP*, CPUID leaf 1's EDX; *AT_HWCAP2* 0), the largest signal frame
-(*AT_MINSIGSTKSZ*), *AT_SECURE* 0, 16 random bytes, the page size and the
-path the program was run by.
+(*AT_MINSIGSTKSZ*), *AT_SECURE* 0, 16 random bytes, the page size, the
+path the program was run by, and the vDSO's address (*AT_SYSINFO_EHDR*,
+*radix-vdso*(7)).
 
 *uname* says *Linux*, release *6.1.0-dukovo*, version *#1 SMP Dukovo*
 with Dukovo's version, machine *x86_64*, and the machine's name as
@@ -63,8 +64,9 @@ as Linux's would, *SA_RESTART* included.
 
 The table has Linux's calls for files and descriptors, paths and
 directories, processes and threads, memory, signals and interval timers,
-futexes, clocks and sleeping, sockets, *poll* and *select*, identities, limits and
-scheduling, and *getrandom*. A number it does not know is ENOSYS, as on
+futexes, clocks and sleeping, sockets, *poll*, *select* and *epoll*, the
+kernel's own files, file watches, identities, limits and scheduling, and
+*getrandom*. A number it does not know is ENOSYS, as on
 a Linux too old for the call.
 
 Some calls are refused for good, as Linux refuses a program without the
@@ -99,7 +101,8 @@ and asking for both is EACCES. *madvise* with *MADV_DONTNEED* or
 *MADV_FREE* lets go of private anonymous pages, which read as zeros when
 touched again (*radix-address-space*(2)'s *forget*). *mremap* shrinks a
 mapping; growing or moving one is ENOMEM, and the C libraries' *realloc*
-copies instead.
+copies instead. *memfd_create* makes a file in memory that no directory
+holds, which *fcntl*'s *F_ADD_SEALS* seals (ADR 0614).
 
 # PROCESSES AND THREADS
 
@@ -109,6 +112,14 @@ the file system's state and signal handlers, and a process when it shares
 none of them; *CLONE_SETTLS* and the three thread-number words work as on
 Linux. *vfork* gives the child a copy of the memory, and the parent waits
 until the child has run *exec* or begun to end.
+
+*futex* waits and wakes with bit sets and absolute deadlines on the
+monotonic or the real-time clock, and requeues (*FUTEX_CMP_REQUEUE*) and
+wake-ops (*FUTEX_WAKE_OP*) as Linux does; the priority inheritance
+operations are ENOSYS. When a thread ends or runs *exec*, the kernel walks
+the robust list *set_robust_list* named and marks each lock the thread
+held *FUTEX_OWNER_DIED*, waking a waiter, so the next locker of a robust
+mutex gets EOWNERDEAD (ADR 0617).
 
 # SIGNALS
 
@@ -137,6 +148,27 @@ and *SO_PEERCRED* is the peer's.
 *poll* and *select* wait in the native *poll*; *ppoll* and *pselect6*
 take a signal mask for the wait.
 
+An epoll descriptor is an event queue (*radix-event-queue*(2)), and each
+registration its *poll* watch of a descriptor: *EPOLLET*, *EPOLLONESHOT*
+and *EPOLLEXCLUSIVE* are the watch's options, and *EPOLLWAKEUP* is
+dropped, as for a program without *CAP_BLOCK_SUSPEND*. An epoll
+descriptor cannot watch another (EINVAL), nor a file or directory
+(EPERM). A signal ends *epoll_wait* with EINTR (ADR 0612).
+
+# THE KERNEL'S OWN FILES AND WATCHES
+
+*eventfd2*, *timerfd_create*, *signalfd4* and *pidfd_open* (and
+*clone*'s *CLONE_PIDFD*) give files of the kernel's own, which *read*,
+*write*, *poll*, *epoll* and *close* take as any file (ADR 0613). A timer
+file runs on *CLOCK_REALTIME*, *CLOCK_MONOTONIC* or *CLOCK_BOOTTIME*; the
+alarm clocks are EPERM, as for a program without *CAP_WAKE_ALARM*.
+*pidfd_send_signal* and *waitid*'s *P_PIDFD* name a process by its file,
+and *pidfd_send_signal* and *rt_sigqueueinfo* queue a record's value as
+*sigqueue* does, with the caller as its sender;
+*pidfd_getfd* is EPERM, as *ptrace* is. *inotify_init1*,
+*inotify_add_watch* and *inotify_rm_watch* watch files and directories
+(ADR 0615); a watch is of the file, not its path, as on Linux.
+
 A terminal's *ioctl* requests have Linux's numbers and go to the
 terminal's native *control*. *TCGETS* and the *TCSETS* calls move the
 first 36 bytes of the native settings, which are Linux's *struct
@@ -145,12 +177,12 @@ termios*; the speeds follow *c_cflag*'s baud bits.
 # NOT YET
 
 Later steps of Phase 18 bring dynamically linked Linux programs and the
-Linux view of the file tree (_/proc_, _/sys_, _/dev_), *epoll*, *eventfd*,
-*timerfd*, *signalfd*, *memfd*, *pidfd* and the vDSO, seccomp and
+Linux view of the file tree (_/proc_, _/sys_, _/dev_), seccomp and
 namespaces. Until then those calls are ENOSYS or EPERM, as above. The
 other gaps are rows of _docs/deferred.md_.
 
 # SEE ALSO
 
 *radix-posix*(7), *radix-processes*(7), *radix-files*(7),
-*radix-address-space*(2), *radix-process*(2), *ob*(1)
+*radix-vdso*(7), *radix-address-space*(2), *radix-event-queue*(2),
+*radix-file*(2), *radix-process*(2), *ob*(1)

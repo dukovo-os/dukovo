@@ -60,6 +60,7 @@ static const struct test TESTS[] = {
 		{"inet", NULL, NULL},
 		{"poll", NULL, NULL},
 		{"events", NULL, NULL},
+		{"epoll", NULL, NULL},
 		{"tty", NULL, NULL},
 		{"job", NULL, NULL},
 		{"time", NULL, NULL},
@@ -83,6 +84,12 @@ static const struct test TESTS[] = {
 		{"libc", NULL, LIBC},
 		{"libc-test", NULL, LIBC_TEST},
 		{"lua", "/system/tests/lua/testes", LUA},
+		// Memory files and their seals (ADR 0614).
+		{"memfd", NULL, NULL},
+		// inotify's watch files (ADR 0615).
+		{"inotify", NULL, NULL},
+		// The kernel's own files: eventfd, timerfd, signalfd and pidfd (ADR 0613).
+		{"kernelfiles", NULL, NULL},
 };
 
 enum { COUNT = sizeof(TESTS) / sizeof(TESTS[0]) };

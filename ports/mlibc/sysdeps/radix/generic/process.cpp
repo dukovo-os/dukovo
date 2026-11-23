@@ -235,7 +235,29 @@ int Sysdeps<Waitpid>::operator()(pid_t pid, int *status, int flags, struct rusag
 
 int Sysdeps<Waitid>::operator()(idtype_t idtype, id_t id, siginfo_t *info, int options) {
 	pid_t pid;
+	// A non-blocking process file that waits for no child fails with EAGAIN,
+	// unless WNOHANG was asked for too.
+	bool pidfd_eagain = false;
 	switch(idtype) {
+	case P_PIDFD: {
+		// The process the process file is of (ADR 0613); a file that does
+		// not wait does not wait here, as on Linux.
+		uint32_t slot = radix::slot_of(static_cast<int>(id));
+		if(slot == radix::NO_SLOT)
+			return EBADF;
+		struct radix_file_process_of_results of;
+		if(uint64_t status = radix_file_process_of(slot, &of); status)
+			return radix::to_errno(status) == EINVAL ? EBADF : radix::to_errno(status);
+		struct radix_file_status_flags_results flags;
+		if(uint64_t status = radix_file_status_flags(slot, false, 0, &flags); status)
+			return radix::to_errno(status);
+		if(flags.flags & RADIX_DESCRIPTION_FLAGS_NON_BLOCKING) {
+			pidfd_eagain = !(options & WNOHANG);
+			options |= WNOHANG;
+		}
+		pid = static_cast<pid_t>(of.pid);
+		break;
+	}
 	case P_ALL:
 		pid = -1;
 		break;
@@ -271,7 +293,7 @@ int Sysdeps<Waitid>::operator()(idtype_t idtype, id_t id, siginfo_t *info, int o
 		return radix::to_errno(result);
 	memset(info, 0, sizeof(*info));
 	if(!r.pid)
-		return 0;
+		return pidfd_eagain ? EAGAIN : 0;
 	int status = static_cast<int>(r.status);
 	info->si_signo = SIGCHLD;
 	info->si_pid = static_cast<pid_t>(r.pid);

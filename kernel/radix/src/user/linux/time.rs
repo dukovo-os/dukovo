@@ -14,12 +14,11 @@
 //! native one's ends it: the call runs again if no handler ran, and fails
 //! with EINTR if one did.
 //!
-//! The futex is the native one (radix-address-space(2)'s `futex_wait` and
-//! `futex_wake`), whose waiters any wake of the word wakes: the bit set
-//! commands are answered for the bit set that matches all, which is the
-//! one the C libraries use, and FUTEX_REQUEUE and FUTEX_CMP_REQUEUE wake
-//! the waiters they would move, which then find the word changed and wait
-//! again where they meant to. The other commands are ENOSYS.
+//! The futex is the native one (radix-address-space(2)'s `futex_wait_set`,
+//! `futex_wake_set`, `futex_requeue` and `futex_wake_op`, ADR 0617), on
+//! the thread's own space: the waits and wakes with bit sets, the
+//! requeues and the wake with an operation are Linux's. The commands of
+//! priority inheritance are ENOSYS.
 
 use radix_abi::errors::Kernel;
 use radix_abi::process::{self as abi, ClockKind, TimerKind};
@@ -28,7 +27,7 @@ use radix_abi::startup::{SLOT_PROCESS, SLOT_RANDOM};
 use radix_abi::{Status, UserBuffer};
 use radix_hal::Timer;
 use radix_linux::errno::{EAGAIN, EFAULT, EINVAL, ENOSYS, EOPNOTSUPP};
-use radix_linux::futex::{self, Command, FUTEX_BITSET_MATCH_ANY};
+use radix_linux::futex::{self, Command, FUTEX_BITSET_MATCH_ANY, WakeOp};
 use radix_linux::records::{self, ITIMERVAL_SIZE, TIMESPEC_SIZE, Time};
 
 use super::{Args, Error, Result, copy_in, copy_out, fail, is, results};
@@ -232,13 +231,20 @@ pub fn alarm(me: &ThreadRef, user: &UserRef, seconds: u64) -> Result<u64> {
     Ok(u64::from(records::alarm_left(left)))
 }
 
-/// FUTEX_REQUEUE and FUTEX_CMP_REQUEUE.
-const FUTEX_REQUEUE: u32 = 3;
-const FUTEX_CMP_REQUEUE: u32 = 4;
-
 /// `futex(uaddr, op, val, timeout or val2, uaddr2, val3)`.
+///
+/// FUTEX_WAIT and FUTEX_WAKE wait and wake with every bit,
+/// FUTEX_WAIT_BITSET and FUTEX_WAKE_BITSET with the bit set `val3` (0 is
+/// EINVAL). FUTEX_REQUEUE and FUTEX_CMP_REQUEUE take `val` and `val2` as
+/// Linux `int`s, a negative one EINVAL, and return how many they woke and
+/// moved together; FUTEX_CMP_REQUEUE gives EAGAIN if the word does not
+/// hold `val3`. FUTEX_WAKE_OP gives ENOSYS for an operation or comparison
+/// Linux does not know, EFAULT if the second word cannot be written, and
+/// wakes at least one waiter of each word it wakes, as Linux's loops do.
+/// A word out of line with 4 bytes is EINVAL. The commands of priority
+/// inheritance are ENOSYS (docs/deferred.md).
 pub fn futex(user: &UserRef, a: &Args) -> Result<u64> {
-    let [address, op, val, timeout, _, val3] = *a;
+    let [address, op, val, timeout, second, val3] = *a;
     let op = futex::op(op as u32);
     // FUTEX_CLOCK_REALTIME means nothing to a relative FUTEX_WAIT, which
     // Linux takes it with since 4.5, and is ENOSYS with the others.
@@ -247,8 +253,7 @@ pub fn futex(user: &UserRef, a: &Args) -> Result<u64> {
     }
     let bitset = || match val3 as u32 {
         0 => fail(EINVAL),
-        FUTEX_BITSET_MATCH_ANY => Ok(()),
-        _ => fail(ENOSYS),
+        bits => Ok(bits),
     };
     match op.command {
         Command::Wait => {
@@ -257,50 +262,61 @@ pub fn futex(user: &UserRef, a: &Args) -> Result<u64> {
             } else {
                 Some(sched::now_ns().saturating_add(read_time(timeout)?.as_ns()))
             };
-            futex_wait(user, address, val as u32, deadline)
+            futex_wait(user, address, val as u32, FUTEX_BITSET_MATCH_ANY, deadline)
         }
         Command::WaitBitset => {
-            bitset()?;
+            let bits = bitset()?;
             let clock = if op.realtime { ClockKind::Realtime } else { ClockKind::Monotonic };
             let deadline =
                 if timeout == 0 { None } else { Some(deadline_of(clock, read_time(timeout)?)) };
-            futex_wait(user, address, val as u32, deadline)
+            futex_wait(user, address, val as u32, bits, deadline)
         }
-        Command::Wake => futex_wake(user, address, val),
-        Command::WakeBitset => {
-            bitset()?;
-            futex_wake(user, address, val)
+        Command::Wake => futex_wake(user, address, val, FUTEX_BITSET_MATCH_ANY),
+        Command::WakeBitset => futex_wake(user, address, val, bitset()?),
+        Command::Requeue | Command::CmpRequeue => {
+            let (Ok(count), Ok(moved)) = (u32::try_from(val as i32), u32::try_from(timeout as i32))
+            else {
+                return fail(EINVAL);
+            };
+            let expected = (op.command == Command::CmpRequeue).then_some(val3 as u32);
+            let (woken, moved) =
+                native::requeue(&user.space, address, count, second, moved, expected)
+                    .map_err(futex_error)?;
+            Ok(u64::from(woken) + u64::from(moved))
         }
-        Command::Other(FUTEX_CMP_REQUEUE) => {
-            let mut word = [0u8; 4];
-            copy_in(address, &mut word)?;
-            if u32::from_le_bytes(word) != val3 as u32 {
-                return fail(EAGAIN);
+        Command::WakeOp => {
+            if !address.is_multiple_of(4) || !second.is_multiple_of(4) {
+                return fail(EINVAL);
             }
-            futex_wake(
-                user,
-                address,
-                saturating_count(val).saturating_add(saturating_count(timeout)),
-            )
+            let operation = WakeOp::decode(val3 as u32).ok_or(Error::Errno(ENOSYS))?;
+            let (count, count_to) = (at_least_one(val), at_least_one(timeout));
+            native::wake_op(&user.space, address, count, second, count_to, operation)
+                .map(u64::from)
+                .map_err(futex_error)
         }
-        Command::Other(FUTEX_REQUEUE) => futex_wake(
-            user,
-            address,
-            saturating_count(val).saturating_add(saturating_count(timeout)),
-        ),
         Command::Other(_) => fail(ENOSYS),
     }
 }
 
-/// A count argument, a Linux `int`: 0 for a negative one.
-fn saturating_count(count: u64) -> u64 {
-    u64::try_from(count as i32).unwrap_or(0)
+/// A count of waiters to wake, a Linux `int`: at least one, as Linux's
+/// loops wake one before they count, and a negative one is one.
+fn at_least_one(count: u64) -> u32 {
+    u32::try_from(count as i32).unwrap_or(0).max(1)
 }
 
-/// Waits while the word at `address` holds `expected`, until a wake,
-/// `deadline` on the kernel's clock, or a signal.
-fn futex_wait(user: &UserRef, address: u64, expected: u32, deadline: Option<u64>) -> Result<u64> {
-    native::wait(&user.space, address, expected, deadline, user).map(|()| 0).map_err(futex_error)
+/// Waits while the word at `address` holds `expected`, until a wake whose
+/// bit set shares a bit with `bits`, `deadline` on the kernel's clock, or
+/// a signal.
+fn futex_wait(
+    user: &UserRef,
+    address: u64,
+    expected: u32,
+    bits: u32,
+    deadline: Option<u64>,
+) -> Result<u64> {
+    native::wait(&user.space, address, expected, bits, deadline, user)
+        .map(|()| 0)
+        .map_err(futex_error)
 }
 
 /// The error of a futex call, as Linux gives it.
@@ -314,12 +330,13 @@ fn futex_error(status: Status) -> Error {
     }
 }
 
-/// Wakes up to `count` waiters on the word at `address` (a Linux `int`:
-/// at least one, as Linux's loop wakes one before it counts), and returns
-/// how many it woke.
-fn futex_wake(user: &UserRef, address: u64, count: u64) -> Result<u64> {
-    let count = u32::try_from(count as i32).unwrap_or(0).max(1);
-    native::wake(&user.space, address, count).map(u64::from).map_err(futex_error)
+/// Wakes up to `count` waiters on the word at `address` whose bit sets
+/// share a bit with `bits` ([`at_least_one`]), and returns how many it
+/// woke.
+fn futex_wake(user: &UserRef, address: u64, count: u64, bits: u32) -> Result<u64> {
+    native::wake(&user.space, address, at_least_one(count), bits)
+        .map(u64::from)
+        .map_err(futex_error)
 }
 
 /// `getrandom`'s flags: GRND_NONBLOCK, GRND_RANDOM and GRND_INSECURE.

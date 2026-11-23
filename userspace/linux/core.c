@@ -5,8 +5,11 @@
 // calls themselves: threads from the C library and from a raw clone, the
 // process calls, the working directory, the memory calls, directories and
 // file status, signals that interrupt a blocked read, interval timers,
-// futexes with absolute timeouts, what an unprivileged program may not do,
-// the descriptor and identity rules, and a pseudo-terminal's settings.
+// futexes with absolute timeouts, bit sets, requeues and wake-ops, robust
+// futex lists, what an unprivileged program may not do, the descriptor and
+// identity rules, a pseudo-terminal's settings, waits on thousands of
+// descriptors, vectored reads and writes, a descriptor's owner, getcpu,
+// and the vDSO.
 // Where a C library would hide a call's own rules (the raw clone, brk,
 // getcwd, getdents64, statx, futex, the interval timers), the program
 // makes the call itself, so that it is the system's answer that is checked.
@@ -35,13 +38,16 @@
 
 #include <errno.h>
 #include <dirent.h>
+#include <elf.h>
 #include <fcntl.h>
 #include <ftw.h>
 #include <limits.h>
+#include <poll.h>
 #include <pthread.h>
 #include <sched.h>
 #include <setjmp.h>
 #include <signal.h>
+#include <stddef.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -50,11 +56,14 @@
 #include <sys/auxv.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
+#include <sys/select.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -64,11 +73,26 @@
 // The kernel's own numbers for the futex operations, which the C libraries'
 // headers do not all carry (musl's has no linux/futex.h at all).
 #define FUTEX_WAIT 0
+#define FUTEX_WAKE 1
+#define FUTEX_REQUEUE 3
+#define FUTEX_CMP_REQUEUE 4
+#define FUTEX_WAKE_OP 5
 #define FUTEX_WAIT_BITSET 9
 #define FUTEX_WAKE_BITSET 10
 #define FUTEX_PRIVATE_FLAG 128
 #define FUTEX_CLOCK_REALTIME 256
 #define FUTEX_BITSET_MATCH_ANY 0xffffffffU
+#define FUTEX_OP_SET 0
+#define FUTEX_OP_ADD 1
+#define FUTEX_OP_OR 2
+#define FUTEX_OP_OPARG_SHIFT 8
+#define FUTEX_OP_CMP_EQ 0
+#define FUTEX_OP_CMP_GT 4
+#define FUTEX_OP(op, oparg, cmp, cmparg) \
+	((((unsigned)(op) & 0xf) << 28) | (((unsigned)(cmp) & 0xf) << 24) | \
+			(((unsigned)(oparg) & 0xfff) << 12) | ((unsigned)(cmparg) & 0xfff))
+#define FUTEX_WAITERS 0x80000000U
+#define FUTEX_OWNER_DIED 0x40000000U
 
 // The kernel's statx record, as linux/stat.h has it: the C libraries' own
 // headers have it only in newer releases, and the call's layout is what the
@@ -1309,6 +1333,250 @@ static void futex_bitset(void) {
 	CHECK(waiter.result == 0);
 }
 
+// A futex call with a second word and a second count, made without the C
+// library: the count goes where the timeout would.
+static long futex_two(int *word, int operation, int count, long count2, int *second,
+		unsigned value) {
+	return syscall(SYS_futex, word, operation | FUTEX_PRIVATE_FLAG, count, (void *)count2, second,
+			value);
+}
+
+// How many threads wait on a futex word, with FUTEX_PRIVATE_FLAG or not as
+// `private` says: a requeue of the word to itself that wakes none leaves
+// them all where they are, and counts them.
+static long futex_waiters_as(int *word, int private) {
+	return syscall(SYS_futex, word, FUTEX_REQUEUE | private, 0, (void *)(long)INT_MAX, word, 0);
+}
+
+static long futex_waiters(int *word) {
+	return futex_waiters_as(word, FUTEX_PRIVATE_FLAG);
+}
+
+// Waits until `count` threads wait on `word`, for up to three seconds;
+// whether they do.
+static int until_waiting_as(int *word, long count, int private) {
+	for(int tries = 0; tries < 3000; tries++) {
+		if(futex_waiters_as(word, private) == count)
+			return 1;
+		sleep_ms(1);
+	}
+	return 0;
+}
+
+static int until_waiting(int *word, long count) {
+	return until_waiting_as(word, count, FUTEX_PRIVATE_FLAG);
+}
+
+// A thread that waits on a futex word that holds `expected`, with the bit
+// set `bits`, for up to ten seconds, and keeps what the call answered: as
+// a private futex, or as a shared one if `private` is 0.
+struct sleeper {
+	int *word;
+	int expected;
+	unsigned bits;
+	int private;
+	pthread_t thread;
+	atomic_int done;
+	long result;
+	int error;
+};
+
+static void *sleep_on(void *argument) {
+	struct sleeper *sleeper = argument;
+	struct timespec limit = timespec_of(now_ns(CLOCK_MONOTONIC) + 10000000000LL);
+	sleeper->result = futex_call(sleeper->word, FUTEX_WAIT_BITSET | sleeper->private,
+			sleeper->expected, &limit, sleeper->bits);
+	sleeper->error = errno;
+	atomic_store(&sleeper->done, 1);
+	return NULL;
+}
+
+// Starts `sleeper` waiting on `word` while it holds `expected`, with
+// FUTEX_PRIVATE_FLAG or not as `private` says.
+static void start_sleeper_as(struct sleeper *sleeper, int *word, int expected, unsigned bits,
+		int private) {
+	sleeper->word = word;
+	sleeper->expected = expected;
+	sleeper->bits = bits;
+	sleeper->private = private;
+	sleeper->result = -2;
+	sleeper->error = 0;
+	atomic_store(&sleeper->done, 0);
+	CHECK(pthread_create(&sleeper->thread, NULL, sleep_on, sleeper) == 0);
+}
+
+// Starts `sleeper` waiting on `word` as a private futex.
+static void start_sleeper(struct sleeper *sleeper, int *word, int expected, unsigned bits) {
+	start_sleeper_as(sleeper, word, expected, bits, FUTEX_PRIVATE_FLAG);
+}
+
+// Joins `sleeper`, and checks that a wake, not its time or an error, ended
+// its wait.
+static void check_woken(struct sleeper *sleeper) {
+	CHECK(pthread_join(sleeper->thread, NULL) == 0);
+	CHECK(sleeper->result == 0);
+}
+
+// Bit sets: a wake wakes only the waiters whose bit sets share a bit with
+// its own, and a set of no bits is EINVAL for a wait and a wake.
+static void futex_sets(void) {
+	static int word;
+	word = 0;
+	CHECK_ERROR(futex_call(&word, FUTEX_WAIT_BITSET | FUTEX_PRIVATE_FLAG, 0, NULL, 0), EINVAL);
+	CHECK_ERROR(futex_call(&word, FUTEX_WAKE_BITSET | FUTEX_PRIVATE_FLAG, 1, NULL, 0), EINVAL);
+	static struct sleeper one, two;
+	start_sleeper(&one, &word, 0, 1);
+	start_sleeper(&two, &word, 0, 2 | 4);
+	CHECK(until_waiting(&word, 2));
+	CHECK(futex_call(&word, FUTEX_WAKE_BITSET | FUTEX_PRIVATE_FLAG, INT_MAX, NULL, 8) == 0);
+	CHECK(futex_call(&word, FUTEX_WAKE_BITSET | FUTEX_PRIVATE_FLAG, INT_MAX, NULL, 4) == 1);
+	check_woken(&two);
+	CHECK(!atomic_load(&one.done));
+	CHECK(futex_waiters(&word) == 1);
+	CHECK(futex_call(&word, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, INT_MAX, NULL, 0) == 1);
+	check_woken(&one);
+}
+
+// Requeues: FUTEX_CMP_REQUEUE checks the word first (EAGAIN), negative
+// counts are EINVAL, moved waiters wait on the second word without waking,
+// and the call returns how many it woke and moved together.
+static void futex_requeue(void) {
+	static int first, second;
+	first = 0;
+	second = 0;
+	static struct sleeper sleepers[3];
+	for(int i = 0; i < 3; i++)
+		start_sleeper(&sleepers[i], &first, 0, FUTEX_BITSET_MATCH_ANY);
+	CHECK(until_waiting(&first, 3));
+	CHECK_ERROR(futex_two(&first, FUTEX_CMP_REQUEUE, 0, INT_MAX, &second, 1), EAGAIN);
+	CHECK_ERROR(futex_two(&first, FUTEX_CMP_REQUEUE, -1, 1, &second, 0), EINVAL);
+	CHECK_ERROR(futex_two(&first, FUTEX_REQUEUE, 1, -1, &second, 0), EINVAL);
+	CHECK(futex_waiters(&first) == 3);
+	// None woken, two moved.
+	CHECK(futex_two(&first, FUTEX_CMP_REQUEUE, 0, 2, &second, 0) == 2);
+	CHECK(futex_waiters(&first) == 1);
+	CHECK(futex_waiters(&second) == 2);
+	for(int i = 0; i < 3; i++)
+		CHECK(!atomic_load(&sleepers[i].done));
+	// One woken on the second word, one moved back.
+	CHECK(futex_two(&second, FUTEX_REQUEUE, 1, INT_MAX, &first, 0) == 2);
+	CHECK(futex_waiters(&second) == 0);
+	CHECK(futex_waiters(&first) == 2);
+	CHECK(futex_call(&first, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, INT_MAX, NULL, 0) == 2);
+	for(int i = 0; i < 3; i++)
+		check_woken(&sleepers[i]);
+}
+
+// FUTEX_WAKE_OP: the operation changes the second word, the first word's
+// waiters wake, and the second's only if the comparison of its old value
+// holds; an unknown operation is ENOSYS, and a second word that cannot be
+// written EFAULT.
+static void futex_wake_op(void) {
+	static int first, second;
+	first = 0;
+	second = 5;
+	CHECK_ERROR(futex_two(&first, FUTEX_WAKE_OP, 1, 1, &second, FUTEX_OP(7, 0, 0, 0)),
+			ENOSYS);
+	CHECK_ERROR(futex_two(&first, FUTEX_WAKE_OP, 1, 1, NULL, FUTEX_OP(FUTEX_OP_SET, 0, 0, 0)),
+			EFAULT);
+	CHECK(second == 5);
+	static struct sleeper on_first, on_second;
+	start_sleeper(&on_first, &first, 0, FUTEX_BITSET_MATCH_ANY);
+	start_sleeper(&on_second, &second, 5, FUTEX_BITSET_MATCH_ANY);
+	CHECK(until_waiting(&first, 1) && until_waiting(&second, 1));
+	// 5 + 2, and 5 > 4: both wake.
+	CHECK(futex_two(&first, FUTEX_WAKE_OP, 1, 1, &second,
+			      FUTEX_OP(FUTEX_OP_ADD, 2, FUTEX_OP_CMP_GT, 4)) == 2);
+	CHECK(second == 7);
+	check_woken(&on_first);
+	check_woken(&on_second);
+	start_sleeper(&on_second, &second, 7, FUTEX_BITSET_MATCH_ANY);
+	CHECK(until_waiting(&second, 1));
+	// 7 is not 0: the word changes and no one wakes.
+	CHECK(futex_two(&first, FUTEX_WAKE_OP, 1, 1, &second,
+			      FUTEX_OP(FUTEX_OP_OR | FUTEX_OP_OPARG_SHIFT, 4, FUTEX_OP_CMP_EQ, 0)) == 0);
+	CHECK(second == (7 | 16));
+	CHECK(!atomic_load(&on_second.done));
+	CHECK(futex_waiters(&second) == 1);
+	CHECK(futex_call(&second, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, 1, NULL, 0) == 1);
+	check_woken(&on_second);
+}
+
+// The kernel's robust list records, as linux/futex.h has them.
+struct linux_robust_list {
+	struct linux_robust_list *next;
+};
+
+struct linux_robust_list_head {
+	struct linux_robust_list list;
+	long futex_offset;
+	struct linux_robust_list *list_op_pending;
+};
+
+// A robust lock: its list entry, and its word.
+struct robust_lock {
+	struct linux_robust_list entry;
+	int word;
+};
+
+// What the owner of the robust locks does: takes the locks, names them in
+// its robust list, and ends once told to.
+static struct robust_locks {
+	struct linux_robust_list_head head;
+	struct robust_lock waited, held, other, pending;
+	atomic_int ready, go;
+	int tid;
+	long set;
+} robust;
+
+static void *robust_owner(void *argument) {
+	(void)argument;
+	robust.tid = (int)syscall(SYS_gettid);
+	robust.waited.word = robust.tid | (int)FUTEX_WAITERS;
+	robust.held.word = robust.tid;
+	robust.other.word = 77;
+	robust.pending.word = 0;
+	robust.head.futex_offset = (long)offsetof(struct robust_lock, word);
+	robust.head.list.next = &robust.waited.entry;
+	robust.waited.entry.next = &robust.held.entry;
+	robust.held.entry.next = &robust.other.entry;
+	robust.other.entry.next = &robust.head.list;
+	robust.head.list_op_pending = &robust.pending.entry;
+	robust.set = syscall(SYS_set_robust_list, &robust.head, sizeof(robust.head));
+	atomic_store(&robust.ready, 1);
+	while(!atomic_load(&robust.go))
+		sleep_ms(1);
+	return NULL;
+}
+
+// A robust list: when its thread ends, each lock word it owns gets
+// FUTEX_OWNER_DIED, keeping FUTEX_WAITERS, and a waiter on one with
+// FUTEX_WAITERS wakes; a word another thread owns, and a pending entry's
+// word that no one owns, are left as they are. A head of another size is
+// EINVAL.
+static void robust_list(void) {
+	CHECK_ERROR(syscall(SYS_set_robust_list, &robust.head, sizeof(robust.head) + 1), EINVAL);
+	memset(&robust, 0, sizeof(robust));
+	pthread_t owner;
+	CHECK(pthread_create(&owner, NULL, robust_owner, NULL) == 0);
+	while(!atomic_load(&robust.ready))
+		sleep_ms(1);
+	CHECK(robust.set == 0);
+	// The kernel wakes a robust lock's waiter as a shared futex's, as a C
+	// library's robust mutexes wait.
+	static struct sleeper sleeper;
+	start_sleeper_as(&sleeper, &robust.waited.word, robust.tid | (int)FUTEX_WAITERS,
+			FUTEX_BITSET_MATCH_ANY, 0);
+	CHECK(until_waiting_as(&robust.waited.word, 1, 0));
+	atomic_store(&robust.go, 1);
+	CHECK(pthread_join(owner, NULL) == 0);
+	check_woken(&sleeper);
+	CHECK((unsigned)robust.waited.word == (FUTEX_WAITERS | FUTEX_OWNER_DIED));
+	CHECK((unsigned)robust.held.word == FUTEX_OWNER_DIED);
+	CHECK(robust.other.word == 77);
+	CHECK(robust.pending.word == 0);
+}
+
 // What an unprivileged program may not do. io_uring is not there on Dukovo,
 // and Linux may or may not have it, with a call that makes no ring; a
 // new user namespace is refused on Dukovo and Linux may allow one, in which
@@ -1504,6 +1772,580 @@ static void terminal(void) {
 	close(master);
 }
 
+// Waiting on many descriptors, vectored I/O and the calls on a descriptor
+// that older programs rarely make. Each case makes the call itself where the
+// C library's wrapper would hide the rule it checks.
+
+// The soft RLIMIT_NOFILE set to `limit`, and `saved` is what it was; the
+// hard limit stays. Returns 0 if the hard limit is below `limit`, which a
+// case cannot go on without.
+static int set_file_limit(rlim_t limit, struct rlimit *saved) {
+	if(getrlimit(RLIMIT_NOFILE, saved) != 0 || saved->rlim_max < limit)
+		return 0;
+	struct rlimit set = {limit, saved->rlim_max};
+	return setrlimit(RLIMIT_NOFILE, &set) == 0;
+}
+
+// poll and ppoll take as many entries as the soft RLIMIT_NOFILE says, which
+// a program raises to wait on thousands of descriptors, and fail with
+// EINVAL past it, even by one entry that a fixed table of 4,096 would
+// hold. 4,000 fits under the hard limit of 4,096 that a program has unless
+// whoever started it gave it more. An entry with a negative descriptor is
+// left out. A socket whose peer has gone reports POLLRDHUP only to a poll
+// that asks.
+static void poll_many(void) {
+	enum { ENTRIES = 4000 };
+	struct rlimit saved;
+	if(!set_file_limit(ENTRIES, &saved)) {
+		skip("the hard limit on descriptors is below 4000");
+		return;
+	}
+	int fds[2];
+	CHECK(pipe(fds) == 0);
+	CHECK(write(fds[1], "x", 1) == 1);
+	struct pollfd *list = calloc(ENTRIES + 1, sizeof(*list));
+	CHECK(list != NULL);
+	if(list) {
+		for(int i = 0; i <= ENTRIES; i++)
+			list[i].fd = -1;
+		list[0].fd = fds[0];
+		list[0].events = POLLIN;
+		list[ENTRIES - 1].fd = fds[1];
+		list[ENTRIES - 1].events = POLLOUT;
+		list[ENTRIES / 2].fd = fds[0];
+		list[ENTRIES / 2].events = POLLOUT;
+		CHECK(poll(list, ENTRIES, 0) == 2);
+		CHECK(list[0].revents == POLLIN && list[ENTRIES - 1].revents == POLLOUT);
+		CHECK(list[ENTRIES / 2].revents == 0 && list[1].revents == 0);
+		CHECK_ERROR(poll(list, ENTRIES + 1, 0), EINVAL);
+
+		struct timespec none = {0, 0};
+		CHECK(ppoll(list, ENTRIES, &none, NULL) == 2);
+		CHECK(list[0].revents == POLLIN && list[ENTRIES - 1].revents == POLLOUT);
+		CHECK_ERROR(ppoll(list, ENTRIES + 1, &none, NULL), EINVAL);
+		free(list);
+	}
+	close(fds[0]);
+	close(fds[1]);
+
+	int pair[2];
+	CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
+	CHECK(close(pair[1]) == 0);
+	struct pollfd asked = {pair[0], POLLIN | POLLRDHUP, 0};
+	CHECK(poll(&asked, 1, 0) == 1);
+	CHECK((asked.revents & POLLRDHUP) != 0);
+	struct pollfd unasked = {pair[0], POLLIN, 0};
+	CHECK(poll(&unasked, 1, 0) == 1);
+	CHECK((unasked.revents & POLLRDHUP) == 0);
+	close(pair[0]);
+	CHECK(setrlimit(RLIMIT_NOFILE, &saved) == 0);
+}
+
+// Sets the bit of descriptor `fd` in the descriptor set of `bytes` bytes.
+static void set_bit(unsigned char *set, int fd) {
+	set[fd / 8] |= (unsigned char)(1 << (fd % 8));
+}
+
+// Whether the bit of descriptor `fd` is set in the descriptor set.
+static int bit_is_set(const unsigned char *set, int fd) {
+	return (set[fd / 8] >> (fd % 8)) & 1;
+}
+
+// select takes as many descriptors as `nfds` says, past FD_SETSIZE, in sets
+// the program makes as large as it needs, when it may have that many
+// descriptors; a descriptor that is not open is EBADF.
+static void select_large(void) {
+	enum { NFDS = 2000, FIRST = 1500, SECOND = 1999 };
+	struct rlimit saved;
+	if(!set_file_limit(NFDS, &saved)) {
+		skip("the hard limit on descriptors is below 2000");
+		return;
+	}
+	int fds[2];
+	CHECK(pipe(fds) == 0);
+	CHECK(write(fds[1], "x", 1) == 1);
+	CHECK(dup2(fds[0], FIRST) == FIRST);
+	CHECK(dup2(fds[1], SECOND) == SECOND);
+	size_t bytes = (NFDS + 63) / 64 * 8;
+	unsigned char *read_set = calloc(1, bytes), *write_set = calloc(1, bytes);
+	CHECK(read_set != NULL && write_set != NULL);
+	if(read_set && write_set) {
+		struct timeval none = {0, 0};
+		set_bit(read_set, FIRST);
+		set_bit(write_set, SECOND);
+		CHECK(select(NFDS, (fd_set *)read_set, (fd_set *)write_set, NULL, &none) == 2);
+		CHECK(bit_is_set(read_set, FIRST) && bit_is_set(write_set, SECOND));
+
+		memset(read_set, 0, bytes);
+		set_bit(read_set, FIRST);
+		struct timespec at_once = {0, 0};
+		long ready = syscall(SYS_pselect6, (long)NFDS, read_set, NULL, NULL, &at_once, NULL);
+		CHECK(ready == 1 && bit_is_set(read_set, FIRST));
+
+		memset(read_set, 0, bytes);
+		set_bit(read_set, 1700);
+		CHECK_ERROR(select(NFDS, (fd_set *)read_set, NULL, NULL, &none), EBADF);
+	}
+	free(read_set);
+	free(write_set);
+	close(FIRST);
+	close(SECOND);
+	close(fds[0]);
+	close(fds[1]);
+	CHECK(setrlimit(RLIMIT_NOFILE, &saved) == 0);
+}
+
+// writev of two buffers is one write: a process blocked in a read of a pipe
+// gets both, for a write of up to PIPE_BUF bytes, never the first alone.
+// The parent waits for the reader's answer before each round, so that the
+// reader is blocked in its read every time.
+static void writev_pipe(void) {
+	enum { PART = 100, ROUNDS = 200 };
+	int data[2], answer[2];
+	CHECK(pipe(data) == 0 && pipe(answer) == 0);
+	fflush(stdout);
+	pid_t pid = fork();
+	if(pid == 0) {
+		close(data[1]);
+		close(answer[0]);
+		for(int round = 0; round < ROUNDS; round++) {
+			char got[4 * PART];
+			ssize_t n = read(data[0], got, sizeof(got));
+			char whole = n == 2 * PART ? 'y' : 'n';
+			for(int i = 0; whole == 'y' && i < PART; i++)
+				if(got[i] != 'a' || got[PART + i] != 'b')
+					whole = 'n';
+			if(write(answer[1], &whole, 1) != 1)
+				_exit(2);
+		}
+		_exit(0);
+	}
+	CHECK(pid > 0);
+	close(data[0]);
+	close(answer[1]);
+	char first[PART], second[PART];
+	memset(first, 'a', sizeof(first));
+	memset(second, 'b', sizeof(second));
+	struct iovec parts[2] = {{first, sizeof(first)}, {second, sizeof(second)}};
+	for(int round = 0; round < ROUNDS; round++) {
+		CHECK(writev(data[1], parts, 2) == 2 * PART);
+		char whole = 0;
+		CHECK(read(answer[0], &whole, 1) == 1 && whole == 'y');
+		if(whole != 'y')
+			break;
+	}
+	CHECK_EXITED(pid, 0);
+	close(data[1]);
+	close(answer[0]);
+
+	// readv scatters one read over its buffers, and a buffer of no bytes
+	// is passed over.
+	int fds[2];
+	CHECK(pipe(fds) == 0);
+	CHECK(write(fds[1], "abcdefgh", 8) == 8);
+	char one[2], two[3], three[8];
+	struct iovec scattered[4] = {{one, sizeof(one)}, {NULL, 0}, {two, sizeof(two)},
+			{three, sizeof(three)}};
+	CHECK(readv(fds[0], scattered, 4) == 8);
+	CHECK(memcmp(one, "ab", 2) == 0 && memcmp(two, "cde", 3) == 0 && memcmp(three, "fgh", 3) == 0);
+	CHECK(writev(fds[1], scattered, 0) == 0);
+	volatile int negative = -1;
+	CHECK_ERROR(writev(fds[1], scattered, negative), EINVAL);
+	close(fds[0]);
+	close(fds[1]);
+}
+
+// F_SETOWN and F_GETOWN keep a description's owner: a process, or with a
+// negative number a process group; F_SETOWN_EX and F_GETOWN_EX give it as a
+// kind and a number. The owner is kept with the description, so a copy made
+// by dup sees it.
+static void owner(void) {
+	int fds[2];
+	CHECK(pipe(fds) == 0);
+	int fd = fds[0];
+	CHECK(fcntl(fd, F_GETOWN) == 0);
+	pid_t self = getpid(), group = getpgrp();
+	CHECK(fcntl(fd, F_SETOWN, self) == 0);
+	CHECK(fcntl(fd, F_GETOWN) == self);
+	struct f_owner_ex ex;
+	memset(&ex, 0xff, sizeof(ex));
+	CHECK(fcntl(fd, F_GETOWN_EX, &ex) == 0);
+	CHECK(ex.type == F_OWNER_PID && ex.pid == self);
+
+	CHECK(fcntl(fd, F_SETOWN, -group) == 0);
+	CHECK(fcntl(fd, F_GETOWN) == -group);
+	CHECK(fcntl(fd, F_GETOWN_EX, &ex) == 0);
+	CHECK(ex.type == F_OWNER_PGRP && ex.pid == group);
+
+	pid_t thread = (pid_t)syscall(SYS_gettid);
+	ex.type = F_OWNER_TID;
+	ex.pid = thread;
+	CHECK(fcntl(fd, F_SETOWN_EX, &ex) == 0);
+	memset(&ex, 0xff, sizeof(ex));
+	CHECK(fcntl(fd, F_GETOWN_EX, &ex) == 0);
+	CHECK(ex.type == F_OWNER_TID && ex.pid == thread);
+	int copy = dup(fd);
+	CHECK(copy >= 0);
+	CHECK(fcntl(copy, F_GETOWN) == thread);
+
+	ex.type = 99;
+	ex.pid = self;
+	CHECK_ERROR(fcntl(fd, F_SETOWN_EX, &ex), EINVAL);
+	ex.type = F_OWNER_PID;
+	ex.pid = -1;
+	CHECK_ERROR(fcntl(fd, F_SETOWN_EX, &ex), ESRCH);
+	CHECK_ERROR(fcntl(fd, F_SETOWN_EX, NULL), EFAULT);
+	CHECK_ERROR(fcntl(fd, F_GETOWN_EX, NULL), EFAULT);
+	CHECK_ERROR(fcntl(fd, F_SETOWN, 2000000000), ESRCH);
+	CHECK_ERROR(fcntl(fd, F_SETOWN, INT_MIN), EINVAL);
+	CHECK(fcntl(fd, F_GETOWN) == thread);
+
+	CHECK(fcntl(fd, F_SETOWN, 0) == 0);
+	CHECK(fcntl(fd, F_GETOWN) == 0);
+	CHECK_ERROR(fcntl(-1, F_GETOWN), EBADF);
+	close(copy);
+	close(fds[0]);
+	close(fds[1]);
+}
+
+// FIONREAD on a file is its size less the description's offset, and no
+// offset a read or a seek moves it past the end gives a different count; a
+// pread leaves it as it was.
+static void fionread_file(void) {
+	char directory[512], path[PATH_MAX];
+	make_directory(directory, sizeof(directory), "readable");
+	snprintf(path, sizeof(path), "%s/file", directory);
+	make_file(path, 1000, 'f', 0644);
+	int fd = open(path, O_RDONLY);
+	CHECK(fd >= 0);
+	int count = -1;
+	CHECK(ioctl(fd, FIONREAD, &count) == 0 && count == 1000);
+	char chunk[300];
+	CHECK(read(fd, chunk, sizeof(chunk)) == (ssize_t)sizeof(chunk));
+	CHECK(ioctl(fd, FIONREAD, &count) == 0 && count == 700);
+	CHECK(pread(fd, chunk, 10, 0) == 10);
+	CHECK(ioctl(fd, FIONREAD, &count) == 0 && count == 700);
+	CHECK(lseek(fd, 100, SEEK_SET) == 100);
+	CHECK(ioctl(fd, FIONREAD, &count) == 0 && count == 900);
+	CHECK(lseek(fd, 0, SEEK_END) == 1000);
+	CHECK(ioctl(fd, FIONREAD, &count) == 0 && count == 0);
+	close(fd);
+
+	int fds[2];
+	CHECK(pipe(fds) == 0);
+	CHECK(write(fds[1], "hello", 5) == 5);
+	CHECK(ioctl(fds[0], FIONREAD, &count) == 0 && count == 5);
+	close(fds[0]);
+	close(fds[1]);
+}
+
+// getcpu names the CPU the thread runs on, which a thread pinned to one
+// finds again, and a NUMA node; either pointer may be null, and one that
+// cannot be written is EFAULT.
+static void getcpu_case(void) {
+	unsigned cpu = ~0u, node = ~0u;
+	CHECK(syscall(SYS_getcpu, &cpu, &node, NULL) == 0);
+	CHECK(cpu < 4096 && node < 1024);
+	if(on_dukovo)
+		CHECK(node == 0);
+	CHECK(syscall(SYS_getcpu, &cpu, NULL, NULL) == 0);
+	CHECK(syscall(SYS_getcpu, NULL, &node, NULL) == 0);
+	CHECK(syscall(SYS_getcpu, NULL, NULL, NULL) == 0);
+	CHECK_ERROR(syscall(SYS_getcpu, (unsigned *)8, NULL, NULL), EFAULT);
+	CHECK_ERROR(syscall(SYS_getcpu, NULL, (unsigned *)8, NULL), EFAULT);
+
+	cpu_set_t allowed;
+	CHECK(sched_getaffinity(0, sizeof(allowed), &allowed) == 0);
+	int first = -1, last = -1;
+	for(int i = 0; i < CPU_SETSIZE; i++) {
+		if(!CPU_ISSET(i, &allowed))
+			continue;
+		if(first < 0)
+			first = i;
+		last = i;
+	}
+	CHECK(first >= 0);
+	int wanted[2] = {first, last};
+	for(int round = 0; first >= 0 && round < 2; round++) {
+		cpu_set_t only;
+		CPU_ZERO(&only);
+		CPU_SET(wanted[round], &only);
+		CHECK(sched_setaffinity(0, sizeof(only), &only) == 0);
+		// The thread is on the CPU as the call returns on Linux; give
+		// another system a moment to move it.
+		for(int tries = 0; tries < 100; tries++) {
+			cpu = ~0u;
+			CHECK(syscall(SYS_getcpu, &cpu, NULL, NULL) == 0);
+			if(cpu == (unsigned)wanted[round])
+				break;
+			sleep_ms(1);
+		}
+		CHECK(cpu == (unsigned)wanted[round]);
+	}
+	CHECK(sched_setaffinity(0, sizeof(allowed), &allowed) == 0);
+}
+
+// The address of the function `name` the vDSO exports, or null: looked up
+// through its hash table, as a C library looks it up.
+static void *vdso_function(const char *name) {
+	uintptr_t base = getauxval(AT_SYSINFO_EHDR);
+	if(!base)
+		return NULL;
+	const Elf64_Ehdr *header = (const Elf64_Ehdr *)base;
+	const Elf64_Phdr *segments = (const Elf64_Phdr *)(base + header->e_phoff);
+	const Elf64_Dyn *dynamic = NULL;
+	uintptr_t bias = 0;
+	int loaded = 0;
+	for(int i = 0; i < header->e_phnum; i++) {
+		if(segments[i].p_type == PT_LOAD && !loaded) {
+			bias = base + segments[i].p_offset - segments[i].p_vaddr;
+			loaded = 1;
+		} else if(segments[i].p_type == PT_DYNAMIC) {
+			dynamic = (const Elf64_Dyn *)(base + segments[i].p_offset);
+		}
+	}
+	if(!loaded || !dynamic)
+		return NULL;
+	const uint32_t *hash = NULL;
+	const Elf64_Sym *symbols = NULL;
+	const char *strings = NULL;
+	for(; dynamic->d_tag != DT_NULL; dynamic++) {
+		uintptr_t at = bias + dynamic->d_un.d_ptr;
+		if(dynamic->d_tag == DT_HASH)
+			hash = (const uint32_t *)at;
+		else if(dynamic->d_tag == DT_SYMTAB)
+			symbols = (const Elf64_Sym *)at;
+		else if(dynamic->d_tag == DT_STRTAB)
+			strings = (const char *)at;
+	}
+	if(!hash || !symbols || !strings)
+		return NULL;
+	for(uint32_t i = 1; i < hash[1]; i++) {
+		if(symbols[i].st_shndx != SHN_UNDEF && !strcmp(strings + symbols[i].st_name, name))
+			return (void *)(bias + symbols[i].st_value);
+	}
+	return NULL;
+}
+
+static long long timespec_ns(const struct timespec *ts) {
+	return ts->tv_sec * 1000000000LL + ts->tv_nsec;
+}
+
+// The vDSO (ADR 0616): AT_SYSINFO_EHDR names it, it exports Linux's
+// functions, and what they read agrees with the system calls around
+// them, in the program and in a child it forks. On Dukovo the clock page
+// below it can be read but not written, and neither can it be made
+// writable.
+static void vdso_case(void) {
+	uintptr_t base = getauxval(AT_SYSINFO_EHDR);
+	CHECK(base != 0 && base % PAGE == 0);
+	int (*gettime)(clockid_t, struct timespec *) = vdso_function("__vdso_clock_gettime");
+	int (*getres)(clockid_t, struct timespec *) = vdso_function("__vdso_clock_getres");
+	int (*timeofday)(struct timeval *, void *) = vdso_function("__vdso_gettimeofday");
+	time_t (*seconds)(time_t *) = vdso_function("__vdso_time");
+	long (*cpu_of)(unsigned *, unsigned *, void *) = vdso_function("__vdso_getcpu");
+	CHECK(gettime && getres && timeofday && seconds && cpu_of);
+	if(!gettime || !getres || !timeofday || !seconds || !cpu_of)
+		return;
+	static const clockid_t clocks[] = {CLOCK_MONOTONIC, CLOCK_MONOTONIC_RAW, CLOCK_BOOTTIME};
+	for(size_t i = 0; i < sizeof(clocks) / sizeof(clocks[0]); i++) {
+		struct timespec before, read, after;
+		CHECK(syscall(SYS_clock_gettime, clocks[i], &before) == 0);
+		CHECK(gettime(clocks[i], &read) == 0);
+		CHECK(syscall(SYS_clock_gettime, clocks[i], &after) == 0);
+		CHECK(timespec_ns(&before) <= timespec_ns(&read));
+		CHECK(timespec_ns(&read) <= timespec_ns(&after));
+		CHECK(read.tv_nsec >= 0 && read.tv_nsec < 1000000000);
+	}
+	// The time of day, to the second: a clock set in between moves it.
+	struct timespec wall;
+	CHECK(gettime(CLOCK_REALTIME, &wall) == 0);
+	time_t now = syscall(SYS_time, NULL);
+	CHECK(now - wall.tv_sec >= 0 && now - wall.tv_sec <= 1);
+	time_t told = 0;
+	CHECK(seconds(&told) - now >= 0 && told - now <= 1);
+	struct timeval tv;
+	CHECK(timeofday(&tv, NULL) == 0 && tv.tv_sec - now >= 0 && tv.tv_sec - now <= 1);
+	CHECK(tv.tv_usec >= 0 && tv.tv_usec < 1000000);
+	// What it cannot read it asks the kernel for.
+	struct timespec cpu_time, res, kernel_res;
+	CHECK(gettime(CLOCK_PROCESS_CPUTIME_ID, &cpu_time) == 0);
+	CHECK(gettime(12345, &cpu_time) == -EINVAL);
+	CHECK(getres(CLOCK_MONOTONIC, &res) == 0);
+	CHECK(syscall(SYS_clock_getres, CLOCK_MONOTONIC, &kernel_res) == 0);
+	CHECK(timespec_ns(&res) == timespec_ns(&kernel_res));
+	// The CPU it runs on, pinned there.
+	cpu_set_t allowed, only;
+	CHECK(sched_getaffinity(0, sizeof(allowed), &allowed) == 0);
+	unsigned here = ~0u, cpu = ~0u, node = ~0u;
+	CHECK(syscall(SYS_getcpu, &here, NULL, NULL) == 0);
+	CPU_ZERO(&only);
+	CPU_SET(here, &only);
+	if(sched_setaffinity(0, sizeof(only), &only) == 0) {
+		for(int tries = 0; tries < 100 && cpu != here; tries++) {
+			CHECK(cpu_of(&cpu, &node, NULL) == 0);
+			if(cpu != here)
+				sleep_ms(1);
+		}
+		CHECK(cpu == here);
+		CHECK(node < 1024 && (!on_dukovo || node == 0));
+		CHECK(sched_setaffinity(0, sizeof(allowed), &allowed) == 0);
+	}
+	// A child reads it too, from where the parent's clock was.
+	struct timespec parent;
+	CHECK(gettime(CLOCK_MONOTONIC, &parent) == 0);
+	pid_t child = fork();
+	if(child == 0) {
+		struct timespec mine;
+		_exit(gettime(CLOCK_MONOTONIC, &mine) == 0 && timespec_ns(&mine) >= timespec_ns(&parent)
+				? 0 : 1);
+	}
+	CHECK(child > 0 && wait_raw(child) == 0);
+	if(on_dukovo) {
+		volatile char *page = (volatile char *)(base - PAGE);
+		CHECK(!faults(page));
+		CHECK(mprotect((void *)(base - PAGE), PAGE, PROT_READ | PROT_WRITE) != 0);
+		CHECK(mprotect((void *)base, PAGE, PROT_READ | PROT_WRITE) != 0);
+	}
+}
+
+#ifndef RWF_HIPRI
+#define RWF_HIPRI 0x1
+#define RWF_DSYNC 0x2
+#define RWF_SYNC 0x4
+#define RWF_APPEND 0x10
+#endif
+
+// preadv2 and pwritev2 with the raw call, whose offset is a whole number.
+static ssize_t preadv2_raw(int fd, const struct iovec *parts, int count, long long offset, int flags) {
+	return syscall(SYS_preadv2, (long)fd, parts, (long)count, (long)offset, 0L, (long)flags);
+}
+
+static ssize_t pwritev2_raw(int fd, const struct iovec *parts, int count, long long offset,
+		int flags) {
+	return syscall(SYS_pwritev2, (long)fd, parts, (long)count, (long)offset, 0L, (long)flags);
+}
+
+// preadv2 and pwritev2 move their buffers at the offset they are given, or
+// at the description's for -1, which then moves; the flags that are only
+// hints, and those that sync or append a write, are taken, and one nobody
+// knows is EOPNOTSUPP.
+static void vectored_flags(void) {
+	char directory[512], path[PATH_MAX];
+	make_directory(directory, sizeof(directory), "vectored");
+	snprintf(path, sizeof(path), "%s/file", directory);
+	int fd = open(path, O_RDWR | O_CREAT | O_EXCL, 0644);
+	CHECK(fd >= 0);
+	CHECK(write(fd, "0123456789", 10) == 10);
+	CHECK(lseek(fd, 0, SEEK_SET) == 0);
+
+	char a[3], b[3];
+	struct iovec parts[2] = {{a, sizeof(a)}, {b, sizeof(b)}};
+	CHECK(preadv2_raw(fd, parts, 2, 2, 0) == 6);
+	CHECK(memcmp(a, "234", 3) == 0 && memcmp(b, "567", 3) == 0);
+	CHECK(lseek(fd, 0, SEEK_CUR) == 0);
+	CHECK(preadv2_raw(fd, parts, 2, -1, 0) == 6);
+	CHECK(memcmp(a, "012", 3) == 0 && memcmp(b, "345", 3) == 0);
+	CHECK(lseek(fd, 0, SEEK_CUR) == 6);
+	CHECK(preadv2_raw(fd, parts, 2, 4, RWF_HIPRI) == 6);
+	CHECK(memcmp(a, "456", 3) == 0 && memcmp(b, "789", 3) == 0);
+	CHECK_ERROR(preadv2_raw(fd, parts, 2, 0, 0x8000), EOPNOTSUPP);
+	CHECK_ERROR(preadv2_raw(fd, parts, 2, -2, 0), EINVAL);
+
+	char text[10];
+	struct iovec out[2] = {{"AB", 2}, {"C", 1}};
+	CHECK(pwritev2_raw(fd, out, 2, 2, 0) == 3);
+	CHECK(pread(fd, text, 10, 0) == 10 && memcmp(text, "01ABC56789", 10) == 0);
+	CHECK(lseek(fd, 0, SEEK_CUR) == 6);
+	CHECK(pwritev2_raw(fd, out, 2, -1, RWF_DSYNC) == 3);
+	CHECK(lseek(fd, 0, SEEK_CUR) == 9);
+	CHECK(pwritev2_raw(fd, out, 2, 0, RWF_SYNC | RWF_HIPRI) == 3);
+	CHECK_ERROR(pwritev2_raw(fd, out, 2, 0, 0x8000), EOPNOTSUPP);
+
+	// An append goes to the end whatever the offset, and leaves the
+	// description's offset where it was; with -1 it moves it to the end.
+	struct iovec tail[1] = {{"Z", 1}};
+	CHECK(pwritev2_raw(fd, tail, 1, 0, RWF_APPEND) == 1);
+	struct stat st;
+	CHECK(fstat(fd, &st) == 0 && st.st_size == 11);
+	CHECK(lseek(fd, 0, SEEK_CUR) == 9);
+	CHECK(pwritev2_raw(fd, tail, 1, -1, RWF_APPEND) == 1);
+	CHECK(fstat(fd, &st) == 0 && st.st_size == 12);
+	CHECK(lseek(fd, 0, SEEK_CUR) == 12);
+	CHECK(pread(fd, text, 2, 10) == 2 && memcmp(text, "ZZ", 2) == 0);
+	close(fd);
+}
+
+// Arms a one-shot SIGALRM in `ms` milliseconds, which on_signal notes.
+static void alarm_in(long ms) {
+	struct itimerval once = {{0, 0}, {ms / 1000, (ms % 1000) * 1000}};
+	CHECK(syscall(SYS_setitimer, (long)ITIMER_REAL, &once, NULL) == 0);
+}
+
+// What the waits that give back their time left say when a signal cuts them
+// short: ppoll, pselect6 and select write the time left in their timeout, so
+// that the call made again waits only that, and poll fails with EINTR. Each
+// is the system call itself: musl's select hands the kernel a copy of the
+// timeout and gives back none of it.
+static void wait_time_left(void) {
+	struct sigaction act, old;
+	memset(&act, 0, sizeof(act));
+	act.sa_sigaction = on_signal;
+	act.sa_flags = SA_SIGINFO;
+	sigemptyset(&act.sa_mask);
+	CHECK(sigaction(SIGALRM, &act, &old) == 0);
+	const long long whole = 2000000000LL, least = 500000000LL, spent = 50000000LL;
+
+	signal_hits = 0;
+	struct timespec left = {2, 0};
+	alarm_in(100);
+	CHECK_ERROR(syscall(SYS_ppoll, NULL, 0L, &left, NULL, 8L), EINTR);
+	long long ns = (long long)left.tv_sec * 1000000000LL + left.tv_nsec;
+	CHECK(signal_hits == 1 && ns < whole - spent && ns > least);
+
+	left.tv_sec = 2;
+	left.tv_nsec = 0;
+	alarm_in(100);
+	CHECK_ERROR(syscall(SYS_pselect6, 0L, NULL, NULL, NULL, &left, NULL), EINTR);
+	ns = (long long)left.tv_sec * 1000000000LL + left.tv_nsec;
+	CHECK(signal_hits == 2 && ns < whole - spent && ns > least);
+
+	struct timeval time = {2, 0};
+	alarm_in(100);
+	CHECK_ERROR(syscall(SYS_select, 0L, NULL, NULL, NULL, &time), EINTR);
+	ns = ((long long)time.tv_sec * 1000000 + time.tv_usec) * 1000;
+	CHECK(signal_hits == 3 && ns < whole - spent && ns > least);
+
+	alarm_in(100);
+	CHECK_ERROR(poll(NULL, 0, 2000), EINTR);
+	CHECK(signal_hits == 4);
+	CHECK(sigaction(SIGALRM, &old, NULL) == 0);
+}
+
+// A signal that is not in the set a rt_sigtimedwait waits for ends the wait
+// with EINTR, which the call never makes again.
+static void sigtimedwait_eintr(void) {
+	struct sigaction act, old;
+	memset(&act, 0, sizeof(act));
+	act.sa_sigaction = on_signal;
+	act.sa_flags = SA_SIGINFO | SA_RESTART;
+	sigemptyset(&act.sa_mask);
+	CHECK(sigaction(SIGALRM, &act, &old) == 0);
+	sigset_t waited, before;
+	sigemptyset(&waited);
+	sigaddset(&waited, SIGUSR2);
+	CHECK(pthread_sigmask(SIG_BLOCK, &waited, &before) == 0);
+	signal_hits = 0;
+	struct timespec limit = {2, 0};
+	long long began = now_ns(CLOCK_MONOTONIC);
+	alarm_in(100);
+	CHECK_ERROR(syscall(SYS_rt_sigtimedwait, &waited, NULL, &limit, 8L), EINTR);
+	CHECK(signal_hits == 1);
+	CHECK(now_ns(CLOCK_MONOTONIC) - began < 1500 * 1000000LL);
+	CHECK(pthread_sigmask(SIG_SETMASK, &before, NULL) == 0);
+	CHECK(sigaction(SIGALRM, &old, NULL) == 0);
+}
+
 struct test_case {
 	const char *name;
 	void (*run)(void);
@@ -1528,11 +2370,25 @@ static const struct test_case CASES[] = {
 	{"statx", statx_case},
 	{"signals", signals},
 	{"futex_bitset", futex_bitset},
+	{"futex_sets", futex_sets},
+	{"futex_requeue", futex_requeue},
+	{"futex_wake_op", futex_wake_op},
+	{"robust_list", robust_list},
 	{"refused", refused},
 	{"ids", ids},
 	{"fd_lowest", fd_lowest},
 	{"umask", umask_case},
 	{"terminal", terminal},
+	{"poll_many", poll_many},
+	{"select_large", select_large},
+	{"writev_pipe", writev_pipe},
+	{"owner", owner},
+	{"fionread_file", fionread_file},
+	{"getcpu", getcpu_case},
+	{"vdso", vdso_case},
+	{"vectored_flags", vectored_flags},
+	{"wait_time_left", wait_time_left},
+	{"sigtimedwait_eintr", sigtimedwait_eintr},
 };
 
 enum { CASE_COUNT = sizeof(CASES) / sizeof(CASES[0]) };

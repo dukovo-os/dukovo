@@ -88,11 +88,15 @@ pub struct LinuxThread {
     /// When the thread exits, the kernel writes 0 there and wakes a
     /// thread waiting on it, which is how a C library's join waits.
     pub clear_child_tid: AtomicU64,
-    /// `set_robust_list`'s head, kept for `get_robust_list`. The kernel
-    /// does not walk the list at a thread's end yet (docs/deferred.md).
+    /// `set_robust_list`'s head: 0 for none. The kernel walks the list
+    /// when the thread ends or runs `exec`, and forgets it (`robust`).
     pub robust_list: AtomicU64,
     /// The length `set_robust_list` was given with the head.
     pub robust_len: AtomicU64,
+    /// The timeout, plus 1, in milliseconds that the `poll` a signal
+    /// interrupted runs again with, set by that `poll` and taken at once
+    /// by the call's end; 0 for none.
+    poll_left: AtomicU64,
 }
 
 impl LinuxThread {
@@ -103,7 +107,20 @@ impl LinuxThread {
             clear_child_tid: AtomicU64::new(0),
             robust_list: AtomicU64::new(0),
             robust_len: AtomicU64::new(0),
+            poll_left: AtomicU64::new(0),
         }
+    }
+
+    /// The `poll` that fails with an interrupt is to run again waiting
+    /// `ms` milliseconds.
+    pub fn set_poll_left(&self, ms: u64) {
+        self.poll_left.store(ms.saturating_add(1), Ordering::Relaxed);
+    }
+
+    /// The milliseconds the interrupted `poll` runs again with, if it set
+    /// them.
+    pub fn take_poll_left(&self) -> Option<u64> {
+        self.poll_left.swap(0, Ordering::Relaxed).checked_sub(1)
     }
 }
 

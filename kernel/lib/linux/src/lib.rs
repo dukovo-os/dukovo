@@ -32,7 +32,11 @@
 //!   read from an array of the record's size.
 //! - [`clone`]: the arguments of `clone` and `clone3`, Linux's rules for
 //!   them and Dukovo's, and whether they make a thread or a process.
+//! - [`descriptors`]: the owner of `F_SETOWN` and `F_SETOWN_EX`, the flags
+//!   of `preadv2` and `pwritev2`, and the record of `FICLONERANGE`.
 //! - [`futex`]: the command and flags in a futex call's `op`.
+//! - [`epoll`]: `struct epoll_event`, and the event queue change each
+//!   `epoll_ctl` makes.
 //! - [`signals`]: Linux's signal flags and `sigprocmask` operations, which
 //!   equal the native ones, so that the table passes them through.
 //! - [`sockets`]: the socket addresses, `msghdr`, control messages, `MSG_`
@@ -40,16 +44,27 @@
 //!   them.
 //! - [`poll`]: the events of `poll` and `ppoll`, and `select`'s sets and
 //!   times.
+//! - [`notify`]: inotify's `IN_` bits and its `struct inotify_event`
+//!   records.
 //! - [`system`]: the records and rules of the calls for limits, times,
 //!   resource usage, scheduling, `prctl`, `waitid` and `siginfo_t`.
+//! - [`kernel_files`]: the flags and records of `eventfd`, `timerfd`,
+//!   `signalfd` and `pidfd`.
+//! - [`memfd`]: the flags of `memfd_create` and the seal commands of
+//!   `fcntl`.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
 pub mod clone;
+pub mod descriptors;
+pub mod epoll;
 pub mod errno;
 pub mod flags;
 pub mod futex;
+pub mod kernel_files;
+pub mod memfd;
+pub mod notify;
 pub mod nr;
 pub mod poll;
 pub mod records;

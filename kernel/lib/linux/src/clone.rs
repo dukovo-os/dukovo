@@ -278,7 +278,11 @@ impl CloneArgs {
 ///
 /// - Any `CLONE_NEW*` flag: EPERM. Namespaces come in a later change, and
 ///   until then no caller holds what they need.
-/// - `CLONE_PIDFD`, `CLONE_PARENT` and `CLONE_INTO_CGROUP`: EINVAL for now.
+/// - `CLONE_PARENT` and `CLONE_INTO_CGROUP`: EINVAL for now.
+/// - `CLONE_PIDFD` is Linux's: EINVAL with `CLONE_THREAD` (before Linux
+///   6.9, which has `PIDFD_THREAD`) or `CLONE_DETACHED`, and with
+///   `CLONE_PARENT_SETTID` when both would store at the same address,
+///   which is always so for `clone`, whose `parent_tid` is both.
 /// - A thread (`CLONE_THREAD`, which Linux makes imply `CLONE_SIGHAND` and
 ///   `CLONE_VM`) must also have `CLONE_FS` and `CLONE_FILES`: EINVAL
 ///   without them, since a Dukovo thread always shares both. A thread with
@@ -327,7 +331,11 @@ pub fn classify(args: &CloneArgs) -> Result<Kind, i32> {
     if flags & NAMESPACE_FLAGS != 0 {
         return Err(EPERM);
     }
-    if has(CLONE_PIDFD) || has(CLONE_PARENT) || has(CLONE_INTO_CGROUP) {
+    if has(CLONE_PARENT) || has(CLONE_INTO_CGROUP) {
+        return Err(EINVAL);
+    }
+    let same_word = has(CLONE_PARENT_SETTID) && args.pidfd == args.parent_tid;
+    if has(CLONE_PIDFD) && (has(CLONE_THREAD) || has(CLONE_DETACHED) || same_word) {
         return Err(EINVAL);
     }
     if has(CLONE_THREAD) { classify_thread(flags) } else { classify_process(flags) }

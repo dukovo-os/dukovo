@@ -549,6 +549,15 @@ const ROWS: &[Row] = &[
         "lx_fork_exec_wait",
         "Linux program: program run and waited for (`fork`, `execve`, `wait4`)",
     ),
+    linux_program(
+        "lx_epoll_wait",
+        "Linux program: epoll's wait for one ready pipe among 1000 idle ones (`epoll_wait`)",
+    ),
+    linux_program("lx_futex_wake", "Linux program: futex wake with no waiter (`FUTEX_WAKE`)"),
+    linux_program(
+        "lx_clock_gettime",
+        "Linux program: monotonic clock read through the vDSO (`clock_gettime`)",
+    ),
 ];
 
 /// `ob bench`.

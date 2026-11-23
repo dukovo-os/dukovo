@@ -18,34 +18,37 @@
 //! the program's address space.
 //!
 //! A signal mask (`ppoll`, `pselect6`) is the native `mask` flag's: the
-//! kernel's `poll` puts it in place when it goes on to wait, and the old one
-//! back when it returns, or once the handler a signal ran has returned. A call
-//! that finds a descriptor ready at once never applies it; a signal that
-//! comes between the call's entry and the wait is a signal the old mask
-//! lets through, where Linux's mask is in place from the entry.
+//! kernel's `poll` puts it in place before its first look, as Linux's is
+//! from the call's entry, and the old one back when it returns, or once the
+//! handler a signal ran has returned.
 //!
 //! The waits that Linux gives back the time they have left (`select`,
 //! `pselect6`, `ppoll`) write it before returning, interrupted or not, so
-//! that the call a signal makes run again goes on with what is left.
+//! that the call a signal makes run again goes on with what is left. A
+//! `poll` has no such argument: the kernel keeps what is left of its
+//! timeout with the registers it runs again with (`LinuxThread`).
+//!
+//! The most entries a call takes is the soft RLIMIT_NOFILE, as on Linux:
+//! `poll` fails with EINVAL past it, and `select` leaves out the
+//! descriptors from it on, as it leaves out those past its table.
 
 use alloc::vec::Vec;
 
+use radix_abi::errors::Kernel;
 use radix_abi::process::{self as abi, PollFlags};
 use radix_abi::startup::SLOT_FD_BASE;
 use radix_linux::errno::{EBADF, EINVAL, ENOMEM};
-use radix_linux::poll::{
-    self as lx, FD_SETSIZE, POLLFD_REVENTS, POLLFD_SIZE, POLLNVAL, PollFd, in_set,
-};
+use radix_linux::poll::{self as lx, POLLFD_REVENTS, POLLFD_SIZE, POLLNVAL, PollFd, in_set};
 use radix_linux::records::{self, TIMESPEC_SIZE, Time};
 use radix_linux::signals::SIGSET_SIZE;
 use radix_mm::Kmalloc;
 
-use super::files::descriptor_limit;
+use super::files::file_limit;
 use super::sockets::{read_bytes, zeroed};
-use super::{Args, Error, Result, copy_in, copy_out, fail, kmalloc};
+use super::{Args, Error, Result, copy_in, copy_out, fail, is, kmalloc};
 use crate::sched;
 use crate::user::UserRef;
-use crate::user::posix::poll::{ENTRIES_MAX, ON_STACK, poll_entries};
+use crate::user::posix::poll::{ON_STACK, poll_entries};
 
 /// How long a call waits and under what signal mask.
 struct Wait {
@@ -73,7 +76,6 @@ fn native_poll(user: &UserRef, entries: &[u8], found: &mut [u16], wait: &Wait) -
         flags = flags.union(PollFlags::MASK);
     }
     // The entries are given as bytes, so the call reads no address for them.
-    // There are at most ENTRIES_MAX, which the callers check.
     let args = abi::PollArgs {
         entries: 0,
         count: found.len() as u32,
@@ -88,11 +90,12 @@ fn native_poll(user: &UserRef, entries: &[u8], found: &mut [u16], wait: &Wait) -
 /// Polls the `nfds` entries at `fds`, on a copy that asks for the events
 /// the kernel knows, with the events found put back as the program asked
 /// for them where they differ from what its array held. The count of
-/// entries with events. EINVAL for more entries than the process may have
-/// descriptors, as on Linux, or than the kernel takes. A few entries, as
-/// most calls have, stay on the kernel stack, as the native `poll`'s do.
+/// entries with events. EINVAL for more entries than the process's soft
+/// RLIMIT_NOFILE, as on Linux, and ENOMEM for more than the kernel has
+/// memory for. A few entries, as most calls have, stay on the kernel stack,
+/// as the native `poll`'s do.
 fn poll_array(user: &UserRef, fds: u64, nfds: u64, wait: &Wait) -> Result<u64> {
-    if nfds > u64::from(descriptor_limit(user)) || nfds > u64::from(ENTRIES_MAX) {
+    if nfds > file_limit(user) {
         return fail(EINVAL);
     }
     let count = nfds as usize;
@@ -133,7 +136,7 @@ fn poll_array(user: &UserRef, fds: u64, nfds: u64, wait: &Wait) -> Result<u64> {
 
 /// The wait of the `timespec`, or with `micros` `timeval`, at `address`:
 /// for ever if there is none, or it is longer than a wait goes on.
-fn read_wait(address: u64, micros: bool) -> Result<Option<u64>> {
+pub(super) fn read_wait(address: u64, micros: bool) -> Result<Option<u64>> {
     if address == 0 {
         return Ok(None);
     }
@@ -146,7 +149,7 @@ fn read_wait(address: u64, micros: bool) -> Result<Option<u64>> {
 /// The signal mask at `address`, if the program gave one: its size,
 /// `size`, must be the kernel's, as `ppoll` and `pselect6` check it only
 /// when there is a mask.
-fn read_mask(address: u64, size: u64) -> Result<Option<u64>> {
+pub(super) fn read_mask(address: u64, size: u64) -> Result<Option<u64>> {
     if address == 0 {
         return Ok(None);
     }
@@ -182,11 +185,19 @@ fn end_of(ns: Option<u64>) -> Option<u64> {
 
 /// `poll(fds, nfds, timeout)`: the native `poll`, with a timeout in
 /// milliseconds, for ever if negative. A call a signal interrupts that is
-/// to run again waits the whole timeout again, where Linux's waits what
-/// was left (docs/deferred.md).
+/// to run again waits what was left of its timeout, rounded up to a
+/// millisecond, as Linux's restart does.
 pub fn poll(user: &UserRef, fds: u64, nfds: u64, timeout: u64) -> Result<u64> {
     let wait = Wait { ns: lx::poll_wait(timeout as i32), mask: None };
-    poll_array(user, fds, u64::from(nfds as u32), &wait)
+    let end = end_of(wait.ns);
+    let done = poll_array(user, fds, u64::from(nfds as u32), &wait);
+    if let (Some(end), Err(Error::Native(status))) = (end, &done)
+        && is(*status, Kernel::Interrupted)
+    {
+        let left = end.saturating_sub(sched::now_ns());
+        user.linux.set_poll_left(left.div_ceil(1_000_000));
+    }
+    done
 }
 
 /// `ppoll(fds, nfds, tmo_p, sigmask, sigsetsize)`: the native `poll` with
@@ -210,14 +221,12 @@ struct Sets {
 }
 
 impl Sets {
-    /// Reads the sets at `addresses` for `nfds` descriptors: EINVAL for a
-    /// negative number, or one above `FD_SETSIZE`, where Linux cuts it to
-    /// its table's size (docs/deferred.md).
-    fn read(nfds: u64, addresses: [u64; 3]) -> Result<Sets> {
+    /// Reads the sets at `addresses` for `nfds` descriptors, as many as the
+    /// process may have: EINVAL for a negative number, and a larger one is
+    /// cut to the soft RLIMIT_NOFILE, as Linux cuts it to its table's size.
+    fn read(user: &UserRef, nfds: u64, addresses: [u64; 3]) -> Result<Sets> {
         let Ok(nfds) = usize::try_from(nfds as i32) else { return fail(EINVAL) };
-        if nfds > FD_SETSIZE {
-            return fail(EINVAL);
-        }
+        let nfds = nfds.min(usize::try_from(file_limit(user)).unwrap_or(usize::MAX));
         let len = lx::set_bytes(nfds);
         let read = |address: u64| if address == 0 { zeroed(0) } else { read_bytes(address, len) };
         let bits = [read(addresses[0])?, read(addresses[1])?, read(addresses[2])?];
@@ -266,7 +275,7 @@ impl Sets {
 /// descriptor that is not open, with the sets left as they were; else the
 /// sets hold what is ready, and the call returns how many bits that is.
 fn select_sets(user: &UserRef, nfds: u64, addresses: [u64; 3], wait: &Wait) -> Result<u64> {
-    let mut sets = Sets::read(nfds, addresses)?;
+    let mut sets = Sets::read(user, nfds, addresses)?;
     let mut asked: Vec<PollFd, Kmalloc> = Vec::new_in(kmalloc());
     for fd in 0..sets.nfds {
         let events = sets.events(fd);

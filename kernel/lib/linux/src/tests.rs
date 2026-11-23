@@ -331,6 +331,7 @@ fn kernel_errnos() -> Vec<(Kernel, i32)> {
         (Kernel::Prohibited, EACCES),
         (Kernel::TooManyThreads, EAGAIN),
         (Kernel::WrongType, EPROTOTYPE),
+        (Kernel::Cancelled, ECANCELED),
     ]
 }
 
@@ -397,7 +398,7 @@ fn success_cancellation_and_unknown_errors_map_as_the_c_library_maps_them() {
     assert_eq!(from_status(Status::OK), 0);
     assert_eq!(from_status(Status(u64::MAX)), ECANCELED);
     // A code past the last of its domain, and a domain no one defines.
-    assert_eq!(from_status(Status::new(Kernel::DOMAIN, 59, 0)), EIO);
+    assert_eq!(from_status(Status::new(Kernel::DOMAIN, 60, 0)), EIO);
     assert_eq!(from_status(Status::new(Kernel::DOMAIN, 0, 0)), EIO);
     assert_eq!(from_status(Status::new(File::DOMAIN, 28, 0)), EIO);
     assert_eq!(from_status(Status::new(0, 5, 0)), EIO);
@@ -1333,11 +1334,38 @@ fn linuxs_rules_come_before_the_namespace_refusal() {
 }
 
 #[test]
-fn descriptors_for_processes_the_parent_and_cgroups_come_later() {
-    for later in [clone::CLONE_PIDFD, clone::CLONE_PARENT, clone::CLONE_INTO_CGROUP] {
+fn the_parent_and_cgroups_come_later() {
+    for later in [clone::CLONE_PARENT, clone::CLONE_INTO_CGROUP] {
         assert_eq!(classify(&request(later)), Err(EINVAL), "{later:#x}");
         assert_eq!(classify(&request(THREAD | later)), Err(EINVAL), "{later:#x} in a thread");
     }
+}
+
+#[test]
+fn a_process_may_ask_for_a_descriptor_for_its_child() {
+    assert_eq!(classify(&request(clone::CLONE_PIDFD)), Ok(Kind::Process { vfork: false }));
+    let vfork = clone::CLONE_PIDFD | clone::CLONE_VM | clone::CLONE_VFORK;
+    assert_eq!(classify(&request(vfork)), Ok(Kind::Process { vfork: true }));
+}
+
+#[test]
+fn a_descriptor_for_a_thread_or_with_the_detached_flag_is_invalid() {
+    assert_eq!(classify(&request(THREAD | clone::CLONE_PIDFD)), Err(EINVAL));
+    assert_eq!(classify(&request(clone::CLONE_PIDFD | clone::CLONE_DETACHED)), Err(EINVAL));
+}
+
+#[test]
+fn the_descriptor_and_the_parents_thread_number_may_not_share_a_word() {
+    let both = clone::CLONE_PIDFD | clone::CLONE_PARENT_SETTID;
+    // `clone` has one word for both.
+    let raw = CloneArgs::from_clone(both, 0, 0x7000, 0, 0);
+    assert_eq!(classify(&raw), Err(EINVAL));
+    // `clone3` has two, which differ.
+    let apart =
+        CloneArgs { flags: both, pidfd: 0x7000, parent_tid: 0x7008, ..CloneArgs::default() };
+    assert_eq!(classify(&apart), Ok(Kind::Process { vfork: false }));
+    let same = CloneArgs { flags: both, pidfd: 0x7000, parent_tid: 0x7000, ..CloneArgs::default() };
+    assert_eq!(classify(&same), Err(EINVAL));
 }
 
 #[test]
@@ -1380,8 +1408,9 @@ proptest! {
         if result.is_ok() {
             let later = CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS | CLONE_NEWIPC
                 | CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNET | CLONE_NEWTIME
-                | CLONE_PIDFD | CLONE_PARENT | CLONE_INTO_CGROUP;
+                | CLONE_PARENT | CLONE_INTO_CGROUP;
             prop_assert_eq!(flags & later, 0);
+            prop_assert!(flags & CLONE_PIDFD == 0 || flags & CLONE_THREAD == 0);
             prop_assert!(exit_signal <= 64);
         }
     }
@@ -1429,17 +1458,27 @@ fn futex_constants_are_linuxs() {
     assert_eq!(futex::FUTEX_PRIVATE_FLAG, 128);
     assert_eq!(futex::FUTEX_CLOCK_REALTIME, 256);
     assert_eq!(
-        [futex::FUTEX_WAIT, futex::FUTEX_WAKE, futex::FUTEX_WAIT_BITSET, futex::FUTEX_WAKE_BITSET],
-        [0, 1, 9, 10]
+        [
+            futex::FUTEX_WAIT,
+            futex::FUTEX_WAKE,
+            futex::FUTEX_REQUEUE,
+            futex::FUTEX_CMP_REQUEUE,
+            futex::FUTEX_WAKE_OP,
+            futex::FUTEX_WAIT_BITSET,
+            futex::FUTEX_WAKE_BITSET
+        ],
+        [0, 1, 3, 4, 5, 9, 10]
     );
     assert_eq!(futex::FUTEX_BITSET_MATCH_ANY, 0xffff_ffff);
 }
 
 #[test]
 fn other_futex_commands_keep_their_number_without_the_flags() {
-    for (raw, number) in
-        [(2, 2), (3 | 128, 3), (5, 5), (6 | 128 | 256, 6), (13, 13), (0x8000_0001, 0x8000_0001)]
+    let both = futex::FUTEX_PRIVATE_FLAG | futex::FUTEX_CLOCK_REALTIME;
+    for (number, flags) in
+        [(2, 0), (6, both), (7, 0), (11, futex::FUTEX_PRIVATE_FLAG), (13, 0), (0x8000_0001, 0)]
     {
+        let raw = number | flags;
         assert_eq!(futex::op(raw).command, futex::Command::Other(number), "{raw:#x}");
     }
 }

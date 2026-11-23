@@ -2377,17 +2377,24 @@ fn release_pools(pools: &mut Vec<Arc<ListenPool, Kmalloc>, Kmalloc>) {
 /// What a stream socket's connection is ready for.
 fn connection_events(state: &mut State) -> u16 {
     let shut_read = state.shut_read;
-    let Some(part) = state.parts.first_mut() else { return poll::HANG_UP };
+    let Some(part) = state.parts.first_mut() else {
+        return poll::HANG_UP | poll::READ_HANG_UP;
+    };
     let mut stack = part.interface.stack.lock();
     // A connection whose bytes go straight across can send as many as the
     // other end has room for (ADR 0186).
     let across = stack.room_across(part.handle, &mut part.other);
     let Some(socket) = stack.socket_mut::<tcp::Socket<'static>>(part.handle) else {
-        return poll::HANG_UP;
+        return poll::HANG_UP | poll::READ_HANG_UP;
     };
     let mut events = 0;
-    if socket.can_recv() || !socket.may_recv() || shut_read {
+    if socket.can_recv() {
         events |= poll::READABLE;
+    }
+    // Its peer's FIN came, or it shut its own reading side: Linux's
+    // RCV_SHUTDOWN, which epoll reports as EPOLLRDHUP.
+    if !socket.may_recv() || shut_read {
+        events |= poll::READABLE | poll::READ_HANG_UP;
     }
     if across.map_or_else(|| socket.can_send(), |room| room > 0) || !socket.may_send() {
         events |= poll::WRITABLE;

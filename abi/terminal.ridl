@@ -61,7 +61,9 @@ const GET_WINDOW_SIZE: u32 = 0x5413;
 /// process group gets SIGWINCH when it changes.
 const SET_WINDOW_SIZE: u32 = 0x5414;
 /// How many bytes can be read now, as a 32-bit number at `buffer` (also
-/// for pipes).
+/// for pipes and sockets, for a watch file the bytes of the records it
+/// holds, and for a regular file the bytes from its description's offset
+/// to its end, 0 at or past the end).
 const READABLE: u32 = 0x541b;
 /// The caller's session gives up its controlling terminal.
 const DETACH: u32 = 0x5422;

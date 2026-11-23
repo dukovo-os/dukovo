@@ -90,6 +90,7 @@ methods a Dukovo program calls.
   tells it through a pipe and returns the error.
 - What the kernel keeps for a Linux program is all in
   `kernel/radix/src/user/linux/state.rs`, beside what every process has.
-- `mremap` growth, the robust list's walk when a thread ends, and the
-  futex calls beyond waits and wakes are rows of docs/deferred.md, for
-  later steps of Phase 18.
+- The robust list's walk when a thread ends and the futex calls beyond
+  waits and wakes came with [0617](0617-futexes-take-bit-sets-requeue-and-wake-op-and-a-linux-thread-s-robust-list-is-walked-at-its-end.md).
+  `mremap` growth is a row of docs/deferred.md, for the seccomp and JIT
+  step of Phase 18.
