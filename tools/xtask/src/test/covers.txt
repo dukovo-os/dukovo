@@ -28,6 +28,9 @@ acpi-power kernel/lib/acpi/ kernel/lib/uacpi/ tools/xtask/src/acpi/
 acpi-power userspace/programs/systools/src/power.rs
 acpi-thermal kernel/lib/acpi/ kernel/lib/sensors/ kernel/lib/uacpi/ tools/xtask/src/acpi/
 acpi-thermal userspace/programs/systools/src/power.rs userspace/programs/systools/src/sensors.rs
+aer kernel/lib/hw/src/pci.rs kernel/lib/hw/src/pcie.rs kernel/lib/hw/src/pcie/
+aer kernel/radix/src/pcie/ kernel/radix/src/apei.rs kernel/radix/src/ras.rs kernel/radix/src/acpi/pci.rs
+aer kernel/radix/src/fs/sysfs.rs userspace/programs/systools/src/hardware/devices.rs
 apei kernel/lib/acpi/ kernel/lib/mca/ kernel/lib/smbios/ kernel/radix/src/apei.rs
 apei kernel/radix/src/ras.rs kernel/radix/src/dmi.rs kernel/hal/src/cmdline.rs
 apei kernel/arch/x86_64/src/memory.rs

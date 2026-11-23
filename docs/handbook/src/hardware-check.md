@@ -129,7 +129,9 @@ the firmware recorded one from before it
 ([HW-161](../../errors/HW-161.md)). It **warns** when one memory device had 24
 corrected errors or more in the last 24 hours
 ([HW-162](../../errors/HW-162.md)); the memory line of the check names the
-devices that have errors, too. The history that `metricsd` keeps has them as
+devices that have errors, too. It also **fails** for each PCIe device the kernel
+stopped after a fatal error, with a line of its own
+([HW-163](../../errors/HW-163.md)); `hardware devices` shows it as failed. The history that `metricsd` keeps has them as
 `ras.corrected`, `ras.uncorrected` and `ras.dimm{NAME}`, and it alerts for each
 error that was not corrected, and for a memory device over the line, which
 `dimm_corrected_per_day` in `/system/settings/metrics.toml` sets.
@@ -289,6 +291,7 @@ waits.
 | HW-153 | A card counted receive errors during the check | Replace the cable; try another port |
 | HW-161 | An error was not corrected, or the firmware recorded one from before this start | Back up; find the part with `hardware errors`; replace it if it reports again |
 | HW-162 | A memory device corrected many errors in a day | Test the memory; replace the module if it keeps on |
+| HW-163 | A PCIe device stopped after a fatal error | Restart; reseat the card and try another slot if it fails again |
 | HW-171 | A RAID volume is degraded or offline | Replace the failed disk now |
 | HW-172 | A disk behind a RAID controller has failed | Replace it in its bay |
 | HW-173 | A disk behind a RAID controller is predicted to fail | Back up, and replace it before it fails |

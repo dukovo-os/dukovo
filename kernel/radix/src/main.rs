@@ -78,6 +78,7 @@ mod memtest;
 mod net;
 mod oom;
 mod panic;
+mod pcie;
 mod percpu;
 mod pstate;
 mod ras;
@@ -322,6 +323,9 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     i2c::find();
     crosec::find();
     mce::start(flags.value("mce-poll"));
+    // After uACPI asked the host bridges who handles PCIe errors, and
+    // before the firmware's error sources are read, which count them.
+    pcie::start();
     // After the machine checks, whose banks the firmware may take.
     apei::start();
     pstate::start(flags.value("pstate") == Some("off"), flags.value("epp"));

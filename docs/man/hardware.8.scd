@@ -232,7 +232,11 @@ those: *memory*, *disks*, *cpu*, *sensors*, *battery*, *network*,
 	its oldest lines, which it does after 256, the count of the device
 	since the start stands in for them, scaled down to a day when the
 	start was longer ago, and the line says so. Otherwise the check
-	passes, and says how many corrected errors were heard of.
+	passes, and says how many corrected errors were heard of. The area
+	also fails (*HW-163*), with a line of its own, for each PCIe device
+	that the kernel stopped after a fatal error (_failed_ in
+	*hardware devices*): its driver cannot use it until the machine
+	restarts.
 
 *raid*
 	Each RAID controller in _/kernel/raid_ (*storage*(8)), from what the
@@ -507,11 +511,28 @@ _null_.
 *hidden*
 	True for bridges and hubs, which work and need nothing, so that the
 	page folds them away. The text does not list them, and says how many
-	there are.
+	there are. A bridge that has counted PCIe errors or has failed is not
+	hidden.
+
+*pcie_errors*
+	On a PCI function that has PCIe error counts or has failed, and
+	missing from every other device: _{"owner":"kernel","corrected":2,
+	"nonfatal":1,"fatal":0,"failed":false}_. _owner_ says who handles the
+	function's PCIe errors, *kernel* or *firmware*, and is _null_ where
+	the function has no error reporting. _corrected_, _nonfatal_ and
+	_fatal_ are the errors counted since the start, by how bad they were:
+	corrected ones the hardware put right itself, non-fatal ones it could
+	not but went on after, and fatal ones that stopped the link. _failed_
+	is true when the kernel stopped the device after a fatal error: its
+	driver cannot use it until the machine restarts. The counts are the
+	kernel's (*radix-sysfs*(5): _aer_dev_correctable_, _aer_dev_nonfatal_,
+	_aer_dev_fatal_, _aer_owner_ and _error_state_).
 
 The text lists the devices that are not hidden, under *Network*,
 *Storage*, *USB*, *Display* and *Other*, a line for each: its name and
 numbers, what it is to the system, its driver and state, and where it is.
+A device with PCIe errors ends with _errors: 2 corrected, 1 non-fatal_
+(only the kinds it had), and a failed one with *FAILED*.
 
 # HARDWARE ERRORS
 
@@ -730,6 +751,10 @@ support center says what it means and what to do.
 :  errors
 :  warning
 :  A memory device had many corrected errors in a day
+|  HW-163
+:  errors
+:  failure
+:  A PCIe device stopped after a fatal error
 |  HW-171
 :  raid
 :  failure or warning

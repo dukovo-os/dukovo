@@ -541,3 +541,157 @@ fn bmi2_shifts_as_the_others_do() {
         }
     }
 }
+
+/// A function at 00:05.0 with `extended` placed in its extended space:
+/// (offset, header) pairs.
+fn function_with_extended(header_type: u8, extended: &[(usize, u32)]) -> Function {
+    let mut bus = Bus::new();
+    let mut bytes: Vec<(usize, Vec<u8>)> =
+        std::vec![(0x00, le16(0x8086).to_vec()), (0x0e, std::vec![header_type]),];
+    for (offset, header) in extended {
+        bytes.push((*offset, le32(*header).to_vec()));
+    }
+    let bytes: Vec<(usize, &[u8])> = bytes.iter().map(|(o, b)| (*o, b.as_slice())).collect();
+    bus.add(5, 0, &bytes);
+    let window = Mmio::fake(Arc::new(bus), pci::BUS_SIZE);
+    let address = Address { segment: 0, bus: 0, device: 5, function: 0 };
+    let config = window.window(address.offset_in_bus(), CONFIG_SIZE).unwrap();
+    Function::attach(address, config).unwrap()
+}
+
+/// An extended capability header.
+fn extended_header(id: u16, version: u32, next: u32) -> u32 {
+    u32::from(id) | version << 16 | next << 20
+}
+
+#[test]
+fn extended_capabilities_are_walked_in_order() {
+    let function = function_with_extended(
+        0,
+        &[
+            (0x100, extended_header(0x0001, 2, 0x140)),
+            (0x140, extended_header(0x001d, 1, 0x1a0)),
+            // The low two bits of the next offset are ignored.
+            (0x1a0, extended_header(0x0019, 1, 0)),
+        ],
+    );
+    let found: Vec<(u16, u8, usize)> = function.extended_capabilities().collect();
+    assert_eq!(found, [(0x0001, 2, 0x100), (0x001d, 1, 0x140), (0x0019, 1, 0x1a0)]);
+    assert_eq!(function.find_extended_capability(0x001d), Some(0x140));
+    assert_eq!(function.find_extended_capability(0x0002), None);
+    let ignored = function_with_extended(
+        0,
+        &[(0x100, extended_header(1, 1, 0x143)), (0x140, extended_header(2, 1, 0))],
+    );
+    assert_eq!(ignored.extended_capabilities().count(), 2);
+}
+
+#[test]
+fn a_looping_extended_list_ends() {
+    let function = function_with_extended(
+        0,
+        &[(0x100, extended_header(1, 1, 0x140)), (0x140, extended_header(2, 1, 0x100))],
+    );
+    assert_eq!(function.extended_capabilities().count(), 960);
+    assert_eq!(function.find_extended_capability(2), Some(0x140));
+}
+
+#[test]
+fn an_empty_or_broken_extended_list_ends() {
+    // A zero header at 0x100: no extended capabilities.
+    let none = function_with_extended(0, &[]);
+    assert_eq!(none.extended_capabilities().count(), 0);
+    // All ones: a device that does not answer in extended space.
+    let ones = function_with_extended(0, &[(0x100, u32::MAX)]);
+    assert_eq!(ones.extended_capabilities().count(), 0);
+    // A next offset below 0x100 ends the list after its own entry.
+    let below = function_with_extended(0, &[(0x100, extended_header(1, 1, 0x0fc))]);
+    assert_eq!(below.extended_capabilities().collect::<Vec<_>>(), [(1, 1, 0x100)]);
+    // So does one past the last dword, and one pointing at a zero header.
+    let past = function_with_extended(0, &[(0x100, extended_header(1, 1, 0xfff))]);
+    assert_eq!(past.extended_capabilities().count(), 1);
+    let zero = function_with_extended(0, &[(0x100, extended_header(1, 1, 0x200))]);
+    assert_eq!(zero.extended_capabilities().count(), 1);
+    // The last dword is a valid place for a header.
+    let last = function_with_extended(
+        0,
+        &[(0x100, extended_header(1, 1, 0xffc)), (0xffc, extended_header(2, 1, 0))],
+    );
+    assert_eq!(last.extended_capabilities().count(), 2);
+}
+
+#[test]
+fn a_given_function_has_no_extended_space() {
+    let mut bus = Bus::new();
+    bus.add(0, 0, &[(0x100, &le32(extended_header(1, 1, 0)))]);
+    let config = Mmio::fake(Arc::new(bus), CONFIG_SIZE);
+    let address = Address { segment: 1, bus: 0, device: 0, function: 0 };
+    let given = Given { vendor: 0x1414, device: 0x00ba, ..Given::default() };
+    let function = Function::probe_given(address, config, given).unwrap();
+    assert_eq!(function.extended_capabilities().count(), 0);
+    assert_eq!(function.find_extended_capability(1), None);
+}
+
+#[test]
+fn attach_does_not_size_the_bars() {
+    let mut bus = Bus::new();
+    let base = bus.add(
+        2,
+        0,
+        &[
+            (0x00, &le16(0x1af4)),
+            (0x04, &le16(0x6)),
+            (0x10, &le32(0xfe00_0000)),
+            (0x20, &le32(0xc001)),
+        ],
+    );
+    bus.bar_masks.insert((base, 0x10), 0xffff_c000);
+    let bus = Arc::new(bus);
+    let window = Mmio::fake(bus.clone(), pci::BUS_SIZE);
+    let address = Address { segment: 0, bus: 0, device: 2, function: 0 };
+    let config = window.window(address.offset_in_bus(), CONFIG_SIZE).unwrap();
+    let function = Function::attach(address, config).unwrap();
+    assert_eq!(function.bar(0), None);
+    assert_eq!(function.bar(4), None);
+    assert_eq!(function.vendor_id(), 0x1af4);
+    // Sizing writes all ones to a BAR with decoding off; nothing of the
+    // kind happened.
+    assert_eq!(bus.read(address.offset_in_bus() + 0x04, 2), 0x6);
+    assert_eq!(function.read32(0x10), 0xfe00_0000);
+    assert_eq!(function.bar_address(0), Some(0xfe00_0000));
+    // No function there.
+    let missing = Address { device: 9, ..address };
+    let config = window.window(missing.offset_in_bus(), CONFIG_SIZE).unwrap();
+    assert!(Function::attach(missing, config).is_none());
+}
+
+#[test]
+fn bar_addresses_are_read_without_sizing() {
+    let found = functions(&bus());
+    let virtio = &found[0];
+    // Bar 0 is I/O; BAR 4 is a 64-bit memory BAR whose upper half is BAR 5.
+    assert_eq!(virtio.bar_address(0), None);
+    assert_eq!(virtio.bar_address(4), Some(0x1_fe00_0000));
+    assert_eq!(virtio.bar_address(1), Some(0));
+    assert_eq!(virtio.bar_address(6), None);
+    // A bridge has two BARs.
+    let bridge = function_with_extended(1, &[]);
+    assert_eq!(bridge.bar_address(1), Some(0));
+    assert_eq!(bridge.bar_address(2), None);
+}
+
+#[test]
+fn a_bridge_has_a_subordinate_bus() {
+    let mut bus = Bus::new();
+    bus.add(1, 0, &[(0x00, &le16(0x8086)), (0x0e, &[0x01]), (0x19, &[0x02]), (0x1a, &[0x05])]);
+    bus.add(2, 0, &[(0x00, &le16(0x8086)), (0x1a, &[0x07])]);
+    let window = Mmio::fake(Arc::new(bus), pci::BUS_SIZE);
+    let mut found = Vec::new();
+    pci::scan(0, 0, 0, &mut |_| Some(window.clone()), &mut |_| false, &mut |f, _| found.push(f));
+    assert_eq!(found[0].secondary_bus(), Some(2));
+    assert_eq!(found[0].subordinate_bus(), Some(5));
+    assert_eq!(found[1].subordinate_bus(), None);
+    assert_eq!(pci::SUBORDINATE_BUS, 0x1a);
+    assert_eq!(pci::BRIDGE_CONTROL, 0x3e);
+    assert_eq!(pci::BRIDGE_CONTROL_SERR, 0x2);
+}

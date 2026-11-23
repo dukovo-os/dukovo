@@ -21,6 +21,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use super::check::{Area, Check, Problem, counted};
+use super::devices::{self, Failed, Sources};
 use super::ras::{Counts, Dimm, Error, Record, Severity};
 use crate::args::{Arg, Args};
 use crate::util::{self, Fail, fail};
@@ -354,9 +355,33 @@ pub(crate) fn check_of(record: &Record, uptime: f64, line: u64) -> Check {
     Check::passed(Area::Errors, NAME, detail)
 }
 
-/// The checks of the area, read from the kernel's record in `dir`.
-pub(crate) fn run(dir: &Path) -> Vec<Check> {
-    vec![check_of(&Record::read(dir), uptime(), DAILY_LINE)]
+/// The check for each PCIe device the kernel marked failed after a fatal
+/// error.
+pub(crate) fn pcie_checks(failed: &[Failed]) -> Vec<Check> {
+    failed
+        .iter()
+        .map(|device| {
+            let detail = format!(
+                "PCIe device {} ({}) stopped after a fatal error; its driver cannot use it \
+                 until the machine restarts",
+                device.address, device.name
+            );
+            Check::failed(
+                Area::Errors,
+                &format!("pcie {}", device.address),
+                Problem::PcieDeviceFailed,
+                detail,
+            )
+        })
+        .collect()
+}
+
+/// The checks of the area, read from the kernel's record in `dir` and the
+/// state of the PCI devices in `pci`.
+pub(crate) fn run(dir: &Path, pci: &Sources) -> Vec<Check> {
+    let mut checks = vec![check_of(&Record::read(dir), uptime(), DAILY_LINE)];
+    checks.extend(pcie_checks(&devices::failed(pci)));
+    checks
 }
 
 /// The memory devices that have errors, as the memory area of the check
@@ -410,6 +435,23 @@ mod tests {
 
     fn options(items: &[&str]) -> Result<Options, Fail> {
         parse(&mut Args::new("hardware", items.iter().map(OsString::from).collect()))
+    }
+
+    #[test]
+    fn a_failed_pcie_device_is_a_failure_of_the_errors_area() {
+        let none = pcie_checks(&[]);
+        assert!(none.is_empty());
+        let failed = [Failed { address: "0000:03:00.0".into(), name: "Intel e1000e".into() }];
+        let checks = pcie_checks(&failed);
+        assert_eq!(checks.len(), 1);
+        let check = &checks[0];
+        assert_eq!((check.area, check.outcome), (Area::Errors, Outcome::Failed));
+        assert_eq!(check.id.as_deref(), Some("HW-163"));
+        assert_eq!(
+            check.detail,
+            "PCIe device 0000:03:00.0 (Intel e1000e) stopped after a fatal error; its driver \
+             cannot use it until the machine restarts"
+        );
     }
 
     #[test]

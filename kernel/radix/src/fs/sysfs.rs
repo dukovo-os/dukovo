@@ -30,7 +30,10 @@
 //! - `/kernel/bus/pci/devices/<address>/vendor`, `device`, `class`,
 //!   `revision`, `subsystem_vendor` and `subsystem_device`, in
 //!   hexadecimal, and `numa_node` in decimal (`-1` when the firmware
-//!   names none), for every PCI function the scan found;
+//!   names none), for every PCI function the scan found, with its PCIe
+//!   error files ([`crate::pcie`], ADR 0663): `error_state`, and Linux's
+//!   `aer_dev_correctable`, `aer_dev_nonfatal`, `aer_dev_fatal`, `aer_owner`
+//!   and a root port's `aer_rootport_total_err_*`;
 //! - `/kernel/bus/usb/devices`: each controller's root hub (`usb1`),
 //!   each USB device (`1-3.2`) and each of its interfaces (`1-3.2:1.0`),
 //!   with Linux's files (ADR 0230, [`usb`]);
@@ -177,6 +180,7 @@ use crate::acpi::{devices, thermal, ucsi};
 mod net;
 mod raid;
 mod usb;
+use crate::pcie::{self, Class};
 use crate::{Arch, hwmon, i2c, pstate, serial};
 
 static COMMAND_LINE: Once<&'static str> = Once::new();
@@ -938,8 +942,45 @@ impl Listing for PciDevices {
                 None => writeln!(text, "-1"),
             })?,
         )?;
+        add_error_files(&dir, function.address)?;
         Ok(dir)
     }
+}
+
+/// A PCI function's error files (ADR 0663): `error_state` on every one,
+/// Linux's `aer_dev_*` counts and `aer_owner` on one with an AER
+/// capability, and a root port's `aer_rootport_total_err_*`.
+fn add_error_files(dir: &FixedDir, address: radix_hw::pci::Address) -> Result<()> {
+    dir.add(
+        "error_state",
+        value(move |text| {
+            writeln!(text, "{}", if pcie::failed(address) { "failed" } else { "normal" })
+        })?,
+    )?;
+    let files = pcie::files(address);
+    if files.counts {
+        for (name, class) in [
+            ("aer_dev_correctable", Class::Correctable),
+            ("aer_dev_nonfatal", Class::Nonfatal),
+            ("aer_dev_fatal", Class::Fatal),
+        ] {
+            dir.add(name, value(move |text| pcie::write_counts(address, class, text))?)?;
+        }
+        dir.add("aer_owner", value(move |text| writeln!(text, "{}", pcie::owner(address)))?)?;
+    }
+    if files.root {
+        for (name, class) in [
+            ("aer_rootport_total_err_cor", Class::Correctable),
+            ("aer_rootport_total_err_fatal", Class::Fatal),
+            ("aer_rootport_total_err_nonfatal", Class::Nonfatal),
+        ] {
+            dir.add(
+                name,
+                value(move |text| writeln!(text, "{}", pcie::root_total(address, class)))?,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// `/kernel/devices/system/edac/mc/mc0`: the memory errors the

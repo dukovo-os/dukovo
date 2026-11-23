@@ -101,6 +101,7 @@ pub(crate) enum Problem {
     LinkErrors,
     HardwareError,
     DimmCorrectedRate,
+    PcieDeviceFailed,
     RaidVolume,
     RaidDiskFailed,
     RaidDiskPredicted,
@@ -111,7 +112,7 @@ pub(crate) enum Problem {
 impl Problem {
     /// Every problem, for the tests that check each one's ID and advice.
     #[cfg(test)]
-    pub(crate) const ALL: [Problem; 23] = [
+    pub(crate) const ALL: [Problem; 24] = [
         Problem::MemoryCorrected,
         Problem::MemoryUncorrected,
         Problem::MemoryTest,
@@ -130,6 +131,7 @@ impl Problem {
         Problem::LinkErrors,
         Problem::HardwareError,
         Problem::DimmCorrectedRate,
+        Problem::PcieDeviceFailed,
         Problem::RaidVolume,
         Problem::RaidDiskFailed,
         Problem::RaidDiskPredicted,
@@ -157,6 +159,7 @@ impl Problem {
             Problem::LinkErrors => "HW-153",
             Problem::HardwareError => "HW-161",
             Problem::DimmCorrectedRate => "HW-162",
+            Problem::PcieDeviceFailed => "HW-163",
             Problem::RaidVolume => "HW-171",
             Problem::RaidDiskFailed => "HW-172",
             Problem::RaidDiskPredicted => "HW-173",
@@ -218,6 +221,10 @@ impl Problem {
             Problem::DimmCorrectedRate => {
                 "Run Test the memory from the start menu, and replace the memory module named \
                  if the errors keep coming."
+            }
+            Problem::PcieDeviceFailed => {
+                "Restart the machine to bring the device back; if it fails again, reseat the \
+                 card, try another slot and update its firmware, and replace it if it still fails."
             }
             Problem::RaidVolume => {
                 "Replace the failed disk now: a second failure before the volume is whole again \

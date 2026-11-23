@@ -28,6 +28,9 @@ use crate::{Mmio, MsiMessage};
 
 /// The size of one function's configuration space.
 pub const CONFIG_SIZE: usize = 4096;
+/// Where a function's extended capabilities start in its configuration
+/// space, after the standard header and the capabilities' 256 bytes.
+pub const EXTENDED_CAPABILITIES: usize = 0x100;
 /// The bytes of ECAM window one bus takes.
 pub const BUS_SIZE: usize = 32 * 8 * CONFIG_SIZE;
 
@@ -42,6 +45,13 @@ const CLASS: usize = 0x0b;
 const HEADER_TYPE: usize = 0x0e;
 const BAR0: usize = 0x10;
 const SECONDARY_BUS: usize = 0x19;
+/// The register of a bridge's header that holds the last bus behind it.
+pub const SUBORDINATE_BUS: usize = 0x1a;
+/// The bridge control register of a bridge's header (type 1).
+pub const BRIDGE_CONTROL: usize = 0x3e;
+/// Bridge control: the bridge forwards ERR_FATAL and ERR_NONFATAL
+/// messages from below it to its primary side as system errors.
+pub const BRIDGE_CONTROL_SERR: u16 = 1 << 1;
 const SUBSYSTEM_VENDOR_ID: usize = 0x2c;
 const SUBSYSTEM_ID: usize = 0x2e;
 const CAPABILITIES: usize = 0x34;
@@ -50,6 +60,10 @@ const CAPABILITIES: usize = 0x34;
 const STATUS_CAPABILITIES: u16 = 1 << 4;
 /// The most capabilities followed: a malformed list cannot loop.
 const MAX_CAPABILITIES: usize = 48;
+/// The most extended capabilities followed: the space from 0x100 to the
+/// end holds at most this many 4-byte-aligned headers, so a longer list
+/// loops.
+const MAX_EXTENDED_CAPABILITIES: usize = (CONFIG_SIZE - EXTENDED_CAPABILITIES) / 4;
 /// The capability that holds a bridge's subsystem IDs.
 const CAP_SUBSYSTEM: u8 = 0x0d;
 
@@ -196,6 +210,19 @@ impl Function {
         Some(function)
     }
 
+    /// The function whose configuration space is `config`, if one is
+    /// there, for one already in use after boot: unlike
+    /// [`Function::probe`] it does not size the BARs, which would turn
+    /// off the decoding a running driver depends on. [`Function::bar`]
+    /// reads `None` for every BAR; [`Function::bar_address`] reads the
+    /// address a BAR holds.
+    pub fn attach(address: Address, config: Mmio) -> Option<Function> {
+        if config.len() < CONFIG_SIZE || config.read16(VENDOR_ID) == 0xffff {
+            return None;
+        }
+        Some(Function { address, config, bars: [None; 6], given: None })
+    }
+
     /// The function whose configuration space is `config` and whose
     /// header its host gives as `given` ([`Given`]): one Hyper-V passes
     /// through. Its BARs are sized as [`Function::probe`] sizes them, once
@@ -294,6 +321,11 @@ impl Function {
         (self.header_type() == 1).then(|| self.read8(SECONDARY_BUS))
     }
 
+    /// The last bus behind a bridge.
+    pub fn subordinate_bus(&self) -> Option<u8> {
+        (self.header_type() == 1).then(|| self.read8(SUBORDINATE_BUS))
+    }
+
     /// The command register.
     pub fn command(&self) -> u16 {
         self.read16(COMMAND)
@@ -350,6 +382,30 @@ impl Function {
     /// BAR `index` (0 to 5), as sized when the function was found.
     pub fn bar(&self, index: usize) -> Option<Bar> {
         self.bars.get(index).copied().flatten()
+    }
+
+    /// The address BAR `index` holds, read from the register without
+    /// sizing it (so it is safe on a function in use). `None` for an I/O
+    /// BAR, for an index past the BARs of the function's header (6 for
+    /// type 0, 2 for type 1), and for the upper half of a 64-bit BAR,
+    /// which is not a BAR of its own. A 64-bit BAR's address takes the
+    /// next register too.
+    pub fn bar_address(&self, index: usize) -> Option<u64> {
+        let count = match self.header_type() {
+            0 => 6,
+            1 => 2,
+            _ => return None,
+        };
+        if index >= count {
+            return None;
+        }
+        let low = self.read32(BAR0 + 4 * index);
+        if low & 1 == 1 {
+            return None;
+        }
+        let wide = (low >> 1) & 0x3 == 0x2 && index + 1 < count;
+        let high = if wide { u64::from(self.read32(BAR0 + 4 * index + 4)) << 32 } else { 0 };
+        Some(high | u64::from(low & !0xf))
     }
 
     /// Sizes the BARs: writes all ones to each with decoding off, reads
@@ -420,6 +476,51 @@ impl Function {
     /// The offset of its first capability with ID `id`.
     pub fn find_capability(&self, id: u8) -> Option<usize> {
         self.capabilities().find(|&(found, _)| found == id).map(|(_, offset)| offset)
+    }
+
+    /// Its extended capabilities (PCIe 6.0, 7.6): (ID, version, offset)
+    /// triples, in list order, from [`EXTENDED_CAPABILITIES`]. A header
+    /// of 0 or all ones (no list, or a device that does not answer) ends
+    /// the list, as does a next offset outside the extended space and a
+    /// list longer than the space can hold. A function its host gives
+    /// (Hyper-V's vPCI) has no extended space, so it has none.
+    pub fn extended_capabilities(&self) -> ExtendedCapabilities<'_> {
+        let first = if self.given.is_some() { 0 } else { EXTENDED_CAPABILITIES };
+        ExtendedCapabilities { function: self, next: first, seen: 0 }
+    }
+
+    /// The offset of its first extended capability with ID `id`.
+    pub fn find_extended_capability(&self, id: u16) -> Option<usize> {
+        self.extended_capabilities().find(|&(found, _, _)| found == id).map(|(_, _, offset)| offset)
+    }
+}
+
+/// The iterator [`Function::extended_capabilities`] returns.
+pub struct ExtendedCapabilities<'a> {
+    function: &'a Function,
+    /// The offset of the next header, or 0 when the list has ended.
+    next: usize,
+    seen: usize,
+}
+
+impl Iterator for ExtendedCapabilities<'_> {
+    type Item = (u16, u8, usize);
+
+    fn next(&mut self) -> Option<(u16, u8, usize)> {
+        if self.next == 0 || self.seen >= MAX_EXTENDED_CAPABILITIES {
+            return None;
+        }
+        let offset = self.next;
+        self.seen += 1;
+        let header = self.function.read32(offset);
+        if header == 0 || header == u32::MAX {
+            self.next = 0;
+            return None;
+        }
+        let next = ((header >> 20) & !0x3) as usize;
+        let in_space = (EXTENDED_CAPABILITIES..=CONFIG_SIZE - 4).contains(&next);
+        self.next = if in_space { next } else { 0 };
+        Some((header as u16, ((header >> 16) & 0xf) as u8, offset))
     }
 }
 

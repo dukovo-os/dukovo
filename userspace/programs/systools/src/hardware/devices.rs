@@ -138,6 +138,67 @@ struct Device {
     place: String,
     /// Whether the page folds it away: bridges and hubs.
     hidden: bool,
+    /// What the kernel counted of its PCIe errors and whether it stopped
+    /// it; only on a PCI function that has error counts or has failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pcie_errors: Option<PcieErrors>,
+}
+
+/// Who handles a function's PCIe errors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Owner {
+    Kernel,
+    Firmware,
+}
+
+/// A PCI function's PCIe errors since boot (radix-sysfs(5): `aer_owner`,
+/// `aer_dev_*` and `error_state`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+struct PcieErrors {
+    /// Who handles them; null where the function has no error reporting.
+    owner: Option<Owner>,
+    corrected: u64,
+    nonfatal: u64,
+    fatal: u64,
+    /// Whether the kernel marked the function failed after a fatal error.
+    failed: bool,
+}
+
+impl PcieErrors {
+    fn any(&self) -> bool {
+        self.corrected + self.nonfatal + self.fatal > 0
+    }
+}
+
+/// The count on the `key` line of an `aer_dev_*` file: `TOTAL_ERR_COR 3`.
+fn total(text: &str, key: &str) -> u64 {
+    text.lines()
+        .find_map(|line| line.strip_prefix(key)?.strip_prefix(' ')?.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// The PCIe errors of the function whose folder is `dir`; none when it has
+/// neither error counts nor a failed state.
+fn pcie_errors(dir: &Path) -> Option<PcieErrors> {
+    let read = |file: &str| fs::read_to_string(dir.join(file)).ok();
+    let counted = read("aer_dev_correctable");
+    let failed = read("error_state").is_some_and(|state| state.trim() == "failed");
+    if counted.is_none() && !failed {
+        return None;
+    }
+    let owner = read("aer_owner").and_then(|owner| match owner.trim() {
+        "kernel" => Some(Owner::Kernel),
+        "firmware" => Some(Owner::Firmware),
+        _ => None,
+    });
+    Some(PcieErrors {
+        owner,
+        corrected: counted.map_or(0, |text| total(&text, "TOTAL_ERR_COR")),
+        nonfatal: read("aer_dev_nonfatal").map_or(0, |text| total(&text, "TOTAL_ERR_NONFATAL")),
+        fatal: read("aer_dev_fatal").map_or(0, |text| total(&text, "TOTAL_ERR_FATAL")),
+        failed,
+    })
 }
 
 /// A network card, as `class/net/NAME/card` and `operstate` say it.
@@ -226,6 +287,7 @@ fn pci_device(f: &Function, names: &lspci::Names, known: &Known) -> Device {
         state: None,
         place: format!("PCI {address}"),
         hidden: f.base_class() == BRIDGE,
+        pcie_errors: None,
     };
     let told = |found: &mut Device, driver: &str, system: Vec<String>| {
         found.driver = Some(driver.to_string());
@@ -310,6 +372,7 @@ fn usb_device(d: &UsbDevice, names: &lsusb::Names) -> Device {
         state: Some(if drivers.is_empty() { State::NoDriver } else { State::Working }),
         place: format!("USB {}-{}", d.bus, ports.join(".")),
         hidden: d.hub_ports > 0 || d.interfaces.iter().any(|interface| interface.class == HUB),
+        pcie_errors: None,
     }
 }
 
@@ -343,8 +406,18 @@ pub(crate) fn gather(sources: &Sources) -> Devices {
             .any(|interface| matches!(interface.driver.as_deref(), Some("usb-storage" | "uas"))),
         roots,
     };
-    let mut devices: Vec<Device> =
-        functions.iter().map(|f| pci_device(f, &pci_names, &known)).collect();
+    let mut devices: Vec<Device> = functions
+        .iter()
+        .map(|f| {
+            let mut device = pci_device(f, &pci_names, &known);
+            device.pcie_errors = pcie_errors(&sources.pci.join(f.address()));
+            // A bridge that has had errors does not "need nothing".
+            if device.pcie_errors.is_some_and(|errors| errors.failed || errors.any()) {
+                device.hidden = false;
+            }
+            device
+        })
+        .collect();
     devices.extend(usb.iter().map(|d| usb_device(d, &usb_names)));
     Devices { format: 1, devices }
 }
@@ -418,8 +491,46 @@ impl Device {
         } else {
             format!(" as {}", self.system.join(", "))
         };
-        format!("{} ({}){system}: {driver}{state}; {}", self.name, self.ids, self.place)
+        let mut line =
+            format!("{} ({}){system}: {driver}{state}; {}", self.name, self.ids, self.place);
+        if let Some(errors) = self.pcie_errors {
+            if errors.any() {
+                let parts: Vec<String> = [
+                    (errors.corrected, "corrected"),
+                    (errors.nonfatal, "non-fatal"),
+                    (errors.fatal, "fatal"),
+                ]
+                .into_iter()
+                .filter(|(count, _)| *count > 0)
+                .map(|(count, word)| format!("{count} {word}"))
+                .collect();
+                let _ = write!(line, "; errors: {}", parts.join(", "));
+            }
+            if errors.failed {
+                line.push_str("; FAILED");
+            }
+        }
+        line
     }
+}
+
+/// A PCI function the kernel marked failed after a fatal PCIe error.
+pub(crate) struct Failed {
+    pub(crate) address: String,
+    pub(crate) name: String,
+}
+
+/// The PCI functions of `sources` that are marked failed.
+pub(crate) fn failed(sources: &Sources) -> Vec<Failed> {
+    gather(sources)
+        .devices
+        .into_iter()
+        .filter(|device| device.pcie_errors.is_some_and(|errors| errors.failed))
+        .filter_map(|device| {
+            let address = device.place.strip_prefix("PCI ")?.to_string();
+            Some(Failed { address, name: device.name })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -525,6 +636,92 @@ mod tests {
             .iter()
             .find(|device| device["where"] == json!(place))
             .unwrap_or_else(|| panic!("no device at {place}: {value}"))
+    }
+
+    /// The files of a function's error counts, as the kernel writes them.
+    fn aer(machine: &Machine, address: &str, owner: &str, counts: (u64, u64, u64)) {
+        machine.put(&format!("pci/{address}/aer_owner"), &format!("{owner}\n"));
+        machine.put(
+            &format!("pci/{address}/aer_dev_correctable"),
+            &format!("RxErr 0\nBadTLP {0}\nTOTAL_ERR_COR {0}\n", counts.0),
+        );
+        machine.put(
+            &format!("pci/{address}/aer_dev_nonfatal"),
+            &format!("CmpltTO {0}\nTOTAL_ERR_NONFATAL {0}\n", counts.1),
+        );
+        machine.put(
+            &format!("pci/{address}/aer_dev_fatal"),
+            &format!("DLP {0}\nTOTAL_ERR_FATAL {0}\n", counts.2),
+        );
+    }
+
+    #[test]
+    fn a_device_without_error_files_has_no_pcie_errors_field() {
+        let machine = Machine::new("noaer");
+        machine.function("0000:03:00.0", 0x8086, 0x1533, 0x020000);
+        machine.put("pci/0000:03:00.0/error_state", "normal\n");
+        let value = found(&machine);
+        assert!(by_place(&value, "PCI 0000:03:00.0").get("pcie_errors").is_none());
+    }
+
+    #[test]
+    fn the_counts_come_from_the_total_lines() {
+        let machine = Machine::new("counts");
+        machine.function("0000:03:00.0", 0x8086, 0x10d3, 0x020000);
+        aer(&machine, "0000:03:00.0", "kernel", (2, 1, 0));
+        machine.put("pci/0000:03:00.0/error_state", "normal\n");
+        let value = found(&machine);
+        assert_eq!(
+            by_place(&value, "PCI 0000:03:00.0")["pcie_errors"],
+            json!({"owner": "kernel", "corrected": 2, "nonfatal": 1, "fatal": 0, "failed": false})
+        );
+        let text = gather(&machine.sources()).text();
+        assert!(text.contains("; PCI 0000:03:00.0; errors: 2 corrected, 1 non-fatal\n"), "{text}");
+        assert!(!text.contains("FAILED"), "{text}");
+    }
+
+    #[test]
+    fn firmware_owned_and_clean_counts_show_no_errors_line() {
+        let machine = Machine::new("firmware");
+        machine.function("0000:03:00.0", 0x8086, 0x10d3, 0x020000);
+        aer(&machine, "0000:03:00.0", "firmware", (0, 0, 0));
+        let devices = gather(&machine.sources());
+        let value: Value = serde_json::from_str(&devices.json().unwrap()).unwrap();
+        assert_eq!(
+            by_place(&value, "PCI 0000:03:00.0")["pcie_errors"],
+            json!({"owner": "firmware", "corrected": 0, "nonfatal": 0, "fatal": 0, "failed": false})
+        );
+        assert!(!devices.text().contains("errors:"));
+    }
+
+    #[test]
+    fn a_failed_device_says_so_with_no_error_files() {
+        let machine = Machine::new("failed");
+        machine.function("0000:03:00.0", 0x8086, 0x10d3, 0x020000);
+        machine.put("pci/0000:03:00.0/error_state", "failed\n");
+        let devices = gather(&machine.sources());
+        let value: Value = serde_json::from_str(&devices.json().unwrap()).unwrap();
+        assert_eq!(
+            by_place(&value, "PCI 0000:03:00.0")["pcie_errors"],
+            json!({"owner": null, "corrected": 0, "nonfatal": 0, "fatal": 0, "failed": true})
+        );
+        let text = devices.text();
+        assert!(text.contains("; PCI 0000:03:00.0; FAILED\n"), "{text}");
+        let failed = failed(&machine.sources());
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].address, "0000:03:00.0");
+    }
+
+    #[test]
+    fn a_failed_bridge_is_not_folded_away() {
+        let machine = Machine::new("bridge");
+        machine.function("0000:00:1c.0", 0x8086, 0xa110, 0x060400);
+        machine.function("0000:00:1d.0", 0x8086, 0xa110, 0x060400);
+        machine.put("pci/0000:00:1c.0/error_state", "failed\n");
+        machine.put("pci/0000:00:1d.0/error_state", "normal\n");
+        let value = found(&machine);
+        assert_eq!(by_place(&value, "PCI 0000:00:1c.0")["hidden"], json!(false));
+        assert_eq!(by_place(&value, "PCI 0000:00:1d.0")["hidden"], json!(true));
     }
 
     #[test]

@@ -173,7 +173,9 @@ the exact chips.
 | Serial-over-LAN on a BMC (iDRAC, iLO and any BMC that offers a serial port as COM2) | Works | uart(4) |
 | IPMI: BMC sensors, event log, watchdog and the identify light | Works | radix-ipmi(4) |
 | Hardware errors the firmware reports (APEI): memory, PCIe and processor errors, a failing memory module named by its slot, the errors that ended the last boot, and a bad page taken out of use | Works | `/kernel/ras`, radix-sysfs(5) |
-| PCIe error reporting and recovery the kernel handles itself (AER, DPC), and memory modules named by slot where the firmware reports no errors | Planned, 1.0 | |
+| PCIe errors (AER): the kernel takes the errors from the firmware when it is offered them, counts them for each device and root port, logs each with the device that sent it, records it in the error log, and marks a device that had a fatal error as failed | Works | `/kernel/bus/pci/devices`, radix-sysfs(5), hardware(8) |
+| Containment (DPC): where the firmware offers it, a port shuts the link when a device below it has a fatal error, and the kernel resets the link and marks the device below as failed; the device's driver recovering it without a restart comes in 1.0 | Partly | `/kernel/bus/pci/devices`, radix-sysfs(5) |
+| Memory modules named by slot where the firmware reports no errors | Planned, 1.0 | |
 | Link aggregation (LACP and active-backup), LLDP, jumbo frames, a queue per CPU, checksum and segmentation offloads | Planned, 1.0 | |
 | Disks on a storage network over iSCSI and NVMe over TCP | Planned, 1.0 | |
 | Multipath: several paths to one storage network disk, kept up when one goes down | Planned, 1.0 | |
