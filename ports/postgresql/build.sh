@@ -72,12 +72,13 @@ cd "$PORT_BUILD/radix"
 #   for Radix does not run on the build machine, so configure takes the
 #   option to be missing. LLD has it, and the modules call the server's
 #   functions through it;
-# - the C library's headers have no <sys/epoll.h> and no <sys/signalfd.h>,
-#   and Radix has neither call (radix-posix(7)); configure takes them if
-#   they come. Radix's kqueue(2) has no EVFILT_SIGNAL or EVFILT_PROC,
-#   which the wait on events (waiteventset.c) uses with it, so configure
-#   is told there is no kqueue. The wait then uses poll(2) and the
-#   self-pipe, as it does on a system without them;
+# - the C library has <sys/epoll.h> and <sys/signalfd.h> (ADR 0612,
+#   0613), which configure would take for the wait on events
+#   (waiteventset.c); it is told there are none until a boot test runs
+#   that wait over them. Radix's kqueue(2) has no EVFILT_SIGNAL or
+#   EVFILT_PROC, which the wait uses with it, so configure is told there
+#   is no kqueue either. The wait then uses poll(2) and the self-pipe, as
+#   it does on a system without them;
 # - nothing here for sync_file_range: the C library does not have it, so
 #   configure leaves it out and the settings *_flush_after are 0 as on
 #   any system without it. posix_fadvise(2) is there and checks its

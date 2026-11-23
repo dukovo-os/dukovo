@@ -93,9 +93,13 @@ cd "$PORT_BUILD/radix"
 #   ways opcache can allocate the memory its processes share; with none
 #   of them it would not start. Each is said to work, so that opcache may
 #   choose (it tries them in that order).
-# - PHP-FPM waits for requests with poll(2): Radix has no epoll, and
-#   configure takes epoll for there when <sys/epoll.h> compiles (the
-#   header is not in the C library's, and this keeps it so if it comes);
+# - PHP-FPM waits for requests with poll(2): configure takes epoll for
+#   there when <sys/epoll.h> compiles, which it does since the C library
+#   has epoll (ADR 0612), and is told no until a boot test runs PHP-FPM's
+#   epoll events;
+# - memfd_create(2) is there (ADR 0614), which opcache's lock file would
+#   take in place of a file in its lock folder: said not to be, until a
+#   boot test covers the lock on a memory file;
 # - Radix has no ptrace(2) and no /proc/PID/mem, which PHP-FPM's slow log
 #   reads a worker's stack with: configure takes ptrace to be there in a
 #   cross build, and looks for the proc file on the build machine, which
@@ -133,6 +137,7 @@ OPENSSL_CFLAGS="-I$openssl/include" OPENSSL_LIBS="-L$openssl/libraries -lssl -lc
 	php_cv_func_getaddrinfo=yes ac_cv_func_which_gethostbyname_r=no php_cv_have_write_stdout=yes \
 	php_cv_shm_ipc=yes php_cv_shm_mmap_anon=yes php_cv_shm_mmap_posix=yes \
 	php_cv_have_epoll=no php_cv_func_ptrace=no php_cv_file_proc_mem= php_cv_have_TCP_INFO=no \
+	ac_cv_func_memfd_create=no \
 	php_cv_have_stack_limit=yes \
 	x86_64-radix-configure "$PORT_SRC" --bindir="$prefix/bin" --libdir="$prefix/lib" \
 	--datarootdir="$prefix/share" --sysconfdir="$sysconf" --localstatedir="$prefix/var" \

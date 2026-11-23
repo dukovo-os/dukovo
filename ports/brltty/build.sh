@@ -34,7 +34,11 @@ autoconf >"$PORT_BUILD/autoconf.log" 2>&1 || {
 python3 -I "$PORT_DIR/gendeps.py" "$PORT_SRC"
 
 cd "$PORT_BUILD"
-x86_64-radix-configure "$PORT_SRC" \
+# The C library has signalfd (ADR 0613), which BRLTTY's handling of
+# signals takes when configure finds <sys/signalfd.h>: it is told there is
+# none until a boot test covers that path.
+ac_cv_header_sys_signalfd_h=no \
+	x86_64-radix-configure "$PORT_SRC" \
 	--enable-standalone-programs --disable-i18n --disable-icu --disable-iconv \
 	--disable-polkit --disable-api --disable-x --disable-expat --disable-liblouis \
 	--disable-gpm --disable-speech-support --with-braille-driver=all \
