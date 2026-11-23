@@ -133,6 +133,8 @@ struct CpuSched {
     /// kernel (`radix_sched::account`); the rest found it idle.
     user_ticks: AtomicU64,
     system_ticks: AtomicU64,
+    /// Switches away from a thread that could have gone on: not from the
+    /// idle thread, which gives way whenever work comes.
     preemptions: AtomicU64,
     /// Threads this CPU moved to another CPU than the one they ran on
     /// last, as it woke them or balanced ([`count_migration`]).
@@ -1584,10 +1586,11 @@ fn reschedule(mut why: Switch) {
             }
         }
     }
+    let idled = rq.idling();
     let next = rq.pick();
     let switching = !ThreadRef::ptr_eq(&next, &me);
     if switching {
-        slot.preemptions.fetch_add(u64::from(why == Switch::Preempt), Ordering::Relaxed);
+        slot.preemptions.fetch_add(u64::from(why == Switch::Preempt && !idled), Ordering::Relaxed);
         match why {
             Switch::Block(_) => me.stats.voluntary.fetch_add(1, Ordering::Relaxed),
             Switch::Preempt | Switch::Yield => me.stats.involuntary.fetch_add(1, Ordering::Relaxed),
