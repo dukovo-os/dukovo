@@ -274,6 +274,20 @@ pub fn pidfd_signal_info(
     if i32::from_le_bytes(get(info, 0)) != signal as i32 {
         return Err(EINVAL);
     }
+    queued_value(info, to_self)
+}
+
+/// The value that `rt_sigqueueinfo`, which `sigqueue` makes, sends with
+/// the `siginfo_t` in `info`: `sigqueue`'s, at the end of the record. The
+/// record's own signal does not count, as Linux puts the call's in its
+/// place. `to_self` says the signal is for the caller's own process.
+///
+/// # Errors
+///
+/// EPERM for a record whose `si_code` is 0 or more, or `SI_TKILL`, to
+/// another process, since Linux lets a program fake only a `sigqueue`
+/// signal to others.
+pub fn queued_value(info: &[u8; SIGNALFD_SIGINFO_SIZE], to_self: bool) -> Result<u64, i32> {
     let code = i32::from_le_bytes(get(info, 8));
     if !to_self && (code >= 0 || code == SI_TKILL) {
         return Err(EPERM);
@@ -508,6 +522,16 @@ mod tests {
         for code in [0, 1, SI_KERNEL, SI_TKILL] {
             assert_eq!(pidfd_signal_info(&record(10, code, 0), 10, false), Err(EPERM), "{code}");
             assert_eq!(pidfd_signal_info(&record(10, code, 5), 10, true), Ok(5), "{code}");
+        }
+    }
+
+    #[test]
+    fn a_queued_signal_takes_the_records_value_whatever_its_signal() {
+        assert_eq!(queued_value(&record(0, SI_QUEUE, 1234), false), Ok(1234));
+        assert_eq!(queued_value(&record(41, SI_TIMER, 7), false), Ok(7));
+        for code in [0, 1, SI_KERNEL, SI_TKILL] {
+            assert_eq!(queued_value(&record(10, code, 0), false), Err(EPERM), "{code}");
+            assert_eq!(queued_value(&record(10, code, 5), true), Ok(5), "{code}");
         }
     }
 }

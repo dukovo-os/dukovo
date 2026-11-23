@@ -65,6 +65,8 @@ the event queue and `poll` watch files.
 - **The Linux table** (`user/linux/kernel_files.rs`) gives `eventfd2`,
   `timerfd_create`, `timerfd_settime`, `timerfd_gettime`, `signalfd4`,
   `pidfd_open`, `pidfd_send_signal`, `CLONE_PIDFD` and `waitid`'s `P_PIDFD`,
+  and `rt_sigqueueinfo` (in `user/linux/process.rs`), which `sigqueue`
+  makes and which queues a record's value as `pidfd_send_signal` does,
   with Linux's errors in Linux's order; the flags and records are
   `radix_linux::kernel_files`'s, with host tests. Dukovo's C library makes
   the same calls (`sysdeps/radix/generic/kernel_files.cpp`, mlibc's
@@ -82,7 +84,9 @@ the event queue and `poll` watch files.
 - Differences from Linux, rows of docs/deferred.md: the files have no
   `anon_inode:` names in the process's view; `ssi_uid` is 0, as the native
   record of a signal keeps no sender's user; `PIDFD_THREAD`, the thread
-  flags of `pidfd_send_signal` and `TFD_IOC_SET_TICKS` are not there;
+  flags of `pidfd_send_signal`, `rt_tgsigqueueinfo` and
+  `TFD_IOC_SET_TICKS` are not there; a signal queued with a record names
+  the caller as its sender, with `SI_QUEUE`, not the record's;
   `pidfd_getfd` is EPERM, as `ptrace` is; the alarm clocks are EPERM, as
   for a program without `CAP_WAKE_ALARM`; Dukovo's C library copies a
   record without the kernel's EFAULT check.

@@ -98,8 +98,9 @@ echo "$program: exit status $status"
 /// named, or every program in the posix folder beside the script, each from
 /// /tmp, alone, for at most 120 seconds. It says a line for each program,
 /// "linux-posix: NAME ok" or "linux-posix: NAME FAILED, status N" with the
-/// first failed check the program printed, and a last line that says every
-/// test passed or how many failed.
+/// first four failed checks the program printed, each without the build
+/// machine's folder of its source so that its line number fits the screen,
+/// and a last line that says every test passed or how many failed.
 const RUN_POSIX: &str = r#"#!/bin/sh
 dir=$(cd "$(dirname "$0")" && pwd)/posix
 cd /tmp || exit 1
@@ -119,7 +120,7 @@ for name in $tests; do
 	else
 		failed=$((failed + 1))
 		echo "linux-posix: $name FAILED, status $status"
-		grep -m 1 FAILED "$log" | cut -c 1-78
+		grep FAILED "$log" | sed 's|/[^ ]*/userspace/posix/||' | head -n 4 | cut -c 1-78
 	fi
 done
 if [ "$failed" -eq 0 ]; then
@@ -288,14 +289,18 @@ fn linux_programs(vm: &mut Vm, case: &Case) -> Result<(), String> {
     }
 
     // The C test programs, one at a time. A program that fails does not end
-    // the test: each says a line, and the failures are reported together.
+    // the test: each says a line, and the failures are reported together,
+    // with the checks that failed.
     run_within(vm, &format!("clear; sh {VOLUME}/run-posix.sh"), POSIX_SECONDS)?;
     let screen = vm.screen()?;
     if !screen.iter().any(|line| line.trim() == "linux-posix: every test passed") {
         let failed: Vec<&str> = screen
             .iter()
             .map(|line| line.trim())
-            .filter(|line| line.starts_with("linux-posix: ") && line.contains(" FAILED"))
+            .filter(|line| {
+                (line.starts_with("linux-posix: ") && line.contains(" FAILED"))
+                    || line.contains(": FAILED: ")
+            })
             .collect();
         return Err(format!(
             "the C test programs did not all pass: {}; the screen shows: {}",
@@ -345,5 +350,30 @@ mod tests {
         assert_eq!(RUN_CORE.matches("timeout -k").count(), 1);
         assert_eq!(RUN_POSIX.matches("timeout -k").count(), 1);
         assert!(musl_missing().contains("musl-tools"));
+    }
+
+    #[test]
+    fn a_failed_check_is_shown_without_the_build_machines_folder() {
+        // A line the C programs' check.h prints, through the script's
+        // pipe, which reads the program's log.
+        let line = "kernelfiles: FAILED: /home/runner/work/dukovo/dukovo/userspace/posix/\
+                    kernelfiles.c:333: sigqueue(getpid(), SIGUSR1, value) == 0 (errno 38)";
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "printf '%s\\n' \"$0\" | {}",
+                RUN_POSIX
+                    .lines()
+                    .find(|line| line.contains("grep FAILED"))
+                    .expect("the line that shows the failed checks")
+                    .trim()
+                    .replace("\"$log\"", "")
+            ))
+            .arg(line)
+            .output()
+            .expect("sh runs");
+        let shown = String::from_utf8(output.stdout).unwrap();
+        assert!(shown.starts_with("kernelfiles: FAILED: kernelfiles.c:333: sigqueue("), "{shown}");
+        assert!(shown.trim_end().len() <= 78, "{shown}");
     }
 }

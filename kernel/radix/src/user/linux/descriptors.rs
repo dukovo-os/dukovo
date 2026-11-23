@@ -479,13 +479,13 @@ pub fn fcntl(me: &ThreadRef, user: &UserRef, fd: u64, command: u64, argument: u6
     }
 }
 
-/// `F_ADD_SEALS` of `add`, or with none `F_GET_SEALS`: the native `seal`,
-/// which gives the seals the memory file has. As Linux has it, in this
-/// order for adding: EPERM if the descriptor is not open for writing,
-/// EINVAL for a bit that is no seal, EINVAL for any file but a memory
-/// file (for reading too), EPERM if the file is sealed with `F_SEAL_SEAL`
-/// (also for `add` of 0), and EBUSY for `F_SEAL_WRITE` with a writable
-/// shared mapping.
+/// `F_ADD_SEALS` of `add`, which gives 0, or with none `F_GET_SEALS`: the
+/// native `seal`, which gives the seals the memory file has. As Linux has
+/// it, in this order for adding: EPERM if the descriptor is not open for
+/// writing, EINVAL for a bit that is no seal, EINVAL for any file but a
+/// memory file (for reading too), EPERM if the file is sealed with
+/// `F_SEAL_SEAL` (also for `add` of 0), and EBUSY for `F_SEAL_WRITE` with a
+/// writable shared mapping.
 fn seals(me: &ThreadRef, user: &UserRef, slot: u32, add: Option<u32>) -> Result<u64> {
     if add.is_some() && !files::rights_of(me, user, slot)?.contains(Rights::WRITE) {
         return fail(EPERM);
@@ -501,7 +501,7 @@ fn seals(me: &ThreadRef, user: &UserRef, slot: u32, add: Option<u32>) -> Result<
     if adding == Some(file::Seals::NONE) && done.seals.contains(file::Seals::SEAL) {
         return fail(EPERM);
     }
-    Ok(u64::from(done.seals.bits()))
+    Ok(if adding.is_some() { 0 } else { u64::from(done.seals.bits()) })
 }
 
 /// The native `owner` of the descriptor in `slot`, which with `new` makes

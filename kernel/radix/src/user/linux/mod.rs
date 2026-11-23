@@ -366,6 +366,7 @@ fn dispatch(me: &ThreadRef, user: &UserRef, regs: &SyscallRegs) -> Result<Done> 
         nr::EXIT_GROUP => return process::exit_group(me, user, a[0]),
         nr::WAIT4 => process::wait4(me, user, a[0], a[1], a[2], a[3])?,
         nr::KILL => process::kill(me, user, a[0], a[1])?,
+        nr::RT_SIGQUEUEINFO => process::rt_sigqueueinfo(me, user, a[0], a[1], a[2])?,
         nr::TGKILL => process::tgkill(me, user, Some(a[0]), a[1], a[2])?,
         nr::TKILL => process::tgkill(me, user, None, a[0], a[1])?,
         nr::ARCH_PRCTL => process::arch_prctl(me, user, a[0], a[1])?,

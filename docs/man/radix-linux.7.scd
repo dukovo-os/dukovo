@@ -162,7 +162,9 @@ descriptor cannot watch another (EINVAL), nor a file or directory
 *write*, *poll*, *epoll* and *close* take as any file (ADR 0613). A timer
 file runs on *CLOCK_REALTIME*, *CLOCK_MONOTONIC* or *CLOCK_BOOTTIME*; the
 alarm clocks are EPERM, as for a program without *CAP_WAKE_ALARM*.
-*pidfd_send_signal* and *waitid*'s *P_PIDFD* name a process by its file;
+*pidfd_send_signal* and *waitid*'s *P_PIDFD* name a process by its file,
+and *pidfd_send_signal* and *rt_sigqueueinfo* queue a record's value as
+*sigqueue* does, with the caller as its sender;
 *pidfd_getfd* is EPERM, as *ptrace* is. *inotify_init1*,
 *inotify_add_watch* and *inotify_rm_watch* watch files and directories
 (ADR 0615); a watch is of the file, not its path, as on Linux.

@@ -471,6 +471,36 @@ pub fn kill(me: &ThreadRef, user: &UserRef, pid: u64, signal: u64) -> Result<u64
     results(me, user, SLOT_PROCESS, abi::KILL, args.encode()).map(|_| 0)
 }
 
+/// `rt_sigqueueinfo(pid, sig, info)`, which `sigqueue` makes: the native
+/// `signal_queue` of the value in the record `info` to process `pid`.
+///
+/// Errors as Linux's: EFAULT for an `info` that cannot be read, first;
+/// then EPERM for a record whose code fakes another sender's signal
+/// (`kill`'s, `tgkill`'s or the kernel's) to another process; EINVAL for an
+/// invalid `sig`, which is checked before the process, as `kill` checks it
+/// here; ESRCH for no process `pid`; EPERM for a process the caller may not
+/// signal; EAGAIN for one that has as many signals queued as it takes. The signal names the caller as its sender, with SI_QUEUE, as
+/// `pidfd_send_signal`'s does (ADR 0613).
+pub fn rt_sigqueueinfo(
+    me: &ThreadRef,
+    user: &UserRef,
+    pid: u64,
+    signal: u64,
+    info: u64,
+) -> Result<u64> {
+    let mut record = [0u8; radix_linux::kernel_files::SIGNALFD_SIGINFO_SIZE];
+    copy_in(info, &mut record)?;
+    let pid = pid as i32;
+    let to_self = pid > 0 && pid as u64 == user.process.number();
+    let value = radix_linux::kernel_files::queued_value(&record, to_self).map_err(Error::Errno)?;
+    let signal = signal_number(signal)?;
+    if pid <= 0 {
+        return fail(ESRCH);
+    }
+    let args = abi::SignalQueueArgs { pid: pid as u64, signal, value };
+    results(me, user, SLOT_PROCESS, abi::SIGNAL_QUEUE, args.encode()).map(|_| 0)
+}
+
 /// `tgkill`, and with no `tgid` `tkill`: the native `signal_thread`,
 /// which reaches the threads of the caller's own process.
 pub fn tgkill(
