@@ -635,7 +635,7 @@ impl Interface {
             .enumerate()
             .filter(|(_, orphan)| {
                 stack
-                    .socket_mut::<tcp::Socket<'static>>(orphan.handle)
+                    .socket::<tcp::Socket<'static>>(orphan.handle)
                     .is_some_and(|socket| socket.state() == tcp::State::TimeWait)
             })
             .min_by_key(|(_, orphan)| orphan.deadline_ns)
@@ -669,7 +669,7 @@ impl Interface {
         let mut index = 0;
         while index < orphans.len() {
             let orphan = &mut orphans[index];
-            let state = stack.socket_mut::<tcp::Socket<'static>>(orphan.handle).map(|s| s.state());
+            let state = stack.socket::<tcp::Socket<'static>>(orphan.handle).map(|s| s.state());
             // On the loopback link a connection in TIME_WAIT goes at once,
             // with its memory and socket slot, rather than holding them for
             // its ten seconds, which short connections to the machine itself
@@ -701,7 +701,7 @@ impl Interface {
             // end, still writing, is not left to its deadline.
             let unread = state != Some(tcp::State::TimeWait)
                 && stack
-                    .socket_mut::<tcp::Socket<'static>>(orphan.handle)
+                    .socket::<tcp::Socket<'static>>(orphan.handle)
                     .is_some_and(|socket| socket.recv_queue() > 0);
             if unread || now_ns >= orphan.deadline_ns {
                 // Closed now; the stack sends the reset, and the next look

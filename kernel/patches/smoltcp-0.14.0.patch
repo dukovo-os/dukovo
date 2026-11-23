@@ -213,6 +213,20 @@ socket cost every poll the neighbour check and the dispatch's setup
 before; a system's idle sockets, its services' listening ones, cost a
 packet less than half as much as they did (ADR 0550).
 
+An interface sending what its sockets hold passes over a TCP connection
+that had nothing to send when it last looked, too, while nothing has
+changed the connection since and its next timer is still to come. What
+the connection's `poll_at` said is kept in its slot's `Meta`, with the
+interface's count of changes to its addresses, which may reset a
+connection; `get_mut`, `try_get_mut` and `iter_mut` forget it, as a
+program may have given the socket something to send, and so does a
+packet the connection takes. `Interface::poll_at` takes the kept answer
+too. Every poll worked out, for each connection, whether it had a
+segment, an acknowledgement, a window update or a timer due: with eight
+short connections at a time on the loopback interface, most of the
+instructions a connection cost the stack went to the others, which had
+nothing to send (ADR 0653).
+
 To be offered upstream.
 
 --- a/src/iface/interface/tcp.rs
@@ -4474,3 +4488,278 @@ To be offered upstream.
      pub(crate) fn accepts(&self, cx: &mut Context, ip_repr: &IpRepr, repr: &UdpRepr) -> bool {
          if self.endpoint.port != repr.dst_port {
              return false;
+--- a/src/iface/interface/mod.rs
++++ b/src/iface/interface/mod.rs
+@@ -131,6 +131,10 @@
+     caps: DeviceCapabilities,
+     now: Instant,
+     rand: Rand,
++    /// How many times its addresses changed, which may change what any
++    /// socket would send: what a socket's `poll_at` said is remembered
++    /// with it.
++    addresses_changed: u32,
+ 
+     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
+     neighbor_cache: NeighborCache,
+@@ -277,6 +281,7 @@
+             inner: InterfaceInner {
+                 now,
+                 caps,
++                addresses_changed: 0,
+                 hardware_addr: config.hardware_addr,
+                 ip_addrs: Vec::new(),
+                 any_ip: false,
+@@ -408,6 +413,7 @@
+     /// This function panics if any of the addresses are not unicast.
+     pub fn update_ip_addrs<F: FnOnce(&mut Vec<IpCidr, IFACE_MAX_ADDR_COUNT>)>(&mut self, f: F) {
+         f(&mut self.inner.ip_addrs);
++        self.inner.addresses_changed = self.inner.addresses_changed.wrapping_add(1);
+         InterfaceInner::forget_gone_neighbors(&mut self.inner);
+         InterfaceInner::check_ip_addrs(&self.inner.ip_addrs);
+ 
+@@ -670,11 +676,15 @@
+             return Some(Instant::from_millis(0));
+         }
+ 
++        let addresses = self.inner.addresses_changed;
+         #[allow(unused_mut)]
+         let mut res = sockets
+             .items()
+             .filter_map(|item| {
+-                let socket_poll_at = item.socket.poll_at(&mut self.inner);
++                let socket_poll_at = match item.meta.remembered(addresses) {
++                    Some(poll_at) => poll_at,
++                    None => item.socket.poll_at(&mut self.inner),
++                };
+                 match item.meta.poll_at(
+                     socket_poll_at,
+                     |ip_addr| self.inner.has_neighbor(&ip_addr),
+@@ -804,6 +814,18 @@
+             // A socket with nothing to send is passed over before anything
+             // else is worked out for it: an idle one costs a load or two.
+             if item.socket.has_nothing_to_send() {
++                // What it said before it lost its connection is no longer
++                // so.
++                item.meta.touched();
++                continue;
++            }
++            // A TCP connection with nothing to send, which nothing changed
++            // since it last had none, and whose next timer is still to
++            // come, is passed over too.
++            #[cfg(feature = "socket-tcp")]
++            if matches!(item.socket, Socket::Tcp(_))
++                && item.meta.quiet(self.inner.addresses_changed, self.inner.now)
++            {
+                 continue;
+             }
+             if !item
+@@ -866,9 +888,12 @@
+                 }
+                 #[cfg(feature = "socket-tcp")]
+                 Socket::Tcp(socket) => {
+-                    socket.dispatch(&mut self.inner, |inner, meta, (ip, tcp)| {
++                    let result = socket.dispatch(&mut self.inner, |inner, meta, (ip, tcp)| {
+                         respond(inner, meta, Packet::new(ip, IpPayload::Tcp(tcp)))
+-                    })
++                    });
++                    let poll_at = socket.poll_at(&mut self.inner);
++                    item.meta.remember(self.inner.addresses_changed, poll_at);
++                    result
+                 }
+                 #[cfg(feature = "socket-dhcpv4")]
+                 Socket::Dhcpv4(socket) => {
+--- a/src/iface/interface/tcp.rs
++++ b/src/iface/interface/tcp.rs
+@@ -31,12 +31,19 @@
+ 
+         // A SYN that opens a connection goes to a connection of its endpoints
+         // first, which may give way to it, and only then to a listening socket.
++        // The socket a packet changes is marked touched, for the next poll
++        // to look at it again; one in TIME-WAIT that gives way to a new
++        // connection's SYN is reset, and closed.
+         if tcp_repr.control == TcpControl::Syn && tcp_repr.ack_number.is_none() {
+-            for tcp_socket in sockets
+-                .items_mut()
+-                .filter_map(|i| Socket::downcast_mut(&mut i.socket))
+-            {
+-                if tcp_socket.takes_syn(self, &ip_repr, &tcp_repr) {
++            for item in sockets.items_mut() {
++                let Some(tcp_socket) = Socket::downcast_mut(&mut item.socket) else {
++                    continue;
++                };
++                let takes = tcp_socket.takes_syn(self, &ip_repr, &tcp_repr);
++                if takes || tcp_socket.state() == crate::socket::tcp::State::Closed {
++                    item.meta.touched();
++                }
++                if takes {
+                     return tcp_socket
+                         .process(self, &ip_repr, &tcp_repr)
+                         .map(|(ip, tcp)| Packet::new(ip, IpPayload::Tcp(tcp)));
+@@ -44,11 +51,12 @@
+             }
+         }
+ 
+-        for tcp_socket in sockets
+-            .items_mut()
+-            .filter_map(|i| Socket::downcast_mut(&mut i.socket))
+-        {
++        for item in sockets.items_mut() {
++            let Some(tcp_socket) = Socket::downcast_mut(&mut item.socket) else {
++                continue;
++            };
+             if tcp_socket.accepts(self, &ip_repr, &tcp_repr) {
++                item.meta.touched();
+                 return tcp_socket
+                     .process(self, &ip_repr, &tcp_repr)
+                     .map(|(ip, tcp)| Packet::new(ip, IpPayload::Tcp(tcp)));
+@@ -59,11 +67,12 @@
+         // connections, being made or waiting for their owner, is held: its
+         // peer sends it again, by when the owner has made room for it.
+         if tcp_repr.control == TcpControl::Syn && tcp_repr.ack_number.is_none() {
+-            for tcp_socket in sockets
+-                .items_mut()
+-                .filter_map(|i| Socket::downcast_mut(&mut i.socket))
+-            {
++            for item in sockets.items_mut() {
++                let Some(tcp_socket) = Socket::downcast_mut(&mut item.socket) else {
++                    continue;
++                };
+                 if tcp_socket.holds_syn(&ip_repr, &tcp_repr) {
++                    item.meta.touched();
+                     return None;
+                 }
+             }
+--- a/src/iface/socket_meta.rs
++++ b/src/iface/socket_meta.rs
+@@ -36,6 +36,12 @@
+     pub(crate) handle: SocketHandle,
+     /// See [NeighborState](struct.NeighborState.html).
+     neighbor_state: NeighborState,
++    /// What the socket's `poll_at` said when it was last worked out, with
++    /// the interface's count of address changes then: `None` once
++    /// anything may have changed the socket since. Kept for TCP sockets,
++    /// so that a poll passes over an idle connection without working out
++    /// again whether it has anything to send.
++    next: Option<(u32, PollAt)>,
+ }
+ 
+ impl Meta {
+@@ -45,6 +51,37 @@
+     /// See also `iface::NeighborCache::SILENT_TIME`.
+     pub(crate) const DISCOVERY_SILENT_TIME: Duration = Duration::from_millis(1_000);
+ 
++    /// Forgets what the socket's `poll_at` said, as the socket may have
++    /// changed.
++    pub(crate) fn touched(&mut self) {
++        self.next = None;
++    }
++
++    /// Keeps `poll_at`, the socket's just worked out, while the interface's
++    /// count of address changes is `addresses`.
++    pub(crate) fn remember(&mut self, addresses: u32, poll_at: PollAt) {
++        self.next = Some((addresses, poll_at));
++    }
++
++    /// What the socket's `poll_at` said when it was last worked out, if
++    /// neither the socket nor the interface's addresses changed since.
++    pub(crate) fn remembered(&self, addresses: u32) -> Option<PollAt> {
++        match self.next {
++            Some((count, poll_at)) if count == addresses => Some(poll_at),
++            _ => None,
++        }
++    }
++
++    /// Whether the socket has nothing to send at `timestamp`, as its
++    /// remembered `poll_at` says.
++    pub(crate) fn quiet(&self, addresses: u32, timestamp: Instant) -> bool {
++        match self.remembered(addresses) {
++            Some(PollAt::Ingress) => true,
++            Some(PollAt::Time(at)) => at > timestamp,
++            Some(PollAt::Now) | None => false,
++        }
++    }
++
+     pub(crate) fn poll_at<F>(
+         &self,
+         socket_poll_at: PollAt,
+@@ -123,10 +160,30 @@
+         Meta {
+             handle: SocketHandle::default(),
+             neighbor_state: NeighborState::Active,
++            next: None,
+         }
+     }
+ 
+     #[test]
++    fn remembered_poll_at_lasts_until_touched_or_addresses_change() {
++        let mut m = meta();
++        let t = Instant::from_millis(1000);
++        assert!(!m.quiet(0, t), "nothing remembered: look");
++        m.remember(0, PollAt::Ingress);
++        assert!(m.quiet(0, t));
++        assert_eq!(m.remembered(0), Some(PollAt::Ingress));
++        assert!(!m.quiet(1, t), "the addresses changed");
++        assert_eq!(m.remembered(1), None);
++        m.touched();
++        assert!(!m.quiet(0, t));
++        m.remember(0, PollAt::Time(Instant::from_millis(2000)));
++        assert!(m.quiet(0, t), "its timer is still to come");
++        assert!(!m.quiet(0, Instant::from_millis(2000)), "its timer is due");
++        m.remember(0, PollAt::Now);
++        assert!(!m.quiet(0, t));
++    }
++
++    #[test]
+     fn poll_at_active_passes_through() {
+         let m = meta();
+         let t = Instant::from_millis(1000);
+--- a/src/iface/socket_set.rs
++++ b/src/iface/socket_set.rs
+@@ -145,7 +145,9 @@
+     /// handle does not refer to a socket of this set or the socket has
+     /// another type.
+     pub fn try_get_mut<T: AnySocket<'a>>(&mut self, handle: SocketHandle) -> Option<&mut T> {
+-        T::downcast_mut(&mut self.sockets.get_mut(handle.0)?.inner.as_mut()?.socket)
++        let item = self.sockets.get_mut(handle.0)?.inner.as_mut()?;
++        item.meta.touched();
++        T::downcast_mut(&mut item.socket)
+     }
+ 
+     /// Remove a socket from the set, without changing its state, or return
+@@ -178,8 +180,11 @@
+     /// or the socket has the wrong type.
+     pub fn get_mut<T: AnySocket<'a>>(&mut self, handle: SocketHandle) -> &mut T {
+         match self.sockets[handle.0].inner.as_mut() {
+-            Some(item) => T::downcast_mut(&mut item.socket)
+-                .expect("handle refers to a socket of a wrong type"),
++            Some(item) => {
++                item.meta.touched();
++                T::downcast_mut(&mut item.socket)
++                    .expect("handle refers to a socket of a wrong type")
++            }
+             None => panic!("handle does not refer to a valid socket"),
+         }
+     }
+@@ -231,7 +236,10 @@
+ 
+     /// Get a mutable iterator to the inner sockets.
+     pub fn iter_mut(&mut self) -> impl Iterator<Item = (SocketHandle, &mut Socket<'a>)> {
+-        self.items_mut().map(|i| (i.meta.handle, &mut i.socket))
++        self.items_mut().map(|i| {
++            i.meta.touched();
++            (i.meta.handle, &mut i.socket)
++        })
+     }
+ 
+     /// Iterate every socket in this set.
+@@ -239,7 +247,9 @@
+         self.sockets[..self.used].iter().filter_map(|x| x.inner.as_ref())
+     }
+ 
+-    /// Iterate every socket in this set.
++    /// Iterate every socket in this set. Unlike `iter_mut` and `get_mut`,
++    /// it leaves what each socket's `poll_at` said remembered: a caller
++    /// that may change a socket marks it touched.
+     pub(crate) fn items_mut(&mut self) -> impl Iterator<Item = &mut Item<'a>> + '_ {
+         self.sockets[..self.used].iter_mut().filter_map(|x| x.inner.as_mut())
+     }

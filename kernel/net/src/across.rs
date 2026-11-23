@@ -178,11 +178,15 @@ impl<L: Link> Stack<L> {
             return false;
         }
         // The first socket that takes it, as `process_udp` looks: the
-        // sender itself, when it sends to its own port.
-        let Some(end) = self.sockets.iter_mut().find_map(|(_, socket)| match socket {
-            Socket::Udp(socket) if socket.takes_across(to) => Some(socket),
+        // sender itself, when it sends to its own port. Found looking, so
+        // that the sockets it passes over are not taken to have changed.
+        let Some(found) = self.sockets.iter().find_map(|(found, socket)| match socket {
+            Socket::Udp(socket) if socket.takes_across(to) => Some(found),
             _ => None,
         }) else {
+            return false;
+        };
+        let Some(end) = self.sockets.try_get_mut::<udp::Socket<'static>>(found) else {
             return false;
         };
         end.receive_across(IpEndpoint::new(from, bound.port), to.addr, payload);
