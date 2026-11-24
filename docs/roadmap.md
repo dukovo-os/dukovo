@@ -705,9 +705,9 @@ windowd is the first 1.x release (moved out of 1.0 on 2026-10-23). It is a compl
 
 The first step of the release gives AI clients the web console's actions through the Model Context Protocol (MCP), so a person can ask an assistant of their choice to look after a Dukovo server.
 
-- **One registry.** The MCP server is part of `admind` and is made from the console's action registry (ADR 0515). Each action is a tool, with its arguments and their checks, so a client can do what the pages, the API and the `admin` command do, and an action added to the registry is a tool with no further work.
+- **One registry.** The MCP server is part of `admind` and is made from the console's action registry (ADR 0515). Every action is offered to a client with its arguments and their checks, so a client can ask for what the pages, the API and the `admin` command do, and an action added to the registry is offered with no further work. An action that takes or shows a password, a key or a token is never offered.
 - **Two ways in.** `admin mcp` speaks MCP on its standard input and output, so a client starts it over SSH and it acts with the rights of the person signed in. admind also answers MCP over HTTPS on the console's port, for a client that holds one of the console's scoped API tokens.
-- **Off until approved.** No client is let in until an administrator approves it, each on its own. A read runs within what the person or the token may see. A change goes through `elevate` and waits for a yes, and a client can ask what a change would do before it is made. Every call is in the audit log, with the client that made it.
+- **Off until approved.** No client is let in until an administrator approves it, each on its own. A read runs within the areas the client was given. A change waits for an administrator's yes in the console and runs as that administrator, so a client's token changes nothing by itself, and a client can ask what a change would do before it is made. Every call is in the audit log, with the client that made it.
 - **A page for it.** The console's AI clients page lists the approved clients, what each may reach and what each has done, and turns a client off.
 - **Done when** an MCP client lists a server's services and restarts one after the yes.
 
