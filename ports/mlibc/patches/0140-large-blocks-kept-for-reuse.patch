@@ -1,0 +1,176 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+Large blocks are kept for reuse. frigg's slab_pool maps every block
+above its largest bucket (32 KiB) on its own, the block's pages, a page
+for its header and the 256 KiB it is aligned in, and unmaps the whole
+mapping when the block is freed, so a program that allocates and frees
+a 64 KiB block for each request makes an mmap, an munmap and a page
+fault for the header and for every page it touches, each time: 1.9
+page faults a SELECT transaction in PostgreSQL, 7.4 a TPC-B
+transaction, and 1.6 a run of a PHP compute loop, where glibc keeps
+such blocks in its heap and takes none. The pool maps and unmaps large
+blocks through map_large() and unmap_large() when its policy has them,
+and through map() and unmap() as before when it does not or when it
+maps with an alignment; the slabs' map_slab() is not among them.
+mlibc's VirtualAllocator puts a mapping that is freed in one of 16
+slots, if it is no longer than 4 MiB plus what frigg adds and the slots
+hold no more than 16 MiB in all, and gives it to the next large block
+that needs a mapping of exactly that length, without a system call. A
+slot is one word, taken and filled by compare-and-swap, so that no lock
+is held that a fork's child could find held by a thread it does not
+have. Memory kept is not cleared, which malloc does not owe, and calloc
+clears what it returns. glibc keeps freed blocks of up to 32 MiB; this
+cache keeps less, to bound what an idle process holds.
+
+diff -ruN a/options/internal/generic/allocator.cpp b/options/internal/generic/allocator.cpp
+--- a/options/internal/generic/allocator.cpp
++++ b/options/internal/generic/allocator.cpp
+@@ -86,6 +86,72 @@
+ 	return slab;
+ }
+ 
++// A block too large for a slab is a mapping of its own, and a program
++// that allocates and frees one per request would map, fault in and
++// unmap it every time: glibc keeps such blocks in its heap and does not.
++// So freed mappings wait in a cache, and the next block that needs a
++// mapping of the same length takes one without a system call or a page
++// fault.
++//
++// glibc keeps freed blocks of up to 32 MiB, as its mmap threshold grows
++// with them; this cache keeps less, to bound what an idle process holds.
++// A mapping is the block, a page for its header and the 256 KiB frigg
++// aligns it in, so the longest length kept is 4 MiB plus those. The
++// bytes kept in all are limited too, and an allocation looks through
++// no more than the 16 slots.
++constexpr size_t cachedLengthMax = (4 << 20) + (256 << 10) + 4096;
++constexpr size_t cachedBytesMax = 16 << 20;
++constexpr size_t cachePage = 4096;
++static_assert(cachedLengthMax / cachePage < (size_t(1) << 20),
++		"A cached length is a page count that fits 20 bits");
++
++// A slot holds 0 or one mapping: its base's page number above 20 bits
++// and its length in pages below. Like _slabs, the slots are taken and
++// filled by compare-and-swap, so a fork never finds a lock here held by
++// a thread the child does not have. The memory is not cleared: malloc
++// owes the caller nothing, and calloc clears what it returns.
++//
++// A thread puts a mapping in with release and another takes it with
++// acquire, so that every write the putter made to the block happens
++// before the taker's own, and none lands in what the taker now uses.
++// The byte count is only a limit and needs no order.
++uintptr_t VirtualAllocator::map_large(size_t length) {
++	__ensure(!(length & (cachePage - 1)));
++	const uint64_t pages = length / cachePage;
++	for(auto &slot : _cachedBlocks) {
++		auto word = __atomic_load_n(&slot, __ATOMIC_RELAXED);
++		if(!word || (word & ((uint64_t(1) << 20) - 1)) != pages)
++			continue;
++		if(__atomic_compare_exchange_n(&slot, &word, 0, false,
++				__ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
++			__atomic_fetch_sub(&_cachedBytes, length, __ATOMIC_RELAXED);
++			return (word >> 20) << 12;
++		}
++	}
++	return map(length);
++}
++
++void VirtualAllocator::unmap_large(uintptr_t address, size_t length) {
++	__ensure(!((address | length) & (cachePage - 1)));
++	if(length > cachedLengthMax || (address >> 12) >= (uint64_t(1) << 44)) {
++		unmap(address, length);
++		return;
++	}
++	auto total = __atomic_add_fetch(&_cachedBytes, length, __ATOMIC_RELAXED);
++	if(total <= cachedBytesMax) {
++		uint64_t word = ((address >> 12) << 20) | (length / cachePage);
++		for(auto &slot : _cachedBlocks) {
++			uint64_t empty = 0;
++			if(!__atomic_load_n(&slot, __ATOMIC_RELAXED)
++					&& __atomic_compare_exchange_n(&slot, &empty, word, false,
++						__ATOMIC_RELEASE, __ATOMIC_RELAXED))
++				return;
++		}
++	}
++	__atomic_fetch_sub(&_cachedBytes, length, __ATOMIC_RELAXED);
++	unmap(address, length);
++}
++
+ #else
+ 
+ namespace {
+diff -ruN a/options/internal/include/mlibc/allocator.hpp b/options/internal/include/mlibc/allocator.hpp
+--- a/options/internal/include/mlibc/allocator.hpp
++++ b/options/internal/include/mlibc/allocator.hpp
+@@ -17,8 +17,15 @@
+ 
+ 	uintptr_t map_slab(size_t length, size_t align);
+ 
++	uintptr_t map_large(size_t length);
++
++	void unmap_large(uintptr_t address, size_t length);
++
+ private:
+ 	uintptr_t _slabs = 0;
++	static constexpr size_t cachedSlots = 16;
++	uint64_t _cachedBlocks[cachedSlots] = {};
++	size_t _cachedBytes = 0;
+ };
+ 
+ typedef frg::slab_pool<VirtualAllocator, FutexLock> MemoryPool;
+diff -ruN a/subprojects/frigg/include/frg/slab.hpp b/subprojects/frigg/include/frg/slab.hpp
+--- a/subprojects/frigg/include/frg/slab.hpp
++++ b/subprojects/frigg/include/frg/slab.hpp
+@@ -100,6 +100,12 @@
+ template<typename Policy>
+ using policy_map_slab_t = decltype(std::declval<Policy>().map_slab(size_t(0), size_t(0)));
+ 
++template<typename Policy>
++using policy_map_large_t = decltype(std::declval<Policy>().map_large(size_t(0)));
++
++template<typename Policy>
++using policy_unmap_large_t = decltype(std::declval<Policy>().unmap_large(uintptr_t(0), size_t(0)));
++
+ // Common configuration for slab allocators (slab_pool and shared_slab_pool).
+ template<typename Policy>
+ struct slab_policy_traits {
+@@ -236,6 +242,15 @@
+ 	// TODO: Refactor the huge frame padding.
+ 	static constexpr size_t huge_padding = page_size;
+ 
++	// A policy that has map_large() and unmap_large() may keep the mapping
++	// of a freed large block to hand it to the next one of the same length.
++	// Every large block is mapped and unmapped through the pair, or through
++	// map() and unmap(): the policy with map(length, align) never has it,
++	// since a cached mapping would not be aligned.
++	static constexpr bool maps_large_blocks = is_detected_v<policy_map_large_t, Policy>
++			&& is_detected_v<policy_unmap_large_t, Policy>
++			&& !is_detected_v<policy_map_aligned_t, Policy>;
++
+ 	struct freelist {
+ 		freelist()
+ 		: link{nullptr} { }
+@@ -478,7 +493,10 @@
+ 			_plcy.poison(sup, sizeof(frame));
+ 			_plcy.poison(reinterpret_cast<void *>(obj_address), obj_size);
+ 		}
+-		_plcy.unmap(sb_base, sb_reservation);
++		if constexpr (maps_large_blocks)
++			_plcy.unmap_large(sb_base, sb_reservation);
++		else
++			_plcy.unmap(sb_base, sb_reservation);
+ 	}
+ 
+ 	//--------------------------------------------------------------------------------------
+@@ -838,7 +856,10 @@
+ 		}
+ 	} else {
+ 		sb_reservation = area_size + offset + alignment;
+-		sb_base = _plcy.map(sb_reservation);
++		if constexpr (maps_large_blocks)
++			sb_base = _plcy.map_large(sb_reservation);
++		else
++			sb_base = _plcy.map(sb_reservation);
+ 		if(!sb_base)
+ 			return nullptr;
+ 		if(alignment == sb_size) {
