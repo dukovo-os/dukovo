@@ -699,14 +699,15 @@ fn stat(text: &mut Text) -> fmt::Result {
     writeln!(text, "faults: {}", crate::user::memory::faults_resolved())?;
     // Lock contention, for `ob bench --scaling`: threads that found a
     // mutex taken, threads that slept for one, mutexes handed to a
-    // sleeper or let go with one woken to try again, and how often the
-    // CPUs' caches of capabilities went stale (`caps::version`).
+    // sleeper or let go with one woken to try again, and how often a
+    // capability the CPUs' caches held left its slot
+    // (`caps::cached_departures`).
     let mutexes = sched::mutex_counts();
     writeln!(text, "mutex_contended: {}", mutexes.contended)?;
     writeln!(text, "mutex_waits: {}", mutexes.waits)?;
     writeln!(text, "mutex_handoffs: {}", mutexes.handoffs)?;
     writeln!(text, "mutex_wakes: {}", mutexes.wakes)?;
-    writeln!(text, "cap_cache_flushes: {}", crate::caps::version())?;
+    writeln!(text, "cap_cache_flushes: {}", crate::caps::cached_departures())?;
     let now = <crate::Arch as radix_hal::Timer>::wall_clock_ns().unwrap_or(0);
     writeln!(text, "boot_time_ns: {}", now.saturating_sub(sched::now_ns()))
 }

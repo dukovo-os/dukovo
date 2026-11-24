@@ -284,33 +284,35 @@ locks have gone, each after a look at a flag.
 frequent use of the store: every system call on a capability does it.
 Each CPU keeps the last capabilities its system calls found
 (`user::objects::find`), sixteen of them indexed by slot, each with a
-weak reference to the object it designates and the store's version
-number at the time (ADR 0077). A lookup that finds the slot in this
-CPU's cache at the current version returns it without taking any lock
-or writing anything another CPU reads.
+weak reference to the object it designates and its slot's version word
+with the value it had before the lookup (ADR 0077, ADR 0656). A lookup
+that finds the slot in this CPU's cache with the word unmoved returns
+it without taking any lock or writing anything another CPU reads.
 
-The version moves whenever a capability some CPU found leaves its
-slot, before the space's lock goes, and whenever an object some CPU
-found leaves the store, before the operation that released it returns.
-The version is read before the lookup. Finding a capability for a cache
-marks its slot (`SpaceView::get_to_cache`), and the store moves the
-version when a marked slot is emptied, moved from or destroyed; the
-kernel marks the objects it hands to a cache in the same hold of the
-space's lock, and moves the version when one of them goes
-(`caps::mark_stale`). Other changes, such
-as a capability put in an empty slot or one nobody looked up deleted,
-leave every cache as it is: nothing in a cache was taken away.
+Each space has sixteen version words, and a slot uses the one its
+number picks modulo sixteen (`SLOT_VERSIONS`). A word moves whenever a
+capability some CPU found leaves one of its slots, before the space's
+lock goes. Finding a capability for a cache marks its slot
+(`SpaceView::get_to_cache`), and the store moves the slot's word when a
+marked slot is emptied, moved from or destroyed (`cached_left`). Other
+changes, such as a capability put in an empty slot or one nobody looked
+up deleted, leave every cache as it is: nothing in a cache was taken
+away. A close in one program moves only one of its own words, so the
+caches of every other program, and of most of its own slots, stay.
 
 That is correct because a capability stays in its slot, unchanged,
 until it is deleted, moved or revoked, all of which empty the slot: so
-if the version did not move, the capability a CPU found is still there,
-and an operation that has emptied the slot but not moved the version yet
-has not returned either, so the lookup counts as coming before it, which
-a lookup that took the space's lock first could also have done. A revoke that
-has returned has moved the version, and any thread that learns of it
-(through a lock, an IPC or any other synchronization) sees the new
-version, so it cannot use what was revoked. The unit tests check this
-on random sequences of every operation (`a_cache_the_store_keeps_fresh_is_never_wrong`).
+if the slot's word did not move, the capability a CPU found is still
+there, and an operation that has emptied the slot but not moved the
+word yet has not returned either, so the lookup counts as coming before
+it, which a lookup that took the space's lock first could also have
+done. A revoke that has returned has moved the word of every slot it
+emptied, and any thread that learns of it (through a lock, an IPC or
+any other synchronization) sees the new value, so it cannot use what was
+revoked. An object leaves the store only once its last capability has
+left its slot, so a cached object is always behind a word that moved
+first. The unit tests check this on random sequences of every operation
+(`a_cache_the_store_keeps_fresh_is_never_wrong`).
 The cache keeps weak references to objects, so it keeps no object
 alive. It is a per-CPU value that only its own CPU touches, with
 preemption off (`percpu::Own`), so a hit takes no lock and no locked

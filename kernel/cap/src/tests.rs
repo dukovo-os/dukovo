@@ -676,45 +676,73 @@ fn the_linked_bit_says_which_slots_have_relatives() {
     caps.audit().unwrap();
 }
 
-/// Whether the store's version moved since `seen`, which then catches up.
-fn stale(caps: &Store, seen: &mut u64) -> bool {
-    let now = caps.version();
+/// Whether the version word of `at` moved since `seen`, which then
+/// catches up.
+fn moved(caps: &Store, at: SlotRef, seen: &mut u64) -> bool {
+    let now = caps.slot_version(at).map_or(0, SlotVersion::get);
     core::mem::replace(seen, now) != now
 }
 
 #[test]
-fn a_cached_capability_leaving_its_slot_makes_the_store_stale() {
+fn a_cached_capability_leaving_its_slot_moves_its_version() {
     let caps = store();
-    let mut seen = caps.version();
     let a = caps.create_space(4).unwrap();
+    let mut seen = [0u64; 4];
     caps.create(at(a, 0), ObjectKind::Endpoint).unwrap();
     caps.derive(at(a, 0), at(a, 1), Derivation::COPY).unwrap();
-    assert!(!stale(&caps, &mut seen));
     // Deleting or moving a capability nobody cached changes nothing cached.
     caps.move_cap(at(a, 1), at(a, 2)).unwrap();
     caps.delete(at(a, 2), &mut |_, _| {}).unwrap();
-    assert!(!stale(&caps, &mut seen));
+    for slot in 0..4 {
+        assert!(!moved(&caps, at(a, slot), &mut seen[slot as usize]));
+    }
     assert_eq!(caps.get_to_cache(at(a, 1)), Err(CapError::Empty));
     // Once cached, moving it out of its slot or deleting it does.
     let cap = caps.get_to_cache(at(a, 0)).unwrap();
     assert_eq!(caps.get(at(a, 0)), Ok(cap));
     caps.derive(at(a, 0), at(a, 1), Derivation::COPY).unwrap();
-    assert!(!stale(&caps, &mut seen));
+    assert!(!moved(&caps, at(a, 0), &mut seen[0]));
     caps.move_cap(at(a, 0), at(a, 3)).unwrap();
-    assert!(stale(&caps, &mut seen));
-    assert!(!stale(&caps, &mut seen));
+    assert!(moved(&caps, at(a, 0), &mut seen[0]));
+    assert!(!moved(&caps, at(a, 0), &mut seen[0]));
     // Its new slot is not cached.
     caps.delete(at(a, 3), &mut |_, _| {}).unwrap();
-    assert!(!stale(&caps, &mut seen));
+    assert!(!moved(&caps, at(a, 3), &mut seen[3]));
     // A revoke of its parent, and destroying its space, take it out too.
     caps.get_to_cache(at(a, 1)).unwrap();
     caps.create(at(a, 0), ObjectKind::Notification).unwrap();
     caps.derive(at(a, 0), at(a, 2), Derivation::COPY).unwrap();
     caps.get_to_cache(at(a, 2)).unwrap();
     assert_eq!(caps.revoke(at(a, 0), usize::MAX, &mut |_, _| {}), Ok(Progress::Done));
-    assert!(stale(&caps, &mut seen));
+    assert!(moved(&caps, at(a, 2), &mut seen[2]));
+    caps.get_to_cache(at(a, 0)).unwrap();
     caps.destroy_space(a, &mut |_, _| {}).unwrap();
-    assert!(stale(&caps, &mut seen));
+    assert!(moved(&caps, at(a, 0), &mut seen[0]));
+    assert!(moved(&caps, at(a, 1), &mut seen[1]));
+    caps.audit().unwrap();
+}
+
+#[test]
+fn a_departure_leaves_other_spaces_and_most_slots_as_they_were() {
+    let caps = store();
+    let a = caps.create_space(SLOT_VERSIONS as u32 + 2).unwrap();
+    let b = caps.create_space(2).unwrap();
+    caps.create(at(a, 0), ObjectKind::Endpoint).unwrap();
+    caps.derive(at(a, 0), at(a, 1), Derivation::COPY).unwrap();
+    caps.derive(at(a, 0), at(b, 0), Derivation::COPY).unwrap();
+    let words = [at(a, 1), at(a, SLOT_VERSIONS as u32), at(b, 0)];
+    let mut seen = words.map(|at| caps.slot_version(at).unwrap().get());
+    caps.get_to_cache(at(a, 0)).unwrap();
+    caps.get_to_cache(at(a, 1)).unwrap();
+    caps.get_to_cache(at(b, 0)).unwrap();
+    // Slot 0 is cached in both spaces: taking it out of a moves only the
+    // word that a's slot 0 shares with a's slot SLOT_VERSIONS.
+    let cap = caps.get(at(a, 0)).unwrap();
+    caps.move_cap(at(a, 0), at(a, 2)).unwrap();
+    assert!(!moved(&caps, words[0], &mut seen[0]));
+    assert!(moved(&caps, words[1], &mut seen[1]));
+    assert!(!moved(&caps, words[2], &mut seen[2]));
+    assert_eq!(caps.get(at(a, 2)), Ok(cap));
     caps.audit().unwrap();
 }
 
@@ -1578,27 +1606,29 @@ proptest! {
         prop_assert_eq!(run.caps.census(), Census::default());
     }
 
-    /// A cache of capabilities looked up with `get_to_cache`, emptied
-    /// whenever the store says it is stale, never holds a capability its
+    /// A cache of capabilities looked up with `get_to_cache`, each kept
+    /// while its slot's version word stays, never holds a capability its
     /// slot no longer has: what the kernel's per-CPU caches rely on.
     #[test]
     fn a_cache_the_store_keeps_fresh_is_never_wrong(
         ops in proptest::collection::vec((op(), slot()), 1..60)
     ) {
         let mut run = Run::new();
-        let mut seen = run.caps.version();
         let mut cache = HashMap::new();
         for (op, look) in &ops {
             run.apply(op);
-            if stale(&run.caps, &mut seen) {
-                cache.clear();
-            }
-            for (&at, cap) in &cache {
-                prop_assert_eq!(run.caps.get(at), Ok(*cap), "after {:?}", op);
+            // An entry stands while its slot's version word is what it was
+            // before the lookup, as the kernel's per-CPU caches check.
+            cache.retain(|&at, &mut (_, seen)| {
+                run.caps.slot_version(at).map(SlotVersion::get) == Some(seen)
+            });
+            for (&at, &(cap, _)) in &cache {
+                prop_assert_eq!(run.caps.get(at), Ok(cap), "after {:?}", op);
             }
             let at = run.at(run.pick(*look, Want::Full(|_| true)));
-            if let Ok(cap) = run.caps.get_to_cache(at) {
-                cache.insert(at, cap);
+            let seen = run.caps.slot_version(at).map(SlotVersion::get);
+            if let (Some(seen), Ok(cap)) = (seen, run.caps.get_to_cache(at)) {
+                cache.insert(at, (cap, seen));
             }
         }
     }
