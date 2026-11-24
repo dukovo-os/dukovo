@@ -251,12 +251,6 @@ const BLOCK: usize = 256;
 /// `BLOCK * BLOCKS`.
 const BLOCKS: usize = 1024;
 
-/// How many version words each space has. The capability in a slot is
-/// cached against the word its slot number picks, modulo this, so taking
-/// a cached capability out of one slot leaves the caches of every other
-/// space, and of most of this space's slots, as they are.
-pub const SLOT_VERSIONS: usize = 16;
-
 /// One capability space's lock and what it guards, on cache lines of its
 /// own: the spaces of a block sit side by side, and processes on other
 /// CPUs, each taking its own space's lock, would otherwise pass the lines
@@ -264,27 +258,6 @@ pub const SLOT_VERSIONS: usize = 16;
 #[repr(align(64))]
 struct Space<A: Allocator> {
     state: Mutex<SpaceState<A>>,
-    versions: SlotVersions,
-}
-
-/// A space's version words ([`SLOT_VERSIONS`]), on lines apart from its
-/// lock: every CPU that finds one of the space's capabilities in its
-/// cache reads a word, and only a capability leaving a slot writes one.
-#[repr(align(64))]
-struct SlotVersions([AtomicU64; SLOT_VERSIONS]);
-
-/// The version word of one slot, for a cache outside the store to check
-/// what it keeps against ([`Capabilities::slot_version`]).
-#[derive(Clone, Copy)]
-pub struct SlotVersion<'s>(&'s AtomicU64);
-
-impl SlotVersion<'_> {
-    /// The word's value now: while it stays what it was before a lookup
-    /// of the slot to be cached, the cached copy is what the slot holds.
-    #[inline]
-    pub fn get(self) -> u64 {
-        self.0.load(Ordering::Acquire)
-    }
 }
 
 /// Every capability space, the object table and the derivation tree, each
@@ -306,6 +279,9 @@ pub struct Capabilities<A: Allocator + Clone, K = ()> {
     /// The object table: its records, each behind its own lock, and its
     /// free indexes behind the table's (O).
     objects: Objects<A, K>,
+    /// Moves on whenever a capability looked up to be cached leaves its
+    /// slot, before the lock that guarded the slot goes.
+    version: AtomicU64,
 }
 
 /// The next generation number, skipping 0.
@@ -339,6 +315,7 @@ impl<A: Allocator + Clone, K: Located> Capabilities<A, K> {
             tree: Mutex::new(Forest { spaces: Vec::new_in(alloc.clone()), free: None }),
             blocks,
             objects: Objects::new(alloc.clone())?,
+            version: AtomicU64::new(0),
             alloc,
         })
     }
@@ -367,8 +344,7 @@ impl<A: Allocator + Clone, K: Located> Capabilities<A, K> {
             // lock-order checker.
             let state =
                 SpaceState { generation: 1, live: false, slots: Vec::new_in(self.alloc.clone()) };
-            let versions = SlotVersions([const { AtomicU64::new(0) }; SLOT_VERSIONS]);
-            let _ = block.push_within_capacity(Space { state: Mutex::new(state), versions });
+            let _ = block.push_within_capacity(Space { state: Mutex::new(state) });
         }
         // Only the tree lock's holder makes blocks, so nobody else can
         // have set it meanwhile.
@@ -419,40 +395,26 @@ impl<A: Allocator + Clone, K: Located> Capabilities<A, K> {
         f: impl FnOnce(&mut SpaceView<'_, A, K>) -> R,
     ) -> Result<R, CapError> {
         let mut state = self.lock_space(space, 0)?;
-        let mut view = SpaceView { store: self, id: space, state: &mut state };
-        Ok(f(&mut view))
-    }
-
-    /// The version word of slot `at`, which moves whenever a capability
-    /// looked up to be cached ([`SpaceView::get_to_cache`]) leaves a slot
-    /// of `at`'s space that picks the same word ([`SLOT_VERSIONS`]),
-    /// before the space's lock goes. Read before the lookup, it says the
-    /// cached copy is still what the slot holds for as long as it stays.
-    /// `None` if no space with `at`'s index was ever made.
-    #[inline]
-    pub fn slot_version(&self, at: SlotRef) -> Option<SlotVersion<'_>> {
-        let space = self.space(at.space.index)?;
-        Some(SlotVersion(&space.versions.0[at.slot as usize % SLOT_VERSIONS]))
-    }
-
-    /// Says that a capability looked up to be cached left slot `slot` of
-    /// the space with index `space`: its version word moves. Called with
-    /// that space's lock held, so the word has moved before anyone can
-    /// find the slot changed.
-    pub(super) fn cached_left(&self, space: u32, slot: u32) {
-        if let Some(space) = self.space(space) {
-            space.versions.0[slot as usize % SLOT_VERSIONS].fetch_add(1, Ordering::Release);
+        let mut view = SpaceView { store: self, id: space, state: &mut state, stale: false };
+        let result = f(&mut view);
+        if view.stale {
+            self.bump_version();
         }
+        Ok(result)
     }
 
-    /// How many times a capability looked up to be cached has left its
-    /// slot, in every space there has been: the sum of every version word.
-    pub fn cached_departures(&self) -> u64 {
-        let spaces = self.blocks.iter().filter_map(Once::get).flatten();
-        spaces
-            .flat_map(|space| &space.versions.0)
-            .map(|word| word.load(Ordering::Relaxed))
-            .fold(0, u64::wrapping_add)
+    /// The store's version, which moves whenever a capability looked up to
+    /// be cached ([`SpaceView::get_to_cache`]) leaves its slot. Read before
+    /// the lookup, it says the cached copy is still what the slot holds
+    /// for as long as the version stays.
+    pub fn version(&self) -> u64 {
+        self.version.load(Ordering::Acquire)
+    }
+
+    /// Moves the version on: for whatever the kernel caches beside the
+    /// store, when it changes.
+    pub fn bump_version(&self) {
+        self.version.fetch_add(1, Ordering::Release);
     }
 
     /// Runs `f` on what the kernel keeps of the object `id`, if the object
@@ -725,7 +687,7 @@ impl<A: Allocator + Clone, K: Located> Capabilities<A, K> {
         let mut stale = false;
         let done = fast::move_unlinked(src, dst, &mut stale);
         if stale {
-            self.cached_left(from.space.index, from.slot);
+            self.bump_version();
         }
         Ok(done)
     }

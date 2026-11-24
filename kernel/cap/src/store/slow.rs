@@ -72,6 +72,9 @@ pub struct TreeView<'v, A: Allocator + Clone, K = ()> {
     /// throughout ([`Capabilities::with_all`]); otherwise the CPUs'
     /// spares take the lock when they need it ([`TreeView::indexes`]).
     pub(super) table: Option<&'v mut Free<A>>,
+    /// A capability a cache may hold left its slot: the store's version
+    /// moves before the locks go.
+    pub(super) stale: bool,
 }
 
 impl<A: Allocator + Clone, K: Located> TreeView<'_, A, K> {
@@ -344,12 +347,10 @@ impl<A: Allocator + Clone, K: Located> TreeView<'_, A, K> {
         if self.slot(src).marks.linked {
             self.move_linked(src, dst);
         } else {
-            let mut stale = false;
+            let mut stale = self.stale;
             let (from_slot, to_slot) = self.two_slots(src, dst);
             let _ = move_unlinked(from_slot, to_slot, &mut stale);
-            if stale {
-                self.store.cached_left(src.space, src.slot);
-            }
+            self.stale = stale;
         }
         Ok(())
     }
@@ -569,9 +570,7 @@ impl<A: Allocator + Clone, K: Located> TreeView<'_, A, K> {
         *self.slot_mut(dst) =
             Slot { cap: moved.cap, marks: Marks { linked: moved.marks.linked, ..Marks::NONE } };
         *self.slot_mut(src) = Slot::EMPTY;
-        if moved.marks.cached {
-            self.store.cached_left(src.space, src.slot);
-        }
+        self.stale |= moved.marks.cached;
         let node = core::mem::replace(self.forest.tree_mut(src), Tree::NONE);
         *self.forest.tree_mut(dst) = node;
         match node.prev {
@@ -600,9 +599,7 @@ impl<A: Allocator + Clone, K: Located> TreeView<'_, A, K> {
     pub(super) fn remove(&mut self, link: Link, released: &mut dyn FnMut(Released, Option<K>)) {
         let slot = core::mem::replace(self.slot_mut(link), Slot::EMPTY);
         let held = slot.cap.as_ref().and_then(Capability::id);
-        if slot.marks.cached {
-            self.store.cached_left(link.space, link.slot);
-        }
+        self.stale |= slot.marks.cached;
         let node = core::mem::replace(self.forest.tree_mut(link), Tree::NONE);
         match (node.parent, node.child) {
             (Some(parent), Some(first)) => {
@@ -736,9 +733,18 @@ impl<A: Allocator + Clone, K: Located> Capabilities<A, K> {
         }
         // The object table's lock comes last of the store's.
         let mut table = hold_objects.then(|| self.objects.lock());
-        let mut view =
-            TreeView { store: self, forest: &mut forest, held, table: table.as_deref_mut() };
-        f(&mut view)
+        let mut view = TreeView {
+            store: self,
+            forest: &mut forest,
+            held,
+            table: table.as_deref_mut(),
+            stale: false,
+        };
+        let result = f(&mut view);
+        if view.stale {
+            self.bump_version();
+        }
+        result
     }
 
     /// Deletes every capability derived from the one in `at`, in every
@@ -829,6 +835,9 @@ impl<A: Allocator + Clone, K: Located> Capabilities<A, K> {
             };
             let mut view = TreeView::one(self, &mut forest, cursor.space, &mut state);
             view.remove(cursor, released);
+            if view.stale {
+                self.bump_version();
+            }
             deleted += 1;
             cursor = parent;
         }
@@ -915,6 +924,9 @@ impl<A: Allocator + Clone, K: Located> Capabilities<A, K> {
                 }
             }
         }
+        if view.stale {
+            self.bump_version();
+        }
         state.slots = Vec::new_in(self.alloc.clone());
         state.live = false;
         state.generation = bump(state.generation);
@@ -959,6 +971,6 @@ impl<'v, A: Allocator + Clone, K> TreeView<'v, A, K> {
     ) -> Self {
         let mut held = [const { None }; MAX_HELD];
         held[0] = Some((index, Some(state)));
-        TreeView { store, forest, held, table: None }
+        TreeView { store, forest, held, table: None, stale: false }
     }
 }

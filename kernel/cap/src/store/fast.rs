@@ -35,6 +35,9 @@ pub struct SpaceView<'v, A: Allocator + Clone, K = ()> {
     pub(super) store: &'v Capabilities<A, K>,
     pub(super) id: SpaceId,
     pub(super) state: &'v mut SpaceState<A>,
+    /// A capability a cache may hold left its slot: the store's version
+    /// moves before the lock goes.
+    pub(super) stale: bool,
 }
 
 impl<A: Allocator + Clone, K: Located> SpaceView<'_, A, K> {
@@ -68,11 +71,10 @@ impl<A: Allocator + Clone, K: Located> SpaceView<'_, A, K> {
     }
 
     /// The capability in `at`, as [`SpaceView::get`] gives it, for a cache
-    /// outside the store to keep: from now on the slot's version word
-    /// ([`Capabilities::slot_version`]) moves once it leaves the slot
-    /// (deleted, revoked, moved, or its space destroyed). Nothing else
-    /// changes a capability in a slot, so until then the cached copy is
-    /// what the slot holds.
+    /// outside the store to keep: from now on the store's version moves
+    /// once it leaves the slot (deleted, revoked, moved, or its space
+    /// destroyed). Nothing else changes a capability in a slot, so until
+    /// then the cached copy is what the slot holds.
     pub fn get_to_cache(&mut self, at: SlotRef) -> Result<Capability, CapError> {
         let index = self.index(at)?;
         let slot = &mut self.state.slots[index];
@@ -269,9 +271,7 @@ impl<A: Allocator + Clone, K: Located> SpaceView<'_, A, K> {
             return Ok(Fast::Linked);
         }
         let taken = self.state.slots[index].take_unlinked();
-        if taken.cached {
-            self.store.cached_left(self.id.index, at.slot);
-        }
+        self.stale |= taken.cached;
         Ok(Fast::Done(taken.cap.as_ref().and_then(Capability::id)))
     }
 
@@ -301,12 +301,7 @@ impl<A: Allocator + Clone, K: Located> SpaceView<'_, A, K> {
             return Err(CapError::Occupied);
         }
         let (src, dst) = two_slots(&mut self.state.slots, src, dst);
-        let mut stale = false;
-        let done = move_unlinked(src, dst, &mut stale);
-        if stale {
-            self.store.cached_left(self.id.index, from.slot);
-        }
-        Ok(done)
+        Ok(move_unlinked(src, dst, &mut self.stale))
     }
 
     // ---- Internals ----
@@ -343,8 +338,7 @@ impl<A: Allocator + Clone, K: Located> SpaceView<'_, A, K> {
 
 /// Moves the capability in `src` to the empty slot `dst`, if `src` is
 /// not linked: a move that touches no other slot. Moving a capability a
-/// cache may hold sets `stale`, for the caller to move `src`'s version
-/// word.
+/// cache may hold marks the store stale.
 pub(super) fn move_unlinked(src: &mut Slot, dst: &mut Slot, stale: &mut bool) -> Fast<()> {
     if src.marks.linked {
         return Fast::Linked;

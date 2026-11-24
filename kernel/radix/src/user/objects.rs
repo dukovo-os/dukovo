@@ -20,13 +20,11 @@
 //! Making or releasing an object takes its space's lock and its record's,
 //! and no lock other objects share. A system call finds a capability and
 //! the object it designates with one look at its CPU's cache, which takes
-//! no lock when this CPU found that slot before and the slot's version
-//! word is what it was then ([`find`]): system calls on different CPUs
-//! share no lock to reach their objects. A capability a CPU found leaving
-//! its slot moves that slot's word (`caps`), and no other space's; one
-//! nobody looked up, such as a file opened and closed again, moves none.
-//! An object leaves the store only once its last capability has left its
-//! slot, so a cached object is always behind a word that moved by then.
+//! no lock when this CPU found that slot before at the version the store
+//! has now ([`find`]): system calls on different CPUs share no lock to
+//! reach their objects. A capability a CPU found leaving its slot, or an
+//! object a CPU found leaving the store, moves the version (`caps`); one
+//! nobody looked up, such as a file opened and closed again, does not.
 //!
 //! A call on a file or directory capability of a process with one thread
 //! borrows the object without counting a reference, as Linux's light
@@ -51,9 +49,7 @@ use core::ptr;
 use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use radix_abi::errors::Kernel;
-use radix_cap::{
-    CapError, Capability, Located, ObjectId, ObjectKind, Rights, SlotRef, SlotVersion, SpaceId,
-};
+use radix_cap::{CapError, Capability, Located, ObjectId, ObjectKind, Rights, SlotRef, SpaceId};
 use radix_hal::{Cpu, CpuLocal, MAX_CPUS};
 use radix_mm::{Flags, HEAP, Kmalloc};
 
@@ -148,6 +144,9 @@ impl Object {
 /// (`radix_cap`'s `K`), which the store checks against the object's name
 /// and locks around each look.
 pub struct Recorded {
+    /// A CPU's cache may hold it ([`get_to_cache`]): its going moves the
+    /// store's version.
+    cached: bool,
     object: Object,
     /// What the object costs, charged to the account of the process that
     /// made it (`process.create`), and given back when it goes.
@@ -266,7 +265,7 @@ pub fn record(
     charge: Option<Charge>,
 ) -> core::result::Result<(), CapError> {
     let Some(object) = object.take() else { return Err(CapError::Empty) };
-    *kept = Some(Recorded { object, charge });
+    *kept = Some(Recorded { cached: false, object, charge });
     Ok(())
 }
 
@@ -295,6 +294,14 @@ pub fn create(
 /// CPU's cache. The system calls' lookups go through [`find`].
 pub fn get(id: ObjectId) -> Option<Object> {
     caps::store().ok()?.with_kept(id, |kept| kept.object.clone())
+}
+
+/// The object `kept` holds, for a CPU's cache to keep: from now on the
+/// version moves once it goes. Called under its record's lock, with the
+/// lock of the space whose slot named it held too (`caps::get_to_cache`).
+fn get_to_cache(kept: &mut Recorded) -> Object {
+    kept.cached = true;
+    kept.object.clone()
 }
 
 /// An object as a CPU's cache keeps it: a weak reference, which keeps its
@@ -382,10 +389,9 @@ impl Kept {
 pub const CACHED: usize = 16;
 
 /// A capability this CPU found in a slot, the object it designates, and
-/// the slot's version word with what it said before the lookup.
+/// the store's version then.
 struct Cached {
     at: SlotRef,
-    word: SlotVersion<'static>,
     version: u64,
     cap: Capability,
     /// `None` if the capability designates no kernel object, as a memory
@@ -469,17 +475,16 @@ static REVOKES: AtomicUsize = AtomicUsize::new(0);
 /// The capability in slot `slot` of `cspace`, and the object it
 /// designates if `wanted` says its kind's is needed, found in `place`.
 ///
-/// If this CPU found the capability while the slot's version word said
-/// what it says now, it has not left the slot since, so neither has its
-/// object left the store, and nothing else changes either: no lock, and
-/// nothing shared written but the object's reference count. A change
-/// under way that has not moved the word yet has not returned either, so
-/// a lookup that misses it happened before it. Otherwise the store is
-/// asked under the space's lock and the object's record's
-/// (`caps::get_to_cache`, which marks the slot so that the word moves
-/// once the capability goes), and the answer is kept with the word's
-/// value read before the store was asked: a change after the lookup
-/// moves the word past it.
+/// If this CPU found the capability at the version the store has now, it
+/// has not left the slot since, nor its object the store, and nothing
+/// else changes either: no lock, and nothing shared written but the
+/// object's reference count. A change under way that has not moved the
+/// version yet has not returned either, so a lookup that misses it
+/// happened before it. Otherwise the store is asked under the space's
+/// lock and the object's record's (`caps::get_to_cache`,
+/// [`get_to_cache`], so that the version moves once either goes), and the
+/// answer is kept with the version read before the store was asked: a
+/// change after the lookup moves the version past it.
 ///
 /// What is found is written in the caller's `place`, not returned: a
 /// capability and an object are 88 bytes, which a move would copy with a
@@ -504,8 +509,8 @@ pub fn find(
 /// in [`Found::held`]. A POSIX program's system calls are methods of its
 /// own process. That is sound because the reference keeps the process's
 /// memory where it is: the cache's weak reference to the same address is
-/// to the same object, which the capability designated while the slot's
-/// version word said what it says now.
+/// to the same object, which the capability designated at the version
+/// the store has now.
 ///
 /// If it finds a file or directory capability, and the thread is its
 /// process's only one, and no revoke a program asked for is under way, it
@@ -518,10 +523,9 @@ pub fn find(
 /// one (`process::ProcessObject::start`). The borrow is counted before
 /// this CPU passes a quiescent state or switches threads
 /// ([`count_borrowed`]), so a grace period that starts after the version
-/// word was read ends only once the borrow holds a reference of its own.
-/// All that is decided in one read section, with preemption off: no
-/// quiescent state can come between the word read and the borrow
-/// recorded.
+/// was read ends only once the borrow holds a reference of its own. All
+/// that is decided in one read section, with preemption off: no quiescent
+/// state can come between the version read and the borrow recorded.
 #[inline(always)]
 pub fn find_holding<'a>(
     cspace: SpaceId,
@@ -546,9 +550,10 @@ fn find_in<'a>(
     let index = cache_index(at);
     'cached: {
         let Some(cache) = CACHE.own() else { break 'cached };
-        let Some(entry) = &cache[index] else { break 'cached };
         // Read with preemption off, for a borrow: see `find_holding`.
-        if entry.at != at || entry.version != entry.word.get() {
+        let now = caps::version();
+        let Some(entry) = &cache[index] else { break 'cached };
+        if entry.at != at || entry.version != now {
             break 'cached;
         }
         let object = match &entry.object {
@@ -567,7 +572,7 @@ fn find_in<'a>(
             }
             Some(kept) if wanted(entry.cap.kind()) => match kept.upgrade() {
                 Some(object) => Some(object),
-                // Gone since the word was read, with its slot: ask the store.
+                // Gone, so the version is about to move: ask the store.
                 None => break 'cached,
             },
             _ => None,
@@ -592,17 +597,17 @@ fn lends(process: Option<&ProcessRef>) -> bool {
 /// Borrows the file or directory object `kept` holds, which capability
 /// `cap` in this CPU's cache designates, without counting a reference
 /// (ADR 0414), and records the borrow for the scheduler to count. With
-/// preemption off, in the read section that found the capability with
-/// its slot's version word unmoved ([`find_holding`]).
+/// preemption off, in the read section that found the capability at the
+/// store's version ([`find_holding`]).
 #[inline(always)]
 fn borrow(cap: Capability, kept: &Weak<FileObject, Kmalloc>, directory: bool) -> Found {
     let at = BORROWED.this();
     debug_assert!(at.load(Ordering::Relaxed).is_null(), "a CPU borrowed two objects at once");
     at.store(kept.as_ptr().cast_mut(), Ordering::Relaxed);
     // SAFETY: the cache's weak reference keeps the memory, and the
-    // capability, found in its slot with its version word unmoved, keeps
-    // the store's reference to the object: nobody but this thread empties
-    // the slot before this CPU passes a quiescent state, and before that the
+    // capability, found in its slot at the store's version, keeps the
+    // store's reference to the object: nobody but this thread empties the
+    // slot before this CPU passes a quiescent state, and before that the
     // borrow is counted (`find_holding`). The `Arc` made here is dropped
     // only if it was counted; otherwise it is forgotten (`give_back`).
     #[allow(unsafe_code)]
@@ -683,17 +688,18 @@ pub fn revoking<R>(revoke: impl FnOnce() -> R) -> R {
 #[inline(always)]
 pub fn find_object(cspace: SpaceId, slot: u32) -> Option<Object> {
     let at = SlotRef::new(cspace, slot);
+    let now = caps::version();
     let index = cache_index(at);
     'cached: {
         let Some(cache) = CACHE.own() else { break 'cached };
         let Some(entry) = &cache[index] else { break 'cached };
-        if entry.at != at || entry.version != entry.word.get() {
+        if entry.at != at || entry.version != now {
             break 'cached;
         }
         return match &entry.object {
             Some(kept) => match kept.upgrade() {
                 Some(object) => Some(object),
-                // Gone since the word was read, with its slot: ask the store.
+                // Gone, so the version is about to move: ask the store.
                 None => break 'cached,
             },
             None => None,
@@ -707,9 +713,8 @@ pub fn find_object(cspace: SpaceId, slot: u32) -> Option<Object> {
 #[cold]
 #[inline(never)]
 fn fill(at: SlotRef, index: usize) -> Result<Found> {
-    let (cap, object, word, version) =
-        caps::get_to_cache(at, |kept| kept.object.clone()).map_err(cap_error)?;
-    let kept = Cached { at, word, version, cap, object: object.as_ref().map(Kept::of) };
+    let (cap, object, version) = caps::get_to_cache(at, get_to_cache).map_err(cap_error)?;
+    let kept = Cached { at, version, cap, object: object.as_ref().map(Kept::of) };
     // What the entry held before goes once preemption is back on: it may
     // be the last reference to an object's memory.
     let before = CACHE.with_own(|cache| cache[index].replace(kept));
@@ -816,14 +821,17 @@ typed_lookup!(
 
 /// The store released an object, and gave back what it kept of it: the
 /// object is closed, with no lock of its record's held, and the store's
-/// other locks held or not (`caps::release`). A CPU's cache holds it only
-/// behind the version word of a slot that named it, which moved when its
-/// capability left, before this. What it
+/// other locks held or not (`caps::release`). If a CPU's cache may hold
+/// it, the version moves first, before the operation that released it
+/// returns; its index is not handed out again until then either. What it
 /// was charged goes back to the stock of the thread that released it,
 /// `by`, if it was charged to that thread's process, and to its account
 /// otherwise.
 pub fn released(kept: Option<Recorded>, by: Option<&super::UserThread>) {
-    let Some(Recorded { object, charge }) = kept else { return };
+    let Some(Recorded { cached, object, charge }) = kept else { return };
+    if cached {
+        caps::mark_stale();
+    }
     if cfg!(debug_assertions)
         && let (Some(_), Object::File(file) | Object::Directory(file)) = (by, &object)
     {
