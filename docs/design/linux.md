@@ -5,12 +5,13 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # Linux programs: the personality and the Linux table
 
-This note describes how Radix runs static x86-64 Linux programs, as of
-Phase 18's second step: how `exec` picks the personality, the path of a
-Linux call, what the kernel keeps for a Linux program, the files of the
-kernel's own and the vDSO, the locks, and how a call is added. The
-user-facing description is radix-linux(7) and radix-vdso(7); the
-decisions are ADRs 0610 to 0617.
+This note describes how Radix runs x86-64 Linux programs, as of Phase
+18's third step: how `exec` picks the personality, the path of a Linux
+call, what the kernel keeps for a Linux program, the files of the
+kernel's own and the vDSO, the calls the kernel forwards to linuxd and
+linuxd itself, the locks, and how a call is added. The user-facing
+description is radix-linux(7), radix-vdso(7), linux(1) and linuxd(8); the
+decisions are ADRs 0610 to 0622.
 
 ## Crates and files
 
@@ -53,9 +54,20 @@ kernel/radix/src/user/linux the table:
   notify.rs                 inotify
   system.rs                 process groups, sessions, identities, limits,
                             usage, scheduling, prctl, waitid
+  forward.rs                the calls forwarded to linuxd, and the Linux
+                            call object's methods (ADR 0618)
+  magic.rs                  a process's own /proc links (ADR 0620)
 tools/xtask/src/personality.rs  ob build's check that every program of
                             the image and of each bundle is Dukovo's
 userspace/linux/core.c      the linux-programs boot test's program
+userspace/linux/view.c      the linux-view boot test's program, dynamic
+userspace/programs/linuxd   linuxd(8): the forwarded calls (serve.rs,
+                            call.rs), /proc and /sys over FUSE (fs/), the
+                            netlink route sockets (netlink/)
+userspace/programs/systools/src/linux
+                            linux(1): `linux run`, the sandbox, the
+                            supervisor
+ports/linux-base            the Linux base bundle, org.dukovo.linux-base
 ```
 
 ## The personality
@@ -152,6 +164,34 @@ writing `struct epoll_event` records into the program's array.
 program and gives `AT_SYSINFO_EHDR`: glibc, musl and Dukovo's C library
 read the clocks without a call (ADR 0616).
 
+## Forwarded calls and linuxd
+
+A program `linux run` starts has an endpoint in slot `SLOT_LINUX`; one
+started otherwise has none, and nothing below happens for it. A call the
+table does not know, a `socket` of a family the kernel lacks, and a socket
+call on a descriptor that is not a kernel socket go to `forward::forward`,
+which sends the call's number and arguments as a call on the endpoint
+(label `FORWARDED`, no capability, no grant) and waits for the reply like
+any IPC call, so a signal cuts it short only while it is still queued. The
+thread keeps a `Forwarding` in `LinuxThread::forwarded` while it waits.
+
+The linuxd thread that received it calls `forwarded_call`, which finds the
+caller through the reply it holds (`ipc::held_caller`) and makes, once, a
+`LinuxCall` object for that `Forwarding`: a capability with read, write
+and control, never copy or transfer. Its methods (`forward::method`) read
+and write the caller's memory through `SpaceObject::read_other` and
+`write_other`, which walk the caller's page tables under its space's lock
+and copy through the direct map a page at a time, bounced through 1 KiB on
+the kernel stack, and give and take descriptors. When the caller's wait
+ends, `forward` takes the `Forwarding` back and marks the object ended, and
+every method then fails with `gone`.
+
+linuxd (`userspace/programs/linuxd`) answers from three worker threads and
+serves its FUSE filesystem from a fourth; `linux run` starts it, holds its
+endpoint and FUSE connection, and starts it again with `--again` if it
+ends. `serve_fuse` (`user/files.rs`) makes linuxd's filesystem a mount in
+no tree, whose root the launcher's view attaches at `/proc` and `/sys`.
+
 ## Locks
 
 - `LinuxProcess::brk` (a sleeping mutex) is taken before any lock of the
@@ -162,6 +202,11 @@ read the clocks without a call (ADR 0616).
   program, an allocation, a method call or a wait.
 - The futex calls on two words lock both waiter lists, the one first in
   the table first (ADR 0617).
+- `LinuxThread::forwarded` is a spin lock, held only to set, take or read
+  the `Forwarding`; the call object is made before it is taken and put in
+  under it. A cross-space copy holds the caller's space lock only while it
+  walks a page's tables and copies that page through the direct map,
+  never across a fault, which it makes with the lock dropped.
 - The timer files' list (`fs::timer_file::ARMED`, a sleeping mutex) is
   taken before a timer file's state, a spin lock; the watches' table
   (`fs::notify`) is a spin lock under which nothing is allocated, freed,

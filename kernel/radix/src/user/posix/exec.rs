@@ -515,6 +515,7 @@ pub fn exec_from(
         stack_bytes,
         linux.then(|| target.identity()).as_ref(),
     )?;
+    space.set_stack(sp);
     let entry = loader.as_ref().map_or(main.entry, |loader| loader.entry);
     let run_as = execfn.or(block.args().next()).unwrap_or(b"");
     let name = base_name(run_as);

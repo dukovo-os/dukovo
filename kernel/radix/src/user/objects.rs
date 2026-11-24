@@ -56,6 +56,7 @@ use radix_mm::{Flags, HEAP, Kmalloc};
 use super::account::Charge;
 use super::device::{DeviceObject, DeviceRef};
 use super::ipc::{Endpoint, EndpointRef};
+use super::linux::forward::{CallRef, LinuxCall};
 use super::memory::{FrameObject, FrameRef, SpaceObject, SpaceRef};
 use super::notify::{Notification, NotificationRef};
 use super::process::{ProcessObject, ProcessRef};
@@ -111,6 +112,8 @@ pub enum Object {
     KernelSettings,
     /// An event queue (radix-event-queue(2)).
     EventQueue(QueueRef),
+    /// A Linux call forwarded to linuxd (radix-linux-call(2)).
+    LinuxCall(CallRef),
 }
 
 impl Object {
@@ -136,6 +139,7 @@ impl Object {
             Object::Firewall => ObjectKind::Firewall,
             Object::KernelSettings => ObjectKind::KernelSettings,
             Object::EventQueue(_) => ObjectKind::EventQueue,
+            Object::LinuxCall(_) => ObjectKind::LinuxCall,
         }
     }
 }
@@ -329,6 +333,7 @@ enum Kept {
     Firewall,
     KernelSettings,
     EventQueue(Weak<EventQueue, Kmalloc>),
+    LinuxCall(Weak<LinuxCall, Kmalloc>),
 }
 
 impl Kept {
@@ -354,6 +359,7 @@ impl Kept {
             Object::Firewall => Kept::Firewall,
             Object::KernelSettings => Kept::KernelSettings,
             Object::EventQueue(queue) => Kept::EventQueue(Arc::downgrade(queue)),
+            Object::LinuxCall(call) => Kept::LinuxCall(Arc::downgrade(call)),
         }
     }
 
@@ -380,6 +386,7 @@ impl Kept {
             Kept::Firewall => Object::Firewall,
             Kept::KernelSettings => Object::KernelSettings,
             Kept::EventQueue(queue) => Object::EventQueue(queue.upgrade()?),
+            Kept::LinuxCall(call) => Object::LinuxCall(call.upgrade()?),
         })
     }
 }
@@ -862,6 +869,9 @@ pub fn released(kept: Option<Recorded>, by: Option<&super::UserThread>) {
         // Its watches go with its last reference (`queue::EventQueue`'s
         // drop), which frees only memory.
         Object::EventQueue(_) => {}
+        // The call goes on until its answer; the capability's end ends
+        // nothing but the reach of its holder.
+        Object::LinuxCall(_) => {}
         Object::Space(_)
         | Object::Random
         | Object::KernelLog

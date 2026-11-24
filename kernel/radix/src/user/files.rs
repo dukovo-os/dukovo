@@ -1285,6 +1285,7 @@ pub(super) fn directory_call(
         }
         directory::MOUNT => mount_method(user, found, label, args),
         directory::MOUNT_FUSE => mount_fuse_method(user, found, label, args),
+        directory::SERVE_FUSE => serve_fuse_method(user, found, label, args),
         directory::UNMOUNT => {
             let a = directory::UnmountArgs::decode(args)?;
             let dir = directory_of(found, Rights::CONTROL)?;
@@ -1890,6 +1891,37 @@ fn mount_fuse_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8])
         .mount(&who, &dir.at, path.as_str()?, made, source.as_source()?, read_only)
         .map_err(fs::status)?;
     log_mount(mount, false);
+    answer(label, 0, [0; 8])
+}
+
+/// `serve_fuse` (ADR 0619): the filesystem a program serves through a
+/// connection of `/devices/fuse`, on a mount of its own in no tree, as a
+/// resource domain's `/processes` is, with a capability to its root for a
+/// view to attach. It needs no right: what it makes is reached through
+/// that capability alone, and covers nothing of anyone else's. Out of
+/// line, as `mount_fuse` is.
+#[inline(never)]
+fn serve_fuse_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -> Result<Answer> {
+    let a = directory::ServeFuseArgs::decode(args)?;
+    let dir = directory_of(found, Rights::NONE)?;
+    let to = SlotRef::new(user.cspace, a.to);
+    // Checked first: a connection that is served is used up, even if its
+    // root's capability then has nowhere to go.
+    match caps::get(to) {
+        Err(radix_cap::CapError::Empty) => {}
+        Ok(_) => return Err(error(Kernel::Occupied)),
+        Err(err) => return Err(cap_error(err)),
+    }
+    let (_, file) = objects::file(user.cspace, a.connection, Rights::READ.union(Rights::WRITE))?;
+    let conn = fs::fuse::channel_of(&file.at.node).ok_or(error(Kernel::WrongKind))?.connection();
+    let made = radix_fuse::FuseFs::mount(conn, false).map_err(fs::status)?;
+    let root = radix_vfs::FileSystem::root(&*made);
+    let mount = Mount::apart(made, "fuse").map_err(|_| error(Kernel::NoMemory))?;
+    let object = FileObject::new(Location::new(mount, root), dir.name.clone())
+        .ok_or(error(Kernel::NoMemory))?;
+    // Never control: nothing is mounted on it, and it makes no views.
+    let rights = Rights::READ.union(Rights::WRITE).union(Rights::COPY).union(Rights::TRANSFER);
+    install_file(user, to, ObjectKind::Directory, rights, object, false)?;
     answer(label, 0, [0; 8])
 }
 

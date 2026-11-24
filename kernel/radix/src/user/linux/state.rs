@@ -11,7 +11,9 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use radix_sync::Mutex;
+use radix_sync::{Mutex, SpinLock};
+
+use super::forward::Forwarding;
 
 /// A process's Linux side.
 pub struct LinuxProcess {
@@ -97,6 +99,9 @@ pub struct LinuxThread {
     /// interrupted runs again with, set by that `poll` and taken at once
     /// by the call's end; 0 for none.
     poll_left: AtomicU64,
+    /// The call it has forwarded to linuxd and waits for the answer to
+    /// (ADR 0618), while it does.
+    pub forwarded: SpinLock<Option<Forwarding>>,
 }
 
 impl LinuxThread {
@@ -108,6 +113,7 @@ impl LinuxThread {
             robust_list: AtomicU64::new(0),
             robust_len: AtomicU64::new(0),
             poll_left: AtomicU64::new(0),
+            forwarded: SpinLock::new(None),
         }
     }
 

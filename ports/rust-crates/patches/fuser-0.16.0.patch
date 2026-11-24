@@ -10,7 +10,10 @@ in one write, which /devices/fuse needs and Radix's writev makes only up
 to PIPE_BUF; and no mount of its own. Radix mounts a connection with
 radix-directory(2)'s mount_fuse, which `mount -t` makes, and the program
 serves the descriptor it is handed with Session::from_fd; Session::new and
-spawn_mount2 say so.
+spawn_mount2 say so. A program started again on a connection whose INIT an
+earlier one answered takes it up with Session::from_fd_initialized, which
+starts the session as initialized, at the protocol version 7.31 Radix's
+kernel offers.
 
 diff --git a/fuser-0.16.0/Cargo.toml b/fuser-0.16.0/Cargo.toml
 --- a/fuser-0.16.0/Cargo.toml
@@ -180,3 +183,26 @@ new file mode 100644
 +        ))
 +    }
 +}
+diff --git a/fuser-0.16.0/src/session.rs b/fuser-0.16.0/src/session.rs
+--- a/fuser-0.16.0/src/session.rs
++++ b/fuser-0.16.0/src/session.rs
+@@ -138,6 +138,19 @@
+         }
+     }
+ 
++    /// Wrap an existing /dev/fuse file descriptor whose connection an
++    /// earlier session already took through `INIT`, as a program started
++    /// again on it does. The kernel sends `INIT` once, so the session
++    /// starts initialized, at the protocol version Radix's kernel offers.
++    #[cfg(target_os = "radix")]
++    pub fn from_fd_initialized(filesystem: FS, fd: OwnedFd, acl: SessionACL) -> Self {
++        let mut session = Self::from_fd(filesystem, fd, acl);
++        session.proto_major = 7;
++        session.proto_minor = 31;
++        session.initialized = true;
++        session
++    }
++
+     /// Run the session loop that receives kernel requests and dispatches them to method
+     /// calls into the filesystem. This read-dispatch-loop is non-concurrent to prevent
+     /// having multiple buffers (which take up much memory), but the filesystem methods

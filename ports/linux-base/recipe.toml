@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The libraries a program built for Linux runs on, as a bundle of the
+# Dukovo catalog, not of the image (ADRs 0370 and 0622): the Linux view of a
+# program that `linux run` starts has this bundle's `usr` as /usr. They are
+# taken, unbuilt, from the Freedesktop SDK's platform image for x86-64, the
+# 25.08 release: glibc 2.42 with its loader, GCC's runtime libraries and
+# the compression, ffi, XML, UUID and crypt libraries that programs from
+# distributions most often name. Nothing else of the image is kept.
+#
+# The image is fetched as its two layers' blobs, each pinned by digest and
+# size (the manifest, which a tag may change, is not read). They come from
+# the manifest of the image `freedesktopsdk/platform:25.08-x86_64`, which is
+#   sha256:af8220ed708c84daf5a530cb20529a809dd8306cae77783cc0baf3e10a056337
+# and whose config says that the layers unpack to the diff IDs
+#   sha256:ad08e36001447f8b80d3156e1569294be6bf213d7d2c0fafad88a40bed571053
+#   sha256:d14fd4f4dd1aa8e2b9ebdb13e691c3d31db5e94cbd15253ddc3003e812b1c25f
+# A newer image of the tag is another release of the bundle: change the
+# layers, and the version with them.
+#
+# The version is the SDK's release, 25.08, written as a bundle's version is:
+# numbers without a leading zero, and a patch number.
+name = "linux-base"
+version = "25.8.0"
+summary = "the libraries that programs for Linux run on"
+# glibc's loader and libraries are under the LGPL, with files that others
+# own under the BSD and ISC licenses and a few more, whose notices are in
+# its LICENSES file, which the bundle keeps. GCC's runtime libraries,
+# libstdc++, libgcc_s and libatomic, are under the GPL with the GCC Runtime
+# Library Exception. zlib is under the zlib license, zstd's library under
+# the BSD license or the GPL (v2), liblzma under the BSD Zero Clause
+# License, libbz2 under bzip2's license, libffi and Expat under the MIT
+# license, libuuid under the BSD license, and libcrypt, libxcrypt's, under
+# the LGPL, with files under the BSD licenses and in the public domain.
+license = "LGPL-2.1-or-later AND BSD-2-Clause AND BSD-3-Clause AND ISC AND GPL-3.0-or-later WITH GCC-exception-3.1 AND Zlib AND (BSD-3-Clause OR GPL-2.0-only) AND 0BSD AND bzip2-1.0.6 AND MIT"
+homepage = "https://freedesktop-sdk.io"
+
+# Blobs by digest are outside Docker Hub's limit on pulls; its manifests are
+# not.
+[source]
+registry = "registry-1.docker.io"
+repository = "freedesktopsdk/platform"
+tag = "25.08-x86_64"
+
+# The minimal layer: glibc and GCC's runtime libraries.
+[[source.layers]]
+digest = "sha256:c941ef6db317ca33564e5ab2bdb75667a55db876648fd65953e4614d7dd60868"
+size = 22603712
+
+# The platform layer, which holds the rest, over the first.
+[[source.layers]]
+digest = "sha256:4cce114f478cab3a53fe95cb9cb9ff945518127d954502cb69015670f428fc82"
+size = 220796320
+
+# No command: the bundle is its files. A manifest names at least one
+# program, so it has one that says so.
+[bundle]
+id = "org.dukovo.linux-base"
+name = "Linux base libraries"
+description = "The C and C++ runtime and the common libraries that programs built for Linux load, from the Freedesktop SDK 25.08 platform: glibc and its dynamic loader, libstdc++, libgcc_s, libatomic, zlib, zstd, xz, bzip2, libffi, Expat, libuuid and libcrypt, with the C.utf8 locale and their license files. A Linux program that Dukovo runs sees them as /usr; the bundle has no command and nothing in it runs on its own."
+commands = []
+programs = ["linux-base"]

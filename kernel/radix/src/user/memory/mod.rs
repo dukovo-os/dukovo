@@ -228,6 +228,47 @@ pub struct SpaceObject {
     /// writes its new pages by their frames ([`SpaceObject::write_new`]),
     /// so none is swapped out.
     running: AtomicBool,
+    /// Where its vDSO's code starts, for `/processes/<n>/maps`; 0 for
+    /// none.
+    vdso: AtomicU64,
+    /// An address in its first thread's stack, for `/processes/<n>/maps`;
+    /// 0 for none known.
+    stack: AtomicU64,
+}
+
+/// A region as `/processes/<n>/maps` shows it ([`SpaceObject::each_mapping`]).
+pub struct Mapping<'a> {
+    /// Its first byte's address.
+    pub start: u64,
+    /// The address past its last byte.
+    pub end: u64,
+    /// What the program may do with it; none (`PROT_NONE`) keeps it out of
+    /// reach.
+    pub access: Option<UserAccess>,
+    /// Whether other spaces may map its pages too (`MAP_SHARED`, a frame,
+    /// a ring).
+    pub shared: bool,
+    /// Where it starts in the file it maps, in bytes.
+    pub offset: u64,
+    /// The number of the file's node, 0 for no file.
+    pub node: u64,
+    /// The path of the file it maps, where the mapping keeps it.
+    pub name: Option<&'a crate::fs::Opened>,
+    /// What the kernel put there.
+    pub place: Place,
+}
+
+/// What the kernel put in a region, for its name in `/processes/<n>/maps`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    /// The vDSO's code.
+    Vdso,
+    /// The clock page above it, Linux's `[vvar]`.
+    Vvar,
+    /// The first thread's stack.
+    Stack,
+    /// Anything else.
+    Other,
 }
 
 /// Every address space, for the swap thread: dropped handles are let go
@@ -382,6 +423,8 @@ impl SpaceObject {
             swapped: AtomicU64::new(0),
             swap_cursor: AtomicU64::new(0),
             running: AtomicBool::new(false),
+            vdso: AtomicU64::new(0),
+            stack: AtomicU64::new(0),
         };
         let space = Arc::try_new_in(space, kmalloc()).ok()?;
         let mut spaces = SPACES.lock();
@@ -491,7 +534,54 @@ impl SpaceObject {
         let run = UserAccess::ReadExecute;
         let image_backing = Backing::Frame(image.clone());
         self.map_kept_in(&mut regions, code, image.pages, &image_backing, 0, run)?;
+        self.vdso.store(code, Ordering::Relaxed);
         Ok(code)
+    }
+
+    /// Notes that its first thread's stack holds `address`, for
+    /// `/processes/<n>/maps`.
+    pub fn set_stack(&self, address: u64) {
+        self.stack.store(address, Ordering::Relaxed);
+    }
+
+    /// Calls `each` with each of its regions, lowest first, as
+    /// `/processes/<n>/maps` shows them (Linux's `/proc/<n>/maps`). The
+    /// regions stay locked meanwhile: `each` only writes text.
+    pub fn each_mapping(&self, each: &mut dyn FnMut(&Mapping<'_>)) {
+        let vdso = self.vdso.load(Ordering::Relaxed);
+        let stack = self.stack.load(Ordering::Relaxed);
+        let regions = self.regions.lock();
+        for region in regions.iter() {
+            let (access, shared, file) = match &region.backing {
+                Backing::Anon(anon) => (anon.access, anon.shared.is_some(), anon.file.as_ref()),
+                // A frame, a ring or a card's pages are mapped whole, with
+                // the access the page tables give.
+                _ => (Arch::query_page(&self.arch, region.start).map(|(_, a)| a), true, None),
+            };
+            let place = if vdso != 0 && region.start == vdso {
+                Place::Vdso
+            } else if vdso != 0 && region.end() == vdso {
+                Place::Vvar
+            } else if stack != 0 && region.start <= stack && stack < region.end() {
+                Place::Stack
+            } else {
+                Place::Other
+            };
+            let offset = match file {
+                Some(file) => file.base.saturating_add(region.offset.saturating_mul(PAGE_SIZE)),
+                None => region.offset.saturating_mul(PAGE_SIZE),
+            };
+            each(&Mapping {
+                start: region.start,
+                end: region.end(),
+                access,
+                shared,
+                offset,
+                node: file.map_or(0, |file| file.node.stat().id),
+                name: file.and_then(|file| file.name.as_deref()),
+                place,
+            });
+        }
     }
 
     /// [`map`](Self::map), with the regions locked.

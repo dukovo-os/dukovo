@@ -80,12 +80,15 @@ pub(super) fn read_bytes(address: u64, len: usize) -> Result<Vec<u8, Kmalloc>> {
 }
 
 /// A socket method's failure as the C library gives it: what is no socket
-/// (a directory, a file) is ENOTSOCK, and a socket not open for the call's
-/// direction is EBADF, as for `read` and `write`.
+/// (a directory, a file) is ENOTSOCK, as an errno, so that the call goes
+/// to linuxd if the program has it (`or_forward`), and a socket not open
+/// for the call's direction is EBADF, as for `read` and `write`.
 fn socket_error(err: Error) -> Error {
     match err {
         Error::Native(status)
-            if is(status, Kernel::NoSuchMethod) || is(status, Kernel::WrongKind) =>
+            if is(status, Kernel::NoSuchMethod)
+                || is(status, Kernel::WrongKind)
+                || is(status, Kernel::NotSocket) =>
         {
             Error::Errno(ENOTSOCK)
         }

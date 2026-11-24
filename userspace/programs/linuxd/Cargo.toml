@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "linuxd"
+description = "Serves a Linux program's calls that the kernel forwards, its /proc and /sys over FUSE, and its netlink route sockets (ADRs 0618 to 0622)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The filesystem's side of Linux's FUSE protocol, which ob patches in
+# from the rust-crates port (ADR 0226), at the protocol's version 7.31.
+fuser = { version = "0.16.0", default-features = false, features = ["abi-7-31"] }
+# The libc crate with its Radix module, which ob patches in from the
+# rust-std port (ADR 0070).
+libc = "0.2.191"
+# The system call interface, generated from abi/*.ridl: the endpoint's
+# receive and reply, and radix-linux-call(2).
+radix-abi = { path = "../../../kernel/abi" }
+# Linux's records and the words `uname` gives, which the kernel's Linux
+# table uses too.
+radix-linux = { path = "../../../kernel/lib/linux" }
+
+[lints]
+workspace = true

@@ -579,6 +579,11 @@ const CADDY_FILES: u8 = 45;
 /// ([`cases::linux_programs::make_disk`]).
 const LINUX_FILES: u8 = 46;
 
+/// [`Disk::fat`] for a FAT32 disk that holds the Linux base's bundle and the
+/// dynamic Linux program of the `linux-view` test, which `ob` builds with
+/// the host's C compiler ([`cases::linux_view::make_disk`]).
+const LINUX_VIEW_FILES: u8 = 47;
+
 /// The start of the names of the bundle files of the catalog's programs
 /// built with Go (ADR 0600), about 37 MiB together: they are on the disks
 /// of the tests that install them ([`GO_APPS_FILES`]), so that the disks of
@@ -1389,6 +1394,13 @@ const fn linux_files_disk(kib: u64, label: &'static str) -> Disk {
     Disk { fat: LINUX_FILES, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
 }
 
+/// A FAT32 virtio disk of `kib` KiB, labelled `label`, holding the Linux
+/// base's bundle and the program of the `linux-view` test
+/// ([`LINUX_VIEW_FILES`]), which Spark mounts at `/volumes/<disk>`.
+const fn linux_view_disk(kib: u64, label: &'static str) -> Disk {
+    Disk { fat: LINUX_VIEW_FILES, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
+}
+
 /// A FAT32 virtio disk of `kib` KiB, labelled `label`, holding the test
 /// updates of the installed system ([`UPDATE_RELEASES`]), which Spark
 /// mounts at `/volumes/<disk>`.
@@ -1963,6 +1975,7 @@ fn needs_packing(case: &Case) -> bool {
                 | GO_APPS_FILES
                 | GO_SUITE_FILES
                 | GO_TOOLCHAIN_FILES
+                | LINUX_VIEW_FILES
                 | PHP_FILES
                 | POSTGRESQL_FILES
                 | POSTGRESQL_SERVICE_FILES
@@ -5742,6 +5755,11 @@ fn make_disks(
             made.push(image);
             continue;
         }
+        if disk.fat == LINUX_VIEW_FILES {
+            cases::linux_view::make_disk(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
         if disk.fat == CATALOG_SITE {
             make_catalog_site(ctx, disk, &image.path)?;
             made.push(image);
@@ -6391,7 +6409,9 @@ fn fsck(disk: &DiskImage, _log: &str) -> Result<(), String> {
 /// small.
 fn make_bundle_files(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
     make_bundle_disk(ctx, disk, path, |name| {
-        !name.starts_with(cases::go_toolchain::BUNDLE_PREFIX) && !is_go_app_bundle(name)
+        !name.starts_with(cases::go_toolchain::BUNDLE_PREFIX)
+            && !name.starts_with(cases::linux_view::BUNDLE_PREFIX)
+            && !is_go_app_bundle(name)
     })
 }
 
@@ -7724,7 +7744,7 @@ fn boot_report(vm: &mut Vm, case: &Case) -> Result<(), String> {
     } else {
         vm.expect("Lock checker: ")?;
     }
-    vm.expect("Capabilities: ready; 26 object kinds, 15 rights")?;
+    vm.expect("Capabilities: ready; 27 object kinds, 15 rights")?;
     vm.expect("User mode: SYSCALL/SYSRET entry, user half ")?;
     vm.expect("Files: the root is a tmpfs; Spark mounts the rest")?;
     // Every test image carries the user test programs.

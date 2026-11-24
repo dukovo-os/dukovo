@@ -133,6 +133,7 @@ const PEER_WANTS: &[(&str, &str)] = &[
     ("kadmin.local", "krb5-admin-server"),
     ("arecord", "alsa-utils"),
     ("python3", "python3"),
+    ("cc", "gcc"),
     ("age", "age"),
     ("restic", "restic"),
     ("rsyslogd", "rsyslog rsyslog-gnutls"),

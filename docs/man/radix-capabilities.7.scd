@@ -169,6 +169,15 @@ rights listed, plus *copy* and *transfer*, which every kind has.
 	*radix-event-queue*(2) and ADR 0353). Rights: *read*, to wait for
 	its events; *write*, to add, change and delete its watches.
 
+*Linux call*
+	A Linux program's call that the kernel forwarded to the program that
+	answers it, taken by a process's *forwarded_call* (see
+	*radix-linux-call*(2), *radix-process*(2) and ADR 0618). It reaches
+	the calling process until the call has its answer, and has neither
+	the *copy* nor the *transfer* right, so it never leaves its holder.
+	Rights: *read*, to read the caller's memory; *write*, to write it;
+	*control*, to give the caller a descriptor or take a copy of one.
+
 # RIGHTS
 
 The fifteen rights are *read*, *write*, *execute*, *send*, *receive*,
@@ -312,7 +321,7 @@ Operations on capabilities fail with one of these, and change nothing:
 At boot the kernel reports its store:
 
 ```
-Capabilities: ready; 26 object kinds, 15 rights, spaces of up to 65536 slots, derivations up to 64 deep
+Capabilities: ready; 27 object kinds, 15 rights, spaces of up to 65536 slots, derivations up to 64 deep
 ```
 
 The *kdb* command *caps* counts the spaces, capabilities and objects by

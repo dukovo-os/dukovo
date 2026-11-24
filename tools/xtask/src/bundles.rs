@@ -557,7 +557,7 @@ fn signing_key(ctx: &Ctx) -> Result<SecretKey> {
 }
 
 /// Writes a file only its owner may read.
-fn write_private(path: &Path, text: &str) -> Result<()> {
+pub(crate) fn write_private(path: &Path, text: &str) -> Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt as _;
     let mut file = std::fs::OpenOptions::new()
@@ -747,6 +747,31 @@ mod tests {
         assert_eq!(logs.keep, 2);
         assert_eq!(logs.reopen, manifest::service::Reopen::Signal(manifest::service::Signal::Usr1));
         assert_eq!(manifest.requires_os.to_string(), "1.0");
+    }
+
+    /// The Linux base's recipe, a bundle of libraries: it gives no command,
+    /// and its manifest still names its one program, which the bundle's
+    /// version, a release of the SDK it comes from, reads as a version.
+    #[test]
+    fn a_bundle_of_libraries_names_a_program_and_gives_no_command() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ports/linux-base");
+        let text = std::fs::read_to_string(dir.join("recipe.toml")).unwrap();
+        let recipe: Recipe = toml::from_str(&text).unwrap();
+        let port = Port {
+            recipe,
+            dir,
+            source: None,
+            extras: Vec::new(),
+            crates: Vec::new(),
+            modules: Vec::new(),
+        };
+        let text = manifest(&port, &port.recipe.version);
+        let manifest = dkv::signed::parse_manifest(text.as_bytes()).unwrap();
+        assert_eq!(manifest.id.0, "org.dukovo.linux-base");
+        assert_eq!(manifest.version.0, "25.8.0");
+        assert!(manifest.commands.is_empty());
+        assert_eq!(manifest.programs.len(), 1);
+        assert!(manifest.programs.get("linux-base").is_some());
     }
 
     /// Valkey's recipe: its aliases are commands that run valkey-server

@@ -307,6 +307,13 @@ copies it over). With an image given by `--image`, `./ob lab` packs no
 bundles but names the ones this tree packed already, if any. Without the
 bundles or the ports' builds those tests are skipped too.
 
+`processes/linux-view` is of the same kind: it installs the Linux base
+bundle, which `./ob lab` packs from `ports/linux-base` with the others,
+builds `userspace/linux/view.c` on the lab PC with its own `cc` and glibc,
+as a program on a Linux machine is built (`lab/tests/processes/linux-view.sh`
+copies it over), and runs it from a folder that is not its own, then again
+with `--restart`, which ends `linuxd` in the middle of the run.
+
 Removable media go in and out with steps of their own: `usb` plugs and
 pulls a USB stick, `card` puts a memory card in a card reader, `disc` a
 disc in an optical drive, and `floppy` a floppy disk in a floppy drive,

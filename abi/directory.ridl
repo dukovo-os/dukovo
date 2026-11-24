@@ -576,7 +576,7 @@ struct ScrubProgress {
 }
 
 /// A directory.
-interface directory = 0x000b version 13 {
+interface directory = 0x000b version 14 {
     kind = directory;
     /// Opens the file or directory at `path` (`.` for this one) and puts
     /// a capability to it with `rights` in slot `to`. Returns what it is.
@@ -1292,4 +1292,20 @@ interface directory = 0x000b version 13 {
                 bad_address, not_found, not_directory, is_directory, name_too_long, bad_name,
                 outside, read_only, no_space, quota_exceeded, too_big, io, corrupt,
                 too_many_links, denied];
+    /// Makes the filesystem a program serves through the connection in
+    /// slot `connection` (a file capability to a description of
+    /// `/devices/fuse`, with the read and write rights) on a mount of its
+    /// own in no tree, and puts a capability to its root in slot `to`,
+    /// acting for this capability's name, with the read, write, copy and
+    /// transfer rights and never the control right: a view attaches it,
+    /// or a directory opened in it (ADR 0619). ADR 0226's rules hold for
+    /// it as for a mount: device nodes on it are denied, its set-ID bits
+    /// are never shown, and the owners and modes it gives are checked. The
+    /// kernel queues FUSE's `INIT` and returns; calls wait for the
+    /// program's answer. A connection is served once: a second time fails
+    /// with in_use, and one whose program has gone with not_connected.
+    /// Needs no right: only the capability reaches it. (Since Phase 18.)
+    method serve_fuse = 57 (connection: u32, to: slot) -> ()
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, occupied, no_memory,
+                in_use, not_connected];
 }

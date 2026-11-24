@@ -514,7 +514,8 @@ _target/userspace/_).
 	*fuzz* runs the cargo-fuzz targets of the update path's parsers and
 	verifiers (ADR 0536), in _userspace/programs/fuzz_: *release-list*,
 	*tuf-root*, *tuf-targets*, *tuf-snapshot*, *tuf-timestamp*, *rollout*,
-	*advisories*, *canary-report* and *slot-state*. The TUF targets feed
+	*advisories*, *canary-report* and *slot-state*, and linuxd's netlink
+	request parser, *linuxd-netlink* (ADR 0621). The TUF targets feed
 	mutated metadata through the trusted-metadata update with a fixed root,
 	so that its signature checks run; a target with an encoder checks that
 	what it reads, it writes back and reads again as it was. Each target
@@ -2623,7 +2624,10 @@ _recipe.toml_
 	*paths*, the only directories of a large repository it needs, of
 	which nothing else is fetched), a
 	release archive (*url*, *sha256* and *mirrors* that serve the same
-	file, ADR 0086), or *rust-src = true* for the _library_ directory of
+	file, ADR 0086), an image of a container registry (*registry*,
+	*repository*, the *tag* that names the image, and its *layers*, the
+	SHA-256 *digest* and the *size* in bytes of each, ADR 0622), or
+	*rust-src = true* for the _library_ directory of
 	the pinned Rust
 	toolchain's *rust-src* component, with the crates it vendors; for a
 	release archive, an *[upstream]* table, which names the project's own
@@ -2673,7 +2677,8 @@ _recipe.toml_
 	holds the tree;
 	and for a port the catalog carries rather than the image, its
 	*[bundle]*: the bundle's *id*, *name*, *description* (a paragraph
-	for the manifest) and *commands* (ADR 0370), and
+	for the manifest) and *commands* (ADR 0370), which may be none for
+	a bundle of libraries that has a program in *programs*, and
 	for a service bundle (ADR 0491) its other *programs*, the ports it
 	*links* (whose packages and licenses, with the compiler's runtime,
 	go into its SBOM), and its *services*, *permissions* and *data*, as
@@ -2726,8 +2731,12 @@ checked to be that commit; release archives from their *url* or, when
 that cannot be reached, from each of their *mirrors* in turn, the first
 copy whose SHA-256 is the one pinned; crates from crates.io, checked
 against their SHA-256; and Go modules from proxy.golang.org, checked
-against theirs. The modules a program in Go names in its _go.mod_ are
-fetched by Go itself into Go's module cache,
+against theirs; and the layers of an image from its registry, with the
+anonymous token the registry gives for the repository, as the blobs of the
+digests pinned, each checked against its SHA-256 and size and kept as
+_layer-N.blob_ in the source's folder, which a build reads and unpacks
+itself (_ports/linux-base/build.sh_ does). The modules a program in Go
+names in its _go.mod_ are fetched by Go itself into Go's module cache,
 _target/ports/sources/go-mod_, checked against the program's _go.sum_. An unpacked archive or crate is used again only
 while it holds the files, of the same sizes, that *ob* noted when it
 unpacked it, and a clone only while it has its commit; else the source
@@ -2752,7 +2761,9 @@ _sbom.spdx_, listing every component the port builds in as the image's
 manifest does, and _licenses/_ with their texts and notices, after
 checking them against the ports' allow-list, MPL-2.0, PCRE2's license
 with its exception, the Boost license, those of PHP and what it
-bundles, and the Unlicense. For a program in Go, each module
+bundles, the Unlicense, and the GPL with the GCC Runtime Library
+Exception, which the runtime libraries of GCC are under. For a program
+in Go, each module
 _modules.txt_ names is a component: one the *go-modules* port patched,
 with that recipe's license, and any other with the license its files
 state, which *ob* reads by phrase from its folder in the module cache;

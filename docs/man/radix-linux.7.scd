@@ -10,11 +10,13 @@ Linux programs, the calls they are given, and how each is served
 
 # DESCRIPTION
 
-Radix runs static x86-64 programs built for Linux unchanged: a program
-linked with glibc or musl, a Rust program for a Linux target, a Go
-program for _linux/amd64_. Such a program makes its system calls with
-Linux's numbers, and the kernel serves them with a table of Linux's
-calls (ADR 0610).
+Radix runs x86-64 programs built for Linux unchanged: a program linked
+with glibc or musl, a Rust program for a Linux target, a Go program for
+_linux/amd64_. A static one runs anywhere; a dynamically linked one runs
+where its loader and libraries are, as in the view *linux*(1) gives it,
+which has glibc and the common libraries from the Linux base bundle. Such
+a program makes its system calls with Linux's numbers, and the kernel
+serves them with a table of Linux's calls (ADR 0610).
 
 Each Linux call ends in a method the program could call itself, on a
 capability in its own slots: a file's *read*, a directory's *open*, its
@@ -67,7 +69,7 @@ directories, processes and threads, memory, signals and interval timers,
 futexes, clocks and sleeping, sockets, *poll*, *select* and *epoll*, the
 kernel's own files, file watches, identities, limits and scheduling, and
 *getrandom*. A number it does not know is ENOSYS, as on
-a Linux too old for the call.
+a Linux too old for the call, unless the program has linuxd (below).
 
 Some calls are refused for good, as Linux refuses a program without the
 privilege: *io_uring_setup*, *bpf*, *perf_event_open*, *ptrace*,
@@ -75,6 +77,22 @@ privilege: *io_uring_setup*, *bpf*, *perf_event_open*, *ptrace*,
 *pivot_root*, *reboot*, *swapon*, *swapoff*, *sethostname*,
 *setdomainname*, *settimeofday* and *clock_settime* are EPERM, as is a
 *clone* that asks for a new namespace.
+
+# CALLS LINUXD ANSWERS
+
+A program that *linux*(1) runs has, in its slot 57 (*SLOT_LINUX*), an
+endpoint that linuxd receives on (*linuxd*(8), ADR 0618). A call the
+table does not know, a *socket* of a family the kernel does not have
+(*AF_NETLINK*), and a socket call on a descriptor that is no socket of
+the kernel's (a netlink socket, which is a file of linuxd's) go there as
+a call: its number and its six arguments. The thread that receives it
+takes a capability to the call with the process's *forwarded_call*
+(*radix-process*(2)), reads and writes the caller's memory and gives and
+takes its descriptors through it (*radix-linux-call*(2)), and replies
+with the call's result. The capability reaches the caller only while the
+call lasts. A signal cuts short a call still waiting to be received, as
+any call that waits; one linuxd has taken runs to its answer. A program
+without the endpoint gets what the table answers.
 
 # PATHS AND THE WORKING DIRECTORY
 
@@ -84,6 +102,20 @@ root directory capability, a relative one from the working directory, and
 one given with a directory descriptor from that directory. *exec* keeps
 the working directory when a Linux program runs a Dukovo program, and the
 other way round.
+
+The kernel answers a process's own links in _/proc_ itself (ADR 0620):
+_/proc/self/exe_, _cwd_, _root_ and _fd/_*n*, the same beneath
+_/proc/thread-self_ and _/proc/_*its number*, and _/dev/fd/_*n*,
+_/dev/stdin_, _/dev/stdout_ and _/dev/stderr_, when the path is absolute
+and ends with the link. *readlink* gives the program's path as *exec* was
+given it, the working directory, _/_, or a descriptor's path, *pipe:[*_n_*]*,
+*socket:[*_n_*]* or *anon_inode:[*_kind_*]*. A call that follows the link
+(*open*, *stat*, *access*, *execve*) goes to the program, the working
+directory or the root by its path, and to a descriptor as the descriptor
+itself: an *open* of one is a copy of its capability with the access the
+open asks for, which it must have (EACCES), sharing its description, as
+Linux shares a pipe's. Any other process's links, and these met part way
+through a path, are linuxd's _/proc_'s.
 
 # DESCRIPTORS
 
@@ -176,13 +208,13 @@ termios*; the speeds follow *c_cflag*'s baud bits.
 
 # NOT YET
 
-Later steps of Phase 18 bring dynamically linked Linux programs and the
-Linux view of the file tree (_/proc_, _/sys_, _/dev_), seccomp and
-namespaces. Until then those calls are ENOSYS or EPERM, as above. The
-other gaps are rows of _docs/deferred.md_.
+Later steps of Phase 18 bring seccomp and namespaces. Until then those
+calls are ENOSYS or EPERM, as above. The other gaps are rows of
+_docs/deferred.md_.
 
 # SEE ALSO
 
 *radix-posix*(7), *radix-processes*(7), *radix-files*(7),
 *radix-vdso*(7), *radix-address-space*(2), *radix-event-queue*(2),
-*radix-file*(2), *radix-process*(2), *ob*(1)
+*radix-file*(2), *radix-linux-call*(2), *radix-process*(2), *linux*(1),
+*linuxd*(8), *ob*(1)

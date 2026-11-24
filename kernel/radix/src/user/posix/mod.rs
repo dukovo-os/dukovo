@@ -799,6 +799,11 @@ pub fn method(
             crate::fs::process_file::make(user, a.pid, a.to, a.flags)?;
             answer(label, 0, [0; 8])
         }
+        process::FORWARDED_CALL => {
+            let a = process::ForwardedCallArgs::decode(args)?;
+            super::linux::forward::claim(user, a.to)?;
+            answer(label, 0, [0; 8])
+        }
         _ => Err(error(Kernel::NoSuchMethod)),
     }
 }

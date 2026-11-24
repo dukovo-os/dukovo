@@ -320,10 +320,14 @@ pub fn install(ctx: &Ctx, staging: &Path, extras: &Extras<'_>) -> Result<String>
 /// GPL, of which the allow-list has the first. lazygit's bundle (ADR 0600)
 /// links github.com/integrii/flaggy, which is under the Unlicense alone: it
 /// dedicates the code to the public domain, as CC0-1.0 does, which the
-/// ports' list allows.
+/// ports' list allows. The Linux base bundle (ADR 0622) keeps GCC's runtime
+/// libraries, libstdc++, libgcc_s and libatomic, which are under the GPL
+/// with the GCC Runtime Library Exception: programs that link them stay
+/// under their own licenses.
 const BUNDLE_EXTRA_ALLOW: &[&str] = &[
     "MPL-2.0",
     "BSD-3-Clause WITH PCRE2-exception",
+    "GPL-3.0-or-later WITH GCC-exception-3.1",
     "BSL-1.0",
     "PHP-3.01",
     "Zend-2.0",
@@ -2088,6 +2092,33 @@ mod tests {
             let path = text_source(&root(), &id);
             assert!(path.is_file(), "{} is missing", path.display());
         }
+    }
+
+    /// The licenses the Linux base bundle declares are ones a bundle may
+    /// carry, and each has its text to put in the bundle, the GCC Runtime
+    /// Library Exception's among them.
+    #[test]
+    fn the_linux_bases_licenses_are_allowed_and_have_texts() {
+        let root = root();
+        let text = std::fs::read_to_string(root.join("ports/linux-base/recipe.toml")).unwrap();
+        let recipe: Recipe = toml::from_str(&text).unwrap();
+        let allowed: Vec<String> = kernel_allow_list(&context(&root))
+            .unwrap()
+            .into_iter()
+            .chain(PORT_EXTRA_ALLOW.iter().chain(BUNDLE_EXTRA_ALLOW).map(ToString::to_string))
+            .collect();
+        let expr = Expr::parse(&recipe.license).unwrap();
+        assert!(expr.satisfied_by(&allowed), "{}", recipe.license);
+        let mut ids = BTreeSet::new();
+        expr.collect_ids(&mut ids);
+        assert!(ids.contains("GCC-exception-3.1") && ids.contains("LGPL-2.1-or-later"));
+        for id in ids {
+            assert!(text_source(&root, &id).is_file(), "no text of {id}");
+        }
+        // The exception is allowed with the license it goes with, not alone.
+        assert!(
+            !Expr::parse("GPL-3.0-or-later WITH Other-exception").unwrap().satisfied_by(&allowed)
+        );
     }
 
     /// No license text is kept twice, and the copies at the top of the

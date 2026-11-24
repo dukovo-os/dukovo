@@ -87,6 +87,9 @@
 //! installs, seals and removes (ADRs 0221 to 0223 and 0225); called by a
 //! name that is no tool's, through a link in a commands folder of
 //! bundled's, it runs the bundle command of that name.
+//! `linux` runs a Linux program in a sandbox of its own, with `linuxd`
+//! beside it to answer what the kernel's Linux table does not (ADRs 0621
+//! and 0622).
 //! `sysupdate` stages a signed release in the spare slot, and as a
 //! service checks that a new version proves itself, or falls back
 //! (ADRs 0451 to 0454); `dukovo-rescue` is Rescue's screens, which
@@ -172,6 +175,7 @@ mod keymaps;
 mod keyring;
 mod last;
 mod links;
+mod linux;
 mod log;
 mod logd;
 mod logforward;
@@ -373,6 +377,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("last", last::last),
     ("lastb", last::lastb),
     ("lastlog", last::lastlog),
+    ("linux", linux::main),
     ("log", log::main),
     ("logd", logd::main),
     ("logforward", logforward::main),

@@ -1149,6 +1149,89 @@ impl SpaceObject {
         core::ptr::from_ref(&self.lending) as usize
     }
 
+    /// Copies this space's bytes at `address` into `out`, as a load of a
+    /// thread running in it would find them: for another program, which
+    /// answers a call a program running here made (radix-linux-call(2),
+    /// ADR 0618). A page at a time: its frame is read through the direct
+    /// map with the space's page tables locked, so it stays mapped while
+    /// it is read; a page that is not there yet is made as a fault would
+    /// make it, and looked for once more. `false` if any byte is not
+    /// readable memory of this space.
+    pub fn read_other(&self, address: u64, out: &mut [u8]) -> bool {
+        self.each_page_of(address, out.len(), false, |phys, done, n| {
+            Arch::read_frames(phys, &mut out[done..done + n]);
+        })
+    }
+
+    /// Copies `bytes` to this space at `address`, as a store of a thread
+    /// running in it would, for another program as [`read_other`] reads:
+    /// a page shared since a fork is copied first, as the store would
+    /// copy it. `false` if any byte is not writable memory of this space,
+    /// or is in a file's page that other spaces share (a shared mapping
+    /// of a file), whose writes the page cache must see through the page
+    /// tables.
+    ///
+    /// [`read_other`]: SpaceObject::read_other
+    pub fn write_other(&self, address: u64, bytes: &[u8]) -> bool {
+        self.each_page_of(address, bytes.len(), true, |phys, done, n| {
+            Arch::write_frames(phys, &bytes[done..done + n]);
+        })
+    }
+
+    /// Calls `each` for each page's part of the `len` bytes at `address`,
+    /// in order, with the part's physical address, its offset in the
+    /// bytes and its length, with the page tables locked: for
+    /// [`read_other`](SpaceObject::read_other) and
+    /// [`write_other`](SpaceObject::write_other).
+    fn each_page_of(
+        &self,
+        address: u64,
+        len: usize,
+        write: bool,
+        mut each: impl FnMut(u64, usize, usize),
+    ) -> bool {
+        if !radix_ipc::range::user_bytes(address, len as u64) {
+            return false;
+        }
+        let mut done = 0;
+        while done < len {
+            let at = address + done as u64;
+            let n = ((PAGE_SIZE - at % PAGE_SIZE) as usize).min(len - done);
+            let mut copied = None;
+            // A page made by the fault may be swapped out again before
+            // the next walk finds it, under pressure: a few tries.
+            for _ in 0..3 {
+                // A walk of one page, under the page tables' lock: the
+                // frame cannot be unmapped, swapped out or freed until it
+                // returns.
+                Arch::frames(&self.arch, at, at + n as u64, write, &mut |phys| {
+                    let usable = match FRAMES.info(phys) {
+                        // Memory the frame allocator does not keep (a
+                        // card's registers) is no program's to lend.
+                        None => false,
+                        Some(info) => !write || info.owner() != Owner::PageCache,
+                    };
+                    if usable {
+                        each(phys + at % PAGE_SIZE, done, n);
+                    }
+                    copied = Some(usable);
+                    false
+                });
+                match copied {
+                    Some(true) => break,
+                    Some(false) => return false,
+                    None if !self.fault_in(at, n, write) => return false,
+                    None => {}
+                }
+            }
+            if copied != Some(true) {
+                return false;
+            }
+            done += n;
+        }
+        true
+    }
+
     /// Makes sure the page at `address` of anonymous memory is there, as
     /// the program would find it, and this space's alone, and returns its
     /// frame: for writing a new program's stack and relocations before any
@@ -1242,6 +1325,8 @@ impl SpaceObject {
             child.charge(total)?;
             // The child maps what this space does, shared memory included.
             child.may_share.store(self.may_share.load(Ordering::Relaxed), Ordering::Release);
+            child.vdso.store(self.vdso.load(Ordering::Relaxed), Ordering::Relaxed);
+            child.stack.store(self.stack.load(Ordering::Relaxed), Ordering::Relaxed);
             for region in regions.iter() {
                 match &region.backing {
                     Backing::Anon(_) => {}

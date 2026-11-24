@@ -34,6 +34,18 @@ fn entry(path: &str, kind: Kind, mode: &str) -> Entry {
     }
 }
 
+/// A netlink request datagram: the header of `kind` and `payload`.
+fn netlink_request(kind: u16, flags: u16, seq: u32, payload: &[u8]) -> Vec<u8> {
+    let length = u32::try_from(16 + payload.len()).expect("the request is short");
+    let mut bytes = length.to_ne_bytes().to_vec();
+    bytes.extend_from_slice(&kind.to_ne_bytes());
+    bytes.extend_from_slice(&flags.to_ne_bytes());
+    bytes.extend_from_slice(&seq.to_ne_bytes());
+    bytes.extend_from_slice(&0u32.to_ne_bytes());
+    bytes.extend_from_slice(payload);
+    bytes
+}
+
 fn release(version: &str, files: Vec<Entry>) -> Release {
     Release {
         format: FORMAT,
@@ -89,4 +101,26 @@ fn main() {
     put("slot-state", "staged", &staged.encode());
     let trial = Trial::new(1, Slot::B, "quiet console=ttyS0,115200n8").expect("a try is valid");
     put("slot-state", "trial", &trial.encode());
+
+    // RTM_GETLINK, RTM_GETADDR and RTM_GETROUTE as the C library's
+    // getifaddrs and Go's NetlinkRIB send them, which differ in the
+    // padding of the body; then one interface by name and by number, and
+    // a request to change an address, which is refused.
+    let dump = 0x301;
+    let link = netlink_request(18, dump, 1, &[0; 4]);
+    let addr = netlink_request(22, dump, 2, &[0; 4]);
+    put("linuxd-netlink", "libc-links", &link);
+    put("linuxd-netlink", "go-routes", &netlink_request(26, dump, 1, &[2]));
+    put("linuxd-netlink", "libc-links-then-addresses", &[link, addr].concat());
+    let mut by_name = vec![0; 16];
+    by_name.extend_from_slice(&[7, 0, 3, 0, b'n', b'e', b't', 0]);
+    put("linuxd-netlink", "link-by-name", &netlink_request(18, 5, 3, &by_name));
+    let mut by_number = vec![0; 16];
+    by_number[4..8].copy_from_slice(&2i32.to_ne_bytes());
+    put("linuxd-netlink", "link-by-number", &netlink_request(18, 1, 4, &by_number));
+    put(
+        "linuxd-netlink",
+        "new-address",
+        &netlink_request(20, 0x105, 5, &[2, 24, 0, 0, 2, 0, 0, 0]),
+    );
 }

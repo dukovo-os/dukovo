@@ -86,10 +86,14 @@ pub enum ObjectKind {
     KernelSettings = 24,
     /// An event queue, which watches many descriptors at once (ADR 0353).
     EventQueue = 25,
+    /// A Linux call forwarded to the program that answers it, which
+    /// reaches the calling process until the call has its answer (ADR
+    /// 0618).
+    LinuxCall = 26,
 }
 
 /// How many kinds there are.
-pub const KINDS: usize = 26;
+pub const KINDS: usize = 27;
 
 impl ObjectKind {
     /// Every kind, in the order of their numbers.
@@ -120,6 +124,7 @@ impl ObjectKind {
         ObjectKind::Firewall,
         ObjectKind::KernelSettings,
         ObjectKind::EventQueue,
+        ObjectKind::LinuxCall,
     ];
 
     /// The kind numbered `n`.
@@ -190,6 +195,10 @@ impl ObjectKind {
             ObjectKind::KernelSettings => Rights::READ.union(Rights::CONTROL),
             // Reading waits for events; writing changes the watches.
             ObjectKind::EventQueue => Rights::READ.union(Rights::WRITE),
+            // Reading and writing reach the calling process's memory;
+            // control its descriptors. Its one capability is made without
+            // the copy and transfer rights, so it never leaves its holder.
+            ObjectKind::LinuxCall => Rights::READ.union(Rights::WRITE).union(Rights::CONTROL),
         };
         own.union(Rights::COPY).union(Rights::TRANSFER)
     }
@@ -256,6 +265,7 @@ impl ObjectKind {
             ObjectKind::Firewall => "firewall",
             ObjectKind::KernelSettings => "kernel settings",
             ObjectKind::EventQueue => "event queue",
+            ObjectKind::LinuxCall => "Linux call",
         }
     }
 }

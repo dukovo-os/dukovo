@@ -39,7 +39,9 @@
 mod descriptors;
 mod events;
 mod files;
+pub(super) mod forward;
 mod kernel_files;
+mod magic;
 mod memory;
 mod names;
 mod notify;
@@ -57,7 +59,7 @@ use radix_abi::Status;
 use radix_abi::errors::Kernel;
 use radix_hal::{SyscallRegs, UserMode};
 use radix_ipc::info::Info;
-use radix_linux::errno::{self, EINTR, ENOSYS, EPERM};
+use radix_linux::errno::{self, EAFNOSUPPORT, EINTR, ENOSYS, ENOTSOCK, EPERM};
 use radix_linux::nr;
 use radix_mm::{Flags, HEAP, Kmalloc};
 
@@ -263,21 +265,60 @@ fn dispatch(me: &ThreadRef, user: &UserRef, regs: &SyscallRegs) -> Result<Done> 
         // Polling, sockets and the system (poll.rs, sockets.rs, system.rs).
         nr::POLL => poll::poll(user, a[0], a[1], a[2])?,
         nr::SELECT => poll::select(user, a)?,
-        nr::SOCKET => sockets::socket(me, user, a[0], a[1], a[2])?,
-        nr::CONNECT => sockets::connect(me, user, a[0], a[1], a[2])?,
+        // A family the kernel does not have, and a socket call on what is
+        // no socket of the kernel's, go to linuxd if the program has it
+        // (`forward`): its netlink sockets are files of its filesystem.
+        nr::SOCKET => {
+            let made = sockets::socket(me, user, a[0], a[1], a[2]);
+            or_forward(me, user, regs.number, a, made, EAFNOSUPPORT)?
+        }
+        nr::CONNECT => {
+            let done = sockets::connect(me, user, a[0], a[1], a[2]);
+            or_forward(me, user, regs.number, a, done, ENOTSOCK)?
+        }
         nr::ACCEPT => sockets::accept(me, user, a[0], a[1], a[2], 0)?,
-        nr::SENDTO => sockets::sendto(me, user, a)?,
-        nr::RECVFROM => sockets::recvfrom(me, user, a)?,
-        nr::SENDMSG => sockets::sendmsg(me, user, a[0], a[1], a[2])?,
-        nr::RECVMSG => sockets::recvmsg(me, user, a[0], a[1], a[2])?,
-        nr::SHUTDOWN => sockets::shutdown(me, user, a[0], a[1])?,
-        nr::BIND => sockets::bind(me, user, a[0], a[1], a[2])?,
+        nr::SENDTO => {
+            let done = sockets::sendto(me, user, a);
+            or_forward(me, user, regs.number, a, done, ENOTSOCK)?
+        }
+        nr::RECVFROM => {
+            let done = sockets::recvfrom(me, user, a);
+            or_forward(me, user, regs.number, a, done, ENOTSOCK)?
+        }
+        nr::SENDMSG => {
+            let done = sockets::sendmsg(me, user, a[0], a[1], a[2]);
+            or_forward(me, user, regs.number, a, done, ENOTSOCK)?
+        }
+        nr::RECVMSG => {
+            let done = sockets::recvmsg(me, user, a[0], a[1], a[2]);
+            or_forward(me, user, regs.number, a, done, ENOTSOCK)?
+        }
+        nr::SHUTDOWN => {
+            let done = sockets::shutdown(me, user, a[0], a[1]);
+            or_forward(me, user, regs.number, a, done, ENOTSOCK)?
+        }
+        nr::BIND => {
+            let done = sockets::bind(me, user, a[0], a[1], a[2]);
+            or_forward(me, user, regs.number, a, done, ENOTSOCK)?
+        }
         nr::LISTEN => sockets::listen(me, user, a[0], a[1])?,
-        nr::GETSOCKNAME => sockets::getsockname(user, a[0], a[1], a[2])?,
-        nr::GETPEERNAME => sockets::getpeername(user, a[0], a[1], a[2])?,
+        nr::GETSOCKNAME => {
+            let done = sockets::getsockname(user, a[0], a[1], a[2]);
+            or_forward(me, user, regs.number, a, done, ENOTSOCK)?
+        }
+        nr::GETPEERNAME => {
+            let done = sockets::getpeername(user, a[0], a[1], a[2]);
+            or_forward(me, user, regs.number, a, done, ENOTSOCK)?
+        }
         nr::SOCKETPAIR => sockets::socketpair(me, user, a[0], a[1], a[2], a[3])?,
-        nr::SETSOCKOPT => sockets::setsockopt(me, user, a[0], a[1], a[2], a[3], a[4])?,
-        nr::GETSOCKOPT => sockets::getsockopt(me, user, a[0], a[1], a[2], a[3], a[4])?,
+        nr::SETSOCKOPT => {
+            let done = sockets::setsockopt(me, user, a[0], a[1], a[2], a[3], a[4]);
+            or_forward(me, user, regs.number, a, done, ENOTSOCK)?
+        }
+        nr::GETSOCKOPT => {
+            let done = sockets::getsockopt(me, user, a[0], a[1], a[2], a[3], a[4]);
+            or_forward(me, user, regs.number, a, done, ENOTSOCK)?
+        }
         nr::GETTIMEOFDAY => system::gettimeofday(me, user, a[0], a[1])?,
         nr::GETRLIMIT => system::getrlimit(me, user, a[0], a[1])?,
         nr::GETRUSAGE => system::getrusage(me, user, a[0], a[1])?,
@@ -424,9 +465,29 @@ fn dispatch(me: &ThreadRef, user: &UserRef, regs: &SyscallRegs) -> Result<Done> 
         | nr::SETDOMAINNAME
         | nr::SETTIMEOFDAY
         | nr::CLOCK_SETTIME => return fail(EPERM),
-        _ => return fail(ENOSYS),
+        // Any other: linuxd's, if the program has it (ADR 0618).
+        number => forward::forward(me, user, number, a).unwrap_or(Err(Error::Errno(ENOSYS)))?,
     };
     Ok(Done::Return(value))
+}
+
+/// `done`, unless it failed with `errno` and the program has linuxd: then
+/// the call forwarded to linuxd ([`forward::forward`]), whose answer it
+/// is.
+fn or_forward(
+    me: &ThreadRef,
+    user: &UserRef,
+    number: u64,
+    a: &Args,
+    done: Result<u64>,
+    errno: i32,
+) -> Result<u64> {
+    match done {
+        Err(Error::Errno(failed)) if failed == errno => {
+            forward::forward(me, user, number, a).unwrap_or(done)
+        }
+        done => done,
+    }
 }
 
 /// Calls the method `label` names on the capability in the process's slot

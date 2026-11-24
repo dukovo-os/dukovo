@@ -1,0 +1,78 @@
+// SPDX-FileCopyrightText: 2026 The Dukovo contributors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! A Linux call forwarded to linuxd (ADR 0618).
+//!
+//! A Linux program's call that the kernel's Linux table does not handle is
+//! sent, as a call, on the endpoint in the program's SLOT_LINUX: a message
+//! labelled FORWARDED with the call's number in word 0 and its six
+//! arguments, in Linux's order, in words 1 to 6. The thread that receives
+//! it takes a `linux_call` capability for it with radix-process(2)'s
+//! `forwarded_call`, and answers with a reply whose word 0 is Linux's
+//! result as the program gets it: the value, or minus the errno.
+//!
+//! The `linux_call` capability reaches the calling process for as long as
+//! the call lasts, and no longer: once the call has its answer, or its
+//! thread was stopped, every method fails with `gone`. It has the read,
+//! write and control rights, and never the copy or transfer rights, so its
+//! holder cannot pass it on.
+
+module linux_call;
+
+/// The label of a forwarded call's message.
+const FORWARDED: u32 = 1;
+/// The most bytes one `read`, `write` or `read_string` moves.
+const COPY_MAX: u64 = 65536;
+
+/// How `give` puts a capability in the caller's descriptors.
+flags GiveFlags: u32 {
+    /// The descriptor closes when the caller runs another program
+    /// (O_CLOEXEC, FD_CLOEXEC).
+    close_on_exec = 0;
+}
+
+/// One forwarded Linux call, and the process that made it.
+interface linux_call = 0x0035 version 1 {
+    kind = linux_call;
+    /// The calling process's and thread's numbers, the user and group it
+    /// acts for, and the call's number. Needs no right.
+    method info = 1 () -> (process: u64, thread: u64, user: u32, group: u32, number: u64)
+        raises [no_such_slot, empty_slot, wrong_kind, gone];
+    /// Copies `buffer`'s length in bytes (at most COPY_MAX) from the
+    /// caller's memory at `address` into `buffer`, as a load of the
+    /// caller's would find them. Fails with bad_address if any of them is
+    /// not readable memory of the caller's. Needs the read right.
+    method read = 2 (address: u64, buffer: out bytes) -> ()
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
+                bad_address, gone];
+    /// Copies `buffer` (at most COPY_MAX bytes) into the caller's memory at
+    /// `address`, as a store of the caller's would. Fails with bad_address
+    /// if any of it is not writable memory of the caller's, or is a shared
+    /// mapping of a file. Needs the write right.
+    method write = 3 (address: u64, buffer: in bytes) -> ()
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
+                bad_address, gone];
+    /// Copies the string at `address` in the caller's memory into
+    /// `buffer`, up to and without its NUL, and returns its length; fails
+    /// with name_too_long if no NUL comes within `buffer`'s length (at most
+    /// COPY_MAX), and with bad_address if memory before it cannot be read.
+    /// Needs the read right.
+    method read_string = 4 (address: u64, buffer: out bytes) -> (len: u64)
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
+                bad_address, name_too_long, gone];
+    /// Copies the capability in slot `from` of the caller of this method
+    /// into the calling process's lowest free descriptor at or above
+    /// `lowest`, below its limit of open files, and returns the
+    /// descriptor. Fails with no_room when none is free. Needs the control
+    /// right, and the copy and transfer rights on `from`.
+    method give = 5 (from: slot, lowest: u32, flags: GiveFlags) -> (descriptor: u32)
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
+                no_memory, no_room, gone];
+    /// Copies the capability of the calling process's descriptor
+    /// `descriptor` into slot `to` of the caller of this method, with the
+    /// rights it has there, and returns its kind. Needs the control right,
+    /// and the copy and transfer rights on the descriptor's capability.
+    method take = 6 (descriptor: u32, to: slot) -> (kind: ObjectKind)
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
+                no_memory, occupied, gone];
+}

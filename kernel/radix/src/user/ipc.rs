@@ -488,6 +488,13 @@ fn deliver_reply(
     true
 }
 
+/// The thread whose call the running thread received and holds for its
+/// reply, if it holds one: for radix-process(2)'s `forwarded_call`, which
+/// looks at what that thread asked.
+pub fn held_caller(user: &UserThread) -> Option<ThreadRef> {
+    user.reply.lock().as_ref().map(|caller| caller.thread.clone())
+}
+
 /// A thread that receives again, or exits, without replying lets its
 /// caller go with `gone`.
 fn abandon_caller(user: &UserThread) {
