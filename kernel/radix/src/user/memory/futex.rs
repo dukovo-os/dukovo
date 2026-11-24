@@ -216,6 +216,33 @@ fn take(waiters: &mut Waiters, key: &Key, bits: u32, count: u32, woken: &mut Wok
     taken
 }
 
+/// What a wake of up to `count` waiters finds on `waiters` when it can do
+/// without a batch ([`take_alone`]).
+enum Alone {
+    /// No waiter on the word, or none whose bit set shares a bit.
+    None,
+    /// The one waiter to wake, taken off its list.
+    One(ThreadRef),
+}
+
+/// Takes the waiter on the word `key` names whose bit set shares a bit
+/// with `bits` off `waiters`, as [`Woken::take`] takes one, if it is the
+/// only one to wake: the first, when `count` is 1, or when no other
+/// matches. `None` when more than one would be woken, which takes a batch.
+fn take_alone(waiters: &mut Waiters, key: &Key, bits: u32, count: u32) -> Option<Alone> {
+    let Some(waiters) = waiters.as_mut().filter(|_| count > 0) else {
+        return Some(Alone::None);
+    };
+    let wakes = |waiter: &Waiter| key.names(waiter) && waiter.bits & bits != 0;
+    let Some(at) = waiters.iter().position(wakes) else { return Some(Alone::None) };
+    if count > 1 && waiters[at + 1..].iter().any(wakes) {
+        return None;
+    }
+    let waiter = waiters.remove(at);
+    waiter.user.futex_woken.store(true, Ordering::Release);
+    Some(Alone::One(waiter.thread))
+}
+
 /// [`take`], until `count` are taken or none is left, for a call that
 /// does its work in one step: each time `woken` fills, its threads wake
 /// with the lists still locked.
@@ -367,6 +394,19 @@ pub fn wake(space: &SpaceObject, address: u64, count: u32, bits: u32) -> Result<
     }
     let key = space.futex_key(address);
     let list = &LISTS[bucket(&key)];
+    // Most wakes find one waiter at most, a lock's or a semaphore's
+    // release: that one needs no batch, and its thread wakes once the
+    // list is unlocked (the lock goes at the end of this statement). A
+    // wake of more looks again below.
+    let alone = take_alone(&mut list.lock(), &key, bits, count);
+    match alone {
+        Some(Alone::None) => return Ok(0),
+        Some(Alone::One(thread)) => {
+            sched::wake(&thread);
+            return Ok(1);
+        }
+        None => {}
+    }
     let mut woken = 0;
     let mut batch = Woken::new();
     loop {

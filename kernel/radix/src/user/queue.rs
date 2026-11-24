@@ -112,8 +112,11 @@ const CHANGES_AT_ONCE: usize = 8;
 
 /// Where a wait's events go, by their index: the program's array of
 /// `struct kevent`, or the Linux table's of `struct epoll_event`. It
-/// fails with bad_address if the program's memory cannot be written.
-pub type Sink<'a> = dyn FnMut(u32, &QueueEvent) -> Result<()> + 'a;
+/// fails with bad_address if the program's memory cannot be written. A
+/// generic, not a `dyn`, so that each event costs no indirect call.
+pub trait Sink: FnMut(u32, &QueueEvent) -> Result<()> {}
+
+impl<F: FnMut(u32, &QueueEvent) -> Result<()>> Sink for F {}
 
 /// An event queue.
 pub struct EventQueue {
@@ -568,11 +571,13 @@ impl EventQueue {
     /// nanoseconds (`None`: as long as it takes; 0: not at all), with
     /// `mask` as the thread's signal mask while it waits, if one is given;
     /// returns how many it wrote. A signal ends the wait with interrupted,
-    /// which `restart` says the call may be run again after.
+    /// which `restart` says the call may be run again after. Always
+    /// inlined: `wait` and `epoll_wait` each pay for no call more.
+    #[inline(always)]
     fn wait_for(
         &self,
         user: &UserRef,
-        sink: &mut Sink<'_>,
+        sink: &mut impl Sink,
         capacity: u32,
         timeout: Option<u64>,
         mask: Option<u64>,
@@ -796,7 +801,7 @@ impl EventQueue {
     /// events of those ready, at most `capacity`, through `sink`; returns
     /// how many it wrote. A watch it puts back on the ring waits for the
     /// next call.
-    fn look(&self, sink: &mut Sink<'_>, capacity: u32) -> Result<u32> {
+    fn look(&self, sink: &mut impl Sink, capacity: u32) -> Result<u32> {
         if !self.has_queued() {
             // Nothing to look at, and no lock taken: a watch put on the
             // ring after this load wakes a waiter counted before it.
@@ -839,7 +844,7 @@ impl EventQueue {
     fn wait_ready(
         &self,
         user: &UserRef,
-        sink: &mut Sink<'_>,
+        sink: &mut impl Sink,
         capacity: u32,
         timeout: Option<u64>,
         mask: Option<u64>,
@@ -1056,7 +1061,7 @@ pub fn change_given(user: &UserRef, found: &Found, change: &QueueEvent, base: u3
 pub fn wait_given(
     user: &UserRef,
     found: &Found,
-    sink: &mut Sink<'_>,
+    sink: &mut impl Sink,
     capacity: u32,
     timeout: Option<u64>,
     mask: Option<u64>,

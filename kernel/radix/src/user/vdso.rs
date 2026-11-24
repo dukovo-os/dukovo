@@ -22,6 +22,8 @@
 //! kernel starts itself (`super::loader`) get no vDSO either, as they get
 //! no auxiliary vector.
 
+use alloc::sync::Arc;
+
 use radix_abi::address_space::PAGE_SIZE;
 use radix_hal::{Timer, UserMode};
 use radix_klog::{info, warn};
@@ -66,6 +68,15 @@ pub fn init() {
     };
     let _ = PAGES.set(Pages { clock, image });
     info!("vDSO: {pages} page(s), above the clock page");
+}
+
+/// Whether `frame` is the clock page's or the vDSO's, the kernel's own,
+/// which no space writes: a futex word in one is named by its space
+/// alone, as in a space's own memory.
+pub fn is_kept(frame: &FrameRef) -> bool {
+    PAGES
+        .get()
+        .is_some_and(|pages| Arc::ptr_eq(frame, &pages.clock) || Arc::ptr_eq(frame, &pages.image))
 }
 
 /// Maps the clock page and the vDSO into `space`, a new space no thread

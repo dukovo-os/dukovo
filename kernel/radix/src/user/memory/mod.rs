@@ -211,8 +211,9 @@ pub struct SpaceObject {
     /// range below this, a random distance below ANONYMOUS_TOP.
     anon_top: u64,
     /// Whether it has ever mapped memory another space may map too (a
-    /// frame, a ring or a shared mapping): until then a futex word is
-    /// named by the space alone, with no look at its regions.
+    /// frame other than the kernel's own, a ring or a shared mapping):
+    /// until then a futex word is named by the space alone, with no look
+    /// at its regions.
     may_share: AtomicBool,
     /// How many lendings of its memory to devices are under way
     /// ([`SpaceObject::lend`]), which a fork waits for, with the top bit
@@ -479,16 +480,38 @@ impl SpaceObject {
         let start = Self::free_range(&regions, pages, self.anon_top)
             .or_else(|| Self::free_range(&regions, pages, ANONYMOUS_TOP))
             .ok_or(error(Kernel::NoMemory))?;
+        // The kernel's own frames, which no capability names, so no space
+        // writes them: a futex word in them is named by the space alone
+        // (`shared_futex_key`), and mapping them leaves `may_share` as it
+        // was, so that a program's futexes go on being named without a
+        // look at its regions.
         let read = UserAccess::Read;
-        self.map_in(&mut regions, start, 1, &Backing::Frame(clock.clone()), 0, read)?;
+        self.map_kept_in(&mut regions, start, 1, &Backing::Frame(clock.clone()), 0, read)?;
         let code = start + PAGE_SIZE;
         let run = UserAccess::ReadExecute;
-        self.map_in(&mut regions, code, image.pages, &Backing::Frame(image.clone()), 0, run)?;
+        let image_backing = Backing::Frame(image.clone());
+        self.map_kept_in(&mut regions, code, image.pages, &image_backing, 0, run)?;
         Ok(code)
     }
 
     /// [`map`](Self::map), with the regions locked.
     fn map_in(
+        &self,
+        regions: &mut Vec<Region, Kmalloc>,
+        start: u64,
+        pages: u64,
+        backing: &Backing,
+        offset: u64,
+        access: UserAccess,
+    ) -> Result<()> {
+        self.map_kept_in(regions, start, pages, backing, offset, access)?;
+        self.may_share.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// [`map_in`](Self::map_in), but leaving `may_share` as it was: for
+    /// the kernel's own frames alone.
+    fn map_kept_in(
         &self,
         regions: &mut Vec<Region, Kmalloc>,
         start: u64,
@@ -538,7 +561,6 @@ impl SpaceObject {
             }
         }
         insert(regions, Region { start, pages, backing: backing.clone(), offset });
-        self.may_share.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -770,6 +792,11 @@ impl SpaceObject {
                 Some(pages) => (Arc::as_ptr(pages) as usize, futex::Held::Pages(pages.clone())),
                 None => return self.own_futex_key(address),
             },
+            // The clock page and the vDSO are named as `map_vdso` leaves
+            // them, whatever else the space maps.
+            Backing::Frame(frame) if super::vdso::is_kept(frame) => {
+                return self.own_futex_key(address);
+            }
             Backing::Frame(frame) => {
                 (Arc::as_ptr(frame) as usize, futex::Held::Frame(frame.clone()))
             }
