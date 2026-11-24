@@ -1,9 +1,10 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-# A diagnosis, not a parity row: serverbench's PostgreSQL rows with one
-# more pass of each traced by rtrace(1), which prints the server's and
-# its backends' system calls as TRACE lines in the step's output.
+# A diagnosis, not a parity row: serverbench's PostgreSQL rows, then one
+# more pass of each against a server started under rtrace(1), which
+# prints the calls of the server and of the processes it starts as TRACE
+# lines in the step's output.
 
 about = "PostgreSQL's pgbench passes with the server's system calls counted by rtrace, for finding where Dukovo's time goes"
 time = "20m"

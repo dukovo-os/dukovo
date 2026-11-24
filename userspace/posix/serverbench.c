@@ -43,9 +43,10 @@
 // server's.
 //
 // With SERVERBENCH_TRACE set in its environment, on Radix, each
-// PostgreSQL row runs one more pass with rtrace(1) counting the system
-// calls of the server and of the backends it starts, and prints the
-// table, each line after "TRACE <row> ". That pass prints no row: tracing
+// PostgreSQL row runs one more pass against a server started under
+// rtrace(1), which counts the system calls of the server and of the
+// processes it starts, and prints the table, each line after
+// "TRACE <row> ". That pass prints no row: tracing
 // slows the server.
 //
 // The servers run as the account `bench` (the program drops root first,
@@ -1057,27 +1058,40 @@ static void print_traced(const char *row, const char *path) {
 }
 
 // With SERVERBENCH_TRACE set and rtrace there (Radix), one more pass of a
-// pgbench row, with rtrace counting the calls of `server` and of the
-// backends it starts for the pass; prints its table, what the machine did
-// meanwhile, and the transactions per second traced, as TRACE lines.
-static void traced_pgbench_pass(const char *row, pid_t server, int select_only, int per_client) {
+// pgbench row against a server started under rtrace, which counts the
+// calls of the server and of every process it starts (the backends, the
+// checkpointer, the writers) from its start to its end; prints the table,
+// what the machine did during the pass, and the pass's transactions per
+// second, as TRACE lines. rtrace starts the server, since Radix lets a
+// process trace only those below it (ADR 0214). `server` is the server's
+// command, which `postgresql_rows` has stopped.
+static void traced_pgbench_pass(const char *row, char *const server[], int select_only, int per_client) {
 	static const char rtrace[] = "/system/commands/rtrace";
 	if(!getenv("SERVERBENCH_TRACE") || access(rtrace, X_OK) != 0)
 		return;
 	char *table = format("%s/trace-%s.txt", work, row);
-	char *log = format("%s/rtrace.log", work);
-	char *argv[] = {(char *)rtrace, "-c", "-f", "-q", "-o", table, "-p", format("%d", (int)server), NULL};
-	pid_t tracing = spawn(log, argv);
-	// Time for rtrace to attach, which it does before anything else.
-	struct timespec attach = {.tv_sec = 1, .tv_nsec = 0};
-	nanosleep(&attach, NULL);
+	char *argv[40] = {(char *)rtrace, "-c", "-f", "-q", "-o", table};
+	size_t count = 6;
+	for(size_t i = 0; server[i] && count < sizeof(argv) / sizeof(argv[0]) - 1; i++)
+		argv[count++] = server[i];
+	argv[count] = NULL;
+	// Stopped by its own end: rtrace ends when the server does.
+	struct child *traced = start_server("postgres-traced", 0, argv);
+	wait_ready(traced, postgres_ready);
 	uint64_t rounds = (uint64_t)CONNECTIONS * (uint64_t)per_client;
 	struct counts before = counts_now();
 	double tps = pgbench_tps(select_only, per_client);
 	struct counts after = counts_now();
-	kill(tracing, SIGINT);
-	int status;
-	while(waitpid(tracing, &status, 0) < 0 && errno == EINTR) {}
+	FILE *pid_file = fopen(format("%s/pg/postmaster.pid", work), "r");
+	long postmaster = 0;
+	if(pid_file) {
+		if(fscanf(pid_file, "%ld", &postmaster) != 1)
+			postmaster = 0;
+		fclose(pid_file);
+	}
+	if(postmaster > 0)
+		kill((pid_t)postmaster, SIGINT);
+	stop_server(traced);
 	printf("TRACE %s traced pass: %.1f ns per transaction, %llu transactions; pgbench user_ns=%llu system_ns=%llu\n", row, 1e9 / tps,
 	       (unsigned long long)rounds, (unsigned long long)tool_user_ns, (unsigned long long)tool_system_ns);
 	if(before.valid && after.valid && after.radix)
@@ -1086,7 +1100,7 @@ static void traced_pgbench_pass(const char *row, pid_t server, int select_only, 
 		       (unsigned long long)(after.system_ns - before.system_ns), (unsigned long long)(after.faults - before.faults),
 		       (unsigned long long)(after.preemptions - before.preemptions));
 	print_traced(row, table);
-	print_traced(row, log);
+	print_traced(row, format("%s/postgres-traced.log", work));
 }
 
 static void postgresql_rows(void) {
@@ -1103,10 +1117,10 @@ static void postgresql_rows(void) {
 	char *load[] = {program("org.postgresql.postgresql", "pgbench"), "-h", work, "-U", "bench", "-i", "-s", "10", "-q", "postgres", NULL};
 	run_tool("pgbench", load);
 	pgbench_row("server_postgresql_select", 1, PGBENCH_SELECT_PER_CLIENT);
-	traced_pgbench_pass("server_postgresql_select", postgres->pid, 1, PGBENCH_SELECT_PER_CLIENT);
 	pgbench_row("server_postgresql_tpcb", 0, PGBENCH_TPCB_PER_CLIENT);
-	traced_pgbench_pass("server_postgresql_tpcb", postgres->pid, 0, PGBENCH_TPCB_PER_CLIENT);
 	stop_server(postgres);
+	traced_pgbench_pass("server_postgresql_select", argv, 1, PGBENCH_SELECT_PER_CLIENT);
+	traced_pgbench_pass("server_postgresql_tpcb", argv, 0, PGBENCH_TPCB_PER_CLIENT);
 }
 
 // A chain of additions, each waiting for the one before, so one clock
