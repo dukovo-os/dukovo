@@ -18,6 +18,9 @@ import { saveText } from './save-file.js';
 /** The words of the question that Escape asks, when `loss` says nothing else. */
 const LOSS = 'It is shown only now.';
 
+/** What the button that keeps it says, when `kept` says nothing else. */
+const KEPT = 'I have kept it';
+
 /** The QR code of `text` for `label`, or null when `text` is longer than a code holds. */
 async function pictureOf(text, label) {
   const { qrSvg } = await import('../qr.js');
@@ -40,10 +43,12 @@ async function pictureOf(text, label) {
  * a QR code, with the text behind "Show the … as text"; `warn` is what to
  * keep it for, in a warning over the text; `loss` is what is lost when the
  * dialog is closed without keeping it, said by the question that Escape
- * asks.
+ * asks; `note` is what else the person needs to use it, shown under the
+ * buttons, and holds nothing of the secret; `kept` is what the button says
+ * that keeps it.
  */
 export async function showOnce(view, {
-  title, label = 'The text', text, file = null, qr = false, warn = null, loss = LOSS,
+  title, label = 'The text', text, file = null, qr = false, warn = null, loss = LOSS, note = null, kept = KEPT,
 }) {
   if (view.signal.aborted) return false;
   let secret = text;
@@ -95,8 +100,9 @@ export async function showOnce(view, {
           pre),
         qr && !picture && h('p', { class: 'small muted' }, 'It is too long for a QR code. Copy it or save it as a file.'),
         h('div', { class: 'btns' }, ...buttons),
-        status),
-      h('div', { class: 'dialog-foot' }, h('button', { class: 'btn default', type: 'submit', value: 'kept' }, 'I have kept it'))));
+        status,
+        note),
+      h('div', { class: 'dialog-foot' }, h('button', { class: 'btn default', type: 'submit', value: 'kept' }, kept))));
 
   // Escape asks first: a secret closed unkept may be gone for good.
   let asking = false;

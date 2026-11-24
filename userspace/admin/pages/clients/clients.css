@@ -1,0 +1,63 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ *
+ * The AI clients page: the cards of what waits for a yes, the clients'
+ * table, which is a card for each client on a phone, and the dialog that
+ * adds a client, with its areas in two columns.
+ * Colours come from the variables of console.css, which hold in dark, light
+ * and high contrast; forced colours are drawn in system colours below, and
+ * nothing here moves. The phone's layout is the same markup under the
+ * container query the shell uses; the dialog is outside the container, so
+ * its narrow layout is a media query of the same width. Same rules as
+ * console.css: rem, and px for borders and focus rings.
+ */
+.cl { display: flex; flex-direction: column; gap: 1.143rem; }
+/* What only a screen reader is told (.sr-only) is placed out of the flow.
+ * Held by the page and by the table's box, it scrolls with them, and makes
+ * neither the window taller nor the table's box wider. */
+.cl, .cl .tbl-box { position: relative; }
+.cl .grid.two { grid-template-columns: repeat(auto-fit, minmax(min(100%, 27.143rem), 1fr)); align-items: start; }
+.cl-body { display: flex; flex-direction: column; gap: .714rem; min-width: 0; }
+.cl-own { display: flex; flex-wrap: wrap; gap: .429rem; align-items: center; }
+
+.ask { border: 1px solid var(--sel-b); border-radius: .429rem; background: var(--bg); padding: .857rem 1rem; display: flex; flex-direction: column; gap: .714rem; }
+.ask-head { display: flex; flex-wrap: wrap; gap: .286rem .571rem; align-items: baseline; }
+.ask-head b { font-size: 1.071rem; overflow-wrap: anywhere; }
+.ask-head .pill { margin-left: auto; }
+.ask-who { flex-basis: 100%; }
+.ask .btns { align-items: center; }
+.said { border-left: .214rem solid var(--border); padding: .143rem 0 .143rem .714rem; display: flex; flex-direction: column; gap: .143rem; overflow-wrap: anywhere; }
+.chips { display: flex; flex-wrap: wrap; gap: .286rem; }
+/* What is short stays on one line, so that the areas are what wraps. */
+.cl .tbl td[data-label="Client"] b, .cl .tbl td[data-label="Connects over"], .cl .tbl td[data-label="Last used"], .cl .tbl td[data-label="Ends"] { white-space: nowrap; }
+
+.cl-add .cl-short { max-width: 24rem; }
+.cl-add .radio-card { align-items: flex-start; }
+.areas { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1.714rem; }
+.area { display: flex; align-items: center; justify-content: space-between; gap: .571rem; padding: .357rem 0; border-bottom: 1px solid var(--border); }
+.area > span:first-child { display: inline-flex; align-items: center; gap: .357rem; min-width: 0; }
+.area .seg { flex: none; }
+.area .seg button { padding: .143rem .571rem; font-size: .857rem; }
+.cl-add .seg button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.cl-approval { margin-right: auto; align-self: center; }
+
+@container (max-width: 51.4rem) {
+  .ask-head .pill { margin-left: 0; }
+  .ask .btns .btn { flex: 1 1 100%; }
+  .cl .tbl-box { border: 0; }
+  .cl .tbl.stack tr { margin: .571rem 0; }
+  .cl .tbl.stack td, .cl .tbl.stack td[data-label] b { white-space: normal; overflow-wrap: anywhere; }
+  .cl .tbl.stack td.end .btn { width: 100%; box-sizing: border-box; }
+}
+@media (max-width: 51.4rem) {
+  .areas { grid-template-columns: minmax(0, 1fr); }
+  .area { flex-wrap: wrap; }
+  .cl-add .seg button { min-height: 3.143rem; min-width: 3.143rem; }
+  .cl-approval { flex-basis: 100%; }
+}
+@media (forced-colors: active) {
+  .dk .ask, .dk .said, .dk .area { border-color: CanvasText; }
+  .dk .cl-add .seg button { border: 1px solid ButtonText; }
+  .dk .cl-add .seg button.on { outline: 2px solid Highlight; outline-offset: -2px; }
+}

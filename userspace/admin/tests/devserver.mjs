@@ -122,6 +122,8 @@ export function startServer({ port = 0, state = freshState() } = {}) {
       }
       if (path === '/api/1/lock') {
         state.session.unlock_seconds = null;
+        // admind tells the stream of a lock as it does of an unlock.
+        send('unlock', { unlock_seconds: null });
         return json(response, 200, { unlock_seconds: null });
       }
       if (path === '/api/1/actions') return json(response, 200, state.actions);

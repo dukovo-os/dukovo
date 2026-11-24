@@ -134,6 +134,7 @@ test('the heading says since the last good start, or the last 7 days', () => {
 test('who made a change is said by how it was made', () => {
   assert.equal(byWords({ who: 'alice', how: 'console' }), 'By alice in this console');
   assert.equal(byWords({ who: 'chase', how: 'token ci' }), 'By chase with the API token ci');
+  assert.equal(byWords({ who: 'chase', how: 'client desk of chase' }), 'By chase, asked for by the AI client desk');
   assert.equal(byWords({ who: 'alice', how: 'by hand' }), 'alice edited it by hand');
   assert.equal(byWords({ who: 'outside the console', how: 'by hand' }), 'Someone edited it by hand');
   assert.equal(byWords({ who: 'Spark', how: 'undone' }), 'Spark undid it');

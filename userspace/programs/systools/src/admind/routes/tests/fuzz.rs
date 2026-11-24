@@ -6,12 +6,15 @@
 //! makes; this one sends the requests of an administrator whose session
 //! is unlocked and of one whose session is locked, of a person who is no
 //! administrator, of one who must add a second step, of each API token,
-//! and of strangers with a cookie or a token that no one was given. Each is
-//! a request the console's page or a script makes, bent from a fixed seed:
+//! of each AI client's token at the MCP server and elsewhere, and of
+//! strangers with a cookie or a token that no one was given. Each is a
+//! request the console's page, a script or an MCP client makes, bent from
+//! a fixed seed:
 //! headers taken out, doubled, emptied, made huge or given to another
 //! caller; the JSON of its body with a member taken out, doubled, of
-//! another type, at its limits or clashing with the address; the bytes of
-//! its body bent; a part of its address made `..`, a NUL, very long or
+//! another type, at its limits or clashing with the address; a message
+//! to the MCP server bent where a tool reads, or its headers set against
+//! it; the bytes of its body bent; a part of its address made `..`, a NUL, very long or
 //! not UTF-8. The requests reach admind as hyper hands them over, so what
 //! hyper refuses before then (a header with a control character, chunks
 //! that do not add up) is hyper's and is not sent.
@@ -22,7 +25,11 @@
 //! the worker; an answer to a stranger holds no account's name and no
 //! session's secrets; every sign-in request that reaches authd, and every
 //! token that authd does not know, is counted against the address; a
-//! check runs only probes, and a read nothing as an administrator.
+//! check runs only probes, and a read nothing as an administrator; and a
+//! message to the MCP server, whatever it is and whoever sends it, runs
+//! nothing as an administrator, writes no row of the journal, changes
+//! nothing of its owner's, and has the worker run a read's command or a
+//! probe and nothing else.
 //!
 //! `ADMIND_FUZZ=N` runs N requests instead of the default, and
 //! `ADMIND_FUZZ_SEED=S` starts from another seed. A failure names the
@@ -87,6 +94,10 @@ fn rounds() -> usize {
 /// whose sessions the requests before may have ended or locked.
 const ROUNDS_PER_SESSION: usize = 60;
 
+/// The requests in a hundred that go to the MCP server or to the routes
+/// of the page for its clients.
+const CLIENTS_SHARE: usize = 15;
+
 /// Who sends a request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Caller {
@@ -110,9 +121,31 @@ enum Caller {
     TokenOther,
     /// A token that authd does not know.
     TokenWrong,
+    /// chase's AI client that reaches everything.
+    ClientAll,
+    /// chase's AI client that reads what chase reads before unlocking.
+    ClientRead,
+    /// An AI client's token that authd does not know.
+    ClientWrong,
 }
 
-const CALLERS: [Caller; 10] = [
+impl Caller {
+    /// The bearer token the caller sends, if it sends one.
+    fn bearer(self) -> Option<&'static str> {
+        match self {
+            Caller::TokenAll => Some(TOKEN_ALL),
+            Caller::TokenRead => Some(TOKEN_READ),
+            Caller::TokenOther => Some(TOKEN_OTHER),
+            Caller::TokenWrong => Some(WRONG_TOKEN),
+            Caller::ClientAll => Some(CLIENT_ALL),
+            Caller::ClientRead => Some(CLIENT_READ),
+            Caller::ClientWrong => Some(WRONG_CLIENT),
+            _ => None,
+        }
+    }
+}
+
+const CALLERS: [Caller; 13] = [
     Caller::Nobody,
     Caller::Stale,
     Caller::Locked,
@@ -123,14 +156,25 @@ const CALLERS: [Caller; 10] = [
     Caller::TokenRead,
     Caller::TokenOther,
     Caller::TokenWrong,
+    Caller::ClientAll,
+    Caller::ClientRead,
+    Caller::ClientWrong,
 ];
 
 /// The callers whom the console lets in, for most of the requests.
 const ADMITTED: [Caller; 5] =
     [Caller::Locked, Caller::Unlocked, Caller::NotAdmin, Caller::TokenAll, Caller::TokenRead];
 
+/// The callers whom the MCP server lets in, for most of the messages.
+const CLIENTS: [Caller; 2] = [Caller::ClientAll, Caller::ClientRead];
+
 const WRONG_TOKEN: &str =
     "dkv_chase_0000000000000000000000000000000000000000000000000000000000000000";
+const WRONG_CLIENT: &str =
+    "dkc_chase_0000000000000000000000000000000000000000000000000000000000000000";
+
+/// Where the MCP server is.
+const MCP: &str = "/mcp";
 
 /// The accounts of the test authd, which an answer to a stranger never
 /// names: by their names, and by chase's full name.
@@ -195,6 +239,7 @@ fn forget_tries(shared: &Shared) {
 
 /// A request before it is bent: an address template with the values of
 /// its `{name}` parts, and a JSON body.
+#[derive(Clone)]
 struct Seed {
     /// What it is, for a failure's words.
     what: String,
@@ -205,6 +250,9 @@ struct Seed {
     /// nothing.
     query: String,
     body: Option<Value>,
+    /// The headers that are the request's own, as those of a message to
+    /// the MCP server that names its revision.
+    headers: Vec<(&'static str, String)>,
 }
 
 impl Seed {
@@ -216,6 +264,7 @@ impl Seed {
             params: Vec::new(),
             query: String::new(),
             body,
+            headers: Vec::new(),
         }
     }
 }
@@ -307,6 +356,7 @@ fn action_seeds(action: &'static dyn Registered, what: &str, args: &Value, seeds
         params,
         query,
         body,
+        headers: Vec::new(),
     });
     for route in ["/api/1/show", "/api/1/check"] {
         let body = json!({ "action": action.id(), "args": args });
@@ -319,9 +369,81 @@ fn action_seeds(action: &'static dyn Registered, what: &str, args: &Value, seeds
     }
 }
 
+/// The messages an MCP client sends: those of the revisions that begin
+/// with `initialize`, a batch of them, and those of the revision that
+/// names itself in each request and in its headers. The actions are the
+/// tests' own.
+fn mcp_seeds(seeds: &mut Vec<Seed>) {
+    let asks = |id: u64, method: &str, params: Value| json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+    let calls = |tool: &str, arguments: Value| {
+        asks(7, "tools/call", json!({ "name": tool, "arguments": arguments }))
+    };
+    let hello = json!({
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": { "name": "fuzz", "version": "1" },
+    });
+    let restart = json!({
+        "action": "lab.restart",
+        "arguments": { "name": "nginx" },
+        "reason": "nginx stopped answering",
+    });
+    let set = json!({
+        "action": "lab.set",
+        "arguments": { "name": "moving" },
+        "reason": "the setting is off and the service needs it on",
+    });
+    let messages = [
+        ("ping", asks(1, "ping", json!({}))),
+        ("initialize", asks(1, "initialize", hello)),
+        ("initialized", json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })),
+        ("tools", asks(2, "tools/list", json!({}))),
+        ("no method", asks(3, "resources/list", json!({}))),
+        ("areas", calls("areas", json!({}))),
+        ("actions", calls("actions", json!({ "area": "services" }))),
+        ("read", calls("read", json!({ "action": "lab.list" }))),
+        ("read log", calls("read", json!({ "action": "lab.log", "arguments": { "lines": 5 } }))),
+        (
+            "check",
+            calls("check", json!({ "action": "lab.set", "arguments": { "name": "moving" } })),
+        ),
+        ("ask", calls("ask", restart)),
+        ("ask set", calls("ask", set)),
+        ("request", calls("request", json!({ "id": 1 }))),
+        ("batch", json!([asks(1, "ping", json!({})), asks(2, "tools/list", json!({}))])),
+    ];
+    for (what, message) in messages {
+        seeds.push(Seed::new(&format!("mcp {what}"), "POST", MCP, Some(message)));
+    }
+    let meta = json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {},
+    });
+    let read = json!({ "name": "read", "arguments": { "action": "lab.list" } });
+    let named = [
+        ("discover", "server/discover", json!({}), None),
+        ("named tools", "tools/list", json!({}), None),
+        ("named read", "tools/call", read, Some("read")),
+        ("named no method", "resources/list", json!({}), None),
+    ];
+    for (what, method, mut params, tool) in named {
+        params["_meta"] = meta.clone();
+        let mut headers =
+            vec![("mcp-protocol-version", "2026-07-28".to_string()), ("mcp-method", method.into())];
+        if let Some(tool) = tool {
+            headers.push(("mcp-name", tool.into()));
+        }
+        let message = asks(4, method, params);
+        seeds.push(Seed {
+            headers,
+            ..Seed::new(&format!("mcp {what}"), "POST", MCP, Some(message))
+        });
+    }
+}
+
 /// Every request the fuzzing starts from: each route of the table with a
 /// body it takes, each action's good and bad examples on its route, shown
-/// and checked, and a few pages. The events and a follow of the log, whose
+/// and checked, the messages of an MCP client, and a few pages. The events and a follow of the log, whose
 /// answers are streams that do not end, are left out.
 fn seeds(actions: &[&'static dyn Registered]) -> Vec<Seed> {
     let mut seeds = vec![
@@ -460,6 +582,40 @@ fn seeds(actions: &[&'static dyn Registered]) -> Vec<Seed> {
             "/api/1/account/tokens/remove",
             Some(json!({ "name": "ci" })),
         ),
+        Seed::new("clients", "GET", "/api/1/account/clients", None),
+        Seed::new(
+            "client add",
+            "POST",
+            "/api/1/account/clients/add",
+            Some(json!({
+                "proof": "right", "name": "desk", "way": "https", "scopes": ["services"],
+                "days": 30,
+            })),
+        ),
+        Seed::new(
+            "client add ssh",
+            "POST",
+            "/api/1/account/clients/add",
+            Some(json!({
+                "proof": "right", "name": "shell", "way": "ssh", "scopes": ["*:read"], "days": 0,
+            })),
+        ),
+        Seed::new(
+            "client remove",
+            "POST",
+            "/api/1/account/clients/remove",
+            Some(json!({ "name": "helper" })),
+        ),
+        Seed::new("client areas", "GET", "/api/1/clients/areas", None),
+        Seed::new("client requests", "GET", "/api/1/clients/requests", None),
+        Seed::new("client history", "GET", "/api/1/clients/history", None),
+        Seed::new(
+            "client approve",
+            "POST",
+            "/api/1/clients/requests/{id}/approve",
+            Some(json!({})),
+        ),
+        Seed::new("client refuse", "POST", "/api/1/clients/requests/{id}/refuse", Some(json!({}))),
         Seed::new("preferences", "GET", "/api/1/account/preferences", None),
         Seed::new(
             "preferences change",
@@ -550,6 +706,7 @@ fn seeds(actions: &[&'static dyn Registered]) -> Vec<Seed> {
         Seed::new("lock", "POST", "/api/1/lock", Some(json!({}))),
         Seed::new("sign-out", "POST", "/api/1/sign-out", Some(json!({}))),
     ];
+    mcp_seeds(&mut seeds);
     for seed in &mut seeds {
         for name in ["id", "pane"] {
             if seed.template.contains(&format!("{{{name}}}")) {
@@ -600,29 +757,22 @@ impl Sent {
                 headers.push(("cookie".into(), cookie.into_bytes()));
                 headers.push((CSRF_HEADER.into(), "6b".repeat(32).into_bytes()));
             }
-            (
-                Caller::TokenAll | Caller::TokenRead | Caller::TokenOther | Caller::TokenWrong,
-                None,
-            ) => {
-                let token = match caller {
-                    Caller::TokenAll => TOKEN_ALL,
-                    Caller::TokenRead => TOKEN_READ,
-                    Caller::TokenOther => TOKEN_OTHER,
-                    _ => WRONG_TOKEN,
-                };
-                headers.push(("authorization".into(), format!("Bearer {token}").into_bytes()));
+            _ => {
+                if let Some(token) = caller.bearer() {
+                    let bearer = format!("Bearer {token}").into_bytes();
+                    headers.push(("authorization".into(), bearer));
+                }
             }
-            _ => {}
         }
-        let token = matches!(
-            caller,
-            Caller::TokenAll | Caller::TokenRead | Caller::TokenOther | Caller::TokenWrong
-        );
-        if post && !token {
+        // A script and an MCP client are no page: they name no origin.
+        if post && caller.bearer().is_none() {
             headers.push(("origin".into(), ORIGIN.as_bytes().to_vec()));
         }
         if post {
             headers.push(("content-type".into(), b"application/json".to_vec()));
+        }
+        for (name, value) in &seed.headers {
+            headers.push(((*name).into(), value.clone().into_bytes()));
         }
         // The Terminal's socket is opened as the page opens it: the
         // session's csrf token goes in the protocols, not a header.
@@ -786,6 +936,24 @@ fn bend_bytes(rng: &mut Rng, seed: &[u8]) -> Vec<u8> {
     data
 }
 
+/// The message `body` to the MCP server, bent once where a tool reads:
+/// in its parameters, or in the arguments they give the tool.
+fn bend_message(rng: &mut Rng, body: &Value) -> Vec<u8> {
+    const PLACE: &str = "bent-here";
+    let mut message = body.clone();
+    let deep = rng.chance(60) && message["params"]["arguments"].is_object();
+    let place = if deep { &mut message["params"]["arguments"] } else { &mut message["params"] };
+    let bent = bend_json(rng, place, &[]);
+    *place = json!(PLACE);
+    // What the bend made may be no JSON: it goes in as the bytes it is.
+    let text = message.to_string().into_bytes();
+    let marked = format!("\"{PLACE}\"").into_bytes();
+    match text.windows(marked.len()).position(|window| window == marked) {
+        Some(at) => [&text[..at], &bent, &text[at + marked.len()..]].concat(),
+        None => bent,
+    }
+}
+
 /// Sets header `name` to `value`, in the place it has, or last.
 fn set_header(sent: &mut Sent, name: &str, value: Vec<u8>) {
     match sent.headers.iter_mut().find(|(have, _)| have == name) {
@@ -797,7 +965,7 @@ fn set_header(sent: &mut Sent, name: &str, value: Vec<u8>) {
 /// `sent`, bent once.
 fn bend(rng: &mut Rng, sent: &mut Sent, seed: &Seed, sessions: &Sessions) {
     let names: Vec<String> = sent.headers.iter().map(|(name, _)| name.clone()).collect();
-    match rng.below(16) {
+    match rng.below(18) {
         0 if !names.is_empty() => {
             let name = rng.pick(&names).clone();
             sent.headers.retain(|(have, _)| *have != name);
@@ -906,6 +1074,30 @@ fn bend(rng: &mut Rng, sent: &mut Sent, seed: &Seed, sessions: &Sessions) {
             set_header(sent, "content-type", kind.as_bytes().to_vec());
         }
         14 => sent.body = vec![b' '; (1 << 20) + 1],
+        // A header of the MCP server's set against the message, on any
+        // request: a revision, a method or a tool that the body does not
+        // name.
+        15 => {
+            let (name, values): (&str, &[&str]) = match rng.below(3) {
+                0 => (
+                    "mcp-protocol-version",
+                    &["2026-07-28", "2025-06-18", "2024-11-05", "1999-01-01", ""],
+                ),
+                1 => ("mcp-method", &["tools/call", "tools/list", "ping", "x", ""]),
+                _ => ("mcp-name", &["ask", "read", "shell", ""]),
+            };
+            let value = rng.pick(values).as_bytes().to_vec();
+            if rng.chance(70) {
+                set_header(sent, name, value);
+            } else {
+                sent.headers.push((name.into(), value));
+            }
+        }
+        16 if seed.template == MCP => {
+            if let Some(body) = &seed.body {
+                sent.body = bend_message(rng, body);
+            }
+        }
         _ => {
             let value: &[u8] = rng.pick(&[
                 &b"Basic Y2hhc2U6cmlnaHQ="[..],
@@ -913,6 +1105,9 @@ fn bend(rng: &mut Rng, sent: &mut Sent, seed: &Seed, sessions: &Sessions) {
                 b"Bearer ",
                 b"bearer dkv_chase_aa",
                 b"Bearer dkv_",
+                b"Bearer dkc_",
+                b"Bearer dkc_chase_aa",
+                b"Bearer dkp_chase_aa",
             ]);
             if rng.chance(50) {
                 set_header(sent, "authorization", value.to_vec());
@@ -951,7 +1146,7 @@ impl Traces {
 }
 
 /// The worker's methods that change something of the person's.
-const CHANGING: [&str; 12] = [
+const CHANGING: [&str; 14] = [
     "app-begin",
     "app-confirm",
     "app-remove",
@@ -963,6 +1158,8 @@ const CHANGING: [&str; 12] = [
     "trusted-forget",
     "token-add",
     "token-remove",
+    "client-add",
+    "client-remove",
     "preferences-change",
 ];
 
@@ -1055,6 +1252,105 @@ fn known_id(id: &str, actions: &[&'static dyn Registered]) -> bool {
     own || actions.iter().any(|action| action.errors().contains(&id))
 }
 
+/// Whether `answer` is a response of JSON-RPC 2.0: the request's ID or
+/// null, and a result or an error with its code and its words, never both.
+fn is_rpc_answer(answer: &Value) -> bool {
+    let error = &answer["error"];
+    let said = error["code"].is_i64() && error["message"].as_str().is_some_and(|m| !m.is_empty());
+    answer["jsonrpc"] == "2.0"
+        && answer.get("id").is_some()
+        && answer["result"].is_object() != error.is_object()
+        && (said || !error.is_object())
+}
+
+/// The commands the messages of `body` may have the worker run for an MCP
+/// client: for each call of a tool that names an action, the action's
+/// command if it is a read, and its probe.
+fn mcp_may_run(actions: &[&'static dyn Registered], body: &[u8]) -> Vec<Value> {
+    let messages = match serde_json::from_slice::<Value>(body) {
+        Ok(Value::Array(batch)) => batch,
+        Ok(one) => vec![one],
+        Err(_) => Vec::new(),
+    };
+    let mut may = Vec::new();
+    for message in &messages {
+        let given = &message["params"]["arguments"];
+        let Some(action) = actions.iter().find(|action| given["action"] == action.id()) else {
+            continue;
+        };
+        let args = match given.get("arguments") {
+            None | Some(Value::Null) => json!({}),
+            Some(args) => args.clone(),
+        };
+        let Ok(prepared) = action.prepare(args) else { continue };
+        if !action.changes() {
+            may.push(json!(prepared.argv));
+        }
+        may.extend(prepared.probe.map(|probe| json!(probe)));
+    }
+    may
+}
+
+/// What a request left behind, as [`broken`] read it from the traces.
+struct Left<'a> {
+    /// What the worker was asked, and what the test authd noted of a read
+    /// it ran as an administrator.
+    calls: &'a [(String, Value)],
+    /// Whether a command ran as an administrator.
+    elevated: bool,
+    /// Whether the journal got a row.
+    wrote: bool,
+    /// Whether the worker changed something of the person's.
+    changed: bool,
+}
+
+/// Checks what must hold of the answer `got` to `sent` when it went to
+/// the MCP server, whoever sent it and whatever it answered: no message
+/// makes a change, and the worker ran a read's command or a probe that
+/// the message names, and nothing else.
+fn mcp_broken(
+    actions: &[&'static dyn Registered],
+    sent: &Sent,
+    got: &Got,
+    json: Option<&Value>,
+    left: &Left<'_>,
+) -> Option<String> {
+    if left.elevated || left.wrote || left.changed {
+        return Some(format!(
+            "a request to the MCP server ran a command as an administrator, wrote the journal \
+             or changed its owner's things: {:?}",
+            left.calls
+        ));
+    }
+    let may = mcp_may_run(actions, &sent.body);
+    for (method, params) in left.calls {
+        let allowed = match method.as_str() {
+            "run" => is_probe(&params["argv"]) || may.contains(&params["argv"]),
+            "client-read" => {
+                actions.iter().any(|action| params[0] == action.id() && !action.changes())
+            }
+            _ => false,
+        };
+        if !allowed {
+            return Some(format!("a message to the MCP server had {method} {params} run"));
+        }
+    }
+    if sent.method != b"POST" {
+        return None;
+    }
+    match (got.status, json) {
+        (200, Some(Value::Array(batch)))
+            if !batch.is_empty() && batch.iter().all(is_rpc_answer) =>
+        {
+            None
+        }
+        (200, Some(one)) if is_rpc_answer(one) => None,
+        (200, _) => Some("200 from the MCP server is no answer of JSON-RPC".into()),
+        (202, _) if !got.body.is_empty() => Some("202 from the MCP server has a body".into()),
+        _ => None,
+    }
+}
+
 /// Checks what must hold of the answer `got` to `sent` from `caller`, given
 /// what was seen before it and after it; the reason it does not, if any.
 fn broken(
@@ -1075,9 +1371,18 @@ fn broken(
         && matches!(lookup(Verb::Get, &path), Lookup::Found(entry, _) if entry.route == Route::Once);
     let body = String::from_utf8_lossy(&got.body);
     let json: Option<Value> = serde_json::from_slice(&got.body).ok();
-    // An error is JSON with an ID, a title and a detail.
+    let mcp = path == MCP;
+    // An error is JSON with an ID, a title and a detail, or what the
+    // protocol of the MCP server answers a message it does not take with.
     let error = if got.status >= 400 {
         if head {
+            None
+        } else if mcp && json.as_ref().is_some_and(|json| json.get("jsonrpc").is_some()) {
+            let refused =
+                json.as_ref().is_some_and(|json| is_rpc_answer(json) && json["error"].is_object());
+            if !refused {
+                return Some(format!("{} is no error of JSON-RPC: {body}", got.status));
+            }
             None
         } else if once && json.is_none() {
             // Refused before the route, as for a wrong host, it is JSON.
@@ -1117,6 +1422,17 @@ fn broken(
         CHANGING.contains(&method.as_str())
             && worker_answers(method, params, &Calls::default()).is_ok()
     });
+    if mcp {
+        let left = Left {
+            calls: &calls,
+            elevated,
+            wrote: after.newest != before.newest,
+            changed: changed_worker,
+        };
+        if let Some(why) = mcp_broken(actions, sent, got, json.as_ref(), &left) {
+            return Some(why);
+        }
+    }
     // ADM-123 and an action's own IDs are a command that ran and failed.
     let refused = error.as_deref().is_some_and(|id| id.starts_with("ADM-") && id != "ADM-123");
     if refused {
@@ -1176,9 +1492,11 @@ fn broken(
     let wrong = asked
         .iter()
         .filter(|line| {
-            line.strip_prefix("token ").is_some_and(|rest| {
-                token_answer(rest.split(' ').next().unwrap_or_default()).is_none()
-            })
+            let shown = |verb: &str| {
+                line.strip_prefix(verb).map(|rest| rest.split(' ').next().unwrap_or_default())
+            };
+            shown("token ").is_some_and(|hex| token_answer(hex).is_none())
+                || shown("client ").is_some_and(|hex| client_answer(hex).is_none())
         })
         .count();
     let counted_tokens = after.wrong_tokens - before.wrong_tokens.min(after.wrong_tokens);
@@ -1188,8 +1506,9 @@ fn broken(
     // A stranger is told nothing of an account.
     let request_text = sent.describe();
     let secrets = sessions.secrets();
+    let tokens = [TOKEN_ALL, TOKEN_READ, TOKEN_OTHER, CLIENT_ALL, CLIENT_READ];
     let known = secrets.iter().any(|secret| request_text.contains(secret.as_str()))
-        || [TOKEN_ALL, TOKEN_READ, TOKEN_OTHER].iter().any(|token| request_text.contains(token));
+        || tokens.iter().any(|token| request_text.contains(token));
     let signs_in = sign_in && got.status < 400;
     if !known && !signs_in && caller != Caller::AddsStep {
         let mut answer_text = body.into_owned();
@@ -1244,10 +1563,21 @@ fn requests_of_every_caller_bent_at_random_keep_what_the_console_promises() {
         offered.extend(LAB.iter().copied().filter(|action| !action.long()));
         let actions: &'static [&'static dyn Registered] = Box::leak(offered.into_boxed_slice());
         world.console.shared.actions.set(actions);
+        // An `ask` waits for an administrator's answer, which comes in
+        // another round or never.
+        world.console.shared.ask_wait.set(Duration::from_millis(2));
         let seeds = seeds(actions);
         // Mostly the requests that can work: a bad example is refused at
         // the first look at its arguments.
         let good: Vec<&Seed> = seeds.iter().filter(|seed| !seed.what.contains(" bad ")).collect();
+        // The MCP server and the page for its clients, which are few
+        // among the actions' hundreds, get a share of their own.
+        let answers = |seed: &Seed| seed.template.starts_with("/api/1/clients/requests/{id}/");
+        let of_clients: Vec<&Seed> = seeds
+            .iter()
+            .filter(|seed| seed.template == MCP || seed.template.contains("/clients"))
+            .collect();
+        let mut approved = 0;
         let address = reach::counted(PEER.parse().unwrap());
         let mut rng = Rng::new();
         let mut sessions = Sessions::new(&world).await;
@@ -1257,9 +1587,39 @@ fn requests_of_every_caller_bent_at_random_keep_what_the_console_promises() {
                 sessions.end(&world).await;
                 sessions = Sessions::new(&world).await;
             }
-            let seed = if rng.chance(75) { *rng.pick(&good) } else { rng.pick(&seeds) };
-            // Mostly the callers whose requests get past the first checks.
-            let caller = if rng.chance(30) { *rng.pick(&CALLERS) } else { *rng.pick(&ADMITTED) };
+            let seed = if rng.chance(CLIENTS_SHARE) {
+                *rng.pick(&of_clients)
+            } else if rng.chance(75) {
+                *rng.pick(&good)
+            } else {
+                rng.pick(&seeds)
+            };
+            // Mostly the callers whose requests get past the first checks:
+            // an AI client at the MCP server, and an administrator who
+            // may answer what a client asked.
+            let caller = if rng.chance(30) {
+                *rng.pick(&CALLERS)
+            } else if seed.template == MCP {
+                *rng.pick(&CLIENTS)
+            } else if answers(seed) && rng.chance(60) {
+                Caller::Unlocked
+            } else {
+                *rng.pick(&ADMITTED)
+            };
+            // A yes or a no is to a request that waits, when one does.
+            let waits = {
+                let requests = world.console.shared.client_requests.borrow();
+                requests.waiting().next().map(|request| request.id)
+            };
+            let answering;
+            let seed = match waits {
+                Some(id) if answers(seed) => {
+                    answering =
+                        Seed { params: vec![("id".into(), id.to_string())], ..seed.clone() };
+                    &answering
+                }
+                _ => seed,
+            };
             let mut sent = Sent::of(seed, caller, &sessions);
             let bends = if rng.chance(35) { 0 } else { 1 + rng.below(3) };
             for _ in 0..bends {
@@ -1286,6 +1646,9 @@ fn requests_of_every_caller_bent_at_random_keep_what_the_console_promises() {
             forget_tries(&world.console.shared);
             sent_count += 1;
             *statuses.entry(got.status).or_insert(0) += 1;
+            if seed.what == "client approve" && got.status == 200 {
+                approved += 1;
+            }
         }
         sessions.end(&world).await;
         // The requests reached the routes and the actions, not only the
@@ -1298,6 +1661,10 @@ fn requests_of_every_caller_bent_at_random_keep_what_the_console_promises() {
             assert!(statuses[&200] > rounds() / 8, "{statuses:?}");
             // Changes ran, and the journal kept them.
             assert!(Traces::now(&world, address).newest > 20);
+            // Clients asked, were answered 202 for what they only told,
+            // and an administrator's yes ran what some of them asked for.
+            assert!(statuses.get(&202).copied().unwrap_or(0) > 5, "{statuses:?}");
+            assert!(approved > 0, "no request of a client's was approved");
         }
     });
 }

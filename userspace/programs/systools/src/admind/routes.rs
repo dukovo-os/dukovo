@@ -47,12 +47,14 @@
 //! browser's address.
 
 mod account;
-mod act;
+pub(super) mod act;
 mod changes;
+mod clients;
 mod events;
 mod follow;
 #[cfg(feature = "lab")]
 mod lab;
+mod mcp;
 mod reports;
 mod session;
 mod sign_in;
@@ -83,13 +85,14 @@ use serde_json::{Value, json};
 
 use super::actions::{self, Found, Params, Registered};
 use super::authd;
-use super::caller::{self, TokenCall};
+use super::caller::{self, Bearer, TokenCall};
 use super::errors::{self, Attempt, Failure, Kind};
 use super::files::File;
 use super::guard::{self, SESSION_COOKIE};
 use super::limits::Held;
 use super::link::Link;
 use super::log;
+use super::mcp::client::{self, Client, Door};
 use super::openapi;
 use super::reach;
 use super::shared::{Shared, unix_now};
@@ -159,6 +162,8 @@ enum Content {
     OnceHead(usize),
     /// Plain words for a phone: a one-time link that is not there.
     Plain(&'static str),
+    /// No body: a notification an MCP client sent was taken.
+    Nothing,
 }
 
 /// An answer, before its headers.
@@ -245,6 +250,8 @@ pub(super) enum Access {
     /// What [`Access::Full`] allows, or an API token: the actions, their
     /// list and the showing of one.
     Api,
+    /// An MCP client, by its token and by nothing else (ADR 0690).
+    Client,
 }
 
 /// The routes of the API, and the files.
@@ -304,6 +311,15 @@ pub(super) enum Route {
     Phone,
     Once,
     OnceHead,
+    Mcp,
+    Clients,
+    ClientAdd,
+    ClientRemove,
+    ClientAreas,
+    ClientRequests,
+    ClientApprove,
+    ClientRefuse,
+    ClientHistory,
     #[cfg(feature = "lab")]
     TestElevate,
 }
@@ -324,8 +340,13 @@ const fn entry(verb: Verb, path: &'static str, route: Route, access: Access) -> 
 /// What a file is answered with, whoever asks.
 const FILE: Entry = entry(Verb::Get, "", Route::File, Access::Anyone);
 
-/// The address of a one-time link: the only route outside `/api/`.
+/// The address of a one-time link: with [`MCP`], the routes outside
+/// `/api/`.
 const ONCE: &str = "/once/{token}/report.txt";
+
+/// The address of the MCP server (ADR 0690), where the clients' settings
+/// expect one.
+const MCP: &str = "/mcp";
 
 /// Every route of the API; a `{name}` in an address is one part of it that
 /// the handler reads as an argument. The second-step routes, `session`,
@@ -383,6 +404,16 @@ pub(super) const TABLE: &[Entry] = &[
     ),
     entry(Verb::Post, "/api/1/account/tokens/add", Route::TokenAdd, Access::Full),
     entry(Verb::Post, "/api/1/account/tokens/remove", Route::TokenRemove, Access::Full),
+    // A person's own AI clients, and what the page for them asks
+    // (ADR 0690).
+    entry(Verb::Get, "/api/1/account/clients", Route::Clients, Access::Full),
+    entry(Verb::Post, "/api/1/account/clients/add", Route::ClientAdd, Access::Full),
+    entry(Verb::Post, "/api/1/account/clients/remove", Route::ClientRemove, Access::Full),
+    entry(Verb::Get, "/api/1/clients/areas", Route::ClientAreas, Access::Full),
+    entry(Verb::Get, "/api/1/clients/requests", Route::ClientRequests, Access::Full),
+    entry(Verb::Post, "/api/1/clients/requests/{id}/approve", Route::ClientApprove, Access::Full),
+    entry(Verb::Post, "/api/1/clients/requests/{id}/refuse", Route::ClientRefuse, Access::Full),
+    entry(Verb::Get, "/api/1/clients/history", Route::ClientHistory, Access::Full),
     entry(Verb::Get, "/api/1/account/preferences", Route::Preferences, Access::Full),
     entry(Verb::Post, "/api/1/account/preferences", Route::PreferencesChange, Access::Full),
     entry(Verb::Get, "/api/1/actions", Route::Actions, Access::Api),
@@ -411,6 +442,7 @@ pub(super) const TABLE: &[Entry] = &[
     // A report's text, once, for a phone with no session (ADR 0568).
     entry(Verb::Get, ONCE, Route::Once, Access::Anyone),
     entry(Verb::Head, ONCE, Route::OnceHead, Access::Anyone),
+    entry(Verb::Post, MCP, Route::Mcp, Access::Client),
     #[cfg(feature = "lab")]
     entry(Verb::Post, "/api/1/test/elevate", Route::TestElevate, Access::Full),
 ];
@@ -478,7 +510,9 @@ enum Lookup {
 /// table, once for each verb it takes, whose `{name}` parts each take one
 /// part of it; any other is a file's, which `GET` and `HEAD` ask for.
 fn lookup(verb: Verb, path: &str) -> Lookup {
-    if path != "/api" && !path.starts_with("/api/") && !path.starts_with("/once/") {
+    let routed =
+        path == "/api" || path.starts_with("/api/") || path.starts_with("/once/") || path == MCP;
+    if !routed {
         return if verb == Verb::Post {
             Lookup::WrongVerb
         } else {
@@ -798,20 +832,34 @@ where
     let verb = verb_of(head)?;
     let (host, origin) = host_of(shared, head)?;
     let cookie = cookie_of(&head.headers, SESSION_COOKIE);
-    let token = caller::bearer(&head.headers)?;
-    if token.is_some() && cookie.is_some() {
-        let why = "a request brings an API token or a session, not both";
+    let bearer = caller::bearer(&head.headers)?;
+    if bearer.is_some() && cookie.is_some() {
+        let why = "a request brings a token or a session, not both";
         return Err(Failure::new(Kind::BadRequest, why));
     }
     let target = target(shared.actions.get(), verb, head.uri.path())?;
     let access = target.access();
-    let token = match token {
-        Some(_) if access != Access::Api => {
+    // Each kind of token is taken at its own addresses, and says where
+    // it belongs when it comes to the other's.
+    let (token, client) = match bearer {
+        Some(Bearer::Api(_)) if access == Access::Client => {
+            let why = "an API token is for the API: an AI client's token, dkc_…, is for /mcp";
+            return Err(Failure::new(Kind::ClientRefused, why));
+        }
+        Some(Bearer::Api(_)) if access != Access::Api => {
             let why = "an API token is for the actions and their list, not for this route";
             return Err(Failure::new(Kind::OutOfScope, why));
         }
-        Some(token) => Some(caller::check(shared, peer, token).await?),
-        None => None,
+        Some(Bearer::Api(token)) => (Some(caller::check(shared, peer, token).await?), None),
+        Some(Bearer::Client(_)) if access != Access::Client => {
+            let why = "an AI client's token is for /mcp, and for nothing else";
+            return Err(Failure::new(Kind::ClientMayNot, why));
+        }
+        Some(Bearer::Client(token)) => {
+            (None, Some(client::check(shared, Door::Https(peer), token).await?))
+        }
+        None if access == Access::Client => return Err(mcp::no_token()),
+        None => (None, None),
     };
     let live = cookie.and_then(|cookie| live(shared, cookie));
     check(shared, peer, head, access, live.as_ref(), token.is_some(), &origin).map_err(
@@ -850,7 +898,7 @@ where
         connection: handover.1,
     };
     match target {
-        Target::Route(entry, _) => dispatch(&cx, entry.route, live, token).await,
+        Target::Route(entry, _) => dispatch(&cx, entry.route, live, token, client).await,
         Target::Action(action, params) => act::action(&cx, action, params, live, token).await,
     }
 }
@@ -907,6 +955,17 @@ fn check(
         // authd took the token; a browser never sends one by itself, so a
         // request that brings one was made on purpose.
         (Access::Api, None) if token => Ok(()),
+        // A client's token says who asks, and a page of another site
+        // that has got hold of one is still not let in: a request that
+        // names where it comes from must name the console.
+        (Access::Client, _) => {
+            let named = head.headers.get_all(header::ORIGIN).iter().count();
+            if named > 0 && given_origin != Some(origin) {
+                let why = "a request to /mcp that names an origin names the console's own";
+                return Err(Failure::new(Kind::ForeignRequest, why));
+            }
+            Ok(())
+        }
         (Access::SignIn, _) => {
             if let Some(why) = guard::sign_in_refusal(given_origin, fetch_site, origin) {
                 return Err(Failure::new(Kind::ForeignRequest, why));
@@ -933,12 +992,13 @@ fn check(
 }
 
 /// Has the handler of `route` answer, for the session `live` if it has one,
-/// or the API token `token`.
+/// the API token `token`, or the MCP client `client`.
 async fn dispatch(
     cx: &Context<'_>,
     route: Route,
     live: Option<Live>,
     token: Option<TokenCall>,
+    client: Option<Client>,
 ) -> Outcome {
     match (route, live) {
         (Route::File, _) => file(cx),
@@ -996,6 +1056,15 @@ async fn dispatch(
         (Route::Phone, Some(live)) => reports::phone(cx, &live).await,
         (Route::Once, _) => reports::fetch(cx, false),
         (Route::OnceHead, _) => reports::fetch(cx, true),
+        (Route::Mcp, _) => mcp::post(cx, client).await,
+        (Route::Clients, Some(live)) => account::clients(cx, &live).await,
+        (Route::ClientAdd, Some(live)) => account::client_add(cx, &live).await,
+        (Route::ClientRemove, Some(live)) => account::client_remove(cx, &live).await,
+        (Route::ClientAreas, Some(live)) => clients::areas(cx, &live),
+        (Route::ClientRequests, Some(live)) => clients::requests(cx, &live).await,
+        (Route::ClientApprove, Some(live)) => clients::approve(cx, live).await,
+        (Route::ClientRefuse, Some(live)) => clients::refuse(cx, &live),
+        (Route::ClientHistory, Some(live)) => clients::history(cx, &live),
         #[cfg(feature = "lab")]
         (Route::TestElevate, Some(live)) => lab::elevate(cx, &live).await,
         // A route of the signed in, for a session that has ended, which
@@ -1199,7 +1268,7 @@ fn render(shared: &Shared, reply: Reply) -> Response<Body> {
         }
         Content::Events(events) => (Some("text/event-stream"), "no-store", events.boxed_unsync()),
         Content::Follow(body) => (Some("text/event-stream"), "no-store", body.boxed_unsync()),
-        Content::Socket(_) => (None, "no-store", Empty::new().boxed_unsync()),
+        Content::Socket(_) | Content::Nothing => (None, "no-store", Empty::new().boxed_unsync()),
         Content::Once(body) => {
             once = Some(None);
             (Some(PLAIN), "no-store", body.boxed_unsync())

@@ -143,6 +143,13 @@ alerts.list, alerts.channels and alerts.push-key read what any machine
 has and are run, and so is alerts.test, which a machine with no channel
 answers with an empty list of deliveries.
 
+Nor is console.client-remove (SET_UP): its example removes the AI client
+lab-read of alice, which only the boot test admin-mcp lets in, and nothing
+puts a client back, since adding one takes its owner's password. Its task
+is the command the console shows, which that boot test runs, and the
+browser test web-console/clients uses it on a client it lets in itself.
+console.clients is run: it lists what any machine has, which may be none.
+
 Nor are the changes that restart the machine, which GET /api/1/actions marks
 `restarts`: a restart, a shut down and the search for a bad change would end
 the round with the machine, and a shut down would leave it off. Their tasks
@@ -200,8 +207,9 @@ from console import (
 # changes that are tried (TRIED) need a trial; ssh.on and ssh.off (UNDER)
 # stop the sshd that Ansible's tasks come through; the actions of the
 # Snapshots, Backups, Move, Accounts, Your account, Security, Updates, Apps,
-# Hardware, Report, Databases, Websites and Alerts pages whose examples need
-# what only their tests set up, or that no machine can take back (SET_UP);
+# Hardware, Report, Databases, Websites, Alerts and AI clients pages whose
+# examples need what only their tests set up, or that no machine can take
+# back (SET_UP);
 # and the grow of a second disk (ON_A_SECOND_DISK).
 TRIED = {
     "network.set", "network.keep", "network.undo",
@@ -266,6 +274,8 @@ UNDER = {"ssh.on", "ssh.off"}
 # only reports.draft's answer holds, reports.send and reports.retry send a
 # person's report to a reports server, and reports.delete takes one off it,
 # which none can take back.
+# console.client-remove names the AI client lab-read of alice, which only the
+# boot test admin-mcp lets in, and a client that is removed is not put back.
 SET_UP = {
     "snapshots.browse", "snapshots.browse-all", "snapshots.take", "snapshots.restore", "snapshots.restore-all",
     "backups.show", "backups.key", "backups.run", "backups.verify", "backups.add", "backups.remove", "backups.restore",
@@ -287,6 +297,7 @@ SET_UP = {
     "alerts.push-add", "alerts.push-remove", "alerts.channel-about",
     "hardware.memtest", "hardware.memtest-cancel",
     "reports.redact", "reports.send", "reports.retry", "reports.delete",
+    "console.client-remove",
 }
 # storage.grow's example grows vdb, a boot test's second disk with room after its last
 # partition; a lab machine has no such disk, and a grow of its own cannot be undone.

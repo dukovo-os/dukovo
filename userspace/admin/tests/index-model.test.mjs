@@ -61,7 +61,7 @@ test('the pages a person may see are rows, with their children and sections, and
     'Your account', 'Your account › Display', 'Your account › Time zone', 'Your account › Second step', 'Your account › API tokens',
     'Terminal', 'Terminal › Sessions', 'Terminal › Terminal settings', 'Terminal › Terminal keys',
     'Services', 'Services › Scheduled tasks',
-    'Apps', 'Certificates', 'Security', 'Hardware', 'Updates', 'Report a problem', 'Alerts',
+    'Apps', 'Certificates', 'Security', 'AI clients', 'Hardware', 'Updates', 'Report a problem', 'Alerts',
     'Add an app', 'Websites', 'Databases',
   ]);
   const terminal = rows.find((one) => one.title === 'Terminal › Terminal keys');
@@ -109,7 +109,7 @@ test('whether an address is a page that is registered and that this person may s
 
 test('each action admind lists is a row, with who runs it and an icon of its area', () => {
   const rows = actionRows(ACTIONS);
-  assert.equal(rows.length, 204);
+  assert.equal(rows.length, 206);
   const restart = rows.find((one) => one.key === 'action:service.restart');
   assert.deepEqual(restart, {
     key: 'action:service.restart', kind: 'action', group: ACTIONS_GROUP, title: 'Restart a service', detail: '',

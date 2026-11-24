@@ -19,6 +19,7 @@ use accounts::request::{Answer, Request};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::net::UnixStream;
 
+use crate::authd::console::clients::{CLIENTS_MAX, SCOPES_MAX};
 use crate::authd::console::{PASSKEYS_MAX, TOKENS_MAX};
 use crate::signin;
 
@@ -42,6 +43,16 @@ const TOKEN_JSON: usize = 32 + 16 * 40 + 160;
 /// lets it, which is longer than the lists of passkey IDs that the
 /// answers to a challenge hold, and room for the rest of the JSON.
 const LINE_MAX: u64 = (PASSKEYS_MAX * PASSKEY_JSON + TOKENS_MAX * TOKEN_JSON + 1024) as u64;
+
+/// The most bytes an MCP client takes in the JSON that `clients`
+/// answers: its owner and its name (at most 32 each), its scopes (each
+/// an area of 32 characters and `:read`, in quotes and with a comma),
+/// the address it last came from, and the keys and numbers around them.
+const CLIENT_JSON: usize = 2 * 32 + SCOPES_MAX * 40 + 46 + 200;
+
+// The `clients` answer of an account that keeps as many clients as authd
+// lets it is a line that is read whole.
+const _: () = assert!((CLIENTS_MAX * CLIENT_JSON + 1024) as u64 <= LINE_MAX);
 
 /// A connection to authd, its request sent.
 pub struct Asked(BufReader<UnixStream>);

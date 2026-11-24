@@ -29,6 +29,7 @@ mod changes;
 mod cuts_off;
 mod follow;
 mod fuzz;
+mod mcp;
 mod once;
 mod restarts;
 mod secrets;
@@ -101,6 +102,9 @@ fn worker_answers(method: &str, params: &Value, calls: &Calls) -> Result<Value, 
         "passkey-add" => Ok(json!({ "codes": [] })),
         "trusted-forget" => Ok(json!({ "forgotten": 2 })),
         "token-add" => Ok(json!({ "token": "dkv_chase_aa" })),
+        "clients" => Ok(json!({ "clients": [{ "owner": "chase", "name": "helper" }] })),
+        "client-add" if params["way"] == "ssh" => Ok(json!({ "token": null })),
+        "client-add" => Ok(json!({ "token": "dkc_chase_aa" })),
         "preferences" => Ok(preferences(&json!({}))),
         // A theme that the worker cannot keep, as a file it cannot write.
         "preferences-change" if params["theme"] == "device" => Err(Fault::new(
@@ -218,10 +222,23 @@ fn script(calls: Calls) -> Arc<fixture::Script> {
                 Some(answer) => vec![format!("ok {answer}")],
                 None => no("that API token is not known"),
             },
-            "token-start" => {
+            "token-start" | "client-start" => {
                 fixture::worker(fixture::ends(&mut fds), Arc::clone(&calls), Arc::clone(&answers));
                 ok()
             }
+            "client" => match client_answer(&asked.text(0)) {
+                Some(answer) => vec![format!("ok {answer}")],
+                None => no("that AI client's token or pass is not one of this machine's"),
+            },
+            // What a client reaches when an administrator answers its
+            // request: `gone` was removed since it asked, and `narrowed`
+            // made again with less.
+            "client-of" => match (asked.text(0).as_str(), asked.text(1).as_str()) {
+                ("chase", "gone") => no("chase has no AI client named gone"),
+                ("chase", "narrowed") => vec!["ok chase narrowed https *:read 1900000000".into()],
+                (owner, name) => vec![format!("ok {owner} {name} https * 1900000000")],
+            },
+            "client-read" => client_read(asked, fds, &calls),
             "elevate" => elevated(asked, fds, &calls),
             "terminal" => shell(asked, fds, &calls),
             "follow" => follow(asked, fds, &follows),
@@ -243,6 +260,58 @@ fn script(calls: Calls) -> Arc<fixture::Script> {
 const TOKEN_ALL: &str = "dkv_chase_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const TOKEN_READ: &str = "dkv_chase_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const TOKEN_OTHER: &str = "dkv_chase_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+/// The tokens of the AI clients the test authd knows, all chase's:
+/// `helper`, which reaches everything, `reader`, which reads what chase's
+/// account reads before it unlocks, `gone` and `narrowed`, which reach
+/// everything until an administrator answers what they asked for, and
+/// the pass of `shell`, which connects over SSH.
+const CLIENT_ALL: &str = "dkc_chase_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+const CLIENT_READ: &str = "dkc_chase_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+const CLIENT_GONE: &str = "dkc_chase_ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+const CLIENT_NARROWED: &str =
+    "dkc_chase_gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg";
+const CLIENT_PASS: &str = "dkp_chase_hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh";
+
+/// What authd answers for the client's token or pass whose hex is `hex`.
+fn client_answer(hex: &str) -> Option<&'static str> {
+    let is = |token: &str| accounts::request::hex(token.as_bytes()) == hex;
+    if is(CLIENT_ALL) {
+        Some("chase helper https * 1900000000")
+    } else if is(CLIENT_READ) {
+        Some("chase reader https *:read 1900000000")
+    } else if is(CLIENT_GONE) {
+        Some("chase gone https * 1900000000")
+    } else if is(CLIENT_NARROWED) {
+        Some("chase narrowed https services 1900000000")
+    } else if is(CLIENT_PASS) {
+        Some("chase shell ssh * 1900000000")
+    } else {
+        None
+    }
+}
+
+/// What the test authd does for `client-read`, as `admind --read` would:
+/// `lab.log` prints two records, and any other action is refused as one
+/// the client may not read, with the status and the last line of a
+/// refusal. The action and its arguments are noted in `calls` as a call
+/// of `client-read`.
+fn client_read(asked: &Asked, mut fds: Vec<OwnedFd>, calls: &Calls) -> Vec<String> {
+    use std::io::Write;
+    let action = asked.text(1);
+    let arguments = accounts::console::from_hex(&asked.fields[2]).unwrap_or_default();
+    let arguments: Value = serde_json::from_slice(&arguments).unwrap_or_default();
+    calls.lock().unwrap().push(("client-read".into(), json!([action, arguments])));
+    let mut output = std::fs::File::from(fds.remove(1));
+    let mut errors = std::fs::File::from(fds.remove(1));
+    if action == "lab.log" {
+        output.write_all(b"{\"n\": 1}\n\n{\"n\": 2}\n").unwrap();
+        return vec!["ok 4321".into(), "ended 0".into()];
+    }
+    let refused = format!("admind: checking\nADM-144: this AI client may not read {action}\n");
+    errors.write_all(refused.as_bytes()).unwrap();
+    vec!["ok 4321".into(), format!("ended {}", 125 << 8)]
+}
 
 /// What authd answers for the token whose hex is `hex`.
 fn token_answer(hex: &str) -> Option<&'static str> {
@@ -678,9 +747,11 @@ fn every_route_is_found_by_its_own_verb_and_no_other_and_no_route_is_in_the_tabl
             entry.path,
             entry.verb
         );
-        // The API's routes, and the one-time links, which a phone opens.
+        // The API's routes, the one-time links, which a phone opens, and
+        // the MCP server, where a client's settings look for one.
         let once = entry.path == ONCE;
-        assert!(entry.path.starts_with("/api/1/") || once, "{}", entry.path);
+        let apart = once || entry.path == MCP;
+        assert!(entry.path.starts_with("/api/1/") || apart, "{}", entry.path);
         assert!(
             matches!(lookup(entry.verb, entry.path), Lookup::Found(found, _) if found.route == entry.route)
         );
@@ -709,10 +780,19 @@ fn every_route_is_found_by_its_own_verb_and_no_other_and_no_route_is_in_the_tabl
             Route::Fresh,
             Route::SignedIn,
             Route::Once,
+            Route::Clients,
+            Route::ClientAreas,
+            Route::ClientRequests,
+            Route::ClientHistory,
         ];
         assert_eq!(entry.verb == Verb::Get, reads.contains(&entry.route), "{}", entry.path);
     }
-    assert_eq!(TABLE.len(), 53 + usize::from(cfg!(feature = "lab")));
+    assert_eq!(TABLE.len(), 62 + usize::from(cfg!(feature = "lab")));
+    // The MCP server takes a POST and nothing else, and nothing under it.
+    assert!(matches!(lookup(Verb::Get, MCP), Lookup::WrongVerb));
+    assert!(
+        matches!(lookup(Verb::Get, "/mcp/"), Lookup::Found(entry, _) if entry.route == Route::File)
+    );
     assert!(matches!(lookup(Verb::Post, "/once/x/report.txt"), Lookup::WrongVerb));
     assert!(matches!(lookup(Verb::Get, "/once/x/other.txt"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api/1/nothing"), Lookup::Missing));
@@ -785,9 +865,24 @@ fn before_sign_in_only_health_fingerprint_the_description_and_the_sign_in_routes
         Route::TokenRemove,
         Route::Preferences,
         Route::PreferencesChange,
+        Route::Clients,
+        Route::ClientAdd,
+        Route::ClientRemove,
+        Route::ClientAreas,
+        Route::ClientRequests,
+        Route::ClientApprove,
+        Route::ClientRefuse,
+        Route::ClientHistory,
     ] {
         assert_eq!(access(full), Access::Full, "{full:?}");
     }
+    // The MCP server alone is a client's, and no session's or API token's.
+    let clients: Vec<Route> = TABLE
+        .iter()
+        .filter(|entry| entry.access == Access::Client)
+        .map(|entry| entry.route)
+        .collect();
+    assert_eq!(clients, [Route::Mcp]);
 }
 
 #[test]

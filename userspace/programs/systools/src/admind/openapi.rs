@@ -26,10 +26,17 @@
 //! leaving it out: only an action's arguments and the `{action, args}` that
 //! `POST /api/1/show` and `POST /api/1/check` take are described as a body.
 //!
-//! The two ways to ask are the security schemes: `session`, the cookie of a
+//! The ways to ask are the security schemes: `session`, the cookie of a
 //! signed-in browser, with `csrf`, the header every change from a session
-//! carries, and `token`, an API token as a bearer. A token is for the
-//! operations tagged `api` alone; any other route refuses one.
+//! carries, `token`, an API token as a bearer, and `client`, an MCP
+//! client's token as a bearer. An API token is for the operations tagged
+//! `api` alone, and a client's for `/mcp` alone; any other route refuses
+//! them.
+//!
+//! `/mcp` is described as what HTTP shows of it: the statuses, and that
+//! a message goes in and an answer comes back. What the messages mean is
+//! the Model Context Protocol's to say, and the server's own
+//! `server/discover` and `tools/list` say the rest.
 //!
 //! When the document says something the console does not do, the unit
 //! tests below check what they can, and the lab test `web-console/fuzz`
@@ -44,6 +51,7 @@ use spark_api::trial;
 use super::actions::{self, Field, Registered, Runs, Through, logs};
 use super::errors::Kind;
 use super::guard::{CSRF_HEADER, SESSION_COOKIE};
+use super::mcp::offer::{Offer, offer};
 use super::routes::{Access, Entry, Route, TABLE, Verb};
 use super::scopes::Needed;
 use super::serve::{HEAD_MAX, HEADERS_MAX};
@@ -70,7 +78,8 @@ pub fn document(actions: &[&dyn Registered]) -> Value {
                 an API token needs neither, since a browser never sends a token by itself. A \
                 request's line and headers come to at most 16 KiB and 64 headers, or it is \
                 answered 431 with no body. A body is JSON, at most 64 KiB before sign-in and \
-                1 MiB after.",
+                1 MiB after. POST /mcp is the console's MCP server, for the clients an \
+                administrator has let in: it takes a client's own token and nothing else.",
         },
         "tags": [
             { "name": "open", "description": "Answered to anyone." },
@@ -78,6 +87,7 @@ pub fn document(actions: &[&dyn Registered]) -> Value {
                 minute from an address." },
             { "name": "session", "description": "For a signed-in session; a token is refused." },
             { "name": "api", "description": "For a signed-in session or an API token." },
+            { "name": "mcp", "description": "The MCP server: for an AI client's token alone." },
         ],
         "paths": paths,
         "components": {
@@ -131,6 +141,13 @@ fn security_schemes() -> Value {
             "scheme": "bearer",
             "description": "An API token, from admin token add or the console's page for the \
                 account. Its scopes name what it may do; it is never more than its owner.",
+        },
+        "client": {
+            "type": "http",
+            "scheme": "bearer",
+            "description": "An AI client's token, dkc_..., from admin mcp add or the console's \
+                AI clients page. It reads within the areas it was given, and what it asks to \
+                change waits for an administrator's yes in the console.",
         },
     })
 }
@@ -196,6 +213,28 @@ fn schemas() -> Value {
                 "task": { "type": "integer", "description": "The task's number, for GET /api/1/tasks/{id}." },
             },
         },
+        "McpAnswer": {
+            "type": "object",
+            "description": "A JSON-RPC 2.0 response: a result, or an error with its code.",
+            "required": ["jsonrpc", "id"],
+            "properties": {
+                "jsonrpc": { "const": "2.0" },
+                "id": {
+                    "type": ["string", "number", "null"],
+                    "description": "The request's own, or null when it could not be read.",
+                },
+                "result": { "type": "object" },
+                "error": {
+                    "type": "object",
+                    "required": ["code", "message"],
+                    "properties": {
+                        "code": { "type": "integer" },
+                        "message": { "type": "string" },
+                        "data": {},
+                    },
+                },
+            },
+        },
     })
 }
 
@@ -226,7 +265,79 @@ fn route_operation(entry: &Entry, actions: &[&dyn Registered]) -> Value {
     if matches!(entry.route, Route::Once | Route::OnceHead) {
         plain_too(&mut operation["responses"]);
     }
+    if entry.route == Route::Mcp {
+        operation["requestBody"] = mcp_message();
+        mcp_too(&mut operation["responses"]);
+    }
+    if entry.route == Route::ClientApprove {
+        // The change runs as its own route would run it, and answers so.
+        let (own, refused) = asked_errors(actions);
+        let mut responses = responses(success_of(entry.route), &route_kinds(entry), &own, &refused);
+        let started = json!({ "$ref": "#/components/schemas/Started" });
+        responses["202"] =
+            json_response("The change is long: the task that runs it has begun.", Some(started));
+        operation["responses"] = responses;
+    }
     operation
+}
+
+/// What approving an MCP client's request can answer besides the
+/// console's own errors: the IDs that the commands of the changes a
+/// client may ask for give, and the refusals of another area, as
+/// [`refusals`] gives them for one action.
+pub fn asked_errors(
+    actions: &[&dyn Registered],
+) -> (Vec<&'static str>, Vec<(&'static str, &'static str)>) {
+    let asked = || actions.iter().filter(|action| offer(**action) == Ok(Offer::Ask));
+    let mut own: Vec<&str> = asked().flat_map(|action| action.errors().iter().copied()).collect();
+    own.sort_unstable();
+    own.dedup();
+    let mut refused: Vec<_> = asked().flat_map(|action| refusals(*action)).collect();
+    refused.sort_unstable();
+    refused.dedup();
+    (own, refused)
+}
+
+/// The body `/mcp` takes: one JSON-RPC message, or a batch of them from a
+/// client of the two oldest revisions.
+fn mcp_message() -> Value {
+    let message = json!({
+        "type": "object",
+        "required": ["jsonrpc", "method"],
+        "properties": {
+            "jsonrpc": { "const": "2.0" },
+            "id": { "type": ["string", "number"] },
+            "method": { "type": "string" },
+            "params": { "type": "object" },
+        },
+    });
+    let schema =
+        json!({ "anyOf": [message, { "type": "array", "items": message, "minItems": 1 }] });
+    json!({ "required": true, "content": { "application/json": { "schema": schema } } })
+}
+
+/// Adds what the protocol answers to the responses of `/mcp`, whose
+/// refusals before a message is read are the console's as everywhere:
+/// 202 with no body for a notification, 404 for a method there is none
+/// of, and a 400 that is the protocol's own error.
+fn mcp_too(responses: &mut Value) {
+    let answer = json!({ "$ref": "#/components/schemas/McpAnswer" });
+    responses["202"] = json!({
+        "description": "A notification was taken. The answer has no body.",
+    });
+    responses["404"] = json_response(
+        "The protocol's error -32601: the revision of 2026-07-28 has no such method.",
+        Some(answer.clone()),
+    );
+    let refused = &mut responses["400"];
+    let console = refused["content"]["application/json"]["schema"].take();
+    refused["content"]["application/json"]["schema"] = json!({ "anyOf": [console, answer] });
+    let said = format!(
+        "{}. Or the protocol's error: a message that is not JSON-RPC, or whose revision, \
+         envelope or headers are not right.",
+        refused["description"].as_str().unwrap_or_default(),
+    );
+    refused["description"] = said.into();
 }
 
 /// The body of a route that takes an action and the arguments its own route
@@ -334,8 +445,8 @@ fn parameter(field: &Field, example: Option<&Value>, place: &str) -> Value {
 }
 
 /// The parameter `name` of a route's address, the number the console gave
-/// a change, a task, a terminal or a pane, or the name of a trial, of an
-/// account, or of one of its sessions.
+/// a change, a task, a terminal, a pane or an AI client's request, or the
+/// name of a trial, of an account, or of one of its sessions.
 fn id_parameter(name: &str, path: &str) -> Value {
     if name == "trial" {
         let pattern = format!("^[A-Za-z0-9][A-Za-z0-9._-]{{0,{}}}$", trial::ID_MAX - 1);
@@ -371,6 +482,8 @@ fn id_parameter(name: &str, path: &str) -> Value {
         "terminal"
     } else if path.contains("/tasks/") {
         "task"
+    } else if path.contains("/requests/") {
+        "request"
     } else {
         "change"
     };
@@ -412,6 +525,7 @@ fn tag(access: Access) -> &'static str {
         Access::SignIn => "sign-in",
         Access::Limited | Access::Full => "session",
         Access::Api => "api",
+        Access::Client => "mcp",
     }
 }
 
@@ -424,6 +538,7 @@ fn security(access: Access, post: bool) -> Value {
         Access::Anyone | Access::SignIn => json!([]),
         Access::Limited | Access::Full => json!([session]),
         Access::Api => json!([{ "token": [] }, session]),
+        Access::Client => json!([{ "client": [] }]),
     }
 }
 
@@ -434,6 +549,10 @@ fn access_kinds(access: Access, post: bool) -> Vec<Kind> {
     let mut kinds = vec![Kind::BadRequest, Kind::WrongHost];
     if post {
         kinds.extend([Kind::TooBig, Kind::NotJson]);
+    }
+    if access != Access::Client {
+        // An MCP client's token is for `/mcp` alone.
+        kinds.push(Kind::ClientMayNot);
     }
     let session = [Kind::SessionEnded, Kind::OutOfScope];
     match access {
@@ -450,8 +569,11 @@ fn access_kinds(access: Access, post: bool) -> Vec<Kind> {
             Kind::SessionEnded,
             Kind::SecondStepOnly,
         ]),
+        // No token, one that is not a client's or one authd does not
+        // take; too many wrong ones from an address.
+        Access::Client => kinds.extend([Kind::ClientRefused, Kind::Wait, Kind::AuthdSilent]),
     }
-    if post && matches!(access, Access::Limited | Access::Full | Access::Api) {
+    if post && access != Access::Anyone && access != Access::SignIn {
         kinds.push(Kind::ForeignRequest);
     }
     kinds
@@ -547,6 +669,39 @@ const PHONE: &[Kind] = &[
     Kind::Internal,
 ];
 
+/// What the routes of the page for AI clients can answer with besides
+/// (ADR 0690): they are an administrator's.
+const CLIENTS: &[Kind] = &[Kind::NotAdmin, Kind::Internal];
+
+/// What answering a request of an AI client's can: it is an
+/// administrator's, there is no such request that waits, or its client is
+/// no more.
+const CLIENT_ANSWER: &[Kind] =
+    &[Kind::NotAdmin, Kind::NoRequest, Kind::AuthdSilent, Kind::Internal];
+
+/// What approving one can answer with besides: the session is locked, and
+/// what the change itself is refused or fails with, as its own route
+/// answers it.
+const CLIENT_APPROVE: &[Kind] = &[
+    Kind::NotAdmin,
+    Kind::Locked,
+    Kind::NoRequest,
+    Kind::AuthdSilent,
+    Kind::Internal,
+    Kind::BadValue,
+    Kind::Refused,
+    Kind::NotSelf,
+    Kind::CutsOff,
+    Kind::NotNamed,
+    Kind::TrialRuns,
+    Kind::CommandFailed,
+    Kind::WorkerSilent,
+    Kind::NoProgram,
+    Kind::Busy,
+    Kind::NoStore,
+    Kind::Wait,
+];
+
 /// What the Terminal's socket can answer with besides: the opening request
 /// did not come from the console's page with the session's token.
 const SOCKET: &[Kind] = &[
@@ -562,6 +717,12 @@ const SOCKET: &[Kind] = &[
 fn own_kinds(route: Route) -> &'static [Kind] {
     match route {
         Route::File | Route::Health | Route::Fingerprint | Route::OpenApi | Route::Actions => &[],
+        // What a message is answered is the protocol's, not an error of
+        // the console's.
+        Route::Mcp => &[],
+        Route::ClientAreas | Route::ClientRequests | Route::ClientHistory => CLIENTS,
+        Route::ClientRefuse => CLIENT_ANSWER,
+        Route::ClientApprove => CLIENT_APPROVE,
         // A probe that does not answer makes check mode say it cannot
         // tell, not an error.
         Route::Show | Route::Check => &[Kind::BadValue, Kind::OutOfScope],
@@ -613,6 +774,9 @@ fn own_kinds(route: Route) -> &'static [Kind] {
         | Route::TrustedForget
         | Route::TokenAdd
         | Route::TokenRemove
+        | Route::Clients
+        | Route::ClientAdd
+        | Route::ClientRemove
         | Route::Preferences
         | Route::PreferencesChange => PERSON,
         #[cfg(feature = "lab")]
@@ -935,6 +1099,20 @@ fn success_of(route: Route) -> (&'static str, Value) {
                 "content": { "text/plain": {} },
             }),
         ),
+        Route::ClientApprove => {
+            ok("The change ended well.", Some(json!({ "$ref": "#/components/schemas/Done" })))
+        }
+        Route::Mcp => ok(
+            "The answer to the message, or the answers to a batch's. An error of the \
+             protocol's that a client of an older revision sent for is answered here too. A \
+             tool's failure is a result as well, with isError true and the console's error as \
+             structuredContent.error: ADM-146, for a client with too many requests that wait, \
+             is told only there.",
+            Some(json!({ "anyOf": [
+                { "$ref": "#/components/schemas/McpAnswer" },
+                { "type": "array", "items": { "$ref": "#/components/schemas/McpAnswer" } },
+            ] })),
+        ),
         _ => ok("What the route answers, as JSON.", None),
     }
 }
@@ -978,6 +1156,18 @@ fn summary(route: Route) -> &'static str {
         Route::TrustedForget => "Forgets every browser the person trusted.",
         Route::TokenAdd => "Makes an API token, which is shown this once.",
         Route::TokenRemove => "Removes an API token.",
+        Route::Clients => "Lists the person's own AI clients, with none of their secrets.",
+        Route::ClientAdd => {
+            "Lets an AI client in: the token of one that connects over HTTPS is shown this once."
+        }
+        Route::ClientRemove => "Removes one of the person's AI clients.",
+        Route::ClientAreas => "Lists the areas an AI client can be given, and what each offers.",
+        Route::ClientRequests => "Lists the changes AI clients asked for that wait for a yes.",
+        Route::ClientApprove => {
+            "Approves an AI client's request: its change runs as the administrator who approves."
+        }
+        Route::ClientRefuse => "Refuses an AI client's request: nothing runs.",
+        Route::ClientHistory => "Lists what the AI clients did, the newest first.",
         Route::Preferences => "Says how the console looks to the person.",
         Route::PreferencesChange => "Changes the person's preferences, and answers them all.",
         Route::Actions => "Lists the actions the API offers.",
@@ -1005,6 +1195,7 @@ fn summary(route: Route) -> &'static str {
         }
         Route::Phone => "Makes a one-time link to a draft's text, for a phone to download.",
         Route::Once | Route::OnceHead => "Gives a report's text once, with no session.",
+        Route::Mcp => "The MCP server: takes a JSON-RPC message from an AI client and answers it.",
         #[cfg(feature = "lab")]
         Route::TestElevate => "Runs a command as an administrator in an unlocked session.",
     }

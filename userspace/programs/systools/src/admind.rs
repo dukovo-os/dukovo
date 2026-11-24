@@ -15,6 +15,10 @@
 //! the person, without the bypass right, with its link to admind as
 //! descriptor 0. It does what the person may do with their own rights.
 //!
+//! `admind --read` is what authd starts, as an administrator, for a read
+//! of an MCP client's ([`read`], ADR 0691): it runs one of the console's
+//! reads and nothing else.
+//!
 //! The parts:
 //!
 //! - [`serve`] listens, checks who may connect, speaks TLS and HTTP, and
@@ -41,7 +45,9 @@
 //!   lose (ADR 0516): [`journal`] with [`audit`] and [`diff`] makes "What
 //!   changed" from the console's own changes and the files changed by
 //!   hand, and [`tasks`] runs the long actions, their progress and their
-//!   logs.
+//!   logs;
+//! - [`mcp`] is the console's MCP server, for the clients an
+//!   administrator lets in (ADR 0690).
 //!
 //! When something is wrong, `log admind` has a line for each start, sign-in,
 //! sign-out and refusal, with the browser's address and never a password,
@@ -78,10 +84,12 @@ mod guard;
 pub(crate) mod journal;
 mod limits;
 mod link;
+pub(crate) mod mcp;
 mod once;
 mod openapi;
 pub(crate) mod preferences;
 mod reach;
+mod read;
 pub(crate) mod routes;
 mod run;
 pub(crate) mod scopes;
@@ -125,7 +133,7 @@ fn audit(text: &str) {
 
 /// admind(8).
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
-    let help = "Usage: admind [--worker]";
+    let help = "Usage: admind [--worker | --read AREAS ACTION ARGUMENTS]";
     let Some(arg) = args.next()? else { return serve::run() };
     match arg {
         Arg::Long(long) if long == "help" => {
@@ -136,6 +144,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             None => worker::run(),
             Some(other) => Err(args.unknown(&other)),
         },
+        Arg::Long(long) if long == "read" => read::main(args),
         other => Err(args.unknown(&other)),
     }
 }

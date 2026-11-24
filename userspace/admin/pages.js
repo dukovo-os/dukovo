@@ -98,7 +98,7 @@ const ENTRIES = [
     parts: { overview: () => import('./pages/account/overview.js') },
   },
   {
-    id: 'terminal', title: 'Terminal', path: '/terminal', icon: 'terminal', nav: { order: 150, flag: 'terminal' },
+    id: 'terminal', title: 'Terminal', path: '/terminal', icon: 'terminal', nav: { order: 160, flag: 'terminal' },
     keywords: ['shell', 'command line', 'console', 'ssh'],
     children: [
       { title: 'Sessions', path: '/terminal/sessions', badge: 'sessions' },
@@ -149,14 +149,21 @@ const ENTRIES = [
     parts: { overview: () => import('./pages/security/overview.js') },
   },
   {
-    id: 'hardware', title: 'Hardware', path: '/hardware', icon: 'hardware', nav: { order: 130 },
+    id: 'clients', title: 'AI clients', path: '/clients', icon: 'ai', nav: { order: 130 }, needs: 'admin',
+    keywords: ['mcp', 'assistant', 'agent', 'approve'],
+    css: ['dialogs.css', 'boards.css', 'pages.css', 'pages/clients/clients.css'],
+    load: () => import('./pages/clients/page.js'),
+    parts: { badge: () => import('./pages/clients/badge.js') },
+  },
+  {
+    id: 'hardware', title: 'Hardware', path: '/hardware', icon: 'hardware', nav: { order: 140 },
     keywords: ['restart', 'shut down', 'reboot', 'power off', 'temperature', 'fan', 'memory test', 'devices', 'driver', 'self-test'],
     css: ['pages.css', 'pages/hardware/hardware.css'],
     load: () => import('./pages/hardware/page.js'),
     parts: { overview: () => import('./pages/hardware/overview.js'), palette: () => import('./pages/hardware/palette.js') },
   },
   {
-    id: 'updates', title: 'Updates', path: '/updates', icon: 'updates', nav: { order: 140 },
+    id: 'updates', title: 'Updates', path: '/updates', icon: 'updates', nav: { order: 150 },
     keywords: ['update', 'upgrade', 'rollback', 'go back', 'channel', 'hold', 'firmware', 'bisect', 'health check'],
     css: ['pages.css', 'pages/updates/updates.css'],
     load: () => import('./pages/updates/page.js'),

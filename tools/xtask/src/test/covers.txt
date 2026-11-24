@@ -83,6 +83,13 @@ admin-logs userspace/programs/systools/src/authd/ userspace/programs/accounts/ u
 admin-logs userspace/programs/systools/src/log.rs userspace/programs/systools/src/logd.rs userspace/programs/systools/src/logger.rs
 admin-logs userspace/defaults/admin.toml userspace/defaults/log userspace/defaults/spark/services/admind.toml
 admin-logs userspace/programs/nukesh/ tools/xtask/src/test/console_client.rs tools/xtask/src/test/websocket_client.py ports/netcat/
+admin-mcp userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
+admin-mcp userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/programs/systools/src/admin.rs
+admin-mcp userspace/programs/systools/src/admin_mcp.rs userspace/programs/systools/src/admin_mcp/ userspace/programs/systools/src/elevate.rs
+admin-mcp userspace/programs/systools/src/service.rs userspace/programs/systools/src/log.rs userspace/programs/systools/src/logd.rs
+admin-mcp userspace/programs/spark-api/ userspace/spark/src/supervisor/ userspace/defaults/admin.toml
+admin-mcp userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/authd.toml userspace/defaults/spark/services/diskhealth.toml
+admin-mcp tools/xtask/src/test/console_client.rs tools/xtask/src/test/cases/admin-backups.rs ports/netcat/
 admin-move userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
 admin-move userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
 admin-move userspace/programs/systools/src/backup.rs userspace/programs/systools/src/backup/ userspace/programs/systools/src/backup_errors.rs

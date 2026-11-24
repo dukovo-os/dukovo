@@ -319,6 +319,8 @@ export async function enterShell({ app, session: first, signOut, signInAgain, on
       if (name === 'task' || name === 'change') parts.forget();
       bus.emit(name, data);
       if (name === 'task' || name === 'change') nav.readBadges('event');
+      // A request that waits is waited on, so its count is read at once.
+      if (name === 'clients') nav.readBadges('now');
     },
   });
 

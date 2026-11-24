@@ -27,6 +27,7 @@ admin-commands 320
 admin-hardware 450
 admin-journal 270
 admin-logs 330
+admin-mcp 100
 admin-move 540
 admin-reports 360
 admin-security 600

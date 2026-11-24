@@ -27,7 +27,7 @@ use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use accounts::console::{Console, from_hex};
+use accounts::console::{Console, Way, from_hex};
 use accounts::request::Answer;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -139,6 +139,9 @@ enum Shape {
     Forgotten,
     /// A new API token: `{token}`.
     Token,
+    /// A new MCP client: `{token}`, its token for one that connects over
+    /// HTTPS, and null for one that connects over SSH, which has none.
+    Client,
     /// Nothing to tell: `{done: true}`.
     Done,
     /// What the browser needs to make a passkey: the challenge, the user
@@ -214,6 +217,16 @@ mod takes {
     #[serde(deny_unknown_fields)]
     pub struct TokenRemove {
         pub name: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct ClientAdd {
+        pub proof: String,
+        pub name: String,
+        pub way: String,
+        pub scopes: Vec<String>,
+        pub days: u32,
     }
 }
 
@@ -311,6 +324,25 @@ fn request(method: &str, params: Value) -> Result<(Console, Shape), Fault> {
             let p: p::TokenRemove = take(method, params)?;
             (Console::TokenRemove { name: p.name }, Shape::Done)
         }
+        "clients" => (nothing(&params).map(|()| Console::Clients)?, Shape::Steps),
+        "client-add" => {
+            let p: p::ClientAdd = take(method, params)?;
+            let way = Way::of(p.way.as_bytes()).ok_or_else(|| {
+                Fault::new(Kind::BadRequest, "an AI client connects over ssh or over https")
+            })?;
+            let console = Console::ClientAdd {
+                proof: p.proof.into_bytes(),
+                name: p.name,
+                way,
+                scopes: p.scopes,
+                days: p.days,
+            };
+            (console, Shape::Client)
+        }
+        "client-remove" => {
+            let p: p::TokenRemove = take(method, params)?;
+            (Console::ClientRemove { name: p.name }, Shape::Done)
+        }
         other => {
             return Err(Fault::new(Kind::NoRoute, format!("the worker has no method {other}")));
         }
@@ -335,6 +367,7 @@ fn result(
             json!({ "forgotten": text.trim().parse::<u32>().map_err(|_| unreadable("a count"))? })
         }
         Shape::Token => json!({ "token": text }),
+        Shape::Client => json!({ "token": (!text.is_empty()).then_some(text) }),
         Shape::Done => json!({ "done": true }),
         Shape::Creation => creation(text, &who()?)?,
     })
@@ -477,6 +510,26 @@ mod tests {
                 Console::TokenRemove { name: "ansible".into() },
                 Shape::Done,
             ),
+            ("clients", Value::Null, Console::Clients, Shape::Steps),
+            (
+                "client-add",
+                json!({"proof": "", "name": "desk", "way": "https", "scopes": ["*:read", "services"],
+                       "days": 90}),
+                Console::ClientAdd {
+                    proof: Vec::new(),
+                    name: "desk".into(),
+                    way: Way::Https,
+                    scopes: vec!["*:read".into(), "services".into()],
+                    days: 90,
+                },
+                Shape::Client,
+            ),
+            (
+                "client-remove",
+                json!({"name": "desk"}),
+                Console::ClientRemove { name: "desk".into() },
+                Shape::Done,
+            ),
         ];
         for (method, params, console, shape) in cases {
             let (asked, how) = ask(method, params).unwrap();
@@ -502,6 +555,9 @@ mod tests {
             bad("passkey-remove", json!({"proof": "", "id": "xyz"})),
             "a passkey's id is hexadecimal"
         );
+        let carried = json!({"proof": "", "name": "a", "way": "carrier", "scopes": [], "days": 1});
+        assert_eq!(bad("client-add", carried), "an AI client connects over ssh or over https");
+        assert!(bad("client-remove", json!({"name": "a", "of": "bob"})).contains("unknown field"));
         let fault = ask("rm-rf", Value::Null).err().unwrap();
         assert_eq!(
             (fault.id.as_str(), fault.detail.as_str()),
@@ -537,6 +593,9 @@ mod tests {
         assert_eq!(told(Shape::Codes, ""), json!({"codes": []}));
         assert_eq!(told(Shape::Forgotten, "3"), json!({"forgotten": 3}));
         assert_eq!(told(Shape::Token, "dkv_ansible_ab"), json!({"token": "dkv_ansible_ab"}));
+        // A client that connects over SSH has no token: its owner's SSH key lets it in.
+        assert_eq!(told(Shape::Client, "dkc_chase_ab"), json!({"token": "dkc_chase_ab"}));
+        assert_eq!(told(Shape::Client, ""), json!({"token": null}));
         assert_eq!(told(Shape::Done, ""), json!({"done": true}));
         for (shape, text) in
             [(Shape::Steps, "not json"), (Shape::Forgotten, "many"), (Shape::Creation, "00")]

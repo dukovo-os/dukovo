@@ -52,12 +52,13 @@ export const BADGE_EVENT_GAP_MS = 30_000;
 export const BADGE_POLL_MS = 300_000;
 
 /**
- * Whether the badges are to be read now. `why` is `'start'`, `'event'` or
- * `'poll'`; `last` is when they were last read (null: never), `now` the
- * time, and `visible` whether the tab is seen.
+ * Whether the badges are to be read now. `why` is `'start'`, `'now'` (an
+ * event whose count a person waits on), `'event'` or `'poll'`; `last` is
+ * when they were last read (null: never), `now` the time, and `visible`
+ * whether the tab is seen.
  */
 export function badgesDue({ why, last, now, visible }) {
-  if (why === 'start' || last === null) return true;
+  if (why === 'start' || why === 'now' || last === null) return true;
   if (why === 'event') return now - last >= BADGE_EVENT_GAP_MS;
   return visible && now - last >= BADGE_POLL_MS;
 }

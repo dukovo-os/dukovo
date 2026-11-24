@@ -7,7 +7,8 @@
 //! each change of a task's state, step or progress (ADR 0516), `change` for
 //! each row of the journal that ends, a console change's or a hand edit's,
 //! `trial` with the trials that run, `power` with the restart or shut down
-//! that is set, and a comment every 25 seconds so that nothing between the
+//! that is set, `clients` with how many requests of AI clients wait for a
+//! yes, and a comment every 25 seconds so that nothing between the
 //! browser and admind closes a stream that says nothing.
 //!
 //! A tab that opens is told where each task is that waits, runs or ended
@@ -31,6 +32,14 @@
 //! set changes, which admind sees when it reads Spark (a `power` change
 //! reads it as soon as it answers, and the upkeep every round). Its
 //! seconds left are as of when it is sent.
+//!
+//! The requests of AI clients that wait (ADR 0690) are told as their
+//! number alone, to the tabs of administrators: to a tab that opens
+//! while any wait, and each time a request is filed, answered or lapses,
+//! so that the page for them reads them again and its entry in the menu
+//! counts them. Whether the session is an administrator's is read when
+//! the stream opens; what a request says is the routes' to give, which
+//! ask again each time.
 //!
 //! An open stream is a tab: while a session has one, it is not idle, and
 //! once its last stream has closed and 60 seconds have passed, an
@@ -59,6 +68,7 @@ use crate::admind::log;
 use crate::admind::shared::{Shared, seconds_left, unix_now};
 use crate::admind::tasks::Told;
 use crate::admind::trials::Running;
+use crate::admind::who::{self, Account};
 use crate::power::Pending;
 
 /// How long a stream may say nothing.
@@ -128,6 +138,13 @@ fn power_event(set: Option<&Pending>, now_ms: u64) -> Bytes {
     Bytes::from(format!("event: power\ndata: {data}\n\n"))
 }
 
+/// The event that says how many requests of AI clients wait for an
+/// administrator's yes.
+fn clients_event(waiting: usize) -> Bytes {
+    let data = json!({ "waiting": waiting });
+    Bytes::from(format!("event: clients\ndata: {data}\n\n"))
+}
+
 /// `GET /api/1/events`: counts the tab in and starts its stream.
 ///
 /// # Panics
@@ -140,10 +157,12 @@ pub fn open(cx: &super::Context<'_>, live: &Live) -> Outcome {
         session.seen = Instant::now();
         session.closed = None;
     });
+    // An account that cannot be read is told nothing of the clients.
+    let admin =
+        who::read(&cx.shared.accounts, Account::Name(&live.name)).is_ok_and(|who| who.admin);
     tokio::task::spawn_local(stream(
         Rc::clone(cx.shared),
-        live.cookie.clone(),
-        live.authd.clone(),
+        Tab { cookie: live.cookie.clone(), authd: live.authd.clone(), admin },
         sender,
     ));
     Ok(Reply {
@@ -207,9 +226,21 @@ async fn woken(
     .await
 }
 
+/// Whose stream a tab's is.
+struct Tab {
+    /// The session's cookie.
+    cookie: String,
+    /// The session, as authd names it.
+    authd: String,
+    /// Whether the session is an administrator's, who is told of the AI
+    /// clients' requests.
+    admin: bool,
+}
+
 /// Tells a tab of its session until the session or the tab ends, then
 /// counts the tab out.
-async fn stream(shared: Rc<Shared>, cookie: String, authd: String, sender: mpsc::Sender<Bytes>) {
+async fn stream(shared: Rc<Shared>, tab: Tab, sender: mpsc::Sender<Bytes>) {
+    let Tab { cookie, authd, admin } = tab;
     let mut changes = shared.changes.subscribe();
     let mut task_news = shared.tasks.subscribe();
     let mut row_news = shared.journal.news.subscribe();
@@ -222,6 +253,7 @@ async fn stream(shared: Rc<Shared>, cookie: String, authd: String, sender: mpsc:
     let mut told_rows = shared.journal.news.position();
     let mut told_trials = None;
     let mut told_power = None;
+    let mut told_clients = None;
     loop {
         let Some(until) = shared.with_session(&cookie, |session| session.unlocked_until) else {
             let reason = shared.endings.borrow().reason(&authd);
@@ -254,6 +286,13 @@ async fn stream(shared: Rc<Shared>, cookie: String, authd: String, sender: mpsc:
         told_power = Some(times);
         let now_ms = crate::util::now_ns() / 1_000_000;
         if power_due && !tell(&sender, power_event(set.as_ref(), now_ms)).await {
+            break;
+        }
+        // And the requests of AI clients that wait, to an administrator.
+        let (times, waiting) = shared.client_requests.borrow().told();
+        let clients_due = admin && told_clients.map_or(waiting > 0, |told| told != times);
+        told_clients = Some(times);
+        if clients_due && !tell(&sender, clients_event(waiting)).await {
             break;
         }
         let (due, held) = shared.tasks.events(&mut told_tasks, tokio::time::Instant::now());
@@ -356,6 +395,12 @@ mod tests {
         );
         // An unlock that ran out is a lock, whether or not authd was told.
         assert_eq!(unlock_event(Some(999), 1_000), unlock_event(None, 1_000));
+    }
+
+    #[test]
+    fn the_requests_of_ai_clients_that_wait_are_told_as_their_number() {
+        assert_eq!(clients_event(2), Bytes::from("event: clients\ndata: {\"waiting\":2}\n\n"));
+        assert_eq!(clients_event(0), Bytes::from("event: clients\ndata: {\"waiting\":0}\n\n"));
     }
 
     #[test]

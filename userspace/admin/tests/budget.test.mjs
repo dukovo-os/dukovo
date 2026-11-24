@@ -21,8 +21,11 @@ const LIMIT = 150_000;
 // next: a change that adds to it raises this number and says what grew. The
 // manifest's link in index.html is 51 bytes of it, and the two more sheets
 // the entry of Websites names (dialogs.css and the tried change's banner) 38
-// bytes in pages.js.
-const START_PLAN = 149_947;
+// bytes in pages.js. The entry of AI clients, its icon and the read of its
+// count when a request moves are 633 bytes, less than the 734 of the eight
+// rules of console.css that a later rule of the same selector repeated in
+// full, which left with them.
+const START_PLAN = 149_837;
 
 /** The files `index.html` names: its scripts and style sheets, as paths on disk. */
 function pageFiles() {
@@ -125,7 +128,9 @@ test('each page with its style sheets is within 150 KB beyond the shell', () => 
 // app's is 500 more.
 // Apps' row is 5,400 more than it was, for the Size row's every state, the
 // hold row's words, and Tonight, Not tonight and the window's words.
-// Hardware's row is 6,000 more than the plan's: the disks' rows and the memory test at the next restart.
+// Hardware's row is 6,000 more than the plan's: the disks' rows and the memory test at the next restart,
+// and 1,000 more for lib/how.js, which the task words it reads take in to name the client that asked for a task.
+// Move's is 500 more than 107,000 for the same.
 // Alerts' is 5,000 more than 60,000: 4,000 for the kinds of alert each channel is told of and 1,000 for the card of Set up a phone.
 // Security's is 2,500 more than 147,000: 1,500 for the rows of its Alerts card, one for each kind of alert, and 1,000 for the steps' rules in pages.css.
 // Add an app, Websites and Databases each keep about 1,000 of room over what
@@ -140,12 +145,12 @@ test('each page with its style sheets is within 150 KB beyond the shell', () => 
 const PAGE_LIMITS = {
   updates: 82_700,
   apps: 62_700,
-  hardware: 61_000,
+  hardware: 62_000,
   certificates: 60_000,
   report: 67_000,
   alerts: 65_000,
   security: 149_500,
-  move: 107_000,
+  move: 107_500,
   reliability: 22_000,
   terminal: 149_908,
   'add-app': 56_000,

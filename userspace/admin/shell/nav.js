@@ -77,7 +77,7 @@ export function createNav({ pages, session, host, parts, openMore }) {
       path = next;
       draw();
     },
-    /** Reads the badges again when `badgesDue` says so. `why` is `'start'`, `'event'` or `'poll'`. */
+    /** Reads the badges again when `badgesDue` says so. `why` is `'start'`, `'now'`, `'event'` or `'poll'`. */
     async readBadges(why) {
       const now = Date.now();
       if (!badgesDue({ why, last: lastRead, now, visible: document.visibilityState === 'visible' })) return;

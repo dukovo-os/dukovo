@@ -1133,6 +1133,8 @@ registry![
     console::Notices,
     console::Keep,
     console::Revert,
+    console::Clients,
+    console::ClientRemove,
     reliability::Export,
     checks::Last,
     checks::Run,

@@ -39,6 +39,7 @@ use accounts::console::Elevator;
 use http::StatusCode;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::task::JoinHandle;
 
 use super::{Context, Live, Outcome, Reply, Text, shown};
 use crate::admind::actions::show;
@@ -63,17 +64,14 @@ use crate::admind::who::{self, Account};
 pub(super) struct Asker {
     /// The person: the session's, or the token's owner.
     pub who: String,
-    /// `console`, or `token NAME`.
+    /// `console`, `token NAME`, or `client NAME of OWNER` for a change an
+    /// administrator approved for an MCP client.
     pub how: String,
 }
 
 /// Answers `action` at the address that gave `params`, for the session
 /// `live` or the token `token`, one of which the request has.
-///
-/// The change runs in a task of its own, which the answer waits for: a
-/// browser that goes away while it runs does not end it half way, with its
-/// command hung up and no row in the journal.
-pub async fn action(
+pub(super) async fn action(
     cx: &Context<'_>,
     action: &'static dyn Registered,
     params: Params,
@@ -91,10 +89,53 @@ pub async fn action(
     if live.is_some() && action.runs() == Runs::AsAdministrator && !action.changes() {
         from_the_console(cx)?;
     }
-    let (asker, whose) = match (&live, &token) {
-        (Some(live), None) => {
-            (Asker { who: live.name.clone(), how: "console".into() }, shown(&live.name))
+    match start(cx, prepared, live, token, None).await? {
+        Started::Task(id) => {
+            Ok(Reply { status: StatusCode::ACCEPTED, ..Reply::json(json!({ "task": id })) })
         }
+        Started::Job(job) => match job.await {
+            Ok(answer) => Ok(Reply::json(answer?)),
+            Err(_) => Err(Failure::new(Kind::Internal, "the action's task did not end")),
+        },
+    }
+}
+
+/// An action that was started.
+pub(super) enum Started {
+    /// It is long, and runs as the task with this number.
+    Task(i64),
+    /// Its command runs in a task of its own, which gives its answer.
+    Job(JoinHandle<Result<Value, Failure>>),
+}
+
+/// Starts `prepared` for the session `live` or the token `token`, one of
+/// which the request has, once every guard has let it through. `for_client`
+/// names the MCP client an administrator approved it for (ADR 0690),
+/// as the journal says it: the change is the session's all the same.
+///
+/// The command runs in a task of its own, which the answer waits for: a
+/// browser that goes away while it runs does not end it half way, with its
+/// command hung up and no row in the journal.
+///
+/// # Errors
+///
+/// A guard's refusal, before anything ran: ADM-136, ADM-142, UPD-106, or
+/// for a long action what [`start_task`] refuses with.
+pub(super) async fn start(
+    cx: &Context<'_>,
+    prepared: Prepared,
+    live: Option<Live>,
+    token: Option<TokenCall>,
+    for_client: Option<String>,
+) -> Result<Started, Failure> {
+    let (asker, whose) = match (&live, &token) {
+        (Some(live), None) => match for_client {
+            Some(client) => {
+                let whose = format!("{}, for AI {client}", shown(&live.name));
+                (Asker { who: live.name.clone(), how: client }, whose)
+            }
+            None => (Asker { who: live.name.clone(), how: "console".into() }, shown(&live.name)),
+        },
         (None, Some(token)) => (
             Asker { who: token.owner.clone(), how: format!("token {}", token.name) },
             format!("{} (API token {})", shown(&token.owner), shown(&token.name)),
@@ -130,7 +171,8 @@ pub async fn action(
         }
     }
     if prepared.action.long() {
-        return long(&shared, peer, prepared, &asker, &whose, live.as_ref(), token.as_ref());
+        return long(&shared, peer, prepared, &asker, &whose, live.as_ref(), token.as_ref())
+            .map(Started::Task);
     }
     let job = tokio::task::spawn_local(async move {
         if let (Some(read), Some(came)) = (&prepared.cuts_off, &came) {
@@ -216,10 +258,7 @@ pub async fn action(
         let done = done?;
         run::answer(&prepared, &done.ran, done.changed)
     });
-    match job.await {
-        Ok(answer) => Ok(Reply::json(answer?)),
-        Err(_) => Err(Failure::new(Kind::Internal, "the action's task did not end")),
-    }
+    Ok(Started::Job(job))
 }
 
 /// Checks that a session's read that runs as an administrator comes from
@@ -290,7 +329,7 @@ async fn for_session(
     live: &Live,
 ) -> Result<Probed, Failure> {
     permit_session(shared, prepared, live)?;
-    let probes = Probes::Session(&live.link);
+    let probes = Probes::Worker(&live.link);
     match prepared.action.runs() {
         Runs::AsAdministrator => {
             let by = session_elevator(live);
@@ -521,8 +560,10 @@ struct Done {
 /// Where a change's probes run: the worker of the person who asked, the
 /// session's or the token owner's, so that a probe reads only what that
 /// person can (ADR 0515).
-enum Probes<'a> {
-    Session(&'a Link),
+pub(in crate::admind) enum Probes<'a> {
+    /// A worker that runs: a session's, or the one an MCP client's owner
+    /// reads through.
+    Worker(&'a Link),
     /// The owner's worker is started when a probe needs it.
     Token(&'a TokenCall),
 }
@@ -533,7 +574,7 @@ impl Probes<'_> {
     /// the change.
     async fn read(&self, shared: &Shared, argv: &[String]) -> Option<String> {
         let link = match self {
-            Probes::Session(link) => (*link).clone(),
+            Probes::Worker(link) => (*link).clone(),
             Probes::Token(token) => caller::worker(shared, token).await.ok()?,
         };
         let ran = run::as_the_person(&link, argv, None).await.ok()?;
@@ -585,7 +626,7 @@ fn changed(prepared: &Prepared, probe_same: Option<bool>, files_same: bool) -> b
 }
 
 /// Starts the long action `prepared` as a task for the session `live` or
-/// the token `token`, and answers 202 with the task's number. The checks
+/// the token `token`, and gives the task's number, which is answered 202. The checks
 /// are the short action's; the command is not run in the request, so a
 /// long action runs as an administrator only: a person's own worker does
 /// not stream what a command writes (a unit test keeps the actions to
@@ -605,7 +646,7 @@ fn long(
     whose: &str,
     live: Option<&Live>,
     token: Option<&TokenCall>,
-) -> Outcome {
+) -> Result<i64, Failure> {
     let action = prepared.action.id();
     let started = start_task(shared, peer, prepared, asker, whose, live, token);
     if let Err(failure) = &started {
@@ -623,7 +664,7 @@ fn start_task(
     whose: &str,
     live: Option<&Live>,
     token: Option<&TokenCall>,
-) -> Outcome {
+) -> Result<i64, Failure> {
     if prepared.action.runs() != Runs::AsAdministrator {
         return Err(Failure::new(
             Kind::Internal,
@@ -647,7 +688,7 @@ fn start_task(
     let action = prepared.action.id();
     let id = tasks::start(shared, prepared, &asker.who, &asker.how, by)?;
     log(6, &format!("{whose} from {peer}: {action} is task {id}"));
-    Ok(Reply { status: StatusCode::ACCEPTED, ..Reply::json(json!({ "task": id })) })
+    Ok(id)
 }
 
 /// What the log says an action asked for came to, which is the end of its
@@ -694,7 +735,7 @@ fn no_arguments() -> Value {
 /// let it read the action's area. Nothing is run, and a secret is neither
 /// needed nor kept: it is shown as what is typed when asked
 /// ([`show::prepare`]).
-pub fn show(cx: &Context<'_>, token: Option<&TokenCall>) -> Outcome {
+pub(super) fn show(cx: &Context<'_>, token: Option<&TokenCall>) -> Outcome {
     let showing: Showing = cx.json()?;
     let action = show::lookup(cx.shared.actions.get(), &showing.action)?;
     let prepared = show::prepare(action, showing.args)?;
@@ -712,24 +753,43 @@ pub fn show(cx: &Context<'_>, token: Option<&TokenCall>) -> Outcome {
 /// does, and the files it names are read as the journal reads them. The
 /// answer is `changed`, true, false or null when the action cannot tell,
 /// and `now`, what the probe reads of what the change moves.
-pub async fn check(cx: &Context<'_>, live: Option<Live>, token: Option<TokenCall>) -> Outcome {
+pub(super) async fn check(
+    cx: &Context<'_>,
+    live: Option<Live>,
+    token: Option<TokenCall>,
+) -> Outcome {
     let showing: Showing = cx.json()?;
     let action = show::lookup(cx.shared.actions.get(), &showing.action)?;
     let prepared = action.prepare(showing.args)?;
     let probes = match (&live, &token) {
-        (Some(live), None) => Probes::Session(&live.link),
+        (Some(live), None) => Probes::Worker(&live.link),
         (None, Some(token)) => {
             actions::token_may(&token.name, &token.scopes, action.area(), false)?;
             Probes::Token(token)
         }
         _ => return Err(super::ended()),
     };
+    let (changed, now) = would(cx.shared, &prepared, &probes).await;
+    Ok(Reply::json(json!({ "changed": changed, "now": now })))
+}
+
+/// Whether the action `prepared` would change anything, and what its
+/// probe reads now of what it moves, as `/api/1/check` answers them: the
+/// probe runs through `probes`, and the files the action names are read
+/// as the journal reads them. A read changes nothing, and has nothing
+/// that is there now.
+pub(in crate::admind) async fn would(
+    shared: &Shared,
+    prepared: &Prepared,
+    probes: &Probes<'_>,
+) -> (Option<bool>, Option<String>) {
+    let action = prepared.action;
     if !action.changes() {
-        return Ok(Reply::json(json!({ "changed": false, "now": null })));
+        return (Some(false), None);
     }
     let now = match prepared.probe.as_deref() {
         Some(probe) => probes
-            .read(cx.shared, probe)
+            .read(shared, probe)
             .await
             .and_then(|output| action.probed(&prepared.args, &output)),
         None => None,
@@ -742,8 +802,7 @@ pub async fn check(cx: &Context<'_>, live: Option<Live>, token: Option<TokenCall
             action.keeps_file(&prepared.args, path, text.as_deref())
         })
         .collect();
-    let changed = would_change(&prepared, now.as_deref(), &kept);
-    Ok(Reply::json(json!({ "changed": changed, "now": now })))
+    (would_change(prepared, now.as_deref(), &kept), now)
 }
 
 /// Whether the change `prepared` would change anything (ADR 0545), from

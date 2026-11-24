@@ -175,8 +175,21 @@ pub struct Shared {
     pub changes: watch::Sender<()>,
     /// The wrong API tokens each address gave in the last minute.
     pub wrong_tokens: RefCell<Tries>,
-    /// The workers of the API tokens in use.
+    /// The workers of the API tokens and the MCP clients in use.
     pub token_workers: RefCell<TokenWorkers>,
+    /// What each MCP client has running (ADR 0690).
+    pub client_calls: RefCell<super::mcp::client::Calls>,
+    /// What MCP clients have asked to change, until an administrator
+    /// answers.
+    pub client_requests: RefCell<super::mcp::requests::Requests>,
+    /// What MCP clients did, for the page.
+    pub client_history: RefCell<super::mcp::history::History>,
+    /// How long a client's `ask` waits for an administrator before it
+    /// answers that the request waits: [`tools::ASK_WAIT`], or a test's
+    /// own.
+    ///
+    /// [`tools::ASK_WAIT`]: super::mcp::tools::ASK_WAIT
+    pub ask_wait: Cell<Duration>,
     /// The elevated commands running now, of every session and token.
     pub elevating: Cell<usize>,
     /// The actions the API offers: [`actions::offered`], or a test's own.
@@ -244,6 +257,10 @@ impl Shared {
             changes: watch::channel(()).0,
             wrong_tokens: RefCell::default(),
             token_workers: RefCell::default(),
+            client_calls: RefCell::default(),
+            client_requests: RefCell::default(),
+            client_history: RefCell::default(),
+            ask_wait: Cell::new(super::mcp::tools::ASK_WAIT),
             elevating: Cell::new(0),
             actions: Cell::new(actions::offered()),
             store,
@@ -435,6 +452,7 @@ impl Shared {
         self.quiet.borrow_mut().tidy(now);
         self.refused.borrow_mut().tidy(now);
         self.token_workers.borrow_mut().tidy(now);
+        super::mcp::upkeep(self, now);
     }
 
     /// What is looked at every moment the server wakes: the terminals'
