@@ -18,6 +18,16 @@
 //! front. When a screen comes, goes or changes its size, the consoles
 //! are arranged anew and take the size of the new grid.
 //!
+//! Only the holder in front can pass the screens on, so a program that
+//! draws them itself, a desktop, has them from consoled ([`Screen::lend`],
+//! `crate::lend`). It gives them back, and the layer makes the consoles'
+//! state again. Or it ends, as one that crashes or is started again
+//! does: the layer then leaves its last picture on the screens, and
+//! consoled draws nothing for [`BORROWER_WAIT`], so that the next
+//! borrower takes the screens from that picture, with no console between
+//! the two. Only when none has come does consoled show the consoles
+//! again.
+//!
 //! Every screen shows the same grid, the largest that fits them all,
 //! centred, in the Spleen font the kernel's log used, chosen the same way
 //! (radix-fbcon), so a screen looks the same when consoled takes it
@@ -39,9 +49,14 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Read};
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
-use display::abi::{DisplayEvent, EVENT_BACK, EVENT_FRONT, EVENT_OVERFLOW, EVENT_SCREEN};
-use display::wire::{self, PutBytes};
+use display::abi::{
+    DisplayEvent, EVENT_BACK, EVENT_BORROWER_ENDED, EVENT_FRONT, EVENT_OVERFLOW, EVENT_SCREEN,
+    MAY_BLANK,
+};
+use display::wire::{self, ChangeBytes, PutBytes};
 use display::{Control, Holder, Unmade};
 use radix_fbcon::{Font, builtin_font, choose_font_for};
 
@@ -71,9 +86,13 @@ const PUT_BYTES: usize = 1024 * 1024;
 /// change while it asks, as when a card's monitor is found just then.
 const START_TRIES: usize = 4;
 
+/// How long consoled leaves the last picture of a borrower that ended
+/// on the screens, for another to take them from.
+pub const BORROWER_WAIT: Duration = Duration::from_secs(5);
+
 /// The layer's file, as the screens use it: its requests, and the events
 /// to read from it.
-pub trait Link: Control {
+pub trait Link: Control + Sized {
     /// Reads the events that wait into `into`, whole ones, without
     /// waiting for one. Returns the bytes read.
     ///
@@ -81,21 +100,65 @@ pub trait Link: Control {
     ///
     /// `WouldBlock` when none waits.
     fn events(&self, into: &mut [u8]) -> io::Result<usize>;
+
+    /// Opens the layer's file once more: another holder, with nothing of
+    /// this one's, to lend the front to.
+    ///
+    /// # Errors
+    ///
+    /// If the file cannot be opened.
+    fn another(&self) -> io::Result<Self>;
+
+    /// The slot the description is in, which LEND names a borrower by.
+    fn slot(&self) -> u32;
 }
 
-/// consoled's description of _/devices/display/control_.
+/// A description of _/devices/display/control_: consoled's own, or one
+/// it opened to lend the front to.
 #[derive(Debug)]
-pub struct Device(File);
+pub struct Device {
+    file: File,
+    /// Where the layer's file is, to open it once more.
+    path: PathBuf,
+}
+
+impl Device {
+    /// Opens the layer's file at `path` with the open flags `flags`, and
+    /// never for a program consoled starts.
+    fn open(path: &Path, flags: i32) -> io::Result<Device> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_CLOEXEC | flags)
+            .open(path)?;
+        Ok(Device { file, path: path.to_path_buf() })
+    }
+}
+
+impl AsRawFd for Device {
+    fn as_raw_fd(&self) -> RawFd {
+        self.file.as_raw_fd()
+    }
+}
 
 impl Control for Device {
     fn control(&self, request: u32, argument: u64, buffer: &mut [u8]) -> io::Result<u64> {
-        sys::control(self.0.as_raw_fd(), request, argument, buffer)
+        sys::control(self.file.as_raw_fd(), request, argument, buffer)
     }
 }
 
 impl Link for Device {
     fn events(&self, into: &mut [u8]) -> io::Result<usize> {
-        (&self.0).read(into)
+        (&self.file).read(into)
+    }
+
+    // The borrower chooses for itself whether its reads wait.
+    fn another(&self) -> io::Result<Device> {
+        Device::open(&self.path, 0)
+    }
+
+    fn slot(&self) -> u32 {
+        sys::slot(self.file.as_raw_fd())
     }
 }
 
@@ -207,6 +270,23 @@ pub struct Screen<L: Link = Device> {
     rows: usize,
     /// Whether consoled is in front, and draws.
     front: bool,
+    /// Whether the layer shows the consoles' state, as far as consoled
+    /// knows. It does not when the front has come back, until consoled
+    /// has asked for its state again: a borrower that ended left its
+    /// own picture on the screens.
+    shows: bool,
+    /// Whether a borrower has the screens.
+    lent: bool,
+    /// Set when a loan's description never reached its borrower: the
+    /// borrower's end, when the layer tells of it, leaves no picture to
+    /// wait behind.
+    unsent: bool,
+    /// Set when a borrower's end is read of, until the wait for another
+    /// is timed ([`Screen::tick`]).
+    ended: bool,
+    /// When consoled draws again, while it leaves the screens to the
+    /// last picture of a borrower that ended.
+    waits_until: Option<Instant>,
     /// Whether the screens changed and are still to be arranged anew.
     stale: bool,
     /// The palette the screens are drawn in: the shown console's.
@@ -234,17 +314,12 @@ impl Screen<Device> {
     /// layer does not let the consoles show: another program is in
     /// front.
     pub fn open(path: &str, want: (usize, usize)) -> io::Result<Screen> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(libc::O_CLOEXEC | libc::O_NONBLOCK)
-            .open(path)?;
-        Screen::on(Device(file), want)
+        Screen::on(Device::open(Path::new(path), libc::O_NONBLOCK)?, want)
     }
 
     /// The file to wait on for the layer's events.
     pub fn fd(&self) -> RawFd {
-        self.holder.file().0.as_raw_fd()
+        self.holder.file().as_raw_fd()
     }
 }
 
@@ -259,6 +334,11 @@ impl<L: Link> Screen<L> {
             cols: UNSEEN_GRID.0,
             rows: UNSEEN_GRID.1,
             front: false,
+            shows: false,
+            lent: false,
+            unsent: false,
+            ended: false,
+            waits_until: None,
             stale: false,
             palette: default_palette(),
             drawn: Drawn::new(UNSEEN_GRID.0, UNSEEN_GRID.1),
@@ -356,7 +436,7 @@ impl<L: Link> Screen<L> {
     fn show_on(&mut self, found: &Found) -> io::Result<()> {
         let outputs = outputs::outputs(found);
         let same = outputs.iter().eq(self.surfaces.iter().map(|surface| &surface.output));
-        if same && (self.front || outputs.is_empty()) {
+        if same && ((self.front && self.shows) || outputs.is_empty()) {
             return Ok(());
         }
         let made = self.make(&outputs)?;
@@ -376,7 +456,7 @@ impl<L: Link> Screen<L> {
         let fit = Fit { step: 0, origin: (0, 0) };
         let surface = |(&output, &(picture, mode))| Surface { output, picture, mode, fit };
         self.surfaces = outputs.iter().zip(&made).map(surface).collect();
-        self.front = true;
+        (self.front, self.shows) = (true, true);
         self.arrange();
         Ok(())
     }
@@ -422,28 +502,124 @@ impl<L: Link> Screen<L> {
     /// Takes in one of the layer's events.
     fn event(&mut self, event: &DisplayEvent) {
         match event.kind {
-            EVENT_FRONT if !self.front => {
-                self.front = true;
-                self.forget();
+            EVENT_FRONT => {
+                self.lent = false;
+                if !self.front {
+                    // Whoever had the front drew on the screens, and may
+                    // have left its own picture on them.
+                    (self.front, self.shows) = (true, false);
+                    self.forget();
+                }
             }
             EVENT_BACK => self.front = false,
+            // Its last picture stays for the next borrower, unless it
+            // never had the screens to draw one.
+            EVENT_BORROWER_ENDED => self.ended = !core::mem::take(&mut self.unsent),
             EVENT_SCREEN => self.stale = true,
             // Some were lost, and one may have been any of the above:
             // the screens are asked about again, and the next draw
             // finds whether consoled is in front.
             EVENT_OVERFLOW => {
                 self.stale = true;
-                self.front = true;
+                (self.front, self.shows, self.lent) = (true, false, false);
                 self.forget();
             }
             _ => {}
         }
     }
 
+    /// Lends the front to a new holder of the layer's file, and returns
+    /// its description for the borrower to draw the screens with. From
+    /// here consoled draws nothing until the layer says it is in front
+    /// again. The description is to reach the borrower and be closed
+    /// here, so that the layer knows when the borrower ends.
+    ///
+    /// # Errors
+    ///
+    /// EBUSY while consoled is not in front, as while another borrower
+    /// has the screens or no screen shows the consoles; and why the
+    /// layer's file could not be opened or the front lent.
+    pub fn lend(&mut self) -> io::Result<L> {
+        // What the layer said before the loan is taken in first: an
+        // event read after it is the loan's.
+        self.read();
+        if !self.front {
+            return Err(io::Error::from_raw_os_error(libc::EBUSY));
+        }
+        let borrower = self.holder.file().another()?;
+        self.holder.lend(borrower.slot())?;
+        (self.front, self.lent) = (false, true);
+        (self.ended, self.waits_until) = (false, None);
+        Ok(borrower)
+    }
+
+    /// The description of the last loan never reached its borrower and
+    /// is closed: there will be no picture of the borrower's to leave on
+    /// the screens.
+    pub fn unlent(&mut self) {
+        self.unsent = true;
+    }
+
+    /// Whether the screens are away: a borrower has them, or its last
+    /// picture is still on them. A key typed then is not for a console
+    /// that nobody sees.
+    pub fn away(&self) -> bool {
+        self.lent || self.waits()
+    }
+
+    /// Whether consoled leaves the screens to the last picture of a
+    /// borrower that ended.
+    fn waits(&self) -> bool {
+        self.ended || self.waits_until.is_some()
+    }
+
+    /// When [`Screen::tick`] is next needed.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.waits_until
+    }
+
+    /// Keeps the time of the wait for another borrower: `now` starts it
+    /// if a borrower's end was read of, and ends it once
+    /// [`BORROWER_WAIT`] has passed with no other. consoled then draws
+    /// again, on screens arranged anew if they changed in the wait.
+    /// Returns whether the grid, or how a screen shows it, changed.
+    pub fn tick(&mut self, now: Instant) -> bool {
+        if core::mem::take(&mut self.ended) {
+            self.waits_until = Some(now + BORROWER_WAIT);
+        }
+        if self.waits_until.is_none_or(|until| now < until) {
+            return false;
+        }
+        self.waits_until = None;
+        self.settle()
+    }
+
+    /// Has the layer make the consoles' state again, where what shows
+    /// differs from it: the pictures, and the modes if a borrower set
+    /// others. Returns whether the screens show the consoles' pictures
+    /// now.
+    fn show_again(&mut self) -> bool {
+        let mut nothing = ChangeBytes::new(MAY_BLANK, 0);
+        match self.holder.change(&mut nothing) {
+            Ok(()) => self.shows = true,
+            Err(Unmade::Failed(err)) => self.not_sent(&err),
+            // As when a screen went meanwhile: its event arranges the
+            // screens anew, with a state that passes.
+            Err(Unmade::Refused { .. }) => self.stale = true,
+        }
+        self.shows
+    }
+
     /// Reads the layer's events and acts on them. Returns whether the
     /// grid, or how a screen shows it, changed: the consoles then take
     /// the new size.
     pub fn events(&mut self) -> bool {
+        self.read();
+        self.settle()
+    }
+
+    /// Reads the layer's events and takes each in.
+    fn read(&mut self) {
         let mut bytes = [0u8; 16 * DisplayEvent::SIZE];
         loop {
             match self.holder.file().events(&mut bytes) {
@@ -461,9 +637,16 @@ impl<L: Link> Screen<L> {
                 }
             }
         }
-        // Behind another holder, a change would be refused: the screens
-        // are arranged when consoled is in front again.
-        if !self.stale || !(self.front || self.surfaces.is_empty()) {
+    }
+
+    /// Arranges the screens anew if they changed. Returns whether the
+    /// grid, or how a screen shows it, changed.
+    fn settle(&mut self) -> bool {
+        // Behind another holder, a change would be refused, and one made
+        // while a borrower's last picture is left on the screens would
+        // take it off them: the screens are arranged when consoled
+        // draws again.
+        if !self.stale || self.waits() || !(self.front || self.surfaces.is_empty()) {
             return false;
         }
         let before = (self.cols, self.rows, self.fits());
@@ -482,12 +665,17 @@ impl<L: Link> Screen<L> {
 
     /// Draws what changed of `term` since the last draw, with `bottom`'s
     /// cells over its last row if there are any: a notification
-    /// (`notices`). Nothing is drawn while consoled is not in front. A
-    /// draw the layer does not take is logged and drawn again, all of
-    /// it, at the next: the consoles go on without the screens, as their
-    /// readers of speech and braille do.
+    /// (`notices`). Nothing is drawn while consoled is not in front, or
+    /// while it leaves the screens to the last picture of a borrower
+    /// that ended. A draw the layer does not take is logged and drawn
+    /// again, all of it, at the next: the consoles go on without the
+    /// screens, as their readers of speech and braille do.
     pub fn draw(&mut self, term: &Terminal, bottom: Option<&[Cell]>) {
-        if !self.front || self.surfaces.is_empty() {
+        if !self.front || self.waits() || self.surfaces.is_empty() {
+            return;
+        }
+        // A picture that does not show takes no rows.
+        if !self.shows && !self.show_again() {
             return;
         }
         // Another console's colours, or the program changed them: rare,
@@ -542,8 +730,9 @@ impl<L: Link> Screen<L> {
         self.forget();
         if err.raw_os_error() == Some(libc::EBUSY) {
             // Not in front after all, with the event still to read:
-            // the next draw is when consoled is.
-            self.front = false;
+            // the next draw is when consoled is. Only a borrower is
+            // ever in front of it.
+            (self.front, self.lent) = (false, true);
         } else if !self.failing {
             self.failing = true;
             eprintln!("consoled: cannot draw on the screens: {err}");

@@ -28,19 +28,6 @@ fn monitor_data(product: u16) -> [u8; 128] {
     data
 }
 
-/// The entries that feed the virtio-like card's screen `index` from its
-/// pipe of the same place, in mode `mode`, with `picture` on it.
-fn feed(index: usize, mode: u32, picture: u32) -> [(u32, u32, u64); 5] {
-    let (pipe, plane) = (V_PIPES[index], V_MAINS[index]);
-    [
-        (pipe, PIPE_MODE, u64::from(mode)),
-        (pipe, PIPE_ACTIVE, 1),
-        (V_SCREENS[index], SCREEN_PIPE, u64::from(pipe)),
-        (plane, PLANE_PIPE, u64::from(pipe)),
-        (plane, PLANE_PICTURE, u64::from(picture)),
-    ]
-}
-
 /// Gives `holder` a picture of the virtio-like card and a mode, both of
 /// `width` by `height`, and returns the entries that show them on the
 /// card's screen `index`.
@@ -294,7 +281,7 @@ fn the_log_passes_to_the_next_card_when_its_card_is_taken_away() {
     let (picture, _) = rig.picture(holder, shape, 3);
     assert_eq!(rig.change(holder, 0, 0, &[(9, PLANE_PICTURE, u64::from(picture))]), DONE);
     assert_eq!(virtio.asked()[0], Call::LogGives);
-    rig.layer.end(holder);
+    assert_eq!(rig.layer.give_back(holder), Ok(()));
     assert_eq!(virtio.asked()[0], Call::LogTakes(0));
     // With the last card gone there is nothing, and nothing breaks.
     assert!(rig.layer.remove_card(6).is_some());
@@ -358,8 +345,9 @@ fn a_card_taken_away_under_a_holder_leaves_the_rest_of_its_state() {
     assert_eq!(virtio.shown().damage, [Rect::sized(2, 2)]);
     // Its picture of the card that went is still its own, to drop.
     assert_eq!(rig.layer.holder(holder).unwrap().drop_object(1), Ok(()));
-    // The log has no card left that shows it: the holder ends, and the
-    // screens are blank.
-    rig.layer.end(holder);
-    assert!(virtio.frames().iter().all(|drawn| !drawn.active));
+    // The log has no card left that shows it: the holder gives the
+    // front back, and the screens are blank.
+    assert_eq!(rig.layer.give_back(holder), Ok(()));
+    let blank = virtio.frames();
+    assert!(!blank.is_empty() && blank.iter().all(|drawn| !drawn.active));
 }

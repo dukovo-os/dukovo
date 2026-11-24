@@ -12,17 +12,18 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use radix_abi::display::{
-    self as abi, BLOB_MODE, CARD_FIRMWARE, CARD_MIRRORS, CARD_SETS_MODES, CARD_VIRTIO,
-    FORMAT_ARGB8888, FORMAT_XRGB8888, KIND_CARD, KIND_PIPE, KIND_PLANE, KIND_SCREEN, PIPE_ACTIVE,
-    PIPE_IS_ACTIVE, PIPE_MODE, PLANE_CHANGED, PLANE_HOT_SPOT, PLANE_PIPE, REASON_BAD_VALUE,
-    REASON_NOT_OFFERED, REASON_SIZE, REASON_WOULD_BLANK, SCREEN_FAILED, SCREEN_PIPE,
-    SCREEN_PLUGGED,
+    self as abi, BLOB_MODE, CARD_FIRMWARE, CARD_MIRRORS, CARD_SETS_MODES, CARD_VIRTIO, EVENT_BACK,
+    EVENT_BORROWER_ENDED, EVENT_FRONT, FORMAT_ARGB8888, FORMAT_XRGB8888, KIND_CARD, KIND_PIPE,
+    KIND_PLANE, KIND_SCREEN, PIPE_ACTIVE, PIPE_IS_ACTIVE, PIPE_MODE, PLANE_CHANGED, PLANE_HOT_SPOT,
+    PLANE_PIPE, REASON_BAD_VALUE, REASON_NOT_OFFERED, REASON_SIZE, REASON_WOULD_BLANK,
+    SCREEN_FAILED, SCREEN_PIPE, SCREEN_PLUGGED,
 };
 
 use super::*;
 use crate::frame::{Failed, PlaneSpec, ScreenSpec, name};
 use crate::state::PictureShape;
 
+mod front;
 mod plug;
 
 /// A millisecond, in the nanoseconds the layer keeps time in.
@@ -217,6 +218,19 @@ struct Rig {
 
 fn planes(format: u32, width_max: u32, height_max: u32) -> PlaneSpec {
     PlaneSpec { width_max, height_max, formats: [format, 0, 0, 0, 0, 0, 0, 0] }
+}
+
+/// The entries that feed the virtio-like card's screen `index` from its
+/// pipe of the same place, in mode `mode`, with `picture` on it.
+fn feed(index: usize, mode: u32, picture: u32) -> [(u32, u32, u64); 5] {
+    let (pipe, plane) = (V_PIPES[index], V_MAINS[index]);
+    [
+        (pipe, PIPE_MODE, u64::from(mode)),
+        (pipe, PIPE_ACTIVE, 1),
+        (V_SCREENS[index], SCREEN_PIPE, u64::from(pipe)),
+        (plane, PLANE_PIPE, u64::from(pipe)),
+        (plane, PLANE_PICTURE, u64::from(picture)),
+    ]
 }
 
 /// A change's bytes: its header, then `entries`, each a thing, a
@@ -700,16 +714,13 @@ fn the_front_is_lent_and_comes_back_with_what_its_holder_asked_for() {
     assert_eq!((drawn.main, drawn.whole), (Some(1), true));
     assert_eq!((rig.kinds(borrower), rig.kinds(lender)), (vec![EVENT_BACK], vec![EVENT_FRONT]));
 
-    // Lent again, the borrower's own state comes back; and when the
-    // borrower ends, the lender is told so before it is told it is in
-    // front.
+    // Lent again, the borrower's own state comes back, and it gives the
+    // front back once more.
     assert_eq!(rig.layer.lend(lender, borrower), Ok(()));
     assert_eq!(rig.firmware.shown().main, Some(2));
-    rig.kinds(lender);
-    rig.layer.end(borrower);
+    assert_eq!(rig.layer.give_back(borrower), Ok(()));
     assert_eq!(rig.firmware.shown().main, Some(1));
-    assert_eq!(rig.kinds(lender), [EVENT_BORROWER_ENDED, EVENT_FRONT]);
-    assert!(rig.layer.holder(borrower).is_none());
+    assert_eq!(rig.kinds(lender), [EVENT_BACK, EVENT_FRONT]);
 
     // The holder at the bottom gives the front back to the log.
     assert_eq!(rig.layer.give_back(lender), Ok(()));
@@ -741,28 +752,8 @@ fn what_waits_is_dropped_when_the_front_passes() {
     assert!(rig.firmware.asked().is_empty());
     // The rectangles it named are part of the whole frame the lender
     // gets when the front comes back.
-    rig.layer.end(borrower);
+    assert_eq!(rig.layer.give_back(borrower), Ok(()));
     assert!(rig.firmware.shown().whole);
-}
-
-#[test]
-fn a_holder_that_ends_in_front_leaves_the_screen_to_the_log() {
-    let mut rig = Rig::firmware();
-    let holder = rig.in_front();
-    let picture = rig.layer.holder(holder).unwrap().picture_ref(1).unwrap().clone();
-    // Its holder has one count of the picture, the plane that shows it
-    // another, and the test a third.
-    assert_eq!(Rc::strong_count(&picture), 3);
-    rig.layer.set_time(MS);
-    assert!(rig.change(holder, 0, 0, &[changed(MAIN, Rect::sized(9, 9))]).is_ok());
-    rig.firmware.asked();
-    rig.layer.end(holder);
-    assert_eq!(rig.firmware.asked(), [Call::LogTakes(0)]);
-    assert_eq!((rig.layer.front(), rig.layer.next_beat(CARD)), (None, None));
-    assert_eq!(Rc::strong_count(&picture), 1);
-    // The pipe's beat goes on from where it was.
-    rig.layer.set_time(5 * BEAT);
-    assert_eq!(rig.layer.pipe_info(PIPE).unwrap().beat_count, 6);
 }
 
 #[test]
@@ -1049,10 +1040,10 @@ fn a_log_card_added_under_a_holder_waits_its_turn() {
     assert_eq!((drawn.pipe, drawn.active, drawn.main), (0, true, Some(1)));
 
     // The log's card comes while the holder is in front: the log does
-    // not draw on it until the holder is gone.
+    // not draw on it until the holder gives the front back.
     rig.add_firmware();
     assert_eq!(rig.firmware.asked(), [Call::LogGives]);
-    rig.layer.end(holder);
+    assert_eq!(rig.layer.give_back(holder), Ok(()));
     assert_eq!(rig.firmware.asked(), [Call::LogTakes(0)]);
     // And the pipe the holder used shows nothing.
     let drawn = virtio.shown();
@@ -1076,7 +1067,7 @@ fn a_card_that_does_not_answer_has_its_screens_marked_failed() {
     // What shows is what showed before.
     assert_eq!(rig.layer.holder(holder).unwrap().drop_object(1), Ok(()));
     rig.firmware.fails.set(false);
-    rig.layer.end(holder);
+    assert_eq!(rig.layer.give_back(holder), Ok(()));
     assert_eq!(rig.firmware.asked(), [Call::LogTakes(0)]);
 }
 

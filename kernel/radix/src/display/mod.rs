@@ -11,7 +11,12 @@
 //! alike. Each description of `/devices/display/control` is a holder,
 //! with its own pictures and the state it last asked for. The holders
 //! are in a stack with the kernel's log at the bottom, and the one on
-//! top is in front: only its changes reach a card.
+//! top is in front: only its changes reach a card. The front is lent and
+//! given back, never taken. A holder that ends when its description is
+//! closed, as one that is killed does, leaves its last picture on the
+//! screens: its lender draws over it when it chooses, and with no lender
+//! the kernel's log waits three seconds for whatever is started in the
+//! holder's place, unless the log has an error to show ([`beat_thread`]).
 //!
 //! The layer itself is `radix_display::layer`, with the rules it keeps,
 //! where all of it is tested on the host. What is here is what only the
@@ -70,6 +75,7 @@ use radix_vfs::{Access, In, KArc, Kind, Node, NodeRef, Out, Stat, mem, next_id};
 
 pub use self::requests::{Call, control};
 use crate::Arch;
+use crate::console;
 use crate::fs::FileObject;
 use crate::sched::{self, Options, Policy, wait};
 use crate::user::memory::{Lack, SharedPages, unshare_page};
@@ -425,10 +431,18 @@ pub fn remove_card(id: u32) -> bool {
     true
 }
 
+/// How often the thread of the card that shows the kernel's log looks
+/// for an error in the log, while the log waits behind the last picture
+/// of a holder that ended: the log's sink wakes nobody.
+const URGENT_NS: u64 = 20_000_000;
+
 /// A card's thread: at each beat anything waits for, makes the changes
 /// that are due and tells the holders that asked, after its driver has
-/// looked at what is its own to do. It ends when its card is taken
-/// away.
+/// looked at what is its own to do. While the kernel's log waits its
+/// turn behind the last picture of a holder that ended, the thread of
+/// the log's card brings the log to the front as soon as an error is
+/// logged, and any card's does when the wait is over. It ends when its
+/// card is taken away.
 fn beat_thread(card: usize) {
     let card = card as u32;
     let Some(run) = with_layer(|layer| layer.card(card).cloned()) else { return };
@@ -438,9 +452,13 @@ fn beat_thread(card: usize) {
         let woken = with_layer(|layer| {
             layer.card(card)?;
             let look = run.driver.look(layer);
+            layer.log_urgent(console::error_at());
             layer.beat(card);
             let beat = layer.next_beat(card);
-            Some(look.into_iter().chain(beat).min())
+            let shows_log = layer.log_card().is_some_and(|log| log.id == card);
+            let urgent = (shows_log && layer.keeps_last())
+                .then(|| sched::now_ns().saturating_add(URGENT_NS));
+            Some(look.into_iter().chain(beat).chain(urgent).min())
         });
         let Some(next) = woken else { return };
         let kicked = || run.kick.load(Ordering::Acquire);

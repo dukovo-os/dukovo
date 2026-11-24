@@ -51,6 +51,11 @@ static TAKEN_OVER: AtomicBool = AtomicBool::new(false);
 /// Set while a holder of the display layer is in front, and draws on the
 /// screen.
 static HANDED_OVER: AtomicBool = AtomicBool::new(false);
+/// When the log last wrote an error, in `sched::now_ns`; 0 if it never
+/// did. The display layer brings the log to the front for one that
+/// comes while the log waits behind the last picture of a program that
+/// ended ([`error_at`]).
+static ERROR_AT: AtomicU64 = AtomicU64::new(0);
 /// Set while the startup screen shows in place of the log.
 static QUIET: AtomicBool = AtomicBool::new(false);
 /// How far the startup screen's bar is, of 1000.
@@ -77,6 +82,9 @@ impl Sink for ScreenSink {
     fn write(&self, text: &str, style: Style) {
         if TAKEN_OVER.load(Ordering::Relaxed) {
             return;
+        }
+        if style == Style::Error {
+            ERROR_AT.store(crate::sched::now_ns(), Ordering::Relaxed);
         }
         if let Some(console) = SCREEN.lock().as_mut() {
             console.write(text, style);
@@ -390,6 +398,13 @@ pub fn screen() -> Option<(usize, usize, usize, PixelFormat)> {
 pub fn framebuffer_start() -> Option<u64> {
     let screen = SCREEN.lock_irq();
     Some(screen.as_ref()?.framebuffer()?.phys_addr)
+}
+
+/// When the log last wrote an error to the console, on the kernel's
+/// clock, or 0 if it never did. Its sink wakes nobody, so whoever needs
+/// to know of one looks here.
+pub fn error_at() -> u64 {
+    ERROR_AT.load(Ordering::Relaxed)
 }
 
 /// Gives the screen to the display layer's holder in front: the log stops

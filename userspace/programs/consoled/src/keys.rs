@@ -284,6 +284,19 @@ impl Keyboard {
         }
     }
 
+    /// Lets go of every modifier that is held, by a finger or by sticky
+    /// keys, and of a dead key that waits: for when the keys go to
+    /// another program, which is told of their release and not consoled.
+    /// The locks stay as they are.
+    pub fn let_go(&mut self) {
+        (self.shift, self.ctrl, self.alt) = ([false; 2], [false; 2], [false; 2]);
+        self.altgr = false;
+        self.dead = None;
+        self.latches = [Latch::Off; 3];
+        self.alone = None;
+        self.shift_taps = 0;
+    }
+
     /// Turns sticky keys on or off; what holds lets go.
     pub fn set_sticky(&mut self, on: bool) {
         self.sticky = on;

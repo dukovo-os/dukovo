@@ -14,8 +14,8 @@ use std::rc::Rc;
 
 use display::abi::{
     BLOB_MODE, Blob, CARD_FIRMWARE, CARD_HOT_PLUG, CARD_SETS_MODES, CARD_VIRTIO, CHANGE, DROP,
-    FORMAT_ARGB8888, FORMAT_XRGB8888, GET, KIND_CARD, KIND_PIPE, KIND_PLANE, KIND_SCREEN, LIST,
-    MAKE_BLOB, MAKE_PICTURE, Mode, PART_INFO, PART_MODES, PICTURE_KEPT, PUT, Thing,
+    FORMAT_ARGB8888, FORMAT_XRGB8888, GET, KIND_CARD, KIND_PIPE, KIND_PLANE, KIND_SCREEN, LEND,
+    LIST, MAKE_BLOB, MAKE_PICTURE, Mode, PART_INFO, PART_MODES, PICTURE_KEPT, PUT, RETURN, Thing,
 };
 use radix_abi::Status;
 use radix_abi::errors::{File as FileError, Kernel};
@@ -29,6 +29,8 @@ use radix_display::wire as kernel;
 
 use super::*;
 use crate::term::{BOLD, REVERSE};
+
+mod lend;
 
 /// What consoled's description of the layer's file is known by, and
 /// another holder's.
@@ -108,6 +110,9 @@ struct FakeKernel {
     /// How many of the next GET requests fail, as one does when the
     /// thing it asks about changed since it was listed.
     changing: usize,
+    /// How many descriptions of the layer's file were opened after
+    /// consoled's and the other holder's.
+    opened: usize,
 }
 
 fn mode(width: u32, height: u32) -> Mode {
@@ -128,6 +133,7 @@ impl FakeKernel {
             changes: 0,
             no_memory: false,
             changing: 0,
+            opened: 0,
         }
     }
 
@@ -331,14 +337,40 @@ impl FakeKernel {
                 }
                 Ok(0)
             }
+            // A slot stands for the description opened as that key.
+            LEND => {
+                let borrower = self.layer.holder_of(argument as usize, false)?;
+                self.layer.lend(me, borrower).map(|()| 0)
+            }
+            RETURN => self.layer.give_back(me).map(|()| 0),
             _ => Err(Kernel::NotTerminal.status(0)),
         }
     }
 }
 
-/// consoled's description of the stand-in kernel's layer.
+/// A description of the stand-in kernel's layer, and what the layer
+/// knows it by: consoled's, or one opened to lend the front to.
 #[derive(Clone)]
-struct Wire(Rc<RefCell<FakeKernel>>);
+struct Wire(Rc<RefCell<FakeKernel>>, usize);
+
+impl Wire {
+    /// consoled's description of `kernel`'s layer.
+    fn of(kernel: FakeKernel) -> Wire {
+        Wire(Rc::new(RefCell::new(kernel)), CONSOLED)
+    }
+
+    /// The holder the layer has for the description, which is made one
+    /// now if it was not.
+    fn holder(&self) -> u32 {
+        self.0.borrow_mut().layer.holder_of(self.1, false).unwrap()
+    }
+
+    /// Closes the description, as its program ending does.
+    fn close(self) {
+        let holder = self.holder();
+        self.0.borrow_mut().layer.end(holder);
+    }
+}
 
 /// The error the C library makes of `status`.
 fn failure(status: Status) -> io::Error {
@@ -349,14 +381,14 @@ fn failure(status: Status) -> io::Error {
 
 impl Control for Wire {
     fn control(&self, request: u32, argument: u64, buffer: &mut [u8]) -> io::Result<u64> {
-        self.0.borrow_mut().request(CONSOLED, request, argument, buffer).map_err(failure)
+        self.0.borrow_mut().request(self.1, request, argument, buffer).map_err(failure)
     }
 }
 
 impl Link for Wire {
     fn events(&self, into: &mut [u8]) -> io::Result<usize> {
         let mut kernel = self.0.borrow_mut();
-        let me = kernel.layer.holder_of(CONSOLED, false).map_err(failure)?;
+        let me = kernel.layer.holder_of(self.1, false).map_err(failure)?;
         let holder = kernel.layer.holder(me).ok_or_else(|| io::Error::other("no holder"))?;
         let mut done = 0;
         for out in into.as_chunks_mut::<{ DisplayEvent::SIZE }>().0 {
@@ -366,13 +398,23 @@ impl Link for Wire {
         }
         if done == 0 { Err(io::ErrorKind::WouldBlock.into()) } else { Ok(done) }
     }
+
+    fn another(&self) -> io::Result<Wire> {
+        let mut kernel = self.0.borrow_mut();
+        kernel.opened += 1;
+        Ok(Wire(self.0.clone(), OTHER + kernel.opened))
+    }
+
+    fn slot(&self) -> u32 {
+        self.1 as u32
+    }
 }
 
 /// A stand-in kernel with one card like the firmware's, of one screen.
 fn firmware(width: u32, height: u32) -> (Wire, Rc<FakeCard>) {
     let mut kernel = FakeKernel::new();
     let card = kernel.add_card(true, &[Some((width, height))]);
-    (Wire(Rc::new(RefCell::new(kernel))), card)
+    (Wire::of(kernel), card)
 }
 
 /// What screen `at` of `screen` should show of `term`, with `bottom`
@@ -571,7 +613,7 @@ fn whatever_is_written_the_screens_show_what_a_full_repaint_would() {
     let mut kernel = FakeKernel::new();
     let firmware = kernel.add_card(true, &[Some((650, 410))]);
     let virtio = kernel.add_card(false, &[Some((1024, 768)), None, Some((800, 600))]);
-    let wire = Wire(Rc::new(RefCell::new(kernel)));
+    let wire = Wire::of(kernel);
     let mut screen = Screen::on(wire, radix_fbcon::MIN_GRID).unwrap();
     assert_eq!(
         screen.describe(),
@@ -676,7 +718,7 @@ fn behind_another_holder_nothing_is_drawn_and_all_of_it_is_when_in_front_again()
 fn with_no_monitor_the_log_keeps_the_screens_and_the_consoles_wait() {
     let mut kernel = FakeKernel::new();
     kernel.add_card(false, &[None, None]);
-    let wire = Wire(Rc::new(RefCell::new(kernel)));
+    let wire = Wire::of(kernel);
     let mut screen = Screen::on(wire.clone(), radix_fbcon::MIN_GRID).unwrap();
     assert_eq!(screen.describe(), ["no screen is plugged in: the consoles show when one is"]);
     assert_eq!((screen.cols(), screen.rows()), UNSEEN_GRID);
@@ -687,7 +729,7 @@ fn with_no_monitor_the_log_keeps_the_screens_and_the_consoles_wait() {
     screen.draw(&term, None);
     assert_eq!(wire.0.borrow().puts, 0);
     // With no card at all there is nothing to wait for.
-    let none = Wire(Rc::new(RefCell::new(FakeKernel::new())));
+    let none = Wire::of(FakeKernel::new());
     assert!(Screen::on(none, radix_fbcon::MIN_GRID).is_err());
 }
 
@@ -728,7 +770,7 @@ fn a_card_that_comes_later_gets_the_consoles_too() {
 fn a_monitor_that_comes_changes_size_and_goes_is_followed() {
     let mut kernel = FakeKernel::new();
     let card = kernel.add_card(false, &[None]);
-    let wire = Wire(Rc::new(RefCell::new(kernel)));
+    let wire = Wire::of(kernel);
     let mut screen = Screen::on(wire.clone(), radix_fbcon::MIN_GRID).unwrap();
     let waiting = ["no screen is plugged in: the consoles show when one is"];
     assert_eq!(screen.describe(), waiting);

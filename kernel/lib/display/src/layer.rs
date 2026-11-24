@@ -25,12 +25,12 @@ use core::ops::Deref;
 
 use radix_abi::Status;
 use radix_abi::display::{
-    CHECK_ONLY, DisplayEvent, EVENT_BACK, EVENT_BEAT, EVENT_BORROWER_ENDED, EVENT_FAILED,
-    EVENT_FRONT, EVENT_REPLACED, EVENT_SCREEN, EVENT_SHOWN, MAY_BLANK, Mode, NEWEST_WINS, NO_WAIT,
-    NOW, PLANE_MAIN, PLANE_PICTURE, PLANE_POINTER,
+    CHECK_ONLY, DisplayEvent, EVENT_BEAT, EVENT_FAILED, EVENT_REPLACED, EVENT_SCREEN, EVENT_SHOWN,
+    MAY_BLANK, Mode, NEWEST_WINS, NO_WAIT, NOW, PLANE_MAIN, PLANE_PICTURE, PLANE_POINTER,
 };
 use radix_abi::errors::{File, Kernel};
 
+pub use self::front::LOG_WAIT_NS;
 pub use self::plug::Found;
 pub(crate) use self::stored::Stored;
 use self::stored::{DAMAGE_MAX, Damage};
@@ -40,11 +40,12 @@ use crate::frame::{
 };
 use crate::holder::Holder;
 use crate::monitor::Monitor;
-use crate::stack::{Passed, Refused, Stack};
+use crate::stack::Stack;
 use crate::state::{self, PipeState, PlaneState, Refusal, ScreenState, Things, Values, View};
 use crate::wire::ChangeRequest;
 use crate::{Rect, same_mode};
 
+mod front;
 mod info;
 mod plug;
 mod stored;
@@ -163,6 +164,10 @@ pub struct Layer<R, C, A: Allocator> {
     seq: u64,
     /// Set as the machine ends: the screens are the log's from then on.
     closing: bool,
+    /// When the holder in front ended with none under it, while its last
+    /// picture still shows and the kernel's log waits its turn
+    /// ([`LOG_WAIT_NS`]).
+    kept_since: Option<u64>,
 }
 
 /// Why a change was not made.
@@ -352,6 +357,7 @@ where
             log_card: 0,
             seq: 0,
             closing: false,
+            kept_since: None,
         }
     }
 
@@ -646,33 +652,6 @@ where
         frame(&self.things(), view, pipe, &picture)
     }
 
-    /// Fills `into`, a blank state, with what shows while the kernel's
-    /// log is in front: the log card's first plugged screen fed in the
-    /// mode it was found in, with the planes of its pipe on it. Returns
-    /// the pipe's place in the list, if there is such a screen.
-    fn log_state(&self, into: &mut Stored<A>) -> Option<usize> {
-        let screen =
-            self.screens.iter().find(|screen| screen.card == self.log_card && screen.plugged)?;
-        let pipe = match screen.fixed_pipe {
-            0 => self.pipes.iter().find(|pipe| pipe.card == self.log_card)?.id,
-            fixed => fixed,
-        };
-        let place = self.pipes.iter().position(|other| other.id == pipe)?;
-        let state = into.state();
-        if let Some(fed) = state.screens.iter_mut().find(|state| state.id == screen.id) {
-            fed.pipe = pipe;
-        }
-        if let Some(run) = state.pipes.iter_mut().find(|state| state.id == pipe) {
-            (run.active, run.mode) = (true, screen.native);
-        }
-        for plane in self.planes.iter().filter(|plane| plane.fixed_pipe == pipe) {
-            if let Some(on) = state.planes.iter_mut().find(|state| state.id == plane.id) {
-                on.pipe = pipe;
-            }
-        }
-        Some(place)
-    }
-
     /// Keeps a pipe's beat in step with what it shows: started or
     /// started again where its mode is new, stopped where it stopped.
     fn keep_beat(&mut self, place: usize) {
@@ -690,100 +669,6 @@ where
         if run.beat.is_some() {
             run.count = run.count.saturating_add(1);
             run.handled = run.count;
-        }
-    }
-
-    /// The kernel's log comes to the front: its card shows it, every
-    /// other pipe shows nothing, and what waited for a beat is dropped.
-    fn log_front(&mut self) {
-        let mut scratch = core::mem::replace(&mut self.scratch, Stored::new_in(self.alloc));
-        if scratch.blank(&self.things()).is_err() {
-            self.scratch = scratch;
-            return;
-        }
-        let log_pipe = self.log_state(&mut scratch);
-        for place in 0..self.pipes.len() {
-            self.drop_pending(place);
-            let pipe = self.pipes[place];
-            let old = self.shown_frame(&pipe);
-            let new = frame(&self.things(), &scratch.view(), &pipe, &|_, _| None);
-            let Some(card) = self.card(pipe.card) else { continue };
-            if log_pipe == Some(place) {
-                card.log_takes(&new);
-            } else if old.active {
-                // A card that does not answer says so in the log itself;
-                // the log shows on its own card either way.
-                let change = Change { main: true, pointer: true, ..difference(&old, &new) };
-                let _ = card.show(&new, &change);
-            }
-        }
-        for picture in &mut self.shown_pictures {
-            *picture = None;
-        }
-        core::mem::swap(&mut self.shown, &mut scratch);
-        self.scratch = scratch;
-        for place in 0..self.pipes.len() {
-            self.keep_beat(place);
-        }
-    }
-
-    /// The first holder takes the front from the kernel's log.
-    fn leave_log(&mut self, holder: u32) -> Result<(), Status> {
-        if self.closing {
-            return Err(busy());
-        }
-        self.stack.leave_log(holder).map_err(|_| busy())?;
-        if let Some(card) = self.card(self.log_card) {
-            card.log_gives();
-        }
-        self.post(holder, DisplayEvent { kind: EVENT_FRONT, ..self.event() });
-        Ok(())
-    }
-
-    /// Passes the front as `passed` says: the one that had it is told,
-    /// the state of the one that has it now is made again, and it is
-    /// told; or the kernel's log shows. `ended` says the one that had it
-    /// is gone, which the one it gives to is told first.
-    fn pass(&mut self, passed: Passed, ended: bool) {
-        if let Some(from) = passed.from {
-            for place in 0..self.pipes.len() {
-                if self.runs[place].pending.as_ref().is_some_and(|pending| pending.holder == from) {
-                    self.drop_pending(place);
-                }
-            }
-            if !ended {
-                self.post(from, DisplayEvent { kind: EVENT_BACK, ..self.event() });
-            }
-        }
-        let Some(to) = passed.to else {
-            self.log_front();
-            return;
-        };
-        if ended {
-            self.post(to, DisplayEvent { kind: EVENT_BORROWER_ENDED, ..self.event() });
-        }
-        self.put_back(to);
-        self.post(to, DisplayEvent { kind: EVENT_FRONT, ..self.event() });
-    }
-
-    /// Makes again the state holder `id`, now in front, last asked for,
-    /// if it asked for one and the cards can still show it: every frame
-    /// of it is drawn whole, since a change of its own that waited when
-    /// the front passed was dropped with the rectangles it named. A
-    /// holder that has asked for nothing leaves what shows until it
-    /// does, and one whose state names a screen that has gone was told
-    /// of that with an EVENT_SCREEN and makes a new change.
-    fn put_back(&mut self, id: u32) {
-        let Some(at) = self.holder_place(id) else { return };
-        let Some(wanted) = self.holders[at].wanted.as_ref() else { return };
-        let holder = &self.holders[at];
-        let checked =
-            state::check(&self.things(), holder, &self.shown.view(), &wanted.view(), true);
-        if checked.is_err() || self.card_check(holder, &wanted.view()).is_err() {
-            return;
-        }
-        for place in 0..self.pipes.len() {
-            self.make_pipe(place, at, &Damage::new(), true);
         }
     }
 
@@ -1191,8 +1076,13 @@ where
 
     /// The beats of the pipes of card `card` that have come by now:
     /// each change that waited for one is made, and each holder that
-    /// asked for one is told.
+    /// asked for one is told. The kernel's log comes to the front if it
+    /// waited its turn and the wait is over.
     pub fn beat(&mut self, card: u32) {
+        // The log's turn, whichever card's beat finds it first.
+        if self.log_due().is_some_and(|due| due <= self.now) {
+            self.log_front();
+        }
         for place in 0..self.pipes.len() {
             if self.pipes[place].card != card {
                 continue;
@@ -1230,7 +1120,8 @@ where
     }
 
     /// When [`Layer::beat`] is next needed for card `card`: the time of
-    /// the earliest beat that a change or a holder waits for.
+    /// the earliest beat that a change or a holder waits for, or the end
+    /// of the log's wait for its turn if that is sooner.
     pub fn next_beat(&self, card: u32) -> Option<u64> {
         let waited = |place: usize| {
             let run = &self.runs[place];
@@ -1243,6 +1134,7 @@ where
         (0..self.pipes.len())
             .filter(|&place| self.pipes[place].card == card)
             .filter_map(waited)
+            .chain(self.log_due())
             .min()
     }
 
@@ -1267,33 +1159,6 @@ where
             card.wake_for(beat.time_of(at));
         }
         Ok(())
-    }
-
-    /// Holder `id` has gone: the front passes on if it had it, what it
-    /// asked of a beat is dropped, and its pictures go with it but for
-    /// those that still show.
-    pub fn end(&mut self, id: u32) {
-        if self.attention == id {
-            self.attention = 0;
-        }
-        for run in &mut self.runs {
-            run.askers.retain(|&(holder, _)| holder != id);
-        }
-        match self.stack.end(id) {
-            Some(passed) => self.pass(passed, true),
-            None => {
-                for place in 0..self.pipes.len() {
-                    if self.runs[place].pending.as_ref().is_some_and(|pending| pending.holder == id)
-                    {
-                        self.drop_pending(place);
-                    }
-                }
-            }
-        }
-        // Its pictures go with it, but for those a plane still shows.
-        if let Some(at) = self.holder_place(id) {
-            drop(self.holders.swap_remove(at));
-        }
     }
 
     /// MOVE_POINTER: puts the hot spot of pointer plane `plane` of
@@ -1362,35 +1227,6 @@ where
         Ok(())
     }
 
-    /// LEND: holder `from`, which is in front, lends the front to `to`.
-    ///
-    /// # Errors
-    ///
-    /// busy for a holder that is not in front, invalid_argument for a
-    /// borrower that is in the stack already, and too_many for a stack
-    /// as deep as it goes.
-    pub fn lend(&mut self, from: u32, to: u32) -> Result<(), Status> {
-        let passed = self.stack.lend(from, to).map_err(|refused| match refused {
-            Refused::NotFront => busy(),
-            Refused::Stacked => invalid(),
-            Refused::Full => Kernel::TooMany.status(0),
-        })?;
-        self.pass(passed, false);
-        Ok(())
-    }
-
-    /// RETURN: holder `me`, which is in front, gives the front back to
-    /// the holder under it, or to the kernel's log.
-    ///
-    /// # Errors
-    ///
-    /// busy for a holder that is not in front.
-    pub fn give_back(&mut self, me: u32) -> Result<(), Status> {
-        let passed = self.stack.give_back(me).map_err(|_| busy())?;
-        self.pass(passed, false);
-        Ok(())
-    }
-
     /// The number of the holder its opener knows by `key`, made a holder
     /// now if it is not one yet. `attention` says it is a description of
     /// that file, which one holder has at a time.
@@ -1428,20 +1264,5 @@ where
     /// The number of the holder its opener knows by `key`, if it is one.
     pub fn holder_by_key(&self, key: usize) -> Option<u32> {
         self.holders.iter().find(|holder| holder.key == key).map(|holder| holder.id)
-    }
-
-    /// The holder in front, or `None` while the kernel's log is.
-    pub fn front(&self) -> Option<u32> {
-        self.stack.front()
-    }
-
-    /// The machine ends: the screens are the log's, and stay so.
-    pub fn close(&mut self) {
-        self.closing = true;
-        while let Some(front) = self.stack.front() {
-            let _ = self.stack.end(front);
-            self.post(front, DisplayEvent { kind: EVENT_BACK, ..self.event() });
-        }
-        self.log_front();
     }
 }

@@ -31,13 +31,18 @@
 //! and fingerprint (`welcome`); one nobody has typed on is drawn again when
 //! admind(8) writes them after it was drawn, as it does once it starts, or
 //! writes new ones, and the log says "ttyN: drawing the sign-in screen
-//! again for the web console's address". When
-//! consoled ends, the screens are the kernel log's again. Spark starts it
-//! as a service (spark(8)).
+//! again for the web console's address". A program that draws the screens
+//! itself, such as a desktop, borrows them from consoled (`lend`, ADR
+//! 0702), and no key is typed into a console while it has them. When
+//! consoled ends, what it showed stays for three seconds, in which the
+//! consoled that Spark starts in its place takes the screens with no
+//! kernel log between; after them the screens are the kernel log's
+//! again. Spark starts it as a service (spark(8)).
 
 mod access;
 mod braille;
 mod keys;
+mod lend;
 mod notices;
 mod prompts;
 mod reader;
@@ -59,6 +64,7 @@ use access::{Access, Size};
 use braille::Braille;
 use keymap::Keymap;
 use keys::{Action, Keyboard, SlowKeys};
+use lend::Lender;
 use notices::Notices;
 use prompts::{Prompts, Typed};
 use radix_abi::input::{Event, PRESSED, SET_LEDS};
@@ -356,6 +362,10 @@ struct Consoled {
     slow: SlowKeys,
     /// The braille display's connection, through BRLTTY (ADR 0326).
     braille: Braille,
+    /// Where a program asks for the screens, to draw them itself.
+    lender: Lender,
+    /// Whether the keys were last another program's, with the screens.
+    keys_away: bool,
     /// admind's file of the web console's address and fingerprint, which
     /// sign-in screens are drawn again for when it changes.
     web_console: welcome::WebConsoleWatch,
@@ -403,6 +413,19 @@ impl Consoled {
                 console.retry_at = Some(Instant::now() + std::time::Duration::from_secs(10));
             }
         }
+    }
+
+    /// Whether the keys are the consoles'. They are not while a program
+    /// that borrowed the screens has them, or its last picture is still
+    /// on them: a key typed then is never typed into a console nobody
+    /// sees. As they go, what is held is let go of.
+    fn takes_keys(&mut self) -> bool {
+        let away = self.screen.away();
+        if away && !self.keys_away {
+            self.keyboard.let_go();
+        }
+        self.keys_away = away;
+        !away
     }
 
     /// A key event from the keyboard, as slow keys let it through.
@@ -777,7 +800,8 @@ impl Consoled {
         loop {
             // The wake pipe, the keyboard, notifyd, authd's prompts,
             // readerd, the braille display's socket and its connection,
-            // the display layer's events, then each console's master.
+            // the display layer's events, the socket the screens are
+            // asked for on, then each console's master.
             let mut fds =
                 vec![libc::pollfd { fd: wake.as_raw_fd(), events: libc::POLLIN, revents: 0 }];
             fds.push(libc::pollfd {
@@ -794,6 +818,7 @@ impl Consoled {
             let (display, wanted) = self.braille.client_fd();
             fds.push(libc::pollfd { fd: display, events: wanted, revents: 0 });
             fds.push(libc::pollfd { fd: self.screen.fd(), events: libc::POLLIN, revents: 0 });
+            fds.push(libc::pollfd { fd: self.lender.fd(), events: libc::POLLIN, revents: 0 });
             for (i, console) in self.consoles.iter().enumerate() {
                 let held = i == self.active && self.keyboard.scroll;
                 let fd = console.master_fd().filter(|_| !held).unwrap_or(-1);
@@ -808,6 +833,7 @@ impl Consoled {
                 .chain(self.prompts.as_ref().and_then(Prompts::deadline))
                 .chain(self.reader.deadline())
                 .chain(self.slow.deadline())
+                .chain(self.screen.deadline())
                 .chain(self.web_console.deadline(self.newest_redrawable()))
                 .min();
             let timeout =
@@ -829,17 +855,21 @@ impl Consoled {
                 self.reload_access();
             }
             self.reap();
+            let typed = self.takes_keys();
             if fds[1].revents != 0
                 && let Some(kbd) = self.kbd.as_mut()
             {
                 match kbd.read(&mut events) {
-                    Ok(n) => {
+                    // Read either way, so that none waits to be typed
+                    // when the keys are the consoles' again.
+                    Ok(n) if typed => {
                         let batch = events[..n].to_vec();
                         let now = Instant::now();
                         for event in batch.as_chunks::<{ Event::SIZE }>().0 {
                             self.key_event(event, now);
                         }
                     }
+                    Ok(_) => {}
                     // Fell behind: the next read goes on with what is kept.
                     Err(err) if err.raw_os_error() == Some(libc::EPIPE) => {}
                     Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
@@ -852,7 +882,9 @@ impl Consoled {
             let now = Instant::now();
             // Keys held long enough, with slow keys.
             for (code, value) in self.slow.tick(now) {
-                self.key(code, value);
+                if typed {
+                    self.key(code, value);
+                }
             }
             if fds[2].revents != 0 {
                 self.notices.read(now);
@@ -881,11 +913,17 @@ impl Consoled {
             }
             // A screen came, went or changed its size, or the front
             // passed: the consoles take the cells the screens now show.
-            if fds[7].revents != 0 && self.screen.events() {
+            let arranged = fds[7].revents != 0 && self.screen.events();
+            if fds[8].revents != 0 {
+                self.lender.accept(&mut self.screen);
+            }
+            // After the events, one of which may start the wait for
+            // another borrower.
+            if self.screen.tick(now) || arranged {
                 self.fit_consoles();
             }
             for (i, console) in self.consoles.iter_mut().enumerate() {
-                if fds[8 + i].revents != 0 {
+                if fds[9 + i].revents != 0 {
                     console.read();
                 }
             }
@@ -1013,6 +1051,8 @@ fn main() -> ExitCode {
         access,
         slow,
         braille: Braille::listen(braille::SOCKET),
+        lender: Lender::listen(lend::SOCKET),
+        keys_away: false,
         web_console: welcome::WebConsoleWatch::new(welcome::WEB_CONSOLE, Instant::now()),
     };
     consoled.lights();

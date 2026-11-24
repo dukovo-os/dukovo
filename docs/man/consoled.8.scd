@@ -21,9 +21,12 @@ sign-in, *login*(1), on a pseudo-terminal of its own (*radix-posix*(7)).
 
 The Radix kernel shows its log on the screens while the machine starts.
 consoled is a holder of the display layer (_/devices/display/control_,
-*radix-display*(2)): its first change takes the screens from the log,
-and when consoled ends they are the log's again; *dmesg*(1) shows the
-kernel's messages meanwhile. The keys come from _/devices/kbd_
+*radix-display*(2)): its first change takes the screens from the log;
+*dmesg*(1) shows the kernel's messages meanwhile. When consoled ends,
+what it showed stays on the screens for three seconds, and the consoled
+that Spark starts in its place takes them with no log between; after
+the three seconds, or at once if the kernel logs an error, the screens
+are the log's again. The keys come from _/devices/kbd_
 (*radix-input*(2)): the PS/2 keyboard's events and every USB keyboard's,
 which can be plugged in and pulled out at any time.
 
@@ -312,6 +315,43 @@ waits, Shift and the others too.
 The screen reader says each change: *Text larger*, *shift*, *shift
 locked*, *Sticky keys on*.
 
+# LENDING THE SCREENS
+
+A program that draws the screens itself, such as a desktop, borrows them
+from consoled (ADR 0702): the display layer lets only the program in
+front pass the screens on, and consoled has them from the kernel's log.
+The program connects to _/system/live/consoled/display_, which only
+root can open. Connecting is the request. consoled answers with one line
+and closes the connection:
+
+*lent*
+	With it comes a descriptor (SCM_RIGHTS, *radix-posix*(7)): a holder
+	of _/devices/display/control_ of the borrower's own, in front
+	(*radix-display*(2)). The screens show the consoles until the
+	borrower's first change. consoled logs *the screens are lent to
+	another program*.
+
+*busy*
+	consoled does not have the screens to lend: another program has
+	borrowed them, or no screen shows the consoles.
+
+*failed*
+	The loan could not be made. consoled logs *cannot lend the screens*
+	and the reason.
+
+The borrower gives the screens back with RETURN, and the consoles show
+again within a frame. A borrower that ends without giving them back, as
+one that crashes or is started again does, leaves its last picture on
+the screens. consoled then draws nothing for five seconds, and a program
+that borrows the screens within them draws its first frame over that
+picture: a desktop that starts again shows no console between its old
+picture and its new one. After the five seconds the consoles show.
+
+While the screens are lent, and through those five seconds, what is
+typed on the keyboard is not typed into a console, and no key waits to
+be typed when the consoles show again. A braille display reads and
+types on the consoles throughout.
+
 # BRAILLE DISPLAYS
 
 consoled shows a braille display the consoles through *brltty*(1),
@@ -462,6 +502,9 @@ _/system/live/readerd/socket_
 
 _/system/live/consoled/braille_
 	The socket a braille display's BRLTTY reads the consoles on.
+
+_/system/live/consoled/display_
+	The socket a program asks for the screens on.
 
 # SEE ALSO
 
