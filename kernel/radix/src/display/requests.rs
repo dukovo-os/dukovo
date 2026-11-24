@@ -57,6 +57,8 @@ pub struct Call<'a> {
     pub argument: u64,
     /// The bytes of the caller's buffer.
     pub size: u64,
+    /// The number of the caller's process.
+    pub who: u64,
     /// Whether the description's capability has the write right, which
     /// every request but LIST and GET needs.
     pub may_write: bool,
@@ -336,6 +338,9 @@ fn change(file: &FileObject, call: &Call<'_>) -> Result<(), Status> {
     let request = ChangeRequest::read(bytes).ok_or_else(invalid)?;
     let made = with_layer(|layer| {
         let me = holder_of(layer, file)?;
+        if let Some(holder) = layer.holder(me) {
+            holder.set_who(call.who);
+        }
         layer.change(me, Asked::of(&request), &request)
     });
     let refused = match made {

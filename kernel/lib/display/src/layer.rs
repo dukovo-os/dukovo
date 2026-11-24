@@ -48,6 +48,7 @@ use crate::{Rect, same_mode};
 mod front;
 mod info;
 mod plug;
+mod report;
 mod stored;
 #[cfg(test)]
 mod tests;

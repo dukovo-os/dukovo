@@ -603,6 +603,40 @@ _/kernel/class/net/_*name*_/card_
 	drives, only _driver program_, and for a USB adapter _driver
 	radix-usb_; nothing for the others.
 
+_/kernel/class/display/state_
+	Radix's own: what the display layer has, written when it is read.
+	The first line says who has the screens: _front log_ while the
+	kernel's log does, _front process_ and the number of the process
+	that made the last change of the program in front, _front holder_
+	for a program that has opened the screens and made no change yet,
+	and _front last_ while the last picture of a program that ended
+	stays. Then a line for each graphics card, each of its screens with
+	the modes it offers, the one it prefers first, and each of its
+	pipes, which make the frames: what the line is of, that thing's
+	number in the layer, and _key=value_ words. A value that may hold
+	spaces, a card's model and a monitor's name, is the last of its
+	line and runs to the line's end.
+
+	```
+	front process 41
+	card 1 name=virtio0 kind=virtio hot_plug=1 mirrors=0 sets_modes=1 shared_pages=0 wakes=977 model=Virtio graphics card
+	screen 6 card=1 index=0 plugged=1 failed=0 hdr=0 variable_refresh=0 pipe=2 depth=8 width_mm=527 height_mm=296 refresh_min_mhz=0 refresh_max_mhz=0 luminance_max=0 product=4660 maker=EXM name=Example 24
+	mode 6 width=1920 height=1080 refresh_mhz=60000 preferred=1
+	pipe 2 card=1 index=0 active=1 width=1920 height=1080 refresh_mhz=60000 beat_ns=16666667 beat_count=58211
+	```
+
+	A card's _kind_ is *firmware*, *virtio* or *other*, and _wakes_
+	counts how often its thread has woken, which a screen that stands
+	still does not add to. A screen's _pipe_ is the pipe that feeds it,
+	or 0, and the mode it shows is that pipe's; a number the monitor
+	does not say is 0. A pipe's _beat_ns_ is the nanoseconds from one
+	of its frames to the next, or 0 while it makes none, and
+	_beat_count_ the number of its latest. A monitor's serial number is not here, so that everyone
+	may read the file and its words can go in a report as they are;
+	the program that has the screens reads it from the layer itself.
+	*hardware*(8)'s *screens* reads the file. With no graphics card it
+	is its first line alone.
+
 _/kernel/devices/system/cpu/possible_, _present_, _online_
 	The CPUs the machine has, and those that run threads, as Linux's
 	lists: *0-7*, which util-linux's lscpu reads.

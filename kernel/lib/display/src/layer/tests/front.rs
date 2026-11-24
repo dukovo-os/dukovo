@@ -236,3 +236,45 @@ fn a_screen_that_changes_in_the_wait_has_the_log_laid_out_on_it() {
     assert_eq!(rig.firmware.asked(), [Call::LogTakes(0)]);
     assert!(!rig.layer.keeps_last());
 }
+
+#[test]
+fn the_layer_says_in_words_who_is_in_front_and_what_it_has() {
+    let mut rig = Rig::firmware();
+    let described = |rig: &Rig| {
+        let mut text = String::new();
+        rig.layer.describe(&|_| 7, &mut text).unwrap();
+        text
+    };
+    let text = described(&rig);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "front log");
+    assert_eq!(
+        lines[1],
+        format!(
+            "card {CARD} name=firmware0 kind=firmware hot_plug=0 mirrors=0 sets_modes=0 \
+             shared_pages=0 wakes=7 model=Firmware framebuffer"
+        )
+    );
+    // A screen's line, its modes after it, and the pipe that feeds it.
+    let screen = lines.iter().find(|line| line.starts_with("screen ")).unwrap();
+    assert!(screen.contains(&format!(" card={CARD} index=0 plugged=1 failed=0 ")), "{screen}");
+    assert!(screen.ends_with(" name="), "a screen with no monitor data has no name: {screen}");
+    let modes = lines.iter().filter(|line| line.starts_with("mode ")).count();
+    assert_eq!(modes, 1);
+    assert!(text.contains(" width=1024 height=768 refresh_mhz=100000 preferred=0\n"), "{text}");
+    assert!(
+        lines.iter().any(|line| line.starts_with(&format!("pipe {PIPE} card={CARD} index=0 ")))
+    );
+
+    // A holder that has made no change is not yet a process's; one
+    // that has is named by the number its changes were noted with.
+    let holder = rig.in_front();
+    assert_eq!(described(&rig).lines().next(), Some("front holder"));
+    rig.layer.holder(holder).unwrap().set_who(41);
+    let text = described(&rig);
+    assert_eq!(text.lines().next(), Some("front process 41"));
+    assert!(text.contains(" active=1 width=1024 height=768 refresh_mhz=100000 "), "{text}");
+    // Its last picture stays when it ends: nobody is in front.
+    rig.layer.end(holder);
+    assert_eq!(described(&rig).lines().next(), Some("front last"));
+}

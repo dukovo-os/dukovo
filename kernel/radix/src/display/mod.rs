@@ -48,6 +48,7 @@
 //! that is woken finds the lock free.
 
 mod firmware;
+mod report;
 mod requests;
 pub mod virtio;
 
@@ -73,6 +74,7 @@ use radix_sync::{Mutex, Once};
 use radix_vfs::synthetic::FixedDir;
 use radix_vfs::{Access, In, KArc, Kind, Node, NodeRef, Out, Stat, mem, next_id};
 
+pub use self::report::report;
 pub use self::requests::{Call, control};
 use crate::Arch;
 use crate::console;
@@ -314,6 +316,8 @@ pub struct CardRun {
     /// When its thread sleeps until: 0 while it is awake, and
     /// [`u64::MAX`] while it waits for no beat.
     sleeping: AtomicU64,
+    /// How many times its thread has woken. A still screen adds none.
+    wakes: AtomicU64,
 }
 
 /// A card, shared.
@@ -410,6 +414,7 @@ pub fn add_card(
             driver: driver(id)?,
             kick: AtomicBool::new(false),
             sleeping: AtomicU64::new(0),
+            wakes: AtomicU64::new(0),
         };
         Arc::try_new_in(run, kmalloc()).ok()
     };
@@ -447,6 +452,7 @@ fn beat_thread(card: usize) {
     let card = card as u32;
     let Some(run) = with_layer(|layer| layer.card(card).cloned()) else { return };
     loop {
+        run.wakes.fetch_add(1, Ordering::Relaxed);
         run.sleeping.store(0, Ordering::Release);
         run.kick.store(false, Ordering::Release);
         let woken = with_layer(|layer| {

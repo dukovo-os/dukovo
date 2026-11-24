@@ -11,6 +11,7 @@ import test from 'node:test';
 import { AREAS, checkArgs } from '../pages/hardware/check-model.js';
 import { healthWords } from '../lib/disk-model.js';
 import { devicesOf, hiddenWords } from '../pages/hardware/devices-model.js';
+import { frontWords, modeWords, screensOf } from '../pages/hardware/screens-model.js';
 import {
   disksOf, pillOf, testArgs, testsOf,
 } from '../pages/hardware/disks-model.js';
@@ -26,7 +27,7 @@ import {
   modelWords, moduleWords, processorWords, stateOf, summaryWords, tookBackWords, upWords,
 } from '../pages/hardware/model.js';
 import {
-  about, asked, broken, clean, devices, diskHealth, highest, history, inventory, last, NOW, sensors, show, skipped, startTest, storage, task, time, updates,
+  about, asked, broken, clean, devices, diskHealth, highest, history, inventory, last, NOW, screens, sensors, show, skipped, startTest, storage, task, time, updates,
 } from './hardware-fixtures.mjs';
 
 test('amounts of memory are in GiB from one and in MiB below it, and none for no memory', () => {
@@ -507,4 +508,50 @@ test('the line of a test at a start copes with one error, one place, a small mem
 test('a test at a start that was never kept, or whose result is not known, is not said', () => {
   for (const answer of [null, undefined, {}, { result: 'passed' }, { at_ms: 'now', result: 'passed' }]) assert.equal(startRun(answer, time, NOW_SECONDS), null);
   assert.equal(startRun({ ...startTest('passed'), result: 'exploded' }, time, NOW_SECONDS), null);
+});
+
+// ---- Screens ---------------------------------------------------------------------
+
+test('each graphics card is a table of its screens, titled with what the card is', () => {
+  const { front, cards } = screensOf(screens());
+  assert.equal(front, 'consoled (process 41)');
+  assert.deepEqual(cards.map((card) => [card.title, card.rows.length]), [
+    ['firmware0 · Firmware framebuffer, in the mode the firmware set', 1],
+    ['virtio0 · Virtio graphics card', 3],
+  ]);
+  const shared = screensOf({ cards: [{ name: 'virtio1', model: 'Virtio graphics card', sets_modes: true, shared_pages: true, screens: [] }] });
+  assert.equal(shared.cards[0].title, 'virtio1 · Virtio graphics card, shows programs’ own pages');
+});
+
+test('a screen says its monitor, the mode it shows, the modes it offers and what its colours can do', () => {
+  const [first, second, third] = screensOf(screens()).cards[1].rows;
+  assert.deepEqual(first, {
+    name: 'Screen 1', monitor: 'QEMU Monitor', small: 'RHT · 260 by 160 mm', muted: false, shows: '800x600 at 60 Hz', tone: null,
+    modes: '1024x768 at 74.99 Hz (preferred), 800x600 at 60 Hz', depth: '8 bits a colour', hdr: 'No', variable: 'No',
+  });
+  assert.deepEqual(second, {
+    name: 'Screen 2', monitor: 'Nothing plugged in', small: '', muted: true, shows: '—', modes: '—', depth: '—', hdr: '—', variable: '—',
+  });
+  // A screen whose card stopped showing on it, of a monitor that gives its maker alone.
+  assert.deepEqual([third.monitor, third.small, third.shows, third.tone], ['A monitor of DEL', '', 'Stopped', 'bad']);
+  assert.deepEqual([third.depth, third.hdr, third.variable], ['10 bits a colour', 'Yes', 'Yes']);
+  const quiet = screensOf(screens()).cards[0].rows[0];
+  assert.deepEqual([quiet.monitor, quiet.depth, quiet.shows], ['A monitor that does not say what it is', 'Not said', '1280x800 at 60 Hz']);
+  const dark = screensOf({ cards: [{ name: 'c', screens: [{ number: 1, plugged: true, mode: null, modes: [] }] }] }).cards[0].rows[0];
+  assert.deepEqual([dark.shows, dark.modes], ['Nothing', '—']);
+});
+
+test('who has the screens is said for the log, a program, one that has not drawn, and a last picture', () => {
+  assert.equal(frontWords({ holder: 'log', process: null, name: null }), 'The kernel’s log');
+  assert.equal(frontWords({ holder: 'program', process: 9, name: null }), 'Process 9');
+  assert.equal(frontWords({ holder: 'program', process: null, name: null }), 'A program that has not drawn yet');
+  assert.equal(frontWords({ holder: 'last-picture', process: null, name: null }), 'Nothing: the last picture of a program that ended');
+  assert.equal(frontWords(undefined), 'The kernel’s log');
+  assert.equal(modeWords({ width: 1920, height: 1080, refresh_mhz: 59940 }), '1920x1080 at 59.94 Hz');
+});
+
+test('an answer that is not a list of cards has none', () => {
+  assert.deepEqual(screensOf(null), { front: 'The kernel’s log', cards: [] });
+  assert.deepEqual(screensOf({ format: 1, front: { holder: 'log' }, cards: 'none' }).cards, []);
+  assert.deepEqual(screensOf({ cards: [{ name: 'c', model: 'm', screens: null }] }).cards, [{ title: 'c · m', rows: [] }]);
 });

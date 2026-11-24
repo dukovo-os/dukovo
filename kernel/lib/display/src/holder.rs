@@ -44,6 +44,9 @@ pub struct Holder<R, A: Allocator> {
     pub(crate) id: u32,
     /// What its opener knows it by, which finds it for a request.
     pub(crate) key: usize,
+    /// Who made its last change, in whatever numbers the layer's user
+    /// tells programs apart by, or 0.
+    who: u64,
     /// Its pictures and values: number `n` is `objects[n - 1]`.
     objects: Vec<Object<R>, A>,
     /// How many of them are pictures.
@@ -63,6 +66,7 @@ impl<R: Deref<Target: Picture>, A: Allocator + Copy> Holder<R, A> {
         Holder {
             id,
             key,
+            who: 0,
             objects: Vec::new_in(alloc),
             pictures: 0,
             values: 0,
@@ -71,6 +75,17 @@ impl<R: Deref<Target: Picture>, A: Allocator + Copy> Holder<R, A> {
             events: Vec::new_in(alloc),
             alloc,
         }
+    }
+
+    /// Notes who makes its changes: the kernel gives the number of the
+    /// process, for whoever asks which program is in front.
+    pub fn set_who(&mut self, who: u64) {
+        self.who = who;
+    }
+
+    /// Who made its last change, or 0 if it has made none.
+    pub fn who(&self) -> u64 {
+        self.who
     }
 
     /// Keeps `object` under the lowest free number, and returns it.

@@ -122,6 +122,7 @@ admin-hardware userspace/programs/systools/src/lsusb.rs userspace/programs/systo
 admin-hardware kernel/radix/src/fs/sysfs/net.rs userspace/defaults/spark/services/metricsd.toml userspace/defaults/spark/services/diskhealth.toml
 admin-hardware userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/authd.toml
 admin-hardware tools/xtask/src/test/console_client.rs ports/netcat/
+admin-hardware kernel/radix/src/display/report.rs kernel/lib/display/src/layer/report.rs
 admin-security userspace/programs/systools/src/private_access.rs userspace/programs/systools/src/private_access/ userspace/programs/systools/src/wireguard.rs
 admin-security userspace/programs/systools/src/firewall.rs userspace/programs/systools/src/firewall/ userspace/programs/systools/src/check.rs
 admin-security userspace/programs/systools/src/check/ userspace/programs/spark-api/ userspace/spark/src/supervisor/ userspace/programs/sshd/

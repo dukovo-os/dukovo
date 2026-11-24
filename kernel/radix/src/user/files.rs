@@ -442,6 +442,7 @@ fn display_control(
         request: a.request,
         argument: a.argument,
         size: a.size,
+        who: user.process.number(),
         may_write: found.cap.check(ObjectKind::File, Rights::WRITE).is_ok(),
         copy_in: &copy_in,
         copy_out: &copy_out,
