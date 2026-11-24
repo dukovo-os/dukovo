@@ -26,10 +26,11 @@ the next system call of every program on every CPU, the listening
 socket's `poll` and the pipes' reads included, went back to the store
 and took its space's lock. A count of instructions under QEMU
 (`-icount`) found 26 cache misses in each PostgreSQL transaction and
-about 2,500 instructions for each descriptor a `poll` looked at, much
+about 2,500 instructions for each descriptor a `poll` looked at, part
 of it in those misses; on the OptiPlex, PHP-FPM behind nginx took 1.14
 times Linux's time and a TPC-B transaction 1.28 times, after the work of
-ADR 0650 to 0655.
+ADR 0650 to 0655. On a machine with many cores, every CPU pays the
+misses for every close on any other.
 
 ## Decision
 
@@ -76,3 +77,10 @@ ADR 0650 to 0655.
   sequences of every operation, and that a departure leaves other
   spaces' words and the space's other words where they were.
 - Each space takes 128 bytes more, on two cache lines of its own.
+- On four cores it changes no measured time: PHP-FPM, PostgreSQL,
+  events and poll stayed within one run's spread on the OptiPlex and
+  under QEMU (lab run 20261124-091045-cc47 against 20261124-065856-e630),
+  as the misses the store's version caused were a few microseconds of a
+  PostgreSQL transaction at most. It is kept for machines with many
+  cores and programs, where a close anywhere emptied the cache of every
+  CPU, and since it costs nothing measured on these.
