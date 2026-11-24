@@ -50,7 +50,10 @@ pub enum Never {
     LongRead,
     /// It changes who gets in.
     WhoGetsIn,
-    /// It is a change that runs as the person, not as an administrator.
+    /// It is a change that runs as the person, not as an administrator:
+    /// to their own account or their own files. An approved change runs
+    /// as the administrator who approved it, so it would be done to that
+    /// person's, which is not what the client's owner asked for.
     OwnChange,
 }
 
@@ -62,7 +65,10 @@ impl Never {
             Never::Document => "takes a document, which no AI client sends",
             Never::LongRead => "runs as a task, which no AI client reads",
             Never::WhoGetsIn => "changes who gets in, which no AI client may ask for",
-            Never::OwnChange => "changes its owner's own account, which no AI client may ask for",
+            Never::OwnChange => {
+                "changes what is a person's own, their account or their files, which no AI \
+                 client may ask for"
+            }
         }
     }
 }
@@ -288,6 +294,9 @@ mod tests {
         let all = Reach::parse("*").expect("scopes");
         assert!(refused(&all, "accounts.add").contains("a password, a key or a token"));
         assert!(refused(&all, "accounts.token-revoke").contains("who gets in"));
-        assert!(refused(&all, "snapshots.restore").contains("own account"));
+        assert!(
+            refused(&all, "snapshots.restore")
+                .contains("a person's own, their account or their files")
+        );
     }
 }

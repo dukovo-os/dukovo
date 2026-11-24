@@ -5,7 +5,7 @@ dukovo-admin(7) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-dukovo-admin - the web console, Dukovo Admin: signing in, second steps, unlocking, the shell and its keys, the palette, the terminal, actions, API tokens
+dukovo-admin - the web console, Dukovo Admin: signing in, second steps, unlocking, the shell and its keys, the palette, the terminal, actions, API tokens, AI clients
 
 # DESCRIPTION
 
@@ -35,8 +35,9 @@ store file of admind's own, _/system/state/admind/store.db_ (ADR 0516).
 This page says how to reach the console, who may sign in, how, what the
 second steps are, how to unlock the console and what ends a session,
 what the shell of pages is, which keys it takes, what the palette finds
-and what the terminal is, what the actions and the API tokens are, what
-the journal and the tasks are, and where to look when something fails. The
+and what the terminal is, what the actions, the API tokens and the AI
+clients are, what the journal and the tasks are, and where to look when
+something fails. The
 handbook's chapter on the web console does the same task by task.
 
 # REACHING THE CONSOLE
@@ -546,13 +547,92 @@ needs no unlock: its owner chose its scopes and its end when they made
 it, and gave their password to do so. Give each token the fewest scopes
 its script needs.
 
+# AI CLIENTS
+
+An AI client is a program that speaks MCP, the Model Context Protocol,
+which an administrator lets in to look after the machine through the
+console's actions (ADR 0690). It is off until an administrator adds one:
+the console answers MCP to no one it was not told of.
+
+A client belongs to the administrator who added it. It never does more
+than that account may, it stops when the account does, and it always
+ends: on the day chosen when it was added, a year later at most. It has a
+name of 1 to 32 of *a* to *z*, *0* to *9* and *-*, and an account has 16.
+
+A client reads, and asks. What it reaches is chosen area by area when it
+is added, at one of three levels:
+
+- *Read*: the reads its owner's account has in the console before
+  unlocking it. As a scope, the area's name with *:read*.
+- *Read all*: every read of the area, those an administrator has after
+  unlocking as well, such as the whole log.
+- *Read all and ask*: those, and asking for the area's changes. As a
+  scope, the area's name alone; an area with no change to ask for stops
+  at *Read all*.
+
+A change that a client asks for changes nothing. It waits on the
+console's *AI clients* page, with the client's reason, the command a yes
+would run, whether it would change anything and the files it writes. An
+administrator with the console unlocked approves it, and it then runs
+once, as that administrator, as a click on the action's own page would;
+or refuses it, which a locked console may do too. A request that nobody
+answers lapses after an hour. The journal's row and the task name the
+administrator, and say which client asked.
+
+No client, whatever it was given, is offered an action that takes or
+shows a password, a key or a token, or one that takes a document; a
+change to what is a person's own, their account or their files; nor a
+change that decides who gets in, which is every change of the accounts,
+the sign-in rules, SSH, the private network and the console's own
+settings, where the clients are.
+A client cannot be changed once it is added: to give it more or less,
+remove it and add it again, so that what it reaches is always what an
+administrator saw when adding it.
+
+A client connects in one of two ways:
+
+- *Over SSH*, the safer way and the default. The client's MCP settings
+  run *ssh* _owner_@_host_ *admin mcp* _name_ (*admin*(8)), so what lets
+  it in is its owner's own SSH sign-in, and there is no secret to keep
+  on the other machine. Such a client is as trusted as its owner's
+  account on this machine.
+- *Over HTTPS*, for a client that cannot use SSH. It is given a token,
+  dkc_OWNER_SECRET, shown once and kept only as a SHA-256, which it
+  sends to _/mcp_ on the console's address as *Authorization: Bearer*.
+  The console's own certificate is one the client has to be told to
+  trust: *cert show this-machine --pem* prints it. A client's token
+  works at _/mcp_ and nowhere else, and an API token does not work
+  there.
+
+The *AI clients* page, for administrators, has *Waiting for a yes*, the
+requests that wait, each with *Approve* and *Refuse*; the clients, with
+how each connects, what it reads and may ask to change, when it was last
+used and when it ends, and *Remove*; *What they did*, each change asked
+for with what became of it and each client's reads; and *What no client
+can do*. *Add a client* asks for its name, how it connects, what it may
+reach and when it ends, and then shows the MCP settings to give the
+client, with the token of one that connects over HTTPS, once. The page's
+entry in the list of pages counts the requests that wait. *admin mcp
+add*, *list* and *remove* do the same at a terminal, and *admin mcp*
+_name_ *--check* says what a client reaches (*admin*(8)).
+
+What a client reads is sent to the service behind it, which is the
+administrator's choice of service and outside this machine. Text that a
+client reads, such as a log line, can be written by anyone who can make
+the machine log it, and a client may take it for an instruction: this is
+why no change runs without a person's yes, and why the yes is given to
+the command shown and not to the client's reason. admind's log has a
+line for every call a client makes, and the audit log each client let in
+or removed and each request approved or refused (*admind*(8)).
+
 # WHAT CHANGED
 
 admind keeps a journal of what changed on the machine and who changed it
 (ADR 0516), so that when something stops working the first question, what
 changed, has an answer. A change made through the console, from a page or
 by a script with a token, has a row once its command has ended, worked or
-not: when, who, how (*console*, or *token* and its name), the action and its
+not: when, who, how (*console*, *token* and its name, or *client* and the
+name and owner of the AI client that asked for it), the action and its
 command, how the command ended, and each file the action names, as it was
 before and after. A file that someone edits by hand, in _/system/settings_
 or in a service's own folder, has a row too. Dukovo has no notification of a
@@ -627,6 +707,8 @@ _/system/state/authd/console/_*name*.toml, which only root reads: the
 app's secret, each passkey's public key and use count, the recovery codes
 and trusted browsers and tokens as SHA-256 hashes, and nothing in the
 clear that would sign anyone in. Removing the account removes the file.
+The account's AI clients are in a file beside it,
+_/system/state/authd/clients/_*name*.toml, with each token as a SHA-256.
 *authd*(8) says more.
 
 The sign-in rules and where it listens are in _/system/settings/admin.toml_.
@@ -637,6 +719,9 @@ admind's own store, _/system/state/admind/store.db_, is one SQLite file, mode
 0600, that only admind writes. It holds the journal of what changed, the
 text of the last 20 versions of each file the journal names (64 MiB in all)
 and the tasks, and no secret: a secret's contents are never read into it.
+What the AI clients did is in _/system/state/admind/clients.jsonl_, the
+newest 1000 entries, which name actions and never their arguments; the
+requests that wait are in admind's memory only.
 Each person's preferences are in their own file,
 _~/.config/dukovo-admin/settings.toml_. The terminals are in admind's memory
 only, as the sessions are, and a restart ends them (THE TERMINAL). The
@@ -649,13 +734,13 @@ address, so *last*(1) and *lastb*(1) show them with the rest. authd's audit
 log (*log --audit*) has a line for each sign-in and how it was proved
 (password, an app's code, a recovery code with how many are left, a
 passkey, a trusted browser), each wrong proof, each unlock, lock, end and
-extension, and each change to a second step or a token, with the
-session's first 8 characters. It never has a password, a code, a cookie,
+extension, each change to a second step or a token, and each AI client
+let in or removed, with the session's first 8 characters. It never has a password, a code, a cookie,
 a ticket or a token.
 
 # WHEN IT FAILS
 
-Each error the console gives has an ID, *ADM-101* to *ADM-135*, and a
+Each error the console gives has an ID, *ADM-101* to *ADM-146*, and a
 page of its own in the support center that says what to do. The page
 shows the ID with a short title and a sentence on what to do; *admind*(8)
 lists them.
@@ -720,6 +805,15 @@ _/system/live/admind/issue_
 
 _/system/state/authd/console/_*name*.toml
 	An account's second steps and tokens.
+
+_/system/state/authd/clients/_*name*.toml
+	An account's AI clients.
+
+_/system/state/admind/clients.jsonl_
+	What the AI clients did.
+
+_/system/live/admind/mcp_
+	The socket of the AI clients that connect over SSH.
 
 _/system/state/sign-ins_
 	The sign-in records (*last*(1)).

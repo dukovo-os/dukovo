@@ -533,6 +533,16 @@ machine asks for them.
 | A new alert rule tried on last week's history before it is on: no alert rule is the owner's to write, and a script raises an alert with `alerts raise`, so this waits until rules exist | ADR 0485 |
 | An alert when an administrator signs in from a new place or device, and Sign-ins as a kind of alert: no program raises an alert for a sign-in, since authd blocks an address that fails too often but keeps no record of where each administrator signs in from; it waits on a record in authd of the places and devices each administrator signs in from, with its own privacy note | ADR 0485, ADR 0566 |
 | Ops' catalog prepare does not see a lab round reading out/: the lab tool keeps its run lock in its own store, which Ops does not read, so the prepare window warns instead | ADR 0594 |
+| AI clients of people who are not administrators: authd lets only an administrator add one, since a client's changes are approved by administrators and its reads as an administrator need an owner who is one | ADR 0690 |
+| Changing an AI client's areas or its end without removing it: a client is removed and added again, so that what it reaches is what its owner saw when adding it | ADR 0690 |
+| One switch that turns every AI client off at once: `admin mcp list --all` lists them, and each is removed by itself | ADR 0690 |
+| A yes to an AI client's request at a terminal: the requests are in admind's memory, and are answered from a signed-in console session, unlocked for a yes | ADR 0690 |
+| An AI client's requests kept across a restart of admind: those that wait are lost, the history shows them as lapsed, and the client asks again | ADR 0690 |
+| An AI client asking for a change that runs as the person: the changes to a person's own account, `snapshots.restore` and `console.export` are offered to no client, since an approved change runs as the administrator who approved it | ADR 0690 |
+| Signing an AI client in to `/mcp` by OAuth, as the protocol describes for HTTP: a client over HTTPS has a token of its own kind, and one over SSH needs none | ADR 0690 |
+| The protocol's tasks, resources and prompts, and a stream that tells an AI client its request was answered: a client asks `request` again | ADR 0692 |
+| `*:read` as an API token's scope, as an AI client has it: a token that reads every area names `*`, which also changes them | admin(8) |
+| The banner of a change that is being tried naming the AI client that asked for it: the journal's row and the task do, and the Security page's script is at its size budget | ADR 0690 |
 
 ### Benchmarks
 

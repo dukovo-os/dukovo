@@ -21,7 +21,8 @@ database; the certificates, with the machine's name and the certificate the
 console serves;
 the security page, with the checks and the score, the
 sign-in rules, the addresses blocked after wrong sign-ins, SSH, who may reach the
-console and private access with WireGuard; the hardware, with the checks of
+console and private access with WireGuard; the AI clients that an
+administrator lets in, and the changes they ask for; the hardware, with the checks of
 the machine, its temperatures, its memory and restarting or shutting it down;
 the updates of the system, its firmware and its apps; the terminal; reporting
 a problem; the alerts, and getting them on a phone; and what to do when
@@ -35,7 +36,8 @@ updates.toml(5), sysupdate(8), updated(8), bundle(1), bundled(8), changes(1),
 hardware(8), shutdown(8), metrics(1), cert(8), certd(8), hostnamectl(1),
 report(1), reportd(8), alerts(8), alertd(8), database(8), website(8) and alerts.toml(5); the
 decisions are ADR 0514, ADR 0515, ADR 0516, ADR 0517, ADR 0461, ADR 0463, ADR
-0561, ADR 0562, ADR 0565, ADR 0566, ADR 0567, ADR 0568, ADR 0569 and ADR 0570.
+0561, ADR 0562, ADR 0565, ADR 0566, ADR 0567, ADR 0568, ADR 0569, ADR 0570,
+ADR 0690, ADR 0691 and ADR 0692.
 
 | Task | How |
 | --- | --- |
@@ -113,6 +115,10 @@ decisions are ADR 0514, ADR 0515, ADR 0516, ADR 0517, ADR 0461, ADR 0463, ADR
 | Reach the console from a phone away from home | **Set up private access…**, then **Add a device…**, on **Security**; see "Private access with WireGuard" |
 | Undo a network or firewall change that cut the console off | Wait for the time the banner shows, or `elevate network undo` or `elevate firewall undo` at the machine |
 | Undo an SSH change, or a change of who may reach the console, that cut you off | Wait for the time the banner shows, or `elevate ssh-server undo` or `elevate admin undo` at the machine |
+| Let an AI client read the server and ask for changes | **AI clients**, then **Add a client…**, or `admin mcp add NAME --scope '*:read'`; see "AI clients" |
+| Approve or refuse a change an AI client asked for | **Approve** and **Refuse** under **Waiting for a yes** on **AI clients**; see "Answering a request" |
+| Find out why an AI client does not connect | `ssh YOU@NAME admin mcp CLIENT --check`; see "When a client does not connect" |
+| Stop an AI client | **Remove** on its row on **AI clients**, or `admin mcp remove NAME`; see "The clients" |
 | See what the machine is, how hot it runs, and check it | **Hardware**, then **Check the hardware**, or `elevate hardware check`; see "Hardware" |
 | Test all the memory at the next restart | **Test at the next restart…** under **Memory test** on **Hardware**, or `elevate hardware memtest --next-start`; see "Testing the memory" |
 | Restart the machine, at a time or in a minute, or shut it down | **Restart…**, **Restart at** and **Shut down…** under **Restart or shut down** on **Hardware**, or `elevate shutdown -r +1`; see "Restart or shut down" |
@@ -4309,6 +4315,244 @@ The cards are one column. A finding is a card with its buttons as wide as the
 page, the blocked addresses and the devices are lists of cards, and the QR code
 fills the width, up to 320 pixels, with **Show the settings as text** under it.
 Buttons are 44 pixels tall at least.
+
+## AI clients
+
+**AI clients**, in the list of pages, is where an administrator lets a program
+that speaks MCP, the Model Context Protocol, look after this server: an AI
+assistant on your own computer, or a service you use. A client reads only the
+areas you choose. It changes nothing by itself: each change it asks for waits on
+this page for an administrator's yes, and then runs as that administrator. The
+page is at `/clients`, and is for administrators; anyone else is told so.
+
+Nothing answers MCP until you add a client. There is no client that comes with
+the system, and none is added for you.
+
+The banner at the top says what to weigh first: **What a client reads is sent to
+the AI service behind it.** Add a client only for a service you trust with this
+server's logs and settings.
+
+The page lists your own clients as `admin mcp list` does. With the console
+unlocked it reads every administrator's with `admin mcp list --all`, and removes
+another administrator's client with `admin mcp remove NAME --of OWNER`
+(admin(8)). The requests and what the clients did are the console's own, in
+admind(8).
+
+### What a client can never do
+
+Four things hold for every client, whatever it was given, and the page lists
+them under **What no client can do**:
+
+- **Change anything without a yes.** An administrator with the console unlocked
+  approves each change, and it runs as that administrator.
+- **See a secret.** Passwords, keys and tokens are never shown to a client, and
+  it cannot ask for one to be made or shown.
+- **Change who gets in.** Accounts, sign-in rules, SSH, the private network and
+  this page can be read by a client, never changed.
+- **Outlast its end date.** A client always ends, a year after it was added at
+  most.
+
+A client also belongs to the administrator who added it. It never does more than
+that account may, and it stops when the account does: when it is removed or
+disabled, or is no longer an administrator's.
+
+### Adding a client
+
+**Add a client…** opens a dialog with four questions.
+
+**Name.** 1 to 32 lowercase letters, digits and hyphens, such as `desk`. The log
+and the journal show it, so name it after the program or the computer it runs
+on.
+
+**How it connects.**
+
+- **Over SSH**, marked **Safest**, is the default. The AI client starts `admin
+  mcp` on this server through your own SSH sign-in. There is no token to keep on
+  the other machine, and no certificate to trust. It needs your SSH key on this
+  server, as any SSH sign-in without a password does (see "Accounts").
+- **Over HTTPS, with a token**, is for an AI client that cannot use SSH. It gets
+  a token, shown once. Keep it as you keep a password.
+
+**What it may reach.** Three starts fill the list of areas: **Read everything**,
+**Read all and ask, everywhere**, and **Choose**. Each area then has a level of
+its own:
+
+| Level | What the client has there |
+| --- | --- |
+| **Off** | Nothing |
+| **Read** | What your account sees before you unlock |
+| **Read all and ask** | That, what only administrators see, such as the whole log, and asking for the area's changes, each of which waits for a yes |
+
+The last level is named for what the area has: **Read all** where there is no
+change to ask for, **Read and ask** where an administrator sees no more than
+you do. As scopes for `admin mcp add`, **Read** is the area's name with `:read`
+after it, such as `logs:read`, and the last level is the name alone.
+
+The areas with a lock, **Accounts**, **Your account**, **Security**, **SSH**,
+**Private network** and **The console's settings**, decide who gets in, so a
+client can read them and never ask to change them.
+
+**Ends.** A client always ends: in 30, 90 or 180 days, or in a year. 90 days is
+the default.
+
+With **Show commands** on, the dialog shows the same thing as a command, which
+asks for your password at a terminal:
+
+```
+admin mcp add desk --scope '*:read' --scope services --days 30
+```
+
+**Add the client** asks you to unlock the console if it is locked. Adding it is
+your approval, and nothing connects until you do. A client cannot be changed
+afterwards: to give it more or less, remove it and add it again, so that what it
+reaches is always what you saw when you added it.
+
+### Connecting the AI client
+
+Once the client is added, the console shows what to put in the AI client's MCP
+settings. For a client that connects over SSH it is the command that your SSH
+sign-in runs:
+
+```json
+{
+  "mcpServers": {
+    "duke-nas": {
+      "command": "ssh",
+      "args": ["alice@duke-nas.local", "admin", "mcp", "desk"]
+    }
+  }
+}
+```
+
+Programs differ in how their settings are written; what every one of them needs
+is the command, `ssh alice@duke-nas.local admin mcp desk`. Under it is a check to
+run from a terminal on that computer first:
+
+```
+$ ssh alice@duke-nas.local admin mcp desk --check
+The AI client desk connects. It reaches:
+AREA      REACH             READS  CHANGES TO ASK FOR
+services  read all and ask  12     30
+logs      read              2      0
+```
+
+If SSH asks for a password there, add your key first, under **SSH keys** on your
+account's page.
+
+For a client that connects over HTTPS the console shows the address, which ends
+in `/mcp`, and the token, in the settings to copy:
+
+```json
+{
+  "mcpServers": {
+    "duke-nas": {
+      "type": "http",
+      "url": "https://duke-nas.local:9090/mcp",
+      "headers": { "Authorization": "Bearer dkc_alice_91be07..." }
+    }
+  }
+}
+```
+
+**The token is shown once.** Copy it before you close the dialog, which asks
+first if you have not said **I have copied the token**. Without it the client
+cannot connect, and you would remove the client and add it again. A server that
+made its own certificate is one the AI client has to be told to trust: the
+dialog shows the certificate's SHA-256 fingerprint, and `cert show this-machine
+--pem` prints the certificate to give it. With SSH there is none of this.
+
+### Answering a request
+
+When a client asks for a change, **AI clients** in the list of pages shows a
+count, and the request is a card under **Waiting for a yes**:
+
+- what it asks for, such as **Restart a service: nginx**, how long it has
+  waited, which client asked and whose it is, and when the request lapses;
+- **The client's reason, in its own words**;
+- **A yes runs this, as you**, with the command;
+- **Changes anything**, which says whether the change would change anything or
+  is already so, and **Files it writes**.
+
+Judge the command, not the reason: the reason is the AI's. A client reads logs
+and names that anyone who reaches the server can write, and may have taken a
+line of them for an instruction, so its reason can be wrong while sounding
+right. The command is what will run, word for word.
+
+**Approve** asks you to unlock the console if it is locked, and runs the command
+once, now, as you. A long change runs as a task (see "Tasks"). **Refuse** runs
+nothing, and a locked console is enough for it. Either way the client is told
+what came of it. A request that nobody answers lapses after an hour, and all of
+them lapse when the console restarts; the client can ask again. A client has at
+most 8 requests waiting and all clients 64
+([ADM-146](../../errors/ADM-146.md)).
+
+The journal's row for an approved change names you, and says which client asked
+for it: **By alice, asked for by the AI client desk** (see "What changed"). The
+task says the same.
+
+### The clients
+
+The table lists each client: its name and owner, how it connects, what it reads,
+what it may ask to change, when it was last used and from which address, and
+when it ends. With the console locked it lists your own; unlocked, every
+administrator's.
+
+**Remove** stops a client at once: its token or its SSH command lets nothing in
+from its next message on, and what it asked for and nobody answered lapses. You
+remove your own; with the console unlocked, any administrator's. At a terminal:
+
+```
+admin mcp list
+admin mcp remove desk
+elevate admin mcp list --all
+elevate admin mcp remove desk --of alice
+```
+
+A client that has ended stays in the list for 30 days, marked as ended, and is
+then forgotten. To go on using it, remove it and add it again.
+
+### What they did
+
+**What they did** lists, newest first, each change a client asked for with what
+became of it, **Waiting for a yes**, **Approved by alice · done**, **Refused by
+alice** or **Lapsed**, and each client's reads, joined into one line: **desk read
+14 things**, with the areas. **Open the journal** shows the changes themselves,
+with their commands and files.
+
+Every call a client makes is also one line in the log, with its name, such as
+**AI client desk of alice read service.list** or **AI client desk of alice asked
+for service.restart (request 7)**. This shows them:
+
+```
+elevate log -s admind --grep "AI client"
+```
+
+The audit log, `elevate log --audit`, has each client that was let in or
+removed, each wrong token, each read a client made as an administrator, and each
+request with the administrator who approved or refused it.
+
+### When a client does not connect
+
+1. Run the check from the computer the AI client runs on: `ssh YOU@NAME admin mcp
+   CLIENT --check`. It says what the client reaches, or why it is not let in.
+2. **That AI client was not let in** ([ADM-143](../../errors/ADM-143.md)): the
+   client has ended or was removed, its token is not the one this server gave,
+   or its owner may no longer use the console. Look at its row on the page.
+3. **This AI client may not do that** ([ADM-144](../../errors/ADM-144.md)): it
+   asked for an area or a level it was not given, or for something no client is
+   offered. Remove it and add it again with what it needs.
+4. Over HTTPS, a client that says the certificate is not trusted needs this
+   server's certificate; see "Connecting the AI client". One that gets no answer
+   at all may be outside the addresses the console answers; see "Who may reach
+   the console".
+5. A client that is told to wait ([ADM-105](../../errors/ADM-105.md)) made more
+   than 120 calls in a minute, or has 4 running at once.
+
+### On a phone
+
+The requests are cards as wide as the page, with **Approve** and **Refuse** as
+wide as the card, one above the other, so a change can be answered from a phone.
+The table of clients scrolls sideways, and the dialog's areas are one column.
 
 ## Hardware
 

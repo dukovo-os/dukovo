@@ -5,7 +5,7 @@ admin(8) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-admin - the web console from a terminal: its address, its actions and its API tokens
+admin - the web console from a terminal: its address, its actions, its API tokens and its AI clients
 
 # SYNOPSIS
 
@@ -37,6 +37,14 @@ admin - the web console from a terminal: its address, its actions and its API to
 
 *admin token remove* _name_
 
+*admin mcp add* _name_ [*--https*] *--scope* _scope_... [*--days* _n_]
+
+*admin mcp list* [*--all*] [*--json*]
+
+*admin mcp remove* _name_ [*--of* _owner_]
+
+*admin mcp* _name_ [*--check*]
+
 *admin put-back* _id_
 
 *admin export* _dir_
@@ -50,8 +58,9 @@ the machine and what is kept for the next sign-in, lists what the console's
 API does, shows
 what an action runs in the forms a person copies, says or sets whom the
 console answers, makes, lists and removes the API tokens of the person who
-types it, keeps the machine's settings in a Git repository of that
-person's, and, as root, puts a change back.
+types it, lets that person's AI clients in over MCP and carries the
+messages of one that connects over SSH, keeps the machine's settings in a
+Git repository of that person's, and, as root, puts a change back.
 
 An _action_ is one read or change that the console and its API offer, such
 as *service.restart*. Each has an _id_ of its area and a verb. The
@@ -64,7 +73,10 @@ and *reach* and *certificate* with no word need no rights. *reach* and
 the files they change are:
 *elevate*(8) them. *token* is the
 person's own, asked of *authd*(8) as that person, so it can never make or
-remove another's.
+remove another's. *mcp* is the person's own in the same way, and
+*authd*(8) lets only an administrator add a client; *mcp list --all* and
+*mcp remove --of*, which are about every account's clients, are an
+administrator's inside *elevate*(8).
 
 # COMMANDS
 
@@ -431,6 +443,105 @@ remove another's.
 	Removes the token _name_ at once. A script that still brings it is
 	refused with ADM-115.
 
+*mcp add* _name_ [*--https*] *--scope* _scope_... [*--days* _n_]
+	Lets in an AI client named _name_ for the administrator who types
+	it (ADR 0690): a program that speaks MCP, the Model Context
+	Protocol, and so can use the console's actions. It asks for the
+	person's password as *token add* does, and *authd*(8) refuses a
+	person who is not an administrator.
+
+	The client reads within its scopes and changes nothing by itself.
+	What it asks to change waits on the console's AI clients page for an
+	administrator's yes, and then runs as that administrator
+	(*dukovo-admin*(7)).
+
+	Without *--https* the client connects over SSH and has no secret to
+	keep: its MCP settings run *ssh* _owner_@_host_ *admin mcp* _name_,
+	which *mcp add* prints, and what lets it in is its owner's own SSH
+	sign-in. Such a client is as trusted as its owner's account on this
+	machine, since any program that runs as the owner here can connect
+	as it. With *--https* it is given a token of the form
+	dkc_OWNER_SECRET, printed once on the standard output, which it
+	sends to the console's _/mcp_ as *Authorization: Bearer* and the
+	token; *authd*(8) keeps only the token's SHA-256.
+
+	A _scope_ is the name of an area with *:read* after it, for the
+	reads its owner has in the console before unlocking it; the name
+	alone, for every read of the area and for asking for its changes; or
+	*\** in place of the name, for every area. *--scope* may be given
+	again, or take several scopes joined by commas, 32 at most. A scope
+	that names no area is a mistake in the command line, which lists the
+	areas, and the scopes are checked before the password is asked.
+
+	Six areas decide who gets in to the machine: *account*, *accounts*,
+	*console*, *private*, *security* and *ssh*. A client reads them and
+	is never offered their changes, whatever its scopes. No client is
+	offered an action that takes or shows a password, a key or a token,
+	or one that takes a document.
+
+	_name_ is 1 to 32 of *a* to *z*, *0* to *9* and *-*, and not *add*,
+	*list*, *remove* or *help*. The client lasts _n_ days, 1 to 366, 90
+	unless *--days* says. An account has 16 clients at most.
+
+*mcp list* [*--all*] [*--json*]
+	Lists the person's AI clients: each one's name, how it connects,
+	what it reaches, the last day it works, with *(ended)* for one whose
+	day has passed, which *authd*(8) forgets 30 days later, and when it
+	was last used and from which address. A client that connects over
+	SSH is used from the address its owner's SSH session says it came
+	from. authd notes a use at most once an hour.
+
+	With *--all* it lists every account's, each with its owner. That is
+	an administrator's inside *elevate*(8), and is the command of the
+	console's *console.clients* action. With *--json* it prints one JSON
+	object with *clients*, a list of objects with *owner*, *name*, *way*
+	(*ssh* or *https*), *scopes* (a list of text), *until*, *made* and
+	*used* (seconds since 1970; *used* is 0 for a client never used),
+	*from* and *ended* (true or false). It never prints a secret, which
+	nothing keeps.
+
+*mcp remove* _name_ [*--of* _owner_]
+	Removes the person's AI client _name_ at once: its next message is
+	refused with ADM-143, and what it had asked for and nobody has
+	answered lapses, so that none of it runs. With *--of* it removes the
+	client _name_ of the account
+	_owner_, which is an administrator's inside *elevate*(8) and the
+	command of the console's *console.client-remove* action.
+
+*mcp* _name_ [*--check*]
+	Connects the person's AI client _name_ to the console, and is what
+	the client's MCP settings run over SSH. It asks *authd*(8) for a
+	pass for the client, which authd gives to the client's owner alone
+	and which lasts 12 hours, gives the pass to the console's socket,
+	_/system/live/admind/mcp_, and then carries the client's messages
+	from its standard input to the console and the console's answers to
+	its standard output, one JSON-RPC message a line, until its input
+	ends. It prints nothing else on its standard output. A client that
+	cannot connect ends at once, with the reason on the standard error,
+	which the client's own settings show.
+
+	When *admind*(8) restarts, or the pass is taken no longer, each
+	request that was on its way is answered with JSON-RPC's error
+	code -32603, in words that say to ask again, and the next message
+	connects again with a new pass. Nothing is sent a second time: a
+	request for a change that waits for an administrator stands in the
+	console, and the client's *request* tool finds it. A pass that ends
+	within a minute is replaced before the next message.
+
+	With *--check* it connects the same way, asks the console what the
+	client reaches, prints it and leaves: each area with how far the
+	client reaches in it (*read*, *read all* or *read all and ask*), how
+	many reads it has there and how many changes it may ask for. It is
+	the first thing to run when a client does not connect:
+
+	```
+	$ admin mcp desk --check
+	The AI client desk connects. It reaches:
+	AREA      REACH             READS  CHANGES TO ASK FOR
+	services  read all and ask  12     30
+	logs      read              2      0
+	```
+
 *put-back* _id_
 	Writes back the earlier text of each file that change _id_ of the
 	console's journal, "What changed", changed (ADR 0516). Only root runs
@@ -556,6 +667,14 @@ _/system/state/authd/console/_*name*.toml
 	The account's second steps and tokens, as hashes, which only root
 	reads. *admin token* reaches them only through *authd*(8).
 
+_/system/state/authd/clients/_*name*.toml
+	The account's AI clients, with the SHA-256 of each token, which only
+	root reads. *admin mcp* reaches them only through *authd*(8).
+
+_/system/live/admind/mcp_
+	The console's socket for the AI clients that connect over SSH, which
+	*admin mcp* _name_ connects to (*admind*(8)).
+
 _/system/state/admind/store.db_
 	The console's store, mode 0600, which holds the journal and the
 	earlier versions of the settings files. *admin put-back* opens it
@@ -569,7 +688,8 @@ console not running for *fingerprint*, for *reach*, *certificate* and
 *sign-in* a change that was not made by root, a settings file that is not
 right, a trial that runs (ADM-138) and a Spark that did not take the
 reload or the trial, for *certificate* a certificate certd does not keep
-or one *admind* did not serve in time, for
+or one *admind* did not serve in time, for *mcp* a client that authd or
+the console does not let in (ADM-143) and a console that does not run, for
 *keep* and *undo* no trial (NET-179), a change that cannot be put back or a
 store that cannot be opened for *put-back*, and a folder that *export* will
 not write in or a *git* that does not run.
@@ -636,6 +756,46 @@ Remove the token when the script no longer runs:
 ```
 $ admin token remove monitor
 The API token monitor is removed.
+```
+
+Let an AI client on your own computer read everything and ask for changes
+to the services, for a month, over SSH:
+
+```
+$ admin mcp add desk --scope '*:read' --scope services --days 30
+Password:
+The AI client desk is let in. In its MCP settings, the command to run is:
+  ssh alice@duke-nas admin mcp desk
+It changes nothing by itself: what it asks to change waits for an administrator's yes in the console.
+```
+
+On that computer, the AI client's MCP settings then name the server as a
+command and its arguments, in the form that client takes, such as:
+
+```
+{"mcpServers": {"duke-nas": {"command": "ssh",
+  "args": ["alice@duke-nas", "admin", "mcp", "desk"]}}}
+```
+
+Let in one that cannot use SSH, over HTTPS, to read the logs alone, and
+list every account's clients:
+
+```
+$ admin mcp add watch --https --scope logs:read
+Password:
+dkc_alice_91be07...
+This token is not shown again: keep it now. The AI client sends it to the console's /mcp, as `Authorization: Bearer TOKEN`; `admin fingerprint` says where the console is.
+$ elevate admin mcp list --all
+OWNER  NAME   CONNECTS    REACHES           ENDS        LAST USED
+alice  desk   over SSH    *:read, services  2026-12-24  2026-11-24 09:40 from 192.168.1.25
+alice  watch  over HTTPS  logs:read         2027-02-22  never
+```
+
+Remove a client that is no longer used:
+
+```
+$ admin mcp remove watch
+The AI client watch is removed.
 ```
 
 # SEE ALSO

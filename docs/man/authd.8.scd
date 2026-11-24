@@ -409,11 +409,13 @@ closes the connection, but for a session (below):
 *console* _verb_ _field_...
 	A request of the web console (ADR 0514): *begin*, *trusted*, *code*,
 	*challenge*, *passkey*, *start*, *unlock*, *extend*, *lock*, *end*,
-	*elevate*, *token*, *token-start*, *terminal*, *follow* and
+	*elevate*, *token*, *token-start*, *client*, *client-start*,
+	*client-read*, *client-of*, *terminal*, *follow* and
 	*follow-end*, which only *admind*(8) asks, as root, and *steps*,
 	*app-begin*, *app-confirm*, *app-remove*,
 	*passkey-begin*, *passkey-add*, *passkey-remove*, *passkey-rename*,
-	*codes*, *trusted-forget*, *token-add* and *token-remove*, which a
+	*codes*, *trusted-forget*, *token-add*, *token-remove*, *clients*,
+	*client-add*, *client-remove* and *client-pass*, which a
 	person asks about their own account, from a process that runs as
 	them. Binary fields, such as a ticket or a signature, are in
 	hexadecimal. WEB CONSOLE says what each does.
@@ -925,6 +927,38 @@ answered for the user the connection gives.
 	once, and *token-start* only when an action runs as the token's
 	owner. The answer to *token* is *ok* _owner_ _name_ _scopes_ _until_.
 
+*client* _credential_ _address_, *client-start* _credential_, *client-of* _owner_ _name_
+	Check what an AI client shows (ADR 0690): a token, of the form
+	dkc_OWNER_SECRET, for a client that connects over HTTPS, or a pass,
+	dkp_OWNER_SECRET, for one that connects over SSH, with SECRET 64
+	hexadecimal digits. The answer is *ok* _owner_ _name_ _way_ _scopes_
+	_until_. The client must not have ended, and its owner must be an
+	administrator who may sign in to the console. admind asks *client*
+	for each message a client sends, so that a client that is removed
+	or ends stops at once. A wrong token waits as a wrong password does,
+	and counts towards blocking its address; a wrong pass does neither,
+	since it comes from this machine, where a count would let any
+	program hold a client's owner back. *client-start* starts a worker
+	for the client's owner, as *token-start* does. *client-of* answers
+	as *client* does for the client _name_ of _owner_, with nothing
+	shown, which admind asks before it shows or runs what a client
+	asked to change. Neither a token nor a pass runs a command:
+	*elevate* refuses both, before it looks anything up, in words that
+	start with *ADM-144:*.
+
+*client-read* _credential_ _action_ _arguments_
+	Runs one of the console's reads as an administrator for an AI
+	client, with the four descriptors that come with the request, and
+	answers as *elevate* does. authd takes no command for a client. It
+	starts _/system/commands/admind_ *--read* itself, with the areas
+	the client was given whole, not their reading alone, the _action_
+	and its _arguments_, and that program runs the action's command
+	only when it is a read that a client is offered, in one of those
+	areas (ADR 0691, *admind*(8)). _action_ is at most 64 letters,
+	digits, *.* and *-*, and _arguments_ at most 16 KiB of JSON. A
+	client that was given no area whole is refused, in words that start
+	with *ADM-144:*. Each read is an audit line.
+
 *terminal* _session_ *own*|*admin* _term_ [_language_...]
 	Starts the shell of a pane of the console's Terminal (ADR 0517) on
 	the terminal that comes with the request as its one descriptor,
@@ -987,6 +1021,28 @@ answered for the user the connection gives.
 	browsers. *token-remove-of* removes the token named _token_, or is
 	refused with *ACC-104*. Each change is an audit line.
 
+*clients*, *client-add* _proof_ _name_ _way_ _scopes_ _days_, *client-remove* _name_, *client-pass* _name_ _address_
+	The person's own AI clients (below). *clients* lists them as JSON,
+	with none of their secrets. *client-add* lets one in and takes the
+	person's password as _proof_, or nothing, from the worker of their
+	own console session while it is unlocked; _way_ is *ssh* or *https*.
+	The answer has the token of a client that connects over HTTPS, this
+	once, and nothing for one that connects over SSH. *client-remove*
+	removes one, and forgets its passes. *client-pass* answers *ok*
+	_pass_ _until_, a pass for the person's client _name_, which must
+	connect over SSH and not have ended; _address_ is where the asker's
+	SSH session says it came from, or empty, and is kept as where the
+	client was last used from. It is the asker's word, and proves
+	nothing. *client-add* and *client-pass* are refused for an account
+	that is not an administrator's, or that may not sign in to the
+	console.
+
+*clients-all*, *client-remove-of* _owner_ _name_
+	Every account's AI clients, as *clients* lists them, and the
+	removal of another account's; only root may, which is an
+	administrator inside *elevate*(8) (*admin mcp list --all* and
+	*admin mcp remove --of*, *admin*(8)).
+
 *end-session* _name_ _session_ *hang-up*|*kill*
 	Sends SIGHUP, or SIGKILL, to each process of the session at the
 	machine that process _session_ leads and that acts for the account
@@ -1020,13 +1076,38 @@ account for a second step, its last one is not removed. A token is made
 with a name of 1 to 32 letters, digits and *-*, scopes, and 1 to 366 days,
 and the answer shows it once.
 
+Each account's AI clients are kept in a file of their own,
+_/system/state/authd/clients/_*name*.toml, in a folder of mode 0700,
+apart from the second steps so that an authd from before them still
+reads those. It holds each client's name, how it connects, the SHA-256
+of its token when it connects over HTTPS, its scopes, when it ends, when
+it was made, and when and from where it was last used, which authd
+notes at most once an hour. An account has 16 clients, each with a name
+of 1 to 32 of *a* to *z*, *0* to *9* and *-* that is not *add*, *list*,
+*remove* or *help*, at most 32 scopes, and 1 to 366 days. A client is
+never changed: one that should reach more or less is removed and added
+again, so that what it reaches is what its owner saw when adding it. One
+that has ended is forgotten 30 days later. Removing the account removes
+the file. Renaming it moves the file and ends the clients that connect
+over HTTPS, whose tokens name the account.
+
+A pass is in memory only. It lasts 12 hours, or until its client ends
+when that is sooner, and authd gives one to the client's owner alone,
+which it reads from the socket. A client has 8 passes that work at
+once, a ninth ending the oldest, and authd keeps 256. So a client that
+connects over SSH is as trusted as its owner's account on this machine:
+any program that runs as the owner here can ask for its pass, which is
+why a client is added with the owner's password.
+
 A session, a sign-in under way, a challenge and an app being added are
 in memory only: authd starting again ends them, and the workers, its
 children, end with it. The sign-in rules are in
 _/system/settings/admin.toml_, which authd reads at each request that
 needs them. Each sign-in with how it was proved, each refusal, each wrong
-proof, each unlock, end and command, and each change to a second step or
-a token is in the audit log; no secret is.
+proof, each unlock, end and command, each change to a second step or
+a token, and each AI client let in or removed, each pass given, each wrong
+token of a client's and each read run for one as an administrator is in
+the audit log; no secret is.
 
 # ELEVATE
 
@@ -1210,6 +1291,9 @@ _/system/state/authd/keyrings/_*number*
 _/system/state/authd/console/_*name*.toml
 	Each account's second steps for the web console, and its API
 	tokens (see WEB CONSOLE).
+
+_/system/state/authd/clients/_*name*.toml
+	Each account's AI clients for the web console (see WEB CONSOLE).
 
 _/system/settings/admin.toml_
 	The web console's sign-in rules, which authd reads (*admin.toml*(5)).

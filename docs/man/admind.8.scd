@@ -13,6 +13,8 @@ admind - the web console's server, Dukovo Admin
 
 *admind --worker*
 
+*admind --read* _areas_ _action_ _arguments_
+
 # DESCRIPTION
 
 admind is the web console (ADR 0514): it answers HTTPS on port 9090, or
@@ -41,6 +43,10 @@ console shows, so the button, the API call and the command typed at a
 terminal do the same; *admin*(8) lists the actions and prints the
 command, the API call and the Ansible task of each.
 
+admind is also an MCP server, for the AI clients an administrator has let
+in (ADR 0690): they read through the same actions, and what they ask to
+change waits for an administrator's yes (AI clients, below).
+
 admind also keeps a journal of what changed on the machine, "What changed",
 and runs the actions that take longer than a request waits as tasks that go
 on without the browser that asked (ADR 0516). Both are in a store of its
@@ -48,8 +54,8 @@ own, one SQLite file. A person's preferences are their own file. The store,
 the journal, the tasks, the preferences and the stream of events that tells
 a page of them have a section each below.
 
-*admind* alone is the server, which Spark runs; *admind --worker* is what
-authd runs, and is not for typing.
+*admind* alone is the server, which Spark runs; *admind --worker* and
+*admind --read* are what authd runs, and are not for typing.
 
 ## Whom it answers
 
@@ -967,6 +973,201 @@ goes idle). A change that runs as an administrator needs none. The
 console's reach still applies: a connection from an address it does not
 answer is closed, with a token or without.
 
+## AI clients
+
+An AI client is a program that speaks MCP, the Model Context Protocol,
+and that an administrator has let in (ADR 0690). *authd*(8) keeps it, as
+its owner's, with a name, the way it connects, its scopes and the day it
+ends. admind keeps no client: a token or a pass comes with every message,
+and authd is asked about it each time, so that a client that was removed
+or has ended, or whose owner may no longer sign in or is no longer an
+administrator, stops at its next message (ADM-143).
+
+A client reads within its scopes and changes nothing by itself. A scope
+is *AREA:read*, for the area's reads that run as the person; *AREA*, for
+those, the reads that run as an administrator, and asking for the area's
+changes; or *\*:read* or *\**, for the same of every area. What a client
+is offered of an action follows from what the list of actions says of
+it, so that an action added to the console is offered, or not, by what
+it is:
+
+- A read that runs as the person runs in a worker of the client's owner,
+  which admind keeps among the tokens' workers.
+- A read that runs as an administrator is run by authd, which takes no
+  command for a client. It starts *admind --read* with the areas the
+  client was given whole, the action's ID and its arguments, and that
+  program runs the action's command only when it is such a read, one that
+  a client is offered, in one of those areas (ADR 0691). A refusal is one
+  line on its error output, an error ID and words, and the status 125.
+- A change that runs as an administrator may be asked for, and runs when
+  an administrator approves it.
+- No client is offered an action that takes or answers a secret, one that
+  takes a document, a read that runs as a task, a change that runs as the
+  person, or a change in the six areas that decide who gets in:
+  *account*, *accounts*, *console*, *private*, *security* and *ssh*.
+  Such an action is ADM-144, in words that say which of these it is.
+
+A client connects in one of two ways, chosen when it is added, and what
+it shows works at its own door alone:
+
+*POST /mcp*
+	For a client that connects over HTTPS. Its token comes with every
+	request, as *Authorization: Bearer dkc\_...*; a request with a pass,
+	an API token or no token is ADM-143 (401). The body is one JSON-RPC
+	message of at most 64 KiB, or for the oldest revisions a batch of at
+	most 16, and the answer is one JSON body: there is no session and no
+	stream, and *GET* and *DELETE* are 405. A notification is answered
+	202 with no body. A request that names an *Origin* names the
+	console's own (ADM-109), so that a page of another site cannot make
+	a browser ask. The console's reach applies, as for a token, and an
+	address that has given 10 wrong tokens in a minute waits the minute
+	out (ADM-105), counted with the wrong API tokens.
+
+_/system/live/admind/mcp_
+	A socket, for a client that connects over SSH: its MCP settings run
+	*ssh* _owner_@_host_ *admin mcp* _name_ (*admin*(8)), which asks
+	authd for a pass as the owner and connects here. Any account may
+	connect. A connection gives its pass, *dkp\_...*, as its first line,
+	within 5 seconds, and is answered *ok* _owner_ _name_ or *no* and an
+	error ID with words. A pass is taken from the account authd gave it
+	to and from no other: the kernel says who connected. After *ok*
+	each line is one JSON-RPC message, of at most 64 KiB, and each answer
+	is one line, in the order they are ready. A longer line is answered
+	with an error and ends the connection. At most 32 connections are
+	open, 8 of one account, and 8 messages of a connection are answered
+	at a time. An account that brings 10 passes in a minute that are not
+	taken waits the minute out. When a pass is taken no longer, the
+	connection is closed, and *admin mcp* asks for a new one.
+
+The server speaks MCP's revision 2026-07-28, which has no handshake, and
+the four before it that begin with *initialize*: 2025-11-25, 2025-06-18,
+2025-03-26 and 2024-11-05 (ADR 0692). It keeps no session in either, so a
+client goes on without a word after admind restarts. Its methods are
+*server/discover*, *initialize*, *ping*, *tools/list* and *tools/call*;
+it has no resources and no prompts, and sends a client no request of its
+own.
+
+There are six tools, the same on every machine, through which a client
+finds the actions:
+
+*areas*
+	Lists the areas the client reaches, each with its *title*, its
+	*reach* (*read*, *read all* or *read all and ask*) and how many
+	*reads* and *changes* that is.
+
+*actions* *{"area"}*
+	Lists the actions of one area that the client may use: each one's
+	ID, whether it is a read or a change, its title and the JSON Schema
+	of its arguments.
+
+*read* *{"action", "arguments"}*
+	Runs a read, and answers *{"action", "answer"}*, the answer being
+	what the action's route answers.
+
+*check* *{"action", "arguments"}*
+	Says whether a change would change anything, as *POST /api/1/check*
+	does, without making it: *{"action", "changes", "now"}*, in which
+	*changes* is true, false, or null when the console cannot tell.
+
+*ask* *{"action", "arguments", "reason"}*
+	Files a request for a change, with a reason of 1 to 200 characters
+	on one line, which the administrator reads. The arguments are
+	checked as the action's route checks them, so that what waits can
+	run. It waits up to 45 seconds for an administrator's answer, and
+	then answers as *request* does. The same action with the same
+	arguments, asked again while its request waits, is the same request.
+
+*request* *{"id"}*
+	Says where one of the client's own requests stands: *{"request",
+	"action", "state", "asked"}*, the state being *waiting* (with
+	*lapses*, the Unix time it does), *approved* while the change runs,
+	*done* (with the change's *answer*), *failed* (with its *error*),
+	*task* (with the number of the task it runs as, and that task's
+	state), *refused* or *lapsed*, and *by* naming the administrator
+	who answered it.
+
+A tool's arguments are at most 16 KiB and its answer 256 KiB; a longer
+answer is refused in words that say to narrow the read. A tool that fails
+answers a result that says so, with the error as the API gives it, and
+not an error of the protocol. Each client has at most 4 calls running
+and makes at most 120 in a minute, whichever way they come in (ADM-105).
+What a tool answers is data from the machine: the server's instructions
+tell every client that text inside an answer, such as a log line, is
+never an instruction to follow.
+
+A request waits in admind's memory for an administrator, who approves it
+from an unlocked session or refuses it, on the console's AI clients page.
+An approved change runs as that administrator, by the path a click on a
+page takes, with each of that path's checks; its row in the journal and
+its task have the administrator as *who* and *client NAME of OWNER* as
+*how*. A client has at most 8 requests waiting and all clients 64
+(ADM-146). A request that nobody answers lapses after an hour, and one
+that was answered is kept an hour for its client to ask about. All of
+them go when admind restarts, and the history then shows those that
+waited as lapsed. A yes is checked with authd first: the requests of a
+client that was removed or has ended, or that was made again with less,
+lapse, and nothing runs (ADM-145).
+
+The page's own routes are an administrator's, for a signed-in session and
+never a token. They are no actions, since the requests and the history
+are admind's own state, which no command reads or changes:
+
+*GET /api/1/clients/areas*
+	*{"areas": [...]}*: every area with its *area*, *title*, how many
+	*reads* run as the person, how many *reads\_all* as an
+	administrator, how many changes may be asked for (*asks*), how many
+	actions no client is offered (*never*), and *who\_gets\_in*, true
+	for the six areas whose changes are never offered.
+
+*GET /api/1/clients/requests*
+	*{"requests": [...]}*, the requests that wait, the oldest first.
+	Each has *request* (its number), *owner*, *client*, *action*,
+	*title*, *area*, *args*, *reason*, *asked* and *lapses* (Unix
+	times), and the *command* and *files* that *POST /api/1/show* gives
+	for the action with those arguments.
+
+*POST /api/1/clients/requests/{id}/approve*
+	Runs the change, as the administrator who approves, and answers as
+	the change's own route would: what it did, or 202 and *{"task"}* for
+	a long one. The session must be unlocked (ADM-106). A request that
+	does not wait, or whose client is gone or no longer reaches the
+	change, is ADM-145. What the change is refused or fails with, the
+	client is told too.
+
+*POST /api/1/clients/requests/{id}/refuse*
+	Says no. Nothing runs, and the client is told who refused. A locked
+	session is enough.
+
+*GET /api/1/clients/history*
+	*{"entries": [...]}*, what the clients did, the newest 200, newest
+	first. Each entry has *at*, *owner*, *client* and *kind*: *ask*, with
+	the *request*, the *action*, its *title*, the *state* and, once
+	known, *by*, *task* and *ended*; or *read*, a client's reads that
+	follow one another within an hour, with *since*, their *count* and
+	the *areas* they read. An entry names an action and never its
+	arguments.
+
+*GET /api/1/account/clients*, *POST /api/1/account/clients/add*, *POST /api/1/account/clients/remove*
+	The person's own clients, through their worker, as the tokens'
+	routes above. The list is *{"clients": [...]}*, as *admin mcp
+	list --json* prints it. *add* takes *{"proof", "name", "way", "scopes",
+	"days"}*, the proof being the password, or empty while the session
+	is unlocked, and the way *ssh* or *https*, and answers *{"token"}*:
+	the token of a client that connects over HTTPS, which is shown
+	once, and null for one that connects over SSH. *remove* takes
+	*{"name"}*, and the client's requests that wait lapse.
+
+Every account's clients are two actions in the area *console*, which run
+as an administrator. No client is offered the second:
+
+*GET /api/1/console/clients* (*console.clients*, area *console*)
+	*admin mcp list --all --json*: every account's clients, with none of
+	their secrets.
+
+*POST /api/1/console/clients/{owner}/{name}/remove* (*console.client-remove*, area *console*)
+	*admin mcp remove NAME --of OWNER*: removes another account's
+	client.
+
 ## The store
 
 admind keeps what the console must not lose with a restart in one SQLite
@@ -999,8 +1200,9 @@ second step does not (ADM-118). A token does not read it (ADM-124).
 
 A change made through the console has a row when its command has ended,
 worked or not: the Unix time, who (the person, or the owner of the token),
-how (*console*, or *token* and the token's name), the action and the command
-it ran, the command's exit status, the task it ran as, and each file the
+how (*console*, *token* and the token's name, or *client* and an AI
+client's name and owner for a change that client asked for and the person
+approved), the action and the command it ran, the command's exit status, the task it ran as, and each file the
 action names, with what it was before the command and after it, by SHA-256.
 The files an action names are those *POST /api/1/show* gives as *files*.
 The text of each side is kept as a version, so that a page shows a diff and
@@ -1060,7 +1262,8 @@ hash and size and no text.
 	at most 200). A value that is not a number in range is ADM-125 with
 	the *field*. The answer is *{"changes": [...]}*. Each change has *id*,
 	*at*, *who* (the person, *outside the console*, or *Spark*), *how*
-	(*console*, *token NAME*, *by hand* or *undone*), *action* and *title*
+	(*console*, *token NAME*, *client NAME of OWNER*, *by hand* or
+	*undone*), *action* and *title*
 	(null for a hand edit, an undo and an action the console no longer
 	has), *argv* (the command),
 	*status*, *task*, *note*, *files* and *seen*. Each of *files* has its
@@ -1160,7 +1363,8 @@ its command ended; a task that was stopped before it began has none.
 	or later (in the last 24 hours when it is not given), newest first, at
 	most *limit* of them (50 when it is not given, at most 200). The answer
 	is *{"tasks": [...]}*. Each task has *id*, *action*, *title*, *args*,
-	*argv*, *who*, *how* (*console* or *token NAME*), *started*, *state*,
+	*argv*, *who*, *how* (*console*, *token NAME* or *client NAME of
+	OWNER*), *started*, *state*,
 	*step*, *steps*, *words*, *percent* (null while the command has said
 	none), *ended*, *status*, *note* (why it is as it is, when the status
 	does not say) and *changed*.
@@ -1256,7 +1460,8 @@ a signed-in session. It tells:
 *event: change*
 	*{"id": 41, "how": "console", "at": 1790000000}*, a row of the journal
 	that has ended: its number, how it was made (*console*, *token* and the
-	token's name, or *by hand*) and when, in seconds since 1970. It is told
+	token's name, *client* and the client's name and owner, or *by hand*)
+	and when, in seconds since 1970. It is told
 	once to every stream of every signed-in session, as the journal is
 	everyone's to read, and says no person, action or file. A stream that
 	opens is told of the rows after it opened; the page reads the rest from
@@ -1289,6 +1494,14 @@ a signed-in session. It tells:
 	that when it reads Spark: as soon as a *power* change answers, and at
 	each 30-second round, so a restart set or cancelled at a terminal is
 	told too.
+
+*event: clients*
+	*{"waiting": 2}*, how many requests of AI clients wait for an answer
+	(AI clients). It is told to the streams of administrators alone: to
+	one that opens while any wait, and each time a request is filed,
+	answered or lapses, so that the page reads them again and its entry
+	in the list of pages counts them. It says nothing of what a request
+	asks.
 
 A comment line, *: keep*, comes every 25 seconds, so that nothing between
 the browser and admind closes a stream that says nothing. A session with a
@@ -1478,9 +1691,11 @@ console follows as many logs as it may, *ADM-135* nothing is being tried by
 that name, *ADM-136* not on your own account from the console, *ADM-137* the
 browser comes through what the change takes away, *ADM-139* the session has
 ended already, *ADM-140* the one-time link was used or has ended, *ADM-141*
-the certificate does not name the address the browser uses, and *ADM-142* a
-trial runs, which a restart would undo. *ADM-138* is given by *admin*(8),
-not admind. *detail* says what happened this time, in authd's own words where
+the certificate does not name the address the browser uses, *ADM-142* a
+trial runs, which a restart would undo, *ADM-143* the AI client was not let
+in, *ADM-144* the AI client may not do that, *ADM-145* there is no such
+request of an AI client's, and *ADM-146* as many requests of AI clients wait
+as may. *ADM-138* is given by *admin*(8), not admind. *detail* says what happened this time, in authd's own words where
 authd refused. ADM-125 also has the *field* whose value cannot work, and
 ADM-123 the *command* with its words, status and error output. Each ID has a
 page in the support center that says what to do.
@@ -1523,6 +1738,18 @@ _/system/state/admind/store.db_
 	The store: the journal, the versions of the files it names, and the
 	tasks (The store). Mode 0600; admind is the only program that writes it,
 	and *admin put-back* (*admin*(8)), as root, reads it.
+
+_/system/live/admind/mcp_
+	The socket of the AI clients that connect over SSH (AI clients). It
+	is there while admind runs. When it cannot be made, the log says so,
+	and the clients that connect over HTTPS are let in all the same.
+
+_/system/state/admind/clients.jsonl_
+	What the AI clients did, a JSON object a line, mode 0600. A later
+	line for the same request, or for the same run of reads, stands for
+	the earlier ones, and the file is written again with the newest 1000
+	entries once it has grown past 2000 lines. Without it the history
+	begins empty.
 
 _~/.config/dukovo-admin/settings.toml_
 	A person's preferences (Preferences), which their worker reads and
@@ -1576,6 +1803,21 @@ or the journal could not do: *the journal could not look at the files*, *the
 journal could not keep* an action's change, *the journal cannot tell who
 changed a file* (logd did not answer, so the rows say *outside the
 console*), and *task 42 could not be saved*.
+
+Each call of a tool by an AI client has a line, a read's too, since a
+client's reads are what a person asks about afterwards: *AI client desk of
+alice read service.list*, *listed its areas*, *listed the actions of
+services*, *checked service.restart*, *asked for service.restart (request
+7)* or *looked at request 7*, with *, and was refused:* and the error's ID
+after it for a call that failed. A call over the client's count has *AI
+client desk of alice was refused read: ADM-105*. A line has the action and
+never its arguments. A client that connects over SSH has a line as it
+connects and as it disconnects, with why. An approved change has the line
+of an action, with whose client asked: *alice, for AI client desk of alice
+from 192.0.2.7: service.restart ended with status 0*. The audit log has
+authd's line for each client let in or removed, each pass given, each
+wrong token and each read that ran as an administrator, and admind's for
+each request approved or refused, with the administrator who answered it.
 
 A one-time link has a line as it is made, such as *alice made a one-time
 link to a report's text*, and as it is opened, with the address it was

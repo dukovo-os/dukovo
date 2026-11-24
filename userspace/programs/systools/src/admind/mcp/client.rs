@@ -10,9 +10,10 @@
 //! each time ([`check`]), so a client that is removed, ends or whose
 //! owner may no longer sign in stops at its next message. A wrong token
 //! from an address is counted with the wrong API tokens, and the
-//! address waits after 10 in a minute. A wrong pass is not counted: it
-//! comes from this machine, where a count would let any program hold a
-//! client's owner back.
+//! address waits after 10 in a minute. A wrong pass has no address to
+//! count it by, as it comes from this machine: the socket counts it
+//! against the account that brought it ([`local`](super::local)), so
+//! that no program holds back another account's clients.
 //!
 //! A client's reads that run as its owner run in a worker of the
 //! owner's, which authd starts for the credential and admind keeps
