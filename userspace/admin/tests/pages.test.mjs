@@ -55,7 +55,7 @@ test('the paths are one to a page, the root is the Overview\'s and the navigatio
     Object.fromEntries(PAGES.filter((entry) => entry.nav).map((entry) => [entry.id, entry.nav.order])),
     {
       overview: 10, logs: 20, reliability: 30, storage: 40, snapshots: 50, networking: 60, firewall: 70, accounts: 80,
-      services: 90, apps: 100, certificates: 110, security: 120, hardware: 130, updates: 140, terminal: 150, report: 1000,
+      services: 90, apps: 100, certificates: 110, security: 120, clients: 130, hardware: 140, updates: 150, terminal: 160, report: 1000,
     },
     'the orders of the table at the top of pages.js',
   );

@@ -1061,7 +1061,7 @@ async fn dispatch(
         (Route::ClientAdd, Some(live)) => account::client_add(cx, &live).await,
         (Route::ClientRemove, Some(live)) => account::client_remove(cx, &live).await,
         (Route::ClientAreas, Some(live)) => clients::areas(cx, &live),
-        (Route::ClientRequests, Some(live)) => clients::requests(cx, &live),
+        (Route::ClientRequests, Some(live)) => clients::requests(cx, &live).await,
         (Route::ClientApprove, Some(live)) => clients::approve(cx, live).await,
         (Route::ClientRefuse, Some(live)) => clients::refuse(cx, &live),
         (Route::ClientHistory, Some(live)) => clients::history(cx, &live),

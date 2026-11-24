@@ -97,7 +97,7 @@ fn card(request: &Request, origin: &str) -> Value {
         "owner": request.owner,
         "client": request.client,
         "action": request.action.id(),
-        "title": request.action.title(),
+        "title": request.name,
         "area": request.action.area(),
         "args": request.args,
         "reason": request.reason,
@@ -108,10 +108,47 @@ fn card(request: &Request, origin: &str) -> Value {
     })
 }
 
+/// Whether the client of `request` may still ask for what it asked for:
+/// not when it was removed, or ended, or was made again with less.
+///
+/// # Errors
+///
+/// ADM-111 when authd does not answer.
+async fn still_asks(shared: &Shared, request: &Request) -> Result<bool, Failure> {
+    match client::reach_now(shared, &request.owner, &request.client).await {
+        Ok(reach) => Ok(reach.allows(request.action).is_ok_and(|offer| offer == Offer::Ask)),
+        Err(failure) if failure.kind == Kind::ClientRefused => Ok(false),
+        Err(failure) => Err(failure),
+    }
+}
+
+/// Lapses the waiting requests of each client that may no longer ask
+/// for one of them. A client removed from this console lapses with the
+/// removal; one removed at a terminal, or by another administrator's
+/// `console.client-remove`, is a command's doing that admind hears
+/// nothing of, so the page finds it out here, before it shows a card
+/// for a client that is gone. When authd does not answer, the requests
+/// stay as they are, and a yes asks it again.
+async fn lapse_gone(shared: &Shared) {
+    let waiting: Vec<Request> = shared.client_requests.borrow().waiting().cloned().collect();
+    let mut gone: Vec<(&str, &str)> = Vec::new();
+    for request in &waiting {
+        let of = (request.owner.as_str(), request.client.as_str());
+        if !gone.contains(&of) && matches!(still_asks(shared, request).await, Ok(false)) {
+            gone.push(of);
+        }
+    }
+    let now = Instant::now();
+    for (owner, name) in gone {
+        shared.client_requests.borrow_mut().lapse_of(owner, name, now);
+    }
+}
+
 /// `GET /api/1/clients/requests`: the requests that wait, the oldest
 /// first.
-pub fn requests(cx: &Context<'_>, live: &Live) -> Outcome {
+pub async fn requests(cx: &Context<'_>, live: &Live) -> Outcome {
     administrator(cx, live)?;
+    lapse_gone(cx.shared).await;
     mcp::lapse(cx.shared, Instant::now());
     let held = cx.shared.client_requests.borrow();
     let waiting: Vec<Value> = held.waiting().map(|request| card(request, &cx.origin)).collect();
@@ -156,12 +193,7 @@ pub async fn approve(cx: &Context<'_>, live: Live) -> Outcome {
     mcp::lapse(shared, Instant::now());
     let request = shared.client_requests.borrow_mut().waits(id, Instant::now())?;
     let (owner, name) = (request.owner.as_str(), request.client.as_str());
-    let reaches = match client::reach_now(shared, owner, name).await {
-        Ok(reach) => reach.allows(request.action).is_ok_and(|offer| offer == Offer::Ask),
-        Err(failure) if failure.kind == Kind::ClientRefused => false,
-        Err(failure) => return Err(failure),
-    };
-    if !reaches {
+    if !still_asks(shared, &request).await? {
         shared.client_requests.borrow_mut().lapse_of(owner, name, Instant::now());
         mcp::lapse(shared, Instant::now());
         let why = format!(

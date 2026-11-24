@@ -492,10 +492,16 @@ async fn ask(
             return Err(may_not(why));
         }
         // Checked as the API checks them, so that what waits can run.
-        action.prepare(given.clone())?;
+        let name = action.prepare(given.clone())?.ansible.name;
         super::lapse(shared, Instant::now());
-        let asking =
-            Asking { owner: &client.owner, client: &client.name, action, args: given, reason };
+        let asking = Asking {
+            owner: &client.owner,
+            client: &client.name,
+            action,
+            name,
+            args: given,
+            reason,
+        };
         let (id, new) =
             shared.client_requests.borrow_mut().ask(asking, Instant::now(), unix_now())?;
         if new {

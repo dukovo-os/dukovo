@@ -145,8 +145,9 @@ test('More holds the pages of the navigation that the bar does not, and Reliabil
   for (const id of ['overview', 'services', 'logs']) assert.equal(more({ admin: true, terminal: true }).includes(id), false, id);
 });
 
-test('badges are read at the start, then at most every 30 s on events and every 5 min while seen', () => {
+test('badges are read at the start and for an event that is waited on, then at most every 30 s on events and every 5 min while seen', () => {
   assert.equal(badgesDue({ why: 'start', last: 1000, now: 1001, visible: true }), true);
+  assert.equal(badgesDue({ why: 'now', last: 1000, now: 1001, visible: false }), true);
   assert.equal(badgesDue({ why: 'event', last: null, now: 0, visible: true }), true);
   assert.equal(badgesDue({ why: 'event', last: 0, now: 29_999, visible: true }), false);
   assert.equal(badgesDue({ why: 'event', last: 0, now: 30_000, visible: true }), true);

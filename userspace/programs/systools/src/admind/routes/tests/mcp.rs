@@ -481,7 +481,7 @@ fn a_change_waits_for_a_yes_and_runs_as_the_administrator_who_gave_it() {
         assert_eq!((&card["owner"], &card["client"]), (&json!("chase"), &json!("helper")));
         assert_eq!(
             (&card["title"], &card["area"]),
-            (&json!("Restart a lab service"), &json!("services"))
+            (&json!("Restart a lab service: nginx"), &json!("services"))
         );
         assert_eq!(card["args"], json!({ "name": "nginx" }));
         assert_eq!(card["reason"], "nginx stopped answering after its settings changed");
@@ -516,11 +516,12 @@ fn a_change_waits_for_a_yes_and_runs_as_the_administrator_who_gave_it() {
         assert_eq!(done.status, 200, "{}", done.body);
         assert_eq!(done.json()["done"], true);
         // It ran as alice's session, and authd was asked whether the
-        // client was still there first.
+        // client was still there first: by each of the two lists above,
+        // and by the yes.
         let elevated = asked_of_authd(&world, "elevate");
         assert_eq!(elevated.len(), 1, "{elevated:?}");
         assert!(elevated[0].ends_with("-- service nginx restart"), "{elevated:?}");
-        assert_eq!(asked_of_authd(&world, "client-of"), ["client-of chase helper"]);
+        assert_eq!(asked_of_authd(&world, "client-of"), ["client-of chase helper"; 3]);
         // The client hears what came of it, and the page no longer shows it.
         let stands = told(&world, CLIENT_ALL, "request", &json!({ "id": id })).await;
         assert_eq!((&stands["state"], &stands["by"]), (&json!("done"), &json!("alice")));
@@ -541,7 +542,7 @@ fn a_change_waits_for_a_yes_and_runs_as_the_administrator_who_gave_it() {
         let entry = &history["entries"][0];
         assert_eq!((&entry["kind"], &entry["request"]), (&json!("ask"), &json!(id)));
         assert_eq!((&entry["state"], &entry["by"]), (&json!("done"), &json!("alice")));
-        assert_eq!(entry["title"], "Restart a lab service");
+        assert_eq!(entry["title"], "Restart a lab service: nginx");
     });
 }
 
@@ -612,6 +613,45 @@ fn a_yes_for_a_client_that_is_gone_or_reaches_less_runs_nothing_and_its_requests
             assert!(states.contains(&(id, "lapsed")), "{id}: {states:?}");
         }
         assert!(states.contains(&(kept, "waiting")), "{states:?}");
+    });
+}
+
+#[test]
+fn the_list_of_what_waits_drops_the_requests_of_a_client_that_is_gone_or_reaches_less() {
+    run(async {
+        let world = lab_world("mcp-gone-listed");
+        let gone = ask_to_restart(&world, CLIENT_GONE, "nginx").await;
+        let also_gone = ask_to_restart(&world, CLIENT_GONE, "postfix").await;
+        let narrowed = ask_to_restart(&world, CLIENT_NARROWED, "nginx").await;
+        let kept = ask_to_restart(&world, CLIENT_ALL, "nginx").await;
+        // A locked administrator opens the page: nobody said yes or no,
+        // and the cards are of the client that still stands alone.
+        let chase = sign_in(&world, "chase").await;
+        let left: Vec<u64> = waiting(&world, &chase)
+            .await
+            .iter()
+            .map(|card| card["request"].as_u64().unwrap())
+            .collect();
+        assert_eq!(left, [kept]);
+        // authd was asked once for each client, not for each request.
+        assert_eq!(asked_of_authd(&world, "client-of").len(), 3);
+        assert!(asked_of_authd(&world, "elevate").is_empty());
+        let history = send(&world, get("/api/1/clients/history").by(&chase)).await.json();
+        let states: Vec<(u64, &str)> = history["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| (entry["request"].as_u64().unwrap(), entry["state"].as_str().unwrap()))
+            .collect();
+        for id in [gone, also_gone, narrowed] {
+            assert!(states.contains(&(id, "lapsed")), "{id}: {states:?}");
+        }
+        assert!(states.contains(&(kept, "waiting")), "{states:?}");
+        // A yes for one of them finds a request that no longer waits.
+        unlock(&world, &chase).await;
+        let approve = format!("/api/1/clients/requests/{gone}/approve");
+        let answered = send(&world, post(&approve, &json!({})).by(&chase)).await;
+        assert_eq!((answered.status, answered.error().as_str()), (404, "ADM-145"));
     });
 }
 

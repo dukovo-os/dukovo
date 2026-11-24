@@ -124,6 +124,24 @@ test('I have kept it closes the dialog, says that it was kept, and leaves none o
   assert.equal(holdings(dialog).some((text) => text.includes('AGE-SECRET')), false, 'the text is dropped when the dialog closes');
 });
 
+test('the button that keeps it says what it was told to, and a note is shown under the buttons', async (context) => {
+  const page = usePage(context);
+  const note = page.document.createElement('p');
+  note.append('Its fingerprint is AB:12.');
+  const { showOnce } = await import('../lib/shown-once.js');
+  const leaving = new AbortController();
+  const closed = showOnce({ signal: leaving.signal }, {
+    title: 'night-watch is added', label: 'Settings', text: KEY, kept: 'I have copied the token', note,
+  });
+  for (let waited = 0; dialogsOf(page.document).length === 0 && waited < 20; waited += 1) await tick();
+  const [dialog] = dialogsOf(page.document);
+  assert.equal(buttonOf(dialog, 'I have kept it'), undefined);
+  assert.equal(dialog.querySelector('.dialog-body').children.at(-1), note);
+  buttonOf(dialog, 'I have copied the token').click();
+  assert.equal(await closed, true);
+  assert.equal(holdings(dialog).some((held) => held.includes(KEY)), false);
+});
+
 test('I have kept it takes the text and the picture out before the close event, which a browser sends in a later task', async (context) => {
   const { dialog } = await opened(context, { options: { qr: true } });
   const atClose = atCloseOf(dialog);

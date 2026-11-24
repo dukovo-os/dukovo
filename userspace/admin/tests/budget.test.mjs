@@ -21,8 +21,11 @@ const LIMIT = 150_000;
 // next: a change that adds to it raises this number and says what grew. The
 // manifest's link in index.html is 51 bytes of it, and the two more sheets
 // the entry of Websites names (dialogs.css and the tried change's banner) 38
-// bytes in pages.js.
-const START_PLAN = 149_947;
+// bytes in pages.js. The entry of AI clients, its icon and the read of its
+// count when a request moves are 633 bytes, less than the 734 of the eight
+// rules of console.css that a later rule of the same selector repeated in
+// full, which left with them.
+const START_PLAN = 149_837;
 
 /** The files `index.html` names: its scripts and style sheets, as paths on disk. */
 function pageFiles() {

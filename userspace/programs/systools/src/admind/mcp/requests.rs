@@ -115,6 +115,9 @@ pub struct Request {
     pub client: String,
     /// The change asked for.
     pub action: &'static dyn Registered,
+    /// What the change is called with what it is done to, as its task is
+    /// named: "Restart a service: nginx".
+    pub name: String,
     /// Its arguments, as the client gave them and the action took them.
     pub args: Value,
     /// Why, in the client's own words.
@@ -186,6 +189,8 @@ pub struct Asking<'a> {
     pub client: &'a str,
     /// The change.
     pub action: &'static dyn Registered,
+    /// What it is called with what it is done to.
+    pub name: String,
     /// Its arguments.
     pub args: Value,
     /// Why.
@@ -274,7 +279,7 @@ impl Requests {
         unix: i64,
     ) -> Result<(u64, bool), Failure> {
         self.lapse(now);
-        let Asking { owner, client, action, args, reason } = asking;
+        let Asking { owner, client, action, name, args, reason } = asking;
         let same = self.waiting().find(|request| {
             request.is_of(owner, client)
                 && request.action.id() == action.id()
@@ -302,6 +307,7 @@ impl Requests {
             owner: owner.into(),
             client: client.into(),
             action,
+            name,
             args,
             reason: reason.into(),
             asked: unix,
@@ -440,6 +446,7 @@ mod tests {
             owner,
             client,
             action: LAB[0],
+            name: format!("{}: {name}", LAB[0].title()),
             args: json!({ "name": name }),
             reason: "it stopped answering",
         }

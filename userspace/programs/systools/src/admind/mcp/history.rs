@@ -64,7 +64,8 @@ pub enum What {
         request: u64,
         /// The action's ID.
         action: String,
-        /// The action's title.
+        /// What was asked for: the action's title with what it is done
+        /// to, as the request's task is named.
         title: String,
         /// Where the request stands: a [`State::word`](super::requests::State::word).
         state: String,
@@ -254,7 +255,7 @@ impl History {
             what: What::Ask {
                 request: request.id,
                 action: request.action.id().into(),
-                title: request.action.title().into(),
+                title: request.name.clone(),
                 state: request.state.word().into(),
                 by,
                 task,
@@ -382,6 +383,7 @@ mod tests {
             owner: "chase",
             client: "helper",
             action: LAB[0],
+            name: format!("{}: {name}", LAB[0].title()),
             args: json!({ "name": name }),
             reason: "why",
         };
@@ -431,7 +433,7 @@ mod tests {
             serde_json::to_value(entry).unwrap(),
             json!({
                 "at": 1_800_000_000, "owner": "chase", "client": "helper", "kind": "ask",
-                "request": id, "action": "lab.restart", "title": LAB[0].title(),
+                "request": id, "action": "lab.restart", "title": "Restart a lab service: nginx",
                 "state": "task", "by": "alice", "task": 7, "ended": 1_800_000_061,
             })
         );
