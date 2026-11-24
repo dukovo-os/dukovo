@@ -7,8 +7,9 @@
 //! (`admin_about`), lists the actions the API offers, shows an action as
 //! the command, the API call and the Ansible task that do it, says or sets
 //! whom the console answers, makes, lists and removes the API tokens of
-//! the person who runs it, and, for root, puts back a change of the
-//! console's journal (`admin_put_back`, ADR 0516).
+//! the person who runs it and the clients that the console lets in
+//! over MCP (`admin_mcp`, ADR 0690), and, for root, puts back a change of
+//! the console's journal (`admin_put_back`, ADR 0516).
 //!
 //! The list and the forms an action shows as are those of the console
 //! itself, from `admind::actions`, so that what is printed here is what the
@@ -48,6 +49,7 @@ use crate::admin_about;
 use crate::admin_certificate;
 use crate::admin_errors;
 use crate::admin_export;
+use crate::admin_mcp;
 use crate::admin_put_back;
 use crate::admin_settings::{self, Reach, Settings};
 use crate::admind::ISSUE;
@@ -72,6 +74,10 @@ const USAGE: &str = "usage: admin fingerprint\n       admin about [--json]\n    
                      [--session-hours N] [--idle-minutes N]\n       \
                      admin token add NAME --scope SCOPE... [--days N]\n       \
                      admin token list\n       admin token remove NAME\n       \
+                     admin mcp add NAME [--https] --scope SCOPE... [--days N]\n       \
+                     admin mcp list [--all] [--json]\n       \
+                     admin mcp remove NAME [--of OWNER]\n       \
+                     admin mcp NAME [--check]\n       \
                      admin put-back ID\n       admin export DIR";
 
 /// The most of the issue file that is read, as consoled reads it: it holds
@@ -108,6 +114,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         Some("settings") => admin_settings::settings(args),
         Some("sign-in") => admin_settings::sign_in(args),
         Some("token") => token(args),
+        Some("mcp") => admin_mcp::main(args),
         Some("export") => admin_export::main(args),
         Some("put-back") => admin_put_back::main(args),
         // A lab build's long command, for the lab's long action.
@@ -180,7 +187,7 @@ fn actions_table(actions: &[&'static dyn Registered]) -> String {
 
 /// `rows` as lines whose columns line up: each cell but the last of a row
 /// is as wide as the widest of its column, and two spaces follow it.
-fn table(rows: &[Vec<String>]) -> String {
+pub(crate) fn table(rows: &[Vec<String>]) -> String {
     let columns = rows.first().map_or(0, Vec::len);
     let widths: Vec<usize> = (0..columns)
         .map(|column| rows.iter().map(|row| row[column].chars().count()).max().unwrap_or(0))
@@ -495,7 +502,7 @@ fn token(args: &mut Args) -> Result<i32, Fail> {
 
 /// Asks authd `console` as the person who runs this, and gives its answer.
 /// Whatever secret `console` holds is wiped once it has been sent.
-fn ask(console: Console) -> Result<Answer, Fail> {
+pub(crate) fn ask(console: Console) -> Result<Answer, Fail> {
     let mut request = Request::Console(console);
     let answer = account::ask(&request);
     request.wipe();
@@ -503,7 +510,7 @@ fn ask(console: Console) -> Result<Answer, Fail> {
 }
 
 /// The text of an answer of authd's, or its refusal in its own words.
-fn told(answer: Answer) -> Result<String, Fail> {
+pub(crate) fn told(answer: Answer) -> Result<String, Fail> {
     match answer {
         Answer::Done(text) => Ok(text),
         Answer::Refused(why) => Err(fail(why)),

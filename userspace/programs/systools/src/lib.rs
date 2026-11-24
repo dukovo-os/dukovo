@@ -101,6 +101,7 @@ mod admin_errors;
 mod admin_export;
 #[cfg(feature = "lab")]
 mod admin_lab;
+mod admin_mcp;
 mod admin_put_back;
 mod admin_settings;
 mod admind;

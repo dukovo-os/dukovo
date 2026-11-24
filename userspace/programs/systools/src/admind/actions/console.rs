@@ -28,6 +28,13 @@
 //! sign-in. They run `admin about` and `admin notices` with `--json` as
 //! the person, which print what the person can read of the machine, and
 //! `null` for the rest, so they are answered 200 on any machine.
+//!
+//! The MCP clients of every account are here as well (ADR 0690):
+//! `console.clients` lists them and `console.client-remove` takes one
+//! away, as `admin mcp list --all` and `admin mcp remove NAME --of OWNER`
+//! do inside elevate. A person's own clients are not actions: they are
+//! made and removed with the person's password, which goes to authd and
+//! never to a command (`routes/account.rs`).
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -39,6 +46,7 @@ use super::{
     Undo,
 };
 use crate::admin_settings::{self, Reach, Settings};
+use crate::authd::console::clients;
 
 /// The area of these actions: the scope a token needs, `console`.
 const AREA: &str = "console";
@@ -483,10 +491,149 @@ impl Action for Revert {
     }
 }
 
+/// The tests of the clients' actions, which the boot and lab tests of the
+/// AI clients page call.
+const CLIENTS_TESTS: Tests = Tests {
+    checks: "admind::actions::console::tests",
+    route: "admin-mcp",
+    same_as_command: "admin-mcp",
+    browser: "web-console/clients",
+    ansible: "web-console/ansible",
+};
+
+/// `admin mcp list --all --json`: the MCP clients of every account, as
+/// authd keeps them: whose each is, how it connects, what it reaches, when
+/// it ends and when and from where it was last used. authd keeps no token
+/// and no pass as it was given, so the list holds none.
+pub struct Clients;
+
+impl Action for Clients {
+    const ID: &'static str = "console.clients";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/console/clients";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const TESTS: Tests = CLIENTS_TESTS;
+    const TITLE: &'static str = "List every account's AI clients";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["admin", "mcp", "list", "--all", "--json"].map(String::from).to_vec()
+    }
+
+    fn examples() -> Examples<Nothing> {
+        Examples { good: vec![Nothing {}], bad: vec![json!({ "owner": "alice" })], undo: None }
+    }
+}
+
+/// What a client's name matches, as far as a pattern can say it: an API
+/// token's letters, and none of the words `admin mcp` reads as what to do.
+const CLIENT_PATTERN: &str = "^(?!(add|list|remove|help)$)[a-z0-9-]+$";
+
+/// The most characters of a client's name.
+const CLIENT_MAX: usize = 32;
+
+/// A client of an account.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientOf {
+    /// The account whose client it is.
+    pub owner: String,
+    /// The client's name, as its owner gave it.
+    pub name: String,
+}
+
+impl Args for ClientOf {
+    const FIELDS: &'static [Field] = &[
+        Field::text(
+            "owner",
+            "The account whose AI client it is, as console.clients lists it.",
+            1,
+            accounts::NAME_MAX,
+            Some(super::accounts::NAME_PATTERN),
+        ),
+        Field::text(
+            "name",
+            "The AI client's name, as console.clients lists it: 1 to 32 of a to z, 0 to 9 and -.",
+            1,
+            CLIENT_MAX,
+            Some(CLIENT_PATTERN),
+        ),
+    ];
+
+    fn check(&self) -> Result<(), Bad> {
+        if accounts::check_name(&self.owner).is_err() {
+            return Err(Bad {
+                field: "owner",
+                why: format!(
+                    "An account's name is 1 to {} lowercase letters, digits, _, - and ., \
+                     starting with a letter or _, and is not help. Nothing was removed.",
+                    accounts::NAME_MAX
+                ),
+            });
+        }
+        if !clients::name_ok(&self.name) {
+            return Err(Bad {
+                field: "name",
+                why: "An AI client's name is 1 to 32 of a to z, 0 to 9 and -, and not add, list, \
+                      remove or help. Nothing was removed."
+                    .into(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// `admin mcp remove NAME --of OWNER`: takes an MCP client from an
+/// account, so that its token or its passes let nothing in from the next
+/// message on, and what it asked for and nobody answered is refused.
+/// authd keeps the state, and nothing puts the client back: its owner
+/// makes it again, with a new token.
+pub struct ClientRemove;
+
+impl Action for ClientRemove {
+    const ID: &'static str = "console.client-remove";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = true;
+    const PATH: &'static str = "/api/1/console/clients/{owner}/{name}/remove";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const TESTS: Tests = CLIENTS_TESTS;
+    const TITLE: &'static str = "Remove an AI client of an account";
+    type Args = ClientOf;
+
+    fn argv(args: &ClientOf) -> Vec<String> {
+        ["admin", "mcp", "remove", args.name.as_str(), "--of", args.owner.as_str()]
+            .map(String::from)
+            .to_vec()
+    }
+
+    fn subject(args: &ClientOf) -> Option<String> {
+        Some(format!("{} of {}", args.name, args.owner))
+    }
+
+    fn examples() -> Examples<ClientOf> {
+        // The client is the boot test's to make: alice, the administrator
+        // of the test image, lets in `lab-client`.
+        Examples {
+            good: vec![ClientOf { owner: "alice".into(), name: "lab-client".into() }],
+            bad: vec![
+                json!({ "owner": "alice", "name": "" }),
+                json!({ "owner": "alice", "name": "Lab Client" }),
+                json!({ "owner": "alice", "name": "list" }),
+                json!({ "owner": "a b", "name": "lab-client" }),
+                json!({ "name": "lab-client" }),
+                json!({ "owner": "alice" }),
+            ],
+            undo: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::IpAddr;
 
+    use super::super::tests::validate;
     use super::super::{Browser, Through};
     use super::super::{REGISTRY, Registered};
     use super::*;
@@ -892,5 +1039,164 @@ mod tests {
         assert!(serve.changes() && serve.runs() == Runs::AsAdministrator);
         let refused = serve.prepare(json!({ "name": "../key" })).unwrap_err();
         assert_eq!((refused.kind, refused.field), (Kind::BadValue, Some("name")));
+    }
+
+    #[test]
+    fn every_account_s_clients_are_a_read_an_administrator_runs_that_takes_nothing() {
+        let list = action("console.clients");
+        assert_eq!(
+            (list.changes(), list.runs(), list.area(), list.long()),
+            (false, Runs::AsAdministrator, "console", false)
+        );
+        assert_eq!((list.path(), list.posts()), ("/api/1/console/clients", false));
+        assert_eq!(list.title(), "List every account's AI clients");
+        assert!(list.errors().is_empty() && !list.compares() && !list.secret_answer());
+        assert_eq!(list.fields().len(), 0);
+        let prepared = list.prepare(json!({})).unwrap();
+        assert_eq!(prepared.argv, ["admin", "mcp", "list", "--all", "--json"]);
+        assert_eq!((prepared.probe, prepared.files.len()), (None, 0));
+        // The command is authd's to answer inside elevate, so the task
+        // becomes root, and a read's task says it changed nothing.
+        assert!(prepared.ansible.become_root);
+        assert_eq!(prepared.ansible.changed_when.as_deref(), Some("false"));
+        assert_eq!(prepared.ansible.params["argv"], json!(prepared.argv));
+        let (good, bad, undo) = list.example_values();
+        assert_eq!((good, undo), (vec![json!({})], None));
+        for args in bad {
+            assert_eq!(list.prepare(args.clone()).unwrap_err().kind, Kind::BadRequest, "{args}");
+        }
+    }
+
+    #[test]
+    fn a_client_is_removed_by_its_name_and_its_owner_s_which_the_address_gives() {
+        let remove = action("console.client-remove");
+        assert_eq!(
+            (remove.changes(), remove.runs(), remove.area(), remove.long()),
+            (true, Runs::AsAdministrator, "console", false)
+        );
+        assert_eq!(remove.path(), "/api/1/console/clients/{owner}/{name}/remove");
+        assert_eq!(remove.title(), "Remove an AI client of an account");
+        // A client that is not there is the command's to say, as ADM-123,
+        // and nothing tells whether a removal moved anything but that.
+        assert!(remove.errors().is_empty() && !remove.compares());
+        let prepared = remove.prepare(json!({ "owner": "ann", "name": "desk" })).unwrap();
+        assert_eq!(prepared.argv, ["admin", "mcp", "remove", "desk", "--of", "ann"]);
+        assert_eq!((prepared.probe, prepared.trial), (None, None));
+        // authd keeps the clients, and no file of the settings is written.
+        assert!(prepared.files.is_empty());
+        assert_eq!(prepared.ansible.name, "Remove an AI client of an account: desk of ann");
+        assert!(prepared.ansible.become_root);
+        // The address names both, and its other method is no route.
+        let path = "/api/1/console/clients/ann/desk/remove";
+        match super::super::find(REGISTRY, true, path) {
+            super::super::Found::Action(found, params) => {
+                assert_eq!(found.id(), "console.client-remove");
+                assert_eq!(Value::Object(params), json!({ "owner": "ann", "name": "desk" }));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            super::super::find(REGISTRY, false, path),
+            super::super::Found::WrongMethod
+        ));
+        match super::super::find(REGISTRY, false, "/api/1/console/clients") {
+            super::super::Found::Action(found, _) => assert_eq!(found.id(), "console.clients"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_client_s_name_and_its_owner_s_are_what_authd_takes_and_the_refusal_names_the_field() {
+        let refused = |owner: &str, name: &str| {
+            let failure = action("console.client-remove")
+                .prepare(json!({ "owner": owner, "name": name }))
+                .unwrap_err();
+            (failure.kind, failure.field, failure.detail)
+        };
+        let schema = super::super::schema(ClientOf::FIELDS);
+        let fits = |owner: &str, name: &str| {
+            validate::validate(&schema, &json!({ "owner": owner, "name": name })).is_ok()
+        };
+        for name in ["desk", "ci-2", "0", "added", "lists", &"a".repeat(32)] {
+            assert!(clients::name_ok(name) && fits("ann", name), "{name}");
+            assert!(
+                action("console.client-remove")
+                    .prepare(json!({ "owner": "ann", "name": name }))
+                    .is_ok()
+            );
+        }
+        // The words `admin mcp` reads as what to do would not be a
+        // client's name in the command, and no client has one.
+        for name in ["", "Desk", "a b", "desk_1", "add", "list", "remove", "help", &"a".repeat(33)]
+        {
+            assert!(!clients::name_ok(name) && !fits("ann", name), "{name:?}");
+            let (kind, field, why) = refused("ann", name);
+            assert_eq!((kind, field), (Kind::BadValue, Some("name")), "{name:?}");
+            assert_eq!(
+                why,
+                "An AI client's name is 1 to 32 of a to z, 0 to 9 and -, and not add, list, \
+                 remove or help. Nothing was removed."
+            );
+        }
+        // An option's look in the owner's place is no account's name, so
+        // the command is given none.
+        for owner in ["", "Ann", "a b", "--all", "-x", "help", "9lives", "a/b"] {
+            assert!(!fits(owner, "desk"), "{owner:?}");
+            let (kind, field, why) = refused(owner, "desk");
+            assert_eq!((kind, field), (Kind::BadValue, Some("owner")), "{owner:?}");
+            assert!(why.starts_with("An account's name is 1 to "), "{why}");
+            assert!(why.ends_with("Nothing was removed."), "{why}");
+        }
+        for args in [json!({ "name": "desk" }), json!({ "owner": "ann" }), json!({})] {
+            let failure = action("console.client-remove").prepare(args.clone()).unwrap_err();
+            assert_eq!(failure.kind, Kind::BadRequest, "{args}");
+        }
+        let more = json!({ "owner": "ann", "name": "desk", "all": true });
+        assert_eq!(
+            action("console.client-remove").prepare(more).unwrap_err().kind,
+            Kind::BadRequest
+        );
+    }
+
+    #[test]
+    fn the_clients_of_every_account_need_the_whole_console_scope_and_an_administrator_unlocked() {
+        for id in ["console.clients", "console.client-remove"] {
+            let token = |list: &str| {
+                let scopes = Scopes::parse(list).unwrap();
+                let caller = super::super::Caller::Token { name: "ci", scopes: &scopes };
+                super::super::authorize(&caller, action(id)).map_err(|refused| refused.kind)
+            };
+            assert_eq!(token("console"), Ok(()), "{id}");
+            assert_eq!(token("*"), Ok(()), "{id}");
+            // The list is a read an administrator runs, which the read
+            // scope does not give.
+            for list in ["console:read", "accounts", "security,services"] {
+                assert_eq!(token(list), Err(Kind::OutOfScope), "{id} {list}");
+            }
+            let session = |admin: bool, unlocked: bool| {
+                let caller = super::super::Caller::Session { name: "ann", admin, unlocked };
+                super::super::authorize(&caller, action(id)).map_err(|refused| refused.kind)
+            };
+            assert_eq!(session(false, true), Err(Kind::NotAdmin), "{id}");
+            assert_eq!(session(true, false), Err(Kind::Locked), "{id}");
+            assert_eq!(session(true, true), Ok(()), "{id}");
+        }
+    }
+
+    #[test]
+    fn the_example_removes_the_client_the_boot_test_has_its_administrator_let_in() {
+        let (good, bad, undo) = action("console.client-remove").example_values();
+        assert_eq!(good, [json!({ "owner": "alice", "name": "lab-client" })]);
+        // Nothing puts a client back: its owner makes it again, with the
+        // password, which no action takes.
+        assert_eq!(undo, None);
+        for args in bad {
+            assert!(action("console.client-remove").prepare(args.clone()).is_err(), "{args}");
+        }
+        let both = [CLIENTS_TESTS.route, CLIENTS_TESTS.same_as_command];
+        assert_eq!(both, ["admin-mcp", "admin-mcp"]);
+        for id in ["console.clients", "console.client-remove"] {
+            assert_eq!(action(id).tests().browser, "web-console/clients", "{id}");
+        }
     }
 }

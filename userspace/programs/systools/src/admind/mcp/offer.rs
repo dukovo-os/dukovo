@@ -199,6 +199,10 @@ mod tests {
             ("accounts.list-all", Ok(Offer::ReadAll)),
             ("accounts.token-revoke", Err(Never::WhoGetsIn)),
             ("account.name", Err(Never::WhoGetsIn)),
+            // The clients themselves: listed for one given all of the
+            // console's area, and removed by none, itself or another.
+            ("console.clients", Ok(Offer::ReadAll)),
+            ("console.client-remove", Err(Never::WhoGetsIn)),
             // A change that runs as the person.
             ("snapshots.restore", Err(Never::OwnChange)),
         ] {

@@ -359,6 +359,30 @@ compares = true
 tests = { checks = "admind::actions::console::tests", route = "admin-security", same_as_command = "admin-security", browser = "web-console/security", ansible = "web-console/ansible" }
 
 [[action]]
+id = "console.clients"
+title = "List every account's AI clients"
+area = "console"
+changes = false
+method = "GET"
+path = "/api/1/console/clients"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::console::tests", route = "admin-mcp", same_as_command = "admin-mcp", browser = "web-console/clients", ansible = "web-console/ansible" }
+
+[[action]]
+id = "console.client-remove"
+title = "Remove an AI client of an account"
+area = "console"
+changes = true
+method = "POST"
+path = "/api/1/console/clients/{owner}/{name}/remove"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::console::tests", route = "admin-mcp", same_as_command = "admin-mcp", browser = "web-console/clients", ansible = "web-console/ansible" }
+
+[[action]]
 id = "console.export"
 title = "Copy the settings to Git"
 area = "console"

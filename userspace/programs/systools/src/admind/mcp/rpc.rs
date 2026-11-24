@@ -29,6 +29,8 @@ pub const INVALID: i64 = -32600;
 pub const NO_METHOD: i64 = -32601;
 /// The method does not take those parameters.
 pub const PARAMS: i64 = -32602;
+/// The request could not be answered, through no fault of its own.
+pub const INTERNAL: i64 = -32603;
 /// An HTTPS request's headers and its body disagree.
 pub const HEADER_MISMATCH: i64 = -32020;
 /// The revision of the protocol that was asked for is not served.
@@ -46,7 +48,7 @@ pub enum Id {
 impl Id {
     /// The ID that `value` is, if it is one: a string, or a number with
     /// no fraction.
-    fn of(value: &Value) -> Option<Id> {
+    pub fn of(value: &Value) -> Option<Id> {
         match value {
             Value::String(text) => Some(Id::Text(text.clone())),
             Value::Number(number) if number.is_i64() || number.is_u64() => {
@@ -148,6 +150,13 @@ impl Error {
     /// A method does not take its parameters, for `why`.
     pub fn params(why: impl Into<String>) -> Error {
         Error::new(PARAMS, why, 200)
+    }
+
+    /// The request could not be answered, for `why`, which is no fault
+    /// of the request's: what `admin mcp` answers the requests that
+    /// were on their way when it lost the console.
+    pub fn internal(why: impl Into<String>) -> Error {
+        Error::new(INTERNAL, why, 500)
     }
 
     /// An HTTPS request's headers and its body disagree, as `why` says.
