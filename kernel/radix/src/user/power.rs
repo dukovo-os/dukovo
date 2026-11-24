@@ -216,8 +216,9 @@ fn wind_down() {
     }
     crate::fs::disk::shutdown();
     crate::usb::shutdown();
-    // The screen is the log's again, whatever program held it, so the last
-    // lines show.
+    // The screens are the log's again, whatever program held them, so the
+    // last lines show.
+    crate::display::shutdown();
     console::give_back();
     // As do the PCI serial ports, which a thread sends to.
     crate::serial::flush();

@@ -172,6 +172,8 @@ enum Special {
     Audio,
     /// `/devices/crashes` (ADR 0530).
     Crashes,
+    /// A holder's file of `/devices/display` (ADR 0700).
+    Display,
 }
 
 /// The most bytes of a path an [`Opened`] keeps.
@@ -427,6 +429,7 @@ impl FileObject {
             Kind::CharDevice if capture::end_of(&at.node).is_some() => Special::Capture,
             Kind::CharDevice if crate::audio::is_audio(&at.node) => Special::Audio,
             Kind::CharDevice if crashes::is_crashes(&at.node) => Special::Crashes,
+            Kind::CharDevice if crate::display::is_display(&at.node) => Special::Display,
             _ => Special::No,
         };
         // The devices are the last kinds: one comparison for the others.
@@ -555,6 +558,11 @@ impl FileObject {
         self.special == Special::Crashes
     }
 
+    /// Whether it is a holder's file of `/devices/display`.
+    pub fn is_display(&self) -> bool {
+        self.special == Special::Display
+    }
+
     /// Whether its reads and writes are a pipe's, a socket's, a terminal's
     /// or a device's, not a node's: one comparison, for the paths that
     /// plain files take.
@@ -590,6 +598,7 @@ impl Drop for FileObject {
             Special::Kmsg => kmsg::closed(),
             Special::Framebuffer => framebuffer::closed(self.address()),
             Special::Audio => crate::audio::closed(self),
+            Special::Display => crate::display::closed(self),
             _ => {}
         }
         if self.locked.load(Ordering::Acquire) {
@@ -609,10 +618,12 @@ static ANY_DROPPED: AtomicBool = AtomicBool::new(false);
 /// that can only free memory, or else queued until the locks have gone.
 /// Only its node can be the last reference that goes: no mount is ever
 /// unmounted while a handle holds a place on it. A terminal's side, whose
-/// last description going may hang the terminal up and send signals, is
-/// on `dev`, whose drops are light otherwise.
+/// last description going may hang the terminal up and send signals, and
+/// a display holder's file, whose going passes the front on and may draw
+/// a screen, are on `dev`, whose drops are light otherwise.
 pub fn release(file: FileRef) {
-    if file.at.mount.fs.light_drops() && file.tty_handle().is_none() {
+    let light = file.tty_handle().is_none() && !file.is_display();
+    if file.at.mount.fs.light_drops() && light {
         drop(file);
     } else {
         defer_drop(file);

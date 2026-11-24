@@ -33,9 +33,11 @@
 //! names a part of one as a picture. The picture holds its pages while it
 //! lives, so cutting the file short takes nothing from under a screen.
 //! A picture can instead be one the card keeps: the program maps nothing
-//! and sends rows with PUT, as a text console does. A kept picture holds
-//! its pixels only while its holder is in front; a holder that comes back
-//! to the front sends them again.
+//! and sends rows with PUT, as a text console does. A kept picture is
+//! FORMAT_XRGB8888, as PUT's rows are. Its pixels are promised only
+//! while it is on a plane and its holder is in front: rows sent before
+//! then may be lost, and a holder that comes back to the front sends
+//! them again.
 //!
 //! CHANGE takes a list of entries, each a thing, one of its properties
 //! and a value. The layer builds the state the list asks for from the

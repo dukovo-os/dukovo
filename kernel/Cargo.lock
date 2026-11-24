@@ -261,6 +261,7 @@ dependencies = [
  "radix-btrfs",
  "radix-cap",
  "radix-crosec",
+ "radix-display",
  "radix-elf",
  "radix-ena",
  "radix-exfat",

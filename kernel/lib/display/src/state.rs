@@ -482,7 +482,7 @@ pub fn apply(values: &dyn Values, state: &mut State<'_>, entry: &Entry) -> Resul
         PLANE_PLACE => plane.place = Rect::unpack(entry.value, true),
         PLANE_ORDER => plane.order = number(entry.value)?,
         PLANE_OPACITY => {
-            plane.opacity = u16::try_from(entry.value).map_err(|_| REASON_BAD_VALUE)?
+            plane.opacity = u16::try_from(entry.value).map_err(|_| REASON_BAD_VALUE)?;
         }
         PLANE_TURN => match entry.value {
             0 | 90 | 180 | 270 => plane.turn = entry.value as u16,

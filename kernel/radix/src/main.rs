@@ -59,6 +59,7 @@ mod console;
 mod crashlog;
 mod crosec;
 mod debug_console;
+mod display;
 mod dmi;
 mod domains;
 mod fs;
@@ -294,6 +295,8 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     usb::init(flags.value("usb") == Some("off"));
     usb::dbc::init(flags.has("dbc"));
     net::init(flags.value("ip"), flags.value("gateway"), flags.value("e1000"));
+    // Before the PCI scan: the firmware's framebuffer is the first card.
+    display::init();
     fs::disk::init();
     console::progress(300);
     // After the PCI scan: VMBus's disks take the `sd` letters after its.

@@ -77,6 +77,18 @@ impl<'a> ChangeRequest<'a> {
         Some(ChangeRequest { flags, cookie, entries })
     }
 
+    /// How many bytes of `buffer` hold a change whose header is `head`,
+    /// entries included: what the kernel copies in before it reads the
+    /// change. `None` if the header is cut short or counts more than
+    /// ENTRIES_MAX entries.
+    pub fn bytes_of(head: &[u8]) -> Option<usize> {
+        let count = le32(head, Change::OFFSET_ENTRIES)?;
+        if count > ENTRIES_MAX {
+            return None;
+        }
+        (count as usize).checked_mul(Entry::SIZE)?.checked_add(Change::SIZE)
+    }
+
     /// How many entries it has.
     pub fn len(&self) -> usize {
         self.entries.len() / Entry::SIZE
@@ -420,6 +432,9 @@ mod tests {
         assert_eq!(entries[0], Entry { thing: 3, property: PIPE_ACTIVE, value: 1 });
         assert_eq!(entries[1], Entry { thing: 5, property: PLANE_PICTURE, value: 9 });
         assert_eq!(request.entry(2), None);
+        // Its header says how long all of it is.
+        assert_eq!(ChangeRequest::bytes_of(&bytes[..Change::SIZE]), Some(bytes.len()));
+        assert_eq!(ChangeRequest::bytes_of(&bytes[..Change::OFFSET_ENTRIES + 3]), None);
     }
 
     #[test]
@@ -431,6 +446,7 @@ mod tests {
         let mut many = change(0, 0, &[]);
         put32(&mut many, Change::OFFSET_ENTRIES, ENTRIES_MAX + 1);
         many.resize(Change::SIZE + (ENTRIES_MAX as usize + 1) * Entry::SIZE, 0);
+        assert!(ChangeRequest::bytes_of(&many).is_none());
         assert!(ChangeRequest::read(&many).is_none());
         // The most the ABI allows is read.
         put32(&mut many, Change::OFFSET_ENTRIES, ENTRIES_MAX);

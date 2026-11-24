@@ -264,6 +264,20 @@ pub fn put_pixels(offset: usize, bytes: &[u8]) -> bool {
     }
 }
 
+/// Hands the framebuffer's pixels to `draw`, for the display layer's
+/// holder in front (`crate::display`), and returns what it returns.
+/// `None`, with `draw` not run, once the panic report owns the screen,
+/// while the log has it, and without a framebuffer console. `draw` runs
+/// with the console's lock held and interrupts masked: it copies a row
+/// and logs nothing.
+pub fn with_pixels<R>(draw: impl FnOnce(&mut [u8]) -> R) -> Option<R> {
+    let mut screen = SCREEN.lock_irq();
+    if TAKEN_OVER.load(Ordering::Relaxed) || !HANDED_OVER.load(Ordering::Relaxed) {
+        return None;
+    }
+    Some(draw(screen.as_mut()?.pixels_mut()))
+}
+
 /// Changes one line of the screen in place, such as a restart countdown.
 pub fn update_line(row_from_bottom: usize, text: &str, style: Style) {
     if HANDED_OVER.load(Ordering::Relaxed) && !TAKEN_OVER.load(Ordering::Relaxed) {

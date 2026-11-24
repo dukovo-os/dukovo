@@ -77,6 +77,8 @@ pub fn init() {
         root.add("disk", Link::make(next_id(), DISK_LINKS)?)?;
         let audio: NodeRef = crate::audio::dir()?;
         root.add("audio", audio)?;
+        let display: NodeRef = crate::display::dir()?;
+        root.add("display", display)?;
         // Where Spark mounts the memory filesystem (ADR 0490).
         root.add_dir("shm", next_id())?;
         let ports = FixedDir::new(next_id())?;

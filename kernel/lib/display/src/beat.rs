@@ -47,6 +47,11 @@ impl Beat {
         Beat::start(now_ns, self.latest(now_ns).saturating_add(1), refresh_mhz)
     }
 
+    /// Its rate, in frames in 1000 seconds.
+    pub fn refresh_mhz(&self) -> u32 {
+        self.refresh_mhz
+    }
+
     /// The nanoseconds from one beat to the next, to the nearest.
     pub fn period_ns(&self) -> u64 {
         let rate = u128::from(self.refresh_mhz);

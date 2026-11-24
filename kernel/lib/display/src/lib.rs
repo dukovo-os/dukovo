@@ -5,10 +5,10 @@
 //! rules behind the files of _/devices/display_, apart from any card.
 //!
 //! A program reaches the screens through radix-display(2)'s requests. The
-//! kernel (`radix::display`) holds the cards and their drivers, the
-//! holders and their pictures, and the threads that keep each card's
-//! beat. What it decides with is here, where the tests run on the host
-//! and the proofs are checked:
+//! kernel (`radix::display`) holds the lock, the drivers, the memory a
+//! picture's pixels are in, and the threads that keep each card's beat.
+//! What it decides with is here, where the tests run on the host and the
+//! proofs are checked:
 //!
 //! - [`wire`] reads the records a request carries (a change and its
 //!   entries, a PUT and its rectangles) out of the bytes a program gave,
@@ -23,19 +23,36 @@
 //!   the next one, and the last moment a change still makes it;
 //! - [`ring`] is the events a holder has not read, with the mark of those
 //!   it lost;
+//! - [`frame`] is what the layer and a card say to each other: the frame
+//!   a pipe is to show, and what of it is new;
+//! - [`holder`] is one holder's own: its pictures and values by their
+//!   numbers, the state it last asked for, the events it has not read;
+//! - [`layer`] puts them together: it keeps the cards, the holders and
+//!   the state that shows, and carries each request out on the cards;
 //! - [`pixels`] moves rows of a picture into device memory in the
 //!   layout the firmware chose, and blends a pointer over them;
 //! - [`monitor`] reads what a monitor says of itself (EDID): its name,
 //!   size, modes and ranges.
 //!
-//! Nothing here allocates: the kernel owns every list and passes slices,
-//! so a failed allocation is the kernel's to answer and each structure's
-//! size is plain to see.
+//! Only the layer and its holders allocate. They keep their lists in
+//! vectors from the allocator the kernel gives them, reserve before they
+//! change anything, and answer a failed allocation with no_memory and
+//! nothing altered. Everything else is given slices.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![feature(vec_push_within_capacity)]
+// For an empty vector in a `const fn`, which the kernel's one layer is
+// made with; Kani's toolchain knows it by its older name.
+#![cfg_attr(not(kani), feature(allocator_ext))]
+#![cfg_attr(kani, feature(allocator_api))]
+
+extern crate alloc;
 
 pub mod beat;
+pub mod frame;
+pub mod holder;
+pub mod layer;
 pub mod monitor;
 pub mod pixels;
 pub mod ring;
