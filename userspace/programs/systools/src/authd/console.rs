@@ -164,6 +164,9 @@ pub(super) struct State {
     /// The follows of the log started for the console's Logs page, by
     /// their processes (ADR 0518).
     follows: HashMap<i32, follow::Follow>,
+    /// The passes given to the MCP clients that connect over SSH
+    /// (ADR 0690).
+    passes: clients::Passes,
 }
 
 /// A sign-in under way: whose, from where, for which admind, and how far.
@@ -239,6 +242,13 @@ impl State {
         self.sign_ins.retain(|_, s| now.saturating_duration_since(s.given) < SIGN_IN_TIME);
         self.challenges.retain(|_, c| now.saturating_duration_since(c.given) < SIGN_IN_TIME);
         self.apps.retain(|_, a| now.saturating_duration_since(a.given) < APP_TIME);
+        self.passes.tidy(now);
+    }
+
+    /// Forgets the passes of the clients of account `name`, which was
+    /// renamed or removed.
+    pub(super) fn account_gone(&mut self, name: &str) {
+        self.passes.forget(name, None);
     }
 
     /// Forgets the console session whose worker, `process`, ended.
@@ -289,12 +299,16 @@ impl State {
             Console::Token { token, from } => {
                 Some((token_owner(token).map_or("", |(owner, _)| owner).into(), web_source(from)))
             }
+            Console::Client { token, from } if !from.is_empty() => {
+                Some((clients::owner_of(token).into(), web_source(from)))
+            }
             Console::AppBegin { proof, .. }
             | Console::AppRemove { proof }
             | Console::PasskeyBegin { proof, .. }
             | Console::PasskeyRemove { proof, .. }
             | Console::Codes { proof }
             | Console::TokenAdd { proof, .. }
+            | Console::ClientAdd { proof, .. }
                 if !proof.is_empty() =>
             {
                 Some((asker.into(), peer.source()))
@@ -861,9 +875,10 @@ fn failed(files: &Files, name: &str, from: &str) {
     }
 }
 
-/// Moves `name`'s file to `new`'s, as the account is renamed. Its API
-/// tokens, which name the account, end.
+/// Moves `name`'s file to `new`'s, as the account is renamed, and its
+/// MCP clients with it. Its API tokens, which name the account, end.
 pub(super) fn renamed(name: &str, new: &str) -> Result<(), String> {
+    clients::renamed(name, new)?;
     let mut store = Store::read(name)?;
     if store.is_empty() {
         return Ok(());
@@ -873,8 +888,9 @@ pub(super) fn renamed(name: &str, new: &str) -> Result<(), String> {
     Store::default().write(name)
 }
 
-/// Removes `name`'s file, as the account goes.
+/// Removes `name`'s file and its MCP clients, as the account goes.
 pub(super) fn removed(name: &str) {
+    clients::removed(name);
     if let Err(why) = Store::default().write(name) {
         eprintln!("authd: {why}");
     }
@@ -1001,7 +1017,14 @@ impl Authd {
             return self.console_person(files, asked, peer, now);
         }
         if !peer.is_root() {
-            return no("only admind, which runs as root, asks this of authd", now);
+            let why = match asked {
+                Console::ClientsAll | Console::ClientRemoveOf { .. } => {
+                    "only an administrator, inside elevate, lists or removes another account's \
+                     AI clients"
+                }
+                _ => "only admind, which runs as root, asks this of authd",
+            };
+            return no(why, now);
         }
         match asked {
             Console::Begin { from, name, password } => {
@@ -1096,6 +1119,16 @@ impl Authd {
             }
             Console::Token { token, from } => self.console_token(files, token, from, now),
             Console::TokenStart { token } => self.console_token_start(i, files, token, now),
+            Console::Client { token, from } => self.console_client(files, token, from, now),
+            Console::ClientOf { owner, name } => self.console_client_of(files, owner, name, now),
+            Console::ClientStart { token } => self.console_client_start(i, files, token, now),
+            Console::ClientRead { token, action, arguments } => {
+                self.console_client_read(i, files, token, action, arguments, now)
+            }
+            Console::ClientsAll => self.console_clients_all(now),
+            Console::ClientRemoveOf { owner, name } => {
+                self.console_client_remove_of(files, owner, name, peer, now)
+            }
             Console::Terminal { session, admin, term, language } => {
                 self.console_terminal(i, files, session, *admin, term, language, now)
             }
@@ -1674,6 +1707,22 @@ impl Authd {
         if descriptors.len() != 4 {
             return no("an elevated command comes with its three descriptors and a pipe", now);
         }
+        // An MCP client's token or pass runs no command, whatever admind
+        // asks with it (ADR 0690): its reads go through `client-read`,
+        // and what it asks to change runs by an administrator's session.
+        if let Elevator::Token { token, .. } = by
+            && clients::is_clients(token)
+        {
+            audit!(
+                "refused a command asked with an AI client's token or pass: {}",
+                elevate::shown_command(command)
+            );
+            return no(
+                "ADM-144: an AI client changes nothing by itself: it asks, and an administrator \
+                 approves in the console",
+                now,
+            );
+        }
         // Whose right, the audit log's words for it, and the journal's.
         let (name, whose, tag) = match by {
             Elevator::Session(session) => match self.usable(session, now) {
@@ -1911,7 +1960,8 @@ impl Authd {
             | Console::PasskeyBegin { proof, .. }
             | Console::PasskeyRemove { proof, .. }
             | Console::Codes { proof }
-            | Console::TokenAdd { proof, .. } => Some(proof),
+            | Console::TokenAdd { proof, .. }
+            | Console::ClientAdd { proof, .. } => Some(proof),
             _ => None,
         };
         if let Some(proof) = proof
@@ -1921,10 +1971,26 @@ impl Authd {
         }
         let adds = matches!(
             asked,
-            Console::AppBegin { .. } | Console::PasskeyBegin { .. } | Console::TokenAdd { .. }
+            Console::AppBegin { .. }
+                | Console::PasskeyBegin { .. }
+                | Console::TokenAdd { .. }
+                | Console::ClientAdd { .. }
         );
         if adds && !accounts::may_use_console(&user, &files.groups) {
             return no(format!("{} may not use the web console", user.name), now);
+        }
+        let clients = matches!(
+            asked,
+            Console::Clients
+                | Console::ClientAdd { .. }
+                | Console::ClientRemove { .. }
+                | Console::ClientPass { .. }
+        );
+        if clients {
+            return match self.own_clients(files, &user, asked, now) {
+                Ok(text) => (Answer::Done(text), now),
+                Err(why) => no(why, now),
+            };
         }
         let needed = match Settings::read() {
             Ok(settings) => rules_need_step(
@@ -2283,6 +2349,7 @@ pub(super) fn token_remove_of(files: &Files, name: &str, token: &str, peer: Peer
     Answer::Done(String::new())
 }
 
+pub(crate) mod clients;
 mod follow;
 mod terminal;
 

@@ -2554,6 +2554,7 @@ impl Authd {
         self.wrong.retain(|(account, _), _| account != name);
         self.remove_keyring(&user);
         console::removed(name);
+        self.console.account_gone(name);
         // Its own /tmp goes with it (ADR 0255); its sign-in records stay,
         // root's to read.
         let tmp = format!("{}/{}", signin::TMP, user.uid);
@@ -2641,6 +2642,7 @@ impl Authd {
         if let Err(why) = console::renamed(name, new) {
             eprintln!("authd: {why}");
         }
+        self.console.account_gone(name);
         self.wrong.retain(|(account, _), _| account != name);
         audit!(
             "renamed the account {name} ({}) to {new}, its home {}, for process {} (user {})",
@@ -3631,6 +3633,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     own_dir(signins::DIR, 0o711)?;
     own_dir(keyring::FOLDER, 0o700)?;
     own_dir(console::FOLDER, 0o700)?;
+    own_dir(console::clients::FOLDER, 0o700)?;
     let dir = Path::new(accounts::SOCKET).parent().unwrap_or(Path::new("/"));
     own_dir(&dir.to_string_lossy(), 0o755)?;
     record_boot();

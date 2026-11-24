@@ -4,7 +4,8 @@
 //! What the web console asks authd(8) (ADR 0514): signing people in with
 //! a password and a second step, starting each session's worker,
 //! unlocking a session to make changes, running its elevated commands,
-//! checking API tokens, and each person's own second steps and tokens.
+//! checking API tokens, each person's own second steps and tokens, and
+//! the MCP clients an administrator lets in (ADR 0690).
 //!
 //! These are [`Request::Console`](crate::request::Request::Console)'s,
 //! sent as any request is, with `console` and a verb first:
@@ -25,14 +26,19 @@
 //! console\0follow-end\03f9a...\04321\0
 //! console\0steps\0
 //! console\0token-add\0\0ansible\0*\0365\0
+//! console\0client-add\0\0night-watch\0https\0logs,services:read\090\0
+//! console\0client-pass\0workstation\0192.0.2.7\0
+//! console\0client\0646b705f...\0192.0.2.7\0
+//! console\0client-read\0646b705f...\0logs.read-all\07b7d\0
 //! ```
 //!
 //! Binary fields (challenges, IDs, client data, authenticator data,
 //! signatures, user handles, tickets and tokens) go as hexadecimal, so
 //! that no NUL in them ends a field. The first group of requests is
-//! admind's, which runs as root, to ask; the second, from `steps` on,
-//! the person's own, about their own account, asked by their worker or
-//! by `admin` at their terminal.
+//! root's to ask: admind's, which runs as root, and the two that an
+//! administrator asks inside elevate, about every account's MCP clients.
+//! The second, from `steps` on, is the person's own, about their own
+//! account, asked by their worker or by `admin` at their terminal.
 
 use crate::request::hex;
 use crate::wipe;
@@ -79,6 +85,35 @@ pub enum Proof {
     Code(Vec<u8>),
     /// A passkey, answering a challenge given for [`Purpose::Unlock`].
     Passkey(Assertion),
+}
+
+/// How an MCP client connects (ADR 0690).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Way {
+    /// Through its owner's own SSH sign-in, which runs `admin mcp`: it
+    /// holds no secret, and is given a pass each time it connects.
+    Ssh,
+    /// Over HTTPS, with a token of its own.
+    Https,
+}
+
+impl Way {
+    /// Its word in a request, in a client's record and in a list.
+    pub fn word(self) -> &'static str {
+        match self {
+            Way::Ssh => "ssh",
+            Way::Https => "https",
+        }
+    }
+
+    /// The way whose word is `word`.
+    pub fn of(word: &[u8]) -> Option<Way> {
+        match word {
+            b"ssh" => Some(Way::Ssh),
+            b"https" => Some(Way::Https),
+            _ => None,
+        }
+    }
 }
 
 /// Whose right an elevated command runs by.
@@ -229,6 +264,55 @@ pub enum Console {
         /// The token.
         token: Vec<u8>,
     },
+    /// Whether `token` is an MCP client's token or pass (ADR 0690), used
+    /// from `from`. The answer is `ok OWNER NAME WAY SCOPES UNTIL`.
+    Client {
+        /// The token or the pass.
+        token: Vec<u8>,
+        /// The address it came from; empty for a pass, which comes from
+        /// this machine.
+        from: String,
+    },
+    /// Start a worker for the owner of the MCP client whose token or pass
+    /// is `token`, as [`Console::Start`] does.
+    ClientStart {
+        /// The token or the pass.
+        token: Vec<u8>,
+    },
+    /// Run the console's read `action` with `arguments` as an
+    /// administrator, for the MCP client whose token or pass is `token`,
+    /// with the four descriptors sent, as [`Console::Elevate`]'s are.
+    /// authd does not run the command an action names: it starts `admind
+    /// --read`, which runs the console's reads and nothing else
+    /// (ADR 0691). Answered as `elevate` is.
+    ClientRead {
+        /// The token or the pass.
+        token: Vec<u8>,
+        /// The action's ID.
+        action: String,
+        /// The action's arguments, as JSON.
+        arguments: Vec<u8>,
+    },
+    /// Whether `owner` has an MCP client `name` that may still connect,
+    /// which admind asks before it shows or runs what a client asked
+    /// for. Answered as [`Console::Client`] is.
+    ClientOf {
+        /// Whose client.
+        owner: String,
+        /// Its name.
+        name: String,
+    },
+    /// Every account's MCP clients, as JSON, with none of their secrets:
+    /// an administrator's to ask, inside elevate.
+    ClientsAll,
+    /// Remove `owner`'s MCP client `name`: an administrator's to ask,
+    /// inside elevate.
+    ClientRemoveOf {
+        /// Whose client.
+        owner: String,
+        /// Its name.
+        name: String,
+    },
     /// Start a shell for session `session` on the terminal sent, the one
     /// descriptor, whose other side admind keeps (ADR 0517): the person's
     /// own login shell, as an SSH session's on a terminal, or, with
@@ -363,6 +447,41 @@ pub enum Console {
         /// Its name.
         name: String,
     },
+    /// The asker's own MCP clients, as JSON, with none of their secrets.
+    Clients,
+    /// Let an MCP client in (ADR 0690). The answer gives the token of
+    /// one that connects over HTTPS, once, and nothing for one that
+    /// connects over SSH.
+    ClientAdd {
+        /// As for [`Console::AppBegin`].
+        proof: Vec<u8>,
+        /// Its name.
+        name: String,
+        /// How it connects.
+        way: Way,
+        /// What it may reach: an area, for all of its reads and to ask
+        /// for its changes, an area with `:read`, for the reads its owner
+        /// has before unlocking, or `*` in place of the area.
+        scopes: Vec<String>,
+        /// The days it lasts, 1 to 366.
+        days: u32,
+    },
+    /// Remove the asker's MCP client named `name`.
+    ClientRemove {
+        /// Its name.
+        name: String,
+    },
+    /// A pass for the asker's MCP client `name`, which connects over
+    /// SSH: what `admin mcp` gives admind in place of a token. The answer
+    /// is `ok PASS UNTIL`.
+    ClientPass {
+        /// The client's name.
+        name: String,
+        /// The address the asker's SSH session says it came from, or
+        /// nothing. The list of clients shows it as where the client was
+        /// last used from; it is the asker's word, and proves nothing.
+        from: String,
+    },
 }
 
 /// The bytes of hexadecimal `text`, or `None`.
@@ -491,6 +610,23 @@ impl Console {
                 words(&[b"token", hex(token).as_bytes(), from.as_bytes()])
             }
             Console::TokenStart { token } => words(&[b"token-start", hex(token).as_bytes()]),
+            Console::Client { token, from } => {
+                words(&[b"client", hex(token).as_bytes(), from.as_bytes()])
+            }
+            Console::ClientStart { token } => words(&[b"client-start", hex(token).as_bytes()]),
+            Console::ClientRead { token, action, arguments } => words(&[
+                b"client-read",
+                hex(token).as_bytes(),
+                action.as_bytes(),
+                hex(arguments).as_bytes(),
+            ]),
+            Console::ClientOf { owner, name } => {
+                words(&[b"client-of", owner.as_bytes(), name.as_bytes()])
+            }
+            Console::ClientsAll => words(&[b"clients-all"]),
+            Console::ClientRemoveOf { owner, name } => {
+                words(&[b"client-remove-of", owner.as_bytes(), name.as_bytes()])
+            }
             Console::Terminal { session, admin, term, language } => {
                 let whose: &[u8] = if *admin { b"admin" } else { b"own" };
                 let mut fields = words(&[b"terminal", session.as_bytes(), whose, term.as_bytes()]);
@@ -552,12 +688,28 @@ impl Console {
                 days.to_string().as_bytes(),
             ]),
             Console::TokenRemove { name } => words(&[b"token-remove", name.as_bytes()]),
+            Console::Clients => words(&[b"clients"]),
+            Console::ClientAdd { proof, name, way, scopes, days } => words(&[
+                b"client-add",
+                proof,
+                name.as_bytes(),
+                way.word().as_bytes(),
+                scopes.join(",").as_bytes(),
+                days.to_string().as_bytes(),
+            ]),
+            Console::ClientRemove { name } => words(&[b"client-remove", name.as_bytes()]),
+            Console::ClientPass { name, from } => {
+                words(&[b"client-pass", name.as_bytes(), from.as_bytes()])
+            }
         }
     }
 
     /// The request whose fields after `console` are `fields`.
     pub fn decode(fields: &[&[u8]]) -> Option<Console> {
         let text = |field: &[u8]| String::from_utf8(field.to_vec()).ok();
+        let scopes_of = |field: &[u8]| -> Option<Vec<String>> {
+            Some(text(field)?.split(',').filter(|s| !s.is_empty()).map(String::from).collect())
+        };
         Some(match *fields {
             [b"begin", from, name, password] => {
                 Console::Begin { from: text(from)?, name: text(name)?, password: password.to_vec() }
@@ -687,20 +839,45 @@ impl Console {
             [b"token-add", proof, name, scopes, days] => Console::TokenAdd {
                 proof: proof.to_vec(),
                 name: text(name)?,
-                scopes: text(scopes)?
-                    .split(',')
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect(),
+                scopes: scopes_of(scopes)?,
                 days: text(days)?.parse().ok()?,
             },
             [b"token-remove", name] => Console::TokenRemove { name: text(name)? },
+            [b"client", token, from] => {
+                Console::Client { token: from_hex(token)?, from: text(from)? }
+            }
+            [b"client-start", token] => Console::ClientStart { token: from_hex(token)? },
+            [b"client-read", token, action, arguments] => Console::ClientRead {
+                token: from_hex(token)?,
+                action: text(action)?,
+                arguments: from_hex(arguments)?,
+            },
+            [b"client-of", owner, name] => {
+                Console::ClientOf { owner: text(owner)?, name: text(name)? }
+            }
+            [b"clients-all"] => Console::ClientsAll,
+            [b"client-remove-of", owner, name] => {
+                Console::ClientRemoveOf { owner: text(owner)?, name: text(name)? }
+            }
+            [b"clients"] => Console::Clients,
+            [b"client-add", proof, name, way, scopes, days] => Console::ClientAdd {
+                proof: proof.to_vec(),
+                name: text(name)?,
+                way: Way::of(way)?,
+                scopes: scopes_of(scopes)?,
+                days: text(days)?.parse().ok()?,
+            },
+            [b"client-remove", name] => Console::ClientRemove { name: text(name)? },
+            [b"client-pass", name, from] => {
+                Console::ClientPass { name: text(name)?, from: text(from)? }
+            }
             _ => return None,
         })
     }
 
-    /// Whether admind, which runs as root, asks it, rather than the
-    /// person whose account it is about.
+    /// Whether root asks it, which is admind or, for the two about every
+    /// account's MCP clients, an administrator inside elevate, rather
+    /// than the person whose account it is about.
     pub fn is_admind(&self) -> bool {
         matches!(
             self,
@@ -717,6 +894,12 @@ impl Console {
                 | Console::Elevate { .. }
                 | Console::Token { .. }
                 | Console::TokenStart { .. }
+                | Console::Client { .. }
+                | Console::ClientStart { .. }
+                | Console::ClientRead { .. }
+                | Console::ClientOf { .. }
+                | Console::ClientsAll
+                | Console::ClientRemoveOf { .. }
                 | Console::Terminal { .. }
                 | Console::Follow { .. }
                 | Console::FollowEnd { .. }
@@ -724,7 +907,7 @@ impl Console {
         )
     }
 
-    /// Its secrets wiped: passwords, codes, tickets and tokens.
+    /// Its secrets wiped: passwords, codes, tickets, tokens and passes.
     pub fn wipe(&mut self) {
         match self {
             Console::Begin { password, .. } => wipe(password),
@@ -743,6 +926,10 @@ impl Console {
             | Console::Elevate { by: Elevator::Token { token: secret, .. }, .. }
             | Console::Token { token: secret, .. }
             | Console::TokenStart { token: secret }
+            | Console::Client { token: secret, .. }
+            | Console::ClientStart { token: secret }
+            | Console::ClientRead { token: secret, .. }
+            | Console::ClientAdd { proof: secret, .. }
             | Console::AppBegin { proof: secret, .. }
             | Console::AppConfirm { code: secret }
             | Console::AppRemove { proof: secret }
@@ -765,7 +952,13 @@ impl Console {
             | Console::PasskeyAdd { .. }
             | Console::PasskeyRename { .. }
             | Console::TrustedForget
-            | Console::TokenRemove { .. } => {}
+            | Console::TokenRemove { .. }
+            | Console::ClientOf { .. }
+            | Console::ClientsAll
+            | Console::ClientRemoveOf { .. }
+            | Console::Clients
+            | Console::ClientRemove { .. }
+            | Console::ClientPass { .. } => {}
         }
     }
 
@@ -801,6 +994,16 @@ impl Console {
             Console::TrustedForget => "trusted-forget",
             Console::TokenAdd { .. } => "token-add",
             Console::TokenRemove { .. } => "token-remove",
+            Console::Client { .. } => "client",
+            Console::ClientStart { .. } => "client-start",
+            Console::ClientRead { .. } => "client-read",
+            Console::ClientOf { .. } => "client-of",
+            Console::ClientsAll => "clients-all",
+            Console::ClientRemoveOf { .. } => "client-remove-of",
+            Console::Clients => "clients",
+            Console::ClientAdd { .. } => "client-add",
+            Console::ClientRemove { .. } => "client-remove",
+            Console::ClientPass { .. } => "client-pass",
         }
     }
 }
@@ -825,6 +1028,21 @@ impl std::fmt::Debug for Console {
                 "Console::TokenAdd {{ name: {name:?}, scopes: {scopes:?}, days: {days} }}"
             ),
             Console::TokenRemove { name } => write!(f, "Console::TokenRemove {{ name: {name:?} }}"),
+            Console::Client { from, .. } => write!(f, "Console::Client {{ from: {from:?} }}"),
+            Console::ClientRead { action, .. } => {
+                write!(f, "Console::ClientRead {{ action: {action:?} }}")
+            }
+            Console::ClientOf { owner, name } | Console::ClientRemoveOf { owner, name } => {
+                write!(f, "Console::{} {{ owner: {owner:?}, name: {name:?} }}", self.verb())
+            }
+            Console::ClientAdd { name, way, scopes, days, .. } => write!(
+                f,
+                "Console::ClientAdd {{ name: {name:?}, way: {way:?}, scopes: {scopes:?}, days: \
+                 {days} }}"
+            ),
+            Console::ClientRemove { name } | Console::ClientPass { name, .. } => {
+                write!(f, "Console::{} {{ name: {name:?} }}", self.verb())
+            }
             _ => write!(f, "Console::{}", self.verb()),
         }
     }
@@ -971,6 +1189,40 @@ mod tests {
                 days: 30,
             },
             Console::TokenRemove { name: "ansible".into() },
+            Console::Client { token: b"dkc_chase_00ff".to_vec(), from: "192.0.2.7".into() },
+            Console::Client { token: b"dkp_chase_00ff".to_vec(), from: String::new() },
+            Console::ClientStart { token: b"dkc_chase_00ff".to_vec() },
+            Console::ClientRead {
+                token: b"dkp_chase_00ff".to_vec(),
+                action: "logs.read-all".into(),
+                arguments: br#"{"service":"nginx","grep":"a\u0000b"}"#.to_vec(),
+            },
+            Console::ClientRead {
+                token: vec![0, 255],
+                action: "storage.health".into(),
+                arguments: Vec::new(),
+            },
+            Console::ClientOf { owner: "chase".into(), name: "workstation".into() },
+            Console::ClientsAll,
+            Console::ClientRemoveOf { owner: "alice".into(), name: "alice-laptop".into() },
+            Console::Clients,
+            Console::ClientAdd {
+                proof: b"a\x01b".to_vec(),
+                name: "night-watch".into(),
+                way: Way::Https,
+                scopes: vec!["logs".into(), "services:read".into()],
+                days: 90,
+            },
+            Console::ClientAdd {
+                proof: Vec::new(),
+                name: "workstation".into(),
+                way: Way::Ssh,
+                scopes: vec!["*:read".into(), "services".into()],
+                days: 366,
+            },
+            Console::ClientRemove { name: "night-watch".into() },
+            Console::ClientPass { name: "workstation".into(), from: "192.0.2.7".into() },
+            Console::ClientPass { name: "workstation".into(), from: String::new() },
         ];
         for request in &requests {
             assert_eq!(round_trip(request).as_ref(), Some(request), "{request:?}");
@@ -1007,6 +1259,25 @@ mod tests {
             &[b"follow-end", b"s", b"-1"],
             &[b"follow-end", b"s", b"x"],
             &[b"follow-end", b"s"],
+            // An MCP client's token and a read's arguments go as
+            // hexadecimal, its way is one of the two, and each request
+            // has its own number of fields.
+            &[b"client", b"zz", b"192.0.2.7"],
+            &[b"client", b"00"],
+            &[b"client-start", b"0"],
+            &[b"client-read", b"00", b"logs.read-all", b"{}"],
+            &[b"client-read", b"00", b"\xff", b"7b7d"],
+            &[b"client-read", b"00", b"logs.read-all"],
+            &[b"client-of", b"chase"],
+            &[b"clients-all", b"chase"],
+            &[b"client-remove-of", b"alice"],
+            &[b"clients", b"all"],
+            &[b"client-add", b"", b"n", b"telnet", b"*", b"30"],
+            &[b"client-add", b"", b"n", b"ssh", b"*", b"many"],
+            &[b"client-add", b"", b"n", b"ssh", b"*"],
+            &[b"client-remove"],
+            &[b"client-pass", b"\xff", b""],
+            &[b"client-pass", b"workstation"],
             &[b"nothing"],
         ] {
             assert_eq!(Console::decode(fields), None, "{fields:?}");
@@ -1034,6 +1305,26 @@ mod tests {
             Console::Unlock { session: "s".into(), proof: Proof::Code(b"654321".to_vec()) },
             Console::TokenStart { token: b"dkv_secret".to_vec() },
         );
+        let clients = format!(
+            "{:?} {:?} {:?} {:?}",
+            Console::Client { token: b"dkc_token".to_vec(), from: "x".into() },
+            Console::ClientStart { token: b"dkp_pass".to_vec() },
+            Console::ClientRead {
+                token: b"dkp_other".to_vec(),
+                action: "logs.read-all".into(),
+                arguments: br#"{"grep":"needle"}"#.to_vec()
+            },
+            Console::ClientAdd {
+                proof: b"hunter3".to_vec(),
+                name: "n".into(),
+                way: Way::Ssh,
+                scopes: vec!["*".into()],
+                days: 1
+            },
+        );
+        for secret in ["dkc_token", "dkp_pass", "dkp_other", "needle", "hunter3"] {
+            assert!(!clients.contains(secret), "{clients}");
+        }
         for secret in ["hunter2", "654321", "dkv_secret"] {
             assert!(!shown.contains(secret), "{shown}");
         }

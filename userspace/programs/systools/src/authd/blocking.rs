@@ -429,6 +429,9 @@ pub(super) enum Failed {
     ConsoleCode,
     /// A wrong API token, from a program calling the web console's API.
     ConsoleToken,
+    /// A wrong token of an MCP client's, from a program calling the web
+    /// console's MCP server (ADR 0690).
+    ConsoleClient,
 }
 
 impl Failed {
@@ -442,6 +445,7 @@ impl Failed {
             Failed::ConsolePassword => "wrong passwords at the web console",
             Failed::ConsoleCode => "wrong second-step codes at the web console",
             Failed::ConsoleToken => "wrong API tokens",
+            Failed::ConsoleClient => "wrong AI client tokens",
         }
     }
 }
