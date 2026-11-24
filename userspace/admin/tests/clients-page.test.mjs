@@ -93,6 +93,20 @@ test('an unlocked console lists every administrator\'s clients, with the command
   assert.equal(buttonOf(card, 'Unlock'), undefined);
 });
 
+test('the table is a card for each client on a phone: each cell names itself by its column', async (context) => {
+  const page = await openClients(context);
+  const table = page.card('cl-clients').querySelector('table');
+  assert.ok(table.classes.has('stack'));
+  const heads = table.querySelectorAll('th').map(text).slice(0, 6);
+  for (const row of table.querySelectorAll('tbody tr')) {
+    const cells = row.querySelectorAll('td');
+    assert.deepEqual(cells.slice(0, 6).map((cell) => cell.getAttribute('data-label')), heads);
+    // The last cell holds Remove alone, which says what it does.
+    assert.equal(cells[6].getAttribute('data-label'), null);
+    assert.ok(cells[6].classes.has('end'));
+  }
+});
+
 test('a locked console lists the person\'s own clients and offers to unlock for the rest', async (context) => {
   const page = await openClients(context, { unlocked: false });
   assert.equal(count(page.calls, '/api/1/console/clients'), 0);

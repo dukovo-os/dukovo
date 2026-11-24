@@ -543,6 +543,7 @@ machine asks for them.
 | The protocol's tasks, resources and prompts, and a stream that tells an AI client its request was answered: a client asks `request` again | ADR 0692 |
 | `*:read` as an API token's scope, as an AI client has it: a token that reads every area names `*`, which also changes them | admin(8) |
 | The banner of a change that is being tried naming the AI client that asked for it: the journal's row and the task do, and the Security page's script is at its size budget | ADR 0690 |
+| What only a screen reader is told (`.sr-only`) held inside the scrolling box of every page, as the AI clients page holds its own: on a page whose table has such a caption below the window's end, the Overview at 1280 by 800 for one, the document is taller than its window and scrolls into nothing. One rule on the shell's page box does it for all pages, and moves what each page's menus and popovers are placed against, so each page is looked at first | Lab test `web-console/clients` |
 
 ### Benchmarks
 

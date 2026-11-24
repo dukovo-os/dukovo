@@ -18,6 +18,9 @@ const NONE = 'No client is let in. Add one, and an AI assistant of your choice c
 const BELONGS = 'A client belongs to the administrator who added it. It never does more than that account may, and it stops when the account does.';
 const STOPS = 'It stops at once: its token or its SSH command lets nothing in from its next message on, and what it asked for and nobody answered lapses.';
 
+/** The table's columns; the last, with Remove, has no words. On a phone each is the label of its cell. */
+const HEADS = ['Client', 'Connects over', 'Reads', 'May ask to change', 'Last used', 'Ends'];
+
 /** The route that removes one of the person's own clients, which is not an action: authd keeps them. */
 const OWN_REMOVE = '/api/1/account/clients/remove';
 
@@ -67,13 +70,16 @@ export function makeList(ctx) {
       });
       if (done) ctx.load();
     });
+    const cells = [
+      [h('b', {}, row.name), h('small', {}, row.owner)],
+      [row.way],
+      [reach(row.reads, 'Every area')],
+      [reach(row.asks, 'Every area a client may')],
+      [row.used, row.from && h('small', {}, row.from)],
+      [row.ended ? h('span', { class: 'pill' }, row.ends) : row.ends],
+    ];
     return h('tr', {},
-      h('td', {}, h('b', {}, row.name), h('small', {}, row.owner)),
-      h('td', {}, row.way),
-      h('td', {}, reach(row.reads, 'Every area')),
-      h('td', {}, reach(row.asks, 'Every area a client may')),
-      h('td', {}, row.used, row.from && h('small', {}, row.from)),
-      h('td', {}, row.ended ? h('span', { class: 'pill' }, row.ends) : row.ends),
+      cells.map((cell, at) => h('td', { 'data-label': HEADS[at] }, ...cell)),
       h('td', { class: 'end' }, button));
   }
 
@@ -96,13 +102,12 @@ export function makeList(ctx) {
       }
       const clients = Array.isArray(found.result.value?.clients) ? found.result.value.clients : [];
       const rows = clientRows(clients, areas, view.time);
-      const heads = ['Client', 'Connects over', 'Reads', 'May ask to change', 'Last used', 'Ends'];
       fill(card.body,
         rows.length === 0
           ? h('p', { class: 'muted' }, NONE)
-          : h('div', { class: 'tbl-box' }, h('table', { class: 'tbl' },
+          : h('div', { class: 'tbl-box' }, h('table', { class: 'tbl stack' },
             h('caption', { class: 'sr-only' }, found.all ? 'Every administrator\'s AI clients' : 'Your AI clients'),
-            h('thead', {}, h('tr', {}, heads.map((head) => h('th', { scope: 'col' }, head)), h('th', { scope: 'col' }, h('span', { class: 'sr-only' }, 'Action')))),
+            h('thead', {}, h('tr', {}, HEADS.map((head) => h('th', { scope: 'col' }, head)), h('th', { scope: 'col' }, h('span', { class: 'sr-only' }, 'Action')))),
             h('tbody', {}, rows.map(rowOf)))),
         !found.all && ownOnly(),
         h('p', { class: 'small muted' }, BELONGS),
