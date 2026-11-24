@@ -334,7 +334,7 @@ enum ProcessState: u8 {
 }
 
 /// A process.
-interface process = 0x000a version 13 {
+interface process = 0x000a version 14 {
     kind = process;
     /// Makes a kernel object, charged to this process's resource domain,
     /// and puts its capability, with every right, in slot `to`: a process
@@ -862,4 +862,16 @@ interface process = 0x000a version 13 {
     /// waits. (Since version 13, ADR 0612.)
     method event_queue = 68 (to: slot, flags: PipeFlags) -> ()
         raises [no_such_slot, missing_rights, occupied, invalid_argument, no_memory];
+    /// Puts in slot `to` a capability to the Linux call that the calling
+    /// thread received as a call on an endpoint and has not answered yet:
+    /// a call the kernel forwarded from a Linux program
+    /// (radix-linux-call(2)). It has the read, write and control rights,
+    /// never the copy or transfer rights, and reaches the calling process
+    /// until the call has its answer. Fails with no_caller if the thread
+    /// holds no call, and with wrong_kind if the call it holds is not a
+    /// forwarded one. Needs the control right on the caller's own process.
+    /// (Since version 14, ADR 0618.)
+    method forwarded_call = 69 (to: slot) -> ()
+        raises [no_such_slot, missing_rights, occupied, invalid_argument, no_caller,
+                wrong_kind, no_memory];
 }

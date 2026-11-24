@@ -17,16 +17,19 @@
 use radix_abi::UserBuffer;
 use radix_abi::directory::{self, FileKind, FileStatus, LinkFlags, PathFlags};
 use radix_abi::file;
-use radix_linux::errno::{self, EFAULT, EINVAL, EISDIR, ENOENT, ENOTDIR, EPERM};
+use radix_cap::Rights;
+use radix_linux::errno::{self, EACCES, EFAULT, EINVAL, EISDIR, ENOENT, ENOTDIR, EPERM};
 use radix_linux::flags;
 use radix_linux::records::{self, SetTime, TIMESPEC_SIZE};
 
 use super::files::{self, at, at2, directory, given};
-use super::paths;
+use super::magic;
+use super::paths::{self, Place};
 use super::{Error, Result, copy_in, fail, method};
 use crate::sched::ThreadRef;
 use crate::user::UserRef;
 use crate::user::methods::Answer;
+use crate::user::objects;
 
 /// AT_REMOVEDIR, which `rmdir` is `unlinkat` with.
 pub const REMOVE_DIRECTORY: u64 = flags::AT_REMOVEDIR as u64;
@@ -44,14 +47,30 @@ pub fn faccessat(user: &UserRef, dirfd: u64, address: u64, mode: u64, how: u64) 
     }
     let want = flags::access(mode as u32).map_err(Error::Errno)?;
     let path_flags = flags::path_flags(how);
-    at(user, dirfd, address, how & flags::AT_EMPTY_PATH != 0, |place| {
+    let empty = how & flags::AT_EMPTY_PATH != 0;
+    let check = |place: &Place| {
         let args = directory::CheckAccessArgs {
             path: given(0, place.path.len()),
             flags: path_flags,
             want,
         };
         directory(user, place, directory::CHECK_ACCESS, args.encode(), &[]).map(drop)
-    })?;
+    };
+    let path = paths::read(address)?;
+    if how & flags::AT_SYMLINK_NOFOLLOW != 0 {
+        files::at_path(user, dirfd, &path, empty, check)?;
+        return Ok(0);
+    }
+    // A descriptor by its link: reading and writing are what its
+    // capability allows; running it is not asked of a descriptor.
+    let descriptor = |fd| {
+        let slot = files::linked_slot(user, fd)?;
+        let rights = objects::capability(user.cspace, slot).map_err(Error::from)?.rights();
+        let reads = want & directory::READ_OK == 0 || rights.contains(Rights::READ);
+        let writes = want & directory::WRITE_OK == 0 || rights.contains(Rights::WRITE);
+        if reads && writes && want & directory::EXECUTE_OK == 0 { Ok(()) } else { fail(EACCES) }
+    };
+    files::following(user, dirfd, &path, empty, descriptor, check)?;
     Ok(0)
 }
 
@@ -199,7 +218,11 @@ pub fn readlinkat(user: &UserRef, dirfd: u64, address: u64, buffer: u64, size: u
     if size == 0 {
         return fail(EINVAL);
     }
-    let len = at(user, dirfd, address, false, |place| {
+    let path = paths::read(address)?;
+    if let Some(target) = magic::target(user, &path)? {
+        return magic::put_target(&target, buffer, size);
+    }
+    let len = files::at_path(user, dirfd, &path, false, |place| {
         let args = directory::ReadLinkArgs {
             path: given(0, place.path.len()),
             buffer: UserBuffer { address: buffer, len: size },

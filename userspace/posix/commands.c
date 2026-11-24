@@ -49,6 +49,8 @@ static const char *const ELSEWHERE[][2] = {
 		{"last", "the signin and elevate boot tests': it reads authd's sign-in records"},
 		{"lastb", "the signin boot test's: it reads the wrong passwords authd recorded"},
 		{"lastlog", "the signin and elevate boot tests': it reads each account's last sign-in"},
+		{"linux", "the linux-view boot test's: it runs a Linux program in its sandbox"},
+		{"linuxd", "the linux-view boot test's: linux starts it beside each Linux program"},
 		{"setfacl", "the signin boot test's: alice shares a folder with bob"},
 		{"getfacl", "the signin boot test's: it shows the list a file took of its folder"},
 		{"netd", "the dhcp boot test's service: it sets a card up by DHCP, which only QEMU's network answers"},

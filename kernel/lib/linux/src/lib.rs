@@ -52,6 +52,8 @@
 //!   `signalfd` and `pidfd`.
 //! - [`memfd`]: the flags of `memfd_create` and the seal commands of
 //!   `fcntl`.
+//! - [`magic`]: which paths name a process's own links in /proc that the
+//!   kernel answers (`/proc/self/exe`, `/dev/fd/<n>` and the like).
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
@@ -63,6 +65,7 @@ pub mod errno;
 pub mod flags;
 pub mod futex;
 pub mod kernel_files;
+pub mod magic;
 pub mod memfd;
 pub mod notify;
 pub mod nr;

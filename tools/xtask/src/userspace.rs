@@ -140,6 +140,7 @@ pub const ARCHIVE_HIDDEN: (&str, &str) = ("system/.hidden", "bin\nlib\nshare\n")
 pub const STD_ARCHIVE: &[(&str, &str)] = &[
     ("system/commands/consoled", "consoled"),
     ("system/commands/dukovo-install", "dukovo-install"),
+    ("system/commands/linuxd", "linuxd"),
     ("system/commands/nfs", "nfs"),
     ("system/commands/nfsd", "nfsd"),
     ("system/commands/nukesh", "nukesh"),
@@ -249,6 +250,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/last", "systools"),
     ("system/commands/lastb", "systools"),
     ("system/commands/lastlog", "systools"),
+    ("system/commands/linux", "systools"),
     ("system/commands/log", "systools"),
     ("system/commands/logd", "systools"),
     ("system/commands/logforward", "systools"),
@@ -552,6 +554,7 @@ pub const HOST_TESTED: &[&str] = &[
     "git-https-test",
     "kerberos",
     "keymap",
+    "linuxd",
     "manifest",
     "netproto",
     "nfs",

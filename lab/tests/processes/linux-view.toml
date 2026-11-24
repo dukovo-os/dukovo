@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# A dynamically linked Linux program, built on the lab PC against its glibc,
+# runs on the machine in the sandbox that linux(1) builds for it, on the
+# libraries of the Linux base bundle (ADRs 0618 to 0622). The program is the
+# boot test's own, userspace/linux/view.c: it makes the calls itself and says
+# one line for a case that went wrong and, at the end, that all its cases
+# passed on Dukovo. The lab account installs the base for itself, from
+# nothing, and runs the program by its path from /tmp, which is not where the
+# program is: Nukesh finds that it is a Linux program and starts it through
+# linux run, which makes the sandbox and starts linuxd beside it. The cases
+# are the /proc and /sys that linuxd serves, the account's files in /etc, the
+# interfaces, the names uname gives, the home that stays out of sight, and
+# the call that only linuxd answers. The same program is then run with
+# --restart, which ends linuxd in the middle of its run and has the
+# supervisor that linux run leaves beside it start linuxd again.
+about = "a dynamically linked Linux program runs in the sandbox of linux(1) on the Linux base bundle, finds the /proc and /sys that linuxd serves, and sees its calls answered again after linuxd is ended (ADRs 0618 to 0622)"
+time = "10m"
+host_needs = ["scp", "cc"]
+
+[[step]]
+host = "sh {here}/../services/copy-bundle.sh org.dukovo.linux-base {machine} {machine-port:22}"
+expect = "copied: org.dukovo.linux-base"
+# The program goes in a folder of its own, so that the sandbox's view of its
+# folder holds nothing else of the lab account's home.
+[[step]]
+run = "sh -c 'rm -rf /users/lab/linux-view && mkdir /users/lab/linux-view'"
+[[step]]
+host = "sh {here}/linux-view.sh {machine} {machine-port:22}"
+expect = "copied: view"
+[[step]]
+run = "chmod 755 /users/lab/linux-view/view"
+# From nothing: a run before may have left the base installed.
+[[step]]
+run = "sh -c 'bundle remove --purge org.dukovo.linux-base > /dev/null 2>&1; bundle install --yes /users/lab/org.dukovo.linux-base.dkv | tail -1'"
+expect = "installed org.dukovo.linux-base 25.8.0, for you"
+# The lines of the cases that went well are left out, so that the output
+# holds the rest whatever the number of cases. The program says on which
+# system it runs, and none of its cases is skipped on Dukovo.
+[[step]]
+run = "sh -c 'cd /tmp && /users/lab/linux-view/view | grep -v \" ok$\"'"
+expect = ["view: running on Dukovo", "view: wrote through /proc/self/fd/1", "view: all 12 cases passed on Dukovo"]
+expect_not = ["FAILED", "skip"]
+# linuxd ends with SIGKILL in the middle of the run, and the case that ended
+# it sees a call answered again: one case more.
+[[step]]
+run = "sh -c 'cd /tmp && /users/lab/linux-view/view --restart | grep -v \" ok$\"'"
+expect = ["view: running on Dukovo", "view: all 13 cases passed on Dukovo"]
+expect_not = ["FAILED", "skip"]
+# linux run on its own gives the same program the same view, and the
+# program's exit status is linux run's.
+[[step]]
+run = "sh -c 'cd /tmp && linux run -- /users/lab/linux-view/view fd_one; echo view-rc=$?'"
+expect = ["view: fd_one ok", "view-rc=0"]
+# A case that does not exist is the program's own refusal, and linux run
+# gives its status, not its own.
+[[step]]
+run = "sh -c 'cd /tmp && linux run -- /users/lab/linux-view/view nothing-of-the-kind; echo view-rc=$?'"
+expect = ["view: there is no case named nothing-of-the-kind", "view-rc=2"]
+# Nothing is left behind: not the program, nor the base, nor the data
+# folder the program's home was.
+[[step]]
+run = "sh -c 'bundle remove --purge org.dukovo.linux-base > /dev/null && rm -rf /users/lab/linux-view /users/lab/org.dukovo.linux-base.dkv /users/lab/app-data/linux && echo gone'"
+expect = "gone"

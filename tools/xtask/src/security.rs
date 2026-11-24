@@ -818,6 +818,15 @@ fn plan(recipes: &[Recipe], go_mods: &GoMods) -> Plan {
                     ),
                 });
             }
+        } else if source.is_image() {
+            plan.not_covered.push(NotCovered {
+                port: recipe.name.clone(),
+                version: recipe.version.clone(),
+                url: source.download(),
+                reason: "its libraries come from a distribution's image, which pins no commit or \
+                         tag of their projects to ask OSV by"
+                    .to_string(),
+            });
         }
         for extra in &recipe.extra {
             plan.commits.push(Asked {

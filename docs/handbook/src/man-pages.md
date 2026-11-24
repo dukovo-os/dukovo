@@ -25,6 +25,7 @@ for section 2, which `ridlc` generates from the interface definitions in
 | `radix-processes(7)` | Processes, program loading, the address space layout and the boot archive |
 | `radix-files(7)` | Files, directory capabilities, paths, filesystems, the page cache, the directory hierarchy and `/volumes` |
 | `radix-posix(7)` | POSIX programs: the C library and toolchain, fork and exec, signals, descriptors and paths, pipes, terminals, timers, threads, limits, file locks, dynamic linking and Rust's standard library |
+| `linux(1)`, `linuxd(8)` | Running a Linux program in a sandbox of its own, and the server beside it that answers the calls and files the kernel does not |
 | `radix-linux(7)` | Linux programs: which programs run as Linux programs, what they are told at start, and how their calls are served |
 | `spark(8)` | Spark, the first program, which starts and supervises every other |
 | `sysupdate(8)`, `updates.toml(5)`, `health.toml(5)` | Updates of the system: channels, checking and downloading from the update server, update files, the two slots, staging an update, trying and proving it, the health check and what it asks, falling back, rolling back, and the boot menu |

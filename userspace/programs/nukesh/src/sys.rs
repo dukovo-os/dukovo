@@ -10,6 +10,8 @@
 use std::ffi::{CStr, CString};
 use std::io::{Error, Result};
 
+use crate::personality;
+
 /// Descriptors the shell keeps for itself (saved descriptors, the script
 /// it reads) are at or above this, out of the way of the 0 to 9 that
 /// redirections name.
@@ -43,8 +45,47 @@ pub fn fork() -> Result<i32> {
     check(unsafe { libc::fork() })
 }
 
-/// Runs `path` in place of this process; it returns only on failure.
+/// Runs `path` in place of this process; it returns only on failure. A
+/// dynamic program written for Linux, which the kernel cannot start for
+/// want of its dynamic linker, runs through `linux run`, which builds the
+/// view its libraries and `/proc` are in (ADR 0622). The shell looks at
+/// the file only then, so that other programs cost nothing more.
 pub fn execve(path: &CStr, argv: &[CString], envp: &[CString]) -> Error {
+    let error = exec_plain(path, argv, envp);
+    if cfg!(target_os = "radix")
+        && error.raw_os_error() == Some(libc::ENOENT)
+        && is_linux_view_program(path)
+    {
+        return exec_plain(personality::LINUX, &personality::linux_command(path, argv), envp);
+    }
+    error
+}
+
+/// Whether the file at `path` is a dynamic program for Linux, from its
+/// first bytes and its size; not if it cannot be read.
+fn is_linux_view_program(path: &CStr) -> bool {
+    // Not blocking: a pipe by that name has nothing to read, and is no program.
+    // SAFETY: the path is a C string.
+    let fd =
+        unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return false;
+    }
+    let mut head = vec![0u8; personality::HEAD];
+    // SAFETY: the buffer is valid for its length.
+    let n = unsafe { libc::read(fd, head.as_mut_ptr().cast(), head.len()) };
+    // SAFETY: a stat buffer of zeros is a valid one to fill.
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: the descriptor is open and the buffer is valid.
+    let size = (unsafe { libc::fstat(fd, &raw mut stat) } == 0).then_some(stat.st_size);
+    // SAFETY: closing the descriptor opened above.
+    unsafe { libc::close(fd) };
+    head.truncate(usize::try_from(n).unwrap_or(0));
+    let size = size.and_then(|size| u64::try_from(size).ok()).unwrap_or(head.len() as u64);
+    personality::runs_in_linux_view(&head, size)
+}
+
+fn exec_plain(path: &CStr, argv: &[CString], envp: &[CString]) -> Error {
     let mut args: Vec<*const libc::c_char> = argv.iter().map(|a| a.as_ptr()).collect();
     args.push(std::ptr::null());
     let mut env: Vec<*const libc::c_char> = envp.iter().map(|e| e.as_ptr()).collect();

@@ -321,6 +321,17 @@ impl SigAction {
     }
 }
 
+/// The system's name in `uname`, and in /proc's `ostype`: a program
+/// written for Linux checks for it.
+pub const SYSNAME: &str = "Linux";
+
+/// The release a Linux program sees: a Linux it can run on. linuxd's
+/// `/proc` gives the same (`osrelease`, `version`).
+pub const RELEASE: &str = "6.1.0-dukovo";
+
+/// The kernel's version as `uname` gives it.
+pub const VERSION: &str = concat!("#1 SMP Dukovo ", env!("CARGO_PKG_VERSION"));
+
 /// Writes `struct utsname`: the system name "Linux", the three names the
 /// caller gives, the machine "x86_64" and the domain name "(none)".
 ///
@@ -328,7 +339,7 @@ impl SigAction {
 /// cut there, so that its NUL stays.
 pub fn utsname(nodename: &[u8], release: &[u8], version: &[u8], out: &mut [u8; UTSNAME_SIZE]) {
     out.fill(0);
-    let fields: [&[u8]; 6] = [b"Linux", nodename, release, version, b"x86_64", b"(none)"];
+    let fields: [&[u8]; 6] = [SYSNAME.as_bytes(), nodename, release, version, b"x86_64", b"(none)"];
     for (index, text) in fields.into_iter().enumerate() {
         let kept = text.len().min(UTS_FIELD - 1);
         let start = index * UTS_FIELD;

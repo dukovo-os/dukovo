@@ -75,6 +75,10 @@ enum ObjectKind: u8 {
     /// An event queue, which watches many descriptors at once
     /// (radix-event-queue(2); since Phase 17, ADR 0353).
     event_queue = 25;
+    /// One Linux call a program made that the kernel forwarded to linuxd,
+    /// and the process that made it, for as long as the call lasts
+    /// (radix-linux-call(2); since Phase 18, ADR 0618).
+    linux_call = 26;
 }
 
 /// What a capability lets its holder do.

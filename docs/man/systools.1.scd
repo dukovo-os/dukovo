@@ -170,6 +170,8 @@ error that starts with the tool's name.
 :  who signed in, when and for how long, and the wrong passwords
 |  *lastlog*(8)
 :  each account's last sign-in
+|  *linux*(1)
+:  run a Linux program in a sandbox of its own
 |  *logd*(8)
 :  keep the system's log
 |  *logforward*(8)

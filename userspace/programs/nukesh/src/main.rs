@@ -47,6 +47,7 @@ mod nebix;
 mod notify;
 mod parse;
 mod pattern;
+mod personality;
 mod project;
 mod prompt;
 mod record;

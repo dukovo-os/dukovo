@@ -7,7 +7,9 @@
 //!
 //! - `recipe.toml`: the port's version, license and home page, the git
 //!   commit or the release archive's SHA-256 its source is pinned to (or,
-//!   for Rust's standard library, the pinned Rust toolchain's rust-src),
+//!   for Rust's standard library, the pinned Rust toolchain's rust-src, or,
+//!   for libraries taken from a distribution's container image, the layers
+//!   of the image, each pinned by its digest and size),
 //!   for a release archive the project's git repository and the tag of
 //!   the release (`[upstream]`), any other sources unpacked into its tree
 //!   and crates from crates.io, each pinned by its SHA-256, the ports it
@@ -27,7 +29,8 @@
 //!
 //! Sources are fetched once into `target/ports`, with git by commit, as
 //! release archives by checksum (from their home, or from a mirror when
-//! that cannot be reached) and from crates.io by checksum, and checked to
+//! that cannot be reached), as the blobs of an image's layers by digest
+//! from its registry and from crates.io by checksum, and checked to
 //! be what the recipe names, so a build uses nothing else. Of a large
 //! repository, such as LLVM's, a recipe can name the directories it
 //! needs, and only their files are fetched. A port is
@@ -208,8 +211,8 @@ pub struct BundleRecipe {
 }
 
 /// Where a source comes from: a git repository and a commit in it, a
-/// release archive, or rust-src; none of them for a port of crates or of
-/// extra sources alone.
+/// release archive, the layers of an image in a registry, or rust-src;
+/// none of them for a port of crates or of extra sources alone.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Source {
@@ -219,7 +222,8 @@ pub struct Source {
     /// The full commit ID, which pins the tree.
     #[serde(default)]
     pub commit: String,
-    /// The release or tag the commit is, for people.
+    /// The release or tag the commit is, or for an image the tag it was
+    /// pinned from, for people.
     #[serde(default)]
     pub tag: Option<String>,
     /// The directories of the repository the port needs, for a large one
@@ -245,13 +249,56 @@ pub struct Source {
     /// toolchain pins it, and it needs no fetching.
     #[serde(default, rename = "rust-src")]
     pub rust_src: bool,
+    /// The registry that serves an image, such as `registry-1.docker.io`,
+    /// for a source that is the layers of an image.
+    #[serde(default)]
+    pub registry: String,
+    /// The image's repository in it, such as `freedesktopsdk/platform`.
+    #[serde(default)]
+    pub repository: String,
+    /// The image's layers, in the order the image stacks them, each pinned
+    /// by the digest of its blob and its size. The manifest that lists them
+    /// is not read: a manifest is a tag's to change, and a blob is its own
+    /// digest's.
+    #[serde(default)]
+    pub layers: Vec<Layer>,
+}
+
+/// A layer of an image: a blob the registry serves by its digest.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Layer {
+    /// `sha256:` and the blob's SHA-256, which pins it.
+    pub digest: String,
+    /// The blob's size in bytes, which a download is refused beyond.
+    pub size: u64,
+}
+
+impl Layer {
+    /// The blob's SHA-256 in lower-case hexadecimal, which is what
+    /// `sha256sum` prints; none for a digest that is not one.
+    pub fn sha256(&self) -> Option<&str> {
+        let hex = self.digest.strip_prefix("sha256:")?;
+        (is_hex(hex, 64) && !hex.bytes().any(|b| b.is_ascii_uppercase())).then_some(hex)
+    }
 }
 
 impl Source {
+    /// Whether the source is the layers of an image.
+    pub fn is_image(&self) -> bool {
+        !self.layers.is_empty()
+    }
+
     /// Where the source can be downloaded, as an SPDX download location.
     pub fn download(&self) -> String {
         if !self.url.is_empty() {
             return self.url.clone();
+        }
+        if let Some(layer) = self.layers.first() {
+            return format!(
+                "https://{}/v2/{}/blobs/{}",
+                self.registry, self.repository, layer.digest
+            );
         }
         format!("git+{}@{}", self.git, self.commit)
     }
@@ -619,11 +666,16 @@ fn check(ctx: &Ctx, recipe: &Recipe, dir: &Path) -> Result<()> {
     }
     let source = &recipe.source;
     let (git, archive) = (!source.git.is_empty(), !source.url.is_empty());
-    let kinds = usize::from(git) + usize::from(archive) + usize::from(source.rust_src);
+    let image = source.is_image();
+    let kinds =
+        usize::from(git) + usize::from(archive) + usize::from(image) + usize::from(source.rust_src);
     if kinds > 1 {
         return Err(Error::new(format!(
-            "{what}: a source is one of git, url and rust-src, not more"
+            "{what}: a source is one of git, url, layers and rust-src, not more"
         )));
+    }
+    if let Some(problem) = image_problem(source) {
+        return Err(Error::new(format!("{what}: {problem}")));
     }
     if source.rust_src && !recipe.toolchain {
         return Err(Error::new(format!("{what}: only a toolchain port builds rust-src")));
@@ -634,11 +686,11 @@ fn check(ctx: &Ctx, recipe: &Recipe, dir: &Path) -> Result<()> {
         && recipe.extra.is_empty()
     {
         return Err(Error::new(format!(
-            "{what}: a port needs a source: git and commit, url and sha256, rust-src, crates, Go \
-             modules or extra sources"
+            "{what}: a port needs a source: git and commit, url and sha256, an image's layers, \
+             rust-src, crates, Go modules or extra sources"
         )));
     }
-    if !git && (!source.commit.is_empty() || source.tag.is_some()) {
+    if !git && (!source.commit.is_empty() || (source.tag.is_some() && !image)) {
         return Err(Error::new(format!("{what}: commit and tag go with git")));
     }
     if !archive && (!source.sha256.is_empty() || !source.mirrors.is_empty()) {
@@ -715,14 +767,66 @@ fn check(ctx: &Ctx, recipe: &Recipe, dir: &Path) -> Result<()> {
                 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
                 && !s.starts_with(['.', '-'])
         };
-        if bundle.commands.is_empty() || !bundle.commands.iter().all(|c| plain(c)) {
+        // A bundle of libraries alone gives no command, and its manifest
+        // still names a program (manifest.json(5)).
+        let mut named = bundle.commands.iter().chain(&bundle.programs);
+        if (bundle.commands.is_empty() && bundle.programs.is_empty()) || !named.all(|c| plain(c)) {
             return Err(Error::new(format!(
-                "{what}: a bundle gives commands, each a name of letters, digits, `-`, `_` \
-                 and `.`"
+                "{what}: a bundle gives commands or programs, each a name of letters, digits, \
+                 `-`, `_` and `.`"
             )));
         }
     }
     Ok(())
+}
+
+/// What is wrong with `source` as the layers of an image, if anything: the
+/// registry is a host name, the repository a path of the names a registry
+/// takes, each layer's digest a SHA-256 and its size is not 0, and the tag
+/// it was pinned from, which says which image the layers are, is there.
+/// Nothing but the layers goes with a registry and a repository.
+fn image_problem(source: &Source) -> Option<String> {
+    if !source.is_image() {
+        return (!source.registry.is_empty() || !source.repository.is_empty())
+            .then(|| "registry and repository go with layers".to_string());
+    }
+    let name = |part: &str| {
+        !part.is_empty()
+            && !part.starts_with(['.', '_', '-'])
+            && part
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
+    };
+    let host = !source.registry.is_empty()
+        && source.registry.split('.').all(|label| {
+            !label.is_empty()
+                && !label.starts_with('-')
+                && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        });
+    if !host {
+        return Some(format!("registry `{}` is not a host name", source.registry));
+    }
+    if !source.repository.split('/').all(name) {
+        return Some(format!(
+            "repository `{}` is not a repository's name, such as library/alpine",
+            source.repository
+        ));
+    }
+    if source.tag.as_deref().is_none_or(str::is_empty) {
+        return Some("an image needs its tag, which says which image the layers are".to_string());
+    }
+    for layer in &source.layers {
+        if layer.sha256().is_none() {
+            return Some(format!(
+                "layer `{}` is not `sha256:` and 64 lower-case hexadecimal digits",
+                layer.digest
+            ));
+        }
+        if layer.size == 0 {
+            return Some(format!("layer {} is 0 bytes: the size pins the blob too", layer.digest));
+        }
+    }
+    None
 }
 
 /// What is wrong with `recipe`'s `series`, if anything: it is one or more
@@ -1709,6 +1813,8 @@ fn build_ports(ctx: &Ctx, rebuild: &[String], pack: bool) -> Result<Ports> {
             Some(rust_src(ctx)?.0)
         } else if !source.url.is_empty() {
             Some(fetch_archive(ctx, &recipe.name, source)?)
+        } else if source.is_image() {
+            Some(fetch_image(ctx, &recipe.name, source)?)
         } else if !source.git.is_empty() {
             Some(fetch(ctx, &recipe.name, &source.git, &source.commit, &source.paths)?)
         } else {
@@ -2090,6 +2196,141 @@ fn fetch_archive(ctx: &Ctx, name: &str, source: &Source) -> Result<PathBuf> {
     let _ = std::fs::remove_file(&file);
     write_file(&files, &listing(&dir)?)?;
     Ok(dir)
+}
+
+/// Fetches the layers of the image `source` names into
+/// `target/ports/sources`, once, each as the blob the registry serves by its
+/// digest, `layer-1.blob`, `layer-2.blob` and so on in the order the image
+/// stacks them, and checks each one's size and SHA-256 against the recipe.
+/// Returns the folder that holds them. The blobs stay packed: build.sh
+/// unpacks the files it keeps, in order, so that the rest of an image's
+/// files are never written. A blob is renamed to its name only once it has
+/// been checked, so a blob that is there with the pinned size is the one
+/// that was checked.
+fn fetch_image(ctx: &Ctx, name: &str, source: &Source) -> Result<PathBuf> {
+    let first = source.layers.first().and_then(Layer::sha256).unwrap_or_default();
+    let dir = ctx.target.join("ports/sources").join(format!("{name}-{}", &first[..12]));
+    let blobs: Vec<(PathBuf, &Layer)> = source
+        .layers
+        .iter()
+        .enumerate()
+        .map(|(at, layer)| (dir.join(format!("layer-{}.blob", at + 1)), layer))
+        .collect();
+    let size = |file: &Path| std::fs::metadata(file).ok().map(|meta| meta.len());
+    if blobs.iter().all(|(file, layer)| size(file) == Some(layer.size)) {
+        return Ok(dir);
+    }
+    process::create_dir(&dir)?;
+    let image = format!(
+        "{}/{}:{}",
+        source.registry,
+        source.repository,
+        source.tag.as_deref().unwrap_or_default()
+    );
+    step(&format!("Fetching the layers of {name}'s image, {image}"));
+    let token = registry_token(ctx, source)?;
+    // The token goes to curl in a file, so that no message of a failed
+    // command shows it.
+    let config = dir.join("curl.config");
+    let _ = std::fs::remove_file(&config);
+    crate::bundles::write_private(
+        &config,
+        &format!("header = \"Authorization: Bearer {token}\"\n"),
+    )?;
+    let fetched = blobs
+        .iter()
+        .filter(|(file, layer)| size(file) != Some(layer.size))
+        .try_for_each(|(file, layer)| fetch_layer(ctx, source, &config, file, layer));
+    let _ = std::fs::remove_file(&config);
+    fetched?;
+    Ok(dir)
+}
+
+/// Fetches the blob of `layer` from `source`'s registry into `file`, with
+/// the request headers `config` holds, and checks its size and SHA-256.
+fn fetch_layer(
+    ctx: &Ctx,
+    source: &Source,
+    config: &Path,
+    file: &Path,
+    layer: &Layer,
+) -> Result<()> {
+    let url =
+        format!("https://{}/v2/{}/blobs/{}", source.registry, source.repository, layer.digest);
+    let partial = file.with_extension("partial");
+    // The registry sends the blob from a storage service, to which curl
+    // does not take the token.
+    let mut cmd = Command::new("curl");
+    cmd.args(["--proto", "=https", "--tlsv1.2", "-fsSL", "--retry", "3", "--max-filesize"])
+        .arg(layer.size.to_string())
+        .arg("--config")
+        .arg(config)
+        .arg("-o")
+        .arg(&partial)
+        .arg(&url);
+    process::run(ctx, &mut cmd)?;
+    let got = std::fs::metadata(&partial).ok().map(|meta| meta.len());
+    let sum = process::sha256(ctx, &partial)?;
+    if got != Some(layer.size) || Some(sum.as_str()) != layer.sha256() {
+        let _ = std::fs::remove_file(&partial);
+        return Err(Error::new(format!(
+            "{url} has SHA-256 {sum} and {} bytes, not the {} and {} the recipe pins; not using it",
+            got.unwrap_or(0),
+            layer.digest,
+            layer.size
+        )));
+    }
+    std::fs::rename(&partial, file).context(|| format!("moving it to {}", file.display()))
+}
+
+/// A token that lets anyone pull `source`'s repository from its registry.
+/// The registry's `/v2/` answers without one and names, in its challenge,
+/// the service that gives tokens ([`bearer_challenge`]); that service gives
+/// one for a pull of the repository with no account.
+fn registry_token(ctx: &Ctx, source: &Source) -> Result<String> {
+    let mut cmd = Command::new("curl");
+    cmd.args(["--proto", "=https", "--tlsv1.2", "-sSI", "--retry", "3"])
+        .arg(format!("https://{}/v2/", source.registry));
+    let answer = process::output(ctx, &mut cmd)?;
+    let headers = String::from_utf8_lossy(&answer.stdout);
+    let Some((realm, service)) = bearer_challenge(&headers) else {
+        return Err(Error::new(format!(
+            "{} does not ask for a bearer token at /v2/: ob cannot pull from it",
+            source.registry
+        )));
+    };
+    let mut cmd = Command::new("curl");
+    cmd.args(["--proto", "=https", "--tlsv1.2", "-fsSL", "--retry", "3", "--get"])
+        .args(["--data-urlencode", &format!("service={service}")])
+        .args(["--data-urlencode", &format!("scope=repository:{}:pull", source.repository)])
+        .arg(&realm);
+    let answer = process::output(ctx, &mut cmd)?;
+    let body = String::from_utf8_lossy(&answer.stdout);
+    serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|reply| {
+            ["token", "access_token"].iter().find_map(|key| {
+                reply.get(key)?.as_str().filter(|t| !t.is_empty()).map(String::from)
+            })
+        })
+        .ok_or_else(|| Error::new(format!("{realm} gave no token for {}", source.repository)))
+}
+
+/// The token service a registry's `WWW-Authenticate: Bearer` challenge
+/// names, as (realm, service), from the headers of its answer. The realm
+/// is an https:// address, which ob sends the request to.
+fn bearer_challenge(headers: &str) -> Option<(String, String)> {
+    let line = headers.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("www-authenticate").then_some(value.trim())
+    })?;
+    let params = line.strip_prefix("Bearer ")?;
+    let param = |key: &str| {
+        let rest = &params[params.find(&format!("{key}=\""))? + key.len() + 2..];
+        Some(rest[..rest.find('"')?].to_string())
+    };
+    let realm = param("realm").filter(|realm| realm.starts_with("https://"))?;
+    Some((realm, param("service")?))
 }
 
 /// The files under `dir`, one line each with its size, in order: what
@@ -3673,6 +3914,129 @@ mod tests {
         )
         .unwrap();
         assert_eq!(fetch_bootstrap(&ctx, "go", &bootstrap).unwrap(), tree);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The layers of an image, as a recipe writes them.
+    const IMAGE: &str = r#"
+        registry = "registry-1.docker.io"
+        repository = "freedesktopsdk/platform"
+        tag = "25.08-x86_64"
+        [[layers]]
+        digest = "sha256:c941ef6db317ca33564e5ab2bdb75667a55db876648fd65953e4614d7dd60868"
+        size = 22603712
+        [[layers]]
+        digest = "sha256:4cce114f478cab3a53fe95cb9cb9ff945518127d954502cb69015670f428fc82"
+        size = 220796320
+    "#;
+
+    #[test]
+    fn an_images_layers_are_pinned_by_registry_repository_digest_and_size() {
+        let image: Source = toml::from_str(IMAGE).unwrap();
+        assert!(image.is_image());
+        assert_eq!(image_problem(&image), None);
+        assert_eq!(
+            image.download(),
+            "https://registry-1.docker.io/v2/freedesktopsdk/platform/blobs/\
+             sha256:c941ef6db317ca33564e5ab2bdb75667a55db876648fd65953e4614d7dd60868"
+        );
+        assert_eq!(image.release(), "25.08-x86_64");
+        for (from, to, wanted) in [
+            ("registry-1.docker.io", "", "is not a host name"),
+            ("registry-1.docker.io", "docker.io/../x", "is not a host name"),
+            ("registry-1.docker.io", "-x", "is not a host name"),
+            ("freedesktopsdk/platform", "", "is not a repository's name"),
+            ("freedesktopsdk/platform", "a//b", "is not a repository's name"),
+            ("freedesktopsdk/platform", "a/../b", "is not a repository's name"),
+            ("freedesktopsdk/platform", "A/b", "is not a repository's name"),
+            ("tag = \"25.08-x86_64\"\n", "", "needs its tag"),
+            ("sha256:c941", "md5:c941", "is not `sha256:`"),
+            (
+                "sha256:4cce114f478cab3a53fe95cb9cb9ff945518127d954502cb69015670f428fc82",
+                "sha256:4CCE114F478CAB3A53FE95CB9CB9FF945518127D954502CB69015670F428FC82",
+                "lower-case",
+            ),
+            ("size = 22603712", "size = 0", "is 0 bytes"),
+        ] {
+            let text = IMAGE.replacen(from, to, 1);
+            let broken: Source = toml::from_str(&text).unwrap();
+            let problem = image_problem(&broken).unwrap_or_default();
+            assert!(problem.contains(wanted), "{from} -> {to}: {problem}");
+        }
+        // A registry and a repository name layers to fetch from them.
+        let bare: Source = toml::from_str("registry = \"registry-1.docker.io\"").unwrap();
+        assert!(!bare.is_image());
+        assert!(image_problem(&bare).unwrap().contains("go with layers"));
+        assert_eq!(image_problem(&Source::default()), None);
+    }
+
+    #[test]
+    fn a_source_is_one_kind_and_an_image_has_no_commit() {
+        let recipe = |source: &str| {
+            let text = format!(
+                "name = \"base\"\nversion = \"1.0.0\"\nsummary = \"s\"\nlicense = \"MIT\"\n\
+                 homepage = \"https://example.org\"\n[source]\n{source}"
+            );
+            toml::from_str::<Recipe>(&text).unwrap()
+        };
+        let dir = scratch("image-recipe").join("base");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("build.sh"), "").unwrap();
+        let ctx = test_ctx(&dir);
+        let checked = |source: &str| check(&ctx, &recipe(source), &dir).map_err(|e| e.to_string());
+        let layers = IMAGE.replace("[[layers]]", "[[source.layers]]");
+        // The layers are a source of their own, and no other goes with them.
+        assert_eq!(checked(&layers).err(), None::<String>);
+        let with_url = format!("url = \"https://example.org/a.tar.xz\"\n{layers}");
+        assert!(checked(&with_url).unwrap_err().contains("one of git, url, layers and rust-src"));
+        let with_commit = format!("commit = \"{}\"\n{layers}", "0".repeat(40));
+        assert!(checked(&with_commit).unwrap_err().contains("commit and tag go with git"));
+        std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_registrys_challenge_names_its_token_service() {
+        let docker = "HTTP/2 401 \r\ncontent-type: application/json\r\n\
+                      www-authenticate: Bearer realm=\"https://auth.docker.io/token\",\
+                      service=\"registry.docker.io\"\r\n\r\n";
+        assert_eq!(
+            bearer_challenge(docker),
+            Some(("https://auth.docker.io/token".into(), "registry.docker.io".into()))
+        );
+        // Header names are not case-sensitive, and the order of the fields
+        // is the registry's.
+        let other = "WWW-Authenticate: Bearer service=\"ghcr.io\",realm=\"https://ghcr.io/token\"";
+        assert_eq!(
+            bearer_challenge(other),
+            Some(("https://ghcr.io/token".into(), "ghcr.io".into()))
+        );
+        for refused in [
+            "HTTP/2 200 \r\n",
+            "www-authenticate: Basic realm=\"registry\"",
+            "www-authenticate: Bearer realm=\"http://auth.example/token\",service=\"s\"",
+            "www-authenticate: Bearer realm=\"https://auth.example/token\"",
+        ] {
+            assert_eq!(bearer_challenge(refused), None, "{refused}");
+        }
+    }
+
+    #[test]
+    fn layers_that_are_there_whole_are_not_fetched_again() {
+        let dir = scratch("image-cached");
+        let ctx = test_ctx(&dir);
+        let image: Source = toml::from_str(IMAGE).unwrap();
+        // As fetch_image leaves them, but for their size: a layer is
+        // taken for the blob that was checked when it has the pinned size.
+        // No download is attempted for them: this test has no network, and
+        // a download would fail it.
+        let folder = ctx.target.join("ports/sources/base-c941ef6db317");
+        std::fs::create_dir_all(&folder).unwrap();
+        for (at, layer) in image.layers.iter().enumerate() {
+            let file =
+                std::fs::File::create(folder.join(format!("layer-{}.blob", at + 1))).unwrap();
+            file.set_len(layer.size).unwrap();
+        }
+        assert_eq!(fetch_image(&ctx, "base", &image).unwrap(), folder);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

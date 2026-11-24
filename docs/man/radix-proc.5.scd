@@ -41,7 +41,7 @@ This page describes _/processes_ as of Phase 13 of the roadmap.
 Each process's directory belongs to the user and group it acts for,
 with mode 0555. Its *status* is 0444, and its other files 0400, so
 another user sees a process's number, name and state but not its
-arguments, files or threads, unless the capability they look through
+arguments, files, memory or threads, unless the capability they look through
 has the bypass right (*radix-names*(2), ADR 0214).
 
 A service's _/processes_ is scoped (ADR 0473): Spark attaches in its view
@@ -157,6 +157,12 @@ _/processes/_*n*_/status_
 		*yes* while a tracer reads its system calls (*radix-trace*(2)),
 		else *no*.
 
+	*program*
+		The path of the program it runs (its interpreter, for a
+		script), from the root, as *exec* was given it. Left out when
+		the kernel does not know it, as for a program started from a
+		descriptor. (Since Phase 18.)
+
 	*directory*
 		Its working directory, last, as it named it: the C library
 		tells the kernel at each *exec* and *chdir*, and a child
@@ -191,6 +197,20 @@ _/processes/_*n*_/files_
 	*process*, *endpoint*, *random*, *kernel_log* and so on) and
 	*rights*. Rights are names joined by *+*, as *radix-capabilities*(7)
 	lists them, or *none*.
+
+_/processes/_*n*_/maps_
+	A line per region of its memory, lowest first, in the format of
+	Linux's _/proc/_*n*_/maps_ (*proc*(5)), which ported programs and
+	linuxd's _/proc_ read: the range as two hexadecimal addresses joined
+	by *-*; the access, *r*, *w* and *x* or *-* each, then *s* for memory
+	other address spaces may map too or *p* for private; the offset in
+	the file it maps, in hexadecimal; the device, always *00:00*; the
+	file's node number, or 0; and its name, padded to the 74th column as
+	Linux pads it: the file's path where the mapping keeps it, *[heap]*
+	for a Linux program's break, *[stack]* for its first thread's stack,
+	*[vdso]* and *[vvar]* for the vDSO and its clock page
+	(*radix-vdso*(7)). A region with no name ends after its node number
+	and a space. A newline in a path is written *\\012*.
 
 _/processes/mounts_
 	One line per mount, in the order they were made, of four fields
@@ -348,6 +368,7 @@ disk_written_bytes: 0
 voluntary_switches: 64
 involuntary_switches: 3
 traced: no
+program: /system/commands/nukesh
 directory: /home
 ```
 

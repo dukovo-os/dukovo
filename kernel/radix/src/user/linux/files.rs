@@ -21,10 +21,11 @@ use radix_abi::startup::{SLOT_FD_BASE, SLOT_PROCESS};
 use radix_abi::{Status, UserBuffer, file};
 use radix_cap::ObjectKind;
 use radix_hal::UserMode;
-use radix_linux::errno::{EBADF, EFAULT, EINVAL, EISDIR, EMFILE, ENOTDIR, ERANGE};
+use radix_linux::errno::{EACCES, EBADF, EFAULT, EINVAL, EISDIR, EMFILE, ENOENT, ENOTDIR, ERANGE};
 use radix_linux::flags;
 use radix_linux::records::{self, Stat, Time};
 
+use super::magic::{self, Lead};
 use super::paths::{self, Place};
 use super::{Error, Result, fail, is, method, results};
 use crate::Arch;
@@ -336,10 +337,76 @@ pub fn openat(
 ) -> Result<u64> {
     let open = Opening::of(flags as u32)?;
     let mode = (mode as u32) & 0o7777;
-    at(user, dirfd, address, false, |place| {
-        into_free(user, 0, |slot| open_into(me, user, place, &open, mode, slot))
-    })
+    following(
+        user,
+        dirfd,
+        &paths::read(address)?,
+        false,
+        |fd| open_descriptor(me, user, fd, &open),
+        |place| into_free(user, 0, |slot| open_into(me, user, place, &open, mode, slot)),
+    )
     .map(descriptor)
+}
+
+/// [`at_path`], for a call that follows a last link: a link of the
+/// process's own in /proc that the kernel answers leads where it points
+/// ([`magic::lead`]), and a descriptor's to `to_descriptor`, with the
+/// descriptor.
+pub(super) fn following<T>(
+    user: &UserRef,
+    dirfd: u64,
+    path: &[u8],
+    empty: bool,
+    to_descriptor: impl FnOnce(u64) -> Result<T>,
+    f: impl FnMut(&Place) -> Result<T>,
+) -> Result<T> {
+    match magic::lead(user, path)? {
+        Some(Lead::Descriptor(fd)) => to_descriptor(fd),
+        Some(Lead::Path(to)) => at_path(user, dirfd, &to, empty, f),
+        None => at_path(user, dirfd, path, empty, f),
+    }
+}
+
+/// The slot of descriptor `fd`, reached by its link in /proc: ENOENT if it
+/// is not open, as Linux's /proc has no link for it then.
+pub(super) fn linked_slot(user: &UserRef, fd: u64) -> Result<u32> {
+    let slot = paths::slot_of(fd).map_err(|_| Error::Errno(ENOENT))?;
+    kind_of(user, slot).map_err(|_| Error::Errno(ENOENT))?;
+    Ok(slot)
+}
+
+/// Opens descriptor `fd` again by its link in /proc, as `open` asks: a
+/// copy of its capability with the access the open asks for, which it
+/// must have (EACCES), in the lowest free descriptor; its slot. The copy
+/// shares the descriptor's description, its offset with it, where Linux
+/// opens a file again with a description of its own; a pipe's and a
+/// socket's are shared on Linux too.
+fn open_descriptor(me: &ThreadRef, user: &UserRef, fd: u64, open: &Opening) -> Result<u32> {
+    let from = linked_slot(user, fd)?;
+    let rights = rights_of(me, user, from)?;
+    if open.native.flags.contains(OpenFlags::DIRECTORY)
+        && kind_of(user, from)? != ObjectKind::Directory
+    {
+        return fail(ENOTDIR);
+    }
+    let access = Rights::READ.union(Rights::WRITE);
+    let asked = open.native.rights.intersection(access);
+    if !rights.contains(asked) {
+        return fail(EACCES);
+    }
+    let keep = Rights(rights.0 & !access.0).union(asked);
+    let slot = into_free(user, 0, |slot| {
+        let args = capability::DeriveArgs { to: slot, rights: keep, badge: 0 };
+        method(me, user, from, capability::DERIVE, args.encode()).map(|_| slot)
+    })?;
+    if open.native.close_on_exec {
+        let args = capability::FlagsArgs { set: true, flags: capability::SlotFlags::CLOSE_ON_EXEC };
+        if let Err(err) = method(me, user, slot, capability::FLAGS, args.encode()) {
+            delete(me, user, slot);
+            return Err(err);
+        }
+    }
+    Ok(slot)
 }
 
 /// Opens `path`, from `dirfd`, as `openat` with the Linux flags
@@ -353,9 +420,14 @@ pub fn open_path(
     linux_flags: u32,
 ) -> Result<u32> {
     let open = Opening::of(linux_flags)?;
-    at_path(user, dirfd, path, false, |place| {
-        into_free(user, 0, |slot| open_into(me, user, place, &open, 0, slot))
-    })
+    following(
+        user,
+        dirfd,
+        path,
+        false,
+        |fd| open_descriptor(me, user, fd, &open),
+        |place| into_free(user, 0, |slot| open_into(me, user, place, &open, 0, slot)),
+    )
 }
 
 /// A Linux open: the native open its flags ask for, and the two facts of
@@ -633,7 +705,7 @@ fn status_at(
     let empty = flags & flags::AT_EMPTY_PATH != 0;
     let follow = flags & flags::AT_SYMLINK_NOFOLLOW == 0;
     let path_flags = if follow { PathFlags::NONE } else { PathFlags::NO_FOLLOW };
-    at(user, dirfd, address, empty, |place| {
+    let stat = |place: &Place| {
         if names_descriptor(place, empty) {
             return status_of(me, user, place.slot, buffer);
         }
@@ -644,7 +716,14 @@ fn status_at(
             buffer: out,
         };
         directory(user, place, directory::STAT, args.encode(), &[]).map(drop)
-    })
+    };
+    let path = paths::read(address)?;
+    if !follow {
+        // The link itself, as linuxd's /proc gives it.
+        return at_path(user, dirfd, &path, empty, stat);
+    }
+    let descriptor = |fd| status_of(me, user, linked_slot(user, fd)?, buffer);
+    following(user, dirfd, &path, empty, descriptor, stat)
 }
 
 /// Reads the FileStatus a method wrote at `buffer` in the program's

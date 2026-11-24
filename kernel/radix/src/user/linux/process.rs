@@ -602,11 +602,9 @@ const HOSTNAME_FILE: &[u8] = b"system/settings/hostname";
 /// The name a machine has until it is given one.
 const DEFAULT_HOSTNAME: &[u8] = b"dukovo";
 
-/// The release a Linux program sees: a Linux it can run on.
-const RELEASE: &[u8] = b"6.1.0-dukovo";
-
 /// `uname`: "Linux", the machine's name as Dukovo's C library reads it,
-/// [`RELEASE`], the kernel's version, and "x86_64" (ADR 0610).
+/// the release and version of `radix_linux::records`, and "x86_64" (ADR
+/// 0610).
 pub fn uname(user: &UserRef, buffer: u64) -> Result<u64> {
     let mut name = [0u8; 66];
     let read = exec::read_from_root(&user.process, HOSTNAME_FILE, &mut name).unwrap_or(0);
@@ -617,8 +615,7 @@ pub fn uname(user: &UserRef, buffer: u64) -> Result<u64> {
         name if name.is_empty() || name.len() > 64 || name.contains(&0) => DEFAULT_HOSTNAME,
         name => name,
     };
-    let version = concat!("#1 SMP Dukovo ", env!("CARGO_PKG_VERSION"));
     let mut out = [0u8; records::UTSNAME_SIZE];
-    records::utsname(nodename, RELEASE, version.as_bytes(), &mut out);
+    records::utsname(nodename, records::RELEASE.as_bytes(), records::VERSION.as_bytes(), &mut out);
     copy_out(buffer, &out).map(|()| 0)
 }

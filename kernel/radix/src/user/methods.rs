@@ -76,6 +76,7 @@ fn version(kind: ObjectKind) -> u32 {
         ObjectKind::Firewall => radix_abi::firewall::VERSION,
         ObjectKind::KernelSettings => radix_abi::kernel_settings::VERSION,
         ObjectKind::EventQueue => radix_abi::event_queue::VERSION,
+        ObjectKind::LinuxCall => radix_abi::linux_call::VERSION,
         _ => 0,
     }
 }
@@ -184,6 +185,7 @@ pub fn call(
         (ObjectKind::KernelSettings, _) => super::settings::method(user, cap, info.label, &args),
         (ObjectKind::Device, _) => super::device::method(user, found, info.label, &args),
         (ObjectKind::EventQueue, _) => super::queue::method(user, found, info.label, &args),
+        (ObjectKind::LinuxCall, _) => super::linux::forward::method(user, slot, info.label, &args),
         (ObjectKind::Directory, _) => {
             super::files::directory_method(user, found, info.label, &args)
         }
@@ -510,14 +512,10 @@ fn address_space_method(user: &UserRef, slot: u32, label: u32, args: &[u64; 8]) 
                 }
                 _ => return Err(Kernel::InvalidArgument.status(4)),
             }
-            // A mapping that may run, now or after `mprotect`, keeps the
-            // file's path for crash records (ADR 0530); a writable one never
-            // runs, as no page is both writable and runnable.
-            let name = (access != Some(radix_hal::UserAccess::ReadWrite))
-                .then(|| {
-                    alloc::sync::Arc::try_new_in(file.opened, HEAP.with(Flags::MAY_SLEEP)).ok()
-                })
-                .flatten();
+            // The mapping keeps the file's path, for crash records of a
+            // mapping that runs (ADR 0530) and for `/processes/<n>/maps`;
+            // with no memory for it, it has no name.
+            let name = alloc::sync::Arc::try_new_in(file.opened, HEAP.with(Flags::MAY_SLEEP)).ok();
             let source = FileSource {
                 node: file.at.node.clone(),
                 base: a.offset,

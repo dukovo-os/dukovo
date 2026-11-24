@@ -225,7 +225,7 @@ fn project_file(files: &[String], here: &Path) -> Option<(PathBuf, String)> {
 }
 
 /// What `run` runs.
-enum Target {
+pub(crate) enum Target {
     /// A bundle's program, and what the person said of its permissions.
     Bundle(Found, Vec<Grant>),
     /// A command of a line's add-ons (ADR 0388).
@@ -236,7 +236,7 @@ enum Target {
 /// said of its permissions. When it names several lines of an ID, the
 /// one [`pick`] picks in the working folder (ADR 0387); a command no
 /// bundle adds may be an add-on's (ADR 0388).
-fn locate(find: &Find) -> Result<Target, Fail> {
+pub(crate) fn locate(find: &Find) -> Result<Target, Fail> {
     let (_stream, mut input) = ask(&Request::Run { find: find.clone() }, None).map_err(fail)?;
     let mut found = None;
     let mut lines = None;
@@ -734,7 +734,7 @@ pub fn system_program(id: &str, name: &str) -> Result<SystemProgram, String> {
 }
 
 /// The caller's environment, as pairs.
-fn caller_environment() -> Vec<(String, String)> {
+pub(crate) fn caller_environment() -> Vec<(String, String)> {
     std::env::vars_os()
         .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
         .collect()
@@ -742,13 +742,13 @@ fn caller_environment() -> Vec<(String, String)> {
 
 /// Makes the folder `path` if it is not there, mode 0700, and checks that
 /// it is a folder of `uid`'s, not a link.
-fn own_folder(path: &str, uid: u32) -> Result<(), String> {
+pub(crate) fn own_folder(path: &str, uid: u32) -> Result<(), String> {
     folder_of(path, uid, 0o700)
 }
 
 /// Makes the folder at `path` with `mode` if it is not there, and checks
 /// that it is a folder of `uid`'s.
-fn folder_of(path: &str, uid: u32, mode: u32) -> Result<(), String> {
+pub(crate) fn folder_of(path: &str, uid: u32, mode: u32) -> Result<(), String> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
     match std::fs::DirBuilder::new().mode(mode).create(path) {
         Err(e) if e.kind() != io::ErrorKind::AlreadyExists => {
@@ -897,7 +897,7 @@ mod sandbox {
 }
 
 #[cfg(target_os = "radix")]
-mod sandbox {
+pub(crate) mod sandbox {
     use std::io::{BufReader, Write};
     use std::os::fd::AsRawFd;
     use std::os::unix::net::UnixStream;
@@ -910,7 +910,7 @@ mod sandbox {
     use radix_abi::directory::{self, OpenFlags};
     use radix_abi::{Status, network, process, startup};
 
-    use super::{ALWAYS, DISCOVERY, NETWORK, Plan, SHARED, VOLUMES, stopped_line};
+    use super::{ALWAYS, DISCOVERY, Given, NETWORK, Plan, SHARED, VOLUMES, stopped_line};
     use crate::bundled::APP_DATA;
     use crate::bundles::keyring;
     use crate::bundles::protocol::Answer;
@@ -923,14 +923,14 @@ mod sandbox {
 
     /// To read and change, and to copy and pass on, as `fork` and `exec`
     /// need; never the bypass right, and never control.
-    const GIVEN: Rights = Rights(
+    pub(crate) const GIVEN: Rights = Rights(
         Rights::READ.bits() | Rights::WRITE.bits() | Rights::COPY.bits() | Rights::TRANSFER.bits(),
     );
     /// To read, and to copy and pass on.
-    const READ_ONLY: Rights =
+    pub(crate) const READ_ONLY: Rights =
         Rights(Rights::READ.bits() | Rights::COPY.bits() | Rights::TRANSFER.bits());
 
-    fn failed(what: String) -> impl Fn(Status) -> String {
+    pub(crate) fn failed(what: String) -> impl Fn(Status) -> String {
         move |status| format!("{what}: {}", sys::status_name(status.0))
     }
 
@@ -1206,7 +1206,7 @@ mod sandbox {
             process::share(&SYS, s.child, from, to, Rights::ALL, 0)
                 .map_err(failed("giving it its capabilities".into()))?;
         }
-        give_network(plan, s)?;
+        give_network(plan.given, s.child, s.network)?;
         let argv: Vec<&[u8]> = plan.argv.iter().map(Vec::as_slice).collect();
         let block =
             signin::exec_block_in(plan.data.as_bytes(), plan.path.as_bytes(), &argv, plan.env);
@@ -1238,7 +1238,7 @@ mod sandbox {
     /// local right, ADR 0337) as it asks, then each range of ports to
     /// listen on, in order. A required range the caller cannot listen on
     /// stops it; an optional one is left out.
-    fn give_network(plan: &Plan<'_>, s: &Slots) -> Result<(), String> {
+    pub(crate) fn give_network(given: &Given, child: u32, network: u32) -> Result<(), String> {
         let kept = Rights::COPY.union(Rights::TRANSFER);
         let held = held();
         let end = startup::SLOT_NETWORK + startup::NETWORK_SLOTS;
@@ -1247,23 +1247,23 @@ mod sandbox {
             if to >= end {
                 return Err("it asks for more ranges of ports than a program holds".into());
             }
-            network::restrict(&SYS, from, s.network, first, count, right.union(kept))
+            network::restrict(&SYS, from, network, first, count, right.union(kept))
                 .map_err(failed("its network".into()))?;
-            let shared = process::share(&SYS, s.child, s.network, to, Rights::ALL, 0);
-            let _ = capability::delete(&SYS, s.network);
+            let shared = process::share(&SYS, child, network, to, Rights::ALL, 0);
+            let _ = capability::delete(&SYS, network);
             shared.map_err(failed("giving it its network".into()))?;
             to += 1;
             Ok(())
         };
-        let reach = (if plan.given.outbound { Rights::SEND.bits() } else { 0 })
-            | (if plan.given.local { Rights::LOCAL.bits() } else { 0 });
+        let reach = (if given.outbound { Rights::SEND.bits() } else { 0 })
+            | (if given.local { Rights::LOCAL.bits() } else { 0 });
         for &(slot, rights, first, past) in &held {
             let has = rights.bits() & reach;
             if let Some(right) = Rights::from_bits(has).filter(|_| has != 0 && first < past) {
                 give(slot, first, past - first, right)?;
             }
         }
-        for &(ports, required) in &plan.given.listen {
+        for &(ports, required) in &given.listen {
             let (first, past) = (u32::from(ports.first), u32::from(ports.last) + 1);
             let covering = held.iter().find(|&&(_, rights, from, until)| {
                 rights.bits() & Rights::RECEIVE.bits() != 0 && from <= first && past <= until

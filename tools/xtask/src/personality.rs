@@ -469,6 +469,26 @@ mod tests {
         assert_eq!(judged(&elf(ET_DYN, &parts)), linux(None));
     }
 
+    /// glibc's libc.so.6 can be run, and names the loader as its
+    /// interpreter, so a copy with an execute bit is a Linux program to
+    /// this check: the Linux base bundle keeps it without the bit
+    /// (ports/linux-base/build.sh), which a loader's mapping does not need.
+    /// The loader itself names none and is a library.
+    #[test]
+    fn a_library_that_names_an_interpreter_is_a_program_only_with_an_execute_bit() {
+        let flags = [(DT_FLAGS_1, 1)];
+        let libc = Parts {
+            interpreter: Some(b"/lib64/ld-linux-x86-64.so.2"),
+            dynamic: Some(&flags),
+            ..Parts::default()
+        };
+        let libc = elf(ET_DYN, &libc);
+        assert_eq!(judged(&libc), linux(Some("/lib64/ld-linux-x86-64.so.2")));
+        assert_eq!(judged_with_mode(&libc, 0o644), Verdict::NotAProgram);
+        let loader = Parts { dynamic: Some(&flags), ..Parts::default() };
+        assert_eq!(judged(&elf(ET_DYN, &loader)), Verdict::NotAProgram);
+    }
+
     #[test]
     fn a_position_independent_file_without_a_dynamic_table_is_a_program() {
         assert_eq!(judged(&elf(ET_DYN, &Parts::default())), linux(None));

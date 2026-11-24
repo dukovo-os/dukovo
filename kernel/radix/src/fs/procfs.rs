@@ -101,7 +101,7 @@ pub fn write_escaped_str(out: &mut dyn Write, text: &str, special: &[u8]) -> fmt
 const FILES: [&str; 6] = ["loadavg", "meminfo", "mounts", "stat", "swaps", "uptime"];
 
 /// The files of a process's directory.
-const PROCESS_FILES: [&str; 4] = ["cmdline", "files", "status", "threads"];
+const PROCESS_FILES: [&str; 5] = ["cmdline", "files", "maps", "status", "threads"];
 
 /// Node numbers: fixed ones for the root and its files, and one per
 /// process and per file of its directory above them.
@@ -303,6 +303,7 @@ impl Listing for ProcessDir {
         let write: fn(&ProcessRef, &mut Text) -> fmt::Result = match name {
             "cmdline" => cmdline,
             "files" => files,
+            "maps" => maps,
             "status" => status,
             _ => threads,
         };
@@ -441,7 +442,20 @@ fn status(process: &ProcessRef, text: &mut Text) -> fmt::Result {
     writeln!(text, "voluntary_switches: {voluntary}")?;
     writeln!(text, "involuntary_switches: {involuntary}")?;
     writeln!(text, "traced: {}", if process.traced() { "yes" } else { "no" })?;
-    let directory = process.posix.lock().directory.clone();
+    let (image, directory) = {
+        let posix = process.posix.lock();
+        (posix.image.clone(), posix.directory.clone())
+    };
+    // The program's path from the root, as `exec` was given it; left out
+    // when it was cut or is not known.
+    if let Some((path, false)) = image.as_deref().and_then(|opened| opened.path()) {
+        let path = &path[path.iter().position(|&b| b != b'/').unwrap_or(path.len())..];
+        if !path.is_empty() {
+            text.write_str("program: /")?;
+            write_escaped(text, path, LINE_SPECIAL)?;
+            text.write_char('\n')?;
+        }
+    }
     if let Some(directory) = directory {
         text.write_str("directory: ")?;
         write_escaped(text, &directory, LINE_SPECIAL)?;
@@ -589,6 +603,76 @@ fn files(process: &ProcessRef, text: &mut Text) -> fmt::Result {
         text.write_char('\n')?;
     }
     Ok(())
+}
+
+/// `/processes/<number>/maps`: its memory's regions as Linux's
+/// `/proc/<n>/maps` lines (proc(5)): the range, the access, `s` for
+/// shared or `p` for private, the offset in the file, the device (always
+/// `00:00`), the file's node number, and the file's path or what the
+/// kernel put there (`[heap]` for a Linux program's break, `[stack]`,
+/// `[vdso]`, `[vvar]`), padded to the column Linux starts it at.
+fn maps(process: &ProcessRef, text: &mut Text) -> fmt::Result {
+    let Some(space) = process.space() else { return Ok(()) };
+    // Taken before the space's lock, as `brk` takes it.
+    let heap = process.linux.on().then(|| *process.linux.brk.lock());
+    let mut result = Ok(());
+    space.each_mapping(&mut |mapping| {
+        if result.is_ok() {
+            result = map_line(text, mapping, heap.map(|brk| (brk.start, brk.end)));
+        }
+    });
+    result
+}
+
+/// The column where a line of `maps` names its mapping, as Linux's
+/// `show_map_vma` pads to it on a 64-bit machine.
+const MAPS_NAME_COLUMN: usize = 25 + 8 * 6 - 1;
+
+/// One line of `maps`, for `mapping`, of a space whose break spans
+/// `heap`.
+fn map_line(
+    text: &mut Text,
+    mapping: &crate::user::memory::Mapping<'_>,
+    heap: Option<(u64, u64)>,
+) -> fmt::Result {
+    use crate::user::memory::Place;
+    use radix_hal::UserAccess;
+    let (read, write, run) = match mapping.access {
+        None => ('-', '-', '-'),
+        Some(UserAccess::Read) => ('r', '-', '-'),
+        Some(UserAccess::ReadWrite) => ('r', 'w', '-'),
+        Some(UserAccess::ReadExecute) => ('r', '-', 'x'),
+    };
+    let shared = if mapping.shared { 's' } else { 'p' };
+    let mut head = TextBuf::<96>::new();
+    write!(
+        head,
+        "{:08x}-{:08x} {read}{write}{run}{shared} {:08x} 00:00 {} ",
+        mapping.start, mapping.end, mapping.offset, mapping.node,
+    )?;
+    text.write_str(head.as_str())?;
+    let in_heap = |(start, end): (u64, u64)| {
+        start < end && mapping.node == 0 && mapping.start >= start && mapping.end <= end
+    };
+    let name: Option<&[u8]> = match mapping.place {
+        Place::Vdso => Some(b"[vdso]"),
+        Place::Vvar => Some(b"[vvar]"),
+        Place::Stack => Some(b"[stack]"),
+        Place::Other if heap.is_some_and(in_heap) => Some(b"[heap]"),
+        Place::Other => mapping.name.and_then(|opened| opened.path()).map(|(path, _)| path),
+    };
+    if let Some(name) = name.filter(|name| !name.is_empty()) {
+        for _ in head.as_str().len()..MAPS_NAME_COLUMN {
+            text.write_char(' ')?;
+        }
+        text.write_char(' ')?;
+        if name[0] != b'/' && name[0] != b'[' {
+            text.write_char('/')?;
+        }
+        // A newline in a path is written as Linux writes it, `\012`.
+        write_escaped(text, name, b"\n")?;
+    }
+    text.write_char('\n')
 }
 
 /// `/processes/mounts`.

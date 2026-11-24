@@ -545,6 +545,8 @@ linux-programs kernel/lib/linux/ kernel/radix/src/user/linux/ tools/xtask/src/pe
 linux-programs userspace/linux/ userspace/posix/hello.c userspace/posix/locks.c
 linux-programs userspace/posix/epoll.c kernel/radix/src/user/queue.rs
 linux-programs abi/terminal.ridl kernel/lib/tty/ kernel/radix/src/fs/tty.rs
+linux-view kernel/lib/linux/ kernel/radix/src/user/linux/ ports/linux-base/
+linux-view userspace/linux/view.c tools/xtask/src/personality.rs
 live-bios image/grub/live.cfg.in tools/xtask/src/release.rs userspace/programs/system-release/
 live-bios userspace/programs/systools/src/releases.rs
 live-dvd image/grub/live.cfg.in kernel/drivers/ahci/ kernel/drivers/scsi/ kernel/fs/iso9660/

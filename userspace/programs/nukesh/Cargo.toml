@@ -15,6 +15,9 @@ indexmap = "2"
 # The key events of the line editor, for Ctrl-X Ctrl-E (MIT).
 crossterm = { version = "0.29.0", default-features = false }
 libc = "0.2.191"
+# The kernel's reader of ELF programs, which tells a Linux program from a
+# Dukovo one as exec does (ADR 0622).
+radix-elf = { path = "../../../kernel/lib/elf" }
 # Its styles, which reedline paints with (MIT).
 nu-ansi-term = "0.50.3"
 reedline = { version = "0.52.1", default-features = false }
