@@ -268,37 +268,6 @@ pub mod msr {
     pub const TSC_DEADLINE: u32 = 0x6e0;
     pub const XFD: u32 = 0x1c4;
     pub const XFD_ERR: u32 = 0x1c5;
-    pub const POWER_CTL: u32 = 0x1fc;
-}
-
-/// `MSR_POWER_CTL` bit 1: the core may turn a wait in C1 into C1E, which
-/// lowers its voltage and takes longer to leave.
-const C1E_PROMOTION: u64 = 1 << 1;
-
-/// Stops this CPU's firmware from turning the idle loop's C1 into C1E,
-/// as Linux's `intel_idle` does on Intel's cores. Leaving C1E takes about
-/// 10 µs where leaving C1 takes 2 (Linux's tables for Skylake), and a
-/// server pays it on every request that wakes an idle CPU. Returns
-/// whether the promotion is off: never under a hypervisor, on other
-/// vendors' CPUs, or on one without `MSR_POWER_CTL`.
-pub fn stop_c1e_promotion() -> bool {
-    if !is_intel() || feature::hypervisor() || !feature::monitor() {
-        return false;
-    }
-    if family_model_stepping().0 != 6 {
-        return false;
-    }
-    // SAFETY: reading MSR_POWER_CTL changes nothing, and a CPU without it
-    // faults, which `rdmsr_safe` turns into `None`.
-    let Some(control) = (unsafe { rdmsr_safe(msr::POWER_CTL) }) else {
-        return false;
-    };
-    if control & C1E_PROMOTION != 0 {
-        // SAFETY: the register exists, as the read showed, and clearing
-        // the bit changes only how deep an idle core goes.
-        unsafe { wrmsr(msr::POWER_CTL, control & !C1E_PROMOTION) };
-    }
-    true
 }
 
 /// Reads a model-specific register.

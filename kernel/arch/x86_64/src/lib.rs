@@ -85,10 +85,6 @@ use radix_hal::{
 /// Whether idle CPUs wait with MONITOR and MWAIT.
 static IDLE_MWAIT: AtomicBool = AtomicBool::new(false);
 
-/// Whether the boot CPU stopped its firmware's promotion of C1 to C1E
-/// (`cpu::stop_c1e_promotion`); each other CPU does the same as it starts.
-static C1E_STOPPED: AtomicBool = AtomicBool::new(false);
-
 /// The x86-64 implementation of the HAL traits.
 #[derive(Clone, Copy, Debug)]
 pub struct Arch;
@@ -120,13 +116,7 @@ impl Cpu for Arch {
     }
 
     fn idle_mode() -> (bool, &'static str) {
-        if !IDLE_MWAIT.load(Ordering::Relaxed) {
-            (false, "HLT")
-        } else if C1E_STOPPED.load(Ordering::Relaxed) {
-            (true, "MWAIT in C1, the firmware's C1E promotion off")
-        } else {
-            (true, "MWAIT")
-        }
+        if IDLE_MWAIT.load(Ordering::Relaxed) { (true, "MWAIT") } else { (false, "HLT") }
     }
 
     fn virtualized() -> bool {
@@ -1284,7 +1274,6 @@ impl Platform for Arch {
         // Under a hypervisor MWAIT is usually not passed through, and when
         // it is emulated it may spin; HLT lets the host run something else.
         IDLE_MWAIT.store(cpu::feature::monitor() && !cpu::feature::hypervisor(), Ordering::Relaxed);
-        C1E_STOPPED.store(cpu::stop_c1e_promotion(), Ordering::Relaxed);
         // Before any driver starts a device.
         iommu::init(flags.value("iommu") == Some("off"));
     }
