@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# A diagnosis, not a parity row: serverbench's PostgreSQL rows with one
+# more pass of each traced by rtrace(1), which prints the server's and
+# its backends' system calls as TRACE lines in the step's output.
+
+about = "PostgreSQL's pgbench passes with the server's system calls counted by rtrace, for finding where Dukovo's time goes"
+time = "20m"
+host_needs = ["scp"]
+
+[[step]]
+host = "sh {here}/../services/copy-bundle.sh org.postgresql.postgresql {machine} {machine-port:22}"
+expect = "copied: org.postgresql.postgresql"
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge org.postgresql.postgresql > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.postgresql.postgresql.dkv | tail -1'"
+root = true
+expect = "installed org.postgresql.postgresql"
+[[step]]
+run = "tune set benchmark"
+root = true
+expect = "the profile is benchmark"
+[[step]]
+run = "sh -c 'SERVERBENCH_TRACE=1 /system/tests/posix/serverbench postgresql 2>&1'"
+expect = "serverbench: done"
+[[step]]
+run = "tune set balanced"
+root = true
+expect = "the profile is balanced"
+[[step]]
+run = "bundle remove --for-everyone --purge org.postgresql.postgresql"
+root = true
+expect = "removed org.postgresql.postgresql"

@@ -33,6 +33,21 @@
 // valkey-benchmark prints three rows and one such line, group
 // server_valkey_run; if neither file can be read there is no line.
 //
+// After that line comes the CPU time of the pass's client, the program
+// that drove the server (this program for nginx and PHP-FPM, pgbench,
+// valkey-benchmark, and the php CLI, which is the whole of its row),
+//
+//     BENCHCLIENT group=<name> rounds=<operations> user_ns=<n> system_ns=<n>
+//
+// so that what is left of BENCHCOUNT's user and system time is the
+// server's.
+//
+// With SERVERBENCH_TRACE set in its environment, on Radix, each
+// PostgreSQL row runs one more pass with rtrace(1) counting the system
+// calls of the server and of the backends it starts, and prints the
+// table, each line after "TRACE <row> ". That pass prints no row: tracing
+// slows the server.
+//
 // The servers run as the account `bench` (the program drops root first,
 // since PostgreSQL's initdb refuses root), with their data in a folder it
 // makes in /tmp and removes at the end, with the servers stopped. A
@@ -62,8 +77,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -275,12 +292,37 @@ static size_t log_count;
 // What the servers and tools run with.
 static char *environment[5];
 
+// The CPU time of the last program run_tool ran, as its wait gave it.
+static uint64_t tool_user_ns, tool_system_ns;
+
 // A time under 10 ns, as the clock row's fraction of a nanosecond, gets
 // four decimals, as in bench.c: the lab holds the two systems' clocks to
 // 3%, finer than two decimals of 0.2 ns.
 static void print_row(const char *name, double ns, uint64_t iterations) {
 	printf("BENCH name=%s ns=%.*f iterations=%llu\n", name, ns < 10 ? 4 : 2, ns,
 	       (unsigned long long)iterations);
+	fflush(stdout);
+}
+
+static uint64_t timeval_ns(struct timeval time) {
+	return (uint64_t)time.tv_sec * 1000000000u + (uint64_t)time.tv_usec * 1000u;
+}
+
+// This program's own CPU time so far, 0 for both if it cannot be read.
+static void own_time(uint64_t *user_ns, uint64_t *system_ns) {
+	struct rusage usage;
+	*user_ns = *system_ns = 0;
+	if(getrusage(RUSAGE_SELF, &usage) == 0) {
+		*user_ns = timeval_ns(usage.ru_utime);
+		*system_ns = timeval_ns(usage.ru_stime);
+	}
+}
+
+// Prints the CPU time of a pass's client as the BENCHCLIENT line of a pass
+// of `rounds` operations.
+static void print_client(const char *group, uint64_t user_ns, uint64_t system_ns, uint64_t rounds) {
+	printf("BENCHCLIENT group=%s rounds=%llu user_ns=%llu system_ns=%llu\n", group, (unsigned long long)rounds,
+	       (unsigned long long)user_ns, (unsigned long long)system_ns);
 	fflush(stdout);
 }
 
@@ -454,10 +496,13 @@ static void run_tool(const char *name, char *const argv[]) {
 	remember_log(name);
 	pid_t pid = spawn(log, argv);
 	int status;
-	while(waitpid(pid, &status, 0) < 0) {
+	struct rusage usage;
+	while(wait4(pid, &status, 0, &usage) < 0) {
 		if(errno != EINTR)
 			fail(name, "cannot wait for it: %s", strerror(errno));
 	}
+	tool_user_ns = timeval_ns(usage.ru_utime);
+	tool_system_ns = timeval_ns(usage.ru_stime);
 	if(!WIFEXITED(status))
 		fail(name, "ended by signal %d", WTERMSIG(status));
 	if(WEXITSTATUS(status) != 0)
@@ -819,12 +864,16 @@ static void http_row(const char *row, const char *path, int keep_alive, uint64_t
 	http_row_now = row;
 	http_pass(path, keep_alive, requests, expected);
 	for(int pass = 0; pass < PASSES; pass++) {
+		uint64_t user_before, system_before, user_after, system_after;
+		own_time(&user_before, &system_before);
 		struct counts before = counts_now();
 		uint64_t started = now_ns();
 		http_pass(path, keep_alive, requests, expected);
 		struct counts after = counts_now();
+		own_time(&user_after, &system_after);
 		report(row, started, requests);
 		print_counts(row, before, after, requests);
+		print_client(row, user_after - user_before, system_after - system_before, requests);
 	}
 }
 
@@ -900,6 +949,7 @@ static void php_rows(void) {
 		struct counts after = counts_now();
 		print_row("server_php_compute", ns / PHP_COMPUTE_PASSES, PHP_COMPUTE_PASSES);
 		print_counts("server_php_compute", before, after, PHP_COMPUTE_PASSES);
+		print_client("server_php_compute", tool_user_ns, tool_system_ns, PHP_COMPUTE_PASSES);
 	}
 }
 
@@ -945,6 +995,7 @@ static void valkey_rows(void) {
 		print_row("server_valkey_get", 1e9 / csv_rate("valkey-benchmark", "GET"), VALKEY_REQUESTS);
 		print_row("server_valkey_lpush", 1e9 / csv_rate("valkey-benchmark", "LPUSH"), VALKEY_REQUESTS);
 		print_counts("server_valkey_run", before, after, 3 * (uint64_t)VALKEY_REQUESTS);
+		print_client("server_valkey_run", tool_user_ns, tool_system_ns, 3 * (uint64_t)VALKEY_REQUESTS);
 	}
 	valkey_benchmark("get", VALKEY_PIPELINED_REQUESTS, VALKEY_PIPELINE);
 	for(int pass = 0; pass < PASSES; pass++) {
@@ -953,6 +1004,7 @@ static void valkey_rows(void) {
 		struct counts after = counts_now();
 		print_row("server_valkey_get_pipelined", 1e9 / csv_rate("valkey-benchmark", "GET"), VALKEY_PIPELINED_REQUESTS);
 		print_counts("server_valkey_get_pipelined", before, after, VALKEY_PIPELINED_REQUESTS);
+		print_client("server_valkey_get_pipelined", tool_user_ns, tool_system_ns, VALKEY_PIPELINED_REQUESTS);
 	}
 	stop_server(valkey);
 }
@@ -988,7 +1040,52 @@ static void pgbench_row(const char *row, int select_only, int per_client) {
 		struct counts after = counts_now();
 		print_row(row, 1e9 / tps, rounds);
 		print_counts(row, before, after, rounds);
+		print_client(row, tool_user_ns, tool_system_ns, rounds);
 	}
+}
+
+// Prints each line of `path` after "TRACE <row> ".
+static void print_traced(const char *row, const char *path) {
+	FILE *file = fopen(path, "r");
+	char line[512];
+	while(file && fgets(line, sizeof(line), file))
+		printf("TRACE %s %s%s", row, line, strchr(line, '\n') ? "" : "\n");
+	if(file)
+		fclose(file);
+	fflush(stdout);
+}
+
+// With SERVERBENCH_TRACE set and rtrace there (Radix), one more pass of a
+// pgbench row, with rtrace counting the calls of `server` and of the
+// backends it starts for the pass; prints its table, what the machine did
+// meanwhile, and the transactions per second traced, as TRACE lines.
+static void traced_pgbench_pass(const char *row, pid_t server, int select_only, int per_client) {
+	static const char rtrace[] = "/system/commands/rtrace";
+	if(!getenv("SERVERBENCH_TRACE") || access(rtrace, X_OK) != 0)
+		return;
+	char *table = format("%s/trace-%s.txt", work, row);
+	char *log = format("%s/rtrace.log", work);
+	char *argv[] = {(char *)rtrace, "-c", "-f", "-q", "-o", table, "-p", format("%d", (int)server), NULL};
+	pid_t tracing = spawn(log, argv);
+	// Time for rtrace to attach, which it does before anything else.
+	struct timespec attach = {.tv_sec = 1, .tv_nsec = 0};
+	nanosleep(&attach, NULL);
+	uint64_t rounds = (uint64_t)CONNECTIONS * (uint64_t)per_client;
+	struct counts before = counts_now();
+	double tps = pgbench_tps(select_only, per_client);
+	struct counts after = counts_now();
+	kill(tracing, SIGINT);
+	int status;
+	while(waitpid(tracing, &status, 0) < 0 && errno == EINTR) {}
+	printf("TRACE %s traced pass: %.1f ns per transaction, %llu transactions; pgbench user_ns=%llu system_ns=%llu\n", row, 1e9 / tps,
+	       (unsigned long long)rounds, (unsigned long long)tool_user_ns, (unsigned long long)tool_system_ns);
+	if(before.valid && after.valid && after.radix)
+		printf("TRACE %s machine: switches=%llu user_ns=%llu system_ns=%llu faults=%llu preemptions=%llu\n", row,
+		       (unsigned long long)(after.switches - before.switches), (unsigned long long)(after.user_ns - before.user_ns),
+		       (unsigned long long)(after.system_ns - before.system_ns), (unsigned long long)(after.faults - before.faults),
+		       (unsigned long long)(after.preemptions - before.preemptions));
+	print_traced(row, table);
+	print_traced(row, log);
 }
 
 static void postgresql_rows(void) {
@@ -1005,7 +1102,9 @@ static void postgresql_rows(void) {
 	char *load[] = {program("org.postgresql.postgresql", "pgbench"), "-h", work, "-U", "bench", "-i", "-s", "10", "-q", "postgres", NULL};
 	run_tool("pgbench", load);
 	pgbench_row("server_postgresql_select", 1, PGBENCH_SELECT_PER_CLIENT);
+	traced_pgbench_pass("server_postgresql_select", postgres->pid, 1, PGBENCH_SELECT_PER_CLIENT);
 	pgbench_row("server_postgresql_tpcb", 0, PGBENCH_TPCB_PER_CLIENT);
+	traced_pgbench_pass("server_postgresql_tpcb", postgres->pid, 0, PGBENCH_TPCB_PER_CLIENT);
 	stop_server(postgres);
 }
 
