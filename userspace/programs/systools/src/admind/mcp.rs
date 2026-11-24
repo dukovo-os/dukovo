@@ -12,5 +12,9 @@
 //! - [`offer`] says what a client may be offered of the actions, and how
 //!   far its scopes reach. The tools, the page and `admind --read`
 //!   ([`read`](super::read)) all ask it, so that they cannot disagree.
+//! - [`rpc`] reads and writes JSON-RPC, and [`protocol`] says what each
+//!   method means in the revisions of MCP that are spoken (ADR 0692).
 
 pub(crate) mod offer;
+pub(crate) mod protocol;
+pub(crate) mod rpc;
