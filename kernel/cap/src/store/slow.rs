@@ -736,12 +736,8 @@ impl<A: Allocator + Clone, K: Located> Capabilities<A, K> {
         }
         // The object table's lock comes last of the store's.
         let mut table = hold_objects.then(|| self.objects.lock());
-        let mut view = TreeView {
-            store: self,
-            forest: &mut forest,
-            held,
-            table: table.as_deref_mut(),
-        };
+        let mut view =
+            TreeView { store: self, forest: &mut forest, held, table: table.as_deref_mut() };
         f(&mut view)
     }
 
