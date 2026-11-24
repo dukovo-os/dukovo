@@ -87,10 +87,21 @@ for each thread (tcache), which takes no lock and no atomic operation.
 
 ## Consequences
 
-- The patched mlibc, built for Linux and run on the container host:
-  52 to 56 ns a round on one thread before, 10 ns after (glibc 19 to
-  22 ns); 413 to 435 ns on two threads before, 30.5 ns after (glibc
-  21 ns).
+- serverbench's rows, Dukovo before and after against Linux (lab run
+  20261124-230701-2bac): `server_malloc_one` 65.3 to 15.6 ns on the
+  OptiPlex (Linux 19.1 ns) and 25.3 to 5.1 ns under QEMU (Linux 7.9 ns);
+  `server_malloc_two` 290.2 to 24.1 ns on the OptiPlex (Linux 21.9 ns)
+  and 125.1 to 9.9 ns under QEMU (Linux 9.3 ns). The patched mlibc, built
+  for Linux and run on the container host, gave the same picture: 10 ns
+  a round on one thread, from 52 to 56 ns, and 30.5 ns on two, from 413
+  to 435 ns.
+- The server rows did not move beyond their run-to-run spread: on the
+  OptiPlex PostgreSQL's TPC-B is 1.24 times Linux's time (1.27 to 1.31
+  before), its select 1.11 (1.12 to 1.14), PHP-FPM 1.14 (1.10 to 1.14)
+  and pipelined Valkey GETs 1.19 (1.17 to 1.23). The servers' extra user
+  time is mostly elsewhere than malloc. The idle machine uses 0.3 MiB
+  more on the OptiPlex and 1.3 MiB more under QEMU, within the
+  idle-memory row's budget.
 - A double free of a block in the thread's cache, and a write through a
   dangling pointer to a cached block's link, end the process with
   SIGABRT where they corrupted the pool before; a double free of a block
