@@ -38,6 +38,7 @@ pub const MODELS: &[(&str, &str)] = &[
     ("kernel/fs/vfs/tla/MountRefs.tla", "MountRefs.cfg"),
     ("kernel/radix/tla/Futex.tla", "Futex.cfg"),
     ("kernel/radix/tla/Futex.tla", "FutexBatch.cfg"),
+    ("kernel/radix/tla/ClockPage.tla", "ClockPage.cfg"),
     ("kernel/radix/tla/Poll.tla", "Poll.cfg"),
     ("kernel/radix/tla/EventQueue.tla", "EventQueue.cfg"),
     ("kernel/radix/tla/Timers.tla", "Timers.cfg"),

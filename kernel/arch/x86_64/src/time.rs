@@ -106,6 +106,53 @@ pub fn record_start() {
     TSC_START.store(cpu::rdtsc(), Ordering::Relaxed);
 }
 
+/// IA32_TSC_AUX, which RDTSCP and RDPID read.
+const IA32_TSC_AUX: u32 = 0xc000_0103;
+
+/// Puts this CPU's number, `index`, in IA32_TSC_AUX, where the vDSO's
+/// `getcpu` reads it with RDPID or RDTSCP (ADR 0616), if the processor
+/// has either. Called on every CPU as it starts.
+pub fn set_cpu_number(index: usize) {
+    if cpu::feature::rdtscp() || cpu::feature::rdpid() {
+        // SAFETY: the register exists where either instruction does, and
+        // only those instructions read it.
+        unsafe { cpu::wrmsr(IA32_TSC_AUX, index as u64) };
+    }
+}
+
+/// Lets programs read the TSC clock themselves: writes the TSC's start
+/// and scale, and how a program finds its CPU's number, into the wall
+/// clock's page ([`clock::ClockPage`]), which programs map. Called once
+/// the clock is calibrated, on the boot CPU.
+pub fn share_clock() {
+    let ns_per_tick = NS_PER_TICK.load(Ordering::Relaxed);
+    if ns_per_tick == 0 {
+        return;
+    }
+    let cpu_number = if cpu::feature::rdpid() {
+        clock::ClockPage::CPU_RDPID
+    } else if cpu::feature::rdtscp() {
+        clock::ClockPage::CPU_RDTSCP
+    } else {
+        0
+    };
+    crate::rtc::WALL_CLOCK.set_counter(clock::Counter {
+        start: TSC_START.load(Ordering::Relaxed),
+        ns_per_tick,
+        flags: clock::ClockPage::COUNTER | cpu_number,
+    });
+    SHARED.store(true, Ordering::Release);
+}
+
+/// Whether programs may read the TSC clock ([`share_clock`]).
+static SHARED: AtomicBool = AtomicBool::new(false);
+
+/// The physical address of the clock page, once programs may read it.
+pub fn clock_page() -> Option<u64> {
+    let page = core::ptr::from_ref(crate::rtc::WALL_CLOCK.page()) as u64;
+    SHARED.load(Ordering::Acquire).then(|| crate::memory::image_phys(page))
+}
+
 /// Nanoseconds since boot, or 0 before calibration.
 pub fn now_ns() -> u64 {
     let ns_per_tick = NS_PER_TICK.load(Ordering::Relaxed);
