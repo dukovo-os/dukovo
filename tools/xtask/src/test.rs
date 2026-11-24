@@ -167,6 +167,7 @@ pub const KERNEL_LIBRARIES: &[&str] = &[
     "radix-btrfs",
     "radix-cap",
     "radix-crosec",
+    "radix-display",
     "radix-elf",
     "radix-ena",
     "radix-exfat",
@@ -3882,6 +3883,7 @@ pub const PROVED_LIBRARIES: &[&str] = &[
     "radix-ahci",
     "radix-nvme",
     "radix-net",
+    "radix-display",
 ];
 
 /// The programs on Rust's standard library with Kani proof harnesses,

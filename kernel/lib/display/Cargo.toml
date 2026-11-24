@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "radix-display"
+description = "The display layer of the Radix kernel: the model of cards, screens, pipes, planes and pictures, the check of a change, the stack of holders, the beat, and the reader of a monitor's data"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+radix-abi = { path = "../../abi" }
+
+[lints]
+workspace = true

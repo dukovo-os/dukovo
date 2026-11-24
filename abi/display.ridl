@@ -1,0 +1,625 @@
+// SPDX-FileCopyrightText: 2026 The Dukovo contributors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! Screens (release 1.1, ADR 0700): the cards, screens, pipes, planes and
+//! pictures of the display layer, and the one checked change that puts
+//! pictures on screens.
+//!
+//! _/devices/display/control_ (radix-files(7)) is how a program draws on
+//! the machine's screens. Each description of it is a _holder_. The
+//! layer keeps its holders in a stack with the kernel's log at the
+//! bottom, and the one on top is in front: only it changes what the
+//! screens show. The front is passed, never taken: its holder lends it
+//! with LEND to a holder whose file it has, and gets it back with RETURN
+//! or when the borrower ends. The one exception is the kernel's log,
+//! which gives way to the first holder that makes a change while no other
+//! holder is in the stack. The file is root's, mode 0600: a service is
+//! given it by its service file (service.toml(5)), and a desktop gets a
+//! description from the service that lends to it, over a socket.
+//!
+//! The layer describes hardware as five kinds of thing. A _card_ is one
+//! graphics device. A _screen_ is a socket a monitor plugs into. A _pipe_
+//! makes one stream of frames in one mode and feeds one screen or, as a
+//! mirror, several. A _plane_ is one picture a card blends into a pipe's
+//! frames: the main plane, the pointer's, or an overlay. A _picture_ is
+//! pixels with a size and a format (ADR 0701). Cards, screens, pipes and
+//! planes have numbers that are good across the whole layer and are never
+//! used twice; LIST gives them and GET says what each is. Pictures and
+//! values are a holder's own, numbered from 1.
+//!
+//! A picture's pixels are the pages of a memory file (a file of
+//! _/devices/shm_ or of memfd_create) that the program maps and draws
+//! in: MAKE_BUFFER sizes such a file as a card wants it, and MAKE_PICTURE
+//! names a part of one as a picture. The picture holds its pages while it
+//! lives, so cutting the file short takes nothing from under a screen.
+//! A picture can instead be one the card keeps: the program maps nothing
+//! and sends rows with PUT, as a text console does. A kept picture holds
+//! its pixels only while its holder is in front; a holder that comes back
+//! to the front sends them again.
+//!
+//! CHANGE takes a list of entries, each a thing, one of its properties
+//! and a value. The layer builds the state the list asks for from the
+//! state the holder last made, checks it whole against every card it
+//! names, and only then makes it: all of it or, when an entry fails,
+//! none, with the entry and the reason written back. A change shows at
+//! its pipes' next _beat_, the moment a new frame starts. A card with no
+//! beat of its own gets one from the kernel's clock at the mode's rate
+//! (ADR 0703), and that is both cards of release 1.1.
+//!
+//! A holder reads DisplayEvent structures from the file, whole ones, as
+//! many as fit: a read waits for one unless the file is non-blocking, and
+//! fails with invalid_argument if the buffer cannot hold one. `poll`
+//! finds the file readable while one waits. A holder that leaves more
+//! than EVENTS_KEPT unread loses the oldest and reads an EVENT_OVERFLOW
+//! first.
+//!
+//! A holder that is not in front keeps its pictures and the state it
+//! made. Its CHANGE (but for CHECK_ONLY), PUT and MOVE_POINTER fail with
+//! busy. When it comes to the front the layer makes its state again by
+//! itself, setting no mode where the mode is the one that shows; if a
+//! screen of that state has gone meanwhile, nothing is made, and the
+//! holder, which was told with EVENT_SCREEN, makes a new change.
+//!
+//! _/devices/display/attention_ is held by the one service that shows
+//! trusted prompts (ADR 0708). Release 1.1 makes the file and its rule
+//! that one description holds it; the secure key that brings its holder
+//! to the front comes with the input devices.
+
+module display;
+
+/// LIST's and GET's kind of thing: a graphics device and its driver.
+const KIND_CARD: u32 = 1;
+/// A socket that a monitor plugs into.
+const KIND_SCREEN: u32 = 2;
+/// The part of a card that makes one stream of frames.
+const KIND_PIPE: u32 = 3;
+/// One picture that a card blends into a pipe's frames.
+const KIND_PLANE: u32 = 4;
+
+/// radix-file(2)'s `control` request that writes a Thing to `buffer` for
+/// every card, screen, pipe and plane, as many as fit, and returns how
+/// many there are.
+const LIST: u32 = 0x44530001;
+/// Reads a Get from `buffer` and writes the part it asks of the thing it
+/// names over it: PART_INFO is the thing's CardInfo, ScreenInfo, PipeInfo
+/// or PlaneInfo; PART_MODES is a screen's Mode structures, the preferred
+/// one first; PART_MONITOR_DATA is the bytes its monitor describes itself
+/// with (EDID). Returns the bytes written. Fails with invalid_argument if
+/// the thing has no such part or `buffer` cannot hold it, and with
+/// not_found if there is no such thing.
+const GET: u32 = 0x44530002;
+/// Reads a Buffer from `buffer`, makes the memory file it names long
+/// enough for a picture of its size and format on its card, and writes
+/// back the row length and the bytes the card wants. Needs the write
+/// right on that file.
+const MAKE_BUFFER: u32 = 0x44530003;
+/// Reads a Picture from `buffer`, makes the picture, and writes back its
+/// number. A holder has at most PICTURES_MAX.
+const MAKE_PICTURE: u32 = 0x44530004;
+/// Lets go of the picture or value whose number is `argument`. Fails with
+/// busy while the holder's state shows the picture or uses the value.
+const DROP: u32 = 0x44530005;
+/// Reads a Blob and the value's bytes after it from `buffer`, keeps the
+/// value, and writes back its number: for a property whose value does
+/// not fit an entry. A holder has at most BLOBS_MAX.
+const MAKE_BLOB: u32 = 0x44530006;
+/// Reads a Change and its Entry structures from `buffer`, checks the
+/// state they ask for and makes it. When an entry fails, the call fails
+/// with invalid_argument and the Change written back names the entry and
+/// the reason. Fails with busy for a holder that is not in front, unless
+/// CHECK_ONLY is set, and while an earlier change of the holder still
+/// waits for the beat of one of the same pipes, unless NEWEST_WINS is
+/// set.
+const CHANGE: u32 = 0x44530007;
+/// Moves a pointer plane at once, apart from the beat and from any change
+/// that waits: `argument` holds the plane in its high 32 bits, the
+/// column in bits 16 to 31 and the row in bits 0 to 15, both signed.
+const MOVE_POINTER: u32 = 0x44530008;
+/// Reads a Put, its PutRect structures and the rows after them from
+/// `buffer`, and writes the rows into a picture the card keeps. The
+/// screen shows them at once if the picture is on a plane.
+const PUT: u32 = 0x44530009;
+/// Asks for an EVENT_BEAT at the next beat of the pipe whose number is
+/// `argument`, with no change.
+const ASK_BEAT: u32 = 0x4453000a;
+/// Lends the front to the holder whose description is in the caller's
+/// slot `argument`. Fails with busy unless the caller is in front, and
+/// with invalid_argument if the slot's file is no holder or is in the
+/// stack already.
+const LEND: u32 = 0x4453000b;
+/// Gives the front back to the holder that lent it. If that holder has
+/// ended, the front goes to the one it had it from, and to the kernel's
+/// log when no holder is left.
+const RETURN: u32 = 0x4453000c;
+
+/// GET's part: what the thing is.
+const PART_INFO: u32 = 0;
+/// GET's part: a screen's modes.
+const PART_MODES: u32 = 1;
+/// GET's part: the bytes a screen's monitor describes itself with.
+const PART_MONITOR_DATA: u32 = 2;
+
+/// The most pictures a holder has.
+const PICTURES_MAX: u32 = 4096;
+/// The most values a holder has.
+const BLOBS_MAX: u32 = 64;
+/// The most bytes of a value.
+const BLOB_BYTES_MAX: u32 = 65536;
+/// The most entries of one change.
+const ENTRIES_MAX: u32 = 1024;
+/// The most rectangles of one PUT.
+const PUT_RECTS_MAX: u32 = 256;
+/// The most pixels a picture has along a side.
+const SIDE_MAX: u32 = 16384;
+/// How many events a holder may leave unread.
+const EVENTS_KEPT: u32 = 256;
+
+/// 32 bits a pixel, blue in the lowest byte, the top byte unused
+/// (DRM_FORMAT_XRGB8888, Wayland's xrgb8888). Every main plane takes it.
+const FORMAT_XRGB8888: u32 = 0x34325258;
+/// As FORMAT_XRGB8888 with see-through in the top byte, the colours
+/// already multiplied by it (DRM_FORMAT_ARGB8888). Every pointer plane
+/// takes it.
+const FORMAT_ARGB8888: u32 = 0x34325241;
+/// 10 bits a colour (DRM_FORMAT_XRGB2101010). No card of release 1.1
+/// takes it.
+const FORMAT_XRGB2101010: u32 = 0x30335258;
+/// 10 bits a colour and 2 of see-through (DRM_FORMAT_ARGB2101010). No
+/// card of release 1.1 takes it.
+const FORMAT_ARGB2101010: u32 = 0x30335241;
+/// A 16-bit float a colour (DRM_FORMAT_ABGR16161616F). No card of release
+/// 1.1 takes it.
+const FORMAT_ABGR16161616F: u32 = 0x48344241;
+/// Video, 8 bits, colour at half size (DRM_FORMAT_NV12). No card of
+/// release 1.1 takes it.
+const FORMAT_NV12: u32 = 0x3231564e;
+/// Video, 10 bits, colour at half size (DRM_FORMAT_P010). No card of
+/// release 1.1 takes it.
+const FORMAT_P010: u32 = 0x30313050;
+
+/// CardInfo's `kind`: the picture the boot loader left (ADR 0705).
+const CARD_FIRMWARE: u32 = 1;
+/// A virtio graphics card (ADR 0704).
+const CARD_VIRTIO: u32 = 2;
+
+/// CardInfo's `flags`: its screens come and go while the system runs.
+const CARD_HOT_PLUG: u32 = 1;
+/// A pipe of it feeds more than one screen.
+const CARD_MIRRORS: u32 = 2;
+/// It sets modes; without this each screen has the one mode it was
+/// found in.
+const CARD_SETS_MODES: u32 = 4;
+/// The host shows the program's own pages, so nothing is copied.
+const CARD_SHARED_PAGES: u32 = 8;
+
+/// ScreenInfo's `flags`: a monitor is plugged in.
+const SCREEN_PLUGGED: u32 = 1;
+/// The monitor takes high dynamic range.
+const SCREEN_HDR: u32 = 2;
+/// The monitor takes a variable refresh rate.
+const SCREEN_VARIABLE_REFRESH: u32 = 4;
+/// The card did not confirm a change of it in time, and shows nothing
+/// more on it.
+const SCREEN_FAILED: u32 = 8;
+
+/// PipeInfo's `flags`: it makes frames.
+const PIPE_IS_ACTIVE: u32 = 1;
+
+/// PlaneInfo's `kind`: the picture that fills the pipe's frame.
+const PLANE_MAIN: u32 = 1;
+/// The pointer's picture, moved with MOVE_POINTER.
+const PLANE_POINTER: u32 = 2;
+/// A picture the card blends over or under the main one.
+const PLANE_OVERLAY: u32 = 3;
+
+/// PlaneInfo's `flags`: the card draws the picture at a size other than
+/// its own.
+const PLANE_SCALES: u32 = 1;
+
+/// Mode's `flags`: the mode the monitor, or the host's window, asks for.
+const MODE_PREFERRED: u32 = 1;
+
+/// A pipe's property: whether it makes frames, 0 or 1.
+const PIPE_ACTIVE: u32 = 1;
+/// A pipe's mode: the number of a BLOB_MODE value.
+const PIPE_MODE: u32 = 2;
+/// Whether a pipe's beat follows its pictures (variable refresh), 0 or
+/// 1. No card of release 1.1 takes 1.
+const PIPE_VARIABLE_REFRESH: u32 = 3;
+/// A pipe's colour table: the number of a BLOB_COLOR_TABLE value, or 0
+/// for none. No card of release 1.1 takes one.
+const PIPE_COLOR_TABLE: u32 = 4;
+/// The pipe that feeds a screen, or 0 for none.
+const SCREEN_PIPE: u32 = 16;
+/// The bits a colour that a screen is sent: 8, 10 or 12. No card of
+/// release 1.1 takes more than 8.
+const SCREEN_DEPTH: u32 = 17;
+/// A screen's high dynamic range details: the number of a BLOB_HDR
+/// value, or 0 for none. No card of release 1.1 takes one.
+const SCREEN_HDR_DETAILS: u32 = 18;
+/// The pipe a plane's picture is blended into, or 0 for none.
+const PLANE_PIPE: u32 = 32;
+/// A plane's picture: its number, or 0 for none.
+const PLANE_PICTURE: u32 = 33;
+/// The part of the picture a plane shows, as a rectangle: the column in
+/// bits 0 to 15, the row in bits 16 to 31, the width in bits 32 to 47
+/// and the height in bits 48 to 63. All 0 is the whole picture.
+const PLANE_SOURCE: u32 = 34;
+/// Where in the pipe's frame a plane shows, as PLANE_SOURCE packs a
+/// rectangle, with the column and the row signed. A width and a height
+/// of 0 stand for the size of the part shown, so all 0 is that part at
+/// the top left corner.
+const PLANE_PLACE: u32 = 35;
+/// A plane's place in the order the card blends in, the lowest first.
+const PLANE_ORDER: u32 = 36;
+/// How solid a plane is, from 0, unseen, to 65535.
+const PLANE_OPACITY: u32 = 37;
+/// A plane's turn: 0, 90, 180 or 270 degrees.
+const PLANE_TURN: u32 = 38;
+/// The point of a pointer plane's picture that MOVE_POINTER places: the
+/// column in bits 0 to 15 and the row in bits 16 to 31.
+const PLANE_HOT_SPOT: u32 = 39;
+/// A rectangle of a plane's picture that changed, as PLANE_SOURCE packs
+/// one. A change may carry many for a plane; with none, a change that
+/// names the plane's picture says all of it changed.
+const PLANE_CHANGED: u32 = 40;
+
+/// Change's `flags`: asks whether the change would work, and makes
+/// nothing.
+const CHECK_ONLY: u32 = 1;
+/// Lets the change blank a screen for a moment, as a new mode does.
+/// Without it such a change fails with REASON_WOULD_BLANK.
+const MAY_BLANK: u32 = 2;
+/// Returns once the check has passed. An EVENT_SHOWN follows for each
+/// pipe the change touches.
+const NO_WAIT: u32 = 4;
+/// Shows the change at once, in the middle of a frame if need be.
+const NOW: u32 = 8;
+/// Takes the place of a change of the holder that still waits for the
+/// beat, which then ends with an EVENT_REPLACED.
+const NEWEST_WINS: u32 = 16;
+
+/// Change's `reason`: no entry failed.
+const REASON_NONE: u32 = 0;
+/// There is no such thing.
+const REASON_NO_THING: u32 = 1;
+/// The thing has no such property.
+const REASON_NO_PROPERTY: u32 = 2;
+/// The value is not one the property takes.
+const REASON_BAD_VALUE: u32 = 3;
+/// The card does not do what the entry asks.
+const REASON_NOT_OFFERED: u32 = 4;
+/// The change would blank a screen, and MAY_BLANK is not set.
+const REASON_WOULD_BLANK: u32 = 5;
+/// No monitor is plugged into the screen.
+const REASON_UNPLUGGED: u32 = 6;
+/// The things are on different cards.
+const REASON_OTHER_CARD: u32 = 7;
+/// The plane does not take the picture's format.
+const REASON_FORMAT: u32 = 8;
+/// The picture, or the part of it shown, does not fit the plane.
+const REASON_SIZE: u32 = 9;
+/// The screen does not take the mode.
+const REASON_MODE: u32 = 10;
+/// A pipe that makes frames has no mode, or feeds no screen.
+const REASON_INCOMPLETE: u32 = 11;
+
+/// Blob's `kind`: a Mode.
+const BLOB_MODE: u32 = 1;
+/// A colour table: for red, then green, then blue, the entries a pipe's
+/// table has, 16 bits each.
+const BLOB_COLOR_TABLE: u32 = 2;
+/// High dynamic range details, as a monitor's data lays out its static
+/// metadata (CTA-861.3).
+const BLOB_HDR: u32 = 3;
+
+/// Picture's `flags`: the card keeps the pixels and PUT writes them;
+/// `file`, `offset` and `row_bytes` are not read.
+const PICTURE_KEPT: u32 = 1;
+
+/// DisplayEvent's `kind`: a change made with NO_WAIT shows. `thing` is
+/// the pipe, `time_ns` the beat it showed at, `count` that beat's number,
+/// `cookie` the change's, and `deadline_ns` the last moment a change can
+/// be asked for and still show at the pipe's next beat.
+const EVENT_SHOWN: u32 = 1;
+/// A change gave way to a newer one before it showed. `cookie` is the
+/// change's.
+const EVENT_REPLACED: u32 = 2;
+/// A beat ASK_BEAT asked for, with the fields of EVENT_SHOWN and no
+/// cookie.
+const EVENT_BEAT: u32 = 3;
+/// A screen came, went or changed. `thing` is the screen, or 0 when
+/// cards came or went and LIST should be asked again.
+const EVENT_SCREEN: u32 = 4;
+/// The holder is in front.
+const EVENT_FRONT: u32 = 5;
+/// The holder is no longer in front.
+const EVENT_BACK: u32 = 6;
+/// The holder this one lent the front to ended without giving it back.
+/// An EVENT_FRONT follows.
+const EVENT_BORROWER_ENDED: u32 = 7;
+/// The card did not confirm a change within a second. `thing` is the
+/// pipe and `cookie` the change's.
+const EVENT_FAILED: u32 = 8;
+/// Events were lost, the oldest, because more than EVENTS_KEPT waited.
+const EVENT_OVERFLOW: u32 = 9;
+
+/// LIST's answer for one thing.
+struct Thing {
+    /// Its number.
+    id: u32;
+    /// What it is: a KIND_*.
+    kind: u32;
+    /// The card it is of; a card's own number for a card.
+    card: u32;
+    /// Its place among the things of its kind on its card, from 0.
+    index: u32;
+}
+
+/// What GET reads: the thing and the part of it asked for.
+struct Get {
+    /// The thing's number.
+    thing: u32;
+    /// A PART_*.
+    part: u32;
+}
+
+/// GET's PART_INFO of a card.
+struct CardInfo {
+    /// Its number.
+    id: u32;
+    /// What drives it: a CARD_*.
+    kind: u32;
+    /// CARD_* flag bits.
+    flags: u32;
+    /// How many screens it has.
+    screens: u32;
+    /// How many pipes it has.
+    pipes: u32;
+    /// How many planes it has.
+    planes: u32;
+    /// The widest picture it shows.
+    width_max: u32;
+    /// The tallest picture it shows.
+    height_max: u32;
+    /// Its name, padded with zeros: "firmware0", "virtio0".
+    name: [u8; 16];
+    /// What it is, in words, padded with zeros.
+    model: [u8; 32];
+}
+
+/// One way a screen can be driven. Two modes are the same when their
+/// width, height and refresh rate are.
+struct Mode {
+    /// Width in pixels.
+    width: u32;
+    /// Height in pixels.
+    height: u32;
+    /// Frames in 1000 seconds.
+    refresh_mhz: u32;
+    /// MODE_* bits.
+    flags: u32;
+    /// The pixel clock in kHz, or 0 where the card needs no timings, as
+    /// no card of release 1.1 does.
+    clock_khz: u32;
+    /// Where in a line the sync pulse starts, in pixels.
+    h_sync_start: u16;
+    /// Where it ends.
+    h_sync_end: u16;
+    /// The pixels of a whole line, blanking included.
+    h_total: u16;
+    /// The line a frame's sync pulse starts at.
+    v_sync_start: u16;
+    /// The line it ends at.
+    v_sync_end: u16;
+    /// The lines of a whole frame, blanking included.
+    v_total: u16;
+}
+
+/// GET's PART_INFO of a screen.
+struct ScreenInfo {
+    /// Its number.
+    id: u32;
+    /// Its card.
+    card: u32;
+    /// SCREEN_* flag bits.
+    flags: u32;
+    /// The pipe that feeds it, or 0.
+    pipe: u32;
+    /// The monitor's width in millimetres, or 0 if it does not say.
+    width_mm: u32;
+    /// Its height in millimetres, or 0.
+    height_mm: u32;
+    /// How many modes PART_MODES gives.
+    modes: u32;
+    /// How many bytes PART_MONITOR_DATA gives.
+    monitor_data_bytes: u32;
+    /// The slowest refresh rate the monitor follows, in frames in 1000
+    /// seconds, or 0.
+    refresh_min_mhz: u32;
+    /// The fastest, or 0.
+    refresh_max_mhz: u32;
+    /// The brightest the monitor shows, in candelas a square metre, or 0
+    /// if it does not say.
+    luminance_max: u32;
+    /// The monitor's model number.
+    product: u32;
+    /// Its serial number, or 0.
+    serial: u32;
+    /// The bits a colour the monitor takes at most, or 0 if it does not
+    /// say.
+    depth: u8;
+    /// Always 0.
+    reserved: [u8; 3];
+    /// The monitor's maker, three letters padded with a zero.
+    maker: [u8; 4];
+    /// The monitor's name, padded with zeros.
+    name: [u8; 16];
+}
+
+/// GET's PART_INFO of a pipe.
+struct PipeInfo {
+    /// Its number.
+    id: u32;
+    /// Its card.
+    card: u32;
+    /// PIPE_IS_* flag bits.
+    flags: u32;
+    /// How many entries its colour table has, or 0 if it has none.
+    color_table_entries: u32;
+    /// The nanoseconds from one beat to the next, or 0 while it makes no
+    /// frames.
+    beat_ns: u64;
+    /// The number of its latest beat.
+    beat_count: u64;
+    /// When that beat was, on the clock radix-process(2)'s `clock` calls
+    /// monotonic.
+    beat_time_ns: u64;
+    /// Its mode; all zeros while it makes no frames.
+    mode: Mode;
+}
+
+/// GET's PART_INFO of a plane.
+struct PlaneInfo {
+    /// Its number.
+    id: u32;
+    /// Its card.
+    card: u32;
+    /// What it is for: a PLANE_MAIN, PLANE_POINTER or PLANE_OVERLAY.
+    kind: u32;
+    /// PLANE_SCALES and later flag bits.
+    flags: u32;
+    /// The pipe it is blended into, or 0.
+    pipe: u32;
+    /// The one pipe it can be blended into, or 0 if it can be any of its
+    /// card's.
+    fixed_pipe: u32;
+    /// The widest picture it takes.
+    width_max: u32;
+    /// The tallest picture it takes.
+    height_max: u32;
+    /// The formats it takes, FORMAT_* numbers, padded with zeros.
+    formats: [u32; 8];
+}
+
+/// What MAKE_BUFFER reads and writes back.
+struct Buffer {
+    /// The caller's slot of the memory file.
+    file: u32;
+    /// The card the picture is for.
+    card: u32;
+    /// The picture's format: a FORMAT_*.
+    format: u32;
+    /// Its width in pixels.
+    width: u32;
+    /// Its height in pixels.
+    height: u32;
+    /// Written back: the bytes from one row to the next.
+    row_bytes: u32;
+    /// Written back: the bytes of the picture, which the file is now at
+    /// least as long as.
+    bytes: u64;
+}
+
+/// What MAKE_PICTURE reads and writes back.
+struct Picture {
+    /// The caller's slot of the memory file that holds the pixels.
+    file: u32;
+    /// The card the picture is for.
+    card: u32;
+    /// PICTURE_* bits.
+    flags: u32;
+    /// Its format: a FORMAT_*.
+    format: u32;
+    /// Its width in pixels.
+    width: u32;
+    /// Its height in pixels.
+    height: u32;
+    /// The bytes from one row to the next.
+    row_bytes: u32;
+    /// Written back: the picture's number.
+    picture: u32;
+    /// Where in the file the first row starts.
+    offset: u64;
+}
+
+/// What MAKE_BLOB reads, before the value's bytes, and writes back.
+struct Blob {
+    /// What the value is: a BLOB_*.
+    kind: u32;
+    /// How many bytes follow.
+    bytes: u32;
+    /// Written back: the value's number.
+    blob: u32;
+    /// Always 0.
+    reserved: u32;
+}
+
+/// What CHANGE reads, before its entries, and writes back.
+struct Change {
+    /// CHECK_ONLY, MAY_BLANK, NO_WAIT, NOW and NEWEST_WINS bits.
+    flags: u32;
+    /// How many Entry structures follow.
+    entries: u32;
+    /// The caller's own number for the change, which its events carry.
+    cookie: u64;
+    /// Written back when the check fails: which entry, from 0. It is the
+    /// number of entries when the fault is in the state the change
+    /// started from, which no entry of this change set.
+    failed: u32;
+    /// Written back: a REASON_*.
+    reason: u32;
+}
+
+/// One entry of a change.
+struct Entry {
+    /// The thing.
+    thing: u32;
+    /// Which of its properties: a PIPE_*, SCREEN_* or PLANE_* number.
+    property: u32;
+    /// The value.
+    value: u64;
+}
+
+/// What PUT reads, before its rectangles.
+struct Put {
+    /// The picture, which the card keeps.
+    picture: u32;
+    /// How many PutRect structures follow.
+    rects: u32;
+}
+
+/// One rectangle of a PUT.
+struct PutRect {
+    /// Its left column in the picture.
+    x: u16;
+    /// Its top row.
+    y: u16;
+    /// Its width in pixels.
+    width: u16;
+    /// Its height in rows.
+    height: u16;
+    /// Where its first row starts in `buffer`. Each row is `width`
+    /// pixels of FORMAT_XRGB8888, and the next follows it at once.
+    offset: u32;
+    /// Always 0.
+    reserved: u32;
+}
+
+/// One event of a holder.
+struct DisplayEvent {
+    /// What happened: an EVENT_*.
+    kind: u32;
+    /// The pipe or screen it is about, or 0.
+    thing: u32;
+    /// When, on the clock radix-process(2)'s `clock` calls monotonic,
+    /// which stamps input events too.
+    time_ns: u64;
+    /// The beat's number, for EVENT_SHOWN and EVENT_BEAT.
+    count: u64;
+    /// The change's cookie.
+    cookie: u64;
+    /// For EVENT_SHOWN and EVENT_BEAT: the last moment a change can be
+    /// asked for and still show at the pipe's next beat.
+    deadline_ns: u64;
+}
