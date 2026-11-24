@@ -734,7 +734,11 @@ be made writable (EACCES). *mprotect* and *munmap*
 work as on Linux, *msync* has nothing to write back, and
 *posix_madvise* takes advice. Linux's *madvise* and its *MADV_* names
 are not there, as they are not POSIX's. There is no program break:
-*malloc* maps memory, and *sbrk* fails. There are no huge pages, and
+*malloc* maps memory, and *sbrk* fails. Each thread keeps a few freed
+blocks of each size up to 4 KiB for its next *malloc*, as glibc's
+tcache does, and, as glibc, ends the process with SIGABRT on a double
+*free* of a block it keeps or on a write to a kept block's link to the
+next. There are no huge pages, and
 <sys/mman.h> has no *MAP_HUGETLB*; *mmap* given Linux's number for it
 fails with ENOMEM, or EINVAL for a file, as on Linux when none is
 reserved.
