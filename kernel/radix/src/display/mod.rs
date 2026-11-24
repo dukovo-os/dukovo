@@ -30,7 +30,13 @@
 //! are due and tells the holders that asked ([`beat_thread`]). The cards
 //! of release 1.1 have no beat of their own, so the kernel's clock keeps
 //! it (`radix_display::beat`, ADR 0703): a thread that sleeps while no
-//! change waits costs nothing on a still screen.
+//! change waits costs nothing on a still screen. The same thread is the
+//! one a driver's own work is done on ([`Driver::look`]): a monitor that
+//! was plugged in, a line of the kernel's log to send to a screen.
+//!
+//! A card can go while the system runs ([`remove_card`]): the firmware's
+//! framebuffer does when a driver takes the device it is the memory of
+//! (ADR 0705). Its thread ends the next time it wakes.
 //!
 //! Everything a holder may wait for (an event to read, a change to show)
 //! moves one count, [`PROGRESS`], after the lock is let go: a thread
@@ -38,6 +44,7 @@
 
 mod firmware;
 mod requests;
+pub mod virtio;
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -141,6 +148,37 @@ impl Pages {
         Ok(pages)
     }
 
+    /// Calls `each` with each run of memory the picture's first `bytes`
+    /// bytes are in, in order, as its physical address and its length:
+    /// what a device is told that reads the picture where it is.
+    pub fn runs(&self, bytes: usize, each: &mut dyn FnMut(u64, u32)) {
+        // A run's length is told in 32 bits.
+        const LONGEST: usize = 1 << 30;
+        let (mut left, mut run) = (bytes, None::<(u64, usize)>);
+        for (index, &frame) in self.frames.iter().enumerate() {
+            let skip = if index == 0 { self.start } else { 0 };
+            let len = (PAGE - skip).min(left);
+            if len == 0 {
+                break;
+            }
+            let at = frame + skip as u64;
+            run = match run {
+                Some((from, so_far)) if from + so_far as u64 == at && so_far + len <= LONGEST => {
+                    Some((from, so_far + len))
+                }
+                Some((from, so_far)) => {
+                    each(from, so_far as u32);
+                    Some((at, len))
+                }
+                None => Some((at, len)),
+            };
+            left -= len;
+        }
+        if let Some((from, len)) = run {
+            each(from, len as u32);
+        }
+    }
+
     /// Copies `out.len()` bytes of the picture from byte `at` of it. The
     /// program may be drawing in them, as it may in any picture a screen
     /// shows: what is copied is some mix of old and new, never anything
@@ -194,7 +232,7 @@ impl frame::Picture for Picture {
 
 impl Drop for Picture {
     fn drop(&mut self) {
-        self.card.driver.drop_picture(self.handle);
+        self.card.driver.drop_picture(self);
     }
 }
 
@@ -228,8 +266,9 @@ pub trait Driver: Send + Sync {
         row_bytes: u32,
         pages: Option<&Pages>,
     ) -> Result<u64, Status>;
-    /// Lets go of what it made for a picture.
-    fn drop_picture(&self, handle: u64);
+    /// Lets go of what it made for `picture`, whose pages are let go of
+    /// when it returns: its device reads them no more.
+    fn drop_picture(&self, picture: &Picture);
     /// Makes a pipe show `frame`, which passed `check`; `change` says
     /// what of it is new.
     fn show(&self, frame: &Frame<'_>, change: &Change<'_>) -> Result<(), Failed>;
@@ -242,6 +281,21 @@ pub trait Driver: Send + Sync {
     fn latch_ns(&self) -> u64 {
         0
     }
+    /// Does the driver's own work, on the card's thread each time it
+    /// wakes and once more as the machine halts ([`draw_log`]): tells
+    /// `layer` of screens that came, went or changed
+    /// ([`Layer::screen_found`]), and draws what waits of the kernel's
+    /// log if the card is sent it. Returns when it is to be called
+    /// again at the latest, on the kernel's clock, or `None` if only
+    /// when the thread is woken ([`CardRun::wake`]).
+    fn look(&self, _layer: &mut Layer) -> Option<u64> {
+        None
+    }
+    /// The machine has stopped with its report on the kernel's console:
+    /// a card that is sent the console's pixels sends them now, with no
+    /// interrupt and no sleep. Called again when a line of the report
+    /// changes.
+    fn show_report(&self) {}
 }
 
 /// A card as its thread and the layer share it.
@@ -262,6 +316,13 @@ pub type CardRef = Arc<CardRun, Kmalloc>;
 impl CardRun {
     fn kick_key(&self) -> usize {
         core::ptr::from_ref(&self.kick).addr()
+    }
+
+    /// Wakes the card's thread, which has its driver look
+    /// ([`Driver::look`]): for the driver's interrupt.
+    pub fn wake(&self) {
+        self.kick.store(true, Ordering::Release);
+        wait::wake_all(self.kick_key());
     }
 }
 
@@ -302,8 +363,7 @@ impl Card<Picture> for CardRun {
     fn wake_for(&self, at_ns: u64) {
         let sleeping = self.sleeping.load(Ordering::Acquire);
         if sleeping == 0 || at_ns < sleeping {
-            self.kick.store(true, Ordering::Release);
-            wait::wake_all(self.kick_key());
+            self.wake();
         }
     }
 }
@@ -356,18 +416,33 @@ pub fn add_card(
     Ok(card)
 }
 
+/// Takes card `id` away from the layer, with its screens, and ends its
+/// thread. The kernel's log passes to the next card that can show it.
+/// Returns whether there was such a card.
+pub fn remove_card(id: u32) -> bool {
+    let Some(card) = with_layer(|layer| layer.remove_card(id)) else { return false };
+    card.wake();
+    true
+}
+
 /// A card's thread: at each beat anything waits for, makes the changes
-/// that are due and tells the holders that asked.
+/// that are due and tells the holders that asked, after its driver has
+/// looked at what is its own to do. It ends when its card is taken
+/// away.
 fn beat_thread(card: usize) {
     let card = card as u32;
     let Some(run) = with_layer(|layer| layer.card(card).cloned()) else { return };
     loop {
         run.sleeping.store(0, Ordering::Release);
         run.kick.store(false, Ordering::Release);
-        let next = with_layer(|layer| {
+        let woken = with_layer(|layer| {
+            layer.card(card)?;
+            let look = run.driver.look(layer);
             layer.beat(card);
-            layer.next_beat(card)
+            let beat = layer.next_beat(card);
+            Some(look.into_iter().chain(beat).min())
         });
+        let Some(next) = woken else { return };
         let kicked = || run.kick.load(Ordering::Acquire);
         run.sleeping.store(next.unwrap_or(u64::MAX), Ordering::Release);
         match next {
@@ -553,9 +628,33 @@ fn wait_shown(seq: u64) -> Result<(), Status> {
 const SHOWN_WAIT_NS: u64 = 1_000_000_000;
 
 /// Starts the layer: the firmware's framebuffer is its first card, where
-/// there is one.
-pub fn init() {
+/// there is one. `virtio_gpu` is the flag of that name, kept for the
+/// virtio cards the scan of the PCI buses finds.
+pub fn init(virtio_gpu: Option<&str>) {
+    virtio::set_options(virtio_gpu);
     firmware::add();
+}
+
+/// The machine has stopped and its report is on the kernel's console
+/// (`crate::panic`): the card that shows the log sends it to the screen
+/// if that is how its pixels get there. Called again when a line of the
+/// report changes. The lock is taken by force if a stopped CPU held it.
+pub fn show_report() {
+    let layer = LAYER.lock();
+    if let Some(card) = layer.log_card() {
+        card.driver.show_report();
+    }
+}
+
+/// Sends the screens what waits of the kernel's log, where a card is
+/// sent the log's pixels and its thread sends them: for the last line
+/// before the machine halts, after which no thread runs.
+pub fn draw_log() {
+    with_layer(|layer| {
+        if let Some(card) = layer.log_card().cloned() {
+            let _ = card.driver.look(layer);
+        }
+    });
 }
 
 /// The machine ends: the screens are the log's again, whatever holder

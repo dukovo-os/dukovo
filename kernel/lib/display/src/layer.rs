@@ -31,6 +31,7 @@ use radix_abi::display::{
 };
 use radix_abi::errors::{File, Kernel};
 
+pub use self::plug::Found;
 pub(crate) use self::stored::Stored;
 use self::stored::{DAMAGE_MAX, Damage};
 use crate::beat::Beat;
@@ -45,6 +46,7 @@ use crate::wire::ChangeRequest;
 use crate::{Rect, same_mode};
 
 mod info;
+mod plug;
 mod stored;
 #[cfg(test)]
 mod tests;
@@ -617,6 +619,12 @@ where
     pub fn card(&self, id: u32) -> Option<&C> {
         let at = self.cards.iter().position(|other| other.id == id)?;
         Some(&self.card_more[at].card)
+    }
+
+    /// The card that shows the kernel's log while no holder is in
+    /// front, if one can.
+    pub fn log_card(&self) -> Option<&C> {
+        self.card(self.log_card)
     }
 
     /// The frame `pipe` shows.

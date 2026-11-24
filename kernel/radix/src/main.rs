@@ -218,14 +218,12 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
 
     // The screen first, so everything from here on shows on machines
     // without a serial port; it replays what was logged before.
-    if let Some(framebuffer) = params.framebuffer.take() {
-        console::init_framebuffer(framebuffer, flags.value("font"));
-        // The startup screen in place of the log (ADR 0426); the bar
-        // moves as the boot goes on, and the processes Spark starts fill
-        // it the rest of the way.
-        if flags.has("quiet") {
-            console::quiet();
-        }
+    console::init(params.framebuffer.take(), flags.value("font"));
+    // The startup screen in place of the log (ADR 0426); the bar moves
+    // as the boot goes on, and the processes Spark starts fill it the
+    // rest of the way.
+    if flags.has("quiet") {
+        console::quiet();
     }
     crashlog::init();
     // The serial ports before the kernel's first line, so that the
@@ -296,7 +294,7 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     usb::dbc::init(flags.has("dbc"));
     net::init(flags.value("ip"), flags.value("gateway"), flags.value("e1000"));
     // Before the PCI scan: the firmware's framebuffer is the first card.
-    display::init();
+    display::init(flags.value("virtio-gpu"));
     fs::disk::init();
     console::progress(300);
     // After the PCI scan: VMBus's disks take the `sd` letters after its.

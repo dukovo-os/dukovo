@@ -692,8 +692,18 @@ them to *init*, and the kernel does not read them.
 	in *dukovo.toml*(5)). See *NETWORK*.
 
 *font*=_size_
-	Draw the framebuffer console with the Spleen font of this size:
+	Draw the kernel's console with the Spleen font of this size:
 	*8x16*, *12x24* or *16x32*.
+
+*virtio-gpu*=store | shared
+	How a virtio graphics card is driven (ADR 0704). With *store*, each
+	picture the card keeps, such as a text console's, has memory of its
+	own the size of the picture, in place of the card's text band of a
+	quarter of a mebibyte: for a host found to read a picture's memory
+	differently from the virtio specification. With *shared*, a host
+	that offers to shows a program's pages where they are and copies
+	nothing; it is off unless asked for, and is for the lab. Both may
+	be given, with a comma between.
 
 *quiet*
 	Show the startup screen on the framebuffer in place of the log: the

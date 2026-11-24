@@ -136,7 +136,7 @@ fn next_step(text: &mut TextBuf<160>) {
     };
 }
 
-/// Draws the full-screen report on the framebuffer.
+/// Draws the full-screen report on the kernel's console.
 fn draw_screen(report: &Report<'_>) {
     console::take_over(|screen| {
         screen.clear();
@@ -276,6 +276,7 @@ fn wait_then_restart() -> ! {
                     " Restarting in {left} s; the log is kept in memory for the next boot."
                 );
                 console::update_line(0, text.as_str(), Style::Banner);
+                crate::display::show_report();
                 for _ in 0..100 {
                     Arch::delay_us(10_000);
                 }
@@ -359,6 +360,8 @@ fn panic(info: &PanicInfo<'_>) -> ! {
     out(Style::Emphasis, format_args!("{footer}"));
     if console::present() {
         draw_screen(&report);
+        // A screen that is sent its pixels is sent the report now.
+        crate::display::show_report();
     }
     crashlog::set_ending(Ending::Panicked);
     usb::dbc::flush();

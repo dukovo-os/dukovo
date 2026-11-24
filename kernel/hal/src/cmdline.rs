@@ -120,7 +120,14 @@ pub const FLAGS: &[Flag] = &[
     Flag {
         name: "font",
         value: Some("size"),
-        summary: "framebuffer console font: 8x16, 12x24 or 16x32",
+        summary: "the kernel console's font: 8x16, 12x24 or 16x32",
+    },
+    Flag {
+        name: "virtio-gpu",
+        value: Some("store|shared"),
+        summary: "store gives each picture a virtio graphics card keeps a store of its own, \
+                  in place of the card's text band; shared has the host show the guest's \
+                  own pages where it offers to, for the lab; both with a comma between",
     },
     Flag {
         name: "memtest",

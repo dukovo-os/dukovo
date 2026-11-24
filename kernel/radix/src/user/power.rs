@@ -202,6 +202,7 @@ fn overheat_power_off() -> ! {
     crate::acpi::power_off();
     Arch::power_off();
     log_error!("Power: this machine cannot be powered off by the kernel; halting it to cool");
+    crate::display::draw_log();
     Arch::stop_other_cpus();
     Arch::halt()
 }
@@ -320,6 +321,9 @@ pub fn method(user: &UserRef, cap: &Capability, label: u32, args: &[u64; 8]) -> 
         }
         End::Halt => {
             info!("Power: the system is halted; it is safe to turn the machine off");
+            // No thread runs from here on, so a screen that is sent the
+            // log is sent this line now.
+            crate::display::draw_log();
             Arch::stop_other_cpus();
             Arch::halt()
         }

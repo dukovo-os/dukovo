@@ -23,6 +23,8 @@ use super::*;
 use crate::frame::{Failed, PlaneSpec, ScreenSpec, name};
 use crate::state::PictureShape;
 
+mod plug;
+
 /// A millisecond, in the nanoseconds the layer keeps time in.
 const MS: u64 = 1_000_000;
 /// From one beat to the next of the stand-in cards' screens, which run

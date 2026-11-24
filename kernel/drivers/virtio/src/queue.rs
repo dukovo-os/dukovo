@@ -208,6 +208,45 @@ impl Queue {
         Ok(queue)
     }
 
+    /// Sets the queue up again after the device was reset, with the
+    /// memory it has: nothing is in flight, every descriptor and table
+    /// is free, and a quiet queue is quiet still. `vector` and
+    /// `features` are as in [`Queue::new`]. Nothing is allocated, so
+    /// that a driver can do it where it cannot wait for memory.
+    pub fn again(
+        &mut self,
+        transport: &Transport,
+        vector: u16,
+        features: u64,
+    ) -> Result<(), Error> {
+        let config = transport.common();
+        config.write16(common::QUEUE_SELECT, self.index);
+        if config.read16(common::QUEUE_SIZE) < self.size {
+            return Err(Error::NoQueue);
+        }
+        for head in 0..self.size {
+            if self.in_flight[usize::from(head)] != 0 {
+                self.release(head);
+            }
+        }
+        self.memory.zero();
+        (self.avail_idx, self.last_used, self.kicked, self.asked) = (0, 0, 0, 0);
+        self.event_idx = features & feature::EVENT_IDX != 0;
+        // What made it quiet was in the memory.
+        let quiet = core::mem::replace(&mut self.quiet, false);
+        self.set_quiet(quiet);
+        config.write16(common::QUEUE_SIZE, self.size);
+        config.write64(common::QUEUE_DESC, self.memory.phys());
+        config.write64(common::QUEUE_DRIVER, self.memory.phys() + self.avail as u64);
+        config.write64(common::QUEUE_DEVICE, self.memory.phys() + self.used as u64);
+        config.write16(common::QUEUE_MSIX_VECTOR, vector);
+        if vector != NO_VECTOR && config.read16(common::QUEUE_MSIX_VECTOR) != vector {
+            return Err(Error::NoVector);
+        }
+        config.write16(common::QUEUE_ENABLE, 1);
+        Ok(())
+    }
+
     /// How many entries the queue has.
     pub fn size(&self) -> u16 {
         self.size

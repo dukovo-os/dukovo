@@ -30,6 +30,11 @@
 //! The firmware says nothing of the monitor's rate, so the card's beat
 //! is the kernel clock's at 60 Hz. Nothing here waits for the monitor:
 //! a change that asks for now is on the screen when the call returns.
+//!
+//! The framebuffer is memory of some device, which the firmware set up
+//! to show it. When a driver takes that device the card steps aside
+//! ([`step_aside`]): the driver's card has the screen from then on, and
+//! what the firmware set up is the driver's to change.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -43,6 +48,7 @@ use radix_abi::display::{
 use radix_display::Rect;
 use radix_display::pixels::{self, Channel, Layout};
 use radix_display::state::PictureShape;
+use radix_hw::pci::{Bar, Function};
 use radix_klog::{info, warn};
 use radix_mm::Kmalloc;
 use radix_mm::bytes::zeroed;
@@ -58,6 +64,10 @@ use crate::console;
 const REFRESH_MHZ: u32 = 60_000;
 /// The longest side of a pointer's picture.
 const POINTER_SIDE: u32 = 256;
+
+/// The card's number in the layer and where its framebuffer starts in
+/// physical memory, while the layer has the card.
+static CARD: Mutex<Option<(u32, u64)>> = Mutex::new(None);
 
 /// The firmware's framebuffer.
 struct Firmware {
@@ -153,9 +163,31 @@ pub(super) fn add() {
         Some(driver)
     });
     match made {
-        Ok(_) => info!("Display: firmware0 is the firmware's framebuffer, {width}x{height}"),
+        Ok(card) => {
+            *CARD.lock() = console::framebuffer_start().map(|start| (card.id, start));
+            info!("Display: firmware0 is the firmware's framebuffer, {width}x{height}");
+        }
         Err(why) => warn!("Display: the firmware's framebuffer shows the log alone: {why}"),
     }
+}
+
+/// Takes the firmware's card away if its framebuffer is memory of
+/// `function`, a device whose driver has just added a card of its own
+/// (ADR 0705). The kernel's log passes to that card, and holders are
+/// told the screens changed. Returns whether the card went.
+pub(super) fn step_aside(function: &Function) -> bool {
+    let mut card = CARD.lock();
+    let Some((id, start)) = *card else { return false };
+    let holds = |bar| match function.bar(bar) {
+        Some(Bar::Memory { address, size, .. }) => start >= address && start - address < size,
+        _ => false,
+    };
+    if !(0..6).any(holds) {
+        return false;
+    }
+    *card = None;
+    drop(card);
+    super::remove_card(id)
 }
 
 impl Firmware {
@@ -255,7 +287,7 @@ impl Driver for Firmware {
         Ok(0)
     }
 
-    fn drop_picture(&self, _handle: u64) {}
+    fn drop_picture(&self, _picture: &Picture) {}
 
     fn show(&self, frame: &Frame<'_>, change: &Change<'_>) -> Result<(), Failed> {
         let mut drawn = self.drawn.lock();

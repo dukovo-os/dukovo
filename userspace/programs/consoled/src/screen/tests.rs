@@ -23,7 +23,7 @@ use radix_display::Rect;
 use radix_display::frame::{
     self, CardSpec, Change, Failed, Frame, PlaneFault, PlaneSpec, ScreenSpec, name,
 };
-use radix_display::layer::{Asked, Layer, Made, Unmade as LayerUnmade};
+use radix_display::layer::{Asked, Found, Layer, Made, Unmade as LayerUnmade};
 use radix_display::state::PictureShape;
 use radix_display::wire as kernel;
 
@@ -176,6 +176,19 @@ impl FakeKernel {
         assert!(made.is_ok());
         self.cards.push((id, card.clone()));
         card
+    }
+
+    /// `card` finds its screen at `index` anew, as a card whose
+    /// monitors come and go does: with a monitor of `size`, or with
+    /// none. The stand-in's pixels are made for it.
+    fn found(&mut self, card: &Rc<FakeCard>, index: usize, size: Option<(u32, u32)>) {
+        let (width, height) = size.unwrap_or((0, 0));
+        card.glass.borrow_mut()[index] =
+            (width as usize, vec![BARE; (width * height * 4) as usize]);
+        let id = self.cards.iter().find(|(_, known)| Rc::ptr_eq(known, card)).unwrap().0;
+        let modes = size.map(|(width, height)| mode(width, height));
+        let found = Found { plugged: size.is_some(), modes: modes.as_slice(), data: &[] };
+        assert_eq!(self.layer.screen_found(id, index, &found), Ok(true));
     }
 
     /// Lets time pass until the change the layer numbered `seq` shows.
@@ -709,6 +722,40 @@ fn a_card_that_comes_later_gets_the_consoles_too() {
     screen.event(&DisplayEvent { kind: EVENT_SCREEN, ..DisplayEvent::default() });
     assert!(!screen.events());
     assert_eq!(wire.0.borrow().changes, changes);
+}
+
+#[test]
+fn a_monitor_that_comes_changes_size_and_goes_is_followed() {
+    let mut kernel = FakeKernel::new();
+    let card = kernel.add_card(false, &[None]);
+    let wire = Wire(Rc::new(RefCell::new(kernel)));
+    let mut screen = Screen::on(wire.clone(), radix_fbcon::MIN_GRID).unwrap();
+    let waiting = ["no screen is plugged in: the consoles show when one is"];
+    assert_eq!(screen.describe(), waiting);
+    // A monitor is plugged in: the consoles show on it.
+    wire.0.borrow_mut().found(&card, 0, Some((640, 400)));
+    assert!(screen.events());
+    assert_eq!(screen.describe(), ["console of 80x25 cells with font 8x16 at (0, 0)"]);
+    let mut term = terminal(&screen);
+    term.feed(b"here at last");
+    screen.draw(&term, None);
+    assert_shows(&card, 0, &screen, 0, &term);
+    // Its size changes, as a virtual machine's window does when it is
+    // dragged: the grid is laid out for the new size.
+    wire.0.borrow_mut().found(&card, 0, Some((800, 600)));
+    assert!(screen.events());
+    assert_eq!(screen.describe(), ["console of 100x37 cells with font 8x16 at (0, 4)"]);
+    term.resize(screen.cols(), screen.rows());
+    screen.draw(&term, None);
+    assert_shows(&card, 0, &screen, 0, &term);
+    // It is unplugged: the consoles wait again, and draw nothing.
+    wire.0.borrow_mut().found(&card, 0, None);
+    assert!(screen.events());
+    assert_eq!(screen.describe(), waiting);
+    let puts = wire.0.borrow().puts;
+    term.feed(b"\r\nunseen");
+    screen.draw(&term, None);
+    assert_eq!(wire.0.borrow().puts, puts);
 }
 
 #[test]
