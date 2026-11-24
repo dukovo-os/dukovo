@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The console's errors (ADRs 0514, 0515, 0517 and 0562), all in this one place. Each
+//! The console's errors (ADRs 0514, 0515, 0517, 0562 and 0690), all in this one place. Each
 //! has an ID a person can quote, a title, the HTTP status it is answered
 //! with, and a fix the person can try. The detail is the sentence for this
 //! one time: where authd refused, its own words, which are written for
@@ -111,11 +111,19 @@ pub enum Kind {
     /// ADM-142: a trial of settings runs, which a restart or a shut down
     /// would end half way.
     TrialRuns,
+    /// ADM-143: an MCP client's token or pass was not accepted (ADR 0690).
+    ClientRefused,
+    /// ADM-144: an MCP client asked for what it may not reach.
+    ClientMayNot,
+    /// ADM-145: there is no such request of an MCP client's.
+    NoRequest,
+    /// ADM-146: as many requests of MCP clients wait as may.
+    TooManyRequests,
 }
 
 impl Kind {
     /// Every kind, in the order of their IDs.
-    pub const ALL: [Kind; 41] = [
+    pub const ALL: [Kind; 45] = [
         Kind::WrongPassword,
         Kind::WrongCode,
         Kind::PasskeyRefused,
@@ -157,6 +165,10 @@ impl Kind {
         Kind::OnceGone,
         Kind::NotNamed,
         Kind::TrialRuns,
+        Kind::ClientRefused,
+        Kind::ClientMayNot,
+        Kind::NoRequest,
+        Kind::TooManyRequests,
     ];
 
     /// Its ID, `ADM-101` and on.
@@ -203,6 +215,10 @@ impl Kind {
             Kind::OnceGone => "ADM-140",
             Kind::NotNamed => "ADM-141",
             Kind::TrialRuns => "ADM-142",
+            Kind::ClientRefused => "ADM-143",
+            Kind::ClientMayNot => "ADM-144",
+            Kind::NoRequest => "ADM-145",
+            Kind::TooManyRequests => "ADM-146",
         }
     }
 
@@ -218,7 +234,8 @@ impl Kind {
             | Kind::WrongCode
             | Kind::PasskeyRefused
             | Kind::SessionEnded
-            | Kind::TokenRefused => 401,
+            | Kind::TokenRefused
+            | Kind::ClientRefused => 401,
             Kind::NotAllowed
             | Kind::Locked
             | Kind::ForeignRequest
@@ -226,8 +243,9 @@ impl Kind {
             | Kind::SecondStepOnly
             | Kind::NotAdmin
             | Kind::OutOfScope
-            | Kind::TerminalClosed => 403,
-            Kind::Wait | Kind::TooManyFollows => 429,
+            | Kind::TerminalClosed
+            | Kind::ClientMayNot => 403,
+            Kind::Wait | Kind::TooManyFollows | Kind::TooManyRequests => 429,
             Kind::BadRequest | Kind::BadValue => 400,
             // The command was asked for and ran: what it said is the
             // answer, and nothing about the request was wrong.
@@ -256,7 +274,8 @@ impl Kind {
             | Kind::NotKept
             | Kind::NoTerminal
             | Kind::NoTrial
-            | Kind::SessionGone => 404,
+            | Kind::SessionGone
+            | Kind::NoRequest => 404,
             Kind::NoMethod => 405,
             Kind::NotJson => 415,
             Kind::Busy | Kind::NoStore => 503,
@@ -308,6 +327,10 @@ impl Kind {
             Kind::OnceGone => "The one-time link was used or has ended",
             Kind::NotNamed => "The certificate does not name the address this browser uses",
             Kind::TrialRuns => "A trial runs: keep or undo it before a restart",
+            Kind::ClientRefused => "That AI client was not let in",
+            Kind::ClientMayNot => "This AI client may not do that",
+            Kind::NoRequest => "There is no such request",
+            Kind::TooManyRequests => "Too many requests wait for a yes",
         }
     }
 
@@ -355,6 +378,16 @@ impl Kind {
             }
             Kind::TrialRuns => {
                 Some("Keep or undo the change being tried, then restart or shut down.")
+            }
+            Kind::ClientRefused => {
+                Some("Add the client again on the AI clients page: a client ends on its date.")
+            }
+            Kind::ClientMayNot => {
+                Some("An administrator can add a client that reaches more on the AI clients page.")
+            }
+            Kind::NoRequest => Some("A request lapses after an hour: the client can ask again."),
+            Kind::TooManyRequests => {
+                Some("Approve or refuse the requests that wait on the AI clients page.")
             }
             Kind::NotJson
             | Kind::BadRequest
@@ -636,6 +669,24 @@ mod tests {
             assert!(kind.fix().is_some(), "{id} says what to do");
         }
         assert!(Kind::TrialRuns.fix().is_some_and(|fix| fix.contains("Keep or undo")));
+    }
+
+    #[test]
+    fn an_ai_client_s_refusals_have_their_own() {
+        let named = [
+            (Kind::ClientRefused, "ADM-143", 401),
+            (Kind::ClientMayNot, "ADM-144", 403),
+            (Kind::NoRequest, "ADM-145", 404),
+            (Kind::TooManyRequests, "ADM-146", 429),
+        ];
+        for (kind, id, status) in named {
+            assert_eq!((kind.id(), kind.status()), (id, status));
+            assert!(kind.fix().is_some(), "{id} says what to do");
+        }
+        // authd words its own refusal of a client with the console's ID.
+        let refused = refusal(Attempt::Other, "ADM-144: an AI client changes nothing by itself");
+        assert_eq!(refused.kind, Kind::ClientMayNot);
+        assert_eq!(refused.detail, "an AI client changes nothing by itself");
     }
 
     #[test]
