@@ -3693,7 +3693,9 @@ pub fn read(
 }
 
 /// [`read`] into `out`, which is the caller's memory in one buffer or
-/// several.
+/// several. Always inlined, so that a plain `read` costs no call more
+/// than it did before `readv` shared it.
+#[inline(always)]
 fn read_into(
     user: &UserThread,
     file: &FileObject,
@@ -3790,7 +3792,8 @@ pub fn write(
 /// several. With `appends` a write at CURRENT goes to the end of the
 /// file as an appending description's does, which is what Linux's
 /// RWF_APPEND asks of one call; the description's offset then moves to
-/// the new end.
+/// the new end. Always inlined, as [`read_into`] is.
+#[inline(always)]
 fn write_from(
     user: &UserThread,
     file: &FileObject,

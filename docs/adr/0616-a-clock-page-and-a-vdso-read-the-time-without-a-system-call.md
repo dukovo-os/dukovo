@@ -80,6 +80,10 @@ plus an offset, slewed by `adjtime` at most 500 ppm (radix-hal's
   (docs/deferred.md).
 - The page shows only what every process may know (the clock), and it is
   read-only; the TSC is readable from user mode already.
+- Mapping the two does not count as mapping memory another space may
+  map (ADR 0110's `may_share`): no space writes them, so a futex word in
+  them is named by the space alone, and a program's own futexes go on
+  being named without a look at its regions.
 - `getcpu`'s node is always 0, as Radix has one memory node per machine
   for now; a program the kernel starts itself, without `exec`, has no
   vDSO and makes the system calls.
