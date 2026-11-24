@@ -20,6 +20,11 @@
 //! on a full pipe. At most 32 elevated commands run at once, every session
 //! and token together.
 //!
+//! An MCP client's read as an administrator ([`checked_read`], ADR 0691)
+//! has the same four descriptors and the same place among the 32, and
+//! admind names no command for it: authd starts the program that checks
+//! the read.
+//!
 //! A long action's command runs the same way, as a task
 //! ([`tasks`](super::tasks), ADR 0516): [`start`] gives it its descriptors
 //! and its place among the 32, and the task reads its output as it comes,
@@ -144,6 +149,18 @@ pub async fn start(
     argv: &[String],
     input: Option<&Secret>,
 ) -> Result<Started, Failure> {
+    let command = argv.iter().map(|word| word.as_bytes().to_vec()).collect();
+    started(shared, Console::Elevate { by, language: Vec::new(), command }, input).await
+}
+
+/// Asks authd `console`, which starts a command as an administrator
+/// with four descriptors from admind, and gives what admind holds of the
+/// command.
+async fn started(
+    shared: &Shared,
+    console: Console,
+    input: Option<&Secret>,
+) -> Result<Started, Failure> {
     let internal = |err: std::io::Error| Failure::new(Kind::Internal, format!("no pipe: {err}"));
     let (input_end, typed) = pipe().map_err(internal)?;
     let typing = typed_and_ended(typed, input).map_err(internal)?;
@@ -154,8 +171,6 @@ pub async fn start(
     let (relay, relay_end) = pipe().map_err(internal)?;
     let fds =
         [input_end.as_raw_fd(), output_end.as_raw_fd(), errors_end.as_raw_fd(), relay.as_raw_fd()];
-    let command = argv.iter().map(|word| word.as_bytes().to_vec()).collect();
-    let console = Console::Elevate { by, language: Vec::new(), command };
     let (answer, asked) = authd::ask(&shared.authd, console, &fds)
         .await
         .map_err(|why| Failure::new(Kind::AuthdSilent, why))?;
@@ -167,6 +182,51 @@ pub async fn start(
     let output = Receiver::from_file(File::from(OwnedFd::from(output))).map_err(internal)?;
     let errors = Receiver::from_file(File::from(OwnedFd::from(errors))).map_err(internal)?;
     Ok(Started { output, errors, asked, relay: relay_end, typing })
+}
+
+/// Runs the administrator's read `action` with `arguments` for the MCP
+/// client whose token or pass is `credential` (ADR 0691), waiting `limit`
+/// for it to end. admind sends no command: authd starts `admind --read`
+/// ([`read`](super::read)) with the areas the client was given, and that
+/// program runs the action's command only if it is such a read.
+///
+/// # Errors
+///
+/// ADM-105 when 32 elevated commands run already; authd's refusal, or the
+/// refusal of `admind --read`, with the ID each gives; ADM-111 when authd
+/// is silent; ADM-121 when the command does not end in `limit`.
+pub async fn checked_read(
+    shared: &Shared,
+    credential: &[u8],
+    action: &str,
+    arguments: &Value,
+    limit: Duration,
+) -> Result<Ran, Failure> {
+    let _place = Place::take(shared)
+        .ok_or_else(|| Failure::wait("too many elevated commands at once", 1))?;
+    let console = Console::ClientRead {
+        token: credential.to_vec(),
+        action: action.to_string(),
+        arguments: arguments.to_string().into_bytes(),
+    };
+    let ran = started(shared, console, None).await?.finish(limit).await?;
+    match read_refused(&ran) {
+        Some(failure) => Err(failure),
+        None => Ok(ran),
+    }
+}
+
+/// The refusal of `admind --read`, if `ran` is one: the status 125, and
+/// a last line of error output that begins with an ID of the console's.
+/// A command of an action's that ends with that status says something
+/// else there, and is the command's own failure.
+fn read_refused(ran: &Ran) -> Option<Failure> {
+    if ran.status != super::read::REFUSED {
+        return None;
+    }
+    let last = ran.errors.lines().rev().find(|line| !line.trim().is_empty())?;
+    let (id, _) = last.split_once(": ")?;
+    Kind::of(id).map(|_| refusal(Attempt::Other, last))
 }
 
 /// Writes `input` to `typed`, the write end of a command's new input, and
@@ -464,6 +524,22 @@ mod tests {
     use super::*;
     use crate::admind::actions::secret::INPUT_LIMIT;
     use crate::admind::fixture::Console;
+
+    #[test]
+    fn a_refusal_of_the_program_that_checks_a_read_is_told_from_a_command_s_own_failure() {
+        let ran =
+            |status, errors: &str| Ran { status, output: String::new(), errors: errors.into() };
+        let said = "admind: reading\nADM-144: this AI client may not read storage\n\n";
+        let failure = read_refused(&ran(125, said)).expect("a refusal");
+        assert_eq!(failure.kind, Kind::ClientMayNot);
+        assert_eq!(failure.detail, "this AI client may not read storage");
+        // A command that ends with 125 itself says something else.
+        assert_eq!(read_refused(&ran(125, "storage: no such disk\n")), None);
+        assert_eq!(read_refused(&ran(125, "XYZ-144: words\n")), None);
+        assert_eq!(read_refused(&ran(125, "")), None);
+        // And the ID alone, with another status, is a command's words.
+        assert_eq!(read_refused(&ran(1, "ADM-144: words\n")), None);
+    }
 
     #[test]
     fn an_error_id_is_read_from_the_end_of_a_line() {

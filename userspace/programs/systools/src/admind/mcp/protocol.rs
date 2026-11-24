@@ -169,7 +169,9 @@ pub fn batch(
 ) -> Result<(), Error> {
     let version = match headers.map(|headers| headers.version) {
         Some(Some(raw)) => Some(named(raw, "MCP-Protocol-Version")?),
-        Some(None) | None => None,
+        Some(None) => Some(UNNAMED.to_string()),
+        // The socket's messages name no revision outside themselves.
+        None => None,
     };
     if let Some(version) = version.filter(|version| version.as_str() >= NO_BATCHES_FROM) {
         let version = shown(&version);
@@ -494,13 +496,13 @@ mod tests {
 
     /// The parameters `extra`, with the envelope of the revision without
     /// a handshake.
-    fn stateless(extra: Value) -> Map<String, Value> {
+    fn stateless(extra: &Value) -> Map<String, Value> {
         let mut params = extra.as_object().expect("an object").clone();
         params.insert("_meta".into(), json!({ VERSION_KEY: STATELESS, CAPABILITIES_KEY: {} }));
         params
     }
 
-    fn plain(params: Value) -> Map<String, Value> {
+    fn plain(params: &Value) -> Map<String, Value> {
         params.as_object().expect("an object").clone()
     }
 
@@ -528,7 +530,7 @@ mod tests {
 
     #[test]
     fn discover_says_the_revisions_and_what_the_server_is() {
-        let said = answer(request("server/discover", &stateless(json!({})), None, &TOOLS));
+        let said = answer(request("server/discover", &stateless(&json!({})), None, &TOOLS));
         assert_eq!(said["resultType"], "complete");
         assert_eq!(said["ttlMs"], 300_000);
         assert_eq!(said["cacheScope"], "private");
@@ -556,7 +558,7 @@ mod tests {
     #[test]
     fn the_stateless_era_has_no_handshake_and_no_ping() {
         for method in ["initialize", "ping", "prompts/list", "resources/list", "tools/nothing"] {
-            let refused = error(request(method, &stateless(json!({})), None, &TOOLS));
+            let refused = error(request(method, &stateless(&json!({})), None, &TOOLS));
             assert_eq!((refused.code, refused.status), (rpc::NO_METHOD, 404), "{method}");
         }
     }
@@ -574,7 +576,7 @@ mod tests {
             ("2026-07-28", "2025-11-25"),
             ("tomorrow", "2025-11-25"),
         ] {
-            let params = plain(json!({
+            let params = plain(&json!({
                 "protocolVersion": asked,
                 "capabilities": {},
                 "clientInfo": { "name": "a client", "version": "1" },
@@ -586,7 +588,7 @@ mod tests {
             assert!(said.get("resultType").is_none());
             assert!(said["instructions"].is_string());
         }
-        let refused = error(request("initialize", &plain(json!({})), None, &TOOLS));
+        let refused = error(request("initialize", &plain(&json!({})), None, &TOOLS));
         assert_eq!((refused.code, refused.status), (rpc::PARAMS, 200));
     }
 
@@ -603,7 +605,7 @@ mod tests {
 
     #[test]
     fn the_tools_are_listed_in_each_era_s_shape() {
-        let newer = answer(request("tools/list", &stateless(json!({})), None, &TOOLS));
+        let newer = answer(request("tools/list", &stateless(&json!({})), None, &TOOLS));
         assert_eq!(newer["resultType"], "complete");
         assert_eq!((&newer["ttlMs"], &newer["cacheScope"]), (&json!(300_000), &json!("private")));
         let older = answer(request("tools/list", &Map::new(), None, &TOOLS));
@@ -648,8 +650,8 @@ mod tests {
 
     #[test]
     fn the_list_of_tools_has_one_page() {
-        assert!(request("tools/list", &plain(json!({ "cursor": null })), None, &TOOLS).is_ok());
-        for params in [plain(json!({ "cursor": "2" })), stateless(json!({ "cursor": "" }))] {
+        assert!(request("tools/list", &plain(&json!({ "cursor": null })), None, &TOOLS).is_ok());
+        for params in [plain(&json!({ "cursor": "2" })), stateless(&json!({ "cursor": "" }))] {
             let refused = error(request("tools/list", &params, None, &TOOLS));
             assert_eq!((refused.code, refused.status), (rpc::PARAMS, 200));
         }
@@ -659,7 +661,7 @@ mod tests {
     fn a_call_names_a_tool_there_is_and_arguments_that_are_an_object() {
         let step = request(
             "tools/call",
-            &stateless(json!({ "name": "read", "arguments": { "action": "service.list" } })),
+            &stateless(&json!({ "name": "read", "arguments": { "action": "service.list" } })),
             None,
             &TOOLS,
         );
@@ -668,11 +670,11 @@ mod tests {
             Ok(Step::Call {
                 era: Era::Stateless,
                 name: "read".into(),
-                arguments: plain(json!({ "action": "service.list" })),
+                arguments: plain(&json!({ "action": "service.list" })),
             })
         );
         for arguments in [json!({ "name": "ask" }), json!({ "name": "ask", "arguments": null })] {
-            let step = request("tools/call", &plain(arguments), None, &TOOLS);
+            let step = request("tools/call", &plain(&arguments), None, &TOOLS);
             assert_eq!(
                 step,
                 Ok(Step::Call { era: Era::Handshake, name: "ask".into(), arguments: Map::new() })
@@ -686,7 +688,7 @@ mod tests {
             (json!({ "name": "read", "arguments": ["service.list"] }), "not an object"),
             (json!({ "name": "read", "arguments": "service.list" }), "not an object"),
         ] {
-            for params in [plain(params.clone()), stateless(params)] {
+            for params in [plain(&params), stateless(&params)] {
                 let refused = error(request("tools/call", &params, None, &TOOLS));
                 // In the answer's body, with status 200, in both eras.
                 assert_eq!((refused.code, refused.status), (rpc::PARAMS, 200), "{why}");
@@ -724,7 +726,7 @@ mod tests {
                 "is not an object",
             ),
         ] {
-            let params = plain(json!({ "_meta": meta }));
+            let params = plain(&json!({ "_meta": meta }));
             let refused = error(request("tools/list", &params, None, &TOOLS));
             // The one place where parameters that are wrong answer 400.
             assert_eq!((refused.code, refused.status), (code, 400), "{why}");
@@ -735,7 +737,7 @@ mod tests {
     #[test]
     fn a_revision_that_is_not_spoken_is_answered_with_the_ones_that_are() {
         for asked in ["2027-01-01", "2025-11-25", "", "DRAFT-2026-v1"] {
-            let params = plain(json!({ "_meta": { VERSION_KEY: asked, CAPABILITIES_KEY: {} } }));
+            let params = plain(&json!({ "_meta": { VERSION_KEY: asked, CAPABILITIES_KEY: {} } }));
             let refused = error(request("server/discover", &params, None, &TOOLS));
             assert_eq!((refused.code, refused.status), (rpc::UNSUPPORTED_VERSION, 400), "{asked}");
             assert_eq!(
@@ -749,20 +751,20 @@ mod tests {
     #[test]
     fn other_keys_of_meta_do_not_claim_the_envelope() {
         // A progress token is older than the envelope.
-        let params = plain(json!({ "_meta": { "progressToken": 3 } }));
+        let params = plain(&json!({ "_meta": { "progressToken": 3 } }));
         let said = answer(request("tools/list", &params, None, &TOOLS));
         assert!(said.get("resultType").is_none());
         // A `_meta` that is no object claims nothing either.
-        let params = plain(json!({ "_meta": "x" }));
+        let params = plain(&json!({ "_meta": "x" }));
         assert!(request("ping", &params, None, &TOOLS).is_ok());
     }
 
     #[test]
     fn a_stateless_request_s_headers_say_what_its_body_says() {
-        let call = stateless(json!({ "name": "read" }));
+        let call = stateless(&json!({ "name": "read" }));
         let good = headers(STATELESS, "tools/call", Some("read"));
         assert!(request("tools/call", &call, Some(&good), &TOOLS).is_ok());
-        let list = stateless(json!({}));
+        let list = stateless(&json!({}));
         assert!(
             request("tools/list", &list, Some(&headers(STATELESS, "tools/list", None)), &TOOLS)
                 .is_ok()
@@ -834,7 +836,7 @@ mod tests {
 
     #[test]
     fn the_headers_are_checked_before_the_method_is_looked_up() {
-        let params = stateless(json!({}));
+        let params = stateless(&json!({}));
         let refused = error(request("nothing", &params, Some(&Headers::default()), &TOOLS));
         assert_eq!(refused.code, rpc::HEADER_MISMATCH);
         let refused =
@@ -842,7 +844,7 @@ mod tests {
         assert_eq!((refused.code, refused.status), (rpc::NO_METHOD, 404));
         // A call that names no tool is refused as one, with no name to
         // hold the header against.
-        let params = stateless(json!({ "name": 7 }));
+        let params = stateless(&json!({ "name": 7 }));
         let refused = error(request(
             "tools/call",
             &params,
@@ -910,7 +912,7 @@ mod tests {
         ] {
             assert_eq!(header_value(raw).as_deref(), meant, "{:?}", String::from_utf8_lossy(raw));
         }
-        let params = stateless(json!({ "name": "read" }));
+        let params = stateless(&json!({ "name": "read" }));
         let coded = headers(STATELESS, "=?base64?dG9vbHMvY2FsbA==?=", Some("=?base64?cmVhZA==?="));
         assert!(request("tools/call", &params, Some(&coded), &TOOLS).is_ok());
     }
@@ -919,7 +921,7 @@ mod tests {
     fn a_notification_is_in_order_by_its_revision_and_headers_alone() {
         assert_eq!(notification("notifications/initialized", &Map::new(), None), Ok(()));
         assert_eq!(notification("anything/at-all", &Map::new(), None), Ok(()));
-        let cancelled = stateless(json!({ "requestId": 4 }));
+        let cancelled = stateless(&json!({ "requestId": 4 }));
         assert_eq!(notification("notifications/cancelled", &cancelled, None), Ok(()));
         let sent = headers(STATELESS, "notifications/cancelled", None);
         assert_eq!(notification("notifications/cancelled", &cancelled, Some(&sent)), Ok(()));

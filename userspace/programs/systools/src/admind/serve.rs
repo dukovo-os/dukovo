@@ -57,6 +57,7 @@ use tokio_rustls::TlsAcceptor;
 use super::files::{self, Files};
 use super::limits::{Held, Slot};
 use super::log;
+use super::mcp;
 use super::reach;
 use super::routes::{self, Connection};
 use super::shared::{Identity, Shared, unix_now};
@@ -803,6 +804,7 @@ async fn serve(shared: Rc<Shared>) -> Result<(), String> {
     for socket in sockets {
         tokio::task::spawn_local(accepting(Rc::clone(&shared), socket));
     }
+    mcp::start(&shared);
     let mut last = Instant::now();
     while !STOP.load(Ordering::Relaxed) {
         tokio::time::sleep(SIGNALS_EVERY).await;
@@ -818,6 +820,7 @@ async fn serve(shared: Rc<Shared>) -> Result<(), String> {
     }
     log(6, &format!("stops: it ends {} sessions", shared.sessions.borrow().len()));
     shared.end_all().await;
+    mcp::stop(&shared);
     // A console that is no more has no address to show.
     if let Err(err) = fs::remove_file(ISSUE)
         && err.kind() != io::ErrorKind::NotFound

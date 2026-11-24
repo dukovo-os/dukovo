@@ -42,9 +42,26 @@ fn statuses(operation: &Value) -> HashSet<&str> {
     names(&operation["responses"])
 }
 
+/// What the document calls an answer of the protocol of `/mcp`.
+const MCP_ANSWER: &str = "#/components/schemas/McpAnswer";
+
+/// The schema of the console's error among what `operation` answers
+/// `status` with: the answer's schema, or the first of the two where the
+/// protocol of `/mcp` has an error of its own with that status.
+fn console_error<'a>(operation: &'a Value, status: &str) -> &'a Value {
+    let schema = &operation["responses"][status]["content"]["application/json"]["schema"];
+    if schema["anyOf"].is_array() { &schema["anyOf"][0] } else { schema }
+}
+
+/// Whether `operation` answers `status` with the protocol's error and
+/// never with the console's, as `/mcp` does for a method there is none of.
+fn protocol_s_alone(operation: &Value, status: &str) -> bool {
+    console_error(operation, status)["$ref"] == MCP_ANSWER
+}
+
 /// The IDs `operation` says it answers `status` with.
 fn ids<'a>(operation: &'a Value, status: &str) -> Vec<&'a str> {
-    let schema = &operation["responses"][status]["content"]["application/json"]["schema"];
+    let schema = console_error(operation, status);
     let listed = &schema["allOf"][1]["properties"]["error"]["properties"]["id"]["enum"];
     listed.as_array().unwrap().iter().map(|id| id.as_str().unwrap()).collect()
 }
@@ -86,19 +103,24 @@ fn example_of(operation: &Value) -> Value {
 }
 
 #[test]
-fn the_document_is_json_of_openapi_3_1_with_the_two_ways_to_ask() {
+fn the_document_is_json_of_openapi_3_1_with_the_ways_to_ask() {
     let text = document(REGISTRY).to_string();
     let parsed: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(parsed["openapi"], "3.1.0");
     assert!(parsed["info"]["title"].as_str().is_some_and(|title| !title.is_empty()));
     let schemes = &parsed["components"]["securitySchemes"];
-    assert_eq!(names(schemes), HashSet::from(["session", "csrf", "token"]));
+    assert_eq!(names(schemes), HashSet::from(["session", "csrf", "token", "client"]));
     assert_eq!(schemes["session"]["in"], "cookie");
     assert_eq!(schemes["session"]["name"], "__Host-dukovo");
     assert_eq!(schemes["csrf"]["in"], "header");
     assert_eq!(schemes["csrf"]["name"], "x-dukovo-csrf");
-    assert_eq!(schemes["token"]["type"], "http");
-    assert_eq!(schemes["token"]["scheme"], "bearer");
+    for bearer in ["token", "client"] {
+        assert_eq!(schemes[bearer]["type"], "http");
+        assert_eq!(schemes[bearer]["scheme"], "bearer");
+    }
+    // Which of the two a bearer is, its words say.
+    assert!(schemes["token"]["description"].as_str().unwrap().contains("API token"));
+    assert!(schemes["client"]["description"].as_str().unwrap().contains("dkc_"));
 }
 
 #[test]
@@ -287,6 +309,14 @@ fn what_a_session_or_a_token_must_send_is_what_the_table_says_of_the_route() {
         security("get", "/api/1/services/{name}/explain"),
         json!([{ "token": [] }, { "session": [] }])
     );
+    // The MCP server is for an AI client's token, and for nothing else;
+    // what the page for the clients asks is a session's.
+    assert_eq!(security("post", "/mcp"), json!([{ "client": [] }]));
+    assert_eq!(security("get", "/api/1/clients/requests"), json!([{ "session": [] }]));
+    assert_eq!(
+        security("post", "/api/1/clients/requests/{id}/approve"),
+        json!([{ "session": [], "csrf": [] }])
+    );
 }
 
 #[test]
@@ -298,9 +328,16 @@ fn every_error_status_lists_ids_that_have_that_status() {
                 let action = actions
                     .iter()
                     .find(|action| action.path() == path && action.posts() == (method == "post"));
-                let own: Vec<&str> = action.map_or_default(|action| action.errors().to_vec());
-                let others: Vec<&str> = action
+                let mut own: Vec<&str> = action.map_or_default(|action| action.errors().to_vec());
+                let mut others: Vec<&str> = action
                     .map_or_default(|action| refusals(*action).iter().map(|(id, _)| *id).collect());
+                // A yes to a client's request runs the change it asked
+                // for, which answers as on its own route.
+                if path == "/api/1/clients/requests/{id}/approve" {
+                    let (asked, refused) = asked_errors(actions);
+                    own = asked;
+                    others = refused.iter().map(|(id, _)| *id).collect();
+                }
                 let responses = operation["responses"].as_object().unwrap();
                 // The Terminal's socket works when the connection is handed over.
                 assert!(
@@ -317,7 +354,11 @@ fn every_error_status_lists_ids_that_have_that_status() {
                 );
                 assert!(refused.get("content").is_none(), "{method} {path}");
                 for (status, response) in responses.iter().filter(|(s, _)| has_ids(s)) {
-                    let schema = &response["content"]["application/json"]["schema"];
+                    if protocol_s_alone(operation, status) {
+                        assert_eq!((path.as_str(), status.as_str()), ("/mcp", "404"));
+                        continue;
+                    }
+                    let schema = console_error(operation, status);
                     assert_eq!(schema["allOf"][0]["$ref"], "#/components/schemas/Error");
                     for id in ids(operation, status) {
                         let wanted = Kind::of(id).map_or_else(
@@ -352,7 +393,8 @@ fn the_errors_of_an_operation_follow_from_its_access_its_handler_and_its_command
     // Open to anyone: nothing but a request that was not right, and a
     // token, which no route that is not the API's takes.
     assert_eq!(statuses(get("/api/1/health")), HashSet::from(["200", "400", "403", "421", "431"]));
-    assert_eq!(ids(get("/api/1/health"), "403"), ["ADM-124"]);
+    // and a token of either kind, which no route that is not its own takes.
+    assert_eq!(ids(get("/api/1/health"), "403"), ["ADM-124", "ADM-144"]);
     // The sign-in is counted, which says when to try again.
     assert!(ids(post("/api/1/sign-in"), "429").contains(&"ADM-105"));
     assert!(ids(post("/api/1/sign-in"), "401").contains(&"ADM-101"));
@@ -405,16 +447,23 @@ fn every_error_the_console_has_is_the_answer_of_some_operation_but_the_wrong_met
     for item in document["paths"].as_object().unwrap().values() {
         for operation in item.as_object().unwrap().values() {
             for status in statuses(operation).iter().filter(|status| has_ids(status)) {
-                listed.extend(ids(operation, status));
+                if !protocol_s_alone(operation, status) {
+                    listed.extend(ids(operation, status));
+                }
             }
         }
     }
     for kind in Kind::ALL {
         // An operation is asked with its own method, which no answer of
-        // the table's says is not used.
+        // the table's says is not used; and a client with too many
+        // requests is told so in a tool's result, which is an answer of
+        // 200 that names the ID in its words.
         let said = listed.contains(kind.id());
-        assert_eq!(said, kind != Kind::NoMethod, "{}", kind.id());
+        let elsewhere = matches!(kind, Kind::NoMethod | Kind::TooManyRequests);
+        assert_eq!(said, !elsewhere, "{}", kind.id());
     }
+    let answered = &operation(&document, "post", "/mcp")["responses"]["200"]["description"];
+    assert!(answered.as_str().unwrap().contains(Kind::TooManyRequests.id()));
 }
 
 #[test]
@@ -496,7 +545,7 @@ fn a_one_time_link_s_own_refusals_may_be_plain_words_and_no_other_error_is() {
 }
 
 #[test]
-fn show_and_check_take_any_action_and_its_arguments_and_no_other_route_of_the_table_has_a_body() {
+fn show_and_check_take_any_action_and_its_arguments_and_only_the_mcp_server_has_a_body_besides() {
     for actions in sets() {
         let document = document(actions);
         let show = operation(&document, "post", "/api/1/show");
@@ -520,10 +569,76 @@ fn show_and_check_take_any_action_and_its_arguments_and_no_other_route_of_the_ta
         validate::validate(named, &media["example"]["action"]).unwrap();
         assert!(validate::validate(named, &json!("no.such")).is_err());
         assert_eq!(media["schema"]["required"], json!(["action"]));
-        for entry in TABLE.iter().filter(|entry| !matches!(entry.route, Route::Show | Route::Check))
-        {
+        let bodied =
+            |entry: &&Entry| matches!(entry.route, Route::Show | Route::Check | Route::Mcp);
+        for entry in TABLE.iter().filter(|entry| !bodied(entry)) {
             let operation = operation(&document, method(entry.verb), entry.path);
             assert!(operation.get("requestBody").is_none(), "{}", entry.path);
         }
     }
+}
+
+#[test]
+fn the_mcp_server_s_operation_says_what_the_protocol_answers_beside_the_console_s_refusals() {
+    for actions in sets() {
+        let document = document(actions);
+        let mcp = operation(&document, "post", "/mcp");
+        assert_eq!(mcp["tags"], json!(["mcp"]));
+        // It takes one message, or a batch of them.
+        let body = &mcp["requestBody"];
+        assert_eq!(body["required"], true);
+        let message = &body["content"]["application/json"]["schema"]["anyOf"];
+        assert_eq!(message[0]["required"], json!(["jsonrpc", "method"]));
+        assert_eq!(message[1]["items"], message[0]);
+        // It answers a request, or a batch's requests, and a notification
+        // with nothing.
+        let responses = &mcp["responses"];
+        let answered = &responses["200"]["content"]["application/json"]["schema"]["anyOf"];
+        assert_eq!(answered[0]["$ref"], MCP_ANSWER);
+        assert_eq!(answered[1]["items"]["$ref"], MCP_ANSWER);
+        assert!(responses["202"].get("content").is_none());
+        // The protocol's own errors: 400 beside the console's, and 404,
+        // which the console never answers there.
+        let refused = &responses["400"]["content"]["application/json"]["schema"]["anyOf"];
+        assert_eq!(refused[1]["$ref"], MCP_ANSWER);
+        assert!(ids(mcp, "400").contains(&"ADM-108"));
+        assert!(protocol_s_alone(mcp, "404"));
+        // Before a message is read, the refusals are the console's: a
+        // token that is not an AI client's, another site, too much.
+        assert!(ids(mcp, "401").contains(&"ADM-143"));
+        assert!(ids(mcp, "403").contains(&"ADM-109"));
+        assert!(!ids(mcp, "403").contains(&"ADM-144"));
+        assert!(ids(mcp, "413").contains(&"ADM-113"));
+        assert!(ids(mcp, "415").contains(&"ADM-119"));
+        assert!(ids(mcp, "429").contains(&"ADM-105"));
+        // A tool's failure is an answer, so no status is a command's.
+        assert!(!statuses(mcp).contains("422"));
+    }
+}
+
+#[test]
+fn a_yes_to_a_client_s_request_answers_as_the_change_it_runs_and_a_no_does_not() {
+    let document = document(LAB);
+    let approve = operation(&document, "post", "/api/1/clients/requests/{id}/approve");
+    assert_eq!(approve["parameters"][0]["name"], "id");
+    assert!(approve["parameters"][0]["description"].as_str().unwrap().contains("request"));
+    let responses = &approve["responses"];
+    let schema = |status: &str| &responses[status]["content"]["application/json"]["schema"];
+    assert_eq!(schema("200")["$ref"], "#/components/schemas/Done");
+    assert_eq!(schema("202")["$ref"], "#/components/schemas/Started");
+    // The request is not there, the session is locked, and what the
+    // commands of the changes a client may ask for say.
+    assert!(ids(approve, "404").contains(&"ADM-145"));
+    assert!(ids(approve, "403").contains(&"ADM-106"));
+    assert!(ids(approve, "403").contains(&"ADM-122"));
+    let (own, _) = asked_errors(LAB);
+    assert!(!own.is_empty());
+    for id in own {
+        assert!(ids(approve, "422").contains(&id), "{id}");
+    }
+    let refuse = operation(&document, "post", "/api/1/clients/requests/{id}/refuse");
+    assert!(ids(refuse, "404").contains(&"ADM-145"));
+    assert!(!statuses(refuse).contains("422"));
+    assert!(!ids(refuse, "403").contains(&"ADM-106"));
+    assert!(!statuses(refuse).contains("202"));
 }

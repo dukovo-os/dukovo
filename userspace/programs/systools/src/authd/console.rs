@@ -1120,12 +1120,12 @@ impl Authd {
             Console::Token { token, from } => self.console_token(files, token, from, now),
             Console::TokenStart { token } => self.console_token_start(i, files, token, now),
             Console::Client { token, from } => self.console_client(files, token, from, now),
-            Console::ClientOf { owner, name } => self.console_client_of(files, owner, name, now),
+            Console::ClientOf { owner, name } => Self::console_client_of(files, owner, name, now),
             Console::ClientStart { token } => self.console_client_start(i, files, token, now),
             Console::ClientRead { token, action, arguments } => {
                 self.console_client_read(i, files, token, action, arguments, now)
             }
-            Console::ClientsAll => self.console_clients_all(now),
+            Console::ClientsAll => Self::console_clients_all(now),
             Console::ClientRemoveOf { owner, name } => {
                 self.console_client_remove_of(files, owner, name, peer, now)
             }

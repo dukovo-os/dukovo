@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The person's own second steps, API tokens and preferences (ADR 0514,
-//! ADR 0516): the authenticator app, passkeys, recovery codes, the
-//! browsers they trust, the tokens that stand for them to scripts, and how
-//! the console looks to them.
+//! The person's own second steps, API tokens, AI clients and preferences
+//! (ADR 0514, ADR 0516, ADR 0690): the authenticator app, passkeys,
+//! recovery codes, the browsers they trust, the tokens that stand for
+//! them to scripts, the MCP clients they have let in, and how the console
+//! looks to them.
 //!
 //! Each route is one call to the session's worker, which asks authd as the
 //! person, so that authd sees them asking, as it does for `passwd`, or
@@ -15,12 +16,15 @@
 //! unlocked. The preferences ask for no proof: they are the person's own
 //! file, which a locked session may change as much as an unlocked one.
 
+use std::time::Instant;
+
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{Context, Live, Outcome, Reply, Text, refused, shown};
 use crate::admind::errors::{self, Attempt, Failure, Kind};
 use crate::admind::link::CallError;
+use crate::admind::mcp;
 use crate::admind::preferences::Change;
 use crate::admind::webauthn::{self, Made};
 use crate::timedatectl;
@@ -211,6 +215,54 @@ pub async fn token_remove(cx: &Context<'_>, live: &Live) -> Outcome {
     let body: Body = cx.json()?;
     let params = json!({ "name": &*body.name });
     Ok(Reply::json(call(cx, live, "token-remove", params, Attempt::Other).await?))
+}
+
+/// `GET /api/1/account/clients`: the person's own AI clients (ADR 0690),
+/// with none of their secrets.
+pub async fn clients(cx: &Context<'_>, live: &Live) -> Outcome {
+    Ok(Reply::json(call(cx, live, "clients", Value::Null, Attempt::Other).await?))
+}
+
+/// `POST /api/1/account/clients/add`: lets a new AI client in, which
+/// authd refuses for a person who is not an administrator. The answer
+/// has the token of one that connects over HTTPS, which is shown this
+/// once, and null for one that connects over SSH.
+pub async fn client_add(cx: &Context<'_>, live: &Live) -> Outcome {
+    #[derive(Deserialize)]
+    struct Body {
+        #[serde(default)]
+        proof: Text,
+        name: Text,
+        way: Text,
+        scopes: Vec<Text>,
+        days: u32,
+    }
+    let body: Body = cx.json()?;
+    let scopes: Vec<&str> = body.scopes.iter().map(|scope| &**scope).collect();
+    let params = json!({
+        "proof": &*body.proof,
+        "name": &*body.name,
+        "way": &*body.way,
+        "scopes": scopes,
+        "days": body.days,
+    });
+    Ok(Reply::json(call(cx, live, "client-add", params, Attempt::Password).await?))
+}
+
+/// `POST /api/1/account/clients/remove`: removes one of the person's AI
+/// clients. What it had asked for and nobody answered lapses.
+pub async fn client_remove(cx: &Context<'_>, live: &Live) -> Outcome {
+    #[derive(Deserialize)]
+    struct Body {
+        name: Text,
+    }
+    let body: Body = cx.json()?;
+    let params = json!({ "name": &*body.name });
+    let done = call(cx, live, "client-remove", params, Attempt::Other).await?;
+    let now = Instant::now();
+    cx.shared.client_requests.borrow_mut().lapse_of(&live.name, &body.name, now);
+    mcp::lapse(cx.shared, now);
+    Ok(Reply::json(done))
 }
 
 /// `GET /api/1/account/preferences`: how the console looks to the person

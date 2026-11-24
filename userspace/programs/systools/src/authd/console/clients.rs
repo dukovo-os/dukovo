@@ -659,7 +659,6 @@ impl Authd {
     /// `console-client-of`: whether `owner` has a client `name` that may
     /// still connect, answered as `console-client` is.
     pub(super) fn console_client_of(
-        &mut self,
         files: &Files,
         owner: &str,
         name: &str,
@@ -820,7 +819,7 @@ impl Authd {
 
     /// `console-clients-all`: every account's clients, for an
     /// administrator inside elevate.
-    pub(super) fn console_clients_all(&self, now: Instant) -> (Answer, Instant) {
+    pub(super) fn console_clients_all(now: Instant) -> (Answer, Instant) {
         match all(unix_now()) {
             Ok(clients) => (Answer::Done(json!({ "clients": clients }).to_string()), now),
             Err(why) => no(why, now),

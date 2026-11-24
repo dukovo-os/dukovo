@@ -17,6 +17,11 @@
 //! starts a session's, and which admind keeps for five minutes after the
 //! token's last call, so that a script's run of calls does not start one
 //! each time.
+//!
+//! An MCP client's token (ADR 0690) comes the same way and starts `dkc_`.
+//! It is told apart here, and is taken at `/mcp` alone, as an API token is
+//! taken everywhere but there: [`Bearer`]. A client's reads as its owner
+//! run in a worker kept among the tokens' ([`Holder`]).
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -35,19 +40,29 @@ use super::shared::Shared;
 
 /// The longest token admind passes on: `dkv_`, an account's name of up
 /// to 32 bytes, `_` and 64 hex digits fit with room.
-const TOKEN_MAX: usize = 160;
+pub const TOKEN_MAX: usize = 160;
+
+/// How an API token begins, and how an MCP client's does.
+const API_PREFIX: &[u8] = b"dkv_";
+const CLIENT_PREFIX: &[u8] = b"dkc_";
 
 /// How long a token's worker is kept after its last call.
 pub const WORKER_IDLE: Duration = Duration::from_mins(5);
 
-/// The most tokens with a worker at once; a token past them waits for
-/// one to go idle.
+/// The most tokens and MCP clients with a worker at once; one past them
+/// waits for a worker to go idle.
 const WORKERS_MAX: usize = 32;
 
-/// An API token from a request, wiped when it goes.
+/// A token from a request, wiped when it goes: an API token, or an MCP
+/// client's token or pass.
 pub struct Token(Vec<u8>);
 
 impl Token {
+    /// The token `bytes` are.
+    pub fn new(bytes: Vec<u8>) -> Token {
+        Token(bytes)
+    }
+
     pub fn bytes(&self) -> &[u8] {
         &self.0
     }
@@ -59,16 +74,24 @@ impl Drop for Token {
     }
 }
 
-/// The API token `headers` bring, if they bring one: an `Authorization`
-/// of the scheme `Bearer`, whatever its case. Another scheme is not a
-/// token and is let be, as a proxy in front of the console that asks for
-/// its own password sends it on.
+/// What a request's `Authorization: Bearer` brings.
+pub enum Bearer {
+    /// An API token, `dkv_...`.
+    Api(Token),
+    /// An MCP client's token, `dkc_...`.
+    Client(Token),
+}
+
+/// The token `headers` bring, if they bring one: an `Authorization` of
+/// the scheme `Bearer`, whatever its case. Another scheme is not a token
+/// and is let be, as a proxy in front of the console that asks for its
+/// own password sends it on.
 ///
 /// # Errors
 ///
 /// ADM-108 for more than one bearer, or one that is not a token of this
 /// console's form.
-pub fn bearer(headers: &HeaderMap) -> Result<Option<Token>, Failure> {
+pub fn bearer(headers: &HeaderMap) -> Result<Option<Bearer>, Failure> {
     let mut bearers = headers
         .get_all(header::AUTHORIZATION)
         .iter()
@@ -78,17 +101,23 @@ pub fn bearer(headers: &HeaderMap) -> Result<Option<Token>, Failure> {
     let form = || {
         Failure::new(
             Kind::BadRequest,
-            "an API token comes as one header, Authorization: Bearer dkv_…",
+            "an API token comes as one header, Authorization: Bearer dkv_…, and an AI client's \
+             as Authorization: Bearer dkc_…",
         )
     };
     if bearers.next().is_some()
-        || !token.starts_with(b"dkv_")
         || token.len() > TOKEN_MAX
         || !token.iter().all(u8::is_ascii_graphic)
     {
         return Err(form());
     }
-    Ok(Some(Token(token.to_vec())))
+    if token.starts_with(API_PREFIX) {
+        Ok(Some(Bearer::Api(Token(token.to_vec()))))
+    } else if token.starts_with(CLIENT_PREFIX) {
+        Ok(Some(Bearer::Client(Token(token.to_vec()))))
+    } else {
+        Err(form())
+    }
 }
 
 /// What follows the scheme of `value` when it is `Bearer`: the spaces
@@ -155,9 +184,19 @@ pub async fn check(shared: &Shared, peer: IpAddr, token: Token) -> Result<TokenC
     Ok(TokenCall { token, owner, name, scopes })
 }
 
-/// The workers of tokens, by owner and token name.
+/// What a kept worker works for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Holder {
+    /// An API token.
+    Token,
+    /// An MCP client.
+    Client,
+}
+
+/// The workers of tokens and of MCP clients, by what they work for, its
+/// owner and its name.
 #[derive(Default)]
-pub struct TokenWorkers(HashMap<(String, String), Kept>);
+pub struct TokenWorkers(HashMap<(Holder, String, String), Kept>);
 
 struct Kept {
     link: Link,
@@ -182,7 +221,25 @@ impl TokenWorkers {
 /// does not start one, ADM-111 when it does not answer.
 pub async fn worker(shared: &Shared, call: &TokenCall) -> Result<Link, Failure> {
     let TokenCall { token, owner, name, .. } = call;
-    let key = (owner.clone(), name.clone());
+    let start = Console::TokenStart { token: token.bytes().to_vec() };
+    kept_worker(shared, (Holder::Token, owner.clone(), name.clone()), start, Kind::TokenRefused)
+        .await
+}
+
+/// The worker kept under `key`, or a new one that authd starts when
+/// asked `start`, which names the token or the client's credential. A
+/// refusal of authd's is of the kind `refused`.
+///
+/// # Errors
+///
+/// ADM-120 when as many workers are kept as may, `refused` when authd
+/// does not start one, ADM-111 when it does not answer.
+pub async fn kept_worker(
+    shared: &Shared,
+    key: (Holder, String, String),
+    start: Console,
+    refused: Kind,
+) -> Result<Link, Failure> {
     let now = Instant::now();
     {
         let mut workers = shared.token_workers.borrow_mut();
@@ -192,21 +249,21 @@ pub async fn worker(shared: &Shared, call: &TokenCall) -> Result<Link, Failure> 
             return Ok(kept.link.clone());
         }
         if workers.0.len() >= WORKERS_MAX {
-            return Err(Failure::new(Kind::Busy, "as many API tokens as may are in use"));
+            let why = "as many API tokens and AI clients as may are in use";
+            return Err(Failure::new(Kind::Busy, why));
         }
     }
     let internal =
         |err: std::io::Error| Failure::new(Kind::Internal, format!("no link to a worker: {err}"));
     let (ours, theirs) = link::pipes().map_err(internal)?;
-    let console = Console::TokenStart { token: token.bytes().to_vec() };
     let [calls, replies] = theirs.fds();
     let fds = [calls, replies, libc::STDERR_FILENO];
-    let (answer, _) = authd::ask(&shared.authd, console, &fds)
+    let (answer, _) = authd::ask(&shared.authd, start, &fds)
         .await
         .map_err(|why| Failure::new(Kind::AuthdSilent, why))?;
     drop(theirs);
     if let Answer::Refused(why) = answer {
-        return Err(Failure::new(Kind::TokenRefused, why));
+        return Err(Failure::new(refused, why));
     }
     let link = Link::new(ours).map_err(internal)?;
     // Another request of the same token may have started one meanwhile:
@@ -236,14 +293,35 @@ mod tests {
         assert!(bearer(&HeaderMap::new()).unwrap().is_none());
     }
 
+    /// The API token `headers` bring.
+    fn api(headers: &HeaderMap) -> Token {
+        match bearer(headers) {
+            Ok(Some(Bearer::Api(token))) => token,
+            _ => panic!("no API token in {headers:?}"),
+        }
+    }
+
     #[test]
     fn a_bearer_token_is_read_whatever_the_scheme_s_case_and_spaces() {
         for value in
             [format!("Bearer {TOKEN}"), format!("bearer {TOKEN}"), format!("BEARER   {TOKEN}")]
         {
-            let token = bearer(&headers(&[&value])).unwrap().unwrap();
-            assert_eq!(token.bytes(), TOKEN.as_bytes(), "{value}");
+            assert_eq!(api(&headers(&[&value])).bytes(), TOKEN.as_bytes(), "{value}");
         }
+    }
+
+    #[test]
+    fn an_mcp_client_s_token_is_told_from_an_api_token_by_how_it_begins() {
+        let client = TOKEN.replacen("dkv_", "dkc_", 1);
+        let value = format!("Bearer {client}");
+        match bearer(&headers(&[&value])) {
+            Ok(Some(Bearer::Client(token))) => assert_eq!(token.bytes(), client.as_bytes()),
+            _ => panic!("{value} is a client's token"),
+        }
+        // A pass is for the socket, and no bearer.
+        let pass = TOKEN.replacen("dkv_", "dkp_", 1);
+        let failure = bearer(&headers(&[&format!("Bearer {pass}")])).err().unwrap();
+        assert_eq!(failure.kind, Kind::BadRequest);
     }
 
     #[test]
@@ -269,7 +347,7 @@ mod tests {
         }
         // A proxy's own password and a token together: the token is read.
         let both = headers(&["Basic Y2hhc2U6c2VjcmV0", &format!("Bearer {TOKEN}")]);
-        assert_eq!(bearer(&both).unwrap().unwrap().bytes(), TOKEN.as_bytes());
+        assert_eq!(api(&both).bytes(), TOKEN.as_bytes());
     }
 
     #[test]

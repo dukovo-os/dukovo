@@ -29,8 +29,6 @@ pub const INVALID: i64 = -32600;
 pub const NO_METHOD: i64 = -32601;
 /// The method does not take those parameters.
 pub const PARAMS: i64 = -32602;
-/// The server could not do what it is for.
-pub const INTERNAL: i64 = -32603;
 /// An HTTPS request's headers and its body disagree.
 pub const HEADER_MISMATCH: i64 = -32020;
 /// The revision of the protocol that was asked for is not served.
@@ -150,11 +148,6 @@ impl Error {
     /// A method does not take its parameters, for `why`.
     pub fn params(why: impl Into<String>) -> Error {
         Error::new(PARAMS, why, 200)
-    }
-
-    /// The server could not do what it is for.
-    pub fn internal(why: impl Into<String>) -> Error {
-        Error::new(INTERNAL, why, 200)
     }
 
     /// An HTTPS request's headers and its body disagree, as `why` says.
