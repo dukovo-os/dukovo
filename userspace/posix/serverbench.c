@@ -69,6 +69,7 @@
 #include <grp.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <pthread.h>
 #include <pwd.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -1135,6 +1136,49 @@ static void cpu_cycle(uint64_t rounds) {
 #endif
 }
 
+// The C library's allocator, as the servers use it: each operation frees
+// the oldest of MALLOC_LIVE blocks and allocates one of a size from 16 to
+// 512 bytes, as a server's requests make and drop their small objects.
+// server_malloc_one runs it on one thread, server_malloc_two on two at
+// once, which share the allocator as pgbench's two threads do. Neither
+// row is held to Linux's: they say how much of a server's time its C
+// library's allocator could account for.
+#define MALLOC_LIVE 1024
+#define MALLOC_ROUNDS 2000000
+
+static void *malloc_rounds(void *argument) {
+	(void)argument;
+	static const size_t sizes[] = {16, 24, 32, 48, 64, 96, 128, 256, 512};
+	void *live[MALLOC_LIVE] = {0};
+	uint32_t seed = 12345;
+	for(uint64_t i = 0; i < MALLOC_ROUNDS; i++) {
+		seed = seed * 1103515245u + 12345u;
+		size_t at = i % MALLOC_LIVE;
+		free(live[at]);
+		live[at] = malloc(sizes[(seed >> 16) % (sizeof(sizes) / sizeof(sizes[0]))]);
+		if(!live[at])
+			fail("server_malloc", "out of memory");
+		*(volatile char *)live[at] = 1;
+	}
+	for(size_t at = 0; at < MALLOC_LIVE; at++)
+		free(live[at]);
+	return NULL;
+}
+
+static void malloc_rows(void) {
+	malloc_rounds(NULL);
+	uint64_t started = now_ns();
+	malloc_rounds(NULL);
+	report("server_malloc_one", started, MALLOC_ROUNDS);
+	pthread_t other;
+	started = now_ns();
+	if(pthread_create(&other, NULL, malloc_rounds, NULL) != 0)
+		fail("server_malloc", "cannot start a thread");
+	malloc_rounds(NULL);
+	pthread_join(other, NULL);
+	report("server_malloc_two", started, MALLOC_ROUNDS);
+}
+
 // Makes the work folder. As root it gives the folder to `bench` and
 // becomes that account, with no groups of the root account's, and checks
 // that root cannot be had back.
@@ -1222,6 +1266,7 @@ int main(int argc, char **argv) {
 	make_work();
 	make_environment();
 	cpu_cycle(1000000);
+	malloc_rows();
 	for(int i = first; i < argc; i++) {
 		if(!strcmp(argv[i], "nginx"))
 			nginx_rows();
