@@ -1,0 +1,71 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The AI clients page of the web console in each engine (ADR 0690): an
+# administrator lets in a client over SSH and one over HTTPS through the
+# page's dialog, which refuses a name that is none, asks to unlock first,
+# says the command that does the same at a terminal, and shows the SSH
+# client's settings and, once, the other's token. The lab PC is then that
+# client: with the token alone, as a program on another machine has it, it
+# asks the console's MCP server at /mcp what it reaches, reads the services,
+# and asks to restart diskhealth, which every image runs and nothing needs.
+# The request waits on the page with the client's reason, the command a yes
+# would run, which is the one POST /api/1/show gives, and whether it would
+# change anything; the navigation counts it. Approve runs the restart as the
+# administrator, and the journal's row has the administrator as who and the
+# client as how. A second request, to stop the service, is refused from a
+# locked console, where Approve asks to unlock first and a cancel sends
+# nothing; the service runs on. The client is told what became of each.
+#
+# A locked console lists the administrator's own clients and an unlocked one
+# every administrator's, as GET /api/1/console/clients answers: the client of
+# a second administrator, which that one lets in first, is in it, and is
+# removed with its Remove, which shows the command that runs. The
+# administrator's own are removed by their own route, and the token then lets
+# nothing in. A reader is told that AI clients are for administrators, has no
+# link to the page and is refused each of its routes. A phone at 390 by 844
+# shows a request that waits and refuses it. Each look is dark, light, high
+# contrast, forced colours and less motion, checked by axe.
+#
+# Each engine has two administrators of its own, and the reader is one for
+# all three, which this test makes and removes, so no script needs the lab's
+# password. A client goes with its account, so removing the accounts takes
+# away what a script that failed left behind. admind and authd are the
+# services that answer, and `admin mcp list --all --json` is what the last
+# steps read at the machine.
+#
+# The console's actions (lab/actions.toml) that this test uses through its
+# page, by id: console.clients, console.client-remove.
+about = "The web console's AI clients page in each engine: a client let in over SSH and one over HTTPS with its token shown once, the lab PC as that client reading and asking at /mcp, a request approved from the page with the journal naming both and one refused from a locked console, every administrator's clients listed and another's removed, a reader, and the phone"
+time = "30m"
+host_needs = ["curl"]
+
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do for name in wc-clients-$engine wc-clients-b-$engine; do echo lab-console-password | user add --admin $name || exit 1; done; done; echo lab-console-password | user add wc-clients-reader && user set --console --yes wc-clients-reader'"
+root = true
+expect = ["Made wc-clients-chromium", "Made wc-clients-b-firefox", "Made wc-clients-b-webkit", "Made wc-clients-reader", "wc-clients-reader is changed"]
+# diskhealth runs, as the page expects to find it: the test restarts it, and
+# asks for its stop only to refuse that.
+[[step]]
+run = "service diskhealth status"
+root = true
+expect = "Active: active (running)"
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+browser = "clients.mjs"
+port = 9090
+# What the scripts left: no client of the test's accounts, and the service
+# running, since its stop was refused.
+[[step]]
+run = "sh -c 'if admin mcp list --all --json | grep -q wc-clients; then echo a client is left; else echo no client is left; fi; service diskhealth status'"
+root = true
+expect = ["no client is left", "Active: active (running)"]
+[[step]]
+run = "sh -c 'for name in wc-clients-chromium wc-clients-b-chromium wc-clients-firefox wc-clients-b-firefox wc-clients-webkit wc-clients-b-webkit wc-clients-reader; do user remove --delete-home --yes $name || exit 1; done'"
+root = true
+expect = ["wc-clients-chromium is removed", "wc-clients-b-webkit is removed", "wc-clients-reader is removed"]

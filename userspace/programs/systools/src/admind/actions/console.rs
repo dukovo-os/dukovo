@@ -612,16 +612,18 @@ impl Action for ClientRemove {
     }
 
     fn examples() -> Examples<ClientOf> {
-        // The client is the boot test's to make: alice, the administrator
-        // of the test image, lets in `lab-client`.
+        // The client is the boot test's to make: in admin-mcp alice, the
+        // administrator of the test image, lets in `lab-read`, and removes
+        // it with the command this shows. No lab machine has it, so the lab
+        // runs neither this example's task nor its call.
         Examples {
-            good: vec![ClientOf { owner: "alice".into(), name: "lab-client".into() }],
+            good: vec![ClientOf { owner: "alice".into(), name: "lab-read".into() }],
             bad: vec![
                 json!({ "owner": "alice", "name": "" }),
                 json!({ "owner": "alice", "name": "Lab Client" }),
                 json!({ "owner": "alice", "name": "list" }),
-                json!({ "owner": "a b", "name": "lab-client" }),
-                json!({ "name": "lab-client" }),
+                json!({ "owner": "a b", "name": "lab-read" }),
+                json!({ "name": "lab-read" }),
                 json!({ "owner": "alice" }),
             ],
             undo: None,
@@ -1186,7 +1188,7 @@ mod tests {
     #[test]
     fn the_example_removes_the_client_the_boot_test_has_its_administrator_let_in() {
         let (good, bad, undo) = action("console.client-remove").example_values();
-        assert_eq!(good, [json!({ "owner": "alice", "name": "lab-client" })]);
+        assert_eq!(good, [json!({ "owner": "alice", "name": "lab-read" })]);
         // Nothing puts a client back: its owner makes it again, with the
         // password, which no action takes.
         assert_eq!(undo, None);

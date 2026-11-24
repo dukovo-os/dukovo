@@ -190,8 +190,9 @@ ACCOUNTS = {
 # lab machine; the alert channels' changes take what a test does not give or need a channel that is not
 # there; Your account's changes would change the name, password and keys of the account the test signs
 # in with; security.unblock needs a blocked address and private.add and private.remove the device
-# lab-phone; and the Updates' and Apps' changes need a release on an update server or an app of the test
-# catalog. Their examples end refused, and so does the undo after them, which the round must not.
+# lab-phone; the Updates' and Apps' changes need a release on an update server or an app of the test
+# catalog; and console.client-remove names the AI client lab-read of alice, which only the boot test
+# admin-mcp lets in. Their examples end refused, and so does the undo after them, which the round must not.
 OTHERS_SET_UP = {
     "certificate.get", "certificate.add", "certificate.revoke", "certificate.remove", "certificate.forget",
     "machine.rename",
@@ -202,6 +203,7 @@ OTHERS_SET_UP = {
     "updates.apply", "updates.unstage", "updates.undo", "updates.hold", "updates.unhold", "updates.later",
     "apps.update", "apps.update-all", "apps.tonight", "apps.tonight-all", "apps.not-tonight",
     "apps.rollback", "apps.hold", "apps.unhold", "apps.remove",
+    "console.client-remove",
 }
 LEFT_ALONE = (
     {"certificate.renew"} | CATALOG_CHANGES | TRIED | SET_UP | DATABASES | WEBSITES | ACCOUNTS | OTHERS_SET_UP
