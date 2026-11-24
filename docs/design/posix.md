@@ -1017,7 +1017,7 @@ ring and reporting it.
 - Hard links, named pipes, device nodes and socket names work on tmpfs
   and Btrfs (ADR 0135); FAT and exFAT have none (EPERM). A device node
   opens only the devices with fixed Linux numbers (`null`, `zero`,
-  `random`, `urandom`, `kmsg`, `tty`, `ptmx`, `fb0`); others fail with
+  `random`, `urandom`, `kmsg`, `tty`, `ptmx`); others fail with
   ENXIO. Symbolic links work on tmpfs, Btrfs and in the boot archive.
 - Files have owners, groups and modes on tmpfs, Btrfs and ext4 (ADR
   0213), which nothing checks until users come later in Phase 13; FAT

@@ -19,13 +19,30 @@ the one shown. Each console is a terminal for *TERM=linux*, a VT100 with
 the Linux console's colours, keys and escape sequences, running the
 sign-in, *login*(1), on a pseudo-terminal of its own (*radix-posix*(7)).
 
-The Radix kernel shows its log on the screen while the machine starts.
-When consoled takes the screen (_/devices/fb0_, *radix-framebuffer*(2)) the
-kernel stops drawing on it, and when consoled ends the screen is the
-log's again; *dmesg*(1) shows the kernel's messages meanwhile. The keys
-come from _/devices/kbd_ (*radix-input*(2)): the PS/2 keyboard's events
-and every USB keyboard's, which can be plugged in and pulled out at any
-time.
+The Radix kernel shows its log on the screens while the machine starts.
+consoled is a holder of the display layer (_/devices/display/control_,
+*radix-display*(2)): its first change takes the screens from the log,
+and when consoled ends they are the log's again; *dmesg*(1) shows the
+kernel's messages meanwhile. The keys come from _/devices/kbd_
+(*radix-input*(2)): the PS/2 keyboard's events and every USB keyboard's,
+which can be plugged in and pulled out at any time.
+
+The shown console is on every screen a monitor is plugged into. Every
+screen shows the same columns and rows: as many as the screen with room
+for the fewest shows, each way. A screen with room for more shows them
+in the middle, in the largest text that still shows them all. A monitor
+plugged in later shows the console at once. When a screen comes, goes or
+changes its size, each console takes the new columns and rows, as a
+terminal does when its window is resized. consoled logs how each screen
+shows them, *console of 160x50 cells with font 8x16 at (0, 0)* for the
+first and the same after *screen 2:* for the next. consoled sends the
+layer only the cells that changed since its last draw. While another
+holder of the layer is in front, consoled draws nothing, and it draws
+the shown console whole when it is in front again. If the layer does not
+take a draw, consoled logs *cannot draw on the screens* and the reason
+once and goes on, so that the sessions and the readers of speech and
+braille do; it draws the console whole once the layer takes a draw
+again, and logs *the screens are drawn on again*.
 
 Spark starts consoled at boot as the *consoled* service
 (_/system/settings/spark/services/consoled.toml_, *spark*(8)), first and
@@ -33,9 +50,12 @@ stopped last, and starts it again if it fails. Its file asks for
 *admin.hardware*, so that root's shells may set the fans, the LEDs and
 the ARGB header with *ectool*(8), and for the whole network with
 *admin.network*, so that they may connect, listen on any port and set
-the interfaces up with *ip*(8). Without a screen, as on
+the interfaces up with *ip*(8). Without a graphics card, as on
 a machine with only a serial console, consoled logs *no screen for
-consoles* and exits with 0, and stays stopped.
+consoles* and exits with 0, and stays stopped. With a card and no
+monitor plugged in, consoled stays: it logs *no screen is plugged in:
+the consoles show when one is*, and the kernel's log keeps the screens
+until a monitor comes.
 
 # SESSIONS
 
@@ -400,8 +420,8 @@ installer's screens set their design's sixteen while they show.
 
 # FILES
 
-_/devices/fb0_
-	The screen.
+_/devices/display/control_
+	The display layer, by which consoled draws on the screens.
 
 _/devices/kbd_
 	The keyboards' events.
@@ -450,5 +470,5 @@ _/system/live/consoled/braille_
 *nukesh*(1), *dmesg*(1),
 *notifyd*(8), *notify-send*(1), *readerd*(8), *reader*(1), *brailled*(8),
 *braille*(1), *brltty*(1), *dukovo-boot*(7),
-*radix-framebuffer*(2), *radix-input*(2), *radix-files*(7),
+*radix-display*(2), *radix-input*(2), *radix-files*(7),
 *serial-console*(8)

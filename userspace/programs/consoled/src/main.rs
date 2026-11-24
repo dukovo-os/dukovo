@@ -3,9 +3,10 @@
 
 //! consoled(8): Dukovo's virtual consoles (ADR 0100).
 //!
-//! The kernel draws its log on the screen until consoled takes the screen
-//! (_/devices/fb0_, radix-framebuffer(2)). Then consoled draws six consoles on
-//! it, one at a time, each a terminal for TERM=linux (`term`) with
+//! The kernel draws its log on the screens until consoled takes them from
+//! it (_/devices/display/control_, radix-display(2)). Then consoled draws
+//! six consoles, one at a time, on every screen a monitor is plugged into
+//! (`screen`), each a terminal for TERM=linux (`term`) with
 //! login(1)'s sign-in on a pseudo-terminal (`session`, ADR 0250), or with
 //! `--shell`, root's shell and no sign-in, and turns the keys read from
 //! _/devices/kbd_ (radix-input(2)) into what the terminal sends (`keys`).
@@ -31,8 +32,8 @@
 //! admind(8) writes them after it was drawn, as it does once it starts, or
 //! writes new ones, and the log says "ttyN: drawing the sign-in screen
 //! again for the web console's address". When
-//! consoled ends, the screen is the kernel log's again. Spark starts it as
-//! a service (spark(8)).
+//! consoled ends, the screens are the kernel log's again. Spark starts it
+//! as a service (spark(8)).
 
 mod access;
 mod braille;
@@ -69,6 +70,9 @@ const USAGE: &str = "usage: consoled [--consoles N] [--shell PATH]";
 
 /// The consoles there are, at most: Alt+F1 to Alt+F12.
 const CONSOLES_MAX: usize = 12;
+
+/// The display layer's file, which the screens are drawn through.
+const DISPLAY: &str = "/devices/display/control";
 
 /// Where the text shown before each session comes from.
 const ISSUE: &str = "/system/settings/issue";
@@ -308,6 +312,14 @@ fn run(path: &str) {
     }
 }
 
+/// Logs the consoles' geometry on each screen, which the boot tests read
+/// the first screen by.
+fn log_geometry(screen: &Screen) {
+    for line in screen.describe() {
+        eprintln!("consoled: {line}");
+    }
+}
+
 /// What consoled's own bottom line shows, over a notification.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Bar {
@@ -529,16 +541,17 @@ impl Consoled {
     /// Draws the text in the size the settings say, as far as the screen
     /// allows, each console as many cells as then fit.
     fn apply_size(&mut self) {
-        match self.screen.set_size(self.access.size) {
-            Ok(true) => {}
-            Ok(false) => return,
-            Err(err) => {
-                eprintln!("consoled: cannot change the text size: {err}");
-                return;
-            }
+        if !self.screen.set_size(self.access.size) {
+            return;
         }
         eprintln!("consoled: text size {}", self.access.size.name());
-        eprintln!("consoled: {}", self.screen.describe());
+        self.fit_consoles();
+    }
+
+    /// Gives each console the cells the screens now show, and logs how
+    /// they show them.
+    fn fit_consoles(&mut self) {
+        log_geometry(&self.screen);
         let (cols, rows) = (self.screen.cols(), self.screen.rows());
         for console in &mut self.consoles {
             console.resize(cols, rows);
@@ -764,7 +777,7 @@ impl Consoled {
         loop {
             // The wake pipe, the keyboard, notifyd, authd's prompts,
             // readerd, the braille display's socket and its connection,
-            // then each console's master.
+            // the display layer's events, then each console's master.
             let mut fds =
                 vec![libc::pollfd { fd: wake.as_raw_fd(), events: libc::POLLIN, revents: 0 }];
             fds.push(libc::pollfd {
@@ -780,6 +793,7 @@ impl Consoled {
             fds.push(libc::pollfd { fd: listener, events: libc::POLLIN, revents: 0 });
             let (display, wanted) = self.braille.client_fd();
             fds.push(libc::pollfd { fd: display, events: wanted, revents: 0 });
+            fds.push(libc::pollfd { fd: self.screen.fd(), events: libc::POLLIN, revents: 0 });
             for (i, console) in self.consoles.iter().enumerate() {
                 let held = i == self.active && self.keyboard.scroll;
                 let fd = console.master_fd().filter(|_| !held).unwrap_or(-1);
@@ -865,8 +879,13 @@ impl Consoled {
                     self.braille_input(input);
                 }
             }
+            // A screen came, went or changed its size, or the front
+            // passed: the consoles take the cells the screens now show.
+            if fds[7].revents != 0 && self.screen.events() {
+                self.fit_consoles();
+            }
             for (i, console) in self.consoles.iter_mut().enumerate() {
-                if fds[7 + i].revents != 0 {
+                if fds[8 + i].revents != 0 {
                     console.read();
                 }
             }
@@ -883,7 +902,7 @@ impl Consoled {
             self.speak(now);
             // Only the cells that changed are drawn.
             let bottom = self.bottom();
-            self.screen.draw(&self.consoles[self.active].term, bottom.as_deref())?;
+            self.screen.draw(&self.consoles[self.active].term, bottom.as_deref());
             self.show_braille(bottom.as_deref());
         }
     }
@@ -903,26 +922,22 @@ fn main() -> ExitCode {
         eprintln!("consoled: install: the installer's screens are on {place}");
     }
     let grid = if install { INSTALLER_GRID } else { radix_fbcon::MIN_GRID };
-    let mut screen = match Screen::open("/devices/fb0", grid) {
+    let mut screen = match Screen::open(DISPLAY, grid) {
         Ok(screen) => screen,
         Err(err) => {
             // No screen to draw on, as with a serial console only: nothing
             // to do, and nothing to start again.
-            eprintln!("consoled: no screen for consoles (/devices/fb0: {err})");
+            eprintln!("consoled: no screen for consoles ({DISPLAY}: {err})");
             return ExitCode::SUCCESS;
         }
     };
-    eprintln!("consoled: {}", screen.describe());
+    log_geometry(&screen);
     // The text size accessibility.toml(5) asks for, before the consoles
     // take their size from the screen.
     let access = Access::read();
-    match screen.set_size(access.size) {
-        Ok(true) => {
-            eprintln!("consoled: text size {}", access.size.name());
-            eprintln!("consoled: {}", screen.describe());
-        }
-        Ok(false) => {}
-        Err(err) => eprintln!("consoled: cannot change the text size: {err}"),
+    if screen.set_size(access.size) {
+        eprintln!("consoled: text size {}", access.size.name());
+        log_geometry(&screen);
     }
     let kbd = OpenOptions::new()
         .read(true)
@@ -1055,18 +1070,18 @@ mod tests {
             names.iter().map(|name| (*name).to_string()).collect()
         };
         assert_eq!(
-            serial_place("live install console=ttyS0", &devices(&["ttyS0", "fb0"])),
+            serial_place("live install console=ttyS0", &devices(&["ttyS0", "display"])),
             Some("the serial port, ttyS0".to_string())
         );
         // A port the computer lacks leaves the installer on tty1.
         assert_eq!(serial_place("live install console=ttyS1", &devices(&["ttyS0"])), None);
         let any = "live install serial-console=any console-sign-in=off";
         assert_eq!(
-            serial_place(any, &devices(&["fb0", "ttyS4", "kbd"])),
+            serial_place(any, &devices(&["display", "ttyS4", "kbd"])),
             Some("the serial port Enter is pressed on".to_string())
         );
         // Without a serial port there is nothing to press Enter on.
-        assert_eq!(serial_place(any, &devices(&["fb0", "kbd", "ttyX", "ttyS"])), None);
+        assert_eq!(serial_place(any, &devices(&["display", "kbd", "ttyX", "ttyS"])), None);
         // The word beats console= as it does in serial-console.
         assert_eq!(
             serial_place("serial-console=any console=ttyS0", &devices(&["ttyS1"])),

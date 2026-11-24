@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! The kernel's own requests on the devices consoled drives, which the C
-//! library has no names for: radix-framebuffer(2)'s and radix-input(2)'s
+//! library has no names for: radix-display(2)'s and radix-input(2)'s
 //! `control` requests (radix-file(2)), through `radix_abi`'s wrappers.
 //!
 //! Built for another system (the unit tests run on the build machine),

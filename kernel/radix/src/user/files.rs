@@ -2088,18 +2088,6 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
                     fs::keyboard::set_lights(a.argument as u32);
                     0
                 }
-                Target::Framebuffer if a.request == radix_abi::framebuffer::GET_INFO => {
-                    let bytes = fs::framebuffer::info_bytes()?;
-                    if a.size < bytes.len() as u64 || !Arch::copy_to_user(a.buffer, &bytes) {
-                        return Err(error(Kernel::BadAddress));
-                    }
-                    0
-                }
-                Target::Framebuffer => {
-                    let may_write = found.cap.check(ObjectKind::File, Rights::WRITE).is_ok();
-                    fs::framebuffer::control(file, a.request, may_write)?;
-                    0
-                }
                 Target::Capture => {
                     let size = a.size;
                     let copy_in = |bytes: &mut [u8]| {
@@ -2884,8 +2872,6 @@ enum Target<'a> {
     Keyboard,
     /// `/devices/mouse`.
     Mouse,
-    /// `/devices/fb0`.
-    Framebuffer,
     /// A connection of `/devices/fuse`.
     Fuse,
     /// The program's end of a tunnel.
@@ -2917,8 +2903,6 @@ fn target(file: &FileObject) -> Target<'_> {
         Target::Keyboard
     } else if file.is_mouse() {
         Target::Mouse
-    } else if file.is_framebuffer() {
-        Target::Framebuffer
     } else if file.fuse_channel().is_some() {
         Target::Fuse
     } else if file.is_tunnel() {
@@ -2997,7 +2981,7 @@ fn read_special(
         Target::Capture => fs::capture::read(file, out, non_blocking).map(|n| n as u64),
         Target::Crashes => fs::crashes::read(file, out, non_blocking).map(|n| n as u64),
         Target::Display => crate::display::read(file, out, non_blocking).map(|n| n as u64),
-        Target::Framebuffer | Target::Audio | Target::Node => Ok(0),
+        Target::Audio | Target::Node => Ok(0),
     }
 }
 
@@ -3016,7 +3000,7 @@ pub fn write(
 ) -> Result<u64> {
     let data = UserIn { address, len };
     if file.is_special() {
-        let written = write_special(user, file, offset, &data, never_wait)?;
+        let written = write_special(user, file, &data, never_wait)?;
         user.process.note_written(written);
         return Ok(written);
     }
@@ -3092,7 +3076,6 @@ fn over_file_size() -> radix_abi::Status {
 fn write_special(
     user: &UserThread,
     file: &FileObject,
-    offset: u64,
     data: &UserIn,
     never_wait: bool,
 ) -> Result<u64> {
@@ -3110,13 +3093,6 @@ fn write_special(
         Target::Tunnel => fs::tunnel::write(file, data).map(|n| n as u64),
         Target::Capture => Err(error(Kernel::NotSupported)),
         Target::Audio => crate::audio::write(file, data, non_blocking).map(|n| n as u64),
-        Target::Framebuffer if offset == file::CURRENT => {
-            let mut at = file.offset.lock();
-            let written = fs::framebuffer::write(file, *at, data)? as u64;
-            *at += written;
-            Ok(written)
-        }
-        Target::Framebuffer => fs::framebuffer::write(file, offset, data).map(|n| n as u64),
         Target::Keyboard | Target::Mouse | Target::Crashes | Target::Display => {
             Err(error(Kernel::InvalidArgument))
         }
@@ -3127,7 +3103,7 @@ fn write_special(
 /// `seek`: moves `file`'s offset `offset` bytes from where `whence` says.
 fn seek(file: &FileObject, offset: i64, whence: Whence) -> Result<u64> {
     match target(file) {
-        Target::Node | Target::Framebuffer => {}
+        Target::Node => {}
         Target::Kmsg => return fs::kmsg::seek(file, offset, whence),
         _ => return Err(error(Kernel::NotSeekable)),
     }

@@ -45,7 +45,6 @@ pub mod crashes;
 pub mod devfs;
 pub mod disk;
 mod events;
-pub mod framebuffer;
 pub mod fuse;
 pub mod inet;
 pub mod keyboard;
@@ -160,8 +159,6 @@ enum Special {
     Keyboard,
     /// `/devices/mouse`.
     Mouse,
-    /// `/devices/fb0`.
-    Framebuffer,
     /// A connection of `/devices/fuse`.
     Fuse,
     /// The program's end of a tunnel (ADR 0339).
@@ -423,7 +420,6 @@ impl FileObject {
             Kind::CharDevice if kmsg::is_kmsg(&at.node) => Special::Kmsg,
             Kind::CharDevice if keyboard::is_keyboard(&at.node) => Special::Keyboard,
             Kind::CharDevice if mouse::is_mouse(&at.node) => Special::Mouse,
-            Kind::CharDevice if framebuffer::is_framebuffer(&at.node) => Special::Framebuffer,
             Kind::CharDevice if fuse::channel_of(&at.node).is_some() => Special::Fuse,
             Kind::CharDevice if tunnel::end_of(&at.node).is_some() => Special::Tunnel,
             Kind::CharDevice if capture::end_of(&at.node).is_some() => Special::Capture,
@@ -528,11 +524,6 @@ impl FileObject {
         self.special == Special::Mouse
     }
 
-    /// Whether it is of `/devices/fb0`.
-    pub fn is_framebuffer(&self) -> bool {
-        self.special == Special::Framebuffer
-    }
-
     /// The connection of `/devices/fuse` it is of, if it is of one.
     pub fn fuse_channel(&self) -> Option<&fuse::Channel> {
         if self.special == Special::Fuse { fuse::channel_of(&self.at.node) } else { None }
@@ -596,7 +587,6 @@ impl Drop for FileObject {
     fn drop(&mut self) {
         match self.special {
             Special::Kmsg => kmsg::closed(),
-            Special::Framebuffer => framebuffer::closed(self.address()),
             Special::Audio => crate::audio::closed(self),
             Special::Display => crate::display::closed(self),
             _ => {}

@@ -547,6 +547,7 @@ pub const HOST_TESTED: &[&str] = &[
     "catalog-repo",
     "consoled",
     "disk",
+    "display",
     "dkv",
     "dukovo-install",
     "git-https-test",

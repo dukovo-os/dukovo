@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! The framebuffer console: the kernel log on the screen, and the screen
-//! the panic report takes over. Since Phase 9 a program may take the screen
-//! to draw on through `/devices/fb0` (`fs::framebuffer`): the log stays off it
-//! until the program gives it back.
+//! the panic report takes over. The screen is also the display layer's
+//! first card (`crate::display`, ADR 0705): while one of the layer's
+//! holders is in front the log stays off it, and is drawn again when the
+//! front is the log's.
 //!
 //! With the `quiet` flag, as an installed system starts (ADR 0426), the
 //! screen shows the startup screen instead: Dukovo's name and a bar that
@@ -31,7 +32,8 @@ static STORAGE: TakeOnce<[u32; STORAGE_CELLS]> = TakeOnce::new([0; STORAGE_CELLS
 static SCREEN: SpinLock<Option<Console>> = SpinLock::new(None);
 /// Set by the panic path, which draws its report itself.
 static TAKEN_OVER: AtomicBool = AtomicBool::new(false);
-/// Set while a program holds the screen (`/devices/fb0`).
+/// Set while a holder of the display layer is in front, and draws on the
+/// screen.
 static HANDED_OVER: AtomicBool = AtomicBool::new(false);
 /// Set while the startup screen shows in place of the log.
 static QUIET: AtomicBool = AtomicBool::new(false);
@@ -222,17 +224,17 @@ pub fn framebuffer_start() -> Option<u64> {
     Some(screen.as_ref()?.framebuffer().phys_addr)
 }
 
-/// Gives the screen to a program (`/devices/fb0`): the log stops drawing on
-/// it, and the startup screen is done with, so that the log shows when the
-/// program gives the screen back.
+/// Gives the screen to the display layer's holder in front: the log stops
+/// drawing on it, and the startup screen is done with, so that the log
+/// shows when the front is the log's again.
 pub fn hand_over() {
     HANDED_OVER.store(true, Ordering::Relaxed);
     QUIET.store(false, Ordering::Relaxed);
     QUIET_UNTIL.store(0, Ordering::Relaxed);
 }
 
-/// Takes the screen back from the program that held it, and draws the log
-/// on it again.
+/// Takes the screen back from the display layer's holders, and draws the
+/// log on it again.
 pub fn give_back() {
     // With interrupts masked, as the log writes the screen from them.
     let mut screen = SCREEN.lock_irq();
@@ -241,26 +243,6 @@ pub fn give_back() {
         && !TAKEN_OVER.load(Ordering::Relaxed)
     {
         console.repaint();
-    }
-}
-
-/// Copies `bytes` into the framebuffer at byte `offset`, for the program
-/// that holds the screen. Returns false past its end.
-pub fn put_pixels(offset: usize, bytes: &[u8]) -> bool {
-    let mut screen = SCREEN.lock_irq();
-    if TAKEN_OVER.load(Ordering::Relaxed) || !HANDED_OVER.load(Ordering::Relaxed) {
-        // The panic report owns the screen now, or the kernel took it back
-        // to show the end of a shutdown.
-        return true;
-    }
-    let Some(console) = screen.as_mut() else { return false };
-    let Some(end) = offset.checked_add(bytes.len()) else { return false };
-    match console.pixels_mut().get_mut(offset..end) {
-        Some(target) => {
-            target.copy_from_slice(bytes);
-            true
-        }
-        None => false,
     }
 }
 

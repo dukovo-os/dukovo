@@ -210,8 +210,9 @@ impl Console {
         &self.fb
     }
 
-    /// The framebuffer's pixels, for a program that draws on the screen
-    /// itself (consoled, through `/devices/fb0`).
+    /// The framebuffer's pixels, for the kernel's display layer, whose
+    /// first card the screen is: what its holder in front shows is drawn
+    /// here.
     pub fn pixels_mut(&mut self) -> &mut [u8] {
         self.fb.memory
     }
@@ -227,7 +228,8 @@ impl Console {
     }
 
     /// Draws the whole screen again from the grid, for when something else
-    /// has drawn on it: consoled, before it gave the screen back.
+    /// has drawn on it: a holder of the display layer, before the front
+    /// was the log's again.
     pub fn repaint(&mut self) {
         self.blank();
         // No cell holds this value, so every one is drawn.
