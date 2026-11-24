@@ -4,6 +4,7 @@
 // The Tasks drawer's groups and the words on a task's card (design 8), as
 // plain values. tasks/cards.js draws them; the model is lib/tasks-model.js.
 
+import { askedBy } from './how.js';
 import { isRunning, needsLook } from './tasks-model.js';
 
 /** The least time between two reads of a log that is open, in milliseconds. */
@@ -30,10 +31,10 @@ export function canStop(task, session) {
   return isRunning(task) && (task.who === session.name || session.admin);
 }
 
-/** Who started `task`, in words: a person in the console, or through an API token. */
+/** Who started `task`, in words: a person in the console, with the client that asked for it if one did, or through an API token. */
 export function startedBy(task) {
   const token = /^token (.+)$/.exec(task.how ?? '');
-  return token ? `${task.who} with the API token ${token[1]}` : task.who;
+  return token ? `${task.who} with the API token ${token[1]}` : `${task.who}${askedBy(task.how, task.who)}`;
 }
 
 /** "Started by alice at 2:00 AM · task 42"; `clock` writes a Unix time as the person reads it. */

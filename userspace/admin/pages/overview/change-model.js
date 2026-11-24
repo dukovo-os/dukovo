@@ -5,6 +5,7 @@
 // how, the words of its title and its dot. The Overview's What changed card
 // and the journal page on Reliability both draw rows from these.
 
+import { askedBy } from '../../lib/how.js';
 import { filesWords } from './part-model.js';
 
 /** How far back What changed looks when no good start is known, in seconds. */
@@ -17,14 +18,14 @@ export function changedHeading(about, time, now) {
   return { more: 'in the last 7 days', since: now - WEEK };
 }
 
-/** Who made a change, as the row says: "alice in this console", "ci with the API token ci", or a hand edit's author. */
+/** Who made a change, as the row says: "alice in this console", "ci with the API token ci", "alice, asked for by the AI client desk", or a hand edit's author. */
 export function byWords(change) {
   const who = change.who === 'outside the console' ? 'Someone' : change.who;
   const token = /^token (.+)$/.exec(change.how ?? '');
   if (change.how === 'by hand') return `${who} edited it by hand`;
   if (change.how === 'undone') return 'Spark undid it';
   if (token) return `By ${change.who} with the API token ${token[1]}`;
-  return `By ${change.who} in this console`;
+  return `By ${change.who}${askedBy(change.how, change.who) || ' in this console'}`;
 }
 
 /**

@@ -126,6 +126,8 @@ test('who started a task, and when, in words', () => {
   const clock = (seconds) => (seconds === 1000 ? '2:00 AM' : '?');
   assert.equal(startedBy(task({})), 'alice');
   assert.equal(startedBy(task({ how: 'token ci' })), 'alice with the API token ci');
+  assert.equal(startedBy(task({ how: 'client desk of alice' })), 'alice, asked for by the AI client desk');
+  assert.equal(startedBy(task({ how: 'client desk of chase' })), 'alice, asked for by chase\'s AI client desk');
   assert.equal(startedWords(task({ id: 42 }), clock), 'Started by alice at 2:00 AM · task 42');
 });
 
