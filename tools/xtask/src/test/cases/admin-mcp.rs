@@ -374,7 +374,8 @@ impl Session {
         let (answers, answers_port) = listen()?;
         // -d: the first nc reads nothing from the pane, and ends when the
         // host closes its side. -N: the second half-closes when the bridge
-        // has ended, so that the host sees the end.
+        // has ended, so that the host sees the end, and ends itself once
+        // the host has closed its side too.
         let command = format!(
             "nc -d {HOST} {messages_port} | admin mcp {name} | nc -N {HOST} {answers_port}"
         );
@@ -487,22 +488,27 @@ impl Session {
     }
 
     /// Ends the client: the host closes its side, the first nc ends, admin
-    /// mcp ends with its input, and the second nc says so. The pane then
-    /// has its prompt again.
-    fn close(mut self, vm: &mut Vm) -> Result<(), String> {
-        if !self.early.is_empty() {
-            return Err(format!("answers that no request of the test's had: {:?}", self.early));
+    /// mcp ends with its input, and the second nc says so by half-closing.
+    /// That nc ends only once the host has closed the answers' connection
+    /// too, as [`Pane::take`] does for its own: the pane has its prompt
+    /// again after that, not before.
+    fn close(self, vm: &mut Vm) -> Result<(), String> {
+        let Session { to, mut from, early } = self;
+        if !early.is_empty() {
+            return Err(format!("answers that no request of the test's had: {early:?}"));
         }
-        self.to.shutdown(Shutdown::Both).map_err(|err| format!("closing the AI client: {err}"))?;
+        to.shutdown(Shutdown::Both).map_err(|err| format!("closing the AI client: {err}"))?;
         let mut rest = String::new();
         loop {
             rest.clear();
-            match self.from.read_line(&mut rest) {
+            match from.read_line(&mut rest) {
                 Ok(0) => break,
                 Ok(_) => {}
                 Err(err) => return Err(format!("admin mcp did not end with its input: {err}")),
             }
         }
+        drop(from);
+        drop(to);
         answer_prompt(vm, "$", "clear")
     }
 }
