@@ -48,10 +48,26 @@ pub use stream::Stream;
 /// device (04/03).
 pub const PCI_CLASS: (u8, u8) = (0x04, 0x03);
 
-/// Whether a PCI function of `class` (class, subclass, interface) is an
-/// HDA controller.
-pub fn is_hda(class: (u8, u8, u8)) -> bool {
-    (class.0, class.1) == PCI_CLASS
+/// The PCI class and subclass of an audio DSP (multimedia, other), which
+/// Intel's chipsets from the 10th generation Core on show for their audio
+/// controller when the firmware turns its DSP on.
+const DSP_CLASS: (u8, u8) = (0x04, 0x01);
+
+/// Intel's audio controllers that show as a DSP and still have the HDA
+/// controller's registers, as Linux's `snd-hda-intel` drives them where
+/// no digital microphone or SoundWire link needs the DSP
+/// (`snd_intel_dsp_driver_probe`): Alder Lake's on S (desktop), P, M and
+/// N chipsets, and Raptor Lake S's.
+const INTEL_DSP_HDA: [u16; 5] = [0x7ad0, 0x51c8, 0x51cc, 0x54c8, 0x7a50];
+
+/// Whether `function` is an HDA controller: any of the HDA class, or one
+/// of Intel's that shows as a DSP but answers as HDA ([`INTEL_DSP_HDA`]).
+pub fn is_hda(function: &Function) -> bool {
+    let (class, subclass, _) = function.class();
+    (class, subclass) == PCI_CLASS
+        || ((class, subclass) == DSP_CLASS
+            && function.vendor_id() == INTEL
+            && INTEL_DSP_HDA.contains(&function.device_id()))
 }
 
 /// Intel's PCI vendor ID.
