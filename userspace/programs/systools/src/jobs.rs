@@ -12,13 +12,11 @@
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 
 pub use accounts::request::KeepRunning;
 use accounts::request::{self, Answer, Request};
-
-use crate::signin;
 
 /// A job to run.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,8 +81,8 @@ fn ask(request: &Request, fds: &[&OwnedFd]) -> io::Result<(Answer, BufReader<Uni
     if fds.is_empty() {
         (&stream).write_all(&bytes)?;
     } else {
-        let fds: Vec<_> = fds.iter().map(|fd| fd.as_raw_fd()).collect();
-        signin::send_with_fds(&stream, &bytes, &fds)?;
+        let fds: Vec<_> = fds.iter().map(|fd| fd.as_fd()).collect();
+        sysapi::net::send_with_fds(&stream, &bytes, &fds)?;
     }
     stream.shutdown(Shutdown::Write)?;
     let mut reader = BufReader::new(stream);

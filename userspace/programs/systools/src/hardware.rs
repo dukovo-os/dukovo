@@ -46,7 +46,8 @@ mod show;
 
 use std::io::{self, BufRead, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+
+use sysapi::signal::{self, Caught};
 
 use crate::admin_about::Sources;
 use crate::args::{Arg, Args};
@@ -65,11 +66,7 @@ const USAGE: &str = "usage: hardware check [AREA...] [--full] [--disk DISK] [--t
 
 /// Set by SIGINT, SIGTERM or SIGHUP: the check stops, and aborts the
 /// self-tests it started.
-static STOP: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_signal(_: libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-}
+static STOP: Caught = Caught::new();
 
 /// hardware(8). A run that could not start ends with status 3: 1 is a
 /// check that failed.
@@ -135,13 +132,10 @@ fn confirmed(question: &str, input: &mut dyn BufRead, out: &mut dyn Write) -> bo
         && matches!(answer.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
+/// Has SIGINT, SIGTERM and SIGHUP set [`STOP`].
 fn handle_signals() {
-    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
-        // SAFETY: all zeros is a valid sigaction: numbers, a signal set and a function address.
-        let mut action: libc::sigaction = unsafe { util::zeroed() };
-        action.sa_sigaction = on_signal as *const () as usize;
-        // SAFETY: the handler only stores to an atomic.
-        unsafe { libc::sigaction(signal, &raw const action, std::ptr::null_mut()) };
+    for number in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+        let _ = signal::catch(number, &STOP, 0);
     }
 }
 
@@ -196,8 +190,8 @@ fn check_command(args: &mut Args) -> Result<i32, Fail> {
         (true, true) => Steps::Errors,
     };
     let sink = run::Sink::new(!options.json, steps);
-    run::execute(&plan, &STOP, &sink);
-    let stopped = STOP.load(Ordering::Relaxed);
+    run::execute(&plan, STOP.flag(), &sink);
+    let stopped = STOP.is_set();
     let checks = sink.into_checks();
     let status = check::status(&checks, stopped);
     let saved = Saved {

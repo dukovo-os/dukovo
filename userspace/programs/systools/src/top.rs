@@ -10,8 +10,13 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::os::fd::AsFd;
 use std::time::Duration;
+
+use sysapi::fd;
+use sysapi::poll::{self, PollFd};
+use sysapi::signal::{self, Caught};
+use sysapi::terminal::{self, When};
 
 use crate::args::{Arg, Args};
 use crate::proc::{self, Process, Stat, Thread};
@@ -86,31 +91,19 @@ struct Before {
 }
 
 /// Set by SIGTERM, SIGHUP or SIGINT: put the terminal back and stop.
-static STOP: AtomicBool = AtomicBool::new(false);
+static STOP: Caught = Caught::new();
 
-extern "C" fn on_signal(_: libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-}
+/// Set by SIGWINCH, only to wake the wait: the size is read each frame.
+static RESIZED: Caught = Caught::new();
 
 /// Catches the signals that should end top cleanly, without restarting
 /// the calls they interrupt, so that a wait for a key ends.
 fn catch_signals() {
-    for signal in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT, libc::SIGWINCH] {
-        // SAFETY: all zeros is a valid sigaction: numbers, a signal set and a function address.
-        let mut action: libc::sigaction = unsafe { util::zeroed() };
-        action.sa_sigaction = if signal == libc::SIGWINCH {
-            // Only to wake the wait: the size is read each frame.
-            noop as *const () as usize
-        } else {
-            on_signal as *const () as usize
-        };
-        // SAFETY: the handlers only store to an atomic; the action is
-        // valid for the call.
-        unsafe { libc::sigaction(signal, &raw const action, std::ptr::null_mut()) };
+    for signal in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT] {
+        let _ = signal::catch(signal, &STOP, 0);
     }
+    let _ = signal::catch(libc::SIGWINCH, &RESIZED, 0);
 }
-
-extern "C" fn noop(_: libc::c_int) {}
 
 /// The terminal in raw mode, on the alternate screen, until dropped.
 struct Screen {
@@ -119,21 +112,17 @@ struct Screen {
 
 impl Screen {
     fn new() -> Screen {
-        // SAFETY: all zeros is a valid termios: numbers.
-        let mut saved: libc::termios = unsafe { util::zeroed() };
-        // SAFETY: tcgetattr fills the termios it is given.
-        let ok = unsafe { libc::tcgetattr(0, &raw mut saved) } == 0;
-        if ok {
+        let saved = terminal::attributes(io::stdin()).ok();
+        if let Some(saved) = saved {
             let mut raw = saved;
             raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG);
             raw.c_cc[libc::VMIN] = 0;
             raw.c_cc[libc::VTIME] = 0;
-            // SAFETY: `raw` is a valid termios.
-            unsafe { libc::tcsetattr(0, libc::TCSANOW, &raw const raw) };
+            let _ = terminal::set_attributes(io::stdin(), When::Now, &raw);
         }
         print!("\x1b[?1049h\x1b[?25l");
         let _ = io::stdout().flush();
-        Screen { saved: ok.then_some(saved) }
+        Screen { saved }
     }
 }
 
@@ -142,25 +131,20 @@ impl Drop for Screen {
         print!("\x1b[?25h\x1b[?1049l");
         let _ = io::stdout().flush();
         if let Some(saved) = self.saved {
-            // SAFETY: `saved` is the termios read at the start.
-            unsafe { libc::tcsetattr(0, libc::TCSANOW, &raw const saved) };
+            let _ = terminal::set_attributes(io::stdin(), When::Now, &saved);
         }
     }
 }
 
 /// Waits up to `delay` for a key; returns it if one came.
 fn wait_key(delay: Duration) -> Option<u8> {
-    let mut fds = libc::pollfd { fd: 0, events: libc::POLLIN, revents: 0 };
-    let ms = delay.as_millis().min(i32::MAX as u128) as i32;
-    // SAFETY: one valid pollfd.
-    let ready = unsafe { libc::poll(&raw mut fds, 1, ms) };
-    if ready <= 0 {
+    let stdin = io::stdin();
+    let mut fds = [PollFd::new(stdin.as_fd(), libc::POLLIN)];
+    if poll::poll(&mut fds, Some(delay)).ok()? == 0 {
         return None;
     }
-    let mut key = 0u8;
-    // SAFETY: reads one byte into `key`.
-    let n = unsafe { libc::read(0, (&raw mut key).cast(), 1) };
-    (n == 1).then_some(key)
+    let mut key = [0u8; 1];
+    matches!(fd::read(io::stdin(), &mut key), Ok(1)).then_some(key[0])
 }
 
 /// top(1).
@@ -239,7 +223,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             other => return Err(args.unknown(&other)),
         }
     }
-    if !s.batch && !util::is_terminal(0) {
+    if !s.batch && !util::is_terminal(std::io::stdin()) {
         // No terminal to read keys from: run as in batch mode.
         s.batch = true;
     }
@@ -264,12 +248,12 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         }
         out.flush()?;
         frame += 1;
-        if s.iterations.is_some_and(|n| frame >= n) || STOP.load(Ordering::Relaxed) {
+        if s.iterations.is_some_and(|n| frame >= n) || STOP.is_set() {
             break;
         }
         if s.batch {
             std::thread::sleep(s.delay);
-            if STOP.load(Ordering::Relaxed) {
+            if STOP.is_set() {
                 break;
             }
             continue;
@@ -290,7 +274,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
                 _ => {}
             }
         }
-        if STOP.load(Ordering::Relaxed) {
+        if STOP.is_set() {
             break;
         }
     }
@@ -386,7 +370,7 @@ fn render(s: &Settings, before: &Before, rows: &[Row]) -> String {
     let (width, height) = if s.batch {
         (s.width.unwrap_or(usize::MAX), usize::MAX)
     } else {
-        util::terminal_size(1).unwrap_or((80, 24))
+        util::terminal_size(std::io::stdout()).unwrap_or((80, 24))
     };
     let mut lines: Vec<String> = Vec::new();
     let processes = proc::processes().unwrap_or_default();

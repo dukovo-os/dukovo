@@ -9,7 +9,7 @@
 //! another, and the number of the process that wrote them.
 
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 
@@ -197,8 +197,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         .open(KMSG)
         .map_err(refused)?;
     if follow_new {
-        // SAFETY: lseek on our own descriptor.
-        unsafe { libc::lseek(kmsg.as_raw_fd(), 0, libc::SEEK_END) };
+        let _ = kmsg.seek(SeekFrom::End(0));
     }
     let boot_s = proc::stat().map_or(0, |s| s.boot_time_ns / 1_000_000_000) as i64;
     let mut out = io::BufWriter::new(io::stdout().lock());

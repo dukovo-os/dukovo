@@ -261,8 +261,12 @@ fn run(args: &mut Args, journalctl: bool) -> Result<i32, Fail> {
             if journalctl { "journalctl" } else { "log" }
         );
     }
-    let show =
-        Show { output, utc, host: hostname.then(util::hostname), color: util::is_terminal(1) };
+    let show = Show {
+        output,
+        utc,
+        host: hostname.then(util::hostname),
+        color: util::is_terminal(std::io::stdout()),
+    };
     let out = io::stdout();
     let mut out = io::BufWriter::new(out.lock());
     let mut shown = 0u64;
@@ -617,14 +621,8 @@ fn relative(text: &str) -> Option<i128> {
 
 /// The local date of `seconds` since the epoch.
 fn local_date(seconds: i64) -> Option<(i64, u32, u32)> {
-    let time = seconds as libc::time_t;
-    // SAFETY: an all-zero tm is valid; localtime_r fills it.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    // SAFETY: both pointers are valid for the call.
-    if unsafe { libc::localtime_r(&raw const time, &raw mut tm) }.is_null() {
-        return None;
-    }
-    Some((i64::from(tm.tm_year) + 1900, (tm.tm_mon + 1) as u32, tm.tm_mday as u32))
+    let civil = sysapi::time::local(seconds).ok()?;
+    Some((civil.year, civil.month, civil.day))
 }
 
 /// Seconds since the epoch of a local date and time.
@@ -636,19 +634,9 @@ fn local_seconds(
     minute: u32,
     second: u32,
 ) -> Option<i64> {
-    // SAFETY: an all-zero tm is valid.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    tm.tm_year = i32::try_from(year - 1900).ok()?;
-    tm.tm_mon = month as i32 - 1;
-    tm.tm_mday = day as i32;
-    tm.tm_hour = hour as i32;
-    tm.tm_min = minute as i32;
-    tm.tm_sec = second as i32;
-    // Whether daylight saving time is in effect then, mktime finds.
-    tm.tm_isdst = -1;
-    // SAFETY: `tm` is valid for the call.
-    let seconds = unsafe { libc::mktime(&raw mut tm) };
-    (seconds != -1).then_some(seconds)
+    let wanted =
+        sysapi::time::Civil { year, month, day, hour, minute, second, ..Default::default() };
+    sysapi::time::from_local(&wanted).ok().map(|(seconds, _)| seconds)
 }
 
 /// The levels the web console's Logs page names, the most urgent first

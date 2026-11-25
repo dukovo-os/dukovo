@@ -25,6 +25,7 @@
 //! with an error ID of its own starts with the ID (`ADM-130: ...`); the
 //! rest are authd's words, which admind reads as it reads any refusal.
 
+use std::io::IsTerminal;
 use std::os::fd::OwnedFd;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -195,7 +196,7 @@ impl Authd {
     ) -> (Answer, Instant) {
         let mut descriptors = std::mem::take(&mut self.clients[i].descriptors);
         let tty = match descriptors.pop() {
-            Some(tty) if descriptors.is_empty() && signin::is_terminal(&tty) => tty,
+            Some(tty) if descriptors.is_empty() && tty.is_terminal() => tty,
             _ => return no("a console terminal comes with one descriptor, its terminal", now),
         };
         let (name, from, unlocked) = match self.usable(session, now) {

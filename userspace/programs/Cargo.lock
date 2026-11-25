@@ -5053,6 +5053,7 @@ version = "0.17.0"
 dependencies = [
  "libc",
  "radix-abi",
+ "radix-hw",
 ]
 
 [[package]]
@@ -5122,6 +5123,7 @@ dependencies = [
  "socket2",
  "spark-api",
  "ssh-key",
+ "sysapi",
  "system-release",
  "time",
  "tokio",

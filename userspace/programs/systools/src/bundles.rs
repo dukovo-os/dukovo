@@ -58,7 +58,7 @@ pub(crate) mod tonight;
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, IsTerminal, Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::AsFd;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -70,7 +70,6 @@ use self::minisign::{PublicKey, SecretKey};
 use self::protocol::{Answer, Available, Request, Shown};
 use self::registry::Place;
 use crate::args::{Arg, Args};
-use crate::signin;
 use crate::util::{self, Fail, fail, usage};
 
 const USAGE: &str =
@@ -757,7 +756,7 @@ pub(crate) fn ask(
     })?;
     let line = request.line();
     let sent = match archive {
-        Some(file) => signin::send_with_fds(&stream, line.as_bytes(), &[file.as_raw_fd()]),
+        Some(file) => sysapi::net::send_with_fds(&stream, line.as_bytes(), &[file.as_fd()]),
         None => (&stream).write_all(line.as_bytes()),
     };
     sent.map_err(|e| format!("bundled: {e}"))?;
@@ -1185,8 +1184,7 @@ fn history(id: Option<String>) -> Result<i32, Fail> {
             return Ok(1);
         }
     };
-    // SAFETY: getuid has no failure and touches no memory.
-    let me = unsafe { libc::getuid() };
+    let me = sysapi::process::uid();
     for event in &events {
         println!("{}", history_line(event, me));
     }

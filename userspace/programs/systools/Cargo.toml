@@ -66,6 +66,9 @@ catalog-repo = { path = "../catalog-repo" }
 # The system call interface, generated from abi/*.ridl, for what the C
 # library does not wrap: affinity, I/O priority, tracing.
 radix-abi = { path = "../../../kernel/abi" }
+# The calls the standard library lacks, made once under the rules that
+# keep them sound, so that systools itself has no `unsafe` (ADR 0730).
+sysapi = { path = "../sysapi" }
 # BitLocker volumes' metadata, and their keys unwrapped with a password
 # or recovery key, for unlock(8) (ADR 0240).
 radix-bitlocker = { path = "../../../kernel/fs/bitlocker", features = ["keys"] }

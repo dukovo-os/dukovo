@@ -29,9 +29,10 @@
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
+
+use sysapi::signal::{self, Caught};
 
 use crate::args::Args;
 use crate::dmesg;
@@ -53,16 +54,8 @@ const RETRY: Duration = Duration::from_secs(1);
 /// The least time between two records sent: a thousand a second.
 const PACE: Duration = Duration::from_millis(1);
 
-static STOP: AtomicBool = AtomicBool::new(false);
-static RELOAD: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_term(_: libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-}
-
-extern "C" fn on_hangup(_: libc::c_int) {
-    RELOAD.store(true, Ordering::Relaxed);
-}
+static STOP: Caught = Caught::new();
+static RELOAD: Caught = Caught::new();
 
 /// The settings: where to send the log, and the least urgent level sent.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -171,7 +164,7 @@ fn target() -> Option<Target> {
 fn connect(target: &str) -> Option<UdpSocket> {
     let (host, port) = host_port(target);
     let mut said = false;
-    while !STOP.load(Ordering::Relaxed) && !RELOAD.load(Ordering::Relaxed) {
+    while !STOP.is_set() && !RELOAD.is_set() {
         let tried = (host.as_str(), port).to_socket_addrs().and_then(|mut addresses| {
             let address: SocketAddr = addresses
                 .next()
@@ -205,7 +198,7 @@ fn connect(target: &str) -> Option<UdpSocket> {
 /// take it yet. False once netlog is to stop or read its settings again.
 fn send(socket: &UdpSocket, data: &[u8]) -> bool {
     loop {
-        if STOP.load(Ordering::Relaxed) || RELOAD.load(Ordering::Relaxed) {
+        if STOP.is_set() || RELOAD.is_set() {
             return false;
         }
         match socket.send(data) {
@@ -225,7 +218,7 @@ fn stream(socket: &UdpSocket, level: Option<u8>) -> Result<(), Fail> {
     let mut kmsg = File::open(KMSG).map_err(|e| util::failed(&KMSG, e))?;
     let mut buffer = vec![0u8; 8192];
     let mut last_sent: Option<Instant> = None;
-    while !STOP.load(Ordering::Relaxed) && !RELOAD.load(Ordering::Relaxed) {
+    while !STOP.is_set() && !RELOAD.is_set() {
         let n = match kmsg.read(&mut buffer) {
             Ok(n) => n,
             // Records were lost to newer ones before they were read.
@@ -260,20 +253,14 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     if let Some(arg) = args.next()? {
         return Err(args.unknown(&arg));
     }
-    for (signal, handler) in
-        [(libc::SIGTERM, on_term as extern "C" fn(libc::c_int)), (libc::SIGHUP, on_hangup)]
-    {
-        // SAFETY: all zeros is a valid sigaction: numbers, a signal set
-        // and a function address. No SA_RESTART: a read of the log ends
-        // with EINTR, so the loop sees the signal.
-        let mut action: libc::sigaction = unsafe { util::zeroed() };
-        action.sa_sigaction = handler as *const () as usize;
-        // SAFETY: the handlers only store to an atomic.
-        unsafe { libc::sigaction(signal, &raw const action, std::ptr::null_mut()) };
+    for (number, caught) in [(libc::SIGTERM, &STOP), (libc::SIGHUP, &RELOAD)] {
+        // No SA_RESTART: a read of the log ends with EINTR, so the loop
+        // sees the signal.
+        let _ = signal::catch(number, caught, 0);
     }
     let mut idle_said = false;
-    while !STOP.load(Ordering::Relaxed) {
-        RELOAD.store(false, Ordering::Relaxed);
+    while !STOP.is_set() {
+        RELOAD.take();
         let Some(target) = target() else {
             if !idle_said {
                 println!(
@@ -282,8 +269,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
                 );
                 idle_said = true;
             }
-            // SAFETY: pause(2) waits for a signal and touches no memory.
-            unsafe { libc::pause() };
+            signal::pause();
             continue;
         };
         idle_said = false;

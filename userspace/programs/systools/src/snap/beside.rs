@@ -36,7 +36,7 @@
 
 use std::fs::{File, FileTimes};
 use std::io::{self, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -44,7 +44,7 @@ use acl::{NO_ID, Tag};
 
 use super::{absolute, place, snapshots, top_of};
 use crate::backup_errors;
-use crate::bundles::folder::{self, DEPTH_MAX, Dir, c_name, check, fd_stat};
+use crate::bundles::folder::{self, DEPTH_MAX, Dir, c_name, fd_stat};
 use crate::util::{self, Fail};
 
 /// The most characters a label has.
@@ -58,10 +58,6 @@ const STAGING: &str = ".snap-restore-";
 
 /// How many names for that folder are tried.
 const STAGING_TRIES: u32 = 16;
-
-/// Linux's FICLONE, which Radix takes too (ADR 0139): the file takes the
-/// data of another, open for reading, without copying it.
-const FICLONE: libc::Ioctl = 0x4004_9409;
 
 /// Whether `label` can name a copy: 1 to [`LABEL_MAX`] characters, none
 /// of them a control character or `/`, and not `.` or `..`.
@@ -231,16 +227,7 @@ fn restore_into(
         Some(libc::EEXIST) => Why::Taken(beside.clone()),
         _ => Why::Failed(err),
     })?;
-    let (from_name, to_name) = (c_name(name)?, c_name(&beside)?);
-    // SAFETY: both names are C strings, beneath descriptors that are open.
-    let moved = check(unsafe {
-        libc::renameat(
-            staging.dir.0.as_raw_fd(),
-            from_name.as_ptr(),
-            into.0.as_raw_fd(),
-            to_name.as_ptr(),
-        )
-    });
+    let moved = staging.dir.move_to(name, into, &beside);
     if let Err(err) = moved {
         unclaim(into, &beside, &claimed);
         return Err(Why::Failed(err));
@@ -255,8 +242,7 @@ fn kind(st: &libc::stat) -> libc::mode_t {
 
 /// Whether this process acts for root, and so gives copies their owners.
 fn is_root() -> bool {
-    // SAFETY: geteuid only reads the process's user.
-    unsafe { libc::geteuid() == 0 }
+    sysapi::process::euid() == 0
 }
 
 /// The folder a copy is made in: made by this process in the folder the
@@ -272,8 +258,7 @@ impl<'a> Staging<'a> {
     /// Makes one in `into`, under a name no one has, open, which only this
     /// process's account may enter.
     fn make(into: &'a Dir) -> io::Result<Staging<'a>> {
-        // SAFETY: geteuid only reads the process's user.
-        let me = unsafe { libc::geteuid() };
+        let me = sysapi::process::euid();
         for n in 0..STAGING_TRIES {
             let name = format!("{STAGING}{}-{n}", std::process::id());
             match into.make(&name, 0o700) {
@@ -288,9 +273,9 @@ impl<'a> Staging<'a> {
             if made.st_uid != me || kind(&made) != libc::S_IFDIR {
                 return Err(io::Error::other(format!("{name}: not the folder snap made")));
             }
-            // SAFETY: the descriptor is open. The mode leaves out a default
-            // access list's entries too: it sets the mask to nothing.
-            check(unsafe { libc::fchmod(dir.0.as_raw_fd(), 0o700) })?;
+            // The mode leaves out a default access list's entries too: it
+            // sets the mask to nothing.
+            sysapi::fs::set_mode(&dir, 0o700)?;
             return Ok(Staging { into, name, dir });
         }
         Err(io::Error::new(io::ErrorKind::AlreadyExists, "no free name to make the copy in"))
@@ -306,14 +291,11 @@ impl Drop for Staging<'_> {
                 let _ = self.dir.remove_tree(&name, 0);
             }
         }
-        let (Ok(made), Ok(Some(named)), Ok(name)) =
-            (self.dir.stat(), self.into.stat_at(&self.name), c_name(&self.name))
-        else {
+        let (Ok(made), Ok(Some(named))) = (self.dir.stat(), self.into.stat_at(&self.name)) else {
             return;
         };
         if folder::same(&made, &named) {
-            // SAFETY: the name is a C string beneath an open descriptor.
-            unsafe { libc::unlinkat(self.into.0.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) };
+            let _ = self.into.remove_dir(&self.name);
         }
     }
 }
@@ -325,35 +307,29 @@ impl Drop for Staging<'_> {
 fn claim(into: &Dir, beside: &str, folder: bool) -> io::Result<OwnedFd> {
     if folder {
         into.make(beside, 0o700)?;
-        return Ok(into.dir_at(beside)?.0);
+        return Ok(into.dir_at(beside)?.into());
     }
     create(into, beside)
 }
 
 /// Removes what [`claim`] made, if it is still at the name.
 fn unclaim(into: &Dir, beside: &str, claimed: &OwnedFd) {
-    let (Ok(made), Ok(Some(named)), Ok(name)) =
-        (fd_stat(claimed), into.stat_at(beside), c_name(beside))
-    else {
+    let (Ok(made), Ok(Some(named))) = (fd_stat(claimed), into.stat_at(beside)) else {
         return;
     };
     if folder::same(&made, &named) {
-        let flags = if kind(&named) == libc::S_IFDIR { libc::AT_REMOVEDIR } else { 0 };
-        // SAFETY: the name is a C string beneath an open descriptor.
-        unsafe { libc::unlinkat(into.0.as_raw_fd(), name.as_ptr(), flags) };
+        let _ = if kind(&named) == libc::S_IFDIR {
+            into.remove_dir(beside)
+        } else {
+            into.unlink(beside)
+        };
     }
 }
 
 /// Makes the file `name` in `into` to write, if nothing has the name,
 /// not through a link, which only its owner may read for now.
 fn create(into: &Dir, name: &str) -> io::Result<OwnedFd> {
-    let name = c_name(name)?;
-    let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC;
-    // SAFETY: the name is a C string; openat returns a descriptor we own.
-    let fd = unsafe { libc::openat(into.0.as_raw_fd(), name.as_ptr(), flags, 0o600) };
-    check(fd)?;
-    // SAFETY: openat made it.
-    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    into.create_new(name, 0o600)
 }
 
 /// Copies `name` of `from`, which `source` describes and the snapshot
@@ -390,7 +366,7 @@ fn copy(
                     )),
                 }
             }
-            finish(made.0, source, at, notes)
+            finish(made.into(), source, at, notes)
         }
         libc::S_IFREG => {
             let read = from.open_at(name, false)?;
@@ -405,18 +381,8 @@ fn copy(
                 .ok_or_else(|| io::Error::other(format!("{}: not a link now", at.display())))?;
             into.symlink(&target, name)?;
             if is_root() {
-                let name = c_name(name)?;
-                // SAFETY: the name is a C string beneath an open descriptor;
-                // the flag leaves the link's target alone.
-                check(unsafe {
-                    libc::fchownat(
-                        into.0.as_raw_fd(),
-                        name.as_ptr(),
-                        source.st_uid,
-                        source.st_gid,
-                        libc::AT_SYMLINK_NOFOLLOW,
-                    )
-                })?;
+                // The link itself, and not its target.
+                into.set_owner_at(name, source.st_uid, source.st_gid)?;
             }
             Ok(())
         }
@@ -440,10 +406,7 @@ fn same_as(opened: &libc::stat, looked: &libc::stat, at: &Path) -> io::Result<()
 /// Gives `written` the data of `read`: a clone that shares it, where the
 /// filesystem makes one, else a copy.
 fn clone_or_copy(read: OwnedFd, written: &OwnedFd) -> io::Result<()> {
-    // SAFETY: both descriptors are open; FICLONE reads its argument as the
-    // source's descriptor.
-    let cloned = unsafe { libc::ioctl(written.as_raw_fd(), FICLONE, read.as_raw_fd()) } == 0;
-    if cloned {
+    if sysapi::fs::clone_data(written, &read).is_ok() {
         return Ok(());
     }
     let mut read = File::from(read);
@@ -456,13 +419,11 @@ fn clone_or_copy(read: OwnedFd, written: &OwnedFd) -> io::Result<()> {
 /// times of `source`, at `at` in the snapshot.
 fn finish(fd: OwnedFd, source: &libc::stat, at: &Path, notes: &mut Vec<String>) -> io::Result<()> {
     if is_root() {
-        // SAFETY: the descriptor is open. The owner goes first, since
-        // changing it clears a set-user-ID bit.
-        check(unsafe { libc::fchown(fd.as_raw_fd(), source.st_uid, source.st_gid) })?;
+        // The owner goes first, since changing it clears a set-user-ID bit.
+        std::os::unix::fs::fchown(&fd, Some(source.st_uid), Some(source.st_gid))?;
     }
     let mode = mode_of(source, at, notes);
-    // SAFETY: the descriptor is open.
-    check(unsafe { libc::fchmod(fd.as_raw_fd(), mode) })?;
+    sysapi::fs::set_mode(&fd, mode)?;
     let times = FileTimes::new()
         .set_accessed(time(source.st_atime, source.st_atime_nsec))
         .set_modified(time(source.st_mtime, source.st_mtime_nsec));

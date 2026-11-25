@@ -49,8 +49,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{self, Write};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6, UdpSocket};
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, UdpSocket};
+use std::os::fd::AsFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -59,6 +59,11 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use radix_abi::network::{Ipv6Flags, Ipv6Settings};
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use sysapi::net::bind_to_device;
+use sysapi::poll::{self, PollFd};
+use sysapi::random;
+use sysapi::signal::{self, Caught};
 
 use crate::args::Args;
 use crate::dhcp::{self, Action, Client, Lease};
@@ -760,7 +765,7 @@ impl Drop for Serving {
 
 /// How long a server's thread waits for a request before it looks at its
 /// stop flag.
-const SERVE_POLL_MS: libc::c_int = 250;
+const SERVE_POLL: Duration = Duration::from_millis(250);
 
 /// Answers the requests that come to `socket` for the card `card`, until
 /// `stop` is set: each under the server's lock, then, with the lock
@@ -775,10 +780,8 @@ fn serve(
     let mut buffer = [0u8; 2048];
     let mut failure: Option<String> = None;
     while !stop.load(Ordering::Relaxed) {
-        let mut poll = libc::pollfd { fd: socket.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-        // SAFETY: `poll` is one valid pollfd.
-        let ready = unsafe { libc::poll(&raw mut poll, 1, SERVE_POLL_MS) };
-        if ready < 0 {
+        let mut fds = [PollFd::new(socket.as_fd(), libc::POLLIN)];
+        if poll::poll(&mut fds, Some(SERVE_POLL)).is_err() {
             // Not a signal's interruption: wait before trying again, as
             // the loop would spin.
             thread::sleep(Duration::from_millis(100));
@@ -911,16 +914,8 @@ fn write_synced(path: &str, text: &str, mode: u32) -> io::Result<()> {
 
 /// Set by SIGTERM: netd ends. Set by SIGHUP: it reads the settings
 /// again.
-static STOP: AtomicBool = AtomicBool::new(false);
-static RELOAD: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_term(_: libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-}
-
-extern "C" fn on_hangup(_: libc::c_int) {
-    RELOAD.store(true, Ordering::Relaxed);
-}
+static STOP: Caught = Caught::new();
+static RELOAD: Caught = Caught::new();
 
 /// The seconds since 1970.
 fn wall() -> u64 {
@@ -961,9 +956,7 @@ fn load_secret() -> [u8; 16] {
         return secret;
     }
     let mut secret = [0u8; 16];
-    // SAFETY: the buffer is valid for its length.
-    let got = unsafe { libc::getrandom(secret.as_mut_ptr().cast(), secret.len(), 0) };
-    if got != 16 {
+    if random::fill(&mut secret).is_err() {
         secret[..8].copy_from_slice(&seed().to_le_bytes());
         secret[8..].copy_from_slice(&seed().rotate_left(17).to_le_bytes());
     }
@@ -988,100 +981,29 @@ fn load_secret() -> [u8; 16] {
 
 /// A number from the kernel's random source, else from the clock.
 fn seed() -> u64 {
-    let mut bytes = [0u8; 8];
-    // SAFETY: the buffer is valid for its length.
-    let got = unsafe { libc::getrandom(bytes.as_mut_ptr().cast(), bytes.len(), 0) };
-    if got == 8 { u64::from_ne_bytes(bytes) } else { util::now_ns() }
+    random::bytes::<8>().map_or_else(|_| util::now_ns(), u64::from_ne_bytes)
 }
 
 /// A UDP socket on `port`, 68 for a client and 67 for a server, of the
 /// card named `name` that may broadcast, which does not block.
 fn dhcp_socket(name: &str, port: u16) -> io::Result<UdpSocket> {
-    let check = |result: libc::c_int| {
-        if result < 0 { Err(io::Error::last_os_error()) } else { Ok(result) }
-    };
-    // SAFETY: socket takes numbers; the descriptor is owned below.
-    let fd =
-        check(unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) })?;
-    // SAFETY: fd is a socket of netd's own, which the UdpSocket closes.
-    let socket = unsafe { UdpSocket::from_raw_fd(fd) };
-    let on: libc::c_int = 1;
-    // SAFETY: the option's values are valid for the lengths given.
-    unsafe {
-        check(libc::setsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_BINDTODEVICE,
-            name.as_ptr().cast(),
-            name.len() as libc::socklen_t,
-        ))?;
-        check(libc::setsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_BROADCAST,
-            (&raw const on).cast(),
-            size_of::<libc::c_int>() as libc::socklen_t,
-        ))?;
-    }
-    // SAFETY: all zeros is a valid sockaddr_in: 0.0.0.0, port 0.
-    let mut address: libc::sockaddr_in = unsafe { util::zeroed() };
-    address.sin_family = libc::AF_INET as libc::sa_family_t;
-    address.sin_port = port.to_be();
-    // SAFETY: the address is valid for its length.
-    check(unsafe {
-        libc::bind(
-            fd,
-            (&raw const address).cast(),
-            size_of::<libc::sockaddr_in>() as libc::socklen_t,
-        )
-    })?;
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    bind_to_device(&socket, name)?;
+    socket.set_broadcast(true)?;
+    socket.bind(&SockAddr::from(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port))))?;
     socket.set_nonblocking(true)?;
-    Ok(socket)
+    Ok(socket.into())
 }
 
 /// A UDP socket on IPv6 port 546 of the card named `name`, for DHCPv6,
 /// which does not block.
 fn client_socket6(name: &str) -> io::Result<UdpSocket> {
-    let check = |result: libc::c_int| {
-        if result < 0 { Err(io::Error::last_os_error()) } else { Ok(result) }
-    };
-    // SAFETY: socket takes numbers; the descriptor is owned below.
-    let fd =
-        check(unsafe { libc::socket(libc::AF_INET6, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) })?;
-    // SAFETY: fd is a socket of netd's own, which the UdpSocket closes.
-    let socket = unsafe { UdpSocket::from_raw_fd(fd) };
-    let on: libc::c_int = 1;
-    // SAFETY: the option's values are valid for the lengths given.
-    unsafe {
-        check(libc::setsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_BINDTODEVICE,
-            name.as_ptr().cast(),
-            name.len() as libc::socklen_t,
-        ))?;
-        check(libc::setsockopt(
-            fd,
-            libc::IPPROTO_IPV6,
-            libc::IPV6_V6ONLY,
-            (&raw const on).cast(),
-            size_of::<libc::c_int>() as libc::socklen_t,
-        ))?;
-    }
-    // SAFETY: all zeros is a valid sockaddr_in6: ::, port 0.
-    let mut address: libc::sockaddr_in6 = unsafe { util::zeroed() };
-    address.sin6_family = libc::AF_INET6 as libc::sa_family_t;
-    address.sin6_port = dhcp6::CLIENT_PORT.to_be();
-    // SAFETY: the address is valid for its length.
-    check(unsafe {
-        libc::bind(
-            fd,
-            (&raw const address).cast(),
-            size_of::<libc::sockaddr_in6>() as libc::socklen_t,
-        )
-    })?;
+    let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+    bind_to_device(&socket, name)?;
+    socket.set_only_v6(true)?;
+    socket.bind(&SockAddr::from(SocketAddr::from((Ipv6Addr::UNSPECIFIED, dhcp6::CLIENT_PORT))))?;
     socket.set_nonblocking(true)?;
-    Ok(socket)
+    Ok(socket.into())
 }
 
 /// netd's state.
@@ -1857,10 +1779,10 @@ impl Netd {
 
     fn run(&mut self) -> io::Result<()> {
         loop {
-            if STOP.load(Ordering::Relaxed) {
+            if STOP.is_set() {
                 return Ok(());
             }
-            if RELOAD.swap(false, Ordering::Relaxed) {
+            if RELOAD.take() {
                 self.reload();
             }
             let now = Instant::now();
@@ -1879,41 +1801,30 @@ impl Netd {
                 };
                 self.act(at, actions);
             }
-            let mut fds: Vec<libc::pollfd> = Vec::new();
+            let mut fds: Vec<PollFd> = Vec::new();
             let mut deadline = self.scanned.map_or(now, |scanned| scanned + SCAN);
             for card in &self.cards {
                 if let Some(until) = card.held {
                     deadline = deadline.min(until);
                 }
                 if let How::Dhcp { socket, client } = &card.how {
-                    fds.push(libc::pollfd {
-                        fd: socket.as_raw_fd(),
-                        events: libc::POLLIN,
-                        revents: 0,
-                    });
+                    fds.push(PollFd::new(socket.as_fd(), libc::POLLIN));
                     deadline = deadline.min(client.next());
                 }
                 if let Some(dhcp6) = &card.dhcp6 {
-                    fds.push(libc::pollfd {
-                        fd: dhcp6.socket.as_raw_fd(),
-                        events: libc::POLLIN,
-                        revents: 0,
-                    });
+                    fds.push(PollFd::new(dhcp6.socket.as_fd(), libc::POLLIN));
                     deadline = deadline.min(dhcp6.client.next());
                 }
             }
-            let timeout = deadline.saturating_duration_since(now).as_millis().min(60_000);
-            // SAFETY: `fds` holds valid pollfds.
-            let ready = unsafe {
-                libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout as libc::c_int + 1)
-            };
-            if ready < 0 {
-                let error = io::Error::last_os_error();
+            let timeout = deadline.saturating_duration_since(now).min(Duration::from_secs(60))
+                + Duration::from_millis(1);
+            if let Err(error) = poll::poll(&mut fds, Some(timeout)) {
                 if error.kind() != io::ErrorKind::Interrupted {
                     return Err(error);
                 }
                 continue;
             }
+            drop(fds);
             let now = Instant::now();
             let mut buffer = [0u8; dhcp::MESSAGE_MAX as usize];
             for at in 0..self.cards.len() {
@@ -2216,15 +2127,10 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     if let Some(arg) = args.next()? {
         return Err(args.unknown(&arg));
     }
-    for (signal, handler) in
-        [(libc::SIGTERM, on_term as extern "C" fn(libc::c_int)), (libc::SIGHUP, on_hangup)]
-    {
-        // SAFETY: all zeros is a valid sigaction: numbers, a signal set
-        // and a function address.
-        let mut action: libc::sigaction = unsafe { util::zeroed() };
-        action.sa_sigaction = handler as *const () as usize;
-        // SAFETY: the handlers only store to an atomic.
-        unsafe { libc::sigaction(signal, &raw const action, std::ptr::null_mut()) };
+    for (number, caught) in [(libc::SIGTERM, &STOP), (libc::SIGHUP, &RELOAD)] {
+        // Without SA_RESTART, so that the signal ends the wait for a
+        // packet.
+        let _ = signal::catch(number, caught, 0);
     }
     let mut netd = Netd {
         cards: Vec::new(),

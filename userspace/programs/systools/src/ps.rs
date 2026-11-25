@@ -8,6 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::io::{self, Write};
+use std::os::fd::AsFd;
 
 use crate::args::{Arg, Args};
 use crate::proc::{self, Process, Thread};
@@ -760,10 +761,10 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             table.push(o.columns.iter().map(|c| row.value(&c.key, &ctx)).collect());
         }
     }
-    let width = if o.wide || !util::is_terminal(1) {
+    let width = if o.wide || !util::is_terminal(std::io::stdout()) {
         None
     } else {
-        util::terminal_size(1).map(|(columns, _)| columns)
+        util::terminal_size(std::io::stdout()).map(|(columns, _)| columns)
     };
     let rights: Vec<bool> = o.columns.iter().map(|c| c.key.right).collect();
     print_table(&table, &rights, width)?;
@@ -773,16 +774,11 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
 
 /// The terminal ps runs on, as `pts/N`.
 fn own_terminal() -> Option<String> {
-    for fd in [0, 1, 2] {
-        // SAFETY: ttyname returns a C string the C library keeps, or null.
-        let name = unsafe { libc::ttyname(fd) };
-        if !name.is_null() {
-            // SAFETY: a non-null result is a C string.
-            let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
-            return Some(util::terminal_name(&name).to_string());
-        }
-    }
-    None
+    let streams: [&dyn AsFd; 3] = [&io::stdin(), &io::stdout(), &io::stderr()];
+    streams.into_iter().find_map(|fd| {
+        let name = sysapi::terminal::path(fd).ok()?;
+        Some(util::terminal_name(&name.to_string_lossy()).to_string())
+    })
 }
 
 /// Prints rows lined up in columns, the last unpadded; numbers to the

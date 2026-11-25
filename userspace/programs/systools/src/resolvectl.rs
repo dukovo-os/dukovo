@@ -91,10 +91,8 @@ pub fn flush_caches() -> Result<(), Fail> {
         .ok()
         .and_then(|text| text.trim().parse::<i32>().ok())
         .ok_or_else(|| fail("resolvectl: resolved is not running".into()))?;
-    // SAFETY: kill(2) takes numbers and touches no memory.
-    if unsafe { libc::kill(pid, libc::SIGUSR2) } != 0 {
-        return Err(util::failed(&"resolvectl: resolved", io::Error::last_os_error()));
-    }
+    sysapi::process::kill(pid, libc::SIGUSR2)
+        .map_err(|error| util::failed(&"resolvectl: resolved", error))?;
     Ok(())
 }
 

@@ -119,10 +119,10 @@ and calls that.
 
 `ob lint` checks all of this (`tools/xtask/src/unsafe_code.rs`): every
 target of every crate in the workspaces starts with
-`#![forbid(unsafe_code)]`, but those of the crates above. `systools`,
-`nukesh`, `tools/lab-writer` and `tools/linux-bench` still make their own
-calls and are on a list of their own, which the check fails on once one of
-them no longer needs its place (docs/deferred.md).
+`#![forbid(unsafe_code)]`, but those of the crates above. `nukesh`,
+`tools/lab-writer` and `tools/linux-bench` still make their own calls and
+are on a list of their own, which the check fails on once one of them no
+longer needs its place (docs/deferred.md).
 
 Wherever `unsafe` is used:
 

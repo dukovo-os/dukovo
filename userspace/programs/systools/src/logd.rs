@@ -30,16 +30,19 @@
 use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use sysapi::net::receive_now;
+use sysapi::poll::{self, PollFd};
+use sysapi::signal::{self, Caught};
 
 use crate::args::{Arg, Args};
 use crate::logtrim::{Limits, Policy, Trimmed};
@@ -389,17 +392,9 @@ struct Shared {
 }
 
 /// Set by SIGTERM: logd flushes what it wrote and ends.
-static STOP: AtomicBool = AtomicBool::new(false);
+static STOP: Caught = Caught::new();
 /// Set by SIGHUP: logd reads its settings again and trims.
-static RELOAD: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_term(_: libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-}
-
-extern "C" fn on_hangup(_: libc::c_int) {
-    RELOAD.store(true, Ordering::Relaxed);
-}
+static RELOAD: Caught = Caught::new();
 
 /// A day file being appended to.
 #[derive(Default)]
@@ -591,19 +586,11 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             other => return Err(args.unknown(&other)),
         }
     }
-    // SAFETY: setting a signal's disposition touches no memory; no other
-    // thread runs yet. A reader that goes away must not end logd: the
-    // write to it fails instead.
-    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
-    for (signal, handler) in
-        [(libc::SIGTERM, on_term as extern "C" fn(libc::c_int)), (libc::SIGHUP, on_hangup)]
-    {
-        // SAFETY: all zeros is a valid sigaction: numbers, a signal set
-        // and a function address.
-        let mut action: libc::sigaction = unsafe { util::zeroed() };
-        action.sa_sigaction = handler as *const () as usize;
-        // SAFETY: the handlers only store to an atomic.
-        unsafe { libc::sigaction(signal, &raw const action, std::ptr::null_mut()) };
+    // A reader that goes away must not end logd: the write to it fails
+    // instead.
+    let _ = signal::ignore(libc::SIGPIPE);
+    for (number, caught) in [(libc::SIGTERM, &STOP), (libc::SIGHUP, &RELOAD)] {
+        let _ = signal::catch(number, caught, 0);
     }
     let query_dir = Path::new(QUERY).parent().unwrap_or(Path::new("/"));
     for path in [dir.as_path(), &dir.join(AUDIT), query_dir] {
@@ -664,11 +651,11 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let mut next = after.map_or(0, |seq| seq + 1);
     let mut failing = false;
     loop {
-        if STOP.load(Ordering::Relaxed) {
+        if STOP.is_set() {
             writer.sync();
             return Ok(0);
         }
-        if RELOAD.swap(false, Ordering::Relaxed) {
+        if RELOAD.take() {
             limits = read_limits();
             writer.trim(&settings_policy(&limits, &writer.dir), false, "as its settings say");
         }
@@ -755,9 +742,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
 
 /// Waits up to `wait` for `file` to have something to read, or a signal.
 fn wait_readable(file: &File, wait: Duration) {
-    let mut entry = libc::pollfd { fd: file.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-    // SAFETY: one valid pollfd for the call.
-    unsafe { libc::poll(&raw mut entry, 1, wait.as_millis() as libc::c_int) };
+    let _ = poll::poll(&mut [PollFd::new(file.as_fd(), libc::POLLIN)], Some(wait));
 }
 
 /// A request to logd, as log(1) sends it: a line of JSON.
@@ -1137,20 +1122,17 @@ fn records(
 
 /// Whether the other end of `stream` closed it.
 fn peer_gone(stream: &UnixStream) -> bool {
-    let mut entry = libc::pollfd { fd: stream.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-    // SAFETY: one valid pollfd for the call.
-    let ready = unsafe { libc::poll(&raw mut entry, 1, 0) };
-    if ready <= 0 {
+    let mut entry = [PollFd::new(stream.as_fd(), libc::POLLIN)];
+    if !poll::poll(&mut entry, Some(Duration::ZERO)).is_ok_and(|ready| ready > 0) {
         return false;
     }
     // Readable: the end, or bytes a follower should not have sent, which
     // are dropped.
     let mut byte = [0u8; 64];
-    // SAFETY: a valid buffer of its length.
-    let got = unsafe {
-        libc::recv(stream.as_raw_fd(), byte.as_mut_ptr().cast(), byte.len(), libc::MSG_DONTWAIT)
-    };
-    got == 0 || got < 0 && io::Error::last_os_error().kind() != io::ErrorKind::WouldBlock
+    match receive_now(stream, &mut byte) {
+        Ok(got) => got == 0,
+        Err(error) => error.kind() != io::ErrorKind::WouldBlock,
+    }
 }
 
 /// Answers a request for the boots the log keeps.

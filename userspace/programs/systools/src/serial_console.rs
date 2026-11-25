@@ -56,13 +56,20 @@
 //! shows each port with what it does at this start. The boot tests
 //! serial-firmware and install-serial cover it.
 
-use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read as _, Write as _};
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
+use std::process::Command;
 use std::time::{Duration, Instant};
+
+use sysapi::fd::{self, Standard};
+use sysapi::poll::{self, PollFd};
+use sysapi::process::{self, Fork};
+use sysapi::system;
+use sysapi::terminal::{self, When, WindowSize};
 
 use crate::args::Args;
 use crate::util::{self, Fail};
@@ -363,12 +370,6 @@ impl Session {
     }
 }
 
-/// An argument or environment string as C wants it; one with a NUL in it
-/// becomes empty.
-fn c_string(text: &str) -> CString {
-    CString::new(text).unwrap_or_default()
-}
-
 /// A serial port serial-console keeps a console on.
 #[derive(Debug)]
 struct Port {
@@ -405,7 +406,7 @@ struct Shared {
     rescue: bool,
     /// /system/settings/issue's text.
     issue: String,
-    env: Vec<CString>,
+    env: Vec<(String, String)>,
 }
 
 /// serial-console(8).
@@ -485,13 +486,11 @@ fn keep(ports: &[Port], shared: &Shared) -> ! {
     let mut consoles: Vec<(libc::pid_t, Instant)> =
         ports.iter().map(|port| start_console(port, shared, port.first)).collect();
     loop {
-        let mut status = 0;
-        // SAFETY: waitpid writes the status.
-        let pid = unsafe { libc::waitpid(-1, &raw mut status, 0) };
-        if pid < 0 {
-            // Interrupted; there is always a console to wait for.
+        let Ok((pid, status)) = process::wait_any() else {
+            // There is always a console to wait for.
             continue;
-        }
+        };
+        let status = status.into_raw();
         let Some(index) = consoles.iter().position(|&(console, _)| console == pid) else {
             continue;
         };
@@ -511,16 +510,11 @@ fn keep(ports: &[Port], shared: &Shared) -> ! {
 /// every 10 seconds while the system has no room for one.
 fn start_console(port: &Port, shared: &Shared, first: First) -> (libc::pid_t, Instant) {
     loop {
-        // SAFETY: serial-console has one thread, so the child may go on
-        // running its code.
-        let pid = unsafe { libc::fork() };
-        if pid == 0 {
-            serve(port, shared, first);
-        }
-        if pid > 0 {
-            return (pid, Instant::now());
-        }
-        let err = io::Error::last_os_error();
+        let err = match process::fork() {
+            Ok(Fork::Child) => serve(port, shared, first),
+            Ok(Fork::Parent(pid)) => return (pid, Instant::now()),
+            Err(err) => err,
+        };
         eprintln!(
             "serial-console: cannot start the console on {}: {err}; trying again in {} seconds",
             port.line,
@@ -619,12 +613,12 @@ fn offer_installer(port: &Port) -> bool {
 /// typed there, letting the line go again.
 fn wait_for_enter(port: &Port) -> io::Result<()> {
     let mut line = open_line(port)?;
-    // SAFETY: tcflush acts on our descriptor of the line. What the line
-    // took before the offer, such as the line feed after the carriage
-    // return that chose the menu's entry, is no one pressing Enter here.
-    unsafe { libc::tcflush(line.as_raw_fd(), libc::TCIFLUSH) };
+    // What the line took before the offer, such as the line feed after the
+    // carriage return that chose the menu's entry, is no one pressing Enter
+    // here.
+    let _ = terminal::drop_input(&line);
     let offer = format!("\nPress Enter to install Dukovo on this port ({}).\n", port.name);
-    write_all(line.as_raw_fd(), offer.as_bytes());
+    write_all(&line, offer.as_bytes());
     let mut typed = [0u8; 64];
     loop {
         match line.read(&mut typed) {
@@ -639,21 +633,19 @@ fn wait_for_enter(port: &Port) -> io::Result<()> {
 /// Writes `text` on `port`'s line, if it can be opened, and lets it go.
 fn tell(port: &Port, text: &str) {
     match open_line(port) {
-        Ok(line) => write_all(line.as_raw_fd(), text.as_bytes()),
+        Ok(line) => write_all(&line, text.as_bytes()),
         Err(err) => eprintln!("serial-console: cannot tell {}: {err}", port.line),
     }
 }
 
 /// The sessions' environment: serial-console's own, from Spark, with what
 /// a login sets, for root, whose sessions they are until someone signs in.
-fn environment(shell: &str, home: &str) -> Vec<CString> {
+fn environment(shell: &str, home: &str) -> Vec<(String, String)> {
     let set =
         [("TERM", TERM), ("HOME", home), ("SHELL", shell), ("USER", "root"), ("LOGNAME", "root")];
     std::env::vars()
         .filter(|(name, _)| !set.iter().any(|(n, _)| n == name))
-        .map(|(name, value)| format!("{name}={value}"))
-        .chain(set.iter().map(|(name, value)| format!("{name}={value}")))
-        .map(|entry| c_string(&entry))
+        .chain(set.iter().map(|(name, value)| (name.to_string(), value.to_string())))
         .collect()
 }
 
@@ -661,38 +653,25 @@ fn environment(shell: &str, home: &str) -> Vec<CString> {
 /// status.
 fn run(port: &Port, session: &Session, shared: &Shared) -> io::Result<i32> {
     let line: OwnedFd = open_line(port)?.into();
-    let (rows, cols) = ask_size(line.as_raw_fd()).unwrap_or(FALLBACK_SIZE);
-    let size = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
-    // SAFETY: TIOCSWINSZ reads the winsize, which lives for the call.
-    unsafe { libc::ioctl(line.as_raw_fd(), libc::TIOCSWINSZ, &raw const size) };
+    let (rows, cols) = ask_size(&line).unwrap_or(FALLBACK_SIZE);
+    let size = WindowSize { rows, cols, ..WindowSize::default() };
+    let _ = terminal::set_window_size(&line, size);
     if session.issue {
         // The terminal turns each newline into a return and a newline.
-        write_all(line.as_raw_fd(), expand_issue(&shared.issue, &port.name).as_bytes());
+        write_all(&line, expand_issue(&shared.issue, &port.name).as_bytes());
         // A failed start's notice, until the next start (ADR 0501).
         if let Ok(notice) = std::fs::read_to_string(crate::sysupdate::health::NOTICE) {
-            write_all(line.as_raw_fd(), format!("{}\n", notice.trim_end()).as_bytes());
+            write_all(&line, format!("{}\n", notice.trim_end()).as_bytes());
         }
         // What its writers kept for the next sign-in (ADR 0504).
         for notice in crate::sign_in_notices::all() {
-            write_all(line.as_raw_fd(), format!("{}\n", notice.trim_end()).as_bytes());
+            write_all(&line, format!("{}\n", notice.trim_end()).as_bytes());
         }
     }
-    let pid = start(line.as_raw_fd(), session, &shared.env)?;
     // The session's programs hold the line now; serial-console keeps none
     // of it, so that the line closes when they are done.
-    drop(line);
-    let mut status = 0;
-    loop {
-        // SAFETY: waitpid writes the status.
-        let waited = unsafe { libc::waitpid(pid, &raw mut status, 0) };
-        if waited == pid {
-            return Ok(status);
-        }
-        let error = io::Error::last_os_error();
-        if error.kind() != io::ErrorKind::Interrupted {
-            return Err(error);
-        }
-    }
+    let pid = start(line, session, &shared.env)?;
+    process::wait(pid).map(ExitStatusExt::into_raw)
 }
 
 /// Opens `port`'s line, not as its process's controlling terminal, set as
@@ -703,33 +682,23 @@ fn open_line(port: &Port) -> io::Result<File> {
         .write(true)
         .custom_flags(libc::O_NOCTTY | libc::O_CLOEXEC)
         .open(&port.line)?;
-    set_line(line.as_raw_fd(), port.format)?;
+    set_line(&line, port.format)?;
     Ok(line)
 }
 
 /// Sets the line as a new terminal is, at `format`'s speed and character
 /// format: what the last session changed, a program left in raw mode or
 /// a stty(1), is undone.
-fn set_line(fd: RawFd, format: Format) -> io::Result<()> {
-    // SAFETY: all zeros is a valid termios: numbers and an array of them.
-    let mut settings: libc::termios = unsafe { std::mem::zeroed() };
-    // SAFETY: tcgetattr writes the termios it is given.
-    if unsafe { libc::tcgetattr(fd, &raw mut settings) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let settings = new_terminal(settings, format);
-    // SAFETY: tcsetattr reads the termios, which lives for the call.
-    if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw const settings) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+fn set_line(line: impl AsFd, format: Format) -> io::Result<()> {
+    let settings = new_terminal(terminal::attributes(&line)?, format);
+    terminal::set_attributes(&line, When::Now, &settings)
 }
 
 /// `settings` made a new terminal's, as Radix makes one and as agetty(8)
 /// leaves a line, at `format`'s speed and character format. CLOCAL keeps
 /// the line up with no modem signals, and no HUPCL leaves DTR raised for
 /// the kernel's log (ADR 0318).
-fn new_terminal(mut settings: libc::termios, format: Format) -> libc::termios {
+fn new_terminal(mut settings: terminal::Attributes, format: Format) -> terminal::Attributes {
     settings.c_iflag = libc::ICRNL | libc::IXON | libc::IUTF8;
     settings.c_oflag = libc::OPOST | libc::ONLCR;
     settings.c_cflag = format.speed | format.size | format.parity | libc::CREAD | libc::CLOCAL;
@@ -767,60 +736,42 @@ fn new_terminal(mut settings: libc::termios, format: Format) -> libc::termios {
 /// Asks the terminal at the other end of the line its size, as xterm's
 /// resize(1) does. None if nothing answers in time, as nothing does on a
 /// line only a log reader is on.
-fn ask_size(fd: RawFd) -> Option<(u16, u16)> {
-    // SAFETY: all zeros is a valid termios.
-    let mut saved: libc::termios = unsafe { std::mem::zeroed() };
-    // SAFETY: tcgetattr writes the termios it is given.
-    if unsafe { libc::tcgetattr(fd, &raw mut saved) } != 0 {
-        return None;
-    }
+fn ask_size(line: impl AsFd) -> Option<(u16, u16)> {
+    let saved = terminal::attributes(&line).ok()?;
     // The answer is read as it comes, not echoed and not a line.
     let mut quiet = saved;
     quiet.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG);
     quiet.c_iflag &= !(libc::ICRNL | libc::IXON);
-    // SAFETY: tcsetattr and tcflush act on our descriptor of the line,
-    // with the termios living for the call.
-    unsafe {
-        libc::tcsetattr(fd, libc::TCSANOW, &raw const quiet);
-        libc::tcflush(fd, libc::TCIFLUSH);
-    }
-    write_all(fd, ASK_SIZE);
-    let answer = read_answer(fd, Instant::now() + ANSWER_WAIT);
-    // SAFETY: as above. What else came, or an answer that came late, is
-    // not typing.
-    unsafe {
-        libc::tcsetattr(fd, libc::TCSANOW, &raw const saved);
-        libc::tcflush(fd, libc::TCIFLUSH);
-    }
+    let _ = terminal::set_attributes(&line, When::Now, &quiet);
+    let _ = terminal::drop_input(&line);
+    write_all(&line, ASK_SIZE);
+    let answer = read_answer(&line, Instant::now() + ANSWER_WAIT);
+    // What else came, or an answer that came late, is not typing.
+    let _ = terminal::set_attributes(&line, When::Now, &saved);
+    let _ = terminal::drop_input(&line);
     size_in(&answer)
 }
 
 /// What the line received until a report's `R`, or until `deadline`.
-fn read_answer(fd: RawFd, deadline: Instant) -> Vec<u8> {
+fn read_answer(line: impl AsFd, deadline: Instant) -> Vec<u8> {
     let mut answer = Vec::new();
     while !answer.contains(&b'R') && answer.len() < 64 {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             break;
         }
-        let ms = i32::try_from(left.as_millis()).unwrap_or(i32::MAX).max(1);
-        let mut wanted = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-        // SAFETY: poll reads and writes the one pollfd it is given.
-        let ready = unsafe { libc::poll(&raw mut wanted, 1, ms) };
-        if ready < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
-            continue;
-        }
-        if ready <= 0 {
-            break;
+        let mut wanted = [PollFd::new(line.as_fd(), libc::POLLIN)];
+        match poll::poll(&mut wanted, Some(left)) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
         }
         let mut buffer = [0u8; 64];
-        // SAFETY: read writes at most the buffer's length into it.
-        let n = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
-        let Ok(n) = usize::try_from(n) else { break };
-        if n == 0 {
-            break;
+        match fd::read(&line, &mut buffer) {
+            Ok(n) if n > 0 => answer.extend_from_slice(&buffer[..n]),
+            _ => break,
         }
-        answer.extend_from_slice(&buffer[..n]);
     }
     answer
 }
@@ -838,54 +789,41 @@ fn size_in(answer: &[u8]) -> Option<(u16, u16)> {
 
 /// Writes all of `bytes` to the line; what cannot be written is dropped,
 /// as nothing more can be done with it.
-fn write_all(fd: RawFd, bytes: &[u8]) {
+fn write_all(line: impl AsFd, bytes: &[u8]) {
     let mut at = 0;
     while at < bytes.len() {
-        // SAFETY: writes from our buffer.
-        let n = unsafe { libc::write(fd, bytes[at..].as_ptr().cast(), bytes.len() - at) };
-        match usize::try_from(n) {
+        match fd::write(&line, &bytes[at..]) {
             Ok(n) if n > 0 => at += n,
-            _ if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted => {}
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
             _ => break,
         }
     }
 }
 
-/// Starts `session` on the line, `fd`, not waiting for it. Its process.
-fn start(fd: RawFd, session: &Session, env: &[CString]) -> io::Result<libc::pid_t> {
-    // Everything the child uses is made before the fork.
-    let path = c_string(&session.path);
-    let name = c_string(&session.name);
-    let argv = [name.as_ptr(), std::ptr::null()];
-    let mut envp: Vec<*const libc::c_char> = env.iter().map(|e| e.as_ptr()).collect();
-    envp.push(std::ptr::null());
-    // SAFETY: serial-console has one thread; the child only takes the line
-    // and execs, with what was made before the fork.
-    let pid = unsafe { libc::fork() };
-    if pid < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if pid == 0 {
-        // SAFETY: async-signal-safe calls on the child's own copy of the
-        // descriptor and of the strings.
-        unsafe {
+/// Starts `session` on the line, not waiting for it, and lets go of the
+/// line. Its process.
+fn start(line: OwnedFd, session: &Session, env: &[(String, String)]) -> io::Result<libc::pid_t> {
+    let mut program = Command::new(&session.path);
+    program.arg0(&session.name).env_clear().envs(env.iter().map(|(name, value)| (name, value)));
+    match process::fork()? {
+        Fork::Parent(pid) => Ok(pid),
+        Fork::Child => {
             if session.sign_in {
                 // A session of its own, with the line as 0 to 2 but not
                 // controlling it: the person's session takes it.
-                libc::setsid();
-                for target in 0..3 {
-                    libc::dup2(fd, target);
+                let _ = process::new_session();
+                for standard in [Standard::Input, Standard::Output, Standard::Error] {
+                    let _ = fd::redirect(standard, &line);
                 }
             } else {
                 // A session of its own that the line controls, on 0 to 2.
-                libc::login_tty(fd);
+                let _ = process::login_terminal(line);
             }
             // The line's own descriptor closes on exec.
-            libc::execve(path.as_ptr(), argv.as_ptr(), envp.as_ptr());
-            libc::_exit(127);
+            let _ = program.exec();
+            process::exit_now(127);
         }
     }
-    Ok(pid)
 }
 
 /// /system/settings/issue's text, with agetty(8)'s escapes: `\l` the
@@ -893,17 +831,7 @@ fn start(fd: RawFd, session: &Session, env: &[CString]) -> io::Result<libc::pid_
 /// release, `\v` its version, `\m` the machine, `\\` a backslash, as
 /// consoled(8) shows it on the screen's consoles.
 fn expand_issue(issue: &str, line: &str) -> String {
-    // SAFETY: all zeros is a valid utsname: arrays of bytes.
-    let mut names: libc::utsname = unsafe { std::mem::zeroed() };
-    // SAFETY: uname fills the structure it is given.
-    let named = unsafe { libc::uname(&raw mut names) } == 0;
-    let field = |field: &[libc::c_char]| -> String {
-        if !named {
-            return String::new();
-        }
-        let bytes: Vec<u8> = field.iter().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
-        String::from_utf8_lossy(&bytes).into_owned()
-    };
+    let names = system::uname().unwrap_or_default();
     let mut out = String::new();
     let mut chars = issue.chars();
     while let Some(c) = chars.next() {
@@ -913,11 +841,11 @@ fn expand_issue(issue: &str, line: &str) -> String {
         }
         match chars.next() {
             Some('l') => out.push_str(line),
-            Some('n') => out.push_str(&field(&names.nodename)),
-            Some('s') => out.push_str(&field(&names.sysname)),
-            Some('r') => out.push_str(&field(&names.release)),
-            Some('v') => out.push_str(&field(&names.version)),
-            Some('m') => out.push_str(&field(&names.machine)),
+            Some('n') => out.push_str(&names.node),
+            Some('s') => out.push_str(&names.system),
+            Some('r') => out.push_str(&names.release),
+            Some('v') => out.push_str(&names.version),
+            Some('m') => out.push_str(&names.machine),
             Some(other) => out.push(other),
             None => out.push('\\'),
         }
@@ -1079,8 +1007,8 @@ mod tests {
 
     #[test]
     fn a_new_terminal_is_made_whatever_the_last_session_left() {
-        // SAFETY: all zeros is a valid termios.
-        let mut left: libc::termios = unsafe { std::mem::zeroed() };
+        let pty = terminal::open_pty(None).unwrap();
+        let mut left = terminal::attributes(&pty.terminal).unwrap();
         left.c_lflag = libc::ECHO;
         left.c_cflag = libc::B9600 | libc::CS7 | libc::HUPCL | libc::CRTSCTS;
         left.c_cc[libc::VINTR] = b'x';
