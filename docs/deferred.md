@@ -535,6 +535,17 @@ machine asks for them.
 | An alert when an administrator signs in from a new place or device, and Sign-ins as a kind of alert: no program raises an alert for a sign-in, since authd blocks an address that fails too often but keeps no record of where each administrator signs in from; it waits on a record in authd of the places and devices each administrator signs in from, with its own privacy note | ADR 0485, ADR 0566 |
 | Ops' catalog prepare does not see a lab round reading out/: the lab tool keeps its run lock in its own store, which Ops does not read, so the prepare window warns instead | ADR 0594 |
 
+### Language runtimes
+
+The roadmap lists these as [not scheduled](roadmap.md#not-scheduled).
+Each waits on programs or users asking for more than the Linux builds
+give.
+
+| Item | Source |
+| --- | --- |
+| A native OpenJDK port (Java and the JVM languages), with HotSpot's own operating-system layer for Dukovo and its JIT within W^X, for speed and DukUI integration. Until then the official Linux builds run through the Linux compatibility layer, once Phase 18 lets a program ask for JIT memory | Roadmap, not scheduled |
+| A native .NET port (C# and F#), with the runtime's platform layer and native shims for Dukovo and its JIT within W^X, for speed and DukUI integration. Until then the official Linux builds run through the Linux compatibility layer, once Phase 18 lets a program ask for JIT memory | Roadmap, not scheduled |
+
 ### Benchmarks
 
 | Item | Source |
