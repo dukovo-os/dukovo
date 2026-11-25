@@ -28,9 +28,9 @@
 //! values are a holder's own, numbered from 1.
 //!
 //! A picture's pixels are the pages of a memory file (a file of
-//! _/devices/shm_ or of memfd_create) that the program maps and draws
-//! in: MAKE_BUFFER sizes such a file as a card wants it, and MAKE_PICTURE
-//! names a part of one as a picture. The picture holds its pages while it
+//! _/devices/shm_, as shm_open makes one) that the program maps and
+//! draws in: MAKE_BUFFER sizes such a file as a card wants it, and
+//! MAKE_PICTURE names a part of one as a picture. The picture holds its pages while it
 //! lives, so cutting the file short takes nothing from under a screen.
 //! A picture can instead be one the card keeps: the program maps nothing
 //! and sends rows with PUT, as a text console does. A kept picture is
@@ -62,8 +62,17 @@
 //! screen of that state has gone meanwhile, nothing is made, and the
 //! holder, which was told with EVENT_SCREEN, makes a new change.
 //!
+//! What the screens show changes only when the holder in front changes
+//! it (ADR 0702). A holder that ends in front leaves its last picture
+//! showing. The holder that lent to it reads EVENT_BORROWER_ENDED and
+//! then EVENT_FRONT, and nothing is drawn for it: the picture stays
+//! until its next CHANGE, which makes all of its state that differs from
+//! what shows, and for which a change with no entries is enough. When
+//! the last holder ends, the kernel's log leaves the picture for three
+//! seconds before it draws, or until the kernel logs an error.
+//!
 //! _/devices/display/attention_ is held by the one service that shows
-//! trusted prompts (ADR 0708). Release 1.1 makes the file and its rule
+//! trusted prompts (ADR 0702). Release 1.1 makes the file and its rule
 //! that one description holds it; the secure key that brings its holder
 //! to the front comes with the input devices.
 
@@ -338,7 +347,8 @@ const EVENT_FRONT: u32 = 5;
 /// The holder is no longer in front.
 const EVENT_BACK: u32 = 6;
 /// The holder this one lent the front to ended without giving it back.
-/// An EVENT_FRONT follows.
+/// An EVENT_FRONT follows. The screens still show the ended holder's
+/// last picture, until this holder's next CHANGE.
 const EVENT_BORROWER_ENDED: u32 = 7;
 /// The card did not confirm a change within a second. `thing` is the
 /// pipe and `cookie` the change's.

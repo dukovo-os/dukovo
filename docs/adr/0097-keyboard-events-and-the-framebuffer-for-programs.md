@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0097. The kernel hands programs key events through /dev/kbd and the screen through /dev/fb0
 
-- Status: Accepted
+- Status: Accepted; since [0700](0700-the-display-layer-is-cards-screens-pipes-planes-and-pictures-changed-in-one-checked-step.md) programs reach the screens through the display layer, and `/dev/fb0` and its requests are gone
 - Date: 2026-10-23
 
 ## Context

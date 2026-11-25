@@ -115,7 +115,7 @@ their pull requests conflicted.
 | [0094](0094-proc-for-the-native-tools-kmsg-and-opened-paths.md) | /proc tells the native tools what they show, /dev/kmsg gives the log, and files keep the path they were opened by | Accepted; changed by [0113](0113-plain-names-for-the-root-folders.md) |
 | [0095](0095-tracing-through-a-pipe-the-kernel-writes.md) | A trace is a pipe the kernel writes a record to for each call | Accepted |
 | [0096](0096-native-administration-tools-as-one-program.md) | The native administration tools are one Rust program, written for Radix with Linux's names and options | Accepted |
-| [0097](0097-keyboard-events-and-the-framebuffer-for-programs.md) | The kernel hands programs key events through /dev/kbd and the screen through /dev/fb0 | Accepted |
+| [0097](0097-keyboard-events-and-the-framebuffer-for-programs.md) | The kernel hands programs key events through /dev/kbd and the screen through /dev/fb0 | Accepted; the screen is the display layer's since [0700](0700-the-display-layer-is-cards-screens-pipes-planes-and-pictures-changed-in-one-checked-step.md) |
 | [0098](0098-resource-domains-from-user-space.md) | Spark makes the services' resource domains through capabilities, and restarts them itself | Accepted |
 | [0099](0099-power-capability-and-ordered-shutdown.md) | Turning the machine off is a capability only Spark holds, and Spark stops the services first | Accepted |
 | [0100](0100-consoled-virtual-consoles-in-a-program.md) | consoled draws the virtual consoles as a program, a terminal for TERM=linux built on the vte crate | Accepted |

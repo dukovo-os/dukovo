@@ -132,6 +132,7 @@ the exact chips.
 | Device | Status | Driver |
 | --- | --- | --- |
 | Any graphics card: one screen at its native resolution through the firmware's framebuffer, without acceleration | Partly | |
+| A virtual machine's virtio graphics card: up to 16 screens, each plugged in, resized and pulled out while the system runs, without acceleration | Works | virtio |
 | AMD Radeon, every GCN and RDNA card and APU, with Vulkan | Planned, 1.10 | |
 | Intel graphics from Haswell, with Vulkan and OpenGL | Planned, 1.10 | |
 | NVIDIA RTX 20 series and later, and older cards through NVK | Planned, 1.10 | |
@@ -186,7 +187,7 @@ the exact chips.
 
 | Device | Status | Driver |
 | --- | --- | --- |
-| QEMU and KVM: virtio disk, network, SCSI, console and sound | Works | virtio |
+| QEMU and KVM: virtio disk, network, SCSI, console, sound and graphics | Works | virtio |
 | VMware: VMXNET3, PVSCSI and the VMware Tools features | Works | vmxnet3(4), pvscsi(4), vmware(4) |
 | Hyper-V and Azure: VMBus network and storage, Azure MANA | Works | hyperv, mana(4) |
 | Amazon Web Services: ENA network and NVMe disks | Works | ena(4) |
@@ -214,7 +215,8 @@ or an ASIX chip, which work), a dock, or a phone's USB tethering.
 **Does my graphics card work?** Every graphics card shows the console
 and, from release 1.1, the desktop, through the picture the firmware sets
 up: one screen at its native resolution, with no 3D acceleration. Native
-drivers come in 1.10.
+drivers come in 1.10. A virtual machine with a virtio graphics card has
+up to 16 screens already; see [Screens](screens.md).
 
 **My disks are in "RAID On" or Intel RST mode.** Intel VMD, the mode
 recent laptops ship in, works as it is. On older machines, set SATA

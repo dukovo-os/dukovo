@@ -779,5 +779,6 @@ hardware memtest --status
 
 *consoled*(8), *diskhealth*(8), *sensors*(1), *nic*(8), *netcheck*(8), *dmesg*(1),
 *elevate*(8), *hwinfo*(8), *lscpu*(1), *lspci*(8), *lsusb*(8),
-*radix-block*(2), *radix-sysfs*(5), *log*(1), *metrics*(1), *metricsd*(8),
+*radix-block*(2), *radix-display*(2), *radix-sysfs*(5), *log*(1), *metrics*(1),
+*metricsd*(8),
 *changes*(1), *alertd*(8), *shutdown*(8), *systools*(1)
