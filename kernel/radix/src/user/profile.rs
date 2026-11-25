@@ -76,11 +76,17 @@ const OFFSET_MASK: u64 = (1 << 44) - 1;
 /// listing samples this far short of [`Text::LIMIT`].
 const SAMPLE_LINE: usize = 64;
 
+/// The most kinds of counts the architecture gives (`Timer::profile_counts`).
+const COUNTS_MAX: usize = 32;
+
 /// What a slot holds: the address space its samples were taken in and the
 /// process that ran there, each counted up while the slot holds it.
 struct Slot {
     space: SpaceRef,
     process: ProcessRef,
+    /// How many times the space's mappings had changed by the slot's
+    /// first sample (`SpaceObject::tlb_changes`).
+    changes: u64,
 }
 
 /// A CPU's samples since the last open.
@@ -192,7 +198,11 @@ fn sample(user_address: u64) {
         None if buffer.slots.len() < SLOTS => {
             // The running thread holds both too, so a count dropped here
             // could never be the last.
-            let slot = Slot { space: Arc::clone(space), process: Arc::clone(&user.process) };
+            let slot = Slot {
+                space: Arc::clone(space),
+                process: Arc::clone(&user.process),
+                changes: space.tlb_changes(),
+            };
             if buffer.slots.push_within_capacity(slot).is_err() {
                 buffer.lost += 1;
                 return;
@@ -352,6 +362,18 @@ pub fn write(text: &mut Text) -> fmt::Result {
     }
     let period = if Arch::sample_every(PERIOD_NS, sample) { PERIOD_NS } else { 0 };
     let mut lost = MISSED.swap(0, Ordering::Relaxed);
+    let mut counts = [("", 0u64); COUNTS_MAX];
+    let mut counted_kinds = 0;
+    Arch::profile_counts(&mut |name, count| {
+        if let Some(slot) = counts.get_mut(counted_kinds) {
+            *slot = (name, count);
+            counted_kinds += 1;
+        }
+    });
+    // How often each space with samples changed its mappings since its
+    // first sample: (space, name, changes), each space once, by the slot
+    // that saw it first, whatever CPU's.
+    let mut spaces: Vec<(usize, u64, u64), Kmalloc> = Vec::new_in(heap());
 
     let reader = sched::current().and_then(|me| me.user().map(|user| user.process.identity().user));
     let mut names = Names { processes: Vec::new_in(heap()), files: Vec::new_in(heap()) };
@@ -373,7 +395,18 @@ pub fn write(text: &mut Text) -> fmt::Result {
             continue;
         }
         for slot in &buffer.slots {
-            let _ = views.push_within_capacity(view(slot, reader, &mut names));
+            let view = view(slot, reader, &mut names);
+            if let Some(view) = &view {
+                let space = Arc::as_ptr(&slot.space) as usize;
+                let changes = slot.space.tlb_changes().saturating_sub(slot.changes);
+                match spaces.iter_mut().find(|known| known.0 == space) {
+                    Some(known) => known.2 = known.2.max(changes),
+                    None => {
+                        push(&mut spaces, (space, view.name, changes));
+                    }
+                }
+            }
+            let _ = views.push_within_capacity(view);
         }
         for &entry in &buffer.samples {
             let slot = (entry >> ADDRESS_BITS) as usize;
@@ -415,6 +448,9 @@ pub fn write(text: &mut Text) -> fmt::Result {
     writeln!(text, "others: {others}")?;
     writeln!(text, "kernel: {kernel}")?;
     writeln!(text, "lost: {lost}")?;
+    for &(name, count) in &counts[..counted_kinds] {
+        writeln!(text, "counter {name} {count}")?;
+    }
     for (at, name) in names.processes.iter().enumerate() {
         write!(text, "name {at} ")?;
         write_escaped(text, name.as_str().as_bytes(), LINE_SPECIAL)?;
@@ -425,6 +461,14 @@ pub fn write(text: &mut Text) -> fmt::Result {
         let path = if path.is_empty() { &b"?"[..] } else { path.as_slice() };
         write_escaped(text, path, LINE_SPECIAL)?;
         text.write_char('\n')?;
+    }
+    // Changes by process name, in the order the names are listed.
+    for (at, _) in names.processes.iter().enumerate() {
+        let changes: u64 =
+            spaces.iter().filter(|space| space.1 == at as u64).map(|space| space.2).sum();
+        if changes != 0 {
+            writeln!(text, "changes {at} {changes}")?;
+        }
     }
     let mut left_out = 0;
     for &(count, key) in &counted {

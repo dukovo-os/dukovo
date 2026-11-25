@@ -229,6 +229,13 @@ pub trait UserMode: crate::Threads {
     /// out.
     fn new_space() -> Option<Self::Space>;
 
+    /// How many times `space`'s mappings changed in a way that needed its
+    /// TLB entries flushed, since it was made: for `/processes/profile`.
+    fn space_changes(space: &Self::Space) -> u64 {
+        let _ = space;
+        0
+    }
+
     /// Maps the page at `virt` (page-aligned, below [`UserMode::USER_TOP`])
     /// to the frame at `phys`, with `access`.
     fn map_page(

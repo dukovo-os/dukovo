@@ -382,6 +382,16 @@ pub trait Timer {
         false
     }
 
+    /// Calls `each` with the name and count of every event the
+    /// architecture counts for a profile, summed over the CPUs since the
+    /// last call, and starts them over: what the processor's own counters
+    /// counted in user mode while [`Timer::sample_every`] sampled (page
+    /// walks, cache misses, instructions), and how often the kernel kept
+    /// or flushed the TLB. Nothing where it counts nothing.
+    fn profile_counts(each: &mut dyn FnMut(&'static str, u64)) {
+        let _ = each;
+    }
+
     /// How many times CPU `cpu` wrote its timer hardware to arm it. Under
     /// a hypervisor each write is usually a VM exit, so the benchmarks
     /// report it.

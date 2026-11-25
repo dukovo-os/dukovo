@@ -51,6 +51,7 @@ mod memory;
 mod microcode;
 mod paging;
 mod percpu;
+mod pmu;
 mod power;
 mod pstate;
 mod random;
@@ -416,6 +417,11 @@ impl Timer for Arch {
 
     fn sample_every(period_ns: u64, sampler: fn(u64)) -> bool {
         time::sample_every(period_ns, sampler)
+    }
+
+    fn profile_counts(each: &mut dyn FnMut(&'static str, u64)) {
+        pmu::take(each);
+        paging::take_tlb_counts(each);
     }
 
     fn timer_writes(cpu: usize) -> u64 {
@@ -845,6 +851,10 @@ impl UserMode for Arch {
 
     fn new_space() -> Option<Self::Space> {
         space::UserSpace::new()
+    }
+
+    fn space_changes(space: &Self::Space) -> u64 {
+        space.space().changes()
     }
 
     fn map_page(

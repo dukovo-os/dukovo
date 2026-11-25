@@ -201,6 +201,15 @@ pub struct PerCpu {
     /// When the next sample of a profile is due (`time::sample_every`),
     /// or 0 while no profile is taken.
     pub next_sample_ns: AtomicU64,
+    /// Whether this CPU's performance counters count for a profile, where
+    /// each stood at the last sample, and what each counted since the
+    /// profile was last read (`pmu`).
+    pub pmu_on: AtomicBool,
+    pub pmu_last: [AtomicU64; crate::pmu::EVENTS],
+    pub pmu_counts: [AtomicU64; crate::pmu::EVENTS],
+    /// This CPU's TLB switches and flushes, by kind, since the profile
+    /// was last read (`paging::TlbCount`).
+    pub tlb_counts: [AtomicU64; crate::paging::TLB_COUNTS],
     /// Times the timer was written to arm it.
     pub timer_writes: AtomicU64,
     /// Interprocessor interrupts this CPU sent.
@@ -254,6 +263,10 @@ impl PerCpu {
             armed_ns: AtomicU64::new(u64::MAX),
             doorbell_until_ns: AtomicU64::new(0),
             next_sample_ns: AtomicU64::new(0),
+            pmu_on: AtomicBool::new(false),
+            pmu_last: [const { AtomicU64::new(0) }; crate::pmu::EVENTS],
+            pmu_counts: [const { AtomicU64::new(0) }; crate::pmu::EVENTS],
+            tlb_counts: [const { AtomicU64::new(0) }; crate::paging::TLB_COUNTS],
             timer_writes: AtomicU64::new(0),
             ipis_sent: AtomicU64::new(0),
             shootdown_wait_ns: AtomicU64::new(0),
