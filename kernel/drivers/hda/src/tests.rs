@@ -1002,6 +1002,27 @@ impl Registers for Config {
     }
 }
 
+#[test]
+fn intel_s_audio_shown_as_a_dsp_is_driven_as_hda_where_it_answers_as_hda() {
+    use radix_hw::pci::{self, Address, Function};
+    let function = |vendor: u16, device: u16, subclass: u8| {
+        let mut bytes = vec![0u8; pci::CONFIG_SIZE];
+        bytes[0..2].copy_from_slice(&vendor.to_le_bytes());
+        bytes[2..4].copy_from_slice(&device.to_le_bytes());
+        bytes[0x0a] = subclass;
+        bytes[0x0b] = 0x04;
+        let config = Arc::new(Config(Mutex::new(bytes)));
+        let address = Address { segment: 0, bus: 0, device: 0x1f, function: 3 };
+        Function::probe(address, Mmio::fake(config, pci::CONFIG_SIZE)).unwrap()
+    };
+    // Alder Lake S, as the Precision 3660's W680 shows it with its DSP on.
+    assert!(is_hda(&function(0x8086, 0x7ad0, 0x01)));
+    assert!(is_hda(&function(0x8086, 0x7ad0, 0x03)));
+    // Another vendor's DSP, and an Intel DSP the list leaves out.
+    assert!(!is_hda(&function(0x1022, 0x7ad0, 0x01)));
+    assert!(!is_hda(&function(0x8086, 0x9dc8, 0x01)));
+}
+
 /// A controller of `vendor`'s, with a PCI Express capability whose
 /// Device Control lets it mark requests No Snoop, and its TCSEL and
 /// snoop registers set.
@@ -1030,7 +1051,7 @@ fn controller_config(vendor: u16) -> (Arc<Config>, radix_hw::pci::Function) {
 fn pci_setup_snoops() {
     // Intel's: traffic class 0, and no No Snoop.
     let (config, function) = controller_config(0x8086);
-    assert!(is_hda(function.class()));
+    assert!(is_hda(&function));
     prepare(&function);
     let bytes = config.0.lock().unwrap().clone();
     assert_eq!(bytes[0x44], 0);
