@@ -421,6 +421,7 @@ machine asks for them.
 | `posix_fallocate(3)` only sets a file's length and takes no room, so a later write into the range can still fail with ENOSPC, on a disk or a tmpfs, where Linux's `fallocate(2)` takes the blocks or pages first | C library (`Sysdeps<Fallocate>`), storage design note |
 | FUSE and share mounts: a page cache with writeback | ADR 0226 |
 | A page or partition written raw through two different nodes at once | storage design note |
+| A claim on a block device that keeps others from mounting it, as Linux's `O_EXCL` open of one does: `mkfs` and `floppy format` refuse a device that is mounted, but nothing keeps volumed(8) from mounting one while they write it, as it may a floppy disk in the moment between the kernel's look at it and the last write of its new filesystem | floppy(1), volumed(8), ADR 0435 |
 
 ### Networking and sharing
 
