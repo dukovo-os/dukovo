@@ -19,9 +19,15 @@
 //! woken and sends each keyboard its Output report
 //! ([`Controller::hid_lights`]).
 //! A device unplugged lets go of every key and button it held.
+//!
+//! A UPS (`Layout::is_ups`, ADR 0741) is not listened to: its state is
+//! in Feature reports, which the thread asks for every
+//! [`crate::ups::POLL_NS`] ([`Controller::upses`]) and gives
+//! [`crate::ups::update`].
 
 use alloc::vec::Vec;
 
+use radix_hid::power::State;
 use radix_hid::{BOOT_KEYBOARD, BOOT_MOUSE, Decoder, Layout};
 use radix_klog::{info, warn};
 use radix_mm::{Flags, HEAP, Kmalloc};
@@ -29,8 +35,10 @@ use radix_usb::Setup;
 use radix_usb::hid::{self, HidDescriptor};
 use radix_xhci::{BUFFER_SIZE, code, endpoint_index};
 
-use super::controller::{Controller, Name, Why};
+use super::controller::{Attached, Controller, Name, Why};
+use super::shown;
 use crate::fs::keyboard;
+use crate::sched;
 
 /// Errors in a row on an interface's reports before it is given up.
 const REPORT_ERRORS: u8 = 3;
@@ -93,7 +101,24 @@ pub(super) struct Hid {
     errors: u8,
     /// The lights its keyboard was last sent, if it has lights.
     lights: Option<u32>,
+    /// What the thread keeps of it if it is a UPS.
+    ups: Option<UpsRead>,
 }
+
+/// A UPS's interface, which the thread reads its reports from.
+struct UpsRead {
+    /// Its slot in [`crate::ups`].
+    slot: usize,
+    /// What its reports said.
+    state: State,
+    /// When they are read next.
+    next_ns: u64,
+}
+
+/// The endpoint and transfer a UPS's interface keeps: none, as no
+/// transfer is made on it.
+const NO_ENDPOINT: u8 = 0;
+const NO_TRANSFER: u64 = u64::MAX;
 
 impl Controller {
     /// Starts the HID interface `plan` of the configured device in slot
@@ -140,6 +165,9 @@ impl Controller {
         // Reports only when something changes; a device that wants to
         // send them anyway may refuse.
         let _ = device.control_out(xhci, host, Setup::set_idle(interface), &[]);
+        if layout.is_ups() {
+            return start_ups(attached, *bus, interface, layout);
+        }
         let (what, read) = crate::hid::what(&layout);
         info!("USB: {}: interface {interface}: {what}", Name(*bus, path));
         if !read {
@@ -154,6 +182,7 @@ impl Controller {
             layout,
             decoder: Decoder::new(),
             errors: 0,
+            ups: None,
         };
         attached.hids.try_reserve(1).map_err(|_| Why::Device("out of memory"))?;
         let _ = attached.hids.push_within_capacity(hid);
@@ -230,11 +259,101 @@ impl Controller {
     }
 }
 
+/// Keeps HID interface `interface` of `attached`, on bus `bus`, as a UPS,
+/// whose reports the thread asks for every [`crate::ups::POLL_NS`]. Out of
+/// `Controller::start_hid` so that its frame stays small.
+#[inline(never)]
+fn start_ups(
+    attached: &mut Attached,
+    bus: usize,
+    interface: u8,
+    layout: Layout<Kmalloc>,
+) -> Result<(), Why> {
+    let path = attached.path;
+    let (model, maker) = shown::strings(bus, path);
+    let model = if model.is_empty() { attached.name.clone() } else { model };
+    info!(
+        "USB: {}: interface {interface}: a UPS, read every {} s into /kernel/class/power_supply",
+        Name(bus, path),
+        crate::ups::POLL_NS / 1_000_000_000
+    );
+    let Some(slot) = crate::ups::add(model.as_str(), maker.as_str()) else {
+        warn!("USB: {}: too many UPSes; this one is not read", Name(bus, path));
+        return Ok(());
+    };
+    if attached.hids.try_reserve(1).is_err() {
+        crate::ups::remove(slot);
+        return Err(Why::Device("out of memory"));
+    }
+    let _ = attached.hids.push_within_capacity(Hid {
+        interface,
+        endpoint: NO_ENDPOINT,
+        pending: NO_TRANSFER,
+        length: 0,
+        layout,
+        decoder: Decoder::new(),
+        errors: 0,
+        lights: None,
+        ups: Some(UpsRead { slot, state: State::default(), next_ns: 0 }),
+    });
+    Ok(())
+}
+
 /// Lets go of every key and button that `hids`, a device's HID
-/// interfaces, held: the device is gone.
+/// interfaces, held, and of its UPS: the device is gone.
 pub(super) fn gone(hids: &mut [Hid]) {
     for hid in hids {
         hid.decoder.release_all(&mut crate::hid::tell);
+        if let Some(ups) = hid.ups.take() {
+            crate::ups::remove(ups.slot);
+        }
+    }
+}
+
+impl Controller {
+    /// Reads the reports of each UPS whose time has come; gives whether it
+    /// read any.
+    #[inline(never)]
+    pub(super) fn upses(&mut self) -> bool {
+        let now = sched::now_ns();
+        let mut any = false;
+        let Controller { devices, buffer, xhci, host, bus, .. } = self;
+        for attached in devices.iter_mut() {
+            for hid in &mut attached.hids {
+                let Some(ups) = hid.ups.as_mut().filter(|ups| ups.next_ns <= now) else {
+                    continue;
+                };
+                any = true;
+                ups.next_ns = now.saturating_add(crate::ups::POLL_NS);
+                let (layout, interface) = (&hid.layout, hid.interface);
+                let mut answered = false;
+                let mut each = |report: radix_hid::power::Report| {
+                    let length = report.bytes.clamp(1, buffer.len());
+                    let setup =
+                        Setup::get_report(interface, report.kind as u8, report.id, length as u16);
+                    if let Ok(came) =
+                        attached.device.control_in(xhci, host, setup, &mut buffer[..length])
+                    {
+                        answered = true;
+                        layout.read_power(report.kind, report.id, &buffer[..came], &mut ups.state);
+                    }
+                };
+                layout.power_reports(&mut each);
+                if answered {
+                    hid.errors = 0;
+                    crate::ups::update(ups.slot, ups.state);
+                } else {
+                    hid.errors = hid.errors.saturating_add(1);
+                    if hid.errors == REPORT_ERRORS {
+                        warn!(
+                            "USB: {}: interface {interface}: the UPS answers no report",
+                            Name(*bus, attached.path)
+                        );
+                    }
+                }
+            }
+        }
+        any
     }
 }
 

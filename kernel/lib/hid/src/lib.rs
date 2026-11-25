@@ -21,6 +21,8 @@
 //!   down and up (radix-input(2)'s key codes, Linux's, [`key`]), with the
 //!   modifiers first, and the pointer's movement, wheels, buttons and,
 //!   for a tablet, where it points.
+//! - [`power`] reads a UPS's charge, run time and flags from the Input
+//!   and Feature reports of a HID power device (ADR 0741).
 //! - [`BOOT_KEYBOARD`] and [`BOOT_MOUSE`] describe the boot protocol's
 //!   fixed reports, for a device whose own descriptor cannot be read.
 //!
@@ -40,6 +42,7 @@ use core::fmt;
 use radix_abi::input::{LED_CAPS_LOCK, LED_NUM_LOCK, LED_SCROLL_LOCK, POSITION_MAX};
 
 mod keys;
+pub mod power;
 #[cfg(test)]
 mod tests;
 
@@ -63,6 +66,11 @@ pub mod page {
     pub const CONSUMER: u16 = 0x0c;
     /// Digitizers: touchpads, touchscreens and pens.
     pub const DIGITIZER: u16 = 0x0d;
+    /// Power Device: a UPS and its outlets (*Universal Serial Bus Usage
+    /// Tables for HID Power Devices 1.0*, 4).
+    pub const POWER_DEVICE: u16 = 0x84;
+    /// Battery System: a UPS's battery and its charger (the same, 5).
+    pub const BATTERY_SYSTEM: u16 = 0x85;
 }
 
 /// The usages the decoder reads.
@@ -220,12 +228,14 @@ struct Light {
     led: u32,
 }
 
-/// How long the Input and Output reports of a report ID are, in bits.
+/// How long the Input, Output and Feature reports of a report ID are, in
+/// bits.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Report {
     id: u8,
     input: u16,
     output: u16,
+    feature: u16,
 }
 
 /// What a report descriptor says of the reports the decoder reads, in
@@ -236,6 +246,9 @@ pub struct Layout<A: Allocator> {
     usages: Vec<Range, A>,
     reports: Vec<Report, A>,
     lights: Vec<Light, A>,
+    /// The values of a power device's Input and Feature reports
+    /// ([`power`]).
+    power: Vec<power::Value, A>,
     /// Its top-level collections' usages.
     applications: [Usage; MAX_APPLICATIONS],
     application_count: usize,
@@ -340,7 +353,8 @@ impl<A: Allocator + Clone> Layout<A> {
             fields: Vec::new_in(alloc.clone()),
             usages: Vec::new_in(alloc.clone()),
             reports: Vec::new_in(alloc.clone()),
-            lights: Vec::new_in(alloc),
+            lights: Vec::new_in(alloc.clone()),
+            power: Vec::new_in(alloc),
             applications: [0; MAX_APPLICATIONS],
             application_count: 0,
             numbered: false,
@@ -397,8 +411,9 @@ impl<A: Allocator + Clone> Layout<A> {
                             }
                             depth += 1;
                         }
+                        0xb => self.feature(&globals, &locals, unsigned as u16)?,
                         0xc => depth = depth.saturating_sub(1),
-                        // Feature, and the reserved tags.
+                        // The reserved tags.
                         _ => {}
                     }
                     locals = Locals::new();
@@ -456,7 +471,7 @@ impl<A: Allocator + Clone> Layout<A> {
                 _ => {}
             }
         }
-        if self.fields.is_empty() {
+        if self.fields.is_empty() && self.power.is_empty() {
             return Err(Error::NoInputs);
         }
         Ok(())
@@ -481,6 +496,7 @@ impl<A: Allocator + Clone> Layout<A> {
         let report = self.report(globals.report)?;
         let offset = u32::from(report.input);
         report.input = u16::try_from(offset + bits).map_err(|_| Error::TooLong)?;
+        self.power_values(power::Kind::Input, globals, locals, flags, offset);
         if flags & flag::CONSTANT != 0
             || !(1..=32).contains(&globals.size)
             || globals.count == 0
@@ -512,6 +528,52 @@ impl<A: Allocator + Clone> Layout<A> {
             pointer,
         };
         push(&mut self.fields, field, MAX_FIELDS, Error::TooManyFields)
+    }
+
+    /// A Feature item: keeps a power device's values.
+    fn feature(&mut self, globals: &Globals, locals: &Locals, flags: u16) -> Result<(), Error> {
+        let bits = bits(globals)?;
+        let report = self.report(globals.report)?;
+        let offset = u32::from(report.feature);
+        report.feature = u16::try_from(offset + bits).map_err(|_| Error::TooLong)?;
+        self.power_values(power::Kind::Feature, globals, locals, flags, offset);
+        Ok(())
+    }
+
+    /// Keeps the values of a variable Input or Feature item at `offset` of
+    /// its report whose usages are among those a power device's state is
+    /// read from ([`power::WANTED`]), each the first of its usage: a UPS
+    /// says its charge in more than one collection, the first the one
+    /// that sums up the rest. Those past [`power::MAX_VALUES`] are not
+    /// kept.
+    fn power_values(
+        &mut self,
+        kind: power::Kind,
+        globals: &Globals,
+        locals: &Locals,
+        flags: u16,
+        offset: u32,
+    ) {
+        if flags & (flag::CONSTANT | flag::VARIABLE) != flag::VARIABLE
+            || !(1..=32).contains(&globals.size)
+        {
+            return;
+        }
+        for i in 0..globals.count.min(power::MAX_VALUES as u32) {
+            let Some(usage) = locals.usage(i) else { break };
+            if !power::WANTED.contains(&usage) || self.power.iter().any(|v| v.usage == usage) {
+                continue;
+            }
+            let value = power::Value {
+                usage,
+                kind,
+                report: globals.report,
+                offset: offset + i * globals.size,
+                size: globals.size as u8,
+                signed: globals.logical_min < 0,
+            };
+            let _ = push(&mut self.power, value, power::MAX_VALUES, Error::TooManyFields);
+        }
     }
 
     /// An Output item: keeps the lock lights among its one-bit values.

@@ -223,8 +223,6 @@ pub fn make() -> Result<FsRef> {
         firmware.add("microcode", value(|text| Arch::microcode_report(text))?)?;
     }
     let usb_c = ucsi::ports().next().is_some();
-    let power =
-        devices::batteries().next().is_some() || devices::adapters().next().is_some() || usb_c;
     let thermal = thermal::zones().next().is_some();
     let mut monitors = false;
     hwmon::devices(&mut |_| monitors = true);
@@ -252,9 +250,9 @@ pub fn make() -> Result<FsRef> {
     if dmi {
         dmi_class(&class)?;
     }
-    if power {
-        power_supply(&class)?;
-    }
+    // Always there, as a UPS may be plugged in at any time.
+    let supplies: radix_vfs::mem::KBox<dyn Listing> = mem::boxed(PowerSupplies)?;
+    class.add("power_supply", ListedDir::make(next_id(), supplies)?)?;
     if thermal {
         thermal_class(&class)?;
     }
@@ -369,37 +367,125 @@ fn cpus(text: &mut Text) -> fmt::Result {
     writeln!(text, "{}", crate::sched::online().len())
 }
 
-/// `/kernel/class/power_supply`: the firmware's batteries and AC adapters.
-fn power_supply(class: &FixedDir) -> Result<()> {
-    let supplies = class.add_dir("power_supply", next_id())?;
-    for battery in devices::batteries() {
-        let dir = supplies.add_dir(battery.name(), next_id())?;
-        for &(name, file) in devices::battery_files(battery) {
-            dir.add(name, value(move |text| devices::write_battery_file(battery, file, text))?)?;
+/// `/kernel/class/power_supply`: the firmware's batteries, AC adapters
+/// and USB-C ports, and the UPSes plugged in by USB, which come and go.
+struct PowerSupplies;
+
+/// The name of USB-C port `number`'s supply, as Linux's.
+fn ucsi_name(number: u8) -> TextBuf<40> {
+    let mut name = TextBuf::<40>::new();
+    let _ = write!(name, "ucsi-source-psy-USBC000:{number:03}");
+    name
+}
+
+impl Listing for PowerSupplies {
+    fn list(&self, f: &mut dyn FnMut(&str, Kind) -> bool) {
+        let firmware = devices::batteries()
+            .map(devices::Battery::name)
+            .chain(devices::adapters().map(devices::Adapter::name));
+        for name in firmware {
+            if !f(name, Kind::Directory) {
+                return;
+            }
         }
+        for port in ucsi::ports() {
+            if !f(ucsi_name(port.number).as_str(), Kind::Directory) {
+                return;
+            }
+        }
+        crate::ups::names(&mut |name| f(name, Kind::Directory));
     }
-    for adapter in devices::adapters() {
-        let dir = supplies.add_dir(adapter.name(), next_id())?;
-        dir.add("type", value(|text| writeln!(text, "Mains"))?)?;
-        dir.add(
-            "online",
-            value(move |text| writeln!(text, "{}", u8::from(adapter.online().ok_or(fmt::Error)?)))?,
-        )?;
+
+    fn lookup(&self, name: &str) -> Result<NodeRef> {
+        let dir = FixedDir::new(next_id())?;
+        if let Some(battery) = devices::batteries().find(|battery| battery.name() == name) {
+            for &(name, file) in devices::battery_files(battery) {
+                dir.add(
+                    name,
+                    value(move |text| devices::write_battery_file(battery, file, text))?,
+                )?;
+            }
+        } else if let Some(adapter) = devices::adapters().find(|adapter| adapter.name() == name) {
+            dir.add("type", value(|text| writeln!(text, "Mains"))?)?;
+            dir.add(
+                "online",
+                value(move |text| {
+                    writeln!(text, "{}", u8::from(adapter.online().ok_or(fmt::Error)?))
+                })?,
+            )?;
+        } else if let Some(port) =
+            ucsi::ports().find(|port| ucsi_name(port.number).as_str() == name)
+        {
+            dir.add("type", value(|text| writeln!(text, "USB"))?)?;
+            dir.add(
+                "online",
+                value(move |text| writeln!(text, "{}", u8::from(ucsi::supply(port).0)))?,
+            )?;
+            dir.add("voltage_now", value(move |text| writeln!(text, "{}", ucsi::supply(port).1))?)?;
+            dir.add("current_now", value(move |text| writeln!(text, "{}", ucsi::supply(port).2))?)?;
+            dir.add("current_max", value(move |text| writeln!(text, "{}", ucsi::supply(port).3))?)?;
+        } else if crate::ups::find(name).is_some() {
+            let mut ups_name = TextBuf::<8>::new();
+            ups_name.push_str(name);
+            for &(file, write) in UPS_FILES {
+                let ups_name = ups_name.clone();
+                // Read when opened; one unplugged since fails to read.
+                let file_value = value(move |text| {
+                    let ups = crate::ups::find(ups_name.as_str()).ok_or(fmt::Error)?;
+                    write(&ups, text)
+                })?;
+                dir.add(file, file_value)?;
+            }
+        } else {
+            return Err(Error::NotFound);
+        }
+        Ok(dir)
     }
-    for port in ucsi::ports() {
-        let mut name = TextBuf::<40>::new();
-        let _ = write!(name, "ucsi-source-psy-USBC000:{:03}", port.number);
-        let dir = supplies.add_dir(name.as_str(), next_id())?;
-        dir.add("type", value(|text| writeln!(text, "USB"))?)?;
-        dir.add(
-            "online",
-            value(move |text| writeln!(text, "{}", u8::from(ucsi::supply(port).0)))?,
-        )?;
-        dir.add("voltage_now", value(move |text| writeln!(text, "{}", ucsi::supply(port).1))?)?;
-        dir.add("current_now", value(move |text| writeln!(text, "{}", ucsi::supply(port).2))?)?;
-        dir.add("current_max", value(move |text| writeln!(text, "{}", ucsi::supply(port).3))?)?;
-    }
-    Ok(())
+}
+
+/// A UPS's file: writes its value, or fails, as Linux's do, for one the
+/// UPS does not say or has not said yet.
+type UpsFile = fn(&crate::ups::Ups, &mut Text) -> fmt::Result;
+
+/// A UPS's files (ADR 0741), as Linux's power supply class names them,
+/// with `load`, `time_to_empty_alert_min` and `shuts_down` of Dukovo's
+/// own.
+const UPS_FILES: &[(&str, UpsFile)] = &[
+    ("type", |_, text| writeln!(text, "UPS")),
+    ("scope", |_, text| writeln!(text, "System")),
+    ("status", |ups, text| writeln!(text, "{}", read(ups)?.status().as_str())),
+    ("online", |ups, text| writeln!(text, "{}", u8::from(!read(ups)?.on_battery()))),
+    ("capacity", |ups, text| writeln!(text, "{}", read(ups)?.percent().ok_or(fmt::Error)?)),
+    ("capacity_level", |ups, text| {
+        let state = read(ups)?;
+        let percent = state.percent().ok_or(fmt::Error)?;
+        let level = if state.low() {
+            "Critical"
+        } else if percent <= state.low_percent() {
+            "Low"
+        } else if percent >= 100 {
+            "Full"
+        } else {
+            "Normal"
+        };
+        writeln!(text, "{level}")
+    }),
+    ("capacity_alert_min", |ups, text| writeln!(text, "{}", read(ups)?.low_percent())),
+    ("time_to_empty_now", |ups, text| writeln!(text, "{}", read(ups)?.run_time.ok_or(fmt::Error)?)),
+    ("time_to_empty_alert_min", |ups, text| writeln!(text, "{}", read(ups)?.low_seconds())),
+    ("load", |ups, text| writeln!(text, "{}", read(ups)?.load.ok_or(fmt::Error)?)),
+    ("health", |ups, text| {
+        let replace = read(ups)?.need_replacement.ok_or(fmt::Error)?;
+        writeln!(text, "{}", if replace { "Dead" } else { "Good" })
+    }),
+    ("shuts_down", |_, text| writeln!(text, "{}", u8::from(crate::ups::shuts_down()))),
+    ("model_name", |ups, text| writeln!(text, "{}", ups.model)),
+    ("manufacturer", |ups, text| writeln!(text, "{}", ups.maker)),
+];
+
+/// What a UPS said, once its reports were read.
+fn read(ups: &crate::ups::Ups) -> core::result::Result<radix_hid::power::State, fmt::Error> {
+    if ups.read { Ok(ups.state) } else { Err(fmt::Error) }
 }
 
 /// `/kernel/class/typec`: the firmware's USB-C ports.

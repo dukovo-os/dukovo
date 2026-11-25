@@ -661,6 +661,13 @@ them to *init*, and the kernel does not read them.
 	or AMD's CPPC, as Linux's *intel_pstate=disable* and
 	*amd_pstate=disable* do. See *CPU FREQUENCY*.
 
+*ups*=show
+	Show the UPSes plugged in by USB in _/kernel/class/power_supply_
+	(*radix-sysfs*(5)), but do not shut the machine down when one runs
+	it on a low battery, for a machine that another program or another
+	machine shuts down. The kernel says so in its log when it finds the
+	UPS.
+
 *hybrid*=off
 	Place threads on a processor's performance and efficient cores
 	alike, as on a processor whose cores are all of one kind. By
@@ -1357,6 +1364,19 @@ Hub ports past 15 and hubs more than five deep are not used. Before the
 machine is powered off or restarted, every controller is halted.
 Keyboards, mice and tablets are read through their HID reports (ADR
 0148).
+
+A UPS that speaks USB's HID power device class, as APC's, CyberPower's
+and Eaton's do, is read through its Feature reports every 2 seconds (ADR
+0741) and shown as _/kernel/class/power_supply/ups0_ (*radix-sysfs*(5)).
+When it runs the machine on its battery and the battery is low, Spark is
+asked to power the machine off, as for the power button, unless
+*ups=show*. The log says when it is found, when the mains goes and
+comes back, and when its battery should be replaced:
+
+	USB: 1-3: interface 0: a UPS, read every 2 s into /kernel/class/power_supply
+	UPS: ups0 is CP1500PFCLCD by CPS; the machine shuts down cleanly when its battery is low
+	UPS: ups0: the mains is gone; the machine runs on its battery, at 100%
+	Power: ups0's battery is low; asking Spark to power the machine off
 
 A USB stick, card reader or USB disk speaking the Bulk-Only Transport
 gets a kernel thread, _usb-storage_, which finds the disks behind it and

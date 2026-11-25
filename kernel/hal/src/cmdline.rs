@@ -74,6 +74,12 @@ pub const FLAGS: &[Flag] = &[
         summary: "leave the USB controllers as the firmware left them",
     },
     Flag {
+        name: "ups",
+        value: Some("show"),
+        summary: "show the UPSes plugged in by USB, but do not shut the machine down when one's \
+                  battery is low",
+    },
+    Flag {
         name: "aml",
         value: Some("off"),
         summary: "run none of the firmware's AML: no uACPI, and the kernel hears the ACPI power \

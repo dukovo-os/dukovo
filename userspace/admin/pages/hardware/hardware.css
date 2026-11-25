@@ -25,6 +25,13 @@
 .hw .tbl caption { text-align: left; font-weight: 600; padding: .5rem .857rem; border-bottom: 1px solid var(--border); }
 .hw-unit { display: flex; align-items: center; justify-content: flex-end; gap: .571rem; }
 .hw-start.bad { color: var(--bad); }
+.hw-supply { display: flex; flex-direction: column; gap: .571rem; }
+.hw-charge { height: .571rem; border-radius: .286rem; background: var(--sunken); border: 1px solid var(--border); overflow: hidden; }
+.hw-charge i { display: block; height: 100%; width: calc(var(--v, 0) * 1%); background: var(--ok); }
+.hw-charge.warn i { background: var(--warn); }
+.hw-charge.bad i { background: var(--bad); }
+@media (forced-colors: active) { .hw-charge { border-color: ButtonText; } .hw-charge i { forced-color-adjust: none; background: Highlight; } }
+.hw-supply + .hw-supply { padding-top: .714rem; border-top: 1px solid var(--border); }
 .hw-start.warn { color: var(--warn); }
 @container (min-width: 51.5rem) {
   .hw { grid-template-columns: repeat(2, minmax(0, 1fr)); }
