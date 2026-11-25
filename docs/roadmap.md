@@ -1146,7 +1146,7 @@ Every section of spec v1.4 maps to at least one phase in this table, so a requir
 | 3.3 | Memory protection, IOMMU, W^X, speculative-execution mitigations | 2, 11; CET in 1.2; memory tagging on Arm in 1.29 |
 | 3.4 | Allocation interfaces | 2 |
 | 4.1 | Processes, threads, namespaces, resource controllers | 4, 6, 13, 16, 18, 1.23 |
-| 4.2 | Scheduling | 4; energy-aware and heterogeneous CPUs in 1.29; deadline class in 1.28 |
+| 4.2 | Scheduling | 4; performance cores first on Intel's hybrid processors before 1.0 (ADR 0740); energy-aware scheduling and Thread Director in 1.29; deadline class in 1.28 |
 | 4.3 | Synchronization, RCU | 4 |
 | 5.1, 5.2 | System calls, async I/O, IPC | 5 |
 | 6.1 | Driver model, userspace drivers | 7, 10 to 12; power management in 1.3 and 1.14 |

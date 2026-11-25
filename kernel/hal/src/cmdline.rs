@@ -85,6 +85,12 @@ pub const FLAGS: &[Flag] = &[
         summary: "leave the CPUs' speed to the firmware, though they have Intel's HWP or AMD's CPPC",
     },
     Flag {
+        name: "hybrid",
+        value: Some("off"),
+        summary: "place threads on performance and efficient cores alike, as on a processor whose \
+                  cores are all of one kind",
+    },
+    Flag {
         name: "epp",
         value: Some("preference"),
         summary: "the energy preference the CPUs are asked for: performance, balance_performance, \

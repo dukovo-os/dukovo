@@ -47,6 +47,18 @@ pub fn max_leaf() -> u32 {
     cpuid(0, 0).eax
 }
 
+/// CPUID leaf 7, EDX: the processor has cores of more than one kind.
+pub const LEAF7_HYBRID: u32 = 1 << 15;
+
+/// What kind of core the running CPU is: CPUID leaf 1Ah says, on a
+/// processor whose leaf 7 says its cores differ.
+pub fn core_kind() -> radix_hal::CoreKind {
+    let max = max_leaf();
+    let hybrid = is_intel() && max >= 0x1a && cpuid(7, 0).edx & LEAF7_HYBRID != 0;
+    let core_type = if hybrid { (cpuid(0x1a, 0).eax >> 24) as u8 } else { 0 };
+    radix_hal::CoreKind::of_intel(hybrid, core_type)
+}
+
 /// Highest extended CPUID leaf.
 pub fn max_extended_leaf() -> u32 {
     cpuid(0x8000_0000, 0).eax

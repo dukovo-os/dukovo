@@ -696,6 +696,8 @@ fn stat(text: &mut Text) -> fmt::Result {
     // another CPU, and a page fault, all since boot.
     writeln!(text, "preemptions: {}", events.preemptions)?;
     writeln!(text, "migrations: {}", events.migrations)?;
+    // Moves to a faster idle core, on a processor whose cores differ.
+    writeln!(text, "moves_up: {}", events.moves_up)?;
     writeln!(text, "faults: {}", crate::user::memory::faults_resolved())?;
     // Lock contention, for `ob bench --scaling`: threads that found a
     // mutex taken, threads that slept for one, mutexes handed to a

@@ -284,6 +284,7 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     };
     report::cpus(online);
     console::progress(200);
+    sched::rank_cores(flags.value("hybrid") == Some("off"));
     sched::start_threads();
     work::start();
     join::start();
