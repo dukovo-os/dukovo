@@ -11,6 +11,9 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+# The C library's calls behind safe functions, so that this program
+# forbids unsafe code (ADR 0730).
+sysapi = { path = "../../userspace/programs/sysapi" }
 # MIT OR Apache-2.0: the system calls std does not wrap (futexes, CPU
 # affinity, eventfd, getrandom).
 libc = "0.2"

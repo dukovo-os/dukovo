@@ -59,6 +59,19 @@ pub fn set_attributes(fd: impl AsFd, when: When, attributes: &Attributes) -> io:
     Ok(())
 }
 
+/// Waits until what was written to terminal `fd` has been sent, as
+/// tcdrain(3) does: a program that is about to stop the machine lets the
+/// serial port send its last lines first.
+///
+/// # Errors
+///
+/// ENOTTY when `fd` is not a terminal, EINTR when a signal came.
+pub fn drain(fd: impl AsFd) -> io::Result<()> {
+    // SAFETY: tcdrain takes a descriptor borrowed for the call.
+    checked(unsafe { libc::tcdrain(fd.as_fd().as_raw_fd()) })?;
+    Ok(())
+}
+
 /// Changes `attributes` to a raw terminal's, as cfmakeraw(3) does: no echo,
 /// no line editing, no signals from keys, and 8-bit characters.
 pub fn make_raw(attributes: &mut Attributes) {
@@ -245,9 +258,17 @@ pub fn session(fd: impl AsFd) -> io::Result<Pid> {
 #[cfg(test)]
 mod tests {
     use super::{
-        When, WindowSize, attributes, drop_input, foreground_group, make_raw, open_pty, path,
-        set_attributes, set_window_size, window_size,
+        When, WindowSize, attributes, drain, drop_input, foreground_group, make_raw, open_pty,
+        path, set_attributes, set_window_size, window_size,
     };
+
+    #[test]
+    fn a_terminal_drains_and_a_pipe_is_no_terminal() {
+        let pty = open_pty(None).unwrap();
+        drain(&pty.terminal).unwrap();
+        let (read, _write) = crate::fd::pipe().unwrap();
+        assert_eq!(drain(&read).unwrap_err().raw_os_error(), Some(libc::ENOTTY));
+    }
 
     #[test]
     fn a_pty_has_the_size_it_was_opened_with_and_takes_a_new_one() {

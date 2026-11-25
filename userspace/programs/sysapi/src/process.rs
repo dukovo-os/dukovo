@@ -18,6 +18,7 @@ use std::io;
 use std::os::fd::{IntoRawFd, OwnedFd};
 use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
+use std::time::Duration;
 
 use crate::{Pid, checked};
 
@@ -332,6 +333,56 @@ pub fn set_limit(resource: libc::c_int, soft: u64, hard: u64) -> io::Result<()> 
     Ok(())
 }
 
+/// Whose use of the machine [`usage`] counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UsageOf {
+    /// This process's own.
+    Process,
+    /// Its children's that it waited for.
+    Children,
+}
+
+/// What a process used of the machine, as getrusage(2) counts it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Usage {
+    /// Time on a CPU in user mode.
+    pub user: Duration,
+    /// Time on a CPU in the kernel.
+    pub system: Duration,
+    /// Times it gave up the CPU to wait.
+    pub voluntary_switches: u64,
+    /// Times another process took the CPU from it.
+    pub involuntary_switches: u64,
+}
+
+/// What `of` used of the machine so far.
+///
+/// # Errors
+///
+/// None that the kernel gives for these two.
+pub fn usage(of: UsageOf) -> io::Result<Usage> {
+    let who = match of {
+        UsageOf::Process => libc::RUSAGE_SELF,
+        UsageOf::Children => libc::RUSAGE_CHILDREN,
+    };
+    // SAFETY: all zeros is a valid rusage: numbers and timevals.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    // SAFETY: getrusage writes the rusage it is given.
+    checked(unsafe { libc::getrusage(who, &raw mut usage) })?;
+    let time = |t: libc::timeval| {
+        Duration::new(
+            u64::try_from(t.tv_sec).unwrap_or(0),
+            u32::try_from(t.tv_usec).unwrap_or(0) * 1000,
+        )
+    };
+    Ok(Usage {
+        user: time(usage.ru_utime),
+        system: time(usage.ru_stime),
+        voluntary_switches: u64::try_from(usage.ru_nvcsw).unwrap_or(0),
+        involuntary_switches: u64::try_from(usage.ru_nivcsw).unwrap_or(0),
+    })
+}
+
 /// This process's real user id.
 #[must_use]
 pub fn uid() -> u32 {
@@ -467,12 +518,24 @@ pub fn fault() -> ! {
 #[cfg(test)]
 mod tests {
     use super::{
-        Who, euid, fork, kill, limit, priority, set_env, set_limit, set_priority, set_thread_name,
-        thread_count, thread_name, try_wait, uid,
+        UsageOf, Who, euid, fork, kill, limit, priority, set_env, set_limit, set_priority,
+        set_thread_name, thread_count, thread_name, try_wait, uid, usage,
     };
     use std::ffi::OsStr;
     use std::os::unix::process::ExitStatusExt;
     use std::process::Command;
+
+    #[test]
+    fn time_on_a_cpu_counts_in_the_usage() {
+        let before = usage(UsageOf::Process).unwrap();
+        let spent = |now: super::Usage| (now.user + now.system) - (before.user + before.system);
+        let started = std::time::Instant::now();
+        while spent(usage(UsageOf::Process).unwrap()) < std::time::Duration::from_millis(10) {
+            assert!(started.elapsed().as_secs() < 30, "no time on a CPU was counted");
+            std::hint::black_box((0..1000u64).sum::<u64>());
+        }
+        assert!(usage(UsageOf::Children).is_ok());
+    }
 
     #[test]
     fn a_thread_has_the_name_it_was_given() {

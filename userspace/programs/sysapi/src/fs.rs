@@ -6,9 +6,9 @@
 //! kernel's access check, what a filesystem has room for, a file's lock,
 //! and a copy that shares its data.
 
-use std::ffi::{OsStr, OsString, c_void};
+use std::ffi::{CStr, OsStr, OsString, c_void};
 use std::io;
-use std::os::fd::{AsFd, AsRawFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::Path;
 
@@ -269,6 +269,43 @@ pub fn may_access(path: &Path, mode: c_int) -> bool {
     unsafe { libc::faccessat(libc::AT_FDCWD, path.as_ptr(), mode, libc::AT_EACCESS) == 0 }
 }
 
+/// Opens `name` beneath the folder `dir` with the open(2) flags `flags`
+/// and close-on-exec, as openat(2) does, following a link unless
+/// `O_NOFOLLOW` is among them. The name is a C string made once, so that
+/// a benchmark that opens it again and again times the call alone;
+/// `sysapi::dir::Dir` is for names that must not lead elsewhere.
+///
+/// # Errors
+///
+/// ENOENT when there is no such file, and what opening it fails with.
+pub fn open_at(dir: impl AsFd, name: &CStr, flags: c_int) -> io::Result<OwnedFd> {
+    // SAFETY: the name is a C string, which openat only reads; no mode is
+    // read without O_CREAT, which an open of an existing file does not
+    // need, so 0 is passed.
+    let fd = checked(unsafe {
+        libc::openat(dir.as_fd().as_raw_fd(), name.as_ptr(), flags | libc::O_CLOEXEC, 0)
+    })?;
+    // SAFETY: openat just made the descriptor, and nothing else holds it.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// The status of `name` beneath the folder `dir`, following a link, as
+/// fstatat(2) gives it; the name a C string made once, as for [`open_at`].
+///
+/// # Errors
+///
+/// ENOENT when there is no such file.
+pub fn stat_at(dir: impl AsFd, name: &CStr) -> io::Result<libc::stat> {
+    let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: the name is a C string, which fstatat only reads, and
+    // `status` is room for the status it writes.
+    checked(unsafe {
+        libc::fstatat(dir.as_fd().as_raw_fd(), name.as_ptr(), status.as_mut_ptr(), 0)
+    })?;
+    // SAFETY: fstatat succeeded, so it wrote the whole status.
+    Ok(unsafe { status.assume_init() })
+}
+
 /// What the filesystem holding `path` has: its sizes, room and longest
 /// name, as statvfs(3) gives them.
 ///
@@ -347,10 +384,25 @@ pub fn clone_data(to: impl AsFd, from: impl AsFd) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Link, Lock, Time, access, check_access, lock, make_fifo, may_access, set_mode, set_times,
-        statvfs, unlock, xattr, xattr_names,
+        Link, Lock, Time, access, check_access, lock, make_fifo, may_access, open_at, set_mode,
+        set_times, stat_at, statvfs, unlock, xattr, xattr_names,
     };
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
+
+    #[test]
+    fn a_name_beneath_a_folder_opens_and_has_a_status() {
+        let dir = scratch("open-at");
+        std::fs::write(dir.join("file"), b"four").unwrap();
+        let folder = std::fs::File::open(&dir).unwrap();
+        let file = std::fs::File::from(open_at(&folder, c"file", libc::O_RDONLY).unwrap());
+        assert!(crate::fd::close_on_exec(&file).unwrap());
+        assert_eq!(std::io::read_to_string(&file).unwrap(), "four");
+        assert_eq!(stat_at(&folder, c"file").unwrap().st_size, 4);
+        let missing = open_at(&folder, c"missing", libc::O_RDONLY).unwrap_err();
+        assert_eq!(missing.raw_os_error(), Some(libc::ENOENT));
+        assert_eq!(stat_at(&folder, c"missing").unwrap_err().raw_os_error(), Some(libc::ENOENT));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn scratch(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("sysapi-fs-{}-{name}", std::process::id()));

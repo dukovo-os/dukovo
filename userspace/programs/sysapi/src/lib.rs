@@ -7,8 +7,8 @@
 //! through this crate: signals, terminals, descriptors passed over a
 //! socket, a fork, folders reached without following links, the
 //! accounts' entries, local time, the C library's patterns, a driver's
-//! card, memory accesses a test needs to happen, and the kernel's own
-//! interface.
+//! card, mapped memory and accesses a test needs to happen, the kernel's
+//! own interface, and on Linux what the lab's Linux programs need.
 //! It is the one place in user space, beside the runtime, where such a
 //! call is written, so it is where a review of how a program meets the
 //! system starts.
@@ -29,6 +29,9 @@ pub mod dir;
 pub mod fd;
 pub mod fs;
 pub mod kernel;
+#[cfg(target_os = "linux")]
+pub mod linux;
+pub mod memory;
 pub mod net;
 pub mod pattern;
 pub mod poll;
