@@ -18,6 +18,8 @@
 //!   and output.
 //! - `sshd -t` checks sshd_config, and `sshd -T` shows what it says.
 
+#![forbid(unsafe_code)]
+
 mod authd;
 mod connection;
 mod forward;
@@ -27,7 +29,6 @@ mod hostkey;
 mod listener;
 mod pty;
 mod session;
-mod sys;
 
 use std::process::ExitCode;
 

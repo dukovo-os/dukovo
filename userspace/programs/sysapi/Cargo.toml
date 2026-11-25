@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "sysapi"
+description = "The C library and the kernel's own calls behind safe functions, so that every other program forbids unsafe code (ADR 0730)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The libc crate with its Radix module, which ob patches in from the
+# rust-std port (ADR 0070).
+libc = "0.2.191"
+# The system call interface, generated from abi/*.ridl, for what the C
+# library does not wrap and for how many threads a process has.
+radix-abi = { path = "../../../kernel/abi" }
+
+[lints]
+workspace = true
+
+# A fork and a change to the environment need a process with one thread,
+# which the test harness's threads would not leave: this test runs its
+# checks itself, on the main thread.
+[[test]]
+name = "one_thread"
+harness = false

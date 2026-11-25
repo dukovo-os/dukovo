@@ -6,9 +6,10 @@
 //! sshd sets them. sshd keeps the master; the session gets the terminal.
 
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 
 use russh::Pty;
+use sysapi::terminal::{self, When, WindowSize};
 
 /// What a client asked for in its `pty-req`.
 #[derive(Clone, Debug, Default)]
@@ -31,13 +32,13 @@ pub struct Size {
 }
 
 impl Size {
-    fn winsize(self) -> libc::winsize {
+    fn window_size(self) -> WindowSize {
         let fit = |n: u32| u16::try_from(n).unwrap_or(u16::MAX);
-        libc::winsize {
-            ws_row: fit(self.rows),
-            ws_col: fit(self.columns),
-            ws_xpixel: fit(self.width),
-            ws_ypixel: fit(self.height),
+        WindowSize {
+            rows: fit(self.rows),
+            cols: fit(self.columns),
+            width: fit(self.width),
+            height: fit(self.height),
         }
     }
 }
@@ -45,59 +46,27 @@ impl Size {
 /// Makes a pseudo-terminal as `asked` says: its master, then the
 /// terminal, both closed on exec.
 pub fn open(asked: &Asked) -> io::Result<(OwnedFd, OwnedFd)> {
-    let (mut master, mut terminal) = (-1, -1);
-    let mut size = asked.size.winsize();
-    // SAFETY: openpty writes the two descriptors; no name is asked for,
-    // and the settings are left as the kernel makes them.
-    let made = unsafe {
-        libc::openpty(
-            &raw mut master,
-            &raw mut terminal,
-            std::ptr::null_mut(),
-            std::ptr::null(),
-            &raw mut size,
-        )
-    };
-    if made != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: openpty made both descriptors, which are ours alone.
-    let (master, terminal) =
-        unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(terminal)) };
-    for fd in [&master, &terminal] {
-        // SAFETY: fcntl sets a flag of a descriptor we hold.
-        unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) };
-    }
-    set_modes(&terminal, &asked.modes)?;
-    Ok((master, terminal))
+    let pty = terminal::open_pty(Some(asked.size.window_size()))?;
+    set_modes(&pty.terminal, &asked.modes)?;
+    Ok((pty.master, pty.terminal))
 }
 
 /// Gives the terminal of `master` a new size: its foreground process
 /// group gets SIGWINCH.
 pub fn resize(master: &OwnedFd, size: Size) {
-    let size = size.winsize();
-    // SAFETY: TIOCSWINSZ reads the winsize, which lives for the call.
-    unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ, &raw const size) };
+    // A size the terminal does not take leaves it as it was.
+    let _ = terminal::set_window_size(master, size.window_size());
 }
 
 /// Sets the modes a client sent on `terminal`: the characters it edits
 /// lines with, and how input and output are treated. One the terminal
 /// does not have is passed over, as Linux's sshd passes it over.
 fn set_modes(terminal: &OwnedFd, modes: &[(Pty, u32)]) -> io::Result<()> {
-    // SAFETY: all zeros is a valid termios, which tcgetattr fills.
-    let mut t: libc::termios = unsafe { std::mem::zeroed() };
-    // SAFETY: tcgetattr writes the settings of a terminal we hold.
-    if unsafe { libc::tcgetattr(terminal.as_raw_fd(), &raw mut t) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
+    let mut t = terminal::attributes(terminal)?;
     for &(mode, value) in modes {
         apply(&mut t, mode, value);
     }
-    // SAFETY: tcsetattr reads the settings, which live for the call.
-    if unsafe { libc::tcsetattr(terminal.as_raw_fd(), libc::TCSANOW, &raw const t) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+    terminal::set_attributes(terminal, When::Now, &t)
 }
 
 /// Sets one mode on `t`.

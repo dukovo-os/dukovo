@@ -16,6 +16,8 @@
 //! caller's own (security.rs, ADR 0399). The options are mount.nfs(8)'s
 //! (options.rs).
 
+#![forbid(unsafe_code)]
+
 mod attrs;
 mod client;
 mod fs;
@@ -31,7 +33,7 @@ use std::env;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::process::exit;
@@ -43,6 +45,10 @@ use fuser::{FileType, Session, SessionACL};
 use nfsd::nfs::{kind, op};
 use radix_abi::directory::{self, MountFlags};
 use radix_abi::startup;
+use sysapi::fd::{self, Standard};
+use sysapi::kernel::SYS;
+use sysapi::process::{self, Fork};
+use sysapi::system;
 
 use crate::attrs::Attr;
 use crate::client::{Client, Fail, Ops, Timing};
@@ -50,7 +56,6 @@ use crate::fs::{NfsFs, ROOT};
 use crate::ids::Ids;
 use crate::options::{Options, PORT, Target};
 use crate::rpc::Cred;
-use crate::sys::Sys;
 
 const USAGE: &str = "usage: nfs mount [-f] [-o OPTIONS] SERVER:/PATH DIR
        nfs ls [-o OPTIONS] SERVER:/PATH";
@@ -196,39 +201,17 @@ fn address(target: &Target, options: &Options) -> Result<SocketAddr, String> {
 
 /// This machine's name, which calls carry.
 fn hostname() -> String {
-    let mut buffer = [0u8; 256];
-    // SAFETY: the buffer is valid for its length.
-    if unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) } != 0 {
-        return "dukovo".into();
-    }
-    let end = buffer.iter().position(|&b| b == 0).unwrap_or(buffer.len());
-    String::from_utf8_lossy(&buffer[..end]).into_owned()
+    system::host_name().unwrap_or_else(|_| "dukovo".into())
 }
 
 /// Eight random bytes from the kernel.
 fn random() -> Result<[u8; 8], String> {
-    let mut out = [0u8; 8];
-    let mut got = 0;
-    while got < out.len() {
-        // SAFETY: the rest of `out` is valid for its length.
-        let n = unsafe { libc::getrandom(out[got..].as_mut_ptr().cast(), out.len() - got, 0) };
-        if n < 0 {
-            let err = io::Error::last_os_error();
-            if err.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(format!("no random bytes: {err}"));
-        }
-        got += n as usize;
-    }
-    Ok(out)
+    sysapi::random::bytes().map_err(|err| format!("no random bytes: {err}"))
 }
 
 /// The caller's credential.
 fn caller(ids: &mut Ids) -> Cred {
-    // SAFETY: getuid and getgid only read the process's IDs.
-    let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
-    ids.cred(uid, gid)
+    ids.cred(process::uid(), process::gid())
 }
 
 /// How many LOOKUPs one COMPOUND carries, well within the operations a
@@ -369,7 +352,7 @@ impl Mount {
         let path = self.dir.to_str().ok_or_else(|| format!("{}: not text", self.dir.display()))?;
         let flags = if self.options.read_only { MountFlags::READ_ONLY } else { MountFlags::NONE };
         directory::mount_fuse(
-            &Sys,
+            &SYS,
             startup::SLOT_ROOT,
             path.trim_start_matches('/').as_bytes(),
             slot,
@@ -410,31 +393,25 @@ fn serve(mut session: Session<NfsFs>) -> Result<(), Stop> {
 /// background, in a session of its own: this one returns once the folder
 /// is mounted, or says why it was not.
 fn in_background(how: &Mount) -> Result<(), Stop> {
-    let mut ends = [0; 2];
-    // SAFETY: pipe writes two descriptors to `ends`.
-    if unsafe { libc::pipe(ends.as_mut_ptr()) } != 0 {
-        return Err(failed(format!("no pipe: {}", io::Error::last_os_error())));
-    }
-    // SAFETY: the descriptors are the pipe's, owned from here on.
-    let (mut from, to) = unsafe { (File::from_raw_fd(ends[0]), File::from_raw_fd(ends[1])) };
-    // SAFETY: nfs has one thread here (the lease's is started after), so
-    // the child is a whole copy of it.
-    match unsafe { libc::fork() } {
-        -1 => Err(failed(format!("cannot start: {}", io::Error::last_os_error()))),
-        0 => {
+    let (from, to) = fd::pipe().map_err(|err| failed(format!("no pipe: {err}")))?;
+    let (mut from, to) = (File::from(from), File::from(to));
+    // nfs has one thread here (the lease's is started after), which the
+    // fork checks, so the child is a whole copy of it.
+    match process::fork() {
+        Err(err) => Err(failed(format!("cannot start: {err}"))),
+        Ok(Fork::Child) => {
             drop(from);
             exit(background(how, to))
         }
-        child => {
+        Ok(Fork::Parent(child)) => {
             drop(to);
             let mut said = Vec::new();
             let _ = from.read_to_end(&mut said);
             if said == [0] {
                 return Ok(());
             }
-            let mut status = 0;
-            // SAFETY: waits for the child, which has ended or is ending.
-            unsafe { libc::waitpid(child, &raw mut status, 0) };
+            // The child has ended or is ending.
+            let _ = process::wait(child);
             if said.is_empty() {
                 return Err(failed("the mount's process ended before it mounted the folder"));
             }
@@ -446,9 +423,9 @@ fn in_background(how: &Mount) -> Result<(), Stop> {
 /// The background process: mounts, says so through `report` (a 0, or
 /// why not), and serves. Returns its exit status.
 fn background(how: &Mount, mut report: File) -> i32 {
-    // SAFETY: setsid takes no arguments; the child leads no group, so it
-    // makes a session of its own, away from the terminal.
-    unsafe { libc::setsid() };
+    // The child leads no group, so it makes a session of its own, away
+    // from the terminal.
+    let _ = process::new_session();
     match how.mounted() {
         Ok(session) => {
             quiet();
@@ -466,9 +443,8 @@ fn background(how: &Mount, mut report: File) -> i32 {
 /// Points the standard input, output and error at /devices/null.
 fn quiet() {
     let Ok(null) = OpenOptions::new().read(true).write(true).open("/devices/null") else { return };
-    for fd in 0..3 {
-        // SAFETY: dup2 replaces a standard descriptor with /devices/null.
-        unsafe { libc::dup2(null.as_raw_fd(), fd) };
+    for which in [Standard::Input, Standard::Output, Standard::Error] {
+        let _ = fd::redirect(which, &null);
     }
 }
 

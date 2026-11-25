@@ -7,6 +7,8 @@
 //! with the pinned toolchain and runs it. Every command is documented in
 //! ob(1); `docs/man/ob.1.scd` is the source of that page.
 
+#![forbid(unsafe_code)]
+
 mod account;
 mod ansible;
 mod baseline;
@@ -59,6 +61,7 @@ mod site;
 mod test;
 mod tla;
 mod tuf;
+mod unsafe_code;
 mod updates;
 mod upstream;
 mod userspace;
@@ -705,9 +708,11 @@ and the tutorials, guides, runbooks and error pages, with search.
         "lint" => {
             "Usage: ./ob lint
 
-Checks formatting with rustfmt and runs Clippy on the host tools, the kernel
-(for x86-64, and for AArch64 against the HAL stubs), the kernel libraries
-and the user programs, treating every warning as an error."
+Checks formatting with rustfmt, checks that every crate outside the trusted
+computing base forbids unsafe code in each of its targets (ADR 0730), and
+runs Clippy on the host tools, the kernel (for x86-64, and for AArch64 against
+the HAL stubs), the kernel libraries and the user programs, treating every
+warning as an error."
         }
         "fmt" => {
             "Usage: ./ob fmt

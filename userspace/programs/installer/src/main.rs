@@ -7,6 +7,8 @@
 //! `--sha256` when given (ADR 0319), and `--hash-password` makes the
 //! password hash an answers file gives.
 
+#![forbid(unsafe_code)]
+
 use std::io::BufRead as _;
 use std::path::Path;
 use std::process::ExitCode;

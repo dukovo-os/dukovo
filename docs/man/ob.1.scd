@@ -2483,12 +2483,14 @@ _target/userspace/_).
 		default is this tree's version).
 
 *lint*
-	Check formatting with rustfmt and run Clippy, treating every warning as
-	an error, on the build tool, on the kernel for x86-64, on the
-	architecture-independent kernel against the AArch64 and RISC-V stubs
-	of the hardware abstraction layer (with the RISC-V smoke boot), on the
-	kernel libraries with their
-	tests, and on the user programs. CI runs the same command.
+	Check formatting with rustfmt; check that every crate outside the
+	trusted computing base starts each of its targets with
+	*#![forbid(unsafe_code)]* (ADR 0730); and run Clippy, treating every
+	warning as an error, on the build tool, on the kernel for x86-64, on
+	the architecture-independent kernel against the AArch64 and RISC-V
+	stubs of the hardware abstraction layer (with the RISC-V smoke boot),
+	on the kernel libraries with their tests, and on the user programs. CI
+	runs the same command.
 
 *fmt*
 	Format all Rust code with rustfmt.

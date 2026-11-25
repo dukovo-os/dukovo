@@ -21,13 +21,15 @@ use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File};
 use std::io::{self, BufReader};
 use std::net::TcpStream;
-use std::os::fd::FromRawFd;
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::{Duration, Instant, SystemTime};
 
 use manifest::shares::{self, Shares};
 use smb2::crypto::encryption::Cipher;
+use sysapi::fd::{self, Standard};
+use sysapi::fs::may_access;
+use sysapi::{net, process};
 
 use crate::crypto::{self, Keys, Sealer, Signing};
 use crate::fs::{Kind, Locks, Open, Opens, Tree, access};
@@ -511,7 +513,7 @@ impl Worker {
             if !root.is_dir() {
                 return Err(status::BAD_NETWORK_NAME);
             }
-            if !sys::may(&root, libc::R_OK | libc::X_OK) {
+            if !may_access(&root, libc::R_OK | libc::X_OK) {
                 return Err(status::ACCESS_DENIED);
             }
             Tree { name: share.name.clone(), root: Some(root), read_only: share.read_only }
@@ -752,20 +754,21 @@ fn grant(header: &Header) -> u16 {
 pub fn maximal_access(path: &Path, read_only: bool, parent_writable: bool) -> u32 {
     let mut mask =
         access::READ_ATTRIBUTES | access::READ_EA | access::READ_CONTROL | access::SYNCHRONIZE;
-    if sys::may(path, libc::R_OK) {
+    if may_access(path, libc::R_OK) {
         mask |= access::READ_DATA;
     }
-    if sys::may(path, libc::W_OK) {
+    if may_access(path, libc::W_OK) {
         mask |= access::WRITE_DATA
             | access::APPEND_DATA
             | access::WRITE_EA
             | access::WRITE_ATTRIBUTES
             | access::DELETE_CHILD;
     }
-    if sys::may(path, libc::X_OK) {
+    if may_access(path, libc::X_OK) {
         mask |= access::EXECUTE;
     }
-    if fs::metadata(path).is_ok_and(|meta| std::os::unix::fs::MetadataExt::uid(&meta) == sys::uid())
+    if fs::metadata(path)
+        .is_ok_and(|meta| std::os::unix::fs::MetadataExt::uid(&meta) == process::euid())
     {
         // The owner sets its times and modes.
         mask |= access::WRITE_ATTRIBUTES | access::WRITE_DAC;
@@ -781,13 +784,14 @@ pub fn maximal_access(path: &Path, read_only: bool, parent_writable: bool) -> u3
 
 /// `smbd --worker`: serves the session authd started it for.
 pub fn run() -> ExitCode {
-    if !sys::is_open(0) || !sys::is_open(3) {
+    // authd starts the worker with the session's pipe as its descriptor
+    // 0, and the PC's connection as its 3.
+    let (Ok(pipe), Ok(connection)) = (fd::take_standard(Standard::Input), fd::handed_down(3))
+    else {
         eprintln!("smbd: --worker is started by authd, with a session's pipe and connection");
         return ExitCode::FAILURE;
-    }
-    // SAFETY: authd starts the worker with the session's pipe as its
-    // descriptor 0, which nothing else here owns.
-    let mut pipe = unsafe { File::from_raw_fd(0) };
+    };
+    let mut pipe = File::from(pipe);
     let handoff = match Handoff::receive(&mut pipe) {
         Ok(handoff) => handoff,
         Err(err) => {
@@ -796,9 +800,9 @@ pub fn run() -> ExitCode {
         }
     };
     drop(pipe);
-    // SAFETY: and the PC's connection as its descriptor 3.
-    let stream = unsafe { TcpStream::from_raw_fd(3) };
-    sys::keep_alive(&stream);
+    let stream = TcpStream::from(connection);
+    // A connection that cannot be watched works all the same.
+    let _ = net::set_keepalive(&stream, true);
     let _ = stream.set_nodelay(true);
     eprintln!("smbd: {} signed in from {}", handoff.user, handoff.from);
     let mut worker = Worker::new(handoff);
