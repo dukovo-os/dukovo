@@ -16,9 +16,10 @@
 # service that was up is up, and the log has no error and no panic since the
 # start.
 #
-# /tmp/lab-journey-day-in-the-life holds the SSH key, the facts the browser
-# script reads and what the SSH session found; the first step makes it and the
-# last takes it away. The baseline is taken before anyone signs in, so what
+# The test's folder on the lab PC, {work}, holds the SSH key, the facts the
+# browser script reads and what the SSH session found. It is the machine's
+# own for this run, so the journey can run on two machines at once, and it
+# goes when the test ends. The baseline is taken before anyone signs in, so what
 # the first use of a page allocates counts against the day; the limits in
 # day-machine.sh are set with that in mind.
 about = "A day of two people at the console in two browsers and an SSH session at once for twenty minutes: pages read, settings changed and put back, a firewall try undone, files uploaded and downloaded by sum and commands run, then the machine's memory, open files, disk and services held to the start, and no error or panic in the log"
@@ -29,10 +30,10 @@ host_needs = ["curl", "ssh", "ssh-keygen", "scp", "sha256sum"]
 # The length of the day, in minutes, and the people in it. The browsers and the
 # SSH session both read the length from here.
 [[step]]
-host = '''sh -c 'rm -rf /tmp/lab-journey-day-in-the-life && mkdir -p /tmp/lab-journey-day-in-the-life && cd /tmp/lab-journey-day-in-the-life && ssh-keygen -q -t ed25519 -N "" -C journey-ada -f journey-ada && printf "minutes=20\nada=journey-ada\nada_password=lab-journey-password-1\nben=journey-ben\nben_password=lab-journey-password-2\n" > info && echo journey-ready' '''
+host = '''sh -c 'ssh-keygen -q -t ed25519 -N "" -C journey-ada -f journey-ada && printf "minutes=20\nada=journey-ada\nada_password=lab-journey-password-1\nben=journey-ben\nben_password=lab-journey-password-2\n" > info && echo journey-ready' '''
 expect = "journey-ready"
 [[step]]
-host = "sh {here}/../services/copy-file.sh /tmp/lab-journey-day-in-the-life/journey-ada.pub {machine} {machine-port:22}"
+host = "sh {here}/../services/copy-file.sh {work}/journey-ada.pub {machine} {machine-port:22}"
 expect = "copied: journey-ada.pub"
 [[step]]
 run = '''sh -c 'echo lab-journey-password-1 | user add --admin journey-ada && echo lab-journey-password-2 | user add journey-ben && user set --console --yes journey-ben && user key add journey-ada "$(cat /users/lab/journey-ada.pub)"' '''
@@ -54,7 +55,7 @@ expect = "before: "
 # The SSH session starts first and goes round for the same minutes as the
 # browsers; it is ready after its first round.
 [[step]]
-host = "sh {here}/day-ssh.sh work /tmp/lab-journey-day-in-the-life journey-ada {machine} {machine-port:22}"
+host = "sh {here}/day-ssh.sh work {work} journey-ada {machine} {machine-port:22}"
 background = true
 ready = "ssh session ready"
 [[step]]
@@ -63,7 +64,7 @@ engines = ["chromium"]
 port = 9090
 # The SSH session's rounds end with the day, and none went wrong.
 [[step]]
-host = "sh {here}/day-ssh.sh finish"
+host = "sh {here}/day-ssh.sh finish {work}"
 expect = "failures: 0"
 expect_not = "failed in round"
 # A minute for what the closed browsers left to be given back.
@@ -102,7 +103,7 @@ root = true
 expect = ": kept"
 expect_not = "too much"
 [[step]]
-host = "sh {here}/day-ssh.sh trend"
+host = "sh {here}/day-ssh.sh trend {work}"
 expect = ": kept"
 expect_not = "too much"
 
@@ -111,6 +112,3 @@ expect_not = "too much"
 run = "sh -c 'rm -f /users/lab/journey-* /users/lab/day-machine.sh; for name in journey-ada journey-ben; do user remove --delete-home --yes $name || exit 1; done; echo cleaned'"
 root = true
 expect = ["journey-ben is removed", "cleaned"]
-[[step]]
-host = "sh -c 'rm -rf /tmp/lab-journey-day-in-the-life; echo gone'"
-expect = "gone"
