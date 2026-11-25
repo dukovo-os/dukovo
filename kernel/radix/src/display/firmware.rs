@@ -23,9 +23,10 @@
 //!
 //! The framebuffer is the kernel console's (`crate::console`), which
 //! draws the log on it and, in a panic, the report. Every write here
-//! goes through [`console::with_pixels`], a row at a time with the
-//! console's lock held, and writes nothing once the log or the panic
-//! report has the screen: the report shows whatever a holder was doing.
+//! goes through [`console::with_pixels`], with the console's lock held
+//! for a row, or for a few short ones ([`HOLD_BYTES`]), and writes
+//! nothing once the log or the panic report has the screen: the report
+//! shows whatever a holder was doing.
 //!
 //! The firmware says nothing of the monitor's rate, so the card's beat
 //! is the kernel clock's at 60 Hz. Nothing here waits for the monitor:
@@ -56,7 +57,7 @@ use radix_sync::Mutex;
 
 use super::{
     CardSpec, Change, Driver, Failed, Frame, Pages, Picture, PlaneFault, PlaneSpec, ScreenSpec,
-    add_card, kmalloc, name,
+    Shown, add_card, kmalloc, name,
 };
 use crate::console;
 
@@ -64,6 +65,11 @@ use crate::console;
 const REFRESH_MHZ: u32 = 60_000;
 /// The longest side of a pointer's picture.
 const POINTER_SIDE: u32 = 256;
+/// The most bytes of rows copied to the screen in one hold of the
+/// console's lock, which masks interrupts: one row at least, whatever
+/// its length, and as many shorter rows as come to this. A row of a
+/// screen 3840 pixels wide is 15 KiB.
+const HOLD_BYTES: usize = 16 << 10;
 
 /// The card's number in the layer and where its framebuffer starts in
 /// physical memory, while the layer has the card.
@@ -190,60 +196,96 @@ pub(super) fn step_aside(function: &Function) -> bool {
     super::remove_card(id)
 }
 
+/// What a row of a frame is drawn from.
+struct Source<'a> {
+    /// The main plane's picture and its pages: black with none.
+    main: Option<(&'a Shown<'a>, &'a Pages)>,
+    /// The pointer's picture, where one shows.
+    pointer: Option<&'a Shown<'a>>,
+}
+
 impl Firmware {
     /// Draws `rect` of `frame` on the screen: the main plane's picture,
     /// or black where the pipe shows none, with the pointer over it. A
     /// main picture the card keeps is left as the screen has it.
+    ///
+    /// Each hold of the console's lock, which masks interrupts, copies
+    /// one row, or as many short ones as come to [`HOLD_BYTES`].
     fn draw(&self, drawn: &mut Drawn, frame: &Frame<'_>, rect: Rect) {
         let Some(rect) = rect.intersect(Rect::sized(self.width, self.height)) else { return };
         let main = frame.main.as_ref().filter(|_| frame.active);
-        let pointer = frame.pointer.as_ref().filter(|_| frame.active);
         let main = match main.map(|main| (main, main.picture.pages.as_ref())) {
             Some((main, Some(pages))) => Some((main, pages)),
             // Its rows come by PUT.
             Some((_, None)) => return,
             None => None,
         };
+        let source = Source { main, pointer: frame.pointer.as_ref().filter(|_| frame.active) };
+        let row_bytes = rect.width as usize * usize::from(self.layout.bytes);
+        let at_once = (HOLD_BYTES / row_bytes.max(1)).max(1);
+        let mut rows = (rect.y..).take(rect.height as usize).peekable();
+        while rows.peek().is_some() {
+            let held = console::with_pixels(|screen| {
+                for y in rows.by_ref().take(at_once) {
+                    self.draw_row(screen, drawn, &source, Rect { y, height: 1, ..rect });
+                }
+            });
+            // The log has the screen, or the kernel's report.
+            if held.is_none() {
+                return;
+            }
+        }
+    }
+
+    /// Draws `rect`, one row of the frame that is on the screen, into
+    /// `screen`, the framebuffer's bytes.
+    fn draw_row(&self, screen: &mut [u8], drawn: &mut Drawn, source: &Source<'_>, rect: Rect) {
         let (width, pixel) = (rect.width as usize, usize::from(self.layout.bytes));
+        let at = rect.y as usize * self.pitch + rect.x as usize * pixel;
+        let Some(target) = screen.get_mut(at..at + width * pixel) else { return };
+        // The part of the row the pointer is over, and where that part's
+        // pixels are in the pointer's picture.
+        let over = source.pointer.and_then(|pointer| {
+            let part = rect.intersect(pointer.place())?;
+            Some((part, pointer.byte_at(part.x, rect.y)?, pointer.picture.pages.as_ref()?))
+        });
+        let from =
+            source.main.and_then(|(main, pages)| Some((main.byte_at(rect.x, rect.y)?, pages)));
         let Some(row) = drawn.row.get_mut(..width * 4) else { return };
-        for y in (rect.y..).take(rect.height as usize) {
-            let at = y as usize * self.pitch + rect.x as usize * pixel;
-            let target = at..at + width * pixel;
-            // The part of the row the pointer is over, and where that
-            // part's pixels are in the pointer's picture.
-            let over = pointer.and_then(|pointer| {
-                let part = Rect { y, height: 1, ..rect }.intersect(pointer.place())?;
-                Some((part, pointer.byte_at(part.x, y)?, pointer.picture.pages.as_ref()?))
-            });
-            let from = main.and_then(|(main, pages)| Some((main.byte_at(rect.x, y)?, pages)));
-            match from {
-                // One copy, from the picture's pages to the screen.
-                Some((from, pages)) if over.is_none() && self.layout == Layout::XRGB8888 => {
-                    console::with_pixels(|screen| {
-                        if let Some(target) = screen.get_mut(target) {
-                            pages.read(from, target);
-                        }
-                    });
-                    continue;
-                }
-                Some((from, pages)) => pages.read(from, row),
-                None => row.fill(0),
+        match from {
+            // One copy, from the picture's pages to the screen.
+            Some((from, pages)) if over.is_none() && self.layout == Layout::XRGB8888 => {
+                return pages.read(from, target);
             }
-            if let Some((part, from, pages)) = over {
-                let skip = part.x.abs_diff(rect.x) as usize * 4;
-                let len = part.width as usize * 4;
-                if let (Some(under), Some(over)) =
-                    (row.get_mut(skip..skip + len), drawn.over.get_mut(..len))
-                {
-                    pages.read(from, over);
-                    pixels::blend(under, over);
-                }
+            Some((from, pages)) => pages.read(from, row),
+            None => row.fill(0),
+        }
+        if let Some((part, from, pages)) = over {
+            let skip = part.x.abs_diff(rect.x) as usize * 4;
+            let len = part.width as usize * 4;
+            if let (Some(under), Some(over)) =
+                (row.get_mut(skip..skip + len), drawn.over.get_mut(..len))
+            {
+                pages.read(from, over);
+                pixels::blend(under, over);
             }
-            console::with_pixels(|screen| {
-                if let Some(target) = screen.get_mut(target) {
-                    pixels::store(self.layout, row, target);
-                }
-            });
+        }
+        pixels::store(self.layout, row, target);
+    }
+
+    /// Writes `row`, the pixels PUT sends for `rect`, one row of the
+    /// picture on the main plane `main`, to `screen`, the framebuffer's
+    /// bytes: where the row shows in the frame, cut to the screen.
+    fn put_row(&self, screen: &mut [u8], main: &Shown<'_>, rect: Rect, row: &[u8]) {
+        let whole =
+            Rect { x: rect.x - main.source.x + main.x, y: rect.y - main.source.y + main.y, ..rect };
+        let Some(part) = whole.intersect(Rect::sized(self.width, self.height)) else { return };
+        let skip = part.x.abs_diff(whole.x) as usize * 4;
+        let Some(row) = row.get(skip..skip + part.width as usize * 4) else { return };
+        let pixel = usize::from(self.layout.bytes);
+        let at = part.y as usize * self.pitch + part.x as usize * pixel;
+        if let Some(target) = screen.get_mut(at..at + part.width as usize * pixel) {
+            pixels::store(self.layout, row, target);
         }
     }
 }
@@ -315,28 +357,22 @@ impl Driver for Firmware {
     fn put(&self, _picture: &Picture, rect: Rect, rows: &[u8], on: Option<&Frame<'_>>) {
         let main = on.filter(|frame| frame.active).and_then(|frame| frame.main.as_ref());
         let Some(main) = main else { return };
-        let screen = Rect::sized(self.width, self.height);
-        let (len, pixel) = (rect.width as usize * 4, usize::from(self.layout.bytes));
+        let len = rect.width as usize * 4;
         if len == 0 {
             return;
         }
-        for (row, y) in rows.chunks_exact(len).take(rect.height as usize).zip(rect.y..) {
-            // Where the row shows in the frame, cut to the screen.
-            let whole = Rect {
-                x: rect.x - main.source.x + main.x,
-                y: y - main.source.y + main.y,
-                width: rect.width,
-                height: 1,
-            };
-            let Some(part) = whole.intersect(screen) else { continue };
-            let skip = part.x.abs_diff(whole.x) as usize * 4;
-            let Some(row) = row.get(skip..skip + part.width as usize * 4) else { continue };
-            let at = part.y as usize * self.pitch + part.x as usize * pixel;
-            console::with_pixels(|screen| {
-                if let Some(target) = screen.get_mut(at..at + part.width as usize * pixel) {
-                    pixels::store(self.layout, row, target);
+        let at_once = (HOLD_BYTES / len).max(1);
+        let mut rows = rows.chunks_exact(len).take(rect.height as usize).zip(rect.y..).peekable();
+        while rows.peek().is_some() {
+            let held = console::with_pixels(|screen| {
+                for (row, y) in rows.by_ref().take(at_once) {
+                    self.put_row(screen, main, Rect { y, height: 1, ..rect }, row);
                 }
             });
+            // The log has the screen, or the kernel's report.
+            if held.is_none() {
+                return;
+            }
         }
     }
 }

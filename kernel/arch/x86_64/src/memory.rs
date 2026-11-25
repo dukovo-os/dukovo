@@ -18,7 +18,7 @@
 
 use core::cell::UnsafeCell;
 use core::ops::Range;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use radix_acpi::{Slit, Srat, SratEntry};
 use radix_hal::{MemoryKind, MemoryRegion, Reservation};
@@ -219,20 +219,42 @@ pub fn memory_map() -> &'static [MemoryRegion] {
     MAP.get().map_or(&[], |map| &map.regions[..map.len])
 }
 
+/// Whether `region` is RAM the kernel may read: usable memory or ACPI
+/// memory. Device memory and holes are not.
+fn is_ram_region(region: &MemoryRegion) -> bool {
+    matches!(region.kind, MemoryKind::Usable | MemoryKind::AcpiReclaimable | MemoryKind::AcpiNvs)
+}
+
+/// The place in the map of the region that held the whole of the range
+/// [`is_ram`] was last asked about. Only a hint of where to look first:
+/// what it names is checked like any other region.
+static LAST_RAM: AtomicUsize = AtomicUsize::new(0);
+
 /// Whether the memory map lists `range` as RAM the kernel may read: usable
 /// memory or ACPI memory. Device memory and holes are not RAM.
+///
+/// The page copies ask this of every page they touch, and a firmware's
+/// map can have over a hundred regions, so the region that answered last
+/// is looked at first: ranges asked about one after another are mostly
+/// in the same one.
 pub fn is_ram(range: Range<u64>) -> bool {
+    let map = memory_map();
+    let holds = |region: &MemoryRegion| {
+        is_ram_region(region) && region.start <= range.start && range.end <= region.end
+    };
+    if map.get(LAST_RAM.load(Ordering::Relaxed)).is_some_and(holds) {
+        return true;
+    }
     let mut position = range.start;
-    for region in memory_map() {
-        let ram = matches!(
-            region.kind,
-            MemoryKind::Usable | MemoryKind::AcpiReclaimable | MemoryKind::AcpiNvs
-        );
-        if !ram || region.end <= position {
+    for (place, region) in map.iter().enumerate() {
+        if !is_ram_region(region) || region.end <= position {
             continue;
         }
         if region.start > position {
             return false;
+        }
+        if holds(region) {
+            LAST_RAM.store(place, Ordering::Relaxed);
         }
         position = region.end;
         if position >= range.end {
@@ -244,13 +266,9 @@ pub fn is_ram(range: Range<u64>) -> bool {
 
 /// Whether any of `range` is RAM, as [`is_ram`] counts it.
 pub fn overlaps_ram(range: Range<u64>) -> bool {
-    memory_map().iter().any(|region| {
-        matches!(
-            region.kind,
-            MemoryKind::Usable | MemoryKind::AcpiReclaimable | MemoryKind::AcpiNvs
-        ) && region.start < range.end
-            && range.start < region.end
-    })
+    memory_map()
+        .iter()
+        .any(|region| is_ram_region(region) && region.start < range.end && range.start < region.end)
 }
 
 struct Reservations {

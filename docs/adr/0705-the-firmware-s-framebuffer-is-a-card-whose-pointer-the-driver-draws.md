@@ -58,9 +58,11 @@ way of.
   monitor, and a change that asks for now is on the screen when the
   call returns.
 - **The framebuffer stays the kernel console's.** Every write goes
-  through the console, a row at a time under its lock, and writes
-  nothing once the log or the kernel's report has the screen: the
-  report shows whatever a holder was doing.
+  through the console under its lock, which masks interrupts: one
+  row at a hold, or as many short rows as come to 16 KiB, so that a
+  small change pays for the lock once. Nothing is written once the
+  log or the kernel's report has the screen: the report shows
+  whatever a holder was doing.
 - **Only a card's memory is a framebuffer.** A firmware that draws
   its screen only through its own calls has no framebuffer to pass
   on, and a boot loader then names whatever address it left, often
@@ -89,7 +91,12 @@ way of.
 ## Consequences
 
 - The pointer on a real machine moves when the mouse does, at the
-  cost of two copies of the pointer's size for each move.
+  cost of two copies of the pointer's size for each move. A pixel of
+  the pointer that is wholly solid or wholly clear costs a copy or
+  nothing, and only its soft edge is mixed with the picture. Counted
+  in CI (`ob bench --instructions`): about 39,000 instructions to
+  move a solid pointer of 32 by 32 pixels, and about 23,000 to show
+  a change of 64 by 64.
 - A frame costs one copy of what changed. The copy is the kernel's,
   into memory that is usually write-combined and slow: the bar is a
   whole frame of 1920 by 1080 in under 3 ms on the lab's OptiPlex,

@@ -250,6 +250,9 @@ pub type PictureRef = Arc<Picture, Kmalloc>;
 /// What one pipe is to show.
 pub type Frame<'a> = frame::Frame<'a, Picture>;
 
+/// A plane's picture in a frame.
+pub type Shown<'a> = frame::Shown<'a, Picture>;
+
 /// What the layer asks of a card's driver: what `radix_display`'s
 /// [`Card`] says, and the making of pictures, which only the kernel
 /// knows the memory of. Called with the layer's lock held, so one call

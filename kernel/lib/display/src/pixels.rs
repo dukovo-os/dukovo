@@ -111,15 +111,22 @@ fn over_255(value: u32) -> u32 {
 /// FORMAT_ARGB8888: its colours are already multiplied by how solid the
 /// pixel is, so each colour of the frame is dimmed by what is left and
 /// the pointer's is added.
+///
+/// Most pixels of a pointer are wholly solid or wholly clear, and those
+/// cost a copy or nothing: only its soft edge is worked out.
 pub fn blend(row: &mut [u8], over: &[u8]) {
     for (under, pointer) in row.as_chunks_mut::<4>().0.iter_mut().zip(over.as_chunks::<4>().0) {
-        let clear = 255 - u32::from(pointer[3]);
-        if clear == 255 && pointer[..3] == [0, 0, 0] {
-            continue;
-        }
-        for (colour, &added) in under.iter_mut().zip(pointer).take(3) {
-            let mixed = u32::from(added) + over_255(u32::from(*colour) * clear);
-            *colour = mixed.min(255) as u8;
+        match pointer[3] {
+            // Nothing of the frame is left: the pointer's colour alone.
+            255 => under[..3].copy_from_slice(&pointer[..3]),
+            0 if pointer[..3] == [0, 0, 0] => {}
+            solid => {
+                let clear = 255 - u32::from(solid);
+                for (colour, &added) in under.iter_mut().zip(pointer).take(3) {
+                    let mixed = u32::from(added) + over_255(u32::from(*colour) * clear);
+                    *colour = mixed.min(255) as u8;
+                }
+            }
         }
     }
 }
@@ -243,6 +250,20 @@ mod tests {
         // Half of 0x10, 0x20, 0x30 is 0x08, 0x10, 0x18, and red gets
         // 0x80 more.
         assert_eq!(pixels, [0xff_ffff, 0x10_2030, 0x88_1018]);
+    }
+
+    #[test]
+    fn a_solid_pixel_is_what_the_sum_for_a_nearly_solid_one_tends_to() {
+        // The copy a solid pixel gets is what the sum gives with nothing
+        // of the frame left, whatever is under it.
+        for under in [0x00u8, 0x01, 0x7f, 0xfe, 0xff] {
+            for added in [0x00u8, 0x01, 0x80, 0xff] {
+                let mut frame = [under, under, under, 0x5a];
+                blend(&mut frame, &[added, added, added, 0xff]);
+                let summed = (u32::from(added) + over_255(0)).min(255) as u8;
+                assert_eq!(frame, [summed, summed, summed, 0x5a], "{under:#x} under {added:#x}");
+            }
+        }
     }
 
     #[test]
