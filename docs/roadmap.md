@@ -1133,6 +1133,17 @@ Dukovo supports the main open, royalty-free formats natively and system-wide. On
 
 Patent-encumbered formats (H.264, HEVC, AAC, HEIC and similar) stay out of the base system, but users can add them with one checkbox, the way Ubuntu's installer offers "additional media formats". The installer's step 6 offers "Install extra media codecs" next to the firmware package, off by default, with a note that some of these formats are covered by patents in some countries; Settings and the update command can add or remove it later. It installs an optional codec package outside /system, built from the same sources Linux distributions use: FFmpeg's libavcodec in its LGPL build (decoders only, no GPL or non-free options, so no x264 or x265), libheif and libde265 (LGPL) for HEIC, and Cisco's OpenH264, downloaded straight from Cisco at install time because Cisco's patent license covers only binaries Cisco distributes. The LGPL libraries are dynamically linked into separate sandboxed decoder processes that the media service starts, with their exact source published next to each release. Hardware decoding of H.264 and HEVC through Mesa's VA-API and Vulkan Video arrives with release 1.10, enabled only when the codec package is installed. The package ships with release 1.13 (audio) and release 1.7 (video). Before its first release we get a legal review of patent exposure, and if needed we host it from a separate repository the way Fedora's codecs live in RPM Fusion. Microsoft's core fonts, which Ubuntu's restricted extras also install, are left out because of their license.
 
+### Not scheduled
+
+Ideas worth keeping that no release above takes on. Each is revisited
+after 1.0 if programs or users ask for it, and is tracked in the
+[deferred work list](deferred.md#language-runtimes) until then.
+
+| Idea | Until then |
+| --- | --- |
+| A native OpenJDK port, for Java and the other JVM languages: HotSpot's own operating-system layer for Dukovo (threads, signals, memory and files), its JIT within W^X, and the desktop toolkits drawn in windowd, for the best speed and for DukUI integration | The official Linux builds of OpenJDK run through the Linux compatibility layer once Phase 18 lets a program ask for JIT memory |
+| A native .NET port, for C# and F#: the runtime's platform layer and native shims for Dukovo (threads, signals, memory and files) and its JIT within W^X, for the best speed and for DukUI integration; release 1.19 already lets C# build to WebAssembly | The official Linux builds of .NET run through the Linux compatibility layer once Phase 18 lets a program ask for JIT memory |
+
 ## Spec traceability matrix
 
 Every section of spec v1.4 maps to at least one phase in this table, so a requirement cannot be silently dropped.
