@@ -5,7 +5,10 @@
 //! 0730). Every program of Dukovo's on Rust's standard library forbids
 //! `unsafe` code, and calls what the standard library does not offer
 //! through this crate: signals, terminals, descriptors passed over a
-//! socket, a fork, the accounts' entries, and the kernel's own interface.
+//! socket, a fork, folders reached without following links, the
+//! accounts' entries, local time, the C library's patterns, a driver's
+//! card, memory accesses a test needs to happen, and the kernel's own
+//! interface.
 //! It is the one place in user space, beside the runtime, where such a
 //! call is written, so it is where a review of how a program meets the
 //! system starts.
@@ -21,17 +24,23 @@
 //! the programs run: there it calls Linux's C library, and the kernel's
 //! own calls fail with no_such_syscall.
 
+pub mod device;
+pub mod dir;
 pub mod fd;
 pub mod fs;
 pub mod kernel;
 pub mod net;
+pub mod pattern;
 pub mod poll;
 pub mod process;
 pub mod random;
 pub mod signal;
 pub mod system;
 pub mod terminal;
+pub mod text;
+pub mod time;
 pub mod users;
+pub mod volatile;
 
 use std::ffi::CString;
 use std::io;

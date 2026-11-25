@@ -17,6 +17,9 @@ libc = "0.2.191"
 # The system call interface, generated from abi/*.ridl, for what the C
 # library does not wrap and for how many threads a process has.
 radix-abi = { path = "../../../kernel/abi" }
+# The registers and DMA memory of a card a driver program holds, as the
+# kernel's drivers reach theirs (ADR 0198).
+radix-hw = { path = "../../../kernel/lib/hw" }
 
 [lints]
 workspace = true
