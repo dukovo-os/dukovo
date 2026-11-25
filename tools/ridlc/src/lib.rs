@@ -469,6 +469,7 @@ pub const ERRNOS: &[(&str, i32)] = &[
     ("EISDIR", 21),
     ("EINVAL", 22),
     ("ENOTTY", 25),
+    ("ETXTBSY", 26),
     ("EFBIG", 27),
     ("ENOSPC", 28),
     ("ESPIPE", 29),

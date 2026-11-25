@@ -27,6 +27,7 @@ use radix_vfs::acl::{self, Acl, AclCell};
 use radix_vfs::cache::{Backing, FileCache, page_len};
 use radix_vfs::mem::{self, Alloc, KArc, KBox, KVec};
 use radix_vfs::path::check_name;
+use radix_vfs::writes::WriteAccess;
 use radix_vfs::{
     Access, AccessChange, Error, In, Kind, ListFn, Node, NodeRef, Out, Result, Setting,
     SocketBinding, Stat, now,
@@ -107,6 +108,8 @@ pub struct BtrfsNode {
     acl: AclCell,
     /// A directory's default access list, once read.
     default_acl: AclCell,
+    /// A file's writers and kept pages ([`radix_vfs::writes`]).
+    writes: WriteAccess,
     /// Itself, to be kept.
     me: Once<Weak<BtrfsNode, Alloc>>,
 }
@@ -159,6 +162,7 @@ impl BtrfsNode {
             pinned: AtomicBool::new(false),
             acl: AclCell::unread(),
             default_acl: AclCell::unread(),
+            writes: WriteAccess::new(),
             me: Once::new(),
         })
     }
@@ -1347,6 +1351,10 @@ impl Node for BtrfsNode {
 
     fn read_only(&self) -> bool {
         self.read_only || self.fs.received(self.subvol)
+    }
+
+    fn write_access(&self) -> Option<&WriteAccess> {
+        (self.kind == Kind::File).then_some(&self.writes)
     }
 
     fn lookup(&self, name: &str) -> Result<NodeRef> {

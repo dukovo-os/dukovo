@@ -108,7 +108,10 @@ copy, filled when touched (ADR 0060). A file that cannot change, as the
 system's programs in their read-only slot, is the exception (ADR 0563):
 its whole pages, where the region may not be written, are in memory
 once, kept in the file's `ProgramPages` for every space that maps them,
-which counts as one more sharer of each. A write after `mprotect`, and
+which counts as one more sharer of each. So is a file no one may write
+by its mode, as a sealed bundle's are, on Btrfs or tmpfs (ADR 0658): its
+pages are kept only while no handle may write it, and while they are,
+an open to write it or cut it fails with ETXTBSY. A write after `mprotect`, and
 the kernel's relocation of a new program, copy a kept page first, so it
 is never written in place; a region's end frees the kept pages it
 spanned that no space maps any more. A shared writable mapping of a

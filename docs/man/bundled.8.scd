@@ -73,6 +73,10 @@ it, binds the ID to its key, and to its catalog if it came from one, at
 its first install there, links its commands, and writes a security event to the audit log. Anything that
 fails removes the folder it made, and nothing is recorded.
 
+As no one may write a sealed file, the processes that run a bundle's
+programs share one copy of their pages, and opening one of its files to
+write fails with ETXTBSY while a program maps it (ADR 0658).
+
 # COMMANDS
 
 Each place has a _commands_ folder of bundled's, root's, mode 0755:
