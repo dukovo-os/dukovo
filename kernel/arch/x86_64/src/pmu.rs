@@ -6,7 +6,8 @@
 //! instructions, cycles, page walks after TLB misses and cache misses.
 //!
 //! Every CPU programs its own counters at its first sample of a profile
-//! ([`tick`]), counting in user mode only. At each later sample it adds
+//! ([`tick`]), counting in user mode, but the `kernel_` events of
+//! Skylake-derived cores, which count in kernel mode. At each later sample it adds
 //! what they counted since the one before to its totals, and when the
 //! profile stops it turns them off again. [`take`] sums the totals of
 //! every CPU and starts them over, for each read of the profile, so the
@@ -47,32 +48,31 @@ const AMD_EVENT_SELECT: u32 = 0xc001_0000;
 const AMD_COUNTER: u32 = 0xc001_0004;
 const AMD_CORE_EVENT_SELECT: u32 = 0xc001_0200;
 
-/// Event select bits: count in user mode, and enable.
+/// Event select bits: count in user mode, count in kernel mode, and
+/// enable.
 const USER: u64 = 1 << 16;
+const KERNEL: u64 = 1 << 17;
 const ENABLE: u64 = 1 << 22;
 
 /// The events of Intel's Skylake-derived cores, in the order they take
 /// the general counters: what the processor has counters for is counted,
-/// the first ones first. Event number and unit mask.
-const SKYLAKE: [(&str, u16, u8); 8] = [
+/// the first ones first. Event number, unit mask, and whether it counts
+/// in kernel mode rather than user mode. The kernel's own instructions,
+/// cycles and misses come first, for the rows whose time is the kernel's.
+const SKYLAKE: [(&str, u16, u8, bool); 8] = [
+    // INST_RETIRED.ANY_P and CPU_CLK_UNHALTED.THREAD_P in kernel mode.
+    ("kernel_instructions", 0xc0, 0x00, true),
+    ("kernel_cycles", 0x3c, 0x00, true),
+    // L2_RQSTS.MISS: requests the L2 cache missed.
+    ("kernel_l2_misses", 0x24, 0x3f, true),
+    // LONGEST_LAT_CACHE.MISS: requests the last-level cache missed.
+    ("kernel_llc_misses", 0x2e, 0x41, true),
     // DTLB_LOAD_MISSES.WALK_COMPLETED: loads whose translation took a
     // page walk.
-    ("dtlb_load_walks", 0x08, 0x0e),
-    // DTLB_LOAD_MISSES.WALK_PENDING: cycles of those walks, each walk
-    // counted while it lasts.
-    ("dtlb_load_walk_cycles", 0x08, 0x10),
-    // ITLB_MISSES.WALK_COMPLETED: instruction fetches that took one.
-    ("itlb_walks", 0x85, 0x0e),
-    // L2_RQSTS.MISS: requests the L2 cache missed.
-    ("l2_misses", 0x24, 0x3f),
-    // DTLB_STORE_MISSES.WALK_COMPLETED.
-    ("dtlb_store_walks", 0x49, 0x0e),
-    // ITLB_MISSES.WALK_PENDING.
-    ("itlb_walk_cycles", 0x85, 0x10),
-    // DTLB_STORE_MISSES.WALK_PENDING.
-    ("dtlb_store_walk_cycles", 0x49, 0x10),
-    // LONGEST_LAT_CACHE.MISS: requests the last-level cache missed.
-    ("llc_misses", 0x2e, 0x41),
+    ("kernel_dtlb_load_walks", 0x08, 0x0e, true),
+    ("l2_misses", 0x24, 0x3f, false),
+    ("llc_misses", 0x2e, 0x41, false),
+    ("dtlb_load_walks", 0x08, 0x0e, false),
 ];
 
 /// Family 6 models with [`SKYLAKE`]'s events: Skylake, Kaby Lake, Coffee
@@ -96,8 +96,8 @@ const ZEN: [(&str, u16, u8); 5] = [
 enum Source {
     /// Intel fixed counter `n`.
     Fixed(u32),
-    /// General counter `n` with this event select (without the user and
-    /// enable bits).
+    /// General counter `n` with this event select (with the mode bit,
+    /// without the enable bit).
     General(u32, u64),
 }
 
@@ -184,11 +184,12 @@ fn intel(plan: &mut Plan) {
     }
     let (family, model, _) = cpu::family_model_stepping();
     if family == 6 && SKYLAKE_MODELS.contains(&model) {
-        for (n, &(name, event, mask)) in SKYLAKE.iter().take(general as usize).enumerate() {
+        for (n, &(name, event, mask, kernel)) in SKYLAKE.iter().take(general as usize).enumerate() {
             if at == EVENTS {
                 break;
             }
-            let select = u64::from(event & 0xff) | (u64::from(mask) << 8);
+            let mode = if kernel { KERNEL } else { USER };
+            let select = u64::from(event & 0xff) | (u64::from(mask) << 8) | mode;
             plan.events[at] = Some((name, Source::General(n as u32, select)));
             at += 1;
         }
@@ -213,7 +214,7 @@ fn amd(plan: &mut Plan) {
     let counters = if core { 6 } else { 4 };
     for (n, &(name, event, mask)) in ZEN.iter().take(counters).enumerate() {
         let select =
-            u64::from(event & 0xff) | (u64::from(mask) << 8) | (u64::from(event >> 8) << 32);
+            u64::from(event & 0xff) | (u64::from(mask) << 8) | (u64::from(event >> 8) << 32) | USER;
         plan.events[n] = Some((name, Source::General(n as u32, select)));
     }
 }
@@ -262,10 +263,10 @@ fn program(plan: &Plan, on: bool) {
                 global |= 1 << (32 + n);
             }
             Source::General(n, select) => {
-                let value = if on { select | USER | ENABLE } else { 0 };
+                let value = if on { select | ENABLE } else { 0 };
                 // SAFETY: the plan lists only counters the processor has;
-                // they count user mode, which changes nothing the kernel
-                // relies on, and no other part of the kernel uses them.
+                // counting changes nothing the kernel relies on, and no
+                // other part of the kernel uses them.
                 unsafe { cpu::wrmsr(select_msr(plan.kind, n), value) };
                 global |= 1 << n;
             }

@@ -139,7 +139,7 @@ const GIT: &str = "/git";
 /// Where the server benchmarks are in the initramfs, when `ob lab` made
 /// the kit with them, and the servers they run.
 const SERVER_BENCH: &str = "/server-bench";
-const SERVERS: [&str; 4] = ["nginx", "php", "valkey", "postgresql"];
+const SERVERS: [&str; 5] = ["nginx", "php", "valkey", "postgresql", "events"];
 
 /// The virtual machine's disks, for the POSIX benchmarks' disk benchmarks:
 /// a virtio disk and an NVMe one.
