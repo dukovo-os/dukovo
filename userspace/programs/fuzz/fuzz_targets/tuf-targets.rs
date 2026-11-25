@@ -5,6 +5,7 @@
 //! fixed snapshot's version for it. Roles the fixed root does not
 //! delegate are refused before their signatures are read.
 
+#![forbid(unsafe_code)]
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

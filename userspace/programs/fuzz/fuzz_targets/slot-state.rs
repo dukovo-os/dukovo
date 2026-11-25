@@ -6,6 +6,7 @@
 //! block under both. A block that reads is written back and read as it
 //! was.
 
+#![forbid(unsafe_code)]
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

@@ -11,8 +11,9 @@
 //! is not running, consoled tries again every 5 seconds.
 
 use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -35,31 +36,7 @@ const LINE_MAX: usize = 64 * 1024;
 /// not at all: consoled's loop must never wait, not even for a notifyd
 /// or an authd that does not accept.
 pub fn connect_now(path: &str) -> io::Result<UnixStream> {
-    // SAFETY: socket(2) takes no pointers.
-    let fd = unsafe {
-        libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC, 0)
-    };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: `fd` is a new socket, owned by nothing else.
-    let stream = unsafe { UnixStream::from_raw_fd(fd) };
-    // SAFETY: all zeros is a valid sockaddr_un.
-    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
-    if path.len() >= address.sun_path.len() {
-        return Err(io::Error::from_raw_os_error(libc::ENAMETOOLONG));
-    }
-    for (to, &from) in address.sun_path.iter_mut().zip(path.as_bytes()) {
-        *to = from as libc::c_char;
-    }
-    let len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
-    // SAFETY: `address` is a valid sockaddr_un of `len` bytes.
-    let done = unsafe { libc::connect(fd, (&raw const address).cast(), len) };
-    if done != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(stream)
+    sysapi::net::connect_now(Path::new(path))
 }
 
 /// What consoled reads of a notification (notifyd(8)).
@@ -185,9 +162,9 @@ impl Notices {
         }
     }
 
-    /// The connection's descriptor, to poll; -1 for none.
-    pub fn fd(&self) -> i32 {
-        self.stream.as_ref().map_or(-1, AsRawFd::as_raw_fd)
+    /// The connection's descriptor, to poll, while there is one.
+    pub fn fd(&self) -> Option<BorrowedFd<'_>> {
+        self.stream.as_ref().map(AsFd::as_fd)
     }
 
     /// When something is to be done next: trying notifyd again, or taking

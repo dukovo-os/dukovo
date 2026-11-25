@@ -46,6 +46,7 @@ list is kept current instead.
 | smoltcp's own tests in CI, with its three UDP broadcast tests mended or changed for the kernel's patch (ADR 0182) | CI runs radix-net's tests, which drive the patched stack, but not the crate's own; those three already fail with the patch | Before the smoltcp patch goes upstream |
 | Trademark clearance of the project's name | Legal review | Before 1.0.0-alpha.1 |
 | SECURITY.md says plainly that the alpha is unaudited; the update server is live for testers | Part of the checklist before the first public release | Before 1.0.0-alpha.1 |
+| `systools`, `nukesh`, `tools/lab-writer` and `tools/linux-bench` moved onto sysapi, so that they forbid `unsafe` too and the check's list of crates not yet moved is empty (ADR 0730) | Some 630 lines with `unsafe` in four crates, more than one pull request reviews well; the check fails once one of them no longer needs its place | Before 1.0.0-alpha.1 |
 
 ## Waiting on real hardware
 
@@ -574,6 +575,7 @@ finding or removed.
 
 | Item | Why it waits |
 | --- | --- |
+| `radix_abi`'s generated wrappers that pass the kernel a buffer as an address and a length made `unsafe`, or made to take a slice, so that a crate that forbids `unsafe` cannot give the kernel an address of its own making (ADR 0730) | The kernel touches only the caller's memory through such an address, so a wrong one spoils only that program; sysapi's `kernel::control` is the safe way to pass a buffer meanwhile. Which of the two suits the generator, ridlc, is open |
 | The SD 64 KiB and 1 MiB benchmark rows: printed but not gated (ADR 0552) | QEMU's SD emulation takes nearly all of both systems' time, and its speed moves with the runner; a real reader in the lab would show each system's own work |
 | Printing: the design's open questions | Drafted for a release after 1.0 |
 | Known weak spots to plan for: Wi-Fi, Bluetooth and webcams; large desktop apps; Btrfs maturity | Raised, not yet discussed |

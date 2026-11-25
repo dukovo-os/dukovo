@@ -4,6 +4,7 @@
 //! A canary's report as the update server receives it, checked against a
 //! list with the fixed canary's key.
 
+#![forbid(unsafe_code)]
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

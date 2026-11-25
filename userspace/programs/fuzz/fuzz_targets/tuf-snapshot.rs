@@ -5,6 +5,7 @@
 //! fixed timestamp's version, whether it is a kept one or one the
 //! timestamp's hashes cover.
 
+#![forbid(unsafe_code)]
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

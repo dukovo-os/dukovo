@@ -20,6 +20,8 @@
 //! "netservices-test: every check passed"; it exits with how many checks
 //! failed.
 
+#![forbid(unsafe_code)]
+
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};

@@ -12,6 +12,8 @@
 //! fetches over http, https or file URLs. Its `repo` module makes and
 //! signs a repository's metadata, for the catalog's tools (ADR 0381).
 
+#![forbid(unsafe_code)]
+
 pub mod fetch;
 pub mod http;
 pub mod json;

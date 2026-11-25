@@ -22,12 +22,12 @@ use std::io::Read;
 use std::net::{IpAddr, TcpListener, TcpStream};
 use std::os::fd::OwnedFd;
 use std::process::{Child, Command, ExitCode, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
 use accounts::sshd_config::{self, Settings};
+use sysapi::signal::{self, Caught};
 
 use crate::hostkey;
 
@@ -100,18 +100,14 @@ fn current(settings: &Current) -> String {
 }
 
 /// Set by SIGHUP: the settings are to be read again.
-static RELOAD: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_hangup(_: libc::c_int) {
-    RELOAD.store(true, Ordering::Relaxed);
-}
+static RELOAD: Caught = Caught::new();
 
 /// Reads the settings again each time SIGHUP asks, for the connections
 /// that come after; a file with a mistake leaves them as they were.
 fn reload(settings: &Current) {
     loop {
         thread::sleep(Duration::from_secs(1));
-        if !RELOAD.swap(false, Ordering::Relaxed) {
+        if !RELOAD.take() {
             continue;
         }
         match sshd_config::read() {
@@ -222,12 +218,8 @@ pub fn run() -> ExitCode {
     };
     eprintln!("sshd: {}", summary(&settings));
     let settings: Current = Arc::new(Mutex::new(settings.text()));
-    // SAFETY: all zeros is a valid sigaction: numbers, a signal set and a
-    // function address.
-    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
-    action.sa_sigaction = on_hangup as *const () as usize;
-    // SAFETY: the handler only stores to an atomic.
-    unsafe { libc::sigaction(libc::SIGHUP, &raw const action, std::ptr::null_mut()) };
+    // SIGHUP is a signal that can be caught, so this does not fail.
+    let _ = signal::catch(libc::SIGHUP, &RELOAD, 0);
     {
         let settings = Arc::clone(&settings);
         let _ = thread::Builder::new().name("reload".into()).spawn(move || reload(&settings));

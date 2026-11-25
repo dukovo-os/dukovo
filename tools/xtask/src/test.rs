@@ -7747,23 +7747,47 @@ fn boot_report(vm: &mut Vm, case: &Case) -> Result<(), String> {
 
 /// Fails if the kernel logged a problem no case looks for: a lock-checker
 /// report (but in the case that seeds them), a thread that slept where
-/// it must not, or an error of uACPI's.
+/// it must not, a kernel stack nearly used up, a thread freed in an
+/// interrupt handler, or an error of uACPI's.
 fn kernel_complaints(vm: &Vm, case: &Case) -> Result<(), String> {
-    let log = vm.log();
-    let complaint = log.lines().find(|line| {
-        let checker = line.contains("Lock checker: ")
-            && !line.contains("Lock checker: on; ")
-            && !line.contains("Lock checker: off");
-        (checker && case.name != "lockdep")
-            || line.contains("with preemption held off")
-            || line.contains("KiB kernel stack left")
-            || line.contains("ACPI: error: ")
-    });
-    match complaint {
-        Some(line) => Err(format!("the kernel complained: {}", line.trim())),
+    match complaint(&vm.log(), case.name != "lockdep") {
+        Some(said) => Err(format!("the kernel complained: {said}")),
         None => Ok(()),
     }
 }
+
+/// The first problem in a serial log, with the lines of a lock-checker
+/// report that tell which locks and where (`lock_reports` false skips the
+/// reports).
+fn complaint(log: &str, lock_reports: bool) -> Option<String> {
+    let lines: Vec<&str> = log.lines().collect();
+    let at = lines.iter().position(|line| {
+        let checker = line.contains("Lock checker: ")
+            && !line.contains("Lock checker: on; ")
+            && !line.contains("Lock checker: off");
+        (checker && lock_reports)
+            || line.contains("with preemption held off")
+            || line.contains("KiB kernel stack left")
+            || line.contains("freed in an interrupt handler")
+            || line.contains("ACPI: error: ")
+    })?;
+    let mut said = vec![lines[at].trim()];
+    if lines[at].contains("Lock checker: ") {
+        // The report's own lines follow its headline, perhaps between
+        // lines of other CPUs; the next headline is another report's.
+        let detail = lines[at + 1..]
+            .iter()
+            .take(REPORT_LINES_SEARCHED)
+            .take_while(|line| !line.contains("Lock checker: possible"))
+            .filter(|line| line.contains("Lock checker:   "))
+            .map(|line| line.trim());
+        said.extend(detail);
+    }
+    Some(said.join("\n          "))
+}
+
+/// How many lines after a lock-checker headline its report is looked for in.
+const REPORT_LINES_SEARCHED: usize = 16;
 
 /// Waits for the end of boot and checks that self-test `name` passed.
 fn selftest_passed(vm: &mut Vm, name: &str) -> Result<(), String> {
@@ -12368,6 +12392,31 @@ fn microcode(vm: &mut Vm, case: &Case) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lock_report_is_told_with_its_locks() {
+        let log = "\
+[    5.1] Lock checker: possible deadlock: a lock is taken in interrupt handlers and with interrupts on (CPU 0)
+[    5.1] Lock checker:   taking class 7 (net), taken at kernel/net/src/a.rs:10:5
+[    5.1] cpu1: Net: net0 is up
+[    5.1] Lock checker:   taken in an interrupt handler at kernel/a.rs:1:1, and with interrupts on at kernel/b.rs:2:2
+[    5.1] Lock checker: turned off after this report
+[    6.0] Lock checker: possible deadlock: two locks are taken in both orders (CPU 1)
+[    6.0] Lock checker:   taking class 9 (other), taken at kernel/c.rs:3:3
+";
+        let said = complaint(log, true).unwrap();
+        let lines: Vec<&str> = said.lines().map(str::trim).collect();
+        assert_eq!(lines.len(), 3, "{said}");
+        assert!(lines[0].ends_with("with interrupts on (CPU 0)"));
+        assert!(lines[1].starts_with("[    5.1] Lock checker:   taking class 7"));
+        assert!(lines[2].contains("with interrupts on at kernel/b.rs:2:2"));
+        assert_eq!(complaint(log, false), None, "the lockdep case seeds reports");
+        let stack = "[ 1.0] Lock checker: on; every lock\n[ 2.0] radix: 3 KiB kernel stack left\n";
+        assert_eq!(
+            complaint(stack, true).as_deref(),
+            Some("[ 2.0] radix: 3 KiB kernel stack left")
+        );
+    }
 
     #[test]
     fn each_kind_of_disk_has_a_number_of_its_own() {

@@ -11,6 +11,8 @@
 //! it, from the first root. The times the canaries are judged at are
 //! given with `--now`, so that nothing waits.
 
+#![forbid(unsafe_code)]
+
 use std::io::{Read as _, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};

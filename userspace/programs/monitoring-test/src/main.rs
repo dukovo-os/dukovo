@@ -41,6 +41,8 @@
 //!   socket and prints its answer, as whoever runs it: a user who is not
 //!   root sees alertd's own refusal.
 
+#![forbid(unsafe_code)]
+
 mod base64;
 mod config;
 mod http;

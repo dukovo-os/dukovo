@@ -35,6 +35,9 @@ sha2 = "0.11.1"
 # AES-GCM), from the client smb(1) uses (ADR 0227); its client signs in
 # to smbd in the unit tests.
 smb2 = { version = "0.39.0", default-features = false, features = ["tokio"] }
+# Descriptors sent to authd, signals, waits, random bytes, the worker's
+# descriptors and file calls, behind safe calls (ADR 0730).
+sysapi = { path = "../sysapi" }
 
 [dev-dependencies]
 # The runtime smb2's client runs on, in the unit test where it signs in

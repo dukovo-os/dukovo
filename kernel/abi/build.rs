@@ -3,6 +3,8 @@
 
 //! Generates the bindings from `abi/*.ridl` with ridlc.
 
+#![forbid(unsafe_code)]
+
 use std::path::Path;
 
 fn main() {

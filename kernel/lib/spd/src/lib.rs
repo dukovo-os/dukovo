@@ -28,6 +28,7 @@
 //! with makers' names from JEP106. The kernel reads; `hwinfo` decodes. No
 //! code is taken from Linux or i2c-tools.
 
+#![forbid(unsafe_code)]
 #![cfg_attr(not(test), no_std)]
 
 #[cfg(test)]

@@ -26,6 +26,8 @@
 //! The project's own releases are signed on two YubiKeys, whose keys and
 //! first root the key ceremony makes ([`ceremony`], through [`yubikey`]).
 
+#![forbid(unsafe_code)]
+
 pub mod advisory;
 pub mod archive;
 pub mod canary;

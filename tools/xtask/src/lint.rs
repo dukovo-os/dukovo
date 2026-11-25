@@ -4,15 +4,15 @@
 //! `ob lint` and `ob fmt`.
 
 use crate::process::{self, step};
-use crate::{Ctx, Result, kernel, ports, test, userspace};
+use crate::{Ctx, Result, kernel, ports, test, unsafe_code, userspace};
 
 /// The Cargo workspaces in the repository.
-const MANIFESTS: &[&str] =
+pub(crate) const MANIFESTS: &[&str] =
     &["Cargo.toml", "kernel/Cargo.toml", "userspace/Cargo.toml", "userspace/programs/Cargo.toml"];
 
 /// The fuzz targets' workspace (ADR 0536), formatted as the rest. It has
 /// no lints of its own, so it is not one of [`MANIFESTS`].
-const FUZZ_MANIFEST: &str = "userspace/programs/fuzz/Cargo.toml";
+pub(crate) const FUZZ_MANIFEST: &str = "userspace/programs/fuzz/Cargo.toml";
 
 /// `ob fmt`.
 pub fn fmt(ctx: &Ctx) -> Result<()> {
@@ -33,6 +33,8 @@ pub fn lint(ctx: &Ctx) -> Result<()> {
         cmd.args(["fmt", "--all", "--check", "--manifest-path", manifest]);
         process::run(ctx, &mut cmd).map_err(|err| err.hint("run `./ob fmt` to fix formatting"))?;
     }
+
+    unsafe_code::check(ctx)?;
 
     step("Running Clippy on the build tool");
     let mut cmd = process::cargo(ctx);

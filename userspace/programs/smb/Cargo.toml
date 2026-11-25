@@ -20,6 +20,8 @@ libc = "0.2.191"
 # The system call interface, generated from abi/*.ridl: radix-directory(2)'s
 # mount_fuse, which the C library does not wrap.
 radix-abi = { path = "../../../kernel/abi" }
+# The kernel and the C library behind safe calls (ADR 0730).
+sysapi = { path = "../sysapi" }
 # SMB 2 and 3: signing, encryption, NTLM, on tokio (ADR 0227).
 smb2 = { version = "0.39.0", default-features = false, features = ["tokio"] }
 # What smb2 runs on: a runtime of one thread, its sockets and timers.

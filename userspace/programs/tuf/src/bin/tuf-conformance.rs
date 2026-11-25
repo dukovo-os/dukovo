@@ -14,6 +14,8 @@
 //!
 //! It exits 0 when the command did all it was asked, and 1 otherwise.
 
+#![forbid(unsafe_code)]
+
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 

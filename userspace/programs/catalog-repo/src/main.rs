@@ -5,6 +5,8 @@
 //! `ob catalog` builds it for the build machine and runs it with the
 //! source tree's paths; ob(1) says what each command does.
 
+#![forbid(unsafe_code)]
+
 use std::io::{BufRead as _, IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

@@ -5,6 +5,8 @@
 //! list names them: two pull requests that each add a test add two files
 //! and touch no line in common.
 
+#![forbid(unsafe_code)]
+
 use std::fmt::Write;
 use std::path::Path;
 
