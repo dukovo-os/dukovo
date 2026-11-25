@@ -271,7 +271,7 @@ machine with AMT, an AMD machine and a laptop; see
 
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
-| `epoll`, `eventfd`, `signalfd`, `timerfd`, `memfd`, `pidfd` and a vDSO clock page (posix design note) | Built as native objects with the Linux layer | 18a |
+| `epoll`, `eventfd`, `signalfd`, `timerfd`, `memfd` and `pidfd` (posix design note) | Built as native objects with the Linux layer | 18a |
 | Neovim and Midnight Commander, as their official Linux builds | Moved off the native port list | 18a |
 | Linux's ALSA programs playing sound (ADR 0320) | Need the compatibility layer | 18a |
 | The Linux layout (`/dev`, `/proc`, `/sys` as directories) inside Linux programs' view (ADR 0113) | Served by `linuxd` | 18a |

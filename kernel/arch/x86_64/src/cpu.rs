@@ -122,6 +122,18 @@ pub mod feature {
         cpuid(1, 0).edx & (1 << 13) != 0
     }
 
+    /// The `rdtscp` instruction and IA32_TSC_AUX (CPUID 0x80000001, EDX
+    /// bit 27).
+    pub fn rdtscp() -> bool {
+        super::max_extended_leaf() >= 0x8000_0001 && cpuid(0x8000_0001, 0).edx & (1 << 27) != 0
+    }
+
+    /// The `rdpid` instruction, which reads IA32_TSC_AUX (CPUID 7, ECX bit
+    /// 22).
+    pub fn rdpid() -> bool {
+        super::max_leaf() >= 7 && cpuid(7, 0).ecx & (1 << 22) != 0
+    }
+
     /// The page attribute table (CPUID 1, EDX bit 16).
     pub fn pat() -> bool {
         cpuid(1, 0).edx & (1 << 16) != 0

@@ -996,8 +996,9 @@ ring and reporting it.
   `mprotect` cannot make it writable (EACCES). SQLite's WAL index
   between connections and its memory-mapped I/O need such mappings (ADR
   0511).
-- `clock_gettime` is a capability call; there is no read-only clock page
-  (vDSO). The instruction budgets will show when it matters.
+- `clock_gettime`, and `gettimeofday` and `time` on it, read the clock
+  page through the vDSO, without a call, where the kernel shares its
+  counter (ADR 0616); a process's or thread's CPU clock is a call.
 - An event queue (`kqueue` and `kevent`) differs from BSD's. The `data`
   of a read or write event is 0, where BSD gives the bytes to read, the
   room to write or the connections waiting. The filters are read, write
