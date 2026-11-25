@@ -66,15 +66,18 @@ port = 9090
 # What the machine's console says of the two restarts the page made, in order:
 # the update's try, which proved itself and became the default, and the way
 # back, which the machine saw through. The steps after read the console from
-# here on.
+# here on. Each restart is Spark's "shutting down to restart", which comes
+# before any service stops: the kernel's own line, "asked to restart the
+# machine", comes once every service has stopped, netlog among them, so a
+# console that comes over netlog (a plug machine's) never shows it.
 [[step]]
-serial = "asked to restart the machine"
+serial = "spark: shutting down to restart"
 [[step]]
 serial = "spark: started slot b, @system.b"
 [[step]]
 serial = "proved itself: it is now the default"
 [[step]]
-serial = "asked to restart the machine"
+serial = "spark: shutting down to restart"
 [[step]]
 serial = "spark: started slot a, @system.a"
 [[step]]
@@ -131,7 +134,7 @@ expect = "-test.bisect in slot B: it starts at the next restart"
 run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
 root = true
 [[step]]
-serial = "asked to restart the machine"
+serial = "spark: shutting down to restart"
 [[step]]
 serial = "spark: started slot b, @system.b"
 [[step]]
@@ -146,7 +149,7 @@ expect = "starts from the next restart on"
 run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
 root = true
 [[step]]
-serial = "asked to restart the machine"
+serial = "spark: shutting down to restart"
 [[step]]
 serial = "spark: started slot a, @system.a"
 [[step]]
@@ -176,7 +179,7 @@ expect = "starts from the next restart on"
 run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
 root = true
 [[step]]
-serial = "asked to restart the machine"
+serial = "spark: shutting down to restart"
 [[step]]
 serial = "spark: started slot b, @system.b"
 [[step]]
