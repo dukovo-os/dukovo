@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn the_forbid_line_counts_after_comments_and_other_inner_attributes() {
-        let source = "// SPDX-License-Identifier: MIT\n\n//! A crate.\n\
+        let source = "// A line comment.\n\n//! A crate.\n\
                       #![no_std]\n#![cfg_attr(\n    not(test),\n    no_main\n)]\n\
                       #![forbid(unsafe_code)]\n\nuse core::fmt;\n";
         assert!(forbids(source));
