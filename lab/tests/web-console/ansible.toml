@@ -52,21 +52,15 @@ about = "Ansible on the lab PC runs the task that the web console shows for each
 time = "40m"
 host_needs = ["python3", "ssh", "ssh-keyscan", "sha256sum", "scp", "curl"]
 
-# Python comes from the test catalog `labtest`, as web-console/add-app has it:
-# an app installed from it stays bound to it (ADR 0383), so a file of the same
-# app would be refused on a boot where that test ran first, and the catalog
-# that dukovo vouches for the publisher in refuses a loose file of it. The
-# copy a run before may have left is taken away first. The test skips where
-# the lab has no test catalog (add-app-catalog.sh says what it is).
+# Python comes from the lab's catalog, `labtest`, as every lab test that
+# installs it has it (services/lab-catalog.sh says why). The copy a test
+# before may have left is replaced. The test skips where the lab has no test
+# catalog.
 [[step]]
-run = "sh -c 'bundle catalog remove labtest > /dev/null 2>&1; rm -rf /users/lab/lab-catalog /shared/lab-catalog; echo cleared'"
-root = true
-expect = "cleared"
-[[step]]
-host = "sh {here}/add-app-catalog.sh {machine} {machine-port:22}"
+host = "sh {here}/../services/lab-catalog.sh {machine} {machine-port:22}"
 expect = "copied: the test catalog"
 [[step]]
-run = "sh -c 'cp -r /users/lab/lab-catalog /shared/lab-catalog && chmod -R a+rX /shared/lab-catalog && bundle catalog add labtest file:///shared/lab-catalog/catalog /shared/lab-catalog/root.json'"
+run = "sh /users/lab/lab-catalog-add.sh"
 root = true
 expect = "added catalog labtest, which lists"
 # From nothing: a run before may have left it installed.

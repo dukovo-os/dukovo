@@ -67,6 +67,7 @@ export async function openFirewall(context, { hash = '', reads: replaced = {}, s
     delete globalThis.history;
   });
   const answers = { ...reads(), ...replaced };
+  const handlers = {};
   const view = {
     main: page.document.createElement('main'),
     slot: page.document.createElement('div'),
@@ -85,7 +86,9 @@ export async function openFirewall(context, { hash = '', reads: replaced = {}, s
       page.document.body.append(title);
       return title;
     },
-    on: () => {},
+    on: (kind, handler) => {
+      (handlers[kind] ??= []).push(handler);
+    },
     onPrefs: () => {},
     every: () => {},
     notice: () => {},
@@ -114,6 +117,11 @@ export async function openFirewall(context, { hash = '', reads: replaced = {}, s
     ready,
     form: () => view.main.querySelector('#add'),
     field: (id) => view.main.querySelector(`#${id}`),
+    /** Says `kind` to the page, as the console's events do: `change` for a new row of the journal. */
+    emit: async (kind) => {
+      for (const handler of handlers[kind] ?? []) handler();
+      await settle();
+    },
     /** Presses the button `id`. */
     press: async (id) => {
       view.main.querySelector(`#${id}`).click();

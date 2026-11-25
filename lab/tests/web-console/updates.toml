@@ -55,7 +55,7 @@
 about = "The web console's Updates page in each engine: the cards against update last, check, settings and checks, Save and Undo, Check now with the server away, Hold with its reason and Release, Later and Remind me now, Stage it and Take it back, an app's update with Tonight and Install tonight, Update all on the Apps page, a check and a service added and removed, a reader and the phone; then the page's Restart now with its countdown, Cancel and the restart of an update that falls back, the banner Back, on, What happened, the release held after the fallback, Go back to the version before an update that proved itself with its choice of settings and its restart, and the search for the change that broke a start, with its two restarts, stopped between tries, and an answer by elimination made sure of with a restart more"
 time = "105m"
 fresh = true
-host_needs = ["curl", "python3", "scp"]
+host_needs = ["curl", "python3", "scp", "ssh"]
 
 [[step]]
 run = "sh -c 'echo lab-console-password | user add --admin wc-updates && echo lab-console-password | user add wc-updates-reader && user set --console --yes wc-updates-reader'"
@@ -237,8 +237,8 @@ expect = "copied: bisect"
 host = "sh {here}/../startup/copy-bundle.sh io.valkey.valkey {machine} {machine-port:22}"
 expect = "copied: io.valkey.valkey"
 [[step]]
-host = "sh {here}/../startup/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
-expect = "copied: org.nginx.nginx"
+host = "sh {here}/../services/lab-catalog.sh {machine} {machine-port:22}"
+expect = "copied: the test catalog"
 [[step]]
 run = '''printf 'essential = ["logd", "authd", "consoled", "netd", "sshd", "valkey"]\nstable = 10\n' > /users/lab/health.toml'''
 [[step]]
@@ -276,10 +276,15 @@ serial = "spark: started slot a, @system.a"
 serial = "is seen through"
 [[step]]
 wait = "ready"
-# The apps, for everyone and enabled. Valkey's first start copies its settings
-# into its data folder; one it does not know there ends it.
+# The apps, for everyone and enabled: Valkey from its file and nginx from the
+# lab's catalog, added first. Valkey's first start copies its settings into its
+# data folder; one it does not know there ends it.
 [[step]]
-run = "sh -c 'bundle install --for-everyone --yes /users/lab/io.valkey.valkey.dkv | tail -1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+run = "sh /users/lab/lab-catalog-add.sh"
+root = true
+expect = "added catalog labtest, which lists"
+[[step]]
+run = "sh -c 'bundle install --for-everyone --yes /users/lab/io.valkey.valkey.dkv | tail -1; bundle install --for-everyone --yes org.nginx.nginx --from labtest | tail -1'"
 root = true
 expect = ["installed io.valkey.valkey", "installed org.nginx.nginx"]
 [[step]]

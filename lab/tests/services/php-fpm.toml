@@ -14,11 +14,15 @@
 # it, so no question is asked.
 about = "PHP-FPM from the catalog runs a site's PHP pages for nginx on the lab PC, and reloads under load lose no request (ADR 0520)"
 time = "15m"
-host_needs = ["curl", "scp"]
+host_needs = ["curl", "scp", "ssh"]
 
 [[step]]
-host = "sh {here}/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
-expect = "copied: org.nginx.nginx"
+host = "sh {here}/lab-catalog.sh {machine} {machine-port:22}"
+expect = "copied: the test catalog"
+[[step]]
+run = "sh /users/lab/lab-catalog-add.sh"
+root = true
+expect = "added catalog labtest, which lists"
 [[step]]
 host = "sh {here}/copy-bundle.sh net.php.php {machine} {machine-port:22}"
 expect = "copied: net.php.php"
@@ -30,7 +34,7 @@ host = "sh {here}/copy-file.sh {here}/php-fpm-info.php {machine} {machine-port:2
 expect = "copied: php-fpm-info.php"
 # From nothing: a run before may have left either installed.
 [[step]]
-run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle remove --for-everyone --purge net.php.php > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle remove --for-everyone --purge net.php.php > /dev/null 2>&1; bundle install --for-everyone --yes org.nginx.nginx --from labtest | tail -1'"
 root = true
 expect = "installed org.nginx.nginx"
 [[step]]

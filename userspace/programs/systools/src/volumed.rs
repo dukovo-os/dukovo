@@ -19,7 +19,10 @@
 //! goes in or comes out, in `/kernel/block/<drive>/media_changes`; when
 //! the count moves, what was on the drive is gone and what is on it now
 //! came, though the names be the same: the old medium's volumes are
-//! unmounted, and the new one's mounted.
+//! unmounted, and the new one's mounted. The old medium's volumes are
+//! those mounted when volumed last looked: one mounted since, as floppy(1)
+//! mounts the disk it formats, is taken to be of the medium in the drive
+//! now, and left mounted.
 //!
 //! An optical drive keeps its disc in while it is mounted, and when its
 //! eject button is pressed, the kernel counts the press in
@@ -32,7 +35,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use radix_abi::directory::{self, MountFlags};
@@ -82,6 +85,16 @@ struct Present {
     /// For each optical drive, how many times its eject button was pressed
     /// while its disc was locked in.
     requests: BTreeMap<String, u64>,
+    /// The volumes mounted at `/volumes`, by the device each is from and
+    /// the place it is at, as listed before the drives' counts were read:
+    /// each is of the medium those counts say is in its drive, or of one
+    /// before it.
+    mounted: BTreeSet<(String, PathBuf)>,
+}
+
+/// A mount at `/volumes`, as [`Present::mounted`] holds it.
+fn mount_key(mount: &Mount) -> (String, PathBuf) {
+    (mount.source.clone(), df::mount_path(mount))
 }
 
 /// The disks and partitions there are now.
@@ -112,7 +125,9 @@ fn changes<'a>(drives: impl Iterator<Item = &'a String>) -> BTreeMap<String, u64
 /// it is a drive whose medium comes and goes, and learns the new ones'.
 /// The drives' counts are read before the names and after, and all again
 /// until they agree, so that the names are those of the media the counts
-/// say: the kernel changes a drive's medium and its count at once.
+/// say: the kernel changes a drive's medium and its count at once. The
+/// volumes mounted are listed first, so that each was mounted before the
+/// counts were read.
 fn present(drives: &mut BTreeMap<String, bool>) -> Present {
     let is_drive = |name: &String| probe::block_text(name, "removable").as_deref() == Some("1");
     let mut now = Present::default();
@@ -120,6 +135,7 @@ fn present(drives: &mut BTreeMap<String, bool>) -> Present {
         let listed = |drives: &BTreeMap<String, bool>| {
             changes(drives.iter().filter(|(_, drive)| **drive).map(|(name, _)| name))
         };
+        now.mounted = volume_mounts().unwrap_or_default().iter().map(mount_key).collect();
         let before = listed(drives);
         now.names = names();
         let new: Vec<String> =
@@ -239,25 +255,35 @@ fn mount_as(at: &str, kind: &[u8], device: &File, flags: MountFlags) -> Result<M
 /// unlock(8), whose unlocked device comes next, and is mounted then (ADR
 /// 0240).
 pub(crate) fn mount(name: &str) -> String {
+    mount_volume(name).0
+}
+
+/// [`mount`], and the place it mounted the volume at, if it did.
+fn mount_volume(name: &str) -> (String, Option<PathBuf>) {
     let found = probe::reader(name).and_then(|mut read| probe::filesystem(&mut read));
     if found.as_ref().is_some_and(|found| found.kind == "BitLocker") {
-        return format!("{name} is a locked BitLocker volume; `unlock {name}` unlocks it");
+        return (format!("{name} is a locked BitLocker volume; `unlock {name}` unlocks it"), None);
     }
     let label = found.and_then(|found| found.label);
     let at = place_for(label.as_deref(), name, |at| Path::new("/volumes").join(at).exists());
     let (device, flags) = match open_device(name) {
         Ok(opened) => opened,
-        Err(err) => return format!("cannot open /devices/{name}: {}", util::strip_os_error(&err)),
+        Err(err) => {
+            let why = util::strip_os_error(&err);
+            return (format!("cannot open /devices/{name}: {why}"), None);
+        }
     };
-    if let Err(err) = std::fs::create_dir(format!("/volumes/{at}")) {
-        return format!("cannot make /volumes/{at}: {}", util::strip_os_error(&err));
+    let place = PathBuf::from(format!("/volumes/{at}"));
+    if let Err(err) = std::fs::create_dir(&place) {
+        return (format!("cannot make /volumes/{at}: {}", util::strip_os_error(&err)), None);
     }
     let mut last = None;
     for (kind, said) in KINDS {
         match mount_as(&at, kind, &device, flags) {
             Ok(flags) => {
                 let ro = if flags.contains(MountFlags::READ_ONLY) { ", read-only" } else { "" };
-                return format!("mounted the {said} filesystem of {name} at /volumes/{at}{ro}");
+                let said = format!("mounted the {said} filesystem of {name} at /volumes/{at}{ro}");
+                return (said, Some(place));
             }
             Err(status) if FileError::from_status(status) == Some(FileError::UnknownFilesystem) => {
             }
@@ -267,8 +293,8 @@ pub(crate) fn mount(name: &str) -> String {
             }
         }
     }
-    let _ = std::fs::remove_dir(format!("/volumes/{at}"));
-    match last {
+    let _ = std::fs::remove_dir(&place);
+    let said = match last {
         None => format!(
             "{name} holds no FAT, exFAT, NTFS, Btrfs, ext4, UDF or ISO 9660 filesystem; left alone"
         ),
@@ -278,7 +304,8 @@ pub(crate) fn mount(name: &str) -> String {
         Some(status) => {
             format!("cannot mount {name}: {}", util::strip_os_error(&sys::io_error(status)))
         }
-    }
+    };
+    (said, None)
 }
 
 /// The mounts at `/volumes/<one name>`.
@@ -327,12 +354,30 @@ pub fn remount(mount: &Mount, flags: MountFlags) -> Result<MountFlags, String> {
     }
 }
 
-/// Unmounts what is mounted at `/volumes` from the disks and partitions
-/// in `gone`: lines of what it did.
-fn unmount_gone(gone: &BTreeSet<String>) -> Vec<String> {
-    let Ok(mounts) = volume_mounts() else { return Vec::new() };
+/// The mounts of `mounts` whose volumes are gone, as the last look,
+/// `known`, and this one, `now`, say: each from a disk or partition that
+/// went, and each that `known` had on a drive in `swapped`, whose medium
+/// went in or came out since. A mount `known` had not, on a swapped
+/// drive, was made since the last look, and is taken to be of the medium
+/// in it now, as floppy(1) mounts the disk it formats once it is in.
+fn gone<'a>(
+    mounts: &'a [Mount],
+    known: &Present,
+    now: &Present,
+    swapped: &BTreeSet<String>,
+) -> Vec<&'a Mount> {
+    let went = |m: &Mount| known.names.contains(&m.source) && !now.names.contains(&m.source);
+    let on_swapped = |m: &Mount| swapped.iter().any(|drive| of_disk(drive, &m.source));
+    mounts
+        .iter()
+        .filter(|m| went(m) || (on_swapped(m) && known.mounted.contains(&mount_key(m))))
+        .collect()
+}
+
+/// Unmounts the mounts in `gone`: lines of what it did.
+fn unmount_gone(gone: &[&Mount]) -> Vec<String> {
     let mut said = Vec::new();
-    for mount in mounts.iter().filter(|m| gone.contains(&m.source)) {
+    for mount in gone {
         let path = df::mount_path(mount);
         said.push(match unmount(&path) {
             Ok(()) => format!("{} is gone; unmounted {}", mount.source, path.display()),
@@ -440,25 +485,39 @@ fn watch() -> Result<i32, Fail> {
     writeln!(out, "watching for volumes; {} disks and partitions now", known.names.len())?;
     loop {
         std::thread::sleep(PERIOD);
-        let now = present(&mut drives);
+        let mut now = present(&mut drives);
         // What was on a drive whose medium changed is gone, and what is
         // on it now came, though the names be the same.
         let swapped = swapped(&known, &now);
         let on_swapped = |name: &String| swapped.iter().any(|drive| of_disk(drive, name));
-        let gone: BTreeSet<String> = known
-            .names
-            .iter()
-            .filter(|name| !now.names.contains(*name) || on_swapped(name))
-            .cloned()
-            .collect();
-        for line in unmount_gone(&gone) {
+        // Nothing is gone while every disk and partition is still there and
+        // no drive's medium changed: the mounts are not read then.
+        let mounts = if swapped.is_empty() && known.names.is_subset(&now.names) {
+            Vec::new()
+        } else {
+            volume_mounts().unwrap_or_default()
+        };
+        for line in unmount_gone(&gone(&mounts, &known, &now, &swapped)) {
             writeln!(out, "{line}")?;
         }
         for drive in &swapped {
             writeln!(out, "{}", swap_note(drive))?;
         }
-        let came = now.names.iter().filter(|name| !known.names.contains(*name) || on_swapped(name));
-        for name in came.filter(|name| is_volume(name, &now.names)) {
+        let came: Vec<&String> = now
+            .names
+            .iter()
+            .filter(|name| !known.names.contains(*name) || on_swapped(name))
+            .filter(|name| is_volume(name, &now.names))
+            .collect();
+        // A volume that came and is mounted already, as floppy(1) mounts
+        // the disk it formats, is left as it is.
+        let mounts = if came.is_empty() { Vec::new() } else { volume_mounts().unwrap_or_default() };
+        let mut made = Vec::new();
+        for name in came {
+            if let Some(mount) = mounts.iter().find(|mount| mount.source == *name) {
+                writeln!(out, "{name} is mounted at {} already", df::mount_path(mount).display())?;
+                continue;
+            }
             if !on_swapped(name) && repartitioned(name, &known.names) {
                 let disk = probe::disk_of(name);
                 writeln!(
@@ -467,8 +526,14 @@ fn watch() -> Result<i32, Fail> {
                 )?;
                 continue;
             }
-            writeln!(out, "{}", mount(name))?;
+            let (said, at) = mount_volume(name);
+            writeln!(out, "{said}")?;
+            made.extend(at.map(|at| (name.clone(), at)));
         }
+        // What volumed mounted is of the medium this look's counts say,
+        // or of a later one: the next look that finds the drive's count
+        // moved takes it as gone, as it does what this look listed.
+        now.mounted.extend(made);
         if now.names != known.names || !swapped.is_empty() {
             links::refresh_quietly();
         }
@@ -540,6 +605,43 @@ mod tests {
         let now = counts(&[("sdb", 1), ("sdc", 2), ("sdd", 0)]);
         assert_eq!(swapped(&known, &now), BTreeSet::from(["sdb".to_string()]));
         assert!(pressed(&known, &now).is_empty());
+    }
+
+    #[test]
+    fn a_swapped_drive_loses_only_what_the_last_look_had_mounted() {
+        let mount = |source: &str, at: &str| Mount {
+            source: source.to_string(),
+            path: format!("/volumes/{at}").into(),
+            kind: "fat".to_string(),
+            read_only: false,
+            label: None,
+        };
+        let names = |list: &[&str]| list.iter().map(ToString::to_string).collect();
+        let known = Present {
+            names: names(&["fd0", "sdb", "sdb1", "sdc", "sdc1", "vda", "vda2"]),
+            mounted: [mount("sdc1", "OLDCARD"), mount("vda2", "DATA")]
+                .iter()
+                .map(mount_key)
+                .collect(),
+            ..Present::default()
+        };
+        let now =
+            Present { names: names(&["fd0", "sdc", "sdc1", "vda", "vda2"]), ..Present::default() };
+        let mounts = [
+            // Its stick was pulled out: gone, though mounted since.
+            mount("sdb1", "STICK"),
+            // Mounted at the last look, and its card has been swapped.
+            mount("sdc1", "OLDCARD"),
+            // Mounted since the disk went in, as floppy(1) mounts the disk
+            // it formats: of the disk in the drive now.
+            mount("fd0", "LABFMT"),
+            // On no drive whose medium changed.
+            mount("vda2", "DATA"),
+        ];
+        let swapped = names(&["fd0", "sdc"]);
+        let gone: Vec<PathBuf> =
+            gone(&mounts, &known, &now, &swapped).into_iter().map(df::mount_path).collect();
+        assert_eq!(gone, [PathBuf::from("/volumes/STICK"), PathBuf::from("/volumes/OLDCARD")]);
     }
 
     #[test]

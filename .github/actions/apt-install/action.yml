@@ -4,19 +4,22 @@
 # Installs Ubuntu packages on a GitHub runner, for every CI job that needs
 # some.
 #
-# The runner's own mirror, azure.archive.ubuntu.com, is now and then so
-# slow that a download of under a minute takes an hour: on 2026-11-06 it
-# sent a boot job's 77 MB at 22 kB/s, for 59 minutes. apt only moves on
-# from a mirror that fails, not from one that is slow, so the download
-# gets 90 seconds there, against the 30 or less it takes from a mirror
-# that is well. Past that, it starts again from Ubuntu's own
-# archive.ubuntu.com, keeping the files it already has, and if that does
-# not answer either, from kernel.org's mirror of it, over HTTPS: on
-# 2026-11-11 the runners reached neither of Ubuntu's own for hours, while
-# HTTPS to other hosts worked. Only then does dpkg install them, so a
-# download that is cut off never leaves a package half installed. apt
-# checks every mirror's files against Ubuntu's signing keys, so a mirror
-# can only fail to give them, not change them.
+# The runner's own mirror, a host under archive.ubuntu.com that depends
+# on where the runner is (azure.archive.ubuntu.com,
+# us-east-2.ec2.archive.ubuntu.com), is now and then so slow that a
+# download of under a minute takes an hour: on 2026-11-06 it sent a boot
+# job's 77 MB at 22 kB/s, for 59 minutes, and on 2026-11-24 the index
+# update alone took over 2 minutes. apt only moves on from a mirror that
+# fails, not from one that is slow, so the download gets 90 seconds
+# there, against the 30 or less it takes from a mirror that is well.
+# Past that, it starts again from Ubuntu's own archive.ubuntu.com,
+# keeping the files it already has, and if that does not answer either,
+# from kernel.org's mirror of it, over HTTPS: on 2026-11-11 the runners
+# reached neither of Ubuntu's own for hours, while HTTPS to other hosts
+# worked. Only then does dpkg install them, so a download that is cut
+# off never leaves a package half installed. apt checks every mirror's
+# files against Ubuntu's signing keys, so a mirror can only fail to give
+# them, not change them.
 #
 # Troubleshooting: "The runner's Ubuntu mirror was slow" in a job's
 # warnings means the second download ran, and "Ubuntu's archive did not
@@ -51,14 +54,14 @@ runs:
         if ! download 90; then
           echo "::warning::The runner's Ubuntu mirror was slow; downloading from archive.ubuntu.com instead"
           # The mirror list where the runner has one, and the sources.
-          sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' \
+          sudo sed -i 's#[a-z0-9.-]*\.archive\.ubuntu\.com#archive.ubuntu.com#g' \
             /etc/apt/apt-mirrors.txt /etc/apt/sources.list.d/*.sources /etc/apt/sources.list \
             2>/dev/null || true
           if ! download 1200; then
             echo "::warning::Ubuntu's archive did not answer; downloading from mirrors.edge.kernel.org instead"
             # Every Ubuntu host, the security archive's too, over HTTP or
             # HTTPS, becomes kernel.org's mirror over HTTPS.
-            sudo sed -i 's#https\?://[a-z.]*ubuntu\.com/ubuntu#https://mirrors.edge.kernel.org/ubuntu#g' \
+            sudo sed -i 's#https\?://[a-z0-9.-]*ubuntu\.com/ubuntu#https://mirrors.edge.kernel.org/ubuntu#g' \
               /etc/apt/apt-mirrors.txt /etc/apt/sources.list.d/*.sources /etc/apt/sources.list \
               2>/dev/null || true
             download 1200

@@ -96,6 +96,7 @@ export function makeTrialBanner(view, {
   let spoken = null;
   let settled = false;
   let latest = 0;
+  let whoRead = 0; // the journal reads asked: only the last one's answer is taken
 
   const ends = () => view.time.clock(Math.floor(anchor.endsMs / 1000));
   const leftNow = () => (anchor === null ? 0 : anchor.leftMs - (performance.now() - anchor.at));
@@ -191,14 +192,19 @@ export function makeTrialBanner(view, {
     onState({ running: false, ended: outcome });
   }
 
-  /** Who began a trial that this page did not: from the journal. A journal that cannot be read says nothing. */
+  /** Who began a trial that this page did not: from the journal, as the last read asked says. A journal that cannot be read says nothing. */
   async function findWho() {
+    whoRead += 1;
+    const asked = whoRead;
+    let found;
     try {
       const rows = await view.api.get(`/api/1/changes?limit=${JOURNAL_ROWS}`);
-      began = triedBy(rows?.changes, id);
+      found = triedBy(rows?.changes, id);
     } catch {
-      began = undefined;
+      found = undefined;
     }
+    if (asked !== whoRead) return;
+    began = found;
     if (began?.seconds) windowMs = Math.max(windowMs, began.seconds * 1000);
     drawWhat();
     drawTime();
@@ -370,7 +376,7 @@ export function makeTrialBanner(view, {
   // while no row names who began it, each new row reads the journal again.
   view.on('change', () => {
     read();
-    if (!mine && anchor !== null && began === null) findWho();
+    if (!mine && anchor !== null && !began) findWho();
   });
 
   return {

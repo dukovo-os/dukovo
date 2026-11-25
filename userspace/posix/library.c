@@ -718,6 +718,9 @@ static void masks(void) {
 	CHECK(pthread_create(&thread, NULL, report_mask, NULL) == 0);
 	CHECK(pthread_join(thread, NULL) == 0);
 	CHECK(sigismember(&thread_mask, SIGUSR2) == 1);
+	// And no more than that: it starts with every signal blocked and
+	// takes that mask once it is set up.
+	CHECK(sigismember(&thread_mask, SIGUSR1) == 0);
 	pthread_sigmask(SIG_UNBLOCK, &blocked, NULL);
 
 	// A thread made by one whose cancellation is disabled can be
