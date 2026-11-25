@@ -405,11 +405,11 @@ pub trait Timer {
 
     /// Has every CPU's timer interrupt also come every `period_ns`, and
     /// call `sampler` each time, with interrupts masked, with the address
-    /// of the user code it interrupted, or 0 if it interrupted the kernel
-    /// or an idle CPU: the samples of `/processes/profile`. CPUs take a
-    /// new period at their next timer interrupt; 0 stops it. False where
-    /// the architecture cannot sample.
-    fn sample_every(period_ns: u64, sampler: fn(user_address: u64)) -> bool {
+    /// of the code it interrupted, the kernel's (an idle CPU's too) or a
+    /// program's: the samples of `/processes/profile`. CPUs take a new
+    /// period at their next timer interrupt; 0 stops it. False where the
+    /// architecture cannot sample.
+    fn sample_every(period_ns: u64, sampler: fn(address: u64)) -> bool {
         let _ = (period_ns, sampler);
         false
     }

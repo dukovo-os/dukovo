@@ -34,8 +34,8 @@
 //! Late answers keep it ringing; going idle stops it (ADR 0109).
 //!
 //! While a profile is taken ([`sample_every`]), the timer also fires every
-//! sample period, hands the kernel's sampler the user code it
-//! interrupted (`/processes/profile`), and adds up what the performance
+//! sample period, hands the kernel's sampler the code it interrupted
+//! (`/processes/profile`), and adds up what the performance
 //! counters counted (`pmu`).
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -477,7 +477,7 @@ pub fn set_deadline(deadline_ns: u64) {
 }
 
 /// Has every CPU's timer also fire every `period_ns` and call `sampler`
-/// with the user address it interrupted (0 for the kernel), for a profile
+/// with the address it interrupted, the kernel's or a program's, for a profile
 /// (`radix_hal::Timer::sample_every`); 0 stops it. Each CPU takes the
 /// period at its next timer interrupt, a tick at the latest. Only the
 /// first sampler given is ever called.
@@ -525,8 +525,9 @@ pub fn tick_hz() -> u32 {
 
 /// The timer interrupt: counts a tick if one is due, takes a profile's
 /// sample if one is due, re-arms the timer, and calls the kernel's
-/// handler. `user_address` is the user code it interrupted, or 0.
-pub fn on_tick(user_address: u64) {
+/// handler. `address` is the code it interrupted, the kernel's or a
+/// program's.
+pub fn on_tick(address: u64) {
     // No trace point here: at 100 Hz on every CPU it would push everything
     // else out of the trace ring within seconds.
     let cpu = percpu::current();
@@ -563,7 +564,7 @@ pub fn on_tick(user_address: u64) {
             if due != 0
                 && let Some(sampler) = SAMPLER.get()
             {
-                sampler(user_address);
+                sampler(address);
             }
             crate::pmu::tick(true);
             cpu.next_sample_ns.store(now + period, Ordering::Relaxed);

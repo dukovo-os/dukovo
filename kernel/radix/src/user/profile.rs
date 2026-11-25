@@ -3,7 +3,13 @@
 
 //! A profile of user code: which instructions of which programs the CPUs
 //! ran, sampled every [`PERIOD_NS`], for finding where a program's time
-//! goes, as `/processes/profile` gives it (radix-proc(5)).
+//! goes, as `/processes/profile` gives it (radix-proc(5)). The samples
+//! that interrupted the kernel are counted too, by the function they fell
+//! in and the process whose thread ran it (`ksample` lines), for whoever
+//! may see that process's samples, and those with no program running for
+//! everyone. A timer interrupt cannot land where the kernel runs with
+//! interrupts masked, so such code's samples fall on the place that
+//! unmasks them.
 //!
 //! While a profile is taken, the architecture's timer interrupt calls
 //! [`sample`] on every CPU once a period (`Timer::sample_every`). A sample
@@ -58,10 +64,20 @@ const SLOTS: usize = 64;
 /// goes first.
 const ENDED_MAX: usize = 1024;
 
-/// A sample holds its slot's number above these bits and the user
-/// address in them, which is below 2^47 on every architecture.
+/// A sample holds its slot's number above these bits and the address in
+/// them: a user address is below 2^47 on every architecture, and a
+/// kernel address has every bit above these set.
 const ADDRESS_BITS: u32 = 56;
 const ADDRESS_MASK: u64 = (1 << ADDRESS_BITS) - 1;
+
+/// The bit of a sample's slot number that says it interrupted the
+/// kernel, and the slot number of a kernel sample with no program's
+/// thread running.
+const KERNEL: u64 = 0x80;
+const NO_SLOT: u64 = 0x7f;
+
+/// A kernel sample's process name index when no program's thread ran.
+const NO_NAME: u64 = 0xff;
 
 /// The key a sample is counted under: the process name's index in the top
 /// byte, the file's index in the next 12 bits, the offset in the file in
@@ -176,8 +192,8 @@ fn sampling() -> bool {
 }
 
 /// Takes this CPU's sample: the timer interrupt calls it, with interrupts
-/// masked, with the user address it interrupted, or 0.
-fn sample(user_address: u64) {
+/// masked, with the address it interrupted, the kernel's or a program's.
+fn sample(address: u64) {
     if !sampling() {
         let _ = Arch::sample_every(0, sample);
         return;
@@ -187,37 +203,51 @@ fn sample(user_address: u64) {
         return;
     };
     let Some(buffer) = held.as_mut() else { return };
-    let running = if user_address == 0 { None } else { sched::running() };
-    let Some(user) = running.as_ref().and_then(|thread| thread.user()) else {
+    let in_kernel = address >> 63 != 0;
+    if in_kernel {
         buffer.kernel += 1;
-        return;
-    };
-    let space = user.space_ref();
-    let slot = match buffer.slots.iter().position(|slot| Arc::ptr_eq(&slot.space, space)) {
-        Some(slot) => slot,
-        None if buffer.slots.len() < SLOTS => {
-            // The running thread holds both too, so a count dropped here
-            // could never be the last.
-            let slot = Slot {
-                space: Arc::clone(space),
-                process: Arc::clone(&user.process),
-                changes: space.tlb_changes(),
-            };
-            if buffer.slots.push_within_capacity(slot).is_err() {
+    }
+    let running = sched::running();
+    let slot = match running.as_ref().and_then(|thread| thread.user()) {
+        Some(user) => match slot_of(buffer, user.space_ref(), &user.process) {
+            Some(slot) => slot,
+            None if in_kernel => NO_SLOT,
+            None => {
                 buffer.lost += 1;
                 return;
             }
-            buffer.slots.len() - 1
-        }
+        },
+        None if in_kernel => NO_SLOT,
         None => {
-            buffer.lost += 1;
+            buffer.kernel += 1;
             return;
         }
     };
-    let entry = ((slot as u64) << ADDRESS_BITS) | (user_address & ADDRESS_MASK);
+    let tag = if in_kernel { slot | KERNEL } else { slot };
+    let entry = (tag << ADDRESS_BITS) | (address & ADDRESS_MASK);
     if buffer.samples.push_within_capacity(entry).is_err() {
         buffer.lost += 1;
     }
+}
+
+/// The number of the slot of `buffer` that holds `space`, filled for it
+/// if there is none yet, or `None` with every slot taken.
+fn slot_of(buffer: &mut Buffer, space: &SpaceRef, process: &ProcessRef) -> Option<u64> {
+    if let Some(slot) = buffer.slots.iter().position(|slot| Arc::ptr_eq(&slot.space, space)) {
+        return Some(slot as u64);
+    }
+    if buffer.slots.len() == SLOTS {
+        return None;
+    }
+    // The running thread holds both too, so a count dropped here could
+    // never be the last.
+    let slot = Slot {
+        space: Arc::clone(space),
+        process: Arc::clone(process),
+        changes: space.tlb_changes(),
+    };
+    buffer.slots.push_within_capacity(slot).ok()?;
+    Some(buffer.slots.len() as u64 - 1)
 }
 
 /// Keeps the parts of files that `space`, about to be emptied, maps to
@@ -379,14 +409,18 @@ pub fn write(text: &mut Text) -> fmt::Result {
     let mut names = Names { processes: Vec::new_in(heap()), files: Vec::new_in(heap()) };
     let (mut others, mut kernel) = (0u64, 0u64);
     let mut keys = Vec::new_in(heap());
+    // Kernel samples, for root only: by process name index and the link
+    // address of the function they fell in.
+    let mut kernel_keys = Vec::new_in(heap());
+    let symbols = crate::symbols::table();
     let all: usize = taken.iter().map(|buffer: &Buffer| buffer.samples.len()).sum();
-    if keys.try_reserve_exact(all).is_err() {
+    if keys.try_reserve_exact(all).is_err() || kernel_keys.try_reserve_exact(all).is_err() {
         lost += all as u64;
     }
     for buffer in &taken {
         kernel += buffer.kernel;
         lost += buffer.lost;
-        if keys.capacity() < all {
+        if keys.capacity() < all || kernel_keys.capacity() < all {
             continue;
         }
         let mut views = Vec::new_in(heap());
@@ -409,7 +443,29 @@ pub fn write(text: &mut Text) -> fmt::Result {
             let _ = views.push_within_capacity(view);
         }
         for &entry in &buffer.samples {
-            let slot = (entry >> ADDRESS_BITS) as usize;
+            let tag = entry >> ADDRESS_BITS;
+            if tag & KERNEL != 0 {
+                // A program's kernel samples go to whoever may see its
+                // user samples; those with no program's thread, to
+                // everyone, since this is for measuring.
+                let slot = tag & !KERNEL;
+                let name = match views.get(slot as usize) {
+                    Some(Some(view)) => view.name,
+                    _ if slot == NO_SLOT => NO_NAME,
+                    _ => {
+                        others += 1;
+                        continue;
+                    }
+                };
+                let link = crate::symbols::link_address(entry | !ADDRESS_MASK);
+                let start = symbols
+                    .as_ref()
+                    .and_then(|table| table.lookup(link))
+                    .map_or(0, |found| link - found.offset);
+                let _ = kernel_keys.push_within_capacity((name << 56) | (start & ADDRESS_MASK));
+                continue;
+            }
+            let slot = tag as usize;
             match views.get(slot) {
                 Some(Some(view)) => {
                     let _ = keys.push_within_capacity(view.key(entry & ADDRESS_MASK));
@@ -460,6 +516,39 @@ pub fn write(text: &mut Text) -> fmt::Result {
         write!(text, "file {at} ")?;
         let path = if path.is_empty() { &b"?"[..] } else { path.as_slice() };
         write_escaped(text, path, LINE_SPECIAL)?;
+        text.write_char('\n')?;
+    }
+    // Kernel samples by process and function, the most first.
+    kernel_keys.sort_unstable();
+    let mut kernel_counted: Vec<(u64, u64), Kmalloc> = Vec::new_in(heap());
+    if kernel_counted.try_reserve_exact(kernel_keys.len()).is_ok() {
+        for &key in &kernel_keys {
+            match kernel_counted.last_mut() {
+                Some((count, last)) if *last == key => *count += 1,
+                _ => {
+                    let _ = kernel_counted.push_within_capacity((1, key));
+                }
+            }
+        }
+    }
+    kernel_counted.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    for &(count, key) in &kernel_counted {
+        if text.bytes().len() + 4 * SAMPLE_LINE > Text::LIMIT {
+            break;
+        }
+        let name = key >> 56;
+        let start = (key & ADDRESS_MASK) | !ADDRESS_MASK;
+        let function = symbols
+            .as_ref()
+            .filter(|_| key & ADDRESS_MASK != 0)
+            .and_then(|table| table.lookup(start))
+            .map_or("?", |found| found.name);
+        if name == NO_NAME {
+            write!(text, "ksample {count} - ")?;
+        } else {
+            write!(text, "ksample {count} {name} ")?;
+        }
+        write_escaped(text, function.as_bytes(), LINE_SPECIAL)?;
         text.write_char('\n')?;
     }
     // Changes by process name, in the order the names are listed.

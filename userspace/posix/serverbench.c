@@ -137,6 +137,11 @@
 #include <strings.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
+#ifdef __linux__
+#include <sys/epoll.h>
+#else
+#include <sys/event.h>
+#endif
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/un.h>
@@ -484,6 +489,7 @@ static char *format(const char *text, ...) {
 // code symbolizes and prints it. Strings are kept once, by number.
 #define PROFILE_PERIOD_NS 500000
 #define PROFILE_SYMBOLS 80
+#define PROFILE_KERNEL_SYMBOLS 120
 #define NO_ID ((size_t)-1)
 
 static char **strings;
@@ -595,6 +601,8 @@ static struct {
 	struct tally samples;
 	// Counts by name, in the order first seen, and by process name.
 	struct tally counters, changes;
+	// Kernel samples by process name and function name, both strings.
+	struct tally kernel_symbols;
 } profile_row;
 
 static int profile_on, profile_raw, profile_radix;
@@ -606,6 +614,8 @@ static uint64_t profile_period_ns = PROFILE_PERIOD_NS;
 // Radix: the text of /processes/profile that ended the last pass.
 static char *profile_text;
 static size_t no_file_id, unknown_id;
+// The process name of a kernel sample taken with no program running.
+static size_t kernel_only_id;
 
 // Reads a whole file into a new string, which is null if it cannot be
 // opened. /processes/profile can be a MiB, so the buffer grows.
@@ -732,6 +742,28 @@ static void radix_collect(char *text) {
 			uint64_t count = strtoull(at, &end, 10);
 			if(end != at)
 				tally_add(&profile_row.changes, known_id(name_ids, name_count, name), 0, 0, count);
+			continue;
+		}
+		if(!strncmp(line, "ksample ", 8)) {
+			char *at = line + 8, *end;
+			uint64_t count = strtoull(at, &end, 10);
+			if(end == at || *end != ' ')
+				continue;
+			at = end + 1;
+			size_t name = unknown_id;
+			if(*at == '-') {
+				name = kernel_only_id;
+				at++;
+			} else {
+				unsigned long index = strtoul(at, &end, 10);
+				if(end == at)
+					continue;
+				name = known_id(name_ids, name_count, index);
+				at = end;
+			}
+			if(*at != ' ')
+				continue;
+			tally_add(&profile_row.kernel_symbols, name, intern_escaped(at + 1), 0, count);
 			continue;
 		}
 		if(strncmp(line, "sample ", 7) != 0)
@@ -967,9 +999,75 @@ static size_t find_name(uint32_t pid) {
 	return unknown_id;
 }
 
+// Linux's kernel functions, from /proc/kallsyms as root reads it, sorted
+// by address: the samples that fell in the kernel are counted by them.
+struct kernel_function {
+	uint64_t address;
+	char *name;
+	// The number of its name's string, once a sample has fallen in it.
+	size_t id;
+};
+static struct kernel_function *kernel_functions;
+static size_t kernel_function_count;
+
+static int by_function_address(const void *left, const void *right) {
+	const struct kernel_function *x = left, *y = right;
+	return x->address < y->address ? -1 : x->address > y->address;
+}
+
+// Reads the kernel's functions, if root may see their addresses; else
+// kernel samples are counted under "?".
+static void kallsyms_load(void) {
+	FILE *file = fopen("/proc/kallsyms", "r");
+	if(!file)
+		return;
+	char line[512];
+	size_t capacity = 0;
+	while(fgets(line, sizeof(line), file)) {
+		char *end;
+		uint64_t address = strtoull(line, &end, 16);
+		if(end == line || end[0] != ' ' || !end[1] || end[2] != ' ' || address == 0)
+			continue;
+		char type = end[1];
+		if(type != 't' && type != 'T')
+			continue;
+		char *name = end + 3;
+		name[strcspn(name, " \t\n")] = 0;
+		if(kernel_function_count == capacity) {
+			capacity = capacity ? capacity * 2 : 65536;
+			kernel_functions = realloc(kernel_functions, capacity * sizeof(kernel_functions[0]));
+			if(!kernel_functions)
+				fail("memory", "out of memory");
+		}
+		kernel_functions[kernel_function_count++] = (struct kernel_function){address, format("%s", name), NO_ID};
+	}
+	fclose(file);
+	qsort(kernel_functions, kernel_function_count, sizeof(kernel_functions[0]), by_function_address);
+}
+
+// The name of the kernel function `ip` fell in, or "?".
+static size_t kernel_function_of(uint64_t ip) {
+	size_t low = 0, high = kernel_function_count;
+	while(low < high) {
+		size_t mid = low + (high - low) / 2;
+		if(kernel_functions[mid].address <= ip)
+			low = mid + 1;
+		else
+			high = mid;
+	}
+	if(!low)
+		return unknown_id;
+	struct kernel_function *function = &kernel_functions[low - 1];
+	if(function->id == NO_ID)
+		function->id = intern(function->name);
+	return function->id;
+}
+
 static void perf_sample(uint64_t ip, uint32_t pid, uint16_t misc) {
 	if((misc & PERF_RECORD_MISC_CPUMODE_MASK) == PERF_RECORD_MISC_KERNEL || (ip >> 63) != 0) {
 		profile_row.kernel++;
+		size_t name = pid == 0 ? kernel_only_id : find_name(pid);
+		tally_add(&profile_row.kernel_symbols, name, kernel_function_of(ip), 0, 1);
 		return;
 	}
 	profile_row.user++;
@@ -1184,6 +1282,8 @@ struct perf_event_choice {
 	const char *name;
 	uint32_t type;
 	uint64_t config;
+	// Counts in kernel mode rather than user mode.
+	int kernel;
 };
 
 #ifdef PERF_CPUID
@@ -1217,18 +1317,22 @@ static size_t perf_choose_events(struct perf_event_choice *events) {
 		if((eax & 0xff) < 2)
 			return 0;
 		unsigned general = (eax >> 8) & 0xff;
-		events[count++] = (struct perf_event_choice){"instructions", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS};
-		events[count++] = (struct perf_event_choice){"cycles", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES};
+		events[count++] = (struct perf_event_choice){"instructions", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS, 0};
+		events[count++] = (struct perf_event_choice){"cycles", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES, 0};
 		if(family != 6 || (model != 0x4E && model != 0x5E && model != 0x8E && model != 0x9E && model != 0xA5 && model != 0xA6))
 			return count;
+		// The same events as the Radix kernel's pmu.rs counts, in the same
+		// order and modes.
 		static const struct {
 			const char *name;
 			unsigned event, umask;
-		} raw[] = {{"dtlb_load_walks", 0x08, 0x0E},      {"dtlb_load_walk_cycles", 0x08, 0x10}, {"itlb_walks", 0x85, 0x0E},
-		           {"l2_misses", 0x24, 0x3F},            {"dtlb_store_walks", 0x49, 0x0E},      {"itlb_walk_cycles", 0x85, 0x10},
-		           {"dtlb_store_walk_cycles", 0x49, 0x10}, {"llc_misses", 0x2E, 0x41}};
+			int kernel;
+		} raw[] = {{"kernel_instructions", 0xC0, 0x00, 1}, {"kernel_cycles", 0x3C, 0x00, 1},
+		           {"kernel_l2_misses", 0x24, 0x3F, 1},    {"kernel_llc_misses", 0x2E, 0x41, 1},
+		           {"kernel_dtlb_load_walks", 0x08, 0x0E, 1}, {"l2_misses", 0x24, 0x3F, 0},
+		           {"llc_misses", 0x2E, 0x41, 0},          {"dtlb_load_walks", 0x08, 0x0E, 0}};
 		for(size_t i = 0; i < sizeof(raw) / sizeof(raw[0]) && i < general && i < 8; i++)
-			events[count++] = (struct perf_event_choice){raw[i].name, PERF_TYPE_RAW, raw[i].event | ((uint64_t)raw[i].umask << 8)};
+			events[count++] = (struct perf_event_choice){raw[i].name, PERF_TYPE_RAW, raw[i].event | ((uint64_t)raw[i].umask << 8), raw[i].kernel};
 	} else if(!strcmp(vendor, "AuthenticAMD") || !strcmp(vendor, "HygonGenuine")) {
 		if(family < 0x17 || family > 0x1A)
 			return 0;
@@ -1241,14 +1345,14 @@ static size_t perf_choose_events(struct perf_event_choice *events) {
 		for(size_t i = 0; i < sizeof(raw) / sizeof(raw[0]) && i < (extended ? 6u : 4u); i++)
 			events[count++] = (struct perf_event_choice){
 				raw[i].name, PERF_TYPE_RAW,
-				(raw[i].event & 0xff) | ((uint64_t)raw[i].umask << 8) | ((uint64_t)(raw[i].event >> 8) << 32)};
+				(raw[i].event & 0xff) | ((uint64_t)raw[i].umask << 8) | ((uint64_t)(raw[i].event >> 8) << 32), 0};
 	}
 	return count;
 }
 #endif
 
 // Opens the counting events of this processor on each of `cpus`, for all
-// processes, counting only user mode. An event that a CPU refuses is left
+// processes, counting user mode, or kernel mode for a kernel_ event. An event that a CPU refuses is left
 // out for that CPU, and one that none accepts is never printed; counting
 // is a help to the profile, not part of it.
 static void perf_open_counters(const int *cpus, size_t cpu_count) {
@@ -1263,7 +1367,8 @@ static void perf_open_counters(const int *cpus, size_t cpu_count) {
 			attr.size = sizeof(attr);
 			attr.config = events[e].config;
 			attr.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
-			attr.exclude_kernel = 1;
+			attr.exclude_kernel = !events[e].kernel;
+			attr.exclude_user = events[e].kernel;
 			attr.exclude_hv = 1;
 			int fd = (int)syscall(SYS_perf_event_open, &attr, -1, cpus[i], -1, PERF_FLAG_FD_CLOEXEC);
 			if(fd < 0)
@@ -1290,6 +1395,7 @@ static void perf_open_counters(const int *cpus, size_t cpu_count) {
 // program becomes `bench`; the files and rings stay usable after that.
 static char *perf_open_all(void) {
 	perf_page_size = (size_t)sysconf(_SC_PAGESIZE);
+	kallsyms_load();
 	size_t count;
 	int *cpus = online_cpus(&count);
 	char *why = NULL;
@@ -1619,6 +1725,15 @@ static void profile_print(const char *row) {
 		print_share(sorted[i].count, profile_row.user);
 	}
 	free(sorted);
+	sorted = tally_sorted(&profile_row.kernel_symbols);
+	for(size_t i = 0; i < profile_row.kernel_symbols.count && i < PROFILE_KERNEL_SYMBOLS; i++) {
+		printf("BENCHPROF group=%s ksymbol process=", row);
+		print_word(strings[sorted[i].a]);
+		printf(" symbol=");
+		print_word(strings[sorted[i].b]);
+		print_share(sorted[i].count, profile_row.kernel);
+	}
+	free(sorted);
 	if(profile_raw) {
 		sorted = tally_sorted(&profile_row.samples);
 		for(size_t i = 0; i < profile_row.samples.count; i++) {
@@ -1638,6 +1753,7 @@ static void profile_print(const char *row) {
 	tally_clear(&profile_row.samples);
 	tally_clear(&profile_row.counters);
 	tally_clear(&profile_row.changes);
+	tally_clear(&profile_row.kernel_symbols);
 	profile_row.passes = 0;
 	profile_row.user = profile_row.others = profile_row.kernel = profile_row.lost = profile_row.left_out = 0;
 }
@@ -1652,6 +1768,7 @@ static void profile_open(void) {
 		return;
 	no_file_id = intern("[no file]");
 	unknown_id = intern("?");
+	kernel_only_id = intern("[kernel]");
 	profile_raw = !strcmp(setting, "raw");
 	const char *why = NULL;
 	if(access("/processes/profile", F_OK) == 0) {
@@ -2502,6 +2619,85 @@ static void *malloc_rounds(void *argument) {
 	return NULL;
 }
 
+// The event rows' pipes: 1,000 idle ones and the active one, last, as
+// bench.c's posix_events_idle has them.
+#define EVENTS_IDLE_PIPES 1000
+#define EVENTS_ROUNDS 200000
+
+// An event queue's wait for one ready pipe among 1,000 idle ones, each
+// watched with edge triggering, as bench.c's posix_events_idle times it,
+// profiled: a round writes a byte to the active pipe, waits without
+// blocking for the one event that makes, and reads the byte.
+static void events_rows(void) {
+	static int ends[EVENTS_IDLE_PIPES + 1][2];
+	struct rlimit files;
+	if(getrlimit(RLIMIT_NOFILE, &files) != 0)
+		fail("server_events_idle", "getrlimit: %s", strerror(errno));
+	files.rlim_cur = files.rlim_max;
+	if(setrlimit(RLIMIT_NOFILE, &files) != 0)
+		fail("server_events_idle", "setrlimit: %s", strerror(errno));
+	for(int i = 0; i <= EVENTS_IDLE_PIPES; i++) {
+		if(pipe(ends[i]) != 0)
+			fail("server_events_idle", "pipe: %s", strerror(errno));
+	}
+#ifdef __linux__
+	int queue = epoll_create1(0);
+	if(queue < 0)
+		fail("server_events_idle", "epoll_create1: %s", strerror(errno));
+	for(int i = 0; i <= EVENTS_IDLE_PIPES; i++) {
+		struct epoll_event watched = {.events = EPOLLIN | EPOLLET};
+		watched.data.fd = ends[i][0];
+		if(epoll_ctl(queue, EPOLL_CTL_ADD, ends[i][0], &watched) != 0)
+			fail("server_events_idle", "epoll_ctl: %s", strerror(errno));
+	}
+	struct epoll_event ready[64];
+#else
+	int queue = kqueue();
+	if(queue < 0)
+		fail("server_events_idle", "kqueue: %s", strerror(errno));
+	static struct kevent changes[EVENTS_IDLE_PIPES + 1];
+	for(int i = 0; i <= EVENTS_IDLE_PIPES; i++)
+		EV_SET(&changes[i], ends[i][0], EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, NULL);
+	if(kevent(queue, changes, EVENTS_IDLE_PIPES + 1, NULL, 0, NULL) != 0)
+		fail("server_events_idle", "kevent: %s", strerror(errno));
+	struct kevent ready[64];
+	const struct timespec no_wait = {0, 0};
+#endif
+	int active = EVENTS_IDLE_PIPES;
+	char byte;
+	// A warm-up pass, then the measured ones.
+	for(int pass = -1; pass < PASSES; pass++) {
+		if(pass >= 0)
+			profile_begin();
+		struct counts before = counts_now();
+		uint64_t started = now_ns();
+		for(uint64_t i = 0; i < EVENTS_ROUNDS; i++) {
+			if(write(ends[active][1], "x", 1) != 1)
+				fail("server_events_idle", "write: %s", strerror(errno));
+#ifdef __linux__
+			if(epoll_wait(queue, ready, 64, 0) != 1)
+				fail("server_events_idle", "epoll_wait did not find the one ready pipe");
+#else
+			if(kevent(queue, NULL, 0, ready, 64, &no_wait) != 1)
+				fail("server_events_idle", "kevent did not find the one ready pipe");
+#endif
+			if(read(ends[active][0], &byte, 1) != 1)
+				fail("server_events_idle", "read: %s", strerror(errno));
+		}
+		if(pass < 0)
+			continue;
+		report("server_events_idle", started, EVENTS_ROUNDS);
+		profile_end();
+		print_counts("server_events_idle", before, counts_now(), EVENTS_ROUNDS);
+	}
+	profile_print("server_events_idle");
+	close(queue);
+	for(int i = 0; i <= EVENTS_IDLE_PIPES; i++) {
+		close(ends[i][0]);
+		close(ends[i][1]);
+	}
+}
+
 static void malloc_rows(void) {
 	malloc_rounds(NULL);
 	uint64_t started = now_ns();
@@ -2591,6 +2787,8 @@ int main(int argc, char **argv) {
 			REQUIRE_ALL(valkey_programs);
 		else if(!strcmp(argv[i], "postgresql"))
 			REQUIRE_ALL(postgresql_programs);
+		else if(!strcmp(argv[i], "events"))
+			continue;
 		else {
 			printf("serverbench: %s is not a server; the servers are nginx, php, valkey and postgresql\n", argv[i]);
 			return 2;
@@ -2612,6 +2810,8 @@ int main(int argc, char **argv) {
 			php_rows();
 		else if(!strcmp(argv[i], "valkey"))
 			valkey_rows();
+		else if(!strcmp(argv[i], "events"))
+			events_rows();
 		else
 			postgresql_rows();
 	}
