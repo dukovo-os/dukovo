@@ -7,9 +7,15 @@
 // byte-at-a-time versions here. Each buffer sits in two pages with a page
 // nothing may touch on both sides, at every offset from the start, ending
 // at or just before the end and across the middle, so that a read or write
-// past a buffer's end faults instead of going unseen.
+// past a buffer's end faults instead of going unseen. Then the case
+// functions, tolower, toupper, strcasecmp, strncasecmp and their _l forms,
+// in the C locale and in UTF-8 ones, and strstr and memmem, with needles
+// that repeat themselves, against the same kind of plain versions.
 
+#include <ctype.h>
+#include <locale.h>
 #include <stdint.h>
+#include <strings.h>
 #include <sys/mman.h>
 
 #include "check.h"
@@ -27,6 +33,10 @@ static char *(*volatile strchrnul_fn)(const char *, int) = strchrnul;
 static int (*volatile strcmp_fn)(const char *, const char *) = strcmp;
 static int (*volatile strncmp_fn)(const char *, const char *, size_t) = strncmp;
 static char *(*volatile strcpy_fn)(char *, const char *) = strcpy;
+static int (*volatile strcasecmp_fn)(const char *, const char *) = strcasecmp;
+static int (*volatile strncasecmp_fn)(const char *, const char *, size_t) = strncasecmp;
+static char *(*volatile strstr_fn)(const char *, const char *) = strstr;
+static void *(*volatile memmem_fn)(const void *, size_t, const void *, size_t) = memmem;
 
 // The references stay as loops: the compiler must not turn them into the
 // calls they check.
@@ -85,6 +95,47 @@ static void ref_memmove(unsigned char *d, const unsigned char *s, size_t n) {
 	else
 		for(size_t i = n; i > 0; i--)
 			d[i - 1] = s[i - 1];
+}
+
+// A byte in lowercase as the C locale has it: only ASCII letters change.
+static int ref_lower(int c) {
+	return c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c;
+}
+
+static int ref_upper(int c) {
+	return c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c;
+}
+
+static int ref_strncasecmp(const char *a, const char *b, size_t n) {
+	const unsigned char *x = (const unsigned char *)a, *y = (const unsigned char *)b;
+	for(size_t i = 0; i < n; i++) {
+		int cx = ref_lower(x[i]), cy = ref_lower(y[i]);
+		if(cx != cy)
+			return cx - cy;
+		if(!cx)
+			return 0;
+	}
+	return 0;
+}
+
+static char *ref_strstr(const char *h, const char *n) {
+	size_t l = ref_strlen(n);
+	for(;; h++) {
+		if(ref_strncmp(h, n, l) == 0)
+			return (char *)h;
+		if(!*h)
+			return NULL;
+	}
+}
+
+static void *ref_memmem(const void *h, size_t k, const void *n, size_t l) {
+	const unsigned char *x = h;
+	if(l == 0)
+		return (void *)h;
+	for(size_t i = 0; i + l <= k; i++)
+		if(ref_memcmp(x + i, n, l) == 0)
+			return (void *)(x + i);
+	return NULL;
 }
 
 #pragma clang optimize on
@@ -336,6 +387,111 @@ static void strcpys(void) {
 		}
 }
 
+// The same numbers on every run: a linear congruential generator.
+static uint32_t seed = 1;
+
+static uint32_t pick(uint32_t n) {
+	seed = seed * 1103515245 + 12345;
+	return (seed >> 16) % n;
+}
+
+// Bytes the case functions are tried on: letters of both cases, the bytes
+// just outside the letters, and bytes above 0x7F, which only ASCII
+// letters' cases leave as they are, in the C locale and in UTF-8.
+static const unsigned char case_bytes[] = {
+	'a', 'A', 'm', 'M', 'z', 'Z', '@', '[', '`', '{', '1', 0xC3, 0xA9, 0xC9, 0xE9, 0xFF,
+};
+
+static void case_strings(const char *name) {
+	CHECK(setlocale(LC_ALL, name) != NULL);
+	locale_t l = newlocale(LC_ALL_MASK, name, (locale_t)0);
+	CHECK(l != (locale_t)0);
+	if(!l)
+		return;
+	for(int c = -1; c < 256; c++) {
+		GIVE_UP();
+		CHECK(tolower(c) == ref_lower(c));
+		CHECK(toupper(c) == ref_upper(c));
+		CHECK(tolower_l(c, l) == ref_lower(c));
+		CHECK(toupper_l(c, l) == ref_upper(c));
+	}
+	for(int round = 0; round < 3000; round++) {
+		GIVE_UP();
+		size_t la = pick(40), lb = la + pick(3);
+		char *a = (char *)place(area_a, la + 1, pick(PLACES));
+		char *b = (char *)place(area_b, lb + 1, pick(PLACES));
+		for(size_t i = 0; i < la; i++) {
+			unsigned char c = case_bytes[pick(sizeof(case_bytes))];
+			a[i] = (char)c;
+			// The same letter, often in the other case.
+			b[i] = (char)(pick(2) ? ref_upper(c) : ref_lower(c));
+		}
+		for(size_t i = la; i < lb; i++)
+			b[i] = (char)case_bytes[pick(sizeof(case_bytes))];
+		// Now and then a byte that differs.
+		if(la && pick(3) == 0)
+			b[pick((uint32_t)la)] = (char)case_bytes[pick(sizeof(case_bytes))];
+		a[la] = 0;
+		b[lb] = 0;
+		int want = ref_strncasecmp(a, b, SIZE_MAX);
+		CHECK(sign(strcasecmp_fn(a, b)) == sign(want));
+		CHECK(sign(strcasecmp_fn(b, a)) == -sign(want));
+		CHECK(sign(strcasecmp_l(a, b, l)) == sign(want));
+		for(size_t n = 0; n < lb + 3; n++) {
+			int limited = ref_strncasecmp(a, b, n);
+			CHECK(sign(strncasecmp_fn(a, b, n)) == sign(limited));
+			CHECK(sign(strncasecmp_l(b, a, n, l)) == -sign(limited));
+		}
+	}
+	freelocale(l);
+	setlocale(LC_ALL, "C");
+}
+
+static void cases(void) {
+	case_strings("C");
+	case_strings("C.utf8");
+	case_strings("en_US.UTF-8");
+	// A byte that is not a whole UTF-8 character compares as itself, not
+	// as the end of the string.
+	CHECK(strncasecmp_fn("\xc3\xa9" "a", "\xc3\xa9" "b", 3) < 0);
+	CHECK(strcasecmp_fn("\xc3\xa9" "a", "\xc3\xa9" "A") == 0);
+}
+
+// A haystack and a needle of letters from a small alphabet, so that the
+// needle repeats itself and is found often, and often almost.
+static void fill_letters(char *s, size_t n, uint32_t letters) {
+	for(size_t i = 0; i < n; i++)
+		s[i] = (char)('a' + pick(letters));
+}
+
+static void searches(void) {
+	for(int round = 0; round < 20000; round++) {
+		GIVE_UP();
+		uint32_t letters = 1 + pick(3);
+		size_t hl = round % 8 ? pick(48) : pick(400);
+		size_t nl = round % 5 ? pick(9) : pick(70);
+		// The haystack at the end of its area, and the needle at the end
+		// of the other, so that reading past either faults.
+		char *h = (char *)area_a + AREA - hl - 1;
+		char *n = (char *)area_b + AREA - nl - 1;
+		fill_letters(h, hl, letters);
+		fill_letters(n, nl, letters);
+		if(nl <= hl && pick(2))
+			memcpy(h + pick((uint32_t)(hl - nl + 1)), n, nl);
+		h[hl] = 0;
+		n[nl] = 0;
+		CHECK(strstr_fn(h, n) == ref_strstr(h, n));
+		// memmem with no terminating byte, at the very end of the areas.
+		CHECK(memmem_fn(h + 1, hl, n + 1, nl) == ref_memmem(h + 1, hl, n + 1, nl));
+		CHECK(memmem_fn(h, hl, n, nl) == ref_memmem(h, hl, n, nl));
+	}
+	// A needle longer than the haystack, and an empty one.
+	CHECK(strstr_fn("abc", "abcd") == NULL);
+	CHECK(strstr_fn("", "") != NULL);
+	CHECK(memmem_fn("abc", 3, "abcd", 4) == NULL);
+	CHECK(memmem_fn("abc", 0, "", 0) != NULL);
+}
+
 int main(void) {
 	check_start("strings");
 	area_a = make_area();
@@ -348,5 +504,7 @@ int main(void) {
 	RUN(strcmps);
 	RUN(moves);
 	RUN(strcpys);
+	RUN(cases);
+	RUN(searches);
 	return check_end();
 }
