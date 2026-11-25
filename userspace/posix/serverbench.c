@@ -49,6 +49,44 @@
 // "TRACE <row> ". That pass prints no row: tracing
 // slows the server.
 //
+// With SERVERBENCH_PROFILE set in its environment to anything but an
+// empty string, each nginx, PHP-FPM and PostgreSQL row also samples the
+// user-mode code of the whole machine during its measured passes (not the
+// warm-up) every 500 microseconds of each CPU's time, and after the last
+// pass prints where the samples fell, summed over the passes,
+//
+//     BENCHPROF group=<name> period_ns=<n> passes=<n> user=<n> others=<n>
+//         kernel=<n> lost=<n> left_out=<n>
+//     BENCHPROF group=<name> object process=<name> object=<file>
+//         samples=<n> share=<percent of user>
+//     BENCHPROF group=<name> symbol process=<name> object=<file>
+//         symbol=<function> samples=<n> share=<percent of user>
+//
+// so that the lab can lay Radix's profile beside Linux's function by
+// function. `user` counts the samples in user mode, `kernel` those in the
+// kernel or on an idle CPU, `others` those of other accounts' processes
+// that the reader may not see (always 0 on Linux), `lost` those the system
+// had no room for and `left_out` those whose lines did not fit Radix's file.
+// Every (process, file) pair has an object line, and the 80 busiest
+// (process, file, function) triples have a symbol line; a function that is
+// not found is `?`, and code in no file (the vDSO, anonymous memory) is
+// the object [no file]. A space in a name becomes an underscore. With the
+// value `raw` there is also, for every distinct place,
+//
+//     BENCHPROF group=<name> raw process=<name> path=<path> offset=0x<hex>
+//         samples=<n>
+//
+// where the offset is into the file. Radix reads /processes/profile, which
+// holds the samples taken since it was last opened; Linux, which has no
+// such file, opens a perf event for each online CPU. The perf events must
+// be opened as root, so this happens before the program becomes `bench`;
+// where the C library lacks perf_event_open (the Radix build) or perf
+// refuses, the program prints "serverbench: no profile: <why>" and runs
+// without. Each file's functions are read from its symbol table, or its
+// dynamic symbols when it has no table, so a stripped program shows as `?`.
+// The samples of a Linux pass are sorted after the pass has been timed,
+// not within it.
+//
 // The servers run as the account `bench` (the program drops root first,
 // since PostgreSQL's initdb refuses root), with their data in a folder it
 // makes in /tmp and removes at the end, with the servers stopped. A
@@ -87,6 +125,28 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+// Sampling the servers on Linux needs perf_event_open: the header of its
+// records and the number of the system call. Radix's C library has neither,
+// and -DHAVE_PERF=0 builds without them anywhere.
+#ifndef HAVE_PERF
+#if defined(__has_include) && __has_include(<linux/perf_event.h>) && __has_include(<sys/syscall.h>)
+#include <sys/syscall.h>
+#ifdef SYS_perf_event_open
+#define HAVE_PERF 1
+#endif
+#endif
+#ifndef HAVE_PERF
+#define HAVE_PERF 0
+#endif
+#endif
+#if HAVE_PERF
+#include <dirent.h>
+#include <linux/perf_event.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#endif
 
 #define PASSES 3
 #define CONNECTIONS 8
@@ -394,6 +454,1015 @@ static char *format(const char *text, ...) {
 	vsnprintf(result, (size_t)length + 1, text, arguments);
 	va_end(arguments);
 	return result;
+}
+
+// The sampling profile of SERVERBENCH_PROFILE. The two backends fill one
+// table of samples for the row being measured, each sample a process name,
+// the file its code came from and the offset in that file, and the same
+// code symbolizes and prints it. Strings are kept once, by number.
+#define PROFILE_PERIOD_NS 500000
+#define PROFILE_SYMBOLS 80
+#define NO_ID ((size_t)-1)
+
+static char **strings;
+static size_t string_count, string_capacity;
+
+// The number of a string, the same for equal strings; a new one is kept
+// the first time.
+static size_t intern(const char *text) {
+	for(size_t i = 0; i < string_count; i++) {
+		if(!strcmp(strings[i], text))
+			return i;
+	}
+	if(string_count == string_capacity) {
+		string_capacity = string_capacity ? string_capacity * 2 : 64;
+		strings = realloc(strings, string_capacity * sizeof(strings[0]));
+		if(!strings)
+			fail("memory", "out of memory");
+	}
+	strings[string_count] = format("%s", text);
+	return string_count++;
+}
+
+// Counts for keys of three numbers, in a table that grows. `order` is the
+// order the keys came in, which settles ties when the counts are sorted.
+struct tally_entry {
+	uint64_t a, b, c, count, order;
+};
+struct tally {
+	struct tally_entry *entries;
+	size_t count, capacity;
+	size_t *slots;
+	size_t slot_count;
+};
+
+static size_t tally_hash(uint64_t a, uint64_t b, uint64_t c) {
+	uint64_t hash = a * 0x9e3779b97f4a7c15ull;
+	hash = (hash ^ (hash >> 29) ^ b) * 0xbf58476d1ce4e5b9ull;
+	hash = (hash ^ (hash >> 32) ^ c) * 0x94d049bb133111ebull;
+	return (size_t)(hash ^ (hash >> 31));
+}
+
+static void tally_add(struct tally *tally, uint64_t a, uint64_t b, uint64_t c, uint64_t count) {
+	if(tally->count * 2 >= tally->slot_count) {
+		size_t slot_count = tally->slot_count ? tally->slot_count * 2 : 256;
+		size_t *slots = calloc(slot_count, sizeof(slots[0]));
+		if(!slots)
+			fail("memory", "out of memory");
+		for(size_t i = 0; i < tally->count; i++) {
+			const struct tally_entry *entry = &tally->entries[i];
+			size_t at = tally_hash(entry->a, entry->b, entry->c) & (slot_count - 1);
+			while(slots[at])
+				at = (at + 1) & (slot_count - 1);
+			slots[at] = i + 1;
+		}
+		free(tally->slots);
+		tally->slots = slots;
+		tally->slot_count = slot_count;
+	}
+	size_t at = tally_hash(a, b, c) & (tally->slot_count - 1);
+	while(tally->slots[at]) {
+		struct tally_entry *entry = &tally->entries[tally->slots[at] - 1];
+		if(entry->a == a && entry->b == b && entry->c == c) {
+			entry->count += count;
+			return;
+		}
+		at = (at + 1) & (tally->slot_count - 1);
+	}
+	if(tally->count == tally->capacity) {
+		tally->capacity = tally->capacity ? tally->capacity * 2 : 256;
+		tally->entries = realloc(tally->entries, tally->capacity * sizeof(tally->entries[0]));
+		if(!tally->entries)
+			fail("memory", "out of memory");
+	}
+	tally->entries[tally->count] = (struct tally_entry){a, b, c, count, tally->count};
+	tally->slots[at] = ++tally->count;
+}
+
+static void tally_clear(struct tally *tally) {
+	tally->count = 0;
+	if(tally->slots)
+		memset(tally->slots, 0, tally->slot_count * sizeof(tally->slots[0]));
+}
+
+static int by_count(const void *left, const void *right) {
+	const struct tally_entry *x = left, *y = right;
+	if(x->count != y->count)
+		return x->count > y->count ? -1 : 1;
+	return x->order < y->order ? -1 : x->order > y->order;
+}
+
+// A copy of a tally's entries, the largest count first.
+static struct tally_entry *tally_sorted(const struct tally *tally) {
+	struct tally_entry *entries = malloc((tally->count + 1) * sizeof(entries[0]));
+	if(!entries)
+		fail("memory", "out of memory");
+	if(tally->count)
+		memcpy(entries, tally->entries, tally->count * sizeof(entries[0]));
+	qsort(entries, tally->count, sizeof(entries[0]), by_count);
+	return entries;
+}
+
+// What the passes of the row being measured have sampled so far: `samples`
+// counts (process name, file path, offset in the file) as numbers of
+// strings and the offset.
+static struct {
+	int passes;
+	uint64_t user, others, kernel, lost, left_out;
+	struct tally samples;
+} profile_row;
+
+static int profile_on, profile_raw, profile_radix;
+// Whether a pass has ended whose samples are not in `profile_row` yet; they
+// are taken at the next pass or at the print, so that a pass's time is
+// not the time of sorting its samples.
+static int profile_pending;
+static uint64_t profile_period_ns = PROFILE_PERIOD_NS;
+// Radix: the text of /processes/profile that ended the last pass.
+static char *profile_text;
+static size_t no_file_id, unknown_id;
+
+// Reads a whole file into a new string, which is null if it cannot be
+// opened. /processes/profile can be a MiB, so the buffer grows.
+static char *read_all(const char *path) {
+	int fd = open(path, O_RDONLY);
+	if(fd < 0)
+		return NULL;
+	size_t capacity = 65536, length = 0;
+	char *text = malloc(capacity);
+	if(!text)
+		fail("memory", "out of memory");
+	for(;;) {
+		if(length + 1 == capacity) {
+			capacity *= 2;
+			text = realloc(text, capacity);
+			if(!text)
+				fail("memory", "out of memory");
+		}
+		ssize_t count = read(fd, text + length, capacity - 1 - length);
+		if(count < 0 && errno == EINTR)
+			continue;
+		if(count <= 0)
+			break;
+		length += (size_t)count;
+	}
+	close(fd);
+	text[length] = 0;
+	return text;
+}
+
+// Keeps the number of a string at an index of a list that grows; an index
+// far beyond any the kernel writes is ignored.
+static void remember_id(size_t **ids, size_t *count, unsigned long index, size_t id) {
+	if(index >= (1ul << 20))
+		return;
+	if(index >= *count) {
+		size_t grown = index + 1 > *count * 2 ? index + 1 : *count * 2;
+		*ids = realloc(*ids, grown * sizeof((*ids)[0]));
+		if(!*ids)
+			fail("memory", "out of memory");
+		for(size_t i = *count; i < grown; i++)
+			(*ids)[i] = NO_ID;
+		*count = grown;
+	}
+	(*ids)[index] = id;
+}
+
+static size_t known_id(const size_t *ids, size_t count, unsigned long index) {
+	return index < count && ids[index] != NO_ID ? ids[index] : unknown_id;
+}
+
+// Makes the string of a name or path line of /processes/profile, in which a
+// newline or a backslash is a backslash and three octal digits, and keeps
+// it. The text is changed in place; it only gets shorter.
+static size_t intern_escaped(char *text) {
+	char *to = text;
+	for(const char *from = text; *from; from++) {
+		if(from[0] == '\\' && from[1] >= '0' && from[1] <= '7' && from[2] >= '0' && from[2] <= '7' && from[3] >= '0' && from[3] <= '7') {
+			*to++ = (char)(((from[1] - '0') << 6) | ((from[2] - '0') << 3) | (from[3] - '0'));
+			from += 3;
+		} else {
+			*to++ = *from;
+		}
+	}
+	*to = 0;
+	return intern(text);
+}
+
+// Adds what /processes/profile said, whose text this changes, to the row.
+// The names and files come before the samples that use them, but all are
+// read before the samples are, so that the order does not matter; a line
+// of a kind it does not know is left out, so that the kernel may add some.
+static void radix_collect(char *text) {
+	size_t length = strlen(text);
+	for(size_t i = 0; i < length; i++) {
+		if(text[i] == '\n')
+			text[i] = 0;
+	}
+	const struct {
+		const char *name;
+		uint64_t *value;
+	} header[] = {{"user", &profile_row.user}, {"others", &profile_row.others}, {"kernel", &profile_row.kernel},
+	              {"lost", &profile_row.lost}, {"left_out", &profile_row.left_out}};
+	size_t *name_ids = NULL, *file_ids = NULL;
+	size_t name_count = 0, file_count = 0;
+	for(char *line = text; line < text + length; line += strlen(line) + 1) {
+		if(!strncmp(line, "name ", 5) || !strncmp(line, "file ", 5)) {
+			char *end;
+			unsigned long index = strtoul(line + 5, &end, 10);
+			if(end == line + 5 || *end != ' ')
+				continue;
+			size_t id = intern_escaped(end + 1);
+			if(line[0] == 'n')
+				remember_id(&name_ids, &name_count, index, id);
+			else
+				remember_id(&file_ids, &file_count, index, id);
+			continue;
+		}
+		if(!strncmp(line, "period_ns:", 10) && strtoull(line + 10, NULL, 10) > 0)
+			profile_period_ns = strtoull(line + 10, NULL, 10);
+		for(size_t i = 0; i < sizeof(header) / sizeof(header[0]); i++) {
+			size_t size = strlen(header[i].name);
+			if(!strncmp(line, header[i].name, size) && line[size] == ':')
+				*header[i].value += strtoull(line + size + 1, NULL, 10);
+		}
+	}
+	for(char *line = text; line < text + length; line += strlen(line) + 1) {
+		if(strncmp(line, "sample ", 7) != 0)
+			continue;
+		char *at = line + 7, *end;
+		uint64_t count = strtoull(at, &end, 10);
+		if(end == at)
+			continue;
+		at = end;
+		unsigned long name = strtoul(at, &end, 10);
+		if(end == at)
+			continue;
+		at = end;
+		while(*at == ' ')
+			at++;
+		// A sample in no file has a dash for both its file and its offset.
+		size_t path = no_file_id;
+		uint64_t offset = 0;
+		if(*at != '-') {
+			unsigned long file = strtoul(at, &end, 10);
+			if(end == at)
+				continue;
+			at = end;
+			offset = strtoull(at, &end, 16);
+			if(end == at)
+				continue;
+			path = known_id(file_ids, file_count, file);
+		}
+		tally_add(&profile_row.samples, known_id(name_ids, name_count, name), path, offset, count);
+	}
+	free(name_ids);
+	free(file_ids);
+}
+
+#if HAVE_PERF
+// The kernel's ring of samples of each CPU: one page of control and
+// PERF_DATA_PAGES of records, a power of two so that a position wraps with
+// a mask.
+#define PERF_DATA_PAGES 1024
+// Added in Linux 3.16; older headers cannot ask for it, and then no record
+// says that a process ran a new program.
+#ifdef PERF_RECORD_MISC_COMM_EXEC
+#define PERF_HAS_COMM_EXEC 1
+#else
+#define PERF_RECORD_MISC_COMM_EXEC (1 << 13)
+#endif
+
+struct perf_ring {
+	int fd;
+	struct perf_event_mmap_page *page;
+};
+static struct perf_ring *perf_rings;
+static size_t perf_ring_count, perf_page_size;
+static size_t vdso_id;
+
+// An executable mapping of a process, and what the pass knows of a
+// process: its parent if it was forked during the pass, its names, and
+// whether it ran a new program, which has its own mappings and so does
+// not take its parent's.
+struct proc_map {
+	uint64_t start, end, offset;
+	size_t path;
+};
+struct proc_info {
+	uint32_t pid, parent;
+	int execd;
+	size_t comm, snapshot_comm;
+	struct proc_map *maps;
+	size_t map_count, map_capacity;
+};
+static struct proc_info *procs;
+static size_t proc_count, proc_capacity;
+
+static struct proc_info *find_proc(uint32_t pid, int create) {
+	for(size_t i = 0; i < proc_count; i++) {
+		if(procs[i].pid == pid)
+			return &procs[i];
+	}
+	if(!create)
+		return NULL;
+	if(proc_count == proc_capacity) {
+		proc_capacity = proc_capacity ? proc_capacity * 2 : 64;
+		procs = realloc(procs, proc_capacity * sizeof(procs[0]));
+		if(!procs)
+			fail("memory", "out of memory");
+	}
+	struct proc_info *proc = &procs[proc_count++];
+	memset(proc, 0, sizeof(*proc));
+	proc->pid = pid;
+	proc->comm = proc->snapshot_comm = NO_ID;
+	return proc;
+}
+
+static void forget_procs(void) {
+	for(size_t i = 0; i < proc_count; i++)
+		free(procs[i].maps);
+	proc_count = 0;
+}
+
+static void add_map(struct proc_info *proc, uint64_t start, uint64_t end, uint64_t offset, size_t path) {
+	if(proc->map_count == proc->map_capacity) {
+		proc->map_capacity = proc->map_capacity ? proc->map_capacity * 2 : 16;
+		proc->maps = realloc(proc->maps, proc->map_capacity * sizeof(proc->maps[0]));
+		if(!proc->maps)
+			fail("memory", "out of memory");
+	}
+	proc->maps[proc->map_count++] = (struct proc_map){start, end, offset, path};
+}
+
+// Whether a mapping's path is one to keep: a file, or the vDSO, which is
+// kept so that its addresses are not taken for a parent's mapping.
+static int keep_path(const char *path) {
+	return (path[0] == '/' && path[1] != '/') || !strcmp(path, "[vdso]");
+}
+
+// Notes the processes there are now, with their names and their executable
+// mappings, since perf tells of a mapping only when it is made. The servers
+// run as the account this runs as, so their maps can be read; those that
+// cannot are left out.
+static void snapshot_procs(void) {
+	DIR *dir = opendir("/proc");
+	if(!dir)
+		return;
+	struct dirent *entry;
+	while((entry = readdir(dir))) {
+		char *end;
+		if(entry->d_name[0] < '0' || entry->d_name[0] > '9')
+			continue;
+		unsigned long pid = strtoul(entry->d_name, &end, 10);
+		if(*end)
+			continue;
+		struct proc_info *proc = find_proc((uint32_t)pid, 1);
+		char path[64], line[8192];
+		snprintf(path, sizeof(path), "/proc/%lu/comm", pid);
+		FILE *file = fopen(path, "r");
+		if(file) {
+			if(fgets(line, sizeof(line), file)) {
+				line[strcspn(line, "\n")] = 0;
+				proc->snapshot_comm = intern(line);
+			}
+			fclose(file);
+		}
+		snprintf(path, sizeof(path), "/proc/%lu/maps", pid);
+		file = fopen(path, "r");
+		while(file && fgets(line, sizeof(line), file)) {
+			unsigned long long start, stop, offset;
+			char permissions[8];
+			int at = 0;
+			if(sscanf(line, "%llx-%llx %7s %llx %*s %*s %n", &start, &stop, permissions, &offset, &at) < 4 || at == 0 || !strchr(permissions, 'x'))
+				continue;
+			line[strcspn(line, "\n")] = 0;
+			if(keep_path(line + at))
+				add_map(proc, start, stop, offset, intern(line + at));
+		}
+		if(file)
+			fclose(file);
+	}
+	closedir(dir);
+}
+
+static uint32_t get32(const char *at) {
+	uint32_t value;
+	memcpy(&value, at, sizeof(value));
+	return value;
+}
+
+static uint64_t get64(const char *at) {
+	uint64_t value;
+	memcpy(&value, at, sizeof(value));
+	return value;
+}
+
+// The string at the start of `text`, which has `room` bytes to its end.
+static size_t intern_bounded(const char *text, size_t room) {
+	size_t length = strnlen(text, room);
+	char *copy = malloc(length + 1);
+	if(!copy)
+		fail("memory", "out of memory");
+	memcpy(copy, text, length);
+	copy[length] = 0;
+	size_t id = intern(copy);
+	free(copy);
+	return id;
+}
+
+// The mapping of a process that holds an address: its own, the newest
+// first, then its parent's and the parent's parent's, at most 8 levels up,
+// since a process forked without running a program has the layout of the
+// one that forked it.
+static const struct proc_map *find_map(uint32_t pid, uint64_t ip) {
+	for(int level = 0; level <= 8; level++) {
+		const struct proc_info *proc = find_proc(pid, 0);
+		if(!proc)
+			return NULL;
+		for(size_t i = proc->map_count; i > 0; i--) {
+			if(proc->maps[i - 1].start <= ip && ip < proc->maps[i - 1].end)
+				return &proc->maps[i - 1];
+		}
+		if(proc->execd || proc->parent == 0)
+			return NULL;
+		pid = proc->parent;
+	}
+	return NULL;
+}
+
+// The name of a process: the one it last took, the one it had when the
+// pass began, or its parent's.
+static size_t find_name(uint32_t pid) {
+	for(int level = 0; level <= 8; level++) {
+		const struct proc_info *proc = find_proc(pid, 0);
+		if(!proc)
+			break;
+		if(proc->comm != NO_ID)
+			return proc->comm;
+		if(proc->snapshot_comm != NO_ID)
+			return proc->snapshot_comm;
+		if(proc->parent == 0)
+			break;
+		pid = proc->parent;
+	}
+	return unknown_id;
+}
+
+static void perf_sample(uint64_t ip, uint32_t pid, uint16_t misc) {
+	if((misc & PERF_RECORD_MISC_CPUMODE_MASK) == PERF_RECORD_MISC_KERNEL || (ip >> 63) != 0) {
+		profile_row.kernel++;
+		return;
+	}
+	profile_row.user++;
+	size_t path = no_file_id;
+	uint64_t offset = 0;
+	const struct proc_map *map = find_map(pid, ip);
+	if(map && map->path != vdso_id) {
+		path = map->path;
+		offset = ip - map->start + map->offset;
+	}
+	tally_add(&profile_row.samples, find_name(pid), path, offset, 1);
+}
+
+// Takes one record of a ring. `body` is what follows the record's header.
+// Everything but the samples comes first, since a sample needs the
+// mappings and names of the whole pass.
+static void perf_record(const struct perf_event_header *header, const char *body, size_t length, int samples) {
+	if(header->type == PERF_RECORD_SAMPLE) {
+		if(samples && length >= 16)
+			perf_sample(get64(body), get32(body + 8), header->misc);
+		return;
+	}
+	if(samples)
+		return;
+	if(header->type == PERF_RECORD_MMAP && length > 32) {
+		size_t path = intern_bounded(body + 32, length - 32);
+		if(keep_path(strings[path]))
+			add_map(find_proc(get32(body), 1), get64(body + 8), get64(body + 8) + get64(body + 16), get64(body + 24), path);
+	} else if(header->type == PERF_RECORD_COMM && length > 8) {
+		// A thread's own name is not its process's.
+		if(get32(body) == get32(body + 4)) {
+			struct proc_info *proc = find_proc(get32(body), 1);
+			proc->comm = intern_bounded(body + 8, length - 8);
+			if(header->misc & PERF_RECORD_MISC_COMM_EXEC)
+				proc->execd = 1;
+		}
+	} else if(header->type == PERF_RECORD_FORK && length >= 16) {
+		// A new thread of a process has the process's own number for its
+		// parent.
+		if(get32(body) != get32(body + 4))
+			find_proc(get32(body), 1)->parent = get32(body + 4);
+	} else if(header->type == PERF_RECORD_LOST && length >= 16) {
+		profile_row.lost += get64(body + 8);
+	}
+}
+
+// Reads the records of every ring once. The last sweep gives the space
+// back to the kernel.
+static void perf_sweep(int samples) {
+	// A record is at most 64 KiB; one that wraps the end of the ring is
+	// copied here to be read in one piece.
+	static uint64_t joined[65536 / sizeof(uint64_t)];
+	uint64_t size = (uint64_t)PERF_DATA_PAGES * perf_page_size;
+	for(size_t i = 0; i < perf_ring_count; i++) {
+		struct perf_event_mmap_page *page = perf_rings[i].page;
+		const char *data = (const char *)page + perf_page_size;
+		uint64_t head = __atomic_load_n(&page->data_head, __ATOMIC_ACQUIRE);
+		uint64_t tail = page->data_tail;
+		while(head - tail >= sizeof(struct perf_event_header)) {
+			uint64_t at = tail % size;
+			struct perf_event_header header;
+			memcpy(&header, data + at, sizeof(header));
+			if(header.size < sizeof(header) || header.size > head - tail)
+				break;
+			const char *record = data + at;
+			if(at + header.size > size) {
+				size_t first = (size_t)(size - at);
+				memcpy(joined, data + at, first);
+				memcpy((char *)joined + first, data, header.size - first);
+				record = (const char *)joined;
+			}
+			perf_record(&header, record + sizeof(header), header.size - sizeof(header), samples);
+			tail += header.size;
+		}
+		if(samples)
+			__atomic_store_n(&page->data_tail, tail, __ATOMIC_RELEASE);
+	}
+}
+
+static void perf_collect(void) {
+	perf_sweep(0);
+	perf_sweep(1);
+}
+
+// Starts a pass: notes the processes, drops what the rings hold and starts
+// the sampling.
+static void perf_begin(void) {
+	forget_procs();
+	snapshot_procs();
+	for(size_t i = 0; i < perf_ring_count; i++) {
+		struct perf_event_mmap_page *page = perf_rings[i].page;
+		__atomic_store_n(&page->data_tail, __atomic_load_n(&page->data_head, __ATOMIC_ACQUIRE), __ATOMIC_RELEASE);
+		ioctl(perf_rings[i].fd, PERF_EVENT_IOC_ENABLE, 0);
+	}
+}
+
+static void perf_stop(void) {
+	for(size_t i = 0; i < perf_ring_count; i++)
+		ioctl(perf_rings[i].fd, PERF_EVENT_IOC_DISABLE, 0);
+	profile_pending = 1;
+}
+
+static void add_cpu(int **cpus, size_t *count, size_t *capacity, int cpu) {
+	if(*count == *capacity) {
+		*capacity = *capacity ? *capacity * 2 : 16;
+		*cpus = realloc(*cpus, *capacity * sizeof((*cpus)[0]));
+		if(!*cpus)
+			fail("memory", "out of memory");
+	}
+	(*cpus)[(*count)++] = cpu;
+}
+
+// The numbers of the online CPUs, from the ranges of the kernel's list
+// ("0-3,5"), or from sysconf if the list cannot be read.
+static int *online_cpus(size_t *count) {
+	int *cpus = NULL;
+	size_t capacity = 0;
+	*count = 0;
+	FILE *file = fopen("/sys/devices/system/cpu/online", "r");
+	char text[1024];
+	if(file && fgets(text, sizeof(text), file)) {
+		const char *at = text;
+		while(*at >= '0' && *at <= '9') {
+			char *end;
+			long first = strtol(at, &end, 10), last = first;
+			if(*end == '-')
+				last = strtol(end + 1, &end, 10);
+			for(long cpu = first; cpu <= last && cpu < 65536; cpu++)
+				add_cpu(&cpus, count, &capacity, (int)cpu);
+			at = *end == ',' ? end + 1 : end;
+		}
+	}
+	if(file)
+		fclose(file);
+	if(*count == 0) {
+		long online = sysconf(_SC_NPROCESSORS_ONLN);
+		for(long cpu = 0; cpu < (online > 0 ? online : 1); cpu++)
+			add_cpu(&cpus, count, &capacity, (int)cpu);
+	}
+	return cpus;
+}
+
+// Opens a software clock event on each online CPU for all processes, with
+// a ring each, stopped until a pass begins. Null if all went well, else why
+// not; what was opened is closed. perf_event_paranoid and the limit on
+// locked memory refuse an account other than root, so this runs before the
+// program becomes `bench`; the files and rings stay usable after that.
+static char *perf_open_all(void) {
+	perf_page_size = (size_t)sysconf(_SC_PAGESIZE);
+	size_t count;
+	int *cpus = online_cpus(&count);
+	char *why = NULL;
+	for(size_t i = 0; i < count && !why; i++) {
+		struct perf_event_attr attr;
+		memset(&attr, 0, sizeof(attr));
+		attr.type = PERF_TYPE_SOFTWARE;
+		attr.size = sizeof(attr);
+		attr.config = PERF_COUNT_SW_CPU_CLOCK;
+		attr.sample_period = PROFILE_PERIOD_NS;
+		attr.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID;
+		attr.disabled = 1;
+		attr.mmap = 1;
+		attr.comm = 1;
+		attr.task = 1;
+		attr.exclude_hv = 1;
+#ifdef PERF_HAS_COMM_EXEC
+		attr.comm_exec = 1;
+#endif
+		int fd = (int)syscall(SYS_perf_event_open, &attr, -1, cpus[i], -1, PERF_FLAG_FD_CLOEXEC);
+		if(fd < 0) {
+			why = format("perf_event_open for CPU %d failed: %s", cpus[i], strerror(errno));
+			break;
+		}
+		void *page = mmap(NULL, (1 + (size_t)PERF_DATA_PAGES) * perf_page_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+		if(page == MAP_FAILED) {
+			why = format("cannot map the perf ring of CPU %d: %s", cpus[i], strerror(errno));
+			close(fd);
+			break;
+		}
+		perf_rings = realloc(perf_rings, (perf_ring_count + 1) * sizeof(perf_rings[0]));
+		if(!perf_rings)
+			fail("memory", "out of memory");
+		perf_rings[perf_ring_count++] = (struct perf_ring){fd, page};
+	}
+	free(cpus);
+	if(why) {
+		for(size_t i = 0; i < perf_ring_count; i++) {
+			munmap(perf_rings[i].page, (1 + (size_t)PERF_DATA_PAGES) * perf_page_size);
+			close(perf_rings[i].fd);
+		}
+		perf_ring_count = 0;
+	}
+	return why;
+}
+#endif
+
+// A file's loadable segments and function symbols, as far as they can be
+// read: 64-bit little-endian ELF only, which is all the servers are.
+struct elf_header {
+	uint8_t ident[16];
+	uint16_t type, machine;
+	uint32_t version;
+	uint64_t entry, program_offset, section_offset;
+	uint32_t flags;
+	uint16_t header_size, program_size, program_count, section_size, section_count, names_section;
+};
+struct elf_program {
+	uint32_t type, flags;
+	uint64_t offset, vaddr, paddr, file_size, memory_size, align;
+};
+struct elf_section {
+	uint32_t name, type;
+	uint64_t flags, address, offset, size;
+	uint32_t link, info;
+	uint64_t align, entry_size;
+};
+struct elf_sym {
+	uint32_t name;
+	uint8_t info, other;
+	uint16_t section;
+	uint64_t value, size;
+};
+_Static_assert(sizeof(struct elf_header) == 64 && sizeof(struct elf_program) == 56 && sizeof(struct elf_section) == 64 &&
+               sizeof(struct elf_sym) == 24, "the ELF structures have the sizes of the file format");
+
+struct elf_symbol {
+	uint64_t address, size;
+	const char *name;
+	int rank;
+};
+struct elf_file {
+	size_t path;
+	struct elf_program *segments;
+	size_t segment_count;
+	struct elf_symbol *symbols;
+	size_t symbol_count;
+};
+static struct elf_file *elf_files;
+static size_t elf_file_count;
+
+// Reads `size` bytes at `offset` into a new buffer with a zero after them,
+// null if the file is too short, so that a damaged table cannot make the
+// program read beyond the file.
+static void *read_part(int fd, uint64_t file_size, uint64_t offset, uint64_t size) {
+	if(offset > file_size || size > file_size - offset)
+		return NULL;
+	char *bytes = malloc((size_t)size + 1);
+	if(!bytes)
+		fail("memory", "out of memory");
+	size_t done = 0;
+	while(done < size) {
+		ssize_t count = pread(fd, bytes + done, (size_t)size - done, (off_t)(offset + done));
+		if(count < 0 && errno == EINTR)
+			continue;
+		if(count <= 0) {
+			free(bytes);
+			return NULL;
+		}
+		done += (size_t)count;
+	}
+	bytes[size] = 0;
+	return bytes;
+}
+
+static int by_address(const void *left, const void *right) {
+	const struct elf_symbol *x = left, *y = right;
+	if(x->address != y->address)
+		return x->address < y->address ? -1 : 1;
+	if(x->rank != y->rank)
+		return x->rank < y->rank ? -1 : 1;
+	if(x->size != y->size)
+		return x->size < y->size ? -1 : 1;
+	return strcmp(x->name, y->name);
+}
+
+// Reads the segments and the functions of an ELF file, from its symbol
+// table if it has one, else from its dynamic symbols; the file is left
+// with none of either if it cannot be read. Of symbols at one address,
+// the global one is the one that sorts last, which is the one found.
+static void elf_load(struct elf_file *file, const char *path) {
+	int fd = open(path, O_RDONLY);
+	struct stat status;
+	if(fd < 0)
+		return;
+	struct elf_header *header = NULL;
+	struct elf_section *sections = NULL;
+	if(fstat(fd, &status) == 0 && status.st_size > 0)
+		header = read_part(fd, (uint64_t)status.st_size, 0, sizeof(*header));
+	if(header && (memcmp(header->ident, "\177ELF", 4) != 0 || header->ident[4] != 2 || header->ident[5] != 1 ||
+	              header->program_size != sizeof(struct elf_program) || header->section_size != sizeof(struct elf_section))) {
+		free(header);
+		header = NULL;
+	}
+	if(!header) {
+		close(fd);
+		return;
+	}
+	uint64_t file_size = (uint64_t)status.st_size;
+	struct elf_program *programs = read_part(fd, file_size, header->program_offset, (uint64_t)header->program_count * sizeof(*programs));
+	for(size_t i = 0; programs && i < header->program_count; i++) {
+		if(programs[i].type == 1) {
+			file->segments = realloc(file->segments, (file->segment_count + 1) * sizeof(file->segments[0]));
+			if(!file->segments)
+				fail("memory", "out of memory");
+			file->segments[file->segment_count++] = programs[i];
+		}
+	}
+	free(programs);
+	if(header->section_count)
+		sections = read_part(fd, file_size, header->section_offset, (uint64_t)header->section_count * sizeof(*sections));
+	// SHT_SYMTAB is 2 and SHT_DYNSYM 11.
+	const struct elf_section *table = NULL;
+	for(unsigned want = 2; want <= 11 && !table; want += 9) {
+		for(size_t i = 0; sections && i < header->section_count; i++) {
+			if(sections[i].type == want && sections[i].link < header->section_count) {
+				table = &sections[i];
+				break;
+			}
+		}
+	}
+	struct elf_sym *syms = NULL;
+	char *names = NULL;
+	if(table) {
+		syms = read_part(fd, file_size, table->offset, table->size);
+		names = read_part(fd, file_size, sections[table->link].offset, sections[table->link].size);
+	}
+	if(syms && names) {
+		size_t count = (size_t)(table->size / sizeof(*syms));
+		size_t names_size = (size_t)sections[table->link].size;
+		file->symbols = malloc((count + 1) * sizeof(file->symbols[0]));
+		if(!file->symbols)
+			fail("memory", "out of memory");
+		for(size_t i = 0; i < count; i++) {
+			// STT_FUNC is 2 and STT_GNU_IFUNC 10; STB_LOCAL is 0, STB_WEAK 2.
+			unsigned type = syms[i].info & 0xf, bind = syms[i].info >> 4;
+			if((type != 2 && type != 10) || syms[i].section == 0 || syms[i].value == 0 || syms[i].name >= names_size)
+				continue;
+			file->symbols[file->symbol_count++] =
+				(struct elf_symbol){syms[i].value, syms[i].size, names + syms[i].name, bind == 0 ? 0 : bind == 2 ? 1 : 2};
+		}
+		qsort(file->symbols, file->symbol_count, sizeof(file->symbols[0]), by_address);
+		// The names stay in use, so their buffer is kept.
+		names = NULL;
+	}
+	free(names);
+	free(syms);
+	free(sections);
+	free(header);
+	close(fd);
+}
+
+// The function at an offset in a file, or "?": the offset becomes an
+// address through the segment that holds it, and the symbol is the last
+// that starts at or before the address, if the address is within its size
+// (or it has none).
+static const char *symbol_of(size_t path, uint64_t offset) {
+	struct elf_file *file = NULL;
+	for(size_t i = 0; i < elf_file_count && !file; i++) {
+		if(elf_files[i].path == path)
+			file = &elf_files[i];
+	}
+	if(!file) {
+		elf_files = realloc(elf_files, (elf_file_count + 1) * sizeof(elf_files[0]));
+		if(!elf_files)
+			fail("memory", "out of memory");
+		file = &elf_files[elf_file_count++];
+		memset(file, 0, sizeof(*file));
+		file->path = path;
+		if(strings[path][0] == '/')
+			elf_load(file, strings[path]);
+	}
+	for(size_t i = 0; i < file->segment_count; i++) {
+		const struct elf_program *segment = &file->segments[i];
+		if(segment->offset <= offset && offset - segment->offset < segment->file_size) {
+			uint64_t address = offset - segment->offset + segment->vaddr;
+			size_t low = 0, high = file->symbol_count;
+			while(low < high) {
+				size_t middle = low + (high - low) / 2;
+				if(file->symbols[middle].address <= address)
+					low = middle + 1;
+				else
+					high = middle;
+			}
+			if(low == 0)
+				return "?";
+			const struct elf_symbol *symbol = &file->symbols[low - 1];
+			return symbol->size == 0 || address < symbol->address + symbol->size ? symbol->name : "?";
+		}
+	}
+	return "?";
+}
+
+// Prints a name, path or symbol as one word: a space or a control
+// character becomes an underscore, so that the fields stay apart.
+static void print_word(const char *text) {
+	if(!*text)
+		text = "?";
+	for(; *text; text++)
+		putchar((unsigned char)*text <= ' ' ? '_' : *text);
+}
+
+static void print_share(uint64_t samples, uint64_t user) {
+	printf(" samples=%llu share=%.2f\n", (unsigned long long)samples, user ? 100.0 * (double)samples / (double)user : 0.0);
+}
+
+// Takes the samples of a pass that has ended into the row.
+static void profile_collect(void) {
+	if(!profile_pending)
+		return;
+	profile_pending = 0;
+	if(profile_radix) {
+		radix_collect(profile_text);
+		free(profile_text);
+		profile_text = NULL;
+		return;
+	}
+#if HAVE_PERF
+	perf_collect();
+#endif
+}
+
+// Prints what the passes of a row sampled, as BENCHPROF lines, and starts
+// the next row with nothing.
+static void profile_print(const char *row) {
+	if(!profile_on)
+		return;
+	profile_collect();
+	struct tally objects, symbols;
+	memset(&objects, 0, sizeof(objects));
+	memset(&symbols, 0, sizeof(symbols));
+	for(size_t i = 0; i < profile_row.samples.count; i++) {
+		const struct tally_entry *entry = &profile_row.samples.entries[i];
+		const char *path = strings[entry->b];
+		const char *slash = strrchr(path, '/');
+		size_t object = slash && path[0] == '/' ? intern(slash + 1) : entry->b;
+		tally_add(&objects, entry->a, object, 0, entry->count);
+		// The symbol's name is kept for the rest of the run, so its address
+		// stands for it.
+		tally_add(&symbols, entry->a, object, (uint64_t)(uintptr_t)symbol_of(entry->b, entry->c), entry->count);
+	}
+	printf("BENCHPROF group=%s period_ns=%llu passes=%d user=%llu others=%llu kernel=%llu lost=%llu left_out=%llu\n", row,
+	       (unsigned long long)profile_period_ns, profile_row.passes, (unsigned long long)profile_row.user,
+	       (unsigned long long)profile_row.others, (unsigned long long)profile_row.kernel, (unsigned long long)profile_row.lost,
+	       (unsigned long long)profile_row.left_out);
+	struct tally_entry *sorted = tally_sorted(&objects);
+	for(size_t i = 0; i < objects.count; i++) {
+		printf("BENCHPROF group=%s object process=", row);
+		print_word(strings[sorted[i].a]);
+		printf(" object=");
+		print_word(strings[sorted[i].b]);
+		print_share(sorted[i].count, profile_row.user);
+	}
+	free(sorted);
+	sorted = tally_sorted(&symbols);
+	for(size_t i = 0; i < symbols.count && i < PROFILE_SYMBOLS; i++) {
+		printf("BENCHPROF group=%s symbol process=", row);
+		print_word(strings[sorted[i].a]);
+		printf(" object=");
+		print_word(strings[sorted[i].b]);
+		printf(" symbol=");
+		print_word((const char *)(uintptr_t)sorted[i].c);
+		print_share(sorted[i].count, profile_row.user);
+	}
+	free(sorted);
+	if(profile_raw) {
+		sorted = tally_sorted(&profile_row.samples);
+		for(size_t i = 0; i < profile_row.samples.count; i++) {
+			printf("BENCHPROF group=%s raw process=", row);
+			print_word(strings[sorted[i].a]);
+			printf(" path=");
+			print_word(strings[sorted[i].b]);
+			printf(" offset=0x%llx samples=%llu\n", (unsigned long long)sorted[i].c, (unsigned long long)sorted[i].count);
+		}
+		free(sorted);
+	}
+	fflush(stdout);
+	free(objects.entries);
+	free(objects.slots);
+	free(symbols.entries);
+	free(symbols.slots);
+	tally_clear(&profile_row.samples);
+	profile_row.passes = 0;
+	profile_row.user = profile_row.others = profile_row.kernel = profile_row.lost = profile_row.left_out = 0;
+}
+
+// Starts sampling if SERVERBENCH_PROFILE asks for it and the system can: on
+// Radix by reading /processes/profile, whose first open starts the kernel's
+// sampling, and on Linux by opening perf events, which needs root and so
+// comes before make_work gives it up. A system that cannot says so once.
+static void profile_open(void) {
+	const char *setting = getenv("SERVERBENCH_PROFILE");
+	if(!setting || !*setting)
+		return;
+	no_file_id = intern("[no file]");
+	unknown_id = intern("?");
+	profile_raw = !strcmp(setting, "raw");
+	const char *why = NULL;
+	if(access("/processes/profile", F_OK) == 0) {
+		char *first = read_all("/processes/profile");
+		if(first)
+			profile_radix = 1;
+		else
+			why = format("cannot read /processes/profile: %s", strerror(errno));
+		free(first);
+	} else {
+#if HAVE_PERF
+		vdso_id = intern("[vdso]");
+		why = perf_open_all();
+#else
+		why = "this system has no perf_event_open";
+#endif
+	}
+	if(why) {
+		printf("serverbench: no profile: %s\n", why);
+		fflush(stdout);
+		return;
+	}
+	profile_on = 1;
+}
+
+// Right before a measured pass starts. On Radix reading the file starts the
+// pass's samples afresh; on Linux the processes are noted and sampling is
+// switched on.
+static void profile_begin(void) {
+	if(!profile_on)
+		return;
+	profile_collect();
+	if(profile_radix)
+		free(read_all("/processes/profile"));
+#if HAVE_PERF
+	else
+		perf_begin();
+#endif
+}
+
+// Right after a measured pass ends. Radix's text is only read here and
+// Linux's rings are only stopped, and the rest is left to the next
+// begin or the print.
+static void profile_end(void) {
+	if(!profile_on)
+		return;
+	profile_row.passes++;
+	if(profile_radix) {
+		free(profile_text);
+		profile_text = read_all("/processes/profile");
+		profile_pending = profile_text != NULL;
+		return;
+	}
+#if HAVE_PERF
+	perf_stop();
+#endif
 }
 
 // The path of a program of a bundle.
@@ -867,6 +1936,7 @@ static void http_row(const char *row, const char *path, int keep_alive, uint64_t
 	http_pass(path, keep_alive, requests, expected);
 	for(int pass = 0; pass < PASSES; pass++) {
 		uint64_t user_before, system_before, user_after, system_after;
+		profile_begin();
 		own_time(&user_before, &system_before);
 		struct counts before = counts_now();
 		uint64_t started = now_ns();
@@ -874,9 +1944,11 @@ static void http_row(const char *row, const char *path, int keep_alive, uint64_t
 		struct counts after = counts_now();
 		own_time(&user_after, &system_after);
 		report(row, started, requests);
+		profile_end();
 		print_counts(row, before, after, requests);
 		print_client(row, user_after - user_before, system_after - system_before, requests);
 	}
+	profile_print(row);
 }
 
 static void nginx_rows(void) {
@@ -946,13 +2018,16 @@ static void php_rows(void) {
 	// The first run is the warm-up pass.
 	compute_ns();
 	for(int pass = 0; pass < PASSES; pass++) {
+		profile_begin();
 		struct counts before = counts_now();
 		double ns = compute_ns();
 		struct counts after = counts_now();
+		profile_end();
 		print_row("server_php_compute", ns / PHP_COMPUTE_PASSES, PHP_COMPUTE_PASSES);
 		print_counts("server_php_compute", before, after, PHP_COMPUTE_PASSES);
 		print_client("server_php_compute", tool_user_ns, tool_system_ns, PHP_COMPUTE_PASSES);
 	}
+	profile_print("server_php_compute");
 }
 
 // Reads a rate from valkey-benchmark's CSV, which has a line
@@ -1037,13 +2112,16 @@ static void pgbench_row(const char *row, int select_only, int per_client) {
 	pgbench_tps(select_only, per_client);
 	uint64_t rounds = (uint64_t)CONNECTIONS * (uint64_t)per_client;
 	for(int pass = 0; pass < PASSES; pass++) {
+		profile_begin();
 		struct counts before = counts_now();
 		double tps = pgbench_tps(select_only, per_client);
 		struct counts after = counts_now();
+		profile_end();
 		print_row(row, 1e9 / tps, rounds);
 		print_counts(row, before, after, rounds);
 		print_client(row, tool_user_ns, tool_system_ns, rounds);
 	}
+	profile_print(row);
 }
 
 // Prints each line of `path` after "TRACE <row> ".
@@ -1277,6 +2355,7 @@ int main(int argc, char **argv) {
 	// the end of this program.
 	signal(SIGPIPE, SIG_IGN);
 	atexit(cleanup);
+	profile_open();
 	make_work();
 	make_environment();
 	cpu_cycle(1000000);

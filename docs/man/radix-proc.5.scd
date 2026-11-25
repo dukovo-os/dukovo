@@ -269,6 +269,25 @@ _/processes/loadavg_
 _/processes/uptime_
 	*uptime_ns*: nanoseconds since the kernel started.
 
+_/processes/profile_
+	A profile of user code, for finding where a program's time goes.
+	Each open gives the samples taken since the one before and starts
+	afresh: every CPU's timer interrupt samples what it interrupted
+	every *period_ns* (500000, 2,000 times a second), and an open
+	starts the sampling, which stops by itself ten minutes after the
+	last. Only the opener's own processes' samples are listed, every
+	process's for root. Header lines: *period_ns* (0 where the
+	architecture cannot sample), *user*, the samples of user code
+	listed, *others*, those of other users' processes, *kernel*, those
+	of the kernel or an idle CPU, and *lost*, those a CPU had no room
+	for. Then *name* _index_ _process_ and *file* _index_ _path_ lines,
+	and a line *sample* _count_ _name_ _file_ _offset_ for each place
+	sampled, the most sampled first: the process's name, the file
+	mapped to run there and the offset in it, in hexadecimal, or *-*
+	and *-* for user code in no file (the vDSO, anonymous memory). The
+	last line, *left_out*, counts the samples whose lines did not fit
+	in the file. A domain's view of _/processes_ has no profile.
+
 _/processes/net/dev_
 	What each interface received and sent, as Linux's _/proc/net/dev_
 	writes it: two lines of headings, then a line per interface (*lo*,
