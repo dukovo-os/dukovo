@@ -442,12 +442,17 @@ impl Dma {
         }
     }
 
-    /// Copies `data` to `offset`.
+    /// Copies `data` to `offset`, as one block: for what the device looks
+    /// at only once it is told of it (a request, a frame, pixels), where
+    /// a byte at a time is the cost of a large copy.
+    #[allow(unsafe_code)]
     pub fn write(&self, offset: usize, data: &[u8]) {
-        self.at(offset, data.len());
-        for (i, &byte) in data.iter().enumerate() {
-            self.write8(offset + i, byte);
-        }
+        let at = self.at(offset, data.len());
+        // SAFETY: `at` checked that the bytes are inside the memory, which
+        // `new`'s contract makes ours and mapped, and `data` is a slice of
+        // other memory, since none of this is ever lent as one. A device
+        // that reads the bytes meanwhile sees each as it was or as it is.
+        unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), at as *mut u8, data.len()) }
     }
 
     /// Zeroes all of it.

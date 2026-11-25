@@ -23,8 +23,8 @@
 //! takes, and the check of them is the command's own rule: each once, and
 //! with a disk, the disks alone.
 //!
-//! `hardware.sensors`, `hardware.highest` and `hardware.devices` run as the
-//! person, as the commands answer anyone; with no history, the highest is
+//! `hardware.sensors`, `hardware.highest`, `hardware.devices` and
+//! `hardware.screens` run as the person, as the commands answer anyone; with no history, the highest is
 //! `[]`. `hardware.memtest` asks
 //! the start menu for the memory to be tested at the next start, and
 //! `hardware.memtest-cancel` takes that back; each is the other's undo.
@@ -409,6 +409,30 @@ impl Action for Devices {
     }
 }
 
+/// `hardware screens --json`: the graphics cards the system draws
+/// through, their screens and the monitor plugged into each, and which
+/// program has the screens.
+pub struct Screens;
+
+impl Action for Screens {
+    const ID: &'static str = "hardware.screens";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/hardware/screens";
+    const RUNS: Runs = Runs::AsThePerson;
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "List the screens";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["hardware", "screens", "--json"].map(String::from).to_vec()
+    }
+
+    fn examples() -> Examples<Nothing> {
+        reads()
+    }
+}
+
 /// The read that says what is asked, which each change of the memory
 /// test uses as its probe.
 fn memtest_shown() -> Vec<String> {
@@ -560,7 +584,7 @@ mod tests {
 
     /// Each action of the page: its id, its address, whether it changes
     /// anything, who runs it, and the command its first example makes.
-    const ACTIONS: [(&str, &str, bool, Runs, &[&str]); 11] = [
+    const ACTIONS: [(&str, &str, bool, Runs, &[&str]); 12] = [
         (
             "hardware.show",
             "/api/1/hardware",
@@ -618,6 +642,13 @@ mod tests {
             &["hardware", "devices", "--json"],
         ),
         (
+            "hardware.screens",
+            "/api/1/hardware/screens",
+            false,
+            Runs::AsThePerson,
+            &["hardware", "screens", "--json"],
+        ),
+        (
             "hardware.memtest",
             "/api/1/hardware/memtest/next-start",
             true,
@@ -641,7 +672,7 @@ mod tests {
     ];
 
     /// The reads that take nothing.
-    const READS: [&str; 8] = [
+    const READS: [&str; 9] = [
         "hardware.show",
         "hardware.inventory",
         "hardware.last",
@@ -649,6 +680,7 @@ mod tests {
         "hardware.sensors",
         "hardware.highest",
         "hardware.devices",
+        "hardware.screens",
         "hardware.memtest-status",
     ];
 
@@ -960,6 +992,7 @@ mod tests {
             ("/api/1/hardware/sensors", "hardware.sensors"),
             ("/api/1/hardware/highest", "hardware.highest"),
             ("/api/1/hardware/devices", "hardware.devices"),
+            ("/api/1/hardware/screens", "hardware.screens"),
             ("/api/1/hardware/memtest", "hardware.memtest-status"),
         ] {
             let found = find(REGISTRY, false, path);
@@ -1000,6 +1033,7 @@ mod tests {
             "/api/1/hardware/sensors/x",
             "/api/1/hardware/highest/x",
             "/api/1/hardware/devices/x",
+            "/api/1/hardware/screens/x",
         ] {
             assert!(matches!(find(REGISTRY, false, path), Found::None), "{path}");
             assert!(matches!(find(REGISTRY, true, path), Found::None), "{path}");
@@ -1021,6 +1055,7 @@ mod tests {
             ("hardware.sensors", true, true, true),
             ("hardware.highest", true, true, true),
             ("hardware.devices", true, true, true),
+            ("hardware.screens", true, true, true),
             ("hardware.memtest-status", true, true, true),
             ("hardware.inventory", false, true, false),
             ("hardware.check", false, true, false),
@@ -1062,6 +1097,7 @@ mod tests {
             "hardware.sensors",
             "hardware.highest",
             "hardware.devices",
+            "hardware.screens",
             "hardware.memtest-status",
         ] {
             for list in ["hardware", "hardware:read", "*"] {
@@ -1220,14 +1256,19 @@ mod tests {
         // one call covers every sensor and every disk.
         assert_eq!(argv("hardware.sensors", json!({})), ["hardware", "sensors", "--json"]);
         assert_eq!(argv("hardware.devices", json!({})), ["hardware", "devices", "--json"]);
+        assert_eq!(argv("hardware.screens", json!({})), ["hardware", "screens", "--json"]);
         assert_eq!(
             argv("hardware.memtest-status", json!({})),
             ["hardware", "memtest", "--status", "--json"]
         );
         // Each is a read that anyone may ask, as the command answers anyone.
-        for id in
-            ["hardware.sensors", "hardware.highest", "hardware.devices", "hardware.memtest-status"]
-        {
+        for id in [
+            "hardware.sensors",
+            "hardware.highest",
+            "hardware.devices",
+            "hardware.screens",
+            "hardware.memtest-status",
+        ] {
             assert_eq!(action(id).runs(), Runs::AsThePerson, "{id}");
             assert!(!action(id).changes() && !action(id).long(), "{id}");
             assert_eq!(action(id).answers(), [0], "{id}");

@@ -1253,6 +1253,7 @@ registry![
     hardware::Sensors,
     hardware::Highest,
     hardware::Devices,
+    hardware::Screens,
     hardware::Memtest,
     hardware::MemtestCancel,
     hardware::MemtestStatus,

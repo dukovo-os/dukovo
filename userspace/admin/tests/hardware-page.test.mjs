@@ -10,7 +10,7 @@ import test, { afterEach, beforeEach } from 'node:test';
 
 import { ApiError } from '../api.js';
 import {
-  about, asked, broken, clean, devices, diskHealth, inventory, last, memtest, NOW, sensors, show, skipped, startTest, storage, task,
+  about, asked, broken, clean, devices, diskHealth, inventory, last, memtest, NOW, screens, sensors, show, skipped, startTest, storage, task,
 } from './hardware-fixtures.mjs';
 import {
   buttonOf, openHardware, refusal, settle, useStore,
@@ -599,11 +599,11 @@ test('Temperatures and fans is a table of the processor, the disks and the zones
   assert.equal(world.card('temps').getAttribute('aria-labelledby'), 'temps-h');
 });
 
-test('the cards come in the order of the phone, with the temperatures, the devices and the restart across both columns', async (context) => {
+test('the cards come in the order of the phone, with the temperatures, the devices, the screens and the restart across both columns', async (context) => {
   const world = await openHardware(context);
   const cards = world.view.main.querySelector('.hw').children.filter((one) => one.tag === 'section');
-  assert.deepEqual(cards.map((one) => one.id), ['machine', 'check', 'temps', 'disks', 'memory', 'devices', 'power']);
-  assert.deepEqual(cards.filter((one) => one.classes.has('hw-wide')).map((one) => one.id), ['temps', 'devices', 'power']);
+  assert.deepEqual(cards.map((one) => one.id), ['machine', 'check', 'temps', 'disks', 'memory', 'devices', 'screens', 'power']);
+  assert.deepEqual(cards.filter((one) => one.classes.has('hw-wide')).map((one) => one.id), ['temps', 'devices', 'screens', 'power']);
 });
 
 test('the choice of Fahrenheit changes every temperature at once, is kept, and is the unit the page opens with next time', async (context) => {
@@ -884,4 +884,56 @@ test('a machine whose list is empty says so', async (context) => {
   await world.press(world.card('devices'), 'Show the devices');
   assert.match(text(world.card('devices')), /The system lists no device\./);
   assert.equal(world.card('devices').querySelectorAll('table').length, 0);
+});
+
+// ---- Screens -------------------------------------------------------------------
+
+const screenTables = (world) => world.card('screens').querySelectorAll('table').map((table) => [text(table.querySelector('caption')), table.querySelectorAll('tbody tr').map((row) => row.querySelectorAll('td').map(text))]);
+
+test('the screens are not read until the card is asked, and then come in a table for each graphics card under who is in front', async (context) => {
+  const world = await openHardware(context);
+  assert.ok(!world.calls.includes('/api/1/hardware/screens'));
+  assert.match(text(world.card('screens')), /Each graphics card and its screens, with the monitor and the mode each shows/);
+  await world.press(world.card('screens'), 'Show the screens');
+  assert.ok(world.calls.includes('/api/1/hardware/screens'));
+  assert.match(text(world.card('screens')), /In front: consoled \(process 41\)/);
+  assert.deepEqual(screenTables(world), [
+    ['firmware0 · Firmware framebuffer, in the mode the firmware set', [
+      ['Screen 1', 'A monitor that does not say what it is', '1280x800 at 60 Hz', '1280x800 at 60 Hz (preferred)', 'Not said', 'No', 'No'],
+    ]],
+    ['virtio0 · Virtio graphics card', [
+      ['Screen 1', 'QEMU MonitorRHT · 260 by 160 mm', '800x600 at 60 Hz', '1024x768 at 74.99 Hz (preferred), 800x600 at 60 Hz', '8 bits a colour', 'No', 'No'],
+      ['Screen 2', 'Nothing plugged in', '—', '—', '—', '—', '—'],
+      ['Screen 3', 'A monitor of DEL', 'Stopped', '3840x2160 at 60 Hz (preferred)', '10 bits a colour', 'Yes', 'Yes'],
+    ]],
+  ]);
+  // Each cell names its column, for the rows that are cards on a phone; the card changes nothing, so it has no button left.
+  const cells = world.card('screens').querySelectorAll('tbody tr')[1].querySelectorAll('td');
+  assert.deepEqual(cells.map((cell) => cell.getAttribute('data-label')), ['Screen', 'Monitor', 'Shows', 'Modes', 'Colour depth', 'HDR', 'Variable refresh']);
+  assert.equal(world.card('screens').querySelectorAll('.st.bad').length, 1);
+  assert.equal(world.card('screens').querySelectorAll('td.muted').length, 1);
+  assert.equal(world.document.activeElement, world.card('screens').querySelector('h2'));
+  assert.equal(buttonOf(world.card('screens'), 'Show the screens'), undefined);
+});
+
+test('a reader may open the screens, and a list that cannot be read leaves the button to try again', async (context) => {
+  const reader = await openHardware(context, { session: { admin: false } });
+  await reader.press(reader.card('screens'), 'Show the screens');
+  assert.equal(screenTables(reader).length, 2);
+  const down = await openHardware(context, { world: { reads: { '/api/1/hardware/screens': refusal('ADM-500', 'down', 500) } } });
+  await down.press(down.card('screens'), 'Show the screens');
+  assert.equal(down.problems.length, 1);
+  assert.equal(down.problems[0][1].slot, down.card('screens').querySelector('.hw-errors'));
+  assert.equal(buttonOf(down.card('screens'), 'Show the screens').getAttribute('aria-disabled'), null);
+  down.answers['/api/1/hardware/screens'] = screens();
+  await down.press(down.card('screens'), 'Show the screens');
+  assert.equal(screenTables(down).length, 2);
+});
+
+test('a machine with no graphics card says so, and names nobody in front', async (context) => {
+  const world = await openHardware(context, { world: { reads: { '/api/1/hardware/screens': { format: 1, front: { holder: 'log', process: null, name: null }, cards: [] } } } });
+  await world.press(world.card('screens'), 'Show the screens');
+  assert.match(text(world.card('screens')), /No graphics card: the system draws on no screen\./);
+  assert.doesNotMatch(text(world.card('screens')), /In front/);
+  assert.equal(world.card('screens').querySelectorAll('table').length, 0);
 });

@@ -46,6 +46,10 @@ pub mod tag_type {
 /// Memory map entry type for RAM the kernel may use.
 pub const MEMORY_AVAILABLE: u32 = 1;
 
+/// Memory map entry type for memory that is kept from every system: the
+/// firmware's own, and devices' where the map names theirs at all.
+pub const MEMORY_RESERVED: u32 = 2;
+
 /// Why the boot information could not be parsed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -250,6 +254,15 @@ pub struct FramebufferInfo {
     pub rgb: Option<[(u8, u8); 3]>,
 }
 
+impl FramebufferInfo {
+    /// The physical memory the picture takes: `pitch * height` bytes
+    /// from `address`.
+    pub fn range(&self) -> core::ops::Range<u64> {
+        let len = u64::from(self.pitch) * u64::from(self.height);
+        self.address..self.address.saturating_add(len)
+    }
+}
+
 /// A module loaded by the boot loader.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Module<'a> {
@@ -309,6 +322,20 @@ impl<'a> MemoryMap<'a> {
                 length: read_u64(entry, 8)?,
                 kind: read_u32(entry, 16)?,
             })
+        })
+    }
+
+    /// Whether any byte of `range` lies in memory the map names as other
+    /// than reserved: RAM, in use or not, and ACPI's tables. A card's
+    /// memory is left out of the map or reserved in it, so a framebuffer
+    /// of which this is true is on no card: a firmware that draws its
+    /// screen only through its own calls has none to give, and a boot
+    /// loader then names whatever address the firmware left, often zero.
+    pub fn names_memory_in(&self, range: &core::ops::Range<u64>) -> bool {
+        self.regions().any(|region| {
+            region.kind != MEMORY_RESERVED
+                && region.base < range.end
+                && range.start < region.base.saturating_add(region.length)
         })
     }
 
@@ -513,6 +540,48 @@ mod tests {
         let map = info.memory_map().unwrap();
         assert_eq!(map.regions().count(), 3);
         assert_eq!(map.usable_summary(), (0x9f000 + 0x7ef0000, 2));
+    }
+
+    #[test]
+    fn a_framebuffer_in_memory_is_told_from_a_cards() {
+        let bytes = build(&[(
+            tag_type::MEMORY_MAP,
+            memory_map(&[
+                (0, 0x9f000, MEMORY_AVAILABLE),
+                (0x9f000, 0x1000, MEMORY_RESERVED),
+                (0x10_0000, 0x3fe0_0000, MEMORY_AVAILABLE),
+                (0x3ff0_0000, 0x10_0000, 3),
+                (0x8000_0000, 0x1000_0000, MEMORY_RESERVED),
+            ]),
+        )]);
+        let map = BootInfo::parse(&bytes).unwrap().memory_map().unwrap();
+        let picture = |address| {
+            FramebufferInfo {
+                address,
+                pitch: 4096,
+                width: 1024,
+                height: 768,
+                bpp: 32,
+                kind: 1,
+                rgb: None,
+            }
+            .range()
+        };
+        assert_eq!(picture(0x1000), 0x1000..0x30_1000);
+        // What a boot loader passes on from a firmware with no
+        // framebuffer: the first three megabytes of RAM, the kernel in
+        // them.
+        assert!(map.names_memory_in(&picture(0)));
+        assert!(map.names_memory_in(&picture(0x9_0000)));
+        // The end of the picture is in ACPI's tables.
+        assert!(map.names_memory_in(&picture(0x3fd0_0000 + 0x1f_f000)));
+        // A card's memory: outside the map, or reserved in it.
+        assert!(!map.names_memory_in(&picture(0xfd00_0000)));
+        assert!(!map.names_memory_in(&picture(0x8000_0000)));
+        assert!(!map.names_memory_in(&picture(0x4000_0000)));
+        // The text screen, between the low memory and the firmware's.
+        assert!(!map.names_memory_in(&(0xb_8000..0xb_8fa0)));
+        assert!(!map.names_memory_in(&(0..0)));
     }
 
     #[test]

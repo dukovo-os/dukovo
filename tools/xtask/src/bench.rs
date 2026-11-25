@@ -34,7 +34,11 @@
 //! instead, where every instruction takes one nanosecond of the guest's
 //! time, so each `BENCH` line gives the instructions an operation took:
 //! the same on every machine, unlike the timings. With `--gate` it fails
-//! if an operation on one CPU takes more than its [`BUDGETS`].
+//! if an operation on one CPU takes more than its [`BUDGETS`]. A third
+//! boot then counts the display layer's short paths ([`DISPLAY_ROWS`],
+//! ADR 0700) on a machine with a virtio graphics card beside its VGA
+//! one, which the other boots are spared: the kernel draws its log on a
+//! screen, and a second card would move every row.
 //!
 //! With `--from FILE` it measures nothing, and reports the numbers of a
 //! real machine instead: Dukovo's and Linux's, which the disk check
@@ -69,6 +73,18 @@ const POSIX_CMDLINE: &str = "-- --compress vdb --posix --network /system/tests/p
 /// and disc benchmarks, which it waits for, as the SD host's module sets
 /// its card up, and the AHCI module probes its ports, in the background.
 const LINUX_INIT_ARGS: &str = "-- --sd /dev/mmcblk0 --disc /dev/sr0";
+
+/// The kernel command line of the display rows' boot: Spark runs
+/// `display-test cost` ([`DISPLAY_SOURCE`]) and nothing else.
+const DISPLAY_CMDLINE: &str = "-- --posix /system/tests/posix/display-test cost";
+
+/// The graphics card that boot has beside the VGA card whose framebuffer
+/// the firmware sets up: a virtio one with one screen.
+const DISPLAY_CARD: &str = "virtio-gpu-pci,xres=1024,yres=768";
+
+/// The program that prints the display rows.
+#[cfg(test)]
+const DISPLAY_SOURCE: &str = include_str!("../../../userspace/programs/display-test/src/cost.rs");
 
 /// The size of each disk both systems' POSIX benchmarks read and write:
 /// the 32 MiB they go through, with room.
@@ -183,6 +199,36 @@ pub const BUDGETS: &[(&str, u64)] = &[
     ("posix_tcp_roundtrip_same_cpu", 11_000),  // 9,274
     ("posix_udp_roundtrip_same_cpu", 15_000),  // 13,189, straight across (ADR 0553)
     ("posix_tcp_mib", 1_700_000),              // 1,515,375
+    ("display_check", 7_700),                  // 6,962
+    ("display_change_queued", 11_000),         // 9,180
+    ("display_change_firmware", 890_000),      // 805,197, 1280 by 800
+    ("display_small_firmware", 25_000),        // 22,596
+    ("display_pointer_firmware", 43_000),      // 38,577, a solid pointer of 32 by 32
+    ("display_change_virtio", 14_000),         // 12,477
+    ("display_small_virtio", 13_000),          // 11,714
+    ("display_pointer_virtio", 2_900),         // 2,590
+];
+
+/// The display layer's rows (`display-test cost`, ADR 0700), each with
+/// what it measures: on the firmware's framebuffer, which is a copy the
+/// kernel makes, and on a virtio card, which is commands queued for the
+/// host. They are counted with `--instructions` only. Linux's side, and
+/// with it the timings, join them with the input devices' rows.
+const DISPLAY_ROWS: &[(&str, &str)] = &[
+    ("display_check", "Display: a change of a main plane's picture, checked only"),
+    (
+        "display_change_queued",
+        "Display: that change checked and left to wait for the beat, in the place of the one before",
+    ),
+    (
+        "display_change_firmware",
+        "Display: a new 1280x800 picture shown at once, firmware framebuffer",
+    ),
+    ("display_small_firmware", "Display: 64x64 pixels shown at once, firmware framebuffer"),
+    ("display_pointer_firmware", "Display: a solid 32x32 pointer moved, firmware framebuffer"),
+    ("display_change_virtio", "Display: a new 1024x768 picture shown at once, virtio"),
+    ("display_small_virtio", "Display: 64x64 pixels shown at once, virtio"),
+    ("display_pointer_virtio", "Display: the pointer moved, virtio"),
 ];
 
 /// One measurement: a `BENCH name=... ns=... iterations=...` line.
@@ -762,6 +808,8 @@ fn count_instructions(
     per_switch(&mut radix, &counts);
     step("Booting Radix with the POSIX benchmarks on 2 CPUs, counting instructions (minutes)");
     radix.extend(radix_posix_numbers(ctx, dir, image, btrfs, Accel::Count)?.0);
+    step("Booting Radix with the display rows on two graphics cards, counting instructions");
+    radix.extend(radix_display_numbers(ctx, dir, image, Accel::Count)?);
     let report = budget_report(&radix);
     let markdown = dir.join("instructions.md");
     std::fs::write(&markdown, &report).context(|| format!("writing {}", markdown.display()))?;
@@ -789,10 +837,11 @@ fn budget_report(radix: &[Measurement]) -> String {
     );
     let _ = writeln!(out, "| Operation | Instructions | Budget | Of the budget |");
     let _ = writeln!(out, "| --- | ---: | ---: | ---: |");
-    for row in ROWS {
-        let Some(measured) = find(radix, row.radix) else { continue };
+    let rows = ROWS.iter().map(|row| (row.radix, row.what));
+    for (name, what) in rows.chain(DISPLAY_ROWS.iter().copied()) {
+        let Some(measured) = find(radix, name) else { continue };
         let count = measured.ns.round() as u64;
-        match budget(row.radix) {
+        match budget(name) {
             Some(budget) => {
                 let share = count as f64 / budget as f64;
                 let shown = if share > 1.0 {
@@ -800,10 +849,10 @@ fn budget_report(radix: &[Measurement]) -> String {
                 } else {
                     format!("{:.0}%", share * 100.0)
                 };
-                let _ = writeln!(out, "| {} | {count} | {budget} | {shown} |", row.what);
+                let _ = writeln!(out, "| {what} | {count} | {budget} | {shown} |");
             }
             None => {
-                let _ = writeln!(out, "| {} | {count} | | |", row.what);
+                let _ = writeln!(out, "| {what} | {count} | | |");
             }
         }
     }
@@ -1693,6 +1742,62 @@ fn radix_posix_numbers(
     Ok((parse(&log), parse_counts(&log)))
 }
 
+/// Boots the test image `base` with Spark running the display layer's
+/// rows ([`DISPLAY_ROWS`]) and reads their `BENCH` lines. The machine
+/// has the VGA card the others have, whose framebuffer is the firmware's
+/// card, and a virtio graphics card.
+fn radix_display_numbers(
+    ctx: &Ctx,
+    dir: &Path,
+    base: &[u8],
+    accel: Accel,
+) -> Result<Vec<Measurement>> {
+    let image = dir.join("display-bench.img");
+    let bytes =
+        test::with_cmdline(base, &accel.cmdline(DISPLAY_CMDLINE)).map_err(crate::Error::new)?;
+    std::fs::write(&image, bytes).context(|| format!("writing {}", image.display()))?;
+    let mut extra = accel.extra();
+    extra.extend(["-device".into(), DISPLAY_CARD.into()]);
+    let machine = Machine {
+        firmware: Firmware::Bios,
+        media: Media::Usb,
+        ovmf: None,
+        image: image.clone(),
+        memory: VM_MEMORY.into(),
+        cpus: VM_CPUS,
+        kvm: accel == Accel::Kvm,
+        cpu_model: None,
+        serial: Serial::Pipe,
+        display: false,
+        reboot: false,
+        gdb: false,
+        qmp: Some(dir.join("display-bench.qmp")),
+        extra,
+        write_log: None,
+        direct: None,
+    };
+    let mut vm = pin::start(ctx, &machine, dir, "display-bench", TIMEOUT)?;
+    let outcome = match vm.expect_first(&["display-test: passed", "display-test: FAILED"]) {
+        Ok(0) => Ok(()),
+        Ok(_) => Err("the program failed".to_string()),
+        Err(reason) => Err(reason),
+    };
+    let log = vm.log();
+    drop(vm);
+    let _ = std::fs::remove_file(&image);
+    if let Err(reason) = outcome {
+        show_trouble(&log);
+        let said: Vec<&str> = log.lines().filter(|line| line.contains("display-test: ")).collect();
+        crate::bail!(
+            "the display rows' boot failed: {reason}{}{}; serial log: {}",
+            if said.is_empty() { "" } else { ": " },
+            said.join(" | "),
+            ctx.display(&dir.join("boot-display-bench.log"))
+        );
+    }
+    Ok(parse(&log))
+}
+
 /// Makes the benchmarks' disks afresh in `dir`, filled with bytes rather
 /// than holes, which the host would read faster, and returns QEMU's
 /// arguments for them: a virtio block device, `vda` on both systems
@@ -2376,10 +2481,37 @@ mod tests {
     #[test]
     fn budgets_name_rows_on_one_cpu() {
         for &(name, budget) in BUDGETS {
-            assert!(ROWS.iter().any(|row| row.radix == name), "{name}");
+            let known = ROWS.iter().any(|row| row.radix == name)
+                || DISPLAY_ROWS.iter().any(|&(row, _)| row == name);
+            assert!(known, "{name}");
             assert!(!name.ends_with("_cross_cpu") && !name.ends_with("_parallel"), "{name}");
             assert!(budget > 0, "{name}");
         }
+    }
+
+    #[test]
+    fn display_rows_name_what_the_program_prints_and_each_has_a_budget() {
+        for (i, &(name, what)) in DISPLAY_ROWS.iter().enumerate() {
+            let card = ["_firmware", "_virtio"].iter().find_map(|card| name.strip_suffix(card));
+            let printed = match card {
+                Some(base) => DISPLAY_SOURCE.contains(&format!("\"{base}_{{card}}\"")),
+                None => DISPLAY_SOURCE.contains(&format!("\"{name}\"")),
+            };
+            assert!(printed, "{name}");
+            assert!(budget(name).is_some(), "{name}");
+            assert!(what.starts_with("Display: "), "{name}");
+            assert!(DISPLAY_ROWS[i + 1..].iter().all(|&(other, _)| other != name), "{name}");
+            assert!(ROWS.iter().all(|row| row.radix != name), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_budget_report_has_the_display_rows_after_the_others() {
+        let radix = [measurement("syscall_null", 100.0), measurement("display_check", 3.0)];
+        let report = budget_report(&radix);
+        let first = report.find("| System call, entry and exit only | 100 |").expect("a row");
+        let display = "| Display: a change of a main plane's picture, checked only | 3 |";
+        assert!(report.find(display).expect("a display row") > first, "{report}");
     }
 
     #[test]

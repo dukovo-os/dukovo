@@ -46,6 +46,10 @@ dkv = { path = "../../userspace/programs/dkv" }
 # WAV files and the tones' detection, for the audio boot tests' check of
 # what the guest played (ADR 0320).
 audio = { path = "../../userspace/programs/audio" }
+# The pictures the display boot tests' program draws and the lines it
+# says, so that the host makes the same pictures and reads the lines
+# (ADR 0700).
+display-pattern = { path = "../../userspace/programs/display-pattern" }
 # The slot state on an installed system's EFI system partition and what
 # a slot says of itself, written as dukovo-install(8) and sysupdate(8)
 # write them (ADRs 0451 and 0452).

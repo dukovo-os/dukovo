@@ -4558,16 +4558,16 @@ The table of clients scrolls sideways, and the dialog's areas are one column.
 
 **Hardware**, in the list of pages, says what this machine is, what its last
 hardware check found, how hot it runs, how its disks and memory are, which
-devices the system found and which driver took each, and restarts or shuts the
-machine down. Anyone who signs in can look at it. Checking the hardware, testing
+devices the system found and which driver took each, which screens it draws on,
+and restarts or shuts the machine down. Anyone who signs in can look at it. Checking the hardware, testing
 the memory, reading the disks' own tests and the memory modules, restarting
 and shutting down are for administrators, who unlock the console first (see
 "Unlocking the console"). The page is at `/hardware`, and its cards have
 addresses of their own: `#machine`, `#check`, `#temps`, `#disks`, `#memory`,
-`#devices` and `#power`.
+`#devices`, `#screens` and `#power`.
 
 It reads `hardware show`, `hardware last`, `hardware history`, `hardware
-sensors`, `hardware devices`, `hardware memtest --status`, `metrics show` and
+sensors`, `hardware devices`, `hardware screens`, `hardware memtest --status`, `metrics show` and
 `shutdown --show`, and runs `hardware check`, `hardware memtest`, `shutdown -r`, `shutdown -P` and
 `shutdown -c` (hardware(8), diskhealth(8), shutdown(8)). "Checking the
 hardware" says what a check looks at and what each result means.
@@ -4703,6 +4703,22 @@ cannot tell. **No cable** marks a network card without a link. A device you need
 and that has no driver has **Report it**, which opens a report about the
 hardware; the report carries its IDs, which are the vendor and device numbers,
 never a serial number (see "Report a problem").
+
+### Screens
+
+**Screens** reads the list when you press **Show the screens**, and changes
+nothing. **In front** says which program has the screens: the console, as
+**consoled (process 41)**, **The kernel's log** before the console has started,
+or the last picture of a program that ended. Under it is a table for each
+graphics card, named as the system names it, **virtio0** or **firmware0**, with
+what the card is; a card that says **in the mode the firmware set** cannot
+change its screen's mode. Each screen of the card is a row: **Screen**, the
+**Monitor** by its name, maker and size, the mode it **Shows**, as **1920x1080
+at 60 Hz**, the **Modes** the monitor offers with the one it prefers marked,
+its **Colour depth**, and whether it says it has **HDR** and **Variable
+refresh**. A screen with no monitor says **Nothing plugged in**, and one whose
+card stopped drawing on it says **Stopped**. A monitor's serial number is not
+read. `hardware screens` prints the same list in a terminal (hardware(8)).
 
 ### Restart or shut down
 

@@ -64,6 +64,8 @@ machine with AMT, an AMD machine and a laptop; see
 | The power button and a graceful off on a real lab machine (`power = "button"` and `"off"`) | AMT asks the system to shut down only when an agent in the system answers AMT, which Dukovo has none of | A decision by the maintainers |
 | Lab machines with Secure Boot on, for Secure Boot's tests on real hardware | The network GRUB and the pinned Linux kernel the writer runs on are not signed (ADR 0429) | A need: Secure Boot's lab tests |
 | AMD lab machine set up as a lab target (no AMT: a smart plug, network boot and network logs) | Need the machine | AMD lab machine |
+| The display layer on real machines and real hosts (ADRs 0704, 0705): the firmware card's bars on the OptiPlex (a 1920 by 1080 frame in under 3 ms, 64 by 64 pixels in under 10 µs, each no slower than Linux there), sixteen screens on one virtio card, and the text band on hosts other than QEMU | CI's virtual machines have four screens and no real framebuffer; the bars are of real memory | The lab's machines and its virtual machine host |
+| virtio-gpu's shared pages are off unless `virtio-gpu=shared` asks for them (ADR 0704) | No host that offers them has run the path: QEMU on CI's runners does not | The lab's virtual machine host, if its kernel offers what QEMU needs |
 | The lab PC's half of `sharing/nfs-server` | Needs a kernel NFS client, which the build container lacks | A run on the lab PC |
 | The lab test of Repair startup (`boot/repair-startup`, ADR 0503): the installed system's menu taken off its EFI system partition, then the install stick's Repair startup puts it back | A test plugs in a stick only as a file beside the test or a blank one; the install stick is started only by `boot = "stick"`, which comes with a blank disk | Lab harness: a step that plugs in the install stick mid-test |
 | The lab test of troubleshoot for a start that failed on bad firmware (`troubleshoot/bad-firmware`, ADR 0474): a firmware set with damaged microcode staged and tried, and troubleshoot naming FW-101 | `boot/troubleshoot` matches the shipped signatures against facts a file holds, and `boot/startup` runs startup; a real failed start needs a firmware set made damaged for the test and a restart that the health check fails | Lab harness: a damaged firmware set for a test (lab PR 10) |
@@ -302,6 +304,10 @@ These come from finished work; the releases themselves are in the
 | The Precision Touchpad's reports (fingers, scrolling, gestures), touchpad sleep and wake (ADR 0235) | The desktop reads them | Release 1.3 |
 | The lid lock, brightness keys and sleep; the sleep button; wake events (ADRs 0142, 0201) | Power management with the desktop | Release 1.3 |
 | Mouse selection in the consoles, and fonts beyond Spleen's (ADR 0100) | Console polish | Release 1.1 or a need |
+| A monitor's name, size and modes on the firmware's framebuffer, so its size in millimetres is unknown there (ADR 0705) | The boot loader passes none of the monitor's data | Release 1.10 |
+| Drivers for the other virtual video cards: a VGA card whose mode can be changed, VMware's, VirtualBox's and Hyper-V's (ADR 0705) | Each keeps the firmware's picture in 1.1, and is a small driver on the display layer when its turn comes | A need |
+| A graphics card with no device behind it, for a desktop on a machine with no screen (ADR 0700) | Belongs with remote desktop | Remote desktop |
+| Turning a screen off after a time (ADR 0700) | Power management with the desktop | Release 1.3 |
 | Console layouts whose letters are not Latin, with a second group (ADR 0149) | Needs group switching in the consoles | Release 1.31 (languages) or a need |
 | A sound server that mixes, as the one player (ADR 0320) | Full audio | Release 1.13 |
 | Version 2 of the bundle manifest: `entries`, `actions` and `display` (ADR 0221) | Desktop integration | Releases 1.3 and 1.4 |
@@ -550,6 +556,7 @@ machine asks for them.
 | Item | Source |
 | --- | --- |
 | `posix_git_status` reported, not gated, until parity | ADR 0294 |
+| The display layer's rows (`display_check` to `display_pointer_virtio`) are counted in instructions and held to budgets; their timings beside Linux's page flip, its damage call and its pointer move come with the input devices' rows, when Linux's benchmark machine gets a graphics card and input devices in one step | ADR 0700 |
 | `posix_poll_idle` reported, not gated, until parity: `poll` on 1,001 pipes takes 1.52 times Linux's time on CI's runners (9.6 µs against 6.3 µs), from 12.7 before ADR 0354, about 130 instructions a descriptor. Each descriptor reads five cache lines, its slot, its record, the file, the pipe's end and the pipe, where Linux reads two or three; next, the address kept in the slot as well as the record, and a pipe's end named by the address itself | ADR 0354 |
 | On an AMD EPYC 9V45 runner, an event queue's wait for one ready pipe among 1,000 idle ones (`posix_events_idle`) takes 1.10 times Linux's time (326 ns against epoll's 297 ns), where Intel 6975P-C runners give 0.90 to 0.92: the gate on the second runner fails when it lands on that machine. Its first AMD run came with ADR 0354, which does not touch the wait; next, a count of its instructions and cache misses there against epoll's | ADR 0353 |
 | Optical reads reported, not gated, until parity; USB storage rows | ADR 0434 |

@@ -86,18 +86,38 @@ pub struct Geometry {
 
 impl Geometry {
     /// Finds the kernel's line
-    /// `Framebuffer: console of 160x50 cells with font 8x16 at (0, 0)`,
+    /// `Framebuffer: console of 160x50 cells with font 8x16 at (0, 0)`
+    /// (`Display:` where the console is on a card with no framebuffer),
     /// or consoled's `consoled: console of ...` once it has taken the
     /// screen over, with `font 12x24 doubled` where it draws the font at
     /// twice its size: the last of them. A line the serial port has not
     /// yet ended is not read, as it may be only part of one.
     pub fn from_log(log: &str) -> Option<Geometry> {
+        const STARTS: [&str; 3] =
+            ["Framebuffer: console of ", "Display: console of ", "consoled: console of "];
+        Geometry::last_after(log, &STARTS)
+    }
+
+    /// As [`Geometry::from_log`], of the consoles on screen `number` of
+    /// those consoled shows them on, counted from 1: for the first, the
+    /// line above; for another, consoled's last
+    /// `consoled: screen 2: console of ...`, which has the grid's corner
+    /// on that screen.
+    pub fn of_screen(log: &str, number: usize) -> Option<Geometry> {
+        if number <= 1 {
+            return Geometry::from_log(log);
+        }
+        Geometry::last_after(log, &[&format!("consoled: screen {number}: console of ")])
+    }
+
+    /// The geometry the last ended line of `log` gives that has one of
+    /// `starts` in it.
+    fn last_after(log: &str, starts: &[&str]) -> Option<Geometry> {
         let ended = log.rfind('\n').map_or("", |end| &log[..end]);
-        let line = ended.lines().rev().find_map(|l| {
-            ["Framebuffer: console of ", "consoled: console of "]
-                .iter()
-                .find_map(|prefix| l.split(prefix).nth(1))
-        })?;
+        let line = ended
+            .lines()
+            .rev()
+            .find_map(|l| starts.iter().find_map(|start| l.split(start).nth(1)))?;
         let (grid, rest) = line.split_once(" cells with font ")?;
         let (font, rest) = rest.split_once(" at (")?;
         let (x, y) = rest.trim_end_matches(')').split_once(", ")?;
@@ -259,6 +279,26 @@ mod tests {
             Geometry::from_log(&log).unwrap(),
             Geometry { cols: 80, rows: 22, font: (12, 24), scale: 2, origin: (0, 12) }
         );
+    }
+
+    #[test]
+    fn finds_each_screens_geometry_in_the_log() {
+        // A console on a card with no framebuffer is the kernel's too.
+        let log = "[    0.2 cpu0] Display: console of 128x48 cells with font 8x16 at (0, 0)\n";
+        assert_eq!(Geometry::from_log(log).map(|found| found.cols), Some(128));
+        // consoled's first screen is the line the tests always read;
+        // another screen's is its own, the last of them.
+        let log = format!(
+            "{log}[    2.5 cpu1] consoled: console of 100x37 cells with font 8x16 at (240, 104)\n\
+             [    2.5 cpu1] consoled: screen 2: console of 100x37 cells with font 8x16 at (112, 88)\n\
+             [    7.0 cpu1] consoled: screen 3: console of 100x37 cells with font 8x16 at (0, 4)\n\
+             [    9.0 cpu1] consoled: screen 2: console of 100x37 cells with font 8x16 at (0, 0)\n"
+        );
+        let origin = |number| Geometry::of_screen(&log, number).map(|found| found.origin);
+        assert_eq!(origin(1), Some((240, 104)));
+        assert_eq!(origin(2), Some((0, 0)));
+        assert_eq!(origin(3), Some((0, 4)));
+        assert_eq!(origin(4), None);
     }
 
     #[test]

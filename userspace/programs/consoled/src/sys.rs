@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! The kernel's own requests on the devices consoled drives, which the C
-//! library has no names for: radix-framebuffer(2)'s and radix-input(2)'s
+//! library has no names for: radix-display(2)'s and radix-input(2)'s
 //! `control` requests (radix-file(2)), through `radix_abi`'s wrappers.
 //!
 //! Built for another system (the unit tests run on the build machine),
@@ -69,11 +69,17 @@ fn io_error(status: Status) -> io::Error {
     io::Error::from_raw_os_error(errno)
 }
 
+/// The slot of the program's own that descriptor `fd` is in, as the
+/// kernel's requests name a file.
+pub fn slot(fd: i32) -> u32 {
+    startup::SLOT_FD_BASE + fd as u32
+}
+
 /// Sends the device open as descriptor `fd` its request `request` with
 /// `argument`, and `buffer` for it to read or fill (radix-file(2)'s
 /// `control`).
 pub fn control(fd: i32, request: u32, argument: u64, buffer: &mut [u8]) -> io::Result<u64> {
-    let slot = startup::SLOT_FD_BASE + fd as u32;
+    let slot = slot(fd);
     let address = if buffer.is_empty() { 0 } else { buffer.as_mut_ptr() as u64 };
     file::control(&SYS, slot, request, argument, address, buffer.len() as u64)
         .map(|done| done.result)

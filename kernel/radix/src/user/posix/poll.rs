@@ -282,6 +282,8 @@ pub(crate) fn polled_by(object: &Object, each: &mut dyn FnMut(&Polled)) {
                 each(&crate::audio::POLLED);
             } else if file.is_crashes() {
                 each(&crate::fs::crashes::POLLED);
+            } else if file.is_display() {
+                each(&crate::display::POLLED);
             }
         }
         Object::Notification(notification) => each(notification.polled()),
@@ -412,6 +414,8 @@ fn file_events(file: &FileObject) -> u16 {
         crate::audio::events(file)
     } else if file.is_crashes() {
         crate::fs::crashes::events(file)
+    } else if file.is_display() {
+        crate::display::events(file)
     } else {
         READABLE | WRITABLE
     }

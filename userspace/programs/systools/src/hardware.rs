@@ -41,6 +41,7 @@ mod plan;
 mod run;
 pub(crate) mod saved;
 mod scan;
+mod screens;
 mod sensors;
 mod show;
 
@@ -60,8 +61,8 @@ use saved::Saved;
 const USAGE: &str = "usage: hardware check [AREA...] [--full] [--disk DISK] [--time SECONDS] \
                      [--yes] [--progress] [--json]\n       hardware last [--json]\n       \
                      hardware history [--json]\n       hardware show [--json]\n       hardware \
-                     sensors [--json]\n       hardware devices [--json]\n       hardware memtest \
-                     --next-start | --cancel | --status [--json]";
+                     sensors [--json]\n       hardware devices [--json]\n       hardware screens \
+                     [--json]\n       hardware memtest --next-start | --cancel | --status [--json]";
 
 /// Set by SIGINT, SIGTERM or SIGHUP: the check stops, and aborts the
 /// self-tests it started.
@@ -81,6 +82,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         Some(command) if command == "show" => show_command(args),
         Some(command) if command == "sensors" => sensors_command(args),
         Some(command) if command == "devices" => devices_command(args),
+        Some(command) if command == "screens" => screens_command(args),
         // A refusal of memtest is a status 1 of its own, as `changes bisect`'s.
         Some(command) if command == "memtest" => {
             return memtest::main(args)
@@ -335,6 +337,22 @@ fn devices_command(args: &mut Args) -> Result<i32, Fail> {
     Ok(0)
 }
 
+/// `hardware screens`: the graphics cards the system draws through and
+/// their screens, as the kernel's display layer has them, and which
+/// program is in front.
+fn screens_command(args: &mut Args) -> Result<i32, Fail> {
+    let json = json_only(args)?;
+    let found = screens::gather(&screens::Sources::system());
+    let mut out = io::stdout().lock();
+    if json {
+        let text = found.json().map_err(|error| fail(format!("cannot write JSON: {error}")))?;
+        writeln!(out, "{text}")?;
+    } else {
+        write!(out, "{}", found.text())?;
+    }
+    Ok(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,6 +407,7 @@ mod tests {
         assert_eq!(ended(&["show", "memory"]), Err(3));
         assert_eq!(ended(&["sensors", "--now"]), Err(3));
         assert_eq!(ended(&["devices", "pci"]), Err(3));
+        assert_eq!(ended(&["screens", "virtio0"]), Err(3));
     }
 
     fn folder(call: &str) -> std::path::PathBuf {

@@ -261,6 +261,7 @@ dependencies = [
  "radix-btrfs",
  "radix-cap",
  "radix-crosec",
+ "radix-display",
  "radix-elf",
  "radix-ena",
  "radix-exfat",
@@ -474,6 +475,13 @@ dependencies = [
 [[package]]
 name = "radix-crosec"
 version = "0.17.0"
+
+[[package]]
+name = "radix-display"
+version = "0.17.0"
+dependencies = [
+ "radix-abi",
+]
 
 [[package]]
 name = "radix-elf"

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Virtio over PCI: the transport, virtqueues and the block, network,
-//! sound, SCSI and console drivers.
+//! sound, SCSI, console and graphics drivers.
 //!
 //! Virtio (OASIS Virtual I/O Device specification, version 1.2) is how a
 //! virtual machine's devices talk to their hypervisor: a device and its
@@ -32,6 +32,10 @@
 //! - [`console::Console`] is the console (virtio-console), whose named
 //!   ports carry bytes to and from programs on the host, with one MSI-X
 //!   interrupt for all its queues.
+//! - [`gpu::Gpu`] is the graphics card (virtio-gpu) in its 2D mode: the
+//!   host keeps the pictures, shows them on the card's screens and draws
+//!   the pointer, with one MSI-X interrupt for its answers and one for
+//!   what its screens show changing.
 //!
 //! Nothing here waits: drivers submit requests and collect completions,
 //! and the kernel decides how threads wait for them (in `radix`, which
@@ -43,6 +47,7 @@
 
 pub mod blk;
 pub mod console;
+pub mod gpu;
 pub mod net;
 pub mod queue;
 pub mod scsi;
@@ -50,6 +55,12 @@ pub mod snd;
 
 #[cfg(test)]
 mod console_tests;
+#[cfg(test)]
+mod gpu_band_tests;
+#[cfg(test)]
+mod gpu_card;
+#[cfg(test)]
+mod gpu_tests;
 #[cfg(test)]
 mod net_tests;
 #[cfg(test)]
@@ -79,6 +90,8 @@ pub mod device_type {
     pub const CONSOLE: u16 = 3;
     /// A SCSI host bus adapter.
     pub const SCSI: u16 = 8;
+    /// A graphics card.
+    pub const GPU: u16 = 16;
     /// A sound card.
     pub const SOUND: u16 = 25;
 }
@@ -333,6 +346,14 @@ impl Transport {
     /// Sends configuration-change interrupts nowhere.
     pub fn no_config_interrupt(&self) {
         self.common.write16(common::CONFIG_MSIX_VECTOR, NO_VECTOR);
+    }
+
+    /// Sends configuration-change interrupts to MSI-X entry `vector`, or
+    /// nowhere for [`NO_VECTOR`]. False if the device does not take the
+    /// entry.
+    pub fn set_config_vector(&self, vector: u16) -> bool {
+        self.common.write16(common::CONFIG_MSIX_VECTOR, vector);
+        vector == NO_VECTOR || self.common.read16(common::CONFIG_MSIX_VECTOR) == vector
     }
 
     /// The device-specific configuration structure.

@@ -2,9 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! The framebuffer console: the kernel log on the screen, and the screen
-//! the panic report takes over. Since Phase 9 a program may take the screen
-//! to draw on through `/devices/fb0` (`fs::framebuffer`): the log stays off it
-//! until the program gives it back.
+//! the panic report takes over. The screen is also the display layer's
+//! first card (`crate::display`, ADR 0705): while one of the layer's
+//! holders is in front the log stays off it, and is drawn again when the
+//! front is the log's.
+//!
+//! A virtual machine's graphics card has no framebuffer: it is sent its
+//! pixels (ADR 0704). When such a card shows the log, the console is
+//! made again for its screen ([`lay`]) with no framebuffer, and from
+//! then on draws nothing itself: the card's thread asks what changed
+//! ([`next_draw`]) and sends that. All else here is the same for both.
 //!
 //! With the `quiet` flag, as an installed system starts (ADR 0426), the
 //! screen shows the startup screen instead: Dukovo's name and a bar that
@@ -16,23 +23,39 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-use radix_fbcon::Console;
+use radix_fbcon::{Console, Draw, FONTS, Font, Painter};
 use radix_hal::{Framebuffer, PixelFormat};
 use radix_klog::{Sink, Style, info, warn};
-use radix_sync::{SpinLock, TakeOnce};
+use radix_sync::{Once, SpinLock, TakeOnce};
 
 /// Cells of grid storage: enough for 1920x1080 with the smallest font
 /// (240 x 67, twice), or 4K with the font picked for it.
 const STORAGE_CELLS: usize = 96 * 1024;
 
 static STORAGE: TakeOnce<[u32; STORAGE_CELLS]> = TakeOnce::new([0; STORAGE_CELLS]);
+/// The grid storage while no console has it: one could not be made for
+/// the screen it was last asked for.
+static SPARE: SpinLock<Option<&'static mut [u32]>> = SpinLock::new(None);
+/// The built-in font the `font` flag names.
+static FONT: Once<&'static str> = Once::new();
+/// The built-in fonts as read, each from when a console first has it.
+/// A font is large: it is read into its place here, and lent from it.
+static FONTS_READ: [Once<Font<'static>>; FONTS.len()] = [const { Once::new() }; FONTS.len()];
+/// Whether the log writes to the console: from the first one made.
+static LOGGED_TO: AtomicBool = AtomicBool::new(false);
 /// The console. The log's sink takes it from interrupts too (the log masks
 /// them around its sinks), so everything else takes it with them masked.
 static SCREEN: SpinLock<Option<Console>> = SpinLock::new(None);
 /// Set by the panic path, which draws its report itself.
 static TAKEN_OVER: AtomicBool = AtomicBool::new(false);
-/// Set while a program holds the screen (`/devices/fb0`).
+/// Set while a holder of the display layer is in front, and draws on the
+/// screen.
 static HANDED_OVER: AtomicBool = AtomicBool::new(false);
+/// When the log last wrote an error, in `sched::now_ns`; 0 if it never
+/// did. The display layer brings the log to the front for one that
+/// comes while the log waits behind the last picture of a program that
+/// ended ([`error_at`]).
+static ERROR_AT: AtomicU64 = AtomicU64::new(0);
 /// Set while the startup screen shows in place of the log.
 static QUIET: AtomicBool = AtomicBool::new(false);
 /// How far the startup screen's bar is, of 1000.
@@ -60,6 +83,9 @@ impl Sink for ScreenSink {
         if TAKEN_OVER.load(Ordering::Relaxed) {
             return;
         }
+        if style == Style::Error {
+            ERROR_AT.store(crate::sched::now_ns(), Ordering::Relaxed);
+        }
         if let Some(console) = SCREEN.lock().as_mut() {
             console.write(text, style);
             // An error shows the log behind the startup screen.
@@ -80,27 +106,50 @@ impl Sink for ScreenSink {
 
 static SCREEN_SINK: ScreenSink = ScreenSink;
 
-/// Starts the framebuffer console with the font named by the `font` flag,
-/// or one chosen for the screen size.
-pub fn init_framebuffer(framebuffer: Framebuffer, font: Option<&str>) {
-    let auto = radix_fbcon::choose_font(framebuffer.width, framebuffer.height);
-    let font_name = match font {
-        Some(name) if radix_fbcon::builtin_font(name).is_some() => name,
-        Some(name) => {
-            warn!("Framebuffer: no built-in font `{name}`; using {auto}");
-            auto
+/// Starts the console on the firmware's framebuffer, if the boot loader
+/// left one, with the font the `font` flag names or one chosen for the
+/// screen's size. The flag is kept for a console made later ([`lay`]).
+pub fn init(framebuffer: Option<Framebuffer>, font: Option<&str>) {
+    if let Some(name) = font {
+        match FONTS.iter().find(|(known, _)| *known == name) {
+            Some(&(known, _)) => {
+                let _ = FONT.set(known);
+            }
+            None => warn!("Console: no built-in font `{name}`; one is chosen for the screen"),
         }
-        None => auto,
-    };
-    let Some(font) = radix_fbcon::builtin_font(font_name) else { return };
-    let Some(storage) = STORAGE.take() else { return };
+    }
+    let Some(framebuffer) = framebuffer else { return };
     let (width, height) = (framebuffer.width, framebuffer.height);
-    match Console::new(framebuffer, font, storage) {
+    let (Some(font), Some(storage)) = (font_for((width, height)), STORAGE.take()) else { return };
+    match Console::new(framebuffer, *font, storage) {
         Some(console) => {
             *SCREEN.lock_irq() = Some(console);
+            LOGGED_TO.store(true, Ordering::Release);
             radix_klog::add_sink(&SCREEN_SINK, true);
         }
         None => warn!("Framebuffer: cannot draw text on a {width}x{height} framebuffer"),
+    }
+}
+
+/// The font for a screen of `size` pixels, wide and high: the `font`
+/// flag's, or the largest that leaves the grid the console should have.
+fn font_for((width, height): (usize, usize)) -> Option<&'static Font<'static>> {
+    let chosen = radix_fbcon::choose_font(width, height);
+    let name = FONT.get().copied().unwrap_or(chosen);
+    let at = FONTS.iter().position(|(known, _)| *known == name)?;
+    if FONTS_READ[at].get().is_none() {
+        read_font(at);
+    }
+    FONTS_READ[at].get()
+}
+
+/// Reads built-in font `at` into its place. In a frame of its own, as
+/// the font passes through it.
+#[inline(never)]
+fn read_font(at: usize) {
+    if let Some(font) = radix_fbcon::builtin_font(FONTS[at].0) {
+        // Another CPU that read it first read the same.
+        let _ = FONTS_READ[at].set(font);
     }
 }
 
@@ -110,30 +159,159 @@ pub fn report() {
     let Some(console) = screen.as_ref() else {
         return;
     };
-    let fb = console.framebuffer();
     let (font_width, font_height) = console.font_size();
     let (x, y) = console.origin();
     let (cols, rows) = (console.cols(), console.rows());
-    let (address, width, height, pitch, bpp) =
-        (fb.phys_addr, fb.width, fb.height, fb.pitch, fb.format.bytes_per_pixel);
+    let framebuffer = console.framebuffer().map(|fb| {
+        (fb.phys_addr, fb.width, fb.height, fb.pitch, u32::from(fb.format.bytes_per_pixel) * 8)
+    });
     drop(screen);
+    // The boot tests find the grid on the screen by the second line.
+    let of = match framebuffer {
+        Some((address, width, height, pitch, bits)) => {
+            info!(
+                "Framebuffer: {width}x{height}, {bits} bits per pixel, pitch {pitch}, at \
+                 {address:#x}"
+            );
+            "Framebuffer"
+        }
+        None => "Display",
+    };
     info!(
-        "Framebuffer: {width}x{height}, {} bits per pixel, pitch {pitch}, at {address:#x}",
-        u32::from(bpp) * 8
-    );
-    info!(
-        "Framebuffer: console of {cols}x{rows} cells with font {font_width}x{font_height} at ({x}, {y})"
+        "{of}: console of {cols}x{rows} cells with font {font_width}x{font_height} at ({x}, {y})"
     );
 }
 
-/// Shows the startup screen in place of the log (`quiet`, ADR 0426), if
-/// there is a framebuffer console, until a minute after the boot began.
+/// Makes the console one for a screen of `width` by `height` pixels that
+/// has no framebuffer, for the card that shows the log on such a screen
+/// and is sent its pixels. A console that is one for that size already
+/// stays as it is. Any other gives way to a new one, whose text starts
+/// again from the log's records, and on which the startup screen shows
+/// if it showed. The card draws what [`next_draw`] gives it with the
+/// console's [`painter`].
+///
+/// Returns whether there is such a console now: no text fits a screen
+/// too small, which is left with no console.
+pub fn lay(width: usize, height: usize) -> bool {
+    let size = (width, height);
+    if sent_size() == Some(size) {
+        return true;
+    }
+    let mut made = false;
+    if LOGGED_TO.swap(true, Ordering::AcqRel) {
+        // With the log locked, so that no line is written between the
+        // new console and the records it starts from.
+        radix_klog::replay(&SCREEN_SINK, || made = make_sent(size));
+    } else {
+        made = make_sent(size);
+        radix_klog::add_sink(&SCREEN_SINK, true);
+    }
+    made
+}
+
+/// The size of the screen the console is for, if it is one with no
+/// framebuffer.
+fn sent_size() -> Option<(usize, usize)> {
+    let screen = SCREEN.lock_irq();
+    let console = screen.as_ref().filter(|console| console.framebuffer().is_none())?;
+    Some(console.painter().screen())
+}
+
+/// Replaces the console with one of no framebuffer for a screen of
+/// `size`, on the storage of the one there was, and returns whether it
+/// could. It logs nothing: [`lay`] calls it with the log locked.
+fn make_sent(size: (usize, usize)) -> bool {
+    let mut screen = SCREEN.lock_irq();
+    let Some(storage) = take_storage(&mut screen) else { return false };
+    match put_sent(&mut screen, size, storage) {
+        Ok(()) => true,
+        Err(storage) => {
+            *SPARE.lock_irq() = Some(storage);
+            false
+        }
+    }
+}
+
+/// The grid storage: that of the console in `screen`, which ends, or
+/// from where it waits while there is no console. A console is large,
+/// so each step of [`make_sent`] has a frame of its own.
+#[inline(never)]
+fn take_storage(screen: &mut Option<Console>) -> Option<&'static mut [u32]> {
+    if let Some(console) = screen.take() {
+        return Some(console.into_storage());
+    }
+    if let Some(spare) = SPARE.lock_irq().take() {
+        return Some(spare);
+    }
+    let never_used: &'static mut [u32] = STORAGE.take()?;
+    Some(never_used)
+}
+
+/// Puts in `screen` a console of no framebuffer for a screen of `size`
+/// pixels, on `storage`, with the startup screen on it if that shows.
+///
+/// # Errors
+///
+/// `storage` again, if no text fits the screen.
+#[inline(never)]
+fn put_sent(
+    screen: &mut Option<Console>,
+    size: (usize, usize),
+    storage: &'static mut [u32],
+) -> Result<(), &'static mut [u32]> {
+    let Some(font) = font_for(size) else { return Err(storage) };
+    let console = screen.insert(Console::without_framebuffer(size, font, storage)?);
+    if QUIET.load(Ordering::Relaxed) {
+        console.draw_splash(TITLE, HINT, PROGRESS.load(Ordering::Relaxed));
+    }
+    Ok(())
+}
+
+/// Puts what draws the console's cells as rows of pixels in `into`, or
+/// `None` if there is no console.
+pub fn painter(into: &mut Option<Painter>) {
+    *into = SCREEN.lock_irq().as_ref().map(Console::painter);
+}
+
+/// What the card that is sent the console's pixels draws next, which
+/// counts as drawn from then on: a part of the screen, and in `cells`
+/// the cells of one that is text. `None` when nothing waits, while a
+/// holder of the display layer has the screens, and for a console on a
+/// framebuffer, which draws itself.
+pub fn next_draw(cells: &mut [u32]) -> Option<Draw> {
+    let mut screen = SCREEN.lock_irq();
+    let taken = TAKEN_OVER.load(Ordering::Relaxed);
+    if HANDED_OVER.load(Ordering::Relaxed) && !taken {
+        return None;
+    }
+    // The startup screen hides the text, and the panic report is text.
+    let text = taken || !QUIET.load(Ordering::Relaxed);
+    screen.as_mut()?.next_draw(text, cells)
+}
+
+/// All of the console's screen is drawn again, as the log or the
+/// startup screen: for the card that is sent its pixels, when it has a
+/// new picture to draw them in.
+pub fn redraw() {
+    if let Some(console) = SCREEN.lock_irq().as_mut() {
+        if QUIET.load(Ordering::Relaxed) && !TAKEN_OVER.load(Ordering::Relaxed) {
+            console.draw_splash(TITLE, HINT, PROGRESS.load(Ordering::Relaxed));
+        } else {
+            console.repaint();
+        }
+    }
+}
+
+/// Shows the startup screen in place of the log (`quiet`, ADR 0426)
+/// until a minute after the boot began: on the console there is, and on
+/// one made while it shows.
 pub fn quiet() {
     let mut screen = SCREEN.lock_irq();
-    let Some(console) = screen.as_mut() else { return };
     QUIET.store(true, Ordering::Relaxed);
     QUIET_UNTIL.store(QUIET_NS, Ordering::Relaxed);
-    console.draw_splash(TITLE, HINT, PROGRESS.load(Ordering::Relaxed));
+    if let Some(console) = screen.as_mut() {
+        console.draw_splash(TITLE, HINT, PROGRESS.load(Ordering::Relaxed));
+    }
 }
 
 /// Moves the startup screen's bar to `per_mille` of 1000, if it is
@@ -187,7 +365,7 @@ pub fn reveal() {
     }
 }
 
-/// Whether there is a framebuffer console.
+/// Whether there is a console on a screen.
 pub fn present() -> bool {
     SCREEN.lock_irq().is_some()
 }
@@ -211,7 +389,7 @@ pub fn take_over(draw: impl FnOnce(&mut Console)) {
 /// there is a framebuffer console.
 pub fn screen() -> Option<(usize, usize, usize, PixelFormat)> {
     let screen = SCREEN.lock_irq();
-    let fb = screen.as_ref()?.framebuffer();
+    let fb = screen.as_ref()?.framebuffer()?;
     Some((fb.width, fb.height, fb.pitch, fb.format))
 }
 
@@ -219,20 +397,27 @@ pub fn screen() -> Option<(usize, usize, usize, PixelFormat)> {
 /// framebuffer console: addresses there are not given to devices.
 pub fn framebuffer_start() -> Option<u64> {
     let screen = SCREEN.lock_irq();
-    Some(screen.as_ref()?.framebuffer().phys_addr)
+    Some(screen.as_ref()?.framebuffer()?.phys_addr)
 }
 
-/// Gives the screen to a program (`/devices/fb0`): the log stops drawing on
-/// it, and the startup screen is done with, so that the log shows when the
-/// program gives the screen back.
+/// When the log last wrote an error to the console, on the kernel's
+/// clock, or 0 if it never did. Its sink wakes nobody, so whoever needs
+/// to know of one looks here.
+pub fn error_at() -> u64 {
+    ERROR_AT.load(Ordering::Relaxed)
+}
+
+/// Gives the screen to the display layer's holder in front: the log stops
+/// drawing on it, and the startup screen is done with, so that the log
+/// shows when the front is the log's again.
 pub fn hand_over() {
     HANDED_OVER.store(true, Ordering::Relaxed);
     QUIET.store(false, Ordering::Relaxed);
     QUIET_UNTIL.store(0, Ordering::Relaxed);
 }
 
-/// Takes the screen back from the program that held it, and draws the log
-/// on it again.
+/// Takes the screen back from the display layer's holders, and draws the
+/// log on it again.
 pub fn give_back() {
     // With interrupts masked, as the log writes the screen from them.
     let mut screen = SCREEN.lock_irq();
@@ -244,24 +429,18 @@ pub fn give_back() {
     }
 }
 
-/// Copies `bytes` into the framebuffer at byte `offset`, for the program
-/// that holds the screen. Returns false past its end.
-pub fn put_pixels(offset: usize, bytes: &[u8]) -> bool {
+/// Hands the framebuffer's pixels to `draw`, for the display layer's
+/// holder in front (`crate::display`), and returns what it returns.
+/// `None`, with `draw` not run, once the panic report owns the screen,
+/// while the log has it, and without a framebuffer. `draw` runs
+/// with the console's lock held and interrupts masked: it copies a row
+/// and logs nothing.
+pub fn with_pixels<R>(draw: impl FnOnce(&mut [u8]) -> R) -> Option<R> {
     let mut screen = SCREEN.lock_irq();
     if TAKEN_OVER.load(Ordering::Relaxed) || !HANDED_OVER.load(Ordering::Relaxed) {
-        // The panic report owns the screen now, or the kernel took it back
-        // to show the end of a shutdown.
-        return true;
+        return None;
     }
-    let Some(console) = screen.as_mut() else { return false };
-    let Some(end) = offset.checked_add(bytes.len()) else { return false };
-    match console.pixels_mut().get_mut(offset..end) {
-        Some(target) => {
-            target.copy_from_slice(bytes);
-            true
-        }
-        None => false,
-    }
+    Some(draw(screen.as_mut()?.pixels_mut()?))
 }
 
 /// Changes one line of the screen in place, such as a restart countdown.

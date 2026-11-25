@@ -264,20 +264,39 @@ pub fn add_sink(sink: &'static dyn Sink, replay: bool) -> bool {
         };
         *slot = Some(sink);
         if replay {
-            let level = console_level();
-            let first = state.next_seq.saturating_sub(RECORDS as u64);
-            for seq in first..state.next_seq {
-                let record = &state.records[(seq % RECORDS as u64) as usize];
-                if record.level <= level || sink.wants_all_levels() {
-                    let mut line = TextBuf::<{ RECORD_TEXT + 40 }>::new();
-                    let _ = record.format(&mut line);
-                    line.push_str("\n");
-                    sink.write(line.as_str(), record.level.into());
-                }
-            }
+            write_ring(state, sink);
         }
         true
     })
+}
+
+/// Writes the messages in the ring to `sink`, oldest first, those it
+/// takes at the console level.
+fn write_ring(state: &State, sink: &dyn Sink) {
+    let level = console_level();
+    let first = state.next_seq.saturating_sub(RECORDS as u64);
+    for seq in first..state.next_seq {
+        let record = &state.records[(seq % RECORDS as u64) as usize];
+        if record.level <= level || sink.wants_all_levels() {
+            let mut line = TextBuf::<{ RECORD_TEXT + 40 }>::new();
+            let _ = record.format(&mut line);
+            line.push_str("\n");
+            sink.write(line.as_str(), record.level.into());
+        }
+    }
+}
+
+/// Runs `before`, and then writes the messages in the ring to `sink` as
+/// [`add_sink`] does for a console that comes up late: for a console
+/// that starts again with nothing on it, such as a screen whose size
+/// changed. The log is locked from before `before` runs until the last
+/// message is written, so nothing is logged in between, and `before`
+/// logs nothing itself.
+pub fn replay(sink: &dyn Sink, before: impl FnOnce()) {
+    with_state(|state| {
+        before();
+        write_ring(state, sink);
+    });
 }
 
 /// The kernel's facility, of its own records.
@@ -463,6 +482,16 @@ mod tests {
         assert!(!replayed.contains("hidden detail"), "debug is below the console level");
         info!("after");
         assert!(sink.0.lock().unwrap().ends_with("after\n"));
+
+        // A console that starts again gets the same messages once more,
+        // after what it does to start.
+        replay(sink, || sink.0.lock().unwrap().clear());
+        let again = sink.0.lock().unwrap().clone();
+        assert!(again.starts_with('['), "nothing from before is left");
+        assert!(again.contains("[    0.000000] first 1\n"));
+        assert!(again.ends_with("after\n"));
+        assert_eq!(again.matches("after\n").count(), 1);
+        assert!(!again.contains("hidden detail"));
     }
 
     #[test]

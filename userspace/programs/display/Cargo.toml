@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "display"
+description = "The display layer for programs: radix-display(2)'s records to and from bytes, and its requests on a holder's file"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The interface, generated from abi/display.ridl.
+radix-abi = { path = "../../../kernel/abi" }
+
+[dev-dependencies]
+# The kernel's own readers and writers of the records, which the tests
+# check these against, each way.
+radix-display = { path = "../../../kernel/lib/display" }
+
+[lints]
+workspace = true

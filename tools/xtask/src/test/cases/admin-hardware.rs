@@ -46,6 +46,14 @@
 //! host bridge is hidden, and no member of the document is a serial number.
 //! A read given a name it does not take is ADM-108.
 //!
+//! The screens. `GET /api/1/hardware/screens` is one document for bob and
+//! for alice, and what `hardware screens --json` prints in alice's pane but
+//! for the count of the card's wake-ups, which moves while the console
+//! draws. The machine has the firmware's framebuffer and no other card,
+//! which is `firmware0` and sets no mode, with one screen that is plugged
+//! in and shows the one mode it has; consoled is the program in front; and
+//! no member of the document is a serial number.
+//!
 //! What the pane's commands print reaches the host through nc, to a port on
 //! the host's loopback that QEMU's user network gives the guest at
 //! 10.0.2.2.
@@ -72,7 +80,7 @@ const CHECK_SECONDS: u64 = 420;
 /// The test.
 pub const CASE: Case = Case {
     name: "admin-hardware",
-    about: "The web console's Hardware: GET /api/1/hardware is what hardware show --json prints in alice's pane, for bob and for alice, with no memory modules and no serial number; hardware.inventory is ADM-122 for bob and ADM-106 for alice locked, and unlocked the same document with the memory's slots and modules from the tables of QEMU's SMBIOS; before any check hardware.last is null and hardware last --json prints null and ends with status 3, and hardware.history is the empty list; hardware.check is ADM-122 for bob and ADM-106 for alice locked, an area that is none, an area named twice and a disk with another area are ADM-125 with their fields, none of them starts a check, and for the sensors and the processors it is a task that counts each check as a step, to the last; bob then reads the result it kept, as hardware last --json prints it in alice's pane, and the history has its one line, as hardware history --json prints it; hardware.sensors, hardware.highest and hardware.devices are the same document for bob and for alice, as the commands print it in alice's pane with status 0: QEMU has no sensor, and its virtio network card is driven by radix-virtio and working",
+    about: "The web console's Hardware: GET /api/1/hardware is what hardware show --json prints in alice's pane, for bob and for alice, with no memory modules and no serial number; hardware.inventory is ADM-122 for bob and ADM-106 for alice locked, and unlocked the same document with the memory's slots and modules from the tables of QEMU's SMBIOS; before any check hardware.last is null and hardware last --json prints null and ends with status 3, and hardware.history is the empty list; hardware.check is ADM-122 for bob and ADM-106 for alice locked, an area that is none, an area named twice and a disk with another area are ADM-125 with their fields, none of them starts a check, and for the sensors and the processors it is a task that counts each check as a step, to the last; bob then reads the result it kept, as hardware last --json prints it in alice's pane, and the history has its one line, as hardware history --json prints it; hardware.sensors, hardware.highest and hardware.devices are the same document for bob and for alice, as the commands print it in alice's pane with status 0: QEMU has no sensor, and its virtio network card is driven by radix-virtio and working; hardware.screens is the same document for both, as hardware screens --json prints it: the firmware's card with its one screen in the one mode it has, consoled in front, and no serial number",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, admind among them.
@@ -281,6 +289,7 @@ fn admin_hardware(vm: &mut Vm, case: &Case) -> Result<(), String> {
     nothing_kept_yet(vm, &mut test)?;
     a_check(vm, &mut test)?;
     sensors_and_devices(vm, &mut test)?;
+    the_screens(vm, &mut test)?;
     //
     // Step 5 goes after it, and ends the test in place of the power button
     // below: power.restart while the console trial runs, and the restart
@@ -558,6 +567,66 @@ fn from_vendor(row: &Value, vendor: &str) -> bool {
     row["ids"].as_str().is_some_and(|ids| ids.starts_with(vendor))
 }
 
+/// The screens' document without the count of each card's wake-ups, which
+/// moves while the console draws.
+fn without_the_wakes(value: &Value) -> Value {
+    let mut value = value.clone();
+    if let Some(cards) = value["cards"].as_array_mut() {
+        for card in cards {
+            card["wakes"] = Value::Null;
+        }
+    }
+    value
+}
+
+/// The screens, which a person reads, as the route says them and as the
+/// command prints them: the firmware's card and its one screen.
+fn the_screens(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
+    let path = "/api/1/hardware/screens";
+    let screens = read_as_printed(vm, test, path, "hardware screens --json", without_the_wakes)?;
+    if screens["format"] != json!(1) || has_member(&screens, "serial") {
+        return Err(format!("hardware screens has the document {screens}"));
+    }
+    // The console has the screens, and is named from its process.
+    let front = &screens["front"];
+    if front["holder"] != json!("program")
+        || front["name"] != json!("consoled")
+        || !front["process"].is_u64()
+    {
+        return Err(format!("hardware screens says {front} is in front, not consoled"));
+    }
+    // The firmware's framebuffer is the one card: it sets no mode, and
+    // nothing can be plugged into it or pulled from it.
+    let cards = screens["cards"].as_array().map_or_default(Vec::as_slice);
+    let [card] = cards else {
+        return Err(format!("hardware screens lists the cards {}", screens["cards"]));
+    };
+    if card["name"] != json!("firmware0")
+        || card["kind"] != json!("firmware")
+        || card["sets_modes"] != json!(false)
+        || card["hot_plug"] != json!(false)
+        || !card["wakes"].is_u64()
+    {
+        return Err(format!("the firmware's card is shown as {card}"));
+    }
+    let shown = card["screens"].as_array().map_or_default(Vec::as_slice);
+    let [screen] = shown else {
+        return Err(format!("the firmware's card has the screens {}", card["screens"]));
+    };
+    let mode = &screen["mode"];
+    let sized = mode["width"].as_u64().is_some_and(|width| width >= 640)
+        && mode["height"].as_u64().is_some_and(|height| height >= 480);
+    if screen["number"] != json!(1)
+        || screen["plugged"] != json!(true)
+        || screen["failed"] != json!(false)
+        || !sized
+        || screen["modes"] != json!([mode])
+    {
+        return Err(format!("the firmware's screen is shown as {screen}"));
+    }
+    Ok(())
+}
+
 /// Step 4: the sensors, the highest temperatures and the devices, which a
 /// person reads, as the routes say them and as the commands print them.
 fn sensors_and_devices(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
@@ -600,6 +669,7 @@ fn sensors_and_devices(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
         "/api/1/hardware/sensors?all=true",
         "/api/1/hardware/highest?since=1d",
         "/api/1/hardware/devices?all=true",
+        "/api/1/hardware/screens?all=true",
     ] {
         test.get(Who::Bob, path)?.refused(&format!("{path} read by bob"), 400, "ADM-108")?;
     }

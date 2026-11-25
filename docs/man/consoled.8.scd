@@ -19,13 +19,33 @@ the one shown. Each console is a terminal for *TERM=linux*, a VT100 with
 the Linux console's colours, keys and escape sequences, running the
 sign-in, *login*(1), on a pseudo-terminal of its own (*radix-posix*(7)).
 
-The Radix kernel shows its log on the screen while the machine starts.
-When consoled takes the screen (_/devices/fb0_, *radix-framebuffer*(2)) the
-kernel stops drawing on it, and when consoled ends the screen is the
-log's again; *dmesg*(1) shows the kernel's messages meanwhile. The keys
-come from _/devices/kbd_ (*radix-input*(2)): the PS/2 keyboard's events
-and every USB keyboard's, which can be plugged in and pulled out at any
-time.
+The Radix kernel shows its log on the screens while the machine starts.
+consoled is a holder of the display layer (_/devices/display/control_,
+*radix-display*(2)): its first change takes the screens from the log;
+*dmesg*(1) shows the kernel's messages meanwhile. When consoled ends,
+what it showed stays on the screens for three seconds, and the consoled
+that Spark starts in its place takes them with no log between; after
+the three seconds, or at once if the kernel logs an error, the screens
+are the log's again. The keys come from _/devices/kbd_
+(*radix-input*(2)): the PS/2 keyboard's events and every USB keyboard's,
+which can be plugged in and pulled out at any time.
+
+The shown console is on every screen a monitor is plugged into. Every
+screen shows the same columns and rows: as many as the screen with room
+for the fewest shows, each way. A screen with room for more shows them
+in the middle, in the largest text that still shows them all. A monitor
+plugged in later shows the console at once. When a screen comes, goes or
+changes its size, each console takes the new columns and rows, as a
+terminal does when its window is resized. consoled logs how each screen
+shows them, *console of 160x50 cells with font 8x16 at (0, 0)* for the
+first and the same after *screen 2:* for the next. consoled sends the
+layer only the cells that changed since its last draw. While another
+holder of the layer is in front, consoled draws nothing, and it draws
+the shown console whole when it is in front again. If the layer does not
+take a draw, consoled logs *cannot draw on the screens* and the reason
+once and goes on, so that the sessions and the readers of speech and
+braille do; it draws the console whole once the layer takes a draw
+again, and logs *the screens are drawn on again*.
 
 Spark starts consoled at boot as the *consoled* service
 (_/system/settings/spark/services/consoled.toml_, *spark*(8)), first and
@@ -33,9 +53,12 @@ stopped last, and starts it again if it fails. Its file asks for
 *admin.hardware*, so that root's shells may set the fans, the LEDs and
 the ARGB header with *ectool*(8), and for the whole network with
 *admin.network*, so that they may connect, listen on any port and set
-the interfaces up with *ip*(8). Without a screen, as on
+the interfaces up with *ip*(8). Without a graphics card, as on
 a machine with only a serial console, consoled logs *no screen for
-consoles* and exits with 0, and stays stopped.
+consoles* and exits with 0, and stays stopped. With a card and no
+monitor plugged in, consoled stays: it logs *no screen is plugged in:
+the consoles show when one is*, and the kernel's log keeps the screens
+until a monitor comes.
 
 # SESSIONS
 
@@ -292,6 +315,43 @@ waits, Shift and the others too.
 The screen reader says each change: *Text larger*, *shift*, *shift
 locked*, *Sticky keys on*.
 
+# LENDING THE SCREENS
+
+A program that draws the screens itself, such as a desktop, borrows them
+from consoled (ADR 0702): the display layer lets only the program in
+front pass the screens on, and consoled has them from the kernel's log.
+The program connects to _/system/live/consoled/display_, which only
+root can open. Connecting is the request. consoled answers with one line
+and closes the connection:
+
+*lent*
+	With it comes a descriptor (SCM_RIGHTS, *radix-posix*(7)): a holder
+	of _/devices/display/control_ of the borrower's own, in front
+	(*radix-display*(2)). The screens show the consoles until the
+	borrower's first change. consoled logs *the screens are lent to
+	another program*.
+
+*busy*
+	consoled does not have the screens to lend: another program has
+	borrowed them, or no screen shows the consoles.
+
+*failed*
+	The loan could not be made. consoled logs *cannot lend the screens*
+	and the reason.
+
+The borrower gives the screens back with RETURN, and the consoles show
+again within a frame. A borrower that ends without giving them back, as
+one that crashes or is started again does, leaves its last picture on
+the screens. consoled then draws nothing for five seconds, and a program
+that borrows the screens within them draws its first frame over that
+picture: a desktop that starts again shows no console between its old
+picture and its new one. After the five seconds the consoles show.
+
+While the screens are lent, and through those five seconds, what is
+typed on the keyboard is not typed into a console, and no key waits to
+be typed when the consoles show again. A braille display reads and
+types on the consoles throughout.
+
 # BRAILLE DISPLAYS
 
 consoled shows a braille display the consoles through *brltty*(1),
@@ -400,8 +460,8 @@ installer's screens set their design's sixteen while they show.
 
 # FILES
 
-_/devices/fb0_
-	The screen.
+_/devices/display/control_
+	The display layer, by which consoled draws on the screens.
 
 _/devices/kbd_
 	The keyboards' events.
@@ -443,6 +503,9 @@ _/system/live/readerd/socket_
 _/system/live/consoled/braille_
 	The socket a braille display's BRLTTY reads the consoles on.
 
+_/system/live/consoled/display_
+	The socket a program asks for the screens on.
+
 # SEE ALSO
 
 *login*(1), *authd*(8), *admind*(8), *elevate*(8), *spark*(8), *reboot*(8),
@@ -450,5 +513,5 @@ _/system/live/consoled/braille_
 *nukesh*(1), *dmesg*(1),
 *notifyd*(8), *notify-send*(1), *readerd*(8), *reader*(1), *brailled*(8),
 *braille*(1), *brltty*(1), *dukovo-boot*(7),
-*radix-framebuffer*(2), *radix-input*(2), *radix-files*(7),
+*radix-display*(2), *radix-input*(2), *radix-files*(7),
 *serial-console*(8)

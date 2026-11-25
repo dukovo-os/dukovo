@@ -245,8 +245,9 @@ impl Braille {
     }
 }
 
-/// A socket listening on `path`, which only root may open.
-fn listener(path: &str) -> io::Result<UnixListener> {
+/// A socket listening on `path`, which only root may open: for a braille
+/// display here, and for the other sockets consoled listens on.
+pub fn listener(path: &str) -> io::Result<UnixListener> {
     if let Some(dir) = std::path::Path::new(path).parent() {
         std::fs::create_dir_all(dir)?;
     }

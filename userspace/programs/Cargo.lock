@@ -800,9 +800,11 @@ name = "consoled"
 version = "0.17.0"
 dependencies = [
  "accounts",
+ "display",
  "keymap",
  "libc",
  "radix-abi",
+ "radix-display",
  "radix-fbcon",
  "serde",
  "serde_json",
@@ -1359,6 +1361,28 @@ dependencies = [
  "radix-vfs",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "display"
+version = "0.17.0"
+dependencies = [
+ "radix-abi",
+ "radix-display",
+]
+
+[[package]]
+name = "display-pattern"
+version = "0.17.0"
+
+[[package]]
+name = "display-test"
+version = "0.17.0"
+dependencies = [
+ "display",
+ "display-pattern",
+ "libc",
+ "radix-abi",
 ]
 
 [[package]]
@@ -3583,6 +3607,13 @@ dependencies = [
  "radix-hw",
  "radix-sync",
  "radix-vfs",
+]
+
+[[package]]
+name = "radix-display"
+version = "0.17.0"
+dependencies = [
+ "radix-abi",
 ]
 
 [[package]]

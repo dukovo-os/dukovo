@@ -23,6 +23,8 @@ has
 
 *hardware devices* [*--json*]
 
+*hardware screens* [*--json*]
+
 *hardware memtest* *--next-start*
 
 *hardware memtest* *--cancel*
@@ -111,6 +113,15 @@ disk's), the driver that took it where the system can tell, how it is
 doing, and where it is. Bridges and hubs, which work and need nothing,
 are marked hidden. No serial number is read. It needs no rights. See
 *DEVICES*.
+
+*hardware screens* lists every graphics card the system draws through and
+every screen of it, as the Hardware page shows them: the monitor that is
+plugged into each, by its name, maker and size, the mode it shows, the
+modes it offers, and what its colours can do. Its first line says which
+program has the screens. It reads the kernel's own account and asks no
+driver and no service, so it works with no console and no desktop
+running. No serial number of a monitor is read. It needs no rights. See
+*SCREENS*.
 
 *hardware memtest* asks the kernel to test the free memory at the next
 start only, before it starts the first program. *--next-start* asks, and
@@ -315,12 +326,15 @@ does not say is _null_.
     "vendor": "Example BIOS Ltd.",
     "version": "1.20",
     "date": "07/12/2023"
-  }
+  },
+  "screens": 1
 }
 ```
 
-_format_ is the version of the document, 1. _memory.bytes_ is what the
-kernel counts. For a program that holds the platform capability, _ecc_ is
+_format_ is the version of the document, 1. _screens_ is how many
+screens have a monitor plugged in, or _null_ on a machine with no
+graphics card; *hardware screens* says what each is. _memory.bytes_ is
+what the kernel counts. For a program that holds the platform capability, _ecc_ is
 whether the memory corrects errors, _slots_ how many slots the board has,
 empty ones too, and _modules_ the modules that are in them, each with its
 _slot_ as the board names it, its size in _bytes_, its _kind_, the _speed_
@@ -424,6 +438,66 @@ _null_.
 The text lists the devices that are not hidden, under *Network*,
 *Storage*, *USB*, *Display* and *Other*, a line for each: its name and
 numbers, what it is to the system, its driver and state, and where it is.
+
+# SCREENS
+
+*hardware screens --json* prints one line of JSON, with the version of
+the document, _format_ 1, who has the screens, _front_, and the graphics
+cards, _cards_, each with its _screens_ in the card's own order. What a
+monitor does not say is _null_.
+
+```
+{"format":1,"front":{"holder":"program","process":41,"name":"consoled"},"cards":[{"name":"virtio0","kind":"virtio","model":"Virtio graphics card","hot_plug":true,"sets_modes":true,"shared_pages":false,"wakes":977,"screens":[{"number":1,"plugged":true,"failed":false,"monitor":"Example 24","maker":"EXM","product":4660,"width_mm":527,"height_mm":296,"depth":8,"hdr":false,"variable_refresh":false,"mode":{"width":1920,"height":1080,"refresh_mhz":60000,"preferred":true},"modes":[{"width":1920,"height":1080,"refresh_mhz":60000,"preferred":true},{"width":1280,"height":720,"refresh_mhz":60000,"preferred":false}]}]}]}
+```
+
+*front*
+	Who has the screens. _holder_ is *log* while the kernel's log has
+	them, *program* while a program does, and *last-picture* while the
+	last picture of a program that ended stays (*consoled*(8)). For a
+	program, _process_ is the number of the process that made the last
+	change and _name_ its name; both are _null_ for one that has opened
+	the screens and has not drawn yet, and _name_ is for a process that
+	has ended since.
+
+*name*, *kind*, *model*
+	A card's name in the system, as _firmware0_ or _virtio0_, what kind
+	it is, *firmware* for the framebuffer the firmware set up, *virtio*
+	or *other*, and what it calls itself.
+
+*hot_plug*, *sets_modes*, *shared_pages*
+	Whether the card tells when a monitor is plugged in or pulled,
+	whether it can change a screen's mode (the firmware's framebuffer
+	stays in the mode the firmware set), and whether it shows a
+	program's own pages without a copy.
+
+*wakes*
+	How many times the card's thread in the kernel has woken since the
+	start. A screen that stands still adds none.
+
+*number*, *plugged*, *failed*
+	A screen's number on its card, from 1, whether a monitor is plugged
+	into it, and whether the card did not confirm a change in time and
+	stopped drawing on it.
+
+*monitor*, *maker*, *product*, *width_mm*, *height_mm*
+	What the monitor says of itself: its name, its maker's three
+	letters, its model number, and the size of its picture in
+	millimetres.
+
+*depth*, *hdr*, *variable_refresh*
+	The bits a colour the monitor takes at most, and whether it says it
+	shows high dynamic range and a refresh rate that follows the
+	picture.
+
+*mode*, *modes*
+	The mode the screen shows, or _null_ when it shows nothing, and the
+	modes it offers, the one it prefers first. A mode is its _width_ and
+	_height_ in pixels, its refresh rate in frames in 1000 seconds
+	(_refresh_mhz_), and whether the monitor prefers it.
+
+The text says who has the screens, then each card with what it is, and
+under it each screen: the monitor, the mode it shows, the modes it
+offers, and its colours. A machine with no graphics card says so.
 
 # THE MEMORY TEST AT THE START
 
@@ -585,9 +659,9 @@ support center says what it means and what to do.
 	could be made (every one was skipped).
 
 *hardware last* gives the status the saved check ended with, or 3 when
-none is saved. *hardware history*, *hardware show*, *hardware sensors*
-and *hardware devices* give 0, or 3 when the command line is wrong or
-what they read cannot be read.
+none is saved. *hardware history*, *hardware show*, *hardware sensors*,
+*hardware devices* and *hardware screens* give 0, or 3 when the command
+line is wrong or what they read cannot be read.
 
 *hardware memtest*: 0 when it did what was asked, or when there was
 nothing to take back; 1 when it was refused, because the person is not an
@@ -626,6 +700,10 @@ _/system/live/diskhealth/_
 
 _/kernel/class/dmi/id_, _/kernel/cpus_
 	What *hardware show* reads of the firmware and the processors.
+
+_/kernel/class/display/state_
+	What *hardware screens* reads, and *hardware show* counts the
+	screens from (*radix-sysfs*(5)).
 
 _/kernel/devices/system/edac_, _/kernel/class/hwmon_,
 _/kernel/class/power_supply_, _/kernel/class/net_, _/kernel/block_
@@ -683,6 +761,12 @@ hardware sensors
 hardware devices
 ```
 
+The screens, and the modes each monitor offers:
+
+```
+hardware screens
+```
+
 The memory tested at the next start, and the restart that takes it:
 
 ```
@@ -693,7 +777,8 @@ hardware memtest --status
 
 # SEE ALSO
 
-*diskhealth*(8), *sensors*(1), *nic*(8), *netcheck*(8), *dmesg*(1),
+*consoled*(8), *diskhealth*(8), *sensors*(1), *nic*(8), *netcheck*(8), *dmesg*(1),
 *elevate*(8), *hwinfo*(8), *lscpu*(1), *lspci*(8), *lsusb*(8),
-*radix-block*(2), *radix-sysfs*(5), *log*(1), *metrics*(1), *metricsd*(8),
+*radix-block*(2), *radix-display*(2), *radix-sysfs*(5), *log*(1), *metrics*(1),
+*metricsd*(8),
 *changes*(1), *alertd*(8), *shutdown*(8), *systools*(1)

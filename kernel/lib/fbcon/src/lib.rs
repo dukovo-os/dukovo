@@ -11,6 +11,13 @@
 //! cells that changed since the last one. Scrolling moves the grid in RAM;
 //! the framebuffer is never read, because reads from video memory are slow.
 //!
+//! A screen may have no framebuffer: a virtual machine's graphics card
+//! is sent its pixels. A console for one ([`Console::without_framebuffer`])
+//! keeps the same grid and draws nothing. Whoever sends the pixels asks
+//! it what changed ([`Console::next_draw`]) and draws that a row of
+//! pixels at a time ([`Painter::row`]), so neither keeps a picture of the
+//! screen. Both kinds draw with the same code and show the same pixels.
+//!
 //! The built-in fonts are Spleen by Frederic Cambus (BSD-2-Clause), in three
 //! sizes; [`choose_font`] picks one for the screen. The grid's storage is
 //! passed in, so the crate needs no heap and its tests run on the host.
@@ -22,7 +29,7 @@ pub mod psf;
 
 pub use psf::{Font, Glyph};
 
-use radix_hal::Framebuffer;
+use radix_hal::{Framebuffer, PixelFormat};
 use radix_klog::Style;
 
 /// The built-in fonts, smallest first, as (name, PSF file).
@@ -112,33 +119,313 @@ fn decode_cell(cell: u32) -> (char, usize) {
     (c, ((cell >> 24) as usize).min(STYLES - 1))
 }
 
-/// A text console drawn into a linear framebuffer.
-pub struct Console {
-    fb: Framebuffer,
+/// A rectangle of the screen: x, y, width and height in pixels.
+pub type Rect = (usize, usize, usize, usize);
+
+/// What it takes to draw a console's cells and its startup screen: the
+/// font, the colours in the screen's pixel layout, and where the grid is
+/// on the screen. The console draws on a framebuffer with it, and a copy
+/// of it draws rows of pixels with no console at hand ([`Painter::row`]),
+/// for a screen whose pixels are sent to it.
+#[derive(Clone, Copy, Debug)]
+pub struct Painter {
     font: Font<'static>,
+    format: PixelFormat,
+    /// The screen's size in pixels.
+    size: (usize, usize),
+    /// Columns in the grid.
     cols: usize,
-    rows: usize,
     /// Pixel position of the grid's top-left corner.
     origin: (usize, usize),
-    /// The text, `cols * rows` cells, row by row.
-    cells: &'static mut [u32],
-    /// What the screen shows, in the same layout.
-    drawn: &'static mut [u32],
+    /// Encoded pixel values: (foreground, background) per style.
+    colors: [(u32, u32); STYLES],
+}
+
+/// A part of the screen of a console with no framebuffer, to be drawn by
+/// whoever sends its pixels ([`Console::next_draw`], [`Painter::row`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Draw {
+    /// All of the screen, in the plain background.
+    Blank,
+    /// All of the screen: the startup screen, its bar at `per_mille` of
+    /// 1000.
+    Splash {
+        /// The name in large letters.
+        title: &'static str,
+        /// The line near the bottom.
+        hint: &'static str,
+        /// How far the bar is.
+        per_mille: u32,
+    },
+    /// The startup screen's bar, at so many of 1000.
+    Bar(u32),
+    /// Cells of one row of the grid.
+    Cells {
+        /// The row.
+        row: usize,
+        /// The column of the first.
+        first: usize,
+        /// How many.
+        count: usize,
+    },
+}
+
+/// Where the startup screen's name and hint go.
+struct Splash<'a> {
+    title: &'a str,
+    hint: &'a str,
+    /// The name's top-left corner, and the pixels to a pixel of the font.
+    title_at: (usize, usize),
+    scale: usize,
+    hint_at: (usize, usize),
+}
+
+impl Painter {
+    fn bpp(&self) -> usize {
+        usize::from(self.format.bytes_per_pixel)
+    }
+
+    /// The pixel value of `rgb` in the screen's layout.
+    fn encode(&self, (r, g, b): Rgb) -> u32 {
+        self.format.encode(r, g, b)
+    }
+
+    /// The screen's size in pixels, as (width, height).
+    pub fn screen(&self) -> (usize, usize) {
+        self.size
+    }
+
+    /// Columns in the grid: the most cells a [`Draw::Cells`] has.
+    pub fn cols(&self) -> usize {
+        self.cols
+    }
+
+    /// The rectangle of the screen that `draw` covers.
+    pub fn area(&self, draw: &Draw) -> Rect {
+        match *draw {
+            Draw::Blank | Draw::Splash { .. } => (0, 0, self.size.0, self.size.1),
+            Draw::Bar(_) => self.splash_bar(),
+            Draw::Cells { row, first, count } => (
+                self.origin.0 + first * self.font.width,
+                self.origin.1 + row * self.font.height,
+                count * self.font.width,
+                self.font.height,
+            ),
+        }
+    }
+
+    /// Draws row `index` of `draw`'s rectangle into `out`, which is a
+    /// row of it. `cells` are the cells of a [`Draw::Cells`], as
+    /// [`Console::next_draw`] gave them.
+    pub fn row(&self, draw: &Draw, cells: &[u32], index: usize, out: &mut [u8]) {
+        match *draw {
+            Draw::Blank => self.fill(out, self.colors[0].1),
+            Draw::Splash { title, hint, per_mille } => {
+                self.fill(out, self.encode(SPLASH_BACKGROUND));
+                let splash = self.splash(title, hint);
+                self.splash_row(&splash, per_mille, index, &mut |x, width, color| {
+                    self.run(out, x, width, color);
+                });
+            }
+            Draw::Bar(per_mille) => {
+                let (left, top, ..) = self.splash_bar();
+                self.bar_row(per_mille, top + index, &mut |x, width, color| {
+                    self.run(out, x - left, width, color);
+                });
+            }
+            Draw::Cells { .. } => self.cells_row(cells, index, out),
+        }
+    }
+
+    /// Paints every pixel of `out` with the value `color`.
+    fn fill(&self, out: &mut [u8], color: u32) {
+        let (bpp, color) = (self.bpp(), color.to_le_bytes());
+        if color == [0; 4] {
+            out.fill(0);
+            return;
+        }
+        for pixel in out.chunks_exact_mut(bpp) {
+            pixel.copy_from_slice(&color[..bpp]);
+        }
+    }
+
+    /// Paints `width` pixels of the row `out` from pixel `x`, as far as
+    /// the row goes.
+    fn run(&self, out: &mut [u8], x: usize, width: usize, color: u32) {
+        let bpp = self.bpp();
+        let end = (x + width).min(out.len() / bpp);
+        if let Some(pixels) = out.get_mut(x * bpp..end.max(x) * bpp) {
+            self.fill(pixels, color);
+        }
+    }
+
+    /// Draws row `gy` of the glyphs of `cells`, side by side from the
+    /// start of `out`.
+    fn cells_row(&self, cells: &[u32], gy: usize, out: &mut [u8]) {
+        let glyph_bytes = self.font.width * self.bpp();
+        for (&cell, out) in cells.iter().zip(out.chunks_exact_mut(glyph_bytes)) {
+            let (c, style) = decode_cell(cell);
+            self.glyph_row(self.font.glyph(c).row_bits(gy), self.colors[style], out);
+        }
+    }
+
+    /// Draws `bits`, a row of a glyph with its left pixel in the highest
+    /// bit, at the start of `out`: its lit pixels in `fg`, the rest in
+    /// `bg`.
+    fn glyph_row(&self, bits: u32, (fg, bg): (u32, u32), out: &mut [u8]) {
+        let (width, bpp) = (self.font.width, self.bpp());
+        let (fg, bg) = (fg.to_le_bytes(), bg.to_le_bytes());
+        for (gx, pixel) in out.chunks_exact_mut(bpp).take(width).enumerate() {
+            let lit = bits & (1 << (width - 1 - gx)) != 0;
+            pixel.copy_from_slice(&if lit { fg } else { bg }[..bpp]);
+        }
+    }
+
+    /// Where the startup screen (ADR 0426) has `title`, in large letters
+    /// a little above the middle, and `hint`, small near the bottom.
+    fn splash<'a>(&self, title: &'a str, hint: &'a str) -> Splash<'a> {
+        let (width, height) = self.size;
+        let (font_width, font_height) = (self.font.width, self.font.height);
+        let letters = title.chars().count().max(1);
+        let scale = (width * SPLASH_EIGHTHS / 8 / (letters * font_width))
+            .clamp(1, SPLASH_MAX_SCALE)
+            .min((height / 4 / font_height).max(1));
+        let title_width = letters * font_width * scale;
+        let title_y = (height * 2 / 5).saturating_sub(font_height * scale / 2);
+        let hint_width = hint.chars().count() * font_width;
+        let hint_y = height.saturating_sub(font_height * 3);
+        Splash {
+            title,
+            hint,
+            title_at: (width.saturating_sub(title_width) / 2, title_y),
+            scale,
+            hint_at: (width.saturating_sub(hint_width) / 2, hint_y),
+        }
+    }
+
+    /// Where the startup screen's bar is: centred a line below the name,
+    /// whose letters are at most a quarter of the screen high, a third of
+    /// the screen wide and a third of a line high.
+    fn splash_bar(&self) -> Rect {
+        let (width, height) = self.size;
+        let bar_width = (width * SPLASH_EIGHTHS / 8).max(self.font.width * 10).min(width);
+        let bar_height = (self.font.height / 3).max(4);
+        let y = height * 2 / 5 + height / 8 + self.font.height;
+        ((width - bar_width) / 2, y.min(height.saturating_sub(bar_height)), bar_width, bar_height)
+    }
+
+    /// Calls `run` with each stretch of row `y` of the startup screen
+    /// that is not its background, as (x, width, pixel value): the
+    /// name's, then the hint's, then the bar's, each over those before.
+    fn splash_row(
+        &self,
+        splash: &Splash<'_>,
+        per_mille: u32,
+        y: usize,
+        run: &mut dyn FnMut(usize, usize, u32),
+    ) {
+        let title = self.encode(SPLASH_TITLE);
+        let mut lit = |x, width| run(x, width, title);
+        self.text_row(splash.title, splash.title_at, splash.scale, y, &mut lit);
+        let hint = self.encode(SPLASH_HINT);
+        self.text_row(splash.hint, splash.hint_at, 1, y, &mut |x, width| run(x, width, hint));
+        self.bar_row(per_mille, y, run);
+    }
+
+    /// Calls `run` with the stretches of row `y` that are the startup
+    /// screen's bar at `per_mille` of 1000: what is filled and the track
+    /// that is left, or nothing on a row the bar is not on.
+    fn bar_row(&self, per_mille: u32, y: usize, run: &mut dyn FnMut(usize, usize, u32)) {
+        let (x, top, width, height) = self.splash_bar();
+        if !(top..top + height).contains(&y) {
+            return;
+        }
+        let filled = width * per_mille.min(1000) as usize / 1000;
+        run(x, filled, self.encode(SPLASH_BAR));
+        run(x + filled, width - filled, self.encode(SPLASH_TRACK));
+    }
+
+    /// Calls `run` with each lit stretch, as (x, width), of row `y` of
+    /// the screen where `text` is drawn with its top-left corner at `at`
+    /// and each pixel of the font as a square of `scale` pixels.
+    fn text_row(
+        &self,
+        text: &str,
+        at: (usize, usize),
+        scale: usize,
+        y: usize,
+        run: &mut dyn FnMut(usize, usize),
+    ) {
+        let (font_width, font_height) = (self.font.width, self.font.height);
+        let Some(gy) = y.checked_sub(at.1).map(|down| down / scale).filter(|&gy| gy < font_height)
+        else {
+            return;
+        };
+        for (index, c) in text.chars().enumerate() {
+            let bits = self.font.glyph(c).row_bits(gy);
+            let left = at.0 + index * font_width * scale;
+            for gx in 0..font_width {
+                if bits & (1 << (font_width - 1 - gx)) != 0 {
+                    run(left + gx * scale, scale);
+                }
+            }
+        }
+    }
+}
+
+/// Where a console's pixels go.
+enum Screen {
+    /// Into the firmware's framebuffer, as they are drawn.
+    Framebuffer(Framebuffer),
+    /// To whoever sends them to the screen, which asks what waits to be
+    /// drawn ([`Console::next_draw`]).
+    Sent(Sent),
+}
+
+/// What of the screen of a console with no framebuffer waits to be
+/// drawn.
+#[derive(Clone, Copy)]
+struct Sent {
+    /// All of it, before anything else.
+    whole: Option<Whole>,
+    /// The startup screen's bar.
+    bar: bool,
+    /// How far the bar is, of 1000.
+    per_mille: u32,
+    /// Whether a cell may differ from what was drawn of it.
+    touched: bool,
+    /// The row the search for such a cell goes on from.
+    next: usize,
+}
+
+/// All of a screen, as it waits to be drawn.
+#[derive(Clone, Copy)]
+enum Whole {
+    Blank,
+    Splash { title: &'static str, hint: &'static str },
+}
+
+/// A text console drawn into a linear framebuffer, or with no
+/// framebuffer of its own for a screen whose pixels are sent to it.
+pub struct Console {
+    screen: Screen,
+    paint: Painter,
+    rows: usize,
+    /// The text, `cols * rows` cells row by row, then what the screen
+    /// shows in the same layout; the rest is not used.
+    storage: &'static mut [u32],
     col: usize,
     row: usize,
     /// The cursor is past the last column; the next character wraps.
     wrap_pending: bool,
-    /// Encoded pixel values: (foreground, background) per style.
-    colors: [(u32, u32); STYLES],
     cells_drawn: u64,
 }
 
 impl core::fmt::Debug for Console {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Console")
-            .field("framebuffer", &self.fb)
-            .field("font", &self.font)
-            .field("cols", &self.cols)
+            .field("framebuffer", &self.framebuffer())
+            .field("paint", &self.paint)
             .field("rows", &self.rows)
             .finish_non_exhaustive()
     }
@@ -152,42 +439,71 @@ impl Console {
     /// columns or 4 rows, or an unusual pixel size).
     pub fn new(fb: Framebuffer, font: Font<'static>, storage: &'static mut [u32]) -> Option<Self> {
         let bpp = usize::from(fb.format.bytes_per_pixel);
-        if !(2..=4).contains(&bpp) || font.width > MAX_GLYPH_WIDTH || fb.pitch < fb.width * bpp {
+        if !(2..=4).contains(&bpp) || fb.pitch < fb.width * bpp {
             return None;
         }
-        let height = fb.height.min(fb.memory.len() / fb.pitch.max(1));
-        let cols = fb.width / font.width;
-        let rows = (height / font.height).min(storage.len() / 2 / cols.max(1));
-        if cols < 16 || rows < 4 {
-            return None;
+        let size = (fb.width, fb.height.min(fb.memory.len() / fb.pitch.max(1)));
+        let format = fb.format;
+        Console::with(Screen::Framebuffer(fb), format, size, &font, storage).ok()
+    }
+
+    /// An empty console for a screen of `size` pixels, wide and high,
+    /// that has no framebuffer: nothing is drawn, and whoever sends the
+    /// screen its pixels asks what to draw ([`Console::next_draw`]) and
+    /// draws it in the usual 32-bit layout ([`Console::painter`]). The
+    /// grid is as [`Console::new`] makes it.
+    ///
+    /// # Errors
+    ///
+    /// `storage` again, for a screen of fewer than 16 columns or 4 rows.
+    pub fn without_framebuffer(
+        size: (usize, usize),
+        font: &Font<'static>,
+        storage: &'static mut [u32],
+    ) -> Result<Self, &'static mut [u32]> {
+        let sent = Sent { whole: None, bar: false, per_mille: 0, touched: false, next: 0 };
+        Console::with(Screen::Sent(sent), PixelFormat::XRGB8888, size, font, storage)
+    }
+
+    fn with(
+        screen: Screen,
+        format: PixelFormat,
+        size: (usize, usize),
+        font: &Font<'static>,
+        storage: &'static mut [u32],
+    ) -> Result<Self, &'static mut [u32]> {
+        let cols = size.0 / font.width;
+        let rows = (size.1 / font.height).min(storage.len() / 2 / cols.max(1));
+        if font.width > MAX_GLYPH_WIDTH || cols < 16 || rows < 4 {
+            return Err(storage);
         }
-        let origin = ((fb.width - cols * font.width) / 2, (height - rows * font.height) / 2);
-        let colors = PALETTE.map(|((fr, fg, fb_), (br, bg, bb))| {
-            (fb.format.encode(fr, fg, fb_), fb.format.encode(br, bg, bb))
+        let origin = ((size.0 - cols * font.width) / 2, (size.1 - rows * font.height) / 2);
+        let colors = PALETTE.map(|((fr, fg, fb), (br, bg, bb))| {
+            (format.encode(fr, fg, fb), format.encode(br, bg, bb))
         });
-        let (cells, rest) = storage.split_at_mut(cols * rows);
-        let (drawn, _) = rest.split_at_mut(cols * rows);
+        let paint = Painter { font: *font, format, size, cols, origin, colors };
         let mut console = Console {
-            fb,
-            font,
-            cols,
+            screen,
+            paint,
             rows,
-            origin,
-            cells,
-            drawn,
+            storage,
             col: 0,
             row: 0,
             wrap_pending: false,
-            colors,
             cells_drawn: 0,
         };
         console.clear();
-        Some(console)
+        Ok(console)
+    }
+
+    /// Ends the console and returns the storage it was given.
+    pub fn into_storage(self) -> &'static mut [u32] {
+        self.storage
     }
 
     /// Columns in the grid.
     pub fn cols(&self) -> usize {
-        self.cols
+        self.paint.cols
     }
 
     /// Rows in the grid.
@@ -197,59 +513,98 @@ impl Console {
 
     /// Glyph size in pixels, as (width, height).
     pub fn font_size(&self) -> (usize, usize) {
-        (self.font.width, self.font.height)
+        (self.paint.font.width, self.paint.font.height)
     }
 
     /// Pixel position of the grid's top-left corner.
     pub fn origin(&self) -> (usize, usize) {
-        self.origin
+        self.paint.origin
     }
 
-    /// The framebuffer the console draws on.
-    pub fn framebuffer(&self) -> &Framebuffer {
-        &self.fb
+    /// The framebuffer the console draws on, if it has one.
+    pub fn framebuffer(&self) -> Option<&Framebuffer> {
+        match &self.screen {
+            Screen::Framebuffer(fb) => Some(fb),
+            Screen::Sent(_) => None,
+        }
     }
 
-    /// The framebuffer's pixels, for a program that draws on the screen
-    /// itself (consoled, through `/devices/fb0`).
-    pub fn pixels_mut(&mut self) -> &mut [u8] {
-        self.fb.memory
+    /// The framebuffer's pixels, if the console has one, for the
+    /// kernel's display layer, whose first card the screen is: what its
+    /// holder in front shows is drawn here.
+    pub fn pixels_mut(&mut self) -> Option<&mut [u8]> {
+        match &mut self.screen {
+            Screen::Framebuffer(fb) => Some(&mut *fb.memory),
+            Screen::Sent(_) => None,
+        }
+    }
+
+    /// What draws the console's cells and its startup screen as rows of
+    /// pixels.
+    pub fn painter(&self) -> Painter {
+        self.paint
+    }
+
+    /// The cells of the grid: one for each character position.
+    fn len(&self) -> usize {
+        self.paint.cols * self.rows
+    }
+
+    /// The text, row by row.
+    fn cells(&mut self) -> &mut [u32] {
+        let len = self.len();
+        &mut self.storage[..len]
+    }
+
+    /// What the screen shows, in the layout of the text.
+    fn drawn(&mut self) -> &mut [u32] {
+        let len = self.len();
+        &mut self.storage[len..2 * len]
+    }
+
+    /// Notes that a cell may differ from what the screen shows, for a
+    /// console with no framebuffer.
+    fn touch(&mut self) {
+        if let Screen::Sent(sent) = &mut self.screen {
+            sent.touched = true;
+        }
     }
 
     /// Blanks the screen and moves the cursor to the top-left corner.
     pub fn clear(&mut self) {
         self.blank();
-        self.cells.fill(0);
-        self.drawn.fill(0);
+        self.cells().fill(0);
+        self.drawn().fill(0);
         self.col = 0;
         self.row = 0;
         self.wrap_pending = false;
     }
 
     /// Draws the whole screen again from the grid, for when something else
-    /// has drawn on it: consoled, before it gave the screen back.
+    /// has drawn on it: a holder of the display layer, before the front
+    /// was the log's again.
     pub fn repaint(&mut self) {
         self.blank();
-        // No cell holds this value, so every one is drawn.
-        self.drawn.fill(u32::MAX);
+        // No cell holds the first value, so every one is drawn. With no
+        // framebuffer the blank is sent first, and after it a cell that
+        // is blank shows as it is.
+        let unseen = if self.framebuffer().is_some() { u32::MAX } else { 0 };
+        self.drawn().fill(unseen);
+        self.touch();
         self.flush();
     }
 
     /// Paints every pixel in the plain background.
     fn blank(&mut self) {
-        let bpp = usize::from(self.fb.format.bytes_per_pixel);
-        let background = self.colors[0].1.to_le_bytes();
-        let row_bytes = self.fb.width * bpp;
-        let height = self.fb.height.min(self.fb.memory.len() / self.fb.pitch);
-        for y in 0..height {
-            let row = &mut self.fb.memory[y * self.fb.pitch..y * self.fb.pitch + row_bytes];
-            if background == [0; 4] {
-                row.fill(0);
-            } else {
-                for pixel in row.chunks_exact_mut(bpp) {
-                    pixel.copy_from_slice(&background[..bpp]);
+        let background = self.paint.colors[0].1;
+        let (width, height) = self.paint.size;
+        match &mut self.screen {
+            Screen::Framebuffer(fb) => {
+                for y in 0..height {
+                    fill_rect(fb, (0, y, width, 1), background);
                 }
             }
+            Screen::Sent(sent) => (sent.whole, sent.bar) = (Some(Whole::Blank), false),
         }
     }
 
@@ -260,7 +615,7 @@ impl Console {
 
     /// Moves the cursor, clamped to the grid.
     pub fn set_position(&mut self, col: usize, row: usize) {
-        self.col = col.min(self.cols - 1);
+        self.col = col.min(self.paint.cols - 1);
         self.row = row.min(self.rows - 1);
         self.wrap_pending = false;
     }
@@ -268,9 +623,11 @@ impl Console {
     /// Paints row `row` blank in `style`'s background, for a title band.
     pub fn fill_row(&mut self, row: usize, style: Style) {
         let blank = encode_cell(' ', style_index(style));
-        if let Some(cells) = self.cells.get_mut(row * self.cols..(row + 1) * self.cols) {
+        let cols = self.paint.cols;
+        if let Some(cells) = self.cells().get_mut(row * cols..(row + 1) * cols) {
             cells.fill(blank);
         }
+        self.touch();
     }
 
     /// Writes text at the cursor. Lines wrap at the right edge and the
@@ -281,8 +638,10 @@ impl Console {
     pub fn write(&mut self, text: &str, style: Style) {
         // Keep going sensibly even if a previous writer was interrupted
         // half-way (the panic path may take the console over).
-        self.col = self.col.min(self.cols - 1);
+        let cols = self.paint.cols;
+        self.col = self.col.min(cols - 1);
         self.row = self.row.min(self.rows - 1);
+        self.touch();
         let style = style_index(style);
         for c in text.chars() {
             match c {
@@ -293,10 +652,10 @@ impl Console {
                 }
                 '\t' if !self.wrap_pending => {
                     let next = (self.col / 8 + 1) * 8;
-                    if next < self.cols {
+                    if next < cols {
                         self.col = next;
                     } else {
-                        self.col = self.cols - 1;
+                        self.col = cols - 1;
                         self.wrap_pending = true;
                     }
                 }
@@ -310,8 +669,9 @@ impl Console {
         if self.wrap_pending {
             self.newline();
         }
-        self.cells[self.row * self.cols + self.col] = encode_cell(c, style);
-        if self.col + 1 == self.cols {
+        let (cols, at) = (self.paint.cols, self.row * self.paint.cols + self.col);
+        self.cells()[at] = encode_cell(c, style);
+        if self.col + 1 == cols {
             self.wrap_pending = true;
         } else {
             self.col += 1;
@@ -324,18 +684,24 @@ impl Console {
         if self.row + 1 < self.rows {
             self.row += 1;
         } else {
-            self.cells.copy_within(self.cols.., 0);
-            let last = (self.rows - 1) * self.cols;
-            self.cells[last..].fill(0);
+            let (cols, last) = (self.paint.cols, (self.rows - 1) * self.paint.cols);
+            self.cells().copy_within(cols.., 0);
+            self.cells()[last..].fill(0);
         }
     }
 
-    /// Draws every cell that changed since the last flush.
+    /// Draws every cell that changed since the last flush. A console
+    /// with no framebuffer draws nothing: [`Console::next_draw`] says
+    /// what changed.
     pub fn flush(&mut self) {
-        for index in 0..self.cells.len() {
-            if self.cells[index] != self.drawn[index] {
+        if self.framebuffer().is_none() {
+            return;
+        }
+        let len = self.len();
+        for index in 0..len {
+            if self.storage[index] != self.storage[len + index] {
                 self.draw_cell(index);
-                self.drawn[index] = self.cells[index];
+                self.storage[len + index] = self.storage[index];
             }
         }
     }
@@ -346,25 +712,20 @@ impl Console {
     }
 
     fn draw_cell(&mut self, index: usize) {
+        let Screen::Framebuffer(fb) = &mut self.screen else { return };
         self.cells_drawn += 1;
-        let (c, style) = decode_cell(self.cells[index]);
-        let (fg, bg) = self.colors[style];
-        let (fg, bg) = (fg.to_le_bytes(), bg.to_le_bytes());
-        let glyph = self.font.glyph(c);
-        let bpp = usize::from(self.fb.format.bytes_per_pixel);
-        let (width, height) = (self.font.width, self.font.height);
-        let x = self.origin.0 + (index % self.cols) * width;
-        let y = self.origin.1 + (index / self.cols) * height;
+        let paint = &self.paint;
+        let (c, style) = decode_cell(self.storage[index]);
+        let glyph = paint.font.glyph(c);
+        let bpp = paint.bpp();
+        let (width, height) = (paint.font.width, paint.font.height);
+        let x = paint.origin.0 + (index % paint.cols) * width;
+        let y = paint.origin.1 + (index / paint.cols) * height;
         let mut line = [0u8; MAX_GLYPH_WIDTH * 4];
         for gy in 0..height {
-            let bits = glyph.row_bits(gy);
-            for gx in 0..width {
-                let lit = bits & (1 << (width - 1 - gx)) != 0;
-                let color = if lit { &fg } else { &bg };
-                line[gx * bpp..(gx + 1) * bpp].copy_from_slice(&color[..bpp]);
-            }
-            let start = (y + gy) * self.fb.pitch + x * bpp;
-            if let Some(target) = self.fb.memory.get_mut(start..start + width * bpp) {
+            paint.glyph_row(glyph.row_bits(gy), paint.colors[style], &mut line);
+            let start = (y + gy) * fb.pitch + x * bpp;
+            if let Some(target) = fb.memory.get_mut(start..start + width * bpp) {
                 target.copy_from_slice(&line[..width * bpp]);
             }
         }
@@ -372,9 +733,53 @@ impl Console {
 
     /// Calls `f` with the text of row `row`, trailing blanks removed.
     pub fn row_text(&self, row: usize, f: &mut dyn FnMut(char)) {
-        let Some(cells) = self.cells.get(row * self.cols..(row + 1) * self.cols) else { return };
+        let cols = self.paint.cols;
+        let Some(cells) = self.storage[..self.len()].get(row * cols..(row + 1) * cols) else {
+            return;
+        };
         let used = cells.iter().rposition(|&cell| decode_cell(cell).0 != ' ').map_or(0, |i| i + 1);
         cells[..used].iter().for_each(|&cell| f(decode_cell(cell).0));
+    }
+
+    /// What to draw next on the screen of a console with no framebuffer,
+    /// which counts as drawn from then on: all of the screen if that
+    /// waits, then the startup screen's bar, then, if `text` (the log
+    /// shows, and not the startup screen), cells of one row that differ
+    /// from what was drawn: as many as `cells` holds, copied into it.
+    /// `None` when nothing waits, and for a console that draws on a
+    /// framebuffer itself.
+    pub fn next_draw(&mut self, text: bool, cells: &mut [u32]) -> Option<Draw> {
+        let Screen::Sent(sent) = &mut self.screen else { return None };
+        if let Some(whole) = sent.whole.take() {
+            sent.bar = false;
+            return Some(match whole {
+                Whole::Blank => Draw::Blank,
+                Whole::Splash { title, hint } => {
+                    Draw::Splash { title, hint, per_mille: sent.per_mille }
+                }
+            });
+        }
+        if core::mem::take(&mut sent.bar) {
+            return Some(Draw::Bar(sent.per_mille));
+        }
+        if !text || !sent.touched || cells.is_empty() {
+            return None;
+        }
+        let (cols, rows) = (self.paint.cols, self.rows);
+        let (now, was) = self.storage.split_at_mut(cols * rows);
+        for step in 0..rows {
+            let row = (sent.next + step) % rows;
+            let (now, was) = (&now[row * cols..][..cols], &mut was[row * cols..][..cols]);
+            let Some(first) = (0..cols).find(|&at| now[at] != was[at]) else { continue };
+            let last = (first..cols).rfind(|&at| now[at] != was[at]).unwrap_or(first);
+            let count = (last + 1 - first).min(cells.len());
+            cells[..count].copy_from_slice(&now[first..first + count]);
+            was[first..first + count].copy_from_slice(&now[first..first + count]);
+            sent.next = row;
+            return Some(Draw::Cells { row, first, count });
+        }
+        sent.touched = false;
+        None
     }
 }
 
@@ -396,99 +801,74 @@ const SPLASH_EIGHTHS: usize = 3;
 /// The largest the name's letters are drawn, in times the font's size.
 const SPLASH_MAX_SCALE: usize = 6;
 
-/// A rectangle of the screen: x, y, width and height in pixels.
-type Rect = (usize, usize, usize, usize);
-
 impl Console {
     /// Draws the startup screen of a quiet boot (ADR 0426) over the whole
-    /// framebuffer: `title` in large letters a little above the middle,
+    /// screen: `title` in large letters a little above the middle,
     /// the progress bar under it at `per_mille` of 1000, and `hint` small
     /// near the bottom. The grid keeps its text, unseen until
     /// [`Console::repaint`].
-    pub fn draw_splash(&mut self, title: &str, hint: &str, per_mille: u32) {
-        let background = self.encode(SPLASH_BACKGROUND);
-        let (width, height) = self.screen_size();
-        self.fill_rect((0, 0, width, height), background);
-        let (font_width, font_height) = (self.font.width, self.font.height);
-        let letters = title.chars().count().max(1);
-        let scale = (width * SPLASH_EIGHTHS / 8 / (letters * font_width))
-            .clamp(1, SPLASH_MAX_SCALE)
-            .min((height / 4 / font_height).max(1));
-        let title_width = letters * font_width * scale;
-        let title_y = (height * 2 / 5).saturating_sub(font_height * scale / 2);
-        let title_color = self.encode(SPLASH_TITLE);
-        self.draw_text((width.saturating_sub(title_width) / 2, title_y), title, scale, title_color);
-        let hint_width = hint.chars().count() * font_width;
-        let hint_y = height.saturating_sub(font_height * 3);
-        let hint_color = self.encode(SPLASH_HINT);
-        self.draw_text((width.saturating_sub(hint_width) / 2, hint_y), hint, 1, hint_color);
-        self.draw_progress(per_mille);
+    pub fn draw_splash(&mut self, title: &'static str, hint: &'static str, per_mille: u32) {
+        let paint = &self.paint;
+        let fb = match &mut self.screen {
+            Screen::Framebuffer(fb) => fb,
+            Screen::Sent(sent) => {
+                sent.whole = Some(Whole::Splash { title, hint });
+                (sent.bar, sent.per_mille) = (false, per_mille);
+                return;
+            }
+        };
+        let splash = paint.splash(title, hint);
+        let background = paint.encode(SPLASH_BACKGROUND);
+        for y in 0..paint.size.1 {
+            fill_rect(fb, (0, y, paint.size.0, 1), background);
+            paint.splash_row(&splash, per_mille, y, &mut |x, width, color| {
+                fill_rect(fb, (x, y, width, 1), color);
+            });
+        }
     }
 
     /// Draws the startup screen's bar at `per_mille` of 1000.
     pub fn draw_progress(&mut self, per_mille: u32) {
-        let (x, y, width, height) = self.splash_bar();
-        let filled = width * per_mille.min(1000) as usize / 1000;
-        let (bar, track) = (self.encode(SPLASH_BAR), self.encode(SPLASH_TRACK));
-        self.fill_rect((x, y, filled, height), bar);
-        self.fill_rect((x + filled, y, width - filled, height), track);
-    }
-
-    /// Where the startup screen's bar is: centred a line below the name,
-    /// whose letters are at most a quarter of the screen high, a third of
-    /// the screen wide and a third of a line high.
-    fn splash_bar(&self) -> Rect {
-        let (width, height) = self.screen_size();
-        let bar_width = (width * SPLASH_EIGHTHS / 8).max(self.font.width * 10).min(width);
-        let bar_height = (self.font.height / 3).max(4);
-        let y = height * 2 / 5 + height / 8 + self.font.height;
-        ((width - bar_width) / 2, y.min(height.saturating_sub(bar_height)), bar_width, bar_height)
-    }
-
-    /// The screen's width and the height its memory holds, in pixels.
-    fn screen_size(&self) -> (usize, usize) {
-        (self.fb.width, self.fb.height.min(self.fb.memory.len() / self.fb.pitch.max(1)))
-    }
-
-    /// The pixel value of `rgb` in the framebuffer's format.
-    fn encode(&self, (r, g, b): Rgb) -> u32 {
-        self.fb.format.encode(r, g, b)
-    }
-
-    /// Paints `rect` in `color`, clipped to the screen.
-    fn fill_rect(&mut self, (x, y, width, height): Rect, color: u32) {
-        let bpp = usize::from(self.fb.format.bytes_per_pixel);
-        let color = color.to_le_bytes();
-        let (screen_width, screen_height) = self.screen_size();
-        let right = (x + width).min(screen_width);
-        for row in y..(y + height).min(screen_height) {
-            let start = row * self.fb.pitch;
-            let Some(line) = self.fb.memory.get_mut(start + x * bpp..start + right.max(x) * bpp)
-            else {
-                continue;
-            };
-            for pixel in line.chunks_exact_mut(bpp) {
-                pixel.copy_from_slice(&color[..bpp]);
+        let paint = &self.paint;
+        let fb = match &mut self.screen {
+            Screen::Framebuffer(fb) => fb,
+            Screen::Sent(sent) => {
+                (sent.bar, sent.per_mille) = (true, per_mille);
+                return;
             }
+        };
+        let (_, top, _, height) = paint.splash_bar();
+        for y in top..top + height {
+            paint.bar_row(per_mille, y, &mut |x, width, color| {
+                fill_rect(fb, (x, y, width, 1), color);
+            });
         }
     }
 
-    /// Draws `text` with its top-left corner at `at`, each pixel of the
-    /// font as a square of `scale` pixels, in `color` on what is there.
-    fn draw_text(&mut self, at: (usize, usize), text: &str, scale: usize, color: u32) {
-        let (font_width, font_height) = (self.font.width, self.font.height);
-        for (index, c) in text.chars().enumerate() {
-            let glyph = self.font.glyph(c);
-            let left = at.0 + index * font_width * scale;
-            for gy in 0..font_height {
-                let bits = glyph.row_bits(gy);
-                for gx in 0..font_width {
-                    if bits & (1 << (font_width - 1 - gx)) != 0 {
-                        let square = (left + gx * scale, at.1 + gy * scale, scale, scale);
-                        self.fill_rect(square, color);
-                    }
-                }
-            }
+    /// Where the startup screen's bar is.
+    #[cfg(test)]
+    fn splash_bar(&self) -> Rect {
+        self.paint.splash_bar()
+    }
+}
+
+/// Paints `rect` of `fb` with the pixel value `color`, clipped to the
+/// screen and to the rows its memory holds.
+fn fill_rect(fb: &mut Framebuffer, (x, y, width, height): Rect, color: u32) {
+    let bpp = usize::from(fb.format.bytes_per_pixel);
+    let color = color.to_le_bytes();
+    let right = (x + width).min(fb.width);
+    for row in y..(y + height).min(fb.height) {
+        let start = row * fb.pitch;
+        let Some(line) = fb.memory.get_mut(start + x * bpp..start + right.max(x) * bpp) else {
+            continue;
+        };
+        if color == [0; 4] {
+            line.fill(0);
+            continue;
+        }
+        for pixel in line.chunks_exact_mut(bpp) {
+            pixel.copy_from_slice(&color[..bpp]);
         }
     }
 }
@@ -496,7 +876,6 @@ impl Console {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use radix_hal::PixelFormat;
 
     fn framebuffer(width: usize, height: usize) -> Framebuffer {
         let pitch = width * 4 + 8;
@@ -527,7 +906,7 @@ mod tests {
     }
 
     fn pixel(console: &Console, x: usize, y: usize) -> u32 {
-        let fb = console.framebuffer();
+        let fb = console.framebuffer().unwrap();
         let at = y * fb.pitch + x * 4;
         u32::from_le_bytes(fb.memory[at..at + 4].try_into().unwrap())
     }
@@ -691,7 +1070,7 @@ mod tests {
         console.write("A", Style::Plain);
         console.flush();
         let drawn = console.cells_drawn();
-        console.pixels_mut().fill(0x77);
+        console.pixels_mut().unwrap().fill(0x77);
         console.repaint();
         assert_eq!(console.cells_drawn(), drawn + 64, "every cell again");
         assert_ne!(pixel(&console, 0, 0) & 0xff, 0x77);
@@ -734,6 +1113,215 @@ mod tests {
         console.draw_splash("Dukovo", "Esc shows the messages", 1000);
         let (x, y, width, height) = console.splash_bar();
         assert!(x + width <= 128 && y + height <= 64);
+    }
+
+    /// A console with no framebuffer for a screen of `width` by `height`.
+    fn unseen(width: usize, height: usize, name: &str) -> Console {
+        let font = builtin_font(name).unwrap();
+        let cells = storage_cells(width, height, &font);
+        Console::without_framebuffer((width, height), &font, storage(cells)).unwrap()
+    }
+
+    /// Draws all that waits of `console`, which has no framebuffer, on
+    /// `image`, its screen in rows of four bytes a pixel, as whoever
+    /// sends its pixels does, and returns what was drawn.
+    fn send(console: &mut Console, text: bool, image: &mut [u8]) -> Vec<Draw> {
+        let paint = console.painter();
+        let (width, _) = paint.screen();
+        let mut cells = vec![0u32; console.cols()];
+        let mut draws = Vec::new();
+        while let Some(draw) = console.next_draw(text, &mut cells) {
+            let (x, y, wide, high) = paint.area(&draw);
+            // What a row held before is never left in it.
+            let mut row = vec![0xaa; wide * 4];
+            for index in 0..high {
+                paint.row(&draw, &cells, index, &mut row);
+                let at = ((y + index) * width + x) * 4;
+                image[at..at + wide * 4].copy_from_slice(&row);
+            }
+            draws.push(draw);
+        }
+        draws
+    }
+
+    /// The pixels a console's framebuffer shows, row after row.
+    fn shown(console: &Console) -> Vec<u8> {
+        let fb = console.framebuffer().unwrap();
+        let rows = (0..fb.height).map(|y| &fb.memory[y * fb.pitch..][..fb.width * 4]);
+        rows.flatten().copied().collect()
+    }
+
+    /// Runs `step` on a console with a framebuffer and on one without,
+    /// and checks that the pixels sent for the second are those the
+    /// first drew.
+    fn both(pair: &mut (Console, Console, Vec<u8>), text: bool, step: impl Fn(&mut Console)) {
+        step(&mut pair.0);
+        step(&mut pair.1);
+        send(&mut pair.1, text, &mut pair.2);
+        assert!(pair.2 == shown(&pair.0), "the pixels sent are not those drawn");
+    }
+
+    #[test]
+    fn a_console_with_no_framebuffer_sends_the_pixels_one_with_draws() {
+        for (width, height, name) in [(640, 480, "8x16"), (805, 603, "12x24"), (1300, 700, "16x32")]
+        {
+            let font = builtin_font(name).unwrap();
+            let cells = storage_cells(width, height, &font);
+            let drawn = Console::new(framebuffer(width, height), font, storage(cells)).unwrap();
+            let mut pair = (drawn, unseen(width, height, name), vec![0x55; width * height * 4]);
+            assert_eq!(pair.0.cols(), pair.1.cols());
+            assert_eq!((pair.0.rows(), pair.0.origin()), (pair.1.rows(), pair.1.origin()));
+            both(&mut pair, true, |_| {});
+            // Enough lines to scroll the grid.
+            for line in 0..pair.0.rows() + 5 {
+                let styles = [Style::Plain, Style::Error, Style::Warning, Style::Debug];
+                both(&mut pair, true, |console| {
+                    let text =
+                        format!("{line}: a line of the log \u{2713}\t\u{2588} and its end\n");
+                    console.write(&text, styles[line % 4]);
+                    console.flush();
+                });
+            }
+            both(&mut pair, true, |console| {
+                console.fill_row(0, Style::Banner);
+                console.set_position(1, 0);
+                console.write("RADIX KERNEL PANIC", Style::Banner);
+                console.write("\rover", Style::Emphasis);
+                console.flush();
+            });
+            both(&mut pair, true, Console::repaint);
+            both(&mut pair, true, Console::clear);
+        }
+    }
+
+    #[test]
+    fn the_startup_screen_is_sent_as_it_is_drawn() {
+        for (width, height, name) in [(640, 480, "8x16"), (1283, 801, "12x24"), (130, 70, "8x16")] {
+            let font = builtin_font(name).unwrap();
+            let cells = storage_cells(width, height, &font);
+            let drawn = Console::new(framebuffer(width, height), font, storage(cells)).unwrap();
+            let mut pair = (drawn, unseen(width, height, name), vec![0x55; width * height * 4]);
+            both(&mut pair, false, |console| {
+                console.write("a line of the log\n", Style::Plain);
+                console.draw_splash("Dukovo", "Esc shows the messages", 250);
+            });
+            for per_mille in [0, 1, 500, 999, 1000, 4000] {
+                both(&mut pair, false, |console| console.draw_progress(per_mille));
+            }
+            // The log is kept behind it, and shows when it goes.
+            both(&mut pair, false, |console| console.write("unseen\n", Style::Error));
+            both(&mut pair, true, Console::repaint);
+            both(&mut pair, false, |console| {
+                console.draw_splash("A longer name than a third of it holds", "", 1000);
+            });
+        }
+    }
+
+    #[test]
+    fn only_what_changed_is_asked_for() {
+        let mut console = unseen(640, 480, "8x16");
+        let mut cells = [0u32; 80];
+        assert_eq!(console.next_draw(true, &mut cells), Some(Draw::Blank));
+        assert_eq!(console.next_draw(true, &mut cells), None);
+        console.write("abc", Style::Plain);
+        // The startup screen shows: the text waits behind it.
+        assert_eq!(console.next_draw(false, &mut cells), None);
+        assert_eq!(
+            console.next_draw(true, &mut cells),
+            Some(Draw::Cells { row: 0, first: 0, count: 3 })
+        );
+        assert_eq!(cells[..3], [u32::from('a'), u32::from('b'), u32::from('c')]);
+        assert_eq!(console.next_draw(true, &mut cells), None);
+        // The same letters again change nothing.
+        console.write("\rabc", Style::Plain);
+        assert_eq!(console.next_draw(true, &mut cells), None);
+        // Two changes far apart in a row are one stretch of it.
+        console.write("\rAbc\t\tx", Style::Plain);
+        assert_eq!(
+            console.next_draw(true, &mut cells),
+            Some(Draw::Cells { row: 0, first: 0, count: 17 })
+        );
+        assert_eq!(console.next_draw(true, &mut cells), None);
+        // A stretch longer than there is room for comes in parts.
+        console.write("\r0123456789", Style::Plain);
+        let part = |console: &mut Console| console.next_draw(true, &mut [0; 4]);
+        assert_eq!(part(&mut console), Some(Draw::Cells { row: 0, first: 0, count: 4 }));
+        assert_eq!(part(&mut console), Some(Draw::Cells { row: 0, first: 4, count: 4 }));
+        assert_eq!(part(&mut console), Some(Draw::Cells { row: 0, first: 8, count: 2 }));
+        assert_eq!(part(&mut console), None);
+        assert_eq!(console.next_draw(true, &mut []), None);
+        assert_eq!(console.cells_drawn(), 0, "it draws nothing itself");
+    }
+
+    #[test]
+    fn the_search_for_changes_goes_on_from_the_row_it_found_one_in() {
+        let mut console = unseen(640, 480, "8x16");
+        let mut cells = [0u32; 80];
+        let mut rows = |console: &mut Console| {
+            let mut rows = Vec::new();
+            while let Some(draw) = console.next_draw(true, &mut cells) {
+                match draw {
+                    Draw::Cells { row, .. } => rows.push(row),
+                    other => assert_eq!(other, Draw::Blank),
+                }
+            }
+            rows
+        };
+        let write = |console: &mut Console, row: usize, text: &str| {
+            console.set_position(0, row);
+            console.write(text, Style::Plain);
+        };
+        write(&mut console, 5, "five");
+        write(&mut console, 2, "two");
+        assert_eq!(rows(&mut console), [2, 5]);
+        write(&mut console, 1, "one");
+        write(&mut console, 5, "FIVE");
+        write(&mut console, 29, "last");
+        assert_eq!(rows(&mut console), [5, 29, 1]);
+    }
+
+    #[test]
+    fn what_waits_whole_replaces_what_waited() {
+        let mut console = unseen(640, 480, "8x16");
+        let mut cells = [0u32; 80];
+        console.draw_progress(100);
+        console.draw_splash("Dukovo", "hint", 200);
+        console.draw_progress(300);
+        // The bar comes with the startup screen, where it is by then.
+        let splash = Draw::Splash { title: "Dukovo", hint: "hint", per_mille: 300 };
+        assert_eq!(console.next_draw(false, &mut cells), Some(splash));
+        assert_eq!(console.next_draw(false, &mut cells), None);
+        console.draw_progress(400);
+        assert_eq!(console.next_draw(false, &mut cells), Some(Draw::Bar(400)));
+        console.draw_progress(500);
+        console.write("log", Style::Plain);
+        console.repaint();
+        assert_eq!(console.next_draw(true, &mut cells), Some(Draw::Blank));
+        assert_eq!(
+            console.next_draw(true, &mut cells),
+            Some(Draw::Cells { row: 0, first: 0, count: 3 })
+        );
+        assert_eq!(console.next_draw(true, &mut cells), None);
+        // One that draws on a framebuffer has nothing to ask for.
+        let mut drawn = super::tests::console(640, 480);
+        drawn.write("log", Style::Plain);
+        assert_eq!(drawn.next_draw(true, &mut cells), None);
+        assert_eq!(drawn.painter().screen(), (640, 480));
+    }
+
+    #[test]
+    fn the_storage_comes_back() {
+        let font = builtin_font("8x16").unwrap();
+        let console = Console::without_framebuffer((640, 480), &font, storage(10_000)).unwrap();
+        assert!(console.framebuffer().is_none());
+        let again = console.into_storage();
+        assert_eq!(again.len(), 10_000);
+        // A screen too small for text gives it back at once.
+        let small = Console::without_framebuffer((64, 480), &font, again).unwrap_err();
+        assert_eq!(small.len(), 10_000);
+        let mut console = Console::without_framebuffer((1280, 800), &font, small).unwrap();
+        assert_eq!((console.cols(), console.rows()), (160, 31), "as many rows as it has cells for");
+        assert!(console.pixels_mut().is_none());
     }
 
     #[test]

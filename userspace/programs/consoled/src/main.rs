@@ -3,9 +3,10 @@
 
 //! consoled(8): Dukovo's virtual consoles (ADR 0100).
 //!
-//! The kernel draws its log on the screen until consoled takes the screen
-//! (_/devices/fb0_, radix-framebuffer(2)). Then consoled draws six consoles on
-//! it, one at a time, each a terminal for TERM=linux (`term`) with
+//! The kernel draws its log on the screens until consoled takes them from
+//! it (_/devices/display/control_, radix-display(2)). Then consoled draws
+//! six consoles, one at a time, on every screen a monitor is plugged into
+//! (`screen`), each a terminal for TERM=linux (`term`) with
 //! login(1)'s sign-in on a pseudo-terminal (`session`, ADR 0250), or with
 //! `--shell`, root's shell and no sign-in, and turns the keys read from
 //! _/devices/kbd_ (radix-input(2)) into what the terminal sends (`keys`).
@@ -30,13 +31,18 @@
 //! and fingerprint (`welcome`); one nobody has typed on is drawn again when
 //! admind(8) writes them after it was drawn, as it does once it starts, or
 //! writes new ones, and the log says "ttyN: drawing the sign-in screen
-//! again for the web console's address". When
-//! consoled ends, the screen is the kernel log's again. Spark starts it as
-//! a service (spark(8)).
+//! again for the web console's address". A program that draws the screens
+//! itself, such as a desktop, borrows them from consoled (`lend`, ADR
+//! 0702), and no key is typed into a console while it has them. When
+//! consoled ends, what it showed stays for three seconds, in which the
+//! consoled that Spark starts in its place takes the screens with no
+//! kernel log between; after them the screens are the kernel log's
+//! again. Spark starts it as a service (spark(8)).
 
 mod access;
 mod braille;
 mod keys;
+mod lend;
 mod notices;
 mod prompts;
 mod reader;
@@ -58,6 +64,7 @@ use access::{Access, Size};
 use braille::Braille;
 use keymap::Keymap;
 use keys::{Action, Keyboard, SlowKeys};
+use lend::Lender;
 use notices::Notices;
 use prompts::{Prompts, Typed};
 use radix_abi::input::{Event, PRESSED, SET_LEDS};
@@ -69,6 +76,9 @@ const USAGE: &str = "usage: consoled [--consoles N] [--shell PATH]";
 
 /// The consoles there are, at most: Alt+F1 to Alt+F12.
 const CONSOLES_MAX: usize = 12;
+
+/// The display layer's file, which the screens are drawn through.
+const DISPLAY: &str = "/devices/display/control";
 
 /// Where the text shown before each session comes from.
 const ISSUE: &str = "/system/settings/issue";
@@ -308,6 +318,14 @@ fn run(path: &str) {
     }
 }
 
+/// Logs the consoles' geometry on each screen, which the boot tests read
+/// the first screen by.
+fn log_geometry(screen: &Screen) {
+    for line in screen.describe() {
+        eprintln!("consoled: {line}");
+    }
+}
+
 /// What consoled's own bottom line shows, over a notification.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Bar {
@@ -344,6 +362,10 @@ struct Consoled {
     slow: SlowKeys,
     /// The braille display's connection, through BRLTTY (ADR 0326).
     braille: Braille,
+    /// Where a program asks for the screens, to draw them itself.
+    lender: Lender,
+    /// Whether the keys were last another program's, with the screens.
+    keys_away: bool,
     /// admind's file of the web console's address and fingerprint, which
     /// sign-in screens are drawn again for when it changes.
     web_console: welcome::WebConsoleWatch,
@@ -391,6 +413,19 @@ impl Consoled {
                 console.retry_at = Some(Instant::now() + std::time::Duration::from_secs(10));
             }
         }
+    }
+
+    /// Whether the keys are the consoles'. They are not while a program
+    /// that borrowed the screens has them, or its last picture is still
+    /// on them: a key typed then is never typed into a console nobody
+    /// sees. As they go, what is held is let go of.
+    fn takes_keys(&mut self) -> bool {
+        let away = self.screen.away();
+        if away && !self.keys_away {
+            self.keyboard.let_go();
+        }
+        self.keys_away = away;
+        !away
     }
 
     /// A key event from the keyboard, as slow keys let it through.
@@ -529,16 +564,17 @@ impl Consoled {
     /// Draws the text in the size the settings say, as far as the screen
     /// allows, each console as many cells as then fit.
     fn apply_size(&mut self) {
-        match self.screen.set_size(self.access.size) {
-            Ok(true) => {}
-            Ok(false) => return,
-            Err(err) => {
-                eprintln!("consoled: cannot change the text size: {err}");
-                return;
-            }
+        if !self.screen.set_size(self.access.size) {
+            return;
         }
         eprintln!("consoled: text size {}", self.access.size.name());
-        eprintln!("consoled: {}", self.screen.describe());
+        self.fit_consoles();
+    }
+
+    /// Gives each console the cells the screens now show, and logs how
+    /// they show them.
+    fn fit_consoles(&mut self) {
+        log_geometry(&self.screen);
         let (cols, rows) = (self.screen.cols(), self.screen.rows());
         for console in &mut self.consoles {
             console.resize(cols, rows);
@@ -764,7 +800,8 @@ impl Consoled {
         loop {
             // The wake pipe, the keyboard, notifyd, authd's prompts,
             // readerd, the braille display's socket and its connection,
-            // then each console's master.
+            // the display layer's events, the socket the screens are
+            // asked for on, then each console's master.
             let mut fds =
                 vec![libc::pollfd { fd: wake.as_raw_fd(), events: libc::POLLIN, revents: 0 }];
             fds.push(libc::pollfd {
@@ -780,6 +817,8 @@ impl Consoled {
             fds.push(libc::pollfd { fd: listener, events: libc::POLLIN, revents: 0 });
             let (display, wanted) = self.braille.client_fd();
             fds.push(libc::pollfd { fd: display, events: wanted, revents: 0 });
+            fds.push(libc::pollfd { fd: self.screen.fd(), events: libc::POLLIN, revents: 0 });
+            fds.push(libc::pollfd { fd: self.lender.fd(), events: libc::POLLIN, revents: 0 });
             for (i, console) in self.consoles.iter().enumerate() {
                 let held = i == self.active && self.keyboard.scroll;
                 let fd = console.master_fd().filter(|_| !held).unwrap_or(-1);
@@ -794,6 +833,7 @@ impl Consoled {
                 .chain(self.prompts.as_ref().and_then(Prompts::deadline))
                 .chain(self.reader.deadline())
                 .chain(self.slow.deadline())
+                .chain(self.screen.deadline())
                 .chain(self.web_console.deadline(self.newest_redrawable()))
                 .min();
             let timeout =
@@ -815,17 +855,21 @@ impl Consoled {
                 self.reload_access();
             }
             self.reap();
+            let typed = self.takes_keys();
             if fds[1].revents != 0
                 && let Some(kbd) = self.kbd.as_mut()
             {
                 match kbd.read(&mut events) {
-                    Ok(n) => {
+                    // Read either way, so that none waits to be typed
+                    // when the keys are the consoles' again.
+                    Ok(n) if typed => {
                         let batch = events[..n].to_vec();
                         let now = Instant::now();
                         for event in batch.as_chunks::<{ Event::SIZE }>().0 {
                             self.key_event(event, now);
                         }
                     }
+                    Ok(_) => {}
                     // Fell behind: the next read goes on with what is kept.
                     Err(err) if err.raw_os_error() == Some(libc::EPIPE) => {}
                     Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
@@ -838,7 +882,9 @@ impl Consoled {
             let now = Instant::now();
             // Keys held long enough, with slow keys.
             for (code, value) in self.slow.tick(now) {
-                self.key(code, value);
+                if typed {
+                    self.key(code, value);
+                }
             }
             if fds[2].revents != 0 {
                 self.notices.read(now);
@@ -865,8 +911,19 @@ impl Consoled {
                     self.braille_input(input);
                 }
             }
+            // A screen came, went or changed its size, or the front
+            // passed: the consoles take the cells the screens now show.
+            let arranged = fds[7].revents != 0 && self.screen.events();
+            if fds[8].revents != 0 {
+                self.lender.accept(&mut self.screen);
+            }
+            // After the events, one of which may start the wait for
+            // another borrower.
+            if self.screen.tick(now) || arranged {
+                self.fit_consoles();
+            }
             for (i, console) in self.consoles.iter_mut().enumerate() {
-                if fds[7 + i].revents != 0 {
+                if fds[9 + i].revents != 0 {
                     console.read();
                 }
             }
@@ -883,7 +940,7 @@ impl Consoled {
             self.speak(now);
             // Only the cells that changed are drawn.
             let bottom = self.bottom();
-            self.screen.draw(&self.consoles[self.active].term, bottom.as_deref())?;
+            self.screen.draw(&self.consoles[self.active].term, bottom.as_deref());
             self.show_braille(bottom.as_deref());
         }
     }
@@ -903,26 +960,22 @@ fn main() -> ExitCode {
         eprintln!("consoled: install: the installer's screens are on {place}");
     }
     let grid = if install { INSTALLER_GRID } else { radix_fbcon::MIN_GRID };
-    let mut screen = match Screen::open("/devices/fb0", grid) {
+    let mut screen = match Screen::open(DISPLAY, grid) {
         Ok(screen) => screen,
         Err(err) => {
             // No screen to draw on, as with a serial console only: nothing
             // to do, and nothing to start again.
-            eprintln!("consoled: no screen for consoles (/devices/fb0: {err})");
+            eprintln!("consoled: no screen for consoles ({DISPLAY}: {err})");
             return ExitCode::SUCCESS;
         }
     };
-    eprintln!("consoled: {}", screen.describe());
+    log_geometry(&screen);
     // The text size accessibility.toml(5) asks for, before the consoles
     // take their size from the screen.
     let access = Access::read();
-    match screen.set_size(access.size) {
-        Ok(true) => {
-            eprintln!("consoled: text size {}", access.size.name());
-            eprintln!("consoled: {}", screen.describe());
-        }
-        Ok(false) => {}
-        Err(err) => eprintln!("consoled: cannot change the text size: {err}"),
+    if screen.set_size(access.size) {
+        eprintln!("consoled: text size {}", access.size.name());
+        log_geometry(&screen);
     }
     let kbd = OpenOptions::new()
         .read(true)
@@ -998,6 +1051,8 @@ fn main() -> ExitCode {
         access,
         slow,
         braille: Braille::listen(braille::SOCKET),
+        lender: Lender::listen(lend::SOCKET),
+        keys_away: false,
         web_console: welcome::WebConsoleWatch::new(welcome::WEB_CONSOLE, Instant::now()),
     };
     consoled.lights();
@@ -1055,18 +1110,18 @@ mod tests {
             names.iter().map(|name| (*name).to_string()).collect()
         };
         assert_eq!(
-            serial_place("live install console=ttyS0", &devices(&["ttyS0", "fb0"])),
+            serial_place("live install console=ttyS0", &devices(&["ttyS0", "display"])),
             Some("the serial port, ttyS0".to_string())
         );
         // A port the computer lacks leaves the installer on tty1.
         assert_eq!(serial_place("live install console=ttyS1", &devices(&["ttyS0"])), None);
         let any = "live install serial-console=any console-sign-in=off";
         assert_eq!(
-            serial_place(any, &devices(&["fb0", "ttyS4", "kbd"])),
+            serial_place(any, &devices(&["display", "ttyS4", "kbd"])),
             Some("the serial port Enter is pressed on".to_string())
         );
         // Without a serial port there is nothing to press Enter on.
-        assert_eq!(serial_place(any, &devices(&["fb0", "kbd", "ttyX", "ttyS"])), None);
+        assert_eq!(serial_place(any, &devices(&["display", "kbd", "ttyX", "ttyS"])), None);
         // The word beats console= as it does in serial-console.
         assert_eq!(
             serial_place("serial-console=any console=ttyS0", &devices(&["ttyS1"])),

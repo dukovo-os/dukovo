@@ -21,6 +21,7 @@ use radix_smbios::memory::{self, MemoryArray, MemoryDevice};
 use radix_smbios::{Entry, Table, chassis_name, kind};
 use serde::Serialize;
 
+use super::screens;
 use crate::admin_about::{Sources, dmi};
 use crate::hwinfo::{self, Tables};
 use crate::lscpu::Summary;
@@ -44,6 +45,9 @@ pub(crate) struct Show {
     processor: Processor,
     memory: Memory,
     firmware: Firmware,
+    /// How many screens have a monitor plugged in; null on a machine
+    /// with no graphics card the system draws through.
+    screens: Option<u32>,
 }
 
 /// The processor, as its own CPUID and the kernel say it.
@@ -146,6 +150,7 @@ pub(crate) fn gather(sources: &Sources, cpu: &Summary, tables: Option<&Tables>) 
             version: dmi(sources, "bios_version"),
             date: dmi(sources, "bios_date"),
         },
+        screens: sources.read(screens::STATE).and_then(|state| screens::plugged_in(&state)),
     }
 }
 
@@ -279,6 +284,11 @@ impl Show {
             .collect();
         if !parts.is_empty() {
             rows.push(("Firmware", parts.join(", ")));
+        }
+        match self.screens {
+            Some(0) => rows.push(("Screens", "none plugged in".into())),
+            Some(count) => rows.push(("Screens", format!("{count} plugged in"))),
+            None => {}
         }
         let width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
         rows.iter().fold(String::new(), |mut text, (label, value)| {
@@ -418,6 +428,14 @@ mod tests {
     fn a_reader_gets_what_anyone_may_read_and_null_for_what_the_tables_say() {
         let machine = Machine::new("reader");
         machine.optiplex();
+        // The display layer has one card of two screens, one of them
+        // with a monitor.
+        machine.put(
+            screens::STATE,
+            "front log\ncard 1 name=firmware0 kind=firmware model=Firmware framebuffer\n\
+             screen 3 card=1 index=0 plugged=1 pipe=2 maker= name=\n\
+             screen 4 card=1 index=1 plugged=0 pipe=0 maker= name=\n",
+        );
         let show = gather(&machine.sources(), &i5(), None);
         assert_eq!(
             json_of(&show),
@@ -434,13 +452,15 @@ mod tests {
                     "bytes": 16_318_464u64 * 1024, "ecc": null, "slots": null, "modules": null
                 },
                 "firmware": { "vendor": "Dell Inc.", "version": "1.24.0", "date": "07/12/2023" },
+                "screens": 1,
             })
         );
+        assert!(show.text().ends_with("Screens    1 plugged in\n"), "{}", show.text());
         // The document starts with its format, and the members come in the
         // order the design gives them.
         let text = show.json().unwrap();
         assert!(text.starts_with("{\n  \"format\": 1,\n  \"maker\""), "{text}");
-        let order = ["maker", "model", "chassis", "processor", "memory", "firmware"];
+        let order = ["maker", "model", "chassis", "processor", "memory", "firmware", "screens"];
         let at: Vec<usize> =
             order.iter().map(|key| text.find(&format!("\"{key}\"")).unwrap()).collect();
         assert!(at.windows(2).all(|pair| pair[0] < pair[1]), "{at:?}");

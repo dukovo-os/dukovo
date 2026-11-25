@@ -36,7 +36,10 @@
 // since one takes minutes. Devices reads `hardware devices`
 // (`GET /api/1/hardware/devices`) only when its button is pressed, and lists
 // every device it gives, the ones that need nothing folded away; its
-// hardware.toml step holds that list to `lspci`. The memory card says what the
+// hardware.toml step holds that list to `lspci`. Screens reads `hardware
+// screens` (`GET /api/1/hardware/screens`) only when its button is pressed,
+// and has a table for each graphics card and a row for each of its screens,
+// under which program has the screens. The memory card says what the
 // test at the next restart does, with the time it takes on this machine; Test
 // at the next restart… asks in a dialog with three ways out, and At the next
 // restart asks for the test only (`POST /api/1/hardware/memtest/next-start`),
@@ -93,6 +96,7 @@ const ROUTES = {
   sensors: "GET /api/1/hardware/sensors",
   highest: "GET /api/1/hardware/highest",
   devices: "GET /api/1/hardware/devices",
+  screens: "GET /api/1/hardware/screens",
   storage: "GET /api/1/storage",
   asked: "GET /api/1/hardware/memtest", // hardware.memtest-status
   ask: "POST /api/1/hardware/memtest/next-start",
@@ -129,6 +133,7 @@ const ALERT = "An alert goes out when a sensor stays within 5 °C of its critica
 const LOCKED_TESTS = "Unlock to see the disks' own tests";
 const READER_TESTS = "Administrators see the disks' own tests";
 const NO_DEVICES = "The system lists no device.";
+const NO_SCREENS = "No graphics card: the system draws on no screen.";
 const BAD_TIME = "A time is written HH:MM, from 00:00 to 23:59, such as 03:00. Nothing was set.";
 
 // The areas of the check dialog, in the words of their boxes. A check of one
@@ -782,6 +787,56 @@ async function disksAsAnswered(t, page, access, seen = null) {
   return access === "ok" ? withLog : [];
 }
 
+// --- Screens ---
+
+/** A mode as the page says it: `1920x1080 at 60 Hz`, with decimals only where the rate has them. */
+function modeAsSaid(mode) {
+  const rate = mode.refresh_mhz % 1000 === 0 ? String(mode.refresh_mhz / 1000) : (mode.refresh_mhz / 1000).toFixed(2);
+  return `${mode.width}x${mode.height} at ${rate} Hz`;
+}
+
+/**
+ * The Screens card is not read until it is asked. Then each graphics card
+ * of `hardware screens` (hardware.screens) is a table, each of its screens a
+ * row with the mode it shows, and the program in front is named above them.
+ * `seen` are the routes the page has asked for so far.
+ */
+async function screensAsAnswered(t, page, seen = null) {
+  const where = "the Screens card";
+  const body = card(page, "screens");
+  if (seen !== null) ensure(!seen.has(ROUTES.screens), `the page asked for ${ROUTES.screens} before the Screens card was asked`);
+  const read = page.waitForResponse((answer) => answer.request().method() === "GET" && new URL(answer.url()).pathname === pathOf(ROUTES.screens), { timeout: 60_000 });
+  read.catch(() => {});
+  await buttonIn(body, "Show the screens").click();
+  const answer = await read;
+  ensure(answer.status() === 200, `${ROUTES.screens} was answered ${answer.status()}: ${await answer.text()}`);
+  const said = await answer.json();
+  ensure(said.format === 1 && Array.isArray(said.cards), `${ROUTES.screens} does not give a list of cards: ${JSON.stringify(said)}`);
+  await page.waitForFunction(() => document.activeElement?.id === "screens-h", null, { timeout: 15_000 });
+
+  if (said.cards.length === 0) {
+    await t.see(body.getByText(NO_SCREENS, { exact: true }));
+    return;
+  }
+  const words = (await body.innerText()).replace(/\s+/g, " ");
+  ensure(words.includes("In front: "), `${where} does not say which program is in front`);
+  if (said.front?.name) ensure(words.includes(`${said.front.name} (process ${said.front.process})`), `${where} does not name ${said.front.name}, which is in front`);
+  const shown = await body.locator("div.hw-body > .tbl-box table").evaluateAll((tables) =>
+    tables.map((table) => ({ caption: table.querySelector("caption").textContent.trim(), rows: [...table.querySelectorAll("tbody tr")].map((row) => [...row.querySelectorAll("td")].map((cell) => cell.textContent.trim())) })));
+  ensure(shown.length === said.cards.length, `${where} has ${shown.length} tables, and ${ROUTES.screens} has ${said.cards.length} cards`);
+  said.cards.forEach((one, at) => {
+    const table = shown[at];
+    ensure(table.caption.startsWith(one.name), `${where}'s table ${at + 1} is "${table.caption}", and the card is ${one.name}`);
+    ensure(table.rows.length === one.screens.length, `${where} lists ${table.rows.length} screens of ${one.name}, which has ${one.screens.length}`);
+    one.screens.forEach((screen, row) => {
+      const cells = table.rows[row];
+      ensure(cells[0] === `Screen ${screen.number}`, `${where}'s row ${row + 1} of ${one.name} is ${cells[0]}`);
+      if (!screen.plugged) ensure(cells[1] === "Nothing plugged in", `${where} says "${cells[1]}" of ${one.name}'s screen ${screen.number}, which has nothing plugged in`);
+      else if (screen.mode && !screen.failed) ensure(cells[2] === modeAsSaid(screen.mode), `${where} says ${one.name}'s screen ${screen.number} shows "${cells[2]}", and it shows ${modeAsSaid(screen.mode)}`);
+    });
+  });
+}
+
 // --- Devices ---
 
 /**
@@ -1019,7 +1074,7 @@ async function shutDownAndCancel(t, page, host) {
 
 /** The links of the Overview and the palette lead to the cards, and the card's heading has the keyboard. */
 async function hashesLeadToCards(t, page) {
-  for (const [hash, id] of [["#check", "check-h"], ["#temps", "temps-h"], ["#disks", "disks-h"], ["#memory", "memory-h"], ["#devices", "devices-h"], ["#power", "power-h"]]) {
+  for (const [hash, id] of [["#check", "check-h"], ["#temps", "temps-h"], ["#disks", "disks-h"], ["#memory", "memory-h"], ["#devices", "devices-h"], ["#screens", "screens-h"], ["#power", "power-h"]]) {
     // From another page, so that the page is drawn again with the hash in its address.
     await page.goto(new URL("/", page.url()).href);
     await t.see(page.getByRole("heading", { level: 1, name: "Overview", exact: true }));
@@ -1066,6 +1121,8 @@ async function administrator(t) {
   await lookAll(t, page, "hardware-temps");
   await devicesAsAnswered(t, page, a.seen);
   await lookAll(t, page, "hardware-devices");
+  await screensAsAnswered(t, page, a.seen);
+  await lookAll(t, page, "hardware-screens");
   await memoryAtNextRestart(t, page, host);
 
   await restartIsAsked(t, page, host);
@@ -1088,9 +1145,9 @@ async function reader(t) {
   await t.see(card(page, "memory").getByText(READER_TEST, { exact: true }));
   await t.see(card(page, "power").getByText(READER_POWER, { exact: true }));
   ensure((await checkNow(page).count()) === 0, "a reader has Check the hardware");
-  // The unit of the temperatures and the list of devices change nothing of the machine: a reader has those buttons and no other.
+  // The unit of the temperatures and the lists of devices and of screens change nothing of the machine: a reader has those buttons and no other.
   const buttons = await page.locator("main .hw button").evaluateAll((all) => all.map((one) => one.textContent.trim()));
-  const others = buttons.filter((name) => !["°C", "°F", "Show the devices"].includes(name));
+  const others = buttons.filter((name) => !["°C", "°F", "Show the devices", "Show the screens"].includes(name));
   ensure(others.length === 0, `a reader's page has these buttons: ${others.join(", ")}`);
   ensure((await readPower(page)) === null, "the machine has a restart set, which a reader reads and no one set");
   await temperaturesAsAnswered(t, page);
@@ -1100,6 +1157,7 @@ async function reader(t) {
   ensure(status.asked === null, `${ROUTES.asked} says a memory test is asked, which no one asked`);
   await startRunAsAnswered(page, status);
   await devicesAsAnswered(t, page);
+  await screensAsAnswered(t, page);
 
   mustBe(await askFor(page, ROUTES.inventory), 403, "ADM-122", "a reader's slots of the memory");
   mustBe(await askFor(page, ROUTES.check, {}), 403, "ADM-122", "a reader's check");
@@ -1124,8 +1182,9 @@ async function phone(t) {
 
   await openHardware(t, page);
   await t.see(buttonIn(card(page, "power"), "Restart…"));
-  // The list of devices is opened, so that its tables are measured too.
+  // The lists of devices and of screens are opened, so that their tables are measured too.
   await devicesAsAnswered(t, page);
+  await screensAsAnswered(t, page);
   ensure((await sidewaysScroll(page)) === 0, `the phone's page scrolls ${await sidewaysScroll(page)} px sideways`);
   const small = await smallControls(page, "main button, main summary, main input[type=time], main a.btn");
   ensure(small.length === 0, `these controls of the phone's page are under 44 px tall: ${small.join(", ")}`);

@@ -141,7 +141,7 @@ Opening one opens what it stands for, on a read-only mount too:
   (ENXIO). An open to read and write waits for nothing.
 - A device node opens the device in _/devices_ with Linux's number:
   _null_ 1:3, _zero_ 1:5, _random_ 1:8, _urandom_ 1:9, _kmsg_ 1:11,
-  _tty_ 5:0, _ptmx_ 5:2, _fb0_ 29:0 and _fuse_ 10:229. Any other fails
+  _tty_ 5:0, _ptmx_ 5:2 and _fuse_ 10:229. Any other fails
   with *no_device*. On a filesystem a program serves (*fuse*, below)
   every device node fails with *denied* (EACCES), as on a Linux mount
   with *nodev*.
@@ -188,9 +188,8 @@ changed, kept by tmpfs and Btrfs; FAT and exFAT give *modified*.
 	log, *radix-kernel-log*(2): root's to read, anyone's to write, mode
 	0622), a block device per disk and partition,
 	the terminals: _ptmx_, _tty_ and _pts/_*N* (*radix-posix*(7)), and
-	from Phase 9 the screen and the keyboard: _fb0_, the framebuffer
-	the firmware set up (*radix-framebuffer*(2)), and _kbd_, the PS/2
-	keyboard's key events (*radix-input*(2)), which *consoled*(8) uses;
+	from Phase 9 the keyboard: _kbd_, the PS/2 keyboard's key events
+	(*radix-input*(2)), which *consoled*(8) uses;
 	from Phase 11a _kbd_ has every USB keyboard's keys too, and _mouse_
 	has what USB mice and tablets do. From Phase 11g each serial port on
 	USB is a terminal: _ttyACM_*N* for a CDC-ACM one (modems, boards
@@ -219,7 +218,13 @@ changed, kept by tmpfs and Btrfs; FAT and exFAT give *modified*.
 	end to it panics the kernel on purpose (*radix-debug*(7),
 	*dumps*(8), ADR 0483). _crashes_ gives the records of the programs
 	that crashed, one for each read, to root alone (mode 0400):
-	*reportd*(8) reads them (*radix-crashes*(4), ADR 0530).
+	*reportd*(8) reads them (*radix-crashes*(4), ADR 0530). From
+	release 1.1 _display_ holds the display layer's files, root's alone
+	(mode 0600): _control_, by which a program draws on the machine's
+	screens, as *consoled*(8) does, and _attention_, which the one
+	service that shows trusted prompts holds (*radix-display*(2), ADR
+	0700). They took the place of Phase 9's _fb0_, the one framebuffer
+	the firmware set up.
 
 *bootfs*
 	The boot archive (*radix-processes*(7)), read-only, with the

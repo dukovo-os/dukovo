@@ -14,11 +14,13 @@ publish.workspace = true
 
 [dependencies]
 accounts = { path = "../accounts" }
+# The display layer's records and requests (radix-display(2)).
+display = { path = "../display" }
 # The keyboard layouts (ADR 0149).
 keymap = { path = "../keymap" }
 libc = "0.2.191"
-# The system call interface, generated from abi/*.ridl: the framebuffer's
-# and the keyboard's own requests.
+# The system call interface, generated from abi/*.ridl: `control`, for
+# the display layer's requests and the keyboard's own.
 radix-abi = { path = "../../../kernel/abi" }
 # notifyd's notifications are lines of JSON (ADR 0212).
 serde = { version = "1.0.229", features = ["derive"] }
@@ -30,6 +32,11 @@ radix-fbcon = { path = "../../../kernel/lib/fbcon" }
 # welcome.toml(5) (Apache-2.0 OR MIT).
 toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }
 vte = { version = "0.14.1", default-features = false }
+
+[dev-dependencies]
+# The display layer itself, which the screens' tests draw through with
+# stand-in cards.
+radix-display = { path = "../../../kernel/lib/display" }
 
 [lints]
 workspace = true

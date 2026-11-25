@@ -129,7 +129,8 @@ test('each page with its style sheets is within 150 KB beyond the shell', () => 
 // Apps' row is 5,400 more than it was, for the Size row's every state, the
 // hold row's words, and Tonight, Not tonight and the window's words.
 // Hardware's row is 6,000 more than the plan's: the disks' rows and the memory test at the next restart,
-// and 1,000 more for lib/how.js, which the task words it reads take in to name the client that asked for a task.
+// and 1,000 more for lib/how.js, which the task words it reads take in to name the client that asked for a task,
+// and 500 more for the Screens card; its list and its model are read when its button is pressed and are not in the row.
 // Move's is 500 more than 107,000 for the same.
 // Alerts' is 5,000 more than 60,000: 4,000 for the kinds of alert each channel is told of and 1,000 for the card of Set up a phone.
 // Security's is 2,500 more than 147,000: 1,500 for the rows of its Alerts card, one for each kind of alert, and 1,000 for the steps' rules in pages.css.
@@ -145,7 +146,7 @@ test('each page with its style sheets is within 150 KB beyond the shell', () => 
 const PAGE_LIMITS = {
   updates: 82_700,
   apps: 62_700,
-  hardware: 62_000,
+  hardware: 62_500,
   certificates: 60_000,
   report: 67_000,
   alerts: 65_000,

@@ -221,6 +221,40 @@ export const devices = () => plain({
   ],
 });
 
+/** `hardware screens --json`: the firmware's card with a monitor that says nothing of itself, and a virtio card of three screens, one in a mode it does not prefer, one with nothing plugged in and one that stopped; consoled is in front. */
+export const screens = (more = {}) => plain({
+  format: 1,
+  front: { holder: 'program', process: 41, name: 'consoled' },
+  cards: [
+    {
+      name: 'firmware0', kind: 'firmware', model: 'Firmware framebuffer', hot_plug: false, sets_modes: false, shared_pages: false, wakes: 3,
+      screens: [{
+        number: 1, plugged: true, failed: false, monitor: null, maker: null, product: null, width_mm: null, height_mm: null, depth: null, hdr: false, variable_refresh: false,
+        mode: { width: 1280, height: 800, refresh_mhz: 60000, preferred: true },
+        modes: [{ width: 1280, height: 800, refresh_mhz: 60000, preferred: true }],
+      }],
+    },
+    {
+      name: 'virtio0', kind: 'virtio', model: 'Virtio graphics card', hot_plug: true, sets_modes: true, shared_pages: false, wakes: 977,
+      screens: [
+        {
+          number: 1, plugged: true, failed: false, monitor: 'QEMU Monitor', maker: 'RHT', product: 4660, width_mm: 260, height_mm: 160, depth: 8, hdr: false, variable_refresh: false,
+          mode: { width: 800, height: 600, refresh_mhz: 60000, preferred: false },
+          modes: [{ width: 1024, height: 768, refresh_mhz: 74990, preferred: true }, { width: 800, height: 600, refresh_mhz: 60000, preferred: false }],
+        },
+        {
+          number: 2, plugged: false, failed: false, monitor: null, maker: null, product: null, width_mm: null, height_mm: null, depth: null, hdr: false, variable_refresh: false, mode: null, modes: [],
+        },
+        {
+          number: 3, plugged: true, failed: true, monitor: null, maker: 'DEL', product: 1, width_mm: null, height_mm: null, depth: 10, hdr: true, variable_refresh: true, mode: null,
+          modes: [{ width: 3840, height: 2160, refresh_mhz: 60000, preferred: true }],
+        },
+      ],
+    },
+  ],
+  ...more,
+});
+
 /** `GET /api/1/hardware/memtest`, which is `hardware memtest --status --json`: nothing asked and no test at a start kept, unless `more` says. */
 export const memtest = (more = {}) => plain({
   format: 1, asked: null, last: null, history: [], ...more,

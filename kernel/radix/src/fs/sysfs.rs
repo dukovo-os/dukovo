@@ -232,6 +232,9 @@ pub fn make() -> Result<FsRef> {
     // Every machine has `lo`, so `class` has `net` at least.
     let class = root.add_dir("class", next_id())?;
     net::add(&class)?;
+    // The screens, as one file: a card comes and goes while the system
+    // runs, and the file is there on a machine with none.
+    class.add_dir("display", next_id())?.add("state", value(crate::display::report)?)?;
     if let Some(found) = crate::watchdog::found() {
         let dir = class.add_dir("watchdog", next_id())?.add_dir("watchdog0", next_id())?;
         let Watchdog { name, min_seconds, max_seconds, restarted } = *found;
