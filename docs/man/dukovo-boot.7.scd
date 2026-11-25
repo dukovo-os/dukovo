@@ -614,6 +614,14 @@ them to *init*, and the kernel does not read them.
 	of the same name. For measuring; *ob bench --instructions* adds it,
 	so that a fork builds the same page tables every run.
 
+*share-program-pages*
+	Keep one copy of each page of every file that programs map where
+	they may not write, for every process that maps it, as the kernel
+	does for files that cannot change (the system's own programs), even
+	for a file that can change, such as a bundle's program. For
+	measuring only: a process that maps such a file after it changed may
+	be given pages of what it held before.
+
 *nopcid*
 	Do not tag TLB entries with process-context identifiers (PCIDs), even
 	when the CPU has them: every switch between address spaces then

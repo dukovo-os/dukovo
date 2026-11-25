@@ -15,7 +15,8 @@
 //! Whether a file can change is asked again at each such fault: a file
 //! found to be able to change has no page kept for any space from then
 //! on, though it could not change again later, and each space fills its
-//! own.
+//! own. The `share-program-pages` flag, for measuring, takes every file
+//! as one that cannot change (dukovo-boot(7)).
 //!
 //! A kept page is anonymous memory as any other (`Owner::Anon`). Its share
 //! count counts the spaces that map it and one more for the
@@ -77,6 +78,12 @@ fn key_of(node: &NodeRef) -> usize {
     Arc::as_ptr(node).cast::<()>().addr()
 }
 
+/// Whether the pages of `node` may be kept for every space: it cannot
+/// change, or `share-program-pages` takes every file so, for measuring.
+fn cannot_change(node: &NodeRef) -> bool {
+    node.read_only() || crate::settings().share_program_pages
+}
+
 /// How the chunks are allocated: without sleeping, as they are with a
 /// file's pages locked.
 fn atomic() -> Kmalloc {
@@ -88,7 +95,7 @@ impl ProgramPages {
     /// now if none maps it yet: `None` for a file that can change, whose
     /// pages each space fills for itself, or with memory short.
     pub fn of(node: &NodeRef) -> Option<ProgramRef> {
-        if !node.read_only() {
+        if !cannot_change(node) {
             return None;
         }
         let key = key_of(node);
@@ -127,7 +134,7 @@ impl ProgramPages {
         if self.stale.load(Ordering::Acquire) {
             return false;
         }
-        if !node.read_only() {
+        if !cannot_change(node) {
             self.stale.store(true, Ordering::Release);
             return false;
         }

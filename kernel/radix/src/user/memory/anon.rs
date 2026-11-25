@@ -85,6 +85,36 @@ pub(super) fn random_top() -> u64 {
     ANONYMOUS_TOP - crate::user::random::place(ANON_WINDOW / PAGE_SIZE) * PAGE_SIZE
 }
 
+/// How the pages filled from files were come by, for the profile
+/// (`/processes/profile`, radix-proc(5)): made as a space's own copy, made
+/// and kept for every space that maps the file (ADR 0563), or taken from
+/// those another space kept.
+#[derive(Clone, Copy)]
+enum FilePage {
+    Copied,
+    Kept,
+    Shared,
+}
+
+/// How many pages of each [`FilePage`] kind were come by since the
+/// profile last took the counts.
+static FILE_PAGES: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+
+/// The names the profile gives the counts of [`FILE_PAGES`].
+const FILE_PAGE_NAMES: [&str; 3] = ["file_pages_copied", "file_pages_kept", "file_pages_shared"];
+
+fn count_file_page(kind: FilePage) {
+    FILE_PAGES[kind as usize].fetch_add(1, Ordering::Relaxed);
+}
+
+/// Gives each count of pages filled from files since the last call, by
+/// name, and starts them afresh: for the profile's `counter` lines.
+pub fn take_file_page_counts(each: &mut dyn FnMut(&'static str, u64)) {
+    for (count, name) in FILE_PAGES.iter().zip(FILE_PAGE_NAMES) {
+        each(name, count.swap(0, Ordering::Relaxed));
+    }
+}
+
 /// An anonymous region's mapping.
 #[derive(Clone, Default)]
 pub struct Anon {
@@ -772,6 +802,7 @@ impl SpaceObject {
         if let Some((pages, index)) = kept
             && let Some(phys) = pages.take(index)
         {
+            count_file_page(FilePage::Shared);
             return Ok(phys);
         }
         let flags = Flags { zero: anon.file.is_none(), ..Flags::MAY_SLEEP };
@@ -818,8 +849,17 @@ impl SpaceObject {
             info.set_share_count(1);
         }
         Ok(match kept {
-            Some((pages, index)) if filled == PAGE_SIZE => pages.keep(index, phys),
-            _ => phys,
+            Some((pages, index)) if filled == PAGE_SIZE => {
+                let mapped = pages.keep(index, phys);
+                count_file_page(if mapped == phys { FilePage::Kept } else { FilePage::Shared });
+                mapped
+            }
+            _ => {
+                if anon.file.is_some() {
+                    count_file_page(FilePage::Copied);
+                }
+                phys
+            }
         })
     }
 

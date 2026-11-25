@@ -76,7 +76,8 @@ const OFFSET_MASK: u64 = (1 << 44) - 1;
 /// listing samples this far short of [`Text::LIMIT`].
 const SAMPLE_LINE: usize = 64;
 
-/// The most kinds of counts the architecture gives (`Timer::profile_counts`).
+/// The most kinds of counts the architecture gives (`Timer::profile_counts`)
+/// with the memory's (`take_file_page_counts`).
 const COUNTS_MAX: usize = 32;
 
 /// What a slot holds: the address space its samples were taken in and the
@@ -364,12 +365,14 @@ pub fn write(text: &mut Text) -> fmt::Result {
     let mut lost = MISSED.swap(0, Ordering::Relaxed);
     let mut counts = [("", 0u64); COUNTS_MAX];
     let mut counted_kinds = 0;
-    Arch::profile_counts(&mut |name, count| {
+    let mut add = |name, count| {
         if let Some(slot) = counts.get_mut(counted_kinds) {
             *slot = (name, count);
             counted_kinds += 1;
         }
-    });
+    };
+    Arch::profile_counts(&mut add);
+    super::memory::take_file_page_counts(&mut add);
     // How often each space with samples changed its mappings since its
     // first sample: (space, name, changes), each space once, by the slot
     // that saw it first, whatever CPU's.

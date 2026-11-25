@@ -65,7 +65,8 @@ use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_sync::Mutex;
 
 pub use anon::{
-    Anon, Fault, FileSource, Lack, Placement, Room, RoomRef, SharedPages, SharedRef, unshare_page,
+    Anon, Fault, FileSource, Lack, Placement, Room, RoomRef, SharedPages, SharedRef,
+    take_file_page_counts, unshare_page,
 };
 pub use program::{ProgramPages, ProgramRef};
 

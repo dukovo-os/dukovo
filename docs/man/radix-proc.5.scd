@@ -288,6 +288,11 @@ _/processes/profile_
 	*tlb_switches_rollover*, *tlb_switches_untagged*), flushed
 	(*tlb_space_flushes*, *tlb_global_flushes*, *tlb_pages_flushed*),
 	or changed mappings in a way that needed a flush (*tlb_changes*).
+	On every architecture, how many pages filled from files the
+	processes came by since the open before: their own copies
+	(*file_pages_copied*), pages made and kept for every process that
+	maps a file that cannot change (*file_pages_kept*), and pages taken
+	from those (*file_pages_shared*).
 	Then *name* _index_ _process_ and *file* _index_ _path_ lines, a
 	line *changes* _name_ _count_ for each process whose address
 	spaces changed their mappings that way since their first sample,
