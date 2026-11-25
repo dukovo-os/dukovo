@@ -6,7 +6,8 @@
 //! (`tools/linux-bench`) and the disk writer (`tools/lab-writer`). They
 //! mount what they need, load the kernel modules of the machine's disks
 //! and cards, set a card's address, pin threads to CPUs, and stop the
-//! machine when they are done.
+//! machine when they are done. The calls the benchmarks time are inlined
+//! into them, so that each costs what the system call costs, as in C.
 
 use std::io;
 use std::net::Ipv4Addr;
@@ -127,6 +128,7 @@ pub fn event_counter() -> io::Result<OwnedFd> {
 /// Waits while `word` holds `expected`, until a [`futex_wake`] on it or a
 /// signal (FUTEX_WAIT of the process's own futexes); returns at once when
 /// it holds something else.
+#[inline]
 pub fn futex_wait(word: &AtomicU32, expected: u32) {
     // SAFETY: the kernel reads the word, which is aligned and lives through
     // the call; the null timeout waits without a limit.
@@ -142,6 +144,7 @@ pub fn futex_wait(word: &AtomicU32, expected: u32) {
 }
 
 /// Wakes up to `count` threads waiting on `word` in [`futex_wait`].
+#[inline]
 pub fn futex_wake(word: &AtomicU32, count: u32) {
     // SAFETY: as in `futex_wait`; FUTEX_WAKE reads only the word's address.
     unsafe {
@@ -158,6 +161,7 @@ pub fn futex_wake(word: &AtomicU32, count: u32) {
 /// itself, so that no C library answers from a cache: the cheapest system
 /// call there is, for a benchmark of the cost of one.
 #[must_use]
+#[inline]
 pub fn parent_through_system_call() -> i32 {
     // SAFETY: getppid takes nothing and cannot fail.
     let parent = unsafe { libc::syscall(libc::SYS_getppid) };

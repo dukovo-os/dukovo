@@ -4,7 +4,8 @@
 //! Memory mapped from the kernel, as a benchmark maps it: fresh anonymous
 //! pages, whose protection changes while nothing refers to them, and a
 //! copy between two buffers with the instruction the kernel's own memory
-//! benchmark copies with.
+//! benchmark copies with. These are inlined into a benchmark's loop, so
+//! that each costs what its system call or instruction costs, as in C.
 
 use std::io;
 use std::ptr::NonNull;
@@ -48,6 +49,7 @@ impl Mapping {
     /// # Errors
     ///
     /// EINVAL for a length of 0, and ENOMEM when the process has no room.
+    #[inline]
     pub fn anonymous(len: usize) -> io::Result<Mapping> {
         let access = Access::ReadWrite;
         // SAFETY: a private anonymous mapping at an address the kernel
@@ -94,6 +96,7 @@ impl Mapping {
     }
 
     /// Its bytes to change, while its pages may be written.
+    #[inline]
     pub fn bytes_mut(&mut self) -> Option<&mut [u8]> {
         (self.access == Access::ReadWrite).then(|| {
             // SAFETY: as in `bytes`, and writable; the mutable borrow of
@@ -108,6 +111,7 @@ impl Mapping {
     ///
     /// ENOMEM when the kernel has no room to split its records of the
     /// process's memory.
+    #[inline]
     pub fn protect(&mut self, access: Access) -> io::Result<()> {
         // SAFETY: the range is this mapping's own, page-aligned, and no
         // loan of its bytes is alive while `self` is borrowed mutably.
@@ -120,6 +124,7 @@ impl Mapping {
 }
 
 impl Drop for Mapping {
+    #[inline]
     fn drop(&mut self) {
         // SAFETY: the range is this mapping's own, unmapped once, and no
         // loan of its bytes outlives `self`.
@@ -134,6 +139,7 @@ impl Drop for Mapping {
 ///
 /// When the two are not the same length.
 #[cfg(target_arch = "x86_64")]
+#[inline]
 pub fn copy_bytes(to: &mut [u8], from: &[u8]) {
     assert_eq!(to.len(), from.len(), "a copy between buffers of different lengths");
     // SAFETY: rep movsb copies rcx bytes from rsi to rdi, upwards, as the

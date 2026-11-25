@@ -58,28 +58,12 @@ pub fn set_nonblocking(fd: impl AsFd, nonblocking: bool) -> io::Result<()> {
 /// # Errors
 ///
 /// EBADF when `fd` is not open.
+#[inline]
 pub fn close_on_exec(fd: impl AsFd) -> io::Result<bool> {
     // SAFETY: F_GETFD reads the descriptor flags of a descriptor the caller
     // holds, and takes no further argument.
     let flags = checked(unsafe { libc::fcntl(fd.as_fd().as_raw_fd(), libc::F_GETFD) })?;
     Ok(flags & libc::FD_CLOEXEC != 0)
-}
-
-/// Has `fd` closed on exec, or kept open in a program this one starts,
-/// as F_SETFD sets it: a shell keeps the descriptors a redirection names.
-///
-/// # Errors
-///
-/// EBADF when `fd` is not open.
-pub fn set_close_on_exec(fd: impl AsFd, on: bool) -> io::Result<()> {
-    let fd = fd.as_fd().as_raw_fd();
-    // SAFETY: F_GETFD reads the descriptor flags of a descriptor the caller
-    // holds.
-    let flags = checked(unsafe { libc::fcntl(fd, libc::F_GETFD) })?;
-    let wanted = if on { flags | libc::FD_CLOEXEC } else { flags & !libc::FD_CLOEXEC };
-    // SAFETY: F_SETFD sets the same descriptor's flags from an integer.
-    checked(unsafe { libc::fcntl(fd, libc::F_SETFD, wanted) })?;
-    Ok(())
 }
 
 /// Reads from `fd` into `buffer`, as read(2) does: what is there, up to
@@ -220,18 +204,13 @@ mod tests {
     use std::io::{Read, Write};
     use std::os::fd::AsRawFd;
 
-    use super::{
-        Standard, close_on_exec, handed_down, pipe, read, set_close_on_exec, set_nonblocking, write,
-    };
+    use super::{Standard, close_on_exec, handed_down, pipe, read, set_nonblocking, write};
 
     #[test]
-    fn close_on_exec_is_read_and_set() {
-        let (read_end, _write_end) = pipe().unwrap();
+    fn a_new_pipe_is_closed_on_exec() {
+        let (read_end, write_end) = pipe().unwrap();
         assert!(close_on_exec(&read_end).unwrap());
-        set_close_on_exec(&read_end, false).unwrap();
-        assert!(!close_on_exec(&read_end).unwrap());
-        set_close_on_exec(&read_end, true).unwrap();
-        assert!(close_on_exec(&read_end).unwrap());
+        assert!(close_on_exec(&write_end).unwrap());
     }
 
     #[test]

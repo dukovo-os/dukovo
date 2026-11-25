@@ -11,16 +11,25 @@
 //! with one thread: a fork copies only the thread that calls it, so a lock
 //! another thread held stays locked in the child for good, and a change to
 //! the environment races any thread that reads it. Both count the
-//! process's threads first, and refuse when there is more than one.
+//! process's threads first, and refuse when there is more than one. A
+//! thread the caller has joined is still counted for a moment while the
+//! kernel finishes ending it, so the count is read again, for up to
+//! [`ENDING_THREADS_WAIT`], before a call is refused.
 
 use std::ffi::OsStr;
 use std::io;
 use std::os::fd::{IntoRawFd, OwnedFd};
 use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::{Pid, checked};
+
+/// How long a call that needs one thread waits for the process's other
+/// threads to finish ending, before it is refused: a joined thread is
+/// listed for some microseconds after the join returns, and one that is
+/// still running is not waited for long.
+pub const ENDING_THREADS_WAIT: Duration = Duration::from_millis(100);
 
 /// Which side of a fork a process is on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,7 +45,8 @@ pub enum Fork {
 /// # Errors
 ///
 /// EAGAIN when the system has no room for another process, and
-/// `ErrorKind::Unsupported` when this process has more than one thread.
+/// `ErrorKind::Unsupported` when this process has more than one thread
+/// once [`ENDING_THREADS_WAIT`] has passed.
 pub fn fork() -> io::Result<Fork> {
     single_threaded("fork")?;
     // SAFETY: this process has one thread, the caller, so the child is a
@@ -47,16 +57,24 @@ pub fn fork() -> io::Result<Fork> {
     }
 }
 
-/// Fails with `ErrorKind::Unsupported` unless this process has one thread;
-/// `what` names the call that needs it. Only the calling thread can start
-/// another, so the answer holds until it does.
+/// Fails with `ErrorKind::Unsupported` unless this process has one thread
+/// within [`ENDING_THREADS_WAIT`]; `what` names the call that needs it.
+/// Only the calling thread can start another, so the answer holds until
+/// it does.
 fn single_threaded(what: &str) -> io::Result<()> {
-    match thread_count()? {
-        1 => Ok(()),
-        threads => Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!("cannot {what}: the process has {threads} threads, and needs to have one"),
-        )),
+    let started = Instant::now();
+    loop {
+        let threads = thread_count()?;
+        if threads == 1 {
+            return Ok(());
+        }
+        if started.elapsed() >= ENDING_THREADS_WAIT {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("cannot {what}: the process has {threads} threads, and needs to have one"),
+            ));
+        }
+        std::thread::yield_now();
     }
 }
 
@@ -424,8 +442,9 @@ pub fn umask(mask: libc::mode_t) -> libc::mode_t {
 ///
 /// # Errors
 ///
-/// `ErrorKind::Unsupported` when this process has more than one thread,
-/// and `ErrorKind::InvalidInput` for a name that is empty or holds `=` or
+/// `ErrorKind::Unsupported` when this process has more than one thread
+/// once [`ENDING_THREADS_WAIT`] has passed, and `ErrorKind::InvalidInput`
+/// for a name that is empty or holds `=` or
 /// a NUL byte, or a value that holds a NUL byte.
 pub fn set_env(name: &OsStr, value: &OsStr) -> io::Result<()> {
     valid_name(name)?;

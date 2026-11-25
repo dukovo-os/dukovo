@@ -278,6 +278,7 @@ pub fn may_access(path: &Path, mode: c_int) -> bool {
 /// # Errors
 ///
 /// ENOENT when there is no such file, and what opening it fails with.
+#[inline]
 pub fn open_at(dir: impl AsFd, name: &CStr, flags: c_int) -> io::Result<OwnedFd> {
     // SAFETY: the name is a C string, which openat only reads; no mode is
     // read without O_CREAT, which an open of an existing file does not
@@ -295,6 +296,7 @@ pub fn open_at(dir: impl AsFd, name: &CStr, flags: c_int) -> io::Result<OwnedFd>
 /// # Errors
 ///
 /// ENOENT when there is no such file.
+#[inline]
 pub fn stat_at(dir: impl AsFd, name: &CStr) -> io::Result<libc::stat> {
     let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
     // SAFETY: the name is a C string, which fstatat only reads, and

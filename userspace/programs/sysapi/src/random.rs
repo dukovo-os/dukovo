@@ -13,6 +13,7 @@ use std::io;
 ///
 /// What getrandom fails with but EINTR, which a kernel whose generator
 /// is ready does not.
+#[inline]
 pub fn fill(bytes: &mut [u8]) -> io::Result<()> {
     let mut got = 0;
     while got < bytes.len() {
