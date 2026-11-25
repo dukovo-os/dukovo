@@ -7,7 +7,7 @@
 
 use std::fs::File;
 use std::io;
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 
 use crate::checked;
 
@@ -131,6 +131,20 @@ impl Standard {
             Standard::Error => 2,
         }
     }
+
+    /// The descriptor, borrowed for as long as the program runs: what the
+    /// standard library's `Stdin`, `Stdout` and `Stderr` borrow for as
+    /// long as each handle lives, which ends with a temporary handle's
+    /// statement.
+    #[must_use]
+    pub fn fd(self) -> BorrowedFd<'static> {
+        // SAFETY: 0, 1 and 2 are open for the whole of the program's life:
+        // the standard library opens the null device at each one that is
+        // closed before `main`, and no Rust code may close them, as no
+        // `OwnedFd` holds them; `redirect` and `take_standard` leave each
+        // open, on another file.
+        unsafe { BorrowedFd::borrow_raw(self.number()) }
+    }
 }
 
 /// Makes standard descriptor `which` another descriptor of what `to` is
@@ -176,7 +190,14 @@ mod tests {
     use std::io::{Read, Write};
     use std::os::fd::AsRawFd;
 
-    use super::{handed_down, pipe, read, set_nonblocking, write};
+    use super::{Standard, handed_down, pipe, read, set_nonblocking, write};
+
+    #[test]
+    fn the_standard_descriptors_are_0_1_and_2() {
+        let numbers = [Standard::Input, Standard::Output, Standard::Error]
+            .map(|which| which.fd().as_raw_fd());
+        assert_eq!(numbers, [0, 1, 2]);
+    }
 
     #[test]
     fn a_pipe_carries_bytes_from_its_write_end_to_its_read_end() {

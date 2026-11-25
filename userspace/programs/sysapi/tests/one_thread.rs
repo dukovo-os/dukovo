@@ -9,20 +9,61 @@
 #![forbid(unsafe_code)]
 
 use std::ffi::OsStr;
+use std::os::unix::process::ExitStatusExt;
+use std::time::Duration;
 
 use sysapi::process::{self, Fork};
+use sysapi::{signal, terminal};
 
 fn main() {
     a_child_of_a_fork_ends_with_its_own_status();
+    any_child_is_waited_for_and_a_stopped_one_is_seen();
+    a_new_session_takes_control_of_a_terminal();
     the_environment_changes_while_there_is_one_thread();
     a_second_thread_stops_both();
-    println!("one_thread: 3 checks passed");
+    println!("one_thread: 5 checks passed");
 }
 
 fn a_child_of_a_fork_ends_with_its_own_status() {
     match process::fork().unwrap() {
         Fork::Child => process::exit_now(7),
         Fork::Parent(child) => assert_eq!(process::wait(child).unwrap().code(), Some(7)),
+    }
+}
+
+fn any_child_is_waited_for_and_a_stopped_one_is_seen() {
+    let child = match process::fork().unwrap() {
+        Fork::Child => {
+            let _ = signal::raise(libc::SIGSTOP);
+            process::exit_now(3)
+        }
+        Fork::Parent(child) => child,
+    };
+    let mut stopped = None;
+    for _ in 0..500 {
+        stopped = process::reap_or_stopped();
+        if stopped.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let (pid, status) = stopped.expect("the child stops itself");
+    assert_eq!((pid, status.stopped_signal()), (child, Some(libc::SIGSTOP)));
+    process::kill(child, libc::SIGCONT).unwrap();
+    let (pid, status) = process::wait_any().unwrap();
+    assert_eq!((pid, status.code()), (child, Some(3)));
+}
+
+fn a_new_session_takes_control_of_a_terminal() {
+    let pty = terminal::open_pty(None).unwrap();
+    match process::fork().unwrap() {
+        Fork::Child => {
+            let session = process::new_session().unwrap();
+            terminal::take_control(&pty.terminal).unwrap();
+            let foreground = terminal::foreground_group(&pty.terminal).unwrap();
+            process::exit_now(if foreground == session { 0 } else { 1 })
+        }
+        Fork::Parent(child) => assert_eq!(process::wait(child).unwrap().code(), Some(0)),
     }
 }
 

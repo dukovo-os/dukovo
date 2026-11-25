@@ -34,7 +34,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
-use std::os::fd::AsRawFd;
+use std::os::fd::AsFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::Arc;
@@ -43,6 +43,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use mdns_sd::{HostnameResolutionEvent, IfKind, ServiceDaemon, ServiceEvent, ServiceInfo};
+use sysapi::poll::{self, PollFd};
+use sysapi::random;
 
 use crate::args::Args;
 use crate::util::{self, Fail, fail};
@@ -152,7 +154,7 @@ fn lines(
     mut each: impl FnMut(&str) -> bool,
 ) -> io::Result<()> {
     let until = Instant::now() + wait;
-    let mut wanted = libc::pollfd { fd: stream.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+    let mut wanted = [PollFd::new(stream.as_fd(), libc::POLLIN)];
     let mut line: Vec<u8> = Vec::new();
     let mut read = 0;
     let mut buffer = [0u8; 4096];
@@ -161,16 +163,13 @@ fn lines(
         if left.is_zero() {
             return Err(io::ErrorKind::TimedOut.into());
         }
-        let ms = i32::try_from(left.as_millis().max(1)).unwrap_or(i32::MAX);
-        // SAFETY: one pollfd, valid for the call.
-        if unsafe { libc::poll(&raw mut wanted, 1, ms) } < 0 {
-            let e = io::Error::last_os_error();
+        if let Err(e) = poll::poll(&mut wanted, Some(left.max(Duration::from_millis(1)))) {
             if e.kind() == io::ErrorKind::Interrupted {
                 continue;
             }
             return Err(e);
         }
-        if wanted.revents == 0 {
+        if wanted[0].revents() == 0 {
             continue;
         }
         let n = match (&*stream).read(&mut buffer) {
@@ -455,9 +454,7 @@ fn address_of(from: SocketAddr) -> String {
 /// A message identifier: a random UUID's URN.
 fn message_id() -> String {
     let mut bytes = [0u8; 16];
-    // SAFETY: getrandom writes at most the buffer's length into it.
-    let got = unsafe { libc::getrandom(bytes.as_mut_ptr().cast(), bytes.len(), 0) };
-    if usize::try_from(got).ok() != Some(bytes.len()) {
+    if random::fill(&mut bytes).is_err() {
         // Unique enough to tell this probe's answers from another's.
         let seed = u128::from(util::now_ns()) ^ (u128::from(std::process::id()) << 64);
         bytes = seed.to_le_bytes();

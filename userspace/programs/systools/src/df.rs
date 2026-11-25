@@ -4,7 +4,7 @@
 //! df(1): the space of each mounted filesystem, from `/processes/mounts` and
 //! statvfs(3), with GNU df's options.
 
-use std::ffi::{CString, OsStr, OsString};
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -25,14 +25,7 @@ pub struct Space {
 }
 
 pub fn statvfs(path: &OsStr) -> io::Result<Space> {
-    let path =
-        CString::new(path.as_bytes()).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
-    // SAFETY: all zeros is a valid statvfs: numbers.
-    let mut st: libc::statvfs = unsafe { util::zeroed() };
-    // SAFETY: the path is a C string and `st` a statvfs for the call.
-    if unsafe { libc::statvfs(path.as_ptr(), &raw mut st) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
+    let st = sysapi::fs::statvfs(Path::new(path))?;
     let unit = if st.f_frsize > 0 { st.f_frsize } else { st.f_bsize };
     Ok(Space {
         size: st.f_blocks * unit,

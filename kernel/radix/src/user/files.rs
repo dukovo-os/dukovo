@@ -462,7 +462,8 @@ pub fn directory_method(
             if flags.create.is_some() {
                 who = making(user, who);
             }
-            let mut at = vfs()?.open(&who, &dir.at, path.as_str()?, flags).map_err(fs::status)?;
+            let (mut at, mut writer) =
+                vfs()?.open_file(&who, &dir.at, path.as_str()?, flags).map_err(fs::status)?;
             let kind = at.node.kind();
             let description = Description {
                 append: a.flags.contains(OpenFlags::APPEND),
@@ -477,6 +478,11 @@ pub fn directory_method(
             let missing = wanted.difference(found.cap.rights());
             if !missing.is_empty() {
                 return Err(cap_error(CapError::MissingRights(missing)));
+            }
+            // The writer an open to cut took goes now, unless the handle
+            // may write.
+            if !wanted.contains(Rights::WRITE) {
+                writer = None;
             }
             // The node's kind, unless it is replaced below.
             let mut known = Some(kind);
@@ -496,8 +502,9 @@ pub fn directory_method(
             let rights = wanted.union(Rights::COPY).union(Rights::TRANSFER).union(bypass);
             // The bytes the VFS took as a path above.
             let from = Some((&dir.opened, path.bytes()));
-            let object = FileObject::opened_as(at, known, description, from, dir.name.clone())
-                .ok_or(error(Kernel::NoMemory))?;
+            let object =
+                FileObject::opened_as(at, known, description, from, dir.name.clone(), writer)
+                    .ok_or(error(Kernel::NoMemory))?;
             let terminal = object.tty_handle().is_some().then(|| object.at.node.clone());
             install_file(user, to, object_kind, rights, object, close_on_exec)?;
             if let Some(node) = terminal

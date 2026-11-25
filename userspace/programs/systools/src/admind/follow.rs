@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::future::{Future, poll_fn};
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, OwnedFd};
 use std::pin::{Pin, pin};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -41,6 +41,7 @@ use accounts::console::Console;
 use bytes::Bytes;
 use http_body::Frame;
 use serde_json::{Value, json};
+use sysapi::fd;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
 use tokio::net::unix::pipe;
 use tokio::sync::{Notify, mpsc};
@@ -290,22 +291,8 @@ fn ended_event(why: Why, error: &str) -> Bytes {
 /// A pipe: its read end, which admind keeps and reads without blocking,
 /// and its write end, which authd gives log.
 fn pipe() -> io::Result<(pipe::Receiver, OwnedFd)> {
-    let mut ends = [0; 2];
-    // SAFETY: `ends` has room for the two descriptors pipe2 writes.
-    if unsafe { libc::pipe2(ends.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: pipe2 opened both, and nothing else owns them.
-    let [read, write] = ends.map(|fd| unsafe { OwnedFd::from_raw_fd(fd) });
-    // SAFETY: fcntl on an open descriptor touches no memory.
-    let flags = unsafe { libc::fcntl(read.as_raw_fd(), libc::F_GETFL) };
-    if flags < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: as above.
-    if unsafe { libc::fcntl(read.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
+    let (read, write) = fd::pipe()?;
+    fd::set_nonblocking(&read, true)?;
     Ok((pipe::Receiver::from_owned_fd_unchecked(read)?, write))
 }
 
@@ -347,7 +334,7 @@ pub async fn start(
             |err: io::Error| Failure::new(Kind::Internal, format!("cannot open a pipe: {err}"));
         let (output, output_end) = pipe().map_err(failed)?;
         let (errors, errors_end) = pipe().map_err(failed)?;
-        let fds = [output_end.as_raw_fd(), errors_end.as_raw_fd()];
+        let fds = [output_end.as_fd(), errors_end.as_fd()];
         let (answer, _) = authd::ask(&shared.authd, asked.request.clone(), &fds)
             .await
             .map_err(|why| Failure::new(Kind::AuthdSilent, why))?;

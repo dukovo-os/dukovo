@@ -5,11 +5,16 @@
 //! terminal, user names, signals, and the C library's regular expressions
 //! and patterns.
 
-use std::ffi::{CStr, CString, OsStr};
+use std::ffi::OsStr;
 use std::fmt;
-use std::io;
+use std::io::{self, IsTerminal};
+use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::process::CommandExt;
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+pub use sysapi::pattern::{Regex, fnmatch};
 
 /// Why a tool stopped: its exit status and what to say, if anything.
 #[derive(Debug)]
@@ -48,6 +53,21 @@ impl From<io::Error> for Fail {
 #[allow(clippy::needless_pass_by_value)]
 pub fn failed(what: &dyn fmt::Display, error: io::Error) -> Fail {
     fail(format!("{what}: {}", strip_os_error(&error)))
+}
+
+/// The program at `path` with the arguments `argv`, its name first, to
+/// run or to start in place of this one as execv(3) would: a path
+/// without a slash is in the working directory, never looked for in
+/// `PATH`. `Command` gives it the default action for SIGPIPE and an empty
+/// signal mask.
+pub fn program<'a>(path: &[u8], mut argv: impl Iterator<Item = &'a [u8]>) -> Command {
+    let path = if path.contains(&b'/') { path.to_vec() } else { [b"./", path].concat() };
+    let mut command = Command::new(OsStr::from_bytes(&path));
+    if let Some(name) = argv.next() {
+        command.arg0(OsStr::from_bytes(name));
+    }
+    command.args(argv.map(OsStr::from_bytes));
+    command
 }
 
 /// An error's text without Rust's " (os error N)".
@@ -160,10 +180,7 @@ pub fn now_ns() -> u64 {
 /// Nanoseconds since boot, now, on the monotonic clock the kernel's
 /// times are on.
 pub fn monotonic_ns() -> u64 {
-    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-    // SAFETY: `ts` is a valid timespec for the call to fill.
-    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut ts) };
-    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+    sysapi::time::monotonic_ns()
 }
 
 /// Seconds since the epoch, formatted with strftime(3) in local time.
@@ -173,28 +190,14 @@ pub fn local_time(seconds: i64, format: &str) -> String {
 
 /// Seconds since the epoch, formatted with strftime(3) in UTC, or in
 /// local time.
+/// A time whose year does not fit is its seconds, and a format with a NUL
+/// byte writes nothing.
 pub fn time_text(seconds: i64, format: &str, utc: bool) -> String {
-    let time = seconds as libc::time_t;
-    // SAFETY: an all-zero tm is valid; gmtime_r and localtime_r fill it.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    // SAFETY: both pointers are valid for the call.
-    let filled = unsafe {
-        if utc {
-            libc::gmtime_r(&raw const time, &raw mut tm)
-        } else {
-            libc::localtime_r(&raw const time, &raw mut tm)
-        }
-    };
-    if filled.is_null() {
-        return seconds.to_string();
+    match sysapi::time::format(seconds, format, utc) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::InvalidInput => String::new(),
+        Err(_) => seconds.to_string(),
     }
-    let Ok(format) = CString::new(format) else { return String::new() };
-    let mut buffer = [0u8; 128];
-    // SAFETY: the buffer is valid for its length, the format a C string.
-    let len = unsafe {
-        libc::strftime(buffer.as_mut_ptr().cast(), buffer.len(), format.as_ptr(), &raw const tm)
-    };
-    String::from_utf8_lossy(&buffer[..len]).into_owned()
 }
 
 /// A duration in seconds, as ps(1)'s TIME: `[DD-]HH:MM:SS`.
@@ -237,13 +240,11 @@ pub fn up_for(seconds: u64) -> String {
 
 /// The terminal's size on `fd`, in columns and rows, if it is one;
 /// otherwise COLUMNS and LINES.
-pub fn terminal_size(fd: i32) -> Option<(usize, usize)> {
-    // SAFETY: an all-zero winsize is valid; the ioctl fills it.
-    let mut size: libc::winsize = unsafe { std::mem::zeroed() };
-    // SAFETY: TIOCGWINSZ writes a winsize to the pointer, which is valid.
-    let got = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) } == 0;
-    if got && size.ws_col > 0 {
-        return Some((size.ws_col as usize, size.ws_row as usize));
+pub fn terminal_size(fd: impl AsFd) -> Option<(usize, usize)> {
+    if let Ok(size) = sysapi::terminal::window_size(fd)
+        && size.cols > 0
+    {
+        return Some((usize::from(size.cols), usize::from(size.rows)));
     }
     let var = |name: &str| std::env::var(name).ok().and_then(|v| v.parse().ok());
     Some((var("COLUMNS")?, var("LINES").unwrap_or(24)))
@@ -276,9 +277,8 @@ pub fn width(text: &str) -> usize {
 }
 
 /// Whether `fd` is a terminal.
-pub fn is_terminal(fd: i32) -> bool {
-    // SAFETY: isatty reads nothing of the program's.
-    unsafe { libc::isatty(fd) == 1 }
+pub fn is_terminal(fd: impl AsFd) -> bool {
+    fd.as_fd().is_terminal()
 }
 
 /// Where the devices are (ADR 0113): the terminals' names are beneath
@@ -307,44 +307,20 @@ pub fn utf8_locale() -> bool {
 
 /// uname(2)'s system name, release and machine.
 pub fn uname() -> (String, String, String) {
-    // SAFETY: all zeros is a valid utsname: arrays of bytes.
-    let mut names: libc::utsname = unsafe { zeroed() };
-    // SAFETY: uname fills the structure it is given.
-    if unsafe { libc::uname(&raw mut names) } != 0 {
-        return ("Dukovo".into(), "unknown".into(), "x86_64".into());
+    match sysapi::system::uname() {
+        Ok(names) => (names.system, names.release, names.machine),
+        Err(_) => ("Dukovo".into(), "unknown".into(), "x86_64".into()),
     }
-    let text = |field: &[libc::c_char]| {
-        let bytes: Vec<u8> = field.iter().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
-        String::from_utf8_lossy(&bytes).into_owned()
-    };
-    (text(&names.sysname), text(&names.release), text(&names.machine))
 }
 
 /// The machine's name.
 pub fn hostname() -> String {
-    let mut buffer = [0u8; 256];
-    // SAFETY: the buffer is valid for its length.
-    if unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) } != 0 {
-        return "localhost".into();
-    }
-    let end = buffer.iter().position(|&b| b == 0).unwrap_or(buffer.len());
-    String::from_utf8_lossy(&buffer[..end]).into_owned()
+    sysapi::system::host_name().unwrap_or_else(|_| "localhost".into())
 }
 
-/// What `read` makes of user `uid`'s entry in the user database, if it
-/// has one.
-fn with_user<T>(uid: u32, read: impl FnOnce(&libc::passwd) -> T) -> Option<T> {
-    // SAFETY: all zeros is a valid passwd: numbers, and pointers that stay
-    // null until getpwuid_r fills them.
-    let mut pw: libc::passwd = unsafe { zeroed() };
-    let mut buffer = vec![0u8; 1024];
-    let mut found: *mut libc::passwd = std::ptr::null_mut();
-    // SAFETY: every pointer is valid for the call; the buffer for its
-    // length.
-    let e = unsafe {
-        libc::getpwuid_r(uid, &raw mut pw, buffer.as_mut_ptr().cast(), buffer.len(), &raw mut found)
-    };
-    (e == 0 && !found.is_null()).then(|| read(&pw))
+/// User `uid`'s entry in the user database, if it has one.
+fn user(uid: u32) -> Option<sysapi::users::User> {
+    sysapi::users::user_by_id(uid).ok().flatten()
 }
 
 /// Whether the kernel was started with `flag` (dukovo-boot(7)): one of
@@ -375,8 +351,7 @@ pub(crate) fn kernel_flag_in(line: &str, flag: &str) -> bool {
 
 /// The user this program runs as.
 pub fn own_user() -> u32 {
-    // SAFETY: geteuid has no preconditions.
-    unsafe { libc::geteuid() }
+    sysapi::process::euid()
 }
 
 /// The user who asked: the one `elevate` ran this for, when it is run as
@@ -391,48 +366,25 @@ pub fn asker() -> u32 {
 
 /// The name of user `uid`, or its number if it has none.
 pub fn user_name(uid: u32) -> String {
-    with_user(uid, |pw| {
-        // SAFETY: getpwuid_r set pw_name to null or to a C string in the
-        // buffer, which lives until with_user returns.
-        (!pw.pw_name.is_null())
-            .then(|| unsafe { CStr::from_ptr(pw.pw_name) }.to_string_lossy().into_owned())
-    })
-    .flatten()
-    .unwrap_or_else(|| uid.to_string())
+    user(uid).map_or_else(|| uid.to_string(), |user| user.name)
 }
 
 /// User `uid`'s home folder, as the user database gives it.
 pub fn user_home(uid: u32) -> Option<String> {
-    with_user(uid, |pw| {
-        // SAFETY: getpwuid_r set pw_dir to null or to a C string in the
-        // buffer, which lives until with_user returns.
-        (!pw.pw_dir.is_null())
-            .then(|| unsafe { CStr::from_ptr(pw.pw_dir) }.to_string_lossy().into_owned())
-    })
-    .flatten()
+    user(uid).map(|user| user.home.to_string_lossy().into_owned())
 }
 
 /// User `uid`'s login group, as the user database gives it.
 pub fn login_group(uid: u32) -> Option<u32> {
-    with_user(uid, |pw| pw.pw_gid)
+    user(uid).map(|user| user.gid)
 }
 
 /// The name of group `gid`, or its number if it has none.
 pub fn group_name(gid: u32) -> String {
-    // SAFETY: all zeros is a valid group: numbers, and pointers that stay
-    // null until getgrgid_r fills them.
-    let mut gr: libc::group = unsafe { zeroed() };
-    let mut buffer = vec![0u8; 4096];
-    let mut found: *mut libc::group = std::ptr::null_mut();
-    // SAFETY: as for getpwuid_r in user_name.
-    let e = unsafe {
-        libc::getgrgid_r(gid, &raw mut gr, buffer.as_mut_ptr().cast(), buffer.len(), &raw mut found)
-    };
-    if e != 0 || found.is_null() || gr.gr_name.is_null() {
-        return gid.to_string();
-    }
-    // SAFETY: getgrgid_r set gr_name to a C string in the buffer.
-    unsafe { CStr::from_ptr(gr.gr_name) }.to_string_lossy().into_owned()
+    sysapi::users::group_by_id(gid)
+        .ok()
+        .flatten()
+        .map_or_else(|| gid.to_string(), |group| group.name)
 }
 
 /// The user `name` names, by name or number.
@@ -440,12 +392,7 @@ pub fn user_id(name: &str) -> Option<u32> {
     if let Ok(uid) = name.parse() {
         return Some(uid);
     }
-    let name = CString::new(name).ok()?;
-    // SAFETY: getpwnam takes a C string; the pointer it returns is read
-    // before any other call could change what it points to.
-    let pw = unsafe { libc::getpwnam(name.as_ptr()) };
-    // SAFETY: a non-null result points to a passwd.
-    (!pw.is_null()).then(|| unsafe { (*pw).pw_uid })
+    sysapi::users::user_by_name(name).ok().flatten().map(|user| user.uid)
 }
 
 /// The group `name` names, by name or number.
@@ -453,24 +400,7 @@ pub fn group_id(name: &str) -> Option<u32> {
     if let Ok(gid) = name.parse() {
         return Some(gid);
     }
-    let name = CString::new(name).ok()?;
-    // SAFETY: as for getpwnam.
-    let gr = unsafe { libc::getgrnam(name.as_ptr()) };
-    // SAFETY: a non-null result points to a group.
-    (!gr.is_null()).then(|| unsafe { (*gr).gr_gid })
-}
-
-/// A C structure with every byte zero, as C code clears one before a
-/// call fills it.
-///
-/// # Safety
-///
-/// All zeros must be a valid `T`, as it is for structures of numbers,
-/// arrays and raw pointers, and is not for references, `NonZero` numbers
-/// or most enums.
-pub unsafe fn zeroed<T: Copy>() -> T {
-    // SAFETY: the caller promises that all zeros is a valid `T`.
-    unsafe { std::mem::zeroed() }
+    sysapi::users::group_by_name(name).ok().flatten().map(|group| group.gid)
 }
 
 /// The signals, by number, as kill(1) names them.
@@ -526,89 +456,6 @@ pub fn signal_number(name: &str) -> Option<i32> {
 /// Signal `number`'s name, without `SIG`.
 pub fn signal_name(number: i32) -> Option<&'static str> {
     SIGNALS.iter().find(|(n, _)| *n == number).map(|(_, name)| *name)
-}
-
-/// A regular expression of the C library's (regex(3)).
-pub struct Regex {
-    compiled: Box<RegexT>,
-}
-
-/// regex_t: room for the C library's, whose size this does not know.
-#[repr(C, align(8))]
-struct RegexT([u8; 256]);
-
-// SAFETY: these are the C library's functions, as regex.h declares them;
-// RegexT has room and alignment for any regex_t.
-unsafe extern "C" {
-    fn regcomp(regex: *mut RegexT, pattern: *const libc::c_char, flags: libc::c_int)
-    -> libc::c_int;
-    fn regexec(
-        regex: *const RegexT,
-        text: *const libc::c_char,
-        nmatch: usize,
-        matches: *mut [isize; 2],
-        flags: libc::c_int,
-    ) -> libc::c_int;
-    fn regerror(
-        code: libc::c_int,
-        regex: *const RegexT,
-        buffer: *mut libc::c_char,
-        size: usize,
-    ) -> usize;
-    fn regfree(regex: *mut RegexT);
-}
-
-/// regcomp(3)'s REG_EXTENDED, REG_ICASE and REG_NOSUB, the same in every
-/// C library.
-const REG_EXTENDED: libc::c_int = 1;
-const REG_ICASE: libc::c_int = 2;
-const REG_NOSUB: libc::c_int = 8;
-
-impl Regex {
-    /// Compiles an extended regular expression, ignoring case if asked.
-    pub fn new(pattern: &str, ignore_case: bool) -> Result<Regex, String> {
-        let text = CString::new(pattern).map_err(|_| "a pattern has a NUL in it".to_string())?;
-        let mut compiled = Box::new(RegexT([0; 256]));
-        let flags = REG_EXTENDED | REG_NOSUB | if ignore_case { REG_ICASE } else { 0 };
-        // SAFETY: `compiled` has room for a regex_t, `text` is a C string.
-        let code = unsafe { regcomp(&raw mut *compiled, text.as_ptr(), flags) };
-        if code != 0 {
-            let mut buffer = [0u8; 256];
-            // SAFETY: the buffer is valid for its length; regerror only
-            // reads `compiled`.
-            unsafe {
-                regerror(code, &raw const *compiled, buffer.as_mut_ptr().cast(), buffer.len())
-            };
-            let end = buffer.iter().position(|&b| b == 0).unwrap_or(0);
-            return Err(String::from_utf8_lossy(&buffer[..end]).into_owned());
-        }
-        Ok(Regex { compiled })
-    }
-
-    /// Whether it matches somewhere in `text`.
-    pub fn is_match(&self, text: &str) -> bool {
-        let Ok(text) = CString::new(text) else { return false };
-        // SAFETY: the expression was compiled; no matches are asked for.
-        unsafe {
-            regexec(&raw const *self.compiled, text.as_ptr(), 0, std::ptr::null_mut(), 0) == 0
-        }
-    }
-}
-
-impl Drop for Regex {
-    fn drop(&mut self) {
-        // SAFETY: it was compiled, and is freed once.
-        unsafe { regfree(&raw mut *self.compiled) };
-    }
-}
-
-/// Whether `name` matches the shell pattern `pattern` (fnmatch(3)).
-pub fn fnmatch(pattern: &str, name: &OsStr) -> bool {
-    let (Ok(pattern), Ok(name)) = (CString::new(pattern), CString::new(name.as_bytes())) else {
-        return false;
-    };
-    // SAFETY: both are C strings.
-    unsafe { libc::fnmatch(pattern.as_ptr(), name.as_ptr(), 0) == 0 }
 }
 
 /// Splits a list of the form ps(1) and pgrep(1) take: items separated by

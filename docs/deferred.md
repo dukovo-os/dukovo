@@ -46,7 +46,7 @@ list is kept current instead.
 | smoltcp's own tests in CI, with its three UDP broadcast tests mended or changed for the kernel's patch (ADR 0182) | CI runs radix-net's tests, which drive the patched stack, but not the crate's own; those three already fail with the patch | Before the smoltcp patch goes upstream |
 | Trademark clearance of the project's name | Legal review | Before 1.0.0-alpha.1 |
 | SECURITY.md says plainly that the alpha is unaudited; the update server is live for testers | Part of the checklist before the first public release | Before 1.0.0-alpha.1 |
-| `systools`, `nukesh`, `tools/lab-writer` and `tools/linux-bench` moved onto sysapi, so that they forbid `unsafe` too and the check's list of crates not yet moved is empty (ADR 0730) | Some 630 lines with `unsafe` in four crates, more than one pull request reviews well; the check fails once one of them no longer needs its place | Before 1.0.0-alpha.1 |
+| `nukesh`, `tools/lab-writer` and `tools/linux-bench` moved onto sysapi, so that they forbid `unsafe` too and the check's list of crates not yet moved is empty (ADR 0730) | Some 150 lines with `unsafe` in three crates, beyond what one pull request reviews well together with the rest; the check fails once one of them no longer needs its place | Before 1.0.0-alpha.1 |
 
 ## Waiting on real hardware
 
@@ -534,6 +534,17 @@ machine asks for them.
 | A new alert rule tried on last week's history before it is on: no alert rule is the owner's to write, and a script raises an alert with `alerts raise`, so this waits until rules exist | ADR 0485 |
 | An alert when an administrator signs in from a new place or device, and Sign-ins as a kind of alert: no program raises an alert for a sign-in, since authd blocks an address that fails too often but keeps no record of where each administrator signs in from; it waits on a record in authd of the places and devices each administrator signs in from, with its own privacy note | ADR 0485, ADR 0566 |
 | Ops' catalog prepare does not see a lab round reading out/: the lab tool keeps its run lock in its own store, which Ops does not read, so the prepare window warns instead | ADR 0594 |
+
+### Language runtimes
+
+The roadmap lists these as [not scheduled](roadmap.md#not-scheduled).
+Each waits on programs or users asking for more than the Linux builds
+give.
+
+| Item | Source |
+| --- | --- |
+| A native OpenJDK port (Java and the JVM languages), with HotSpot's own operating-system layer for Dukovo and its JIT within W^X, for speed and DukUI integration. Until then the official Linux builds run through the Linux compatibility layer, once Phase 18 lets a program ask for JIT memory | Roadmap, not scheduled |
+| A native .NET port (C# and F#), with the runtime's platform layer and native shims for Dukovo and its JIT within W^X, for speed and DukUI integration. Until then the official Linux builds run through the Linux compatibility layer, once Phase 18 lets a program ask for JIT memory | Roadmap, not scheduled |
 
 ### Benchmarks
 

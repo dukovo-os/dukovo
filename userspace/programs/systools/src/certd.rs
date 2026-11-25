@@ -57,11 +57,11 @@
 //! `certificates` boot test covers it.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use ring::rand::{SecureRandom, SystemRandom};
+use sysapi::signal::{self, Caught};
 
 use crate::alerts::protocol::{About, Alert, Severity};
 use crate::args::Args;
@@ -98,16 +98,8 @@ const CRITICAL_DAYS: i64 = 7;
 /// with this many days or fewer left.
 const FAILED_NOTICE_DAYS: i64 = 14;
 
-static STOP: AtomicBool = AtomicBool::new(false);
-static CHECK_NOW: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_term(_: libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-}
-
-extern "C" fn on_hangup(_: libc::c_int) {
-    CHECK_NOW.store(true, Ordering::Relaxed);
-}
+static STOP: Caught = Caught::new();
+static CHECK_NOW: Caught = Caught::new();
 
 /// What certd carries from one look to the next.
 struct Certd {
@@ -135,15 +127,8 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     if let Some(arg) = args.next()? {
         return Err(args.unknown(&arg));
     }
-    for (signal, handler) in
-        [(libc::SIGTERM, on_term as extern "C" fn(libc::c_int)), (libc::SIGHUP, on_hangup)]
-    {
-        // SAFETY: all zeros is a valid sigaction: numbers, a signal set
-        // and a function address.
-        let mut action: libc::sigaction = unsafe { util::zeroed() };
-        action.sa_sigaction = handler as *const () as usize;
-        // SAFETY: the handlers only store to an atomic.
-        unsafe { libc::sigaction(signal, &raw const action, std::ptr::null_mut()) };
+    for (number, caught) in [(libc::SIGTERM, &STOP), (libc::SIGHUP, &CHECK_NOW)] {
+        let _ = signal::catch(number, caught, 0);
     }
     let mut certd = Certd {
         store: Store::system(),
@@ -155,8 +140,8 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         alertd_unreached: false,
     };
     println!("certd: keeping certificates in {}", certd.store.dir().display());
-    while !STOP.load(Ordering::Relaxed) {
-        CHECK_NOW.store(false, Ordering::Relaxed);
+    while !STOP.is_set() {
+        CHECK_NOW.take();
         let wait = certd.look();
         sleep(wait);
     }
@@ -166,10 +151,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
 /// Sleeps for `time`, or until SIGTERM or SIGHUP.
 fn sleep(time: Duration) {
     let until = Instant::now() + time;
-    while Instant::now() < until
-        && !STOP.load(Ordering::Relaxed)
-        && !CHECK_NOW.load(Ordering::Relaxed)
-    {
+    while Instant::now() < until && !STOP.is_set() && !CHECK_NOW.is_set() {
         thread::sleep(Duration::from_secs(1).min(until.saturating_duration_since(Instant::now())));
     }
 }

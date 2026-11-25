@@ -40,6 +40,7 @@ use radix_sync::{Mutex, rcu};
 use crate::attributes::{self, Inherited};
 use crate::mem::{self, KVec};
 use crate::path::{self, Component};
+use crate::writes::Writer;
 use crate::{
     Access, Error, FsRef, Kind, ListFn, MAX_LINKS, NodeRef, PATH_MAX, Result, Stat, TreeItem,
     TreeRange, Who, address, mode, want,
@@ -779,7 +780,8 @@ impl Vfs {
     /// one whose last component is `.` or `..`. One that is there must let `who` do what
     /// `flags.want` asks, and write it to truncate it; one the open makes
     /// is `who`'s whatever its mode, and its directory must let `who`
-    /// change it.
+    /// change it. A writer the open takes ([`Vfs::open_file`]) goes as it
+    /// returns: this is for an open that writes nothing after it.
     pub fn open(
         &self,
         who: &Who,
@@ -787,6 +789,20 @@ impl Vfs {
         path: &str,
         flags: OpenFlags,
     ) -> Result<Location> {
+        self.open_file(who, base, path, flags).map(|(at, _)| at)
+    }
+
+    /// As [`Vfs::open`], with the [`Writer`] of a file that `flags` open
+    /// to write or to cut, which the handle that writes keeps: the open
+    /// fails with [`Error::TextBusy`] while programs share the file's
+    /// pages ([`crate::writes`]), before it cuts anything.
+    pub fn open_file(
+        &self,
+        who: &Who,
+        base: &Location,
+        path: &str,
+        flags: OpenFlags,
+    ) -> Result<(Location, Option<Writer>)> {
         let mut made = false;
         let at = if let Some(access) = flags.create {
             // The path again with the link's target for its last name,
@@ -864,11 +880,18 @@ impl Vfs {
         if kind == Kind::File {
             at.node.opening(asked)?;
         }
+        // The writer before the cut, which it refuses while programs
+        // share the file's pages.
+        let writer = if kind == Kind::File && asked & want::WRITE != 0 {
+            Writer::of(&at.node)?
+        } else {
+            None
+        };
         if flags.truncate && kind == Kind::File {
             at.node.set_size(0)?;
         }
         let node = at.node.open()?.unwrap_or(at.node);
-        Ok(Location { mount: at.mount, node, read_only: at.read_only })
+        Ok((Location { mount: at.mount, node, read_only: at.read_only }, writer))
     }
 
     /// Makes a symbolic link `path` beneath `base` that points to

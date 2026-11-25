@@ -3,7 +3,7 @@
 
 //! which(1): where in PATH each command is.
 
-use std::ffi::{CString, OsString};
+use std::ffi::OsString;
 use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -17,9 +17,7 @@ fn executable(path: &Path) -> bool {
     if !meta.is_file() {
         return false;
     }
-    let Ok(c) = CString::new(path.as_os_str().as_bytes()) else { return false };
-    // SAFETY: `c` is a C string.
-    unsafe { libc::access(c.as_ptr(), libc::X_OK) == 0 }
+    sysapi::fs::access(path, libc::X_OK)
 }
 
 /// Where `name` is: itself if it has a slash, else the first (or with

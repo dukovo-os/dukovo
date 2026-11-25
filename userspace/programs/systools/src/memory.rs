@@ -299,7 +299,7 @@ pub fn vmstat(args: &mut Args) -> Result<i32, Fail> {
         return Ok(0);
     }
     let rounds = count.unwrap_or(if delay.is_some() { u64::MAX } else { 1 });
-    let height = util::terminal_size(1).map_or(24, |(_, rows)| rows.max(5));
+    let height = util::terminal_size(std::io::stdout()).map_or(24, |(_, rows)| rows.max(5));
     let mut before: Option<Sample> = None;
     let mut now = first;
     for round in 0..rounds {

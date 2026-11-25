@@ -669,7 +669,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
                         "always" => true,
                         "never" => false,
                         "auto" => {
-                            crate::util::is_terminal(1)
+                            crate::util::is_terminal(std::io::stdout())
                                 && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
                         }
                         other => {

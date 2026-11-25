@@ -21,18 +21,17 @@
 //! starts e1000d again, which brings them back up. A card that fails
 //! ends e1000d with an error, so that it is started again.
 
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
 use radix_abi::capability::{self, ObjectKind};
 use radix_abi::device::{self, DeviceInfo, INTERRUPT_MSI};
-use radix_abi::startup::{DEVICE_SLOTS, SLOT_DEVICE, SLOT_SPACE};
-use radix_hw::{Dma, Mmio};
+use radix_abi::startup::{DEVICE_SLOTS, SLOT_DEVICE};
 use radix_intel_net::{Card, Interrupt, Kind, Model};
 use radix_nic::link::{self, Driver, Memory};
-use radix_nic::{Link, MAX_FRAME, MIN_FRAME, Nic, PAGE};
+use radix_nic::{Link, MAX_FRAME, MIN_FRAME, Nic};
+use sysapi::random;
 
 use crate::args::Args;
 use crate::sys::{SYS, status_name};
@@ -69,63 +68,25 @@ fn identity(slot: u32) -> Result<(u32, u16, u16), String> {
     Ok((address, u16_at(DeviceInfo::OFFSET_VENDOR), u16_at(DeviceInfo::OFFSET_DEVICE)))
 }
 
-/// A link's memory as e1000d maps it: [`link::SIZE`] bytes from `base`,
-/// which the kernel shares with the interface's stack.
-struct Mapped {
-    base: usize,
-}
-
-impl Mapped {
-    /// The header's word at `offset`.
-    fn word(&self, offset: usize) -> &AtomicU32 {
-        assert!(offset.is_multiple_of(4) && offset + 4 <= link::HEADER);
-        // SAFETY: `attach_network` mapped the link readable and writable
-        // at `base` for as long as e1000d holds the card, which it does
-        // until it ends; the word is in its header page, 4-aligned, and
-        // the kernel reaches the header's words only atomically too.
-        unsafe { AtomicU32::from_ptr((self.base + offset) as *mut u32) }
-    }
-
-    /// Checks that `len` bytes from `offset` are in the link.
-    fn check(offset: usize, len: usize) {
-        assert!(offset.checked_add(len).is_some_and(|end| end <= link::SIZE));
-    }
-}
+/// A link's memory as e1000d maps it: [`link::SIZE`] bytes, which the
+/// kernel shares with the interface's stack.
+struct Mapped(sysapi::device::Link);
 
 impl Memory for Mapped {
     fn load(&self, offset: usize) -> u32 {
-        self.word(offset).load(Ordering::Acquire)
+        self.0.load(offset)
     }
 
     fn store(&self, offset: usize, value: u32) {
-        self.word(offset).store(value, Ordering::Release);
+        self.0.store(offset, value);
     }
 
     fn read(&self, offset: usize, out: &mut [u8]) {
-        Self::check(offset, out.len());
-        // SAFETY: the bytes are in the mapping (checked); by the link's
-        // rules the kernel does not write a slot while this side owns it,
-        // and the acquire load of its index ordered its writes before.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                (self.base + offset) as *const u8,
-                out.as_mut_ptr(),
-                out.len(),
-            );
-        }
+        self.0.read(offset, out);
     }
 
     fn write(&self, offset: usize, data: &[u8]) {
-        Self::check(offset, data.len());
-        // SAFETY: as in `read`; the kernel reads the slot only after the
-        // release store of this side's index that follows.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                data.as_ptr(),
-                (self.base + offset) as *mut u8,
-                data.len(),
-            );
-        }
+        self.0.write(offset, data);
     }
 }
 
@@ -138,19 +99,12 @@ struct Running {
     link: Mapped,
 }
 
-/// DMA memory goes back with the card, when its capability goes: nothing
-/// to do when the driver drops it.
-fn keep(_virt: usize, _phys: u64, _len: usize, _tag: u32) {}
-
 /// A locally administered MAC address from the kernel's random source,
 /// for a card that has none of its own.
 fn fallback_mac() -> [u8; 6] {
-    let mut bytes = [0u8; 6];
-    // SAFETY: the buffer is valid for its length.
-    let got = unsafe { libc::getrandom(bytes.as_mut_ptr().cast(), bytes.len(), 0) };
-    if got != 6 {
-        bytes = util::now_ns().to_le_bytes()[..6].try_into().unwrap_or([2, 0, 0, 0, 0, 1]);
-    }
+    let bytes = random::bytes::<6>().unwrap_or_else(|_| {
+        util::now_ns().to_le_bytes()[..6].try_into().unwrap_or([2, 0, 0, 0, 0, 1])
+    });
     radix_nic::local_mac(bytes)
 }
 
@@ -160,14 +114,7 @@ fn start(slot: u32, address: u32, model: Model) -> Result<Running, String> {
     fn fails(what: &str) -> impl Fn(radix_abi::Status) -> String + '_ {
         move |s| format!("{what}: {}", status_name(s.0))
     }
-    let registers = device::map_registers(&SYS, slot, SLOT_SPACE, 0, 0)
-        .map_err(fails("mapping its registers"))?;
-    let len = usize::try_from(registers.size).map_err(|_| "its registers are too large")?;
-    // SAFETY: the kernel mapped the card's first BAR, `len` bytes of
-    // device memory, uncached at `registers.at`, for as long as e1000d
-    // holds the card, which it does until it ends; nothing else here
-    // touches those pages.
-    let regs = unsafe { Mmio::new(registers.at as usize, len) };
+    let regs = sysapi::device::registers(slot).map_err(fails("mapping its registers"))?;
     // The PCI 8254x are polled, as the kernel polls them.
     let interrupt = if model.msi() {
         let kind = device::interrupt(&SYS, slot).map_err(fails("its interrupt"))?.kind;
@@ -175,26 +122,19 @@ fn start(slot: u32, address: u32, model: Model) -> Result<Running, String> {
     } else {
         Interrupt::Polled
     };
-    let mut alloc = |pages: usize| {
-        let given = device::map_dma(&SYS, slot, SLOT_SPACE, 0, u32::try_from(pages).ok()?).ok()?;
-        // SAFETY: the kernel mapped `pages` pages of zeroed memory at
-        // `given.at`, which follow one another at `given.device_address`
-        // where the card reaches them, for this card alone, until its
-        // capability goes; `keep` gives back nothing before then.
-        Some(unsafe { Dma::new(given.at as usize, given.device_address, pages * PAGE, 0, keep) })
-    };
+    let mut alloc = |pages: usize| sysapi::device::dma(slot, u32::try_from(pages).ok()?).ok();
     let mut delay = |us: u32| thread::sleep(Duration::from_micros(us.into()));
     let card =
         radix_intel_net::start(model, regs, interrupt, fallback_mac(), &mut alloc, &mut delay)
             .map_err(|err| format!("{err}"))?;
     let mac = card.info().mac;
-    let attached = device::attach_network(&SYS, slot, SLOT_SPACE, 0, &mac)
+    let (link, interface) = sysapi::device::attach_network(slot, &mac)
         .map_err(fails("attaching it to its interface"))?;
-    let link = Mapped { base: attached.at as usize };
+    let link = Mapped(link);
     if !link::valid(&link) {
         return Err("its link is of a layout e1000d does not know".to_string());
     }
-    let name = format!("net{}", attached.interface);
+    let name = format!("net{interface}");
     let how = match interrupt {
         Interrupt::Msi => "an MSI",
         Interrupt::Polled => "polled",
@@ -318,6 +258,8 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU8, Ordering};
+
     use super::*;
 
     #[test]
@@ -326,10 +268,43 @@ mod tests {
         assert_eq!(pci_address(0x0001_0a12), "0001:0a:02.2");
     }
 
+    /// A link's memory held in bytes of this program, which a test reaches
+    /// as the driver and the stack reach the shared mapping.
+    struct Fake(Vec<AtomicU8>);
+
+    impl Fake {
+        fn new() -> Fake {
+            Fake((0..link::SIZE).map(|_| AtomicU8::new(0)).collect())
+        }
+    }
+
+    impl Memory for Fake {
+        fn load(&self, offset: usize) -> u32 {
+            let mut word = [0u8; 4];
+            self.read(offset, &mut word);
+            u32::from_le_bytes(word)
+        }
+
+        fn store(&self, offset: usize, value: u32) {
+            self.write(offset, &value.to_le_bytes());
+        }
+
+        fn read(&self, offset: usize, out: &mut [u8]) {
+            for (byte, cell) in out.iter_mut().zip(&self.0[offset..]) {
+                *byte = cell.load(Ordering::Acquire);
+            }
+        }
+
+        fn write(&self, offset: usize, data: &[u8]) {
+            for (byte, cell) in data.iter().zip(&self.0[offset..]) {
+                cell.store(*byte, Ordering::Release);
+            }
+        }
+    }
+
     #[test]
     fn the_link_is_reached_within_its_mapping() {
-        let mut memory = vec![0u64; link::SIZE / 8];
-        let link = Mapped { base: memory.as_mut_ptr() as usize };
+        let link = Fake::new();
         link::init(&link);
         assert!(link::valid(&link));
         let (mut driver, mut stack) = (Driver::new(), link::Stack::new());

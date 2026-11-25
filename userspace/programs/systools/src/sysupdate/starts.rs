@@ -26,7 +26,6 @@
 //! record begun after it.
 
 use std::fs::OpenOptions;
-use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -340,11 +339,8 @@ fn path(dir: &Path, number: u64) -> PathBuf {
 fn locked<T>(dir: &Path, then: impl FnOnce() -> std::io::Result<T>) -> std::io::Result<T> {
     std::fs::create_dir_all(dir)?;
     let lock = OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(LOCK))?;
-    // SAFETY: flock takes a descriptor `lock` owns, and the lock goes when
-    // `lock` closes it, at the end of this function.
-    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(std::io::Error::last_os_error());
-    }
+    // The lock goes when `lock` is closed, at the end of this function.
+    sysapi::fs::lock(&lock, sysapi::fs::Lock::Exclusive, true)?;
     then()
 }
 

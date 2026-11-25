@@ -449,8 +449,7 @@ impl Client {
     /// by keys this system trusts, has expired, or is older than what
     /// this system has read before.
     pub fn connect(settings: Settings) -> Result<Client, Fail> {
-        // SAFETY: geteuid has no arguments and cannot fail.
-        let mut client = if unsafe { libc::geteuid() } == 0 {
+        let mut client = if sysapi::process::euid() == 0 {
             Client::open_in(settings, Path::new(STATE))?
         } else {
             Client::private(settings)?

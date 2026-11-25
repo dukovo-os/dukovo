@@ -11,7 +11,6 @@
 //! first. logd(8) keeps the record, and its writer reads it back with
 //! log(1), as root does.
 
-use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, Write};
 
@@ -115,10 +114,7 @@ fn line(priority: u8, message: &str) -> Vec<u8> {
 /// Names this thread `tag`, which the kernel puts in front of each record
 /// it writes.
 fn name_thread(tag: &str) {
-    if let Ok(name) = CString::new(thread_name(tag)) {
-        // SAFETY: names this thread with a C string of at most 15 bytes.
-        unsafe { libc::pthread_setname_np(libc::pthread_self(), name.as_ptr()) };
-    }
+    let _ = sysapi::process::set_thread_name(thread_name(tag));
 }
 
 /// Writes `message` to the log as program `tag`, at syslog level `level`

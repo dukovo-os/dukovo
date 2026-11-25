@@ -40,23 +40,22 @@ pub fn time_ms(name: &str) -> Option<u64> {
     if !layout::is_time(name) {
         return None;
     }
-    let part = |from: usize, to: usize| name[from..to].parse::<i32>().ok();
+    let part = |from: usize, to: usize| name[from..to].parse::<u32>().ok();
     let (year, month, day) = (part(0, 4)?, part(5, 7)?, part(8, 10)?);
     let (hour, minute, second) = (part(11, 13)?, part(13, 15)?, part(15, 17)?);
-    // SAFETY: an all-zero tm is valid; mktime reads and normalizes it.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    tm.tm_year = year - 1900;
-    tm.tm_mon = month - 1;
-    tm.tm_mday = day;
-    tm.tm_hour = hour;
-    tm.tm_min = minute;
-    tm.tm_sec = second;
-    tm.tm_isdst = -1;
-    let fields = (tm.tm_mon, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
-    // SAFETY: the pointer is valid for the call.
-    let seconds = unsafe { libc::mktime(&raw mut tm) };
+    let asked = sysapi::time::Civil {
+        year: i64::from(year),
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        ..Default::default()
+    };
+    let (seconds, found) = sysapi::time::from_local(&asked).ok()?;
     // A field out of range comes back changed.
-    let same = fields == (tm.tm_mon, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+    let same = (asked.month, asked.day, asked.hour, asked.minute, asked.second)
+        == (found.month, found.day, found.hour, found.minute, found.second);
     u64::try_from(seconds).ok().filter(|_| same).map(|seconds| seconds * 1000)
 }
 

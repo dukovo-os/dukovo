@@ -26,7 +26,7 @@
 //! not hold the request.
 
 use std::fs::File;
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::time::{Duration, Instant};
 
 use accounts::console::Filter;
@@ -99,12 +99,7 @@ pub(super) fn refusal(
 
 /// Whether `fd` is a pipe.
 fn is_pipe(fd: &OwnedFd) -> bool {
-    // SAFETY: an all-zero stat is valid, and fstat fills it for an open
-    // descriptor.
-    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
-    // SAFETY: `fd` is open, and `stat` is valid for the call.
-    let done = unsafe { libc::fstat(fd.as_raw_fd(), &raw mut stat) } == 0;
-    done && stat.st_mode & libc::S_IFMT == libc::S_IFIFO
+    sysapi::dir::stat(fd).is_ok_and(|stat| stat.st_mode & libc::S_IFMT == libc::S_IFIFO)
 }
 
 /// Opens /dev/null, for a follow's standard input: log(1) reads none, and
@@ -359,12 +354,7 @@ mod tests {
 
     #[test]
     fn a_follow_is_given_pipes() {
-        let mut ends = [0; 2];
-        // SAFETY: `ends` has room for the two descriptors.
-        assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
-        // SAFETY: pipe(2) opened both, and nothing else owns them.
-        let [read, write] =
-            ends.map(|fd| unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) });
+        let (read, write) = sysapi::fd::pipe().unwrap();
         assert!(is_pipe(&read) && is_pipe(&write));
         let file = OwnedFd::from(File::open("/dev/null").unwrap());
         assert!(!is_pipe(&file));

@@ -3,8 +3,9 @@
 
 //! Signals: a handler that records a signal's arrival for the program to
 //! take when it next looks, and wakes a loop waiting in `poll` if asked;
-//! ignoring a signal or giving it back its default; and a thread that
-//! blocks signals and waits for one.
+//! ignoring a signal or giving it back its default, and putting back what
+//! it did before; a thread that blocks signals and waits for one; and a
+//! signal sent to the process itself.
 //!
 //! A handler runs between any two instructions of the thread it lands on,
 //! so it may only do what is async-signal-safe. The one handler here
@@ -52,11 +53,19 @@ impl Caught {
         self.caught.load(Ordering::SeqCst)
     }
 
+    /// The flag the handler sets, for code that looks at a stop flag of
+    /// its own while it works.
+    pub fn flag(&self) -> &AtomicBool {
+        &self.caught
+    }
+
     /// Has the handler also write a byte to `write_end`, the write end of a
     /// pipe whose read end a loop waits on in `poll`, so that the loop
-    /// wakes when the signal comes. A full pipe already wakes it, so make
-    /// the pipe non-blocking: the handler does not wait. The descriptor
-    /// stays open for as long as the process runs, since a handler may be
+    /// wakes when the signal comes. The byte is the signal's number, so
+    /// that `Caught`s of several signals may share one pipe and the loop
+    /// still tell them apart. A full pipe already wakes it, so make the
+    /// pipe non-blocking: the handler does not wait. The descriptor stays
+    /// open for as long as the process runs, since a handler may be
     /// writing to it at any time.
     ///
     /// # Errors
@@ -103,12 +112,14 @@ extern "C" fn record(signal: c_int) {
     if fd >= 0 {
         // The handler may land between a call that failed and the
         // program's read of errno, which write must not change.
+        // Every signal number is below SIGNALS, so it fits a byte.
+        let byte = signal as u8;
         // SAFETY: __errno_location gives this thread's errno, and write
         // reads one byte from a local; both are async-signal-safe, and the
         // descriptor stays open for the process's life (`wake_through`).
         unsafe {
             let errno = *libc::__errno_location();
-            libc::write(fd, [0u8].as_ptr().cast(), 1);
+            libc::write(fd, (&raw const byte).cast(), 1);
             *libc::__errno_location() = errno;
         }
     }
@@ -150,6 +161,52 @@ pub fn ignore(signal: c_int) -> io::Result<()> {
 /// EINVAL for a number that is no signal.
 pub fn restore_default(signal: c_int) -> io::Result<()> {
     set_action(signal, libc::SIG_DFL, 0)
+}
+
+/// What a signal did before a change, for [`Saved::restore`] to put
+/// back: as a prompt catches Ctrl+C while it asks, and the program's own
+/// action is back once it has its answer.
+pub struct Saved {
+    signal: c_int,
+    action: libc::sigaction,
+}
+
+/// What `signal` does now, to put back later with [`Saved::restore`].
+///
+/// # Errors
+///
+/// EINVAL for a number that is no signal.
+pub fn save(signal: c_int) -> io::Result<Saved> {
+    // SAFETY: all zeros is a valid sigaction, which sigaction fills.
+    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+    // SAFETY: with no new action sigaction changes nothing, and writes the
+    // current one into `action`.
+    checked(unsafe { libc::sigaction(signal, std::ptr::null(), &raw mut action) })?;
+    Ok(Saved { signal, action })
+}
+
+impl Saved {
+    /// The signal this is what of.
+    #[must_use]
+    pub fn signal(&self) -> c_int {
+        self.signal
+    }
+
+    /// Has the signal do again what it did when this was saved.
+    ///
+    /// # Errors
+    ///
+    /// None in practice: the signal and its action were valid when they
+    /// were saved.
+    pub fn restore(&self) -> io::Result<()> {
+        // SAFETY: the action is one sigaction gave for this signal, so its
+        // handler is one the process had set: SIG_DFL, SIG_IGN, `record`,
+        // or one the standard library or the C library set for itself.
+        checked(unsafe {
+            libc::sigaction(self.signal, &raw const self.action, std::ptr::null_mut())
+        })?;
+        Ok(())
+    }
 }
 
 fn set_action(signal: c_int, handler: libc::sighandler_t, flags: c_int) -> io::Result<()> {
@@ -194,6 +251,45 @@ pub fn block(signals: &[c_int]) -> io::Result<()> {
     }
 }
 
+/// Unblocks `signals` for the calling thread, so that one that waits, or
+/// comes, is delivered.
+///
+/// # Errors
+///
+/// EINVAL for a number that is no signal.
+pub fn unblock(signals: &[c_int]) -> io::Result<()> {
+    let set = set_of(signals)?;
+    // SAFETY: pthread_sigmask reads the set and writes no old mask.
+    match unsafe { libc::pthread_sigmask(libc::SIG_UNBLOCK, &raw const set, std::ptr::null_mut()) }
+    {
+        0 => Ok(()),
+        errno => Err(io::Error::from_raw_os_error(errno)),
+    }
+}
+
+/// Sends `signal` to the calling thread, as raise(3) does: with its
+/// default action, a program ends as the signal would end it, so that
+/// what started it sees the same as for the program it ran.
+///
+/// # Errors
+///
+/// EINVAL for a number that is no signal.
+pub fn raise(signal: c_int) -> io::Result<()> {
+    // SAFETY: raise takes a number and touches no memory of the program's;
+    // the handler it may run is one `set_action` or `Saved` set.
+    match unsafe { libc::raise(signal) } {
+        0 => Ok(()),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
+/// Waits until a signal comes that runs a handler or ends the process,
+/// as pause(2) does.
+pub fn pause() {
+    // SAFETY: pause takes nothing and returns when a handler has run.
+    unsafe { libc::pause() };
+}
+
 /// Waits for one of `signals`, which every thread blocks ([`block`]),
 /// and returns which came.
 ///
@@ -213,8 +309,9 @@ pub fn wait(signals: &[c_int]) -> io::Result<c_int> {
 #[cfg(test)]
 mod tests {
     use std::os::fd::AsFd;
+    use std::sync::atomic::Ordering;
 
-    use super::{Caught, catch, ignore, restore_default};
+    use super::{Caught, catch, ignore, restore_default, save};
     use crate::{fd, process};
 
     #[test]
@@ -231,7 +328,9 @@ mod tests {
         let mut byte = [0; 1];
         crate::poll::wait_readable(from.as_fd(), std::time::Duration::from_secs(5)).unwrap();
         assert_eq!(fd::read(&from, &mut byte).unwrap(), 1);
+        assert_eq!(i32::from(byte[0]), libc::SIGUSR1, "the byte names the signal");
         assert!(CAUGHT.is_set());
+        assert!(CAUGHT.flag().load(Ordering::SeqCst), "the flag is what the handler set");
         assert!(CAUGHT.take());
         assert!(!CAUGHT.take());
         restore_default(libc::SIGUSR1).unwrap();
@@ -255,5 +354,29 @@ mod tests {
             assert_eq!(error.raw_os_error(), Some(libc::EINVAL), "{signal} {flags}");
         }
         assert_eq!(ignore(libc::SIGKILL).unwrap_err().raw_os_error(), Some(libc::EINVAL));
+    }
+
+    #[test]
+    fn a_saved_action_comes_back() {
+        static CAUGHT: Caught = Caught::new();
+        // SIGURG's default is to do nothing, so a stray one harms no test.
+        let before = save(libc::SIGURG).unwrap();
+        assert_eq!(before.signal(), libc::SIGURG);
+        catch(libc::SIGURG, &CAUGHT, 0).unwrap();
+        let caught = save(libc::SIGURG).unwrap();
+        before.restore().unwrap();
+        process::kill(std::process::id() as i32, libc::SIGURG).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!CAUGHT.take(), "the default action is back");
+        caught.restore().unwrap();
+        process::kill(std::process::id() as i32, libc::SIGURG).unwrap();
+        for _ in 0..100 {
+            if CAUGHT.is_set() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(CAUGHT.take(), "the handler is back");
+        before.restore().unwrap();
     }
 }

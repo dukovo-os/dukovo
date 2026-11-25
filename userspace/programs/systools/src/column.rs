@@ -105,7 +105,9 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             other => return Err(args.unknown(&other)),
         }
     }
-    let width = width.unwrap_or_else(|| util::terminal_size(1).map_or(80, |(columns, _)| columns));
+    let width = width.unwrap_or_else(|| {
+        util::terminal_size(std::io::stdout()).map_or(80, |(columns, _)| columns)
+    });
     let (text, mut failed) = read(&files);
     let lines: Vec<&str> = text.split_terminator('\n').collect();
     let mut out = BufWriter::new(io::stdout().lock());

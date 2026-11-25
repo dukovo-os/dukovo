@@ -552,8 +552,8 @@ impl Lock {
                 }
                 Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                     let holder = fs::read_to_string(LOCK).ok().and_then(|t| t.trim().parse().ok());
-                    // SAFETY: signal 0 checks that the process is there.
-                    let alive = holder.is_some_and(|pid: i32| unsafe { libc::kill(pid, 0) } == 0);
+                    let alive =
+                        holder.is_some_and(|pid: i32| sysapi::process::kill(pid, 0).is_ok());
                     if alive {
                         return Err(backup_errors::round_running());
                     }
@@ -571,9 +571,10 @@ impl Lock {
     fn held() -> bool {
         let Ok(text) = fs::read_to_string(LOCK) else { return Path::new(LOCK).exists() };
         let Ok(pid) = text.trim().parse::<i32>() else { return true };
-        // SAFETY: signal 0 checks that the process is there.
-        let alive = unsafe { libc::kill(pid, 0) } == 0;
-        alive || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+        match sysapi::process::kill(pid, 0) {
+            Ok(()) => true,
+            Err(err) => err.raw_os_error() == Some(libc::EPERM),
+        }
     }
 }
 
@@ -2718,8 +2719,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     // Only list and ssh-key are anyone's: the rest reach the destination
     // with the machine's keys, change the settings, or read every file of
     // the places.
-    // SAFETY: geteuid only reads.
-    if !["list", "ssh-key"].contains(&action.as_str()) && unsafe { libc::geteuid() } != 0 {
+    if !["list", "ssh-key"].contains(&action.as_str()) && sysapi::process::euid() != 0 {
         return Err(util::fail(format!(
             "backup {action} needs an administrator's session (elevate)"
         )));

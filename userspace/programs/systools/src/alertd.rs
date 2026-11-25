@@ -52,14 +52,17 @@ mod webhook;
 use std::collections::HashSet;
 use std::fs;
 use std::io;
-use std::os::fd::AsRawFd;
+use std::os::fd::AsFd;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+
+use sysapi::poll::{self, PollFd};
+use sysapi::signal::{self, Caught};
 
 use crate::alerts::protocol::{
     Active, Alert, Browser, Change, Channel, Delivery, SOCKET, Severity, Subscribe,
@@ -76,16 +79,8 @@ const CONNECTIONS_MAX: usize = 16;
 
 /// Set by SIGTERM: alertd ends. Set by SIGHUP: alertd reads alerts.toml
 /// again.
-static STOP: AtomicBool = AtomicBool::new(false);
-static RELOAD: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_term(_: libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-}
-
-extern "C" fn on_hangup(_: libc::c_int) {
-    RELOAD.store(true, Ordering::Relaxed);
-}
+static STOP: Caught = Caught::new();
+static RELOAD: Caught = Caught::new();
 
 /// What the lock holds: the alerts, the messages waiting for the
 /// channels, and the channels.
@@ -583,19 +578,11 @@ fn load_outbox(dir: &Path) -> (Outbox, Option<String>) {
 }
 
 fn install_signals() {
-    // SAFETY: setting a signal's disposition touches no memory. A client
-    // that goes away must not end alertd: the write to it fails instead.
-    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
-    for (signal, handler) in [
-        (libc::SIGTERM, on_term as extern "C" fn(libc::c_int)),
-        (libc::SIGHUP, on_hangup as extern "C" fn(libc::c_int)),
-    ] {
-        // SAFETY: all zeros is a valid sigaction: numbers, a signal set
-        // and a function address.
-        let mut action: libc::sigaction = unsafe { util::zeroed() };
-        action.sa_sigaction = handler as *const () as usize;
-        // SAFETY: the handlers only store to atomics.
-        unsafe { libc::sigaction(signal, &raw const action, std::ptr::null_mut()) };
+    // A client that goes away must not end alertd: the write to it fails
+    // instead.
+    let _ = signal::ignore(libc::SIGPIPE);
+    for (number, caught) in [(libc::SIGTERM, &STOP), (libc::SIGHUP, &RELOAD)] {
+        let _ = signal::catch(number, caught, 0);
     }
 }
 
@@ -623,7 +610,7 @@ fn listen() -> Result<UnixListener, Fail> {
 fn start_threads(alertd: &Arc<Alertd>) {
     let sender = Arc::clone(alertd);
     thread::spawn(move || {
-        while !STOP.load(Ordering::Relaxed) {
+        while !STOP.is_set() {
             thread::sleep(Duration::from_secs(1));
             drop(sender.send_due(now()));
         }
@@ -637,7 +624,7 @@ fn start_threads(alertd: &Arc<Alertd>) {
 fn watch_services(alertd: &Alertd) {
     let mut watch = services::Watch::default();
     let mut failing = false;
-    while !STOP.load(Ordering::Relaxed) {
+    while !STOP.is_set() {
         let shown = crate::power::request("show")
             .map_err(|why| why.message)
             .and_then(|answer| spark_api::show::parse(&answer));
@@ -664,15 +651,12 @@ fn watch_services(alertd: &Alertd) {
 /// Accepts connections until SIGTERM, and reads alerts.toml again on
 /// SIGHUP.
 fn serve(alertd: &Arc<Alertd>, listener: &UnixListener) -> io::Result<()> {
-    while !STOP.load(Ordering::Relaxed) {
-        if RELOAD.swap(false, Ordering::Relaxed) {
+    while !STOP.is_set() {
+        if RELOAD.take() {
             alertd.reload();
         }
-        let mut fds = [libc::pollfd { fd: listener.as_raw_fd(), events: libc::POLLIN, revents: 0 }];
-        // SAFETY: `fds` holds one valid pollfd.
-        let ready = unsafe { libc::poll(fds.as_mut_ptr(), 1, 500) };
-        if ready < 0 {
-            let err = io::Error::last_os_error();
+        let mut fds = [PollFd::new(listener.as_fd(), libc::POLLIN)];
+        if let Err(err) = poll::poll(&mut fds, Some(Duration::from_millis(500))) {
             if err.kind() == io::ErrorKind::Interrupted {
                 continue;
             }

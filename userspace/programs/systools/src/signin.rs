@@ -22,8 +22,8 @@
 //! leaves root out.
 
 use std::fs::{self, File};
-use std::io::{self, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::io;
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
@@ -171,95 +171,15 @@ pub fn receive(
     buffer: &mut [u8],
     fds: &mut Vec<OwnedFd>,
 ) -> io::Result<usize> {
-    let mut iov = libc::iovec { iov_base: buffer.as_mut_ptr().cast(), iov_len: buffer.len() };
-    // Room for more descriptors than are kept, aligned for the headers.
-    let mut control = [0u64; 8];
-    // SAFETY: all zeros is a valid msghdr: numbers and null pointers.
-    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
-    message.msg_iov = &raw mut iov;
-    message.msg_iovlen = 1;
-    message.msg_control = control.as_mut_ptr().cast();
-    message.msg_controllen = size_of_val(&control) as _;
-    // SAFETY: the message points at our buffer and control space.
-    let n = unsafe { libc::recvmsg(stream.as_raw_fd(), &raw mut message, libc::MSG_CMSG_CLOEXEC) };
-    if n < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: the control messages are those recvmsg wrote into
-    // `control`, walked with the C library's macros; each descriptor in
-    // one is ours to own.
-    unsafe {
-        let mut header = libc::CMSG_FIRSTHDR(&raw const message);
-        while !header.is_null() {
-            if (*header).cmsg_level == libc::SOL_SOCKET && (*header).cmsg_type == libc::SCM_RIGHTS {
-                let data = libc::CMSG_DATA(header);
-                let bytes = (*header).cmsg_len as usize - libc::CMSG_LEN(0) as usize;
-                for k in 0..bytes / size_of::<libc::c_int>() {
-                    let at = data.add(k * size_of::<libc::c_int>());
-                    let received = OwnedFd::from_raw_fd(at.cast::<libc::c_int>().read_unaligned());
-                    if fds.len() < DESCRIPTORS_MAX {
-                        fds.push(received);
-                    }
-                }
-            }
-            header = libc::CMSG_NXTHDR(&raw const message, header);
-        }
-    }
-    Ok(n as usize)
-}
-
-/// Sends `bytes` on `stream` with the descriptors `fds` (SCM_RIGHTS) in
-/// the first message, as [`receive`] reads them.
-pub fn send_with_fds(stream: &UnixStream, bytes: &[u8], fds: &[RawFd]) -> io::Result<()> {
-    let mut iov = libc::iovec { iov_base: bytes.as_ptr().cast_mut().cast(), iov_len: bytes.len() };
-    let mut control = [0u64; 8];
-    let room = size_of_val(&fds[..fds.len().min(DESCRIPTORS_MAX)]) as u32;
-    // SAFETY: all zeros is a valid msghdr: numbers and null pointers.
-    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
-    message.msg_iov = &raw mut iov;
-    message.msg_iovlen = 1;
-    message.msg_control = control.as_mut_ptr().cast();
-    // SAFETY: CMSG_SPACE only computes a size, which fits `control` for
-    // DESCRIPTORS_MAX descriptors.
-    message.msg_controllen = unsafe { libc::CMSG_SPACE(room) } as _;
-    // SAFETY: the control space holds one header and the descriptors, as
-    // CMSG_SPACE said; the macros point into it.
-    let sent = unsafe {
-        let header = libc::CMSG_FIRSTHDR(&raw const message);
-        (*header).cmsg_level = libc::SOL_SOCKET;
-        (*header).cmsg_type = libc::SCM_RIGHTS;
-        (*header).cmsg_len = libc::CMSG_LEN(room) as _;
-        let data = libc::CMSG_DATA(header);
-        for (k, fd) in fds.iter().take(DESCRIPTORS_MAX).enumerate() {
-            data.add(k * size_of::<libc::c_int>()).cast::<libc::c_int>().write_unaligned(*fd);
-        }
-        libc::sendmsg(stream.as_raw_fd(), &raw const message, 0)
-    };
-    if sent < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // What the first message did not take goes after it, as a write.
-    let rest = &bytes[sent as usize..];
-    if rest.is_empty() { Ok(()) } else { (&mut &*stream).write_all(rest) }
-}
-
-/// Whether `fd` is a terminal.
-pub fn is_terminal(fd: &OwnedFd) -> bool {
-    // SAFETY: isatty only looks at the descriptor.
-    unsafe { libc::isatty(fd.as_raw_fd()) == 1 }
+    sysapi::net::receive_with_fds(stream, buffer, fds, DESCRIPTORS_MAX)
 }
 
 /// The name of the terminal in `fd`, as `pts/3`.
-pub fn terminal_name(fd: &OwnedFd) -> String {
-    // SAFETY: ttyname returns a C string the C library keeps, or null;
-    // authd has one thread.
-    let name = unsafe { libc::ttyname(fd.as_raw_fd()) };
-    if name.is_null() {
-        return "a terminal".into();
+pub fn terminal_name(fd: impl AsFd) -> String {
+    match sysapi::terminal::path(fd) {
+        Ok(path) => crate::util::terminal_name(&path.to_string_lossy()).to_string(),
+        Err(_) => "a terminal".into(),
     }
-    // SAFETY: a non-null result is a C string.
-    let path = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
-    crate::util::terminal_name(&path).to_string()
 }
 
 /// `term` if it is a terminal type a session may be given, `dumb` if not:
@@ -325,13 +245,13 @@ impl Spares {
         let files =
             (0..count).map(|_| File::open("/devices/null")).collect::<io::Result<Vec<_>>>()?;
         for file in &files {
-            let _ = capability::delete(&SYS, sys::slot_of(file.as_raw_fd()));
+            let _ = capability::delete(&SYS, sysapi::kernel::slot_of(file));
         }
         Ok(Spares(files))
     }
 
     pub fn slot(&self, index: usize) -> u32 {
-        sys::slot_of(self.0[index].as_raw_fd())
+        sysapi::kernel::slot_of(&self.0[index])
     }
 }
 
@@ -347,7 +267,7 @@ pub fn start(
     term: &str,
     command: Option<&str>,
 ) -> Result<u64, String> {
-    let tty = terminal.as_raw_fd();
+    let tty = terminal.as_fd();
     let mut args: Vec<&[u8]> = vec![b"login", b"--session"];
     if let Some(command) = command {
         args.extend([b"--command".as_slice(), command.as_bytes()]);
@@ -383,7 +303,7 @@ pub fn start_help(
     domain: u32,
     id: &str,
 ) -> Result<u64, String> {
-    let tty = terminal.as_raw_fd();
+    let tty = terminal.as_fd();
     let mut env = environment(user, term);
     env.push(format!("{HELP_SESSION}={id}"));
     let program = Program {
@@ -469,7 +389,7 @@ pub fn start_web_terminal(
     tty: &OwnedFd,
     env: Vec<String>,
 ) -> Result<u64, String> {
-    let tty = tty.as_raw_fd();
+    let tty = tty.as_fd();
     let program = Program {
         what: "the console terminal's shell",
         path: FIRST_PROGRAM,
@@ -499,11 +419,11 @@ pub fn start_ssh(
 ) -> Result<u64, String> {
     let descriptors = match io {
         SshIo::Terminal(tty) => {
-            let tty = tty.as_raw_fd();
+            let tty = tty.as_fd();
             [(tty, 0), (tty, 1), (tty, 2)]
         }
         SshIo::Pipes([input, output, error]) => {
-            [(input.as_raw_fd(), 0), (output.as_raw_fd(), 1), (error.as_raw_fd(), 2)]
+            [(input.as_fd(), 0), (output.as_fd(), 1), (error.as_fd(), 2)]
         }
     };
     let mut args: Vec<&[u8]> = vec![b"login", b"--session"];
@@ -547,7 +467,7 @@ pub fn start_forwarder(
         args: &[b"sshd", b"--forward"],
         folder: b"/",
         env,
-        descriptors: &[(input.as_raw_fd(), 0), (output.as_raw_fd(), 1), (error.as_raw_fd(), 2)],
+        descriptors: &[(input.as_fd(), 0), (output.as_fd(), 1), (error.as_fd(), 2)],
         network: true,
         shares: None,
         domain: None,
@@ -582,7 +502,7 @@ pub fn start_job(
 ) -> Result<u64, String> {
     let null = File::open("/devices/null")
         .map_err(|err| format!("cannot start the job: /devices/null: {err}"))?;
-    let (null, output) = (null.as_raw_fd(), job.output.as_raw_fd());
+    let (null, output) = (null.as_fd(), job.output.as_fd());
     let program = Program {
         what: "the job",
         path: JOB_SHELL,
@@ -629,10 +549,10 @@ pub fn start_share(
             "LANG=C.UTF-8".into(),
         ],
         descriptors: &[
-            (session.as_raw_fd(), 0),
-            (log.as_raw_fd(), 1),
-            (log.as_raw_fd(), 2),
-            (connection.as_raw_fd(), 3),
+            (session.as_fd(), 0),
+            (log.as_fd(), 1),
+            (log.as_fd(), 2),
+            (connection.as_fd(), 3),
         ],
         network: false,
         shares: None,
@@ -667,10 +587,10 @@ pub fn start_console(
         folder: b"/",
         env: environment(user, "dumb"),
         descriptors: &[
-            (calls.as_raw_fd(), 0),
-            (log.as_raw_fd(), 1),
-            (log.as_raw_fd(), 2),
-            (replies.as_raw_fd(), 3),
+            (calls.as_fd(), 0),
+            (log.as_fd(), 1),
+            (log.as_fd(), 2),
+            (replies.as_fd(), 3),
         ],
         network: true,
         shares: None,
@@ -726,11 +646,11 @@ pub fn start_nfs(
         folder: b"/",
         env: vec![format!("USER={}", user.name), "HOME=/".into(), "LANG=C.UTF-8".into()],
         descriptors: &[
-            (null.as_raw_fd(), 0),
-            (log.as_raw_fd(), 1),
-            (log.as_raw_fd(), 2),
-            (requests.as_raw_fd(), 3),
-            (answers.as_raw_fd(), 4),
+            (null.as_fd(), 0),
+            (log.as_fd(), 1),
+            (log.as_fd(), 2),
+            (requests.as_fd(), 3),
+            (answers.as_fd(), 4),
         ],
         network: false,
         shares: Some(folders),
@@ -765,7 +685,7 @@ pub fn start_console_follow(
             format!("HOME={}", user.home),
             "LANG=C.UTF-8".into(),
         ],
-        descriptors: &[(null.as_raw_fd(), 0), (output.as_raw_fd(), 1), (errors.as_raw_fd(), 2)],
+        descriptors: &[(null.as_fd(), 0), (output.as_fd(), 1), (errors.as_fd(), 2)],
         network: false,
         shares: None,
         domain: None,
@@ -787,7 +707,7 @@ struct Program<'a> {
     env: Vec<String>,
     /// Descriptors of authd's, each with the number it has in the
     /// program.
-    descriptors: &'a [(RawFd, u32)],
+    descriptors: &'a [(BorrowedFd<'a>, u32)],
     /// Whether it gets the network, as a session does (ADR 0257).
     network: bool,
     /// For an NFS worker, the shares' folders, by their keys, which its
@@ -854,7 +774,7 @@ fn launch(names: u32, user: &User, groups: &[u32], program: &Program) -> Result<
     let descriptors = program
         .descriptors
         .iter()
-        .map(|&(fd, number)| (sys::slot_of(fd), startup::SLOT_FD_BASE + number));
+        .map(|&(fd, number)| (sysapi::kernel::slot_of(fd), startup::SLOT_FD_BASE + number));
     for (from, to) in base.into_iter().chain(descriptors) {
         process::share(&SYS, child, from, to, Rights::ALL, 0)
             .map_err(failed("giving it its capabilities"))?;

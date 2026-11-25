@@ -42,7 +42,6 @@ use std::path::Path;
 use std::pin::{Pin, pin};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::Poll;
 use std::time::Duration;
 
@@ -50,6 +49,7 @@ use hyper::server::conn::{http1, http2};
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use socket2::{Domain, Protocol, SockRef, Socket, TcpKeepalive, Type};
+use sysapi::signal::{self, Caught};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::Instant;
 use tokio_rustls::TlsAcceptor;
@@ -107,33 +107,15 @@ pub(crate) const ISSUE: &str = "/system/live/admind/issue";
 
 /// Set by SIGTERM: admind stops. Set by SIGHUP: it reads its certificate
 /// again.
-static STOP: AtomicBool = AtomicBool::new(false);
-static RELOAD: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_term(_: libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-}
-
-extern "C" fn on_hangup(_: libc::c_int) {
-    RELOAD.store(true, Ordering::Relaxed);
-}
+static STOP: Caught = Caught::new();
+static RELOAD: Caught = Caught::new();
 
 /// Has the signals admind answers set the flags above, and a browser that
 /// goes away not end it: the write to it fails instead.
 fn install_signals() {
-    // SAFETY: setting a signal's disposition touches no memory.
-    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
-    for (signal, handler) in [
-        (libc::SIGTERM, on_term as extern "C" fn(libc::c_int)),
-        (libc::SIGHUP, on_hangup as extern "C" fn(libc::c_int)),
-    ] {
-        // SAFETY: all zeros is a valid sigaction: numbers, a signal set
-        // and a function address.
-        let mut action: libc::sigaction = unsafe { util::zeroed() };
-        action.sa_sigaction = handler as *const () as usize;
-        // SAFETY: the handlers only store to atomics.
-        unsafe { libc::sigaction(signal, &raw const action, std::ptr::null_mut()) };
-    }
+    let _ = signal::ignore(libc::SIGPIPE);
+    let _ = signal::catch(libc::SIGTERM, &STOP, 0);
+    let _ = signal::catch(libc::SIGHUP, &RELOAD, 0);
 }
 
 /// The certificate that `admin.toml` names.
@@ -461,21 +443,8 @@ fn set_probes(stream: &TcpStream) -> io::Result<()> {
 /// TCP_KEEPINTVL out although the kernel takes it.
 #[cfg(target_os = "radix")]
 fn probe_every(stream: &TcpStream) -> io::Result<()> {
-    use std::os::fd::AsRawFd;
     let seconds = libc::c_int::try_from(PROBE_EVERY.as_secs()).unwrap_or(libc::c_int::MAX);
-    let size = libc::socklen_t::try_from(size_of::<libc::c_int>()).unwrap_or_default();
-    // SAFETY: setsockopt reads `size` bytes of `seconds`, which lives
-    // through the call, on a socket `stream` holds open.
-    let done = unsafe {
-        libc::setsockopt(
-            stream.as_raw_fd(),
-            libc::IPPROTO_TCP,
-            libc::TCP_KEEPINTVL,
-            (&raw const seconds).cast(),
-            size,
-        )
-    };
-    if done < 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+    sysapi::net::set_int_option(stream, libc::IPPROTO_TCP, libc::TCP_KEEPINTVL, seconds)
 }
 
 /// Runs the futures of an HTTP/2 connection's streams on this thread,
@@ -804,9 +773,9 @@ async fn serve(shared: Rc<Shared>) -> Result<(), String> {
         tokio::task::spawn_local(accepting(Rc::clone(&shared), socket));
     }
     let mut last = Instant::now();
-    while !STOP.load(Ordering::Relaxed) {
+    while !STOP.is_set() {
         tokio::time::sleep(SIGNALS_EVERY).await;
-        if RELOAD.swap(false, Ordering::Relaxed) {
+        if RELOAD.take() {
             upkeep.reload(&shared);
         }
         shared.look_at_terminals();
@@ -1008,15 +977,11 @@ pub(crate) mod tests {
 
     /// Raises the limit of open descriptors to `wanted`, or as far as the
     /// hard limit lets.
-    fn enough_descriptors(wanted: libc::rlim_t) {
-        let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
-        // SAFETY: getrlimit and setrlimit read and write only `limit`.
-        unsafe {
-            assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit), 0);
-            if limit.rlim_cur < wanted {
-                limit.rlim_cur = wanted.min(limit.rlim_max);
-                assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit), 0);
-            }
+    fn enough_descriptors(wanted: u64) {
+        let files = libc::RLIMIT_NOFILE as libc::c_int;
+        let (soft, hard) = sysapi::process::limit(files).unwrap();
+        if soft < wanted {
+            sysapi::process::set_limit(files, wanted.min(hard), hard).unwrap();
         }
     }
 

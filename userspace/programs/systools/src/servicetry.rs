@@ -11,6 +11,7 @@
 //! change that cuts the administrator off comes undone by itself.
 
 use std::io::{self, Write};
+use std::os::fd::AsFd;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -21,6 +22,7 @@ use crate::service::{self as command, ask, said};
 use crate::servicefiles::{self, Place};
 use crate::trial::{ToUse, Tried, try_file};
 use crate::util::{self, Fail, fail, fail_with, usage};
+use sysapi::poll::{self, PollFd};
 
 const USAGE: &str = "Usage: service try NAME [--for SECONDS] | keep NAME | undo NAME";
 
@@ -71,7 +73,7 @@ pub fn put_in_place(path: &Path, copy: &Path, name: &str, seconds: u32) -> Resul
         return Ok(1);
     }
     let end = began + Duration::from_secs(u64::from(seconds));
-    if !util::is_terminal(0) {
+    if !util::is_terminal(std::io::stdin()) {
         println!(
             "Spark undoes it in {} s unless it is kept: `service keep {name}`",
             end.saturating_duration_since(Instant::now()).as_secs()
@@ -159,28 +161,23 @@ fn answer_within(left: Duration) -> Answer {
         if wait.is_zero() {
             return Answer::TimeUp;
         }
-        let mut entry = libc::pollfd { fd: 0, events: libc::POLLIN, revents: 0 };
-        let ms = libc::c_int::try_from(wait.as_millis()).unwrap_or(libc::c_int::MAX);
-        // SAFETY: one pollfd, which lives across the call.
-        let ready = unsafe { libc::poll(&raw mut entry, 1, ms) };
-        if ready < 0 {
+        let stdin = io::stdin();
+        let mut entry = [PollFd::new(stdin.as_fd(), libc::POLLIN)];
+        match poll::poll(&mut entry, Some(wait)) {
+            Ok(0) => continue,
+            Ok(_) => {}
             // Another signal than SIGINT, as a resized terminal's.
-            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
-                && !command::sigint_came()
-            {
+            Err(err) if err.kind() == io::ErrorKind::Interrupted && !command::sigint_came() => {
                 continue;
             }
-            return Answer::Gone;
-        }
-        if ready == 0 {
-            continue;
+            Err(_) => return Answer::Gone,
         }
         let mut byte = [0u8; 1];
-        // SAFETY: reads at most one byte into the array.
-        let read = unsafe { libc::read(0, byte.as_mut_ptr().cast(), 1) };
-        match read {
-            1 if byte[0] == b'\n' => return Answer::Line(String::from_utf8_lossy(&line).into()),
-            1 => line.push(byte[0]),
+        match sysapi::fd::read(&stdin, &mut byte) {
+            Ok(1) if byte[0] == b'\n' => {
+                return Answer::Line(String::from_utf8_lossy(&line).into());
+            }
+            Ok(1) => line.push(byte[0]),
             _ => return Answer::Gone,
         }
     }

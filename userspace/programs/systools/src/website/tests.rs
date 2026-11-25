@@ -900,8 +900,7 @@ fn what_is_made_for_a_person_is_theirs_and_the_folders_above_are_root_s() {
     assert_eq!(result.unwrap(), 0);
     assert_eq!(fake.owner_of(SHOP_FOLDER), person());
     assert_eq!(fake.owner_of(&format!("{SHOP_FOLDER}/index.html")), person());
-    // SAFETY: geteuid has no failure and touches no memory.
-    let root = unsafe { libc::geteuid() };
+    let root = sysapi::process::euid();
     assert_eq!(fake.owner_of("/shared/www/sites"), root);
     assert_eq!(fake.owner_of("/system/settings/websites/shop.example.org.conf"), root);
 }

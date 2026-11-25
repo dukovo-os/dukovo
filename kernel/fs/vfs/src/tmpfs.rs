@@ -37,6 +37,7 @@ use crate::acl::{self, Acl, AclCell};
 use crate::cache::{Backing, FileCache};
 use crate::mem::{self, Alloc, KArc, KVec};
 use crate::path::check_name;
+use crate::writes::WriteAccess;
 use crate::{
     Access, AccessChange, Error, FileSystem, FsInfo, FsKind, In, Kind, ListFn, Node, NodeRef, Out,
     Result, Setting, SocketBinding, Stat, now,
@@ -322,6 +323,8 @@ pub struct TmpNode {
     parent: Mutex<Option<Weak<TmpNode, Alloc>>>,
     /// Itself, so that it can be its entries' parent.
     me: radix_sync::Once<Weak<TmpNode, Alloc>>,
+    /// A file's writers and kept pages ([`crate::writes`]).
+    writes: WriteAccess,
     body: Body,
 }
 
@@ -447,6 +450,7 @@ impl TmpNode {
             shared,
             parent: Mutex::new(None),
             me: radix_sync::Once::new(),
+            writes: WriteAccess::new(),
             body,
         })?;
         let _ = node.me.set(KArc::downgrade(&node));
@@ -662,6 +666,10 @@ impl Node for TmpNode {
             },
             device,
         }
+    }
+
+    fn write_access(&self) -> Option<&WriteAccess> {
+        matches!(self.body, Body::File { .. }).then_some(&self.writes)
     }
 
     fn kind(&self) -> Kind {

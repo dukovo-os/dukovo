@@ -4,7 +4,8 @@
 //! The kernel's own interface (radix-ipc(7)), for what the C library does
 //! not wrap: CPU affinity, I/O priority and tracing (radix-process(2)),
 //! and clearing the kernel log (radix-kernel-log(2)). The calls go
-//! through `radix_abi`'s wrappers, generated from `abi/*.ridl`.
+//! through `radix_abi`'s wrappers, generated from `abi/*.ridl`, with
+//! sysapi's `SYS`.
 //!
 //! Built for another system (the unit tests run on the build machine),
 //! every call fails with no_such_syscall.
@@ -16,52 +17,9 @@ use std::path::Path;
 use radix_abi::capability::{self, Rights};
 use radix_abi::directory::{self, OpenFlags};
 use radix_abi::errors::{File, Kernel};
-use radix_abi::{Status, Syscalls, startup};
+use radix_abi::{Status, startup};
 
-/// The kernel, through the `syscall` instruction.
-pub struct Sys;
-
-impl Syscalls for Sys {
-    #[cfg(target_os = "radix")]
-    #[inline(always)]
-    fn syscall(&self, number: u64, args: [u64; 10]) -> (u64, [u64; 10]) {
-        let mut r = args;
-        let status: u64;
-        // SAFETY: the kernel reads only these registers, writes only these
-        // and rcx and r11 (declared clobbered), and touches no memory of
-        // the program's but the buffers the arguments name, which the
-        // wrappers pass from references they hold; it does not use the
-        // program's stack.
-        unsafe {
-            std::arch::asm!(
-                "syscall",
-                inlateout("rax") number => status,
-                inlateout("rdi") r[0],
-                inlateout("rsi") r[1],
-                inlateout("rdx") r[2],
-                inlateout("r10") r[3],
-                inlateout("r8") r[4],
-                inlateout("r9") r[5],
-                inlateout("r12") r[6],
-                inlateout("r13") r[7],
-                inlateout("r14") r[8],
-                inlateout("r15") r[9],
-                out("rcx") _,
-                out("r11") _,
-                options(nostack),
-            );
-        }
-        (status, r)
-    }
-
-    #[cfg(not(target_os = "radix"))]
-    fn syscall(&self, _number: u64, args: [u64; 10]) -> (u64, [u64; 10]) {
-        (Kernel::NoSuchSyscall.status(0).0, args)
-    }
-}
-
-/// The kernel, for `radix_abi`'s wrappers.
-pub static SYS: Sys = Sys;
+pub use sysapi::kernel::SYS;
 
 /// The slot of the program's own process.
 pub const SLOT_PROCESS: u32 = startup::SLOT_PROCESS;

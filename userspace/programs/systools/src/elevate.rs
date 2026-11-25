@@ -33,13 +33,13 @@
 //! As root, which an elevated command is, elevate runs the command
 //! itself, with the same path and environment.
 
-use std::ffi::{CString, OsStr, OsString};
-use std::io::{self, BufRead, BufReader, Write};
+use std::ffi::{OsStr, OsString};
+use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::net::Shutdown;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::os::unix::process::CommandExt;
 use std::time::Duration;
 
 use accounts::User;
@@ -47,6 +47,11 @@ use accounts::request::{self, Answer, Mode, NEEDS_PASSWORD, Request, WRONG_PASSW
 use radix_abi::capability::{self, ObjectKind, Rights};
 use radix_abi::directory::{self, OpenFlags};
 use radix_abi::{Status, process, resource_domain, startup};
+
+use sysapi::fd::Standard;
+use sysapi::poll::{PollFd, poll};
+use sysapi::signal::{self, Caught};
+use sysapi::terminal::{self, Attributes, When};
 
 use crate::args::{Arg, Args};
 use crate::sys::{self, SYS};
@@ -296,7 +301,7 @@ pub fn start(
         shares.push((startup::SLOT_FIREWALL, startup::SLOT_FIREWALL));
     }
     for (fd, n) in fds.iter().zip(0..3) {
-        shares.push((sys::slot_of(fd.as_raw_fd()), startup::SLOT_FD_BASE + n));
+        shares.push((sysapi::kernel::slot_of(fd), startup::SLOT_FD_BASE + n));
     }
     for (from, to) in shares {
         process::share(&SYS, child, from, to, Rights::ALL, 0)
@@ -325,13 +330,11 @@ fn started(words: &[OsString]) -> Result<i32, Fail> {
     if argv.is_empty() {
         return Err(usage("elevate --started needs the program's name".into()));
     }
-    // SAFETY: setsid and the terminal request change only this process's
-    // session; authd made it in its own process group, so setsid works.
-    unsafe {
-        libc::setsid();
-        if let Some(fd) = (0..3).find(|&fd| libc::isatty(fd) == 1) {
-            libc::ioctl(fd, libc::TIOCSCTTY, 0);
-        }
+    // authd made the process in a group of its own, so it can start a
+    // session.
+    let _ = sysapi::process::new_session();
+    if let Some(terminal) = standard().into_iter().find(IsTerminal::is_terminal) {
+        let _ = terminal::take_control(terminal);
     }
     if let Err(err) = std::env::set_current_dir(directory) {
         eprintln!(
@@ -341,17 +344,14 @@ fn started(words: &[OsString]) -> Result<i32, Fail> {
         );
         let _ = std::env::set_current_dir("/");
     }
-    let c = |word: &OsString| CString::new(word.as_bytes()).unwrap_or_default();
-    let path = c(program);
-    let strings: Vec<CString> = argv.iter().map(c).collect();
-    let mut pointers: Vec<*const libc::c_char> = strings.iter().map(|s| s.as_ptr()).collect();
-    pointers.push(std::ptr::null());
-    // SAFETY: execv takes NUL-terminated strings and a null-ended list,
-    // which live until it returns, if it does.
-    unsafe { libc::execv(path.as_ptr(), pointers.as_ptr()) };
-    let err = io::Error::last_os_error();
+    let err = util::program(program.as_bytes(), argv.iter().map(|word| word.as_bytes())).exec();
     let code = if err.kind() == io::ErrorKind::NotFound { 127 } else { 126 };
     Err(fail_with(code, format!("{}: {}", program.to_string_lossy(), util::strip_os_error(&err))))
+}
+
+/// Descriptors 0 to 2.
+fn standard() -> [BorrowedFd<'static>; 3] {
+    [Standard::Input, Standard::Output, Standard::Error].map(Standard::fd)
 }
 
 /// What was asked on the command line.
@@ -562,18 +562,11 @@ fn as_root(action: Action) -> Result<i32, Fail> {
         );
         let _ = std::env::set_current_dir("/");
     }
-    let c = |bytes: &[u8]| CString::new(bytes).unwrap_or_default();
-    let path = c(&plan.program);
-    let argv: Vec<CString> = plan.argv.iter().map(|w| c(w)).collect();
-    let envp: Vec<CString> = env.iter().map(|e| c(e.as_bytes())).collect();
-    let mut argv_p: Vec<*const libc::c_char> = argv.iter().map(|s| s.as_ptr()).collect();
-    argv_p.push(std::ptr::null());
-    let mut envp_p: Vec<*const libc::c_char> = envp.iter().map(|s| s.as_ptr()).collect();
-    envp_p.push(std::ptr::null());
-    // SAFETY: execve takes NUL-terminated strings and null-ended lists,
-    // which live until it returns, if it does.
-    unsafe { libc::execve(path.as_ptr(), argv_p.as_ptr(), envp_p.as_ptr()) };
-    let err = io::Error::last_os_error();
+    let mut command = util::program(&plan.program, plan.argv.iter().map(Vec::as_slice));
+    command.env_clear();
+    // Each is `NAME=value` (`environment`).
+    command.envs(env.iter().filter_map(|entry| entry.split_once('=')));
+    let err = command.exec();
     let code = if err.kind() == io::ErrorKind::NotFound { 127 } else { 126 };
     Err(fail_with(
         code,
@@ -592,14 +585,14 @@ fn connect() -> Result<UnixStream, Fail> {
 /// connection to read more from.
 pub(crate) fn ask_with(
     request: &Request,
-    fds: &[RawFd],
+    fds: &[BorrowedFd<'_>],
 ) -> Result<(Answer, BufReader<UnixStream>), Fail> {
     let stream = connect()?;
     let mut bytes = request.encode();
     let sent = if fds.is_empty() {
         (&stream).write_all(&bytes)
     } else {
-        signin::send_with_fds(&stream, &bytes, fds)
+        sysapi::net::send_with_fds(&stream, &bytes, fds)
     };
     accounts::wipe(&mut bytes);
     sent.and_then(|()| stream.shutdown(Shutdown::Write))
@@ -612,7 +605,7 @@ pub(crate) fn ask_with(
     Ok((Answer::decode(&line), reader))
 }
 
-fn ask(request: &Request, fds: &[RawFd]) -> Result<Answer, Fail> {
+fn ask(request: &Request, fds: &[BorrowedFd<'_>]) -> Result<Answer, Fail> {
     ask_with(request, fds).map(|(answer, _)| answer)
 }
 
@@ -641,7 +634,7 @@ fn password_typed(options: &Options, tool: &str) -> Result<Vec<u8>, Fail> {
         None => format!("[{tool}] password for {me}: "),
     };
     let answer = if options.stdin {
-        prompt::ask_on(0, 2, &text, true)
+        prompt::ask_on(io::stdin(), io::stderr(), &text, true)
     } else {
         let tty = std::fs::OpenOptions::new().read(true).write(true).open("/devices/tty").map_err(
             |_| {
@@ -652,7 +645,7 @@ fn password_typed(options: &Options, tool: &str) -> Result<Vec<u8>, Fail> {
                 )
             },
         )?;
-        prompt::ask_on(tty.as_raw_fd(), tty.as_raw_fd(), &text, false)
+        prompt::ask_on(&tty, &tty, &text, false)
     };
     match answer {
         Ok(prompt::Answer::Line(line)) => Ok(line),
@@ -709,31 +702,17 @@ fn tool_name() -> String {
     }
 }
 
-/// The write end of the pipe the signal handler wakes the loop with.
-pub(crate) static WAKE: AtomicI32 = AtomicI32::new(-1);
-
-pub(crate) extern "C" fn on_signal(signal: libc::c_int) {
-    let byte = signal as u8;
-    // SAFETY: write(2) is async-signal-safe; a full pipe only loses a
-    // repeat of a signal.
-    unsafe { libc::write(WAKE.load(Ordering::Relaxed), (&raw const byte).cast(), 1) };
-}
-
 /// The signals elevate passes on to the command, as sudo does, and the
-/// one that tells it its terminal's size changed.
+/// one that tells it its terminal's size changed, as they come: each
+/// writes its number to the pipe [`run`]'s loop waits on.
+static SIGNALLED: Caught = Caught::new();
+
+/// The signals elevate passes on to the command, as sudo does.
 const PASSED_ON: [libc::c_int; 5] =
     [libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGHUP, libc::SIGTSTP];
 
 /// A pipe, its ends closed on exec: (read, write).
-pub(crate) fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
-    let mut fds = [0; 2];
-    // SAFETY: pipe2 writes two descriptors.
-    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: both are new descriptors of ours.
-    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
-}
+pub(crate) use sysapi::fd::pipe;
 
 /// The command's own terminal: a pseudo-terminal with the settings and
 /// size of `like`, one of elevate's.
@@ -743,77 +722,41 @@ pub(crate) struct Pty {
 }
 
 impl Pty {
-    pub(crate) fn open(like: RawFd) -> io::Result<Pty> {
-        // SAFETY: all zeros is a valid termios and winsize: numbers.
-        let (mut settings, mut size): (libc::termios, libc::winsize) =
-            unsafe { (util::zeroed(), util::zeroed()) };
-        // SAFETY: tcgetattr and TIOCGWINSZ fill what they are given;
-        // failing leaves zeros, which openpty is not given.
-        let have_settings = unsafe { libc::tcgetattr(like, &raw mut settings) } == 0;
-        // SAFETY: as above.
-        let have_size = unsafe { libc::ioctl(like, libc::TIOCGWINSZ, &raw mut size) } == 0;
-        let (mut master, mut slave) = (-1, -1);
-        // SAFETY: openpty writes the two descriptors; the name may be
-        // null, and so may the settings and size.
-        let opened = unsafe {
-            libc::openpty(
-                &raw mut master,
-                &raw mut slave,
-                std::ptr::null_mut(),
-                if have_settings { &raw const settings } else { std::ptr::null() },
-                if have_size { &raw const size } else { std::ptr::null() },
-            )
-        };
-        if opened != 0 {
-            return Err(io::Error::last_os_error());
+    pub(crate) fn open(like: impl AsFd) -> io::Result<Pty> {
+        let opened = terminal::open_pty(terminal::window_size(&like).ok())?;
+        if let Ok(settings) = terminal::attributes(&like) {
+            terminal::set_attributes(&opened.terminal, When::Now, &settings)?;
         }
-        // SAFETY: openpty gave both descriptors to us.
-        let pty = unsafe {
-            Pty { master: OwnedFd::from_raw_fd(master), slave: Some(OwnedFd::from_raw_fd(slave)) }
-        };
-        for fd in [master, slave] {
-            // SAFETY: setting close-on-exec on our own descriptor.
-            unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
-        }
-        Ok(pty)
+        Ok(Pty { master: opened.master, slave: Some(opened.terminal) })
     }
 }
 
-/// The terminal's settings from before it was made raw, put back when it
-/// is dropped, whatever ends elevate's copying.
+/// The standard input's settings from before it was made raw, put back
+/// when this is dropped, whatever ends elevate's copying.
 pub(crate) struct Raw {
-    fd: RawFd,
-    saved: Option<libc::termios>,
+    saved: Option<Attributes>,
 }
 
 impl Raw {
-    pub(crate) fn new(fd: RawFd) -> Raw {
-        Raw { fd, saved: None }
+    pub(crate) fn new() -> Raw {
+        Raw { saved: None }
     }
 
     pub(crate) fn on(&mut self) {
-        // SAFETY: all zeros is a valid termios: numbers.
-        let mut settings: libc::termios = unsafe { util::zeroed() };
-        // SAFETY: tcgetattr fills `settings`.
-        if unsafe { libc::tcgetattr(self.fd, &raw mut settings) } != 0 {
+        let Ok(settings) = terminal::attributes(Standard::Input.fd()) else {
             return;
-        }
+        };
         if self.saved.is_none() {
             self.saved = Some(settings);
         }
         let mut raw = settings;
-        // SAFETY: cfmakeraw changes the termios it is given; `raw` is
-        // valid for tcsetattr.
-        unsafe {
-            libc::cfmakeraw(&raw mut raw);
-            libc::tcsetattr(self.fd, libc::TCSADRAIN, &raw const raw);
-        }
+        terminal::make_raw(&mut raw);
+        let _ = terminal::set_attributes(Standard::Input.fd(), When::Drained, &raw);
     }
 
     pub(crate) fn off(&mut self) {
         if let Some(saved) = self.saved.take() {
-            // SAFETY: `saved` is the termios read before.
-            unsafe { libc::tcsetattr(self.fd, libc::TCSADRAIN, &raw const saved) };
+            let _ = terminal::set_attributes(Standard::Input.fd(), When::Drained, &saved);
         }
     }
 }
@@ -825,31 +768,25 @@ impl Drop for Raw {
 }
 
 /// Writes all of `data` to `fd`, as far as it takes it.
-pub(crate) fn write_all(fd: RawFd, mut data: &[u8]) {
+pub(crate) fn write_all(fd: impl AsFd, mut data: &[u8]) {
     while !data.is_empty() {
-        // SAFETY: writes from our buffer.
-        let n = unsafe { libc::write(fd, data.as_ptr().cast(), data.len()) };
-        if n <= 0 {
-            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return;
+        match sysapi::fd::write(&fd, data) {
+            Ok(0) => return,
+            Ok(n) => data = data.get(n..).unwrap_or_default(),
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => return,
         }
-        data = &data[n as usize..];
     }
 }
 
 /// Reads what `fd` has into `buffer`: the count, 0 at its end or on an
 /// error other than an interrupted read.
-pub(crate) fn read_some(fd: RawFd, buffer: &mut [u8]) -> usize {
+pub(crate) fn read_some(fd: impl AsFd, buffer: &mut [u8]) -> usize {
     loop {
-        // SAFETY: reads into our buffer.
-        let n = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
-        if n >= 0 {
-            return n as usize;
-        }
-        if io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-            return 0;
+        match sysapi::fd::read(&fd, buffer) {
+            Ok(n) => return n,
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => return 0,
         }
     }
 }
@@ -871,17 +808,22 @@ fn exit_code(status: i32) -> i32 {
 /// until it ends.
 fn run(options: &Options) -> Result<i32, Fail> {
     let tool = tool_name();
-    let is_tty = |fd: RawFd| util::is_terminal(fd);
-    let ttys = [is_tty(0), is_tty(1), is_tty(2)];
-    let mut pty = match (0..3).find(|&fd| ttys[fd as usize]) {
-        Some(like) => Some(Pty::open(like).map_err(|e| util::failed(&"a pseudo-terminal", e))?),
+    let standard = standard();
+    let ttys = standard.map(|fd| fd.is_terminal());
+    let mut pty = match standard.iter().zip(ttys).find(|&(_, tty)| tty) {
+        Some((like, _)) => {
+            Some(Pty::open(like).map_err(|e| util::failed(&"a pseudo-terminal", e))?)
+        }
         None => None,
     };
-    let slave = pty.as_ref().and_then(|p| p.slave.as_ref()).map(AsRawFd::as_raw_fd);
-    let mut fds: Vec<RawFd> =
-        (0..3).map(|fd| if ttys[fd as usize] { slave.unwrap_or(fd) } else { fd }).collect();
     let (relay_read, relay_write) = pipe().map_err(|e| util::failed(&"a pipe", e))?;
-    fds.push(relay_read.as_raw_fd());
+    let slave = pty.as_ref().and_then(|p| p.slave.as_ref()).map(AsFd::as_fd);
+    let mut fds: Vec<BorrowedFd<'_>> = standard
+        .iter()
+        .zip(ttys)
+        .map(|(&fd, tty)| if tty { slave.unwrap_or(fd) } else { fd })
+        .collect();
+    fds.push(relay_read.as_fd());
     let here =
         std::env::current_dir().map_or_else(|_| b"/".to_vec(), |d| d.into_os_string().into_vec());
     let term = std::env::var("TERM").unwrap_or_default();
@@ -930,88 +872,76 @@ fn run(options: &Options) -> Result<i32, Fail> {
         pty.slave = None;
     }
     drop(relay_read);
-    let relay = relay_write.as_raw_fd();
     let (wake_read, wake_write) = pipe().map_err(|e| util::failed(&"a pipe", e))?;
-    WAKE.store(wake_write.as_raw_fd(), Ordering::Relaxed);
-    // SAFETY: the handler only writes to the pipe; the signals' old
-    // actions are not needed again, as elevate ends after.
-    unsafe {
-        let mut action: libc::sigaction = util::zeroed();
-        action.sa_sigaction = on_signal as extern "C" fn(libc::c_int) as *const () as usize;
-        action.sa_flags = libc::SA_RESTART;
-        for signal in PASSED_ON.into_iter().chain([libc::SIGWINCH]) {
-            libc::sigaction(signal, &raw const action, std::ptr::null_mut());
-        }
-        // A closed output must not end elevate before it puts the
-        // terminal back.
-        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    // The handler does not wait for room: a full pipe wakes the loop
+    // already, and loses only a repeat of a signal.
+    sysapi::fd::set_nonblocking(&wake_write, true).map_err(|e| util::failed(&"a pipe", e))?;
+    SIGNALLED.wake_through(wake_write).map_err(|e| util::failed(&"its signals", e))?;
+    // The signals' old actions are not needed again, as elevate ends
+    // after.
+    for caught in PASSED_ON.into_iter().chain([libc::SIGWINCH]) {
+        signal::catch(caught, &SIGNALLED, libc::SA_RESTART)
+            .map_err(|e| util::failed(&"its signals", e))?;
     }
+    // A closed output must not end elevate before it puts the terminal
+    // back.
+    signal::ignore(libc::SIGPIPE).map_err(|e| util::failed(&"its signals", e))?;
     // Keys go to the command's terminal from elevate's own, raw, so that
     // Ctrl+C and Ctrl+Z are the command's terminal's to act on.
     let input = pty.is_some() && ttys[0];
-    let mut raw = Raw::new(0);
+    let mut raw = Raw::new();
     if input {
         raw.on();
     }
     // What the command writes to its terminal shows on elevate's.
-    let out = [1, 2, 0].into_iter().find(|&fd| ttys[fd as usize]).unwrap_or(1);
-    let master = pty.as_ref().map(|p| p.master.as_raw_fd());
+    let [stdin, stdout, stderr] = standard;
+    let out = [stdout, stderr, stdin].into_iter().find(IsTerminal::is_terminal).unwrap_or(stdout);
+    let master = pty.as_ref().map(|p| p.master.as_fd());
     let mut master_open = master.is_some();
     let mut input_open = input;
     let mut buffer = [0u8; 4096];
     let mut line = String::new();
     loop {
-        let mut fds = [
-            libc::pollfd { fd: reader.get_ref().as_raw_fd(), events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: wake_read.as_raw_fd(), events: libc::POLLIN, revents: 0 },
-            libc::pollfd {
-                fd: if master_open { master.unwrap_or(-1) } else { -1 },
-                events: libc::POLLIN,
-                revents: 0,
-            },
-            libc::pollfd { fd: if input_open { 0 } else { -1 }, events: libc::POLLIN, revents: 0 },
-        ];
         // A line of authd's already read is taken before waiting.
         let buffered = !reader.buffer().is_empty();
-        // SAFETY: `fds` holds valid pollfds.
-        let ready = unsafe {
-            libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, if buffered { 0 } else { -1 })
-        };
-        if ready < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-            return Err(fail(format!("poll: {}", io::Error::last_os_error())));
+        let mut fds = [
+            PollFd::new(reader.get_ref().as_fd(), libc::POLLIN),
+            PollFd::new(wake_read.as_fd(), libc::POLLIN),
+            PollFd::optional(master.filter(|_| master_open), libc::POLLIN),
+            PollFd::optional(input_open.then_some(stdin), libc::POLLIN),
+        ];
+        match poll(&mut fds, buffered.then_some(Duration::ZERO)) {
+            Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+            Err(err) => return Err(fail(format!("poll: {err}"))),
         }
-        if fds[1].revents != 0 {
+        let [authd, wake, from_command, typing] = fds.map(|fd| fd.revents() != 0);
+        if wake {
             let mut signals = [0u8; 16];
-            let n = read_some(wake_read.as_raw_fd(), &mut signals);
+            let n = read_some(&wake_read, &mut signals);
             for &signal in &signals[..n] {
                 let signal = libc::c_int::from(signal);
                 if signal == libc::SIGWINCH {
-                    if let Some(master) = master {
-                        // SAFETY: copies the terminal's size to the
-                        // command's.
-                        unsafe {
-                            let mut size: libc::winsize = util::zeroed();
-                            if libc::ioctl(out, libc::TIOCGWINSZ, &raw mut size) == 0 {
-                                libc::ioctl(master, libc::TIOCSWINSZ, &raw const size);
-                            }
-                        }
+                    // The command's terminal takes the size of elevate's.
+                    if let Some(master) = master
+                        && let Ok(size) = terminal::window_size(out)
+                    {
+                        let _ = terminal::set_window_size(master, size);
                     }
                 } else {
-                    write_all(relay, request::signal(signal).as_bytes());
+                    write_all(&relay_write, request::signal(signal).as_bytes());
                 }
             }
         }
-        if fds[3].revents != 0 {
-            let n = read_some(0, &mut buffer);
+        if typing {
+            let n = read_some(stdin, &mut buffer);
             if n == 0 {
                 input_open = false;
             } else if let Some(master) = master {
                 write_all(master, &buffer[..n]);
             }
         }
-        if fds[2].revents != 0
-            && let Some(master) = master
-        {
+        if from_command && let Some(master) = master {
             let n = read_some(master, &mut buffer);
             if n == 0 {
                 // Every descriptor of the command's terminal is closed.
@@ -1020,7 +950,7 @@ fn run(options: &Options) -> Result<i32, Fail> {
                 write_all(out, &buffer[..n]);
             }
         }
-        if fds[0].revents != 0 || buffered {
+        if authd || buffered {
             line.clear();
             match reader.read_line(&mut line) {
                 Ok(0) | Err(_) => {
@@ -1042,12 +972,11 @@ fn run(options: &Options) -> Result<i32, Fail> {
                 // so that the shell that ran it has its terminal back, and
                 // has the command go on when it does.
                 raw.off();
-                // SAFETY: stopping ourselves; we go on after SIGCONT.
-                unsafe { libc::kill(libc::getpid(), libc::SIGSTOP) };
+                let _ = signal::raise(libc::SIGSTOP);
                 if input {
                     raw.on();
                 }
-                write_all(relay, request::CONTINUE.as_bytes());
+                write_all(&relay_write, request::CONTINUE.as_bytes());
             }
         }
     }
@@ -1055,12 +984,11 @@ fn run(options: &Options) -> Result<i32, Fail> {
 
 /// Copies what the command's terminal still holds to `out`, without
 /// waiting for more.
-fn drain(master: RawFd, out: RawFd) {
+fn drain(master: BorrowedFd<'_>, out: BorrowedFd<'_>) {
     let mut buffer = [0u8; 4096];
     loop {
-        let mut entry = libc::pollfd { fd: master, events: libc::POLLIN, revents: 0 };
-        // SAFETY: one valid pollfd.
-        if unsafe { libc::poll(&raw mut entry, 1, 0) } <= 0 {
+        let mut fds = [PollFd::new(master, libc::POLLIN)];
+        if !matches!(poll(&mut fds, Some(Duration::ZERO)), Ok(1..)) {
             return;
         }
         let n = read_some(master, &mut buffer);
