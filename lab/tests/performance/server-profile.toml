@@ -5,7 +5,9 @@
 # PostgreSQL rows with SERVERBENCH_PROFILE=raw, which samples the user
 # code of the whole machine through /processes/profile during each
 # measured pass and prints where the samples fell as BENCHPROF lines, in
-# the test's log. Linux's side comes from a Linux kit whose kit.toml
+# the test's log, with the processor's counts of TLB page walks, cache
+# misses, instructions and cycles in user mode and the kernel's counts of
+# TLB switches and flushes. Linux's side comes from a Linux kit whose kit.toml
 # command line has the word linux-bench.profile=raw: its BENCHPROF lines
 # are in the twin's linux-boot log of any performance test with a bench
 # step. Run it by name.
