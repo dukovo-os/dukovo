@@ -154,7 +154,8 @@ impl Rq {
             REAL_TIME if !self.idling() => self.current.queued_prio.load(Ordering::Relaxed),
             _ => 0,
         };
-        CpuLoad { running: self.len() as u32, rt_prio }
+        // The CPU's rank is its own, not its queue's (`balance::rank_cores`).
+        CpuLoad { running: self.len() as u32, rt_prio, rank: 0 }
     }
 
     /// Adds a ready thread.

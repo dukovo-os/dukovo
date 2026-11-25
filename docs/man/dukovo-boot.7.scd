@@ -661,6 +661,16 @@ them to *init*, and the kernel does not read them.
 	or AMD's CPPC, as Linux's *intel_pstate=disable* and
 	*amd_pstate=disable* do. See *CPU FREQUENCY*.
 
+*hybrid*=off
+	Place threads on a processor's performance and efficient cores
+	alike, as on a processor whose cores are all of one kind. By
+	default, on Intel's processors with cores of both kinds, a waking
+	thread goes to an idle performance core first, then to an idle
+	efficient core, then to a busy performance core's second hardware
+	thread, and a thread running alone on a slower core moves to a
+	faster one that goes idle; the boot log says which. For comparing
+	the two, or for a workload that does better spread alike.
+
 *epp*=_preference_
 	Ask the CPUs for this energy preference, by Linux's names:
 	*performance*, *balance_performance*, *balance_power* or *power*.

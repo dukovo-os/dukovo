@@ -191,6 +191,38 @@ pub trait Cpu {
     /// What the running CPU's own temperature sensors say (ADR 0205):
     /// Intel's digital thermal sensors, which Linux's `coretemp` shows.
     fn core_temperature() -> Option<radix_sensors::coretemp::Sample>;
+
+    /// What kind of core the running CPU is, on a processor whose cores
+    /// differ (ADR 0740).
+    fn core_kind() -> CoreKind;
+}
+
+/// What kind of core a CPU is, on a processor with cores of more than
+/// one kind, as Intel's from the 12th generation Core on have.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CoreKind {
+    /// The processor's cores are all of one kind, or it does not say.
+    #[default]
+    Only,
+    /// One of the processor's faster cores (Intel's performance cores).
+    Performance,
+    /// One of its slower, smaller cores (Intel's efficient cores).
+    Efficient,
+}
+
+impl CoreKind {
+    /// The kind of core an Intel CPU says it is: `hybrid` when CPUID leaf
+    /// 7's EDX bit 15 says the processor has cores of more than one kind,
+    /// and `core_type` the top byte of leaf 1Ah's EAX, 40h for a
+    /// performance core and 20h for an efficient one (Intel's Software
+    /// Developer's Manual, volume 2A, CPUID).
+    pub const fn of_intel(hybrid: bool, core_type: u8) -> CoreKind {
+        match (hybrid, core_type) {
+            (true, 0x40) => CoreKind::Performance,
+            (true, 0x20) => CoreKind::Efficient,
+            _ => CoreKind::Only,
+        }
+    }
 }
 
 /// An error a machine-check bank held, as [`Cpu::poll_machine_checks`]
@@ -1142,3 +1174,16 @@ pub trait Platform {
 /// Signature of the kernel's entry point, `radix_kernel_main`, which the
 /// architecture calls once it has set up the boot CPU.
 pub type KernelMain = fn(BootParams) -> !;
+
+#[cfg(test)]
+mod tests {
+    use super::CoreKind;
+
+    #[test]
+    fn intel_names_its_kinds_of_core_only_on_a_hybrid_processor() {
+        assert_eq!(CoreKind::of_intel(true, 0x40), CoreKind::Performance);
+        assert_eq!(CoreKind::of_intel(true, 0x20), CoreKind::Efficient);
+        assert_eq!(CoreKind::of_intel(true, 0x10), CoreKind::Only);
+        assert_eq!(CoreKind::of_intel(false, 0x40), CoreKind::Only);
+    }
+}

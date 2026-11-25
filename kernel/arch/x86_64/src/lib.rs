@@ -274,6 +274,10 @@ impl Cpu for Arch {
     fn core_temperature() -> Option<radix_sensors::coretemp::Sample> {
         sensors::core_sample()
     }
+
+    fn core_kind() -> radix_hal::CoreKind {
+        cpu::core_kind()
+    }
 }
 
 impl CpuLocal for Arch {

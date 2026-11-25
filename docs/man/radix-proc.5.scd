@@ -241,6 +241,9 @@ _/processes/stat_
 	memory out of a CPU's caches and TLB (switches away from a thread
 	that could have gone on, moves of a thread to another CPU than the
 	one it ran on last, and page faults resolved), since boot;
+	*moves_up*, the moves of a thread running alone on a slower core to
+	a faster idle one, on a processor whose cores differ in speed
+	(*dukovo-boot*(7)'s *hybrid*), since boot;
 	*mutex_contended*, *mutex_waits*, *mutex_handoffs* and *mutex_wakes*,
 	the times a thread found a kernel mutex taken, the times it slept
 	waiting for one, the times a mutex was handed to a sleeping waiter,
