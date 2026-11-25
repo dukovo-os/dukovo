@@ -65,7 +65,6 @@ mod platform;
 pub(crate) mod posix;
 pub mod power;
 pub mod process;
-pub(crate) mod profile;
 pub mod queue;
 pub mod random;
 mod ring;
@@ -142,11 +141,6 @@ impl Drop for UserThread {
 impl UserThread {
     /// The address space.
     pub fn space(&self) -> &SpaceObject {
-        &self.space
-    }
-
-    /// The address space, as the reference it holds.
-    pub(crate) fn space_ref(&self) -> &memory::SpaceRef {
         &self.space
     }
 

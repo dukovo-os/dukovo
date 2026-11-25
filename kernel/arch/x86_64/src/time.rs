@@ -32,11 +32,6 @@
 //! [`DOORBELL_HOLD_NS`] its timer also fires every [`DOORBELL_NS`], and
 //! each firing is such a way out, where the held interrupt is delivered.
 //! Late answers keep it ringing; going idle stops it (ADR 0109).
-//!
-//! While a profile is taken ([`sample_every`]), the timer also fires every
-//! sample period, hands the kernel's sampler the user code it
-//! interrupted (`/processes/profile`), and adds up what the performance
-//! counters counted (`pmu`).
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
@@ -81,11 +76,6 @@ static DEADLINE_MODE: AtomicBool = AtomicBool::new(false);
 static DOORBELL: AtomicBool = AtomicBool::new(false);
 /// The kernel's timer handler.
 static HANDLER: Once<fn(bool)> = Once::new();
-/// How often the timer also fires to take a profile's sample, in
-/// nanoseconds; 0 while no profile is taken ([`sample_every`]).
-static SAMPLE_NS: AtomicU64 = AtomicU64::new(0);
-/// What takes a profile's sample.
-static SAMPLER: Once<fn(u64)> = Once::new();
 /// One tick period.
 const TICK_NS: u64 = 1_000_000_000 / TICK_HZ as u64;
 
@@ -476,20 +466,6 @@ pub fn set_deadline(deadline_ns: u64) {
     program(cpu.next_tick_ns.load(Ordering::Relaxed).min(deadline_ns));
 }
 
-/// Has every CPU's timer also fire every `period_ns` and call `sampler`
-/// with the user address it interrupted (0 for the kernel), for a profile
-/// (`radix_hal::Timer::sample_every`); 0 stops it. Each CPU takes the
-/// period at its next timer interrupt, a tick at the latest. Only the
-/// first sampler given is ever called.
-pub fn sample_every(period_ns: u64, sampler: fn(u64)) -> bool {
-    if !TICKING.load(Ordering::Relaxed) {
-        return false;
-    }
-    let _ = SAMPLER.set(sampler);
-    SAMPLE_NS.store(period_ns, Ordering::Relaxed);
-    true
-}
-
 /// Under KVM, makes this CPU's timer also fire every
 /// [`DOORBELL_NS`] for the next [`DOORBELL_HOLD_NS`]: for a CPU that
 /// answered another CPU's interrupt late (`paging::serve_shootdown`).
@@ -523,10 +499,9 @@ pub fn tick_hz() -> u32 {
     if TICKING.load(Ordering::Relaxed) { TICK_HZ } else { 0 }
 }
 
-/// The timer interrupt: counts a tick if one is due, takes a profile's
-/// sample if one is due, re-arms the timer, and calls the kernel's
-/// handler. `user_address` is the user code it interrupted, or 0.
-pub fn on_tick(user_address: u64) {
+/// The timer interrupt: counts a tick if one is due, re-arms the timer,
+/// and calls the kernel's handler.
+pub fn on_tick() {
     // No trace point here: at 100 Hz on every CPU it would push everything
     // else out of the trace ring within seconds.
     let cpu = percpu::current();
@@ -553,25 +528,6 @@ pub fn on_tick(user_address: u64) {
         cpu.next_tick_ns.load(Ordering::Relaxed).min(cpu.deadline_ns.load(Ordering::Relaxed));
     if now < cpu.doorbell_until_ns.load(Ordering::Relaxed) {
         at = at.min(now + DOORBELL_NS);
-    }
-    let period = SAMPLE_NS.load(Ordering::Relaxed);
-    if period != 0 {
-        let due = cpu.next_sample_ns.load(Ordering::Relaxed);
-        if now >= due {
-            // The first interrupt of a profile only sets when its first
-            // sample is due, so that every sample stands for a period.
-            if due != 0
-                && let Some(sampler) = SAMPLER.get()
-            {
-                sampler(user_address);
-            }
-            crate::pmu::tick(true);
-            cpu.next_sample_ns.store(now + period, Ordering::Relaxed);
-        }
-        at = at.min(cpu.next_sample_ns.load(Ordering::Relaxed));
-    } else if cpu.next_sample_ns.load(Ordering::Relaxed) != 0 {
-        cpu.next_sample_ns.store(0, Ordering::Relaxed);
-        crate::pmu::tick(false);
     }
     program(at);
     apic::end_of_interrupt();

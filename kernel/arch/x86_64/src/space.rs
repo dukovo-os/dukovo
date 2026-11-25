@@ -41,7 +41,7 @@ use radix_mm::{AllocError, Owner, Pcids};
 use radix_sync::SpinLock;
 
 use crate::memory::{self, PAGE};
-use crate::paging::{self, Access, MapError, TlbCount};
+use crate::paging::{self, Access, MapError};
 use crate::{cpu, percpu};
 
 /// The first address above the lower half.
@@ -161,12 +161,6 @@ impl AddressSpace {
 
     fn is_active(&self, cpu: usize) -> bool {
         self.active[cpu / 64].load(Ordering::SeqCst) & (1 << (cpu % 64)) != 0
-    }
-
-    /// How many times the space's mappings changed in a way that needed
-    /// a TLB flush: its TLB generation, which starts at 1.
-    pub fn changes(&self) -> u64 {
-        self.tlb_generation.load(Ordering::Relaxed) - 1
     }
 
     /// Maps the page at `virt` (in the lower half) to frame `phys`, for
@@ -592,7 +586,6 @@ impl AddressSpace {
 
     fn flush_range(&self, range: Range<u64>) {
         self.tlb_generation.fetch_add(1, Ordering::SeqCst);
-        paging::count_tlb(TlbCount::Changes, 1);
         fence(Ordering::SeqCst);
         paging::shootdown_on(range, |cpu| self.is_active(cpu.index()));
     }
@@ -618,21 +611,10 @@ impl AddressSpace {
                 if flush_all {
                     cpu::flush_tlb_all();
                 }
-                paging::count_tlb(
-                    if flush_all {
-                        TlbCount::Rollover
-                    } else if stale {
-                        TlbCount::Dropped
-                    } else {
-                        TlbCount::Kept
-                    },
-                    1,
-                );
                 // Bit 63 keeps the PCID's TLB entries.
                 let keep = if stale || flush_all { 0 } else { 1 << 63 };
                 self.pml4 | u64::from(pcid) | keep
             } else {
-                paging::count_tlb(TlbCount::Untagged, 1);
                 self.pml4
             };
             // SAFETY: the PML4's upper half is the kernel's, so the running
@@ -1013,7 +995,6 @@ impl<'a> Walk<'a> {
     fn flush(&mut self, space: &AddressSpace, to: u64) {
         if self.changed {
             space.tlb_generation.fetch_add(1, Ordering::SeqCst);
-            paging::count_tlb(TlbCount::Changes, 1);
             fence(Ordering::SeqCst);
             paging::shootdown_on(self.flushed_to..to, |cpu| space.is_active(cpu.index()));
             self.changed = false;
@@ -1124,7 +1105,6 @@ impl Unlinked {
             return;
         }
         space.tlb_generation.fetch_add(1, Ordering::SeqCst);
-        paging::count_tlb(TlbCount::Changes, 1);
         fence(Ordering::SeqCst);
         paging::shootdown_on(0..USER_END, |cpu| space.is_active(cpu.index()));
         for &table in &self.tables[..self.count] {

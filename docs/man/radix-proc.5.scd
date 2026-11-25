@@ -266,43 +266,6 @@ _/processes/loadavg_
 _/processes/uptime_
 	*uptime_ns*: nanoseconds since the kernel started.
 
-_/processes/profile_
-	A profile of user code, for finding where a program's time goes.
-	Each open gives the samples taken since the one before and starts
-	afresh: every CPU's timer interrupt samples what it interrupted
-	every *period_ns* (500000, 2,000 times a second), and an open
-	starts the sampling, which stops by itself ten minutes after the
-	last. Only the opener's own processes' samples are listed, every
-	process's for root. Header lines: *period_ns* (0 where the
-	architecture cannot sample), *user*, the samples of user code
-	listed, *others*, those of other users' processes, *kernel*, those
-	of the kernel or an idle CPU, and *lost*, those a CPU had no room
-	for. Then a line *counter* _name_ _count_ for each event the
-	architecture counts, over all CPUs since the open before: on x86,
-	what the processor's performance counters counted in user mode
-	while the profile was taken (*instructions*, *cycles*, and page
-	walks and cache misses such as *dtlb_load_walks* and *l2_misses*,
-	as the processor has them), and how often the kernel switched
-	address spaces keeping their TLB entries
-	(*tlb_switches_kept*) or dropping them (*tlb_switches_dropped*,
-	*tlb_switches_rollover*, *tlb_switches_untagged*), flushed
-	(*tlb_space_flushes*, *tlb_global_flushes*, *tlb_pages_flushed*),
-	or changed mappings in a way that needed a flush (*tlb_changes*).
-	On every architecture, how many pages filled from files the
-	processes came by since the open before: their own copies
-	(*file_pages_copied*), pages made and kept for every process that
-	maps a file that cannot change (*file_pages_kept*), and pages taken
-	from those (*file_pages_shared*).
-	Then *name* _index_ _process_ and *file* _index_ _path_ lines, a
-	line *changes* _name_ _count_ for each process whose address
-	spaces changed their mappings that way since their first sample,
-	and a line *sample* _count_ _name_ _file_ _offset_ for each place
-	sampled, the most sampled first: the process's name, the file
-	mapped to run there and the offset in it, in hexadecimal, or *-*
-	and *-* for user code in no file (the vDSO, anonymous memory). The
-	last line, *left_out*, counts the samples whose lines did not fit
-	in the file. A domain's view of _/processes_ has no profile.
-
 _/processes/net/dev_
 	What each interface received and sent, as Linux's _/proc/net/dev_
 	writes it: two lines of headings, then a line per interface (*lo*,
