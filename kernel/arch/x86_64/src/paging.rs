@@ -992,19 +992,82 @@ const LATE_NS: u64 = 50_000;
 /// program's view, and with PCIDs to the kernel's views of the others.
 pub(crate) fn flush_local(range: Range<u64>) {
     let user = range.start < crate::space::USER_END;
-    let flush = if (range.end - range.start) / PAGE <= FLUSH_ALL_PAGES {
+    let pages = (range.end - range.start) / PAGE;
+    let flush = if pages <= FLUSH_ALL_PAGES {
         for page in range.clone().step_by(PAGE as usize) {
             cpu::invlpg(page as usize);
         }
+        count_tlb(TlbCount::Pages, pages);
         crate::pti::Flushed::Pages(range)
     } else if range.end <= crate::space::USER_END {
         cpu::flush_tlb();
+        count_tlb(TlbCount::SpaceFlushes, 1);
         crate::pti::Flushed::Space
     } else {
         cpu::flush_tlb_all();
+        count_tlb(TlbCount::GlobalFlushes, 1);
         crate::pti::Flushed::All
     };
     crate::pti::flushed(user, flush);
+}
+
+/// What a CPU's TLB did, counted for a profile (`PerCpu::tlb_counts`),
+/// which shows how often a program finds its TLB entries gone.
+#[derive(Clone, Copy)]
+pub(crate) enum TlbCount {
+    /// Switches to an address space that kept its entries (its PCID's).
+    Kept,
+    /// Switches that dropped the space's entries, since its mappings
+    /// changed after this CPU last ran it (its TLB generation moved).
+    Dropped,
+    /// Switches that flushed every PCID's entries, as a new generation of
+    /// PCIDs began.
+    Rollover,
+    /// Switches without PCIDs, which flush the entries of the space left.
+    Untagged,
+    /// Flushes of the running space's entries all at once, for a range of
+    /// more than [`FLUSH_ALL_PAGES`] pages.
+    SpaceFlushes,
+    /// Flushes of every entry, the kernel's global ones too.
+    GlobalFlushes,
+    /// Pages flushed one at a time (INVLPG).
+    Pages,
+    /// Changes to a space's mappings that needed a flush, each moving its
+    /// TLB generation.
+    Changes,
+}
+
+/// How many kinds [`TlbCount`] has.
+pub const TLB_COUNTS: usize = 8;
+
+/// The names of [`TlbCount`]'s kinds, in their order, as the profile
+/// gives them.
+const TLB_NAMES: [&str; TLB_COUNTS] = [
+    "tlb_switches_kept",
+    "tlb_switches_dropped",
+    "tlb_switches_rollover",
+    "tlb_switches_untagged",
+    "tlb_space_flushes",
+    "tlb_global_flushes",
+    "tlb_pages_flushed",
+    "tlb_changes",
+];
+
+/// Counts `n` of `what` on this CPU.
+pub(crate) fn count_tlb(what: TlbCount, n: u64) {
+    percpu::current().tlb_counts[what as usize].fetch_add(n, Ordering::Relaxed);
+}
+
+/// Calls `each` with every kind of [`TlbCount`] and its count over all
+/// CPUs since the last call, and starts the counts over.
+pub fn take_tlb_counts(each: &mut dyn FnMut(&'static str, u64)) {
+    for (at, name) in TLB_NAMES.iter().enumerate() {
+        let total = (0..smp::count())
+            .filter_map(percpu::get)
+            .map(|cpu| cpu.tlb_counts[at].swap(0, Ordering::Relaxed))
+            .sum();
+        each(name, total);
+    }
 }
 
 /// Flushes `range` from the TLB of every online CPU, waiting until all

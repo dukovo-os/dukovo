@@ -283,7 +283,20 @@ _/processes/profile_
 	architecture cannot sample), *user*, the samples of user code
 	listed, *others*, those of other users' processes, *kernel*, those
 	of the kernel or an idle CPU, and *lost*, those a CPU had no room
-	for. Then *name* _index_ _process_ and *file* _index_ _path_ lines,
+	for. Then a line *counter* _name_ _count_ for each event the
+	architecture counts, over all CPUs since the open before: on x86,
+	what the processor's performance counters counted in user mode
+	while the profile was taken (*instructions*, *cycles*, and page
+	walks and cache misses such as *dtlb_load_walks* and *l2_misses*,
+	as the processor has them), and how often the kernel switched
+	address spaces keeping their TLB entries
+	(*tlb_switches_kept*) or dropping them (*tlb_switches_dropped*,
+	*tlb_switches_rollover*, *tlb_switches_untagged*), flushed
+	(*tlb_space_flushes*, *tlb_global_flushes*, *tlb_pages_flushed*),
+	or changed mappings in a way that needed a flush (*tlb_changes*).
+	Then *name* _index_ _process_ and *file* _index_ _path_ lines, a
+	line *changes* _name_ _count_ for each process whose address
+	spaces changed their mappings that way since their first sample,
 	and a line *sample* _count_ _name_ _file_ _offset_ for each place
 	sampled, the most sampled first: the process's name, the file
 	mapped to run there and the offset in it, in hexadecimal, or *-*

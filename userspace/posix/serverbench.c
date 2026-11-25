@@ -79,7 +79,25 @@
 //     BENCHPROF group=<name> raw process=<name> path=<path> offset=0x<hex>
 //         samples=<n>
 //
-// where the offset is into the file. Radix reads /processes/profile, which
+// where the offset is into the file. Right after the first line of a row
+// come its counts, summed over the passes,
+//
+//     BENCHPROF group=<name> counter name=<name> value=<n>
+//     BENCHPROF group=<name> changes process=<name> count=<n>
+//
+// A counter line is one count of what the machine did in user mode, in the
+// order they were first seen. On Radix these are the kernel's own counts
+// (such as `tlb_switches_dropped`) and the processor's counters of user
+// mode (such as `instructions`, `cycles` and `dtlb_load_walks`, the page
+// walks of the TLB); on Linux they are perf counting events of user mode of
+// the same names, which the processor's model decides, and the `nr_tlb_`
+// lines of /proc/vmstat as `linux_<name>`. A count that the processor had to
+// share among more events than it has counters is scaled up to the whole
+// time. The names are the same on both systems so that the rows can be
+// compared; one that a system lacks is not printed. A changes line is how
+// often the address spaces of a process changed their mappings in a way
+// that needed a TLB flush, for each process with any, the most first; only
+// Radix counts these. Radix reads /processes/profile, which
 // holds the samples taken since it was last opened; Linux, which has no
 // such file, opens a perf event for each online CPU. The perf events must
 // be opened as root, so this happens before the program becomes `bench`;
@@ -144,6 +162,10 @@
 #endif
 #endif
 #if HAVE_PERF
+#if defined(__x86_64__) || defined(__i386__)
+#define PERF_CPUID 1
+#include <cpuid.h>
+#endif
 #include <dirent.h>
 #include <linux/perf_event.h>
 #include <sys/ioctl.h>
@@ -589,11 +611,14 @@ static struct tally_entry *tally_sorted(const struct tally *tally) {
 
 // What the passes of the row being measured have sampled so far: `samples`
 // counts (process name, file path, offset in the file) as numbers of
-// strings and the offset.
+// strings and the offset; `counters` and `changes` count by the number of
+// a name alone.
 static struct {
 	int passes;
 	uint64_t user, others, kernel, lost, left_out;
 	struct tally samples;
+	// Counts by name, in the order first seen, and by process name.
+	struct tally counters, changes;
 } profile_row;
 
 static int profile_on, profile_raw, profile_radix;
@@ -703,6 +728,16 @@ static void radix_collect(char *text) {
 				remember_id(&file_ids, &file_count, index, id);
 			continue;
 		}
+		if(!strncmp(line, "counter ", 8)) {
+			const char *space = strchr(line + 8, ' ');
+			char name[64];
+			if(!space || (size_t)(space - (line + 8)) >= sizeof(name))
+				continue;
+			memcpy(name, line + 8, (size_t)(space - (line + 8)));
+			name[space - (line + 8)] = 0;
+			tally_add(&profile_row.counters, intern(name), 0, 0, strtoull(space + 1, NULL, 10));
+			continue;
+		}
 		if(!strncmp(line, "period_ns:", 10) && strtoull(line + 10, NULL, 10) > 0)
 			profile_period_ns = strtoull(line + 10, NULL, 10);
 		for(size_t i = 0; i < sizeof(header) / sizeof(header[0]); i++) {
@@ -712,6 +747,17 @@ static void radix_collect(char *text) {
 		}
 	}
 	for(char *line = text; line < text + length; line += strlen(line) + 1) {
+		if(!strncmp(line, "changes ", 8)) {
+			char *end;
+			unsigned long name = strtoul(line + 8, &end, 10);
+			if(end == line + 8)
+				continue;
+			char *at = end;
+			uint64_t count = strtoull(at, &end, 10);
+			if(end != at)
+				tally_add(&profile_row.changes, known_id(name_ids, name_count, name), 0, 0, count);
+			continue;
+		}
 		if(strncmp(line, "sample ", 7) != 0)
 			continue;
 		char *at = line + 7, *end;
@@ -763,6 +809,18 @@ struct perf_ring {
 };
 static struct perf_ring *perf_rings;
 static size_t perf_ring_count, perf_page_size;
+
+// A counting event on one CPU, and what it had counted, and for how long
+// it was enabled and running, when the pass began.
+struct perf_counter {
+	int fd;
+	size_t name;
+	uint64_t before[3];
+};
+static struct perf_counter *perf_counters;
+static size_t perf_counter_count;
+// The `nr_tlb_` lines of /proc/vmstat when the pass began.
+static struct tally perf_vmstat_before;
 static size_t vdso_id;
 
 // An executable mapping of a process, and what the pass knows of a
@@ -1020,10 +1078,75 @@ static void perf_collect(void) {
 	perf_sweep(1);
 }
 
+// Reads what a counting event has counted, for how long it was enabled and
+// for how long it was running; false if the read fails.
+static int perf_read_counter(int fd, uint64_t values[3]) {
+	return read(fd, values, 3 * sizeof(values[0])) == (ssize_t)(3 * sizeof(values[0]));
+}
+
+// Adds each `nr_tlb_` line of Linux's /proc/vmstat to `into`, by the number
+// of its name; nothing if the file or such lines are absent.
+static void perf_read_vmstat(struct tally *into) {
+	FILE *file = fopen("/proc/vmstat", "r");
+	if(!file)
+		return;
+	char line[256];
+	while(fgets(line, sizeof(line), file)) {
+		char *space = strchr(line, ' ');
+		if(strncmp(line, "nr_tlb_", 7) != 0 || !space)
+			continue;
+		*space = 0;
+		tally_add(into, intern(format("linux_%s", line)), 0, 0, strtoull(space + 1, NULL, 10));
+	}
+	fclose(file);
+}
+
+// Takes what the counters count now as what a pass starts from.
+static void perf_counters_begin(void) {
+	for(size_t i = 0; i < perf_counter_count; i++) {
+		if(!perf_read_counter(perf_counters[i].fd, perf_counters[i].before))
+			memset(perf_counters[i].before, 0, sizeof(perf_counters[i].before));
+	}
+	tally_clear(&perf_vmstat_before);
+	perf_read_vmstat(&perf_vmstat_before);
+}
+
+// Adds what the counters counted since the pass began to the row. A counter
+// that the kernel shared with other events was running for only part of the
+// time it was enabled, so its count is scaled up to the whole time.
+static void perf_counters_end(void) {
+	for(size_t i = 0; i < perf_counter_count; i++) {
+		uint64_t now[3];
+		const uint64_t *before = perf_counters[i].before;
+		if(!perf_read_counter(perf_counters[i].fd, now))
+			continue;
+		uint64_t value = now[0] - before[0], enabled = now[1] - before[1], running = now[2] - before[2];
+		if(running == 0)
+			value = 0;
+		else if(running < enabled)
+			value = (uint64_t)((double)value * ((double)enabled / (double)running));
+		tally_add(&profile_row.counters, perf_counters[i].name, 0, 0, value);
+	}
+	struct tally after;
+	memset(&after, 0, sizeof(after));
+	perf_read_vmstat(&after);
+	for(size_t i = 0; i < after.count; i++) {
+		uint64_t before = 0;
+		for(size_t j = 0; j < perf_vmstat_before.count; j++) {
+			if(perf_vmstat_before.entries[j].a == after.entries[i].a)
+				before = perf_vmstat_before.entries[j].count;
+		}
+		tally_add(&profile_row.counters, after.entries[i].a, 0, 0, after.entries[i].count - before);
+	}
+	free(after.entries);
+	free(after.slots);
+}
+
 // Starts a pass: notes the processes, drops what the rings hold and starts
 // the sampling.
 static void perf_begin(void) {
 	forget_procs();
+	perf_counters_begin();
 	snapshot_procs();
 	for(size_t i = 0; i < perf_ring_count; i++) {
 		struct perf_event_mmap_page *page = perf_rings[i].page;
@@ -1033,6 +1156,7 @@ static void perf_begin(void) {
 }
 
 static void perf_stop(void) {
+	perf_counters_end();
 	for(size_t i = 0; i < perf_ring_count; i++)
 		ioctl(perf_rings[i].fd, PERF_EVENT_IOC_DISABLE, 0);
 	profile_pending = 1;
@@ -1078,6 +1202,111 @@ static int *online_cpus(size_t *count) {
 	return cpus;
 }
 
+// A hardware event to count: its name, as it is printed, and what
+// perf_event_open is given for it.
+struct perf_event_choice {
+	const char *name;
+	uint32_t type;
+	uint64_t config;
+};
+
+#ifdef PERF_CPUID
+#define PERF_MAX_EVENTS 10
+
+// The events that this processor can count, up to PERF_MAX_EVENTS of them,
+// as the processor's maker and model make them known; none for a processor
+// not known. Returns how many.
+static size_t perf_choose_events(struct perf_event_choice *events) {
+	unsigned eax, ebx, ecx, edx;
+	if(!__get_cpuid(0, &eax, &ebx, &ecx, &edx))
+		return 0;
+	char vendor[13];
+	memcpy(vendor, &ebx, 4);
+	memcpy(vendor + 4, &edx, 4);
+	memcpy(vendor + 8, &ecx, 4);
+	vendor[12] = 0;
+	unsigned highest = eax;
+	if(!__get_cpuid(1, &eax, &ebx, &ecx, &edx))
+		return 0;
+	unsigned family = (eax >> 8) & 0xf, model = (eax >> 4) & 0xf;
+	if(family == 0xf)
+		family += (eax >> 20) & 0xff;
+	if(((eax >> 8) & 0xf) == 6 || ((eax >> 8) & 0xf) == 0xf)
+		model += ((eax >> 16) & 0xf) << 4;
+	size_t count = 0;
+	if(!strcmp(vendor, "GenuineIntel")) {
+		if(highest < 0xa)
+			return 0;
+		__cpuid_count(0xa, 0, eax, ebx, ecx, edx);
+		if((eax & 0xff) < 2)
+			return 0;
+		unsigned general = (eax >> 8) & 0xff;
+		events[count++] = (struct perf_event_choice){"instructions", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS};
+		events[count++] = (struct perf_event_choice){"cycles", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES};
+		if(family != 6 || (model != 0x4E && model != 0x5E && model != 0x8E && model != 0x9E && model != 0xA5 && model != 0xA6))
+			return count;
+		static const struct {
+			const char *name;
+			unsigned event, umask;
+		} raw[] = {{"dtlb_load_walks", 0x08, 0x0E},      {"dtlb_load_walk_cycles", 0x08, 0x10}, {"itlb_walks", 0x85, 0x0E},
+		           {"l2_misses", 0x24, 0x3F},            {"dtlb_store_walks", 0x49, 0x0E},      {"itlb_walk_cycles", 0x85, 0x10},
+		           {"dtlb_store_walk_cycles", 0x49, 0x10}, {"llc_misses", 0x2E, 0x41}};
+		for(size_t i = 0; i < sizeof(raw) / sizeof(raw[0]) && i < general && i < 8; i++)
+			events[count++] = (struct perf_event_choice){raw[i].name, PERF_TYPE_RAW, raw[i].event | ((uint64_t)raw[i].umask << 8)};
+	} else if(!strcmp(vendor, "AuthenticAMD") || !strcmp(vendor, "HygonGenuine")) {
+		if(family < 0x17 || family > 0x1A)
+			return 0;
+		unsigned extended = __get_cpuid(0x80000001, &eax, &ebx, &ecx, &edx) ? (ecx >> 23) & 1 : 0;
+		static const struct {
+			const char *name;
+			unsigned event, umask;
+		} raw[] = {{"instructions", 0xC0, 0x00}, {"cycles", 0x76, 0x00}, {"dtlb_walks", 0x45, 0xF0},
+		           {"itlb_walks", 0x85, 0x0F},   {"l2_misses", 0x64, 0x09}};
+		for(size_t i = 0; i < sizeof(raw) / sizeof(raw[0]) && i < (extended ? 6u : 4u); i++)
+			events[count++] = (struct perf_event_choice){
+				raw[i].name, PERF_TYPE_RAW,
+				(raw[i].event & 0xff) | ((uint64_t)raw[i].umask << 8) | ((uint64_t)(raw[i].event >> 8) << 32)};
+	}
+	return count;
+}
+#endif
+
+// Opens the counting events of this processor on each of `cpus`, for all
+// processes, counting only user mode. An event that a CPU refuses is left
+// out for that CPU, and one that none accepts is never printed; counting
+// is a help to the profile, not part of it.
+static void perf_open_counters(const int *cpus, size_t cpu_count) {
+#ifdef PERF_CPUID
+	struct perf_event_choice events[PERF_MAX_EVENTS];
+	size_t event_count = perf_choose_events(events);
+	for(size_t e = 0; e < event_count; e++) {
+		for(size_t i = 0; i < cpu_count; i++) {
+			struct perf_event_attr attr;
+			memset(&attr, 0, sizeof(attr));
+			attr.type = events[e].type;
+			attr.size = sizeof(attr);
+			attr.config = events[e].config;
+			attr.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
+			attr.exclude_kernel = 1;
+			attr.exclude_hv = 1;
+			int fd = (int)syscall(SYS_perf_event_open, &attr, -1, cpus[i], -1, PERF_FLAG_FD_CLOEXEC);
+			if(fd < 0)
+				continue;
+			struct perf_counter *grown = realloc(perf_counters, (perf_counter_count + 1) * sizeof(perf_counters[0]));
+			if(!grown) {
+				close(fd);
+				continue;
+			}
+			perf_counters = grown;
+			perf_counters[perf_counter_count++] = (struct perf_counter){fd, intern(events[e].name), {0, 0, 0}};
+		}
+	}
+#else
+	(void)cpus;
+	(void)cpu_count;
+#endif
+}
+
 // Opens a software clock event on each online CPU for all processes, with
 // a ring each, stopped until a pass begins. Null if all went well, else why
 // not; what was opened is closed. perf_event_paranoid and the limit on
@@ -1120,6 +1349,8 @@ static char *perf_open_all(void) {
 			fail("memory", "out of memory");
 		perf_rings[perf_ring_count++] = (struct perf_ring){fd, page};
 	}
+	if(!why)
+		perf_open_counters(cpus, count);
 	free(cpus);
 	if(why) {
 		for(size_t i = 0; i < perf_ring_count; i++) {
@@ -1380,7 +1611,19 @@ static void profile_print(const char *row) {
 	       (unsigned long long)profile_period_ns, profile_row.passes, (unsigned long long)profile_row.user,
 	       (unsigned long long)profile_row.others, (unsigned long long)profile_row.kernel, (unsigned long long)profile_row.lost,
 	       (unsigned long long)profile_row.left_out);
-	struct tally_entry *sorted = tally_sorted(&objects);
+	for(size_t i = 0; i < profile_row.counters.count; i++) {
+		printf("BENCHPROF group=%s counter name=", row);
+		print_word(strings[profile_row.counters.entries[i].a]);
+		printf(" value=%llu\n", (unsigned long long)profile_row.counters.entries[i].count);
+	}
+	struct tally_entry *sorted = tally_sorted(&profile_row.changes);
+	for(size_t i = 0; i < profile_row.changes.count && sorted[i].count > 0; i++) {
+		printf("BENCHPROF group=%s changes process=", row);
+		print_word(strings[sorted[i].a]);
+		printf(" count=%llu\n", (unsigned long long)sorted[i].count);
+	}
+	free(sorted);
+	sorted = tally_sorted(&objects);
 	for(size_t i = 0; i < objects.count; i++) {
 		printf("BENCHPROF group=%s object process=", row);
 		print_word(strings[sorted[i].a]);
@@ -1417,6 +1660,8 @@ static void profile_print(const char *row) {
 	free(symbols.entries);
 	free(symbols.slots);
 	tally_clear(&profile_row.samples);
+	tally_clear(&profile_row.counters);
+	tally_clear(&profile_row.changes);
 	profile_row.passes = 0;
 	profile_row.user = profile_row.others = profile_row.kernel = profile_row.lost = profile_row.left_out = 0;
 }

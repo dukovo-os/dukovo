@@ -702,6 +702,12 @@ impl SpaceObject {
         });
     }
 
+    /// How many times the space's mappings changed in a way that needed
+    /// a TLB flush, since it was made (`/processes/profile`).
+    pub fn tlb_changes(&self) -> u64 {
+        Arch::space_changes(&self.arch)
+    }
+
     /// The parts of files mapped to run, lowest first, for a crash record
     /// (ADR 0530): calls `each` with each [`RunningFile`]. The regions stay
     /// locked meanwhile: `each` only copies.

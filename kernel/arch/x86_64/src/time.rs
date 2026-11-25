@@ -34,8 +34,9 @@
 //! Late answers keep it ringing; going idle stops it (ADR 0109).
 //!
 //! While a profile is taken ([`sample_every`]), the timer also fires every
-//! sample period, and hands the kernel's sampler the user code it
-//! interrupted (`/processes/profile`).
+//! sample period, hands the kernel's sampler the user code it
+//! interrupted (`/processes/profile`), and adds up what the performance
+//! counters counted (`pmu`).
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
@@ -571,11 +572,13 @@ pub fn on_tick(user_address: u64) {
             {
                 sampler(user_address);
             }
+            crate::pmu::tick(true);
             cpu.next_sample_ns.store(now + period, Ordering::Relaxed);
         }
         at = at.min(cpu.next_sample_ns.load(Ordering::Relaxed));
     } else if cpu.next_sample_ns.load(Ordering::Relaxed) != 0 {
         cpu.next_sample_ns.store(0, Ordering::Relaxed);
+        crate::pmu::tick(false);
     }
     program(at);
     apic::end_of_interrupt();
