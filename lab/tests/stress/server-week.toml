@@ -41,8 +41,12 @@ host_needs = ["python3", "scp", "ssh", "curl"]
 host = "sh {here}/server-week.sh prepare shop-week.example.org week-admin lab-week-password-1"
 expect = "prepared"
 [[step]]
-host = "sh {here}/../services/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
-expect = "copied: org.nginx.nginx"
+host = "sh {here}/../services/lab-catalog.sh {machine} {machine-port:22}"
+expect = "copied: the test catalog"
+[[step]]
+run = "sh /users/lab/lab-catalog-add.sh"
+root = true
+expect = "added catalog labtest, which lists"
 [[step]]
 host = "sh {here}/../services/copy-bundle.sh net.php.php {machine} {machine-port:22}"
 expect = "copied: net.php.php"
@@ -194,7 +198,7 @@ run = "sh /users/lab/server-week-machine.sh teardown shop-week.example.org week-
 root = true
 expect = "restored"
 [[step]]
-run = "sh -c 'rm -f /users/lab/server-week-machine.sh /users/lab/server-week.php /users/lab/org.nginx.nginx.dkv /users/lab/net.php.php.dkv /users/lab/org.postgresql.postgresql.dkv /users/lab/io.valkey.valkey.dkv /system/settings/sysupdate/health.toml /system/settings/sysupdate/updates.toml; echo cleaned'"
+run = "sh -c 'rm -f /users/lab/server-week-machine.sh /users/lab/server-week.php /users/lab/net.php.php.dkv /users/lab/org.postgresql.postgresql.dkv /users/lab/io.valkey.valkey.dkv /system/settings/sysupdate/health.toml /system/settings/sysupdate/updates.toml; echo cleaned'"
 root = true
 expect = "cleaned"
 [[step]]

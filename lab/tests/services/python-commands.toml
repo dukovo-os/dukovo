@@ -9,14 +9,18 @@
 # with the alias's name.
 about = "Python's commands from the catalog run: python3 and python, and pip3 and pip for that same Python (ADR 0495)"
 time = "5m"
-host_needs = ["scp"]
+host_needs = ["scp", "ssh"]
 
 [[step]]
-host = "sh {here}/copy-bundle.sh org.python.python {machine} {machine-port:22}"
-expect = "copied: org.python.python"
+host = "sh {here}/lab-catalog.sh {machine} {machine-port:22}"
+expect = "copied: the test catalog"
+[[step]]
+run = "sh /users/lab/lab-catalog-add.sh"
+root = true
+expect = "added catalog labtest, which lists"
 # From nothing: a run before may have left it installed.
 [[step]]
-run = "sh -c 'bundle remove --for-everyone --purge org.python.python > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.python.python.dkv | tail -1'"
+run = "sh -c 'bundle remove --for-everyone --purge org.python.python > /dev/null 2>&1; bundle install --for-everyone --yes org.python.python --from labtest | tail -1'"
 root = true
 expect = "installed org.python.python"
 # A sum the interpreter works out, so that the typed line never matches.

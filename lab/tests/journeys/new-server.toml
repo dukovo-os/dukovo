@@ -51,12 +51,16 @@ expect = "Made journey-owner"
 host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
 expect = '{"ok":true}'
 
-# nginx for the website, from the lab's packed bundle.
+# nginx for the website, from the lab's catalog (services/lab-catalog.sh).
 [[step]]
-host = "sh {here}/../services/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
-expect = "copied: org.nginx.nginx"
+host = "sh {here}/../services/lab-catalog.sh {machine} {machine-port:22}"
+expect = "copied: the test catalog"
 [[step]]
-run = "sh -c 'bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1; service nginx enable'"
+run = "sh /users/lab/lab-catalog-add.sh"
+root = true
+expect = "added catalog labtest, which lists"
+[[step]]
+run = "sh -c 'bundle install --for-everyone --yes org.nginx.nginx --from labtest | tail -1; service nginx enable'"
 root = true
 expect = "installed org.nginx.nginx"
 [[step]]
@@ -351,6 +355,6 @@ expect_not = "intruder"
 
 # The machine as it was.
 [[step]]
-run = '''sh -c 'website remove journey.acme-lab.example --files > /dev/null 2>&1; cert remove journey.acme-lab.example > /dev/null 2>&1; service nginx disable > /dev/null 2>&1; bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; rm -f /system/settings/alerts.toml; service alertd reload; sed -i "/^allow tcp 808/d" /system/settings/firewall; firewall load; cp /users/lab/journey-resolved.orig /system/settings/resolved && service resolved reload; ln -sf /system/resources/certificates/ca-certificates.crt /system/settings/ssl/certs/ca-certificates.crt; rm -f /users/lab/journey-* /users/lab/ca.pem /users/lab/issuer.pem /users/lab/mail-relay.sh /users/lab/org.nginx.nginx.dkv; rm -rf /shared/www/sites; for name in journey-owner journey-admin journey-reader; do user remove --delete-home --yes $name || exit 1; done; echo restored' '''
+run = '''sh -c 'website remove journey.acme-lab.example --files > /dev/null 2>&1; cert remove journey.acme-lab.example > /dev/null 2>&1; service nginx disable > /dev/null 2>&1; bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; rm -f /system/settings/alerts.toml; service alertd reload; sed -i "/^allow tcp 808/d" /system/settings/firewall; firewall load; cp /users/lab/journey-resolved.orig /system/settings/resolved && service resolved reload; ln -sf /system/resources/certificates/ca-certificates.crt /system/settings/ssl/certs/ca-certificates.crt; rm -f /users/lab/journey-* /users/lab/ca.pem /users/lab/issuer.pem /users/lab/mail-relay.sh; rm -rf /shared/www/sites; for name in journey-owner journey-admin journey-reader; do user remove --delete-home --yes $name || exit 1; done; echo restored' '''
 root = true
 expect = ["journey-reader is removed", "restored"]

@@ -25,7 +25,7 @@
 about = "An update and a bad one from the web console: the page stays open while the update is staged and the machine restarts into it, the page asks to sign in again by itself and the console and services are as before, the update is gone back from and everything is as at the start, then a start that fails is searched from the page, through the machine's own restarts, to the change that broke it"
 time = "30m"
 fresh = true
-host_needs = ["curl", "python3", "scp"]
+host_needs = ["curl", "python3", "scp", "ssh"]
 
 # The update server of the lab PC, which the machine reads as a canary; an
 # update proves itself after 10 seconds here.
@@ -121,8 +121,8 @@ expect = "copied: bisect"
 host = "sh {here}/../startup/copy-bundle.sh io.valkey.valkey {machine} {machine-port:22}"
 expect = "copied: io.valkey.valkey"
 [[step]]
-host = "sh {here}/../startup/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
-expect = "copied: org.nginx.nginx"
+host = "sh {here}/../services/lab-catalog.sh {machine} {machine-port:22}"
+expect = "copied: the test catalog"
 [[step]]
 run = '''printf 'essential = ["logd", "authd", "consoled", "netd", "sshd", "valkey"]\nstable = 10\n' > /users/lab/health.toml'''
 [[step]]
@@ -158,10 +158,15 @@ serial = "spark: started slot a, @system.a"
 serial = "is seen through"
 [[step]]
 wait = "ready"
-# The apps, for everyone and on. Valkey's first start copies its settings into
-# its data folder; one it does not know there ends it.
+# The apps, for everyone and on: Valkey from its file and nginx from the lab's
+# catalog, added first. Valkey's first start copies its settings into its data
+# folder; one it does not know there ends it.
 [[step]]
-run = "sh -c 'bundle install --for-everyone --yes /users/lab/io.valkey.valkey.dkv | tail -1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+run = "sh /users/lab/lab-catalog-add.sh"
+root = true
+expect = "added catalog labtest, which lists"
+[[step]]
+run = "sh -c 'bundle install --for-everyone --yes /users/lab/io.valkey.valkey.dkv | tail -1; bundle install --for-everyone --yes org.nginx.nginx --from labtest | tail -1'"
 root = true
 expect = ["installed io.valkey.valkey", "installed org.nginx.nginx"]
 [[step]]

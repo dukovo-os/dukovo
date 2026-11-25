@@ -8,7 +8,8 @@
 # account's find it where ansible_python_interpreter says.
 #
 # dukovo_python_from is what `bundle install` is given: the bundle's ID, which
-# the catalog has, or the path of its .dkv file.
+# the catalog has, with `--from` and a catalog's name if need be, or the path
+# of its .dkv file.
 
 - name: Python comes to the machine
   hosts: dukovo
