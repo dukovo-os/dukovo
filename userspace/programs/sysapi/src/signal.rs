@@ -11,10 +11,19 @@
 //! so it may only do what is async-signal-safe. The one handler here
 //! stores to an atomic and writes a byte to a pipe, and the program reads
 //! the atomic in its own time: no program writes a handler of its own.
+//! For a program that cannot get back to look, as a shell whose line
+//! editor waits on a terminal that hung up, the handler can instead carry
+//! out a [`Farewell`] made ready beforehand, and end the process.
+//!
+//! What each signal did when the program started is read before the
+//! standard library's start-up changes it ([`ignored_at_start`]): Rust's
+//! runtime ignores SIGPIPE before `main`, and a shell must know whether
+//! its parent did.
 
+use std::ffi::CString;
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 use libc::c_int;
 
@@ -97,6 +106,17 @@ static CAUGHT: [AtomicPtr<Caught>; SIGNALS] =
 
 /// The handler [`catch`] installs.
 extern "C" fn record(signal: c_int) {
+    if signal == FAREWELL_SIGNAL.load(Ordering::SeqCst) {
+        HANDLERS_IN_FAREWELL.fetch_add(1, Ordering::SeqCst);
+        let plan = FAREWELL.load(Ordering::SeqCst);
+        if !plan.is_null() {
+            // SAFETY: a plan in FAREWELL is from `Box::into_raw`, and is not
+            // freed while a handler counted in HANDLERS_IN_FAREWELL may read
+            // it (`retire`).
+            farewell(unsafe { &*plan });
+        }
+        HANDLERS_IN_FAREWELL.fetch_sub(1, Ordering::SeqCst);
+    }
     let Some(slot) = usize::try_from(signal).ok().and_then(|index| CAUGHT.get(index)) else {
         return;
     };
@@ -141,6 +161,171 @@ pub fn catch(signal: c_int, caught: &'static Caught, flags: c_int) -> io::Result
     };
     slot.store(std::ptr::from_ref(caught).cast_mut(), Ordering::SeqCst);
     set_action(signal, record as extern "C" fn(c_int) as libc::sighandler_t, flags)
+}
+
+/// What a [`Farewell`] does, made ready for the handler: the path as a C
+/// string, so that the handler allocates nothing.
+struct Plan {
+    signals: Vec<(crate::Pid, c_int)>,
+    append: Option<(CString, Vec<u8>)>,
+    status: i32,
+}
+
+/// What the handler does at once when a signal comes, in place of
+/// recording it, for a program that could not get back to look: each
+/// signal sent, the bytes appended to the file, and the process ended
+/// with the status. A shell readies one before its prompt, for SIGHUP,
+/// with its jobs and its history (ADR 0267).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Farewell {
+    /// Signals to send first, each to a process, or to a process group as
+    /// a negative number, as kill(2) takes them.
+    pub signals: Vec<(crate::Pid, c_int)>,
+    /// A file to append to, made with mode 0600 if it is not there, and
+    /// the bytes.
+    pub append: Option<(std::path::PathBuf, Vec<u8>)>,
+    /// The exit status.
+    pub status: i32,
+}
+
+/// The signal the farewell in FAREWELL is for, or 0.
+static FAREWELL_SIGNAL: AtomicI32 = AtomicI32::new(0);
+/// The farewell made ready, from `Box::into_raw`, or null.
+static FAREWELL: AtomicPtr<Plan> = AtomicPtr::new(std::ptr::null_mut());
+/// How many handlers may be reading the farewell.
+static HANDLERS_IN_FAREWELL: AtomicUsize = AtomicUsize::new(0);
+
+/// Carries out `plan`, from the handler, with async-signal-safe calls
+/// only, and ends the process.
+fn farewell(plan: &Plan) -> ! {
+    for &(target, signal) in &plan.signals {
+        // SAFETY: kill takes integers and is async-signal-safe.
+        unsafe { libc::kill(target, signal) };
+    }
+    if let Some((path, bytes)) = &plan.append {
+        // SAFETY: open, write and close are async-signal-safe; the path is
+        // a C string and the bytes are read for their length, both the
+        // plan's, which lives while the handler reads it.
+        unsafe {
+            let fd = libc::open(
+                path.as_ptr(),
+                libc::O_WRONLY | libc::O_APPEND | libc::O_CREAT | libc::O_CLOEXEC,
+                0o600 as libc::c_uint,
+            );
+            if fd >= 0 {
+                libc::write(fd, bytes.as_ptr().cast(), bytes.len());
+                libc::close(fd);
+            }
+        }
+    }
+    // SAFETY: _exit is async-signal-safe, and ends the process.
+    unsafe { libc::_exit(plan.status) }
+}
+
+/// Frees `old`, a plan taken out of FAREWELL, once no handler reads it.
+fn retire(old: *mut Plan) {
+    if old.is_null() {
+        return;
+    }
+    // A handler on another thread that counted itself before the plan was
+    // taken out may still be reading it; one that counts itself after
+    // finds the new one. A handler on this thread ran to its end already.
+    while HANDLERS_IN_FAREWELL.load(Ordering::SeqCst) != 0 {
+        std::hint::spin_loop();
+    }
+    // SAFETY: from `Box::into_raw`, out of FAREWELL, and no handler reads
+    // it any more.
+    drop(unsafe { Box::from_raw(old) });
+}
+
+/// Makes `farewell` ready for `signal`, which must be caught ([`catch`]):
+/// from now on the handler carries it out when the signal comes, until
+/// [`disarm_farewell`]. One farewell is ready at a time; this replaces an
+/// earlier one.
+///
+/// # Errors
+///
+/// EINVAL for a number that is no signal; `ErrorKind::InvalidInput` for
+/// a path with a NUL byte.
+pub fn arm_farewell(signal: c_int, farewell: Farewell) -> io::Result<()> {
+    if usize::try_from(signal).map_or(true, |index| index == 0 || index >= SIGNALS) {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    let append = match farewell.append {
+        Some((path, bytes)) => Some((crate::c_path(&path)?, bytes)),
+        None => None,
+    };
+    let plan = Box::new(Plan { signals: farewell.signals, append, status: farewell.status });
+    retire(FAREWELL.swap(std::ptr::null_mut(), Ordering::SeqCst));
+    FAREWELL_SIGNAL.store(signal, Ordering::SeqCst);
+    FAREWELL.store(Box::into_raw(plan), Ordering::SeqCst);
+    Ok(())
+}
+
+/// Puts the farewell away: the handler records its signal again.
+pub fn disarm_farewell() {
+    retire(FAREWELL.swap(std::ptr::null_mut(), Ordering::SeqCst));
+}
+
+/// What a signal does now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Disposition {
+    /// Its default action (SIG_DFL).
+    Default,
+    /// Nothing (SIG_IGN).
+    Ignored,
+    /// [`catch`]'s handler records it.
+    Caught,
+    /// A handler of another part of the program, as a terminal library
+    /// sets for SIGWINCH.
+    Other,
+}
+
+/// What `signal` does now.
+///
+/// # Errors
+///
+/// EINVAL for a number that is no signal.
+pub fn disposition(signal: c_int) -> io::Result<Disposition> {
+    let handler = save(signal)?.action.sa_sigaction;
+    Ok(match handler {
+        libc::SIG_DFL => Disposition::Default,
+        libc::SIG_IGN => Disposition::Ignored,
+        h if h == record as extern "C" fn(c_int) as libc::sighandler_t => Disposition::Caught,
+        _ => Disposition::Other,
+    })
+}
+
+/// The signals that were ignored when the program started, a bit each.
+static IGNORED_AT_START: AtomicU64 = AtomicU64::new(0);
+
+/// Reads which signals are ignored, from `.init_array`, which the C
+/// library runs before the standard library's start-up and `main`.
+extern "C" fn read_ignored_at_start() {
+    let mut ignored = 0u64;
+    for signal in 1..SIGNALS as c_int {
+        if save(signal).is_ok_and(|saved| saved.action.sa_sigaction == libc::SIG_IGN) {
+            ignored |= 1 << (signal - 1);
+        }
+    }
+    IGNORED_AT_START.store(ignored, Ordering::Relaxed);
+}
+
+#[used]
+#[unsafe(link_section = ".init_array")]
+static READ_IGNORED_AT_START: extern "C" fn() = read_ignored_at_start;
+
+/// Whether `signal` was ignored when the program started, before Rust's
+/// runtime ignored SIGPIPE: a non-interactive shell leaves such a signal
+/// ignored (XCU 2.11), and gives SIGPIPE back its default otherwise, so
+/// that a writer to a closed pipe ends.
+#[must_use]
+pub fn ignored_at_start(signal: c_int) -> bool {
+    // The read above is in this crate's object only if something refers to
+    // it, which this does.
+    std::hint::black_box(&READ_IGNORED_AT_START);
+    (1..SIGNALS as c_int).contains(&signal)
+        && IGNORED_AT_START.load(Ordering::Relaxed) & (1 << (signal - 1)) != 0
 }
 
 /// Has `signal` do nothing when it comes, as SIG_IGN; an ignored signal
@@ -261,6 +446,23 @@ pub fn unblock(signals: &[c_int]) -> io::Result<()> {
     let set = set_of(signals)?;
     // SAFETY: pthread_sigmask reads the set and writes no old mask.
     match unsafe { libc::pthread_sigmask(libc::SIG_UNBLOCK, &raw const set, std::ptr::null_mut()) }
+    {
+        0 => Ok(()),
+        errno => Err(io::Error::from_raw_os_error(errno)),
+    }
+}
+
+/// Unblocks every signal for the calling thread, as a shell's child does
+/// before it starts a program, which should not find any blocked that the
+/// shell blocked for itself.
+///
+/// # Errors
+///
+/// None in practice: the empty set is valid.
+pub fn unblock_all() -> io::Result<()> {
+    let set = set_of(&[])?;
+    // SAFETY: pthread_sigmask reads the set and writes no old mask.
+    match unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &raw const set, std::ptr::null_mut()) }
     {
         0 => Ok(()),
         errno => Err(io::Error::from_raw_os_error(errno)),

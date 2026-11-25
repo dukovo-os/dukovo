@@ -1799,12 +1799,11 @@ impl Shell {
         let (keep, other) = if output { (write, read) } else { (read, write) };
         sys::close(other);
         // The command gets the descriptor; the shell closes it afterwards.
-        // SAFETY: F_DUPFD only acts on the descriptor table.
-        let fd = unsafe { libc::fcntl(keep, libc::F_DUPFD, 63) };
+        let fd = sys::dup_kept(keep, 63);
         sys::close(keep);
-        if fd < 0 {
+        let Ok(fd) = fd else {
             return Err(self.fatal("cannot make a descriptor for process substitution", 1));
-        }
+        };
         self.procsub_fds.push(fd);
         let dir = if cfg!(target_os = "radix") { "/devices/fd" } else { "/dev/fd" };
         Ok(format!("{dir}/{fd}"))

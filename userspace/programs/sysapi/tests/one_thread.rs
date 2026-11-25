@@ -20,8 +20,9 @@ fn main() {
     any_child_is_waited_for_and_a_stopped_one_is_seen();
     a_new_session_takes_control_of_a_terminal();
     the_environment_changes_while_there_is_one_thread();
+    a_joined_thread_does_not_stop_a_fork();
     a_second_thread_stops_both();
-    println!("one_thread: 5 checks passed");
+    println!("one_thread: 6 checks passed");
 }
 
 fn a_child_of_a_fork_ends_with_its_own_status() {
@@ -60,6 +61,7 @@ fn a_new_session_takes_control_of_a_terminal() {
         Fork::Child => {
             let session = process::new_session().unwrap();
             terminal::take_control(&pty.terminal).unwrap();
+            terminal::set_foreground_group(&pty.terminal, session).unwrap();
             let foreground = terminal::foreground_group(&pty.terminal).unwrap();
             process::exit_now(if foreground == session { 0 } else { 1 })
         }
@@ -72,6 +74,18 @@ fn the_environment_changes_while_there_is_one_thread() {
     assert_eq!(std::env::var("SYSAPI_ONE_THREAD").unwrap(), "set");
     process::remove_env(OsStr::new("SYSAPI_ONE_THREAD")).unwrap();
     assert!(std::env::var_os("SYSAPI_ONE_THREAD").is_none());
+}
+
+/// Linux lists a joined thread in /proc/self/task for some microseconds
+/// after the join returns, about once in a hundred joins.
+fn a_joined_thread_does_not_stop_a_fork() {
+    for _ in 0..2000 {
+        std::thread::spawn(|| {}).join().unwrap();
+        match process::fork().unwrap() {
+            Fork::Child => process::exit_now(0),
+            Fork::Parent(child) => assert_eq!(process::wait(child).unwrap().code(), Some(0)),
+        }
+    }
 }
 
 fn a_second_thread_stops_both() {

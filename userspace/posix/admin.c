@@ -395,9 +395,11 @@ static void tracing(void) {
 	STATUS(1, "/bin/rtrace", "-o", "/devices/null", "/bin/false");
 	STATUS(0, "/bin/rtrace", "-c", "-o", DIR "/count", "/bin/true");
 	CHECK(strstr(read_file(DIR "/count", text, sizeof(text)), "% time") != NULL);
+	// The shell's start and each child's are in this trace, which runs
+	// past `text`: grep reads it whole.
 	STATUS(0, "/bin/rtrace", "-f", "-o", DIR "/forks", "/bin/sh", "-c", "/bin/true; /bin/true");
-	read_file(DIR "/forks", text, sizeof(text));
-	CHECK(strstr(text, "--- child ") != NULL && strstr(text, "[pid ") != NULL);
+	STATUS(0, "/bin/grep", "-qF", "-e", "--- child ", DIR "/forks");
+	STATUS(0, "/bin/grep", "-qF", "-e", "[pid ", DIR "/forks");
 
 	// A process already running: it goes on while traced, and its end
 	// ends the trace. Only a descendant may be traced, as Linux's Yama has

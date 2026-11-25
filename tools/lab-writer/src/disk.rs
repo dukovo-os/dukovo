@@ -8,12 +8,12 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::Read;
-use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
+use sysapi::linux;
 
 use crate::plan::Plan;
 
@@ -29,14 +29,6 @@ const CHUNK: usize = 4 << 20;
 /// What reads past the page cache are aligned to: the largest logical
 /// block size of a disk.
 const ALIGN: usize = 4096;
-
-/// Linux's BLKZEROOUT: zero a byte range of a block device, given as a
-/// `[u64; 2]` of start and length, both multiples of 512.
-const BLKZEROOUT: libc::c_ulong = 0x127f;
-
-/// Linux's BLKFLSBUF: write a block device's dirty pages and drop its
-/// page cache.
-const BLKFLSBUF: libc::c_ulong = 0x1261;
 
 /// The disk found.
 #[derive(Debug, PartialEq, Eq)]
@@ -218,9 +210,9 @@ pub fn write(
     // fsync on a block device writes its dirty pages and flushes the
     // disk's own write cache.
     disk.sync_all().map_err(|err| format!("flushing {}: {err}", device.display()))?;
-    // SAFETY: BLKFLSBUF takes no argument; on a file that is not a block
-    // device (in tests) it fails, and the read back below still works.
-    unsafe { libc::ioctl(disk.as_raw_fd(), BLKFLSBUF, 0) };
+    // On a file that is not a block device (in tests) this fails, and the
+    // read back below still works.
+    let _ = linux::drop_block_cache(&disk);
     drop(disk);
     hash_back(device, plan.size)
 }
@@ -232,15 +224,9 @@ pub fn write(
 fn zero(disk: &File, offset: u64, length: u64) -> Result<(), String> {
     let end = offset + length;
     let (first, last) = (offset.next_multiple_of(512), end / 512 * 512);
-    if last > first {
-        let range = [first, last - first];
-        // SAFETY: BLKZEROOUT reads a [u64; 2], which lives through the
-        // call.
-        let result = unsafe { libc::ioctl(disk.as_raw_fd(), BLKZEROOUT, &raw const range) };
-        if result == 0 {
-            write_zeros(disk, offset, first - offset)?;
-            return write_zeros(disk, last, end - last);
-        }
+    if last > first && linux::zero_range(disk, first, last - first).is_ok() {
+        write_zeros(disk, offset, first - offset)?;
+        return write_zeros(disk, last, end - last);
     }
     write_zeros(disk, offset, length)
 }

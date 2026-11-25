@@ -3,7 +3,7 @@
 
 //! Terminals: their settings (termios), pseudo-terminals, the window
 //! size, input not yet read, which terminal and session a descriptor is,
-//! and the controlling terminal and its foreground.
+//! and the controlling terminal and its foreground process group.
 
 use std::ffi::OsStr;
 use std::io;
@@ -56,6 +56,19 @@ pub fn set_attributes(fd: impl AsFd, when: When, attributes: &Attributes) -> io:
     };
     // SAFETY: tcsetattr reads the termios it is given.
     checked(unsafe { libc::tcsetattr(fd.as_fd().as_raw_fd(), when, attributes) })?;
+    Ok(())
+}
+
+/// Waits until what was written to terminal `fd` has been sent, as
+/// tcdrain(3) does: a program that is about to stop the machine lets the
+/// serial port send its last lines first.
+///
+/// # Errors
+///
+/// ENOTTY when `fd` is not a terminal, EINTR when a signal came.
+pub fn drain(fd: impl AsFd) -> io::Result<()> {
+    // SAFETY: tcdrain takes a descriptor borrowed for the call.
+    checked(unsafe { libc::tcdrain(fd.as_fd().as_raw_fd()) })?;
     Ok(())
 }
 
@@ -231,6 +244,36 @@ pub fn foreground_group(fd: impl AsFd) -> io::Result<Pid> {
     checked(unsafe { libc::tcgetpgrp(fd.as_fd().as_raw_fd()) })
 }
 
+/// Gives the terminal on `fd` to process group `group`, as tcsetpgrp(3)
+/// does, with SIGTTOU blocked meanwhile: from a process group in the
+/// background the change raises SIGTTOU, which would stop the caller, so
+/// a shell taking the terminal back, or giving it to a job, goes ahead,
+/// as bash does. The signal mask is as it was afterwards.
+///
+/// # Errors
+///
+/// ENOTTY when `fd` is not the caller's controlling terminal, EPERM for a
+/// group in another session.
+pub fn set_foreground_group(fd: impl AsFd, group: Pid) -> io::Result<()> {
+    // SAFETY: all zeros is a valid sigset_t, which sigemptyset then sets,
+    // and sigaddset adds a valid signal to.
+    let mut ttou: libc::sigset_t = unsafe { std::mem::zeroed() };
+    // SAFETY: as above, for the mask pthread_sigmask writes.
+    let mut old: libc::sigset_t = unsafe { std::mem::zeroed() };
+    // SAFETY: the sets are this function's; pthread_sigmask reads the one
+    // and writes the other, and the old mask comes back below.
+    unsafe {
+        libc::sigemptyset(&raw mut ttou);
+        libc::sigaddset(&raw mut ttou, libc::SIGTTOU);
+        libc::pthread_sigmask(libc::SIG_BLOCK, &raw const ttou, &raw mut old);
+    }
+    // SAFETY: tcsetpgrp takes a descriptor held here and an integer.
+    let result = checked(unsafe { libc::tcsetpgrp(fd.as_fd().as_raw_fd(), group) });
+    // SAFETY: puts back the mask read above.
+    unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &raw const old, std::ptr::null_mut()) };
+    result.map(drop)
+}
+
 /// The session whose controlling terminal `fd` is, as tcgetsid(3) gives
 /// it.
 ///
@@ -245,9 +288,17 @@ pub fn session(fd: impl AsFd) -> io::Result<Pid> {
 #[cfg(test)]
 mod tests {
     use super::{
-        When, WindowSize, attributes, drop_input, foreground_group, make_raw, open_pty, path,
-        set_attributes, set_window_size, window_size,
+        When, WindowSize, attributes, drain, drop_input, foreground_group, make_raw, open_pty,
+        path, set_attributes, set_window_size, window_size,
     };
+
+    #[test]
+    fn a_terminal_drains_and_a_pipe_is_no_terminal() {
+        let pty = open_pty(None).unwrap();
+        drain(&pty.terminal).unwrap();
+        let (read, _write) = crate::fd::pipe().unwrap();
+        assert_eq!(drain(&read).unwrap_err().raw_os_error(), Some(libc::ENOTTY));
+    }
 
     #[test]
     fn a_pty_has_the_size_it_was_opened_with_and_takes_a_new_one() {

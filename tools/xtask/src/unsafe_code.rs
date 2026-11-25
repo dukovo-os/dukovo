@@ -42,12 +42,6 @@ const ALLOWED: &[&str] = &[
     "sysapi",
 ];
 
-/// The crates that still call the C library themselves. Each moves onto
-/// `sysapi` and leaves this list (ADR 0730), which only shrinks: the check
-/// fails when a crate here forbids `unsafe` in every target, so that the
-/// line goes with the last call.
-const NOT_YET: &[&str] = &["nukesh", "lab-writer", "linux-bench"];
-
 /// The line every target of a crate outside [`ALLOWED`] starts with.
 const FORBID: &str = "#![forbid(unsafe_code)]";
 
@@ -119,10 +113,10 @@ pub fn check(ctx: &Ctx) -> Result<()> {
 }
 
 /// What breaks the rule among `packages`, one line each: a target without
-/// the forbid line, a crate of [`NOT_YET`] that no longer needs its place,
-/// and a name in either list that no workspace has. `forbidding` says, for
-/// each target's file, whether it starts with the forbid line (a file it
-/// does not name has none); paths are shown from `root`.
+/// the forbid line, and a name in [`ALLOWED`] that no workspace has.
+/// `forbidding` says, for each target's file, whether it starts with the
+/// forbid line (a file it does not name has none); paths are shown from
+/// `root`.
 fn problems<'a>(
     root: &Path,
     packages: impl Iterator<Item = &'a Package>,
@@ -135,21 +129,10 @@ fn problems<'a>(
         if ALLOWED.contains(&package.name.as_str()) {
             continue;
         }
-        let missing: Vec<&Target> = package
+        let missing = package
             .targets
             .iter()
-            .filter(|target| !forbidding.get(&target.src_path).copied().unwrap_or(false))
-            .collect();
-        if NOT_YET.contains(&package.name.as_str()) {
-            if missing.is_empty() {
-                problems.push(format!(
-                    "{} forbids unsafe code in every target: take it off NOT_YET in \
-                     tools/xtask/src/unsafe_code.rs",
-                    package.name
-                ));
-            }
-            continue;
-        }
+            .filter(|target| !forbidding.get(&target.src_path).copied().unwrap_or(false));
         for target in missing {
             let path = target.src_path.strip_prefix(root).unwrap_or(&target.src_path);
             problems.push(format!(
@@ -160,12 +143,10 @@ fn problems<'a>(
             ));
         }
     }
-    for (list, listed) in [("ALLOWED", ALLOWED), ("NOT_YET", NOT_YET)] {
-        for name in listed.iter().filter(|name| !names.contains(name)) {
-            problems.push(format!(
-                "{list} in tools/xtask/src/unsafe_code.rs names {name}, which no workspace has"
-            ));
-        }
+    for name in ALLOWED.iter().filter(|name| !names.contains(name)) {
+        problems.push(format!(
+            "ALLOWED in tools/xtask/src/unsafe_code.rs names {name}, which no workspace has"
+        ));
     }
     problems
 }
@@ -202,7 +183,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
 
-    use super::{ALLOWED, NOT_YET, Package, Target, forbids, problems};
+    use super::{ALLOWED, Package, Target, forbids, problems};
 
     fn package(name: &str, sources: &[&str]) -> Package {
         Package {
@@ -218,9 +199,9 @@ mod tests {
         }
     }
 
-    /// Every crate the lists name, so that none is reported missing.
+    /// Every crate the list names, so that none is reported missing.
     fn listed() -> Vec<Package> {
-        ALLOWED.iter().chain(NOT_YET).map(|name| package(name, &["src/lib.rs"])).collect()
+        ALLOWED.iter().map(|name| package(name, &["src/lib.rs"])).collect()
     }
 
     fn check(packages: &[Package], forbidding: &[(&str, bool)]) -> Vec<String> {
@@ -252,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn a_crate_outside_the_lists_needs_the_line_in_every_target() {
+    fn a_crate_outside_the_list_needs_the_line_in_every_target() {
         let mut packages = listed();
         packages.push(package("tool", &["src/main.rs", "build.rs"]));
         let problems =
@@ -266,14 +247,6 @@ mod tests {
     #[test]
     fn an_allowed_crate_needs_no_line() {
         assert_eq!(check(&listed(), &[]), Vec::<String>::new());
-    }
-
-    #[test]
-    fn a_crate_that_no_longer_needs_its_place_on_not_yet_is_named() {
-        let name = NOT_YET[0];
-        let problems = check(&listed(), &[(&format!("/tree/{name}/src/lib.rs"), true)]);
-        assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(problems[0].starts_with(&format!("{name} forbids unsafe code in every target")));
     }
 
     #[test]

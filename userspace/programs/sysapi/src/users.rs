@@ -178,9 +178,42 @@ pub fn group_by_name(name: &str) -> io::Result<Option<Group>> {
     )
 }
 
+/// Every account's name, in the order the accounts' file lists them, as
+/// a shell completes `~name`: getpwent(3) walks the file, under a lock,
+/// since the walk is the C library's one shared place. A name that is not
+/// UTF-8 is left out.
+#[must_use]
+pub fn user_names() -> Vec<String> {
+    static WALK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _walking = WALK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut names = Vec::new();
+    // SAFETY: setpwent, getpwent and endpwent walk the accounts' file with
+    // the C library's own state, which the lock keeps to one walk at a
+    // time; each entry's name is a C string, copied before the next call.
+    unsafe {
+        libc::setpwent();
+        loop {
+            let entry = libc::getpwent();
+            if entry.is_null() {
+                break;
+            }
+            if let Ok(name) = text_of((*entry).pw_name) {
+                names.push(name);
+            }
+        }
+        libc::endpwent();
+    }
+    names
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{group_by_id, group_by_name, user_by_id, user_by_name};
+    use super::{group_by_id, group_by_name, user_by_id, user_by_name, user_names};
+
+    #[test]
+    fn every_account_is_walked() {
+        assert!(user_names().iter().any(|name| name == "root"));
+    }
 
     #[test]
     fn root_is_found_by_number_and_by_name() {

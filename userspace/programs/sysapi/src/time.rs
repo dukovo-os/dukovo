@@ -128,7 +128,8 @@ pub fn from_local(civil: &Civil) -> io::Result<(i64, Civil)> {
 }
 
 /// The time `seconds` after 1970 UTC written as strftime(3) writes it
-/// with `format`, in local time or in UTC; up to 255 bytes of it.
+/// with `format`, in local time or in UTC; empty for a text longer than
+/// 16 KiB.
 ///
 /// # Errors
 ///
@@ -141,14 +142,25 @@ pub fn format(seconds: i64, format: &str, utc: bool) -> io::Result<String> {
 }
 
 fn format_tm(tm: &libc::tm, format: &CString) -> String {
-    let mut buffer = [0u8; 256];
-    // SAFETY: strftime writes at most the buffer's length into it, from a
-    // C string format and a tm that gmtime_r or localtime_r filled, whose
-    // zone name is the C library's own.
-    let length =
-        unsafe { libc::strftime(buffer.as_mut_ptr().cast(), buffer.len(), format.as_ptr(), tm) };
-    String::from_utf8_lossy(&buffer[..length]).into_owned()
+    // strftime gives 0 both for a text that does not fit and for an empty
+    // one, so a larger buffer is tried up to a limit.
+    let mut buffer = vec![0u8; 256];
+    loop {
+        // SAFETY: strftime writes at most the buffer's length into it, from
+        // a C string format and a tm that gmtime_r or localtime_r filled,
+        // whose zone name is the C library's own.
+        let length = unsafe {
+            libc::strftime(buffer.as_mut_ptr().cast(), buffer.len(), format.as_ptr(), tm)
+        };
+        if length > 0 || buffer.len() >= FORMATTED_MAX {
+            return String::from_utf8_lossy(&buffer[..length]).into_owned();
+        }
+        buffer.resize(buffer.len() * 4, 0);
+    }
 }
+
+/// The longest time [`format`] writes: a longer one is written as empty.
+const FORMATTED_MAX: usize = 16 << 10;
 
 /// The monotonic clock (CLOCK_MONOTONIC) in nanoseconds: the time since
 /// the system started, which no change to the wall clock moves, as the

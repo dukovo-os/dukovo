@@ -13,9 +13,9 @@ use crate::checked;
 
 /// The device that reads as empty and takes every write.
 #[cfg(target_os = "radix")]
-const NULL_DEVICE: &str = "/devices/null";
+pub(crate) const NULL_DEVICE: &str = "/devices/null";
 #[cfg(not(target_os = "radix"))]
-const NULL_DEVICE: &str = "/dev/null";
+pub(crate) const NULL_DEVICE: &str = "/dev/null";
 
 /// A pipe: its read end, then its write end, each closed on exec.
 ///
@@ -52,6 +52,20 @@ pub fn set_nonblocking(fd: impl AsFd, nonblocking: bool) -> io::Result<()> {
     Ok(())
 }
 
+/// Whether `fd` is closed on exec, as F_GETFD reads it: the cheapest
+/// look at a descriptor there is.
+///
+/// # Errors
+///
+/// EBADF when `fd` is not open.
+#[inline]
+pub fn close_on_exec(fd: impl AsFd) -> io::Result<bool> {
+    // SAFETY: F_GETFD reads the descriptor flags of a descriptor the caller
+    // holds, and takes no further argument.
+    let flags = checked(unsafe { libc::fcntl(fd.as_fd().as_raw_fd(), libc::F_GETFD) })?;
+    Ok(flags & libc::FD_CLOEXEC != 0)
+}
+
 /// Reads from `fd` into `buffer`, as read(2) does: what is there, up to
 /// the buffer's length; 0 at the end.
 ///
@@ -78,6 +92,30 @@ pub fn write(fd: impl AsFd, bytes: &[u8]) -> io::Result<usize> {
     usize::try_from(n).map_err(|_| io::Error::last_os_error())
 }
 
+/// Moves `fd`'s offset, as lseek(2) does; the new offset from the start.
+/// The offset belongs to the open file, so every descriptor of it sees
+/// the change: a shell gives back what it read past a line this way, for
+/// the command that reads on.
+///
+/// # Errors
+///
+/// ESPIPE on a pipe, socket or terminal; EINVAL for an offset before the
+/// start.
+pub fn seek(fd: impl AsFd, to: io::SeekFrom) -> io::Result<u64> {
+    let (offset, whence) = match to {
+        io::SeekFrom::Start(offset) => (
+            i64::try_from(offset).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?,
+            libc::SEEK_SET,
+        ),
+        io::SeekFrom::Current(offset) => (offset, libc::SEEK_CUR),
+        io::SeekFrom::End(offset) => (offset, libc::SEEK_END),
+    };
+    // SAFETY: lseek takes integers, and moves the offset of a descriptor the
+    // caller holds.
+    let at = unsafe { libc::lseek(fd.as_fd().as_raw_fd(), offset, whence) };
+    u64::try_from(at).map_err(|_| io::Error::last_os_error())
+}
+
 /// Takes descriptor `fd`, which this program's parent left open across
 /// `exec` for it, as authd hands a worker its pipes as 3 and 4.
 ///
@@ -96,20 +134,29 @@ pub fn handed_down(fd: RawFd) -> io::Result<OwnedFd> {
     if fd <= 2 {
         return Err(io::Error::from_raw_os_error(libc::EINVAL));
     }
-    // SAFETY: F_GETFD reads the descriptor flags of the number `fd`, and
-    // takes no further argument; it fails with EBADF for a number with no
-    // descriptor, and changes nothing.
-    let flags = checked(unsafe { libc::fcntl(fd, libc::F_GETFD) })?;
-    if flags & libc::FD_CLOEXEC != 0 {
-        return Err(io::Error::from_raw_os_error(libc::EINVAL));
-    }
-    // SAFETY: as above, F_SETFD with an integer; it sets the flag that
-    // marks the descriptor as taken.
-    checked(unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) })?;
-    // SAFETY: the descriptor is open and was not opened by this process's
-    // Rust code, which opens every descriptor with close-on-exec, so no
-    // owner of it exists; the flag just set makes this the only claim.
-    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    // The table of numbers a shell keeps holds descriptors with
+    // close-on-exec clear too; its lock keeps it from taking `fd` at the
+    // same time.
+    crate::numbered::with_held(fd, |held| {
+        if held {
+            return Err(io::Error::from_raw_os_error(libc::EINVAL));
+        }
+        // SAFETY: F_GETFD reads the descriptor flags of the number `fd`, and
+        // takes no further argument; it fails with EBADF for a number with
+        // no descriptor, and changes nothing.
+        let flags = checked(unsafe { libc::fcntl(fd, libc::F_GETFD) })?;
+        if flags & libc::FD_CLOEXEC != 0 {
+            return Err(io::Error::from_raw_os_error(libc::EINVAL));
+        }
+        // SAFETY: as above, F_SETFD with an integer; it sets the flag that
+        // marks the descriptor as taken.
+        checked(unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) })?;
+        // SAFETY: the descriptor is open, the table does not hold it, and
+        // it was not opened by this process's Rust code, which opens every
+        // descriptor with close-on-exec, so no owner of it exists; the flag
+        // just set makes this the only claim.
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    })
 }
 
 /// One of the three standard descriptors.
@@ -135,14 +182,17 @@ impl Standard {
     /// The descriptor, borrowed for as long as the program runs: what the
     /// standard library's `Stdin`, `Stdout` and `Stderr` borrow for as
     /// long as each handle lives, which ends with a temporary handle's
-    /// statement.
+    /// statement. Where a shell closed it
+    /// ([`numbered::close`](crate::numbered::close)), it is open on the
+    /// null device.
     #[must_use]
     pub fn fd(self) -> BorrowedFd<'static> {
         // SAFETY: 0, 1 and 2 are open for the whole of the program's life:
         // the standard library opens the null device at each one that is
         // closed before `main`, and no Rust code may close them, as no
-        // `OwnedFd` holds them; `redirect` and `take_standard` leave each
-        // open, on another file.
+        // `OwnedFd` holds them; `redirect`, `take_standard` and the table
+        // of `numbered` leave each open, on another file, but for the
+        // moment before an exec where no other code runs.
         unsafe { BorrowedFd::borrow_raw(self.number()) }
     }
 }
@@ -156,11 +206,7 @@ impl Standard {
 ///
 /// EBADF when `to` is not open.
 pub fn redirect(which: Standard, to: impl AsFd) -> io::Result<()> {
-    // SAFETY: dup2 onto 0, 1 or 2, which no `OwnedFd` holds: the standard
-    // library's handles use the numbers without owning them, and expect
-    // them to stay open, which they do, now on `to`'s file.
-    checked(unsafe { libc::dup2(to.as_fd().as_raw_fd(), which.number()) })?;
-    Ok(())
+    crate::numbered::put_standard(to.as_fd(), which.number())
 }
 
 /// Takes what standard descriptor `which` is open on as a descriptor of
@@ -171,9 +217,13 @@ pub fn redirect(which: Standard, to: impl AsFd) -> io::Result<()> {
 ///
 /// # Errors
 ///
-/// EBADF when `which` is not open, and what opening the null device fails
-/// with.
+/// EBADF when `which` is not open, or a shell closed it
+/// ([`numbered::close`](crate::numbered::close)), and what opening the
+/// null device fails with.
 pub fn take_standard(which: Standard) -> io::Result<OwnedFd> {
+    if crate::numbered::standard_is_closed(which.number()) {
+        return Err(io::Error::from_raw_os_error(libc::EBADF));
+    }
     let null = File::options().read(true).write(true).open(NULL_DEVICE)?;
     // SAFETY: F_DUPFD_CLOEXEC makes a new descriptor of what `which` is open
     // on, at the lowest free number from 3; it takes an integer and closes
@@ -190,7 +240,14 @@ mod tests {
     use std::io::{Read, Write};
     use std::os::fd::AsRawFd;
 
-    use super::{Standard, handed_down, pipe, read, set_nonblocking, write};
+    use super::{Standard, close_on_exec, handed_down, pipe, read, set_nonblocking, write};
+
+    #[test]
+    fn a_new_pipe_is_closed_on_exec() {
+        let (read_end, write_end) = pipe().unwrap();
+        assert!(close_on_exec(&read_end).unwrap());
+        assert!(close_on_exec(&write_end).unwrap());
+    }
 
     #[test]
     fn the_standard_descriptors_are_0_1_and_2() {

@@ -11,15 +11,25 @@
 //! with one thread: a fork copies only the thread that calls it, so a lock
 //! another thread held stays locked in the child for good, and a change to
 //! the environment races any thread that reads it. Both count the
-//! process's threads first, and refuse when there is more than one.
+//! process's threads first, and refuse when there is more than one. A
+//! thread the caller has joined is still counted for a moment while the
+//! kernel finishes ending it, so the count is read again, for up to
+//! [`ENDING_THREADS_WAIT`], before a call is refused.
 
-use std::ffi::OsStr;
+use std::ffi::{CStr, CString, OsStr};
 use std::io;
 use std::os::fd::{IntoRawFd, OwnedFd};
 use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
+use std::time::{Duration, Instant};
 
 use crate::{Pid, checked};
+
+/// How long a call that needs one thread waits for the process's other
+/// threads to finish ending, before it is refused: a joined thread is
+/// listed for some microseconds after the join returns, and one that is
+/// still running is not waited for long.
+pub const ENDING_THREADS_WAIT: Duration = Duration::from_millis(100);
 
 /// Which side of a fork a process is on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,7 +45,8 @@ pub enum Fork {
 /// # Errors
 ///
 /// EAGAIN when the system has no room for another process, and
-/// `ErrorKind::Unsupported` when this process has more than one thread.
+/// `ErrorKind::Unsupported` when this process has more than one thread
+/// once [`ENDING_THREADS_WAIT`] has passed.
 pub fn fork() -> io::Result<Fork> {
     single_threaded("fork")?;
     // SAFETY: this process has one thread, the caller, so the child is a
@@ -46,16 +57,24 @@ pub fn fork() -> io::Result<Fork> {
     }
 }
 
-/// Fails with `ErrorKind::Unsupported` unless this process has one thread;
-/// `what` names the call that needs it. Only the calling thread can start
-/// another, so the answer holds until it does.
-fn single_threaded(what: &str) -> io::Result<()> {
-    match thread_count()? {
-        1 => Ok(()),
-        threads => Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!("cannot {what}: the process has {threads} threads, and needs to have one"),
-        )),
+/// Fails with `ErrorKind::Unsupported` unless this process has one thread
+/// within [`ENDING_THREADS_WAIT`]; `what` names the call that needs it.
+/// Only the calling thread can start another, so the answer holds until
+/// it does.
+pub(crate) fn single_threaded(what: &str) -> io::Result<()> {
+    let started = Instant::now();
+    loop {
+        let threads = thread_count()?;
+        if threads == 1 {
+            return Ok(());
+        }
+        if started.elapsed() >= ENDING_THREADS_WAIT {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("cannot {what}: the process has {threads} threads, and needs to have one"),
+            ));
+        }
+        std::thread::yield_now();
     }
 }
 
@@ -74,6 +93,48 @@ fn thread_count() -> io::Result<u32> {
 fn thread_count() -> io::Result<u32> {
     let threads = std::fs::read_dir("/proc/self/task")?.count();
     u32::try_from(threads).map_err(io::Error::other)
+}
+
+/// Starts the program at `path` in place of this process, as execve(2)
+/// does, with `args` as its arguments (the first its name) and `env` as
+/// its environment; it returns only when the program could not start.
+///
+/// Unlike `std::process::Command`, it keeps the signal mask and the
+/// signals this process ignores, as a shell's children keep them
+/// (XCU 2.11), and every descriptor without close-on-exec: those a shell
+/// put at its numbers ([`numbered`](crate::numbered)), with a standard
+/// one it closed closed.
+pub fn exec(path: &CStr, args: &[CString], env: &[CString]) -> io::Error {
+    let argv: Vec<*const libc::c_char> =
+        args.iter().map(|arg| arg.as_ptr()).chain(std::iter::once(std::ptr::null())).collect();
+    let envp: Vec<*const libc::c_char> =
+        env.iter().map(|entry| entry.as_ptr()).chain(std::iter::once(std::ptr::null())).collect();
+    let started = crate::numbered::with_closed_standard_closed(|| {
+        // SAFETY: both arrays end with a null pointer and point at C
+        // strings that live through the call; execve returns only when it
+        // fails, and errno is read before anything else runs.
+        unsafe { libc::execve(path.as_ptr(), argv.as_ptr(), envp.as_ptr()) };
+        io::Error::last_os_error()
+    });
+    match started {
+        Ok(error) | Err(error) => error,
+    }
+}
+
+/// Puts process `pid` (0 for the caller) in process group `group` (0 for
+/// a new one numbered as `pid`), as setpgid(2) does: a shell puts each
+/// job's processes in a group of their own, from the parent and from the
+/// child both, so that neither waits for the other.
+///
+/// # Errors
+///
+/// EACCES for a child that has started its program already, EPERM for a
+/// group in another session, ESRCH for a process that is not the caller
+/// or its child.
+pub fn set_process_group(pid: Pid, group: Pid) -> io::Result<()> {
+    // SAFETY: setpgid takes two integers and touches no memory.
+    checked(unsafe { libc::setpgid(pid, group) })?;
+    Ok(())
 }
 
 /// Ends this process at once with exit status `code`, as _exit(2) does:
@@ -178,6 +239,26 @@ pub fn reap() -> Option<(Pid, ExitStatus)> {
 #[must_use]
 pub fn reap_or_stopped() -> Option<(Pid, ExitStatus)> {
     reap_with(libc::WNOHANG | libc::WUNTRACED)
+}
+
+/// Waits as waitpid(2) does with `flags` (WNOHANG, WUNTRACED,
+/// WCONTINUED), for child `pid`, any child (-1), or one in process group
+/// `-pid`: the child and how it changed, or `None` with WNOHANG when none
+/// has. A signal that comes meanwhile ends the wait with EINTR, for a
+/// shell to run its trap.
+///
+/// # Errors
+///
+/// ECHILD when there is no such child, EINTR when a signal came first.
+pub fn wait_with(pid: Pid, flags: libc::c_int) -> io::Result<Option<(Pid, ExitStatus)>> {
+    if flags & !(libc::WNOHANG | libc::WUNTRACED | libc::WCONTINUED) != 0 {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    let mut status = 0;
+    // SAFETY: waitpid writes the status of the child it reports into
+    // `status`.
+    let got = checked(unsafe { libc::waitpid(pid, &raw mut status, flags) })?;
+    Ok((got > 0).then(|| (got, ExitStatus::from_raw(status))))
 }
 
 fn reap_with(options: libc::c_int) -> Option<(Pid, ExitStatus)> {
@@ -332,6 +413,56 @@ pub fn set_limit(resource: libc::c_int, soft: u64, hard: u64) -> io::Result<()> 
     Ok(())
 }
 
+/// Whose use of the machine [`usage`] counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UsageOf {
+    /// This process's own.
+    Process,
+    /// Its children's that it waited for.
+    Children,
+}
+
+/// What a process used of the machine, as getrusage(2) counts it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Usage {
+    /// Time on a CPU in user mode.
+    pub user: Duration,
+    /// Time on a CPU in the kernel.
+    pub system: Duration,
+    /// Times it gave up the CPU to wait.
+    pub voluntary_switches: u64,
+    /// Times another process took the CPU from it.
+    pub involuntary_switches: u64,
+}
+
+/// What `of` used of the machine so far.
+///
+/// # Errors
+///
+/// None that the kernel gives for these two.
+pub fn usage(of: UsageOf) -> io::Result<Usage> {
+    let who = match of {
+        UsageOf::Process => libc::RUSAGE_SELF,
+        UsageOf::Children => libc::RUSAGE_CHILDREN,
+    };
+    // SAFETY: all zeros is a valid rusage: numbers and timevals.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    // SAFETY: getrusage writes the rusage it is given.
+    checked(unsafe { libc::getrusage(who, &raw mut usage) })?;
+    let time = |t: libc::timeval| {
+        Duration::new(
+            u64::try_from(t.tv_sec).unwrap_or(0),
+            u32::try_from(t.tv_usec).unwrap_or(0) * 1000,
+        )
+    };
+    Ok(Usage {
+        user: time(usage.ru_utime),
+        system: time(usage.ru_stime),
+        voluntary_switches: u64::try_from(usage.ru_nvcsw).unwrap_or(0),
+        involuntary_switches: u64::try_from(usage.ru_nivcsw).unwrap_or(0),
+    })
+}
+
 /// This process's real user id.
 #[must_use]
 pub fn uid() -> u32 {
@@ -373,8 +504,9 @@ pub fn umask(mask: libc::mode_t) -> libc::mode_t {
 ///
 /// # Errors
 ///
-/// `ErrorKind::Unsupported` when this process has more than one thread,
-/// and `ErrorKind::InvalidInput` for a name that is empty or holds `=` or
+/// `ErrorKind::Unsupported` when this process has more than one thread
+/// once [`ENDING_THREADS_WAIT`] has passed, and `ErrorKind::InvalidInput`
+/// for a name that is empty or holds `=` or
 /// a NUL byte, or a value that holds a NUL byte.
 pub fn set_env(name: &OsStr, value: &OsStr) -> io::Result<()> {
     valid_name(name)?;
@@ -467,12 +599,24 @@ pub fn fault() -> ! {
 #[cfg(test)]
 mod tests {
     use super::{
-        Who, euid, fork, kill, limit, priority, set_env, set_limit, set_priority, set_thread_name,
-        thread_count, thread_name, try_wait, uid,
+        UsageOf, Who, euid, fork, kill, limit, priority, set_env, set_limit, set_priority,
+        set_thread_name, thread_count, thread_name, try_wait, uid, usage, wait_with,
     };
     use std::ffi::OsStr;
     use std::os::unix::process::ExitStatusExt;
     use std::process::Command;
+
+    #[test]
+    fn time_on_a_cpu_counts_in_the_usage() {
+        let before = usage(UsageOf::Process).unwrap();
+        let spent = |now: super::Usage| (now.user + now.system) - (before.user + before.system);
+        let started = std::time::Instant::now();
+        while spent(usage(UsageOf::Process).unwrap()) < std::time::Duration::from_millis(10) {
+            assert!(started.elapsed().as_secs() < 30, "no time on a CPU was counted");
+            std::hint::black_box((0..1000u64).sum::<u64>());
+        }
+        assert!(usage(UsageOf::Children).is_ok());
+    }
 
     #[test]
     fn a_thread_has_the_name_it_was_given() {
@@ -507,6 +651,26 @@ mod tests {
         };
         assert_eq!(status.signal(), Some(libc::SIGKILL));
         assert_eq!(try_wait(pid).unwrap_err().raw_os_error(), Some(libc::ECHILD));
+    }
+
+    #[test]
+    #[expect(clippy::zombie_processes, reason = "wait_with reaps it by its number")]
+    fn a_child_s_stop_continuing_and_end_are_each_reported() {
+        let child = Command::new("sleep").arg("10").spawn().unwrap();
+        let pid = child.id() as i32;
+        assert_eq!(wait_with(pid, libc::WNOHANG).unwrap(), None, "it still runs");
+        kill(pid, libc::SIGSTOP).unwrap();
+        let (got, status) = wait_with(pid, libc::WUNTRACED).unwrap().unwrap();
+        assert_eq!((got, status.stopped_signal()), (pid, Some(libc::SIGSTOP)));
+        kill(pid, libc::SIGCONT).unwrap();
+        let (_, status) = wait_with(pid, libc::WCONTINUED).unwrap().unwrap();
+        assert!(status.continued());
+        kill(pid, libc::SIGKILL).unwrap();
+        let (_, status) = wait_with(pid, 0).unwrap().unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
+        assert_eq!(wait_with(pid, 0).unwrap_err().raw_os_error(), Some(libc::ECHILD));
+        // A flag waitpid(2) does not take.
+        assert_eq!(wait_with(pid, 1 << 30).unwrap_err().raw_os_error(), Some(libc::EINVAL));
     }
 
     #[test]
