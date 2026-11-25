@@ -561,6 +561,7 @@ pub const HOST_TESTED: &[&str] = &[
     "smb",
     "smbd",
     "spark-api",
+    "sysapi",
     "system-release",
     "systools",
     "tuf",

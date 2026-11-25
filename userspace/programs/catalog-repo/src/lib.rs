@@ -21,6 +21,8 @@
 //! newest version of each bundle (ADR 0544), which says which wave of
 //! machines may take it ([`Repo::sign_rollouts`]).
 
+#![forbid(unsafe_code)]
+
 pub mod keys;
 pub mod plan;
 mod verify;

@@ -25,6 +25,7 @@
 //! The architecture reads and writes the registers; this crate only reads
 //! their values, so its tests run on the host.
 
+#![forbid(unsafe_code)]
 #![cfg_attr(not(test), no_std)]
 
 pub mod corrected;

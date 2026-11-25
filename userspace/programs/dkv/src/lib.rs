@@ -7,6 +7,8 @@
 //! ob packs the catalog's bundles of ports with it on the build machine
 //! (ADR 0370), so that both make the same files.
 
+#![forbid(unsafe_code)]
+
 pub mod base64;
 pub mod flaws;
 pub mod minisign;

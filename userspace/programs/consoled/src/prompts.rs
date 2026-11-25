@@ -20,7 +20,7 @@
 
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
@@ -253,9 +253,9 @@ impl Prompts {
         }
     }
 
-    /// The connection's descriptor, to poll; -1 for none.
-    pub fn fd(&self) -> i32 {
-        self.stream.as_ref().map_or(-1, AsRawFd::as_raw_fd)
+    /// The connection's descriptor, to poll, while there is one.
+    pub fn fd(&self) -> Option<BorrowedFd<'_>> {
+        self.stream.as_ref().map(AsFd::as_fd)
     }
 
     /// When to try authd again.

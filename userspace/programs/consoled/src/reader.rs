@@ -30,7 +30,7 @@
 //! again every [`RETRY`], and the keys are the programs' as always.
 
 use std::io::{ErrorKind, Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
@@ -176,8 +176,8 @@ impl Reader {
     }
 
     /// The socket, to poll for readerd going away.
-    pub fn fd(&self) -> i32 {
-        self.stream.as_ref().map_or(-1, AsRawFd::as_raw_fd)
+    pub fn fd(&self) -> Option<BorrowedFd<'_>> {
+        self.stream.as_ref().map(AsFd::as_fd)
     }
 
     /// When consoled should try readerd again, or say what was written

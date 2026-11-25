@@ -42,7 +42,7 @@ allows it where it is, with a comment saying why.
 
 ## `unsafe` code
 
-Only the trusted computing base may use `unsafe`. Today that is:
+Only the trusted computing base may use `unsafe` (ADR 0730). Today that is:
 
 - the architecture crate `kernel/arch/x86_64`, for everything that touches
   hardware: port and MSR access, page tables, descriptor tables, assembly;
@@ -70,27 +70,59 @@ Only the trusted computing base may use `unsafe`. Today that is:
   locks into panic mode, the context switch and borrowing the running
   thread, per-CPU data, building an open file in place, handing half
   of a `join` on the caller's stack to another CPU's helper (ADR 0133),
-  and borrowing an object from a locked capability space (ADR 0354).
+  and borrowing an object from a locked capability space (ADR 0354);
+- the vDSO `kernel/lib/vdso`, which is `#![deny(unsafe_code)]` and allows
+  it only in its host tests, which call the functions of the image they
+  map;
+- in user space, `libradix`'s system call stubs and the runtime
+  `radix-rt` (its start-up and heap), for the programs without Rust's
+  standard library; the user-mode tests `usertests`, which make raw calls
+  on purpose; and **sysapi** (`userspace/programs/sysapi`), for the
+  programs on the standard library.
 
-Every other kernel crate, including the other libraries under
-`kernel/lib/`, the HAL, the AArch64 stubs and the system call interface
-`kernel/abi`, starts with `#![forbid(unsafe_code)]`, and the build tools
-under `tools/` inherit `unsafe_code = "forbid"` from their workspace. In
-particular every parser of data from outside the kernel
-(boot information, ACPI tables, microcode, fonts, the symbol table, the
-crash log) is safe code, and so are the capability core `kernel/cap`, which
-decides who may use what, the scheduling policy `kernel/sched`, and the
-lock checker `kernel/lib/lockdep`. The one exception is the firmware's
-AML, which uACPI's C interprets.
+Every other crate starts each of its targets with
+`#![forbid(unsafe_code)]`: its library, its programs, its tests, benchmarks
+and examples, and its build script, each of which Rust compiles as a crate
+of its own. That covers the other kernel crates, including the other
+libraries under `kernel/lib/`, the HAL, the AArch64 stubs and the system
+call interface `kernel/abi`; the build tools under `tools/`; and every
+service, program, library and test in user space. In particular every
+parser of data from outside the kernel (boot information, ACPI tables,
+microcode, fonts, the symbol table, the crash log) is safe code, and so are
+the capability core `kernel/cap`, which decides who may use what, the
+scheduling policy `kernel/sched`, and the lock checker `kernel/lib/lockdep`.
+The one exception is the firmware's AML, which uACPI's C interprets.
 
-In user space, `unsafe` is for calls into the kernel and the C library:
-`libradix`'s system call stubs, the runtime `radix-rt` (its start-up and
-heap), the user-mode tests `usertests`, which make raw calls on purpose,
-and the programs on Rust's standard library (`nukesh`, `systools`,
-`consoled` and `std-test`) for their libc calls; so do the bench program
-`tools/linux-bench`, which measures Linux through libc, and the lab's
-disk writer `tools/lab-writer`, Linux's init on a lab machine. The services
-`spark` and `storage`, and `hello`, forbid it.
+A program on Rust's standard library makes every call that the standard
+library has none for through sysapi: descriptors, pipes and descriptors
+passed over a socket, files' extended attributes, nodes and times, forks,
+sessions and the environment, signals, `poll`, terminals and
+pseudo-terminals, accounts, the host's name, random bytes, and the kernel's
+own calls (`sysapi::kernel`). sysapi's functions are safe because of rules
+that hold for the whole program, which a function can check and a block in
+a program cannot:
+
+- Descriptors are `OwnedFd`, taken as `impl AsFd`; what sysapi makes is
+  closed on exec.
+- A descriptor a parent handed down is claimed with `fd::handed_down`,
+  which takes a number only once (it marks it closed on exec as it takes
+  it), and standard input and output with `fd::take_standard`, which
+  leaves them on the null device. A program never makes an owned
+  descriptor from a number itself.
+- A fork and a change to the environment are refused while the process
+  has more than one thread.
+- A signal is caught by sysapi's one handler, which sets a flag in a
+  `static Caught` and may wake a pipe; the program never writes a handler.
+
+A program that needs a call sysapi lacks adds it to sysapi, with a test,
+and calls that.
+
+`ob lint` checks all of this (`tools/xtask/src/unsafe_code.rs`): every
+target of every crate in the workspaces starts with
+`#![forbid(unsafe_code)]`, but those of the crates above. `systools`,
+`nukesh`, `tools/lab-writer` and `tools/linux-bench` still make their own
+calls and are on a list of their own, which the check fails on once one of
+them no longer needs its place (docs/deferred.md).
 
 Wherever `unsafe` is used:
 

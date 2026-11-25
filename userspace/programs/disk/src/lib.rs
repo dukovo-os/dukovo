@@ -34,6 +34,8 @@
 //! read panics. Nothing is written until asked: [`plan`] says what a
 //! write puts where, and [`apply`] writes it.
 
+#![forbid(unsafe_code)]
+
 #[cfg(feature = "kernel")]
 pub mod blockfile;
 #[cfg(feature = "btrfs")]

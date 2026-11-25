@@ -12,10 +12,12 @@
 //! It runs itself as the child its process tests need, with `child` and
 //! what to do as its arguments.
 
+#![forbid(unsafe_code)]
+
 use std::backtrace::{Backtrace, BacktraceStatus};
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::ffi::CStr;
+use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::hint;
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
@@ -120,8 +122,7 @@ fn child(args: &[String]) -> ! {
         }
         // Prints whether it leads its process group.
         Some("group") => {
-            // SAFETY: getpgrp has no preconditions.
-            let group = unsafe { libc::getpgrp() };
+            let group = sysapi::process::process_group();
             print!("{}", group == process::id() as i32);
             process::exit(0)
         }
@@ -141,12 +142,11 @@ fn environment() -> Outcome {
     check!(args.len() == 1 && args[0] == EXE);
     check!(std::env::current_exe()? == Path::new(EXE));
     check!(std::env::var("PATH").is_ok());
-    // SAFETY: no other thread runs yet, so none reads the environment.
-    unsafe { std::env::set_var("DUKOVO_TEST", "set") };
+    // No other thread runs yet, which the call checks.
+    sysapi::process::set_env(OsStr::new("DUKOVO_TEST"), OsStr::new("set"))?;
     check!(std::env::var("DUKOVO_TEST")? == "set");
     check!(std::env::vars().any(|(name, value)| name == "DUKOVO_TEST" && value == "set"));
-    // SAFETY: as above.
-    unsafe { std::env::remove_var("DUKOVO_TEST") };
+    sysapi::process::remove_env(OsStr::new("DUKOVO_TEST"))?;
     check!(std::env::var("DUKOVO_TEST") == Err(std::env::VarError::NotPresent));
     check!(std::env::current_dir()? == Path::new("/"));
     std::env::set_current_dir("/tmp")?;
@@ -316,11 +316,7 @@ fn threads() -> Outcome {
     check!(ENDED.load(Ordering::Relaxed) == THREADS as usize);
     // Names, which the kernel keeps too.
     let named = thread::Builder::new().name("worker".into()).spawn(|| {
-        let mut name = [0 as libc::c_char; 16];
-        // SAFETY: the buffer is as long as it says.
-        let e = unsafe { libc::pthread_getname_np(libc::pthread_self(), name.as_mut_ptr(), 16) };
-        // SAFETY: pthread_getname_np ends the name with a NUL.
-        let kernel = e == 0 && unsafe { CStr::from_ptr(name.as_ptr()) }.to_bytes() == b"worker";
+        let kernel = sysapi::process::thread_name().is_ok_and(|name| name == b"worker");
         thread::current().name() == Some("worker") && kernel
     })?;
     check!(named.join().unwrap_or(false));
@@ -730,6 +726,26 @@ fn backtraces() -> Outcome {
     Ok(())
 }
 
+/// Types the allocator is asked to align as each says, never made: only
+/// their sizes and alignments are used.
+#[allow(dead_code)]
+mod alignments {
+    #[repr(align(16))]
+    pub struct Align16(u8);
+    #[repr(align(4096))]
+    pub struct Align4096(u8);
+    #[repr(align(2097152))]
+    pub struct Align2M(u8);
+}
+use alignments::{Align2M, Align16, Align4096};
+
+/// Whether room for two `T`s, which a `Vec` asks the allocator for with
+/// `T`'s alignment and twice its size, came aligned.
+fn aligned<T>() -> bool {
+    let room: Vec<T> = Vec::with_capacity(2);
+    room.capacity() >= 2 && room.as_ptr().addr().is_multiple_of(align_of::<T>())
+}
+
 /// Large allocations, aligned ones, and a map of many entries.
 fn memory() -> Outcome {
     // 64 MiB, every page touched.
@@ -739,16 +755,7 @@ fn memory() -> Outcome {
     }
     check!(big.iter().map(|&b| usize::from(b)).sum::<usize>() == (64 << 20) / 4096);
     drop(big);
-    for align in [16, 4096, 2 << 20] {
-        let layout = std::alloc::Layout::from_size_align(align * 2, align)?;
-        // SAFETY: the layout's size is not zero.
-        let pointer = unsafe { std::alloc::alloc(layout) };
-        check!(!pointer.is_null() && pointer.addr() % align == 0);
-        if !pointer.is_null() {
-            // SAFETY: allocated just above, with this layout.
-            unsafe { std::alloc::dealloc(pointer, layout) };
-        }
-    }
+    check!(aligned::<Align16>() && aligned::<Align4096>() && aligned::<Align2M>());
     // A hash map, with the random keys its hasher needs.
     let map: HashMap<u32, u32> = (0..100_000).map(|i| (i, i * 2)).collect();
     check!(map.len() == 100_000 && map[&77_777] == 155_554);

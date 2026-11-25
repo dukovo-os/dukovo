@@ -12,14 +12,18 @@
 //! folders above a share are not walked through.
 
 use std::collections::{HashMap, VecDeque};
-use std::ffi::{CString, OsStr};
+use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io;
-use std::os::fd::FromRawFd;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::os::unix::fs::{DirBuilderExt, FileExt, FileTypeExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{
+    DirBuilderExt, FileExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt,
+};
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
+
+use sysapi::fd;
+use sysapi::fs::Link;
 
 use crate::ipc::{
     self, Answer, Changes, Create, FsStat, Make, Reply, Request, SetTime, Stat, Time,
@@ -93,34 +97,18 @@ pub fn stat_of(meta: &fs::Metadata) -> Stat {
     }
 }
 
-/// `path` as a C string.
-fn c_path(path: &Path) -> io::Result<CString> {
-    CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))
-}
-
-/// A libc call's result as an io::Result.
-fn checked(result: libc::c_int) -> io::Result<()> {
-    if result == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
-}
-
-/// The timespec that sets a time as `set` says.
-fn timespec(set: SetTime) -> libc::timespec {
+/// How sysapi sets a time as `set` says.
+fn time_to_set(set: SetTime) -> sysapi::fs::Time {
     match set {
-        SetTime::Keep => libc::timespec { tv_sec: 0, tv_nsec: libc::UTIME_OMIT as _ },
-        SetTime::Now => libc::timespec { tv_sec: 0, tv_nsec: libc::UTIME_NOW as _ },
-        SetTime::At(t) => libc::timespec { tv_sec: t.seconds as _, tv_nsec: t.nanos as _ },
+        SetTime::Keep => sysapi::fs::Time::Keep,
+        SetTime::Now => sysapi::fs::Time::Now,
+        SetTime::At(t) => sysapi::fs::Time::At { seconds: t.seconds, nanoseconds: t.nanos },
     }
 }
 
 /// Sets `path`'s times, not through a symbolic link.
 fn set_times(path: &Path, atime: SetTime, mtime: SetTime) -> io::Result<()> {
-    let c = c_path(path)?;
-    let times = [timespec(atime), timespec(mtime)];
-    // SAFETY: the path is a C string, and `times` the two timespecs.
-    checked(unsafe {
-        libc::utimensat(libc::AT_FDCWD, c.as_ptr(), times.as_ptr(), libc::AT_SYMLINK_NOFOLLOW)
-    })
+    sysapi::fs::set_times(path, time_to_set(atime), time_to_set(mtime), Link::Itself)
 }
 
 /// The times an exclusive create keeps its verifier in, as Linux's nfsd
@@ -182,7 +170,7 @@ impl Worker {
             Request::Stat(p) => Ok(Reply::Stat(stat_of(&fs::symlink_metadata(self.place(&p)?)?))),
             Request::FsStat(p) => Ok(Reply::FsStat(fs_stat(&self.place(&p)?)?)),
             Request::Access(p, want) => {
-                let path = c_path(&self.place(&p)?)?;
+                let path = self.place(&p)?;
                 let mut granted = 0;
                 for bit in [4, 2, 1] {
                     let mode = match bit {
@@ -190,11 +178,7 @@ impl Worker {
                         2 => libc::W_OK,
                         _ => libc::X_OK,
                     };
-                    // SAFETY: the path is a C string.
-                    let ok = unsafe {
-                        libc::faccessat(libc::AT_FDCWD, path.as_ptr(), mode, libc::AT_EACCESS)
-                    };
-                    if want & bit != 0 && ok == 0 {
+                    if want & bit != 0 && sysapi::fs::may_access(&path, mode) {
                         granted |= bit;
                     }
                 }
@@ -373,9 +357,7 @@ impl Worker {
             if fs::symlink_metadata(path)?.file_type().is_symlink() {
                 return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
             }
-            let c = c_path(path)?;
-            // SAFETY: the path is a C string.
-            checked(unsafe { libc::chmod(c.as_ptr(), (mode & 0o7777) as libc::mode_t) })?;
+            fs::set_permissions(path, fs::Permissions::from_mode(mode & 0o7777))?;
         }
         if changes.atime != SetTime::Keep || changes.mtime != SetTime::Keep {
             set_times(path, changes.atime, changes.mtime)?;
@@ -435,19 +417,11 @@ fn read(file: &File, offset: u64, count: u32) -> io::Result<Reply> {
 
 /// Makes the node `make` at `path`.
 fn make_node(path: &Path, make: &Make) -> io::Result<()> {
-    let node = |mode: libc::mode_t, dev: libc::dev_t| {
-        let c = c_path(path)?;
-        // SAFETY: the path is a C string.
-        checked(unsafe { libc::mknod(c.as_ptr(), mode, dev) })
-    };
+    let node = |mode: libc::mode_t, dev: libc::dev_t| sysapi::fs::make_node(path, mode, dev);
     match make {
         Make::Directory(mode) => fs::DirBuilder::new().mode(*mode & 0o7777).create(path),
         Make::Symlink(target) => std::os::unix::fs::symlink(path_of(target), path),
-        Make::Fifo(mode) => {
-            let c = c_path(path)?;
-            // SAFETY: the path is a C string.
-            checked(unsafe { libc::mkfifo(c.as_ptr(), (*mode & 0o7777) as libc::mode_t) })
-        }
+        Make::Fifo(mode) => sysapi::fs::make_fifo(path, (*mode & 0o7777) as libc::mode_t),
         Make::Socket(mode) => node(libc::S_IFSOCK | (*mode & 0o7777) as libc::mode_t, 0),
         Make::Device(chr, major, minor, mode) => {
             let kind = if *chr { libc::S_IFCHR } else { libc::S_IFBLK };
@@ -463,11 +437,7 @@ fn make_node(path: &Path, make: &Make) -> io::Result<()> {
 
 /// What the filesystem holding `path` has room for.
 fn fs_stat(path: &Path) -> io::Result<FsStat> {
-    let c = c_path(path)?;
-    // SAFETY: all zeros is a valid statvfs: numbers.
-    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
-    // SAFETY: the path is a C string and `st` a statvfs for the call.
-    checked(unsafe { libc::statvfs(c.as_ptr(), &raw mut st) })?;
+    let st = sysapi::fs::statvfs(path)?;
     let unit = if st.f_frsize > 0 { st.f_frsize as u64 } else { st.f_bsize as u64 };
     Ok(FsStat {
         files_avail: st.f_favail as u64,
@@ -516,12 +486,16 @@ fn attached() -> Vec<PathBuf> {
 pub fn run() -> ExitCode {
     // The modes NFS asks for are what files get: the client applied its
     // own mask already.
-    // SAFETY: umask only sets the mask.
-    unsafe { libc::umask(0) };
-    // SAFETY: authd gives the worker the read end of the listener's pipe
-    // to it as descriptor 3, and the write end of the pipe back as 4, and
-    // nothing else owns them.
-    let (mut requests, mut answers) = unsafe { (File::from_raw_fd(3), File::from_raw_fd(4)) };
+    let _ = sysapi::process::umask(0);
+    // authd gives the worker the read end of the listener's pipe to it as
+    // descriptor 3, and the write end of the pipe back as 4.
+    let (mut requests, mut answers) = match (fd::handed_down(3), fd::handed_down(4)) {
+        (Ok(requests), Ok(answers)) => (File::from(requests), File::from(answers)),
+        (Err(err), _) | (_, Err(err)) => {
+            eprintln!("nfsd worker: no pipe from the listener: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
     let mut worker = Worker::new(&attached());
     loop {
         let message = match ipc::receive(&mut requests) {

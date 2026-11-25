@@ -27,6 +27,7 @@
 //! sysupdate(8) does. When an update will not stage or a start falls
 //! back, `sysupdate status` shows the state both copies hold.
 
+#![forbid(unsafe_code)]
 #![cfg_attr(not(any(test, kani)), no_std)]
 
 extern crate alloc;

@@ -11,6 +11,8 @@
 //! canaries are judged at are given with `--now`, so that nothing waits.
 //! The system's side is the same flow in system-release's tests.
 
+#![forbid(unsafe_code)]
+
 use std::io::{Read as _, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};

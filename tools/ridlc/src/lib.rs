@@ -40,6 +40,8 @@
 //! declarations and the man pages, so an undocumented interface is an
 //! error, not a warning.
 
+#![forbid(unsafe_code)]
+
 use std::fmt;
 use std::path::Path;
 

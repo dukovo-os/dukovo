@@ -16,6 +16,8 @@
 //! option's, the credentials file's or `$PASSWD`'s, or else is asked for
 //! on the terminal; the account is the option's or `$USER`.
 
+#![forbid(unsafe_code)]
+
 mod fs;
 mod options;
 mod share;
@@ -23,19 +25,22 @@ mod sys;
 
 use std::env;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::io::{self, IsTerminal, Read, Write};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::process::exit;
 
 use fuser::{Session, SessionACL};
 use radix_abi::directory::{self, MountFlags};
 use radix_abi::startup;
+use sysapi::fd::{self, Standard};
+use sysapi::kernel::SYS;
+use sysapi::process::{self, Fork};
+use sysapi::terminal::{self, When};
 
 use crate::fs::{Shown, SmbFs};
 use crate::options::{Options, Target};
 use crate::share::{Account, Share};
-use crate::sys::Sys;
 
 const USAGE: &str = "usage: smb mount [-f] [-o OPTIONS] //SERVER/SHARE[/FOLDER] DIR
        smb shares [-o OPTIONS] //SERVER
@@ -176,8 +181,7 @@ fn mount(args: &[String]) -> Result<(), Fail> {
         return Err(failed(format!("{}: not a folder", dir.display())));
     }
     let account = account(&target, &mut options)?;
-    // SAFETY: getuid and getgid only read the process's IDs.
-    let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+    let (uid, gid) = (process::uid(), process::gid());
     let shown = Shown {
         uid: options.uid.unwrap_or(uid),
         gid: options.gid.unwrap_or(gid),
@@ -222,7 +226,7 @@ impl Mount {
         let path = self.dir.to_str().ok_or_else(|| format!("{}: not text", self.dir.display()))?;
         let flags = if self.read_only { MountFlags::READ_ONLY } else { MountFlags::NONE };
         directory::mount_fuse(
-            &Sys,
+            &SYS,
             startup::SLOT_ROOT,
             path.trim_start_matches('/').as_bytes(),
             slot,
@@ -246,31 +250,25 @@ fn serve(mut session: Session<SmbFs>) -> Result<(), Fail> {
 /// background, in a session of its own: this one returns once the share
 /// is mounted, or says why it was not.
 fn in_background(how: &Mount) -> Result<(), Fail> {
-    let mut ends = [0; 2];
-    // SAFETY: pipe writes two descriptors to `ends`.
-    if unsafe { libc::pipe(ends.as_mut_ptr()) } != 0 {
-        return Err(failed(format!("no pipe: {}", io::Error::last_os_error())));
-    }
-    // SAFETY: the descriptors are the pipe's, owned from here on.
-    let (mut from, to) = unsafe { (File::from_raw_fd(ends[0]), File::from_raw_fd(ends[1])) };
-    // SAFETY: smb has one thread here (its runtime is made after), so the
-    // child is a whole copy of it.
-    match unsafe { libc::fork() } {
-        -1 => Err(failed(format!("cannot start: {}", io::Error::last_os_error()))),
-        0 => {
+    let (from, to) = fd::pipe().map_err(|err| failed(format!("no pipe: {err}")))?;
+    let (mut from, to) = (File::from(from), File::from(to));
+    // smb has one thread here (its runtime is made after), which the fork
+    // checks, so the child is a whole copy of it.
+    match process::fork() {
+        Err(err) => Err(failed(format!("cannot start: {err}"))),
+        Ok(Fork::Child) => {
             drop(from);
             exit(background(how, to))
         }
-        child => {
+        Ok(Fork::Parent(child)) => {
             drop(to);
             let mut said = Vec::new();
             let _ = from.read_to_end(&mut said);
             if said == [0] {
                 return Ok(());
             }
-            let mut status = 0;
-            // SAFETY: waits for the child, which has ended or is ending.
-            unsafe { libc::waitpid(child, &raw mut status, 0) };
+            // The child has ended or is ending.
+            let _ = process::wait(child);
             if said.is_empty() {
                 return Err(failed("the mount's process ended before it mounted the share"));
             }
@@ -282,9 +280,9 @@ fn in_background(how: &Mount) -> Result<(), Fail> {
 /// The background process: mounts, says so through `report` (a 0, or
 /// why not), and serves. Returns its exit status.
 fn background(how: &Mount, mut report: File) -> i32 {
-    // SAFETY: setsid takes no arguments; the child leads no group, so it
-    // makes a session of its own, away from the terminal.
-    unsafe { libc::setsid() };
+    // The child leads no group, so it makes a session of its own, away
+    // from the terminal.
+    let _ = process::new_session();
     match how.mounted() {
         Ok(session) => {
             quiet();
@@ -302,9 +300,8 @@ fn background(how: &Mount, mut report: File) -> i32 {
 /// Points the standard input, output and error at /devices/null.
 fn quiet() {
     let Ok(null) = OpenOptions::new().read(true).write(true).open("/devices/null") else { return };
-    for fd in 0..3 {
-        // SAFETY: dup2 replaces a standard descriptor with /devices/null.
-        unsafe { libc::dup2(null.as_raw_fd(), fd) };
+    for which in [Standard::Input, Standard::Output, Standard::Error] {
+        let _ = fd::redirect(which, &null);
     }
 }
 
@@ -334,27 +331,21 @@ fn account(target: &Target, options: &mut Options) -> Result<Account, Fail> {
 
 /// Asks for a password on the terminal, without showing it.
 fn ask(prompt: &str) -> Result<String, Fail> {
-    // SAFETY: isatty only looks at the descriptor.
-    if unsafe { libc::isatty(0) } != 1 {
+    if !io::stdin().is_terminal() {
         return Err(failed("no password: give password=, credentials= or $PASSWD"));
     }
     eprint!("{prompt}");
     let _ = io::stderr().flush();
-    // SAFETY: all zeros is a valid termios: numbers.
-    let mut saved: libc::termios = unsafe { std::mem::zeroed() };
-    // SAFETY: tcgetattr fills `saved`.
-    let quiet = unsafe { libc::tcgetattr(0, &raw mut saved) } == 0;
-    if quiet {
-        let mut off = saved;
+    let saved = terminal::attributes(io::stdin()).ok();
+    if let Some(saved) = &saved {
+        let mut off = *saved;
         off.c_lflag &= !libc::ECHO;
-        // SAFETY: `off` is a valid termios.
-        unsafe { libc::tcsetattr(0, libc::TCSANOW, &raw const off) };
+        let _ = terminal::set_attributes(io::stdin(), When::Now, &off);
     }
     let mut line = String::new();
     let read = io::stdin().read_line(&mut line);
-    if quiet {
-        // SAFETY: `saved` is the termios read above.
-        unsafe { libc::tcsetattr(0, libc::TCSANOW, &raw const saved) };
+    if let Some(saved) = &saved {
+        let _ = terminal::set_attributes(io::stdin(), When::Now, saved);
         eprintln!();
     }
     match read {

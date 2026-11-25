@@ -15,21 +15,20 @@
 use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use accounts::forwarding::{Frame, Frames, PAYLOAD_MAX, QUEUE_MAX};
+use sysapi::fd::{self, Standard};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::unix::pipe;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Notify, mpsc};
 use tokio::task::AbortHandle;
-
-use crate::sys;
 
 /// How long a connection the client asked for may take.
 const CONNECT_TIME: Duration = Duration::from_secs(30);
@@ -147,9 +146,16 @@ struct Forwarder {
 
 /// `sshd --forward`: serves sshd's frames on standard input.
 pub fn run() -> ExitCode {
-    // SAFETY: authd gave this process its pipes from sshd as 0 and 1,
-    // which nothing else here uses: what it says goes to 2.
-    let (input, output) = unsafe { (OwnedFd::from_raw_fd(0), OwnedFd::from_raw_fd(1)) };
+    // authd gave this process its pipes from sshd as 0 and 1: what it
+    // says goes to 2.
+    let (input, output) =
+        match (fd::take_standard(Standard::Input), fd::take_standard(Standard::Output)) {
+            (Ok(input), Ok(output)) => (input, output),
+            (Err(err), _) | (_, Err(err)) => {
+                eprintln!("cannot take the pipes from sshd: {err}");
+                return ExitCode::FAILURE;
+            }
+        };
     let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
         Ok(runtime) => runtime,
         Err(err) => {
@@ -168,8 +174,8 @@ pub fn run() -> ExitCode {
 
 async fn serve(input: OwnedFd, output: OwnedFd) -> Result<(), String> {
     let pipes = |err: io::Error| format!("cannot use the pipes from sshd: {err}");
-    sys::set_nonblocking(&input).map_err(pipes)?;
-    sys::set_nonblocking(&output).map_err(pipes)?;
+    fd::set_nonblocking(&input, true).map_err(pipes)?;
+    fd::set_nonblocking(&output, true).map_err(pipes)?;
     let input = pipe::Receiver::from_owned_fd_unchecked(input).map_err(pipes)?;
     let output = pipe::Sender::from_owned_fd_unchecked(output).map_err(pipes)?;
     let (out, frames) = mpsc::unbounded_channel();
