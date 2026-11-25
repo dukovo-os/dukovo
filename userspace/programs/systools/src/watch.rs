@@ -8,18 +8,17 @@
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+use sysapi::fd;
+use sysapi::signal::{self, Caught};
+use sysapi::terminal::{self, When};
 
 use crate::args::{Arg, Args};
 use crate::util::{self, Fail, fail, usage};
 
 /// Set by SIGINT, SIGTERM or SIGHUP.
-static STOP: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_signal(_: libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-}
+static STOP: Caught = Caught::new();
 
 /// Runs the command once: its output and errors, as they came, and how
 /// it ended.
@@ -126,13 +125,9 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         return Err(usage("usage: watch [-bdegptx] [-n SECONDS] COMMAND".into()));
     }
     for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
-        // SAFETY: all zeros is a valid sigaction: numbers, a signal set and a function address.
-        let mut action: libc::sigaction = unsafe { util::zeroed() };
-        action.sa_sigaction = on_signal as *const () as usize;
-        // SAFETY: the handler only stores to an atomic.
-        unsafe { libc::sigaction(signal, &raw const action, std::ptr::null_mut()) };
+        let _ = signal::catch(signal, &STOP, 0);
     }
-    let terminal = util::is_terminal(1);
+    let terminal = util::is_terminal(std::io::stdout());
     let mut out = io::stdout().lock();
     if terminal {
         write!(out, "\x1b[?1049h\x1b[?25l")?;
@@ -147,7 +142,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let mut round = 0u32;
     loop {
         let begun = Instant::now();
-        let (width, height) = util::terminal_size(1).unwrap_or((80, 24));
+        let (width, height) = util::terminal_size(std::io::stdout()).unwrap_or((80, 24));
         let (output, status) = match run(&command, exec) {
             Ok(result) => result,
             Err(e) => {
@@ -206,7 +201,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         }
         if status != 0 && error_exit {
             // Frozen on the output, as procps's watch is, until a key.
-            let (_, height) = util::terminal_size(1).unwrap_or((80, 24));
+            let (_, height) = util::terminal_size(std::io::stdout()).unwrap_or((80, 24));
             if terminal {
                 write!(out, "\x1b[{height};1H")?;
             }
@@ -230,10 +225,10 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         let wait = Duration::from_secs_f64(interval);
         let deadline =
             if precise { started + wait * round } else { begun.max(Instant::now()) + wait };
-        while Instant::now() < deadline && !STOP.load(Ordering::Relaxed) {
+        while Instant::now() < deadline && !STOP.is_set() {
             std::thread::sleep((deadline - Instant::now()).min(Duration::from_millis(100)));
         }
-        if STOP.load(Ordering::Relaxed) {
+        if STOP.is_set() {
             break;
         }
     }
@@ -250,24 +245,16 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
 /// Waits for a key on standard input, a terminal read a key at a time;
 /// returns at once if it is not a terminal, or on a signal.
 fn wait_for_key() {
-    // SAFETY: all zeros is a valid termios: numbers.
-    let mut saved: libc::termios = unsafe { util::zeroed() };
-    // SAFETY: tcgetattr fills `saved`.
-    let tty = unsafe { libc::tcgetattr(0, &raw mut saved) } == 0;
-    if !tty {
+    let Ok(saved) = terminal::attributes(io::stdin()) else {
         return;
-    }
+    };
     let mut keys = saved;
     keys.c_lflag &= !(libc::ICANON | libc::ECHO);
     keys.c_cc[libc::VMIN] = 1;
     keys.c_cc[libc::VTIME] = 0;
-    let mut byte = 0u8;
-    // SAFETY: valid termios structures and a one-byte buffer of ours.
-    unsafe {
-        libc::tcsetattr(0, libc::TCSANOW, &raw const keys);
-        libc::read(0, (&raw mut byte).cast(), 1);
-        libc::tcsetattr(0, libc::TCSANOW, &raw const saved);
-    }
+    let _ = terminal::set_attributes(io::stdin(), When::Now, &keys);
+    let _ = fd::read(io::stdin(), &mut [0u8; 1]);
+    let _ = terminal::set_attributes(io::stdin(), When::Now, &saved);
 }
 
 /// An interval in seconds, at least 0.1, with a point or a comma.

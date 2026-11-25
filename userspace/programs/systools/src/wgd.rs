@@ -35,12 +35,11 @@ use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV6, UdpSocket};
-use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use boringtun::noise::handshake::parse_handshake_anon;
@@ -50,6 +49,9 @@ use boringtun::x25519;
 use radix_abi::Status;
 use radix_abi::network::{self, Ipv6Flags, Ipv6Settings, LinkKind};
 use radix_abi::process::PipeFlags;
+use sysapi::fd;
+use sysapi::poll::PollFd;
+use sysapi::signal::{self, Caught};
 
 use crate::args::Args;
 use crate::ip::{self, Cidr, Cidr6, Network as _};
@@ -85,29 +87,10 @@ const REQUEST_WAIT: Duration = Duration::from_secs(1);
 const EINVAL: i32 = libc::EINVAL;
 const EADDRINUSE: i32 = libc::EADDRINUSE;
 
-/// Set by SIGTERM, and by SIGHUP; the handler writes a byte into
-/// [`WAKE`] too, which the poll waits on.
-static STOP: AtomicBool = AtomicBool::new(false);
-static RELOAD: AtomicBool = AtomicBool::new(false);
-static WAKE: AtomicI32 = AtomicI32::new(-1);
-
-extern "C" fn on_term(_: libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-    wake();
-}
-
-extern "C" fn on_hangup(_: libc::c_int) {
-    RELOAD.store(true, Ordering::Relaxed);
-    wake();
-}
-
-fn wake() {
-    let fd = WAKE.load(Ordering::Relaxed);
-    if fd >= 0 {
-        // SAFETY: write(2) is async-signal-safe; one byte from the stack.
-        unsafe { libc::write(fd, [1u8].as_ptr().cast(), 1) };
-    }
-}
+/// Set by SIGTERM, and by SIGHUP; the handler writes a byte into the wake
+/// pipe too, which the poll waits on.
+static STOP: Caught = Caught::new();
+static RELOAD: Caught = Caught::new();
 
 /// A peer of an interface.
 struct Peer {
@@ -169,24 +152,16 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     if let Some(arg) = args.next()? {
         return Err(args.unknown(&arg));
     }
-    let mut fds = [0; 2];
-    // SAFETY: pipe2 fills the two descriptors.
-    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_NONBLOCK | libc::O_CLOEXEC) } < 0 {
-        return Err(util::failed(&"pipe", io::Error::last_os_error()));
-    }
-    WAKE.store(fds[1], Ordering::Relaxed);
-    // SAFETY: setting signals' dispositions touches no memory; no other
-    // thread runs. A wg that goes away must not end wgd.
-    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
-    for (signal, handler) in
-        [(libc::SIGTERM, on_term as extern "C" fn(libc::c_int)), (libc::SIGHUP, on_hangup)]
-    {
-        // SAFETY: all zeros is a valid sigaction: numbers, a signal set
-        // and a function address.
-        let mut action: libc::sigaction = unsafe { util::zeroed() };
-        action.sa_sigaction = handler as *const () as usize;
-        // SAFETY: the handlers store to atomics and write(2).
-        unsafe { libc::sigaction(signal, &raw const action, std::ptr::null_mut()) };
+    let (wake_read, wake_write) = fd::pipe().map_err(|e| util::failed(&"pipe", e))?;
+    fd::set_nonblocking(&wake_read, true).map_err(|e| util::failed(&"pipe", e))?;
+    fd::set_nonblocking(&wake_write, true).map_err(|e| util::failed(&"pipe", e))?;
+    let wake_reload = wake_write.try_clone().map_err(|e| util::failed(&"pipe", e))?;
+    STOP.wake_through(wake_write).map_err(|e| util::failed(&"pipe", e))?;
+    RELOAD.wake_through(wake_reload).map_err(|e| util::failed(&"pipe", e))?;
+    // A wg that goes away must not end wgd.
+    let _ = signal::ignore(libc::SIGPIPE);
+    for (number, caught) in [(libc::SIGTERM, &STOP), (libc::SIGHUP, &RELOAD)] {
+        let _ = signal::catch(number, caught, 0);
     }
     fs::create_dir_all(wireguard::STATE).map_err(|e| util::failed(&wireguard::STATE, e))?;
     // Its files hold private keys.
@@ -198,19 +173,19 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let (mut tick, mut reset) = (Instant::now() + TICK, Instant::now() + LIMITER_RESET);
     let mut buffers = Buffers { input: vec![0; BUFFER], output: vec![0; BUFFER] };
     loop {
-        if STOP.load(Ordering::Relaxed) {
+        if STOP.is_set() {
             for interface in interfaces.drain(..) {
                 interface.take_away();
             }
             return Ok(0);
         }
-        if RELOAD.swap(false, Ordering::Relaxed) {
+        if RELOAD.take() {
             eprintln!("wgd: reading {} again", wireguard::STATE);
             reload(&mut interfaces);
         }
         let now = Instant::now();
         let wait = tick.min(reset).saturating_duration_since(now);
-        poll(fds[0], &mut interfaces, wait, &mut buffers);
+        poll(wake_read.as_fd(), &mut interfaces, wait, &mut buffers);
         let now = Instant::now();
         if now >= tick {
             tick = now + TICK;
@@ -242,34 +217,31 @@ struct Buffers {
 
 /// Waits up to `wait` for the wake pipe `wake`, a tunnel, a socket or a
 /// connection of wg's, and does what came.
-fn poll(wake: RawFd, interfaces: &mut [Interface], wait: Duration, buffers: &mut Buffers) {
-    let event = |fd: RawFd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-    let mut fds = vec![event(wake)];
+fn poll(wake: BorrowedFd<'_>, interfaces: &mut [Interface], wait: Duration, buffers: &mut Buffers) {
+    let mut fds = vec![PollFd::new(wake, libc::POLLIN)];
     for interface in interfaces.iter() {
-        fds.push(event(interface.tunnel.as_raw_fd()));
-        fds.push(event(interface.socket.as_ref().map_or(-1, AsRawFd::as_raw_fd)));
-        fds.push(event(interface.listener.as_raw_fd()));
+        fds.push(PollFd::new(interface.tunnel.as_fd(), libc::POLLIN));
+        fds.push(PollFd::optional(interface.socket.as_ref().map(AsFd::as_fd), libc::POLLIN));
+        fds.push(PollFd::new(interface.listener.as_fd(), libc::POLLIN));
     }
-    let ms = i32::try_from(wait.as_millis()).unwrap_or(i32::MAX).max(1);
-    let count = libc::nfds_t::try_from(fds.len()).unwrap_or(libc::nfds_t::MAX);
-    // SAFETY: `fds` holds `count` pollfds.
-    let ready = unsafe { libc::poll(fds.as_mut_ptr(), count, ms) };
-    if ready <= 0 {
+    let wait = wait.max(Duration::from_millis(1));
+    if !sysapi::poll::poll(&mut fds, Some(wait)).is_ok_and(|ready| ready > 0) {
         return;
     }
-    if fds[0].revents != 0 {
+    let events: Vec<i16> = fds.iter().map(PollFd::revents).collect();
+    drop(fds);
+    if events[0] != 0 {
         let mut drain = [0u8; 64];
-        // SAFETY: reading into a buffer of ours, from the pipe we made.
-        while unsafe { libc::read(wake, drain.as_mut_ptr().cast(), drain.len()) } > 0 {}
+        while fd::read(wake, &mut drain).is_ok_and(|read| read > 0) {}
     }
-    for (interface, fds) in interfaces.iter_mut().zip(fds[1..].chunks(3)) {
-        if fds[0].revents != 0 {
+    for (interface, events) in interfaces.iter_mut().zip(events[1..].chunks(3)) {
+        if events[0] != 0 {
             interface.seal(buffers);
         }
-        if fds[1].revents != 0 {
+        if events[1] != 0 {
             interface.open(buffers);
         }
-        if fds[2].revents != 0 {
+        if events[2] != 0 {
             interface.answer_wg();
         }
     }
@@ -371,30 +343,15 @@ fn make_tunnel(name: &str) -> Result<u32, String> {
 /// `open_tunnel`, into the slot of the lowest free descriptor.
 fn open_tunnel(index: u32) -> Result<File, String> {
     let flags = PipeFlags(PipeFlags::NON_BLOCKING.bits() | PipeFlags::CLOSE_ON_EXEC.bits());
-    loop {
-        // SAFETY: opening and closing a descriptor of our own.
-        let fd = unsafe { libc::open(c"/devices/null".as_ptr(), libc::O_RDONLY) };
-        if fd < 0 {
-            return Err(util::strip_os_error(&io::Error::last_os_error()));
+    let opened = sysapi::kernel::new_descriptor(|slot| {
+        ip::through_slots(|via| network::open_tunnel(&SYS, via, slot, index, flags))
+    });
+    match opened {
+        Ok(fd) => Ok(File::from(fd)),
+        Err(status) if sys::errno_of(status) == libc::EBUSY => {
+            Err("another program has the tunnel open".into())
         }
-        // SAFETY: `fd` was just opened here.
-        unsafe { libc::close(fd) };
-        let opened = ip::through_slots(|slot| {
-            network::open_tunnel(&SYS, slot, sys::slot_of(fd), index, flags)
-        });
-        match opened {
-            // SAFETY: the kernel put the tunnel's file in descriptor
-            // `fd`'s slot, which nothing else owns.
-            Ok(()) => return Ok(unsafe { File::from_raw_fd(fd) }),
-            // Another thread took the descriptor: try the next.
-            Err(status)
-                if radix_abi::errors::Kernel::from_status(status)
-                    == Some(radix_abi::errors::Kernel::Occupied) => {}
-            Err(status) if sys::errno_of(status) == libc::EBUSY => {
-                return Err("another program has the tunnel open".into());
-            }
-            Err(status) => return Err(format!("opening the tunnel: {}", refused(status))),
-        }
+        Err(status) => Err(format!("opening the tunnel: {}", refused(status))),
     }
 }
 

@@ -29,7 +29,6 @@ use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use manifest::service::Stop;
 use serde::Serialize;
@@ -43,6 +42,7 @@ use crate::power::{self, CONTROL};
 use crate::proc::{self, Process};
 use crate::util::{self, Fail, fail, fail_with, usage};
 use crate::{servicefiles, servicetry, timerd};
+use sysapi::signal::{self, Caught};
 
 const USAGE: &str = "Usage: service list [--failed] [--json] [--timers]
        service NAME status [-n LINES | --json]
@@ -77,15 +77,11 @@ const NAMES_SHOWN: usize = 3;
 const TCP_TABLES: [&str; 2] = ["/processes/net/tcp", "/processes/net/tcp6"];
 
 /// Whether SIGINT came while a start, stop or restart was waiting.
-static INTERRUPTED: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_interrupt(_: libc::c_int) {
-    INTERRUPTED.store(true, Ordering::Relaxed);
-}
+static INTERRUPTED: Caught = Caught::new();
 
 /// Whether SIGINT came since a start, stop or restart began to wait.
 pub(crate) fn sigint_came() -> bool {
-    INTERRUPTED.load(Ordering::Relaxed)
+    INTERRUPTED.is_set()
 }
 
 /// Sends `request`, and fails with what Spark said if it refused.
@@ -233,13 +229,9 @@ pub(crate) fn change(verb: &str, name: &str, options: &[String]) -> Result<i32, 
     }
     // Before the request goes, so that a SIGINT from then on ends the wait
     // and leaves the request going.
-    // SAFETY: all zeros is a valid sigaction: numbers, a signal set and a
-    // function address.
-    let mut action: libc::sigaction = unsafe { util::zeroed() };
-    action.sa_sigaction = on_interrupt as extern "C" fn(libc::c_int) as *const () as usize;
-    // SAFETY: the handler only stores to an atomic; without SA_RESTART the
-    // read that waits for Spark's next line ends when SIGINT comes.
-    unsafe { libc::sigaction(libc::SIGINT, &raw const action, std::ptr::null_mut()) };
+    // Without SA_RESTART the read that waits for Spark's next line ends
+    // when SIGINT comes.
+    let _ = signal::catch(libc::SIGINT, &INTERRUPTED, 0);
     let mut stream = UnixStream::connect(CONTROL).map_err(|e| util::failed(&CONTROL, e))?;
     stream.write_all(format!("{verb} {name} --wait\n").as_bytes())?;
     let _ = stream.shutdown(Shutdown::Write);
@@ -308,7 +300,7 @@ impl Lines {
                 let line: Vec<u8> = self.held.drain(..=at).collect();
                 return Ok(Some(String::from_utf8_lossy(&line[..at]).into_owned()));
             }
-            if INTERRUPTED.load(Ordering::Relaxed) {
+            if INTERRUPTED.is_set() {
                 return Err(io::ErrorKind::Interrupted.into());
             }
             match self.stream.read(&mut buffer) {
@@ -945,7 +937,7 @@ fn list(options: &[String]) -> Result<i32, Fail> {
     let wrong: Vec<&show::Service> = document.services.iter().filter(|s| not_as_asked(s)).collect();
     let listed: Vec<&show::Service> =
         if failed_only { wrong.clone() } else { document.services.iter().collect() };
-    let terminal = util::is_terminal(1);
+    let terminal = util::is_terminal(std::io::stdout());
     let mut out = io::stdout().lock();
     write!(out, "{}", list_text(&listed, &clock, terminal))?;
     if terminal && !failed_only && !wrong.is_empty() {
@@ -1009,7 +1001,7 @@ fn list_timers(json: bool) -> Result<i32, Fail> {
         return Ok(0);
     }
     let shown_at = |seconds: i64| util::local_time(seconds, "%Y-%m-%d %H:%M:%S");
-    print!("{}", timerd::show::table(&rows, &shown_at, util::is_terminal(1)));
+    print!("{}", timerd::show::table(&rows, &shown_at, util::is_terminal(std::io::stdout())));
     Ok(0)
 }
 

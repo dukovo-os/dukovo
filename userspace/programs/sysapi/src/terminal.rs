@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Terminals: their settings (termios), pseudo-terminals, the window
-//! size, and which terminal and session a descriptor is.
+//! size, input not yet read, which terminal and session a descriptor is,
+//! and the controlling terminal and its foreground.
 
 use std::ffi::OsStr;
 use std::io;
@@ -191,6 +192,45 @@ pub fn path(fd: impl AsFd) -> io::Result<PathBuf> {
     }
 }
 
+/// Drops what terminal `fd` received and nothing has read yet
+/// (tcflush(3) with TCIFLUSH): keys pressed before a prompt asked.
+///
+/// # Errors
+///
+/// ENOTTY when `fd` is not a terminal.
+pub fn drop_input(fd: impl AsFd) -> io::Result<()> {
+    // SAFETY: tcflush takes a descriptor held here and a number.
+    checked(unsafe { libc::tcflush(fd.as_fd().as_raw_fd(), libc::TCIFLUSH) })?;
+    Ok(())
+}
+
+/// Makes terminal `fd` the controlling terminal of this process's
+/// session (TIOCSCTTY), which this process leads and which has none: as
+/// a program that started a session does before it runs a shell there.
+///
+/// # Errors
+///
+/// EPERM when this process leads no session, or the session has a
+/// terminal already; ENOTTY when `fd` is not a terminal.
+pub fn take_control(fd: impl AsFd) -> io::Result<()> {
+    // SAFETY: TIOCSCTTY takes an integer argument, 0: do not take the
+    // terminal from another session.
+    checked(unsafe { libc::ioctl(fd.as_fd().as_raw_fd(), libc::TIOCSCTTY, 0) })?;
+    Ok(())
+}
+
+/// The foreground process group of terminal `fd` (tcgetpgrp(3)): the one
+/// its keys' signals go to.
+///
+/// # Errors
+///
+/// ENOTTY when `fd` is not this process's controlling terminal, nor the
+/// master of a pseudo-terminal.
+pub fn foreground_group(fd: impl AsFd) -> io::Result<Pid> {
+    // SAFETY: tcgetpgrp takes a descriptor held here.
+    checked(unsafe { libc::tcgetpgrp(fd.as_fd().as_raw_fd()) })
+}
+
 /// The session whose controlling terminal `fd` is, as tcgetsid(3) gives
 /// it.
 ///
@@ -205,8 +245,8 @@ pub fn session(fd: impl AsFd) -> io::Result<Pid> {
 #[cfg(test)]
 mod tests {
     use super::{
-        When, WindowSize, attributes, make_raw, open_pty, path, set_attributes, set_window_size,
-        window_size,
+        When, WindowSize, attributes, drop_input, foreground_group, make_raw, open_pty, path,
+        set_attributes, set_window_size, window_size,
     };
 
     #[test]
@@ -231,9 +271,32 @@ mod tests {
     }
 
     #[test]
+    fn input_not_read_is_dropped() {
+        let pty = open_pty(None).unwrap();
+        let mut settings = attributes(&pty.terminal).unwrap();
+        make_raw(&mut settings);
+        set_attributes(&pty.terminal, When::Now, &settings).unwrap();
+        crate::fd::write(&pty.master, b"typed ahead").unwrap();
+        assert!(
+            crate::poll::wait_readable(&pty.terminal, std::time::Duration::from_secs(5)).unwrap()
+        );
+        drop_input(&pty.terminal).unwrap();
+        let waiting = crate::poll::wait_readable(&pty.terminal, std::time::Duration::ZERO);
+        assert!(!waiting.unwrap(), "nothing is left to read");
+    }
+
+    #[test]
+    fn a_terminal_this_process_does_not_control_has_no_foreground_for_it() {
+        // tests/one_thread.rs takes control of one in a new session.
+        let pty = open_pty(None).unwrap();
+        assert_eq!(foreground_group(&pty.terminal).unwrap_err().raw_os_error(), Some(libc::ENOTTY));
+    }
+
+    #[test]
     fn a_pipe_is_no_terminal() {
         let (from, _to) = crate::fd::pipe().unwrap();
         assert_eq!(attributes(&from).unwrap_err().raw_os_error(), Some(libc::ENOTTY));
         assert_eq!(path(&from).unwrap_err().raw_os_error(), Some(libc::ENOTTY));
+        assert_eq!(drop_input(&from).unwrap_err().raw_os_error(), Some(libc::ENOTTY));
     }
 }

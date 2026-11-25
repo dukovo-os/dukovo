@@ -32,21 +32,25 @@
 //! through authd, which tells every administrator at their next sign-in,
 //! or restarts or powers off the computer.
 
-use std::ffi::{CString, OsString};
-use std::io::{self, BufRead, BufReader, Write};
+use std::ffi::OsString;
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::net::Shutdown;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
 use std::time::{Duration, Instant};
 
 use accounts::request::{Answer, Request};
 use accounts::wipe;
+use sysapi::fd::Standard;
+use sysapi::terminal;
 
 use crate::account::Input;
 use crate::args::{Arg, Args};
 use crate::reports::qr;
 use crate::util::{self, Fail, fail};
-use crate::{authd, prompt, signin};
+use crate::{authd, prompt};
 
 /// How long login waits for authd to answer at all, as at boot, when
 /// the consoles may come up before it.
@@ -83,7 +87,7 @@ fn send(request: &Request, terminal: bool) -> Result<UnixStream, Fail> {
     let stream = connect()?;
     let mut bytes = request.encode();
     let sent = if terminal {
-        signin::send_with_fds(&stream, &bytes, &[0])
+        sysapi::net::send_with_fds(&stream, &bytes, &[Standard::Input.fd()])
     } else {
         (&stream).write_all(&bytes)
     };
@@ -208,16 +212,9 @@ fn sign_in(
     }
     // The terminal is the session's now: login keeps none of it open, so
     // that it hangs up once the session's programs are done with it.
-    let null = c"/devices/null";
-    // SAFETY: opening /devices/null and putting it in place of the
-    // terminal on 0 to 2 touches only our descriptors.
-    unsafe {
-        let fd = libc::open(null.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
-        if fd >= 0 {
-            for target in 0..3 {
-                libc::dup2(fd, target);
-            }
-            libc::close(fd);
+    if let Ok(null) = File::options().read(true).write(true).open("/devices/null") {
+        for which in [Standard::Input, Standard::Output, Standard::Error] {
+            let _ = sysapi::fd::redirect(which, &null);
         }
     }
     // Then it waits for authd's word that the session ended, or for authd
@@ -397,7 +394,7 @@ fn page_lines(address: &str, columns: usize, rows: usize) -> Vec<String> {
 
 /// Shows the support page's QR code and address, and waits for a key.
 fn show_page(address: &str) {
-    let (columns, rows) = util::terminal_size(1).unwrap_or((80, 24));
+    let (columns, rows) = util::terminal_size(std::io::stdout()).unwrap_or((80, 24));
     println!();
     for line in page_lines(address, columns, rows) {
         println!("{line}");
@@ -495,46 +492,36 @@ fn console() -> Result<i32, Fail> {
 /// has one, becomes the session's, then the shell runs as a login shell
 /// in the home, or runs `command` if there is one.
 fn session(command: Option<OsString>) -> Result<i32, Fail> {
-    // SAFETY: setsid and the terminal request change only this process's
-    // session; authd made it in its own process group, so setsid works.
-    unsafe {
-        if libc::setsid() < 0 {
-            return Err(util::failed(&"setsid", io::Error::last_os_error()));
-        }
-        if libc::isatty(0) == 1 && libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
-            return Err(util::failed(&"the terminal", io::Error::last_os_error()));
-        }
-    }
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
-    if std::env::set_current_dir(&home).is_err() {
-        println!("No home {home}: starting in /.");
-        let _ = std::env::set_current_dir("/");
-        // SAFETY: one thread; nothing else reads the environment now.
-        unsafe { std::env::set_var("HOME", "/") };
+    // authd made the process in a group of its own, so it can start a
+    // session.
+    sysapi::process::new_session().map_err(|e| util::failed(&"setsid", e))?;
+    let input = Standard::Input.fd();
+    if input.is_terminal() {
+        terminal::take_control(input).map_err(|e| util::failed(&"the terminal", e))?;
     }
     let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty());
     let shell = shell.unwrap_or_else(|| accounts::SHELL.into());
     let base = shell.rsplit('/').next().unwrap_or("sh");
-    let nul = || fail("a shell path or command with a NUL".into());
-    let path = CString::new(shell.clone()).map_err(|_| nul())?;
-    let mut args = Vec::new();
-    match command {
+    let command = command.map(OsString::into_vec);
+    if shell.contains('\0') || command.as_ref().is_some_and(|c| c.contains(&0)) {
+        return Err(fail("a shell path or command with a NUL".into()));
+    }
+    let login_name = format!("-{base}");
+    let argv: Vec<&[u8]> = match &command {
         // A command runs with the shell's -c, the shell named as it is,
         // so that it reads no login files, as with Linux's sshd.
-        Some(command) => {
-            args.push(CString::new(base).map_err(|_| nul())?);
-            args.push(c"-c".to_owned());
-            args.push(CString::new(command.into_vec()).map_err(|_| nul())?);
-        }
+        Some(command) => vec![base.as_bytes(), b"-c", command],
         // A login shell's name starts with a dash (sh(1)).
-        None => args.push(CString::new(format!("-{base}")).map_err(|_| nul())?),
+        None => vec![login_name.as_bytes()],
+    };
+    let mut program = util::program(shell.as_bytes(), argv.into_iter());
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+    if std::env::set_current_dir(&home).is_err() {
+        println!("No home {home}: starting in /.");
+        let _ = std::env::set_current_dir("/");
+        program.env("HOME", "/");
     }
-    let mut argv: Vec<*const libc::c_char> = args.iter().map(|a| a.as_ptr()).collect();
-    argv.push(std::ptr::null());
-    // SAFETY: execv takes NUL-terminated strings and a null-ended list,
-    // which live until it returns, if it does.
-    unsafe { libc::execv(path.as_ptr(), argv.as_ptr()) };
-    Err(util::failed(&shell, io::Error::last_os_error()))
+    Err(util::failed(&shell, program.exec()))
 }
 
 /// login(1).

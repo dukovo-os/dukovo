@@ -3,8 +3,9 @@
 
 //! Processes, for what `std::process` has no call for: a fork, sessions and
 //! a controlling terminal, waiting for and signalling a child by number,
-//! the process's ids, a thread's name as the system keeps it, its
-//! environment while it has one thread, and a fault on purpose.
+//! the process's ids, its scheduling priority and limits, a thread's name
+//! as the system keeps it, its environment while it has one thread, and a
+//! fault on purpose.
 //!
 //! A fork, and a change to the environment, are sound only in a process
 //! with one thread: a fork copies only the thread that calls it, so a lock
@@ -130,15 +131,60 @@ pub fn wait(pid: Pid) -> io::Result<ExitStatus> {
     }
 }
 
+/// How child `pid` ended, if it has, which takes it out of the process
+/// table; none while it runs.
+///
+/// # Errors
+///
+/// ECHILD when `pid` is not a child of this process.
+pub fn try_wait(pid: Pid) -> io::Result<Option<ExitStatus>> {
+    let mut status = 0;
+    // SAFETY: waitpid writes the child's status into `status`; WNOHANG
+    // returns at once while it runs.
+    let reaped = checked(unsafe { libc::waitpid(pid, &raw mut status, libc::WNOHANG) })?;
+    Ok((reaped > 0).then(|| ExitStatus::from_raw(status)))
+}
+
+/// Waits for any child of this process to end, and returns which and
+/// how. A signal that interrupts the wait does not end it.
+///
+/// # Errors
+///
+/// ECHILD when this process has no child.
+pub fn wait_any() -> io::Result<(Pid, ExitStatus)> {
+    let mut status = 0;
+    loop {
+        // SAFETY: waitpid writes the status of the child it reaps into
+        // `status`.
+        match checked(unsafe { libc::waitpid(-1, &raw mut status, 0) }) {
+            Ok(pid) => return Ok((pid, ExitStatus::from_raw(status))),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// A child of this process that has ended, with how it ended, which it
 /// takes out of the process table; none when no child has ended yet, or
 /// this process has none.
 #[must_use]
 pub fn reap() -> Option<(Pid, ExitStatus)> {
+    reap_with(libc::WNOHANG)
+}
+
+/// As [`reap`], and a child that a signal stopped too, which stays in the
+/// table: its status's `stopped_signal` (`ExitStatusExt`) says which
+/// signal, as a shell sees Ctrl+Z stop a job.
+#[must_use]
+pub fn reap_or_stopped() -> Option<(Pid, ExitStatus)> {
+    reap_with(libc::WNOHANG | libc::WUNTRACED)
+}
+
+fn reap_with(options: libc::c_int) -> Option<(Pid, ExitStatus)> {
     let mut status = 0;
-    // SAFETY: waitpid writes the status of the child it reaps into
-    // `status`; WNOHANG returns at once when none has ended.
-    let pid = unsafe { libc::waitpid(-1, &raw mut status, libc::WNOHANG) };
+    // SAFETY: waitpid writes the status of the child it reports into
+    // `status`; WNOHANG returns at once when there is none.
+    let pid = unsafe { libc::waitpid(-1, &raw mut status, options) };
     (pid > 0).then(|| (pid, ExitStatus::from_raw(status)))
 }
 
@@ -179,6 +225,111 @@ pub fn thread_name() -> io::Result<Vec<u8>> {
         0 => Ok(crate::field_bytes(&name)),
         errno => Err(io::Error::from_raw_os_error(errno)),
     }
+}
+
+/// Names the calling thread, as `std::thread::Builder::name` names a
+/// thread it starts: the system keeps the first 15 bytes, which ps(1) and
+/// a crash report show.
+///
+/// # Errors
+///
+/// `ErrorKind::InvalidInput` for a name with a NUL byte.
+pub fn set_thread_name(name: &str) -> io::Result<()> {
+    let mut end = name.len().min(15);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    let name = crate::c_string(&name.as_bytes()[..end])?;
+    // SAFETY: the name is a C string of at most 15 bytes, which
+    // pthread_setname_np copies.
+    match unsafe { libc::pthread_setname_np(libc::pthread_self(), name.as_ptr()) } {
+        0 => Ok(()),
+        errno => Err(io::Error::from_raw_os_error(errno)),
+    }
+}
+
+/// Which processes [`priority`] and [`set_priority`] are of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Who {
+    /// Process `n`, or this one for 0 (PRIO_PROCESS).
+    Process(u32),
+    /// The processes of process group `n`, or of this one's for 0
+    /// (PRIO_PGRP).
+    Group(u32),
+    /// The processes of user `n`, or of this one's real user for 0
+    /// (PRIO_USER).
+    User(u32),
+}
+
+impl Who {
+    fn which(self) -> (libc::c_int, libc::id_t) {
+        match self {
+            Who::Process(n) => (libc::PRIO_PROCESS as libc::c_int, n),
+            Who::Group(n) => (libc::PRIO_PGRP as libc::c_int, n),
+            Who::User(n) => (libc::PRIO_USER as libc::c_int, n),
+        }
+    }
+}
+
+/// The nice value of `who`, from -20 to 19, as getpriority(2) gives it:
+/// the highest of their priorities, the lowest number, for several.
+///
+/// # Errors
+///
+/// ESRCH when there is no such process.
+pub fn priority(who: Who) -> io::Result<i32> {
+    let (which, id) = who.which();
+    // getpriority may return -1 as a value, so errno tells a failure.
+    // SAFETY: __errno_location gives this thread's errno.
+    unsafe { *libc::__errno_location() = 0 };
+    // SAFETY: getpriority takes two integers.
+    let value = unsafe { libc::getpriority(which as _, id) };
+    match io::Error::last_os_error() {
+        error if value == -1 && error.raw_os_error() != Some(0) => Err(error),
+        _ => Ok(value),
+    }
+}
+
+/// Sets the nice value of `who` to `value`, as setpriority(2) does: from
+/// -20, the most CPU time, to 19, the least.
+///
+/// # Errors
+///
+/// ESRCH when there is no such process; EACCES or EPERM to raise a
+/// priority without the right, or to change another user's.
+pub fn set_priority(who: Who, value: i32) -> io::Result<()> {
+    let (which, id) = who.which();
+    // SAFETY: setpriority takes three integers.
+    checked(unsafe { libc::setpriority(which as _, id, value) })?;
+    Ok(())
+}
+
+/// A limit of this process's (getrlimit(2)): its soft limit, which the
+/// kernel holds it to, and the hard limit it may raise the soft one to;
+/// `u64::MAX` is no limit.
+///
+/// # Errors
+///
+/// EINVAL for a number that is no resource.
+pub fn limit(resource: libc::c_int) -> io::Result<(u64, u64)> {
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: getrlimit writes the rlimit it is given.
+    checked(unsafe { libc::getrlimit(resource as _, &raw mut limit) })?;
+    Ok((limit.rlim_cur, limit.rlim_max))
+}
+
+/// Sets a limit of this process's, `soft` and `hard`, as setrlimit(2)
+/// does; its children inherit it.
+///
+/// # Errors
+///
+/// EINVAL for a number that is no resource or a soft limit above the hard
+/// one, and EPERM to raise the hard limit without the right.
+pub fn set_limit(resource: libc::c_int, soft: u64, hard: u64) -> io::Result<()> {
+    let limit = libc::rlimit { rlim_cur: soft, rlim_max: hard };
+    // SAFETY: setrlimit reads the rlimit it is given.
+    checked(unsafe { libc::setrlimit(resource as _, &raw const limit) })?;
+    Ok(())
 }
 
 /// This process's real user id.
@@ -263,6 +414,42 @@ fn valid_name(name: &OsStr) -> io::Result<()> {
     Ok(())
 }
 
+/// The registers that place the calling function's frame: where it runs,
+/// its stack pointer and its frame pointer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Registers {
+    /// The instruction pointer (rip).
+    pub pc: u64,
+    /// The stack pointer (rsp).
+    pub sp: u64,
+    /// The frame pointer (rbp).
+    pub fp: u64,
+}
+
+/// The calling function's [`Registers`], for a test of an unwinder that
+/// starts from a real frame, as a crash report starts from a fault's. It
+/// is always inlined, so they are of the caller's own frame.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+#[must_use]
+pub fn registers() -> Registers {
+    let (pc, sp, fp): (u64, u64, u64);
+    // SAFETY: reads three registers into three outputs, and writes no
+    // memory and no other register.
+    unsafe {
+        std::arch::asm!(
+            "lea {pc}, [rip]",
+            "mov {sp}, rsp",
+            "mov {fp}, rbp",
+            pc = out(reg) pc,
+            sp = out(reg) sp,
+            fp = out(reg) fp,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    Registers { pc, sp, fp }
+}
+
 /// Writes to address 0, which nothing maps, so that the kernel ends the
 /// process with SIGSEGV where this is called; for the test programs of
 /// crash reports. It is always inlined, so the fault is in the caller's
@@ -279,13 +466,69 @@ pub fn fault() -> ! {
 
 #[cfg(test)]
 mod tests {
-    use super::{euid, fork, set_env, thread_count, thread_name, uid};
+    use super::{
+        Who, euid, fork, kill, limit, priority, set_env, set_limit, set_priority, set_thread_name,
+        thread_count, thread_name, try_wait, uid,
+    };
     use std::ffi::OsStr;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::Command;
 
     #[test]
     fn a_thread_has_the_name_it_was_given() {
         let named = std::thread::Builder::new().name("sysapi-named".into()).spawn(thread_name);
         assert_eq!(named.unwrap().join().unwrap().unwrap(), b"sysapi-named");
+    }
+
+    #[test]
+    fn a_thread_names_itself_with_at_most_15_bytes() {
+        let named = std::thread::spawn(|| {
+            set_thread_name("sysapi-a-long-name").unwrap();
+            thread_name().unwrap()
+        });
+        assert_eq!(named.join().unwrap(), b"sysapi-a-long-n");
+        assert!(set_thread_name("a\0b").is_err());
+    }
+
+    #[test]
+    #[expect(clippy::zombie_processes, reason = "try_wait reaps it by its number")]
+    fn a_child_is_waited_for_by_number_without_blocking() {
+        let child = Command::new("sleep").arg("10").spawn().unwrap();
+        let pid = child.id() as i32;
+        assert_eq!(try_wait(pid).unwrap(), None, "it still runs");
+        set_priority(Who::Process(child.id()), 10).unwrap();
+        assert_eq!(priority(Who::Process(child.id())).unwrap(), 10);
+        kill(pid, libc::SIGKILL).unwrap();
+        let status = loop {
+            if let Some(status) = try_wait(pid).unwrap() {
+                break status;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
+        assert_eq!(try_wait(pid).unwrap_err().raw_os_error(), Some(libc::ECHILD));
+    }
+
+    #[test]
+    fn a_limit_reads_back_as_it_was_set() {
+        let (soft, hard) = limit(libc::RLIMIT_NOFILE as libc::c_int).unwrap();
+        assert!(soft <= hard);
+        set_limit(libc::RLIMIT_NOFILE as libc::c_int, soft, hard).unwrap();
+        assert_eq!(limit(libc::RLIMIT_NOFILE as libc::c_int).unwrap(), (soft, hard));
+        let error = set_limit(libc::RLIMIT_NOFILE as libc::c_int, hard, soft.min(hard));
+        assert!(soft == hard || error.is_err(), "a soft limit above the hard one");
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn the_registers_are_of_the_caller_s_frame() {
+        let local = 0u8;
+        let at = std::ptr::from_ref(&local) as u64;
+        let here = super::registers();
+        // The local is in this frame, above its stack pointer and near it.
+        assert!(here.sp <= at && at - here.sp < 4096, "{here:x?} {at:#x}");
+        let this = the_registers_are_of_the_caller_s_frame as fn() as usize as u64;
+        assert!(here.pc > this && here.pc - this < 4096, "{here:x?} {this:#x}");
     }
 
     #[test]

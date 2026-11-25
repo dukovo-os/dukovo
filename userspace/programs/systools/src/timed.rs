@@ -40,7 +40,6 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs, UdpSocket};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -54,6 +53,7 @@ use rustls::crypto::ring as provider;
 use rustls::pki_types::UnixTime;
 use rustls::time_provider::TimeProvider;
 use rustls::{CertificateError, ClientConfig, RootCertStore};
+use sysapi::signal::{self, Caught};
 
 use crate::args::Args;
 use crate::sys::SYS;
@@ -96,16 +96,8 @@ const COOKIES: usize = 8;
 /// root delay plus its root dispersion, is past this (NTP's MAXDIST).
 const MAX_DISTANCE_NS: i128 = 1_500_000_000;
 
-static STOP: AtomicBool = AtomicBool::new(false);
-static RELOAD: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_term(_: libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-}
-
-extern "C" fn on_hangup(_: libc::c_int) {
-    RELOAD.store(true, Ordering::Relaxed);
-}
+static STOP: Caught = Caught::new();
+static RELOAD: Caught = Caught::new();
 
 /// What timed(5) says.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -674,8 +666,7 @@ fn write_file(path: &str, text: &str) -> bool {
 /// Sleeps for `time`, or until a signal asks for something.
 fn sleep(time: Duration) {
     let until = Instant::now() + time;
-    while Instant::now() < until && !STOP.load(Ordering::Relaxed) && !RELOAD.load(Ordering::Relaxed)
-    {
+    while Instant::now() < until && !STOP.is_set() && !RELOAD.is_set() {
         thread::sleep(Duration::from_secs(1).min(until.saturating_duration_since(Instant::now())));
     }
 }
@@ -685,15 +676,8 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     if let Some(arg) = args.next()? {
         return Err(args.unknown(&arg));
     }
-    for (signal, handler) in
-        [(libc::SIGTERM, on_term as extern "C" fn(libc::c_int)), (libc::SIGHUP, on_hangup)]
-    {
-        // SAFETY: all zeros is a valid sigaction: numbers, a signal set
-        // and a function address.
-        let mut action: libc::sigaction = unsafe { util::zeroed() };
-        action.sa_sigaction = handler as *const () as usize;
-        // SAFETY: the handlers only store to an atomic.
-        unsafe { libc::sigaction(signal, &raw const action, std::ptr::null_mut()) };
+    for (number, caught) in [(libc::SIGTERM, &STOP), (libc::SIGHUP, &RELOAD)] {
+        let _ = signal::catch(number, caught, 0);
     }
     if clock::state(&SYS, SLOT_CLOCK).is_err() {
         return Err(util::fail(
@@ -715,8 +699,8 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     timed.read_settings();
     Timed::not_before_last();
     let mut poll = POLL_MIN;
-    while !STOP.load(Ordering::Relaxed) {
-        if RELOAD.swap(false, Ordering::Relaxed) {
+    while !STOP.is_set() {
+        if RELOAD.take() {
             println!("timed: reading {SETTINGS} again");
             timed.read_settings();
             poll = POLL_MIN;

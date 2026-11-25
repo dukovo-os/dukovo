@@ -3,10 +3,13 @@
 
 //! Files, for what `std::fs` has no call for: extended attributes, device
 //! nodes and named pipes, times set by path without opening the file, the
-//! kernel's access check, and what a filesystem has room for.
+//! kernel's access check, what a filesystem has room for, a file's lock,
+//! and a copy that shares its data.
 
-use std::ffi::c_void;
+use std::ffi::{OsStr, OsString, c_void};
 use std::io;
+use std::os::fd::{AsFd, AsRawFd};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::Path;
 
 use libc::{c_char, c_int};
@@ -32,10 +35,13 @@ unsafe extern "C" {
         flags: c_int,
     ) -> c_int;
     fn removexattr(path: *const c_char, name: *const c_char) -> c_int;
+    fn listxattr(path: *const c_char, list: *mut c_char, size: usize) -> isize;
+    fn llistxattr(path: *const c_char, list: *mut c_char, size: usize) -> isize;
 }
 
-/// The largest value of an extended attribute, as on Linux
-/// (XATTR_SIZE_MAX).
+/// The largest value of an extended attribute, and the longest list of
+/// a file's attributes' names, as on Linux (XATTR_SIZE_MAX and
+/// XATTR_LIST_MAX).
 const XATTR_SIZE_MAX: usize = 65536;
 
 /// What a call on a path that ends in a symbolic link acts on.
@@ -53,32 +59,60 @@ pub enum Link {
 ///
 /// ENODATA when the file has no such attribute, EOPNOTSUPP when its
 /// filesystem keeps none, and what finding the file fails with.
-pub fn xattr(path: &Path, name: &str, link: Link) -> io::Result<Vec<u8>> {
+pub fn xattr(path: &Path, name: impl AsRef<OsStr>, link: Link) -> io::Result<Vec<u8>> {
     let path = c_path(path)?;
-    let name = c_string(name.as_bytes())?;
-    let mut value = vec![0u8; 256];
+    let name = c_string(name.as_ref().as_bytes())?;
+    let get = match link {
+        Link::Follow => getxattr,
+        Link::Itself => lgetxattr,
+    };
+    // SAFETY: the path and name are C strings, and the call writes at most
+    // `value.len()` bytes into `value`.
+    filled(|value| unsafe {
+        get(path.as_ptr(), name.as_ptr(), value.as_mut_ptr().cast(), value.len())
+    })
+}
+
+/// The names of `path`'s extended attributes, in the order the
+/// filesystem keeps them.
+///
+/// # Errors
+///
+/// EOPNOTSUPP when its filesystem keeps none, and what finding the file
+/// fails with.
+pub fn xattr_names(path: &Path, link: Link) -> io::Result<Vec<OsString>> {
+    let path = c_path(path)?;
+    let list = match link {
+        Link::Follow => listxattr,
+        Link::Itself => llistxattr,
+    };
+    // SAFETY: the path is a C string, and the call writes at most
+    // `names.len()` bytes into `names`.
+    let names =
+        filled(|names| unsafe { list(path.as_ptr(), names.as_mut_ptr().cast(), names.len()) })?;
+    // The names follow one another, each ended by a NUL.
+    Ok(names
+        .split(|&byte| byte == 0)
+        .filter(|name| !name.is_empty())
+        .map(|name| OsString::from_vec(name.to_vec()))
+        .collect())
+}
+
+/// The bytes `call` writes into a buffer it is given, growing the buffer
+/// while it fails with ERANGE, up to the largest a value or a list of
+/// names can be: what it gives may have grown between two tries.
+fn filled(mut call: impl FnMut(&mut [u8]) -> isize) -> io::Result<Vec<u8>> {
+    let mut buffer = vec![0u8; 256];
     loop {
-        // SAFETY: the path and name are C strings, and the call writes at
-        // most `value.len()` bytes into `value`.
-        let n = unsafe {
-            let get = match link {
-                Link::Follow => getxattr,
-                Link::Itself => lgetxattr,
-            };
-            get(path.as_ptr(), name.as_ptr(), value.as_mut_ptr().cast(), value.len())
-        };
-        if let Ok(n) = usize::try_from(n) {
-            value.truncate(n);
-            return Ok(value);
+        if let Ok(n) = usize::try_from(call(&mut buffer)) {
+            buffer.truncate(n);
+            return Ok(buffer);
         }
         let error = io::Error::last_os_error();
-        // ERANGE: the value is longer than the buffer, and may have grown
-        // since the last try, so the buffer grows to the largest a value
-        // can be.
-        if error.raw_os_error() != Some(libc::ERANGE) || value.len() >= XATTR_SIZE_MAX {
+        if error.raw_os_error() != Some(libc::ERANGE) || buffer.len() >= XATTR_SIZE_MAX {
             return Err(error);
         }
-        value.resize((value.len() * 4).min(XATTR_SIZE_MAX), 0);
+        buffer.resize((buffer.len() * 4).min(XATTR_SIZE_MAX), 0);
     }
 }
 
@@ -89,9 +123,9 @@ pub fn xattr(path: &Path, name: &str, link: Link) -> io::Result<Vec<u8>> {
 ///
 /// EOPNOTSUPP when the file's filesystem keeps no extended attributes,
 /// EPERM or EACCES when the caller may not set it.
-pub fn set_xattr(path: &Path, name: &str, value: &[u8]) -> io::Result<()> {
+pub fn set_xattr(path: &Path, name: impl AsRef<OsStr>, value: &[u8]) -> io::Result<()> {
     let path = c_path(path)?;
-    let name = c_string(name.as_bytes())?;
+    let name = c_string(name.as_ref().as_bytes())?;
     // SAFETY: C strings, and the value's bytes with their length, which
     // the call only reads.
     checked(unsafe {
@@ -106,9 +140,9 @@ pub fn set_xattr(path: &Path, name: &str, value: &[u8]) -> io::Result<()> {
 ///
 /// ENODATA when the file has no such attribute, EOPNOTSUPP when its
 /// filesystem keeps none.
-pub fn remove_xattr(path: &Path, name: &str) -> io::Result<()> {
+pub fn remove_xattr(path: &Path, name: impl AsRef<OsStr>) -> io::Result<()> {
     let path = c_path(path)?;
-    let name = c_string(name.as_bytes())?;
+    let name = c_string(name.as_ref().as_bytes())?;
     // SAFETY: two C strings, which the call only reads.
     checked(unsafe { removexattr(path.as_ptr(), name.as_ptr()) })?;
     Ok(())
@@ -189,6 +223,41 @@ pub fn set_times(path: &Path, access: Time, modification: Time, link: Link) -> i
     Ok(())
 }
 
+/// Sets the permissions of what `fd` holds to `mode` (fchmod(2)), as
+/// `File::set_permissions` does for a file, for a folder or a descriptor
+/// that is no `File`.
+///
+/// # Errors
+///
+/// EPERM when this process does not own it.
+pub fn set_mode(fd: impl AsFd, mode: libc::mode_t) -> io::Result<()> {
+    // SAFETY: fchmod takes a descriptor held here and a number.
+    checked(unsafe { libc::fchmod(fd.as_fd().as_raw_fd(), mode) })?;
+    Ok(())
+}
+
+/// Whether this process's real user and groups may `mode` `path` (`R_OK`,
+/// `W_OK`, `X_OK` or several), as access(2) checks it: as which(1) asks
+/// whether a file runs. A path the caller cannot reach is false.
+#[must_use]
+pub fn access(path: &Path, mode: c_int) -> bool {
+    check_access(path, mode).is_ok()
+}
+
+/// What access(2) says of `mode` on `path` for this process's real user
+/// and groups, with its reason when it refuses: `EROFS` when the
+/// filesystem refuses every writer, before it looks at who asks.
+///
+/// # Errors
+///
+/// The refusal, or what finding `path` fails with.
+pub fn check_access(path: &Path, mode: c_int) -> io::Result<()> {
+    let path = c_path(path)?;
+    // SAFETY: the path is a C string, which the call only reads.
+    checked(unsafe { libc::access(path.as_ptr(), mode) })?;
+    Ok(())
+}
+
 /// Whether the kernel lets this process `mode` `path` (`R_OK`, `W_OK`,
 /// `X_OK` or several), for its effective user and groups, as a server that
 /// runs as its client checks before it acts (faccessat with AT_EACCESS).
@@ -216,9 +285,71 @@ pub fn statvfs(path: &Path) -> io::Result<libc::statvfs> {
     Ok(stats)
 }
 
+/// How a lock is held: by one holder, or by any number of holders at
+/// once, none of whom holds it alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lock {
+    /// Held by any number at once (LOCK_SH), to read.
+    Shared,
+    /// Held by one alone (LOCK_EX), to change.
+    Exclusive,
+}
+
+/// Takes a lock on `file` as flock(2) does: one that the open file holds,
+/// with every descriptor that shares it, until it is unlocked or the last
+/// of them closes. With `wait`, waits while another holds a lock that
+/// conflicts with it; without, fails at once.
+///
+/// # Errors
+///
+/// EWOULDBLOCK (`ErrorKind::WouldBlock`) without `wait` when another
+/// holds it; EINTR when a signal ends the wait.
+pub fn lock(file: impl AsFd, lock: Lock, wait: bool) -> io::Result<()> {
+    let operation = match lock {
+        Lock::Shared => libc::LOCK_SH,
+        Lock::Exclusive => libc::LOCK_EX,
+    } | if wait { 0 } else { libc::LOCK_NB };
+    // SAFETY: flock takes a descriptor held here and a number.
+    checked(unsafe { libc::flock(file.as_fd().as_raw_fd(), operation) })?;
+    Ok(())
+}
+
+/// Lets go of the lock on `file` that [`lock`] took.
+///
+/// # Errors
+///
+/// None in practice for an open file.
+pub fn unlock(file: impl AsFd) -> io::Result<()> {
+    // SAFETY: flock takes a descriptor held here and a number.
+    checked(unsafe { libc::flock(file.as_fd().as_raw_fd(), libc::LOCK_UN) })?;
+    Ok(())
+}
+
+/// Linux's FICLONE, which Radix takes too (ADR 0139).
+const FICLONE: libc::Ioctl = 0x4004_9409;
+
+/// Gives `to`, open to write, the data of `from`, open to read, without
+/// copying it: the two share it until one changes, as `cp --reflink`
+/// does (FICLONE).
+///
+/// # Errors
+///
+/// EOPNOTSUPP or EINVAL when the filesystem makes no such copies, or not
+/// of these two; EXDEV when they are on different filesystems. The
+/// caller copies the bytes then.
+pub fn clone_data(to: impl AsFd, from: impl AsFd) -> io::Result<()> {
+    // SAFETY: FICLONE takes the source's descriptor as its argument, an
+    // integer, and reads no memory of the caller's.
+    checked(unsafe { libc::ioctl(to.as_fd().as_raw_fd(), FICLONE, from.as_fd().as_raw_fd()) })?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Link, Time, make_fifo, may_access, set_times, statvfs};
+    use super::{
+        Link, Lock, Time, access, check_access, lock, make_fifo, may_access, set_mode, set_times,
+        statvfs, unlock, xattr, xattr_names,
+    };
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
 
     fn scratch(name: &str) -> std::path::PathBuf {
@@ -254,10 +385,60 @@ mod tests {
     }
 
     #[test]
+    fn a_mode_set_on_a_descriptor_is_what_access_sees() {
+        let dir = scratch("mode");
+        let path = dir.join("program");
+        let file = std::fs::File::create(&path).unwrap();
+        set_mode(&file, 0o700).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().mode() & 0o777, 0o700);
+        assert!(access(&path, libc::X_OK) || crate::process::uid() == 0);
+        set_mode(&file, 0o600).unwrap();
+        // Root may run a file only when someone may.
+        assert!(!access(&path, libc::X_OK));
+        assert!(!access(std::path::Path::new("a\0b"), libc::R_OK));
+        let refused = check_access(&path, libc::X_OK).map_err(|e| e.raw_os_error());
+        assert_eq!(refused, Err(Some(libc::EACCES)));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn a_path_with_a_nul_byte_is_refused() {
         let error = make_fifo(std::path::Path::new("a\0b"), 0o600).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
         assert!(!may_access(std::path::Path::new("a\0b"), libc::R_OK));
+    }
+
+    #[test]
+    fn a_lock_held_alone_keeps_out_another_until_it_is_let_go() {
+        let dir = scratch("lock");
+        let path = dir.join("file");
+        std::fs::write(&path, b"").unwrap();
+        let (first, second) =
+            (std::fs::File::open(&path).unwrap(), std::fs::File::open(&path).unwrap());
+        lock(&first, Lock::Exclusive, false).unwrap();
+        let held = lock(&second, Lock::Shared, false).unwrap_err();
+        assert_eq!(held.kind(), std::io::ErrorKind::WouldBlock);
+        unlock(&first).unwrap();
+        lock(&second, Lock::Shared, false).unwrap();
+        lock(&first, Lock::Shared, false).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_without_attributes_lists_none() {
+        let dir = scratch("xattr");
+        let path = dir.join("file");
+        std::fs::write(&path, b"").unwrap();
+        // The build machine's temporary folder may keep attributes or not.
+        match xattr_names(&path, Link::Itself) {
+            Ok(names) => {
+                assert!(names.iter().all(|name| !name.as_encoded_bytes().starts_with(b"user.")));
+            }
+            Err(error) => assert_eq!(error.raw_os_error(), Some(libc::EOPNOTSUPP)),
+        }
+        let missing = xattr(&path, "user.sysapi-none", Link::Itself).unwrap_err();
+        assert!(matches!(missing.raw_os_error(), Some(libc::ENODATA | libc::EOPNOTSUPP)));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

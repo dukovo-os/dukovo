@@ -49,6 +49,7 @@ pub(crate) use connection::validity;
 use connection::{Connection, Transport};
 use forward::Places;
 use settings::Destination;
+use sysapi::signal::{self, Caught};
 
 use crate::args::{Arg, Args};
 use crate::logd;
@@ -64,16 +65,8 @@ const WATCH: Duration = Duration::from_millis(100);
 /// certificate it refuses after the handshake is done.
 const TEST_WAIT: Duration = Duration::from_millis(250);
 
-static STOP: AtomicBool = AtomicBool::new(false);
-static RELOAD: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_term(_: libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-}
-
-extern "C" fn on_hangup(_: libc::c_int) {
-    RELOAD.store(true, Ordering::Relaxed);
-}
+static STOP: Caught = Caught::new();
+static RELOAD: Caught = Caught::new();
 
 /// logforward(8).
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
@@ -119,19 +112,12 @@ fn run(args: &mut Args) -> Result<i32, Fail> {
     if let Some(arg) = args.next()? {
         return Err(args.unknown(&arg));
     }
-    for (signal, handler) in
-        [(libc::SIGTERM, on_term as extern "C" fn(libc::c_int)), (libc::SIGHUP, on_hangup)]
-    {
-        // SAFETY: all zeros is a valid sigaction: numbers, a signal set
-        // and a function address.
-        let mut action: libc::sigaction = unsafe { util::zeroed() };
-        action.sa_sigaction = handler as *const () as usize;
-        // SAFETY: the handlers only store to an atomic.
-        unsafe { libc::sigaction(signal, &raw const action, std::ptr::null_mut()) };
+    for (number, caught) in [(libc::SIGTERM, &STOP), (libc::SIGHUP, &RELOAD)] {
+        let _ = signal::catch(number, caught, 0);
     }
     let places = Places::system();
-    while !STOP.load(Ordering::Relaxed) {
-        RELOAD.store(false, Ordering::Relaxed);
+    while !STOP.is_set() {
+        RELOAD.take();
         let destinations = read_destinations();
         let names: Vec<&str> = destinations.iter().map(|d| d.name.as_str()).collect();
         status::remove_others(&places.status, &names);
@@ -167,7 +153,7 @@ fn read_destinations() -> Vec<Destination> {
 }
 
 fn wait_for_signal() {
-    while !STOP.load(Ordering::Relaxed) && !RELOAD.load(Ordering::Relaxed) {
+    while !STOP.is_set() && !RELOAD.is_set() {
         thread::sleep(WATCH);
     }
 }
@@ -201,7 +187,7 @@ fn serve(destinations: &[Destination], places: &Places) {
     stop.store(true, Ordering::Relaxed);
     let mut give_up = None;
     while running > 0 {
-        if STOP.load(Ordering::Relaxed) {
+        if STOP.is_set() {
             give_up.get_or_insert_with(|| Instant::now() + STOP_WAIT);
         }
         if give_up.is_some_and(|at| Instant::now() >= at) {

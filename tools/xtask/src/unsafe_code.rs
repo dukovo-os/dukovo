@@ -46,7 +46,7 @@ const ALLOWED: &[&str] = &[
 /// `sysapi` and leaves this list (ADR 0730), which only shrinks: the check
 /// fails when a crate here forbids `unsafe` in every target, so that the
 /// line goes with the last call.
-const NOT_YET: &[&str] = &["systools", "nukesh", "lab-writer", "linux-bench"];
+const NOT_YET: &[&str] = &["nukesh", "lab-writer", "linux-bench"];
 
 /// The line every target of a crate outside [`ALLOWED`] starts with.
 const FORBID: &str = "#![forbid(unsafe_code)]";

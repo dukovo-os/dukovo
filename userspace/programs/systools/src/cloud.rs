@@ -668,15 +668,11 @@ fn set_hostname(name: &str, dry_run: bool) -> bool {
     if dry_run {
         return true;
     }
-    // SAFETY: the pointer and length are the name's own bytes.
-    let set = unsafe { libc::sethostname(name.as_ptr().cast(), name.len() as _) };
-    if set != 0 {
-        say!(
-            "cannot name the machine {name}: {}",
-            util::strip_os_error(&io::Error::last_os_error())
-        );
+    let set = sysapi::system::set_host_name(name);
+    if let Err(error) = &set {
+        say!("cannot name the machine {name}: {}", util::strip_os_error(error));
     }
-    set == 0
+    set.is_ok()
 }
 
 /// Writes the network(5) file for the configuration `text`, and has netd

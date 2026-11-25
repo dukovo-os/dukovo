@@ -9,7 +9,7 @@
 //! ends as `exited`.
 
 use std::io;
-use std::os::fd::AsRawFd;
+use std::os::fd::AsFd;
 use std::rc::Rc;
 
 use accounts::console::Console;
@@ -71,7 +71,7 @@ pub async fn start(shared: &Shared, asked: &Asked<'_>) -> Result<Started, Failur
         // The machine's language: the console's own words are English.
         language: Vec::new(),
     };
-    let answer = authd::ask(&shared.authd, request, &[terminal.as_raw_fd()]).await;
+    let answer = authd::ask(&shared.authd, request, &[terminal.as_fd()]).await;
     // The shell holds the terminal now, if it started.
     drop(terminal);
     let process = match answer.map_err(|why| Failure::new(Kind::AuthdSilent, why))?.0 {

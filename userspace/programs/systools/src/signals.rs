@@ -6,18 +6,15 @@
 
 use std::io::{self, Write};
 
+use sysapi::process;
+
 use crate::args::{Arg, Args};
 use crate::proc::{self, Process};
 use crate::util::{self, Fail, Regex, fail, usage};
 
 /// Sends `signal` to process `pid` (a group if negative).
 fn send(pid: i64, signal: i32) -> io::Result<()> {
-    // SAFETY: kill reads nothing of the program's.
-    if unsafe { libc::kill(pid as libc::pid_t, signal) } == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
+    process::kill(pid as libc::pid_t, signal)
 }
 
 /// Lists the signals: their names in a row, or with `table` a table of

@@ -30,15 +30,19 @@
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use accounts::request::{
     Answer, HELP_MINUTES_DEFAULT, HELP_MINUTES_MAX, HELP_MINUTES_MIN, HELP_NAME, HelpEnded,
     HelpEvent, HelpKept, HelpStarted, Request, SSH_KEY_ALGORITHMS, WRONG_PASSWORD, help_code_shown,
 };
+use sysapi::fd;
+use sysapi::poll::{self, PollFd};
+use sysapi::signal::{self, Caught};
+use sysapi::terminal;
 
 use crate::args::{Arg, Args};
 use crate::elevate::{self, Pty, Raw};
@@ -54,9 +58,9 @@ const END_KEY: u8 = 0x1d;
 /// elevate takes.
 const TRIES: u32 = 3;
 
-/// The standard output's descriptor, where the owner's terminal shows the
-/// help screen.
-const OWNER_OUT: RawFd = libc::STDOUT_FILENO;
+/// Set by each signal the session takes, which also writes its number to
+/// the pipe the loop waits on.
+static SIGNALLED: Caught = Caught::new();
 
 /// The most of the help screen's output kept for a helper whose
 /// connection takes it slower than the screen writes it. Past it, what is
@@ -245,7 +249,7 @@ fn start(options: &Start) -> Result<i32, Fail> {
     if util::own_user() == 0 {
         return Err(fail("it shares your own screen: run it as yourself, not as root".into()));
     }
-    if !util::is_terminal(0) || !util::is_terminal(1) {
+    if !util::is_terminal(std::io::stdin()) || !util::is_terminal(std::io::stdout()) {
         return Err(fail(
             "it shares your terminal, so the standard input and output must both be a terminal"
                 .into(),
@@ -253,17 +257,18 @@ fn start(options: &Start) -> Result<i32, Fail> {
     }
     // The help screen has the owner's settings and size, taken before the
     // terminal goes raw.
-    let mut screen = Pty::open(0).map_err(|err| util::failed(&"a pseudo-terminal", err))?;
+    let mut screen =
+        Pty::open(io::stdin()).map_err(|err| util::failed(&"a pseudo-terminal", err))?;
     let pipe = || elevate::pipe().map_err(|err| util::failed(&"a pipe", err));
     // sshd reads the screen from the one, and writes the helper's typing
     // to the other.
     let (sshd_reads, screen_out) = pipe()?;
     let (typing_in, sshd_writes) = pipe()?;
-    let sent: Vec<RawFd> = screen
+    let sent: Vec<BorrowedFd<'_>> = screen
         .slave
         .iter()
-        .map(AsRawFd::as_raw_fd)
-        .chain([sshd_reads.as_raw_fd(), sshd_writes.as_raw_fd()])
+        .map(AsFd::as_fd)
+        .chain([sshd_reads.as_fd(), sshd_writes.as_fd()])
         .collect();
     let term = std::env::var("TERM").unwrap_or_default();
     let (text, authd) = ask_with_password(
@@ -471,7 +476,7 @@ fn before_end_key(bytes: &[u8]) -> (&[u8], bool) {
 fn ask_with_password(
     needs_password: bool,
     request: impl Fn(Vec<u8>) -> Request,
-    fds: &[RawFd],
+    fds: &[BorrowedFd<'_>],
 ) -> Result<(String, BufReader<UnixStream>), Fail> {
     let mut wrong = 0;
     loop {
@@ -493,7 +498,7 @@ fn ask_with_password(
 /// The owner's password, asked at the terminal with its echo off.
 fn password_typed() -> Result<Vec<u8>, Fail> {
     let question = format!("[help-session] password for {}: ", util::user_name(util::own_user()));
-    match prompt::ask_on(0, OWNER_OUT, &question, false) {
+    match prompt::ask_on(io::stdin(), io::stdout(), &question, false) {
         Ok(prompt::Answer::Line(line)) => Ok(line),
         Ok(prompt::Answer::Stopped) => Err(fail("no password was typed".into())),
         Err(err) => Err(fail(format!("cannot read the password: {}", util::strip_os_error(&err)))),
@@ -510,20 +515,10 @@ struct HelperPipes {
 
 impl HelperPipes {
     fn new(screen_out: OwnedFd, typing_in: OwnedFd) -> io::Result<HelperPipes> {
-        set_nonblocking(&screen_out)?;
-        set_nonblocking(&typing_in)?;
+        fd::set_nonblocking(&screen_out, true)?;
+        fd::set_nonblocking(&typing_in, true)?;
         Ok(HelperPipes { screen_out: screen_out.into(), typing_in: typing_in.into() })
     }
-}
-
-/// Makes `fd` non-blocking.
-fn set_nonblocking(fd: &OwnedFd) -> io::Result<()> {
-    // SAFETY: fcntl reads and sets the status flags of our own descriptor.
-    let set = unsafe {
-        let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFL);
-        flags >= 0 && libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) == 0
-    };
-    if set { Ok(()) } else { Err(io::Error::last_os_error()) }
 }
 
 /// Joins the help screen to the owner's terminal and the helper's pipes
@@ -536,22 +531,17 @@ fn share(
     mut authd: BufReader<UnixStream>,
 ) -> Result<Finished, Fail> {
     let (wake, wake_write) = elevate::pipe().map_err(|err| util::failed(&"a pipe", err))?;
-    elevate::WAKE.store(wake_write.as_raw_fd(), Ordering::Relaxed);
-    // SAFETY: the handler only writes to the pipe; the signals' old
-    // actions are not needed again, as help-session ends after.
-    unsafe {
-        let mut action: libc::sigaction = util::zeroed();
-        action.sa_sigaction =
-            elevate::on_signal as extern "C" fn(libc::c_int) as *const () as usize;
-        action.sa_flags = libc::SA_RESTART;
-        for signal in [libc::SIGWINCH, libc::SIGTERM, libc::SIGHUP, libc::SIGINT, libc::SIGQUIT] {
-            libc::sigaction(signal, &raw const action, std::ptr::null_mut());
-        }
-        // A helper whose connection went must not end help-session with
-        // the terminal still raw.
-        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    fd::set_nonblocking(&wake_write, true).map_err(|err| util::failed(&"a pipe", err))?;
+    SIGNALLED.wake_through(wake_write).map_err(|err| util::failed(&"a pipe", err))?;
+    // The signals' old actions are not needed again, as help-session ends
+    // after.
+    for number in [libc::SIGWINCH, libc::SIGTERM, libc::SIGHUP, libc::SIGINT, libc::SIGQUIT] {
+        let _ = signal::catch(number, &SIGNALLED, libc::SA_RESTART);
     }
-    let mut raw = Raw::new(0);
+    // A helper whose connection went must not end help-session with the
+    // terminal still raw.
+    let _ = signal::ignore(libc::SIGPIPE);
+    let mut raw = Raw::new();
     raw.on();
     let mut joined = Joined {
         master,
@@ -582,6 +572,12 @@ struct Joined<'a> {
     buffer: [u8; 4096],
 }
 
+/// The descriptor `fd` to wait for `events`, or one left out of the wait
+/// when `wanted` is false.
+fn watch(fd: BorrowedFd<'_>, wanted: bool, events: i16) -> PollFd<'_> {
+    PollFd::optional(wanted.then_some(fd), events)
+}
+
 impl Joined<'_> {
     /// Copies between the owner, the help screen, the helper and authd's
     /// events until the session ends: why.
@@ -590,58 +586,41 @@ impl Joined<'_> {
         authd: &mut BufReader<UnixStream>,
         wake: &OwnedFd,
     ) -> Result<HelpEnded, Fail> {
-        let watch = |fd: RawFd, events: libc::c_short| libc::pollfd {
-            fd: if events == 0 { -1 } else { fd },
-            events,
-            revents: 0,
-        };
-        let when = |open: bool, events: libc::c_short| if open { events } else { 0 };
+        let stdin = io::stdin();
         loop {
             let mut fds = [
-                watch(authd.get_ref().as_raw_fd(), libc::POLLIN),
-                watch(wake.as_raw_fd(), libc::POLLIN),
-                watch(self.master.as_raw_fd(), when(self.master_open, libc::POLLIN)),
-                watch(0, libc::POLLIN),
-                watch(self.helper.typing_in.as_raw_fd(), when(self.typing_open, libc::POLLIN)),
-                watch(
-                    self.helper.screen_out.as_raw_fd(),
-                    when(!self.to_helper.is_empty(), libc::POLLOUT),
-                ),
+                watch(authd.get_ref().as_fd(), true, libc::POLLIN),
+                watch(wake.as_fd(), true, libc::POLLIN),
+                watch(self.master.as_fd(), self.master_open, libc::POLLIN),
+                watch(stdin.as_fd(), true, libc::POLLIN),
+                watch(self.helper.typing_in.as_fd(), self.typing_open, libc::POLLIN),
+                watch(self.helper.screen_out.as_fd(), !self.to_helper.is_empty(), libc::POLLOUT),
             ];
             // A line of authd's already read is taken before waiting.
             let buffered = !authd.buffer().is_empty();
-            // SAFETY: `fds` holds valid pollfds.
-            let ready = unsafe {
-                libc::poll(
-                    fds.as_mut_ptr(),
-                    fds.len() as libc::nfds_t,
-                    if buffered { 0 } else { -1 },
-                )
-            };
-            if ready < 0 {
-                let err = io::Error::last_os_error();
-                if err.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(util::failed(&"poll", err));
+            match poll::poll(&mut fds, buffered.then_some(Duration::ZERO)) {
+                Ok(_) => {}
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(err) => return Err(util::failed(&"poll", err)),
             }
-            if fds[1].revents != 0 && self.signals(wake) {
+            let came = fds.each_ref().map(|fd| fd.revents() != 0);
+            if came[1] && self.signals(wake) {
                 return Ok(HelpEnded::Owner);
             }
-            if fds[3].revents != 0 && self.owner_typed() {
+            if came[3] && self.owner_typed() {
                 return Ok(HelpEnded::Owner);
             }
             // Room, or the helper's end closed, which the write tells.
-            if fds[5].revents != 0 {
+            if came[5] {
                 self.send_helper();
             }
-            if fds[4].revents != 0 {
+            if came[4] {
                 self.helper_typed();
             }
-            if fds[2].revents != 0 {
+            if came[2] {
                 self.screen_wrote();
             }
-            if (fds[0].revents != 0 || buffered)
+            if (came[0] || buffered)
                 && let Some(why) = self.authd_said(authd)?
             {
                 return Ok(why);
@@ -653,7 +632,7 @@ impl Joined<'_> {
     /// help screen. Whether one asks to end the session.
     fn signals(&self, wake: &OwnedFd) -> bool {
         let mut signals = [0u8; 16];
-        let count = elevate::read_some(wake.as_raw_fd(), &mut signals);
+        let count = elevate::read_some(wake, &mut signals);
         for &signal in &signals[..count] {
             if libc::c_int::from(signal) != libc::SIGWINCH {
                 return true;
@@ -666,25 +645,20 @@ impl Joined<'_> {
     /// Gives the help screen the size of the owner's terminal: the
     /// helper's own window is ignored.
     fn copy_size(&self) {
-        // SAFETY: all zeros is a valid winsize: numbers.
-        let mut size: libc::winsize = unsafe { util::zeroed() };
-        // SAFETY: TIOCGWINSZ fills `size`, which TIOCSWINSZ reads.
-        unsafe {
-            if libc::ioctl(0, libc::TIOCGWINSZ, &raw mut size) == 0 {
-                libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ, &raw const size);
-            }
+        if let Ok(size) = terminal::window_size(io::stdin()) {
+            let _ = terminal::set_window_size(self.master, size);
         }
     }
 
     /// Passes what the owner typed to the help screen. Whether it ends
     /// the session: Ctrl-], or the terminal's hangup.
     fn owner_typed(&mut self) -> bool {
-        let count = elevate::read_some(0, &mut self.buffer);
+        let count = elevate::read_some(io::stdin(), &mut self.buffer);
         if count == 0 {
             return true;
         }
         let (typed, ends) = before_end_key(&self.buffer[..count]);
-        elevate::write_all(self.master.as_raw_fd(), typed);
+        elevate::write_all(self.master, typed);
         ends
     }
 
@@ -696,7 +670,7 @@ impl Joined<'_> {
             // Every write end is closed: sshd's connection, or the session
             // before a helper came, ended.
             Ok(0) => self.typing_open = false,
-            Ok(count) => elevate::write_all(self.master.as_raw_fd(), &self.buffer[..count]),
+            Ok(count) => elevate::write_all(self.master, &self.buffer[..count]),
             // Nothing to read yet is no end; any other failure is.
             Err(err) => {
                 self.typing_open =
@@ -707,13 +681,13 @@ impl Joined<'_> {
 
     /// Shows what the help screen wrote to the owner and the helper.
     fn screen_wrote(&mut self) {
-        let count = elevate::read_some(self.master.as_raw_fd(), &mut self.buffer);
+        let count = elevate::read_some(self.master, &mut self.buffer);
         if count == 0 {
             // Every descriptor of the help screen's terminal is closed.
             self.master_open = false;
             return;
         }
-        elevate::write_all(OWNER_OUT, &self.buffer[..count]);
+        elevate::write_all(io::stdout(), &self.buffer[..count]);
         let output = self.buffer;
         self.tell_helper(&output[..count]);
     }
@@ -763,7 +737,7 @@ impl Joined<'_> {
         }
         let Some(event) = HelpEvent::parse(&line) else {
             elevate::write_all(
-                OWNER_OUT,
+                io::stdout(),
                 framed(&format!("authd said `{}`.", line.trim_end())).as_bytes(),
             );
             return Ok(None);
@@ -777,7 +751,7 @@ impl Joined<'_> {
             HelpEvent::Left { .. } => self.tell_helper(text.as_bytes()),
             _ => {}
         }
-        elevate::write_all(OWNER_OUT, text.as_bytes());
+        elevate::write_all(io::stdout(), text.as_bytes());
         Ok(None)
     }
 }
@@ -857,7 +831,7 @@ fn transcript_text(lines: &[&str], clock: impl Fn(i64) -> String) -> String {
 /// `help-session allow-elevate`: lets elevate run in the help screen
 /// without a password, after the owner's, asked here.
 fn allow_elevate() -> Result<i32, Fail> {
-    if !util::is_terminal(0) {
+    if !util::is_terminal(std::io::stdin()) {
         return Err(fail("help-session allow-elevate asks for your password at a terminal".into()));
     }
     let (text, _) =
@@ -1228,7 +1202,7 @@ mod tests {
     fn the_helper_sees_the_screen_from_their_sign_in_and_a_slow_one_is_told_what_was_skipped() {
         let (helper, screen_out) = elevate::pipe().unwrap();
         let (typing_in, _typing) = elevate::pipe().unwrap();
-        set_nonblocking(&helper).unwrap();
+        fd::set_nonblocking(&helper, true).unwrap();
         let helper = File::from(helper);
         let pipes = HelperPipes::new(screen_out, typing_in).unwrap();
         let master = OwnedFd::from(std::fs::File::open("/dev/null").unwrap());

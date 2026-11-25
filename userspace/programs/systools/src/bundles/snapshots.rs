@@ -247,8 +247,7 @@ mod tests {
         fs::write(data.join("notes"), "1.0.0\n").unwrap();
         // As root, the host tests can give it to another; as anyone else,
         // the copy of their own is all there is to see.
-        // SAFETY: geteuid only reads the process's user.
-        let root = unsafe { libc::geteuid() } == 0;
+        let root = sysapi::process::euid() == 0;
         let (uid, gid) = if root { (100, 100) } else { (fs::metadata(&data).unwrap().uid(), 0) };
         if root {
             std::os::unix::fs::chown(&data, Some(uid), Some(gid)).unwrap();

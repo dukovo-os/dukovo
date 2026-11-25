@@ -19,13 +19,14 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use sysapi::poll::{self, PollFd};
+use sysapi::signal::{self, Caught};
 
 use crate::args::{Arg, Args};
 use crate::logd::{self, Refusal};
@@ -323,11 +324,7 @@ struct Notifyd {
 }
 
 /// Set by SIGTERM: notifyd ends.
-static STOP: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_term(_: libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-}
+static STOP: Caught = Caught::new();
 
 /// The time now, as RFC 3339 in UTC.
 fn now_rfc3339() -> String {
@@ -470,23 +467,16 @@ impl Notifyd {
 
     fn run(&mut self) -> io::Result<()> {
         loop {
-            if STOP.load(Ordering::Relaxed) {
+            if STOP.is_set() {
                 return Ok(());
             }
             let now = Instant::now();
             let listening = self.clients.len() < CLIENTS_MAX;
-            let mut fds = vec![libc::pollfd {
-                fd: if listening { self.listener.as_raw_fd() } else { -1 },
-                events: libc::POLLIN,
-                revents: 0,
-            }];
+            let mut fds =
+                vec![PollFd::optional(listening.then(|| self.listener.as_fd()), libc::POLLIN)];
             for client in &self.clients {
                 let out = if client.out.is_empty() { 0 } else { libc::POLLOUT };
-                fds.push(libc::pollfd {
-                    fd: client.stream.as_raw_fd(),
-                    events: libc::POLLIN | out,
-                    revents: 0,
-                });
+                fds.push(PollFd::new(client.stream.as_fd(), libc::POLLIN | out));
             }
             // The first deadline: a request not yet sent, or an answer
             // not yet read.
@@ -496,23 +486,23 @@ impl Notifyd {
                 .filter(|c| !c.following || !c.out.is_empty())
                 .map(|c| c.deadline)
                 .min();
-            let timeout = deadline.map_or(-1, |at| {
-                at.saturating_duration_since(now).as_millis().min(60_000) as libc::c_int + 1
+            let timeout = deadline.map(|at| {
+                at.saturating_duration_since(now).min(Duration::from_secs(60))
+                    + Duration::from_millis(1)
             });
-            // SAFETY: `fds` holds valid pollfds.
-            let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout) };
-            if ready < 0 {
-                let error = io::Error::last_os_error();
+            if let Err(error) = poll::poll(&mut fds, timeout) {
                 if error.kind() != io::ErrorKind::Interrupted {
                     return Err(error);
                 }
                 continue;
             }
+            let events: Vec<i16> = fds.iter().map(PollFd::revents).collect();
+            drop(fds);
             let now = Instant::now();
             // The clients that were there when poll was called, in order;
             // accepted ones come after them.
-            for (i, entry) in fds[1..].iter().enumerate() {
-                if entry.revents & libc::POLLOUT != 0 {
+            for (i, &revents) in events[1..].iter().enumerate() {
+                if revents & libc::POLLOUT != 0 {
                     let client = &mut self.clients[i];
                     let before = client.out.len();
                     client.flush();
@@ -520,7 +510,7 @@ impl Notifyd {
                         client.deadline = now + REQUEST_TIME;
                     }
                 }
-                if entry.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+                if revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
                     self.read(i, now);
                 }
             }
@@ -531,7 +521,7 @@ impl Notifyd {
                 }
             }
             self.clients.retain(|c| !c.done);
-            if fds[0].revents != 0 {
+            if events[0] != 0 {
                 self.accept(now);
             }
         }
@@ -543,16 +533,10 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     if let Some(arg) = args.next()? {
         return Err(args.unknown(&arg));
     }
-    // SAFETY: setting a signal's disposition touches no memory; no other
-    // thread runs. A follower that goes away must not end notifyd: the
-    // write to it fails instead.
-    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
-    // SAFETY: all zeros is a valid sigaction: numbers, a signal set and a
-    // function address.
-    let mut action: libc::sigaction = unsafe { util::zeroed() };
-    action.sa_sigaction = on_term as extern "C" fn(libc::c_int) as *const () as usize;
-    // SAFETY: the handler only stores to an atomic.
-    unsafe { libc::sigaction(libc::SIGTERM, &raw const action, std::ptr::null_mut()) };
+    // A follower that goes away must not end notifyd: the write to it
+    // fails instead.
+    let _ = signal::ignore(libc::SIGPIPE);
+    let _ = signal::catch(libc::SIGTERM, &STOP, 0);
     let dir = Path::new(SOCKET).parent().unwrap_or(Path::new("/"));
     std::fs::create_dir_all(dir).map_err(|e| util::failed(&dir.display(), e))?;
     let _ = std::fs::remove_file(SOCKET);

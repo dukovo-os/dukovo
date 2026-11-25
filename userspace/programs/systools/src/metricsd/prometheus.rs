@@ -21,7 +21,7 @@
 use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::os::fd::AsRawFd;
+use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::Arc;
@@ -34,6 +34,7 @@ use super::settings::Network;
 use crate::alerts::protocol::{Active, End, Refusal, Request, Severity};
 use crate::deadline::Deadline;
 use crate::util;
+use sysapi::poll::{self, PollFd};
 
 /// The longest a request's head may be, and how long it has to arrive.
 pub const HEAD_MAX: usize = 8 * 1024;
@@ -173,21 +174,15 @@ fn ready(listeners: &[TcpListener]) -> Vec<&TcpListener> {
         thread::sleep(WATCH);
         return Vec::new();
     }
-    let mut fds: Vec<libc::pollfd> = listeners
-        .iter()
-        .map(|listener| libc::pollfd { fd: listener.as_raw_fd(), events: libc::POLLIN, revents: 0 })
-        .collect();
-    // SAFETY: `fds` is a valid array of its length for the call.
-    let found = unsafe {
-        libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, WATCH.as_millis() as libc::c_int)
-    };
-    if found <= 0 {
+    let mut fds: Vec<PollFd> =
+        listeners.iter().map(|listener| PollFd::new(listener.as_fd(), libc::POLLIN)).collect();
+    if !poll::poll(&mut fds, Some(WATCH)).is_ok_and(|found| found > 0) {
         return Vec::new();
     }
     listeners
         .iter()
         .zip(&fds)
-        .filter(|(_, fd)| fd.revents & libc::POLLIN != 0)
+        .filter(|(_, fd)| fd.revents() & libc::POLLIN != 0)
         .map(|(l, _)| l)
         .collect()
 }

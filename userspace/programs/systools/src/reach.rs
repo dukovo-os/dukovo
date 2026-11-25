@@ -38,9 +38,8 @@
 //! If an answer looks wrong, start with [`Way::can`] for accounts and
 //! [`app_reach`] for apps.
 
-use std::ffi::{CString, OsString};
+use std::ffi::OsString;
 use std::io::{self, Write};
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -273,10 +272,8 @@ impl Way {
 /// Whether nothing at `path` may change, whoever asks: `access(2)` says
 /// `EROFS` before it looks at who may write.
 fn refuses_writes(path: &Path) -> bool {
-    let Ok(c) = CString::new(path.as_os_str().as_bytes()) else { return false };
-    // SAFETY: `c` is a C string.
-    let status = unsafe { libc::access(c.as_ptr(), libc::W_OK) };
-    status != 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EROFS)
+    sysapi::fs::check_access(path, libc::W_OK)
+        .is_err_and(|error| error.raw_os_error() == Some(libc::EROFS))
 }
 
 /// `text` safe to write to a terminal: a control character, or one that
@@ -284,12 +281,12 @@ fn refuses_writes(path: &Path) -> bool {
 /// file's name or app's name can move the cursor or make a line read as
 /// another.
 fn printable(text: &str) -> String {
-    let unsafe_char = |c: char| {
+    let unprintable = |c: char| {
         c.is_control()
             || matches!(c, '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}')
             || matches!(c, '\u{2060}'..='\u{2069}' | '\u{FEFF}')
     };
-    text.chars().map(|c| if unsafe_char(c) { '?' } else { c }).collect()
+    text.chars().map(|c| if unprintable(c) { '?' } else { c }).collect()
 }
 
 /// A line of the answer: who, what they may do, and how.
@@ -692,8 +689,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let read = |path: &str| std::fs::read_to_string(path).map_err(|e| util::failed(&path, e));
     let users = accounts::users(&read(accounts::PASSWD)?);
     let groups = accounts::groups(&read(accounts::GROUP)?);
-    // SAFETY: getuid has no failure and touches no memory.
-    let uid = unsafe { libc::getuid() };
+    let uid = sysapi::process::uid();
     let person = bundled::account(uid).ok();
 
     let mut out = io::stdout().lock();

@@ -373,9 +373,8 @@ pub fn lower_priority() -> Result<(), String> {
     if !crate::priority::idle_io() {
         return Err("the kernel did not put the walk's disk requests in the idle class".into());
     }
-    // SAFETY: setpriority takes numbers and touches no memory.
-    if unsafe { libc::setpriority(libc::PRIO_PROCESS as _, 0, 19) } != 0 {
-        return Err(format!("the walk's nice level was not set: {}", io::Error::last_os_error()));
+    if let Err(error) = sysapi::process::set_priority(sysapi::process::Who::Process(0), 19) {
+        return Err(format!("the walk's nice level was not set: {error}"));
     }
     Ok(())
 }
