@@ -35,14 +35,7 @@ pub fn worth_telling(command: &str) -> bool {
 
 /// The terminal standard input is, as `pts/3` or `tty2`.
 pub fn terminal() -> Option<String> {
-    let mut buffer = [0u8; 128];
-    // SAFETY: the buffer is ours and its length is given.
-    let failed = unsafe { libc::ttyname_r(0, buffer.as_mut_ptr().cast(), buffer.len()) };
-    if failed != 0 {
-        return None;
-    }
-    let end = buffer.iter().position(|&b| b == 0)?;
-    let path = std::str::from_utf8(&buffer[..end]).ok()?;
+    let path = crate::sys::tty_path(0)?;
     let name = path.strip_prefix("/devices/").or_else(|| path.strip_prefix("/dev/"))?;
     Some(name.to_string())
 }

@@ -241,6 +241,26 @@ pub fn reap_or_stopped() -> Option<(Pid, ExitStatus)> {
     reap_with(libc::WNOHANG | libc::WUNTRACED)
 }
 
+/// Waits as waitpid(2) does with `flags` (WNOHANG, WUNTRACED,
+/// WCONTINUED), for child `pid`, any child (-1), or one in process group
+/// `-pid`: the child and how it changed, or `None` with WNOHANG when none
+/// has. A signal that comes meanwhile ends the wait with EINTR, for a
+/// shell to run its trap.
+///
+/// # Errors
+///
+/// ECHILD when there is no such child, EINTR when a signal came first.
+pub fn wait_with(pid: Pid, flags: libc::c_int) -> io::Result<Option<(Pid, ExitStatus)>> {
+    if flags & !(libc::WNOHANG | libc::WUNTRACED | libc::WCONTINUED) != 0 {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    let mut status = 0;
+    // SAFETY: waitpid writes the status of the child it reports into
+    // `status`.
+    let got = checked(unsafe { libc::waitpid(pid, &raw mut status, flags) })?;
+    Ok((got > 0).then(|| (got, ExitStatus::from_raw(status))))
+}
+
 fn reap_with(options: libc::c_int) -> Option<(Pid, ExitStatus)> {
     let mut status = 0;
     // SAFETY: waitpid writes the status of the child it reports into
@@ -580,7 +600,7 @@ pub fn fault() -> ! {
 mod tests {
     use super::{
         UsageOf, Who, euid, fork, kill, limit, priority, set_env, set_limit, set_priority,
-        set_thread_name, thread_count, thread_name, try_wait, uid, usage,
+        set_thread_name, thread_count, thread_name, try_wait, uid, usage, wait_with,
     };
     use std::ffi::OsStr;
     use std::os::unix::process::ExitStatusExt;
@@ -631,6 +651,26 @@ mod tests {
         };
         assert_eq!(status.signal(), Some(libc::SIGKILL));
         assert_eq!(try_wait(pid).unwrap_err().raw_os_error(), Some(libc::ECHILD));
+    }
+
+    #[test]
+    #[expect(clippy::zombie_processes, reason = "wait_with reaps it by its number")]
+    fn a_child_s_stop_continuing_and_end_are_each_reported() {
+        let child = Command::new("sleep").arg("10").spawn().unwrap();
+        let pid = child.id() as i32;
+        assert_eq!(wait_with(pid, libc::WNOHANG).unwrap(), None, "it still runs");
+        kill(pid, libc::SIGSTOP).unwrap();
+        let (got, status) = wait_with(pid, libc::WUNTRACED).unwrap().unwrap();
+        assert_eq!((got, status.stopped_signal()), (pid, Some(libc::SIGSTOP)));
+        kill(pid, libc::SIGCONT).unwrap();
+        let (_, status) = wait_with(pid, libc::WCONTINUED).unwrap().unwrap();
+        assert!(status.continued());
+        kill(pid, libc::SIGKILL).unwrap();
+        let (_, status) = wait_with(pid, 0).unwrap().unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
+        assert_eq!(wait_with(pid, 0).unwrap_err().raw_os_error(), Some(libc::ECHILD));
+        // A flag waitpid(2) does not take.
+        assert_eq!(wait_with(pid, 1 << 30).unwrap_err().raw_os_error(), Some(libc::EINVAL));
     }
 
     #[test]

@@ -7,13 +7,15 @@
 //! command at the next safe point, after the command that was running (as
 //! POSIX asks), or at once when the `wait` builtin or `read` is waiting.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
+
+use sysapi::signal::{self as os, Caught};
 
 /// The highest signal number the shell knows.
 pub const MAX_SIGNAL: usize = 64;
 
-static CAUGHT: [AtomicBool; MAX_SIGNAL + 1] = [const { AtomicBool::new(false) }; MAX_SIGNAL + 1];
-static ANY: AtomicBool = AtomicBool::new(false);
+/// Which signals came, by number.
+static CAUGHT: [Caught; MAX_SIGNAL + 1] = [const { Caught::new() }; MAX_SIGNAL + 1];
 
 /// The pseudo-signals `trap` takes besides real ones.
 pub const EXIT: usize = 0;
@@ -152,16 +154,6 @@ pub fn slot_name(slot: usize) -> String {
     }
 }
 
-extern "C" fn note(signal: libc::c_int) {
-    if signal == libc::SIGHUP {
-        crate::hangup::at_prompt_hang_up();
-    }
-    if let Some(flag) = CAUGHT.get(signal as usize) {
-        flag.store(true, Ordering::SeqCst);
-        ANY.store(true, Ordering::SeqCst);
-    }
-}
-
 /// What a signal does to the shell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Disposition {
@@ -175,68 +167,35 @@ pub fn set(signal: i32, disposition: Disposition) {
     // The line editor's terminal library catches SIGWINCH to redraw, and
     // passes the signal on to the handler it found, ours: a handler that
     // is neither ours nor a default stays.
-    if signal == libc::SIGWINCH && disposition == Disposition::Catch && foreign_handler(signal) {
+    if signal == libc::SIGWINCH
+        && disposition == Disposition::Catch
+        && os::disposition(signal).is_ok_and(|now| now == os::Disposition::Other)
+    {
         return;
     }
-    let handler = match disposition {
-        Disposition::Default => libc::SIG_DFL,
-        Disposition::Ignore => libc::SIG_IGN,
-        Disposition::Catch => note as extern "C" fn(libc::c_int) as libc::sighandler_t,
+    // A signal that cannot be caught or ignored keeps what it does. No
+    // SA_RESTART: a caught signal interrupts `wait` and `read`.
+    let _ = match disposition {
+        Disposition::Default => os::restore_default(signal),
+        Disposition::Ignore => os::ignore(signal),
+        Disposition::Catch => match caught(signal) {
+            Some(caught) => os::catch(signal, caught, 0),
+            None => Ok(()),
+        },
     };
-    // SAFETY: sigaction is plain data, filled in before the call; the
-    // handler only stores to atomics, which is async-signal-safe.
-    unsafe {
-        let mut action: libc::sigaction = std::mem::zeroed();
-        action.sa_sigaction = handler;
-        // No SA_RESTART: a caught signal interrupts `wait` and `read`.
-        action.sa_flags = 0;
-        libc::sigemptyset(&raw mut action.sa_mask);
-        libc::sigaction(signal, &raw const action, std::ptr::null_mut());
-    }
 }
 
-/// Whether `signal`'s handler is someone else's.
-fn foreign_handler(signal: i32) -> bool {
-    // SAFETY: a null new action only reads the current one.
-    let current = unsafe {
-        let mut old: libc::sigaction = std::mem::zeroed();
-        libc::sigaction(signal, std::ptr::null(), &raw mut old);
-        old.sa_sigaction
-    };
-    let ours = note as extern "C" fn(libc::c_int) as libc::sighandler_t;
-    current != libc::SIG_DFL && current != libc::SIG_IGN && current != ours
+/// The record of `signal`, a real signal's.
+fn caught(signal: i32) -> Option<&'static Caught> {
+    usize::try_from(signal).ok().filter(|&n| n > 0).and_then(|n| CAUGHT.get(n))
 }
-
-/// Whether `signal` is ignored now.
-fn ignored(signal: i32) -> bool {
-    // SAFETY: a null new action only reads the current one.
-    unsafe {
-        let mut old: libc::sigaction = std::mem::zeroed();
-        libc::sigaction(signal, std::ptr::null(), &raw mut old);
-        old.sa_sigaction == libc::SIG_IGN
-    }
-}
-
-/// Whether SIGPIPE was ignored when the program was started. Rust's
-/// runtime ignores SIGPIPE before `main` runs, so it is read earlier, by
-/// a constructor in `.init_array`, which the C library runs first.
-static PIPE_IGNORED_AT_EXEC: AtomicBool = AtomicBool::new(false);
-
-#[used]
-#[unsafe(link_section = ".init_array")]
-static READ_SIGPIPE: extern "C" fn() = {
-    extern "C" fn read() {
-        PIPE_IGNORED_AT_EXEC.store(ignored(libc::SIGPIPE), Ordering::Relaxed);
-    }
-    read
-};
 
 /// Gives SIGPIPE back the disposition it had when the program was
 /// started, which Rust's runtime changed: at its default, a writer to a
 /// closed pipe ends, as under bash, and the programs the shell runs get
 /// it so too.
 pub fn restore_sigpipe() {
-    if !PIPE_IGNORED_AT_EXEC.load(Ordering::Relaxed) {
+    if !os::ignored_at_start(libc::SIGPIPE) {
         set(libc::SIGPIPE, Disposition::Default);
     }
 }
@@ -244,63 +203,48 @@ pub fn restore_sigpipe() {
 /// Whether `signal` was ignored when the shell started, which makes a
 /// non-interactive shell leave it so (XCU 2.11).
 pub fn ignored_at_start(signal: i32) -> bool {
-    if signal == libc::SIGPIPE {
-        return PIPE_IGNORED_AT_EXEC.load(Ordering::Relaxed);
-    }
-    ignored(signal)
+    os::ignored_at_start(signal)
 }
 
 /// Unblocks every signal, for a child about to run a program.
 pub fn unblock_all() {
-    // SAFETY: an empty set is filled in before it is installed.
-    unsafe {
-        let mut set: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&raw mut set);
-        libc::sigprocmask(libc::SIG_SETMASK, &raw const set, std::ptr::null_mut());
-    }
+    let _ = os::unblock_all();
 }
 
 /// Whether any signal came since [`take`] last looked.
 pub fn pending() -> bool {
-    ANY.load(Ordering::SeqCst)
+    CAUGHT[1..].iter().any(Caught::is_set)
 }
 
 /// The signals that came, each once, in number order.
 pub fn take() -> Vec<i32> {
-    if !ANY.swap(false, Ordering::SeqCst) {
-        return Vec::new();
-    }
-    (1..=MAX_SIGNAL)
-        .filter(|&n| CAUGHT[n].swap(false, Ordering::SeqCst))
-        .map(|n| n as i32)
-        .collect()
+    (1..=MAX_SIGNAL).filter(|&n| CAUGHT[n].take()).map(|n| n as i32).collect()
 }
 
 /// Whether `signal` came, forgetting it.
 pub fn take_one(signal: i32) -> bool {
-    CAUGHT.get(signal as usize).is_some_and(|flag| flag.swap(false, Ordering::SeqCst))
+    caught(signal).is_some_and(Caught::take)
 }
 
 /// Notes `signal` as if it had come, so that its trap runs at the next
 /// safe point.
 pub fn raise_later(signal: i32) {
-    note(signal);
+    if let Some(caught) = caught(signal) {
+        caught.flag().store(true, Ordering::SeqCst);
+    }
 }
 
 /// The lowest signal that came and has not been taken, if any.
 pub fn first_pending() -> Option<i32> {
-    if !pending() {
-        return None;
-    }
-    (1..=MAX_SIGNAL).find(|&n| CAUGHT[n].load(Ordering::SeqCst)).map(|n| n as i32)
+    (1..=MAX_SIGNAL).find(|&n| CAUGHT[n].is_set()).map(|n| n as i32)
 }
 
 /// Whether `signal` came and has not been taken.
 pub fn is_pending(signal: i32) -> bool {
-    CAUGHT.get(signal as usize).is_some_and(|flag| flag.load(Ordering::SeqCst))
+    caught(signal).is_some_and(Caught::is_set)
 }
 
 /// Whether a signal other than `signal` came and has not been taken.
 pub fn pending_other_than(signal: i32) -> bool {
-    pending() && (1..=MAX_SIGNAL).any(|n| n as i32 != signal && CAUGHT[n].load(Ordering::SeqCst))
+    (1..=MAX_SIGNAL).any(|n| n as i32 != signal && CAUGHT[n].is_set())
 }

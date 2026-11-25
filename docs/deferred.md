@@ -46,7 +46,6 @@ list is kept current instead.
 | smoltcp's own tests in CI, with its three UDP broadcast tests mended or changed for the kernel's patch (ADR 0182) | CI runs radix-net's tests, which drive the patched stack, but not the crate's own; those three already fail with the patch | Before the smoltcp patch goes upstream |
 | Trademark clearance of the project's name | Legal review | Before 1.0.0-alpha.1 |
 | SECURITY.md says plainly that the alpha is unaudited; the update server is live for testers | Part of the checklist before the first public release | Before 1.0.0-alpha.1 |
-| `nukesh`, `tools/lab-writer` and `tools/linux-bench` moved onto sysapi, so that they forbid `unsafe` too and the check's list of crates not yet moved is empty (ADR 0730) | Some 150 lines with `unsafe` in three crates, beyond what one pull request reviews well together with the rest; the check fails once one of them no longer needs its place | Before 1.0.0-alpha.1 |
 
 ## Waiting on real hardware
 

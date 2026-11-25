@@ -162,12 +162,6 @@ fn short_pwd(shell: &Shell, base: bool) -> String {
 
 /// The terminal's name without its directory, for `\l`.
 fn tty_name() -> String {
-    // SAFETY: ttyname returns a static string or null.
-    let name = unsafe { libc::ttyname(0) };
-    if name.is_null() {
-        return "tty".into();
-    }
-    // SAFETY: a non-null result is a terminated string.
-    let full = text::decode(unsafe { std::ffi::CStr::from_ptr(name) }.to_bytes());
+    let Some(full) = crate::sys::tty_path(0) else { return "tty".into() };
     full.rsplit('/').next().unwrap_or("tty").to_string()
 }

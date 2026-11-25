@@ -37,26 +37,15 @@ pub fn char_byte(c: char) -> Option<u8> {
 }
 
 /// Bytes to text.
-pub fn decode(mut bytes: &[u8]) -> String {
+pub fn decode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len());
-    loop {
-        match std::str::from_utf8(bytes) {
-            Ok(text) => {
-                push_valid(&mut out, text);
-                return out;
-            }
-            Err(error) => {
-                let (good, rest) = bytes.split_at(error.valid_up_to());
-                // SAFETY: from_utf8 checked the first valid_up_to bytes.
-                push_valid(&mut out, unsafe { std::str::from_utf8_unchecked(good) });
-                let bad = error.error_len().unwrap_or(rest.len());
-                for &byte in &rest[..bad] {
-                    out.push(byte_char(byte));
-                }
-                bytes = &rest[bad..];
-            }
+    for chunk in bytes.utf8_chunks() {
+        push_valid(&mut out, chunk.valid());
+        for &byte in chunk.invalid() {
+            out.push(byte_char(byte));
         }
     }
+    out
 }
 
 /// Appends valid UTF-8 text. A character that is itself one of the

@@ -128,7 +128,6 @@ pub fn format_entries(entries: &[Entry]) -> String {
 /// another shell made while this one waited.
 fn lock_file(path: &str) -> Option<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
-    use std::os::unix::io::AsRawFd;
     for _ in 0..8 {
         // A new history file is the user's alone, as bash makes it.
         let file = std::fs::OpenOptions::new()
@@ -138,10 +137,7 @@ fn lock_file(path: &str) -> Option<std::fs::File> {
             .mode(0o600)
             .open(text::to_os(path))
             .ok()?;
-        // SAFETY: flock only acts on the descriptor.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            return None;
-        }
+        sysapi::fs::lock(&file, sysapi::fs::Lock::Exclusive, true).ok()?;
         let same = match (file.metadata(), std::fs::metadata(text::to_os(path))) {
             (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
             _ => false,

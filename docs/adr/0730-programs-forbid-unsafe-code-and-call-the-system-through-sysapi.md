@@ -81,11 +81,6 @@ of one block cannot check any of these.
 
   A program that needs a call sysapi lacks adds it there, with a test,
   instead of making it itself.
-- **The crates that still make their own calls are listed apart**:
-  `nukesh`, `tools/lab-writer` and `tools/linux-bench`. The
-  check passes over them, and fails once one of them forbids `unsafe` in
-  every target, so that it comes off the list. The list is empty once
-  they have moved to sysapi.
 
 ## Consequences
 
