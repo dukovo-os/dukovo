@@ -13,7 +13,8 @@
 // what a stream reading a pipe has read ahead; and what PHP's suite found:
 // a stream whose command ended unread closes without a word; and a block
 // that realloc shrinks a long way gives back what it no longer needs, as
-// CPython's pipe reads want.
+// CPython's pipe reads want; and each thread's cache of freed blocks
+// (ADR 0657).
 
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -178,6 +179,162 @@ static void shrinks(void) {
 				&& less[0] == 'l' && less[300 * 1024] == 'l');
 		free(less);
 	}
+}
+
+// Each thread's cache of freed blocks (ADR 0657). Threads allocate and
+// free blocks of every size the caches keep and some they do not, hand
+// blocks to each other to free, and check that no block changed while
+// it was theirs.
+enum { CACHE_THREADS = 4, CACHE_ROUNDS = 200000, CACHE_LIVE = 256, CACHE_SHARED = 64 };
+
+struct cached_block {
+	unsigned char *p;
+	size_t size;
+	unsigned char fill;
+};
+
+static pthread_mutex_t shared_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct cached_block shared_blocks[CACHE_SHARED];
+static int cache_damage;
+
+static void check_and_free(struct cached_block *block) {
+	for(size_t i = 0; i < block->size; i++) {
+		if(block->p[i] != block->fill) {
+			__atomic_fetch_add(&cache_damage, 1, __ATOMIC_RELAXED);
+			break;
+		}
+	}
+	free(block->p);
+	block->p = NULL;
+}
+
+static void *cache_user(void *argument) {
+	uint64_t seed = (uintptr_t)argument * 2654435761u + 1;
+	struct cached_block live[CACHE_LIVE] = {0};
+	for(int i = 0; i < CACHE_ROUNDS; i++) {
+		seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+		unsigned r = (unsigned)(seed >> 32);
+		struct cached_block *block = &live[r % CACHE_LIVE];
+		if(block->p && (r & (1u << 20))) {
+			// Swapped with one another thread may have left.
+			pthread_mutex_lock(&shared_lock);
+			struct cached_block *other = &shared_blocks[(r >> 8) % CACHE_SHARED];
+			struct cached_block mine = *block;
+			*block = *other;
+			*other = mine;
+			pthread_mutex_unlock(&shared_lock);
+		}else if(block->p) {
+			check_and_free(block);
+		}else{
+			size_t size = (r >> 4) % (r & 1 ? 600 : 5000);
+			if(r & (1u << 21)) {
+				size_t alignment = (size_t)8 << ((r >> 12) % 10);
+				void *q = NULL;
+				if(posix_memalign(&q, alignment, size) || !aligned(q, alignment))
+					__atomic_fetch_add(&cache_damage, 1, __ATOMIC_RELAXED);
+				block->p = q;
+			}else{
+				block->p = malloc_(size);
+			}
+			if(!block->p) {
+				__atomic_fetch_add(&cache_damage, 1, __ATOMIC_RELAXED);
+				continue;
+			}
+			block->size = size;
+			block->fill = (unsigned char)(r >> 24) | 1;
+			memset(block->p, block->fill, size);
+		}
+	}
+	for(int i = 0; i < CACHE_LIVE; i++)
+		if(live[i].p)
+			check_and_free(&live[i]);
+	return NULL;
+}
+
+// Frees 16 blocks of each size a cache keeps, as many as it holds, and
+// exits; or, with an argument, exits at once.
+static void *cache_filler(void *argument) {
+	if(argument)
+		return NULL;
+	void *blocks[16];
+	for(size_t size = 16; size <= 4096; size *= 2) {
+		for(int i = 0; i < 16; i++)
+			blocks[i] = malloc_(size);
+		for(int i = 0; i < 16; i++)
+			free(blocks[i]);
+	}
+	return NULL;
+}
+
+static void double_free(void) {
+	char *p = malloc_(40);
+	free(p);
+	free(p);
+}
+
+static void dangling_write(void) {
+	char *p = malloc_(72);
+	char *q = malloc_(72);
+	free(p);
+	free(q);
+	// One bit of the link the cache keeps in a freed block's first word,
+	// which then points at no block: malloc finds it as it hands q out.
+	*(volatile char *)q ^= 1;
+	malloc_(72);
+	malloc_(72);
+}
+
+// Runs `part` in a child, which must end on SIGABRT.
+static void check_aborts(void (*part)(void), const char *what) {
+	pid_t pid = check_fork();
+	if(pid == 0) {
+		// The C library's message, which would go to the console.
+		int null = open("/dev/null", O_WRONLY);
+		if(null >= 0)
+			dup2(null, 2);
+		part();
+		_exit(0);
+	}
+	if(pid < 0)
+		return;
+	int status = check_wait(pid);
+	if(!WIFSIGNALED(status) || WTERMSIG(status) != SIGABRT)
+		printf("%s: %s ended with status %#x\n", check_name, what, status);
+	CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+}
+
+static void thread_caches(void) {
+	pthread_t threads[CACHE_THREADS];
+	for(uintptr_t i = 0; i < CACHE_THREADS; i++)
+		CHECK(pthread_create(&threads[i], NULL, cache_user, (void *)(i + 1)) == 0);
+	for(int i = 0; i < CACHE_THREADS; i++)
+		CHECK(pthread_join(threads[i], NULL) == 0);
+	for(int i = 0; i < CACHE_SHARED; i++)
+		if(shared_blocks[i].p)
+			check_and_free(&shared_blocks[i]);
+	CHECK(cache_damage == 0);
+
+	// A thread's cache goes back to the pool as the thread exits: kept by
+	// 300 threads that are gone, the blocks would be over 4,000 pages more
+	// than 300 threads that allocate nothing leave.
+	long grew[2];
+	for(int filled = 0; filled < 2; filled++) {
+		long before = check_anonymous_pages();
+		CHECK(before > 0);
+		for(int i = 0; i < 300; i++) {
+			pthread_t thread;
+			CHECK(pthread_create(&thread, NULL, cache_filler, filled ? NULL : &grew) == 0);
+			CHECK(pthread_join(thread, NULL) == 0);
+		}
+		grew[filled] = check_anonymous_pages() - before;
+	}
+	if(grew[1] - grew[0] >= 400)
+		printf("%s: 300 threads grew the process by %ld pages, and by %ld when each filled "
+				"its cache\n", check_name, grew[0], grew[1]);
+	CHECK(grew[1] - grew[0] < 400);
+
+	check_aborts(double_free, "a double free");
+	check_aborts(dangling_write, "a write to a freed block's link");
 }
 
 static void environment(void) {
@@ -666,6 +823,7 @@ int main(void) {
 	check_start("library");
 	RUN(allocations);
 	RUN(shrinks);
+	RUN(thread_caches);
 	RUN(environment);
 	RUN(popens);
 	RUN(flush_all);
