@@ -24,19 +24,20 @@ pub enum Value<'a> {
     Str(&'a [u8]),
 }
 
-/// The most digits of a width or a precision: ten, as many as an int has.
-const DIGITS_MAX: usize = 10;
-
 /// Whether `spec` is printf's flags, then a width, then a precision, each
-/// of them optional, and nothing else: `#08.3`, `-4`, ``.
+/// of them optional, and nothing else: `#08.3`, `-4`, ``. A width or a
+/// precision is at most what an int holds, as printf(3) reads them.
 fn valid_spec(spec: &str) -> bool {
     let rest = spec.trim_start_matches(['#', '-', '+', ' ', '0']);
     let (width, precision) = match rest.split_once('.') {
         Some((width, precision)) => (width, Some(precision)),
         None => (rest, None),
     };
-    let digits = |text: &str| text.len() <= DIGITS_MAX && text.bytes().all(|b| b.is_ascii_digit());
-    digits(width) && precision.is_none_or(digits)
+    let number = |text: &str| {
+        text.bytes().all(|b| b.is_ascii_digit())
+            && (text.is_empty() || text.parse::<libc::c_int>().is_ok())
+    };
+    number(width) && precision.is_none_or(number)
 }
 
 /// `value` written as printf(3) writes it with the conversion
@@ -45,7 +46,7 @@ fn valid_spec(spec: &str) -> bool {
 /// # Errors
 ///
 /// `ErrorKind::InvalidInput` for a spec of other characters or another
-/// shape, a width or precision of more than ten digits, or a letter that
+/// shape, a width or precision beyond what an int holds, or a letter that
 /// is not one for the value's kind.
 pub fn printf(spec: &str, letter: char, value: Value<'_>) -> io::Result<Vec<u8>> {
     let fits = match value {
@@ -161,6 +162,7 @@ mod tests {
             200,
             "beyond the first buffer"
         );
+        assert_eq!(printf(".00000000003", 'd', Value::Signed(7)).unwrap(), b"007");
     }
 
     #[test]
@@ -175,6 +177,8 @@ mod tests {
             ("1.2.3", 'd', Value::Signed(1)),
             ("%", 'd', Value::Signed(1)),
             ("99999999999", 'd', Value::Signed(1)),
+            ("2147483648", 'd', Value::Signed(1)),
+            (".2147483648", 'd', Value::Signed(1)),
             ("5-", 'd', Value::Signed(1)),
         ] {
             assert!(printf(spec, letter, value).is_err(), "%{spec}{letter}");
