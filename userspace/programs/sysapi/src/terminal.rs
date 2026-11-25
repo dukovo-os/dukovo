@@ -3,7 +3,7 @@
 
 //! Terminals: their settings (termios), pseudo-terminals, the window
 //! size, input not yet read, which terminal and session a descriptor is,
-//! and the controlling terminal and its foreground.
+//! and the controlling terminal and its foreground process group.
 
 use std::ffi::OsStr;
 use std::io;
@@ -242,6 +242,36 @@ pub fn take_control(fd: impl AsFd) -> io::Result<()> {
 pub fn foreground_group(fd: impl AsFd) -> io::Result<Pid> {
     // SAFETY: tcgetpgrp takes a descriptor held here.
     checked(unsafe { libc::tcgetpgrp(fd.as_fd().as_raw_fd()) })
+}
+
+/// Gives the terminal on `fd` to process group `group`, as tcsetpgrp(3)
+/// does, with SIGTTOU blocked meanwhile: from a process group in the
+/// background the change raises SIGTTOU, which would stop the caller, so
+/// a shell taking the terminal back, or giving it to a job, goes ahead,
+/// as bash does. The signal mask is as it was afterwards.
+///
+/// # Errors
+///
+/// ENOTTY when `fd` is not the caller's controlling terminal, EPERM for a
+/// group in another session.
+pub fn set_foreground_group(fd: impl AsFd, group: Pid) -> io::Result<()> {
+    // SAFETY: all zeros is a valid sigset_t, which sigemptyset then sets,
+    // and sigaddset adds a valid signal to.
+    let mut ttou: libc::sigset_t = unsafe { std::mem::zeroed() };
+    // SAFETY: as above, for the mask pthread_sigmask writes.
+    let mut old: libc::sigset_t = unsafe { std::mem::zeroed() };
+    // SAFETY: the sets are this function's; pthread_sigmask reads the one
+    // and writes the other, and the old mask comes back below.
+    unsafe {
+        libc::sigemptyset(&raw mut ttou);
+        libc::sigaddset(&raw mut ttou, libc::SIGTTOU);
+        libc::pthread_sigmask(libc::SIG_BLOCK, &raw const ttou, &raw mut old);
+    }
+    // SAFETY: tcsetpgrp takes a descriptor held here and an integer.
+    let result = checked(unsafe { libc::tcsetpgrp(fd.as_fd().as_raw_fd(), group) });
+    // SAFETY: puts back the mask read above.
+    unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &raw const old, std::ptr::null_mut()) };
+    result.map(drop)
 }
 
 /// The session whose controlling terminal `fd` is, as tcgetsid(3) gives

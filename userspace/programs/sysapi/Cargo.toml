@@ -30,3 +30,9 @@ workspace = true
 [[test]]
 name = "one_thread"
 harness = false
+
+# The table of descriptor numbers is the whole process's, and the test
+# closes standard output on the way: it runs its checks itself, in order.
+[[test]]
+name = "numbered"
+harness = false

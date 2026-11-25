@@ -16,7 +16,7 @@
 //! kernel finishes ending it, so the count is read again, for up to
 //! [`ENDING_THREADS_WAIT`], before a call is refused.
 
-use std::ffi::OsStr;
+use std::ffi::{CStr, CString, OsStr};
 use std::io;
 use std::os::fd::{IntoRawFd, OwnedFd};
 use std::os::unix::process::ExitStatusExt;
@@ -61,7 +61,7 @@ pub fn fork() -> io::Result<Fork> {
 /// within [`ENDING_THREADS_WAIT`]; `what` names the call that needs it.
 /// Only the calling thread can start another, so the answer holds until
 /// it does.
-fn single_threaded(what: &str) -> io::Result<()> {
+pub(crate) fn single_threaded(what: &str) -> io::Result<()> {
     let started = Instant::now();
     loop {
         let threads = thread_count()?;
@@ -93,6 +93,48 @@ fn thread_count() -> io::Result<u32> {
 fn thread_count() -> io::Result<u32> {
     let threads = std::fs::read_dir("/proc/self/task")?.count();
     u32::try_from(threads).map_err(io::Error::other)
+}
+
+/// Starts the program at `path` in place of this process, as execve(2)
+/// does, with `args` as its arguments (the first its name) and `env` as
+/// its environment; it returns only when the program could not start.
+///
+/// Unlike `std::process::Command`, it keeps the signal mask and the
+/// signals this process ignores, as a shell's children keep them
+/// (XCU 2.11), and every descriptor without close-on-exec: those a shell
+/// put at its numbers ([`numbered`](crate::numbered)), with a standard
+/// one it closed closed.
+pub fn exec(path: &CStr, args: &[CString], env: &[CString]) -> io::Error {
+    let argv: Vec<*const libc::c_char> =
+        args.iter().map(|arg| arg.as_ptr()).chain(std::iter::once(std::ptr::null())).collect();
+    let envp: Vec<*const libc::c_char> =
+        env.iter().map(|entry| entry.as_ptr()).chain(std::iter::once(std::ptr::null())).collect();
+    let started = crate::numbered::with_closed_standard_closed(|| {
+        // SAFETY: both arrays end with a null pointer and point at C
+        // strings that live through the call; execve returns only when it
+        // fails, and errno is read before anything else runs.
+        unsafe { libc::execve(path.as_ptr(), argv.as_ptr(), envp.as_ptr()) };
+        io::Error::last_os_error()
+    });
+    match started {
+        Ok(error) | Err(error) => error,
+    }
+}
+
+/// Puts process `pid` (0 for the caller) in process group `group` (0 for
+/// a new one numbered as `pid`), as setpgid(2) does: a shell puts each
+/// job's processes in a group of their own, from the parent and from the
+/// child both, so that neither waits for the other.
+///
+/// # Errors
+///
+/// EACCES for a child that has started its program already, EPERM for a
+/// group in another session, ESRCH for a process that is not the caller
+/// or its child.
+pub fn set_process_group(pid: Pid, group: Pid) -> io::Result<()> {
+    // SAFETY: setpgid takes two integers and touches no memory.
+    checked(unsafe { libc::setpgid(pid, group) })?;
+    Ok(())
 }
 
 /// Ends this process at once with exit status `code`, as _exit(2) does:

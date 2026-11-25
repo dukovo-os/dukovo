@@ -61,6 +61,7 @@ fn a_new_session_takes_control_of_a_terminal() {
         Fork::Child => {
             let session = process::new_session().unwrap();
             terminal::take_control(&pty.terminal).unwrap();
+            terminal::set_foreground_group(&pty.terminal, session).unwrap();
             let foreground = terminal::foreground_group(&pty.terminal).unwrap();
             process::exit_now(if foreground == session { 0 } else { 1 })
         }

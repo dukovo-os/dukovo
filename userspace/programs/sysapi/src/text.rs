@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! One value written as printf(3) writes it, for a tool whose formats are
-//! printf's own, as hexdump(1)'s are: its flags, width and precision with
-//! one conversion, checked before the C library sees them.
+//! printf's own, as hexdump(1)'s and a shell's `printf` are: its flags,
+//! width and precision with one conversion, checked before the C library
+//! sees them; and a number read as strtod(3) reads it.
 
 use std::io;
 
@@ -23,9 +24,8 @@ pub enum Value<'a> {
     Str(&'a [u8]),
 }
 
-/// The most digits of a width or a precision: a wider one is a mistake,
-/// not a format.
-const DIGITS_MAX: usize = 4;
+/// The most digits of a width or a precision: ten, as many as an int has.
+const DIGITS_MAX: usize = 10;
 
 /// Whether `spec` is printf's flags, then a width, then a precision, each
 /// of them optional, and nothing else: `#08.3`, `-4`, ``.
@@ -45,7 +45,7 @@ fn valid_spec(spec: &str) -> bool {
 /// # Errors
 ///
 /// `ErrorKind::InvalidInput` for a spec of other characters or another
-/// shape, a width or precision of more than four digits, or a letter that
+/// shape, a width or precision of more than ten digits, or a letter that
 /// is not one for the value's kind.
 pub fn printf(spec: &str, letter: char, value: Value<'_>) -> io::Result<Vec<u8>> {
     let fits = match value {
@@ -101,9 +101,51 @@ pub fn printf(spec: &str, letter: char, value: Value<'_>) -> io::Result<Vec<u8>>
     }
 }
 
+/// What [`read_float`] read.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Float {
+    /// The number; ±HUGE_VAL or 0 when it is out of range.
+    pub value: f64,
+    /// How many bytes of the text it took.
+    pub used: usize,
+    /// Whether the number is beyond what a double holds (ERANGE).
+    pub out_of_range: bool,
+}
+
+/// The number at the start of `text`, as strtod(3) reads it: decimal or
+/// hexadecimal, `inf` and `nan`, after any white space. The text ends at
+/// a NUL byte, as a C string does.
+#[must_use]
+pub fn read_float(text: &[u8]) -> Float {
+    let end = text.iter().position(|&b| b == 0).unwrap_or(text.len());
+    let Ok(c_text) = crate::c_string(&text[..end]) else {
+        return Float { value: 0.0, used: 0, out_of_range: false };
+    };
+    let start = c_text.as_ptr();
+    let mut stop = start.cast_mut();
+    // SAFETY: the text is a C string, and strtod leaves `stop` inside it;
+    // errno is this thread's, cleared first so that ERANGE is strtod's.
+    let (value, out_of_range, used) = unsafe {
+        *libc::__errno_location() = 0;
+        let value = libc::strtod(start, &raw mut stop);
+        (value, *libc::__errno_location() == libc::ERANGE, stop.offset_from(start))
+    };
+    Float { value, used: used.unsigned_abs(), out_of_range }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Value, printf};
+    use super::{Float, Value, printf, read_float};
+
+    #[test]
+    fn a_float_is_read_as_strtod_reads_it() {
+        assert_eq!(read_float(b"1.5"), Float { value: 1.5, used: 3, out_of_range: false });
+        assert_eq!(read_float(b" 0x10z"), Float { value: 16.0, used: 5, out_of_range: false });
+        assert_eq!(read_float(b"abc").used, 0);
+        assert_eq!(read_float(b"2\0junk").used, 1);
+        let huge = read_float(b"1e5000");
+        assert!(huge.out_of_range && huge.value.is_infinite() && huge.used == 6);
+    }
 
     #[test]
     fn each_kind_is_written_as_printf_writes_it() {
@@ -132,7 +174,7 @@ mod tests {
             ("l", 'd', Value::Signed(1)),
             ("1.2.3", 'd', Value::Signed(1)),
             ("%", 'd', Value::Signed(1)),
-            ("99999", 'd', Value::Signed(1)),
+            ("99999999999", 'd', Value::Signed(1)),
             ("5-", 'd', Value::Signed(1)),
         ] {
             assert!(printf(spec, letter, value).is_err(), "%{spec}{letter}");
