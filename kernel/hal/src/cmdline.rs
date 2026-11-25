@@ -58,11 +58,6 @@ pub const FLAGS: &[Flag] = &[
         summary: "put programs' stacks, images and anonymous memory in the same places every boot",
     },
     Flag {
-        name: "share-program-pages",
-        value: None,
-        summary: "for measuring: share the pages of every program file, even of one that can change",
-    },
-    Flag {
         name: "nopcid",
         value: None,
         summary: "do not tag TLB entries with process-context identifiers (PCIDs)",

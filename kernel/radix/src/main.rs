@@ -131,10 +131,6 @@ pub struct Settings {
     /// Programs' memory goes to random places, unless `norandmaps` keeps
     /// it in the same places every boot (`user::random::place`).
     pub random_maps: bool,
-    /// `share-program-pages`: every file's pages that programs map where
-    /// they may not write are kept for every space that maps them, as for
-    /// a file that cannot change (`user::memory::program`). For measuring.
-    pub share_program_pages: bool,
     /// A panic writes a crash dump, unless `crashdump=off` (ADR 0483).
     pub crash_dump: bool,
     /// A program's crash leaves a record for reportd, unless
@@ -166,7 +162,6 @@ pub fn settings() -> Settings {
         lockdep: None,
         fuzz_seed: None,
         random_maps: true,
-        share_program_pages: false,
         crash_dump: true,
         crash_records: true,
     })
@@ -209,7 +204,6 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
         },
         fuzz_seed: flags.value("fuzz-seed").and_then(|v| v.parse().ok()),
         random_maps: !flags.has("norandmaps"),
-        share_program_pages: flags.has("share-program-pages"),
         crash_dump: flags.value("crashdump") != Some("off"),
         crash_records: flags.value("crashrecords") != Some("off"),
     };
@@ -260,12 +254,6 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     }
     if !settings.random_maps {
         info!("User memory: in the same places every boot (norandmaps)");
-    }
-    if settings.share_program_pages {
-        warn!(
-            "User memory: the pages of every program file are shared, even of files that can \
-             change (share-program-pages); for measuring only"
-        );
     }
 
     HEAP.set_corruption_handler(on_heap_corruption);
