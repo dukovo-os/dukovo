@@ -12,8 +12,8 @@
 //! | `display_check` | CHECK_ONLY of a change that puts another picture on a main plane |
 //! | `display_change_queued` | that change with NO_WAIT and NEWEST_WINS: checked, and left to wait for the beat in the place of the one before |
 //! | `display_change_<card>` | that change made at once (NOW): the whole picture is new to the card |
-//! | `display_small_<card>` | a change made at once that names 64 by 64 pixels of the picture as new |
-//! | `display_pointer_<card>` | MOVE_POINTER |
+//! | `display_small_<card>` | a change made at once that names 64 by 64 pixels of the picture as new, clear of the pointer |
+//! | `display_pointer_<card>` | MOVE_POINTER of a pointer of 32 by 32 pixels, every one of them solid, to a place clear of the last |
 //!
 //! `<card>` is `firmware` or `virtio`. An operation is timed by itself,
 //! and what reading the clock twice costs is taken off. A card is given
@@ -43,6 +43,14 @@ const MOMENT: Duration = Duration::from_millis(2);
 
 /// The side of the rectangle a small change names.
 const SMALL: u16 = 64;
+
+/// The side of the pointer's picture.
+const POINTER: u32 = 32;
+
+/// Where the pointer is, and the column it moves to and back from: clear
+/// of the small change's rectangle and of each other.
+const POINTER_AT: (i16, i16) = (400, 300);
+const POINTER_THERE: i16 = 440;
 
 /// Runs the rows.
 pub fn run() -> Outcome {
@@ -130,7 +138,7 @@ fn whole_layer(stage: &mut Stage, clock: u64) -> Outcome {
 fn one_card(stage: &mut Stage, at: usize, card: &str, clock: u64) -> Outcome {
     let plane = stage.shown[at].plane;
     let pictures = [stage.spare(at)?, stage.shown[at].canvas.picture];
-    let pointer = stage.point(at, 32, (0, 0), (100, 100))?.plane;
+    let pointer = stage.point(at, POINTER, (0, 0), POINTER_AT)?.plane;
     let holder = &stage.seat.holder;
     let whole = |round: u32| {
         let mut change = ChangeBytes::new(NOW, 0);
@@ -145,8 +153,8 @@ fn one_card(stage: &mut Stage, at: usize, card: &str, clock: u64) -> Outcome {
     };
     row(&format!("display_small_{card}"), clock, small, moment)?;
     let point = |round: u32| {
-        let x = if round.is_multiple_of(2) { 100 } else { 140 };
-        holder.move_pointer(pointer, x, 100).map_err(|err| format!("MOVE_POINTER: {err}"))
+        let x = if round.is_multiple_of(2) { POINTER_AT.0 } else { POINTER_THERE };
+        holder.move_pointer(pointer, x, POINTER_AT.1).map_err(|err| format!("MOVE_POINTER: {err}"))
     };
     row(&format!("display_pointer_{card}"), clock, point, moment)
 }
