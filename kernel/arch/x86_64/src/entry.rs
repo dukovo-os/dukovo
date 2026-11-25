@@ -123,9 +123,21 @@ fn boot_info_bytes(info_phys: u32, base: u64) -> &'static [u8] {
     unsafe { core::slice::from_raw_parts(virt as *const u8, total) }
 }
 
-/// Maps the boot loader's framebuffer, if it is one this kernel can draw on.
+/// Maps the boot loader's framebuffer, if it is one this kernel can draw
+/// on and a card's: one that lies in memory the map names is not mapped,
+/// and nothing is ever drawn there.
 fn framebuffer(info: &BootInfo<'_>) -> (Option<Framebuffer>, bool) {
     let Some(fb) = info.framebuffer() else { return (None, false) };
+    if info.memory_map().is_some_and(|map| map.names_memory_in(&fb.range())) {
+        radix_klog::info!(
+            "Framebuffer: none: the boot loader names {}x{} at {:#x}, which is memory and no \
+             card's (the firmware draws its screen itself)",
+            fb.width,
+            fb.height,
+            fb.address
+        );
+        return (None, false);
+    }
     match (fb.kind, fb.rgb) {
         (framebuffer_type::RGB, Some([red, green, blue])) if matches!(fb.bpp, 16 | 24 | 32) => {
             let len = u64::from(fb.pitch) * u64::from(fb.height);
