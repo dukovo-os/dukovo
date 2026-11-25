@@ -78,3 +78,65 @@ test('a trial begun elsewhere says who began it when its row comes while the fir
   assert.match(words, /Begun by alice in this console\./);
   assert.doesNotMatch(words, /Begun at a terminal/);
 });
+
+test('a trial begun elsewhere reads the journal once at a time, and a read that fails says nothing', async (context) => {
+  const trial = {
+    id: 'firewall', files: ['/system/settings/firewall'], services: ['firewall'], user: 1000, left_ms: 290_000,
+  };
+  const row = {
+    action: 'firewall.add', status: 0, argv: ['firewall', 'add', '--try', '300', 'allow', 'tcp', '22'], who: 'alice', how: 'console', files: [],
+  };
+  const reads = [];
+  const world = await openFirewall(context, {
+    reads: {
+      '/api/1/firewall': { ...listed(), trial: { left_ms: 290_000 } },
+      '/api/1/services': {
+        show_version: 1, now_ms: 1_000_000, services: [{ name: 'firewall', state: 'running' }], trials: [trial], undone: [],
+      },
+      '/api/1/changes?limit=100': () => new Promise((resolve, reject) => { reads.push({ resolve, reject }); }),
+    },
+  });
+  await world.ready;
+
+  // New rows ask while the first read is out: they wait for it.
+  await world.emit('change');
+  await world.emit('change');
+  assert.equal(reads.length, 1, 'a second read of the journal began while the first was out');
+
+  // The first read fails, says nothing, and the one asked for meanwhile
+  // follows it and finds the row.
+  reads[0].reject(new Error('the journal is away'));
+  await settle();
+  assert.doesNotMatch(world.view.main.textContent, /Begun/);
+  assert.equal(reads.length, 2, 'the read asked for meanwhile did not follow');
+  reads[1].resolve({ changes: [row] });
+  await settle();
+  assert.match(world.view.main.textContent, /Begun by alice in this console\./);
+});
+
+test('a trial begun elsewhere says who began it when its row comes and no change is heard', async (context) => {
+  const trial = {
+    id: 'firewall', files: ['/system/settings/firewall'], services: ['firewall'], user: 1000, left_ms: 290_000,
+  };
+  const row = {
+    action: 'firewall.add', status: 0, argv: ['firewall', 'add', '--try', '300', 'allow', 'tcp', '22'], who: 'alice', how: 'console', files: [],
+  };
+  let rows = [];
+  const world = await openFirewall(context, {
+    reads: {
+      '/api/1/firewall': { ...listed(), trial: { left_ms: 290_000 } },
+      '/api/1/services': {
+        show_version: 1, now_ms: 1_000_000, services: [{ name: 'firewall', state: 'running' }], trials: [trial], undone: [],
+      },
+      '/api/1/changes?limit=100': () => ({ changes: rows }),
+    },
+  });
+  await world.ready;
+  assert.match(world.view.main.textContent, /Begun at a terminal\./, 'the first read of the journal has no row');
+
+  // The row is kept, but this page hears no change: its next read of the
+  // document reads the journal again.
+  rows = [row];
+  await world.every();
+  assert.match(world.view.main.textContent, /Begun by alice in this console\./);
+});
