@@ -53,6 +53,7 @@ pub mod raw;
 pub mod synthetic;
 pub mod tmpfs;
 pub mod view;
+pub mod writes;
 
 #[cfg(test)]
 mod tests;
@@ -155,6 +156,10 @@ pub enum Error {
     /// The program that served the filesystem has gone, or its mount
     /// has (ADR 0226). POSIX's ENOTCONN.
     NotConnected,
+    /// The file's pages are shared by the programs that map it, so it may
+    /// not be opened to write or be cut while they do ([`writes`]).
+    /// POSIX's ETXTBSY.
+    TextBusy,
 }
 
 impl fmt::Display for Error {
@@ -192,6 +197,7 @@ impl fmt::Display for Error {
             Error::OutOfRange => "out of range",
             Error::Interrupted => "interrupted",
             Error::NotConnected => "the filesystem's program has gone",
+            Error::TextBusy => "the file's pages are shared by programs that run it",
         })
     }
 }
@@ -688,6 +694,14 @@ pub trait Node: Send + Sync + Any {
     /// to write: a file or directory of a read-only Btrfs subvolume.
     fn read_only(&self) -> bool {
         false
+    }
+
+    /// A file's count of the handles that may write it and of the sets of
+    /// its pages programs share ([`writes`]), on a filesystem whose files
+    /// change only by the kernel's writes: `None` if it keeps none, and
+    /// then programs that map the file share none of its pages.
+    fn write_access(&self) -> Option<&writes::WriteAccess> {
+        None
     }
 
     /// The node a new handle to it uses: `None` for itself (the caller

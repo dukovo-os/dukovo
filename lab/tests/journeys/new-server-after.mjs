@@ -12,7 +12,7 @@
 import { readFile } from "node:fs/promises";
 
 import { ensure, fetchAsPage, mustBe, signOut } from "../web-console/console.mjs";
-import { folderOf, infoOf, readJson, signedIn, unlock, wordsOf } from "./journey.mjs";
+import { journeyFolder, journeyInfo, readJson, signedIn, unlock, wordsOf } from "./journey.mjs";
 
 /** The administrator's view of each page, held to what the machine answers. */
 async function administrator(t, info) {
@@ -56,7 +56,7 @@ async function administrator(t, info) {
 /** The reader sees the pages and changes nothing: no button, and every call refused. */
 async function reader(t, info) {
   const { page } = await signedIn(t, info.reader, info.reader_password);
-  const stranger = (await readFile(`${folderOf("new-server")}/stranger.pub`, "utf8")).trim();
+  const stranger = (await readFile(`${journeyFolder()}/stranger.pub`, "utf8")).trim();
   const refused = [
     ["/api/1/accounts/add", { name: "journey-intruder", admin: true, password: "lab-journey-password-9" }],
     ["/api/1/firewall/add", { action: "allow", protocol: "tcp", ports: "8090" }],
@@ -84,7 +84,7 @@ async function reader(t, info) {
 }
 
 export default async function check(t) {
-  const info = await infoOf("new-server");
+  const info = await journeyInfo();
   await administrator(t, info);
   await reader(t, info);
 }

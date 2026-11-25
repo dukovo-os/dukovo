@@ -10,7 +10,7 @@
 // administrator's folder is as it was (data-safety.toml looks at it after).
 
 import { ensure, fetchAsPage, lookAll, mustBe, signOut } from "../web-console/console.mjs";
-import { infoOf, readJson, signedIn, unlock, wordsOf } from "./journey.mjs";
+import { journeyInfo, readJson, signedIn, unlock, wordsOf } from "./journey.mjs";
 
 /** What the machine says of its backup places, as `backup list --json` says it, through the console. */
 async function placesNow(page) {
@@ -68,7 +68,7 @@ async function reader(t, info) {
 }
 
 export default async function check(t) {
-  const info = await infoOf("data-safety");
+  const info = await journeyInfo();
   await administrator(t, info);
   await reader(t, info);
 }

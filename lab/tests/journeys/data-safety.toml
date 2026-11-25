@@ -25,22 +25,23 @@
 # as its owner would take it with them; on a real machine a person plugs and
 # pulls it, which marks the steps that do so as steps for a person.
 #
-# /tmp/lab-journey-data-safety holds the keys of the two accounts and the
-# facts the browser script reads; the first step makes it and the last takes it
-# away.
+# The test's folder on the lab PC, {work}, holds the keys of the two accounts
+# and the facts the browser script reads. It is the machine's own for this
+# run, so the journey can run on two machines at once, and it goes when the
+# test ends.
 about = "Two people's files kept safe: files of known sums, a USB stick and a folder as backup places, a snapshot, files deleted and written over, restored from the snapshot and from the backup and matched by sum, a reader refused another's files, then the cord pulled in the middle of a backup after which the filesystems are clean, the earlier backups restore, and the console reports the last good backup and nothing running"
 time = "10m"
 fresh = true
 host_needs = ["ssh", "ssh-keygen", "scp"]
 
 [[step]]
-host = '''sh -c 'rm -rf /tmp/lab-journey-data-safety && mkdir -p /tmp/lab-journey-data-safety && cd /tmp/lab-journey-data-safety && ssh-keygen -q -t ed25519 -N "" -C journey-alice -f journey-alice && ssh-keygen -q -t ed25519 -N "" -C journey-bob -f journey-bob && printf "alice=journey-alice\nalice_password=lab-journey-password-1\nbob=journey-bob\nbob_password=lab-journey-password-2\n" > info && echo journey-ready' '''
+host = '''sh -c 'ssh-keygen -q -t ed25519 -N "" -C journey-alice -f journey-alice && ssh-keygen -q -t ed25519 -N "" -C journey-bob -f journey-bob && printf "alice=journey-alice\nalice_password=lab-journey-password-1\nbob=journey-bob\nbob_password=lab-journey-password-2\n" > info && echo journey-ready' '''
 expect = "journey-ready"
 [[step]]
-host = "sh {here}/../services/copy-file.sh /tmp/lab-journey-data-safety/journey-alice.pub {machine} {machine-port:22}"
+host = "sh {here}/../services/copy-file.sh {work}/journey-alice.pub {machine} {machine-port:22}"
 expect = "copied: journey-alice.pub"
 [[step]]
-host = "sh {here}/../services/copy-file.sh /tmp/lab-journey-data-safety/journey-bob.pub {machine} {machine-port:22}"
+host = "sh {here}/../services/copy-file.sh {work}/journey-bob.pub {machine} {machine-port:22}"
 expect = "copied: journey-bob.pub"
 # An administrator and a reader, each with the key that signs them in over SSH.
 [[step]]
@@ -50,10 +51,10 @@ expect = ["Made journey-alice", "Made journey-bob"]
 
 # Files of known content in each person's home.
 [[step]]
-host = "sh -c 'sh {here}/ssh-as.sh /tmp/lab-journey-data-safety journey-alice {machine} {machine-port:22} \"sh -s make\" < {here}/data-safety-files.sh'"
+host = "sh -c 'sh {here}/ssh-as.sh {work} journey-alice {machine} {machine-port:22} \"sh -s make\" < {here}/data-safety-files.sh'"
 expect = "5"
 [[step]]
-host = "sh -c 'sh {here}/ssh-as.sh /tmp/lab-journey-data-safety journey-bob {machine} {machine-port:22} \"sh -s make\" < {here}/data-safety-files.sh'"
+host = "sh -c 'sh {here}/ssh-as.sh {work} journey-bob {machine} {machine-port:22} \"sh -s make\" < {here}/data-safety-files.sh'"
 expect = "5"
 
 # A USB stick, found as the disk that is new, is made a Btrfs and mounted where
@@ -101,22 +102,22 @@ expect = "/snapshots/users/journey-before"
 
 # Files are deleted and written over, by each person.
 [[step]]
-host = "sh -c 'sh {here}/ssh-as.sh /tmp/lab-journey-data-safety journey-alice {machine} {machine-port:22} \"sh -s change\" < {here}/data-safety-files.sh'"
+host = "sh -c 'sh {here}/ssh-as.sh {work} journey-alice {machine} {machine-port:22} \"sh -s change\" < {here}/data-safety-files.sh'"
 expect = ["docs/numbers.txt", "docs/report.csv"]
 expect_not = "notes.txt"
 [[step]]
-host = "sh -c 'sh {here}/ssh-as.sh /tmp/lab-journey-data-safety journey-bob {machine} {machine-port:22} \"sh -s change\" < {here}/data-safety-files.sh'"
+host = "sh -c 'sh {here}/ssh-as.sh {work} journey-bob {machine} {machine-port:22} \"sh -s change\" < {here}/data-safety-files.sh'"
 expect = ["docs/numbers.txt", "docs/report.csv"]
 [[step]]
-host = "sh -c 'sh {here}/ssh-as.sh /tmp/lab-journey-data-safety journey-alice {machine} {machine-port:22} \"sh -s check\" < {here}/data-safety-files.sh'"
+host = "sh -c 'sh {here}/ssh-as.sh {work} journey-alice {machine} {machine-port:22} \"sh -s check\" < {here}/data-safety-files.sh'"
 expect = ["matching: 0", "FAILED"]
 
 # The administrator's files come back from the snapshot, as the administrator.
 [[step]]
-host = "sh -c 'sh {here}/ssh-as.sh /tmp/lab-journey-data-safety journey-alice {machine} {machine-port:22} \"sh -s restore journey-before\" < {here}/data-safety-files.sh'"
+host = "sh -c 'sh {here}/ssh-as.sh {work} journey-alice {machine} {machine-port:22} \"sh -s restore journey-before\" < {here}/data-safety-files.sh'"
 expect = ["Restored /users/journey-alice/docs/notes.txt", "Restored /users/journey-alice/docs/photos"]
 [[step]]
-host = "sh -c 'sh {here}/ssh-as.sh /tmp/lab-journey-data-safety journey-alice {machine} {machine-port:22} \"sh -s check\" < {here}/data-safety-files.sh'"
+host = "sh -c 'sh {here}/ssh-as.sh {work} journey-alice {machine} {machine-port:22} \"sh -s check\" < {here}/data-safety-files.sh'"
 expect = "matching: 5"
 expect_not = "FAILED"
 
@@ -127,21 +128,21 @@ run = "backup restore --place /users stick"
 root = true
 expect = "Restored the backup of users at "
 [[step]]
-host = "sh -c 'sh {here}/ssh-as.sh /tmp/lab-journey-data-safety journey-bob {machine} {machine-port:22} \"sh -s restore-backup\" < {here}/data-safety-files.sh'"
+host = "sh -c 'sh {here}/ssh-as.sh {work} journey-bob {machine} {machine-port:22} \"sh -s restore-backup\" < {here}/data-safety-files.sh'"
 expect = ["restoring from restored-", "Restored /users/journey-bob/docs/notes.txt"]
 [[step]]
-host = "sh -c 'sh {here}/ssh-as.sh /tmp/lab-journey-data-safety journey-bob {machine} {machine-port:22} \"sh -s check\" < {here}/data-safety-files.sh'"
+host = "sh -c 'sh {here}/ssh-as.sh {work} journey-bob {machine} {machine-port:22} \"sh -s check\" < {here}/data-safety-files.sh'"
 expect = "matching: 5"
 expect_not = "FAILED"
 
 # The reader cannot take the administrator's files, from the snapshot or from
 # the backup, and the administrator's folder is as it was.
 [[step]]
-host = "sh -c 'sh {here}/ssh-as.sh /tmp/lab-journey-data-safety journey-bob {machine} {machine-port:22} \"snap restore --from journey-before --to /users/journey-bob/taken.txt /users/journey-alice/docs/notes.txt; echo status=\\$?; ls /users/journey-bob\"'"
+host = "sh -c 'sh {here}/ssh-as.sh {work} journey-bob {machine} {machine-port:22} \"snap restore --from journey-before --to /users/journey-bob/taken.txt /users/journey-alice/docs/notes.txt; echo status=\\$?; ls /users/journey-bob\"'"
 expect = ["status=1"]
 expect_not = ["Restored", "taken.txt"]
 [[step]]
-host = "sh -c 'sh {here}/ssh-as.sh /tmp/lab-journey-data-safety journey-bob {machine} {machine-port:22} \"snap browse /users journey-before /users/journey-alice/docs; echo status=\\$?\"'"
+host = "sh -c 'sh {here}/ssh-as.sh {work} journey-bob {machine} {machine-port:22} \"snap browse /users journey-before /users/journey-alice/docs; echo status=\\$?\"'"
 expect = "status=1"
 expect_not = "notes.txt"
 
@@ -156,7 +157,7 @@ usb = "unplug"
 # The reader's large file, and the sums of everything on disk before the
 # backup that is cut off.
 [[step]]
-host = "sh -c 'sh {here}/ssh-as.sh /tmp/lab-journey-data-safety journey-bob {machine} {machine-port:22} \"sh -s big\" < {here}/data-safety-files.sh'"
+host = "sh -c 'sh {here}/ssh-as.sh {work} journey-bob {machine} {machine-port:22} \"sh -s big\" < {here}/data-safety-files.sh'"
 expect = "300000000"
 [[step]]
 run = "sh -c 'backup list --json | tr \",\" \"\\n\" | grep done_ms > /users/lab/journey-done-before; backup show --json shelf | tr \",\" \"\\n\" | grep at_ms > /users/lab/journey-backups-before; cat /users/lab/journey-done-before; wc -l < /users/lab/journey-backups-before; sync'"
@@ -185,15 +186,15 @@ run = "sh -c 'for place in /users /shared /system/settings; do scrub start -B -r
 root = true
 expect = ["Status:           finished", "no errors found"]
 [[step]]
-host = "sh -c 'sh {here}/ssh-as.sh /tmp/lab-journey-data-safety journey-alice {machine} {machine-port:22} \"sh -s check\" < {here}/data-safety-files.sh'"
+host = "sh -c 'sh {here}/ssh-as.sh {work} journey-alice {machine} {machine-port:22} \"sh -s check\" < {here}/data-safety-files.sh'"
 expect = "matching: 5"
 expect_not = "FAILED"
 [[step]]
-host = "sh -c 'sh {here}/ssh-as.sh /tmp/lab-journey-data-safety journey-bob {machine} {machine-port:22} \"sh -s check\" < {here}/data-safety-files.sh'"
+host = "sh -c 'sh {here}/ssh-as.sh {work} journey-bob {machine} {machine-port:22} \"sh -s check\" < {here}/data-safety-files.sh'"
 expect = "matching: 5"
 expect_not = "FAILED"
 [[step]]
-host = "sh -c 'sh {here}/ssh-as.sh /tmp/lab-journey-data-safety journey-bob {machine} {machine-port:22} \"sh -s bigcheck\" < {here}/data-safety-files.sh'"
+host = "sh -c 'sh {here}/ssh-as.sh {work} journey-bob {machine} {machine-port:22} \"sh -s bigcheck\" < {here}/data-safety-files.sh'"
 expect = "big.bin: OK"
 # What the machine says of the backups: the last good one is the one before,
 # and the earlier backups restore whole.
@@ -261,6 +262,3 @@ expect = "big.bin: OK"
 run = '''sh -c 'backup remove stick; backup remove shelf; rm -rf /system/state/journey-shelf; for snapshot in journey-before; do snap delete /users $snapshot; done; for s in /snapshots/users/restored-*; do [ -d "$s" ] && snap delete /users ${s##*/}; done; rm -f /volumes/JOURNEY; rmdir /volumes/JOURNEY; for name in journey-alice journey-bob; do user remove --delete-home --yes $name || exit 1; done; rm -f /users/lab/journey-* /users/lab/lab-stick /users/lab/lab-disks-before; echo restored' '''
 root = true
 expect = ["journey-bob is removed", "restored"]
-[[step]]
-host = "sh -c 'rm -rf /tmp/lab-journey-data-safety; echo gone'"
-expect = "gone"

@@ -26,8 +26,9 @@
 # checked in each engine by the web-console tests.
 #
 # The facts the browser scripts need from the lab PC, and the key the
-# administrator signs in with, are in /tmp/lab-journey-new-server, which the
-# first step makes and the last takes away. The machine is put back at the end:
+# administrator signs in with, are in the test's folder on the lab PC,
+# {work}, the machine's own for this run, so the journey can run on two
+# machines at once; it goes when the test ends. The machine is put back at the end:
 # the accounts, the website, the certificate and its authority, the resolver,
 # the firewall's rules and the alerts' settings.
 about = "A new server's first weeks: the first console sign-in, an administrator with an SSH key and a reader, the key accepted and the password refused over SSH, firewall rules from the console that the lab PC feels, a website with a Pebble certificate fetched over HTTPS, alerts by email that arrive, a restart after which every one still holds, and a reader who can change none of it"
@@ -38,7 +39,7 @@ host_needs = ["curl", "scp", "ssh", "ssh-keygen", "openssl", "nc", "mailpit"]
 # The facts for the browser scripts, and the administrator's key. The reader
 # has no key, so a key of its own that the machine does not know is refused.
 [[step]]
-host = '''sh -c 'rm -rf /tmp/lab-journey-new-server && mkdir -p /tmp/lab-journey-new-server && cd /tmp/lab-journey-new-server && ssh-keygen -q -t ed25519 -N "" -C journey-key -f key && ssh-keygen -q -t ed25519 -N "" -C journey-stranger -f stranger && printf "#!/bin/sh\necho lab-journey-password-1\n" > askpass && chmod 700 askpass && printf "owner=journey-owner\nowner_password=lab-console-password\nadmin=journey-admin\nadmin_password=lab-journey-password-1\nreader=journey-reader\nreader_password=lab-journey-password-2\nsite=journey.acme-lab.example\nmail_to=owner@lab.test\nmail_server=127.0.0.1\n" > info && echo journey-ready' '''
+host = '''sh -c 'ssh-keygen -q -t ed25519 -N "" -C journey-key -f key && ssh-keygen -q -t ed25519 -N "" -C journey-stranger -f stranger && printf "#!/bin/sh\necho lab-journey-password-1\n" > askpass && chmod 700 askpass && printf "owner=journey-owner\nowner_password=lab-console-password\nadmin=journey-admin\nadmin_password=lab-journey-password-1\nreader=journey-reader\nreader_password=lab-journey-password-2\nsite=journey.acme-lab.example\nmail_to=owner@lab.test\nmail_server=127.0.0.1\n" > info && echo journey-ready' '''
 expect = "journey-ready"
 # The account the install made: an administrator with a password, and no
 # time zone yet, so its first sign-in is the welcome page.
@@ -150,14 +151,14 @@ expect = ["700 journey-admin", "600 journey-admin"]
 # Over SSH from the lab PC: the key signs the administrator in, a key the
 # machine does not know and a password are both refused, and so is root.
 [[step]]
-host = "sh -c 'ssh -p {machine-port:22} -i /tmp/lab-journey-new-server/key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR journey-admin@{machine} \"whoami; pwd\"'"
+host = "sh -c 'ssh -p {machine-port:22} -i {work}/key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR journey-admin@{machine} \"whoami; pwd\"'"
 expect = ["journey-admin", "/users/journey-admin"]
 [[step]]
-host = "sh -c 'SSH_ASKPASS=/tmp/lab-journey-new-server/askpass SSH_ASKPASS_REQUIRE=force ssh -p {machine-port:22} -o PubkeyAuthentication=no -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR journey-admin@{machine} echo let-in < /dev/null; echo status=$?'"
+host = "sh -c 'SSH_ASKPASS={work}/askpass SSH_ASKPASS_REQUIRE=force ssh -p {machine-port:22} -o PubkeyAuthentication=no -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR journey-admin@{machine} echo let-in < /dev/null; echo status=$?'"
 expect = ["Permission denied", "status=255"]
 expect_not = "let-in\n"
 [[step]]
-host = "sh -c 'ssh -p {machine-port:22} -i /tmp/lab-journey-new-server/stranger -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR journey-admin@{machine} echo let-in < /dev/null; echo status=$?'"
+host = "sh -c 'ssh -p {machine-port:22} -i {work}/stranger -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR journey-admin@{machine} echo let-in < /dev/null; echo status=$?'"
 expect = ["Permission denied", "status=255"]
 expect_not = "let-in\n"
 
@@ -273,10 +274,10 @@ run = "user list --json"
 root = true
 expect = ["journey-owner", "journey-admin", "journey-reader"]
 [[step]]
-host = "sh -c 'ssh -p {machine-port:22} -i /tmp/lab-journey-new-server/key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR journey-admin@{machine} whoami'"
+host = "sh -c 'ssh -p {machine-port:22} -i {work}/key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR journey-admin@{machine} whoami'"
 expect = "journey-admin"
 [[step]]
-host = "sh -c 'SSH_ASKPASS=/tmp/lab-journey-new-server/askpass SSH_ASKPASS_REQUIRE=force ssh -p {machine-port:22} -o PubkeyAuthentication=no -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR journey-admin@{machine} echo let-in < /dev/null; echo status=$?'"
+host = "sh -c 'SSH_ASKPASS={work}/askpass SSH_ASKPASS_REQUIRE=force ssh -p {machine-port:22} -o PubkeyAuthentication=no -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR journey-admin@{machine} echo let-in < /dev/null; echo status=$?'"
 expect = ["Permission denied", "status=255"]
 expect_not = "let-in\n"
 # The firewall: the rules the kernel took from the file at the boot, felt from
@@ -353,6 +354,3 @@ expect_not = "intruder"
 run = '''sh -c 'website remove journey.acme-lab.example --files > /dev/null 2>&1; cert remove journey.acme-lab.example > /dev/null 2>&1; service nginx disable > /dev/null 2>&1; bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; rm -f /system/settings/alerts.toml; service alertd reload; sed -i "/^allow tcp 808/d" /system/settings/firewall; firewall load; cp /users/lab/journey-resolved.orig /system/settings/resolved && service resolved reload; ln -sf /system/resources/certificates/ca-certificates.crt /system/settings/ssl/certs/ca-certificates.crt; rm -f /users/lab/journey-* /users/lab/ca.pem /users/lab/issuer.pem /users/lab/mail-relay.sh /users/lab/org.nginx.nginx.dkv; rm -rf /shared/www/sites; for name in journey-owner journey-admin journey-reader; do user remove --delete-home --yes $name || exit 1; done; echo restored' '''
 root = true
 expect = ["journey-reader is removed", "restored"]
-[[step]]
-host = "sh -c 'rm -rf /tmp/lab-journey-new-server; echo gone'"
-expect = "gone"

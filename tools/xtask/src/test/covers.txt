@@ -712,6 +712,7 @@ php-fpm ports/postgresql/ ports/rustls-ffi/ ports/zlib/ ports/zstd/ tools/xtask/
 php-fpm tools/xtask/src/licenses.rs tools/xtask/src/ports.rs userspace/programs/dkv/
 php-fpm userspace/programs/manifest/ userspace/programs/systools/src/bundled.rs
 php-fpm userspace/programs/systools/src/bundles/ userspace/programs/systools/src/authd.rs
+php-fpm ports/mlibc/patches/0142-case-and-search-without-a-locale-lookup-per-byte.patch
 postgresql ports/libedit/ ports/libxml2/ ports/lz4/ ports/ncurses/ ports/openssl/
 postgresql ports/postgresql/ ports/zlib/ ports/zstd/ tools/xtask/src/bundles.rs
 postgresql tools/xtask/src/licenses.rs tools/xtask/src/ports.rs userspace/programs/dkv/
@@ -737,6 +738,8 @@ posix userspace/posix/format.c userspace/posix/hello.c userspace/posix/inet.c us
 posix userspace/posix/library.c userspace/posix/limits.c userspace/posix/locks.c
 posix ports/mlibc/patches/0094-fclose-drops-what-it-could-not-write.patch
 posix ports/mlibc/patches/0101-string-functions-sixteen-bytes-at-a-time.patch
+posix ports/mlibc/patches/0142-case-and-search-without-a-locale-lookup-per-byte.patch
+posix ports/mlibc/musl/substring.hpp
 posix userspace/posix/pipe.c userspace/posix/poll.c userspace/posix/programs.h userspace/posix/run.c
 posix userspace/posix/shm.c userspace/posix/signal.c userspace/posix/strings.c
 posix kernel/radix/src/fs/shm/ kernel/radix/src/user/memory/ kernel/radix/src/fs/socket.rs kernel/radix/src/fs/socket/
