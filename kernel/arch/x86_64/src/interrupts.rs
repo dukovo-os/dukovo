@@ -663,7 +663,8 @@ extern "C" fn radix_trap_dispatch(frame: *mut TrapFrame) {
 
 fn handle(vector: u8, frame: &mut TrapFrame) {
     match vector {
-        VECTOR_TIMER => crate::time::on_tick(),
+        // The user code it interrupted, for a profile's sample.
+        VECTOR_TIMER => crate::time::on_tick(if frame.cs & 3 != 0 { frame.rip } else { 0 }),
         VECTOR_RESCHEDULE => {
             percpu::current().reschedules.fetch_add(1, Ordering::Relaxed);
             crate::apic::end_of_interrupt();

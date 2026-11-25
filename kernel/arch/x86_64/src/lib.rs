@@ -428,6 +428,10 @@ impl Timer for Arch {
         time::next_interrupt_ns()
     }
 
+    fn sample_every(period_ns: u64, sampler: fn(u64)) -> bool {
+        time::sample_every(period_ns, sampler)
+    }
+
     fn timer_writes(cpu: usize) -> u64 {
         time::writes(cpu)
     }
