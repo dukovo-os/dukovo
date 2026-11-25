@@ -221,6 +221,16 @@ export const devices = () => plain({
   ],
 });
 
+/** A UPS of `hardware power --json` on the mains, charging, unless `more` says. */
+export const ups = (more = {}) => ({
+  name: 'ups0', kind: 'ups', model: 'CP1500PFCLCD', maker: 'CPS', online: true, status: 'Charging', percent: 87, seconds_left: 1500, load: 35, low_percent: 10, low_seconds: 120, shuts_down: true, replace: false, ...more,
+});
+
+/** `hardware power --json`: no battery and no UPS, as on most servers, unless `supplies` says; an AC adapter, which the card does not list. */
+export const power = (supplies = []) => plain({
+  format: 1, supplies: [...supplies, { name: 'AC', kind: 'mains', online: true }],
+});
+
 /** `GET /api/1/hardware/memtest`, which is `hardware memtest --status --json`: nothing asked and no test at a start kept, unless `more` says. */
 export const memtest = (more = {}) => plain({
   format: 1, asked: null, last: null, history: [], ...more,

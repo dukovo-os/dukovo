@@ -462,6 +462,41 @@ _/kernel/class/power_supply/ucsi-source-psy-USBC000:_*nnn*_/type_, _online_, _vo
 	and, while it does, the voltage agreed, in µV, the current agreed and
 	the most the charger offers at that voltage, in µA (else *0*).
 
+_/kernel/class/power_supply/ups_*n*_/type_, _scope_, _status_, _online_
+	For each UPS plugged in by USB (ADR 0741), from *ups0*, while it is
+	plugged in: *UPS*; *System*; what its battery is doing, *Charging*,
+	*Discharging*, *Full* or *Not charging*; and *1* while the mains is
+	there, else *0*. The USB controller's thread reads the UPS's reports
+	every 2 seconds; each file says what it last read. A UPS's directory
+	is listed while it is plugged in, and the directory
+	_/kernel/class/power_supply_ is there on every machine, as a UPS may
+	be plugged in at any time.
+
+_/kernel/class/power_supply/ups_*n*_/capacity_, _capacity_level_, _time_to_empty_now_, _load_
+	Its charge in percent; *Critical* when the machine shuts down for
+	it, *Low* at or under _capacity_alert_min_, *Full* or *Normal*; how
+	long the charge lasts at the load now, in seconds; and what the load
+	draws, in percent of what the UPS gives (Dukovo's own).
+
+_/kernel/class/power_supply/ups_*n*_/capacity_alert_min_, _time_to_empty_alert_min_, _shuts_down_
+	The charge in percent, and the run time in seconds (Dukovo's own),
+	at or under which its battery is low: the limits the UPS sets, else
+	10% and 120 seconds. While the UPS runs the machine on its battery
+	and it is that low, or the UPS says itself that it is low or that it
+	will turn its outlets off, two reads in a row, Spark is asked to
+	power the machine off, as for the power button, and the kernel
+	powers it off itself 60 seconds later if it is still on.
+	_shuts_down_ is *1*, or *0* when the kernel was started with
+	*ups=show* (*dukovo-boot*(7)), which only shows the UPS.
+
+_/kernel/class/power_supply/ups_*n*_/health_, _model_name_, _manufacturer_
+	*Dead* when the UPS says its battery should be replaced, else
+	*Good*; and its USB product and manufacturer strings.
+
+	A value the UPS does not say, and every one until its reports are
+	first read, fails to read with EIO; so does every file of a UPS
+	unplugged since its directory was opened.
+
 _/kernel/class/thermal/thermal_zone_*n*_/type_, _temp_
 	For each thermal zone of the firmware's (*dukovo-boot*(7)'s *ACPI*),
 	in the order the namespace has them, as Linux's ACPI thermal driver

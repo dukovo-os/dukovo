@@ -9,8 +9,10 @@
 //! host reads that with [`Setup::report_descriptor`], and `radix-hid`
 //! makes sense of it. The device sends its Input reports on an interrupt
 //! IN endpoint; the host sends Output reports, such as the keyboard's
-//! lights, with [`Setup::set_report`]. [`Setup::set_idle`] asks it to
-//! send a report only when something changed, and
+//! lights, with [`Setup::set_report`], and asks for a report with
+//! [`Setup::get_report`], as a UPS's Feature reports are read.
+//! [`Setup::set_idle`] asks it to send a report only when something
+//! changed, and
 //! [`Setup::set_protocol`] picks the fixed boot reports that a keyboard
 //! or mouse of the boot subclass also knows, for a host that cannot read
 //! its report descriptor.
@@ -122,6 +124,19 @@ impl Setup {
             value: u16::from(report),
             index: u16::from(interface),
             length: 0,
+        }
+    }
+
+    /// GET_REPORT: asks interface `interface` for its report of type
+    /// `kind` (REPORT_FEATURE for a UPS's charge) and ID `id`, `length`
+    /// bytes with the ID (HID 1.11, 7.2.1).
+    pub fn get_report(interface: u8, kind: u8, id: u8, length: u16) -> Setup {
+        Setup {
+            request_type: DEVICE_TO_HOST | CLASS | TO_INTERFACE,
+            request: request::GET_REPORT,
+            value: u16::from(kind) << 8 | u16::from(id),
+            index: u16::from(interface),
+            length,
         }
     }
 

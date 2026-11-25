@@ -241,6 +241,16 @@ pub fn set_tty(bus: usize, path: Path, interface: u8, number: u32) {
     });
 }
 
+/// The product and manufacturer strings of the device at `path` on bus
+/// `bus`, empty where it has none.
+pub fn strings(bus: usize, path: Path) -> (TextBuf<64>, TextBuf<64>) {
+    let all = SHOWN.lock();
+    all.iter()
+        .flatten()
+        .find(|s| usize::from(s.bus) == bus && s.path == path)
+        .map_or_else(Default::default, |s| (s.product.clone(), s.manufacturer.clone()))
+}
+
 /// Says that the hub at `path` has `ports` ports.
 pub fn set_hub_ports(bus: usize, path: Path, ports: u8) {
     change(bus, path, |shown| shown.hub_ports = ports);

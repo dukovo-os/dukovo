@@ -4,7 +4,8 @@
 //! hardware(8): `hardware check` looks for hardware that is failing,
 //! `hardware last` shows what the last check found (ADR 0488), `hardware
 //! history` lists the checks that were kept, `hardware show` says what
-//! the machine is, and `hardware memtest` asks for the memory to be
+//! the machine is, `hardware power` its batteries and UPSes (ADR 0741),
+//! and `hardware memtest` asks for the memory to be
 //! tested at the next start.
 //!
 //! A check looks at six areas: the memory (the errors the memory
@@ -38,6 +39,7 @@ pub(crate) mod memtest;
 mod monitors;
 mod network;
 mod plan;
+mod power;
 mod run;
 pub(crate) mod saved;
 mod scan;
@@ -60,7 +62,7 @@ use saved::Saved;
 const USAGE: &str = "usage: hardware check [AREA...] [--full] [--disk DISK] [--time SECONDS] \
                      [--yes] [--progress] [--json]\n       hardware last [--json]\n       \
                      hardware history [--json]\n       hardware show [--json]\n       hardware \
-                     sensors [--json]\n       hardware devices [--json]\n       hardware memtest \
+                     sensors [--json]\n       hardware devices [--json]\n       hardware power [--json]\n       hardware memtest \
                      --next-start | --cancel | --status [--json]";
 
 /// Set by SIGINT, SIGTERM or SIGHUP: the check stops, and aborts the
@@ -81,6 +83,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         Some(command) if command == "show" => show_command(args),
         Some(command) if command == "sensors" => sensors_command(args),
         Some(command) if command == "devices" => devices_command(args),
+        Some(command) if command == "power" => power_command(args),
         // A refusal of memtest is a status 1 of its own, as `changes bisect`'s.
         Some(command) if command == "memtest" => {
             return memtest::main(args)
@@ -325,6 +328,21 @@ fn sensors_command(args: &mut Args) -> Result<i32, Fail> {
 fn devices_command(args: &mut Args) -> Result<i32, Fail> {
     let json = json_only(args)?;
     let found = devices::gather(&devices::Sources::system());
+    let mut out = io::stdout().lock();
+    if json {
+        let text = found.json().map_err(|error| fail(format!("cannot write JSON: {error}")))?;
+        writeln!(out, "{text}")?;
+    } else {
+        write!(out, "{}", found.text())?;
+    }
+    Ok(0)
+}
+
+/// `hardware power`: the batteries, adapters and UPSes, and when a UPS
+/// shuts the machine down.
+fn power_command(args: &mut Args) -> Result<i32, Fail> {
+    let json = json_only(args)?;
+    let found = power::system();
     let mut out = io::stdout().lock();
     if json {
         let text = found.json().map_err(|error| fail(format!("cannot write JSON: {error}")))?;
