@@ -1854,9 +1854,11 @@ mod phase11;
 mod phase12;
 mod phase13;
 mod replay;
+mod screens;
 pub mod soak;
 mod stall;
 mod upgrade;
+mod viewer;
 
 /// The boot tests in test/cases, one file each, which build.rs lists (see
 /// test/cases/README.md): two pull requests that add a test each then
@@ -5171,6 +5173,8 @@ fn run_case(
             *arg = format!("stream,id=cable,server=off,addr.type=unix,addr.path={cable}");
         } else if *arg == CABLE_DUMP {
             *arg = format!("filter-dump,id=dump,netdev=cable,file={dump}");
+        } else if let Some(view) = screens::view_argument(arg, dir, case.name) {
+            *arg = view;
         }
     }
     let hyperv = extra.iter().any(|arg| arg == HYPERV);

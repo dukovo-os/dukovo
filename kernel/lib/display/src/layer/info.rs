@@ -150,6 +150,13 @@ where
         })
     }
 
+    /// How many times the card of pipe `id` was asked to give it another
+    /// mode, to start it or to stop it.
+    pub fn mode_sets(&self, id: u32) -> Option<u64> {
+        let at = self.pipes.iter().position(|pipe| pipe.id == id)?;
+        Some(self.runs[at].mode_sets)
+    }
+
     /// GET's PART_INFO of plane `id`.
     pub fn plane_info(&self, id: u32) -> Option<PlaneInfo> {
         let at = self.planes.iter().position(|plane| plane.id == id)?;

@@ -1377,6 +1377,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "display-pattern"
+version = "0.17.0"
+
+[[package]]
+name = "display-test"
+version = "0.17.0"
+dependencies = [
+ "display",
+ "display-pattern",
+ "libc",
+ "radix-abi",
+]
+
+[[package]]
 name = "displaydoc"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

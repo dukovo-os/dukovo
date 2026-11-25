@@ -95,14 +95,16 @@ where
             let old = self.shown_frame(&pipe);
             let new = frame(&self.things(), &scratch.view(), &pipe, &|_, _| None);
             let Some(card) = self.card(pipe.card) else { continue };
+            let change = Change { main: true, pointer: true, ..difference(&old, &new) };
+            let mode_set = change.mode;
             if log_pipe == Some(place) {
                 card.log_takes(&new);
             } else if old.active {
                 // A card that does not answer says so in the log itself;
                 // the log shows on its own card either way.
-                let change = Change { main: true, pointer: true, ..difference(&old, &new) };
                 let _ = card.show(&new, &change);
             }
+            self.runs[place].mode_sets += u64::from(mode_set);
         }
         for picture in &mut self.shown_pictures {
             *picture = None;

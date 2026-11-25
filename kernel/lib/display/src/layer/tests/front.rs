@@ -33,6 +33,11 @@ fn the_front_is_lent_and_given_back_between_three_holders() {
     let of_game = shows(&mut rig, game, 3, (800, 600));
     assert_eq!(rig.change(console, NOW, 0, &of_console), DONE);
     virtio.asked();
+    // The layer counts the modes it asks the card for, for whoever
+    // wants to know that a hand-over blanked no screen: one so far,
+    // the console's.
+    let mode_sets = |rig: &Rig| rig.layer.mode_sets(V_PIPES[0]);
+    assert_eq!(mode_sets(&rig), Some(1));
 
     // The desktop's first frame is in the mode that shows: none is set.
     assert_eq!(rig.layer.lend(console, desktop), Ok(()));
@@ -40,10 +45,12 @@ fn the_front_is_lent_and_given_back_between_three_holders() {
     assert_eq!(rig.change(desktop, NOW, 0, &of_desktop), DONE);
     let drawn = virtio.shown();
     assert_eq!((drawn.main, drawn.mode, drawn.whole), (Some(2), false, true));
+    assert_eq!(mode_sets(&rig), Some(1));
     assert_eq!(rig.layer.lend(desktop, game), Ok(()));
     assert_eq!(rig.change(game, NOW | MAY_BLANK, 0, &of_game), DONE);
     let drawn = virtio.shown();
     assert_eq!((drawn.main, drawn.size, drawn.mode), (Some(3), (800, 600), true));
+    assert_eq!(mode_sets(&rig), Some(2));
 
     // Those at the back keep what they asked for, and change nothing.
     let dot = [changed(V_MAINS[0], Rect::sized(1, 1))];
@@ -66,6 +73,9 @@ fn the_front_is_lent_and_given_back_between_three_holders() {
     let drawn = virtio.shown();
     assert_eq!((drawn.main, drawn.mode, drawn.whole), (Some(1), false, true));
     assert_eq!(rig.layer.front(), Some(console));
+    // Three in all: the console's, the game's and the desktop's back.
+    assert_eq!(mode_sets(&rig), Some(3));
+    assert_eq!(rig.layer.mode_sets(V_CARD), None, "a card is no pipe");
 
     // Each was told as the front came and went.
     let passes = |kinds: Vec<u32>| -> Vec<u32> {
@@ -262,9 +272,10 @@ fn the_layer_says_in_words_who_is_in_front_and_what_it_has() {
     let modes = lines.iter().filter(|line| line.starts_with("mode ")).count();
     assert_eq!(modes, 1);
     assert!(text.contains(" width=1024 height=768 refresh_mhz=100000 preferred=0\n"), "{text}");
-    assert!(
-        lines.iter().any(|line| line.starts_with(&format!("pipe {PIPE} card={CARD} index=0 ")))
-    );
+    let pipe = lines.iter().find(|line| line.starts_with(&format!("pipe {PIPE} card={CARD} ")));
+    let pipe = pipe.expect("the pipe has a line");
+    assert!(pipe.contains(" index=0 active=1 "), "{pipe}");
+    assert!(pipe.ends_with(" mode_sets=1"), "the log started the pipe, once: {pipe}");
 
     // A holder that has made no change is not yet a process's; one
     // that has is named by the number its changes were noted with.

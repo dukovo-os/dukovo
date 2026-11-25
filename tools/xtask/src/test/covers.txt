@@ -333,6 +333,8 @@ cloud-metadata userspace/programs/systools/src/cloud.rs userspace/programs/systo
 cloud-metadata userspace/defaults/spark/services/cloud-setup.toml
 console-access kernel/lib/fbcon/ tools/xtask/src/screen.rs userspace/defaults/console/
 console-access userspace/programs/consoled/ userspace/programs/systools/src/reader.rs
+console-screens kernel/lib/display/ kernel/radix/src/display/ kernel/drivers/virtio/ userspace/programs/display/
+console-screens userspace/programs/consoled/ kernel/lib/fbcon/ tools/xtask/src/test/screens.rs tools/xtask/src/test/viewer.rs tools/xtask/src/screen.rs
 consoles kernel/lib/fbcon/ kernel/lib/hid/ kernel/lib/input/ kernel/lib/tty/
 consoles tools/xtask/src/screen.rs tools/xtask/src/vt.rs userspace/defaults/console/
 consoles userspace/defaults/keyboard/ userspace/defaults/nukesh/ userspace/defaults/spark/services/
@@ -381,6 +383,21 @@ disk-raw-4k kernel/drivers/nvme/ kernel/fs/block/ userspace/programs/systools/sr
 disk-raw-4k userspace/storage/
 disk-readers kernel/drivers/ahci/ kernel/drivers/nvme/ kernel/drivers/virtio/ kernel/fs/block/
 disk-readers kernel/radix/src/fs/disk/queue.rs userspace/posix/diskread.c
+display-beat kernel/lib/display/ kernel/radix/src/display/ kernel/drivers/virtio/ userspace/programs/display/
+display-beat userspace/programs/display-test/ userspace/programs/display-pattern/ tools/xtask/src/test/screens.rs tools/xtask/src/test/viewer.rs tools/xtask/src/screen.rs
+display-handover kernel/lib/display/ kernel/radix/src/display/ kernel/drivers/virtio/ userspace/programs/display/
+display-handover userspace/programs/display-test/ userspace/programs/display-pattern/ userspace/programs/consoled/ tools/xtask/src/test/screens.rs tools/xtask/src/test/viewer.rs tools/xtask/src/screen.rs
+display-panic kernel/lib/display/ kernel/radix/src/display/ kernel/drivers/virtio/ userspace/programs/display/
+display-panic userspace/programs/display-test/ userspace/programs/display-pattern/ kernel/radix/src/panic.rs kernel/radix/src/console.rs kernel/lib/fbcon/
+display-panic kernel/radix/src/fs/crashdump.rs tools/xtask/src/test/screens.rs tools/xtask/src/test/viewer.rs tools/xtask/src/screen.rs
+display-panic-vga kernel/lib/display/ kernel/radix/src/display/ kernel/drivers/virtio/ userspace/programs/display/
+display-panic-vga userspace/programs/display-test/ userspace/programs/display-pattern/ kernel/radix/src/panic.rs kernel/radix/src/console.rs kernel/lib/fbcon/
+display-panic-vga kernel/radix/src/fs/crashdump.rs tools/xtask/src/test/screens.rs tools/xtask/src/test/viewer.rs tools/xtask/src/screen.rs
+display-vga-virtio kernel/lib/display/ kernel/radix/src/display/ kernel/drivers/virtio/ userspace/programs/display/
+display-vga-virtio userspace/programs/consoled/ userspace/programs/systools/src/hardware/screens.rs kernel/radix/src/console.rs
+display-vga-virtio tools/xtask/src/test/screens.rs tools/xtask/src/test/viewer.rs tools/xtask/src/screen.rs
+display-virtio kernel/lib/display/ kernel/radix/src/display/ kernel/drivers/virtio/ userspace/programs/display/
+display-virtio userspace/programs/display-test/ userspace/programs/display-pattern/ kernel/radix/src/fs/shm/ tools/xtask/src/test/screens.rs tools/xtask/src/test/viewer.rs tools/xtask/src/screen.rs
 dukovo-check userspace/defaults/spark/services/dukovo-check.toml userspace/programs/accounts/
 dukovo-check userspace/programs/systools/src/check.rs userspace/programs/systools/src/check/
 dukovo-check userspace/programs/systools/src/elevate.rs userspace/programs/systools/src/firewall.rs

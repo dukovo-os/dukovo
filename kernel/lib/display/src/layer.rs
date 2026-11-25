@@ -102,6 +102,9 @@ struct PipeRun<A: Allocator> {
     /// The holders that asked for a beat, each with the first beat that
     /// answers it.
     askers: Vec<(u32, u64), A>,
+    /// How many times its card was asked to give it another mode, to
+    /// start it or to stop it.
+    mode_sets: u64,
 }
 
 /// What the layer keeps of a card apart from what the check reads.
@@ -536,6 +539,7 @@ where
                 handled: 0,
                 pending: None,
                 askers: Vec::new_in(self.alloc),
+                mode_sets: 0,
             });
         }
     }
@@ -729,12 +733,14 @@ where
             // A pipe that made no frames and is to make none has nothing
             // to draw.
             let idle = !old.active && !new.active;
-            if idle || (same && count == 0) { Ok(()) } else { card.show(&new, &change) }
+            let made = if idle || (same && count == 0) { Ok(()) } else { card.show(&new, &change) };
+            made.map(|()| change.mode && !idle)
         };
-        if made.is_err() {
+        let Ok(mode_set) = made else {
             self.failed(place);
             return false;
-        }
+        };
+        self.runs[place].mode_sets += u64::from(mode_set);
         self.shows(place, holder);
         self.keep_beat(place);
         true

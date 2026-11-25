@@ -224,6 +224,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "display-pattern"
+version = "0.17.0"
+
+[[package]]
 name = "dkv"
 version = "0.17.0"
 dependencies = [
@@ -833,6 +837,7 @@ dependencies = [
  "accounts",
  "audio",
  "disk",
+ "display-pattern",
  "dkv",
  "manifest",
  "pulldown-cmark",

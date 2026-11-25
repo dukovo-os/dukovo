@@ -622,7 +622,7 @@ _/kernel/class/display/state_
 	card 1 name=virtio0 kind=virtio hot_plug=1 mirrors=0 sets_modes=1 shared_pages=0 wakes=977 model=Virtio graphics card
 	screen 6 card=1 index=0 plugged=1 failed=0 hdr=0 variable_refresh=0 pipe=2 depth=8 width_mm=527 height_mm=296 refresh_min_mhz=0 refresh_max_mhz=0 luminance_max=0 product=4660 maker=EXM name=Example 24
 	mode 6 width=1920 height=1080 refresh_mhz=60000 preferred=1
-	pipe 2 card=1 index=0 active=1 width=1920 height=1080 refresh_mhz=60000 beat_ns=16666667 beat_count=58211
+	pipe 2 card=1 index=0 active=1 width=1920 height=1080 refresh_mhz=60000 beat_ns=16666667 beat_count=58211 mode_sets=1
 	```
 
 	A card's _kind_ is *firmware*, *virtio* or *other*, and _wakes_
@@ -630,10 +630,14 @@ _/kernel/class/display/state_
 	still does not add to. A screen's _pipe_ is the pipe that feeds it,
 	or 0, and the mode it shows is that pipe's; a number the monitor
 	does not say is 0. A pipe's _beat_ns_ is the nanoseconds from one
-	of its frames to the next, or 0 while it makes none, and
-	_beat_count_ the number of its latest. A monitor's serial number is not here, so that everyone
-	may read the file and its words can go in a report as they are;
-	the program that has the screens reads it from the layer itself.
+	of its frames to the next, or 0 while it makes none, _beat_count_
+	the number of its latest, and _mode_sets_ how often its card was
+	asked to give it another mode, to start it or to stop it: screens
+	handed from one program to another in the mode they show add
+	nothing to it. A monitor's serial number is not here, so that
+	everyone may read the file and its words can go in a report as
+	they are; the program that has the screens reads it from the layer
+	itself.
 	*hardware*(8)'s *screens* reads the file. With no graphics card it
 	is its first line alone.
 

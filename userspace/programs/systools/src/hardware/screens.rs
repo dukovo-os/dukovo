@@ -423,9 +423,9 @@ screen 8 card=5 index=0 plugged=1 failed=0 hdr=0 variable_refresh=0 pipe=6 depth
 mode 8 width=1024 height=768 refresh_mhz=74990 preferred=1
 mode 8 width=800 height=600 refresh_mhz=60000 preferred=0
 screen 9 card=5 index=1 plugged=0 failed=0 hdr=0 variable_refresh=0 pipe=0 depth=0 width_mm=0 height_mm=0 refresh_min_mhz=0 refresh_max_mhz=0 luminance_max=0 product=0 maker= name=
-pipe 2 card=1 index=0 active=1 width=1280 height=800 refresh_mhz=60000 beat_ns=16666666 beat_count=40
-pipe 6 card=5 index=0 active=1 width=800 height=600 refresh_mhz=60000 beat_ns=16666666 beat_count=12
-pipe 7 card=5 index=1 active=0 width=0 height=0 refresh_mhz=0 beat_ns=0 beat_count=0
+pipe 2 card=1 index=0 active=1 width=1280 height=800 refresh_mhz=60000 beat_ns=16666666 beat_count=40 mode_sets=1
+pipe 6 card=5 index=0 active=1 width=800 height=600 refresh_mhz=60000 beat_ns=16666666 beat_count=12 mode_sets=2
+pipe 7 card=5 index=1 active=0 width=0 height=0 refresh_mhz=0 beat_ns=0 beat_count=0 mode_sets=0
 ";
 
     /// Sources in a directory of the test's own, with `state` as the

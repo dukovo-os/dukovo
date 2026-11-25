@@ -15,7 +15,7 @@
 //! card 1 name=virtio0 kind=virtio hot_plug=1 mirrors=0 sets_modes=1 shared_pages=0 wakes=17 model=virtio graphics card
 //! screen 6 card=1 index=0 plugged=1 failed=0 hdr=0 variable_refresh=0 pipe=2 depth=8 width_mm=260 height_mm=160 refresh_min_mhz=0 refresh_max_mhz=0 luminance_max=0 product=4660 maker=RHT name=QEMU Monitor
 //! mode 6 width=1280 height=800 refresh_mhz=74991 preferred=1
-//! pipe 2 card=1 index=0 active=1 width=1280 height=800 refresh_mhz=74991 beat_ns=13334815 beat_count=412
+//! pipe 2 card=1 index=0 active=1 width=1280 height=800 refresh_mhz=74991 beat_ns=13334815 beat_count=412 mode_sets=1
 //! ```
 //!
 //! `front` is `log` while the kernel's log has the screens, `process`
@@ -23,7 +23,10 @@
 //! holder in front, `holder` for a holder that has made no change yet,
 //! and `last` while the last picture of a holder that ended stays. A
 //! screen's modes follow it, the one it prefers first; the mode it
-//! shows is that of the pipe that feeds it.
+//! shows is that of the pipe that feeds it. A pipe's `mode_sets` counts
+//! how often its card was asked to give it another mode, to start it
+//! or to stop it: a hand-over that leaves it alone shows no blank
+//! screen.
 //!
 //! A monitor's serial number is not here. These words are for everyone
 //! on the machine to read and to put in a report as they are; the
@@ -172,7 +175,7 @@ where
         writeln!(
             out,
             "pipe {} card={} index={} active={} width={} height={} refresh_mhz={} beat_ns={} \
-             beat_count={}",
+             beat_count={} mode_sets={}",
             info.id,
             info.card,
             thing.index,
@@ -182,6 +185,7 @@ where
             info.mode.refresh_mhz,
             info.beat_ns,
             info.beat_count,
+            self.mode_sets(thing.id).unwrap_or(0),
         )
     }
 }

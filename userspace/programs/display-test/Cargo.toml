@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "display-test"
+description = "Tests the display layer (radix-display(2)) on real cards in the display boot tests: it draws pictures the host knows pixel for pixel, and says in the log what each screen shows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The test patterns and the lines that say what each screen shows, which
+# the boot tests on the host read (tools/xtask/src/test/screens.rs).
+display-pattern = { path = "../display-pattern" }
+# The display layer's records and requests (radix-display(2)).
+display = { path = "../display" }
+# The libc crate with its Radix module, which ob patches in from the
+# rust-std port (ADR 0070).
+libc = "0.2.191"
+# The system call interface, generated from abi/*.ridl: `control`, for
+# the display layer's requests.
+radix-abi = { path = "../../../kernel/abi" }
+
+[lints]
+workspace = true

@@ -111,7 +111,7 @@ fn try_bind(function: &Function) -> Result<(), &'static str> {
     slot.changed.store(true, Ordering::Release);
     card.wake();
     if firmware::step_aside(function) {
-        info!("Display: firmware0 is gone: its screen is card {}'s", card.id);
+        info!("Display: firmware0 is gone: its screen is virtio{index}'s");
     }
     Ok(())
 }
