@@ -35,7 +35,7 @@ use radix_usb::Setup;
 use radix_usb::hid::{self, HidDescriptor};
 use radix_xhci::{BUFFER_SIZE, code, endpoint_index};
 
-use super::controller::{Controller, Name, Why};
+use super::controller::{Attached, Controller, Name, Why};
 use super::shown;
 use crate::fs::keyboard;
 use crate::sched;
@@ -166,35 +166,7 @@ impl Controller {
         // send them anyway may refuse.
         let _ = device.control_out(xhci, host, Setup::set_idle(interface), &[]);
         if layout.is_ups() {
-            let (model, maker) = shown::strings(*bus, path);
-            let model = if model.is_empty() { attached.name.clone() } else { model };
-            info!(
-                "USB: {}: interface {interface}: a UPS, read every {} s into \
-                 /kernel/class/power_supply",
-                Name(*bus, path),
-                crate::ups::POLL_NS / 1_000_000_000
-            );
-            let Some(slot) = crate::ups::add(model.as_str(), maker.as_str()) else {
-                warn!("USB: {}: too many UPSes; this one is not read", Name(*bus, path));
-                return Ok(());
-            };
-            let hid = Hid {
-                interface,
-                endpoint: NO_ENDPOINT,
-                pending: NO_TRANSFER,
-                length: 0,
-                layout,
-                decoder: Decoder::new(),
-                errors: 0,
-                lights: None,
-                ups: Some(UpsRead { slot, state: State::default(), next_ns: 0 }),
-            };
-            if attached.hids.try_reserve(1).is_err() {
-                crate::ups::remove(slot);
-                return Err(Why::Device("out of memory"));
-            }
-            let _ = attached.hids.push_within_capacity(hid);
-            return Ok(());
+            return start_ups(attached, *bus, interface, layout);
         }
         let (what, read) = crate::hid::what(&layout);
         info!("USB: {}: interface {interface}: {what}", Name(*bus, path));
@@ -285,6 +257,46 @@ impl Controller {
             let _ = attached.device.control_out(xhci, host, setup, &buffer[..len]);
         }
     }
+}
+
+/// Keeps HID interface `interface` of `attached`, on bus `bus`, as a UPS,
+/// whose reports the thread asks for every [`crate::ups::POLL_NS`]. Out of
+/// `Controller::start_hid` so that its frame stays small.
+#[inline(never)]
+fn start_ups(
+    attached: &mut Attached,
+    bus: usize,
+    interface: u8,
+    layout: Layout<Kmalloc>,
+) -> Result<(), Why> {
+    let path = attached.path;
+    let (model, maker) = shown::strings(bus, path);
+    let model = if model.is_empty() { attached.name.clone() } else { model };
+    info!(
+        "USB: {}: interface {interface}: a UPS, read every {} s into /kernel/class/power_supply",
+        Name(bus, path),
+        crate::ups::POLL_NS / 1_000_000_000
+    );
+    let Some(slot) = crate::ups::add(model.as_str(), maker.as_str()) else {
+        warn!("USB: {}: too many UPSes; this one is not read", Name(bus, path));
+        return Ok(());
+    };
+    if attached.hids.try_reserve(1).is_err() {
+        crate::ups::remove(slot);
+        return Err(Why::Device("out of memory"));
+    }
+    let _ = attached.hids.push_within_capacity(Hid {
+        interface,
+        endpoint: NO_ENDPOINT,
+        pending: NO_TRANSFER,
+        length: 0,
+        layout,
+        decoder: Decoder::new(),
+        errors: 0,
+        lights: None,
+        ups: Some(UpsRead { slot, state: State::default(), next_ns: 0 }),
+    });
+    Ok(())
 }
 
 /// Lets go of every key and button that `hids`, a device's HID

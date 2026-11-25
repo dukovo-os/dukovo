@@ -127,18 +127,22 @@ pub fn update(slot: usize, state: State) {
     }
 }
 
-/// Calls `each` with each UPS kept, by slot.
-pub fn each(each: &mut dyn FnMut(&Ups)) {
-    let upses = UPSES.lock().clone();
-    for ups in upses.iter().flatten() {
-        each(ups);
+/// Calls `each` with the name of each UPS kept, by slot, until it gives
+/// false. Copies only the names out of the lock, to keep the caller's
+/// frame small.
+pub fn names(each: &mut dyn FnMut(&str) -> bool) {
+    let names: [Option<TextBuf<8>>; MAX_UPSES] =
+        UPSES.lock().each_ref().map(|ups| ups.as_ref().map(|ups| ups.name.clone()));
+    for name in names.iter().flatten() {
+        if !each(name.as_str()) {
+            return;
+        }
     }
 }
 
-/// The UPS named `name`, as it is now.
+/// The UPS named `name`, as it is now. Clones only that one.
 pub fn find(name: &str) -> Option<Ups> {
-    let upses = UPSES.lock().clone();
-    upses.into_iter().flatten().find(|ups| ups.name.as_str() == name)
+    UPSES.lock().iter().flatten().find(|ups| ups.name.as_str() == name).cloned()
 }
 
 /// A charge for the log: `80%`, or `a charge it does not say`.

@@ -393,12 +393,7 @@ impl Listing for PowerSupplies {
                 return;
             }
         }
-        let mut more = true;
-        crate::ups::each(&mut |ups| {
-            if more {
-                more = f(ups.name.as_str(), Kind::Directory);
-            }
-        });
+        crate::ups::names(&mut |name| f(name, Kind::Directory));
     }
 
     fn lookup(&self, name: &str) -> Result<NodeRef> {
