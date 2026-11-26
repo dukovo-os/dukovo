@@ -168,7 +168,7 @@ impl Ring {
     /// once.
     fn push(&mut self, watch: WatchRef) {
         debug_assert!(self.len < self.slots.len(), "an event queue's ring is full");
-        let at = (self.head + self.len) % self.slots.len();
+        let at = self.wrap(self.head + self.len);
         self.slots[at] = Some(watch);
         self.len += 1;
     }
@@ -178,9 +178,19 @@ impl Ring {
             return None;
         }
         let watch = self.slots[self.head].take();
-        self.head = (self.head + 1) % self.slots.len();
+        self.head = self.wrap(self.head + 1);
         self.len -= 1;
         watch
+    }
+
+    /// `at`, less than one lap past the end of the slots, as the head and
+    /// the length make it, brought back into them: what `%` would give,
+    /// without its division, which costs some 26 cycles on the lab's
+    /// Skylake, on each watch put on the ring and each taken off.
+    fn wrap(&self, at: usize) -> usize {
+        let size = self.slots.len();
+        debug_assert!(at < 2 * size, "an index more than a lap past the ring's end");
+        if at >= size { at - size } else { at }
     }
 
     /// Takes `slots`, empty and at least as many as its own, in place of
