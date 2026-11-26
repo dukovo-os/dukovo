@@ -170,7 +170,7 @@ impl End {
     fn pair(first_peer: (Name, Peer), second_peer: (Name, Peer)) -> Result<(End, End), Status> {
         // Each pipe starts with one reader and one writer, which the ends
         // are from here.
-        let (one, other) = (Pipe::new()?, Pipe::new()?);
+        let (one, other) = (Pipe::of_socket()?, Pipe::of_socket()?);
         let end = |rx: &KArc<Pipe>, tx: &KArc<Pipe>, (peer_name, peer)| End {
             rx: rx.clone(),
             tx: tx.clone(),

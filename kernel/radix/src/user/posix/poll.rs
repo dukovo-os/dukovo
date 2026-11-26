@@ -92,6 +92,9 @@ pub struct Polled {
     pollers: AtomicUsize,
     /// How many watches `lists` holds, likewise.
     watched: AtomicUsize,
+    /// How many of those watch for writing, which a change that only
+    /// empties the object may make ready (ADR 0777), likewise.
+    watched_writes: AtomicUsize,
     /// Taken with interrupts masked: the keyboard's and the mouse's
     /// change in their interrupt handlers.
     lists: SpinLock<Lists>,
@@ -113,6 +116,7 @@ impl Polled {
         Polled {
             pollers: AtomicUsize::new(0),
             watched: AtomicUsize::new(0),
+            watched_writes: AtomicUsize::new(0),
             lists: SpinLock::new(Lists {
                 pollers: Vec::new_in(HEAP.with(Flags::MAY_SLEEP)),
                 watches: Vec::new_in(HEAP.with(Flags::MAY_SLEEP)),
@@ -147,6 +151,29 @@ impl Polled {
         }
     }
 
+    /// As [`Polled::changed_by_rmw`], for a change that only took away
+    /// what made the object readable, leaving it unreadable: a read that
+    /// took a pipe's last byte while some end still writes it (ADR 0777).
+    /// Only for an object whose watches for reading nothing else makes
+    /// ready: such a watch would look and find nothing to report, and the
+    /// change that next makes the object readable reaches it, so only the
+    /// pollers and the watches for writing look again. Two loads while
+    /// there are none.
+    pub fn emptied_by_rmw(&self) {
+        if self.pollers.load(Ordering::SeqCst) == 0
+            && self.watched_writes.load(Ordering::SeqCst) == 0
+        {
+            return;
+        }
+        let lists = self.lists.lock_irq();
+        for thread in &lists.pollers {
+            wake_poller(thread);
+        }
+        for watch in lists.watches.iter().filter(|watch| !watch.watches_reads()) {
+            queue::changed(watch);
+        }
+    }
+
     /// Adds `watch` to its watches, which its changes queue from then on,
     /// and lets go of those whose queue deleted them: a watch's last
     /// reference frees memory and gives back its charge, nothing more, so
@@ -157,7 +184,7 @@ impl Polled {
     /// no_memory when there is no room for one more.
     pub fn watch(&self, watch: &WatchRef) -> Result<()> {
         let tidy = |watches: &mut Vec<WatchRef, Kmalloc>| watches.retain(|held| !held.is_deleted());
-        self.push(|lists| &mut lists.watches, &self.watched, watch.clone(), tidy)
+        self.push(|lists| &mut lists.watches, Polled::count_watches, watch.clone(), tidy)
     }
 
     /// Takes `watch` out of its watches, if it is there: its queue has
@@ -167,7 +194,7 @@ impl Polled {
             let mut lists = self.lists.lock_irq();
             let at = lists.watches.iter().position(|held| WatchRef::ptr_eq(held, watch));
             let taken = at.map(|at| lists.watches.swap_remove(at));
-            self.watched.store(lists.watches.len(), Ordering::SeqCst);
+            self.count_watches(&lists);
             taken
         };
         drop(taken);
@@ -180,7 +207,7 @@ impl Polled {
     ///
     /// no_memory when there is no room for one more.
     fn add_poller(&self, thread: &ThreadRef) -> Result<()> {
-        self.push(|lists| &mut lists.pollers, &self.pollers, thread.clone(), |_| {})
+        self.push(|lists| &mut lists.pollers, Polled::count_pollers, thread.clone(), |_| {})
     }
 
     /// Takes `thread` off its pollers, once: its poll has looked for the
@@ -198,9 +225,22 @@ impl Polled {
         drop(taken);
     }
 
+    /// Stores how many pollers `lists` holds.
+    fn count_pollers(&self, lists: &Lists) {
+        self.pollers.store(lists.pollers.len(), Ordering::SeqCst);
+    }
+
+    /// Stores how many watches `lists` holds, and how many of them watch
+    /// for writing.
+    fn count_watches(&self, lists: &Lists) {
+        let writes = lists.watches.iter().filter(|watch| !watch.watches_reads()).count();
+        self.watched_writes.store(writes, Ordering::SeqCst);
+        self.watched.store(lists.watches.len(), Ordering::SeqCst);
+    }
+
     /// Pushes `item` onto the list that `list` picks, once `tidy` has let
-    /// go of what that list no longer needs, and stores the list's new
-    /// length in `count`, all with the lock held. Room is made with the
+    /// go of what that list no longer needs, and has `count` store the
+    /// lists' new counts, all with the lock held. Room is made with the
     /// lock let go, as memory is never allocated under a spin lock, and
     /// kept: a list that has grown for its object's pollers or watches
     /// does not allocate again for as many.
@@ -211,7 +251,7 @@ impl Polled {
     fn push<T>(
         &self,
         list: fn(&mut Lists) -> &mut Vec<T, Kmalloc>,
-        count: &AtomicUsize,
+        count: fn(&Polled, &Lists),
         item: T,
         tidy: fn(&mut Vec<T, Kmalloc>),
     ) -> Result<()> {
@@ -230,7 +270,7 @@ impl Polled {
             if held.len() < held.capacity() {
                 // Checked just above.
                 let _ = held.push_within_capacity(item);
-                count.store(held.len(), Ordering::SeqCst);
+                count(self, &lists);
                 return Ok(());
             }
             let want = held.len().saturating_mul(2).max(2);

@@ -301,6 +301,12 @@ impl Watch {
     pub fn is_deleted(&self) -> bool {
         self.marks.load(Ordering::Relaxed) & DELETED != 0
     }
+
+    /// Whether it watches for reading, which a change that only empties
+    /// what it watches cannot make ready (ADR 0777).
+    pub fn watches_reads(&self) -> bool {
+        self.filter == QueueFilter::Read
+    }
 }
 
 /// What a change to a watched description does to `watch`: puts it on its

@@ -496,7 +496,11 @@ The locks of the queue, from first to last:
 5. the scheduler's wait table.
 
 A change to a watched description (`Polled::changed`) takes only the
-last three, so it may run under any other lock. Closing a queue, which
+last three, so it may run under any other lock. A read that leaves a
+pipe empty while some end still writes it tells only its pollers and
+its watches for writing, which a `Polled` counts apart: a watch for
+reading would find nothing to report, and the next write, or the last
+writer's going, tells it (ADR 0777). Closing a queue, which
 may happen with the capability store's locks held, takes only spin locks
 and frees only memory. Looking at a description takes its object's
 locks, so it is never done under a spin lock of the queue, and user
