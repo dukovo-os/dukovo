@@ -250,13 +250,15 @@ fn server(what: &str) -> (Server, Receiver) {
         .spawn()
         .unwrap();
     let receiver = Receiver(receiver);
+    // The socket's file is there from its bind, a moment before it
+    // listens; a connection taken says it listens.
     for _ in 0..1000 {
-        if server.socket.exists() {
+        if UnixStream::connect(&server.socket).is_ok() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert!(server.socket.exists(), "the receiver made no socket");
+    assert!(UnixStream::connect(&server.socket).is_ok(), "the receiver takes no connection");
     (server, receiver)
 }
 
