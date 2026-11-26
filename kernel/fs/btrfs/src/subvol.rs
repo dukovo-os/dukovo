@@ -371,6 +371,8 @@ impl Files<'_> {
         self.drop_tree(id, &top, key.offset)?;
         self.w.delete(self.volume, tree::ROOT, &key)?;
         self.w.forget_tree(id);
+        // Its directories' entries went with its blocks, not one by one.
+        self.volume.all_names_changed();
         Ok(())
     }
 

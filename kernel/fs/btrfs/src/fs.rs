@@ -246,6 +246,12 @@ impl BtrfsFs {
         self.inner.tx.is_some()
     }
 
+    /// Holds the transaction, as a change in progress does.
+    #[cfg(test)]
+    pub(crate) fn hold_transaction(&self) -> Option<MutexGuard<'_, Txn>> {
+        self.inner.reading()
+    }
+
     /// Has the data written from now on compressed with zstd, or not:
     /// Linux's `compress=zstd:1` mount option (ADR 0134). Files without
     /// checksums, or marked not to be compressed, are written as they
