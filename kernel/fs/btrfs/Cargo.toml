@@ -28,7 +28,6 @@ radix-block = { path = "../block" }
 radix-hw = { path = "../../lib/hw" }
 radix-sync = { path = "../../lib/sync" }
 radix-vfs = { path = "../vfs" }
-radix-klog = { path = "../../lib/klog" }
 
 [dev-dependencies]
 radix-block = { path = "../block", features = ["host"] }

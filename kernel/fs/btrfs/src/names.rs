@@ -58,13 +58,6 @@ impl Names {
         self.0.get_with(name.as_bytes(), kept).flatten()
     }
 
-    /// Diagnostic: why `find` missed: 0 not kept, 1 kept at another
-    /// count, 2 kept but its node went.
-    pub(crate) fn why(&self, name: &str, seen: u64) -> u8 {
-        let why = |named: &Named| if named.seen != seen { 1 } else if named.node.strong_count() == 0 { 2 } else { 3 };
-        self.0.get_with(name.as_bytes(), why).unwrap_or(0)
-    }
-
     /// Keeps `node`, where `name` led a lookup that began with the count
     /// of changes at `seen`, in place of what the name led to before. With
     /// no memory for it, the name is not kept.

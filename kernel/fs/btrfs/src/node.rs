@@ -1370,21 +1370,10 @@ impl Node for BtrfsNode {
         // Read before the walk: a change the walk misses moves it past.
         let seen = self.fs.volume.names_seen(self.subvol, self.ino);
         if let Some(node) = self.names.find(name, seen) {
-            lookup_diag::note(self.subvol, self.ino, name, lookup_diag::HIT);
             return Ok(node);
         }
-        let why = self.names.why(name, seen);
         let _reading = self.fs.reading();
-        let Some(location) = self.entry(name)? else {
-            lookup_diag::note(self.subvol, self.ino, name, lookup_diag::NOT_FOUND);
-            return Err(Error::NotFound);
-        };
-        lookup_diag::note(
-            self.subvol,
-            self.ino,
-            name,
-            if location.kind == item::ROOT_ITEM { lookup_diag::SUBVOLUME } else { why },
-        );
+        let location = self.entry(name)?.ok_or(Error::NotFound)?;
         // A subvolume a snapshot's source held is not in the snapshot: its
         // entry there is an empty directory, as Linux's
         // `fixup_tree_root_location` finds.
@@ -2190,29 +2179,4 @@ fn copy_from(data: &[u8], from: u64, to: &mut [u8]) {
     let n = (data.len() - from).min(to.len());
     to[..n].copy_from_slice(&data[from..from + n]);
     to[n..].fill(0);
-}
-
-/// Diagnostic only, never merged: counts the outcomes of Btrfs lookups and
-/// logs every 64th that walked the tree, with the counts so far.
-mod lookup_diag {
-    use core::sync::atomic::{AtomicU64, Ordering};
-
-    pub(super) const HIT: u8 = 4;
-    pub(super) const NOT_FOUND: u8 = 5;
-    pub(super) const SUBVOLUME: u8 = 6;
-    const NAMES: [&str; 7] = ["absent", "stale", "dead", "live", "hit", "notfound", "subvol"];
-    static COUNTS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
-    static WALKS: AtomicU64 = AtomicU64::new(0);
-
-    pub(super) fn note(subvol: u64, dir: u64, name: &str, outcome: u8) {
-        COUNTS[usize::from(outcome)].fetch_add(1, Ordering::Relaxed);
-        if outcome == HIT || !WALKS.fetch_add(1, Ordering::Relaxed).is_multiple_of(64) {
-            return;
-        }
-        let c = |i: usize| COUNTS[i].load(Ordering::Relaxed);
-        radix_klog::info!(
-            "BTRFSDIAG {} subvol={} dir={} name={} absent={} stale={} dead={} live={} hit={} notfound={} subvol={}",
-            NAMES[usize::from(outcome)], subvol, dir, name, c(0), c(1), c(2), c(3), c(4), c(5), c(6)
-        );
-    }
 }
