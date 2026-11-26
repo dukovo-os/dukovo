@@ -354,10 +354,13 @@ $ cat out/mine/system.json.sha256
 
 The job "Compare the builds" prints both builds' values, and
 `system.json.sha256` is in the artifacts `reproducible-first` and
-`reproducible-second`; the three are the same when the builds agree. `files.txt` lists every folder, file and
-link of the tree, with its mode, SHA-256, size and time, sorted, so that
-`diff` of two of them shows what differs. The tree itself stays in
-`out/release-build-tree`.
+`reproducible-second`; the three are the same when the builds agree.
+`files.txt` lists every folder, file and link of the tree, with its mode,
+SHA-256, size and time, sorted, so that `diff` of two of them shows what
+differs. The tree itself stays in `out/release-build-tree`, and CI's are
+the artifacts `reproducible-first-tree` and `reproducible-second-tree`.
+`./ob release sign` makes this comparison itself before it signs
+(`releases/README.md`).
 
 The build trusts the repository's own root, not the machine's release
 keys, and signs nothing; `releases/README.md` says which root.

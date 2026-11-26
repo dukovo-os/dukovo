@@ -22,9 +22,10 @@ The public half of the system's release repository is kept here (ADRs
 
 The ceremony signed the first root on 2026-11-17; its SHA-256 is
 `b9b2421ef1cd9f67d376547970bac6dcecd1c85f83a333559ebfb8d6c9345e14`.
-Until `ob release sign` signs releases on the YubiKeys, every build
-machine still signs its releases with keys of its own in
-`.cache/release-keys`, and nothing it signs is deployed.
+`./ob release sign` signs the project's releases on the YubiKeys
+(below). The images and install sticks a machine builds still hold a
+release signed with that machine's own keys in `.cache/release-keys`,
+and nothing those keys sign is deployed.
 
 `stand-in-root.json` is a root made once with `system-release keys`,
 whose secret keys were deleted when it was made, so that no one can sign
@@ -78,6 +79,46 @@ twice in different places and compares (ADR 0535), and `ob release sign`
 compares its own third build with the last line it printed (ADR 0457).
 Two builds of one commit make the same list, so the keys sign it only
 when they do.
+
+## Signing a release
+
+On the maintainer's computer, with one YubiKey, from a checkout of the
+commit the release is built from, once the version is bumped and the
+commit has merged (ADR 0778). It takes about as long as `./ob build`,
+and `gh` must be signed in.
+
+1. Check on GitHub that the commit has its gates: `CI passed`; a run of
+   the reproducible workflow, whose builds are kept for seven days; and a
+   full run of the update test matrix, started on the branch while it is
+   at the commit: `gh workflow run update-matrix.yml -R dukovo-os/dukovo
+   --ref main -f full=true`.
+2. Check that `git status` shows nothing changed and `git log -1` is the
+   commit.
+3. Plug in a YubiKey and run `./ob release sign VERSION`. A release goes
+   on the beta channel unless `--channel stable` names stable; with both
+   YubiKeys plugged in, `--serial` names one. It checks the gates,
+   downloads CI's two builds, builds the release, and stops unless the
+   three are the same.
+4. It reads what updates.dukovo.org serves into
+   `out/release-sign/VERSION`, shows what it will sign, and asks for the
+   version to be typed. The YubiKey then asks for its PIN and a touch.
+5. It sends the signature to Sigstore's Rekor log and prints the entry's
+   address. If the log could not be reached, `./ob release record
+   VERSION` sends it again.
+6. `./ob release deploy out/release-sign/VERSION`. The server signs the
+   snapshot and timestamp, and the deploy reads the release back.
+
+When it stops, it says which gate or build it was. A build that is not
+CI's is read with `diff` of the two `files.txt` it names, which are in
+`out/release-sign/ci-COMMIT/`.
+
+A channel's move, a withdrawal and the advisories alone are signed on a
+YubiKey by hand, with the system-release that `./ob release` builds in
+`target/programs-host/debug/`: `system-release fetch --root
+releases/metadata/1.root.json --out DIR https://updates.dukovo.org/system/`,
+then `system-release channel`, `pull` or `advisories` with `--repo DIR
+--yubikey-helper tools/yubikey-piv.py` (system-release(8)), then `./ob
+release deploy DIR`.
 
 ## Setting up the update server
 
