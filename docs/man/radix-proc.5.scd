@@ -248,8 +248,11 @@ _/processes/stat_
 	the times a thread found a kernel mutex taken, the times it slept
 	waiting for one, the times a mutex was handed to a sleeping waiter,
 	and the times one was let go with a sleeping waiter woken to try
-	again; *cap_cache_flushes*, how often the CPUs' caches of
-	capabilities went stale;
+	again; *cap_cache_flushes*, how often a capability the CPUs' caches
+	held left its slot, which takes from the caches what they kept of
+	the slots that share its version word; *cap_cache_fills*, how often
+	a system call's lookup found nothing in its CPU's cache and asked
+	the store;
 	*swap_ins* and *swap_outs*, the pages read back from swap and
 	written to it since boot; and *boot_time_ns*, when the kernel
 	started, in nanoseconds since 1970.

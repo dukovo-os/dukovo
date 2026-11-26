@@ -18,7 +18,8 @@
 //     BENCHCOUNT group=<name> rounds=<operations> switches=<n> user_ns=<n>
 //         system_ns=<n> idle_ns=<n> [ipis=<n> halts=<n> timer_writes=<n>
 //         preemptions=<n> migrations=<n> faults=<n> polls=<n>
-//         mutex_waits=<n>] [faults=<n> interrupts=<n>]
+//         mutex_waits=<n> mutex_contended=<n> cap_fills=<n>
+//         cap_flushes=<n>] [faults=<n> interrupts=<n>]
 //
 // from /processes/stat on Radix (all twelve) and from /proc/stat on Linux
 // (the first four; the clock ticks become nanoseconds). The Radix fields
@@ -26,8 +27,10 @@
 // the timer, the preemptions (switches away from a thread that could have
 // gone on), the migrations (moves of a thread to another CPU than the one
 // it ran on last), the page faults resolved, the polls (idle periods a
-// wake-up ended while polling) and the mutex waits (threads that slept
-// waiting for a kernel mutex). Linux prints instead its page faults
+// wake-up ended while polling), the mutex waits (threads that slept
+// waiting for a kernel mutex), the times a thread found a mutex taken, and
+// the capability cache's lookups that asked the store and the slots its
+// entries were taken from (0 from a kernel without those three). Linux prints instead its page faults
 // (pgfault in /proc/vmstat) and its interrupts (the total of the intr
 // line of /proc/stat), each left out if its file cannot be read. A run of
 // valkey-benchmark prints three rows and one such line, group
@@ -223,6 +226,7 @@ struct counts {
 	uint64_t switches, user_ns, system_ns, idle_ns;
 	uint64_t ipis, halts, timer_writes;
 	uint64_t preemptions, migrations, faults, polls, mutex_waits;
+	uint64_t cap_fills, cap_flushes, mutex_contended;
 	uint64_t interrupts;
 };
 
@@ -252,6 +256,22 @@ static int read_radix_counts(struct counts *counts) {
 		}
 	}
 	fclose(file);
+	// Counted since, so read apart: a kernel without them reads as 0.
+	const struct {
+		const char *name;
+		uint64_t *value;
+	} more[] = {{"cap_cache_fills", &counts->cap_fills}, {"cap_cache_flushes", &counts->cap_flushes},
+	            {"mutex_contended", &counts->mutex_contended}};
+	file = fopen("/processes/stat", "r");
+	while(file && fgets(line, sizeof(line), file)) {
+		for(size_t i = 0; i < sizeof(more) / sizeof(more[0]); i++) {
+			size_t length = strlen(more[i].name);
+			if(!strncmp(line, more[i].name, length) && line[length] == ':')
+				*more[i].value = strtoull(line + length + 1, NULL, 10);
+		}
+	}
+	if(file)
+		fclose(file);
 	return found == all;
 }
 
@@ -353,6 +373,10 @@ static void print_counts(const char *group, struct counts before, struct counts 
 		       (unsigned long long)(after.preemptions - before.preemptions), (unsigned long long)(after.migrations - before.migrations),
 		       (unsigned long long)(after.faults - before.faults), (unsigned long long)(after.polls - before.polls),
 		       (unsigned long long)(after.mutex_waits - before.mutex_waits));
+		printf(" mutex_contended=%llu cap_fills=%llu cap_flushes=%llu",
+		       (unsigned long long)(after.mutex_contended - before.mutex_contended),
+		       (unsigned long long)(after.cap_fills - before.cap_fills),
+		       (unsigned long long)(after.cap_flushes - before.cap_flushes));
 	} else {
 		if(before.have_faults && after.have_faults)
 			printf(" faults=%llu", (unsigned long long)(after.faults - before.faults));
