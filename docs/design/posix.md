@@ -402,7 +402,11 @@ thread that waits on the network. The handshakes of a listening TCP
 socket wake nobody, and each connection made wakes one thread blocked in
 `accept`, and its pollers, as Linux's exclusive waits do; a waiter that
 leaves at its timeout or for a signal takes a connection that waits as it
-goes (ADR 0651).
+goes (ADR 0651). A connected TCP socket keeps what the last look found
+it ready for, with the counts of changes it read first, and a look that
+finds the counts where they were takes that without the stack's lock
+(ADR 0771); the socket's own calls move a count of their own, as
+smoltcp does not wake for what they change.
 
 What an entry found is written back only where it differs from what
 the entry held when it was copied in. A program polls the same array

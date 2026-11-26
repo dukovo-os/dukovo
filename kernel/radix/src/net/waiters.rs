@@ -31,6 +31,16 @@
 //! reads how many wait, each sequentially consistent, so either the
 //! waiter sees the change or the wake sees the waiter.
 //!
+//! A connected stream socket keeps what a look found it ready for, with
+//! the sum of its counts of changes and of its own calls read before the
+//! look (ADR 0771): a `poll` or an event queue that finds the sum where it
+//! was takes what was found, without its stack's lock, as Linux's
+//! `tcp_poll` reads a socket without its lock. A change smoltcp makes
+//! wakes a side and moves its count; one the socket's own call makes, as
+//! a read that empties its buffer, moves the count of its calls. A look
+//! that races a change finds the socket as one of the two states has it,
+//! as one under the lock would.
+//!
 //! A listening socket's threads wait in `accept`, and one connection is
 //! for one of them: its receive side wakes one waiter for each change
 //! ([`Waiters::accepts`]), as Linux's exclusive waits in `accept` do, and
@@ -111,12 +121,29 @@ pub struct Waiters {
     receive: Side,
     send: Side,
     polled: Polled,
+    /// Moves after each of the socket's own calls has taken its state:
+    /// what they change, smoltcp does not wake for (ADR 0771).
+    own: AtomicU64,
+    /// What the socket was last found ready for, with the sum of the
+    /// counts of changes read before that look ([`Waiters::keep`]).
+    looked: AtomicU64,
 }
+
+/// The bits of [`Waiters::looked`] below the sum of counts: the events,
+/// and one that says they were kept.
+const LOOKED_SHIFT: u32 = 17;
+const LOOKED_KEPT: u64 = 1 << 16;
 
 impl Waiters {
     /// Waiters for a new socket, or `None` without memory for them.
     pub fn new() -> Option<Arc<Waiters, Kmalloc>> {
-        let waiters = Waiters { receive: Side::new(), send: Side::new(), polled: Polled::new() };
+        let waiters = Waiters {
+            receive: Side::new(),
+            send: Side::new(),
+            polled: Polled::new(),
+            own: AtomicU64::new(0),
+            looked: AtomicU64::new(0),
+        };
         Arc::try_new_in(waiters, HEAP.with(Flags::MAY_SLEEP)).ok()
     }
 
@@ -176,6 +203,40 @@ impl Waiters {
     /// The count of changes `way`, which a waiter reads before it looks.
     pub fn count(&self, way: Way) -> u64 {
         self.side(way).changes.load(Ordering::SeqCst)
+    }
+
+    /// One of the socket's own calls has taken its state, and may have
+    /// changed what the socket is ready for, as reading its bytes does:
+    /// the next look at it looks again. The caller still holds the state.
+    pub fn touched(&self) {
+        self.own.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The sum of the counts of changes either way and of the socket's own
+    /// calls, which a look at what the socket is ready for reads before it
+    /// looks. Every change to that moves it: smoltcp wakes for those it
+    /// makes, and the calls for theirs ([`Waiters::touched`]).
+    pub fn seen(&self) -> u64 {
+        self.count(Way::Receive)
+            .wrapping_add(self.count(Way::Send))
+            .wrapping_add(self.own.load(Ordering::SeqCst))
+    }
+
+    /// What a look that read `seen` before it looked found the socket
+    /// ready for, if the sum read now is that one: no change came since.
+    pub fn kept(&self, seen: u64) -> Option<u16> {
+        let looked = self.looked.load(Ordering::Acquire);
+        let same = looked >> LOOKED_SHIFT == seen & (u64::MAX >> LOOKED_SHIFT);
+        (looked & LOOKED_KEPT != 0 && same).then_some(looked as u16)
+    }
+
+    /// Keeps `events`, what a look that read `seen` before it looked found
+    /// the socket ready for. Two looks may store in either order: each
+    /// one's events are at least as new as the sum it read, and a look
+    /// whose sum is older than the one read now looks again.
+    pub fn keep(&self, seen: u64, events: u16) {
+        let looked = seen << LOOKED_SHIFT | LOOKED_KEPT | u64::from(events);
+        self.looked.store(looked, Ordering::Release);
     }
 
     /// Sleeps until the count of changes `way` moves from `seen`, or the
