@@ -19,15 +19,16 @@ entries on its next accesses. A server's threads sleep between requests,
 so each request on an otherwise idle CPU costs a round trip to the idle
 thread and a full refill.
 
-The lab's virtual machine runs on an AMD host whose guest reports no
-PCIDs, as Radix's boot line says ("PCID off"), and under a hypervisor's
-nested paging each refill walks two sets of tables. A profile of the
-PostgreSQL select row there, at 2.09 times Linux's time, counted about
-the same instructions in the backend as Linux's but 2.4 times the cycles
-and 2.4 times the L2 misses, and 2.8 untagged switches of the tables for
-each transaction. Linux in the same virtual machine runs kernel threads
-on a *lazy TLB*: the idle thread keeps the tables of the program before
-it, and a switch back to that program loads nothing.
+The lab's virtual machine runs on an AMD Ryzen 9 9900X3D, which has no
+PCIDs (its Linux lists none, and Radix's boot line in the guest says
+"PCID off"), and under a hypervisor's nested paging each refill walks
+two sets of tables. A profile of the PostgreSQL select row there, at
+2.09 times Linux's time, counted about the same instructions in the
+backend as Linux's but 2.4 times the cycles and 2.4 times the L2 misses,
+and 2.8 untagged switches of the tables for each transaction. Linux in
+the same virtual machine runs kernel threads on a *lazy TLB*: the idle
+thread keeps the tables of the program before it, and a switch back to
+that program loads nothing.
 
 ## Decision
 
@@ -69,8 +70,8 @@ it, and a switch back to that program loads nothing.
   page table. Fewer interrupts to idle CPUs, but a change that frees page
   tables must still reach them, which every shootdown here would have to
   say. Leaving at the first one keeps one kind of request.
-- **Turning on PCIDs that the guest does not report.** Not possible:
-  CR4.PCIDE faults where CPUID lacks the feature.
+- **PCIDs in the virtual machine.** The host lists none to pass on,
+  and CR4.PCIDE faults where CPUID lacks the feature.
 
 ## Consequences
 

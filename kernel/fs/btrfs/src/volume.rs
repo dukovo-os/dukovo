@@ -130,10 +130,11 @@ pub struct Volume {
     quotas: Mutex<Option<crate::quota::Quotas>>,
     /// Whether a quota group has a limit, which writes keep to.
     quota_limited: AtomicBool,
-    /// Counts of the changes to directories' entries, a directory's in
-    /// the word its subvolume and inode number pick, which the caches of
-    /// the names looked up in them compare (ADR 0659).
-    names: [AtomicU64; NAME_WORDS],
+    /// Counts of the changes to directories' entries, [`NAME_WORDS`] of
+    /// them, a directory's in the word its subvolume and inode number pick,
+    /// which the caches of the names looked up in them compare (ADR 0659).
+    /// On the heap: the volume is built on a frame near its budget.
+    names: KVec<AtomicU64>,
 }
 
 /// How many words the counts of changes to directories' entries are
@@ -214,11 +215,26 @@ impl Volume {
             trees: [None; TREES],
             superblock: bytes,
         });
-        // On the heap at once: a volume is large, and the mount's frames
-        // above this one need not each hold a copy.
+        Volume::assemble(sb, disks, chunks, blocks, current)
+    }
+
+    /// The volume of these parts, on the heap at once: a volume is large,
+    /// and the mount's frames above this one need not each hold a copy.
+    /// A frame of its own, as [`Volume::boxed`]'s is near its budget.
+    #[inline(never)]
+    fn assemble(
+        sb: Superblock,
+        disks: KVec<Disk>,
+        chunks: RcuCell<ChunkMap, Alloc>,
+        blocks: Blocks,
+        current: Mutex<Current>,
+    ) -> Result<KBox<Volume>> {
         let shown = AtomicUsize::new(disks.len());
         let (quotas, quota_limited) = (Mutex::new(None), AtomicBool::new(false));
-        let names = [const { AtomicU64::new(0) }; NAME_WORDS];
+        let mut names = mem::vec_with_capacity(NAME_WORDS)?;
+        for _ in 0..NAME_WORDS {
+            mem::push(&mut names, AtomicU64::new(0))?;
+        }
         let volume =
             Volume { sb, disks, shown, chunks, blocks, current, quotas, quota_limited, names };
         Ok(mem::boxed(volume)?)
