@@ -1154,6 +1154,18 @@ static void postgresql_rows(void) {
 // that lets its clock fall when idle has climbed back to the clock the
 // rows run at; the lab compares the two systems' clocks from it before
 // it compares any row (ADR 0557).
+//
+// The timed additions run in CLOCK_SLICES slices of about 3 ms, and the
+// row is the fastest slice: time the kernel or another program takes from
+// this CPU makes the slices it lands in slow, where a clock that is lower
+// makes every slice slow. main() measures the clock at its start and again
+// after the server rows, under the same name, and the lab keeps the faster
+// of the two. On the lab's OptiPlex 7040, a single timing of all the
+// additions at the start read 9% slow in two PHP runs of six while the
+// PHP rows after it ran at the full clock, and the lab would not compare
+// those runs' rows.
+#define CLOCK_SLICES 10
+
 static void cpu_cycle(uint64_t rounds) {
 #ifdef __x86_64__
 	uint64_t x = 0, warmed = 0;
@@ -1163,11 +1175,17 @@ static void cpu_cycle(uint64_t rounds) {
 			__asm__ volatile(".rept 100\n\taddq $1, %0\n\t.endr" : "+r"(x));
 		warmed += 100000;
 	}
-	uint64_t started = now_ns();
-	for(uint64_t i = 0; i < rounds; i++)
-		__asm__ volatile(".rept 100\n\taddq $1, %0\n\t.endr" : "+r"(x));
-	report("cpu_cycle", started, rounds * 100);
-	if(x != (warmed + rounds) * 100)
+	uint64_t per_slice = rounds / CLOCK_SLICES, fastest = UINT64_MAX;
+	for(int slice = 0; slice < CLOCK_SLICES; slice++) {
+		uint64_t started = now_ns();
+		for(uint64_t i = 0; i < per_slice; i++)
+			__asm__ volatile(".rept 100\n\taddq $1, %0\n\t.endr" : "+r"(x));
+		uint64_t took = now_ns() - started;
+		if(took < fastest)
+			fastest = took;
+	}
+	print_row("cpu_cycle", (double)fastest / (double)(per_slice * 100), per_slice * 100);
+	if(x != (warmed + per_slice * CLOCK_SLICES) * 100)
 		fail("cpu_cycle", "the sum is wrong");
 #else
 	(void)rounds;
@@ -1315,6 +1333,7 @@ int main(int argc, char **argv) {
 		else
 			postgresql_rows();
 	}
+	cpu_cycle(1000000);
 	printf("serverbench: done\n");
 	fflush(stdout);
 	return 0;

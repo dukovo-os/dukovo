@@ -398,6 +398,10 @@ bundles, puts the machine in the benchmark profile, and runs
 one worker of the server on the machine, drives it itself over the loopback
 or a Unix socket with its data in `/tmp`, and prints each row after a
 warm-up pass and three measured passes, of which the lab keeps the fastest.
+It measures the clock, `cpu_cycle`, before the rows and again after them,
+each time as the fastest of ten slices of about 3 ms, so that other work
+that takes the CPU for a moment does not read as a lower clock; the lab
+keeps the faster of the two.
 Each measured pass is followed by a `BENCHCOUNT` line with the machine's
 context switches and CPU time (user, system and idle, over all CPUs) during
 the pass, and on Dukovo its IPIs, halts and timer writes, preemptions
