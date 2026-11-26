@@ -18,14 +18,17 @@
 //! files/<sha256>                         every file of every release and set, once
 //! ```
 //!
-//! [`add`] adds a release that `make` signed, [`add_firmware`] a firmware
-//! set, [`set_channel`] points a channel at a release and
-//! [`set_channel_firmware`] at a set, [`set_advisories`] signs the
-//! security advisories (a channel's change can sign them in the same
-//! targets version), and [`refresh`] signs a new snapshot and timestamp, as
-//! a server does every few hours. Each signs the next version of what it
-//! changes and writes the timestamp last, so that a client reading the
-//! repository while it changes sees the old one or the new one.
+//! [`offer`] adds a release that `./ob release build` made and points a
+//! channel at it, in one targets version, as the project's releases are
+//! signed on a YubiKey (ADR 0778). [`add`] adds a release that `make`
+//! signed, [`add_firmware`] a firmware set, [`set_channel`] points a
+//! channel at a release and [`set_channel_firmware`] at a set,
+//! [`set_advisories`] signs the security advisories (a channel's change
+//! can sign them in the same targets version), and [`refresh`] signs a new
+//! snapshot and timestamp, as a server does every few hours. Each signs
+//! the next version of what it changes and writes the timestamp last, so
+//! that a client reading the repository while it changes sees the old one
+//! or the new one.
 //!
 //! [`pack`] writes one release as an update file ([`crate::archive`]),
 //! and [`open_file`] reads one back as a computer does, from the root it
@@ -482,6 +485,172 @@ pub fn add(dir: &Path, keys: &Keys, release_dir: &Path, now: i64) -> Result<Adde
         Signed::Targets => published,
     };
     Ok(Added { published, new_files, already: false })
+}
+
+/// A release to offer, as `./ob release build` leaves it: the tree its
+/// files are in and its list, unsigned, which the three builds agree on
+/// (ADR 0457).
+pub struct NewRelease<'a> {
+    /// The staged tree the list was made of.
+    pub tree: &'a Path,
+    /// The release list, as `system-release list` wrote it.
+    pub list: &'a [u8],
+    /// The channel that offers it from now on, one of [`CHANNELS`].
+    pub channel: &'a str,
+    /// The security advisories, signed in the same targets version.
+    pub advisories: Option<&'a [Source]>,
+}
+
+/// What [`offer`] is about to sign, for the person who signs it to read
+/// before the YubiKey asks for the touch.
+#[derive(Debug)]
+pub struct Proposal {
+    /// The release's version.
+    pub version: String,
+    /// The SHA-256 of its list, which names it.
+    pub name: String,
+    /// The commit it was built from.
+    pub commit: String,
+    /// How many files it has.
+    pub files: usize,
+    /// Their total size in bytes.
+    pub bytes: u64,
+    /// The channel that will offer it.
+    pub channel: String,
+    /// The release that channel offers until then, if any.
+    pub replaces: Option<String>,
+    /// The targets version to be signed.
+    pub targets_version: u64,
+    /// When that version expires.
+    pub expires: String,
+    /// What the advisories change, when they are signed too.
+    pub advised: Option<Advised>,
+}
+
+/// What [`offer`] signed.
+#[derive(Debug)]
+pub struct Offering {
+    /// What was shown before it was signed.
+    pub proposal: Proposal,
+    /// How many of the release's files the store did not hold already.
+    pub new_files: usize,
+    /// The targets metadata as signed, whose signature Rekor records.
+    pub targets: Vec<u8>,
+}
+
+/// Offers a new release in the update repository at `dir` (ADR 0457): its
+/// files from `new.tree` in the store, each checked against its list as
+/// it is copied, its list among the targets, and the channel `new.channel`
+/// pointed at it, keeping the firmware set the channel offers, all in one
+/// new version of the targets, so one touch of a YubiKey. `confirm` is
+/// shown what will be signed first, and nothing is signed unless it says
+/// yes. The targets are then checked against the newest root; with keys
+/// that sign the snapshot and timestamp too, the release is read back
+/// from the first root.
+///
+/// # Errors
+///
+/// If the list is not one `system-release list` writes, the repository
+/// offers this version or a newer one already (a version is never used
+/// twice, and a channel never goes back), a file of the tree is not what
+/// the list says, `confirm` says no, a signature fails, or a write fails.
+pub fn offer(
+    dir: &Path,
+    keys: &Keys,
+    new: &NewRelease,
+    now: i64,
+    confirm: impl FnOnce(&Proposal) -> Result<(), String>,
+) -> Result<Offering, String> {
+    let release = Release::parse(new.list)?;
+    if release.to_bytes() != new.list {
+        return Err("the release list is not as system-release writes one: it was changed".into());
+    }
+    if !CHANNELS.contains(&new.channel) {
+        return Err(format!("no channel called {}; they are {}", new.channel, CHANNELS.join(", ")));
+    }
+    let current = current(dir)?;
+    let mut targets = current.as_ref().map_or_else(BTreeMap::new, |c| c.targets.clone());
+    newer_than_offered(&targets, &release.version)?;
+    let held = match &current {
+        Some(current) => held_channel(dir, current, new.channel)?,
+        None => None,
+    };
+    let new_files = crate::store::Store::at(&dir.join("files")).add_tree(new.tree, &release)?;
+    let path = repo::target_path(&release.version);
+    write(&repo::target_file(dir, &path, new.list), new.list)?;
+    targets.insert(path, signing::file_info(new.list));
+    let channel = Channel {
+        channel: new.channel.into(),
+        version: release.version.clone(),
+        firmware: held.as_ref().and_then(|held| held.firmware.clone()),
+    };
+    let bytes = channel.to_bytes();
+    write(&repo::target_file(dir, &channel_path(new.channel), &bytes), &bytes)?;
+    targets.insert(channel_path(new.channel), signing::file_info(&bytes));
+    let advised = new.advisories.map(|s| put_advisories(dir, &mut targets, s)).transpose()?;
+    let targets_version = current.as_ref().map_or(0, |c| c.targets_version) + 1;
+    let mut proposal = Proposal {
+        name: hex(ring::digest::digest(&ring::digest::SHA256, new.list).as_ref()),
+        commit: release.commit.clone(),
+        files: release.files.iter().filter(|e| e.file().is_some()).count(),
+        bytes: release.bytes(),
+        channel: new.channel.into(),
+        replaces: held.map(|held| held.version),
+        targets_version,
+        expires: expires(now, "targets"),
+        advised,
+        version: release.version.clone(),
+    };
+    confirm(&proposal)?;
+    let signed = sign(dir, keys, current.as_ref(), Some(&targets), None, now)?;
+    let metadata = read(&dir.join(format!("metadata/{targets_version}.targets.json")))?;
+    signed_as_shown(&metadata, keys, &targets)?;
+    if let Signed::All { .. } = signed {
+        repo::open(dir, &keys.roots()[0], Some(&release.version))?;
+    }
+    if let Some(advised) = proposal.advised.as_mut() {
+        advised.signed = true;
+    }
+    Ok(Offering { proposal, new_files, targets: metadata })
+}
+
+/// Refuses `version` unless it is newer than every release `targets`
+/// offer: a version is never used twice, even after a pull, and a channel
+/// never goes back (ADR 0450).
+fn newer_than_offered(targets: &BTreeMap<String, Value>, version: &str) -> Result<(), String> {
+    let new = Version::parse(version).ok_or_else(|| format!("{version} is not a version"))?;
+    for path in targets.keys() {
+        let Some(offered) = path.strip_prefix("system/").and_then(|p| p.strip_suffix(".json"))
+        else {
+            continue;
+        };
+        if Version::parse(offered).is_none_or(|offered| offered >= new) {
+            return Err(format!(
+                "the repository offers Dukovo {offered} already, and {version} is not newer: a \
+                 version is never used twice"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Checks that `metadata`, the targets just signed, are `targets`, signed
+/// as the newest root of `keys` asks.
+fn signed_as_shown(
+    metadata: &[u8],
+    keys: &Keys,
+    targets: &BTreeMap<String, Value>,
+) -> Result<(), String> {
+    use tuf::metadata::{Root, Signed as Metadata, Targets};
+    let root = Metadata::<Root>::parse(keys.root()).map_err(|err| format!("the root: {err}"))?;
+    let signed =
+        Metadata::<Targets>::parse(metadata).map_err(|err| format!("the targets: {err}"))?;
+    signed.verified_by(&root.signed, "targets").map_err(|err| format!("the targets: {err}"))?;
+    let listed: Value = serde_json::from_slice(metadata).map_err(|err| err.to_string())?;
+    if listed["signed"]["targets"] != serde_json::to_value(targets).map_err(|e| e.to_string())? {
+        return Err("the targets signed are not the ones shown".into());
+    }
+    Ok(())
 }
 
 /// Points the channel `channel` of the repository at `dir` at its release
@@ -1531,7 +1700,7 @@ pub fn check_archive(archive: &Archive, release: &Release) -> Result<Checked, Ve
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// The target `path` of the repository at `dir`, found through the
@@ -1622,6 +1791,140 @@ mod tests {
         let current = current(&repo_dir).unwrap().unwrap();
         assert!(current.targets.contains_key("channels/stable.json"));
         assert_eq!(current.targets.len(), 3);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The project's keys, as the key ceremony leaves them: two YubiKeys
+    /// behind the helper at `helper`, the first root they signed, and the
+    /// update server's online key, whose secret half is given.
+    pub(crate) fn ceremony(dir: &Path) -> (PathBuf, Vec<u8>, Vec<u8>) {
+        use crate::ceremony::{add_yubikey, sign_first_root};
+        let helper = crate::ceremony::tests::fake_yubikeys(dir);
+        let keys = dir.join("releases/keys");
+        let (online, secret) = signing::Ed25519::generate().unwrap();
+        std::fs::create_dir_all(&keys).unwrap();
+        std::fs::write(
+            keys.join("online.json"),
+            serde_json::to_vec(signing::Signer::key(&online)).unwrap(),
+        )
+        .unwrap();
+        for serial in [1001, 1002] {
+            add_yubikey(&keys, &helper, Some(serial)).unwrap();
+        }
+        let metadata = dir.join("releases/metadata");
+        let root = sign_first_root(&keys, &metadata, &helper, tuf::time::now()).unwrap();
+        (helper, root, secret)
+    }
+
+    /// The release key of YubiKey `serial`, for the repository at `dir`.
+    fn yubikey_keys(dir: &Path, helper: &Path, serial: u64) -> Keys {
+        let yubikey = crate::yubikey::release_key(helper, Some(serial)).unwrap();
+        Keys::hardware(repo::roots_in(dir).unwrap(), &yubikey, &["targets"]).unwrap()
+    }
+
+    #[test]
+    fn a_release_is_offered_from_what_the_server_serves_and_signed_on_a_yubikey() {
+        let dir = scratch("updates-offer");
+        let (helper, first, secret) = ceremony(&dir);
+        let server = dir.join("server");
+        let url = tuf::Url::parse(&format!("file://{}/", server.display())).unwrap();
+        let slot = dir.join("slot");
+        tree(&slot);
+        let list = Release::of_tree(&slot, about("0.18.0", "0.14.1")).unwrap().to_bytes();
+        let now = tuf::time::now();
+
+        // Nothing is served yet: the first release starts from the first
+        // root alone, and is shown before it is signed.
+        let work = dir.join("work-1");
+        let fetched = repo::fetch(&url, &first, &work).unwrap();
+        assert_eq!(fetched, repo::Fetched { root: 1, targets: 0, listed: 0 });
+        let keys = yubikey_keys(&work, &helper, 1001);
+        let new = NewRelease { tree: &slot, list: &list, channel: "beta", advisories: None };
+        let mut shown = None;
+        let offered = offer(&work, &keys, &new, now, |proposal| {
+            shown = Some(format!("{proposal:?}"));
+            Ok(())
+        })
+        .unwrap();
+        let proposal = &offered.proposal;
+        assert_eq!(shown, Some(format!("{proposal:?}")));
+        assert_eq!((proposal.version.as_str(), proposal.channel.as_str()), ("0.18.0", "beta"));
+        assert_eq!((proposal.replaces.as_deref(), proposal.targets_version), (None, 1));
+        assert_eq!((proposal.files, offered.new_files), (2, 2));
+        let entry = crate::rekor::entry(&offered.targets, keys.signer("targets").unwrap().key());
+        assert!(entry.is_ok(), "{entry:?}");
+        // The server signs the snapshot and timestamp, and a computer reads
+        // the release from the first root.
+        let deployed = publish(&server, &work, &secret, None, now).unwrap();
+        assert_eq!(deployed.releases, ["0.18.0"]);
+        assert_eq!(repo::open(&server, &first, Some("0.18.0")).unwrap().release.version, "0.18.0");
+
+        // The next starts from what is served, signed on the other YubiKey;
+        // nothing is signed until the version is confirmed.
+        std::fs::write(slot.join("commands/spark"), b"spark, newer").unwrap();
+        let list = Release::of_tree(&slot, about("0.18.1", "0.14.1")).unwrap().to_bytes();
+        let work = dir.join("work-2");
+        let fetched = repo::fetch(&url, &first, &work).unwrap();
+        assert_eq!(fetched, repo::Fetched { root: 1, targets: 1, listed: 2 });
+        assert!(repo::fetch(&url, &first, &work).unwrap_err().contains("is there already"));
+        let keys = yubikey_keys(&work, &helper, 1002);
+        let new = NewRelease { list: &list, ..new };
+        let refused = offer(&work, &keys, &new, now, |_| Err("not typed".into()));
+        assert_eq!(refused.unwrap_err(), "not typed");
+        assert!(!work.join("metadata/2.targets.json").exists());
+        // The files the refused offer copied stay in the store.
+        let offered = offer(&work, &keys, &new, now, |_| Ok(())).unwrap();
+        assert_eq!(offered.proposal.replaces.as_deref(), Some("0.18.0"));
+        assert_eq!((offered.proposal.targets_version, offered.new_files), (2, 0));
+        let deployed = publish(&server, &work, &secret, None, now).unwrap();
+        assert_eq!(deployed.releases, ["0.18.0", "0.18.1"]);
+        assert_eq!(deployed.new_files, 1);
+        let beta = Channel { channel: "beta".into(), version: "0.18.1".into(), firmware: None };
+        assert_eq!(deployed.channels, [beta]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_offer_is_refused_before_anything_is_signed() {
+        let dir = scratch("updates-offer-refused");
+        let (helper, first, _) = ceremony(&dir);
+        let work = dir.join("work");
+        let url = tuf::Url::parse(&format!("file://{}/", dir.join("server").display())).unwrap();
+        repo::fetch(&url, &first, &work).unwrap();
+        let slot = dir.join("slot");
+        tree(&slot);
+        let list = Release::of_tree(&slot, about("0.18.0", "0.14.1")).unwrap().to_bytes();
+        let keys = yubikey_keys(&work, &helper, 1001);
+        let now = tuf::time::now();
+        let shown = |_: &Proposal| -> Result<(), String> { panic!("nothing is to be shown") };
+        let refused = |new: &NewRelease| offer(&work, &keys, new, now, shown).unwrap_err();
+
+        // A YubiKey whose release key the root does not name.
+        let stranger = signing::Signer::key(&crate::ceremony::tests::P256::new()).clone();
+        let stranger = crate::yubikey::YubiKey::new(&helper, 1003, "95", stranger);
+        let Err(error) = Keys::hardware(repo::roots_in(&work).unwrap(), &stranger, &["targets"])
+        else {
+            panic!("a YubiKey the root does not name signs nothing")
+        };
+        assert!(error.contains("does not name YubiKey 1003's key"), "{error}");
+        // A list changed after it was made, a channel there is not, and a
+        // tree that is not the list's.
+        let mut changed = list.clone();
+        changed.insert(1, b' ');
+        let new = NewRelease { tree: &slot, list: &changed, channel: "beta", advisories: None };
+        assert!(refused(&new).contains("it was changed"));
+        assert!(refused(&NewRelease { list: &list, channel: "lts", ..new }).contains("no channel"));
+        std::fs::write(slot.join("commands/spark"), b"spark, changed").unwrap();
+        let error = refused(&NewRelease { list: &list, ..new });
+        assert!(error.contains("changed since it was listed"), "{error}");
+        std::fs::write(slot.join("commands/spark"), b"spark's bytes").unwrap();
+        // A version offered already, or older than one offered.
+        offer(&work, &keys, &NewRelease { list: &list, ..new }, now, |_| Ok(())).unwrap();
+        for version in ["0.18.0", "0.17.9"] {
+            let older = Release::of_tree(&slot, about(version, "0.14.1")).unwrap().to_bytes();
+            let error = refused(&NewRelease { list: &older, ..new });
+            assert!(error.contains("is not newer"), "{error}");
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

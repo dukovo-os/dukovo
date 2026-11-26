@@ -141,14 +141,27 @@ jobs:
           out="$RUNNER_TEMP/first"
           ./ob release build --out "$out" | tee "$RUNNER_TEMP/first.stdout"
           echo "digest=$(tail -n 1 "$RUNNER_TEMP/first.stdout")" >> "$GITHUB_OUTPUT"
-          tar -C out -I 'zstd -T0 -3' -cf "$out/tree.tar.zst" release-build-tree
-          ls -l "$out"
+          mkdir "$RUNNER_TEMP/first-tree"
+          tar -C out -I 'zstd -T0 -3' -cf "$RUNNER_TEMP/first-tree/tree.tar.zst" release-build-tree
+          ls -l "$out" "$RUNNER_TEMP/first-tree"
 
+      # The lists apart from the tree, which is large: `./ob release sign`
+      # downloads the lists alone, and the comparison the tree only when
+      # the builds differ.
       - name: Upload what the build made
         uses: actions/upload-artifact@v4
         with:
           name: reproducible-first
           path: ${{ runner.temp }}/first
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload the tree
+        uses: actions/upload-artifact@v4
+        with:
+          name: reproducible-first-tree
+          path: ${{ runner.temp }}/first-tree
           compression-level: 0
           if-no-files-found: error
           retention-days: 7
@@ -213,16 +226,26 @@ jobs:
                 exec taskset -c "0-$(($1 - 1))" ./ob release build --out /srv/repro/out' \
               bash "$jobs" | tee "$RUNNER_TEMP/second.stdout"
           echo "digest=$(tail -n 1 "$RUNNER_TEMP/second.stdout")" >> "$GITHUB_OUTPUT"
+          sudo mkdir /srv/repro/tree
           sudo tar -C /srv/dukovo-second/out -I 'zstd -T0 -3' \
-            -cf /srv/repro/out/tree.tar.zst release-build-tree
+            -cf /srv/repro/tree/tree.tar.zst release-build-tree
           sudo chmod -R a+rX /srv/repro
-          ls -l /srv/repro/out
+          ls -l /srv/repro/out /srv/repro/tree
 
       - name: Upload what the build made
         uses: actions/upload-artifact@v4
         with:
           name: reproducible-second
           path: /srv/repro/out
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload the tree
+        uses: actions/upload-artifact@v4
+        with:
+          name: reproducible-second-tree
+          path: /srv/repro/tree
           compression-level: 0
           if-no-files-found: error
           retention-days: 7
@@ -303,6 +326,20 @@ jobs:
             printf -- '< %s\n' "$(awk -F'\t' -v p="$path" '$6 == p' first/files.txt)"
             printf -- '> %s\n' "$(awk -F'\t' -v p="$path" '$6 == p' second/files.txt)"
           done
+
+      - name: Download the first build's tree
+        if: steps.compare.outputs.same == 'false'
+        uses: actions/download-artifact@v4
+        with:
+          name: reproducible-first-tree
+          path: ${{ runner.temp }}/first
+
+      - name: Download the second build's tree
+        if: steps.compare.outputs.same == 'false'
+        uses: actions/download-artifact@v4
+        with:
+          name: reproducible-second-tree
+          path: ${{ runner.temp }}/second
 
       - name: Install diffoscope
         if: steps.compare.outputs.same == 'false'

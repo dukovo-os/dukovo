@@ -8,9 +8,10 @@
 //! release` deploys an update repository to the update server and checks
 //! what it serves (ADR 0467).
 //!
-//! Until releases are signed with the project's YubiKeys (the updates
-//! design's section 11), every machine that builds Dukovo signs with keys
-//! of its own, made the first time they are needed in
+//! `ob release sign` signs the releases the update server offers on the
+//! project's YubiKeys ([`crate::release_sign`], ADR 0778). An image's
+//! release is still signed by the machine that builds it, with keys of
+//! its own, made the first time they are needed in
 //! `.cache/release-keys`: a stick verifies against the root built into
 //! it, and nothing online trusts that root. When a stick's release will not check, run
 //! `system-release check` on the stick's `release` folder with
@@ -115,6 +116,8 @@ pub fn tool_for(ctx: &Ctx, release: bool) -> Result<PathBuf> {
 pub fn command(ctx: &Ctx, args: &[String]) -> Result<()> {
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["build", rest @ ..] => build(ctx, rest),
+        ["sign", rest @ ..] => crate::release_sign::sign(ctx, rest),
+        ["record", version] => crate::release_sign::record(ctx, version),
         ["key", "yubikey"] => release_key(ctx, None),
         ["key", "yubikey", "--serial", serial] => release_key(ctx, Some(serial)),
         ["root"] => first_root(ctx),
@@ -139,7 +142,9 @@ pub fn command(ctx: &Ctx, args: &[String]) -> Result<()> {
         ["canaries", "--json"] => canaries(ctx, true),
         ["canary", rest @ ..] if !rest.is_empty() => canary(ctx, rest),
         _ => bail!(
-            "usage: ./ob release build [--out <dir>] | key yubikey [--serial <number>] | root \
+            "usage: ./ob release build [--out <dir>] \
+             | sign <version> [--channel <channel>] [--serial <number>] | record <version> \
+             | key yubikey [--serial <number>] | root \
              | server setup [--dukovo] | channel <repository> (<channel> \
              <version> | --firmware <version>|none <channel>) | advisories <repository> \
              | deploy <repository> | send [--copy-only] <repository> \
@@ -285,7 +290,7 @@ fn canaries(ctx: &Ctx, json: bool) -> Result<()> {
 
 /// The production first root, which every repository deployed must start
 /// from.
-fn production_root(ctx: &Ctx) -> Result<Vec<u8>> {
+pub(crate) fn production_root(ctx: &Ctx) -> Result<Vec<u8>> {
     let path = ctx.root.join(REPO).join("metadata/1.root.json");
     std::fs::read(&path).map_err(|_| {
         crate::Error::new(format!(
@@ -433,7 +438,7 @@ pub const BUILD_FILES: [&str; 3] = ["files.txt", "system.json", "system.json.sha
 
 /// Where `./ob release build` stages the tree, below `out/`, and leaves
 /// it: a file that differs between two builds is read from there.
-const BUILD_TREE: &str = "release-build-tree";
+pub(crate) const BUILD_TREE: &str = "release-build-tree";
 
 /// `./ob release build [--out DIR]`: builds the system as this commit
 /// makes it, stages its slot as an image and a release hold it, and
@@ -454,6 +459,15 @@ fn build(ctx: &Ctx, args: &[&str]) -> Result<()> {
             .map_err(|err| crate::Error::new(format!("--out {dir}: {err}")))?,
         _ => bail!("usage: ./ob release build [--out <dir>]"),
     };
+    let digest = build_release(ctx, &out)?;
+    println!("{digest}");
+    Ok(())
+}
+
+/// [`build`] into `out`, which gives the release list's SHA-256 and
+/// leaves the tree in `out/`[`BUILD_TREE`]; `./ob release sign` builds
+/// the third time with it.
+pub(crate) fn build_release(ctx: &Ctx, out: &Path) -> Result<String> {
     if image::source_date_epoch(ctx).is_none() {
         bail!(
             "a release is built at the time of its commit: run this in a git checkout, or set \
@@ -469,9 +483,7 @@ fn build(ctx: &Ctx, args: &[&str]) -> Result<()> {
     let kernel = kernel::build(ctx, Profile::Release)?;
     let programs = userspace::build(ctx, Profile::Release)?;
     let tree = ctx.out.join(BUILD_TREE);
-    let digest = build_in(ctx, &kernel, &programs, &tree, &out)?;
-    println!("{digest}");
-    Ok(())
+    build_in(ctx, &kernel, &programs, &tree, out)
 }
 
 /// The second half of [`build`]: stages the slot in `tree`, and writes the

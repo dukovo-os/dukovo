@@ -234,7 +234,7 @@ pub fn sign_first_root(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use ring::rand::SystemRandom;
     use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair as _};
@@ -242,13 +242,13 @@ mod tests {
     use tuf::repo::Ed25519;
 
     /// A P-256 key such as a YubiKey's slot holds.
-    struct P256 {
+    pub(crate) struct P256 {
         key: Key,
         pair: EcdsaKeyPair,
     }
 
     impl P256 {
-        fn new() -> P256 {
+        pub(crate) fn new() -> P256 {
             let rng = SystemRandom::new();
             let pkcs8 =
                 EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
@@ -282,7 +282,7 @@ mod tests {
     /// A stand-in for tools/yubikey-piv.py with YubiKeys 1001 and 1002,
     /// whose slot 95 keys openssl holds and sign as a YubiKey does:
     /// ECDSA with SHA-256, in DER. Slot 9c holds no key on either.
-    fn fake_yubikeys(dir: &Path) -> PathBuf {
+    pub(crate) fn fake_yubikeys(dir: &Path) -> PathBuf {
         let openssl = |args: &[&str]| {
             let status = Command::new("openssl").args(args).current_dir(dir).status();
             assert!(status.is_ok_and(|s| s.success()), "openssl {args:?} failed");
@@ -309,7 +309,7 @@ mod tests {
         helper
     }
 
-    fn online_key(keys: &Path) -> Key {
+    pub(crate) fn online_key(keys: &Path) -> Key {
         let (online, _) = Ed25519::generate().unwrap();
         std::fs::create_dir_all(keys).unwrap();
         std::fs::write(keys.join("online.json"), serde_json::to_vec(online.key()).unwrap())

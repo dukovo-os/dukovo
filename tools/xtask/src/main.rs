@@ -48,6 +48,7 @@ mod process;
 mod qemu;
 mod redteam;
 mod release;
+mod release_sign;
 mod repro;
 mod riscv;
 mod rootfs;
@@ -838,6 +839,8 @@ resolve)."
         }
         "release" => {
             "Usage: ./ob release build [--out <dir>]
+       ./ob release sign <version> [--channel <channel>] [--serial <number>]
+       ./ob release record <version>
        ./ob release key yubikey [--serial <number>]
        ./ob release root
        ./ob release server setup [--dukovo]
@@ -865,6 +868,19 @@ and releases/stand-in-root.json until then, and not this machine's, which
 would make the tree differ from every other machine's. The tree stays in
 out/release-build-tree. SOURCE_DATE_EPOCH is the commit's time unless it is
 set, and the build takes as long as `./ob build`.
+
+`sign` signs this commit's release on a YubiKey (ADRs 0457 and 0778), as
+releases/README.md walks through. It refuses unless the checkout has nothing
+changed and builds <version>, and the commit is on main or a release branch
+with CI passed, a full update matrix run and a reproducible run green on it,
+read with gh. It downloads that run's two builds, runs `build`, and refuses
+unless the three are the same. Then it reads what the update server serves
+into out/release-sign/<version>, adds the release and points <channel> (beta
+by default) at it with the security advisories, shows what it will sign, asks
+for the version to be typed, and signs on the YubiKey with its PIN and a
+touch. Last, it sends the signature to Sigstore's Rekor log and keeps the
+answer beside it; `record` sends it again when the log could not be reached,
+and $DUKOVO_REKOR names another log. `deploy` then sends the repository.
 
 `key yubikey` and `root` are the key ceremony (ADRs 0457 and 0538), as
 releases/README.md says. `key yubikey` adds releases/keys/yubikey-SERIAL.json,

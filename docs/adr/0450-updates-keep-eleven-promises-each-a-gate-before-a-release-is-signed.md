@@ -87,8 +87,5 @@ its version number.
 - A release is late rather than unproven: a release that is not green on
   release day skips that month (ADR 0458).
 - **Not yet:**
-  - `ob release sign` and its gates, with the full matrix's run on
-    GitHub's runners (ADR 0536) among them, before the first public
-    release, 1.0.0-alpha.1.
   - The upgrade paths from 12 months back, Kani on the slot-state reader,
     and the fuzzing (ADR 0536 lists what it still lacks).

@@ -63,8 +63,9 @@ from 82 upward.
   that trusts it.
 - The YubiKeys' 9c keys sign only the catalog, and their 95 keys only
   the system's releases.
-- **Not yet:** signing releases, channels and pulls on the YubiKeys
-  (`ob release sign`, with its third build and the Rekor record), root
-  versions after the first, `ob keys ceremony` for the yearly root, and
-  the runbooks for lost or stolen keys, before 1.0.0-alpha.1
-  (`docs/deferred.md`).
+- Releases, channels, advisories and pulls are signed on the YubiKeys
+  through the same helper (ADR 0778).
+- **Not yet:** the runbooks for lost or stolen keys, before
+  1.0.0-alpha.1; root versions after the first and `ob keys ceremony`
+  for the yearly root, before 1.0.0, as the first root expires on
+  2027-11-17 (`docs/deferred.md`).

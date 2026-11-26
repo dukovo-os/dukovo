@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0457. Releases are signed on two hardware keys, after three builds agree
 
-- Status: Accepted; the builds are made reproducible, and CI builds twice, by [0535](0535-a-release-is-built-twice-by-ci-in-different-places-and-must-come-out-the-same.md); the first root's ceremony and the release keys' own slot are set by [0538](0538-the-system-releases-first-root-is-signed-on-a-slot-of-each-yubikey-of-its-own.md)
+- Status: Accepted; the builds are made reproducible, and CI builds twice, by [0535](0535-a-release-is-built-twice-by-ci-in-different-places-and-must-come-out-the-same.md); the first root's ceremony and the release keys' own slot are set by [0538](0538-the-system-releases-first-root-is-signed-on-a-slot-of-each-yubikey-of-its-own.md); `ob release sign` and the Rekor record by [0778](0778-a-release-is-signed-on-a-yubikey-from-what-the-server-serves-once-its-gates-and-three-builds-agree.md)
 - Date: 2026-11-11
 
 ## Context
@@ -75,6 +75,5 @@ there is nothing more to buy, keep or practise.
   root. The owner would install one by hand from an update file after
   checking its fingerprint on dukovo.org. Two places, yearly checks and
   the replacement drill exist to keep that from happening.
-- **Not yet:** the system's TUF root signed on the hardware keys, `ob
-  release sign` with its third build, the Rekor record, `ob keys
-  ceremony`, and the runbooks, before 1.0.0-alpha.1.
+- **Not yet:** the runbooks, before 1.0.0-alpha.1; `ob keys ceremony`
+  and the root versions after the first, before 1.0.0.

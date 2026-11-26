@@ -27,6 +27,7 @@ pub const RELEASE_SLOT: &str = "95";
 
 /// A key held by a YubiKey, in one of its PIV slots, which signs through
 /// the helper.
+#[derive(Clone)]
 pub struct YubiKey {
     helper: PathBuf,
     serial: u64,
@@ -40,6 +41,12 @@ impl YubiKey {
     #[must_use]
     pub fn new(helper: &Path, serial: u64, slot: &'static str, key: Key) -> YubiKey {
         YubiKey { helper: helper.to_path_buf(), serial, slot, key }
+    }
+
+    /// The YubiKey's serial number, printed on its label.
+    #[must_use]
+    pub fn serial(&self) -> u64 {
+        self.serial
     }
 }
 
@@ -132,6 +139,19 @@ pub fn one(helper: &Path, serial: Option<u64>) -> Result<u64, String> {
 pub fn public_key(helper: &Path, serial: u64, slot: &str) -> Result<Key, String> {
     let pem = run_helper(helper, &helper_args("public", serial, slot), &[])?;
     repo::p256_key(&pem).map_err(|e| format!("YubiKey {serial}, slot {slot}: {e}"))
+}
+
+/// The release key of YubiKey `serial`, or of the only one plugged in:
+/// the key in its slot 95, to sign the system's releases with.
+///
+/// # Errors
+///
+/// If there is no YubiKey, more than one and no serial, or its slot 95
+/// holds no P-256 key made on it.
+pub fn release_key(helper: &Path, serial: Option<u64>) -> Result<YubiKey, String> {
+    let serial = one(helper, serial)?;
+    let key = public_key(helper, serial, RELEASE_SLOT)?;
+    Ok(YubiKey::new(helper, serial, RELEASE_SLOT, key))
 }
 
 #[cfg(test)]

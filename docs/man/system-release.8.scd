@@ -30,17 +30,21 @@ system-release - check, sign, offer, publish, pack, keep Rescue of and make keys
 
 *system-release add* *--repo* _dir_ *--keys* _dir_ _release_
 
-*system-release channel* *--repo* _dir_ *--keys* _dir_ [*--advisories* _dir_] _channel_ _version_
+*system-release fetch* *--root* _file_ *--out* _dir_ _url_
 
-*system-release channel* *--repo* _dir_ *--keys* _dir_ [*--advisories* _dir_] *--firmware* _version_|*none* _channel_
+*system-release offer* *--repo* _dir_ (*--keys* _dir_ | *--yubikey-helper* _file_ [*--serial* _number_]) *--tree* _dir_ [*--advisories* _dir_] [*--record* _file_] [*--yes*] _list_ _channel_
 
-*system-release advisories* *--repo* _dir_ *--keys* _dir_ _dir_
+*system-release channel* *--repo* _dir_ (*--keys* _dir_ | *--yubikey-helper* _file_ [*--serial* _number_]) [*--advisories* _dir_] _channel_ _version_
+
+*system-release channel* *--repo* _dir_ (*--keys* _dir_ | *--yubikey-helper* _file_ [*--serial* _number_]) [*--advisories* _dir_] *--firmware* _version_|*none* _channel_
+
+*system-release advisories* *--repo* _dir_ (*--keys* _dir_ | *--yubikey-helper* _file_ [*--serial* _number_]) _dir_
 
 *system-release advisories* *--check* _dir_
 
 *system-release firmware* *--repo* _dir_ *--keys* _dir_ *--version* _version_ *--microcode* _file_ *--license* _license_
 
-*system-release pull* *--repo* _dir_ *--keys* _dir_ *--version* _version_ *--reason* _text_ *--advice* *rollback*|*stay*
+*system-release pull* *--repo* _dir_ (*--keys* _dir_ | *--yubikey-helper* _file_ [*--serial* _number_]) *--version* _version_ *--reason* _text_ *--advice* *rollback*|*stay*
 
 *system-release refresh* *--repo* _dir_ (*--keys* _dir_ | *--online-key* _secret_ [*--plan* _file_])
 
@@ -127,10 +131,10 @@ too when the root key is the one replaced; every root is kept, so that a
 computer that trusts the first walks to the newest. *keys --online*
 _key_ signs the next root naming the update server's online key, the
 public key in the file _key_, for snapshot and timestamp beside the keys
-in _dir_, either of which signs alone (ADR 0467). Until releases are
-signed with the project's YubiKeys, each build machine signs with keys
-of its own, which *ob* makes in _.cache/release-keys_, and its images
-trust only those.
+in _dir_, either of which signs alone (ADR 0467). The project's releases
+are signed on its YubiKeys (*offer*); each build machine signs the
+release of its images with keys of its own, which *ob* makes in
+_.cache/release-keys_, and its images trust only those.
 
 *online-key* makes the update server's online key: an Ed25519 key whose
 secret half goes into the new file _secret_, readable by its owner
@@ -160,6 +164,28 @@ is never used twice. *channel* points a channel at a release the
 repository offers. With keys for snapshot and timestamp in *--keys*,
 *add* and *channel* sign a new snapshot and timestamp too; without them,
 the update server signs those once the repository is deployed.
+
+The project's releases are signed on one of its YubiKeys, from what the
+update server serves (ADR 0778), as *ob release sign* does. *fetch*
+reads the repository the server at _url_ serves, from the first root in
+*--root*, as a computer online does, expiry checked, and writes it into
+the new folder *--out*: every root by version, the newest targets as
+served, and the file of each target by its SHA-256; a server that serves
+nothing yet gives the first root alone. The releases' files stay on the
+server. *offer* then adds the release whose list *system-release list*
+wrote in _list_, whose files are in the tree *--tree*, each checked
+against the list as it is copied into the store, and points _channel_ at
+it, keeping the firmware set the channel offers, with the advisories of
+*--advisories*, in one targets version. It refuses a version that is
+not newer than every release the repository offers, and a list that is
+not byte for byte as *list* writes it. It shows what it is about to
+sign, and signs only once the version is typed, or with *--yes*. With
+*--record* _file_, it writes the Rekor entry of the YubiKey's signature
+to _file_, which *ob release sign* sends to Sigstore's log.
+*channel*, *advisories* and *pull* sign on a YubiKey too, on a fetched
+repository, with *--yubikey-helper* in place of *--keys*. The newest
+root must name the YubiKey's key in slot 95 for targets, or nothing is
+asked of it.
 *firmware* adds a firmware set of the optional firmware package (ADR
 0468): the CPU microcode _file_, with its license as an SPDX expression,
 under a version such as *2026.11.12*, signed as a release is, with the
@@ -319,7 +345,8 @@ or with *--json* prints *{"url": ..., "published": false}*, and succeeds.
 # OPTIONS
 
 *--root* _file_
-	Check against the root in _file_ instead of the system's.
+	Check against the root in _file_ instead of the system's; for
+	*fetch*, the first root to read the server from.
 
 *--version* _version_
 	The release to check, when the repository holds several; the
@@ -363,10 +390,27 @@ or with *--json* prints *{"url": ..., "published": false}*, and succeeds.
 	With *advisories*, only check the folder.
 
 *--tree* _dir_
-	The slot to make a release of: what _/system_ will hold.
+	The slot to make a release of: what _/system_ will hold. For
+	*offer*, the tree the release list was made of.
 
 *--keys* _dir_
 	The keys *keys* made.
+
+*--yubikey-helper* _file_
+	Sign on a YubiKey, through the helper _file_, tools/yubikey-piv.py
+	in the source tree, which asks for the PIN and the touch: with its
+	key in slot 95 for *offer*, *channel*, *advisories* and *pull*, which
+	the repository's newest root must name for targets.
+
+*--serial* _number_
+	The YubiKey to use, by the serial number on its label, when more
+	than one is plugged in.
+
+*--record* _file_
+	For *offer*, where to write the Rekor entry of the signature.
+
+*--yes*
+	For *offer*, sign without asking for the version to be typed.
 
 *--repo* _dir_
 	The update repository.
@@ -384,10 +428,11 @@ or with *--json* prints *{"url": ..., "published": false}*, and succeeds.
 	snapshot and timestamp.
 
 *--out* _dir_
-	Where *make* lays out the repository; for *list*, the file that
-	takes the list, in place of the standard output; for *rescue*, the
-	EFI system partition's mount point; for *pack*, the update file; for
-	*online-key*, the public half of the key.
+	Where *make* lays out the repository, and *fetch* writes it; for
+	*list*, the file that takes the list, in place of the standard
+	output; for *rescue*, the EFI system partition's mount point; for
+	*pack*, the update file; for *online-key*, the public half of the
+	key.
 
 *--commit* _commit_, *--toolchain* _toolchain_
 	The git commit and the Rust toolchain the release was built from,

@@ -2171,7 +2171,7 @@ _target/userspace/_).
 	are changed with *release canary* (ADR 0533), and *rollout canary*
 	is refused. *bundle*(1) says what a computer does with one.
 
-*release* *build* [*--out* _dir_] | *key* *yubikey* [*--serial* _n_] | *root* | *server* *setup* [*--dukovo*] | *channel* _repository_ (_channel_ _version_ | *--firmware* _version_|*none* _channel_) | *advisories* _repository_ | *deploy* _repository_ | *send* [*--copy-only*] _repository_ | *check* [*--root* _file_] [_url_] | *rollout* (*pause* _version_ _reason_ | *resume* _version_) | *canaries* [*--json*] | *canary* (*add* _name_ _key_ | *remove* _name_ | _name_ *red*|*green* _reason_ | _name_ *auto*)
+*release* *build* [*--out* _dir_] | *sign* _version_ [*--channel* _channel_] [*--serial* _n_] | *record* _version_ | *key* *yubikey* [*--serial* _n_] | *root* | *server* *setup* [*--dukovo*] | *channel* _repository_ (_channel_ _version_ | *--firmware* _version_|*none* _channel_) | *advisories* _repository_ | *deploy* _repository_ | *send* [*--copy-only*] _repository_ | *check* [*--root* _file_] [_url_] | *rollout* (*pause* _version_ _reason_ | *resume* _version_) | *canaries* [*--json*] | *canary* (*add* _name_ _key_ | *remove* _name_ | _name_ *red*|*green* _reason_ | _name_ *auto*)
 	Build the system's release, and deploy the system's releases to the
 	update server and check what it serves (ADR 0467), over the same SSH
 	login as *catalog*.
@@ -2200,6 +2200,28 @@ _target/userspace/_).
 	as long as *ob build*, and *SOURCE_DATE_EPOCH* is the commit's time
 	unless it is set. CI runs *build* twice in different
 	places and compares the results (_.github/workflows/reproducible.yml_).
+
+	*sign* signs the release of this checkout's commit on a YubiKey
+	(ADRs 0457 and 0778), as _releases/README.md_ walks through. It
+	refuses unless the checkout has nothing changed and builds
+	_version_, and, read with *gh* from GitHub, the commit is on main or
+	a release branch with *CI passed*, a full run of the update test
+	matrix and a run of the reproducible workflow green on it. It
+	downloads that run's two builds into _out/release-sign/ci-COMMIT_,
+	runs *build*, and refuses unless all three have the same
+	_system.json.sha256_ and _files.txt_. Then *system-release*(8)
+	*fetch* reads what the update server serves into
+	_out/release-sign/version_, and *offer* adds the release there and
+	points _channel_, *beta* by default, at it, with the security
+	advisories of _security/advisories_, in one targets version: it
+	shows what it is about to sign and asks for the version to be
+	typed, and the YubiKey, or the one *--serial* names, asks for its PIN
+	and a touch. Last, it sends the signature to Sigstore's Rekor log,
+	keeps the answer in _out/release-sign/version.rekor.json_ and prints
+	the entry's address; *record* sends it again when the log could not
+	be reached. *$DUKOVO_REKOR* names another log, such as
+	_https://rekor.sigstage.dev_. The repository is then sent with
+	*deploy*.
 
 	*key yubikey* and *root* are the key ceremony (ADRs 0457 and 0538),
 	which _releases/README.md_ walks through. *key yubikey* adds
