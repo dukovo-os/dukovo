@@ -103,7 +103,10 @@ bytes or more whose destination is 1 to 511 bytes ahead of its source,
 modulo 4 KiB, goes from the end in 8-byte moves instead: AMD's Zen 3 and
 later run `rep movsb` many times slower there, each load waiting on a
 store just before it with the same low 12 bits of address (4K aliasing),
-and glibc's `memmove` copies backward in the same case. A page fault on
+and glibc's `memmove` copies backward in the same case. A copy of at
+most 63 bytes goes from the end too, by bytes and words, as `rep movsb`
+takes some 30 cycles to start on CPUs without fast short REP MOVSB, more
+than such a copy (ADR 0774). A page fault on
 a copying instruction does not panic: the fault handler moves the
 instruction pointer to the end of the copy (`fixup`) and the copy
 reports failure, which becomes `bad_address`. Memory the kernel shares

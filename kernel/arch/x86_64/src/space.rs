@@ -20,6 +20,12 @@
 //! before it reads which CPUs run the space, so every CPU either gets the
 //! IPI or sees the new generation. PCIDs come from [`radix_mm::Pcids`].
 //!
+//! A kernel thread runs on the tables of the space its CPU ran last, which
+//! stays marked as running there ([`AddressSpace::run_kernel_thread`], ADR
+//! 0770), so a switch back to that space reloads nothing; the CPU leaves
+//! the space at its first shootdown of a user range, and before the space's
+//! tables go.
+//!
 //! Pages are 4 KiB ones, but for a run of frames that follow one another
 //! ([`AddressSpace::map_run`]: a frame object's, mapped whole), which a
 //! page directory's entry maps 2 MiB at a time wherever the virtual and
@@ -595,13 +601,10 @@ impl AddressSpace {
         let were_enabled = cpu::disable_interrupts();
         let me = percpu::current_index();
         let this = core::ptr::from_ref::<AddressSpace>(self) as usize;
-        let previous = percpu::current().space.swap(this, Ordering::Relaxed);
+        let here = percpu::current();
+        here.lazy.store(false, Ordering::Relaxed);
+        let previous = here.space.swap(this, Ordering::Relaxed);
         if previous != this {
-            if previous != 0 {
-                // SAFETY: a space stays valid while a CPU runs it (see
-                // `destroy`), and this CPU ran `previous` until now.
-                unsafe { (*(previous as *const AddressSpace)).set_active(me, false) };
-            }
             self.set_active(me, true);
             fence(Ordering::SeqCst);
             let generation = self.tlb_generation.load(Ordering::SeqCst);
@@ -620,6 +623,14 @@ impl AddressSpace {
             // SAFETY: the PML4's upper half is the kernel's, so the running
             // code, its stack and everything the kernel uses stay mapped.
             unsafe { cpu::write_cr3(cr3) };
+            if previous != 0 {
+                // Once its tables are no longer loaded: a space's tables
+                // stay until no CPU marks it as running (`leave_lazy_cpus`).
+                // SAFETY: a space stays valid while a CPU marks it as
+                // running (see `destroy`), and this CPU marked `previous`
+                // until now.
+                unsafe { (*(previous as *const AddressSpace)).set_active(me, false) };
+            }
         }
         if were_enabled {
             cpu::enable_interrupts();
@@ -630,10 +641,10 @@ impl AddressSpace {
     pub fn switch_to_kernel() {
         let were_enabled = cpu::disable_interrupts();
         let me = percpu::current_index();
-        let previous = percpu::current().space.swap(0, Ordering::Relaxed);
+        let here = percpu::current();
+        here.lazy.store(false, Ordering::Relaxed);
+        let previous = here.space.swap(0, Ordering::Relaxed);
         if previous != 0 {
-            // SAFETY: as in `switch_to`.
-            unsafe { (*(previous as *const AddressSpace)).set_active(me, false) };
             if paging::PCID.load(Ordering::Relaxed) {
                 PCIDS.leave(me);
             }
@@ -642,9 +653,50 @@ impl AddressSpace {
             // other PCIDs, so its entries are never kept.
             // SAFETY: the kernel's tables map everything the kernel uses.
             unsafe { cpu::write_cr3(paging::kernel_pml4()) };
+            // SAFETY: as in `switch_to`.
+            unsafe { (*(previous as *const AddressSpace)).set_active(me, false) };
         }
         if were_enabled {
             cpu::enable_interrupts();
+        }
+    }
+
+    /// Runs a kernel thread on this CPU, which uses no user space, as Linux
+    /// runs one on a lazy TLB: the space the CPU ran last stays loaded and
+    /// marked as running here, so that a switch back to it, as when a
+    /// server's thread sleeps until its next request and the CPU idles
+    /// meanwhile, reloads no tables and keeps its TLB entries. Without
+    /// PCIDs, as in a virtual machine on an AMD host, each switch to the
+    /// kernel's tables and back flushed the program's TLB, whose entries a
+    /// hypervisor's nested paging makes slow to walk again. The CPU leaves
+    /// the space at the first shootdown it gets for it
+    /// (`paging::serve_shootdown`), so a space it no longer runs costs it
+    /// one interrupt, and before the space's tables go
+    /// ([`AddressSpace::leave_lazy_cpus`]). Interrupts must be off.
+    pub fn run_kernel_thread() {
+        let here = percpu::current();
+        if here.space.load(Ordering::Relaxed) != 0 {
+            here.lazy.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Takes the space, whose last handle went, off the CPUs that still
+    /// keep its tables loaded while they run kernel threads
+    /// ([`AddressSpace::run_kernel_thread`]): this one at once, the others
+    /// with a shootdown that each answers by switching to the kernel's
+    /// tables, before the tables are freed. No thread of the space runs,
+    /// so every CPU that marks it as running is such a CPU.
+    fn leave_lazy_cpus(&'static self) {
+        let were_enabled = cpu::disable_interrupts();
+        let this = core::ptr::from_ref::<AddressSpace>(self) as usize;
+        if percpu::current().space.load(Ordering::Relaxed) == this {
+            Self::switch_to_kernel();
+        }
+        if were_enabled {
+            cpu::enable_interrupts();
+        }
+        if self.active.iter().any(|word| word.load(Ordering::SeqCst) != 0) {
+            paging::leave_on(|cpu| self.is_active(cpu.index()));
         }
     }
 
@@ -1037,9 +1089,11 @@ impl Drop for UserSpace {
     fn drop(&mut self) {
         if self.0.handles.fetch_sub(1, Ordering::Release) == 1 {
             fence(Ordering::Acquire);
+            self.0.leave_lazy_cpus();
             // SAFETY: this was the last handle, and only holders of a
             // handle reach the space: nothing uses it afterwards. A context
-            // keeps a handle while it may run, so no CPU runs the space
+            // keeps a handle while it may run, so no thread runs the space,
+            // and no CPU keeps its tables for a kernel thread any more
             // (which `destroy` checks).
             unsafe { self.0.destroy() };
         }

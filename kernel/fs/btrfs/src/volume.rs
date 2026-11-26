@@ -130,7 +130,16 @@ pub struct Volume {
     quotas: Mutex<Option<crate::quota::Quotas>>,
     /// Whether a quota group has a limit, which writes keep to.
     quota_limited: AtomicBool,
+    /// Counts of the changes to directories' entries, [`NAME_WORDS`] of
+    /// them, a directory's in the word its subvolume and inode number pick,
+    /// which the caches of the names looked up in them compare (ADR 0659).
+    /// On the heap: the volume is built on a frame near its budget.
+    names: KVec<AtomicU64>,
 }
+
+/// How many words the counts of changes to directories' entries are
+/// spread over: directories that share one see each other's changes.
+const NAME_WORDS: usize = 64;
 
 /// What changes as transactions commit: the roots of the two trees the
 /// superblock names, as the running transaction has them, and the
@@ -206,11 +215,29 @@ impl Volume {
             trees: [None; TREES],
             superblock: bytes,
         });
-        // On the heap at once: a volume is large, and the mount's frames
-        // above this one need not each hold a copy.
+        Volume::assemble(sb, disks, chunks, blocks, current)
+    }
+
+    /// The volume of these parts, on the heap at once: a volume is large,
+    /// and the mount's frames above this one need not each hold a copy.
+    /// A frame of its own, as [`Volume::boxed`]'s is near its budget.
+    #[inline(never)]
+    fn assemble(
+        sb: Superblock,
+        disks: KVec<Disk>,
+        chunks: RcuCell<ChunkMap, Alloc>,
+        blocks: Blocks,
+        current: Mutex<Current>,
+    ) -> Result<KBox<Volume>> {
         let shown = AtomicUsize::new(disks.len());
         let (quotas, quota_limited) = (Mutex::new(None), AtomicBool::new(false));
-        Ok(mem::boxed(Volume { sb, disks, shown, chunks, blocks, current, quotas, quota_limited })?)
+        let mut names = mem::vec_with_capacity(NAME_WORDS)?;
+        for _ in 0..NAME_WORDS {
+            mem::push(&mut names, AtomicU64::new(0))?;
+        }
+        let volume =
+            Volume { sb, disks, shown, chunks, blocks, current, quotas, quota_limited, names };
+        Ok(mem::boxed(volume)?)
     }
 
     /// Adds to `disks` those of `devices` that hold the filesystem of the
@@ -442,6 +469,37 @@ impl Volume {
     /// Its quotas, as [`crate::quota`] keeps them.
     pub(crate) fn quotas(&self) -> &Mutex<Option<crate::quota::Quotas>> {
         &self.quotas
+    }
+
+    /// The count of changes to the entries of directory `dir` of tree
+    /// `tree` (and of the directories that share its word): a name the
+    /// directory found while it said the same still means what it did.
+    pub(crate) fn names_seen(&self, tree: u64, dir: u64) -> u64 {
+        self.name_word(tree, dir).load(Ordering::Acquire)
+    }
+
+    /// Notes that the entries of directory `dir` of tree `tree` changed,
+    /// after the change, so that a name it found before means nothing
+    /// until it is looked up again.
+    pub(crate) fn names_changed(&self, tree: u64, dir: u64) {
+        self.name_word(tree, dir).fetch_add(1, Ordering::Release);
+    }
+
+    /// Notes that any directory's entries may have changed, as when a
+    /// subvolume goes with its trees, whose items no change deletes one by
+    /// one.
+    pub(crate) fn all_names_changed(&self) {
+        for word in &self.names {
+            word.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    /// The word that counts directory `dir`'s changes: a Fibonacci hash
+    /// of its tree and inode number, so that a subvolume's directories,
+    /// numbered in a row, spread over all of them.
+    fn name_word(&self, tree: u64, dir: u64) -> &AtomicU64 {
+        let mixed = (dir ^ tree.rotate_left(32)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        &self.names[(mixed >> (u64::BITS - NAME_WORDS.ilog2())) as usize]
     }
 
     /// Whether a quota group has a limit.

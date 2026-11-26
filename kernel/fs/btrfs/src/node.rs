@@ -39,6 +39,7 @@ use crate::files::{Files, Packed, Put, at, compression, file_type, put_time, put
 use crate::format::{Key, item, name_hash, tree, u32_at};
 use crate::fs::{Inner, Txn};
 use crate::inode::{self, Inode};
+use crate::names::Names;
 use crate::pack::{CHUNK, PACKERS, Packer};
 use crate::tree::{Cursor, Root};
 use crate::unpack::{self, Workspace};
@@ -104,6 +105,9 @@ pub struct BtrfsNode {
     freed: AtomicBool,
     /// Whether the filesystem keeps it for the next sync.
     pinned: AtomicBool,
+    /// Whether the filesystem keeps it among the nodes looked up last
+    /// (ADR 0772); changed under that list's lock.
+    pub(crate) kept: AtomicBool,
     /// Its access list, once read from its attribute (ADR 0256).
     acl: AclCell,
     /// A directory's default access list, once read.
@@ -112,6 +116,8 @@ pub struct BtrfsNode {
     writes: WriteAccess,
     /// Itself, to be kept.
     me: Once<Weak<BtrfsNode, Alloc>>,
+    /// A directory's names looked up, with the nodes they led to.
+    names: Names,
 }
 
 /// The inode number of the empty directory a snapshot has where its
@@ -160,10 +166,12 @@ impl BtrfsNode {
             removed: AtomicBool::new(false),
             freed: AtomicBool::new(false),
             pinned: AtomicBool::new(false),
+            kept: AtomicBool::new(false),
             acl: AclCell::unread(),
             default_acl: AclCell::unread(),
             writes: WriteAccess::new(),
             me: Once::new(),
+            names: Names::new(),
         })
     }
 
@@ -292,7 +300,7 @@ impl BtrfsNode {
 
     /// What the entry `location` of this directory names: an inode here,
     /// or the top directory of another subvolume.
-    fn open_entry(&self, location: &Key) -> Result<NodeRef> {
+    fn open_entry(&self, location: &Key) -> Result<KArc<BtrfsNode>> {
         let node = match location.kind {
             item::INODE_ITEM => Inner::node_for(
                 &self.fs,
@@ -1359,6 +1367,11 @@ impl Node for BtrfsNode {
 
     fn lookup(&self, name: &str) -> Result<NodeRef> {
         self.is_dir()?;
+        // Read before the walk: a change the walk misses moves it past.
+        let seen = self.fs.volume.names_seen(self.subvol, self.ino);
+        if let Some(node) = self.names.find(name, seen) {
+            return Ok(node);
+        }
         let _reading = self.fs.reading();
         let location = self.entry(name)?.ok_or(Error::NotFound)?;
         // A subvolume a snapshot's source held is not in the snapshot: its
@@ -1367,7 +1380,13 @@ impl Node for BtrfsNode {
         if location.kind == item::ROOT_ITEM && !self.names_subvolume(location.objectid, name)? {
             return Ok(radix_vfs::synthetic::FixedDir::new(id_of(self.subvol, EMPTY_SUBVOL_DIR))?);
         }
-        self.open_entry(&location)
+        let node = self.open_entry(&location)?;
+        // A name in this subvolume; one that leads into another is looked
+        // up each time, as is the subvolume's root it leads to.
+        if location.kind == item::INODE_ITEM {
+            self.names.keep(name, seen, &node);
+        }
+        Ok(node)
     }
 
     fn list(&self, cursor: u64, f: ListFn<'_>) -> Result<()> {

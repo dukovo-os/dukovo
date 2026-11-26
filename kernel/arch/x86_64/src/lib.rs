@@ -32,6 +32,10 @@
 mod acpi;
 mod apic;
 mod boot;
+// The kernel's own `memcpy`: never in a host build, where it would
+// replace the C library's.
+#[cfg(target_os = "none")]
+mod copy;
 mod cpu;
 mod devices;
 mod ec;

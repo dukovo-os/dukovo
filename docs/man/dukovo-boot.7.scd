@@ -365,7 +365,9 @@ this by walking its finished page tables and reports it at boot. Where
 the CPU has them, SMEP stops the kernel from running code in a user page,
 and SMAP from reading or writing one except where it says it means to;
 PCIDs tag TLB entries by address space, so switching between them does
-not flush the TLB (the *nopcid* flag turns that off). When the kernel
+not flush the TLB (the *nopcid* flag turns that off), and a kernel thread
+runs on the tables of the program that ran before it, so a switch back
+to that program loads nothing. When the kernel
 removes a mapping that other CPUs may have cached, it sends them an
 inter-processor interrupt and waits until each has flushed it (a TLB
 shootdown).

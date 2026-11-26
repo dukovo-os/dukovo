@@ -45,7 +45,7 @@
 
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering, fence};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
 use radix_abi::errors::{File, Kernel};
 use radix_abi::event_queue::{
@@ -57,7 +57,7 @@ use radix_cap::{ObjectKind, Rights};
 use radix_hal::UserMode;
 use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_posix::watch::{self, Asks, State, Then};
-use radix_sync::{Mutex, SpinLock};
+use radix_sync::{Mutex, SpinLock, barrier};
 
 use super::account::{Account, Charge};
 use super::methods::{Answer, answer};
@@ -168,7 +168,7 @@ impl Ring {
     /// once.
     fn push(&mut self, watch: WatchRef) {
         debug_assert!(self.len < self.slots.len(), "an event queue's ring is full");
-        let at = (self.head + self.len) % self.slots.len();
+        let at = self.wrap(self.head + self.len);
         self.slots[at] = Some(watch);
         self.len += 1;
     }
@@ -178,9 +178,19 @@ impl Ring {
             return None;
         }
         let watch = self.slots[self.head].take();
-        self.head = (self.head + 1) % self.slots.len();
+        self.head = self.wrap(self.head + 1);
         self.len -= 1;
         watch
+    }
+
+    /// `at`, less than one lap past the end of the slots, as the head and
+    /// the length make it, brought back into them: what `%` would give,
+    /// without its division, which costs some 26 cycles on the lab's
+    /// Skylake, on each watch put on the ring and each taken off.
+    fn wrap(&self, at: usize) -> usize {
+        let size = self.slots.len();
+        debug_assert!(at < 2 * size, "an index more than a lap past the ring's end");
+        if at >= size { at - size } else { at }
     }
 
     /// Takes `slots`, empty and at least as many as its own, in place of
@@ -290,6 +300,12 @@ impl Watch {
     /// may let go of it.
     pub fn is_deleted(&self) -> bool {
         self.marks.load(Ordering::Relaxed) & DELETED != 0
+    }
+
+    /// Whether it watches for reading, which a change that only empties
+    /// what it watches cannot make ready (ADR 0777).
+    pub fn watches_reads(&self) -> bool {
+        self.filter == QueueFilter::Read
     }
 }
 
@@ -715,7 +731,7 @@ impl EventQueue {
             // Cleared before the look, with a barrier between, so that a
             // change the look misses queues the watch again.
             let marks = watch.marks.fetch_and(!QUEUED, Ordering::SeqCst);
-            fence(Ordering::SeqCst);
+            barrier::after_rmw();
             if marks & DELETED != 0 {
                 registry.on_ring_max -= 1;
                 continue;

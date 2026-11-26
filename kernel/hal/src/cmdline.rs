@@ -154,7 +154,7 @@ pub const FLAGS: &[Flag] = &[
         name: "selftest",
         value: Some("name"),
         summary: "run a self-test at the end of boot: page-fault, crash-reboot, breakpoint, \
-                  mm-stress, stack-overflow, smep, smap, tlb, msr, caps, fpu, sched-fair, \
+                  mm-stress, stack-overflow, smep, smap, tlb, msr, copy, caps, fpu, sched-fair, \
                   sched-rt, sched-pi, sched-balance, lockdep, rcu, oom, user, ipc, fuzz, bench, \
                   iommu, net, gpio or i2c",
     },
@@ -319,6 +319,7 @@ pub const SELFTESTS: &[&str] = &[
     "smap",
     "tlb",
     "msr",
+    "copy",
     "caps",
     "fpu",
     "sched-fair",

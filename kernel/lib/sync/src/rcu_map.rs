@@ -185,8 +185,16 @@ impl<V: Clone + Send + Sync, A: Allocator + Clone + Send + Sync> RcuMap<V, A> {
     }
 
     /// The value of `key`, if the map holds it: looked up without a lock.
-    #[allow(unsafe_code)]
     pub fn get(&self, key: &[u8]) -> Option<V> {
+        self.get_with(key, V::clone)
+    }
+
+    /// What `f` makes of the value of `key`, if the map holds it, called
+    /// in the lookup's read section, where it must not sleep: a value
+    /// whose copy costs, such as a reference to count, is looked at where
+    /// it is.
+    #[allow(unsafe_code)]
+    pub fn get_with<R>(&self, key: &[u8], f: impl FnOnce(&V) -> R) -> Option<R> {
         let hash = hash(key);
         let _section = rcu::read_lock();
         let table = NonNull::new(self.table.load(Ordering::Acquire))?;
@@ -200,7 +208,7 @@ impl<V: Clone + Send + Sync, A: Allocator + Clone + Send + Sync> RcuMap<V, A> {
             while let Some(link) = NonNull::new(at) {
                 let link = link.as_ref();
                 if link.hash == hash && same(&link.key, key) {
-                    return Some(link.value.clone());
+                    return Some(f(&link.value));
                 }
                 at = link.next.load(Ordering::Acquire);
             }
@@ -229,17 +237,59 @@ impl<V: Clone + Send + Sync, A: Allocator + Clone + Send + Sync> RcuMap<V, A> {
         Some(Pending { link: Box::try_new_in(link, self.alloc.clone()).ok()? })
     }
 
-    /// Puts `pending` in. Its key must not be in the map. It cannot fail:
-    /// a table that should grow and has no memory to stays as it is.
-    // `pending` made the table, so the `expect` never fails.
-    #[allow(unsafe_code, clippy::missing_panics_doc)]
+    /// How many names the map holds.
+    pub fn len(&self) -> usize {
+        self.len.load(Ordering::Relaxed)
+    }
+
+    /// Whether the map holds no name.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Puts `pending` in, in place of the value its key has if the map
+    /// holds it: a lookup meanwhile finds the old value, the new, or, as
+    /// the one goes before the other comes, neither.
+    pub fn put(&self, pending: Pending<V, A>) {
+        let _writing = self.writer.lock();
+        self.take_out(&pending.link.key);
+        self.insert_locked(pending);
+    }
+
+    /// Takes every name out, and frees them once no reader can see them.
+    #[allow(unsafe_code)]
+    pub fn clear(&self) {
+        let _writing = self.writer.lock();
+        let old = self.table.swap(ptr::null_mut(), Ordering::AcqRel);
+        self.len.store(0, Ordering::Relaxed);
+        if let Some(old) = NonNull::new(old) {
+            // SAFETY: unpublished just now; its links are its own.
+            unsafe { rcu::defer(NonNull::from(&old.as_ref().deferred)) };
+        }
+    }
+
+    /// Puts `pending` in. Its key must not be in the map. A table that
+    /// should grow and has no memory to stays as it is; only a map
+    /// [`RcuMap::clear`] emptied since `pending` was made, with no memory
+    /// for a table, leaves the name out.
     pub fn insert(&self, pending: Pending<V, A>) {
         let _writing = self.writer.lock();
+        self.insert_locked(pending);
+    }
+
+    /// [`RcuMap::insert`], with the writer lock held.
+    #[allow(unsafe_code)]
+    fn insert_locked(&self, pending: Pending<V, A>) {
         let len = self.len.load(Ordering::Relaxed) + 1;
         self.grow(len);
-        // `pending` made the first table, and tables are only replaced.
+        // A table that `clear` took out since `pending` made one: the
+        // name goes in a new one, or nowhere if there is no memory for it.
+        if self.table.load(Ordering::Relaxed).is_null() {
+            let Some(table) = self.table_of(FIRST_BUCKETS) else { return };
+            self.table.store(table.as_ptr(), Ordering::Release);
+        }
         let table = NonNull::new(self.table.load(Ordering::Relaxed))
-            .expect("a pending name's map has a table");
+            .expect("a table was made above if there was none");
         let link = Box::into_raw_with_allocator(pending.link).0;
         // SAFETY: the table is the published one, which only writers
         // change, under the writer lock held here; the link is new.
@@ -254,9 +304,14 @@ impl<V: Clone + Send + Sync, A: Allocator + Clone + Send + Sync> RcuMap<V, A> {
 
     /// Takes `key` out, and frees it once no reader can see it; whether it
     /// was in.
-    #[allow(unsafe_code)]
     pub fn remove(&self, key: &[u8]) -> bool {
         let _writing = self.writer.lock();
+        self.take_out(key)
+    }
+
+    /// [`RcuMap::remove`], with the writer lock held.
+    #[allow(unsafe_code)]
+    fn take_out(&self, key: &[u8]) -> bool {
         let Some(table) = NonNull::new(self.table.load(Ordering::Relaxed)) else { return false };
         let hash = hash(key);
         // SAFETY: as in `insert`; a link taken out of its chain is in no
@@ -438,6 +493,35 @@ mod tests {
             assert_eq!(Arc::strong_count(&value), 51);
         }
         assert_eq!(Arc::strong_count(&value), 1);
+    }
+
+    #[test]
+    fn a_value_is_looked_at_in_place_put_over_and_cleared() {
+        crate::testing::install();
+        let value = Arc::new(());
+        let map = RcuMap::new_in(Global);
+        assert_eq!(map.get_with(b"a", |_| ()), None);
+        map.put(map.pending(b"a", Arc::clone(&value)).unwrap());
+        map.put(map.pending(b"b", Arc::clone(&value)).unwrap());
+        assert_eq!(map.get_with(b"a", |found| Arc::ptr_eq(found, &value)), Some(true));
+        assert_eq!(Arc::strong_count(&value), 3, "a look in place copies nothing");
+        let other = Arc::new(());
+        map.put(map.pending(b"a", Arc::clone(&other)).unwrap());
+        assert_eq!(map.len(), 2, "a name put again holds one place");
+        assert_eq!(map.get_with(b"a", |found| Arc::ptr_eq(found, &other)), Some(true));
+        map.clear();
+        assert!(map.is_empty());
+        assert_eq!(map.get(b"b"), None);
+        // Freed once a grace period has passed: the test's RCU has none
+        // under way, so the deferred calls ran.
+        assert_eq!(Arc::strong_count(&value), 1);
+        assert_eq!(Arc::strong_count(&other), 1);
+        map.put(map.pending(b"c", Arc::clone(&value)).unwrap());
+        assert_eq!(map.get(b"c").map(|found| Arc::ptr_eq(&found, &value)), Some(true));
+        let pending = map.pending(b"d", Arc::clone(&value)).unwrap();
+        map.clear();
+        map.insert(pending);
+        assert_eq!(map.len(), 1, "a name made ready before a clear still goes in");
     }
 
     #[test]

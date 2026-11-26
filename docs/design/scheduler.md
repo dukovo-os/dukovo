@@ -188,7 +188,8 @@ only if a dead thread's lock was held while it looked.
 preemption count; nothing else holds off preemption. They reach it, and
 mutexes the running thread's token, through functions the kernel defines
 by name, which fat LTO inlines into each lock, not through the hooks'
-table (ADR 0406). A request to switch is
+table (ADR 0406), as do the spin locks taken with interrupts masked for
+the masking (ADR 0776). A request to switch is
 acted on as the interrupt that set it returns, if the count is 0, or when
 the last spin lock is let go: the guard restores the interrupt flag
 first and then drops the count, so the reschedule it may trigger runs
