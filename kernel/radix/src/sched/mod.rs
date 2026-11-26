@@ -982,7 +982,7 @@ pub fn interrupt(thread: &ThreadRef) {
     // interrupts masked (`user::on_return`). So either the thread is seen
     // running here, or that look sees what the caller set. The thread
     // running here is the caller, which looks on its own way back.
-    atomic::fence(Ordering::SeqCst);
+    radix_sync::barrier::full();
     let token = thread.token();
     let cpu = thread.cpu.load(Ordering::Relaxed);
     if token != current_token() && CPUS.get(cpu).current.load(Ordering::Relaxed) == token {

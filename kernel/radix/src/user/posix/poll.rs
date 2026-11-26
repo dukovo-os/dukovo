@@ -45,14 +45,14 @@
 //! looks only at what changed, and nothing else wakes.
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicUsize, Ordering, fence};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use radix_abi::errors::Kernel;
 use radix_abi::process::{PollArgs, PollEntry, PollEvents, PollFlags};
 use radix_cap::{SlotRef, SpaceId};
 use radix_hal::UserMode;
 use radix_mm::{Flags, HEAP, Kmalloc};
-use radix_sync::SpinLock;
+use radix_sync::{SpinLock, barrier};
 
 use super::kmalloc;
 use super::signal::{self, Restart, interrupted};
@@ -124,7 +124,7 @@ impl Polled {
     /// watching it look at it. Costs a barrier and two loads while nobody
     /// polls or watches it.
     pub fn changed(&self) {
-        fence(Ordering::SeqCst);
+        barrier::full();
         self.changed_by_rmw();
     }
 
@@ -680,7 +680,7 @@ fn wait_ready(
         // Cleared, and the barrier taken, before the look: a change the
         // look misses sets it again (the module's doc says why).
         user.poll_changed.store(false, Ordering::SeqCst);
-        fence(Ordering::SeqCst);
+        barrier::full();
         let ready = look_held(held, entries, found);
         if ready > 0 {
             break ready;
