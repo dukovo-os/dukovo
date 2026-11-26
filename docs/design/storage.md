@@ -541,7 +541,10 @@ disk missing while the others hold a copy of all of it (ADR 0153).
   changes to its entries as each lookup began (one of 64 words in the
   volume, which `Writer`'s edits of `DIR_ITEM`s move). A lookup that
   finds the name there with the count unmoved takes neither the
-  transaction nor the table (ADR 0659). A
+  transaction nor the table (ADR 0659). The last 256 nodes looked up
+  stay after their last use, so that the names lead to them again; a
+  change asks whether a node is in use with them let go of, so a closed
+  file still goes with its last name (ADR 0772). A
   directory entry that names a subvolume leads to that subvolume's top
   directory; the inode numbers of the top subvolume are its files' IDs,
   and other subvolumes' carry their number from bit 40. Every node of a

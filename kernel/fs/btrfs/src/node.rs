@@ -105,6 +105,9 @@ pub struct BtrfsNode {
     freed: AtomicBool,
     /// Whether the filesystem keeps it for the next sync.
     pinned: AtomicBool,
+    /// Whether the filesystem keeps it among the nodes looked up last
+    /// (ADR 0772); changed under that list's lock.
+    pub(crate) kept: AtomicBool,
     /// Its access list, once read from its attribute (ADR 0256).
     acl: AclCell,
     /// A directory's default access list, once read.
@@ -163,6 +166,7 @@ impl BtrfsNode {
             removed: AtomicBool::new(false),
             freed: AtomicBool::new(false),
             pinned: AtomicBool::new(false),
+            kept: AtomicBool::new(false),
             acl: AclCell::unread(),
             default_acl: AclCell::unread(),
             writes: WriteAccess::new(),

@@ -14,7 +14,7 @@ use radix_vfs::{Error, FileSystem, Kind, NodeRef};
 
 use super::write::{mkfs_empty, writable};
 use super::{DIR, FILE};
-use crate::fs::BtrfsFs;
+use crate::fs::{BtrfsFs, KEPT};
 
 /// An empty filesystem, mounted to write.
 fn mounted() -> KArc<BtrfsFs> {
@@ -105,11 +105,80 @@ fn a_name_whose_node_went_is_looked_up_again() {
     let root = fs.root();
     let dir = root.create("d", Kind::Directory, DIR).unwrap();
     let made = dir.create("f", Kind::File, FILE).unwrap().stat().id;
-    // Nobody holds the file once the lookup's node is dropped.
+    // Nobody holds the file once the lookup's node is dropped and the
+    // filesystem lets go of the nodes it kept.
     assert_eq!(id(&dir, "f"), Ok(made));
+    fs.let_go_of_kept();
     assert_eq!(id(&dir, "f"), Ok(made));
+    fs.let_go_of_kept();
     fs.sync().unwrap();
     assert_eq!(id(&dir, "f"), Ok(made));
+}
+
+#[test]
+fn a_file_no_one_holds_is_kept_and_found_again_while_the_transaction_is_held() {
+    let fs = mounted();
+    let root = fs.root();
+    let dir = root.create("d", Kind::Directory, DIR).unwrap();
+    let made = dir.create("f", Kind::File, FILE).unwrap().stat().id;
+    assert_eq!(id(&dir, "f"), Ok(made));
+
+    // No one holds the file's node now, as between two requests that open
+    // it: the filesystem kept it (ADR 0772), so its name still leads to it.
+    let held = fs.hold_transaction();
+    let (tx, rx) = mpsc::channel();
+    std::thread::scope(|scope| {
+        let looker = scope.spawn(|| tx.send(id(&dir, "f")).unwrap());
+        let kept = rx.recv_timeout(Duration::from_secs(10));
+        assert_eq!(kept, Ok(Ok(made)), "the name of a kept node waited for the transaction");
+        drop(held);
+        looker.join().unwrap();
+    });
+}
+
+#[test]
+fn the_nodes_kept_are_the_last_ones_looked_up() {
+    let fs = mounted();
+    let root = fs.root();
+    let dir = root.create("d", Kind::Directory, DIR).unwrap();
+    let count = KEPT + 10;
+    let made: std::vec::Vec<u64> = (0..count)
+        .map(|n| dir.create(&format!("f{n}"), Kind::File, FILE).unwrap().stat().id)
+        .collect();
+    assert_eq!(fs.kept(), KEPT);
+    for (n, made) in made.iter().enumerate() {
+        assert_eq!(id(&dir, &format!("f{n}")), Ok(*made));
+    }
+    assert_eq!(fs.kept(), KEPT);
+}
+
+#[test]
+fn the_nodes_kept_go_with_the_filesystem() {
+    let fs = mounted();
+    let root = fs.root();
+    let file = root.create("f", Kind::File, FILE).unwrap();
+    let node = KArc::downgrade(&file);
+    drop(file);
+    drop(root);
+    assert!(node.upgrade().is_some(), "the filesystem keeps the file's node");
+    // Each node holds what the filesystem's nodes share: were the kept
+    // ones not let go of, neither would ever go.
+    drop(fs);
+    assert!(node.upgrade().is_none(), "a kept node outlived its filesystem");
+}
+
+#[test]
+fn a_subvolume_whose_files_were_looked_up_is_removed_once_no_one_holds_them() {
+    let fs = mounted();
+    let root = fs.root();
+    root.make_subvolume("sub").unwrap();
+    let sub = root.lookup("sub").unwrap();
+    sub.create("f", Kind::File, FILE).unwrap();
+    assert!(sub.lookup("f").is_ok());
+    drop(sub);
+    assert!(fs.kept() > 0);
+    root.remove_subvolume("sub").unwrap();
+    assert_eq!(id(&root, "sub"), Err(Error::NotFound));
 }
 
 #[test]

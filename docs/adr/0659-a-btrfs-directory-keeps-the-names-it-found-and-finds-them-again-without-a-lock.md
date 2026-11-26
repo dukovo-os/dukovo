@@ -60,8 +60,9 @@ Linux's profile had none of it.
 - **A directory keeps at most 64 names.** One more empties its map and
   it starts again, so a directory of many files costs at most 64 links
   and a table, and the common case, a few directories on every path,
-  stays found. A node nobody holds goes as before; its name is then
-  looked up in the tree again.
+  stays found. The filesystem keeps the last nodes looked up after
+  their last use (ADR 0772); one that went is looked up in the tree
+  again.
 
 ## Alternatives
 
