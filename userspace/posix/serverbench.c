@@ -513,7 +513,7 @@ static char *format(const char *text, ...) {
 // code symbolizes and prints it. Strings are kept once, by number.
 #define PROFILE_PERIOD_NS 500000
 #define PROFILE_SYMBOLS 80
-#define PROFILE_KERNEL_SYMBOLS 120
+#define PROFILE_KERNEL_SYMBOLS 400
 #define NO_ID ((size_t)-1)
 
 static char **strings;

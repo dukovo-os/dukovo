@@ -412,9 +412,14 @@ pub fn write(text: &mut Text) -> fmt::Result {
     // Kernel samples, for root only: by process name index and the link
     // address of the function they fell in.
     let mut kernel_keys = Vec::new_in(heap());
+    // Diagnostic: the same samples by their exact link address.
+    let mut kernel_addresses = Vec::new_in(heap());
     let symbols = crate::symbols::table();
     let all: usize = taken.iter().map(|buffer: &Buffer| buffer.samples.len()).sum();
-    if keys.try_reserve_exact(all).is_err() || kernel_keys.try_reserve_exact(all).is_err() {
+    if keys.try_reserve_exact(all).is_err()
+        || kernel_keys.try_reserve_exact(all).is_err()
+        || kernel_addresses.try_reserve_exact(all).is_err()
+    {
         lost += all as u64;
     }
     for buffer in &taken {
@@ -463,6 +468,7 @@ pub fn write(text: &mut Text) -> fmt::Result {
                     .and_then(|table| table.lookup(link))
                     .map_or(0, |found| link - found.offset);
                 let _ = kernel_keys.push_within_capacity((name << 56) | (start & ADDRESS_MASK));
+                let _ = kernel_addresses.push_within_capacity((name << 56) | (link & ADDRESS_MASK));
                 continue;
             }
             let slot = tag as usize;
@@ -549,6 +555,40 @@ pub fn write(text: &mut Text) -> fmt::Result {
             write!(text, "ksample {count} {name} ")?;
         }
         write_escaped(text, function.as_bytes(), LINE_SPECIAL)?;
+        text.write_char('\n')?;
+    }
+    // Diagnostic: the addresses sampled most, as "@function+offset".
+    kernel_addresses.sort_unstable();
+    let mut address_counted: Vec<(u64, u64), Kmalloc> = Vec::new_in(heap());
+    if address_counted.try_reserve_exact(kernel_addresses.len()).is_ok() {
+        for &key in &kernel_addresses {
+            match address_counted.last_mut() {
+                Some((count, last)) if *last == key => *count += 1,
+                _ => {
+                    let _ = address_counted.push_within_capacity((1, key));
+                }
+            }
+        }
+    }
+    address_counted.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    for &(count, key) in address_counted.iter().take(240) {
+        if text.bytes().len() + 4 * SAMPLE_LINE > Text::LIMIT {
+            break;
+        }
+        let name = key >> 56;
+        let link = (key & ADDRESS_MASK) | !ADDRESS_MASK;
+        if name == NO_NAME {
+            write!(text, "ksample {count} - @")?;
+        } else {
+            write!(text, "ksample {count} {name} @")?;
+        }
+        match symbols.as_ref().and_then(|table| table.lookup(link)) {
+            Some(found) => {
+                write_escaped(text, found.name.as_bytes(), LINE_SPECIAL)?;
+                write!(text, "+{:#x}", found.offset)?;
+            }
+            None => write!(text, "{link:#x}")?,
+        }
         text.write_char('\n')?;
     }
     // Changes by process name, in the order the names are listed.
