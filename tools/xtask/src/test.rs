@@ -7650,27 +7650,50 @@ fn screen_shows(screen: &[String], needles: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
+/// The random-number instructions a guest's CPU has.
+#[derive(Clone, Copy)]
+struct Instructions {
+    rdseed: bool,
+    rdrand: bool,
+}
+
+/// Whether the host's kernel lists `flag` among its CPU's features in
+/// /proc/cpuinfo. A guest under KVM sees only what it lists. Where the file
+/// cannot be read, the flag is taken as there.
+fn host_cpu_has(flag: &str) -> bool {
+    std::fs::read_to_string("/proc/cpuinfo").map_or(true, |info| {
+        info.lines()
+            .find_map(|line| line.strip_prefix("flags").and_then(|rest| rest.split_once(':')))
+            .is_some_and(|(_, flags)| flags.split_ascii_whitespace().any(|have| have == flag))
+    })
+}
+
 /// Checks the `Random:` line (after "Random: "). RDSEED and RDRAND must
-/// pass their health tests when the CPU has them (`hardware`). Timing
+/// pass their health tests where the guest's CPU has them (`cpu`). Timing
 /// jitter must pass under QEMU's emulation, whose counter always varies
 /// enough. Under KVM the counter is the host's, and some hosts keep the
 /// work's timing so steady that the jitter fails its test (about half the
 /// samples were stuck on an AMD EPYC 9V45), so there a failed jitter is
 /// accepted as long as the line says so. Mixing it in does no harm either
 /// way (see "Seeding" in docs/design/random.md).
-fn check_random(line: &str, hardware: bool, kvm: bool) -> Result<(), String> {
-    let (passed, failed) = if hardware {
+fn check_random(line: &str, cpu: Instructions, kvm: bool) -> Result<(), String> {
+    let names: Vec<&str> = [(cpu.rdseed, "RDSEED"), (cpu.rdrand, "RDRAND")]
+        .into_iter()
+        .filter_map(|(has, name)| has.then_some(name))
+        .collect();
+    let (passed, failed) = if names.is_empty() {
         (
-            "from RDSEED, RDRAND and timing jitter (",
-            "from RDSEED and RDRAND; failed its health test: timing jitter (",
+            "from timing jitter (".to_string(),
+            ", but no source passed its health test; failed its health test: timing jitter ("
+                .to_string(),
         )
     } else {
         (
-            "from timing jitter (",
-            ", but no source passed its health test; failed its health test: timing jitter (",
+            format!("from {} and timing jitter (", names.join(", ")),
+            format!("from {}; failed its health test: timing jitter (", names.join(" and ")),
         )
     };
-    if line.contains(passed) || kvm && line.contains(failed) {
+    if line.contains(&passed) || kvm && line.contains(&failed) {
         return Ok(());
     }
     let or_failed = if kvm { format!(" or \"{failed}...)\"") } else { String::new() };
@@ -7693,10 +7716,14 @@ fn boot_report(vm: &mut Vm, case: &Case) -> Result<(), String> {
         vm.expect("KASLR: kernel moved by 0x")?;
     }
     // The whole `Random:` line has arrived now. The CPUs the cases use have
-    // RDSEED and RDRAND unless the case emulates a model of its own.
+    // RDSEED and RDRAND unless the case emulates a model of its own, or KVM
+    // runs it on a host whose kernel hides one: Linux hides RDSEED on Zen 5
+    // CPUs whose microcode has its erratum.
     let log = vm.log();
     let random = log.split("Random: ").nth(1).and_then(|rest| rest.lines().next());
-    check_random(random.unwrap_or_default(), case.cpu_model.is_none(), vm.kvm)?;
+    let has = |flag| case.cpu_model.is_none() && (!vm.kvm || host_cpu_has(flag));
+    let cpu = Instructions { rdseed: has("rdseed"), rdrand: has("rdrand") };
+    check_random(random.unwrap_or_default(), cpu, vm.kvm)?;
     vm.expect("Layout: kernel at 0x")?;
     vm.expect("Paging: W^X holds")?;
     vm.expect("CPU: ")?;
@@ -12875,16 +12902,18 @@ mod tests {
 
     #[test]
     fn a_failed_jitter_test_is_accepted_only_under_kvm() {
+        let both = Instructions { rdseed: true, rdrand: true };
+        let neither = Instructions { rdseed: false, rdrand: false };
         let all = "ChaCha20 seeded before KASLR from RDSEED, RDRAND and timing jitter \
                    (4096 samples, 37 stuck)";
         // From a boot test on an AMD EPYC 9V45 CI runner.
         let steady = "ChaCha20 seeded before KASLR from RDSEED and RDRAND; failed its \
                       health test: timing jitter (4096 samples, 2079 stuck)";
         for kvm in [false, true] {
-            assert!(check_random(all, true, kvm).is_ok());
+            assert!(check_random(all, both, kvm).is_ok());
         }
-        assert!(check_random(steady, true, true).is_ok());
-        assert!(check_random(steady, true, false).is_err());
+        assert!(check_random(steady, both, true).is_ok());
+        assert!(check_random(steady, both, false).is_err());
 
         // RDSEED and RDRAND must pass wherever the CPU has them.
         let bad_rdrand = "ChaCha20 seeded before KASLR from RDSEED and timing jitter \
@@ -12892,18 +12921,41 @@ mod tests {
         let missing = "ChaCha20 seeded before KASLR from timing jitter (4096 samples, \
                        134 stuck); the CPU has no RDSEED or RDRAND";
         for kvm in [false, true] {
-            assert!(check_random(bad_rdrand, true, kvm).is_err());
-            assert!(check_random(missing, true, kvm).is_err());
-            assert!(check_random("", true, kvm).is_err());
+            assert!(check_random(bad_rdrand, both, kvm).is_err());
+            assert!(check_random(missing, both, kvm).is_err());
+            assert!(check_random("", both, kvm).is_err());
         }
 
         // An emulated CPU without them seeds from the jitter alone.
-        assert!(check_random(missing, false, false).is_ok());
+        assert!(check_random(missing, neither, false).is_ok());
         let none = "ChaCha20 seeded before KASLR, but no source passed its health test; \
                     failed its health test: timing jitter (4096 samples, 2079 stuck); the \
                     CPU has no RDSEED or RDRAND";
-        assert!(check_random(none, false, false).is_err());
-        assert!(check_random(none, false, true).is_ok());
+        assert!(check_random(none, neither, false).is_err());
+        assert!(check_random(none, neither, true).is_ok());
+    }
+
+    #[test]
+    fn a_host_that_hides_rdseed_leaves_rdrand_to_pass() {
+        let rdrand = Instructions { rdseed: false, rdrand: true };
+        let both = Instructions { rdseed: true, rdrand: true };
+        // From a boot test under KVM on a Ryzen 9 9900X3D, whose Linux hides
+        // RDSEED for the Zen 5 erratum.
+        let hidden = "ChaCha20 seeded before KASLR from RDRAND and timing jitter (4096 \
+                      samples, 841 stuck); the CPU has no RDSEED";
+        let steady = "ChaCha20 seeded before KASLR from RDRAND; failed its health test: \
+                      timing jitter (4096 samples, 2079 stuck); the CPU has no RDSEED";
+        let all = "ChaCha20 seeded before KASLR from RDSEED, RDRAND and timing jitter \
+                   (4096 samples, 37 stuck)";
+        assert!(check_random(hidden, rdrand, true).is_ok());
+        assert!(check_random(steady, rdrand, true).is_ok());
+        assert!(check_random(steady, rdrand, false).is_err());
+        // Where the host lists RDSEED, the guest must have it pass.
+        assert!(check_random(hidden, both, true).is_err());
+        assert!(check_random(all, rdrand, true).is_err());
+        let bad_rdrand = "ChaCha20 seeded before KASLR from timing jitter (4096 samples, \
+                          37 stuck); failed its health test: RDRAND; the CPU has no RDSEED";
+        assert!(check_random(bad_rdrand, rdrand, true).is_err());
     }
 
     #[test]
