@@ -26,9 +26,6 @@
 //!   waiting for a disk, and what the disks have read and written;
 //! - `/processes/loadavg`: the load averages;
 //! - `/processes/uptime`: nanoseconds since boot;
-//! - `/processes/profile`: the samples of user code taken since it was
-//!   last opened, for the opener's own processes, by program, file and
-//!   offset (`crate::user::profile`); the first open starts the sampling;
 //! - `/processes/acpi/button/lid/<name>/state`, Linux's, for each lid of
 //!   the firmware's (ADR 0201): `state:      open`, or `closed`;
 //! - `/processes/net/dev`, `route`, `tcp` and `udp`, and for IPv6
@@ -74,7 +71,7 @@ const FIELD_SPECIAL: &[u8] = b" \t\n\\";
 
 /// Writes `bytes`, with each of those in `special` as `/proc` on Linux
 /// writes it: a backslash and three octal digits (`\040` for a space).
-pub(crate) fn write_escaped(text: &mut Text, bytes: &[u8], special: &[u8]) -> fmt::Result {
+fn write_escaped(text: &mut Text, bytes: &[u8], special: &[u8]) -> fmt::Result {
     let mut start = 0;
     for (i, &byte) in bytes.iter().enumerate() {
         if special.contains(&byte) {
@@ -128,12 +125,7 @@ const NET_FILES: [(&str, Generate); 8] = [
     ("tcp6", net::proc::tcp6),
     ("udp6", net::proc::udp6),
 ];
-const _: () = assert!(NET_ID + 1 + NET_FILES.len() as u64 <= PROFILE_ID);
-
-/// `/processes/profile`, which only the root's own `/processes` has: a
-/// domain's view has no profile of the processes outside it.
-const PROFILE_ID: u64 = 25;
-const _: () = assert!(PROFILE_ID < PROCESS_ID_BASE);
+const _: () = assert!(NET_ID + 1 + NET_FILES.len() as u64 <= PROCESS_ID_BASE);
 
 static NET: Once<KArc<FixedDir>> = Once::new();
 
@@ -182,9 +174,6 @@ impl Listing for Root {
                 return;
             }
         }
-        if self.scope.is_none() && !f("profile", Kind::File) {
-            return;
-        }
         if devices::lids().next().is_some() && !f("acpi", Kind::Directory) {
             return;
         }
@@ -218,9 +207,6 @@ impl Listing for Root {
             "stat" => stat,
             "swaps" => swaps,
             "uptime" => uptime,
-            "profile" if self.scope.is_none() => {
-                return Generated::from_fn(PROFILE_ID, crate::user::profile::write);
-            }
             "acpi" if devices::lids().next().is_some() => return acpi(),
             "net" => return net_dir(),
             _ => {

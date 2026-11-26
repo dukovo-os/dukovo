@@ -79,3 +79,6 @@ until memory runs short.
   subvolume whose files were looked up is removed; the tests of removal
   check that a closed file's items and room still go with its last
   name.
+- On OptiPlex 1, with ADRs 0773 and 0774 in the same build, PHP-FPM's
+  request went from 1.08 times Linux's time to 0.96 (lab runs
+  20261126-005747-d6c9 and 20261126-022946-4834).

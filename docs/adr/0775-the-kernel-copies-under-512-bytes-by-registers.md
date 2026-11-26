@@ -62,3 +62,8 @@ copies to and from programs below 64 bytes.
 - The kernel's `memcpy` is assembly the kernel keeps, with its own test,
   instead of a library's.
 - Copies of 512 bytes or more start one `rep` instead of three.
+- On OptiPlex 1, with the rings that wrap without dividing in the same
+  build, nginx's new connection went from 1.01 to 1.02 times Linux's
+  time to 1.00, and serverbench's wait for one ready pipe among idle
+  ones from 1.02 to 1.00 (lab runs 20261126-022946-4834 and
+  20261126-034703-163a).

@@ -403,27 +403,6 @@ pub trait Timer {
     /// replaces it; `u64::MAX` cancels it. Call with interrupts masked.
     fn set_deadline(deadline_ns: u64);
 
-    /// Has every CPU's timer interrupt also come every `period_ns`, and
-    /// call `sampler` each time, with interrupts masked, with the address
-    /// of the code it interrupted, the kernel's (an idle CPU's too) or a
-    /// program's: the samples of `/processes/profile`. CPUs take a new
-    /// period at their next timer interrupt; 0 stops it. False where the
-    /// architecture cannot sample.
-    fn sample_every(period_ns: u64, sampler: fn(address: u64)) -> bool {
-        let _ = (period_ns, sampler);
-        false
-    }
-
-    /// Calls `each` with the name and count of every event the
-    /// architecture counts for a profile, summed over the CPUs since the
-    /// last call, and starts them over: what the processor's own counters
-    /// counted in user mode while [`Timer::sample_every`] sampled (page
-    /// walks, cache misses, instructions), and how often the kernel kept
-    /// or flushed the TLB. Nothing where it counts nothing.
-    fn profile_counts(each: &mut dyn FnMut(&'static str, u64)) {
-        let _ = each;
-    }
-
     /// How many times CPU `cpu` wrote its timer hardware to arm it. Under
     /// a hypervisor each write is usually a VM exit, so the benchmarks
     /// report it.

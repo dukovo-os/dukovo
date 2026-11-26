@@ -798,7 +798,7 @@ fn kit_file(kernel: &str, initrd: &str) -> String {
          # this folder, and dukovo-lab boots it with --linux.\n\
          kernel = \"{kernel}\"\n\
          initrd = \"{initrd}\"\n\
-         cmdline = \"{} linux-bench.clock=base linux-bench.profile=raw\"\n\
+         cmdline = \"{} linux-bench.clock=base\"\n\
          done = \"{KIT_DONE}\"\n\
          time = \"{KIT_TIME}\"\n",
         bench::LINUX_CMDLINE
@@ -1277,7 +1277,7 @@ mod tests {
         assert!(bench::LINUX_CMDLINE.contains("console=ttyS0"));
         assert!(
             kit.contains(&format!(
-                "cmdline = \"{} linux-bench.clock=base linux-bench.profile=raw\"\n",
+                "cmdline = \"{} linux-bench.clock=base\"\n",
                 bench::LINUX_CMDLINE
             )),
             "{kit}"

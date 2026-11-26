@@ -59,3 +59,9 @@ write, and the writers' only on a read that found the pipe full.
   copy, and takes no lock with interrupts masked.
 - Each change to a `Polled`'s watches counts its watches for writing
   again, under its lock.
+- On OptiPlex 1, with ADR 0776 in the same build, the wait for one
+  ready pipe among 1,000 idle ones (`posix_events_idle`) went from 1.02
+  times Linux's time to 0.99 and serverbench's from 1.00 to 0.95, with
+  4.5% fewer kernel cycles in serverbench's (lab runs
+  20261126-034703-163a and 20261126-044239-f0ad). Linux's own time for
+  the first ranged from 624 to 651 ns between boots that week.

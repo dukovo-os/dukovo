@@ -84,11 +84,6 @@
 //! performance tests run Linux at the clock Dukovo runs at (ADR 0557).
 //! If the lines show a different clock than the rows ran at, start with
 //! `/sys/devices/system/cpu/cpufreq` on the twin.
-//!
-//! With `linux-bench.profile` on the kernel command line the server
-//! benchmarks also print where the servers' user-mode time went, sampled
-//! with perf, and with `linux-bench.profile=raw` the raw samples too: it
-//! sets `SERVERBENCH_PROFILE` for them ([`profile_setting`]).
 
 #![forbid(unsafe_code)]
 
@@ -115,12 +110,6 @@ use sysapi::{fd, fs, random, terminal, volatile};
 /// `--` would reach init.
 const CLOCK_WORD: &str = "linux-bench.clock=base";
 
-/// The kernel command line words that have the server benchmarks profile
-/// the servers' user-mode time, and print the raw samples as well. Words
-/// with a dot, for the reasons of [`CLOCK_WORD`].
-const PROFILE_WORD: &str = "linux-bench.profile";
-const PROFILE_RAW_WORD: &str = "linux-bench.profile=raw";
-
 /// Where Linux keeps the CPUs' frequency policies, one folder each.
 const CPUFREQ: &str = "/sys/devices/system/cpu/cpufreq";
 
@@ -139,7 +128,7 @@ const GIT: &str = "/git";
 /// Where the server benchmarks are in the initramfs, when `ob lab` made
 /// the kit with them, and the servers they run.
 const SERVER_BENCH: &str = "/server-bench";
-const SERVERS: [&str; 5] = ["nginx", "php", "valkey", "postgresql", "events"];
+const SERVERS: [&str; 4] = ["nginx", "php", "valkey", "postgresql"];
 
 /// The virtual machine's disks, for the POSIX benchmarks' disk benchmarks:
 /// a virtio disk and an NVMe one.
@@ -1055,31 +1044,11 @@ fn server_bench(cpus: &[usize]) {
     std::io::stdout().flush().ok();
     let mut command = std::process::Command::new(SERVER_BENCH);
     command.args(SERVERS).env_clear().env("TZ", "UTC").env("PATH", "/usr/bin:/bin");
-    let cmdline = std::fs::read_to_string("/proc/cmdline").unwrap_or_default();
-    if let Some(setting) = profile_setting(&cmdline) {
-        command.env("SERVERBENCH_PROFILE", setting);
-    }
     match command.status() {
         Ok(status) if status.success() => {}
         Ok(status) => eprintln!("linux-bench: {SERVER_BENCH} failed: {status}"),
         Err(err) => eprintln!("linux-bench: cannot run {SERVER_BENCH}: {err}"),
     }
-}
-
-/// What `SERVERBENCH_PROFILE` is to be for a kernel command line: `raw` if
-/// it has [`PROFILE_RAW_WORD`], else 1 if it has [`PROFILE_WORD`], else
-/// unset.
-fn profile_setting(cmdline: &str) -> Option<&'static str> {
-    let mut setting = None;
-    for word in cmdline.split_whitespace() {
-        if word == PROFILE_RAW_WORD {
-            return Some("raw");
-        }
-        if word == PROFILE_WORD {
-            setting = Some("1");
-        }
-    }
-    setting
 }
 
 /// Lets the calling thread run on each of `cpus` again.
@@ -1108,15 +1077,5 @@ mod tests {
         // A CPU that is not online has no column.
         assert_eq!(tlb_column(text, 1), None);
         assert_eq!(tlb_column("           CPU0\n  8:  0  rtc0\n", 0), None);
-    }
-
-    #[test]
-    fn reads_the_profile_words() {
-        assert_eq!(profile_setting("console=ttyS0 quiet\n"), None);
-        assert_eq!(profile_setting("console=ttyS0 linux-bench.profile\n"), Some("1"));
-        assert_eq!(profile_setting("linux-bench.profile=raw quiet"), Some("raw"));
-        assert_eq!(profile_setting("linux-bench.profile linux-bench.profile=raw"), Some("raw"));
-        // Only a whole word counts.
-        assert_eq!(profile_setting("linux-bench.profile=1 xlinux-bench.profile"), None);
     }
 }

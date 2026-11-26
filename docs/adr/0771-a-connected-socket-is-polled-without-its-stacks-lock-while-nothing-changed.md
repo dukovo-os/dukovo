@@ -76,3 +76,6 @@ socket's state without its lock.
   a look made twice finds the same: bytes coming and read, a send that
   fills the other end's room and the read that frees it, a shutdown by
   the socket's own call, and the other end's FIN.
+- On OptiPlex 1 it took nginx's new connection from 1.09 times Linux's
+  time to 1.00 (lab runs 20261126-005747-d6c9 and
+  20261126-015125-9b1d).

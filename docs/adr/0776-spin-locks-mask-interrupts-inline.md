@@ -49,3 +49,7 @@ under Linux's.
   call.
 - The kernel must define the two functions, as it does the hooks of
   ADR 0406; a build without them does not link.
+- In a profile of the event queue's wait on OptiPlex 1, the samples in
+  the two calls, about a hundred in three passes, are gone (lab run
+  20261126-044239-f0ad); ADR 0777 gives what the two changes saved
+  together.

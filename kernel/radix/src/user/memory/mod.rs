@@ -638,8 +638,6 @@ impl SpaceObject {
     /// shared since `fork`. Whoever still holds a capability to it holds an
     /// empty space.
     pub fn empty(&self) {
-        // A profile being taken keeps the files it ran, for its samples.
-        super::profile::space_ends(self);
         let regions = {
             let mut regions = self.regions.lock();
             if let (Some(first), Some(last)) = (regions.first(), regions.last()) {
@@ -700,12 +698,6 @@ impl SpaceObject {
             self.unmap_range(region.start, region.end());
             false
         });
-    }
-
-    /// How many times the space's mappings changed in a way that needed
-    /// a TLB flush, since it was made (`/processes/profile`).
-    pub fn tlb_changes(&self) -> u64 {
-        Arch::space_changes(&self.arch)
     }
 
     /// The parts of files mapped to run, lowest first, for a crash record
