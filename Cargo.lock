@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "accounts"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "argon2",
  "base64ct",
@@ -52,7 +52,7 @@ dependencies = [
 
 [[package]]
 name = "audio"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "md-5",
 ]
@@ -191,7 +191,7 @@ dependencies = [
 
 [[package]]
 name = "disk"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "radix-block",
  "radix-btrfs",
@@ -202,11 +202,11 @@ dependencies = [
 
 [[package]]
 name = "display-pattern"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "dkv"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "blake2",
  "ed25519-compact",
@@ -282,7 +282,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "lab-writer"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "libc",
  "serde_json",
@@ -298,7 +298,7 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "linux-bench"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "libc",
  "sysapi",
@@ -306,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "manifest"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "radix-abi",
  "serde",
@@ -388,14 +388,14 @@ dependencies = [
 
 [[package]]
 name = "radix-abi"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "ridlc",
 ]
 
 [[package]]
 name = "radix-bitlocker"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "aes",
  "ccm",
@@ -405,7 +405,7 @@ dependencies = [
 
 [[package]]
 name = "radix-block"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "radix-hw",
  "radix-mm",
@@ -414,11 +414,11 @@ dependencies = [
 
 [[package]]
 name = "radix-bootfs"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "radix-btrfs"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "radix-block",
  "radix-hw",
@@ -428,7 +428,7 @@ dependencies = [
 
 [[package]]
 name = "radix-fat"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "radix-block",
  "radix-hw",
@@ -438,7 +438,7 @@ dependencies = [
 
 [[package]]
 name = "radix-fbcon"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "radix-hal",
  "radix-klog",
@@ -446,7 +446,7 @@ dependencies = [
 
 [[package]]
 name = "radix-hal"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "radix-hw",
  "radix-pstate",
@@ -456,56 +456,56 @@ dependencies = [
 
 [[package]]
 name = "radix-hw"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "radix-kdb"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "radix-klog"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "radix-sync",
 ]
 
 [[package]]
 name = "radix-ksyms"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "radix-microcode"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "radix-mm"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "radix-sync",
 ]
 
 [[package]]
 name = "radix-pstate"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "radix-relocs"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "radix-sensors"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "radix-hw",
 ]
 
 [[package]]
 name = "radix-sync"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "radix-vfs"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "radix-block",
  "radix-bootfs",
@@ -515,7 +515,7 @@ dependencies = [
 
 [[package]]
 name = "radix-vmware"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "rand_core"
@@ -525,7 +525,7 @@ checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 
 [[package]]
 name = "ridlc"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "rustc-demangle"
@@ -604,7 +604,7 @@ dependencies = [
 
 [[package]]
 name = "slots"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "subtle"
@@ -625,7 +625,7 @@ dependencies = [
 
 [[package]]
 name = "sysapi"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "libc",
  "radix-abi",
@@ -709,7 +709,7 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 
 [[package]]
 name = "xtask"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "accounts",
  "audio",

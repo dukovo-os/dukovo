@@ -136,7 +136,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "radix-bootfs"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "ring"
@@ -237,7 +237,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "slots"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "subtle"
@@ -258,7 +258,7 @@ dependencies = [
 
 [[package]]
 name = "system-release"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "httparse",
  "radix-bootfs",
@@ -271,7 +271,7 @@ dependencies = [
 
 [[package]]
 name = "tuf"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "base64",
  "ring",
@@ -294,7 +294,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "update-fuzz"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "libfuzzer-sys",
  "ring",
