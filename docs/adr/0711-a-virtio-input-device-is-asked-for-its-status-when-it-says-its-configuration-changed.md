@@ -74,8 +74,16 @@ notification has an entry of its own.
 
 - Traced in the emulator, 400 motions read a register of the mouse 400
   times before, and not once now.
-- Under KVM on the lab's PC, before the change, the host counted 1.18
-  exits for device memory for each motion on Radix and 0.01 on Linux.
+- Under KVM on the lab's PC the host counted 1.18 exits for device
+  memory for each motion before and 0.17 after, against Linux's 0.01:
+  what is left is the USB and disk controllers' registers, which the
+  trace shows touched a few times a second whether a mouse moves or
+  not. A motion took 13.3 µs before and 5.3 µs after, and the motion
+  that 99 in 100 were faster than 30.6 µs and 8.3 µs. Linux's took 18.6
+  µs and 10.7 µs in the same two runs, and 36.0 µs and 19.5 µs.
+- CI's runners are virtual machines themselves, where an exit to the
+  emulator costs more than on a machine of its own: their time for a
+  motion is the benchmark job's to give.
 - An input device takes two of the kernel's interrupt vectors where it
   took one.
 - A device that needs a reset leaves the input devices as before, and
