@@ -34,11 +34,17 @@
 //! instead, where every instruction takes one nanosecond of the guest's
 //! time, so each `BENCH` line gives the instructions an operation took:
 //! the same on every machine, unlike the timings. With `--gate` it fails
-//! if an operation on one CPU takes more than its [`BUDGETS`]. A third
-//! boot then counts the display layer's short paths ([`DISPLAY_ROWS`],
-//! ADR 0700) on a machine with a virtio graphics card beside its VGA
-//! one, which the other boots are spared: the kernel draws its log on a
-//! screen, and a second card would move every row.
+//! if an operation on one CPU takes more than its [`BUDGETS`].
+//!
+//! The display layer's short paths and the way of an input event to its
+//! reader ([`DISPLAY_ROWS`], ADRs 0700 and 0706) are measured in boots
+//! of their own, of Radix and of Linux, on a machine with a virtio
+//! graphics card beside its VGA one and a virtio mouse, which the other
+//! boots are spared: the kernel draws its log on a screen, and a second
+//! card would move every row. Radix runs `display-test cost` there and
+//! Linux `linux-bench --only display`, and `ob bench` moves the mouse
+//! through QEMU when each says it is ready. With `--instructions` the
+//! same boot of Radix counts those rows.
 //!
 //! With `--from FILE` it measures nothing, and reports the numbers of a
 //! real machine instead: Dukovo's and Linux's, which the disk check
@@ -78,13 +84,39 @@ const LINUX_INIT_ARGS: &str = "-- --sd /dev/mmcblk0 --disc /dev/sr0";
 /// `display-test cost` ([`DISPLAY_SOURCE`]) and nothing else.
 const DISPLAY_CMDLINE: &str = "-- --posix /system/tests/posix/display-test cost";
 
-/// The graphics card that boot has beside the VGA card whose framebuffer
-/// the firmware sets up: a virtio one with one screen.
-const DISPLAY_CARD: &str = "virtio-gpu-pci,xres=1024,yres=768";
+/// What Linux's kernel and its init, `linux-bench`, are given for the
+/// display rows' boot, after [`LINUX_CMDLINE`]. `vga=` has the firmware
+/// set the mode that Radix's boot loader sets for Radix: mode 0x17a of
+/// QEMU's VGA BIOS, 1280 by 800 at 32 bits a pixel, which Linux's
+/// `simpledrm` then drives as Radix drives its firmware framebuffer.
+const LINUX_DISPLAY_ARGS: &str = "vga=0x37a -- --only display";
+
+/// What each system says of each card's screen before that card's rows:
+/// a row is compared only between screens of one size.
+const DISPLAY_SIZES: [&str; 2] = ["firmware shows 1280 by 800", "virtio shows 1024 by 768"];
+
+/// How many motions of the mouse the input rows time, which each
+/// program asks for by saying [`motions_wanted`], and the pause after
+/// each: long enough for its reader to have gone back to waiting.
+const MOTIONS: usize = 400;
+const MOTION_PAUSE: Duration = Duration::from_millis(5);
+
+/// The graphics card those boots have beside the VGA card whose
+/// framebuffer the firmware sets up: a virtio one with one screen. Its
+/// mouse is a virtio one too, bound to that screen ([`DISPLAY_SCREEN`]),
+/// so that the motions sent to the screen reach it and no other pointer.
+const DISPLAY_CARD: &str = "virtio-gpu-pci,id=video1,xres=1024,yres=768";
+const DISPLAY_MOUSE: &str = "virtio-mouse-pci,display=video1";
+const DISPLAY_SCREEN: &str = "video1";
 
 /// The program that prints the display rows.
 #[cfg(test)]
 const DISPLAY_SOURCE: &str = include_str!("../../../userspace/programs/display-test/src/cost.rs");
+
+/// `linux-bench --only display`'s source, to check Linux's side of the
+/// display rows against what it prints.
+#[cfg(test)]
+const LINUX_DISPLAY_SOURCE: &str = include_str!("../../linux-bench/src/display.rs");
 
 /// The size of each disk both systems' POSIX benchmarks read and write:
 /// the 32 MiB they go through, with room.
@@ -169,7 +201,10 @@ const ICOUNT: &str = "shift=0,align=off";
 /// while one waits, so they have no budget; nor do the disk transfers
 /// and the Btrfs rows, which wait for the disk or start writing to it. A change that makes an
 /// operation longer raises its budget in the same pull request, and says
-/// why.
+/// why. A mouse's motion has a budget for the middle one of the 400,
+/// which counts alike from run to run; the one that 99 in 100 were
+/// faster than has none, as it is the motions that met a timer or
+/// another interrupt on their way.
 pub const BUDGETS: &[(&str, u64)] = &[
     ("syscall_null", 190),                     // 165
     ("syscall_yield", 670),                    // 603
@@ -207,28 +242,7 @@ pub const BUDGETS: &[(&str, u64)] = &[
     ("display_change_virtio", 14_000),         // 12,586
     ("display_small_virtio", 13_000),          // 11,827
     ("display_pointer_virtio", 2_900),         // 2,606
-];
-
-/// The display layer's rows (`display-test cost`, ADR 0700), each with
-/// what it measures: on the firmware's framebuffer, which is a copy the
-/// kernel makes, and on a virtio card, which is commands queued for the
-/// host. They are counted with `--instructions` only. Linux's side, and
-/// with it the timings, join them with the input devices' rows.
-const DISPLAY_ROWS: &[(&str, &str)] = &[
-    ("display_check", "Display: a change of a main plane's picture, checked only"),
-    (
-        "display_change_queued",
-        "Display: that change checked and left to wait for the beat, in the place of the one before",
-    ),
-    (
-        "display_change_firmware",
-        "Display: a new 1280x800 picture shown at once, firmware framebuffer",
-    ),
-    ("display_small_firmware", "Display: 64x64 pixels shown at once, firmware framebuffer"),
-    ("display_pointer_firmware", "Display: a solid 32x32 pointer moved, firmware framebuffer"),
-    ("display_change_virtio", "Display: a new 1024x768 picture shown at once, virtio"),
-    ("display_small_virtio", "Display: 64x64 pixels shown at once, virtio"),
-    ("display_pointer_virtio", "Display: the pointer moved, virtio"),
+    ("input_to_reader", 8_000),                // 7,236, from the interrupt's stamp to the reader
 ];
 
 /// One measurement: a `BENCH name=... ns=... iterations=...` line.
@@ -574,6 +588,100 @@ const ROWS: &[Row] = &[
     },
 ];
 
+/// A row of the display boots that Linux has a like of: reported only
+/// until Radix first reaches parity on it, as every new row is.
+const fn display(
+    radix: &'static str,
+    what: &'static str,
+    linux: &'static str,
+    how: &'static str,
+) -> Row {
+    Row { radix, what, linux: Some((linux, how)), gate: Gate::Yet }
+}
+
+/// A row of the display boots that Linux has no like of.
+const fn display_alone(radix: &'static str, what: &'static str) -> Row {
+    Row { radix, what, linux: None, gate: Gate::Yet }
+}
+
+/// The rows of the display boots, after [`ROWS`] in each report: the
+/// display layer's (`display-test cost`, ADR 0700) on the firmware's
+/// framebuffer, which is a copy the kernel makes, and on a virtio card,
+/// which is commands queued for the host; then an input event's way
+/// from its time stamp to its reader (ADR 0706).
+///
+/// Linux's display rows are the calling thread's processor time and
+/// Radix's the time that passed, which is never less: Linux's virtio
+/// driver holds a change until the next of the 60 frames a second it
+/// counts, and that wait is no cost of the change. Two rows have no
+/// like on Linux. A change left to wait in the place of the one before
+/// is refused there while the one before has not shown (EBUSY). And
+/// `simpledrm` has no pointer plane: a desktop draws the pointer into
+/// its own picture.
+const DISPLAY_ROWS: &[Row] = &[
+    display(
+        "display_check",
+        "Display: a change of a main plane's picture, checked only",
+        "drm_check",
+        "DRM atomic commit of another framebuffer, with TEST_ONLY",
+    ),
+    display_alone(
+        "display_change_queued",
+        "Display: that change checked and left to wait for the beat, in the place of the one before",
+    ),
+    display(
+        "display_change_firmware",
+        "Display: a new 1280x800 picture shown at once, firmware framebuffer",
+        "drm_flip_firmware",
+        "that commit made, `simpledrm`",
+    ),
+    display(
+        "display_small_firmware",
+        "Display: 64x64 pixels shown at once, firmware framebuffer",
+        "drm_dirty_firmware",
+        "DIRTYFB of 64x64 pixels, `simpledrm`",
+    ),
+    display_alone(
+        "display_pointer_firmware",
+        "Display: a solid 32x32 pointer moved, firmware framebuffer",
+    ),
+    display(
+        "display_change_virtio",
+        "Display: a new 1024x768 picture shown at once, virtio",
+        "drm_flip_virtio",
+        "that commit made, `virtio_gpu`",
+    ),
+    display(
+        "display_small_virtio",
+        "Display: 64x64 pixels shown at once, virtio",
+        "drm_dirty_virtio",
+        "DIRTYFB of 64x64 pixels, `virtio_gpu`",
+    ),
+    display(
+        "display_pointer_virtio",
+        "Display: the pointer moved, virtio",
+        "drm_cursor_virtio",
+        "MODE_CURSOR move, `virtio_gpu`",
+    ),
+    display(
+        "input_to_reader",
+        "Input: a mouse's motion, from its time stamp to its reader having read it: the middle of 400",
+        "evdev_to_reader",
+        "the same, on the mouse's event device",
+    ),
+    display(
+        "input_to_reader_p99",
+        "Input: that, for the motion that 99 in 100 were faster than",
+        "evdev_to_reader_p99",
+        "the same, on the mouse's event device",
+    ),
+];
+
+/// Every row of the reports: [`ROWS`], then [`DISPLAY_ROWS`].
+fn rows() -> impl Iterator<Item = &'static Row> {
+    ROWS.iter().chain(DISPLAY_ROWS)
+}
+
 /// `ob bench`.
 pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     let linux = !args.flag("--no-linux");
@@ -717,6 +825,8 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
             numbers.counts = counts;
             numbers.counts.extend(posix_counts);
         }
+        step(&format!("Booting Radix with the display and input rows{of}"));
+        keep_best(&mut numbers.radix, radix_display_numbers(ctx, &dir, &image, Accel::of(kvm))?);
         if let Some((kernel, initrd)) = &vm_kernel {
             step(&format!(
                 "Measuring the same operations on Linux ({}) in a virtual machine like \
@@ -725,6 +835,8 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
             ));
             let (linux, linux_counts) = linux_vm_numbers(ctx, &dir, kernel, initrd, &btrfs)?;
             keep_best(&mut numbers.linux_vm, linux);
+            step(&format!("Booting that Linux with its display and input rows{of}"));
+            keep_best(&mut numbers.linux_vm, linux_display_numbers(ctx, &dir, kernel, initrd)?);
             if numbers.runs == 0 {
                 numbers.counts.extend(linux_counts);
             }
@@ -808,7 +920,7 @@ fn count_instructions(
     per_switch(&mut radix, &counts);
     step("Booting Radix with the POSIX benchmarks on 2 CPUs, counting instructions (minutes)");
     radix.extend(radix_posix_numbers(ctx, dir, image, btrfs, Accel::Count)?.0);
-    step("Booting Radix with the display rows on two graphics cards, counting instructions");
+    step("Booting Radix with the display and input rows, counting instructions");
     radix.extend(radix_display_numbers(ctx, dir, image, Accel::Count)?);
     let report = budget_report(&radix);
     let markdown = dir.join("instructions.md");
@@ -837,8 +949,7 @@ fn budget_report(radix: &[Measurement]) -> String {
     );
     let _ = writeln!(out, "| Operation | Instructions | Budget | Of the budget |");
     let _ = writeln!(out, "| --- | ---: | ---: | ---: |");
-    let rows = ROWS.iter().map(|row| (row.radix, row.what));
-    for (name, what) in rows.chain(DISPLAY_ROWS.iter().copied()) {
+    for (name, what) in rows().map(|row| (row.radix, row.what)) {
         let Some(measured) = find(radix, name) else { continue };
         let count = measured.ns.round() as u64;
         match budget(name) {
@@ -963,7 +1074,7 @@ impl std::fmt::Display for Over {
 
 /// The rows over the gate, each with its ratio (or that it is missing).
 fn over_gate(numbers: &Numbers) -> Vec<Over> {
-    ROWS.iter()
+    rows()
         .filter(|row| row.linux.is_some() && row.gated())
         .filter_map(|row| match ratio(numbers, row) {
             Some(ratio) if ratio <= GATE_RATIO => None,
@@ -1300,8 +1411,10 @@ pub(crate) fn linux_init(
 /// The modules Linux needs for the benchmarks' disks and disc, where the
 /// kernel has them as modules rather than built in: Btrfs's, to mount the
 /// Btrfs disk, the SD host's and the MMC block driver's, to read the SD
-/// card, and AHCI's and the SCSI CD driver's, to read the DVD drive.
-const LINUX_MODULES: [&str; 5] = ["btrfs", "sdhci-pci", "mmc_block", "ahci", "sr_mod"];
+/// card, AHCI's and the SCSI CD driver's, to read the DVD drive, and the
+/// virtio graphics card's and input devices', for the display rows' boot.
+const LINUX_MODULES: [&str; 7] =
+    ["btrfs", "sdhci-pci", "mmc_block", "ahci", "sr_mod", "virtio-gpu", "virtio_input"];
 
 /// The modules the Linux kernel `kernel` loads for `names` (for the
 /// benchmarks, [`LINUX_MODULES`]), in the order they load: each it does
@@ -1742,10 +1855,59 @@ fn radix_posix_numbers(
     Ok((parse(&log), parse_counts(&log)))
 }
 
-/// Boots the test image `base` with Spark running the display layer's
+/// What a program of the display rows' boots says when its reader waits
+/// for the mouse's motions.
+fn motions_wanted() -> String {
+    format!("input: ready for {MOTIONS} motions")
+}
+
+/// The devices of the display rows' boots, beside the VGA card.
+fn display_devices() -> [String; 4] {
+    ["-device".into(), DISPLAY_CARD.into(), "-device".into(), DISPLAY_MOUSE.into()]
+}
+
+/// Sees the display rows' program in `vm` through: waits until it wants
+/// the mouse's motions, sends them one at a time, and waits for `done`.
+/// `ended` is what the program says if it ends before it wants them.
+fn drive_display_rows(
+    vm: &mut test::Vm,
+    done: &str,
+    ended: &str,
+) -> std::result::Result<(), String> {
+    if vm.expect_first(&[&motions_wanted(), ended])? != 0 {
+        return Err("the program ended before its input rows".into());
+    }
+    let motion = [r#"{"type":"rel","data":{"axis":"x","value":1}}"#.to_string()];
+    for _ in 0..MOTIONS {
+        vm.input_events(DISPLAY_SCREEN, &motion)?;
+        std::thread::sleep(MOTION_PAUSE);
+    }
+    match vm.expect_first(&[done, ended])? {
+        0 => Ok(()),
+        _ => Err("the program failed".into()),
+    }
+}
+
+/// Fails unless `log`, of a display rows' boot, says that each card's
+/// screen has the size the rows are compared at ([`DISPLAY_SIZES`]).
+fn display_sizes(log: &str) -> std::result::Result<(), String> {
+    match DISPLAY_SIZES.iter().find(|size| !log.contains(**size)) {
+        Some(size) => Err(format!("nothing says that {size}")),
+        None => Ok(()),
+    }
+}
+
+/// The lines of `log` that the display rows' program `program` said, in
+/// one, for an error.
+fn said_by(log: &str, program: &str) -> String {
+    let said: Vec<&str> = log.lines().filter(|line| line.contains(program)).collect();
+    if said.is_empty() { String::new() } else { format!(": {}", said.join(" | ")) }
+}
+
+/// Boots the test image `base` with Spark running the display and input
 /// rows ([`DISPLAY_ROWS`]) and reads their `BENCH` lines. The machine
 /// has the VGA card the others have, whose framebuffer is the firmware's
-/// card, and a virtio graphics card.
+/// card, a virtio graphics card and a virtio mouse.
 fn radix_display_numbers(
     ctx: &Ctx,
     dir: &Path,
@@ -1757,7 +1919,7 @@ fn radix_display_numbers(
         test::with_cmdline(base, &accel.cmdline(DISPLAY_CMDLINE)).map_err(crate::Error::new)?;
     std::fs::write(&image, bytes).context(|| format!("writing {}", image.display()))?;
     let mut extra = accel.extra();
-    extra.extend(["-device".into(), DISPLAY_CARD.into()]);
+    extra.extend(display_devices());
     let machine = Machine {
         firmware: Firmware::Bios,
         media: Media::Usb,
@@ -1777,22 +1939,63 @@ fn radix_display_numbers(
         direct: None,
     };
     let mut vm = pin::start(ctx, &machine, dir, "display-bench", TIMEOUT)?;
-    let outcome = match vm.expect_first(&["display-test: passed", "display-test: FAILED"]) {
-        Ok(0) => Ok(()),
-        Ok(_) => Err("the program failed".to_string()),
-        Err(reason) => Err(reason),
-    };
+    let outcome = drive_display_rows(&mut vm, "display-test: passed", "display-test: FAILED");
     let log = vm.log();
     drop(vm);
     let _ = std::fs::remove_file(&image);
-    if let Err(reason) = outcome {
+    if let Err(reason) = outcome.and_then(|()| display_sizes(&log)) {
         show_trouble(&log);
-        let said: Vec<&str> = log.lines().filter(|line| line.contains("display-test: ")).collect();
         crate::bail!(
-            "the display rows' boot failed: {reason}{}{}; serial log: {}",
-            if said.is_empty() { "" } else { ": " },
-            said.join(" | "),
+            "the display rows' boot failed: {reason}{}; serial log: {}",
+            said_by(&log, "display-test: "),
             ctx.display(&dir.join("boot-display-bench.log"))
+        );
+    }
+    Ok(parse(&log))
+}
+
+/// Boots `kernel` with the `initrd` of [`linux_init`] on the machine of
+/// [`radix_display_numbers`], for `linux-bench` to run its display and
+/// input rows, and reads their `BENCH` lines.
+fn linux_display_numbers(
+    ctx: &Ctx,
+    dir: &Path,
+    kernel: &Path,
+    initrd: &Path,
+) -> Result<Vec<Measurement>> {
+    let machine = Machine {
+        firmware: Firmware::Bios,
+        media: Media::Usb,
+        ovmf: None,
+        image: PathBuf::new(),
+        memory: VM_MEMORY.into(),
+        cpus: VM_CPUS,
+        kvm: true,
+        cpu_model: None,
+        serial: Serial::Pipe,
+        display: false,
+        reboot: false,
+        gdb: false,
+        qmp: Some(dir.join("linux-display.qmp")),
+        extra: display_devices().into(),
+        write_log: None,
+        direct: Some(DirectBoot {
+            kernel: kernel.to_path_buf(),
+            initrd: initrd.to_path_buf(),
+            cmdline: format!("{LINUX_CMDLINE} {LINUX_DISPLAY_ARGS}"),
+        }),
+    };
+    let mut vm = pin::start(ctx, &machine, dir, "linux-display", TIMEOUT)?;
+    // linux-bench says what it could not measure and goes on to its end.
+    let outcome = drive_display_rows(&mut vm, "linux-bench: done", "linux-bench: done");
+    let log = vm.log();
+    drop(vm);
+    if let Err(reason) = outcome.and_then(|()| display_sizes(&log)) {
+        show_trouble(&log);
+        crate::bail!(
+            "the Linux display rows' boot failed: {reason}{}; serial log: {}",
+            said_by(&log, "linux-bench: "),
+            ctx.display(&dir.join("boot-linux-display.log"))
         );
     }
     Ok(parse(&log))
@@ -2049,7 +2252,7 @@ fn report(ctx: &Ctx, numbers: &Numbers, kvm: bool) -> String {
     let _ = writeln!(out, "| --- | ---: | ---: | ---: | ---: | --- |");
     let measured =
         |list: &[Measurement], name| find(list, name).map_or(String::new(), |m| show(m.ns));
-    for row in ROWS {
+    for row in rows() {
         let ours = find(&numbers.radix, row.radix).map_or("missing".into(), |m| show(m.ns));
         let (vm, host, how) = match row.linux {
             Some((name, how)) => {
@@ -2481,28 +2684,64 @@ mod tests {
     #[test]
     fn budgets_name_rows_on_one_cpu() {
         for &(name, budget) in BUDGETS {
-            let known = ROWS.iter().any(|row| row.radix == name)
-                || DISPLAY_ROWS.iter().any(|&(row, _)| row == name);
-            assert!(known, "{name}");
+            assert!(rows().any(|row| row.radix == name), "{name}");
             assert!(!name.ends_with("_cross_cpu") && !name.ends_with("_parallel"), "{name}");
             assert!(budget > 0, "{name}");
         }
     }
 
+    /// Whether `source` prints a row called `name`: whole, or as a name
+    /// that a card's is added to, where the source calls the card `word`.
+    fn printed_by(source: &str, name: &str, word: &str) -> bool {
+        match ["_firmware", "_virtio"].iter().find_map(|card| name.strip_suffix(card)) {
+            Some(base) => source.contains(&format!("\"{base}_{{{word}}}\"")),
+            None => {
+                source.contains(&format!("\"{name}\"")) || source.contains(&format!("name={name} "))
+            }
+        }
+    }
+
     #[test]
-    fn display_rows_name_what_the_program_prints_and_each_has_a_budget() {
-        for (i, &(name, what)) in DISPLAY_ROWS.iter().enumerate() {
-            let card = ["_firmware", "_virtio"].iter().find_map(|card| name.strip_suffix(card));
-            let printed = match card {
-                Some(base) => DISPLAY_SOURCE.contains(&format!("\"{base}_{{card}}\"")),
-                None => DISPLAY_SOURCE.contains(&format!("\"{name}\"")),
-            };
-            assert!(printed, "{name}");
-            assert!(budget(name).is_some(), "{name}");
-            assert!(what.starts_with("Display: "), "{name}");
-            assert!(DISPLAY_ROWS[i + 1..].iter().all(|&(other, _)| other != name), "{name}");
+    fn display_rows_name_what_the_two_programs_print() {
+        for (i, row) in DISPLAY_ROWS.iter().enumerate() {
+            let name = row.radix;
+            assert!(printed_by(DISPLAY_SOURCE, name, "card"), "{name}");
+            if let Some((linux, _)) = row.linux {
+                assert!(printed_by(LINUX_DISPLAY_SOURCE, linux, "name"), "{linux}");
+            }
+            assert!(row.what.starts_with("Display: ") || row.what.starts_with("Input: "), "{name}");
+            // Every row but the slowest motions' is held to a budget.
+            assert_eq!(budget(name).is_some(), name != "input_to_reader_p99", "{name}");
+            assert!(DISPLAY_ROWS[i + 1..].iter().all(|other| other.radix != name), "{name}");
             assert!(ROWS.iter().all(|row| row.radix != name), "{name}");
         }
+    }
+
+    #[test]
+    fn both_programs_time_the_motions_that_are_sent() {
+        let count = format!("const MOTIONS: usize = {MOTIONS};");
+        for source in [DISPLAY_SOURCE, LINUX_DISPLAY_SOURCE] {
+            assert!(source.contains(&count));
+            assert!(source.contains("input: ready for {MOTIONS} motions"));
+        }
+        assert_eq!(motions_wanted(), format!("input: ready for {MOTIONS} motions"));
+    }
+
+    #[test]
+    fn a_display_boot_must_say_each_screens_size() {
+        let said =
+            "display-test: firmware shows 1280 by 800\ndisplay-test: virtio shows 1024 by 768";
+        assert_eq!(display_sizes(said), Ok(()));
+        let other = said.replace("1024 by 768", "1280 by 800");
+        assert_eq!(
+            display_sizes(&other),
+            Err("nothing says that virtio shows 1024 by 768".to_string())
+        );
+        assert_eq!(
+            said_by("a\nlinux-bench: b\nlinux-bench: c", "linux-bench: "),
+            ": linux-bench: b | linux-bench: c"
+        );
+        assert_eq!(said_by("a", "linux-bench: "), "");
     }
 
     #[test]
@@ -2573,8 +2812,9 @@ mod tests {
         let kernel = dir.join("vmlinuz");
         std::fs::write(&kernel, &image).unwrap();
         // The SCSI CD driver is built in, as in Ubuntu's kernels; Btrfs,
-        // the SD host's, the MMC block driver and AHCI are modules, which
-        // each need what loads first.
+        // the SD host's, the MMC block driver, AHCI and the virtio
+        // graphics card's and input devices' are modules, which each
+        // need what loads first.
         std::fs::write(dir.join("modules.builtin"), "kernel/drivers/scsi/sr_mod.ko\n").unwrap();
         std::fs::write(
             dir.join("modules.dep"),
@@ -2586,7 +2826,11 @@ mod tests {
              kernel/drivers/mmc/core/mmc_block.ko.zst: kernel/drivers/misc/rpmb-core.ko.zst\n\
              kernel/drivers/ata/libahci.ko.zst: kernel/crypto/xor.ko.zst\n\
              kernel/drivers/ata/ahci.ko.zst: kernel/drivers/ata/libahci.ko.zst\n\
-             kernel/drivers/ata/ahci_platform.ko.zst: kernel/drivers/ata/libahci.ko.zst\n",
+             kernel/drivers/ata/ahci_platform.ko.zst: kernel/drivers/ata/libahci.ko.zst\n\
+             kernel/drivers/virtio/virtio_dma_buf.ko.zst:\n\
+             kernel/drivers/gpu/drm/virtio/virtio-gpu.ko.zst: \
+             kernel/drivers/virtio/virtio_dma_buf.ko.zst\n\
+             kernel/drivers/virtio/virtio_input.ko.zst:\n",
         )
         .unwrap();
         let loaded = linux_modules(&kernel, Some(&dir), &LINUX_MODULES);
@@ -2595,7 +2839,8 @@ mod tests {
                 dir.join("modules.builtin"),
                 "kernel/fs/btrfs/btrfs.ko\nkernel/drivers/mmc/host/sdhci-pci.ko\n\
                  kernel/drivers/mmc/core/mmc_block.ko\nkernel/drivers/ata/ahci.ko\n\
-                 kernel/drivers/scsi/sr_mod.ko\n",
+                 kernel/drivers/scsi/sr_mod.ko\nkernel/drivers/gpu/drm/virtio/virtio-gpu.ko\n\
+                 kernel/drivers/virtio/virtio_input.ko\n",
             )
             .unwrap();
             linux_modules(&kernel, Some(&dir), &LINUX_MODULES)
@@ -2617,6 +2862,9 @@ mod tests {
                 "kernel/drivers/mmc/core/mmc_block.ko.zst",
                 "kernel/drivers/ata/libahci.ko.zst",
                 "kernel/drivers/ata/ahci.ko.zst",
+                "kernel/drivers/virtio/virtio_dma_buf.ko.zst",
+                "kernel/drivers/gpu/drm/virtio/virtio-gpu.ko.zst",
+                "kernel/drivers/virtio/virtio_input.ko.zst",
             ]
         );
         assert!(all_built_in.unwrap().is_empty());

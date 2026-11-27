@@ -8,6 +8,11 @@
 //! and cards, set a card's address, pin threads to CPUs, and stop the
 //! machine when they are done. The calls the benchmarks time are inlined
 //! into them, so that each costs what the system call costs, as in C.
+//! [`drm`] is a graphics card's screens and [`evdev`] the input devices,
+//! for the display and input benchmarks.
+
+pub mod drm;
+pub mod evdev;
 
 use std::io;
 use std::net::Ipv4Addr;
@@ -111,6 +116,21 @@ pub fn load_module(file: impl AsFd, compressed: bool) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// The processor time the calling thread has used, in nanoseconds
+/// (CLOCK_THREAD_CPUTIME_ID): the time it ran, in the program and in
+/// the kernel for it, and none of the time it waited.
+#[must_use]
+#[inline]
+pub fn thread_cpu_ns() -> u64 {
+    let mut now = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: clock_gettime fills the timespec it is given; a thread's
+    // own clock is always there.
+    let _ = checked(unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &raw mut now) });
+    let seconds = u64::try_from(now.tv_sec).unwrap_or(0);
+    let nanoseconds = u64::try_from(now.tv_nsec).unwrap_or(0);
+    seconds * 1_000_000_000 + nanoseconds
 }
 
 /// A new eventfd(2) counter at 0, closed on exec.

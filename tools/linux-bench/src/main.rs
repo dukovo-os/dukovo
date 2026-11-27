@@ -6,12 +6,15 @@
 //!
 //! ```text
 //! linux-bench [--rounds <count>] [--posix-bench <program>] [--git <program>]
-//!             [--disc <device>] [--sd <device>] [--only scaling]
+//!             [--disc <device>] [--sd <device>] [--only scaling|display]
 //! ```
 //!
 //! With `--only scaling` it runs only the POSIX benchmarks' open/close
 //! scaling benchmark (`ob bench --scaling`); as process 1 it gets that
-//! from the kernel command line, after `--`.
+//! from the kernel command line, after `--`. With `--only display` it
+//! runs only the display and input rows ([`display`]), on the machine
+//! `ob bench` boots for them, which has a virtio graphics card and a
+//! virtio mouse.
 //!
 //! It prints one line per benchmark, in the format of the Radix benchmark
 //! programs:
@@ -88,6 +91,7 @@
 #![forbid(unsafe_code)]
 
 mod btrfs_log;
+mod display;
 
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
@@ -157,6 +161,7 @@ fn main() {
     let mut disc = None;
     let mut sd = None;
     let mut scaling = false;
+    let mut display = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let value = args.next();
@@ -169,6 +174,7 @@ fn main() {
             ("--disc", Some(device)) => disc = Some(PathBuf::from(device)),
             ("--sd", Some(device)) => sd = Some(PathBuf::from(device)),
             ("--only", Some(what)) if what == "scaling" => scaling = true,
+            ("--only", Some(what)) if what == "display" => display = true,
             ("--btrfs-log", Some(mode)) if mode == "make" || mode == "list" => {
                 btrfs_log = Some(mode);
             }
@@ -176,7 +182,7 @@ fn main() {
                 eprintln!(
                     "usage: linux-bench [--rounds <count>] [--posix-bench <program>] \
                      [--git <program>] [--disc <device>] [--sd <device>] \
-                     [--btrfs-log make|list] [--only scaling]"
+                     [--btrfs-log make|list] [--only scaling|display]"
                 );
                 std::process::exit(2);
             }
@@ -202,6 +208,16 @@ fn main() {
             btrfs_log::list();
         }
         power_off();
+    }
+    if display {
+        // `ob bench`'s display boot: the display and input rows, and
+        // nothing else.
+        display::run();
+        if std::process::id() == 1 {
+            println!("linux-bench: done");
+            power_off();
+        }
+        return;
     }
     let cpus = linux::allowed_cpus().expect("sched_getaffinity");
     let Some(&first) = cpus.first() else {

@@ -195,6 +195,18 @@ fn listed() -> Outcome<Vec<u32>> {
     input::devices(&Raw(&control)).map_err(|err| format!("listing the input devices: {err}"))
 }
 
+/// A new description of the file of the device that calls itself
+/// `name`, tied to nobody, whose reads wait.
+pub fn open_named(name: &str) -> Outcome<File> {
+    for number in listed()? {
+        let Ok(file) = File::open(format!("{DEVICES}/{number}")) else { continue };
+        if name_of(&file) == name {
+            return Ok(file);
+        }
+    }
+    Err(format!("no input device calls itself {name}"))
+}
+
 /// What the device `file` is of calls itself.
 fn name_of(file: &File) -> String {
     Device::new(Raw(file)).name().unwrap_or_else(|err| format!("a device with no name ({err})"))

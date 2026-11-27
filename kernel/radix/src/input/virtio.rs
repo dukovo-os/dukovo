@@ -171,12 +171,15 @@ fn try_bind(function: &Function) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Starts the thread, at the first device.
+/// Starts the thread, at the first device. It runs on the boot CPU,
+/// where the devices' interrupts arrive (`allocate_interrupt`): the
+/// interrupt that wakes it has that CPU awake already, and no other is
+/// woken for an event on its way to its reader.
 fn start_thread() {
     if THREAD.get().is_some() {
         return;
     }
-    let options = Options::new().policy(Policy::Fair { nice: -5 });
+    let options = Options::new().pinned(0).policy(Policy::Fair { nice: -5 });
     match sched::spawn("vinput", run, 0, options) {
         Ok(thread) => {
             let _ = THREAD.set(thread);
