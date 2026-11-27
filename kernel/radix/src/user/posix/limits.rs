@@ -18,6 +18,7 @@
 use radix_abi::errors::Kernel;
 use radix_abi::process::{self, LimitKind, UNLIMITED};
 use radix_posix::signal::QUEUE_MAX;
+use radix_sync::nospec;
 
 use super::{find, join, same_domain, same_user, with_tree};
 use crate::user::methods::{Answer, answer};
@@ -103,6 +104,13 @@ pub fn stack_bytes(limits: &Limits, page: u64) -> u64 {
     wanted / page * page
 }
 
+/// The place of `resource` in [`Limits`]: a number the program chose, so
+/// the processor that guesses it in range meanwhile reads place 0 (Spectre
+/// v1, ADR 0790).
+fn slot(resource: LimitKind) -> usize {
+    nospec::index(resource as usize, COUNT)
+}
+
 /// The bits of a file mode mask.
 const MODE_BITS: u32 = 0o777;
 
@@ -119,7 +127,7 @@ fn change(
     argument: u32,
 ) -> Result<Limit> {
     let mut posix = process.posix.lock();
-    let limit = &mut posix.limits.0[resource as usize];
+    let limit = &mut posix.limits.0[slot(resource)];
     let old = *limit;
     if let Some(new) = new {
         if new.current > new.max {
@@ -154,7 +162,7 @@ pub fn start_limit(target: &ProcessObject, label: u32, args: &[u64; 8]) -> Resul
     if !target.not_started() {
         return Err(error(Kernel::NotPermitted));
     }
-    posix.limits.0[a.resource as usize] = Limit::of(a.current, a.max);
+    posix.limits.0[slot(a.resource)] = Limit::of(a.current, a.max);
     posix.started_limits |= 1 << a.resource as u32;
     if a.resource == LimitKind::FileSize {
         target.set_file_size_limit(a.current);

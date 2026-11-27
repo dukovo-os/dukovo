@@ -26,6 +26,7 @@ export const WEIGHTS = Object.freeze({
   'SEC-150': { weight: 4, words: 'A service gave up after its restarts (each; at most 12 in all)' },
   'SEC-160': { weight: 8, words: 'No snapshot schedule covers the people\'s and shared folders' },
   'SEC-170': { weight: 6, words: 'Alerts reach nobody' },
+  'SEC-180': { weight: 6, words: 'The processor has a flaw that nothing closes' },
 });
 
 /** The weight of a check that repeats an early warning or a hardware check, by the start of its ID. */

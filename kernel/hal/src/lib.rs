@@ -81,6 +81,21 @@ pub trait Cpu {
     /// interprocessor interrupts are exits to the hypervisor.
     fn virtualized() -> bool;
 
+    /// The speculative-execution flaws the architecture reports on, by
+    /// the names of their files in `/kernel/devices/system/cpu/
+    /// vulnerabilities`, which are Linux's (ADR 0790); none by default.
+    fn cpu_flaws() -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Writes the line, with its newline, that the file of flaw `name`
+    /// shows: whether the processor has it and how the kernel closes it,
+    /// in Linux's words. Fails for a name [`Cpu::cpu_flaws`] does not
+    /// give.
+    fn cpu_flaw(_name: &str, _out: &mut dyn core::fmt::Write) -> core::fmt::Result {
+        Err(core::fmt::Error)
+    }
+
     /// Whether this CPU accepts interrupts.
     fn interrupts_enabled() -> bool;
 

@@ -83,7 +83,7 @@ use radix_net::{
     PingMemory, Pinger, Reporter, Stack, TAGGED_FRAME,
 };
 use radix_nic::Nic;
-use radix_sync::{Mutex, MutexGuard, Once};
+use radix_sync::{Mutex, MutexGuard, Once, nospec};
 use radix_virtio::net::{MAX_FRAME, Net};
 use radix_virtio::{NO_VECTOR, Transport};
 
@@ -1897,7 +1897,11 @@ fn add_link(name: &TextBuf<16>, made: Made) -> Result<&'static Interface, Failur
 fn numbered(number: usize) -> Option<&'static Interface> {
     match number {
         0 => LO.get(),
-        n => INTERFACES.get(n - 1).and_then(Once::get),
+        n if n > INTERFACES.len() => None,
+        // A number a program gave (`by_index`), which the processor guesses
+        // in range, while the check is still to be done, is card 0
+        // meanwhile (Spectre v1, ADR 0790).
+        n => INTERFACES[nospec::index(n - 1, INTERFACES.len())].get(),
     }
 }
 

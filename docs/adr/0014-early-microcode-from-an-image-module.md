@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0014. Early microcode comes from a boot module added at image build time
 
-- Status: Accepted
+- Status: Accepted; AMD microcode since [0792](0792-amd-processors-load-their-microcode-at-boot-as-intel-s-do.md)
 - Date: 2026-10-20
 
 ## Context
@@ -31,7 +31,8 @@ module by that word, reserves it, and on every CPU, before anything else of
 note, writes the newest matching update if it is newer than the running
 revision. The parser lives in `kernel/lib/microcode`, without `unsafe`.
 
-Only Intel's format is supported; AMD's comes with AMD hardware in testing.
+Only Intel's format is supported here; AMD's is added by
+[0792](0792-amd-processors-load-their-microcode-at-boot-as-intel-s-do.md).
 
 ## Consequences
 

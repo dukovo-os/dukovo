@@ -58,11 +58,12 @@ timeout and the flags each test needs.
 *[image]* adds optional files to the images *ob image* and *ob run* build.
 
 *image.microcode* = "_path_"
-	A file or directory of Intel microcode updates to load early in boot,
+	A file or directory of Intel or AMD microcode to load early in boot,
 	such as "/lib/firmware/intel-ucode" from the *intel-microcode*
+	package or "/lib/firmware/amd-ucode" from the *amd64-microcode*
 	package. Microcode is closed firmware, so Dukovo does not ship it;
 	this key adds the updates of the build host to the image. *ob* checks
-	each update and fails if _path_ holds none. The default is empty: no
+	each update and container and fails if _path_ holds none. The default is empty: no
 	microcode. *ob image --microcode* and *ob run --microcode* override it.
 	See *MICROCODE* in *dukovo-boot*(7).
 

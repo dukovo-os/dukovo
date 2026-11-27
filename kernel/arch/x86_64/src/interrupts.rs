@@ -122,78 +122,145 @@ radix_isr_stubs:
     jmp radix_isr_common
     .set vector, vector + 1
     .endr
+    "#,
+    options(att_syntax)
+);
 
+// What every stub jumps to: the registers saved, GS base and the
+// speculation controls set for the kernel, the handler called, and all of
+// it undone on the way out.
+core::arch::global_asm!(
+    r#"
+    .section .text.isr, "ax"
+    .global radix_isr_common
 radix_isr_common:
     cld
-    pushq %rax
-    pushq %rbx
-    pushq %rcx
-    pushq %rdx
-    pushq %rbp
-    pushq %rsi
-    pushq %rdi
-    pushq %r8
-    pushq %r9
-    pushq %r10
-    pushq %r11
-    pushq %r12
-    pushq %r13
-    pushq %r14
-    pushq %r15
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
     /* RBX (saved above, callee-saved across the call) says whether GS
-       base was swapped on the way in. */
-    xorl %ebx, %ebx
-    testb $3, 18*8(%rsp)
+       base was swapped on the way in. R12, also callee-saved, holds the
+       IA32_SPEC_CTRL value to put back on the way out, with bit 32 set,
+       where the NMI and machine-check site below saved one. */
+    xor ebx, ebx
+    xor r12d, r12d
+    test byte ptr [rsp + 18 * 8], 3
     jz 1f
     swapgs
-    movl $1, %ebx
+    mov ebx, 1
+"#,
+    crate::speculation::entry_sites!(),
+    r#"
     jmp 3f
 1:
     /* Kernel mode: an interrupt finds the kernel's GS base, but an
        exception may not, so it reads GS base, which is the kernel's when
        its top bit is set. */
-    cmpq $32, 15*8(%rsp)
+    cmp qword ptr [rsp + 15 * 8], 32
     jae 3f
-    movl $0xc0000101, %ecx
+    mov ecx, 0xc0000101
     rdmsr
-    testl %edx, %edx
-    js 3f
+    test edx, edx
+    js 2f
     swapgs
-    movl $1, %ebx
-    orq ${user_gs}, 15*8(%rsp)
+    mov ebx, 1
+    or qword ptr [rsp + 15 * 8], {user_gs}
+2:
+    /* An NMI or a machine check can arrive while IA32_SPEC_CTRL holds a
+       program's value: just after a system call's entry, or just before
+       its exit. It runs with the kernel's, and puts the program's back on
+       its way out. */
+"#,
+    crate::speculation::site!(
+        "site_spec_ctrl_paranoid",
+        "cmp qword ptr [rsp + 15 * 8], 2",
+        "je 667f",
+        "cmp qword ptr [rsp + 15 * 8], 18",
+        "jne 668f",
+        "667:",
+        "mov ecx, 0x48",
+        "rdmsr",
+        "mov r12d, eax",
+        "bts r12, 32",
+        crate::speculation::write_spec_ctrl!("spec_ctrl_kernel"),
+        "668:",
+    ),
+    r#"
 3:
-    cmpb $0, {smap}(%rip)
+    /* Both sides of the SWAPGS decision stop here until it is settled, so
+       that no handler runs speculatively with the wrong GS base (Spectre
+       variant 1). */
+"#,
+    crate::speculation::site!("site_swapgs_fence", "lfence"),
+    r#"
+    cmp byte ptr [rip + {smap}], 0
     je 4f
     clac
 4:
     /* Fake frame record: interrupted RIP above interrupted RBP. */
-    pushq 17*8(%rsp)
-    pushq %rbp
-    movq %rsp, %rbp
-    leaq 16(%rsp), %rdi
+    push qword ptr [rsp + 17 * 8]
+    push rbp
+    mov rbp, rsp
+    lea rdi, [rsp + 16]
     call radix_trap_dispatch
 radix_isr_return:
-    addq $16, %rsp
-    testl %ebx, %ebx
+    add rsp, 16
+"#,
+    crate::speculation::site!(
+        "site_spec_ctrl_paranoid",
+        "bt r12, 32",
+        "jnc 667f",
+        "mov ecx, 0x48",
+        "mov eax, r12d",
+        "xor edx, edx",
+        "wrmsr",
+        "667:",
+    ),
+    r#"
+    test byte ptr [rsp + 18 * 8], 3
+    jz 6f
+"#,
+    crate::speculation::exit_sites!(),
+    r#"
+6:
+    test ebx, ebx
     jz 5f
     swapgs
 5:
-    popq %r15
-    popq %r14
-    popq %r13
-    popq %r12
-    popq %r11
-    popq %r10
-    popq %r9
-    popq %r8
-    popq %rdi
-    popq %rsi
-    popq %rbp
-    popq %rdx
-    popq %rcx
-    popq %rbx
-    popq %rax
-    addq $16, %rsp
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    add rsp, 16
+    test byte ptr [rsp + 8], 3
+    jz 7f
+"#,
+    crate::speculation::verw_site!(),
+    r#"
+7:
     iretq
 
     /* A machine check in user mode that ends the program
@@ -203,18 +270,28 @@ radix_isr_return:
        It goes on there as the stub above does, GS base swapped. */
     .global radix_isr_user_machine_check
 radix_isr_user_machine_check:
-    movq %rdi, %rsp
-    movl $1, %ebx
-    pushq 17*8(%rsp)
-    pushq 11*8(%rsp)
-    movq %rsp, %rbp
-    leaq 16(%rsp), %rdi
+    mov rsp, rdi
+    mov ebx, 1
+    xor r12d, r12d
+    push qword ptr [rsp + 17 * 8]
+    push qword ptr [rsp + 11 * 8]
+    mov rbp, rsp
+    lea rdi, [rsp + 16]
     call radix_trap_user_machine_check
     jmp radix_isr_return
     "#,
     smap = sym crate::paging::SMAP,
     user_gs = const USER_GS_IN_KERNEL,
-    options(att_syntax)
+    spec_ctrl_kernel = sym crate::speculation::SPEC_CTRL_KERNEL,
+    spec_ctrl_user = sym crate::speculation::SPEC_CTRL_USER,
+    verw_selector = sym crate::speculation::VERW_SELECTOR,
+    site_spec_ctrl_entry = const crate::speculation::Site::SpecCtrlEntry as u8,
+    site_spec_ctrl_exit = const crate::speculation::Site::SpecCtrlExit as u8,
+    site_spec_ctrl_paranoid = const crate::speculation::Site::SpecCtrlParanoid as u8,
+    site_ibpb_entry = const crate::speculation::Site::IbpbEntry as u8,
+    site_verw_exit = const crate::speculation::Site::VerwExit as u8,
+    site_div0_exit = const crate::speculation::Site::Div0Exit as u8,
+    site_swapgs_fence = const crate::speculation::Site::SwapgsFence as u8,
 );
 
 /// Set in a frame's vector word by the entry stub: the exception came in
@@ -541,10 +618,10 @@ fn handle(vector: u8, frame: &mut TrapFrame) {
     }
 }
 
-/// Where a protection fault resumes, if it was a read of an MSR that may
-/// not exist (`cpu::rdmsr_safe`).
+/// Where a protection fault resumes, if it was a read or a write of an
+/// MSR that may not exist (`cpu::rdmsr_safe`, `cpu::wrmsr_safe`).
 fn msr_fixup(vector: u8, frame: &TrapFrame) -> Option<u64> {
-    if vector == 13 { cpu::rdmsr_fixup(frame.rip) } else { None }
+    if vector == 13 { cpu::msr_fixup(frame.rip) } else { None }
 }
 
 /// Where a kernel-mode page or protection fault resumes, if it hit a user

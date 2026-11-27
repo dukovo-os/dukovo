@@ -58,11 +58,15 @@ const ADDRESS: u64 = 0x000f_ffff_ffff_f000;
 /// A software bit of a leaf entry that is not present: the entry still
 /// holds its frame, which a program may not reach for now (a page of
 /// anonymous memory under `PROT_NONE`). The CPU ignores every other bit
-/// of an entry that is not present.
+/// of an entry that is not present, but for L1TF: a processor with it
+/// reads ahead from its cache at the entry's address before it faults, so
+/// the address bits keep the frame inverted, past the top of memory
+/// ([`held_entry`], ADR 0790).
 const HELD: u64 = 1 << 9;
 /// A software bit of a leaf entry that is not present: the page is
-/// swapped out, and the entry's address bits hold its swap slot rather
-/// than a frame (ADR 0152).
+/// swapped out, and the entry holds its swap slot rather than a frame
+/// (ADR 0152): the slot's area in bits 52 to 59, and its page inverted in
+/// the address bits, as [`HELD`]'s frame is ([`swap_entry`]).
 const SWAPPED: u64 = 1 << 10;
 /// The bit the CPU sets in an entry it reads a page through.
 const ACCESSED: u64 = 1 << 5;
@@ -343,7 +347,7 @@ impl AddressSpace {
         if entry & PRESENT != 0 {
             Some((entry & ADDRESS, Some(paging::access_of(entry))))
         } else if entry & HELD != 0 {
-            Some((entry & ADDRESS, None))
+            Some((held_frame(entry), None))
         } else {
             None
         }
@@ -374,7 +378,7 @@ impl AddressSpace {
                     }
                     each(virt, Scanned::Frame { phys: entry & ADDRESS, used })
                 } else {
-                    each(virt, Scanned::Swapped((entry & ADDRESS) >> 12))
+                    each(virt, Scanned::Swapped(swap_slot(entry)))
                 }
             });
         }
@@ -420,7 +424,7 @@ impl AddressSpace {
     pub fn swapped(&self, virt: u64) -> Option<u64> {
         let _guard = self.lock.lock();
         let entry = page_entry(self.pml4, virt)?;
-        (entry & (PRESENT | SWAPPED) == SWAPPED).then_some((entry & ADDRESS) >> 12)
+        (entry & (PRESENT | SWAPPED) == SWAPPED).then_some(swap_slot(entry))
     }
 
     /// Takes every swapped-out page from `start` to `end` out of the
@@ -433,7 +437,7 @@ impl AddressSpace {
                 let entry = slot.load(Ordering::Relaxed);
                 if entry & PRESENT == 0 {
                     slot.store(0, Ordering::Relaxed);
-                    each((entry & ADDRESS) >> 12);
+                    each(swap_slot(entry));
                 }
                 true
             });
@@ -605,6 +609,7 @@ impl AddressSpace {
         here.lazy.store(false, Ordering::Relaxed);
         let previous = here.space.swap(this, Ordering::Relaxed);
         if previous != this {
+            crate::speculation::switched_space(me, this);
             self.set_active(me, true);
             fence(Ordering::SeqCst);
             let generation = self.tlb_generation.load(Ordering::SeqCst);
@@ -723,6 +728,7 @@ impl AddressSpace {
             self.active.iter().all(|word| word.load(Ordering::SeqCst) == 0),
             "destroying an address space that a CPU runs"
         );
+        crate::speculation::forget_space(core::ptr::from_ref::<AddressSpace>(self) as usize);
         free_tables(self.pml4, 4, 0..256);
         memory::free_pages(self.pml4, 1, Owner::PageTable);
         // Its PCID stays taken until the next rollover, so no CPU uses the
@@ -758,15 +764,68 @@ struct Walk<'a> {
 fn leaf_entry(frame: u64, access: Option<Access>) -> u64 {
     match access {
         Some(access) => frame | paging::user_flags(access),
-        None => frame | HELD,
+        None => held_entry(frame),
     }
 }
 
-/// The entry of a page swapped out to `slot`.
+/// The entry that holds `frame` without access. Its address bits are the
+/// frame's inverted, as Linux keeps those of every entry that is not
+/// present, so that they name no memory for L1TF to read ahead from: the
+/// top half of the physical addresses (ADR 0790).
+const fn held_entry(frame: u64) -> u64 {
+    !frame & ADDRESS | HELD
+}
+
+/// The frame of a [`held_entry`].
+const fn held_frame(entry: u64) -> u64 {
+    !entry & ADDRESS
+}
+
+/// The bits of a swap slot that number its page in its area
+/// (`radix::swap`).
+const SLOT_PAGE: u64 = u32::MAX as u64;
+
+/// The entry of a page swapped out to `slot`: the slot's page inverted in
+/// the address bits, as [`held_entry`] keeps a frame, so that L1TF reads
+/// ahead from none of the lower half's memory while the page is under
+/// half the physical addresses' span, and the area in bits 52 to 59,
+/// which no processor reads ahead from.
 fn swap_entry(slot: u64) -> u64 {
     assert!(slot < 1 << 40, "swap slot {slot:#x} does not fit an entry");
-    slot << 12 | SWAPPED
+    swap_bits(slot)
 }
+
+/// [`swap_entry`], for a slot below 2^40.
+const fn swap_bits(slot: u64) -> u64 {
+    (slot >> 32) << 52 | !((slot & SLOT_PAGE) << 12) & ADDRESS | SWAPPED
+}
+
+/// The slot of a [`swap_entry`].
+const fn swap_slot(entry: u64) -> u64 {
+    (entry >> 52 & 0xff) << 32 | (!entry & ADDRESS) >> 12 & SLOT_PAGE
+}
+
+// Every frame and slot comes back from its entry, which is not present,
+// and the first pages of an area, as the first frames, name the top of
+// the physical addresses.
+const _: () = {
+    let slots = [0, 1, SLOT_PAGE, 1 << 32, 7 << 32 | 0x1234_5678, (1 << 40) - 1];
+    let mut at = 0;
+    while at < slots.len() {
+        let entry = swap_bits(slots[at]);
+        assert!(swap_slot(entry) == slots[at] && entry & (PRESENT | HELD) == 0);
+        at += 1;
+    }
+    let frames = [0, PAGE, 0x1_2345_6000, ADDRESS];
+    let mut at = 0;
+    while at < frames.len() {
+        let entry = held_entry(frames[at]);
+        assert!(held_frame(entry) == frames[at] && entry & (PRESENT | SWAPPED) == 0);
+        at += 1;
+    }
+    assert!(swap_bits(5) & ADDRESS == ADDRESS - (5 << 12));
+    assert!(held_entry(PAGE) & ADDRESS == ADDRESS - PAGE);
+};
 
 /// Calls `each` with the address and entry of every leaf of the table at
 /// `phys`, of `level` (4 for the PML4), mapping from `base`, from `start`
@@ -993,7 +1052,7 @@ impl<'a> Walk<'a> {
                     continue;
                 }
                 let virt = base + index as u64 * PAGE;
-                let frame = entry & ADDRESS;
+                let frame = if present { entry & ADDRESS } else { held_frame(entry) };
                 let access = present.then(|| paging::access_of(entry));
                 let (edit, copy) = (self.decide)(virt, frame, access);
                 if let (Some(to), Some(access)) = (self.to, copy) {

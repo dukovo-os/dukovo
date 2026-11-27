@@ -12,6 +12,8 @@
 
 use core::alloc::Allocator;
 
+use radix_sync::nospec;
+
 use super::objects::{Entry, Indexes, Located};
 use super::slots::{Slot, SpaceState, two_slots};
 use super::{Capabilities, Extent, Released, SlotRef, SpaceId};
@@ -316,10 +318,13 @@ impl<A: Allocator + Clone, K: Located> SpaceView<'_, A, K> {
         if at.space != self.id {
             return Err(CapError::NoSuchSpace);
         }
-        if at.slot as usize >= self.state.slots.len() {
+        let len = self.state.slots.len();
+        if at.slot as usize >= len {
             return Err(CapError::NoSuchSlot);
         }
-        Ok(at.slot as usize)
+        // A slot the processor guesses in range, while the check is still
+        // to be done, is slot 0 meanwhile (Spectre v1, ADR 0790).
+        Ok(nospec::index(at.slot as usize, len))
     }
 
     /// The index of `at`, which must hold a capability.

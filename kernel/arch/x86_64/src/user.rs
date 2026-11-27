@@ -269,10 +269,20 @@ radix_syscall_entry:
     push rax
     /* A zero frame pointer ends kernel backtraces here. */
     xor ebp, ebp
+"#,
+    crate::speculation::entry_sites!(),
+    crate::speculation::site!("site_bhb_clear", "call radix_clear_bhb"),
+    r#"
     mov rdi, rsp
     call radix_syscall_dispatch
     cli
-    test eax, eax
+    /* ESI keeps the result while the exit sites use EAX, ECX and EDX;
+       both ways out load RSI from the saved registers. */
+    mov esi, eax
+"#,
+    crate::speculation::exit_sites!(),
+    r#"
+    test esi, esi
     jnz 1f
     pop rax
     pop rdi
@@ -291,6 +301,9 @@ radix_syscall_entry:
     pop r11
     pop rsp
     swapgs
+"#,
+    crate::speculation::verw_site!(),
+    r#"
     sysretq
 
 1:
@@ -318,12 +331,18 @@ radix_syscall_entry:
     mov rcx, gs:[{full_rcx}]
     mov r11, gs:[{full_r11}]
     swapgs
+"#,
+    crate::speculation::verw_site!(),
+    r#"
     iretq
 
     .global radix_enter_user_registers
 radix_enter_user_registers:
     /* RDI points at a UserRegisters. */
     cli
+"#,
+    crate::speculation::exit_sites!(),
+    r#"
     push {user_ds}
     push qword ptr [rdi + 15 * 8]
     push qword ptr [rdi + 17 * 8]
@@ -345,11 +364,20 @@ radix_enter_user_registers:
     mov rcx, [rdi + 112]
     mov rdi, [rdi + 64]
     swapgs
+"#,
+    crate::speculation::verw_site!(),
+    r#"
     iretq
 
     .global radix_enter_user
 radix_enter_user:
     cli
+    /* R8 keeps the third argument while the exit sites use EDX. */
+    mov r8, rdx
+"#,
+    crate::speculation::exit_sites!(),
+    r#"
+    mov rdx, r8
     mov rcx, rdi
     mov r11, {initial_flags}
     mov rsp, rsi
@@ -367,6 +395,9 @@ radix_enter_user:
     xor r14d, r14d
     xor r15d, r15d
     swapgs
+"#,
+    crate::speculation::verw_site!(),
+    r#"
     sysretq
 
     .global radix_user_copy
@@ -376,6 +407,10 @@ radix_user_copy:
     je 2f
     stac
 2:
+    /* The caller checked that the program's range is its own; no copy
+       starts before that check is settled, whichever way the CPU
+       predicted it (Spectre variant 1). */
+    lfence
     // Short copies go by bytes and words, from the end (SHORT_MAX).
     cmp rcx, {short_max}
     jbe 5f
@@ -452,6 +487,15 @@ radix_user_copy_back_end:
     backward_min = const BACKWARD_MIN,
     backward_window = const BACKWARD_WINDOW,
     short_max = const SHORT_MAX,
+    spec_ctrl_kernel = sym crate::speculation::SPEC_CTRL_KERNEL,
+    spec_ctrl_user = sym crate::speculation::SPEC_CTRL_USER,
+    verw_selector = sym crate::speculation::VERW_SELECTOR,
+    site_spec_ctrl_entry = const crate::speculation::Site::SpecCtrlEntry as u8,
+    site_spec_ctrl_exit = const crate::speculation::Site::SpecCtrlExit as u8,
+    site_ibpb_entry = const crate::speculation::Site::IbpbEntry as u8,
+    site_bhb_clear = const crate::speculation::Site::BhbClear as u8,
+    site_verw_exit = const crate::speculation::Site::VerwExit as u8,
+    site_div0_exit = const crate::speculation::Site::Div0Exit as u8,
 );
 
 /// The longest copy made by loads and stores from the end rather than

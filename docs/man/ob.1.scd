@@ -265,10 +265,11 @@ _target/userspace/_).
 		*"kdb loglevel=debug"*. *dukovo-boot*(7) lists the flags.
 
 	*--microcode* _path_
-		Add the Intel microcode updates in _path_, a file or a directory
-		such as _/lib/firmware/intel-ucode_, instead of those named by
-		*image.microcode*. Every update is checked, and the command fails
-		if _path_ holds none. See *MICROCODE* in *dukovo-boot*(7).
+		Add the Intel updates and AMD containers in _path_, a file or a
+		directory such as _/lib/firmware/intel-ucode_ or
+		_/lib/firmware/amd-ucode_, or one that holds both, instead of
+		those named by *image.microcode*. Every update and container is
+		checked, and the command fails if _path_ holds none. See *MICROCODE* in *dukovo-boot*(7).
 
 	*--disk-check* _serial_
 		Add a second boot menu entry, *Dukovo disk check: erases the disk
@@ -1794,8 +1795,8 @@ _target/userspace/_).
 	calls on a tmpfs, and last the same POSIX benchmarks, built from the
 	same file with this machine's C library, with the same disk, card
 	and disc opened with *O_DIRECT*). This
-	Linux boots with *mitigations=off*, since Radix has no mitigations of
-	CPU vulnerabilities yet. Under KVM, Radix and this Linux are measured
+	Linux boots with its default protections against CPU vulnerabilities,
+	as Radix does. Under KVM, Radix and this Linux are measured
 	three times in turn, and each operation counts its fastest run on
 	each side. Last, run _tools/linux-bench_ on this machine too, for
 	reference.
@@ -3146,10 +3147,11 @@ gdb -x out/qemu/radix.gdb
 ```
 
 Build an image that loads Intel microcode, here from Debian's
-*intel-microcode* package:
+*intel-microcode* package, or AMD's, from its *amd64-microcode* package:
 
 ```
 ./ob image --microcode /lib/firmware/intel-ucode
+./ob image --microcode /lib/firmware/amd-ucode
 ```
 
 Build the image and write it to a USB stick. Check the device name with

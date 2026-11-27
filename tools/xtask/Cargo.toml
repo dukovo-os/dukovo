@@ -17,6 +17,7 @@ publish.workspace = true
 # updates), and the lists of kernel flags and kdb commands that `ob docs
 # --check` compares with the manual pages.
 radix-bootfs = { path = "../../kernel/lib/bootfs", features = ["write"] }
+radix-cpuflaws = { path = "../../kernel/lib/cpuflaws" }
 radix-fbcon = { path = "../../kernel/lib/fbcon" }
 radix-hal = { path = "../../kernel/hal" }
 radix-kdb = { path = "../../kernel/lib/kdb" }

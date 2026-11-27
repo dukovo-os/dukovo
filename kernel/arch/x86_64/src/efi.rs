@@ -403,7 +403,9 @@ fn call(function: u64, args: [u64; 5]) -> Result<u64, VariableError> {
     // reads has bit 63 clear, so loading it again flushes its PCID.
     let status = unsafe {
         cpu::write_cr3(runtime.pml4);
+        crate::speculation::firmware_enter();
         let status = radix_efi_call(function, &raw const args, runtime.stack_top);
+        crate::speculation::firmware_exit();
         cpu::write_cr3(cr3);
         status
     };

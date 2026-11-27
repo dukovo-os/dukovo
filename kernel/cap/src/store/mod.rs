@@ -81,7 +81,7 @@ use core::alloc::Allocator;
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use radix_sync::{Mutex, MutexGuard, Once};
+use radix_sync::{Mutex, MutexGuard, Once, nospec};
 
 use crate::cap::{Capability, Derivation};
 use crate::error::CapError;
@@ -347,7 +347,12 @@ impl<A: Allocator + Clone, K: Located> Capabilities<A, K> {
 
     /// The space with index `index`, if its block was made.
     fn space(&self, index: u32) -> Option<&Space<A>> {
-        let block = self.blocks.get(index as usize / BLOCK)?.get()?;
+        let (at, blocks) = (index as usize / BLOCK, self.blocks.len());
+        if at >= blocks {
+            return None;
+        }
+        // Spectre v1, as for a slot ([`SpaceView`]'s index).
+        let block = self.blocks[nospec::index(at, blocks)].get()?;
         block.get(index as usize % BLOCK)
     }
 
@@ -710,11 +715,13 @@ impl<A: Allocator + Clone, K: Located> Capabilities<A, K> {
         } else {
             (&mut second_state, &mut first_state)
         };
-        let (Some(src), Some(dst)) =
-            (src.slots.get_mut(from.slot as usize), dst.slots.get_mut(to.slot as usize))
-        else {
+        let (from_len, to_len) = (src.slots.len(), dst.slots.len());
+        if from.slot as usize >= from_len || to.slot as usize >= to_len {
             return Err(CapError::NoSuchSlot);
-        };
+        }
+        // Spectre v1, as for a slot ([`SpaceView`]'s index).
+        let src = &mut src.slots[nospec::index(from.slot as usize, from_len)];
+        let dst = &mut dst.slots[nospec::index(to.slot as usize, to_len)];
         let Some(cap) = src.cap else { return Err(CapError::Empty) };
         if dst.cap.is_some() {
             return Err(CapError::Occupied);

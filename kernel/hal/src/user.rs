@@ -354,6 +354,14 @@ pub trait UserMode: crate::Threads {
     /// CPU can reach the frame.
     fn swap_out(space: &Self::Space, virt: u64, phys: u64, slot: u64) -> bool;
 
+    /// The most pages a swap area may span, which may be fewer than its
+    /// slots' numbers reach: on x86 the page tables keep a slot's page
+    /// inverted, above the memory a processor with L1TF could read ahead
+    /// from through it, only below a limit (ADR 0790).
+    fn swap_pages() -> u64 {
+        u64::MAX
+    }
+
     /// Takes the frame at `phys`, whose memory went bad, out of the page at
     /// `virt`: if the page still maps it, used or not, the page holds swap
     /// slot `slot` instead, and `true` says so once no CPU can reach the

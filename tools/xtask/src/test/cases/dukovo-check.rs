@@ -8,7 +8,7 @@
 //!
 //! A check through elevate on the system as it was installed finds no
 //! warning and ends with status 0, in under 5 seconds where the machine
-//! has KVM: 16 lines, the firewall service said to have loaded its rules,
+//! has KVM: 17 lines, the firewall service said to have loaded its rules,
 //! SSH off, alice the one administrator, no channel for alerts beyond the
 //! screens (which is no warning), and the snapshots made. Where the
 //! computer has been up too short a while for updated and timed to have
@@ -27,7 +27,7 @@ use super::super::*;
 
 pub const CASE: Case = Case {
     name: "dukovo-check",
-    about: "dukovo-check on an installed system: a user who is no root is refused with status 3; through elevate the system as installed ends with status 0, 16 lines and no warning, in under 5 seconds with KVM, the alerts line passing with no channel set up; --last as alice, who is in admins, shows the same; with sshd on, PasswordAuthentication yes gives SEC-110 and SEC-111 and status 2, with the run's line and both IDs in the log, and --json and --last --json print the same file, kept with mode 0640 for admins; with passwords off again the check passes",
+    about: "dukovo-check on an installed system: a user who is no root is refused with status 3; through elevate the system as installed ends with status 0, 17 lines and no warning, in under 5 seconds with KVM, the alerts line passing with no channel set up; --last as alice, who is in admins, shows the same; with sshd on, PasswordAuthentication yes gives SEC-110 and SEC-111 and status 2, with the run's line and both IDs in the log, and --json and --last --json print the same file, kept with mode 0640 for admins; with passwords off again the check passes",
     firmware: Firmware::Uefi,
     media: Media::Disk,
     cmdline: "",
@@ -153,7 +153,7 @@ fn dukovo_check(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     answer_prompt_within(vm, "$", &format!("clear; {}", reading.join("; ")), 60)?;
     vm.expect_screen(&[
         "clean 0",
-        "clean-lines 16",
+        "clean-lines 17",
         "clean-warned 0",
         "clean-summary 1",
         "clean-ssh 1",

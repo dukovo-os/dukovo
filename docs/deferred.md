@@ -136,7 +136,6 @@ machine with AMT, an AMD machine and a laptop; see
 | Each slot's release list kept beside it, so that `sysupdate check` reads none of the slot's files (ADR 0466) | A check reads the running slot's files whose size matches a wanted one, as a stage does | A need |
 | The three cloud canaries (ADRs 0456, 0533) | The reference machine and the lab machines are the canaries: each reports every hour, and one that fails or goes quiet holds the waves | Buying the cloud machines, before 1.0.0-alpha.1 |
 | Firmware that drivers load for their cards, in firmware sets, with a per-device check that the driver loaded it (ADR 0468) | Sets hold CPU microcode only; no driver Dukovo has loads firmware yet | A port: the first driver that needs firmware (Wi-Fi, release 1.11) |
-| AMD CPU microcode in firmware sets (ADRs 0014, 0468) | The kernel's loader is Intel's; AMD's patches have their own format and loader | A need |
 | Disks other than the root's in the health check's device record (ADR 0468) | Data disks, USB disks and discs come and go with their owner, so a missing one says nothing of the update | A need |
 | A summary of the last starts on the EFI system partition, for a root Rescue cannot mount (ADRs 0500, 0501) | Rescue reads the root's records, and says how many starts the boot menu counted as not seen through | A need |
 | A boot test that starts Repair startup from the install stick's menu entry, on the hotkey R, and one of a repair that finds the partition readable, with only GRUB or its menu gone (ADR 0503) | The `repair-startup` boot test runs the repair from the live system's shell, on a partition whose FAT is overwritten with zeros, and restarts from the stick in place; the entry and the readable case have unit tests, and the lab test waits too (Lab machines and harness) | When the boot tests gain a third boot |
@@ -290,6 +289,14 @@ machine with AMT, an AMD machine and a laptop; see
 | NUMA tested beyond QEMU's emulated nodes: every device on its node, and memory placement, on two sockets | QEMU's nodes are emulated, and the lab has no two-socket machine yet | Phase 19 step 15, on the reference server |
 | Machine-check counts by DIMM slot | The kernel counts errors by bank, and names no memory module | Phase 19 step 4 |
 | SFP+ modules: their information, and fiber ports | No driver reads a module's EEPROM, and the cards with cages are the server cards | Phase 19 step 12 |
+
+### Speculation flaws before 1.0.0-beta.1
+
+| Item | Why it waits | Waits on |
+| --- | --- | --- |
+| Retpolines and return thunks, patched in at boot as the entry and exit protections are, for Spectre v2, Retbleed, SRSO and ITS (ADRs 0790, 0791) | On AMD's Zen 1 to 3, Spectre v2, Retbleed and SRSO read `Vulnerable`, and ITS does on the Intel parts it touches, unless `spectre_v2=ibrs`, `retbleed=ibpb` or `spec_rstack_overflow=ibpb` closes them at a higher cost | The next change of the work, before 1.0.0-beta.1 |
+| Kernel page-table isolation for Meltdown (ADR 0790) | Meltdown reads `Vulnerable` on Intel's parts from before 2019, among them the OptiPlex 7040's Core i5-6500 | The change after the retpolines, before 1.0.0-beta.1 |
+| A program's own speculation controls, `prctl(PR_SET_SPECULATION_CTRL)` and seccomp's, for Speculative Store Bypass and IBPB between programs (ADR 0790) | Speculative Store Bypass is closed only for every program at once (`spec_store_bypass_disable=on`), and IBPB between programs only with `spectre_v2_user=on` | Phase 18's `prctl`, with the retpolines |
 
 ### Releases after 1.0
 

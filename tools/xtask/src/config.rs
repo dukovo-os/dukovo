@@ -71,9 +71,10 @@ impl Default for Boot {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Image {
-    /// Intel microcode to load at boot: a file of updates, or a directory
-    /// such as `/lib/firmware/intel-ucode` whose files are all included.
-    /// Empty for none.
+    /// Intel or AMD microcode to load at boot: a file of updates, or a
+    /// directory such as `/lib/firmware/intel-ucode` or
+    /// `/lib/firmware/amd-ucode` whose files are all included. Empty for
+    /// none.
     pub microcode: String,
 }
 
