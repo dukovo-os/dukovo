@@ -612,7 +612,9 @@ fn write_etc(
     if let Ok(text) = fs::read_to_string("/system/libraries/os-release") {
         put("os-release", &text)?;
     }
-    let store = Path::new(home).join(bundled::APP_DATA).join("linux").join(".machine-id");
+    // A bundle's program keeps its data in the bundle's folder, so this
+    // may be the first of the person's Linux programs to need app-data/linux.
+    let store = private::linux_folder(home, user.uid).map_err(refused)?.join(".machine-id");
     let random = || {
         let mut bytes = [0u8; 16];
         File::open("/devices/urandom")?.read_exact(&mut bytes)?;

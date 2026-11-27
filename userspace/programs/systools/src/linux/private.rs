@@ -139,6 +139,22 @@ pub fn machine_id(
     Ok(text)
 }
 
+/// The folder of the person's Linux programs' data, made with its parent
+/// beneath `home`: `app-data/linux`, which keeps the machine ID, and each
+/// program's own folder when `linux run` runs it.
+///
+/// # Errors
+///
+/// If a folder is there and not the person's, or cannot be made.
+pub fn linux_folder(home: &str, uid: u32) -> Result<PathBuf, String> {
+    let mut path = PathBuf::from(home);
+    for part in [crate::bundled::APP_DATA, "linux"] {
+        path.push(part);
+        own_data_folder(&path, uid)?;
+    }
+    Ok(path)
+}
+
 /// The folder of the program's own data, made with its parents beneath
 /// `home`: `app-data/linux/NAME`.
 ///
@@ -146,13 +162,15 @@ pub fn machine_id(
 ///
 /// If a folder is there and not the person's, or cannot be made.
 pub fn data_folder(home: &str, uid: u32, name: &str) -> Result<PathBuf, String> {
-    let mut path = PathBuf::from(home);
-    for part in [crate::bundled::APP_DATA, "linux", name] {
-        path.push(part);
-        let text = path.to_str().ok_or_else(|| format!("{}: not text", path.display()))?;
-        folder_of(text, uid, 0o700)?;
-    }
+    let path = linux_folder(home, uid)?.join(name);
+    own_data_folder(&path, uid)?;
     Ok(path)
+}
+
+/// Makes the folder `path` the person `uid`'s, as [`folder_of`] does.
+fn own_data_folder(path: &Path, uid: u32) -> Result<(), String> {
+    let text = path.to_str().ok_or_else(|| format!("{}: not text", path.display()))?;
+    folder_of(text, uid, 0o700)
 }
 
 /// The name of a program's data folder: the file's name, with what is not
@@ -265,6 +283,19 @@ mod tests {
         assert!(folder.is_dir());
         // Again, with the folders there.
         assert_eq!(data_folder(scratch.text(), uid(), "hello").unwrap(), folder);
+    }
+
+    #[test]
+    fn the_machine_id_has_its_folder_before_any_program_has_one() {
+        // A bundle's program keeps its data in the bundle's folder: the
+        // machine ID may be the first thing in app-data/linux.
+        let scratch = Scratch::new("linux-folder");
+        let folder = linux_folder(scratch.text(), uid()).unwrap();
+        assert_eq!(folder, scratch.0.join("app-data/linux"));
+        let id = machine_id(&folder.join(".machine-id"), || Ok([0x5e; 16])).unwrap();
+        assert_eq!(fs::read_to_string(folder.join(".machine-id")).unwrap(), id);
+        // Again, with the folder there.
+        assert_eq!(linux_folder(scratch.text(), uid()).unwrap(), folder);
     }
 
     #[test]
