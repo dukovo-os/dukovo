@@ -825,12 +825,12 @@ static void bundles(void) {
 	STATUS(1, "/bin/bundle", "check", DIR "/notes");
 	write_file(DIR "/notes/bin/notes", "#!/bin/sh\necho notes\n");
 	STATUS(0, "/bin/chmod", "755", DIR "/notes/bin/notes");
-	OUTPUT("", DIR "/notes/manifest.json: ok: org.example.notes 0.1.0, manifest version 1\n",
+	OUTPUT("", DIR "/notes/manifest.json: ok: org.example.notes 0.1.0, manifest version 2\n",
 			"/bin/bundle", "check", DIR "/notes");
-	OUTPUT("", DIR "/notes/manifest.json: manifest version 1, the newest this Dukovo reads: "
+	OUTPUT("", DIR "/notes/manifest.json: manifest version 2, the newest this Dukovo reads: "
 			   "nothing to upgrade\n",
 			"/bin/bundle", "upgrade-manifest", DIR "/notes/manifest.json");
-	write_file(DIR "/later.json", "{\n  \"manifest_version\": 2,\n  \"entries\": {}\n}\n");
+	write_file(DIR "/later.json", "{\n  \"manifest_version\": 3,\n  \"entries\": {}\n}\n");
 	STATUS(1, "/bin/bundle", "check", DIR "/later.json");
 	CONTAINS("  \"title\": \"Manifest\",\n", "/bin/sh", "-c", "/bin/bundle schema | /bin/head -n 5");
 	// Signed with the developer key, packed, checked and unpacked by the
