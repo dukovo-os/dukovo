@@ -115,6 +115,11 @@ branches and returns were found and how each runs.
   no-ops or traps, at the cost of a slightly larger image.
 - The running text differs from the image at every site the processor
   needs changed.
+- QEMU's emulation without KVM, on which the instruction budgets are
+  counted, names its processor AMD's with a family before Zen, so its
+  indirect branches go through the retpoline: a system call's entry and
+  exit take 192 instructions where they took 182, and the budgets of the
+  operations that grew near theirs are set again from the new counts.
 - Hand-written assembly that returns, or branches through a register,
   writes `radix_ret` or `radix_call_r11` inside the blocks that
   `asm_begin!` starts; the only plain returns left in the image are those
