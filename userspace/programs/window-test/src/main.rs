@@ -14,11 +14,17 @@
 //! which lent the desktop the screens: the desktop goes on. `alone` goes
 //! through what needs nobody at the keyboard and leaves consoled be, for
 //! a machine in the lab.
+//!
+//! `in-desktop` starts the desktop itself, with the program in it, once
+//! consoled is there to lend the screens. A boot test's command starts
+//! with the services, where a person's starts at a console that
+//! consoled already shows.
 
 #![forbid(unsafe_code)]
 
+use std::path::Path;
 use std::process::{Command, ExitCode};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use display_pattern::said::{Rect, Said, WINDOW_START};
 use window_test::{Client, DESKTOP, Heard, Outcome, Screen};
@@ -251,6 +257,30 @@ fn alone() -> Outcome {
     Ok(())
 }
 
+/// The command that shows the desktop (desktop(1)).
+const DESKTOP_COMMAND: &str = "/system/commands/desktop";
+
+/// How long consoled may take to start.
+const LENDER_PATIENCE: Duration = Duration::from_secs(60);
+
+/// Runs the desktop with this program in it, which goes through `inside`,
+/// once consoled listens for a program that asks for the screens: it
+/// does from when it has them to lend (consoled(8)). The program in the
+/// desktop says whether it passed, and the desktop ends as it did.
+fn in_desktop(inside: &[&str]) -> Outcome {
+    let until = Instant::now() + LENDER_PATIENCE;
+    while !Path::new(display::loan::SOCKET).exists() {
+        ensure(Instant::now() < until, || {
+            format!("consoled did not listen at {} in {LENDER_PATIENCE:?}", display::loan::SOCKET)
+        })?;
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let itself = std::env::current_exe().map_err(|err| format!("the program's own path: {err}"))?;
+    let ended = Command::new(DESKTOP_COMMAND).arg(itself).args(inside).status();
+    let ended = ended.map_err(|err| format!("{DESKTOP_COMMAND}: {err}"))?;
+    ensure(ended.success(), || format!("{DESKTOP_COMMAND}: {ended}"))
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -258,7 +288,12 @@ fn main() -> ExitCode {
         ["steps"] => steps(false),
         ["steps", "pointer-drawn"] => steps(true),
         ["alone"] => alone(),
-        _ => Err("usage: window-test steps [pointer-drawn] | alone".into()),
+        // The program in the desktop has said whether it passed.
+        ["in-desktop", ref inside @ ..] => match in_desktop(inside) {
+            Ok(()) => return ExitCode::SUCCESS,
+            failed => failed,
+        },
+        _ => Err("usage: window-test [in-desktop] steps [pointer-drawn] | alone".into()),
     };
     match outcome {
         Ok(()) => {

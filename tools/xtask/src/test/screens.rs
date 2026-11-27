@@ -338,9 +338,10 @@ impl Watch {
 /// Where Spark says how `display-test` ended.
 const ENDED: &str = "(/system/tests/posix/display-test) exited with code ";
 
-/// Where Spark says how the desktop ended, which ends as the command it
-/// ran did (desktop(1)): `window-test`.
-const DESKTOP_ENDED: &str = "(/system/commands/desktop) exited with code ";
+/// Where Spark says how the `window-test` that ran the desktop ended:
+/// as the desktop did, which ends as the command it ran (desktop(1)),
+/// the `window-test` in it.
+const DESKTOP_ENDED: &str = "(/system/tests/posix/window-test) exited with code ";
 
 /// Waits for `display-test` to end, and fails unless it passed.
 pub(super) fn passed(vm: &mut Vm) -> Result<(), String> {

@@ -11,6 +11,8 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+# Where consoled lends the screens, which `in-desktop` waits for.
+display = { path = "../display" }
 # The test patterns and the lines that say what each screen shows, which
 # the boot tests on the host read (tools/xtask/src/test/screens.rs).
 display-pattern = { path = "../display-pattern" }

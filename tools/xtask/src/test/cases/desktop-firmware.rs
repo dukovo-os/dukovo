@@ -23,7 +23,7 @@ pub const CASE: Case = Case {
     about: "the desktop's first window on the firmware's screen alone (ADR 0712), as `desktop-window`, with the pointer in the picture: a window's own pointer shows over it where the mouse put it, drawn by the kernel on a card with no pointer plane, pixel for pixel",
     firmware: Firmware::Uefi,
     media: Media::Usb,
-    cmdline: "lockdep console-sign-in=off -- --services --posix /system/commands/desktop /system/tests/posix/window-test steps pointer-drawn",
+    cmdline: "lockdep console-sign-in=off -- --services --posix /system/tests/posix/window-test in-desktop steps pointer-drawn",
     cpus: 2,
     memory: "1G",
     reboot: false,

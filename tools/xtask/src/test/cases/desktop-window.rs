@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! The desktop's first window (ADR 0712), on a machine whose one screen
-//! is a virtio graphics card's. Spark starts `desktop` (desktop(1)),
-//! which borrows the screens from consoled and runs window-test
-//! (userspace/programs/window-test), a program that shows one window and
+//! is a virtio graphics card's. Spark starts window-test
+//! (userspace/programs/window-test), which waits for consoled and runs
+//! `desktop` (desktop(1)) with itself in it. The desktop borrows the
+//! screens from consoled, and the window-test in it shows one window and
 //! says what the screen then shows: the desktop's colour and the
 //! window's picture in the middle. The host compares the screen with
 //! that, pixel for pixel, at every step, and presses the space bar,
@@ -34,7 +35,7 @@ pub const CASE: Case = Case {
     about: "the desktop's first window on a virtio graphics card (ADR 0712): `desktop` borrows the screens and runs a program whose window the host compares with what it says, pixel for pixel; keys, the mouse and its buttons reach the window; a program that cuts its pixels short is let go and the desktop draws on; Ctrl+Alt+F2 shows a console and Ctrl+Alt+F1 the desktop again; consoled is restarted under the desktop, which goes on; the desktop ends as its command did, and the consoles show",
     firmware: Firmware::Uefi,
     media: Media::Usb,
-    cmdline: "lockdep console-sign-in=off -- --services --posix /system/commands/desktop /system/tests/posix/window-test steps",
+    cmdline: "lockdep console-sign-in=off -- --services --posix /system/tests/posix/window-test in-desktop steps",
     cpus: 2,
     memory: "1G",
     reboot: false,
