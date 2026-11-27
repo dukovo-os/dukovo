@@ -563,8 +563,12 @@ kind the halts, the exits for an I/O port or device memory, the
 interrupts given. An exit costs far more than the instructions around
 it, and a kernel counts only the ones it knows it asks for, so a row
 that is slower than its instructions and its kernel's counts say is
-read here next. `ob bench --display` measures these rows alone, in a
-few minutes, for work on them.
+read here next. A mouse's motion that took twice Linux's time on CI's
+runners read one register of its device each time, which is an exit to
+the host's emulator and counts as a handful of instructions: the device
+now tells the driver when its status changes (ADR 0711). `ob bench
+--display` measures these rows alone, in a few minutes, for work on
+them.
 
 The report shows each Radix number, the Linux one from the virtual
 machine, their ratio and the host's Linux. Under KVM a system call does

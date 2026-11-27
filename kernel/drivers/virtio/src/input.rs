@@ -20,11 +20,20 @@
 //! go the other way, as events on the status queue, queue 1
 //! ([`Input::light`]).
 //!
-//! Nothing here waits: both queues' completions raise MSI-X entry
-//! `vector`, and the kernel's thread for the devices does the rest. The
-//! host is not trusted to count: an answer's length is held to the room
-//! it has, an event shorter than eight bytes is dropped, and the queue
-//! itself skips a completion that names no buffer the driver gave.
+//! Nothing here waits: both queues' completions raise one MSI-X entry
+//! ([`Vectors::queues`]), and the kernel's thread for the devices does
+//! the rest. The host is not trusted to count: an answer's length is
+//! held to the room it has, an event shorter than eight bytes is
+//! dropped, and the queue itself skips a completion that names no buffer
+//! the driver gave.
+//!
+//! Taking events reads memory the device wrote and no register of the
+//! device: a register read leaves a virtual machine for its host, which
+//! costs more than everything else an event takes. A device that needs
+//! a reset says so with a change of its configuration (virtio 1.2,
+//! section 2.1.2), which raises the entry it is given for that
+//! ([`Vectors::config`]): [`Input::failed`], which reads the device's
+//! status, is for then.
 
 use radix_hw::{Dma, device_barrier};
 
@@ -134,6 +143,17 @@ pub struct Range {
     pub resolution: i32,
 }
 
+/// The MSI-X entries a device is given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Vectors {
+    /// For the completions of its two queues.
+    pub queues: u16,
+    /// For a change of its configuration, which is how a device says it
+    /// needs a reset. The queues' entry, for a device with one entry for
+    /// everything: [`Input::failed`] is then asked at each interrupt.
+    pub config: u16,
+}
+
 /// A virtio input device, set up.
 pub struct Input {
     transport: Transport,
@@ -148,12 +168,12 @@ pub struct Input {
 
 impl Input {
     /// Sets the device up: resets it, agrees on features, and sets up
-    /// its two queues with completions on MSI-X entry `vector`. `alloc`
-    /// gives zeroed DMA memory, in pages. The device sends nothing until
-    /// [`Input::start`].
+    /// its two queues, with its interrupts on the MSI-X entries
+    /// `vectors`. `alloc` gives zeroed DMA memory, in pages. The device
+    /// sends nothing until [`Input::start`].
     pub fn new(
         transport: Transport,
-        vector: u16,
+        vectors: Vectors,
         alloc: &mut dyn FnMut(usize) -> Option<Dma>,
     ) -> Result<Input, Error> {
         if !transport.reset() {
@@ -161,7 +181,7 @@ impl Input {
         }
         transport.add_status(status::ACKNOWLEDGE);
         transport.add_status(status::DRIVER);
-        let made = Input::set_up(&transport, vector, alloc);
+        let made = Input::set_up(&transport, vectors, alloc);
         match made {
             Ok((events, status, buffers)) => {
                 Ok(Input { transport, events, status, buffers, short: 0 })
@@ -176,7 +196,7 @@ impl Input {
     /// The features, the queues and the page of buffers.
     fn set_up(
         transport: &Transport,
-        vector: u16,
+        vectors: Vectors,
         alloc: &mut dyn FnMut(usize) -> Option<Dma>,
     ) -> Result<(Queue, Queue, Dma), Error> {
         let offered = transport.device_features();
@@ -187,10 +207,13 @@ impl Input {
         let common = common_feature::EVENT_IDX | common_feature::ACCESS_PLATFORM;
         let features = common_feature::VERSION_1 | (offered & common);
         transport.set_driver_features(features)?;
-        transport.no_config_interrupt();
+        if !transport.set_config_vector(vectors.config) {
+            return Err(Error::NoVector);
+        }
         if transport.device_config().len() < CONFIG_ANSWER + ANSWER_MAX {
             return Err(Error::MissingStructure("device configuration"));
         }
+        let vector = vectors.queues;
         let events = Queue::new(transport, 0, QUEUE_SIZE, vector, features, (0, 0), alloc)?;
         let status = Queue::new(transport, 1, STATUS_SIZE, vector, features, (0, 0), alloc)?;
         let buffers = alloc(1).ok_or(Error::NoMemory)?;
@@ -357,7 +380,9 @@ impl Input {
         true
     }
 
-    /// Whether the device asks to be reset after an error.
+    /// Whether the device asks to be reset after an error. It reads the
+    /// device's status, which leaves a virtual machine for its host: ask
+    /// when the device's configuration changed, not at each event.
     pub fn failed(&self) -> bool {
         self.transport.status() & status::NEEDS_RESET != 0
     }

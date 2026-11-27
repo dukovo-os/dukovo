@@ -242,7 +242,7 @@ pub const BUDGETS: &[(&str, u64)] = &[
     ("display_change_virtio", 14_000),         // 12,586
     ("display_small_virtio", 13_000),          // 11,827
     ("display_pointer_virtio", 2_900),         // 2,606
-    ("input_to_reader", 7_700),                // 6,966, from the interrupt's stamp to the reader
+    ("input_to_reader", 7_700),                // 6,974, from the interrupt's stamp to the reader
 ];
 
 /// The most of one kernel event an operation may take, on average,
@@ -1197,9 +1197,13 @@ struct Numbers {
 /// KVM.
 #[derive(Default)]
 struct HostCounts {
-    radix: Vec<(String, u64)>,
-    linux: Vec<(String, u64)>,
+    radix: HostCounted,
+    linux: HostCounted,
 }
+
+/// What a host counted for one virtual machine: each counter's name and
+/// its number.
+type HostCounted = Vec<(String, u64)>;
 
 /// Radix's time for a row as a share of Linux's in the virtual machine,
 /// once both are measured.
@@ -2041,7 +2045,7 @@ fn drive_display_rows(
     vm: &mut test::Vm,
     done: &str,
     ended: &str,
-) -> std::result::Result<Vec<(String, u64)>, String> {
+) -> std::result::Result<HostCounted, String> {
     if vm.expect_first(&[&motions_wanted(), ended])? != 0 {
         return Err("the program ended before its input rows".into());
     }
@@ -2060,7 +2064,7 @@ fn drive_display_rows(
 
 /// How far each of the host's counters in `after` has gone on from
 /// `before`.
-fn counted_since(before: &[(String, u64)], after: &[(String, u64)]) -> Vec<(String, u64)> {
+fn counted_since(before: &[(String, u64)], after: &[(String, u64)]) -> HostCounted {
     let was = |name: &str| before.iter().find(|(known, _)| known == name).map_or(0, |(_, v)| *v);
     after.iter().map(|(name, value)| (name.clone(), value.saturating_sub(was(name)))).collect()
 }
@@ -2091,7 +2095,7 @@ fn radix_display_numbers(
     dir: &Path,
     base: &[u8],
     accel: Accel,
-) -> Result<(Vec<Measurement>, Vec<Counts>, Vec<(String, u64)>)> {
+) -> Result<(Vec<Measurement>, Vec<Counts>, HostCounted)> {
     let image = dir.join("display-bench.img");
     let bytes =
         test::with_cmdline(base, &accel.cmdline(DISPLAY_CMDLINE)).map_err(crate::Error::new)?;
@@ -2143,7 +2147,7 @@ fn linux_display_numbers(
     dir: &Path,
     kernel: &Path,
     initrd: &Path,
-) -> Result<(Vec<Measurement>, Vec<(String, u64)>)> {
+) -> Result<(Vec<Measurement>, HostCounted)> {
     let machine = Machine {
         firmware: Firmware::Bios,
         media: Media::Usb,
@@ -2510,8 +2514,10 @@ fn host_table(out: &mut String, host: &HostCounts, first_of_several: bool) {
          first of the {MOTIONS} motions to after the last, the 5 ms between them with it, and \
          divided by the motions. Exits is every time a CPU of the virtual machine stopped \
          for the host, which costs far more than the instructions around it; the other \
-         counters say why it stopped or what the host then did. The kernel's own counts \
-         above show the exits it knows it asks for; this table shows them all.",
+         counters say why it stopped or what the host then did. Exits for I/O ports here \
+         are the serial port's: each system's program writes its results there when it has \
+         read the last motion. The kernel's own counts above show the exits it knows it \
+         asks for; this table shows them all.",
         if first_of_several { " in the first run" } else { "" }
     );
 }

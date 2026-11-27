@@ -7277,7 +7277,7 @@ impl Vm {
         let reply = Qmp::connect(&socket).and_then(|mut qmp| {
             qmp.execute_reply(r#"{"execute":"query-stats","arguments":{"target":"vcpu"}}"#)
         });
-        reply.map(|reply| host_counters(&reply)).unwrap_or_default()
+        reply.map_or_default(|reply| host_counters(&reply))
     }
 
     /// Holds down, or lets go of, `keys` (QEMU key codes) on the keyboard

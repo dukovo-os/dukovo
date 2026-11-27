@@ -500,6 +500,7 @@ machine asks for them.
 | ASIX adapters' interrupt endpoint | ADR 0362 |
 | HD Audio: microphones, line in, HDMI and DisplayPort audio, more than two channels, S/PDIF, interrupts | ADR 0322 |
 | USB audio: microphones, implicit feedback, more than two channels, UAC3, vendor requests | ADR 0323 |
+| The virtio sound card telling its driver when its status changes, as a virtio input device does: the card's worker reads its status at each look, 50 a second while it plays and one a second otherwise, and each read is an exit to the host | ADR 0711 |
 | Braille displays that are HID or USB-bulk devices | ADR 0326 |
 | Hyper-V: disks added while running, the mouse, the video device, dynamic memory, key-value exchange | ADR 0423 |
 | virtio-scsi: the event queue for hot-plugged disks, and task management | ADR 0327 |
