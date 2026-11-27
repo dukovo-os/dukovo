@@ -4,18 +4,18 @@
 //! inputd(8), which hands the input devices to the program that has the
 //! screens (ADR 0707), on the machine of `input-follow`. display-test
 //! asks it as three programs it refuses: one that sends no holder, one
-//! that sends a file that is no holder of the screens, and a holder that
-//! speaks a version inputd does not know. Having borrowed the screens
-//! from consoled, it asks as their holder, with a copy of its
+//! that sends a file that is no holder of the screens, and a holder
+//! that speaks a version inputd does not know. Having borrowed the
+//! screens from consoled, it asks as their holder, with a copy of its
 //! description that can only be passed on, and is handed the PS/2
 //! keyboard, the USB keyboard and the USB mouse, each with what it is.
 //! What it was handed reads the keys while its holder is in front, and
-//! `paused` once the screens are lent on. A tablet plugged in is handed
-//! out as it comes and reads where it points; pulled out, it is said to
-//! have gone, and its description reads nothing more. Then the test
-//! reads inputd's own account in _/processes_: it holds less than 2 MiB
-//! of memory of its own, and through ten seconds of typing and of a
-//! mouse moving it was not woken once.
+//! reads `paused` once the screens are lent on. A tablet plugged in is
+//! handed out as it comes and reads where it points; pulled out, it is
+//! said to have gone, and its description reads nothing more. Then the
+//! test reads inputd's own account in _/processes_: it holds less than
+//! 2 MiB of memory of its own, and through ten seconds of typing and of
+//! a mouse moving it was not woken once.
 
 use super::super::*;
 use super::input_follow::{CMDLINE, MACHINE, Told, VIDEO, abs, rel};

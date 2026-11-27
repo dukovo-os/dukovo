@@ -29,8 +29,8 @@ disk = { path = "../disk", features = ["btrfs", "fat", "ntfs"] }
 # kinit(1), klist(1) and kdestroy(1): Kerberos's exchanges, krb5.conf,
 # keytabs and tickets in the keyring (ADR 0397).
 kerberos = { path = "../kerberos" }
-# inputd(8)'s exchange with the programs it hands the input devices to,
-# and what each device is (ADR 0707).
+# What each input device is, from the keys and axes it has, for
+# `hardware inputs` (ADR 0706).
 input = { path = "../input" }
 # keymap(1)'s layouts and their setting (ADR 0149).
 keymap = { path = "../keymap" }

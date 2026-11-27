@@ -2435,6 +2435,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "inputd"
+version = "1.0.0-alpha.1"
+dependencies = [
+ "input",
+ "libc",
+ "sysapi",
+]
+
+[[package]]
 name = "instability"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -3,23 +3,23 @@
 
 //! Input follows the screens (ADR 0706), on a machine with a PS/2
 //! keyboard, a USB keyboard and a USB mouse, whose consoles consoled
-//! shows. display-test (userspace/programs/display-test) runs as
-//! `display-test input`: the test tells it what to do on a serial port
-//! of its own, COM2, and it says what each of its descriptions of the
-//! input files read. It borrows the screens from consoled, as a desktop
-//! does, and ties a description of every device's file, of
-//! _/devices/kbd_ and of _/devices/mouse_ to its holder. While that
-//! holder is in front, what is tied to it reads both keyboards and the
-//! mouse. Lent on to a second holder, the screens take the keys with
-//! them: the first holder's descriptions read `paused` and no key, and
-//! the second's read them. A key held down while the screens pass is
-//! let go for the holder that read it go down, whose device then says
-//! that nothing is down, and the holder that comes to the front reads
-//! nothing of it, not even its release. What was tied to a holder that
-//! ended reads nothing more. A description tied to nobody reads
-//! everything throughout. Given back, the screens show the consoles,
-//! and the shell there has read none of the keys typed while the
-//! program had the screens.
+//! shows. display-test (userspace/programs/display-test) runs as its
+//! command `display-test input`: the test tells it what to do on a
+//! serial port of its own, COM2, and it says what each of its
+//! descriptions of the input files read. It borrows the screens from
+//! consoled, as a desktop does, and ties a description of every
+//! device's file, of _/devices/kbd_ and of _/devices/mouse_ to its
+//! holder. While that holder is in front, what is tied to it reads
+//! both keyboards and the mouse. Lent on to a second holder, the
+//! screens take the keys with them: the first holder's descriptions
+//! read `paused` and no key, and the second's read them. A key held
+//! down while the screens pass is let go for the holder that read it
+//! go down, whose device then says that nothing is down, and the
+//! holder that comes to the front reads nothing of it, not even its
+//! release. What was tied to a holder that ended reads nothing more. A
+//! description tied to nobody reads everything throughout. Given back,
+//! the screens show the consoles, and the shell there has read none of
+//! the keys typed while the program had the screens.
 
 use super::super::*;
 

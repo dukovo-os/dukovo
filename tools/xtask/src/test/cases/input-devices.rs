@@ -9,10 +9,11 @@
 //! at its PCI address. A key on the virtio keyboard is read on its own
 //! file and on _/devices/kbd_, and not on the PS/2 keyboard's. The mouse
 //! reads its motion, its left button, and a notch of its wheel as 120;
-//! the tablet reads where it points, scaled to 65,535 each way. Given
-//! back, the consoles are typed into on the virtio keyboard, and
-//! `hardware inputs` lists the three as a virtual machine's own, which
-//! `hardware show` counts with the PS/2 keyboard.
+//! the tablet reads where it points, in its own range on its own file
+//! and as 0 to 65,535 on _/devices/mouse_. Given back, the consoles are
+//! typed into on the virtio keyboard, and `hardware inputs` lists the
+//! three as a virtual machine's own, which `hardware show` counts with
+//! the PS/2 keyboard.
 
 use super::super::*;
 use super::input_follow::{CMDLINE, Told, VIDEO, abs, button, rel};
@@ -95,7 +96,15 @@ fn input_devices(vm: &mut Vm, case: &Case) -> Result<(), String> {
             (&keyboard, "+30 -30"),
             ("PS/2 keyboard, tied to ours", "nothing"),
             (&mouse, "rel0:10 rel1:-5 +272 -272 rel11:120"),
-            (&tablet, "abs0:65535 abs1:32768"),
+            // The tablet's own file says what the tablet says, in the
+            // tablet's range, which is 0 to 32767. /devices/mouse gives
+            // every tablet's place as 0 to 65535.
+            (&tablet, "abs0:32767 abs1:16384"),
+            (
+                "mouse, tied to ours",
+                "10,-5,0,0,0,0,0,0 0,0,0,0,0,0,1,0 0,0,0,0,0,0,0,0 0,0,1,0,0,0,0,0 \
+                 0,0,0,0,65535,32768,0,1",
+            ),
         ],
     )?;
     told.tell(vm, "give", "input: the consoles have the screens")?;

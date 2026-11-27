@@ -1,21 +1,22 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The secure key, Ctrl+Alt+Delete (ADR 0708), on the machine of
-//! `input-follow`. display-test borrows the screens from consoled and
-//! ties descriptions of the input files to its holder. Ctrl and Alt go
-//! down on the USB keyboard and reach the program; Delete then reaches
-//! nobody: the kernel sees the three keys, puts the consoles in front of
-//! the program, and from that moment only consoled reads a key. The
-//! program is told that it was passed over, its descriptions read the
-//! release of Ctrl and Alt and `paused`, and neither they nor a
-//! description tied to nobody read what is typed while consoled's menu
-//! shows. Esc closes the menu and gives the program the front back, and
-//! its descriptions read on, without the Esc that closed it. Pressed
-//! again and answered with Enter, the key leaves the consoles in front
-//! of the program, whose shell runs a command while the program reads
-//! none of it; the key and Esc then give the program the front back.
-//! With no program in front, the menu's P powers the machine off.
+//! The secure key, Ctrl+Alt+Delete (ADR 0708), on the machine of the
+//! test `input-follow`. display-test borrows the screens from consoled
+//! and ties descriptions of the input files to its holder. Ctrl and Alt
+//! go down on the USB keyboard and reach the program; Delete then
+//! reaches nobody: the kernel sees the three keys, puts the consoles in
+//! front of the program, and from that moment only consoled reads a
+//! key. The program is told that it was passed over, its descriptions
+//! read the release of Ctrl and Alt and `paused`, and neither they nor
+//! a description tied to nobody read what is typed while consoled's
+//! menu shows. Esc closes the menu and gives the program the front
+//! back, and its descriptions read on, without the Esc that closed it.
+//! Pressed again and answered with Enter, the key leaves the consoles
+//! in front of the program, whose shell runs a command while the
+//! program reads none of it; the key and Esc then give the program the
+//! front back. With no program in front, the menu's P powers the
+//! machine off.
 
 use super::super::*;
 use super::input_follow::{CMDLINE, MACHINE, Told, VIDEO, rel};

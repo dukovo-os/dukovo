@@ -481,7 +481,7 @@ input-devices userspace/programs/display-test/ userspace/programs/systools/src/h
 input-follow kernel/lib/input/ kernel/radix/src/input/ kernel/lib/display/ kernel/radix/src/display/ kernel/lib/hid/
 input-follow userspace/programs/input/ userspace/programs/display/ userspace/programs/display-test/ userspace/programs/consoled/
 inputd kernel/lib/input/ kernel/radix/src/input/ userspace/programs/input/ userspace/programs/display-test/
-inputd userspace/programs/systools/src/inputd.rs userspace/programs/systools/src/inputd/ userspace/defaults/spark/services/inputd.toml
+inputd userspace/programs/inputd/ userspace/defaults/spark/services/inputd.toml
 install-beside image/grub/installed.cfg.in kernel/fs/ntfs/ tools/xtask/src/grub.rs
 install-beside tools/xtask/src/grub_theme.rs userspace/programs/consoled/ userspace/programs/disk/
 install-beside userspace/programs/installer/ userspace/programs/systools/src/efiboot.rs
@@ -823,7 +823,7 @@ problem-report-access userspace/defaults/spark/services/reportd.toml userspace/p
 problem-report-access userspace/programs/systools/src/authd.rs userspace/programs/systools/src/login.rs
 problem-report-access userspace/programs/systools/src/reportd.rs userspace/programs/systools/src/reportd/
 problem-report-access userspace/programs/systools/src/reports.rs userspace/programs/systools/src/reports/
-quiet-boot kernel/lib/fbcon/ kernel/radix/src/console.rs kernel/radix/src/fs/keyboard.rs
+quiet-boot kernel/lib/fbcon/ kernel/radix/src/console.rs kernel/radix/src/input/
 rcu kernel/lib/sync/
 rdisk userspace/programs/disk/ userspace/programs/systools/src/mkfs.rs
 rdisk userspace/programs/systools/src/rdisk.rs userspace/programs/systools/src/swap.rs

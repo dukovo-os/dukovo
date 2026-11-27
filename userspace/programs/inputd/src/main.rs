@@ -32,6 +32,13 @@
 //! [`Broker`] is all of that but the files and the socket, which reach
 //! it through [`Devices`] and [`Peer`], so that the tests hand devices
 //! out on the build machine.
+//!
+//! inputd is a program of its own, and not one of systools(1)'s: it
+//! runs as root for as long as the system does, so it holds no code but
+//! its own, and none of the memory a program of many commands sets up
+//! for them all.
+
+#![forbid(unsafe_code)]
 
 use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
@@ -40,6 +47,7 @@ use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
+use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use input::abi::{DEVICE_ADDED, DEVICE_REMOVED, InputChange};
@@ -51,9 +59,6 @@ use input::{Control, Device};
 use sysapi::poll::{self, PollFd};
 use sysapi::signal::{self, Caught};
 use sysapi::{kernel, net};
-
-use crate::args::Args;
-use crate::util::{self, Fail};
 
 #[cfg(test)]
 mod tests;
@@ -555,11 +560,15 @@ fn listen(path: &str) -> io::Result<UnixListener> {
     Ok(listener)
 }
 
-/// inputd(8).
-pub fn main(args: &mut Args) -> Result<i32, Fail> {
-    if let Some(arg) = args.next()? {
-        return Err(args.unknown(&arg));
-    }
+/// How inputd is run, and what `--help` says after it.
+const USAGE: &str = "usage: inputd";
+const HELP: &str = "Hands each keyboard, mouse and tablet to the program that holds the
+screens, and tells it of each one that comes or goes. Spark runs it as
+the inputd service: see inputd(8).";
+
+/// Serves until it is told to stop. An error says what could not be
+/// done, and on what.
+fn serve() -> Result<(), String> {
     // A program that goes away must not end inputd: the write to it
     // fails instead.
     let _ = signal::ignore(libc::SIGPIPE);
@@ -568,12 +577,38 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         .read(true)
         .custom_flags(libc::O_CLOEXEC | libc::O_NONBLOCK)
         .open(CONTROL)
-        .map_err(|err| util::failed(&CONTROL, err))?;
-    let listener = listen(service::SOCKET).map_err(|err| util::failed(&service::SOCKET, err))?;
+        .map_err(|err| format!("{CONTROL}: {err}"))?;
+    let listener = listen(service::SOCKET).map_err(|err| format!("{}: {err}", service::SOCKET))?;
     eprintln!("inputd: handing the input devices out at {}", service::SOCKET);
     let broker = Broker::new(Machine { control });
     let mut inputd = Inputd { listener, waiting: Vec::new(), broker };
-    inputd.run().map_err(|err| util::failed(&"inputd", err))?;
+    inputd.run().map_err(|err| err.to_string())?;
     let _ = std::fs::remove_file(service::SOCKET);
-    Ok(0)
+    Ok(())
+}
+
+/// Serves when run with no argument, as Spark runs it.
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        [] => match serve() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(why) => {
+                eprintln!("inputd: {why}");
+                ExitCode::FAILURE
+            }
+        },
+        ["--help" | "-h"] => {
+            println!("{USAGE}\n\n{HELP}");
+            ExitCode::SUCCESS
+        }
+        ["--version"] => {
+            println!("inputd {}", env!("CARGO_PKG_VERSION"));
+            ExitCode::SUCCESS
+        }
+        _ => {
+            eprintln!("{USAGE}");
+            ExitCode::from(2)
+        }
+    }
 }

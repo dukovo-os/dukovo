@@ -119,7 +119,8 @@ _/system/settings/spark/services/inputd.toml_
 # EXIT STATUS
 
 As a service, inputd does not exit but when it is stopped, with 0; it
-exits with 1 if it cannot start.
+exits with 1 if it cannot start, and with 2 if it is given an argument
+it does not know.
 
 # SEE ALSO
 
