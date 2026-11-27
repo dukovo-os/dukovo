@@ -31,6 +31,44 @@
 //! moved. It is read as _/devices/kbd_ is, in whole Motion structures, each
 //! what one report of one pointer changed; a reader that falls more than
 //! MOTIONS_KEPT behind fails with gone once.
+//!
+//! _/devices/input/N_ (release 1.1, ADR 0706) is one device: a keyboard, a
+//! mouse, a tablet. A number is never used twice, so an old file never
+//! means a new device. A read returns whole InputEvent structures: what
+//! one report of the device said, then an EV_SYN event with SYN_REPORT.
+//! Every event of a report carries the time of the interrupt that brought
+//! it. Keys and buttons are EV_KEY events with Linux's codes, 1 for down
+//! and 0 for up, and never repeat. A mouse's movement is EV_REL, in the
+//! counts it reported: no speed curve, no scaling. A wheel is
+//! REL_WHEEL_HI_RES, in 120ths of a notch, so a plain wheel says 120 a
+//! notch. Where a device points is EV_ABS, within the range INPUT_AXIS
+//! gives.
+//!
+//! Each description has the events it has not read in a ring of its own,
+//! which grows from 4 KiB to INPUT_EVENTS_KEPT events. A reader that
+//! falls further behind loses what waited and reads an EV_SYN event with
+//! SYN_DROPPED: it drops the report it was in the middle of and asks
+//! INPUT_STATE what is down.
+//!
+//! Input follows the screen (ADR 0706). INPUT_TIE ties a description to a
+//! holder of radix-display(2), once. From then on events reach it only
+//! while that holder is in front. When the holder goes to the back the
+//! reader reads SYN_PAUSED and then nothing: it takes every key as let
+//! go. When the holder is in front again it reads SYN_RESUMED and asks
+//! INPUT_STATE. A description tied to no holder reads everything, as a
+//! reader of _/devices/kbd_ or _/devices/mouse_ that is tied to none
+//! does; the files are root's.
+//!
+//! Ctrl+Alt+Delete is the secure key (ADR 0708). The kernel sees it on
+//! any keyboard before any reader does. If a program holds
+//! _/devices/display/attention_, the kernel brings that holder to the
+//! front and pauses every other description of every input file, tied or
+//! not, until that holder ends it (radix-display(2)'s ATTENTION_END); the
+//! press of Delete reaches no reader at all.
+//!
+//! _/devices/input/control_ says which devices there are: INPUT_LIST
+//! lists them, and a read returns InputChange structures, one for each
+//! device that came or went since the description was opened.
 
 module input;
 
@@ -110,6 +148,214 @@ struct Motion {
     buttons: u32;
     /// MOTION_ABSOLUTE, or 0.
     flags: u32;
+}
+
+/// How many events a description of _/devices/input/N_ keeps at most
+/// for a reader that falls behind: 64 KiB of them.
+const INPUT_EVENTS_KEPT: u32 = 4096;
+/// How many it has room for before its ring first grows: 4 KiB of them.
+const INPUT_EVENTS_FIRST: u32 = 256;
+/// How many changes a description of _/devices/input/control_ keeps.
+const INPUT_CHANGES_KEPT: u32 = 64;
+
+/// The kind of an InputEvent that ends what one report said (SYN_REPORT)
+/// or is a mark from the kernel (the other SYN_* codes). The kinds and
+/// the codes are Linux's (<linux/input-event-codes.h>).
+const EV_SYN: u16 = 0;
+/// A key or a button: `code` is a KEY_* or a BTN_*, `value` 1 as it goes
+/// down and 0 as it goes up.
+const EV_KEY: u16 = 1;
+/// A movement: `code` is a REL_*, `value` how far, in the device's counts.
+const EV_REL: u16 = 2;
+/// A position: `code` is an ABS_*, `value` where, within the axis's range.
+const EV_ABS: u16 = 3;
+/// A switch: `code` is a SW_*, `value` 1 as it goes on and 0 as it goes
+/// off.
+const EV_SW: u16 = 5;
+/// A light. No event has this kind; INPUT_BITS says which lights a
+/// device has.
+const EV_LED: u16 = 0x11;
+
+/// The end of what one report said.
+const SYN_REPORT: u16 = 0;
+/// Events were lost because the reader fell too far behind.
+const SYN_DROPPED: u16 = 3;
+/// The reader's holder is no longer in front, or the secure key was
+/// pressed: no event follows until SYN_RESUMED. Radix's own, as is
+/// SYN_RESUMED; Linux has no code this high.
+const SYN_PAUSED: u16 = 0x10;
+/// Events reach the reader again.
+const SYN_RESUMED: u16 = 0x11;
+
+/// Right is more.
+const REL_X: u16 = 0;
+/// Down is more.
+const REL_Y: u16 = 1;
+/// The wheel, in 120ths of a notch: away from the user is more.
+const REL_WHEEL_HI_RES: u16 = 0x0b;
+/// The horizontal wheel, in 120ths of a notch: right is more.
+const REL_HWHEEL_HI_RES: u16 = 0x0c;
+
+/// From the left edge.
+const ABS_X: u16 = 0;
+/// From the top edge.
+const ABS_Y: u16 = 1;
+
+/// The lid of a laptop: on when it is shut.
+const SW_LID: u16 = 0;
+
+/// The Num Lock light, in INPUT_BITS's answer for EV_LED.
+const LED_NUML: u16 = 0;
+/// The Caps Lock light.
+const LED_CAPSL: u16 = 1;
+/// The Scroll Lock light.
+const LED_SCROLLL: u16 = 2;
+
+/// The left button. A pointer's further buttons follow BTN_TASK, up to
+/// the sixteenth at 0x11f.
+const BTN_LEFT: u16 = 0x110;
+/// The right button.
+const BTN_RIGHT: u16 = 0x111;
+/// The middle button, or the wheel pressed.
+const BTN_MIDDLE: u16 = 0x112;
+/// The side button nearer the user.
+const BTN_SIDE: u16 = 0x113;
+/// The side button farther from the user.
+const BTN_EXTRA: u16 = 0x114;
+/// Forward.
+const BTN_FORWARD: u16 = 0x115;
+/// Back.
+const BTN_BACK: u16 = 0x116;
+/// The eighth button.
+const BTN_TASK: u16 = 0x117;
+/// A pen's tip, on a tablet.
+const BTN_TOOL_PEN: u16 = 0x140;
+/// A finger on a touch screen or a touchpad.
+const BTN_TOUCH: u16 = 0x14a;
+
+/// How many codes each kind has: INPUT_BITS's and INPUT_STATE's answers
+/// have a bit for each, the code's eighth in the byte and the rest the
+/// bit in it.
+const KEY_CODES: u32 = 0x300;
+/// REL_* codes.
+const REL_CODES: u32 = 0x10;
+/// ABS_* codes.
+const ABS_CODES: u32 = 0x40;
+/// SW_* codes.
+const SW_CODES: u32 = 0x20;
+/// LED_* codes.
+const LED_CODES: u32 = 0x10;
+/// EV_* kinds.
+const EV_KINDS: u32 = 0x20;
+
+/// How a device is connected, in InputInfo's `bus`: by USB. Linux's
+/// numbers.
+const BUS_USB: u16 = 0x03;
+/// Made by a virtual machine's host: virtio, Hyper-V.
+const BUS_VIRTUAL: u16 = 0x06;
+/// The PS/2 controller.
+const BUS_I8042: u16 = 0x11;
+/// I2C, as a laptop's touchpad is.
+const BUS_I2C: u16 = 0x18;
+
+/// radix-file(2)'s `control` request on _/devices/input/N_ that fills the
+/// buffer with the device's InputInfo. Returns its size.
+const INPUT_INFO: u32 = 0x494e0001;
+/// Fills the buffer with a bit for each code of the kind `argument` names
+/// (an EV_*) that the device has, as much as fits; for EV_SYN, a bit for
+/// each kind it has. Returns the bytes of the whole answer.
+const INPUT_BITS: u32 = 0x494e0002;
+/// Fills the buffer with the InputAxis of the ABS_* code `argument`
+/// names. Fails with invalid_argument if the device has no such axis.
+const INPUT_AXIS: u32 = 0x494e0003;
+/// Fills the buffer with a bit for each key and button that is down
+/// (`argument` EV_KEY) or each switch that is on (EV_SW), as INPUT_BITS
+/// does. A paused description is answered with none.
+const INPUT_STATE: u32 = 0x494e0004;
+/// Ties the description to the holder of radix-display(2) whose file is
+/// in the slot `argument` names, which needs no right, and forgets the
+/// events the description had not read. Fails with busy if it is tied
+/// already, and with invalid_argument if the slot's file holds no screen.
+const INPUT_TIE: u32 = 0x494e0005;
+/// Fills the buffer with the device's name, as much as fits, and returns
+/// its length in bytes: at most INPUT_TEXT_MAX.
+const INPUT_NAME: u32 = 0x494e0006;
+/// Fills the buffer with where the device is plugged in, as INPUT_NAME
+/// does with the name: "usb 1-2", "ps2".
+const INPUT_PLACE: u32 = 0x494e0007;
+/// Fills the buffer with the device's serial number, as INPUT_NAME does
+/// with the name. It is empty for a device that has none.
+const INPUT_SERIAL: u32 = 0x494e0008;
+/// The most bytes INPUT_NAME, INPUT_PLACE and INPUT_SERIAL answer with.
+const INPUT_TEXT_MAX: u32 = 64;
+/// On _/devices/input/control_: fills the buffer with the number (a u32)
+/// of each device there is, as many as fit, lowest first. Returns how
+/// many there are.
+const INPUT_LIST: u32 = 0x494e0010;
+
+/// InputChange's `what`: the device came.
+const DEVICE_ADDED: u32 = 1;
+/// The device went.
+const DEVICE_REMOVED: u32 = 2;
+/// Changes were lost because the reader fell more than
+/// INPUT_CHANGES_KEPT behind: it asks INPUT_LIST. `device` is 0.
+const DEVICES_LOST: u32 = 3;
+
+/// One thing a device said, or a mark.
+struct InputEvent {
+    /// When the report came: nanoseconds since boot, on the clock
+    /// radix-process(2)'s `clock` calls monotonic, taken at the interrupt.
+    time_ns: u64;
+    /// What kind: an EV_*.
+    kind: u16;
+    /// Which key, axis or mark.
+    code: u16;
+    /// What it did.
+    value: i32;
+}
+
+/// What a device says of itself.
+struct InputInfo {
+    /// Its number: the N of _/devices/input/N_.
+    device: u32;
+    /// How it is connected: a BUS_*.
+    bus: u16;
+    /// Its maker's number, on that bus; 0 if it has none.
+    vendor: u16;
+    /// Its model's number.
+    product: u16;
+    /// Its version.
+    version: u16;
+    /// How many reports a second it asks to be read for; 0 where the
+    /// device sends when it likes.
+    rate_hz: u32;
+}
+
+/// One axis of a device that says where it points. Linux's
+/// `input_absinfo`.
+struct InputAxis {
+    /// Where it last was.
+    value: i32;
+    /// The least it says.
+    min: i32;
+    /// The most.
+    max: i32;
+    /// How much it wavers while still.
+    fuzz: i32;
+    /// How far from the middle still counts as the middle.
+    flat: i32;
+    /// Units in a millimetre, or 0 if the device does not say.
+    resolution: i32;
+}
+
+/// A device that came or went.
+struct InputChange {
+    /// When: nanoseconds since boot.
+    time_ns: u64;
+    /// The device's number.
+    device: u32;
+    /// DEVICE_ADDED, DEVICE_REMOVED or DEVICES_LOST.
+    what: u32;
 }
 
 /// Escape.
