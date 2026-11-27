@@ -281,7 +281,10 @@ const INPUT_TIE: u32 = 0x494e0005;
 /// its length in bytes: at most INPUT_TEXT_MAX.
 const INPUT_NAME: u32 = 0x494e0006;
 /// Fills the buffer with where the device is plugged in, as INPUT_NAME
-/// does with the name: "usb 1-2", "ps2".
+/// does with the name: "ps2" for the keyboard controller's, "usb-1-2/0"
+/// for interface 0 of the USB device at port 2 of bus 1, and
+/// "pci-0000:00:05.0" for a virtual machine's own device at that PCI
+/// address.
 const INPUT_PLACE: u32 = 0x494e0007;
 /// Fills the buffer with the device's serial number, as INPUT_NAME does
 /// with the name. It is empty for a device that has none.
