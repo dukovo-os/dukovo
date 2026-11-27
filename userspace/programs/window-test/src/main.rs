@@ -162,12 +162,13 @@ impl Shown {
     /// order.
     fn mouse_moved(&mut self) -> Outcome {
         let heard = self.client.take_heard();
-        let places = heard.iter().filter_map(|heard| match heard {
+        let mut places = heard.iter().filter_map(|heard| match heard {
             Heard::Motion(x, y) => Some((*x, *y)),
             _ => None,
         });
         let from = (f64::from(WINDOW.0 / 2), f64::from(WINDOW.1 / 2));
-        let to = places.last().ok_or_else(|| format!("the pointer did not move: {heard:?}"))?;
+        let to =
+            places.next_back().ok_or_else(|| format!("the pointer did not move: {heard:?}"))?;
         let within = to.0 < f64::from(WINDOW.0 - POINTER) && to.1 < f64::from(WINDOW.1 - POINTER);
         ensure(to.0 > from.0 && to.1 > from.1 && within, || {
             format!("the pointer moved from {from:?} to {to:?}, not right and down in the window")

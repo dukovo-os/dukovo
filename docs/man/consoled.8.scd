@@ -322,26 +322,42 @@ locked*, *Sticky keys on*.
 # LENDING THE SCREENS
 
 A program that draws the screens itself, such as a desktop, borrows them
-from consoled (ADR 0702): the display layer lets only the program in
-front pass the screens on, and consoled has them from the kernel's log.
-The program connects to _/system/live/consoled/display_, which only
-root can open. Connecting is the request. consoled answers with one line
-and closes the connection:
+from consoled (ADRs 0702 and 0713): the display layer lets only the
+program in front pass the screens on, and consoled has them from the
+kernel's log. The program connects to _/system/live/consoled/display_.
+Connecting is the request, and consoled answers with one line.
 
-*lent*
+Who asks is what the kernel says of the connection. The screens are lent
+to root's programs, and to a program of the session whose terminal is
+the console that shows: one that the person at the screens started
+there, as *desktop*(1) is.
+
+*lent* _N_
 	With it comes a descriptor (SCM_RIGHTS, *radix-posix*(7)): a holder
 	of _/devices/display/control_ of the borrower's own, in front
-	(*radix-display*(2)). The screens show the consoles until the
+	(*radix-display*(2)). _N_ is the console the borrower stands in,
+	the one that showed. The screens show the consoles until the
 	borrower's first change. consoled logs *the screens are lent to
 	another program*.
 
 *busy*
 	consoled does not have the screens to lend: another program has
-	borrowed them, or no screen shows the consoles.
+	borrowed them or stands in a console, or no screen shows the
+	consoles.
 
 *failed*
 	The loan could not be made. consoled logs *cannot lend the screens*
 	and the reason.
+
+*refused*
+	The program is neither root's nor of the console that shows.
+
+A borrower that keeps the connection open stands in its console for as
+long as it does. To show another console it writes the line *console*
+_N_ and gives the screens back: consoled shows console _N_. When the
+person chooses the borrower's console again, consoled lends it the
+screens again, with what it last showed, and it reads EVENT_FRONT. A
+borrower that closes the connection, or ends, stands in no console.
 
 The borrower gives the screens back with RETURN, and the consoles show
 again within a frame. A borrower that ends without giving them back, as
@@ -360,6 +376,12 @@ Ctrl+Alt+Delete puts the consoles in front of a borrower without asking
 it (*KEYS*, ADR 0708). The borrower is told that it was passed over and
 keeps what it made; it reads no key until it is in front again, which it
 is told too. *Esc* in consoled's menu gives it the front back as it was.
+
+A consoled that is started while a borrower has the screens, as Spark
+starts it again after it ended, stands under the borrower (STAND_UNDER,
+ADR 0716) and logs *a program has the screens*. The borrower goes on,
+and the consoles show when it is done. It does not stand in a console of
+the new consoled, which switches to none for it.
 
 # BRAILLE DISPLAYS
 

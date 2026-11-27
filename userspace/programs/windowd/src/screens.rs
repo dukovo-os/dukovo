@@ -334,7 +334,7 @@ where
             None => None,
         };
         let info = found.screens.iter().find(|(info, _)| info.id == on.screen);
-        let info = info.map(|(info, _)| *info).unwrap_or_default();
+        let info = info.map_or_default(|(info, _)| *info);
         let thing = found.things.iter().find(|thing| thing.id == on.screen);
         let card = holder.card(on.card)?;
         let name = format!("{}/{}", wire::text(&card.name), thing.map_or(0, |thing| thing.index));
@@ -695,6 +695,6 @@ fn few(rects: Vec<Rectangle<i32, Physical>>) -> Vec<Rectangle<i32, Physical>> {
     if rects.len() <= RECTS_MAX {
         return rects;
     }
-    let around = rects.iter().copied().reduce(|around, rect| around.merge(rect));
+    let around = rects.iter().copied().reduce(Rectangle::merge);
     around.into_iter().collect()
 }

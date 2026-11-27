@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The desktop on a machine in the lab (ADR 0712): a person signed in at
+# the console starts `desktop`, which is windowd, with a program, and
+# consoled lends it the screens. The program, window-test, shows a window, waits for the
+# frame that shows it on this machine's card, draws again, and has a
+# second program break the rules, which the desktop outlives. When it
+# ends, the desktop ends as it did and the console shows again, with what
+# the program said. What needs someone to look at the picture and move
+# the mouse is the boot tests': desktop-window and desktop-firmware.
+about = "desktop, started at the console, borrows the screens and shows a program's window on the machine's card, lets go of a second program that cuts its pixels short, and ends as its program did, after which the console shows again (ADR 0712)"
+time = "5m"
+
+[[step]]
+screen = "Name:"
+[[step]]
+type = "lab\n"
+[[step]]
+screen = "Password:"
+[[step]]
+type = "{password}\n"
+[[step]]
+serial = "authd: lab signed in on pts/"
+# The words after the command are written so that the typed line does not
+# hold what the screen is read for.
+[[step]]
+type = "desktop /system/tests/posix/window-test alone; echo \"desktop ended\"\": $?\"\n"
+[[step]]
+screen = ["window-test: passed", "desktop ended: 0"]
+[[step]]
+type = "exit\n"
+[[step]]
+serial = "authd: lab signed out on pts/"

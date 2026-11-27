@@ -16,6 +16,7 @@
 //! program changes is kept in [`Changed`] and [`Shell::lights`], which
 //! the desktop reads after it has let the programs speak.
 
+use std::borrow::Cow;
 use std::time::Duration;
 
 use smithay::backend::renderer::utils::on_commit_buffer_handler;
@@ -152,7 +153,7 @@ impl Shell {
                 toplevel.send_pending_configure();
             }
         }
-        let surface = window.and_then(|window| window.wl_surface().map(|its| its.into_owned()));
+        let surface = window.and_then(|window| window.wl_surface().map(Cow::into_owned));
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, surface, SERIAL_COUNTER.next_serial());
         }
@@ -280,12 +281,12 @@ impl CompositorHandler for Shell {
             return;
         }
         self.popups.commit(surface);
-        if let Some(PopupKind::Xdg(popup)) = self.popups.find_popup(surface) {
-            if !popup.is_initial_configure_sent() {
-                // A popup that was destroyed meanwhile has nobody to
-                // configure.
-                let _ = popup.send_configure();
-            }
+        if let Some(PopupKind::Xdg(popup)) = self.popups.find_popup(surface)
+            && !popup.is_initial_configure_sent()
+        {
+            // A popup that was destroyed meanwhile has nobody to
+            // configure.
+            let _ = popup.send_configure();
         }
         if let Some(window) = self.window_of(surface) {
             window.on_commit();

@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 wayland-backend's server on Radix, which has neither epoll nor kqueue:
 a client is registered with nothing, and the server waits on each
 client's own descriptor with poll(2) and dispatches it by its id, as
-windowd does (ADR 0712). The descriptor the backend gives out for all of
+windowd does (ADR 0717). The descriptor the backend gives out for all of
 its clients is one that is never ready, and dispatching all the clients
 reads each of them.
 

@@ -24,7 +24,7 @@ use smithay::backend::renderer::pixman::PixmanRenderer;
 use smithay::input::keyboard::{FilterResult, XkbConfig};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::reexports::wayland_server::Display;
-use smithay::utils::{Logical, Point, SERIAL_COUNTER};
+use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
 use sysapi::time::monotonic_ns;
 
 use crate::clients::Clients;
@@ -273,10 +273,8 @@ where
     /// to the front.
     pub fn button(&mut self, time_ns: u64, code: u16, pressed: bool) {
         let Some(pointer) = self.shell.seat.get_pointer() else { return };
-        if pressed {
-            if let Some(window) = self.shell.window_under(pointer.current_location()) {
-                self.shell.focus(Some(&window));
-            }
+        if pressed && let Some(window) = self.shell.window_under(pointer.current_location()) {
+            self.shell.focus(Some(&window));
         }
         self.held.retain(|held| *held != code);
         if pressed {
@@ -302,7 +300,9 @@ where
     /// 0 to 1. An axis that is `None` stays where the pointer is.
     pub fn pointed(&mut self, time_ns: u64, x: Option<f64>, y: Option<f64>) {
         let Some(pointer) = self.shell.seat.get_pointer() else { return };
-        let Some(first) = self.screens.first().map(|first| first.to_f64()) else { return };
+        let Some(first) = self.screens.first().map(Rectangle::to_f64) else {
+            return;
+        };
         let mut at = pointer.current_location();
         if let Some(x) = x {
             at.x = first.loc.x + x.clamp(0.0, 1.0) * (first.size.w - 1.0);

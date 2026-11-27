@@ -308,7 +308,17 @@ These come from finished work; the releases themselves are in the
 | Drivers for the other virtual video cards: a VGA card whose mode can be changed, VMware's, VirtualBox's and Hyper-V's (ADR 0705) | Each keeps the firmware's picture in 1.1, and is a small driver on the display layer when its turn comes | A need |
 | A graphics card with no device behind it, for a desktop on a machine with no screen (ADR 0700) | Belongs with remote desktop | Remote desktop |
 | Turning a screen off after a time (ADR 0700) | Power management with the desktop | Release 1.3 |
-| A consoled that starts again while a program it had lent the screens to still has them: it finds the front taken and ends, so the secure key raises nobody until that program ends (ADRs 0702, 0708) | The attention holder must be able to wait behind the front and be raised from there; until the window server there is no program that keeps the screens | Release 1.1, with the window server |
+| A desktop that stands in a console again after consoled was started again under it: the desktop goes on with the screens and the keys, and Ctrl+Alt+F1 to F12 show no console until it ends (ADRs 0713, 0716) | The desktop has to hand the new consoled its holder and its console, which is the session's work | Release 1.1 step 5, with the desktop as a session |
+| Keyboards and pointers plugged in after inputd was started again under a desktop: those it had handed over are heard on, and new ones are not (ADR 0715) | The desktop has to ask the new inputd, which answers with every device again | Release 1.1 step 5, with the desktop as a session |
+| Who a program in the desktop is: windowd is not told the account or the process of a connection (ADR 0712) | wayland-backend reads them with a Linux socket option; nothing asks until a window may be given more than another | Release 1.1 step 5, with the grants |
+| Popups that take a grab, so that a click outside a menu closes it (ADR 0712) | A menu shows and works without one; the grab comes with the windows' own frames and their focus rules | Release 1.1 step 4 |
+| presentation-time and viewporter for the desktop's programs (ADR 0714) | A program is told that a frame showed, by the frame callback, and not when; the first programs that ask for the time are step 4's | Release 1.1 step 4 |
+| Windows left where no screen shows once a monitor is pulled out, and a choice of how the screens lie (ADR 0714) | The screens lie left to right in the display layer's order; moving windows comes with the window manager | Release 1.1 step 4 |
+| A setting for the mouse's speed and for the keys' repeat in the desktop (ADR 0715) | One curve and the consoles' repeat serve until windowd has its settings file | Release 1.1 step 4, with windowd.json |
+| The desktop's rows beside a Linux compositor: a window's frame and a key to its program (ADR 0714) | The frame's way is the display layer's, whose rows are measured (ADR 0709); the compositor's own rows need a second compositor in the Linux image | Release 1.1 step 4 |
+| A pointer picture larger than 64 by 64 pixels, and pointers a program asks for by name (ADR 0715) | The pointer planes of release 1.1 take one size, and windowd has one arrow | Release 1.1 step 7, with the looks |
+| The XKB compose tables, and the layouts' names in other languages, in the desktop (ADR 0712) | xkeyboard-config's layouts are installed alone; dead keys of a layout work without the tables | Release 1.31 (languages) |
+| A console layout of a person's own in the desktop's programs, which get English (US) for it (ADR 0712) | The consoles' layout files and XKB's describe a keyboard differently, and nothing translates one to the other | A need |
 | Ctrl, Alt and Delete pressed one after another with sticky keys as the secure key while a program has the screens (ADR 0708) | Sticky keys are consoled's, which reads no key while a program has the screens, and the three keys are never down together for the kernel to see | Release 1.3, with the desktop's sticky keys |
 | A reader of a USB or PS/2 input device running after its driver's thread, on that thread's CPU, as a virtio device's does (ADR 0710) | Their threads serve other devices, or go on to other work after a report, so a reader queued behind one could wait; what a sleeping CPU costs a motion on a machine of its own is measured first | Release 1.1, with the window server's input rows on the lab's machines |
 | A wheel's fine steps on a mouse or touchpad that speaks HID over I2C: it is counted in notches (ADR 0706) | Both USB host drivers ask a wheel to count finer than a notch; the I2C driver comes with the touchpads | Release 1.3 |
@@ -329,6 +339,7 @@ These come from finished work; the releases themselves are in the
 
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
+| libxkbcommon 1.13.2 and later: the port is 1.13.1 (ADR 0712) | Their build asks for Meson 1.4, and the build machines and CI have Ubuntu 24.04's 1.3 | The build machines' next Ubuntu |
 | The rest of the Rust batch: fd, hyperfine (Linux perf events gated off), dust, delta, eza, zoxide, tealdeer, starship (Radix sources for `sysinfo` and the battery crate) | Paused after ripgrep and bat | Approval to continue |
 | The C and C++ batches: make, bash, zsh, fish, Vim, Perl, GnuPG, htop, btop with a Radix collector, ncdu 1.x, mosh, an IRC or Matrix client | Follow the Rust batch | Approval to continue |
 | delta in the catalog | Needs libgit2; its xdiff is LGPL, to be checked | License review |
@@ -510,6 +521,8 @@ machine asks for them.
 | Writing CD-Text when burning a CD | ADR 0449 |
 | Serial ports: typing by INTx on PCI ports without MSI, and by MSI-X on functions that have only that (they are polled); COM3's interrupt, which is COM1's (it is polled); memory-mapped 16550s, such as AMD's `AMDI0020` and Intel's LPSS UARTs (not used); the AX99100's 256-byte FIFO and rates above 115200 | ADRs 0360, 0480 |
 | FLAC with linear prediction, a few per cent smaller | ADR 0447 |
+| A pointer that windowd draws into its frames, for a graphics card with no pointer plane: every card of release 1.1 has one, or a driver that draws the pointer | ADR 0715 |
+| windowd waiting with a kernel queue in place of poll(2): a wait names a few dozen descriptors | ADR 0717 |
 
 ### Accounts, bundles and the console
 

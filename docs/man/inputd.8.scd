@@ -35,8 +35,9 @@ between.
 
 inputd keeps no list of programs it trusts. What a program is handed is
 decided by what it holds: it must send a holder of the screens, which
-only root, or a program root passed one to, has; and what it is handed
-is silent whenever that holder is not in front.
+only root, or a program one was passed to, has, as *consoled*(8) passes
+one to a desktop (ADR 0713); and what it is handed is silent whenever
+that holder is not in front.
 
 # THE EXCHANGE
 
@@ -107,7 +108,8 @@ keys and axes (*radix-input*(2)).
 # FILES
 
 _/system/live/inputd/devices_
-	The socket inputd answers on, which root connects to.
+	The socket inputd answers on, which any program connects to. What
+	it is handed depends on the holder it sends.
 
 _/devices/input/control_
 	Where inputd learns which devices there are, and of each that

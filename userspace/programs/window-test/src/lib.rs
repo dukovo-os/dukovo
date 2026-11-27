@@ -119,11 +119,9 @@ struct Told {
 #[derive(Debug)]
 struct Window {
     surface: wl_surface::WlSurface,
-    /// Kept for as long as the window shows.
-    _role: xdg_surface::XdgSurface,
-    _toplevel: xdg_toplevel::XdgToplevel,
+    role: xdg_surface::XdgSurface,
     /// The buffer that shows, and its pixels' file.
-    _shown: Option<(wl_buffer::WlBuffer, File)>,
+    shown: Option<(wl_buffer::WlBuffer, File)>,
 }
 
 /// The program.
@@ -132,9 +130,8 @@ pub struct Client {
     queue: EventQueue<Told>,
     told: Told,
     window: Option<Window>,
-    /// The pointer's picture over the window, kept for as long as it
-    /// shows.
-    _pointer: Option<(wl_surface::WlSurface, wl_buffer::WlBuffer, File)>,
+    /// The pointer's picture over the window, and its pixels' file.
+    pointer_shown: Option<(wl_surface::WlSurface, wl_buffer::WlBuffer, File)>,
 }
 
 impl Client {
@@ -178,7 +175,7 @@ impl Client {
         if let Some((name, _)) = missing.iter().find(|(_, missing)| *missing) {
             return Err(format!("the window server offers no {name}"));
         }
-        Ok(Client { queue, told, window: None, _pointer: None })
+        Ok(Client { queue, told, window: None, pointer_shown: None })
     }
 
     /// The screens.
@@ -239,7 +236,7 @@ impl Client {
             toplevel.set_app_id("org.dukovo.window-test".into());
             // A commit with no buffer asks for the first configure.
             surface.commit();
-            self.window = Some(Window { surface, _role: role, _toplevel: toplevel, _shown: None });
+            self.window = Some(Window { surface, role, shown: None });
             let until = Instant::now() + Duration::from_secs(10);
             while self.told.configured.is_none() {
                 if Instant::now() >= until {
@@ -251,14 +248,14 @@ impl Client {
         let shown = self.buffer((width, height), seed)?;
         let Some(window) = &mut self.window else { return Err("no window".into()) };
         if let Some(serial) = self.told.configured.take() {
-            window._role.ack_configure(serial);
+            window.role.ack_configure(serial);
         }
         window.surface.attach(Some(&shown.0), 0, 0);
         window.surface.damage_buffer(0, 0, width as i32, height as i32);
         window.surface.frame(&handle, ());
         window.surface.commit();
         // The buffer before is let go only now, when it shows no more.
-        if let Some((before, _)) = window._shown.replace(shown) {
+        if let Some((before, _)) = window.shown.replace(shown) {
             before.destroy();
         }
         self.queue.roundtrip(&mut self.told).map_err(|err| format!("the window server: {err}"))?;
@@ -300,7 +297,11 @@ impl Client {
         surface.attach(Some(&buffer), 0, 0);
         surface.damage_buffer(0, 0, side as i32, side as i32);
         surface.commit();
-        self._pointer = Some((surface, buffer, file));
+        // A picture the pointer showed before is let go.
+        if let Some((before, pixels, _)) = self.pointer_shown.replace((surface, buffer, file)) {
+            before.destroy();
+            pixels.destroy();
+        }
         self.queue.roundtrip(&mut self.told).map_err(|err| format!("the window server: {err}"))?;
         Ok(())
     }
@@ -321,7 +322,7 @@ impl Client {
         };
         let surface = compositor.create_surface(&handle, ());
         let role = shell.get_xdg_surface(&surface, &handle, ());
-        let _toplevel = role.get_toplevel(&handle, ());
+        role.get_toplevel(&handle, ());
         surface.commit();
         let until = Instant::now() + Duration::from_secs(10);
         while self.told.configured.is_none() {
@@ -452,7 +453,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Told {
         match event {
             wl_registry::Event::Global { name, interface, version } => match interface.as_str() {
                 "wl_compositor" => {
-                    told.compositor = Some(registry.bind(name, version.min(4), handle, ()))
+                    told.compositor = Some(registry.bind(name, version.min(4), handle, ()));
                 }
                 "wl_shm" => told.shm = Some(registry.bind(name, 1, handle, ())),
                 "xdg_wm_base" => told.shell = Some(registry.bind(name, version.min(2), handle, ())),
