@@ -187,6 +187,7 @@ where
         if changed.windows || changed.pointer {
             self.screens.stale();
         }
+        // What the steps above sent, as the first flush.
         let _ = self.display.flush_clients();
     }
 
@@ -415,7 +416,6 @@ where
     pub fn shows(&mut self, at: usize) -> (u32, Vec<u8>) {
         use smithay::backend::allocator::Fourcc;
         use smithay::backend::renderer::ExportMem;
-        use smithay::utils::Rectangle;
         let ((width, height), pixels) = self.screens.pixels(at);
         let target = self.renderer.bind(pixels).unwrap();
         let all = Rectangle::from_size((width as i32, height as i32).into());

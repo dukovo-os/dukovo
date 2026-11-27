@@ -32,6 +32,7 @@ use display::outputs::{self, Found};
 use display::wire::{self, ChangeBytes};
 use display::{Holder, Unmade};
 use smithay::backend::renderer::damage::{Error as DamageError, OutputDamageTracker};
+use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::pixman::{PixmanError, PixmanRenderer};
 use smithay::backend::renderer::utils::draw_render_elements;
@@ -150,7 +151,7 @@ pub struct Pointing<'a> {
     /// another picture.
     pub picture: u64,
     /// windowd's own arrow.
-    pub arrow: &'a smithay::backend::renderer::element::memory::MemoryRenderBuffer,
+    pub arrow: &'a MemoryRenderBuffer,
 }
 
 /// What an event of the layer's means for the desktop.
