@@ -23,7 +23,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::*;
-use crate::power::{Info, State};
+use radix_acpi::processor::{
+    CAP_C1_HALT, CAP_C1_NATIVE, CAP_C2_C3_NATIVE, CAP_PSTATE_MSRS, CState, Entry, OSC_REVISION,
+    OSC_UUID, cstate, pstate,
+};
+use radix_acpi::resources::generic_register;
+
+use crate::power::{Fields, Info, State};
 use crate::sync::{FOREVER_MS, Semaphore};
 
 const DSDT: &[u8] = include_bytes!("tests/dsdt.aml");
@@ -564,6 +570,115 @@ fn a_machine_runs_its_firmwares_aml_from_start_to_power_off() {
     assert_eq!(*NOTIFIED.lock().unwrap(), [("BAT0".to_string(), 0x80), ("LID0".to_string(), 0x80)]);
     assert_eq!(machine.port(GPE0) & 1 << EC_GPE, 0, "the EC's GPE status cleared");
     assert_eq!(machine.port(GPE0 + 1) & 1 << EC_GPE, 1 << EC_GPE, "the EC's GPE on again");
+
+    // The processors: the legacy object's ID and the device's `_UID`, in
+    // the namespace's order, without the device that is not there.
+    let mut processors = Vec::new();
+    for_each_processor(|node, id| processors.push((node.name_text().to_string(), id, node)));
+    let ids: Vec<_> = processors.iter().map(|(name, id, _)| (name.as_str(), *id)).collect();
+    assert_eq!(ids, [("CPU0", 3), ("CPU1", 5)]);
+    for &(_, _, cpu) in &processors {
+        // `_CST`: a count, then a package for each state, whose first
+        // element is a register's resource template.
+        let states = cpu
+            .package(c"_CST", |cst| {
+                assert_eq!((cst.len(), cst.integer(0)), (4, Some(3)));
+                (1..4)
+                    .map(|index| {
+                        cst.package(index, |state| {
+                            let register = state.text(0).unwrap();
+                            let number = |field| state.integer(field).unwrap();
+                            (register.to_vec(), number(1), number(2), number(3))
+                        })
+                        .unwrap()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert_eq!(cpu.package(c"_CST", |cst| cst.package(0, |_| ())), Ok(None), "an integer");
+        assert_eq!(cpu.package(c"_CST", |cst| cst.package(4, |_| ())), Ok(None), "past the end");
+        let register = |bytes: &[u8]| generic_register(bytes).unwrap();
+        let (mwait, port) = (register(&states[0].0), register(&states[1].0));
+        assert_eq!(
+            (mwait.space, mwait.bit_width, mwait.bit_offset, mwait.access_size, mwait.address),
+            (0x7f, 1, 2, 1, 0)
+        );
+        assert_eq!((port.space, port.bit_width, port.address), (0x01, 8, 0x814));
+        let cstates: Vec<_> = states
+            .iter()
+            .map(|(bytes, kind, latency, power)| cstate(bytes, *kind, *latency, *power).unwrap())
+            .collect();
+        assert_eq!(
+            cstates,
+            [
+                CState {
+                    entry: Entry::Mwait { hint: 0, flags: 1 },
+                    kind: 1,
+                    latency_us: 1,
+                    power_mw: 1000
+                },
+                CState { entry: Entry::Port(0x814), kind: 2, latency_us: 100, power_mw: 500 },
+                CState {
+                    entry: Entry::Mwait { hint: 0x20, flags: 1 },
+                    kind: 3,
+                    latency_us: 87,
+                    power_mw: 350
+                },
+            ]
+        );
+        // `_PSS`: three states of six numbers, `_PCT`: two registers.
+        let pstates = cpu
+            .package(c"_PSS", |pss| {
+                (0..pss.len())
+                    .map(|index| {
+                        let numbers = pss
+                            .package(index, |entry| {
+                                (0..6).map(|n| entry.integer(n).unwrap()).collect::<Vec<_>>()
+                            })
+                            .unwrap();
+                        pstate(numbers.try_into().unwrap()).unwrap()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert_eq!(
+            pstates
+                .iter()
+                .map(|p| (p.mhz, p.power_mw, p.latency_us, p.control))
+                .collect::<Vec<_>>(),
+            [(2400, 35_000, 10, 0x1800), (1800, 20_000, 10, 0x1200), (800, 8000, 10, 0x800)]
+        );
+        assert_eq!(pstates[2].status, 0x800);
+        let control = cpu.package(c"_PCT", |pct| register(pct.text(0).unwrap())).unwrap();
+        let status = cpu.package(c"_PCT", |pct| register(pct.text(1).unwrap())).unwrap();
+        assert_eq!((control.address, control.bit_width, control.access_size), (0x199, 64, 4));
+        assert_eq!(status.address, 0x198);
+    }
+    assert_eq!(processors[0].2.integer(c"_PPC"), Ok(1));
+    assert_eq!(processors[1].2.integer(c"_PPC"), Ok(0));
+    // `_OSC`: the capabilities go in as the firmware reads them, and come
+    // back with the bit it does not grant cleared; `_PDC` keeps its bytes.
+    for &(_, _, cpu) in &processors {
+        let granted = CAP_PSTATE_MSRS | CAP_C1_HALT | CAP_C1_NATIVE | CAP_C2_C3_NATIVE;
+        let mut dwords = [0, granted];
+        cpu.osc(&OSC_UUID, OSC_REVISION, &mut dwords).unwrap();
+        assert_eq!(dwords, [0, granted & !CAP_C2_C3_NATIVE]);
+        let sent = cpu.bytes(c"OSCB", <[u8]>::to_vec).unwrap();
+        let mut expected = vec![0, 0, 0, 0];
+        expected.extend_from_slice(&granted.to_le_bytes());
+        expected.resize(16, 0);
+        assert_eq!(sent, expected);
+        // Every dword of a longer list comes back, the second without
+        // the bit the firmware clears.
+        let mut three = [1, 0xffff_ffff, 0xdead_beef];
+        cpu.osc(&OSC_UUID, OSC_REVISION, &mut three).unwrap();
+        assert_eq!(three, [1, 0xffff_fdff, 0xdead_beef]);
+        let pdc = [1, 0, 0, 0, 0x09, 0x01, 0x00, 0x00];
+        cpu.run_with_buffer(c"_PDC", &pdc).unwrap();
+        assert_eq!(cpu.bytes(c"PDCB", <[u8]>::to_vec), Ok(pdc.to_vec()));
+    }
+    assert!(battery.osc(&OSC_UUID, OSC_REVISION, &mut [0, 0]).is_err_and(Error::is_not_found));
+    assert!(battery.run_with_buffer(c"_PDC", &[0]).is_err_and(Error::is_not_found));
 
     // Powering off runs `_PTS(5)`, then writes S5's SLP_TYP and SLP_EN; this
     // machine stays on, which uACPI reports after waiting.

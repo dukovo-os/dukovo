@@ -865,6 +865,7 @@ dependencies = [
 name = "radix-uacpi"
 version = "1.0.0-alpha.1"
 dependencies = [
+ "radix-acpi",
  "radix-sync",
 ]
 

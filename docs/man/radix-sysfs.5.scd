@@ -659,6 +659,29 @@ _/kernel/devices/system/cpu/vulnerabilities/_*flaw*
 	newer microcode. There is no directory on a machine that is not
 	x86-64. util-linux's lscpu reads them, as does *lscpu*(1).
 
+_/kernel/devices/system/cpu/cpuidle/current_driver_
+	*acpi_idle* where the CPUs have idle states deeper than C1 from the
+	firmware's _\_CST_ (*dukovo-boot*(7)'s *IDLE STATES*), as Linux's
+	driver for them is named; *none* where C1 is all they use.
+
+_/kernel/devices/system/cpu/cpu_*n*_/cpuidle/state_*k*_/name_, _desc_
+	CPU _n_'s idle state _k_, shallowest first from *state0*: its name,
+	*C1*, *C2* and so on, and how it is entered, as Linux's acpi_idle
+	describes it: *ACPI FFH MWAIT 0x20* for MWAIT with that hint, *ACPI
+	IOPORT 0x414* for a read of that I/O port, *ACPI HLT* for HLT.
+
+_/kernel/devices/system/cpu/cpu_*n*_/cpuidle/state_*k*_/latency_, _residency_
+	How long leaving it takes, as the firmware gives it, and how long
+	the CPU must stay in it for it to save power, in microseconds.
+
+_/kernel/devices/system/cpu/cpu_*n*_/cpuidle/state_*k*_/usage_, _time_
+	How many times the CPU entered it since boot, and the microseconds
+	it stayed there in all.
+
+_/kernel/devices/system/cpu/cpu_*n*_/cpuidle/state_*k*_/disable_
+	*0*: no state can be turned off while the system runs; the boot
+	flags *idle* and *max_cstate* limit them.
+
 _/kernel/devices/system/cpu/cpufreq/policy_*n*_/scaling_driver_
 	Where CPU _n_ picks its own speed (*dukovo-boot*(7)'s *CPU
 	FREQUENCY*): the Linux driver for its control, *intel_pstate* for

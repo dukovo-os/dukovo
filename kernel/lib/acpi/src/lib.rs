@@ -32,6 +32,7 @@ mod fpdt;
 mod ivrs;
 mod madt;
 mod numa;
+pub mod processor;
 pub mod resources;
 mod sleep;
 mod spcr;

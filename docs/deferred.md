@@ -112,7 +112,7 @@ machine with AMT, an AMD machine and a laptop; see
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
 | The fixed ACPI power button on both reference machines (ADR 0142) | Firmware differs | Dell, Framework |
-| MWAIT idle on real CPUs (scheduler design note) | QEMU does not offer MWAIT, so boot tests exercise HLT | Dell, Framework |
+| MWAIT idle on real CPUs (scheduler design note), and the deeper C-states the firmware's `_CST` gives: MWAIT states on Intel, I/O-port states on AMD's Zen, the C1E promotion turned off, and the idle governor's choices (ADR 0795) | QEMU does not offer MWAIT or `_CST`, so boot tests exercise HLT alone | OptiPlex 7040, Lenovo M75q, Dell, Framework |
 | HWP and CPPC frequency control, thermal zones, embedded controller events, batteries and lids (ADRs 0201 to 0203) | QEMU emulates none of them | Dell, Framework |
 | The Framework Desktop's embedded controller, fans and ARGB header (ADRs 0207, 0208) | Tested against a simulated EC | Framework |
 | Corrected-error interrupts (CMCI on the Dell, Zen 5's counters) and Zen's scalable machine-check banks (ADRs 0169, 0204) | QEMU's CPUs have neither | Dell, Framework |
@@ -370,6 +370,8 @@ machine asks for them.
 | --- | --- |
 | Spark's pet of the hardware watchdog came more than 10 s late while nginx served the lab PC's load on the OptiPlex 7040: what holds Spark's loop up (nginx's access log copied into the system's log is the first suspect) | Lab, services/nginx on the OptiPlex, 2026-11-13 |
 | Transparent huge pages for anonymous memory | ADR 0121 |
+| Idle states for Intel processors whose firmware gives no `_CST`, or a poor one, from the kernel's own table of each model's states | ADR 0795 |
+| Turning an idle state off while the system runs, through `cpuidle/state*/disable`, and a latency limit that programs ask for, as Linux's PM QoS | ADR 0795 |
 | Batched and lazy TLB shootdowns | ADR 0020 |
 | `getrusage`'s `ru_maxrss`, a process's peak resident memory in KiB, as on Linux and the BSDs: the C library leaves it 0, as the kernel keeps no peak, so Go's `runtime/pprof` heap profiles say `MaxRSS = 0` | Go's test suite, ADR 0358 |
 | `/devices/shm`'s directory keeps its names in one array in the order they were made, with an index sorted by name, as tmpfs did before ADR 0367 kept its entries in pieces: it holds at most 32,768 shared memory objects, and removing one moves every one after it | ADR 0367 |
@@ -567,7 +569,7 @@ give.
 | TLS rows of the server benchmarks (nginx over HTTPS, PostgreSQL over TLS): the handshake and record costs are OpenSSL's arithmetic, the same code on both systems, and the Linux kit's servers are built without OpenSSL | ADR 0546 |
 | The server benchmarks over the network card: they run client and server on the machine, over the loopback or a Unix socket, so that they need no peer; the card's path is measured by its own rows | ADR 0546 |
 | In QEMU on the lab PC (an AMD Zen 5 host, which gives the virtual machine no PCIDs), some server rows take longer than Linux's in the same virtual machine: PostgreSQL's select 2.0 to 2.6 times Linux's time, TPC-B 2.0 to 2.1, and serverbench's wait for one ready pipe among idle ones 1.9, where PHP-FPM is level with Linux and on the OptiPlex 7040 every server row is at or under Linux's time. The profiles put the extra time in switching between programs and in the return from interrupts, each of which costs more in the virtual machine. 1.0.0-alpha.1 holds the server rows to Linux's time on the OptiPlex; 1.0.0-beta.1 holds them in QEMU too | Lab, performance/server-profile, php and postgresql on QEMU; ADR 0770 |
-| At the CPUs' default clocks, Dukovo's and Linux's differ on real hardware: Dukovo idles in C1 with the firmware's C1E promotion left on and no deeper state, so idle cores count as active and the busy core reaches the four-core turbo level (3.3 GHz on the OptiPlex 7040) where Linux, whose intel_idle turns the promotion off and uses deeper states, can reach 3.6 GHz. The lab's performance tests hold both systems at the base frequency instead; what the default clocks cost is measured with `cpu_cycle_cold`, `cpu_cycle` and `cpu_cycle_end` once that run is in, and deep idle states come with laptop power | ADR 0557; the first OptiPlex run with the clocks held |
+| At the CPUs' default clocks, Dukovo's and Linux's differed on real hardware: Dukovo idled in C1 with the firmware's C1E promotion left on and no deeper state, so idle cores counted as active and the busy core reached the four-core turbo level (3.3 GHz on the OptiPlex 7040) where Linux, whose intel_idle turns the promotion off and uses deeper states, can reach 3.6 GHz. ADR 0795 brings the firmware's deeper states and turns the promotion off where the firmware lists C1E; whether the busy core now reaches 3.6 GHz, and what the default clocks cost, is measured with `cpu_cycle_cold`, `cpu_cycle` and `cpu_cycle_end`. The lab's performance tests hold both systems at the base frequency meanwhile | ADR 0557, ADR 0795; an OptiPlex run with the default clocks |
 
 ## Lab findings to confirm
 

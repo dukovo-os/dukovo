@@ -304,7 +304,7 @@ fn ask_here() {
 }
 
 /// Runs `job` once on every CPU: here first, then on the others.
-fn on_every_cpu(job: fn()) {
+pub(crate) fn on_every_cpu(job: fn()) {
     Arch::preempt_disable();
     let me = Arch::current_cpu();
     job();

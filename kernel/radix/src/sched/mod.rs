@@ -67,7 +67,7 @@ use radix_klog::{error, info, warn};
 use radix_mm::{FRAMES, Flags, HEAP, Kmalloc};
 use radix_sched::{
     CpuLoad, CpuSet, HaltPoll, LOAD_INTERVAL_NS, LoadAverage, Loads, Place, Resched, Split,
-    Topology, haltpoll,
+    Topology, haltpoll, idle,
 };
 use radix_sync::{Mutex, Once, SpinLock, SpinLockGuard};
 
@@ -181,6 +181,10 @@ struct CpuSched {
     /// Idle periods that ended while polling, and that halted.
     polls: AtomicU64,
     halts: AtomicU64,
+    /// Times each idle state was entered, and nanoseconds spent in it
+    /// (ADR 0795).
+    state_entries: [AtomicU64; idle::MAX_STATES],
+    state_ns: [AtomicU64; idle::MAX_STATES],
     /// Its busy time as [`cpu_times`] last split it, and the idle time
     /// it gave then.
     given: SpinLock<(Split, u64)>,
@@ -222,6 +226,8 @@ impl CpuSched {
             given: SpinLock::new((Split::new(), 0)),
             polls: AtomicU64::new(0),
             halts: AtomicU64::new(0),
+            state_entries: [const { AtomicU64::new(0) }; idle::MAX_STATES],
+            state_ns: [const { AtomicU64::new(0) }; idle::MAX_STATES],
             balance_failures: [const { AtomicU32::new(0) }; 4],
             left_dead: AtomicBool::new(false),
             lazy: AtomicBool::new(false),
@@ -1949,6 +1955,7 @@ fn idle_loop(cpu: usize) -> ! {
     // few (ADR 0037, ADR 0551).
     let bounds = if Arch::virtualized() && !mwait { haltpoll::VIRTUAL } else { haltpoll::HARDWARE };
     let mut haltpoll = HaltPoll::within(bounds);
+    let mut governor = idle::Governor::new();
     loop {
         Arch::disable_interrupts();
         rcu::quiescent(cpu);
@@ -1968,9 +1975,19 @@ fn idle_loop(cpu: usize) -> ! {
         if poll(slot, started.saturating_add(haltpoll.limit_ns())) {
             slot.polls.fetch_add(1, Ordering::Relaxed);
         } else {
-            // Only an idle that watches the word (MWAIT) ends on the write
-            // alone; HLT needs the interrupt, so a waker must send one.
-            let pending = if mwait { slot.resched.watch() } else { slot.resched.pending() };
+            // The deepest state that pays before the timer, unless recent
+            // periods say something else ends it sooner (ADR 0795).
+            let hal_states = Arch::idle_states(cpu);
+            let (states, count) = governed(hal_states);
+            let states = &states[..count];
+            let halted = Arch::now_ns();
+            let sleep_ns = Arch::next_interrupt_ns().saturating_sub(halted);
+            let state = governor.choose(states, |_| true, u64::MAX, sleep_ns);
+            // Only a state that watches the word (MWAIT's) ends on the
+            // write alone; HLT and an I/O port's need the interrupt, so a
+            // waker must send one.
+            let watches = hal_states.get(state).is_some_and(|state| state.watches);
+            let pending = if watches { slot.resched.watch() } else { slot.resched.pending() };
             if !pending {
                 slot.halts.fetch_add(1, Ordering::Relaxed);
                 // Preemption off, as in `poll`: the interrupt that ends the
@@ -1979,10 +1996,14 @@ fn idle_loop(cpu: usize) -> ! {
                 // leave the period open while other threads ran, counting
                 // their time as idle until this CPU next went idle.
                 Arch::preempt_disable();
-                Arch::idle_until(slot.resched.word());
+                Arch::idle_until(slot.resched.word(), state);
                 Arch::preempt_enable();
+                let stayed = Arch::now_ns().saturating_sub(halted);
+                slot.state_entries[state].fetch_add(1, Ordering::Relaxed);
+                slot.state_ns[state].fetch_add(stayed, Ordering::Relaxed);
+                governor.record(states, stayed, sleep_ns);
             }
-            if mwait {
+            if watches {
                 slot.resched.unwatch();
             }
         }
@@ -1996,6 +2017,17 @@ fn idle_loop(cpu: usize) -> ! {
         slot.idle_seq.fetch_add(1, Ordering::Release);
         haltpoll.record(idle, slot.resched.remote());
     }
+}
+
+/// What the idle governor needs of `states`: the first
+/// [`idle::MAX_STATES`] of them, and how many that is.
+fn governed(states: &[radix_hal::IdleState]) -> ([idle::State; idle::MAX_STATES], usize) {
+    let mut out = [idle::State { exit_ns: 0, residency_ns: 0 }; idle::MAX_STATES];
+    let count = states.len().min(idle::MAX_STATES);
+    for (out, state) in out.iter_mut().zip(&states[..count]) {
+        *out = idle::State { exit_ns: state.exit_ns, residency_ns: state.residency_ns };
+    }
+    (out, count)
 }
 
 /// Whether the running thread has its CPU to itself: no other thread is
@@ -2213,6 +2245,19 @@ pub fn counters() -> Counters {
         total.shootdowns_left += shootdowns.left;
     }
     total
+}
+
+/// How many times CPU `cpu` entered its idle state `state`, and the
+/// nanoseconds it stayed there, in all.
+pub fn idle_state_use(cpu: usize, state: usize) -> (u64, u64) {
+    if cpu >= MAX_CPUS || state >= idle::MAX_STATES {
+        return (0, 0);
+    }
+    let slot = CPUS.get(cpu);
+    (
+        slot.state_entries[state].load(Ordering::Relaxed),
+        slot.state_ns[state].load(Ordering::Relaxed),
+    )
 }
 
 /// Checks the fair queue of every CPU, for the self-tests.
