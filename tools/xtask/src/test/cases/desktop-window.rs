@@ -4,7 +4,7 @@
 //! The desktop's first window (ADR 0712), on a machine whose one screen
 //! is a virtio graphics card's. Spark starts window-test
 //! (userspace/programs/window-test), which waits for consoled and runs
-//! `desktop` (desktop(1)) with itself in it. The desktop borrows the
+//! the desktop (desktop(1)) with itself in it. The desktop borrows the
 //! screens from consoled, and the window-test in it shows one window and
 //! says what the screen then shows: the desktop's colour and the
 //! window's picture in the middle. The host compares the screen with
