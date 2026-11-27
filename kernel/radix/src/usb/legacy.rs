@@ -26,7 +26,8 @@
 //! Hubs and HID interfaces are driven as on xHCI (ADRs 0147, 0148), over
 //! the controller's interrupt pipes: a hub's status pipe says which ports
 //! changed, each queued port is read and its device set up or let go;
-//! each HID report is decoded into `/devices/kbd` and `/devices/mouse`.
+//! each HID report is decoded and handed to the input hub as its
+//! interface's frame (`crate::hid::Port`).
 //! USB sticks are not read on these controllers yet: their mass storage
 //! interface is named, and left alone.
 
@@ -47,8 +48,7 @@ use super::controller::{Name, Path, RECOVERY_NS, RESET_US, Why, alloc, read_devi
 use super::hid::{HidPlan, MAX_HIDS};
 use super::shown::{self, RootHub, Shown};
 use super::{Kind, STARTS, Start};
-use crate::fs::keyboard;
-use crate::hid::tell;
+use crate::hid::Port;
 use crate::sched;
 
 /// How often the thread looks at the controller.
@@ -110,6 +110,9 @@ struct Hid {
     length: usize,
     layout: Layout<Kmalloc>,
     decoder: Decoder,
+    /// Its input device, which goes when this does or its pipe is given
+    /// up.
+    port: Option<Port>,
     errors: u8,
     lights: Option<u32>,
 }
@@ -324,7 +327,7 @@ impl Legacy {
             failed: 0,
             buffer,
             work,
-            lights: keyboard::lights(),
+            lights: crate::input::lights(),
         };
         Box::try_new_in(legacy, heap).ok()
     }
@@ -556,7 +559,8 @@ impl Legacy {
             info!("USB: {}: {} was unplugged", Name(self.bus, gone.path), gone.name);
             shown::remove(self.bus, gone.path);
             for hid in &mut gone.hids {
-                hid.decoder.release_all(&mut tell);
+                // Its input device goes, with what it held down.
+                hid.port = None;
                 self.hcd.close(hid.pipe, &mut self.waiter);
             }
             if let Some(hub) = &gone.hub {
@@ -582,6 +586,9 @@ impl Legacy {
 
     /// Looks at every interrupt pipe; says whether one finished.
     fn pipes(&mut self) -> bool {
+        // What finished did so by the controller's last interrupt; the
+        // buses are numbered from 1 in the controllers' order.
+        let came_ns = super::came_at(self.bus - 1);
         let mut any = false;
         let mut at = 0;
         while at < self.devices.len() {
@@ -599,7 +606,7 @@ impl Legacy {
                 let pipe = self.devices[at].hids[index].pipe;
                 if let Some(result) = self.hcd.poll(pipe) {
                     any = true;
-                    self.hid_report(at, index, result);
+                    self.hid_report((at, index), result, came_ns);
                 }
             }
             at += 1;
@@ -662,7 +669,7 @@ impl Legacy {
     /// Lights every keyboard's lock lights as consoled(8) last asked, if
     /// that changed; says whether it did.
     fn lights(&mut self) -> bool {
-        let lights = keyboard::lights();
+        let lights = crate::input::lights();
         if lights == self.lights {
             return false;
         }
@@ -935,6 +942,8 @@ impl Legacy {
             interval: plan.interval,
         };
         let pipe = self.listen(endpoint, length)?;
+        let name = self.devices[at].name.as_str();
+        let port = super::hid::port(self.bus, path, (interface, plan.interval), name, &layout);
         let hid = Hid {
             interface,
             pipe,
@@ -943,6 +952,7 @@ impl Legacy {
             lights: layout.has_lights().then_some(u32::MAX),
             layout,
             decoder: Decoder::new(),
+            port,
             errors: 0,
         };
         let _ = self.devices[at].hids.push_within_capacity(hid);
@@ -950,10 +960,16 @@ impl Legacy {
         Ok(())
     }
 
-    /// The transfer on HID interface `index` of the device at `at` ended:
-    /// tells what its report changed, and starts it again.
+    /// The transfer on HID interface `index` of the device at `at` ended
+    /// with `result`: hands on what its report, which came at `came_ns`,
+    /// said, and starts it again.
     #[inline(never)]
-    fn hid_report(&mut self, at: usize, index: usize, result: Result<usize, host::Error>) {
+    fn hid_report(
+        &mut self,
+        (at, index): (usize, usize),
+        result: Result<usize, host::Error>,
+        came_ns: u64,
+    ) {
         let Some(hid) = self.devices[at].hids.get_mut(index) else { return };
         let (pipe, length, endpoint) = (hid.pipe, hid.length, hid.endpoint);
         let mut errors = hid.errors;
@@ -962,13 +978,17 @@ impl Legacy {
             let Legacy { hcd, devices, buffer, .. } = &mut *self;
             hcd.received(pipe, &mut buffer[..came]);
             let hid = &mut devices[at].hids[index];
-            hid.decoder.report(&hid.layout, &buffer[..came], &mut tell);
+            if let Some(port) = &mut hid.port {
+                port.report(&mut hid.decoder, &hid.layout, &buffer[..came], came_ns);
+            }
         }
         let going = self.again(at, pipe, length, result, (&mut errors, endpoint));
         if let Some(hid) = self.devices[at].hids.get_mut(index) {
             hid.errors = errors;
             if !going {
-                hid.decoder.release_all(&mut tell);
+                // Nothing more is read from it: its input device goes,
+                // with what it held down.
+                hid.port = None;
             }
         }
     }
@@ -976,7 +996,7 @@ impl Legacy {
     /// Sends the keyboards of the device at `at` the lock lights consoled
     /// asked for, if they changed since.
     fn hid_lights(&mut self, at: usize) {
-        let leds = keyboard::lights();
+        let leds = crate::input::lights();
         let (target, max) = (self.devices[at].target, self.devices[at].max_packet);
         for index in 0..self.devices[at].hids.len() {
             let hid = &mut self.devices[at].hids[index];

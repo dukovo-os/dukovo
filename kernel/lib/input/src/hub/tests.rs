@@ -24,8 +24,10 @@ impl Wake for Woken {
 
 type TestHub = Hub<Woken, Global>;
 
+/// A keyboard that sends a held key again itself, as a PS/2 one does.
 fn keyboard(name: &str) -> About {
     let mut about = About::new(BUS_I8042, name, "ps2");
+    about.repeats = true;
     about.keys =
         Keys::of(&[KEY_A, KEY_B, KEY_LEFTCTRL, KEY_RIGHTCTRL, KEY_LEFTALT, KEY_DELETE, KEY_KPDOT]);
     about
@@ -138,32 +140,77 @@ fn what_changes_nothing_reaches_nobody_and_wakes_nobody() {
 #[test]
 fn the_merged_keyboard_reads_keys_of_every_keyboard_with_their_repeats() {
     let mut hub = hub();
-    assert_eq!(hub.add(&keyboard("Another"), 0), Ok(2));
     open(&mut hub, 1, Source::Keyboard);
     open(&mut hub, 2, Source::Device(0));
     hub.frame(0, 1, &[Said::key(KEY_A, true)]);
-    hub.frame(2, 2, &[Said::key(KEY_B, true)]);
     // The built-in keyboard sends a held key again; a button is no key.
     hub.frame(0, 3, &[Said::key(KEY_A, true)]);
     hub.frame(0, 4, &[Said { kind: EV_KEY, code: KEY_A, value: 2 }]);
     hub.frame(1, 5, &[Said::key(BTN_LEFT, true)]);
-    // The kernel repeats a key for a keyboard that does not.
-    assert!(hub.repeat(6, KEY_B));
-    hub.frame(2, 7, &[Said::key(KEY_B, false)]);
-    assert!(!hub.repeat(8, KEY_B));
-    assert_eq!(
-        keys(&mut hub, 1),
-        [
-            (KEY_A, PRESSED),
-            (KEY_B, PRESSED),
-            (KEY_A, REPEATED),
-            (KEY_A, REPEATED),
-            (KEY_B, REPEATED),
-            (KEY_B, RELEASED)
-        ]
-    );
-    // The device's own file has no repeats.
+    assert_eq!(keys(&mut hub, 1), [(KEY_A, PRESSED), (KEY_A, REPEATED), (KEY_A, REPEATED)]);
+    // The device's own file has no repeats, and nothing is repeated for
+    // a keyboard that repeats its keys itself.
     assert_eq!(events(&mut hub, 2), [down(KEY_A), REPORT]);
+    assert_eq!(hub.repeat_at(), None);
+}
+
+/// A hub with a keyboard that does not repeat its keys itself (device 0),
+/// as a USB one, and a reader of _/devices/kbd_ with the key 1.
+fn plain() -> TestHub {
+    let mut hub = Hub::new_in(Global);
+    let mut about = keyboard("A USB keyboard");
+    about.repeats = false;
+    assert_eq!(hub.add(&about, 0), Ok(0));
+    open(&mut hub, 1, Source::Keyboard);
+    hub
+}
+
+#[test]
+fn the_hub_repeats_a_held_key_of_a_keyboard_that_does_not() {
+    let mut hub = plain();
+    let woken = open(&mut hub, 2, Source::Device(0));
+    hub.frame(0, 1_000, &[Said::key(KEY_A, true)]);
+    assert_eq!(hub.repeat_at(), Some(1_000 + REPEAT_DELAY_NS));
+    // Not yet; and what the host of a virtual machine sends again for a
+    // held key is not a repeat.
+    assert_eq!(hub.tick(2_000), Some(1_000 + REPEAT_DELAY_NS));
+    hub.frame(0, 3_000, &[Said::key(KEY_A, true)]);
+    hub.frame(0, 4_000, &[Said { kind: EV_KEY, code: KEY_A, value: 2 }]);
+    assert_eq!(keys(&mut hub, 1), [(KEY_A, PRESSED)]);
+    // After the delay, and then every period.
+    let first = 1_000 + REPEAT_DELAY_NS;
+    assert_eq!(hub.tick(first), Some(first + REPEAT_PERIOD_NS));
+    assert_eq!(hub.tick(first + REPEAT_PERIOD_NS), Some(first + 2 * REPEAT_PERIOD_NS));
+    // Late, it goes on from now: no burst to catch up.
+    let late = first + 10 * REPEAT_PERIOD_NS;
+    assert_eq!(hub.tick(late), Some(late + 1));
+    assert_eq!(keys(&mut hub, 1), [(KEY_A, REPEATED); 3]);
+    // A second key takes over, and any key going up stops it.
+    hub.frame(0, late + 5, &[Said::key(KEY_B, true)]);
+    assert_eq!(hub.repeat_at(), Some(late + 5 + REPEAT_DELAY_NS));
+    hub.frame(0, late + 6, &[Said::key(KEY_A, false)]);
+    assert_eq!((hub.repeat_at(), hub.tick(u64::MAX)), (None, None));
+    // The device's own file read no repeat, and was woken for none.
+    assert_eq!(events(&mut hub, 2).len(), 6);
+    assert_eq!(woken.0.get(), 3);
+}
+
+#[test]
+fn a_key_stops_repeating_when_its_keyboard_goes_or_a_hold_begins() {
+    let mut hub = plain();
+    hub.frame(0, 1, &[Said::key(KEY_A, true)]);
+    hub.remove(0, 2);
+    assert_eq!(hub.repeat_at(), None);
+    assert_eq!(keys(&mut hub, 1), [(KEY_A, PRESSED), (KEY_A, RELEASED)]);
+
+    // Ctrl is held and repeats; the secure key ends that.
+    let mut hub = plain();
+    hub.attention_is(7, 0);
+    let chord = [Said::key(KEY_LEFTCTRL, true), Said::key(KEY_LEFTALT, true)];
+    hub.frame(0, 1, &chord);
+    assert!(hub.repeat_at().is_some());
+    assert!(hub.frame(0, 2, &[Said::key(KEY_DELETE, true)]));
+    assert_eq!(hub.repeat_at(), None);
 }
 
 #[test]
@@ -513,6 +560,24 @@ fn the_merged_files_and_the_control_file_say_once_that_they_lost_records() {
     assert_eq!(out[8..], [0, 0, 0, 0, DEVICES_LOST as u8, 0, 0, 0]);
     assert_eq!(hub.read(2, &mut out), Ok(16));
     assert_eq!(out[12], DEVICE_ADDED as u8);
+}
+
+#[test]
+fn a_read_that_has_records_already_leaves_a_loss_for_the_next_read() {
+    let mut hub = hub();
+    open(&mut hub, 1, Source::Keyboard);
+    hub.frame(0, 1, &[Said::key(KEY_A, true)]);
+    let mut out = [0u8; 16];
+    // The reader has taken a record of this read when its ring fills.
+    assert_eq!(hub.read(1, &mut out), Ok(16));
+    for press in 0..300 {
+        hub.frame(0, press, &[Said::key(KEY_A, false)]);
+        hub.frame(0, press, &[Said::key(KEY_A, true)]);
+    }
+    // The merged file reads on to nothing, and its next read says so.
+    assert_eq!(hub.read_on(1, &mut out), Ok(0));
+    assert_eq!(hub.read(1, &mut out), Err(Refused::Lost));
+    assert_eq!(hub.read_on(1, &mut out), Ok(16));
 }
 
 #[test]

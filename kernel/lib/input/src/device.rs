@@ -69,6 +69,9 @@ pub struct About {
     pub version: u16,
     /// Reports a second it asks to be read for, or 0.
     pub rate_hz: u32,
+    /// Whether it sends a held key again itself, as a PS/2 keyboard
+    /// does. The hub repeats the keys of one that does not.
+    pub repeats: bool,
     /// The keys and buttons it has.
     pub keys: Keys,
     /// The REL_* axes it has.
@@ -112,6 +115,7 @@ impl About {
             product: 0,
             version: 0,
             rate_hz: 0,
+            repeats: false,
             keys: Keys::new(),
             moves: Few::new(),
             switches: Few::new(),
@@ -232,16 +236,15 @@ impl Device {
     /// Notes what `said` changes, and says who hears it.
     pub fn hear(&mut self, said: Said) -> Heard {
         let changed = match said.kind {
-            EV_KEY if said.value == i32::from(REPEATED) => {
-                return if self.down.has(said.code) { Heard::Repeat } else { Heard::Nothing };
+            // A held key sent again is a repeat only from a device that
+            // repeats its keys itself: the hub repeats the others', and
+            // what a virtual machine's host sends again is not counted
+            // twice.
+            EV_KEY if said.value != 0 && self.down.has(said.code) => {
+                return if self.about.repeats { Heard::Repeat } else { Heard::Nothing };
             }
-            EV_KEY if said.value != 0 => {
-                if !self.down.set(said.code, true) {
-                    let held = self.down.has(said.code);
-                    return if held { Heard::Repeat } else { Heard::Nothing };
-                }
-                true
-            }
+            EV_KEY if said.value == i32::from(REPEATED) => return Heard::Nothing,
+            EV_KEY if said.value != 0 => self.down.set(said.code, true),
             EV_KEY => self.down.set(said.code, false),
             EV_SW => self.on.set(said.code, said.value != 0),
             EV_REL => said.value != 0,
@@ -402,10 +405,15 @@ mod tests {
     #[test]
     fn what_changes_nothing_is_not_heard() {
         let mut device = tablet();
+        let repeat = Said { kind: EV_KEY, code: KEY_A, value: i32::from(REPEATED) };
         assert_eq!(device.hear(Said::key(KEY_A, false)), Heard::Nothing);
         assert_eq!(device.hear(Said::key(KEY_A, true)), Heard::Changed);
+        // It does not repeat its keys itself: a held key sent again is
+        // nothing new.
+        assert_eq!(device.hear(Said::key(KEY_A, true)), Heard::Nothing);
+        assert_eq!(device.hear(repeat), Heard::Nothing);
+        device.about.repeats = true;
         assert_eq!(device.hear(Said::key(KEY_A, true)), Heard::Repeat);
-        let repeat = Said { kind: EV_KEY, code: KEY_A, value: i32::from(REPEATED) };
         assert_eq!(device.hear(repeat), Heard::Repeat);
         assert_eq!(device.hear(Said::key(KEY_A, false)), Heard::Changed);
         assert_eq!(device.hear(repeat), Heard::Nothing);

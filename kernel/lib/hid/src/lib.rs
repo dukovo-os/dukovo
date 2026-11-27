@@ -668,6 +668,42 @@ impl<A: Allocator + Clone> Layout<A> {
         !self.lights.is_empty()
     }
 
+    /// The lock lights it has: LED_* bits of radix-input(2).
+    pub fn lights(&self) -> u32 {
+        self.lights.iter().fold(0, |all, light| all | light.led)
+    }
+
+    /// What its Input reports can say, for whoever lists the device: the
+    /// keys, the buttons, and how its pointer tells where it is.
+    pub fn says(&self) -> Says {
+        let mut says = Says::default();
+        for field in self.fields() {
+            let relative = field.flags & flag::RELATIVE != 0;
+            let usages = self.ranges(field).iter().flat_map(|range| {
+                (0..range.len().min(RANGE_LOOK)).map(move |index| range.first + index)
+            });
+            for usage in usages {
+                match usage {
+                    usage::X | usage::Y if relative => says.moves = true,
+                    usage::X | usage::Y => says.points = true,
+                    usage::WHEEL => says.wheel = true,
+                    usage::AC_PAN => says.pan = true,
+                    _ if usage >> 16 == u32::from(page::BUTTON) => {
+                        let number = (usage & 0xffff).min(32);
+                        says.buttons = says.buttons.max(number as u8);
+                    }
+                    _ => {
+                        // The decoder follows the keys below 256.
+                        if let Some(code) = key(usage).filter(|&code| code < 256) {
+                            set_key(&mut says.keys, code);
+                        }
+                    }
+                }
+            }
+        }
+        says
+    }
+
     /// Its top-level collections' usages.
     pub fn applications(&self) -> &[Usage] {
         &self.applications[..self.application_count]
@@ -735,6 +771,30 @@ fn scale(value: i32, min: i32, max: i32) -> u32 {
     }
     let from = i64::from(value.clamp(min, max)) - i64::from(min);
     (from * i64::from(POSITION_MAX) / (i64::from(max) - i64::from(min))) as u32
+}
+
+/// What a device's Input reports can say ([`Layout::says`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Says {
+    /// The keys it has: a bit for each KEY_* code below 256.
+    pub keys: [u64; 4],
+    /// How many buttons its pointer has, 32 at most.
+    pub buttons: u8,
+    /// Whether its pointer says how far it moved.
+    pub moves: bool,
+    /// Whether its pointer says where it points.
+    pub points: bool,
+    /// Whether it has a wheel.
+    pub wheel: bool,
+    /// Whether it has a horizontal wheel.
+    pub pan: bool,
+}
+
+impl Says {
+    /// Calls `each` with every key it has.
+    pub fn each_key(&self, each: &mut dyn FnMut(u16)) {
+        each_key(self.keys, each);
+    }
 }
 
 /// What a pointer did in one report.

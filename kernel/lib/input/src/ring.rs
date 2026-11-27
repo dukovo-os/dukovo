@@ -20,8 +20,12 @@
 //!
 //! What is pushed in one call stays together: either all of it waits, or
 //! none of it.
+//!
+//! The records lie in one run of memory that is filled round and round.
+//! Only growing asks the allocator for anything, and it may be refused:
+//! the kernel's lists have no call that cannot fail (ADR 0017).
 
-use alloc::collections::VecDeque;
+use alloc::vec::Vec;
 use core::alloc::Allocator;
 
 /// What a ring keeps when more comes than it may hold.
@@ -47,7 +51,13 @@ pub struct Limits {
 /// The records a reader has not read, oldest first.
 #[derive(Debug)]
 pub struct Ring<T, A: Allocator> {
-    records: VecDeque<T, A>,
+    /// The places records lie in, filled round and round: as many as
+    /// have been written since the ring last asked for memory, `room` at
+    /// most.
+    places: Vec<T, A>,
+    /// The oldest record's place, and how many records wait from it on.
+    oldest: usize,
+    waiting: usize,
     /// How many records it has asked the allocator for room for.
     room: usize,
     /// When the newest record it lost came, if the reader has not been
@@ -58,18 +68,18 @@ pub struct Ring<T, A: Allocator> {
 impl<T: Copy, A: Allocator + Copy> Ring<T, A> {
     /// A ring of no record, which holds no memory.
     pub fn new_in(alloc: A) -> Ring<T, A> {
-        Ring { records: VecDeque::new_in(alloc), room: 0, lost_ns: None }
+        Ring { places: Vec::new_in(alloc), oldest: 0, waiting: 0, room: 0, lost_ns: None }
     }
 
     /// How many records wait.
     pub fn len(&self) -> usize {
-        self.records.len()
+        self.waiting
     }
 
     /// Whether the reader has nothing to read: no record, and no loss to
     /// be told of.
     pub fn is_empty(&self) -> bool {
-        self.records.is_empty() && self.lost_ns.is_none()
+        self.waiting == 0 && self.lost_ns.is_none()
     }
 
     /// How many records it holds memory for.
@@ -80,29 +90,51 @@ impl<T: Copy, A: Allocator + Copy> Ring<T, A> {
     /// Adds `records`, which came at `time_ns`, as the newest: all of
     /// them or, if they cannot fit even in an empty ring, none.
     pub fn push(&mut self, records: &[T], time_ns: u64, limits: &Limits) {
-        let wanted = self.records.len() + records.len();
+        let wanted = self.waiting + records.len();
         if wanted > self.room && !self.grow(wanted, limits) {
             self.lost_ns = Some(time_ns);
             // All the room the ring may have, so that what just came is
             // not lost for want of room it could have had.
             let _ = self.grow(limits.most, limits);
             match limits.full {
-                Full::Forget => self.records.clear(),
-                Full::DropOldest => {
-                    let over = (wanted - self.room).min(self.records.len());
-                    self.records.drain(..over);
-                }
+                Full::Forget => self.forget(self.waiting),
+                Full::DropOldest => self.forget((wanted - self.room).min(self.waiting)),
             }
             if records.len() > self.room {
                 return;
             }
         }
-        // Within the room reserved: this asks the allocator for nothing.
-        self.records.extend(records.iter().copied());
+        for &record in records {
+            self.put(record);
+        }
     }
 
-    /// Asks for room for `wanted` records; false if that is more than the
-    /// ring may hold or there is no memory.
+    /// Writes `record` as the newest. There is room for it: the caller
+    /// saw that fewer than `room` records wait.
+    fn put(&mut self, record: T) {
+        let place = (self.oldest + self.waiting) % self.room;
+        match self.places.get_mut(place) {
+            Some(written) => *written = record,
+            // The first time round: the next place never written, within
+            // the room reserved, so this asks the allocator for nothing.
+            None => {
+                let _ = self.places.push_within_capacity(record);
+            }
+        }
+        self.waiting += 1;
+    }
+
+    /// Forgets the `count` oldest records, which wait.
+    fn forget(&mut self, count: usize) {
+        self.waiting -= count;
+        // An empty ring starts at its first place again, so that the next
+        // place to write is never past the last one written.
+        self.oldest = if self.waiting == 0 { 0 } else { (self.oldest + count) % self.room };
+    }
+
+    /// Asks for room for `wanted` records, and moves what waits there;
+    /// false if that is more than the ring may hold or there is no
+    /// memory.
     fn grow(&mut self, wanted: usize, limits: &Limits) -> bool {
         if wanted > limits.most {
             return false;
@@ -112,11 +144,26 @@ impl<T: Copy, A: Allocator + Copy> Ring<T, A> {
             room = room.saturating_mul(2);
         }
         let room = room.min(limits.most);
-        if self.records.try_reserve_exact(room - self.records.len()).is_err() {
+        if room == self.room {
+            return true;
+        }
+        let mut places = Vec::new_in(*self.places.allocator());
+        if places.try_reserve_exact(room).is_err() {
             return false;
         }
+        for nth in 0..self.waiting {
+            // Within the room just reserved, which is more than waits.
+            let _ = places.push_within_capacity(self.places[(self.oldest + nth) % self.room]);
+        }
+        self.places = places;
+        self.oldest = 0;
         self.room = room;
         true
+    }
+
+    /// Whether records were lost since the reader was last told.
+    pub fn lost(&self) -> bool {
+        self.lost_ns.is_some()
     }
 
     /// Whether records were lost since the reader was last told, and when
@@ -128,9 +175,13 @@ impl<T: Copy, A: Allocator + Copy> Ring<T, A> {
     /// Takes the oldest record. A ring that grew and is now empty gives
     /// its memory back.
     pub fn pop(&mut self, limits: &Limits) -> Option<T> {
-        let record = self.records.pop_front()?;
-        if self.records.is_empty() && self.room > limits.first {
-            self.records = VecDeque::new_in(*self.records.allocator());
+        if self.waiting == 0 {
+            return None;
+        }
+        let record = self.places[self.oldest];
+        self.forget(1);
+        if self.waiting == 0 && self.room > limits.first {
+            self.places = Vec::new_in(*self.places.allocator());
             self.room = 0;
         }
         Some(record)
@@ -138,7 +189,7 @@ impl<T: Copy, A: Allocator + Copy> Ring<T, A> {
 
     /// Forgets what waits, and any loss the reader was not told of.
     pub fn clear(&mut self) {
-        self.records.clear();
+        self.forget(self.waiting);
         self.lost_ns = None;
     }
 }
@@ -236,6 +287,49 @@ mod tests {
         assert_eq!(ring.len(), 0);
         // Told of the loss, the reader has nothing more to read.
         assert!(ring.is_empty());
+    }
+
+    #[test]
+    fn a_ring_read_and_written_in_turn_goes_round_its_places_in_order() {
+        // Three in and two out, many times round a ring that grows on the
+        // way and then forgets what waits; then round one that drops the
+        // oldest.
+        for limits in [&DEVICE, &MERGED] {
+            let mut ring: Ring<u32, Global> = Ring::new_in(Global);
+            let (mut next, mut read_next) = (0, 0);
+            for _ in 0..40 {
+                ring.push(&[next, next + 1, next + 2], 0, limits);
+                next += 3;
+                for _ in 0..2 {
+                    if ring.take_lost().is_some() {
+                        // Forgotten or dropped: what is read next is
+                        // newer, and still in order.
+                        let record = ring.pop(limits).unwrap();
+                        assert!(record > read_next);
+                        read_next = record + 1;
+                        continue;
+                    }
+                    assert_eq!(ring.pop(limits), Some(read_next));
+                    read_next += 1;
+                }
+                assert!(ring.len() <= limits.most);
+            }
+        }
+    }
+
+    #[test]
+    fn a_ring_that_grows_while_it_is_wrapped_keeps_its_order() {
+        let mut ring: Ring<u32, Global> = Ring::new_in(Global);
+        ring.push(&[1, 2, 3, 4], 0, &DEVICE);
+        assert_eq!(ring.pop(&DEVICE), Some(1));
+        assert_eq!(ring.pop(&DEVICE), Some(2));
+        // Round the end of its four places, then out of them.
+        ring.push(&[5, 6], 0, &DEVICE);
+        assert_eq!(ring.room(), 4);
+        ring.push(&[7, 8, 9], 0, &DEVICE);
+        assert_eq!(ring.room(), 8);
+        assert_eq!(read(&mut ring, &DEVICE), [3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(ring.take_lost(), None);
     }
 
     #[test]

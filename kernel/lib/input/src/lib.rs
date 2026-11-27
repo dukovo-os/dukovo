@@ -38,6 +38,8 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+// The lists never grow in a call that cannot fail (ADR 0017).
+#![feature(vec_push_within_capacity)]
 // For the lists and rings in the kernel's allocator, and an empty hub in
 // a `const fn`; Kani's toolchain knows the feature by its older name.
 #![cfg_attr(not(kani), feature(allocator_ext))]
@@ -49,6 +51,7 @@ pub mod bits;
 pub mod device;
 pub mod event;
 pub mod hub;
+pub mod report;
 pub mod ring;
 
 use radix_abi::input::*;
@@ -60,6 +63,20 @@ pub struct Key {
     pub code: u16,
     /// RELEASED, PRESSED or REPEATED.
     pub value: u16,
+}
+
+/// The keys a keyboard that sends scan code set 1 can send: what
+/// [`Set1`] makes of any byte.
+pub fn set1_keys() -> device::Keys {
+    let mut keys = device::Keys::new();
+    for make in 0..0x80 {
+        keys.set(plain(make), true);
+        keys.set(extended(make), true);
+    }
+    keys.set(KEY_PAUSE, true);
+    // What a byte that is no key decodes to.
+    keys.set(0, false);
+    keys
 }
 
 /// What came before the byte being decoded.
@@ -247,6 +264,15 @@ mod tests {
     fn keys(bytes: &[u8]) -> Vec<(u16, u16)> {
         let mut set = Set1::new();
         bytes.iter().filter_map(|&b| set.feed(b)).map(|k| (k.code, k.value)).collect()
+    }
+
+    #[test]
+    fn the_keys_of_set_1_are_those_its_bytes_decode_to() {
+        let keys = set1_keys();
+        for code in [KEY_ESC, KEY_A, KEY_RIGHTCTRL, KEY_DELETE, KEY_PAUSE, KEY_SYSRQ, KEY_F13] {
+            assert!(keys.has(code), "{code}");
+        }
+        assert!(!keys.has(0) && !keys.has(BTN_LEFT));
     }
 
     #[test]

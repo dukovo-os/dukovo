@@ -46,6 +46,12 @@
 //! Everything a holder may wait for (an event to read, a change to show)
 //! moves one count, [`PROGRESS`], after the lock is let go: a thread
 //! that is woken finds the lock free.
+//!
+//! Input follows the screen (ADR 0706): whenever the front passes or the
+//! attention file changes hands, the input hub is told before the lock
+//! is let go ([`tell_input`]), and the secure key raises the attention
+//! holder through [`secure_key`] (ADR 0708). The hub's lock is taken
+//! inside this one, never the other way round.
 
 mod firmware;
 mod report;
@@ -56,7 +62,7 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use radix_abi::Status;
 use radix_abi::address_space::PAGE_SIZE;
@@ -104,6 +110,12 @@ static PROGRESS: AtomicU64 = AtomicU64::new(0);
 pub static POLLED: Polled = Polled::new();
 /// `/devices/display`.
 static DIR: Once<KArc<FixedDir>> = Once::new();
+/// What the input hub was last told of the layer: the holder in front
+/// and the one that has the attention file, 0 for none, and whether the
+/// secure key has a holder raised. Read and written with the lock held.
+static TOLD_FRONT: AtomicU32 = AtomicU32::new(0);
+static TOLD_ATTENTION: AtomicU32 = AtomicU32::new(0);
+static TOLD_RAISED: AtomicBool = AtomicBool::new(false);
 
 const fn kmalloc() -> Kmalloc {
     HEAP.with(Flags::MAY_SLEEP)
@@ -388,6 +400,7 @@ fn with_layer<R>(with: impl FnOnce(&mut Layer) -> R) -> R {
     layer.set_time(sched::now_ns());
     let result = with(&mut layer);
     let news = layer.take_news();
+    tell_input(&layer);
     drop(layer);
     if news {
         PROGRESS.fetch_add(1, Ordering::AcqRel);
@@ -395,6 +408,55 @@ fn with_layer<R>(with: impl FnOnce(&mut Layer) -> R) -> R {
         POLLED.changed();
     }
     result
+}
+
+/// Tells the input hub who is in front, who has the attention file and
+/// whether the holder the secure key raised is done, if any of it
+/// changed (`crate::input`, ADR 0706): with the lock held, so that what
+/// a holder's input files read changes in the order the front passed.
+/// Three loads and no more while nothing changed.
+fn tell_input(layer: &Layer) {
+    let front = layer.front().unwrap_or(0);
+    let attention = layer.attention();
+    let raised = layer.raised().is_some();
+    let was_raised = TOLD_RAISED.load(Ordering::Relaxed);
+    if TOLD_FRONT.load(Ordering::Relaxed) == front
+        && TOLD_ATTENTION.load(Ordering::Relaxed) == attention
+        && was_raised == raised
+    {
+        return;
+    }
+    TOLD_FRONT.store(front, Ordering::Relaxed);
+    TOLD_ATTENTION.store(attention, Ordering::Relaxed);
+    TOLD_RAISED.store(raised, Ordering::Relaxed);
+    crate::input::screen_changed(front, attention, was_raised && !raised);
+}
+
+/// The secure key was pressed, and the input hub lets nobody but the
+/// attention holder's readers hear a key from now (ADR 0708): the holder
+/// of the attention file is raised over whoever is in front and told. If
+/// no holder has the file, the hub's hold ends at once.
+pub fn secure_key() {
+    if with_layer(Layer::secure_key).is_none() {
+        crate::input::release();
+    }
+}
+
+/// Runs `with` with the holder that the description `file` is, the lock
+/// held: the holder does not end and the front does not pass meanwhile.
+///
+/// # Errors
+///
+/// invalid_argument if `file` is not a holder's file, and busy for a
+/// second description of the attention file.
+pub fn with_holder<R>(file: &FileObject, with: impl FnOnce(u32) -> R) -> Result<R, Status> {
+    with_layer(|layer| {
+        if !file.is_display() {
+            return Err(invalid());
+        }
+        let holder = holder_of(layer, file)?;
+        Ok(with(holder))
+    })
 }
 
 fn progress_key() -> usize {
@@ -624,6 +686,8 @@ pub fn closed(file: &FileObject) {
     with_layer(|layer| {
         if let Some(holder) = layer.holder_by_key(file.address()) {
             layer.end(holder);
+            // Its number may be given to a new holder from now.
+            crate::input::holder_ended(holder);
         }
     });
 }

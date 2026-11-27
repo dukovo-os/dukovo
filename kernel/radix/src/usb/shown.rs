@@ -251,6 +251,11 @@ pub fn strings(bus: usize, path: Path) -> (TextBuf<64>, TextBuf<64>) {
         .map_or_else(Default::default, |s| (s.product.clone(), s.manufacturer.clone()))
 }
 
+/// What is shown of the device at `path` on bus `bus`.
+pub fn of(bus: usize, path: Path) -> Option<Shown> {
+    SHOWN.lock().iter().flatten().find(|s| usize::from(s.bus) == bus && s.path == path).cloned()
+}
+
 /// Says that the hub at `path` has `ports` ports.
 pub fn set_hub_ports(bus: usize, path: Path, ports: u8) {
     change(bus, path, |shown| shown.hub_ports = ports);

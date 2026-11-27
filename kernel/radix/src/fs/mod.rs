@@ -44,13 +44,10 @@ pub mod crashdump;
 pub mod crashes;
 pub mod devfs;
 pub mod disk;
-mod events;
 pub mod fuse;
 pub mod inet;
-pub mod keyboard;
 pub mod kmsg;
 pub mod locks;
-pub mod mouse;
 pub mod pipe;
 pub mod procfs;
 pub mod shm;
@@ -156,10 +153,9 @@ enum Special {
     Tty,
     /// `/devices/kmsg`.
     Kmsg,
-    /// `/devices/kbd`.
-    Keyboard,
-    /// `/devices/mouse`.
-    Mouse,
+    /// An input file: `/devices/kbd`, `/devices/mouse`, or one of
+    /// `/devices/input` (ADR 0706).
+    Input,
     /// A connection of `/devices/fuse`.
     Fuse,
     /// The program's end of a tunnel (ADR 0339).
@@ -426,8 +422,7 @@ impl FileObject {
             Kind::Socket if inet::socket_of(&at.node).is_some() => Special::Inet,
             Kind::CharDevice if tty::handle_of(&at.node).is_some() => Special::Tty,
             Kind::CharDevice if kmsg::is_kmsg(&at.node) => Special::Kmsg,
-            Kind::CharDevice if keyboard::is_keyboard(&at.node) => Special::Keyboard,
-            Kind::CharDevice if mouse::is_mouse(&at.node) => Special::Mouse,
+            Kind::CharDevice if crate::input::is_input(&at.node) => Special::Input,
             Kind::CharDevice if fuse::channel_of(&at.node).is_some() => Special::Fuse,
             Kind::CharDevice if tunnel::end_of(&at.node).is_some() => Special::Tunnel,
             Kind::CharDevice if capture::end_of(&at.node).is_some() => Special::Capture,
@@ -465,7 +460,12 @@ impl FileObject {
             Opened::write_at(&raw mut (*place).opened, &(*place).at, from);
         }
         // SAFETY: written just above.
-        Some(unsafe { object.assume_init() })
+        let object = unsafe { object.assume_init() };
+        if special == Special::Input {
+            // A reader from now, at the address it stays at.
+            crate::input::opened(&object);
+        }
+        Some(object)
     }
 
     /// Its status flags.
@@ -523,14 +523,9 @@ impl FileObject {
         self.special == Special::Kmsg
     }
 
-    /// Whether it is of `/devices/kbd`.
-    pub fn is_keyboard(&self) -> bool {
-        self.special == Special::Keyboard
-    }
-
-    /// Whether it is of `/devices/mouse`.
-    pub fn is_mouse(&self) -> bool {
-        self.special == Special::Mouse
+    /// Whether it is of an input file.
+    pub fn is_input(&self) -> bool {
+        self.special == Special::Input
     }
 
     /// The connection of `/devices/fuse` it is of, if it is of one.
@@ -586,8 +581,6 @@ fn device_opened(special: Special) -> u64 {
             kmsg::opened();
             0
         }
-        Special::Keyboard => keyboard::opened(),
-        Special::Mouse => mouse::opened(),
         _ => 0,
     }
 }
@@ -598,6 +591,7 @@ impl Drop for FileObject {
             Special::Kmsg => kmsg::closed(),
             Special::Audio => crate::audio::closed(self),
             Special::Display => crate::display::closed(self),
+            Special::Input => crate::input::closed(self),
             _ => {}
         }
         if self.locked.load(Ordering::Acquire) {
@@ -619,9 +613,10 @@ static ANY_DROPPED: AtomicBool = AtomicBool::new(false);
 /// unmounted while a handle holds a place on it. A terminal's side, whose
 /// last description going may hang the terminal up and send signals, and
 /// a display holder's file, whose going passes the front on and may draw
-/// a screen, are on `dev`, whose drops are light otherwise.
+/// a screen, and an input file, whose going takes the input hub's lock,
+/// are on `dev`, whose drops are light otherwise.
 pub fn release(file: FileRef) {
-    let light = file.tty_handle().is_none() && !file.is_display();
+    let light = file.tty_handle().is_none() && !file.is_display() && !file.is_input();
     if file.at.mount.fs.light_drops() && light {
         drop(file);
     } else {

@@ -74,6 +74,23 @@ pub const READERS_MAX: usize = 1024;
 /// KEY_OK.
 const BUTTON_CODES: core::ops::Range<u16> = 0x100..0x160;
 
+/// How long a key of a keyboard that does not repeat its keys itself is
+/// held before the hub repeats it, and how often it repeats then: Linux's
+/// defaults.
+pub const REPEAT_DELAY_NS: u64 = 250_000_000;
+/// The time from one repeat to the next.
+pub const REPEAT_PERIOD_NS: u64 = 33_000_000;
+
+/// The key the hub repeats.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Repeat {
+    /// The device that holds it.
+    device: u32,
+    code: u16,
+    /// When it repeats next.
+    at: u64,
+}
+
 /// What the kernel gives the hub for each reader, to wake it.
 pub trait Wake {
     /// The reader has something to read, or its file has changed: wakes
@@ -255,6 +272,9 @@ pub struct Hub<W, A: Allocator + Copy> {
     /// The Delete that began the hold, which no reader hears go up
     /// either: its device and its code.
     swallowed: Option<(u32, u16)>,
+    /// The key that repeats, if one is held on a keyboard that does not
+    /// repeat its keys itself.
+    repeat: Option<Repeat>,
 }
 
 impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
@@ -269,6 +289,7 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
             attention: 0,
             held: false,
             swallowed: None,
+            repeat: None,
         }
     }
 
@@ -286,7 +307,8 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
             return Err(Refused::NoRoom);
         }
         self.next = next;
-        self.devices.push(Device::new(number, about));
+        // Within the room just reserved.
+        let _ = self.devices.push_within_capacity(Device::new(number, about));
         self.tell(InputChange { time_ns: now, device: number, what: DEVICE_ADDED });
         Ok(number)
     }
@@ -366,7 +388,9 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
             Source::Control => Queue::Changes(Ring::new_in(self.alloc)),
         };
         let heard = source == Source::Control || hears(None, self.front, self.attention, self.held);
-        self.readers.push(Reader { key, source, tie: None, heard, gone: false, queue, waker });
+        let reader = Reader { key, source, tie: None, heard, gone: false, queue, waker };
+        // Within the room just reserved.
+        let _ = self.readers.push_within_capacity(reader);
         Ok(())
     }
 
@@ -531,6 +555,8 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
                 self.send(index, &mut frame);
                 self.held = true;
                 self.swallowed = Some((number, said.code));
+                // A key held since before the hold repeats for nobody.
+                self.repeat = None;
                 self.retune(time_ns);
                 secure = true;
                 continue;
@@ -538,6 +564,7 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
             if frame.is_full() {
                 self.send(index, &mut frame);
             }
+            self.note_repeat(index, time_ns, said, heard);
             frame.add(&mut self.devices[index], said, heard);
         }
         self.send(index, &mut frame);
@@ -597,22 +624,60 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
         frame.moved = Moved::default();
     }
 
-    /// The key `code` is still held at `time_ns` on a keyboard that does
-    /// not repeat its keys itself: the readers of _/devices/kbd_ that are
-    /// heard read a repeat. Returns false, and repeats nothing, if no
-    /// device has the key down any more.
-    pub fn repeat(&mut self, time_ns: u64, code: u16) -> bool {
-        if !self.devices.iter().any(|device| device.down().has(code)) {
-            return false;
+    /// Notes what `said`, which the device at `index` heard as `heard`,
+    /// means for the key that repeats: a key that goes down on a keyboard
+    /// that does not repeat its keys itself repeats from then, and any
+    /// key that goes up on such a keyboard stops it, as on Linux.
+    fn note_repeat(&mut self, index: usize, time_ns: u64, said: Said, heard: Heard) {
+        let device = &self.devices[index];
+        let key = said.kind == EV_KEY && !BUTTON_CODES.contains(&said.code);
+        if !key || heard != Heard::Changed || device.about.repeats {
+            return;
         }
-        let key = Event { time_ns, code, value: REPEATED, reserved: 0 };
+        self.repeat = (said.value != 0).then_some(Repeat {
+            device: device.number,
+            code: said.code,
+            at: time_ns.saturating_add(REPEAT_DELAY_NS),
+        });
+    }
+
+    /// When the hub is next to be asked to repeat a key ([`Hub::tick`]),
+    /// if a key that repeats is held.
+    pub fn repeat_at(&self) -> Option<u64> {
+        self.repeat.map(|repeat| repeat.at)
+    }
+
+    /// It is `now`: if the key that repeats is due, the readers of
+    /// _/devices/kbd_ that are heard read a repeat of it. Returns when it
+    /// is due next, if a key repeats. A repeat that comes late goes on
+    /// from `now`, with no burst to catch up.
+    pub fn tick(&mut self, now: u64) -> Option<u64> {
+        let repeat = self.repeat?;
+        if now < repeat.at {
+            return Some(repeat.at);
+        }
+        let held =
+            |device: &Device| device.number == repeat.device && device.down().has(repeat.code);
+        if !self.devices.iter().any(held) {
+            self.repeat = None;
+            return None;
+        }
+        let key = Event { time_ns: now, code: repeat.code, value: REPEATED, reserved: 0 };
         for reader in self.readers.iter_mut().filter(|reader| reader.heard) {
             if let Queue::Keys(ring) = &mut reader.queue {
-                ring.push(&[key], time_ns, &KEYS);
+                ring.push(&[key], now, &KEYS);
                 reader.waker.wake();
             }
         }
-        true
+        let at = repeat.at.saturating_add(REPEAT_PERIOD_NS).max(now.saturating_add(1));
+        self.repeat = Some(Repeat { at, ..repeat });
+        Some(at)
+    }
+
+    /// The waker of the reader `key`, for the kernel to find what it
+    /// keeps for the reader's pollers.
+    pub fn waker(&self, key: usize) -> Option<&W> {
+        self.reader(key).ok().map(|reader| &reader.waker)
     }
 
     /// Reads the reader `key`'s oldest records into `out`, as many as it
@@ -627,17 +692,33 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
     /// lost records; [`Refused::NoDevice`] once the device has gone and
     /// nothing waits; [`Refused::NoReader`].
     pub fn read(&mut self, key: usize, out: &mut [u8]) -> Result<usize, Refused> {
+        self.read_as(key, out, Told::Now)
+    }
+
+    /// Reads on for a caller whose read has records already, as
+    /// [`Hub::read`] does but for one thing: a loss that only an error
+    /// can tell of is left for the caller's next read to find, and 0 is
+    /// returned, so that the records it has are not lost with it.
+    ///
+    /// # Errors
+    ///
+    /// [`Hub::read`]'s, without [`Refused::Lost`].
+    pub fn read_on(&mut self, key: usize, out: &mut [u8]) -> Result<usize, Refused> {
+        self.read_as(key, out, Told::NextRead)
+    }
+
+    fn read_as(&mut self, key: usize, out: &mut [u8], told: Told) -> Result<usize, Refused> {
         let reader = self.reader_mut(key)?;
         let done = match &mut reader.queue {
             Queue::Events(ring) => {
                 let lost = |time_ns| mark(time_ns, SYN_DROPPED);
-                drain(ring, &EVENTS, out, Some(&lost))?
+                drain(ring, &EVENTS, out, &Loss::Record(&lost))?
             }
-            Queue::Keys(ring) => drain(ring, &KEYS, out, None)?,
-            Queue::Motions(ring) => drain(ring, &MOTIONS, out, None)?,
+            Queue::Keys(ring) => drain(ring, &KEYS, out, &Loss::Error(told))?,
+            Queue::Motions(ring) => drain(ring, &MOTIONS, out, &Loss::Error(told))?,
             Queue::Changes(ring) => {
                 let lost = |time_ns| InputChange { time_ns, device: 0, what: DEVICES_LOST };
-                drain(ring, &CHANGES, out, Some(&lost))?
+                drain(ring, &CHANGES, out, &Loss::Record(&lost))?
             }
         };
         if done == 0 && reader.gone {
@@ -679,6 +760,11 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
     pub fn readers(&self) -> usize {
         self.readers.len()
     }
+
+    /// How many readers the own file of the device `number` has.
+    pub fn readers_of(&self, number: u32) -> usize {
+        self.readers.iter().filter(|reader| reader.source == Source::Device(number)).count()
+    }
 }
 
 /// Gives a reader of _/devices/kbd_ that is no longer heard the release
@@ -689,24 +775,49 @@ fn let_go<A: Allocator + Copy>(ring: &mut Ring<Event, A>, down: &Keys, now: u64)
     }
 }
 
+/// When a reader is told of a loss that only an error can tell of.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Told {
+    /// By this read's error.
+    Now,
+    /// By its next read's: this one has records already.
+    NextRead,
+}
+
+/// How a file tells its reader that records were lost.
+enum Loss<'a, T> {
+    /// With the record this makes of the time the newest was lost.
+    Record(&'a dyn Fn(u64) -> T),
+    /// By [`Refused::Lost`]: the file has no such record.
+    Error(Told),
+}
+
 /// Takes `ring`'s oldest records into `out`, as many as it holds whole,
 /// and returns their bytes. If records were lost, the reader is told
-/// first: with the record `lost` makes of the time, or by
-/// [`Refused::Lost`] where the file has no such record.
+/// first, as `loss` says.
 fn drain<T: Record, A: Allocator + Copy>(
     ring: &mut Ring<T, A>,
     limits: &Limits,
     out: &mut [u8],
-    lost: Option<&dyn Fn(u64) -> T>,
+    loss: &Loss<'_, T>,
 ) -> Result<usize, Refused> {
     if out.len() < T::SIZE {
         return Err(Refused::TooSmall);
     }
     let mut done = 0;
-    if let Some(time_ns) = ring.take_lost() {
-        let Some(lost) = lost else { return Err(Refused::Lost) };
-        lost(time_ns).encode(&mut out[..T::SIZE]);
-        done = T::SIZE;
+    match loss {
+        Loss::Record(lost) => {
+            if let Some(time_ns) = ring.take_lost() {
+                lost(time_ns).encode(&mut out[..T::SIZE]);
+                done = T::SIZE;
+            }
+        }
+        Loss::Error(Told::NextRead) if ring.lost() => return Ok(0),
+        Loss::Error(_) => {
+            if ring.take_lost().is_some() {
+                return Err(Refused::Lost);
+            }
+        }
     }
     while out.len() - done >= T::SIZE {
         let Some(record) = ring.pop(limits) else { break };

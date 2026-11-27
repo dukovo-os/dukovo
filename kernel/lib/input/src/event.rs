@@ -10,7 +10,8 @@
 //! (radix-input(2)). [`Record`] writes each as the bytes a read returns.
 
 use radix_abi::input::{
-    EV_ABS, EV_KEY, EV_REL, EV_SYN, Event, InputChange, InputEvent, Motion, PRESSED, RELEASED,
+    EV_ABS, EV_KEY, EV_REL, EV_SYN, Event, InputAxis, InputChange, InputEvent, InputInfo, Motion,
+    PRESSED, RELEASED,
 };
 
 /// The most things one report says that reach a reader as one frame; a
@@ -106,6 +107,32 @@ impl Record for Motion {
     }
 }
 
+impl Record for InputInfo {
+    const SIZE: usize = InputInfo::SIZE;
+
+    fn encode(&self, out: &mut [u8]) {
+        put(out, InputInfo::OFFSET_DEVICE, &self.device.to_le_bytes());
+        put(out, InputInfo::OFFSET_BUS, &self.bus.to_le_bytes());
+        put(out, InputInfo::OFFSET_VENDOR, &self.vendor.to_le_bytes());
+        put(out, InputInfo::OFFSET_PRODUCT, &self.product.to_le_bytes());
+        put(out, InputInfo::OFFSET_VERSION, &self.version.to_le_bytes());
+        put(out, InputInfo::OFFSET_RATE_HZ, &self.rate_hz.to_le_bytes());
+    }
+}
+
+impl Record for InputAxis {
+    const SIZE: usize = InputAxis::SIZE;
+
+    fn encode(&self, out: &mut [u8]) {
+        put(out, InputAxis::OFFSET_VALUE, &self.value.to_le_bytes());
+        put(out, InputAxis::OFFSET_MIN, &self.min.to_le_bytes());
+        put(out, InputAxis::OFFSET_MAX, &self.max.to_le_bytes());
+        put(out, InputAxis::OFFSET_FUZZ, &self.fuzz.to_le_bytes());
+        put(out, InputAxis::OFFSET_FLAT, &self.flat.to_le_bytes());
+        put(out, InputAxis::OFFSET_RESOLUTION, &self.resolution.to_le_bytes());
+    }
+}
+
 impl Record for InputChange {
     const SIZE: usize = InputChange::SIZE;
 
@@ -138,6 +165,27 @@ mod tests {
         assert_eq!(bytes(&mark(1, SYN_REPORT))[8..], [0; 8]);
         assert_eq!(Said::key(BTN_LEFT, true).value, 1);
         assert_eq!(Said::key(BTN_LEFT, false).value, 0);
+    }
+
+    #[test]
+    fn what_a_device_says_of_itself_and_of_an_axis_is_laid_out_in_order() {
+        let info = InputInfo {
+            device: 7,
+            bus: 3,
+            vendor: 0x046d,
+            product: 0xc077,
+            version: 0x0111,
+            rate_hz: 1000,
+        };
+        assert_eq!(
+            bytes(&info),
+            [7, 0, 0, 0, 3, 0, 0x6d, 0x04, 0x77, 0xc0, 0x11, 0x01, 0xe8, 3, 0, 0]
+        );
+        let axis = InputAxis { value: 1, min: -2, max: 3, fuzz: 4, flat: 5, resolution: 6 };
+        let out = bytes(&axis);
+        assert_eq!(out.len(), 24);
+        assert_eq!(out[..12], [1, 0, 0, 0, 0xfe, 0xff, 0xff, 0xff, 3, 0, 0, 0]);
+        assert_eq!(out[12..], [4, 0, 0, 0, 5, 0, 0, 0, 6, 0, 0, 0]);
     }
 
     #[test]

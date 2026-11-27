@@ -68,6 +68,7 @@ mod hid;
 mod hwmon;
 mod hyperv;
 mod i2c;
+mod input;
 mod iommutest;
 mod ioports;
 mod join;
@@ -304,7 +305,7 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     hyperv::start();
     fs::writeback::start();
     fs::kmsg::start();
-    fs::keyboard::start();
+    input::start();
     // After the PCI scan, which the AML's PCI regions reach through, and
     // before the power button.
     acpi::start(flags.value("aml") == Some("off"));

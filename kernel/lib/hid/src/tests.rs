@@ -213,6 +213,30 @@ const TOUCHPAD: &[u8] = &[
 ];
 
 #[test]
+fn a_layout_says_what_its_device_can_report() {
+    let mut keys = Vec::new();
+    let keyboard = layout(BOOT_KEYBOARD).says();
+    keyboard.each_key(&mut |code| keys.push(code));
+    assert!(keys.contains(&KEY_A) && keys.contains(&KEY_LEFTCTRL) && keys.contains(&KEY_DELETE));
+    assert_eq!((keyboard.buttons, keyboard.moves, keyboard.points), (0, false, false));
+    assert_eq!(layout(BOOT_KEYBOARD).lights() & 7, 7);
+
+    let mouse = layout(BOOT_MOUSE).says();
+    assert_eq!(mouse.keys, [0; 4]);
+    assert_eq!((mouse.buttons, mouse.moves, mouse.points), (3, true, false));
+
+    let tablet = layout(TABLET).says();
+    assert_eq!((tablet.buttons, tablet.moves, tablet.points), (3, false, true));
+    assert_eq!((tablet.wheel, tablet.pan), (true, false));
+
+    // The media and system keys of a keyboard's other reports are its
+    // keys too.
+    let mut keys = Vec::new();
+    layout(COMPOSITE).says().each_key(&mut |code| keys.push(code));
+    assert!(keys.contains(&KEY_A) && keys.contains(&KEY_MUTE) && keys.contains(&KEY_POWER));
+}
+
+#[test]
 fn numbered_reports_keep_their_own_keys() {
     let layout = layout(COMPOSITE);
     assert!(layout.numbered() && layout.is_keyboard() && layout.has_lights());

@@ -64,10 +64,10 @@ pub fn init() {
         }
         let kmsg: NodeRef = mem::arc(super::kmsg::Kmsg(next_id()))?;
         root.add("kmsg", kmsg)?;
-        let kbd: NodeRef = mem::arc(super::keyboard::Keyboard(next_id()))?;
-        root.add("kbd", kbd)?;
-        let mouse: NodeRef = mem::arc(super::mouse::Mouse(next_id()))?;
-        root.add("mouse", mouse)?;
+        root.add("kbd", crate::input::keyboard_node()?)?;
+        root.add("mouse", crate::input::mouse_node()?)?;
+        let input: NodeRef = crate::input::dir()?;
+        root.add("input", input)?;
         let fuse: NodeRef = mem::arc(super::fuse::Fuse(next_id()))?;
         root.add("fuse", fuse)?;
         let crashdump: NodeRef = mem::arc(super::crashdump::CrashDump(next_id()))?;
