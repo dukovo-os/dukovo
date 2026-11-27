@@ -20,8 +20,10 @@
 //!
 //! Every change to a file's bytes goes through a handle that may write it:
 //! a write, a change of size, a clone into it, or the cut of an open with
-//! `O_TRUNC`, which holds its writer from before the cut. Removing,
-//! renaming and linking the file change no bytes, and take none.
+//! `O_TRUNC`, which holds its writer from before the cut. A directory's
+//! `set_size` (truncate(2)) opens nothing, and holds a writer for its cut.
+//! Removing, renaming and linking the file change no bytes, and take
+//! none.
 
 use core::sync::atomic::{AtomicIsize, Ordering};
 

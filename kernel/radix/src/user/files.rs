@@ -43,6 +43,7 @@ use radix_linux::notify::{IN_ACCESS, IN_ATTRIB, IN_MODIFY};
 use radix_mm::{Flags, HEAP};
 use radix_vfs::attributes;
 use radix_vfs::mount::{Location, Mount, OpenFlags as VfsOpen};
+use radix_vfs::writes::Writer;
 use radix_vfs::{
     Access, AccessChange, FsKind, In, Kind, NodeRef, Out, PATH_MAX, Setting, Who, want,
 };
@@ -987,8 +988,12 @@ pub(super) fn directory_call(
             }
             who.check(&*at.node, want::WRITE).map_err(fs::status)?;
             at.writable().map_err(fs::status)?;
+            // A writer for the cut, as an open with O_TRUNC takes: ETXTBSY
+            // while programs share the file's pages (ADR 0658).
+            let writer = Writer::of(&at.node).map_err(fs::status)?;
             grows_within_file_size(user, &at.node, a.size)?;
             at.node.set_size(a.size).map_err(fs::status)?;
+            drop(writer);
             if notify::watched() {
                 notices::changed(vfs()?, &who, &dir.at, path.as_str()?, &at, IN_MODIFY);
             }

@@ -1284,14 +1284,15 @@ interface directory = 0x000b version 14 {
     /// as radix-file(2)'s `set_size` does, without opening it: truncate(2),
     /// which watches hear as a change of the file alone (ADR 0615). A
     /// symbolic link is followed. A directory fails with is_directory, any
-    /// other file but a regular one with invalid_argument, and a file the
-    /// caller may not write with denied. Needs the write right. (Since
-    /// Phase 18, ADR 0615.)
+    /// other file but a regular one with invalid_argument, a file the
+    /// caller may not write with denied, and one whose pages programs
+    /// share with text_busy, as an open to cut it does (ADR 0658). Needs
+    /// the write right. (Since Phase 18, ADR 0615.)
     method set_size = 56 (path: in bytes, size: u64) -> ()
         raises [no_such_slot, empty_slot, missing_rights, invalid_argument, no_memory,
                 bad_address, not_found, not_directory, is_directory, name_too_long, bad_name,
                 outside, read_only, no_space, quota_exceeded, too_big, io, corrupt,
-                too_many_links, denied];
+                too_many_links, denied, text_busy];
     /// Makes the filesystem a program serves through the connection in
     /// slot `connection` (a file capability to a description of
     /// `/devices/fuse`, with the read and write rights) on a mount of its
