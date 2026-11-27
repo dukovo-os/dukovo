@@ -4,6 +4,7 @@
 // What a dynamically linked glibc program finds in the sandbox that linux(1)
 // builds for it (ADRs 0618 to 0622): a /proc and /sys in Linux's text, the
 // program's own path, a standard output that /proc/self/fd/1 leads back to,
+// a /proc/self/fd that lists the descriptors open, its own among them,
 // the network interfaces through a netlink route socket, the accounts in
 // /etc, a resolver file, the kernel's name, and the person's own folders
 // kept out of sight, and a /dev/shm whose files two processes map and
@@ -488,6 +489,61 @@ static void sleep_ms(long ms) {
 	}
 }
 
+// Lists the descriptors of /proc/self/fd through the directory's own
+// handle, as closefrom(3)'s fallback and Python's subprocess do: standard
+// input, output and error are there, and so is the directory itself.
+// Returns how many checks failed.
+static int list_own_descriptors(void) {
+	DIR *dir = opendir("/proc/self/fd");
+	CHECK(dir != NULL);
+	if(!dir)
+		return case_failures;
+	int own = dirfd(dir);
+	int found = 0;
+	errno = 0;
+	for(const struct dirent *entry; (entry = readdir(dir));) {
+		if(entry->d_name[0] == '.')
+			continue;
+		int fd = atoi(entry->d_name);
+		if(fd <= 2)
+			found |= 1 << fd;
+		else if(fd == own)
+			found |= 1 << 3;
+	}
+	CHECK(errno == 0);
+	CHECK(found == 0xf);
+	CHECK(closedir(dir) == 0);
+	return case_failures;
+}
+
+// /proc/self/fd lists the descriptors that are open, its own among them.
+// linuxd makes the listing from the kernel's list of the process's files,
+// which holds a file of linuxd's own /proc: the directory. The listing runs
+// in a child that is ended after CALL_SECONDS, so that a listing that never
+// comes fails the case by name rather than holding the test.
+static void fd_list_case(void) {
+	fflush(stdout);
+	pid_t child = fork();
+	CHECK(child >= 0);
+	if(child < 0)
+		return;
+	if(child == 0)
+		_exit(list_own_descriptors() ? 1 : 0);
+	int how = 0;
+	pid_t ended = 0;
+	long long limit = now_ms() + CALL_SECONDS * 1000LL;
+	while((ended = waitpid(child, &how, WNOHANG)) == 0 && now_ms() < limit)
+		sleep_ms(20);
+	if(ended == 0) {
+		FAIL("/proc/self/fd was not listed in time");
+		kill(child, SIGKILL);
+		waitpid(child, &how, 0);
+		return;
+	}
+	CHECK(ended == child);
+	CHECK(WIFEXITED(how) && WEXITSTATUS(how) == 0);
+}
+
 // linuxd is ended with SIGKILL while the program runs, and the supervisor
 // starts it again on the same connection and endpoint: a forwarded call is
 // answered again within RESTART_SECONDS by another process called linuxd,
@@ -550,6 +606,7 @@ static const struct test_case CASES[] = {
 	{"hidden", hidden_case},
 	{"personality", personality_case},
 	{"shm", shm_case},
+	{"fd_list", fd_list_case},
 };
 
 enum { CASE_COUNT = sizeof(CASES) / sizeof(CASES[0]) };

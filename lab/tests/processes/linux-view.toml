@@ -40,13 +40,13 @@ expect = "installed org.dukovo.linux-base 25.8.0, for you"
 # system it runs, and none of its cases is skipped on Dukovo.
 [[step]]
 run = "sh -c 'cd /tmp && /users/lab/linux-view/view | grep -v \" ok$\"'"
-expect = ["view: running on Dukovo", "view: wrote through /proc/self/fd/1", "view: all 13 cases passed on Dukovo"]
+expect = ["view: running on Dukovo", "view: wrote through /proc/self/fd/1", "view: all 14 cases passed on Dukovo"]
 expect_not = ["FAILED", "skip"]
 # linuxd ends with SIGKILL in the middle of the run, and the case that ended
 # it sees a call answered again: one case more.
 [[step]]
 run = "sh -c 'cd /tmp && /users/lab/linux-view/view --restart | grep -v \" ok$\"'"
-expect = ["view: running on Dukovo", "view: all 14 cases passed on Dukovo"]
+expect = ["view: running on Dukovo", "view: all 15 cases passed on Dukovo"]
 expect_not = ["FAILED", "skip"]
 # linux run on its own gives the same program the same view, and the
 # program's exit status is linux run's.

@@ -14,15 +14,16 @@
 //! folders of alice's home, and nothing else of it.
 //!
 //! The program makes the calls itself and says one line for a case that went
-//! wrong and, at the end, that all 13 cases passed on Dukovo: the maps, the
+//! wrong and, at the end, that all 14 cases passed on Dukovo: the maps, the
 //! CPU list and the status of /proc, the path /proc/self/exe gives, a write
 //! through /proc/self/fd/1 that reaches standard output, the interfaces that
 //! getifaddrs lists, the accounts of /etc, the resolver's file, the names
 //! uname gives, the list of CPUs under /sys, the person's home kept out of
-//! sight, personality(0xffffffff), which only linuxd answers, and a file of
-//! /dev/shm that a child and its parent map and share. The same file runs
-//! on a Linux machine, which is how its expectations are known to be
-//! Linux's.
+//! sight, personality(0xffffffff), which only linuxd answers, a file of
+//! /dev/shm that a child and its parent map and share, and /proc/self/fd
+//! listed through its own descriptor, which linuxd lists from the kernel's
+//! list of the process's files. The same file runs on a Linux machine,
+//! which is how its expectations are known to be Linux's.
 //!
 //! It then runs again with --restart: it ends linuxd with SIGKILL, and the
 //! supervisor that linux run leaves beside it starts linuxd again, which the
@@ -51,7 +52,7 @@ const SOURCE: &str = "userspace/linux/view.c";
 
 /// How many cases the program has without `--restart`: the table of the
 /// source, which a unit test counts. The restart adds one.
-const CASES: usize = 13;
+const CASES: usize = 14;
 
 /// How long a run of the program may take, in seconds: the program ends a
 /// case that waits for linuxd after 30, and starting the sandbox, its
@@ -68,7 +69,7 @@ const DISKS: &[Disk] = &[
 /// The test.
 pub const CASE: Case = Case {
     name: "linux-view",
-    about: "a dynamically linked Linux program runs in the sandbox of linux(1) on the Linux base bundle (ADRs 0618 to 0622): the bundle, packed from ports/linux-base, installs from its .dkv file; the program view, built from userspace/linux/view.c with the build machine's glibc, runs by its path from Nukesh, which starts it through linux run; it reads /proc/self/maps, /proc/cpuinfo and /proc/self/status, finds its own path in /proc/self/exe, writes through /proc/self/fd/1, lists the interface lo with getifaddrs, finds its account and the resolver's file in /etc, sees the kernel as Linux, reads the CPU list of /sys, cannot see alice's home outside its own folders, and has personality(0xffffffff) answered by linuxd; and with --restart it ends linuxd and the call is answered again once the supervisor has started it anew",
+    about: "a dynamically linked Linux program runs in the sandbox of linux(1) on the Linux base bundle (ADRs 0618 to 0622): the bundle, packed from ports/linux-base, installs from its .dkv file; the program view, built from userspace/linux/view.c with the build machine's glibc, runs by its path from Nukesh, which starts it through linux run; it reads /proc/self/maps, /proc/cpuinfo and /proc/self/status, finds its own path in /proc/self/exe, writes through /proc/self/fd/1, lists the interface lo with getifaddrs, finds its account and the resolver's file in /etc, sees the kernel as Linux, reads the CPU list of /sys, cannot see alice's home outside its own folders, has personality(0xffffffff) answered by linuxd, shares a file of /dev/shm with a child, and lists /proc/self/fd through its own descriptor; and with --restart it ends linuxd and the call is answered again once the supervisor has started it anew",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, bundled among them.

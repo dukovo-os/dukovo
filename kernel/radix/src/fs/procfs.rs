@@ -598,7 +598,11 @@ fn files(process: &ProcessRef, text: &mut Text) -> fmt::Result {
             (false, true) => "w",
             (false, false) => "-",
         };
-        let stat = file.at.node.stat();
+        // What the file's filesystem knows without asking: a file of a
+        // filesystem a program serves would otherwise wait for that
+        // program, and linuxd reads this list to answer for `/proc/PID/fd`,
+        // which would then wait for itself.
+        let stat = file.at.node.stat_kept();
         write!(
             text,
             " kind={} access={mode} id={} size={} fs={} mount={} rights={rights}",

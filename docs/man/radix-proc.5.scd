@@ -197,7 +197,9 @@ _/processes/_*n*_/files_
 	*slot*=_n_. For a file or directory the fields that follow are
 	*kind* (*file*, *directory*, *block*, *char*, *pipe*, *socket* or
 	*link*), *access* (*r*, *w*, *rw* or *-*), *id* (its node number),
-	*size*, *fs* (the filesystem's kind), *mount* (the mount's number),
+	*size* (for a filesystem a program serves, what the program last
+	said, as the list never waits for the program, which may be the one
+	reading it), *fs* (the filesystem's kind), *mount* (the mount's number),
 	*rights*, *offset* (unless a read or write holds it), *cut=yes* if
 	the path was too long to keep whole, and *path*: the path it was
 	opened by, made absolute, or a pipe's or socket's name. Beneath a

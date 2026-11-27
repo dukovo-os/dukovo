@@ -97,6 +97,10 @@ impl Node for Named {
         self.inner.stat()
     }
 
+    fn stat_kept(&self) -> Stat {
+        self.inner.stat_kept()
+    }
+
     fn kind(&self) -> Kind {
         Kind::Directory
     }
