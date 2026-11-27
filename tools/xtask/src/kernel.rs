@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::Profile;
 use crate::process::{self, step};
-use crate::{Context, Ctx, Result, bail, doctor, frames, krelocs, ksyms, patched, ports};
+use crate::{Context, Ctx, Result, bail, doctor, frames, krelocs, ksyms, kthunks, patched, ports};
 
 /// The kernel's target specification, relative to the repository root.
 /// docs/adr/0011-kernel-target-and-build-std.md explains why the kernel has
@@ -58,6 +58,12 @@ fn rustflags(ctx: &Ctx) -> Vec<String> {
         "--cfg",
         "aes_force_soft",
         "-Zmin-function-alignment=64",
+        // Every indirect branch through the retpoline and every return
+        // through the return thunk, each six bytes, which the boot CPU
+        // rewrites for the processor (ADR 0793).
+        "-Zretpoline-external-thunk",
+        "-Zfunction-return=thunk-extern",
+        "-Zindirect-branch-cs-prefix",
     ]
     .map(String::from)
     .into();
@@ -126,6 +132,7 @@ fn install(ctx: &Ctx, built: &Path, installed: &Path, profile: Profile) -> Resul
     };
     let functions = ksyms::embed(&mut bytes)?;
     let relocations = krelocs::embed(&mut bytes)?;
+    let thunk_sites = kthunks::embed(&mut bytes)?;
     if let Some(parent) = installed.parent() {
         process::create_dir(parent)?;
     }
@@ -141,7 +148,7 @@ fn install(ctx: &Ctx, built: &Path, installed: &Path, profile: Profile) -> Resul
     )?;
     step(&format!(
         "Kernel installed at {} (symbol table of {functions} functions, {relocations} \
-         relocations{frames})",
+         relocations, {thunk_sites} thunk sites{frames})",
         ctx.display(installed)
     ));
     Ok(())

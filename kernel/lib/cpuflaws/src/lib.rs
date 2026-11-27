@@ -35,8 +35,9 @@ mod plan;
 mod tests;
 
 pub use plan::{
-    BadValue, Built, Choice, Controls, FLAGS, Pick, Plan, SPEC_CTRL_BHI_DIS_S, SPEC_CTRL_IBRS,
-    SPEC_CTRL_RRSBA_DIS_S, SPEC_CTRL_SSBD, SPEC_CTRL_STIBP, SpectreV2,
+    BadValue, Built, Choice, Controls, FLAGS, IndirectBranches, Pick, Plan, ReturnPath,
+    SPEC_CTRL_BHI_DIS_S, SPEC_CTRL_IBRS, SPEC_CTRL_RRSBA_DIS_S, SPEC_CTRL_SSBD, SPEC_CTRL_STIBP,
+    SpectreV2,
 };
 
 /// CPUID bits the decisions read, named as Intel's and AMD's manuals name

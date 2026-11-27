@@ -336,6 +336,7 @@ pub unsafe fn wrmsr(msr: u32, value: u64) {
 // value: the #GP that raises resumes at the fault label ([`msr_fixup`]),
 // which returns false.
 core::arch::global_asm!(
+    crate::thunks::asm_begin!(),
     r#"
     .section .text
     .balign 64
@@ -349,11 +350,11 @@ radix_rdmsr_safe_insn:
     or rax, rdx
     mov [rsi], rax
     mov eax, 1
-    ret
+    radix_ret
     .global radix_rdmsr_safe_fault
 radix_rdmsr_safe_fault:
     xor eax, eax
-    ret
+    radix_ret
 
     .balign 64
     .global radix_wrmsr_safe
@@ -366,12 +367,13 @@ radix_wrmsr_safe:
 radix_wrmsr_safe_insn:
     wrmsr
     mov eax, 1
-    ret
+    radix_ret
     .global radix_wrmsr_safe_fault
 radix_wrmsr_safe_fault:
     xor eax, eax
-    ret
-"#
+    radix_ret
+"#,
+    crate::thunks::asm_end!(),
 );
 
 unsafe extern "sysv64" {

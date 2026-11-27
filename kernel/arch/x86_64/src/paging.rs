@@ -784,6 +784,22 @@ pub fn remap(virt: u64, phys: u64) -> u64 {
     old
 }
 
+/// Maps the page of the kernel's text at `phys` a second time at `virt`,
+/// read-only and executable, for SRSO's safe return on Zen 3 and 4, which
+/// runs from such a second mapping (`thunks.rs`). The boot CPU calls it
+/// before any other CPU starts and before any address space is made, so
+/// every CPU and space sees the page. `virt` must be in the top 2 GiB,
+/// above the image, and free.
+pub fn map_code_alias(virt: u64, phys: u64) -> Result<(), MapError> {
+    let state = STATE.lock();
+    let taken = leaf(state.pml4, virt).map(|slot| slot.load(Ordering::Relaxed) & PRESENT);
+    assert!(
+        virt >= memory::KERNEL_OFFSET && taken.unwrap_or(0) == 0,
+        "paging: {virt:#x} is no free kernel address for a second mapping of the text"
+    );
+    map_4k(state.pml4, virt, phys, leaf_flags(&state, Access::Code, Cache::WriteBack))
+}
+
 /// Identity-maps one low page, read-only and executable, for the AP
 /// trampoline (the boot CPU writes it through the direct map).
 pub fn map_identity(phys: u64) {

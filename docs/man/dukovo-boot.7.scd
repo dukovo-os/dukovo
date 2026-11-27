@@ -967,7 +967,10 @@ Processors that run ahead of what a program asked for can be made to leak
 what the program may not read: Spectre, Meltdown, Retbleed, MDS and the
 flaws that followed. The kernel finds out which flaws the CPU has from its
 identification and capability registers, decides how to close each one, and
-patches the entry and exit paths at boot to match (ADR 0790). Without a flag
+patches the entry and exit paths at boot to match (ADR 0790). The kernel is
+built with every indirect branch and return going through a thunk, and at
+boot it rewrites each one for the CPU: plain where the CPU needs nothing,
+through a retpoline or a return thunk where it does (ADR 0793). Without a flag
 every protection is on where the CPU needs it (*auto*), as Linux's default
 is. *ob bench* compares Radix with Linux booted the same way.
 
@@ -980,7 +983,8 @@ it.
 
 *mitigations*=_mode_
 	*auto* closes every flaw the CPU has, the default. *off* closes none,
-	except what another flag asks for with *on*, *ibrs* or *ibpb*.
+	except what another flag asks for with *on*, *ibrs*, *ibpb*,
+	*retpoline*, *unret* or *safe-ret*.
 	*auto,nosmt* is *auto*, and turns the second hardware threads off on
 	CPUs where a flaw reaches from one thread to the other and nothing
 	else closes it.
@@ -995,13 +999,16 @@ it.
 
 *spectre_v2*=_mode_
 	How programs are kept from steering the kernel's indirect branches.
-	*auto* picks enhanced or automatic IBRS where the CPU has it, and
-	IBRS while in the kernel on an Intel CPU without it. AMD's Zen 1 to 3
-	need retpolines, which the kernel does not have yet: *auto* leaves
-	them open, and *ibrs* closes them at a higher cost. *off* uses none.
-	*on* picks as *auto* does and also turns on *spectre_v2_user*'s *on*.
-	*ibrs* sets IBRS on every entry to the kernel and clears it on every
-	exit.
+	*auto* picks enhanced or automatic IBRS where the CPU has it, IBRS
+	while in the kernel on an Intel CPU without it whose returns need it
+	too (Retbleed), and retpolines otherwise, as on AMD's Zen 1 to 3: each
+	indirect call and jump goes through a thunk that the CPU cannot
+	predict anywhere but into a trap. *retpoline* and
+	*retpoline,generic* use retpolines even where the CPU's own
+	protection would do. *off* uses none, and the kernel's indirect
+	branches are plain. *on* picks as *auto* does and also turns on
+	*spectre_v2_user*'s *on*. *ibrs* sets IBRS on every entry to the
+	kernel and clears it on every exit.
 
 *nospectre_v2*
 	The same as *spectre_v2=off*.
@@ -1024,17 +1031,35 @@ it.
 
 *retbleed*=_mode_
 	How returns are kept from being predicted from the branch target
-	buffer. *auto* uses the IBRS that *spectre_v2* chose on Intel; AMD's
-	need return thunks, which the kernel does not have yet, and *auto*
-	leaves them open. *off* uses none. *ibpb* makes an AMD CPU flush its
-	branch predictions on every entry to the kernel.
+	buffer. *auto* uses the IBRS that *spectre_v2* chose on Intel. On
+	AMD's Zen 1 and 2 every return goes through one return thunk, whose
+	predictions the kernel clears on every entry from a program, so that
+	what a program trained cannot steer it; where
+	*spec_rstack_overflow*'s safe return is on, it serves for both.
+	*unret* asks for that thunk as *auto* does,
+	even with *mitigations=off*, and changes nothing on Intel. *off* uses
+	none. *ibpb* makes an AMD CPU flush its branch predictions on every
+	entry to the kernel, and returns stay plain.
 
 *spec_rstack_overflow*=_mode_
 	How the return stack overflow of AMD's Zen 1 to 4 is closed. *auto*
-	needs return thunks, which the kernel does not have yet; on Zen 1 and
-	2 running one thread a core the flaw is closed already. *off* uses
-	none. *ibpb* flushes on every entry to the kernel, if the microcode's
-	flush covers return predictions.
+	sends every return through a safe return, whose predictions the
+	kernel resets on every entry from a program. On Zen 3 and 4 the reset
+	and the safe return run from a second mapping of their code, at
+	addresses that the processor's predictor takes for each other. On Zen 1 and 2 running one thread a core the flaw is
+	closed already. *safe-ret* asks for the safe return as *auto* does,
+	even with *mitigations=off*. *off* uses none. *ibpb* flushes on every
+	entry to the kernel, if the microcode's flush covers return
+	predictions.
+
+*indirect_target_selection*=_mode_
+	On the Intel CPUs with indirect target selection, which predicts an
+	indirect branch or return that ends in the lower half of a 64-byte
+	cache line from the wrong history, *on*, the default, moves each of
+	the kernel's indirect branches and returns within its site so that it
+	ends in the upper half, or sends it through a thunk that does where
+	it cannot be moved. It needs *spectre_v2* to be on. *off* leaves them
+	where the compiler put them.
 
 *tsx*=_mode_
 	Whether Intel's transactional memory is on. *auto* and *off* turn it

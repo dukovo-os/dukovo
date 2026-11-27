@@ -24,6 +24,7 @@ radix-kdb = { path = "../../kernel/lib/kdb" }
 radix-ksyms = { path = "../../kernel/lib/ksyms" }
 radix-microcode = { path = "../../kernel/lib/microcode" }
 radix-relocs = { path = "../../kernel/lib/relocs" }
+radix-thunks = { path = "../../kernel/lib/thunks" }
 # BitLocker volumes encrypted as Windows encrypts them, for the bitlocker
 # boot test (ADR 0240).
 radix-bitlocker = { path = "../../kernel/fs/bitlocker", features = ["make"] }

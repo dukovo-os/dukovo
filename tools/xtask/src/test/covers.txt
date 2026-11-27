@@ -334,6 +334,12 @@ consoles userspace/programs/systools/src/xxd.rs
 copy kernel/arch/x86_64/src/copy.rs
 cpu-flaws kernel/arch/x86_64/src/speculation.rs kernel/lib/cpuflaws/ kernel/radix/src/fs/sysfs.rs
 cpu-flaws userspace/programs/systools/src/check/health.rs userspace/programs/systools/src/lscpu.rs
+cpu-thunks kernel/arch/x86_64/src/thunks.rs kernel/arch/x86_64/src/speculation.rs kernel/lib/cpuflaws/
+cpu-thunks kernel/lib/thunks/ tools/xtask/src/kthunks.rs
+cpu-thunks-its kernel/arch/x86_64/src/thunks.rs kernel/arch/x86_64/src/speculation.rs kernel/lib/cpuflaws/
+cpu-thunks-its kernel/lib/thunks/ tools/xtask/src/kthunks.rs
+cpu-thunks-zen2 kernel/arch/x86_64/src/thunks.rs kernel/arch/x86_64/src/speculation.rs kernel/lib/cpuflaws/
+cpu-thunks-zen2 kernel/lib/thunks/ tools/xtask/src/kthunks.rs
 crash-dump kernel/lib/klog/ kernel/radix/src/crashlog.rs kernel/radix/src/panic.rs
 crash-dump kernel/radix/src/fs/crashdump.rs kernel/radix/src/fs/devfs.rs
 crash-dump userspace/defaults/spark/services/dumps.toml userspace/programs/accounts/

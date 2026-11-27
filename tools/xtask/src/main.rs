@@ -34,6 +34,7 @@ mod image;
 mod kernel;
 mod krelocs;
 mod ksyms;
+mod kthunks;
 mod lab;
 mod lab_net;
 mod libc_check;

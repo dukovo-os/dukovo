@@ -218,6 +218,7 @@ pub const KERNEL_LIBRARIES: &[&str] = &[
     "radix-smbus",
     "radix-spd",
     "radix-sync",
+    "radix-thunks",
     "radix-tty",
     "radix-uacpi",
     "radix-uart",

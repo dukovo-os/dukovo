@@ -65,7 +65,7 @@ pub const FLAGS: &[Flag] = &[
     Flag {
         name: "spectre_v2",
         value: Some("mode"),
-        summary: "how programs are kept from steering the kernel's indirect branches: auto, off, on or ibrs",
+        summary: "how programs are kept from steering the kernel's indirect branches: auto, off, on, ibrs or retpoline",
     },
     Flag { name: "nospectre_v2", value: None, summary: "same as spectre_v2=off" },
     Flag {
@@ -86,12 +86,17 @@ pub const FLAGS: &[Flag] = &[
     Flag {
         name: "retbleed",
         value: Some("mode"),
-        summary: "how returns are kept from being predicted from the branch target buffer: auto, off or ibpb",
+        summary: "how returns are kept from being predicted from the branch target buffer: auto, off, ibpb or unret",
     },
     Flag {
         name: "spec_rstack_overflow",
         value: Some("mode"),
-        summary: "how AMD's return stack overflow is closed: auto, off or ibpb",
+        summary: "how AMD's return stack overflow is closed: auto, off, ibpb or safe-ret",
+    },
+    Flag {
+        name: "indirect_target_selection",
+        value: Some("mode"),
+        summary: "keep Intel's indirect branches and returns out of the lower half of a cache line: on or off",
     },
     Flag {
         name: "tsx",
@@ -548,6 +553,7 @@ mod tests {
             "tsa",
             "srbds",
             "gather_data_sampling",
+            "indirect_target_selection",
             "l1tf",
             "nospectre_bhb",
             "spectre_bhi",

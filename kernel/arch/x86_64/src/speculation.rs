@@ -22,12 +22,15 @@
 use core::fmt;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
-use radix_cpuflaws::{Built, Choice, Controls, Cpu, Flaw, Plan, Vendor, bits, caps, mcu_opt};
+use radix_cpuflaws::{
+    Built, Choice, Controls, Cpu, Flaw, IndirectBranches, Plan, ReturnPath, Vendor, bits, caps,
+    mcu_opt,
+};
 use radix_hal::MAX_CPUS;
 use radix_hal::cmdline::CommandLine;
 use radix_sync::Once;
 
-use crate::{cpu, microcode, percpu, smp};
+use crate::{cpu, microcode, percpu, smp, thunks};
 
 /// IA32_SPEC_CTRL.
 const SPEC_CTRL: u32 = 0x48;
@@ -72,6 +75,10 @@ const NO_SPACE: usize = usize::MAX;
 /// The decisions, made once by the boot CPU.
 static PLAN: Once<Plan> = Once::new();
 
+/// What the kernel is built with: its indirect branches and returns go
+/// through thunks that the boot CPU rewrites (`thunks.rs`).
+const BUILT: Built = Built { retpoline: true, return_thunks: true, ..Built::DEFAULT };
+
 /// What a site turns on. The numbers are the ones the sites' records
 /// carry (`.spec_sites`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,6 +104,9 @@ pub enum Site {
     SwapgsFence = 8,
     /// A filled return stack, on every switch between threads.
     RsbFillSwitch = 9,
+    /// The return's prediction untrained, on entry from a program
+    /// (Retbleed and SRSO on AMD, `thunks.rs`).
+    UntrainEntry = 10,
 }
 
 impl Site {
@@ -111,6 +121,7 @@ impl Site {
             7 => Site::Div0Exit,
             8 => Site::SwapgsFence,
             9 => Site::RsbFillSwitch,
+            10 => Site::UntrainEntry,
             _ => return None,
         })
     }
@@ -127,6 +138,7 @@ impl Site {
             Site::Div0Exit => controls.div0_clear,
             Site::SwapgsFence => controls.swapgs_fence,
             Site::RsbFillSwitch => controls.rsb_fill_on_switch,
+            Site::UntrainEntry => controls.returns.untrains(),
         }
     }
 }
@@ -198,9 +210,10 @@ macro_rules! fill_rsb {
 pub(crate) use fill_rsb;
 
 /// The sites on every entry from a program, after its registers are
-/// saved: IA32_SPEC_CTRL's kernel value, then IBPB. Uses EAX, ECX and
-/// EDX, and asm operands `site_spec_ctrl_entry`, `site_ibpb_entry` and
-/// `spec_ctrl_kernel`.
+/// saved and before the first return: IA32_SPEC_CTRL's kernel value, then
+/// IBPB, then the untraining of the return thunk's prediction. Uses RAX,
+/// ECX and EDX, and asm operands `site_spec_ctrl_entry`,
+/// `site_ibpb_entry`, `site_untrain_entry` and `spec_ctrl_kernel`.
 macro_rules! entry_sites {
     () => {
         concat!(
@@ -218,6 +231,7 @@ macro_rules! entry_sites {
                 // processors.
                 $crate::speculation::fill_rsb!(),
             ),
+            $crate::speculation::site!("site_untrain_entry", "call radix_return_untrain"),
         )
     };
 }
@@ -261,8 +275,10 @@ pub(crate) use verw_site;
 // five rounds, each a call and five taken jumps, every branch at its own
 // place in the predictor, then the calls returned from in turn. It uses
 // EAX, ECX and the flags. Its branches start cache lines, as the guidance
-// asks.
+// asks. Its own calls and returns are the sequence, so they stay as they
+// are; only its return to its caller goes through the return thunk.
 core::arch::global_asm!(
+    crate::thunks::asm_begin!(),
     r#"
     .section .text
     .balign 64
@@ -292,8 +308,9 @@ radix_clear_bhb:
 5:
     lfence
     pop rbp
-    ret
-"#
+    radix_ret
+"#,
+    crate::thunks::asm_end!(),
 );
 
 /// One site's record, as [`site!`] lays it out.
@@ -324,19 +341,21 @@ fn records() -> &'static [Record] {
     unsafe { core::slice::from_raw_parts(start, count) }
 }
 
-/// Turns on the sites `on` picks: each one's jump becomes a no-op of the
-/// same length. Run by the boot CPU before any other CPU starts and before
-/// any program runs, with interrupts masked, so no CPU fetches a site as
-/// it changes; an NMI on this CPU sees each site whole, as each is
-/// written by one store. Returns how many sites there are and how many
-/// it turned on.
-fn patch_sites(on: impl Fn(Site) -> bool) -> (usize, usize) {
+/// Rewrites the kernel's indirect branches and returns for `controls`
+/// (`thunks.rs`), and turns on the sites they pick: each one's jump
+/// becomes a no-op of the same length. Run by the boot CPU before any
+/// other CPU starts and before any program runs, with interrupts masked,
+/// so no CPU fetches a site as it changes; an NMI on this CPU sees each
+/// site whole, as each is written by one store. Returns how many sites
+/// there are and how many it turned on, and the thunk sites it found.
+fn patch_sites(controls: &Controls) -> (usize, usize, thunks::Counts) {
     let were_enabled = cpu::disable_interrupts();
     let cr0 = cpu::cr0();
     // SAFETY: with CR0.WP clear the kernel may write its read-only text,
     // which it does only below, to the sites' jumps; interrupts are masked
     // and no other CPU runs, so nothing else runs meanwhile.
     unsafe { cpu::write_cr0(cr0 & !CR0_WP) };
+    let thunk_sites = thunks::patch(controls);
     let (mut total, mut turned_on) = (0, 0);
     for record in records() {
         total += 1;
@@ -350,7 +369,7 @@ fn patch_sites(on: impl Fn(Site) -> bool) -> (usize, usize) {
         // mapped.
         let first = unsafe { core::ptr::read(at as *const u8) };
         assert_eq!(first, opcode, "speculation: no jump at the site at {at:#x}");
-        if on(site) {
+        if site.on(controls) {
             patch_jump(at, nop);
             turned_on += 1;
         }
@@ -361,7 +380,7 @@ fn patch_sites(on: impl Fn(Site) -> bool) -> (usize, usize) {
     if were_enabled {
         cpu::enable_interrupts();
     }
-    (total, turned_on)
+    (total, turned_on, thunk_sites)
 }
 
 /// The first byte of a `length`-byte jump, and the no-op of that length.
@@ -474,13 +493,13 @@ pub fn init(flags: &CommandLine<'_>) {
             );
         }
     }
-    let mut plan = Plan::make(&cpu, &choice, Built::default());
+    let mut plan = Plan::make(&cpu, &choice, BUILT);
     if plan.controls().spec_ctrl && !spec_ctrl_takes(plan.controls()) {
         // A hypervisor that names the controls and refuses their register
         // leaves the processor as one without them, which the report then
         // says too.
         radix_klog::warn!("CPU flaws: IA32_SPEC_CTRL refused the values CPUID names; not used");
-        plan = Plan::make(&without_spec_ctrl(cpu), &choice, Built::default());
+        plan = Plan::make(&without_spec_ctrl(cpu), &choice, BUILT);
     }
     let plan = PLAN.call_once(|| plan);
     let controls = plan.controls();
@@ -491,9 +510,9 @@ pub fn init(flags: &CommandLine<'_>) {
     FIRMWARE_IBRS.store(controls.ibrs_firmware, Ordering::Relaxed);
     FIRMWARE_IBPB.store(controls.ibpb_firmware, Ordering::Relaxed);
     IBPB_ON_SWITCH.store(controls.ibpb_on_switch, Ordering::Relaxed);
-    let (sites, turned_on) = patch_sites(|site| site.on(controls));
+    let (sites, turned_on, thunk_sites) = patch_sites(controls);
     init_cpu();
-    log(plan, sites, turned_on);
+    log(plan, sites, turned_on, thunk_sites);
 }
 
 /// Whether IA32_SPEC_CTRL takes both values the plan writes to it, the
@@ -577,7 +596,7 @@ fn set_mcu_opt(controls: &Controls) {
     }
 }
 
-fn log(plan: &Plan, sites: usize, turned_on: usize) {
+fn log(plan: &Plan, sites: usize, turned_on: usize, thunk_sites: thunks::Counts) {
     let mut open = radix_klog::TextBuf::<160>::new();
     for flaw in Flaw::ALL {
         if plan.is_vulnerable(flaw) {
@@ -594,6 +613,24 @@ fn log(plan: &Plan, sites: usize, turned_on: usize) {
         open.as_str(),
     );
     let controls = plan.controls();
+    let indirect = match controls.indirect_branches {
+        IndirectBranches::Plain => "plain",
+        IndirectBranches::Retpoline => "through the retpoline",
+        IndirectBranches::Aligned => "aligned against ITS",
+    };
+    let returns = match controls.returns {
+        ReturnPath::Plain => "plain",
+        ReturnPath::Aligned => "aligned against ITS",
+        ReturnPath::Untrained => "through the untrained return",
+        ReturnPath::SafeRet => "through the safe return",
+        ReturnPath::SafeRetAliased => "through the safe return at aliased addresses",
+    };
+    radix_klog::info!(
+        "CPU flaws: {} indirect branches {indirect}, {} returns {returns}{}",
+        thunk_sites.indirect,
+        thunk_sites.returns,
+        if controls.returns.untrains() { ", untrained on entry" } else { "" },
+    );
     let mut what = radix_klog::TextBuf::<200>::new();
     describe(controls, &mut what);
     if !what.as_str().is_empty() {

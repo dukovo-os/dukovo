@@ -155,32 +155,32 @@ const ICOUNT: &str = "shift=0,align=off";
 /// operation longer raises its budget in the same pull request, and says
 /// why.
 pub const BUDGETS: &[(&str, u64)] = &[
-    ("syscall_null", 190),                     // 165
-    ("syscall_yield", 670),                    // 603
-    ("cap_info", 470),                         // 425
+    ("syscall_null", 220),                     // 192, with the thunks (ADR 0793)
+    ("syscall_yield", 740),                    // 669, with the thunks (ADR 0793)
+    ("cap_info", 500),                         // 446, with the thunks (ADR 0793)
     ("random_words", 2_500),                   // 2,221
     ("context_switch", 1_300),                 // 1,107, with the CPU's protections (ADR 0791)
     ("fresh_page", 11_000),                    // 9,870, with record locks on frame and memory
-    ("tlb_local", 3_500),                      // 3,106
+    ("tlb_local", 3_700),                      // 3,361, with the thunks (ADR 0793)
     ("file_open_close", 4_400),                // 3,966, with the CPU's protections (ADR 0791)
-    ("file_stat", 1_900),                      // 1,657
+    ("file_stat", 2_100),                      // 1,829, with the thunks (ADR 0793)
     ("file_read_4k", 5_400),                   // 4,896
-    ("file_write_4k", 5_600),                  // 5,061
+    ("file_write_4k", 6_000),                  // 5,416, with the thunks (ADR 0793)
     ("endpoint_call_same_cpu", 6_200),         // 5,549
     ("notification_pingpong_same_cpu", 6_200), // 5,566
     ("channel_roundtrip_same_cpu", 5_100),     // 4,587
     ("ring_roundtrip_same_cpu", 9_400),        // 8,489
-    ("posix_fork_wait", 170_000),              // 153,856, with norandmaps
-    ("posix_fork_exec_wait", 500_000),         // 452,281, with slabs from one mapping
+    ("posix_fork_wait", 190_000),              // 165,940, with norandmaps and the thunks (ADR 0793)
+    ("posix_fork_exec_wait", 540_000),         // 482,259, with the thunks (ADR 0793)
     ("posix_pipe_mib", 2_500_000),             // 2,188,725
-    ("posix_signal", 5_900),                   // 5,300
+    ("posix_signal", 6_400),                   // 5,738, with the thunks (ADR 0793)
     ("posix_poll", 1_300),                     // 1,092
     ("posix_events_idle", 4_900),              // 4,382, one ready pipe among 1,000 watched
-    ("posix_poll_idle", 145_000),              // 130,595, 1,001 pipes
-    ("posix_futex_same_cpu", 5_300),           // 4,787
-    ("posix_futex_shared_same_cpu", 5_800),    // 5,248
+    ("posix_poll_idle", 160_000),              // 139,749, 1,001 pipes, with the thunks (ADR 0793)
+    ("posix_futex_same_cpu", 5_800),           // 5,213, with the thunks (ADR 0793)
+    ("posix_futex_shared_same_cpu", 6_200),    // 5,626, with the thunks (ADR 0793)
     ("posix_tcp_connect", 71_000),             // 64,734, beside 11 idle sockets (ADR 0550)
-    ("posix_tcp_roundtrip_same_cpu", 11_000),  // 9,274
+    ("posix_tcp_roundtrip_same_cpu", 13_000),  // 10,930, with the thunks (ADR 0793)
     ("posix_udp_roundtrip_same_cpu", 15_000),  // 13,189, straight across (ADR 0553)
     ("posix_tcp_mib", 1_700_000),              // 1,515,375
 ];

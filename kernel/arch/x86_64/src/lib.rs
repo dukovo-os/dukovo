@@ -68,6 +68,7 @@ mod smp;
 mod space;
 mod speculation;
 mod thread;
+mod thunks;
 mod time;
 mod tsc_sync;
 mod user;

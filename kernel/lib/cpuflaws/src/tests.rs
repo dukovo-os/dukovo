@@ -129,8 +129,9 @@ fn choice(flags: &str) -> Choice {
     choice
 }
 
+/// The plan of the kernel as it is built, with its thunks.
 fn default_plan(cpu: &Cpu) -> Plan {
-    Plan::make(cpu, &Choice::default(), Built::default())
+    Plan::make(cpu, &Choice::default(), THUNKS)
 }
 
 fn line(plan: &Plan, flaw: Flaw) -> String {
@@ -291,7 +292,7 @@ fn enhanced_ibrs_without_bhi_dis_s_clears_the_history_on_system_calls() {
 }
 
 #[test]
-fn renoir_waits_for_retpolines_but_gets_the_zenbleed_chicken_bit() {
+fn renoir_takes_retpolines_and_the_safe_return_and_the_zenbleed_chicken_bit() {
     let cpu = renoir();
     assert_eq!(
         affected(&cpu),
@@ -306,19 +307,34 @@ fn renoir_waits_for_retpolines_but_gets_the_zenbleed_chicken_bit() {
     );
     let plan = default_plan(&cpu);
     let controls = plan.controls();
-    assert_eq!(plan.spectre_v2(), SpectreV2::Off);
+    assert_eq!(plan.spectre_v2(), SpectreV2::Retpoline);
     assert!(controls.zenbleed_chicken && !controls.div0_clear);
     assert!(controls.ibpb_firmware && !controls.ibrs_firmware);
     assert!(controls.rsb_fill_on_switch && !controls.verw_on_exit && !controls.swapgs_fence);
-    assert_eq!(controls.spec_ctrl_kernel, 0);
+    // The untrained return needs STIBP while both threads run.
+    assert_eq!(controls.spec_ctrl_user, SPEC_CTRL_STIBP);
     assert_eq!(
         line(&plan, Flaw::SpectreV2),
+        "Mitigation: Retpolines; IBPB: disabled; STIBP: always-on; RSB filling; PBRSB-eIBRS: Not \
+         affected; BHI: Not affected"
+    );
+    assert_eq!(
+        line(&plan, Flaw::Retbleed),
+        "Mitigation: untrained return thunk; SMT enabled with STIBP protection"
+    );
+    assert_eq!(line(&plan, Flaw::SpecRstackOverflow), "Mitigation: Safe RET");
+    assert_eq!(line(&plan, Flaw::Mds), "Not affected");
+    // A kernel without the thunks leaves all three open.
+    let unbuilt = Plan::make(&cpu, &Choice::default(), Built::DEFAULT);
+    assert_eq!(unbuilt.spectre_v2(), SpectreV2::Off);
+    assert_eq!(unbuilt.controls().spec_ctrl_kernel, 0);
+    assert_eq!(
+        line(&unbuilt, Flaw::SpectreV2),
         "Vulnerable; IBPB: disabled; STIBP: disabled; RSB filling; PBRSB-eIBRS: Not affected; \
          BHI: Not affected"
     );
-    assert_eq!(line(&plan, Flaw::Retbleed), "Vulnerable");
-    assert_eq!(line(&plan, Flaw::SpecRstackOverflow), "Vulnerable");
-    assert_eq!(line(&plan, Flaw::Mds), "Not affected");
+    assert_eq!(line(&unbuilt, Flaw::Retbleed), "Vulnerable");
+    assert_eq!(line(&unbuilt, Flaw::SpecRstackOverflow), "Vulnerable");
     let fixed = Cpu { microcode: 0x0860_010c, ..cpu };
     assert!(!find(&fixed).zenbleed);
     let guest = Cpu { leaf1_ecx: cpu.leaf1_ecx | LEAF1_HYPERVISOR, ..cpu };
@@ -352,8 +368,9 @@ fn srso_ibpb_needs_microcode_that_flushes_returns() {
 fn zen_1_and_2_without_threads_are_out_of_srsos_reach() {
     let cpu = Cpu { smt: false, ..renoir() };
     assert_eq!(line(&default_plan(&cpu), Flaw::SpecRstackOverflow), "Mitigation: SMT disabled");
+    // Zen 3 is reached with one thread a core too.
     let zen3 = Cpu { smt: false, ..zen3() };
-    assert_eq!(line(&default_plan(&zen3), Flaw::SpecRstackOverflow), "Vulnerable");
+    assert_eq!(line(&default_plan(&zen3), Flaw::SpecRstackOverflow), "Mitigation: Safe RET");
 }
 
 #[test]
@@ -374,8 +391,8 @@ fn zen_3_keeps_stibp_on_and_clears_buffers_for_tsa() {
     assert_eq!(line(&plan, Flaw::Tsa), "Mitigation: Clear CPU buffers: user/kernel boundary");
     assert_eq!(
         line(&plan, Flaw::SpectreV2),
-        "Vulnerable; IBPB: disabled; IBRS_FW; STIBP: always-on; RSB filling; PBRSB-eIBRS: Not \
-         affected; BHI: Not affected"
+        "Mitigation: Retpolines; IBPB: disabled; IBRS_FW; STIBP: always-on; RSB filling; \
+         PBRSB-eIBRS: Not affected; BHI: Not affected"
     );
     let old = Cpu { ext21_eax: 0, ..cpu };
     assert_eq!(line(&default_plan(&old), Flaw::Tsa), "Vulnerable: No microcode");
@@ -428,6 +445,111 @@ fn retpolines_and_return_thunks_close_what_s1_leaves_open_on_zen_2() {
         SpectreV2::Ibrs
     );
     assert_eq!(Plan::make(&haswell, &Choice::default(), built).spectre_v2(), SpectreV2::Retpoline);
+}
+
+/// What the kernel is built with since retpolines and return thunks.
+const THUNKS: Built = Built { retpoline: true, return_thunks: true, ..Built::DEFAULT };
+
+fn paths(plan: &Plan) -> (IndirectBranches, ReturnPath) {
+    (plan.controls().indirect_branches, plan.controls().returns)
+}
+
+#[test]
+fn zen_2_runs_retpolines_and_the_safe_return_which_closes_both_flaws_of_returns() {
+    let plan = Plan::make(&renoir(), &Choice::default(), THUNKS);
+    assert_eq!(paths(&plan), (IndirectBranches::Retpoline, ReturnPath::SafeRet));
+    assert!(plan.controls().returns.untrains());
+    // Without SRSO's closing, Retbleed's untrained return is enough.
+    let no_srso = Plan::make(&renoir(), &choice("spec_rstack_overflow=off"), THUNKS);
+    assert_eq!(paths(&no_srso), (IndirectBranches::Retpoline, ReturnPath::Untrained));
+    assert_eq!(line(&no_srso, Flaw::SpecRstackOverflow), "Vulnerable");
+    // With one thread a core, SRSO cannot reach the kernel.
+    let one_thread = Plan::make(&Cpu { smt: false, ..renoir() }, &Choice::default(), THUNKS);
+    assert_eq!(paths(&one_thread).1, ReturnPath::Untrained);
+    assert_eq!(line(&one_thread, Flaw::SpecRstackOverflow), "Mitigation: SMT disabled");
+    // IBPB on every entry closes both, and returns run plain.
+    let ibpb = Plan::make(&renoir(), &choice("retbleed=ibpb"), THUNKS);
+    assert_eq!(paths(&ibpb), (IndirectBranches::Retpoline, ReturnPath::Plain));
+    assert!(!ibpb.controls().returns.untrains());
+}
+
+#[test]
+fn zen_3_and_4_take_the_safe_return_at_aliased_addresses() {
+    let zen3 = Plan::make(&zen3(), &Choice::default(), THUNKS);
+    assert_eq!(paths(&zen3), (IndirectBranches::Retpoline, ReturnPath::SafeRetAliased));
+    assert_eq!(line(&zen3, Flaw::SpecRstackOverflow), "Mitigation: Safe RET");
+    assert!(line(&zen3, Flaw::SpectreV2).starts_with("Mitigation: Retpolines; "));
+    // Automatic IBRS guards Zen 4's indirect branches, not its returns.
+    let zen4 = Plan::make(&zen4(), &Choice::default(), THUNKS);
+    assert_eq!(paths(&zen4), (IndirectBranches::Plain, ReturnPath::SafeRetAliased));
+}
+
+#[test]
+fn intel_s_own_protections_leave_branches_and_returns_plain() {
+    // Skylake: IBRS on every entry.
+    let skylake = Plan::make(&i5_6500(), &Choice::default(), THUNKS);
+    assert_eq!(skylake.spectre_v2(), SpectreV2::Ibrs);
+    assert_eq!(paths(&skylake), (IndirectBranches::Plain, ReturnPath::Plain));
+    // Alder Lake: enhanced IBRS, unless retpolines are asked for.
+    let alder = Plan::make(&i9_12900(), &Choice::default(), THUNKS);
+    assert_eq!(paths(&alder), (IndirectBranches::Plain, ReturnPath::Plain));
+    for flag in ["spectre_v2=retpoline", "spectre_v2=retpoline,generic"] {
+        let asked = Plan::make(&i9_12900(), &choice(flag), THUNKS);
+        assert_eq!(asked.spectre_v2(), SpectreV2::Retpoline, "{flag}");
+        assert_eq!(paths(&asked), (IndirectBranches::Retpoline, ReturnPath::Plain), "{flag}");
+    }
+    // A kernel without retpolines cannot be asked for them.
+    let unbuilt = Plan::make(&i9_12900(), &choice("spectre_v2=retpoline"), Built::DEFAULT);
+    assert_eq!(unbuilt.spectre_v2(), SpectreV2::Eibrs);
+}
+
+#[test]
+fn its_aligns_branches_and_returns_unless_it_is_turned_off() {
+    let icelake = Cpu {
+        leaf7_edx: INTEL_SPEC | LEAF7_ARCH_CAPABILITIES,
+        arch_capabilities: caps::RDCL_NO
+            | caps::IBRS_ALL
+            | caps::MDS_NO
+            | caps::TAA_NO
+            | caps::PSCHANGE_MC_NO,
+        ..intel(0x6a, 6)
+    };
+    assert!(find(&icelake).has(Flaw::IndirectTargetSelection));
+    let plan = Plan::make(&icelake, &Choice::default(), THUNKS);
+    assert_eq!(plan.spectre_v2(), SpectreV2::Eibrs);
+    assert_eq!(paths(&plan), (IndirectBranches::Aligned, ReturnPath::Aligned));
+    assert_eq!(
+        line(&plan, Flaw::IndirectTargetSelection),
+        "Mitigation: Aligned branch/return thunks"
+    );
+    // With retpolines there are no indirect branches left to align.
+    let retpoline = Plan::make(&icelake, &choice("spectre_v2=retpoline"), THUNKS);
+    assert_eq!(paths(&retpoline), (IndirectBranches::Retpoline, ReturnPath::Aligned));
+    for flags in ["indirect_target_selection=off", "spectre_v2=off", "mitigations=off"] {
+        let off = Plan::make(&icelake, &choice(flags), THUNKS);
+        assert_eq!(paths(&off).1, ReturnPath::Plain, "{flags}");
+        assert_eq!(line(&off, Flaw::IndirectTargetSelection), "Vulnerable", "{flags}");
+    }
+    let asked =
+        Plan::make(&icelake, &choice("mitigations=off indirect_target_selection=on"), THUNKS);
+    assert_eq!(paths(&asked), (IndirectBranches::Plain, ReturnPath::Plain), "spectre_v2 is off");
+    // A kernel without the thunks cannot align them.
+    let unbuilt = Plan::make(&icelake, &Choice::default(), Built::DEFAULT);
+    assert_eq!(paths(&unbuilt), (IndirectBranches::Plain, ReturnPath::Plain));
+    assert_eq!(line(&unbuilt, Flaw::IndirectTargetSelection), "Vulnerable");
+}
+
+#[test]
+fn mitigations_off_leaves_branches_and_returns_plain_everywhere() {
+    for cpu in [renoir(), zen3(), zen4(), i5_6500(), gold_6152(), i9_12900()] {
+        let plan = Plan::make(&cpu, &choice("mitigations=off"), THUNKS);
+        assert_eq!(paths(&plan), (IndirectBranches::Plain, ReturnPath::Plain), "{cpu:?}");
+    }
+    // Linux's names for the return thunks ask for them even then.
+    let unret = Plan::make(&renoir(), &choice("mitigations=off retbleed=unret"), THUNKS);
+    assert_eq!(paths(&unret), (IndirectBranches::Plain, ReturnPath::Untrained));
+    let safe_ret = choice("mitigations=off spec_rstack_overflow=safe-ret");
+    assert_eq!(paths(&Plan::make(&zen3(), &safe_ret, THUNKS)).1, ReturnPath::SafeRetAliased);
 }
 
 #[test]
@@ -564,8 +686,12 @@ fn a_guest_assumes_the_worst_of_its_host() {
     let found = find(&guest);
     assert!(found.bhi, "a hypervisor may hide enhanced IBRS");
     assert!(found.has(Flaw::IndirectTargetSelection));
+    // Without enhanced IBRS it takes retpolines, which leave no indirect
+    // branch for the history to steer; a kernel without them clears it.
     let plan = default_plan(&guest);
-    assert!(plan.controls().bhb_clear);
+    assert_eq!(plan.spectre_v2(), SpectreV2::Retpoline);
+    assert!(!plan.controls().bhb_clear);
+    assert!(Plan::make(&guest, &Choice::default(), Built::DEFAULT).controls().bhb_clear);
     assert_eq!(line(&plan, Flaw::GatherDataSampling), "Unknown: Dependent on hypervisor status");
     let mds_guest = Cpu { leaf1_ecx: LEAF1_AVX | LEAF1_HYPERVISOR, ..gold_6152() };
     assert_eq!(
@@ -651,7 +777,8 @@ fn every_line_starts_as_linux_tools_expect() {
 fn flags_are_checked_against_their_values() {
     let mut choice = Choice::default();
     assert_eq!(choice.set("loglevel", Some("debug")), Ok(false));
-    assert_eq!(choice.set("spectre_v2", Some("retpoline")), Err(BadValue));
+    assert_eq!(choice.set("spectre_v2", Some("retpoline,lfence")), Err(BadValue));
+    assert_eq!(choice.set("indirect_target_selection", Some("force")), Err(BadValue));
     assert_eq!(choice.set("nosmt", Some("force")), Err(BadValue));
     assert_eq!(choice.set("retbleed", None), Err(BadValue));
     assert_eq!(choice.set("mitigations", Some("auto,nosmt")), Ok(true));
