@@ -131,6 +131,10 @@ fn rate_hz(speed: Speed, interval: u8) -> u32 {
 /// itself, or `name` if it has no product string, and plugged in at
 /// `usb-1-2/0`, its interface after the device. `interval` is its
 /// interrupt endpoint's bInterval. `None` if the hub has no room.
+///
+/// Not inlined: what the device said of itself, and what the hub is told
+/// of it, are a frame of their own (ADR 0058).
+#[inline(never)]
 pub(super) fn port(
     bus: usize,
     path: Path,
@@ -176,14 +180,51 @@ impl Controller {
     #[inline(never)]
     pub(super) fn start_hid(&mut self, slot: u8, plan: HidPlan) -> Result<(), Why> {
         let at = self.find(slot).ok_or(Why::Device("it is gone"))?;
+        let Some(layout) = self.hid_layout(at, &plan)? else { return Ok(()) };
+        let (bus, path, interface) = (self.bus, self.devices[at].path, plan.interface);
+        if layout.is_ups() {
+            return start_ups(&mut self.devices[at], bus, interface, layout);
+        }
+        let (what, read) = crate::hid::what(&layout);
+        info!("USB: {}: interface {interface}: {what}", Name(bus, path));
+        if !read {
+            return Ok(());
+        }
+        let mut decoder = Decoder::new();
+        if self.fine_wheels(at, interface, &layout, &mut decoder) {
+            info!("USB: {}: interface {interface}: {FINER}", Name(bus, path));
+        }
+        let attached = &mut self.devices[at];
+        attached.hids.try_reserve(1).map_err(|_| Why::Device("out of memory"))?;
+        let _ = attached.hids.push_within_capacity(Hid {
+            interface,
+            endpoint: endpoint_index(plan.endpoint),
+            pending: 0,
+            length: layout.input_bytes().clamp(1, BUFFER_SIZE),
+            lights: layout.has_lights().then_some(u32::MAX),
+            port: port(bus, path, (interface, plan.interval), attached.name.as_str(), &layout),
+            layout,
+            decoder,
+            errors: 0,
+            ups: None,
+        });
+        let index = attached.hids.len() - 1;
+        self.hid_lights(at);
+        self.listen_hid(at, index)
+    }
+
+    /// How HID interface `plan` of the device at `at` lays its reports
+    /// out: as its own report descriptor says; a boot interface that has
+    /// none to give, or one too much for the decoder, falls back on the
+    /// boot protocol. `None`, with a line in the log, for an interface
+    /// whose descriptor says nothing that can be read.
+    #[inline(never)]
+    fn hid_layout(&mut self, at: usize, plan: &HidPlan) -> Result<Option<Layout<Kmalloc>>, Why> {
         let Controller { xhci, host, devices, buffer, bus, .. } = self;
         let attached = &mut devices[at];
         let (path, device) = (attached.path, &mut attached.device);
         let heap = HEAP.with(Flags::MAY_SLEEP);
         let interface = plan.interface;
-        // Its own report descriptor; a boot interface that has none to
-        // give, or one too much for the decoder, falls back on the boot
-        // protocol.
         let length = usize::from(plan.report_length).min(BUFFER_SIZE);
         let own = (length > 0)
             .then(|| {
@@ -208,22 +249,28 @@ impl Controller {
             }
             (Some(Err(err)), _) => {
                 warn!("USB: {}: interface {interface}: {err}", Name(*bus, path));
-                return Ok(());
+                return Ok(None);
             }
             (None, _) => return Err(Why::Device("its report descriptor could not be read")),
         };
         // Reports only when something changes; a device that wants to
         // send them anyway may refuse.
         let _ = device.control_out(xhci, host, Setup::set_idle(interface), &[]);
-        if layout.is_ups() {
-            return start_ups(attached, *bus, interface, layout);
-        }
-        let (what, read) = crate::hid::what(&layout);
-        info!("USB: {}: interface {interface}: {what}", Name(*bus, path));
-        if !read {
-            return Ok(());
-        }
-        let mut decoder = Decoder::new();
+        Ok(Some(layout))
+    }
+
+    /// Asks the wheels of HID interface `interface` of the device at
+    /// `at` to count finer than a notch (`crate::hid::fine_wheels`).
+    #[inline(never)]
+    fn fine_wheels(
+        &mut self,
+        at: usize,
+        interface: u8,
+        layout: &Layout<Kmalloc>,
+        decoder: &mut Decoder,
+    ) -> bool {
+        let Controller { xhci, host, devices, buffer, .. } = self;
+        let device = &mut devices[at].device;
         let mut ask = |feature: Feature<'_>| match feature {
             Feature::Get(id, report) => {
                 let setup =
@@ -236,26 +283,7 @@ impl Controller {
                 device.control_out(xhci, host, setup, report).ok().map(|()| 0)
             }
         };
-        if crate::hid::fine_wheels(&layout, &mut decoder, &mut buffer[..], &mut ask) {
-            info!("USB: {}: interface {interface}: {FINER}", Name(*bus, path));
-        }
-        let hid = Hid {
-            interface,
-            endpoint: endpoint_index(plan.endpoint),
-            pending: 0,
-            length: layout.input_bytes().clamp(1, BUFFER_SIZE),
-            lights: layout.has_lights().then_some(u32::MAX),
-            port: port(*bus, path, (interface, plan.interval), attached.name.as_str(), &layout),
-            layout,
-            decoder,
-            errors: 0,
-            ups: None,
-        };
-        attached.hids.try_reserve(1).map_err(|_| Why::Device("out of memory"))?;
-        let _ = attached.hids.push_within_capacity(hid);
-        let index = attached.hids.len() - 1;
-        self.hid_lights(at);
-        self.listen_hid(at, index)
+        crate::hid::fine_wheels(layout, decoder, &mut buffer[..], &mut ask)
     }
 
     /// Starts the transfer on HID interface `index` of the device at `at`.
