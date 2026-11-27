@@ -5,13 +5,17 @@
 //! thread should run, and which CPU an underloaded one should pull from.
 //!
 //! The kernel describes each CPU by its core (hardware threads on one core
-//! share it), its package (whose cores share the last-level cache) and its
-//! NUMA node, and gives the distances between nodes (ACPI's SLIT; 10 is
-//! local). From that come the *levels* of each CPU: the CPUs sharing its
-//! core, its package, its node, and the whole machine. Each level holds
-//! the one below: a package that spans nodes (AMD's NPS modes, or a
-//! virtual machine's made-up topology) counts as one package per node,
-//! since its last-level caches do not span nodes either. Placement and
+//! share it), its last-level cache (which the cores of a package share,
+//! or on AMD's processors with several core complexes, and Intel's with
+//! several dies, the cores of one of them), its package and its NUMA node,
+//! and gives the distances between nodes (ACPI's SLIT; 10 is local). From
+//! that come the *levels* of each CPU: the CPUs sharing its core, its
+//! last-level cache, its package, its node, and the whole machine. Each
+//! level holds the one below: a package that spans nodes (AMD's NPS modes,
+//! or a virtual machine's made-up topology) counts as one package per
+//! node, since its last-level caches do not span nodes either, and a level
+//! that adds no CPUs to the one below, as the cache level does where the
+//! package has one cache, is skipped. Placement and
 //! balancing walk the levels from the closest out, so a thread moves to a
 //! CPU that shares its caches before one that does not, and to a near node
 //! before a far one. Moving between nodes also waits longer between
@@ -42,7 +46,10 @@ pub const MAX_NODES: usize = 8;
 pub enum Level {
     /// Hardware threads of one core.
     Core,
-    /// Cores of one package, which share its last-level cache.
+    /// Cores that share a last-level cache: one of AMD's core complexes,
+    /// one of Intel's dies, or the whole package where it has one cache.
+    Cache,
+    /// Cores of one package.
     Package,
     /// CPUs of one NUMA node.
     Node,
@@ -52,15 +59,17 @@ pub enum Level {
 
 impl Level {
     /// Every level, closest first.
-    pub const ALL: [Level; 4] = [Level::Core, Level::Package, Level::Node, Level::Machine];
+    pub const ALL: [Level; 5] =
+        [Level::Core, Level::Cache, Level::Package, Level::Node, Level::Machine];
 
     /// Its place in [`Level::ALL`].
     pub const fn index(self) -> usize {
         match self {
             Level::Core => 0,
-            Level::Package => 1,
-            Level::Node => 2,
-            Level::Machine => 3,
+            Level::Cache => 1,
+            Level::Package => 2,
+            Level::Node => 3,
+            Level::Machine => 4,
         }
     }
 
@@ -68,6 +77,7 @@ impl Level {
     pub const fn name(self) -> &'static str {
         match self {
             Level::Core => "core",
+            Level::Cache => "cache",
             Level::Package => "package",
             Level::Node => "node",
             Level::Machine => "machine",
@@ -77,7 +87,8 @@ impl Level {
     const fn lower(self) -> Option<Level> {
         match self {
             Level::Core => None,
-            Level::Package => Some(Level::Core),
+            Level::Cache => Some(Level::Core),
+            Level::Package => Some(Level::Cache),
             Level::Node => Some(Level::Package),
             Level::Machine => Some(Level::Node),
         }
@@ -89,6 +100,9 @@ impl Level {
 pub struct Place {
     /// Its package.
     pub package: u32,
+    /// Its last-level cache, unique within the package; 0 where the
+    /// package has one.
+    pub cache: u32,
     /// Its core, unique within the package.
     pub core: u32,
     /// Its NUMA node.
@@ -124,18 +138,23 @@ pub struct CpuLoad {
 pub const fn interval_ticks(level: Level) -> u64 {
     match level {
         Level::Core => 1,
-        Level::Package => 2,
+        Level::Cache => 2,
+        Level::Package => 4,
         Level::Node => 8,
         Level::Machine => 16,
     }
 }
 
 /// Whether a thread that last ran `since_ns` ago probably still has its
-/// data in the caches that moving it across `level` would leave behind.
+/// data in the caches that moving it across `level` would leave behind:
+/// its core's caches within a last-level cache, that cache as well
+/// between caches, whose next one is as far as memory, and its memory's
+/// nearness besides between nodes.
 pub const fn is_cache_hot(since_ns: u64, level: Level) -> bool {
     let window = match level {
         Level::Core => 0,
-        Level::Package => 500_000,
+        Level::Cache => 500_000,
+        Level::Package => 2_000_000,
         Level::Node | Level::Machine => 5_000_000,
     };
     since_ns < window
@@ -157,12 +176,12 @@ pub const fn should_pull(from: u32, from_cpus: u32, to: u32, to_cpus: u32) -> bo
 #[derive(Clone, Copy)]
 struct Known {
     /// Its span at each level, in [`Level::ALL`]'s order.
-    spans: [CpuSet; 4],
+    spans: [CpuSet; Level::ALL.len()],
     /// Bit `i` set when level `Level::ALL[i]` adds CPUs to the one below.
     grows: u8,
 }
 
-/// The machine's CPUs, packages and nodes.
+/// The machine's CPUs, caches, packages and nodes.
 pub struct Topology<A: Allocator> {
     cpus: usize,
     places: [Place; MAX_CPUS],
@@ -178,7 +197,7 @@ impl<A: Allocator> Topology<A> {
     /// what [`Topology::finish`] works out in memory from `alloc`.
     pub fn flat_in(cpus: usize, alloc: A) -> Topology<A> {
         let cpus = cpus.min(MAX_CPUS);
-        let mut places = [Place { package: 0, core: 0, node: 0 }; MAX_CPUS];
+        let mut places = [Place::default(); MAX_CPUS];
         for (i, place) in places.iter_mut().enumerate() {
             place.core = i as u32;
         }
@@ -249,8 +268,10 @@ impl<A: Allocator> Topology<A> {
     fn shares(&self, a: usize, b: usize, level: Level) -> bool {
         let (pa, pb) = (self.place(a), self.place(b));
         let package = pa.package == pb.package && pa.node == pb.node;
+        let cache = package && pa.cache == pb.cache;
         match level {
-            Level::Core => package && pa.core == pb.core,
+            Level::Core => cache && pa.core == pb.core,
+            Level::Cache => cache,
             Level::Package => package,
             Level::Node => pa.node == pb.node,
             Level::Machine => true,
@@ -468,6 +489,7 @@ mod tests {
                 cpu,
                 Place {
                     package: (cpu / 4) as u32,
+                    cache: 0,
                     core: ((cpu / 2) % 2) as u32,
                     node: (cpu / 4) as u8,
                 },
@@ -489,20 +511,26 @@ mod tests {
         assert_eq!(topology.span(5, Level::Package).to_string(), "4-7");
         assert_eq!(topology.span(5, Level::Node).to_string(), "4-7");
         assert_eq!(topology.span(5, Level::Machine).to_string(), "0-7");
-        // The node adds nothing to the package here.
+        // Each package has one cache, so the package adds nothing to it,
+        // and the node adds nothing to the package.
+        assert_eq!(topology.span(5, Level::Cache).to_string(), "4-7");
         assert_eq!(
             topology.levels(0).collect::<Vec<_>>(),
-            [Level::Core, Level::Package, Level::Machine]
+            [Level::Core, Level::Cache, Level::Machine]
         );
         // One package over two nodes counts as one per node.
         let mut split = flat(4);
         for cpu in 0..4 {
-            split.set_place(cpu, Place { package: 0, core: cpu as u32, node: (cpu / 2) as u8 });
+            split.set_place(
+                cpu,
+                Place { package: 0, cache: 0, core: cpu as u32, node: (cpu / 2) as u8 },
+            );
         }
         assert_eq!(split.span(3, Level::Package).to_string(), "2-3");
-        assert_eq!(split.levels(3).collect::<Vec<_>>(), [Level::Package, Level::Machine]);
+        assert_eq!(split.span(3, Level::Cache).to_string(), "2-3");
+        assert_eq!(split.levels(3).collect::<Vec<_>>(), [Level::Cache, Level::Machine]);
         let four = flat(4);
-        assert_eq!(four.levels(2).collect::<Vec<_>>(), [Level::Package]);
+        assert_eq!(four.levels(2).collect::<Vec<_>>(), [Level::Cache]);
         assert_eq!(flat(1).levels(0).count(), 0);
     }
 
@@ -511,7 +539,7 @@ mod tests {
         let mut topology = flat(4);
         assert!(topology.finish());
         assert_eq!(topology.span(3, Level::Package).to_string(), "0-3");
-        topology.set_place(3, Place { package: 1, core: 0, node: 0 });
+        topology.set_place(3, Place { package: 1, cache: 0, core: 0, node: 0 });
         assert_eq!(topology.span(3, Level::Package).to_string(), "3");
         assert_eq!(topology.span(0, Level::Package).to_string(), "0-2");
         assert!(topology.finish());
@@ -556,17 +584,18 @@ mod tests {
         // One thread each on CPUs 2 and 3: nothing is waiting, so nothing
         // moves, although the package is uneven.
         assert_eq!(
-            topology.find_busiest(0, Level::Package, &*loads(&[0, 0, 1, 1, 0, 0, 0, 0])),
+            topology.find_busiest(0, Level::Cache, &*loads(&[0, 0, 1, 1, 0, 0, 0, 0])),
             None
         );
         assert_eq!(
-            topology.find_busiest(0, Level::Package, &*loads(&[0, 0, 3, 1, 0, 0, 0, 0])),
+            topology.find_busiest(0, Level::Cache, &*loads(&[0, 0, 3, 1, 0, 0, 0, 0])),
             Some(2)
         );
-        // The other package is busier than this one.
+        // The other package is busier than this one, which its cache
+        // level cannot see.
         let far = loads(&[1, 1, 1, 1, 3, 2, 2, 2]);
         assert_eq!(topology.find_busiest(0, Level::Machine, &*far), Some(4));
-        assert_eq!(topology.find_busiest(0, Level::Package, &*far), None);
+        assert_eq!(topology.find_busiest(0, Level::Cache, &*far), None);
     }
 
     #[test]
@@ -579,6 +608,65 @@ mod tests {
         assert_eq!(topology.select_cpu(0, &all, &*loads(&[1; 8])), 0);
         let only = CpuSet::single(6);
         assert_eq!(topology.select_cpu(0, &only, &*loads(&[0; 8])), 6);
+    }
+
+    /// One package of two core complexes, each of four cores with two
+    /// hardware threads sharing a last-level cache, as on AMD's Ryzen 9
+    /// and EPYC: CPUs 0-7 and 8-15.
+    fn complexes() -> Topology<Global> {
+        let mut topology = flat(16);
+        for cpu in 0..16 {
+            topology.set_place(
+                cpu,
+                Place { package: 0, cache: (cpu / 8) as u32, core: (cpu / 2) as u32, node: 0 },
+            );
+        }
+        assert!(topology.finish());
+        topology
+    }
+
+    #[test]
+    fn caches_split_a_package() {
+        let topology = complexes();
+        assert_eq!(topology.span(3, Level::Cache).to_string(), "0-7");
+        assert_eq!(topology.span(12, Level::Cache).to_string(), "8-15");
+        assert_eq!(topology.span(12, Level::Package).to_string(), "0-15");
+        assert_eq!(
+            topology.levels(12).collect::<Vec<_>>(),
+            [Level::Core, Level::Cache, Level::Package]
+        );
+        // A waking thread takes an idle CPU of its own complex before one
+        // of the other's, though the other's is lower-numbered.
+        let mut running = [1; 16];
+        running[2] = 0;
+        running[13] = 0;
+        assert_eq!(topology.select_cpu(9, &CpuSet::first(16), &*loads(&running)), 13);
+        // Balancing within the complex comes first: a thread waits on CPU
+        // 10, and CPU 8 pulls it at the cache level; across complexes the
+        // load is even enough per CPU that nothing moves.
+        let mut waiting = [1; 16];
+        waiting[8] = 0;
+        waiting[10] = 2;
+        assert_eq!(topology.find_busiest(8, Level::Cache, &*loads(&waiting)), Some(10));
+        assert_eq!(topology.find_busiest(8, Level::Package, &*loads(&waiting)), None);
+        // A complex with threads waiting gives them to an idle one.
+        let mut lopsided = [0; 16];
+        for load in &mut lopsided[..8] {
+            *load = 2;
+        }
+        assert_eq!(topology.find_busiest(8, Level::Cache, &*loads(&lopsided)), None);
+        assert_eq!(topology.find_busiest(8, Level::Package, &*loads(&lopsided)), Some(0));
+    }
+
+    #[test]
+    fn crossing_a_cache_waits_longer_and_keeps_warm_threads() {
+        let mut previous = 0;
+        for level in Level::ALL {
+            assert!(interval_ticks(level) > previous);
+            previous = interval_ticks(level);
+        }
+        assert!(is_cache_hot(1_000_000, Level::Package));
+        assert!(!is_cache_hot(1_000_000, Level::Cache));
     }
 
     #[test]
@@ -601,13 +689,13 @@ mod tests {
         #[test]
         fn finished_answers_as_worked_out(
             cpus in 1usize..16,
-            places in prop::collection::vec((0u32..3, 0u32..4, 0u8..3), 16),
+            places in prop::collection::vec((0u32..3, 0u32..2, 0u32..4, 0u8..3), 16),
             running in prop::collection::vec(0u32..4, 16),
             words in any::<u64>(),
         ) {
             let mut worked_out = flat(cpus);
-            for (cpu, &(package, core, node)) in places.iter().enumerate().take(cpus) {
-                worked_out.set_place(cpu, Place { package, core, node });
+            for (cpu, &(package, cache, core, node)) in places.iter().enumerate().take(cpus) {
+                worked_out.set_place(cpu, Place { package, cache, core, node });
             }
             worked_out.set_distance(0, 1, 21);
             let mut finished = flat(cpus);

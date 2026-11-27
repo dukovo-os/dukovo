@@ -6,7 +6,7 @@
 //!
 //! Each CPU looks at the levels of the topology from the closest out
 //! (`radix_sched::Topology`): the hardware threads of its core, its
-//! package, its NUMA node, the machine. At each level it compares its
+//! last-level cache, its package, its NUMA node, the machine. At each level it compares its
 //! group of CPUs with the others there and, if one is busier by enough
 //! that moving a thread makes things more even (`should_pull`), takes a
 //! waiting thread from that group's busiest CPU. A busy CPU tries every
@@ -23,15 +23,6 @@ use super::{CPUS, LiveLoads, TOPOLOGY, adopt};
 
 /// Failed attempts at a level after which a cache-hot thread may move.
 const FORCE_AFTER: u32 = 4;
-
-fn level_index(level: Level) -> usize {
-    match level {
-        Level::Core => 0,
-        Level::Package => 1,
-        Level::Node => 2,
-        Level::Machine => 3,
-    }
-}
 
 /// From the timer tick on CPU `cpu`, with interrupts off.
 pub(super) fn tick(cpu: usize, now: u64) {
@@ -58,7 +49,7 @@ fn pull(cpu: usize, level: Level, now: u64) -> bool {
     if busiest == cpu {
         return false;
     }
-    let failures = &CPUS.get(cpu).balance_failures[level_index(level)];
+    let failures = &CPUS.get(cpu).balance_failures[level.index()];
     let force = failures.load(Ordering::Relaxed) >= FORCE_AFTER;
     // Both queues, in CPU order.
     let (first, second) = (cpu.min(busiest), cpu.max(busiest));
@@ -69,7 +60,7 @@ fn pull(cpu: usize, level: Level, now: u64) -> bool {
     match there.take_for(cpu, now, level, force) {
         Some((thread, class)) => {
             adopt(here, cpu, thread, class);
-            here.pulled[level_index(level)] += 1;
+            here.pulled[level.index()] += 1;
             CPUS.get(cpu).publish(here);
             CPUS.get(busiest).publish(there);
             failures.store(0, Ordering::Relaxed);

@@ -327,14 +327,18 @@ while taking another's.
 
 ## Placement and balancing
 
-`Topology` (`topology.rs`) describes each CPU by its core, package and
-NUMA node, read from the APIC IDs (CPUID's topology leaves) and ACPI's
-SRAT and SLIT. Each CPU has four *levels*: the CPUs of its core, of its
-package, of its node, and the machine. Each level holds the one below: a
-package that spans nodes (AMD's NPS modes, or QEMU's default topology
-when it emulates nodes) counts as one package per node, since its
-last-level caches do not span nodes either. Levels that add no CPUs are
-skipped. Each CPU's spans, and which of its levels add CPUs, are worked
+`Topology` (`topology.rs`) describes each CPU by its core, last-level
+cache, package and NUMA node, read from the APIC IDs (CPUID's topology
+and cache leaves, ADR 0797) and ACPI's SRAT and SLIT. Each CPU has five
+*levels*: the CPUs of its core, of its last-level cache, of its package,
+of its node, and the machine. A package splits between caches on AMD's
+processors with several core complexes and Intel's with several dies;
+elsewhere the cache level is the package. Each level holds the one
+below: a package that spans nodes (AMD's NPS modes, or QEMU's default
+topology when it emulates nodes) counts as one package per node, since
+its last-level caches do not span nodes either. Levels that add no CPUs
+are skipped, so a package with one cache is balanced at the cache level
+alone. Each CPU's spans, and which of its levels add CPUs, are worked
 out once when the scheduler starts (`Topology::finish`, ADR 0654), so
 placement and balancing cost the same on a server of a hundred CPUs as
 on four, apart from reading each CPU's load.
@@ -362,11 +366,12 @@ group's busiest CPU if `should_pull(from, from_cpus, to, to_cpus)` holds:
 
 that is, after the move the source group still has at least as much load
 per CPU as the destination. A busy CPU tries a level every
-`interval_ticks` ticks (1 for the core, 2 for the package, 8 for the
-node, 16 for the machine); an idle CPU tries every level before it
-sleeps. Only threads waiting in a queue move, never the running one, and
-threads that ran within the level's cache window (`is_cache_hot`: 0.5 ms
-in a package, 5 ms across nodes) stay unless attempts at that level have
+`interval_ticks` ticks (1 for the core, 2 for the cache, 4 for the
+package, 8 for the node, 16 for the machine); an idle CPU tries every
+level before it sleeps. Only threads waiting in a queue move, never the
+running one, and threads that ran within the level's cache window
+(`is_cache_hot`: 0.5 ms within a cache, 2 ms between the caches of a
+package, 5 ms across nodes) stay unless attempts at that level have
 failed several times in a row.
 
 **Affinity.** A thread's affinity is a `CpuSet`. `set_affinity` updates

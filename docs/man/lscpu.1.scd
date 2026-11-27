@@ -50,8 +50,8 @@ It reads the processor with the CPUID instruction, which a program may
 run itself. The flags are the CPUID bits that Linux's _/proc/cpuinfo_
 names, with Linux's names, without the flags that Linux's kernel adds
 of its own, such as *constant_tsc*. The topology comes from CPUID too:
-leaf 0xB where the processor has it. Linux's lscpu also shows clock
-speeds, NUMA nodes and vulnerabilities, which this does not.
+leaf 0x1F, or 0xB, where the processor has them. Linux's lscpu also
+shows clock speeds, NUMA nodes and vulnerabilities, which this does not.
 
 # EXIT STATUS
 
