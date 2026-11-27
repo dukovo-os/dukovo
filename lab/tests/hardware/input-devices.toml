@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The input devices of a machine in the lab (ADRs 0706 and 0707):
+# `hardware inputs` lists a keyboard and names a file of its own for each
+# device, which are the files the kernel has; a key pressed at the machine
+# is read on one device's own file, as Linux's code for it; and inputd, the
+# service that hands the devices to the program that has the screens, runs,
+# holds under 2 MiB of its own and is woken by no key. What needs a second
+# program with the screens, which no installed one is before the window
+# server, is the boot tests': input-follow, secure-key, inputd and
+# input-devices.
+about = "hardware inputs lists a keyboard and each device's own file, a key pressed at the machine is read on its device's file as Linux's key code, and inputd runs, holds under 2 MiB of its own and is woken by no key (ADRs 0706, 0707)"
+time = "5m"
+
+# A key before anything is read, so that a keyboard the lab attaches with
+# its first key is among the devices from here on. Shift alone types
+# nothing.
+[[step]]
+keys = ["shift"]
+[[step]]
+wait = "3s"
+# The list needs no rights.
+[[step]]
+run = "hardware inputs"
+expect = ["Is:        keyboard", "File:      /devices/input/"]
+[[step]]
+run = "hardware inputs --json"
+expect = ["{\"format\":1,\"held\":false,", "\"kinds\":[\"keyboard\""]
+# Each file the list names is there, and the kernel has no other.
+[[step]]
+run = '''sh -c 'listed=$(hardware inputs | sed -n "s|^  File:  *\(/devices/input/[0-9]*\).*|\1|p" | sort); files=$(ls -d /devices/input/[0-9]* | sort); [ -n "$listed" ] && [ "$listed" = "$files" ] && echo "the list and the files are the same"; echo "listed:" $listed "files:" $files' '''
+root = true
+expect = "the list and the files are the same"
+[[step]]
+run = "service inputd status"
+root = true
+expect = ["inputd - Input devices", "Active: active (running)"]
+# Its memory of its own: the pages no file backs, of 4 KiB each, and the
+# kernel's memory for it, in bytes.
+[[step]]
+run = '''sh -c 'status=/processes/$(pgrep -x inputd)/status; pages=$(sed -n "s/^anonymous_memory: \([0-9]*\).*/\1/p" $status); kernel=$(sed -n "s/^kernel_memory: \([0-9]*\).*/\1/p" $status); own=$((pages * 4 + (kernel + 1023) / 1024)); [ "$own" -gt 0 ] && [ "$own" -lt 2048 ] && echo "inputd holds under 2 MiB of its own"; echo "inputd holds $own KiB"' '''
+root = true
+expect = "inputd holds under 2 MiB of its own"
+# How often it has waited so far, to hold it to after the keys.
+[[step]]
+run = '''sh -c 'echo "inputd has waited $(sed -n "s/^voluntary_switches: \([0-9]*\).*/\1/p" /processes/$(pgrep -x inputd)/status) times."' '''
+root = true
+expect = " times."
+save = "waits"
+# A reader on each device's own file, which only root may open, for half a
+# minute at most: the first two events of 16 bytes each (radix-input(2)).
+[[step]]
+run = '''sh -c 'rm -rf /users/lab/input-read && mkdir /users/lab/input-read && for file in /devices/input/[0-9]*; do (timeout 30 head -c 32 $file > /users/lab/input-read/$(basename $file)) > /dev/null 2>&1 & done; echo reading' '''
+root = true
+expect = "reading"
+[[step]]
+wait = "2s"
+# An x, and a backspace that takes it away again, wherever the console is.
+[[step]]
+keys = ["x", "backspace"]
+[[step]]
+wait = "2s"
+# What each device's file read, by its number. The device the key came
+# from read it: after the eight bytes of its time, a key (kind 1), x (code
+# 45, 0x2d), down (value 1), and at 16 the mark that ends a report.
+[[step]]
+run = '''sh -c 'for file in /users/lab/input-read/*; do echo "input/$(basename $file) read:"; hexdump -Cv $file; done' '''
+root = true
+expect = ["  01 00 2d 00 01 00 00 00  |", "00000020"]
+# The keys woke the readers, and not inputd: it has waited as often as
+# before them.
+[[step]]
+run = '''sh -c 'echo "inputd has waited $(sed -n "s/^voluntary_switches: \([0-9]*\).*/\1/p" /processes/$(pgrep -x inputd)/status) times."' '''
+root = true
+expect = "{saved:waits}"
+[[step]]
+run = "rm -rf /users/lab/input-read"
+root = true
