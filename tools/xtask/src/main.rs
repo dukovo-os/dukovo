@@ -249,7 +249,7 @@ DUKOVO_LIVE partition holds the signed release the installer installs
                        which `dukovo-lab key` makes too; without it the
                        account's password is one no one knows; ADR 0408)
   --cmdline <flags>    Kernel flags instead of boot.cmdline (dukovo-boot(7))
-  --microcode <path>   Intel microcode file or directory instead of image.microcode
+  --microcode <path>   Intel or AMD microcode file or directory instead of image.microcode
   --disk-check <serial>
                        Add a boot entry that checks, and erases, the disk with
                        this serial number, and Linux's side of the check in
@@ -285,7 +285,7 @@ press Ctrl-A then X to quit QEMU. KVM is used when /dev/kvm is accessible.
                        on QEMU's user network, with its SSH port on localhost:2222
                        (extra QEMU network arguments after -- replace it too)
   --cmdline <flags>    Kernel flags instead of boot.cmdline, such as \"kdb\"
-  --microcode <path>   Intel microcode file or directory instead of image.microcode
+  --microcode <path>   Intel or AMD microcode file or directory instead of image.microcode
   --user <name>        With --installed, make an administrator's account in the
                        image, with --full-name, --password-file and --test-cost
                        as ./ob image takes them"

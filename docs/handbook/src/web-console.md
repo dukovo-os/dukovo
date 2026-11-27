@@ -725,6 +725,7 @@ words under the ring say what its colour says:
 | SEC-150 | A service gave up after its restarts, each, at most 12 in all | 4 |
 | SEC-160 | No snapshot schedule covers the people's and shared folders | 8 |
 | SEC-170 | Alerts reach nobody: each channel that is set up failed, and none took one in a day | 6 |
+| SEC-180 | The processor's microcode cannot close a flaw | 6 |
 | MET-… | An early warning is active, each | 4 |
 | HW-… | The last hardware check warned or failed, each | 6 |
 | Any other | A check this table does not know yet | 3 |
@@ -4028,6 +4029,7 @@ takes off, **+6**, its ID as a link to its help page, and a button for the fix:
 | **SEC-150** A service gave up | **See it** | Opens that service |
 | **SEC-160** No snapshots of the folders people use | **Snapshots** | Opens Snapshots |
 | **SEC-170** No alert has reached anyone | **Where alerts go** | Opens Alerts |
+| **SEC-180** The processor's microcode cannot close a flaw | **Show how** | Says to install a newer firmware set, or the BIOS update from the maker |
 | **MET-…** A disk or a filesystem | **See it** | Opens Storage, or the Overview for the rest |
 | **HW-…** The hardware | **See it** | Opens Hardware |
 

@@ -242,6 +242,21 @@ pub fn is_ram(range: Range<u64>) -> bool {
     position >= range.end
 }
 
+/// The address past the highest RAM, as [`is_ram`] counts it.
+pub fn ram_end() -> u64 {
+    memory_map()
+        .iter()
+        .filter(|region| {
+            matches!(
+                region.kind,
+                MemoryKind::Usable | MemoryKind::AcpiReclaimable | MemoryKind::AcpiNvs
+            )
+        })
+        .map(|region| region.end)
+        .max()
+        .unwrap_or(0)
+}
+
 /// Whether any of `range` is RAM, as [`is_ram`] counts it.
 pub fn overlaps_ram(range: Range<u64>) -> bool {
     memory_map().iter().any(|region| {

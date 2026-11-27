@@ -377,6 +377,7 @@ dependencies = [
  "radix-acpi",
  "radix-amdvi",
  "radix-bootinfo",
+ "radix-cpuflaws",
  "radix-hal",
  "radix-hw",
  "radix-iopt",
@@ -473,6 +474,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "radix-cpuflaws"
+version = "1.0.0-alpha.1"
+
+[[package]]
 name = "radix-crosec"
 version = "1.0.0-alpha.1"
 
@@ -567,6 +572,7 @@ dependencies = [
 name = "radix-hal"
 version = "1.0.0-alpha.1"
 dependencies = [
+ "radix-cpuflaws",
  "radix-hw",
  "radix-pstate",
  "radix-sensors",
@@ -745,6 +751,7 @@ version = "1.0.0-alpha.1"
 dependencies = [
  "proptest",
  "radix-abi",
+ "radix-sync",
 ]
 
 [[package]]

@@ -82,6 +82,7 @@ members = [
     "lib/lockdep",
     "lib/mca",
     "lib/ksyms",
+    "lib/cpuflaws",
     "lib/microcode",
     "lib/posix",
     "lib/pstate",

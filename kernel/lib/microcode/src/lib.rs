@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Intel CPU microcode updates: parsing, checking and matching.
+//! Intel and AMD CPU microcode: parsing, checking and matching.
 //!
 //! Processors ship with microcode that later updates fix; firmware applies
 //! some, and the operating system loads newer ones early in boot. Updates
@@ -10,17 +10,21 @@
 //! loads it as a module, and the kernel looks for an update for each CPU
 //! here before writing it to the processor.
 //!
-//! A file is any number of updates back to back, as in the `intel-ucode`
-//! directory of Intel's microcode releases. Each update is a 48-byte
-//! header, the update data, and optionally a table of further processor
-//! signatures it applies to. Reference: Intel 64 and IA-32 Architectures
+//! A file is any number of Intel updates and AMD containers back to back,
+//! so that one file serves every machine (ADR 0792). An Intel update is a
+//! 48-byte header, the update data, and optionally a table of further
+//! processor signatures it applies to, as in the `intel-ucode` directory of
+//! Intel's microcode releases. Reference: Intel 64 and IA-32 Architectures
 //! Software Developer's Manual, volume 3, section 10.11 "Microcode Update
-//! Facilities". AMD's format differs and is not supported yet.
+//! Facilities". AMD's containers are in [`amd`]. [`updates`] and [`find`]
+//! read Intel's and skip AMD's; [`pieces`] gives both.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
 use core::fmt;
+
+pub mod amd;
 
 /// Bytes in an update header.
 pub const HEADER: usize = 48;
@@ -42,6 +46,9 @@ pub enum Error {
     BadSize,
     /// A checksum does not add up.
     BadChecksum,
+    /// An AMD container holds a section of a type that is neither its
+    /// equivalence table nor a patch, or its magic is wrong.
+    UnknownSection,
 }
 
 impl fmt::Display for Error {
@@ -50,12 +57,21 @@ impl fmt::Display for Error {
             Error::UnknownVersion => "unknown microcode header version",
             Error::BadSize => "inconsistent microcode update size",
             Error::BadChecksum => "microcode checksum mismatch",
+            Error::UnknownSection => "unknown section in an AMD microcode container",
         })
     }
 }
 
 fn u32_at(bytes: &[u8], offset: usize) -> u32 {
     bytes.get(offset..offset + 4).and_then(|b| b.try_into().ok()).map_or(0, u32::from_le_bytes)
+}
+
+/// A release date given as 0xMMDDYYYY in BCD, as (year, month, day).
+fn date_of(date: u32) -> (u16, u8, u8) {
+    let bcd = |value: u32| {
+        (0..4).rev().fold(0u32, |acc, digit| acc * 10 + ((value >> (digit * 4)) & 0xf))
+    };
+    (bcd(date & 0xffff) as u16, bcd(date >> 24) as u8, bcd((date >> 16) & 0xff) as u8)
 }
 
 /// Sum of the little-endian 32-bit words of `bytes`.
@@ -152,11 +168,7 @@ impl<'a> Update<'a> {
 
     /// Release date as (year, month, day).
     pub fn date(&self) -> (u16, u8, u8) {
-        let date = u32_at(self.bytes, 8);
-        let bcd = |value: u32| {
-            (0..4).rev().fold(0u32, |acc, digit| acc * 10 + ((value >> (digit * 4)) & 0xf))
-        };
-        (bcd(date & 0xffff) as u16, bcd(date >> 24) as u8, bcd((date >> 16) & 0xff) as u8)
+        date_of(u32_at(self.bytes, 8))
     }
 
     /// The main processor signature.
@@ -203,24 +215,50 @@ impl<'a> Update<'a> {
     }
 }
 
-/// The updates in a file, in order. Iteration stops after the first
-/// update that fails its checks, which is returned as an error.
-pub fn updates(file: &[u8]) -> impl Iterator<Item = Result<Update<'_>, Error>> {
+/// One piece of a file that may hold both vendors' microcode.
+#[derive(Clone, Copy, Debug)]
+pub enum Piece<'a> {
+    /// An Intel update.
+    Intel(Update<'a>),
+    /// An AMD container.
+    Amd(amd::Container<'a>),
+}
+
+/// The pieces of a file, in order: a container if the next word is AMD's
+/// magic, an Intel update otherwise. Iteration stops after the first
+/// piece that fails its checks, which is returned as an error.
+pub fn pieces(file: &[u8]) -> impl Iterator<Item = Result<Piece<'_>, Error>> {
     let mut rest = file;
     core::iter::from_fn(move || {
         if rest.is_empty() {
             return None;
         }
-        match Update::parse(rest) {
-            Ok(update) => {
-                rest = &rest[update.bytes.len()..];
-                Some(Ok(update))
+        let piece = if u32_at(rest, 0) == amd::MAGIC {
+            amd::Container::parse(rest).map(|container| (Piece::Amd(container), container.bytes()))
+        } else {
+            Update::parse(rest).map(|update| (Piece::Intel(update), update.bytes()))
+        };
+        match piece {
+            Ok((piece, bytes)) => {
+                rest = &rest[bytes.len()..];
+                Some(Ok(piece))
             }
             Err(err) => {
                 rest = &[];
                 Some(Err(err))
             }
         }
+    })
+}
+
+/// The Intel updates in a file, in order. AMD containers in the file are
+/// skipped. Iteration stops after the first piece that fails its checks,
+/// which is returned as an error.
+pub fn updates(file: &[u8]) -> impl Iterator<Item = Result<Update<'_>, Error>> {
+    pieces(file).filter_map(|piece| match piece {
+        Ok(Piece::Intel(update)) => Some(Ok(update)),
+        Ok(Piece::Amd(_)) => None,
+        Err(err) => Some(Err(err)),
     })
 }
 
@@ -279,6 +317,47 @@ pub mod build {
             out[table + 4..table + 8].copy_from_slice(&0u32.wrapping_sub(ext_sum).to_le_bytes());
         }
         total
+    }
+
+    /// Encodes an AMD container into `out` and returns its length. The
+    /// equivalence table maps each (signature, equivalence ID), and each
+    /// patch is (revision, equivalence ID, size in bytes, at least the
+    /// 64-byte header).
+    pub fn amd_container(
+        equivalence: &[(u32, u16)],
+        patches: &[(u32, u16, usize)],
+        out: &mut [u8],
+    ) -> usize {
+        let mut at = 0;
+        fn put(out: &mut [u8], at: &mut usize, bytes: &[u8]) {
+            out[*at..*at + bytes.len()].copy_from_slice(bytes);
+            *at += bytes.len();
+        }
+        put(out, &mut at, &super::amd::MAGIC.to_le_bytes());
+        put(out, &mut at, &0u32.to_le_bytes());
+        put(out, &mut at, &(16 * (equivalence.len() as u32 + 1)).to_le_bytes());
+        for &(signature, id) in equivalence {
+            put(out, &mut at, &signature.to_le_bytes());
+            put(out, &mut at, &[0; 8]);
+            put(out, &mut at, &id.to_le_bytes());
+            put(out, &mut at, &[0; 2]);
+        }
+        // The table ends with an empty entry.
+        put(out, &mut at, &[0; 16]);
+        for &(revision, id, size) in patches {
+            put(out, &mut at, &1u32.to_le_bytes());
+            put(out, &mut at, &(size as u32).to_le_bytes());
+            put(out, &mut at, &0x0415_2024u32.to_le_bytes());
+            put(out, &mut at, &revision.to_le_bytes());
+            put(out, &mut at, &[0; 16]);
+            put(out, &mut at, &id.to_le_bytes());
+            let rest = size - 26;
+            out[at..at + rest].fill(0);
+            // Patch data after the header, which differs between patches.
+            out[at + 38..at + rest].fill(revision as u8);
+            at += rest;
+        }
+        at
     }
 }
 
@@ -351,5 +430,176 @@ mod tests {
         assert_eq!(results.len(), 3);
         assert!(results[2].is_err());
         assert_eq!(find(&bytes, KABY_LAKE_R).unwrap().revision(), 2);
+    }
+
+    /// Family 17h, model 71h, stepping 0, and family 19h, model 1, stepping 1.
+    const ZEN_2: u32 = 0x00870f10;
+    const ZEN_3: u32 = 0x00a00f11;
+
+    fn amd_file(equivalence: &[(u32, u16)], patches: &[(u32, u16, usize)]) -> Vec<u8> {
+        let mut buf = vec![0; 40_000];
+        let len = build::amd_container(equivalence, patches, &mut buf);
+        buf.truncate(len);
+        buf
+    }
+
+    #[test]
+    fn an_amd_patch_is_found_by_the_equivalence_id_of_the_signature() {
+        let bytes = amd_file(
+            &[(ZEN_2, 0x8870), (ZEN_3, 0xa010)],
+            &[(0x10, 0xa010, 1024), (0x20, 0x8870, 2048)],
+        );
+        let container = amd::Container::parse(&bytes).unwrap();
+        assert_eq!(container.bytes().len(), bytes.len());
+        assert_eq!(container.patches().count(), 2);
+        let patch = amd::find(&bytes, ZEN_2).unwrap();
+        assert_eq!((patch.revision(), patch.equivalence_id()), (0x20, 0x8870));
+        assert_eq!(patch.bytes().len(), 2048);
+        assert_eq!(patch.date(), (2024, 4, 15));
+        assert_eq!(amd::find(&bytes, ZEN_3).unwrap().revision(), 0x10);
+        assert!(amd::find(&bytes, 0x00800f12).is_none());
+    }
+
+    #[test]
+    fn the_highest_amd_revision_wins() {
+        let bytes = amd_file(
+            &[(ZEN_3, 0xa010)],
+            &[(0x30, 0xa010, 1024), (0x50, 0xa010, 1024), (0x40, 0xa010, 1024)],
+        );
+        assert_eq!(amd::find(&bytes, ZEN_3).unwrap().revision(), 0x50);
+    }
+
+    #[test]
+    fn the_highest_amd_revision_wins_across_containers() {
+        let mut bytes = amd_file(&[(ZEN_3, 0xa010)], &[(0x30, 0xa010, 1024)]);
+        bytes.extend(amd_file(&[(ZEN_3, 0xa010)], &[(0x60, 0xa010, 1024)]));
+        assert_eq!(amd::containers(&bytes).count(), 2);
+        assert_eq!(amd::find(&bytes, ZEN_3).unwrap().revision(), 0x60);
+    }
+
+    #[test]
+    fn an_equivalence_table_ends_at_its_first_empty_entry() {
+        let mut bytes = amd_file(&[(ZEN_2, 0x8870), (ZEN_3, 0xa010)], &[(0x10, 0xa010, 1024)]);
+        // The first entry becomes empty, so the second is not read.
+        bytes[12..16].fill(0);
+        let container = amd::Container::parse(&bytes).unwrap();
+        assert_eq!(container.equivalence_id(ZEN_3), None);
+    }
+
+    #[test]
+    fn a_damaged_amd_container_is_refused() {
+        let good = amd_file(&[(ZEN_3, 0xa010)], &[(0x10, 0xa010, 1024)]);
+        let table_size =
+            |bytes: &mut Vec<u8>, size: u32| bytes[8..12].copy_from_slice(&size.to_le_bytes());
+
+        let truncated = &good[..good.len() - 1];
+        assert_eq!(amd::Container::parse(truncated).unwrap_err(), Error::BadSize);
+
+        let mut bytes = good.clone();
+        table_size(&mut bytes, 24);
+        assert_eq!(amd::Container::parse(&bytes).unwrap_err(), Error::BadSize);
+        table_size(&mut bytes, 0);
+        assert_eq!(amd::Container::parse(&bytes).unwrap_err(), Error::BadSize);
+        table_size(&mut bytes, 0x7fff_fff0);
+        assert_eq!(amd::Container::parse(&bytes).unwrap_err(), Error::BadSize);
+
+        let mut bytes = good.clone();
+        bytes[4] = 7;
+        assert_eq!(amd::Container::parse(&bytes).unwrap_err(), Error::UnknownSection);
+
+        // The patch section follows the table's 12 + 32 bytes.
+        let mut bytes = good.clone();
+        bytes[44] = 9;
+        assert_eq!(amd::Container::parse(&bytes).unwrap_err(), Error::UnknownSection);
+
+        let small = amd_file(&[(ZEN_3, 0xa010)], &[(0x10, 0xa010, 64)]);
+        let mut bytes = small.clone();
+        bytes[48..52].copy_from_slice(&(amd::PATCH_HEADER as u32 - 4).to_le_bytes());
+        assert_eq!(amd::Container::parse(&bytes).unwrap_err(), Error::BadSize);
+
+        let mut bytes = amd_file(&[(ZEN_3, 0xa010)], &[(0x10, 0xa010, amd::PATCH_MAX + 1)]);
+        assert_eq!(amd::Container::parse(&bytes).unwrap_err(), Error::BadSize);
+        bytes.clear();
+        assert_eq!(amd::Container::parse(&bytes).unwrap_err(), Error::UnknownSection);
+    }
+
+    #[test]
+    fn a_container_that_follows_with_the_wrong_magic_is_refused() {
+        let mut bytes = amd_file(&[(ZEN_3, 0xa010)], &[(0x10, 0xa010, 1024)]);
+        let second = bytes.len();
+        bytes.extend(amd_file(&[(ZEN_3, 0xa010)], &[(0x20, 0xa010, 1024)]));
+        bytes[second] ^= 1;
+        // The word where the second container should start is read as a
+        // section of the first, so the file is refused from there on.
+        let results: Vec<_> = pieces(&bytes).collect();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].as_ref().unwrap_err(), &Error::UnknownSection);
+    }
+
+    #[test]
+    fn a_patch_larger_than_the_family_takes_is_not_chosen() {
+        let bytes = amd_file(&[(ZEN_2, 0x8870)], &[(0x10, 0x8870, 3200), (0x20, 0x8870, 3201)]);
+        assert_eq!(amd::find(&bytes, ZEN_2).unwrap().revision(), 0x10);
+        assert_eq!(amd::patch_limit(ZEN_2), 3200);
+        assert_eq!(amd::patch_limit(ZEN_3), 5568);
+        assert_eq!(amd::patch_limit(0x00600f12), 4096);
+        assert_eq!(amd::patch_limit(0x00700f01), 3458);
+        assert_eq!(amd::patch_limit(0x00b00f21), amd::PATCH_MAX);
+    }
+
+    #[test]
+    fn a_mixed_file_splits_into_pieces_and_intel_still_finds_its_update() {
+        let mut bytes = file(&[(0x96, 0x806ea, 0xc0, &[])]);
+        bytes.extend(amd_file(&[(ZEN_3, 0xa010)], &[(0x10, 0xa010, 1000), (0x20, 0xa010, 1001)]));
+        bytes.extend(file(&[(0xf4, 0x806ea, 0xc0, &[])]));
+        let kinds: Vec<_> = pieces(&bytes)
+            .map(|piece| match piece.unwrap() {
+                Piece::Intel(_) => "intel",
+                Piece::Amd(_) => "amd",
+            })
+            .collect();
+        assert_eq!(kinds, ["intel", "amd", "intel"]);
+        assert_eq!(updates(&bytes).count(), 2);
+        assert_eq!(find(&bytes, KABY_LAKE_R).unwrap().revision(), 0xf4);
+        assert_eq!(amd::containers(&bytes).count(), 1);
+        assert_eq!(amd::find(&bytes, ZEN_3).unwrap().revision(), 0x20);
+    }
+
+    #[test]
+    fn an_amd_only_file_has_no_intel_updates() {
+        let bytes = amd_file(&[(ZEN_3, 0xa010)], &[(0x10, 0xa010, 1024)]);
+        assert_eq!(updates(&bytes).count(), 0);
+        assert!(find(&bytes, KABY_LAKE_R).is_none());
+    }
+
+    /// Parses every file of the directory in `AMD_UCODE_DIR`, such as
+    /// linux-firmware's `amd-ucode`, and checks that each patch is within
+    /// the limit of its family.
+    #[test]
+    #[ignore = "needs AMD_UCODE_DIR, a directory of linux-firmware's amd-ucode files"]
+    fn the_amd_files_of_linux_firmware_parse() {
+        let dir = std::env::var("AMD_UCODE_DIR").unwrap();
+        let mut files = 0;
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "bin") {
+                continue;
+            }
+            let bytes = std::fs::read(&path).unwrap();
+            let mut patches = 0;
+            let mut largest = 0;
+            for container in amd::containers(&bytes) {
+                let container = container.unwrap();
+                for patch in container.patches() {
+                    patches += 1;
+                    largest = largest.max(patch.bytes().len());
+                    assert!(patch.bytes().len() <= amd::PATCH_MAX);
+                }
+            }
+            assert!(patches > 0, "{} holds no patch", path.display());
+            println!("{}: {patches} patches, largest {largest} bytes", path.display());
+            files += 1;
+        }
+        assert!(files > 0);
     }
 }

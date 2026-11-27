@@ -106,10 +106,12 @@ explains it, and what to include when you report it.
 
 To include the processor's microcode updates, which Dukovo does not ship
 itself, build the image with the build host's copy, for example from
-Debian's or Ubuntu's `intel-microcode` package:
+Debian's or Ubuntu's `intel-microcode` package, or `amd64-microcode` for
+an AMD processor:
 
 ```sh
 ./ob image --microcode /lib/firmware/intel-ucode
+./ob image --microcode /lib/firmware/amd-ucode
 ```
 
 Machine-specific settings, such as turning Secure Boot off, are in

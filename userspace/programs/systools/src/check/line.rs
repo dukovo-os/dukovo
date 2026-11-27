@@ -81,12 +81,13 @@ pub(crate) enum Problem {
     ServiceGaveUp,
     NoSnapshots,
     NoAlertReached,
+    ProcessorFlaw,
 }
 
 impl Problem {
     /// Every problem, for the tests that check each one's ID and advice.
     #[cfg(test)]
-    pub(crate) const ALL: [Problem; 13] = [
+    pub(crate) const ALL: [Problem; 14] = [
         Problem::FirewallAllowsAll,
         Problem::FirewallOff,
         Problem::SshPasswords,
@@ -100,6 +101,7 @@ impl Problem {
         Problem::ServiceGaveUp,
         Problem::NoSnapshots,
         Problem::NoAlertReached,
+        Problem::ProcessorFlaw,
     ];
 
     pub(crate) fn id(self) -> &'static str {
@@ -117,6 +119,7 @@ impl Problem {
             Problem::ServiceGaveUp => "SEC-150",
             Problem::NoSnapshots => "SEC-160",
             Problem::NoAlertReached => "SEC-170",
+            Problem::ProcessorFlaw => "SEC-180",
         }
     }
 
@@ -173,6 +176,10 @@ impl Problem {
             Problem::NoAlertReached => {
                 "Run elevate alerts status to see why each channel failed and follow the page of \
                  its ID, then run elevate alerts test to try them again."
+            }
+            Problem::ProcessorFlaw => {
+                "Install a newer microcode, in a newer firmware set with elevate update apply or \
+                 in the BIOS update from the machine's maker."
             }
         }
     }

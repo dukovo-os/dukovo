@@ -48,6 +48,92 @@ pub const FLAGS: &[Flag] = &[
     },
     Flag { name: "nosmp", value: None, summary: "start only the boot CPU" },
     Flag {
+        name: "mitigations",
+        value: Some("mode"),
+        summary: "how the kernel closes the processor's speculative-execution flaws: auto, off (only what another flag asks for with on, ibrs or ibpb) or auto,nosmt",
+    },
+    Flag {
+        name: "nosmt",
+        value: None,
+        summary: "keep the second hardware thread of each core off",
+    },
+    Flag {
+        name: "nospectre_v1",
+        value: None,
+        summary: "leave out the interrupt entry's fence after its SWAPGS choice",
+    },
+    Flag {
+        name: "spectre_v2",
+        value: Some("mode"),
+        summary: "how programs are kept from steering the kernel's indirect branches: auto, off, on or ibrs",
+    },
+    Flag { name: "nospectre_v2", value: None, summary: "same as spectre_v2=off" },
+    Flag {
+        name: "spectre_v2_user",
+        value: Some("mode"),
+        summary: "whether programs are kept from steering each other's indirect branches: auto, off or on",
+    },
+    Flag {
+        name: "spec_store_bypass_disable",
+        value: Some("mode"),
+        summary: "whether every load waits for older stores' addresses (SSBD): auto (off), off or on",
+    },
+    Flag {
+        name: "nospec_store_bypass_disable",
+        value: None,
+        summary: "same as spec_store_bypass_disable=off",
+    },
+    Flag {
+        name: "retbleed",
+        value: Some("mode"),
+        summary: "how returns are kept from being predicted from the branch target buffer: auto, off or ibpb",
+    },
+    Flag {
+        name: "spec_rstack_overflow",
+        value: Some("mode"),
+        summary: "how AMD's return stack overflow is closed: auto, off or ibpb",
+    },
+    Flag {
+        name: "tsx",
+        value: Some("mode"),
+        summary: "whether Intel's transactional memory is on: auto (off where the CPU can turn it off), off or on",
+    },
+    Flag {
+        name: "mds",
+        value: Some("mode"),
+        summary: "clear the CPU's buffers on return to a program, against microarchitectural data sampling: auto or off",
+    },
+    Flag {
+        name: "tsx_async_abort",
+        value: Some("mode"),
+        summary: "clear the CPU's buffers against TSX asynchronous abort: auto or off",
+    },
+    Flag {
+        name: "mmio_stale_data",
+        value: Some("mode"),
+        summary: "clear the CPU's buffers against stale data from device memory: auto or off",
+    },
+    Flag {
+        name: "reg_file_data_sampling",
+        value: Some("mode"),
+        summary: "clear the CPU's register file against register file data sampling: auto or off",
+    },
+    Flag {
+        name: "tsa",
+        value: Some("mode"),
+        summary: "clear the CPU's buffers against AMD's transient scheduler attacks: auto or off",
+    },
+    Flag {
+        name: "srbds",
+        value: Some("mode"),
+        summary: "protect the random number instructions against special register buffer data sampling: auto or off",
+    },
+    Flag {
+        name: "gather_data_sampling",
+        value: Some("mode"),
+        summary: "protect vector gathers against gather data sampling: auto or off",
+    },
+    Flag {
         name: "nokaslr",
         value: None,
         summary: "keep the kernel, the direct map and the mapping window at fixed addresses",
@@ -437,6 +523,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_flaw_flags_match_the_ones_the_plan_reads() {
+        for &(name, values) in radix_cpuflaws::FLAGS {
+            let flag = FLAGS.iter().find(|flag| flag.name == name);
+            let flag = flag.unwrap_or_else(|| panic!("{name} is not in FLAGS"));
+            assert_eq!(flag.value.is_some(), !values.is_empty(), "{name}");
+        }
+        let linux = [
+            "mitigations",
+            "nosmt",
+            "nospectre_v1",
+            "spectre_v2",
+            "nospectre_v2",
+            "spectre_v2_user",
+            "spec_store_bypass_disable",
+            "nospec_store_bypass_disable",
+            "retbleed",
+            "spec_rstack_overflow",
+            "tsx",
+            "mds",
+            "tsx_async_abort",
+            "mmio_stale_data",
+            "reg_file_data_sampling",
+            "tsa",
+            "srbds",
+            "gather_data_sampling",
+            "l1tf",
+            "nospectre_bhb",
+            "spectre_bhi",
+            "ssbd",
+        ];
+        for flag in FLAGS.iter().filter(|flag| linux.contains(&flag.name)) {
+            let known = radix_cpuflaws::FLAGS.iter().any(|&(name, _)| name == flag.name);
+            assert!(known, "{} is not in the cpuflaws list", flag.name);
+        }
+    }
+
+    #[test]
     fn parses_flags_and_values() {
         let line = CommandLine::new("  qemu-exit loglevel=debug kdb  loglevel=warn x=1 ");
         assert!(line.has("qemu-exit"));
@@ -509,7 +632,9 @@ mod tests {
     fn flag_names_are_unique_and_simple() {
         for (i, flag) in FLAGS.iter().enumerate() {
             assert!(
-                flag.name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                flag.name.chars().all(|c| {
+                    c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_'
+                })
             );
             assert!(FLAGS[i + 1..].iter().all(|other| other.name != flag.name));
         }

@@ -1154,7 +1154,7 @@ Every section of spec v1.4 maps to at least one phase in this table, so a requir
 | 2.3 | Capability security, no ambient authority | 3, enforced in every later phase |
 | 3.1 | Physical memory, zones, NUMA | 2; hotplug in 1.12 |
 | 3.2 | Virtual memory, demand paging, copy-on-write, ASLR | 2, 7, 8 |
-| 3.3 | Memory protection, IOMMU, W^X, speculative-execution mitigations | 2, 11; CET in 1.2; memory tagging on Arm in 1.29 |
+| 3.3 | Memory protection, IOMMU, W^X, speculative-execution mitigations | 2, 11; speculation flaws found, closed and reported before 1.0 (ADRs 0790, 0791); CET in 1.2; memory tagging on Arm in 1.29 |
 | 3.4 | Allocation interfaces | 2 |
 | 4.1 | Processes, threads, namespaces, resource controllers | 4, 6, 13, 16, 18, 1.23 |
 | 4.2 | Scheduling | 4; performance cores first on Intel's hybrid processors before 1.0 (ADR 0740); energy-aware scheduling and Thread Director in 1.29; deadline class in 1.28 |

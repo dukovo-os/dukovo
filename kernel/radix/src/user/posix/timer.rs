@@ -42,7 +42,7 @@ use radix_abi::signal::{SIGALRM, SIGNALS, SIGPROF, SIGVTALRM};
 use radix_klog::error;
 use radix_mm::Kmalloc;
 use radix_posix::signal::{Info, SI_KERNEL, SI_TIMER, bit};
-use radix_sync::{Mutex, MutexGuard};
+use radix_sync::{Mutex, MutexGuard, nospec};
 
 use super::signal::Sent;
 use super::{PosixState, cpu_ns, find_thread, kmalloc, signal};
@@ -203,6 +203,9 @@ pub fn set(
     if index >= ITIMER_SIGNALS.len() {
         return Err(Kernel::InvalidArgument.status(0));
     }
+    // A kind the processor guesses in range, while the check is still to
+    // be done, is kind 0 meanwhile (Spectre v1, ADR 0790).
+    let index = nospec::index(index, ITIMER_SIGNALS.len());
     let armed = if value_ns != 0 {
         start()?;
         Some(register(process)?)
@@ -324,10 +327,14 @@ pub fn method(user: &UserRef, label: u32, args: &[u64; 8]) -> Result<Answer> {
 
 /// POSIX timer `number` of `posix`'s, if it has one.
 fn posix_timer(posix: &mut PosixState, number: u32) -> Result<&mut PosixTimer> {
-    posix
-        .posix_timers
-        .get_mut(number as usize)
-        .and_then(Option::as_mut)
+    let len = posix.posix_timers.len();
+    if number as usize >= len {
+        return Err(Kernel::InvalidArgument.status(0));
+    }
+    // A number the processor guesses in range, while the check is still to
+    // be done, is timer 0 meanwhile (Spectre v1, ADR 0790).
+    posix.posix_timers[nospec::index(number as usize, len)]
+        .as_mut()
         .ok_or(Kernel::InvalidArgument.status(0))
 }
 
@@ -451,7 +458,13 @@ fn set_posix(
 /// `posix`, and its signals that are pending (more than one if it was set
 /// again while one was).
 fn delete(process: &ProcessObject, posix: &mut PosixState, number: usize) {
-    let Some(timer) = posix.posix_timers.get_mut(number).and_then(Option::take) else { return };
+    let len = posix.posix_timers.len();
+    if number >= len {
+        return;
+    }
+    // A number the processor guesses in range is timer 0 meanwhile (Spectre
+    // v1, ADR 0790).
+    let Some(timer) = posix.posix_timers[nospec::index(number, len)].take() else { return };
     let info = timer.info(number);
     match timer.notify {
         TimerNotify::Signal => while posix.pending.remove(timer.signal, &info) {},

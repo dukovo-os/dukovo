@@ -368,8 +368,8 @@ machine set up the same way (q35, 2 CPUs, 1 GiB, KVM, `-cpu host`), with
 a static `tools/linux-bench` as its only process, for the closest Linux
 operations, and runs `linux-bench` on the host too, for reference
 (ADR 0039). The Linux in the virtual machine is the runner's own kernel,
-booted with `mitigations=off`, since Radix has no mitigations of CPU
-vulnerabilities yet. The method follows lmbench's `lat_syscall`,
+booted with its default protections against CPU vulnerabilities, as
+Radix is. The method follows lmbench's `lat_syscall`,
 `lat_ctx`, `lat_pipe` and `lat_unix`:
 
 - each measurement times a loop of many operations (200,000 system calls,

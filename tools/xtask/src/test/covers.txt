@@ -332,6 +332,8 @@ consoles userspace/programs/consoled/ userspace/programs/keymap/ userspace/progr
 consoles userspace/programs/systools/src/keymaps.rs userspace/programs/systools/src/notifyd.rs
 consoles userspace/programs/systools/src/xxd.rs
 copy kernel/arch/x86_64/src/copy.rs
+cpu-flaws kernel/arch/x86_64/src/speculation.rs kernel/lib/cpuflaws/ kernel/radix/src/fs/sysfs.rs
+cpu-flaws userspace/programs/systools/src/check/health.rs userspace/programs/systools/src/lscpu.rs
 crash-dump kernel/lib/klog/ kernel/radix/src/crashlog.rs kernel/radix/src/panic.rs
 crash-dump kernel/radix/src/fs/crashdump.rs kernel/radix/src/fs/devfs.rs
 crash-dump userspace/defaults/spark/services/dumps.toml userspace/programs/accounts/

@@ -423,6 +423,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "radix-cpuflaws"
+version = "1.0.0-alpha.1"
+
+[[package]]
 name = "radix-fat"
 version = "1.0.0-alpha.1"
 dependencies = [
@@ -716,6 +720,7 @@ dependencies = [
  "radix-bitlocker",
  "radix-bootfs",
  "radix-btrfs",
+ "radix-cpuflaws",
  "radix-fat",
  "radix-fbcon",
  "radix-hal",

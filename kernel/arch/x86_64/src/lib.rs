@@ -66,6 +66,7 @@ mod smbios;
 mod smbus;
 mod smp;
 mod space;
+mod speculation;
 mod thread;
 mod time;
 mod tsc_sync;
@@ -111,12 +112,22 @@ impl Cpu for Arch {
             // A write between the check and MWAIT still ends the wait: the
             // monitor is armed already.
             if wake.load(Ordering::Acquire) & 1 == 0 {
+                speculation::before_idle();
                 cpu::sti_mwait();
             }
         } else if wake.load(Ordering::Acquire) & 1 == 0 {
+            speculation::before_idle();
             cpu::sti_hlt();
         }
         cpu::disable_interrupts();
+    }
+
+    fn cpu_flaws() -> &'static [&'static str] {
+        &speculation::NAMES
+    }
+
+    fn cpu_flaw(name: &str, out: &mut dyn fmt::Write) -> fmt::Result {
+        speculation::write_report(name, out)
     }
 
     fn idle_mode() -> (bool, &'static str) {
@@ -935,6 +946,10 @@ impl UserMode for Arch {
         virt < user::USER_TOP && space.space().swap_out(virt, phys, slot, true)
     }
 
+    fn swap_pages() -> u64 {
+        speculation::swap_pages()
+    }
+
     fn retire_page(space: &Self::Space, virt: u64, phys: u64, slot: u64) -> bool {
         virt < user::USER_TOP && space.space().swap_out(virt, phys, slot, false)
     }
@@ -1157,7 +1172,7 @@ fn log_cpu() {
     let vendor = cpu::vendor();
     let (family, model, stepping) = cpu::family_model_stepping();
     let mut revision = radix_klog::TextBuf::<40>::new();
-    if cpu::is_intel() {
+    if microcode::supported() {
         use core::fmt::Write;
         let _ = write!(revision, ", microcode revision {:#x}", microcode::revision());
     }
@@ -1194,6 +1209,8 @@ impl Platform for Arch {
         apic::disable_pics();
         apic::init(madt, !flags.has("nox2apic"));
         smp::discover_cpus();
+        // Before the other CPUs start and before any program runs.
+        speculation::init(&flags);
         memory::start_frame_allocator(
             acpi.and_then(|acpi| acpi.srat.as_ref()),
             acpi.and_then(|acpi| acpi.slit.as_ref()),

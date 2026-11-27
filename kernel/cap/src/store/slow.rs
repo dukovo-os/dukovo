@@ -28,6 +28,8 @@ use core::alloc::Allocator;
 
 use alloc::vec::Vec;
 
+use radix_sync::nospec;
+
 use super::fast::move_unlinked;
 use super::objects::{Entry, Free, Indexes, Located};
 use super::slots::{self, Forest, Link, Marks, Slot, SpaceState, Tree, Trees};
@@ -411,10 +413,13 @@ impl<A: Allocator + Clone, K: Located> TreeView<'_, A, K> {
     /// The link for `at`, which must name a slot of a live space this
     /// view holds.
     fn link(&self, at: SlotRef) -> Result<Link, CapError> {
-        if at.slot as usize >= self.space(at.space)?.slots.len() {
+        let len = self.space(at.space)?.slots.len();
+        if at.slot as usize >= len {
             return Err(CapError::NoSuchSlot);
         }
-        Ok(Link { space: at.space.index, slot: at.slot })
+        // As the fast path's index (Spectre v1, ADR 0790); it is below
+        // `MAX_SLOTS`.
+        Ok(Link { space: at.space.index, slot: nospec::index(at.slot as usize, len) as u32 })
     }
 
     /// The link for `at`, which must hold a capability.

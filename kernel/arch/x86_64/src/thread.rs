@@ -184,6 +184,9 @@ radix_context_switch:
     jmp 2b
 3:
     mov rsp, [rsi]
+"#,
+    crate::speculation::site!("site_rsb_fill_switch", crate::speculation::fill_rsb!()),
+    r#"
     pop r15
     pop r14
     pop r13
@@ -201,7 +204,8 @@ radix_thread_trampoline:
     push 0
     xor ebp, ebp
     jmp radix_thread_start
-    "#
+    "#,
+    site_rsb_fill_switch = const crate::speculation::Site::RsbFillSwitch as u8,
 );
 
 unsafe extern "C" {

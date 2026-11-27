@@ -35,7 +35,7 @@ use radix_abi::errors::{File as FileError, Kernel};
 use radix_block::swap::Header;
 use radix_block::{DeviceRef, SECTORS_PER_PAGE};
 use radix_hal::UserMode;
-use radix_klog::{error, info};
+use radix_klog::{error, info, warn};
 use radix_mm::{FRAMES, Flags, HEAP, Kmalloc, Owner, PAGE_SIZE};
 use radix_sync::{Mutex, Once, SpinLock};
 
@@ -169,9 +169,11 @@ pub fn on(device: &DeviceRef, flags: u32) -> Result<(), Status> {
     if info.read_only {
         return Err(FileError::ReadOnly.status(0));
     }
-    let pages = (info.sectors / SECTORS_PER_PAGE).min(MAX_PAGES);
+    let device_pages = (info.sectors / SECTORS_PER_PAGE).min(MAX_PAGES);
+    let pages = device_pages.min(Arch::swap_pages());
     let page = read_header(device)?;
     let header = Header::read(&page, pages).map_err(|_| Kernel::InvalidArgument.status(0))?;
+    let cut = pages < device_pages && u64::from(header.last_page) + 1 == pages;
     let last = u64::from(header.last_page);
     let mut counts = radix_mm::bytes::zeroed(last as usize + 1, kmalloc())
         .map_err(|_| Kernel::NoMemory.status(0))?;
@@ -187,6 +189,13 @@ pub fn on(device: &DeviceRef, flags: u32) -> Result<(), Status> {
         return Err(Kernel::InvalidArgument.status(0));
     }
     let name = crate::fs::disk::name_of(device).unwrap_or_default();
+    if cut {
+        warn!(
+            "Swap: {name}: only the first {} MiB are used, as far as the page tables' guard \
+             against L1TF reaches",
+            (pages * PAGE_SIZE as u64) >> 20
+        );
+    }
     let priority = priority.unwrap_or_else(|| NEXT_PRIORITY.fetch_sub(1, Ordering::Relaxed));
     let map = Map { counts, used: 0, next: 1, closing: false };
     let area = Area {

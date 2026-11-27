@@ -59,6 +59,14 @@ SECTIONS
     {
         *(.rodata .rodata.*)
     }
+    /* Where the entry and exit paths' speculation sites are, which the
+     * boot CPU turns on as the processor needs (src/speculation.rs). */
+    .spec_sites : AT(ADDR(.spec_sites) - KERNEL_OFFSET) ALIGN(8)
+    {
+        __spec_sites_start = .;
+        KEEP(*(.spec_sites))
+        __spec_sites_end = .;
+    }
     .data.rel.ro : AT(ADDR(.data.rel.ro) - KERNEL_OFFSET)
     {
         *(.data.rel.ro .data.rel.ro.*)

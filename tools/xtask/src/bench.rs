@@ -90,10 +90,10 @@ const BTRFS_DISK_BYTES: u64 = 192 << 20;
 const POSIX_SOURCE: &str = "userspace/posix/bench.c";
 
 /// The Linux virtual machine's command line: the serial console, no
-/// restart after a panic, so that QEMU exits, and none of the mitigations
-/// of CPU vulnerabilities, which Radix does not have yet either (plan item
-/// 3.3): like for like, and the harder baseline to match.
-pub(crate) const LINUX_CMDLINE: &str = "console=ttyS0 panic=-1 quiet mitigations=off";
+/// restart after a panic, so that QEMU exits. Linux keeps its default
+/// protections against the flaws of the CPU, as Radix keeps its own (ADR
+/// 0790): like for like.
+pub(crate) const LINUX_CMDLINE: &str = "console=ttyS0 panic=-1 quiet";
 
 /// What both virtual machines get.
 pub(crate) const VM_MEMORY: &str = "1G";
@@ -159,10 +159,10 @@ pub const BUDGETS: &[(&str, u64)] = &[
     ("syscall_yield", 670),                    // 603
     ("cap_info", 470),                         // 425
     ("random_words", 2_500),                   // 2,221
-    ("context_switch", 1_100),                 // 959
+    ("context_switch", 1_300),                 // 1,107, with the CPU's protections (ADR 0791)
     ("fresh_page", 11_000),                    // 9,870, with record locks on frame and memory
     ("tlb_local", 3_500),                      // 3,106
-    ("file_open_close", 3_950),                // 3,891
+    ("file_open_close", 4_400),                // 3,966, with the CPU's protections (ADR 0791)
     ("file_stat", 1_900),                      // 1,657
     ("file_read_4k", 5_400),                   // 4,896
     ("file_write_4k", 5_600),                  // 5,061
@@ -2150,7 +2150,7 @@ mod tests {
     fn reads_a_machines_numbers() {
         let file = "machine: Intel(R) Core(TM) i7-8550U CPU @ 1.80GHz\n\
                     kernel: Linux 6.8.0-38-generic\n\
-                    mitigations: off\n\
+                    mitigations: default\n\
                     dukovo: system Radix 0.10.0 (Dukovo Server 0.10.0)\n\
                     dukovo: BENCH name=syscall_null ns=40.00 iterations=200000\n\
                     dukovo: BENCH name=cpu_cycle ns=0.56 iterations=100000000\n\
@@ -2167,7 +2167,7 @@ mod tests {
             [
                 "the machine is Intel(R) Core(TM) i7-8550U CPU @ 1.80GHz",
                 "Linux is Linux 6.8.0-38-generic",
-                "Linux's mitigations are off",
+                "Linux's mitigations are default",
                 "Dukovo is Radix 0.10.0 (Dukovo Server 0.10.0)",
             ]
         );

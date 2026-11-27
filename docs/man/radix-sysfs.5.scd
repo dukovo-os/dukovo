@@ -277,10 +277,12 @@ _/kernel/bus/i2c/devices/i2c-_*HID*:*nn*_/name_
 _/kernel/firmware/microcode_
 	What became of the CPU microcode the boot loader gave the kernel,
 	there only when it gave some (ADR 0468), a line each: *size*, the
-	module's bytes; *updates*, how many updates it holds; *result*:
+	module's bytes; *vendor*, whose microcode this CPU reads from it:
+	*intel*, *amd* or *other*; *updates*, how many Intel updates or AMD
+	patches of that vendor it holds; *result*:
 	*applied*, *current* (the processor runs that revision or a newer
 	one), *unmatched* (no update is for this processor), *unsupported*
-	(not an Intel processor), *hypervisor* (the update did not take
+	(neither an Intel nor an AMD processor), *hypervisor* (the update did not take
 	effect under a hypervisor, which keeps its own), *damaged* (data that
 	failed its checks; none of it is used) or *refused* (the processor
 	did not take it); *revision*, the revision the processor runs; and
@@ -641,6 +643,21 @@ _/kernel/class/net/_*name*_/card_
 _/kernel/devices/system/cpu/possible_, _present_, _online_
 	The CPUs the machine has, and those that run threads, as Linux's
 	lists: *0-7*, which util-linux's lscpu reads.
+
+_/kernel/devices/system/cpu/vulnerabilities/_*flaw*
+	How the processor stands against a speculative-execution flaw, one
+	file for each, named as Linux's files are: *gather_data_sampling*,
+	*itlb_multihit*, *l1tf*, *mds*, *meltdown*, *mmio_stale_data*,
+	*reg_file_data_sampling*, *retbleed*, *spec_rstack_overflow*,
+	*spec_store_bypass*, *spectre_v1*, *spectre_v2*, *srbds*, *tsa*,
+	*tsx_async_abort* and the others the kernel knows (ADR 0790). Each
+	holds one line, in Linux's words: *Not affected*; *Vulnerable*, with
+	what is missing; *Mitigation:* and what the kernel does about it; or
+	*Unknown:* where the processor gives no way to tell. The kernel
+	decides at boot, from the processor's model and what its firmware and
+	microcode say. *Vulnerable* usually means that the processor needs a
+	newer microcode. There is no directory on a machine that is not
+	x86-64. util-linux's lscpu reads them, as does *lscpu*(1).
 
 _/kernel/devices/system/cpu/cpufreq/policy_*n*_/scaling_driver_
 	Where CPU _n_ picks its own speed (*dukovo-boot*(7)'s *CPU
