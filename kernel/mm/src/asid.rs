@@ -5,7 +5,7 @@
 //!
 //! With PCIDs, the TLB tags each entry with the identifier of the address
 //! space that made it, so switching address spaces need not flush the TLB.
-//! There are only 4096 identifiers, so they are handed out in
+//! There are only 2048 identifiers, so they are handed out in
 //! *generations*, the scheme Linux uses for arm64 ASIDs: an address space
 //! keeps its identifier while the generation lasts; when every identifier
 //! of a generation is taken, the next generation starts, every CPU flushes
@@ -51,8 +51,10 @@ pub struct Asids<const BITS: u32, const CPUS: usize> {
     state: SpinLock<State<CPUS>>,
 }
 
-/// The x86-64 PCID allocator: 12-bit identifiers.
-pub type Pcids = Asids<12, MAX_CPUS>;
+/// The x86-64 PCID allocator: 11-bit identifiers. PCIDs have 12 bits; the
+/// twelfth tags the TLB entries of a program's own view of its address
+/// space, under page-table isolation, apart from the kernel's view of it.
+pub type Pcids = Asids<11, MAX_CPUS>;
 
 impl<const BITS: u32, const CPUS: usize> Asids<BITS, CPUS> {
     const IDS: u64 = 1 << BITS;

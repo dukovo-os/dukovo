@@ -293,6 +293,7 @@ fn allocate_stacks(index: usize) -> usize {
         ist[slot] = stack;
         guards[slot + 1] = guard;
     }
+    crate::pti::share_stack_tops(&ist);
     let top = kernel.end;
     let _ = percpu::get(index).expect("index below MAX_CPUS").stacks.set(percpu::Stacks {
         kernel,

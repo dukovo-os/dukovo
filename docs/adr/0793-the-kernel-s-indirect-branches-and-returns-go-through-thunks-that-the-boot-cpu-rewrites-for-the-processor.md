@@ -125,5 +125,6 @@ branches and returns were found and how each runs.
   `asm_begin!` starts; the only plain returns left in the image are those
   of the thunks themselves and the branch history clearing sequence, whose
   calls and returns are the sequence.
-- A per-process speculation control (`prctl(PR_SET_SPECULATION_CTRL)`) and
-  KPTI remain in docs/deferred.md.
+- A per-process speculation control (`prctl(PR_SET_SPECULATION_CTRL)`)
+  remains in docs/deferred.md; page-table isolation for Meltdown is ADR
+  0794.

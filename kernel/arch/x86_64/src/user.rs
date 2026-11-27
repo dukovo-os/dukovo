@@ -6,17 +6,21 @@
 //!
 //! A program enters the kernel with `syscall`. The CPU masks interrupts
 //! (FMASK also clears DF, AC, TF, NT and IOPL), and the entry stub swaps GS
-//! to this CPU's data, parks the program's stack pointer in a scratch word,
-//! switches to the running thread's kernel stack (`gs:[24]`, set at every
-//! context switch) and saves the program's registers there as a
+//! to this CPU's data, parks the program's stack pointer in a scratch word
+//! of its entry area, loads the kernel's page tables where the kernel
+//! isolates itself (`crate::pti`), switches to the running thread's kernel
+//! stack (`gs:[24]`, set at every context switch) and saves the program's
+//! registers there as a
 //! [`SyscallFrame`], whose first eleven words are the HAL's
 //! [`SyscallRegs`]. The kernel's handler reads its arguments from them and
 //! writes its results back; the stub then restores every register from
 //! the frame, so nothing of the kernel's leaks out, and returns with
-//! `sysretq`. Before that, [`radix_syscall_dispatch`] makes sure the
-//! return address is a user address, since SYSRET with a non-canonical one
-//! would fault in kernel mode on Intel CPUs with the program's stack, and
-//! that the flags the program gets back are ones it may have.
+//! `sysretq`, from the entry stack and with the program's page tables where
+//! the kernel isolates itself. Before that, [`radix_syscall_dispatch`]
+//! makes sure the return address is a user address, since SYSRET with a
+//! non-canonical one would fault in kernel mode on Intel CPUs with the
+//! program's stack, and that the flags the program gets back are ones it
+//! may have.
 //!
 //! A call that must give a program back every register, RCX and R11
 //! among them (returning from a signal handler, which may have interrupted
@@ -70,8 +74,8 @@ use crate::interrupts::TrapFrame;
 use crate::memory::{self, PAGE};
 use crate::paging;
 use crate::percpu::{
-    self, FULL_R11_OFFSET, FULL_RCX_OFFSET, KERNEL_CS, KERNEL_RSP_OFFSET, SCRATCH_OFFSET,
-    USER_BASE, USER_CS, USER_DS,
+    self, FULL_R11_OFFSET, FULL_RCX_OFFSET, KERNEL_CS, KERNEL_RSP_OFFSET, USER_BASE, USER_CS,
+    USER_DS,
 };
 use crate::space::USER_END;
 use crate::thread::{self, UserEntry};
@@ -240,19 +244,24 @@ mod layout {
 /// moving the stack pointer.
 const RED_ZONE: u64 = 128;
 
-// The system call entry and the copies to and from user memory. The
-// block starts a cache line, as every kernel function does (ADR 0411).
+// The system call entry and the exits to user mode, in the entry text,
+// which programs' page tables map under page-table isolation
+// (`crate::pti`), and the copies to and from user memory. Each block starts
+// a cache line, as every kernel function does (ADR 0411).
 core::arch::global_asm!(
     crate::thunks::asm_begin!(),
     r#"
-    .section .text
+    .section .text.entry, "ax"
     .balign 64
     .global radix_syscall_entry
 radix_syscall_entry:
     swapgs
-    mov gs:[{scratch}], rsp
+    mov gs:[{entry_scratch}], rsp
+"#,
+    crate::speculation::pti_enter_syscall!(),
+    r#"
     mov rsp, gs:[{kernel_rsp}]
-    push qword ptr gs:[{scratch}]
+    push qword ptr gs:[{entry_scratch}]
     push r11
     push rcx
     push rbp
@@ -300,6 +309,9 @@ radix_syscall_entry:
     pop rbp
     pop rcx
     pop r11
+"#,
+    crate::speculation::pti_exit_sysret!(),
+    r#"
     pop rsp
     swapgs
 "#,
@@ -331,6 +343,9 @@ radix_syscall_entry:
     mov rbp, [rsp + 40 + 96]
     mov rcx, gs:[{full_rcx}]
     mov r11, gs:[{full_r11}]
+"#,
+    crate::speculation::pti_exit_iret!(),
+    r#"
     swapgs
 "#,
     crate::speculation::verw_site!(),
@@ -364,6 +379,9 @@ radix_enter_user_registers:
     mov rax, [rdi + 104]
     mov rcx, [rdi + 112]
     mov rdi, [rdi + 64]
+"#,
+    crate::speculation::pti_exit_iret!(),
+    r#"
     swapgs
 "#,
     crate::speculation::verw_site!(),
@@ -381,8 +399,11 @@ radix_enter_user:
     mov rdx, r8
     mov rcx, rdi
     mov r11, {initial_flags}
-    mov rsp, rsi
     mov rdi, rdx
+"#,
+    crate::speculation::pti_exit_plain!(),
+    r#"
+    mov rsp, rsi
     xor eax, eax
     xor ebx, ebx
     xor edx, edx
@@ -401,6 +422,8 @@ radix_enter_user:
     r#"
     sysretq
 
+    .section .text
+    .balign 64
     .global radix_user_copy
 radix_user_copy:
     mov rcx, rdx
@@ -478,8 +501,13 @@ radix_user_copy_back_end:
     jmp radix_user_copy_done
     "#,
     crate::thunks::asm_end!(),
-    scratch = const SCRATCH_OFFSET,
     kernel_rsp = const KERNEL_RSP_OFFSET,
+    pti_views = const crate::pti::USER_VIEW | crate::pti::USER_PCID,
+    entry_scratch = const percpu::ENTRY_SCRATCH,
+    entry_noflush = const percpu::ENTRY_NOFLUSH,
+    entry_user_view = const percpu::ENTRY_USER_VIEW,
+    entry_user_flush = const percpu::ENTRY_USER_FLUSH,
+    entry_stack_top = const percpu::ENTRY_STACK_TOP,
     full_rcx = const FULL_RCX_OFFSET,
     full_r11 = const FULL_R11_OFFSET,
     user_ds = const USER_DS,
@@ -491,7 +519,6 @@ radix_user_copy_back_end:
     short_max = const SHORT_MAX,
     spec_ctrl_kernel = sym crate::speculation::SPEC_CTRL_KERNEL,
     spec_ctrl_user = sym crate::speculation::SPEC_CTRL_USER,
-    verw_selector = sym crate::speculation::VERW_SELECTOR,
     site_spec_ctrl_entry = const crate::speculation::Site::SpecCtrlEntry as u8,
     site_spec_ctrl_exit = const crate::speculation::Site::SpecCtrlExit as u8,
     site_ibpb_entry = const crate::speculation::Site::IbpbEntry as u8,
@@ -499,6 +526,7 @@ radix_user_copy_back_end:
     site_bhb_clear = const crate::speculation::Site::BhbClear as u8,
     site_verw_exit = const crate::speculation::Site::VerwExit as u8,
     site_div0_exit = const crate::speculation::Site::Div0Exit as u8,
+    site_pti = const crate::speculation::Site::Pti as u8,
 );
 
 /// The longest copy made by loads and stores from the end rather than

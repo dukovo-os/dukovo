@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0790. The kernel finds the processor's speculation flaws, closes them by default, and reports them as Linux does
 
-- Status: Accepted; retpolines and return thunks since [0793](0793-the-kernel-s-indirect-branches-and-returns-go-through-thunks-that-the-boot-cpu-rewrites-for-the-processor.md)
+- Status: Accepted; retpolines and return thunks since [0793](0793-the-kernel-s-indirect-branches-and-returns-go-through-thunks-that-the-boot-cpu-rewrites-for-the-processor.md), page-table isolation since [0794](0794-on-processors-with-meltdown-programs-run-on-page-tables-without-the-kernel.md)
 - Date: 2026-11-27
 
 ## Context

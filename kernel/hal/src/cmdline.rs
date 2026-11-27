@@ -99,6 +99,12 @@ pub const FLAGS: &[Flag] = &[
         summary: "keep Intel's indirect branches and returns out of the lower half of a cache line: on or off",
     },
     Flag {
+        name: "pti",
+        value: Some("mode"),
+        summary: "unmap the kernel from programs' page tables while they run, against Meltdown: auto, off or on",
+    },
+    Flag { name: "nopti", value: None, summary: "same as pti=off" },
+    Flag {
         name: "tsx",
         value: Some("mode"),
         summary: "whether Intel's transactional memory is on: auto (off where the CPU can turn it off), off or on",
@@ -152,6 +158,11 @@ pub const FLAGS: &[Flag] = &[
         name: "nopcid",
         value: None,
         summary: "do not tag TLB entries with process-context identifiers (PCIDs)",
+    },
+    Flag {
+        name: "noinvpcid",
+        value: None,
+        summary: "do not flush a PCID's TLB entries with INVPCID, even if the CPU has it",
     },
     Flag {
         name: "nox2apic",
@@ -554,6 +565,8 @@ mod tests {
             "srbds",
             "gather_data_sampling",
             "indirect_target_selection",
+            "pti",
+            "nopti",
             "l1tf",
             "nospectre_bhb",
             "spectre_bhi",

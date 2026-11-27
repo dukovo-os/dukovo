@@ -294,7 +294,6 @@ machine with AMT, an AMD machine and a laptop; see
 
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
-| Kernel page-table isolation for Meltdown (ADR 0790) | Meltdown reads `Vulnerable` on Intel's parts from before 2019, among them the OptiPlex 7040's Core i5-6500 | The next change of the work, before 1.0.0-beta.1 |
 | A program's own speculation controls, `prctl(PR_SET_SPECULATION_CTRL)` and seccomp's, for Speculative Store Bypass and IBPB between programs (ADR 0790) | Speculative Store Bypass is closed only for every program at once (`spec_store_bypass_disable=on`), and IBPB between programs only with `spectre_v2_user=on` | Phase 18's `prctl` |
 
 ### Releases after 1.0

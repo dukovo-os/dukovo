@@ -179,6 +179,28 @@ pub(crate) fn new_table(pml4: bool) -> Result<u64, MapError> {
     Ok(phys)
 }
 
+/// A zeroed page for a PML4 the kernel runs on, below 4 GiB, at an even
+/// page: under page-table isolation the 4 KiB page after a space's PML4 is
+/// the PML4 of its program's view, and bit 12 of CR3 tells which view is
+/// loaded (`crate::pti`), so no PML4 of the kernel's view may have it set.
+/// Takes two pages: with `pair` the second is zeroed for the program's view,
+/// otherwise it is left unused.
+pub(crate) fn new_root(pair: bool) -> Result<u64, MapError> {
+    let block = memory::alloc_pages(2, true, Owner::PageTable).ok_or(MapError::NoMemory)?;
+    // The frame allocator aligns blocks to their size; the boot allocator
+    // does not, and gives one page more for the odd case.
+    let root = if block & PAGE == 0 {
+        block
+    } else {
+        assert!(!pair, "a pair of page tables from the boot allocator");
+        block + PAGE
+    };
+    if let Some(record) = table_record(root) {
+        record.set_table_lines(0);
+    }
+    Ok(root)
+}
+
 /// Entries in a line of a page table: one cache line's worth.
 pub(crate) const LINE: usize = 8;
 
@@ -239,11 +261,17 @@ pub(crate) fn table_of(root: u64, virt: u64, level: u32, user: bool) -> Result<u
             if let Some(record) = table_record(table_phys) {
                 record.add_table_lines(line_bit(index));
             }
+            if current == 4 && user {
+                crate::pti::mirror(root, index, value);
+            }
         } else if value & LARGE != 0 {
             return Err(MapError::LargePage);
         } else if user && value & USER == 0 {
             value |= USER;
             slot.store(value, Ordering::Relaxed);
+            if current == 4 {
+                crate::pti::mirror(root, index, value);
+            }
         }
         table_phys = value & ADDRESS;
     }
@@ -412,7 +440,7 @@ pub fn build_and_switch(use_pcid: bool) {
     // Kernel mappings are global, so INVLPG reaches them whatever PCID is
     // current; without global pages PCIDs would need INVPCID instead.
     PCID.store(use_pcid && cpu::feature::pcid() && cpu::feature::pge(), Ordering::Relaxed);
-    let root = new_table(true).expect("out of memory for the kernel's page tables");
+    let root = new_root(false).expect("out of memory for the kernel's page tables");
     state.pml4 = root;
     KERNEL_PML4.store(root, Ordering::Relaxed);
     let fail = |err: MapError| -> ! { panic!("building the kernel's page tables: {err:?}") };
@@ -524,6 +552,56 @@ fn audit(phys: u64, level: u32, base: u64, above: (bool, bool), nx: u64) -> (u64
         }
     }
     (checked, bad)
+}
+
+/// Stops making the kernel's mappings global, and takes the global bit off
+/// every mapping in its half, then flushes the TLB: under page-table
+/// isolation a global entry would outlive the switch to a program's view of
+/// its address space, which must not reach the kernel (`crate::pti`). The
+/// kernel's half is shared by every address space, so this is all of them.
+/// Called once, by the boot CPU, before the other CPUs start.
+pub(crate) fn drop_global() {
+    let mut state = STATE.lock();
+    state.global = 0;
+    clear_global(state.pml4, 4, 256..512);
+    drop(state);
+    cpu::flush_tlb_all();
+}
+
+fn clear_global(phys: u64, level: u32, range: Range<usize>) {
+    for slot in &table(phys)[range] {
+        let entry = slot.load(Ordering::Relaxed);
+        if entry & PRESENT == 0 {
+            continue;
+        }
+        if level == 1 || entry & LARGE != 0 {
+            if entry & GLOBAL != 0 {
+                slot.store(entry & !GLOBAL, Ordering::Relaxed);
+            }
+        } else {
+            clear_global(entry & ADDRESS, level - 1, 0..512);
+        }
+    }
+}
+
+/// Maps the kernel's pages in `range`, each to the frame the kernel maps
+/// it to, at the same addresses under the PML4 at `root`, with `access`:
+/// what programs' views of address spaces keep of the kernel under
+/// page-table isolation (`crate::pti`). Every page of `range` is a 4 KiB
+/// page of the kernel's.
+pub(crate) fn share_kernel_pages(root: u64, range: Range<u64>, access: Access) {
+    let state = STATE.lock();
+    let flags = leaf_flags(&state, access, Cache::WriteBack);
+    for virt in range.step_by(PAGE as usize) {
+        let entry = leaf(state.pml4, virt).map_or(0, |slot| slot.load(Ordering::Relaxed));
+        assert!(entry & PRESENT != 0, "sharing {virt:#x}, which the kernel does not map");
+        map_4k(root, virt, entry & ADDRESS, flags).expect("out of memory for page tables");
+    }
+}
+
+/// Makes the PDPT for `virt` under the PML4 at `root`, unless there is one.
+pub(crate) fn reserve_slot(root: u64, virt: u64) {
+    entry(root, virt, 3, false).expect("out of memory for page tables");
 }
 
 /// Physical address of the kernel's PML4, for the AP trampoline and new
@@ -830,7 +908,7 @@ pub fn unmap_identity(phys: u64) {
 /// The regions must not overlap. On failure the tables made so far stay
 /// allocated: a few pages, once, at boot.
 pub(crate) fn firmware_table(regions: &[(Range<u64>, Cache)]) -> Result<u64, MapError> {
-    let root = new_table(true)?;
+    let root = new_root(false)?;
     let kernel = table(kernel_pml4());
     for (index, entry) in table(root).iter().enumerate().skip(256) {
         entry.store(kernel[index].load(Ordering::Relaxed), Ordering::Relaxed);
@@ -908,16 +986,25 @@ const LATE_NS: u64 = 50_000;
 /// hypervisor may trap (KVM on AMD traps every write to CR4): toggled for
 /// each `fork` and exit, it cost a program's end two exits to the host and
 /// every kernel mapping in the TLB.
+///
+/// Under page-table isolation (`crate::pti`) these flush the kernel's view
+/// of the running address space; [`crate::pti::flushed`] then sees to the
+/// program's view, and with PCIDs to the kernel's views of the others.
 pub(crate) fn flush_local(range: Range<u64>) {
-    if (range.end - range.start) / PAGE <= FLUSH_ALL_PAGES {
-        for page in range.step_by(PAGE as usize) {
+    let user = range.start < crate::space::USER_END;
+    let flush = if (range.end - range.start) / PAGE <= FLUSH_ALL_PAGES {
+        for page in range.clone().step_by(PAGE as usize) {
             cpu::invlpg(page as usize);
         }
+        crate::pti::Flushed::Pages(range)
     } else if range.end <= crate::space::USER_END {
         cpu::flush_tlb();
+        crate::pti::Flushed::Space
     } else {
         cpu::flush_tlb_all();
-    }
+        crate::pti::Flushed::All
+    };
+    crate::pti::flushed(user, flush);
 }
 
 /// Flushes `range` from the TLB of every online CPU, waiting until all

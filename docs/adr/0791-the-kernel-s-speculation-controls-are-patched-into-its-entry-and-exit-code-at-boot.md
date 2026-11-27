@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0791. The kernel's speculation controls are patched into its entry and exit code at boot
 
-- Status: Accepted; retpolines and return thunks since [0793](0793-the-kernel-s-indirect-branches-and-returns-go-through-thunks-that-the-boot-cpu-rewrites-for-the-processor.md)
+- Status: Accepted; retpolines and return thunks since [0793](0793-the-kernel-s-indirect-branches-and-returns-go-through-thunks-that-the-boot-cpu-rewrites-for-the-processor.md), page-table isolation since [0794](0794-on-processors-with-meltdown-programs-run-on-page-tables-without-the-kernel.md)
 - Date: 2026-11-27
 
 ## Context
@@ -66,6 +66,8 @@ with a panic that names its address. The records are PC-relative, so KASLR
 | `Div0Exit` | the same | a division of 0 by 1, which leaves no quotient for Zen 1 to leak |
 | `VerwExit` | immediately before SYSRET or IRET to a program | VERW, which clears the processor's buffers |
 | `RsbFillSwitch` | context switch | 32 calls whose returns are never taken, so no return predicts into the old thread |
+| `UntrainEntry` | system call and interrupt entry from a program | the return thunk's untraining (ADR 0793) |
+| `Pti` | every entry from a program and exit to one; NMI, machine-check and exception entry in kernel mode, and their return | CR3 to the kernel's page tables, and back to the program's (ADR 0794) |
 
 An NMI or machine check can arrive between a site of the exit path and
 the return, with the program's value in IA32_SPEC_CTRL; the paranoid site
@@ -93,8 +95,8 @@ docs/deferred.md.
 - A machine that needs no protection runs each crossing with a few taken
   jumps; one that needs them runs them without a branch that could skip
   them.
-- `.spec_sites` is a list the kernel reads once, at boot; its 22 records
-  are 176 bytes.
+- `.spec_sites` is a list the kernel reads once, at boot; its 33 records
+  are 264 bytes.
 - A site is added with the `site!` macro in the assembly and a `Site`
   variant; the boot check catches a record that does not point at its
   jump.
