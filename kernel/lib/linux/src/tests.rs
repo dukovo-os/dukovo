@@ -365,6 +365,7 @@ fn file_errnos() -> Vec<(File, i32)> {
         (File::NoAttribute, ENODATA),
         (File::Unmounted, ENODEV),
         (File::Removed, EIDRM),
+        (File::TextBusy, ETXTBSY),
     ]
 }
 
@@ -400,7 +401,7 @@ fn success_cancellation_and_unknown_errors_map_as_the_c_library_maps_them() {
     // A code past the last of its domain, and a domain no one defines.
     assert_eq!(from_status(Status::new(Kernel::DOMAIN, 60, 0)), EIO);
     assert_eq!(from_status(Status::new(Kernel::DOMAIN, 0, 0)), EIO);
-    assert_eq!(from_status(Status::new(File::DOMAIN, 28, 0)), EIO);
+    assert_eq!(from_status(Status::new(File::DOMAIN, 29, 0)), EIO);
     assert_eq!(from_status(Status::new(0, 5, 0)), EIO);
     assert_eq!(from_status(Status::new(3, 1, 0)), EIO);
 }

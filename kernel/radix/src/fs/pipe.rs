@@ -42,7 +42,7 @@ use radix_abi::process::PipeFlags;
 use radix_abi::signal::SIGPIPE;
 use radix_cap::{ObjectKind, Rights, SlotRef};
 use radix_mm::{Kmalloc, PAGE_SIZE};
-use radix_sync::{Mutex, Once};
+use radix_sync::{Mutex, Once, SpinLock};
 use radix_tty::Ring;
 use radix_vfs::mount::{Location, MountRef};
 use radix_vfs::synthetic::FixedDir;
@@ -147,14 +147,46 @@ fn heap() -> Kmalloc {
 }
 
 /// Zeroed storage for a buffer of `size` bytes.
-pub(super) fn storage(size: usize) -> Result<alloc::vec::Vec<u8, Kmalloc>, Status> {
-    let mut storage = alloc::vec::Vec::new_in(heap());
-    storage.try_reserve_exact(size).map_err(|_| Kernel::NoMemory.status(0))?;
-    while storage.len() < size {
-        // Room was reserved above.
-        let _ = storage.push_within_capacity(0);
+pub(super) fn storage(size: usize) -> Result<Vec<u8, Kmalloc>, Status> {
+    radix_mm::bytes::zeroed(size, heap()).map_err(|_| Kernel::NoMemory.status(0))
+}
+
+/// How many buffers of [`DEFAULT_CAPACITY`] bytes are kept once their
+/// pipes are gone: sixteen Unix connections' worth, 2 MiB. Each
+/// connection between Unix sockets is two pipes, and a FastCGI server
+/// such as PHP-FPM takes a new connection for each request; with none
+/// kept, each request had the heap make and zero 128 KiB (ADR 0655).
+const SPARES: usize = 32;
+
+/// The buffers kept, from pipes that are gone. A leaf lock, held only to
+/// take a buffer or put one back, and never while the heap frees one.
+static SPARE: SpinLock<[Option<Vec<u8, Kmalloc>>; SPARES]> =
+    SpinLock::new([const { None }; SPARES]);
+
+/// A buffer of [`DEFAULT_CAPACITY`] bytes for a new pipe: a spare one, or
+/// one made from the heap, zeroed. What a spare held for the pipe it came
+/// from stays out of reach: a ring reads only the bytes written to it
+/// since it was made.
+fn new_buffer() -> Result<Vec<u8, Kmalloc>, Status> {
+    let spare = SPARE.lock().iter_mut().find_map(Option::take);
+    spare.map_or_else(|| storage(DEFAULT_CAPACITY), Ok)
+}
+
+/// Keeps `buffer`, from a pipe that is gone or has a new buffer, if it is
+/// of [`DEFAULT_CAPACITY`] bytes and there is room among the spares; else
+/// it goes back to the heap.
+fn keep(buffer: Vec<u8, Kmalloc>) {
+    if buffer.len() != DEFAULT_CAPACITY {
+        return;
     }
-    Ok(storage)
+    let mut spare = SPARE.lock();
+    if let Some(slot) = spare.iter_mut().find(|slot| slot.is_none()) {
+        *slot = Some(buffer);
+        return;
+    }
+    // Freed without the lock.
+    drop(spare);
+    drop(buffer);
 }
 
 /// A pipe.
@@ -191,6 +223,11 @@ pub struct Pipe {
     /// For a named pipe, its node, kept while the pipe is open so that
     /// [`NAMED`] finds the pipe by the node's address.
     named: Option<NodeRef>,
+    /// Whether it is a pipe of its own, plain or named, and not one of a
+    /// Unix socket's pair: only then are the watches for reading among
+    /// its pollers watches of its ends, which only what makes it readable
+    /// makes ready ([`Pipe::emptied`]).
+    own: bool,
 }
 
 /// Pipes by the address of their node.
@@ -199,20 +236,33 @@ type ByNode = Vec<(usize, Weak<Pipe, Kmalloc>), Kmalloc>;
 /// The named pipes open now, by the address of their node.
 static NAMED: Mutex<Option<ByNode>> = Mutex::new(None);
 
+impl Drop for Pipe {
+    /// Its buffer is kept for a new pipe, if there is room among the
+    /// spares.
+    fn drop(&mut self) {
+        let empty = Ring::new(Vec::new_in(heap()));
+        let ring = core::mem::replace(&mut self.buffer.get_mut().ring, empty);
+        keep(ring.into_inner());
+    }
+}
+
 impl Pipe {
     /// A new, empty pipe, with one end reading it and one writing it.
     pub(super) fn new() -> Result<KArc<Pipe>, Status> {
-        Pipe::with_ends(1, None)
+        Pipe::with_ends(1, None, true)
+    }
+
+    /// A new, empty pipe for one way of a Unix socket's connection, with
+    /// one end reading it and one writing it.
+    pub(super) fn of_socket() -> Result<KArc<Pipe>, Status> {
+        Pipe::with_ends(1, None, false)
     }
 
     /// A new, empty pipe, with `ends` ends reading it and as many writing
-    /// it, the pipe `named` is if any.
-    fn with_ends(ends: u32, named: Option<NodeRef>) -> Result<KArc<Pipe>, Status> {
-        let buffer = Buffer {
-            ring: Ring::new(storage(DEFAULT_CAPACITY)?),
-            taken: 0,
-            attachments: Fifo::new(),
-        };
+    /// it, the pipe `named` is if any, and whether it is a pipe of its
+    /// `own`.
+    fn with_ends(ends: u32, named: Option<NodeRef>, own: bool) -> Result<KArc<Pipe>, Status> {
+        let buffer = Buffer { ring: Ring::new(new_buffer()?), taken: 0, attachments: Fifo::new() };
         mem::arc(Pipe {
             buffer: Mutex::new(buffer),
             len: AtomicUsize::new(0),
@@ -226,6 +276,7 @@ impl Pipe {
             waits: WaitCount::new(),
             opened: [AtomicU32::new(0), AtomicU32::new(0)],
             named,
+            own,
         })
         .map_err(|_| Kernel::NoMemory.status(0))
     }
@@ -249,6 +300,18 @@ impl Pipe {
         self.waits.wake_all(self.key());
         // `wake_all` took the full barrier that `Polled::changed` would.
         self.polled.changed_by_rmw();
+    }
+
+    /// A read left it empty while some end still writes it: the waits
+    /// look again, and so do its pollers and the watches for writing, for
+    /// the room the read made. No watch for reading can be ready until
+    /// something else changes it: a write, or the last writer's going
+    /// (ADR 0777).
+    fn emptied(&self) {
+        self.waits.wake_all(self.key());
+        // `wake_all` took the full barrier that `Polled::emptied_by_rmw`
+        // would.
+        self.polled.emptied_by_rmw();
     }
 
     /// What its pollers count themselves in.
@@ -339,7 +402,7 @@ impl Pipe {
         let old = core::mem::replace(&mut buffer.ring, ring);
         self.capacity.store(wanted, Ordering::Release);
         drop(buffer);
-        drop(old);
+        keep(old.into_inner());
         self.changed();
         Ok(wanted)
     }
@@ -453,8 +516,16 @@ impl Pipe {
                         attachment.files
                     });
                     self.len.store(buffer.ring.len(), Ordering::Release);
+                    // A writer's going after this load makes its own change.
+                    let emptied = self.own
+                        && buffer.ring.is_empty()
+                        && self.writers.load(Ordering::Acquire) > 0;
                     drop(buffer);
-                    self.changed();
+                    if emptied {
+                        self.emptied();
+                    } else {
+                        self.changed();
+                    }
                     return read.map(|read| (read, files)).map_err(super::status);
                 }
                 if self.writers.load(Ordering::Acquire) == 0 {
@@ -883,7 +954,7 @@ pub fn open_named(
         let pipe = match open {
             Some(pipe) => pipe,
             None => {
-                let pipe = Pipe::with_ends(0, Some(at.node.clone()))?;
+                let pipe = Pipe::with_ends(0, Some(at.node.clone()), true)?;
                 named.try_reserve(1).map_err(|_| Kernel::NoMemory.status(0))?;
                 let _ = named.push_within_capacity((key, KArc::downgrade(&pipe)));
                 pipe

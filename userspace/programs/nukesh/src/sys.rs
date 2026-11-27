@@ -1,14 +1,29 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The system calls the shell makes, through the C library, with errors
-//! as [`std::io::Error`].
+//! The system calls the shell makes, through sysapi, with errors as
+//! [`std::io::Error`].
 //!
-//! The shell forks, so it uses descriptors directly rather than through
-//! `std::fs::File`, whose buffers and drops would follow the child.
+//! The shell keeps its descriptors by number, as redirections name them,
+//! in sysapi's table of descriptor numbers ([`sysapi::numbered`]), rather
+//! than as `std::fs::File`s, whose buffers and drops would follow a forked
+//! child. A number other code of the shell holds (a file the line editor
+//! keeps open, say) is never closed or replaced from here: sysapi refuses
+//! it.
 
 use std::ffi::{CStr, CString};
-use std::io::{Error, Result};
+use std::io::{Error, IsTerminal, Read, Result, SeekFrom};
+use std::os::fd::AsFd;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::process::ExitStatusExt;
+use std::path::Path;
+use std::time::Duration;
+
+use sysapi::numbered;
+use sysapi::poll::PollFd;
+use sysapi::process::Fork;
+use sysapi::terminal::When;
 
 use crate::personality;
 
@@ -17,46 +32,50 @@ use crate::personality;
 /// redirections name.
 pub const HIGH_FD: i32 = 10;
 
-fn check(result: libc::c_int) -> Result<libc::c_int> {
-    if result < 0 { Err(Error::last_os_error()) } else { Ok(result) }
+/// Keeps 3 to 9 for redirections, so that the files the shell's libraries
+/// open (the line editor's, say) land elsewhere; for the shell's start,
+/// while it has one thread.
+pub fn keep_redirection_numbers() {
+    let _ = numbered::reserve(3..=HIGH_FD - 1);
 }
 
 /// The text of an error, without Rust's "(os error N)".
 pub fn describe(error: &Error) -> String {
+    let text = error.to_string();
     match error.raw_os_error() {
-        Some(code) => {
-            // SAFETY: strerror returns a pointer to a NUL-terminated string
-            // that stays valid until the next call; it is copied at once.
-            let text = unsafe { CStr::from_ptr(libc::strerror(code)) };
-            text.to_string_lossy().into_owned()
-        }
-        None => error.to_string(),
+        Some(code) => match text.strip_suffix(&format!(" (os error {code})")) {
+            Some(bare) => bare.to_string(),
+            None => text,
+        },
+        None => text,
     }
 }
 
-pub fn errno() -> i32 {
-    Error::last_os_error().raw_os_error().unwrap_or(0)
-}
-
-/// Forks: the child's number in the parent, 0 in the child.
+/// Forks: the child's number in the parent, 0 in the child. sysapi
+/// refuses while the shell has a second thread, whose locks the child
+/// would find held for good.
 pub fn fork() -> Result<i32> {
-    // SAFETY: the shell has one thread, so the child gets a consistent
-    // copy of its memory.
-    check(unsafe { libc::fork() })
+    Ok(match sysapi::process::fork()? {
+        Fork::Child => 0,
+        Fork::Parent(child) => child,
+    })
 }
 
-/// Runs `path` in place of this process; it returns only on failure. A
-/// dynamic program written for Linux, which the kernel cannot start for
-/// want of its dynamic linker, runs through `linux run`, which builds the
-/// view its libraries and `/proc` are in (ADR 0622). The shell looks at
-/// the file only then, so that other programs cost nothing more.
+/// Runs `path` in place of this process; it returns only on failure. The
+/// program keeps the signals the shell ignores, its signal mask, and the
+/// descriptors redirections put at their numbers. A dynamic program
+/// written for Linux, which the kernel cannot start for want of its
+/// dynamic linker, runs through `linux run`, which builds the view its
+/// libraries and `/proc` are in (ADR 0622). The shell looks at the file
+/// only then, so that other programs cost nothing more.
 pub fn execve(path: &CStr, argv: &[CString], envp: &[CString]) -> Error {
-    let error = exec_plain(path, argv, envp);
+    let error = sysapi::process::exec(path, argv, envp);
     if cfg!(target_os = "radix")
         && error.raw_os_error() == Some(libc::ENOENT)
         && is_linux_view_program(path)
     {
-        return exec_plain(personality::LINUX, &personality::linux_command(path, argv), envp);
+        let command = personality::linux_command(path, argv);
+        return sysapi::process::exec(personality::LINUX, &command, envp);
     }
     error
 }
@@ -65,100 +84,75 @@ pub fn execve(path: &CStr, argv: &[CString], envp: &[CString]) -> Error {
 /// first bytes and its size; not if it cannot be read.
 fn is_linux_view_program(path: &CStr) -> bool {
     // Not blocking: a pipe by that name has nothing to read, and is no program.
-    // SAFETY: the path is a C string.
-    let fd =
-        unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC) };
-    if fd < 0 {
-        return false;
-    }
+    let opened = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(Path::new(std::ffi::OsStr::from_bytes(path.to_bytes())));
+    let Ok(mut file) = opened else { return false };
     let mut head = vec![0u8; personality::HEAD];
-    // SAFETY: the buffer is valid for its length.
-    let n = unsafe { libc::read(fd, head.as_mut_ptr().cast(), head.len()) };
-    // SAFETY: a stat buffer of zeros is a valid one to fill.
-    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
-    // SAFETY: the descriptor is open and the buffer is valid.
-    let size = (unsafe { libc::fstat(fd, &raw mut stat) } == 0).then_some(stat.st_size);
-    // SAFETY: closing the descriptor opened above.
-    unsafe { libc::close(fd) };
-    head.truncate(usize::try_from(n).unwrap_or(0));
-    let size = size.and_then(|size| u64::try_from(size).ok()).unwrap_or(head.len() as u64);
+    let n = file.read(&mut head).unwrap_or(0);
+    head.truncate(n);
+    let size = file.metadata().map_or(head.len() as u64, |metadata| metadata.len());
     personality::runs_in_linux_view(&head, size)
-}
-
-fn exec_plain(path: &CStr, argv: &[CString], envp: &[CString]) -> Error {
-    let mut args: Vec<*const libc::c_char> = argv.iter().map(|a| a.as_ptr()).collect();
-    args.push(std::ptr::null());
-    let mut env: Vec<*const libc::c_char> = envp.iter().map(|e| e.as_ptr()).collect();
-    env.push(std::ptr::null());
-    // SAFETY: both arrays end with a null pointer and point at C strings
-    // that live until the call returns.
-    unsafe { libc::execve(path.as_ptr(), args.as_ptr(), env.as_ptr()) };
-    Error::last_os_error()
 }
 
 /// A pipe, both ends closed on exec: (read end, write end).
 pub fn pipe() -> Result<(i32, i32)> {
-    let mut fds = [0; 2];
-    // SAFETY: fds has room for the two descriptors pipe2 writes.
-    check(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) })?;
-    Ok((fds[0], fds[1]))
+    numbered::pipe()
 }
 
+/// Makes `to` a copy of `from`, kept across exec; with the two the same,
+/// only keeps it across exec, as a redirection wants.
 pub fn dup2(from: i32, to: i32) -> Result<()> {
-    if from == to {
-        // dup2 would keep close-on-exec; a redirection wants it off.
-        return set_cloexec(to, false);
-    }
-    // SAFETY: dup2 only acts on the descriptor table.
-    check(unsafe { libc::dup2(from, to) }).map(drop)
+    numbered::duplicate_onto(from, to)
 }
 
 /// A copy of `fd` at or above `min`, closed on exec.
 pub fn dup_at_least(fd: i32, min: i32) -> Result<i32> {
-    // SAFETY: F_DUPFD_CLOEXEC only acts on the descriptor table.
-    check(unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, min) })
+    numbered::duplicate_above(fd, min, true)
 }
 
 /// A copy of `fd` at or above [`HIGH_FD`], closed on exec.
 pub fn dup_high(fd: i32) -> Result<i32> {
-    // SAFETY: F_DUPFD_CLOEXEC only acts on the descriptor table.
-    check(unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, HIGH_FD) })
+    numbered::duplicate_above(fd, HIGH_FD, true)
+}
+
+/// A copy of `fd` at or above `min`, kept across exec: for `{name}>file`
+/// and a process substitution, whose number the command is given.
+pub fn dup_kept(fd: i32, min: i32) -> Result<i32> {
+    numbered::duplicate_above(fd, min, false)
 }
 
 pub fn close(fd: i32) {
-    // SAFETY: closing a descriptor the shell owns.
-    unsafe { libc::close(fd) };
+    let _ = numbered::close(fd);
 }
 
 pub fn is_open(fd: i32) -> bool {
-    // SAFETY: F_GETFD only reads the descriptor's flags.
-    unsafe { libc::fcntl(fd, libc::F_GETFD) >= 0 }
+    numbered::is_open(fd)
 }
 
 pub fn set_cloexec(fd: i32, on: bool) -> Result<()> {
-    // SAFETY: F_GETFD and F_SETFD only act on the descriptor's flags.
-    let flags = check(unsafe { libc::fcntl(fd, libc::F_GETFD) })?;
-    let flags = if on { flags | libc::FD_CLOEXEC } else { flags & !libc::FD_CLOEXEC };
-    // SAFETY: as above.
-    check(unsafe { libc::fcntl(fd, libc::F_SETFD, flags) }).map(drop)
+    numbered::set_close_on_exec(fd, on)
 }
 
 pub fn open(path: &str, flags: i32, mode: u32) -> Result<i32> {
-    let path = crate::text::cstring(path);
-    // SAFETY: path is a C string; open reads it and returns a descriptor.
-    check(unsafe { libc::open(path.as_ptr(), flags | libc::O_CLOEXEC, mode as libc::c_uint) })
+    numbered::open(Path::new(&crate::text::to_os(path)), flags, mode as libc::mode_t)
+}
+
+/// One read, as read(2) makes it: EINTR when a signal came first.
+pub fn read_once(fd: i32, buf: &mut [u8]) -> Result<usize> {
+    sysapi::fd::read(numbered::lend(fd)?, buf)
 }
 
 pub fn read(fd: i32, buf: &mut [u8]) -> Result<usize> {
+    let lent = numbered::lend(fd)?;
     loop {
-        // SAFETY: buf is valid for writes of its length.
-        let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
-        if n >= 0 {
-            return Ok(n as usize);
-        }
-        let error = Error::last_os_error();
-        if error.raw_os_error() != Some(libc::EINTR) || crate::trap::pending() {
-            return Err(error);
+        match sysapi::fd::read(&lent, buf) {
+            Ok(n) => return Ok(n),
+            Err(error) if error.raw_os_error() != Some(libc::EINTR) || crate::trap::pending() => {
+                return Err(error);
+            }
+            Err(_) => {}
         }
     }
 }
@@ -178,17 +172,13 @@ pub fn read_all(fd: i32) -> Result<Vec<u8>> {
 }
 
 pub fn write_all(fd: i32, mut bytes: &[u8]) -> Result<()> {
+    let lent = numbered::lend(fd)?;
     while !bytes.is_empty() {
-        // SAFETY: bytes is valid for reads of its length.
-        let n = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
-        if n < 0 {
-            let error = Error::last_os_error();
-            if error.raw_os_error() == Some(libc::EINTR) {
-                continue;
-            }
-            return Err(error);
+        match sysapi::fd::write(&lent, bytes) {
+            Ok(n) => bytes = &bytes[n..],
+            Err(error) if error.raw_os_error() == Some(libc::EINTR) => {}
+            Err(error) => return Err(error),
         }
-        bytes = &bytes[n as usize..];
     }
     Ok(())
 }
@@ -196,252 +186,160 @@ pub fn write_all(fd: i32, mut bytes: &[u8]) -> Result<()> {
 /// Waits for a child: its number and status, or `None` with `WNOHANG`
 /// when none has changed.
 pub fn waitpid(pid: i32, flags: i32) -> Result<Option<(i32, i32)>> {
-    let mut status = 0;
-    // SAFETY: status is a valid place for the status.
-    let got = unsafe { libc::waitpid(pid, &raw mut status, flags) };
-    match got {
-        0 => Ok(None),
-        n if n > 0 => Ok(Some((n, status))),
-        _ => Err(Error::last_os_error()),
-    }
+    Ok(sysapi::process::wait_with(pid, flags)?.map(|(pid, status)| (pid, status.into_raw())))
 }
 
 pub fn getpid() -> i32 {
-    // SAFETY: getpid has no preconditions.
-    unsafe { libc::getpid() }
+    std::process::id().cast_signed()
 }
 
 pub fn getppid() -> i32 {
-    // SAFETY: getppid has no preconditions.
-    unsafe { libc::getppid() }
+    std::os::unix::process::parent_id().cast_signed()
 }
 
 pub fn getuid() -> u32 {
-    // SAFETY: getuid has no preconditions.
-    unsafe { libc::getuid() }
+    sysapi::process::uid()
 }
 
 pub fn geteuid() -> u32 {
-    // SAFETY: geteuid has no preconditions.
-    unsafe { libc::geteuid() }
+    sysapi::process::euid()
 }
 
 pub fn getgid() -> u32 {
-    // SAFETY: getgid has no preconditions.
-    unsafe { libc::getgid() }
+    sysapi::process::gid()
 }
 
 pub fn setpgid(pid: i32, pgid: i32) -> Result<()> {
-    // SAFETY: setpgid only changes process groups.
-    check(unsafe { libc::setpgid(pid, pgid) }).map(drop)
+    sysapi::process::set_process_group(pid, pgid)
 }
 
 pub fn getpgrp() -> i32 {
-    // SAFETY: getpgrp has no preconditions.
-    unsafe { libc::getpgrp() }
+    sysapi::process::process_group()
 }
 
 pub fn tcgetpgrp(fd: i32) -> Result<i32> {
-    // SAFETY: tcgetpgrp only reads the terminal's foreground group.
-    check(unsafe { libc::tcgetpgrp(fd) })
+    sysapi::terminal::foreground_group(numbered::lend(fd)?)
 }
 
 /// Gives the terminal on `fd` to process group `pgid`. From a group in
 /// the background the change raises SIGTTOU, which would stop a script's
-/// shell taking the terminal back, or a job about to have it; with the
-/// signal blocked meanwhile, the change goes ahead, as in bash.
+/// shell taking the terminal back, or a job about to have it; sysapi
+/// blocks the signal meanwhile, so the change goes ahead, as in bash.
 pub fn tcsetpgrp(fd: i32, pgid: i32) -> Result<()> {
-    // SAFETY: the sets are filled in before they are used, the old mask
-    // comes back, and tcsetpgrp only changes the terminal's foreground
-    // group.
-    unsafe {
-        let mut ttou: libc::sigset_t = std::mem::zeroed();
-        let mut old: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&raw mut ttou);
-        libc::sigaddset(&raw mut ttou, libc::SIGTTOU);
-        libc::sigprocmask(libc::SIG_BLOCK, &raw const ttou, &raw mut old);
-        let result = check(libc::tcsetpgrp(fd, pgid)).map(drop);
-        libc::sigprocmask(libc::SIG_SETMASK, &raw const old, std::ptr::null_mut());
-        result
-    }
+    sysapi::terminal::set_foreground_group(numbered::lend(fd)?, pgid)
 }
 
 pub fn isatty(fd: i32) -> bool {
-    // SAFETY: isatty only asks about the descriptor.
-    unsafe { libc::isatty(fd) == 1 }
+    numbered::lend(fd).is_ok_and(|lent| lent.as_fd().is_terminal())
+}
+
+/// The path of the terminal on `fd`, as `/dev/pts/3`.
+pub fn tty_path(fd: i32) -> Option<String> {
+    let path = sysapi::terminal::path(numbered::lend(fd).ok()?).ok()?;
+    Some(crate::text::decode(path.as_os_str().as_bytes()))
 }
 
 pub fn kill(pid: i32, signal: i32) -> Result<()> {
-    // SAFETY: kill sends a signal and touches no memory.
-    check(unsafe { libc::kill(pid, signal) }).map(drop)
+    sysapi::process::kill(pid, signal)
 }
 
 pub fn umask(mask: u32) -> u32 {
-    // SAFETY: umask only sets the process's mask.
-    unsafe { libc::umask(mask as libc::mode_t) as u32 }
+    sysapi::process::umask(mask as libc::mode_t) as u32
 }
 
 pub fn tcgetattr(fd: i32) -> Option<libc::termios> {
-    // SAFETY: termios is plain data; tcgetattr fills it in.
-    let mut termios: libc::termios = unsafe { std::mem::zeroed() };
-    // SAFETY: termios is a valid place to fill.
-    (unsafe { libc::tcgetattr(fd, &raw mut termios) } == 0).then_some(termios)
+    sysapi::terminal::attributes(numbered::lend(fd).ok()?).ok()
 }
 
 pub fn tcsetattr(fd: i32, termios: &libc::termios) {
-    // SAFETY: termios is a valid struct from tcgetattr.
-    unsafe { libc::tcsetattr(fd, libc::TCSADRAIN, termios) };
+    if let Ok(lent) = numbered::lend(fd) {
+        let _ = sysapi::terminal::set_attributes(lent, When::Drained, termios);
+    }
 }
 
 /// The terminal's size in columns and rows.
 pub fn window_size(fd: i32) -> Option<(u16, u16)> {
-    // SAFETY: winsize is plain data; TIOCGWINSZ fills it in.
-    let mut size: libc::winsize = unsafe { std::mem::zeroed() };
-    // SAFETY: size is a valid place for TIOCGWINSZ to write.
-    let ok = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) } == 0;
-    (ok && size.ws_col > 0).then_some((size.ws_col, size.ws_row))
+    let size = sysapi::terminal::window_size(numbered::lend(fd).ok()?).ok()?;
+    (size.cols > 0).then_some((size.cols, size.rows))
 }
 
 pub fn hostname() -> String {
-    let mut buf = [0u8; 256];
-    // SAFETY: buf has room for the name gethostname writes.
-    if unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } != 0 {
-        return "localhost".into();
-    }
-    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    crate::text::decode(&buf[..end])
+    sysapi::system::host_name().unwrap_or_else(|_| "localhost".into())
 }
 
 /// The home directory of user `name` (`None` for the current user).
 pub fn home_of(name: Option<&str>) -> Option<String> {
-    // SAFETY: getpwnam and getpwuid return a pointer to a static entry or
-    // null; its fields are copied before any other call.
-    unsafe {
-        let entry = match name {
-            Some(name) => {
-                let name = crate::text::cstring(name);
-                libc::getpwnam(name.as_ptr())
-            }
-            None => libc::getpwuid(libc::getuid()),
-        };
-        if entry.is_null() || (*entry).pw_dir.is_null() {
-            return None;
-        }
-        Some(crate::text::decode(CStr::from_ptr((*entry).pw_dir).to_bytes()))
-    }
+    let user = match name {
+        Some(name) => sysapi::users::user_by_name(name),
+        None => sysapi::users::user_by_id(getuid()),
+    };
+    let home = user.ok()??.home;
+    (!home.as_os_str().is_empty()).then(|| crate::text::decode(home.as_os_str().as_bytes()))
 }
 
 /// The login name of the current user.
 pub fn user_name() -> Option<String> {
-    // SAFETY: as in home_of.
-    unsafe {
-        let entry = libc::getpwuid(libc::getuid());
-        if entry.is_null() || (*entry).pw_name.is_null() {
-            return None;
-        }
-        Some(crate::text::decode(CStr::from_ptr((*entry).pw_name).to_bytes()))
-    }
+    let user = sysapi::users::user_by_id(getuid()).ok()??;
+    (!user.name.is_empty()).then_some(user.name)
 }
 
 /// Every user's login name, for completion.
 pub fn user_names() -> Vec<String> {
-    let mut names = Vec::new();
-    // SAFETY: setpwent, getpwent and endpwent walk the user database; each
-    // entry's name is copied before the next call.
-    unsafe {
-        libc::setpwent();
-        loop {
-            let entry = libc::getpwent();
-            if entry.is_null() {
-                break;
-            }
-            if !(*entry).pw_name.is_null() {
-                names.push(crate::text::decode(CStr::from_ptr((*entry).pw_name).to_bytes()));
-            }
-        }
-        libc::endpwent();
-    }
-    names
+    sysapi::users::user_names()
 }
 
 pub type Rlimit = libc::rlimit;
 
 pub fn getrlimit(resource: i32) -> Result<Rlimit> {
-    // SAFETY: rlimit is plain data that getrlimit fills in.
-    let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
-    // SAFETY: limit is a valid place to fill.
-    check(unsafe { libc::getrlimit(resource as _, &raw mut limit) })?;
-    Ok(limit)
+    let (soft, hard) = sysapi::process::limit(resource)?;
+    Ok(libc::rlimit { rlim_cur: soft, rlim_max: hard })
 }
 
 pub fn setrlimit(resource: i32, limit: &Rlimit) -> Result<()> {
-    // SAFETY: limit is a valid rlimit.
-    check(unsafe { libc::setrlimit(resource as _, limit) }).map(drop)
+    sysapi::process::set_limit(resource, limit.rlim_cur, limit.rlim_max)
 }
 
 /// The CPU time used by the shell and by its waited-for children, user
 /// and system, in seconds.
 pub fn times() -> (f64, f64, f64, f64) {
-    let usage = |who| {
-        // SAFETY: rusage is plain data that getrusage fills in.
-        let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
-        // SAFETY: usage is a valid place to fill.
-        unsafe { libc::getrusage(who, &raw mut usage) };
-        let secs = |tv: libc::timeval| tv.tv_sec as f64 + tv.tv_usec as f64 / 1e6;
-        (secs(usage.ru_utime), secs(usage.ru_stime))
+    let usage = |of| {
+        sysapi::process::usage(of)
+            .map_or((0.0, 0.0), |usage| (usage.user.as_secs_f64(), usage.system.as_secs_f64()))
     };
-    let (user, system) = usage(libc::RUSAGE_SELF);
-    let (child_user, child_system) = usage(libc::RUSAGE_CHILDREN);
+    let (user, system) = usage(sysapi::process::UsageOf::Process);
+    let (child_user, child_system) = usage(sysapi::process::UsageOf::Children);
     (user, system, child_user, child_system)
 }
 
 /// Whether `path` can be run by this user.
 pub fn executable(path: &str) -> bool {
-    let c = crate::text::cstring(path);
-    // SAFETY: c is a C string that access only reads.
-    unsafe { libc::access(c.as_ptr(), libc::X_OK) == 0 }
+    access(path, libc::X_OK)
 }
 
 pub fn access(path: &str, mode: i32) -> bool {
-    let c = crate::text::cstring(path);
-    // SAFETY: as in executable.
-    unsafe { libc::access(c.as_ptr(), mode) == 0 }
+    sysapi::fs::access(Path::new(&crate::text::to_os(path)), mode)
 }
 
 /// Random bytes from the kernel.
 pub fn random_u32() -> u32 {
-    let mut value = [0u8; 4];
-    // SAFETY: value has room for the 4 bytes asked for.
-    let got = unsafe { libc::getrandom(value.as_mut_ptr().cast(), 4, 0) };
-    if got == 4 {
-        u32::from_ne_bytes(value)
-    } else {
-        // SAFETY: time with a null pointer only returns the time.
-        (unsafe { libc::time(std::ptr::null_mut()) } as u32) ^ (getpid() as u32).rotate_left(16)
+    match sysapi::random::bytes::<4>() {
+        Ok(bytes) => u32::from_ne_bytes(bytes),
+        Err(_) => {
+            let (seconds, micros) = now();
+            (seconds as u32 ^ micros) ^ getpid().cast_unsigned().rotate_left(16)
+        }
     }
 }
 
 /// Exits at once, without running Rust's exit handlers or flushing
 /// buffers the child copied from its parent.
 pub fn exit_now(status: i32) -> ! {
-    // SAFETY: _exit ends the process.
-    unsafe { libc::_exit(status) }
+    sysapi::process::exit_now(status)
 }
 
 /// The time of day, formatted with strftime's `format`.
 pub fn strftime(format: &str, time: i64) -> String {
-    let mut out = vec![0u8; 512];
-    let c = crate::text::cstring(format);
-    // SAFETY: tm is plain data that localtime_r fills in; strftime writes
-    // at most out.len() bytes.
-    unsafe {
-        let mut tm: libc::tm = std::mem::zeroed();
-        let t = time as libc::time_t;
-        libc::localtime_r(&raw const t, &raw mut tm);
-        let n = libc::strftime(out.as_mut_ptr().cast(), out.len(), c.as_ptr(), &raw const tm);
-        out.truncate(n);
-    }
-    crate::text::decode(&out)
+    sysapi::time::format(time, format, false).unwrap_or_default()
 }
 
 pub fn now() -> (i64, u32) {
@@ -452,38 +350,34 @@ pub fn now() -> (i64, u32) {
 
 /// Moves `fd`'s offset; the new offset.
 pub fn lseek(fd: i32, offset: i64, whence: i32) -> Result<i64> {
-    // SAFETY: lseek only acts on the descriptor.
-    let got = unsafe { libc::lseek(fd, offset as libc::off_t, whence) };
-    if got < 0 { Err(Error::last_os_error()) } else { Ok(got as i64) }
+    let to = match whence {
+        libc::SEEK_SET => SeekFrom::Start(
+            u64::try_from(offset).map_err(|_| Error::from_raw_os_error(libc::EINVAL))?,
+        ),
+        libc::SEEK_END => SeekFrom::End(offset),
+        _ => SeekFrom::Current(offset),
+    };
+    let at = sysapi::fd::seek(numbered::lend(fd)?, to)?;
+    i64::try_from(at).map_err(|_| Error::from_raw_os_error(libc::EOVERFLOW))
 }
 
 /// Whether `fd` is a regular file, whose offset can be moved back over
 /// what was read but not used.
 pub fn is_regular(fd: i32) -> bool {
-    // SAFETY: stat is plain data that fstat fills in.
-    unsafe {
-        let mut st: libc::stat = std::mem::zeroed();
-        libc::fstat(fd, &raw mut st) == 0 && st.st_mode & libc::S_IFMT == libc::S_IFREG
-    }
+    identity(fd).is_some_and(|(_, _, regular)| regular)
 }
 
 /// `fd`'s device, inode and whether it is a regular file.
 pub fn identity(fd: i32) -> Option<(u64, u64, bool)> {
-    // SAFETY: stat is plain data that fstat fills in.
-    unsafe {
-        let mut st: libc::stat = std::mem::zeroed();
-        if libc::fstat(fd, &raw mut st) != 0 {
-            return None;
-        }
-        Some((st.st_dev as u64, st.st_ino as u64, st.st_mode & libc::S_IFMT == libc::S_IFREG))
-    }
+    let st = sysapi::dir::stat(numbered::lend(fd).ok()?).ok()?;
+    Some((st.st_dev as u64, st.st_ino as u64, st.st_mode & libc::S_IFMT == libc::S_IFREG))
 }
 
 /// Waits up to `millis` (forever if negative) for `fd` to have input:
 /// whether it has.
 pub fn poll_in(fd: i32, millis: i32) -> Result<bool> {
-    let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-    // SAFETY: pfd is one valid pollfd.
-    let n = unsafe { libc::poll(&raw mut pfd, 1, millis) };
-    if n < 0 { Err(Error::last_os_error()) } else { Ok(n > 0) }
+    let lent = numbered::lend(fd)?;
+    let wait = u64::try_from(millis).ok().map(Duration::from_millis);
+    let ready = sysapi::poll::poll(&mut [PollFd::new(lent.as_fd(), libc::POLLIN)], wait)?;
+    Ok(ready > 0)
 }

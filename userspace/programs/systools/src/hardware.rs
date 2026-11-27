@@ -4,7 +4,8 @@
 //! hardware(8): `hardware check` looks for hardware that is failing,
 //! `hardware last` shows what the last check found (ADR 0488), `hardware
 //! history` lists the checks that were kept, `hardware show` says what
-//! the machine is, and `hardware memtest` asks for the memory to be
+//! the machine is, `hardware power` its batteries and UPSes (ADR 0741),
+//! and `hardware memtest` asks for the memory to be
 //! tested at the next start.
 //!
 //! A check looks at six areas: the memory (the errors the memory
@@ -38,6 +39,7 @@ pub(crate) mod memtest;
 mod monitors;
 mod network;
 mod plan;
+mod power;
 mod run;
 pub(crate) mod saved;
 mod scan;
@@ -46,7 +48,8 @@ mod show;
 
 use std::io::{self, BufRead, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+
+use sysapi::signal::{self, Caught};
 
 use crate::admin_about::Sources;
 use crate::args::{Arg, Args};
@@ -60,16 +63,12 @@ use saved::Saved;
 const USAGE: &str = "usage: hardware check [AREA...] [--full] [--disk DISK] [--time SECONDS] \
                      [--yes] [--progress] [--json]\n       hardware last [--json]\n       \
                      hardware history [--json]\n       hardware show [--json]\n       hardware \
-                     sensors [--json]\n       hardware devices [--json]\n       hardware memtest \
+                     sensors [--json]\n       hardware devices [--json]\n       hardware power [--json]\n       hardware memtest \
                      --next-start | --cancel | --status [--json]";
 
 /// Set by SIGINT, SIGTERM or SIGHUP: the check stops, and aborts the
 /// self-tests it started.
-static STOP: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_signal(_: libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-}
+static STOP: Caught = Caught::new();
 
 /// hardware(8). A run that could not start ends with status 3: 1 is a
 /// check that failed.
@@ -81,6 +80,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         Some(command) if command == "show" => show_command(args),
         Some(command) if command == "sensors" => sensors_command(args),
         Some(command) if command == "devices" => devices_command(args),
+        Some(command) if command == "power" => power_command(args),
         // A refusal of memtest is a status 1 of its own, as `changes bisect`'s.
         Some(command) if command == "memtest" => {
             return memtest::main(args)
@@ -135,13 +135,10 @@ fn confirmed(question: &str, input: &mut dyn BufRead, out: &mut dyn Write) -> bo
         && matches!(answer.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
+/// Has SIGINT, SIGTERM and SIGHUP set [`STOP`].
 fn handle_signals() {
-    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
-        // SAFETY: all zeros is a valid sigaction: numbers, a signal set and a function address.
-        let mut action: libc::sigaction = unsafe { util::zeroed() };
-        action.sa_sigaction = on_signal as *const () as usize;
-        // SAFETY: the handler only stores to an atomic.
-        unsafe { libc::sigaction(signal, &raw const action, std::ptr::null_mut()) };
+    for number in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+        let _ = signal::catch(number, &STOP, 0);
     }
 }
 
@@ -196,8 +193,8 @@ fn check_command(args: &mut Args) -> Result<i32, Fail> {
         (true, true) => Steps::Errors,
     };
     let sink = run::Sink::new(!options.json, steps);
-    run::execute(&plan, &STOP, &sink);
-    let stopped = STOP.load(Ordering::Relaxed);
+    run::execute(&plan, STOP.flag(), &sink);
+    let stopped = STOP.is_set();
     let checks = sink.into_checks();
     let status = check::status(&checks, stopped);
     let saved = Saved {
@@ -325,6 +322,21 @@ fn sensors_command(args: &mut Args) -> Result<i32, Fail> {
 fn devices_command(args: &mut Args) -> Result<i32, Fail> {
     let json = json_only(args)?;
     let found = devices::gather(&devices::Sources::system());
+    let mut out = io::stdout().lock();
+    if json {
+        let text = found.json().map_err(|error| fail(format!("cannot write JSON: {error}")))?;
+        writeln!(out, "{text}")?;
+    } else {
+        write!(out, "{}", found.text())?;
+    }
+    Ok(0)
+}
+
+/// `hardware power`: the batteries, adapters and UPSes, and when a UPS
+/// shuts the machine down.
+fn power_command(args: &mut Args) -> Result<i32, Fail> {
+    let json = json_only(args)?;
+    let found = power::system();
     let mut out = io::stdout().lock();
     if json {
         let text = found.json().map_err(|error| fail(format!("cannot write JSON: {error}")))?;

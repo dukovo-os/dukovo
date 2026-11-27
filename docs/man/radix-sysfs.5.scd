@@ -193,6 +193,16 @@ _/kernel/bus/pci/devices/_*address*_/subsystem_vendor_, _subsystem_device_
 	found is listed, whether or not a driver uses it. *lspci*(8) reads
 	them.
 
+_/kernel/bus/pci/devices/_*address*_/numa_node_
+	The NUMA node the function is closest to, in decimal, as Linux's
+	file: *0* or *1* on a two-socket server. The firmware gives each
+	PCI root bus a node (the proximity domain of its ACPI host bridge), and every
+	function on that bus has it. The file reads *-1* when the node is not
+	known: the firmware names none, the machine has no NUMA tables,
+	ACPI is off (*aml=off*) or has not started. The scan finds every root
+	bus, not only the first, so a second socket's devices are listed
+	with the node they belong to.
+
 _/kernel/bus/usb/devices/_*name*_/idVendor_, _idProduct_, _bcdDevice_, _version_
 	A USB device's vendor and product IDs and its release, in
 	hexadecimal with four digits, and the USB version it speaks, as
@@ -451,6 +461,41 @@ _/kernel/class/power_supply/ucsi-source-psy-USBC000:_*nnn*_/type_, _online_, _vo
 	them: *USB*; *1* while the machine takes power through it, else *0*;
 	and, while it does, the voltage agreed, in µV, the current agreed and
 	the most the charger offers at that voltage, in µA (else *0*).
+
+_/kernel/class/power_supply/ups_*n*_/type_, _scope_, _status_, _online_
+	For each UPS plugged in by USB (ADR 0741), from *ups0*, while it is
+	plugged in: *UPS*; *System*; what its battery is doing, *Charging*,
+	*Discharging*, *Full* or *Not charging*; and *1* while the mains is
+	there, else *0*. The USB controller's thread reads the UPS's reports
+	every 2 seconds; each file says what it last read. A UPS's directory
+	is listed while it is plugged in, and the directory
+	_/kernel/class/power_supply_ is there on every machine, as a UPS may
+	be plugged in at any time.
+
+_/kernel/class/power_supply/ups_*n*_/capacity_, _capacity_level_, _time_to_empty_now_, _load_
+	Its charge in percent; *Critical* when the machine shuts down for
+	it, *Low* at or under _capacity_alert_min_, *Full* or *Normal*; how
+	long the charge lasts at the load now, in seconds; and what the load
+	draws, in percent of what the UPS gives (Dukovo's own).
+
+_/kernel/class/power_supply/ups_*n*_/capacity_alert_min_, _time_to_empty_alert_min_, _shuts_down_
+	The charge in percent, and the run time in seconds (Dukovo's own),
+	at or under which its battery is low: the limits the UPS sets, else
+	10% and 120 seconds. While the UPS runs the machine on its battery
+	and it is that low, or the UPS says itself that it is low or that it
+	will turn its outlets off, two reads in a row, Spark is asked to
+	power the machine off, as for the power button, and the kernel
+	powers it off itself 60 seconds later if it is still on.
+	_shuts_down_ is *1*, or *0* when the kernel was started with
+	*ups=show* (*dukovo-boot*(7)), which only shows the UPS.
+
+_/kernel/class/power_supply/ups_*n*_/health_, _model_name_, _manufacturer_
+	*Dead* when the UPS says its battery should be replaced, else
+	*Good*; and its USB product and manufacturer strings.
+
+	A value the UPS does not say, and every one until its reports are
+	first read, fails to read with EIO; so does every file of a UPS
+	unplugged since its directory was opened.
 
 _/kernel/class/thermal/thermal_zone_*n*_/type_, _temp_
 	For each thermal zone of the firmware's (*dukovo-boot*(7)'s *ACPI*),

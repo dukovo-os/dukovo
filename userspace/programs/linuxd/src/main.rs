@@ -4,6 +4,8 @@
 //! linuxd(8): `linuxd serve`, which `linux run` starts beside each Linux
 //! program it starts (ADR 0621; the parts are in the library, `lib.rs`).
 
+#![forbid(unsafe_code)]
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let again = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {

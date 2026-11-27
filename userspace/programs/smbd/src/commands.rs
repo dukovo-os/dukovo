@@ -25,6 +25,7 @@ use crate::rpc::{Interface, Pipe};
 use crate::wire::{self, HEADER, Out, Status, status, status_of};
 use crate::worker::{Chain, OPENS_MAX, Reply, Worker, maximal_access};
 use crate::{sd, sys};
+use sysapi::fs::may_access;
 
 /// CREATE's dispositions (MS-SMB2 2.2.13).
 mod disposition {
@@ -224,7 +225,7 @@ impl Worker {
             return Err(status::ACCESS_DENIED);
         }
         let parent_writable =
-            !is_root && path.parent().is_some_and(|parent| sys::may(parent, libc::W_OK));
+            !is_root && path.parent().is_some_and(|parent| may_access(parent, libc::W_OK));
         if granted & access::DELETE != 0 && !parent_writable {
             // Asked for by name, it is refused; within GENERIC_ALL, it is
             // left out.
@@ -262,7 +263,7 @@ impl Worker {
         let read = granted & (access::READ_DATA | access::EXECUTE) != 0;
         let write = granted & (access::WRITE_DATA | access::APPEND_DATA) != 0;
         let file = if folder {
-            if read && !sys::may(&path, libc::R_OK) || write && !sys::may(&path, libc::W_OK) {
+            if read && !may_access(&path, libc::R_OK) || write && !may_access(&path, libc::W_OK) {
                 return Err(status::ACCESS_DENIED);
             }
             None

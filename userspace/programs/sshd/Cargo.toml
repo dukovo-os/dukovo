@@ -21,6 +21,9 @@ libc = "0.2.191"
 # that a handler sees what a client signed, for authd to check again,
 # and gives a client room to send as a session reads (ADR 0347).
 russh = { version = "0.65.0", default-features = false, features = ["ring"] }
+# Descriptors sent to and from authd, pipes, pseudo-terminals, SIGHUP,
+# random bytes and the machine's name, behind safe calls (ADR 0730).
+sysapi = { path = "../sysapi" }
 # The runtime russh runs on (MIT), one thread per connection.
 tokio = { version = "1.54.1", features = ["rt", "net", "time", "io-util", "sync"] }
 

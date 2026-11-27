@@ -10,6 +10,8 @@
 
 use std::time::{Duration, Instant};
 
+use sysapi::text::Value;
+
 use super::{flags, legal_number, out, usage};
 use crate::shell::{Res, Shell};
 use crate::{sys, text, trap};
@@ -216,20 +218,20 @@ struct Spec {
 }
 
 impl Spec {
-    /// The C format for this conversion. A negative precision is as if
-    /// none was given, as in C.
-    fn c_format(&self, conversion: &str) -> String {
-        let mut f = String::from("%");
-        f.push_str(&self.flags);
+    /// What C's printf makes of `value` under this spec, with conversion
+    /// `letter`; nothing for a width or precision C cannot take. A
+    /// negative precision is as if none was given, as in C.
+    fn c_format(&self, letter: char, value: sysapi::text::Value<'_>) -> String {
+        let mut spec = self.flags.clone();
         if let Some(w) = self.width {
-            f.push_str(&w.to_string());
+            spec.push_str(&w.to_string());
         }
         if let Some(p) = self.precision.filter(|p| *p >= 0) {
-            f.push('.');
-            f.push_str(&p.to_string());
+            spec.push('.');
+            spec.push_str(&p.to_string());
         }
-        f.push_str(conversion);
-        f
+        sysapi::text::printf(&spec, letter, value)
+            .map_or_else(|_| String::new(), |b| text::decode(&b))
     }
 
     /// `s` cut to the precision and padded to the width, both counted in
@@ -403,21 +405,17 @@ fn format_all(shell: &mut Shell, format: &str, args: &[String], direct: bool) ->
                 'd' | 'i' => {
                     let (n, how) = parse_signed(&arg_text);
                     check_number(shell, &arg_text, how, &mut status);
-                    output.push_str(&c_format_int(&spec.c_format("lld"), n));
+                    output.push_str(&spec.c_format(conversion, Value::Signed(n)));
                 }
                 'o' | 'u' | 'x' | 'X' => {
                     let (n, how) = parse_unsigned(&arg_text);
                     check_number(shell, &arg_text, how, &mut status);
-                    // The same bits, which the conversion takes as unsigned.
-                    output.push_str(&c_format_int(
-                        &spec.c_format(&format!("ll{conversion}")),
-                        n as i64,
-                    ));
+                    output.push_str(&spec.c_format(conversion, Value::Unsigned(n)));
                 }
                 'f' | 'F' | 'e' | 'E' | 'g' | 'G' | 'a' | 'A' => {
                     let (x, how) = parse_float(&arg_text);
                     check_number(shell, &arg_text, how, &mut status);
-                    output.push_str(&c_format_float(&spec.c_format(&conversion.to_string()), x));
+                    output.push_str(&spec.c_format(conversion, Value::Float(x)));
                 }
                 '(' => {
                     // `%(format)T`: a time, given in seconds.
@@ -594,62 +592,20 @@ fn parse_float(text: &str) -> (f64, Number) {
     if let Some(code) = char_code(text) {
         return (code as f64, Number::Whole);
     }
-    let c = text::cstring(text);
-    let start = c.as_ptr();
-    let mut end = start.cast_mut();
-    // SAFETY: `c` is NUL-terminated, and strtod leaves `end` inside it;
-    // errno is this thread's.
-    let (x, range, used) = unsafe {
-        *libc::__errno_location() = 0;
-        let x = libc::strtod(start, &raw mut end);
-        (x, *libc::__errno_location() == libc::ERANGE, end.offset_from(start))
-    };
-    let how = if used.unsigned_abs() < c.as_bytes().len() {
+    let mut bytes = text::encode(text);
+    // A NUL, which no C string holds, ends it.
+    if let Some(nul) = bytes.iter().position(|&b| b == 0) {
+        bytes.truncate(nul);
+    }
+    let read = sysapi::text::read_float(&bytes);
+    let how = if read.used < bytes.len() {
         Number::Partial
-    } else if range {
+    } else if read.out_of_range {
         Number::Range
     } else {
         Number::Whole
     };
-    (x, how)
-}
-
-/// What C's snprintf makes of a format with one conversion, through
-/// `print`, which calls it with a buffer, its size and the format; as
-/// long as it comes.
-fn c_format(
-    format: &str,
-    print: impl Fn(*mut libc::c_char, usize, *const libc::c_char) -> i32,
-) -> String {
-    let format = text::cstring(format);
-    let mut buf = vec![0u8; 128];
-    loop {
-        let Ok(n) = usize::try_from(print(buf.as_mut_ptr().cast(), buf.len(), format.as_ptr()))
-        else {
-            return String::new();
-        };
-        if n < buf.len() {
-            buf.truncate(n);
-            return text::decode(&buf);
-        }
-        buf.resize(n + 1, 0);
-    }
-}
-
-fn c_format_int(format: &str, value: i64) -> String {
-    // SAFETY: the format has one integer conversion (`ll`), which gets a
-    // long long; snprintf writes at most `size` bytes to `buf`.
-    c_format(format, |buf, size, format| unsafe {
-        libc::snprintf(buf, size, format, value as libc::c_longlong)
-    })
-}
-
-fn c_format_float(format: &str, value: f64) -> String {
-    // SAFETY: the format has one floating-point conversion, which gets a
-    // double; snprintf writes at most `size` bytes to `buf`.
-    c_format(format, |buf, size, format| unsafe {
-        libc::snprintf(buf, size, format, value as libc::c_double)
-    })
+    (read.value, how)
 }
 
 /// `s` quoted with backslashes, as `printf %q` does; `$'...'` if it has
@@ -1383,7 +1339,13 @@ mod tests {
         assert_eq!(spec.pad("é"), text::decode(&[0xc3]));
         let spec = Spec { precision: Some(-1), ..Spec::default() };
         assert_eq!(spec.pad("abc"), "abc");
-        assert_eq!(c_format_int("%600d", 1).len(), 600);
+        let spec = Spec { width: Some(600), ..Spec::default() };
+        assert_eq!(spec.c_format('d', Value::Signed(1)).len(), 600);
+        let spec = Spec { flags: "#".into(), precision: Some(3), ..Spec::default() };
+        assert_eq!(spec.c_format('x', Value::Unsigned(u64::MAX)), "0xffffffffffffffff");
+        assert_eq!(spec.c_format('d', Value::Signed(-7)), "-007");
+        let spec = Spec { width: Some(-6), precision: Some(-1), ..Spec::default() };
+        assert_eq!(spec.c_format('g', Value::Float(0.5)), "0.5   ");
     }
 
     #[test]

@@ -206,8 +206,7 @@ mod tests {
 
     /// The group of the test's own process, which it may give a file.
     fn own_group() -> u32 {
-        // SAFETY: getegid has no preconditions.
-        unsafe { libc::getegid() }
+        sysapi::process::egid()
     }
 
     #[test]

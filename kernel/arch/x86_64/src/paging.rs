@@ -930,6 +930,23 @@ impl Drop for NoPreemption {
 
 /// Like [`shootdown`], for the other online CPUs `wanted` picks.
 pub(crate) fn shootdown_on(range: Range<u64>, wanted: impl Fn(&PerCpu) -> bool) {
+    request(range, wanted, true);
+}
+
+/// Has the other online CPUs `wanted` picks, which run kernel threads on a
+/// user space's tables (`AddressSpace::run_kernel_thread`), switch to the
+/// kernel's tables, and waits until all have: before the space's tables
+/// are freed. Every target gets the interrupt: one the host stopped would
+/// have its TLB flushed when it runs again, but keep the tables loaded.
+pub(crate) fn leave_on(wanted: impl Fn(&PerCpu) -> bool) {
+    request(0..0, wanted, false);
+}
+
+/// Sends a shootdown of `range` to the other online CPUs `wanted` picks,
+/// and waits until they have answered. With `resumed`, a CPU the host has
+/// stopped is left to the hypervisor's flush when it runs again
+/// ([`kvm::flush_when_resumed`]) rather than sent the interrupt.
+fn request(range: Range<u64>, wanted: impl Fn(&PerCpu) -> bool, resumed: bool) {
     // On one CPU throughout: the CPU whose TLB it flushes here, which it
     // leaves out of the targets and marks as having served the request,
     // must be the one it runs on. A thread moved to a target CPU on the
@@ -957,7 +974,7 @@ pub(crate) fn shootdown_on(range: Range<u64>, wanted: impl Fn(&PerCpu) -> bool) 
             && !cpu.stopped.load(Ordering::Relaxed)
             && wanted(cpu)
         {
-            if kvm::flush_when_resumed(cpu) {
+            if resumed && kvm::flush_when_resumed(cpu) {
                 left += 1;
             } else {
                 targets[index / 64] |= 1 << (index % 64);
@@ -1004,7 +1021,7 @@ pub(crate) fn shootdown_on(range: Range<u64>, wanted: impl Fn(&PerCpu) -> bool) 
                 let bit = stopped.isolate_lowest_one();
                 stopped &= !bit;
                 let index = word * 64 + bit.trailing_zeros() as usize;
-                if percpu::get(index).is_some_and(kvm::flush_when_resumed) {
+                if resumed && percpu::get(index).is_some_and(kvm::flush_when_resumed) {
                     slot.fetch_and(!bit, Ordering::Relaxed);
                     bits &= !bit;
                     left += 1;
@@ -1055,6 +1072,12 @@ pub fn serve_shootdown() {
         let end = SHOOTDOWN.end.load(Ordering::Relaxed);
         let sent = SHOOTDOWN.sent_ns.load(Ordering::Relaxed);
         flush_local(start..end);
+        // A CPU running a kernel thread on a user space's tables leaves
+        // them rather than flush them again for each change (and must,
+        // before they are freed: `leave_on`), as Linux's lazy TLB does.
+        if start < crate::space::USER_END && cpu.lazy.load(Ordering::Relaxed) {
+            crate::space::AddressSpace::switch_to_kernel();
+        }
         pending.fetch_and(!bit, Ordering::Release);
         // Late: the hypervisor may hold this CPU's interrupts while it runs,
         // so it shortens the wait for the next requests (ADR 0109).

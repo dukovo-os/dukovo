@@ -21,7 +21,7 @@
 # is dark, light, high contrast, forced colours and less motion, checked by axe.
 #
 # The apps are nginx, which has a service and a data folder, and Python, which
-# has neither, from the catalog, installed for everyone. The browser script
+# has neither, from the test catalog `labtest` (below), installed for everyone. The browser script
 # removes nginx, and runs once for each engine, so the steps before it put both
 # apps back from nothing for each: a marker in nginx's data folder, which
 # nginx's first start makes, is what Keep its data must leave. Going back and
@@ -34,18 +34,23 @@
 # apps.not-tonight, apps.hold, apps.unhold, apps.remove.
 about = "The web console's Apps pages in each engine: the apps from what bundle list says, an app's facts and size from bundle info, Hold with its reason and Release the hold, Tonight and Not tonight where an app has an update, Remove asks to unlock, says what uses the app and asks for its name before the data goes, nginx removed with its data kept, an app that is not there, a reader, and the phone"
 time = "20m"
-host_needs = ["curl", "scp"]
+host_needs = ["curl", "scp", "ssh"]
 
 [[step]]
 run = "sh -c 'echo lab-console-password | user add --admin wc-apps && echo lab-console-password | user add wc-apps-reader && user set --console --yes wc-apps-reader'"
 root = true
 expect = ["Made wc-apps", "Made wc-apps-reader", "wc-apps-reader is changed"]
+# The apps come from the lab's catalog, `labtest`, as every lab test that
+# installs them has them (services/lab-catalog.sh says why). The copy a test
+# before may have left is replaced. The test skips where the lab has no test
+# catalog.
 [[step]]
-host = "sh {here}/../services/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
-expect = "copied: org.nginx.nginx"
+host = "sh {here}/../services/lab-catalog.sh {machine} {machine-port:22}"
+expect = "copied: the test catalog"
 [[step]]
-host = "sh {here}/../services/copy-bundle.sh org.python.python {machine} {machine-port:22}"
-expect = "copied: org.python.python"
+run = "sh /users/lab/lab-catalog-add.sh"
+root = true
+expect = "added catalog labtest, which lists"
 # The console answers within seconds of the boot; its last answer is shown
 # so that a console that refuses this address says so in the failure.
 [[step]]
@@ -55,7 +60,7 @@ expect = '{"ok":true}'
 # Chromium. From nothing: a run before may have left either app, and nginx's
 # data folder, which a removal that keeps the data leaves.
 [[step]]
-run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle remove --for-everyone --purge org.python.python > /dev/null 2>&1; rm -rf /shared/services/org.nginx.nginx; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1; bundle install --for-everyone --yes /users/lab/org.python.python.dkv | tail -1'"
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle remove --for-everyone --purge org.python.python > /dev/null 2>&1; rm -rf /shared/services/org.nginx.nginx; bundle install --for-everyone --yes org.nginx.nginx --from labtest | tail -1; bundle install --for-everyone --yes org.python.python --from labtest | tail -1'"
 root = true
 expect = ["installed org.nginx.nginx", "installed org.python.python"]
 [[step]]
@@ -85,7 +90,7 @@ expect = "kept-by-apps-test"
 
 # Firefox, with both apps put back.
 [[step]]
-run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle remove --for-everyone --purge org.python.python > /dev/null 2>&1; rm -rf /shared/services/org.nginx.nginx; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1; bundle install --for-everyone --yes /users/lab/org.python.python.dkv | tail -1'"
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle remove --for-everyone --purge org.python.python > /dev/null 2>&1; rm -rf /shared/services/org.nginx.nginx; bundle install --for-everyone --yes org.nginx.nginx --from labtest | tail -1; bundle install --for-everyone --yes org.python.python --from labtest | tail -1'"
 root = true
 expect = ["installed org.nginx.nginx", "installed org.python.python"]
 [[step]]
@@ -110,7 +115,7 @@ expect = "kept-by-apps-test"
 
 # WebKit, with both apps put back.
 [[step]]
-run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle remove --for-everyone --purge org.python.python > /dev/null 2>&1; rm -rf /shared/services/org.nginx.nginx; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1; bundle install --for-everyone --yes /users/lab/org.python.python.dkv | tail -1'"
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle remove --for-everyone --purge org.python.python > /dev/null 2>&1; rm -rf /shared/services/org.nginx.nginx; bundle install --for-everyone --yes org.nginx.nginx --from labtest | tail -1; bundle install --for-everyone --yes org.python.python --from labtest | tail -1'"
 root = true
 expect = ["installed org.nginx.nginx", "installed org.python.python"]
 [[step]]
@@ -133,9 +138,10 @@ run = "cat /shared/services/org.nginx.nginx/nginx/lab-apps-marker"
 root = true
 expect = "kept-by-apps-test"
 
-# The machine as it was: both apps and nginx's data gone, and the accounts.
+# The machine as it was: both apps and nginx's data gone, the test catalog
+# taken away, and the accounts.
 [[step]]
-run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle remove --for-everyone --purge org.python.python > /dev/null 2>&1; rm -rf /shared/services/org.nginx.nginx; echo cleaned'"
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle remove --for-everyone --purge org.python.python > /dev/null 2>&1; rm -rf /shared/services/org.nginx.nginx; bundle catalog remove labtest > /dev/null 2>&1; rm -rf /users/lab/lab-catalog /shared/lab-catalog; echo cleaned'"
 root = true
 expect = "cleaned"
 [[step]]

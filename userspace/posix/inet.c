@@ -8,7 +8,8 @@
 // poll, a listener shared with a child, a socket that listens unbound,
 // more connections at once than an interface's first socket slots, and
 // a connection made while a thread waits in accept and another opens a
-// descriptor.
+// descriptor, and one thread woken for each connection, not all that wait
+// in accept (ADR 0651).
 // UDP: sendto and recvfrom, datagrams kept whole, sendmsg and recvmsg
 // over several buffers, connect, and MSG_DONTWAIT. The errors of
 // addresses in use or not on the machine and of families not there.
@@ -206,6 +207,106 @@ static void accept_while_another_opens(void) {
 	CHECK(close(server) == 0);
 }
 
+// The voluntary_switches of process `pid` from /processes/<pid>/status;
+// -1 if it cannot be read.
+static long voluntary_switches(pid_t pid) {
+	char path[64];
+	snprintf(path, sizeof(path), "/processes/%d/status", (int)pid);
+	FILE *status = fopen(path, "r");
+	if(!status)
+		return -1;
+	char line[128];
+	long switches = -1;
+	while(fgets(line, sizeof(line), status))
+		if(sscanf(line, "voluntary_switches: %ld", &switches) == 1)
+			break;
+	fclose(status);
+	return switches;
+}
+
+// A connection wakes one of the processes blocked in accept on a TCP
+// socket, as on Linux, and the steps of its handshake wake none (ADR
+// 0651). Four children block in accept on one listening socket and close
+// what they take, and the parent connects 500 times, waiting each time for
+// the acceptor's close. Each connection costs one child one block, so the
+// children's voluntary switches move by about 500 over the rounds; with
+// every step of every handshake waking all four they moved by more than
+// 750, and this check failed.
+static void accepting(void) {
+	enum { CHILDREN = 4, ROUNDS = 500 };
+	int s = socket(AF_INET, SOCK_STREAM, 0);
+	CHECK(s >= 0);
+	struct sockaddr_in at = loopback(0);
+	CHECK(bind(s, (struct sockaddr *)&at, sizeof(at)) == 0);
+	CHECK(listen(s, 16) == 0);
+	unsigned short port = port_of(s);
+	pid_t pids[CHILDREN];
+	for(int i = 0; i < CHILDREN; i++) {
+		pids[i] = check_fork();
+		if(pids[i] == 0) {
+			for(;;) {
+				int a = accept(s, NULL, NULL);
+				if(a < 0)
+					break;
+				close(a);
+			}
+			check_exit_child();
+		}
+		CHECK(pids[i] > 0);
+	}
+	// The children are asleep once their switches stop moving.
+	long switches[CHILDREN], total = 0;
+	long long deadline = check_now_ns() + 2000000000LL;
+	for(int i = 0; i < CHILDREN; i++)
+		switches[i] = voluntary_switches(pids[i]);
+	for(;;) {
+		check_sleep_ms(50);
+		int still = 1;
+		for(int i = 0; i < CHILDREN; i++) {
+			long now = voluntary_switches(pids[i]);
+			still &= now >= 0 && now == switches[i];
+			switches[i] = now;
+		}
+		if(still)
+			break;
+		if(check_now_ns() >= deadline) {
+			CHECK(0 && "the acceptors' voluntary_switches stopped moving");
+			break;
+		}
+	}
+	for(int i = 0; i < CHILDREN; i++)
+		total -= switches[i];
+	int served = 0;
+	for(int round = 0; round < ROUNDS; round++) {
+		int c = connected(port);
+		char byte;
+		struct pollfd entry = {.fd = c, .events = POLLIN};
+		if(poll(&entry, 1, 5000) != 1 || read(c, &byte, 1) != 0) {
+			CHECK(0 && "a connection accepted and closed by a child");
+			close(c);
+			break;
+		}
+		close(c);
+		served++;
+	}
+	for(int i = 0; i < CHILDREN; i++)
+		total += voluntary_switches(pids[i]);
+	printf("inet: accepting: %d connections made the %d acceptors switch %ld times\n", served,
+			CHILDREN, total);
+	CHECK(served == ROUNDS);
+	if(total > ROUNDS + ROUNDS / 2) {
+		char what[96];
+		snprintf(what, sizeof(what), "the acceptors switched %ld times, more than %d", total,
+				ROUNDS + ROUNDS / 2);
+		check_failed(__FILE__, __LINE__, what, 0);
+	}
+	for(int i = 0; i < CHILDREN; i++) {
+		kill(pids[i], SIGKILL);
+		waitpid(pids[i], NULL, 0);
+	}
+	close(s);
+}
+
 static void tcp(void) {
 	int server = listener();
 	unsigned short port = port_of(server);
@@ -327,6 +428,80 @@ static void non_blocking(void) {
 	struct pollfd r = {accepted, POLLIN, 0};
 	CHECK(poll(&r, 1, 5000) == 1 && (r.revents & POLLIN));
 	CHECK(read(accepted, buffer, sizeof(buffer)) == 1);
+	close(accepted);
+	close(client);
+	close(server);
+}
+
+// What poll finds on `fd` for `events` at once.
+static short polled_now(int fd, short events) {
+	struct pollfd p = {fd, events, 0};
+	CHECK(poll(&p, 1, 0) >= 0);
+	return p.revents;
+}
+
+// Each change to what a connection is ready for is found by the next
+// poll, those the socket's own calls make as well as those that come from
+// its other end, though a poll that finds nothing changed takes what the
+// one before it found (ADR 0771). Each look is made twice.
+static void readiness_follows_each_change(void) {
+	int server = listener();
+	int client = connected(port_of(server));
+	int accepted = accept(server, NULL, NULL);
+	CHECK(accepted >= 0);
+	CHECK(fcntl(client, F_SETFL, O_NONBLOCK) == 0 && fcntl(accepted, F_SETFL, O_NONBLOCK) == 0);
+	for(int i = 0; i < 2; i++)
+		CHECK(polled_now(accepted, POLLIN | POLLOUT) == POLLOUT);
+	// Two bytes come: readable until the second is read.
+	CHECK(send(client, "ab", 2, 0) == 2);
+	struct pollfd p = {accepted, POLLIN, 0};
+	CHECK(poll(&p, 1, 5000) == 1 && p.revents == POLLIN);
+	char buffer[4096];
+	CHECK(read(accepted, buffer, 1) == 1 && buffer[0] == 'a');
+	for(int i = 0; i < 2; i++)
+		CHECK(polled_now(accepted, POLLIN) == POLLIN);
+	CHECK(read(accepted, buffer, 1) == 1 && buffer[0] == 'b');
+	for(int i = 0; i < 2; i++)
+		CHECK(polled_now(accepted, POLLIN) == 0);
+	// The client fills what the other end has room for: not writable until
+	// that end reads.
+	memset(buffer, 'x', sizeof(buffer));
+	size_t sent = 0;
+	for(;;) {
+		ssize_t n = send(client, buffer, sizeof(buffer), 0);
+		if(n < 0) {
+			CHECK(errno == EAGAIN);
+			break;
+		}
+		sent += (size_t)n;
+		CHECK(sent < 64u << 20);
+	}
+	for(int i = 0; i < 2; i++)
+		CHECK(polled_now(client, POLLOUT) == 0);
+	while(sent > 0) {
+		ssize_t n = read(accepted, buffer, sizeof(buffer));
+		if(n < 0) {
+			CHECK(errno == EAGAIN);
+			struct pollfd q = {accepted, POLLIN, 0};
+			CHECK(poll(&q, 1, 5000) == 1);
+			continue;
+		}
+		CHECK(n > 0);
+		sent -= (size_t)n;
+	}
+	struct pollfd w = {client, POLLOUT, 0};
+	CHECK(poll(&w, 1, 5000) == 1 && w.revents == POLLOUT);
+	CHECK(polled_now(accepted, POLLIN) == 0);
+	// Shut for reading by its own call, the socket is readable at once.
+	CHECK(shutdown(accepted, SHUT_RD) == 0);
+	for(int i = 0; i < 2; i++)
+		CHECK(polled_now(accepted, POLLIN) & POLLIN);
+	// The other end's end of sending makes the client's readable too.
+	CHECK(polled_now(client, POLLIN) == 0);
+	CHECK(shutdown(accepted, SHUT_WR) == 0);
+	struct pollfd e = {client, POLLIN, 0};
+	CHECK(poll(&e, 1, 5000) == 1 && (e.revents & POLLIN));
+	CHECK(read(client, buffer, sizeof(buffer)) == 0);
 	close(accepted);
 	close(client);
 	close(server);
@@ -1629,8 +1804,10 @@ int main(void) {
 	RUN(short_connections);
 	RUN(many_connections);
 	RUN(accept_while_another_opens);
+	RUN(accepting);
 	RUN(tcp);
 	RUN(non_blocking);
+	RUN(readiness_follows_each_change);
 	RUN(unbound);
 	RUN(shared);
 	RUN(udp);

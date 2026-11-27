@@ -73,7 +73,11 @@ removed afterwards, because GRUB refuses ELF files that have them.
 The kernel target (`kernel/targets/x86_64-radix-kernel.json`, ADR 0011)
 disables the red zone and SSE, keeps frame pointers everywhere, and
 `-Zbuild-std` compiles `core` with those settings so backtraces walk
-through it.
+through it. `compiler_builtins` gives the kernel `memcpy` with the rest
+of its memory functions, but on x86-64 the kernel's own takes its place:
+a copy of fewer than 512 bytes goes by general-purpose registers rather
+than by `rep movs`, which takes some 30 cycles to start on CPUs without
+fast short REP MOVSB (`copy.rs`, ADR 0775).
 
 ## The trampoline
 

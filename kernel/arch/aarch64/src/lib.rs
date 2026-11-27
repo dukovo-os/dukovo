@@ -121,6 +121,10 @@ impl Cpu for Arch {
     fn core_temperature() -> Option<radix_sensors::coretemp::Sample> {
         None
     }
+
+    fn core_kind() -> radix_hal::CoreKind {
+        radix_hal::CoreKind::Only
+    }
 }
 
 impl CpuLocal for Arch {
@@ -262,6 +266,14 @@ impl Devices for Arch {
     fn pci_segments(_found: &mut dyn FnMut(PciSegment)) {}
 
     fn map_device(_phys: u64, _len: usize) -> Option<Mmio> {
+        None
+    }
+
+    fn pci_bus_answers(_phys: u64) -> bool {
+        false
+    }
+
+    fn numa_node_of_domain(_domain: u32) -> Option<u8> {
         None
     }
 

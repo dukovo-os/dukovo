@@ -10,12 +10,24 @@
 # be busy for less than a second of the five measured.
 about = "With its cable out, a machine that has data to send leaves its CPUs idle: under a second busy in five"
 time = "3m"
-host_needs = ["nc"]
+host_needs = ["nc", "scp"]
 
 [[step]]
 host = "sh {here}/send-with-cable-out.sh {port:sink}"
 background = true
 ready = "sink ready"
+
+# The CPUs' time busy is measured by a script on the machine, which the test
+# starts before the cable comes out and reads after it is back: over the SSH
+# link that the pull has just cut, the measurement would wait for a banner
+# that does not come. The script waits 15 seconds, which is after the pull
+# whatever the SSH steps take, and measures five seconds of the 18 that the
+# cable is out afterwards.
+[[step]]
+host = "sh {here}/../services/copy-file.sh {here}/send-with-cable-out-busy.sh {machine} {machine-port:22}"
+expect = "copied: send-with-cable-out-busy.sh"
+[[step]]
+run = "sh -c 'sh -c \"$0\" < /dev/null > /dev/null 2>&1 &' 'sh /users/lab/send-with-cable-out-busy.sh 15'"
 
 # The machine sends in the background, by a shell of its own so that the
 # step returns.
@@ -26,13 +38,13 @@ wait = "5s"
 [[step]]
 link = "down"
 [[step]]
-wait = "3s"
-# The CPUs' time busy, user and kernel, over five seconds with the cable
-# out.
-[[step]]
-run = '''sh -c 'busy() { awk "/^(user|system)_ns:/ { s += \$2 } END { printf \"%.0f\n\", s }" /processes/stat; }; first=$(busy); sleep 5; ms=$(( ($(busy) - first) / 1000000 )); echo "busy $ms ms of 5000"; [ "$ms" -lt 1000 ] && echo "idle""-enough"' '''
-expect = "idle-enough"
+wait = "18s"
 [[step]]
 link = "up"
+# Read once the link is back: the script is done by then, and the result is
+# waited for in case the machine was slow.
+[[step]]
+run = '''sh -c 'i=0; while [ $i -lt 60 ] && [ ! -s /tmp/send-with-cable-out.busy ]; do sleep 1; i=$((i + 1)); done; ms=$(cat /tmp/send-with-cable-out.busy); echo "busy $ms ms of 5000"; [ "$ms" -lt 1000 ] && echo "idle""-enough"' '''
+expect = "idle-enough"
 [[step]]
 run = "sh -c 'pkill -x nc; true'"

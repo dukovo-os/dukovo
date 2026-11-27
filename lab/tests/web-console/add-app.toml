@@ -17,20 +17,26 @@
 # motion, checked by axe.
 #
 # The apps are nginx, which has a service and a data folder, and Python, which
-# has neither, from a catalog of the test's own, `labtest`, which a host step
-# copies onto the machine and a step as root adds; the catalog the image comes
-# with is left as it is, so that a machine without a network shows its banner.
-# The test skips where the lab has no test catalog (add-app-catalog.sh says
-# what it is). The browser script runs once for each engine, so the steps
-# before it take both apps away for each. The accounts are two that this test
-# makes and removes, an administrator and a reader, so no script needs the lab's
-# password.
+# has neither, from the lab's catalog, `labtest`, which a host step copies onto
+# the machine and a step as root adds (services/lab-catalog.sh); the lab image
+# has Dukovo's own catalog turned off, and the page shows a banner for any
+# catalog that could not be read. The test skips where the lab has no test
+# catalog (lab-catalog.sh says what it is). The browser script runs once for
+# each engine, so the steps before it take both apps away for each. The
+# accounts are two that this test makes and removes, an administrator and a
+# reader, so no script needs the lab's password.
+#
+# An app installed from a catalog stays bound to it after its removal (ADR
+# 0383), so the bindings of nginx and Python to `labtest` outlive this test
+# and no step can take them away; every lab test that installs these apps
+# installs them from the same catalog by the same name, and so agrees with
+# them.
 #
 # The console's actions (lab/actions.toml) that this test uses through its
 # page, by id: apps.search, apps.sheet, apps.install.
 about = "The web console's Add an app page in each engine: the search from what bundle search says, a sheet from bundle sheet, Install for everyone as a task that installs nginx, Turn it on and the next step's link, a catalog that moved on (APP-102) and Read it again, an app no catalog lists, a reader, and the phone"
 time = "30m"
-host_needs = ["curl", "scp"]
+host_needs = ["curl", "scp", "ssh"]
 
 [[step]]
 run = "sh -c 'echo lab-console-password | user add --admin wc-add && echo lab-console-password | user add wc-add-reader && user set --console --yes wc-add-reader'"
@@ -40,14 +46,10 @@ expect = ["Made wc-add", "Made wc-add-reader", "wc-add-reader is changed"]
 # taken away first, and the catalog is added by name, for bundled to read from
 # a folder that every account may read.
 [[step]]
-run = "sh -c 'bundle catalog remove labtest > /dev/null 2>&1; rm -rf /users/lab/lab-catalog /shared/lab-catalog; echo cleared'"
-root = true
-expect = "cleared"
-[[step]]
-host = "sh {here}/add-app-catalog.sh {machine} {machine-port:22}"
+host = "sh {here}/../services/lab-catalog.sh {machine} {machine-port:22}"
 expect = "copied: the test catalog"
 [[step]]
-run = "sh -c 'cp -r /users/lab/lab-catalog /shared/lab-catalog && chmod -R a+rX /shared/lab-catalog && bundle catalog add labtest file:///shared/lab-catalog/catalog /shared/lab-catalog/root.json'"
+run = "sh /users/lab/lab-catalog-add.sh"
 root = true
 expect = "added catalog labtest, which lists"
 # The console answers within seconds of the boot; its last answer is shown

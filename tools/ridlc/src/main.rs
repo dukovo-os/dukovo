@@ -11,6 +11,8 @@
 //! With no output named it only checks the files. `ob build` and `ob docs`
 //! use it as a library instead; this command is for working on the files.
 
+#![forbid(unsafe_code)]
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 

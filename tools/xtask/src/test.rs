@@ -572,17 +572,22 @@ const GO_APPS_FILES: u8 = 44;
 /// with the `caddy` test's script ([`cases::caddy::make_disk`]).
 const CADDY_FILES: u8 = 45;
 
+/// [`Disk::fat`] for a disk of zeros, sparse on the host, that a test makes
+/// a Btrfs on and fills, which the host then checks with `btrfs check`
+/// ([`btrfs_checked`]): `dirty-limit`'s, larger than the machine's memory.
+const ZEROS: u8 = 46;
+
 /// [`Disk::fat`] for a FAT32 disk that holds the static Linux programs of
 /// the `linux-programs` test, which `ob` builds with the host's C compiler
 /// and with musl: linux-core twice and the C test programs of
 /// userspace/posix, each as a Linux program
 /// ([`cases::linux_programs::make_disk`]).
-const LINUX_FILES: u8 = 46;
+const LINUX_FILES: u8 = 47;
 
 /// [`Disk::fat`] for a FAT32 disk that holds the Linux base's bundle and the
 /// dynamic Linux program of the `linux-view` test, which `ob` builds with
 /// the host's C compiler ([`cases::linux_view::make_disk`]).
-const LINUX_VIEW_FILES: u8 = 47;
+const LINUX_VIEW_FILES: u8 = 48;
 
 /// The start of the names of the bundle files of the catalog's programs
 /// built with Go (ADR 0600), about 37 MiB together: they are on the disks
@@ -4010,7 +4015,7 @@ pub fn build_test_image(
     let staging = dir.join(format!("{name}-release"));
     let release = match (kind, iso) {
         (TestImage::Live, true) => {
-            Some(image::stage_release(ctx, &built.kernel, &built.programs, &staging)?)
+            Some(image::stage_release(ctx, &built.kernel, &built.programs, None, &staging)?)
         }
         _ => None,
     };
@@ -4294,7 +4299,7 @@ fn test_live(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> Result<Op
         return Ok(None);
     }
     let path = dir.join("live.btrfs");
-    image::make_live(ctx, &built.kernel, &built.programs, &dir.join("live-staging"), &path)?;
+    image::make_live(ctx, &built.kernel, &built.programs, None, &dir.join("live-staging"), &path)?;
     Ok(Some(path))
 }
 
@@ -5594,6 +5599,14 @@ fn make_disks(
                 None
             };
             made.push(DiskImage { btrfs: tool, ..image });
+            continue;
+        }
+        if disk.fat == ZEROS {
+            std::fs::File::create(&image.path)
+                .and_then(|file| file.set_len(image.bytes))
+                .map_err(|err| format!("making {}: {err}", image.path.display()))?;
+            let tool = btrfs::tool(ctx).map_err(|err| err.to_string())?;
+            made.push(DiskImage { btrfs: Some(tool), ..image });
             continue;
         }
         if disk.fat == SWAP {
@@ -7677,27 +7690,50 @@ fn screen_shows(screen: &[String], needles: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
+/// The random-number instructions a guest's CPU has.
+#[derive(Clone, Copy)]
+struct Instructions {
+    rdseed: bool,
+    rdrand: bool,
+}
+
+/// Whether the host's kernel lists `flag` among its CPU's features in
+/// /proc/cpuinfo. A guest under KVM sees only what it lists. Where the file
+/// cannot be read, the flag is taken as there.
+fn host_cpu_has(flag: &str) -> bool {
+    std::fs::read_to_string("/proc/cpuinfo").map_or(true, |info| {
+        info.lines()
+            .find_map(|line| line.strip_prefix("flags").and_then(|rest| rest.split_once(':')))
+            .is_some_and(|(_, flags)| flags.split_ascii_whitespace().any(|have| have == flag))
+    })
+}
+
 /// Checks the `Random:` line (after "Random: "). RDSEED and RDRAND must
-/// pass their health tests when the CPU has them (`hardware`). Timing
+/// pass their health tests where the guest's CPU has them (`cpu`). Timing
 /// jitter must pass under QEMU's emulation, whose counter always varies
 /// enough. Under KVM the counter is the host's, and some hosts keep the
 /// work's timing so steady that the jitter fails its test (about half the
 /// samples were stuck on an AMD EPYC 9V45), so there a failed jitter is
 /// accepted as long as the line says so. Mixing it in does no harm either
 /// way (see "Seeding" in docs/design/random.md).
-fn check_random(line: &str, hardware: bool, kvm: bool) -> Result<(), String> {
-    let (passed, failed) = if hardware {
+fn check_random(line: &str, cpu: Instructions, kvm: bool) -> Result<(), String> {
+    let names: Vec<&str> = [(cpu.rdseed, "RDSEED"), (cpu.rdrand, "RDRAND")]
+        .into_iter()
+        .filter_map(|(has, name)| has.then_some(name))
+        .collect();
+    let (passed, failed) = if names.is_empty() {
         (
-            "from RDSEED, RDRAND and timing jitter (",
-            "from RDSEED and RDRAND; failed its health test: timing jitter (",
+            "from timing jitter (".to_string(),
+            ", but no source passed its health test; failed its health test: timing jitter ("
+                .to_string(),
         )
     } else {
         (
-            "from timing jitter (",
-            ", but no source passed its health test; failed its health test: timing jitter (",
+            format!("from {} and timing jitter (", names.join(", ")),
+            format!("from {}; failed its health test: timing jitter (", names.join(" and ")),
         )
     };
-    if line.contains(passed) || kvm && line.contains(failed) {
+    if line.contains(&passed) || kvm && line.contains(&failed) {
         return Ok(());
     }
     let or_failed = if kvm { format!(" or \"{failed}...)\"") } else { String::new() };
@@ -7720,10 +7756,14 @@ fn boot_report(vm: &mut Vm, case: &Case) -> Result<(), String> {
         vm.expect("KASLR: kernel moved by 0x")?;
     }
     // The whole `Random:` line has arrived now. The CPUs the cases use have
-    // RDSEED and RDRAND unless the case emulates a model of its own.
+    // RDSEED and RDRAND unless the case emulates a model of its own, or KVM
+    // runs it on a host whose kernel hides one: Linux hides RDSEED on Zen 5
+    // CPUs whose microcode has its erratum.
     let log = vm.log();
     let random = log.split("Random: ").nth(1).and_then(|rest| rest.lines().next());
-    check_random(random.unwrap_or_default(), case.cpu_model.is_none(), vm.kvm)?;
+    let has = |flag| case.cpu_model.is_none() && (!vm.kvm || host_cpu_has(flag));
+    let cpu = Instructions { rdseed: has("rdseed"), rdrand: has("rdrand") };
+    check_random(random.unwrap_or_default(), cpu, vm.kvm)?;
     vm.expect("Layout: kernel at 0x")?;
     vm.expect("Paging: W^X holds")?;
     vm.expect("CPU: ")?;
@@ -7774,23 +7814,47 @@ fn boot_report(vm: &mut Vm, case: &Case) -> Result<(), String> {
 
 /// Fails if the kernel logged a problem no case looks for: a lock-checker
 /// report (but in the case that seeds them), a thread that slept where
-/// it must not, or an error of uACPI's.
+/// it must not, a kernel stack nearly used up, a thread freed in an
+/// interrupt handler, or an error of uACPI's.
 fn kernel_complaints(vm: &Vm, case: &Case) -> Result<(), String> {
-    let log = vm.log();
-    let complaint = log.lines().find(|line| {
-        let checker = line.contains("Lock checker: ")
-            && !line.contains("Lock checker: on; ")
-            && !line.contains("Lock checker: off");
-        (checker && case.name != "lockdep")
-            || line.contains("with preemption held off")
-            || line.contains("KiB kernel stack left")
-            || line.contains("ACPI: error: ")
-    });
-    match complaint {
-        Some(line) => Err(format!("the kernel complained: {}", line.trim())),
+    match complaint(&vm.log(), case.name != "lockdep") {
+        Some(said) => Err(format!("the kernel complained: {said}")),
         None => Ok(()),
     }
 }
+
+/// The first problem in a serial log, with the lines of a lock-checker
+/// report that tell which locks and where (`lock_reports` false skips the
+/// reports).
+fn complaint(log: &str, lock_reports: bool) -> Option<String> {
+    let lines: Vec<&str> = log.lines().collect();
+    let at = lines.iter().position(|line| {
+        let checker = line.contains("Lock checker: ")
+            && !line.contains("Lock checker: on; ")
+            && !line.contains("Lock checker: off");
+        (checker && lock_reports)
+            || line.contains("with preemption held off")
+            || line.contains("KiB kernel stack left")
+            || line.contains("freed in an interrupt handler")
+            || line.contains("ACPI: error: ")
+    })?;
+    let mut said = vec![lines[at].trim()];
+    if lines[at].contains("Lock checker: ") {
+        // The report's own lines follow its headline, perhaps between
+        // lines of other CPUs; the next headline is another report's.
+        let detail = lines[at + 1..]
+            .iter()
+            .take(REPORT_LINES_SEARCHED)
+            .take_while(|line| !line.contains("Lock checker: possible"))
+            .filter(|line| line.contains("Lock checker:   "))
+            .map(|line| line.trim());
+        said.extend(detail);
+    }
+    Some(said.join("\n          "))
+}
+
+/// How many lines after a lock-checker headline its report is looked for in.
+const REPORT_LINES_SEARCHED: usize = 16;
 
 /// Waits for the end of boot and checks that self-test `name` passed.
 fn selftest_passed(vm: &mut Vm, name: &str) -> Result<(), String> {
@@ -12397,6 +12461,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_lock_report_is_told_with_its_locks() {
+        let log = "\
+[    5.1] Lock checker: possible deadlock: a lock is taken in interrupt handlers and with interrupts on (CPU 0)
+[    5.1] Lock checker:   taking class 7 (net), taken at kernel/net/src/a.rs:10:5
+[    5.1] cpu1: Net: net0 is up
+[    5.1] Lock checker:   taken in an interrupt handler at kernel/a.rs:1:1, and with interrupts on at kernel/b.rs:2:2
+[    5.1] Lock checker: turned off after this report
+[    6.0] Lock checker: possible deadlock: two locks are taken in both orders (CPU 1)
+[    6.0] Lock checker:   taking class 9 (other), taken at kernel/c.rs:3:3
+";
+        let said = complaint(log, true).unwrap();
+        let lines: Vec<&str> = said.lines().map(str::trim).collect();
+        assert_eq!(lines.len(), 3, "{said}");
+        assert!(lines[0].ends_with("with interrupts on (CPU 0)"));
+        assert!(lines[1].starts_with("[    5.1] Lock checker:   taking class 7"));
+        assert!(lines[2].contains("with interrupts on at kernel/b.rs:2:2"));
+        assert_eq!(complaint(log, false), None, "the lockdep case seeds reports");
+        let stack = "[ 1.0] Lock checker: on; every lock\n[ 2.0] radix: 3 KiB kernel stack left\n";
+        assert_eq!(
+            complaint(stack, true).as_deref(),
+            Some("[ 2.0] radix: 3 KiB kernel stack left")
+        );
+    }
+
+    #[test]
     fn each_kind_of_disk_has_a_number_of_its_own() {
         // A number two kinds share makes `make_disks` make each disk of the
         // one it checks later as the other: each constant of this file
@@ -12853,16 +12942,18 @@ mod tests {
 
     #[test]
     fn a_failed_jitter_test_is_accepted_only_under_kvm() {
+        let both = Instructions { rdseed: true, rdrand: true };
+        let neither = Instructions { rdseed: false, rdrand: false };
         let all = "ChaCha20 seeded before KASLR from RDSEED, RDRAND and timing jitter \
                    (4096 samples, 37 stuck)";
         // From a boot test on an AMD EPYC 9V45 CI runner.
         let steady = "ChaCha20 seeded before KASLR from RDSEED and RDRAND; failed its \
                       health test: timing jitter (4096 samples, 2079 stuck)";
         for kvm in [false, true] {
-            assert!(check_random(all, true, kvm).is_ok());
+            assert!(check_random(all, both, kvm).is_ok());
         }
-        assert!(check_random(steady, true, true).is_ok());
-        assert!(check_random(steady, true, false).is_err());
+        assert!(check_random(steady, both, true).is_ok());
+        assert!(check_random(steady, both, false).is_err());
 
         // RDSEED and RDRAND must pass wherever the CPU has them.
         let bad_rdrand = "ChaCha20 seeded before KASLR from RDSEED and timing jitter \
@@ -12870,18 +12961,41 @@ mod tests {
         let missing = "ChaCha20 seeded before KASLR from timing jitter (4096 samples, \
                        134 stuck); the CPU has no RDSEED or RDRAND";
         for kvm in [false, true] {
-            assert!(check_random(bad_rdrand, true, kvm).is_err());
-            assert!(check_random(missing, true, kvm).is_err());
-            assert!(check_random("", true, kvm).is_err());
+            assert!(check_random(bad_rdrand, both, kvm).is_err());
+            assert!(check_random(missing, both, kvm).is_err());
+            assert!(check_random("", both, kvm).is_err());
         }
 
         // An emulated CPU without them seeds from the jitter alone.
-        assert!(check_random(missing, false, false).is_ok());
+        assert!(check_random(missing, neither, false).is_ok());
         let none = "ChaCha20 seeded before KASLR, but no source passed its health test; \
                     failed its health test: timing jitter (4096 samples, 2079 stuck); the \
                     CPU has no RDSEED or RDRAND";
-        assert!(check_random(none, false, false).is_err());
-        assert!(check_random(none, false, true).is_ok());
+        assert!(check_random(none, neither, false).is_err());
+        assert!(check_random(none, neither, true).is_ok());
+    }
+
+    #[test]
+    fn a_host_that_hides_rdseed_leaves_rdrand_to_pass() {
+        let rdrand = Instructions { rdseed: false, rdrand: true };
+        let both = Instructions { rdseed: true, rdrand: true };
+        // From a boot test under KVM on a Ryzen 9 9900X3D, whose Linux hides
+        // RDSEED for the Zen 5 erratum.
+        let hidden = "ChaCha20 seeded before KASLR from RDRAND and timing jitter (4096 \
+                      samples, 841 stuck); the CPU has no RDSEED";
+        let steady = "ChaCha20 seeded before KASLR from RDRAND; failed its health test: \
+                      timing jitter (4096 samples, 2079 stuck); the CPU has no RDSEED";
+        let all = "ChaCha20 seeded before KASLR from RDSEED, RDRAND and timing jitter \
+                   (4096 samples, 37 stuck)";
+        assert!(check_random(hidden, rdrand, true).is_ok());
+        assert!(check_random(steady, rdrand, true).is_ok());
+        assert!(check_random(steady, rdrand, false).is_err());
+        // Where the host lists RDSEED, the guest must have it pass.
+        assert!(check_random(hidden, both, true).is_err());
+        assert!(check_random(all, rdrand, true).is_err());
+        let bad_rdrand = "ChaCha20 seeded before KASLR from timing jitter (4096 samples, \
+                          37 stuck); failed its health test: RDRAND; the CPU has no RDSEED";
+        assert!(check_random(bad_rdrand, rdrand, true).is_err());
     }
 
     #[test]

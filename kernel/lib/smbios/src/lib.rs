@@ -22,6 +22,7 @@
 //! the table; this crate only reads its bytes, so its tests run on the
 //! host.
 
+#![forbid(unsafe_code)]
 #![cfg_attr(not(test), no_std)]
 
 pub mod memory;

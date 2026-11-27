@@ -40,8 +40,9 @@
 //! [`copy_from_user`] and [`copy_to_user`] (and one atomic word at a time
 //! through [`compare_exchange`], for futexes), which check that the range is
 //! in the user half and lift SMAP for the one `rep movsb` that copies, or
-//! for a loop that copies from the end when the destination is a little
-//! ahead of the source within a page ([`BACKWARD_WINDOW`]). A fault on a
+//! for a loop that copies from the end when the copy is short
+//! ([`SHORT_MAX`]) or the destination is a little ahead of the source
+//! within a page ([`BACKWARD_WINDOW`]). A fault on a
 //! copying instruction does not stop the kernel. If the copy may
 //! sleep (interrupts were on, preemption allowed), the user page handler
 //! gets the chance to make the page first, and the copy goes on where it
@@ -376,6 +377,9 @@ radix_user_copy:
     je 2f
     stac
 2:
+    // Short copies go by bytes and words, from the end (SHORT_MAX).
+    cmp rcx, {short_max}
+    jbe 5f
     // Backward when the destination is 1 to BACKWARD_WINDOW - 1 bytes
     // ahead of the source, modulo 4 KiB, and the copy is long.
     cmp rcx, {backward_min}
@@ -448,6 +452,7 @@ radix_user_copy_back_end:
     smap = sym paging::SMAP,
     backward_min = const BACKWARD_MIN,
     backward_window = const BACKWARD_WINDOW,
+    short_max = const SHORT_MAX,
 );
 
 // A compare-exchange of a 32-bit word of user memory: RDI the address,
@@ -482,6 +487,13 @@ radix_user_cmpxchg_fault:
     "#,
     smap = sym paging::SMAP,
 );
+/// The longest copy made by loads and stores from the end rather than
+/// with `rep movsb`, whose start takes some 30 cycles on CPUs without
+/// fast short REP MOVSB (Skylake and its kind, the lab's OptiPlexes), more
+/// than such a copy: a system call's few bytes, an event, a status. Linux
+/// copies under 64 bytes with a loop on those CPUs too
+/// (`rep_movs_alternative`). ADR 0774.
+const SHORT_MAX: usize = 63;
 
 /// Copies of at least this many bytes go backward when the destination
 /// is a little ahead of the source within a page ([`BACKWARD_WINDOW`]).

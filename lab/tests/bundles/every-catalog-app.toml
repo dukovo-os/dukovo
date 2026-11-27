@@ -7,15 +7,37 @@
 # their type, mode, owner, group and a file's size, installs the bundle for
 # everyone, runs each of its commands once, removes it, and records
 # again: the two records differ only by the records that outlive a bundle.
-# The first run removes with --purge. The second removes keeping the data,
+# A command that needs the grant "runs with your access" is left out, as
+# the script says. The first run removes with --purge. The second removes keeping the data,
 # which then is all that differs, installs the bundle again, so that a
 # service's account takes its old number and finds its data, and removes
 # it with --purge. A line for each bundle, and the count of those that
 # left nothing.
 about = "each bundle of the catalogs installs, runs its commands and is removed, and the system's paths differ afterwards only by the records that outlive a bundle; removed keeping its data and installed again, a bundle finds its data, and purged after, nothing is left (ADR 0591)"
 time = "90m"
+own_boot = true
 host_needs = ["scp"]
 
+# The catalogs are on the internet. A machine on the lab network of a real
+# one has none and no DNS, and reading them there fails (APP-103), which is
+# the lab's, not Dukovo's: the test is skipped there. netcheck exits with 2
+# for a warning, as a clock not yet set, which does not stop the catalogs.
+# Its internet layer checks the update server the machine follows, which
+# on the lab network is the lab PC's, so the catalogs' own name is looked
+# up too.
+[[step]]
+run = '''sh -c 'netcheck --internet >/dev/null 2>&1; [ $? -le 2 ] && host updates.dukovo.org >/dev/null 2>&1' '''
+or_skip = "the machine has no internet (no DNS on the lab network), where the catalogs are read from"
+# The lab image comes with Dukovo's own catalog turned off, as the lab's
+# tests install the lab's own builds (services/lab-catalog.sh); this test
+# turns it on again with the address and root the system came with. Each
+# app it installs stays bound to the catalog after it is removed (ADR 0383),
+# so a later test of the boot would be refused the lab's build of it: the
+# boot is the test's own.
+[[step]]
+run = '''sh -c 'bundle catalog add dukovo "$(cat /system/settings/catalogs/dukovo/url)" /system/settings/catalogs/dukovo/root.json' '''
+root = true
+expect = "added catalog dukovo, which lists"
 [[step]]
 host = "sh {here}/../services/copy-file.sh {here}/every-catalog-app.sh {machine} {machine-port:22}"
 expect = "copied: every-catalog-app.sh"

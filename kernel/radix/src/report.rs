@@ -190,10 +190,13 @@ pub fn write_memory(line: &mut dyn FnMut(fmt::Arguments<'_>)) {
     line(format_args!("Frame allocator zones:"));
     write_zones(line);
     let (dropped, failed) = crate::fs::writeback::stats();
+    let (throttled, stuck) = crate::fs::writeback::throttle_stats();
     line(format_args!(
-        "Page cache: {} pages held, {dropped} dropped to reclaim memory, {failed} failed \
-         write-backs",
-        radix_block::mem::pages()
+        "Page cache: {} pages held, {} waiting to be written, {dropped} dropped to reclaim \
+         memory, {failed} failed write-backs; {throttled} writers waited for write-back, \
+         {stuck} gave up on a disk that took nothing",
+        radix_block::mem::pages(),
+        radix_vfs::cache::dirty_pages()
     ));
     Arch::describe(line);
 }

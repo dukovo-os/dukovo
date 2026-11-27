@@ -23,6 +23,8 @@ radix-abi = { path = "../../../kernel/abi" }
 # Linux's records and the words `uname` gives, which the kernel's Linux
 # table uses too.
 radix-linux = { path = "../../../kernel/lib/linux" }
+# The C library and the kernel through safe functions (ADR 0730).
+sysapi = { path = "../sysapi" }
 
 [lints]
 workspace = true

@@ -7,6 +7,7 @@
 //! that fails. A datagram is any bytes, and none of it stops the parser
 //! or makes an answer that does not read back.
 
+#![forbid(unsafe_code)]
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

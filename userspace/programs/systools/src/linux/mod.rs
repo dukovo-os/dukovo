@@ -33,6 +33,9 @@ use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
+use sysapi::fd::{self, Standard};
+use sysapi::terminal;
+
 use self::view::{Base, Entry, Inputs, Terminal, View};
 use crate::args::{Arg, Args};
 use crate::bundled;
@@ -196,7 +199,7 @@ fn run(options: &Options) -> Result<i32, Fail> {
         whole_home: options.home,
     };
     let mut view = facts.plan(&[]).map_err(refused)?;
-    if util::is_terminal(0) {
+    if util::is_terminal(Standard::Input.fd()) {
         let asked = ask_about(&options.args, &program.name, &view);
         if !asked.is_empty() {
             view = facts.plan(&asked).map_err(refused)?;
@@ -458,19 +461,12 @@ fn resolve_all(paths: &[String], option: &str) -> Result<Vec<String>, Fail> {
 
 /// The path of the terminal one of the standard descriptors is, if any.
 fn first_terminal() -> Option<String> {
-    (0..3).filter(|&fd| util::is_terminal(fd)).find_map(terminal_path)
-}
-
-/// The path of the terminal `fd` is.
-fn terminal_path(fd: i32) -> Option<String> {
-    let mut buffer = [0 as libc::c_char; 128];
-    // SAFETY: the buffer is valid for its length.
-    if unsafe { libc::ttyname_r(fd, buffer.as_mut_ptr(), buffer.len()) } != 0 {
-        return None;
-    }
-    // SAFETY: ttyname_r wrote a C string in the buffer.
-    let name = unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) };
-    name.to_str().ok().map(String::from)
+    [Standard::Input, Standard::Output, Standard::Error]
+        .into_iter()
+        .map(Standard::fd)
+        .filter(|fd| util::is_terminal(fd))
+        .find_map(|fd| terminal::path(fd).ok())
+        .and_then(|path| path.to_str().map(String::from))
 }
 
 /// What the terminal at `path` is: a pseudo-terminal, as every pane and
@@ -512,12 +508,11 @@ fn read_line() -> String {
     let mut line = Vec::new();
     loop {
         let mut byte = 0u8;
-        // SAFETY: reads one byte into `byte`, which is valid for it.
-        let n = unsafe { libc::read(0, (&raw mut byte).cast(), 1) };
-        if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
-            continue;
-        }
-        if n <= 0 || byte == b'\n' || line.len() >= 64 {
+        let n = match fd::read(Standard::Input.fd(), std::slice::from_mut(&mut byte)) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            read => read.unwrap_or(0),
+        };
+        if n == 0 || byte == b'\n' || line.len() >= 64 {
             return String::from_utf8_lossy(&line).into_owned();
         }
         line.push(byte);

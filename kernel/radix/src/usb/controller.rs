@@ -324,7 +324,8 @@ pub fn run(index: usize) {
             | controller.storage()
             | controller.serial()
             | controller.net()
-            | controller.audio();
+            | controller.audio()
+            | controller.upses();
         if controller.xhci.failed() {
             if controller.dbc {
                 super::dbc::stop();
@@ -333,6 +334,7 @@ pub fn run(index: usize) {
                 link.gone();
             }
             for device in &mut controller.devices {
+                hid::gone(&mut device.hids);
                 serial::gone(&mut device.serials);
                 net::gone(&mut device.ethernet);
                 audio::gone(device.audio.take());

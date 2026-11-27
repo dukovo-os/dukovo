@@ -7,17 +7,21 @@
 # stopped, and brings nginx back when it is started again.
 about = "nginx from the catalog starts after the network and the resolver and is ready once it listens; a service that requires it stops with it and brings it back (ADR 0470)"
 time = "5m"
-host_needs = ["curl", "scp"]
+host_needs = ["curl", "scp", "ssh"]
 
 [[step]]
-host = "sh {here}/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
-expect = "copied: org.nginx.nginx"
+host = "sh {here}/lab-catalog.sh {machine} {machine-port:22}"
+expect = "copied: the test catalog"
+[[step]]
+run = "sh /users/lab/lab-catalog-add.sh"
+root = true
+expect = "added catalog labtest, which lists"
 [[step]]
 host = "sh {here}/copy-file.sh {here}/lab-web.service {machine} {machine-port:22}"
 expect = "copied: lab-web.service"
 # From nothing: a run before may have left them.
 [[step]]
-run = "sh -c 'rm -f /system/settings/spark/services/lab-web.toml; bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+run = "sh -c 'rm -f /system/settings/spark/services/lab-web.toml; bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle install --for-everyone --yes org.nginx.nginx --from labtest | tail -1'"
 root = true
 expect = "installed org.nginx.nginx"
 [[step]]

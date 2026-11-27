@@ -5,9 +5,11 @@ about = "Intel AMT, which shares the machine's network card with Dukovo, keeps a
 time = "5m"
 host_needs = ["curl", "nc"]
 
-# AMT's web server answers while Dukovo has the card.
+# AMT's web server answers while Dukovo has the card: on port 16992, or
+# over TLS on port 16993 from AMT 16.1 on, which serves nothing in the
+# clear ({amt-web}). Its certificate is its own, hence -k.
 [[step]]
-host = "curl -s -o /dev/null -w 'amt answered %{http_code}\\n' --max-time 10 http://{amt}:16992/"
+host = "curl -s -k -o /dev/null -w 'amt answered %{http_code}\\n' --max-time 10 {amt-web}"
 expect = "amt answered "
 expect_not = "amt answered 000"
 # The lab PC sends the machine zeros for as long as it reads them, and the
@@ -20,7 +22,7 @@ run = "sh -c 'rm -f ~/amt-bulk; (timeout 40 nc {peer} {port:bulk} | wc -c > ~/am
 expect = "started"
 # AMT answers each of ten tries while the card is busy.
 [[step]]
-host = "sh -c 'sleep 5; for i in 1 2 3 4 5 6 7 8 9 10; do curl -s -o /dev/null -w \"%{http_code} \" --max-time 5 http://{amt}:16992/ || printf \"failed \"; sleep 2; done; echo tries-done'"
+host = "sh -c 'sleep 5; for i in 1 2 3 4 5 6 7 8 9 10; do curl -s -k -o /dev/null -w \"%{http_code} \" --max-time 5 {amt-web} || printf \"failed \"; sleep 2; done; echo tries-done'"
 expect = "tries-done"
 expect_not = ["000", "failed"]
 # The transfer was real: more than 100 MB came in while AMT answered.
@@ -29,6 +31,6 @@ run = "sh -c 'for i in $(seq 60); do [ -s ~/amt-bulk ] && break; sleep 1; done; 
 expect = "busy-enough"
 # And AMT still answers once the card is quiet again.
 [[step]]
-host = "curl -s -o /dev/null -w 'amt answered %{http_code}\\n' --max-time 10 http://{amt}:16992/"
+host = "curl -s -k -o /dev/null -w 'amt answered %{http_code}\\n' --max-time 10 {amt-web}"
 expect = "amt answered "
 expect_not = "amt answered 000"

@@ -23,6 +23,8 @@ has
 
 *hardware devices* [*--json*]
 
+*hardware power* [*--json*]
+
 *hardware memtest* *--next-start*
 
 *hardware memtest* *--cancel*
@@ -53,7 +55,7 @@ do:
 $ elevate hardware check
 Checking the hardware: a quick check, about 3 minutes. Ctrl-C stops it.
 sensors  hardware monitors      skipped  the kernel shows no temperature or fan on this machine
-battery  battery                skipped  this machine has no battery
+battery  battery                skipped  this machine has no battery or UPS
 disks    sda health             passed   Samsung SSD 860: PASSED, 31 °C, 1,204 hours on
 memory   memory test            passed   1.0G tested by 4 CPUs; Test the memory in the start menu tests all of it
 memory   memory errors          passed   none counted since the start
@@ -111,6 +113,13 @@ disk's), the driver that took it where the system can tell, how it is
 doing, and where it is. Bridges and hubs, which work and need nothing,
 are marked hidden. No serial number is read. It needs no rights. See
 *DEVICES*.
+
+*hardware power* lists the batteries, AC adapters, USB-C supplies and
+UPSes the kernel shows, the UPSes first: for each, whether the mains is
+there, what its battery is doing, its charge, how long the charge lasts,
+and for a UPS the load and the charge and run time at which the machine
+shuts down cleanly. A UPS that says its battery should be replaced is
+said so. It needs no rights. See *POWER*.
 
 *hardware memtest* asks the kernel to test the free memory at the next
 start only, before it starts the first program. *--next-start* asks, and
@@ -186,8 +195,9 @@ those: *memory*, *disks*, *cpu*, *sensors*, *battery*, *network*.
 *battery*
 	How much each battery holds when full, against what it held new
 	(_energy_full_ against _energy_full_design_, or the charge pair, in
-	_/kernel/class/power_supply_). Under 80% is a warning. A machine
-	with no battery skips the check.
+	_/kernel/class/power_supply_). Under 80% is a warning. A UPS whose
+	battery should be replaced, as it says itself, is a warning too. A
+	machine with no battery and no UPS skips the check.
 
 *network*
 	Each network card that has a wire, as *nic*(8) reads it: whether it
@@ -425,6 +435,57 @@ The text lists the devices that are not hidden, under *Network*,
 *Storage*, *USB*, *Display* and *Other*, a line for each: its name and
 numbers, what it is to the system, its driver and state, and where it is.
 
+# POWER
+
+*hardware power --json* prints one line of JSON, with the version of
+the document, _format_ 1, and the list _supplies_, the UPSes first, each
+by name. Where a supply does not say a member it is _null_.
+
+```
+{"format":1,"supplies":[{"name":"ups0","kind":"ups","model":"CP1500PFCLCD","maker":"CPS","online":true,"status":"Charging","percent":87,"seconds_left":1500,"load":35,"low_percent":10,"low_seconds":120,"shuts_down":true,"replace":false}]}
+```
+
+*name*, *kind*
+	The kernel's name for it in _/kernel/class/power_supply_, as _ups0_,
+	_BAT0_ or _AC_, and what it is: *ups*, *battery*, *mains* (an AC
+	adapter) or *usb* (a USB-C port's supply).
+
+*model*, *maker*
+	What it says it is.
+
+*online*
+	For a UPS or an adapter, whether the mains is there; for a USB-C
+	port, whether a supply powers the machine through it.
+
+*status*
+	What its battery is doing: *Charging*, *Discharging*, *Full* or *Not
+	charging*.
+
+*percent*, *seconds_left*, *load*
+	Its charge, how long the charge lasts at the load now in seconds,
+	and what the load draws in percent of what the UPS gives.
+
+*low_percent*, *low_seconds*, *shuts_down*
+	The charge and run time at which a UPS's battery is low: the limits
+	the UPS sets, else 10% and 120 seconds. On its battery and that low,
+	or when the UPS says itself that its battery is low or that it will
+	turn its outlets off, the machine shuts down cleanly, unless
+	_shuts_down_ is _false_: the kernel was started with *ups=show*
+	(*dukovo-boot*(7)).
+
+*replace*
+	Whether the UPS says its battery should be replaced (HW-142).
+
+The text:
+
+```
+ups0: UPS, CP1500PFCLCD by CPS
+  on the mains, charging, 87% charged, 25 min left, load 35%
+  shuts the machine down cleanly on its battery at 10% or 2 min left
+AC: AC adapter
+  powering the machine
+```
+
 # THE MEMORY TEST AT THE START
 
 *hardware memtest --next-start* writes the file _/system/state/hardware/memtest-asked.json_
@@ -556,6 +617,10 @@ support center says what it means and what to do.
 :  battery
 :  warning
 :  The battery holds under 80% of its design capacity
+|  HW-142
+:  battery
+:  warning
+:  A UPS says its battery should be replaced
 |  HW-152
 :  network
 :  warning
@@ -629,7 +694,7 @@ _/kernel/class/dmi/id_, _/kernel/cpus_
 
 _/kernel/devices/system/edac_, _/kernel/class/hwmon_,
 _/kernel/class/power_supply_, _/kernel/class/net_, _/kernel/block_
-	What the checks read (*radix-sysfs*(5)).
+	What the checks and *hardware power* read (*radix-sysfs*(5)).
 
 _/devices/kmsg_
 	The kernel's log, which the check reads for machine checks and

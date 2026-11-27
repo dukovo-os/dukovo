@@ -77,6 +77,14 @@ directory *read*, *write* and *control*. Both get *copy* and *transfer*,
 so they can be passed on (see *radix-capabilities*(7)). A file opened for
 writing on a read-only filesystem fails with *read_only*.
 
+A file no one may write by its mode, as a sealed bundle's files are, on
+Btrfs or tmpfs, has its pages kept once for every program that maps it,
+while no handle may write it (ADR 0658). While they are kept, opening it
+to write or to cut fails with *text_busy* (ETXTBSY), before anything is
+cut, and works again once the last program that maps it has unmapped it
+or ended. A file a handle may write is mapped as a copy for each
+program instead.
+
 # TIMES
 
 A file keeps when it was made, when its contents last changed and when
@@ -105,10 +113,19 @@ Linux. *sync* returns once the disk says it has the data. The disk reads
 and writes cached pages directly, so data is copied once between a
 program and the disk.
 
-When memory runs low, the writeback thread drops clean cached pages, and
-the out-of-memory policy (*radix-scheduling*(7)) asks it to before it
-stops anything. Cached pages are counted as *page_cache* in
-_/processes/meminfo_.
+Changes cannot fill memory faster than the disks take them: once the
+pages that wait to be written pass a tenth of memory, a write has the
+writeback thread write every filesystem back at once, however new its
+changes, and once they pass a fifth, the program that wrote waits until
+the thread has brought them under, as Linux's *dirty_background_ratio*
+and *dirty_ratio* have it. While the disks take nothing, a write waits
+30 seconds at most, and the kernel log says so once. Pages of tmpfs
+files, which have no disk, are not counted.
+
+When memory runs low, the kernel's reclaim thread drops clean cached
+pages, as a program that writes finds it so, and the out-of-memory
+policy (*radix-scheduling*(7)) asks it to before it stops anything. Cached pages are counted as *page_cache* in
+_/processes/meminfo_, and those that wait to be written as *dirty*.
 
 A file removed while it is open lives on, unnamed, until its last
 capability goes, then its space is freed.

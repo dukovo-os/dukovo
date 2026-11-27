@@ -924,6 +924,9 @@ impl SpaceObject {
         };
         if fault == Fault::Resolved {
             self.faults.fetch_add(1, Ordering::Relaxed);
+            // On the CPU the thread runs on now, which a move since only
+            // shares a line with another for once.
+            super::FAULTS.this().fetch_add(1, Ordering::Relaxed);
         }
         fault
     }

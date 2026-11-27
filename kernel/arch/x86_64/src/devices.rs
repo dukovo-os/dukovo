@@ -24,7 +24,7 @@
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use radix_hw::pci::Address;
+use radix_hw::pci::{self, Address};
 use radix_hw::{Dma, Mmio, MsiMessage, Page};
 use radix_mm::{FRAMES, Flags, Owner};
 use radix_sync::SpinLock;
@@ -152,6 +152,31 @@ pub fn map(phys: u64, len: usize) -> Option<Mmio> {
     // readable and writable, in the mapping window, where nothing else is
     // mapped, and device mappings are never undone.
     Some(unsafe { Mmio::new(virt, len) })
+}
+
+/// Whether a device answers on the PCI bus whose ECAM window starts at
+/// `phys`, looked at through a mapping undone before it returns: asking
+/// about every bus a segment decodes would otherwise keep a megabyte of
+/// the window and its page tables for each bus with nothing on it.
+pub fn pci_bus_answers(phys: u64) -> bool {
+    let len = pci::BUS_SIZE;
+    let Some(virt) = paging::try_map_physical(
+        phys,
+        len as u64,
+        paging::Access::ReadOnly,
+        paging::Cache::Uncached,
+    ) else {
+        return false;
+    };
+    let answers = pci::bus_answers(&mut |offset| {
+        assert!(offset.is_multiple_of(4) && offset + 4 <= len, "{offset:#x} is outside a bus");
+        // SAFETY: `virt` maps `len` bytes of configuration space uncached
+        // until the unmap below, and the offset was checked to be within
+        // them and aligned; configuration reads have no side effects.
+        unsafe { core::ptr::read_volatile((virt + offset) as *const u32) }
+    });
+    paging::unmap_physical(virt, len);
+    answers
 }
 
 fn release(_virt: usize, phys: u64, len: usize, tag: u32) {

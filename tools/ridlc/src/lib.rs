@@ -40,6 +40,8 @@
 //! declarations and the man pages, so an undocumented interface is an
 //! error, not a warning.
 
+#![forbid(unsafe_code)]
+
 use std::fmt;
 use std::path::Path;
 
@@ -469,6 +471,7 @@ pub const ERRNOS: &[(&str, i32)] = &[
     ("EISDIR", 21),
     ("EINVAL", 22),
     ("ENOTTY", 25),
+    ("ETXTBSY", 26),
     ("EFBIG", 27),
     ("ENOSPC", 28),
     ("ESPIPE", 29),

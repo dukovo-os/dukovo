@@ -331,6 +331,7 @@ consoles userspace/defaults/keyboard/ userspace/defaults/nukesh/ userspace/defau
 consoles userspace/programs/consoled/ userspace/programs/keymap/ userspace/programs/nukesh/
 consoles userspace/programs/systools/src/keymaps.rs userspace/programs/systools/src/notifyd.rs
 consoles userspace/programs/systools/src/xxd.rs
+copy kernel/arch/x86_64/src/copy.rs
 crash-dump kernel/lib/klog/ kernel/radix/src/crashlog.rs kernel/radix/src/panic.rs
 crash-dump kernel/radix/src/fs/crashdump.rs kernel/radix/src/fs/devfs.rs
 crash-dump userspace/defaults/spark/services/dumps.toml userspace/programs/accounts/
@@ -361,6 +362,7 @@ disk-check image/crosscheck/ tools/linux-bench/ tools/xtask/src/bench.rs userspa
 disk-check userspace/posix/disktest.c userspace/programs/systools/src/nvme.rs
 disk-errors kernel/drivers/ahci/ kernel/drivers/nvme/ kernel/fs/block/
 disk-errors userspace/programs/systools/src/nvme.rs userspace/storage/
+dirty-limit kernel/fs/vfs/src/cache.rs kernel/radix/src/fs/writeback.rs kernel/fs/btrfs/
 disk-grow kernel/fs/block/ kernel/fs/btrfs/src/balance.rs kernel/fs/btrfs/src/grow.rs
 disk-grow userspace/programs/disk/src/table.rs userspace/programs/systools/src/device.rs
 disk-grow userspace/programs/systools/src/rdisk.rs
@@ -446,6 +448,8 @@ hyperv kernel/drivers/hyperv/ kernel/radix/src/hyperv.rs kernel/arch/x86_64/src/
 hyperv kernel/arch/x86_64/src/time.rs kernel/radix/src/fs/disk/storvsc.rs
 hyperv kernel/drivers/mana/ kernel/radix/src/vpci.rs
 i2c kernel/drivers/i2c/ tools/xtask/src/acpi/
+idle-reader-lock kernel/fs/btrfs/ kernel/radix/src/fs/disk/queue.rs kernel/radix/src/sched/wait.rs
+idle-reader-lock userspace/spark/tests/services/io-weight/
 install-beside image/grub/installed.cfg.in kernel/fs/ntfs/ tools/xtask/src/grub.rs
 install-beside tools/xtask/src/grub_theme.rs userspace/programs/consoled/ userspace/programs/disk/
 install-beside userspace/programs/installer/ userspace/programs/systools/src/efiboot.rs
@@ -702,17 +706,22 @@ optical-ide kernel/drivers/ide/ kernel/drivers/scsi/ kernel/fs/iso9660/ kernel/f
 optical-ide kernel/radix/src/fs/disk/handed.rs kernel/radix/src/fs/disk/ide.rs kernel/radix/src/fs/disk/optical.rs
 optical-ide userspace/programs/systools/src/eject.rs userspace/programs/systools/src/volumed.rs
 page-fault kernel/mm/
+pci-roots kernel/lib/hw/src/pci.rs kernel/radix/src/acpi/pci.rs kernel/radix/src/fs/disk/mod.rs
+pci-roots kernel/radix/src/fs/sysfs.rs
 pci-serial kernel/drivers/uart/ kernel/radix/src/serial/
 php ports/bzip2/ ports/curl/ ports/libxml2/ ports/openssl/ ports/php/ ports/postgresql/
 php ports/rustls-ffi/ ports/zlib/ ports/zstd/ tools/xtask/src/bundles.rs tools/xtask/src/licenses.rs
 php tools/xtask/src/ports.rs userspace/programs/dkv/ userspace/programs/manifest/
 php userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles/
 php kernel/radix/src/fs/socket.rs kernel/radix/src/fs/socket/ ports/mlibc/sysdeps/radix/generic/socket.cpp
+php ports/mlibc/patches/0143-classes-and-numbers-without-a-locale-lookup-per-byte.patch
 php-fpm ports/bzip2/ ports/curl/ ports/libxml2/ ports/nginx/ ports/openssl/ ports/php/
 php-fpm ports/postgresql/ ports/rustls-ffi/ ports/zlib/ ports/zstd/ tools/xtask/src/bundles.rs
 php-fpm tools/xtask/src/licenses.rs tools/xtask/src/ports.rs userspace/programs/dkv/
 php-fpm userspace/programs/manifest/ userspace/programs/systools/src/bundled.rs
 php-fpm userspace/programs/systools/src/bundles/ userspace/programs/systools/src/authd.rs
+php-fpm ports/mlibc/patches/0142-case-and-search-without-a-locale-lookup-per-byte.patch
+php-fpm ports/mlibc/patches/0143-classes-and-numbers-without-a-locale-lookup-per-byte.patch
 postgresql ports/libedit/ ports/libxml2/ ports/lz4/ ports/ncurses/ ports/openssl/
 postgresql ports/postgresql/ ports/zlib/ ports/zstd/ tools/xtask/src/bundles.rs
 postgresql tools/xtask/src/licenses.rs tools/xtask/src/ports.rs userspace/programs/dkv/
@@ -737,8 +746,12 @@ posix userspace/posix/files.c userspace/posix/fork.c userspace/posix/format-case
 posix userspace/posix/format.c userspace/posix/hello.c userspace/posix/inet.c userspace/posix/job.c
 posix userspace/posix/library.c userspace/posix/limits.c userspace/posix/locks.c
 posix ports/mlibc/patches/0094-fclose-drops-what-it-could-not-write.patch
+posix ports/mlibc/patches/0101-string-functions-sixteen-bytes-at-a-time.patch
+posix ports/mlibc/patches/0142-case-and-search-without-a-locale-lookup-per-byte.patch
+posix ports/mlibc/patches/0143-classes-and-numbers-without-a-locale-lookup-per-byte.patch
+posix ports/mlibc/musl/substring.hpp
 posix userspace/posix/pipe.c userspace/posix/poll.c userspace/posix/programs.h userspace/posix/run.c
-posix userspace/posix/shm.c userspace/posix/signal.c userspace/posix/memfd.c
+posix userspace/posix/shm.c userspace/posix/signal.c userspace/posix/memfd.c userspace/posix/strings.c
 posix kernel/radix/src/fs/shm/ kernel/radix/src/user/memory/ kernel/radix/src/fs/socket.rs kernel/radix/src/fs/socket/
 posix kernel/radix/src/user/posix/poll.rs kernel/radix/src/user/queue.rs
 posix userspace/posix/epoll.c kernel/lib/linux/src/epoll.rs kernel/radix/src/user/linux/events.rs

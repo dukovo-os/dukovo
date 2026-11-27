@@ -300,7 +300,5 @@ update. The first start of an update, which GRUB takes as a counted try
   checkout whose `.cache/release-keys` was made again no longer matches
   its fixture, and `ob test boot` says so rather than build with keys the
   old release rejects.
-
-- **Not yet** (the next part of this decision):
-  - The gate: `ob release sign` checking that a candidate's full run is
-    green for the exact commit.
+- `ob release sign` refuses a commit without a full run that passed
+  (ADR 0778).

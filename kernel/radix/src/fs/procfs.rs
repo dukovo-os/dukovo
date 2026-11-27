@@ -713,6 +713,9 @@ fn meminfo(text: &mut Text) -> fmt::Result {
         }
         writeln!(text, "{}: {} KiB", key.as_str(), kib(FRAMES.owner_pages(owner)))?;
     }
+    // Of the page cache, what waits to be written to a disk (ADR 0547), as
+    // Linux's Dirty.
+    writeln!(text, "dirty: {} KiB", kib(radix_vfs::cache::dirty_pages() as u64))?;
     // The swap areas on (ADR 0152): the pages they hold, and those free.
     let (slots, used) = crate::swap::totals();
     writeln!(text, "swap_total: {} KiB", kib(slots))?;
@@ -772,16 +775,26 @@ fn stat(text: &mut Text) -> fmt::Result {
     writeln!(text, "ipis: {}", events.ipis)?;
     writeln!(text, "halts: {}", events.halts)?;
     writeln!(text, "polls: {}", events.polls)?;
+    // What leaves a thread's memory out of the CPU's caches and TLB: a
+    // switch away from a thread that could have gone on, a move to
+    // another CPU, and a page fault, all since boot.
+    writeln!(text, "preemptions: {}", events.preemptions)?;
+    writeln!(text, "migrations: {}", events.migrations)?;
+    // Moves to a faster idle core, on a processor whose cores differ.
+    writeln!(text, "moves_up: {}", events.moves_up)?;
+    writeln!(text, "faults: {}", crate::user::memory::faults_resolved())?;
     // Lock contention, for `ob bench --scaling`: threads that found a
     // mutex taken, threads that slept for one, mutexes handed to a
-    // sleeper or let go with one woken to try again, and how often the
-    // CPUs' caches of capabilities went stale (`caps::version`).
+    // sleeper or let go with one woken to try again, how often a
+    // capability the CPUs' caches held left its slot
+    // (`caps::cached_departures`), and how often a cache asked the store.
     let mutexes = sched::mutex_counts();
     writeln!(text, "mutex_contended: {}", mutexes.contended)?;
     writeln!(text, "mutex_waits: {}", mutexes.waits)?;
     writeln!(text, "mutex_handoffs: {}", mutexes.handoffs)?;
     writeln!(text, "mutex_wakes: {}", mutexes.wakes)?;
-    writeln!(text, "cap_cache_flushes: {}", crate::caps::version())?;
+    writeln!(text, "cap_cache_flushes: {}", crate::caps::cached_departures())?;
+    writeln!(text, "cap_cache_fills: {}", crate::user::objects::fills())?;
     let now = <crate::Arch as radix_hal::Timer>::wall_clock_ns().unwrap_or(0);
     writeln!(text, "boot_time_ns: {}", now.saturating_sub(sched::now_ns()))
 }

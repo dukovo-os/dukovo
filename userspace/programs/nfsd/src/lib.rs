@@ -6,6 +6,8 @@
 //! numbers ([`nfs`]), RPC's records and calls ([`rpc`]) and RPCSEC_GSS,
 //! Kerberos's credential ([`gss`], ADR 0399).
 
+#![forbid(unsafe_code)]
+
 mod attr;
 mod contexts;
 mod fh;
@@ -18,7 +20,6 @@ pub mod rpc;
 mod server;
 mod shares;
 mod state;
-mod sys;
 #[cfg(feature = "testing")]
 pub mod testing;
 #[cfg(test)]

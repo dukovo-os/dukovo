@@ -13,18 +13,24 @@ The public half of the system's release repository is kept here (ADRs
   server setup` writes it the first time it sets the server up; its
   secret half never leaves the server.
 - `keys/yubikey-SERIAL.json`: the public half of the release key in slot
-  95 of each of the two YubiKeys, which `./ob release key yubikey` writes.
-  Slot 9c of the same YubiKeys holds the catalog's key; the two are kept
-  apart so that nothing signed for one repository is taken by the other.
+  95 of each of the two YubiKeys, which `./ob release key yubikey` writes,
+  and `keys/yubikey-SERIAL.pem`, the same key alone in PEM, which checks
+  the signature of an install image's checksums with `openssl`. Slot 9c
+  of the same YubiKeys holds the catalog's key; the two are kept apart so
+  that nothing signed for one repository is taken by the other.
 - `metadata/1.root.json`: the first root of the releases the update
   server serves, signed on both YubiKeys in the key ceremony. `./ob
-  release deploy` deploys only a repository that starts from it.
+  release deploy` deploys only a repository that starts from it. Each
+  root after it is `metadata/N.root.json`, which `./ob release root`
+  signs (below).
 
 The ceremony signed the first root on 2026-11-17; its SHA-256 is
 `b9b2421ef1cd9f67d376547970bac6dcecd1c85f83a333559ebfb8d6c9345e14`.
-Until `ob release sign` signs releases on the YubiKeys, every build
-machine still signs its releases with keys of its own in
-`.cache/release-keys`, and nothing it signs is deployed.
+`./ob release sign` signs the project's releases on the YubiKeys, and
+`./ob release images` makes their install stick and ISO (below). Every
+other image a machine builds, with `./ob image` or for the tests, holds
+a release signed with that machine's own keys in `.cache/release-keys`,
+and nothing those keys sign is deployed.
 
 `stand-in-root.json` is a root made once with `system-release keys`,
 whose secret keys were deleted when it was made, so that no one can sign
@@ -65,7 +71,8 @@ YubiKey.
 8. The second YubiKey goes back to its safe place; either one alone
    signs from then on.
 
-The root is good for a year: sign the next one at ten months. A touch
+The root is good for a year: sign the next one at ten months, as
+*Signing the next root* says. A touch
 that times out fails with `SW=0x6982`; run the step again. Touching the
 wrong YubiKey types a one-time code into the terminal instead of
 signing; clear the line and touch the one that asked.
@@ -78,6 +85,85 @@ twice in different places and compares (ADR 0535), and `ob release sign`
 compares its own third build with the last line it printed (ADR 0457).
 Two builds of one commit make the same list, so the keys sign it only
 when they do.
+
+## Signing a release
+
+On the maintainer's computer, with one YubiKey, from a checkout of the
+commit the release is built from, once the version is bumped and the
+commit has merged (ADR 0778). It takes about as long as `./ob build`,
+and `gh` must be signed in.
+
+1. Check on GitHub that the commit has its gates: `CI passed`; a run of
+   the reproducible workflow, whose builds are kept for seven days; and a
+   full run of the update test matrix, started on the branch while it is
+   at the commit: `gh workflow run update-matrix.yml -R dukovo-os/dukovo
+   --ref main -f full=true`.
+2. Check that `git status` shows nothing changed and `git log -1` is the
+   commit.
+3. Plug in a YubiKey and run `./ob release sign VERSION`. A release goes
+   on the beta channel unless `--channel stable` names stable; with both
+   YubiKeys plugged in, `--serial` names one. It checks the gates,
+   downloads CI's two builds, builds the release, and stops unless the
+   three are the same.
+4. It reads what updates.dukovo.org serves into
+   `out/release-sign/VERSION`, shows what it will sign, and asks for the
+   version to be typed. The YubiKey then asks for its PIN and a touch.
+5. It sends the signature to Sigstore's Rekor log and prints the entry's
+   address. If the log could not be reached, `./ob release record
+   VERSION` sends it again.
+6. `./ob release deploy out/release-sign/VERSION`. The server signs the
+   snapshot and timestamp, and the deploy reads the release back.
+
+When it stops, it says which gate or build it was. A build that is not
+CI's is read with `diff` of the two `files.txt` it names, which are in
+`out/release-sign/ci-COMMIT/`.
+
+## Making the install images
+
+Once the release is deployed, on the same computer, from the same
+checkout, with one YubiKey (ADR 0779). It takes about as long as `./ob
+build`, and the PIN and a touch once more.
+
+1. Plug in a YubiKey and run `./ob release images VERSION`; with both
+   plugged in, `--serial` names one. It builds the release again, reads
+   it as updates.dukovo.org serves it, and stops unless the two are the
+   same.
+2. It builds the install stick and the ISO, which trust
+   `metadata/1.root.json` and carry the release as the server serves
+   it, so that a system installed from one updates from the server.
+3. It shows their `SHA256SUMS` and the YubiKey that will sign, and asks
+   for the version to be typed. The YubiKey then asks for its PIN and a
+   touch.
+4. It sends the signature to the Rekor log, as `sign` does; `./ob
+   release record VERSION` sends it again.
+
+Everything is in `out/release-images/VERSION`: the stick
+`dukovo-VERSION-x86_64.img`, the ISO `dukovo-VERSION-x86_64.iso`,
+`SHA256SUMS`, its signature `SHA256SUMS.yubikey-SERIAL.sig`, and the
+Rekor entry and the log's answer. Publish the first four beside the
+release notes. When it stops at the server's release, the release is
+not deployed yet or the checkout is not its commit.
+
+A download is checked with two common tools, on any system that has
+them, the key's PEM taken from this folder:
+
+```
+openssl dgst -sha256 -verify releases/keys/yubikey-SERIAL.pem \
+  -signature SHA256SUMS.yubikey-SERIAL.sig SHA256SUMS
+sha256sum -c SHA256SUMS
+```
+
+## Changing a channel by hand
+
+A channel's move, a withdrawal and the advisories alone are signed on a
+YubiKey by hand, with the system-release that `./ob release` builds in
+`target/programs-host/debug/`: `system-release fetch --root
+releases/metadata/1.root.json --roots releases/metadata --out DIR
+https://updates.dukovo.org/system/`, which adds the roots after the first
+that the server does not serve yet,
+then `system-release channel`, `pull` or `advisories` with `--repo DIR
+--yubikey-helper tools/yubikey-piv.py` (system-release(8)), then `./ob
+release deploy DIR`.
 
 ## Setting up the update server
 
@@ -93,18 +179,33 @@ reach it over SSH):
 Run it again whenever `tools/update-server/`, catalog-repo or
 system-release changes; the keys are kept.
 
-## Naming the online key in a root
+## Signing the next root
 
-The root names the online key for snapshot and timestamp beside the
-release keys' own, either of which signs alone, so that install sticks
-and update files, signed offline, still check:
+A root names the release key of each YubiKey for every role, and the
+online key in `keys/online.json` for snapshot and timestamp too, either
+of which signs alone, so that install sticks and update files, signed
+offline, still check (ADR 0780). With a YubiKey the root names plugged
+in:
 
 ```
-system-release keys --online releases/keys/online.json KEYS
+./ob release root
 ```
 
-signs the next root from the keys in `KEYS`. A deploy whose newest root
-does not name the server's key is refused by the server, which says so.
+reads what the server serves into `out/release-root/N`, `N` being the
+next root's version, from the roots here, and makes root `N` from
+`keys/` as it is now. It shows what the root names, which keys it drops
+and which YubiKeys sign it, and signs once `root N` is typed. A YubiKey
+new to the root signs it too, so it must be plugged in. Then it signs
+the targets again as they are, with a key the new root names, and
+writes `metadata/N.root.json`. Deploy it with `./ob release deploy
+out/release-root/N`, and commit `keys/` and `metadata/`.
+
+`./ob release root --repo DIR` signs it into the repository at `DIR`
+instead of reading the server, for a server that cannot be read. A root
+is signed at ten months, when a YubiKey is lost or replaced, and when the
+server's online key is: the handbook's *Keys and incidents* has a page
+for each. A deploy whose newest root does not name the server's key is
+refused by the server, which says so.
 
 ## Deploying
 
@@ -115,11 +216,13 @@ from `metadata/1.root.json`. ob(1) says more.
 
 ## A lost or stolen online key
 
-Remove `/var/lib/dukovo-system/online.key` on the server and run
-`./ob release server setup` again: it makes a new key, and stops because
-`keys/online.json` is not the new one. Replace `keys/online.json` with
-`/usr/local/share/dukovo-system/online.json` from the server, sign a
-root that names it, and deploy.
+The handbook's *A hacked update server or hosting account* says how to
+replace both online keys on a new server. Its short form: take
+`keys/online.json` and `catalog/keys/online.json` out, set the new server
+up with `./ob release server setup`, which makes new keys and writes
+their public halves to both files, sign the next roots with `./ob
+release root --repo DIR` and `./ob catalog root` followed by `./ob
+catalog sign --renew`, and deploy both.
 
 ## Canaries
 

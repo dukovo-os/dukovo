@@ -6,7 +6,8 @@
 //! drives, the sizes they format and what is in them. `floppy format`
 //! formats each disk a track at a time through radix-block(2)'s
 //! FORMAT_TRACK, has the kernel look, reads the disk back, makes a FAT
-//! filesystem labelled as asked, and mounts it at its label; a file
+//! filesystem labelled as asked, and mounts it at its label, where
+//! volumed(8), finding the drive's medium changed, leaves it; a file
 //! written there reads back. The kernel refuses to format a disk that is
 //! mounted, and one that is write-protected. The host checks both
 //! filesystems with `fsck.fat` and reads back the file and labels.
@@ -64,6 +65,19 @@ fn run(vm: &mut Vm, command: &str, ended: u32) -> Result<(), String> {
     vm.expect_screen(&[&format!("ended {ended}")])
 }
 
+/// Waits for volumed to find that a disk went in `drive`, as `floppy
+/// format` put it in, and fails if volumed unmounted what floppy mounted
+/// from it: a medium the drive had before is gone, but floppy mounted
+/// the one in it now.
+fn left_mounted(vm: &mut Vm, drive: &str) -> Result<(), String> {
+    vm.expect_anywhere(&format!("volumed: a medium went in {drive}"))?;
+    let gone = format!("volumed: {drive} is gone");
+    match vm.log().lines().find(|line| line.contains(&gone)) {
+        Some(line) => Err(format!("volumed unmounted the disk floppy formatted: {}", line.trim())),
+        None => Ok(()),
+    }
+}
+
 fn floppy_format(vm: &mut Vm, case: &Case) -> Result<(), String> {
     disks_found(vm, case)?;
     vm.expect_anywhere("volumed: watching for volumes; ")?;
@@ -89,6 +103,10 @@ fn floppy_format(vm: &mut Vm, case: &Case) -> Result<(), String> {
         "floppy: making a FAT filesystem on it",
         "floppy: mounted the FAT filesystem of fd0 at /volumes/LABFMT",
     ])?;
+    // volumed looks within a second, finds the drive's count of media
+    // moved, and leaves floppy's mount, made once the disk was in, as it
+    // is.
+    left_mounted(vm, "fd0")?;
     let write = format!(
         "seq 1 {LINES} > /volumes/LABFMT/seq.txt && seq 1 {LINES} | cmp - /volumes/LABFMT/seq.txt"
     );
@@ -103,6 +121,7 @@ fn floppy_format(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect("Disk: fd1: formatting its disk as a 720 KB one")?;
     vm.expect("Disk: fd1: a 720 KB disk went in")?;
     vm.expect_screen(&["floppy: mounted the FAT filesystem of fd1 at /volumes/DD720"])?;
+    left_mounted(vm, "fd1")?;
 
     // Let go and put back write-protected: the kernel refuses to format
     // it.

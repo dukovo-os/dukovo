@@ -4314,16 +4314,16 @@ Buttons are 44 pixels tall at least.
 
 **Hardware**, in the list of pages, says what this machine is, what its last
 hardware check found, how hot it runs, how its disks and memory are, which
-devices the system found and which driver took each, and restarts or shuts the
-machine down. Anyone who signs in can look at it. Checking the hardware, testing
+devices the system found and which driver took each, how its UPS or battery is,
+and restarts or shuts the machine down. Anyone who signs in can look at it. Checking the hardware, testing
 the memory, reading the disks' own tests and the memory modules, restarting
 and shutting down are for administrators, who unlock the console first (see
 "Unlocking the console"). The page is at `/hardware`, and its cards have
 addresses of their own: `#machine`, `#check`, `#temps`, `#disks`, `#memory`,
-`#devices` and `#power`.
+`#supplies`, `#devices` and `#power`.
 
 It reads `hardware show`, `hardware last`, `hardware history`, `hardware
-sensors`, `hardware devices`, `hardware memtest --status`, `metrics show` and
+sensors`, `hardware devices`, `hardware power`, `hardware memtest --status`, `metrics show` and
 `shutdown --show`, and runs `hardware check`, `hardware memtest`, `shutdown -r`, `shutdown -P` and
 `shutdown -c` (hardware(8), diskhealth(8), shutdown(8)). "Checking the
 hardware" says what a check looks at and what each result means.
@@ -4389,6 +4389,20 @@ alert goes out: when a sensor stays within 5 °C of its critical limit, or a
 disk at its warning limit, for 5 minutes (metricsd(8)). The page reads the
 temperatures again every minute. "Disk temperatures" says how a disk's is read
 and when it sleeps.
+
+### Battery and UPS
+
+**Battery and UPS** is there on a machine with a UPS plugged in by USB, or a
+battery. For each, the UPSes first, it gives its model, its state as a pill
+(**On mains**, **On battery**, **Battery low**, **Replace battery**, or a
+battery's **Charging** and **Full**), a bar of its charge, and rows for what it
+says: **State**, **Charge**, **Lasts** (how long the charge lasts at the load
+now) and, for a UPS, **Load**. Under a UPS a line says when the machine shuts
+down: **On its battery, this machine shuts down cleanly at 10% or 2 min
+left.**, the limits being the UPS's own. A machine started with `ups=show`
+says instead that it stays on. A UPS that says its battery should be replaced
+says so in red, with HW-142. The page reads it again every minute, with the
+temperatures. hardware(8)'s POWER says where each value comes from.
 
 ### Disks
 

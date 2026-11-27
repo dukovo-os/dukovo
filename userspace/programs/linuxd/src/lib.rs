@@ -19,6 +19,8 @@
 //! Run as `linuxd serve`, or `linuxd serve --again` when started again,
 //! so that the filesystem takes up the connection where it was.
 
+#![forbid(unsafe_code)]
+
 pub mod call;
 pub mod fs;
 pub mod netlink;

@@ -444,7 +444,7 @@ fn lab_steps(
     mut fds: Vec<OwnedFd>,
 ) -> Vec<String> {
     use std::io::{Read, Write};
-    use std::os::fd::AsRawFd;
+    use std::os::fd::AsFd;
     let mut relay = std::fs::File::from(fds.remove(1));
     let ended = |status: u32| vec!["ok 4321".to_string(), format!("ended {status}")];
     match mode {
@@ -470,11 +470,9 @@ fn lab_steps(
             fixture::then(move || {
                 let (mut got, mut buffer) = (String::new(), [0u8; 64]);
                 for _ in 0..1500 {
-                    let mut poll =
-                        libc::pollfd { fd: relay.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-                    // SAFETY: one pollfd, which lives through the call.
-                    let ready = unsafe { libc::poll(&raw mut poll, 1, 20) };
-                    if ready <= 0 {
+                    let mut fds = [sysapi::poll::PollFd::new(relay.as_fd(), libc::POLLIN)];
+                    let wait = Some(std::time::Duration::from_millis(20));
+                    if sysapi::poll::poll(&mut fds, wait).unwrap_or(0) == 0 {
                         continue;
                     }
                     match relay.read(&mut buffer).unwrap_or(0) {

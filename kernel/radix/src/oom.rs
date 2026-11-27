@@ -9,7 +9,7 @@
 //! resource domains (`domains`), never single threads, and says so in the
 //! log every time:
 //!
-//! 0. It asks the writeback thread to drop clean pages of the page cache,
+//! 0. It asks the reclaim thread to drop clean pages of the page cache,
 //!    which their disks hold (`fs::writeback`), and then, if a swap area
 //!    is on, the swap thread to swap programs' memory out (`swap`, ADR
 //!    0152), and has the allocation tried again if any went.

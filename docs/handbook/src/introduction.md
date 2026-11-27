@@ -30,15 +30,19 @@ itself and is run from the shell or from a browser:
 - an installer with the `rdisk` partitioner, delivered as a USB image,
   and images for clouds and virtual machines.
 
-Go software and Linux containers through Podman complete 1.0. The
-window manager (`windowd`), and the graphical side that builds on it, follow
-in release 1.1.
+Go software runs on it today. Linux containers through Podman, rack
+servers' own hardware (RAID controllers, 10 to 100 Gb/s network cards, the
+management controller and firmware updates) and managing several servers
+from one web console complete 1.0. The window manager (`windowd`), and the
+graphical side that builds on it, follow in release 1.1.
 
 ## Where the project is
 
 Dukovo is built in phases, each ending in something that runs. Phases 0
-to 13 are done, and Phase 14, the installer and install media, is under
-way.
+to 17 are done. Phase 18, Linux containers, and Phase 19, server hardware,
+are under way. Five releases lead to 1.0.0: 1.0.0-alpha.1, 1.0.0-alpha.2,
+1.0.0-beta.1, the release candidates and 1.0.0 itself, as the roadmap's
+"Releases to 1.0" sets out.
 
 - **Boot and hardware.** The Radix kernel boots through GRUB under UEFI
   and legacy BIOS at a random address, starts every CPU and reads the
@@ -72,6 +76,19 @@ way.
 - **Users and apps.** Accounts that sign in at the consoles or over SSH,
   a keyring, shared folders, and bundles installed from signed catalogs
   (see the Users, SSH and Bundles chapters).
+- **Installing and updating.** An installer with the `rdisk`
+  partitioner, USB media and images for clouds and virtual machines, and
+  system updates that install beside the running system and go back on
+  their own when the new one fails its checks (see the Installing and
+  Updates chapters).
+- **Running a server.** Services with health checks and limits, a serial
+  console from the boot menu on, remote logging, metrics and alerts, and
+  nginx, certificates, PostgreSQL, SQLite, Valkey, PHP and Python as
+  signed bundles (see the Running services chapter).
+- **Dukovo Admin.** The web console runs the whole machine from any
+  browser, a phone's included (see the Dukovo Admin web console chapter).
+- **Go.** The Go toolchain, and Go programs such as Caddy, built as
+  ports (see the Go chapter).
 
 Chapters for later phases are listed in the table of contents and are
 written as those phases land. The full plan is in

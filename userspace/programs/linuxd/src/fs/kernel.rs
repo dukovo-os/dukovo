@@ -50,9 +50,7 @@ impl Kernel for Machine {
 
     #[cfg(target_arch = "x86_64")]
     fn cpuid(&self, leaf: u32, sub: u32) -> [u32; 4] {
-        // SAFETY: every x86-64 processor has CPUID, which only reads.
-        #[allow(unused_unsafe, reason = "the intrinsic is safe to call on newer toolchains")]
-        let registers = unsafe { core::arch::x86_64::__cpuid_count(leaf, sub) };
+        let registers = core::arch::x86_64::__cpuid_count(leaf, sub);
         [registers.eax, registers.ebx, registers.ecx, registers.edx]
     }
 

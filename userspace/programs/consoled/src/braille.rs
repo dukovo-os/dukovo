@@ -42,7 +42,7 @@
 //! so that a flood of output never keeps the display behind.
 
 use std::io::{self, ErrorKind, Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 
@@ -94,21 +94,21 @@ impl Braille {
         }
     }
 
-    /// The listening socket's descriptor, or -1.
-    pub fn listener_fd(&self) -> i32 {
-        self.listener.as_ref().map_or(-1, AsRawFd::as_raw_fd)
+    /// The listening socket's descriptor, while it listens.
+    pub fn listener_fd(&self) -> Option<BorrowedFd<'_>> {
+        self.listener.as_ref().map(AsFd::as_fd)
     }
 
-    /// The display's descriptor, or -1, and the events to wait for: what
-    /// it sends, and room for what is still to be written.
-    pub fn client_fd(&self) -> (i32, i16) {
+    /// The display's descriptor, while one is connected, and the events to
+    /// wait for: what it sends, and room for what is still to be written.
+    pub fn client_fd(&self) -> (Option<BorrowedFd<'_>>, i16) {
         match &self.client {
             Some(client) => {
                 let writing = self.written < self.out.len();
                 let events = libc::POLLIN | if writing { libc::POLLOUT } else { 0 };
-                (client.as_raw_fd(), events)
+                (Some(client.as_fd()), events)
             }
-            None => (-1, 0),
+            None => (None, 0),
         }
     }
 

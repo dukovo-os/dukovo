@@ -61,3 +61,8 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 - [Manual pages](man-pages.md)
 - [For developers](developers.md)
 - [The release train and the security bots](release-train.md)
+- [Keys and incidents](keys-and-incidents.md)
+  - [A lost or stolen YubiKey](incident-yubikey.md)
+  - [A hacked update server or hosting account](incident-server.md)
+  - [A hacked GitHub account](incident-github.md)
+  - [When the maintainer is unavailable](incident-maintainer.md)

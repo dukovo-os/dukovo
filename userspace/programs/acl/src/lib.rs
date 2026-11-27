@@ -7,37 +7,18 @@
 //! getfacl(1) and setfacl(1) show and change them, and smbd(8) shows
 //! them to Windows as security descriptors (ADR 0229).
 
-use std::ffi::{CString, c_char, c_int, c_void};
+#![forbid(unsafe_code)]
+
 use std::io;
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+
+use sysapi::fs::{self, Link};
 
 /// The attribute of the list that decides.
 pub const ACCESS: &str = "system.posix_acl_access";
 /// The attribute of a directory's list for what is made in it.
 pub const DEFAULT: &str = "system.posix_acl_default";
-
-// The C library's extended attribute calls (sys/xattr.h), which the
-// libc crate does not declare for Radix.
-unsafe extern "C" {
-    fn getxattr(path: *const c_char, name: *const c_char, value: *mut c_void, size: usize)
-    -> isize;
-    fn lgetxattr(
-        path: *const c_char,
-        name: *const c_char,
-        value: *mut c_void,
-        size: usize,
-    ) -> isize;
-    fn setxattr(
-        path: *const c_char,
-        name: *const c_char,
-        value: *const c_void,
-        size: usize,
-        flags: c_int,
-    ) -> c_int;
-    fn removexattr(path: *const c_char, name: *const c_char) -> c_int;
-}
 
 /// What an entry names, in the order of a list: Linux's tags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -237,31 +218,14 @@ impl Acl {
 ///
 /// The call's, but for ENODATA and EOPNOTSUPP, which are none.
 pub fn read_attribute(path: &Path, name: &str, physical: bool) -> io::Result<Option<Vec<u8>>> {
-    let c_path = c_string(path.as_os_str().as_bytes())?;
-    let c_name = c_string(name.as_bytes())?;
-    let mut buffer = vec![0u8; 256];
-    loop {
-        // SAFETY: the path and name are C strings, and the buffer is as
-        // long as the size given.
-        let n = unsafe {
-            let get = if physical { lgetxattr } else { getxattr };
-            get(c_path.as_ptr(), c_name.as_ptr(), buffer.as_mut_ptr().cast(), buffer.len())
-        };
-        if n >= 0 {
-            buffer.truncate(n as usize);
-            return Ok(Some(buffer));
+    let link = if physical { Link::Itself } else { Link::Follow };
+    match fs::xattr(path, name, link) {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if matches!(error.raw_os_error(), Some(libc::ENODATA | libc::EOPNOTSUPP)) => {
+            Ok(None)
         }
-        let error = io::Error::last_os_error();
-        match error.raw_os_error() {
-            Some(libc::ENODATA | libc::EOPNOTSUPP) => return Ok(None),
-            Some(libc::ERANGE) if buffer.len() < 65536 => buffer.resize(buffer.len() * 4, 0),
-            _ => return Err(error),
-        }
+        Err(error) => Err(error),
     }
-}
-
-fn c_string(bytes: &[u8]) -> io::Result<CString> {
-    CString::new(bytes).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))
 }
 
 /// A file's access list, from its attribute or its mode.
@@ -291,17 +255,10 @@ pub fn default_list(path: &Path, physical: bool) -> io::Result<Option<Acl>> {
 ///
 /// Setting the attribute's, or the mode's.
 pub fn write_access(path: &Path, acl: &Acl, mode: u32) -> io::Result<()> {
-    let c_path = c_string(path.as_os_str().as_bytes())?;
-    let c_name = c_string(ACCESS.as_bytes())?;
-    let value = acl.to_value();
-    // SAFETY: C strings, and the value's bytes with their length.
-    let r = unsafe {
-        setxattr(c_path.as_ptr(), c_name.as_ptr(), value.as_ptr().cast(), value.len(), 0)
+    let error = match fs::set_xattr(path, ACCESS, &acl.to_value()) {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
     };
-    if r == 0 {
-        return Ok(());
-    }
-    let error = io::Error::last_os_error();
     if error.raw_os_error() == Some(libc::EOPNOTSUPP) && acl.is_base() {
         let perm = |tag| u32::from(acl.get(tag, NO_ID).map_or(0, |e| e.perm));
         let bits = (mode & 0o7000)
@@ -319,25 +276,20 @@ pub fn write_access(path: &Path, acl: &Acl, mode: u32) -> io::Result<()> {
 ///
 /// Setting or removing the attribute's.
 pub fn write_default(path: &Path, acl: Option<&Acl>) -> io::Result<()> {
-    let c_path = c_string(path.as_os_str().as_bytes())?;
-    let c_name = c_string(DEFAULT.as_bytes())?;
-    // SAFETY: C strings, and the value's bytes with their length.
-    let r = unsafe {
-        match acl {
-            Some(acl) => {
-                let value = acl.to_value();
-                setxattr(c_path.as_ptr(), c_name.as_ptr(), value.as_ptr().cast(), value.len(), 0)
-            }
-            None => removexattr(c_path.as_ptr(), c_name.as_ptr()),
-        }
+    let result = match acl {
+        Some(acl) => fs::set_xattr(path, DEFAULT, &acl.to_value()),
+        None => fs::remove_xattr(path, DEFAULT),
     };
-    let error = io::Error::last_os_error();
-    if r == 0
-        || (acl.is_none() && matches!(error.raw_os_error(), Some(libc::ENODATA | libc::EOPNOTSUPP)))
-    {
-        return Ok(());
+    match result {
+        // A list that is not there is taken away already.
+        Err(error)
+            if acl.is_none()
+                && matches!(error.raw_os_error(), Some(libc::ENODATA | libc::EOPNOTSUPP)) =>
+        {
+            Ok(())
+        }
+        result => result,
     }
-    Err(error)
 }
 
 #[cfg(test)]

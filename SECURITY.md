@@ -5,6 +5,25 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # Security policy
 
+## The alpha, beta and release candidates
+
+Dukovo 1.0.0-alpha.1 is the first release for anyone outside the project
+to install, and every release before 1.0.0 is a test release.
+
+- **No one outside the project has audited it.** Its security rests on
+  the project's own reviews, tests, fuzzing and proofs, and nothing more
+  yet. Do not run it where a break-in would cost you: not with data you
+  cannot lose, and not on a machine that others depend on.
+- **It takes its updates from the project's server.** A system installed
+  from the project's install stick or ISO follows the beta channel of
+  updates.dukovo.org, where each pre-release goes. Every release is
+  signed on the project's hardware keys, and the server can sign nothing
+  a machine would install (ADR 0457). The images' checksums are signed
+  the same way, so that a download can be checked before it is written
+  to a stick ("Creating USB install media" in the handbook).
+- **Report what you find**, as below: which test releases get fixes is
+  under [Supported versions](#supported-versions).
+
 ## Reporting a vulnerability
 
 Please report security problems privately through GitHub's private
@@ -83,8 +102,16 @@ a report to a published advisory.
 
 ## Supported versions
 
-Before 1.0 only the `main` branch is supported, and fixes land there. From
-1.0 on, the newest stable release gets every security fix, and the previous
+Before 1.0, the newest pre-release and the `main` branch are supported.
+A fix lands on `main` and reaches testers in the next pre-release. A
+Critical or High fix comes sooner, as a fix release of the newest
+pre-release, named with one more number: 1.0.0-alpha.1 is fixed by
+1.0.0-alpha.1.1, which comes before 1.0.0-alpha.2. An older pre-release
+gets no fix; update to the newest. The clock above holds from 1.0.0, and
+before it a fix ships as soon as it is ready. There are no nightly
+releases before 1.0 (ADR 0781).
+
+From 1.0 on, the newest stable release gets every security fix, and the previous
 stable release gets Critical and High fixes until the next stable release
 ships. There is no long-term-support line (ADR 0458).
 

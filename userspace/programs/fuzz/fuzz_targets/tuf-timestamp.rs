@@ -3,6 +3,7 @@
 
 //! A timestamp, checked against the fixed root's timestamp key.
 
+#![forbid(unsafe_code)]
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

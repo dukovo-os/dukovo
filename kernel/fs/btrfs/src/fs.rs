@@ -37,8 +37,8 @@
 //! reading the disk: a node is read first, and when another was added
 //! for the same inode meanwhile, that one is used and the new one
 //! dropped, which only frees memory. Shrinking only tries the
-//! workspaces' and the packers' locks, as a reader or a writer that holds
-//! one may be making memory.
+//! workspaces', the packers' and the page caches' locks, as a reader or a
+//! writer that holds one may be making memory.
 
 use alloc::sync::Weak;
 use core::fmt;
@@ -112,6 +112,19 @@ impl Txn {
 /// the node while it is in use.
 type Entry = ((u64, u64), Weak<BtrfsNode, Alloc>);
 
+/// The most nodes kept after their last use (ADR 0772).
+pub(crate) const KEPT: usize = 256;
+
+/// The nodes looked up last, kept when nothing else holds them.
+struct Kept {
+    nodes: KVec<KArc<BtrfsNode>>,
+    /// Where the next one goes once there are [`KEPT`], round the ring in
+    /// turn: the oldest, or near it once some were let go of early.
+    next: usize,
+    /// Whether the filesystem went: nothing is kept from then on.
+    closed: bool,
+}
+
 /// What a filesystem's nodes share.
 pub(crate) struct Inner {
     pub(crate) volume: KBox<Volume>,
@@ -119,6 +132,10 @@ pub(crate) struct Inner {
     csums: Option<Root>,
     /// The nodes in use, by subvolume and inode number, sorted.
     nodes: Mutex<KVec<Entry>>,
+    /// The nodes looked up last, kept when nothing else holds them, as
+    /// Linux keeps unused inodes until memory runs short, so that the
+    /// names directories keep (ADR 0659) lead to them again (ADR 0772).
+    kept: Mutex<Kept>,
     /// The subvolumes received while mounted, read-only since (ADR 0462),
     /// and whether there are any, which each change asks first.
     received: Mutex<KVec<u64>>,
@@ -161,6 +178,12 @@ pub(crate) struct Inner {
 pub struct BtrfsFs {
     inner: KArc<Inner>,
     root: KArc<BtrfsNode>,
+}
+
+impl Drop for BtrfsFs {
+    fn drop(&mut self) {
+        self.inner.close();
+    }
 }
 
 impl BtrfsFs {
@@ -244,6 +267,24 @@ impl BtrfsFs {
     /// Whether it was mounted to write.
     pub fn writable(&self) -> bool {
         self.inner.tx.is_some()
+    }
+
+    /// Holds the transaction, as a change in progress does.
+    #[cfg(test)]
+    pub(crate) fn hold_transaction(&self) -> Option<MutexGuard<'_, Txn>> {
+        self.inner.reading()
+    }
+
+    /// How many nodes are kept after their last use (ADR 0772).
+    #[cfg(test)]
+    pub(crate) fn kept(&self) -> usize {
+        self.inner.kept()
+    }
+
+    /// Lets go of every node kept after its last use.
+    #[cfg(test)]
+    pub(crate) fn let_go_of_kept(&self) {
+        self.inner.unkeep_where(|_| true);
     }
 
     /// Has the data written from now on compressed with zstd, or not:
@@ -385,6 +426,7 @@ impl Inner {
             volume,
             csums,
             nodes: Mutex::new(mem::vec()),
+            kept: Mutex::new(Kept { nodes: mem::vec(), next: 0, closed: false }),
             received: Mutex::new(mem::vec()),
             any_received: AtomicBool::new(false),
             workspaces: Mutex::new([None, None]),
@@ -458,8 +500,10 @@ impl Inner {
         Ok(result)
     }
 
-    /// Whether a node of subvolume `subvol` is in use.
+    /// Whether a node of subvolume `subvol` is in use. Those only kept
+    /// are let go of first.
     pub(crate) fn in_use(&self, subvol: u64) -> bool {
+        self.unkeep_where(|node| node.subvol == subvol);
         self.nodes.lock().iter().any(|((s, _), weak)| *s == subvol && weak.strong_count() > 0)
     }
 
@@ -556,7 +600,6 @@ impl Inner {
         }
     }
 
-    /// The node of inode `ino` of subvolume `subvol`, if one is in use.
     /// What the socket named by inode `ino` of subvolume `subvol` holds,
     /// if one was named there since the mount.
     pub(crate) fn socket(&self, subvol: u64, ino: u64) -> Option<SocketBinding> {
@@ -583,10 +626,105 @@ impl Inner {
         Ok(())
     }
 
+    /// The node of inode `ino` of subvolume `subvol`, if one is in use. A
+    /// node only kept is let go of, and is not: a change to the inode
+    /// finds what holds it as it would were nothing kept, and a removed
+    /// file no one has open goes with its last name.
     pub(crate) fn live(&self, subvol: u64, ino: u64) -> Option<KArc<BtrfsNode>> {
-        let nodes = self.nodes.lock();
-        let i = nodes.binary_search_by_key(&(subvol, ino), |(k, _)| *k).ok()?;
-        nodes[i].1.upgrade()
+        let node = {
+            let nodes = self.nodes.lock();
+            let i = nodes.binary_search_by_key(&(subvol, ino), |(k, _)| *k).ok()?;
+            nodes[i].1.upgrade()?
+        };
+        self.unkeep(&node);
+        (KArc::strong_count(&node) > 1).then_some(node)
+    }
+
+    /// Keeps `node`, just looked up, until about [`KEPT`] others are: the
+    /// one it replaces goes after the lock, as that may be its last
+    /// reference.
+    fn keep(&self, node: &KArc<BtrfsNode>) {
+        if node.kept.load(Ordering::Relaxed) {
+            return;
+        }
+        let oldest = {
+            let mut kept = self.kept.lock();
+            if kept.closed || node.kept.load(Ordering::Relaxed) {
+                return;
+            }
+            let oldest = if kept.nodes.len() < KEPT {
+                if mem::push(&mut kept.nodes, node.clone()).is_err() {
+                    return;
+                }
+                None
+            } else {
+                let at = kept.next;
+                kept.next = (at + 1) % KEPT;
+                let oldest = core::mem::replace(&mut kept.nodes[at], node.clone());
+                oldest.kept.store(false, Ordering::Relaxed);
+                Some(oldest)
+            };
+            node.kept.store(true, Ordering::Relaxed);
+            oldest
+        };
+        drop(oldest);
+    }
+
+    /// Lets go of `node`, if it is kept, after the lock.
+    fn unkeep(&self, node: &KArc<BtrfsNode>) {
+        if !node.kept.load(Ordering::Relaxed) {
+            return;
+        }
+        let taken = {
+            let mut kept = self.kept.lock();
+            let Some(i) = kept.nodes.iter().position(|other| KArc::ptr_eq(other, node)) else {
+                return;
+            };
+            let taken = kept.nodes.swap_remove(i);
+            taken.kept.store(false, Ordering::Relaxed);
+            taken
+        };
+        drop(taken);
+    }
+
+    /// Lets go of the kept nodes `going` picks, a few at a time, each
+    /// batch after the lock.
+    fn unkeep_where(&self, going: impl Fn(&BtrfsNode) -> bool) {
+        loop {
+            let mut taken: [Option<KArc<BtrfsNode>>; 16] = Default::default();
+            let mut count = 0;
+            {
+                let mut kept = self.kept.lock();
+                let mut i = 0;
+                while i < kept.nodes.len() && count < taken.len() {
+                    if going(&kept.nodes[i]) {
+                        let node = kept.nodes.swap_remove(i);
+                        node.kept.store(false, Ordering::Relaxed);
+                        taken[count] = Some(node);
+                        count += 1;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            if count < taken.len() {
+                return;
+            }
+        }
+    }
+
+    /// Keeps nothing from now on, and lets go of what is kept: each node
+    /// holds what the filesystem's nodes share, so the filesystem would
+    /// otherwise never go.
+    fn close(&self) {
+        self.kept.lock().closed = true;
+        self.unkeep_where(|_| true);
+    }
+
+    /// How many nodes are kept.
+    #[cfg(test)]
+    pub(crate) fn kept(&self) -> usize {
+        self.kept.lock().nodes.len()
     }
 
     /// Frees the files a crash left removed but open: those with orphan
@@ -794,13 +932,13 @@ impl Inner {
         read_only: bool,
     ) -> Result<KArc<BtrfsNode>> {
         let key = (subvol, ino);
-        {
+        let found = {
             let nodes = this.nodes.lock();
-            if let Ok(i) = nodes.binary_search_by_key(&key, |(k, _)| *k)
-                && let Some(node) = nodes[i].1.upgrade()
-            {
-                return Ok(node);
-            }
+            nodes.binary_search_by_key(&key, |(k, _)| *k).ok().and_then(|i| nodes[i].1.upgrade())
+        };
+        if let Some(node) = found {
+            this.keep(&node);
+            return Ok(node);
         }
         let node = mem::arc(BtrfsNode::load(this.clone(), subvol, tree, ino, read_only)?)?;
         BtrfsNode::placed(&node);
@@ -812,6 +950,7 @@ impl Inner {
                 // the lock.
                 Some(other) => {
                     drop(nodes);
+                    this.keep(&other);
                     return Ok(other);
                 }
                 None => nodes[i].1 = weak,
@@ -829,6 +968,8 @@ impl Inner {
                 }
             }
         }
+        drop(nodes);
+        this.keep(&node);
         Ok(node)
     }
 

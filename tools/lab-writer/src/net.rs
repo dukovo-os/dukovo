@@ -7,10 +7,11 @@
 //! kernel's interface ioctls, brings the card up and waits for its link.
 //! There is no gateway: the lab PC is on the same network.
 
-use std::net::{Ipv4Addr, UdpSocket};
-use std::os::fd::AsRawFd;
+use std::net::Ipv4Addr;
 use std::path::Path;
 use std::time::{Duration, Instant};
+
+use sysapi::linux::{self, CardAddress};
 
 /// Where the kernel lists network cards.
 const CARDS: &str = "/sys/class/net";
@@ -66,12 +67,11 @@ pub fn configure(mac: &str, address: Address, wait: Duration) -> Result<String, 
         }
         std::thread::sleep(Duration::from_millis(250));
     };
-    // Any IPv4 socket carries the interface ioctls.
-    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
-        .map_err(|err| format!("opening a socket for the card's ioctls: {err}"))?;
-    set_address(&socket, &card, libc::SIOCSIFADDR, address.ip)?;
-    set_address(&socket, &card, libc::SIOCSIFNETMASK, address.netmask())?;
-    bring_up(&socket, &card)?;
+    for (which, ip) in [(CardAddress::Own, address.ip), (CardAddress::Netmask, address.netmask())] {
+        linux::set_card_address(&card, which, ip)
+            .map_err(|err| format!("setting {card}'s address {ip}: {err}"))?;
+    }
+    linux::bring_up(&card).map_err(|err| format!("bringing {card} up: {err}"))?;
     let carrier = Path::new(CARDS).join(&card).join("carrier");
     let linked = Instant::now() + wait;
     while std::fs::read_to_string(&carrier).map_or(true, |text| text.trim() != "1") {
@@ -108,67 +108,6 @@ fn cards(cards: &Path) -> Vec<String> {
         found.push("none".into());
     }
     found
-}
-
-/// A zeroed `ifreq` naming `card`.
-fn request(card: &str) -> Result<libc::ifreq, String> {
-    // SAFETY: ifreq is plain data (a name and a union of numbers and
-    // addresses), for which all zeros is a valid value.
-    let mut request: libc::ifreq = unsafe { std::mem::zeroed() };
-    if card.len() >= request.ifr_name.len() {
-        return Err(format!("the card's name {card} is too long"));
-    }
-    for (to, from) in request.ifr_name.iter_mut().zip(card.bytes()) {
-        *to = from as libc::c_char;
-    }
-    Ok(request)
-}
-
-/// Sets an IPv4 address of `card` with `ioctl`: its own address or its
-/// netmask.
-fn set_address(
-    socket: &UdpSocket,
-    card: &str,
-    ioctl: libc::c_ulong,
-    address: Ipv4Addr,
-) -> Result<(), String> {
-    let mut request = request(card)?;
-    let mut data = [0 as libc::c_char; 14];
-    // A sockaddr_in in a sockaddr: the port's two bytes, then the address.
-    for (to, from) in data[2..6].iter_mut().zip(address.octets()) {
-        *to = from as libc::c_char;
-    }
-    request.ifr_ifru.ifru_addr =
-        libc::sockaddr { sa_family: libc::AF_INET as libc::sa_family_t, sa_data: data };
-    // SAFETY: the socket is open, and the request is a whole ifreq that
-    // lives through the call, as these ioctls read.
-    let result = unsafe { libc::ioctl(socket.as_raw_fd(), ioctl, &raw mut request) };
-    if result != 0 {
-        return Err(format!(
-            "setting {card}'s address {address}: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok(())
-}
-
-/// Brings `card` up.
-fn bring_up(socket: &UdpSocket, card: &str) -> Result<(), String> {
-    let mut request = request(card)?;
-    // SAFETY: as in set_address; SIOCGIFFLAGS fills the request's flags.
-    let result = unsafe { libc::ioctl(socket.as_raw_fd(), libc::SIOCGIFFLAGS, &raw mut request) };
-    if result != 0 {
-        return Err(format!("reading {card}'s flags: {}", std::io::Error::last_os_error()));
-    }
-    // SAFETY: SIOCGIFFLAGS just set the union's flags.
-    let flags = unsafe { request.ifr_ifru.ifru_flags };
-    request.ifr_ifru.ifru_flags = flags | libc::IFF_UP as libc::c_short;
-    // SAFETY: as above.
-    let result = unsafe { libc::ioctl(socket.as_raw_fd(), libc::SIOCSIFFLAGS, &raw mut request) };
-    if result != 0 {
-        return Err(format!("bringing {card} up: {}", std::io::Error::last_os_error()));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

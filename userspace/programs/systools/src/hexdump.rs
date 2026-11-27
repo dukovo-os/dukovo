@@ -11,9 +11,11 @@
 //! longest one takes; a block like the one before it is shown as `*`,
 //! unless `-v` is given. `hd` is `hexdump -C`.
 
-use std::ffi::{CString, OsString};
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
+
+use sysapi::text::{self, Value};
 
 use crate::args::{Arg, Args};
 use crate::util::{self, Fail, fail};
@@ -341,53 +343,10 @@ fn prepare(formats: &mut [Format], block: usize) {
     }
 }
 
-/// A value for printf(3).
-#[derive(Clone, Copy)]
-enum Value<'a> {
-    Signed(i64),
-    Unsigned(u64),
-    Float(f64),
-    Char(u8),
-    Str(&'a [u8]),
-}
-
-/// printf(3)'s rendering of one value with `%{spec}{letter}`.
+/// printf(3)'s rendering of one value with `%{spec}{letter}`, nothing for
+/// a conversion it refuses.
 fn printf(spec: &str, letter: char, value: Value) -> Vec<u8> {
-    let length = if matches!(value, Value::Signed(_) | Value::Unsigned(_)) { "ll" } else { "" };
-    let Ok(format) = CString::new(format!("%{spec}{length}{letter}")) else { return Vec::new() };
-    let string = match &value {
-        Value::Str(bytes) => {
-            let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-            CString::new(&bytes[..end]).unwrap_or_default()
-        }
-        _ => CString::default(),
-    };
-    let mut buffer = vec![0u8; 64];
-    loop {
-        let (out, size) = (buffer.as_mut_ptr().cast::<libc::c_char>(), buffer.len());
-        // SAFETY: `format` is one conversion, of the type each value is
-        // passed as, with flags, width and precision of SPEC's characters
-        // only; snprintf writes at most `size` bytes to `buffer`.
-        let n = unsafe {
-            match value {
-                Value::Signed(v) => {
-                    libc::snprintf(out, size, format.as_ptr(), v as libc::c_longlong)
-                }
-                Value::Unsigned(v) => {
-                    libc::snprintf(out, size, format.as_ptr(), v as libc::c_ulonglong)
-                }
-                Value::Float(v) => libc::snprintf(out, size, format.as_ptr(), v),
-                Value::Char(c) => libc::snprintf(out, size, format.as_ptr(), libc::c_int::from(c)),
-                Value::Str(_) => libc::snprintf(out, size, format.as_ptr(), string.as_ptr()),
-            }
-        };
-        let Ok(n) = usize::try_from(n) else { return Vec::new() };
-        if n < buffer.len() {
-            buffer.truncate(n);
-            return buffer;
-        }
-        buffer.resize(n + 1, 0);
-    }
+    text::printf(spec, letter, value).unwrap_or_default()
 }
 
 /// The control characters' names, for `%_u`.

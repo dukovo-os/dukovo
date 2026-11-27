@@ -21,6 +21,7 @@ radix-elf = { path = "../../../kernel/lib/elf" }
 # Its styles, which reedline paints with (MIT).
 nu-ansi-term = "0.50.3"
 reedline = { version = "0.52.1", default-features = false }
+sysapi = { path = "../sysapi" }
 # colors.toml(5) (Apache-2.0 OR MIT).
 toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }
 

@@ -1,0 +1,321 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+strcasecmp, strncasecmp and their _l forms fetch the locale's table of
+lowercase once, rather than looking up the locale for each byte, and
+tolower_l and toupper_l read the same tables as tolower and toupper.
+strstr and memmem are musl's, from ports/mlibc/musl/substring.hpp.
+
+strncasecmp went through the wide characters' case map for each byte of
+both strings: it looked up the active locale, compared the locale's
+codeset name with "ANSI_X3.4-1968" to choose a character code, decoded
+the byte and searched the map. strcasecmp looked up the locale for each
+byte as well. In the server benchmark's PHP-FPM row on OptiPlex 1, these
+calls were about a quarter of the time php-fpm took over its time on
+glibc.
+
+Through the wide characters' map, a byte that is not a whole character,
+as every byte above 0x7F is in UTF-8 and in ASCII, became 0, and so did
+EOF: strncasecmp("\xc3\xa9" "a", "\xc3\xa9" "b", 3) was 0, and
+tolower_l(0xc9, l) was 0. Now every byte maps by the locale's table, as
+in glibc. A locale whose table has fewer than the 384 entries, for -128
+to 255, changes only ASCII letters.
+
+strstr and memmem compared the needle at each place in the haystack in
+turn, which takes the product of the two lengths in the worst case, and
+the benchmark's client spent much of its time in strstr. musl's compare a
+needle of two to four bytes as one word that slides along the haystack,
+and find a longer one by the Two-Way algorithm, in time linear in the
+haystack's length.
+
+diff -ruN a/options/ansi/generic/ctype.cpp b/options/ansi/generic/ctype.cpp
+--- a/options/ansi/generic/ctype.cpp
++++ b/options/ansi/generic/ctype.cpp
+@@ -4,6 +4,7 @@
+ 
+ #include <bits/ensure.h>
+ #include <mlibc/charset.hpp>
++#include <mlibc/ctype.hpp>
+ #include <mlibc/locale.hpp>
+ 
+ // --------------------------------------------------------------------------------------
+@@ -231,13 +232,11 @@ int iswctype(wint_t wc, wctype_t type) {
+ // --------------------------------------------------------------------------------------
+ 
+ int tolower(int c) {
+-	auto l = mlibc::getActiveLocale();
+-	return c >= -128 && c < 256 ? l->ctype.map_tolower()[c + 128] : c;
++	return mlibc::tolower_l(c, mlibc::getActiveLocale());
+ }
+ 
+ int toupper(int c) {
+-	auto l = mlibc::getActiveLocale();
+-	return c >= -128 && c < 256 ? l->ctype.map_toupper()[c + 128] : c;
++	return mlibc::toupper_l(c, mlibc::getActiveLocale());
+ }
+ 
+ // --------------------------------------------------------------------------------------
+diff -ruN a/options/ansi/generic/string.cpp b/options/ansi/generic/string.cpp
+--- a/options/ansi/generic/string.cpp
++++ b/options/ansi/generic/string.cpp
+@@ -12,6 +12,7 @@
+ #include <mlibc/strtol.hpp>
+ #include <mlibc/wide.hpp>
+ #include <mlibc/string.hpp>
++#include <mlibc/substring.hpp>
+ 
+ // memset() is defined in options/internals.
+ // memcpy() is defined in options/internals.
+@@ -201,22 +202,10 @@ size_t strspn(const char *s, const char *chrs) {
+ 		n++;
+ 	}
+ }
++// musl's, which compares short patterns as one word and finds longer ones
++// by the Two-Way algorithm.
+ char *strstr(const char *s, const char *pattern) {
+-	// The empty pattern matches at the beginning of every string, including
+-	// the empty string.
+-	if(!*pattern)
+-		return const_cast<char *>(s);
+-
+-	for(size_t i = 0; s[i]; i++) {
+-		size_t j = 0;
+-		while(pattern[j] && s[i + j] && s[i + j] == pattern[j])
+-			j++;
+-
+-		if(!pattern[j])
+-			return const_cast<char *>(&s[i]);
+-	}
+-
+-	return nullptr;
++	return mlibc::substring::find_string(s, pattern);
+ }
+ char *strtok_r(char *__restrict s, const char *__restrict del, char **__restrict m) {
+ 	__ensure(m);
+diff -ruN a/options/internal/generic/ctype.cpp b/options/internal/generic/ctype.cpp
+--- a/options/internal/generic/ctype.cpp
++++ b/options/internal/generic/ctype.cpp
+@@ -35,12 +35,15 @@ int isxdigit_l(int nc, localeinfo *loc) {
+ 	return mlibc::current_charset()->is_xdigit(cp, loc);
+ }
+ 
++// From the locale's table, as tolower(3): through the wide characters'
++// map, a byte that is not a whole character, such as one of UTF-8's above
++// 0x7F, became 0.
+ int tolower_l(int nc, localeinfo *loc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->to_lower(cp, loc);
++	return lower_by(lower_table(loc), nc);
++}
++
++int toupper_l(int nc, localeinfo *loc) {
++	return upper_by(upper_table(loc), nc);
+ }
+ 
+ int iswascii(int nc) {
+diff -ruN a/options/internal/generic/strings.cpp b/options/internal/generic/strings.cpp
+--- a/options/internal/generic/strings.cpp
++++ b/options/internal/generic/strings.cpp
+@@ -9,9 +9,11 @@ int strncasecmp(const char *a, const char *b, size_t size, localeinfo *l) {
+ 	if (a == b || size == 0)
+ 		return 0;
+ 
++	// The locale's table once, not a look-up of the locale for each byte.
++	auto lower = lower_table(l);
+ 	for(size_t i = 0; i < size; i++) {
+-		unsigned char a_byte = mlibc::tolower_l(a[i], l);
+-		unsigned char b_byte = mlibc::tolower_l(b[i], l);
++		unsigned char a_byte = lower_by(lower, static_cast<unsigned char>(a[i]));
++		unsigned char b_byte = lower_by(lower, static_cast<unsigned char>(b[i]));
+ 		if(!a_byte && !b_byte)
+ 			return 0;
+ 		// If only one char is null, one of the following cases applies.
+diff -ruN a/options/internal/include/mlibc/ctype.hpp b/options/internal/include/mlibc/ctype.hpp
+--- a/options/internal/include/mlibc/ctype.hpp
++++ b/options/internal/include/mlibc/ctype.hpp
+@@ -1,5 +1,7 @@
+ #pragma once
+ 
++#include <stdint.h>
++
+ #include <mlibc/locale.hpp>
+ 
+ namespace mlibc {
+@@ -10,6 +12,40 @@ int isspace_l(int c, localeinfo *l);
+ int isxdigit_l(int c, localeinfo *l);
+ 
+ int tolower_l(int c, localeinfo *l);
++int toupper_l(int c, localeinfo *l);
++
++// A locale's lowercase or uppercase of each byte and of EOF, as tolower(3)
++// and toupper(3) give them: LC_CTYPE's tables of 384 entries, for -128 to
++// 255. A caller that converts many bytes, as strcasecmp(3) does, fetches
++// the table once rather than looking up the locale for each byte. nullptr
++// when the locale's table is shorter, and then only ASCII letters change.
++inline const uint32_t *lower_table(localeinfo *l) {
++	auto table = l->ctype.map_tolower();
++	return table.size() >= 384 ? table.data() : nullptr;
++}
++
++inline const uint32_t *upper_table(localeinfo *l) {
++	auto table = l->ctype.map_toupper();
++	return table.size() >= 384 ? table.data() : nullptr;
++}
++
++// c in a table from lower_table: unchanged unless it is a byte or EOF.
++inline int lower_by(const uint32_t *table, int c) {
++	if(c < -128 || c > 255)
++		return c;
++	if(table)
++		return static_cast<int>(table[c + 128]);
++	return c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c;
++}
++
++// c in a table from upper_table: unchanged unless it is a byte or EOF.
++inline int upper_by(const uint32_t *table, int c) {
++	if(c < -128 || c > 255)
++		return c;
++	if(table)
++		return static_cast<int>(table[c + 128]);
++	return c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c;
++}
+ 
+ int iswascii(int nc);
+ int iswspace_l(wint_t nc, localeinfo *l);
+diff -ruN a/options/posix/generic/posix_ctype.cpp b/options/posix/generic/posix_ctype.cpp
+--- a/options/posix/generic/posix_ctype.cpp
++++ b/options/posix/generic/posix_ctype.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include <bits/ensure.h>
+ #include <mlibc/charset.hpp>
++#include <mlibc/ctype.hpp>
+ #include <mlibc/locale.hpp>
+ #include <mlibc/wide.hpp>
+ 
+@@ -107,19 +108,11 @@ int isascii_l(int c, locale_t) {
+ }
+ 
+ int tolower_l(int nc, locale_t loc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->to_lower(cp, static_cast<mlibc::localeinfo *>(loc));
++	return mlibc::tolower_l(nc, static_cast<mlibc::localeinfo *>(loc));
+ }
+ 
+ int toupper_l(int nc, locale_t loc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->to_upper(cp, static_cast<mlibc::localeinfo *>(loc));
++	return mlibc::toupper_l(nc, static_cast<mlibc::localeinfo *>(loc));
+ }
+ 
+ int iswalnum_l(wint_t nc, locale_t loc) {
+diff -ruN a/options/posix/generic/posix_string.cpp b/options/posix/generic/posix_string.cpp
+--- a/options/posix/generic/posix_string.cpp
++++ b/options/posix/generic/posix_string.cpp
+@@ -15,6 +15,7 @@
+ #include <mlibc/debug.hpp>
+ #include <mlibc/locale.hpp>
+ #include <mlibc/strings.hpp>
++#include <mlibc/substring.hpp>
+ 
+ char *strdup(const char *string) {
+ 	auto num_bytes = strlen(string);
+@@ -178,29 +179,9 @@ char *strerror_l(int errnum, locale_t) {
+ 	return strerror(errnum);
+ }
+ 
++// musl's, as strstr.
+ void *memmem(const void *hs, size_t haystackLen, const void *nd, size_t needleLen) {
+-	const char *haystack = static_cast<const char *>(hs);
+-	const char *needle = static_cast<const char *>(nd);
+-
+-	// An empty needle is found at the start, even of an empty haystack.
+-	if (!needleLen)
+-		return const_cast<char *>(haystack);
+-
+-	for (size_t i = 0; i < haystackLen; i++) {
+-		bool found = true;
+-
+-		for (size_t j = 0; j < needleLen; j++) {
+-			if (i + j >= haystackLen || haystack[i + j] != needle[j]) {
+-				found = false;
+-				break;
+-			}
+-		}
+-
+-		if(found)
+-			return const_cast<char *>(&haystack[i]);
+-	}
+-
+-	return nullptr;
++	return mlibc::substring::find_bytes(hs, haystackLen, nd, needleLen);
+ }
+ 
+ // BSD extensions.
+diff -ruN a/options/posix/generic/strings.cpp b/options/posix/generic/strings.cpp
+--- a/options/posix/generic/strings.cpp
++++ b/options/posix/generic/strings.cpp
+@@ -3,6 +3,7 @@
+ #include <string.h>
+ 
+ #include <ctype.h>
++#include <stdint.h>
+ #include <bits/ensure.h>
+ #include <mlibc/strings.hpp>
+ 
+@@ -72,42 +73,14 @@ int ffsll(long long i) {
+ #endif
+ }
+ 
++// As strncasecmp with no limit, which fetches the locale's table of
++// lowercase once.
+ int strcasecmp(const char *a, const char *b) {
+-	if (a == b)
+-		return 0;
+-
+-	size_t i = 0;
+-	while(true) {
+-		unsigned char a_byte = tolower(a[i]);
+-		unsigned char b_byte = tolower(b[i]);
+-		if(!a_byte && !b_byte)
+-			return 0;
+-		// If only one char is null, one of the following cases applies.
+-		if(a_byte < b_byte)
+-			return -1;
+-		if(a_byte > b_byte)
+-			return 1;
+-		i++;
+-	}
++	return mlibc::strncasecmp(a, b, SIZE_MAX);
+ }
+ 
+ int strcasecmp_l(const char *a, const char *b, locale_t locale) {
+-	if (a == b)
+-		return 0;
+-
+-	size_t i = 0;
+-	while(true) {
+-		unsigned char a_byte = tolower_l(a[i], locale);
+-		unsigned char b_byte = tolower_l(b[i], locale);
+-		if(!a_byte && !b_byte)
+-			return 0;
+-		// If only one char is null, one of the following cases applies.
+-		if(a_byte < b_byte)
+-			return -1;
+-		if(a_byte > b_byte)
+-			return 1;
+-		i++;
+-	}
++	return mlibc::strncasecmp(a, b, SIZE_MAX, static_cast<mlibc::localeinfo *>(locale));
+ }
+ 
+ int strncasecmp(const char *a, const char *b, size_t size) {

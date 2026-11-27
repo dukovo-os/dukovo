@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::os::fd::AsRawFd;
+use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -18,13 +18,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use accounts::request::{Answer as AuthdAnswer, Request as AuthdRequest};
+use sysapi::{fd, net, poll, random, system};
 
 use crate::contexts::Refused;
 use crate::gss::{self, Flavor, RPCSEC_GSS};
 use crate::ipc::{self, Answer, Request};
 use crate::rpc::{self, Call, GssCall, NFS_PROGRAM, NFS_VERSION, Refusal};
 use crate::server::{Backend, Context, Server};
-use crate::sys;
 use crate::xdr::Reader;
 
 /// NFS's port.
@@ -130,7 +130,7 @@ impl Backend for Pool {
 /// [`WORKER_TIME`] to give.
 fn exchange(link: &mut Link, message: &[u8]) -> io::Result<Answer> {
     ipc::send(&mut link.to, message)?;
-    if !sys::readable(&link.from, WORKER_TIME)? {
+    if !poll::wait_readable(&link.from, WORKER_TIME)? {
         return Err(io::Error::new(io::ErrorKind::TimedOut, "no answer in time"));
     }
     let answer = ipc::receive(&mut link.from)?.ok_or(io::ErrorKind::UnexpectedEof)?;
@@ -141,20 +141,20 @@ fn exchange(link: &mut Link, message: &[u8]) -> io::Result<Answer> {
 /// Has authd start a worker as the person numbered `uid`: nfsd's ends of
 /// the pipes to it and back.
 fn start_worker(uid: u32) -> io::Result<Link> {
-    let (requests, to) = sys::pipe()?;
-    let (from, answers) = sys::pipe()?;
+    let (requests, to) = fd::pipe()?;
+    let (from, answers) = fd::pipe()?;
     let stream = UnixStream::connect(accounts::SOCKET)?;
     let request = AuthdRequest::NfsWorker { uid };
-    sys::send_with_fds(
+    net::send_with_fds(
         &stream,
         &request.encode(),
-        &[requests.as_raw_fd(), answers.as_raw_fd(), io::stderr().as_raw_fd()],
+        &[requests.as_fd(), answers.as_fd(), io::stderr().as_fd()],
     )?;
     stream.shutdown(Shutdown::Write)?;
     // The worker holds them now; nfsd's copies would keep each pipe open
     // after the worker ended.
     drop((requests, answers));
-    if !sys::readable(&stream, AUTHD_TIME)? {
+    if !poll::wait_readable(&stream, AUTHD_TIME)? {
         return Err(io::Error::new(io::ErrorKind::TimedOut, "authd did not answer in time"));
     }
     let mut line = String::new();
@@ -318,7 +318,8 @@ pub(crate) fn serve<B: Backend>(
 ) -> io::Result<()> {
     let peer = from.ip().to_canonical();
     let _ = stream.set_nodelay(true);
-    sys::keep_alive(stream);
+    // A connection that cannot be watched works all the same.
+    let _ = net::set_keepalive(stream, true);
     stream.set_read_timeout(Some(IDLE))?;
     let mut input = BufReader::with_capacity(64 * 1024, stream);
     loop {
@@ -367,14 +368,15 @@ fn accept(listener: &TcpListener, server: &Arc<Mutex<Server<Pool>>>, open: &Arc<
 
 /// nfsd: listens on port 2049.
 pub fn run() -> ExitCode {
-    let (boot, verifier) = match (sys::random::<4>(), sys::random::<8>()) {
+    let (boot, verifier) = match (random::bytes::<4>(), random::bytes::<8>()) {
         (Ok(boot), Ok(verifier)) => (u32::from_be_bytes(boot), verifier),
         (Err(err), _) | (_, Err(err)) => {
             eprintln!("nfsd: cannot read random bytes: {err}");
             return ExitCode::FAILURE;
         }
     };
-    let server = Server::new(Pool::default(), boot, verifier, &sys::hostname());
+    let host = system::host_name().unwrap_or_else(|_| "localhost".into());
+    let server = Server::new(Pool::default(), boot, verifier, &host);
     let server = Arc::new(Mutex::new(server));
     let ipv4 = match TcpListener::bind(("0.0.0.0", PORT)) {
         Ok(listener) => listener,

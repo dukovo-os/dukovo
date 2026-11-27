@@ -173,11 +173,7 @@ pub fn data_name(file_name: &str) -> String {
 mod tests {
     use super::*;
     use std::os::unix::fs::MetadataExt;
-
-    fn uid() -> u32 {
-        // SAFETY: getuid has no failure and touches no memory.
-        unsafe { libc::getuid() }
-    }
+    use sysapi::process::uid;
 
     /// A folder of the test's own, which the test removes.
     struct Scratch(PathBuf);

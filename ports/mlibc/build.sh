@@ -39,7 +39,7 @@ ln -s ../../../options/linux/include/ifaddrs.h "$PORT_SRC/sysdeps/radix/include/
 # Code from musl 1.2.5 that the patches use: exact floating-point
 # conversions (0004), strftime (0006), the calendar arithmetic (0007),
 # scanf's integers (0018), Internet addresses (0021), message catalogs
-# (0028) and the time zone (0051).
+# (0028), the time zone (0051) and strstr and memmem (0142).
 cp "$PORT_DIR"/musl/*.hpp "$PORT_SRC/options/internal/include/mlibc/"
 
 # The C library with the POSIX, glibc and BSD interfaces, using Clang's C

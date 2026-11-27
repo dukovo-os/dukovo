@@ -47,6 +47,18 @@ pub fn max_leaf() -> u32 {
     cpuid(0, 0).eax
 }
 
+/// CPUID leaf 7, EDX: the processor has cores of more than one kind.
+pub const LEAF7_HYBRID: u32 = 1 << 15;
+
+/// What kind of core the running CPU is: CPUID leaf 1Ah says, on a
+/// processor whose leaf 7 says its cores differ.
+pub fn core_kind() -> radix_hal::CoreKind {
+    let max = max_leaf();
+    let hybrid = is_intel() && max >= 0x1a && cpuid(7, 0).edx & LEAF7_HYBRID != 0;
+    let core_type = if hybrid { (cpuid(0x1a, 0).eax >> 24) as u8 } else { 0 };
+    radix_hal::CoreKind::of_intel(hybrid, core_type)
+}
+
 /// Highest extended CPUID leaf.
 pub fn max_extended_leaf() -> u32 {
     cpuid(0x8000_0000, 0).eax
@@ -165,6 +177,11 @@ pub mod feature {
         cpuid(1, 0).ecx & (1 << 17) != 0
     }
 
+    /// The IA32_TSC_ADJUST MSR (CPUID 7, EBX bit 1).
+    pub fn tsc_adjust() -> bool {
+        leaf7_ebx() & (1 << 1) != 0
+    }
+
     /// Supervisor-mode execution prevention (CPUID 7, EBX bit 7).
     pub fn smep() -> bool {
         leaf7_ebx() & (1 << 7) != 0
@@ -271,6 +288,7 @@ pub mod msr {
     pub const FS_BASE: u32 = 0xc000_0100;
     pub const GS_BASE: u32 = 0xc000_0101;
     pub const KERNEL_GS_BASE: u32 = 0xc000_0102;
+    pub const TSC_ADJUST: u32 = 0x3b;
     pub const TSC_DEADLINE: u32 = 0x6e0;
     pub const XFD: u32 = 0x1c4;
     pub const XFD_ERR: u32 = 0x1c5;

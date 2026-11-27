@@ -294,7 +294,7 @@ fn list(args: &mut Args) -> Result<i32, Fail> {
             serde_json::to_string_pretty(&entries).map_err(|err| fail(err.to_string()))?
         );
     } else {
-        let colour = util::is_terminal(1) && std::env::var_os("NO_COLOR").is_none();
+        let colour = util::is_terminal(std::io::stdout()) && std::env::var_os("NO_COLOR").is_none();
         print!("{}", list_table(&certificates, now, colour));
     }
     Ok(i32::from(unreadable))

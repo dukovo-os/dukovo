@@ -348,8 +348,15 @@ async function reader(t, name) {
   // An app is added in the frame, which marks the step done and leaves nothing to skip.
   await addApp(t, page, PASSWORD);
   await page.getByRole("button", { name: "I have saved them", exact: true }).click();
-  const steps = await stepsOf(page);
-  ensure(steps[2].includes("Added"), `the second step is "${steps[2]}" after the app was added`);
+  // The frame's page asks the console whether the step is done without the
+  // click waiting for the answer, so the list reads "Not added yet" for a
+  // moment: it is asked again for up to 15 s.
+  let steps = await stepsOf(page);
+  for (let end = Date.now() + 15000; !steps[2]?.includes("Added") && Date.now() < end; ) {
+    await page.waitForTimeout(250);
+    steps = await stepsOf(page);
+  }
+  ensure(steps[2]?.includes("Added"), `the second step is "${steps[2]}" after the app was added`);
   ensure((await page.locator(".step.done").count()) >= 1, "no step is marked done after the app was added");
   await t.gone(page.getByRole("button", { name: "Skip for now", exact: true }));
   await look(t, page, "welcome-second-done");

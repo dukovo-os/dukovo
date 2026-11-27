@@ -16,19 +16,57 @@
 //! each with how it ended (`✗ 2`), how long it took, when, and where.
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
+use std::thread::{self, ThreadId};
 
 use reedline::{Completer, CompletionResult, Hinter, History, Span, Suggestion};
 
 use crate::shell::Shell;
 
-/// The shell, as reedline's parts hold it.
-#[derive(Clone)]
-pub struct Handle(pub Rc<RefCell<Shell>>);
+thread_local! {
+    /// The shells of this thread that reedline's parts reach, by number.
+    static SHELLS: RefCell<Vec<Weak<RefCell<Shell>>>> = const { RefCell::new(Vec::new()) };
+}
 
-// SAFETY: as for the editor's own handle: reedline calls the hinter and
-// the picker's completer only from `read_line`, on the shell's thread.
-unsafe impl Send for Handle {}
+/// The shell, as reedline's parts hold it. reedline asks its parts to be
+/// `Send` and calls them only from `read_line`, on the shell's thread; so
+/// a part holds the shell's number in that thread's list, not the shell,
+/// and on any other thread it reaches nothing.
+#[derive(Clone)]
+pub struct Handle {
+    number: usize,
+    owner: ThreadId,
+}
+
+impl Handle {
+    /// A handle on `shell`, which has one number for as long as it lives.
+    pub fn new(shell: &Rc<RefCell<Shell>>) -> Handle {
+        let held = Rc::downgrade(shell);
+        let number = SHELLS.with_borrow_mut(|shells| {
+            shells.iter().position(|kept| kept.ptr_eq(&held)).unwrap_or_else(|| {
+                shells.push(held);
+                shells.len() - 1
+            })
+        });
+        Handle { number, owner: thread::current().id() }
+    }
+
+    /// The shell, on its own thread while it lives.
+    pub fn get(&self) -> Option<Rc<RefCell<Shell>>> {
+        if thread::current().id() != self.owner {
+            debug_assert!(false, "a shell is reached only from its own thread");
+            return None;
+        }
+        SHELLS.with_borrow(|shells| shells.get(self.number).and_then(Weak::upgrade))
+    }
+
+    /// How the shell parses now, or the defaults while it is busy.
+    pub fn parse_options(&self) -> crate::parse::Options {
+        self.get()
+            .and_then(|shell| shell.try_borrow().ok().map(|shell| shell.parse_options()))
+            .unwrap_or_default()
+    }
+}
 
 /// The faded text after the cursor.
 pub struct ShellHinter {
@@ -72,7 +110,8 @@ impl Hinter for ShellHinter {
         if pos != line.len() || (line.trim().is_empty() && !line.is_empty()) {
             return String::new();
         }
-        let Ok(mut shell) = self.shell.0.try_borrow_mut() else { return String::new() };
+        let Some(shell) = self.shell.get() else { return String::new() };
+        let Ok(mut shell) = shell.try_borrow_mut() else { return String::new() };
         if line.is_empty() {
             let key =
                 (shell.last_command.clone(), shell.status, shell.get("PWD").unwrap_or_default());
@@ -239,7 +278,8 @@ pub struct Picker(pub Handle);
 
 impl Completer for Picker {
     fn complete(&mut self, line: &str, _pos: usize) -> CompletionResult {
-        let Ok(mut shell) = self.0.0.try_borrow_mut() else {
+        let Some(shell) = self.0.get() else { return CompletionResult::fresh(Vec::new()) };
+        let Ok(mut shell) = shell.try_borrow_mut() else {
             return CompletionResult::fresh(Vec::new());
         };
         let folder = shell.get("PWD").unwrap_or_default();
@@ -288,6 +328,7 @@ pub fn right_prompt(shell: &Shell, paint: bool) -> String {
                 crate::git::status(
                     &repo,
                     std::time::Duration::from_millis(shell.settings.git_status_wait),
+                    &shell.jobs.reaped,
                 )
             })
             .flatten();

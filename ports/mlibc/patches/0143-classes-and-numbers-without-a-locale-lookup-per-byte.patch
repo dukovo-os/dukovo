@@ -1,0 +1,443 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+isalpha, isdigit and the rest of the narrow ctype functions, and their
+_l forms, class a byte up to 0x7F at once, by the locale's table, as
+before; only a byte above it is decoded by the locale's character code
+first. Every call went through current_charcode(), which compares the
+locale's codeset name with "ANSI_X3.4-1968", then decoded the byte,
+though each character code mlibc has keeps ASCII as it is.
+
+strtol and the rest of the family read a digit's value from the ASCII
+digits and letters, which C ascribes 0 to 35 to, rather than by
+isdigit, isupper and islower for each character, and find that a
+number is out of range by a multiply and an add that report overflow,
+rather than by the two divisions of its limit by the base each call
+made. A character beyond ASCII that a locale calls a digit or a letter
+was worth 36 or more before and ended the number, and still does. The
+results, the end pointer and errno are as before, for every base and
+type: checked against the old code over 24 million strings, with the
+limits of each type and every prefix.
+
+In the server benchmark's PHP row on OptiPlex 1, PHP's JSON decoder,
+which reads each integer with strtoll, and its sprintf, which reads
+widths with isdigit and strtol, spent at least 1.6 % of the run in these
+calls, where glibc reads a table inline, and the row took 1.0015 times
+Linux's time.
+
+diff -ruN a/options/ansi/generic/ctype.cpp b/options/ansi/generic/ctype.cpp
+--- a/options/ansi/generic/ctype.cpp
++++ b/options/ansi/generic/ctype.cpp
+@@ -12,99 +12,51 @@
+ // --------------------------------------------------------------------------------------
+ 
+ int isalpha(int nc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_alpha(cp, mlibc::getActiveLocale());
++	return mlibc::byte_in_class<&mlibc::charset::is_alpha>(nc, mlibc::getActiveLocale());
+ }
+ 
+ int isdigit(int nc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_digit(cp, mlibc::getActiveLocale());
++	return mlibc::byte_in_class<&mlibc::charset::is_digit>(nc, mlibc::getActiveLocale());
+ }
+ 
+ int isxdigit(int nc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_xdigit(cp, mlibc::getActiveLocale());
++	return mlibc::byte_in_class<&mlibc::charset::is_xdigit>(nc, mlibc::getActiveLocale());
+ }
+ 
+ int isalnum(int nc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_alnum(cp, mlibc::getActiveLocale());
++	return mlibc::byte_in_class<&mlibc::charset::is_alnum>(nc, mlibc::getActiveLocale());
+ }
+ 
+ int ispunct(int nc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_punct(cp, mlibc::getActiveLocale());
++	return mlibc::byte_in_class<&mlibc::charset::is_punct>(nc, mlibc::getActiveLocale());
+ }
+ 
+ int isgraph(int nc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_graph(cp, mlibc::getActiveLocale());
++	return mlibc::byte_in_class<&mlibc::charset::is_graph>(nc, mlibc::getActiveLocale());
+ }
+ 
+ int isblank(int nc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_blank(cp, mlibc::getActiveLocale());
++	return mlibc::byte_in_class<&mlibc::charset::is_blank>(nc, mlibc::getActiveLocale());
+ }
+ 
+ int isspace(int nc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_space(cp, mlibc::getActiveLocale());
++	return mlibc::byte_in_class<&mlibc::charset::is_space>(nc, mlibc::getActiveLocale());
+ }
+ 
+ int isprint(int nc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_print(cp, mlibc::getActiveLocale());
++	return mlibc::byte_in_class<&mlibc::charset::is_print>(nc, mlibc::getActiveLocale());
+ }
+ 
+ int islower(int nc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_lower(cp, mlibc::getActiveLocale());
++	return mlibc::byte_in_class<&mlibc::charset::is_lower>(nc, mlibc::getActiveLocale());
+ }
+ 
+ int isupper(int nc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_upper(cp, mlibc::getActiveLocale());
++	return mlibc::byte_in_class<&mlibc::charset::is_upper>(nc, mlibc::getActiveLocale());
+ }
+ 
+ int iscntrl(int nc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_cntrl(cp, mlibc::getActiveLocale());
++	return mlibc::byte_in_class<&mlibc::charset::is_cntrl>(nc, mlibc::getActiveLocale());
+ }
+ 
+ int isascii(int nc) {
+diff -ruN a/options/internal/generic/ctype.cpp b/options/internal/generic/ctype.cpp
+--- a/options/internal/generic/ctype.cpp
++++ b/options/internal/generic/ctype.cpp
+@@ -5,34 +5,18 @@
+ namespace mlibc {
+ 
+ int isalpha_l(int nc, localeinfo *loc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_alpha(cp, loc);
++	return byte_in_class<&charset::is_alpha>(nc, loc);
+ }
+ int isdigit_l(int nc, localeinfo *loc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_digit(cp, loc);
++	return byte_in_class<&charset::is_digit>(nc, loc);
+ }
+ 
+ int isspace_l(int nc, localeinfo *loc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_space(cp, loc);
++	return byte_in_class<&charset::is_space>(nc, loc);
+ }
+ 
+ int isxdigit_l(int nc, localeinfo *loc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_xdigit(cp, loc);
++	return byte_in_class<&charset::is_xdigit>(nc, loc);
+ }
+ 
+ // From the locale's table, as tolower(3): through the wide characters'
+diff -ruN a/options/internal/include/mlibc/ctype.hpp b/options/internal/include/mlibc/ctype.hpp
+--- a/options/internal/include/mlibc/ctype.hpp
++++ b/options/internal/include/mlibc/ctype.hpp
+@@ -2,10 +2,29 @@
+ 
+ #include <stdint.h>
+ 
++#include <mlibc/charcode.hpp>
++#include <mlibc/charset.hpp>
+ #include <mlibc/locale.hpp>
+ 
+ namespace mlibc {
+ 
++// Whether the byte nc is in the class `is` tests, by the locale l, as
++// isalpha(3) and the rest answer. A byte up to 0x7F is its own code point
++// in each character code mlibc has (each preserves 7-bit units), so it
++// is classed at once, without current_charcode(), which compares the
++// locale's codeset name with "ANSI_X3.4-1968" on every call; any other
++// byte is decoded by the locale's character code first, as before.
++template<bool (charset::*is)(codepoint, localeinfo *)>
++int byte_in_class(int nc, localeinfo *l) {
++	auto uc = static_cast<unsigned char>(nc);
++	if(uc <= 0x7F)
++		return (current_charset()->*is)(uc, l);
++	codepoint cp;
++	if(auto e = current_charcode()->promote(nc, cp); e != transcode_status::input_exhausted)
++		return 0;
++	return (current_charset()->*is)(cp, l);
++}
++
+ int isalpha_l(int c, localeinfo *l);
+ int isdigit_l(int c, localeinfo *l);
+ int isspace_l(int c, localeinfo *l);
+diff -ruN a/options/internal/include/mlibc/strtol.hpp b/options/internal/include/mlibc/strtol.hpp
+--- a/options/internal/include/mlibc/strtol.hpp
++++ b/options/internal/include/mlibc/strtol.hpp
+@@ -43,23 +43,31 @@
+ template<>
+ struct char_detail<char> {
+ 	static bool isSpace(char c, localeinfo *l) { return mlibc::isspace_l(c, l); }
+-	static bool isDigit(char c) { return isdigit(c); }
+-	static bool isHexDigit(char c) { return isxdigit(c); }
+-	static bool isLower(char c) { return islower(c); }
+-	static bool isUpper(char c) { return isupper(c); }
+ };
+ 
+ template<>
+ struct char_detail<wchar_t> {
+ 	static bool isSpace(wchar_t wc, localeinfo *l) { return mlibc::iswspace_l(wc, l); }
+-	static bool isDigit(wchar_t c) { return iswdigit(c); }
+-	static bool isHexDigit(wchar_t c) { return iswxdigit(c); }
+-	static bool isLower(wchar_t c) { return iswlower(c); }
+-	static bool isUpper(wchar_t c) { return iswupper(c); }
+ };
+ 
+ template<typename Char> Char widen(char c) { return static_cast<Char>(c); }
+ 
++// The value of c as a digit, 0 to 35, by the digits and the letters of
++// ASCII, which C ascribes 10 to 35 to; 36 for any other character. A
++// character a locale counts as a digit or a letter beyond ASCII was
++// worth 36 or more as before, and ended a number in any base, as it does
++// in glibc.
++template<typename Char>
++unsigned int digitValue(Char c) {
++	if(c >= widen<Char>('0') && c <= widen<Char>('9'))
++		return c - widen<Char>('0');
++	if(c >= widen<Char>('a') && c <= widen<Char>('z'))
++		return c - widen<Char>('a') + 10;
++	if(c >= widen<Char>('A') && c <= widen<Char>('Z'))
++		return c - widen<Char>('A') + 10;
++	return 36;
++}
++
+ template<typename Return, typename Char>
+ Return stringToInteger(const Char *__restrict nptr, Char **__restrict endptr, int baseInt, localeinfo *l = getActiveLocale()) {
+ 	using UnsignedReturn = std::make_unsigned_t<Return>;
+@@ -96,7 +104,7 @@
+ 	//   1. We should interpret "0x5" as hex 5 rather than octal 0.
+ 	//   2. We should interpret "0x" as octal 0 (and set endptr correctly).
+ 	// To deal with 2, we check the charcacter following the hex prefix.
+-	if ((base == 0 || base == 16) && hasHexPrefix && char_detail<Char>::isHexDigit(s[2])) {
++	if ((base == 0 || base == 16) && hasHexPrefix && digitValue(s[2]) < 16) {
+ 		s += 2;
+ 		base = 16;
+ 	} else if ((base == 0 || base == 2) && hasBinPrefix) {
+@@ -108,43 +116,33 @@
+ 		base = 10;
+ 	}
+ 
+-	// Compute the range of acceptable values.
+-	UnsignedReturn cutoff, cutlim;
+-	if (std::is_unsigned_v<Return>) {
+-		cutoff = int_limits<Return>::max() / base;
+-		cutlim = int_limits<Return>::max() % base;
+-	} else {
+-		Return co = negative ? int_limits<Return>::min() : int_limits<Return>::max();
+-		cutlim = negative ? -(co % base) : co % base;
+-		co /= negative ? -base : base;
+-		cutoff = co;
+-	}
++	// The largest magnitude the result may have: the type's largest value,
++	// or for a negative signed number, its smallest's magnitude. Checked
++	// as each digit comes, by a multiply and an add that report
++	// overflow, rather than by dividing it by the base first, two
++	// divisions of some 40 to 90 cycles each on many x86-64 CPUs.
++	UnsignedReturn limit = static_cast<UnsignedReturn>(int_limits<Return>::max());
++	if (!std::is_unsigned_v<Return> && negative)
++		limit += 1;
+ 
+ 	UnsignedReturn totalValue = 0;
+ 	bool convertedAny = false;
+ 	bool outOfRange = false;
+ 	for (Char c = *s; c != widen<Char>('\0'); c = *++s) {
+-		UnsignedReturn digitValue;
+-		if (char_detail<Char>::isDigit(c))
+-			digitValue = c - widen<Char>('0');
+-		else if (char_detail<Char>::isUpper(c))
+-			digitValue = c - widen<Char>('A') + 10;
+-		else if (char_detail<Char>::isLower(c))
+-			digitValue = c - widen<Char>('a') + 10;
+-		else
+-			break;
+-
+-		if (digitValue >= static_cast<UnsignedReturn>(base))
++		UnsignedReturn digit = digitValue(c);
++		if (digit >= static_cast<UnsignedReturn>(base))
+ 			break;
+ 
++		UnsignedReturn next;
+ 		if (outOfRange) {
+ 			// The value is already known to be out of range, but we need to keep
+ 			// consuming characters until we can't (to set endptr correctly).
+-		} else if (totalValue > cutoff || (totalValue == cutoff && digitValue > cutlim)) {
+-			// The value will be out of range if we accumulate digitValue.
++		} else if (__builtin_mul_overflow(totalValue, static_cast<UnsignedReturn>(base), &next)
++				|| __builtin_add_overflow(next, digit, &next) || next > limit) {
++			// The value will be out of range if we accumulate the digit.
+ 			outOfRange = true;
+ 		} else {
+-			totalValue = (totalValue * base) + digitValue;
++			totalValue = next;
+ 			convertedAny = true;
+ 		}
+ 	}
+diff -ruN a/options/posix/generic/posix_ctype.cpp b/options/posix/generic/posix_ctype.cpp
+--- a/options/posix/generic/posix_ctype.cpp
++++ b/options/posix/generic/posix_ctype.cpp
+@@ -8,99 +8,51 @@
+ #include <mlibc/wide.hpp>
+ 
+ int isalnum_l(int nc, locale_t loc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_alnum(cp, static_cast<mlibc::localeinfo *>(loc));
++	return mlibc::byte_in_class<&mlibc::charset::is_alnum>(nc, static_cast<mlibc::localeinfo *>(loc));
+ }
+ 
+ int isalpha_l(int nc, locale_t loc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_alpha(cp, static_cast<mlibc::localeinfo *>(loc));
++	return mlibc::byte_in_class<&mlibc::charset::is_alpha>(nc, static_cast<mlibc::localeinfo *>(loc));
+ }
+ 
+ int isblank_l(int nc, locale_t loc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_blank(cp, static_cast<mlibc::localeinfo *>(loc));
++	return mlibc::byte_in_class<&mlibc::charset::is_blank>(nc, static_cast<mlibc::localeinfo *>(loc));
+ }
+ 
+ int iscntrl_l(int nc, locale_t loc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_cntrl(cp, static_cast<mlibc::localeinfo *>(loc));
++	return mlibc::byte_in_class<&mlibc::charset::is_cntrl>(nc, static_cast<mlibc::localeinfo *>(loc));
+ }
+ 
+ int isdigit_l(int nc, locale_t loc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_digit(cp, static_cast<mlibc::localeinfo *>(loc));
++	return mlibc::byte_in_class<&mlibc::charset::is_digit>(nc, static_cast<mlibc::localeinfo *>(loc));
+ }
+ 
+ int isgraph_l(int nc, locale_t loc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_graph(cp, static_cast<mlibc::localeinfo *>(loc));
++	return mlibc::byte_in_class<&mlibc::charset::is_graph>(nc, static_cast<mlibc::localeinfo *>(loc));
+ }
+ 
+ int islower_l(int nc, locale_t loc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_lower(cp, static_cast<mlibc::localeinfo *>(loc));
++	return mlibc::byte_in_class<&mlibc::charset::is_lower>(nc, static_cast<mlibc::localeinfo *>(loc));
+ }
+ 
+ int isprint_l(int nc, locale_t loc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_print(cp, static_cast<mlibc::localeinfo *>(loc));
++	return mlibc::byte_in_class<&mlibc::charset::is_print>(nc, static_cast<mlibc::localeinfo *>(loc));
+ }
+ 
+ int ispunct_l(int nc, locale_t loc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_punct(cp, static_cast<mlibc::localeinfo *>(loc));
++	return mlibc::byte_in_class<&mlibc::charset::is_punct>(nc, static_cast<mlibc::localeinfo *>(loc));
+ }
+ 
+ int isspace_l(int nc, locale_t loc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_space(cp, static_cast<mlibc::localeinfo *>(loc));
++	return mlibc::byte_in_class<&mlibc::charset::is_space>(nc, static_cast<mlibc::localeinfo *>(loc));
+ }
+ 
+ int isupper_l(int nc, locale_t loc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_upper(cp, static_cast<mlibc::localeinfo *>(loc));
++	return mlibc::byte_in_class<&mlibc::charset::is_upper>(nc, static_cast<mlibc::localeinfo *>(loc));
+ }
+ 
+ int isxdigit_l(int nc, locale_t loc) {
+-	auto cc = mlibc::current_charcode();
+-	mlibc::codepoint cp;
+-	if(auto e = cc->promote(nc, cp); e != mlibc::transcode_status::input_exhausted)
+-		return 0;
+-	return mlibc::current_charset()->is_xdigit(cp, static_cast<mlibc::localeinfo *>(loc));
++	return mlibc::byte_in_class<&mlibc::charset::is_xdigit>(nc, static_cast<mlibc::localeinfo *>(loc));
+ }
+ 
+ int isascii_l(int c, locale_t) {

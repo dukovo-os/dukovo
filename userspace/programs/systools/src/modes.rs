@@ -7,11 +7,12 @@
 //! 0213); FAT and exFAT keep none, and as on Linux take a change that
 //! changes nothing and refuse any other with EPERM.
 
-use std::ffi::{CString, OsString};
-use std::io;
+use std::ffi::OsString;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, PermissionsExt, lchown};
 use std::path::Path;
+
+use sysapi::process;
 
 use crate::args::{Arg, Args};
 use crate::util::{self, Fail, fail, usage};
@@ -157,11 +158,6 @@ fn walk(
     }
 }
 
-fn c_path(path: &Path) -> io::Result<CString> {
-    CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))
-}
-
 /// One clause of a symbolic mode: who, and its actions.
 fn apply_symbolic(mode: &str, old: u32, is_dir: bool, umask: u32) -> Result<u32, String> {
     let mut new = old;
@@ -250,12 +246,10 @@ fn new_mode(mode: &str, old: u32, is_dir: bool, umask: u32) -> Result<u32, Strin
 
 /// The process's umask.
 fn umask() -> u32 {
-    // SAFETY: umask only sets and returns the mask; it is put back.
-    unsafe {
-        let mask = libc::umask(0o022);
-        libc::umask(mask);
-        mask as u32
-    }
+    // The mask can only be read by setting it, so it is put back.
+    let mask = process::umask(0o022);
+    let _ = process::umask(mask);
+    mask as u32
 }
 
 /// A mode as ls shows it, `rwxr-xr-x`.
@@ -355,13 +349,7 @@ pub fn chmod(args: &mut Args) -> Result<i32, Fail> {
         };
         let change =
             format!("from {old:04o} ({}) to {new:04o} ({})", mode_text(old), mode_text(new));
-        let done = c_path(path).and_then(|cpath| {
-            // SAFETY: `cpath` is a C string.
-            match unsafe { libc::chmod(cpath.as_ptr(), new as libc::mode_t) } {
-                0 => Ok(()),
-                _ => Err(io::Error::last_os_error()),
-            }
-        });
+        let done = std::fs::set_permissions(path, std::fs::Permissions::from_mode(new));
         if let Err(e) = done {
             if !c.silent {
                 eprintln!("chmod: changing permissions of '{shown}': {}", util::strip_os_error(&e));
@@ -475,7 +463,6 @@ fn change_owner(args: &mut Args, group_only: bool) -> Result<i32, Fail> {
         (false, None, None) => String::new(),
     };
     let verbose = c.verbose == Verbose::All;
-    let to_id = |id: Option<u32>| id.unwrap_or(u32::MAX);
     let code = each(&c, &operands, &mut |path, _| {
         let shown = path.display();
         let found =
@@ -503,17 +490,11 @@ fn change_owner(args: &mut Args, group_only: bool) -> Result<i32, Fail> {
                 format!("{}:{}", util::user_name(meta.uid()), util::group_name(meta.gid()))
             }
         };
-        let done = c_path(path).and_then(|cpath| {
-            // SAFETY: `cpath` is a C string; -1 leaves an id as it is.
-            let result = unsafe {
-                if dereference {
-                    libc::chown(cpath.as_ptr(), to_id(uid), to_id(gid))
-                } else {
-                    libc::lchown(cpath.as_ptr(), to_id(uid), to_id(gid))
-                }
-            };
-            if result == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
-        });
+        let done = if dereference {
+            std::os::unix::fs::chown(path, uid, gid)
+        } else {
+            lchown(path, uid, gid)
+        };
         if let Err(e) = done {
             if !c.silent {
                 eprintln!("{}: changing {what} of '{shown}': {}", c.tool, util::strip_os_error(&e));

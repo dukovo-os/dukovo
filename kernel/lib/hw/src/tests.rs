@@ -134,7 +134,7 @@ fn bus() -> Arc<Bus> {
 fn functions(bus: &Arc<Bus>) -> Vec<Function> {
     let mut found = Vec::new();
     let window = Mmio::fake(bus.clone(), pci::BUS_SIZE);
-    pci::scan(0, 0, 0, &mut |_| Some(window.clone()), &mut |f| found.push(f));
+    pci::scan(0, 0, 0, &mut |_| Some(window.clone()), &mut |_| false, &mut |f, _| found.push(f));
     found
 }
 
@@ -283,7 +283,7 @@ fn bridges_lead_to_their_buses_once() {
             .get(&usize::from(bus))
             .map(|b| Mmio::fake(b.clone() as Arc<dyn Registers>, pci::BUS_SIZE))
     };
-    pci::scan(0, 0, 255, &mut map, &mut |f| found.push(f.address()));
+    pci::scan(0, 0, 255, &mut map, &mut |_| false, &mut |f, _| found.push(f.address()));
     assert_eq!(
         found,
         [
@@ -291,6 +291,140 @@ fn bridges_lead_to_their_buses_once() {
             Address { segment: 0, bus: 1, device: 0, function: 0 }
         ]
     );
+}
+
+/// Simulated buses of one segment, by number.
+struct Machine(BTreeMap<u8, Arc<Bus>>);
+
+impl Machine {
+    /// A device on `bus` whose function 0 is a bridge to `secondary`.
+    fn bridge(&mut self, bus: u8, device: u8, secondary: u8) {
+        let config: &[(usize, &[u8])] = &[
+            (0x00, &le16(0x8086)),
+            (0x0b, &[0x06]),
+            (0x0a, &[0x04]),
+            (0x0e, &[0x01]),
+            (0x19, &[secondary]),
+        ];
+        self.bus(bus).add(device, 0, config);
+    }
+
+    /// A device on `bus` whose function 0 is an endpoint.
+    fn endpoint(&mut self, bus: u8, device: u8) {
+        self.bus(bus).add(device, 0, &[(0x00, &le16(0x1af4)), (0x02, &le16(0x1042))]);
+    }
+
+    fn bus(&mut self, bus: u8) -> &mut Bus {
+        let bus = self.0.entry(bus).or_insert_with(|| Arc::new(Bus::new()));
+        Arc::get_mut(bus).unwrap()
+    }
+
+    /// Scans buses `first..=last`: what was found, with its root bus, and
+    /// which buses were asked whether a device answers.
+    fn scan(&self, first: u8, last: u8) -> (Vec<(String, u8)>, Vec<u8>) {
+        let mut found = Vec::new();
+        let mut asked = Vec::new();
+        let mut map = |bus: u8| {
+            self.0.get(&bus).map(|b| Mmio::fake(b.clone() as Arc<dyn Registers>, pci::BUS_SIZE))
+        };
+        let mut answers = |bus: u8| {
+            asked.push(bus);
+            let regs: Arc<dyn Registers> = match self.0.get(&bus) {
+                Some(b) => b.clone(),
+                None => Arc::new(Bus::new()),
+            };
+            pci::bus_answers(&mut |offset| regs.read(offset, 4) as u32)
+        };
+        pci::scan(0, first, last, &mut map, &mut answers, &mut |f, root| {
+            found.push((f.address().to_string(), root));
+        });
+        (found, asked)
+    }
+}
+
+#[test]
+fn every_root_bus_is_walked() {
+    let mut machine = Machine(BTreeMap::new());
+    // The first root: a host bridge and a bridge to bus 1.
+    machine.endpoint(0, 0);
+    machine.bridge(0, 1, 1);
+    machine.endpoint(1, 0);
+    // A second root, as a Xeon Scalable's PCIe stack: a root port to 0x18.
+    machine.bridge(0x17, 0, 0x18);
+    machine.endpoint(0x18, 0);
+    // A third, as an EPYC quadrant's, whose first device is not device 0.
+    machine.endpoint(0x40, 3);
+    let (found, asked) = machine.scan(0, 255);
+    let found: Vec<(&str, u8)> = found.iter().map(|(a, r)| (a.as_str(), *r)).collect();
+    assert_eq!(
+        found,
+        [
+            ("0000:00:00.0", 0),
+            ("0000:00:01.0", 0),
+            ("0000:01:00.0", 0),
+            ("0000:17:00.0", 0x17),
+            ("0000:18:00.0", 0x17),
+            ("0000:40:03.0", 0x40),
+        ]
+    );
+    // Every bus the first walk did not reach is asked about once, roots
+    // included, but not one a root's walk reached first.
+    assert!(!asked.iter().any(|bus| [0, 1, 0x18].contains(bus)), "{asked:?}");
+    assert!(asked.contains(&0x17) && asked.contains(&0x40));
+    assert_eq!(asked.len(), 256 - 3);
+}
+
+#[test]
+fn roots_outside_the_window_are_left_alone() {
+    let mut machine = Machine(BTreeMap::new());
+    machine.endpoint(0, 0);
+    machine.endpoint(0x40, 0);
+    let (found, asked) = machine.scan(0, 0x3f);
+    assert_eq!(found, [("0000:00:00.0".to_string(), 0)]);
+    assert!(!asked.contains(&0x40));
+    // A window that starts above bus 0 is walked from its own first bus.
+    let (found, _) = machine.scan(0x40, 0x7f);
+    assert_eq!(found, [("0000:40:00.0".to_string(), 0x40)]);
+}
+
+#[test]
+fn a_bus_two_roots_lead_to_is_walked_once() {
+    let mut machine = Machine(BTreeMap::new());
+    machine.bridge(0, 0, 1);
+    machine.endpoint(1, 0);
+    // A root whose bridge leads back to bus 1, walked already, and one
+    // whose bridge leads below it, to a bus asked about before it.
+    machine.bridge(0x20, 0, 1);
+    machine.bridge(0x30, 0, 5);
+    machine.endpoint(5, 0);
+    let (found, _) = machine.scan(0, 255);
+    let found: Vec<(&str, u8)> = found.iter().map(|(a, r)| (a.as_str(), *r)).collect();
+    assert_eq!(
+        found,
+        [
+            ("0000:00:00.0", 0),
+            ("0000:01:00.0", 0),
+            ("0000:05:00.0", 5),
+            ("0000:20:00.0", 0x20),
+            ("0000:30:00.0", 0x30),
+        ]
+    );
+}
+
+#[test]
+fn a_bus_answers_only_with_a_real_id() {
+    let mut reads = Vec::new();
+    let mut empty = |offset: usize| {
+        reads.push(offset);
+        u32::MAX
+    };
+    assert!(!pci::bus_answers(&mut empty));
+    // Function 0 of each of the 32 devices, nothing else.
+    assert_eq!(reads, (0..32).map(|device| device << 15).collect::<Vec<_>>());
+    for bad in [0, 0x0000_ffff, 0xffff_0000] {
+        assert!(!pci::bus_answers(&mut |_| bad), "{bad:#x}");
+    }
+    assert!(pci::bus_answers(&mut |offset| if offset == 7 << 15 { 0x1042_1af4 } else { u32::MAX }));
 }
 
 #[test]

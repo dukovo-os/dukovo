@@ -208,7 +208,7 @@ impl<T: ?Sized> SpinLock<T> {
 fn enter(hooks: Option<&'static dyn Hooks>, irq: bool) -> Option<bool> {
     let hooks = hooks?;
     hooks::preempt_disable(hooks);
-    irq.then(|| hooks.disable_interrupts())
+    irq.then(|| hooks::disable_interrupts(hooks))
 }
 
 /// Undoes [`enter`]: interrupts first, so that the last `preempt_enable`
@@ -216,7 +216,7 @@ fn enter(hooks: Option<&'static dyn Hooks>, irq: bool) -> Option<bool> {
 fn leave(hooks: Option<&'static dyn Hooks>, irq: Option<bool>) {
     if let Some(hooks) = hooks {
         if let Some(were_enabled) = irq {
-            hooks.restore_interrupts(were_enabled);
+            hooks::restore_interrupts(hooks, were_enabled);
         }
         hooks::preempt_enable(hooks);
     }

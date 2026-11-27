@@ -93,10 +93,12 @@ fn window(function: &Function, index: usize) -> Option<Range> {
 
 /// Sets up the VMD `function` and the domain behind it, and binds the
 /// NVMe controllers there, counting them in `controllers` and every
-/// function found in `functions`. Kept out of the frame of the scan.
+/// function found in `functions`. `root` is the root bus the VMD is on,
+/// whose NUMA node the functions behind it have. Kept out of the frame of
+/// the scan.
 #[inline(never)]
-pub fn bind(function: &Function, controllers: &mut usize, functions: &mut usize) {
-    if let Err(why) = try_bind(function, controllers, functions) {
+pub fn bind(function: &Function, root: u8, controllers: &mut usize, functions: &mut usize) {
+    if let Err(why) = try_bind(function, root, controllers, functions) {
         warn!(
             "Disk: could not set up the Intel VMD at {}: {why}; the disks behind it are not seen \
              (setting the firmware's storage to AHCI shows them)",
@@ -134,6 +136,7 @@ impl From<&'static str> for Why {
 
 fn try_bind(
     function: &Function,
+    root: u8,
     controllers: &mut usize,
     functions: &mut usize,
 ) -> Result<(), Why> {
@@ -185,13 +188,17 @@ fn try_bind(
         );
     }
     let vmd = function.address();
+    let numa_root = (vmd.segment, root);
     let mut map_bus = |bus: u8| {
         let offset = usize::from(bus.checked_sub(first_bus)?) << 20;
         space.config.window(offset, pci::BUS_SIZE)
     };
-    pci::scan(segment, first_bus, summary.last_bus, &mut map_bus, &mut |child| {
+    // A VMD domain has one root, its first bus, where its root ports are:
+    // no other bus of it is asked about.
+    let mut answers = |_| false;
+    pci::scan(segment, first_bus, summary.last_bus, &mut map_bus, &mut answers, &mut |child, _| {
         *functions += 1;
-        describe(&child);
+        describe(&child, numa_root);
         if child.class() == radix_nvme::PCI_CLASS {
             nvme::bind_behind(&child, controllers, vmd);
         } else if child.header_type() & 0x7f == 0 {

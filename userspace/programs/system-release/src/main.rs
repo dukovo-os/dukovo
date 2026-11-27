@@ -5,6 +5,8 @@
 //! make keys and sign releases (system-release(8)). On Dukovo the same
 //! command is one of the native tools.
 
+#![forbid(unsafe_code)]
+
 use std::process::ExitCode;
 
 fn main() -> ExitCode {

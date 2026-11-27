@@ -16,9 +16,12 @@
 //! page the HAL's writer filled, and call each function.
 
 #![cfg_attr(not(test), no_std)]
+// The crate itself is safe; only its tests call into the mapped image.
+#![deny(unsafe_code)]
 
 /// The image, mapped as it is: empty where there is no vDSO.
 pub static IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/vdso.so"));
 
 #[cfg(all(test, target_arch = "x86_64"))]
+#[allow(unsafe_code)]
 mod tests;

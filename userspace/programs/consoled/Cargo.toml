@@ -20,15 +20,18 @@ libc = "0.2.191"
 # The system call interface, generated from abi/*.ridl: the framebuffer's
 # and the keyboard's own requests.
 radix-abi = { path = "../../../kernel/abi" }
+# Pseudo-terminals, the sessions' processes, signals, the poll loop and
+# the devices' requests, behind safe calls (ADR 0730).
+sysapi = { path = "../sysapi" }
 # notifyd's notifications are lines of JSON (ADR 0212).
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.140"
 # The kernel console's Spleen fonts and the choice between them, so that
 # the consoles look as the kernel's log did.
 radix-fbcon = { path = "../../../kernel/lib/fbcon" }
-# Alacritty's parser of terminal escape sequences (Apache-2.0 OR MIT).
 # welcome.toml(5) (Apache-2.0 OR MIT).
 toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }
+# Alacritty's parser of terminal escape sequences (Apache-2.0 OR MIT).
 vte = { version = "0.14.1", default-features = false }
 
 [lints]

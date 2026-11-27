@@ -132,6 +132,8 @@ dependencies = [
  "fuser",
  "libc",
  "radix-abi",
+ "radix-linux",
+ "sysapi",
 ]
 
 [[package]]
@@ -208,6 +210,17 @@ dependencies = [
 [[package]]
 name = "radix-bootfs"
 version = "0.17.0"
+
+[[package]]
+name = "radix-hw"
+version = "0.17.0"
+
+[[package]]
+name = "radix-linux"
+version = "0.17.0"
+dependencies = [
+ "radix-abi",
+]
 
 [[package]]
 name = "ridlc"
@@ -346,6 +359,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "sysapi"
+version = "0.17.0"
+dependencies = [
+ "libc",
+ "radix-abi",
+ "radix-hw",
 ]
 
 [[package]]

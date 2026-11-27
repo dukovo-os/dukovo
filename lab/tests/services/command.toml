@@ -11,11 +11,15 @@
 # the log down.
 about = "service list, status (holdings, processes, log lines), starts that wait and show Spark's lines, stops that name what they stop, logs; a wait cut short, a start that never gets ready, a requirement given up on, the log down (ADR 0471)"
 time = "6m"
-host_needs = ["scp"]
+host_needs = ["scp", "ssh"]
 
 [[step]]
-host = "sh {here}/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
-expect = "copied: org.nginx.nginx"
+host = "sh {here}/lab-catalog.sh {machine} {machine-port:22}"
+expect = "copied: the test catalog"
+[[step]]
+run = "sh /users/lab/lab-catalog-add.sh"
+root = true
+expect = "added catalog labtest, which lists"
 [[step]]
 host = "sh {here}/copy-file.sh {here}/lab-web.service {machine} {machine-port:22}"
 expect = "copied: lab-web.service"
@@ -27,7 +31,7 @@ host = "sh {here}/copy-file.sh {here}/lab-top.service {machine} {machine-port:22
 expect = "copied: lab-top.service"
 # From nothing: a run before may have left them.
 [[step]]
-run = "sh -c 'cd /system/settings/spark/services && rm -f lab-web.toml lab-slow.toml lab-top.toml /system/settings/lab-slow-ok; bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+run = "sh -c 'cd /system/settings/spark/services && rm -f lab-web.toml lab-slow.toml lab-top.toml /system/settings/lab-slow-ok; bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle install --for-everyone --yes org.nginx.nginx --from labtest | tail -1'"
 root = true
 expect = "installed org.nginx.nginx"
 [[step]]

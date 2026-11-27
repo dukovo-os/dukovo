@@ -282,7 +282,7 @@ async fn start(
         browser: browser_name(&cx.user_agent),
     };
     let [calls, replies] = theirs.fds();
-    let fds = [calls, replies, libc::STDERR_FILENO];
+    let fds = [calls, replies, sysapi::fd::Standard::Error.fd()];
     let (answer, _) = authd::ask(&cx.shared.authd, console, &fds)
         .await
         .map_err(|why| Failure::new(Kind::AuthdSilent, why))?;

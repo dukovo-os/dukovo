@@ -56,12 +56,15 @@ pub use radix::run;
 mod radix {
     use std::fs::{self, File, OpenOptions};
     use std::os::fd::{AsRawFd, OwnedFd};
+    use std::os::unix::process::ExitStatusExt;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
     use radix_abi::capability::{self, ObjectKind, Rights};
     use radix_abi::directory::{self, OpenFlags};
     use radix_abi::{process, startup, syscalls};
+    use sysapi::process as process_calls;
+    use sysapi::signal;
 
     use super::Plan;
     use crate::bundles::folder::Dir;
@@ -185,8 +188,8 @@ mod radix {
         /// SIGTERM, and SIGKILL if it has not ended `STOP_TIME` later.
         fn stop(&mut self) {
             let Some(pid) = self.pid.take() else { return };
-            // SAFETY: kill(2) touches no memory.
-            unsafe { libc::kill(pid, libc::SIGTERM) };
+            // linuxd may have ended already, which `gone` then sees.
+            let _ = process_calls::kill(pid, libc::SIGTERM);
             let mut waited = Duration::ZERO;
             while waited < STOP_TIME {
                 if gone(pid) {
@@ -195,11 +198,9 @@ mod radix {
                 std::thread::sleep(STOP_POLL);
                 waited += STOP_POLL;
             }
-            // SAFETY: as above; waitpid writes no status here.
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
-                libc::waitpid(pid, std::ptr::null_mut(), 0);
-            }
+            // As above; and the wait fails only when it has been reaped.
+            let _ = process_calls::kill(pid, libc::SIGKILL);
+            let _ = process_calls::wait(pid);
         }
     }
 
@@ -211,9 +212,7 @@ mod radix {
 
     /// Whether process `pid`, a child, has ended, which this takes note of.
     fn gone(pid: libc::pid_t) -> bool {
-        // SAFETY: waitpid without a status touches no memory.
-        let r = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
-        r == pid || r < 0
+        !matches!(process_calls::try_wait(pid), Ok(None))
     }
 
     /// Builds the view, starts linuxd and the program in it, and waits for
@@ -337,8 +336,7 @@ mod radix {
         // In a group of its own, so that the terminal's Ctrl+C, which goes
         // to the foreground group, does not end it with the program. It
         // may not be allowed, and nothing is lost: linuxd is started again.
-        // SAFETY: setpgid touches no memory.
-        unsafe { libc::setpgid(pid, pid) };
+        let _ = process_calls::set_process_group(pid, pid);
         Ok(pid)
     }
 
@@ -446,18 +444,19 @@ mod radix {
     fn wait_for(ctx: &Ctx<'_>, linuxd: &mut Daemon, number: u64) -> Result<i32, String> {
         let program = libc::pid_t::try_from(number).map_err(|_| "its number".to_string())?;
         // As system(3): the terminal's Ctrl+C is the program's to take.
-        // SAFETY: setting dispositions touches no memory.
-        let old = unsafe {
-            (libc::signal(libc::SIGINT, libc::SIG_IGN), libc::signal(libc::SIGQUIT, libc::SIG_IGN))
-        };
+        let old = [libc::SIGINT, libc::SIGQUIT].map(signal::save);
+        for number in [libc::SIGINT, libc::SIGQUIT] {
+            // sigaction fails only for a number that is no signal.
+            let _ = signal::ignore(number);
+        }
         let begun = Instant::now();
         let mut restarts = Restarts::default();
         let code = loop {
             let (pid, status) = match wait_any() {
                 Ok(done) => done,
                 Err(why) => {
-                    // SAFETY: kill(2) touches no memory.
-                    unsafe { libc::kill(program, libc::SIGKILL) };
+                    // The program may have ended already.
+                    let _ = process_calls::kill(program, libc::SIGKILL);
                     break Err(why);
                 }
             };
@@ -470,18 +469,17 @@ mod radix {
                 }
             } else if Some(pid) == linuxd.pid {
                 if supervise::stopped(status) {
-                    // SAFETY: kill(2) touches no memory.
-                    unsafe { libc::kill(pid, libc::SIGCONT) };
+                    // linuxd may have ended since, which the next wait sees.
+                    let _ = process_calls::kill(pid, libc::SIGCONT);
                 } else if supervise::exit_status(status).is_some() {
                     linuxd.pid = None;
                     restart(ctx, linuxd, &mut restarts, begun.elapsed());
                 }
             }
         };
-        // SAFETY: as above.
-        unsafe {
-            libc::signal(libc::SIGINT, old.0);
-            libc::signal(libc::SIGQUIT, old.1);
+        for saved in old.into_iter().flatten() {
+            // sigaction fails only for a number that is no signal.
+            let _ = saved.restore();
         }
         code
     }
@@ -510,15 +508,11 @@ mod radix {
     /// The next process of ours that ended or stopped, and its status.
     fn wait_any() -> Result<(libc::pid_t, i32), String> {
         loop {
-            let mut status = 0;
-            // SAFETY: waitpid writes the status.
-            let pid = unsafe { libc::waitpid(-1, &raw mut status, libc::WUNTRACED) };
-            if pid >= 0 {
-                return Ok((pid, status));
-            }
-            let error = std::io::Error::last_os_error();
-            if error.kind() != std::io::ErrorKind::Interrupted {
-                return Err(format!("waiting for it: {}", strip_os_error(&error)));
+            match process_calls::wait_with(-1, libc::WUNTRACED) {
+                Ok(Some((pid, status))) => return Ok((pid, status.into_raw())),
+                Ok(None) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(format!("waiting for it: {}", strip_os_error(&error))),
             }
         }
     }
@@ -533,9 +527,9 @@ mod radix {
         if !stopped {
             return;
         }
-        // SAFETY: stopping ourselves; we go on after SIGCONT.
-        unsafe { libc::kill(libc::getpid(), libc::SIGSTOP) };
-        // SAFETY: kill(2) touches no memory.
-        unsafe { libc::kill(program, libc::SIGCONT) };
+        // A stop of this process cannot fail, and the program may have
+        // ended meanwhile, which the next wait sees.
+        let _ = signal::raise(libc::SIGSTOP);
+        let _ = process_calls::kill(program, libc::SIGCONT);
     }
 }

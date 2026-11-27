@@ -6,13 +6,15 @@
 //! them as Linux's ACPI drivers do in `/kernel/class/power_supply`:
 //! `energy_full` and `energy_full_design` in µWh, or for a battery that
 //! counts in amperes `charge_full` and `charge_full_design` in µAh. A
-//! battery under 80% of its design capacity is worn out. Most servers
-//! and desktops have none, which is skipped.
+//! battery under 80% of its design capacity is worn out. A UPS plugged
+//! in by USB (ADR 0741) says itself whether its battery should be
+//! replaced. Most servers and desktops have neither, which is skipped.
 
 use std::fs;
 use std::path::Path;
 
 use super::check::{Area, Check, Problem};
+use super::power::{self, Supply};
 
 /// Where the kernel shows the power supplies.
 pub(crate) const POWER_SUPPLY: &str = "/kernel/class/power_supply";
@@ -88,17 +90,42 @@ pub(crate) fn check(battery: &Battery) -> Check {
     Check::passed(Area::Battery, &battery.name, detail)
 }
 
-/// The checks of the area: one for each battery in `root`.
+/// The check of a UPS: whether it says its battery should be replaced.
+pub(crate) fn check_ups(ups: &Supply) -> Check {
+    let model = ups.model.as_deref().map_or_else(String::new, |model| format!("{model}: "));
+    match ups.replace {
+        Some(true) => Check::warning(
+            Area::Battery,
+            &ups.name,
+            Problem::UpsBattery,
+            format!("{model}the UPS says its battery should be replaced"),
+        ),
+        Some(false) => Check::passed(
+            Area::Battery,
+            &ups.name,
+            format!("{model}the UPS says its battery is good"),
+        ),
+        None => Check::skipped(
+            Area::Battery,
+            &ups.name,
+            "the UPS does not say whether its battery should be replaced".into(),
+        ),
+    }
+}
+
+/// The checks of the area: one for each battery and UPS in `root`.
 pub(crate) fn run(root: &Path) -> Vec<Check> {
     let found = batteries(root);
-    if found.is_empty() {
+    let upses: Vec<Supply> =
+        power::gather(root).supplies.into_iter().filter(|s| s.kind == "ups").collect();
+    if found.is_empty() && upses.is_empty() {
         return vec![Check::skipped(
             Area::Battery,
             "battery",
-            "this machine has no battery".into(),
+            "this machine has no battery or UPS".into(),
         )];
     }
-    found.iter().map(check).collect()
+    upses.iter().map(check_ups).chain(found.iter().map(check)).collect()
 }
 
 #[cfg(test)]
@@ -185,5 +212,25 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         let none = run(&root);
         assert_eq!((none.len(), none[0].outcome), (1, Outcome::Skipped));
+    }
+
+    #[test]
+    fn a_ups_that_says_its_battery_should_be_replaced_is_a_warning() {
+        let root = std::env::temp_dir().join(format!("hardware-ups-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("ups0")).unwrap();
+        for (file, text) in [("type", "UPS"), ("health", "Dead"), ("model_name", "CP1500PFCLCD")] {
+            fs::write(root.join("ups0").join(file), format!("{text}\n")).unwrap();
+        }
+        let checks = run(&root);
+        assert_eq!(checks.len(), 1);
+        assert_eq!(
+            (checks[0].outcome, checks[0].id.as_deref()),
+            (Outcome::Warning, Some("HW-142"))
+        );
+        assert_eq!(checks[0].detail, "CP1500PFCLCD: the UPS says its battery should be replaced");
+        fs::write(root.join("ups0").join("health"), "Good\n").unwrap();
+        assert_eq!(run(&root)[0].outcome, Outcome::Passed);
+        let _ = fs::remove_dir_all(&root);
     }
 }

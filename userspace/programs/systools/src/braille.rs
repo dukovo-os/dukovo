@@ -20,10 +20,11 @@
 use std::io;
 use std::path::Path;
 use std::process::{Child, Command};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use audio::settings::{entry, string};
+use sysapi::process;
+use sysapi::signal::{self, Caught};
 
 use crate::args::Args;
 use crate::util::{self, Fail, fail, usage};
@@ -345,11 +346,7 @@ pub fn wanted(settings: &Settings, found: Option<&Found>) -> Result<Option<Start
 }
 
 /// Set by SIGTERM: brailled stops BRLTTY and ends.
-static STOP: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_stop(_: libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-}
+static STOP: Caught = Caught::new();
 
 /// BRLTTY as brailled runs it.
 struct Running {
@@ -360,8 +357,7 @@ struct Running {
 /// Stops `running`'s BRLTTY and waits for it to end.
 fn stop(mut running: Running, why: &str) {
     println!("{why}: stopping BRLTTY");
-    // SAFETY: kill sends a signal to the child, which has not been reaped.
-    unsafe { libc::kill(running.child.id() as libc::pid_t, libc::SIGTERM) };
+    let _ = process::kill(running.child.id() as libc::pid_t, libc::SIGTERM);
     let until = Instant::now() + Duration::from_secs(5);
     loop {
         match running.child.try_wait() {
@@ -385,10 +381,7 @@ pub fn daemon(args: &mut Args) -> Result<i32, Fail> {
         println!("braille displays are off (braille.toml(5)); `braille on` turns them on");
         return Ok(0);
     }
-    // SAFETY: the handler only sets an atomic flag.
-    unsafe {
-        libc::signal(libc::SIGTERM, on_stop as *const () as libc::sighandler_t);
-    }
+    let _ = signal::catch(libc::SIGTERM, &STOP, libc::SA_RESTART);
     println!("looking for a braille display");
     let mut running: Option<Running> = None;
     // The last start that ended, and when it may be tried again.
@@ -445,10 +438,10 @@ pub fn daemon(args: &mut Args) -> Result<i32, Fail> {
             }
         }
         let until = Instant::now() + POLL;
-        while Instant::now() < until && !STOP.load(Ordering::Relaxed) {
+        while Instant::now() < until && !STOP.is_set() {
             std::thread::sleep(Duration::from_millis(100));
         }
-        if STOP.load(Ordering::Relaxed) {
+        if STOP.is_set() {
             if let Some(now) = running.take() {
                 stop(now, "brailled is stopping");
             }

@@ -25,6 +25,11 @@
 //!
 //! The project's own releases are signed on two YubiKeys, whose keys and
 //! first root the key ceremony makes ([`ceremony`], through [`yubikey`]).
+//! The project's install stick and ISO carry the release as the update
+//! server serves it ([`medium`]), and their checksums are signed on a
+//! YubiKey too ([`sums`]).
+
+#![forbid(unsafe_code)]
 
 pub mod advisory;
 pub mod archive;
@@ -33,11 +38,14 @@ pub mod ceremony;
 pub mod cli;
 pub mod firmware;
 pub mod list;
+pub mod medium;
 pub mod receiver;
+pub mod rekor;
 pub mod repo;
 pub mod rescue;
 pub mod rollout;
 pub mod store;
+pub mod sums;
 pub mod updates;
 pub mod verdict;
 pub mod yubikey;

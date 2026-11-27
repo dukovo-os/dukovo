@@ -263,6 +263,20 @@ reads the generation, and flushes the space's identifier if the generation
 is newer than the one it last loaded. With these two orders, every CPU
 either gets the shootdown or sees the new generation.
 
+A kernel thread runs on the tables of the space its CPU ran last, as on
+Linux's lazy TLB (ADR 0770): the switch to it loads nothing
+(`AddressSpace::run_kernel_thread`), and the CPU keeps marking the space
+as running, so it still gets the space's shootdowns. A switch back to the
+same space, the usual next one when a program's thread sleeps and the CPU
+idles meanwhile, reloads nothing either, which keeps the program's TLB
+entries where there are no PCIDs. The first shootdown of a user range
+that such a CPU gets makes it switch to the kernel's tables instead
+(`paging::serve_shootdown`), so a space that runs elsewhere costs it one
+interrupt. When a space's last handle goes, the CPUs that still keep its
+tables loaded leave them before they are freed (`leave_lazy_cpus`): this
+CPU at once, the others by a shootdown that each answers by switching.
+A CPU clears its mark on a space only after it has loaded other tables.
+
 Most of a program's page tables is empty: its few regions sit far apart
 in 128 TiB. So that walks of a space (`edit`, `copy_into` for `fork`, the
 frees) never read the empty parts, each table's frame record keeps, in its

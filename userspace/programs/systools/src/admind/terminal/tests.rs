@@ -346,12 +346,10 @@ fn a_pane_that_ends_is_said_to_its_sockets_and_its_terminal_ends_with_its_last()
 /// Whether the far side of the pseudo-terminal whose own side is
 /// `terminal` was closed, as a shell on it would see the hang-up.
 fn hung_up(terminal: &OwnedFd) -> bool {
-    use std::os::fd::AsRawFd;
-    let mut poll = libc::pollfd { fd: terminal.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-    // SAFETY: one pollfd, which lives across the call; no waiting.
-    let ready = unsafe { libc::poll(&raw mut poll, 1, 0) };
-    assert!(ready >= 0, "{}", std::io::Error::last_os_error());
-    poll.revents & libc::POLLHUP != 0
+    use std::os::fd::AsFd;
+    let mut fds = [sysapi::poll::PollFd::new(terminal.as_fd(), libc::POLLIN)];
+    sysapi::poll::poll(&mut fds, Some(std::time::Duration::ZERO)).unwrap();
+    fds[0].revents() & libc::POLLHUP != 0
 }
 
 #[test]

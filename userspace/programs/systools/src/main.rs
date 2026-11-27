@@ -5,6 +5,8 @@
 //! binary (ADR 0096). The library has the tools, and the code that picks
 //! the one the program was called as.
 
+#![forbid(unsafe_code)]
+
 fn main() -> std::process::ExitCode {
     systools::main()
 }
