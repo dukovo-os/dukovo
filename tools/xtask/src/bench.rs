@@ -199,14 +199,14 @@ pub const BUDGETS: &[(&str, u64)] = &[
     ("posix_tcp_roundtrip_same_cpu", 11_000),  // 9,274
     ("posix_udp_roundtrip_same_cpu", 15_000),  // 13,189, straight across (ADR 0553)
     ("posix_tcp_mib", 1_700_000),              // 1,515,375
-    ("display_check", 7_700),                  // 6,962
-    ("display_change_queued", 11_000),         // 9,180
-    ("display_change_firmware", 890_000),      // 805,197, 1280 by 800
-    ("display_small_firmware", 25_000),        // 22,596
-    ("display_pointer_firmware", 43_000),      // 38,577, a solid pointer of 32 by 32
-    ("display_change_virtio", 14_000),         // 12,477
-    ("display_small_virtio", 13_000),          // 11,714
-    ("display_pointer_virtio", 2_900),         // 2,590
+    ("display_check", 7_700),                  // 6,953
+    ("display_change_queued", 11_000),         // 9,405
+    ("display_change_firmware", 890_000),      // 809,723, 1280 by 800
+    ("display_small_firmware", 29_000),        // 26,051, rows of 256 bytes by registers (ADR 0775)
+    ("display_pointer_firmware", 46_000),      // 41,165, a solid pointer of 32 by 32, likewise
+    ("display_change_virtio", 14_000),         // 12,586
+    ("display_small_virtio", 13_000),          // 11,827
+    ("display_pointer_virtio", 2_900),         // 2,606
 ];
 
 /// The display layer's rows (`display-test cost`, ADR 0700), each with
