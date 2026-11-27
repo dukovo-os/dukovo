@@ -554,6 +554,7 @@ pub const HOST_TESTED: &[&str] = &[
     "dkv",
     "dukovo-install",
     "git-https-test",
+    "input",
     "kerberos",
     "keymap",
     "manifest",

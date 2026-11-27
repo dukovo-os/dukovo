@@ -2425,6 +2425,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "input"
+version = "1.0.0-alpha.1"
+dependencies = [
+ "radix-abi",
+ "radix-input",
+]
+
+[[package]]
 name = "instability"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3687,6 +3695,13 @@ dependencies = [
 [[package]]
 name = "radix-hw"
 version = "1.0.0-alpha.1"
+
+[[package]]
+name = "radix-input"
+version = "1.0.0-alpha.1"
+dependencies = [
+ "radix-abi",
+]
 
 [[package]]
 name = "radix-intel-net"
