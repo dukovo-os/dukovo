@@ -471,6 +471,21 @@ fn a_program_s_own_pointer_shows_over_its_window_with_no_frame_drawn() {
     assert!(showed.iter().any(|showed| showed.pointer), "{showed:?}");
     assert!(showed.iter().all(|showed| !showed.main && showed.damage.is_empty()), "{showed:?}");
     assert_eq!(showed.last().unwrap().pointer_at, Some((512, 384)));
+    // Off the window the pointer is windowd's arrow again, and the
+    // program gives its own again when the pointer comes back.
+    for (place, comes) in [(0.0, false), (0.5, true)] {
+        let before = world.showed();
+        let now = world.now();
+        world.desktop.pointed(now, Some(place), Some(place));
+        world.heard(&program, move |heard| match heard {
+            Heard::Enter(..) => comes,
+            Heard::Leave => !comes,
+            _ => false,
+        });
+        world.settle();
+        let showed = world.showed_since(before);
+        assert!(showed.iter().any(|showed| showed.pointer), "{place}: {showed:?}");
+    }
 }
 
 #[test]

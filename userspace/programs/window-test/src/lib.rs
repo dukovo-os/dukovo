@@ -112,6 +112,10 @@ struct Told {
     active: bool,
     /// The serial of the pointer's last coming onto the window.
     entered: Option<u32>,
+    /// The surface the program has the pointer show over the window. A
+    /// pointer shows what it was given until it leaves, so the program
+    /// gives it again each time the pointer comes onto the window.
+    pointer_surface: Option<wl_surface::WlSurface>,
     heard: VecDeque<Heard>,
 }
 
@@ -212,7 +216,9 @@ impl Client {
             }
         }
         self.queue.dispatch_pending(&mut self.told).map_err(|err| gone(&err))?;
-        Ok(())
+        // What the program answered while it took that in, as the
+        // pointer's picture when the pointer came onto the window.
+        self.queue.flush().map_err(|err| gone(&err))
     }
 
     /// Shows the window, `width` by `height`, with the pattern of
@@ -298,6 +304,7 @@ impl Client {
         surface.damage_buffer(0, 0, side as i32, side as i32);
         surface.commit();
         // A picture the pointer showed before is let go.
+        self.told.pointer_surface = Some(surface.clone());
         if let Some((before, pixels, _)) = self.pointer_shown.replace((surface, buffer, file)) {
             before.destroy();
             pixels.destroy();
@@ -547,7 +554,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Told {
 impl Dispatch<wl_pointer::WlPointer, ()> for Told {
     fn event(
         told: &mut Told,
-        _pointer: &wl_pointer::WlPointer,
+        pointer: &wl_pointer::WlPointer,
         event: wl_pointer::Event,
         (): &(),
         _connection: &Connection,
@@ -556,6 +563,9 @@ impl Dispatch<wl_pointer::WlPointer, ()> for Told {
         let heard = match event {
             wl_pointer::Event::Enter { serial, surface_x, surface_y, .. } => {
                 told.entered = Some(serial);
+                if let Some(shown) = &told.pointer_surface {
+                    pointer.set_cursor(serial, Some(shown), 0, 0);
+                }
                 Heard::Enter(surface_x, surface_y)
             }
             wl_pointer::Event::Leave { .. } => Heard::Leave,
