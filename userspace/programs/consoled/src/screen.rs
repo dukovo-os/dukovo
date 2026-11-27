@@ -436,7 +436,14 @@ impl<L: Link> Screen<L> {
     /// it is drawn at twice its size, and the grid's corner.
     pub fn describe(&self) -> Vec<String> {
         if self.surfaces.is_empty() {
-            return vec!["no screen is plugged in: the consoles show when one is".into()];
+            // A consoled that started under a borrower has not looked at
+            // the screens yet (ADR 0716).
+            let why = if self.lent {
+                "a program has the screens: the consoles show when it is done"
+            } else {
+                "no screen is plugged in: the consoles show when one is"
+            };
+            return vec![why.into()];
         }
         let line = |(at, surface): (usize, &Surface)| {
             let (font, scale) = LADDER[surface.fit.step];

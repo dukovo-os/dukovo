@@ -873,6 +873,7 @@ fn another_holder_in_front_keeps_the_screens_and_the_consoles_stand_under_it() {
     let mut screen = Screen::on(wire.clone(), radix_fbcon::MIN_GRID).unwrap();
     // It asked once, and not again, and draws nothing behind the other.
     assert!(screen.away());
+    assert_eq!(screen.describe(), ["a program has the screens: the consoles show when it is done"]);
     assert!(!screen.events() && !screen.tick(Instant::now()));
     assert_eq!(wire.0.borrow().changes, changes + 1);
     let front = wire.0.borrow().layer.front();
