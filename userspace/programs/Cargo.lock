@@ -1383,7 +1383,9 @@ version = "1.0.0-alpha.1"
 dependencies = [
  "display",
  "display-pattern",
+ "input",
  "libc",
+ "radix-abi",
  "sysapi",
 ]
 
@@ -2403,6 +2405,23 @@ checksum = "3b5cf4372d022092674a83b8febf5865f7a573cc0c5baec5e49c879b6a20978f"
 dependencies = [
  "block-padding",
  "hybrid-array",
+]
+
+[[package]]
+name = "input"
+version = "1.0.0-alpha.1"
+dependencies = [
+ "radix-abi",
+ "radix-input",
+]
+
+[[package]]
+name = "inputd"
+version = "1.0.0-alpha.1"
+dependencies = [
+ "input",
+ "libc",
+ "sysapi",
 ]
 
 [[package]]
@@ -3654,6 +3673,13 @@ dependencies = [
 [[package]]
 name = "radix-hw"
 version = "1.0.0-alpha.1"
+
+[[package]]
+name = "radix-input"
+version = "1.0.0-alpha.1"
+dependencies = [
+ "radix-abi",
+]
 
 [[package]]
 name = "radix-intel-net"
@@ -5122,6 +5148,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "if-addrs",
+ "input",
  "instant-acme",
  "jiff",
  "kerberos",

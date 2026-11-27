@@ -72,9 +72,10 @@
 //! seconds before it draws, or until the kernel logs an error.
 //!
 //! _/devices/display/attention_ is held by the one service that shows
-//! trusted prompts (ADR 0702). Release 1.1 makes the file and its rule
-//! that one description holds it; the secure key that brings its holder
-//! to the front comes with the input devices.
+//! trusted prompts (ADR 0702): one description holds it. The secure key,
+//! Ctrl+Alt+Delete, brings its holder to the front, whoever is in front
+//! (ADR 0708, radix-input(2)). The holder reads EVENT_ATTENTION and has
+//! the front until it asks ATTENTION_END.
 
 module display;
 
@@ -142,6 +143,11 @@ const LEND: u32 = 0x4453000b;
 /// ended, the front goes to the one it had it from, and to the kernel's
 /// log when no holder is left.
 const RETURN: u32 = 0x4453000c;
+/// The holder of _attention_ that the secure key raised says it is done
+/// (ADR 0708): the front is again the top of the stack's, and the
+/// readers of the input files that the key paused are heard again
+/// (radix-input(2)). Fails with busy for a holder the key did not raise.
+const ATTENTION_END: u32 = 0x4453000d;
 
 /// GET's part: what the thing is.
 const PART_INFO: u32 = 0;
@@ -355,6 +361,13 @@ const EVENT_BORROWER_ENDED: u32 = 7;
 const EVENT_FAILED: u32 = 8;
 /// Events were lost, the oldest, because more than EVENTS_KEPT waited.
 const EVENT_OVERFLOW: u32 = 9;
+/// The secure key, Ctrl+Alt+Delete, was pressed. The holder, which has
+/// _attention_, is in front until it asks ATTENTION_END, whoever was in
+/// front before, and no other program reads a key meanwhile. An
+/// EVENT_FRONT comes before it if the holder was not in front: `count`
+/// is then 1, and ATTENTION_END passes the front back to the top of the
+/// stack. It is 0 if the holder was in front already.
+const EVENT_ATTENTION: u32 = 10;
 
 /// LIST's answer for one thing.
 struct Thing {
@@ -627,7 +640,9 @@ struct DisplayEvent {
     /// When, on the clock radix-process(2)'s `clock` calls monotonic,
     /// which stamps input events too.
     time_ns: u64;
-    /// The beat's number, for EVENT_SHOWN and EVENT_BEAT.
+    /// The beat's number, for EVENT_SHOWN and EVENT_BEAT. For
+    /// EVENT_ATTENTION, 1 if the front passed to the holder and 0 if it
+    /// had it.
     count: u64;
     /// The change's cookie.
     cookie: u64;

@@ -32,6 +32,7 @@ for section 2, which `ridlc` generates from the interface definitions in
 | `systemctl(1)`, `hostnamectl(1)`, `sendmail(8)` | Linux's front ends for services, the machine's name and mail from scripts: what each takes and what to run for the rest |
 | `tune(8)` | Performance profiles: the kernel's settings for speed, power and waiting, chosen together, and which fits the machine |
 | `consoled(8)` | The virtual consoles on the screen and keyboard, and their keys |
+| `inputd(8)` | Handing the keyboards, mice and other input devices to the program that has the screens: who is handed them, the exchange on its socket, and what each device is called |
 | `authd(8)`, `user(8)`, `passwd(1)`, `login(1)` | Accounts: the service that keeps them, checks passwords and starts sessions, making and listing accounts, changing a password, signing in at a console, and who may sign in to the web console |
 | `admind(8)`, `admin(8)`, `admin.toml(5)`, `dukovo-admin(7)` | The web console: reaching it and the first visit, who signs in and how, the sign-in rules, second steps, unlocking, sessions, what the server checks and limits, and the errors it gives; and the command that shows its address, certificate fingerprint and actions, and makes API tokens |
 | `elevate(8)`, `sudo(8)` | Running a command as an administrator, after the password once in each terminal pane every 15 minutes, and what elevate says in a help screen |

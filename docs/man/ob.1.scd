@@ -1759,8 +1759,9 @@ _target/userspace/_).
 
 *bench* [*--gate* [*--defer-close*]] [*--linux-kernel* _file_] [*--runs* _n_] [*--no-linux*] [*--instructions*] [*--shell*] [*--scaling*] [*--from* _file_] [*--summary* _file_] [*--debug* | *--release*]
 	Measure what system calls, IPC round trips, context switches, fresh
-	pages, TLB shootdowns, memory copies, files and POSIX calls cost on
-	Radix, next to Linux.
+	pages, TLB shootdowns, memory copies, files, POSIX calls, changes of
+	a screen's picture and a mouse's motions cost on Radix, next to
+	Linux.
 	Build a test image and boot it in QEMU on 2 CPUs with
 	*selftest=bench*, where the benchmark programs of the test image time
 	the cheapest system calls (an unknown number, which only enters and
@@ -1782,7 +1783,16 @@ _target/userspace/_).
 	disk, _vda_ on both systems, a file on this machine, and of an SD
 	card, a file too, in QEMU's _sdhci-pci_ reader, _mmcblk0_ on both,
 	and reads of 64 KiB and 1 MiB of a disc, a file too, in a DVD drive
-	on the AHCI controller, _cd0_ on Radix and _sr0_ on Linux.
+	on the AHCI controller, _cd0_ on Radix and _sr0_ on Linux. A third
+	boot, on the same machine with a virtio graphics card of 1024 by 768
+	beside its VGA card and a virtio mouse, runs *display-test cost*: a
+	change of a screen's picture checked, left to wait for the beat and
+	shown at once, 64 by 64 pixels of it shown, and the pointer moved,
+	on the firmware's framebuffer and on the virtio card; then 400
+	motions of the mouse, which *ob* sends through QEMU 5 ms apart, each
+	from the time its interrupt stamped it with to the program that
+	waited for it having read it. The kernel counts what it does for
+	each of these rows too.
 
 	Then boot Linux in a virtual machine set up the same way, with
 	_tools/linux-bench_ built as a static program and run as its only
@@ -1793,7 +1803,16 @@ _target/userspace/_).
 	round trips with a pair of threads on each CPU at once, the same file
 	calls on a tmpfs, and last the same POSIX benchmarks, built from the
 	same file with this machine's C library, with the same disk, card
-	and disc opened with *O_DIRECT*). This
+	and disc opened with *O_DIRECT*). It boots once more on the machine
+	with the virtio card and the mouse, with a VESA mode of 1280 by 800
+	so that its _simpledrm_ driver has the firmware's framebuffer, for
+	*linux-bench --only display*: an atomic commit checked and made,
+	*DIRTYFB* of 64 by 64 pixels and a pointer move on its DRM cards, by
+	the time that passed, or for a commit and a *DIRTYFB* on the virtio
+	card, which its driver holds for a frame, by the calling thread's
+	processor time, and the same motions read from the mouse's event
+	device (ADR 0709). A boot of either system that
+	does not say those sizes for its two screens fails. This
 	Linux boots with *mitigations=off*, since Radix has no mitigations of
 	CPU vulnerabilities yet. Under KVM, Radix and this Linux are measured
 	three times in turn, and each operation counts its fastest run on
@@ -1857,7 +1876,11 @@ _target/userspace/_).
 		_out/bench/instructions.md_; no Linux runs. With *--gate*, fail
 		if an operation on one CPU takes more instructions than its
 		budget (*BUDGETS* in _tools/xtask/src/bench.rs_: what it took
-		when the budget was set, plus a tenth). CI runs
+		when the budget was set, plus a tenth), or if a motion of the
+		mouse sends more than 0.1 interrupts to another CPU
+		(*EVENT_LIMITS*, ADR 0710): the kernel counts them, and a
+		reader woken on a CPU that slept counts few instructions more
+		and takes several times as long. CI runs
 		*ob bench --instructions --gate* on every pull request and every
 		merge, so a longer hot path fails there even when the timings are
 		noisy.

@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "input"
+description = "Input devices for programs: radix-input(2)'s records from bytes, its requests on a device's file, what kind of device each is, and how inputd(8) hands devices out"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The interface, generated from abi/input.ridl.
+radix-abi = { path = "../../../kernel/abi" }
+
+[dev-dependencies]
+# The kernel's own writers of the records and its account of a device,
+# which the tests check these readers against.
+radix-input = { path = "../../../kernel/lib/input" }
+
+[lints]
+workspace = true

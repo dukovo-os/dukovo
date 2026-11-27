@@ -507,6 +507,54 @@ paging (the page cache came in Phase 7, and anonymous memory filled on
 touch in Phase 8): the same work as a first-touch fault (a zeroed page,
 mapped), plus giving it back.
 
+The display layer's short paths and an input event's way to its reader
+are measured in two more boots, one of each system, on the same machine
+with a virtio graphics card of 1024 by 768 beside the VGA card and a
+virtio mouse (ADR 0709). Radix runs `display-test cost`, and Linux
+`linux-bench --only display`, booted with a VESA mode of 1280 by 800 so
+that `simpledrm` drives the firmware's framebuffer as Radix's firmware
+card does, and with the pinned kernel's `virtio-gpu` and `virtio_input`
+modules. Each program says the size of each card's screen, and a boot
+that says another size fails.
+
+| Radix | Linux baseline |
+| --- | --- |
+| `display_check`: a change that puts another picture on a main plane, checked only | `drm_check`: an atomic commit of another framebuffer, with TEST_ONLY |
+| `display_change_queued`: that change checked and left to wait for the beat, in the place of the one before | none: Linux refuses a change while the one before has not shown |
+| `display_change_firmware`, `display_change_virtio`: a whole new picture shown at once | `drm_flip_firmware`, `drm_flip_virtio`: that commit made, on `simpledrm` and on `virtio_gpu` |
+| `display_small_firmware`, `display_small_virtio`: 64 by 64 pixels of the picture shown at once | `drm_dirty_firmware`, `drm_dirty_virtio`: DIRTYFB of 64 by 64 pixels |
+| `display_pointer_firmware`: a solid pointer of 32 by 32 pixels moved, which the driver draws | none: `simpledrm` has no pointer plane |
+| `display_pointer_virtio`: the pointer moved | `drm_cursor_virtio`: a MODE_CURSOR move |
+| `input_to_reader`, `input_to_reader_p99`: a motion of the mouse, from the time its interrupt stamped it with to a reader that waited in `read` having read it; the middle one of 400 motions, and the one that 99 in 100 were faster than | `evdev_to_reader`, `evdev_to_reader_p99`: the same on the mouse's event device, stamped with the monotonic clock |
+
+Each display operation is timed by itself, 400 times, with what reading
+the clock twice costs taken off and a moment for the card after it,
+outside the time. Radix's rows are the time that passed, and so are
+Linux's where its call waits for nothing (`<row>_passed`): the check,
+the firmware card's rows and the pointer's move. `virtio_gpu` holds a
+blocking commit and a DIRTYFB until the next of the 60 frames a second
+it counts, 10.9 ms that are no cost of the change, so Linux's rows for
+a whole picture and a small change on that card are the calling
+thread's processor time. What Linux does for those calls outside the
+calling thread is left out with the wait, so the two lean Linux's way.
+The motions come from outside both systems: each program says when it
+is ready, and `ob bench` sends 400 through QEMU, 5 ms apart. These rows
+are reported and not gated until Radix has first met parity on them on
+CI's runners. With `--instructions` the same boot of Radix counts them,
+and each display row and the middle motion has a budget; the slowest
+motions, which met a timer or another interrupt on their way, have
+none.
+
+Radix counts what its kernel does for each of these rows too, as for
+the rows above: a display row over 100 more operations, made after the
+timed ones, and the motions from the reader's first wait to its last
+read. A motion takes three switches, on the CPU its interrupt arrives
+at: from idle to the driver's thread, to the reader, and back (ADR
+0710). With `--instructions --gate`, a motion that sends more than 0.1
+interrupts to another CPU fails, which is a reader woken on a CPU that
+slept: it counts few instructions more and takes several times as long
+under a hypervisor.
+
 The report shows each Radix number, the Linux one from the virtual
 machine, their ratio and the host's Linux. Under KVM a system call does
 not leave the guest, and a wake-up on another CPU is an interrupt the

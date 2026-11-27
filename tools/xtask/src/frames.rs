@@ -127,6 +127,11 @@ const ALLOWED: &[(&str, &str)] = &[
          CPU's 64 KiB stack",
     ),
     (
+        "radix::input::virtio::new_bound",
+        "sets up a virtio keyboard, mouse or tablet and moves it onto the heap, at boot, on the \
+         boot CPU's 64 KiB stack",
+    ),
+    (
         "<radix_virtio::scsi::Scsi>::new",
         "sets up a virtio SCSI adapter's queue for radix::fs::disk::virtio_scsi::bind, at boot, \
          on the boot CPU's 64 KiB stack",

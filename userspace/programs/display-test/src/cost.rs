@@ -1,11 +1,13 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! `display-test cost`: what the layer's short paths cost, for `ob bench
-//! --instructions`, on a machine with the firmware's card and a virtio
-//! one. Each row is one `BENCH` line: the nanoseconds one operation
-//! took, which are the instructions it took where the machine counts
-//! them.
+//! `display-test cost`: what the layer's short paths cost, and an input
+//! event's way to its reader, for `ob bench`, on a machine with the
+//! firmware's card, a virtio one and a virtio mouse. Each row is one
+//! `BENCH` line: the nanoseconds one operation took, which are the
+//! instructions it took where the machine counts them (`ob bench
+//! --instructions`). `linux-bench --only display` measures Linux's like
+//! of each row in the same way.
 //!
 //! | Row | One operation |
 //! |---|---|
@@ -14,6 +16,16 @@
 //! | `display_change_<card>` | that change made at once (NOW): the whole picture is new to the card |
 //! | `display_small_<card>` | a change made at once that names 64 by 64 pixels of the picture as new, clear of the pointer |
 //! | `display_pointer_<card>` | MOVE_POINTER of a pointer of 32 by 32 pixels, every one of them solid, to a place clear of the last |
+//! | `input_to_reader` | from the time a motion of the mouse was stamped with at its interrupt to a reader, which waited in read(2), having read its report: the middle one of the motions |
+//! | `input_to_reader_p99` | the same, for the motion that 99 in 100 were faster than |
+//!
+//! Each row but the slowest motions' has a `BENCHCOUNT` line too: what
+//! the kernel did meanwhile, as `/processes/stat` counts it, which `ob
+//! bench` divides by the operations. A display row's is counted over 100
+//! more operations, made after the timed ones, and the input row's from
+//! the reader's first wait to its last motion read, the time between the
+//! motions with it. A motion whose interrupt, driver and reader share a
+//! processor sends no interrupt to another.
 //!
 //! `<card>` is `firmware` or `virtio`. An operation is timed by itself,
 //! and what reading the clock twice costs is taken off. A card is given
@@ -22,7 +34,15 @@
 //! operation, as many each time, and none has to be waited for. The
 //! events of the changes that wait are read outside the time too, as
 //! a program that makes such changes reads them.
+//!
+//! Before each card's rows the program says `display-test: <card> shows
+//! <width> by <height>`, which `ob bench` holds against the size Linux's
+//! rows are measured at. The motions come from outside: the program
+//! says `display-test: input: ready for <count> motions`, and `ob bench`
+//! sends that many through QEMU, one at a time.
 
+use std::fmt::Write as _;
+use std::io::Read;
 use std::time::Duration;
 
 use display::abi::{
@@ -30,13 +50,19 @@ use display::abi::{
     PLANE_PICTURE,
 };
 use display::wire::{self, ChangeBytes};
+use input::abi::{EV_SYN, SYN_REPORT};
+use input::wire::events;
 use sysapi::time;
 
+use crate::input::open_named;
 use crate::rig::{Outcome, Seat};
 use crate::stage::{Stage, unmade};
 
 /// How many times each operation is done.
 const ROUNDS: u32 = 400;
+
+/// How many more times it is done for the kernel to count what it does.
+const COUNTED: u32 = 100;
 
 /// The moment a card is given after an operation that sent it something.
 const MOMENT: Duration = Duration::from_millis(2);
@@ -52,6 +78,19 @@ const POINTER: u32 = 32;
 const POINTER_AT: (i16, i16) = (400, 300);
 const POINTER_THERE: i16 = 440;
 
+/// The name the virtio mouse gives itself, and how many of its motions
+/// are timed.
+const MOUSE: &str = "QEMU Virtio Mouse";
+const MOTIONS: usize = 400;
+
+/// What `ob bench` counts of the kernel for an operation, as
+/// `/processes/stat` names it: the switches, and what costs an exit to
+/// the host under a hypervisor.
+const EVENTS: [&str; 5] = ["switches", "timer_writes", "ipis", "halts", "polls"];
+
+/// The kernel's file of its counts since boot, one a line (`ipis: 12`).
+const STAT: &str = "/processes/stat";
+
 /// Runs the rows.
 pub fn run() -> Outcome {
     let mut stage = Stage::of(Seat::open()?, 0)?;
@@ -65,9 +104,11 @@ pub fn run() -> Outcome {
             CARD_VIRTIO => "virtio",
             other => return Err(format!("a card of kind {other}")),
         };
+        let canvas = &stage.shown[at].canvas;
+        println!("display-test: {card} shows {} by {}", canvas.width, canvas.height);
         one_card(&mut stage, at, card, clock)?;
     }
-    Ok(())
+    input_rows()
 }
 
 /// What reading the clock twice in a row costs: the least of many
@@ -103,7 +144,111 @@ fn row(
     }
     let each = total as f64 / f64::from(ROUNDS);
     println!("BENCH name={name} ns={each:.2} iterations={ROUNDS}");
+    count_row(name, one, rest)
+}
+
+/// Prints the `BENCHCOUNT` line of the row `name`: what the kernel
+/// counted of [`EVENTS`] while each of [`COUNTED`] more operations was
+/// made, the rest after each left out. The timed operations are not
+/// counted: reading the counts before one would warm the processor for
+/// it. Nothing is printed where the kernel does not say.
+fn count_row(
+    name: &str,
+    mut one: impl FnMut(u32) -> Outcome,
+    mut rest: impl FnMut(u32) -> Outcome,
+) -> Outcome {
+    let mut counted = [0; EVENTS.len()];
+    for round in ROUNDS + 1..=ROUNDS + COUNTED {
+        let Some(before) = events_now() else { return Ok(()) };
+        one(round)?;
+        let Some(after) = events_now() else { return Ok(()) };
+        for ((sum, before), after) in counted.iter_mut().zip(before).zip(after) {
+            *sum += after.saturating_sub(before);
+        }
+        rest(round)?;
+    }
+    println!("{}", count_line(name, COUNTED as usize, &[0; EVENTS.len()], &counted));
     Ok(())
+}
+
+/// The value of `sorted` that `part` in 100 of them are at or below.
+fn at_part(sorted: &[u64], part: usize) -> u64 {
+    sorted[(sorted.len() - 1) * part / 100]
+}
+
+/// The input rows: each of [`MOTIONS`] motions of the mouse, from the
+/// time its interrupt stamped it with to this reader having read it.
+/// The reader is tied to nobody, and waits in read(2) for each.
+fn input_rows() -> Outcome {
+    let mut mouse = open_named(MOUSE)?;
+    let before = events_now();
+    println!("display-test: input: ready for {MOTIONS} motions");
+    let mut took = Vec::with_capacity(MOTIONS);
+    let mut bytes = [0u8; 256];
+    while took.len() < MOTIONS {
+        let read = mouse.read(&mut bytes).map_err(|err| format!("reading the mouse: {err}"))?;
+        let now = time::monotonic_ns();
+        let before = took.len();
+        took.extend(reports(&bytes[..read]).map(|stamp| now.saturating_sub(stamp)));
+        if took.len() == before {
+            return Err(format!("the mouse gave {read} bytes, which end no report"));
+        }
+    }
+    let after = events_now();
+    took.sort_unstable();
+    let motions = took.len();
+    println!("BENCH name=input_to_reader ns={} iterations={motions}", at_part(&took, 50));
+    println!("BENCH name=input_to_reader_p99 ns={} iterations={motions}", at_part(&took, 99));
+    if let (Some(before), Some(after)) = (before, after) {
+        println!("{}", count_line("input_to_reader", motions, &before, &after));
+    }
+    Ok(())
+}
+
+/// The kernel's counts of [`EVENTS`] now; `None` if it does not say.
+fn events_now() -> Option<[u64; EVENTS.len()]> {
+    events_in(&std::fs::read_to_string(STAT).ok()?)
+}
+
+/// The counts of [`EVENTS`] in `stat`, the text of [`STAT`]; `None` if
+/// one of them is not there.
+fn events_in(stat: &str) -> Option<[u64; EVENTS.len()]> {
+    let mut counts = [None; EVENTS.len()];
+    for (name, count) in stat.lines().filter_map(|line| line.split_once(": ")) {
+        if let Some(at) = EVENTS.iter().position(|event| *event == name) {
+            counts[at] = count.parse().ok();
+        }
+    }
+    let mut all = [0; EVENTS.len()];
+    for (count, slot) in counts.into_iter().zip(&mut all) {
+        *slot = count?;
+    }
+    Some(all)
+}
+
+/// The `BENCHCOUNT` line of the row `name`: what the kernel counted of
+/// [`EVENTS`] from `before` to `after`, over `rounds` operations.
+fn count_line(
+    name: &str,
+    rounds: usize,
+    before: &[u64; EVENTS.len()],
+    after: &[u64; EVENTS.len()],
+) -> String {
+    let mut line = format!("BENCHCOUNT group={name} rounds={rounds}");
+    for ((event, before), after) in EVENTS.iter().zip(before).zip(after) {
+        let _ = write!(line, " {event}={}", after.saturating_sub(*before));
+    }
+    line
+}
+
+/// The time stamps of the reports that end among the events `read`
+/// holds. A motion is one report, which one read takes; a reader kept
+/// from the processor for longer than the motions are apart reads two
+/// at once, and each counts with the time it waited.
+fn reports(read: &[u8]) -> impl Iterator<Item = u64> + '_ {
+    events(read)
+        .filter(|event| (event.kind, event.code) == (EV_SYN, SYN_REPORT))
+        .map(|event| event.time_ns)
 }
 
 /// The rest a card is given after an operation that sent it something.
@@ -157,4 +302,59 @@ fn one_card(stage: &mut Stage, at: usize, card: &str, clock: u64) -> Outcome {
         holder.move_pointer(pointer, x, POINTER_AT.1).map_err(|err| format!("MOVE_POINTER: {err}"))
     };
     row(&format!("display_pointer_{card}"), clock, point, moment)
+}
+
+#[cfg(test)]
+mod tests {
+    use input::abi::{EV_REL, InputEvent, REL_X};
+
+    use super::*;
+
+    /// An event of `kind` and `code` stamped `time_ns`, as a read gives it.
+    fn event(time_ns: u64, kind: u16, code: u16) -> [u8; InputEvent::SIZE] {
+        let mut bytes = [0u8; InputEvent::SIZE];
+        bytes[InputEvent::OFFSET_TIME_NS..][..8].copy_from_slice(&time_ns.to_le_bytes());
+        bytes[InputEvent::OFFSET_KIND..][..2].copy_from_slice(&kind.to_le_bytes());
+        bytes[InputEvent::OFFSET_CODE..][..2].copy_from_slice(&code.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn each_report_that_ends_in_a_read_is_one_motion() {
+        // Two motions read at once, and half a third.
+        let read = [
+            event(5, EV_REL, REL_X),
+            event(5, EV_SYN, SYN_REPORT),
+            event(9, EV_REL, REL_X),
+            event(9, EV_SYN, SYN_REPORT),
+            event(12, EV_REL, REL_X),
+        ];
+        assert_eq!(reports(read.as_flattened()).collect::<Vec<_>>(), [5, 9]);
+        assert_eq!(reports(&[]).count(), 0);
+    }
+
+    #[test]
+    fn the_kernels_counts_are_read_and_their_difference_is_one_line() {
+        let stat = "cpu0: user_ns=5 system_ns=7 idle_ns=9 switches=3\ncpus: 1\nswitches: 40\n\
+                    timer_writes: 2\nipis: 12\nhalts: 30\npolls: 1\npreemptions: 6\n";
+        let before = events_in(stat).expect("every event is there");
+        assert_eq!(before, [40, 2, 12, 30, 1]);
+        let after = [1240, 2, 12, 430, 3];
+        assert_eq!(
+            count_line("input_to_reader", 400, &before, &after),
+            "BENCHCOUNT group=input_to_reader rounds=400 switches=1200 timer_writes=0 ipis=0 \
+             halts=400 polls=2"
+        );
+        // A kernel that does not count one of them gives no line.
+        assert_eq!(events_in("switches: 40\nipis: 12\n"), None);
+        assert_eq!(events_in(&stat.replace("ipis: 12", "ipis: many")), None);
+    }
+
+    #[test]
+    fn the_middle_and_the_99th_of_100() {
+        let sorted: Vec<u64> = (1..=100).collect();
+        assert_eq!(at_part(&sorted, 50), 50);
+        assert_eq!(at_part(&sorted, 99), 99);
+        assert_eq!(at_part(&[7], 99), 7);
+    }
 }

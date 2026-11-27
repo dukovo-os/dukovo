@@ -27,6 +27,8 @@ has
 
 *hardware screens* [*--json*]
 
+*hardware inputs* [*--json*]
+
 *hardware memtest* *--next-start*
 
 *hardware memtest* *--cancel*
@@ -131,6 +133,14 @@ program has the screens. It reads the kernel's own account and asks no
 driver and no service, so it works with no console and no desktop
 running. No serial number of a monitor is read. It needs no rights. See
 *SCREENS*.
+
+*hardware inputs* lists every input device the kernel reads, as the
+Hardware page shows them: the keyboards, mice, tablets, touch devices
+and switches, each with what it is, how and where it is connected, how
+often it is read, and the keys, buttons, wheels and lights it has. It
+reads the kernel's own account and opens no device, so it reads no key,
+and works with no console and no desktop running. No serial number of a
+device is read. It needs no rights. See *INPUT DEVICES*.
 
 *hardware memtest* asks the kernel to test the free memory at the next
 start only, before it starts the first program. *--next-start* asks, and
@@ -337,13 +347,16 @@ does not say is _null_.
     "version": "1.20",
     "date": "07/12/2023"
   },
-  "screens": 1
+  "screens": 1,
+  "inputs": 2
 }
 ```
 
 _format_ is the version of the document, 1. _screens_ is how many
 screens have a monitor plugged in, or _null_ on a machine with no
-graphics card; *hardware screens* says what each is. _memory.bytes_ is
+graphics card; *hardware screens* says what each is. _inputs_ is how
+many input devices the kernel reads, the keyboards and mice among them;
+*hardware inputs* says what each is. _memory.bytes_ is
 what the kernel counts. For a program that holds the platform capability, _ecc_ is
 whether the memory corrects errors, _slots_ how many slots the board has,
 empty ones too, and _modules_ the modules that are in them, each with its
@@ -560,6 +573,60 @@ The text says who has the screens, then each card with what it is, and
 under it each screen: the monitor, the mode it shows, the modes it
 offers, and its colours. A machine with no graphics card says so.
 
+# INPUT DEVICES
+
+*hardware inputs --json* prints one line of JSON, with the version of
+the document, _format_ 1, and the input devices, _devices_, the one with
+the lowest number first. What a device does not say is _null_.
+
+```
+{"format":1,"held":false,"readers":3,"devices":[{"number":0,"name":"PS/2 keyboard","kinds":["keyboard"],"bus":"ps2","ids":null,"where":"ps2","rate_hz":null,"readers":1,"keys":104,"buttons":0,"wheel":false,"sideways_wheel":false,"lights":["num-lock","caps-lock","scroll-lock"]},{"number":2,"name":"Example Optical Mouse","kinds":["pointer"],"bus":"usb","ids":"1234:abcd","where":"usb-1-2/0","rate_hz":125,"readers":0,"keys":0,"buttons":3,"wheel":true,"sideways_wheel":false,"lights":[]}]}
+```
+
+*held*
+	Whether Ctrl+Alt+Delete has the consoles in front of a program that
+	has the screens: until the consoles' menu is closed, no program but
+	them reads a key (*consoled*(8)).
+
+*readers*
+	How many times an input file is open: every device's own file, and
+	_/devices/kbd_ and _/devices/mouse_, which read all of them. A
+	device's own _readers_ is how many times its own file is open, which
+	*inputd*(8) opens for the program that has the screens.
+
+*number*, *name*
+	The N of the device's file, _/devices/input/N_, and what the device
+	calls itself.
+
+*kinds*
+	What the device is, from the keys and axes it has: any of
+	*keyboard*, which has the keys of the 26 letters; *keys*, which has
+	keys without them, as a power button or a row of media keys;
+	*pointer*, which moves both ways and has a left button; *tablet*,
+	which says where it points; *touch*, which says where a finger is;
+	and *switch*, as a laptop's lid. A device that is none of them is
+	*other* alone. *inputd*(8) calls each device the same.
+
+*bus*, *ids*, *where*
+	How the device is connected, *usb*, *ps2*, *i2c* or, for a virtual
+	machine's own, *virtual*; its maker's number and its own, four
+	hexadecimal digits each, or _null_ for one that has none, as a PS/2
+	keyboard; and where it is plugged in, as _usb-1-2/0_ for interface 0
+	of the device at port 2 of USB bus 1.
+
+*rate_hz*
+	How many times a second the device asks to be read, or _null_ for
+	one that sends when it likes.
+
+*keys*, *buttons*, *wheel*, *sideways_wheel*, *lights*
+	How many keys and how many buttons the device has, whether it has a
+	wheel and one that turns sideways, and its lights: any of
+	*num-lock*, *caps-lock* and *scroll-lock*.
+
+The text says the same of each device under its name: what it is, how
+it is connected, what it has, and its file. A machine with no input
+device says so.
+
 # THE MEMORY TEST AT THE START
 
 *hardware memtest --next-start* writes the file _/system/state/hardware/memtest-asked.json_
@@ -725,8 +792,8 @@ support center says what it means and what to do.
 
 *hardware last* gives the status the saved check ended with, or 3 when
 none is saved. *hardware history*, *hardware show*, *hardware sensors*,
-*hardware devices* and *hardware screens* give 0, or 3 when the command
-line is wrong or what they read cannot be read.
+*hardware devices*, *hardware screens* and *hardware inputs* give 0, or
+3 when the command line is wrong or what they read cannot be read.
 
 *hardware memtest*: 0 when it did what was asked, or when there was
 nothing to take back; 1 when it was refused, because the person is not an
@@ -769,6 +836,10 @@ _/kernel/class/dmi/id_, _/kernel/cpus_
 _/kernel/class/display/state_
 	What *hardware screens* reads, and *hardware show* counts the
 	screens from (*radix-sysfs*(5)).
+
+_/kernel/class/input/state_
+	What *hardware inputs* reads, and *hardware show* counts the input
+	devices from (*radix-sysfs*(5)).
 
 _/kernel/devices/system/edac_, _/kernel/class/hwmon_,
 _/kernel/class/power_supply_, _/kernel/class/net_, _/kernel/block_
@@ -832,6 +903,12 @@ The screens, and the modes each monitor offers:
 hardware screens
 ```
 
+The keyboards, mice and other input devices:
+
+```
+hardware inputs
+```
+
 The memory tested at the next start, and the restart that takes it:
 
 ```
@@ -843,7 +920,7 @@ hardware memtest --status
 # SEE ALSO
 
 *consoled*(8), *diskhealth*(8), *sensors*(1), *nic*(8), *netcheck*(8), *dmesg*(1),
-*elevate*(8), *hwinfo*(8), *lscpu*(1), *lspci*(8), *lsusb*(8),
-*radix-block*(2), *radix-display*(2), *radix-sysfs*(5), *log*(1), *metrics*(1),
+*elevate*(8), *hwinfo*(8), *inputd*(8), *lscpu*(1), *lspci*(8), *lsusb*(8),
+*radix-block*(2), *radix-display*(2), *radix-input*(2), *radix-sysfs*(5), *log*(1), *metrics*(1),
 *metricsd*(8),
 *changes*(1), *alertd*(8), *shutdown*(8), *systools*(1)

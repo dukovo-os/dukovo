@@ -265,6 +265,28 @@ export const screens = (more = {}) => plain({
   ...more,
 });
 
+/** `hardware inputs --json`: a PS/2 keyboard, a USB mouse with both wheels, a virtual machine's tablet that says no name, and a USB device of media keys on a bus with no name here. */
+export const inputs = (more = {}) => plain({
+  format: 1,
+  held: false,
+  readers: 3,
+  devices: [
+    {
+      number: 0, name: 'PS/2 keyboard', kinds: ['keyboard'], bus: 'ps2', ids: null, where: 'ps2', rate_hz: null, readers: 1, keys: 104, buttons: 0, wheel: false, sideways_wheel: false, lights: ['num-lock', 'caps-lock', 'scroll-lock'],
+    },
+    {
+      number: 2, name: 'USB Optical Mouse', kinds: ['pointer'], bus: 'usb', ids: '046d:c077', where: 'usb-1-2/0', rate_hz: 125, readers: 0, keys: 0, buttons: 3, wheel: true, sideways_wheel: true, lights: [],
+    },
+    {
+      number: 5, name: null, kinds: ['tablet'], bus: 'virtual', ids: '0627:0003', where: 'pci-0000:00:05.0', rate_hz: null, readers: 1, keys: 0, buttons: 1, wheel: false, sideways_wheel: false, lights: [],
+    },
+    {
+      number: 6, name: 'Media Remote', kinds: ['keys', 'pointer'], bus: '5', ids: '1234:abcd', where: '', rate_hz: 1, readers: 0, keys: 1, buttons: 2, wheel: false, sideways_wheel: true, lights: [],
+    },
+  ],
+  ...more,
+});
+
 /** `GET /api/1/hardware/memtest`, which is `hardware memtest --status --json`: nothing asked and no test at a start kept, unless `more` says. */
 export const memtest = (more = {}) => plain({
   format: 1, asked: null, last: null, history: [], ...more,

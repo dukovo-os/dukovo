@@ -157,6 +157,10 @@ struct CpuSched {
     /// A thread woken here by [`lazily`] should have run at once: the
     /// running thread gives way at [`pay_owed`], or at its next switch.
     owed: AtomicBool,
+    /// Set while [`lazily_handing_on`] wakes threads from this CPU: a
+    /// thread woken for another CPU, idle, stays here if the waker is all
+    /// this CPU runs ([`kept_by_waker`]).
+    handing_on: AtomicBool,
     /// This CPU's sleepers.
     timers: SpinLock<Option<Vec<(u64, ThreadRef), Kmalloc>>>,
     /// Balancing attempts that found nothing to move, by level.
@@ -226,6 +230,7 @@ impl CpuSched {
             left_dead: AtomicBool::new(false),
             lazy: AtomicBool::new(false),
             owed: AtomicBool::new(false),
+            handing_on: AtomicBool::new(false),
         }
     }
 
@@ -946,7 +951,8 @@ fn wake_masked(thread: &ThreadRef) -> bool {
 
 /// Puts `thread`, just made ready under its lock `state`, on CPU `target`:
 /// handed to it ([`hand_over`]) once the lock is let go, if `target` is
-/// another CPU and idle; otherwise queued on it. With interrupts masked,
+/// another CPU and idle, or queued on this one if its waker keeps it
+/// ([`kept_by_waker`]); otherwise queued on `target`. With interrupts masked,
 /// so that a waker moved meanwhile cannot find itself on the CPU it hands
 /// to.
 fn place_woken(thread: &ThreadRef, mut state: SpinLockGuard<'_, State>, target: usize) {
@@ -955,12 +961,41 @@ fn place_woken(thread: &ThreadRef, mut state: SpinLockGuard<'_, State>, target: 
         enqueue_on(thread, &mut state, false, target);
         return;
     }
+    // Another CPU, idle, unless the waker keeps the thread by it.
+    if let Some(here) = kept_by_waker(&state) {
+        thread.stats.wakeups.fetch_add(1, Ordering::Relaxed);
+        enqueue_on(thread, &mut state, false, here);
+        return;
+    }
     if target != thread.cpu.load(Ordering::Relaxed) {
         count_migration(thread);
     }
     thread.cpu.store(target, Ordering::Relaxed);
     drop(state);
     hand_over(thread, target);
+}
+
+/// This CPU, if the thread of `state`, woken for another CPU that is
+/// idle, should stay on this one: its waker is handing on what an event
+/// brought ([`lazily_handing_on`]) and is all this CPU runs, the thread
+/// may run here, and where a processor's cores differ this one is of the
+/// fastest. A real-time thread goes where its priority sends it. A CPU
+/// with more to run keeps nothing: behind the others the thread could
+/// wait a slice while a CPU sat idle. With interrupts masked.
+fn kept_by_waker(state: &State) -> Option<usize> {
+    let here = Arch::current_cpu();
+    let slot = CPUS.get(here);
+    if !slot.handing_on.load(Ordering::Relaxed) {
+        return None;
+    }
+    let fastest = TOPOLOGY.get().is_none_or(|topology| {
+        !topology.is_ranked() || slot.rank.load(Ordering::Relaxed) == balance::FASTEST
+    });
+    let kept = fastest
+        && state.rt_prio() == 0
+        && state.affinity.contains(here)
+        && slot.running.load(Ordering::Relaxed) <= 1;
+    kept.then_some(here)
 }
 
 /// Makes a thread that has been asked to stop, or marked as having a
@@ -1763,6 +1798,25 @@ pub fn lazily(wake: impl FnOnce()) {
     slot.lazy.store(true, Ordering::Relaxed);
     wake();
     slot.lazy.store(false, Ordering::Relaxed);
+    Arch::restore_interrupts(were);
+}
+
+/// As [`lazily`], for a thread that waits for its next event once it
+/// has handed this one on, as a driver's thread does with what an
+/// interrupt brought. A thread it wakes that would go to another CPU,
+/// idle, stays on this one if the waker is all this one runs, and runs
+/// as soon as the waker waits. The idle CPU would have to be interrupted
+/// and brought out of its sleep first: under a hypervisor an exit to the
+/// host, which wakes a virtual CPU, and on a machine of its own the way
+/// out of an idle state, each many times a switch here.
+///
+/// Not for an interrupt handler: the thread it interrupted goes on.
+pub fn lazily_handing_on(wake: impl FnOnce()) {
+    let were = Arch::disable_interrupts();
+    let slot = CPUS.this();
+    slot.handing_on.store(true, Ordering::Relaxed);
+    lazily(wake);
+    slot.handing_on.store(false, Ordering::Relaxed);
     Arch::restore_interrupts(were);
 }
 

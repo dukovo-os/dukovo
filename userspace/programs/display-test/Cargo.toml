@@ -3,7 +3,7 @@
 
 [package]
 name = "display-test"
-description = "Tests the display layer (radix-display(2)) on real cards in the display boot tests: it draws pictures the host knows pixel for pixel, and says in the log what each screen shows"
+description = "Tests the display layer (radix-display(2)) on real cards and the input that follows it in the display and input boot tests: it draws pictures the host knows pixel for pixel, says in the log what each screen shows, and says who heard each key"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -16,6 +16,12 @@ publish.workspace = true
 display-pattern = { path = "../display-pattern" }
 # The display layer's records and requests (radix-display(2)).
 display = { path = "../display" }
+# The input files' records and requests (radix-input(2)), what each
+# device is, and inputd(8)'s exchange.
+input = { path = "../input" }
+# The right a copy of a holder's description keeps when it is sent to
+# inputd: to be passed on, and no other.
+radix-abi = { path = "../../../kernel/abi" }
 # The libc crate with its Radix module, which ob patches in from the
 # rust-std port (ADR 0070).
 libc = "0.2.191"

@@ -12,11 +12,11 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use radix_abi::display::{
-    self as abi, BLOB_MODE, CARD_FIRMWARE, CARD_MIRRORS, CARD_SETS_MODES, CARD_VIRTIO, EVENT_BACK,
-    EVENT_BORROWER_ENDED, EVENT_FRONT, FORMAT_ARGB8888, FORMAT_XRGB8888, KIND_CARD, KIND_PIPE,
-    KIND_PLANE, KIND_SCREEN, PIPE_ACTIVE, PIPE_IS_ACTIVE, PIPE_MODE, PLANE_CHANGED, PLANE_HOT_SPOT,
-    PLANE_PIPE, REASON_BAD_VALUE, REASON_NOT_OFFERED, REASON_SIZE, REASON_WOULD_BLANK,
-    SCREEN_FAILED, SCREEN_PIPE, SCREEN_PLUGGED,
+    self as abi, BLOB_MODE, CARD_FIRMWARE, CARD_MIRRORS, CARD_SETS_MODES, CARD_VIRTIO,
+    EVENT_ATTENTION, EVENT_BACK, EVENT_BORROWER_ENDED, EVENT_FRONT, FORMAT_ARGB8888,
+    FORMAT_XRGB8888, KIND_CARD, KIND_PIPE, KIND_PLANE, KIND_SCREEN, PIPE_ACTIVE, PIPE_IS_ACTIVE,
+    PIPE_MODE, PLANE_CHANGED, PLANE_HOT_SPOT, PLANE_PIPE, REASON_BAD_VALUE, REASON_NOT_OFFERED,
+    REASON_SIZE, REASON_WOULD_BLANK, SCREEN_FAILED, SCREEN_PIPE, SCREEN_PLUGGED,
 };
 
 use super::*;
@@ -358,11 +358,37 @@ impl Rig {
         self.events(holder).iter().map(|event| event.kind).collect()
     }
 
+    /// The kind and the count of each event `holder` has not read.
+    fn told(&mut self, holder: u32) -> Vec<(u32, u64)> {
+        self.events(holder).iter().map(|event| (event.kind, event.count)).collect()
+    }
+
     /// A holder that has taken the front from the log with picture 1,
     /// tagged 1, on the firmware-like card's screen. What the card was
     /// asked and what the holder was told on the way are forgotten.
     fn in_front(&mut self) -> u32 {
         let holder = self.holder(1);
+        self.take_front(holder)
+    }
+
+    /// As [`Rig::in_front`], for a holder that has the attention file,
+    /// as the text consoles do.
+    fn console(&mut self) -> u32 {
+        let holder = self.layer.holder_of(1, true).unwrap();
+        self.take_front(holder)
+    }
+
+    /// Forgets what `holders` were told and the firmware-like card was
+    /// asked so far.
+    fn forget(&mut self, holders: &[u32]) {
+        for &holder in holders {
+            self.kinds(holder);
+        }
+        self.firmware.asked();
+    }
+
+    /// `holder` takes the front from the log, as [`Rig::in_front`] says.
+    fn take_front(&mut self, holder: u32) -> u32 {
         let picture = self.frame(holder, 1);
         assert_eq!(self.change(holder, 0, 0, &[(MAIN, PLANE_PICTURE, u64::from(picture))]), DONE);
         self.firmware.asked();
@@ -732,6 +758,116 @@ fn the_front_is_lent_and_comes_back_with_what_its_holder_asked_for() {
     assert_eq!(asked[0], Call::LogGives);
     let Call::Show(drawn) = &asked[1] else { panic!("the frame was to be shown: {asked:?}") };
     assert_eq!((drawn.main, drawn.whole), (Some(1), true));
+}
+
+#[test]
+fn the_secure_key_raises_the_attention_holder_until_it_is_done() {
+    let mut rig = Rig::firmware();
+    assert_eq!(rig.layer.secure_key(), None);
+    // The console has the attention file and lent the front to a
+    // desktop, which shows its own picture.
+    let console = rig.console();
+    assert_eq!(rig.layer.attention(), console);
+    let desktop = rig.holder(2);
+    rig.layer.lend(console, desktop).unwrap();
+    let picture = u64::from(rig.frame(desktop, 2));
+    assert_eq!(rig.change(desktop, NOW, 0, &[(MAIN, PLANE_PICTURE, picture)]), DONE);
+    rig.forget(&[console, desktop]);
+
+    // The key: the console's state is made again, whole, and the
+    // desktop is in the back, where it changes nothing.
+    assert_eq!(rig.layer.secure_key(), Some(console));
+    assert_eq!((rig.layer.front(), rig.layer.raised()), (Some(console), Some(console)));
+    let drawn = rig.firmware.shown();
+    assert_eq!((drawn.main, drawn.whole), (Some(1), true));
+    assert_eq!(rig.kinds(desktop), [EVENT_BACK]);
+    // The key's event counts the front that passed, and passes back.
+    assert_eq!(rig.told(console), [(EVENT_FRONT, 0), (EVENT_ATTENTION, 1)]);
+    let entries = [(MAIN, PLANE_PICTURE, picture)];
+    assert_eq!(rig.change(desktop, NOW, 0, &entries), status(busy()));
+    // Nobody passes the front meanwhile, and only the raised holder
+    // says it is done. The key again is nothing new.
+    assert_eq!(rig.layer.give_back(desktop), Err(busy()));
+    let third = rig.holder(3);
+    assert_eq!(rig.layer.lend(console, third), Err(busy()));
+    assert_eq!(rig.layer.attention_end(desktop), Err(busy()));
+    assert_eq!(rig.layer.secure_key(), Some(console));
+    assert!(rig.kinds(console).is_empty());
+
+    // Done: the desktop has the front back with what it asked for.
+    assert_eq!(rig.layer.attention_end(console), Ok(()));
+    assert_eq!((rig.layer.front(), rig.layer.raised()), (Some(desktop), None));
+    let drawn = rig.firmware.shown();
+    assert_eq!((drawn.main, drawn.whole), (Some(2), true));
+    assert_eq!((rig.kinds(console), rig.kinds(desktop)), (vec![EVENT_BACK], vec![EVENT_FRONT]));
+    assert_eq!(rig.layer.attention_end(console), Err(busy()));
+}
+
+#[test]
+fn the_secure_key_with_its_holder_in_front_already_passes_no_front() {
+    let mut rig = Rig::firmware();
+    let console = rig.console();
+    assert_eq!(rig.layer.secure_key(), Some(console));
+    assert_eq!(rig.told(console), [(EVENT_ATTENTION, 0)]);
+    assert_eq!(rig.layer.attention_end(console), Ok(()));
+    assert!(rig.kinds(console).is_empty());
+    // Nothing was drawn anew for it.
+    assert_eq!((rig.layer.front(), rig.firmware.asked()), (Some(console), vec![]));
+}
+
+#[test]
+fn holders_that_end_while_the_attention_holder_is_raised() {
+    let mut rig = Rig::firmware();
+    let console = rig.console();
+    let desktop = rig.holder(2);
+    rig.layer.lend(console, desktop).unwrap();
+    rig.layer.secure_key();
+    rig.forget(&[console, desktop]);
+    // The desktop ends behind the console: the console, its lender, is
+    // told, and is simply in front once it is done.
+    rig.layer.end(desktop);
+    assert_eq!(rig.kinds(console), [EVENT_BORROWER_ENDED]);
+    assert_eq!(rig.layer.attention_end(console), Ok(()));
+    assert!(rig.kinds(console).is_empty());
+    assert_eq!(rig.layer.front(), Some(console));
+
+    // The raised console ends over a desktop: the desktop has the
+    // front as if the console were done, and the attention file is free.
+    let desktop = rig.holder(3);
+    rig.layer.lend(console, desktop).unwrap();
+    let picture = u64::from(rig.frame(desktop, 3));
+    assert_eq!(rig.change(desktop, NOW, 0, &[(MAIN, PLANE_PICTURE, picture)]), DONE);
+    rig.layer.secure_key();
+    rig.forget(&[desktop]);
+    rig.layer.end(console);
+    assert_eq!((rig.layer.front(), rig.layer.raised()), (Some(desktop), None));
+    assert_eq!(rig.kinds(desktop), [EVENT_FRONT]);
+    assert_eq!(rig.firmware.shown().main, Some(3));
+    assert_eq!((rig.layer.attention(), rig.layer.secure_key()), (0, None));
+}
+
+#[test]
+fn a_holder_that_never_drew_is_raised_over_the_log_and_gives_it_back() {
+    let mut rig = Rig::firmware();
+    let prompt = rig.layer.holder_of(1, true).unwrap();
+    rig.firmware.asked();
+    assert_eq!(rig.layer.secure_key(), Some(prompt));
+    assert_eq!(rig.firmware.asked(), [Call::LogGives]);
+    assert_eq!(rig.told(prompt), [(EVENT_FRONT, 0), (EVENT_ATTENTION, 1)]);
+    let picture = u64::from(rig.frame(prompt, 1));
+    assert_eq!(rig.change(prompt, NOW, 0, &[(MAIN, PLANE_PICTURE, picture)]), DONE);
+    assert_eq!(rig.firmware.shown().main, Some(1));
+    assert_eq!(rig.layer.attention_end(prompt), Ok(()));
+    assert_eq!(rig.layer.front(), None);
+    assert_eq!(rig.firmware.asked().last(), Some(&Call::LogTakes(0)));
+    assert_eq!(rig.kinds(prompt), [EVENT_BACK]);
+
+    // Raised over the log again, it ends: its last picture stays and
+    // the log waits its turn, as after any holder that ends in front.
+    assert_eq!(rig.layer.secure_key(), Some(prompt));
+    rig.layer.end(prompt);
+    assert_eq!((rig.layer.front(), rig.layer.raised()), (None, None));
+    assert!(rig.layer.keeps_last());
 }
 
 #[test]

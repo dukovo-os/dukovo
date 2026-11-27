@@ -140,6 +140,7 @@ pub const ARCHIVE_HIDDEN: (&str, &str) = ("system/.hidden", "bin\nlib\nshare\n")
 pub const STD_ARCHIVE: &[(&str, &str)] = &[
     ("system/commands/consoled", "consoled"),
     ("system/commands/dukovo-install", "dukovo-install"),
+    ("system/commands/inputd", "inputd"),
     ("system/commands/nfs", "nfs"),
     ("system/commands/nfsd", "nfsd"),
     ("system/commands/nukesh", "nukesh"),
@@ -554,6 +555,8 @@ pub const HOST_TESTED: &[&str] = &[
     "dkv",
     "dukovo-install",
     "git-https-test",
+    "input",
+    "inputd",
     "kerberos",
     "keymap",
     "manifest",
@@ -1095,6 +1098,13 @@ fn build_std(
     let mut files = Vec::new();
     for (path, package) in STD_ARCHIVE {
         let installed = ctx.out.join("sysroot").join(path);
+        // A program that an older build left as a link to another is
+        // written as its own file, and not through the link into the
+        // other program's.
+        if installed.is_symlink() {
+            std::fs::remove_file(&installed)
+                .context(|| format!("removing {}", installed.display()))?;
+        }
         process::copy(&built.join(package), &installed)?;
         files.push((path.to_string(), installed));
     }

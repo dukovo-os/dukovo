@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Input devices: inputd(8) hands each keyboard, mouse and tablet to the
+# program that holds the screens, tied to that holder, and tells it of
+# each device that comes or goes. It reads no key itself (ADR 0707).
+#
+# service.toml(5) explains each setting. `service check inputd` checks
+# this file, and `service edit inputd` checks it as you save.
+
+service_version = 1
+description = "Input devices"
+program = "/system/commands/inputd"
+# After consoled, which reads the keyboard itself and waits for nothing
+# here.
+order = 11
+# Started again whenever it ends: always, on-failure or never.
+restart = "always"
+
+[limits]
+memory = "8M"
+
+# What it holds beyond what every service reads (service.toml(5)): the
+# input devices' files, which it opens for the programs it serves, the
+# merged keyboard file, by which it tells who holds a screen, and its
+# folder, where it answers on a socket.
+[permissions]
+files.read = ["/devices/input", "/devices/kbd"]
+files.read-write = ["/system/live/inputd"]

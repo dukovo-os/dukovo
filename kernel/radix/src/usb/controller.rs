@@ -196,6 +196,9 @@ pub(super) struct Controller {
     lights: u32,
     /// Whether its Debug Capability carries the console.
     dbc: bool,
+    /// When the events being read came ([`super::came_at`]): the time
+    /// an input device's reports carry.
+    pub(super) came_ns: u64,
 }
 
 /// Why a device could not be set up.
@@ -298,6 +301,7 @@ pub fn run(index: usize) {
     let mut slept = false;
     let _ = super::interrupted(index);
     loop {
+        controller.came_ns = super::came_at(index);
         let found = controller.events();
         if interrupt && found {
             if super::interrupted(index) {
@@ -449,8 +453,9 @@ impl Controller {
             failed: [0; PORT_WORDS],
             buffer,
             work,
-            lights: crate::fs::keyboard::lights(),
+            lights: crate::input::lights(),
             dbc,
+            came_ns: 0,
         };
         let controller = Box::try_new_in(controller, heap).ok();
         if controller.is_none() && dbc {
@@ -529,7 +534,7 @@ impl Controller {
     /// Lights every keyboard's lock lights as consoled(8) last asked, if
     /// that changed; says whether it did.
     fn lights(&mut self) -> bool {
-        let lights = crate::fs::keyboard::lights();
+        let lights = crate::input::lights();
         if lights == self.lights {
             return false;
         }

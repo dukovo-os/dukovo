@@ -20,6 +20,15 @@
 //! over it then gives back to the one under it: a lender that is gone
 //! takes nothing with it.
 //!
+//! One thing is over the stack: the secure key (ADR 0708). When it is
+//! pressed the kernel raises the holder of the attention file
+//! ([`Stack::raise`]), which is then in front whatever is stacked, and
+//! whether it is stacked itself or not. Nothing below it moves: while a
+//! holder is raised, nobody lends the front or gives it back. When the
+//! raised holder says it is done ([`Stack::lower`]), or ends, the front
+//! is again the top of the stack's. No program raises a holder; only
+//! the key does.
+//!
 //! A holder is known here by the number the kernel gave its description,
 //! which is never 0.
 
@@ -48,11 +57,14 @@ pub struct Passed {
     pub to: Option<u32>,
 }
 
-/// The stack of holders, the one in front last.
+/// The stack of holders, the one in front last, and the holder raised
+/// over it.
 #[derive(Clone, Copy, Debug)]
 pub struct Stack {
     holders: [u32; DEPTH_MAX],
     depth: usize,
+    /// The holder the secure key raised, or 0.
+    raised: u32,
 }
 
 impl Default for Stack {
@@ -64,12 +76,57 @@ impl Default for Stack {
 impl Stack {
     /// A stack of no holder: the kernel's log is in front.
     pub const fn new() -> Stack {
-        Stack { holders: [0; DEPTH_MAX], depth: 0 }
+        Stack { holders: [0; DEPTH_MAX], depth: 0, raised: 0 }
     }
 
-    /// The holder in front, or `None` while the kernel's log is.
+    /// The holder in front, or `None` while the kernel's log is: the
+    /// raised holder if there is one, else the top of the stack.
     pub fn front(&self) -> Option<u32> {
+        self.raised().or(self.top())
+    }
+
+    /// The holder on top of the stack, which is in front unless another
+    /// is raised.
+    pub fn top(&self) -> Option<u32> {
         self.stacked().last().copied()
+    }
+
+    /// The holder the secure key raised, if one is.
+    pub fn raised(&self) -> Option<u32> {
+        (self.raised != 0).then_some(self.raised)
+    }
+
+    /// The secure key raises `holder` over the stack. The answer says
+    /// how the front passed; `None` if `holder` was in front already, as
+    /// the top of the stack, and is now also raised.
+    ///
+    /// # Errors
+    ///
+    /// [`Refused::Stacked`] while a holder is raised already, and for 0,
+    /// which is no holder.
+    pub fn raise(&mut self, holder: u32) -> Result<Option<Passed>, Refused> {
+        if self.raised != 0 || holder == 0 {
+            return Err(Refused::Stacked);
+        }
+        let top = self.top();
+        self.raised = holder;
+        Ok((top != Some(holder)).then_some(Passed { from: top, to: Some(holder) }))
+    }
+
+    /// The raised holder, `holder`, is done: the front is the top of the
+    /// stack's again. The answer says how the front passed; `None` if
+    /// `holder` is the top of the stack and so stays in front.
+    ///
+    /// # Errors
+    ///
+    /// [`Refused::NotFront`] if `holder` is not raised.
+    pub fn lower(&mut self, holder: u32) -> Result<Option<Passed>, Refused> {
+        if self.raised() != Some(holder) {
+            return Err(Refused::NotFront);
+        }
+        self.raised = 0;
+        let top = self.top();
+        Ok((top != Some(holder)).then_some(Passed { from: Some(holder), to: top }))
     }
 
     /// Whether `holder` is in the stack, in front or under another.
@@ -86,10 +143,10 @@ impl Stack {
     ///
     /// # Errors
     ///
-    /// [`Refused::NotFront`] while any holder is stacked: the front is
-    /// that holder's to lend.
+    /// [`Refused::NotFront`] while any holder is stacked, as the front
+    /// is that holder's to lend, or while one is raised.
     pub fn leave_log(&mut self, holder: u32) -> Result<Passed, Refused> {
-        if self.depth != 0 {
+        if self.depth != 0 || self.raised != 0 {
             return Err(Refused::NotFront);
         }
         self.push(holder);
@@ -100,11 +157,11 @@ impl Stack {
     ///
     /// # Errors
     ///
-    /// [`Refused::NotFront`] if `from` is not in front,
-    /// [`Refused::Stacked`] if `to` is in the stack already, and
+    /// [`Refused::NotFront`] if `from` is not in front or a holder is
+    /// raised, [`Refused::Stacked`] if `to` is in the stack already, and
     /// [`Refused::Full`] if the stack is as deep as it goes.
     pub fn lend(&mut self, from: u32, to: u32) -> Result<Passed, Refused> {
-        if self.front() != Some(from) {
+        if self.raised != 0 || self.front() != Some(from) {
             return Err(Refused::NotFront);
         }
         if self.contains(to) {
@@ -122,9 +179,10 @@ impl Stack {
     ///
     /// # Errors
     ///
-    /// [`Refused::NotFront`] if `holder` is not in front.
+    /// [`Refused::NotFront`] if `holder` is not in front, or a holder is
+    /// raised.
     pub fn give_back(&mut self, holder: u32) -> Result<Passed, Refused> {
-        if self.front() != Some(holder) {
+        if self.raised != 0 || self.front() != Some(holder) {
             return Err(Refused::NotFront);
         }
         self.depth -= 1;
@@ -132,13 +190,18 @@ impl Stack {
     }
 
     /// `holder` ends. If it was in front, the front passes as
-    /// [`Stack::give_back`] passes it and the answer says to whom;
-    /// otherwise nothing that shows changes and the answer is `None`.
+    /// [`Stack::give_back`] passes it, or from a raised holder to the
+    /// top of the stack, and the answer says to whom; otherwise nothing
+    /// that shows changes and the answer is `None`.
     pub fn end(&mut self, holder: u32) -> Option<Passed> {
-        let at = self.stacked().iter().position(|&stacked| stacked == holder)?;
-        let was_front = at + 1 == self.depth;
-        self.holders.copy_within(at + 1..self.depth, at);
-        self.depth -= 1;
+        let was_front = self.front() == Some(holder);
+        if self.raised == holder {
+            self.raised = 0;
+        }
+        if let Some(at) = self.stacked().iter().position(|&stacked| stacked == holder) {
+            self.holders.copy_within(at + 1..self.depth, at);
+            self.depth -= 1;
+        }
         was_front.then(|| Passed { from: Some(holder), to: self.front() })
     }
 
@@ -260,6 +323,84 @@ mod tests {
     }
 
     #[test]
+    fn the_secure_key_raises_a_holder_over_the_stack_and_nothing_below_moves() {
+        let mut stack = Stack::new();
+        stack.leave_log(CONSOLE).unwrap();
+        stack.lend(CONSOLE, DESKTOP).unwrap();
+        assert_eq!(
+            stack.raise(CONSOLE),
+            Ok(Some(Passed { from: Some(DESKTOP), to: Some(CONSOLE) }))
+        );
+        assert_eq!(
+            (stack.front(), stack.top(), stack.raised()),
+            (Some(CONSOLE), Some(DESKTOP), Some(CONSOLE))
+        );
+        // Nobody lends or gives back meanwhile, the raised holder
+        // included, and no second holder is raised.
+        assert_eq!(stack.lend(CONSOLE, GAME), Err(Refused::NotFront));
+        assert_eq!(stack.lend(DESKTOP, GAME), Err(Refused::NotFront));
+        assert_eq!(stack.give_back(DESKTOP), Err(Refused::NotFront));
+        assert_eq!(stack.give_back(CONSOLE), Err(Refused::NotFront));
+        assert_eq!(stack.raise(GAME), Err(Refused::Stacked));
+        assert_eq!(stack.lower(DESKTOP), Err(Refused::NotFront));
+        assert_eq!(stack.stacked(), [CONSOLE, DESKTOP]);
+        assert_eq!(
+            stack.lower(CONSOLE),
+            Ok(Some(Passed { from: Some(CONSOLE), to: Some(DESKTOP) }))
+        );
+        assert_eq!(stack.front(), Some(DESKTOP));
+        assert_eq!(stack.lower(CONSOLE), Err(Refused::NotFront));
+        assert!(stack.is_sound());
+    }
+
+    #[test]
+    fn a_holder_raised_while_it_is_on_top_stays_in_front_throughout() {
+        let mut stack = Stack::new();
+        stack.leave_log(CONSOLE).unwrap();
+        assert_eq!(stack.raise(CONSOLE), Ok(None));
+        assert_eq!(stack.give_back(CONSOLE), Err(Refused::NotFront));
+        assert_eq!(stack.lower(CONSOLE), Ok(None));
+        assert_eq!(stack.front(), Some(CONSOLE));
+        assert_eq!(stack.raise(0), Err(Refused::Stacked));
+    }
+
+    #[test]
+    fn a_holder_that_is_not_stacked_is_raised_over_the_log_or_over_others() {
+        let mut stack = Stack::new();
+        assert_eq!(stack.raise(GAME), Ok(Some(Passed { from: None, to: Some(GAME) })));
+        assert_eq!(stack.leave_log(CONSOLE), Err(Refused::NotFront));
+        assert_eq!(stack.lower(GAME), Ok(Some(Passed { from: Some(GAME), to: None })));
+        stack.leave_log(CONSOLE).unwrap();
+        stack.raise(GAME).unwrap();
+        assert_eq!(stack.stacked(), [CONSOLE]);
+        assert_eq!(stack.front(), Some(GAME));
+    }
+
+    #[test]
+    fn holders_that_end_while_one_is_raised() {
+        let mut stack = Stack::new();
+        stack.leave_log(CONSOLE).unwrap();
+        stack.lend(CONSOLE, DESKTOP).unwrap();
+        stack.raise(CONSOLE).unwrap();
+        // The top of the stack ends behind the raised holder: the front
+        // does not pass.
+        assert_eq!(stack.end(DESKTOP), None);
+        assert_eq!((stack.front(), stack.top()), (Some(CONSOLE), Some(CONSOLE)));
+        assert_eq!(stack.lower(CONSOLE), Ok(None));
+        // The raised holder ends: the front is the top's again, and the
+        // raised holder is out of the stack too.
+        stack.lend(CONSOLE, DESKTOP).unwrap();
+        stack.raise(CONSOLE).unwrap();
+        assert_eq!(stack.end(CONSOLE), Some(Passed { from: Some(CONSOLE), to: Some(DESKTOP) }));
+        assert_eq!((stack.raised(), stack.stacked()), (None, &[DESKTOP][..]));
+        // Raised and on top, it ends as any front does.
+        stack.raise(DESKTOP).unwrap();
+        assert_eq!(stack.end(DESKTOP), Some(Passed { from: Some(DESKTOP), to: None }));
+        assert_eq!(stack.front(), None);
+        assert!(stack.is_sound());
+    }
+
+    #[test]
     fn a_holder_that_was_never_stacked_ends_without_a_trace() {
         let mut stack = Stack::new();
         assert_eq!(stack.end(CONSOLE), None);
@@ -278,6 +419,7 @@ mod proofs {
         let stack = Stack {
             holders: kani::any(),
             depth: kani::any_where(|&depth: &usize| depth <= DEPTH_MAX),
+            raised: kani::any(),
         };
         kani::assume(stack.is_sound());
         stack
@@ -292,10 +434,12 @@ mod proofs {
         let mut stack = any_stack();
         let front = stack.front();
         let (a, b): (u32, u32) = (kani::any(), kani::any());
-        let passed = match kani::any::<u8>() % 4 {
+        let passed = match kani::any::<u8>() % 6 {
             0 => stack.leave_log(a).ok(),
             1 => stack.lend(a, b).ok(),
             2 => stack.give_back(a).ok(),
+            3 => stack.raise(a).ok().flatten(),
+            4 => stack.lower(a).ok().flatten(),
             _ => stack.end(a),
         };
         assert!(stack.is_sound());

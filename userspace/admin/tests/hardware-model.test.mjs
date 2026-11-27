@@ -12,6 +12,7 @@ import { AREAS, checkArgs } from '../pages/hardware/check-model.js';
 import { healthWords } from '../lib/disk-model.js';
 import { devicesOf, hiddenWords } from '../pages/hardware/devices-model.js';
 import { frontWords, modeWords, screensOf } from '../pages/hardware/screens-model.js';
+import { inputsOf } from '../pages/hardware/inputs-model.js';
 import {
   disksOf, pillOf, testArgs, testsOf,
 } from '../pages/hardware/disks-model.js';
@@ -28,7 +29,7 @@ import {
   modelWords, moduleWords, processorWords, stateOf, summaryWords, tookBackWords, upWords,
 } from '../pages/hardware/model.js';
 import {
-  about, asked, broken, clean, devices, diskHealth, highest, history, inventory, last, NOW, screens, sensors, show, skipped, startTest, storage, task, time, updates,
+  about, asked, broken, clean, devices, diskHealth, highest, history, inputs, inventory, last, NOW, screens, sensors, show, skipped, startTest, storage, task, time, updates,
 } from './hardware-fixtures.mjs';
 
 test('amounts of memory are in GiB from one and in MiB below it, and none for no memory', () => {
@@ -589,4 +590,32 @@ test('an answer that is not a list of cards has none', () => {
   assert.deepEqual(screensOf(null), { front: 'The kernel’s log', cards: [] });
   assert.deepEqual(screensOf({ format: 1, front: { holder: 'log' }, cards: 'none' }).cards, []);
   assert.deepEqual(screensOf({ cards: [{ name: 'c', model: 'm', screens: null }] }).cards, [{ title: 'c · m', rows: [] }]);
+});
+
+// ---- Input devices ---------------------------------------------------------------
+
+test('an input device says what it is, how it is connected, how often it is read and what it has', () => {
+  const { held, rows } = inputsOf(inputs());
+  assert.equal(held, false);
+  const [keyboard, mouse, tablet, remote] = rows;
+  assert.deepEqual(keyboard, {
+    name: 'PS/2 keyboard', muted: false, small: '/devices/input/0', is: 'Keyboard', connected: 'PS/2', where: '',
+    read: 'When it sends', has: '104 keys; lights for Num Lock, Caps Lock, Scroll Lock',
+  });
+  assert.deepEqual(mouse, {
+    name: 'USB Optical Mouse', muted: false, small: '/devices/input/2', is: 'Pointer', connected: 'USB', where: '046d:c077 · usb-1-2/0',
+    read: '125 times a second', has: '3 buttons; a wheel that also turns sideways',
+  });
+  // A device that gives no name, and one on a bus with no name here that is two things.
+  assert.deepEqual([tablet.name, tablet.muted, tablet.is, tablet.connected, tablet.has], ['A device that does not say what it is', true, 'Tablet', 'Virtual', '1 button']);
+  assert.deepEqual([remote.is, remote.connected, remote.where, remote.read, remote.has], ['Keys, Pointer', 'Bus 5', '1234:abcd', '1 time a second', '1 key; 2 buttons; a sideways wheel']);
+});
+
+test('an answer that is not a list of input devices has none, and the secure key’s hold is said', () => {
+  assert.deepEqual(inputsOf(null), { held: false, rows: [] });
+  assert.deepEqual(inputsOf({ format: 1, held: true, devices: 'none' }), { held: true, rows: [] });
+  // What a later release names is shown as it is named, and a device that says nothing of itself still has a row.
+  const [odd, bare] = inputsOf({ devices: [{ number: 1, name: 'Wheel', kinds: ['dial'], bus: 'usb', keys: 0, buttons: 0, wheel: true, lights: ['kana'] }, { number: 9 }] }).rows;
+  assert.deepEqual([odd.is, odd.has], ['dial', 'a wheel; lights for kana']);
+  assert.deepEqual(bare, { name: 'A device that does not say what it is', muted: true, small: '/devices/input/9', is: 'Other', connected: '—', where: '', read: 'When it sends', has: '—' });
 });

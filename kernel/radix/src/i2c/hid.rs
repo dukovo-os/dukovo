@@ -15,25 +15,31 @@
 //! its report descriptor and lays it out (`radix_hid::Layout`). A
 //! touchpad is left as the mouse it is until told to report its fingers.
 //!
-//! Then each interrupt of a device wakes the thread, which reads its
-//! input register once, decodes the report (`radix_hid::Decoder`) and
-//! tells what changed ([`crate::hid::tell`]), as USB's HID interfaces
-//! do; a level-triggered pin is unmasked once its report is read. A
-//! device whose reads fail more than three times in a row is given up.
+//! Each device that reports keys or a pointer is an input device
+//! (`crate::hid::Port`, ADR 0706). Each interrupt of a device is noted
+//! with its time and wakes the thread, which reads the device's input
+//! register once, decodes the report (`radix_hid::Decoder`) and hands
+//! the input hub what it said as one frame with that time, as USB's HID
+//! interfaces do; a level-triggered pin is unmasked once its report is
+//! read. A device whose reads fail more than three times in a row is
+//! given up, and its input device goes.
 
 use alloc::vec::Vec;
 use core::ffi::CStr;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::fmt::Write;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
+use radix_abi::input::BUS_I2C;
 use radix_acpi::resources::{GpioUsage, Resource, Resources};
 use radix_hid::{Decoder, Layout};
 use radix_i2c::hid::{self as protocol, Descriptor, Failed, Input};
 use radix_i2c::{Error, Message};
-use radix_klog::{info, warn};
+use radix_klog::{TextBuf, info, warn};
 use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_sync::Once;
 
 use super::designware::{self, Device};
+use crate::hid::{Identity, Port};
 use crate::sched::{self, Options, Policy, ThreadRef};
 use crate::{acpi, gpio};
 
@@ -53,6 +59,9 @@ const READ_ERRORS: u8 = 3;
 static CANDIDATES: Once<[Option<Device>; MAX_HIDS]> = Once::new();
 /// The devices whose interrupts came, waiting for the thread.
 static PENDING: AtomicU32 = AtomicU32::new(0);
+/// When each device's interrupt last came, on the kernel's clock: the
+/// time its report carries.
+static CAME_NS: [AtomicU64; MAX_HIDS] = [const { AtomicU64::new(0) }; MAX_HIDS];
 static THREAD: Once<ThreadRef> = Once::new();
 /// Whether the thread has set up every device it could.
 static SETTLED: AtomicBool = AtomicBool::new(false);
@@ -86,6 +95,8 @@ struct Hid {
     level: bool,
     layout: Layout<Kmalloc>,
     decoder: Decoder,
+    /// Its input device, if anything it reports is read, until it stops.
+    port: Option<Port>,
     errors: u8,
     stopped: bool,
 }
@@ -192,8 +203,12 @@ pub fn settled() -> bool {
     SETTLED.load(Ordering::Acquire)
 }
 
-/// A device's pin interrupted: the thread reads it.
+/// A device's pin interrupted: the time is noted, and the thread reads
+/// the device.
 fn on_interrupt(index: usize) {
+    if let Some(came) = CAME_NS.get(index) {
+        came.store(sched::now_ns(), Ordering::Release);
+    }
     PENDING.fetch_or(1 << index, Ordering::AcqRel);
     if let Some(thread) = THREAD.get() {
         sched::wake(thread);
@@ -311,7 +326,7 @@ fn set_up(index: usize, device: &Device, buffer: &mut [u8]) -> Result<Hid, Why> 
     }
     let report = descriptor.read_report_descriptor(&mut target, &mut bytes).map_err(Why::Report)?;
     let layout = Layout::parse(report, heap).map_err(Why::Layout)?;
-    let (what, _) = crate::hid::what(&layout);
+    let (what, read) = crate::hid::what(&layout);
     info!(
         "I2C-HID: {} ({:04x}:{:04x}) on i2c-{} at {:#04x}: {what}",
         node.path(),
@@ -320,6 +335,7 @@ fn set_up(index: usize, device: &Device, buffer: &mut [u8]) -> Result<Hid, Why> 
         device.bus,
         device.address
     );
+    let port = if read { port(device, &descriptor, &layout) } else { None };
     Ok(Hid {
         index,
         device: *device,
@@ -328,22 +344,51 @@ fn set_up(index: usize, device: &Device, buffer: &mut [u8]) -> Result<Hid, Why> 
         level,
         layout,
         decoder: Decoder::new(),
+        port,
         errors: 0,
         stopped: false,
     })
 }
 
-/// Reads `hid`'s input register once, as its interrupt asks, and tells
-/// what its report changed.
+/// Makes `device`, laid out as `layout`, an input device: named by its
+/// place in the ACPI namespace, which is all it has for a name, and
+/// found at `i2c-0-002c`, its bus and its address. `None` if the hub has
+/// no room.
+fn port(device: &Device, descriptor: &Descriptor, layout: &Layout<Kmalloc>) -> Option<Port> {
+    let (mut name, mut place) = (TextBuf::<64>::new(), TextBuf::<32>::new());
+    let _ = write!(name, "{}", device.node.path());
+    let _ = write!(place, "i2c-{}-{:04x}", device.bus, device.address);
+    let identity = Identity {
+        bus: BUS_I2C,
+        name: name.as_str(),
+        place: place.as_str(),
+        serial: "",
+        vendor: descriptor.vendor,
+        product: descriptor.product,
+        version: descriptor.version,
+        // It reports when its pin says so, at no rate it names.
+        rate_hz: 0,
+    };
+    Port::add(layout, &identity)
+}
+
+/// Reads `hid`'s input register once, as its interrupt asks, and hands
+/// on what its report said, with the interrupt's time.
 #[inline(never)]
 fn serve(hid: &mut Hid, buffer: &mut [u8]) {
     if hid.stopped {
         return;
     }
+    let came_ns = match CAME_NS.get(hid.index).map(|came| came.swap(0, Ordering::AcqRel)) {
+        Some(came) if came != 0 => came,
+        _ => sched::now_ns(),
+    };
     let mut target = Target::of(&hid.device);
     let failed = match hid.descriptor.read_input(&mut target, buffer) {
         Ok(Input::Report(report)) => {
-            hid.decoder.report(&hid.layout, report, &mut crate::hid::tell);
+            if let Some(port) = &mut hid.port {
+                port.report(&mut hid.decoder, &hid.layout, report, came_ns);
+            }
             None
         }
         Ok(Input::Reset) => None,
@@ -357,7 +402,8 @@ fn serve(hid: &mut Hid, buffer: &mut [u8]) {
             if hid.errors > READ_ERRORS {
                 // Left masked, if its pin is level-triggered.
                 hid.stopped = true;
-                hid.decoder.release_all(&mut crate::hid::tell);
+                // Its input device goes, with what it held down.
+                hid.port = None;
                 warn!("I2C-HID: {} stopped reporting: {why}", hid.device.node.path());
                 return;
             }

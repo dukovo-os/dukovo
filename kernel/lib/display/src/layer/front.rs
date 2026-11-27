@@ -27,12 +27,20 @@
 //!   that comes, goes or changes.
 //! - The holder at the bottom that gives the front back leaves the
 //!   screens to the log at once: it asked to.
+//! - The secure key raises the holder of the attention file over them
+//!   all (ADR 0708, [`Layer::secure_key`]). Its state is made as for a
+//!   holder given the front back, and the one that was in front is told
+//!   it is in the back. When the raised holder is done
+//!   ([`Layer::attention_end`]) or ends, the top of the stack has the
+//!   front back the same way.
 
 use core::alloc::Allocator;
 use core::ops::Deref;
 
 use radix_abi::Status;
-use radix_abi::display::{DisplayEvent, EVENT_BACK, EVENT_BORROWER_ENDED, EVENT_FRONT};
+use radix_abi::display::{
+    DisplayEvent, EVENT_ATTENTION, EVENT_BACK, EVENT_BORROWER_ENDED, EVENT_FRONT,
+};
 use radix_abi::errors::Kernel;
 
 use super::stored::Damage;
@@ -123,14 +131,68 @@ where
             return Err(busy());
         }
         self.stack.leave_log(holder).map_err(|_| busy())?;
-        // A log that still waited its turn never drew: only one that
-        // has the screens is told to give them.
+        self.log_gives_way();
+        self.post(holder, DisplayEvent { kind: EVENT_FRONT, ..self.event() });
+        Ok(())
+    }
+
+    /// The kernel's log leaves the screens to a holder. A log that still
+    /// waited its turn never drew: only one that has the screens is told
+    /// to give them.
+    fn log_gives_way(&mut self) {
         let waited = self.kept_since.take().is_some();
         if let Some(card) = self.card(self.log_card).filter(|_| !waited) {
             card.log_gives();
         }
-        self.post(holder, DisplayEvent { kind: EVENT_FRONT, ..self.event() });
+    }
+
+    /// The secure key was pressed (ADR 0708): the holder of the
+    /// attention file is raised over the stack, told it is in front if
+    /// it was not, and told of the key, with a count of 1 if the front
+    /// passed to it and so passes back when it is done. Returns that
+    /// holder; `None` if no holder has the attention file, or the
+    /// machine ends. A key pressed again while the holder is raised
+    /// changes nothing: the holder reads it as keys.
+    pub fn secure_key(&mut self) -> Option<u32> {
+        if self.closing || self.attention == 0 {
+            return None;
+        }
+        let id = self.attention;
+        let Ok(passed) = self.stack.raise(id) else {
+            return self.stack.raised();
+        };
+        if let Some(passed) = passed {
+            if passed.from.is_none() {
+                self.log_gives_way();
+            }
+            self.pass(passed, false);
+        }
+        let count = u64::from(passed.is_some());
+        self.post(id, DisplayEvent { kind: EVENT_ATTENTION, count, ..self.event() });
+        Some(id)
+    }
+
+    /// ATTENTION_END: holder `me`, which the secure key raised, is done.
+    /// The top of the stack has the front again, or the kernel's log.
+    ///
+    /// # Errors
+    ///
+    /// busy for a holder the key did not raise.
+    pub fn attention_end(&mut self, me: u32) -> Result<(), Status> {
+        if let Some(passed) = self.stack.lower(me).map_err(|_| busy())? {
+            self.pass(passed, false);
+        }
         Ok(())
+    }
+
+    /// The holder the secure key raised, until it is done.
+    pub fn raised(&self) -> Option<u32> {
+        self.stack.raised()
+    }
+
+    /// The holder of the attention file, or 0.
+    pub fn attention(&self) -> u32 {
+        self.attention
     }
 
     /// Passes the front as `passed` says, and tells the one that had it
@@ -229,14 +291,24 @@ where
         for run in &mut self.runs {
             run.askers.retain(|&(holder, _)| holder != id);
         }
+        // A raised holder that ends over another leaves the front as one
+        // that is done does. The top of the stack that ends behind a
+        // raised holder passes no front, and its lender is told now: it
+        // may be the raised holder itself, which is given no front later.
+        let (raised, top) = (self.stack.raised(), self.stack.top());
+        let over_others = raised == Some(id) && top.is_some_and(|top| top != id);
+        let behind = raised.is_some_and(|raised| raised != id) && top == Some(id);
         match self.stack.end(id) {
-            Some(passed) => self.pass(passed, true),
+            Some(passed) => self.pass(passed, !over_others),
             None => {
                 for place in 0..self.pipes.len() {
                     if self.runs[place].pending.as_ref().is_some_and(|pending| pending.holder == id)
                     {
                         self.drop_pending(place);
                     }
+                }
+                if let Some(lender) = self.stack.top().filter(|_| behind) {
+                    self.post(lender, DisplayEvent { kind: EVENT_BORROWER_ENDED, ..self.event() });
                 }
             }
         }

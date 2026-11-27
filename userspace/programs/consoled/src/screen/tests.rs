@@ -13,9 +13,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use display::abi::{
-    BLOB_MODE, Blob, CARD_FIRMWARE, CARD_HOT_PLUG, CARD_SETS_MODES, CARD_VIRTIO, CHANGE, DROP,
-    FORMAT_ARGB8888, FORMAT_XRGB8888, GET, KIND_CARD, KIND_PIPE, KIND_PLANE, KIND_SCREEN, LEND,
-    LIST, MAKE_BLOB, MAKE_PICTURE, Mode, PART_INFO, PART_MODES, PICTURE_KEPT, PUT, RETURN, Thing,
+    ATTENTION_END, BLOB_MODE, Blob, CARD_FIRMWARE, CARD_HOT_PLUG, CARD_SETS_MODES, CARD_VIRTIO,
+    CHANGE, DROP, FORMAT_ARGB8888, FORMAT_XRGB8888, GET, KIND_CARD, KIND_PIPE, KIND_PLANE,
+    KIND_SCREEN, LEND, LIST, MAKE_BLOB, MAKE_PICTURE, Mode, PART_INFO, PART_MODES, PICTURE_KEPT,
+    PUT, RETURN, Thing,
 };
 use radix_abi::Status;
 use radix_abi::errors::{File as FileError, Kernel};
@@ -30,6 +31,7 @@ use radix_display::wire as kernel;
 use super::*;
 use crate::term::{BOLD, REVERSE};
 
+mod key;
 mod lend;
 
 /// What consoled's description of the layer's file is known by, and
@@ -235,6 +237,13 @@ impl FakeKernel {
         })
     }
 
+    /// The holder the layer has for the description opened as `key`,
+    /// which is made one now if it was not. consoled's is a description
+    /// of the attention file, and any other's of the control file.
+    fn holder(&mut self, key: usize) -> Result<u32, Status> {
+        self.layer.holder_of(key, key == CONSOLED)
+    }
+
     /// One request of the holder `key` knows, as the kernel's glue
     /// passes it to the layer.
     fn request(
@@ -247,7 +256,7 @@ impl FakeKernel {
         let invalid = || Kernel::InvalidArgument.status(0);
         self.now += 1_000_000;
         self.layer.set_time(self.now);
-        let me = self.layer.holder_of(key, false)?;
+        let me = self.holder(key)?;
         match request {
             LIST => {
                 let mut things: Vec<Thing> = Vec::new();
@@ -339,10 +348,11 @@ impl FakeKernel {
             }
             // A slot stands for the description opened as that key.
             LEND => {
-                let borrower = self.layer.holder_of(argument as usize, false)?;
+                let borrower = self.holder(argument as usize)?;
                 self.layer.lend(me, borrower).map(|()| 0)
             }
             RETURN => self.layer.give_back(me).map(|()| 0),
+            ATTENTION_END => self.layer.attention_end(me).map(|()| 0),
             _ => Err(Kernel::NotTerminal.status(0)),
         }
     }
@@ -362,7 +372,7 @@ impl Wire {
     /// The holder the layer has for the description, which is made one
     /// now if it was not.
     fn holder(&self) -> u32 {
-        self.0.borrow_mut().layer.holder_of(self.1, false).unwrap()
+        self.0.borrow_mut().holder(self.1).unwrap()
     }
 
     /// Closes the description, as its program ending does.
@@ -388,7 +398,7 @@ impl Control for Wire {
 impl Link for Wire {
     fn events(&self, into: &mut [u8]) -> io::Result<usize> {
         let mut kernel = self.0.borrow_mut();
-        let me = kernel.layer.holder_of(self.1, false).map_err(failure)?;
+        let me = kernel.holder(self.1).map_err(failure)?;
         let holder = kernel.layer.holder(me).ok_or_else(|| io::Error::other("no holder"))?;
         let mut done = 0;
         for out in into.as_chunks_mut::<{ DisplayEvent::SIZE }>().0 {
@@ -679,8 +689,8 @@ fn behind_another_holder_nothing_is_drawn_and_all_of_it_is_when_in_front_again()
     // The front is lent to another holder, which draws over the screen.
     let lend = |wire: &Wire| {
         let mut kernel = wire.0.borrow_mut();
-        let consoled = kernel.layer.holder_of(CONSOLED, false).unwrap();
-        let other = kernel.layer.holder_of(OTHER, false).unwrap();
+        let consoled = kernel.holder(CONSOLED).unwrap();
+        let other = kernel.holder(OTHER).unwrap();
         kernel.layer.lend(consoled, other).unwrap();
         other
     };

@@ -402,6 +402,35 @@ fn clone_file(user: &UserRef, found: &Found, file: &FileRef, a: &file::ControlAr
     })
 }
 
+/// A request of an input file (radix-input(2)): the hub's own, which
+/// writes the caller's buffer and looks in its slots through these.
+#[inline(never)]
+fn input_control(
+    user: &UserRef,
+    found: &Found,
+    file: &FileRef,
+    a: &file::ControlArgs,
+) -> Result<u64> {
+    let copy_out = |bytes: &[u8]| {
+        if a.size < bytes.len() as u64 || !Arch::copy_to_user(a.buffer, bytes) {
+            return Err(error(Kernel::BadAddress));
+        }
+        Ok(())
+    };
+    // The file of a screen's holder names the holder, whatever its
+    // rights: a copy with none is the proof inputd(8) is shown.
+    let file_in = |slot: u32| objects::file(user.cspace, slot, Rights::NONE).map(|(_, file)| file);
+    let call = crate::input::Call {
+        request: a.request,
+        argument: a.argument,
+        size: a.size,
+        may_write: found.cap.check(ObjectKind::File, Rights::WRITE).is_ok(),
+        copy_out: &copy_out,
+        file_in: &file_in,
+    };
+    crate::input::control(file, &call)
+}
+
 /// A request of a display holder's file (radix-display(2)): the layer's
 /// own, which reads and writes the caller's buffer and looks in its
 /// slots through these.
@@ -2091,11 +2120,7 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
                     fs::kmsg::clear();
                     0
                 }
-                Target::Keyboard if a.request == radix_abi::input::SET_LEDS => {
-                    found.cap.check(ObjectKind::File, Rights::WRITE).map_err(cap_error)?;
-                    fs::keyboard::set_lights(a.argument as u32);
-                    0
-                }
+                Target::Input => input_control(user, found, file, &a)?,
                 Target::Capture => {
                     let size = a.size;
                     let copy_in = |bytes: &mut [u8]| {
@@ -2876,10 +2901,8 @@ enum Target<'a> {
     Tty(&'a tty::Handle),
     /// `/devices/kmsg`.
     Kmsg,
-    /// `/devices/kbd`.
-    Keyboard,
-    /// `/devices/mouse`.
-    Mouse,
+    /// An input file (ADR 0706).
+    Input,
     /// A connection of `/devices/fuse`.
     Fuse,
     /// The program's end of a tunnel.
@@ -2907,10 +2930,8 @@ fn target(file: &FileObject) -> Target<'_> {
         Target::Tty(handle)
     } else if file.is_kmsg() {
         Target::Kmsg
-    } else if file.is_keyboard() {
-        Target::Keyboard
-    } else if file.is_mouse() {
-        Target::Mouse
+    } else if file.is_input() {
+        Target::Input
     } else if file.fuse_channel().is_some() {
         Target::Fuse
     } else if file.is_tunnel() {
@@ -2982,8 +3003,7 @@ fn read_special(
         Target::Inet(socket) => socket.receive(out, non_blocking, false).map(|r| r.count as u64),
         Target::Tty(handle) => handle.read(user, out, non_blocking).map(|n| n as u64),
         Target::Kmsg => fs::kmsg::read(file, out, non_blocking).map(|n| n as u64),
-        Target::Keyboard => fs::keyboard::read(file, out, non_blocking).map(|n| n as u64),
-        Target::Mouse => fs::mouse::read(file, out, non_blocking).map(|n| n as u64),
+        Target::Input => crate::input::read(file, out, non_blocking).map(|n| n as u64),
         Target::Fuse => fs::fuse::read(file, out, non_blocking).map(|n| n as u64),
         Target::Tunnel => fs::tunnel::read(file, out, non_blocking).map(|n| n as u64),
         Target::Capture => fs::capture::read(file, out, non_blocking).map(|n| n as u64),
@@ -3101,9 +3121,7 @@ fn write_special(
         Target::Tunnel => fs::tunnel::write(file, data).map(|n| n as u64),
         Target::Capture => Err(error(Kernel::NotSupported)),
         Target::Audio => crate::audio::write(file, data, non_blocking).map(|n| n as u64),
-        Target::Keyboard | Target::Mouse | Target::Crashes | Target::Display => {
-            Err(error(Kernel::InvalidArgument))
-        }
+        Target::Input | Target::Crashes | Target::Display => Err(error(Kernel::InvalidArgument)),
         Target::Node => Ok(0),
     }
 }

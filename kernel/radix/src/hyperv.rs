@@ -168,6 +168,10 @@ pub fn wait_for_disks() {
     }
 }
 
+/// When a service's channel last had events, on the kernel's clock: the
+/// time a key the synthetic keyboard then sent carries (ADR 0706).
+static SERVICE_CAME_NS: AtomicU64 = AtomicU64::new(0);
+
 /// VMBus's interrupt, on the boot CPU: the channels with events, and the
 /// message slot.
 fn on_interrupt(_: usize) {
@@ -181,6 +185,7 @@ fn on_interrupt(_: usize) {
             ROUTE_DISKS => crate::fs::disk::storvsc::on_event(number),
             ROUTE_NETWORK => crate::net::wake_card(number),
             ROUTE_SERVICE => {
+                SERVICE_CAME_NS.store(sched::now_ns(), Ordering::Release);
                 PENDING.fetch_or(1 << number, Ordering::AcqRel);
                 wake = true;
             }
@@ -688,12 +693,17 @@ fn serve(state: &mut State) {
     }
 }
 
-/// A message from the synthetic keyboard.
+/// A message from the synthetic keyboard, which the interrupt noted
+/// last brought.
 fn key(data: &[u8]) {
     match keyboard::parse(data) {
         Some(keyboard::Message::Key { bytes, len }) => {
+            let came_ns = match SERVICE_CAME_NS.load(Ordering::Acquire) {
+                0 => sched::now_ns(),
+                came => came,
+            };
             for &byte in &bytes[..len] {
-                crate::fs::keyboard::set1_byte(byte);
+                crate::input::set1_byte(byte, came_ns);
             }
         }
         Some(keyboard::Message::Protocol { accepted: true }) => {

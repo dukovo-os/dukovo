@@ -294,7 +294,7 @@ fn wake_poller(thread: &ThreadRef) {
 /// Calls `each` with what `object` keeps for its pollers: a pipe end's
 /// pipe, a Unix socket's own and both pipes of its connection or its
 /// listener, its own for a network socket, a terminal, the kernel log or
-/// the keyboard, a notification, or an event queue.
+/// an input file's reader, a notification, or an event queue.
 pub(crate) fn polled_by(object: &Object, each: &mut dyn FnMut(&Polled)) {
     match object {
         Object::File(file) => {
@@ -308,10 +308,8 @@ pub(crate) fn polled_by(object: &Object, each: &mut dyn FnMut(&Polled)) {
                 each(handle.polled());
             } else if file.is_kmsg() {
                 each(&crate::fs::kmsg::POLLED);
-            } else if file.is_keyboard() {
-                each(&crate::fs::keyboard::POLLED);
-            } else if file.is_mouse() {
-                each(&crate::fs::mouse::POLLED);
+            } else if file.is_input() {
+                crate::input::polled(file, each);
             } else if file.fuse_channel().is_some() {
                 each(&crate::fs::fuse::POLLED);
             } else if file.is_tunnel() {
@@ -440,10 +438,8 @@ fn file_events(file: &FileObject) -> u16 {
         socket.events()
     } else if file.is_kmsg() {
         crate::fs::kmsg::events(file) | WRITABLE
-    } else if file.is_keyboard() {
-        crate::fs::keyboard::events(file)
-    } else if file.is_mouse() {
-        crate::fs::mouse::events(file)
+    } else if file.is_input() {
+        crate::input::events(file)
     } else if file.fuse_channel().is_some() {
         crate::fs::fuse::events(file)
     } else if file.is_tunnel() {

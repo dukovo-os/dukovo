@@ -6,18 +6,19 @@
 //! Once a device is configured, [`Controller::start_hid`] starts each of
 //! its HID interfaces: it reads the interface's report descriptor and
 //! lays it out (`radix_hid::Layout`), asks it to report only changes
-//! (SET_IDLE; a device may refuse), lights a keyboard's lock lights as
-//! consoled(8) last asked, and starts a transfer on its interrupt IN
-//! endpoint. A boot keyboard or mouse whose report descriptor cannot be
+//! (SET_IDLE; a device may refuse), asks a mouse's wheels to count finer
+//! than a notch if they can (`crate::hid::fine_wheels`), lights a
+//! keyboard's lock lights as consoled(8) last asked, and starts a
+//! transfer on its interrupt IN endpoint. A boot keyboard or mouse whose report descriptor cannot be
 //! read or laid out is put in the boot protocol, whose reports are fixed.
 //!
-//! Each report that comes ([`Controller::hid_report`]) is decoded
-//! (`radix_hid::Decoder`) and told (`crate::hid::tell`): keys go to
-//! `/devices/kbd` (`fs::keyboard::usb_key`), which repeats them, and the
-//! pointer's motion to `/devices/mouse` (`fs::mouse::motion`); then the
-//! transfer starts again. When consoled changes the lights, the thread is
-//! woken and sends each keyboard its Output report
-//! ([`Controller::hid_lights`]).
+//! Each interface that is read is an input device of its own
+//! (`crate::hid::Port`, ADR 0706). Each report that comes
+//! ([`Controller::hid_report`]) is decoded (`radix_hid::Decoder`) and
+//! handed to the input hub as one frame, with the time of the
+//! controller's interrupt; then the transfer starts again. When consoled
+//! changes the lights, the thread is woken and sends each keyboard its
+//! Output report ([`Controller::hid_lights`]).
 //! A device unplugged lets go of every key and button it held.
 //!
 //! A UPS (`Layout::is_ups`, ADR 0741) is not listened to: its state is
@@ -27,18 +28,25 @@
 
 use alloc::vec::Vec;
 
+use core::fmt::Write;
+
+use radix_abi::input::BUS_USB;
 use radix_hid::power::State;
 use radix_hid::{BOOT_KEYBOARD, BOOT_MOUSE, Decoder, Layout};
-use radix_klog::{info, warn};
+use radix_klog::{TextBuf, info, warn};
 use radix_mm::{Flags, HEAP, Kmalloc};
-use radix_usb::Setup;
 use radix_usb::hid::{self, HidDescriptor};
+use radix_usb::{Setup, Speed};
 use radix_xhci::{BUFFER_SIZE, code, endpoint_index};
 
-use super::controller::{Attached, Controller, Name, Why};
+use super::controller::{Attached, Controller, Name, Path, Why};
 use super::shown;
-use crate::fs::keyboard;
+use crate::hid::{Feature, Identity, Port};
 use crate::sched;
+
+/// What the log says of a mouse that took its Resolution Multipliers
+/// (`crate::hid::fine_wheels`).
+pub(super) const FINER: &str = "its wheel counts finer than a notch";
 
 /// Errors in a row on an interface's reports before it is given up.
 const REPORT_ERRORS: u8 = 3;
@@ -97,12 +105,58 @@ pub(super) struct Hid {
     length: usize,
     layout: Layout<Kmalloc>,
     decoder: Decoder,
+    /// Its input device, which goes when this does; none for a UPS.
+    port: Option<Port>,
     /// Errors in a row on its endpoint.
     errors: u8,
     /// The lights its keyboard was last sent, if it has lights.
     lights: Option<u32>,
     /// What the thread keeps of it if it is a UPS.
     ups: Option<UpsRead>,
+}
+
+/// How many reports a second an interrupt endpoint with `interval` as
+/// its bInterval asks to be read for, on a device of `speed`.
+fn rate_hz(speed: Speed, interval: u8) -> u32 {
+    match speed {
+        // In milliseconds.
+        Speed::Low | Speed::Full => 1000 / u32::from(interval.max(1)),
+        // Two to the bInterval less one, in microframes of 125 µs.
+        _ => 8000 >> (interval.clamp(1, 16) - 1),
+    }
+}
+
+/// Makes HID interface `interface` of the device at `path` on bus `bus`,
+/// laid out as `layout`, an input device: named as the device names
+/// itself, or `name` if it has no product string, and plugged in at
+/// `usb-1-2/0`, its interface after the device. `interval` is its
+/// interrupt endpoint's bInterval. `None` if the hub has no room.
+///
+/// Not inlined: what the device said of itself, and what the hub is told
+/// of it, are a frame of their own (ADR 0058).
+#[inline(never)]
+pub(super) fn port(
+    bus: usize,
+    path: Path,
+    (interface, interval): (u8, u8),
+    name: &str,
+    layout: &Layout<Kmalloc>,
+) -> Option<Port> {
+    let shown = shown::of(bus, path);
+    let mut place = TextBuf::<32>::new();
+    let _ = write!(place, "usb-{}/{interface}", Name(bus, path));
+    let product = shown.as_ref().map(|shown| shown.product.as_str()).filter(|p| !p.is_empty());
+    let identity = Identity {
+        bus: BUS_USB,
+        name: product.unwrap_or(name),
+        place: place.as_str(),
+        serial: shown.as_ref().map_or("", |shown| shown.serial.as_str()),
+        vendor: shown.as_ref().map_or(0, |shown| shown.device.vendor),
+        product: shown.as_ref().map_or(0, |shown| shown.device.product),
+        version: shown.as_ref().map_or(0, |shown| shown.device.release),
+        rate_hz: shown.as_ref().map_or(0, |shown| rate_hz(shown.speed, interval)),
+    };
+    Port::add(layout, &identity)
 }
 
 /// A UPS's interface, which the thread reads its reports from.
@@ -126,14 +180,51 @@ impl Controller {
     #[inline(never)]
     pub(super) fn start_hid(&mut self, slot: u8, plan: HidPlan) -> Result<(), Why> {
         let at = self.find(slot).ok_or(Why::Device("it is gone"))?;
+        let Some(layout) = self.hid_layout(at, &plan)? else { return Ok(()) };
+        let (bus, path, interface) = (self.bus, self.devices[at].path, plan.interface);
+        if layout.is_ups() {
+            return start_ups(&mut self.devices[at], bus, interface, layout);
+        }
+        let (what, read) = crate::hid::what(&layout);
+        info!("USB: {}: interface {interface}: {what}", Name(bus, path));
+        if !read {
+            return Ok(());
+        }
+        let mut decoder = Decoder::new();
+        if self.fine_wheels(at, interface, &layout, &mut decoder) {
+            info!("USB: {}: interface {interface}: {FINER}", Name(bus, path));
+        }
+        let attached = &mut self.devices[at];
+        attached.hids.try_reserve(1).map_err(|_| Why::Device("out of memory"))?;
+        let _ = attached.hids.push_within_capacity(Hid {
+            interface,
+            endpoint: endpoint_index(plan.endpoint),
+            pending: 0,
+            length: layout.input_bytes().clamp(1, BUFFER_SIZE),
+            lights: layout.has_lights().then_some(u32::MAX),
+            port: port(bus, path, (interface, plan.interval), attached.name.as_str(), &layout),
+            layout,
+            decoder,
+            errors: 0,
+            ups: None,
+        });
+        let index = attached.hids.len() - 1;
+        self.hid_lights(at);
+        self.listen_hid(at, index)
+    }
+
+    /// How HID interface `plan` of the device at `at` lays its reports
+    /// out: as its own report descriptor says; a boot interface that has
+    /// none to give, or one too much for the decoder, falls back on the
+    /// boot protocol. `None`, with a line in the log, for an interface
+    /// whose descriptor says nothing that can be read.
+    #[inline(never)]
+    fn hid_layout(&mut self, at: usize, plan: &HidPlan) -> Result<Option<Layout<Kmalloc>>, Why> {
         let Controller { xhci, host, devices, buffer, bus, .. } = self;
         let attached = &mut devices[at];
         let (path, device) = (attached.path, &mut attached.device);
         let heap = HEAP.with(Flags::MAY_SLEEP);
         let interface = plan.interface;
-        // Its own report descriptor; a boot interface that has none to
-        // give, or one too much for the decoder, falls back on the boot
-        // protocol.
         let length = usize::from(plan.report_length).min(BUFFER_SIZE);
         let own = (length > 0)
             .then(|| {
@@ -158,37 +249,41 @@ impl Controller {
             }
             (Some(Err(err)), _) => {
                 warn!("USB: {}: interface {interface}: {err}", Name(*bus, path));
-                return Ok(());
+                return Ok(None);
             }
             (None, _) => return Err(Why::Device("its report descriptor could not be read")),
         };
         // Reports only when something changes; a device that wants to
         // send them anyway may refuse.
         let _ = device.control_out(xhci, host, Setup::set_idle(interface), &[]);
-        if layout.is_ups() {
-            return start_ups(attached, *bus, interface, layout);
-        }
-        let (what, read) = crate::hid::what(&layout);
-        info!("USB: {}: interface {interface}: {what}", Name(*bus, path));
-        if !read {
-            return Ok(());
-        }
-        let hid = Hid {
-            interface,
-            endpoint: endpoint_index(plan.endpoint),
-            pending: 0,
-            length: layout.input_bytes().clamp(1, BUFFER_SIZE),
-            lights: layout.has_lights().then_some(u32::MAX),
-            layout,
-            decoder: Decoder::new(),
-            errors: 0,
-            ups: None,
+        Ok(Some(layout))
+    }
+
+    /// Asks the wheels of HID interface `interface` of the device at
+    /// `at` to count finer than a notch (`crate::hid::fine_wheels`).
+    #[inline(never)]
+    fn fine_wheels(
+        &mut self,
+        at: usize,
+        interface: u8,
+        layout: &Layout<Kmalloc>,
+        decoder: &mut Decoder,
+    ) -> bool {
+        let Controller { xhci, host, devices, buffer, .. } = self;
+        let device = &mut devices[at].device;
+        let mut ask = |feature: Feature<'_>| match feature {
+            Feature::Get(id, report) => {
+                let setup =
+                    Setup::get_report(interface, hid::REPORT_FEATURE, id, report.len() as u16);
+                device.control_in(xhci, host, setup, report).ok()
+            }
+            Feature::Set(id, report) => {
+                let setup =
+                    Setup::set_report(interface, hid::REPORT_FEATURE, id, report.len() as u16);
+                device.control_out(xhci, host, setup, report).ok().map(|()| 0)
+            }
         };
-        attached.hids.try_reserve(1).map_err(|_| Why::Device("out of memory"))?;
-        let _ = attached.hids.push_within_capacity(hid);
-        let index = attached.hids.len() - 1;
-        self.hid_lights(at);
-        self.listen_hid(at, index)
+        crate::hid::fine_wheels(layout, decoder, &mut buffer[..], &mut ask)
     }
 
     /// Starts the transfer on HID interface `index` of the device at `at`.
@@ -204,7 +299,7 @@ impl Controller {
     /// changed, and starts it again.
     #[inline(never)]
     pub(super) fn hid_report(&mut self, at: usize, index: usize, code: u8, residual: u32) {
-        let Controller { devices, buffer, bus, xhci, host, .. } = self;
+        let Controller { devices, buffer, bus, xhci, host, came_ns, .. } = self;
         let attached = &mut devices[at];
         let (slot, path) = (attached.device.slot(), attached.path);
         let Some(hid) = attached.hids.get_mut(index) else { return };
@@ -215,7 +310,9 @@ impl Controller {
                 if attached.device.received(hid.endpoint, &mut buffer[..came]).is_err() {
                     return;
                 }
-                hid.decoder.report(&hid.layout, &buffer[..came], &mut crate::hid::tell);
+                if let Some(port) = &mut hid.port {
+                    port.report(&mut hid.decoder, &hid.layout, &buffer[..came], *came_ns);
+                }
             }
             // Stopped by the driver.
             code::STOPPED => return,
@@ -245,7 +342,7 @@ impl Controller {
     /// Sends the keyboards of the device at `at` the lock lights
     /// consoled(8) asked for, if they changed since.
     pub(super) fn hid_lights(&mut self, at: usize) {
-        let leds = keyboard::lights();
+        let leds = crate::input::lights();
         let Controller { devices, buffer, xhci, host, .. } = self;
         let attached = &mut devices[at];
         for hid in attached.hids.iter_mut().filter(|h| h.lights.is_some_and(|l| l != leds)) {
@@ -292,6 +389,7 @@ fn start_ups(
         length: 0,
         layout,
         decoder: Decoder::new(),
+        port: None,
         errors: 0,
         lights: None,
         ups: Some(UpsRead { slot, state: State::default(), next_ns: 0 }),
@@ -303,7 +401,8 @@ fn start_ups(
 /// interfaces, held, and of its UPS: the device is gone.
 pub(super) fn gone(hids: &mut [Hid]) {
     for hid in hids {
-        hid.decoder.release_all(&mut crate::hid::tell);
+        // Its input device goes, with what it held down.
+        hid.port = None;
         if let Some(ups) = hid.ups.take() {
             crate::ups::remove(ups.slot);
         }

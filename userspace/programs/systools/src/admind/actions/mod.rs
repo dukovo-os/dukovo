@@ -1255,6 +1255,7 @@ registry![
     hardware::Devices,
     hardware::Power,
     hardware::Screens,
+    hardware::Inputs,
     hardware::Memtest,
     hardware::MemtestCancel,
     hardware::MemtestStatus,

@@ -66,7 +66,7 @@ fn answer(stream: &UnixStream) -> Outcome<(String, Option<OwnedFd>)> {
 /// Borrows the screens from consoled: a holder that is in front. It
 /// asks again while consoled is not there yet or has no screens to
 /// lend.
-fn borrow_seat() -> Outcome<Seat> {
+pub fn borrow_seat() -> Outcome<Seat> {
     let until = Instant::now() + LENDER_PATIENCE;
     loop {
         let said = match UnixStream::connect(LENDER) {

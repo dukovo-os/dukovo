@@ -1,8 +1,18 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Keyboards for the Radix kernel (Phase 9, ADR 0097): what a PS/2
-//! keyboard sends, as the key events of radix-input(2).
+//! Input devices for the Radix kernel: what they say, and who reads it
+//! (radix-input(2)).
+//!
+//! Since release 1.1 (ADR 0706) every keyboard, mouse and tablet is a
+//! device of the [`hub`], whatever driver it has. The driver says what
+//! the device has ([`device::About`]) and hands over what each report
+//! said ([`event::Said`]); the hub gives it to the readers that may hear
+//! it, each in a [`ring`] of its own, and catches the secure key (ADR
+//! 0708). [`bits`] is the sets of codes the requests answer with.
+//!
+//! [`Set1`] is the built-in keyboard's part (Phase 9, ADR 0097): what a
+//! PS/2 keyboard sends, as keys.
 //!
 //! The i8042 controller translates what the keyboard sends into scan code
 //! set 1, as PC firmware leaves it, and [`Set1`] turns those bytes into
@@ -28,6 +38,21 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+// The lists never grow in a call that cannot fail (ADR 0017).
+#![feature(vec_push_within_capacity)]
+// For the lists and rings in the kernel's allocator, and an empty hub in
+// a `const fn`; Kani's toolchain knows the feature by its older name.
+#![cfg_attr(not(kani), feature(allocator_ext))]
+#![cfg_attr(kani, feature(allocator_api))]
+
+extern crate alloc;
+
+pub mod bits;
+pub mod device;
+pub mod event;
+pub mod hub;
+pub mod report;
+pub mod ring;
 
 use radix_abi::input::*;
 
@@ -38,6 +63,20 @@ pub struct Key {
     pub code: u16,
     /// RELEASED, PRESSED or REPEATED.
     pub value: u16,
+}
+
+/// The keys a keyboard that sends scan code set 1 can send: what
+/// [`Set1`] makes of any byte.
+pub fn set1_keys() -> device::Keys {
+    let mut keys = device::Keys::new();
+    for make in 0..0x80 {
+        keys.set(plain(make), true);
+        keys.set(extended(make), true);
+    }
+    keys.set(KEY_PAUSE, true);
+    // What a byte that is no key decodes to.
+    keys.set(0, false);
+    keys
 }
 
 /// What came before the byte being decoded.
@@ -225,6 +264,15 @@ mod tests {
     fn keys(bytes: &[u8]) -> Vec<(u16, u16)> {
         let mut set = Set1::new();
         bytes.iter().filter_map(|&b| set.feed(b)).map(|k| (k.code, k.value)).collect()
+    }
+
+    #[test]
+    fn the_keys_of_set_1_are_those_its_bytes_decode_to() {
+        let keys = set1_keys();
+        for code in [KEY_ESC, KEY_A, KEY_RIGHTCTRL, KEY_DELETE, KEY_PAUSE, KEY_SYSRQ, KEY_F13] {
+            assert!(keys.has(code), "{code}");
+        }
+        assert!(!keys.has(0) && !keys.has(BTN_LEFT));
     }
 
     #[test]

@@ -124,6 +124,7 @@ the exact chips.
 | Device | Status | Driver |
 | --- | --- | --- |
 | Built-in PS/2 keyboards | Works | i8042 |
+| A virtual machine's virtio keyboard, mouse and tablet | Works | virtio |
 | Touchpads and touchscreens: I2C-HID, Synaptics, Elantech and ALPS, TrackPoints | Planned, 1.3 | |
 | Fingerprint readers and the Fingerprint app | Planned, 1.12 | |
 

@@ -11,6 +11,7 @@
 use std::io;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 
+use radix_abi::capability::{self, Rights};
 use radix_abi::errors::{File, Kernel};
 use radix_abi::{Status, Syscalls, file, startup};
 
@@ -126,6 +127,20 @@ pub fn new_descriptor(mut call: impl FnMut(u32) -> Result<(), Status>) -> Result
             Err(status) => return Err(status),
         }
     }
+}
+
+/// A new descriptor of the file `fd` is a descriptor of, whose capability
+/// has only `rights` of `fd`'s own: one to give a program that is to name
+/// the file and do no more with it. `Rights::COPY` alone is the least a
+/// descriptor passed over a socket needs.
+///
+/// # Errors
+///
+/// `missing_rights` if `fd`'s capability lacks one of `rights` or may not
+/// be copied; `no_room` when the process can open no more descriptors.
+pub fn narrowed(fd: impl AsFd, rights: Rights) -> Result<OwnedFd, Status> {
+    let from = slot_of(fd);
+    new_descriptor(|to| capability::derive(&SYS, from, to, rights, 0))
 }
 
 /// The slot of descriptor number `number`: the capability of a

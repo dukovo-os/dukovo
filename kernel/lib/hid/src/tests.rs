@@ -179,8 +179,152 @@ fn a_tablet_says_where_it_points() {
     assert!(feed(&mut decoder, &layout, &[0, 0x00, 0x40, 0xff, 0x7f, 0]).is_empty());
     assert_eq!(
         feed(&mut decoder, &layout, &[1, 0x00, 0x40, 0xff, 0x7f, 0xfe]),
-        [at(32768, POSITION_MAX, BUTTON_LEFT, -2)]
+        [at(32768, POSITION_MAX, BUTTON_LEFT, -2 * DETENT)]
     );
+    // It has no Resolution Multiplier: there is nothing to ask it for.
+    assert_eq!(layout.fine_reports().count(), 0);
+    assert!(!layout.set_fine(0, &mut [0; 4]));
+}
+
+/// A mouse whose wheels can count finer than a detent, as Microsoft's
+/// and Logitech's are laid out: report 2 has three buttons, X and Y,
+/// then a logical collection each for the wheel and the horizontal
+/// wheel, with a Resolution Multiplier of two bits in each. The wheel's
+/// stands for 1 or 8 counts a detent, the horizontal wheel's for 1 or
+/// 16. The Feature report is the two multipliers and four bits of
+/// padding.
+const FINE_MOUSE: &[u8] = &[
+    0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, 0x85, 0x02, 0x09, 0x01, 0xa1, 0x00, // mouse, report 2
+    0x05, 0x09, 0x19, 0x01, 0x29, 0x03, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x03, 0x81, 0x02,
+    0x75, 0x05, 0x95, 0x01, 0x81, 0x01, // three buttons, padding
+    0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x15, 0x81, 0x25, 0x7f, 0x75, 0x08, 0x95, 0x02, 0x81,
+    0x06, // relative X and Y
+    0xa1, 0x02, 0x09, 0x48, 0x15, 0x00, 0x25, 0x01, 0x35, 0x01, 0x45, 0x08, 0x75, 0x02, 0x95, 0x01,
+    0xb1, 0x02, // the wheel's multiplier: 1 or 8
+    0x09, 0x38, 0x15, 0x81, 0x25, 0x7f, 0x35, 0x00, 0x45, 0x00, 0x75, 0x08, 0x81, 0x06,
+    0xc0, // the wheel
+    0xa1, 0x02, 0x09, 0x48, 0x15, 0x00, 0x25, 0x01, 0x35, 0x01, 0x45, 0x10, 0x75, 0x02, 0xb1,
+    0x02, // the horizontal wheel's multiplier: 1 or 16
+    0x75, 0x04, 0xb1, 0x01, // the Feature report's padding
+    0x05, 0x0c, 0x0a, 0x38, 0x02, 0x15, 0x81, 0x25, 0x7f, 0x35, 0x00, 0x45, 0x00, 0x75, 0x08, 0x81,
+    0x06, 0xc0, // the horizontal wheel
+    0xc0, 0xc0,
+];
+
+fn turned(wheel: i32, pan: i32) -> Input {
+    Input::Pointer(Pointer { wheel, pan, ..Pointer::default() })
+}
+
+#[test]
+fn a_wheel_counts_whole_detents_until_its_device_takes_the_multiplier() {
+    let layout = layout(FINE_MOUSE);
+    assert_eq!(layout.input_bytes(), 6);
+    let mut decoder = Decoder::new();
+    assert_eq!(feed(&mut decoder, &layout, &[2, 0, 0, 0, 1, 0]), [turned(DETENT, 0)]);
+    assert_eq!(
+        feed(&mut decoder, &layout, &[2, 0, 0, 0, 0xfe, 3]),
+        [turned(-2 * DETENT, 3 * DETENT)]
+    );
+}
+
+#[test]
+fn the_multipliers_of_a_feature_report_are_set_to_their_most_and_the_rest_is_kept() {
+    let layout = layout(FINE_MOUSE);
+    assert_eq!(layout.fine_reports().collect::<Vec<_>>(), [(2, 1)]);
+    let mut report = [0b1010_0000];
+    assert!(layout.set_fine(2, &mut report));
+    assert_eq!(report, [0b1010_0101]);
+    // A value already past the most goes to the most.
+    let mut report = [0b0000_1111, 0xff];
+    assert!(layout.set_fine(2, &mut report));
+    assert_eq!(report, [0b0000_0101, 0xff]);
+    // Another report, and one cut short, are left alone.
+    assert!(!layout.set_fine(1, &mut report));
+    assert!(!layout.set_fine(2, &mut []));
+    assert_eq!(report, [0b0000_0101, 0xff]);
+    // A device that took the report answers it; one that did not take a
+    // multiplier of it, another report and one cut short are not that.
+    assert!(layout.is_fine(2, &[0b1010_0101]));
+    assert!(!layout.is_fine(2, &[0b1010_0001]) && !layout.is_fine(2, &[0b1010_0100]));
+    assert!(!layout.is_fine(1, &[0b0000_0101]) && !layout.is_fine(2, &[]));
+}
+
+#[test]
+fn a_wheel_whose_multiplier_was_taken_counts_finer_and_loses_nothing() {
+    let layout = layout(FINE_MOUSE);
+    let mut decoder = Decoder::new();
+    // Another report's multipliers are not this one's.
+    decoder.fine(&layout, 1);
+    assert_eq!(feed(&mut decoder, &layout, &[2, 0, 0, 0, 1, 0]), [turned(DETENT, 0)]);
+    decoder.fine(&layout, 2);
+    // Eight counts of the wheel are a detent: each is 15 of its 120.
+    assert_eq!(feed(&mut decoder, &layout, &[2, 0, 0, 0, 1, 0]), [turned(15, 0)]);
+    assert_eq!(feed(&mut decoder, &layout, &[2, 0, 0, 0, 0xf8, 0]), [turned(-DETENT, 0)]);
+    // Sixteen of the horizontal wheel are: seven and a half each. The
+    // half waits for the next count, so sixteen counts are 120 exactly.
+    let mut sum = 0;
+    for count in 0..16 {
+        let said = feed(&mut decoder, &layout, &[2, 0, 0, 0, 0, 1]);
+        let expected = if count % 2 == 0 { 7 } else { 8 };
+        assert_eq!(said, [turned(0, expected)]);
+        sum += expected;
+    }
+    assert_eq!(sum, DETENT);
+    // Back the other way, likewise.
+    assert_eq!(feed(&mut decoder, &layout, &[2, 0, 0, 0, 0, 0xff]), [turned(0, -7)]);
+    assert_eq!(feed(&mut decoder, &layout, &[2, 0, 0, 0, 0, 0xff]), [turned(0, -8)]);
+}
+
+/// A mouse with one multiplier for the whole of it, in its application
+/// collection (1 or 4), and one of the wheel's own beside the wheel (1
+/// or 8); the horizontal wheel is in a collection of its own with none.
+/// A third multiplier is in a collection with no wheel.
+const NESTED_MOUSE: &[u8] = &[
+    0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, // mouse
+    0x09, 0x48, 0x15, 0x00, 0x25, 0x01, 0x35, 0x01, 0x45, 0x04, 0x75, 0x02, 0x95, 0x01, 0xb1,
+    0x02, // the whole mouse's multiplier: 1 or 4
+    0xa1, 0x02, 0x09, 0x38, 0x15, 0x81, 0x25, 0x7f, 0x35, 0x00, 0x45, 0x00, 0x75, 0x08, 0x81,
+    0x06, // the wheel
+    0x09, 0x48, 0x15, 0x00, 0x25, 0x03, 0x35, 0x01, 0x45, 0x08, 0x75, 0x02, 0xb1, 0x02,
+    0xc0, // then its own multiplier: up to 8, at 3
+    0xa1, 0x02, 0x05, 0x0c, 0x0a, 0x38, 0x02, 0x15, 0x81, 0x25, 0x7f, 0x35, 0x00, 0x45, 0x00, 0x75,
+    0x08, 0x81, 0x06, 0xc0, // the horizontal wheel
+    0xa1, 0x02, 0x05, 0x01, 0x09, 0x48, 0x15, 0x00, 0x25, 0x01, 0x35, 0x01, 0x45, 0x78, 0x75, 0x02,
+    0xb1, 0x02, 0xc0, // a multiplier with no wheel: left alone
+    0xc0,
+];
+
+#[test]
+fn a_wheel_counts_by_the_multiplier_of_the_nearest_collection_around_it() {
+    let layout = layout(NESTED_MOUSE);
+    assert_eq!(layout.fine_reports().collect::<Vec<_>>(), [(0, 1)]);
+    // The whole mouse's goes to 1 and the wheel's to 3; the third, which
+    // no wheel counts by, stays as the device had it.
+    let mut report = [0b0010_0000];
+    assert!(layout.set_fine(0, &mut report));
+    assert_eq!(report, [0b0010_1101]);
+    let mut decoder = Decoder::new();
+    decoder.fine(&layout, 0);
+    assert_eq!(feed(&mut decoder, &layout, &[1, 1]), [turned(15, 30)]);
+}
+
+#[test]
+fn a_multiplier_that_makes_nothing_finer_is_not_kept() {
+    // FINE_MOUSE with its multipliers' most standing for one count a
+    // detent, and for none.
+    for most in [1, 0] {
+        let mut descriptor = FINE_MOUSE.to_vec();
+        for at in 0..descriptor.len() - 1 {
+            if descriptor[at] == 0x45 && matches!(descriptor[at + 1], 0x08 | 0x10) {
+                descriptor[at + 1] = most;
+            }
+        }
+        let layout = layout(&descriptor);
+        assert_eq!(layout.fine_reports().count(), 0);
+        let mut decoder = Decoder::new();
+        decoder.fine(&layout, 2);
+        assert_eq!(feed(&mut decoder, &layout, &[2, 0, 0, 0, 1, 1]), [turned(DETENT, DETENT)]);
+    }
 }
 
 /// A touchpad's, as HID over I2C ones have it (Microsoft's Precision
@@ -211,6 +355,30 @@ const TOUCHPAD: &[u8] = &[
     0x05, 0x0d, 0x09, 0x0e, 0xa1, 0x01, 0x85, 0x04, 0x09, 0x52, 0x25, 0x0a, 0x75, 0x08, 0x95, 0x01,
     0xb1, 0x02, 0xc0, // configuration, report 4: input mode
 ];
+
+#[test]
+fn a_layout_says_what_its_device_can_report() {
+    let mut keys = Vec::new();
+    let keyboard = layout(BOOT_KEYBOARD).says();
+    keyboard.each_key(&mut |code| keys.push(code));
+    assert!(keys.contains(&KEY_A) && keys.contains(&KEY_LEFTCTRL) && keys.contains(&KEY_DELETE));
+    assert_eq!((keyboard.buttons, keyboard.moves, keyboard.points), (0, false, false));
+    assert_eq!(layout(BOOT_KEYBOARD).lights() & 7, 7);
+
+    let mouse = layout(BOOT_MOUSE).says();
+    assert_eq!(mouse.keys, [0; 4]);
+    assert_eq!((mouse.buttons, mouse.moves, mouse.points), (3, true, false));
+
+    let tablet = layout(TABLET).says();
+    assert_eq!((tablet.buttons, tablet.moves, tablet.points), (3, false, true));
+    assert_eq!((tablet.wheel, tablet.pan), (true, false));
+
+    // The media and system keys of a keyboard's other reports are its
+    // keys too.
+    let mut keys = Vec::new();
+    layout(COMPOSITE).says().each_key(&mut |code| keys.push(code));
+    assert!(keys.contains(&KEY_A) && keys.contains(&KEY_MUTE) && keys.contains(&KEY_POWER));
+}
 
 #[test]
 fn numbered_reports_keep_their_own_keys() {
@@ -369,6 +537,19 @@ proptest! {
             }
             let _ = layout.input_bytes();
             let _ = layout.lights_report(7, &mut [0u8; 64]);
+            // Its wheels asked to count finer, with a Feature report as
+            // long as it says and one cut short, and read again.
+            for (id, bytes) in layout.fine_reports() {
+                let mut feature = vec![0u8; bytes];
+                prop_assert!(layout.set_fine(id, &mut feature));
+                prop_assert!(layout.is_fine(id, &feature));
+                let _ = layout.set_fine(id, &mut feature[..bytes / 2]);
+                let _ = layout.is_fine(id, &feature[..bytes / 2]);
+                decoder.fine(&layout, id);
+            }
+            for report in &reports {
+                decoder.report(&layout, report, &mut |_| {});
+            }
         }
     }
 

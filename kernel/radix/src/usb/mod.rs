@@ -34,7 +34,7 @@
 //! or restarted, so that none goes on writing to memory, and routes the
 //! Intel ports back as the firmware left them.
 
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use radix_hal::{Devices, Timer};
 use radix_hw::Mmio;
@@ -174,12 +174,30 @@ pub fn init(off: bool) {
 static INTERRUPTED: [AtomicBool; MAX_CONTROLLERS] =
     [const { AtomicBool::new(false) }; MAX_CONTROLLERS];
 
-/// A controller's interrupt itself: noted, then its thread woken.
+/// When each controller's interrupt last came, on the kernel's clock,
+/// if it has since its thread last asked ([`came_at`]); 0 if not.
+static CAME_NS: [AtomicU64; MAX_CONTROLLERS] = [const { AtomicU64::new(0) }; MAX_CONTROLLERS];
+
+/// A controller's interrupt itself: noted with its time, then its thread
+/// woken.
 fn on_irq(index: usize) {
     if let Some(flag) = INTERRUPTED.get(index) {
         flag.store(true, Ordering::Release);
     }
+    if let Some(came) = CAME_NS.get(index) {
+        came.store(sched::now_ns(), Ordering::Release);
+    }
     on_interrupt(index);
+}
+
+/// When what the thread of the controller with index `index` is about to
+/// read came: the time of its interrupt, if one came since the last
+/// call, or else now. An input device's reports carry it (ADR 0706).
+pub(super) fn came_at(index: usize) -> u64 {
+    match CAME_NS.get(index).map(|came| came.swap(0, Ordering::AcqRel)) {
+        Some(came) if came != 0 => came,
+        _ => sched::now_ns(),
+    }
 }
 
 /// Whether the interrupt of the controller with index `index` came since
@@ -387,7 +405,7 @@ pub fn wait_for_disks() {
 }
 
 /// The keyboards' lock lights are to change: wakes every controller's
-/// thread, which lights its keyboards' (`fs::keyboard::lights`).
+/// thread, which lights its keyboards' (`crate::input::lights`).
 pub fn lights_changed() {
     for thread in THREADS.iter().filter_map(Once::get) {
         sched::wake(thread);

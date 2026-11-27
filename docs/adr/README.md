@@ -115,7 +115,7 @@ their pull requests conflicted.
 | [0094](0094-proc-for-the-native-tools-kmsg-and-opened-paths.md) | /proc tells the native tools what they show, /dev/kmsg gives the log, and files keep the path they were opened by | Accepted; changed by [0113](0113-plain-names-for-the-root-folders.md) |
 | [0095](0095-tracing-through-a-pipe-the-kernel-writes.md) | A trace is a pipe the kernel writes a record to for each call | Accepted |
 | [0096](0096-native-administration-tools-as-one-program.md) | The native administration tools are one Rust program, written for Radix with Linux's names and options | Accepted |
-| [0097](0097-keyboard-events-and-the-framebuffer-for-programs.md) | The kernel hands programs key events through /dev/kbd and the screen through /dev/fb0 | Accepted; the screen is the display layer's since [0700](0700-the-display-layer-is-cards-screens-pipes-planes-and-pictures-changed-in-one-checked-step.md) |
+| [0097](0097-keyboard-events-and-the-framebuffer-for-programs.md) | The kernel hands programs key events through /dev/kbd and the screen through /dev/fb0 | Accepted; the screen is the display layer's since [0700](0700-the-display-layer-is-cards-screens-pipes-planes-and-pictures-changed-in-one-checked-step.md), and each keyboard is a file of its own since [0706](0706-each-input-device-is-a-file-of-events-in-linux-s-codes-and-the-merged-files-stay.md) |
 | [0098](0098-resource-domains-from-user-space.md) | Spark makes the services' resource domains through capabilities, and restarts them itself | Accepted |
 | [0099](0099-power-capability-and-ordered-shutdown.md) | Turning the machine off is a capability only Spark holds, and Spark stops the services first | Accepted |
 | [0100](0100-consoled-virtual-consoles-in-a-program.md) | consoled draws the virtual consoles as a program, a terminal for TERM=linux built on the vte crate | Accepted |
@@ -225,6 +225,6 @@ their pull requests conflicted.
 | [0232](0232-memory-modules-spd-eeproms-over-the-smbus.md) | Memory modules' SPD EEPROMs are read over the SMBus, when first opened | Accepted |
 | [0233](0233-gpio-controllers-and-the-firmwares-gpio-events.md) | GPIO controllers are driven from their ACPI devices, and run the firmware's GPIO events | Accepted |
 | [0250](0250-sign-in-at-the-consoles-and-sessions-started-by-authd.md) | Sign-in at the consoles, and sessions started by authd | Accepted |
-| [0251](0251-the-consoles-ask-for-elevate-s-password-and-ctrl-alt-delete-is-the-secure-attention-key.md) | The consoles ask for elevate's password, and Ctrl+Alt+Delete is the secure attention key | Accepted |
+| [0251](0251-the-consoles-ask-for-elevate-s-password-and-ctrl-alt-delete-is-the-secure-attention-key.md) | The consoles ask for elevate's password, and Ctrl+Alt+Delete is the secure attention key | Accepted; the kernel sees the key since [0708](0708-the-secure-key-is-seen-in-the-kernel-and-pauses-every-other-reader.md) |
 | [0252](0252-the-logs-are-for-administrators-and-everyone-reads-their-own-programs-records.md) | The logs are for administrators, and everyone reads their own programs' records | Accepted |
 | [0253](0253-the-startup-trouble-menu-resets-an-administrator-s-password.md) | The startup-trouble menu resets an administrator's password | Accepted |
