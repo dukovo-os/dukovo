@@ -18,6 +18,7 @@ static const char *const ELSEWHERE[][2] = {
 		{"spark", "the first program, which every boot test starts"},
 		{"consoled", "the consoles boot test's service: another would take the screen and keyboard"},
 		{"keymap", "the consoles boot test's: the layout it sets is the one consoled types in"},
+		{"inputd", "the inputd boot test's service: it hands the input devices to a program that has the screens, which that test's display-test is"},
 		{"volumed", "the volumes boot test's service: it mounts a stick plugged in after boot"},
 		{"eject", "the volumes boot test's: it unmounts the stick volumed mounted"},
 		{"remount", "the volumes boot test's: it mounts the stick volumed mounted again"},
