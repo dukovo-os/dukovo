@@ -48,7 +48,6 @@
 //! drawn at twice their size, each pixel two by two, so that a screen too
 //! big for the largest font still has bigger text to give.
 
-mod outputs;
 mod paint;
 
 use std::fs::{File, OpenOptions};
@@ -70,7 +69,7 @@ use sysapi::kernel;
 
 use crate::access::Size;
 use crate::term::{Cell, Palette, Terminal, default_palette};
-use outputs::{Found, Output};
+use display::outputs::{self, Found, Output};
 use paint::{Drawn, Look, Span};
 
 /// The text sizes, smallest first: a built-in font, and how many times

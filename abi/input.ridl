@@ -295,7 +295,8 @@ const INPUT_SERIAL: u32 = 0x494e0008;
 /// SET_LEDS's does, on every keyboard as SET_LEDS does (ADR 0715). It
 /// is for the program whose holder has the screens, so it fails with
 /// busy for a paused description; it fails with invalid_argument for a
-/// device that has no lights, or bits that are no light.
+/// device that has no lights, or bits that are no light. (Since release
+/// 1.1, ADR 0715.)
 const INPUT_LIGHTS: u32 = 0x494e0009;
 /// The most bytes INPUT_NAME, INPUT_PLACE and INPUT_SERIAL answer with.
 const INPUT_TEXT_MAX: u32 = 64;

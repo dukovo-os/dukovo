@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Which screens the consoles show on, and the change that puts a
-//! picture on each.
+//! Which screens a program shows on when it shows on them all, and the
+//! change that puts a picture on each: the consoles' choice
+//! (consoled(8)) and the desktop's (windowd(1)).
 //!
-//! The consoles show on every screen a monitor is plugged into
+//! Such a program shows on every screen a monitor is plugged into
 //! (radix-display(2)), each fed by a pipe of its own in the mode the
 //! screen prefers, with a picture of that size on the pipe's main plane.
 //! A change names every screen, pipe and main plane the layer has, so
@@ -12,19 +13,19 @@
 
 use std::io;
 
-use display::abi::{
+use crate::abi::{
     FORMAT_XRGB8888, KIND_CARD, KIND_PIPE, KIND_PLANE, KIND_SCREEN, MAY_BLANK, Mode, PIPE_ACTIVE,
     PIPE_MODE, PLANE_MAIN, PLANE_PICTURE, PLANE_PIPE, PlaneInfo, SCREEN_FAILED, SCREEN_PIPE,
     SCREEN_PLUGGED, ScreenInfo, Thing,
 };
-use display::wire::ChangeBytes;
-use display::{Control, Holder};
+use crate::wire::ChangeBytes;
+use crate::{Control, Holder};
 
-/// The narrowest and the shortest screen a console is drawn on: 16
-/// columns and 4 rows of the smallest font.
+/// The narrowest and the shortest screen that is shown on: 16 columns
+/// and 4 rows of the consoles' smallest font.
 pub const SMALLEST: (u32, u32) = (128, 64);
 
-/// What the layer has, as far as the consoles look.
+/// What the layer has, as far as such a program looks.
 #[derive(Clone, Debug, Default)]
 pub struct Found {
     /// Every card, screen, pipe and plane.
@@ -65,7 +66,7 @@ impl Found {
     }
 }
 
-/// One screen the consoles show on.
+/// One screen to show on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Output {
     /// The screen.
@@ -164,7 +165,7 @@ pub fn change(found: &Found, outputs: &[Output], made: &[(u32, u32)]) -> ChangeB
 
 #[cfg(test)]
 mod tests {
-    use display::abi::{Change, Entry, FORMAT_ARGB8888, PLANE_POINTER};
+    use crate::abi::{Change, Entry, FORMAT_ARGB8888, PLANE_POINTER};
 
     use super::*;
 

@@ -10,6 +10,8 @@
 //! - [`Holder`] sends the layer's requests, each with its record, over
 //!   whatever sends a `control` request to the program's description of
 //!   the file ([`Control`]).
+//! - [`outputs`] chooses the screens for a program that shows on every
+//!   one, and builds the change that puts a picture on each.
 //! - [`loan`] is the lines a program and consoled(8) say to each other
 //!   when the program borrows the screens.
 //!
@@ -22,6 +24,7 @@
 #![forbid(unsafe_code)]
 
 pub mod loan;
+pub mod outputs;
 pub mod wire;
 
 #[cfg(test)]

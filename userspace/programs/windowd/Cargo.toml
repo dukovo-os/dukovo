@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "windowd"
+description = "Dukovo's window server: a Wayland compositor that draws the windows of a person's programs on the screens the consoles lend it"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+display = { path = "../display" }
+input = { path = "../input" }
+keymap = { path = "../keymap" }
+libc = "0.2.191"
+radix-abi = { path = "../../../kernel/abi" }
+# The Wayland protocols, the windows' model and the pixman renderer (ADR
+# 0712). No backend of Smithay's is built: windowd's own reach the
+# display layer and inputd.
+smithay = { version = "0.7.0", default-features = false, features = ["desktop", "renderer_pixman", "wayland_frontend"] }
+sysapi = { path = "../sysapi" }
+
+[dev-dependencies]
+# The patterns the test program's window shows, pixel for pixel.
+display-pattern = { path = "../display-pattern" }
+# The display layer itself, which the tests draw through with stand-in
+# cards, so that the kernel's own code checks what windowd asks for.
+radix-display = { path = "../../../kernel/lib/display" }
+# A Wayland program, which the tests run against the desktop over a
+# socket pair.
+window-test = { path = "../window-test" }
+
+[lints]
+workspace = true

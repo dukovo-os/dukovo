@@ -160,7 +160,7 @@ const ATTENTION_END: u32 = 0x4453000d;
 /// ended. Fails with not_permitted for another holder, with busy for a
 /// holder that is stacked already and while no holder is stacked (the
 /// front is then the caller's to take with a CHANGE), and with too_many
-/// if the stack is as deep as it goes.
+/// if the stack is as deep as it goes. (Since release 1.1, ADR 0716.)
 const STAND_UNDER: u32 = 0x4453000e;
 
 /// GET's part: what the thing is.

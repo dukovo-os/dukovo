@@ -33,8 +33,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use display::Unmade;
-use display::loan::Answer;
 use display::abi::{DisplayEvent, EVENT_BACK, EVENT_BORROWER_ENDED, EVENT_FRONT, KIND_PIPE};
+use display::loan::Answer;
 use display::wire::ChangeBytes;
 use display_pattern::said::Said;
 use sysapi::net;
