@@ -56,6 +56,14 @@ moment, the program's frame is in it.
   else is wrong.
 - **When the desktop comes back to the front** the layer puts its
   pictures back (ADR 0702), and each screen is drawn anew once.
+- **A frame drawn anew takes the place of one that still waits**
+  (NEWEST_WINS, ADR 0703). windowd asks for no frame while the one
+  before it waits, except when it lost sight of what a screen shows:
+  the desktop came to the front, a change failed, or screens came or
+  went. The screen is then drawn whole at once, and the frame that
+  waited, which was of the screen as it was, gives way. So a change
+  that fails with busy says one thing only, that the desktop is not in
+  front, and windowd draws nothing until the layer says it is again.
 
 ## Alternatives
 

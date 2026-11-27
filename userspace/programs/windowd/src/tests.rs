@@ -224,6 +224,28 @@ fn a_program_s_window_shows_in_the_middle_of_the_screen_pixel_for_pixel() {
 }
 
 #[test]
+fn a_frame_drawn_before_the_one_before_it_showed_takes_its_place() {
+    let (holder, card) = rig::lent(&[Some((1024, 768))], false);
+    let kernel = holder.file().0.clone();
+    let desktop = Desktop::new(holder, "us").unwrap();
+    let mut world = World { desktop, kernel, card };
+    // The first frame is drawn before the layer's word that the desktop
+    // is in front is read, as when both wait at the desktop's start. The
+    // word has every screen drawn anew, before the first frame's beat.
+    let now = world.now();
+    world.desktop.draw(now).unwrap();
+    world.hear_layer();
+    assert_eq!(world.desktop.due(now), Some(now));
+    world.desktop.draw(now).unwrap();
+    assert!(world.desktop.front());
+    world.settle();
+    let program = world.program();
+    world.show(&program, (320, 200), 7);
+    let (left, top) = middle((320, 200));
+    assert_eq!(world.colour(left, top), pattern::colour(7, 0, 0));
+}
+
+#[test]
 fn a_still_desktop_draws_nothing_and_is_not_woken() {
     let mut world = World::one_screen();
     let program = world.program();

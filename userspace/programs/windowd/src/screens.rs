@@ -18,6 +18,12 @@
 //! change that shows it does not wait: the layer says with an event
 //! when it shows, and windowd then tells the programs on that screen
 //! that a frame was shown, which is when they draw their next.
+//!
+//! windowd asks for no frame while the one before it waits for its
+//! beat, but for one: when it lost sight of what a screen shows, as
+//! when the desktop comes to the front or screens come and go, it draws
+//! the screen whole at once. That frame takes the place of one that
+//! still waits (`NEWEST_WINS`).
 
 pub mod pace;
 
@@ -25,8 +31,8 @@ use std::io;
 
 use display::abi::{
     CARD_SHARED_PAGES, DisplayEvent, EVENT_BACK, EVENT_BEAT, EVENT_FAILED, EVENT_FRONT,
-    EVENT_OVERFLOW, EVENT_SCREEN, EVENT_SHOWN, FORMAT_ARGB8888, FORMAT_XRGB8888, NO_WAIT,
-    PLANE_CHANGED, PLANE_HOT_SPOT, PLANE_PICTURE, PLANE_PIPE, PLANE_POINTER,
+    EVENT_OVERFLOW, EVENT_SCREEN, EVENT_SHOWN, FORMAT_ARGB8888, FORMAT_XRGB8888, NEWEST_WINS,
+    NO_WAIT, PLANE_CHANGED, PLANE_HOT_SPOT, PLANE_PICTURE, PLANE_PIPE, PLANE_POINTER,
 };
 use display::outputs::{self, Found};
 use display::wire::{self, ChangeBytes};
@@ -616,7 +622,10 @@ where
         cookie: u64,
     ) -> Result<bool, Failed> {
         let started = monotonic_ns();
-        let mut change = ChangeBytes::new(NO_WAIT, cookie);
+        // A frame that still waits for its beat is one the screen was
+        // lost sight of after: this one, drawn whole, takes its place,
+        // so that busy says only that the desktop is not in front.
+        let mut change = ChangeBytes::new(NO_WAIT | NEWEST_WINS, cookie);
         let (picture, changed) = self.draw(renderer, shell)?;
         let drew = !changed.is_empty();
         if drew {

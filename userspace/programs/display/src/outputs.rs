@@ -14,9 +14,9 @@
 use std::io;
 
 use crate::abi::{
-    FORMAT_XRGB8888, KIND_CARD, KIND_PIPE, KIND_PLANE, KIND_SCREEN, MAY_BLANK, Mode, PIPE_ACTIVE,
-    PIPE_MODE, PLANE_MAIN, PLANE_PICTURE, PLANE_PIPE, PlaneInfo, SCREEN_FAILED, SCREEN_PIPE,
-    SCREEN_PLUGGED, ScreenInfo, Thing,
+    FORMAT_XRGB8888, KIND_CARD, KIND_PIPE, KIND_PLANE, KIND_SCREEN, MAY_BLANK, Mode, NEWEST_WINS,
+    PIPE_ACTIVE, PIPE_MODE, PLANE_MAIN, PLANE_PICTURE, PLANE_PIPE, PlaneInfo, SCREEN_FAILED,
+    SCREEN_PIPE, SCREEN_PLUGGED, ScreenInfo, Thing,
 };
 use crate::wire::ChangeBytes;
 use crate::{Control, Holder};
@@ -133,10 +133,11 @@ pub fn outputs(found: &Found) -> Vec<Output> {
 
 /// The change that shows on each of `outputs` the picture and in the
 /// mode `made` has for it, as (picture, mode value), and nothing on any
-/// other screen.
+/// other screen. It takes the place of a frame of the holder's that
+/// still waits for its beat, which is of the screens as they were.
 pub fn change(found: &Found, outputs: &[Output], made: &[(u32, u32)]) -> ChangeBytes {
     // A new mode may blank a screen for a moment.
-    let mut change = ChangeBytes::new(MAY_BLANK, 0);
+    let mut change = ChangeBytes::new(MAY_BLANK | NEWEST_WINS, 0);
     let made = |at: usize| made.get(at).copied().unwrap_or((0, 0));
     for thing in found.of_kind(KIND_SCREEN) {
         let fed = outputs.iter().find(|output| output.screen == thing.id);
