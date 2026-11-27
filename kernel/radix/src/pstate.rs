@@ -19,6 +19,11 @@
 //! Every change asks every CPU again for what all of them together allow
 //! ([`radix_pstate::Request::at`]).
 //!
+//! A CPU with neither control runs at one of the P-states its firmware
+//! describes, where it has the register that chooses them (ADR 0796); the
+//! kernel picks the state then, at each tick, from how busy the CPU was
+//! since the last and how fast it ran ([`tick`]), within the same levels.
+//!
 //! `/kernel/devices/system/cpu/cpufreq` shows each CPU's levels and
 //! request as frequencies ([`write_file`]), and the frequency it runs at,
 //! measured from its APERF and MPERF counters over [`MEASURE_NS`] when a
@@ -29,7 +34,7 @@ use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, 
 
 use radix_hal::{Cpu, CpuLocal, MAX_CPUS, Timer, UserMode};
 use radix_klog::{error, info, warn};
-use radix_pstate::{Driver, Levels, Preference, Request, Scale, Speed};
+use radix_pstate::{Driver, Levels, Preference, Request, Scale, Speed, firmware};
 use radix_sync::{Mutex, Once};
 
 use crate::{Arch, work};
@@ -119,7 +124,8 @@ static STEP: AtomicU8 = AtomicU8::new(0);
 pub fn start(off: bool, epp: Option<&str>) {
     let Some(driver) = Arch::performance_driver() else {
         info!(
-            "CPU frequency: left to the firmware: the CPUs have neither Intel's HWP nor AMD's CPPC"
+            "CPU frequency: left to the firmware: the CPUs have neither Intel's HWP nor AMD's \
+             CPPC, nor P-states from the firmware that the kernel can choose"
         );
         return;
     };
@@ -393,6 +399,7 @@ pub fn files(driver: Driver) -> impl Iterator<Item = &'static (&'static str, Fil
     let own = match driver {
         Driver::Hwp { .. } => INTEL_FILES,
         Driver::Cppc => AMD_FILES,
+        Driver::Firmware => &[],
     };
     FILES.iter().chain(preference).chain(own)
 }
@@ -408,10 +415,14 @@ pub fn write_file(cpu: usize, file: File, out: &mut dyn Write) -> fmt::Result {
         File::CpuinfoMaxFreq => writeln!(out, "{}", control.khz(control.levels.highest)),
         File::CpuinfoMinFreq => writeln!(out, "{}", control.khz(control.levels.lowest)),
         // Linux's intel_pstate and amd-pstate-epp offer these two: the
-        // performance governor holds a CPU at the top of its range.
-        File::ScalingAvailableGovernors => writeln!(out, "performance powersave"),
+        // performance governor holds a CPU at the top of its range. Where
+        // the kernel picks the speed from the load, as Linux's schedutil
+        // does with acpi-cpufreq, that one is offered instead of powersave.
+        File::ScalingAvailableGovernors => {
+            writeln!(out, "performance {}", own_governor(driver))
+        }
         File::ScalingGovernor => {
-            writeln!(out, "{}", if held() { "performance" } else { "powersave" })
+            writeln!(out, "{}", if held() { "performance" } else { own_governor(driver) })
         }
         File::ScalingCurFreq => {
             measure();
@@ -435,6 +446,63 @@ pub fn write_file(cpu: usize, file: File, out: &mut dyn Write) -> fmt::Result {
             writeln!(out, "{}", control.scale.khz(control.levels.efficient))
         }
         File::AmdMaxFreq => writeln!(out, "{}", control.khz(control.levels.highest)),
+    }
+}
+
+/// The governor that is not *performance*, as Linux names it for
+/// `driver`.
+fn own_governor(driver: Driver) -> &'static str {
+    if driver.picks_own_speed() { "powersave" } else { "schedutil" }
+}
+
+/// Each CPU's last look at its load ([`tick`]): when, its idle time then,
+/// and its APERF and MPERF counts.
+static LOOKED: [[AtomicU64; 4]; MAX_CPUS] = [const { [const { AtomicU64::new(0) }; 4] }; MAX_CPUS];
+
+/// On CPU `cpu`'s tick, at `now`, its idle time being `idle_ns`: where
+/// the kernel picks its speed, the firmware's P-states, asks for the level
+/// [`radix_pstate::firmware::demand`] works out from how busy it was since
+/// the last tick and the level it ran at meanwhile, measured from its
+/// APERF and MPERF counters (MPERF counts at the nominal level's rate),
+/// within what it is allowed. A CPU held at one level is left there.
+pub fn tick(cpu: usize, now: u64, idle_ns: u64) {
+    if DRIVER.get().is_none_or(|driver| driver.picks_own_speed()) || cpu >= MAX_CPUS {
+        return;
+    }
+    let Some(control) = CONTROLS[cpu].get() else { return };
+    let looked = &LOOKED[cpu];
+    let then = looked[0].swap(now, Ordering::Relaxed);
+    let idle_then = looked[1].swap(idle_ns, Ordering::Relaxed);
+    let counts = Arch::performance_counts();
+    let counted = counts.map(|(aperf, mperf)| {
+        (looked[2].swap(aperf, Ordering::Relaxed), looked[3].swap(mperf, Ordering::Relaxed))
+    });
+    let request = request(cpu);
+    if then == 0 || now <= then || request.min >= request.max {
+        return;
+    }
+    let wall = now - then;
+    let busy = wall.saturating_sub(idle_ns.saturating_sub(idle_then)) * 1000 / wall;
+    let asked = if request.desired == 0 { request.max } else { request.desired };
+    let ran = match (counts, counted) {
+        (Some((aperf, mperf)), Some((aperf_then, mperf_then)))
+            if mperf > mperf_then && aperf_then != 0 =>
+        {
+            u64::from(control.levels.nominal) * aperf.wrapping_sub(aperf_then)
+                / (mperf - mperf_then)
+        }
+        _ => u64::from(asked),
+    };
+    let desired = firmware::demand(
+        u32::try_from(busy).unwrap_or(1000),
+        u32::try_from(ran).unwrap_or(u32::MAX),
+        request.min,
+        request.max,
+    );
+    if desired != request.desired {
+        let request = Request { desired, ..request };
+        Arch::request_performance(request);
+        REQUESTS[cpu].store(pack(request), Ordering::Relaxed);
     }
 }
 

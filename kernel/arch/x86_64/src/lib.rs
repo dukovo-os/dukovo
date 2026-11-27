@@ -478,6 +478,10 @@ impl Devices for Arch {
         idle::set(states)
     }
 
+    fn set_performance_states(states: &[radix_pstate::firmware::State], limit: usize) -> usize {
+        pstate::set_firmware(states, limit)
+    }
+
     fn pci_segments(found: &mut dyn FnMut(PciSegment)) {
         let Some(mcfg) = acpi::get().and_then(|acpi| acpi.mcfg.as_ref()) else { return };
         for window in radix_acpi::mcfg_entries(mcfg) {

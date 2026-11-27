@@ -12,15 +12,22 @@
 //! firmwares load the tables that describe the deeper states only then.
 //! Each CPU then takes the states it can use (`Devices::set_idle_states`),
 //! on itself, and the scheduler's governor picks among them.
+//!
+//! The same objects' `_PSS` lists the CPU's performance states, which a
+//! CPU without HWP or CPPC takes too (`Devices::set_performance_states`,
+//! ADR 0796), where `_PCT` says they are chosen through the processor's
+//! own register; `_PPC` keeps the fastest few off limits.
 
 use alloc::vec::Vec;
 use core::fmt::Write;
 
 use radix_acpi::processor::{self as firmware, CState};
+use radix_acpi::resources::{SPACE_FUNCTIONAL_FIXED_HW, generic_register};
 use radix_hal::idle::{Entry, FirmwareState, NAMES};
 use radix_hal::{Cpu, CpuLocal, Devices, Smp};
 use radix_klog::{TextBuf, info};
 use radix_mm::Kmalloc;
+use radix_pstate::firmware::{MAX_STATES as MOST_PSTATES, State};
 use radix_sync::Once;
 use radix_uacpi::Node;
 use radix_uacpi::power::Fields;
@@ -35,12 +42,21 @@ const MOST: usize = NAMES.len();
 struct Found {
     states: [FirmwareState; MOST],
     count: usize,
+    /// Its performance states, fastest first, where the processor's own
+    /// register chooses them.
+    pstates: [State; MOST_PSTATES],
+    pcount: usize,
+    /// How many of the fastest are off limits (`_PPC`).
+    limit: usize,
 }
 
 impl Found {
     const NONE: Found = Found {
         states: [FirmwareState { how: Entry::Halt, kind: 1, latency_us: 0 }; MOST],
         count: 0,
+        pstates: [State { mhz: 0, control: 0 }; MOST_PSTATES],
+        pcount: 0,
+        limit: 0,
     };
 }
 
@@ -86,7 +102,7 @@ pub fn start() {
     }
     for cpu in 0..cpus {
         let node = objects.iter().find(|&&(other, _)| other == cpu).map(|&(_, node)| node);
-        let _ = found.push_within_capacity(node.map_or(Found::NONE, states));
+        let _ = found.push_within_capacity(node.map_or(Found::NONE, read));
     }
     let _ = FOUND.set(found);
     let me = Arch::current_cpu();
@@ -99,7 +115,60 @@ fn take() {
     let me = Arch::current_cpu();
     if let Some(found) = FOUND.get().and_then(|found| found.get(me)) {
         Arch::set_idle_states(&found.states[..found.count]);
+        Arch::set_performance_states(&found.pstates[..found.pcount], found.limit);
     }
+}
+
+/// What processor object `node` describes: its idle states, and its
+/// performance states where its own register chooses them.
+fn read(node: Node) -> Found {
+    let mut found = states(node);
+    if own_registers(node) {
+        let read = |pss: &radix_uacpi::Package<'_>| {
+            let (mut pstates, mut count) = ([State::default(); MOST_PSTATES], 0);
+            for index in 0..pss.len().min(MOST_PSTATES) {
+                // A state the firmware gets wrong ends the list: the ones
+                // after it would be out of place.
+                let Some(Some(state)) = pss.package(index, pstate) else { break };
+                pstates[count] = state;
+                count += 1;
+            }
+            (pstates, count)
+        };
+        if let Ok((pstates, count)) = node.package(c"_PSS", read) {
+            found.pstates = pstates;
+            found.pcount = count;
+            // No `_PPC`: none is off limits.
+            found.limit = node
+                .integer(c"_PPC")
+                .map_or(0, |limit| usize::try_from(limit).unwrap_or(usize::MAX));
+        }
+    }
+    found
+}
+
+/// Whether `_PCT` of processor object `node` names functional fixed
+/// hardware for both its control and its status register: the
+/// processor's own registers, which `_PSS`'s values are written to.
+fn own_registers(node: Node) -> bool {
+    let read = |pct: &radix_uacpi::Package<'_>| {
+        (0..2).all(|index| {
+            pct.text(index)
+                .and_then(generic_register)
+                .is_some_and(|register| register.space == SPACE_FUNCTIONAL_FIXED_HW)
+        })
+    };
+    node.package(c"_PCT", read).unwrap_or(false)
+}
+
+/// One `_PSS` entry: its frequency, power, latencies, control and status.
+fn pstate(fields: &radix_uacpi::Package<'_>) -> Option<State> {
+    let mut values = [0; 6];
+    for (index, value) in values.iter_mut().enumerate() {
+        *value = fields.integer(index)?;
+    }
+    let state = firmware::pstate(values)?;
+    Some(State { mhz: state.mhz, control: state.control })
 }
 
 /// Tells the firmware of processor object `node` what the kernel can do:

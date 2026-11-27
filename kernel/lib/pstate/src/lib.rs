@@ -28,6 +28,9 @@
 //! 19h (MSRC001_02B0 to MSRC001_02B3); Linux's `intel_pstate.c` and
 //! `amd-pstate.c`, as the reference for their use (no code taken).
 //!
+//! CPUs with neither take one of the P-states their firmware describes,
+//! which the kernel picks for them ([`firmware`], ADR 0796).
+//!
 //! The architecture reads and writes the registers; this crate only works
 //! out their values, so its tests run on the host.
 
@@ -35,6 +38,8 @@
 #![cfg_attr(not(test), no_std)]
 
 use core::fmt;
+
+pub mod firmware;
 
 /// IA32_PM_ENABLE: bit 0 turns HWP on, until the CPU is reset.
 pub const PM_ENABLE: u32 = 0x770;
@@ -102,6 +107,12 @@ pub enum Driver {
     },
     /// AMD's CPPC through registers, whose request always carries one.
     Cppc,
+    /// The P-states the firmware describes, one of which the kernel picks
+    /// ([`firmware`]). Its registers are the [`firmware::Table`]'s, which
+    /// the architecture reads and writes itself: [`Driver::start`],
+    /// [`Driver::levels`], [`Driver::request`] and
+    /// [`Driver::set_request`] are for HWP's and CPPC's.
+    Firmware,
 }
 
 impl Driver {
@@ -121,12 +132,19 @@ impl Driver {
         match self {
             Driver::Hwp { .. } => "intel_pstate",
             Driver::Cppc => "amd-pstate-epp",
+            Driver::Firmware => "acpi-cpufreq",
         }
     }
 
     /// Whether a request carries an energy preference.
     pub fn has_preference(self) -> bool {
-        !matches!(self, Driver::Hwp { epp: false })
+        !matches!(self, Driver::Hwp { epp: false } | Driver::Firmware)
+    }
+
+    /// Whether the CPU picks its own speed within the request, rather than
+    /// the kernel picking it ([`firmware::demand`]).
+    pub fn picks_own_speed(self) -> bool {
+        self != Driver::Firmware
     }
 
     /// Turns the control on for the running CPU, and reads its levels and
@@ -135,6 +153,7 @@ impl Driver {
         match self {
             Driver::Hwp { .. } => msrs.write(PM_ENABLE, 1),
             Driver::Cppc => msrs.write(CPPC_ENABLE, 1),
+            Driver::Firmware => {}
         }
         (self.levels(msrs), self.request(msrs))
     }
@@ -152,6 +171,7 @@ impl Driver {
                     msrs.read(CPPC_CAPABILITY).to_le_bytes();
                 Levels { lowest, efficient, nominal, highest }
             }
+            Driver::Firmware => Levels::default(),
         }
     }
 
@@ -166,6 +186,7 @@ impl Driver {
                 let [max, min, desired, preference, ..] = msrs.read(CPPC_REQUEST).to_le_bytes();
                 Request { min, max, desired, preference }
             }
+            Driver::Firmware => Request::default(),
         }
     }
 
@@ -177,6 +198,7 @@ impl Driver {
         let (msr, fields) = match self {
             Driver::Hwp { .. } => (HWP_REQUEST, [min, max, desired, preference]),
             Driver::Cppc => (CPPC_REQUEST, [max, min, desired, preference]),
+            Driver::Firmware => return,
         };
         let kept = if self.has_preference() { !0xffff_ffff } else { !0x00ff_ffff };
         let value = msrs.read(msr) & kept | u64::from(u32::from_le_bytes(fields)) & !kept;
@@ -189,6 +211,7 @@ impl fmt::Display for Driver {
         f.write_str(match self {
             Driver::Hwp { .. } => "Intel's HWP",
             Driver::Cppc => "AMD's CPPC",
+            Driver::Firmware => "the firmware's P-states",
         })
     }
 }
@@ -319,7 +342,9 @@ impl Preference {
         match (self, driver) {
             (Preference::Performance, _) => 0,
             (Preference::BalancePerformance, _) => 0x80,
-            (Preference::BalancePower, Driver::Hwp { .. }) => 0xc0,
+            // The firmware's P-states take no preference; the value is
+            // never written.
+            (Preference::BalancePower, Driver::Hwp { .. } | Driver::Firmware) => 0xc0,
             (Preference::BalancePower, Driver::Cppc) => 0xbf,
             (Preference::Power, _) => 0xff,
         }

@@ -1832,6 +1832,8 @@ fn on_timer(tick: bool) {
         if !idling {
             balance::move_up(cpu, now);
         }
+        // Where the kernel picks the CPU's speed, from its load (ADR 0796).
+        crate::pstate::tick(cpu, now, idle_time_here(slot, now));
         if cpu == 0 && now >= NEXT_LOAD_NS.load(Ordering::Relaxed) {
             sample_load(now);
         }
@@ -1937,6 +1939,15 @@ fn idle_time(slot: &CpuSched) -> (u64, u64) {
         }
         core::hint::spin_loop();
     }
+}
+
+/// This CPU's idle time at `now`, from an interrupt on it: the idle loop
+/// moves a period into `idle_ns` with interrupts masked, so the two are
+/// never caught halfway, as `idle_time` must allow for on other CPUs.
+fn idle_time_here(slot: &CpuSched, now: u64) -> u64 {
+    let since = slot.idle_since.load(Ordering::Relaxed);
+    let current = if since == 0 { 0 } else { now.saturating_sub(since) };
+    slot.idle_ns.load(Ordering::Relaxed) + current
 }
 
 /// Each CPU's idle thread, as a new thread (the boot CPU's).

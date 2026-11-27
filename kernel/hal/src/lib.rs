@@ -662,6 +662,16 @@ pub trait Devices {
         0
     }
 
+    /// Gives the running CPU the P-states its firmware describes, fastest
+    /// first, of which the first `limit` are off limits, and returns how
+    /// many it now uses: none if it controls its own speed, or has no
+    /// register that chooses them (ADR 0796). Only the first call on a CPU
+    /// counts. Run on each CPU, from a thread, before the speed control
+    /// starts.
+    fn set_performance_states(_states: &[radix_pstate::firmware::State], _limit: usize) -> usize {
+        0
+    }
+
     /// Maps `len` bytes of device registers from physical address `phys`,
     /// uncached, for the rest of the kernel's life. `None` when the
     /// mapping window or memory for page tables runs out.

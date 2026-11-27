@@ -114,6 +114,7 @@ machine with AMT, an AMD machine and a laptop; see
 | The fixed ACPI power button on both reference machines (ADR 0142) | Firmware differs | Dell, Framework |
 | MWAIT idle on real CPUs (scheduler design note), and the deeper C-states the firmware's `_CST` gives: MWAIT states on Intel, I/O-port states on AMD's Zen, the C1E promotion turned off, and the idle governor's choices (ADR 0795) | QEMU does not offer MWAIT or `_CST`, so boot tests exercise HLT alone | OptiPlex 7040, Lenovo M75q, Dell, Framework |
 | HWP and CPPC frequency control, thermal zones, embedded controller events, batteries and lids (ADRs 0201 to 0203) | QEMU emulates none of them | Dell, Framework |
+| Speed control through the firmware's P-states (ADR 0796) | QEMU offers neither Enhanced SpeedStep nor hardware P-states, and the lab's desktops have HWP or CPPC | The R740 with its BIOS's power management set to the operating system and HWP off |
 | The Framework Desktop's embedded controller, fans and ARGB header (ADRs 0207, 0208) | Tested against a simulated EC | Framework |
 | Corrected-error interrupts (CMCI on the Dell, Zen 5's counters) and Zen's scalable machine-check banks (ADRs 0169, 0204) | QEMU's CPUs have neither | Dell, Framework |
 | The chipset watchdogs: the Dell's TCO timer behind its SMBus controller, and the AMD FCH's (ADR 0167), and an update that hangs falling back through them (ADR 0453; the boot test `update-hang` proves it on QEMU's i6300esb, and the lab's QEMU machines have no watchdog) | Phase 15's rollback relies on them; not proven on hardware | Dell, Framework, AMD lab machine |
@@ -372,6 +373,7 @@ machine asks for them.
 | Transparent huge pages for anonymous memory | ADR 0121 |
 | Idle states for Intel processors whose firmware gives no `_CST`, or a poor one, from the kernel's own table of each model's states | ADR 0795 |
 | Turning an idle state off while the system runs, through `cpuidle/state*/disable`, and a latency limit that programs ask for, as Linux's PM QoS | ADR 0795 |
+| The firmware's P-states where `_PCT` names I/O ports rather than the processor's registers, `_PSD`'s software coordination of a domain's CPUs, a `_PPC` that changes while the system runs (its Notify 0x80), AMD's Core Performance Boost under `cpu.boost`, and CPPC through `_CPC`'s shared memory | ADR 0796 |
 | Batched and lazy TLB shootdowns | ADR 0020 |
 | `getrusage`'s `ru_maxrss`, a process's peak resident memory in KiB, as on Linux and the BSDs: the C library leaves it 0, as the kernel keeps no peak, so Go's `runtime/pprof` heap profiles say `MaxRSS = 0` | Go's test suite, ADR 0358 |
 | `/devices/shm`'s directory keeps its names in one array in the order they were made, with an index sorted by name, as tmpfs did before ADR 0367 kept its entries in pieces: it holds at most 32,768 shared memory objects, and removing one moves every one after it | ADR 0367 |

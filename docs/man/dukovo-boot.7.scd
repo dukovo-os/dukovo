@@ -683,8 +683,9 @@ them to *init*, and the kernel does not read them.
 
 *pstate*=off
 	Leave the CPUs' speed to the firmware, though they have Intel's HWP
-	or AMD's CPPC, as Linux's *intel_pstate=disable* and
-	*amd_pstate=disable* do. See *CPU FREQUENCY*.
+	or AMD's CPPC, or P-states the kernel could choose, as Linux's
+	*intel_pstate=disable* and *amd_pstate=disable* do. See *CPU
+	FREQUENCY*.
 
 *ups*=show
 	Show the UPSes plugged in by USB in _/kernel/class/power_supply_
@@ -1342,10 +1343,27 @@ CPUs can do:
 	CPU frequency: Intel's HWP on 8 CPUs, 400 to 3400 MHz, base 1800 MHz, energy preference balance_performance
 
 Each CPU's policy is in _/kernel/devices/system/cpu/cpufreq_, as on Linux
-(*radix-sysfs*(5)). CPUs with neither control, as QEMU's even under KVM,
-keep the firmware's setting:
+(*radix-sysfs*(5)).
 
-	CPU frequency: left to the firmware: the CPUs have neither Intel's HWP nor AMD's CPPC
+CPUs with neither control, Intel's from before Skylake and those whose
+firmware keeps HWP off, and AMD's Zen 1 and 2 and those whose firmware
+offers no CPPC, run at one of the P-states their firmware's _\_PSS_
+describes, where _\_PCT_ says the processor's own register chooses them:
+Intel's Enhanced SpeedStep or AMD's hardware P-states (ADR 0796). The
+kernel picks the state then, as Linux's _acpi-cpufreq_ with its
+_schedutil_ governor does: at each tick, from how busy the CPU was since
+the last and how fast it ran, the slowest state at which the same work
+would keep it busy four fifths of the time, and the fastest allowed at
+once when it was busy throughout. _\_PPC_ keeps the fastest states off
+limits, and *cpu.boost*, *cpu.speed* and passive cooling apply as above.
+The log says so:
+
+	CPU frequency: the firmware's P-states on 8 CPUs, 800 to 3900 MHz, base 3400 MHz
+
+CPUs with none of these, as QEMU's even under KVM, keep the firmware's
+setting:
+
+	CPU frequency: left to the firmware: the CPUs have neither Intel's HWP nor AMD's CPPC, nor P-states from the firmware that the kernel can choose
 
 # SENSORS
 

@@ -683,10 +683,11 @@ _/kernel/devices/system/cpu/cpu_*n*_/cpuidle/state_*k*_/disable_
 	flags *idle* and *max_cstate* limit them.
 
 _/kernel/devices/system/cpu/cpufreq/policy_*n*_/scaling_driver_
-	Where CPU _n_ picks its own speed (*dukovo-boot*(7)'s *CPU
-	FREQUENCY*): the Linux driver for its control, *intel_pstate* for
-	Intel's HWP or *amd-pstate-epp* for AMD's CPPC. Each CPU has a
-	policy, as with those drivers, and _/kernel/devices/system/cpu/cpu_*n*_/cpufreq_
+	Where CPU _n_'s speed is the kernel's to set (*dukovo-boot*(7)'s
+	*CPU FREQUENCY*): the Linux driver for its control, *intel_pstate*
+	for Intel's HWP, *amd-pstate-epp* for AMD's CPPC, or *acpi-cpufreq*
+	for the P-states its firmware describes. Each CPU has a policy, as
+	with those drivers, and _/kernel/devices/system/cpu/cpu_*n*_/cpufreq_
 	is a link to it. Linux's cpupower and powertop read these.
 
 _/kernel/devices/system/cpu/cpufreq/policy_*n*_/affected_cpus_, _related_cpus_
@@ -708,7 +709,9 @@ _/kernel/devices/system/cpu/cpufreq/policy_*n*_/scaling_governor_, _scaling_avai
 	Linux's drivers call so; *performance* while the CPUs are held at
 	the top of the range (*cpu.speed* *highest*, ADR 0557).
 	_scaling_available_governors_ lists *performance powersave*, as
-	Linux's intel_pstate does.
+	Linux's intel_pstate does. With the firmware's P-states the kernel
+	picks the speed from the load, which Linux's schedutil governor
+	does: *schedutil* takes the place of *powersave* in both files.
 
 _/kernel/devices/system/cpu/cpufreq/policy_*n*_/energy_performance_preference_
 	Where the CPU takes one, the energy preference it is asked for:
