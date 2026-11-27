@@ -108,7 +108,10 @@ copy, filled when touched (ADR 0060). A file that cannot change, as the
 system's programs in their read-only slot, is the exception (ADR 0563):
 its whole pages, where the region may not be written, are in memory
 once, kept in the file's `ProgramPages` for every space that maps them,
-which counts as one more sharer of each. A write after `mprotect`, and
+which counts as one more sharer of each. So is a file no one may write
+by its mode, as a sealed bundle's are, on Btrfs or tmpfs (ADR 0658): its
+pages are kept only while no handle may write it, and while they are,
+an open to write it or cut it fails with ETXTBSY. A write after `mprotect`, and
 the kernel's relocation of a new program, copy a kept page first, so it
 is never written in place; a region's end frees the kept pages it
 spanned that no space maps any more. A shared writable mapping of a
@@ -399,7 +402,11 @@ thread that waits on the network. The handshakes of a listening TCP
 socket wake nobody, and each connection made wakes one thread blocked in
 `accept`, and its pollers, as Linux's exclusive waits do; a waiter that
 leaves at its timeout or for a signal takes a connection that waits as it
-goes (ADR 0651).
+goes (ADR 0651). A connected TCP socket keeps what the last look found
+it ready for, with the counts of changes it read first, and a look that
+finds the counts where they were takes that without the stack's lock
+(ADR 0771); the socket's own calls move a count of their own, as
+smoltcp does not wake for what they change.
 
 What an entry found is written back only where it differs from what
 the entry held when it was copied in. A program polls the same array
@@ -489,7 +496,11 @@ The locks of the queue, from first to last:
 5. the scheduler's wait table.
 
 A change to a watched description (`Polled::changed`) takes only the
-last three, so it may run under any other lock. Closing a queue, which
+last three, so it may run under any other lock. A read that leaves a
+pipe empty while some end still writes it tells only its pollers and
+its watches for writing, which a `Polled` counts apart: a watch for
+reading would find nothing to report, and the next write, or the last
+writer's going, tells it (ADR 0777). Closing a queue, which
 may happen with the capability store's locks held, takes only spin locks
 and frees only memory. Looking at a description takes its object's
 locks, so it is never done under a spin lock of the queue, and user
@@ -859,8 +870,9 @@ and clears its queued mark, then reads what its description is ready
 for; a change is made, then `changed` finds each watch of the
 description, sets its mark and puts it on its queue's ring. Both sides
 have a full barrier between their write and their read (the look's
-`fence`, and `changed`'s barrier or, for a notification, its
-read-modify-write), so either the look sees the change, or `changed`
+read-modify-write of the mark with the barrier after it, and
+`changed`'s barrier or, for a notification, its read-modify-write;
+`radix_sync::barrier`, ADR 0773), so either the look sees the change, or `changed`
 finds the mark clear and queues the watch again, and the next look
 reports it. A waiting call counts itself among the queue's waiters,
 takes a full barrier, and reads the ring's count after it is on the
@@ -996,8 +1008,9 @@ ring and reporting it.
   `mprotect` cannot make it writable (EACCES). SQLite's WAL index
   between connections and its memory-mapped I/O need such mappings (ADR
   0511).
-- `clock_gettime` is a capability call; there is no read-only clock page
-  (vDSO). The instruction budgets will show when it matters.
+- `clock_gettime`, and `gettimeofday` and `time` on it, read the clock
+  page through the vDSO, without a call, where the kernel shares its
+  counter (ADR 0616); a process's or thread's CPU clock is a call.
 - An event queue (`kqueue` and `kevent`) differs from BSD's. The `data`
   of a read or write event is 0, where BSD gives the bytes to read, the
   room to write or the connections waiting. The filters are read, write

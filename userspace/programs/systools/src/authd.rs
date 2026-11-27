@@ -63,12 +63,13 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::io::{self, IsTerminal, Read, Write};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use accounts::hash::{self, Cost};
@@ -81,6 +82,8 @@ use accounts::rescue;
 use accounts::signins::{self, Event, Latest, Place, Record, Seat};
 use accounts::{DISABLED, Group, Password, Table, User};
 use radix_abi::names;
+use sysapi::poll::{PollFd, poll};
+use sysapi::signal::{self, Caught};
 
 use crate::args::Args;
 use crate::elevate::{self, Plan};
@@ -282,20 +285,10 @@ struct Ticket {
 const TICKETS_MAX: usize = 128;
 
 /// Set by SIGTERM: authd ends.
-static STOP: AtomicBool = AtomicBool::new(false);
+static STOP: Caught = Caught::new();
 
-extern "C" fn on_term(_: libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-}
-
-/// The write end of the pipe SIGCHLD wakes authd's loop with.
-static CHILDREN: AtomicI32 = AtomicI32::new(-1);
-
-extern "C" fn on_child(_: libc::c_int) {
-    let byte = 1u8;
-    // SAFETY: write(2) is async-signal-safe; the pipe does not block.
-    unsafe { libc::write(CHILDREN.load(Ordering::Relaxed), (&raw const byte).cast(), 1) };
-}
+/// SIGCHLD, which wakes authd's loop through a pipe.
+static CHILDREN: Caught = Caught::new();
 
 /// What an elevated command's session names as its terminal when it was
 /// elevated outside a terminal pane.
@@ -1200,7 +1193,7 @@ impl Authd {
             return (Answer::Refused(why.into()), now);
         }
         let terminal = (descriptors.len() == 1).then(|| descriptors.remove(0));
-        let Some(terminal) = terminal.filter(signin::is_terminal) else {
+        let Some(terminal) = terminal.filter(IsTerminal::is_terminal) else {
             return (Answer::Refused("a session request comes with its terminal".into()), now);
         };
         let Some(names) = self.names else {
@@ -1300,19 +1293,13 @@ impl Authd {
     fn reap(&mut self, now: Instant) {
         let mut drained = [0u8; 64];
         while (&self.children).read(&mut drained).is_ok_and(|n| n > 0) {}
-        loop {
-            let mut status = 0;
-            // SAFETY: waitpid writes the status.
-            let process =
-                unsafe { libc::waitpid(-1, &raw mut status, libc::WNOHANG | libc::WUNTRACED) };
-            if process <= 0 {
-                return;
-            }
+        while let Some((process, ended)) = sysapi::process::reap_or_stopped() {
+            let status = ended.into_raw();
             // An elevated command stopped, as Ctrl+Z stops it: elevate
             // stops too, and asks for it to go on when it does.
-            if libc::WIFSTOPPED(status) {
+            if let Some(stopped) = ended.stopped_signal() {
                 if self.sessions.get(&process).is_some_and(|s| s.elevated) {
-                    let line = request::stopped(libc::WSTOPSIG(status));
+                    let line = request::stopped(stopped);
                     for client in self.clients.iter_mut().filter(|c| c.session == Some(process)) {
                         client.tell(line.as_bytes(), now);
                     }
@@ -1527,8 +1514,7 @@ impl Authd {
         let client = &mut self.clients[i];
         client.session = Some(process);
         client.relay = relay.map(|fd| {
-            // SAFETY: making our own descriptor not wait.
-            unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
+            let _ = sysapi::fd::set_nonblocking(&fd, true);
             (fd, Vec::new())
         });
     }
@@ -1578,22 +1564,19 @@ impl Authd {
         let mut buffer = [0u8; 256];
         let mut gone = false;
         loop {
-            // SAFETY: reads into our buffer.
-            let n = unsafe { libc::read(fd.as_raw_fd(), buffer.as_mut_ptr().cast(), buffer.len()) };
-            if n > 0 {
-                pending.extend_from_slice(&buffer[..n as usize]);
-                // Nothing elevate writes is this long without a newline.
-                if pending.len() > 1024 {
-                    pending.clear();
+            match sysapi::fd::read(&*fd, &mut buffer) {
+                Ok(0) => gone = true,
+                Ok(n) => {
+                    pending.extend_from_slice(&buffer[..n]);
+                    // Nothing elevate writes is this long without a newline.
+                    if pending.len() > 1024 {
+                        pending.clear();
+                    }
+                    continue;
                 }
-                continue;
-            }
-            let error = io::Error::last_os_error();
-            match error.kind() {
-                _ if n == 0 => gone = true,
-                io::ErrorKind::Interrupted => continue,
-                io::ErrorKind::WouldBlock => {}
-                _ => gone = true,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(_) => gone = true,
             }
             break;
         }
@@ -1876,7 +1859,7 @@ impl Authd {
             return refused(format!("there are {SSH_SESSIONS_MAX} SSH sessions at once already"));
         }
         let terminal = (descriptors.len() == 1).then(|| descriptors.remove(0));
-        let terminal = terminal.filter(signin::is_terminal);
+        let terminal = terminal.filter(IsTerminal::is_terminal);
         let pipes = <[OwnedFd; 3]>::try_from(descriptors).ok();
         let io = match (&terminal, &pipes) {
             (Some(tty), _) => signin::SshIo::Terminal(tty),
@@ -2422,9 +2405,8 @@ impl Authd {
             processes.iter().filter(|p| p.session == leader && p.user == user.uid && !p.zombie())
         {
             let Ok(number) = libc::pid_t::try_from(process.number) else { continue };
-            // SAFETY: kill only sends a signal, to a process of a session
-            // authd started, which is below it.
-            if unsafe { libc::kill(number, signal) } == 0 {
+            // A process of a session authd started, which is below it.
+            if sysapi::process::kill(number, signal).is_ok() {
                 sent += 1;
             }
         }
@@ -3193,11 +3175,8 @@ fn administrator(files: &Files, peer: Peer) -> Result<&User, String> {
 /// started, its process group, as a terminal does; to it alone if it
 /// left its group.
 fn signal_command(process: i32, signal: libc::c_int) {
-    // SAFETY: kill only sends a signal, to authd's own child's group.
-    unsafe {
-        if libc::kill(-process, signal) != 0 {
-            libc::kill(process, signal);
-        }
+    if sysapi::process::kill(-process, signal).is_err() {
+        let _ = sysapi::process::kill(process, signal);
     }
 }
 
@@ -3378,8 +3357,8 @@ impl Client {
         // Descriptors go with the first bytes of the answer, which is
         // short enough to go whole.
         if !self.answer_fds.is_empty() {
-            let fds: Vec<i32> = self.answer_fds.iter().map(AsRawFd::as_raw_fd).collect();
-            match signin::send_with_fds(&self.stream, bytes, &fds) {
+            let fds: Vec<_> = self.answer_fds.iter().map(AsFd::as_fd).collect();
+            match sysapi::net::send_with_fds(&self.stream, bytes, &fds) {
                 Ok(()) => bytes.clear(),
                 Err(err) if err.kind() == io::ErrorKind::WouldBlock => return,
                 Err(_) => sent = false,
@@ -3418,7 +3397,7 @@ impl Client {
 impl Authd {
     fn run_loop(&mut self) -> io::Result<()> {
         loop {
-            if STOP.load(Ordering::Relaxed) {
+            if STOP.is_set() {
                 return Ok(());
             }
             let now = Instant::now();
@@ -3450,30 +3429,25 @@ impl Authd {
             self.clients.retain(|c| !c.done);
             let listening = self.clients.len() < CLIENTS_MAX;
             let mut fds = vec![
-                libc::pollfd {
-                    fd: if listening { self.listener.as_raw_fd() } else { -1 },
-                    events: libc::POLLIN,
-                    revents: 0,
-                },
-                libc::pollfd { fd: self.children.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+                PollFd::optional(listening.then(|| self.listener.as_fd()), libc::POLLIN),
+                PollFd::new(self.children.as_fd(), libc::POLLIN),
             ];
             // A client whose request came is not polled to read, as its
             // end is always there to read; it is still told hung up.
             for client in &self.clients {
                 let due = client.answer.as_ref().is_some_and(|(_, at)| *at <= now);
                 let read = if client.ended { 0 } else { libc::POLLIN };
-                fds.push(libc::pollfd {
-                    fd: client.stream.as_raw_fd(),
-                    events: read | if due { libc::POLLOUT } else { 0 },
-                    revents: 0,
-                });
+                fds.push(PollFd::new(
+                    client.stream.as_fd(),
+                    read | if due { libc::POLLOUT } else { 0 },
+                ));
             }
             // Then the pipes of the elevated commands' elevates.
             let relays: Vec<usize> =
                 (0..self.clients.len()).filter(|&i| self.clients[i].relay.is_some()).collect();
             for &i in &relays {
-                let fd = self.clients[i].relay.as_ref().map_or(-1, |(fd, _)| fd.as_raw_fd());
-                fds.push(libc::pollfd { fd, events: libc::POLLIN, revents: 0 });
+                let fd = self.clients[i].relay.as_ref().map(|(fd, _)| fd.as_fd());
+                fds.push(PollFd::optional(fd, libc::POLLIN));
             }
             let next = self
                 .clients
@@ -3490,37 +3464,36 @@ impl Authd {
                 .chain(self.helps.iter().map(help::Help::next))
                 .chain(self.console.next_check(now))
                 .min();
-            let timeout = next.map_or(-1, |at| {
-                at.saturating_duration_since(now).as_millis().min(60_000) as libc::c_int + 1
+            let timeout = next.map(|at| {
+                at.saturating_duration_since(now).min(Duration::from_secs(60))
+                    + Duration::from_millis(1)
             });
-            // SAFETY: `fds` holds valid pollfds.
-            let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout) };
-            if ready < 0 {
-                let error = io::Error::last_os_error();
-                if error.kind() != io::ErrorKind::Interrupted {
-                    return Err(error);
-                }
-                continue;
+            match poll(&mut fds, timeout) {
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
             }
+            let revents: Vec<i16> = fds.iter().map(PollFd::revents).collect();
+            drop(fds);
             let now = Instant::now();
-            if fds[1].revents != 0 {
+            if revents[1] != 0 {
                 self.reap(now);
             }
             let count = self.clients.len();
-            for (i, entry) in fds[2..2 + count].iter().enumerate() {
-                if entry.revents & libc::POLLOUT != 0 {
+            for (i, &events) in revents[2..2 + count].iter().enumerate() {
+                if events & libc::POLLOUT != 0 {
                     self.clients[i].send(now);
                 }
-                if entry.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+                if events & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
                     self.read(i, now);
                 }
             }
-            for (&i, entry) in relays.iter().zip(&fds[2 + count..]) {
-                if entry.revents != 0 {
+            for (&i, &events) in relays.iter().zip(&revents[2 + count..]) {
+                if events != 0 {
                     self.relay(i);
                 }
             }
-            if fds[0].revents != 0 {
+            if revents[0] != 0 {
                 self.accept(now);
             }
         }
@@ -3531,23 +3504,15 @@ impl Authd {
 /// loop wakes when a session's first process or an elevated command ends
 /// or stops.
 fn watch_children() -> io::Result<File> {
-    let mut fds = [0; 2];
-    // SAFETY: pipe2 writes two descriptors.
-    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_NONBLOCK | libc::O_CLOEXEC) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    CHILDREN.store(fds[1], Ordering::Relaxed);
-    // SAFETY: all zeros is a valid sigaction; the handler only writes to
-    // the pipe; the read end is ours alone.
-    unsafe {
-        let mut action: libc::sigaction = util::zeroed();
-        action.sa_sigaction = on_child as extern "C" fn(libc::c_int) as *const () as usize;
-        // A stopped child wakes it too: an elevated command's elevate is
-        // told.
-        action.sa_flags = libc::SA_RESTART;
-        libc::sigaction(libc::SIGCHLD, &raw const action, std::ptr::null_mut());
-        Ok(File::from_raw_fd(fds[0]))
-    }
+    let (read, write) = sysapi::fd::pipe()?;
+    // Neither end waits: the loop drains what is there, and the handler
+    // does not wait for room, as a full pipe wakes the loop already.
+    sysapi::fd::set_nonblocking(&read, true)?;
+    sysapi::fd::set_nonblocking(&write, true)?;
+    CHILDREN.wake_through(write)?;
+    // A stopped child wakes it too: an elevated command's elevate is told.
+    signal::catch(libc::SIGCHLD, &CHILDREN, libc::SA_RESTART)?;
+    Ok(File::from(read))
 }
 
 /// Whether no account can be signed in to: no person's account, and
@@ -3616,16 +3581,11 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     if let Some(arg) = args.next()? {
         return Err(args.unknown(&arg));
     }
-    // SAFETY: setting a signal's disposition touches no memory; no other
-    // thread runs. A client that goes away must not end authd: the write
-    // to it fails instead.
-    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
-    // SAFETY: all zeros is a valid sigaction: numbers, a signal set and a
-    // function address.
-    let mut action: libc::sigaction = unsafe { util::zeroed() };
-    action.sa_sigaction = on_term as extern "C" fn(libc::c_int) as *const () as usize;
-    // SAFETY: the handler only stores to an atomic.
-    unsafe { libc::sigaction(libc::SIGTERM, &raw const action, std::ptr::null_mut()) };
+    // A client that goes away must not end authd: the write to it fails
+    // instead.
+    signal::ignore(libc::SIGPIPE).map_err(|e| util::failed(&"its signals", e))?;
+    // Without SA_RESTART, so that SIGTERM ends the loop's wait.
+    signal::catch(libc::SIGTERM, &STOP, 0).map_err(|e| util::failed(&"its signals", e))?;
     // Its own files, which only it reads; the hashes are root's 0600 in
     // there too.
     own_dir(accounts::STATE, 0o700)?;

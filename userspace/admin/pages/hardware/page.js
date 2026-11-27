@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 // Hardware: what this machine is, its last check and the check itself, the
-// temperatures and fans, the disks and their own tests, the memory test, the
-// devices, the screens, and restarting or shutting it down. The page reads what it shows
+// temperatures and fans, the UPS and battery, the disks and their own tests,
+// the memory test, the devices, the screens, and restarting or shutting it down. The page reads what it shows
 // when it opens and again when a check of its own ends; the memory's modules
 // and the disks' own tests only for an administrator whose console is
 // unlocked. The temperatures are read apart from the rest, since the cards do
-// not wait for them, and again every minute. The dialog that checks, the
+// not wait for them, and again every minute, as is the UPS and battery. The dialog that checks, the
 // dialog that asks for the memory test, the restart's dialogs and the lists of
 // devices and of screens are read when a button asks.
 
@@ -33,6 +33,7 @@ const READS = {
   storage: '/api/1/storage',
   tasks: '/api/1/tasks',
   memtest: '/api/1/hardware/memtest',
+  power: '/api/1/hardware/power',
 };
 const TEMPS = { sensors: '/api/1/hardware/sensors', highest: '/api/1/hardware/highest', updates: '/api/1/updates/history' };
 const TEMPS_MS = 60_000;
@@ -46,6 +47,8 @@ export async function show(view) {
     machine: null, inventory: null, access: admin ? 'locked' : 'reader', about: null, last: null, history: null, storage: null, ended: null,
     // The memory test at the start: its answer, or undefined when it could not be read.
     memtest: null,
+    // The UPSes and batteries: null until read, undefined when they could not be.
+    power: null,
     // The temperatures: null until read, undefined when they could not be.
     sensors: null, highest: null, updates: null,
   };
@@ -149,11 +152,16 @@ export async function show(view) {
     h('div', { class: 'btns' }, button('Show the screens', async (one) => (await import('./screens.js')).drawScreens(ctx, screensCard, one))));
   const disks = makeDisks(ctx);
   const memory = makeMemory(ctx);
+  // The UPS and battery's own module comes when the machine has one.
+  const suppliesCard = makeCard('supplies', 'Battery and UPS');
+  suppliesCard.element.hidden = true;
+  let supplies = null;
   const power = makePower(ctx);
   ctx.pendingHost = power.host;
 
   // The cards come in when the first read is in, so that none says "Not checked yet" before it knows.
-  let cards = [machine, check, tempsCard, disks, memory, devicesCard, screensCard, power].map((one) => one.element);
+  let cards = [machine, check, tempsCard, suppliesCard, disks, memory, devicesCard, screensCard, power]
+    .map((one) => one.element);
   tempsCard.element.classList.add('hw-wide');
   devicesCard.element.classList.add('hw-wide');
   screensCard.element.classList.add('hw-wide');
@@ -176,6 +184,7 @@ export async function show(view) {
         health && [hasResult(data.last) && ' ', health.lead, health.notes.flatMap((note) => ['; ', h('a', { href: note.href }, note.words)]), '.']);
     }
     for (const one of [machine, check, disks, memory]) one.draw();
+    drawSupplies();
   }
 
   /** Reads the modules; `ask` lets a locked console be asked to unlock. Gives whether they were read. */
@@ -226,6 +235,7 @@ export async function show(view) {
     data.about = got.about ?? null;
     data.storage = got.storage ?? null;
     data.memtest = got.memtest;
+    data.power = got.power;
     if (Array.isArray(got.tasks?.tasks)) {
       tasks.clear();
       for (const task of got.tasks.tasks) if (task.action === CHECK && running(task)) tasks.set(task.id, task);
@@ -278,7 +288,28 @@ export async function show(view) {
     if (data.access !== 'ok' && await readInventory(false)) drawAll();
   });
   view.on('online', () => read());
-  view.every(TEMPS_MS, () => readTemps(['sensors']));
+  view.every(TEMPS_MS, () => {
+    readTemps(['sensors']);
+    readPower();
+  });
+
+  /** Reads the UPSes and batteries again; one that cannot be read leaves what was read before. */
+  async function readPower() {
+    try {
+      data.power = await view.api.get(READS.power);
+    } catch {
+      return;
+    }
+    if (!view.signal.aborted) await drawSupplies();
+  }
+
+  /** Draws the Battery and UPS card, reading its module the first time the machine has one of them. */
+  async function drawSupplies() {
+    const has = data.power?.supplies?.some?.((one) => one?.kind === 'ups' || one?.kind === 'battery') === true;
+    if (!has && supplies === null) return;
+    supplies ??= (await import('./supplies.js')).makeSupplies(ctx, suppliesCard);
+    supplies.draw();
+  }
 
   await read();
   const wanted = globalThis.location?.hash?.slice(1);

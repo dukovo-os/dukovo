@@ -87,6 +87,7 @@ mod serial;
 mod settings;
 mod swap;
 mod symbols;
+mod ups;
 mod usb;
 mod user;
 mod usertest;
@@ -283,6 +284,7 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     };
     report::cpus(online);
     console::progress(200);
+    sched::rank_cores(flags.value("hybrid") == Some("off"));
     sched::start_threads();
     work::start();
     join::start();
@@ -290,6 +292,7 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     oom::start();
     // Before the PCI scan, whose serial ports join it as they are found.
     serial::start();
+    ups::configure(flags.value("ups") == Some("show"));
     usb::init(flags.value("usb") == Some("off"));
     usb::dbc::init(flags.has("dbc"));
     net::init(flags.value("ip"), flags.value("gateway"), flags.value("e1000"));

@@ -22,6 +22,9 @@ libc = "0.2.191"
 # The shares file, shares.toml(5), and the networks NFS may reach each
 # share from.
 manifest = { path = "../manifest" }
+# Descriptors sent to authd, waits, the machine's name, random bytes and
+# the worker's file calls, behind safe calls (ADR 0730).
+sysapi = { path = "../sysapi" }
 
 [dev-dependencies]
 # Contexts without a KDC, for the tests of RPCSEC_GSS.

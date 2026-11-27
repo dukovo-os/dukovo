@@ -4,6 +4,7 @@
 //! A root as the root this computer trusts, and as the next root of the
 //! fixed one.
 
+#![forbid(unsafe_code)]
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

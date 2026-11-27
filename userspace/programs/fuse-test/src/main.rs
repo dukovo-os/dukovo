@@ -28,12 +28,15 @@
 //! passed, a line for each check that fails, and "fuse-test: every check
 //! passed"; it exits with how many checks failed.
 
+#![forbid(unsafe_code)]
+
 mod memfs;
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt, symlink};
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -42,7 +45,8 @@ use fuser::{Session, SessionACL};
 use radix_abi::capability::{self, Rights};
 use radix_abi::directory::{self, MountFlags, OpenFlags};
 use radix_abi::errors::{File as FileError, Kernel};
-use radix_abi::{Status, Syscalls, names, startup};
+use radix_abi::{Status, names, startup};
+use sysapi::kernel::SYS;
 
 use crate::memfs::MemFs;
 
@@ -110,48 +114,6 @@ fn part(what: &str, run: impl FnOnce()) {
     }
 }
 
-/// The kernel, through the `syscall` instruction.
-struct Sys;
-
-impl Syscalls for Sys {
-    #[cfg(target_os = "radix")]
-    #[inline(always)]
-    fn syscall(&self, number: u64, args: [u64; 10]) -> (u64, [u64; 10]) {
-        let mut r = args;
-        let status: u64;
-        // SAFETY: the kernel reads only these registers, writes only these
-        // and rcx and r11 (declared clobbered), and touches no memory of
-        // the program's but the buffers the arguments name, which the
-        // wrappers pass from references they hold; it does not use the
-        // program's stack.
-        unsafe {
-            std::arch::asm!(
-                "syscall",
-                inlateout("rax") number => status,
-                inlateout("rdi") r[0],
-                inlateout("rsi") r[1],
-                inlateout("rdx") r[2],
-                inlateout("r10") r[3],
-                inlateout("r8") r[4],
-                inlateout("r9") r[5],
-                inlateout("r12") r[6],
-                inlateout("r13") r[7],
-                inlateout("r14") r[8],
-                inlateout("r15") r[9],
-                out("rcx") _,
-                out("r11") _,
-                options(nostack),
-            );
-        }
-        (status, r)
-    }
-
-    #[cfg(not(target_os = "radix"))]
-    fn syscall(&self, _number: u64, args: [u64; 10]) -> (u64, [u64; 10]) {
-        (Kernel::NoSuchSyscall.status(0).0, args)
-    }
-}
-
 /// A status by its error's name.
 fn named(status: Status) -> String {
     if let Some(error) = Kernel::from_status(status) {
@@ -167,13 +129,13 @@ fn named(status: Status) -> String {
 fn mount(device: &File) -> Result<(), String> {
     let slot = startup::SLOT_FD_BASE + device.as_raw_fd() as u32;
     let path = DIR.trim_start_matches('/').as_bytes();
-    directory::mount_fuse(&Sys, startup::SLOT_ROOT, path, slot, SOURCE.as_bytes(), MountFlags::NONE)
+    directory::mount_fuse(&SYS, startup::SLOT_ROOT, path, slot, SOURCE.as_bytes(), MountFlags::NONE)
         .map_err(named)
 }
 
 /// Unmounts [`DIR`].
 fn unmount() -> Result<(), String> {
-    directory::unmount(&Sys, startup::SLOT_ROOT, DIR.trim_start_matches('/').as_bytes())
+    directory::unmount(&SYS, startup::SLOT_ROOT, DIR.trim_start_matches('/').as_bytes())
         .map_err(named)
 }
 
@@ -381,7 +343,7 @@ fn spares<const N: usize>() -> Option<([u32; N], Vec<File>)> {
     let slots: [u32; N] =
         std::array::from_fn(|i| startup::SLOT_FD_BASE + files[i].as_raw_fd() as u32);
     for slot in slots {
-        ok!(capability::delete(&Sys, slot).map_err(named))?;
+        ok!(capability::delete(&SYS, slot).map_err(named))?;
     }
     Some((slots, files))
 }
@@ -389,11 +351,11 @@ fn spares<const N: usize>() -> Option<([u32; N], Vec<File>)> {
 /// Puts in `to` a root that acts for user [`OTHER`] without the bypass
 /// right, as a shell of theirs has one (ADR 0214), stamped in `scratch`.
 fn other_root(scratch: u32, to: u32) -> Option<()> {
-    ok!(names::stamp(&Sys, NAMES, startup::SLOT_ROOT, scratch, OTHER, OTHER, &[]).map_err(named))?;
-    let rights = ok!(capability::info(&Sys, scratch).map_err(named))?.rights;
+    ok!(names::stamp(&SYS, NAMES, startup::SLOT_ROOT, scratch, OTHER, OTHER, &[]).map_err(named))?;
+    let rights = ok!(capability::info(&SYS, scratch).map_err(named))?.rights;
     let without = Rights(rights.bits() & !Rights::BYPASS.bits());
-    ok!(capability::derive(&Sys, scratch, to, without, 0).map_err(named))?;
-    ok!(capability::delete(&Sys, scratch).map_err(named))
+    ok!(capability::derive(&SYS, scratch, to, without, 0).map_err(named))?;
+    ok!(capability::delete(&SYS, scratch).map_err(named))
 }
 
 /// Opens `name` on the mount through the root in `root`, into the empty
@@ -407,7 +369,7 @@ fn open_as(root: u32, file: u32, name: &str, create: bool, mode: u32) -> Result<
         (OpenFlags::NONE, Rights::READ)
     };
     directory::open(
-        &Sys,
+        &SYS,
         root,
         path.trim_start_matches('/').as_bytes(),
         flags,
@@ -415,7 +377,7 @@ fn open_as(root: u32, file: u32, name: &str, create: bool, mode: u32) -> Result<
         file,
         mode,
     )?;
-    capability::delete(&Sys, file)
+    capability::delete(&SYS, file)
 }
 
 /// Whether a status is the second gate's refusal (EACCES).
@@ -481,11 +443,10 @@ fn nosuid() {
 }
 
 fn nodev() {
-    let path = std::ffi::CString::new(at("null")).unwrap_or_default();
     // The kernel's null device, 1:3.
-    // SAFETY: `path` is a string that ends in a NUL, which mknod only reads.
-    let made = unsafe { libc::mknod(path.as_ptr(), libc::S_IFCHR | 0o666, libc::makedev(1, 3)) };
-    check!(made == 0, "mknod: {}", io::Error::last_os_error());
+    let made =
+        sysapi::fs::make_node(Path::new(&at("null")), libc::S_IFCHR | 0o666, libc::makedev(1, 3));
+    check!(made.is_ok(), "mknod: {made:?}");
     let meta = ok!(fs::metadata(at("null")));
     check!(
         meta.as_ref().is_some_and(

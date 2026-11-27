@@ -30,6 +30,8 @@
 //! in /tmp/git-https, says `git-https-test: serving` and the address once
 //! the server listens, and goes on serving after it returns.
 
+#![forbid(unsafe_code)]
+
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};

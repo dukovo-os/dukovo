@@ -6,6 +6,8 @@
 //! for it, or dash for the `posix-*` ones, which run as `sh`. The boot
 //! test runs the same scripts on Radix (userspace/posix/shell.c).
 
+#![forbid(unsafe_code)]
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};

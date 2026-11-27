@@ -42,10 +42,12 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, Read};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
+
+use sysapi::signal::{self, Caught};
 
 use crate::args::Args;
 use crate::reports::protocol::{
@@ -75,7 +77,7 @@ const EVERY: Duration = Duration::from_secs(30);
 /// The most requests served at once.
 const CONNECTIONS_MAX: usize = 8;
 
-static STOP: AtomicBool = AtomicBool::new(false);
+static STOP: Caught = Caught::new();
 
 /// What reportd's threads share.
 pub struct Reportd {
@@ -611,18 +613,10 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
 }
 
 fn install_signals() {
-    // SAFETY: setting a signal's disposition touches no memory. A client
-    // that goes away must not end reportd: the write to it fails instead.
-    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
-    // SAFETY: all zeros is a valid sigaction.
-    let mut action: libc::sigaction = unsafe { util::zeroed() };
-    action.sa_sigaction = on_term as extern "C" fn(libc::c_int) as *const () as usize;
-    // SAFETY: the handler only stores to an atomic.
-    unsafe { libc::sigaction(libc::SIGTERM, &raw const action, std::ptr::null_mut()) };
-}
-
-extern "C" fn on_term(_: libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
+    // A client that goes away must not end reportd: the write to it fails
+    // instead.
+    let _ = signal::ignore(libc::SIGPIPE);
+    let _ = signal::catch(libc::SIGTERM, &STOP, 0);
 }
 
 /// The threads that read crash records, follow the log for panics, and
@@ -634,7 +628,7 @@ fn start_threads(reportd: &Arc<Reportd>) {
     thread::spawn(move || follow_panics(&panics));
     let timer = Arc::clone(reportd);
     thread::spawn(move || {
-        while !STOP.load(Ordering::Relaxed) {
+        while !STOP.is_set() {
             timer.take_dumps();
             timer.send_due();
             thread::sleep(EVERY);
@@ -645,7 +639,7 @@ fn start_threads(reportd: &Arc<Reportd>) {
 /// Reads the kernel's crash records as they come.
 fn read_records(reportd: &Reportd) {
     let mut buffer = vec![0u8; radix_abi::crash::RECORD_MAX as usize];
-    while !STOP.load(Ordering::Relaxed) {
+    while !STOP.is_set() {
         let mut file = match fs::File::open(RECORDS) {
             Ok(file) => file,
             Err(err) => {
@@ -680,7 +674,7 @@ fn read_records(reportd: &Reportd) {
 fn follow_panics(reportd: &Reportd) {
     let mut since: Option<u64> = None;
     let mut last = util::now_ns();
-    while !STOP.load(Ordering::Relaxed) {
+    while !STOP.is_set() {
         let followed = panics::follow(since, |panic| {
             last = last.max(panic.at_ns + 1);
             reportd.take_panic(&panic);

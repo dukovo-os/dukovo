@@ -1,0 +1,584 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+Each thread keeps a cache of its freed blocks of up to 4 KiB, and malloc
+hands them out again without frigg's slab pool, as glibc's tcache does
+(ADR 0657). The pool takes the lock of a block's size for every malloc
+and every free, one lock that all threads share, and a contended lock
+sleeps in the kernel at once; it also moves a slab in and out of a tree
+whenever the slab fills or empties. A malloc and a free of small blocks
+took 3.3 times glibc's time on one thread on the OptiPlex, and 13 times
+on two threads at once.
+
+A cache keeps 16 blocks of each size from 16 bytes to 1 KiB and 4 of
+2 KiB and of 4 KiB. When it has none of a size, it takes half that many
+from the pool with one hold of the lock (slab_pool::allocate_batch), and
+when it is full, it gives the older half back the same way (free_batch).
+posix_memalign takes a cached block when the alignment is at most the
+block's size, at a multiple of which every block of a bucket lies; a
+malloc of 8 bytes or fewer takes a 16-byte block, as an 8-byte one has no
+room for the key below. thread_exit gives the thread's blocks back to
+the pool before its TLS goes, and its later frees go there.
+
+As glibc hardens tcache: a cached block's first word links it to the
+next of its size, mangled with the word's own address and, unlike
+glibc, a secret of the process's; malloc checks that the link it follows
+is a block of the size, or nothing after the last, and ends the process
+if not. The second word holds a key of the process's while the block is
+cached, cleared when malloc hands it out: a free that finds it there
+looks for the block in the cache, and ends the process if it is there, a
+double free. Both words come from getentropy once a process.
+
+The cache lives in TLS, initial-exec, as the C library is always loaded
+with the program, so the TCB's layout, which the other architectures'
+assembly depends on, does not change. MLIBC_DEBUG_MALLOC turns it off,
+since only the pool's path logs, and the debug allocator has none.
+
+diff -ruN a/options/ansi/generic/stdlib.cpp b/options/ansi/generic/stdlib.cpp
+--- a/options/ansi/generic/stdlib.cpp
++++ b/options/ansi/generic/stdlib.cpp
+@@ -648,18 +648,315 @@
+ 	return wcsrtombs(mb_string, &wcs, max_size, nullptr);
+ }
+ 
+-void free(void *ptr) {
++#if !MLIBC_DEBUG_ALLOCATOR
++
++// --------------------------------------------------------
++// The calling thread's cache of freed blocks
++// --------------------------------------------------------
++
++// Each thread keeps a few freed blocks of each size up to 4 KiB, and its
++// malloc hands them out again without the pool, as glibc's tcache does.
++// The pool takes a lock of the size's for every malloc and free, which
++// all threads share, and moves a slab in and out of a tree whenever the
++// slab fills or empties: a malloc and a free took three times glibc's
++// time on one thread, and thirteen times on two at once. A cache that
++// has none of a size takes half its fill from the pool at once, and one
++// that is full gives half back at once, holding the pool's lock once.
++//
++// A block in a cache is allocated as far as the pool knows, so the pool
++// may still take it back from any thread. The block's first word links
++// it to the next of its size, mangled with the link's own address as
++// glibc's safe-linking mangles tcache's, and also with a secret of the
++// process's, so a write through a dangling pointer cannot aim malloc at
++// memory of its choosing; malloc checks that the link it follows is a
++// block of the size, or nothing after the last. The second word holds a
++// key of the process's while the block is in a cache: a free that finds
++// it there looks for the block in the cache, and ends the process if it
++// is there, a double free.
++namespace {
++
++using PoolTraits = frg::slab_policy_traits<VirtualAllocator>;
++
++// The buckets a cache keeps: the powers of two from 16 bytes to 4 KiB.
++// An 8-byte block has no room for the key, so a malloc of 8 bytes or
++// fewer takes a 16-byte block from the cache, as glibc's smallest chunk
++// is 24 bytes.
++constexpr unsigned int cacheFirst = 1;
++constexpr unsigned int cacheLast = 9;
++constexpr size_t cacheMaxSize = PoolTraits::bucket_to_size(cacheLast);
++
++constexpr size_t cacheSize(unsigned int bucket) {
++	return size_t(16) << (bucket - cacheFirst);
++}
++
++// The bucket of a block of `size` bytes, at most cacheMaxSize.
++constexpr unsigned int cacheBucket(size_t size) {
++	if(size <= 16)
++		return cacheFirst;
++	return 64 - __builtin_clzll(size - 1) - 3;
++}
++
++// The cache's buckets are the pool's, and every block of one lies at a
++// multiple of its size (slab_pool's slabs start at a multiple of 256 KiB
++// and hold blocks of one size end to end from a multiple of it), which
++// posix_memalign relies on.
++constexpr bool cacheMatchesPool() {
++	for(unsigned int bucket = cacheFirst; bucket <= cacheLast; bucket++) {
++		if(PoolTraits::bucket_to_size(bucket) != cacheSize(bucket))
++			return false;
++	}
++	for(size_t size = 0; size <= cacheMaxSize; size++) {
++		size_t pool = PoolTraits::size_to_bucket(size ? size : 1);
++		if(cacheBucket(size) != (pool < cacheFirst ? cacheFirst : pool))
++			return false;
++	}
++	return true;
++}
++static_assert(cacheSize(cacheLast) == 4096);
++static_assert(cacheMatchesPool());
++
++// How many blocks a thread keeps of each size: 16 of each up to 1 KiB,
++// 4 of 2 KiB and of 4 KiB, at most 56 KiB a thread. It takes and gives
++// back half of that at a time.
++constexpr unsigned int cacheLimit(unsigned int bucket) {
++	return bucket <= 7 ? 16 : 4;
++}
++
++constexpr unsigned int cacheBatch(unsigned int bucket) {
++	return cacheLimit(bucket) / 2;
++}
++
++struct CachedBlock {
++	uintptr_t link;
++	uintptr_t key;
++};
++
++enum class CacheState : uint8_t {
++	// The thread has not used it yet.
++	unused,
++	open,
++	// The thread is exiting, or MLIBC_DEBUG_MALLOC logs every malloc and
++	// free, which the pool's path does: frees go to the pool.
++	closed,
++};
++
++struct ThreadCache {
++	// The process's secret and key, copied when the cache opens.
++	uintptr_t secret;
++	uintptr_t key;
++	CacheState state;
++	uint16_t counts[cacheLast + 1];
++	CachedBlock *heads[cacheLast + 1];
++};
++
++// Zero until the thread first uses it, as every thread's TLS is when it
++// starts. Initial-exec, as the C library is always loaded with
++// the program: a load from the thread pointer, with no call.
++[[gnu::tls_model("initial-exec")]] constinit thread_local ThreadCache threadCache{};
++
++// Chosen at random once for the process, by the first thread that opens
++// its cache; the others take what it chose. A fork keeps them, as the
++// child keeps the forking thread's cache.
++constinit uintptr_t processSecret = 0;
++constinit uintptr_t processKey = 0;
++
++constexpr uint64_t mixBits(uint64_t x) {
++	x += 0x9e3779b97f4a7c15;
++	x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9;
++	x = (x ^ (x >> 27)) * 0x94d049bb133111eb;
++	return x ^ (x >> 31);
++}
++
++uintptr_t processWord(uintptr_t *word) {
++	auto value = __atomic_load_n(word, __ATOMIC_ACQUIRE);
++	if(value)
++		return value;
++	uintptr_t chosen;
++	if(mlibc::sysdep_or_enosys<GetEntropy>(&chosen, sizeof(chosen))) {
++		// A process with no randomness mixes where its stack, its TLS and
++		// the word are, which its address space's layout varies.
++		chosen = mixBits(reinterpret_cast<uintptr_t>(&chosen)
++				^ mixBits(reinterpret_cast<uintptr_t>(&threadCache))
++				^ mixBits(reinterpret_cast<uintptr_t>(word)));
++	}
++	// Zero is "not chosen yet".
++	if(!chosen)
++		chosen = 1;
++	if(__atomic_compare_exchange_n(word, &value, chosen, false,
++			__ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
++		return chosen;
++	return value;
++}
++
++[[noreturn, gnu::noinline, gnu::cold]] void cacheCorrupted(const char *message) {
++	mlibc::panicLogger() << "mlibc: " << message << frg::endlog;
++	__builtin_unreachable();
++}
++
++// The block after `block` in its bucket's list, which goes on past it
++// when `more` is set, from the link the block holds.
++inline CachedBlock *followLink(const ThreadCache &cache, CachedBlock *block,
++		unsigned int bucket, bool more) {
++	auto next = block->link ^ (reinterpret_cast<uintptr_t>(block) >> 12) ^ cache.secret;
++	if(more ? (!next || (next & (cacheSize(bucket) - 1))) : next)
++		cacheCorrupted("a freed block was written to: its link to the next is not a block");
++	return reinterpret_cast<CachedBlock *>(next);
++}
++
++// Opens the calling thread's cache when it is first used; returns
++// whether it is open.
++[[gnu::noinline]] bool openCache(ThreadCache &cache) {
++	if(cache.state == CacheState::closed)
++		return false;
++	if(mlibc::globalConfig().debugMalloc) {
++		cache.state = CacheState::closed;
++		return false;
++	}
++	cache.secret = processWord(&processSecret);
++	cache.key = processWord(&processKey);
++	cache.state = CacheState::open;
++	return true;
++}
++
++// A free found the key in a block: it is in this cache, a double free,
++// or in another thread's, or the program wrote the key there by chance.
++[[gnu::noinline, gnu::cold]] void checkNotCached(const ThreadCache &cache,
++		CachedBlock *block, unsigned int bucket) {
++	auto entry = cache.heads[bucket];
++	for(unsigned int left = cache.counts[bucket]; left; left--) {
++		if(entry == block)
++			cacheCorrupted("free(): double free detected");
++		entry = followLink(cache, entry, bucket, left > 1);
++	}
++}
++
++// Links `block` in at the head of its bucket's list.
++inline void pushBlock(ThreadCache &cache, CachedBlock *block, unsigned int bucket) {
++	block->link = reinterpret_cast<uintptr_t>(cache.heads[bucket])
++			^ (reinterpret_cast<uintptr_t>(block) >> 12) ^ cache.secret;
++	block->key = cache.key;
++	cache.heads[bucket] = block;
++	cache.counts[bucket]++;
++}
++
++// Takes a batch of blocks of `bucket` from the pool when the cache has
++// none: returns one of them, and keeps the rest. Returns nullptr when the
++// cache is closed, for malloc to take its block from the pool itself.
++[[gnu::noinline]] void *refillCache(ThreadCache &cache, unsigned int bucket) {
++	if(cache.state != CacheState::open && !openCache(cache))
++		return nullptr;
++	void *blocks[cacheBatch(1)];
++	static_assert(cacheBatch(1) >= cacheBatch(cacheLast));
++	auto taken = getAllocator().allocate_batch(bucket, blocks, cacheBatch(bucket));
++	if(!taken)
++		return nullptr;
++	// The first stays at the head, for the next malloc.
++	for(auto i = taken - 1; i > 0; i--)
++		pushBlock(cache, static_cast<CachedBlock *>(blocks[i]), bucket);
++	return blocks[0];
++}
++
++// Unlinks the `count` blocks from `block` on, which end the list, and
++// gives them back to the pool.
++void releaseBlocks(const ThreadCache &cache, CachedBlock *block,
++		unsigned int bucket, unsigned int count) {
++	void *blocks[cacheLimit(1)];
++	static_assert(cacheLimit(1) >= cacheLimit(cacheLast));
++	for(unsigned int i = 0; i < count; i++) {
++		// The pool writes its own link over the block's.
++		auto next = followLink(cache, block, bucket, i + 1 < count);
++		block->key = 0;
++		blocks[i] = block;
++		block = next;
++	}
++	getAllocator().free_batch(bucket, blocks, count);
++}
++
++// Gives the oldest half of a full bucket back to the pool, and keeps the
++// half freed last, likelier to be in the CPU's cache.
++[[gnu::noinline]] void spillCache(ThreadCache &cache, unsigned int bucket) {
++	unsigned int keep = cacheLimit(bucket) - cacheBatch(bucket);
++	auto last = cache.heads[bucket];
++	for(unsigned int i = 1; i < keep; i++)
++		last = followLink(cache, last, bucket, true);
++	auto rest = followLink(cache, last, bucket, true);
++	last->link = (reinterpret_cast<uintptr_t>(last) >> 12) ^ cache.secret;
++	releaseBlocks(cache, rest, bucket, cache.counts[bucket] - keep);
++	cache.counts[bucket] = keep;
++}
++
++// A block of `size` bytes from the calling thread's cache, or nullptr
++// when the pool has to give it.
++inline void *cacheTake(size_t size) {
++	if(!mlibc::tcb_available_flag || size > cacheMaxSize)
++		return nullptr;
++	auto &cache = threadCache;
++	auto bucket = cacheBucket(size);
++	unsigned int count = cache.counts[bucket];
++	if(!count)
++		return refillCache(cache, bucket);
++	auto block = cache.heads[bucket];
++	cache.heads[bucket] = followLink(cache, block, bucket, count > 1);
++	cache.counts[bucket] = count - 1;
++	block->key = 0;
++	return block;
++}
++
++// Keeps the block at `pointer` in the calling thread's cache, or returns
++// false when the block is too large or too small for it or the cache is
++// closed.
++inline bool cachePut(void *pointer) {
++	if(!mlibc::tcb_available_flag || !pointer)
++		return false;
++	auto &cache = threadCache;
++	if(cache.state != CacheState::open && !openCache(cache))
++		return false;
++	int index = MemoryPool::bucket_of(pointer);
++	if(index < static_cast<int>(cacheFirst) || index > static_cast<int>(cacheLast))
++		return false;
++	auto bucket = static_cast<unsigned int>(index);
++	auto block = static_cast<CachedBlock *>(pointer);
++	if(block->key == cache.key) [[unlikely]]
++		checkNotCached(cache, block, bucket);
++	if(cache.counts[bucket] >= cacheLimit(bucket)) [[unlikely]]
++		spillCache(cache, bucket);
++	pushBlock(cache, block, bucket);
++	return true;
++}
++
++} // namespace
++
++void mlibc::thread_cache_close() {
++	if(!mlibc::tcb_available_flag)
++		return;
++	auto &cache = threadCache;
++	cache.state = CacheState::closed;
++	for(unsigned int bucket = cacheFirst; bucket <= cacheLast; bucket++) {
++		if(cache.counts[bucket])
++			releaseBlocks(cache, cache.heads[bucket], bucket, cache.counts[bucket]);
++		cache.heads[bucket] = nullptr;
++		cache.counts[bucket] = 0;
++	}
++}
++
++#endif // !MLIBC_DEBUG_ALLOCATOR
++
++namespace {
++
++// free's and malloc's ways through the pool, out of line, so that the
++// cache's ways need no stack frame for the logger's buffer.
++[[gnu::noinline]] void freeToPool(void *ptr, void *caller) {
+ 	// TODO: Print PID only if POSIX option is enabled.
+ 	if (mlibc::globalConfig().debugMalloc) {
+ 		mlibc::infoLogger() << "mlibc (PID ?): free() on "
+ 				<< ptr << frg::endlog;
+ 		if((uintptr_t)ptr & 1)
+-			mlibc::infoLogger() << __builtin_return_address(0) << frg::endlog;
++			mlibc::infoLogger() << caller << frg::endlog;
+ 	}
+ 	getAllocator().free(ptr);
+ }
+ 
+-void *malloc(size_t size) {
++[[gnu::noinline]] void *mallocFromPool(size_t size) {
+ 	auto nptr = getAllocator().allocate(size);
+ 	if(!nptr)
+ 		errno = ENOMEM;
+@@ -670,6 +967,24 @@
+ 	return nptr;
+ }
+ 
++} // namespace
++
++void free(void *ptr) {
++#if !MLIBC_DEBUG_ALLOCATOR
++	if(cachePut(ptr))
++		return;
++#endif
++	freeToPool(ptr, __builtin_return_address(0));
++}
++
++void *malloc(size_t size) {
++#if !MLIBC_DEBUG_ALLOCATOR
++	if(auto block = cacheTake(size))
++		return block;
++#endif
++	return mallocFromPool(size);
++}
++
+ void *realloc(void *ptr, size_t size) {
+ 	auto nptr = getAllocator().reallocate(ptr, size);
+ 	// realloc(ptr, 0) frees ptr and returns a null pointer; any other
+@@ -689,6 +1004,14 @@
+ 	if(align & (align - 1)) // Make sure that align is a power of two.
+ 		return EINVAL;
+ #if !MLIBC_DEBUG_ALLOCATOR
++	// A cached block lies at a multiple of its size, so one of the larger
++	// of `size` and `align` is aligned, as the pool's would be.
++	if(align <= cacheMaxSize) {
++		if(auto block = cacheTake(frg::max(size, align))) {
++			*out = block;
++			return 0;
++		}
++	}
+ 	// The slab pool places a block at any alignment.
+ 	auto p = getAllocator().allocate_aligned(size, align);
+ #else
+diff -ruN a/options/internal/generic/threads.cpp b/options/internal/generic/threads.cpp
+--- a/options/internal/generic/threads.cpp
++++ b/options/internal/generic/threads.cpp
+@@ -367,6 +367,12 @@
+ 	if (__atomic_sub_fetch(&live_threads, 1, __ATOMIC_ACQ_REL) == 0)
+ 		exit(0);
+ 
++#if !MLIBC_DEBUG_ALLOCATOR
++	// The thread's TLS, and the cache of freed blocks in it, outlive it
++	// only until its TCB is freed: the blocks go back to the pool now.
++	thread_cache_close();
++#endif
++
+ 	self->returnValue = ret_val;
+ 
+ 	if constexpr (frees_threads) {
+diff -ruN a/options/internal/include/mlibc/allocator.hpp b/options/internal/include/mlibc/allocator.hpp
+--- a/options/internal/include/mlibc/allocator.hpp
++++ b/options/internal/include/mlibc/allocator.hpp
+@@ -27,6 +27,15 @@
+ 
+ MemoryAllocator &getAllocator();
+ 
++namespace mlibc {
++
++// Gives the blocks the calling thread's cache of freed blocks holds back
++// to the pool, and sends the thread's later frees there: thread_exit
++// calls it, before the thread's TLS goes.
++void thread_cache_close();
++
++} // namespace mlibc
++
+ #else
+ 
+ struct MemoryAllocator {
+diff -ruN a/subprojects/frigg/include/frg/slab.hpp b/subprojects/frigg/include/frg/slab.hpp
+--- a/subprojects/frigg/include/frg/slab.hpp
++++ b/subprojects/frigg/include/frg/slab.hpp
+@@ -196,6 +196,23 @@
+ 	void deallocate(void *pointer, size_t size);
+ 	size_t get_size(void *pointer);
+ 
++	// Takes up to `count` blocks of bucket `index` into `out`, holding the
++	// bucket's lock once; returns how many, fewer only when memory ran out.
++	size_t allocate_batch(int index, void **out, size_t count);
++	// Gives back `count` blocks of bucket `index`, holding its lock once.
++	void free_batch(int index, void *const *blocks, size_t count);
++
++	// The bucket of a block that a slab holds, or -1 for a block with a
++	// mapping of its own. It reads only what never changes in the frame
++	// of a block that is allocated, so it takes no lock.
++	static int bucket_of(void *pointer) {
++		auto address = reinterpret_cast<uintptr_t>(pointer);
++		auto sup = reinterpret_cast<frame *>((address - 1) & ~(sb_size - 1));
++		if(sup->type != frame_type::slab)
++			return -1;
++		return static_cast<slab_frame *>(sup)->index;
++	}
++
+ 	size_t numUsedPages() {
+ 		return _usedPages;
+ 	}
+@@ -730,6 +747,108 @@
+ }
+ 
+ template<typename Policy, typename Mutex>
++size_t slab_pool<Policy, Mutex>::allocate_batch(int index, void **out, size_t count) {
++	FRG_ASSERT(index >= 0 && index < policy_traits::num_buckets);
++	if(enable_checking)
++		_verify_integrity();
++
++	size_t item_size = policy_traits::bucket_to_size(index);
++	auto bkt = &_bkts[index];
++	size_t taken = 0;
++	unique_lock<Mutex> bucket_guard(bkt->bucket_mutex);
++	while(taken < count) {
++		auto slb = bkt->head_slb;
++		if(!slb) {
++			// As allocate(): call into the Policy without holding locks.
++			bucket_guard.unlock();
++
++			slb = _construct_slab(index);
++			if(!slb)
++				return taken;
++
++			unique_lock<Mutex> tree_guard(_tree_mutex);
++#ifdef FRG_SLAB_TRACK_REGIONS
++			_frame_tree.insert(slb);
++#endif
++			_usedPages += (slb->length + huge_padding) / page_size;
++			tree_guard.unlock();
++
++			bucket_guard.lock();
++			bkt->partial_tree.insert(slb);
++			if(!bkt->head_slb || slb->address < bkt->head_slb->address)
++				bkt->head_slb = slb;
++			continue;
++		}
++
++		auto object = take_from_slab_(slb);
++		if(!has_room_(slb)) {
++			bkt->partial_tree.remove(slb);
++			bkt->head_slb = bkt->partial_tree.first();
++		}
++		object->~freelist();
++		if constexpr (slab::has_poisoning_support<Policy>) {
++			_plcy.poison(object, sizeof(freelist));
++			_plcy.unpoison(object, item_size);
++		}
++		out[taken++] = object;
++	}
++	bucket_guard.unlock();
++
++	for(size_t i = 0; i < taken; i++)
++		slab::trace(_plcy, 'a', out[i], item_size);
++	if(enable_checking)
++		_verify_integrity();
++	return taken;
++}
++
++template<typename Policy, typename Mutex>
++void slab_pool<Policy, Mutex>::free_batch(int index, void *const *blocks, size_t count) {
++	FRG_ASSERT(index >= 0 && index < policy_traits::num_buckets);
++	if(enable_checking)
++		_verify_integrity();
++
++	size_t item_size = policy_traits::bucket_to_size(index);
++	for(size_t i = 0; i < count; i++) {
++		slab::trace(_plcy, 'f', blocks[i], 0);
++		if constexpr (slab::has_poisoning_support<Policy>) {
++			_plcy.unpoison_expand(blocks[i], item_size);
++			_plcy.poison(blocks[i], item_size);
++			_plcy.unpoison(blocks[i], sizeof(freelist));
++		}
++	}
++
++	// As free_in_slab_(), for each block, under one hold of the lock.
++	auto bkt = &_bkts[index];
++	unique_lock<Mutex> bucket_guard(bkt->bucket_mutex);
++	for(size_t i = 0; i < count; i++) {
++		auto address = reinterpret_cast<uintptr_t>(blocks[i]);
++		auto slb = static_cast<slab_frame *>(
++				reinterpret_cast<frame *>((address - 1) & ~(sb_size - 1)));
++		FRG_ASSERT(slb->type == frame_type::slab && slb->index == index);
++		FRG_ASSERT(slb->contains(blocks[i]));
++		FRG_ASSERT(!enable_checking || !((address - slb->address) % item_size));
++
++		auto object = new (blocks[i]) freelist;
++		bool reinsert_into_bucket = !has_room_(slb);
++		FRG_ASSERT(slb->num_reserved);
++
++		FRG_ASSERT(!slb->available || slb->contains(slb->available));
++		object->link = slb->available;
++		slb->available = object;
++
++		if(reinsert_into_bucket) {
++			bkt->partial_tree.insert(slb);
++			if(!bkt->head_slb || slb->address < bkt->head_slb->address)
++				bkt->head_slb = slb;
++		}
++	}
++	bucket_guard.unlock();
++
++	if(enable_checking)
++		_verify_integrity();
++}
++
++template<typename Policy, typename Mutex>
+ size_t slab_pool<Policy, Mutex>::get_size(void *p) {
+ 	if(enable_checking)
+ 		_verify_integrity();
+@@ -928,6 +1047,14 @@
+ 		return pool_->get_size(pointer);
+ 	}
+ 
++	size_t allocate_batch(int index, void **out, size_t count) {
++		return pool_->allocate_batch(index, out, count);
++	}
++
++	void free_batch(int index, void *const *blocks, size_t count) {
++		pool_->free_batch(index, blocks, count);
++	}
++
+ private:
+ 	slab_pool<Policy, Mutex> *pool_;
+ };

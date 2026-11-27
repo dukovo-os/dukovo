@@ -433,6 +433,80 @@ static void non_blocking(void) {
 	close(server);
 }
 
+// What poll finds on `fd` for `events` at once.
+static short polled_now(int fd, short events) {
+	struct pollfd p = {fd, events, 0};
+	CHECK(poll(&p, 1, 0) >= 0);
+	return p.revents;
+}
+
+// Each change to what a connection is ready for is found by the next
+// poll, those the socket's own calls make as well as those that come from
+// its other end, though a poll that finds nothing changed takes what the
+// one before it found (ADR 0771). Each look is made twice.
+static void readiness_follows_each_change(void) {
+	int server = listener();
+	int client = connected(port_of(server));
+	int accepted = accept(server, NULL, NULL);
+	CHECK(accepted >= 0);
+	CHECK(fcntl(client, F_SETFL, O_NONBLOCK) == 0 && fcntl(accepted, F_SETFL, O_NONBLOCK) == 0);
+	for(int i = 0; i < 2; i++)
+		CHECK(polled_now(accepted, POLLIN | POLLOUT) == POLLOUT);
+	// Two bytes come: readable until the second is read.
+	CHECK(send(client, "ab", 2, 0) == 2);
+	struct pollfd p = {accepted, POLLIN, 0};
+	CHECK(poll(&p, 1, 5000) == 1 && p.revents == POLLIN);
+	char buffer[4096];
+	CHECK(read(accepted, buffer, 1) == 1 && buffer[0] == 'a');
+	for(int i = 0; i < 2; i++)
+		CHECK(polled_now(accepted, POLLIN) == POLLIN);
+	CHECK(read(accepted, buffer, 1) == 1 && buffer[0] == 'b');
+	for(int i = 0; i < 2; i++)
+		CHECK(polled_now(accepted, POLLIN) == 0);
+	// The client fills what the other end has room for: not writable until
+	// that end reads.
+	memset(buffer, 'x', sizeof(buffer));
+	size_t sent = 0;
+	for(;;) {
+		ssize_t n = send(client, buffer, sizeof(buffer), 0);
+		if(n < 0) {
+			CHECK(errno == EAGAIN);
+			break;
+		}
+		sent += (size_t)n;
+		CHECK(sent < 64u << 20);
+	}
+	for(int i = 0; i < 2; i++)
+		CHECK(polled_now(client, POLLOUT) == 0);
+	while(sent > 0) {
+		ssize_t n = read(accepted, buffer, sizeof(buffer));
+		if(n < 0) {
+			CHECK(errno == EAGAIN);
+			struct pollfd q = {accepted, POLLIN, 0};
+			CHECK(poll(&q, 1, 5000) == 1);
+			continue;
+		}
+		CHECK(n > 0);
+		sent -= (size_t)n;
+	}
+	struct pollfd w = {client, POLLOUT, 0};
+	CHECK(poll(&w, 1, 5000) == 1 && w.revents == POLLOUT);
+	CHECK(polled_now(accepted, POLLIN) == 0);
+	// Shut for reading by its own call, the socket is readable at once.
+	CHECK(shutdown(accepted, SHUT_RD) == 0);
+	for(int i = 0; i < 2; i++)
+		CHECK(polled_now(accepted, POLLIN) & POLLIN);
+	// The other end's end of sending makes the client's readable too.
+	CHECK(polled_now(client, POLLIN) == 0);
+	CHECK(shutdown(accepted, SHUT_WR) == 0);
+	struct pollfd e = {client, POLLIN, 0};
+	CHECK(poll(&e, 1, 5000) == 1 && (e.revents & POLLIN));
+	CHECK(read(client, buffer, sizeof(buffer)) == 0);
+	close(accepted);
+	close(client);
+	close(server);
+}
+
 static void unbound(void) {
 	// A socket that listens unbound is bound to a port the kernel picks,
 	// as on Linux.
@@ -1733,6 +1807,7 @@ int main(void) {
 	RUN(accepting);
 	RUN(tcp);
 	RUN(non_blocking);
+	RUN(readiness_follows_each_change);
 	RUN(unbound);
 	RUN(shared);
 	RUN(udp);

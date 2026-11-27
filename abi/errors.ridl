@@ -244,4 +244,8 @@ errors file = 2 {
     /// The System V object was removed while the call waited for it
     /// (radix-directory(2)'s `semaphore_operate`, ADR 0490).
     removed = 27 => EIDRM;
+    /// The file's pages are shared by the programs that map it, and it
+    /// may not be opened to write or be cut while they do: a file no one
+    /// may write by its mode, as a sealed bundle's are (ADR 0658).
+    text_busy = 28 => ETXTBSY;
 }

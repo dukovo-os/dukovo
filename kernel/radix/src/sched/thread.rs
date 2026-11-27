@@ -27,6 +27,15 @@ use crate::domains::{DomainRef, JoinError};
 use crate::user::UserRef;
 
 /// A thread, shared.
+///
+/// The last reference goes in thread context, never in an interrupt
+/// handler: freeing a thread frees its stack, its process's share and its
+/// domain's charge, which take locks taken with interrupts on. So an
+/// interrupt handler wakes a thread through a reference that a list, slot
+/// or table holds, under the lock the thread takes to leave it before it
+/// goes on (the wait table's, a timer list's, a disk request's slot's),
+/// never through a clone of its own: woken, the thread may run, exit and
+/// be reaped on another CPU before the handler lets a clone go.
 pub type ThreadRef = Arc<Thread, Kmalloc>;
 
 /// A thread's saved registers and stack.
@@ -609,6 +618,13 @@ pub struct ThreadInfo {
 
 impl Drop for Thread {
     fn drop(&mut self) {
+        if <Arch as radix_hal::CpuLocal>::interrupt_depth() != 0 {
+            radix_klog::error!(
+                "Threads: thread {} ({}) freed in an interrupt handler",
+                self.id,
+                self.name()
+            );
+        }
         self.domain.uncharge(self.charged);
         self.leave_domain();
     }

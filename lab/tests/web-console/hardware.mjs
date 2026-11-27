@@ -29,7 +29,9 @@
 // disk and each thermal zone of `hardware sensors` (`GET /api/1/hardware/sensors`)
 // with the highest of 30 days beside it (`GET /api/1/hardware/highest`), and a
 // line for each fan; a machine that reads no temperature says so, and the
-// choice of °C or °F outlives the page. Disks lists each whole disk of
+// choice of °C or °F outlives the page. Battery and UPS holds each UPS and
+// battery of `hardware power` (`GET /api/1/hardware/power`) with its charge,
+// and is not there on a machine with neither, as the lab's QEMU machine. Disks lists each whole disk of
 // `storage show` (`GET /api/1/storage`) and, for an unlocked administrator, the
 // last tests of its own log (`GET /api/1/storage/disks/{disk}/health`), which
 // a locked one and a reader are told of in words; no test is started here,
@@ -96,7 +98,8 @@ const ROUTES = {
   sensors: "GET /api/1/hardware/sensors",
   highest: "GET /api/1/hardware/highest",
   devices: "GET /api/1/hardware/devices",
-  screens: "GET /api/1/hardware/screens",
+  screens: "GET /api/1/hardware/screens", // hardware.screens
+  supplies: "GET /api/1/hardware/power", // hardware.power
   storage: "GET /api/1/storage",
   asked: "GET /api/1/hardware/memtest", // hardware.memtest-status
   ask: "POST /api/1/hardware/memtest/next-start",
@@ -845,6 +848,28 @@ async function screensAsAnswered(t, page, seen = null) {
  * folded away, and the card links to a report about a device that needs a
  * driver. `seen` are the routes the page has asked for so far.
  */
+/** Battery and UPS holds the charge of each UPS and battery that `hardware power` gives, and is hidden on a machine with neither. */
+async function suppliesAsAnswered(t, page) {
+  const power = await readOf(page, ROUTES.supplies);
+  ensure(power?.format === 1 && Array.isArray(power.supplies), `${ROUTES.supplies} gives no list of supplies: ${JSON.stringify(power)}`);
+  const shown = power.supplies.filter((one) => one.kind === "ups" || one.kind === "battery");
+  const body = card(page, "supplies");
+  if (shown.length === 0) {
+    await eventually(async () => ensure(await body.isHidden(), "Battery and UPS is shown on a machine with no UPS and no battery"));
+    return;
+  }
+  await t.see(body);
+  for (const one of shown) {
+    await t.see(body.getByText(one.name, { exact: false }).first());
+    if (Number.isFinite(one.percent)) {
+      await eventually(async () => {
+        const label = await body.locator(".hw-charge").nth(shown.indexOf(one)).getAttribute("aria-label");
+        ensure(label === `Charged ${one.percent}%` || Math.abs(Number(label?.match(/\d+/)?.[0]) - one.percent) <= 2, `${one.name}'s bar says ${label}, and hardware power ${one.percent}%`);
+      });
+    }
+  }
+}
+
 async function devicesAsAnswered(t, page, seen = null) {
   const where = "the Devices card";
   const body = card(page, "devices");
@@ -1118,6 +1143,7 @@ async function administrator(t) {
 
   await temperaturesAsAnswered(t, page);
   await temperatureUnit(t, page);
+  await suppliesAsAnswered(t, page);
   await lookAll(t, page, "hardware-temps");
   await devicesAsAnswered(t, page, a.seen);
   await lookAll(t, page, "hardware-devices");
@@ -1151,6 +1177,7 @@ async function reader(t) {
   ensure(others.length === 0, `a reader's page has these buttons: ${others.join(", ")}`);
   ensure((await readPower(page)) === null, "the machine has a restart set, which a reader reads and no one set");
   await temperaturesAsAnswered(t, page);
+  await suppliesAsAnswered(t, page);
   await disksAsAnswered(t, page, "reader");
   await nextWordsAsAnswered(t, page);
   const status = await readOf(page, ROUTES.asked);

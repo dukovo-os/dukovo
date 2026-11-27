@@ -403,6 +403,7 @@ fn hid_requests_go_to_the_interface() {
     assert_eq!(Setup::set_protocol(2, false).to_u64(), 0x0000_0002_0000_0b21);
     assert_eq!(Setup::set_protocol(2, true).to_u64(), 0x0000_0002_0001_0b21);
     assert_eq!(Setup::set_report(0, hid::REPORT_OUTPUT, 1, 2).to_u64(), 0x0002_0000_0201_0921);
+    assert_eq!(Setup::get_report(0, hid::REPORT_FEATURE, 8, 4).to_u64(), 0x0004_0000_0308_01a1);
 }
 
 /// A CDC-ACM device's descriptor and configuration, as a board's: the

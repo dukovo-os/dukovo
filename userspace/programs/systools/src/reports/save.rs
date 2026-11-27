@@ -37,7 +37,7 @@ use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::os::fd::AsRawFd;
+use std::os::fd::AsFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::Arc;
@@ -52,6 +52,7 @@ use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use super::qr;
 use crate::util::{self, Fail, fail};
 use crate::{logd, tls};
+use sysapi::poll::{self, PollFd};
 
 /// How long a download waits for the phone.
 pub const LIMIT: Duration = Duration::from_secs(600);
@@ -340,17 +341,11 @@ fn response(answer: &Answer, body: &[u8]) -> Vec<u8> {
 
 /// Waits up to `wait` for a connection to come to `listener`.
 fn wait_for_connection(listener: &TcpListener, wait: Duration) -> io::Result<()> {
-    let mut fd = libc::pollfd { fd: listener.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-    let ms = i32::try_from(wait.as_millis()).unwrap_or(i32::MAX);
-    // SAFETY: one pollfd, of a descriptor the listener owns.
-    let ready = unsafe { libc::poll(&raw mut fd, 1, ms) };
-    if ready < 0 {
-        let error = io::Error::last_os_error();
-        if error.kind() != io::ErrorKind::Interrupted {
-            return Err(error);
-        }
+    let mut fds = [PollFd::new(listener.as_fd(), libc::POLLIN)];
+    match poll::poll(&mut fds, Some(wait)) {
+        Err(error) if error.kind() != io::ErrorKind::Interrupted => Err(error),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 /// Reads a request's head, up to the empty line that ends it.
@@ -520,7 +515,7 @@ pub fn download(text: &str, port: Option<u16>) -> Result<Outcome, Fail> {
     let token = token().map_err(fail)?;
     let offer = Offer { path: format!("/{token}/{FILE_NAME}"), body: text.as_bytes().to_vec() };
     let urls: Vec<String> = addresses.iter().take(3).map(|a| url(*a, port, &token)).collect();
-    let (columns, rows) = util::terminal_size(1).unwrap_or((80, 24));
+    let (columns, rows) = util::terminal_size(std::io::stdout()).unwrap_or((80, 24));
     // The blank line and the waiting line go below the code.
     let code =
         qr::encode(&urls[0]).and_then(|code| qr::lines(&code, columns, rows.saturating_sub(3)));

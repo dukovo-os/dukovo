@@ -257,7 +257,7 @@ pub async fn kept_worker(
         |err: std::io::Error| Failure::new(Kind::Internal, format!("no link to a worker: {err}"));
     let (ours, theirs) = link::pipes().map_err(internal)?;
     let [calls, replies] = theirs.fds();
-    let fds = [calls, replies, libc::STDERR_FILENO];
+    let fds = [calls, replies, sysapi::fd::Standard::Error.fd()];
     let (answer, _) = authd::ask(&shared.authd, start, &fds)
         .await
         .map_err(|why| Failure::new(Kind::AuthdSilent, why))?;

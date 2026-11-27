@@ -36,8 +36,10 @@
 //! typed on the keyboard is not typed into a console.
 
 use std::io::{self, ErrorKind};
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
+
+use sysapi::net;
 
 use crate::braille;
 use crate::screen::Screen;
@@ -69,9 +71,9 @@ impl Lender {
         }
     }
 
-    /// The listening socket's descriptor, or -1.
-    pub fn fd(&self) -> i32 {
-        self.listener.as_ref().map_or(-1, AsRawFd::as_raw_fd)
+    /// The listening socket, if there is one, to wait on.
+    pub fn fd(&self) -> Option<BorrowedFd<'_>> {
+        self.listener.as_ref().map(AsFd::as_fd)
     }
 
     /// Answers the program that connected: lends it `screen` if consoled
@@ -99,7 +101,7 @@ impl Lender {
                 return;
             }
         };
-        match send(&client, LENT, Some(borrower.as_raw_fd())) {
+        match send(&client, LENT, Some(borrower.as_fd())) {
             Ok(()) => eprintln!("consoled: the screens are lent to another program"),
             Err(err) => {
                 eprintln!("consoled: the program that asked for the screens left: {err}");
@@ -113,77 +115,26 @@ impl Lender {
 }
 
 /// Sends `answer` on `client`, with the descriptor `passed` if there is
-/// one (SCM_RIGHTS).
-fn send(client: &UnixStream, answer: &str, passed: Option<RawFd>) -> io::Result<()> {
-    let mut iov =
-        libc::iovec { iov_base: answer.as_ptr().cast_mut().cast(), iov_len: answer.len() };
-    // Room for one descriptor, aligned for its header.
-    let mut control = [0u64; 4];
-    let room = size_of::<libc::c_int>() as u32;
-    // SAFETY: all zeros is a valid msghdr: numbers and null pointers.
-    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
-    message.msg_iov = &raw mut iov;
-    message.msg_iovlen = 1;
-    if let Some(fd) = passed {
-        message.msg_control = control.as_mut_ptr().cast();
-        // SAFETY: CMSG_SPACE only computes a size, which is less than
-        // `control`'s for one descriptor.
-        message.msg_controllen = unsafe { libc::CMSG_SPACE(room) } as _;
-        // SAFETY: the control space holds one header and one descriptor,
-        // as CMSG_SPACE said; the macros point into it.
-        unsafe {
-            let header = libc::CMSG_FIRSTHDR(&raw const message);
-            (*header).cmsg_level = libc::SOL_SOCKET;
-            (*header).cmsg_type = libc::SCM_RIGHTS;
-            (*header).cmsg_len = libc::CMSG_LEN(room) as _;
-            libc::CMSG_DATA(header).cast::<libc::c_int>().write_unaligned(fd);
-        }
-    }
-    // SAFETY: the message points at the answer's bytes and the control
-    // space above, which both outlive the call.
-    let sent = unsafe { libc::sendmsg(client.as_raw_fd(), &raw const message, 0) };
-    match usize::try_from(sent) {
-        // An answer is a few bytes, which a socket nobody has written
-        // to takes whole or not at all.
-        Ok(sent) if sent == answer.len() => Ok(()),
-        Ok(_) => Err(io::Error::other("the answer was cut short")),
-        Err(_) => Err(io::Error::last_os_error()),
-    }
+/// one (SCM_RIGHTS). An answer is a few bytes, which a socket nobody has
+/// written to takes whole or not at all.
+fn send(client: &UnixStream, answer: &str, passed: Option<BorrowedFd<'_>>) -> io::Result<()> {
+    net::send_with_fds(client, answer.as_bytes(), passed.as_slice())
 }
 
 #[cfg(test)]
 mod tests {
     use std::fs::File;
     use std::io::{Read, Seek, SeekFrom, Write};
-    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::os::fd::{AsRawFd, OwnedFd};
 
     use super::*;
 
     /// Reads what `stream` has, and the descriptor that came with it.
     fn receive(stream: &UnixStream) -> (String, Option<OwnedFd>) {
         let mut bytes = [0u8; 32];
-        let mut iov = libc::iovec { iov_base: bytes.as_mut_ptr().cast(), iov_len: bytes.len() };
-        let mut control = [0u64; 4];
-        // SAFETY: all zeros is a valid msghdr: numbers and null pointers.
-        let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
-        message.msg_iov = &raw mut iov;
-        message.msg_iovlen = 1;
-        message.msg_control = control.as_mut_ptr().cast();
-        message.msg_controllen = size_of_val(&control) as _;
-        // SAFETY: the message points at the buffer and control space
-        // above.
-        let n = unsafe { libc::recvmsg(stream.as_raw_fd(), &raw mut message, 0) };
-        assert!(n >= 0, "{}", io::Error::last_os_error());
-        // SAFETY: the header is the one recvmsg wrote into `control`, and
-        // a descriptor in it is the test's to own.
-        let passed = unsafe {
-            let header = libc::CMSG_FIRSTHDR(&raw const message);
-            (!header.is_null() && (*header).cmsg_type == libc::SCM_RIGHTS).then(|| {
-                let fd = libc::CMSG_DATA(header).cast::<libc::c_int>().read_unaligned();
-                OwnedFd::from_raw_fd(fd)
-            })
-        };
-        (String::from_utf8_lossy(&bytes[..n as usize]).into_owned(), passed)
+        let mut passed = Vec::new();
+        let n = net::receive_with_fds(stream, &mut bytes, &mut passed, 1).unwrap();
+        (String::from_utf8_lossy(&bytes[..n]).into_owned(), passed.pop())
     }
 
     #[test]
@@ -193,7 +144,7 @@ mod tests {
         // open file, which the borrower reads and writes as its own.
         let mut file = tempfile();
         file.write_all(b"the borrower's").unwrap();
-        send(&ours, LENT, Some(file.as_raw_fd())).unwrap();
+        send(&ours, LENT, Some(file.as_fd())).unwrap();
         let (answer, passed) = receive(&theirs);
         assert_eq!(answer, "lent\n");
         let mut passed = File::from(passed.expect("a descriptor comes with a loan"));
@@ -209,7 +160,7 @@ mod tests {
         // A program that asked and left is an error to the sender, which
         // then knows the loan never arrived.
         drop(theirs);
-        assert!(send(&ours, LENT, Some(file.as_raw_fd())).is_err());
+        assert!(send(&ours, LENT, Some(file.as_fd())).is_err());
     }
 
     /// A file of the test's own that is gone when it is closed.
@@ -223,6 +174,6 @@ mod tests {
     #[test]
     fn without_its_socket_nothing_is_lent() {
         let lender = Lender::default();
-        assert_eq!(lender.fd(), -1);
+        assert!(lender.fd().is_none());
     }
 }

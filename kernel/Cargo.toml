@@ -94,6 +94,7 @@ members = [
     "lib/sync",
     "lib/tty",
     "lib/uacpi",
+    "lib/vdso",
     "mm",
     "sched",
 ]

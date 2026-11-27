@@ -23,6 +23,8 @@
 //! None of it does any I/O, so its tests run on the host; audio(1) and
 //! audiod(8), in systools, do the rest.
 
+#![forbid(unsafe_code)]
+
 pub mod cd;
 pub mod convert;
 pub mod detect;

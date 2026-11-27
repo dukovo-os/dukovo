@@ -69,6 +69,7 @@ catalog-waves 70
 catalog-withdraw 120
 certificates 120
 consoles 38
+copy 15
 crash-dump 140
 crash-log-bios 23
 crash-log-uefi 26

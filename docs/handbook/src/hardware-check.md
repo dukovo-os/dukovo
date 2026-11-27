@@ -32,7 +32,7 @@ ends, in the order they end:
 ```
 Checking the hardware: a quick check, about 3 minutes. Ctrl-C stops it.
 sensors  hardware monitors      skipped  the kernel shows no temperature or fan on this machine
-battery  battery                skipped  this machine has no battery
+battery  battery                skipped  this machine has no battery or UPS
 disks    sda health             passed   Samsung SSD 860: PASSED, 31 °C, 1,204 hours on
 memory   memory test            passed   1.0G tested by 4 CPUs; Test the memory in the start menu tests all of it
 memory   memory errors          passed   none counted since the start
@@ -197,6 +197,7 @@ memory](web-console.md#testing-the-memory) in the chapter on the console.
 | HW-131 | A temperature at rest is over its limit | Check the fans, vents and cooler |
 | HW-132 | A fan stopped or is too slow | Check it is plugged in, and replace it |
 | HW-141 | A battery holds under 80% of what it held new | Replace the battery |
+| HW-142 | A UPS says its battery should be replaced | Replace the UPS's battery |
 | HW-152 | A network link is at half duplex | Check the cable and the switch port |
 | HW-153 | A card counted receive errors during the check | Replace the cable; try another port |
 

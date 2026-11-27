@@ -16,6 +16,9 @@ publish.workspace = true
 libc = "0.2.189"
 # mio with its poll(2) selector, as tokio uses it on Radix (ADR 0070).
 mio = { version = "1.2.4", features = ["os-poll", "os-ext"] }
+# The process group, the environment, a thread's name as the kernel keeps
+# it, behind safe calls (ADR 0730).
+sysapi = { path = "../sysapi" }
 
 [lints]
 workspace = true

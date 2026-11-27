@@ -136,13 +136,8 @@ fn server_addresses(asking: &Asking) -> Result<Vec<SocketAddr>, Failure> {
 
 /// A query's number, at random.
 fn query_id() -> u16 {
-    let mut id = [0u8; 2];
-    // SAFETY: getrandom writes at most the buffer's two bytes.
-    let got = unsafe { libc::getrandom(id.as_mut_ptr().cast(), id.len(), 0) };
-    if got != 2 {
-        return (util::now_ns() & 0xffff) as u16;
-    }
-    u16::from_ne_bytes(id)
+    sysapi::random::bytes::<2>()
+        .map_or_else(|_| (util::now_ns() & 0xffff) as u16, u16::from_ne_bytes)
 }
 
 /// Asks `server` over UDP, waiting `time` for an answer with its number.

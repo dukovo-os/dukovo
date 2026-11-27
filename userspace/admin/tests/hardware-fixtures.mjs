@@ -221,6 +221,16 @@ export const devices = () => plain({
   ],
 });
 
+/** A UPS of `hardware power --json` on the mains, charging, unless `more` says. */
+export const ups = (more = {}) => ({
+  name: 'ups0', kind: 'ups', model: 'CP1500PFCLCD', maker: 'CPS', online: true, status: 'Charging', percent: 87, seconds_left: 1500, load: 35, low_percent: 10, low_seconds: 120, shuts_down: true, replace: false, ...more,
+});
+
+/** `hardware power --json`: no battery and no UPS, as on most servers, unless `supplies` says; an AC adapter, which the card does not list. */
+export const power = (supplies = []) => plain({
+  format: 1, supplies: [...supplies, { name: 'AC', kind: 'mains', online: true }],
+});
+
 /** `hardware screens --json`: the firmware's card with a monitor that says nothing of itself, and a virtio card of three screens, one in a mode it does not prefer, one with nothing plugged in and one that stopped; consoled is in front. */
 export const screens = (more = {}) => plain({
   format: 1,

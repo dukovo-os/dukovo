@@ -14,6 +14,8 @@ publish.workspace = true
 # The libc crate with its Radix module, which ob patches in from the
 # rust-std port (ADR 0070).
 libc = "0.2.191"
+# Extended attributes, behind safe calls (ADR 0730).
+sysapi = { path = "../sysapi" }
 
 [lints]
 workspace = true

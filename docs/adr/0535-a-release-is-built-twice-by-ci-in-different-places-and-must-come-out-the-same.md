@@ -233,6 +233,5 @@ when it is built in two places:
   - The images themselves are not compared, until the system's first root
     is signed on the hardware keys and every machine's image holds the same
     release.
-  - `ob release sign`, which compares the third build, is ADR 0457's.
   - The sysroot's own files, which a build reads and no image holds, are
     not compared.

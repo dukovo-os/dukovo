@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, OwnedFd};
 
 use accounts::forwarding::{self, CREDIT, Frame, Frames};
 use accounts::request::{Answer, Request, SshRun};
@@ -27,13 +27,14 @@ use russh::server::{ChannelOpenHandle, Handle, Msg};
 use russh::{
     Channel, ChannelId, ChannelMsg, ChannelOpenFailure, ChannelReadHalf, ChannelWriteHalf,
 };
+use sysapi::fd;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::net::unix::pipe;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::AbortHandle;
 
+use crate::authd;
 use crate::session::{self, SignedIn};
-use crate::{authd, sys};
 
 /// The most forwarded channels a connection has at once, of both kinds.
 const STREAMS_MAX: usize = 128;
@@ -103,11 +104,11 @@ impl Drop for Forwarding {
 /// `fd` read or written without blocking: tokio's pipes, as tokio's
 /// AsyncFd waits on Radix for one event only.
 fn reader(fd: OwnedFd) -> io::Result<pipe::Receiver> {
-    sys::set_nonblocking(&fd).and_then(|()| pipe::Receiver::from_owned_fd_unchecked(fd))
+    fd::set_nonblocking(&fd, true).and_then(|()| pipe::Receiver::from_owned_fd_unchecked(fd))
 }
 
 fn writer(fd: OwnedFd) -> io::Result<pipe::Sender> {
-    sys::set_nonblocking(&fd).and_then(|()| pipe::Sender::from_owned_fd_unchecked(fd))
+    fd::set_nonblocking(&fd, true).and_then(|()| pipe::Sender::from_owned_fd_unchecked(fd))
 }
 
 impl Forwarding {
@@ -121,9 +122,9 @@ impl Forwarding {
         from: &str,
     ) -> Result<Forwarding, String> {
         let failed = |err: io::Error| format!("cannot make the forwarder's pipes: {err}");
-        let (input, to_input) = sys::pipe().map_err(failed)?;
-        let (from_output, output) = sys::pipe().map_err(failed)?;
-        let (from_error, error) = sys::pipe().map_err(failed)?;
+        let (input, to_input) = fd::pipe().map_err(failed)?;
+        let (from_output, output) = fd::pipe().map_err(failed)?;
+        let (from_error, error) = fd::pipe().map_err(failed)?;
         let request = Request::SshSession {
             connection: connection.into(),
             name: who.name.clone(),
@@ -133,7 +134,7 @@ impl Forwarding {
             language: Vec::new(),
         };
         let given = [input, output, error];
-        let fds: Vec<RawFd> = given.iter().map(AsRawFd::as_raw_fd).collect();
+        let fds = given.each_ref().map(AsFd::as_fd);
         let (answer, _) = authd::ask(&request, &fds).await?;
         // The forwarder holds its ends now.
         drop(given);

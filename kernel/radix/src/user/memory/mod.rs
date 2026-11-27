@@ -444,8 +444,49 @@ impl SpaceObject {
         Ok(start)
     }
 
+    /// Maps the clock page, `clock`'s one page, read-only, and the vDSO,
+    /// `image`'s pages, read and execute, right above it (ADR 0616), where
+    /// the kernel places anonymous memory given no hint; returns where the
+    /// vDSO went. For a space nothing runs in yet, whose end takes away
+    /// the clock page if the vDSO cannot be mapped.
+    pub fn map_vdso(&self, clock: &FrameRef, image: &FrameRef) -> Result<u64> {
+        let pages = image.pages + 1;
+        let mut regions = self.regions.lock();
+        let start = Self::free_range(&regions, pages, self.anon_top)
+            .or_else(|| Self::free_range(&regions, pages, ANONYMOUS_TOP))
+            .ok_or(error(Kernel::NoMemory))?;
+        // The kernel's own frames, which no capability names, so no space
+        // writes them: a futex word in them is named by the space alone
+        // (`shared_futex_key`), and mapping them leaves `may_share` as it
+        // was, so that a program's futexes go on being named without a
+        // look at its regions.
+        let read = UserAccess::Read;
+        self.map_kept_in(&mut regions, start, 1, &Backing::Frame(clock.clone()), 0, read)?;
+        let code = start + PAGE_SIZE;
+        let run = UserAccess::ReadExecute;
+        let image_backing = Backing::Frame(image.clone());
+        self.map_kept_in(&mut regions, code, image.pages, &image_backing, 0, run)?;
+        Ok(code)
+    }
+
     /// [`map`](Self::map), with the regions locked.
     fn map_in(
+        &self,
+        regions: &mut Vec<Region, Kmalloc>,
+        start: u64,
+        pages: u64,
+        backing: &Backing,
+        offset: u64,
+        access: UserAccess,
+    ) -> Result<()> {
+        self.map_kept_in(regions, start, pages, backing, offset, access)?;
+        self.may_share.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// [`map_in`](Self::map_in), but leaving `may_share` as it was: for
+    /// the kernel's own frames alone.
+    fn map_kept_in(
         &self,
         regions: &mut Vec<Region, Kmalloc>,
         start: u64,
@@ -495,7 +536,6 @@ impl SpaceObject {
             }
         }
         insert(regions, Region { start, pages, backing: backing.clone(), offset });
-        self.may_share.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -727,6 +767,11 @@ impl SpaceObject {
                 Some(pages) => (Arc::as_ptr(pages) as usize, futex::Held::Pages(pages.clone())),
                 None => return self.own_futex_key(address),
             },
+            // The clock page and the vDSO are named as `map_vdso` leaves
+            // them, whatever else the space maps.
+            Backing::Frame(frame) if super::vdso::is_kept(frame) => {
+                return self.own_futex_key(address);
+            }
             Backing::Frame(frame) => {
                 (Arc::as_ptr(frame) as usize, futex::Held::Frame(frame.clone()))
             }
@@ -763,6 +808,16 @@ impl FrameObject {
             spaces: Mutex::new(Vec::new_in(kmalloc())),
         };
         Arc::try_new_in(frame, kmalloc()).ok()
+    }
+
+    /// A frame for the `pages` pages from `phys` that the kernel filled
+    /// and keeps for good: the clock page and the vDSO (ADR 0616), which
+    /// every program maps. It is never zeroed, and never closed, as no
+    /// capability names it.
+    pub fn kept(phys: u64, pages: u64) -> Option<FrameRef> {
+        let frame = FrameObject::new(phys, pages)?;
+        frame.zeroed.store(pages, Ordering::Release);
+        Some(frame)
     }
 
     /// Zeroes the pages not zeroed yet, a step of [`ZERO_STEP`] pages at a

@@ -396,3 +396,174 @@ proptest! {
         prop_assert!(held.is_empty());
     }
 }
+
+/// A UPS as the CyberPower and APC ones describe theirs, cut short:
+/// report 1 the charge in percent and the run time in seconds, report 2
+/// the capacity mode and the limits the UPS sets, report 3 its present
+/// status, a bit a flag, in a Feature report and an Input report alike,
+/// and report 4 the load in an Input report alone.
+const UPS: &[u8] = &[
+    0x05, 0x84, 0x09, 0x04, 0xa1, 0x01, // Power Device: UPS
+    0x09, 0x24, 0xa1, 0x00, //   Power Summary
+    0x05, 0x85, 0x85, 0x01, //     Battery System, report 1
+    0x09, 0x66, 0x15, 0x00, 0x25, 0x64, 0x75, 0x08, 0x95, 0x01, 0xb1,
+    0x02, // Remaining Capacity
+    0x09, 0x68, 0x27, 0xff, 0xff, 0x00, 0x00, 0x75, 0x10, 0xb1, 0x02, // Run Time To Empty
+    0x85, 0x02, 0x09, 0x2c, 0x25, 0x02, 0x75, 0x08, 0xb1, 0x02, // report 2: Capacity Mode
+    0x09, 0x29, 0x25, 0x64, 0xb1, 0x02, // Remaining Capacity Limit
+    0x09, 0x2a, 0x27, 0xff, 0xff, 0x00, 0x00, 0x75, 0x10, 0xb1, 0x02, // Remaining Time Limit
+    0x85, 0x03, 0x05, 0x84, 0x09, 0x02, 0xa1, 0x02, //     report 3: Present Status
+    0x05, 0x85, 0x09, 0xd0, 0x09, 0x44, 0x09, 0x45, 0x09, 0x42, 0x09, 0x46, 0x09, 0x4b, 0x05, 0x84,
+    0x09, 0x69, // AC Present ... Shutdown Imminent
+    0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x07, 0xb1, 0x02, 0x95, 0x01, 0xb1,
+    0x01, // Feature
+    0x05, 0x85, 0x09, 0xd0, 0x09, 0x44, 0x09, 0x45, 0x09, 0x42, 0x09, 0x46, 0x09, 0x4b, 0x05, 0x84,
+    0x09, 0x69, 0x95, 0x07, 0x81, 0x02, 0x95, 0x01, 0x81, 0x01, // Input
+    0xc0, //     end Present Status
+    0x85, 0x04, 0x09, 0x35, 0x25, 0x64, 0x75, 0x08, 0x95, 0x01, 0x81,
+    0x02, // report 4: Percent Load
+    0xc0, 0xc0,
+];
+
+fn ups_reports(layout: &Layout<Global>) -> Vec<power::Report> {
+    let mut reports = Vec::new();
+    layout.power_reports(&mut |report| reports.push(report));
+    reports
+}
+
+#[test]
+fn a_ups_is_known_by_its_power_device_collection() {
+    let ups = layout(UPS);
+    assert!(ups.is_ups());
+    assert!(!ups.is_keyboard() && !ups.is_pointer() && !ups.has_keys());
+    assert!(!layout(TABLET).is_ups());
+    assert!(!layout(COMPOSITE).is_ups());
+}
+
+#[test]
+fn a_ups_s_reports_are_asked_for_once_each_with_their_lengths() {
+    use power::{Kind, Report};
+    assert_eq!(
+        ups_reports(&layout(UPS)),
+        [
+            Report { kind: Kind::Feature, id: 1, bytes: 4 },
+            Report { kind: Kind::Feature, id: 2, bytes: 5 },
+            // Report 3's Input report says what its Feature report does.
+            Report { kind: Kind::Feature, id: 3, bytes: 2 },
+            Report { kind: Kind::Input, id: 4, bytes: 2 },
+        ]
+    );
+}
+
+/// The state the UPS's reports give: `charge` in percent, `seconds` of run
+/// time, and the present status's bits.
+fn ups_state(charge: u8, seconds: u16, status: u8) -> power::State {
+    use power::Kind;
+    let ups = layout(UPS);
+    let mut state = power::State::default();
+    let [low, high] = seconds.to_le_bytes();
+    ups.read_power(Kind::Feature, 1, &[1, charge, low, high], &mut state);
+    ups.read_power(Kind::Feature, 2, &[2, 2, 0, 0, 0], &mut state);
+    ups.read_power(Kind::Feature, 3, &[3, status], &mut state);
+    ups.read_power(Kind::Input, 4, &[4, 35], &mut state);
+    state
+}
+
+/// The present status's bits, as report 3 has them.
+const AC: u8 = 1 << 0;
+const CHARGING: u8 = 1 << 1;
+const DISCHARGING: u8 = 1 << 2;
+const BELOW_LIMIT: u8 = 1 << 3;
+const FULL: u8 = 1 << 4;
+const REPLACE: u8 = 1 << 5;
+const IMMINENT: u8 = 1 << 6;
+
+#[test]
+fn a_ups_on_the_mains_says_its_charge_and_run_time() {
+    let state = ups_state(87, 1500, AC | CHARGING);
+    assert_eq!(state.percent(), Some(87));
+    assert_eq!(state.run_time, Some(1500));
+    assert_eq!(state.load, Some(35));
+    assert_eq!(state.status(), power::Status::Charging);
+    assert!(!state.on_battery() && !state.low());
+    assert_eq!(state.need_replacement, Some(false));
+    assert_eq!(ups_state(100, 1800, AC | FULL).status(), power::Status::Full);
+    assert_eq!(ups_state(100, 1800, AC | REPLACE).need_replacement, Some(true));
+}
+
+#[test]
+fn a_ups_on_its_battery_is_low_when_it_says_or_at_the_limits() {
+    let on_battery = ups_state(60, 900, DISCHARGING);
+    assert!(on_battery.on_battery());
+    assert_eq!(on_battery.status(), power::Status::Discharging);
+    assert!(!on_battery.low());
+    // The UPS says so.
+    assert!(ups_state(60, 900, DISCHARGING | BELOW_LIMIT).low());
+    assert!(ups_state(60, 900, DISCHARGING | IMMINENT).low());
+    // Its limits are 0 here, so the defaults hold.
+    assert!(ups_state(power::LOW_PERCENT as u8, 900, DISCHARGING).low());
+    assert!(ups_state(60, power::LOW_SECONDS as u16, DISCHARGING).low());
+    // On the mains nothing is low, whatever the UPS says.
+    assert!(!ups_state(5, 30, AC | CHARGING | BELOW_LIMIT).low());
+}
+
+#[test]
+fn a_ups_s_own_limits_are_its_low_battery() {
+    use power::Kind;
+    let ups = layout(UPS);
+    let mut state = ups_state(30, 900, DISCHARGING);
+    assert!(!state.low());
+    // Report 2: percent, a 35% limit, 600 s.
+    ups.read_power(Kind::Feature, 2, &[2, 2, 35, 0x58, 0x02], &mut state);
+    assert_eq!((state.low_percent(), state.low_seconds()), (35, 600));
+    assert!(state.low());
+}
+
+#[test]
+fn a_charge_in_watt_hours_is_a_share_of_the_full_charge() {
+    let state = power::State {
+        remaining: Some(150),
+        full: Some(600),
+        capacity_mode: Some(1),
+        ..power::State::default()
+    };
+    assert_eq!(state.percent(), Some(25));
+    let unknown = power::State { full: None, ..state };
+    assert_eq!(unknown.percent(), None);
+}
+
+#[test]
+fn a_report_of_another_id_or_cut_short_changes_nothing() {
+    use power::Kind;
+    let ups = layout(UPS);
+    let mut state = power::State::default();
+    ups.read_power(Kind::Feature, 1, &[2, 50, 0, 0], &mut state);
+    assert_eq!(state, power::State::default());
+    ups.read_power(Kind::Feature, 1, &[1, 50], &mut state);
+    assert_eq!((state.remaining, state.run_time), (Some(50), None));
+}
+
+#[test]
+fn a_descriptor_of_feature_reports_alone_is_kept_for_a_ups() {
+    // Report 1 of UPS, the charge, and nothing else.
+    let bytes = [
+        0x05, 0x84, 0x09, 0x04, 0xa1, 0x01, 0x05, 0x85, 0x85, 0x01, 0x09, 0x66, 0x15, 0x00, 0x25,
+        0x64, 0x75, 0x08, 0x95, 0x01, 0xb1, 0x02, 0xc0,
+    ];
+    let ups = layout(&bytes);
+    assert!(ups.is_ups());
+    assert!(ups.fields().is_empty());
+    // A Feature report that holds nothing of a UPS's is still nothing to read.
+    let other =
+        [0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, 0x09, 0x30, 0x75, 0x08, 0x95, 0x01, 0xb1, 0x02, 0xc0];
+    assert_eq!(parse(&other).err(), Some(Error::NoInputs));
+}
+
+proptest! {
+    #[test]
+    fn a_ups_on_the_mains_is_never_low(charge in any::<u8>(), seconds in any::<u16>(), status in any::<u8>()) {
+        let state = ups_state(charge, seconds, (status | AC) & !DISCHARGING);
+        prop_assert!(!state.low());
+        prop_assert!(state.percent().is_some_and(|p| p <= 100));
+    }
+}

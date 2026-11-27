@@ -92,6 +92,8 @@
 //! (ADRs 0451 to 0454); `dukovo-rescue` is Rescue's screens, which
 //! repair a system that will not start (ADR 0460).
 
+#![forbid(unsafe_code)]
+
 mod account;
 mod account_errors;
 mod admin;
@@ -509,13 +511,9 @@ fn tool(name: &str) -> Option<Tool> {
 /// names, or the command of a bundle when the name is no tool's, and gives
 /// its exit status.
 pub fn main() -> ExitCode {
-    // SAFETY: setting a signal's disposition to the default touches no
-    // memory; it is done before any thread starts.
-    unsafe {
-        // A closed pipe ends a tool quietly, as it does a C program,
-        // where Rust would have every write after it fail.
-        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-    }
+    // A closed pipe ends a tool quietly, as it does a C program, where
+    // Rust would have every write after it fail.
+    let _ = sysapi::signal::restore_default(libc::SIGPIPE);
     let mut argv: Vec<OsString> = std::env::args_os().collect();
     let called = argv.first().map(Path::new).and_then(Path::file_name);
     let mut name = called.map_or_default(|name| name.to_string_lossy().into_owned());

@@ -19,7 +19,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::AsFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::thread;
@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use super::conf::FILE_MAX;
 use super::host::{Paths, STATE};
 use super::plan::{LOGS, Main, NGINX_HOME, SETTINGS};
-use crate::bundles::folder::{Dir, check};
+use crate::bundles::folder::Dir;
 use crate::util::strip_os_error;
 
 /// nginx's settings folder, in nginx's view.
@@ -77,9 +77,8 @@ pub fn read_conf(paths: &Paths) -> Result<Option<String>, String> {
 }
 
 /// Gives the descriptor `fd` to the owner and group `uid` and `gid`.
-fn chown(fd: &OwnedFd, uid: libc::uid_t, gid: libc::gid_t) -> io::Result<()> {
-    // SAFETY: fchown takes a descriptor we hold and two numbers.
-    check(unsafe { libc::fchown(fd.as_raw_fd(), uid, gid) })
+fn chown(fd: impl AsFd, uid: libc::uid_t, gid: libc::gid_t) -> io::Result<()> {
+    std::os::unix::fs::fchown(fd, Some(uid), Some(gid))
 }
 
 /// Opens the folder of the sites' logs, `logs/sites` in nginx's data
@@ -103,7 +102,7 @@ pub fn logs_dir(paths: &Paths, make: bool) -> io::Result<Option<Dir>> {
                 let owner = at.stat()?;
                 at.make(name, 0o755)?;
                 let inner = at.dir_at(name)?;
-                chown(&inner.0, owner.st_uid, owner.st_gid)?;
+                chown(&inner, owner.st_uid, owner.st_gid)?;
                 inner
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -161,9 +160,8 @@ pub fn read_settings(paths: &Paths) -> Result<Vec<Raw>, String> {
 }
 
 /// Changes the mode of what `fd` holds, whatever the mask says.
-fn chmod(fd: &OwnedFd, mode: libc::mode_t) -> io::Result<()> {
-    // SAFETY: fchmod takes a descriptor we hold and a mode.
-    check(unsafe { libc::fchmod(fd.as_raw_fd(), mode) })
+fn chmod(fd: impl AsFd, mode: libc::mode_t) -> io::Result<()> {
+    sysapi::fs::set_mode(fd, mode)
 }
 
 /// Makes the file `name` in `dir`, new, mode 0644, holding `bytes`.
@@ -197,7 +195,7 @@ impl Staged {
         staged.remove_all();
         staged.conf.make(NEXT, 0o755).map_err(words)?;
         let next = staged.conf.dir_at(NEXT).map_err(words)?;
-        chmod(&next.0, 0o755).map_err(words)?;
+        chmod(&next, 0o755).map_err(words)?;
         for file in files {
             put(&next, &file.file, &file.bytes).map_err(words)?;
         }

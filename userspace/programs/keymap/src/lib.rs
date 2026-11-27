@@ -11,6 +11,8 @@
 //! `/system/settings/keymaps` is read the same way. What a dead key makes
 //! of the letter after it comes from Unicode's compositions ([`compose`]).
 
+#![forbid(unsafe_code)]
+
 mod dead;
 mod layouts;
 #[cfg(test)]

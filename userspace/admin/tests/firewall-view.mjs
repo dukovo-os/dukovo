@@ -67,6 +67,8 @@ export async function openFirewall(context, { hash = '', reads: replaced = {}, s
     delete globalThis.history;
   });
   const answers = { ...reads(), ...replaced };
+  const handlers = {};
+  const everyStep = [];
   const view = {
     main: page.document.createElement('main'),
     slot: page.document.createElement('div'),
@@ -85,9 +87,13 @@ export async function openFirewall(context, { hash = '', reads: replaced = {}, s
       page.document.body.append(title);
       return title;
     },
-    on: () => {},
+    on: (kind, handler) => {
+      (handlers[kind] ??= []).push(handler);
+    },
     onPrefs: () => {},
-    every: () => {},
+    every: (ms, step) => {
+      everyStep.push(step);
+    },
     notice: () => {},
     problem: () => {},
     api: {
@@ -114,6 +120,16 @@ export async function openFirewall(context, { hash = '', reads: replaced = {}, s
     ready,
     form: () => view.main.querySelector('#add'),
     field: (id) => view.main.querySelector(`#${id}`),
+    /** Runs what the page does every so often, as the time for it comes. */
+    every: async () => {
+      for (const step of everyStep) step();
+      await settle();
+    },
+    /** Says `kind` to the page, as the console's events do: `change` for a new row of the journal. */
+    emit: async (kind) => {
+      for (const handler of handlers[kind] ?? []) handler();
+      await settle();
+    },
     /** Presses the button `id`. */
     press: async (id) => {
       view.main.querySelector(`#${id}`).click();

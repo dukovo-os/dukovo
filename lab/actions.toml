@@ -1787,6 +1787,18 @@ compares = false
 tests = { checks = "admind::actions::hardware::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
 
 [[action]]
+id = "hardware.power"
+title = "Show the batteries and UPSes"
+area = "hardware"
+changes = false
+method = "GET"
+path = "/api/1/hardware/power"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::hardware::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
+
+[[action]]
 id = "hardware.screens"
 title = "List the screens"
 area = "hardware"

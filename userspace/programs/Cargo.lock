@@ -18,6 +18,7 @@ name = "acl"
 version = "0.17.0"
 dependencies = [
  "libc",
+ "sysapi",
 ]
 
 [[package]]
@@ -808,6 +809,7 @@ dependencies = [
  "radix-fbcon",
  "serde",
  "serde_json",
+ "sysapi",
  "toml 0.9.12+spec-1.1.0",
  "vte",
 ]
@@ -1382,7 +1384,7 @@ dependencies = [
  "display",
  "display-pattern",
  "libc",
- "radix-abi",
+ "sysapi",
 ]
 
 [[package]]
@@ -1434,6 +1436,7 @@ dependencies = [
  "serde",
  "serde_json",
  "slots",
+ "sysapi",
  "system-release",
  "toml 0.9.12+spec-1.1.0",
  "tuf",
@@ -1779,6 +1782,7 @@ dependencies = [
  "fuser",
  "libc",
  "radix-abi",
+ "sysapi",
 ]
 
 [[package]]
@@ -2942,6 +2946,7 @@ dependencies = [
  "libc",
  "nfsd",
  "radix-abi",
+ "sysapi",
 ]
 
 [[package]]
@@ -2952,6 +2957,7 @@ dependencies = [
  "kerberos",
  "libc",
  "manifest",
+ "sysapi",
 ]
 
 [[package]]
@@ -3002,6 +3008,7 @@ dependencies = [
  "libc",
  "nu-ansi-term",
  "reedline",
+ "sysapi",
  "toml 0.9.12+spec-1.1.0",
 ]
 
@@ -3969,6 +3976,7 @@ name = "report-test"
 version = "0.17.0"
 dependencies = [
  "serde_json",
+ "sysapi",
 ]
 
 [[package]]
@@ -4785,6 +4793,7 @@ dependencies = [
  "libc",
  "radix-abi",
  "smb2",
+ "sysapi",
  "tokio",
 ]
 
@@ -4829,6 +4838,7 @@ dependencies = [
  "manifest",
  "sha2 0.11.1",
  "smb2",
+ "sysapi",
  "tokio",
 ]
 
@@ -4969,6 +4979,7 @@ dependencies = [
  "accounts",
  "libc",
  "russh",
+ "sysapi",
  "tokio",
 ]
 
@@ -4990,6 +5001,7 @@ version = "0.17.0"
 dependencies = [
  "libc",
  "mio",
+ "sysapi",
 ]
 
 [[package]]
@@ -5068,6 +5080,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sysapi"
+version = "0.17.0"
+dependencies = [
+ "libc",
+ "radix-abi",
+ "radix-hw",
+]
+
+[[package]]
 name = "system-release"
 version = "0.17.0"
 dependencies = [
@@ -5134,6 +5155,7 @@ dependencies = [
  "socket2",
  "spark-api",
  "ssh-key",
+ "sysapi",
  "system-release",
  "time",
  "tokio",

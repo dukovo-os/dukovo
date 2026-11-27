@@ -313,7 +313,9 @@ mod tests {
         let socket = dir.join("receive.sock");
         let serving = (socket.clone(), paths.clone());
         std::thread::spawn(move || serve(&serving.0, &serving.1));
-        while !socket.exists() {
+        // The socket's file is there from its bind, a moment before it
+        // listens; a connection taken says it listens.
+        while UnixStream::connect(&socket).is_err() {
             std::thread::yield_now();
         }
 

@@ -72,6 +72,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
+use core::ops::{Deref, DerefMut};
 use core::task::Waker;
 
 use radix_abi::Status;
@@ -87,7 +88,7 @@ use radix_net::smoltcp::socket::{icmp, tcp, udp};
 use radix_net::smoltcp::time::Duration;
 use radix_net::smoltcp::wire::{IpAddress, IpEndpoint, IpListenEndpoint};
 use radix_net::{Across, ConnectError, IpVersion, Ipv4Address, Ipv6Address, OtherEnd, TcpMemory};
-use radix_sync::Mutex;
+use radix_sync::{Mutex, MutexGuard};
 use radix_vfs::mount::Location;
 use radix_vfs::{In, Kind as NodeKind, Node, NodeRef, Out, Stat, mem, next_id};
 
@@ -804,10 +805,39 @@ pub struct InetSocket {
     /// Its number, which its node shows.
     id: u64,
     kind: Kind,
+    /// Taken by its calls through [`InetSocket::locked`], and by
+    /// [`InetSocket::events`] alone otherwise.
     state: Mutex<State>,
     /// Who waits on it and polls it, whom its smoltcp sockets wake (ADR
-    /// 0550).
+    /// 0550), and what it was last found ready for (ADR 0771).
     waiters: Arc<Waiters, Kmalloc>,
+}
+
+/// A socket's state, taken by one of its calls ([`InetSocket::locked`]).
+struct Locked<'a> {
+    state: MutexGuard<'a, State>,
+    waiters: &'a Waiters,
+}
+
+impl Deref for Locked<'_> {
+    type Target = State;
+
+    fn deref(&self) -> &State {
+        &self.state
+    }
+}
+
+impl DerefMut for Locked<'_> {
+    fn deref_mut(&mut self) -> &mut State {
+        &mut self.state
+    }
+}
+
+impl Drop for Locked<'_> {
+    /// Whatever the call changed is in the state before it is let go.
+    fn drop(&mut self) {
+        self.waiters.touched();
+    }
 }
 
 fn kmalloc() -> Kmalloc {
@@ -913,9 +943,16 @@ impl InetSocket {
         self.kind
     }
 
+    /// Its state, for one of its calls: what the call changes in it, as
+    /// what the socket is ready for, the next look at it finds, though
+    /// smoltcp does not wake for it ([`Waiters::touched`], ADR 0771).
+    fn locked(&self) -> Locked<'_> {
+        Locked { state: self.state.lock(), waiters: &self.waiters }
+    }
+
     /// Whether it is an IPv6 socket.
     pub fn is_ipv6(&self) -> bool {
-        self.state.lock().v6
+        self.locked().v6
     }
 
     /// Waits until `attempt` gives an answer: it returns `None` when the
@@ -935,7 +972,7 @@ impl InetSocket {
         let _waiting = self.waiters.waiting(way);
         loop {
             let seen = self.waiters.count(way);
-            if let Some(done) = attempt(&mut self.state.lock())? {
+            if let Some(done) = attempt(&mut self.locked())? {
                 return Ok(done);
             }
             if non_blocking {
@@ -955,7 +992,7 @@ impl InetSocket {
             // connection that came before its signal, so that no other
             // waiter is left asleep with it there.
             if self.waiters.wakes_one(way)
-                && let Ok(Some(done)) = attempt(&mut self.state.lock())
+                && let Ok(Some(done)) = attempt(&mut self.locked())
             {
                 return Ok(done);
             }
@@ -966,7 +1003,7 @@ impl InetSocket {
     /// Binds it to `given` through `authority` (radix-file(2)'s
     /// `bind_address`), for `owner`.
     pub fn bind(&self, given: Given, authority: Authority, owner: Owner) -> Result<(), Status> {
-        let mut state = self.state.lock();
+        let mut state = self.locked();
         if state.local.is_some() || state.phase != Phase::Fresh {
             return Err(status(Kernel::InvalidArgument));
         }
@@ -1088,7 +1125,7 @@ impl InetSocket {
         if self.kind == Kind::Stream {
             return Err(status(Kernel::NotSupported));
         }
-        let state = self.state.lock();
+        let state = self.locked();
         let heard = state.errors.as_ref().and_then(|sink| sink.take());
         heard.map(|heard| (heard, state.v6)).ok_or(status(Kernel::WouldBlock))
     }
@@ -1106,7 +1143,7 @@ impl InetSocket {
         }
         let backlog = u64::from(backlog).clamp(1, radix_abi::file::BACKLOG_MAX) as usize;
         let backlog = backlog.min(WAITING_MAX);
-        let mut state = self.state.lock();
+        let mut state = self.locked();
         match state.phase {
             // Listening again changes its backlog, as on Linux.
             Phase::Listening => {
@@ -1155,7 +1192,7 @@ impl InetSocket {
     /// Takes a connection made to it, waiting for one unless
     /// `non_blocking`, for [`accept`].
     fn take(&self, non_blocking: bool) -> Result<Taken, Status> {
-        let timeout = self.state.lock().options.receive_timeout_ns;
+        let timeout = self.locked().options.receive_timeout_ns;
         self.wait(Way::Receive, non_blocking, timeout, Kernel::WouldBlock, "accept", |state| {
             if state.phase != Phase::Listening {
                 return Err(status(Kernel::InvalidArgument));
@@ -1186,7 +1223,7 @@ impl InetSocket {
     /// Has `taken`, a connection its listening socket took, connect it, a
     /// new stream socket that no one else has yet.
     fn have(&self, taken: Taken) {
-        let mut state = self.state.lock();
+        let mut state = self.locked();
         state.phase = Phase::Connected;
         state.local = taken.local;
         state.peer = taken.peer;
@@ -1203,7 +1240,7 @@ impl InetSocket {
     /// Gives up the connection [`have`](Self::have) gave it, which no one
     /// used: it is fresh again.
     fn give_up(&self) -> Option<Part> {
-        let mut state = self.state.lock();
+        let mut state = self.locked();
         let part = state.parts.pop()?;
         state.phase = Phase::Fresh;
         state.local = None;
@@ -1217,7 +1254,7 @@ impl InetSocket {
     /// in `accept` for it. One that can no longer wait, as there is no
     /// memory for it, is reset.
     fn give_back(&self, part: Part) {
-        let state = self.state.lock();
+        let state = self.locked();
         let pool = state.pools.iter().find(|pool| core::ptr::eq(pool.interface, part.interface));
         match pool {
             Some(pool) if state.phase == Phase::Listening => pool.give_back(part),
@@ -1233,7 +1270,7 @@ impl InetSocket {
     /// connection unless `non_blocking`.
     pub fn connect(&self, given: Given, non_blocking: bool) -> Result<(), Status> {
         let (to, scope) = {
-            let state = self.state.lock();
+            let state = self.locked();
             // A ping socket's address has no port, as on Linux.
             match state.destination(given)? {
                 ((ip, port), scope) if port != 0 || self.kind == Kind::Ping => ((ip, port), scope),
@@ -1241,7 +1278,7 @@ impl InetSocket {
             }
         };
         if self.kind != Kind::Stream {
-            let mut state = self.state.lock();
+            let mut state = self.locked();
             self.bind_if_not(&mut state)?;
             state.peer = Some(to);
             state.scope = scope;
@@ -1250,7 +1287,7 @@ impl InetSocket {
             return self.watch(&mut state);
         }
         let timeout = {
-            let mut state = self.state.lock();
+            let mut state = self.locked();
             match state.phase {
                 Phase::Fresh => {
                     state.start_connection(to, scope)?;
@@ -1298,7 +1335,7 @@ impl InetSocket {
     ) -> Result<usize, Status> {
         if self.kind != Kind::Stream {
             let to = match to {
-                Some(given) => Some(self.state.lock().destination(given)?),
+                Some(given) => Some(self.locked().destination(given)?),
                 None => None,
             };
             if self.kind == Kind::Ping {
@@ -1306,7 +1343,7 @@ impl InetSocket {
             }
             return self.send_datagram(data, to, non_blocking);
         }
-        let timeout = self.state.lock().options.send_timeout_ns;
+        let timeout = self.locked().options.send_timeout_ns;
         let mut sent = 0;
         let result =
             self.wait(Way::Send, non_blocking, timeout, Kernel::WouldBlock, "send", |state| {
@@ -1393,7 +1430,7 @@ impl InetSocket {
         non_blocking: bool,
     ) -> Result<usize, Status> {
         let (to, interface, timeout) = {
-            let mut state = self.state.lock();
+            let mut state = self.locked();
             if state.shut_write {
                 return pipe::broken(0, false);
             }
@@ -1505,7 +1542,7 @@ impl InetSocket {
         non_blocking: bool,
         peek: bool,
     ) -> Result<Received, Status> {
-        let timeout = self.state.lock().options.receive_timeout_ns;
+        let timeout = self.locked().options.receive_timeout_ns;
         self.wait(Way::Receive, non_blocking, timeout, Kernel::WouldBlock, "receive", |state| {
             if state.shut_read {
                 return Ok(Some(Received::of(0, state.peer, state.scope)));
@@ -1525,7 +1562,7 @@ impl InetSocket {
 
     /// Whether its packet_info option is set (`receive_message`).
     pub fn packet_info(&self) -> bool {
-        self.state.lock().options.packet_info
+        self.locked().options.packet_info
     }
 
     /// Sends `data`, an echo request, waiting for room unless
@@ -1540,7 +1577,7 @@ impl InetSocket {
         non_blocking: bool,
     ) -> Result<usize, Status> {
         let (to, interface, ident, timeout) = {
-            let mut state = self.state.lock();
+            let mut state = self.locked();
             if state.shut_write {
                 return pipe::broken(0, false);
             }
@@ -1619,7 +1656,7 @@ impl InetSocket {
     /// Shuts it for reading, writing or both (radix-file(2)'s
     /// `shutdown`): a stream socket's connection sends its FIN.
     pub fn shutdown(&self, read: bool, write: bool) -> Result<(), Status> {
-        let mut state = self.state.lock();
+        let mut state = self.locked();
         if state.phase != Phase::Connected && state.phase != Phase::Connecting {
             return Err(status(Kernel::NotConnected));
         }
@@ -1646,7 +1683,7 @@ impl InetSocket {
     /// Where it is bound, or with `peer` where it is connected, as an
     /// Address's bytes.
     pub fn name(&self, peer: bool) -> Result<[u8; Address::SIZE], Status> {
-        let mut state = self.state.lock();
+        let mut state = self.locked();
         // A connection being made may have been made since: the other end
         // may have accepted it, and asks for this end's name.
         if peer && state.phase == Phase::Connecting {
@@ -1686,19 +1723,19 @@ impl InetSocket {
     /// The port it is bound to, or a ping socket's identifier: 0 if it is
     /// not bound.
     pub fn local_port(&self) -> u16 {
-        self.state.lock().local.map_or(0, |(_, port)| port)
+        self.locked().local.map_or(0, |(_, port)| port)
     }
 
     /// Whether it listens, and whether it is connected.
     pub fn listens_and_connected(&self) -> (bool, bool) {
-        let phase = self.state.lock().phase;
+        let phase = self.locked().phase;
         (phase == Phase::Listening, phase == Phase::Connected)
     }
 
     /// Reads, and with `set` sets, `option` (radix-file(2)'s
     /// `socket_option`), returning it as it was.
     pub fn option(&self, option: SocketOption, set: Option<u64>) -> Result<u64, Status> {
-        let mut state = self.state.lock();
+        let mut state = self.locked();
         let flag = |on: bool| u64::from(on);
         let options = &mut state.options;
         let old = match option {
@@ -1880,7 +1917,7 @@ impl InetSocket {
         if self.kind != Kind::Datagram {
             return Err(status(Kernel::NotSupported));
         }
-        let mut state = self.state.lock();
+        let mut state = self.locked();
         let group = match state.endpoint(given)? {
             ((Some(group), _), _) if group.is_multicast() => group,
             _ => return Err(status(Kernel::InvalidArgument)),
@@ -1983,7 +2020,7 @@ impl InetSocket {
     /// How many bytes wait to be received: a stream socket's, or a
     /// datagram socket's next datagram's.
     pub fn pending(&self) -> usize {
-        let state = self.state.lock();
+        let state = self.locked();
         let mut pending = 0;
         for part in &state.parts {
             let mut stack = part.interface.stack.lock();
@@ -2007,8 +2044,15 @@ impl InetSocket {
         pending
     }
 
-    /// The events `poll` finds on it, as Linux's.
+    /// The events `poll` finds on it, as Linux's. A connected stream
+    /// socket's are those the last look found while nothing has changed
+    /// since, which takes neither its state's lock nor its stack's (ADR
+    /// 0771).
     pub fn events(&self) -> u16 {
+        let seen = self.waiters.seen();
+        if let Some(events) = self.waiters.kept(seen) {
+            return events;
+        }
         let mut state = self.state.lock();
         if self.kind != Kind::Stream {
             let mut events = poll::WRITABLE;
@@ -2048,7 +2092,11 @@ impl InetSocket {
                     poll::WRITABLE | poll::ERROR | poll::HANG_UP
                 }
             },
-            Phase::Connected => connection_events(&mut state),
+            Phase::Connected => {
+                let events = connection_events(&mut state);
+                self.waiters.keep(seen, events);
+                events
+            }
         }
     }
 }

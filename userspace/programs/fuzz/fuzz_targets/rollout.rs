@@ -6,6 +6,7 @@
 //! waves the schedule opens at times and for numbers taken from the
 //! input's first bytes.
 
+#![forbid(unsafe_code)]
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

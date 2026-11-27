@@ -44,8 +44,7 @@ fn mounted_with(name: &str, add: &str) -> Mounted {
     options.add(&format!("soft,timeo=50,port={}", addr.port())).unwrap();
     options.add(add).unwrap();
     let target = Target::parse("127.0.0.1:/Music").unwrap();
-    // SAFETY: getuid and getgid only read the process's IDs.
-    let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+    let (uid, gid) = (sysapi::process::uid(), sysapi::process::gid());
     let cred = Cred { uid, gid, gids: Vec::new() };
     let (client, root) = crate::connect(&target, &options, &cred).unwrap();
     let fs = NfsFs::new(Arc::new(Mutex::new(client)), &root, options.read_only);
@@ -210,8 +209,7 @@ fn calls_whose_reply_was_lost_are_sent_again() {
     let mut options = Options::default();
     options.add(&format!("soft,timeo=50,port={}", addr.port())).unwrap();
     let target = Target::parse("127.0.0.1:/Music").unwrap();
-    // SAFETY: getuid and getgid only read the process's IDs.
-    let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+    let (uid, gid) = (sysapi::process::uid(), sysapi::process::gid());
     let cred = Cred { uid, gid, gids: Vec::new() };
     let (mut client, root) = crate::connect(&target, &options, &cred).unwrap();
     // One whose reply the server kept, which it gives again.

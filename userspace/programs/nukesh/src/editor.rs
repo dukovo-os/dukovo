@@ -115,7 +115,7 @@ impl Editor {
             let abbrs = shell.abbrs.clone();
             (shell.opts.vi, abbrs, colors(&shell), needs_wakes(&shell), shell.colors.clone())
         };
-        let handle = Handle(self.shell.clone());
+        let handle = Handle::new(&self.shell);
         let (editor, file) = buffer_editor(&self.shell.borrow());
         let grown = abbrs.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         let mut line =
@@ -669,7 +669,8 @@ impl ShellHighlighter {
     fn known(&self, name: &str) -> bool {
         // While the shell is busy (it never is while a line is read), the
         // benefit of the doubt.
-        let Ok(shell) = self.shell.0.try_borrow() else { return true };
+        let Some(shell) = self.shell.get() else { return true };
+        let Ok(shell) = shell.try_borrow() else { return true };
         let stamp = format!(
             "{}\0{}\0{}",
             shell.get("PATH").unwrap_or_default(),
@@ -703,10 +704,6 @@ impl ShellHighlighter {
     }
 }
 
-// SAFETY: as for `Handle`: reedline calls the highlighter only from
-// `read_line`, on the shell's thread.
-unsafe impl Send for ShellHighlighter {}
-
 impl Highlighter for ShellHighlighter {
     fn should_expand_abbr(&self, line: &str, start: usize, _: reedline::AbbrExpandContext) -> bool {
         crate::abbr::command_position(line, start)
@@ -716,7 +713,7 @@ impl Highlighter for ShellHighlighter {
         let mut styled = StyledText::default();
         // A mistake the parser finds is shown before Enter (ADR 0284): the
         // token it is near, as an unknown command is.
-        let options = self.shell.0.try_borrow().map_or_default(|shell| shell.parse_options());
+        let options = self.shell.parse_options();
         let wrong = mistake(line, options.clone()).and_then(|(token, _)| token);
         let spans = highlight::spans(line, &mut |name| self.known(name));
         // The piece to mark: the first of the token's where the line up to
@@ -815,7 +812,8 @@ struct ShellCompleter(Handle);
 
 impl Completer for ShellCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> CompletionResult {
-        let Ok(mut shell) = self.0.0.try_borrow_mut() else {
+        let Some(shell) = self.0.get() else { return CompletionResult::fresh(Vec::new()) };
+        let Ok(mut shell) = shell.try_borrow_mut() else {
             return CompletionResult::fresh(Vec::new());
         };
         let (start, candidates) = shell.complete_line(line, pos);
@@ -840,7 +838,7 @@ struct ShellValidator(Handle);
 
 impl Validator for ShellValidator {
     fn validate(&self, line: &str) -> ValidationResult {
-        let options = self.0.0.try_borrow().map_or_default(|shell| shell.parse_options());
+        let options = self.0.parse_options();
         if needs_more(line, options) {
             ValidationResult::Incomplete
         } else {
@@ -881,18 +879,15 @@ fn read_plain_line(fd: i32) -> Got {
     let mut bytes = Vec::new();
     let mut byte = [0u8; 1];
     loop {
-        // SAFETY: byte is valid for writes of one byte.
-        let n = unsafe { libc::read(fd, byte.as_mut_ptr().cast(), 1) };
-        match n {
-            1 if byte[0] == b'\n' => return Got::Line(text::decode(&bytes)),
-            1 => bytes.push(byte[0]),
-            0 => break,
-            _ if sys::errno() == libc::EINTR => {
+        match sys::read_once(fd, &mut byte) {
+            Ok(1) if byte[0] == b'\n' => return Got::Line(text::decode(&bytes)),
+            Ok(1) => bytes.push(byte[0]),
+            Err(error) if error.raw_os_error() == Some(libc::EINTR) => {
                 if trap::is_pending(libc::SIGINT) {
                     return Got::Interrupted;
                 }
             }
-            _ => break,
+            Ok(_) | Err(_) => break,
         }
     }
     if bytes.is_empty() { Got::Eof } else { Got::Line(text::decode(&bytes)) }

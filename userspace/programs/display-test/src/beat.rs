@@ -37,9 +37,10 @@ use display::abi::{
     DisplayEvent, EVENT_BEAT, EVENT_REPLACED, EVENT_SHOWN, MAY_BLANK, NEWEST_WINS, NO_WAIT, NOW,
 };
 
+use sysapi::time;
+
 use crate::rig::{Keys, Outcome, Seat, State, ensure};
 use crate::stage::{Stage, unmade};
-use crate::sys;
 
 /// How many beats in a row are asked for.
 const BEATS: u64 = 40;
@@ -129,9 +130,9 @@ fn steady_beats(stage: &mut Stage, at: usize) -> Outcome {
         on_the_grid(&last, &beat, rate)?;
         in_step += u64::from(beat.count == last.count + 1);
         // It was told after it came, and not long after.
-        let late = sys::now_ns().saturating_sub(beat.time_ns);
-        ensure(sys::now_ns() >= beat.time_ns && late < 2_000_000_000, || {
-            format!("a beat of {} ns was told at {} ns", beat.time_ns, sys::now_ns())
+        let late = time::monotonic_ns().saturating_sub(beat.time_ns);
+        ensure(time::monotonic_ns() >= beat.time_ns && late < 2_000_000_000, || {
+            format!("a beat of {} ns was told at {} ns", beat.time_ns, time::monotonic_ns())
         })?;
         let room = beat.deadline_ns.saturating_sub(beat.time_ns);
         ensure(room > 0 && room <= period + 1, || {

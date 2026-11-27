@@ -22,7 +22,7 @@
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::os::fd::AsRawFd;
+use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -32,6 +32,7 @@ use std::time::{Duration, Instant};
 
 use accounts::ntlm;
 use accounts::request::{Answer, Request};
+use sysapi::{fd, net, poll, random, signal};
 
 use crate::auth::{self, Names, State};
 use crate::crypto::{self, dialect};
@@ -397,7 +398,7 @@ impl SignIn {
 fn ask_authd(
     pending: &Pending,
     from: &str,
-    pipe: &impl AsRawFd,
+    pipe: &impl AsFd,
     connection: &TcpStream,
 ) -> Result<(String, [u8; 16]), String> {
     let [negotiate, challenge, authenticate] = &pending.messages;
@@ -409,8 +410,9 @@ fn ask_authd(
     };
     let unreachable = |err: io::Error| format!("cannot ask authd at {}: {err}", accounts::SOCKET);
     let stream = UnixStream::connect(accounts::SOCKET).map_err(unreachable)?;
-    let fds = [pipe.as_raw_fd(), connection.as_raw_fd(), io::stderr().as_raw_fd()];
-    sys::send_with_fds(&stream, &request.encode(), &fds).map_err(unreachable)?;
+    let log = io::stderr();
+    let fds = [pipe.as_fd(), connection.as_fd(), log.as_fd()];
+    net::send_with_fds(&stream, &request.encode(), &fds).map_err(unreachable)?;
     stream.shutdown(Shutdown::Write).map_err(unreachable)?;
     let line = answer_of(&stream, AUTHD_TIME).map_err(unreachable)?;
     match Answer::decode(&line) {
@@ -432,7 +434,7 @@ fn answer_of(stream: &UnixStream, time: Duration) -> io::Result<String> {
     let mut buffer = [0; 512];
     loop {
         let left = until.saturating_duration_since(Instant::now());
-        if left.is_zero() || !sys::readable(stream, left)? {
+        if left.is_zero() || !poll::wait_readable(stream, left)? {
             return Err(io::Error::new(io::ErrorKind::TimedOut, "no answer in time"));
         }
         match (&*stream).read(&mut buffer)? {
@@ -474,11 +476,11 @@ fn serve(stream: &TcpStream, from: SocketAddr, server_guid: [u8; 16]) -> Result<
     let _ = stream.set_nodelay(true);
     let address = from.ip().to_canonical().to_string();
     let challenges = (0..TRIES_MAX)
-        .map(|_| sys::random::<8>())
+        .map(|_| random::bytes::<8>())
         .collect::<io::Result<Vec<_>>>()
         .map_err(failed)?;
-    let salt = sys::random::<32>().map_err(failed)?;
-    let session_id = u64::from_le_bytes(sys::random::<8>().map_err(failed)?);
+    let salt = random::bytes::<32>().map_err(failed)?;
+    let session_id = u64::from_le_bytes(random::bytes::<8>().map_err(failed)?);
     let mut sign_in =
         SignIn::new(address.clone(), server_guid, &sys::hostname(), salt, session_id, challenges);
     let mut timed = Timed { stream, until: Instant::now() + SIGN_IN_TIME };
@@ -502,7 +504,7 @@ fn serve(stream: &TcpStream, from: SocketAddr, server_guid: [u8; 16]) -> Result<
             }
             Step::Check(pending) => pending,
         };
-        let (read, write) = sys::pipe().map_err(failed)?;
+        let (read, write) = fd::pipe().map_err(failed)?;
         let asked = Instant::now();
         let answer = ask_authd(&pending, &address, &read, stream);
         drop(read);
@@ -563,17 +565,8 @@ fn accept(listener: &TcpListener, server_guid: [u8; 16], active: &Arc<AtomicUsiz
 /// Waits for SIGTERM, which Spark sends to stop smbd, then has authd end
 /// every share session, as `share off` does, and exits.
 fn on_stop() {
-    // SAFETY: an empty set, then SIGTERM added, then waited for; every
-    // thread blocks SIGTERM, so this one takes it.
-    let signal = unsafe {
-        let mut set: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&raw mut set);
-        libc::sigaddset(&raw mut set, libc::SIGTERM);
-        let mut signal = 0;
-        libc::sigwait(&raw const set, &raw mut signal);
-        signal
-    };
-    if signal == libc::SIGTERM {
+    // Every thread blocks SIGTERM, so this one takes it.
+    if signal::wait(&[libc::SIGTERM]).is_ok_and(|signal| signal == libc::SIGTERM) {
         match end_shares() {
             Ok(text) => eprintln!("smbd: stopping; share sessions ended: {text}"),
             Err(err) => eprintln!("smbd: stopping; cannot end the share sessions: {err}"),
@@ -597,16 +590,10 @@ pub fn end_shares() -> io::Result<String> {
 /// smbd: listens on port 445 and signs PCs in.
 pub fn run() -> ExitCode {
     // SIGTERM is taken by one thread, with sigwait, so every thread
-    // blocks it, those started after this among them.
-    // SAFETY: a set with SIGTERM, blocked for this thread and those it
-    // starts.
-    unsafe {
-        let mut set: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&raw mut set);
-        libc::sigaddset(&raw mut set, libc::SIGTERM);
-        libc::pthread_sigmask(libc::SIG_BLOCK, &raw const set, std::ptr::null_mut());
-    }
-    let server_guid = match sys::random::<16>() {
+    // blocks it, those started after this among them. It fails only for a
+    // number that is no signal.
+    let _ = signal::block(&[libc::SIGTERM]);
+    let server_guid = match random::bytes::<16>() {
         Ok(guid) => guid,
         Err(err) => {
             eprintln!("smbd: cannot read random bytes: {err}");

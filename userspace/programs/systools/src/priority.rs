@@ -6,12 +6,13 @@
 //! tools set them. ionice and taskset call the kernel directly
 //! (radix-process(2)'s `io_priority`, `set_affinity` and `affinity`).
 
-use std::ffi::{CString, OsString};
+use std::ffi::OsString;
 use std::fmt::Write;
-use std::io;
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::process::CommandExt;
+use std::process::Command;
 
 use radix_abi::process::{self as abi, IoClass, PriorityWhich};
+use sysapi::process::{self, Who};
 
 use crate::args::{Arg, Args};
 use crate::proc;
@@ -22,13 +23,7 @@ use crate::util::{self, Fail, fail, usage};
 /// returns only if that fails.
 pub fn exec(command: &[OsString]) -> Fail {
     let Some(name) = command.first() else { return usage("no command given".into()) };
-    let c: Vec<CString> = command.iter().filter_map(|a| CString::new(a.as_bytes()).ok()).collect();
-    let mut argv: Vec<*const libc::c_char> = c.iter().map(|a| a.as_ptr()).collect();
-    argv.push(std::ptr::null());
-    // SAFETY: argv is a null-terminated array of C strings that outlive
-    // the call.
-    unsafe { libc::execvp(argv[0], argv.as_ptr()) };
-    let e = io::Error::last_os_error();
+    let e = Command::new(name).args(&command[1..]).exec();
     let code = if e.raw_os_error() == Some(libc::ENOENT) { 127 } else { 126 };
     util::fail_with(
         code,
@@ -78,29 +73,25 @@ pub fn renice(args: &mut Args) -> Result<i32, Fail> {
                     item.parse().map_err(|_| usage(format!("bad value {item}")))?
                 };
                 let n = adjustment.unwrap_or(0);
-                // SAFETY: errno is the calling thread's; getpriority and
-                // setpriority read nothing of the program's.
-                let old = unsafe {
-                    *libc::__errno_location() = 0;
-                    libc::getpriority(which as _, who as _)
+                let who = who_of(which, who);
+                let old = match process::priority(who) {
+                    Ok(old) => old,
+                    Err(error) => {
+                        eprintln!(
+                            "renice: failed to get priority for {item} ({}): {}",
+                            kind(which),
+                            util::strip_os_error(&error)
+                        );
+                        code = 1;
+                        continue;
+                    }
                 };
-                // SAFETY: as above.
-                if old == -1 && unsafe { *libc::__errno_location() } != 0 {
-                    eprintln!(
-                        "renice: failed to get priority for {item} ({}): {}",
-                        kind(which),
-                        util::strip_os_error(&io::Error::last_os_error())
-                    );
-                    code = 1;
-                    continue;
-                }
                 let new = if relative { old.saturating_add(n) } else { n }.clamp(-20, 19);
-                // SAFETY: as above.
-                if unsafe { libc::setpriority(which as _, who as _, new) } != 0 {
+                if let Err(error) = process::set_priority(who, new) {
                     eprintln!(
                         "renice: failed to set priority for {item} ({}): {}",
                         kind(which),
-                        util::strip_os_error(&io::Error::last_os_error())
+                        util::strip_os_error(&error)
                     );
                     code = 1;
                     continue;
@@ -113,6 +104,17 @@ pub fn renice(args: &mut Args) -> Result<i32, Fail> {
         return Err(usage("usage: renice [-n] PRIORITY [-p|-g|-u] ID...".into()));
     }
     Ok(code)
+}
+
+/// The processes `id` names as the kind of ID `which` says.
+fn who_of(which: i64, id: u32) -> Who {
+    if which == libc::PRIO_PGRP as i64 {
+        Who::Group(id)
+    } else if which == libc::PRIO_USER as i64 {
+        Who::User(id)
+    } else {
+        Who::Process(id)
+    }
 }
 
 fn kind(which: i64) -> &'static str {

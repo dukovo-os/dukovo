@@ -70,6 +70,7 @@ pub mod random;
 mod ring;
 mod settings;
 mod syscall;
+mod vdso;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -201,6 +202,7 @@ fn runs(user: &UserThread) -> bool {
 /// boot. The system call and return handlers the architecture calls by
 /// name ([`radix_syscall`], [`radix_user_return`]).
 pub fn init() {
+    vdso::init();
     Arch::set_user_fault_handler(on_fault);
     Arch::set_user_page_handler(on_user_page);
     Arch::describe_user_mode(&mut |args| info!("{args}"));

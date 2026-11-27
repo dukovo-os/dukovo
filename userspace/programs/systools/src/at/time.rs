@@ -103,34 +103,27 @@ pub struct Local;
 
 impl Zone for Local {
     fn civil(&self, epoch: i64) -> Civil {
-        let time = epoch as libc::time_t;
-        // SAFETY: an all-zero tm is valid; localtime_r fills it.
-        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-        // SAFETY: both pointers are valid for the call.
-        unsafe { libc::localtime_r(&raw const time, &raw mut tm) };
+        let tm = sysapi::time::local(epoch).unwrap_or_default();
         Civil {
-            year: i64::from(tm.tm_year) + 1900,
-            month: (tm.tm_mon + 1) as u32,
-            day: tm.tm_mday as u32,
-            hour: tm.tm_hour as u32,
-            minute: tm.tm_min as u32,
-            weekday: tm.tm_wday as u32,
+            year: tm.year,
+            month: tm.month,
+            day: tm.day,
+            hour: tm.hour,
+            minute: tm.minute,
+            weekday: tm.weekday,
         }
     }
 
     fn epoch(&self, civil: &Civil) -> i64 {
-        // SAFETY: an all-zero tm is valid; the fields mktime reads are set.
-        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-        tm.tm_year = (civil.year - 1900) as libc::c_int;
-        tm.tm_mon = civil.month as libc::c_int - 1;
-        tm.tm_mday = civil.day as libc::c_int;
-        tm.tm_hour = civil.hour as libc::c_int;
-        tm.tm_min = civil.minute as libc::c_int;
-        tm.tm_isdst = -1;
-        // SAFETY: `tm` is valid for the call.
-        // `time_t` is `i64` here and may be narrower elsewhere.
-        #[allow(clippy::useless_conversion)]
-        i64::from(unsafe { libc::mktime(&raw mut tm) })
+        let wanted = sysapi::time::Civil {
+            year: civil.year,
+            month: civil.month,
+            day: civil.day,
+            hour: civil.hour,
+            minute: civil.minute,
+            ..sysapi::time::Civil::default()
+        };
+        sysapi::time::from_local(&wanted).map_or(-1, |(seconds, _)| seconds)
     }
 }
 

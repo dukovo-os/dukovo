@@ -17,6 +17,8 @@
 //! nukesh --diff-highlight | --diff-pager
 //! ```
 
+#![forbid(unsafe_code)]
+
 mod abbr;
 mod arith;
 mod assist;
@@ -100,6 +102,7 @@ const USAGE: &str =
 ";
 
 fn main() {
+    sys::keep_redirection_numbers();
     trap::restore_sigpipe();
     let args: Vec<String> = std::env::args_os().map(|a| text::from_os(&a)).collect();
     let status = run(&args);

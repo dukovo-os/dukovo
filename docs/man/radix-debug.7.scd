@@ -744,6 +744,14 @@ boots.
 	test is skipped with a warning that says what it read; on aarch64,
 	which has no MSRs, it is skipped too.
 
+*copy*
+	Has *memcpy* copy each size from 0 to 1,100 bytes, from each of the 8
+	places in a quadword to each, into a buffer filled with a byte no
+	source byte is. Each copy must match its source and leave every byte
+	around it as it was. The sizes pass each way the x86-64 kernel's own
+	*memcpy* copies by, which change at 16, 32 and 512 bytes. Reports
+	*selftest copy: passed* with the number of copies.
+
 *caps*
 	Runs the capability store's test suite in spaces of its own (see
 	*radix-capabilities*(7)). It tries to use or copy capabilities it

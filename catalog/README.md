@@ -285,13 +285,19 @@ Remove `/var/lib/dukovo-catalog/online.key` on the server, or start a
 new server, and run `./ob catalog server setup`. It makes a new key and
 stops, because `keys/online.json` is the old one: replace that file with
 the new key, from `/usr/local/share/dukovo-catalog/online.json` on the
-server, sign the next root with a YubiKey, and deploy. Clients stop
-trusting the old key once they read that root.
+server, sign the next root with a YubiKey, `./ob catalog root`, then the
+targets again as they are, `./ob catalog sign --renew`, so that they
+delegate the rollouts and the list of flaws to the new key, and deploy.
+Clients stop trusting the old key once they read that root. The
+handbook's *A hacked update server or hosting account* says the whole of
+it.
 
 ## When a YubiKey is lost
 
 Plug in the other one, take the lost key's file out of `keys/`, add a
 new YubiKey's with `./ob catalog key yubikey`, and sign the next root
-with `./ob catalog root`: clients take a new root only when the old
-root's keys sign it, so the lost key can sign nothing more once they
-have it.
+with `./ob catalog root`, then the targets again with `./ob catalog sign
+--renew`, as the lost one may have signed them last: clients take a new
+root only when the old root's keys sign it, so the lost key can sign
+nothing more once they have it. The handbook's *A lost or stolen
+YubiKey* says the whole of it, for the system's releases too.

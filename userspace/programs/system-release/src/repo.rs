@@ -31,6 +31,7 @@ use tuf::repo::{self, Ed25519, Signer};
 
 use crate::list::{Release, hex};
 use crate::store::{Checked, Store};
+use crate::yubikey::YubiKey;
 
 /// The four top-level roles, each with a key of its own.
 pub const ROLES: [&str; 4] = ["root", "targets", "snapshot", "timestamp"];
@@ -49,16 +50,19 @@ pub fn target_path(version: &str) -> String {
     format!("system/{version}.json")
 }
 
-/// The keys that sign a repository, kept in a directory: each role's
-/// Ed25519 secret as `<role>.key` (PKCS #8, readable by its owner alone),
-/// and `root.json`, the newest root they make, which a system trusts.
-/// Once a key has been replaced ([`Keys::rotate`]) every root is kept
-/// too, by version, as `N.root.json`, for a client to walk from the root
-/// it has to the newest (TUF 5.3).
+/// The keys that sign a repository. A build machine's are kept in a
+/// directory: each role's Ed25519 secret as `<role>.key` (PKCS #8,
+/// readable by its owner alone), and `root.json`, the newest root they
+/// make, which a system trusts. Once a key has been replaced
+/// ([`Keys::rotate`]) every root is kept too, by version, as
+/// `N.root.json`, for a client to walk from the root it has to the newest
+/// (TUF 5.3). The project's release keys are on YubiKeys instead
+/// ([`Keys::hardware`]), and the update server's online key in a file of
+/// its own ([`Keys::online`]).
 pub struct Keys {
     /// Every root, oldest first; the last is `root.json`.
     roots: Vec<Vec<u8>>,
-    signers: Vec<(&'static str, Ed25519)>,
+    signers: Vec<(&'static str, Box<dyn Signer>)>,
 }
 
 impl Keys {
@@ -81,12 +85,11 @@ impl Keys {
                     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
                 })
                 .map_err(|err| format!("{}: {err}", path.display()))?;
-            signers.push((role, key));
+            signers.push((role, Box::new(key) as Box<dyn Signer>));
         }
         let roles: Vec<_> = signers.iter().map(|(role, key)| (*role, vec![key.key()], 1)).collect();
         let signed = repo::root(1, &expires(built, "root"), &roles, true);
-        let root_signer: &dyn Signer = &signers[0].1;
-        let root = repo::sign(&signed, &[root_signer])?;
+        let root = repo::sign(&signed, &[signers[0].1.as_ref()])?;
         std::fs::write(dir.join("root.json"), &root)
             .map_err(|err| format!("{}: {err}", dir.display()))?;
         Ok(Keys { roots: vec![root], signers })
@@ -125,7 +128,7 @@ impl Keys {
                     dir.display()
                 ));
             }
-            signers.push((role, key));
+            signers.push((role, Box::new(key) as Box<dyn Signer>));
         }
         Ok(Keys { roots, signers })
     }
@@ -151,7 +154,41 @@ impl Keys {
                     key.key().id()
                 ));
             }
-            signers.push((role, key));
+            signers.push((role, Box::new(key) as Box<dyn Signer>));
+        }
+        Ok(Keys { roots, signers })
+    }
+
+    /// The project's release keys, as the maintainer signs with one
+    /// YubiKey (ADRs 0457 and 0538): `yubikey` for each of `roles`, under
+    /// `roots`, every root of the repository, oldest first. The newest
+    /// must name the YubiKey's key for each role, so that what it signs is
+    /// taken: a YubiKey that holds the catalog's key in slot 95, or no
+    /// release key at all, is refused before it is asked for a touch.
+    ///
+    /// # Errors
+    ///
+    /// If there is no root, or the newest does not name the key for a
+    /// role.
+    pub fn hardware(
+        roots: Vec<Vec<u8>>,
+        yubikey: &YubiKey,
+        roles: &[&'static str],
+    ) -> Result<Keys, String> {
+        let newest = roots.last().ok_or("the repository has no root")?;
+        let parsed = Signed::<Root>::parse(newest).map_err(|err| format!("the root: {err}"))?;
+        let mut signers = Vec::new();
+        for role in roles {
+            if !names(&parsed.signed, role, yubikey.key()) {
+                return Err(format!(
+                    "root version {} does not name YubiKey {}'s key {} for {role}: it is not a \
+                     release key",
+                    parsed.version,
+                    yubikey.serial(),
+                    &yubikey.key().id()[..16]
+                ));
+            }
+            signers.push((*role, Box::new(yubikey.clone()) as Box<dyn Signer>));
         }
         Ok(Keys { roots, signers })
     }
@@ -238,7 +275,7 @@ impl Keys {
     /// `role`'s key, to sign with.
     pub(crate) fn signer(&self, role: &str) -> Result<&dyn Signer, String> {
         let found = self.signers.iter().find(|(r, _)| *r == role).map(|(_, key)| key);
-        found.map(|key| key as &dyn Signer).ok_or_else(|| {
+        found.map(AsRef::as_ref).ok_or_else(|| {
             format!("these keys do not sign for {role}: the update server's online key does")
         })
     }
@@ -282,7 +319,7 @@ fn next_root(
     let roles: Vec<(&str, Vec<&tuf::keys::Key>, u64)> =
         role_keys.iter().map(|(role, keys)| (*role, keys.iter().collect(), 1)).collect();
     let signed = repo::root(version, &expires(now, "root"), &roles, true);
-    let old: &dyn Signer = &signers[old_root].1;
+    let old = signers[old_root].1.as_ref();
     let root = match &new {
         Some(("root", key, _)) => repo::sign(&signed, &[old, key])?,
         _ => repo::sign(&signed, &[old])?,
@@ -303,7 +340,7 @@ fn next_root(
         write(&format!("{role}.key.new"), &secret, 0o600)?;
         std::fs::rename(&partial, &path).map_err(|err| format!("{}: {err}", path.display()))?;
         signers.retain(|(r, _)| *r != role);
-        signers.push((role, key));
+        signers.push((role, Box::new(key)));
     }
     write("root.json", &root, 0o644)?;
     roots.push(root);
@@ -431,6 +468,49 @@ pub(crate) fn write_roots(dir: &Path, keys: &Keys) -> Result<(), String> {
     }
     let path = dir.join("root.json");
     std::fs::write(&path, keys.root()).map_err(|err| format!("{}: {err}", path.display()))
+}
+
+/// The file in a repository's folder that names the release to read
+/// among those its targets list, when they list more than one: an
+/// install medium's, whose metadata is the update server's (ADR 0779),
+/// and Rescue's. It chooses and is not trusted: the release it names is
+/// read and checked as any other, and it can name only one the targets
+/// list.
+pub const VERSION_FILE: &str = "version";
+
+/// [`open`], of `version`, or else of the release the repository's
+/// [`VERSION_FILE`] names, or else of the only one there.
+///
+/// # Errors
+///
+/// As [`open`], and if the file names what cannot be a version.
+pub fn open_named(dir: &Path, root: &[u8], version: Option<&str>) -> Result<Published, String> {
+    if version.is_some() {
+        return open(dir, root, version);
+    }
+    let named = dir.join(VERSION_FILE);
+    let text = match std::fs::read_to_string(&named) {
+        Ok(text) => Some(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => return Err(format!("{}: {err}", named.display())),
+    };
+    let version = match text.as_deref().map(str::trim) {
+        Some(text) => {
+            Some(plain_version(text).ok_or_else(|| format!("{}: not a version", named.display()))?)
+        }
+        None => None,
+    };
+    open(dir, root, version)
+}
+
+/// `text`, if it can only be a version: letters, digits, `.`, `-` and
+/// `+`, and no more than 64 of them.
+fn plain_version(text: &str) -> Option<&str> {
+    let plain = !text.is_empty()
+        && text.len() <= 64
+        && !text.starts_with('.')
+        && text.bytes().all(|b| b.is_ascii_alphanumeric() || b".-+".contains(&b));
+    plain.then_some(text)
 }
 
 /// Reads the release in the repository at `dir` with the TUF client,
@@ -618,6 +698,235 @@ pub fn read_served_more(
         Ok(ServedRead { targets, more: read_more, roles })
     })();
     let _ = std::fs::remove_dir_all(&work);
+    result
+}
+
+/// Whether the update server at `base` serves a repository at all: before
+/// the first deploy it has no timestamp, which is no fault of the
+/// server's.
+///
+/// # Errors
+///
+/// If the timestamp cannot be fetched for another reason.
+pub fn serves(base: &tuf::Url) -> Result<bool, String> {
+    let url = base.resolve("metadata/timestamp.json").map_err(|err| format!("{base}: {err}"))?;
+    match tuf::fetch::fetch(&url, tuf::Limits::default().timestamp) {
+        Ok(_) => Ok(true),
+        Err(tuf::fetch::Error::NotFound) => Ok(false),
+        Err(err) => Err(format!("{url}: {err}")),
+    }
+}
+
+/// Where a repository at `dir` keeps the target `path` whose bytes are
+/// `bytes`: in its folder, named by their SHA-256 and then its own name,
+/// as a client of consistent snapshots fetches it (TUF 5.7.3).
+#[must_use]
+pub fn target_file(dir: &Path, path: &str, bytes: &[u8]) -> PathBuf {
+    let sha256 = hex(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref());
+    let name = match path.rsplit_once('/') {
+        Some((folder, file)) => format!("{folder}/{sha256}.{file}"),
+        None => format!("{sha256}.{path}"),
+    };
+    dir.join("targets").join(name)
+}
+
+/// Every root of the repository at `dir`, by version from the first, as
+/// its metadata folder keeps them (`N.root.json`).
+///
+/// # Errors
+///
+/// If it has no first root, or one cannot be read.
+pub fn roots_in(dir: &Path) -> Result<Vec<Vec<u8>>, String> {
+    let metadata = dir.join("metadata");
+    let mut roots = Vec::new();
+    for version in 1_u64.. {
+        let path = metadata.join(format!("{version}.root.json"));
+        match std::fs::read(&path) {
+            Ok(bytes) => roots.push(bytes),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound && version > 1 => break,
+            Err(err) => return Err(format!("{}: {err}", path.display())),
+        }
+    }
+    Ok(roots)
+}
+
+/// Checks that the root `new` follows the root `old`, as a client takes
+/// the next root (TUF 5.3.4 to 5.3.8): one version on, and signed by
+/// enough of `old`'s root keys and of its own.
+///
+/// # Errors
+///
+/// If either is not a root, or `new` does not follow `old`.
+pub fn follows(old: &[u8], new: &[u8]) -> Result<(), String> {
+    let old = Signed::<Root>::parse(old).map_err(|err| format!("root: {err}"))?;
+    let parsed = Signed::<Root>::parse(new).map_err(|err| format!("the next root: {err}"))?;
+    let next = old.version + 1;
+    if parsed.version != next {
+        return Err(format!(
+            "root {} follows root {}, not root {next}",
+            parsed.version, old.version
+        ));
+    }
+    parsed.verified_by(&old.signed, "root").map_err(|err| {
+        format!("root {next} is not signed by root {}'s keys: {err}", old.version)
+    })?;
+    parsed
+        .verified_by(&parsed.signed, "root")
+        .map_err(|err| format!("root {next} is not signed by its own keys: {err}"))
+}
+
+/// Every root in the folder `metadata`, as the source tree keeps them in
+/// `releases/metadata/`: `1.root.json`, then each next version while there
+/// is one, each checked to follow the one before.
+///
+/// # Errors
+///
+/// If there is no first root, one cannot be read, or one does not follow
+/// the one before.
+pub fn root_chain(metadata: &Path) -> Result<Vec<Vec<u8>>, String> {
+    let mut roots: Vec<Vec<u8>> = Vec::new();
+    for version in 1_u64.. {
+        let path = metadata.join(format!("{version}.root.json"));
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound && version > 1 => break,
+            Err(err) => return Err(format!("{}: {err}", path.display())),
+        };
+        if let Some(old) = roots.last() {
+            follows(old, &bytes).map_err(|err| format!("{}: {err}", path.display()))?;
+        }
+        roots.push(bytes);
+    }
+    Ok(roots)
+}
+
+/// Adds to the repository at `dir`, fetched from the update server, the
+/// roots of the source tree's `metadata` that the server does not serve
+/// yet, by version, and the newest as `root.json`, so that what is signed
+/// in it next is signed under the newest root and a deploy carries them
+/// (ADR 0780). Gives how many were added.
+///
+/// # Errors
+///
+/// If a root of the tree does not follow the one before, or the server
+/// serves a root that the tree does not hold, or holds otherwise: the
+/// tree is then behind the server, or not the project's.
+pub fn add_roots(dir: &Path, metadata: &Path) -> Result<usize, String> {
+    let tree = root_chain(metadata)?;
+    let served = roots_in(dir)?;
+    for (n, root) in served.iter().enumerate() {
+        match tree.get(n) {
+            Some(held) if held == root => {}
+            Some(_) => {
+                return Err(format!(
+                    "root {} as served is not {}'s: nothing was added",
+                    n + 1,
+                    metadata.display()
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "the server serves root {}, which {} does not hold: the source tree is behind",
+                    n + 1,
+                    metadata.display()
+                ));
+            }
+        }
+    }
+    let folder = dir.join("metadata");
+    let added = &tree[served.len()..];
+    for (n, root) in added.iter().enumerate() {
+        let path = folder.join(format!("{}.root.json", served.len() + n + 1));
+        std::fs::write(&path, root).map_err(|err| format!("{}: {err}", path.display()))?;
+    }
+    if let Some(newest) = added.last() {
+        let path = folder.join("root.json");
+        std::fs::write(&path, newest).map_err(|err| format!("{}: {err}", path.display()))?;
+    }
+    Ok(added.len())
+}
+
+/// What [`fetch`] wrote.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Fetched {
+    /// The newest root's version.
+    pub root: u64,
+    /// The version of the targets served, 0 when nothing is served yet.
+    pub targets: u64,
+    /// How many targets they list.
+    pub listed: usize,
+}
+
+/// Writes the repository the update server at `base` serves into `out`,
+/// a new folder, to be changed and deployed again: every root by
+/// version, the newest targets as served, and the file of each target
+/// they list, named as the server names it. It is read with the TUF
+/// client from `first`, the first root, as a computer online reads it,
+/// expiry checked, so that a change starts from what machines see and
+/// from nothing else. A server that serves nothing yet gives the first
+/// root alone. The releases' files stay on the server: a deploy sends
+/// only those it lacks.
+///
+/// # Errors
+///
+/// If `out` is there already, the server cannot be read, or what it
+/// serves does not check.
+pub fn fetch(base: &tuf::Url, first: &[u8], out: &Path) -> Result<Fetched, String> {
+    if out.exists() {
+        return Err(format!(
+            "{} is there already: a repository is fetched into a new folder",
+            out.display()
+        ));
+    }
+    let write = |path: &Path, bytes: &[u8]| -> Result<(), String> {
+        if let Some(folder) = path.parent() {
+            std::fs::create_dir_all(folder)
+                .map_err(|err| format!("{}: {err}", folder.display()))?;
+        }
+        std::fs::write(path, bytes).map_err(|err| format!("{}: {err}", path.display()))
+    };
+    let metadata = out.join("metadata");
+    write(&metadata.join("1.root.json"), first)?;
+    if !serves(base)? {
+        write(&metadata.join("root.json"), first)?;
+        return Ok(Fetched { root: 1, targets: 0, listed: 0 });
+    }
+    let client = scratch_dir();
+    let result = (|| {
+        let url = |sub: &str| base.resolve(sub).map_err(|err| format!("{base}{sub}: {err}"));
+        tuf::init(&client, first).map_err(|err| err.to_string())?;
+        let mut updater = tuf::Updater::new(&client, &url("metadata/")?, Some(&url("targets/")?))
+            .map_err(|err| format!("the first root: {err}"))?
+            .keeping_roots(&metadata);
+        updater.refresh().map_err(|err| format!("{base}: {err}"))?;
+        let read = |path: PathBuf| {
+            std::fs::read(&path).map_err(|err| format!("{}: {err}", path.display()))
+        };
+        // The client keeps the newest root and targets as it took them.
+        write(&metadata.join("root.json"), &read(client.join("root.json"))?)?;
+        let root = updater.trusted().root().version;
+        let targets = updater.trusted().targets("targets").ok_or("the targets did not load")?;
+        let version = targets.version;
+        let paths: Vec<String> = targets.signed.targets.keys().cloned().collect();
+        write(
+            &metadata.join(format!("{version}.targets.json")),
+            &read(client.join("targets.json"))?,
+        )?;
+        let file = client.join("target");
+        for path in &paths {
+            let target = updater
+                .target(path)
+                .map_err(|err| format!("{base}: {err}"))?
+                .ok_or_else(|| format!("{base}: {path} is not a target"))?;
+            updater
+                .download_target(path, &target, &file)
+                .map_err(|err| format!("{base}: {err}"))?;
+            let bytes = read(file.clone())?;
+            write(&target_file(out, path, &bytes), &bytes)?;
+        }
+        Ok(Fetched { root, targets: version, listed: paths.len() })
+    })();
+    let _ = std::fs::remove_dir_all(&client);
     result
 }
 

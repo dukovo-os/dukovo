@@ -367,9 +367,7 @@ mod tests {
         let pair = Pair::new("kinds");
         pair.both("photo.heic", "0123456789");
         symlink("photo.heic", pair.then().join("link")).unwrap();
-        let fifo = std::ffi::CString::new(pair.then().join("pipe").to_str().unwrap()).unwrap();
-        // SAFETY: the path is a C string for the call.
-        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        sysapi::fs::make_fifo(&pair.then().join("pipe"), 0o600).unwrap();
         let found = entries(&pair.then(), &pair.now(), ENTRIES_MOST).unwrap();
         let by = |name: &str| found.entries.iter().find(|e| e.name == name).unwrap();
         assert_eq!(by("photo.heic").kind, Kind::File);

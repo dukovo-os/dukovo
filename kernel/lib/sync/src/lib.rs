@@ -53,6 +53,7 @@
 
 extern crate alloc;
 
+pub mod barrier;
 pub mod cpu;
 pub mod cpu_ref;
 mod hooks;

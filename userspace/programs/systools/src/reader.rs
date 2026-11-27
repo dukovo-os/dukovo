@@ -42,7 +42,7 @@
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::AsFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::{Child, Command, Stdio};
@@ -53,6 +53,7 @@ use std::time::Duration;
 use audio::settings::{entry, string};
 use audio::{convert, resample, tone, wav};
 use radix_abi::audio as abi;
+use sysapi::poll::{self, PollFd};
 
 use crate::args::Args;
 use crate::sound::{control, int_request};
@@ -680,29 +681,23 @@ pub fn daemon(args: &mut Args) -> Result<i32, Fail> {
 
     let mut clients: Vec<Client> = Vec::new();
     loop {
-        let mut fds =
-            vec![libc::pollfd { fd: listener.as_raw_fd(), events: libc::POLLIN, revents: 0 }];
-        fds.extend(clients.iter().map(|c| libc::pollfd {
-            fd: c.stream.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        }));
-        // SAFETY: `fds` holds valid pollfds.
-        let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
-        if ready < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() != ErrorKind::Interrupted {
-                return Err(util::failed(&"poll", error));
-            }
-            continue;
+        let mut fds = vec![PollFd::new(listener.as_fd(), libc::POLLIN)];
+        fds.extend(clients.iter().map(|c| PollFd::new(c.stream.as_fd(), libc::POLLIN)));
+        match poll::poll(&mut fds, None) {
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            Err(error) => return Err(util::failed(&"poll", error)),
         }
-        for (client, fd) in clients.iter_mut().zip(&fds[1..]) {
-            if fd.revents != 0 {
+        let accepting = fds[0].revents() != 0;
+        let readable: Vec<bool> = fds[1..].iter().map(|fd| fd.revents() != 0).collect();
+        drop(fds);
+        for (client, readable) in clients.iter_mut().zip(readable) {
+            if readable {
                 client.read(&shared);
             }
         }
         clients.retain(|c| !c.done);
-        if fds[0].revents != 0 {
+        if accepting {
             while let Ok((stream, _)) = listener.accept() {
                 if stream.set_nonblocking(true).is_ok() {
                     clients.push(Client { stream, line: Vec::new(), dropping: false, done: false });

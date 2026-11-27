@@ -18,7 +18,7 @@
 
 #include "check.h"
 
-enum { THREADS = 8, ROUNDS = 2000 };
+enum { THREADS = 8, ROUNDS = 2000, SIGNAL_ROUNDS = 50 };
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static long counter;
@@ -149,20 +149,26 @@ static void *waits(void *argument) {
 	return NULL;
 }
 
-// A signal sent to a thread runs its handler on that thread.
+// A signal sent to a thread runs its handler on that thread, even one
+// sent right after pthread_create, which the C library holds until the
+// thread is set up: a handler that ran earlier would find no thread
+// pointer, and pthread_self in it would fault.
 static void signals(void) {
 	signal(SIGUSR1, on_signal);
-	pthread_t thread;
-	CHECK(pthread_create(&thread, NULL, waits, NULL) == 0);
-	CHECK(pthread_kill(thread, SIGUSR1) == 0);
-	for(int i = 0; i < 1000 && !atomic_load(&caught); i++)
-		check_sleep_ms(1);
-	CHECK(atomic_load(&caught) && pthread_equal(caught_on, thread));
-	atomic_store(&stop, 1);
-	CHECK(pthread_join(thread, NULL) == 0);
-	// For the next one that waits (names' waiter, which must not end
-	// while it is named).
-	atomic_store(&stop, 0);
+	for(int round = 0; round < SIGNAL_ROUNDS; round++) {
+		atomic_store(&caught, 0);
+		pthread_t thread;
+		CHECK(pthread_create(&thread, NULL, waits, NULL) == 0);
+		CHECK(pthread_kill(thread, SIGUSR1) == 0);
+		for(int i = 0; i < 1000 && !atomic_load(&caught); i++)
+			check_sleep_ms(1);
+		CHECK(atomic_load(&caught) && pthread_equal(caught_on, thread));
+		atomic_store(&stop, 1);
+		CHECK(pthread_join(thread, NULL) == 0);
+		// For the next one that waits (names' waiter, which must not
+		// end while it is named).
+		atomic_store(&stop, 0);
+	}
 	signal(SIGUSR1, SIG_DFL);
 }
 

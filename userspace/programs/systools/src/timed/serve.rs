@@ -37,7 +37,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket};
-use std::os::fd::AsRawFd;
+use std::os::fd::AsFd;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::thread::{self, JoinHandle};
@@ -50,6 +50,7 @@ use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use socket2::{Domain, Protocol, Socket, Type};
+use sysapi::poll::{self, PollFd};
 
 use netproto::ntp::{self, KEY_LEN, KeRecord};
 
@@ -657,10 +658,8 @@ fn udp(v6: bool, port: u16) -> io::Result<UdpSocket> {
 /// Whether `listener` has a connection waiting, after waiting up to
 /// [`WAKE`] for one.
 fn waiting(listener: &TcpListener) -> bool {
-    let mut poll = libc::pollfd { fd: listener.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-    let wake = libc::c_int::try_from(WAKE.as_millis()).unwrap_or(1000);
-    // SAFETY: one pollfd, which lives across the call.
-    unsafe { libc::poll(&raw mut poll, 1, wake) > 0 }
+    let mut fds = [PollFd::new(listener.as_fd(), libc::POLLIN)];
+    poll::poll(&mut fds, Some(WAKE)).is_ok_and(|ready| ready > 0)
 }
 
 /// Takes key establishment connections on `listener` until told to stop,

@@ -77,6 +77,14 @@ directory *read*, *write* and *control*. Both get *copy* and *transfer*,
 so they can be passed on (see *radix-capabilities*(7)). A file opened for
 writing on a read-only filesystem fails with *read_only*.
 
+A file no one may write by its mode, as a sealed bundle's files are, on
+Btrfs or tmpfs, has its pages kept once for every program that maps it,
+while no handle may write it (ADR 0658). While they are kept, opening it
+to write or to cut fails with *text_busy* (ETXTBSY), before anything is
+cut, and works again once the last program that maps it has unmapped it
+or ended. A file a handle may write is mapped as a copy for each
+program instead.
+
 # TIMES
 
 A file keeps when it was made, when its contents last changed and when

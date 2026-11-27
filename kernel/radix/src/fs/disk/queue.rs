@@ -555,11 +555,14 @@ impl<C: Controller> Disk<C> {
     }
 
     /// Wakes the thread waiting for the request in `slot` of `lane`, if
-    /// one is named there.
+    /// one is named there. It wakes it through the slot's reference, under
+    /// the slot's lock, which the thread takes to leave the slot before it
+    /// goes on: a reference of the interrupt handler's own could outlive
+    /// the thread's others and free the thread in the handler
+    /// ([`sched::ThreadRef`]).
     fn wake_slot(&self, lane: usize, slot: usize) {
-        let sleeper = self.sleepers[lane * SLOTS + slot].lock_irq().clone();
-        if let Some(thread) = sleeper {
-            sched::wake(&thread);
+        if let Some(thread) = self.sleepers[lane * SLOTS + slot].lock_irq().as_ref() {
+            sched::wake(thread);
         }
     }
 

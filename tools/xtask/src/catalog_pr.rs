@@ -21,7 +21,7 @@ use crate::process::{self, step};
 use crate::{Context, Ctx, Error, Result, bail};
 
 /// The repository the pull request goes to.
-const GITHUB: &str = "dukovo-os/dukovo";
+pub(crate) const GITHUB: &str = "dukovo-os/dukovo";
 
 /// The branch it goes into, as fetched.
 const MAIN: &str = "origin/main";
@@ -229,7 +229,7 @@ pub fn propose(ctx: &Ctx) -> Result<()> {
     step(&format!("Reading what {} serves", catalog::HOST));
     is_live(tree, catalog::served_versions(ctx)?)?;
     let identity = identity(ctx)?;
-    gh_ready(ctx)?;
+    gh_ready(ctx, "the pull request is opened")?;
 
     let branch = signed.branch();
     if let Some(url) = open_pull(ctx, &branch)? {
@@ -349,14 +349,14 @@ fn identity(ctx: &Ctx) -> Result<String> {
     }
 }
 
-/// Refuses unless `gh` is installed and signed in.
-fn gh_ready(ctx: &Ctx) -> Result<()> {
+/// Refuses unless `gh` is installed and signed in; `what` is what it is
+/// needed for, such as `the pull request is opened`.
+pub(crate) fn gh_ready(ctx: &Ctx, what: &str) -> Result<()> {
     let hint = "install it with `sudo apt install gh`, then sign in with `gh auth login`";
     if process::find_program("gh").is_none() {
-        return Err(Error::new(
-            "the pull request is opened with GitHub's gh, which is not installed",
-        )
-        .hint(hint));
+        return Err(
+            Error::new(format!("{what} with GitHub's gh, which is not installed")).hint(hint)
+        );
     }
     let mut status = Command::new("gh");
     status.current_dir(&ctx.root).args(["auth", "status", "--hostname", "github.com"]);

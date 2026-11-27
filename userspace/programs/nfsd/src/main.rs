@@ -12,6 +12,8 @@
 //!   shared folders alone: authd starts one for each person calls come
 //!   as, and one as no one for root's.
 
+#![forbid(unsafe_code)]
+
 use std::process::ExitCode;
 
 const USAGE: &str = "usage: nfsd [--worker]";

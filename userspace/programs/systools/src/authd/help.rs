@@ -31,8 +31,8 @@
 //! and then without one.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::io::{self, IsTerminal, Read, Write};
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::time::{Duration, Instant};
 
@@ -238,11 +238,7 @@ fn host_key() -> Option<String> {
 
 /// Whether `fd` is a pipe's end, as help-session sends authd for sshd.
 fn is_pipe(fd: &OwnedFd) -> bool {
-    // SAFETY: all zeros is a valid stat: numbers.
-    let mut status: libc::stat = unsafe { util::zeroed() };
-    // SAFETY: fstat writes the descriptor's status to `status`.
-    let read = unsafe { libc::fstat(fd.as_raw_fd(), &raw mut status) } == 0;
-    read && status.st_mode & libc::S_IFMT == libc::S_IFIFO
+    sysapi::dir::stat(fd).is_ok_and(|status| status.st_mode & libc::S_IFMT == libc::S_IFIFO)
 }
 
 /// Whether Spark runs sshd, or is starting it.
@@ -440,7 +436,7 @@ impl Authd {
         let pipes = (descriptors.len() == 3)
             .then(|| [descriptors.remove(1), descriptors.remove(1)])
             .filter(|pipes| pipes.iter().all(is_pipe));
-        let terminal = descriptors.pop().filter(signin::is_terminal);
+        let terminal = descriptors.pop().filter(IsTerminal::is_terminal);
         let (Some(terminal), Some(pipes)) = (terminal, pipes) else {
             return refused(
                 "a help-start request comes with the help screen's terminal and two pipes' ends",

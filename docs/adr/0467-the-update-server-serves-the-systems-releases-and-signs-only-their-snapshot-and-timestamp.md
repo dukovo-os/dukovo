@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0467. The update server serves the system's releases and signs only their snapshot and timestamp
 
-- Status: Accepted; the server runs on Dukovo since [0542](0542-the-update-server-runs-on-dukovo-and-a-deploy-sends-only-what-it-lacks-without-rsync.md)
+- Status: Accepted; the server runs on Dukovo since [0542](0542-the-update-server-runs-on-dukovo-and-a-deploy-sends-only-what-it-lacks-without-rsync.md); no nightly release before 1.0 by [0781](0781-there-are-no-nightly-system-releases-before-1-0.md); the online key kept as a file by [0782](0782-the-update-server-s-online-keys-stay-files-that-only-their-jobs-read.md), and replaced by the next root as [0780](0780-the-system-s-next-root-is-signed-on-the-yubikeys-from-the-keys-the-source-tree-holds-and-served-with-the-targets-signed-again.md) has it
 - Date: 2026-11-12
 
 ## Context

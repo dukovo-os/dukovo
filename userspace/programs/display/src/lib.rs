@@ -17,6 +17,8 @@
 //! [`Control`] with radix-file(2)'s `control`, reads its events from the
 //! file itself, and gives the bytes to [`wire::events`].
 
+#![forbid(unsafe_code)]
+
 pub mod wire;
 
 #[cfg(test)]

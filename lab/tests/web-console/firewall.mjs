@@ -315,8 +315,9 @@ async function tried(t, a, b, route) {
   ensure((await rulesCard(a.page).locator("button[aria-disabled=true]").count()) > 0 || (await rowsShown(a.page)).length === 0, "the buttons of the rules are on while a change is tried");
   const reached = await bannerBecomes(a.page, (banner) => banner.reach === WORDS.reached && !banner.keepOff, "say that this browser reached the console", 40);
   ensure(reached.applied, "the banner lost its Applied step");
-  const other = await bannerBecomes(b.page, (banner) => banner.running && banner.heading === BANNER_WORDS, "show the change another administrator is trying", 30);
-  ensure(other.words.includes(`Begun by ${ADMIN} in this console.`), `the banner of another administrator's page says "${other.words}", not that ${ADMIN} began it`);
+  await bannerBecomes(b.page, (banner) => banner.running && banner.heading === BANNER_WORDS, "show the change another administrator is trying", 30);
+  // Who began it comes from the journal, which that page reads once it shows the trial.
+  const other = await bannerBecomes(b.page, (banner) => banner.words.includes(`Begun by ${ADMIN} in this console.`), `say that ${ADMIN} began the change another administrator is trying`, 30);
   ensure(!other.applied && other.reach === "" && other.buttons.includes("Keep this change") && other.buttons.includes("Undo now"), `a page that did not begin the change shows ${JSON.stringify(other)}`);
   return beganAt;
 }

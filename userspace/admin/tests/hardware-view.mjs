@@ -10,7 +10,8 @@ import { ApiError } from '../api.js';
 import { setUnlockSeconds } from '../unlock.js';
 import { usePage } from './fake-dom.mjs';
 import {
-  about, devices, diskHealth, highest, history, inventory, last, memtest, NOW, screens, sensors, show, storage, time, updates,
+  about, devices, diskHealth, highest, history, inventory, last, memtest, NOW, power, screens, sensors, show, storage, time,
+  updates,
 } from './hardware-fixtures.mjs';
 
 /** Lets what waits on a promise run, as a click does. */
@@ -50,6 +51,7 @@ export const reads = () => ({
   '/api/1/hardware/devices': devices(),
   '/api/1/hardware/screens': screens(),
   '/api/1/hardware/memtest': memtest(),
+  '/api/1/hardware/power': power(),
   '/api/1/updates/history': updates(),
   '/api/1/storage/disks/sda/health': diskHealth('sda'),
   '/api/1/storage/disks/sdb/health': diskHealth('sdb'),

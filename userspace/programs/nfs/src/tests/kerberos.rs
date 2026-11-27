@@ -50,8 +50,7 @@ fn mount(
         let server = Principal::parse(testing::SERVICE, None).unwrap();
         Kerberos::new(service, server, Box::new(Given(ticket)))
     });
-    // SAFETY: getuid and getgid only read the process's IDs.
-    let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+    let (uid, gid) = (sysapi::process::uid(), sysapi::process::gid());
     let cred = Cred { uid, gid, gids: Vec::new() };
     let mounted = crate::connect_with(&target, &given, &cred, kerberos).map(|(client, root)| {
         (NfsFs::new(Arc::new(Mutex::new(client)), &root, given.read_only), cred)

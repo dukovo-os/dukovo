@@ -23,6 +23,9 @@
 //!   0205).
 //! - `tlb` checks TLB shootdowns and address-space switches (with PCIDs
 //!   when the CPU has them) on every CPU.
+//! - `copy` has `memcpy` copy each size up to 1,100 bytes, past each way
+//!   the x86-64 kernel's own copies by (ADR 0775), from and to each place
+//!   in a quadword, and checks that it writes nothing around the copy.
 //! - `caps` runs the capability store's test suite (`captest`): no
 //!   capability can be forged or its rights widened, revocation reaches
 //!   everything derived, also while other CPUs derive, a file released
@@ -42,6 +45,7 @@
 //!   names were set up, the devices found on their buses, and a transfer
 //!   on each (`i2c::designware`).
 
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use radix_hal::cmdline::SELFTESTS;
@@ -49,7 +53,7 @@ use radix_hal::{Cpu, CpuLocal, FaultTest, PageTable, Platform, Smp, Timer};
 use radix_klog::crashlog::Ending;
 use radix_klog::{error, info, warn};
 use radix_mm::stress::{self, StressReport};
-use radix_mm::{FRAMES, HEAP, HeapStats, Owner};
+use radix_mm::{FRAMES, Flags, HEAP, HeapStats, Owner};
 
 use crate::panic::SELFTEST_MARKER;
 use crate::{Arch, captest, crashlog, iommutest, schedtest, usertest, work};
@@ -66,6 +70,7 @@ pub fn run(name: &str) {
         "smap" => fault("smap", FaultTest::UserData, "reading a user page"),
         "tlb" => tlb(),
         "msr" => msr(),
+        "copy" => copy(),
         "caps" => captest::run(),
         "fpu" => schedtest::fpu(),
         "sched-fair" => schedtest::fair(),
@@ -351,6 +356,64 @@ fn msr() {
         Some(Err(what)) => error!("selftest msr: failed; {what}"),
         None => warn!("selftest msr: skipped; this architecture has no model-specific registers"),
     }
+}
+
+/// The largest copy `copy` makes: past each way the x86-64 kernel's
+/// `memcpy` copies by, which change at 16, 32 and 512 bytes (ADR 0775).
+const COPY_MAX: usize = 1100;
+
+/// The places in a quadword `copy` starts each copy's source and
+/// destination at.
+const COPY_PLACES: usize = 8;
+
+/// What `copy` fills its destination with; no source byte is this.
+const COPY_GUARD: u8 = 0xFF;
+
+/// The `copy` self-test: `memcpy` copies each size up to [`COPY_MAX`]
+/// bytes from each of [`COPY_PLACES`] places in a quadword to each, and
+/// writes nothing before or after what it copies.
+#[inline(never)]
+fn copy() {
+    let len = COPY_MAX + COPY_PLACES;
+    let mut source = Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
+    let mut target = Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
+    if source.try_reserve_exact(len).is_err() || target.try_reserve_exact(len).is_err() {
+        error!("selftest copy: failed; there is no room for two buffers of {len} bytes");
+        return;
+    }
+    for i in 0..len {
+        // 1 to 251, so that a byte differs from those near it.
+        let _ = source.push_within_capacity((i % 251 + 1).to_le_bytes()[0]);
+        let _ = target.push_within_capacity(COPY_GUARD);
+    }
+    let mut copies: u32 = 0;
+    for size in 0..=COPY_MAX {
+        for from in 0..COPY_PLACES {
+            for to in 0..COPY_PLACES {
+                target.fill(COPY_GUARD);
+                // Known only as it runs, so that the copy calls `memcpy`
+                // rather than moves the compiler picks for one size.
+                let size = core::hint::black_box(size);
+                target[to..to + size].copy_from_slice(&source[from..from + size]);
+                let copied = target[to..to + size] == source[from..from + size];
+                let around =
+                    target[..to].iter().chain(&target[to + size..]).all(|&b| b == COPY_GUARD);
+                if !copied || !around {
+                    error!(
+                        "selftest copy: failed; a copy of {size} bytes from byte {from} of a \
+                         quadword to byte {to} {}",
+                        if copied { "wrote past its ends" } else { "did not copy them" }
+                    );
+                    return;
+                }
+                copies += 1;
+            }
+        }
+    }
+    info!(
+        "selftest copy: passed; {copies} copies of 0 to {COPY_MAX} bytes between each place in \
+         a quadword"
+    );
 }
 
 fn tlb() {

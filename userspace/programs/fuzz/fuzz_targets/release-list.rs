@@ -4,6 +4,7 @@
 //! A release list, which a machine reads from the update server's files,
 //! and the list written back from what was read.
 
+#![forbid(unsafe_code)]
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

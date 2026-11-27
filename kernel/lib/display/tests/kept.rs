@@ -4,15 +4,15 @@
 //! What the layer keeps (ADR 0700's bars): for a holder at the back,
 //! its pictures and under 4 KiB for everything else; for a card of
 //! sixteen screens, under 1 KiB for each screen, pipe and plane.
-//! Measured with an allocator that counts the bytes it has out, which
-//! the library's own tests cannot have: the library forbids unsafe code.
-//! The second test also makes one change across the sixteen screens,
-//! and says how long the check of it takes.
+//! Measured with the memory manager's allocator that counts the bytes it
+//! has out (`radix_mm::counted`). The second test also makes one change
+//! across the sixteen screens, and says how long the check of it takes.
 
-use std::alloc::{AllocError, Allocator, Global, Layout};
-use std::cell::Cell;
-use std::ptr::NonNull;
+#![forbid(unsafe_code)]
+
+use std::alloc::Global;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use radix_abi::display::{
@@ -29,28 +29,7 @@ use radix_display::holder::Holder;
 use radix_display::layer::{Asked, Layer, Made};
 use radix_display::state::PictureShape;
 use radix_display::wire::ChangeRequest;
-
-/// An allocator that counts the bytes it has out.
-#[derive(Clone, Copy)]
-struct Counted<'a>(&'a Cell<usize>);
-
-// SAFETY: every block is the global allocator's, which each call is
-// passed on to; the count kept beside them changes nothing of them.
-#[allow(unsafe_code)]
-unsafe impl Allocator for Counted<'_> {
-    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        let block = Global.allocate(layout)?;
-        self.0.set(self.0.get() + layout.size());
-        Ok(block)
-    }
-
-    unsafe fn deallocate(&self, block: NonNull<u8>, layout: Layout) {
-        self.0.set(self.0.get() - layout.size());
-        // SAFETY: what the caller promises this allocator is what the
-        // global one asks: `block` came from `allocate` with `layout`.
-        unsafe { Global.deallocate(block, layout) };
-    }
-}
+use radix_mm::counted::Counted;
 
 /// A stand-in picture: its pixels are not the layer's to keep.
 struct Pixels(PictureShape);
@@ -91,7 +70,12 @@ impl Card<Pixels> for Blank {
     fn wake_for(&self, _at_ns: u64) {}
 }
 
-type Counting<'a> = Layer<Rc<Pixels>, Blank, Counted<'a>>;
+type Counting<'a> = Layer<Rc<Pixels>, Blank, Counted<'a, Global>>;
+
+/// The bytes the layer has out of its allocator.
+fn bytes_out(out: &AtomicUsize) -> usize {
+    out.load(Ordering::Relaxed)
+}
 
 const WIDTH: u32 = 1920;
 const HEIGHT: u32 = 1080;
@@ -194,8 +178,8 @@ fn things(layer: &Counting<'_>, kind: u32) -> Vec<u32> {
 
 #[test]
 fn a_holder_at_the_back_costs_under_4_kib_and_its_pictures() {
-    let out = Cell::new(0);
-    let mut layer: Counting<'_> = Layer::new_in(Counted(&out));
+    let out = AtomicUsize::new(0);
+    let mut layer: Counting<'_> = Layer::new_in(Counted::new(Global, &out));
     let main = add_card(&mut layer);
     let shape = PictureShape { card: 1, format: FORMAT_XRGB8888, width: WIDTH, height: HEIGHT };
     let picture = || Rc::new(Pixels(shape));
@@ -206,7 +190,7 @@ fn a_holder_at_the_back_costs_under_4_kib_and_its_pictures() {
     let theirs = layer.holder(borrower).unwrap().keep_picture(picture()).unwrap();
     show(&mut layer, borrower, main, theirs);
     assert_eq!(layer.give_back(borrower), Ok(()));
-    let before = out.get();
+    let before = bytes_out(&out);
 
     // A holder with eight pictures and a mode takes the front, draws,
     // and lends the front on.
@@ -221,25 +205,25 @@ fn a_holder_at_the_back_costs_under_4_kib_and_its_pictures() {
 
     // At the back it keeps the state it asked for, its numbers, the
     // events it has not read, and its place in the layer's list.
-    let kept = out.get() - before + size_of::<Holder<Rc<Pixels>, Counted<'_>>>();
-    assert!(kept > size_of::<Holder<Rc<Pixels>, Counted<'_>>>(), "the count counts");
+    let kept = bytes_out(&out) - before + size_of::<Holder<Rc<Pixels>, Counted<'_, Global>>>();
+    assert!(kept > size_of::<Holder<Rc<Pixels>, Counted<'_, Global>>>(), "the count counts");
     assert!(kept < 4096, "a holder at the back keeps {kept} bytes");
 }
 
 #[test]
 fn sixteen_screens_cost_under_1_kib_a_thing_and_change_in_one_step() {
-    let out = Cell::new(0);
-    let mut layer: Counting<'_> = Layer::new_in(Counted(&out));
-    let before = out.get();
+    let out = AtomicUsize::new(0);
+    let mut layer: Counting<'_> = Layer::new_in(Counted::new(Global, &out));
+    let before = bytes_out(&out);
     add_sixteen(&mut layer);
     let (screens, pipes) = (things(&layer, KIND_SCREEN), things(&layer, KIND_PIPE));
     let planes = things(&layer, KIND_PLANE);
     assert_eq!((screens.len(), pipes.len(), planes.len()), (SIXTEEN, SIXTEEN, 2 * SIXTEEN));
     // What it took from the allocator, and the layer itself.
-    let kept = out.get() - before + size_of::<Counting<'_>>();
+    let kept = bytes_out(&out) - before + size_of::<Counting<'_>>();
     let each = kept / (screens.len() + pipes.len() + planes.len());
     println!("the layer keeps {kept} bytes for sixteen screens, their pipes and planes");
-    assert!(out.get() > before, "the count counts");
+    assert!(bytes_out(&out) > before, "the count counts");
     assert!(each < 1024, "the layer keeps {each} bytes a screen, pipe and plane");
 
     // One change shows a picture of its own on every screen: the screen

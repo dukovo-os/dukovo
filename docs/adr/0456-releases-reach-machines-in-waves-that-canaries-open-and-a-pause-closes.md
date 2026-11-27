@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0456. Releases reach machines in waves that canaries open and a pause closes
 
-- Status: Accepted
+- Status: Accepted; no nightly release before 1.0 by [0781](0781-there-are-no-nightly-system-releases-before-1-0.md)
 - Date: 2026-11-11
 
 ## Context

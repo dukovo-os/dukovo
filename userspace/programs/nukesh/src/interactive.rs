@@ -132,8 +132,7 @@ pub fn run(shell: Shell) -> i32 {
                 let started = std::time::Instant::now();
                 // Only for a terminal: output to a file or a pipe is the
                 // command's alone.
-                // SAFETY: isatty only asks about a descriptor.
-                let marks = shell.settings.marks && unsafe { libc::isatty(1) } == 1;
+                let marks = shell.settings.marks && sys::isatty(1);
                 if marks {
                     let _ = sys::write_all(1, b"\x1b]133;C\x1b\\");
                 }

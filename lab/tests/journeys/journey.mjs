@@ -16,16 +16,21 @@ import path from "node:path";
 
 import { ensure, fetchAsPage, openConsole, signInDone, sleep } from "../web-console/console.mjs";
 
-/** The folder a journey's host steps keep what the scripts read, on the lab PC. */
-export const folderOf = (journey) => `/tmp/lab-journey-${journey}`;
+/**
+ * The folder where a journey's host steps keep what the scripts read, on the
+ * lab PC: the test's own, `{work}`, which the browser runner runs in as the
+ * host steps do. It is the machine's own for the run, so a journey can run
+ * on two machines at once.
+ */
+export const journeyFolder = () => process.cwd();
 
 /**
  * The facts the journey's first host step wrote to `info` in its folder, a
  * line each as `name=value`: the lab PC's ports and addresses, which only a
  * host step knows, since the script has no placeholders.
  */
-export async function infoOf(journey) {
-  const text = await readFile(`${folderOf(journey)}/info`, "utf8");
+export async function journeyInfo() {
+  const text = await readFile(`${journeyFolder()}/info`, "utf8");
   const facts = {};
   for (const line of text.split("\n")) {
     const at = line.indexOf("=");

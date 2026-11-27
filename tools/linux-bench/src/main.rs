@@ -85,15 +85,23 @@
 //! If the lines show a different clock than the rows ran at, start with
 //! `/sys/devices/system/cpu/cpufreq` on the twin.
 
+#![forbid(unsafe_code)]
+
 mod btrfs_log;
 
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::unix::fs::FileExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::Instant;
+
+use sysapi::linux::{self, Ending};
+use sysapi::memory::{self, Access, Mapping};
+use sysapi::process::{self, Fork, UsageOf};
+use sysapi::{fd, fs, random, terminal, volatile};
 
 /// The kernel command line word that has process 1 hold the CPUs at their
 /// base frequency. A word with a dot is left to modules, so Linux neither
@@ -140,11 +148,6 @@ const BTRFS_AT: &str = "/mnt/vdb";
 /// Where `ob bench` puts the kernel modules the disk needs, in the
 /// initramfs: named so that they load in the order of their names.
 const MODULES: &str = "/modules";
-
-/// finit_module(2)'s flag for a compressed module, which the kernel
-/// uncompresses itself (Linux 6.6 and later, with
-/// CONFIG_MODULE_DECOMPRESS).
-const MODULE_INIT_COMPRESSED_FILE: libc::c_uint = 4;
 
 fn main() {
     let mut rounds = 100_000u64;
@@ -200,7 +203,7 @@ fn main() {
         }
         power_off();
     }
-    let cpus = allowed_cpus();
+    let cpus = linux::allowed_cpus().expect("sched_getaffinity");
     let Some(&first) = cpus.first() else {
         eprintln!("linux-bench: this process may run on no CPU");
         std::process::exit(1);
@@ -225,10 +228,7 @@ fn main() {
 
     let calls = rounds * 2;
     report("getppid", calls, getppid);
-    report("sched_yield", calls, || {
-        // SAFETY: sched_yield takes no arguments.
-        unsafe { libc::sched_yield() };
-    });
+    report("sched_yield", calls, std::thread::yield_now);
     report("fcntl_getfd", calls, fcntl_getfd);
     report("getrandom_64", calls / 4, getrandom_64);
     report("fresh_page", rounds / 2, fresh_page);
@@ -324,83 +324,60 @@ fn power_off() {
     // the middle of "linux-bench: done" and hid it from `ob bench`.
     std::io::stdout().flush().ok();
     std::io::stderr().flush().ok();
-    for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
-        // SAFETY: tcdrain only waits; on a descriptor that is not a
-        // terminal it fails at once, which is fine here.
-        unsafe { libc::tcdrain(fd) };
-    }
-    // SAFETY: as process 1, this program may power the machine off.
-    unsafe { libc::reboot(libc::LINUX_REBOOT_CMD_POWER_OFF) };
+    // On a descriptor that is not a terminal, tcdrain fails at once, which
+    // is fine here.
+    let _ = terminal::drain(std::io::stdout());
+    let _ = terminal::drain(std::io::stderr());
+    let err = linux::end(Ending::PowerOff);
+    eprintln!("linux-bench: cannot power off: {err}");
     loop {
         std::thread::park();
     }
 }
 
 fn getppid() {
-    // SAFETY: getppid takes no arguments and cannot fail. It is called
-    // through syscall(2) so that no library caches its answer.
-    unsafe { libc::syscall(libc::SYS_getppid) };
+    // The call is what is timed; its answer is not used.
+    let _ = linux::parent_through_system_call();
 }
 
 /// A descriptor to look up: an eventfd, which every Linux has.
-fn some_fd() -> i32 {
+fn some_fd() -> BorrowedFd<'static> {
     static FD: std::sync::OnceLock<OwnedFd> = std::sync::OnceLock::new();
-    let fd = FD.get_or_init(|| {
-        // SAFETY: eventfd takes no pointers; a negative result is an error.
-        let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC) };
-        assert!(fd >= 0, "cannot make an eventfd: {}", std::io::Error::last_os_error());
-        // SAFETY: `fd` is a new descriptor that nothing else owns.
-        unsafe { OwnedFd::from_raw_fd(fd) }
-    });
-    std::os::fd::AsRawFd::as_raw_fd(fd)
+    FD.get_or_init(|| linux::event_counter().expect("cannot make an eventfd")).as_fd()
 }
 
 /// Looks a descriptor up and reads its flags: the closest Linux has to a
 /// capability's `info` method.
 fn fcntl_getfd() {
-    // SAFETY: F_GETFD takes no argument; the descriptor is open.
-    let flags = unsafe { libc::fcntl(some_fd(), libc::F_GETFD) };
-    assert!(flags >= 0, "fcntl: {}", std::io::Error::last_os_error());
+    fd::close_on_exec(some_fd()).expect("fcntl");
 }
 
 fn getrandom_64() {
     let mut bytes = [0u8; 64];
-    // SAFETY: `bytes` is 64 writable bytes.
-    let got = unsafe { libc::getrandom(bytes.as_mut_ptr().cast(), bytes.len(), 0) };
-    assert_eq!(got, 64, "getrandom returned {got}");
+    random::fill(&mut bytes).expect("getrandom");
 }
 
 const PAGE: usize = 4096;
 
 /// Maps `len` bytes of fresh anonymous memory.
-fn map_anonymous(len: usize) -> *mut u8 {
-    // SAFETY: an anonymous private mapping at an address the kernel picks
-    // touches no existing memory.
-    let at = unsafe {
-        libc::mmap(
-            std::ptr::null_mut(),
-            len,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-            -1,
-            0,
-        )
-    };
-    assert!(at != libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
-    at.cast()
+fn map_anonymous(len: usize) -> Mapping {
+    Mapping::anonymous(len).expect("mmap")
+}
+
+/// Touches a page of `mapping` with one eight-byte store, as the first
+/// touch of a fresh page.
+fn touch(mapping: &mut Mapping) {
+    let bytes = mapping.bytes_mut().expect("a mapping that may be written");
+    volatile::write(
+        <&mut [u8; 8]>::try_from(&mut bytes[..8]).expect("eight bytes"),
+        1u64.to_ne_bytes(),
+    );
 }
 
 /// A fresh page: mapped, touched (a page fault that zeroes it), unmapped.
 fn fresh_page() {
-    let at = map_anonymous(PAGE);
-    // SAFETY: `at` is a page mapped read-write just above (so aligned).
-    #[allow(clippy::cast_ptr_alignment)]
-    unsafe {
-        at.cast::<u64>().write_volatile(1);
-    }
-    // SAFETY: the page was mapped above and nothing refers to it any more.
-    let result = unsafe { libc::munmap(at.cast(), PAGE) };
-    assert_eq!(result, 0, "munmap: {}", std::io::Error::last_os_error());
+    let mut page = map_anonymous(PAGE);
+    touch(&mut page);
 }
 
 /// The bytes of each of the two buffers memory bandwidth is measured
@@ -411,42 +388,22 @@ const COPY_BYTES: usize = 32 << 20;
 const COPY_BATCH: u64 = 6;
 const COPY_BATCHES: usize = 5;
 
-/// Copies `len` bytes with `rep movsb`, as the Radix benchmark does.
-///
-/// # Safety
-///
-/// Both ranges must be mapped, `to` writable, and they must not overlap.
-unsafe fn copy(from: *const u8, to: *mut u8, len: usize) {
-    // SAFETY: the caller's contract.
-    unsafe {
-        std::arch::asm!(
-            "rep movsb",
-            inout("rsi") from => _,
-            inout("rdi") to => _,
-            inout("rcx") len => _,
-            options(nostack, preserves_flags),
-        );
-    }
-}
-
 /// Memory bandwidth: nanoseconds per MiB copied, in the fastest of a few
 /// batches of copies.
 fn memory_copy() {
-    let (from, to) = (map_anonymous(COPY_BYTES), map_anonymous(COPY_BYTES));
+    let (mut from, mut to) = (map_anonymous(COPY_BYTES), map_anonymous(COPY_BYTES));
+    let from = from.bytes_mut().expect("a mapping that may be written");
+    let to = to.bytes_mut().expect("a mapping that may be written");
     // Fill the source, and copy once, so that no page is touched for the
     // first time below.
-    // SAFETY: both buffers were just mapped, COPY_BYTES long, apart.
-    unsafe {
-        from.write_bytes(0x5a, COPY_BYTES);
-        copy(from, to, COPY_BYTES);
-    }
+    from.fill(0x5a);
+    memory::copy_bytes(to, from);
     let mib = COPY_BATCH * (COPY_BYTES >> 20) as u64;
     let fastest = (0..COPY_BATCHES)
         .map(|_| {
             let started = Instant::now();
             for _ in 0..COPY_BATCH {
-                // SAFETY: as above.
-                unsafe { copy(from, to, COPY_BYTES) };
+                memory::copy_bytes(to, from);
             }
             started.elapsed()
         })
@@ -454,10 +411,6 @@ fn memory_copy() {
         .expect("at least one batch");
     let ns = fastest.as_nanos() as f64 / mib as f64;
     println!("BENCH name=memory_copy ns={ns:.2} iterations={mib}");
-    for at in [from, to] {
-        // SAFETY: mapped above, and no longer used.
-        unsafe { libc::munmap(at.cast(), COPY_BYTES) };
-    }
 }
 
 /// Two processes on this thread's CPU (a child inherits its pinning), each
@@ -468,30 +421,28 @@ fn memory_copy() {
 fn context_switch(rounds: u64) {
     let (ready_read, ready_write) = std::io::pipe().expect("cannot make a pipe");
     let (count_read, count_write) = std::io::pipe().expect("cannot make a pipe");
-    // SAFETY: the process has one thread here (every pair has been joined),
-    // so the child may run anything; it only yields, writes and exits.
-    let child = unsafe { libc::fork() };
-    assert!(child >= 0, "fork: {}", std::io::Error::last_os_error());
-    if child == 0 {
-        let (mut ready_write, mut count_write) = (ready_write, count_write);
-        let _ = ready_write.write_all(&[1]);
-        let before = switches();
-        for _ in 0..rounds {
-            // SAFETY: sched_yield takes no arguments.
-            unsafe { libc::sched_yield() };
+    // The process has one thread here: every pair has been joined.
+    let child = match process::fork().expect("fork") {
+        Fork::Parent(child) => child,
+        Fork::Child => {
+            let (mut ready_write, mut count_write) = (ready_write, count_write);
+            let _ = ready_write.write_all(&[1]);
+            let before = switches();
+            for _ in 0..rounds {
+                std::thread::yield_now();
+            }
+            let _ = count_write.write_all(&(switches() - before).to_le_bytes());
+            // The child ends here, without unwinding the parent's state.
+            process::exit_now(0);
         }
-        let _ = count_write.write_all(&(switches() - before).to_le_bytes());
-        // SAFETY: the child ends here, without unwinding the parent's state.
-        unsafe { libc::_exit(0) };
-    }
+    };
     drop((ready_write, count_write));
     let mut byte = [0u8];
     (&ready_read).read_exact(&mut byte).expect("the other process did not start");
     let before = switches();
     let started = Instant::now();
     for _ in 0..rounds {
-        // SAFETY: sched_yield takes no arguments.
-        unsafe { libc::sched_yield() };
+        std::thread::yield_now();
     }
     let elapsed = started.elapsed();
     let ours = switches() - before;
@@ -500,39 +451,28 @@ fn context_switch(rounds: u64) {
     let total = (ours + u64::from_le_bytes(theirs)).max(1);
     let ns = elapsed.as_nanos() as f64 / total as f64;
     println!("BENCH name=context_switch ns={ns:.2} iterations={total}");
-    let mut status = 0;
-    // SAFETY: `child` is this process's child, and `status` is writable.
-    unsafe { libc::waitpid(child, &raw mut status, 0) };
+    process::wait(child).expect("cannot wait for the other process");
 }
 
 /// The context switches of this process so far, voluntary or not.
 fn switches() -> u64 {
-    // SAFETY: an all-zero rusage is valid, and getrusage writes into it.
-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
-    // SAFETY: `usage` is writable.
-    let done = unsafe { libc::getrusage(libc::RUSAGE_SELF, &raw mut usage) };
-    assert_eq!(done, 0, "getrusage: {}", std::io::Error::last_os_error());
-    (usage.ru_nvcsw + usage.ru_nivcsw) as u64
+    let usage = process::usage(UsageOf::Process).expect("getrusage");
+    usage.voluntary_switches + usage.involuntary_switches
 }
 
 /// A TLB shootdown: this thread takes a page's access away and gives it
 /// back while another thread of the process spins on `other`, so every
 /// removal must reach that CPU's TLB. Giving access back needs no flush.
 fn tlb_shootdown(other: usize, rounds: u64) {
-    let page = map_anonymous(PAGE);
-    // SAFETY: `page` is mapped read-write; touching it makes it present.
-    unsafe { page.write_volatile(1) };
-    let protect = |prot| {
-        // SAFETY: `page` is a whole page this function mapped.
-        let result = unsafe { libc::mprotect(page.cast(), PAGE, prot) };
-        assert_eq!(result, 0, "mprotect: {}", std::io::Error::last_os_error());
-    };
+    let mut page = map_anonymous(PAGE);
+    touch(&mut page);
+    let mut protect = |access| page.protect(access).expect("mprotect");
     // The same system calls while no other thread runs: the shootdown is
     // the difference.
     let started = Instant::now();
     for _ in 0..rounds {
-        protect(libc::PROT_NONE);
-        protect(libc::PROT_READ | libc::PROT_WRITE);
+        protect(Access::None);
+        protect(Access::ReadWrite);
     }
     print_line("tlb_local", started, rounds);
     let stop = Arc::new(AtomicBool::new(false));
@@ -549,8 +489,8 @@ fn tlb_shootdown(other: usize, rounds: u64) {
     let interrupts = tlb_interrupts(other);
     let started = Instant::now();
     for _ in 0..rounds {
-        protect(libc::PROT_NONE);
-        protect(libc::PROT_READ | libc::PROT_WRITE);
+        protect(Access::None);
+        protect(Access::ReadWrite);
     }
     print_line("tlb_shootdown", started, rounds);
     if let (Some(before), Some(after)) = (interrupts, tlb_interrupts(other)) {
@@ -561,8 +501,6 @@ fn tlb_shootdown(other: usize, rounds: u64) {
     }
     stop.store(true, Ordering::Relaxed);
     spinner.join().expect("the spinning thread panicked");
-    // SAFETY: mapped above, and no longer used.
-    unsafe { libc::munmap(page.cast(), PAGE) };
 }
 
 /// Runs `body` `count` times here and on `other` at once; prints what one
@@ -607,38 +545,27 @@ fn files(rounds: u64) {
     std::fs::create_dir_all(&dir).expect("cannot make the benchmark directory");
     std::fs::write(&path, [0x5a; 4096]).expect("cannot write the benchmark file");
     let directory = std::fs::File::open(&dir).expect("cannot open the benchmark directory");
-    let at = directory.as_raw_fd();
     let name = c"bench";
     report("file_open_close", rounds, || {
-        // SAFETY: the name is NUL-terminated and the directory is open.
-        let fd = unsafe { libc::openat(at, name.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
-        assert!(fd >= 0, "openat: {}", std::io::Error::last_os_error());
-        // SAFETY: the descriptor was just opened, and is closed once.
-        unsafe { libc::close(fd) };
+        let fd = fs::open_at(&directory, name, libc::O_RDONLY).expect("openat");
+        drop(fd);
     });
     report("file_stat", rounds, || {
-        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-        // SAFETY: the name is NUL-terminated, the directory is open, and
-        // `stat` is room for the status.
-        let done = unsafe { libc::fstatat(at, name.as_ptr(), stat.as_mut_ptr(), 0) };
-        assert_eq!(done, 0, "fstatat: {}", std::io::Error::last_os_error());
+        fs::stat_at(&directory, name).expect("fstatat");
     });
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(&path)
         .expect("cannot open the benchmark file");
-    let fd = file.as_raw_fd();
     let mut buffer = [0x5au8; 4096];
     report("file_read_4k", rounds, || {
-        // SAFETY: the buffer is 4096 writable bytes and the file is open.
-        let read = unsafe { libc::pread(fd, buffer.as_mut_ptr().cast(), buffer.len(), 0) };
-        assert_eq!(read, 4096, "pread: {}", std::io::Error::last_os_error());
+        let read = file.read_at(&mut buffer, 0).expect("pread");
+        assert_eq!(read, 4096, "pread returned {read}");
     });
     report("file_write_4k", rounds, || {
-        // SAFETY: the buffer is 4096 readable bytes and the file is open.
-        let wrote = unsafe { libc::pwrite(fd, buffer.as_ptr().cast(), buffer.len(), 0) };
-        assert_eq!(wrote, 4096, "pwrite: {}", std::io::Error::last_os_error());
+        let wrote = file.write_at(&buffer, 0).expect("pwrite");
+        assert_eq!(wrote, 4096, "pwrite wrote {wrote}");
     });
     drop(file);
     drop(directory);
@@ -673,16 +600,8 @@ fn tlb_column(text: &str, cpu: usize) -> Option<u64> {
 /// devtmpfs, where its disk is.
 fn mount(kind: &str, at: &str) {
     let _ = std::fs::create_dir_all(at);
-    let (Ok(kind_c), Ok(at_c)) = (std::ffi::CString::new(kind), std::ffi::CString::new(at)) else {
-        return;
-    };
-    // SAFETY: the strings are NUL-terminated and live through the call;
-    // procfs, sysfs and devtmpfs take no data.
-    let result = unsafe {
-        libc::mount(kind_c.as_ptr(), at_c.as_ptr(), kind_c.as_ptr(), 0, std::ptr::null())
-    };
-    if result != 0 {
-        eprintln!("linux-bench: cannot mount {at}: {}", std::io::Error::last_os_error());
+    if let Err(err) = linux::mount(kind, Path::new(at), kind, 0, "") {
+        eprintln!("linux-bench: cannot mount {at}: {err}");
     }
 }
 
@@ -899,14 +818,11 @@ fn load_modules() {
             }
         };
         let compressed = path.extension().is_some_and(|e| e == "zst" || e == "xz" || e == "gz");
-        let flags = if compressed { MODULE_INIT_COMPRESSED_FILE } else { 0 };
-        // SAFETY: the descriptor is open, and the parameters are an empty
-        // NUL-terminated string that lives through the call.
-        let result =
-            unsafe { libc::syscall(libc::SYS_finit_module, file.as_raw_fd(), c"".as_ptr(), flags) };
-        let err = std::io::Error::last_os_error();
-        if result != 0 && err.raw_os_error() != Some(libc::EEXIST) {
-            eprintln!("linux-bench: cannot load {}: {err}", path.display());
+        match linux::load_module(&file, compressed) {
+            Err(err) if err.raw_os_error() != Some(libc::EEXIST) => {
+                eprintln!("linux-bench: cannot load {}: {err}", path.display());
+            }
+            _ => {}
         }
     }
 }
@@ -921,20 +837,11 @@ fn mount_btrfs() -> bool {
         return false;
     }
     let _ = std::fs::create_dir_all(BTRFS_AT);
-    // SAFETY: the strings are NUL-terminated and live through the call.
-    let result = unsafe {
-        libc::mount(
-            c"/dev/vdb".as_ptr(),
-            c"/mnt/vdb".as_ptr(),
-            c"btrfs".as_ptr(),
-            0,
-            c"compress=zstd:1".as_ptr().cast(),
-        )
-    };
-    if result != 0 {
-        eprintln!("linux-bench: cannot mount {BTRFS_DISK}: {}", std::io::Error::last_os_error());
+    let mounted = linux::mount(BTRFS_DISK, Path::new(BTRFS_AT), "btrfs", 0, "compress=zstd:1");
+    if let Err(err) = &mounted {
+        eprintln!("linux-bench: cannot mount {BTRFS_DISK}: {err}");
     }
-    result == 0
+    mounted.is_ok()
 }
 
 fn print_line(name: &str, started: Instant, count: u64) {
@@ -986,19 +893,19 @@ impl Pair {
             go.wait();
             for _ in 0..rounds {
                 while theirs.load(Ordering::Acquire) == 0 {
-                    futex_wait(&theirs, 0);
+                    linux::futex_wait(&theirs, 0);
                 }
                 theirs.store(0, Ordering::Release);
-                futex_wake(&theirs);
+                linux::futex_wake(&theirs, 1);
             }
         });
         ready.wait();
         let started = Instant::now();
         for _ in 0..self.rounds {
             turn.store(1, Ordering::Release);
-            futex_wake(&turn);
+            linux::futex_wake(&turn, 1);
             while turn.load(Ordering::Acquire) == 1 {
-                futex_wait(&turn, 1);
+                linux::futex_wait(&turn, 1);
             }
         }
         print_line(name, started, self.rounds);
@@ -1075,11 +982,7 @@ fn sockets() -> Ends<UnixStream, UnixStream> {
 
 fn eventfds() -> Ends<std::fs::File, std::fs::File> {
     let make = || {
-        // SAFETY: eventfd takes no pointers; a negative result is an error.
-        let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC) };
-        assert!(fd >= 0, "cannot make an eventfd: {}", std::io::Error::last_os_error());
-        // SAFETY: `fd` is a new descriptor that nothing else owns.
-        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        let fd = linux::event_counter().expect("cannot make an eventfd");
         let clone = fd.try_clone().expect("cannot duplicate an eventfd");
         (std::fs::File::from(fd), std::fs::File::from(clone))
     };
@@ -1089,73 +992,14 @@ fn eventfds() -> Ends<std::fs::File, std::fs::File> {
     ((answer.0, question.1), (question.0, answer.1))
 }
 
-fn futex_wait(word: &AtomicU32, expected: u32) {
-    // SAFETY: `word` is a live, aligned 32-bit atomic for the whole call;
-    // the null timeout waits without a limit.
-    unsafe {
-        libc::syscall(
-            libc::SYS_futex,
-            word.as_ptr(),
-            libc::FUTEX_WAIT | libc::FUTEX_PRIVATE_FLAG,
-            expected,
-            std::ptr::null::<libc::timespec>(),
-        )
-    };
-}
-
-fn futex_wake(word: &AtomicU32) {
-    // SAFETY: as in `futex_wait`; FUTEX_WAKE reads nothing else.
-    unsafe {
-        libc::syscall(
-            libc::SYS_futex,
-            word.as_ptr(),
-            libc::FUTEX_WAKE | libc::FUTEX_PRIVATE_FLAG,
-            1,
-        )
-    };
-}
-
-/// The CPUs this process may run on, lowest first.
-fn allowed_cpus() -> Vec<usize> {
-    // SAFETY: cpu_set_t is plain data, and all zeroes is the empty set.
-    let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
-    // SAFETY: `set` is a writable cpu_set_t of the size given.
-    let result = unsafe { libc::sched_getaffinity(0, size_of::<libc::cpu_set_t>(), &raw mut set) };
-    assert_eq!(result, 0, "sched_getaffinity: {}", std::io::Error::last_os_error());
-    // SAFETY: every index is below CPU_SETSIZE, so within the set.
-    (0..libc::CPU_SETSIZE as usize).filter(|&cpu| unsafe { libc::CPU_ISSET(cpu, &set) }).collect()
-}
-
 /// Brings the loopback interface up, as the virtual machine's process 1
 /// finds it down: false if it could not.
 fn loopback_up() -> bool {
-    // SAFETY: a socket of any family is what the interface ioctls take.
-    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
-    if fd < 0 {
-        eprintln!("linux-bench: no socket for lo: {}", std::io::Error::last_os_error());
+    if let Err(err) = linux::bring_up("lo") {
+        eprintln!("linux-bench: cannot bring lo up: {err}");
         return false;
     }
-    // SAFETY: the descriptor was just made, and is this one's alone.
-    let socket = unsafe { OwnedFd::from_raw_fd(fd) };
-    // SAFETY: an all-zero ifreq is a valid one with an empty name.
-    let mut request: libc::ifreq = unsafe { std::mem::zeroed() };
-    for (to, from) in request.ifr_name.iter_mut().zip(b"lo") {
-        *to = *from as libc::c_char;
-    }
-    // SAFETY: SIOCGIFFLAGS fills the flags of the ifreq it is given.
-    let got = unsafe { libc::ioctl(socket.as_raw_fd(), libc::SIOCGIFFLAGS as _, &raw mut request) };
-    let set = got == 0 && {
-        // SAFETY: SIOCGIFFLAGS set the union's flags; SIOCSIFFLAGS reads
-        // the name and flags of the ifreq.
-        unsafe {
-            request.ifr_ifru.ifru_flags |= libc::IFF_UP as libc::c_short;
-            libc::ioctl(socket.as_raw_fd(), libc::SIOCSIFFLAGS as _, &raw const request) == 0
-        }
-    };
-    if !set {
-        eprintln!("linux-bench: cannot bring lo up: {}", std::io::Error::last_os_error());
-    }
-    set
+    true
 }
 
 /// Runs the POSIX benchmarks at `program`, which print their own lines,
@@ -1209,30 +1053,13 @@ fn server_bench(cpus: &[usize]) {
 
 /// Lets the calling thread run on each of `cpus` again.
 fn allow(cpus: &[usize]) {
-    // SAFETY: as in `allowed_cpus`.
-    let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
-    for &cpu in cpus {
-        // SAFETY: `cpu` came from `allowed_cpus`, so it is below CPU_SETSIZE.
-        unsafe { libc::CPU_SET(cpu, &mut set) };
-    }
-    // SAFETY: pid 0 is the calling thread, and `set` is a cpu_set_t of the
-    // size given.
-    let result =
-        unsafe { libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &raw const set) };
-    assert_eq!(result, 0, "sched_setaffinity: {}", std::io::Error::last_os_error());
+    linux::set_allowed_cpus(cpus).expect("sched_setaffinity");
 }
 
 /// Pins the calling thread to `cpu`.
 fn pin(cpu: usize) {
-    // SAFETY: as in `allowed_cpus`.
-    let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
-    // SAFETY: `cpu` came from `allowed_cpus`, so it is below CPU_SETSIZE.
-    unsafe { libc::CPU_SET(cpu, &mut set) };
-    // SAFETY: pid 0 is the calling thread, and `set` is a cpu_set_t of the
-    // size given.
-    let result =
-        unsafe { libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &raw const set) };
-    assert_eq!(result, 0, "cannot pin a thread to CPU {cpu}: {}", std::io::Error::last_os_error());
+    linux::set_allowed_cpus(&[cpu])
+        .unwrap_or_else(|err| panic!("cannot pin a thread to CPU {cpu}: {err}"));
 }
 
 #[cfg(test)]

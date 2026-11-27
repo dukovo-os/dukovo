@@ -42,7 +42,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
 use std::net::{SocketAddr, TcpStream};
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -64,6 +64,7 @@ use russh::server::{
     VerifiedPublicKey,
 };
 use russh::{Channel, ChannelId, ChannelOpenFailure, Disconnect, MethodSet, Preferred, SshId, kex};
+use sysapi::fd::{self, Standard};
 
 use crate::forward::Forwarding;
 use crate::help::{self, HelpPipes, Helping};
@@ -163,9 +164,16 @@ struct Connection {
 /// `sshd --connection`: serves the connection on standard input, with
 /// the `settings` the listener read.
 pub fn run(settings: Settings) -> ExitCode {
-    // SAFETY: the listener gave this process the connection as standard
-    // input, and the pipe as standard output, which nothing else uses.
-    let (socket, notify) = unsafe { (TcpStream::from_raw_fd(0), File::from_raw_fd(1)) };
+    // The listener gave this process the connection as standard input,
+    // and the pipe as standard output.
+    let (socket, notify) =
+        match (fd::take_standard(Standard::Input), fd::take_standard(Standard::Output)) {
+            (Ok(socket), Ok(notify)) => (TcpStream::from(socket), File::from(notify)),
+            (Err(err), _) | (_, Err(err)) => {
+                eprintln!("sshd: cannot take the connection: {err}");
+                return ExitCode::FAILURE;
+            }
+        };
     let (peer, local) = match (socket.peer_addr(), socket.local_addr()) {
         (Ok(peer), Ok(local)) => (canonical(peer), canonical(local)),
         _ => {

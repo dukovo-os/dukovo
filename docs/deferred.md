@@ -38,14 +38,15 @@ list is kept current instead.
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
 | Post-Phase-13 code audit (audit 10) | Planned and scoped; starts only on approval | Decision |
-| System releases signed on the two hardware keys: `ob release sign` with its gates and a third build that must match CI's two, root versions after the first, the Rekor record, `ob keys ceremony` for the yearly root, and the key runbooks (ADRs 0450, 0457, 0467, 0538) | Phase 15 signs with each build machine's own keys and tests against a local update server; the key ceremony signed the first root, but no command signs a release on the YubiKeys yet, so `ob release deploy` has nothing to deploy | Before 1.0.0-alpha.1 |
+| `ob keys ceremony`: the yearly root signed from a Dukovo stick with networking off, both YubiKeys checked, and one replaced every other year (ADRs 0457, 0780) | `./ob release root` signs the next root on the maintainer's computer, from the keys in `releases/keys/` (ADR 0780) | Before 1.0.0, as the first root expires on 2027-11-17 |
+| The handbook's key and incident runbooks followed once, end to end, against a test server and test YubiKeys | The `ob`, system-release and catalog-repo commands they give are tested with stand-in YubiKeys and servers; no one has yet followed a whole page | Before 1.0.0 |
+| The install images of a release published for download, beside its notes: the stick, the ISO, `SHA256SUMS` and its signature (ADR 0779) | `./ob release images` leaves them in `out/release-images/VERSION`, and nothing uploads them yet | Before 1.0.0-alpha.1 |
+| `ob` commands for a channel's move, a withdrawal and the advisories alone on a YubiKey (ADR 0778) | `system-release fetch`, then `channel`, `pull` or `advisories` with `--yubikey-helper`, then `./ob release deploy` do each by hand | Before 1.0.0 |
 | The release train is off: `.github/release-train.json` says `"enabled": false`, so the release-train bot writes what it would do into its job summary and cuts no branch and opens no issue (ADRs 0458, 0534) | The first release branch is cut at 1.0.0, and the backport bot has no release branch to copy to until then | 1.0.0, when a maintainer sets `"enabled": true` |
 | The daily scan cannot ask OSV about db1, mandoc, netcat and zip, whose recipes say `[upstream] none`: db1 is Berkeley DB 1.85 as glibc 2.1.3 carried it and only Debian keeps it, mandoc keeps its source in CVS, OpenBSD does not release nc by itself, and Info-ZIP publishes archives alone; `./ob security scan` lists them as not asked about, with their reasons (ADR 0534) | OSV answers for a git commit or a package of an ecosystem, and these projects have no public git repository to take the commit of a release from | A project that publishes git, or a decision by the maintainers to ask by a distribution's source package |
-| The rest of the update test matrix: `ob release sign` checking a candidate's full run (ADRs 0450, 0536) | The nightly sample and the full run have the power-cut replay, the first-start kills, the update boot tests with a network that stays down, a root that is not there, a full disk, a bad network and a clock a year off, the updates from the old release 0.15.0's fixture under UEFI and BIOS, the TUF conformance suite and the fuzz targets, and Kani proves the slot state; `ob release sign` does not check yet that a candidate's full run is green for its exact commit | Before 1.0.0-alpha.1 |
 | Send the 27 mlibc and frigg patches upstream | Prepared; planned after the audit's last part | Audit 10 |
 | smoltcp's own tests in CI, with its three UDP broadcast tests mended or changed for the kernel's patch (ADR 0182) | CI runs radix-net's tests, which drive the patched stack, but not the crate's own; those three already fail with the patch | Before the smoltcp patch goes upstream |
 | Trademark clearance of the project's name | Legal review | Before 1.0.0-alpha.1 |
-| SECURITY.md says plainly that the alpha is unaudited; the update server is live for testers | Part of the checklist before the first public release | Before 1.0.0-alpha.1 |
 
 ## Waiting on real hardware
 
@@ -136,7 +137,6 @@ machine with AMT, an AMD machine and a laptop; see
 | Rescue resetting the settings to their defaults (ADR 0460) | Putting back the settings from before the last update covers a bad update | A need |
 | Each slot's release list kept beside it, so that `sysupdate check` reads none of the slot's files (ADR 0466) | A check reads the running slot's files whose size matches a wanted one, as a stage does | A need |
 | The three cloud canaries (ADRs 0456, 0533) | The reference machine and the lab machines are the canaries: each reports every hour, and one that fails or goes quiet holds the waves | Buying the cloud machines, before 1.0.0-alpha.1 |
-| `system-release pull` signing with the hardware keys (ADRs 0457, 0469) | It signs with the release keys' files, as `add` and `channel` do | `ob release sign` |
 | Firmware that drivers load for their cards, in firmware sets, with a per-device check that the driver loaded it (ADR 0468) | Sets hold CPU microcode only; no driver Dukovo has loads firmware yet | A port: the first driver that needs firmware (Wi-Fi, release 1.11) |
 | AMD CPU microcode in firmware sets (ADRs 0014, 0468) | The kernel's loader is Intel's; AMD's patches have their own format and loader | A need |
 | Disks other than the root's in the health check's device record (ADR 0468) | Data disks, USB disks and discs come and go with their owner, so a missing one says nothing of the update | A need |
@@ -273,7 +273,7 @@ machine with AMT, an AMD machine and a laptop; see
 
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
-| `epoll`, `eventfd`, `signalfd`, `timerfd`, `memfd`, `pidfd` and a vDSO clock page (posix design note) | Built as native objects with the Linux layer | 18a |
+| `epoll`, `eventfd`, `signalfd`, `timerfd`, `memfd` and `pidfd` (posix design note) | Built as native objects with the Linux layer | 18a |
 | Neovim and Midnight Commander, as their official Linux builds | Moved off the native port list | 18a |
 | Linux's ALSA programs playing sound (ADR 0320) | Need the compatibility layer | 18a |
 | The Linux layout (`/dev`, `/proc`, `/sys` as directories) inside Linux programs' view (ADR 0113) | Served by `linuxd` | 18a |
@@ -427,6 +427,7 @@ machine asks for them.
 | `posix_fallocate(3)` only sets a file's length and takes no room, so a later write into the range can still fail with ENOSPC, on a disk or a tmpfs, where Linux's `fallocate(2)` takes the blocks or pages first | C library (`Sysdeps<Fallocate>`), storage design note |
 | FUSE and share mounts: a page cache with writeback | ADR 0226 |
 | A page or partition written raw through two different nodes at once | storage design note |
+| A claim on a block device that keeps others from mounting it, as Linux's `O_EXCL` open of one does: `mkfs` and `floppy format` refuse a device that is mounted, but nothing keeps volumed(8) from mounting one while they write it, as it may a floppy disk in the moment between the kernel's look at it and the last write of its new filesystem | floppy(1), volumed(8), ADR 0435 |
 
 ### Networking and sharing
 
@@ -532,7 +533,7 @@ machine asks for them.
 | Rebuilding a mirror onto a new disk without manual steps | ADR 0315 |
 | The filesystem, label and ID of a partition that is not mounted, in `storage show` as a person: blkid must open the device, which only an administrator may, so the console's Storage page, which reads as the person, shows such a partition with no filesystem; an unlocked administrator's page could read them through `elevate` | storage(8) |
 | `ls --app` naming the app that downloaded a file (needs provenance tags) | ADR 0442 |
-| Disk and ISO images compared byte for byte between machines (the tree, its release list and each image's identifiers are, ADR 0535): each machine's image holds a release signed with its own keys, until the system's first root is signed on the hardware keys | ADR 0010, ADR 0382, ADR 0535 |
+| Disk and ISO images compared byte for byte between machines (the tree, its release list and each image's identifiers are, ADR 0535): the images `ob image` makes hold a release signed with the machine's own keys; those `./ob release images` makes hold nothing of a machine's own (ADR 0779), and no second machine makes them yet | ADR 0010, ADR 0382, ADR 0535, ADR 0779 |
 | A git settings page in Settings (on hold) | Git work, ADR 0287 |
 | An app's own settings file and its own update rule: a bundle's manifest names neither, so an app's page shows its data folder, the page of its service and the one rule that every app installed for everyone follows | bundle(1) |
 | A version of an app older than the one kept: bundled keeps one version back, so an app's page lists the version it runs, the one on offer and the one kept | bundled(8) |
@@ -551,6 +552,17 @@ machine asks for them.
 | The banner of a change that is being tried naming the AI client that asked for it: the journal's row and the task do, and the Security page's script is at its size budget | ADR 0690 |
 | What only a screen reader is told (`.sr-only`) held inside the scrolling box of every page, as the AI clients page holds its own: on a page whose table has such a caption below the window's end, the Overview at 1280 by 800 for one, the document is taller than its window and scrolls into nothing. One rule on the shell's page box does it for all pages, and moves what each page's menus and popovers are placed against, so each page is looked at first | Lab test `web-console/clients` |
 
+### Language runtimes
+
+The roadmap lists these as [not scheduled](roadmap.md#not-scheduled).
+Each waits on programs or users asking for more than the Linux builds
+give.
+
+| Item | Source |
+| --- | --- |
+| A native OpenJDK port (Java and the JVM languages), with HotSpot's own operating-system layer for Dukovo and its JIT within W^X, for speed and DukUI integration. Until then the official Linux builds run through the Linux compatibility layer, once Phase 18 lets a program ask for JIT memory | Roadmap, not scheduled |
+| A native .NET port (C# and F#), with the runtime's platform layer and native shims for Dukovo and its JIT within W^X, for speed and DukUI integration. Until then the official Linux builds run through the Linux compatibility layer, once Phase 18 lets a program ask for JIT memory | Roadmap, not scheduled |
+
 ### Benchmarks
 
 | Item | Source |
@@ -567,6 +579,7 @@ machine asks for them.
 | On real hardware (OptiPlex 7040, i5-6500), on 2026-11-20: fork, exec and wait 1.12 times Linux's time, and the UDP round trip on one CPU 1.16 before ADR 0553; the lab's next run there confirms both | Lab, performance/loopback and processes on the OptiPlex; mlibc patches 0092 and 0093 |
 | TLS rows of the server benchmarks (nginx over HTTPS, PostgreSQL over TLS): the handshake and record costs are OpenSSL's arithmetic, the same code on both systems, and the Linux kit's servers are built without OpenSSL | ADR 0546 |
 | The server benchmarks over the network card: they run client and server on the machine, over the loopback or a Unix socket, so that they need no peer; the card's path is measured by its own rows | ADR 0546 |
+| In QEMU on the lab PC (an AMD Zen 5 host, which gives the virtual machine no PCIDs), some server rows take longer than Linux's in the same virtual machine: PostgreSQL's select 2.0 to 2.6 times Linux's time, TPC-B 2.0 to 2.1, and serverbench's wait for one ready pipe among idle ones 1.9, where PHP-FPM is level with Linux and on the OptiPlex 7040 every server row is at or under Linux's time. The profiles put the extra time in switching between programs and in the return from interrupts, each of which costs more in the virtual machine. 1.0.0-alpha.1 holds the server rows to Linux's time on the OptiPlex; 1.0.0-beta.1 holds them in QEMU too | Lab, performance/server-profile, php and postgresql on QEMU; ADR 0770 |
 | At the CPUs' default clocks, Dukovo's and Linux's differ on real hardware: Dukovo idles in C1 with the firmware's C1E promotion left on and no deeper state, so idle cores count as active and the busy core reaches the four-core turbo level (3.3 GHz on the OptiPlex 7040) where Linux, whose intel_idle turns the promotion off and uses deeper states, can reach 3.6 GHz. The lab's performance tests hold both systems at the base frequency instead; what the default clocks cost is measured with `cpu_cycle_cold`, `cpu_cycle` and `cpu_cycle_end` once that run is in, and deep idle states come with laptop power | ADR 0557; the first OptiPlex run with the clocks held |
 
 ## Lab findings to confirm
@@ -592,11 +605,11 @@ finding or removed.
 
 | Item | Why it waits |
 | --- | --- |
+| `radix_abi`'s generated wrappers that pass the kernel a buffer as an address and a length made `unsafe`, or made to take a slice, so that a crate that forbids `unsafe` cannot give the kernel an address of its own making (ADR 0730) | The kernel touches only the caller's memory through such an address, so a wrong one spoils only that program; sysapi's `kernel::control` is the safe way to pass a buffer meanwhile. Which of the two suits the generator, ridlc, is open |
 | The SD 64 KiB and 1 MiB benchmark rows: printed but not gated (ADR 0552) | QEMU's SD emulation takes nearly all of both systems' time, and its speed moves with the runner; a real reader in the lab would show each system's own work |
 | Printing: the design's open questions | Drafted for a release after 1.0 |
 | Known weak spots to plan for: Wi-Fi, Bluetooth and webcams; large desktop apps; Btrfs maturity | Raised, not yet discussed |
-| Nightly system releases on the update server, and the key that signs them (ADRs 0456, 0467); to decide before 1.0.0-alpha.1 | The server offers stable and beta; a nightly release would be signed at every merge with no person there, and ADR 0457 keeps release keys off servers and out of CI |
-| The update server's online keys kept encrypted at rest, as ADR 0457's table has them (ADRs 0382, 0467); to decide before 1.0.0-alpha.1 | They are files only their system users read; a timer signs with them with nobody there, so a key the server decrypts itself guards only a copy of its disk |
+| Nightly system releases after 1.0.0, and the key that signs them (ADR 0781) | There are none before 1.0.0: a nightly release would be signed at every merge with nobody there, and ADR 0457 keeps every key that signs a release off servers and out of CI |
 | A build taken out of the targets with `--remove` could be given its number again (ADR 0595) | Removing a signed target is rare, and a number given again is still ordered right: it is above every build the targets list |
 
 ## Documentation to bring up to date

@@ -138,6 +138,48 @@ fn tmpfs_files_and_directories() {
     assert!(names(&vfs, &root).is_empty());
 }
 
+/// While programs share a file's pages, it cannot be opened to write or
+/// be cut, and its pages are kept only while no handle may write it
+/// (ADR 0658). Removing and renaming it are as before.
+#[test]
+fn a_file_whose_pages_are_kept_takes_no_writer() {
+    let vfs = vfs();
+    let root = vfs.root();
+    write(&vfs, &root, "prog", b"code").unwrap();
+    let writes = OpenFlags { want: want::WRITE, ..OpenFlags::default() };
+    let reads = OpenFlags { want: want::READ, ..OpenFlags::default() };
+    let cut = OpenFlags { truncate: true, ..OpenFlags::default() };
+    let (file, writer) = vfs.open_file(&K, &root, "prog", writes).unwrap();
+    let access = file.node.write_access().unwrap();
+    assert!(writer.is_some());
+    // A handle may write it, so no pages are kept.
+    assert!(!access.deny_writes());
+    let again = writer.as_ref().unwrap().again();
+    drop(writer);
+    assert!(!access.deny_writes());
+    drop(again);
+    // Kept twice over, by two programs.
+    assert!(access.deny_writes());
+    assert!(access.deny_writes());
+    assert!(access.denied());
+    assert_eq!(vfs.open_file(&K, &root, "prog", writes).err(), Some(Error::TextBusy));
+    assert_eq!(vfs.open(&K, &root, "prog", cut).err(), Some(Error::TextBusy));
+    assert_eq!(read_all(&file.node), b"code");
+    let (_, reader) = vfs.open_file(&K, &root, "prog", reads).unwrap();
+    assert!(reader.is_none());
+    vfs.rename(&K, &root, "prog", &K, &root, "old").unwrap();
+    access.allow_writes();
+    assert_eq!(vfs.open_file(&K, &root, "old", writes).err(), Some(Error::TextBusy));
+    access.allow_writes();
+    assert!(!access.denied());
+    let (_, writer) = vfs.open_file(&K, &root, "old", cut).unwrap();
+    assert!(writer.is_some());
+    assert_eq!(read_all(&file.node), b"");
+    // A directory has no count.
+    vfs.make_directory(&K, &root, "dir", DIR).unwrap();
+    assert!(vfs.open(&K, &root, "dir", reads).unwrap().node.write_access().is_none());
+}
+
 #[test]
 fn tmpfs_times_are_set() {
     let vfs = vfs();

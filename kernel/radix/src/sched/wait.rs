@@ -52,11 +52,11 @@
 //! run queue's.
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering, fence};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use radix_hal::{CpuLocal, MAX_CPUS};
 use radix_mm::Kmalloc;
-use radix_sync::{RawMutex, SpinLock};
+use radix_sync::{RawMutex, SpinLock, barrier};
 
 use super::thread::ThreadRef;
 use super::{current, registry_find, set_boost};
@@ -348,7 +348,7 @@ impl WaitCount {
     /// if anyone waits. It takes a full barrier first, whether or not it
     /// wakes anyone, which a caller may count on for what it reads next.
     pub fn wake_all(&self, key: usize) {
-        fence(Ordering::SeqCst);
+        barrier::full();
         if self.0.load(Ordering::Relaxed) > 0 {
             wake_all(key);
         }
@@ -356,7 +356,7 @@ impl WaitCount {
 
     /// [`wake_one`], with no lock taken while nobody waits.
     pub fn wake_one(&self, key: usize) {
-        fence(Ordering::SeqCst);
+        barrier::full();
         if self.0.load(Ordering::Relaxed) > 0 {
             wake_one(key);
         }
@@ -364,7 +364,7 @@ impl WaitCount {
 
     fn count(&self) -> Counted<'_> {
         self.0.fetch_add(1, Ordering::SeqCst);
-        fence(Ordering::SeqCst);
+        barrier::after_rmw();
         Counted(&self.0)
     }
 }

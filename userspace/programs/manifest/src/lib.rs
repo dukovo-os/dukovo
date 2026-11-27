@@ -13,6 +13,7 @@
 //! the same types, so the two can never drift apart. An error says which
 //! line is wrong and why, in plain words.
 
+#![forbid(unsafe_code)]
 #![no_std]
 
 extern crate alloc;

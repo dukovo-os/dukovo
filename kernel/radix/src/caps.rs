@@ -35,15 +35,16 @@
 //! whatever an object takes when it closes ([`release`]), which runs with
 //! no record's lock held.
 //!
-//! The store has a version number for the caches outside it: each CPU
-//! keeps the capabilities its system calls found, with the version the
-//! store had before the lookup (`user::objects`), and the version moves
-//! whenever a capability some CPU found leaves its slot, or an object
-//! some CPU found leaves the store ([`mark_stale`]), before the operation
-//! that took it away returns. Other changes, such as a capability put in an
+//! Each space has version words for the caches outside the store: each
+//! CPU keeps the capabilities its system calls found, with what the
+//! slot's word said before the lookup (`user::objects`), and the word
+//! moves whenever a capability some CPU found leaves a slot that picks it
+//! (its number modulo `radix_cap::SLOT_VERSIONS`), before the space's
+//! lock goes (ADR 0656). Other changes, such as a capability put in an
 //! empty slot or one nobody looked up deleted, leave every cache as it
-//! is. So programs on different CPUs using their capabilities at once do
-//! not contend, and opening and closing files does not empty the caches.
+//! is, and a close in one program leaves the others' caches alone. So
+//! programs on different CPUs using their capabilities at once do not
+//! contend, and opening and closing files does not empty the caches.
 //!
 //! What the store releases is closed under its locks, or after them on a
 //! fast-path delete, but some of the work that follows waits until they
@@ -60,7 +61,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use radix_cap::{
     CapError, Capabilities, Capability, Derivation, MAX_DEPTH, MAX_SLOTS, ObjectId, ObjectKind,
-    Progress, Released, Rights, SlotRef, SpaceId, SpaceView, TreeView,
+    Progress, Released, Rights, SlotRef, SlotVersion, SpaceId, SpaceView, TreeView,
 };
 use radix_klog::{error, info};
 use radix_mm::{FRAMES, Flags, HEAP, Kmalloc, Owner, PAGE_SHIFT};
@@ -196,23 +197,11 @@ fn finish_queued() {
     crate::user::process::report_finished();
 }
 
-/// The store's version: it moves when a capability a CPU found leaves its
-/// slot, before the space's lock goes, and when an object a CPU found
-/// leaves the store (`user::objects`), before the operation that released
-/// it returns. Read
-/// before a lookup, it says the lookup's answer still holds while it
-/// stays the same.
-pub fn version() -> u64 {
-    STORE.get().map_or(0, Store::version)
-}
-
-/// Says that a change took away something a CPU may have cached outside
-/// the store (a kernel object the store kept): the version moves now,
-/// before the operation that took it away returns.
-pub fn mark_stale() {
-    if let Some(store) = STORE.get() {
-        store.bump_version();
-    }
+/// How many times a capability a CPU found has left its slot, for
+/// `/system/kernel/counters`: each time, the caches lost what they kept
+/// of the slots that share its version word.
+pub fn cached_departures() -> u64 {
+    STORE.get().map_or(0, Store::cached_departures)
 }
 
 /// The capability in `at`, as [`Store::get`] gives it: for lookups too
@@ -223,21 +212,23 @@ pub fn get(at: SlotRef) -> Result<Capability, CapError> {
 }
 
 /// The capability in `at`, for a CPU's cache to keep (`user::objects`):
-/// from now on the version moves once it leaves its slot
+/// from now on the slot's version word moves once it leaves the slot
 /// ([`Space::get_to_cache`]). With it come what `also` finds in the
 /// record of the kernel object it names, if any, with the space's lock
-/// still held and the record's taken, and the version read before the
-/// lookup: any change to the slot after the lookup moves it past that.
+/// still held and the record's taken, the word, and what it said before
+/// the lookup: any change to the slot after the lookup moves it past
+/// that.
 pub fn get_to_cache<R>(
     at: SlotRef,
     also: impl FnOnce(&mut Recorded) -> R,
-) -> Result<(Capability, Option<R>, u64), CapError> {
+) -> Result<(Capability, Option<R>, SlotVersion<'static>, u64), CapError> {
     let store = store()?;
-    let version = store.version();
+    let word = store.slot_version(at).ok_or(CapError::NoSuchSpace)?;
+    let version = word.get();
     store.in_space(at.space, |space| {
         let cap = space.get_to_cache(at)?;
         let found = cap.id().and_then(|id| space.with_kept(id, also));
-        Ok((cap, found, version))
+        Ok((cap, found, word, version))
     })?
 }
 

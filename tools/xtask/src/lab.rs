@@ -5,7 +5,7 @@
 //! the lab tests, and `ob lab`, which runs the lab's harness on this
 //! tree's tests in `lab/tests`.
 //!
-//! A lab image is an installed system's disk with four things added,
+//! A lab image is an installed system's disk with five things added,
 //! all outside the system's slot, so that no release (which is made from
 //! the slot alone) can ever carry them:
 //!
@@ -18,7 +18,13 @@
 //!   says the image is a test image;
 //! - netlog's settings naming the lab PC on the lab network ([`NETLOG`]),
 //!   so a real machine with no serial port sends its log to the lab, which
-//!   reads it as the machine's console.
+//!   reads it as the machine's console;
+//! - Dukovo's own catalog turned off, as `bundle catalog remove dukovo`
+//!   turns it off: the lab's tests install the lab's own builds, from the
+//!   lab's catalog, and a catalog on the internet that vouches for an
+//!   app's publisher would refuse them (ADR 0592) on a machine that
+//!   reaches it, as QEMU's does, and not on the lab network's, which do
+//!   not.
 //!
 //! The harness itself, dukovo-lab, lives in dukovo-os/lab; `ob lab` finds
 //! it on PATH (or at `OB_LAB`), builds the lab image and passes it on.
@@ -60,6 +66,9 @@ use crate::{
 
 /// The lab's account.
 pub const ACCOUNT: &str = "lab";
+
+/// Dukovo's own catalog, which the lab image turns off.
+const DUKOVO_CATALOG: &str = "dukovo";
 
 /// Its full name, as `user list` shows it.
 const FULL_NAME: &str = "Dukovo Lab";
@@ -255,10 +264,11 @@ impl Key {
     }
 }
 
-/// Adds the lab's account, home, key, sshd and banner to a root being
-/// staged in `staging`, whose subvolumes are named as `ob image` names
-/// them; `system` is its staged system slot, which is not changed. Gives
-/// the home, which must be the account's.
+/// Adds the lab's account, home, key, sshd, banner, netlog settings and
+/// Dukovo's catalog turned off to a root being staged in `staging`, whose
+/// subvolumes are named as `ob image` names them; `system` is its staged
+/// system slot, which is not changed. Gives the home, which must be the
+/// account's.
 pub fn stage(staging: &Path, system: &Path, access: &Access) -> Result<Owned> {
     let settings = staging.join("@settings");
     let key = &access.key;
@@ -296,6 +306,16 @@ pub fn stage(staging: &Path, system: &Path, access: &Access) -> Result<Owned> {
 
     // netlog sends nothing by default; the lab image names the lab PC.
     write(&settings.join("netlog"), NETLOG, 0o644)?;
+
+    // Dukovo's own catalog, off, where the system comes with it (a build
+    // with no release root has none): Spark copies its address and root
+    // in beside the file, as it copies every default setting the settings
+    // lack, and bundled reads it as off.
+    let own = Path::new("catalogs").join(DUKOVO_CATALOG);
+    if system.join(defaults).join(&own).is_dir() {
+        make_dir(&settings.join(&own), 0o755)?;
+        write(&settings.join(&own).join("off"), "", 0o644)?;
+    }
 
     Ok(Owned { path: Path::new("@users").join(ACCOUNT), owner, group })
 }
@@ -610,15 +630,16 @@ const UPDATES_ENV: &str = "DUKOVO_LAB_UPDATES";
 const BUNDLES_ENV: &str = "DUKOVO_LAB_BUNDLES";
 
 /// The variable that names the folder of the test catalog, `out/lab-catalog`,
-/// for the web console's test of adding an app, whose host step
-/// (`lab/tests/web-console/add-app-catalog.sh`) copies it onto the machine:
-/// `catalog/`, as a server serves it, and `root.json`, its first root, of a
-/// catalog signed with throwaway keys that lists the bundles of
-/// [`CATALOG_BUNDLES`], packed from the same tree.
+/// which every test that installs nginx or Python installs them from, as the
+/// catalog `labtest`, and whose host step (`lab/tests/services/lab-catalog.sh`)
+/// copies it onto the machine: `catalog/`, as a server serves it, and
+/// `root.json`, its first root, of a catalog signed with throwaway keys that
+/// lists the bundles of [`CATALOG_BUNDLES`], packed from the same tree.
 const CATALOG_ENV: &str = "DUKOVO_LAB_CATALOG";
 
 /// The bundles the test catalog lists: the two the web console's test of
-/// adding an app searches for, reads the sheet of and installs.
+/// adding an app searches for, reads the sheet of and installs, and the lab's
+/// tests install from it.
 const CATALOG_BUNDLES: [&str; 2] = ["org.nginx.nginx", "org.python.python"];
 
 /// The variable that names the folder of the ports' builds, `out/ports`,
@@ -1378,7 +1399,7 @@ mod tests {
     }
 
     #[test]
-    fn stages_the_account_home_key_sshd_banner_and_netlog_beside_the_system() {
+    fn stages_the_account_home_key_sshd_banner_netlog_and_catalog_beside_the_system() {
         let staging = std::env::temp_dir().join(format!("ob-lab-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&staging);
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -1395,6 +1416,8 @@ mod tests {
         for name in ["passwd", "group", "issue"] {
             std::fs::copy(root.join("userspace/defaults").join(name), defaults.join(name)).unwrap();
         }
+        std::fs::create_dir_all(defaults.join("catalogs/dukovo")).unwrap();
+        std::fs::write(defaults.join("catalogs/dukovo/url"), "https://example.org/\n").unwrap();
         let access = Access { key: Key::parse(KEY).unwrap(), password_hash: None };
         let owned = stage(&staging, &system, &access).unwrap();
         assert_eq!(owned, Owned { path: "@users/lab".into(), owner: 1000, group: 1000 });
@@ -1410,6 +1433,7 @@ mod tests {
         );
         assert!(read("@settings/issue").ends_with(&format!("{BANNER}\n")));
         assert!(read("@settings/netlog").lines().any(|line| line == "target = 10.77.0.1:6666"));
+        assert_eq!(read("@settings/catalogs/dukovo/off"), "", "Dukovo's own catalog is off");
         assert!(std::fs::metadata(staging.join("@users/lab/documents")).unwrap().is_dir());
         let mode = |path: &str| {
             use std::os::unix::fs::PermissionsExt as _;
@@ -1423,7 +1447,8 @@ mod tests {
         let mut staged: Vec<_> =
             std::fs::read_dir(&defaults).unwrap().map(|e| e.unwrap().file_name()).collect();
         staged.sort();
-        assert_eq!(staged, ["group", "issue", "passwd"]);
+        assert_eq!(staged, ["catalogs", "group", "issue", "passwd"]);
+        assert!(!defaults.join("catalogs/dukovo/off").exists());
         assert!(!read("@system.a/resources/default-settings/issue").contains(BANNER));
         std::fs::remove_dir_all(&staging).unwrap();
     }

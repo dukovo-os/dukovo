@@ -37,8 +37,9 @@ time = "50m"
 fresh = true
 host_needs = ["python3", "ssh", "scp", "tar", "curl", "base64", "cmp", "cargo"]
 
-# The test update server this tree builds, the setup's files and nginx's
-# bundle: without them the test is skipped, before it changes anything.
+# The test update server this tree builds, the setup's files and the lab's
+# catalog, which nginx comes from: without them the test is skipped, before
+# it changes anything.
 [[step]]
 host = "sh {here}/server-on-dukovo.sh needs"
 expect = "the test update server and the setup's files are there"
@@ -68,17 +69,21 @@ run = "ls /system/state/sysupdate/metadata"
 root = true
 expect = ["snapshot.json", "timestamp.json"]
 
-# NEW, steps 4 and 5: nginx's bundle, which setup would fetch from the
-# catalog, the files of the setup copied as ob copies them, the online keys
+# NEW, steps 4 and 5: nginx from the lab's catalog, as setup would fetch it
+# from Dukovo's, the files of the setup copied as ob copies them, the online keys
 # in the lab account's own /tmp, and setup run through elevate. The eight
 # jobs are service files with timers that timerd starts; each online key is
 # a secret of the jobs that sign with it. The receiver of the canaries'
 # reports (ADR 0533) is a ninth service file, with no timer.
 [[step]]
-host = "sh {here}/../services/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
-expect = "copied: org.nginx.nginx"
+host = "sh {here}/../services/lab-catalog.sh {machine} {machine-port:22}"
+expect = "copied: the test catalog"
 [[step]]
-run = "sh -c 'bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+run = "sh /users/lab/lab-catalog-add.sh"
+root = true
+expect = "added catalog labtest, which lists"
+[[step]]
+run = "sh -c 'bundle install --for-everyone --yes org.nginx.nginx --from labtest | tail -1'"
 root = true
 expect = "installed org.nginx.nginx"
 [[step]]

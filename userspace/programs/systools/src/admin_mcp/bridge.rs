@@ -30,8 +30,10 @@
 
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
+
+use sysapi::poll::{self, PollFd};
 
 use crate::admind::mcp::protocol;
 use crate::admind::mcp::rpc::{self, Error, Id, Incoming, MESSAGE_MAX, Message, Refused};
@@ -176,18 +178,11 @@ fn failure(id: Option<&Id>, error: Error) -> String {
 }
 
 /// Reads what `fd` has into `buffer`: how many bytes, 0 at its end.
-fn read_from(fd: RawFd, buffer: &mut [u8]) -> io::Result<usize> {
+fn read_from(fd: BorrowedFd<'_>, buffer: &mut [u8]) -> io::Result<usize> {
     loop {
-        // SAFETY: the buffer is valid for its length.
-        let read = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
-        match usize::try_from(read) {
-            Ok(read) => return Ok(read),
-            Err(_) => {
-                let error = io::Error::last_os_error();
-                if error.kind() != io::ErrorKind::Interrupted {
-                    return Err(error);
-                }
-            }
+        match sysapi::fd::read(fd, buffer) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            read => return read,
         }
     }
 }
@@ -306,40 +301,41 @@ impl<W: Write> Bridge<'_, W> {
         }
     }
 
+    /// Waits until the client's `input` has a message, the console has
+    /// an answer, or the console takes what is kept for it. The client is
+    /// not read while too much is kept. Returns what each has: the
+    /// client, then the console.
+    fn wait(&self, input: BorrowedFd<'_>) -> io::Result<(i16, i16)> {
+        let reads_client = self.kept.len() < KEPT_MAX;
+        let console = self.link.as_ref().map(|link| link.stream.as_fd());
+        let writes = if self.kept.is_empty() { 0 } else { libc::POLLOUT };
+        let mut fds = [
+            PollFd::optional(reads_client.then_some(input), libc::POLLIN),
+            PollFd::optional(console, libc::POLLIN | writes),
+        ];
+        poll::poll(&mut fds, None)?;
+        Ok((fds[0].revents(), fds[1].revents()))
+    }
+
     /// Carries messages until the client's `input` ends.
-    fn run(&mut self, input: RawFd) -> io::Result<()> {
+    fn run(&mut self, input: BorrowedFd<'_>) -> io::Result<()> {
         let mut from_client = Lines::new(MESSAGE_MAX);
         let mut buffer = [0u8; 16 * 1024];
         loop {
-            let reads_client = self.kept.len() < KEPT_MAX;
-            let console = self.link.as_ref().map_or(-1, |link| link.stream.as_raw_fd());
-            let writes = if self.kept.is_empty() { 0 } else { libc::POLLOUT };
-            let mut fds = [
-                libc::pollfd {
-                    fd: if reads_client { input } else { -1 },
-                    events: libc::POLLIN,
-                    revents: 0,
-                },
-                libc::pollfd { fd: console, events: libc::POLLIN | writes, revents: 0 },
-            ];
-            // SAFETY: two valid pollfds.
-            let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
-            if ready < 0 {
-                let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(error);
-            }
+            let (client, console) = match self.wait(input) {
+                Ok(ready) => ready,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            };
             // Its answers first, so that a request that is answered is
             // not told it failed.
-            if fds[1].revents & !libc::POLLOUT != 0 {
+            if console & !libc::POLLOUT != 0 {
                 self.read_console()?;
             }
-            if fds[1].revents & libc::POLLOUT != 0 {
+            if console & libc::POLLOUT != 0 {
                 self.write_kept()?;
             }
-            if fds[0].revents != 0 {
+            if client != 0 {
                 let read = read_from(input, &mut buffer)?;
                 if read == 0 {
                     return Ok(());
@@ -363,7 +359,7 @@ impl<W: Write> Bridge<'_, W> {
 /// When the client cannot be read or written to. The console's failures
 /// are answered to the client, and are not the bridge's.
 pub fn carry(
-    input: RawFd,
+    input: BorrowedFd<'_>,
     out: impl Write,
     link: Option<Link>,
     connect: &mut dyn FnMut() -> Result<Link, String>,

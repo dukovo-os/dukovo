@@ -14,7 +14,8 @@
 // beneath directory descriptors, the identity of a named pipe opened by
 // its path, a slash after the name an open makes, a slash or a dot after
 // a file and mkdir of a dot, close_range, the space a removed tmpfs
-// file gives back, and a tmpfs folder of 40,000 entries.
+// file gives back, a tmpfs folder of 40,000 entries, and a file no one
+// may write, which refuses writers while programs share its pages.
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -1071,6 +1072,66 @@ static void mapped(void) {
 	CHECK(!close(fd) && !unlink("/tmp/mapped"));
 }
 
+// A file no one may write by its mode has its pages kept once for every
+// program that maps it, and while they are, opening it to write or to cut
+// fails with ETXTBSY, as Linux's open of a program that runs does
+// (ADR 0658). A file open to write when it is mapped is mapped as a copy
+// for each program, and writes open as before. Reading, renaming, linking
+// and changing its mode take no writer.
+static void busy_while_shared(void) {
+	enum { SIZE = 2 * 4096 };
+	static char pattern[SIZE];
+	for(int i = 0; i < SIZE; i++)
+		pattern[i] = (char)(i % 241);
+	const char *path = "/tmp/files-busy";
+	int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+	CHECK(fd >= 0 && write(fd, pattern, SIZE) == SIZE);
+	CHECK(fchmod(fd, 0555) == 0);
+	// A handle may write it: each mapping is a copy, and writes open.
+	char *copy = mmap(NULL, SIZE, PROT_READ, MAP_PRIVATE, fd, 0);
+	CHECK(copy != MAP_FAILED && !memcmp(copy, pattern, SIZE));
+	int other = open(path, O_WRONLY);
+	CHECK(other >= 0 && close(other) == 0);
+	CHECK(munmap(copy, SIZE) == 0 && close(fd) == 0);
+	// None may: its pages are kept, and writers are refused.
+	fd = open(path, O_RDONLY);
+	char *map = mmap(NULL, SIZE, PROT_READ, MAP_PRIVATE, fd, 0);
+	CHECK(map != MAP_FAILED && !memcmp(map, pattern, SIZE));
+	CHECK_ERROR(open(path, O_WRONLY), ETXTBSY);
+	CHECK_ERROR(open(path, O_RDWR), ETXTBSY);
+	CHECK_ERROR(open(path, O_RDONLY | O_TRUNC), ETXTBSY);
+	CHECK_ERROR(truncate(path, 0), ETXTBSY);
+	struct stat st;
+	CHECK(stat(path, &st) == 0 && st.st_size == SIZE);
+	int reader = open(path, O_RDONLY);
+	CHECK(reader >= 0 && close(reader) == 0);
+	CHECK(rename(path, "/tmp/files-busy-2") == 0);
+	CHECK(link("/tmp/files-busy-2", path) == 0);
+	CHECK(chmod(path, 0444) == 0);
+	CHECK_ERROR(open("/tmp/files-busy-2", O_WRONLY), ETXTBSY);
+	// A child keeps the mapping it was forked with, and the file busy.
+	pid_t pid = check_fork();
+	if(pid == 0) {
+		CHECK(!memcmp(map, pattern, SIZE));
+		CHECK_ERROR(open(path, O_WRONLY), ETXTBSY);
+		check_exit_child();
+	}
+	int status = 0;
+	CHECK(pid > 0 && waitpid(pid, &status, 0) == pid);
+	CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	// Busy until the last mapping goes.
+	char *second = mmap(NULL, 4096, PROT_READ, MAP_PRIVATE, fd, 4096);
+	CHECK(second != MAP_FAILED && !memcmp(second, pattern + 4096, 4096));
+	CHECK(munmap(map, SIZE) == 0);
+	CHECK_ERROR(open(path, O_WRONLY), ETXTBSY);
+	CHECK(munmap(second, 4096) == 0);
+	other = open(path, O_WRONLY | O_TRUNC);
+	CHECK(other >= 0);
+	CHECK(fstat(fd, &st) == 0 && st.st_size == 0);
+	CHECK(close(other) == 0 && close(fd) == 0);
+	CHECK(unlink(path) == 0 && unlink("/tmp/files-busy-2") == 0);
+}
+
 // A tmpfs charges a file by the pages it holds, as Linux's does: a byte
 // written far past the end costs one page and the hole before it none, so
 // a sparse file longer than the limit of /tmp fits (CPython's test_io
@@ -1862,6 +1923,7 @@ int main(void) {
 	RUN(climbing);
 	RUN(path_forms);
 	RUN(mapped);
+	RUN(busy_while_shared);
 	RUN(tmpfs_space);
 	RUN(large_folder);
 	RUN(folder_names);

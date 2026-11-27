@@ -131,9 +131,12 @@ test('each page with its style sheets is within 150 KB beyond the shell', () => 
 // Hardware's row is 6,000 more than the plan's: the disks' rows and the memory test at the next restart,
 // and 1,000 more for lib/how.js, which the task words it reads take in to name the client that asked for a task,
 // and 500 more for the Screens card; its list and its model are read when its button is pressed and are not in the row.
-// Move's is 500 more than 107,000 for the same.
+// It is 2,500 more again for the Battery and UPS card, its model and its bar (ADR 0741), which a machine
+// with neither never reads.
+// Move's is 500 more than 107,000 for lib/how.js too.
 // Alerts' is 5,000 more than 60,000: 4,000 for the kinds of alert each channel is told of and 1,000 for the card of Set up a phone.
 // Security's is 2,500 more than 147,000: 1,500 for the rows of its Alerts card, one for each kind of alert, and 1,000 for the steps' rules in pages.css.
+// It is 300 more again for the trial banner's count of its journal reads, so that a late answer does not hide who began a trial.
 // Add an app, Websites and Databases each keep about 1,000 of room over what
 // they bring; Websites' list reads the whole model of a site, its words and checks.
 // Databases' row is 4,200 more than it was, for the firewall's row and its rule that
@@ -146,11 +149,11 @@ test('each page with its style sheets is within 150 KB beyond the shell', () => 
 const PAGE_LIMITS = {
   updates: 82_700,
   apps: 62_700,
-  hardware: 62_500,
+  hardware: 65_000,
   certificates: 60_000,
   report: 67_000,
   alerts: 65_000,
-  security: 149_500,
+  security: 149_800,
   move: 107_500,
   reliability: 22_000,
   terminal: 149_908,

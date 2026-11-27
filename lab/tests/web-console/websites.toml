@@ -69,8 +69,12 @@ expect = ["Made wc-websites", "Made wc-websites-reader", "wc-websites-reader is 
 host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
 expect = '{"ok":true}'
 [[step]]
-host = "sh {here}/../services/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
-expect = "copied: org.nginx.nginx"
+host = "sh {here}/../services/lab-catalog.sh {machine} {machine-port:22}"
+expect = "copied: the test catalog"
+[[step]]
+run = "sh /users/lab/lab-catalog-add.sh"
+root = true
+expect = "added catalog labtest, which lists"
 [[step]]
 host = "sh {here}/../services/copy-bundle.sh net.php.php {machine} {machine-port:22}"
 expect = "copied: net.php.php"
@@ -81,7 +85,7 @@ expect = "copied: websites.sh"
 # nginx and PHP-FPM, from nothing: a run before may have left either installed,
 # with sites. Both are turned on, as the page leaves a machine that has them.
 [[step]]
-run = "sh -c 'sh /users/lab/websites.sh reset > /dev/null 2>&1; service php-fpm disable > /dev/null 2>&1; service nginx disable > /dev/null 2>&1; bundle remove --for-everyone --purge net.php.php > /dev/null 2>&1; bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+run = "sh -c 'sh /users/lab/websites.sh reset > /dev/null 2>&1; service php-fpm disable > /dev/null 2>&1; service nginx disable > /dev/null 2>&1; bundle remove --for-everyone --purge net.php.php > /dev/null 2>&1; bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle install --for-everyone --yes org.nginx.nginx --from labtest | tail -1'"
 root = true
 expect = "installed org.nginx.nginx"
 [[step]]
@@ -363,7 +367,7 @@ expect = "gone"
 # Pebble made gone, the resolver and the authorities the system's, and the
 # accounts gone.
 [[step]]
-run = '''sh -c 'cert remove site.acme-lab.example > /dev/null 2>&1; service php-fpm disable > /dev/null 2>&1; service nginx disable > /dev/null 2>&1; bundle remove --for-everyone --purge net.php.php > /dev/null 2>&1; bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; cp /users/lab/wc-web-resolved.orig /system/settings/resolved && service resolved reload; ln -sf /system/resources/certificates/ca-certificates.crt /system/settings/ssl/certs/ca-certificates.crt; rm -f /users/lab/wc-web-* /users/lab/ca.pem /users/lab/issuer.pem /users/lab/websites.sh /users/lab/org.nginx.nginx.dkv /users/lab/net.php.php.dkv; rm -rf /shared/www/sites; echo restored' '''
+run = '''sh -c 'cert remove site.acme-lab.example > /dev/null 2>&1; service php-fpm disable > /dev/null 2>&1; service nginx disable > /dev/null 2>&1; bundle remove --for-everyone --purge net.php.php > /dev/null 2>&1; bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; cp /users/lab/wc-web-resolved.orig /system/settings/resolved && service resolved reload; ln -sf /system/resources/certificates/ca-certificates.crt /system/settings/ssl/certs/ca-certificates.crt; rm -f /users/lab/wc-web-* /users/lab/ca.pem /users/lab/issuer.pem /users/lab/websites.sh /users/lab/net.php.php.dkv; rm -rf /shared/www/sites; echo restored' '''
 root = true
 expect = "restored"
 [[step]]

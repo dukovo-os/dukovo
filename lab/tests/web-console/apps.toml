@@ -34,28 +34,21 @@
 # apps.not-tonight, apps.hold, apps.unhold, apps.remove.
 about = "The web console's Apps pages in each engine: the apps from what bundle list says, an app's facts and size from bundle info, Hold with its reason and Release the hold, Tonight and Not tonight where an app has an update, Remove asks to unlock, says what uses the app and asks for its name before the data goes, nginx removed with its data kept, an app that is not there, a reader, and the phone"
 time = "20m"
-host_needs = ["curl", "scp"]
+host_needs = ["curl", "scp", "ssh"]
 
 [[step]]
 run = "sh -c 'echo lab-console-password | user add --admin wc-apps && echo lab-console-password | user add wc-apps-reader && user set --console --yes wc-apps-reader'"
 root = true
 expect = ["Made wc-apps", "Made wc-apps-reader", "wc-apps-reader is changed"]
-# The apps come from a catalog of the test's own, `labtest`, as add-app does:
-# the catalog that dukovo vouches for the publisher of nginx and Python in
-# refuses a loose file of either (registry.rs), and an app installed from
-# `labtest` stays bound to it (ADR 0383), so a later test of the same boot
-# that installs from a file would be refused as well. The copy a run before
-# may have left is taken away first. The test skips where the lab has no test
-# catalog (add-app-catalog.sh says what it is).
+# The apps come from the lab's catalog, `labtest`, as every lab test that
+# installs them has them (services/lab-catalog.sh says why). The copy a test
+# before may have left is replaced. The test skips where the lab has no test
+# catalog.
 [[step]]
-run = "sh -c 'bundle catalog remove labtest > /dev/null 2>&1; rm -rf /users/lab/lab-catalog /shared/lab-catalog; echo cleared'"
-root = true
-expect = "cleared"
-[[step]]
-host = "sh {here}/add-app-catalog.sh {machine} {machine-port:22}"
+host = "sh {here}/../services/lab-catalog.sh {machine} {machine-port:22}"
 expect = "copied: the test catalog"
 [[step]]
-run = "sh -c 'cp -r /users/lab/lab-catalog /shared/lab-catalog && chmod -R a+rX /shared/lab-catalog && bundle catalog add labtest file:///shared/lab-catalog/catalog /shared/lab-catalog/root.json'"
+run = "sh /users/lab/lab-catalog-add.sh"
 root = true
 expect = "added catalog labtest, which lists"
 # The console answers within seconds of the boot; its last answer is shown

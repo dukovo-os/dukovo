@@ -187,7 +187,7 @@ fn running() -> Running {
             Ok(Link { stream: ours, until: UNTIL })
         };
         let clock = || clock.load(Ordering::SeqCst);
-        carry(input.as_raw_fd(), out, None, &mut connect, &clock)
+        carry(input.as_fd(), out, None, &mut connect, &clock)
     });
     Running { client, consoles, refusal, now, bridge }
 }

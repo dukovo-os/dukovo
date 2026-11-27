@@ -56,6 +56,6 @@ pub use object::{KINDS, Object, ObjectId, ObjectKind, Target};
 pub use rights::Rights;
 pub use store::{
     Capabilities, Census, Extent, Fast, Inconsistency, Located, MAX_DEPTH, MAX_RETYPE, MAX_SLOTS,
-    OBJECT_BLOCK, OBJECT_BLOCKS, ObjectInfo, Progress, Released, SLOT_BYTES, SlotRef, SpaceId,
-    SpaceView, TreeView,
+    OBJECT_BLOCK, OBJECT_BLOCKS, ObjectInfo, Progress, Released, SLOT_BYTES, SLOT_VERSIONS,
+    SlotRef, SlotVersion, SpaceId, SpaceView, TreeView,
 };
