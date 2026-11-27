@@ -185,7 +185,7 @@ fn hears(tie: Option<u32>, front: u32, attention: u32, held: bool) -> bool {
     match tie {
         _ if held => attention != 0 && tie == Some(attention),
         None => true,
-        Some(holder) => holder == front,
+        Some(holder) => holder != 0 && holder == front,
     }
 }
 
@@ -411,6 +411,17 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
             reader.waker.wake();
         }
         Ok(())
+    }
+
+    /// The display holder `holder` has ended: the readers tied to it
+    /// stay tied, to nobody, and hear nothing more. The number may be
+    /// given to a new holder after this.
+    pub fn forget(&mut self, holder: u32) {
+        for reader in &mut self.readers {
+            if reader.tie == Some(holder) {
+                reader.tie = Some(0);
+            }
+        }
     }
 
     /// The display holder `holder` is in front from `now`; 0 for nobody.

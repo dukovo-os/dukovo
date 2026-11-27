@@ -246,6 +246,22 @@ fn while_nobody_is_in_front_tied_readers_hear_nothing_and_nothing_is_kept() {
 }
 
 #[test]
+fn a_reader_tied_to_a_holder_that_ended_hears_nothing_more() {
+    let mut hub = hub();
+    hub.front_is(5, 0);
+    open(&mut hub, 1, Source::Device(0));
+    hub.tie(1, 5, 0).unwrap();
+    // The holder ends: nobody is in front, and its number is free.
+    hub.front_is(0, 1);
+    hub.forget(5);
+    // A new holder is given the old number and comes to the front.
+    hub.front_is(5, 2);
+    hub.frame(0, 3, &[Said::key(KEY_A, true)]);
+    assert_eq!(events(&mut hub, 1), [PAUSED]);
+    assert_eq!(hub.tie(1, 5, 4), Err(Refused::Tied));
+}
+
+#[test]
 fn tying_forgets_what_came_before_and_is_done_once() {
     let mut hub = hub();
     hub.front_is(5, 0);
