@@ -273,13 +273,6 @@ fn requirements() -> Vec<Requirement> {
             fallback: None,
         },
         Requirement {
-            name: "strace",
-            purpose: "lists the Linux calls Node.js makes, which the linux-node boot test checks Dukovo has",
-            found: |_| program_version("strace", "-V"),
-            packages: all("strace"),
-            fallback: None,
-        },
-        Requirement {
             name: "flex",
             purpose: "builds GRUB's lexer",
             found: |_| program_version("flex", "--version"),
@@ -789,6 +782,15 @@ pub fn doctor(ctx: &Ctx) -> Result<()> {
     // Linux's restic, and leaves that part out without it; CI's boot jobs
     // install it.
     note_programs("restic", &["restic"], "the restic-backup boot test's last steps", "restic");
+    // Only the linux-node boot test runs Node.js on the build machine
+    // under strace, to list the Linux calls it makes; CI's boot jobs
+    // install it.
+    note_programs(
+        "strace",
+        &["strace"],
+        "the linux-node boot test's runs of Node.js on the build machine",
+        "strace",
+    );
     match crate::lab::tool_found() {
         Some(path) => println!("  ok       {:<15} {}", "dukovo-lab", path.display()),
         None => println!(
