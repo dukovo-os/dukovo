@@ -21,6 +21,11 @@
 // USER_NOTIF is made), the program checks Dukovo's answer when `uname -v`
 // says Dukovo and Linux's elsewhere.
 //
+// /proc/self/status names the seccomp mode, the filters and no_new_privs.
+// Dukovo's Linux view has /proc, from linuxd; a Linux program run by its
+// name has none, so there the checks of the status lines are left out, and
+// the boot test runs `seccomp --status` through `linux run` to make them.
+//
 // Every filter is installed in a child of its own, as nothing takes one
 // away.
 
@@ -119,6 +124,10 @@ static int on_dukovo;
 // The program's own path, which `inherited` runs.
 static const char *self;
 
+// Whether the process has /proc/self/status: always on Linux, and on
+// Dukovo in the Linux view.
+static int has_proc;
+
 static long seccomp_call(unsigned operation, unsigned flags, const void *args) {
 	return syscall(SYS_seccomp, operation, flags, args);
 }
@@ -207,6 +216,13 @@ static int status_says(const char *line) {
 	return found;
 }
 
+// Checks that /proc/self/status has the line `line`, where there is one.
+#define CHECK_STATUS(line) \
+	do { \
+		if(has_proc) \
+			CHECK(status_says(line)); \
+	} while(0)
+
 // --- What a process with no filter sees ---
 
 // The process has no filter, and the kernel names the eight actions it
@@ -231,7 +247,31 @@ static void before(void) {
 		CHECK_ERROR(seccomp_call(GET_NOTIF_SIZES, 0, sizes), EINVAL);
 	else
 		CHECK(seccomp_call(GET_NOTIF_SIZES, 0, sizes) == 0);
+	CHECK_STATUS("Seccomp:\t0");
+}
+
+// --- The status lines ---
+
+// What /proc/self/status says of a process with neither no_new_privs nor
+// a filter, then with each, and of its child, which keeps both.
+static void status_lines(void) {
+	CHECK(get_no_new_privs() == 0 && mode() == 0);
+	CHECK(status_says("NoNewPrivs:\t0"));
 	CHECK(status_says("Seccomp:\t0"));
+	CHECK(status_says("Seccomp_filters:\t0"));
+	CHECK(set_no_new_privs() == 0);
+	CHECK(status_says("NoNewPrivs:\t1"));
+	CHECK(refuse(SYS_getppid, RET_ERRNO | EXDEV, 0) == 0);
+	CHECK(status_says("Seccomp:\t2"));
+	CHECK(status_says("Seccomp_filters:\t1"));
+	pid_t pid = check_fork();
+	if(pid == 0) {
+		CHECK(status_says("NoNewPrivs:\t1"));
+		CHECK(status_says("Seccomp:\t2"));
+		CHECK(status_says("Seccomp_filters:\t1"));
+		check_exit_child();
+	}
+	CHECK_CHILD(pid);
 }
 
 // --- no_new_privs ---
@@ -250,7 +290,7 @@ static void privileges(void) {
 	CHECK(get_no_new_privs() == 0);
 	CHECK(set_no_new_privs() == 0);
 	CHECK(get_no_new_privs() == 1);
-	CHECK(status_says("NoNewPrivs:\t1"));
+	CHECK_STATUS("NoNewPrivs:\t1");
 	// Set again, it stays.
 	CHECK(set_no_new_privs() == 0);
 	pid_t pid = check_fork();
@@ -270,8 +310,8 @@ static void errno_action(void) {
 	CHECK(set_no_new_privs() == 0);
 	CHECK(refuse(SYS_getppid, RET_ERRNO | EXDEV, 0) == 0);
 	CHECK(mode() == MODE_FILTER);
-	CHECK(status_says("Seccomp:\t2"));
-	CHECK(status_says("Seccomp_filters:\t1"));
+	CHECK_STATUS("Seccomp:\t2");
+	CHECK_STATUS("Seccomp_filters:\t1");
 	CHECK_ERROR(parent_of_me(), EXDEV);
 	// The other calls are made.
 	CHECK(getpid() > 0 && getpid() != parent);
@@ -513,7 +553,7 @@ static void chain(void) {
 	CHECK_ERROR(parent_of_me(), EXDEV);
 	CHECK(refuse(SYS_getppid, RET_ERRNO | E2BIG, 0) == 0);
 	CHECK_ERROR(parent_of_me(), E2BIG);
-	CHECK(status_says("Seccomp_filters:\t5"));
+	CHECK_STATUS("Seccomp_filters:\t5");
 	// prctl adds one the same way.
 	const struct insn insns[] = {
 			STMT(LD_W_ABS, DATA_NR),
@@ -590,7 +630,7 @@ static int inherited(void) {
 	CHECK(mode() == MODE_FILTER);
 	CHECK(get_no_new_privs() == 1);
 	CHECK_ERROR(parent_of_me(), EXDEV);
-	CHECK(status_says("Seccomp_filters:\t1"));
+	CHECK_STATUS("Seccomp_filters:\t1");
 	return check_end();
 }
 
@@ -904,7 +944,7 @@ static void length(void) {
 	CHECK(room == 4036);
 	CHECK(install(longest + COUNT(longest) - room, room, 0) == 0);
 	CHECK_ERROR(install(longest + COUNT(longest) - 1, 1, 0), ENOMEM);
-	CHECK(status_says("Seccomp_filters:\t8"));
+	CHECK_STATUS("Seccomp_filters:\t8");
 	CHECK(getpid() > 0);
 }
 
@@ -915,7 +955,16 @@ int main(int argc, char **argv) {
 	self = argv[0];
 	struct utsname names;
 	on_dukovo = uname(&names) == 0 && strstr(names.version, "Dukovo") != NULL;
-	printf("seccomp: running on %s\n", on_dukovo ? "Dukovo" : "Linux");
+	has_proc = access("/proc/self/status", R_OK) == 0;
+	printf("seccomp: running on %s, %s /proc\n", on_dukovo ? "Dukovo" : "Linux",
+			has_proc ? "with" : "without");
+	if(!on_dukovo)
+		CHECK(has_proc);
+	if(argc > 1 && strcmp(argv[1], "--status") == 0) {
+		CHECK(has_proc);
+		CHILD(status_lines);
+		return check_end();
+	}
 	// The processes SIGSYS ends leave no core behind.
 	struct rlimit no_core = {0, 0};
 	setrlimit(RLIMIT_CORE, &no_core);

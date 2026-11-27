@@ -104,7 +104,9 @@ the rules of Linux's `kernel/seccomp.c` for chains, threads, `fork` and
   every action, the SIGSYS record and the handler's frame, the errno
   clamp, arguments, chains, `TSYNC` and its refusals, strict mode,
   inheritance through threads, `fork` and `execve`, a call linuxd
-  answers, the refused program shapes and the chain's limit.
+  answers, the refused program shapes and the chain's limit. Run by its
+  name it has no `/proc`, so it runs through `linux run` with `--status`
+  as well, where it checks the three status lines.
 - radix-bpf's host tests run libseccomp's output for a small allow list
   and for Podman's default profile, and the conversion lengths measured
   on Linux; its proofs show that a checked program always ends, that the
