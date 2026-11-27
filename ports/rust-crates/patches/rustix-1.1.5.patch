@@ -7,7 +7,10 @@ no fallocate modes and no IPPROTO_MPTCP; ioctl request numbers are
 unsigned long, as on the BSDs, and msg_controllen is a socklen_t, as
 POSIX has it. Its struct termios is Linux's, with c_line: without it,
 tcgetattr wrote past the end of rustix's Termios and the special codes
-were one place off, so crossterm's raw mode never set VMIN.
+were one place off, so crossterm's raw mode never set VMIN. Its mmap
+flags leave out the ones Radix's libc crate does not name, and it has no
+shm_open or shm_unlink, so that Smithay builds with rustix's `mm` and
+`shm` features (ADR 0712).
 
 diff --git a/rustix-1.1.5/src/backend/libc/fs/dir.rs b/rustix-1.1.5/src/backend/libc/fs/dir.rs
 index 6574287..c8be946 100644
@@ -252,3 +255,129 @@ index 71d9fb8..0a51b57 100644
              target_os = "redox"
          ))]
          {
+diff --git a/rustix-1.1.5/src/backend/libc/mm/types.rs b/rustix-1.1.5/src/backend/libc/mm/types.rs
+index 6f7d24f..f18bc88 100644
+--- a/rustix-1.1.5/src/backend/libc/mm/types.rs
++++ b/rustix-1.1.5/src/backend/libc/mm/types.rs
+@@ -89,6 +89,7 @@ bitflags! {
+             target_os = "hurd",
+             target_os = "nto",
+             target_os = "redox",
++            target_os = "radix",
+         )))]
+         const SHARED_VALIDATE = bitcast!(c::MAP_SHARED_VALIDATE);
+         /// `MAP_PRIVATE`
+@@ -103,6 +104,7 @@ bitflags! {
+             target_os = "hurd",
+             target_os = "nto",
+             target_os = "redox",
++            target_os = "radix",
+         )))]
+         const DENYWRITE = bitcast!(c::MAP_DENYWRITE);
+         /// `MAP_FIXED`
+@@ -120,6 +122,7 @@ bitflags! {
+             target_os = "hurd",
+             target_os = "nto",
+             target_os = "redox",
++            target_os = "radix",
+         )))]
+         const FIXED_NOREPLACE = bitcast!(c::MAP_FIXED_NOREPLACE);
+         /// `MAP_GROWSDOWN`
+@@ -132,6 +135,7 @@ bitflags! {
+             target_os = "hurd",
+             target_os = "nto",
+             target_os = "redox",
++            target_os = "radix",
+         )))]
+         const GROWSDOWN = bitcast!(c::MAP_GROWSDOWN);
+         /// `MAP_HUGETLB`
+@@ -144,6 +148,7 @@ bitflags! {
+             target_os = "hurd",
+             target_os = "nto",
+             target_os = "redox",
++            target_os = "radix",
+         )))]
+         const HUGETLB = bitcast!(c::MAP_HUGETLB);
+         /// `MAP_HUGE_2MB`
+@@ -159,6 +164,7 @@ bitflags! {
+             target_os = "hurd",
+             target_os = "nto",
+             target_os = "redox",
++            target_os = "radix",
+         )))]
+         const HUGE_2MB = bitcast!(c::MAP_HUGE_2MB);
+         /// `MAP_HUGE_1GB`
+@@ -174,6 +180,7 @@ bitflags! {
+             target_os = "hurd",
+             target_os = "nto",
+             target_os = "redox",
++            target_os = "radix",
+         )))]
+         const HUGE_1GB = bitcast!(c::MAP_HUGE_1GB);
+         /// `MAP_LOCKED`
+@@ -186,6 +193,7 @@ bitflags! {
+             target_os = "hurd",
+             target_os = "nto",
+             target_os = "redox",
++            target_os = "radix",
+         )))]
+         const LOCKED = bitcast!(c::MAP_LOCKED);
+         /// `MAP_NOCORE`
+@@ -198,6 +206,7 @@ bitflags! {
+             target_os = "hurd",
+             target_os = "nto",
+             target_os = "redox",
++            target_os = "radix",
+         )))]
+         const NORESERVE = bitcast!(c::MAP_NORESERVE);
+         /// `MAP_NOSYNC`
+@@ -213,6 +222,7 @@ bitflags! {
+             target_os = "hurd",
+             target_os = "nto",
+             target_os = "redox",
++            target_os = "radix",
+         )))]
+         const POPULATE = bitcast!(c::MAP_POPULATE);
+         /// `MAP_STACK`
+@@ -224,6 +234,7 @@ bitflags! {
+             target_os = "haiku",
+             target_os = "hurd",
+             target_os = "redox",
++            target_os = "radix",
+         )))]
+         const STACK = bitcast!(c::MAP_STACK);
+         /// `MAP_PREFAULT_READ`
+@@ -242,6 +253,7 @@ bitflags! {
+             target_os = "hurd",
+             target_os = "nto",
+             target_os = "redox",
++            target_os = "radix",
+             all(
+                 linux_kernel,
+                 any(target_arch = "mips", target_arch = "mips32r6", target_arch = "mips64", target_arch = "mips64r6"),
+diff --git a/rustix-1.1.5/src/backend/libc/mod.rs b/rustix-1.1.5/src/backend/libc/mod.rs
+index b4fd3ef..3cf307f 100644
+--- a/rustix-1.1.5/src/backend/libc/mod.rs
++++ b/rustix-1.1.5/src/backend/libc/mod.rs
+@@ -196,7 +196,7 @@ pub(crate) mod prctl;
+     target_os = "vita",
+     target_os = "wasi"
+ )))]
+-#[cfg(feature = "shm")]
++#[cfg(all(feature = "shm", not(target_os = "radix")))]
+ pub(crate) mod shm;
+ #[cfg(any(feature = "fs", feature = "thread", feature = "process"))]
+ #[cfg(not(any(windows, target_os = "wasi")))]
+diff --git a/rustix-1.1.5/src/lib.rs b/rustix-1.1.5/src/lib.rs
+index 8109ca2..2291104 100644
+--- a/rustix-1.1.5/src/lib.rs
++++ b/rustix-1.1.5/src/lib.rs
+@@ -281,7 +281,7 @@ pub mod rand;
+     target_os = "vita",
+     target_os = "wasi"
+ )))]
+-#[cfg(feature = "shm")]
++#[cfg(all(feature = "shm", not(target_os = "radix")))]
+ #[cfg_attr(docsrs, doc(cfg(feature = "shm")))]
+ pub mod shm;
+ #[cfg(not(windows))]

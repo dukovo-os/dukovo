@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The XKB keyboard data (ADR 0712): the layouts of the world's
+# keyboards, as every Wayland and X11 system has them, in
+# /system/resources/xkb. windowd gives the programs the layout the
+# consoles type in (keymap(1)) by its name here, and a program turns key
+# codes into characters with it (the libxkbcommon port).
+#
+# Only data is taken, no code: the layout files as they are, and the
+# rules files its build puts together from their parts.
+name = "xkeyboard-config"
+version = "2.48"
+summary = "the XKB keyboard layouts, for the desktop's programs"
+license = "HPND AND HPND-sell-variant AND X11 AND X11-distribute-modifications-variant AND MIT AND MIT-open-group AND xkeyboard-config-Zinoviev"
+homepage = "https://www.freedesktop.org/wiki/Software/XKeyboardConfig/"
+image = ["system/resources/xkb/"]
+
+[source]
+url = "https://www.x.org/releases/individual/data/xkeyboard-config/xkeyboard-config-2.48.tar.xz"
+sha256 = "b77041324f0109f77161ee43743fe04baa485866af8460d31e476ad3f7648fd5"
+mirrors = ["https://archive.ubuntu.com/ubuntu/pool/main/x/xkeyboard-config/xkeyboard-config_2.48.orig.tar.xz"]
+
+[upstream]
+git = "https://gitlab.freedesktop.org/xkeyboard-config/xkeyboard-config.git"
+tag = "xkeyboard-config-2.48"

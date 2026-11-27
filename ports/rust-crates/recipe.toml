@@ -18,6 +18,12 @@ depends = ["rust-std"]
 toolchain = true
 
 [[crate]]
+name = "calloop"
+version = "0.14.5"
+sha256 = "43b32313e937c8721c9d17ee9bf60699a6402b4b7c2cb6ac1bee0ffcaa4b4e5e"
+license = "MIT"
+
+[[crate]]
 name = "crossterm"
 version = "0.29.0"
 sha256 = "d8b9f2e4c67f833b660cdb0a3523065869fb35570177239812ed4c905aeff87b"
@@ -51,6 +57,12 @@ license = "MIT"
 name = "getrandom"
 version = "0.2.17"
 sha256 = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
+license = "MIT OR Apache-2.0"
+
+[[crate]]
+name = "getrandom"
+version = "0.3.4"
+sha256 = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
 license = "MIT OR Apache-2.0"
 
 [[crate]]
@@ -120,6 +132,12 @@ sha256 = "891efababe418670775f199f0d233d84843c227a0949a883ce15b37c78d6629d"
 license = "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
 
 [[crate]]
+name = "smithay"
+version = "0.7.0"
+sha256 = "740cea6927892bc182d5bf70c8f79806c8bc9f68f2fb96e55a30be171b63af98"
+license = "MIT"
+
+[[crate]]
 name = "socket2"
 version = "0.6.5"
 sha256 = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
@@ -135,6 +153,12 @@ license = "MIT"
 name = "uucore"
 version = "0.9.0"
 sha256 = "069b34217c27f611e1589f540f58118dbf226a9e407d38ab472052ff075a1dc2"
+license = "MIT"
+
+[[crate]]
+name = "wayland-backend"
+version = "0.3.17"
+sha256 = "38a91b4eaddff87b1cd1074985e3713da4af2c49742d1b356b2c01670a67a078"
 license = "MIT"
 
 [[crate]]
