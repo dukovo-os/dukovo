@@ -46,7 +46,7 @@ list is kept current instead.
 | The daily scan cannot ask OSV about db1, mandoc, netcat and zip, whose recipes say `[upstream] none`: db1 is Berkeley DB 1.85 as glibc 2.1.3 carried it and only Debian keeps it, mandoc keeps its source in CVS, OpenBSD does not release nc by itself, and Info-ZIP publishes archives alone; `./ob security scan` lists them as not asked about, with their reasons (ADR 0534) | OSV answers for a git commit or a package of an ecosystem, and these projects have no public git repository to take the commit of a release from | A project that publishes git, or a decision by the maintainers to ask by a distribution's source package |
 | Send the 27 mlibc and frigg patches upstream | Prepared; planned after the audit's last part | Audit 10 |
 | smoltcp's own tests in CI, with its three UDP broadcast tests mended or changed for the kernel's patch (ADR 0182) | CI runs radix-net's tests, which drive the patched stack, but not the crate's own; those three already fail with the patch | Before the smoltcp patch goes upstream |
-| Trademark clearance of the project's name | Legal review | Before 1.0.0-alpha.1 |
+| Trademark clearance of the project's name | The application for the name is filed; the clearance waits on its examination and a legal review, and the pre-releases do not wait for it | Before 1.0.0 |
 
 ## Waiting on real hardware
 
