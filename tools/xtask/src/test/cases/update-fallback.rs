@@ -61,7 +61,7 @@ fn update_fallback(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     vm.expect("spark: asked to restart the machine")?;
 
     // The menu shows, as the try was not seen through, and starts slot A.
-    vm.expect(&format!("Booting `Dukovo Server {VERSION} (the update to {version} failed)'"))?;
+    vm.expect_grub(&format!("Booting `Dukovo Server {VERSION} (the update to {version} failed)'"))?;
     vm.expect("spark: the update in slot b fell back: putting the settings from before it back")?;
     vm.expect("spark: the settings from before the update are back")?;
     started(vm, 'a')?;
