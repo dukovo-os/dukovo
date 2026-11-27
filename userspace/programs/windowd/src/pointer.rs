@@ -9,6 +9,8 @@
 //! MOVE_POINTER says, at once (radix-display(2)): the pointer moves
 //! without a frame being drawn or waited for.
 
+use std::sync::Mutex;
+
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::{
     MemoryRenderBuffer, MemoryRenderBufferRenderElement,
@@ -21,7 +23,6 @@ use smithay::backend::renderer::pixman::PixmanRenderer;
 use smithay::input::pointer::{CursorImageAttributes, CursorImageStatus};
 use smithay::utils::Transform;
 use smithay::wayland::compositor::with_states;
-use std::sync::Mutex;
 
 /// The width and the height of the pointer's picture, which every
 /// pointer plane of release 1.1 takes. A program's pointer that is

@@ -14,13 +14,14 @@
 pub mod decode;
 
 use std::fs::File;
+use std::io::ErrorKind::{Interrupted, WouldBlock};
 use std::io::{self, Read};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 
 use input::abi::{ABS_X, ABS_Y, InputEvent};
 use input::kind::Kinds;
-use input::service::{DEVICE, GONE, Inbox, READY, REFUSED, Record, SOCKET};
+use input::service::{DEVICE, GONE, Inbox, REFUSED, Record, SOCKET};
 use input::{Control, Device};
 use radix_abi::capability::Rights;
 use smithay::backend::renderer::Bind;
@@ -132,7 +133,7 @@ impl Devices {
         let mut bytes = [0u8; 4 * Record::SIZE];
         let mut files = Vec::new();
         let read = match net::receive_with_fds(&self.inputd, &mut bytes, &mut files, 4) {
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+            Err(error) if error.kind() == WouldBlock => return Ok(()),
             read => read?,
         };
         if read == 0 {
@@ -152,7 +153,7 @@ impl Devices {
                 }
                 // READY, a device beyond the most, and whatever a later
                 // inputd says.
-                _ => debug_assert!(matches!(record.what, READY | DEVICE)),
+                _ => {}
             }
         }
         Ok(())
@@ -169,10 +170,20 @@ impl Devices {
     {
         let mut bytes = [0u8; EVENTS * InputEvent::SIZE];
         let mut heard = Vec::new();
+        let mut went = Vec::new();
         for at in wrote {
             let Some(handed) = self.handed.get_mut(at) else { continue };
-            // A device that went is taken away when inputd says so.
-            let Ok(read) = (&handed.device.file().0).read(&mut bytes) else { continue };
+            let read = match (&handed.device.file().0).read(&mut bytes) {
+                Ok(read) => read,
+                Err(error) if matches!(error.kind(), WouldBlock | Interrupted) => continue,
+                Err(_) => {
+                    // The device went. Its file says so at every wait
+                    // from here on, so it is not waited on until inputd
+                    // says the same.
+                    went.push(handed.number);
+                    continue;
+                }
+            };
             for event in input::wire::events(&bytes[..read]) {
                 handed.report.take(&event, &mut heard);
                 for heard in heard.drain(..) {
@@ -180,6 +191,7 @@ impl Devices {
                 }
             }
         }
+        self.handed.retain(|handed| !went.contains(&handed.number));
     }
 
     /// Lights the lock lights `lights` names, in INPUT_LIGHTS's bits, on
