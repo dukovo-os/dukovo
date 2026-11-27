@@ -103,6 +103,16 @@ pub enum Access {
     ReadOnly,
     /// Readable and writable.
     ReadWrite,
+    /// Readable, writable and executable: a user page of a process given
+    /// memory.jit (ADR 0624), and never the kernel's.
+    CodeWritable,
+}
+
+impl Access {
+    /// Whether the page may be written.
+    pub fn writes(self) -> bool {
+        matches!(self, Access::ReadWrite | Access::CodeWritable)
+    }
 }
 
 /// Why a mapping could not be made.
@@ -275,7 +285,9 @@ fn leaf_flags(state: &State, access: Access, cache: Cache) -> u64 {
     match access {
         Access::Code => {}
         Access::ReadOnly => flags |= state.nx,
-        Access::ReadWrite => flags |= WRITABLE | state.nx,
+        // The kernel's own pages are never writable and executable: one
+        // asked for so is only writable.
+        Access::ReadWrite | Access::CodeWritable => flags |= WRITABLE | state.nx,
     }
     flags
 }
@@ -288,6 +300,7 @@ pub(crate) fn user_flags(access: Access) -> u64 {
         Access::Code => PRESENT | USER,
         Access::ReadOnly => PRESENT | USER | nx,
         Access::ReadWrite => PRESENT | USER | WRITABLE | nx,
+        Access::CodeWritable => PRESENT | USER | WRITABLE,
     }
 }
 
@@ -306,7 +319,13 @@ pub(crate) fn user_table(phys: u64) -> u64 {
 /// The access rights a user page-table entry grants.
 pub(crate) fn access_of(entry: u64) -> Access {
     if entry & WRITABLE != 0 {
-        Access::ReadWrite
+        // Without NX a writable page is executable too; it counts as
+        // what was asked for, as a read-only one does below.
+        if entry & NO_EXECUTE == 0 && USER_NX.load(Ordering::Relaxed) != 0 {
+            Access::CodeWritable
+        } else {
+            Access::ReadWrite
+        }
     } else if entry & NO_EXECUTE != 0 || USER_NX.load(Ordering::Relaxed) == 0 {
         // Without NX every readable page is executable; it counts as
         // read-only, since that is what was asked for.

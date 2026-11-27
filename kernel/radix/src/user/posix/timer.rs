@@ -137,7 +137,7 @@ impl PosixTimer {
 
     /// What its signal carries, before its overrun is known.
     fn info(&self, number: usize) -> Info {
-        Info { code: SI_TIMER, pid: number as u64, status: self.value }
+        Info { code: SI_TIMER, errno: 0, pid: number as u64, status: self.value }
     }
 
     /// For one that does nothing when it expires: set again past `now`,
@@ -233,7 +233,7 @@ pub fn set(
     // Otherwise `getitimer`, which sets the timer again with what it read,
     // would move a due timer a little way off at each read, and a program
     // reading it over and over would never see it fire.
-    let info = Info { code: SI_KERNEL, pid: 0, status: 0 };
+    let info = Info { code: SI_KERNEL, errno: 0, pid: 0, status: 0 };
     signal::send_process(process, ITIMER_SIGNALS[index], info);
     let mut next = old;
     next.next_after(now, 0);
@@ -690,7 +690,7 @@ fn expire_due() -> Option<u64> {
             }
         }
         for (index, _) in fired.iter().enumerate().filter(|(_, fired)| **fired) {
-            let info = Info { code: SI_KERNEL, pid: 0, status: 0 };
+            let info = Info { code: SI_KERNEL, errno: 0, pid: 0, status: 0 };
             signal::send_process(process, ITIMER_SIGNALS[index], info);
         }
         for fire in fires.iter().flatten() {

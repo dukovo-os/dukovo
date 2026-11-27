@@ -137,6 +137,19 @@ path = "kernel/fs/btrfs/src/tests/fixtures/*"
 SPDX-FileCopyrightText = "2026 The Dukovo contributors"
 SPDX-License-Identifier = "Apache-2.0 OR MIT"
 
+# The seccomp filters libseccomp compiled, which radix-bpf's tests run
+# (kernel/lib/bpf/src/fixtures/make.py): a small allow list of ours, and
+# Podman's default profile from containers/common v0.64.2.
+[[annotations]]
+path = "kernel/lib/bpf/src/fixtures/allow-list.bpf"
+SPDX-FileCopyrightText = "2026 The Dukovo contributors"
+SPDX-License-Identifier = "Apache-2.0 OR MIT"
+
+[[annotations]]
+path = "kernel/lib/bpf/src/fixtures/podman-default.bpf"
+SPDX-FileCopyrightText = "The Podman and Buildah authors"
+SPDX-License-Identifier = "Apache-2.0"
+
 # The sectors of an exFAT volume exfat-fuse wrote, which the exFAT
 # driver's tests read (kernel/fs/exfat/src/tests.rs).
 [[annotations]]
@@ -187,6 +200,16 @@ SPDX-License-Identifier = "Apache-2.0 OR MIT"
 # file itself.
 [[annotations]]
 path = ["lab/browsers/package.json", "lab/browsers/package-lock.json"]
+SPDX-FileCopyrightText = "2026 The Dukovo contributors"
+SPDX-License-Identifier = "Apache-2.0 OR MIT"
+
+# The project the linux-node boot test installs and runs on Dukovo, and
+# npm's lock of its packages (tools/xtask/src/test/linux-node).
+[[annotations]]
+path = [
+    "tools/xtask/src/test/linux-node/package.json",
+    "tools/xtask/src/test/linux-node/package-lock.json",
+]
 SPDX-FileCopyrightText = "2026 The Dukovo contributors"
 SPDX-License-Identifier = "Apache-2.0 OR MIT"
 

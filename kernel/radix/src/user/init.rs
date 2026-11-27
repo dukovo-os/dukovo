@@ -136,14 +136,15 @@ fn start_spark(path: &str, image: &[u8], args: impl Iterator<Item = &'static str
     // capability, the memory for the programs it starts, the domain its
     // services' domains go below, the machine's power, the network, its
     // platform controls, the names (ADR 0214), the clock (ADR 0194), the
-    // cards left for programs (ADR 0198), the firewall (ADR 0334) and the
-    // kernel's settings (ADR 0476). It is never destroyed.
-    let kept = caps::store().and_then(|store| store.create_space(11)).map_err(cap_error)?;
+    // cards left for programs (ADR 0198), the firewall (ADR 0334), the
+    // kernel's settings (ADR 0476) and memory.jit's (ADR 0624). It is
+    // never destroyed.
+    let kept = caps::store().and_then(|store| store.create_space(12)).map_err(cap_error)?;
     let slot = |n| SlotRef::new(kept, n);
     let (at, pool, services, power, network, platform) =
         (slot(0), slot(1), slot(2), slot(3), slot(4), slot(5));
-    let (names, clock, devices, firewall, kernel_settings) =
-        (slot(6), slot(7), slot(8), slot(9), slot(10));
+    let (names, clock, devices, firewall, kernel_settings, jit) =
+        (slot(6), slot(7), slot(8), slot(9), slot(10), slot(11));
     caps::create_memory(pool, MEMORY_ORDER).map_err(cap_error)?;
     let settings = Settings::new(OomClass::Service);
     caps::create_domain(services, &domains::root(), SERVICES, settings).map_err(cap_error)?;
@@ -154,6 +155,7 @@ fn start_spark(path: &str, image: &[u8], args: impl Iterator<Item = &'static str
     process::install(devices, ObjectKind::Device, Object::Devices)?;
     process::install(firewall, ObjectKind::Firewall, Object::Firewall)?;
     process::install(kernel_settings, ObjectKind::KernelSettings, Object::KernelSettings)?;
+    process::install(jit, ObjectKind::Jit, Object::Jit)?;
     caps::store()
         .and_then(|store| store.grant_range(network, ObjectKind::Network, 0, 1 << 16))
         .map_err(cap_error)?;
@@ -176,6 +178,7 @@ fn start_spark(path: &str, image: &[u8], args: impl Iterator<Item = &'static str
             (devices, ObjectKind::Device.rights(), 0),
             (firewall, ObjectKind::Firewall.rights(), 0),
             (kernel_settings, ObjectKind::KernelSettings.rights(), 0),
+            (jit, ObjectKind::Jit.rights(), 0),
         ],
         root: true,
         domain: domains::root(),

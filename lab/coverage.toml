@@ -113,6 +113,9 @@ network = ["web-console/networking"]
 "network show" = ["web-console/networking"]
 "network undo" = ["web-console/networking"]
 nginx = ["services/nginx", "updates/server-on-dukovo"]
+node = ["processes/linux-node"]
+npm = ["processes/linux-node"]
+npx = ["processes/linux-node"]
 passwd = ["web-console/accounts"]
 # PostgreSQL's programs (ADR 0521): the lab test starts each by its path for
 # its version, then runs the server, its programs for maintenance, checks

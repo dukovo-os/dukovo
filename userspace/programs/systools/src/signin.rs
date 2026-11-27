@@ -280,6 +280,7 @@ pub fn start(
         env: environment(user, term),
         descriptors: &[(tty, 0), (tty, 1), (tty, 2)],
         network: true,
+        jit: true,
         shares: None,
         domain: None,
     };
@@ -314,6 +315,7 @@ pub fn start_help(
         env,
         descriptors: &[(tty, 0), (tty, 1), (tty, 2)],
         network: true,
+        jit: true,
         shares: None,
         domain: Some(domain),
     };
@@ -398,6 +400,7 @@ pub fn start_web_terminal(
         env,
         descriptors: &[(tty, 0), (tty, 1), (tty, 2)],
         network: true,
+        jit: true,
         shares: None,
         domain: None,
     };
@@ -438,6 +441,7 @@ pub fn start_ssh(
         env,
         descriptors: &descriptors,
         network: true,
+        jit: true,
         shares: None,
         domain: None,
     };
@@ -469,6 +473,7 @@ pub fn start_forwarder(
         env,
         descriptors: &[(input.as_fd(), 0), (output.as_fd(), 1), (error.as_fd(), 2)],
         network: true,
+        jit: false,
         shares: None,
         domain: None,
     };
@@ -511,6 +516,7 @@ pub fn start_job(
         env,
         descriptors: &[(null, 0), (output, 1), (output, 2)],
         network: true,
+        jit: true,
         shares: None,
         domain: None,
     };
@@ -555,6 +561,7 @@ pub fn start_share(
             (connection.as_fd(), 3),
         ],
         network: false,
+        jit: false,
         shares: None,
         domain: None,
     };
@@ -593,6 +600,7 @@ pub fn start_console(
             (replies.as_fd(), 3),
         ],
         network: true,
+        jit: false,
         shares: None,
         domain: None,
     };
@@ -653,6 +661,7 @@ pub fn start_nfs(
             (answers.as_fd(), 4),
         ],
         network: false,
+        jit: false,
         shares: Some(folders),
         domain: None,
     };
@@ -687,6 +696,7 @@ pub fn start_console_follow(
         ],
         descriptors: &[(null.as_fd(), 0), (output.as_fd(), 1), (errors.as_fd(), 2)],
         network: false,
+        jit: false,
         shares: None,
         domain: None,
     };
@@ -710,6 +720,9 @@ struct Program<'a> {
     descriptors: &'a [(BorrowedFd<'a>, u32)],
     /// Whether it gets the network, as a session does (ADR 0257).
     network: bool,
+    /// Whether it gets the jit capability in SLOT_JIT, as a session does
+    /// (ADR 0624), for `bundle run` and `linux run --allow-jit`.
+    jit: bool,
     /// For an NFS worker, the shares' folders, by their keys, which its
     /// view holds alone.
     shares: Option<&'a [(u64, String)]>,
@@ -782,11 +795,27 @@ fn launch(names: u32, user: &User, groups: &[u32], program: &Program) -> Result<
     if program.network {
         give_network(child, network, user.uid == 0).map_err(failed("giving it the network"))?;
     }
+    if program.jit {
+        give_jit(child).map_err(failed("giving it the jit capability"))?;
+    }
     let block = exec_block_in(program.folder, program.path.as_bytes(), program.args, &program.env);
     process::exec(&SYS, child, opened, &block).map_err(failed("starting its program"))?;
     // The child stays in the tree after its capability goes, for wait.
     let number = process::info(&SYS, child).map_err(failed("its number"))?.number;
     Ok(number)
+}
+
+/// Gives `child` the jit capability authd holds in SLOT_JIT, into its
+/// own SLOT_JIT, with the control right and the copy and transfer rights
+/// so that it lasts through `fork` and `exec` (ADR 0624). Nothing when
+/// authd holds none: memory.jit is then given to no program.
+pub fn give_jit(child: u32) -> Result<(), Status> {
+    let held = capability::info(&SYS, startup::SLOT_JIT);
+    if !held.is_ok_and(|info| info.kind == ObjectKind::Jit) {
+        return Ok(());
+    }
+    let rights = Rights::CONTROL.union(Rights::COPY).union(Rights::TRANSFER);
+    process::share(&SYS, child, startup::SLOT_JIT, startup::SLOT_JIT, rights, 0)
 }
 
 /// The first port everyone may listen on, as Linux's

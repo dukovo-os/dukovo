@@ -3,6 +3,9 @@
 
 //! The sandbox of a Linux program (ADR 0622): carries out the plan of
 //! `view.rs`, starts linuxd and the program, and waits for the program.
+//! A Linux bundle's program (ADR 0625) runs in the same, with its bundle's
+//! folder attached as it was checked, and is stopped as a bundle's is when
+//! bundled says a permission it holds was taken away.
 //!
 //! It is a sibling of a bundle's sandbox (`bundles::run`), built the same
 //! way: a view acting for the person, without the control right, attached
@@ -19,7 +22,9 @@
 //! or "io" has a linuxd that ended at once: its own messages are on the
 //! terminal.
 
+use std::io::BufReader;
 use std::os::fd::OwnedFd;
+use std::os::unix::net::UnixStream;
 
 use super::view::View;
 use crate::bundles::run::{Given, Sealed};
@@ -39,13 +44,27 @@ pub struct Plan<'a> {
     pub env: &'a [String],
     /// What linuxd's environment holds.
     pub daemon_env: &'a [String],
-    /// The network it is given.
+    /// The network it is given, and memory.jit.
     pub given: &'a Given,
+    /// The bundle it is of, whose folder the view's attach of it is.
+    pub bundle: Option<&'a Sealed>,
+    /// What to do, the person is told, when the program ended badly after
+    /// it was refused memory that is writable and executable.
+    pub jit_hint: &'a str,
+}
+
+/// bundled's connection, followed while a bundle's program runs: `names`
+/// are the permissions it was given of bundle `id`.
+#[cfg_attr(not(target_os = "radix"), allow(dead_code))]
+pub struct Follow {
+    pub input: BufReader<UnixStream>,
+    pub names: Vec<String>,
+    pub id: String,
 }
 
 /// Built for another system, for tests: there is no sandbox to run in.
 #[cfg(not(target_os = "radix"))]
-pub fn run(_plan: &Plan<'_>) -> Result<i32, String> {
+pub fn run(_plan: &Plan<'_>, _follow: Option<Follow>) -> Result<i32, String> {
     Err("Linux programs run on Dukovo".into())
 }
 
@@ -62,14 +81,16 @@ mod radix {
 
     use radix_abi::capability::{self, ObjectKind, Rights};
     use radix_abi::directory::{self, OpenFlags};
-    use radix_abi::{process, startup, syscalls};
+    use radix_abi::{jit, process, startup, syscalls};
     use sysapi::process as process_calls;
     use sysapi::signal;
 
-    use super::Plan;
+    use super::{Follow, Plan};
     use crate::bundles::folder::Dir;
     use crate::bundles::run::Sealed;
-    use crate::bundles::run::sandbox::{GIVEN, READ_ONLY, failed, give_network};
+    use crate::bundles::run::sandbox::{
+        Followed, GIVEN, READ_ONLY, failed, give_jit, give_network,
+    };
     use crate::linux::supervise::{self, Restarts};
     use crate::linux::view::{Attach, Source};
     use crate::signin::{self, Spares};
@@ -217,7 +238,7 @@ mod radix {
 
     /// Builds the view, starts linuxd and the program in it, and waits for
     /// the program, with the program's exit status.
-    pub fn run(plan: &Plan<'_>) -> Result<i32, String> {
+    pub fn run(plan: &Plan<'_>, follow: Option<Follow>) -> Result<i32, String> {
         // Everything that opens a descriptor comes before the spare slots:
         // an emptied slot is a free descriptor to the C library, and the
         // next open would take one of them.
@@ -242,9 +263,32 @@ mod radix {
         };
         let mut linuxd = Daemon::default();
         let program = start(&ctx, &parts, &mut linuxd)?;
+        let followed = follow.map(|f| Followed::start(Some(f.input), program, f.names, f.id));
         let code = wait_for(&ctx, &mut linuxd, program);
+        if let Some(followed) = followed {
+            followed.ended();
+        }
         linuxd.stop();
+        if code.as_ref().is_ok_and(|&code| code != 0)
+            && plan.given.jit.is_none()
+            && refused_jit(ctx.s.child)
+        {
+            eprintln!(
+                "linux: the program asked for memory that is writable and executable, as a JIT \
+                 compiler does: {}",
+                plan.jit_hint
+            );
+        }
         code
+    }
+
+    /// Whether the program, its process in `child`, was refused memory
+    /// that is writable and executable for want of memory.jit (ADR 0624),
+    /// as the jit capability the session holds tells.
+    fn refused_jit(child: u32) -> bool {
+        let held = capability::info(&SYS, startup::SLOT_JIT);
+        held.is_ok_and(|info| info.kind == ObjectKind::Jit)
+            && jit::state(&SYS, startup::SLOT_JIT, child).is_ok_and(|state| state.refused)
     }
 
     /// The pieces of the base the view attaches, open, in the order of its
@@ -378,6 +422,9 @@ mod radix {
                 .map_err(failed("giving it its capabilities".into()))?;
         }
         give_network(plan.given, s.child, s.network)?;
+        if let Some(required) = plan.given.jit {
+            give_jit(s.child, required)?;
+        }
         let argv: Vec<&[u8]> = plan.argv.iter().map(Vec::as_slice).collect();
         let block = signin::exec_block_in(
             plan.view.working.as_bytes(),
@@ -403,6 +450,12 @@ mod radix {
                 let part = part.ok_or_else(|| format!("{}: not open", attach.at))?;
                 capability::derive(&SYS, sys::slot_of(part.as_raw_fd()), s.scratch, READ_ONLY, 0)
             }
+            // The very folder checked, not one opened again by its path.
+            Source::Bundle => {
+                let sealed = ctx.plan.bundle.ok_or_else(|| format!("{}: not open", attach.at))?;
+                let slot = sysapi::kernel::slot_of(&sealed.folder);
+                capability::derive(&SYS, slot, s.scratch, READ_ONLY, 0)
+            }
             Source::Person(path) => {
                 let is_dir = fs::symlink_metadata(path)
                     .map_err(|e| format!("{path}: {}", strip_os_error(&e)))?
@@ -416,6 +469,7 @@ mod radix {
                 directory::open(&SYS, s.root, name.as_bytes(), folder, rights, s.scratch, 0)
                     .map(drop)
             }
+            Source::Memory => directory::memory_filesystem(&SYS, startup::SLOT_ROOT, s.scratch),
             Source::Names { folder: path, .. } => {
                 let from = path.trim_start_matches('/');
                 directory::open(&SYS, s.base, from.as_bytes(), folder, rights, s.scratch, 0)

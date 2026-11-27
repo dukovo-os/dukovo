@@ -41,7 +41,7 @@ prints its JSON Schema, for an editor that checks as you type.
 
 # VERSIONS
 
-*manifest_version* = _1_
+*manifest_version* = _1_ | _2_
 	The version of this format the manifest is written for; every
 	manifest has it. Version 1 is a preview until Dukovo 1.0.0, when it
 	freezes; after that a version only adds fields and never changes
@@ -49,11 +49,15 @@ prints its JSON Schema, for an editor that checks as you type.
 	manifest for a version newer than this Dukovo reads is refused,
 	with a message to update Dukovo.
 
+Version 2 adds *runtime* (ADR 0625); a version 1 manifest is a version
+2 manifest without it. *bundle upgrade-manifest* changes a version 1
+manifest's number to 2 and nothing else.
+
 The names of what later versions bring are reserved, and a manifest
 that uses one is refused: *entries*, where an app shows up on the
 desktop and which files and links it opens (Dukovo 1.6, ADR 0760),
 *actions*, what it can do there (1.4), *display*, its windows (1.1),
-*runtime*, the Linux layer (1.3), and *plugins* (1.10).
+and *plugins* (1.10).
 
 # FIELDS
 
@@ -151,6 +155,19 @@ desktop and which files and links it opens (Dukovo 1.6, ADR 0760),
 	The architectures it carries programs for, each once: *"x86_64"*;
 	later *"wasm"* (Dukovo 1.9), *"aarch64"* (1.16) and *"riscv64"*
 	(1.17). One bundle may carry several. Required.
+
+*runtime* = _"native"_ | _"linux"_
+	What its programs are written for, from manifest version 2:
+	*"native"*, Dukovo, the default; or *"linux"*, x86-64 Linux. A
+	Linux bundle's programs are Linux programs or scripts, which *bundle
+	check* and *bundle sign* read the headers of, and they run on the
+	Linux base (*org.dukovo.linux-base*) in a Linux view of their own,
+	with linuxd beside them, as *linux run* starts a program (linux(1)):
+	its folder is attached read-only, a program in its sandbox gets its
+	data folder as its home and what its permissions give, and a
+	command that runs with your access gets all of your files and the
+	folder it was started in. A Linux bundle has no services yet, and
+	may not ask for *devices.serial* or *keyring.shared* (ADR 0625).
 
 *programs* = { _"name"_: { *path* = {...}, *permissions* = [...] } }
 	Its programs, by name, at least one. *path* gives the file for
@@ -424,6 +441,10 @@ defines these:
 |  *devices.serial*
 :  Use a serial port or USB serial device
 :  on first use
+|  *memory.jit*
+:  Make machine code as it runs, as JavaScript engines do (memory
+   that is writable and executable at once, ADR 0624)
+:  at install
 |  *start-at-login*
 :  Start when you sign in
 :  at install
@@ -453,8 +474,7 @@ that brings them: *devices.usb* (1.6), *devices.camera* (1.6.6),
 *devices.hardware* (1.8), *display* (1.1), *screen.capture* (1.5.2),
 *input.control* (1.5), *shortcuts.global* (1.5), *clipboard.read* (1.1),
 *background* (1.1), *location* (1.6), *contacts*, *calendar*,
-*reminders* and *mail* (1.5.6), *ai.ask* (1.10) and *memory.jit*
-(1.2).
+*reminders* and *mail* (1.5.6) and *ai.ask* (1.10).
 
 Dukovo may later narrow what a permission gives, or ask again, when that
 protects people: a bundle keeps installing and running, perhaps with

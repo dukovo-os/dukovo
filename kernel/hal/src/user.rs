@@ -38,7 +38,8 @@ pub struct SyscallRegs {
 }
 
 /// What a program may do with a page mapped into its address space.
-/// Nothing is writable and executable at once.
+/// Nothing is writable and executable at once, but the private anonymous
+/// memory of a process given memory.jit (ADR 0624).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UserAccess {
     /// Read only.
@@ -47,6 +48,34 @@ pub enum UserAccess {
     ReadWrite,
     /// Read and execute.
     ReadExecute,
+    /// Read, write and execute: only private anonymous memory of a
+    /// process with memory.jit, which a JIT compiler writes its code into.
+    ReadWriteExecute,
+}
+
+impl UserAccess {
+    /// Whether the program may write the page.
+    #[inline]
+    pub fn writes(self) -> bool {
+        matches!(self, UserAccess::ReadWrite | UserAccess::ReadWriteExecute)
+    }
+
+    /// Whether the program may run the page's code.
+    #[inline]
+    pub fn executes(self) -> bool {
+        matches!(self, UserAccess::ReadExecute | UserAccess::ReadWriteExecute)
+    }
+
+    /// The access without the write: what a page gets while a write must
+    /// fault first, to be copied.
+    #[inline]
+    pub fn without_write(self) -> UserAccess {
+        match self {
+            UserAccess::ReadWrite => UserAccess::Read,
+            UserAccess::ReadWriteExecute => UserAccess::ReadExecute,
+            other => other,
+        }
+    }
 }
 
 /// What [`UserMode::edit_pages`] does with a page that holds a frame.
@@ -333,6 +362,16 @@ pub trait UserMode: crate::Threads {
             Option<UserAccess>,
         ) -> (PageEdit, Option<Option<UserAccess>>),
     ) -> Result<(), u64>;
+
+    /// Moves the entries of the `pages` pages from `from` to the same
+    /// place from `to`, as `mremap` moves a mapping (ADR 0629): each
+    /// page's frame and access, or its frame held without access, or its
+    /// swap slot, never copied; the old place is empty afterwards and no
+    /// CPU reaches it. The ranges must be apart and hold no large page
+    /// ([`UserMode::map_pages`]). Nothing moves if a page table for the new
+    /// place cannot be had (NoMemory), or something is mapped there
+    /// (AlreadyMapped).
+    fn move_pages(space: &Self::Space, from: u64, to: u64, pages: u64) -> Result<(), MapPageError>;
 
     /// Calls `each` with every page from `start` to `end` that maps a
     /// frame of its own (not part of a large page) or is swapped out, in

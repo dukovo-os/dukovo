@@ -1,14 +1,15 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The run's private folder: the program's `/tmp` and `/dev/shm`, the
-//! `/etc` files `linux run` writes, and the mounts file linuxd reads, in a
-//! folder of the person's own `/tmp` that no one else may enter, made for
-//! the run and removed with it.
+//! The run's private folder: the program's `/tmp`, the `/etc` files
+//! `linux run` writes, and the mounts file linuxd reads, in a folder of
+//! the person's own `/tmp` that no one else may enter, made for the run
+//! and removed with it. The program's `/dev/shm` is a memory filesystem
+//! of the run's own (`view.rs`).
 //!
-//! Beneath it are `tmp`, `shm`, `etc` and `mounts`; the view attaches the
-//! first two as folders and each file of `etc` by itself, so the program
-//! finds none of the others in its `/tmp`. When a run ends with its folder
+//! Beneath it are `tmp`, `etc` and `mounts`; the view attaches the first
+//! as a folder and each file of `etc` by itself, so the program finds
+//! none of the others in its `/tmp`. When a run ends with its folder
 //! still in `/tmp` (`linux` was killed), it is the person's to remove: its
 //! name has the number of the run's process.
 
@@ -35,8 +36,8 @@ pub struct Private {
 
 impl Private {
     /// Makes the folder for the run of process `number` in `parent`, with
-    /// the folders of the program's `/tmp` and `/dev/shm`, and the one that
-    /// holds the `/etc` files.
+    /// the folder of the program's `/tmp`, and the one that holds the
+    /// `/etc` files.
     ///
     /// # Errors
     ///
@@ -53,14 +54,12 @@ impl Private {
         // The value is built before the folders so that a failure on the
         // way removes what was made.
         let private = Private { path };
-        for name in ["etc", "tmp", "shm"] {
+        for name in ["etc", "tmp"] {
             own_folder(&private.at(name), uid)?;
         }
-        for name in ["tmp", "shm"] {
-            let folder = private.at(name);
-            fs::set_permissions(&folder, fs::Permissions::from_mode(OPEN_FOLDER))
-                .map_err(|e| format!("{folder}: {e}"))?;
-        }
+        let tmp = private.at("tmp");
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(OPEN_FOLDER))
+            .map_err(|e| format!("{tmp}: {e}"))?;
         Ok(private)
     }
 
@@ -199,12 +198,12 @@ mod tests {
     }
 
     #[test]
-    fn the_private_folder_holds_tmp_shm_and_etc_and_is_gone_when_dropped() {
+    fn the_private_folder_holds_tmp_and_etc_and_is_gone_when_dropped() {
         let scratch = Scratch::new("private");
         let private = Private::make(scratch.text(), uid(), 4242).unwrap();
         let path = PathBuf::from(private.path());
         assert_eq!(path, scratch.0.join(".linux-4242"));
-        for (name, mode) in [("", 0o700), ("etc", 0o700), ("tmp", 0o1777), ("shm", 0o1777)] {
+        for (name, mode) in [("", 0o700), ("etc", 0o700), ("tmp", 0o1777)] {
             let meta = fs::metadata(path.join(name)).unwrap();
             assert!(meta.is_dir(), "{name}");
             assert_eq!(meta.mode() & 0o7777, mode, "{name}");

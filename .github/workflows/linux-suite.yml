@@ -1,0 +1,137 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# LTP's system call tests and the seccomp differential, run on the runner's
+# Linux and in Dukovo's Linux view (`ob test linux-suite`, ADR 0628): ob
+# builds LTP's tests at a pinned release with the runner's GCC, runs all of
+# them on the runner as its ordinary user, and runs the ones that passed
+# there in a Dukovo machine with 4 CPUs and 4 GiB, where each must pass too
+# unless tools/xtask/src/test/linux-suite-skips.txt names it with its row of
+# docs/deferred.md. The run on the runner takes about 8 minutes. Few changes
+# can break it, so it is a job of its own: ci.yml calls it for a pull request
+# that changes the Linux layer (the kernel's Linux table, radix-bpf, linuxd,
+# linux run, the Linux base or the suite itself), and anyone may start it by
+# hand. Its report, the results on both systems and the logs of the cases
+# that did not pass on Dukovo are kept as an artifact, and when the run
+# fails the report is also printed in the job's own log.
+#
+# A nightly schedule is to be added when scheduled runs are turned back on.
+name: Linux test suite
+
+on:
+  workflow_call:
+    inputs:
+      # The cache ci.yml's ports job left for the run (ADR 0560), and the
+      # start of the keys to fall back on; a run by hand names the cache
+      # itself.
+      ports-key:
+        type: string
+        default: ""
+      ports-prefix:
+        type: string
+        default: ""
+      # The rust-std port's stamp, which keys the Rust cache (ADR 0560).
+      std-stamp:
+        type: string
+        default: ""
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux-suite:
+    name: LTP and seccomp on Linux and Dukovo
+    runs-on: ubuntu-24.04
+    timeout-minutes: 220
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Allow QEMU to use KVM
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+              | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+          fi
+
+      - name: Install host packages
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            qemu-system-x86 ovmf gcc flex gawk musl-tools automake m4
+            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils scdoc mandoc
+            udftools udfclient genisoimage
+            clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf zlib1g-dev
+
+      # GRUB, which ./ob builds from its pinned source for the images
+      # (ADR 0306): built once for each change to its recipe.
+      - name: Cache GRUB
+        uses: actions/cache@v4
+        with:
+          path: .cache/grub
+          key: grub-${{ hashFiles('tools/xtask/src/grub.rs') }}
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          key: ${{ inputs.std-stamp && format('std-{0}', inputs.std-stamp) || '' }}
+          save-if: false
+
+      - name: Note the port toolchain's version
+        id: ports-key
+        run: echo "clang=$(clang-20 --version | head -n1 | tr -c 'A-Za-z0-9.\n' -)" >> "$GITHUB_OUTPUT"
+
+      # The ports as ci.yml's ports job left them, or, for a run by hand,
+      # the newest that main saved.
+      - name: Restore the built ports
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            out/sysroot
+            out/toolchain
+            out/ports
+            target/ports/sources
+          key: ${{ inputs.ports-key || format('ports-host-{0}-{1}', steps.ports-key.outputs.clang, hashFiles('ports/**', 'abi/**', 'tools/**', 'rust-toolchain.toml')) }}
+          restore-keys: ${{ inputs.ports-prefix || format('ports-host-{0}-', steps.ports-key.outputs.clang) }}
+
+      # The ports on their own, so that building them again, after a
+      # change every port builds on, does not eat into the suite's time.
+      - name: ./ob ports
+        timeout-minutes: 45
+        run: ./ob ports
+
+      - name: ./ob test linux-suite
+        timeout-minutes: 150
+        run: ./ob test linux-suite
+
+      - name: Show the suite's report
+        if: failure()
+        run: |
+          if [ -f out/test/linux-suite.txt ]; then
+            head -n 400 out/test/linux-suite.txt
+          fi
+
+      - name: Upload the suite's results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-suite
+          path: |
+            out/test/linux-suite.txt
+            out/test/linux-suite-dukovo.txt
+            out/test/linux-suite-seccomp.txt
+            out/test/linux-suite-failed.log
+            out/test/boot-linux-suite.log
+            out/test/linux-suite.ppm
+            target/linux-suite/on-linux/results.txt
+            target/linux-suite/seccomp-linux.txt
+          if-no-files-found: ignore
+          retention-days: 30

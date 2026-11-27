@@ -6,7 +6,8 @@
 // program's own path, a standard output that /proc/self/fd/1 leads back to,
 // the network interfaces through a netlink route socket, the accounts in
 // /etc, a resolver file, the kernel's name, and the person's own folders
-// kept out of sight. A call that the Linux table does not handle is
+// kept out of sight, and a /dev/shm whose files two processes map and
+// share. A call that the Linux table does not handle is
 // answered by linuxd, which the case `personality` shows with the one call
 // that only linuxd answers, and which the case `restart` ends and waits for
 // the supervisor to start again.
@@ -47,10 +48,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/personality.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/utsname.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -329,6 +332,43 @@ static void cpu_online_case(void) {
 	free(online);
 }
 
+// A file of /dev/shm that shm_open makes is shared by the processes that
+// map it: a child writes through its mapping, and its parent reads that
+// through its own, as glibc's named semaphores and LTP's library rely on.
+// The file is /dev/shm's, by its name there, and goes with shm_unlink.
+static void shm_case(void) {
+	char name[64];
+	char path[80];
+	snprintf(name, sizeof(name), "/view-shm-%ld", (long)getpid());
+	snprintf(path, sizeof(path), "/dev/shm%s", name);
+	int fd = shm_open(name, O_CREAT | O_EXCL | O_RDWR, 0600);
+	CHECK(fd >= 0);
+	if(fd < 0)
+		return;
+	CHECK(ftruncate(fd, 4096) == 0);
+	struct stat status;
+	CHECK(stat(path, &status) == 0 && status.st_size == 4096);
+	volatile int *word = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	CHECK(word != MAP_FAILED);
+	CHECK(close(fd) == 0);
+	if(word != MAP_FAILED) {
+		*word = 1;
+		pid_t child = fork();
+		CHECK(child >= 0);
+		if(child == 0) {
+			*word = 0x5eed;
+			_exit(0);
+		}
+		int how = 0;
+		CHECK(child < 0 || waitpid(child, &how, 0) == child);
+		CHECK(WIFEXITED(how) && WEXITSTATUS(how) == 0);
+		CHECK(*word == 0x5eed);
+		CHECK(munmap((void *)word, 4096) == 0);
+	}
+	CHECK(shm_unlink(name) == 0);
+	CHECK(access(path, F_OK) != 0 && errno == ENOENT);
+}
+
 // The person's own folders are not in the view. Dukovo's programs and
 // libraries are not; /devices holds a terminal's devices alone, which the
 // links of /dev name; and the parent of the person's home is there only as
@@ -490,6 +530,7 @@ static const struct test_case CASES[] = {
 	{"cpu_online", cpu_online_case},
 	{"hidden", hidden_case},
 	{"personality", personality_case},
+	{"shm", shm_case},
 };
 
 enum { CASE_COUNT = sizeof(CASES) / sizeof(CASES[0]) };

@@ -30,6 +30,9 @@
 //! ERESTARTNOHAND): the registers it was made with are kept, so the way
 //! back makes the `syscall` instruction run again.
 //!
+//! A thread's seccomp filters judge each call before it runs, the calls
+//! forwarded to linuxd too (`seccomp`, ADR 0623).
+//!
 //! Calls Linux has that Dukovo will not give a program answer as Linux
 //! answers a program without the privilege: ENOSYS for io_uring, BPF,
 //! perf events, ptrace, kexec and modules, EPERM for mounts, reboot,
@@ -49,6 +52,7 @@ mod paths;
 mod poll;
 mod process;
 mod robust;
+mod seccomp;
 mod signals;
 mod sockets;
 mod state;
@@ -154,7 +158,12 @@ pub type Args = [u64; 6];
 /// does not return.
 pub fn call(me: &ThreadRef, user: &UserRef, regs: &mut SyscallRegs) {
     let number = regs.number;
-    match dispatch(me, user, regs) {
+    // A seccomp filter judges the call first (ADR 0623).
+    let done = match seccomp::check(me, user, regs) {
+        Some(judged) => judged,
+        None => dispatch(me, user, regs),
+    };
+    match done {
         Ok(Done::Return(value)) => regs.number = value,
         Ok(Done::Restore(saved)) => *regs = saved,
         Ok(Done::Exit(code)) => super::exit_current(user.clone(), code, Ending::Exit),
@@ -207,6 +216,8 @@ fn dispatch(me: &ThreadRef, user: &UserRef, regs: &SyscallRegs) -> Result<Done> 
         nr::FSTAT => files::fstat(me, user, a[0], a[1])?,
         nr::NEWFSTATAT => files::stat_at(me, user, a[0], a[1], a[2], a[3])?,
         nr::STATX => files::statx(me, user, a[0], a[1], a[2], a[3], a[4])?,
+        nr::STATFS => files::statfs(me, user, a[0], a[1])?,
+        nr::FSTATFS => files::fstatfs(me, user, a[0], a[1])?,
         nr::GETDENTS64 => files::getdents64(user, a[0], a[1], a[2])?,
         nr::GETCWD => files::getcwd(user, a[0], a[1])?,
         nr::CHDIR => files::chdir(user, a[0])?,
@@ -351,7 +362,10 @@ fn dispatch(me: &ThreadRef, user: &UserRef, regs: &SyscallRegs) -> Result<Done> 
         nr::SCHED_GETSCHEDULER => system::sched_getscheduler(me, user, a[0])?,
         nr::SCHED_GET_PRIORITY_MAX => system::sched_get_priority_max(a[0])?,
         nr::SCHED_GET_PRIORITY_MIN => system::sched_get_priority_min(a[0])?,
-        nr::PRCTL => system::prctl(me, user, a[0], a[1])?,
+        nr::PRCTL => system::prctl(me, user, a)?,
+        nr::CAPGET => system::capget(user, a[0], a[1])?,
+        nr::CAPSET => system::capset(user, a[0], a[1])?,
+        nr::SECCOMP => seccomp::seccomp(me, user, a[0], a[1], a[2])?,
         nr::SETRLIMIT => system::setrlimit(me, user, a[0], a[1])?,
         nr::TIME => system::time(me, user, a[0])?,
         nr::SCHED_SETAFFINITY => system::sched_setaffinity(me, user, a[0], a[1], a[2])?,

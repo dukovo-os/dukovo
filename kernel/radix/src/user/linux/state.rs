@@ -14,6 +14,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use radix_sync::{Mutex, SpinLock};
 
 use super::forward::Forwarding;
+use super::seccomp::Seccomp;
 
 /// A process's Linux side.
 pub struct LinuxProcess {
@@ -27,6 +28,10 @@ pub struct LinuxProcess {
     /// Its break, which `brk` moves: taken before any lock of its address
     /// space, and held while the break's memory is mapped.
     pub brk: Mutex<Break>,
+    /// Held by each change of a thread's seccomp, so that one thread's
+    /// filter and another's TSYNC do not cross (ADR 0623): taken before
+    /// the process's list of threads.
+    pub installing: Mutex<()>,
 }
 
 /// Where a Linux program's break starts and where it is: the end of the
@@ -46,6 +51,7 @@ impl LinuxProcess {
             on: AtomicBool::new(false),
             execed: AtomicBool::new(false),
             brk: Mutex::new(Break { start: 0, end: 0 }),
+            installing: Mutex::new(()),
         }
     }
 
@@ -102,6 +108,8 @@ pub struct LinuxThread {
     /// The call it has forwarded to linuxd and waits for the answer to
     /// (ADR 0618), while it does.
     pub forwarded: SpinLock<Option<Forwarding>>,
+    /// Its seccomp mode, filters and `no_new_privs` (ADR 0623).
+    pub seccomp: Seccomp,
 }
 
 impl LinuxThread {
@@ -114,6 +122,7 @@ impl LinuxThread {
             robust_len: AtomicU64::new(0),
             poll_left: AtomicU64::new(0),
             forwarded: SpinLock::new(None),
+            seccomp: Seccomp::new(),
         }
     }
 

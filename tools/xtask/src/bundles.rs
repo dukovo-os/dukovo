@@ -92,8 +92,10 @@ pub fn pack_next_builds(
     }
     let key = signing_key(ctx)?;
     for build in builds {
-        let Some(port) =
-            ports.ports.iter().find(|p| p.recipe.bundle.as_ref().is_some_and(|b| b.id == build.id))
+        let Some(port) = ports
+            .ports
+            .iter()
+            .find(|p| p.recipe.bundle.as_ref().is_some_and(|b| b.key() == build.id))
         else {
             return Err(Error::new(format!("no port packs {}", build.id)));
         };
@@ -139,8 +141,13 @@ fn pack(ctx: &Ctx, ports: &Ports, port: &Port, key: &SecretKey, version: &str) -
     process::create_dir(folder.parent().expect("the folder has a parent"))?;
     crate::ports::copy_tree(ctx, &built, &folder)?;
     // A bundle's programs run as Linux programs unless they say they are
-    // Dukovo's (ADR 0610).
-    crate::personality::check_folder(&format!("the bundle of port {}", recipe.name), &folder)?;
+    // Dukovo's (ADR 0610), and a Linux bundle's must be Linux's (ADR 0625).
+    let what = format!("the bundle of port {}", recipe.name);
+    if spec.is_linux() {
+        crate::personality::check_linux_folder(&what, &folder)?;
+    } else {
+        crate::personality::check_folder(&what, &folder)?;
+    }
     let manifest = manifest(port, version);
     // The reader bundle(1) installs with must take it.
     dkv::signed::parse_manifest(manifest.as_bytes())
@@ -163,7 +170,7 @@ fn pack(ctx: &Ctx, ports: &Ports, port: &Port, key: &SecretKey, version: &str) -
     std::io::Write::flush(&mut writer).context(|| format!("writing {}", partial.display()))?;
     drop(writer);
     std::fs::rename(&partial, &out).context(|| format!("writing {}", out.display()))?;
-    remove_other_versions(&dir(ctx), &spec.id, &out)?;
+    remove_other_versions(&dir(ctx), &spec.id, spec.line.as_deref(), &out)?;
     step(&format!(
         "Packed {} {version} into {}: {} files, signed by {}",
         spec.id,
@@ -175,12 +182,13 @@ fn pack(ctx: &Ctx, ports: &Ports, port: &Port, key: &SecretKey, version: &str) -
 }
 
 /// Removes from `dir` the files of bundle `id` but `kept`: `ID-V.dkv` for
-/// any version `V`, and each one's reason. A name whose rest is no
-/// version, such as `org.nginx.nginx-extra-1.0.0.dkv` beside
-/// `org.nginx.nginx`, is another bundle's and stays. A version packed
-/// before, left there, would be signed with this one, and an earlier
-/// build's reason would be read as this one's.
-fn remove_other_versions(dir: &Path, id: &str, kept: &Path) -> Result<()> {
+/// any version `V`, of `line` when it has one, and each one's reason. A
+/// name whose rest is no version, such as `org.nginx.nginx-extra-1.0.0.dkv`
+/// beside `org.nginx.nginx`, is another bundle's and stays, as is another
+/// line's version. A version packed before, left there, would be signed
+/// with this one, and an earlier build's reason would be read as this
+/// one's.
+fn remove_other_versions(dir: &Path, id: &str, line: Option<&str>, kept: &Path) -> Result<()> {
     let entries = std::fs::read_dir(dir).context(|| format!("reading {}", dir.display()))?;
     for entry in entries {
         let entry = entry.context(|| format!("reading {}", dir.display()))?;
@@ -192,6 +200,7 @@ fn remove_other_versions(dir: &Path, id: &str, kept: &Path) -> Result<()> {
                     .or_else(|| rest.strip_suffix(&format!(".{REASON_EXTENSION}")))
             })
             .filter(|version| manifest::bundle::check_version(version).is_ok())
+            .filter(|version| line.is_none_or(|line| in_line(version, line)))
         else {
             continue;
         };
@@ -201,6 +210,12 @@ fn remove_other_versions(dir: &Path, id: &str, kept: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Whether `version` is of `line`: it is the line's numbers, or starts
+/// with them and a `.`, as manifest.json(5) has it.
+fn in_line(version: &str, line: &str) -> bool {
+    version.strip_prefix(line).is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '_']))
 }
 
 /// A small bundle the boot tests make (ADR 0384): one program, a shell
@@ -401,10 +416,23 @@ pub fn manifest(port: &Port, version: &str) -> String {
     let spec = recipe.bundle.as_ref().expect("a bundle's port");
     let mut o = String::new();
     let _ = writeln!(o, "{{");
-    let _ = writeln!(o, "  \"manifest_version\": 1,");
+    // Version 2 has `runtime` (ADR 0625); a bundle without it is written
+    // as before.
+    let manifest_version = if spec.runtime.is_some() { 2 } else { 1 };
+    let _ = writeln!(o, "  \"manifest_version\": {manifest_version},");
     let _ = writeln!(o, "  \"id\": {},", json(&spec.id));
     let _ = writeln!(o, "  \"name\": {},", json(&spec.name));
     let _ = writeln!(o, "  \"version\": {},", json(version));
+    if let Some(line) = &spec.line {
+        let _ = writeln!(o, "  \"line\": {},", json(line));
+    }
+    if !spec.line_files.is_empty() {
+        let files: Vec<String> = spec.line_files.iter().map(|file| json(file)).collect();
+        let _ = writeln!(o, "  \"line_files\": [{}],", files.join(", "));
+    }
+    if let Some(add_ons) = &spec.add_ons {
+        let _ = writeln!(o, "  \"add_ons\": {},", table_json(add_ons));
+    }
     let _ = writeln!(o, "  \"summary\": {},", json(&sentence(&recipe.summary)));
     if let Some(description) = &spec.description {
         let _ = writeln!(o, "  \"description\": {},", json(description));
@@ -420,6 +448,9 @@ pub fn manifest(port: &Port, version: &str) -> String {
     let requires_os = if graph { REQUIRES_OS_GRAPH } else { REQUIRES_OS };
     let _ = writeln!(o, "  \"requires_os\": {},", json(requires_os));
     let _ = writeln!(o, "  \"architectures\": [\"x86_64\"],");
+    if let Some(runtime) = &spec.runtime {
+        let _ = writeln!(o, "  \"runtime\": {},", json(runtime));
+    }
     let programs: Vec<String> = spec
         .commands
         .iter()
@@ -493,13 +524,20 @@ fn table_json(table: &toml::Table) -> String {
 }
 
 /// Where the bundle's source is: its upstream repository, pinned in the
-/// port, whose `https://` address a manifest takes.
+/// port, whose `https://` address a manifest takes, or for a port of a
+/// release archive the tree of the release's tag.
 fn source_url(port: &Port) -> String {
     let git = &port.recipe.source.git;
     if git.starts_with("https://") {
-        git.strip_suffix(".git").unwrap_or(git).to_string()
-    } else {
-        port.recipe.homepage.clone()
+        return git.strip_suffix(".git").unwrap_or(git).to_string();
+    }
+    // A release archive's: the tag of its upstream, where GitHub shows the
+    // tree at that tag.
+    match port.recipe.upstream.as_ref().and_then(|upstream| upstream.tagged()) {
+        Some((git, tag)) if git.starts_with("https://github.com/") => {
+            format!("{}/tree/{tag}", git.strip_suffix(".git").unwrap_or(git))
+        }
+        _ => port.recipe.homepage.clone(),
     }
 }
 
@@ -638,7 +676,7 @@ mod tests {
         }
         let kept = dir.join("org.nginx.nginx-1.29.1.dkv");
         std::fs::write(&kept, "packed").unwrap();
-        remove_other_versions(&dir, id, &kept).unwrap();
+        remove_other_versions(&dir, id, None, &kept).unwrap();
         let mut left: Vec<String> = std::fs::read_dir(&dir)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
@@ -654,6 +692,84 @@ mod tests {
             ]
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A line's pack leaves the other lines' bundles: each is a bundle of
+    /// its own, `ID@line` (ADR 0387).
+    #[test]
+    fn a_lines_pack_removes_only_that_lines_other_versions() {
+        let dir = std::env::temp_dir().join(format!("ob-bundles-lines-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let names = [
+            "org.nodejs.node-24.22.3.dkv",
+            "org.nodejs.node-26.12.0.dkv",
+            "org.nodejs.node-26.13.1_2.reason",
+            "org.nodejs.node-260.1.0.dkv",
+        ];
+        for name in names {
+            std::fs::write(dir.join(name), name).unwrap();
+        }
+        let kept = dir.join("org.nodejs.node-26.13.1.dkv");
+        std::fs::write(&kept, "packed").unwrap();
+        remove_other_versions(&dir, "org.nodejs.node", Some("26"), &kept).unwrap();
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            [
+                "org.nodejs.node-24.22.3.dkv",
+                "org.nodejs.node-26.13.1.dkv",
+                "org.nodejs.node-260.1.0.dkv"
+            ]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(in_line("26", "26") && in_line("26.13.1_2", "26") && !in_line("260.1.0", "26"));
+    }
+
+    /// Node.js's recipes (ADR 0627): a version 2 manifest of a Linux
+    /// bundle, of its line, with add-ons, whose commands run with your
+    /// access and which asks for memory.jit; its source is the release's
+    /// tag.
+    #[test]
+    fn nodes_manifests_are_linux_lines_with_add_ons() {
+        for line in ["24", "26"] {
+            let dir =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../ports/node-{line}"));
+            let text = std::fs::read_to_string(dir.join("recipe.toml")).unwrap();
+            let recipe: Recipe = toml::from_str(&text).unwrap();
+            assert_eq!(recipe.bundle.as_ref().unwrap().key(), format!("org.nodejs.node@{line}"));
+            assert!(in_line(&recipe.version, line), "{} is of line {line}", recipe.version);
+            let port = Port {
+                recipe,
+                dir: dir.clone(),
+                source: None,
+                extras: Vec::new(),
+                crates: Vec::new(),
+                modules: Vec::new(),
+            };
+            let text = manifest(&port, &port.recipe.version);
+            let manifest = dkv::signed::parse_manifest(text.as_bytes()).unwrap();
+            assert!(text.contains("\"manifest_version\": 2,"));
+            assert_eq!(manifest.runtime, manifest::bundle::Runtime::Linux);
+            assert_eq!(manifest.line.as_ref().unwrap().0, line);
+            let files: Vec<&str> = manifest.line_files.iter().map(|f| f.0.as_str()).collect();
+            assert_eq!(files, [".nvmrc", ".node-version"]);
+            let add_ons = manifest.add_ons.as_ref().unwrap();
+            assert_eq!(add_ons.commands.0, "bin");
+            let commands: Vec<&str> = manifest.commands.iter().map(|c| c.name.0.as_str()).collect();
+            assert_eq!(commands, ["node", "npm", "npx"]);
+            assert!(manifest.permissions.get("memory.jit").is_some());
+            let tag = format!("https://github.com/nodejs/node/tree/v{}", port.recipe.version);
+            assert!(text.contains(&format!("\"source\": \"{tag}\"")));
+            // Every line's build.sh is the same.
+            let script = std::fs::read(dir.join("build.sh")).unwrap();
+            let first = std::fs::read(dir.join("../node-26/build.sh")).unwrap();
+            assert_eq!(script, first, "ports/node-{line}/build.sh is ports/node-26/build.sh");
+        }
     }
 
     #[test]

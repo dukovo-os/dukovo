@@ -113,17 +113,48 @@ pub fn check(what: &str, files: &[(String, PathBuf)]) -> Result<()> {
 ///
 /// As [`check`], or if the folder cannot be read.
 pub fn check_folder(what: &str, folder: &Path) -> Result<()> {
+    check(what, &files_of(folder)?)
+}
+
+/// The files beneath `folder`, each with its path from there, in order.
+fn files_of(folder: &Path) -> Result<Vec<(String, PathBuf)>> {
     let mut found = Vec::new();
     ports::list_files(folder, &mut found)?;
     found.sort();
-    let files: Vec<(String, PathBuf)> = found
+    Ok(found
         .into_iter()
         .map(|file| {
             let inside = file.strip_prefix(folder).unwrap_or(&file).to_string_lossy().into_owned();
             (inside, file)
         })
-        .collect();
-    check(what, &files)
+        .collect())
+}
+
+/// The check of a Linux bundle (ADR 0625), the other way round: fails if a
+/// file beneath `folder` is a program the kernel would run as Dukovo's,
+/// which in a Linux view would make Dukovo's calls with none of Dukovo's
+/// files. `bundle check` and `bundle sign` refuse the same.
+///
+/// # Errors
+///
+/// If a file cannot be read, or programs are Dukovo's: the error lists
+/// them.
+pub fn check_linux_folder(what: &str, folder: &Path) -> Result<()> {
+    let mut dukovo = Vec::new();
+    for (path, file) in files_of(folder)? {
+        if verdict(&file)? == Verdict::Dukovo {
+            dukovo.push(path);
+        }
+    }
+    if dukovo.is_empty() {
+        return Ok(());
+    }
+    Err(Error::new(format!(
+        "{what} is a Linux bundle and holds programs that the kernel would run as Dukovo's \
+         (ADR 0625):\n  {}",
+        dukovo.join("\n  ")
+    ))
+    .hint("a Linux bundle holds Linux programs and scripts; Dukovo's go in a bundle of their own"))
 }
 
 /// What `exec` makes of the file at `path`: the kernel's rule, read from

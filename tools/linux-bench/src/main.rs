@@ -16,14 +16,17 @@
 //!
 //! The rows of a static Linux program's own system calls,
 //! `lx_syscall_null`, `lx_clone_thread`, `lx_fork_exec_wait`,
-//! `lx_epoll_wait`, `lx_futex_wake` and `lx_clock_gettime`, touch nothing
-//! but what such a program is given (no `/proc`, `/sys` or `/dev`, no
-//! other program), so that this one static binary runs the same rows on
-//! Linux and, under the Linux personality (ADR 0610), on Dukovo, where
-//! `--only linux` runs them alone. `lx_fork_exec_wait` runs this program
-//! again with `--exit 0`, which ends at once and does nothing else.
+//! `lx_epoll_wait`, `lx_futex_wake`, `lx_clock_gettime`,
+//! `lx_forwarded_null`, `lx_seccomp_null` and `lx_seccomp_filtered`,
+//! touch nothing but what such a program is given (no `/proc`, `/sys` or
+//! `/dev`, no other program), so that this one static binary runs the same
+//! rows on Linux and, under the Linux personality (ADR 0610), on Dukovo,
+//! where `--only linux` runs them alone. `lx_fork_exec_wait` runs this
+//! program again with `--exit 0`, which ends at once and does nothing else.
 //! `lx_clock_gettime` is answered by the vDSO on both (ADR 0616) and
-//! enters no system call.
+//! enters no system call. `lx_forwarded_null` is a call that Dukovo's
+//! kernel hands to linuxd (ADR 0618), and the two seccomp rows run in a
+//! child process under Podman's default profile (ADR 0623).
 //!
 //! It prints one line per benchmark, in the format of the Radix benchmark
 //! programs:
@@ -392,6 +395,45 @@ fn linux_rows(rounds: u64) {
     let nobody = AtomicU32::new(0);
     report("lx_futex_wake", rounds * 2, || linux::futex_wake(&nobody, 1));
     report("lx_clock_gettime", rounds * 2, clock_gettime);
+    // Dukovo's kernel hands this call to linuxd and back.
+    report("lx_forwarded_null", rounds / 10, || {
+        let _ = linux::persona();
+    });
+    seccomp_rows(rounds);
+}
+
+/// Podman's default seccomp profile, as libseccomp compiles it for x86-64:
+/// the filter that radix-bpf's tests read (kernel/lib/bpf/src/fixtures).
+const PODMAN_PROFILE: &[u8] =
+    include_bytes!("../../../kernel/lib/bpf/src/fixtures/podman-default.bpf");
+
+/// The cost of a call under a container's seccomp filter, in a child
+/// process, as a filter holds for good: getppid, which the profile allows
+/// whatever its arguments, so that Linux's cache of such calls (and
+/// Dukovo's, ADR 0623) answers without running the filter, and
+/// personality(0xffffffff), whose argument the filter checks, so that it
+/// runs each time; less `lx_forwarded_null`, that is the filter's cost.
+fn seccomp_rows(rounds: u64) {
+    std::io::stdout().flush().ok();
+    // The process has one thread here: every thread has been joined.
+    let child = match process::fork().expect("fork") {
+        Fork::Parent(child) => child,
+        Fork::Child => {
+            match linux::install_seccomp_filter(PODMAN_PROFILE) {
+                Ok(()) => {
+                    report("lx_seccomp_null", rounds * 2, getppid);
+                    report("lx_seccomp_filtered", rounds / 10, || {
+                        let _ = linux::persona();
+                    });
+                }
+                Err(err) => eprintln!("linux-bench: cannot install the seccomp filter: {err}"),
+            }
+            std::io::stdout().flush().ok();
+            // The child ends here, without unwinding the parent's state.
+            process::exit_now(0);
+        }
+    };
+    process::wait(child).expect("cannot wait for the process of the seccomp rows");
 }
 
 /// The path this program can be run by again: where the system says it is,

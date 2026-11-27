@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# A static Linux program filters its own calls with seccomp on the machine's
+# own processor (ADR 0623). The program is the boot test's own,
+# userspace/posix/linux/seccomp.c, built on the lab PC with its glibc: it
+# installs filters with each action, reads the SIGSYS record a trap gives,
+# filters every thread at once with TSYNC, has a filter inherited across
+# fork and execve, runs in strict mode, and finds a filter refused that
+# Linux refuses and the chain's limit where Linux has it. It runs by its
+# path, as Nukesh runs any Linux program, and says at the end that every
+# check passed.
+about = "a static Linux program installs seccomp filters with every action, gets the SIGSYS record of a trap, filters every thread with TSYNC, inherits filters across fork and execve and runs in strict mode (ADR 0623)"
+time = "5m"
+host_needs = ["scp", "cc"]
+
+[[step]]
+run = "sh -c 'rm -rf /users/lab/linux-static && mkdir /users/lab/linux-static'"
+[[step]]
+host = "sh {here}/linux-static.sh seccomp {machine} {machine-port:22}"
+expect = "copied: seccomp"
+[[step]]
+run = "chmod 755 /users/lab/linux-static/seccomp"
+# From /tmp, which is not the program's folder. Its threads and children
+# are killed by SIGSYS on purpose; the program says so of each.
+[[step]]
+run = "sh -c 'cd /tmp && /users/lab/linux-static/seccomp; echo seccomp-rc=$?'"
+expect = ["seccomp: running on Dukovo", "seccomp: every check passed", "seccomp-rc=0"]
+expect_not = ["FAILED"]
+[[step]]
+run = "sh -c 'rm -rf /users/lab/linux-static && echo gone'"
+expect = "gone"

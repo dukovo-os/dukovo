@@ -451,9 +451,8 @@ impl AddressSpace {
             let Some((entries, level)) = mapping(self.pml4, virt) else { return };
             let first = ((virt / PAGE) % 512) as usize;
             let count = (end - virt).div_ceil(PAGE).min(512 - first as u64);
-            let usable = |entry: u64| {
-                entry & PRESENT != 0 && (!write || paging::access_of(entry) == Access::ReadWrite)
-            };
+            let usable =
+                |entry: u64| entry & PRESENT != 0 && (!write || paging::access_of(entry).writes());
             if level == 2 {
                 // A large page's frames, from `virt` on.
                 let entry = entries[index(virt, 2)].load(Ordering::Relaxed);
@@ -556,6 +555,73 @@ impl AddressSpace {
         walk.table(self, self.pml4, 4, 0);
         walk.flush(self, end);
         walk.failed.map_or(Ok(()), Err)
+    }
+
+    /// Moves every entry from `from` to `from + size` to the same place
+    /// from `to`, as `mremap` moves a mapping (ADR 0629): a frame with its
+    /// access or held without it, or a swap slot, each the same, never
+    /// copied. The old entries are shot down once, when all have moved.
+    /// The two ranges must be apart, and neither may hold a large page.
+    /// Nothing moves if a page table for the new place cannot be had
+    /// (NoMemory), or an entry there is not empty (AlreadyMapped).
+    pub fn move_entries(&self, from: u64, to: u64, size: u64) -> Result<(), MapPageError> {
+        let within = |at: u64| {
+            at.is_multiple_of(PAGE) && at.checked_add(size).is_some_and(|end| end <= USER_END)
+        };
+        assert!(
+            within(from) && within(to) && size.is_multiple_of(PAGE),
+            "moving {size:#x} bytes from {from:#x} to {to:#x}"
+        );
+        assert!(from + size <= to || to + size <= from, "moving {from:#x} onto itself at {to:#x}");
+        if size == 0 {
+            return Ok(());
+        }
+        let end = from + size;
+        let guard = self.lock.lock();
+        // The new place's tables first, a look for each 2 MiB that gets an
+        // entry, so that nothing moves unless everything can.
+        let mut made = None;
+        let mut failed = None;
+        held_leaves_of(self.pml4, 4, 0, from, end, &mut |virt, _| {
+            let target = to + (virt - from);
+            if failed.is_some() {
+                return;
+            }
+            if made != Some(target / LARGE_PAGE) {
+                match paging::table_of(self.pml4, target, 1, true) {
+                    Ok(_) => made = Some(target / LARGE_PAGE),
+                    Err(MapError::NoMemory) => failed = Some(MapPageError::NoMemory),
+                    Err(MapError::LargePage) => failed = Some(MapPageError::AlreadyMapped),
+                }
+            }
+            if paging::leaf(self.pml4, target).is_some_and(|slot| slot.load(Ordering::Relaxed) != 0)
+            {
+                failed.get_or_insert(MapPageError::AlreadyMapped);
+            }
+        });
+        if let Some(failed) = failed {
+            return Err(failed);
+        }
+        let mut moved = false;
+        held_leaves_of(self.pml4, 4, 0, from, end, &mut |virt, slot| {
+            let target = to + (virt - from);
+            // Made above, under the same lock: nothing is allocated now.
+            let Ok(table) = paging::table_of(self.pml4, target, 1, true) else { return };
+            // In one step, so that no accessed or dirty bit a CPU sets
+            // meanwhile is lost.
+            let entry = slot.swap(0, Ordering::Relaxed);
+            let at = index(target, 1);
+            paging::table(table)[at].store(entry, Ordering::Relaxed);
+            if let Some(record) = paging::table_record(table) {
+                record.add_table_lines(paging::line_bit(at));
+            }
+            moved |= entry & PRESENT != 0;
+        });
+        drop(guard);
+        if moved {
+            self.flush_range(from..end);
+        }
+        Ok(())
     }
 
     /// The frame `virt` maps and how, if it is mapped.
@@ -803,6 +869,39 @@ fn leaves_of(
         }
     }
     true
+}
+
+/// Calls `each` with the address and entry of every 4 KiB leaf of the
+/// table at `phys`, of `level` (4 for the PML4), mapping from `base`, from
+/// `start` to `end`, that holds anything, in order: a frame, with access or
+/// held without it, or a swap slot. The caller holds the space's lock, and
+/// knows the range holds no large page.
+fn held_leaves_of(
+    phys: u64,
+    level: u32,
+    base: u64,
+    start: u64,
+    end: u64,
+    each: &mut dyn FnMut(u64, &AtomicU64),
+) {
+    let span = 1u64 << (12 + 9 * (level - 1));
+    let first = ((start.max(base) - base) / span) as usize;
+    let last = ((end - 1 - base) / span).min(511) as usize;
+    let entries = paging::table(phys);
+    for indices in in_use(paging::lines(phys).0, first, last) {
+        for index in indices {
+            let entry = entries[index].load(Ordering::Relaxed);
+            let at = base + index as u64 * span;
+            if level == 1 {
+                if entry != 0 {
+                    each(at, &entries[index]);
+                }
+            } else if entry & PRESENT != 0 {
+                assert!(entry & LARGE == 0, "a large page at {at:#x} in memory that moves");
+                held_leaves_of(entry & ADDRESS, level - 1, at, start, end, each);
+            }
+        }
+    }
 }
 
 /// The entry of a large page that maps the frames from `frame` on.
@@ -1106,6 +1205,7 @@ pub fn access(access: UserAccess) -> Access {
         UserAccess::Read => Access::ReadOnly,
         UserAccess::ReadWrite => Access::ReadWrite,
         UserAccess::ReadExecute => Access::Code,
+        UserAccess::ReadWriteExecute => Access::CodeWritable,
     }
 }
 
@@ -1115,6 +1215,7 @@ pub fn user_access(access: Access) -> UserAccess {
         Access::ReadOnly => UserAccess::Read,
         Access::ReadWrite => UserAccess::ReadWrite,
         Access::Code => UserAccess::ReadExecute,
+        Access::CodeWritable => UserAccess::ReadWriteExecute,
     }
 }
 

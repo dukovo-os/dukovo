@@ -105,8 +105,8 @@ use libradix::abi::process::{
 use libradix::abi::resource_domain::{self, NO_LIMIT};
 use libradix::abi::startup::{
     DEVICE_SLOTS, SLOT_CLOCK, SLOT_DEVICE, SLOT_DOMAIN, SLOT_FD_BASE, SLOT_FIREWALL,
-    SLOT_FIRST_EXTRA, SLOT_LOG, SLOT_NETWORK, SLOT_PLATFORM, SLOT_PROCESS, SLOT_RANDOM, SLOT_ROOT,
-    SLOT_SETTINGS,
+    SLOT_FIRST_EXTRA, SLOT_JIT, SLOT_LOG, SLOT_NETWORK, SLOT_PLATFORM, SLOT_PROCESS, SLOT_RANDOM,
+    SLOT_ROOT, SLOT_SETTINGS,
 };
 use libradix::abi::{names as names_abi, network, power, signal, syscalls};
 use radix_rt::fs::{Dir, File};
@@ -391,6 +391,19 @@ fn grant_settings(settings: Option<u32>, spec: &Spec, child: u32) -> Result<(), 
     let rights = Rights::READ.union(Rights::CONTROL).union(Rights::COPY).union(Rights::TRANSFER);
     process::share(&SYS, child, settings, SLOT_SETTINGS, rights, 0)
         .map_err(|status| format!("giving it the kernel settings failed: {:#x}", status.0))
+}
+
+/// Gives `child` the jit capability in SLOT_JIT if `spec` asks for
+/// memory.jit, with the control right, and the copy and transfer rights
+/// so that it lasts through `fork` (ADR 0624).
+fn grant_jit(jit: Option<u32>, spec: &Spec, child: u32) -> Result<(), String> {
+    if !spec.jit {
+        return Ok(());
+    }
+    let jit = jit.ok_or("Spark has no jit capability to give")?;
+    let rights = Rights::CONTROL.union(Rights::COPY).union(Rights::TRANSFER);
+    process::share(&SYS, child, jit, SLOT_JIT, rights, 0)
+        .map_err(|status| format!("giving it the jit capability failed: {:#x}", status.0))
 }
 
 /// Gives `child` a capability to its own domain, `domain`, in SLOT_DOMAIN
@@ -907,6 +920,8 @@ pub struct Supervisor {
     firewall: Option<u32>,
     /// The kernel settings capability (ADR 0476), from the kernel.
     settings: Option<u32>,
+    /// The jit capability (ADR 0624), from the kernel.
+    jit: Option<u32>,
     /// The notification the kernel signals when a child changes.
     children: Option<u32>,
     /// The notification the kernel signals when the power button is
@@ -977,6 +992,7 @@ impl Supervisor {
         let devices = SLOT_FIRST_EXTRA + 7;
         let firewall = SLOT_FIRST_EXTRA + 8;
         let settings = SLOT_FIRST_EXTRA + 9;
+        let jit = SLOT_FIRST_EXTRA + 10;
         let children = slots::take().filter(|&slot| {
             process::create(&SYS, SLOT_PROCESS, ObjectKind::Notification, 0, slot).is_ok()
                 && process::notify_children(&SYS, SLOT_PROCESS, slot).is_ok()
@@ -1010,6 +1026,7 @@ impl Supervisor {
             devices: holds(devices, ObjectKind::Device).then_some(devices),
             firewall: holds(firewall, ObjectKind::Firewall).then_some(firewall),
             settings: holds(settings, ObjectKind::KernelSettings).then_some(settings),
+            jit: holds(jit, ObjectKind::Jit).then_some(jit),
             children,
             button,
             restart,
@@ -1661,6 +1678,7 @@ impl Supervisor {
             .and_then(|()| grant_clock(self.clock, spec, child))
             .and_then(|()| grant_firewall(self.firewall, spec, child))
             .and_then(|()| grant_settings(self.settings, spec, child))
+            .and_then(|()| grant_jit(self.jit, spec, child))
             .and_then(|()| grant_domain(service.domain, spec, child))
             .and_then(|()| grant_devices(self.devices, spec, child))
             .and_then(|()| limit_files(spec, child))

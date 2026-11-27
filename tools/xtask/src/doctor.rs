@@ -273,6 +273,13 @@ fn requirements() -> Vec<Requirement> {
             fallback: None,
         },
         Requirement {
+            name: "strace",
+            purpose: "lists the Linux calls Node.js makes, which the linux-node boot test checks Dukovo has",
+            found: |_| program_version("strace", "-V"),
+            packages: all("strace"),
+            fallback: None,
+        },
+        Requirement {
             name: "flex",
             purpose: "builds GRUB's lexer",
             found: |_| program_version("flex", "--version"),

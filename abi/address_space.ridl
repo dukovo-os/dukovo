@@ -53,6 +53,19 @@ flags MapFlags: u32 {
     shared = 2;
 }
 
+/// How `remap` may place the mapping it changes, as Linux's `mremap`
+/// flags. (Since version 5, ADR 0629.)
+flags RemapFlags: u32 {
+    /// Move it elsewhere if it cannot grow where it is.
+    may_move = 0;
+    /// With may_move: move it to `to`, whatever is mapped there going
+    /// first.
+    fixed = 1;
+    /// With may_move: move it, its size unchanged, and keep its old place
+    /// mapped as it was, empty: private memory only.
+    keep_old = 2;
+}
+
 /// How `futex_wait_set` waits. (Since version 4, ADR 0617.)
 flags FutexWaitFlags: u32 {
     /// `timeout_ns` is a time on the clock, not a time from now.
@@ -73,26 +86,30 @@ const FUTEX_ALL: u32 = 0xffffffff;
 const ROBUST_LIST_MAX: u32 = 2048;
 
 /// A virtual address space.
-interface address_space = 0x0003 version 4 {
+interface address_space = 0x0003 version 5 {
     kind = address_space;
     /// Whether a page is mapped at `address`, and with which rights.
     method query = 1 (address: addr) -> (mapped: bool, rights: Rights)
         raises [no_such_slot, empty_slot, missing_rights, invalid_argument];
     /// Maps `size` bytes (rounded up to whole pages) of zeroed anonymous
-    /// memory with `rights`: any of read, write and execute, write and
-    /// execute never together, and none for memory that cannot be touched
-    /// yet. With fixed or fixed_no_replace it goes at `address` (a page
-    /// boundary); otherwise `address` is a hint, and the kernel takes the
-    /// highest free range below it, or below ANONYMOUS_TOP, that fits.
-    /// Returns where it went. Needs the control right.
+    /// memory with `rights`: any of read, write and execute, and none for
+    /// memory that cannot be touched yet. Write and execute go together
+    /// only for private memory of the caller's own address space when its
+    /// process has memory.jit (radix-jit(2), ADR 0624); otherwise they are
+    /// invalid_argument, and they always are with shared. With fixed or
+    /// fixed_no_replace it goes at `address` (a page boundary); otherwise
+    /// `address` is a hint, and the kernel takes the highest free range
+    /// below it, or below ANONYMOUS_TOP, that fits. Returns where it went.
+    /// Needs the control right.
     method map_anonymous = 2 (address: addr, size: u64, rights: Rights, flags: MapFlags)
         -> (address: addr)
         raises [no_such_slot, empty_slot, missing_rights, invalid_argument, no_memory,
                 already_mapped];
     /// Gives the anonymous memory in the `size` bytes from `address` (a
     /// page boundary) the access `rights` allows, as `map_anonymous`
-    /// takes them. Every page must be anonymous memory. Needs the control
-    /// right.
+    /// takes them. Every page must be anonymous memory. Write with
+    /// execute is missing_rights for a file's pages or shared memory, even
+    /// with memory.jit. Needs the control right.
     method protect = 3 (address: addr, size: u64, rights: Rights) -> ()
         raises [no_such_slot, empty_slot, missing_rights, invalid_argument, no_memory,
                 not_mapped];
@@ -202,4 +219,28 @@ interface address_space = 0x0003 version 4 {
                                operation: u32) -> (woken: u32)
         raises [no_such_slot, empty_slot, missing_rights, invalid_argument, bad_address,
                 not_supported];
+    /// Changes the mapping of the `size` bytes from `address` (a page
+    /// boundary) to `new_size` bytes, both rounded up to whole pages, and
+    /// returns where it is now, as Linux's `mremap`. Shrinking unmaps the
+    /// bytes past `new_size`, whatever is mapped there, and needs only a
+    /// mapping at `address`. Growing extends it where the pages after it
+    /// are free, if it ends its mapping; with may_move it moves elsewhere
+    /// if it cannot, at `to` if `to` is free, or where `map_anonymous`
+    /// would put it, and with fixed it moves to `to`. A move takes the
+    /// pages with it, never copying them: each keeps its memory, or its
+    /// place in swap, and its access. `size` 0 maps a shared mapping's
+    /// pages from `address` a second time, the old mapping staying.
+    /// Otherwise the `size` bytes must lie in one mapping of anonymous
+    /// memory, private, shared or filled from a file (not_mapped if they
+    /// do not); a frame's, a ring's or a card's cannot grow or move
+    /// (wrong_kind). Fails with no_memory if it cannot grow where it is
+    /// and may not move, or finds no room, and with invalid_argument for a
+    /// `new_size` of 0, flags that need may_move without it, keep_old with
+    /// sizes that differ or for shared memory, `size` 0 for private
+    /// memory, or a `to` that is not a page boundary or meets the old
+    /// mapping. Needs the control right. (Since version 5, ADR 0629.)
+    method remap = 14 (address: addr, size: u64, new_size: u64, flags: RemapFlags, to: addr)
+        -> (address: addr)
+        raises [no_such_slot, empty_slot, missing_rights, invalid_argument, no_memory,
+                not_mapped, wrong_kind];
 }

@@ -229,7 +229,7 @@ fn mark_ended(user: u32) -> Result<()> {
 /// how many it ended, of those that were not ending already.
 fn end_processes(user: u32) -> Result<u32> {
     let processes = objects::processes().ok_or(error(Kernel::NoMemory))?;
-    let from = Info { code: SI_KERNEL, pid: 0, status: 0 };
+    let from = Info { code: SI_KERNEL, errno: 0, pid: 0, status: 0 };
     let mut ended = 0u32;
     for process in processes.iter().filter(|p| p.user() == user) {
         if signal::send_process(process, SIGKILL, from) != Sent::Dropped {

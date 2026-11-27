@@ -157,6 +157,12 @@ _/processes/_*n*_/status_
 		*yes* while a tracer reads its system calls (*radix-trace*(2)),
 		else *no*.
 
+	*jit*
+		*yes* if it was given memory.jit (*radix-jit*(2)), which lets it
+		make its private memory writable and executable at once;
+		*refused* if it asked for such memory without it and was
+		refused; else *no*. (Since Phase 18.)
+
 	*program*
 		The path of the program it runs (its interpreter, for a
 		script), from the root, as *exec* was given it. Left out when
@@ -180,7 +186,10 @@ _/processes/_*n*_/threads_
 	on), *user_ns*, *system_ns*, *voluntary_switches*,
 	*involuntary_switches*, *policy*, *priority* and *nice*, then
 	*waits* (what it is blocked on, with _\__ for spaces) if it is
-	blocked, and *name* last.
+	blocked, *seccomp* (*off*, *strict*, or *filter:*_n_ with the _n_
+	filters along a Linux thread's chain, *radix-linux*(7)) and
+	*no_new_privs* (*yes* or *no*), and *name* last. (*seccomp* and
+	*no_new_privs* since Phase 18.)
 
 _/processes/_*n*_/files_
 	A line per capability the process holds, by slot: *fd*=_n_ for a
@@ -381,6 +390,7 @@ disk_written_bytes: 0
 voluntary_switches: 64
 involuntary_switches: 3
 traced: no
+jit: no
 program: /system/commands/nukesh
 directory: /home
 ```

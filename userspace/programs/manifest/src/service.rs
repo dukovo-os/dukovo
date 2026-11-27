@@ -86,6 +86,7 @@ pub const KEYS: &[&str] = &[
     "names",
     "domain",
     "devices.pci",
+    "memory.jit",
     "backup",
     "backup.before",
     "backup.after",
@@ -767,6 +768,9 @@ pub struct Permissions {
     pub domain: bool,
     /// `devices.*`: the cards it drives, as a driver program.
     pub devices: Devices,
+    /// `memory.*`: what of memory it may do beyond what every program
+    /// does.
+    pub memory: Memory,
 }
 
 impl Permissions {
@@ -808,6 +812,19 @@ pub struct Admin {
     /// kernel's settings, as the tune service does (ADR 0476).
     #[serde(default)]
     pub tune: bool,
+}
+
+/// The memory group: `memory.jit`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Memory {
+    /// Whether it gets the jit capability (radix-jit(2), ADR 0624), with
+    /// which it lets a program it starts map memory that is writable and
+    /// executable at once: authd's, which puts it in each sign-in session
+    /// for `bundle run` and `linux run --allow-jit`. The service itself
+    /// does not get memory.jit from it.
+    #[serde(default)]
+    pub jit: bool,
 }
 
 /// The devices group: `devices.pci`, the cards the kernel left for a
@@ -1118,6 +1135,8 @@ struct RawPermissions {
     domain: bool,
     #[serde(default)]
     devices: Devices,
+    #[serde(default)]
+    memory: Memory,
 }
 
 impl TryFrom<RawPermissions> for Permissions {
@@ -1132,6 +1151,7 @@ impl TryFrom<RawPermissions> for Permissions {
             names: raw.names,
             domain: raw.domain,
             devices: raw.devices,
+            memory: raw.memory,
         };
         let grants = permissions.network.grants() + usize::from(permissions.admin.network);
         if grants > NETWORK_SLOTS as usize {
@@ -1420,6 +1440,10 @@ domain = false
 # The cards it drives, as a driver program does, by their PCI vendor and
 # device IDs, such as "8086:100e", or "8086:*" for any of the vendor's.
 devices.pci = []
+# Letting the programs it starts make machine code as they run, as
+# JavaScript engines do: only for authd, which hands it to each sign-in
+# session.
+memory.jit = false
 
 # What it runs around the snapshots of backup(8), each a program's
 # absolute path and its arguments, as the service runs: before, to bring

@@ -14,14 +14,15 @@
 //! folders of alice's home, and nothing else of it.
 //!
 //! The program makes the calls itself and says one line for a case that went
-//! wrong and, at the end, that all 12 cases passed on Dukovo: the maps, the
+//! wrong and, at the end, that all 13 cases passed on Dukovo: the maps, the
 //! CPU list and the status of /proc, the path /proc/self/exe gives, a write
 //! through /proc/self/fd/1 that reaches standard output, the interfaces that
 //! getifaddrs lists, the accounts of /etc, the resolver's file, the names
 //! uname gives, the list of CPUs under /sys, the person's home kept out of
-//! sight, and personality(0xffffffff), which only linuxd answers. The same
-//! file runs on a Linux machine, which is how its expectations are known to
-//! be Linux's.
+//! sight, personality(0xffffffff), which only linuxd answers, and a file of
+//! /dev/shm that a child and its parent map and share. The same file runs
+//! on a Linux machine, which is how its expectations are known to be
+//! Linux's.
 //!
 //! It then runs again with --restart: it ends linuxd with SIGKILL, and the
 //! supervisor that linux run leaves beside it starts linuxd again, which the
@@ -36,7 +37,7 @@ const LABEL: &str = "BUNDLES";
 const VOLUME: &str = "/volumes/vdb";
 
 /// The Linux base's bundle file, which ob packs from ports/linux-base.
-const FILE: &str = "org.dukovo.linux-base-25.8.0.dkv";
+pub(in crate::test) const FILE: &str = "org.dukovo.linux-base-25.8.0.dkv";
 
 /// The start of its name: the one bundle the disk holds, and the one the
 /// other tests' disks of bundles leave out, as they have no use for it.
@@ -50,7 +51,7 @@ const SOURCE: &str = "userspace/linux/view.c";
 
 /// How many cases the program has without `--restart`: the table of the
 /// source, which a unit test counts. The restart adds one.
-const CASES: usize = 12;
+const CASES: usize = 13;
 
 /// How long a run of the program may take, in seconds: the program ends a
 /// case that waits for linuxd after 30, and starting the sandbox, its

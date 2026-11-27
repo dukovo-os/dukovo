@@ -10,6 +10,7 @@
 //! data words, packed and checked by the code ridlc generates from
 //! `abi/*.ridl`, so the kernel and every program agree on them.
 
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use radix_abi::capability::{self as abi_cap, ObjectKind as AbiKind, Rights as AbiRights};
@@ -21,8 +22,8 @@ use radix_klog::info;
 use radix_mm::{Flags, HEAP};
 
 use super::memory::{
-    Anon, FileSource, Placement, ProgramPages, SharedPages, SpaceObject, cap_rights, frame_made,
-    futex,
+    Anon, FileSource, Placement, ProgramPages, Remap, SharedPages, SpaceObject, SpaceRef,
+    cap_rights, frame_made, futex,
 };
 use super::objects::{self, Found, Object};
 use super::{Result, UserRef, cap_error, error};
@@ -77,6 +78,7 @@ fn version(kind: ObjectKind) -> u32 {
         ObjectKind::KernelSettings => radix_abi::kernel_settings::VERSION,
         ObjectKind::EventQueue => radix_abi::event_queue::VERSION,
         ObjectKind::LinuxCall => radix_abi::linux_call::VERSION,
+        ObjectKind::Jit => radix_abi::jit::VERSION,
         _ => 0,
     }
 }
@@ -186,6 +188,7 @@ pub fn call(
         (ObjectKind::Device, _) => super::device::method(user, found, info.label, &args),
         (ObjectKind::EventQueue, _) => super::queue::method(user, found, info.label, &args),
         (ObjectKind::LinuxCall, _) => super::linux::forward::method(user, slot, info.label, &args),
+        (ObjectKind::Jit, _) => super::jit::method(user, cap, info.label, &args),
         (ObjectKind::Directory, _) => {
             super::files::directory_method(user, found, info.label, &args)
         }
@@ -386,8 +389,9 @@ fn read_random(address: u64, len: u64) -> Result<()> {
 
 /// The access anonymous memory's `rights` ask for (Phase 8): any of read,
 /// write and execute, write implying read as on x86-64, write and execute
-/// never together; none keeps the memory out of reach.
-fn anonymous_access(rights: AbiRights) -> Result<Option<radix_hal::UserAccess>> {
+/// together only where `jit` says the caller may have them (memory.jit,
+/// ADR 0624); none keeps the memory out of reach.
+fn anonymous_access(rights: AbiRights, jit: bool) -> Result<Option<radix_hal::UserAccess>> {
     use radix_hal::UserAccess;
     let known = AbiRights::READ.0 | AbiRights::WRITE.0 | AbiRights::EXECUTE.0;
     if rights.bits() & !known != 0 {
@@ -395,12 +399,30 @@ fn anonymous_access(rights: AbiRights) -> Result<Option<radix_hal::UserAccess>> 
     }
     let (write, execute) = (rights.contains(AbiRights::WRITE), rights.contains(AbiRights::EXECUTE));
     Ok(match (rights.contains(AbiRights::READ), write, execute) {
+        (_, true, true) if jit => Some(UserAccess::ReadWriteExecute),
         (_, true, true) => return Err(Kernel::InvalidArgument.status(2)),
         (_, true, false) => Some(UserAccess::ReadWrite),
         (_, false, true) => Some(UserAccess::ReadExecute),
         (true, false, false) => Some(UserAccess::Read),
         (false, false, false) => None,
     })
+}
+
+/// Whether `user`'s process may make memory of `space` writable and
+/// executable: it has memory.jit, and `space` is its own (ADR 0624).
+fn may_jit(user: &UserRef, space: &SpaceRef) -> bool {
+    user.process.jit() && user.process.space().is_some_and(|own| Arc::ptr_eq(&own, space))
+}
+
+/// Notes on `user`'s process that `rights` asked for writable and
+/// executable memory without memory.jit, which is refused.
+fn note_refused_jit(user: &UserRef, rights: AbiRights) {
+    if rights.contains(AbiRights::WRITE)
+        && rights.contains(AbiRights::EXECUTE)
+        && !user.process.jit()
+    {
+        user.process.refuse_jit();
+    }
 }
 
 /// Where `map_anonymous` and `map_file` put what they map.
@@ -433,7 +455,10 @@ fn address_space_method(user: &UserRef, slot: u32, label: u32, args: &[u64; 8]) 
     match label {
         address_space::MAP_ANONYMOUS => {
             let a = address_space::MapAnonymousArgs::decode(args)?;
-            let access = anonymous_access(a.rights)?;
+            // Shared memory is never writable and executable.
+            let jit = may_jit(user, &space) && !a.flags.contains(address_space::MapFlags::SHARED);
+            note_refused_jit(user, a.rights);
+            let access = anonymous_access(a.rights, jit)?;
             let placement = placement(a.address, a.flags);
             if !matches!(placement, Placement::Hint(_)) && !aligned(a.address) {
                 return Err(Kernel::InvalidArgument.status(0));
@@ -453,7 +478,11 @@ fn address_space_method(user: &UserRef, slot: u32, label: u32, args: &[u64; 8]) 
             if !aligned(a.address) {
                 return Err(Kernel::InvalidArgument.status(0));
             }
-            space.protect(a.address, pages_of(a.size)?, anonymous_access(a.rights)?)?;
+            // The space refuses it for anything but private anonymous
+            // memory.
+            note_refused_jit(user, a.rights);
+            let access = anonymous_access(a.rights, may_jit(user, &space))?;
+            space.protect(a.address, pages_of(a.size)?, access)?;
             answer(label, 0, [0; 8])
         }
         address_space::DISCARD => {
@@ -474,7 +503,8 @@ fn address_space_method(user: &UserRef, slot: u32, label: u32, args: &[u64; 8]) 
         }
         address_space::MAP_FILE => {
             let a = address_space::MapFileArgs::decode(args)?;
-            let access = anonymous_access(a.rights)?;
+            // A file's pages are never writable and executable.
+            let access = anonymous_access(a.rights, false)?;
             let shared = a.flags.contains(address_space::MapFlags::SHARED);
             let placement = placement(a.address, a.flags);
             if !a.offset.is_multiple_of(address_space::PAGE_SIZE)
@@ -588,6 +618,31 @@ fn address_space_method(user: &UserRef, slot: u32, label: u32, args: &[u64; 8]) 
             let woken = futex::wake_op(&space, a.address, a.count, a.to, a.count_to, operation)?;
             let results = address_space::FutexWakeOpResults { woken };
             answer(label, address_space::FutexWakeOpResults::WORDS, results.encode())
+        }
+        address_space::REMAP => {
+            let a = address_space::RemapArgs::decode(args)?;
+            if !aligned(a.address) {
+                return Err(Kernel::InvalidArgument.status(0));
+            }
+            let most = address_space::USER_TOP / address_space::PAGE_SIZE;
+            let pages = a.size.div_ceil(address_space::PAGE_SIZE);
+            if pages > most {
+                return Err(Kernel::InvalidArgument.status(1));
+            }
+            let new_pages = a.new_size.div_ceil(address_space::PAGE_SIZE);
+            if new_pages == 0 || new_pages > most {
+                return Err(Kernel::InvalidArgument.status(2));
+            }
+            let fixed = a.flags.contains(address_space::RemapFlags::FIXED);
+            let how = Remap {
+                may_move: a.flags.contains(address_space::RemapFlags::MAY_MOVE),
+                to: fixed.then_some(a.to),
+                keep_old: a.flags.contains(address_space::RemapFlags::KEEP_OLD),
+                hint: if fixed { 0 } else { a.to },
+            };
+            let address = space.remap(a.address, pages, new_pages, how)?;
+            let results = address_space::RemapResults { address };
+            answer(label, address_space::RemapResults::WORDS, results.encode())
         }
         _ => Err(error(Kernel::NoSuchMethod)),
     }

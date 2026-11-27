@@ -135,7 +135,8 @@ fn packs_first(args: &[String]) -> bool {
 /// next build of versions the catalog lists (ADR 0595).
 #[derive(Debug)]
 struct NextBuilds {
-    /// The bundles' IDs, as their ports' `[bundle]` tables have them.
+    /// The bundles' IDs, as their ports' `[bundle]` tables have them, each
+    /// with `@line` for a line's.
     ids: Vec<String>,
     /// Why they were built again, one line.
     reason: String,
@@ -143,7 +144,7 @@ struct NextBuilds {
 
 /// A bundle to pack as a version's next build.
 pub(crate) struct NextBuild {
-    /// Its ID.
+    /// Its ID, with `@line` for a line's.
     pub id: String,
     /// The version it is packed as, such as `15.2.0_2`.
     pub version: String,
@@ -213,13 +214,16 @@ fn planned_builds(ctx: &Ctx, ids: &[String]) -> Result<Vec<NextBuild>> {
     let recipes = crate::ports::recipes(ctx)?;
     let mut planned = Vec::new();
     for id in ids {
-        let Some((recipe, _)) =
-            recipes.iter().find(|(recipe, _)| recipe.bundle.as_ref().is_some_and(|b| &b.id == id))
-        else {
-            bail!("no port packs {id}: --next-build takes the ID of a port's bundle");
+        let Some((recipe, bundle)) = recipes.iter().find_map(|(recipe, _)| {
+            recipe.bundle.as_ref().filter(|b| b.key() == *id).map(|b| (recipe, b))
+        }) else {
+            bail!(
+                "no port packs {id}: --next-build takes the ID of a port's bundle, with @LINE \
+                 for a line's"
+            );
         };
         let version = &recipe.version;
-        let Some(newest) = newest_build(&targets, id, version) else {
+        let Some(newest) = newest_build(&targets, &bundle.id, version) else {
             bail!(
                 "{id} {version} is not in the catalog: it publishes as a new version, without \
                  --next-build"

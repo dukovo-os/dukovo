@@ -28,7 +28,8 @@ use crate::sys::{SYS, errno_of};
 const WORKERS: u32 = 3;
 /// The first of the workers' slots, two each (the call's capability, and
 /// one for the call's own use), empty between calls: the slots after
-/// SLOT_LINUX, which the C library never takes.
+/// SLOT_LINUX, which the C library never takes (linuxd is never given a
+/// jit capability, so SLOT_JIT is free too).
 const SLOTS_FIRST: u32 = startup::SLOT_LINUX + 1;
 const _: () = assert!(SLOTS_FIRST + 2 * WORKERS <= startup::SLOT_FD_BASE);
 

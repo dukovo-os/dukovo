@@ -53,6 +53,7 @@ pub(crate) mod files;
 mod firewall;
 pub mod init;
 mod ipc;
+mod jit;
 pub mod launch;
 mod linux;
 mod loader;

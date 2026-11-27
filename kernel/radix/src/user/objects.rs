@@ -118,6 +118,8 @@ pub enum Object {
     EventQueue(QueueRef),
     /// A Linux call forwarded to linuxd (radix-linux-call(2)).
     LinuxCall(CallRef),
+    /// The authority to give processes memory.jit (radix-jit(2)).
+    Jit,
 }
 
 impl Object {
@@ -144,6 +146,7 @@ impl Object {
             Object::KernelSettings => ObjectKind::KernelSettings,
             Object::EventQueue(_) => ObjectKind::EventQueue,
             Object::LinuxCall(_) => ObjectKind::LinuxCall,
+            Object::Jit => ObjectKind::Jit,
         }
     }
 }
@@ -327,6 +330,7 @@ enum Kept {
     KernelSettings,
     EventQueue(Weak<EventQueue, Kmalloc>),
     LinuxCall(Weak<LinuxCall, Kmalloc>),
+    Jit,
 }
 
 impl Kept {
@@ -353,6 +357,7 @@ impl Kept {
             Object::KernelSettings => Kept::KernelSettings,
             Object::EventQueue(queue) => Kept::EventQueue(Arc::downgrade(queue)),
             Object::LinuxCall(call) => Kept::LinuxCall(Arc::downgrade(call)),
+            Object::Jit => Kept::Jit,
         }
     }
 
@@ -380,6 +385,7 @@ impl Kept {
             Kept::KernelSettings => Object::KernelSettings,
             Kept::EventQueue(queue) => Object::EventQueue(queue.upgrade()?),
             Kept::LinuxCall(call) => Object::LinuxCall(call.upgrade()?),
+            Kept::Jit => Object::Jit,
         })
     }
 }
@@ -891,7 +897,8 @@ pub fn released(kept: Option<Recorded>, by: Option<&super::UserThread>) {
         | Object::Clock
         | Object::Devices
         | Object::Firewall
-        | Object::KernelSettings => {}
+        | Object::KernelSettings
+        | Object::Jit => {}
     }
     // What it was charged is given back once it has closed.
     match (charge, by) {

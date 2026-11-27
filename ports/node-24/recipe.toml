@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Node.js 24 ("Krypton", long-term support until 2028-04-30): the line's bundle of
+# the Dukovo catalog, made from Node.js's own build for x86-64 Linux,
+# whose programs run in a Linux view (ADRs 0625 and 0627). Nothing is
+# built: build.sh lays the release out as a bundle. Each line is a port of
+# its own, packed as org.nodejs.node@24, and a project chooses its line
+# with .nvmrc or .node-version (ADR 0387).
+#
+# The archive is pinned by the SHA-256 in the release's SHASUMS256.txt,
+# whose signature is by Antoine du Hamel's release key,
+# 5BE8A3F6C8A5C01D106C0AD820B1A390B168D356, which Node.js's README lists
+# among its releasers'. A newer release of the line is a new archive and
+# SHA-256, taken from its own signed list.
+name = "node-24"
+version = "24.22.3"
+summary = "the Node.js JavaScript runtime, with npm"
+# Node.js is under the MIT license, and its LICENSE file, which the bundle
+# keeps, carries the licenses of what it includes: V8, OpenSSL, ICU,
+# libuv, zlib, brotli, zstd, simdjson, nghttp2, ngtcp2, swc and the rest,
+# under the MIT, Apache 2.0, BSD, ISC, zlib and Unicode licenses, with
+# SipHash and HdrHistogram in the public domain (CC0). npm is under the
+# Artistic License 2.0, and its own modules under the ISC, MIT, Blue Oak
+# Model, Apache 2.0 and BSD licenses; spdx-exceptions' data is under
+# CC-BY-3.0 and spdx-license-ids' under CC0, as their package.json files
+# say.
+license = "MIT AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND ISC AND Zlib AND Unicode-3.0 AND CC0-1.0 AND Artistic-2.0 AND BlueOak-1.0.0 AND CC-BY-3.0"
+homepage = "https://nodejs.org"
+notices = ["LICENSE"]
+# Only the line's own releases replace it.
+series = "24"
+
+[source]
+url = "https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-x64.tar.xz"
+sha256 = "4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb"
+
+[upstream]
+git = "https://github.com/nodejs/node.git"
+tag = "v24.22.3"
+
+[bundle]
+id = "org.nodejs.node"
+name = "Node.js 24"
+description = "Node.js 24, the JavaScript runtime built on V8, as Node.js releases it for Linux, with npm and npx. It runs in a Linux view of its own with the Linux base libraries; node, npm and npx run with your access in the folder you start them in, and npm install -g puts packages and their commands in a folder of yours for the line. A project's .nvmrc or .node-version chooses the line its commands run."
+commands = ["node", "npm", "npx"]
+runtime = "linux"
+line = "24"
+line_files = [".nvmrc", ".node-version"]
+add_ons = { variables = ["NPM_CONFIG_PREFIX"], commands = "bin" }
+
+# V8 compiles JavaScript to machine code as it runs.
+[bundle.permissions."memory.jit"]
+need = "required"
+why = "V8, its JavaScript engine, compiles code to machine code as it runs"

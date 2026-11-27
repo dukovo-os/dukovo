@@ -1065,6 +1065,11 @@ static void mapped(void) {
 	// New memory reads as zeros, and writes them.
 	char *zeros = mmap(NULL, SIZE, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	CHECK(zeros != MAP_FAILED);
+	// A program not given memory.jit has no memory that is writable and
+	// executable at once, mapped so or turned so (ADR 0624).
+	int rwx = PROT_READ | PROT_WRITE | PROT_EXEC;
+	CHECK(mmap(NULL, SIZE, rwx, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) == MAP_FAILED);
+	CHECK(mprotect(zeros, SIZE, rwx) != 0);
 	CHECK(pwrite(fd, zeros, SIZE, 0) == SIZE);
 	CHECK(pread(fd, fresh, SIZE, 0) == SIZE && !memcmp(fresh, zeros, SIZE));
 	CHECK(!munmap(map, SIZE) && !munmap(again, SIZE));

@@ -116,6 +116,13 @@ impl ShmFs {
     /// `max_pages` pages together, and which may hold `max_files` files.
     pub fn new(max_pages: u64, max_files: u64) -> Result<KArc<ShmFs>> {
         let room = Room::new(max_pages).map_err(|_| Error::NoMemory)?;
+        ShmFs::in_room(room, max_files)
+    }
+
+    /// An empty memory filesystem whose files and segments take their
+    /// pages from `room`, which other filesystems may share, and which may
+    /// hold `max_files` files.
+    fn in_room(room: RoomRef, max_files: u64) -> Result<KArc<ShmFs>> {
         let ipc = ipc::Ipc::new(room.clone()).map_err(|_| Error::NoMemory)?;
         let shared = mem::arc(Shared {
             room,
@@ -774,6 +781,25 @@ fn memory_files() -> Result<&'static MemoryFiles> {
         // Another thread made it first; this one's is dropped.
         Err(_) => MEMORY_FILES.get().ok_or(Error::NoMemory),
     }
+}
+
+/// A memory filesystem of its own, on a mount in no tree that walks go
+/// through, and its root, for a view to attach (radix-directory(2)'s
+/// `memory_filesystem`): a Linux view's `/dev/shm`, as a container's on
+/// Linux is a tmpfs of its own. Its files and segments take their pages
+/// from the memory files' room, so that however many of them are made,
+/// they and every memory file hold no more than half of memory together;
+/// each may hold as many files as `/devices/shm`, as each tmpfs may.
+///
+/// # Errors
+///
+/// [`Error::NoMemory`] if the kernel's memory for it runs out.
+pub fn apart() -> Result<(NodeRef, MountRef)> {
+    let room = memory_files()?.fs.root.shared.room.clone();
+    let fs = ShmFs::in_room(room, FRAMES.managed_pages() / 2)?;
+    let root = fs.root();
+    let mount = radix_vfs::mount::Mount::apart(fs, "shm")?;
+    Ok((root, mount))
 }
 
 /// Makes a memory file for `user`'s process in slot `to` (radix-process(2)'s

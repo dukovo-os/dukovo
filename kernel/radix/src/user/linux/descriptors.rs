@@ -221,11 +221,18 @@ fn segments(vector: u64, count: u64) -> Result<Vec<UserBuffer, Kmalloc>> {
 
 /// `close_range`: closes the descriptors from `first` to `last`, or with
 /// CLOSE_RANGE_CLOEXEC makes them close-on-exec, as Dukovo's C library
-/// does: a descriptor that fails to close is no error. CLOSE_RANGE_UNSHARE
-/// is EINVAL, as no process here shares its table.
+/// does: a descriptor that fails to close is no error. A process's table
+/// is its own from `fork` on, so CLOSE_RANGE_UNSHARE, which gives the
+/// caller a table of its own first, changes nothing for a process of one
+/// thread; its threads share theirs, which cannot be split, so with more
+/// it is EINVAL, which callers take for a kernel without the flag.
 pub fn close_range(me: &ThreadRef, user: &UserRef, first: u64, last: u64, how: u64) -> Result<u64> {
     let (first, last, how) = (first as u32, last as u32, how as u32);
-    if how & !flags::CLOSE_RANGE_CLOEXEC != 0 || first > last {
+    let known = flags::CLOSE_RANGE_CLOEXEC | flags::CLOSE_RANGE_UNSHARE;
+    if how & !known != 0 || first > last {
+        return fail(EINVAL);
+    }
+    if how & flags::CLOSE_RANGE_UNSHARE != 0 && user.process.thread_count() > 1 {
         return fail(EINVAL);
     }
     // No descriptor is numbered past the table's last.

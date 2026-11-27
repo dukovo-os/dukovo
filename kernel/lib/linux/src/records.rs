@@ -3,7 +3,7 @@
 
 //! The records of Linux's x86-64 system call interface that the kernel
 //! writes to, or reads from, a program's memory: `struct stat` and `struct
-//! statx`, `linux_dirent64`, the kernel's `struct sigaction`, `struct
+//! statx`, `struct statfs`, `linux_dirent64`, the kernel's `struct sigaction`, `struct
 //! utsname`, `timespec` and `timeval`, `struct itimerval`, `struct rusage`
 //! and `struct sysinfo`, `struct flock` and `struct iovec`, and
 //! `utimensat`'s times.
@@ -11,7 +11,7 @@
 //! Each is built in, or read from, a byte array or slice of the record's
 //! exact size, little-endian as the CPU is, so the kernel fills a local
 //! buffer and copies it out in one go. The layouts are those of the x86-64
-//! uapi (`asm/stat.h`, `linux/stat.h`, `linux/dirent.h`, `asm/signal.h`,
+//! uapi (`asm/stat.h`, `linux/stat.h`, `asm/statfs.h`, `linux/dirent.h`, `asm/signal.h`,
 //! `linux/utsname.h`, `linux/time_types.h`, `linux/time.h`,
 //! `linux/resource.h` and `linux/sysinfo.h`), and the host tests check every field's offset. A
 //! writer sets every byte of its record, padding and fields it has no value
@@ -25,6 +25,8 @@ use crate::errno::{EINVAL, EOVERFLOW};
 pub const STAT_SIZE: usize = 144;
 /// The size of `struct statx`.
 pub const STATX_SIZE: usize = 256;
+/// The size of `struct statfs`.
+pub const STATFS_SIZE: usize = 120;
 /// The size of the kernel's `struct sigaction`.
 pub const SIGACTION_SIZE: usize = 32;
 /// The size of `struct utsname`: six fields of 65 bytes.
@@ -214,6 +216,75 @@ pub fn put_stat(stat: &Stat, out: &mut [u8; STAT_SIZE]) {
         put(out, at, time.sec.to_le_bytes());
         put(out, at + 8, i64::from(time.nsec).to_le_bytes());
     }
+}
+
+/// A filesystem as `statfs` and `fstatfs` give it: radix-directory(2)'s
+/// `info` and radix-file(2)'s `filesystem_info`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FsInfo {
+    /// Its kind, a radix-directory(2) `FilesystemKind`.
+    pub kind: u8,
+    /// Whether it is mounted read-only.
+    pub read_only: bool,
+    /// Its block size, in bytes.
+    pub block_size: u32,
+    /// How many blocks it has.
+    pub blocks: u64,
+    /// How many of them are free.
+    pub free: u64,
+    /// How many files it can hold, 0 when it keeps no count.
+    pub files: u64,
+    /// How many more it can take.
+    pub free_files: u64,
+}
+
+/// `statfs`'s `f_flags`: the figures are valid (`ST_VALID`), and the
+/// filesystem is read-only (`ST_RDONLY`).
+const ST_VALID: u64 = 0x20;
+const ST_RDONLY: u64 = 1;
+
+/// The longest name a filesystem of Dukovo's takes, as `f_namelen` says.
+const NAME_LEN: u64 = 255;
+
+/// The magic number Linux's `f_type` gives for a filesystem of `kind`
+/// (`linux/magic.h`), by radix-directory(2)'s `FilesystemKind`: the
+/// filesystem Linux has of the same kind, tmpfs's for the memory ones and
+/// the device folders, which Linux keeps in devtmpfs, a tmpfs.
+pub fn filesystem_magic(kind: u8) -> u64 {
+    match kind {
+        1 => 0x4d44,       // fat: MSDOS_SUPER_MAGIC
+        2 => 0x9fa0,       // proc: PROC_SUPER_MAGIC
+        3 => 0x6265_6572,  // sys: SYSFS_MAGIC
+        5 => 0x8584_58f6,  // bootfs: RAMFS_MAGIC, as an initramfs is
+        6 => 0x5049_5045,  // pipe: PIPEFS_MAGIC
+        7 => 0x9123_683e,  // btrfs: BTRFS_SUPER_MAGIC
+        8 => 0x2011_bab0,  // exfat: EXFAT_SUPER_MAGIC
+        9 => 0xef53,       // ext4: EXT4_SUPER_MAGIC
+        10 => 0x5346_544e, // ntfs: NTFS_SB_MAGIC
+        11 => 0x9660,      // iso9660: ISOFS_SUPER_MAGIC
+        12 => 0x1501_3346, // udf: UDF_SUPER_MAGIC
+        13 => 0x6573_5546, // fuse: FUSE_SUPER_MAGIC
+        _ => 0x0102_1994,  // tmpfs, dev, shm and the device views: TMPFS_MAGIC
+    }
+}
+
+/// Writes `info` as x86-64's `struct statfs`: every free block is one an
+/// ordinary user may take, as Dukovo keeps none for root, and the
+/// filesystem's ID is 0, as for one that gives none.
+pub fn put_statfs(info: &FsInfo, out: &mut [u8; STATFS_SIZE]) {
+    out.fill(0);
+    let block_size = u64::from(info.block_size);
+    let flags = ST_VALID | if info.read_only { ST_RDONLY } else { 0 };
+    put(out, 0, filesystem_magic(info.kind).to_le_bytes());
+    put(out, 8, block_size.to_le_bytes());
+    put(out, 16, info.blocks.to_le_bytes());
+    put(out, 24, info.free.to_le_bytes());
+    put(out, 32, info.free.to_le_bytes());
+    put(out, 40, info.files.to_le_bytes());
+    put(out, 48, info.free_files.to_le_bytes());
+    put(out, 64, NAME_LEN.to_le_bytes());
+    put(out, 72, block_size.to_le_bytes());
+    put(out, 80, flags.to_le_bytes());
 }
 
 /// Writes `stat` as `struct statx`, with `stx_mask` naming the fields that

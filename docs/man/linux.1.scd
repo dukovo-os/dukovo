@@ -9,7 +9,7 @@ linux - run a Linux program in a sandbox of its own
 
 # SYNOPSIS
 
-*linux run* [*--allow* _path_]... [*--allow-write* _path_]... [*--home*] [*--*] _program_ [_argument_...]
+*linux run* [*--allow* _path_]... [*--allow-write* _path_]... [*--home*] [*--allow-jit*] [*--*] _program_ [_argument_...]
 
 *linux help*
 
@@ -59,12 +59,24 @@ The program's root holds, each at its path:
   _/sbin_ to its _usr/lib_, _usr/lib64_, _usr/bin_ and _usr/sbin_, for the
   ones the base has. The time zone database of Dukovo is at
   _/usr/share/zoneinfo_ if the base has none.
+- a shell and the core commands, which are Dukovo's own: _/usr/bin/sh_ and
+  _/usr/bin/bash_ lead to *nukesh*(1), which runs as POSIX's shell by the
+  name *sh* and as bash by its own; _/usr/bin/env_, _ls_, _cp_, _cat_ and
+  the other utilities of uutils' coreutils lead to its one program, and
+  _find_ and _xargs_ to uutils' findutils. They are read-only at their
+  paths in _/system/commands_, with _/system/libraries_, which they load,
+  and _/bin_ leads to _usr/bin_. So a script's _#!/bin/sh_ or
+  _#!/usr/bin/env node_ line, and a program that runs *sh -c*, find them. A
+  Linux program the shell starts runs in the same view. A base with a
+  _usr/bin_ of its own keeps its own commands, and the view adds none.
 - _/proc_ and _/sys_, which linuxd serves, in Linux's formats. The
   program's own links in _/proc_, _/proc/self/fd_ and the others, are the
   kernel's (*radix-linux*(7)).
 - _/dev_: _null_, _zero_, _full_, _random_ and _urandom_ as far as this
-  system has them, _shm_, a folder of the program's own, and the links
-  _fd_, _stdin_, _stdout_ and _stderr_. When one of the descriptors 0 to
+  system has them, _shm_, a memory filesystem of the run's own, as
+  _/devices/shm_ is, whose files the program's processes map and share
+  and which goes when the run ends, and the links _fd_, _stdin_,
+  _stdout_ and _stderr_. When one of the descriptors 0 to
   2 is a terminal it has _tty_, and in a pseudo-terminal, as every pane
   and SSH session has, _ptmx_ and _pts_, so that the program may make a
   terminal of its own. They are in _/devices_ too, which the view holds
@@ -79,9 +91,8 @@ The program's root holds, each at its path:
   attached by itself, which the program may read and not change; the
   other names of _/etc_ are not there.
 - _/tmp_, a folder of its own, made for the run in _/tmp/.linux-PID_ of
-  yours and removed when the program ends. The files of _/etc_ and
-  _/dev/shm_ are in folders beside it, which the program's _/tmp_ does
-  not show.
+  yours and removed when the program ends. The files of _/etc_ are in
+  a folder beside it, which the program's _/tmp_ does not show.
 - the directory *linux* was started in, which the program may change, at
   its real path, where it starts. When that folder is one of the places
   above, or holds your home and *--home* does not give it, it is left out
@@ -108,8 +119,8 @@ and nothing can be added to its view once it runs.
 *--allow* _path_
 	Give the program _path_, a file or folder, read-only, at its real
 	path. It may be given more than once. A path in one of the program's
-	own places, _/usr_, _/etc_, _/tmp_, _/dev_, _/proc_ or _/sys_, is
-	refused. A place the program may change inside a folder given to read
+	own places, _/usr_, _/etc_, _/tmp_, _/dev_, _/proc_, _/sys_ or
+	_/system_, is refused. A place the program may change inside a folder given to read
 	is refused too, as the kernel does not attach beneath what is
 	attached: give the outer folder with *--allow-write*.
 
@@ -121,6 +132,23 @@ and nothing can be added to its view once it runs.
 	its data folder and the folder it was started in, which it holds as
 	part of it. Its *HOME*, and the home in _/etc/passwd_, are still its
 	data folder.
+
+*--allow-jit*
+	Let the program make its private memory writable and executable at
+	once, as JavaScript engines such as Node.js's V8, LuaJIT, the JVM
+	and .NET do as they compile what they run (memory.jit,
+	*radix-jit*(2), ADR 0624). Without it, *mmap* and *mprotect* of such
+	memory fail with *EACCES*, and when a program that asked for it
+	ends with a status other than 0, *linux* says:
+
+	```
+	linux: the program asked for memory that is writable and executable, as a JIT compiler does: run it with linux run --allow-jit
+	```
+
+	A file's pages and shared memory are never writable and executable,
+	with the option or not. The option needs the jit capability, which
+	every sign-in session holds (*authd*(8)); where there is none, as in
+	a service, *linux run --allow-jit* refuses to start the program.
 
 *--*
 	Ends the options. What follows _program_ is the program's own, so
@@ -152,8 +180,9 @@ terminal is asked nothing.
 The program's environment is clean, as a bundle's is: *HOME*, *USER*,
 *LOGNAME*, *PATH*=_/usr/local/bin:/usr/bin:/bin_, the four *XDG* folders,
 *TERM* (*dumb* when yours is not a terminal type), and *LANG*, *LANGUAGE*
-and *LC_\** as yours are, with *LANG* *C.UTF-8* when it is not. *TZ* is
-not set: the zone is _/etc/localtime_'s. Nothing else of yours passes.
+and *LC_\** as yours are, with *LANG* *C.UTF-8* when it is not, and
+*DUKOVO_LINUX_VIEW*=_1_, which tells Nukesh it is in a view. *TZ* is not
+set: the zone is _/etc/localtime_'s. Nothing else of yours passes.
 
 Its first argument, _argv[0]_, is _program_ as given. The kernel shows the
 program's path, with no links, as _/proc/self/exe_.
@@ -201,7 +230,7 @@ _~/app-data/linux/.machine-id_
 	same since.
 
 _/tmp/.linux-PID_
-	The run's private folder: _tmp_, _shm_, _etc_ and _mounts_, the
+	The run's private folder: _tmp_, _etc_ and _mounts_, the
 	mounts _/proc/mounts_ shows. It is removed when the run ends; one that
 	is still there belongs to a *linux* that was killed, and may be
 	removed.

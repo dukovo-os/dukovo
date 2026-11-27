@@ -79,6 +79,9 @@ enum ObjectKind: u8 {
     /// and the process that made it, for as long as the call lasts
     /// (radix-linux-call(2); since Phase 18, ADR 0618).
     linux_call = 26;
+    /// What lets a launcher give a process memory.jit, writable and
+    /// executable private memory (radix-jit(2); since Phase 18, ADR 0624).
+    jit = 27;
 }
 
 /// What a capability lets its holder do.

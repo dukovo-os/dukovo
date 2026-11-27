@@ -346,7 +346,7 @@ _target/userspace/_).
 		Pass everything after *--* to *qemu-system-x86_64*(1) unchanged,
 		for example *-- -d int* to log interrupts.
 
-*test* [*unit* | *boot* | *kani* | *tla* | *tuf* | *corpus* | *riscv* | *lab-writer* | *go-suite*] [*--case* _name_]... [*--affected* _commit_ [*--plan*]] [*--shard* _part_/_parts_] [*--timeout* _seconds_] [*--retry*] [*--image-only*] [*--debug* | *--release*] | *--list* | *replay* [*--case* _name_] [*--points* *all*|_n_] [*--part* _k_/_m_] [*--seed* _n_] [*--log* _path_ [*--point* _n_]] [*--timeout* _seconds_] | *fuzz* [*--target* _name_] [*--seconds* _n_] | *matrix* *--list* [*--full*]
+*test* [*unit* | *boot* | *kani* | *tla* | *tuf* | *corpus* | *riscv* | *lab-writer* | *go-suite* | *linux-suite*] [*--case* _name_]... [*--affected* _commit_ [*--plan*]] [*--shard* _part_/_parts_] [*--timeout* _seconds_] [*--retry*] [*--image-only*] [*--debug* | *--release*] | *--list* | *replay* [*--case* _name_] [*--points* *all*|_n_] [*--part* _k_/_m_] [*--seed* _n_] [*--log* _path_ [*--point* _n_]] [*--timeout* _seconds_] | *fuzz* [*--target* _name_] [*--seconds* _n_] | *matrix* *--list* [*--full*]
 	Run the unit tests of the build tool and the kernel libraries on this
 	machine, then the boot tests: build a test image and boot it in QEMU
 	once per case below. Each case follows the serial console, types
@@ -464,6 +464,33 @@ _target/userspace/_).
 	*--timeout* _seconds_ is how long the whole machine may run; without
 	it, 1 hour and 17 minutes. A line of _skips.txt_ whose package is
 	written *suite:*_path_ is a skip that only this run reads.
+
+	*linux-suite* runs LTP's system call tests and the seccomp
+	differential on this machine's Linux and in Dukovo's Linux view, and
+	judges Dukovo by Linux (ADR 0628). *ob* fetches LTP at its release
+	20260930, builds _testcases/kernel/syscalls_ with this machine's C
+	compiler and glibc, and refuses a program that loads a library the
+	Linux base lacks. It runs every case of LTP's _runtest/syscalls_ here
+	with *suite-run* (_userspace/linux/suite-run.c_), one at a time, each in
+	a process group of its own and ended after 3 minutes, as the user
+	who runs *ob*, which must not be root: about 8 minutes. The cases that
+	pass, but for those that _tools/xtask/src/test/linux-suite-skips.txt_
+	names, then run on Dukovo, in a machine with 4 CPUs, 4 GiB of memory
+	and a root grown to 2 GiB: alice installs the Linux base and runs
+	*suite-run* and *seccomp-diff* (_userspace/posix/linux/seccomp-diff.c_,
+	2,000 seeded filters) under *linux run*. Each case must pass on Dukovo
+	too, and *seccomp-diff* must print Linux's lines; a case that does not
+	pass on Linux is listed and not judged. The report, with the counts,
+	the times and each case that failed, is _out/test/linux-suite.txt_; the
+	logs of the cases that failed on Dukovo are
+	_out/test/linux-suite-failed.log_. A skip is a case's name, or a
+	pattern with *\**, and a reason that quotes, in double quotes, words
+	of its row of _docs/deferred.md_; *ob* refuses a skip whose row is not
+	there or that names no case. *--timeout* _seconds_ is how long the
+	machine may run; without it, 1 hour and 45 minutes. CI runs it for
+	changes to the Linux layer (_.github/workflows/linux-suite.yml_).
+	Plain *ob test* leaves it out. LTP is GPL-2.0 and is never put in an
+	image or a bundle.
 
 	*lab-writer* checks the lab's net boot of real machines end to end
 	(ADR 0429), in QEMU with OVMF: QEMU's own DHCP and TFTP, on a network
@@ -1991,7 +2018,9 @@ _target/userspace/_).
 		differ.
 
 	*--next-build* _id_
-		Publish the recipe version of _id_ as its next build. After
+		Publish the recipe version of _id_ as its next build, with
+		*@*_line_ after the ID of a line's bundle, such as
+		_org.nodejs.node@26_. After
 		*ob ports* packs everything, ob packs the version of each
 		named _id_ again as one past the newest build the targets
 		list of it, a withdrawn build counted so that no number is
@@ -1999,7 +2028,8 @@ _target/userspace/_).
 		reason in _ID-VERSION_N.reason_ beside it. The build is
 		_VERSION_N_, with N from 2 to 9999 (*manifest.json*(5)).
 		Packing a bundle removes the other versions' _.dkv_ and
-		_.reason_ files of the same ID from _out/bundles/_. May be
+		_.reason_ files of the same ID, and of the same line for a
+		line's, from _out/bundles/_. May be
 		given again for each _id_. Needs *--rebuild-reason*, and is
 		refused with *--expect*, *--renew* or a bundle named. It
 		fails with "no port packs ID", with "ID VERSION is not in the

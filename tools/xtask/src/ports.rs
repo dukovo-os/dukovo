@@ -208,6 +208,39 @@ pub struct BundleRecipe {
     /// Which of its folders it keeps (manifest.json(5)'s `data`).
     #[serde(default)]
     pub data: Option<toml::Table>,
+    /// What its programs are written for: `linux` for x86-64 Linux
+    /// programs, which its manifest says with version 2's `runtime` (ADR
+    /// 0625); none for Dukovo's own.
+    #[serde(default)]
+    pub runtime: Option<String>,
+    /// The major version line it is of, such as `26` (manifest.json(5)'s
+    /// `line`): the bundle is `ID@line` beside the ID's other lines, and
+    /// each line is a port of its own.
+    #[serde(default)]
+    pub line: Option<String>,
+    /// The files a project chooses its line with, such as `.nvmrc`.
+    #[serde(default)]
+    pub line_files: Vec<String>,
+    /// Where its package manager installs what each person adds
+    /// (manifest.json(5)'s `add_ons`), written into its manifest as it is.
+    #[serde(default)]
+    pub add_ons: Option<toml::Table>,
+}
+
+impl BundleRecipe {
+    /// What names this bundle among the ports' and the catalog's:
+    /// `ID@line` for one of a line, its ID for another.
+    pub fn key(&self) -> String {
+        match &self.line {
+            Some(line) => format!("{}@{line}", self.id),
+            None => self.id.clone(),
+        }
+    }
+
+    /// Whether its programs are Linux programs.
+    pub fn is_linux(&self) -> bool {
+        self.runtime.as_deref() == Some("linux")
+    }
 }
 
 /// Where a source comes from: a git repository and a commit in it, a
@@ -621,6 +654,19 @@ pub fn recipes(ctx: &Ctx) -> Result<Vec<(Recipe, PathBuf)>> {
         check(ctx, &recipe, &dir)?;
         found.insert(recipe.name.clone(), (recipe, dir));
     }
+    // A bundle, or a line of one, is one port's: the catalog and
+    // `--next-build` find its port by it.
+    let mut bundles: BTreeMap<String, &str> = BTreeMap::new();
+    for (name, (recipe, _)) in &found {
+        if let Some(bundle) = &recipe.bundle
+            && let Some(other) = bundles.insert(bundle.key(), name)
+        {
+            return Err(Error::new(format!(
+                "ports {other} and {name} both pack {}: give each line its own `line`",
+                bundle.key()
+            )));
+        }
+    }
     // Each port after those it needs: a depth-first walk.
     let mut order = Vec::new();
     let names: Vec<String> = found.keys().cloned().collect();
@@ -775,6 +821,16 @@ fn check(ctx: &Ctx, recipe: &Recipe, dir: &Path) -> Result<()> {
                 "{what}: a bundle gives commands or programs, each a name of letters, digits, \
                  `-`, `_` and `.`"
             )));
+        }
+        if bundle.runtime.as_deref().is_some_and(|runtime| runtime != "linux") {
+            return Err(Error::new(format!(
+                "{what}: a bundle's runtime is \"linux\", or none for Dukovo's programs"
+            )));
+        }
+        // The manifest's reader checks the rest of each when the bundle
+        // is packed.
+        if bundle.line.is_none() && (!bundle.line_files.is_empty() || bundle.add_ons.is_some()) {
+            return Err(Error::new(format!("{what}: line_files and add_ons need a line")));
         }
     }
     Ok(())

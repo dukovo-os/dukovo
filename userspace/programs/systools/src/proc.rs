@@ -52,6 +52,11 @@ pub struct Process {
     pub voluntary_switches: u64,
     pub involuntary_switches: u64,
     pub traced: bool,
+    /// Whether it may make machine code as it runs (memory.jit).
+    pub jit: bool,
+    /// Whether it asked for memory that is writable and executable
+    /// without memory.jit and was refused.
+    pub jit_refused: bool,
     /// Its working directory, if the kernel knows it.
     pub directory: Option<OsString>,
 }
@@ -159,6 +164,7 @@ pub fn parse_status(text: &[u8]) -> Process {
             b"voluntary_switches" => p.voluntary_switches = number(value),
             b"involuntary_switches" => p.involuntary_switches = number(value),
             b"traced" => p.traced = value == b"yes",
+            b"jit" => (p.jit, p.jit_refused) = (value == b"yes", value == b"refused"),
             b"directory" => p.directory = Some(OsString::from_vec(unescape(value))),
             _ => {}
         }
@@ -535,7 +541,7 @@ mod tests {
             b"number: 12\nname: nukesh\nstate: running\nthreads: 1\nuser: 1000\nuser_group: 100\n\
               parent: 1\ngroup: 12\n\
               session: 12\nterminal: pts/0\nterminal_group: 12\nrun: sleeping\nstarted_ns: 5000\nuser_ns: 10\n\
-              system_ns: 20\nnice: -5\nresident_memory: 1024 KiB\ntraced: no\n\
+              system_ns: 20\nnice: -5\nresident_memory: 1024 KiB\ntraced: no\njit: yes\n\
               directory: /home/a b\n",
         );
         assert_eq!(p.number, 12);
@@ -546,6 +552,8 @@ mod tests {
         assert_eq!(p.cpu_ns(), 30);
         assert_eq!(p.nice, -5);
         assert_eq!(p.resident_kib, 1024);
+        assert!(p.jit && !p.jit_refused);
+        assert!(parse_status(b"jit: refused\n").jit_refused);
         assert_eq!(p.directory, Some(OsString::from("/home/a b")));
         let escaped = parse_status(b"name: a\\012b\ndirectory: /x\\134\\012y\n");
         assert_eq!(escaped.name, "a\nb");

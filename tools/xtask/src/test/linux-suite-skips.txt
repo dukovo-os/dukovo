@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The cases of LTP's system call tests that pass on Linux and that the
+# linux-suite run (ob test linux-suite, ADR 0628) does not run on Dukovo, one
+# a line: the case's name, as LTP's runtest/syscalls names it, or a pattern
+# of names in which a * stands for any run of characters, and the reason. The
+# reason names what Dukovo lacks and quotes, in double quotes, words of the
+# row of docs/deferred.md that holds the work. A line with no such row is an
+# error: nothing is skipped because it fails, and when the work is done and
+# its row is closed, the skips that quote it fail until they are taken out.
+#
+# case reason

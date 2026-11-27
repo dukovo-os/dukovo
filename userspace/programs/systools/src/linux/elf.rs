@@ -80,6 +80,84 @@ pub fn inspect(head: &[u8]) -> Result<Linking, String> {
     Ok(if names_interpreter { Linking::Dynamic } else { Linking::Static })
 }
 
+/// The system the program in `file` is written for, as `exec` tells it
+/// with the kernel's own reader (`radix-elf`, ADR 0610): Dukovo's if its
+/// notes include Dukovo's or it names Dukovo's dynamic linker, else
+/// Linux's. `None` for a file `exec` runs as neither, such as a script,
+/// whose interpreter runs.
+///
+/// # Errors
+///
+/// If the file cannot be read.
+pub fn abi_of(file: &std::fs::File) -> std::io::Result<Option<radix_elf::Abi>> {
+    use std::os::unix::fs::FileExt;
+    let size = file.metadata()?.len();
+    let mut head = vec![0; usize::try_from(size).map_or(HEAD_MAX, |size| size.min(HEAD_MAX))];
+    file.read_exact_at(&mut head, 0)?;
+    let Ok(program) = radix_elf::read_program(&head, size) else { return Ok(None) };
+    let read = |offset: u64, len: u64, cap: u64| -> std::io::Result<Vec<u8>> {
+        let mut bytes = vec![0; usize::try_from(len.min(cap)).map_err(std::io::Error::other)?];
+        file.read_exact_at(&mut bytes, offset)?;
+        Ok(bytes)
+    };
+    let interpreter = match program.interpreter {
+        Some((offset, len)) => {
+            let bytes = read(offset, len, radix_elf::INTERPRETER_MAX)?;
+            // The path ends at its first NUL, as `exec` reads it.
+            Some(bytes.split(|&b| b == 0).next().unwrap_or_default().to_vec())
+        }
+        None => None,
+    };
+    let mut marked = false;
+    for note in program.notes() {
+        marked |= radix_elf::marks_dukovo(
+            &read(note.offset, note.size, radix_elf::NOTE_MAX)?,
+            note.align,
+        );
+    }
+    Ok(Some(radix_elf::Abi::of(interpreter.as_deref(), marked)))
+}
+
+/// An x86-64 executable `exec` can map, of 0x400 bytes: one loadable
+/// segment that holds the whole file and its entry, and the interpreter
+/// `interpreter` if it names one. For tests of what reads programs.
+#[cfg(test)]
+pub(crate) fn executable(interpreter: Option<&[u8]>) -> Vec<u8> {
+    const LEN: u64 = 0x400;
+    const INTERP_AT: u64 = 0x200;
+    let base: u64 = 0x40_0000;
+    let mut headers: Vec<(u32, u64, u64)> = vec![(1, 0, LEN)];
+    let mut bytes = vec![0u8; LEN as usize];
+    if let Some(path) = interpreter {
+        let at = INTERP_AT as usize;
+        bytes[at..at + path.len()].copy_from_slice(path);
+        headers.push((PT_INTERP, INTERP_AT, path.len() as u64 + 1));
+    }
+    bytes[..4].copy_from_slice(MAGIC);
+    bytes[4..7].copy_from_slice(&[CLASS_64, LITTLE_ENDIAN, 1]);
+    bytes[16..18].copy_from_slice(&ET_EXEC.to_le_bytes());
+    bytes[18..20].copy_from_slice(&EM_X86_64.to_le_bytes());
+    bytes[20..24].copy_from_slice(&1u32.to_le_bytes());
+    bytes[24..32].copy_from_slice(&(base + 0x100).to_le_bytes());
+    bytes[32..40].copy_from_slice(&(HEADER_SIZE as u64).to_le_bytes());
+    bytes[52..54].copy_from_slice(&(HEADER_SIZE as u16).to_le_bytes());
+    bytes[54..56].copy_from_slice(&(PHDR_SIZE as u16).to_le_bytes());
+    bytes[56..58].copy_from_slice(&(headers.len() as u16).to_le_bytes());
+    for (i, &(kind, offset, size)) in headers.iter().enumerate() {
+        let at = HEADER_SIZE + i * PHDR_SIZE;
+        let (flags, address) = if kind == 1 { (5u32, base) } else { (4, base + offset) };
+        bytes[at..at + 4].copy_from_slice(&kind.to_le_bytes());
+        bytes[at + 4..at + 8].copy_from_slice(&flags.to_le_bytes());
+        bytes[at + 8..at + 16].copy_from_slice(&offset.to_le_bytes());
+        bytes[at + 16..at + 24].copy_from_slice(&address.to_le_bytes());
+        bytes[at + 24..at + 32].copy_from_slice(&address.to_le_bytes());
+        bytes[at + 32..at + 40].copy_from_slice(&size.to_le_bytes());
+        bytes[at + 40..at + 48].copy_from_slice(&size.to_le_bytes());
+        bytes[at + 48..at + 56].copy_from_slice(&4096u64.to_le_bytes());
+    }
+    bytes
+}
+
 // The callers have checked that the bytes reach the field.
 fn u16_at(bytes: &[u8], at: usize) -> u16 {
     u16::from_le_bytes([bytes[at], bytes[at + 1]])
@@ -176,5 +254,24 @@ mod tests {
         let mut far = file(CLASS_64, LITTLE_ENDIAN, ET_EXEC, EM_X86_64, &[PT_LOAD]);
         far[32..40].copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(inspect(&far).is_err());
+    }
+
+    #[test]
+    fn a_program_is_dukovos_by_its_loader_and_linuxs_otherwise() {
+        let folder = std::env::temp_dir().join(format!("linux-abi-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let abi = |bytes: &[u8]| {
+            let path = folder.join("program");
+            std::fs::write(&path, bytes).unwrap();
+            abi_of(&std::fs::File::open(&path).unwrap()).unwrap()
+        };
+        assert_eq!(abi(&executable(None)), Some(radix_elf::Abi::Linux));
+        assert_eq!(
+            abi(&executable(Some(b"/lib64/ld-linux-x86-64.so.2"))),
+            Some(radix_elf::Abi::Linux)
+        );
+        assert_eq!(abi(&executable(Some(radix_elf::DUKOVO_LOADER))), Some(radix_elf::Abi::Dukovo));
+        assert_eq!(abi(b"#!/usr/bin/env node\n"), None);
+        let _ = std::fs::remove_dir_all(&folder);
     }
 }

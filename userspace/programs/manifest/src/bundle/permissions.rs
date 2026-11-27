@@ -114,6 +114,13 @@ pub const LIST: &[Permission] = &[
     ),
     defined("network.raw", "Send raw packets and capture network traffic", Admin, Nothing),
     defined("devices.serial", "Use a serial port or USB serial device", FirstUse, Nothing),
+    // Memory that is writable and executable at once (ADR 0624).
+    defined(
+        "memory.jit",
+        "Make machine code as it runs, as JavaScript engines do",
+        AtInstall,
+        Nothing,
+    ),
     defined("start-at-login", "Start when you sign in", AtInstall, Nothing),
     defined("notifications", "Show notifications", Always, Nothing),
     defined("processes.debug", "Trace or debug your other programs", Warning, Nothing),
@@ -161,12 +168,6 @@ pub const LIST: &[Permission] = &[
     reserved("reminders", "Use your reminders", FirstUse, "1.5.6"),
     reserved("mail", "Use your mail", FirstUse, "1.5.6"),
     reserved("ai.ask", "Ask the local assistant", FirstUse, "1.10"),
-    reserved(
-        "memory.jit",
-        "Generate machine code as it runs, as JavaScript engines do",
-        AtInstall,
-        "1.2",
-    ),
 ];
 
 /// The permission `name`, if the list has it.

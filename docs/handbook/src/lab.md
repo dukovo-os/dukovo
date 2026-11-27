@@ -326,6 +326,19 @@ as a program on a Linux machine is built (`lab/tests/processes/linux-view.sh`
 copies it over), and runs it from a folder that is not its own, then again
 with `--restart`, which ends `linuxd` in the middle of the run.
 
+`processes/linux-seccomp` and `processes/linux-jit` build the boot
+tests' own programs, `userspace/posix/linux/seccomp.c` and `jit.c`, on
+the lab PC with its `cc` and static glibc (`lab/tests/processes/linux-static.sh`,
+which skips the test on a PC without them), and run them on the machine's
+own processor through `linux run`: seccomp's filters, actions and
+inheritance (ADR 0623), and machine code written into private memory and
+run, with memory.jit given by `linux run --allow-jit` and refused without
+it (ADR 0624). `processes/linux-node` installs the Linux base and the
+Node.js bundles, which `./ob lab` packs from `ports/node-24` and
+`ports/node-26`, and runs line 26's `node`, `npm` and `npx` through
+`linux run --allow-jit`, since a command that runs with your access asks
+at a console the first time, which a test has none of.
+
 Removable media go in and out with steps of their own: `usb` plugs and
 pulls a USB stick, `card` puts a memory card in a card reader, `disc` a
 disc in an optical drive, and `floppy` a floppy disk in a floppy drive,

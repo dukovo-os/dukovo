@@ -545,6 +545,9 @@ limits kernel/mm/ kernel/radix/src/domains.rs kernel/radix/src/user/posix/limits
 limits userspace/posix/forkbomb.c userspace/posix/hog.c userspace/programs/manifest/src/service.rs
 limits userspace/programs/systools/src/service.rs userspace/spark/src/supervisor.rs
 limits userspace/spark/tests/services/limits/
+linux-node kernel/lib/linux/ kernel/radix/src/user/linux/ ports/linux-base/ ports/node-24/ ports/node-26/
+linux-node tools/xtask/src/test/linux-node/ userspace/programs/systools/src/bundles/run.rs
+linux-node userspace/programs/systools/src/linux/ userspace/programs/linuxd/ tools/xtask/src/bundles.rs
 linux-programs kernel/lib/linux/ kernel/radix/src/user/linux/ tools/xtask/src/personality.rs
 linux-programs userspace/linux/ userspace/posix/hello.c userspace/posix/locks.c
 linux-programs userspace/posix/epoll.c kernel/radix/src/user/queue.rs

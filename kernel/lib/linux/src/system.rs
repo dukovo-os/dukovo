@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Linux's calls for what a process is and has: its limits, its times and
-//! its resource usage, its scheduling, the names `prctl` sets, the waits of
-//! `waitid`, and the `siginfo_t` a signal wait gives.
+//! its resource usage, its scheduling, the names `prctl` sets, its
+//! capabilities (`capget`), the waits of `waitid`, and the `siginfo_t` a
+//! signal wait gives.
 //!
 //! Each call is the one Dukovo's C library makes for the same POSIX
 //! function (`ports/mlibc/sysdeps/radix/generic/process.cpp`) with Linux's
@@ -112,6 +113,11 @@ pub fn put_tms(
     out
 }
 
+/// `prctl`'s `PR_SET_PDEATHSIG`: the signal the caller gets when its
+/// parent ends.
+pub const PR_SET_PDEATHSIG: u32 = 1;
+/// `prctl`'s `PR_GET_PDEATHSIG`.
+pub const PR_GET_PDEATHSIG: u32 = 2;
 /// `prctl`'s `PR_GET_DUMPABLE`.
 pub const PR_GET_DUMPABLE: u32 = 3;
 /// `prctl`'s `PR_SET_DUMPABLE`.
@@ -120,6 +126,110 @@ pub const PR_SET_DUMPABLE: u32 = 4;
 pub const PR_SET_NAME: u32 = 15;
 /// `prctl`'s `PR_GET_NAME`.
 pub const PR_GET_NAME: u32 = 16;
+/// `prctl`'s `PR_CAPBSET_READ`: whether a capability is in the bounding
+/// set.
+pub const PR_CAPBSET_READ: u32 = 23;
+/// `prctl`'s `PR_CAPBSET_DROP`.
+pub const PR_CAPBSET_DROP: u32 = 24;
+/// `prctl`'s `PR_SET_TIMERSLACK`.
+pub const PR_SET_TIMERSLACK: u32 = 29;
+/// `prctl`'s `PR_GET_TIMERSLACK`.
+pub const PR_GET_TIMERSLACK: u32 = 30;
+/// `prctl`'s `PR_SET_MM`: changes the bounds of the address space's
+/// parts, which takes `CAP_SYS_RESOURCE`.
+pub const PR_SET_MM: u32 = 35;
+/// `prctl`'s `PR_SET_CHILD_SUBREAPER`: the caller adopts its descendants'
+/// orphans.
+pub const PR_SET_CHILD_SUBREAPER: u32 = 36;
+/// `prctl`'s `PR_GET_CHILD_SUBREAPER`.
+pub const PR_GET_CHILD_SUBREAPER: u32 = 37;
+/// The timer slack Linux gives a thread, in nanoseconds: what
+/// `PR_GET_TIMERSLACK` answers.
+pub const TIMER_SLACK_NS: u64 = 50_000;
+/// The highest signal number `PR_SET_PDEATHSIG` takes: Linux's `_NSIG`.
+pub const SIGNAL_MAX: u64 = 64;
+
+/// `capget`'s and `capset`'s first header version, of 32 capabilities.
+pub const CAP_VERSION_1: u32 = 0x1998_0330;
+/// The second, of 64, which Linux takes and calls deprecated.
+pub const CAP_VERSION_2: u32 = 0x2007_1026;
+/// The third and current, of 64.
+pub const CAP_VERSION_3: u32 = 0x2008_0522;
+/// The size of `struct __user_cap_header_struct`: a version and a pid.
+pub const CAP_HEADER_SIZE: usize = 8;
+/// The size of one `struct __user_cap_data_struct`: the effective,
+/// permitted and inheritable sets of 32 capabilities.
+pub const CAP_DATA_SIZE: usize = 12;
+/// The last capability Linux has: `CAP_CHECKPOINT_RESTORE`.
+pub const CAP_LAST_CAP: u64 = 40;
+/// Every capability: root's effective and permitted sets, and everyone's
+/// bounding set, as `/proc`'s `CapBnd` shows it.
+pub const CAP_ALL: u64 = (1 << (CAP_LAST_CAP + 1)) - 1;
+
+/// How many 32-bit data records a capability header of `version` has: 1
+/// for the first, 2 for the second and third, none for another, which is
+/// EINVAL once the third is written back to the header.
+pub fn cap_records(version: u32) -> Option<usize> {
+    match version {
+        CAP_VERSION_1 => Some(1),
+        CAP_VERSION_2 | CAP_VERSION_3 => Some(2),
+        _ => None,
+    }
+}
+
+/// A process's capability sets, each a bit for each capability.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CapSets {
+    /// What it may use now.
+    pub effective: u64,
+    /// What it may make effective.
+    pub permitted: u64,
+    /// What a program it runs may keep.
+    pub inheritable: u64,
+}
+
+impl CapSets {
+    /// The sets of a process with user ID `user`, as Dukovo's kernel
+    /// treats it: root has every capability, effective and permitted,
+    /// and another user none; nothing is inheritable.
+    pub fn of_user(user: u32) -> CapSets {
+        let all = if user == 0 { CAP_ALL } else { 0 };
+        CapSets { effective: all, permitted: all, inheritable: 0 }
+    }
+
+    /// The data `capget` writes: `records` records (1 or 2), the low 32
+    /// bits of each set first.
+    pub fn write(self, records: usize, out: &mut [u8; 2 * CAP_DATA_SIZE]) {
+        for record in 0..records.min(2) {
+            let shift = 32 * record;
+            let at = record * CAP_DATA_SIZE;
+            for (n, set) in
+                [self.effective, self.permitted, self.inheritable].into_iter().enumerate()
+            {
+                put(out, at + 4 * n, ((set >> shift) as u32).to_le_bytes());
+            }
+        }
+    }
+
+    /// The sets `capset` was given in `records` records; with 1, the high
+    /// bits are `high`'s, which a first-version caller cannot name.
+    pub fn read(bytes: &[u8; 2 * CAP_DATA_SIZE], records: usize, high: CapSets) -> CapSets {
+        let set = |n: usize, high: u64| {
+            let low = u64::from(u32::from_le_bytes(get(bytes, 4 * n)));
+            let upper = if records >= 2 {
+                u64::from(u32::from_le_bytes(get(bytes, CAP_DATA_SIZE + 4 * n)))
+            } else {
+                high >> 32
+            };
+            low | upper << 32
+        };
+        CapSets {
+            effective: set(0, high.effective),
+            permitted: set(1, high.permitted),
+            inheritable: set(2, high.inheritable),
+        }
+    }
+}
 /// The size of a thread's name for `prctl`, with its NUL.
 pub const COMM_SIZE: usize = 16;
 
@@ -395,7 +505,35 @@ mod tests {
 
     #[test]
     fn prctl_options_have_linuxs_numbers() {
+        assert_eq!((PR_SET_PDEATHSIG, PR_GET_PDEATHSIG), (1, 2));
         assert_eq!((PR_GET_DUMPABLE, PR_SET_DUMPABLE, PR_SET_NAME, PR_GET_NAME), (3, 4, 15, 16));
+        assert_eq!((PR_CAPBSET_READ, PR_CAPBSET_DROP), (23, 24));
+        assert_eq!((PR_SET_TIMERSLACK, PR_GET_TIMERSLACK, PR_SET_MM), (29, 30, 35));
+        assert_eq!((PR_SET_CHILD_SUBREAPER, PR_GET_CHILD_SUBREAPER), (36, 37));
+    }
+
+    #[test]
+    fn capability_records_are_linuxs() {
+        assert_eq!(cap_records(CAP_VERSION_1), Some(1));
+        assert_eq!(cap_records(CAP_VERSION_2), Some(2));
+        assert_eq!(cap_records(CAP_VERSION_3), Some(2));
+        assert_eq!(cap_records(0), None);
+        assert_eq!(CAP_ALL, 0x1ff_ffff_ffff);
+        let root = CapSets::of_user(0);
+        assert_eq!(root, CapSets { effective: CAP_ALL, permitted: CAP_ALL, inheritable: 0 });
+        assert_eq!(CapSets::of_user(1000), CapSets::default());
+        let mut out = [0xaa; 2 * CAP_DATA_SIZE];
+        root.write(2, &mut out);
+        let words: Vec<u32> =
+            out.chunks(4).map(|w| u32::from_le_bytes(w.try_into().unwrap())).collect();
+        assert_eq!(words, [u32::MAX, u32::MAX, 0, 0x1ff, 0x1ff, 0]);
+        assert_eq!(CapSets::read(&out, 2, CapSets::default()), root);
+        // A first-version caller names only the low 32.
+        let mut out = [0; 2 * CAP_DATA_SIZE];
+        root.write(1, &mut out);
+        assert_eq!(&out[CAP_DATA_SIZE..], &[0; CAP_DATA_SIZE]);
+        assert_eq!(CapSets::read(&out, 1, root), root);
+        assert_eq!(CapSets::read(&out, 1, CapSets::default()).effective, u64::from(u32::MAX));
     }
 
     #[test]

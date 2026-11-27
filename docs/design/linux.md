@@ -57,10 +57,24 @@ kernel/radix/src/user/linux the table:
   forward.rs                the calls forwarded to linuxd, and the Linux
                             call object's methods (ADR 0618)
   magic.rs                  a process's own /proc links (ADR 0620)
+  seccomp.rs                a thread's seccomp: its mode, its chain of
+                            filters and the calls they always allow, the
+                            check before each call, seccomp(2) (ADR 0623)
+kernel/lib/bpf              radix-bpf: classic BPF's checks and
+                            interpreter, seccomp's rules, actions and the
+                            map of calls a filter always allows, with Kani
+                            proofs and a fuzz target (host-tested, no
+                            unsafe)
+kernel/radix/src/user/jit.rs  the jit capability's methods: memory.jit
+                            given to a process (ADR 0624)
 tools/xtask/src/personality.rs  ob build's check that every program of
                             the image and of each bundle is Dukovo's
 userspace/linux/core.c      the linux-programs boot test's program
 userspace/linux/view.c      the linux-view boot test's program, dynamic
+userspace/linux/suite-run.c the runner of LTP's cases in `ob test
+                            linux-suite`, on Linux and Dukovo (ADR 0628)
+userspace/posix/linux       seccomp.c, jit.c and seccomp-diff.c, the
+                            seccomp, memory.jit and differential programs
 userspace/programs/linuxd   linuxd(8): the forwarded calls (serve.rs,
                             call.rs), /proc and /sys over FUSE (fs/), the
                             netlink route sockets (netlink/)
@@ -164,6 +178,24 @@ writing `struct epoll_event` records into the program's array.
 program and gives `AT_SYSINFO_EHDR`: glibc, musl and Dukovo's C library
 read the clocks without a call (ADR 0616).
 
+## seccomp and memory.jit
+
+`linux::call` asks `seccomp::check` before `dispatch`, which answers at
+once when the thread's mode is off. A call the chain's map always allows (every
+filter's, computed when the filter is installed, as Linux 5.11's cache
+does) goes on without running a filter; any other runs the chain, newest
+first, and takes the strictest action. `inherit` copies the mode, the
+flag and the chain to a new thread before it runs; `TSYNC` copies the
+caller's to its process's other threads under the process's lock.
+
+A program given memory.jit (the `jit` capability's `allow`, which `linux
+run --allow-jit`, a bundle's launcher or authd's sessions hold) may map or
+protect its private anonymous memory writable and executable at once;
+`methods::may_jit` and the table's `mmap` and `mprotect` ask the
+process's `jit()`, which `allow_jit` sets for good, and a refusal is
+noted for `linux run`'s hint (`refuse_jit`). A file's pages and shared
+memory never are.
+
 ## Forwarded calls and linuxd
 
 A program `linux run` starts has an endpoint in slot `SLOT_LINUX`; one
@@ -191,6 +223,11 @@ serves its FUSE filesystem from a fourth; `linux run` starts it, holds its
 endpoint and FUSE connection, and starts it again with `--again` if it
 ends. `serve_fuse` (`user/files.rs`) makes linuxd's filesystem a mount in
 no tree, whose root the launcher's view attaches at `/proc` and `/sys`.
+`memory_filesystem` makes a memory filesystem the same way
+(`fs::shm::apart`), which the view attaches at `/dev/shm`: the MAP_FILE
+path shares the pages of a memory filesystem's files alone, so a folder of
+the person's would refuse `shm_open`'s and LTP's shared writable
+mappings with ENODEV. Its pages come from the memory files' room.
 
 ## Locks
 
@@ -224,3 +261,6 @@ no tree, whose root the launcher's view attaches at `/proc` and `/sys`.
 3. The arm goes in `dispatch`, in its group.
 4. `userspace/linux/core.c` gets a case if the call has a rule a C
    library hides, and the case runs on Linux first.
+5. `ob test linux-suite` runs LTP's cases of the call on Linux and on
+   Dukovo: those that now pass on Dukovo lose their skips, and those
+   that do not need one, with its row of `docs/deferred.md` (ADR 0628).

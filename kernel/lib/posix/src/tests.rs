@@ -25,7 +25,7 @@ use crate::ipc::{
 };
 use crate::signal::{self, Action, ActionError, Actions, Disposition, Info, Pending};
 use crate::status::{self, Ended};
-use crate::tree::{Found, Life, Tree, TreeError, WaitFor, Which};
+use crate::tree::{Exit, Found, Life, Reaps, Tree, TreeError, WaitFor, Which};
 use crate::watch::{self, Asks, Invalid, State, Then};
 
 type T = Tree<u64, Global>;
@@ -104,7 +104,7 @@ fn pending() -> Pending<[Info; SIGNALS as usize], Global> {
 #[test]
 fn faults_come_first_and_real_time_signals_queue() {
     let mut pending = pending();
-    let info = |pid| Info { code: signal::SI_USER, pid, status: 0 };
+    let info = |pid| Info { code: signal::SI_USER, errno: 0, pid, status: 0 };
     assert!(pending.add(SIGTERM, info(1)));
     assert!(!pending.add(SIGTERM, info(2)), "a standard signal pending twice is one");
     assert!(pending.add(SIGSEGV, info(3)));
@@ -132,7 +132,7 @@ fn faults_come_first_and_real_time_signals_queue() {
 #[test]
 fn real_time_signals_go_lowest_first_and_queue_up_to_the_limit() {
     let mut pending = pending();
-    let info = |status| Info { code: signal::SI_QUEUE, pid: 1, status };
+    let info = |status| Info { code: signal::SI_QUEUE, errno: 0, pid: 1, status };
     assert!(pending.add(SIGRTMIN + 2, info(1)));
     assert!(pending.add(SIGRTMIN, info(2)));
     assert!(pending.add(SIGRTMIN + 2, info(3)));
@@ -304,7 +304,8 @@ fn wait_reports_ends_stops_and_continues() {
     assert_eq!(tree.wait(1, Which::Pid(3), all), continued);
     // An end, seen with no_reap, then reaped.
     let mut gone = Vec::new();
-    assert_eq!(tree.exit(2, Ended::Exited(7), (5, 6), false, &mut |h| gone.push(h)), Some(1));
+    let exit = tree.exit(2, Ended::Exited(7), (5, 6), Reaps::default(), &mut |h| gone.push(h));
+    assert_eq!(exit.parent, Some(1));
     let peek = WaitFor { no_reap: true, ..WaitFor::default() };
     let ended = |reaped| Found::Child { pid: 2, status: status::exited(7), times: (5, 6), reaped };
     assert_eq!(tree.wait(1, Which::Any, peek), ended(None));
@@ -322,7 +323,7 @@ fn wait_can_leave_out_ends() {
     tree.insert_child(2, 1, 2).unwrap();
     tree.insert_child(3, 1, 3).unwrap();
     let mut gone = Vec::new();
-    tree.exit(2, Ended::Exited(7), (5, 6), false, &mut |h| gone.push(h));
+    tree.exit(2, Ended::Exited(7), (5, 6), Reaps::default(), &mut |h| gone.push(h));
     let stops = WaitFor { stopped: true, skip_ended: true, ..WaitFor::default() };
     assert_eq!(tree.wait(1, Which::Any, stops), Found::NotYet);
     assert_eq!(tree.wait(1, Which::Pid(2), stops), Found::NotYet);
@@ -343,19 +344,63 @@ fn orphans_lose_their_parent_and_ended_ones_go() {
     tree.insert_child(3, 2, 3).unwrap();
     tree.insert_child(4, 2, 4).unwrap();
     let mut gone = Vec::new();
-    tree.exit(4, Ended::Killed(SIGTERM), (0, 0), false, &mut |h| gone.push(h));
+    tree.exit(4, Ended::Killed(SIGTERM), (0, 0), Reaps::default(), &mut |h| gone.push(h));
     assert!(gone.is_empty(), "4 waits for 2 to reap it");
-    tree.exit(2, Ended::Exited(0), (0, 0), false, &mut |h| gone.push(h));
+    tree.exit(2, Ended::Exited(0), (0, 0), Reaps::default(), &mut |h| gone.push(h));
     assert_eq!(gone, [4]);
     assert_eq!(tree.get(3).unwrap().parent, 0);
     // 3 has no parent now, so it goes as soon as it ends.
-    tree.exit(3, Ended::Exited(1), (0, 0), false, &mut |h| gone.push(h));
+    tree.exit(3, Ended::Exited(1), (0, 0), Reaps::default(), &mut |h| gone.push(h));
     assert_eq!(gone, [4, 3]);
     // A parent that ignores SIGCHLD has its children reaped at once.
-    tree.exit(2, Ended::Exited(0), (0, 0), false, &mut |h| gone.push(h));
+    tree.exit(2, Ended::Exited(0), (0, 0), Reaps::default(), &mut |h| gone.push(h));
     tree.insert_child(5, 1, 5).unwrap();
-    tree.exit(5, Ended::Exited(0), (0, 0), true, &mut |h| gone.push(h));
+    tree.exit(5, Ended::Exited(0), (0, 0), REAPS, &mut |h| gone.push(h));
     assert!(tree.get(5).is_none());
+    tree.check().unwrap();
+}
+
+/// A parent that does not wait for its children.
+const REAPS: Reaps = Reaps { parent: true, reaper: false };
+
+#[test]
+fn a_subreaper_adopts_its_descendants_orphans() {
+    // 1 is a subreaper; 2 is its child, 3 and 4 are 2's. When 2 ends, 3
+    // and 4 go to 1, and 1 is told of 4, which had ended.
+    let mut tree = T::new(Global);
+    tree.insert_root(1, 1).unwrap();
+    tree.insert_child(2, 1, 2).unwrap();
+    tree.insert_child(3, 2, 3).unwrap();
+    tree.insert_child(4, 2, 4).unwrap();
+    tree.insert_child(5, 3, 5).unwrap();
+    tree.get_mut(1).unwrap().subreaper = true;
+    assert_eq!(tree.reaper(3), 1, "the nearest subreaper above");
+    assert_eq!(tree.reaper(1), 1, "itself");
+    let mut gone = Vec::new();
+    tree.exit(4, Ended::Exited(3), (0, 0), Reaps::default(), &mut |h| gone.push(h));
+    let exit = tree.exit(2, Ended::Exited(0), (0, 0), Reaps::default(), &mut |h| gone.push(h));
+    assert_eq!(exit, Exit { parent: Some(1), adopted: Some((1, 4, Ended::Exited(3))) });
+    assert!(gone.is_empty());
+    assert_eq!(tree.get(3).unwrap().parent, 1);
+    let ended = Found::Child { pid: 4, status: status::exited(3), times: (0, 0), reaped: Some(4) };
+    assert_eq!(tree.wait(1, Which::Pid(4), WaitFor::default()), ended);
+    // A grandchild goes to the subreaper too, past its ended parent.
+    tree.exit(3, Ended::Exited(0), (0, 0), Reaps::default(), &mut |h| gone.push(h));
+    assert_eq!(tree.get(5).unwrap().parent, 1);
+    tree.check().unwrap();
+    // A subreaper that ignores SIGCHLD reaps the ended ones it adopts.
+    tree.insert_child(6, 5, 6).unwrap();
+    tree.insert_child(7, 6, 7).unwrap();
+    tree.exit(7, Ended::Exited(0), (0, 0), Reaps::default(), &mut |h| gone.push(h));
+    let reaps = Reaps { parent: false, reaper: true };
+    let exit = tree.exit(6, Ended::Exited(0), (0, 0), reaps, &mut |h| gone.push(h));
+    assert_eq!(exit, Exit { parent: Some(5), adopted: None });
+    assert_eq!(gone, [7]);
+    tree.check().unwrap();
+    // With the subreaper gone too, orphans lose their parent.
+    tree.get_mut(1).unwrap().subreaper = false;
+    tree.exit(5, Ended::Exited(0), (0, 0), Reaps::default(), &mut |h| gone.push(h));
+    assert_eq!(tree.reaper(1), 0);
     tree.check().unwrap();
 }
 
@@ -408,7 +453,7 @@ fn groups_and_sessions_follow_posix() {
     assert!(!tree.orphaned(11));
     tree.stopped(11, SIGSTOP);
     assert!(tree.has_stopped(11));
-    tree.exit(10, Ended::Exited(0), (0, 0), false, &mut |_| {});
+    tree.exit(10, Ended::Exited(0), (0, 0), Reaps::default(), &mut |_| {});
     assert!(tree.orphaned(11));
     tree.check().unwrap();
 }
@@ -434,8 +479,9 @@ fn kill_of_every_process_leaves_init_out() {
 #[derive(Clone, Debug)]
 enum Op {
     Fork(usize),
-    Exit(usize, bool),
+    Exit(usize, bool, bool),
     Wait(usize),
+    Subreaper(usize),
     SetGroup(usize, usize, usize),
     Session(usize),
     Stop(usize),
@@ -446,7 +492,8 @@ fn op() -> impl Strategy<Value = Op> {
     let n = 0usize..16;
     prop_oneof![
         3 => n.clone().prop_map(Op::Fork),
-        2 => (n.clone(), any::<bool>()).prop_map(|(a, b)| Op::Exit(a, b)),
+        2 => (n.clone(), any::<bool>(), any::<bool>()).prop_map(|(a, b, c)| Op::Exit(a, b, c)),
+        1 => n.clone().prop_map(Op::Subreaper),
         2 => n.clone().prop_map(Op::Wait),
         2 => (n.clone(), n.clone(), n.clone()).prop_map(|(a, b, c)| Op::SetGroup(a, b, c)),
         1 => n.clone().prop_map(Op::Session),
@@ -475,11 +522,17 @@ proptest! {
                     let _ = tree.insert_child(next, parent, next);
                     next += 1;
                 }
-                Op::Exit(i, auto) => {
+                Op::Exit(i, parent, reaper) => {
                     let pid = pick(&tree, i);
                     if !matches!(tree.get(pid).unwrap().life, Life::Zombie { .. }) {
-                        tree.exit(pid, Ended::Exited(0), (0, 0), auto, &mut |_| {});
+                        let reaps = Reaps { parent, reaper };
+                        tree.exit(pid, Ended::Exited(0), (0, 0), reaps, &mut |_| {});
                     }
+                }
+                Op::Subreaper(i) => {
+                    let pid = pick(&tree, i);
+                    let member = tree.get_mut(pid).unwrap();
+                    member.subreaper = !member.subreaper;
                 }
                 Op::Wait(i) => {
                     let pid = pick(&tree, i);

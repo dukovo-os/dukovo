@@ -7,14 +7,17 @@
 //!
 //! Version 1 holds what Dukovo 1.0 uses: the bundle's identity, its
 //! programs, commands and services, the permissions it asks for, the data
-//! it keeps, the interfaces it provides and uses, and its update feed. It
-//! is a preview until 1.0.0, when it freezes, and then only grows: a later
-//! version adds fields and never changes what one means.
+//! it keeps, the interfaces it provides and uses, and its update feed.
+//! Version 2 adds `runtime`, which says that the bundle holds Linux
+//! programs (ADR 0625); a version 1 manifest reads as a version 2 one
+//! without it. Each is a preview until 1.0.0, when it freezes, and then
+//! only grows: a later version adds fields and never changes what one
+//! means.
 //!
 //! The reading is strict. An unknown field is an error, but for `x-`
 //! fields, which are a vendor's own and which Dukovo ignores, and
 //! `$schema`, which editors read. The names of what later versions bring
-//! (`entries`, `actions`, `display`, `runtime`, `plugins`) are reserved,
+//! (`entries`, `actions`, `display`, `plugins`) are reserved,
 //! and so are the permissions later releases define. A manifest for a
 //! later version is refused with a message to update Dukovo. Each error
 //! says its line and what is wrong, in plain words.
@@ -53,8 +56,12 @@ use radix_abi::resource_domain::WEIGHT_MAX;
 #[cfg(feature = "schema")]
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 
-/// The version of the format this reads, the newest there is.
-pub const VERSION: u32 = 1;
+/// The version of the format this reads, the newest there is. Every
+/// version from 1 is read.
+pub const VERSION: u32 = 2;
+
+/// The version that brought `runtime`.
+pub const RUNTIME_VERSION: u32 = 2;
 
 /// Every field of a manifest, in the order manifest.json(5) describes
 /// them.
@@ -76,6 +83,7 @@ pub const KEYS: &[&str] = &[
     "icon",
     "requires_os",
     "architectures",
+    "runtime",
     "programs",
     "commands",
     "services",
@@ -102,9 +110,8 @@ const REQUIRED: &[&str] = &[
 ];
 
 /// The names later manifest versions define: what the desktop's menus
-/// (`entries`, `actions`), windows (`display`), the Linux layer
-/// (`runtime`) and plugins bring.
-pub const RESERVED: &[&str] = &["entries", "actions", "display", "runtime", "plugins"];
+/// (`entries`, `actions`), windows (`display`) and plugins bring.
+pub const RESERVED: &[&str] = &["entries", "actions", "display", "plugins"];
 
 /// The architectures a bundle may carry programs for.
 pub const ARCHITECTURES: &[&str] = &["x86_64", "aarch64", "riscv64", "wasm"];
@@ -112,6 +119,8 @@ pub const ARCHITECTURES: &[&str] = &["x86_64", "aarch64", "riscv64", "wasm"];
 /// A bundle's manifest, read and checked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Manifest {
+    /// The version of the format it is written in, 1 to [`VERSION`].
+    pub manifest_version: u32,
     /// Its ID: reverse DNS, lowercase, such as `org.nginx.nginx`.
     pub id: Id,
     /// What people call it.
@@ -150,6 +159,8 @@ pub struct Manifest {
     pub requires_os: OsVersion,
     /// The architectures it carries programs for.
     pub architectures: Vec<Arch>,
+    /// What its programs are built for: Dukovo, or Linux (ADR 0625).
+    pub runtime: Runtime,
     /// Its programs, by name.
     pub programs: Map<Name, Program>,
     /// The commands it adds to the terminal.
@@ -197,11 +208,12 @@ pub fn from_json(text: &str) -> Result<Manifest, Vec<Error>> {
                 ),
             )]);
         }
-        Some(serde_json::Value::Number(n)) if n.as_u64() == Some(u64::from(VERSION)) => {}
+        Some(serde_json::Value::Number(n))
+            if n.as_u64().is_some_and(|v| (1..=u64::from(VERSION)).contains(&v)) => {}
         Some(other) => {
             return Err(vec![Error::at(
                 at(text, &[Step::Key("manifest_version")]),
-                format!("manifest_version is {VERSION}, not {other}"),
+                format!("manifest_version is 1 to {VERSION}, not {other}"),
             )]);
         }
     }
@@ -280,6 +292,34 @@ impl Manifest {
             errors.push(Error::at(at(text, path), message));
         };
         use Step::{Index, Key};
+
+        // What its programs are built for, a field of version 2; a Linux
+        // bundle's programs run in a Linux view, which no service does yet.
+        if self.manifest_version < RUNTIME_VERSION && locate(text, &[Key("runtime")]).is_some() {
+            fail(
+                &[Key("runtime")],
+                format!(
+                    "runtime comes with manifest version {RUNTIME_VERSION}: make manifest_version \
+                     {RUNTIME_VERSION}"
+                ),
+            );
+        }
+        if self.runtime == Runtime::Linux && !self.services.is_empty() {
+            fail(
+                &[Key("services")],
+                "a Linux bundle runs no services yet: its programs run in a Linux view, which \
+                 only a person's run makes"
+                    .into(),
+            );
+        }
+        if self.runtime == Runtime::Linux {
+            for name in LINUX_NOT_GIVEN.iter().filter(|name| self.permissions.get(name).is_some()) {
+                fail(
+                    &[Key("permissions"), Key(name)],
+                    format!("a Linux bundle's programs are not given {name} yet"),
+                );
+            }
+        }
 
         // A line, which its version is of, and the files that choose it.
         if let Some(line) = &self.line {
@@ -653,6 +693,8 @@ impl<'de> Deserialize<'de> for Top {
 
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Top, A::Error> {
                 let mut seen = BTreeSet::new();
+                let mut manifest_version = None;
+                let mut runtime = None;
                 let mut id = None;
                 let mut name = None;
                 let mut summary = None;
@@ -683,9 +725,7 @@ impl<'de> Deserialize<'de> for Top {
                         return Err(de::Error::custom(format!("{key} is written twice")));
                     }
                     match key.as_str() {
-                        "manifest_version" => {
-                            map.next_value::<IgnoredAny>()?;
-                        }
+                        "manifest_version" => manifest_version = Some(map.next_value::<u32>()?),
                         "$schema" => {
                             map.next_value::<String>()?;
                         }
@@ -708,6 +748,7 @@ impl<'de> Deserialize<'de> for Top {
                         "icon" => icon = Some(map.next_value()?),
                         "requires_os" => requires_os = Some(map.next_value()?),
                         "architectures" => architectures = Some(map.next_value()?),
+                        "runtime" => runtime = Some(map.next_value()?),
                         "programs" => programs = Some(map.next_value()?),
                         "commands" => commands = Some(map.next_value()?),
                         "services" => services = Some(map.next_value()?),
@@ -741,9 +782,9 @@ impl<'de> Deserialize<'de> for Top {
                 else {
                     return Ok(Top::Missing(missing(&seen)));
                 };
-                if !seen.contains("manifest_version") {
+                let Some(manifest_version) = manifest_version else {
                     return Ok(Top::Missing("manifest_version"));
-                }
+                };
                 let mut asked = Vec::new();
                 let mut wrong = Vec::new();
                 for (name, raw) in permissions.into_iter().flat_map(|p| p.0) {
@@ -755,6 +796,7 @@ impl<'de> Deserialize<'de> for Top {
                 }
                 Ok(Top::Whole(
                     Box::new(Manifest {
+                        manifest_version,
                         id,
                         name,
                         summary,
@@ -771,6 +813,7 @@ impl<'de> Deserialize<'de> for Top {
                         icon,
                         requires_os,
                         architectures,
+                        runtime: runtime.unwrap_or(Runtime::Native),
                         programs,
                         commands: commands.unwrap_or_default(),
                         services: services.unwrap_or_default(),
@@ -1611,6 +1654,23 @@ words!(
         Riscv64 = "riscv64",
         /// WebAssembly (Dukovo 1.9).
         Wasm = "wasm",
+    ]
+);
+
+/// The permissions a Linux bundle may not ask for yet: a Linux view has no
+/// serial ports, and a Linux program does not reach the keyring.
+const LINUX_NOT_GIVEN: &[&str] = &["devices.serial", "keyring.shared"];
+
+words!(
+    /// What a bundle's programs are built for (ADR 0625).
+    Runtime,
+    "runtime",
+    [
+        /// Dukovo: each program is a Dukovo program, as `ob` builds them.
+        Native = "native",
+        /// Linux: each program is an x86-64 Linux program, which runs in a
+        /// Linux view of its own, as `linux run` starts it (ADR 0622).
+        Linux = "linux",
     ]
 );
 
@@ -2671,8 +2731,8 @@ pub struct Translation {
 #[schemars(deny_unknown_fields, transform = extensions, rename = "Manifest")]
 #[allow(dead_code)]
 struct Shape {
-    /// The version of this format: 1.
-    manifest_version: VersionOne,
+    /// The version of this format: 1 or 2.
+    manifest_version: ManifestVersion,
     id: Id,
     name: Line,
     summary: Line,
@@ -2689,6 +2749,7 @@ struct Shape {
     icon: Option<BundlePath>,
     requires_os: OsVersion,
     architectures: Vec<Arch>,
+    runtime: Option<Runtime>,
     programs: Map<Name, Program>,
     commands: Option<Vec<Command>>,
     services: Option<Vec<Service>>,
@@ -2702,16 +2763,16 @@ struct Shape {
 
 /// `manifest_version`, for the schema.
 #[cfg(feature = "schema")]
-struct VersionOne;
+struct ManifestVersion;
 
 #[cfg(feature = "schema")]
-impl JsonSchema for VersionOne {
+impl JsonSchema for ManifestVersion {
     fn schema_name() -> Cow<'static, str> {
         "ManifestVersion".into()
     }
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({"const": VERSION})
+        json_schema!({"type": "integer", "minimum": 1, "maximum": VERSION})
     }
 }
 
@@ -2780,8 +2841,8 @@ pub fn schema() -> String {
     );
     schema.insert(
         "description".into(),
-        "A Dukovo bundle's manifest.json, version 1 (a preview until Dukovo 1.0); \
-         manifest.json(5) explains each field"
+        "A Dukovo bundle's manifest.json, version 2 (a preview until Dukovo 1.0), which \
+         reads version 1 too; manifest.json(5) explains each field"
             .into(),
     );
     serde_json::to_string_pretty(&schema).unwrap_or_default()

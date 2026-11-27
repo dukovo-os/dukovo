@@ -945,8 +945,9 @@ fn install_in(
     } else {
         format!("; the data of the app it replaced is set aside in {}", aside.join(", "))
     };
+    let base = linux_base_note(&shared.lock(), &checked.manifest, place);
     let installed = format!(
-        "installed {id} {version}{over}, for {whose}{linked}{}{}{aside}",
+        "installed {id} {version}{over}, for {whose}{linked}{}{}{aside}{base}",
         services::skipped(&wanted),
         ran.said
     );
@@ -964,6 +965,19 @@ fn install_in(
         });
     }
     Ok(installed)
+}
+
+/// What the install of a Linux bundle says when the Linux base its
+/// programs run on (ADR 0625) is not installed where they find it: for
+/// `place` or for everyone.
+fn linux_base_note(registry: &Registry, manifest: &Manifest, place: Place) -> String {
+    let base = crate::linux::BASE_ID;
+    let found =
+        [place, Place::Everyone].into_iter().any(|at| registry.installed(at, base).is_some());
+    if manifest.runtime != manifest::bundle::Runtime::Linux || found {
+        return String::new();
+    }
+    format!("; its programs are Linux programs, which need the Linux base: bundle install {base}")
 }
 
 /// The file whose sheet is read: the catalog that offered it, its SHA-256
@@ -1656,7 +1670,7 @@ fn link_commands(registry: &Registry, place: Place) -> Result<(), String> {
     wanted.extend(
         add_on_commands(registry, place)
             .into_iter()
-            .map(|a| a.0)
+            .map(|a| a.name)
             .filter(|name| !system.contains(name)),
     );
     wanted.sort();
@@ -1682,14 +1696,24 @@ fn add_on_place(asker: u32) -> Place {
     if asker == 0 { Place::Everyone } else { Place::User(asker) }
 }
 
-/// The lines with add-ons in reach of `place`, by full ID, and the
-/// folder in their add-ons that holds commands (ADR 0388); none of a
+/// A line with add-ons (ADR 0388).
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct AddOnLine {
+    /// Its full ID.
+    id: String,
+    /// The folder in its add-ons that holds commands.
+    commands: String,
+    /// Its programs are Linux programs, and so are its add-ons (ADR 0625).
+    linux: bool,
+}
+
+/// The lines with add-ons in reach of `place`, by full ID; none of a
 /// stopped line (ADR 0593).
-fn add_on_lines(registry: &Registry, place: Place) -> Vec<(String, String)> {
-    let mut lines: Vec<(String, String)> = Vec::new();
+fn add_on_lines(registry: &Registry, place: Place) -> Vec<AddOnLine> {
+    let mut lines: Vec<AddOnLine> = Vec::new();
     for at in [place, Place::Everyone] {
         for installed in registry.installed.iter().filter(|i| i.place == at && i.id.contains('@')) {
-            if lines.iter().any(|(id, _)| *id == installed.id)
+            if lines.iter().any(|line| line.id == installed.id)
                 || registry.stopped(at, &installed.id).is_some()
             {
                 continue;
@@ -1697,7 +1721,11 @@ fn add_on_lines(registry: &Registry, place: Place) -> Vec<(String, String)> {
             if let Ok(manifest) = installed_manifest(installed.place, &installed.id)
                 && let Some(add_ons) = manifest.add_ons
             {
-                lines.push((installed.id.clone(), add_ons.commands.0));
+                lines.push(AddOnLine {
+                    id: installed.id.clone(),
+                    commands: add_ons.commands.0,
+                    linux: manifest.runtime == manifest::bundle::Runtime::Linux,
+                });
             }
         }
     }
@@ -1729,19 +1757,30 @@ fn add_ons_folder(place: Place, id: &str, inner: &str) -> Result<(Dir, String), 
 /// line and path, by name; of two lines' commands of one name, the line
 /// first by full ID. Only names a command may have, and nothing of a
 /// folder that is not its owner's.
-fn add_on_commands(registry: &Registry, place: Place) -> Vec<(String, String, String)> {
-    let mut commands: Vec<(String, String, String)> = Vec::new();
-    for (id, inner) in add_on_lines(registry, place) {
-        let Ok((dir, path)) = add_ons_folder(place, &id, &inner) else { continue };
+fn add_on_commands(registry: &Registry, place: Place) -> Vec<AddOnCommand> {
+    let mut commands: Vec<AddOnCommand> = Vec::new();
+    for line in add_on_lines(registry, place) {
+        let Ok((dir, path)) = add_ons_folder(place, &line.id, &line.commands) else { continue };
         for name in dir.names().unwrap_or_default() {
-            let free = !commands.iter().any(|c| c.0 == name);
+            let free = !commands.iter().any(|c| c.name == name);
             if free && manifest::bundle::check_command_name(&name).is_ok() {
-                commands.push((name.clone(), id.clone(), format!("{path}/{name}")));
+                let path = format!("{path}/{name}");
+                commands.push(AddOnCommand { name, id: line.id.clone(), path, linux: line.linux });
             }
         }
     }
     commands.sort();
     commands
+}
+
+/// A command of a line's add-ons: its name, its line's full ID, its path,
+/// and whether the line is a Linux one.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct AddOnCommand {
+    name: String,
+    id: String,
+    path: String,
+    linux: bool,
 }
 
 /// The add-on command `name` that `asker` runs: their own before
@@ -1750,10 +1789,12 @@ fn add_on(registry: &Registry, asker: u32, name: &str) -> Option<AddOn> {
     let places =
         if asker == 0 { vec![Place::Everyone] } else { vec![Place::User(asker), Place::Everyone] };
     places.into_iter().find_map(|place| {
-        add_on_commands(registry, place)
-            .into_iter()
-            .find(|c| c.0 == name)
-            .map(|(_, id, path)| AddOn { place, id, path })
+        add_on_commands(registry, place).into_iter().find(|c| c.name == name).map(|c| AddOn {
+            place,
+            id: c.id,
+            path: c.path,
+            linux: c.linux,
+        })
     })
 }
 

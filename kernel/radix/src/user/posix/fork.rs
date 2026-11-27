@@ -105,6 +105,9 @@ pub fn fork_returning(
         }
         let (class, level) = parent.io_priority();
         child.set_io_priority(class, level);
+        if parent.jit() {
+            child.allow_jit();
+        }
         child.linux.copy_from(&parent.linux);
         // It has not started: it acts for its parent's name from the first.
         child.name_before_start(parent.identity());

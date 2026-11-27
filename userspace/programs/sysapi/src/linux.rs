@@ -169,6 +169,58 @@ pub fn parent_through_system_call() -> i32 {
     i32::try_from(parent).unwrap_or(0)
 }
 
+/// The calling process's persona, asked of personality(2) with
+/// 0xffffffff, which reads it and changes nothing: a call that Dukovo's
+/// Linux table forwards to linuxd, for the benchmark of what forwarding
+/// costs.
+#[must_use]
+#[inline]
+pub fn persona() -> i32 {
+    // SAFETY: personality takes a number, and 0xffffffff only reads.
+    let persona = unsafe { libc::syscall(libc::SYS_personality, 0xffff_ffff_u64) };
+    i32::try_from(persona).unwrap_or(-1)
+}
+
+/// Sets no_new_privs and installs `program`, a classic BPF program of
+/// 8-byte instructions laid out as Linux's `struct sock_filter`, little
+/// endian, as a seccomp filter of the calling thread
+/// (seccomp(2), `SECCOMP_SET_MODE_FILTER`). The filter holds for the
+/// thread's life and passes to the processes it makes.
+///
+/// # Errors
+///
+/// InvalidInput for a program that is empty, not whole instructions or
+/// longer than a filter may be; EINVAL when Linux refuses the program;
+/// EFAULT, ENOMEM or EACCES as seccomp(2) says.
+pub fn install_seccomp_filter(program: &[u8]) -> io::Result<()> {
+    let (whole, rest) = program.as_chunks::<8>();
+    let instructions: Vec<libc::sock_filter> = whole
+        .iter()
+        .map(|bytes| libc::sock_filter {
+            code: u16::from_le_bytes([bytes[0], bytes[1]]),
+            jt: bytes[2],
+            jf: bytes[3],
+            k: u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+        })
+        .collect();
+    let len = u16::try_from(instructions.len())
+        .ok()
+        .filter(|&len| len > 0 && rest.is_empty())
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let filter = libc::sock_fprog { len, filter: instructions.as_ptr().cast_mut() };
+    // SAFETY: PR_SET_NO_NEW_PRIVS takes a flag and changes nothing else.
+    checked(unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) })?;
+    // SAFETY: `filter` points at `len` instructions, which live through the
+    // call; the kernel copies them and keeps no pointer.
+    let result = unsafe {
+        libc::syscall(libc::SYS_seccomp, libc::SECCOMP_SET_MODE_FILTER, 0, &raw const filter)
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// The CPUs the calling thread may run on, lowest first
 /// (sched_getaffinity(2)).
 ///
@@ -429,6 +481,35 @@ mod tests {
     #[test]
     fn the_parent_is_the_one_std_names() {
         assert_eq!(parent_through_system_call(), std::os::unix::process::parent_id() as i32);
+    }
+
+    #[test]
+    fn the_persona_is_read_without_change() {
+        let persona = persona();
+        assert!(persona >= 0, "{persona}");
+        assert_eq!(super::persona(), persona);
+    }
+
+    #[test]
+    fn a_seccomp_filter_is_installed_or_refused_with_why() {
+        // On a thread of its own, as a filter holds for the thread that
+        // installs it: `RET ALLOW` lets every call through.
+        std::thread::spawn(|| {
+            let allow = [0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x7f];
+            install_seccomp_filter(&allow).unwrap();
+            assert_eq!(parent_through_system_call(), std::os::unix::process::parent_id() as i32);
+            let kind = |program: &[u8]| install_seccomp_filter(program).unwrap_err().kind();
+            assert_eq!(kind(&[]), io::ErrorKind::InvalidInput);
+            assert_eq!(kind(&allow[..7]), io::ErrorKind::InvalidInput);
+            // A jump past the program's end.
+            let past = [0x05, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00];
+            assert_eq!(
+                install_seccomp_filter(&past).unwrap_err().raw_os_error(),
+                Some(libc::EINVAL)
+            );
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]

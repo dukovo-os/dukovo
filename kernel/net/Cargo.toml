@@ -14,6 +14,8 @@ publish.workspace = true
 bench = false
 
 [dependencies]
+# The classic BPF machine packet captures' filters run on (ADR 0346).
+radix-bpf = { path = "../lib/bpf" }
 # Without `alloc`: every buffer is lent to it (ADR 0180). A neighbour
 # cache of 64 entries, as each one is looked for in turn. `medium-ip` is
 # for the loopback interface, whose packets have no Ethernet header, and

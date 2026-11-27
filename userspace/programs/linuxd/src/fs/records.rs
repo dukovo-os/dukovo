@@ -237,8 +237,25 @@ pub struct Thread {
     pub priority: u64,
     /// Its nice level.
     pub nice: i64,
+    /// Its seccomp mode, as Linux numbers it (0 off, 1 strict, 2 filter),
+    /// and the filters along its chain (ADR 0623).
+    pub seccomp: (u8, u32),
+    /// Whether it has `no_new_privs`.
+    pub no_new_privs: bool,
     /// Its name.
     pub name: String,
+}
+
+/// A thread's `seccomp` field: `off`, `strict` or `filter:<filters>`.
+fn seccomp_of(field: Option<&str>) -> (u8, u32) {
+    match field {
+        Some("strict") => (1, 0),
+        Some(filter) => match filter.strip_prefix("filter:") {
+            Some(count) => (2, count.parse().unwrap_or(0)),
+            None => (0, 0),
+        },
+        None => (0, 0),
+    }
 }
 
 impl Thread {
@@ -262,6 +279,8 @@ impl Thread {
             policy: Policy::of(field("policy").unwrap_or("other")),
             priority: count("priority"),
             nice: field("nice").and_then(|nice| nice.parse().ok()).unwrap_or(0),
+            seccomp: seccomp_of(field("seccomp")),
+            no_new_privs: field("no_new_privs") == Some("yes"),
             name: String::from_utf8_lossy(&name.unwrap_or_default()).into_owned(),
         })
     }
@@ -368,6 +387,21 @@ mod tests {
         assert_eq!((threads[0].number, threads[0].state, threads[0].cpu), (9, State::Running, 2));
         assert_eq!(threads[1].name, "a b");
         assert_eq!((threads[1].policy, threads[1].nice), (Policy::Batch, 5));
+        // A kernel before seccomp's fields: none.
+        assert_eq!((threads[0].seccomp, threads[0].no_new_privs), ((0, 0), false));
+    }
+
+    #[test]
+    fn a_threads_seccomp_is_read_as_linux_numbers_its_modes() {
+        let line = |seccomp: &str, nnp: &str| {
+            let text =
+                format!("number=9 run=running seccomp={seccomp} no_new_privs={nnp} name=m\n");
+            let thread = Thread::parse_all(text.as_bytes()).remove(0);
+            (thread.seccomp, thread.no_new_privs)
+        };
+        assert_eq!(line("off", "no"), ((0, 0), false));
+        assert_eq!(line("strict", "yes"), ((1, 0), true));
+        assert_eq!(line("filter:3", "yes"), ((2, 3), true));
     }
 
     #[test]

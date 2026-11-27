@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Node.js 26, the catalog's bundle of Node.js's own Linux build (ADR 0627),
+# runs on the machine's own processor, with V8 making machine code as it
+# runs (ADR 0624). The lab account installs the Linux base and the line's
+# bundle for itself from the files `./ob lab` packed, from nothing. The
+# bundle's commands run with your access, which only a person at a console
+# can allow and no test can (as in bundles/every-catalog-app), so the test
+# runs the bundle's node through `linux run`, which builds the same Linux
+# view on the Linux base, given memory.jit with --allow-jit. A loop that V8
+# compiles sums the primes below two million, which takes about half a
+# second where V8 makes its code and ten times that where it cannot.
+# npm and npx, scripts for node, say their version. Without --allow-jit,
+# V8 is refused the memory it writes code into, and `linux run` says which
+# option would have given it. The boot test linux-node runs the bundle's
+# own commands, with npm ci, npx and a project's packages.
+about = "Node.js 26, installed from its Linux bundle, runs through linux run with memory.jit and computes with V8's compiled code, and its npm and npx say their version; without memory.jit V8 is refused and linux run names the option (ADRs 0624 and 0627)"
+time = "10m"
+host_needs = ["scp"]
+
+[[step]]
+host = "sh {here}/../services/copy-bundle.sh org.dukovo.linux-base {machine} {machine-port:22}"
+expect = "copied: org.dukovo.linux-base"
+# Of the lines' files, the script copies the last in order, line 26's.
+[[step]]
+host = "sh {here}/../services/copy-bundle.sh org.nodejs.node {machine} {machine-port:22}"
+expect = "copied: org.nodejs.node"
+# From nothing: a run before may have left them installed.
+[[step]]
+run = "sh -c 'bundle remove --purge org.nodejs.node@26 > /dev/null 2>&1; bundle remove --purge org.dukovo.linux-base > /dev/null 2>&1; bundle install --yes /users/lab/org.dukovo.linux-base.dkv | tail -1; bundle install --yes /users/lab/org.nodejs.node.dkv | tail -1'"
+expect = ["installed org.dukovo.linux-base 25.8.0, for you", "installed org.nodejs.node@26 26.13.1, for you"]
+[[step]]
+run = "sh -c 'cd /tmp && linux run --allow-jit -- /users/lab/applications/org.nodejs.node@26/bin/node -p \"[process.version, process.platform, process.arch].join(\\\" \\\")\"'"
+expect = "v26.13.1 linux x64"
+[[step]]
+run = "sh -c 'cd /tmp && linux run --allow-jit -- /users/lab/applications/org.nodejs.node@26/bin/node -p \"let s = 0; for (let n = 2; n < 2e6; n++) { let p = true; for (let d = 2; d * d <= n; d++) if (n % d == 0) { p = false; break } if (p) s += n } s\"; echo node-rc=$?'"
+expect = ["142913828922", "node-rc=0"]
+# npm and npx, the bundle's scripts for node, which load npm from the
+# bundle's lib: run with the bundle's node, with the whole bundle in view.
+[[step]]
+run = "sh -c 'cd /tmp && b=/users/lab/applications/org.nodejs.node@26 && linux run --allow $b --allow-jit -- $b/bin/node $b/bin/npm --version && linux run --allow $b --allow-jit -- $b/bin/node $b/bin/npx --version'"
+expect = ["11.20.0"]
+expect_not = ["Error", "ERR"]
+[[step]]
+run = "sh -c 'cd /tmp && linux run -- /users/lab/applications/org.nodejs.node@26/bin/node -p 1 2>&1 | tail -n 3'"
+expect = "run it with linux run --allow-jit"
+# Nothing is left behind.
+[[step]]
+run = "sh -c 'bundle remove --purge org.nodejs.node@26 > /dev/null && bundle remove --purge org.dukovo.linux-base > /dev/null && rm -f /users/lab/org.nodejs.node.dkv /users/lab/org.dukovo.linux-base.dkv && echo gone'"
+expect = "gone"

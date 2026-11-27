@@ -537,6 +537,10 @@ impl UserMode for Arch {
         Ok(())
     }
 
+    fn move_pages(_: &Space, _: u64, _: u64, _: u64) -> Result<(), MapPageError> {
+        Err(MapPageError::NoMemory)
+    }
+
     fn free_page_tables(_: &Space) {}
 
     fn attach_space(_: &Context, _: &Space) -> bool {

@@ -527,6 +527,9 @@ pub struct AddOn {
     pub place: Place,
     pub id: String,
     pub path: String,
+    /// The line is a Linux one, whose add-ons run in its Linux view (ADR
+    /// 0625).
+    pub linux: bool,
 }
 
 /// The lines of an ID installed for the asker or for everyone, to choose
@@ -745,7 +748,10 @@ impl Answer {
                 l.everyone.as_deref().unwrap_or("-")
             )
             .into_bytes(),
-            Answer::AddOn(a) => format!("add-on\t{}\t{}\t{}\n", a.place, a.id, a.path).into_bytes(),
+            Answer::AddOn(a) => {
+                let runtime = if a.linux { "linux" } else { "native" };
+                format!("add-on\t{}\t{}\t{}\t{runtime}\n", a.place, a.id, a.path).into_bytes()
+            }
             Answer::Granted(g) => format!(
                 "granted\t{}\t{}\t{}\t{}\t{}\n",
                 g.permission,
@@ -884,7 +890,7 @@ impl Answer {
                 everyone: line(everyone)?,
             })));
         }
-        if let ["add-on", at, id, path] = words.as_slice() {
+        if let ["add-on", at, id, path, runtime] = words.as_slice() {
             let path_ok = path.starts_with('/')
                 && path.len() <= 4096
                 && path.split('/').skip(1).all(|p| !p.is_empty() && p != "." && p != "..")
@@ -892,10 +898,16 @@ impl Answer {
             if !path_ok {
                 return Err(bad("an add-on's path"));
             }
+            let linux = match *runtime {
+                "native" => false,
+                "linux" => true,
+                _ => return Err(bad("an add-on's runtime")),
+            };
             return Ok(Some(Answer::AddOn(AddOn {
                 place: place(at)?,
                 id: checked_id(id).map_err(|why| bad(&why))?,
                 path: (*path).into(),
+                linux,
             })));
         }
         if let ["found", at, id, key, list] = words.as_slice() {
@@ -1407,6 +1419,13 @@ mod tests {
                 place: Place::User(1000),
                 id: "org.nodejs.node@22".into(),
                 path: "/users/alice/applications/add-ons/org.nodejs.node@22/bin/tsc".into(),
+                linux: true,
+            }),
+            Answer::AddOn(AddOn {
+                place: Place::Everyone,
+                id: "org.python.python@3.14".into(),
+                path: "/applications/add-ons/org.python.python@3.14/bin/black".into(),
+                linux: false,
             }),
             Answer::Found(Found {
                 place: Place::Everyone,

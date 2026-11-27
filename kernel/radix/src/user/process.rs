@@ -229,6 +229,14 @@ pub struct ProcessObject {
     trace: SpinLock<Option<TraceRef>>,
     /// Whether one does: what each of its system calls looks at first.
     traced: AtomicBool,
+    /// Whether it may make its private anonymous memory writable and
+    /// executable at once (memory.jit, ADR 0624): set by radix-jit(2)'s
+    /// `allow`, copied by `fork`, kept by `exec`, and never cleared.
+    jit: AtomicBool,
+    /// Whether it asked for writable and executable memory without
+    /// memory.jit and was refused, which `/processes/<n>/status` and
+    /// radix-jit(2)'s `state` tell, so that a launcher can say why.
+    jit_refused: AtomicBool,
     /// Its Linux side: whether its program is a Linux program, which each
     /// of its system calls looks at as it looks at `traced`, and that
     /// program's break (ADR 0611).
@@ -402,6 +410,8 @@ fn allocate(
         sem_undo: AtomicBool::new(false),
         trace: SpinLock::new(None),
         traced: AtomicBool::new(false),
+        jit: AtomicBool::new(false),
+        jit_refused: AtomicBool::new(false),
         linux: super::linux::LinuxProcess::new(),
     };
     Arc::try_new_in(process, kmalloc()).map_err(|_| error(Kernel::NoMemory))
@@ -538,6 +548,13 @@ impl ProcessObject {
         }
     }
 
+    /// Runs `f` on its threads, with their list locked: no thread starts
+    /// or leaves the process meanwhile. A Linux thread's TSYNC (ADR 0623)
+    /// checks and changes every thread's seccomp at once this way.
+    pub fn with_threads(&self, f: &mut dyn FnMut(&[ThreadRef])) {
+        f(&self.state.lock().threads);
+    }
+
     /// How many of its threads have not exited, read without a lock: as
     /// of a moment ago.
     pub fn thread_count(&self) -> usize {
@@ -648,6 +665,35 @@ impl ProcessObject {
     /// Sets its I/O class and level.
     pub fn set_io_priority(&self, class: u32, level: u32) {
         self.io_priority.store((class << 8) | (level & 0xff), Ordering::Relaxed);
+    }
+
+    /// Whether it has memory.jit (ADR 0624).
+    #[inline]
+    pub fn jit(&self) -> bool {
+        self.jit.load(Ordering::Acquire)
+    }
+
+    /// Gives it memory.jit, which it keeps until it ends.
+    pub fn allow_jit(&self) {
+        self.jit.store(true, Ordering::Release);
+    }
+
+    /// Whether it was refused writable and executable memory for want of
+    /// memory.jit.
+    pub fn jit_refused(&self) -> bool {
+        self.jit_refused.load(Ordering::Relaxed)
+    }
+
+    /// Notes that it asked for writable and executable memory without
+    /// memory.jit, which the caller refuses; the first time, in the log.
+    pub fn refuse_jit(&self) {
+        if !self.jit_refused.swap(true, Ordering::Relaxed) {
+            info!(
+                "Jit: process {} asked for memory that is writable and executable, which it may \
+                 not have without memory.jit",
+                self.number()
+            );
+        }
     }
 
     /// Keeps `args`, the arguments its new program starts with, each
@@ -908,6 +954,14 @@ impl ProcessObject {
                 return Err(fail(error(Kernel::NoMemory)));
             }
             let joins = !state.threads.is_empty();
+            // A program's thread passes its seccomp on to the thread it
+            // starts, as `clone`, `fork` and `execve` keep it on Linux:
+            // under this lock, which a TSYNC holds too, so that the new
+            // thread gets the chain the TSYNC gives or is in the list it
+            // gives it to (ADR 0623).
+            if let Some(starter) = sched::current().and_then(|me| me.user().cloned()) {
+                user.linux.seccomp.inherit(&starter.linux.seccomp);
+            }
             // Room was reserved above.
             let _ = state.threads.push_within_capacity(thread.clone());
             process.live_threads.store(state.threads.len(), Ordering::Release);

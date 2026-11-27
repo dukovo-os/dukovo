@@ -84,6 +84,9 @@ Spark gets what every program gets (see *radix-startup*(2)) and more:
 - the kernel settings capability in slot 17, which lists the kernel's
   few settings and sets them (*radix-kernel-settings*(2), ADR 0476), and
   which Spark gives to the one service whose file asks for it (below);
+- the jit capability in slot 18, which lets a program map memory that is
+  writable and executable (*radix-jit*(2), ADR 0624), and which Spark
+  gives to the services whose file asks for it (below);
 - an image placed at a random address, as every position-independent
   program is (see *radix-processes*(7)).
 
@@ -876,6 +879,19 @@ Only the *tune* service's file asks, to give the kernel the performance
 profile an administrator chose (*tune*(8)); every setting's value is
 readable by everyone in _/kernel/settings_ (*radix-sysfs*(5)). A service
 that does not ask cannot change them.
+
+# MEMORY FOR JIT COMPILERS
+
+The kernel gives Spark the jit capability (*radix-jit*(2), ADR 0624),
+with which a process lets another, one it may control, map private
+memory that is writable and executable at once, as JavaScript engines
+and other compilers that run as they compile need (*memory.jit*). A
+service whose file says *memory.jit = true* gets a copy in _SLOT_JIT_
+(*radix-startup*(2)), with the copy and transfer rights; holding it does
+not give the service memory.jit itself. Only *authd*(8)'s file asks: it
+puts the capability in each sign-in session, where *bundle*(1)'s *run*
+gives memory.jit to the apps whose bundle was granted it, and *linux*(1)'s
+*run --allow-jit* to the Linux program it starts.
 
 # DEVICES
 

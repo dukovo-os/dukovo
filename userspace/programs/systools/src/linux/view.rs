@@ -7,11 +7,15 @@
 //! touches the system, so every rule has a test.
 //!
 //! The view's fixed places are `/usr` and its links (the Linux base),
+//! the shell and core commands in `/usr/bin` (Dukovo's own, ADR 0626),
 //! `/proc` and `/sys` (linuxd's filesystem), `/dev`, `/etc`, `/tmp`, and
 //! the network's folders. The person's own places are the folder the
 //! program was started in, its data folder, its own folder, and what
 //! `--allow`, `--allow-write`, `--home` and the questions at the terminal
-//! add, each attached at its real path. A person's place never goes under
+//! add, each attached at its real path. A bundle's program (ADR 0625) has
+//! its bundle's folder too, read-only, and the places its permissions
+//! give; one in the bundle's sandbox starts in its data folder, and is
+//! given no other. A person's place never goes under
 //! a fixed one, and none goes under another attached place, since the
 //! kernel refuses to attach beneath what is attached (radix-directory(2),
 //! `attach`): the plan keeps the outermost.
@@ -33,10 +37,34 @@ pub const DEVICES: &[(&str, bool)] =
 pub const TERMINAL_DEVICES: &[&str] = &["tty", "ptmx", "pts"];
 
 /// The places that are the program's own in its view: no folder of the
-/// person's is attached at or beneath them.
+/// person's is attached at or beneath them. `/system` is Dukovo's: the
+/// programs of the view's shell are there, and the network's folders.
 const OWN: &[&str] = &[
     "/usr", "/lib", "/lib64", "/bin", "/sbin", "/proc", "/sys", "/dev", "/devices", "/etc", "/tmp",
+    "/system",
 ];
+
+/// Dukovo's folder of commands, and the folder of the dynamic linker and
+/// C library its programs load.
+pub const COMMANDS: &str = "/system/commands";
+pub const LIBRARIES: &str = "/system/libraries";
+
+/// Dukovo's programs that are the view's shell and core commands (ADR
+/// 0626), each with the names Linux keeps in `/usr/bin` that lead to it:
+/// Nukesh, which is POSIX's shell by the name `sh` and bash's by `bash`,
+/// and uutils' programs.
+pub const SHELL: &[(&str, &str)] =
+    &[("nukesh", "sh bash"), ("coreutils", CORE_UTILITIES), ("find", "find"), ("xargs", "xargs")];
+
+/// The utilities of the one program uutils' coreutils is, as Dukovo
+/// builds it (`ports/uutils-coreutils/build.sh`, which a test reads).
+pub const CORE_UTILITIES: &str = "[ arch b2sum base32 base64 basename basenc cat cksum comm cp \
+    csplit cut date dd dir dircolors dirname du echo env expand expr factor false fmt fold groups \
+    head hostname id install join link ln logname ls md5sum mkdir mkfifo mknod mktemp more mv \
+    nice nl nohup nproc numfmt od paste pathchk pr printenv printf ptx pwd readlink realpath rm \
+    rmdir seq sha1sum sha224sum sha256sum sha384sum sha512sum shred shuf sleep sort split stat \
+    stty sum sync tac tail tee test timeout touch tr true truncate tsort tty uname unexpand uniq \
+    unlink vdir wc whoami yes";
 
 /// What a place in the view leads to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,8 +75,14 @@ pub enum Source {
     Base { path: String, folder: bool },
     /// The folder `proc` or `sys` of linuxd's filesystem.
     Linuxd(&'static str),
+    /// A memory filesystem of the run's own, as `/devices/shm` is, whose
+    /// files programs map and share (radix-directory(2)'s
+    /// `memory_filesystem`).
+    Memory,
     /// A folder of the person's root with only `names` in it.
     Names { folder: String, names: Vec<String> },
+    /// The bundle's folder, the very one that was checked: read-only.
+    Bundle,
 }
 
 /// A place to attach: where it is in the view, what it leads to, and
@@ -92,6 +126,11 @@ pub struct Base {
 }
 
 impl Base {
+    /// Whether its `usr` has an entry called `name`.
+    fn has(&self, name: &str) -> bool {
+        self.usr.iter().any(|entry| entry.name == name)
+    }
+
     fn has_zoneinfo(&self) -> bool {
         self.share.as_ref().is_some_and(|share| share.iter().any(|entry| entry.name == "zoneinfo"))
     }
@@ -113,19 +152,26 @@ pub enum Terminal {
 pub struct Inputs<'a> {
     /// The program's file, by its real path.
     pub program: &'a str,
-    /// The folder `linux run` was started in, by its real path.
-    pub started_in: &'a str,
+    /// The folder `linux run` was started in, by its real path, when it is
+    /// given: to `linux run`'s program, and to a bundle's command that
+    /// runs with your access. A program in its bundle's sandbox starts in
+    /// its data folder.
+    pub started_in: Option<&'a str>,
+    /// A bundle's folder, for a bundle's program.
+    pub bundle: Option<&'a str>,
     /// The person's home.
     pub home: &'a str,
     /// The program's data folder.
     pub data: &'a str,
-    /// The run's private folder, which holds the program's `/tmp`,
-    /// `/dev/shm` and the `/etc` files.
+    /// The run's private folder, which holds the program's `/tmp` and
+    /// the `/etc` files.
     pub private: &'a str,
     /// The base bundle, if the program is dynamic.
     pub base: Option<&'a Base>,
     /// Whether Dukovo has a time zone database to show.
     pub zoneinfo: bool,
+    /// The programs of [`SHELL`] that [`COMMANDS`] has.
+    pub commands: &'a [String],
     /// The zone `/etc/localtime` leads to, a path beneath it.
     pub zone: &'a str,
     /// The names of [`DEVICES`] and [`TERMINAL_DEVICES`] that
@@ -206,6 +252,7 @@ pub fn reserved(path: &str) -> bool {
 pub fn plan(inputs: &Inputs<'_>) -> Result<View, String> {
     let mut view = View::default();
     usr(inputs, &mut view);
+    shell(inputs, &mut view);
     view.attach("/proc", Source::Linuxd("proc"), true);
     view.mount("/proc", "proc", true);
     view.attach("/sys", Source::Linuxd("sys"), true);
@@ -229,11 +276,13 @@ fn usr(inputs: &Inputs<'_>, view: &mut View) {
         return;
     };
     view.mount("/usr", "linux-base", false);
-    if base.has_zoneinfo() {
+    // Dukovo's zoneinfo goes beneath `/usr/share`, and the shell's links
+    // beneath `/usr/bin`, which the kernel refuses beneath one attached
+    // whole: then each entry is attached.
+    let shell_beneath = has_shell(inputs) && !base.has("bin");
+    if base.has_zoneinfo() && !shell_beneath {
         view.attach("/usr", Source::Base { path: "usr".into(), folder: true }, false);
     } else {
-        // Dukovo's zoneinfo goes beneath `/usr/share`, which the kernel
-        // refuses beneath one attached whole: each entry is attached.
         for entry in base.usr.iter().filter(|entry| entry.name != "share") {
             let path = format!("usr/{}", entry.name);
             view.attach(&format!("/{path}"), Source::Base { path, folder: entry.folder }, false);
@@ -242,13 +291,42 @@ fn usr(inputs: &Inputs<'_>, view: &mut View) {
             let path = format!("usr/share/{}", entry.name);
             view.attach(&format!("/{path}"), Source::Base { path, folder: entry.folder }, false);
         }
-        zoneinfo(inputs, view);
+        if !base.has_zoneinfo() {
+            zoneinfo(inputs, view);
+        }
     }
     for name in ["lib", "lib64", "bin", "sbin"] {
-        if base.usr.iter().any(|entry| entry.name == name) {
+        if base.has(name) {
             view.link(&format!("/{name}"), &format!("usr/{name}"));
         }
     }
+}
+
+/// Whether the view gets the shell's links in `/usr/bin`: some program of
+/// [`SHELL`] is there, and the base has no `usr/bin` of its own.
+fn has_shell(inputs: &Inputs<'_>) -> bool {
+    !inputs.commands.is_empty() && !inputs.base.is_some_and(|base| base.has("bin"))
+}
+
+/// The view's shell and core commands (ADR 0626): the programs of
+/// [`SHELL`] that are there, read-only at their own paths with the
+/// libraries they load, and the links in `/usr/bin` that lead to them,
+/// which `/bin` leads to, as on Linux. A base with a `usr/bin` of its own
+/// gives its own commands, and nothing is added to them.
+fn shell(inputs: &Inputs<'_>, view: &mut View) {
+    if !has_shell(inputs) {
+        return;
+    }
+    view.attach(LIBRARIES, Source::Person(LIBRARIES.into()), false);
+    let there = |program: &str| inputs.commands.iter().any(|command| command == program);
+    for &(program, names) in SHELL.iter().filter(|(program, _)| there(program)) {
+        let path = format!("{COMMANDS}/{program}");
+        view.attach(&path, Source::Person(path.clone()), false);
+        for name in names.split_whitespace() {
+            view.link(&format!("/usr/bin/{name}"), &path);
+        }
+    }
+    view.link("/bin", "usr/bin");
 }
 
 /// Dukovo's time zone database at `/usr/share/zoneinfo`.
@@ -259,13 +337,18 @@ fn zoneinfo(inputs: &Inputs<'_>, view: &mut View) {
 }
 
 /// `/dev`: the devices every program has, `/dev/shm`, the terminals, and
-/// the links Linux's `udev` and `procfs` make.
+/// the links Linux's `udev` and `procfs` make. `/dev/shm` is a memory
+/// filesystem of the run's own, as a container's is a tmpfs of its own:
+/// a folder of the person's `/tmp` would not do, as the kernel shares the
+/// pages of a memory filesystem's files alone, and `shm_open`, `sem_open`
+/// and LTP's library map theirs shared and writable.
 fn dev(inputs: &Inputs<'_>, view: &mut View) {
     let there = |name: &str| inputs.devices.iter().any(|device| device == name);
     for &(name, write) in DEVICES.iter().filter(|(name, _)| there(name)) {
         view.attach(&format!("/dev/{name}"), Source::Person(format!("/devices/{name}")), write);
     }
-    view.attach("/dev/shm", Source::Person(format!("{}/shm", inputs.private)), true);
+    view.attach("/dev/shm", Source::Memory, true);
+    view.mount("/dev/shm", "tmpfs", true);
     let wanted: &[&str] = match inputs.terminal {
         Terminal::Absent => &[],
         Terminal::Tty => &TERMINAL_DEVICES[..1],
@@ -312,11 +395,13 @@ struct Wanted {
     write: bool,
     /// Said yes to at the terminal, not named on the command line.
     asked: bool,
+    /// The bundle's folder.
+    bundle: bool,
 }
 
 /// The person's folders: the program's own data, the folder it started
-/// in, the one its file is in, and what was given or asked. Where one is
-/// inside another, the outer one is attached.
+/// in, the one its file is in, its bundle's, and what was given or asked.
+/// Where one is inside another, the outer one is attached.
 fn folders(inputs: &Inputs<'_>, view: &mut View) -> Result<(), String> {
     let mut wanted = Vec::new();
     for (paths, write, asked) in [
@@ -327,30 +412,34 @@ fn folders(inputs: &Inputs<'_>, view: &mut View) -> Result<(), String> {
         for path in paths {
             if reserved(path) {
                 return Err(format!(
-                    "{path} is one of the program's own places: /usr, /etc, /tmp, /dev, /proc \
-                     and /sys are not yours to give"
+                    "{path} is one of the program's own places: /usr, /etc, /tmp, /dev, /proc, \
+                     /sys and /system are not yours to give"
                 ));
             }
-            wanted.push(Wanted { path: path.clone(), write, asked });
+            wanted.push(Wanted { path: path.clone(), write, asked, bundle: false });
         }
     }
     let own = if inputs.whole_home { inputs.home } else { inputs.data };
-    wanted.push(Wanted { path: own.into(), write: true, asked: false });
-    let started = inputs.started_in;
-    if let Some(why) = leaves_out(inputs, started) {
-        view.notes.push(format!(
-            "{started} is not given to the program ({why}); it starts in its data folder"
-        ));
-        view.working = inputs.data.into();
-    } else {
-        wanted.push(Wanted { path: started.into(), write: true, asked: false });
-        view.working = started.into();
+    wanted.push(Wanted { path: own.into(), write: true, asked: false, bundle: false });
+    view.working = inputs.data.into();
+    if let Some(started) = inputs.started_in {
+        if let Some(why) = leaves_out(inputs, started) {
+            view.notes.push(format!(
+                "{started} is not given to the program ({why}); it starts in its data folder"
+            ));
+        } else {
+            wanted.push(Wanted { path: started.into(), write: true, asked: false, bundle: false });
+            view.working = started.into();
+        }
+    }
+    if let Some(bundle) = inputs.bundle {
+        wanted.push(Wanted { path: bundle.into(), write: false, asked: false, bundle: true });
     }
     if let Some((folder, _)) = inputs.program.rsplit_once('/')
         && !folder.is_empty()
         && !reserved(folder)
     {
-        wanted.push(Wanted { path: folder.into(), write: false, asked: false });
+        wanted.push(Wanted { path: folder.into(), write: false, asked: false, bundle: false });
     }
     // A folder the person said yes to for reading is not given if a place
     // the program may change is inside it: attached whole, it would take
@@ -388,7 +477,9 @@ fn folders(inputs: &Inputs<'_>, view: &mut View) -> Result<(), String> {
     }
     for folder in kept {
         view.mount(&folder.path, "dukovo", folder.write);
-        view.attach(&folder.path, Source::Person(folder.path.clone()), folder.write);
+        let source =
+            if folder.bundle { Source::Bundle } else { Source::Person(folder.path.clone()) };
+        view.attach(&folder.path, source, folder.write);
     }
     Ok(())
 }
@@ -480,7 +571,8 @@ mod tests {
     struct Run {
         base: Option<Base>,
         terminal: Terminal,
-        started_in: String,
+        started_in: Option<String>,
+        bundle: Option<String>,
         program: String,
         allow: Vec<String>,
         allow_write: Vec<String>,
@@ -488,6 +580,12 @@ mod tests {
         whole_home: bool,
         devices: Vec<String>,
         etc: Vec<String>,
+        commands: Vec<String>,
+    }
+
+    /// Every program of the view's shell.
+    fn all_commands() -> Vec<String> {
+        SHELL.iter().map(|(program, _)| (*program).to_string()).collect()
     }
 
     fn run() -> Run {
@@ -495,7 +593,8 @@ mod tests {
         Run {
             base: Some(base(true)),
             terminal: Terminal::Absent,
-            started_in: "/users/alice/work".into(),
+            started_in: Some("/users/alice/work".into()),
+            bundle: None,
             program: "/users/alice/tools/hello".into(),
             allow: Vec::new(),
             allow_write: Vec::new(),
@@ -503,6 +602,7 @@ mod tests {
             whole_home: false,
             devices: strings(&["null", "zero", "random", "urandom", "tty", "ptmx", "pts"]),
             etc: ETC_FILES.iter().map(|name| (*name).to_string()).collect(),
+            commands: Vec::new(),
         }
     }
 
@@ -511,12 +611,14 @@ mod tests {
             let network = ["/system/live/resolved".to_string()];
             plan(&Inputs {
                 program: &self.program,
-                started_in: &self.started_in,
+                started_in: self.started_in.as_deref(),
+                bundle: self.bundle.as_deref(),
                 home: "/users/alice",
                 data: "/users/alice/app-data/linux/hello",
                 private: "/tmp/.linux-7",
                 base: self.base.as_ref(),
                 zoneinfo: true,
+                commands: &self.commands,
                 zone: "Europe/Berlin",
                 devices: &self.devices,
                 terminal: self.terminal,
@@ -601,13 +703,131 @@ mod tests {
         assert!(at(&view, "/proc").is_some() && at(&view, "/etc/passwd").is_some());
     }
 
+    fn link<'a>(view: &'a View, place: &str) -> Option<&'a str> {
+        view.links.iter().find(|link| link.at == place).map(|link| link.target.as_str())
+    }
+
     #[test]
-    fn proc_and_sys_are_linuxds_and_tmp_is_private() {
+    fn the_view_has_dukovos_shell_and_core_commands_where_linux_keeps_them() {
+        let mut facts = run();
+        // The base as it is: no usr/bin, and no zone database.
+        facts.base = Some(Base { usr: entries(&["lib", "lib64", "share"]), share: None });
+        facts.commands = all_commands();
+        let view = facts.plan().unwrap();
+        for place in ["/system/libraries", "/system/commands/nukesh", "/system/commands/coreutils"]
+        {
+            assert_eq!(what(&view, place), person(place, false), "{place}");
+        }
+        for place in ["/system/commands/find", "/system/commands/xargs"] {
+            assert_eq!(what(&view, place), person(place, false), "{place}");
+        }
+        assert_eq!(link(&view, "/usr/bin/sh"), Some("/system/commands/nukesh"));
+        assert_eq!(link(&view, "/usr/bin/bash"), Some("/system/commands/nukesh"));
+        assert_eq!(link(&view, "/usr/bin/env"), Some("/system/commands/coreutils"));
+        assert_eq!(link(&view, "/usr/bin/["), Some("/system/commands/coreutils"));
+        assert_eq!(link(&view, "/usr/bin/xargs"), Some("/system/commands/xargs"));
+        let linked = view.links.iter().filter(|l| l.at.starts_with("/usr/bin/")).count();
+        assert_eq!(linked, 2 + CORE_UTILITIES.split_whitespace().count() + 2);
+        // `/bin/sh` is reached as on Linux, through `/bin`.
+        assert_eq!(link(&view, "/bin"), Some("usr/bin"));
+        assert_eq!(view.links.iter().filter(|l| l.at == "/bin").count(), 1);
+        assert!(view.holds("/bin/sh") && view.holds("/system/commands/nukesh"));
+    }
+
+    #[test]
+    fn the_shell_has_only_the_programs_that_are_there() {
+        let mut facts = run();
+        facts.base = Some(Base { usr: entries(&["lib", "lib64"]), share: None });
+        facts.commands = vec!["nukesh".into()];
+        let view = facts.plan().unwrap();
+        assert_eq!(link(&view, "/usr/bin/sh"), Some("/system/commands/nukesh"));
+        assert_eq!(link(&view, "/usr/bin/env"), None);
+        assert_eq!(at(&view, "/system/commands/coreutils"), None);
+        // With none of them, there is no shell, nor the libraries for it.
+        facts.commands = Vec::new();
+        let view = facts.plan().unwrap();
+        assert_eq!(at(&view, "/system/libraries"), None);
+        assert_eq!(link(&view, "/bin"), None);
+        assert!(!view.links.iter().any(|l| l.at.starts_with("/usr/bin/")));
+    }
+
+    #[test]
+    fn a_base_with_its_own_usr_bin_gives_its_own_commands() {
+        let mut facts = run();
+        facts.commands = all_commands();
+        // base(true) has usr/bin and a zone database: /usr is attached whole.
+        let view = facts.plan().unwrap();
+        assert_eq!(
+            what(&view, "/usr"),
+            Some((Source::Base { path: "usr".into(), folder: true }, false))
+        );
+        assert!(!view.links.iter().any(|l| l.at.starts_with("/usr/bin/")));
+        assert_eq!(at(&view, "/system/commands/nukesh"), None);
+        assert_eq!(link(&view, "/bin"), Some("usr/bin"));
+        assert_eq!(view.links.iter().filter(|l| l.at == "/bin").count(), 1);
+    }
+
+    #[test]
+    fn a_base_with_a_zone_database_and_no_usr_bin_is_attached_by_its_entries() {
+        let mut facts = run();
+        facts.base = Some(Base {
+            usr: entries(&["lib", "lib64", "share"]),
+            share: Some(entries(&["zoneinfo", "locale"])),
+        });
+        facts.commands = all_commands();
+        let view = facts.plan().unwrap();
+        assert_eq!(at(&view, "/usr"), None);
+        // The base's zone database, not Dukovo's.
+        assert_eq!(
+            what(&view, "/usr/share/zoneinfo"),
+            Some((Source::Base { path: "usr/share/zoneinfo".into(), folder: true }, false))
+        );
+        assert_eq!(view.attaches.iter().filter(|a| a.at == "/usr/share/zoneinfo").count(), 1);
+        assert_eq!(link(&view, "/usr/bin/sh"), Some("/system/commands/nukesh"));
+    }
+
+    #[test]
+    fn a_static_program_has_the_shell_too() {
+        let mut facts = run();
+        facts.base = None;
+        facts.commands = all_commands();
+        let view = facts.plan().unwrap();
+        assert_eq!(link(&view, "/usr/bin/sh"), Some("/system/commands/nukesh"));
+        assert_eq!(link(&view, "/bin"), Some("usr/bin"));
+        assert_eq!(what(&view, "/system/libraries"), person("/system/libraries", false));
+        assert_eq!(what(&view, "/usr/share/zoneinfo"), person("/system/resources/zoneinfo", false));
+    }
+
+    #[test]
+    fn system_is_not_the_persons_to_give() {
+        let mut facts = run();
+        facts.allow = vec!["/system/settings".into()];
+        let refused = facts.plan().unwrap_err();
+        assert!(
+            refused.contains("/system/settings is one of the program's own places"),
+            "{refused}"
+        );
+    }
+
+    /// The list of uutils' utilities is the one the port builds.
+    #[test]
+    fn the_core_utilities_are_those_the_port_builds() {
+        let script =
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../../ports/uutils-coreutils/build.sh");
+        let text = std::fs::read_to_string(script).unwrap();
+        let (_, rest) = text.split_once("utilities=\"").unwrap();
+        let (list, _) = rest.split_once('"').unwrap();
+        let built: Vec<&str> = list.split_whitespace().collect();
+        assert_eq!(built, CORE_UTILITIES.split_whitespace().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn proc_and_sys_are_linuxds_and_tmp_and_dev_shm_are_private() {
         let view = run().plan().unwrap();
         assert_eq!(what(&view, "/proc"), Some((Source::Linuxd("proc"), true)));
         assert_eq!(what(&view, "/sys"), Some((Source::Linuxd("sys"), true)));
         assert_eq!(what(&view, "/tmp"), person("/tmp/.linux-7/tmp", true));
-        assert_eq!(what(&view, "/dev/shm"), person("/tmp/.linux-7/shm", true));
+        assert_eq!(what(&view, "/dev/shm"), Some((Source::Memory, true)));
     }
 
     #[test]
@@ -733,10 +953,46 @@ mod tests {
         assert_eq!(at(&view, "/users/alice/tools"), None);
         assert_eq!(view.working, "/users/alice/work");
         // A folder outside the home is still its place to start in.
-        facts.started_in = "/volumes/stick".into();
+        facts.started_in = Some("/volumes/stick".into());
         let view = facts.plan().unwrap();
         assert_eq!(what(&view, "/volumes/stick"), person("/volumes/stick", true));
         assert_eq!(view.working, "/volumes/stick");
+    }
+
+    #[test]
+    fn a_bundles_sandboxed_program_has_its_folder_read_only_and_starts_in_its_data() {
+        let mut facts = run();
+        let bundle = "/users/alice/applications/org.example.tool";
+        facts.started_in = None;
+        facts.bundle = Some(bundle.into());
+        facts.program = format!("{bundle}/bin/tool");
+        let view = facts.plan().unwrap();
+        assert_eq!(what(&view, bundle), Some((Source::Bundle, false)));
+        assert_eq!(at(&view, &format!("{bundle}/bin")), None);
+        assert_eq!(at(&view, "/users/alice/work"), None);
+        assert_eq!(view.working, "/users/alice/app-data/linux/hello");
+        assert!(view.notes.is_empty(), "{:?}", view.notes);
+        assert!(view.mounts.iter().any(|m| m.at == bundle && !m.write));
+    }
+
+    #[test]
+    fn a_bundle_in_the_home_given_whole_is_reached_through_it() {
+        let mut facts = run();
+        facts.whole_home = true;
+        let bundle = "/users/alice/applications/org.example.tool";
+        facts.bundle = Some(bundle.into());
+        facts.program = format!("{bundle}/bin/tool");
+        let view = facts.plan().unwrap();
+        assert_eq!(what(&view, "/users/alice"), person("/users/alice", true));
+        assert_eq!(at(&view, bundle), None);
+        assert_eq!(view.working, "/users/alice/work");
+        // Installed for everyone, it is attached beside the home.
+        let everyone = "/applications/org.example.tool";
+        facts.bundle = Some(everyone.into());
+        facts.program = format!("{everyone}/bin/tool");
+        let view = facts.plan().unwrap();
+        assert_eq!(what(&view, everyone), Some((Source::Bundle, false)));
+        assert_eq!(at(&view, &format!("{everyone}/bin")), None);
     }
 
     #[test]
@@ -801,7 +1057,7 @@ mod tests {
     #[test]
     fn a_started_in_folder_that_is_the_programs_own_is_left_out() {
         let mut facts = run();
-        facts.started_in = "/tmp/build".into();
+        facts.started_in = Some("/tmp/build".into());
         let view = facts.plan().unwrap();
         assert_eq!(at(&view, "/tmp/build"), None);
         assert_eq!(view.working, "/users/alice/app-data/linux/hello");
@@ -817,7 +1073,7 @@ mod tests {
     fn a_started_in_folder_that_holds_the_home_is_left_out_unless_home_is_given() {
         for started in ["/users/alice", "/users", "/users/alice/app-data"] {
             let mut facts = run();
-            facts.started_in = started.into();
+            facts.started_in = Some(started.into());
             let view = facts.plan().unwrap();
             assert_eq!(at(&view, started), None, "{started}");
             assert_eq!(view.working, "/users/alice/app-data/linux/hello", "{started}");
@@ -826,7 +1082,7 @@ mod tests {
             ));
         }
         let mut facts = run();
-        facts.started_in = "/users/alice".into();
+        facts.started_in = Some("/users/alice".into());
         facts.whole_home = true;
         let view = facts.plan().unwrap();
         assert_eq!(view.working, "/users/alice");
@@ -844,6 +1100,7 @@ mod tests {
              proc /proc proc rw,nosuid,nodev,noexec 0 0\n\
              sysfs /sys sysfs rw,nosuid,nodev,noexec 0 0\n\
              tmpfs /tmp tmpfs rw,nosuid,nodev 0 0\n\
+             tmpfs /dev/shm tmpfs rw,nosuid,nodev 0 0\n\
              dukovo /users/alice/work dukovo rw,nosuid,nodev 0 0\n\
              dukovo /users/alice/tools dukovo ro,nosuid,nodev 0 0\n\
              dukovo /users/alice/app-data/linux/hello dukovo rw,nosuid,nodev 0 0\n"

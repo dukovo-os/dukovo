@@ -58,7 +58,7 @@ use radix_hal::UserMode;
 use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_posix::signal::{Action, Actions, Info, Pending};
 use radix_posix::status::Ended;
-use radix_posix::tree::{Found, Tree, TreeError, WaitFor, Which};
+use radix_posix::tree::{Exit, Found, Reaps, Tree, TreeError, WaitFor, Which};
 use radix_sync::Mutex;
 
 pub use signal::ThreadSignals;
@@ -280,6 +280,23 @@ pub fn ids_of(process: &ProcessRef) -> Result<(u64, u64, u64)> {
     })
 }
 
+/// Whether `process` adopts its descendants' orphans and the signal it gets
+/// when its parent ends, for Linux's `PR_SET_CHILD_SUBREAPER` and
+/// `PR_SET_PDEATHSIG` and their getters: as they were, after `change` has
+/// changed them. Puts `process` in the tree if it is not there.
+pub fn orphan_settings(
+    process: &ProcessRef,
+    change: impl FnOnce(&mut bool, &mut u32),
+) -> Result<(bool, u32)> {
+    with_tree(|tree| {
+        join(tree, process)?;
+        let member = tree.get_mut(process.number()).ok_or(error(Kernel::NoSuchProcess))?;
+        let was = (member.subreaper, member.parent_death);
+        change(&mut member.subreaper, &mut member.parent_death);
+        Ok(was)
+    })
+}
+
 /// The process numbered `pid`, ended and unreaped included, as `kill` finds
 /// its targets but without asking whether `me` may signal it: a process file
 /// names a process, and `pidfd_send_signal` asks then. Puts `me` in the
@@ -414,12 +431,26 @@ pub fn exited(process: &ProcessObject) {
     // The handles of members that left: dropped once the tree is let go.
     let mut gone: Vec<ProcessRef, Kmalloc> = Vec::new_in(kmalloc());
     let mut leftover = None;
-    let (parent, hangups) = with_tree(|tree| {
-        let Some(me) = tree.get(pid) else { return (None, Vec::new_in(kmalloc())) };
+    // Children that asked for a signal when their parent ends, and which.
+    let mut bereaved: Vec<(ProcessRef, u32), Kmalloc> = Vec::new_in(kmalloc());
+    let (parent, adopted, hangups) = with_tree(|tree| {
+        let Some(me) = tree.get(pid) else { return (None, None, Vec::new_in(kmalloc())) };
         let session = me.session;
         let parent = find(tree, me.parent);
-        let auto_reap =
-            parent.as_ref().is_some_and(|parent| parent.posix.lock().actions.reaps_children());
+        let reaper = find(tree, tree.reaper(me.parent));
+        let reaps = |process: &Option<ProcessRef>| {
+            process.as_ref().is_some_and(|process| process.posix.lock().actions.reaps_children())
+        };
+        let reaps = Reaps { parent: reaps(&parent), reaper: reaps(&reaper) };
+        for child in tree.members() {
+            if child.parent == pid
+                && child.parent_death != 0
+                && !matches!(child.life, radix_posix::tree::Life::Zombie { .. })
+                && bereaved.try_reserve(1).is_ok()
+            {
+                let _ = bereaved.push_within_capacity((child.handle.clone(), child.parent_death));
+            }
+        }
         // Groups this end may leave orphaned with stopped members: its
         // own, and its children's, each with whether it is orphaned now.
         // Only a group there is no memory to note is left out.
@@ -433,7 +464,7 @@ pub fn exited(process: &ProcessObject) {
                 let _ = groups.push_within_capacity((member.group, tree.orphaned(member.group)));
             }
         }
-        tree.exit(pid, ended, times, auto_reap, &mut |handle| {
+        let exit = tree.exit(pid, ended, times, reaps, &mut |handle| {
             if gone.try_reserve(1).is_ok() {
                 let _ = gone.push_within_capacity(handle);
             } else {
@@ -445,7 +476,9 @@ pub fn exited(process: &ProcessObject) {
         // POSIX: a process group newly orphaned with a stopped member gets
         // SIGHUP and SIGCONT.
         groups.retain(|&(group, was)| !was && tree.orphaned(group) && tree.has_stopped(group));
-        (parent, groups)
+        let Exit { parent: told, adopted } = exit;
+        let adopted = adopted.and_then(|(_, child, ended)| Some((reaper?, child, ended)));
+        (told.and(parent), adopted, groups)
     });
     // Hung up for the process files that hold them, before they go.
     for process in leftover.iter().chain(gone.iter()) {
@@ -454,20 +487,45 @@ pub fn exited(process: &ProcessObject) {
     drop(leftover);
     drop(gone);
     if let Some(parent) = parent {
-        let (code, status) = match ended {
-            Ended::Exited(code) => (radix_posix::signal::CLD_EXITED, code & 0xff),
-            Ended::Killed(signal) => (radix_posix::signal::CLD_KILLED, u64::from(signal)),
+        tell_parent(&parent, pid, ended);
+    }
+    // Linux's PR_SET_CHILD_SUBREAPER: a subreaper hears of the ended
+    // children it adopts as their parent would have.
+    if let Some((reaper, child, ended)) = adopted {
+        tell_parent(&reaper, child, ended);
+    }
+    // Linux's PR_SET_PDEATHSIG, sent as `kill` from the parent would be.
+    for (child, signal) in &bereaved {
+        let info = radix_posix::signal::Info {
+            code: radix_posix::signal::SI_USER,
+            errno: 0,
+            pid,
+            status: 0,
         };
-        let info = radix_posix::signal::Info { code, pid, status };
-        signal::send_process(&parent, SIGCHLD, info);
-        children_changed(&parent);
+        signal::send_process(child, *signal, info);
     }
     for &(group, _) in &hangups {
-        let info =
-            radix_posix::signal::Info { code: radix_posix::signal::SI_KERNEL, pid: 0, status: 0 };
+        let info = radix_posix::signal::Info {
+            code: radix_posix::signal::SI_KERNEL,
+            errno: 0,
+            pid: 0,
+            status: 0,
+        };
         signal::send_group(group, radix_abi::signal::SIGHUP, info);
         signal::send_group(group, radix_abi::signal::SIGCONT, info);
     }
+}
+
+/// Sends `parent` SIGCHLD for its child `pid`, which ended `ended`, and
+/// wakes its `wait`.
+fn tell_parent(parent: &ProcessRef, pid: u64, ended: Ended) {
+    let (code, status) = match ended {
+        Ended::Exited(code) => (radix_posix::signal::CLD_EXITED, code & 0xff),
+        Ended::Killed(signal) => (radix_posix::signal::CLD_KILLED, u64::from(signal)),
+    };
+    let info = radix_posix::signal::Info { code, errno: 0, pid, status };
+    signal::send_process(parent, SIGCHLD, info);
+    children_changed(parent);
 }
 
 /// One of `process`'s children changed: its `wait` looks again, and its
@@ -515,7 +573,8 @@ pub fn method(
         }
         process::KILL => {
             let a = process::KillArgs::decode(args)?;
-            let info = Info { code: radix_posix::signal::SI_USER, pid: me.number(), status: 0 };
+            let info =
+                Info { code: radix_posix::signal::SI_USER, errno: 0, pid: me.number(), status: 0 };
             kill(me, a.pid, a.signal, info)?;
             answer(label, 0, [0; 8])
         }
@@ -524,8 +583,12 @@ pub fn method(
             // One process, as `sigqueue` names it.
             let pid = i64::try_from(a.pid).ok().filter(|&pid| pid > 0);
             let pid = pid.ok_or(error(Kernel::NoSuchProcess))?;
-            let info =
-                Info { code: radix_posix::signal::SI_QUEUE, pid: me.number(), status: a.value };
+            let info = Info {
+                code: radix_posix::signal::SI_QUEUE,
+                errno: 0,
+                pid: me.number(),
+                status: a.value,
+            };
             kill(me, pid, a.signal, info)?;
             answer(label, 0, [0; 8])
         }

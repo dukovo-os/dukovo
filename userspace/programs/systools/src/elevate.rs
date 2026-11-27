@@ -310,6 +310,8 @@ pub fn start(
     // The network as root has it: to listen on any port and set up the
     // interfaces with ip(8) (ADR 0257).
     signin::give_network(child, scratch, true).map_err(failed("giving it the network"))?;
+    // The jit capability, as a session has it (ADR 0624).
+    signin::give_jit(child).map_err(failed("giving it the jit capability"))?;
     let mut args: Vec<&[u8]> = vec![b"elevate", STARTED.as_bytes(), &plan.directory, &plan.program];
     args.extend(plan.argv.iter().map(Vec::as_slice));
     let block = signin::exec_block(HELPER.as_bytes(), &args, env);
