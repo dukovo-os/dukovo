@@ -21,7 +21,7 @@ use radix_smbios::memory::{self, MemoryArray, MemoryDevice};
 use radix_smbios::{Entry, Table, chassis_name, kind};
 use serde::Serialize;
 
-use super::screens;
+use super::{inputs, screens};
 use crate::admin_about::{Sources, dmi};
 use crate::hwinfo::{self, Tables};
 use crate::lscpu::Summary;
@@ -48,6 +48,9 @@ pub(crate) struct Show {
     /// How many screens have a monitor plugged in; null on a machine
     /// with no graphics card the system draws through.
     screens: Option<u32>,
+    /// How many input devices the kernel reads, keyboards and mice
+    /// among them; null where the kernel does not say.
+    inputs: Option<u32>,
 }
 
 /// The processor, as its own CPUID and the kernel say it.
@@ -151,6 +154,7 @@ pub(crate) fn gather(sources: &Sources, cpu: &Summary, tables: Option<&Tables>) 
             date: dmi(sources, "bios_date"),
         },
         screens: sources.read(screens::STATE).and_then(|state| screens::plugged_in(&state)),
+        inputs: sources.read(inputs::STATE).and_then(|state| inputs::devices_in(&state)),
     }
 }
 
@@ -288,6 +292,12 @@ impl Show {
         match self.screens {
             Some(0) => rows.push(("Screens", "none plugged in".into())),
             Some(count) => rows.push(("Screens", format!("{count} plugged in"))),
+            None => {}
+        }
+        match self.inputs {
+            Some(0) => rows.push(("Inputs", "no device".into())),
+            Some(1) => rows.push(("Inputs", "1 device".into())),
+            Some(count) => rows.push(("Inputs", format!("{count} devices"))),
             None => {}
         }
         let width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
@@ -436,6 +446,12 @@ mod tests {
              screen 3 card=1 index=0 plugged=1 pipe=2 maker= name=\n\
              screen 4 card=1 index=1 plugged=0 pipe=0 maker= name=\n",
         );
+        // The input hub has a keyboard and a mouse.
+        machine.put(
+            inputs::STATE,
+            "hub readers=1 hold=0\ndevice 0 bus=ps2 place=ps2 key= name=PS/2 keyboard\n\
+             device 1 bus=usb place=usb-1-2/0 key= name=USB Optical Mouse\n",
+        );
         let show = gather(&machine.sources(), &i5(), None);
         assert_eq!(
             json_of(&show),
@@ -453,14 +469,17 @@ mod tests {
                 },
                 "firmware": { "vendor": "Dell Inc.", "version": "1.24.0", "date": "07/12/2023" },
                 "screens": 1,
+                "inputs": 2,
             })
         );
-        assert!(show.text().ends_with("Screens    1 plugged in\n"), "{}", show.text());
+        let ends = "Screens    1 plugged in\nInputs     2 devices\n";
+        assert!(show.text().ends_with(ends), "{}", show.text());
         // The document starts with its format, and the members come in the
         // order the design gives them.
         let text = show.json().unwrap();
         assert!(text.starts_with("{\n  \"format\": 1,\n  \"maker\""), "{text}");
-        let order = ["maker", "model", "chassis", "processor", "memory", "firmware", "screens"];
+        let order =
+            ["maker", "model", "chassis", "processor", "memory", "firmware", "screens", "inputs"];
         let at: Vec<usize> =
             order.iter().map(|key| text.find(&format!("\"{key}\"")).unwrap()).collect();
         assert!(at.windows(2).all(|pair| pair[0] < pair[1]), "{at:?}");

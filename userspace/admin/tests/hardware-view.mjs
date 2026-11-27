@@ -10,7 +10,7 @@ import { ApiError } from '../api.js';
 import { setUnlockSeconds } from '../unlock.js';
 import { usePage } from './fake-dom.mjs';
 import {
-  about, devices, diskHealth, highest, history, inventory, last, memtest, NOW, power, screens, sensors, show, storage, time,
+  about, devices, diskHealth, highest, history, inputs, inventory, last, memtest, NOW, power, screens, sensors, show, storage, time,
   updates,
 } from './hardware-fixtures.mjs';
 
@@ -50,6 +50,7 @@ export const reads = () => ({
   '/api/1/hardware/highest': highest(),
   '/api/1/hardware/devices': devices(),
   '/api/1/hardware/screens': screens(),
+  '/api/1/hardware/inputs': inputs(),
   '/api/1/hardware/memtest': memtest(),
   '/api/1/hardware/power': power(),
   '/api/1/updates/history': updates(),

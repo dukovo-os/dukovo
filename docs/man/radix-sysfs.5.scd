@@ -676,6 +676,35 @@ _/kernel/class/display/state_
 	*hardware*(8)'s *screens* reads the file. With no graphics card it
 	is its first line alone.
 
+_/kernel/class/input/state_
+	Radix's own: what the kernel's input hub has, written when it is
+	read. The first line is the hub's: how many times an input file is
+	open, _/devices/kbd_ and _/devices/mouse_ among them (_readers_),
+	and whether Ctrl+Alt+Delete has the consoles in front, so that no
+	program but them reads a key (_hold_). Then a line for each input
+	device, the lowest number first: _device_, the N of its file
+	_/devices/input/N_, and _key=value_ words. The device's name is the
+	last of its line and runs to the line's end.
+
+	```
+	hub readers=3 hold=0
+	device 2 bus=usb vendor=1234 product=abcd version=0111 rate=125 readers=1 place=usb-1-2/0 key=0000000000000000000000000000000000000000000000000000000000000000000007 rel=0308 abs= sw= led= name=Example Optical Mouse
+	```
+
+	_bus_ is *usb*, *ps2*, *i2c*, *virtual* or the number of a bus with
+	no name here; _vendor_, _product_ and _version_ are four
+	hexadecimal digits each; _rate_ is how many times a second the
+	device asks to be read, 0 for one that sends when it likes;
+	_readers_ how many times its own file is open; and _place_ where it
+	is plugged in. _key_, _rel_, _abs_, _sw_ and _led_ are the codes of
+	each kind the device has, as *radix-input*(2)'s INPUT_BITS answers:
+	a bit for each code, each byte as two hexadecimal digits, the first
+	byte first and without the zero bytes at the end. A device's serial
+	number is not here, so that everyone may read the file and its
+	words can go in a report as they are; a program that is handed the
+	device's own file asks that for it.
+	*hardware*(8)'s *inputs* reads the file.
+
 _/kernel/devices/system/cpu/possible_, _present_, _online_
 	The CPUs the machine has, and those that run threads, as Linux's
 	lists: *0-7*, which util-linux's lscpu reads.

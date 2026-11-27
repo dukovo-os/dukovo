@@ -3,13 +3,13 @@
 
 // Hardware: what this machine is, its last check and the check itself, the
 // temperatures and fans, the UPS and battery, the disks and their own tests,
-// the memory test, the devices, the screens, and restarting or shutting it down. The page reads what it shows
+// the memory test, the devices, the screens, the input devices, and restarting or shutting it down. The page reads what it shows
 // when it opens and again when a check of its own ends; the memory's modules
 // and the disks' own tests only for an administrator whose console is
 // unlocked. The temperatures are read apart from the rest, since the cards do
 // not wait for them, and again every minute, as is the UPS and battery. The dialog that checks, the
 // dialog that asks for the memory test, the restart's dialogs and the lists of
-// devices and of screens are read when a button asks.
+// devices, of screens and of input devices are read when a button asks.
 
 import { fill, h } from '../../dom.js';
 import { stepWords } from '../../lib/tasks-words.js';
@@ -150,6 +150,10 @@ export async function show(view) {
   fill(screensCard.body,
     h('p', {}, 'Each graphics card and its screens, with the monitor and the mode each shows. The list is read when you ask.'),
     h('div', { class: 'btns' }, button('Show the screens', async (one) => (await import('./screens.js')).drawScreens(ctx, screensCard, one))));
+  const inputsCard = makeCard('inputs', 'Input devices');
+  fill(inputsCard.body,
+    h('p', {}, 'Each keyboard, mouse and other input device, with what it is and how it is connected. The list is read when you ask.'),
+    h('div', { class: 'btns' }, button('Show the input devices', async (one) => (await import('./inputs.js')).drawInputs(ctx, inputsCard, one))));
   const disks = makeDisks(ctx);
   const memory = makeMemory(ctx);
   // The UPS and battery's own module comes when the machine has one.
@@ -160,11 +164,12 @@ export async function show(view) {
   ctx.pendingHost = power.host;
 
   // The cards come in when the first read is in, so that none says "Not checked yet" before it knows.
-  let cards = [machine, check, tempsCard, suppliesCard, disks, memory, devicesCard, screensCard, power]
+  let cards = [machine, check, tempsCard, suppliesCard, disks, memory, devicesCard, screensCard, inputsCard, power]
     .map((one) => one.element);
   tempsCard.element.classList.add('hw-wide');
   devicesCard.element.classList.add('hw-wide');
   screensCard.element.classList.add('hw-wide');
+  inputsCard.element.classList.add('hw-wide');
   power.element.classList.add('hw-wide');
   view.head({ title: 'Hardware', commands: true, buttons: admin ? [checkNow] : [] });
   const host = h('div', { class: 'hw' }, lead, !admin && h('p', { class: 'muted' }, 'An administrator can check the hardware and restart or shut down this machine.'), say);

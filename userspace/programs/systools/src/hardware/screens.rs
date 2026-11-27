@@ -23,6 +23,7 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
+use super::words::{Words, line_of};
 use crate::proc;
 
 /// Where the kernel says what the display layer has.
@@ -134,49 +135,6 @@ struct Mode {
     refresh_mhz: u32,
     /// Whether the monitor, or the host's window, asks for it.
     preferred: bool,
-}
-
-/// A line's `key=value` words. The value of `last`, which may hold
-/// spaces, runs to the line's end.
-struct Words<'a> {
-    line: &'a str,
-    last: &'a str,
-}
-
-impl<'a> Words<'a> {
-    fn text(&self, key: &str) -> Option<&'a str> {
-        if key == self.last {
-            let at = self.line.find(&format!(" {key}="))?;
-            return Some(&self.line[at + key.len() + 2..]);
-        }
-        let before = self.line.find(&format!(" {}=", self.last)).unwrap_or(self.line.len());
-        self.line[..before].split(' ').find_map(|word| word.strip_prefix(key)?.strip_prefix('='))
-    }
-
-    fn number(&self, key: &str) -> u32 {
-        self.text(key).and_then(|value| value.parse().ok()).unwrap_or_default()
-    }
-
-    fn flag(&self, key: &str) -> bool {
-        self.number(key) != 0
-    }
-
-    /// A number that 0 stands for "not said" in.
-    fn said(&self, key: &str) -> Option<u32> {
-        Some(self.number(key)).filter(|&value| value != 0)
-    }
-
-    /// A text that may be empty.
-    fn named(&self, key: &str) -> Option<String> {
-        self.text(key).map(str::trim).filter(|text| !text.is_empty()).map(String::from)
-    }
-}
-
-/// The thing's number and its words, of a line that starts with `kind`.
-fn line_of<'a>(line: &'a str, kind: &str, last: &'a str) -> Option<(u32, Words<'a>)> {
-    let rest = line.strip_prefix(kind)?.strip_prefix(' ')?;
-    let id = rest.split(' ').next()?.parse().ok()?;
-    Some((id, Words { line: rest, last }))
 }
 
 fn mode_of(words: &Words<'_>) -> Mode {

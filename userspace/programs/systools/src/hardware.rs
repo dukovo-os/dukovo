@@ -5,8 +5,10 @@
 //! `hardware last` shows what the last check found (ADR 0488), `hardware
 //! history` lists the checks that were kept, `hardware show` says what
 //! the machine is, `hardware power` its batteries and UPSes (ADR 0741),
-//! and `hardware memtest` asks for the memory to be
-//! tested at the next start.
+//! `hardware screens` its graphics cards and screens, `hardware inputs`
+//! its keyboards, mice and other input devices (ADR 0706), and
+//! `hardware memtest` asks for the memory to be tested at the next
+//! start.
 //!
 //! A check looks at six areas: the memory (the errors the memory
 //! controller counted, and a test of a share of the free memory), the
@@ -34,6 +36,7 @@ mod devices;
 mod disks;
 mod drivetest;
 mod history;
+mod inputs;
 mod memory;
 pub(crate) mod memtest;
 mod monitors;
@@ -46,6 +49,7 @@ mod scan;
 mod screens;
 mod sensors;
 mod show;
+mod words;
 
 use std::io::{self, BufRead, Write};
 use std::path::Path;
@@ -65,7 +69,7 @@ const USAGE: &str = "usage: hardware check [AREA...] [--full] [--disk DISK] [--t
                      [--yes] [--progress] [--json]\n       hardware last [--json]\n       \
                      hardware history [--json]\n       hardware show [--json]\n       hardware \
                      sensors [--json]\n       hardware devices [--json]\n       hardware power [--json]\n       hardware screens \
-                     [--json]\n       hardware memtest --next-start | --cancel | --status [--json]";
+                     [--json]\n       hardware inputs [--json]\n       hardware memtest --next-start | --cancel | --status [--json]";
 
 /// Set by SIGINT, SIGTERM or SIGHUP: the check stops, and aborts the
 /// self-tests it started.
@@ -83,6 +87,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         Some(command) if command == "devices" => devices_command(args),
         Some(command) if command == "power" => power_command(args),
         Some(command) if command == "screens" => screens_command(args),
+        Some(command) if command == "inputs" => inputs_command(args),
         // A refusal of memtest is a status 1 of its own, as `changes bisect`'s.
         Some(command) if command == "memtest" => {
             return memtest::main(args)
@@ -365,6 +370,21 @@ fn screens_command(args: &mut Args) -> Result<i32, Fail> {
     Ok(0)
 }
 
+/// `hardware inputs`: the keyboards, mice and other input devices the
+/// kernel reads, as its input hub has them.
+fn inputs_command(args: &mut Args) -> Result<i32, Fail> {
+    let json = json_only(args)?;
+    let found = inputs::gather(Path::new(inputs::STATE));
+    let mut out = io::stdout().lock();
+    if json {
+        let text = found.json().map_err(|error| fail(format!("cannot write JSON: {error}")))?;
+        writeln!(out, "{text}")?;
+    } else {
+        write!(out, "{}", found.text())?;
+    }
+    Ok(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,6 +440,7 @@ mod tests {
         assert_eq!(ended(&["sensors", "--now"]), Err(3));
         assert_eq!(ended(&["devices", "pci"]), Err(3));
         assert_eq!(ended(&["screens", "virtio0"]), Err(3));
+        assert_eq!(ended(&["inputs", "0"]), Err(3));
     }
 
     fn folder(call: &str) -> std::path::PathBuf {

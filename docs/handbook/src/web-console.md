@@ -4559,16 +4559,17 @@ The table of clients scrolls sideways, and the dialog's areas are one column.
 **Hardware**, in the list of pages, says what this machine is, what its last
 hardware check found, how hot it runs, how its disks and memory are, which
 devices the system found and which driver took each, which screens it draws on,
+which keyboards and mice it reads,
 how its UPS or battery is,
 and restarts or shuts the machine down. Anyone who signs in can look at it. Checking the hardware, testing
 the memory, reading the disks' own tests and the memory modules, restarting
 and shutting down are for administrators, who unlock the console first (see
 "Unlocking the console"). The page is at `/hardware`, and its cards have
 addresses of their own: `#machine`, `#check`, `#temps`, `#disks`, `#memory`,
-`#supplies`, `#devices`, `#screens` and `#power`.
+`#supplies`, `#devices`, `#screens`, `#inputs` and `#power`.
 
 It reads `hardware show`, `hardware last`, `hardware history`, `hardware
-sensors`, `hardware devices`, `hardware power`, `hardware screens`, `hardware memtest --status`, `metrics show` and
+sensors`, `hardware devices`, `hardware power`, `hardware screens`, `hardware inputs`, `hardware memtest --status`, `metrics show` and
 `shutdown --show`, and runs `hardware check`, `hardware memtest`, `shutdown -r`, `shutdown -P` and
 `shutdown -c` (hardware(8), diskhealth(8), shutdown(8)). "Checking the
 hardware" says what a check looks at and what each result means.
@@ -4734,6 +4735,22 @@ its **Colour depth**, and whether it says it has **HDR** and **Variable
 refresh**. A screen with no monitor says **Nothing plugged in**, and one whose
 card stopped drawing on it says **Stopped**. A monitor's serial number is not
 read. `hardware screens` prints the same list in a terminal (hardware(8)).
+
+### Input devices
+
+**Input devices** reads the list when you press **Show the input devices**, and
+changes nothing; it reads no key. Every keyboard, mouse, tablet, touch device
+and switch the system reads is a row of one table: the **Device** by the name
+it gives itself, over its file, as **/devices/input/0**; what it **Is**, as
+**Keyboard**, **Pointer** or **Tablet**, worked out from the keys and axes it
+has; how it is **Connected**, as **USB**, **PS/2** or **Virtual**, over its
+maker's and its own numbers and where it is plugged in; how often it is
+**Read**, as **125 times a second**, or **When it sends** for a device that
+sends when it likes; and what it **Has**: its keys, buttons, wheels and lights.
+While Ctrl+Alt+Delete has the consoles in front of a program, a line over the
+table says that only the consoles read a key. A device's serial number is not
+read. `hardware inputs` prints the same list in a terminal (hardware(8)); see
+[Keyboards and mice](input.md).
 
 ### Restart or shut down
 

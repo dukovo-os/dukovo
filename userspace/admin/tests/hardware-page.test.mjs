@@ -10,7 +10,7 @@ import test, { afterEach, beforeEach } from 'node:test';
 
 import { ApiError } from '../api.js';
 import {
-  about, asked, broken, clean, devices, diskHealth, inventory, last, memtest, NOW, power, screens, sensors, show, skipped,
+  about, asked, broken, clean, devices, diskHealth, inputs, inventory, last, memtest, NOW, power, screens, sensors, show, skipped,
   startTest, storage, task, ups,
 } from './hardware-fixtures.mjs';
 import {
@@ -600,11 +600,11 @@ test('Temperatures and fans is a table of the processor, the disks and the zones
   assert.equal(world.card('temps').getAttribute('aria-labelledby'), 'temps-h');
 });
 
-test('the cards come in the order of the phone, with the temperatures, the devices, the screens and the restart across both columns', async (context) => {
+test('the cards come in the order of the phone, with the temperatures, the devices, the screens, the input devices and the restart across both columns', async (context) => {
   const world = await openHardware(context);
   const cards = world.view.main.querySelector('.hw').children.filter((one) => one.tag === 'section');
-  assert.deepEqual(cards.map((one) => one.id), ['machine', 'check', 'temps', 'supplies', 'disks', 'memory', 'devices', 'screens', 'power']);
-  assert.deepEqual(cards.filter((one) => one.classes.has('hw-wide')).map((one) => one.id), ['temps', 'devices', 'screens', 'power']);
+  assert.deepEqual(cards.map((one) => one.id), ['machine', 'check', 'temps', 'supplies', 'disks', 'memory', 'devices', 'screens', 'inputs', 'power']);
+  assert.deepEqual(cards.filter((one) => one.classes.has('hw-wide')).map((one) => one.id), ['temps', 'devices', 'screens', 'inputs', 'power']);
 });
 
 test('the choice of Fahrenheit changes every temperature at once, is kept, and is the unit the page opens with next time', async (context) => {
@@ -974,4 +974,55 @@ test('a machine with no graphics card says so, and names nobody in front', async
   assert.match(text(world.card('screens')), /No graphics card: the system draws on no screen\./);
   assert.doesNotMatch(text(world.card('screens')), /In front/);
   assert.equal(world.card('screens').querySelectorAll('table').length, 0);
+});
+
+// ---- Input devices -------------------------------------------------------------
+
+const inputTable = (world) => world.card('inputs').querySelectorAll('table').map((table) => [text(table.querySelector('caption')), table.querySelectorAll('tbody tr').map((row) => row.querySelectorAll('td').map(text))]);
+
+test('the input devices are not read until the card is asked, and then come in one table', async (context) => {
+  const world = await openHardware(context);
+  assert.ok(!world.calls.includes('/api/1/hardware/inputs'));
+  assert.match(text(world.card('inputs')), /Each keyboard, mouse and other input device, with what it is and how it is connected/);
+  await world.press(world.card('inputs'), 'Show the input devices');
+  assert.ok(world.calls.includes('/api/1/hardware/inputs'));
+  assert.deepEqual(inputTable(world), [
+    ['Input devices · 4', [
+      ['PS/2 keyboard/devices/input/0', 'Keyboard', 'PS/2', 'When it sends', '104 keys; lights for Num Lock, Caps Lock, Scroll Lock'],
+      ['USB Optical Mouse/devices/input/2', 'Pointer', 'USB046d:c077 · usb-1-2/0', '125 times a second', '3 buttons; a wheel that also turns sideways'],
+      ['A device that does not say what it is/devices/input/5', 'Tablet', 'Virtual0627:0003 · pci-0000:00:05.0', 'When it sends', '1 button'],
+      ['Media Remote/devices/input/6', 'Keys, Pointer', 'Bus 51234:abcd', '1 time a second', '1 key; 2 buttons; a sideways wheel'],
+    ]],
+  ]);
+  // Each cell names its column, for the rows that are cards on a phone; the card changes nothing, so it has no button left.
+  const cells = world.card('inputs').querySelectorAll('tbody tr')[1].querySelectorAll('td');
+  assert.deepEqual(cells.map((cell) => cell.getAttribute('data-label')), ['Device', 'Is', 'Connected', 'Read', 'Has']);
+  assert.equal(world.card('inputs').querySelectorAll('td.muted').length, 1);
+  assert.doesNotMatch(text(world.card('inputs')), /Ctrl\+Alt\+Delete/);
+  assert.equal(world.document.activeElement, world.card('inputs').querySelector('h2'));
+  assert.equal(buttonOf(world.card('inputs'), 'Show the input devices'), undefined);
+});
+
+test('a reader may open the input devices, and a list that cannot be read leaves the button to try again', async (context) => {
+  const reader = await openHardware(context, { session: { admin: false } });
+  await reader.press(reader.card('inputs'), 'Show the input devices');
+  assert.equal(inputTable(reader)[0][1].length, 4);
+  const down = await openHardware(context, { world: { reads: { '/api/1/hardware/inputs': refusal('ADM-500', 'down', 500) } } });
+  await down.press(down.card('inputs'), 'Show the input devices');
+  assert.equal(down.problems.length, 1);
+  assert.equal(down.problems[0][1].slot, down.card('inputs').querySelector('.hw-errors'));
+  assert.equal(buttonOf(down.card('inputs'), 'Show the input devices').getAttribute('aria-disabled'), null);
+  down.answers['/api/1/hardware/inputs'] = inputs();
+  await down.press(down.card('inputs'), 'Show the input devices');
+  assert.equal(inputTable(down).length, 1);
+});
+
+test('a machine with no input device says so, and the secure key’s hold is said over the table', async (context) => {
+  const none = await openHardware(context, { world: { reads: { '/api/1/hardware/inputs': { format: 1, held: false, readers: 0, devices: [] } } } });
+  await none.press(none.card('inputs'), 'Show the input devices');
+  assert.match(text(none.card('inputs')), /No input device: the system reads no keyboard and no mouse\./);
+  assert.equal(none.card('inputs').querySelectorAll('table').length, 0);
+  const held = await openHardware(context, { world: { reads: { '/api/1/hardware/inputs': inputs({ held: true }) } } });
+  await held.press(held.card('inputs'), 'Show the input devices');
+  assert.match(text(held.card('inputs')), /^Input devicesCtrl\+Alt\+Delete has the consoles in front: only they read a key\.Input devices · 4/);
 });

@@ -41,7 +41,10 @@
 // hardware.toml step holds that list to `lspci`. Screens reads `hardware
 // screens` (`GET /api/1/hardware/screens`) only when its button is pressed,
 // and has a table for each graphics card and a row for each of its screens,
-// under which program has the screens. The memory card says what the
+// under which program has the screens. Input devices reads `hardware inputs`
+// (`GET /api/1/hardware/inputs`) only when its button is pressed, and has a
+// row for each keyboard, mouse and other input device the kernel reads, with
+// what it is and how it is connected. The memory card says what the
 // test at the next restart does, with the time it takes on this machine; Test
 // at the next restart… asks in a dialog with three ways out, and At the next
 // restart asks for the test only (`POST /api/1/hardware/memtest/next-start`),
@@ -99,6 +102,7 @@ const ROUTES = {
   highest: "GET /api/1/hardware/highest",
   devices: "GET /api/1/hardware/devices",
   screens: "GET /api/1/hardware/screens", // hardware.screens
+  inputs: "GET /api/1/hardware/inputs", // hardware.inputs
   supplies: "GET /api/1/hardware/power", // hardware.power
   storage: "GET /api/1/storage",
   asked: "GET /api/1/hardware/memtest", // hardware.memtest-status
@@ -137,6 +141,7 @@ const LOCKED_TESTS = "Unlock to see the disks' own tests";
 const READER_TESTS = "Administrators see the disks' own tests";
 const NO_DEVICES = "The system lists no device.";
 const NO_SCREENS = "No graphics card: the system draws on no screen.";
+const NO_INPUTS = "No input device: the system reads no keyboard and no mouse.";
 const BAD_TIME = "A time is written HH:MM, from 00:00 to 23:59, such as 03:00. Nothing was set.";
 
 // The areas of the check dialog, in the words of their boxes. A check of one
@@ -840,6 +845,55 @@ async function screensAsAnswered(t, page, seen = null) {
   });
 }
 
+// --- Input devices ---
+
+/** What the table calls each kind of device and each way it is connected, as the page's model does. */
+const KIND_WORDS = { keyboard: "Keyboard", keys: "Keys", pointer: "Pointer", tablet: "Tablet", touch: "Touch", switch: "Switch", other: "Other" };
+const BUS_WORDS = { usb: "USB", ps2: "PS/2", i2c: "I2C", virtual: "Virtual" };
+
+/**
+ * The Input devices card is not read until it is asked. Then every device of
+ * `hardware inputs` (hardware.inputs) is a row of one table, with its name
+ * and its file, what it is and how it is connected. `seen` are the routes
+ * the page has asked for so far.
+ */
+async function inputsAsAnswered(t, page, seen = null) {
+  const where = "the Input devices card";
+  const body = card(page, "inputs");
+  if (seen !== null) ensure(!seen.has(ROUTES.inputs), `the page asked for ${ROUTES.inputs} before the Input devices card was asked`);
+  const read = page.waitForResponse((answer) => answer.request().method() === "GET" && new URL(answer.url()).pathname === pathOf(ROUTES.inputs), { timeout: 60_000 });
+  read.catch(() => {});
+  await buttonIn(body, "Show the input devices").click();
+  const answer = await read;
+  ensure(answer.status() === 200, `${ROUTES.inputs} was answered ${answer.status()}: ${await answer.text()}`);
+  const said = await answer.json();
+  ensure(said.format === 1 && Array.isArray(said.devices), `${ROUTES.inputs} does not give a list of devices: ${JSON.stringify(said)}`);
+  await page.waitForFunction(() => document.activeElement?.id === "inputs-h", null, { timeout: 15_000 });
+
+  if (said.devices.length === 0) {
+    await t.see(body.getByText(NO_INPUTS, { exact: true }));
+    return;
+  }
+  const shown = await body.locator("div.hw-body > .tbl-box table").evaluateAll((tables) =>
+    tables.map((table) => ({ caption: table.querySelector("caption").textContent.trim(), rows: [...table.querySelectorAll("tbody tr")].map((row) => [...row.querySelectorAll("td")].map((cell) => cell.textContent.trim())) })));
+  ensure(shown.length === 1, `${where} has ${shown.length} tables`);
+  const [table] = shown;
+  ensure(table.caption === `Input devices · ${said.devices.length}`, `${where}'s table is "${table.caption}", and ${ROUTES.inputs} has ${said.devices.length} devices`);
+  ensure(table.rows.length === said.devices.length, `${where} lists ${table.rows.length} devices, and ${ROUTES.inputs} has ${said.devices.length}`);
+  said.devices.forEach((device, row) => {
+    const cells = table.rows[row];
+    const file = `/devices/input/${device.number}`;
+    ensure(cells[0].endsWith(file), `${where}'s row ${row + 1} is "${cells[0]}", and the device's file is ${file}`);
+    if (device.name) ensure(cells[0].startsWith(device.name), `${where}'s row ${row + 1} is "${cells[0]}", and the device is ${device.name}`);
+    const is = device.kinds.map((kind) => KIND_WORDS[kind] ?? kind).join(", ");
+    ensure(cells[1] === is, `${where} says ${file} is "${cells[1]}", and it is ${is}`);
+    const bus = BUS_WORDS[device.bus] ?? `Bus ${device.bus}`;
+    ensure(cells[2].startsWith(bus), `${where} says ${file} is connected by "${cells[2]}", and it is ${bus}`);
+    // No serial number is on the page: the answer has none to show.
+    ensure(!("serial" in device), `${ROUTES.inputs} gives a serial number of ${file}`);
+  });
+}
+
 // --- Devices ---
 
 /**
@@ -1099,7 +1153,7 @@ async function shutDownAndCancel(t, page, host) {
 
 /** The links of the Overview and the palette lead to the cards, and the card's heading has the keyboard. */
 async function hashesLeadToCards(t, page) {
-  for (const [hash, id] of [["#check", "check-h"], ["#temps", "temps-h"], ["#disks", "disks-h"], ["#memory", "memory-h"], ["#devices", "devices-h"], ["#screens", "screens-h"], ["#power", "power-h"]]) {
+  for (const [hash, id] of [["#check", "check-h"], ["#temps", "temps-h"], ["#disks", "disks-h"], ["#memory", "memory-h"], ["#devices", "devices-h"], ["#screens", "screens-h"], ["#inputs", "inputs-h"], ["#power", "power-h"]]) {
     // From another page, so that the page is drawn again with the hash in its address.
     await page.goto(new URL("/", page.url()).href);
     await t.see(page.getByRole("heading", { level: 1, name: "Overview", exact: true }));
@@ -1149,6 +1203,8 @@ async function administrator(t) {
   await lookAll(t, page, "hardware-devices");
   await screensAsAnswered(t, page, a.seen);
   await lookAll(t, page, "hardware-screens");
+  await inputsAsAnswered(t, page, a.seen);
+  await lookAll(t, page, "hardware-inputs");
   await memoryAtNextRestart(t, page, host);
 
   await restartIsAsked(t, page, host);
@@ -1171,9 +1227,9 @@ async function reader(t) {
   await t.see(card(page, "memory").getByText(READER_TEST, { exact: true }));
   await t.see(card(page, "power").getByText(READER_POWER, { exact: true }));
   ensure((await checkNow(page).count()) === 0, "a reader has Check the hardware");
-  // The unit of the temperatures and the lists of devices and of screens change nothing of the machine: a reader has those buttons and no other.
+  // The unit of the temperatures and the lists of devices, of screens and of input devices change nothing of the machine: a reader has those buttons and no other.
   const buttons = await page.locator("main .hw button").evaluateAll((all) => all.map((one) => one.textContent.trim()));
-  const others = buttons.filter((name) => !["°C", "°F", "Show the devices", "Show the screens"].includes(name));
+  const others = buttons.filter((name) => !["°C", "°F", "Show the devices", "Show the screens", "Show the input devices"].includes(name));
   ensure(others.length === 0, `a reader's page has these buttons: ${others.join(", ")}`);
   ensure((await readPower(page)) === null, "the machine has a restart set, which a reader reads and no one set");
   await temperaturesAsAnswered(t, page);
@@ -1185,6 +1241,7 @@ async function reader(t) {
   await startRunAsAnswered(page, status);
   await devicesAsAnswered(t, page);
   await screensAsAnswered(t, page);
+  await inputsAsAnswered(t, page);
 
   mustBe(await askFor(page, ROUTES.inventory), 403, "ADM-122", "a reader's slots of the memory");
   mustBe(await askFor(page, ROUTES.check, {}), 403, "ADM-122", "a reader's check");
@@ -1209,9 +1266,10 @@ async function phone(t) {
 
   await openHardware(t, page);
   await t.see(buttonIn(card(page, "power"), "Restart…"));
-  // The lists of devices and of screens are opened, so that their tables are measured too.
+  // The lists of devices, of screens and of input devices are opened, so that their tables are measured too.
   await devicesAsAnswered(t, page);
   await screensAsAnswered(t, page);
+  await inputsAsAnswered(t, page);
   ensure((await sidewaysScroll(page)) === 0, `the phone's page scrolls ${await sidewaysScroll(page)} px sideways`);
   const small = await smallControls(page, "main button, main summary, main input[type=time], main a.btn");
   ensure(small.length === 0, `these controls of the phone's page are under 44 px tall: ${small.join(", ")}`);

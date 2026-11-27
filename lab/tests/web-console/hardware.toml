@@ -21,7 +21,8 @@
 # (`GET /api/1/storage/disks/{disk}/health`), Devices held to `hardware devices`
 # (`GET /api/1/hardware/devices`), which the steps below hold to `lspci`, Battery
 # and UPS held to `hardware power` (`GET /api/1/hardware/power`), Screens
-# held to `hardware screens` (`GET /api/1/hardware/screens`), and the
+# held to `hardware screens` (`GET /api/1/hardware/screens`), Input devices
+# held to `hardware inputs` (`GET /api/1/hardware/inputs`), and the
 # memory test at the next restart, asked and taken back with the restart's
 # question read and cancelled (`GET /api/1/hardware/memtest`,
 # `POST /api/1/hardware/memtest/next-start`, `POST /api/1/hardware/memtest/cancel`).
@@ -44,9 +45,9 @@
 # page, by id: power.status, power.restart, power.shutdown, power.cancel,
 # hardware.show, hardware.inventory, hardware.last, hardware.history,
 # hardware.check, hardware.sensors, hardware.highest, hardware.devices,
-# hardware.power, hardware.screens, hardware.memtest, hardware.memtest-cancel,
-# hardware.memtest-status.
-about = "The web console's Hardware page in each engine: This machine from hardware show and the slots once unlocked, Check the hardware run to its end and held to hardware last and hardware history, the temperatures and fans from hardware sensors, the disks' own tests, the devices from hardware devices held to lspci, the screens from hardware screens, the memory test asked for the next restart and taken back, Restart and Shut down asked and cancelled, a restart at a time and its Cancel, a shut down with the typed name taken back within its minute, a reader, and the phone"
+# hardware.power, hardware.screens, hardware.inputs, hardware.memtest,
+# hardware.memtest-cancel, hardware.memtest-status.
+about = "The web console's Hardware page in each engine: This machine from hardware show and the slots once unlocked, Check the hardware run to its end and held to hardware last and hardware history, the temperatures and fans from hardware sensors, the disks' own tests, the devices from hardware devices held to lspci, the screens from hardware screens, the input devices from hardware inputs, the memory test asked for the next restart and taken back, Restart and Shut down asked and cancelled, a restart at a time and its Cancel, a shut down with the typed name taken back within its minute, a reader, and the phone"
 time = "30m"
 host_needs = ["curl"]
 
@@ -88,6 +89,15 @@ expect = ["\"format\":1", "\"front\"", "\"cards\""]
 [[step]]
 run = "sh -c 'head -n 1 /kernel/class/display/state; hardware screens | head -n 1'"
 expect = ["front ", "In front: "]
+# The keyboards, mice and other input devices, as the page holds them.
+[[step]]
+run = "hardware inputs --json"
+expect = ["\"format\":1", "\"held\":false", "\"devices\""]
+# The kernel's own account, which the command reads, has a line for each
+# device after the hub's, and hardware show counts as many.
+[[step]]
+run = '''sh -c 'head -n 1 /kernel/class/input/state; count=$(grep -c "^device " /kernel/class/input/state); hardware show --json | grep -q "\"inputs\": $count\$" && echo "input devices agree: $count"' '''
+expect = ["hub readers=", "input devices agree: "]
 # Nothing is asked of the memory when the test begins.
 [[step]]
 run = "hardware memtest --status --json"
