@@ -7,8 +7,8 @@
 use core::fmt;
 
 use radix_hal::{
-    BootParams, CpuInfo, InterruptController, MemoryKind, MemoryRegion, PageTable, Reservation,
-    Smp, Timer,
+    BootParams, CpuInfo, CpuPlace, InterruptController, MemoryKind, MemoryRegion, PageTable,
+    Reservation, Smp, Timer,
 };
 use radix_klog::info;
 use radix_mm::{FRAMES, HEAP, PAGE_SIZE};
@@ -201,8 +201,39 @@ pub fn write_memory(line: &mut dyn FnMut(fmt::Arguments<'_>)) {
     Arch::describe(line);
 }
 
-/// Logs the CPU list.
+/// Logs the CPU list, and how the CPUs group.
 pub fn cpus(online: usize) {
     info!("CPUs: {online} of {} online:", Arch::cpu_count());
     write_cpus(&mut |args| info!("{args}"));
+    write_topology(&mut |args| info!("{args}"));
+}
+
+/// Writes how the CPUs group: into cores, last-level caches, packages and
+/// NUMA nodes (ADR 0797).
+pub fn write_topology(line: &mut dyn FnMut(fmt::Arguments<'_>)) {
+    let count = Arch::cpu_count();
+    // How many CPUs have no CPU before them in the same group. Quadratic,
+    // but done once at boot over at most a few hundred CPUs.
+    let groups = |same: fn(&CpuPlace, &CpuPlace) -> bool| {
+        (0..count)
+            .filter_map(|index| Some((index, Arch::cpu_place(index)?)))
+            .filter(|(index, place)| {
+                !(0..*index).any(|other| Arch::cpu_place(other).is_some_and(|o| same(place, &o)))
+            })
+            .count()
+    };
+    let cores = groups(|a, b| a.package == b.package && a.node == b.node && a.core == b.core);
+    let caches = groups(|a, b| a.package == b.package && a.node == b.node && a.cache == b.cache);
+    let packages = groups(|a, b| a.package == b.package);
+    let nodes = groups(|a, b| a.node == b.node);
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    line(format_args!(
+        "CPU topology: {count} hardware thread{} on {cores} core{}, {caches} last-level \
+         cache{}, {packages} package{}, {nodes} NUMA node{}",
+        plural(count),
+        plural(cores),
+        plural(caches),
+        plural(packages),
+        plural(nodes)
+    ));
 }

@@ -102,7 +102,7 @@ pub(super) struct Rq {
     /// Threads switched to.
     pub(super) switches: u64,
     /// Threads pulled here by balancing, by level.
-    pub(super) pulled: [u64; 4],
+    pub(super) pulled: [u64; Level::ALL.len()],
 }
 
 impl Rq {
@@ -119,7 +119,15 @@ impl Rq {
         fair.try_reserve(room).ok()?;
         let mut rt = RtQueue::new_in(alloc);
         rt.try_reserve(room).ok()?;
-        Some(Rq { fair, rt, current, idle, clock_ns: now, switches: 0, pulled: [0; 4] })
+        Some(Rq {
+            fair,
+            rt,
+            current,
+            idle,
+            clock_ns: now,
+            switches: 0,
+            pulled: [0; Level::ALL.len()],
+        })
     }
 
     /// Changes the fair class's base slice ([`super::set_slice_ns`]).

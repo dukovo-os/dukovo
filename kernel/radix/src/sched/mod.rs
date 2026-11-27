@@ -63,7 +63,7 @@ use radix_hal::{
 use radix_klog::{error, info, warn};
 use radix_mm::{FRAMES, Flags, HEAP, Kmalloc};
 use radix_sched::{
-    CpuLoad, CpuSet, HaltPoll, LOAD_INTERVAL_NS, LoadAverage, Loads, Place, Resched, Split,
+    CpuLoad, CpuSet, HaltPoll, LOAD_INTERVAL_NS, Level, LoadAverage, Loads, Place, Resched, Split,
     Topology, haltpoll,
 };
 use radix_sync::{Mutex, Once, SpinLock, SpinLockGuard};
@@ -152,7 +152,7 @@ struct CpuSched {
     /// This CPU's sleepers.
     timers: SpinLock<Option<Vec<(u64, ThreadRef), Kmalloc>>>,
     /// Balancing attempts that found nothing to move, by level.
-    balance_failures: [AtomicU32; 4],
+    balance_failures: [AtomicU32; Level::ALL.len()],
     _idle: LineBreak,
     // What this CPU writes as an idle period ends, in a line of its own.
     /// Nanoseconds idle, in periods that have ended; while one is under
@@ -201,7 +201,7 @@ impl CpuSched {
             given: SpinLock::new((Split::new(), 0)),
             polls: AtomicU64::new(0),
             halts: AtomicU64::new(0),
-            balance_failures: [const { AtomicU32::new(0) }; 4],
+            balance_failures: [const { AtomicU32::new(0) }; Level::ALL.len()],
             left_dead: AtomicBool::new(false),
             lazy: AtomicBool::new(false),
             owed: AtomicBool::new(false),
@@ -405,7 +405,12 @@ pub fn init(lockdep: Option<bool>) {
         if let Some(place) = Arch::cpu_place(index) {
             topology.set_place(
                 index,
-                Place { package: place.package, core: place.core, node: place.node },
+                Place {
+                    package: place.package,
+                    cache: place.cache,
+                    core: place.core,
+                    node: place.node,
+                },
             );
         }
     }
@@ -2090,9 +2095,9 @@ fn count_migration(thread: &ThreadRef) {
 
 // ---- Reports ----
 
-/// Threads that balancing pulled to CPU `cpu`, by level (core, package,
-/// node, machine), or `None` if it runs no threads.
-pub fn pulled(cpu: usize) -> Option<[u64; 4]> {
+/// Threads that balancing pulled to CPU `cpu`, by level (core, cache,
+/// package, node, machine), or `None` if it runs no threads.
+pub fn pulled(cpu: usize) -> Option<[u64; Level::ALL.len()]> {
     if cpu >= MAX_CPUS {
         return None;
     }
@@ -2253,7 +2258,7 @@ pub fn write_queues(line: &mut dyn FnMut(fmt::Arguments<'_>)) {
         let Some(rq) = guard.as_ref() else { continue };
         line(format_args!(
             "  cpu{cpu}: {} queued, running `{}`; {} switches, {} preemptions, {} ms idle; pulled \
-             {}/{}/{}/{} (core/package/node/machine){}",
+             {}/{}/{}/{}/{} (core/cache/package/node/machine){}",
             rq.len(),
             rq.current.name(),
             rq.switches,
@@ -2263,6 +2268,7 @@ pub fn write_queues(line: &mut dyn FnMut(fmt::Arguments<'_>)) {
             rq.pulled[1],
             rq.pulled[2],
             rq.pulled[3],
+            rq.pulled[4],
             if slot.resched.pending() { "; switch pending" } else { "" }
         ));
         rq.for_each(|thread, running, weighing| {

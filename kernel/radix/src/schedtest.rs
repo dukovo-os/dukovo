@@ -892,15 +892,15 @@ pub fn balance() {
     }
     outcome.finish(format_args!(
         "{threads} threads started on CPU {start} spread {spread} over {cpus} CPUs, {elsewhere} \
-         to another NUMA node; pulled {} within cores, {} within packages, {} within nodes and \
-         {} across them",
-        pulled[0], pulled[1], pulled[2], pulled[3]
+         to another NUMA node; pulled {} within cores, {} within caches, {} within packages, {} \
+         within nodes and {} across them",
+        pulled[0], pulled[1], pulled[2], pulled[3], pulled[4]
     ));
 }
 
 /// Threads pulled by balancing, by level, over every CPU.
 fn pulled() -> Pulled {
-    let mut total = [0u64; 4];
+    let mut total = [0u64; LEVELS];
     for cpu in sched::online().iter() {
         if let Some(pulled) = sched::pulled(cpu) {
             for (total, n) in total.iter_mut().zip(pulled) {
@@ -912,10 +912,13 @@ fn pulled() -> Pulled {
 }
 
 #[derive(Clone, Copy)]
-struct Pulled([u64; 4]);
+struct Pulled([u64; LEVELS]);
+
+/// The topology's levels, for [`Pulled`].
+const LEVELS: usize = radix_sched::Level::ALL.len();
 
 impl Pulled {
-    fn map2(self, before: Pulled) -> [u64; 4] {
+    fn map2(self, before: Pulled) -> [u64; LEVELS] {
         core::array::from_fn(|i| self.0[i].saturating_sub(before.0[i]))
     }
 }

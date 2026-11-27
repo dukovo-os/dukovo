@@ -338,6 +338,8 @@ consoles userspace/defaults/keyboard/ userspace/defaults/nukesh/ userspace/defau
 consoles userspace/programs/consoled/ userspace/programs/keymap/ userspace/programs/nukesh/
 consoles userspace/programs/systools/src/keymaps.rs userspace/programs/systools/src/notifyd.rs
 consoles userspace/programs/systools/src/xxd.rs
+cpu-topology kernel/sched/ kernel/hal/src/topology.rs kernel/arch/x86_64/src/smp.rs kernel/radix/src/sched/
+cpu-topology kernel/radix/src/report.rs kernel/radix/src/schedtest.rs
 crash-dump kernel/lib/klog/ kernel/radix/src/crashlog.rs kernel/radix/src/panic.rs
 crash-dump kernel/radix/src/fs/crashdump.rs kernel/radix/src/fs/devfs.rs
 crash-dump userspace/defaults/spark/services/dumps.toml userspace/programs/accounts/

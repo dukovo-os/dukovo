@@ -32,6 +32,7 @@ pub mod boot;
 pub mod clock;
 pub mod cmdline;
 pub mod hyperv;
+pub mod topology;
 pub mod user;
 pub mod vmware;
 
@@ -285,6 +286,9 @@ pub struct CpuInfo {
 pub struct CpuPlace {
     /// Its package (socket).
     pub package: u32,
+    /// Its last-level cache, unique within the package: 0 where the
+    /// package has one, as most do.
+    pub cache: u32,
     /// Its core, unique within the package.
     pub core: u32,
     /// Its hardware thread, unique within the core.

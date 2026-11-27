@@ -392,8 +392,12 @@ impl Processor {
     }
 }
 
-/// Logical CPUs a core runs, and a package holds: leaf 0xb's levels
-/// where it has them, else AMD's extended leaves, else leaf 1's count.
+/// Logical CPUs a core runs, and a package holds: the levels of leaf
+/// 0x1f or 0xb where the processor has them, else AMD's extended leaves,
+/// else leaf 1's count. Leaf 0x1f names the levels between the cores and
+/// the package too (Intel's modules, tiles and dies), and its last level
+/// is the package; leaf 0xb stops at the cores, which on a processor with
+/// several dies hold less than the package.
 fn topology(
     leaf: &dyn Fn(u32, u32) -> [u32; 4],
     misc: u32,
@@ -401,18 +405,19 @@ fn topology(
     amd: bool,
     topoext: bool,
 ) -> (u32, u32) {
-    let (mut threads, mut package) = (0, 0);
-    for sub in 0..8 {
-        let [_, b, c, _] = leaf(0xb, sub);
-        match (c >> 8) & 0xff {
-            0 => break,
-            1 => threads = b & 0xffff,
-            2 => package = b & 0xffff,
-            _ => {}
+    for levels in [0x1f, 0xb] {
+        let (mut threads, mut package) = (0, 0);
+        for sub in 0..8 {
+            let [_, b, c, _] = leaf(levels, sub);
+            match (c >> 8) & 0xff {
+                0 => break,
+                1 => threads = b & 0xffff,
+                _ => package = b & 0xffff,
+            }
         }
-    }
-    if threads > 0 && package >= threads {
-        return (threads, package);
+        if threads > 0 && package >= threads {
+            return (threads, package);
+        }
     }
     if amd {
         let cores = (leaf(0x8000_0008, 0)[2] & 0xff) + 1;
@@ -676,6 +681,28 @@ mod tests {
         assert_eq!(row("L2:"), "1 MiB (4 instances)");
         assert_eq!(row("L3:"), "8 MiB (1 instance)");
         assert!(report.iter().all(|(_, n, _)| *n != "Hypervisor vendor:"));
+    }
+
+    /// [`kaby_lake`] made into one package of two dies of two cores, as
+    /// leaf 0x1f describes it: leaf 0xb's cores are a die's.
+    fn two_dies(leaf: u32, sub: u32) -> [u32; 4] {
+        match (leaf, sub) {
+            (0, _) => {
+                let [_, b, c, d] = kaby_lake(0, 0);
+                [0x1f, b, c, d]
+            }
+            (0xb | 0x1f, 0) => [1, 2, 0x100, 0],
+            (0xb | 0x1f, 1) => [2, 4, 0x201, 0],
+            (0x1f, 2) => [3, 8, 0x502, 0],
+            (0x1f, _) => [0, 0, sub, 0],
+            _ => kaby_lake(leaf, sub),
+        }
+    }
+
+    #[test]
+    fn leaf_0x1f_reaches_the_package_past_its_dies() {
+        let p = Processor::read(&two_dies);
+        assert_eq!((p.threads_per_core, p.per_package), (2, 8));
     }
 
     /// QEMU's default CPU under KVM on an AMD host: no brand string
