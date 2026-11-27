@@ -38,8 +38,8 @@ list is kept current instead.
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
 | Post-Phase-13 code audit (audit 10) | Planned and scoped; starts only on approval | Decision |
-| The system's root versions after the first, and `ob keys ceremony` for the yearly root (ADRs 0457, 0538) | The key ceremony signed the first root, and `ob release sign` signs releases on the YubiKeys under it (ADR 0778); no command signs a root after it yet | Before 1.0.0, as the first root expires on 2027-11-17 |
-| The key runbooks: a lost or stolen YubiKey, a hacked update server, a hacked GitHub account, and the maintainer unavailable (ADR 0457) | `releases/README.md` walks through the key ceremony and the signing of a release, but not through what to do when a key or an account is lost | Before 1.0.0-alpha.1 |
+| `ob keys ceremony`: the yearly root signed from a Dukovo stick with networking off, both YubiKeys checked, and one replaced every other year (ADRs 0457, 0780) | `./ob release root` signs the next root on the maintainer's computer, from the keys in `releases/keys/` (ADR 0780) | Before 1.0.0, as the first root expires on 2027-11-17 |
+| The handbook's key and incident runbooks followed once, end to end, against a test server and test YubiKeys | The `ob`, system-release and catalog-repo commands they give are tested with stand-in YubiKeys and servers; no one has yet followed a whole page | Before 1.0.0 |
 | The install images of a release published for download, beside its notes: the stick, the ISO, `SHA256SUMS` and its signature (ADR 0779) | `./ob release images` leaves them in `out/release-images/VERSION`, and nothing uploads them yet | Before 1.0.0-alpha.1 |
 | `ob` commands for a channel's move, a withdrawal and the advisories alone on a YubiKey (ADR 0778) | `system-release fetch`, then `channel`, `pull` or `advisories` with `--yubikey-helper`, then `./ob release deploy` do each by hand | Before 1.0.0 |
 | The release train is off: `.github/release-train.json` says `"enabled": false`, so the release-train bot writes what it would do into its job summary and cuts no branch and opens no issue (ADRs 0458, 0534) | The first release branch is cut at 1.0.0, and the backport bot has no release branch to copy to until then | 1.0.0, when a maintainer sets `"enabled": true` |
@@ -47,7 +47,6 @@ list is kept current instead.
 | Send the 27 mlibc and frigg patches upstream | Prepared; planned after the audit's last part | Audit 10 |
 | smoltcp's own tests in CI, with its three UDP broadcast tests mended or changed for the kernel's patch (ADR 0182) | CI runs radix-net's tests, which drive the patched stack, but not the crate's own; those three already fail with the patch | Before the smoltcp patch goes upstream |
 | Trademark clearance of the project's name | Legal review | Before 1.0.0-alpha.1 |
-| SECURITY.md says plainly that the alpha is unaudited; the update server is live for testers | Part of the checklist before the first public release | Before 1.0.0-alpha.1 |
 
 ## Waiting on real hardware
 
@@ -592,8 +591,7 @@ finding or removed.
 | The SD 64 KiB and 1 MiB benchmark rows: printed but not gated (ADR 0552) | QEMU's SD emulation takes nearly all of both systems' time, and its speed moves with the runner; a real reader in the lab would show each system's own work |
 | Printing: the design's open questions | Drafted for a release after 1.0 |
 | Known weak spots to plan for: Wi-Fi, Bluetooth and webcams; large desktop apps; Btrfs maturity | Raised, not yet discussed |
-| Nightly system releases on the update server, and the key that signs them (ADRs 0456, 0467); to decide before 1.0.0-alpha.1 | The server offers stable and beta; a nightly release would be signed at every merge with no person there, and ADR 0457 keeps release keys off servers and out of CI |
-| The update server's online keys kept encrypted at rest, as ADR 0457's table has them (ADRs 0382, 0467); to decide before 1.0.0-alpha.1 | They are files only their system users read; a timer signs with them with nobody there, so a key the server decrypts itself guards only a copy of its disk |
+| Nightly system releases after 1.0.0, and the key that signs them (ADR 0781) | There are none before 1.0.0: a nightly release would be signed at every merge with nobody there, and ADR 0457 keeps every key that signs a release off servers and out of CI |
 | A build taken out of the targets with `--remove` could be given its number again (ADR 0595) | Removing a signed target is rare, and a number given again is still ordered right: it is above every build the targets list |
 
 ## Documentation to bring up to date

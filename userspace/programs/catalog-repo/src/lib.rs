@@ -1810,6 +1810,37 @@ mod tests {
     }
 
     #[test]
+    fn a_new_online_key_signs_the_rollouts_once_the_targets_are_signed_again() {
+        // A server set up anew makes a key of its own: the next root names
+        // it, but the targets still delegate the rollouts to the old one
+        // until they are signed again as they are.
+        let dir = scratch("new-online-key");
+        let ripgrep = bundle(&dir, "org.dukovo.ripgrep", "14.1.1", b"rg");
+        let (repo, store, ..) = catalog_of(&dir, &[ripgrep]);
+        let (out, first) = (dir.join("site"), std::fs::read(repo.metadata("1.root.json")).unwrap());
+        let now = tuf::time::now();
+        std::fs::remove_file(repo.keys_dir().join("online.json")).unwrap();
+        let new_file = dir.join("new-online.key");
+        let roles = vec!["snapshot".to_string(), "timestamp".to_string()];
+        keys::new_file_key("online", roles, &new_file).unwrap().write(&repo.keys_dir()).unwrap();
+        let yubikey = Signers::new(Some(&dir.join("yubikey")), &[]).unwrap();
+        assert_eq!(repo.sign_root(&yubikey, 365), Ok(2));
+        let online = Signers::new(None, std::slice::from_ref(&new_file)).unwrap();
+        let err = repo.sign_rollouts(&store, &online, None, now).unwrap_err();
+        assert!(err.contains("do not check against the targets"), "{err}");
+
+        let renewed = repo.changes(&[], &[], &[], None).unwrap();
+        assert!(renewed.is_empty());
+        assert_eq!(repo.sign_targets(&renewed, &[], &store, &yubikey, 182), Ok(2));
+        assert!(repo.sign_rollouts(&store, &online, None, now).unwrap().is_some());
+        repo.publish(&store, &out, &online, (7, 1)).unwrap();
+        let release = "org.dukovo.ripgrep/14.1.1";
+        let read = read_rollout(&out, &first, &rollout::target_path(release));
+        assert_eq!(read.map(|rollout| rollout.wave), Some(rollout::LAST));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn rollouts_open_wave_by_wave_and_are_read_back_by_the_client() {
         let dir = scratch("rollouts");
         let older = bundle(&dir, "org.dukovo.ripgrep", "14.1.0", b"rg, older");

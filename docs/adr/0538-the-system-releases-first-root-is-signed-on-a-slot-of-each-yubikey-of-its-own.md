@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0538. The system releases' first root is signed on a slot of each YubiKey of its own
 
-- Status: Accepted
+- Status: Accepted; the roots after the first by [0780](0780-the-system-s-next-root-is-signed-on-the-yubikeys-from-the-keys-the-source-tree-holds-and-served-with-the-targets-signed-again.md)
 - Date: 2026-11-17
 
 ## Context

@@ -125,7 +125,8 @@ pub fn command(ctx: &Ctx, args: &[String]) -> Result<()> {
         ["images", rest @ ..] => crate::release_images::images(ctx, rest),
         ["key", "yubikey"] => release_key(ctx, None),
         ["key", "yubikey", "--serial", serial] => release_key(ctx, Some(serial)),
-        ["root"] => first_root(ctx),
+        ["root"] => root(ctx, None),
+        ["root", "--repo", repo] => root(ctx, Some(Path::new(repo))),
         ["server", "setup"] => crate::catalog::server_setup(ctx, false),
         ["server", "setup", "--dukovo"] => crate::catalog::server_setup(ctx, true),
         ["channel", repo, "--firmware", set, channel] => {
@@ -150,7 +151,7 @@ pub fn command(ctx: &Ctx, args: &[String]) -> Result<()> {
             "usage: ./ob release build [--out <dir>] \
              | sign <version> [--channel <channel>] [--serial <number>] | record <version> \
              | images <version> [--serial <number>] \
-             | key yubikey [--serial <number>] | root \
+             | key yubikey [--serial <number>] | root [--repo <repository>] \
              | server setup [--dukovo] | channel <repository> (<channel> \
              <version> | --firmware <version>|none <channel>) | advisories <repository> \
              | deploy <repository> | send [--copy-only] <repository> \
@@ -175,9 +176,109 @@ fn release_key(ctx: &Ctx, serial: Option<&str>) -> Result<()> {
     process::run(ctx, &mut cmd)
 }
 
-/// `ob release root`: the key ceremony's first root of the system's
-/// releases, signed on both YubiKeys from the keys in `releases/keys/`,
-/// in `releases/metadata/1.root.json` (ADRs 0457 and 0538).
+/// `ob release root [--repo DIR]`: the key ceremony's first root of the
+/// system's releases, or the next one once that is there.
+fn root(ctx: &Ctx, repo: Option<&Path>) -> Result<()> {
+    let metadata = ctx.root.join(REPO).join("metadata");
+    match repo {
+        _ if metadata.join("1.root.json").exists() => next_root(ctx, &metadata, repo),
+        None => first_root(ctx),
+        Some(_) => bail!("the first root is signed in the key ceremony, with `./ob release root`"),
+    }
+}
+
+/// The version the next root of the source tree's `metadata` will have:
+/// one after the last of `1.root.json`, `2.root.json`, and so on.
+fn next_root_version(metadata: &Path) -> u64 {
+    (1..).find(|version| !metadata.join(format!("{version}.root.json")).exists()).unwrap_or(1)
+}
+
+/// The next root of the system's releases (ADR 0780), from the keys in
+/// `releases/keys/` as they are now, signed on the YubiKeys plugged in
+/// and written to `releases/metadata/N.root.json`. What updates.dukovo.org
+/// serves is fetched into `out/release-root/N` with the source tree's
+/// roots, and the root goes into it with the targets signed again under
+/// it, for `ob release deploy` to serve; when the server serves no
+/// release yet, the first one signed carries the root instead. With
+/// `from`, a repository deployed before, such as `out/release-sign/V`,
+/// the root goes into that one instead, for a server that cannot be read:
+/// a new one, in place of a server that was broken into.
+fn next_root(ctx: &Ctx, metadata: &Path, from: Option<&Path>) -> Result<()> {
+    let version = next_root_version(metadata);
+    let tool = tool(ctx)?;
+    if let Some(from) = from {
+        process::run(ctx, &mut next_root_command(ctx, &tool, metadata, from))?;
+        println!(
+            "Commit {REPO}/metadata/{version}.root.json, then serve it: `./ob release deploy {}`.",
+            from.display()
+        );
+        return Ok(());
+    }
+    let repo = ctx.out.join("release-root").join(version.to_string());
+    if repo.exists() {
+        bail!(
+            "{} is there already: deploy it with `./ob release deploy {}`, or remove it to sign \
+             root {version} again",
+            ctx.display(&repo),
+            ctx.display(&repo)
+        );
+    }
+    if let Some(parent) = repo.parent() {
+        process::create_dir(parent)?;
+    }
+    let signed = (|| {
+        let mut fetch = Command::new(&tool);
+        fetch
+            .arg("fetch")
+            .arg("--root")
+            .arg(metadata.join("1.root.json"))
+            .arg("--roots")
+            .arg(metadata)
+            .arg("--out")
+            .arg(&repo)
+            .arg(URL);
+        process::run(ctx, &mut fetch)?;
+        process::run(ctx, &mut next_root_command(ctx, &tool, metadata, &repo))
+    })();
+    let offers = repo.join("metadata").read_dir().is_ok_and(|entries| {
+        entries.flatten().any(|e| e.file_name().to_string_lossy().ends_with(".targets.json"))
+    });
+    if signed.is_err() || !offers {
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+    signed?;
+    let root = format!("{REPO}/metadata/{version}.root.json");
+    if offers {
+        println!("Commit {root}, then serve it: `./ob release deploy {}`.", ctx.display(&repo));
+    } else {
+        println!(
+            "Commit {root}. {URL} serves no release yet: the first one `./ob release sign` signs \
+             carries it."
+        );
+    }
+    Ok(())
+}
+
+/// system-release's `next-root`, of the source tree's keys and roots,
+/// into the repository `repo`. It runs on the terminal, for the version
+/// to be typed and the YubiKeys' PINs.
+fn next_root_command(ctx: &Ctx, tool: &Path, metadata: &Path, repo: &Path) -> Command {
+    let mut sign = Command::new(tool);
+    sign.arg("next-root")
+        .arg("--yubikey-helper")
+        .arg(ctx.root.join(crate::catalog::YUBIKEY_HELPER))
+        .arg("--out")
+        .arg(metadata)
+        .arg("--repo")
+        .arg(repo)
+        .arg(ctx.root.join(REPO).join("keys"));
+    sign
+}
+
+/// `ob release root`, the first time: the key ceremony's first root of the
+/// system's releases, signed on both YubiKeys from the keys in
+/// `releases/keys/`, in `releases/metadata/1.root.json` (ADRs 0457 and
+/// 0538).
 fn first_root(ctx: &Ctx) -> Result<()> {
     let repo = ctx.root.join(REPO);
     let mut cmd = Command::new(tool(ctx)?);
@@ -694,6 +795,20 @@ fn toolchain(ctx: &Ctx) -> Result<String> {
 mod tests {
     use super::canary_words_are_valid as valid;
     use super::*;
+
+    #[test]
+    fn the_next_root_is_one_version_after_the_last_the_tree_holds() {
+        let dir = std::env::temp_dir().join(format!("ob-next-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(next_root_version(&dir), 1);
+        for version in 1..=2 {
+            std::fs::write(dir.join(format!("{version}.root.json")), b"{}").unwrap();
+        }
+        std::fs::write(dir.join("root.json"), b"{}").unwrap();
+        assert_eq!(next_root_version(&dir), 3);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// A tree made in the order `names` gives, whatever order the folder
     /// then lists in.

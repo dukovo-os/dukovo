@@ -28,9 +28,11 @@ system-release - check, sign, offer, publish, pack, keep Rescue of and make keys
 
 *system-release first-root* *--yubikey-helper* _file_ *--out* _metadata_ _keys_
 
+*system-release next-root* *--yubikey-helper* _file_ *--out* _metadata_ [*--repo* _dir_] [*--yes*] _keys_
+
 *system-release add* *--repo* _dir_ *--keys* _dir_ _release_
 
-*system-release fetch* *--root* _file_ *--out* _dir_ _url_
+*system-release fetch* *--root* _file_ [*--roots* _metadata_] *--out* _dir_ _url_
 
 *system-release medium* *--root* _file_ *--tree* _dir_ *--out* _dir_ _url_ _list_
 
@@ -166,6 +168,22 @@ timestamp too. It writes _metadata_/1.root.json and prints the root's
 SHA-256 last, and refuses when that file is there already, or when a
 YubiKey is not plugged in or holds another key than its file names.
 
+*next-root* signs each root after the first (ADR 0780), as *ob release
+root* does once _metadata_/1.root.json is there. It reads the roots in
+_metadata_, each of which must follow the one before, and makes the
+next from _keys_ as it is now: the YubiKeys whose files are there, one
+or two, for every role, and _keys_/online.json for snapshot and
+timestamp too. The newest root's root keys sign it, on each YubiKey
+plugged in whose key that root names or whose file is in _keys_; a
+YubiKey new to the root signs it too, so that it is shown to work, and
+must be plugged in. It shows the root, what it adds and what it drops,
+and signs only once *root* _N_ is typed, or with *--yes*. With *--repo*,
+it first adds to the repository the roots of _metadata_ it lacks, then
+writes the new root into it and signs its targets again as they are,
+with a key the new root names, so that they check under it and
+delegate the rollouts to the online key it names. It writes
+_metadata_/_N_.root.json last, and prints its SHA-256.
+
 The update repository, *--repo*, holds every release a server offers,
 each file once, and the channels, stable, beta and nightly, each naming
 one release (ADR 0466). *add* adds a release that *make* made, after
@@ -182,7 +200,11 @@ reads the repository the server at _url_ serves, from the first root in
 *--root*, as a computer online does, expiry checked, and writes it into
 the new folder *--out*: every root by version, the newest targets as
 served, and the file of each target by its SHA-256; a server that serves
-nothing yet gives the first root alone. The releases' files stay on the
+nothing yet gives the first root alone. With *--roots* _metadata_, the
+roots after the first that _metadata_ holds and the server does not
+serve yet are added, each checked to follow the one before; it refuses
+when the server serves a root _metadata_ does not hold, or holds as
+other bytes. The releases' files stay on the
 server. *offer* then adds the release whose list *system-release list*
 wrote in _list_, whose files are in the tree *--tree*, each checked
 against the list as it is copied into the store, and points _channel_ at
@@ -443,10 +465,16 @@ or with *--json* prints *{"url": ..., "published": false}*, and succeeds.
 
 *--yes*
 	For *offer* and *sums*, sign without asking for the version to be
-	typed.
+	typed; for *next-root*, without asking for *root* _N_.
+
+*--roots* _metadata_
+	For *fetch*, the folder of the roots the source tree holds,
+	_releases/metadata_, whose roots after the first are added to what
+	the server serves.
 
 *--repo* _dir_
-	The update repository.
+	The update repository; for *next-root*, the one to write the new
+	root into and sign the targets of again.
 
 *--rotate* _role_
 	The role whose key *keys* replaces: root, targets, snapshot or

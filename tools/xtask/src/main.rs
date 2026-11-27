@@ -844,7 +844,7 @@ resolve)."
        ./ob release record <version>
        ./ob release images <version> [--serial <number>]
        ./ob release key yubikey [--serial <number>]
-       ./ob release root
+       ./ob release root [--repo <repository>]
        ./ob release server setup [--dukovo]
        ./ob release channel <repository> (<channel> <version>
                                           | --firmware <version>|none <channel>)
@@ -904,7 +904,19 @@ names, made with ykman, and the key alone in PEM beside it,
 releases/keys/yubikey-SERIAL.pem. `root` signs root version 1 on both YubiKeys, a PIN
 and a touch for each, from the two YubiKeys' keys and the server's online key
 in releases/keys/, and writes releases/metadata/1.root.json; the last line it
-prints is the root's SHA-256. It signs the first root once.
+prints is the root's SHA-256. Once that is there, `root` signs the next root
+(ADR 0780) from the keys releases/keys/ holds then, which is how a lost or
+stolen YubiKey is dropped, a new one or a new online key named, and the root
+signed again each year: it shows what changes and asks for the version to be
+typed, signs on every YubiKey plugged in that either root names (one of the
+root before's, and every one new to the root), and writes
+releases/metadata/N.root.json. It fetches what the server serves into
+out/release-root/N with the source tree's roots, and signs its targets again
+under the new root, for `./ob release deploy out/release-root/N`; while the
+server serves no release, the first that `sign` signs carries the root. With
+--repo, the root goes into that repository, one deployed before such as
+out/release-sign/VERSION, in place of what the server serves: for a new
+server that replaces one broken into.
 
 Deploys the system's releases to the update server (ADR 0467), reached over
 SSH as `$OB_UPDATE_SSH` (default updates.dukovo.org), as `ob catalog` deploys

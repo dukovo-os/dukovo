@@ -24,6 +24,7 @@ usage: system-release keys [--rotate ROLE | --online KEY] DIR
        system-release online-key --out KEY SECRET
        system-release release-key --yubikey-helper FILE [--serial NUMBER] KEYS
        system-release first-root --yubikey-helper FILE --out METADATA KEYS
+       system-release next-root --yubikey-helper FILE --out METADATA [--repo DIR] [--yes] KEYS
        system-release make --tree DIR --keys DIR --out DIR --version VERSION
                            --commit COMMIT --toolchain TOOLCHAIN --built SECONDS
                            [--updates-from VERSION]
@@ -31,7 +32,7 @@ usage: system-release keys [--rotate ROLE | --online KEY] DIR
                            --toolchain TOOLCHAIN --built SECONDS
                            [--updates-from VERSION] [--out FILE]
        system-release add --repo DIR --keys DIR RELEASE
-       system-release fetch --root FILE --out DIR URL
+       system-release fetch --root FILE [--roots METADATA] --out DIR URL
        system-release medium --root FILE --tree DIR --out DIR URL LIST
        system-release sums --root FILE --yubikey-helper FILE [--serial NUMBER]
                            --version VERSION --out DIR [--record FILE] [--yes] IMAGE...
@@ -89,6 +90,7 @@ pub fn run(args: &[String]) -> i32 {
         "online-key" => online_key(&options),
         "release-key" => release_key(&options),
         "first-root" => first_root(&options),
+        "next-root" => next_root(&options),
         "make" => make(&options),
         "list" => list(&options),
         "add" => add(&options),
@@ -142,6 +144,9 @@ struct Options {
     online_key: Option<PathBuf>,
     out: Option<PathBuf>,
     root: Option<PathBuf>,
+    /// For `fetch`: the source tree's roots, to add those the server
+    /// does not serve yet.
+    roots: Option<PathBuf>,
     version: Option<String>,
     commit: Option<String>,
     toolchain: Option<String>,
@@ -188,6 +193,7 @@ impl Options {
                 "--online-key" => options.online_key = Some(value()?.into()),
                 "--out" => options.out = Some(value()?.into()),
                 "--root" => options.root = Some(value()?.into()),
+                "--roots" => options.roots = Some(value()?.into()),
                 "--version" => options.version = Some(value()?),
                 "--commit" => options.commit = Some(value()?),
                 "--toolchain" => options.toolchain = Some(value()?),
@@ -353,6 +359,104 @@ fn first_root(options: &Options) -> Result<(), String> {
     Ok(())
 }
 
+/// `next-root --yubikey-helper FILE --out METADATA [--repo DIR] [--yes]
+/// KEYS`: the next root of the system's releases, from the keys in
+/// `KEYS`, after the newest in `METADATA`, signed on the YubiKeys plugged
+/// in once the version is typed, and written to `METADATA`; with `--repo`,
+/// put in that repository too, with the roots of `METADATA` it lacks and
+/// its targets signed again under it, to deploy (ADR 0780).
+fn next_root(options: &Options) -> Result<(), String> {
+    let [dir] = options.operands.as_slice() else {
+        return Err("next-root takes the folder of the release keys' public halves".into());
+    };
+    let helper = needed(&options.yubikey_helper, "--yubikey-helper")?;
+    let metadata = needed(&options.out, "--out")?;
+    let repo = options.repo.as_deref();
+    let signed = ceremony::sign_next_root(
+        Path::new(dir),
+        metadata,
+        helper,
+        repo,
+        tuf::time::now(),
+        |next| {
+            print!("{}", next_root_lines(next));
+            if options.yes { Ok(()) } else { typed(&format!("root {}", next.version)) }
+        },
+    )?;
+    let next = &signed.shown;
+    println!(
+        "system-release: signed root {}, {}, on {}; it expires {}",
+        next.version,
+        metadata.join(format!("{}.root.json", next.version)).display(),
+        yubikeys_named(&next.signers),
+        tuf::time::format(next.expires)
+    );
+    println!(
+        "SHA-256 {}",
+        crate::list::hex(ring::digest::digest(&ring::digest::SHA256, &signed.root).as_ref())
+    );
+    match (repo, next.targets) {
+        (Some(repo), Some(targets)) => println!(
+            "system-release: signed targets version {targets} of {} again under it, as they \
+             are: deploy it to serve root {}",
+            repo.display(),
+            next.version
+        ),
+        (Some(repo), None) => println!(
+            "system-release: {} offers nothing yet: the first release signed carries root {}",
+            repo.display(),
+            next.version
+        ),
+        (None, _) => {}
+    }
+    Ok(())
+}
+
+/// What `next-root` is about to sign, in lines for the person who signs it.
+fn next_root_lines(next: &ceremony::NextRoot) -> String {
+    use std::fmt::Write as _;
+    let mut lines = format!(
+        "Root {} of the system's releases, good until {}:\n",
+        next.version,
+        tuf::time::format(next.expires)
+    );
+    let mut named = Vec::new();
+    for serial in &next.yubikeys {
+        let new = if next.new_yubikeys.contains(serial) { ", new" } else { "" };
+        named.push(format!("YubiKey {serial}{new}"));
+    }
+    let _ = writeln!(lines, "  every role: {}", named.join(" and "));
+    let new = if next.new_online { ", new" } else { "" };
+    let _ = writeln!(
+        lines,
+        "  snapshot and timestamp also: the update server's online key {}{new}",
+        &next.online[..16]
+    );
+    if next.dropped.is_empty() {
+        lines.push_str("  no key of the root before is dropped\n");
+    }
+    for id in &next.dropped {
+        let _ = writeln!(lines, "  dropped: the key {}", &id[..16]);
+    }
+    if next.yubikeys.len() == 1 {
+        lines.push_str("  it names one YubiKey: sign the next root once a second is added\n");
+    }
+    let _ = writeln!(lines, "  signed on {}", yubikeys_named(&next.signers));
+    if let Some(targets) = next.targets {
+        let _ = writeln!(lines, "  then the targets again as they are, as version {targets}");
+    }
+    lines
+}
+
+/// "YubiKey 1001" or "YubiKeys 1001 and 1003".
+fn yubikeys_named(serials: &[u64]) -> String {
+    let names: Vec<String> = serials.iter().map(u64::to_string).collect();
+    match names.as_slice() {
+        [one] => format!("YubiKey {one}"),
+        _ => format!("YubiKeys {}", names.join(" and ")),
+    }
+}
+
 /// The keys `--keys` or `--online-key` name for the repository `dir`.
 fn signing_keys(options: &Options, dir: &Path) -> Result<Keys, String> {
     match (&options.keys, &options.online_key) {
@@ -477,6 +581,18 @@ fn fetch(options: &Options) -> Result<(), String> {
     let url = if url.ends_with('/') { url.clone() } else { format!("{url}/") };
     let base = tuf::Url::parse(&url).map_err(|err| format!("{url}: {err}"))?;
     let fetched = repo::fetch(&base, &root, out)?;
+    if let Some(metadata) = &options.roots {
+        let added = repo::add_roots(out, metadata).inspect_err(|_| {
+            let _ = std::fs::remove_dir_all(out);
+        })?;
+        if added > 0 {
+            println!(
+                "system-release: added {} that {url} does not serve yet, from {}",
+                count(added, "root"),
+                metadata.display()
+            );
+        }
+    }
     if fetched.targets == 0 {
         println!(
             "system-release: {url} serves no releases yet; {} holds the first root",
@@ -1635,6 +1751,62 @@ mod tests {
         // Images are named; the checksums of none are not signed.
         assert_eq!(run(&strings(&[&sums[..], &signer].concat())), 1);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_next_root_is_signed_into_the_tree_and_a_repository_fetched_with_its_roots() {
+        let dir = scratch("cli-next-root");
+        let server = crate::updates::tests::Server::new(&dir);
+        tree(&dir.join("slot"));
+        server.sign_and_serve(&dir.join("slot"), "0.18.0", 1001);
+        std::fs::write(dir.join("plugged"), "1001\n").unwrap();
+        let path = |name: &str| dir.join(name).display().to_string();
+        let (metadata, url) = (path("releases/metadata"), server.url.to_string());
+        let root = path("releases/metadata/1.root.json");
+        let fetch = |out: &str| {
+            run(&strings(&["fetch", "--root", &root, "--roots", &metadata, "--out", out, &url]))
+        };
+        assert_eq!(fetch(&path("work")), 0);
+        let helper = server.helper.display().to_string();
+        let next = ["next-root", "--yubikey-helper", &helper, "--out", &metadata];
+        let repo = ["--repo", &path("work"), "--yes", &path("releases/keys")];
+        assert_eq!(run(&strings(&[&next[..], &repo].concat())), 0);
+        assert!(dir.join("releases/metadata/2.root.json").is_file());
+        assert!(dir.join("work/metadata/2.targets.json").is_file());
+        // The server does not serve it yet; a fetch with the tree's roots
+        // carries it, and one into the same folder is refused.
+        assert_eq!(fetch(&path("again")), 0);
+        assert!(dir.join("again/metadata/2.root.json").is_file());
+        assert_eq!(fetch(&path("again")), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_next_root_is_shown_with_what_it_adds_and_drops() {
+        let next = ceremony::NextRoot {
+            version: 2,
+            expires: 1_830_000_000,
+            yubikeys: vec![1001],
+            new_yubikeys: vec![],
+            online: "cd".repeat(32),
+            new_online: true,
+            dropped: vec!["ab".repeat(32), "ef".repeat(32)],
+            signers: vec![1001, 1002],
+            targets: Some(4),
+        };
+        let lines = next_root_lines(&next);
+        for wanted in [
+            "Root 2 of the system's releases, good until 2027-12-28T",
+            "every role: YubiKey 1001\n",
+            "online key cdcdcdcdcdcdcdcd, new\n",
+            "dropped: the key abababababababab\n",
+            "dropped: the key efefefefefefefef\n",
+            "it names one YubiKey",
+            "signed on YubiKeys 1001 and 1002\n",
+            "then the targets again as they are, as version 4\n",
+        ] {
+            assert!(lines.contains(wanted), "{wanted} in\n{lines}");
+        }
     }
 
     #[test]

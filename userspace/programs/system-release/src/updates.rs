@@ -168,6 +168,16 @@ fn newest(metadata: &Path, role: &str) -> Result<u64, String> {
     Ok(found)
 }
 
+/// The version of the newest targets of the repository at `dir`, or 0
+/// when it offers nothing yet.
+///
+/// # Errors
+///
+/// If its metadata folder cannot be read.
+pub fn targets_version(dir: &Path) -> Result<u64, String> {
+    newest(&dir.join("metadata"), "targets")
+}
+
 /// Reads what the repository at `dir` says now, if it offers anything.
 fn current(dir: &Path) -> Result<Option<Current>, String> {
     let metadata = dir.join("metadata");
@@ -612,6 +622,26 @@ pub fn offer(
         advised.signed = true;
     }
     Ok(Offering { proposal, new_files, targets: metadata })
+}
+
+/// Signs the targets of the repository at `dir` again, as they are, as
+/// their next version, with `keys` under their newest root, and gives
+/// that version, or `None` when the repository offers nothing yet: after
+/// a new root, so that what the repository offers is signed by a key that
+/// root names and its rollouts are delegated to the keys it names for
+/// timestamp (ADR 0780). It changes nothing a machine is offered.
+///
+/// # Errors
+///
+/// If the targets cannot be signed or do not check against the newest
+/// root.
+pub fn sign_targets_again(dir: &Path, keys: &Keys, now: i64) -> Result<Option<u64>, String> {
+    let Some(current) = current(dir)? else { return Ok(None) };
+    let version = current.targets_version + 1;
+    sign(dir, keys, Some(&current), Some(&current.targets), None, now)?;
+    let metadata = read(&dir.join(format!("metadata/{version}.targets.json")))?;
+    signed_as_shown(&metadata, keys, &current.targets)?;
+    Ok(Some(version))
 }
 
 /// Refuses `version` unless it is newer than every release `targets`
@@ -1820,6 +1850,64 @@ pub(crate) mod tests {
     pub(crate) fn yubikey_keys(dir: &Path, helper: &Path, serial: u64) -> Keys {
         let yubikey = crate::yubikey::release_key(helper, Some(serial)).unwrap();
         Keys::hardware(repo::roots_in(dir).unwrap(), &yubikey, &["targets"]).unwrap()
+    }
+
+    /// An update server in `dir/server`, of a key ceremony's first root,
+    /// whose source tree is `dir/releases`.
+    pub(crate) struct Server {
+        pub(crate) dir: PathBuf,
+        pub(crate) helper: PathBuf,
+        pub(crate) first: Vec<u8>,
+        /// The secret half of the server's online key.
+        pub(crate) secret: Vec<u8>,
+        pub(crate) url: tuf::Url,
+    }
+
+    impl Server {
+        pub(crate) fn new(dir: &Path) -> Server {
+            let (helper, first, secret) = ceremony(dir);
+            let url =
+                tuf::Url::parse(&format!("file://{}/", dir.join("server").display())).unwrap();
+            Server { dir: dir.to_path_buf(), helper, first, secret, url }
+        }
+
+        /// The source tree's keys and roots.
+        pub(crate) fn keys(&self) -> PathBuf {
+            self.dir.join("releases/keys")
+        }
+
+        pub(crate) fn metadata(&self) -> PathBuf {
+            self.dir.join("releases/metadata")
+        }
+
+        /// What the server serves, in the new folder `work`, with the
+        /// source tree's roots it does not serve yet, as `./ob release
+        /// sign` and `root` fetch it.
+        pub(crate) fn fetch(&self, work: &Path) {
+            repo::fetch(&self.url, &self.first, work).unwrap();
+            repo::add_roots(work, &self.metadata()).unwrap();
+        }
+
+        /// Signs the release of `slot` as Dukovo `version` on YubiKey
+        /// `serial`, from what the server serves, and deploys it, as
+        /// `./ob release sign` and `deploy` do. Gives its list.
+        pub(crate) fn sign_and_serve(&self, slot: &Path, version: &str, serial: u64) -> Vec<u8> {
+            let list = Release::of_tree(slot, about(version, "0.14.1")).unwrap().to_bytes();
+            let work = self.dir.join(format!("work-{version}"));
+            self.fetch(&work);
+            let keys = yubikey_keys(&work, &self.helper, serial);
+            let new = NewRelease { tree: slot, list: &list, channel: "beta", advisories: None };
+            let now = tuf::time::now();
+            offer(&work, &keys, &new, now, |_| Ok(())).unwrap();
+            self.deploy(&work, &self.secret).unwrap();
+            list
+        }
+
+        /// Publishes the repository `work` with the online key `secret`,
+        /// as the server does once a deploy is ready.
+        pub(crate) fn deploy(&self, work: &Path, secret: &[u8]) -> Result<Deployed, String> {
+            publish(&self.dir.join("server"), work, secret, None, tuf::time::now())
+        }
     }
 
     #[test]

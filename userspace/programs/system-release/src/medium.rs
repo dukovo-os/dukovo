@@ -183,42 +183,7 @@ fn put(path: &Path, bytes: &[u8]) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::list::tests::{scratch, tree};
-    use crate::updates::tests::{about, ceremony, yubikey_keys};
-    use crate::updates::{NewRelease, offer, publish};
-    use std::path::PathBuf;
-
-    /// An update server in `dir/server`, of a key ceremony's first root.
-    struct Server {
-        dir: PathBuf,
-        helper: PathBuf,
-        first: Vec<u8>,
-        secret: Vec<u8>,
-        url: tuf::Url,
-    }
-
-    impl Server {
-        fn new(dir: &Path) -> Server {
-            let (helper, first, secret) = ceremony(dir);
-            let url =
-                tuf::Url::parse(&format!("file://{}/", dir.join("server").display())).unwrap();
-            Server { dir: dir.to_path_buf(), helper, first, secret, url }
-        }
-
-        /// Signs the release of `slot` as Dukovo `version` on YubiKey
-        /// 1001, from what the server serves, and deploys it, as `./ob
-        /// release sign` and `deploy` do. Gives its list.
-        fn sign_and_serve(&self, slot: &Path, version: &str) -> Vec<u8> {
-            let list = Release::of_tree(slot, about(version, "0.14.1")).unwrap().to_bytes();
-            let work = self.dir.join(format!("work-{version}"));
-            repo::fetch(&self.url, &self.first, &work).unwrap();
-            let keys = yubikey_keys(&work, &self.helper, 1001);
-            let new = NewRelease { tree: slot, list: &list, channel: "beta", advisories: None };
-            let now = tuf::time::now();
-            offer(&work, &keys, &new, now, |_| Ok(())).unwrap();
-            publish(&self.dir.join("server"), &work, &self.secret, None, now).unwrap();
-            list
-        }
-    }
+    use crate::updates::tests::Server;
 
     #[test]
     fn a_medium_holds_the_release_as_the_server_serves_it_and_reads_back_offline() {
@@ -227,7 +192,7 @@ mod tests {
         let (url, first) = (&server.url, &server.first);
         let slot = dir.join("slot");
         tree(&slot);
-        let list = server.sign_and_serve(&slot, "0.18.0");
+        let list = server.sign_and_serve(&slot, "0.18.0", 1001);
 
         let out = dir.join("medium-1");
         let medium = write(url, first, &list, &slot, &out).unwrap();
@@ -241,7 +206,7 @@ mod tests {
         // Once the server offers another, its targets list both, and the
         // medium names its own, for the installer and for Rescue.
         std::fs::write(slot.join("commands/spark"), b"spark, newer").unwrap();
-        let newer = server.sign_and_serve(&slot, "0.18.1");
+        let newer = server.sign_and_serve(&slot, "0.18.1", 1001);
         let out = dir.join("medium-2");
         let medium = write(url, first, &newer, &slot, &out).unwrap();
         assert_eq!((medium.version.as_str(), medium.targets), ("0.18.1", 2));
@@ -265,10 +230,12 @@ mod tests {
         let slot = dir.join("slot");
         tree(&slot);
         let out = dir.join("medium");
-        let list = Release::of_tree(&slot, about("0.18.0", "0.14.1")).unwrap().to_bytes();
+        let list = Release::of_tree(&slot, crate::updates::tests::about("0.18.0", "0.14.1"))
+            .unwrap()
+            .to_bytes();
         let error = write(url, first, &list, &slot, &out).unwrap_err();
         assert!(error.contains("serves no releases yet"), "{error}");
-        server.sign_and_serve(&slot, "0.18.0");
+        server.sign_and_serve(&slot, "0.18.0", 1001);
         let refused = |list: &[u8]| {
             let error = write(url, first, list, &slot, &out).unwrap_err();
             assert!(!out.exists(), "{error}");
@@ -276,9 +243,11 @@ mod tests {
         };
         // A version not offered, and a list of the same version that is
         // not the one signed: built at another time.
-        let other = Release::of_tree(&slot, about("0.18.2", "0.14.1")).unwrap().to_bytes();
+        let other = Release::of_tree(&slot, crate::updates::tests::about("0.18.2", "0.14.1"))
+            .unwrap()
+            .to_bytes();
         assert!(refused(&other).contains("does not offer Dukovo 0.18.2"));
-        let mut later = about("0.18.0", "0.14.1");
+        let mut later = crate::updates::tests::about("0.18.0", "0.14.1");
         later.built += 1;
         let later = Release::of_tree(&slot, later).unwrap().to_bytes();
         assert!(refused(&later).contains("is not the one built here"));

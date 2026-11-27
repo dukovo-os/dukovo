@@ -2173,7 +2173,7 @@ _target/userspace/_).
 	are changed with *release canary* (ADR 0533), and *rollout canary*
 	is refused. *bundle*(1) says what a computer does with one.
 
-*release* *build* [*--out* _dir_] | *sign* _version_ [*--channel* _channel_] [*--serial* _n_] | *record* _version_ | *images* _version_ [*--serial* _n_] | *key* *yubikey* [*--serial* _n_] | *root* | *server* *setup* [*--dukovo*] | *channel* _repository_ (_channel_ _version_ | *--firmware* _version_|*none* _channel_) | *advisories* _repository_ | *deploy* _repository_ | *send* [*--copy-only*] _repository_ | *check* [*--root* _file_] [_url_] | *rollout* (*pause* _version_ _reason_ | *resume* _version_) | *canaries* [*--json*] | *canary* (*add* _name_ _key_ | *remove* _name_ | _name_ *red*|*green* _reason_ | _name_ *auto*)
+*release* *build* [*--out* _dir_] | *sign* _version_ [*--channel* _channel_] [*--serial* _n_] | *record* _version_ | *images* _version_ [*--serial* _n_] | *key* *yubikey* [*--serial* _n_] | *root* [*--repo* _repository_] | *server* *setup* [*--dukovo*] | *channel* _repository_ (_channel_ _version_ | *--firmware* _version_|*none* _channel_) | *advisories* _repository_ | *deploy* _repository_ | *send* [*--copy-only*] _repository_ | *check* [*--root* _file_] [_url_] | *rollout* (*pause* _version_ _reason_ | *resume* _version_) | *canaries* [*--json*] | *canary* (*add* _name_ _key_ | *remove* _name_ | _name_ *red*|*green* _reason_ | _name_ *auto*)
 	Build the system's release, and deploy the system's releases to the
 	update server and check what it serves (ADR 0467), over the same SSH
 	login as *catalog*.
@@ -2254,11 +2254,25 @@ _target/userspace/_).
 	root's SHA-256. It signs the first root once (*system-release*(8)
 	*first-root*).
 
+	Once the first root is there, *root* signs the next (ADR 0780;
+	*system-release*(8) *next-root*), from _releases/keys/_ as it is
+	now: a YubiKey whose files were taken out is dropped, one whose
+	files were added is named and signs it too, and a new
+	_releases/keys/online.json_ is named for snapshot and timestamp. It
+	reads what updates.dukovo.org serves into _out/release-root/N_, adding
+	the roots of _releases/metadata/_ the server lacks, shows the root
+	and signs it once *root N* is typed, signs the targets again as they
+	are, writes _releases/metadata/N.root.json_ and says how to deploy
+	it; with nothing served yet, it keeps no folder, as the root then
+	goes out with the first release *sign* signs. With *--repo*, it signs into
+	_repository_ instead, which a server that cannot be read needs. The
+	handbook's *Keys and incidents* says when.
+
 	*server setup* is *catalog server setup*, which sets up both; it
 	writes the server's online key for the system's releases to
 	_releases/keys/online.json_, for the release keys' next root to name
-	for snapshot and timestamp beside their own keys (*system-release*(8)
-	*keys --online*), and fails if a different one is there.
+	for snapshot and timestamp beside their own keys (*root*), and fails
+	if a different one is there.
 
 	*channel* has the channel of an update _repository_, which
 	*system-release add* added a release to, offer that release, or with
