@@ -975,6 +975,10 @@ origin/main) has a Signed-off-by line certifying the Developer Certificate
 of Origin. A person signs off their own commits; a commit written by a tool,
 such as an AI assistant, needs the sign-off of the person submitting it,
 and a tool's own sign-off does not count. Merge commits are skipped.
+A commit that is already on a shared branch without its sign-off is signed
+off afterwards: a later commit that the same person signed off says, on a
+line of its message, \"I, Name <email>, hereby add my Signed-off-by to this
+commit: <the commit's whole hash>\".
 CI runs this on the commits of every pull request."
         }
         "clean" => {

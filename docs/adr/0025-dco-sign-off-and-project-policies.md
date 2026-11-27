@@ -31,6 +31,13 @@ can certify where a change came from.
   Merge commits are skipped.
 - The commits already on `main` when this was adopted are not rewritten or
   checked; the rule applies from this pull request on.
+- A commit that reaches `main` without its sign-off (a squash whose
+  message lost the line) is not rewritten either. Its author adds the
+  sign-off in a later commit they sign off, on a line of its message:
+  `I, Name <email>, hereby add my Signed-off-by to this commit: <hash>`,
+  with the commit's whole hash, the wording the DCO's own tools read.
+  `./ob signoff` counts it as the named commit's sign-off, so that a pull
+  request that brings `main` into another branch passes.
 - `CODE_OF_CONDUCT.md` is the Contributor Covenant 2.1 with its
   attribution, under CC-BY-4.0. That license covers the document only; it
   is not a code license, does not enter `deny.toml` or `kernel/deny.toml`,
