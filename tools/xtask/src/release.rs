@@ -9,13 +9,17 @@
 //! what it serves (ADR 0467).
 //!
 //! `ob release sign` signs the releases the update server offers on the
-//! project's YubiKeys ([`crate::release_sign`], ADR 0778). An image's
-//! release is still signed by the machine that builds it, with keys of
-//! its own, made the first time they are needed in
-//! `.cache/release-keys`: a stick verifies against the root built into
-//! it, and nothing online trusts that root. When a stick's release will not check, run
-//! `system-release check` on the stick's `release` folder with
-//! `--root .cache/release-keys/root.json`.
+//! project's YubiKeys ([`crate::release_sign`], ADR 0778), and `ob
+//! release images` makes the project's install stick and ISO of one,
+//! which carry it as the server serves it and trust the release root
+//! ([`crate::release_images`], ADR 0779). Any other image's release is
+//! signed by the machine that builds it, with keys of its own, made the
+//! first time they are needed in `.cache/release-keys`: such a stick
+//! verifies against the root built into it, and nothing online trusts
+//! that root. When a stick's release will not check, run `system-release
+//! check` on the stick's `release` folder with `--root
+//! .cache/release-keys/root.json`, or with `--root
+//! releases/metadata/1.root.json` for the project's.
 
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
@@ -118,6 +122,7 @@ pub fn command(ctx: &Ctx, args: &[String]) -> Result<()> {
         ["build", rest @ ..] => build(ctx, rest),
         ["sign", rest @ ..] => crate::release_sign::sign(ctx, rest),
         ["record", version] => crate::release_sign::record(ctx, version),
+        ["images", rest @ ..] => crate::release_images::images(ctx, rest),
         ["key", "yubikey"] => release_key(ctx, None),
         ["key", "yubikey", "--serial", serial] => release_key(ctx, Some(serial)),
         ["root"] => first_root(ctx),
@@ -144,6 +149,7 @@ pub fn command(ctx: &Ctx, args: &[String]) -> Result<()> {
         _ => bail!(
             "usage: ./ob release build [--out <dir>] \
              | sign <version> [--channel <channel>] [--serial <number>] | record <version> \
+             | images <version> [--serial <number>] \
              | key yubikey [--serial <number>] | root \
              | server setup [--dukovo] | channel <repository> (<channel> \
              <version> | --firmware <version>|none <channel>) | advisories <repository> \

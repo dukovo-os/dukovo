@@ -4,7 +4,8 @@
 //! `ob release sign VERSION` and `ob release record VERSION`: the
 //! project's release signed on a YubiKey, after three builds agree and
 //! every gate is green (ADRs 0450, 0457 and 0778), and its signature
-//! recorded in Sigstore's public Rekor log.
+//! recorded in Sigstore's public Rekor log, as the signature of its
+//! install images' checksums is ([`crate::release_images`]).
 //!
 //! `sign` refuses unless the checkout has nothing changed, builds this
 //! version, and its commit is on main or a release branch on GitHub with
@@ -116,7 +117,9 @@ pub fn sign(ctx: &Ctx, args: &[&str]) -> Result<()> {
         return Err(err);
     }
     let shown = ctx.display(&repo);
-    record(ctx, request.version).map_err(|err| {
+    let (entry, answer) = entry_paths(ctx, request.version);
+    let what = format!("Dukovo {}", request.version);
+    record_entry(ctx, request.version, &what, &entry, &answer).map_err(|err| {
         err.hint(format!(
             "the release is signed: `./ob release record {}` records it, and `./ob release deploy \
              {shown}` deploys it",
@@ -129,7 +132,7 @@ pub fn sign(ctx: &Ctx, args: &[&str]) -> Result<()> {
 
 /// Refuses unless the checkout has nothing changed, so that the release is
 /// its commit's.
-fn unchanged(ctx: &Ctx) -> Result<()> {
+pub(crate) fn unchanged(ctx: &Ctx) -> Result<()> {
     let changes = text(ctx, git(ctx).args(["status", "--porcelain"]))?;
     if !changes.is_empty() {
         bail!("the checkout has changes: a release is signed from its commit alone\n{changes}");
@@ -268,40 +271,74 @@ fn offer(ctx: &Ctx, request: &Request, repo: &Path) -> Result<()> {
         .arg("--advisories")
         .arg(ctx.root.join(crate::security::DIR))
         .arg("--record")
-        .arg(entry_path(ctx, request.version))
+        .arg(entry_paths(ctx, request.version).0)
         .arg(ctx.out.join("release-build").join(BUILD_FILES[1]))
         .arg(request.channel);
     // The terminal, for the version to be typed and the YubiKey's PIN.
     process::run(ctx, &mut offer)
 }
 
-/// The Rekor entry of `version`'s signature, which `sign` writes.
-fn entry_path(ctx: &Ctx, version: &str) -> PathBuf {
-    sign_dir(ctx).join(format!("{version}.rekor-entry.json"))
+/// The Rekor entry of `version`'s signature, which `sign` writes, and
+/// where the log's answer is kept.
+fn entry_paths(ctx: &Ctx, version: &str) -> (PathBuf, PathBuf) {
+    let dir = sign_dir(ctx);
+    (dir.join(format!("{version}.rekor-entry.json")), dir.join(format!("{version}.rekor.json")))
 }
 
-/// `ob release record VERSION`: sends the Rekor entry of `version`'s
-/// signature to the log, unless the log's answer is kept already, and
-/// keeps the answer beside it. The log holding the entry already is its
-/// answer too.
+/// `ob release record VERSION`: sends the Rekor entries of `version`'s
+/// signatures to the log, the release's and its install images'
+/// checksums', each that is there and whose answer is not kept already,
+/// and keeps each answer beside it. The log holding an entry already is
+/// its answer too.
 pub fn record(ctx: &Ctx, version: &str) -> Result<()> {
-    let entry = entry_path(ctx, version);
-    let answer = sign_dir(ctx).join(format!("{version}.rekor.json"));
+    let entries = [
+        (format!("Dukovo {version}"), entry_paths(ctx, version)),
+        (
+            format!("the checksums of Dukovo {version}'s install images"),
+            crate::release_images::entry_paths(ctx, version),
+        ),
+    ];
+    let mut recorded = false;
+    for (what, (entry, answer)) in entries {
+        if entry.is_file() {
+            record_entry(ctx, version, &what, &entry, &answer)?;
+            recorded = true;
+        }
+    }
+    if !recorded {
+        bail!(
+            "nothing of Dukovo {version} is signed here: `./ob release sign {version}` and \
+             `./ob release images {version}` write the entries"
+        );
+    }
+    Ok(())
+}
+
+/// Sends the Rekor entry `entry` of the signature of `what`, of release
+/// `version`, to the log, unless its answer is kept in `answer` already,
+/// and keeps the answer there.
+pub(crate) fn record_entry(
+    ctx: &Ctx,
+    version: &str,
+    what: &str,
+    entry: &Path,
+    answer: &Path,
+) -> Result<()> {
     if !entry.is_file() {
-        bail!("{} is not there: `./ob release sign {version}` writes it", ctx.display(&entry));
+        bail!("{} is not there", ctx.display(entry));
     }
     if !answer.is_file() {
         let log = std::env::var("DUKOVO_REKOR").unwrap_or_else(|_| REKOR.to_string());
-        step(&format!("Recording the signature of Dukovo {version} in the Rekor log at {log}"));
-        send(ctx, &log, &entry, &answer)
+        step(&format!("Recording the signature of {what} in the Rekor log at {log}"));
+        send(ctx, &log, entry, answer)
             .map_err(|err| err.hint(format!("./ob release record {version} sends it again")))?;
     }
-    let text = std::fs::read(&answer).context(|| format!("reading {}", answer.display()))?;
+    let text = std::fs::read(answer).context(|| format!("reading {}", answer.display()))?;
     let Some(index) = log_index(&text) else {
         bail!("{} is not an answer of the Rekor log: remove it and record again", answer.display())
     };
     println!(
-        "The signature of Dukovo {version} is entry {index} of the Rekor log: \
+        "The signature of {what} is entry {index} of the Rekor log: \
          https://search.sigstore.dev/?logIndex={index}"
     );
     Ok(())

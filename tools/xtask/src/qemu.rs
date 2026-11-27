@@ -308,6 +308,7 @@ pub fn run_command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         disk_check: None,
         account: None,
         lab: None,
+        release: None,
     };
     let account = account::Options::from_args(args)?;
     if !installed && account.any() {

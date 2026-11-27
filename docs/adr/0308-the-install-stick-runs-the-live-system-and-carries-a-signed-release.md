@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0308. The install stick runs the live system and carries a signed release
 
-- Status: Accepted
+- Status: Accepted; the project's sticks of a release carry it as the update server serves it, and trust the release root, by [0779](0779-the-project-s-install-images-carry-the-release-as-the-server-serves-it-and-their-checksums-are-signed-on-a-yubikey.md)
 - Date: 2026-11-06
 
 ## Context

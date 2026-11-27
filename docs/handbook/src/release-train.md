@@ -58,8 +58,9 @@ labelled `release`, with a checklist of what a release needs:
 
 - only fixes are merged into the branch, each by the `backport` label;
 - the check "CI passed" is successful on the head of the branch;
-- the release is in the update repository and the beta channel offers
-  it;
+- the release is signed on a YubiKey and the beta channel offers it;
+- its install images are made and their checksums signed, to publish
+  with the release notes;
 - the betas have soaked on the canaries, and the canaries are green;
 - the release's security advisories are checked and signed;
 - the release notes are written;
