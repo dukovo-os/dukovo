@@ -815,16 +815,40 @@ pub struct Admin {
 }
 
 /// The memory group: `memory.jit`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Memory {
     /// Whether it gets the jit capability (radix-jit(2), ADR 0624), with
     /// which it lets a program it starts map memory that is writable and
     /// executable at once: authd's, which puts it in each sign-in session
     /// for `bundle run` and `linux run --allow-jit`. The service itself
     /// does not get memory.jit from it.
-    #[serde(default)]
     pub jit: bool,
+}
+
+impl Memory {
+    /// The group from the file's `memory` table, read by hand rather than
+    /// by a reader serde derives: Spark reads service files, and such a
+    /// reader for one more group costs it about 5 KiB, where ADR 0427
+    /// holds Spark, the startup archive, under a MiB.
+    fn from_toml(value: &toml::Value) -> Result<Memory, String> {
+        let toml::Value::Table(table) = value else {
+            return Err("memory is a group of keys, such as memory.jit = true".to_owned());
+        };
+        let mut memory = Memory::default();
+        for (key, value) in table {
+            match (key.as_str(), value) {
+                ("jit", toml::Value::Boolean(jit)) => memory.jit = *jit,
+                ("jit", _) => return Err("memory.jit is true or false".to_owned()),
+                (key, _) => return Err(format!("unknown field `{key}`, expected `jit`")),
+            }
+        }
+        Ok(memory)
+    }
+}
+
+/// An empty group, for a file that leaves one out.
+fn no_group() -> toml::Value {
+    toml::Value::Table(toml::Table::new())
 }
 
 /// The devices group: `devices.pci`, the cards the kernel left for a
@@ -1135,8 +1159,9 @@ struct RawPermissions {
     domain: bool,
     #[serde(default)]
     devices: Devices,
-    #[serde(default)]
-    memory: Memory,
+    /// Read as [`Memory::from_toml`] says.
+    #[serde(default = "no_group")]
+    memory: toml::Value,
 }
 
 impl TryFrom<RawPermissions> for Permissions {
@@ -1151,7 +1176,7 @@ impl TryFrom<RawPermissions> for Permissions {
             names: raw.names,
             domain: raw.domain,
             devices: raw.devices,
-            memory: raw.memory,
+            memory: Memory::from_toml(&raw.memory)?,
         };
         let grants = permissions.network.grants() + usize::from(permissions.admin.network);
         if grants > NETWORK_SLOTS as usize {
