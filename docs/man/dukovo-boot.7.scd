@@ -667,10 +667,25 @@ them to *init*, and the kernel does not read them.
 	itself, as before Phase 11c. For firmware whose AML misbehaves. See
 	*ACPI*.
 
+*idle*=_mode_
+	How idle CPUs wait (see *IDLE STATES*). *halt* keeps them in C1,
+	with HLT, and uses no deeper state, as Linux's *idle=halt* does;
+	*nomwait* uses no MWAIT: C1 is HLT, the firmware hears that the
+	kernel has no MWAIT, and of the deeper states only those entered
+	by reading an I/O port are used, as with Linux's *idle=nomwait*.
+	For a machine whose firmware or processor misbehaves in a deeper
+	state.
+
+*max_cstate*=_count_
+	Use at most _count_ idle states, C1 included: *max_cstate=1* is C1
+	alone, *max_cstate=2* C1 and the shallowest deeper state, and so on.
+	As Linux's *processor.max_cstate*, which counts the same way.
+
 *pstate*=off
 	Leave the CPUs' speed to the firmware, though they have Intel's HWP
-	or AMD's CPPC, as Linux's *intel_pstate=disable* and
-	*amd_pstate=disable* do. See *CPU FREQUENCY*.
+	or AMD's CPPC, or P-states the kernel could choose, as Linux's
+	*intel_pstate=disable* and *amd_pstate=disable* do. See *CPU
+	FREQUENCY*.
 
 *ups*=show
 	Show the UPSes plugged in by USB in _/kernel/class/power_supply_
@@ -1272,6 +1287,45 @@ runs; the kernel hears a fixed power button by itself and powers off
 with the sleep types of the DSDT's _\_S5_ (ADR 0142), and no battery,
 adapter, lid, thermal zone or USB-C port is found.
 
+# IDLE STATES
+
+An idle CPU first polls for a moment, for work that comes at once (ADR
+0037, ADR 0551), and then waits in an idle state: C1, with MWAIT where
+the processor has it and the machine is no virtual one, or HLT, or one
+of the deeper states the firmware describes in each processor object's
+_\_CST_, which save more power and take longer to leave (ADR 0795). Before
+reading them, the kernel tells the firmware, through the processor
+objects' _\_OSC_ or _\_PDC_, that it enters C1 with HLT and deeper states
+with MWAIT, each CPU its own; many firmwares describe the deeper states
+only then.
+
+A deeper state is used only where the processor lists its MWAIT hint
+(CPUID leaf 5), or, for one entered by reading an I/O port, where the
+machine is no virtual one and the state needs no bus-master arbitration
+(ACPI type 1 or 2, or any type on AMD's Zen processors), and only on a
+processor whose local APIC timer runs in every state and whose TSC is
+invariant. Where the firmware lists C1E as a state of its own, the
+kernel turns off Intel's promotion of C1 to C1E, so that C1 is short and
+C1E is chosen when it pays.
+
+Each time a CPU goes idle, the governor picks the deepest state whose
+target residency (three times its exit latency) the time until the
+CPU's next timer reaches, unless most of its recent idle periods were
+ended sooner by something else, interrupts or other CPUs' wake-ups: it
+then picks the state that the middle of those early ends allows. The log
+says what the CPUs have:
+
+	Idle: C1 (ACPI FFH MWAIT 0x0, 0 µs), C2 (ACPI FFH MWAIT 0x1, 2 µs), C3 (ACPI FFH MWAIT 0x20, 85 µs)
+
+and on machines whose firmware describes none, QEMU's among them:
+
+	Idle: C1 only; the firmware describes no deeper state the CPUs can use (4 processor objects)
+
+Each CPU's states, how often it entered each and how long it stayed, are
+in _/kernel/devices/system/cpu/cpu_*n*_/cpuidle_, as on Linux
+(*radix-sysfs*(5)); cpupower and powertop read them. *idle* and
+*max_cstate* limit the states the CPUs use.
+
 # CPU FREQUENCY
 
 Intel's CPUs from Skylake on and most of AMD's from Zen 3 on pick their
@@ -1289,10 +1343,27 @@ CPUs can do:
 	CPU frequency: Intel's HWP on 8 CPUs, 400 to 3400 MHz, base 1800 MHz, energy preference balance_performance
 
 Each CPU's policy is in _/kernel/devices/system/cpu/cpufreq_, as on Linux
-(*radix-sysfs*(5)). CPUs with neither control, as QEMU's even under KVM,
-keep the firmware's setting:
+(*radix-sysfs*(5)).
 
-	CPU frequency: left to the firmware: the CPUs have neither Intel's HWP nor AMD's CPPC
+CPUs with neither control, Intel's from before Skylake and those whose
+firmware keeps HWP off, and AMD's Zen 1 and 2 and those whose firmware
+offers no CPPC, run at one of the P-states their firmware's _\_PSS_
+describes, where _\_PCT_ says the processor's own register chooses them:
+Intel's Enhanced SpeedStep or AMD's hardware P-states (ADR 0796). The
+kernel picks the state then, as Linux's _acpi-cpufreq_ with its
+_schedutil_ governor does: at each tick, from how busy the CPU was since
+the last and how fast it ran, the slowest state at which the same work
+would keep it busy four fifths of the time, and the fastest allowed at
+once when it was busy throughout. _\_PPC_ keeps the fastest states off
+limits, and *cpu.boost*, *cpu.speed* and passive cooling apply as above.
+The log says so:
+
+	CPU frequency: the firmware's P-states on 8 CPUs, 800 to 3900 MHz, base 3400 MHz
+
+CPUs with none of these, as QEMU's even under KVM, keep the firmware's
+setting:
+
+	CPU frequency: left to the firmware: the CPUs have neither Intel's HWP nor AMD's CPPC, nor P-states from the firmware that the kernel can choose
 
 # SENSORS
 

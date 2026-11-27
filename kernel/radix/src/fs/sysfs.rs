@@ -630,8 +630,8 @@ fn hwmon_device(dir: &FixedDir, index: usize, device: hwmon::Device) -> Result<(
 }
 
 /// `/kernel/devices/system/cpu`: the CPUs' lists, each CPU's frequency's
-/// policy where they pick their own speed (ADR 0202), and the
-/// processor's flaws.
+/// policy where they pick their own speed (ADR 0202), each CPU's idle
+/// states (ADR 0795), and the processor's flaws.
 fn cpu(system: &FixedDir) -> Result<()> {
     let dir = system.add_dir("cpu", next_id())?;
     let present = |text: &mut Text| match Arch::cpu_count() {
@@ -642,6 +642,13 @@ fn cpu(system: &FixedDir) -> Result<()> {
     dir.add("present", value(present)?)?;
     dir.add("online", value(|text| writeln!(text, "{}", crate::sched::online()))?)?;
     cpu_flaws(&dir)?;
+    let idle = dir.add_dir("cpuidle", next_id())?;
+    // Linux's names: its ACPI driver, or none where C1 is all there is.
+    let firmware = Arch::idle_states(0).len() > 1;
+    idle.add(
+        "current_driver",
+        value(move |text| writeln!(text, "{}", if firmware { "acpi_idle" } else { "none" }))?,
+    )?;
     let driver = pstate::driver();
     let cpufreq = match driver {
         Some(_) => Some(dir.add_dir("cpufreq", next_id())?),
@@ -651,6 +658,7 @@ fn cpu(system: &FixedDir) -> Result<()> {
         let mut name = TextBuf::<16>::new();
         let _ = write!(name, "cpu{cpu}");
         let cpu_dir = dir.add_dir(name.as_str(), next_id())?;
+        cpu_idle(&cpu_dir, cpu)?;
         let (Some(driver), Some(cpufreq)) = (driver, &cpufreq) else { continue };
         if !pstate::cpus().any(|on| on == cpu) {
             continue;
@@ -664,6 +672,32 @@ fn cpu(system: &FixedDir) -> Result<()> {
         let mut target = TextBuf::<32>::new();
         let _ = write!(target, "../cpufreq/policy{cpu}");
         cpu_dir.add("cpufreq", Link::make(next_id(), target.as_str())?)?;
+    }
+    Ok(())
+}
+
+/// `cpu<cpu>/cpuidle`: a directory for each of the CPU's idle states,
+/// shallowest first, with the files Linux's have: the state's name and
+/// description, its exit latency and target residency in microseconds,
+/// how often the CPU entered it and the microseconds it stayed (ADR 0795).
+fn cpu_idle(cpu_dir: &FixedDir, cpu: usize) -> Result<()> {
+    let dir = cpu_dir.add_dir("cpuidle", next_id())?;
+    for (index, &state) in Arch::idle_states(cpu).iter().enumerate() {
+        let mut name = TextBuf::<16>::new();
+        let _ = write!(name, "state{index}");
+        let state_dir = dir.add_dir(name.as_str(), next_id())?;
+        let used = move || crate::sched::idle_state_use(cpu, index);
+        state_dir.add("name", value(move |text| writeln!(text, "{}", state.name))?)?;
+        state_dir.add("desc", value(move |text| writeln!(text, "{}", state.how))?)?;
+        state_dir
+            .add("latency", value(move |text| writeln!(text, "{}", state.exit_ns / 1_000))?)?;
+        state_dir.add(
+            "residency",
+            value(move |text| writeln!(text, "{}", state.residency_ns / 1_000))?,
+        )?;
+        state_dir.add("usage", value(move |text| writeln!(text, "{}", used().0))?)?;
+        state_dir.add("time", value(move |text| writeln!(text, "{}", used().1 / 1_000))?)?;
+        state_dir.add("disable", value(|text| writeln!(text, "0"))?)?;
     }
     Ok(())
 }

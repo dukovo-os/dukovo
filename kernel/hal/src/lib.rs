@@ -32,6 +32,7 @@ pub mod boot;
 pub mod clock;
 pub mod cmdline;
 pub mod hyperv;
+pub mod idle;
 pub mod user;
 pub mod vmware;
 
@@ -43,6 +44,7 @@ pub use boot::{
     Reservation,
 };
 pub use hyperv::{Hyperv, Synic};
+pub use idle::{FirmwareState, IdleState};
 pub use radix_hw::pci::Address as PciAddress;
 pub use radix_hw::{Dma, Mmio, MsiMessage, Page};
 pub use user::{
@@ -65,17 +67,27 @@ pub trait Cpu {
     /// Sleeps until the next interrupt arrives.
     fn wait_for_interrupt();
 
-    /// Sleeps until an interrupt arrives or another CPU writes to `wake`'s
-    /// cache line, setting `wake`'s lowest bit, in the CPU's light sleep
-    /// state: MONITOR and MWAIT on x86-64 when it has them, so a waker need
-    /// not send an interrupt, else HLT. Call with interrupts masked; it
-    /// returns with them masked, after any interrupt that woke it was
-    /// handled. Returns at once if `wake`'s lowest bit is already set.
-    fn idle_until(wake: &AtomicUsize);
+    /// Sleeps until an interrupt arrives, or, in a state that watches
+    /// (MWAIT's), until another CPU writes to `wake`'s cache line, setting
+    /// `wake`'s lowest bit: in idle state `state` of this CPU's
+    /// [`Cpu::idle_states`], or its first if there is no such state. The
+    /// first is the CPU's light sleep: MONITOR and MWAIT on x86-64 when it
+    /// has them, so a waker need not send an interrupt, else HLT. Call
+    /// with interrupts masked; it returns with them masked, after any
+    /// interrupt that woke it was handled. Returns at once if `wake`'s
+    /// lowest bit is already set.
+    fn idle_until(wake: &AtomicUsize, state: usize);
 
-    /// Whether [`Cpu::idle_until`] notices writes to `wake` without an
+    /// Whether the first idle state notices writes to `wake` without an
     /// interrupt (MWAIT), and its name for the boot report.
     fn idle_mode() -> (bool, &'static str);
+
+    /// CPU `cpu`'s idle states, shallowest first; never empty. Deeper
+    /// states come once the firmware has described them
+    /// ([`Devices::set_idle_states`]), and do not change after.
+    fn idle_states(_cpu: usize) -> &'static [IdleState] {
+        core::slice::from_ref(&idle::ONLY)
+    }
 
     /// Whether the kernel runs in a virtual machine, where halting and
     /// interprocessor interrupts are exits to the hypervisor.
@@ -418,6 +430,13 @@ pub trait Timer {
     /// replaces it; `u64::MAX` cancels it. Call with interrupts masked.
     fn set_deadline(deadline_ns: u64);
 
+    /// When this CPU's timer next interrupts, on the [`Timer::now_ns`]
+    /// clock: the earlier of its next tick and its deadline, or
+    /// `u64::MAX` when it is not armed. With interrupts masked.
+    fn next_interrupt_ns() -> u64 {
+        u64::MAX
+    }
+
     /// How many times CPU `cpu` wrote its timer hardware to arm it. Under
     /// a hypervisor each write is usually a VM exit, so the benchmarks
     /// report it.
@@ -626,6 +645,32 @@ impl core::fmt::Display for SmbusError {
 pub trait Devices {
     /// Calls `found` with each PCI segment the firmware describes.
     fn pci_segments(found: &mut dyn FnMut(PciSegment));
+
+    /// The ACPI processor ID or `_UID` the firmware's interrupt controller
+    /// table gives CPU `cpu`, by which its processor object in the
+    /// namespace is found.
+    fn acpi_processor_id(_cpu: usize) -> Option<u32> {
+        None
+    }
+
+    /// Gives the running CPU the idle states its firmware describes,
+    /// shallowest first, and returns how many of them it now uses beyond
+    /// its first state: those the architecture can enter and that keep
+    /// time and timers going. Only the first call on a CPU counts. Run on
+    /// each CPU, from a thread.
+    fn set_idle_states(_states: &[FirmwareState]) -> usize {
+        0
+    }
+
+    /// Gives the running CPU the P-states its firmware describes, fastest
+    /// first, of which the first `limit` are off limits, and returns how
+    /// many it now uses: none if it controls its own speed, or has no
+    /// register that chooses them (ADR 0796). Only the first call on a CPU
+    /// counts. Run on each CPU, from a thread, before the speed control
+    /// starts.
+    fn set_performance_states(_states: &[radix_pstate::firmware::State], _limit: usize) -> usize {
+        0
+    }
 
     /// Maps `len` bytes of device registers from physical address `phys`,
     /// uncached, for the rest of the kernel's life. `None` when the

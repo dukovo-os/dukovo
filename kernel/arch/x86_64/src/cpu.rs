@@ -232,6 +232,12 @@ pub mod feature {
         cpuid(1, 0).ecx & (1 << 3) != 0
     }
 
+    /// A local APIC timer that keeps running in every C-state (ARAT,
+    /// CPUID 6, EAX bit 2).
+    pub fn arat() -> bool {
+        super::max_leaf() >= 6 && cpuid(6, 0).eax & (1 << 2) != 0
+    }
+
     /// The local APIC timer's TSC-deadline mode (CPUID 1, ECX bit 24).
     pub fn tsc_deadline() -> bool {
         cpuid(1, 0).ecx & (1 << 24) != 0
@@ -729,12 +735,21 @@ pub fn monitor(addr: usize) {
     };
 }
 
-/// Enables interrupts and waits in C1 until an interrupt arrives or the
-/// monitored line is written. The `sti` takes effect only once MWAIT has
-/// started, so an interrupt cannot slip in between and be missed.
-pub fn sti_mwait() {
-    // SAFETY: MWAIT only waits; the interrupt handlers are installed.
-    unsafe { asm!("sti", "mwait", in("eax") 0u32, in("ecx") 0u32, options(nostack)) };
+/// Enables interrupts and waits in the C-state of MWAIT hint `hint` (0 is
+/// C1) until an interrupt arrives or the monitored line is written. The
+/// `sti` takes effect only once MWAIT has started, so an interrupt cannot
+/// slip in between and be missed.
+pub fn sti_mwait(hint: u32) {
+    // SAFETY: MWAIT only waits; the interrupt handlers are installed, and
+    // a hint the processor does not list waits in C1.
+    unsafe { asm!("sti", "mwait", in("eax") hint, in("ecx") 0u32, options(nostack)) };
+}
+
+/// Takes the interrupts that are pending, and masks them again: `sti`
+/// lets them in only after the instruction that follows it.
+pub fn interrupt_window() {
+    // SAFETY: the interrupt handlers are installed.
+    unsafe { asm!("sti", "nop", "cli", options(nostack)) };
 }
 
 /// Enables interrupts and halts until one arrives, without the window

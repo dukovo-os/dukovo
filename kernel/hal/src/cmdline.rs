@@ -188,6 +188,17 @@ pub const FLAGS: &[Flag] = &[
                   button itself",
     },
     Flag {
+        name: "idle",
+        value: Some("mode"),
+        summary: "how idle CPUs wait: halt keeps them in C1, with HLT; nomwait uses no MWAIT, \
+                  so C1 is HLT and deeper states are the firmware's I/O-port ones",
+    },
+    Flag {
+        name: "max_cstate",
+        value: Some("count"),
+        summary: "the most idle states a CPU uses, C1 first: 1 keeps it in C1",
+    },
+    Flag {
         name: "pstate",
         value: Some("off"),
         summary: "leave the CPUs' speed to the firmware, though they have Intel's HWP or AMD's CPPC",

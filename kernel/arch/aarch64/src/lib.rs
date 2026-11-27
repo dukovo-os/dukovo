@@ -42,7 +42,7 @@ impl Cpu for Arch {
         core::hint::spin_loop();
     }
 
-    fn idle_until(_wake: &AtomicUsize) {
+    fn idle_until(_wake: &AtomicUsize, _state: usize) {
         core::hint::spin_loop();
     }
 

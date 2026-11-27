@@ -32,6 +32,8 @@ pub enum Resource<'a> {
     I2c(I2c<'a>),
     /// Bus numbers a PCI host bridge decodes.
     Buses(Buses),
+    /// A register in any address space, as `_CST` and `_PCT` name them.
+    Register(GenericRegister),
     /// A descriptor of another kind: its small type, or a large one's
     /// type with bit 7 set.
     Other(u8),
@@ -57,6 +59,50 @@ pub struct Buses {
     pub first: u8,
     /// The last bus number, which bridges below the root may be given.
     pub last: u8,
+}
+
+/// The address space of system memory, in a [`GenericRegister`].
+pub const SPACE_SYSTEM_MEMORY: u8 = 0x00;
+/// The address space of I/O ports, in a [`GenericRegister`].
+pub const SPACE_SYSTEM_IO: u8 = 0x01;
+/// The address space of a Platform Communications Channel.
+pub const SPACE_PCC: u8 = 0x0a;
+/// The address space of functional fixed hardware: the processor's own
+/// registers and instructions, which its other fields describe.
+pub const SPACE_FUNCTIONAL_FIXED_HW: u8 = 0x7f;
+
+/// A register in some address space (Generic Register descriptor,
+/// section 6.4.3.7; `Register` in ASL).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GenericRegister {
+    /// The address space, as `SPACE_SYSTEM_IO`.
+    pub space: u8,
+    /// How many bits wide the register is; for functional fixed
+    /// hardware, the vendor.
+    pub bit_width: u8,
+    /// The bit the register starts at; for functional fixed hardware,
+    /// the class.
+    pub bit_offset: u8,
+    /// The size of an access: 0 undefined, 1 byte, 2 word, 3 dword, 4
+    /// qword; for functional fixed hardware, flags.
+    pub access_size: u8,
+    /// The register's address in its space; for functional fixed
+    /// hardware, what the vendor and class define.
+    pub address: u64,
+}
+
+/// The first descriptor of `template`, if it is a Generic Register: as
+/// `_CST` returns for each C-state and `_PCT` for its two registers, a
+/// register descriptor and then an End Tag. `None` for any other first
+/// descriptor, or for bytes too short for one.
+pub fn generic_register(template: &[u8]) -> Option<GenericRegister> {
+    if *template.first()? != REGISTER | 0x80 {
+        return None;
+    }
+    large(REGISTER, template).and_then(|resource| match resource {
+        Resource::Register(register) => Some(register),
+        _ => None,
+    })
 }
 
 /// A range of I/O ports (I/O Port or Fixed Location I/O Port, or an I/O
@@ -241,6 +287,7 @@ const DWORD_SPACE: u8 = 0x07;
 const WORD_SPACE: u8 = 0x08;
 const EXTENDED_INTERRUPT: u8 = 0x09;
 const QWORD_SPACE: u8 = 0x0a;
+const REGISTER: u8 = 0x02;
 const GPIO: u8 = 0x0c;
 const SERIAL_BUS: u8 = 0x0e;
 /// The serial bus type of I2C.
@@ -320,6 +367,19 @@ fn large(kind: u8, bytes: &[u8]) -> Option<Resource<'_>> {
             length: u32_at(bytes, 8)?.into(),
             writable: *bytes.get(3)? & 1 != 0,
         }),
+        REGISTER => {
+            // A length of 12: the space, three bytes, and the address.
+            if u16_at(bytes, 1)? != 12 {
+                return None;
+            }
+            Resource::Register(GenericRegister {
+                space: *bytes.get(3)?,
+                bit_width: *bytes.get(4)?,
+                bit_offset: *bytes.get(5)?,
+                access_size: *bytes.get(6)?,
+                address: u64_at(bytes, 7)?,
+            })
+        }
         WORD_SPACE | DWORD_SPACE | QWORD_SPACE => return space(kind, bytes),
         EXTENDED_INTERRUPT => {
             let flags = *bytes.get(3)?;
@@ -653,5 +713,56 @@ mod tests {
         // its checksum ends it too.
         assert_eq!(all(&bytes[..11]).len(), 3);
         assert_eq!(all(&bytes[..12]).len(), 3);
+    }
+
+    /// `Register (FFixedHW, 1, 2, 0x20, 1)` (an MWAIT C-state's) and
+    /// `Register (SystemIO, 8, 0, 0x814, 1)`, each with its End Tag.
+    const MWAIT: &[u8] =
+        &[0x82, 0x0c, 0x00, 0x7f, 0x01, 0x02, 0x01, 0x20, 0, 0, 0, 0, 0, 0, 0, 0x79, 0x00];
+    const PORT: &[u8] =
+        &[0x82, 0x0c, 0x00, 0x01, 0x08, 0x00, 0x01, 0x14, 0x08, 0, 0, 0, 0, 0, 0, 0x79, 0x00];
+
+    #[test]
+    fn reads_a_generic_register() {
+        assert_eq!(
+            generic_register(MWAIT),
+            Some(GenericRegister {
+                space: SPACE_FUNCTIONAL_FIXED_HW,
+                bit_width: 1,
+                bit_offset: 2,
+                access_size: 1,
+                address: 0x20
+            })
+        );
+        assert_eq!(
+            generic_register(PORT),
+            Some(GenericRegister {
+                space: SPACE_SYSTEM_IO,
+                bit_width: 8,
+                bit_offset: 0,
+                access_size: 1,
+                address: 0x814
+            })
+        );
+        // The walker gives the same, then ends at the End Tag.
+        let walked: Vec<_> = Resources::new(PORT).collect();
+        assert_eq!(walked, [Ok(Resource::Register(generic_register(PORT).unwrap()))]);
+    }
+
+    #[test]
+    fn a_register_is_the_first_descriptor_only() {
+        assert_eq!(generic_register(&[]), None);
+        assert_eq!(generic_register(&MWAIT[..14]), None);
+        assert_eq!(generic_register(&MWAIT[..3]), None);
+        // An End Tag, a Memory32Fixed range, and a Register after an IRQ.
+        assert_eq!(generic_register(&[0x79, 0x00]), None);
+        assert_eq!(generic_register(&[0x86, 0x09, 0, 1, 0, 0, 0, 0xfd, 0, 0, 1, 0, 0x79, 0]), None);
+        let mut late = vec![0x22, 0x02, 0x00];
+        late.extend_from_slice(PORT);
+        assert_eq!(generic_register(&late), None);
+        // A length that is not 12.
+        let mut odd = PORT.to_vec();
+        odd[1] = 0x0b;
+        assert_eq!(generic_register(&odd), None);
     }
 }
