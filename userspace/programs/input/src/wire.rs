@@ -8,7 +8,7 @@
 //! returned. The kernel's side of each record is `radix_input::event`,
 //! and the tests check the two against each other.
 
-use radix_abi::input::{InputAxis, InputChange, InputEvent, InputInfo};
+use radix_abi::input::{Event, InputAxis, InputChange, InputEvent, InputInfo, Motion};
 
 fn le16(bytes: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_le_bytes(bytes.get(at..at.checked_add(2)?)?.try_into().ok()?))
@@ -36,6 +36,37 @@ pub fn events(bytes: &[u8]) -> impl Iterator<Item = InputEvent> + '_ {
             kind: le16(event, InputEvent::OFFSET_KIND)?,
             code: le16(event, InputEvent::OFFSET_CODE)?,
             value: signed(event, InputEvent::OFFSET_VALUE)?,
+        })
+    })
+}
+
+/// The keys a read of _/devices/kbd_ put into `bytes`: every whole one,
+/// the oldest first.
+pub fn keys(bytes: &[u8]) -> impl Iterator<Item = Event> + '_ {
+    bytes.as_chunks::<{ Event::SIZE }>().0.iter().filter_map(|key| {
+        Some(Event {
+            time_ns: le64(key, Event::OFFSET_TIME_NS)?,
+            code: le16(key, Event::OFFSET_CODE)?,
+            value: le16(key, Event::OFFSET_VALUE)?,
+            reserved: 0,
+        })
+    })
+}
+
+/// The motions a read of _/devices/mouse_ put into `bytes`: every whole
+/// one, the oldest first.
+pub fn motions(bytes: &[u8]) -> impl Iterator<Item = Motion> + '_ {
+    bytes.as_chunks::<{ Motion::SIZE }>().0.iter().filter_map(|motion| {
+        Some(Motion {
+            time_ns: le64(motion, Motion::OFFSET_TIME_NS)?,
+            dx: signed(motion, Motion::OFFSET_DX)?,
+            dy: signed(motion, Motion::OFFSET_DY)?,
+            wheel: signed(motion, Motion::OFFSET_WHEEL)?,
+            pan: signed(motion, Motion::OFFSET_PAN)?,
+            x: le32(motion, Motion::OFFSET_X)?,
+            y: le32(motion, Motion::OFFSET_Y)?,
+            buttons: le32(motion, Motion::OFFSET_BUTTONS)?,
+            flags: le32(motion, Motion::OFFSET_FLAGS)?,
         })
     })
 }

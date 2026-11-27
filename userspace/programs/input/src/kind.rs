@@ -70,6 +70,17 @@ pub struct Has {
 }
 
 impl Has {
+    /// How many keys it has: its codes that are not buttons.
+    pub fn key_count(&self) -> usize {
+        codes(&self.keys).filter(|code| !(BUTTONS..BUTTONS_END).contains(code)).count()
+    }
+
+    /// How many buttons it has, a mouse's, a pen's and a game
+    /// controller's alike.
+    pub fn button_count(&self) -> usize {
+        codes(&self.keys).filter(|code| (BUTTONS..BUTTONS_END).contains(code)).count()
+    }
+
     /// What a device that has these is.
     pub fn kinds(&self) -> Kinds {
         let key = |code| has(&self.keys, code);

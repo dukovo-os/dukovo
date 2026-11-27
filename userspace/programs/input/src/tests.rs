@@ -11,11 +11,11 @@ use std::io;
 
 use radix_abi::input::{
     ABS_X, ABS_Y, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, BTN_TOOL_PEN, BTN_TOUCH, BUS_I8042, BUS_USB,
-    BUS_VIRTUAL, DEVICE_ADDED, DEVICE_REMOVED, EV_ABS, EV_KEY, EV_LED, EV_REL, EV_SW, EV_SYN,
-    INPUT_AXIS, INPUT_BITS, INPUT_INFO, INPUT_LIST, INPUT_NAME, INPUT_PLACE, INPUT_SERIAL,
-    INPUT_STATE, INPUT_TIE, InputAxis, InputChange, InputEvent, InputInfo, KEY_A, KEY_KP1,
-    KEY_MUTE, KEY_POWER, KEY_VOLUMEDOWN, KEY_VOLUMEUP, POSITION_MAX, REL_WHEEL_HI_RES, REL_X,
-    REL_Y, SW_LID, SYN_REPORT,
+    BUS_VIRTUAL, BUTTON_LEFT, BUTTON_MIDDLE, DEVICE_ADDED, DEVICE_REMOVED, EV_ABS, EV_KEY, EV_LED,
+    EV_REL, EV_SW, EV_SYN, Event, INPUT_AXIS, INPUT_BITS, INPUT_INFO, INPUT_LIST, INPUT_NAME,
+    INPUT_PLACE, INPUT_SERIAL, INPUT_STATE, INPUT_TIE, InputAxis, InputChange, InputEvent,
+    InputInfo, KEY_A, KEY_KP1, KEY_MUTE, KEY_POWER, KEY_VOLUMEDOWN, KEY_VOLUMEUP, MOTION_ABSOLUTE,
+    Motion, POSITION_MAX, PRESSED, REL_WHEEL_HI_RES, REL_X, REL_Y, RELEASED, SW_LID, SYN_REPORT,
 };
 use radix_input::device::{About, Axis, Device as Kept, Few, Keys, padded};
 use radix_input::event::{Record as Written, Said, mark};
@@ -52,6 +52,34 @@ fn events_are_read_as_the_kernel_writes_them_and_a_cut_one_is_left_out() {
     }
     bytes.truncate(InputEvent::SIZE + 5);
     assert_eq!(wire::events(&bytes).collect::<Vec<_>>(), said[..1]);
+}
+
+#[test]
+fn the_merged_files_keys_and_motions_are_read_as_the_kernel_writes_them() {
+    let keys = [
+        Event { time_ns: 5, code: KEY_A, value: PRESSED, reserved: 0 },
+        Event { time_ns: u64::MAX, code: KEY_POWER, value: RELEASED, reserved: 0 },
+    ];
+    let bytes: Vec<u8> = keys.iter().flat_map(written).collect();
+    assert_eq!(wire::keys(&bytes).collect::<Vec<_>>(), keys);
+    assert_eq!(wire::keys(&bytes[..bytes.len() - 1]).collect::<Vec<_>>(), keys[..1]);
+
+    let motions = [
+        Motion { time_ns: 9, dx: -4, dy: 7, wheel: -120, pan: 15, ..Motion::default() },
+        Motion {
+            time_ns: 10,
+            x: POSITION_MAX,
+            y: 1,
+            buttons: BUTTON_LEFT | BUTTON_MIDDLE,
+            flags: MOTION_ABSOLUTE,
+            ..Motion::default()
+        },
+    ];
+    let bytes: Vec<u8> = motions.iter().flat_map(written).collect();
+    assert_eq!(wire::motions(&bytes).collect::<Vec<_>>(), motions);
+    for cut in 0..bytes.len() {
+        assert_eq!(wire::motions(&bytes[..cut]).count(), cut / Motion::SIZE);
+    }
 }
 
 #[test]
@@ -305,6 +333,10 @@ fn each_device_is_called_what_it_is() {
     let mut buttons = About::new(BUS_USB, "Buttons", "usb-1-5");
     buttons.keys = Keys::of(&[0x130, 0x131, BTN_RIGHT]);
     assert_eq!(named(&buttons), "other");
+    // Keys and buttons are counted apart.
+    buttons.keys.set(KEY_MUTE, true);
+    let has = has_of(&buttons);
+    assert_eq!((has.key_count(), has.button_count()), (1, 3));
 }
 
 #[test]
