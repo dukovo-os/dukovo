@@ -12,7 +12,10 @@
 //! key (ADR 0708), and the repeats of a held key. What is here is what
 //! only the kernel has: the lock, the files and their requests
 //! (`requests`, radix-input(2)), what wakes a reader, and the thread that
-//! keeps a held key repeating (`keyboard`).
+//! keeps a held key repeating (`keyboard`). The drivers are with their
+//! buses (PS/2 in `keyboard`, `crate::usb`, `crate::i2c`,
+//! `crate::hyperv`), but for virtio's devices, which are only input
+//! devices and are in [`virtio`].
 //!
 //! Every description of an input file is a reader with a ring of its
 //! own, made when the file is opened. The hub wakes a reader through its
@@ -36,6 +39,7 @@
 
 mod keyboard;
 mod requests;
+pub mod virtio;
 
 use alloc::sync::Arc;
 use core::any::Any;

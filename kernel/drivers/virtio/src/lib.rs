@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Virtio over PCI: the transport, virtqueues and the block, network,
-//! sound, SCSI, console and graphics drivers.
+//! sound, SCSI, console, graphics and input drivers.
 //!
 //! Virtio (OASIS Virtual I/O Device specification, version 1.2) is how a
 //! virtual machine's devices talk to their hypervisor: a device and its
@@ -36,6 +36,9 @@
 //!   host keeps the pictures, shows them on the card's screens and draws
 //!   the pointer, with one MSI-X interrupt for its answers and one for
 //!   what its screens show changing.
+//! - [`input::Input`] is a keyboard, a mouse or a tablet (virtio-input):
+//!   it says what it is and what it has, and its events come in Linux's
+//!   codes, with one MSI-X interrupt for both its queues.
 //!
 //! Nothing here waits: drivers submit requests and collect completions,
 //! and the kernel decides how threads wait for them (in `radix`, which
@@ -48,6 +51,7 @@
 pub mod blk;
 pub mod console;
 pub mod gpu;
+pub mod input;
 pub mod net;
 pub mod queue;
 pub mod scsi;
@@ -61,6 +65,8 @@ mod gpu_band_tests;
 mod gpu_card;
 #[cfg(test)]
 mod gpu_tests;
+#[cfg(test)]
+mod input_tests;
 #[cfg(test)]
 mod net_tests;
 #[cfg(test)]
@@ -92,6 +98,8 @@ pub mod device_type {
     pub const SCSI: u16 = 8;
     /// A graphics card.
     pub const GPU: u16 = 16;
+    /// A keyboard, a mouse or a tablet.
+    pub const INPUT: u16 = 18;
     /// A sound card.
     pub const SOUND: u16 = 25;
 }

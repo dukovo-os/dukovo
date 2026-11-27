@@ -187,6 +187,7 @@ pub(super) fn set_lights(lights: u32) {
     LIGHTS.store(lights & 7, Ordering::Release);
     wake_thread();
     crate::usb::lights_changed();
+    super::virtio::lights_changed();
 }
 
 /// Starts the thread, then the PS/2 keyboard.
