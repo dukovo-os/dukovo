@@ -619,7 +619,16 @@ them to *init*, and the kernel does not read them.
 *nopcid*
 	Do not tag TLB entries with process-context identifiers (PCIDs), even
 	when the CPU has them: every switch between address spaces then
-	flushes the TLB. For debugging and for comparison.
+	flushes the TLB, and so does every entry to the kernel and exit from
+	it where the kernel isolates itself (*pti*). For debugging and for
+	comparison.
+
+*noinvpcid*
+	Do not use INVPCID, even when the CPU has it: where the kernel
+	isolates itself under PCIDs (*pti*), a program's pages that were
+	unmapped are then flushed by flushing its whole view on its next
+	return, as on CPUs without INVPCID. As Linux's flag of the same name;
+	for debugging and for comparison.
 
 *nox2apic*
 	Drive the local APICs in xAPIC mode (registers in memory) even when
@@ -970,7 +979,9 @@ identification and capability registers, decides how to close each one, and
 patches the entry and exit paths at boot to match (ADR 0790). The kernel is
 built with every indirect branch and return going through a thunk, and at
 boot it rewrites each one for the CPU: plain where the CPU needs nothing,
-through a retpoline or a return thunk where it does (ADR 0793). Without a flag
+through a retpoline or a return thunk where it does (ADR 0793). On a CPU
+with Meltdown, programs run on page tables that leave the kernel out (ADR
+0794). Without a flag
 every protection is on where the CPU needs it (*auto*), as Linux's default
 is. *ob bench* compares Radix with Linux booted the same way.
 
@@ -991,6 +1002,18 @@ it.
 
 *nosmt*
 	Keep every core's second hardware thread off, whatever the CPU has.
+
+*pti*=_mode_
+	Whether programs run on page tables of their own that map almost
+	none of the kernel, against Meltdown, which lets a program read the
+	kernel's memory. *auto*, the default, isolates the kernel on CPUs with
+	Meltdown and not on others; *on* isolates it on any CPU, even with
+	*mitigations=off*; *off* never does. Each entry to the kernel and exit
+	from it then switches page tables, which costs most on CPUs without
+	PCIDs (see *nopcid*).
+
+*nopti*
+	The same as *pti=off*.
 
 *nospectre_v1*
 	Leave out the fence after the interrupt entry's *swapgs* choice. The

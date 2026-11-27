@@ -16,7 +16,8 @@
  *
  * The section boundaries below are read by the kernel to map the image with
  * the right permissions: text executable, rodata and the symbol table
- * read-only, data and bss writable, nothing writable and executable.
+ * read-only, data and bss writable, nothing writable and executable. The
+ * entry text comes first, in pages of its own.
  * docs/design/boot.md describes the layout.
  */
 
@@ -49,6 +50,13 @@ SECTIONS
     __kernel_text_start = .;
     .text : AT(ADDR(.text) - KERNEL_OFFSET)
     {
+        /* The entry text: the interrupt stubs and the system call entry
+         * and exits, in pages of their own, which programs' page tables
+         * map under page-table isolation (src/pti.rs). */
+        __entry_text_start = .;
+        KEEP(*(.text.entry))
+        . = ALIGN(4K);
+        __entry_text_end = .;
         *(.text .text.*)
     }
     . = ALIGN(4K);

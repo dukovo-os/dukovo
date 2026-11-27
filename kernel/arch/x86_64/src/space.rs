@@ -126,14 +126,18 @@ const _: () = assert!(core::mem::size_of::<AddressSpace>() <= PAGE as usize);
 impl AddressSpace {
     /// A new address space with nothing mapped in its lower half.
     pub fn new() -> Result<&'static AddressSpace, AllocError> {
-        let pml4 = paging::new_table(true).map_err(|_| AllocError)?;
+        let pml4 = if crate::pti::on() { paging::new_root(true) } else { paging::new_table(true) }
+            .map_err(|_| AllocError)?;
         let Some(frame) = memory::alloc_pages(1, false, Owner::Kernel) else {
-            memory::free_pages(pml4, 1, Owner::PageTable);
+            memory::free_pages(pml4, pml4_pages(), Owner::PageTable);
             return Err(AllocError);
         };
         let kernel = paging::table(paging::kernel_pml4());
         for (mine, theirs) in paging::table(pml4)[256..].iter().zip(&kernel[256..]) {
             mine.store(theirs.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
+        if crate::pti::on() {
+            crate::pti::fill_user_view(pml4);
         }
         if let Some(record) = paging::table_record(pml4) {
             record.add_table_lines(u64::MAX << 32);
@@ -616,11 +620,21 @@ impl AddressSpace {
             let stale = self.seen[me].swap(generation, Ordering::Relaxed) != generation;
             let cr3 = if paging::PCID.load(Ordering::Relaxed) {
                 let (pcid, flush_all) = PCIDS.switch(me, &self.context);
-                if flush_all {
+                // Under page-table isolation, a flush of some of the
+                // kernel's pages reached only the PCID running then.
+                let kernel_stale = here.kernel_tlb_stale.swap(false, Ordering::Relaxed);
+                if flush_all || kernel_stale {
                     cpu::flush_tlb_all();
                 }
                 // Bit 63 keeps the PCID's TLB entries.
                 let keep = if stale || flush_all { 0 } else { 1 << 63 };
+                // Under page-table isolation the program's view runs a
+                // PCID of its own, which this write does not flush: the
+                // next exit flushes it if this space's entries are stale.
+                if crate::pti::on() {
+                    leave_user_view(previous, me);
+                    here.entry().set_user_view_flush(stale || flush_all);
+                }
                 self.pml4 | u64::from(pcid) | keep
             } else {
                 self.pml4
@@ -652,6 +666,9 @@ impl AddressSpace {
         if previous != 0 {
             if paging::PCID.load(Ordering::Relaxed) {
                 PCIDS.leave(me);
+                if crate::pti::on() {
+                    leave_user_view(previous, me);
+                }
             }
             // PCID 0, flushed: the kernel's lower half changes (the AP
             // trampoline's identity page) are shot down while CPUs may run
@@ -730,7 +747,7 @@ impl AddressSpace {
         );
         crate::speculation::forget_space(core::ptr::from_ref::<AddressSpace>(self) as usize);
         free_tables(self.pml4, 4, 0..256);
-        memory::free_pages(self.pml4, 1, Owner::PageTable);
+        memory::free_pages(self.pml4, pml4_pages(), Owner::PageTable);
         // Its PCID stays taken until the next rollover, so no CPU uses the
         // PCID's stale entries before they are flushed.
         memory::free_pages(self.frame, 1, Owner::Kernel);
@@ -1177,6 +1194,27 @@ pub fn user_access(access: Access) -> UserAccess {
     }
 }
 
+/// Under page-table isolation with PCIDs, as CPU `me` stops running the
+/// space at `previous` (0 for none): entries of its program's view that
+/// were due to go at an exit that has not come stay in the TLB, so this
+/// CPU flushes the space as stale when it next runs it.
+fn leave_user_view(previous: usize, me: usize) {
+    let entry = percpu::current().entry();
+    if previous != 0 && entry.user_view_flush_pending() {
+        // SAFETY: a space stays valid while a CPU marks it as running (see
+        // `AddressSpace::destroy`), and this CPU marks `previous` until its
+        // caller is done.
+        unsafe { (*(previous as *const AddressSpace)).seen[me].store(0, Ordering::Relaxed) };
+        entry.set_user_view_flush(false);
+    }
+}
+
+/// The pages of an address space's PML4: two under page-table isolation,
+/// the kernel's view and the program's (`crate::pti`).
+fn pml4_pages() -> u64 {
+    if crate::pti::on() { 2 } else { 1 }
+}
+
 /// Frees the page tables below entries `range` of the table at `phys`.
 fn free_tables(phys: u64, level: u32, range: Range<usize>) {
     if level == 1 || range.is_empty() {
@@ -1248,6 +1286,10 @@ fn prune(
             let table = entry & PRESENT != 0 && entry & LARGE == 0 && level > 1;
             if table && prune(space, entry & ADDRESS, level - 1, 0..512, unlinked) {
                 slot.store(0, Ordering::Relaxed);
+                if level == 4 {
+                    let index = (core::ptr::from_ref(slot) as usize & (PAGE as usize - 1)) / 8;
+                    crate::pti::mirror(phys, index, 0);
+                }
                 unlinked.add(space, entry & ADDRESS);
                 continue;
             }

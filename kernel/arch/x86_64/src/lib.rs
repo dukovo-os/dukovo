@@ -57,6 +57,7 @@ mod paging;
 mod percpu;
 mod power;
 mod pstate;
+mod pti;
 mod random;
 mod rtc;
 mod sci;

@@ -88,6 +88,8 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("srbds", &["auto", "off"]),
     ("gather_data_sampling", &["auto", "off"]),
     ("indirect_target_selection", &["on", "off"]),
+    ("pti", &["auto", "off", "on"]),
+    ("nopti", &[]),
 ];
 
 /// A flag of [`FLAGS`] was given a value it does not take.
@@ -114,6 +116,7 @@ pub struct Choice {
     srbds: Pick,
     gather_data_sampling: Pick,
     indirect_target_selection: Pick,
+    pti: Pick,
 }
 
 impl Choice {
@@ -166,7 +169,9 @@ impl Choice {
             "tsa" => self.tsa = pick,
             "srbds" => self.srbds = pick,
             "gather_data_sampling" => self.gather_data_sampling = pick,
-            _ => self.indirect_target_selection = pick,
+            "indirect_target_selection" => self.indirect_target_selection = pick,
+            "pti" => self.pti = pick,
+            _ => self.pti = Pick::Off,
         }
         Ok(true)
     }
@@ -193,7 +198,8 @@ pub struct Built {
     pub retpoline: bool,
     /// Its returns go through a return thunk.
     pub return_thunks: bool,
-    /// It unmaps itself from programs' page tables while they run (PTI).
+    /// It can unmap itself from programs' page tables while they run
+    /// (page-table isolation, PTI).
     pub pti: bool,
     /// It runs guests.
     pub guests: bool,
@@ -369,6 +375,10 @@ pub struct Controls {
     pub indirect_branches: IndirectBranches,
     /// How the kernel's returns run.
     pub returns: ReturnPath,
+    /// Programs run on page tables that map only what entering and
+    /// leaving the kernel needs of it (page-table isolation), so that
+    /// Meltdown has nothing of the kernel's to read.
+    pub pti: bool,
 }
 
 /// The flaws a processor has and how each is closed.
@@ -582,6 +592,14 @@ impl Plan {
             ReturnPath::Plain
         };
 
+        // `pti=on` isolates the kernel on any processor, as on Linux.
+        let pti = built.pti
+            && match choice.get(choice.pti) {
+                Pick::On => true,
+                Pick::Off => false,
+                _ => found.has(Flaw::Meltdown),
+            };
+
         let srbds = choice.wants(choice.srbds);
         let gds = choice.wants(choice.gather_data_sampling);
         let (mcu_opt_set, mcu_opt_clear) = mcu_opt_bits(cpu, &found, tsx_disable, srbds, gds);
@@ -608,6 +626,7 @@ impl Plan {
             nosmt,
             indirect_branches,
             returns,
+            pti,
         };
         Plan {
             cpu: *cpu,
@@ -676,7 +695,7 @@ impl Plan {
         }
         match flaw {
             Flaw::Meltdown => {
-                out.write_str(if self.built.pti { "Mitigation: PTI" } else { "Vulnerable" })
+                out.write_str(if self.controls.pti { "Mitigation: PTI" } else { "Vulnerable" })
             }
             Flaw::SpectreV1 => out.write_str(if self.spectre_v1 {
                 "Mitigation: usercopy/swapgs barriers and __user pointer sanitization"

@@ -129,9 +129,10 @@ fn choice(flags: &str) -> Choice {
     choice
 }
 
-/// The plan of the kernel as it is built, with its thunks.
+/// The plan of the kernel as it is built, with its thunks and page-table
+/// isolation.
 fn default_plan(cpu: &Cpu) -> Plan {
-    Plan::make(cpu, &Choice::default(), THUNKS)
+    Plan::make(cpu, &Choice::default(), KERNEL)
 }
 
 fn line(plan: &Plan, flaw: Flaw) -> String {
@@ -201,7 +202,8 @@ fn the_i5_6500_has_skylakes_flaws_and_takes_ibrs_on_entry() {
     assert_eq!(line(&plan, Flaw::Srbds), "Mitigation: Microcode");
     assert_eq!(line(&plan, Flaw::GatherDataSampling), "Mitigation: Microcode");
     assert_eq!(line(&plan, Flaw::L1tf), "Mitigation: PTE Inversion");
-    assert_eq!(line(&plan, Flaw::Meltdown), "Vulnerable");
+    assert!(controls.pti);
+    assert_eq!(line(&plan, Flaw::Meltdown), "Mitigation: PTI");
     assert_eq!(line(&plan, Flaw::SpecStoreBypass), "Vulnerable");
     assert_eq!(line(&plan, Flaw::ItlbMultihit), "Mitigation: VMX disabled");
     assert_eq!(line(&plan, Flaw::Vmscape), "Mitigation: no guests run");
@@ -449,6 +451,8 @@ fn retpolines_and_return_thunks_close_what_s1_leaves_open_on_zen_2() {
 
 /// What the kernel is built with since retpolines and return thunks.
 const THUNKS: Built = Built { retpoline: true, return_thunks: true, ..Built::DEFAULT };
+/// The kernel as it is built.
+const KERNEL: Built = Built { pti: true, ..THUNKS };
 
 fn paths(plan: &Plan) -> (IndirectBranches, ReturnPath) {
     (plan.controls().indirect_branches, plan.controls().returns)
@@ -579,6 +583,31 @@ fn spec_store_bypass_disable_on_sets_ssbd_everywhere() {
     let plan = Plan::make(&i9_12900(), &choice("spec_store_bypass_disable=on"), Built::default());
     assert_eq!(plan.controls().spec_ctrl_user & SPEC_CTRL_SSBD, SPEC_CTRL_SSBD);
     assert_eq!(line(&plan, Flaw::SpecStoreBypass), "Mitigation: Speculative Store Bypass disabled");
+}
+
+#[test]
+fn meltdown_is_closed_by_page_table_isolation_unless_it_is_turned_off() {
+    let isolated = |cpu: &Cpu, flags: &str| {
+        let plan = Plan::make(cpu, &choice(flags), KERNEL);
+        (plan.controls().pti, line(&plan, Flaw::Meltdown))
+    };
+    let skylake = i5_6500();
+    assert_eq!(isolated(&skylake, ""), (true, "Mitigation: PTI".into()));
+    assert_eq!(isolated(&skylake, "pti=auto"), (true, "Mitigation: PTI".into()));
+    for off in ["pti=off", "nopti", "mitigations=off", "pti=on nopti"] {
+        assert_eq!(isolated(&skylake, off), (false, "Vulnerable".into()), "{off}");
+    }
+    assert_eq!(isolated(&skylake, "mitigations=off pti=on"), (true, "Mitigation: PTI".into()));
+    // Processors without Meltdown run without it, unless it is asked for.
+    assert_eq!(isolated(&i9_12900(), ""), (false, "Not affected".into()));
+    assert_eq!(isolated(&zen3(), ""), (false, "Not affected".into()));
+    assert_eq!(isolated(&zen3(), "pti=on"), (true, "Not affected".into()));
+    // A kernel that cannot isolate itself says so.
+    let plan = Plan::make(&skylake, &choice("pti=on"), THUNKS);
+    assert!(!plan.controls().pti);
+    assert_eq!(line(&plan, Flaw::Meltdown), "Vulnerable");
+    assert_eq!(Choice::default().set("pti", Some("yes")), Err(BadValue));
+    assert_eq!(Choice::default().set("nopti", Some("1")), Err(BadValue));
 }
 
 #[test]

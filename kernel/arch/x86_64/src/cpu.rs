@@ -177,6 +177,11 @@ pub mod feature {
         cpuid(1, 0).ecx & (1 << 17) != 0
     }
 
+    /// The `invpcid` instruction (CPUID 7, EBX bit 10).
+    pub fn invpcid() -> bool {
+        leaf7_ebx() & (1 << 10) != 0
+    }
+
     /// The IA32_TSC_ADJUST MSR (CPUID 7, EBX bit 1).
     pub fn tsc_adjust() -> bool {
         leaf7_ebx() & (1 << 1) != 0
@@ -515,6 +520,24 @@ pub unsafe fn write_cr4(value: u64) {
 pub fn invlpg(addr: usize) {
     // SAFETY: invalidating a TLB entry only costs a later page walk.
     unsafe { asm!("invlpg [{}]", in(reg) addr, options(nostack, preserves_flags)) };
+}
+
+/// Flushes the TLB entry for one page that PCID `pcid` tagged, whichever
+/// PCID is current. The caller checks that the processor has `invpcid`
+/// ([`feature::invpcid`]) and that PCIDs are on.
+pub fn invpcid_address(pcid: u64, addr: usize) {
+    let descriptor: [u64; 2] = [pcid, addr as u64];
+    // SAFETY: type 0 invalidates one page's entries for one PCID, which
+    // only costs a later page walk; the descriptor is 16 bytes, as the
+    // instruction reads it.
+    unsafe {
+        asm!(
+            "invpcid {kind}, [{descriptor}]",
+            kind = in(reg) 0u64,
+            descriptor = in(reg) &raw const descriptor,
+            options(nostack, preserves_flags, readonly),
+        );
+    };
 }
 
 /// Flushes the non-global TLB entries of the current address space by

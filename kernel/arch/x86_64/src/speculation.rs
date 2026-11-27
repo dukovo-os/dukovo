@@ -54,9 +54,24 @@ const CR0_WP: u64 = 1 << 16;
 pub static SPEC_CTRL_KERNEL: AtomicU32 = AtomicU32::new(0);
 /// IA32_SPEC_CTRL while a program runs; the exit sites write it.
 pub static SPEC_CTRL_USER: AtomicU32 = AtomicU32::new(0);
-/// The selector VERW is given: any valid one does, and the kernel's data
-/// segment is always valid.
-pub static VERW_SELECTOR: u16 = percpu::KERNEL_DS;
+
+// The selector VERW is given: any valid one does, and the kernel's data
+// segment is always valid. In the entry text, which programs' page tables
+// map under page-table isolation, as the exits run VERW after they switch
+// to them.
+core::arch::global_asm!(
+    ".pushsection .text.entry, \"ax\"",
+    ".balign 2",
+    ".global radix_verw_selector",
+    "radix_verw_selector:",
+    ".short {selector}",
+    ".popsection",
+    selector = const percpu::KERNEL_DS,
+);
+
+unsafe extern "C" {
+    static radix_verw_selector: u16;
+}
 
 /// VERW before idling, while the other hardware thread runs.
 static VERW_ON_IDLE: AtomicBool = AtomicBool::new(false);
@@ -76,8 +91,9 @@ const NO_SPACE: usize = usize::MAX;
 static PLAN: Once<Plan> = Once::new();
 
 /// What the kernel is built with: its indirect branches and returns go
-/// through thunks that the boot CPU rewrites (`thunks.rs`).
-const BUILT: Built = Built { retpoline: true, return_thunks: true, ..Built::DEFAULT };
+/// through thunks that the boot CPU rewrites (`thunks.rs`), and it can
+/// isolate itself from programs' page tables (`pti.rs`).
+const BUILT: Built = Built { retpoline: true, return_thunks: true, pti: true, ..Built::DEFAULT };
 
 /// What a site turns on. The numbers are the ones the sites' records
 /// carry (`.spec_sites`).
@@ -107,6 +123,9 @@ pub enum Site {
     /// The return's prediction untrained, on entry from a program
     /// (Retbleed and SRSO on AMD, `thunks.rs`).
     UntrainEntry = 10,
+    /// The switches between a program's view of its address space and the
+    /// kernel's, on every entry and exit (page-table isolation, `pti.rs`).
+    Pti = 11,
 }
 
 impl Site {
@@ -122,6 +141,7 @@ impl Site {
             8 => Site::SwapgsFence,
             9 => Site::RsbFillSwitch,
             10 => Site::UntrainEntry,
+            11 => Site::Pti,
             _ => return None,
         })
     }
@@ -139,6 +159,7 @@ impl Site {
             Site::SwapgsFence => controls.swapgs_fence,
             Site::RsbFillSwitch => controls.rsb_fill_on_switch,
             Site::UntrainEntry => controls.returns.untrains(),
+            Site::Pti => controls.pti,
         }
     }
 }
@@ -261,14 +282,145 @@ macro_rules! exit_sites {
 pub(crate) use exit_sites;
 
 /// The last site before the instruction that returns to a program: VERW,
-/// clearing the CPU's buffers. Changes only the flags. Uses asm operands
-/// `site_verw_exit` and `verw_selector`.
+/// clearing the CPU's buffers. Changes only the flags. Uses the asm operand
+/// `site_verw_exit`.
 macro_rules! verw_site {
     () => {
-        $crate::speculation::site!("site_verw_exit", "verw word ptr [rip + {verw_selector}]")
+        $crate::speculation::site!("site_verw_exit", "verw word ptr [rip + radix_verw_selector]")
     };
 }
 pub(crate) use verw_site;
+
+// The sites of page-table isolation (`pti.rs`). They use the asm operands
+// `site_pti`, `pti_views` (both of CR3's bits of a program's view) and
+// `entry_*` (the offsets of the running CPU's `EntryCpu` words from GS
+// base), with GS base the kernel's. Label 669 is theirs.
+
+/// The system call entry's switch to the kernel's view, with the program's
+/// stack pointer saved and RSP for scratch.
+macro_rules! pti_enter_syscall {
+    () => {
+        $crate::speculation::site!(
+            "site_pti",
+            "mov rsp, cr3",
+            "and rsp, ~{pti_views}",
+            "or rsp, gs:[{entry_noflush}]",
+            "mov cr3, rsp",
+        )
+    };
+}
+pub(crate) use pti_enter_syscall;
+
+/// The interrupt entry's switch to the kernel's view, from user mode, with
+/// every register saved (a `TrapFrame`), and the frame's move off the
+/// entry stack ([`pti_leave_entry_stack`]). Uses RAX, RCX, RSI and RDI,
+/// and the operands `kernel_rsp` and `frame_words`.
+macro_rules! pti_enter_interrupt {
+    () => {
+        $crate::speculation::site!(
+            "site_pti",
+            "mov rax, cr3",
+            "and rax, ~{pti_views}",
+            "or rax, gs:[{entry_noflush}]",
+            "mov cr3, rax",
+            $crate::speculation::pti_leave_entry_stack!(),
+        )
+    };
+}
+pub(crate) use pti_enter_interrupt;
+
+/// Moves a `TrapFrame` at RSP, from user mode, that arrived on the entry
+/// stack to the top of the thread's kernel stack, where it would have
+/// arrived without isolation, and goes on there; one on an NMI, machine
+/// check or double fault's own stack stays. Runs in the kernel's view with
+/// GS base the kernel's. Uses RAX, RCX, RSI and RDI, and the operands
+/// `kernel_rsp` and `frame_words`; the label 666 is its own.
+macro_rules! pti_leave_entry_stack {
+    () => {
+        concat!(
+            "mov rax, gs:[{entry_stack_top}]\n",
+            "sub rax, rsp\n",
+            "cmp rax, {entry_stack_size}\n",
+            "jae 666f\n",
+            "mov rsi, rsp\n",
+            // As the processor aligns RSP0 before it pushes.
+            "mov rsp, gs:[{kernel_rsp}]\n",
+            "and rsp, -16\n",
+            "sub rsp, {frame_words} * 8\n",
+            "mov rdi, rsp\n",
+            "mov ecx, {frame_words}\n",
+            "rep movsq\n",
+            "666:"
+        )
+    };
+}
+pub(crate) use pti_leave_entry_stack;
+
+/// Loads the program's view, with RAX for scratch, keeping its TLB entries
+/// unless the kernel changed its mappings since (`EntryCpu::flush_user_view`).
+macro_rules! pti_load_user_view {
+    () => {
+        concat!(
+            "mov rax, cr3\n",
+            "or rax, gs:[{entry_user_view}]\n",
+            "btr qword ptr gs:[{entry_user_flush}], 0\n",
+            "jc 669f\n",
+            "or rax, gs:[{entry_noflush}]\n",
+            "669:\n",
+            "mov cr3, rax"
+        )
+    };
+}
+pub(crate) use pti_load_user_view;
+
+/// The switch to the program's view of an exit with every register the
+/// program's and the stack holding the interrupt frame it returns through
+/// (RIP, CS, RFLAGS, RSP, SS), which moves to the entry stack.
+macro_rules! pti_exit_iret {
+    () => {
+        $crate::speculation::site!(
+            "site_pti",
+            "mov gs:[{entry_scratch}], rax",
+            "mov rax, rsp",
+            "mov rsp, gs:[{entry_stack_top}]",
+            "push qword ptr [rax + 32]",
+            "push qword ptr [rax + 24]",
+            "push qword ptr [rax + 16]",
+            "push qword ptr [rax + 8]",
+            "push qword ptr [rax]",
+            $crate::speculation::pti_load_user_view!(),
+            "mov rax, gs:[{entry_scratch}]",
+        )
+    };
+}
+pub(crate) use pti_exit_iret;
+
+/// The switch to the program's view of a system call's exit with every
+/// register the program's and the stack holding its stack pointer, which
+/// moves to the entry stack for the `pop rsp` after.
+macro_rules! pti_exit_sysret {
+    () => {
+        $crate::speculation::site!(
+            "site_pti",
+            "mov gs:[{entry_scratch}], rax",
+            "mov rax, rsp",
+            "mov rsp, gs:[{entry_stack_top}]",
+            "push qword ptr [rax]",
+            $crate::speculation::pti_load_user_view!(),
+            "mov rax, gs:[{entry_scratch}]",
+        )
+    };
+}
+pub(crate) use pti_exit_sysret;
+
+/// The switch to the program's view of an exit that uses no stack after
+/// it, with RAX free.
+macro_rules! pti_exit_plain {
+    () => {
+        $crate::speculation::site!("site_pti", $crate::speculation::pti_load_user_view!())
+    };
+}
+pub(crate) use pti_exit_plain;
 
 // The branch history clearing sequence for processors with enhanced IBRS
 // but no BHI_DIS_S, from Intel's guidance on Branch History Injection:
@@ -503,6 +655,9 @@ pub fn init(flags: &CommandLine<'_>) {
     }
     let plan = PLAN.call_once(|| plan);
     let controls = plan.controls();
+    if controls.pti {
+        crate::pti::init();
+    }
     SPEC_CTRL_KERNEL.store(controls.spec_ctrl_kernel as u32, Ordering::Relaxed);
     SPEC_CTRL_USER.store(controls.spec_ctrl_user as u32, Ordering::Relaxed);
     HAS_SPEC_CTRL.store(controls.spec_ctrl, Ordering::Relaxed);
@@ -542,6 +697,7 @@ fn without_spec_ctrl(cpu: Cpu) -> Cpu {
 /// the boot CPU from [`init`] and the others as they start.
 pub fn init_cpu() {
     let Some(plan) = PLAN.get() else { return };
+    crate::pti::init_cpu();
     let controls = plan.controls();
     if controls.spec_ctrl {
         // SAFETY: CPUID says the processor has IA32_SPEC_CTRL, and every
@@ -631,7 +787,7 @@ fn log(plan: &Plan, sites: usize, turned_on: usize, thunk_sites: thunks::Counts)
         thunk_sites.returns,
         if controls.returns.untrains() { ", untrained on entry" } else { "" },
     );
-    let mut what = radix_klog::TextBuf::<200>::new();
+    let mut what = radix_klog::TextBuf::<240>::new();
     describe(controls, &mut what);
     if !what.as_str().is_empty() {
         radix_klog::info!("CPU flaws: {}", what.as_str());
@@ -641,7 +797,7 @@ fn log(plan: &Plan, sites: usize, turned_on: usize, thunk_sites: thunks::Counts)
 /// Names what `controls` do, for the boot log.
 fn describe(controls: &Controls, out: &mut dyn fmt::Write) {
     let spec_ctrl = |bit: u64| controls.spec_ctrl_user & bit != 0;
-    let items: [(bool, &str); 16] = [
+    let items: [(bool, &str); 17] = [
         (controls.spec_ctrl_kernel != controls.spec_ctrl_user, "IBRS on entry"),
         (spec_ctrl(radix_cpuflaws::SPEC_CTRL_IBRS), "enhanced IBRS"),
         (controls.auto_ibrs, "automatic IBRS"),
@@ -658,6 +814,7 @@ fn describe(controls: &Controls, out: &mut dyn fmt::Write) {
         (controls.zenbleed_chicken, "Zenbleed bit set"),
         (controls.div0_clear, "divider cleared on exit"),
         (controls.nosmt, "second hardware threads left off"),
+        (controls.pti, "page-table isolation"),
     ];
     let mut first = true;
     for (on, name) in items {
@@ -681,7 +838,11 @@ fn verw() {
     // SAFETY: VERW only reads the selector and sets ZF; with MD_CLEAR's
     // microcode it also clears the CPU's buffers.
     unsafe {
-        core::arch::asm!("verw word ptr [{sel}]", sel = in(reg) &raw const VERW_SELECTOR, options(nostack));
+        core::arch::asm!(
+            "verw word ptr [{sel}]",
+            sel = in(reg) &raw const radix_verw_selector,
+            options(nostack),
+        );
     };
 }
 
