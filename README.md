@@ -16,7 +16,7 @@ An operating system built on **Radix**, a capability kernel written in Rust.
 
 [![CI](https://github.com/dukovo-os/dukovo/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/dukovo-os/dukovo/actions/workflows/ci.yml)
 [![Benchmarks](https://github.com/dukovo-os/dukovo/actions/workflows/bench.yml/badge.svg?branch=main)](https://github.com/dukovo-os/dukovo/actions/workflows/bench.yml)
-![Version](https://img.shields.io/badge/version-0.17.0-44596B)
+![Version](https://img.shields.io/badge/version-1.0.0--alpha.1-44596B)
 ![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-44596B)
 
 [Website](https://dukovo.org) ·
@@ -134,7 +134,7 @@ Settings live in [`dukovo.toml`](dukovo.toml). The full manual is
 ```sh
 ./ob image
 lsblk -d -o NAME,SIZE,MODEL,TRAN          # find your stick, for example sdb
-sudo dd if=out/dukovo-0.17.0-x86_64.img of=/dev/sdX bs=4M conv=fsync status=progress
+sudo dd if=out/dukovo-1.0.0-alpha.1-x86_64.img of=/dev/sdX bs=4M conv=fsync status=progress
 ```
 
 Everything on the target device is erased. balenaEtcher, GNOME Disks

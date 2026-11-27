@@ -47,7 +47,7 @@ pub struct Uname {
     pub system: String,
     /// The host's name.
     pub node: String,
-    /// The kernel's release, such as `0.17.0`.
+    /// The kernel's release, such as `1.0.0-alpha.1`.
     pub release: String,
     /// The kernel's version: its build.
     pub version: String,
