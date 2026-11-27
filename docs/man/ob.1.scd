@@ -1791,7 +1791,8 @@ _target/userspace/_).
 	on the firmware's framebuffer and on the virtio card; then 400
 	motions of the mouse, which *ob* sends through QEMU 5 ms apart, each
 	from the time its interrupt stamped it with to the program that
-	waited for it having read it.
+	waited for it having read it. The kernel counts what it does for
+	each of these rows too.
 
 	Then boot Linux in a virtual machine set up the same way, with
 	_tools/linux-bench_ built as a static program and run as its only
@@ -1806,9 +1807,11 @@ _target/userspace/_).
 	with the virtio card and the mouse, with a VESA mode of 1280 by 800
 	so that its _simpledrm_ driver has the firmware's framebuffer, for
 	*linux-bench --only display*: an atomic commit checked and made,
-	*DIRTYFB* of 64 by 64 pixels and a pointer move on its DRM cards, in
-	the calling thread's processor time, and the same motions read from
-	the mouse's event device (ADR 0709). A boot of either system that
+	*DIRTYFB* of 64 by 64 pixels and a pointer move on its DRM cards, by
+	the time that passed, or for a commit and a *DIRTYFB* on the virtio
+	card, which its driver holds for a frame, by the calling thread's
+	processor time, and the same motions read from the mouse's event
+	device (ADR 0709). A boot of either system that
 	does not say those sizes for its two screens fails. This
 	Linux boots with *mitigations=off*, since Radix has no mitigations of
 	CPU vulnerabilities yet. Under KVM, Radix and this Linux are measured
@@ -1873,7 +1876,11 @@ _target/userspace/_).
 		_out/bench/instructions.md_; no Linux runs. With *--gate*, fail
 		if an operation on one CPU takes more instructions than its
 		budget (*BUDGETS* in _tools/xtask/src/bench.rs_: what it took
-		when the budget was set, plus a tenth). CI runs
+		when the budget was set, plus a tenth), or if a motion of the
+		mouse sends more than 0.1 interrupts to another CPU
+		(*EVENT_LIMITS*, ADR 0710): the kernel counts them, and a
+		reader woken on a CPU that slept counts few instructions more
+		and takes several times as long. CI runs
 		*ob bench --instructions --gate* on every pull request and every
 		merge, so a longer hot path fails there even when the timings are
 		noisy.

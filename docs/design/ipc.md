@@ -529,18 +529,31 @@ that says another size fails.
 
 Each display operation is timed by itself, 400 times, with what reading
 the clock twice costs taken off and a moment for the card after it,
-outside the time. Radix's rows are the time that passed. Linux's are the
-calling thread's processor time: `virtio_gpu` holds a blocking commit
-and a DIRTYFB until the next of the 60 frames a second it counts, 10.9
-ms that are no cost of the change, and what Linux does for a call
-outside the calling thread is left out with that wait, so the rows lean
-Linux's way. The motions come from outside both systems: each program
-says when it is ready, and `ob bench` sends 400 through QEMU, 5 ms
-apart. These rows are reported and not gated until Radix has first met
-parity on them on CI's runners. With `--instructions` the same boot of
-Radix counts them, and each display row and the middle motion has a
-budget; the slowest motions, which met a timer or another interrupt on
-their way, have none.
+outside the time. Radix's rows are the time that passed, and so are
+Linux's where its call waits for nothing (`<row>_passed`): the check,
+the firmware card's rows and the pointer's move. `virtio_gpu` holds a
+blocking commit and a DIRTYFB until the next of the 60 frames a second
+it counts, 10.9 ms that are no cost of the change, so Linux's rows for
+a whole picture and a small change on that card are the calling
+thread's processor time. What Linux does for those calls outside the
+calling thread is left out with the wait, so the two lean Linux's way.
+The motions come from outside both systems: each program says when it
+is ready, and `ob bench` sends 400 through QEMU, 5 ms apart. These rows
+are reported and not gated until Radix has first met parity on them on
+CI's runners. With `--instructions` the same boot of Radix counts them,
+and each display row and the middle motion has a budget; the slowest
+motions, which met a timer or another interrupt on their way, have
+none.
+
+Radix counts what its kernel does for each of these rows too, as for
+the rows above: a display row over 100 more operations, made after the
+timed ones, and the motions from the reader's first wait to its last
+read. A motion takes three switches, on the CPU its interrupt arrives
+at: from idle to the driver's thread, to the reader, and back (ADR
+0710). With `--instructions --gate`, a motion that sends more than 0.1
+interrupts to another CPU fails, which is a reader woken on a CPU that
+slept: it counts few instructions more and takes several times as long
+under a hypervisor.
 
 The report shows each Radix number, the Linux one from the virtual
 machine, their ratio and the host's Linux. Under KVM a system call does

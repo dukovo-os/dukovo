@@ -13,17 +13,23 @@
 //! | `drm_flip_<card>` | that change made: the whole picture is new to the card |
 //! | `drm_dirty_<card>` | DIRTYFB of 64 by 64 pixels of the framebuffer that is shown |
 //! | `drm_cursor_virtio` | the pointer moved (MODE_CURSOR) |
+//! | `<row>_passed` | the DRM row `<row>` again, by the time that passed |
 //! | `evdev_to_reader` | from the time stamp of a mouse's motion to its reader having read it: the middle one of the motions |
 //! | `evdev_to_reader_p99` | the same, for the motion that 99 in 100 were faster than |
 //!
 //! `<card>` is `firmware` or `virtio`. Each operation is timed as
 //! `display-test cost` times its own: by itself, what reading the clock
 //! twice costs taken off, and the card given the same moment after it,
-//! outside the time. The clock of the DRM rows is the calling thread's
-//! processor time: `virtio_gpu` holds a change until the next of the 60
-//! frames a second it counts, and that wait is no cost of the change.
-//! `simpledrm` has no pointer plane: a Linux desktop draws the pointer
-//! into its picture there, so the row has no like.
+//! outside the time. Each DRM row is timed twice, by two clocks. The
+//! row of its name is the calling thread's processor time. Then
+//! `<row>_passed` is the time that passed, as Radix's rows are, over as
+//! many operations again. `ob bench` sets the time that passed beside
+//! Radix's row, but for `drm_flip_virtio` and `drm_dirty_virtio`:
+//! `virtio_gpu` holds those two calls until the next of the 60 frames a
+//! second it counts, and that wait is no cost of the change, so theirs
+//! is the processor time. `simpledrm` has no pointer plane: a Linux
+//! desktop draws the pointer into its picture there, so the row has no
+//! like.
 //!
 //! The motions come from outside: the program prints
 //! `linux-bench: input: ready for <count> motions`, and `ob bench` sends
@@ -47,6 +53,9 @@ use sysapi::time;
 const ROUNDS: u32 = 400;
 const MOMENT: Duration = Duration::from_millis(2);
 const SMALL: u16 = 64;
+
+/// How many more times each operation is done for the time that passed.
+const PASSED: u32 = ROUNDS;
 
 /// The side of the pointer's picture, which is the one size a virtio
 /// card takes, and the two places it moves between.
@@ -129,6 +138,33 @@ fn row(
     }
     let each = total as f64 / f64::from(ROUNDS);
     println!("BENCH name={name} ns={each:.2} iterations={ROUNDS}");
+    passed_row(name, rest, one)
+}
+
+/// Prints the row `name`_passed: the time that passed while `one` was
+/// made, on average over [`PASSED`] more operations, each followed by a
+/// rest of `rest`. It is the processor time and whatever the call waited
+/// for, which Radix's rows have in them too: where Linux holds a call
+/// for nothing, it is the row to set beside Radix's.
+fn passed_row(
+    name: &str,
+    rest: Duration,
+    mut one: impl FnMut(u32) -> std::io::Result<()>,
+) -> Outcome {
+    let pair = || {
+        let before = time::monotonic_ns();
+        time::monotonic_ns().saturating_sub(before)
+    };
+    let clock = (0..1000).map(|_| pair()).min().unwrap_or(0);
+    let mut total = 0;
+    for round in ROUNDS + 1..=ROUNDS + PASSED {
+        let before = time::monotonic_ns();
+        one(round).map_err(|err| format!("{name}: {err}"))?;
+        total += time::monotonic_ns().saturating_sub(before).saturating_sub(clock);
+        std::thread::sleep(rest);
+    }
+    let each = total as f64 / f64::from(PASSED);
+    println!("BENCH name={name}_passed ns={each:.2} iterations={PASSED}");
     Ok(())
 }
 

@@ -242,8 +242,18 @@ pub const BUDGETS: &[(&str, u64)] = &[
     ("display_change_virtio", 14_000),         // 12,586
     ("display_small_virtio", 13_000),          // 11,827
     ("display_pointer_virtio", 2_900),         // 2,606
-    ("input_to_reader", 8_000),                // 7,236, from the interrupt's stamp to the reader
+    ("input_to_reader", 7_700),                // 6,966, from the interrupt's stamp to the reader
 ];
+
+/// The most of one kernel event an operation may take, on average,
+/// under `--instructions` before `--gate` fails: what no budget of
+/// instructions holds. A mouse's motion whose reader is woken on another
+/// CPU counts a few hundred instructions more, inside its budget, and
+/// under a hypervisor takes several times as long. Its interrupt, the
+/// driver's thread and the reader share a CPU (ADR 0710), so a motion
+/// sends no interrupt to another: 2 or 3 of the 400 met one on their
+/// way.
+const EVENT_LIMITS: &[(&str, &str, f64)] = &[("input_to_reader", "ipis", 0.1)];
 
 /// One measurement: a `BENCH name=... ns=... iterations=...` line.
 #[derive(Clone, Debug, PartialEq)]
@@ -610,10 +620,13 @@ const fn display_alone(radix: &'static str, what: &'static str) -> Row {
 /// which is commands queued for the host; then an input event's way
 /// from its time stamp to its reader (ADR 0706).
 ///
-/// Linux's display rows are the calling thread's processor time and
-/// Radix's the time that passed, which is never less: Linux's virtio
-/// driver holds a change until the next of the 60 frames a second it
-/// counts, and that wait is no cost of the change. Two rows have no
+/// Radix's rows are the time that passed, and so are Linux's (`linux-bench`
+/// prints them as `<row>_passed`), but for the two that its virtio
+/// driver holds until the next of the 60 frames a second it counts: a
+/// whole picture and a small change on that card are the calling
+/// thread's processor time, since that wait is no cost of the change.
+/// Processor time is never more than the time that passed, so those two
+/// lean Linux's way. Two rows have no
 /// like on Linux. A change left to wait in the place of the one before
 /// is refused there while the one before has not shown (EBUSY). And
 /// `simpledrm` has no pointer plane: a desktop draws the pointer into
@@ -622,7 +635,7 @@ const DISPLAY_ROWS: &[Row] = &[
     display(
         "display_check",
         "Display: a change of a main plane's picture, checked only",
-        "drm_check",
+        "drm_check_passed",
         "DRM atomic commit of another framebuffer, with TEST_ONLY",
     ),
     display_alone(
@@ -632,13 +645,13 @@ const DISPLAY_ROWS: &[Row] = &[
     display(
         "display_change_firmware",
         "Display: a new 1280x800 picture shown at once, firmware framebuffer",
-        "drm_flip_firmware",
+        "drm_flip_firmware_passed",
         "that commit made, `simpledrm`",
     ),
     display(
         "display_small_firmware",
         "Display: 64x64 pixels shown at once, firmware framebuffer",
-        "drm_dirty_firmware",
+        "drm_dirty_firmware_passed",
         "DIRTYFB of 64x64 pixels, `simpledrm`",
     ),
     display_alone(
@@ -649,18 +662,18 @@ const DISPLAY_ROWS: &[Row] = &[
         "display_change_virtio",
         "Display: a new 1024x768 picture shown at once, virtio",
         "drm_flip_virtio",
-        "that commit made, `virtio_gpu`",
+        "that commit made, `virtio_gpu`: the thread's processor time",
     ),
     display(
         "display_small_virtio",
         "Display: 64x64 pixels shown at once, virtio",
         "drm_dirty_virtio",
-        "DIRTYFB of 64x64 pixels, `virtio_gpu`",
+        "DIRTYFB of 64x64 pixels, `virtio_gpu`: the thread's processor time",
     ),
     display(
         "display_pointer_virtio",
         "Display: the pointer moved, virtio",
-        "drm_cursor_virtio",
+        "drm_cursor_virtio_passed",
         "MODE_CURSOR move, `virtio_gpu`",
     ),
     display(
@@ -826,7 +839,11 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
             numbers.counts.extend(posix_counts);
         }
         step(&format!("Booting Radix with the display and input rows{of}"));
-        keep_best(&mut numbers.radix, radix_display_numbers(ctx, &dir, &image, Accel::of(kvm))?);
+        let (display, display_counts) = radix_display_numbers(ctx, &dir, &image, Accel::of(kvm))?;
+        keep_best(&mut numbers.radix, display);
+        if numbers.runs == 0 {
+            numbers.counts.extend(display_counts);
+        }
         if let Some((kernel, initrd)) = &vm_kernel {
             step(&format!(
                 "Measuring the same operations on Linux ({}) in a virtual machine like \
@@ -921,8 +938,9 @@ fn count_instructions(
     step("Booting Radix with the POSIX benchmarks on 2 CPUs, counting instructions (minutes)");
     radix.extend(radix_posix_numbers(ctx, dir, image, btrfs, Accel::Count)?.0);
     step("Booting Radix with the display and input rows, counting instructions");
-    radix.extend(radix_display_numbers(ctx, dir, image, Accel::Count)?);
-    let report = budget_report(&radix);
+    let (display, display_counts) = radix_display_numbers(ctx, dir, image, Accel::Count)?;
+    radix.extend(display);
+    let report = budget_report(&radix) + &events_report(&display_counts);
     let markdown = dir.join("instructions.md");
     std::fs::write(&markdown, &report).context(|| format!("writing {}", markdown.display()))?;
     if let Some(path) = summary {
@@ -932,6 +950,7 @@ fn count_instructions(
     step(&format!("Instruction report in {}", ctx.display(&markdown)));
     if gate {
         check_budgets(&radix)?;
+        check_events(&display_counts)?;
         step("Instruction budgets met: no operation on one CPU takes more than its budget");
     }
     Ok(())
@@ -987,6 +1006,47 @@ fn check_budgets(radix: &[Measurement]) -> Result<()> {
     }
     if !failed.is_empty() {
         crate::bail!("instruction budgets exceeded: {}", failed.join("; "));
+    }
+    Ok(())
+}
+
+/// How often the operation `group` took the kernel event `event`, on
+/// average, as `counts` has it; `None` if it was not counted.
+fn events_each(counts: &[Counts], group: &str, event: &str) -> Option<f64> {
+    let counts = counts.iter().find(|counts| counts.group == group)?;
+    let (_, count) = counts.events.iter().find(|(name, _)| name == event)?;
+    Some(*count as f64 / counts.rounds as f64)
+}
+
+/// What each operation with a limit on a kernel event took of it
+/// ([`EVENT_LIMITS`]), after the budgets' table, in Markdown.
+fn events_report(counts: &[Counts]) -> String {
+    let mut out = String::from("\nKernel events with a limit, an operation:\n\n");
+    for &(group, event, limit) in EVENT_LIMITS {
+        let name = group.replace('_', " ");
+        let _ = match events_each(counts, group, event) {
+            Some(each) => writeln!(out, "- {name}: {each:.2} {event} (limit {limit})"),
+            None => writeln!(out, "- {name}: {event} not counted (limit {limit})"),
+        };
+    }
+    out
+}
+
+/// Fails unless every operation with a limit on a kernel event was
+/// counted and kept to it.
+fn check_events(counts: &[Counts]) -> Result<()> {
+    let mut failed = Vec::new();
+    for &(group, event, limit) in EVENT_LIMITS {
+        match events_each(counts, group, event) {
+            Some(each) if each <= limit => {}
+            Some(each) => {
+                failed.push(format!("{group} ({each:.2} {event} an operation, limit {limit})"));
+            }
+            None => failed.push(format!("{group} ({event} not counted)")),
+        }
+    }
+    if !failed.is_empty() {
+        crate::bail!("kernel events over their limits: {}", failed.join("; "));
     }
     Ok(())
 }
@@ -1905,15 +1965,16 @@ fn said_by(log: &str, program: &str) -> String {
 }
 
 /// Boots the test image `base` with Spark running the display and input
-/// rows ([`DISPLAY_ROWS`]) and reads their `BENCH` lines. The machine
-/// has the VGA card the others have, whose framebuffer is the firmware's
-/// card, a virtio graphics card and a virtio mouse.
+/// rows ([`DISPLAY_ROWS`]) and reads their `BENCH` lines, and the
+/// `BENCHCOUNT` line of the input rows. The machine has the VGA card the
+/// others have, whose framebuffer is the firmware's card, a virtio
+/// graphics card and a virtio mouse.
 fn radix_display_numbers(
     ctx: &Ctx,
     dir: &Path,
     base: &[u8],
     accel: Accel,
-) -> Result<Vec<Measurement>> {
+) -> Result<(Vec<Measurement>, Vec<Counts>)> {
     let image = dir.join("display-bench.img");
     let bytes =
         test::with_cmdline(base, &accel.cmdline(DISPLAY_CMDLINE)).map_err(crate::Error::new)?;
@@ -1951,7 +2012,7 @@ fn radix_display_numbers(
             ctx.display(&dir.join("boot-display-bench.log"))
         );
     }
-    Ok(parse(&log))
+    Ok((parse(&log), parse_counts(&log)))
 }
 
 /// Boots `kernel` with the `initrd` of [`linux_init`] on the machine of
@@ -2325,7 +2386,12 @@ fn counts_table(out: &mut String, counts: &[Counts], first_of_several: bool) {
          waited for the other CPUs to flush it, and flushes left to the host how many of \
          them it neither interrupted nor waited for, because the host had stopped them and \
          flushes for them when it runs them again. The tlb shootdown linux row is Linux's \
-         own count in its virtual machine: the TLB interrupts its other CPU took.",
+         own count in its virtual machine: the TLB interrupts its other CPU took. A display \
+         row is counted over 100 more operations made after the timed ones, each without \
+         the rest after it, and input to reader from the reader's first wait to its last \
+         motion read, the 5 ms between the motions with it: three switches a motion are \
+         its interrupt's CPU going from idle to the driver's thread, to the reader, and \
+         back.",
         if first_of_several { " in the first run" } else { "" }
     );
 }
@@ -2693,6 +2759,11 @@ mod tests {
     /// Whether `source` prints a row called `name`: whole, or as a name
     /// that a card's is added to, where the source calls the card `word`.
     fn printed_by(source: &str, name: &str, word: &str) -> bool {
+        // The time that passed is a row printed after the one it is
+        // named for.
+        if let Some(row) = name.strip_suffix("_passed") {
+            return source.contains("name={name}_passed ") && printed_by(source, row, word);
+        }
         match ["_firmware", "_virtio"].iter().find_map(|card| name.strip_suffix(card)) {
             Some(base) => source.contains(&format!("\"{base}_{{{word}}}\"")),
             None => {
@@ -2715,6 +2786,45 @@ mod tests {
             assert!(DISPLAY_ROWS[i + 1..].iter().all(|other| other.radix != name), "{name}");
             assert!(ROWS.iter().all(|row| row.radix != name), "{name}");
         }
+    }
+
+    #[test]
+    fn linux_rows_are_the_time_that_passed_but_where_a_frame_is_waited_for() {
+        for row in DISPLAY_ROWS {
+            let Some((linux, how)) = row.linux else { continue };
+            let held = matches!(linux, "drm_flip_virtio" | "drm_dirty_virtio");
+            assert_eq!(how.ends_with("the thread's processor time"), held, "{linux}");
+            let passed = linux.ends_with("_passed") || linux.starts_with("evdev_");
+            assert_eq!(passed, !held, "{linux}");
+        }
+    }
+
+    /// The counts of one group: `ipis` of them were interrupts sent.
+    fn counted(group: &str, rounds: u64, ipis: u64) -> Counts {
+        let events = vec![("switches".to_string(), 3 * rounds), ("ipis".to_string(), ipis)];
+        Counts { group: group.into(), rounds, events }
+    }
+
+    #[test]
+    fn a_motion_that_wakes_another_cpu_fails_the_gate() {
+        for &(group, event, limit) in EVENT_LIMITS {
+            assert!(rows().any(|row| row.radix == group), "{group}");
+            assert!(EVENTS.iter().any(|(name, _)| *name == event), "{event}");
+            assert!(limit > 0.0, "{group}");
+        }
+        // Three motions of 400 met an interrupt on their way.
+        let kept = [counted("display_check", 100, 0), counted("input_to_reader", 400, 3)];
+        assert_eq!(events_each(&kept, "input_to_reader", "ipis"), Some(0.0075));
+        check_events(&kept).expect("under the limit");
+        assert!(events_report(&kept).contains("- input to reader: 0.01 ipis (limit 0.1)"));
+        // Each motion woke the reader on another CPU.
+        let woke = [counted("input_to_reader", 400, 397)];
+        let said = check_events(&woke).expect_err("over the limit").to_string();
+        assert!(said.contains("input_to_reader (0.99 ipis an operation, limit 0.1)"), "{said}");
+        // A boot that printed no counts does not pass by saying nothing.
+        let said = check_events(&[]).expect_err("not counted").to_string();
+        assert!(said.contains("input_to_reader (ipis not counted)"), "{said}");
+        assert!(events_report(&[]).contains("ipis not counted"));
     }
 
     #[test]

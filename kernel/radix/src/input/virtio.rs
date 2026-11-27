@@ -315,9 +315,12 @@ impl Bound {
         }
     }
 
-    /// Hands the hub what the device said since its last frame.
+    /// Hands the hub what the device said since its last frame. The
+    /// thread waits for the next interrupt once the frames are handed
+    /// over, so a reader it wakes may run after it on this CPU, which
+    /// the interrupt has awake already.
     fn hand_over(&mut self, came_ns: u64) {
-        super::frame(self.number, came_ns, &self.said[..self.count]);
+        super::frame_then_waits(self.number, came_ns, &self.said[..self.count]);
         self.count = 0;
     }
 

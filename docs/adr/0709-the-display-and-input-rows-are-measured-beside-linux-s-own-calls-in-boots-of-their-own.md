@@ -61,13 +61,18 @@ kernel (`tools/xtask/src/baseline.rs`) decide how they can be measured:
   fails a boot that does not say 1280 by 800 for the firmware's and
   1024 by 768 for the virtio card's, so a row is never compared across
   two sizes of picture.
-- **Linux's display rows are the calling thread's processor time**
-  (`CLOCK_THREAD_CPUTIME_ID`), each operation timed by itself with the
-  clock's own cost taken off, as Radix times its own. Radix's rows are
-  the time that passed, which is never less than the processor time. So
-  the wait for `virtio_gpu`'s frame is left out, and whatever Linux does
-  for a call outside the calling thread is left out with it: the rows
-  lean Linux's way, and a Radix row that is under Linux's is under it.
+- **Radix's rows are the time that passed, and so are Linux's where its
+  call waits for nothing**: the check, the firmware card's two rows and
+  the pointer's move. `linux-bench` times every DRM row by two clocks,
+  the calling thread's processor time (`CLOCK_THREAD_CPUTIME_ID`) and
+  then, over as many operations again, the time that passed
+  (`<row>_passed`), each operation timed by itself with the clock's own
+  cost taken off, as Radix times its own. For a whole picture and a
+  small change on the virtio card, which `virtio_gpu` holds for a
+  frame, the row beside Radix's is the processor time. The wait is left
+  out, and whatever Linux does for the call outside the calling thread
+  is left out with it: those two rows lean Linux's way, and a Radix row
+  that is under Linux's there is under it.
 - **The mouse's motions come from outside the two systems.** Each
   program says when it is ready, and `ob bench` sends 400 motions
   through QEMU's monitor, 5 ms apart, to the virtio mouse. Both drivers
@@ -89,8 +94,14 @@ kernel (`tools/xtask/src/baseline.rs`) decide how they can be measured:
 
 ## Alternatives
 
-- **The time that passed for Linux's rows too.** Each `virtio_gpu` row
-  would read 10.9 ms, the wait for a frame that no card shows.
+- **The time that passed for those two rows too.** Each would read
+  10.9 ms, the wait for a frame that no card shows.
+- **Processor time for every Linux display row**, as the rows were
+  first measured. What a call costs the program that makes it is the
+  time until it returns, which is what Radix's rows are. Emulated, a
+  small change on the firmware's card took Linux 405 µs, of which its
+  thread's processor time was 281 µs; the pointer's move took 364 µs and
+  357 µs.
 - **Commits that do not block (NONBLOCK) on Linux.** The call returns
   before the change is made, and a worker makes it: less of Linux's
   work would be in the row, not more.
@@ -142,6 +153,29 @@ kernel (`tools/xtask/src/baseline.rs`) decide how they can be measured:
   interrupt's thread to the interrupt's CPUs. The motion's emulated
   time fell from 231 µs to 160 µs, with Linux at 151 µs and 174 µs in
   the two runs, and its count from 8,035 instructions to 7,236.
+- The rows' first run on CI's runners, under KVM, each system's
+  fastest of three runs, with every Linux display row its processor
+  time:
+
+  | Row | Radix | Linux | Radix to Linux |
+  | --- | --- | --- | --- |
+  | A change checked | 557 ns | 769 ns | 0.72 |
+  | 1280 by 800 shown, firmware | 283.1 µs | 356.8 µs | 0.79 |
+  | 64 by 64 pixels shown, firmware | 6,459 ns | 5,159 ns | 1.25 |
+  | 1024 by 768 shown, virtio | 54.2 µs | 89.5 µs | 0.61 |
+  | 64 by 64 pixels shown, virtio | 38.1 µs | 88.4 µs | 0.43 |
+  | The pointer moved, virtio | 34.1 µs | 23.2 µs | 1.47 |
+  | A motion to its reader, the middle one | 38.8 µs | 10.4 µs | 3.71 |
+  | The one that 99 in 100 were faster than | 62.5 µs | 35.1 µs | 1.78 |
+
+  A motion woke a second, sleeping CPU for its reader every time, which
+  ADR 0710 ends. The pointer's move and the small change on the
+  firmware's card do nothing in the kernel beyond their own work:
+  counted over 100 of each, neither switches threads, sends an
+  interrupt or writes a timer. Those rows are set beside Linux's time
+  that passed from then on, and a row that stays above Linux's is
+  looked at on a machine with KVM, which the build machine is not
+  (`docs/deferred.md`).
 - What these rows do not show is held elsewhere: that inputd is not
   woken by a key or a motion and stays under its memory bar is the
   `inputd` boot test's, and a whole frame's time, from a client's

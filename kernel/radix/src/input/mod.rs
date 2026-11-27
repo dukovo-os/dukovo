@@ -44,7 +44,7 @@ pub mod virtio;
 use alloc::sync::Arc;
 use core::any::Any;
 use core::fmt::{self, Write};
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use radix_abi::Status;
 use radix_abi::errors::Kernel;
@@ -105,6 +105,11 @@ impl Reader {
 /// A reader as the hub holds it.
 struct Waker(Arc<Reader, Kmalloc>);
 
+/// Whether the hub is being handed a report by a thread that waits for
+/// its device's next interrupt once it has ([`frame_then_waits`]).
+/// Written and read with the hub's lock held.
+static WAITS_NEXT: AtomicBool = AtomicBool::new(false);
+
 impl Wake for Waker {
     // Called with the hub's lock held, which the woken thread wants
     // next: it is given this CPU only once the lock has gone
@@ -112,11 +117,18 @@ impl Wake for Waker {
     fn wake(&self) {
         let reader = &*self.0;
         reader.news.fetch_add(1, Ordering::SeqCst);
-        sched::lazily(|| {
+        let wake = || {
             // Takes the barrier the pollers' look needs too.
             reader.waiters.wake_all(reader.key());
             reader.polled.changed_by_rmw();
-        });
+        };
+        // What a thread that waits next wakes may run after it on its
+        // CPU, which the device's interrupt has awake already.
+        if WAITS_NEXT.load(Ordering::Relaxed) {
+            sched::lazily_handing_on(wake);
+        } else {
+            sched::lazily(wake);
+        }
     }
 }
 
@@ -284,8 +296,25 @@ pub fn remove(number: u32) {
 /// Everything one report said is handed over in one call, so that a
 /// reader reads it as one frame.
 pub fn frame(number: u32, time_ns: u64, said: &[Said]) {
+    hand_over(number, time_ns, said, false);
+}
+
+/// As [`frame`], from a thread that has nothing to do but wait for its
+/// device's next interrupt once its frames are handed over. A reader the
+/// frame wakes, whether it waits in a read or on an event queue, then
+/// runs after that thread on its CPU if nothing else waits there, and no
+/// idle CPU is interrupted and brought out of its sleep for it
+/// (`sched::lazily_handing_on`).
+pub fn frame_then_waits(number: u32, time_ns: u64, said: &[Said]) {
+    hand_over(number, time_ns, said, true);
+}
+
+/// [`frame`], or with `waits` [`frame_then_waits`].
+fn hand_over(number: u32, time_ns: u64, said: &[Said], waits: bool) {
     let (secure, sooner) = with_hub(|hub| {
+        WAITS_NEXT.store(waits, Ordering::Relaxed);
         let secure = hub.frame(number, time_ns, said);
+        WAITS_NEXT.store(false, Ordering::Relaxed);
         (secure, keyboard::repeat_is(hub.repeat_at()))
     });
     if secure {
