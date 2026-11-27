@@ -138,6 +138,48 @@ fn tmpfs_files_and_directories() {
     assert!(names(&vfs, &root).is_empty());
 }
 
+/// While programs share a file's pages, it cannot be opened to write or
+/// be cut, and its pages are kept only while no handle may write it
+/// (ADR 0658). Removing and renaming it are as before.
+#[test]
+fn a_file_whose_pages_are_kept_takes_no_writer() {
+    let vfs = vfs();
+    let root = vfs.root();
+    write(&vfs, &root, "prog", b"code").unwrap();
+    let writes = OpenFlags { want: want::WRITE, ..OpenFlags::default() };
+    let reads = OpenFlags { want: want::READ, ..OpenFlags::default() };
+    let cut = OpenFlags { truncate: true, ..OpenFlags::default() };
+    let (file, writer) = vfs.open_file(&K, &root, "prog", writes).unwrap();
+    let access = file.node.write_access().unwrap();
+    assert!(writer.is_some());
+    // A handle may write it, so no pages are kept.
+    assert!(!access.deny_writes());
+    let again = writer.as_ref().unwrap().again();
+    drop(writer);
+    assert!(!access.deny_writes());
+    drop(again);
+    // Kept twice over, by two programs.
+    assert!(access.deny_writes());
+    assert!(access.deny_writes());
+    assert!(access.denied());
+    assert_eq!(vfs.open_file(&K, &root, "prog", writes).err(), Some(Error::TextBusy));
+    assert_eq!(vfs.open(&K, &root, "prog", cut).err(), Some(Error::TextBusy));
+    assert_eq!(read_all(&file.node), b"code");
+    let (_, reader) = vfs.open_file(&K, &root, "prog", reads).unwrap();
+    assert!(reader.is_none());
+    vfs.rename(&K, &root, "prog", &K, &root, "old").unwrap();
+    access.allow_writes();
+    assert_eq!(vfs.open_file(&K, &root, "old", writes).err(), Some(Error::TextBusy));
+    access.allow_writes();
+    assert!(!access.denied());
+    let (_, writer) = vfs.open_file(&K, &root, "old", cut).unwrap();
+    assert!(writer.is_some());
+    assert_eq!(read_all(&file.node), b"");
+    // A directory has no count.
+    vfs.make_directory(&K, &root, "dir", DIR).unwrap();
+    assert!(vfs.open(&K, &root, "dir", reads).unwrap().node.write_access().is_none());
+}
+
 #[test]
 fn tmpfs_times_are_set() {
     let vfs = vfs();
@@ -1826,6 +1868,9 @@ proptest! {
                 }
             }
             prop_assert_eq!(cache.size(), model.len() as u64);
+            // Every dirty page of a file on a disk counts toward the
+            // writers' limit, and no other.
+            prop_assert_eq!(cache.counted_pages(), cache.dirty_pages());
         }
         // After a sync and dropping every page, the disk alone has it.
         cache.sync(&disk).unwrap();
@@ -1836,6 +1881,33 @@ proptest! {
         prop_assert_eq!(n, model.len());
         prop_assert_eq!(out, model);
     }
+}
+
+/// The pages of files on disks that wait to be written count toward the
+/// limit writers are held to, until they are written or gone; a tmpfs
+/// file's, which have nowhere to go, never do.
+#[test]
+fn dirty_pages_of_files_on_disks_are_counted_until_written() {
+    let disk = FakeDisk { limit: 1 << 20, ..FakeDisk::default() };
+    let cache = FileCache::new(0, 0);
+    let data = std::vec![1u8; 5 * 4096];
+    assert_eq!(cache.write(0, &Slice(&data), &disk), Ok(data.len()));
+    assert_eq!(cache.counted_pages(), 5);
+    // Other tests' files count too, but never less than this one's.
+    assert!(crate::cache::dirty_pages() >= 5);
+    // Rewriting a dirty page counts it once.
+    assert_eq!(cache.write(4096, &Slice(&data[..100]), &disk), Ok(100));
+    assert_eq!(cache.counted_pages(), 5);
+    // Cutting the file takes its dirty pages past the end out.
+    cache.set_size(2 * 4096, &disk).unwrap();
+    assert_eq!(cache.counted_pages(), 2);
+    cache.sync(&disk).unwrap();
+    assert_eq!(cache.counted_pages(), 0);
+
+    let tmpfs = FileCache::new(0, 0);
+    assert_eq!(tmpfs.write(0, &Slice(&data), &Memory), Ok(data.len()));
+    assert_eq!(tmpfs.dirty_pages(), 5);
+    assert_eq!(tmpfs.counted_pages(), 0);
 }
 
 /// A write from a bad buffer, one whose pages cannot be made, keeps what

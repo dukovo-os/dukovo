@@ -4,6 +4,17 @@
 about = "A press of the power button shuts the machine down cleanly, as a person would expect"
 time = "6m"
 
+# On a machine with Intel AMT the lab presses the button through AMT, which
+# asks the system to shut down only when an agent in the system answers AMT,
+# and Dukovo has none: a deferred row of docs/deferred.md ("No AMT OS agent:
+# a graceful power-off asked through AMT is not seen, so boot/power-button
+# fails on the Intel lab machine"). The machine has AMT when its serial ports
+# hold AMT's Serial-over-LAN (hardware/serial-ports checks it the same way),
+# and the test is skipped there until the row is done.
+[[step]]
+run = '''sh -c 'for p in /kernel/class/tty/ttyS*; do [ "$(cat $p/kind)" = amt-sol ] && exit 1; done; exit 0' '''
+or_skip = "an AMT machine's power button is a request through AMT that the system has no agent to answer: the deferred row \"No AMT OS agent\" of docs/deferred.md"
+
 # Spark stops every service before the kernel turns the power off.
 [[step]]
 power = "button"

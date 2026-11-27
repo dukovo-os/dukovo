@@ -325,21 +325,29 @@ async function pressFor(t, page, control, route, method = "POST") {
   return answer;
 }
 
-/** Whether `control`, pressed, sends no request that is a POST to `route`. */
-async function sendsNoPost(page, control, route) {
+/**
+ * Whether `control`, pressed, sends no request that is a POST to `route`. With
+ * `message`, the refusal the page shows for it is waited for, so that a press
+ * that the page has not taken yet is not mistaken for one that sent nothing.
+ */
+async function sendsNoPost(page, control, route, message = null) {
   let sent = 0;
   const count = (request) => {
     if (request.method() === "POST" && new URL(request.url()).pathname === route) sent += 1;
   };
   page.on("request", count);
-  // Brought whole into the middle of the view first: a press that skips
-  // Playwright's checks lands where the control's middle is, and a control
-  // left half under the view's edge is not pressed at all.
-  await control.evaluate((element) => element.scrollIntoView({ block: "center" }));
-  // Pressed as a person may: Playwright would wait for it to come on.
-  await control.click({ force: true });
-  await sleep(1200);
-  page.off("request", count);
+  try {
+    // Pressed as a person presses: Playwright scrolls it into view and waits
+    // until it is stable, visible and receives the press. A control that is
+    // turned off is pressed as it is, where Playwright would wait for it to
+    // come on.
+    if (await control.isEnabled()) await control.click();
+    else await control.click({ force: true });
+    if (message !== null) await message.waitFor({ state: "visible", timeout: 15_000 });
+    else await sleep(1200);
+  } finally {
+    page.off("request", count);
+  }
   return sent === 0;
 }
 
@@ -499,18 +507,18 @@ async function emailSet(t, page, hooks, said) {
   for (const label of ["Send to", "Mail server", "Port", "Sign in as", "Password", "From (optional)"]) await t.see(field(label));
   for (const label of KINDS) await t.see(email.getByRole("checkbox", { name: new RegExp(`^${label}`) }));
 
-  ensure(await sendsNoPost(page, save, pathOf(ROUTES.email)), "Save with no address sent the email's settings");
+  ensure(await sendsNoPost(page, save, pathOf(ROUTES.email), email.getByText(NO_ADDRESS, { exact: true })), "Save with no address sent the email's settings");
   await t.see(email.getByText(NO_ADDRESS, { exact: true }));
   await field("Send to").fill("nobody");
-  ensure(await sendsNoPost(page, save, pathOf(ROUTES.email)), "Save with a word that is no address sent the email's settings");
+  ensure(await sendsNoPost(page, save, pathOf(ROUTES.email), email.getByText(NOT_AN_ADDRESS, { exact: true })), "Save with a word that is no address sent the email's settings");
   await t.see(email.getByText(NOT_AN_ADDRESS, { exact: true }));
   await field("Send to").fill(TO);
-  ensure(await sendsNoPost(page, save, pathOf(ROUTES.email)), "Save with no mail server sent the email's settings");
+  ensure(await sendsNoPost(page, save, pathOf(ROUTES.email), email.getByText(NO_SERVER, { exact: true })), "Save with no mail server sent the email's settings");
   await t.see(email.getByText(NO_SERVER, { exact: true }));
   await field("Mail server").fill(hooks.peer);
   await field("Port").selectOption(MAIL_PORT);
   await field("Sign in as").fill(MAIL_USER);
-  ensure(await sendsNoPost(page, save, pathOf(ROUTES.email)), "Save with a user name and no password sent the email's settings");
+  ensure(await sendsNoPost(page, save, pathOf(ROUTES.email), email.getByText(NO_PASSWORD, { exact: true })), "Save with a user name and no password sent the email's settings");
   await t.see(email.getByText(NO_PASSWORD, { exact: true }));
 
   // The password is typed, and the command that the page shows has none of it.
@@ -549,10 +557,10 @@ async function webhookAdded(t, page, hooks, said) {
   await t.see(dialog);
   await dialog.getByLabel("Kind", { exact: true }).selectOption("json");
   const add = buttonIn(dialog, "Add the webhook");
-  ensure(await sendsNoPost(page, add, pathOf(ROUTES.webhook)), "Add the webhook with no address sent a webhook");
+  ensure(await sendsNoPost(page, add, pathOf(ROUTES.webhook), dialog.getByText("Type the address.", { exact: true })), "Add the webhook with no address sent a webhook");
   await t.see(dialog.getByText("Type the address.", { exact: true }));
   await dialog.getByLabel("Address", { exact: true }).fill("not an address");
-  ensure(await sendsNoPost(page, add, pathOf(ROUTES.webhook)), "Add the webhook with a word that is no address sent a webhook");
+  ensure(await sendsNoPost(page, add, pathOf(ROUTES.webhook), dialog.getByText(NO_WEB_ADDRESS, { exact: true })), "Add the webhook with a word that is no address sent a webhook");
   await t.see(dialog.getByText(NO_WEB_ADDRESS, { exact: true }));
   await dialog.getByLabel("Address", { exact: true }).fill(address);
   await dialog.getByLabel("Token", { exact: true }).fill(HOOK_TOKEN);
@@ -647,7 +655,7 @@ async function toldOf(t, page, hook) {
   // None chosen is refused, and the dialog is cancelled.
   let dialog = await edit(hookRow(), async (one) => {
     for (const label of KINDS) await box(one, label).uncheck();
-    ensure(await sendsNoPost(page, buttonIn(one, "Save"), pathOf(ROUTES.told)), "Save with no kind chosen sent a change");
+    ensure(await sendsNoPost(page, buttonIn(one, "Save"), pathOf(ROUTES.told), one.getByText(NO_KIND, { exact: true })), "Save with no kind chosen sent a change");
     await t.see(one.getByText(NO_KIND, { exact: true }));
   });
   await buttonIn(dialog, "Cancel").click();
@@ -766,7 +774,7 @@ async function getAlertsHere(t, page, seen) {
   const name = here.getByLabel("Name", { exact: true });
   ensure(isText(await name.inputValue()), "the browser is offered no name for itself");
   await name.fill("");
-  ensure(await sendsNoPost(page, get, pathOf(ROUTES.push)), "Get alerts in this browser with no name sent a subscription");
+  ensure(await sendsNoPost(page, get, pathOf(ROUTES.push), here.getByText(NO_NAME, { exact: true })), "Get alerts in this browser with no name sent a subscription");
   await t.see(here.getByText(NO_NAME, { exact: true }));
   await name.fill("Lab browser");
 

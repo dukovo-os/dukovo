@@ -87,7 +87,7 @@ run = "findmnt '/volumes/Lab Disc'"
 expect = ["iso9660", "ro"]
 [[step]]
 run = "sh -c 'cd \"/volumes/Lab Disc\" && sha256sum -c ~/lab-burn.sum && readlink live'"
-expect = ["noise.bin: OK", "characters.txt: OK", "Música en vivo"]
+expect = ["noise.bin: OK", "characters.txt': OK", "Música en vivo"]
 [[step]]
 run = "burn info"
 root = true
@@ -119,7 +119,7 @@ run = "findmnt /volumes/LABDVD"
 expect = ["udf", "ro"]
 [[step]]
 run = "sh -c 'cd /volumes/LABDVD && sha256sum -c ~/lab-burn.sum && readlink live'"
-expect = ["noise.bin: OK", "characters.txt: OK", "Música en vivo"]
+expect = ["noise.bin: OK", "characters.txt': OK", "Música en vivo"]
 [[step]]
 run = "eject LABDVD"
 root = true

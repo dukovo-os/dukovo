@@ -6,6 +6,7 @@
 //! input is each of them in turn, and an index with an advisory beside
 //! it.
 
+#![forbid(unsafe_code)]
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

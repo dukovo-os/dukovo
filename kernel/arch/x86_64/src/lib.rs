@@ -32,6 +32,10 @@
 mod acpi;
 mod apic;
 mod boot;
+// The kernel's own `memcpy`: never in a host build, where it would
+// replace the C library's.
+#[cfg(target_os = "none")]
+mod copy;
 mod cpu;
 mod devices;
 mod ec;
@@ -64,6 +68,7 @@ mod smp;
 mod space;
 mod thread;
 mod time;
+mod tsc_sync;
 mod user;
 mod vga;
 mod vmware;
@@ -273,6 +278,10 @@ impl Cpu for Arch {
     fn core_temperature() -> Option<radix_sensors::coretemp::Sample> {
         sensors::core_sample()
     }
+
+    fn core_kind() -> radix_hal::CoreKind {
+        cpu::core_kind()
+    }
 }
 
 impl CpuLocal for Arch {
@@ -469,6 +478,14 @@ impl Devices for Arch {
 
     fn map_device(phys: u64, len: usize) -> Option<radix_hal::Mmio> {
         devices::map(phys, len)
+    }
+
+    fn pci_bus_answers(phys: u64) -> bool {
+        devices::pci_bus_answers(phys)
+    }
+
+    fn numa_node_of_domain(domain: u32) -> Option<u8> {
+        memory::numa_node_of_domain(domain)
     }
 
     fn alloc_dma(

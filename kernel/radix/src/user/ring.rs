@@ -23,7 +23,7 @@
 
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering, fence};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use radix_abi::errors::Kernel;
 use radix_abi::ring::{Cqe, LAYOUT_VERSION, Opcode, RingHeader, RingIndexes, Sqe};
@@ -32,7 +32,7 @@ use radix_hal::{UserAccess, UserMode};
 use radix_ipc::range::user_pages;
 use radix_ipc::ring::{Layout, Queues};
 use radix_mm::{Flags, HEAP, Kmalloc};
-use radix_sync::SpinLock;
+use radix_sync::{SpinLock, barrier};
 
 use super::memory::{Backing, SpaceObject, SpaceRef};
 use super::objects::{self, Object};
@@ -120,7 +120,7 @@ impl RingObject {
         // sees the completion. Without it the load could be done before
         // this CPU's store of the tail was seen, while the waiter counts
         // itself and reads the old tail, and the wake-up would be lost.
-        fence(Ordering::SeqCst);
+        barrier::full();
         if self.waiting.load(Ordering::Relaxed) > 0 {
             wait::wake_all(self.key());
         }
@@ -348,7 +348,7 @@ pub fn enter(
         ring.waiting.fetch_add(1, Ordering::Relaxed);
         // Pairs with the barrier in `wake`: either the thread finishing an
         // entry sees this count, or `done` sees what it wrote.
-        fence(Ordering::SeqCst);
+        barrier::full();
         match until {
             None => wait::wait_until(ring.key(), "ring", done),
             Some(until) => {

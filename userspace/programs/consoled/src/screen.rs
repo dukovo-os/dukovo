@@ -22,14 +22,13 @@
 
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
 
 use radix_abi::framebuffer::{self as abi, FramebufferInfo};
 use radix_fbcon::{Font, builtin_font, choose_font_for};
+use sysapi::kernel;
 
 use crate::access::Size;
-use crate::sys;
 use crate::term::{
     BOLD, Cell, DIM, Palette, REVERSE, Terminal, UNDERLINE, WIDE_TAIL, default_palette,
 };
@@ -157,9 +156,8 @@ impl Screen {
     /// at least, or the smallest.
     pub fn open(path: &str, grid: (usize, usize)) -> io::Result<Screen> {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
-        let fd = file.as_raw_fd();
         let mut info = [0u8; FramebufferInfo::SIZE];
-        sys::control(fd, abi::GET_INFO, 0, &mut info)?;
+        kernel::control(&file, abi::GET_INFO, 0, &mut info).map_err(kernel::io_error)?;
         let format = Format::parse(&info);
         if !(2..=4).contains(&format.bpp) || format.pitch < format.width * format.bpp {
             return Err(io::Error::other(format!("an unusual framebuffer: {format:?}")));
@@ -171,7 +169,7 @@ impl Screen {
         if cols < 16 || rows < 4 {
             return Err(io::Error::other("the screen is too small for a console"));
         }
-        sys::control(fd, abi::TAKE, 0, &mut [])?;
+        kernel::control(&file, abi::TAKE, 0, &mut []).map_err(kernel::io_error)?;
         let palette = default_palette();
         let colours = palette.iter().map(|&rgb| format.encode(rgb)).collect();
         let mut screen = Screen {

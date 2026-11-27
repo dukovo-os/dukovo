@@ -246,6 +246,10 @@ impl Reaped {
         self.statuses.swap_remove(&pid)
     }
 
+    pub fn get(&self, pid: i32) -> Option<i32> {
+        self.statuses.get(&pid).copied()
+    }
+
     /// The one kept longest.
     pub fn oldest(&self) -> Option<(i32, i32)> {
         self.statuses.first().map(|(&pid, &status)| (pid, status))
@@ -271,9 +275,11 @@ fn child_max() -> usize {
         if cfg!(target_os = "radix") {
             return 4096;
         }
-        // SAFETY: sysconf only reads a limit.
-        let limit = unsafe { libc::sysconf(libc::_SC_CHILD_MAX) };
-        usize::try_from(limit).unwrap_or(0).clamp(4096, 32768)
+        // sysconf(_SC_CHILD_MAX) is this soft limit, and none without one.
+        let limit = sysapi::process::limit(libc::RLIMIT_NPROC as libc::c_int)
+            .ok()
+            .and_then(|(soft, _)| (soft != libc::RLIM_INFINITY).then_some(soft));
+        limit.and_then(|soft| usize::try_from(soft).ok()).unwrap_or(0).clamp(4096, 32768)
     })
 }
 

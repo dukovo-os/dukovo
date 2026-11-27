@@ -29,6 +29,8 @@ nfsd = { path = "../nfsd" }
 # The system call interface, generated from abi/*.ridl: radix-directory(2)'s
 # mount_fuse, which the C library does not wrap.
 radix-abi = { path = "../../../kernel/abi" }
+# The kernel and the C library behind safe calls (ADR 0730).
+sysapi = { path = "../sysapi" }
 
 [dev-dependencies]
 # Contexts and tickets without a KDC, for the tests of sec=krb5.

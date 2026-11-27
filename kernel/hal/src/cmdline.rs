@@ -74,6 +74,12 @@ pub const FLAGS: &[Flag] = &[
         summary: "leave the USB controllers as the firmware left them",
     },
     Flag {
+        name: "ups",
+        value: Some("show"),
+        summary: "show the UPSes plugged in by USB, but do not shut the machine down when one's \
+                  battery is low",
+    },
+    Flag {
         name: "aml",
         value: Some("off"),
         summary: "run none of the firmware's AML: no uACPI, and the kernel hears the ACPI power \
@@ -83,6 +89,12 @@ pub const FLAGS: &[Flag] = &[
         name: "pstate",
         value: Some("off"),
         summary: "leave the CPUs' speed to the firmware, though they have Intel's HWP or AMD's CPPC",
+    },
+    Flag {
+        name: "hybrid",
+        value: Some("off"),
+        summary: "place threads on performance and efficient cores alike, as on a processor whose \
+                  cores are all of one kind",
     },
     Flag {
         name: "epp",
@@ -142,7 +154,7 @@ pub const FLAGS: &[Flag] = &[
         name: "selftest",
         value: Some("name"),
         summary: "run a self-test at the end of boot: page-fault, crash-reboot, breakpoint, \
-                  mm-stress, stack-overflow, smep, smap, tlb, msr, caps, fpu, sched-fair, \
+                  mm-stress, stack-overflow, smep, smap, tlb, msr, copy, caps, fpu, sched-fair, \
                   sched-rt, sched-pi, sched-balance, lockdep, rcu, oom, user, ipc, fuzz, bench, \
                   iommu, net, gpio or i2c",
     },
@@ -307,6 +319,7 @@ pub const SELFTESTS: &[&str] = &[
     "smap",
     "tlb",
     "msr",
+    "copy",
     "caps",
     "fpu",
     "sched-fair",

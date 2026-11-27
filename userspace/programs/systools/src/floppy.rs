@@ -255,7 +255,7 @@ fn format(args: &mut Args, out: &mut dyn Write) -> Result<i32, Fail> {
     opened.refuse_in_use("formatting")?;
     drop(opened);
 
-    let tty = util::is_terminal(1);
+    let tty = util::is_terminal(std::io::stdout());
     writeln!(out, "floppy: formatting the disk in {name} as a {} disk", size.name)?;
     for cylinder in 0..CYLINDERS {
         if tty {

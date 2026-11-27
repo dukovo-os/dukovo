@@ -68,6 +68,15 @@ volumed: sdc1 is gone; unmounted /volumes/SDCARD
 volumed: sdc has no medium in it now
 ```
 
+The old medium's volumes are those mounted when volumed last looked: a
+volume mounted since, as *floppy*(1) mounts the disk it formats, is
+taken to be of the medium in the drive now, and stays mounted.
+
+```
+volumed: a medium went in fd0
+volumed: fd0 is mounted at /volumes/LABFMT already
+```
+
 A CD, DVD or Blu-ray drive (ADR 0431) is such a drive, named *cd0* and
 on, and volumed says what disc went in it from its _disc_ file. A disc
 of data has no partitions: the drive itself is mounted, read-only, at

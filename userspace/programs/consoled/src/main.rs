@@ -34,6 +34,8 @@
 //! consoled ends, the screen is the kernel log's again. Spark starts it as
 //! a service (spark(8)).
 
+#![forbid(unsafe_code)]
+
 mod access;
 mod braille;
 mod keys;
@@ -42,16 +44,16 @@ mod prompts;
 mod reader;
 mod screen;
 mod session;
-mod sys;
 mod term;
 mod welcome;
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read};
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::AsFd;
 use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::process::ExitStatusExt;
+use std::path::Path;
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::Instant;
 
 use access::{Access, Size};
@@ -64,6 +66,9 @@ use radix_abi::input::{Event, PRESSED, SET_LEDS};
 use reader::Reader;
 use screen::Screen;
 use session::{Console, Shell};
+use sysapi::poll::{self, PollFd};
+use sysapi::signal::{self, Caught};
+use sysapi::{fd, kernel, process, users};
 
 const USAGE: &str = "usage: consoled [--consoles N] [--shell PATH]";
 
@@ -111,22 +116,11 @@ fn read_welcome() -> Option<welcome::Welcome> {
     welcome::shows_this_boot(&welcome, welcome::SHOWN).then_some(welcome)
 }
 
-/// The write end of the pipe the SIGCHLD handler wakes the loop with.
-static WAKE: AtomicI32 = AtomicI32::new(-1);
+/// SIGCHLD, which wakes the loop to reap ended sessions.
+static CHILD: Caught = Caught::new();
 
 /// Set by SIGHUP: read the keyboard layout's setting again.
-static RELOAD: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_child(_: libc::c_int) {
-    let fd = WAKE.load(Ordering::Relaxed);
-    // SAFETY: write(2) is async-signal-safe; a full pipe already wakes.
-    unsafe { libc::write(fd, [0u8].as_ptr().cast(), 1) };
-}
-
-extern "C" fn on_hangup(signal: libc::c_int) {
-    RELOAD.store(true, Ordering::Relaxed);
-    on_child(signal);
-}
+static RELOAD: Caught = Caught::new();
 
 /// The layout the setting names, saying which; US when it cannot be had.
 fn chosen_keymap() -> Keymap {
@@ -242,22 +236,11 @@ fn serial_place(line: &str, devices: &[String]) -> Option<String> {
 
 /// Root's shell and home from the user database, as login(1) reads them.
 fn root_account() -> (String, String) {
-    // SAFETY: getpwuid returns a static entry or null.
-    let entry = unsafe { libc::getpwuid(0) };
-    let text = |p: *const libc::c_char| -> Option<String> {
-        // SAFETY: the entry's strings are NUL-terminated while it lives.
-        (!p.is_null())
-            .then(|| unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned())
-    };
-    if entry.is_null() {
-        return ("/system/commands/sh".into(), "/".into());
-    }
-    // SAFETY: not null, as checked.
-    let entry = unsafe { &*entry };
-    let shell =
-        text(entry.pw_shell).filter(|s| !s.is_empty()).unwrap_or("/system/commands/sh".into());
-    let home = text(entry.pw_dir).filter(|s| !s.is_empty()).unwrap_or("/".into());
-    (shell, home)
+    let root = users::user_by_id(0).ok().flatten();
+    let text = |path: &Path| Some(path.to_string_lossy().into_owned()).filter(|s| !s.is_empty());
+    let shell = root.as_ref().and_then(|root| text(&root.shell));
+    let home = root.as_ref().and_then(|root| text(&root.home));
+    (shell.unwrap_or("/system/commands/sh".into()), home.unwrap_or("/".into()))
 }
 
 /// The session's environment: consoled's own, with what a login sets.
@@ -280,24 +263,15 @@ fn session_env(shell: &str, home: &str) -> Vec<String> {
 /// The SIGCHLD and SIGHUP handlers and the pipe they write to; returns the
 /// pipe's read end.
 fn watch_children() -> io::Result<File> {
-    let mut fds = [0; 2];
-    // SAFETY: pipe2 writes two descriptors.
-    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_NONBLOCK | libc::O_CLOEXEC) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    WAKE.store(fds[1], Ordering::Relaxed);
-    // SAFETY: the handler only writes to the pipe, and the read end is
-    // ours alone.
-    unsafe {
-        let mut action: libc::sigaction = std::mem::zeroed();
-        action.sa_sigaction = on_child as *const () as usize;
-        action.sa_flags = libc::SA_RESTART | libc::SA_NOCLDSTOP;
-        libc::sigaction(libc::SIGCHLD, &raw const action, std::ptr::null_mut());
-        action.sa_sigaction = on_hangup as *const () as usize;
-        action.sa_flags = libc::SA_RESTART;
-        libc::sigaction(libc::SIGHUP, &raw const action, std::ptr::null_mut());
-        Ok(File::from_raw_fd(fds[0]))
-    }
+    let (from, to) = fd::pipe()?;
+    // A full pipe already wakes the loop, so neither end waits.
+    fd::set_nonblocking(&from, true)?;
+    fd::set_nonblocking(&to, true)?;
+    RELOAD.wake_through(to.try_clone()?)?;
+    CHILD.wake_through(to)?;
+    signal::catch(libc::SIGCHLD, &CHILD, libc::SA_RESTART | libc::SA_NOCLDSTOP)?;
+    signal::catch(libc::SIGHUP, &RELOAD, libc::SA_RESTART)?;
+    Ok(File::from(from))
 }
 
 /// Starts `path` with no arguments, not waiting for it.
@@ -352,8 +326,7 @@ struct Consoled {
 impl Consoled {
     fn lights(&self) {
         if let Some(kbd) = &self.kbd {
-            let _ =
-                sys::control(kbd.as_raw_fd(), SET_LEDS, u64::from(self.keyboard.lights()), &mut []);
+            let _ = kernel::control(kbd, SET_LEDS, u64::from(self.keyboard.lights()), &mut []);
         }
     }
 
@@ -703,17 +676,11 @@ impl Consoled {
 
     /// Reaps the ended children and starts new sessions for them.
     fn reap(&mut self) {
-        loop {
-            let mut status = 0;
-            // SAFETY: waitpid fills `status`.
-            let pid = unsafe { libc::waitpid(-1, &raw mut status, libc::WNOHANG) };
-            if pid <= 0 {
-                return;
-            }
+        while let Some((pid, status)) = process::reap() {
             let Some(console) = self.consoles.iter_mut().find(|c| c.child() == Some(pid)) else {
                 continue;
             };
-            if let Some(line) = console.ended(status, &self.shell) {
+            if let Some(line) = console.ended(status.into_raw(), &self.shell) {
                 eprintln!("consoled: {line}");
             }
         }
@@ -765,26 +732,6 @@ impl Consoled {
             // The wake pipe, the keyboard, notifyd, authd's prompts,
             // readerd, the braille display's socket and its connection,
             // then each console's master.
-            let mut fds =
-                vec![libc::pollfd { fd: wake.as_raw_fd(), events: libc::POLLIN, revents: 0 }];
-            fds.push(libc::pollfd {
-                fd: self.kbd.as_ref().map_or(-1, AsRawFd::as_raw_fd),
-                events: libc::POLLIN,
-                revents: 0,
-            });
-            fds.push(libc::pollfd { fd: self.notices.fd(), events: libc::POLLIN, revents: 0 });
-            let prompts_fd = self.prompts.as_ref().map_or(-1, Prompts::fd);
-            fds.push(libc::pollfd { fd: prompts_fd, events: libc::POLLIN, revents: 0 });
-            fds.push(libc::pollfd { fd: self.reader.fd(), events: libc::POLLIN, revents: 0 });
-            let listener = self.braille.listener_fd();
-            fds.push(libc::pollfd { fd: listener, events: libc::POLLIN, revents: 0 });
-            let (display, wanted) = self.braille.client_fd();
-            fds.push(libc::pollfd { fd: display, events: wanted, revents: 0 });
-            for (i, console) in self.consoles.iter().enumerate() {
-                let held = i == self.active && self.keyboard.scroll;
-                let fd = console.master_fd().filter(|_| !held).unwrap_or(-1);
-                fds.push(libc::pollfd { fd, events: libc::POLLIN, revents: 0 });
-            }
             let now = Instant::now();
             let next = self
                 .consoles
@@ -796,26 +743,41 @@ impl Consoled {
                 .chain(self.slow.deadline())
                 .chain(self.web_console.deadline(self.newest_redrawable()))
                 .min();
-            let timeout =
-                next.map_or(-1, |at| at.saturating_duration_since(now).as_millis() as i32);
-            // SAFETY: `fds` holds valid pollfds.
-            let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout) };
-            if ready < 0 {
-                let error = io::Error::last_os_error();
-                if error.kind() != io::ErrorKind::Interrupted {
+            let timeout = next.map(|at| at.saturating_duration_since(now));
+            let revents = {
+                let mut fds = vec![
+                    PollFd::new(wake.as_fd(), libc::POLLIN),
+                    PollFd::optional(self.kbd.as_ref().map(AsFd::as_fd), libc::POLLIN),
+                    PollFd::optional(self.notices.fd(), libc::POLLIN),
+                    PollFd::optional(self.prompts.as_ref().and_then(Prompts::fd), libc::POLLIN),
+                    PollFd::optional(self.reader.fd(), libc::POLLIN),
+                    PollFd::optional(self.braille.listener_fd(), libc::POLLIN),
+                ];
+                let (display, wanted) = self.braille.client_fd();
+                fds.push(PollFd::optional(display, wanted));
+                for (i, console) in self.consoles.iter().enumerate() {
+                    let held = i == self.active && self.keyboard.scroll;
+                    let fd = console.master_fd().filter(|_| !held);
+                    fds.push(PollFd::optional(fd, libc::POLLIN));
+                }
+                // A signal that comes first woke the pipe, which is read below.
+                if let Err(error) = poll::poll(&mut fds, timeout)
+                    && error.kind() != io::ErrorKind::Interrupted
+                {
                     return Err(error);
                 }
-            }
-            if fds[0].revents != 0 {
+                fds.iter().map(PollFd::revents).collect::<Vec<_>>()
+            };
+            if revents[0] != 0 {
                 let mut drain = [0u8; 64];
                 while matches!(wake.read(&mut drain), Ok(n) if n > 0) {}
             }
-            if RELOAD.swap(false, Ordering::Relaxed) {
+            if RELOAD.take() {
                 self.keyboard.set_keymap(chosen_keymap());
                 self.reload_access();
             }
             self.reap();
-            if fds[1].revents != 0
+            if revents[1] != 0
                 && let Some(kbd) = self.kbd.as_mut()
             {
                 match kbd.read(&mut events) {
@@ -840,10 +802,10 @@ impl Consoled {
             for (code, value) in self.slow.tick(now) {
                 self.key(code, value);
             }
-            if fds[2].revents != 0 {
+            if revents[2] != 0 {
                 self.notices.read(now);
             }
-            if fds[3].revents != 0
+            if revents[3] != 0
                 && let Some(prompts) = self.prompts.as_mut()
             {
                 let consoles = &self.consoles;
@@ -851,22 +813,22 @@ impl Consoled {
                     consoles.iter().position(|c| c.terminal() == Some(terminal))
                 });
             }
-            if fds[4].revents != 0 {
+            if revents[4] != 0 {
                 self.reader.read(now);
             }
-            if fds[5].revents != 0 {
+            if revents[5] != 0 {
                 self.braille.accept();
             }
-            if fds[6].revents & libc::POLLOUT != 0 {
+            if revents[6] & libc::POLLOUT != 0 {
                 self.braille.flush();
             }
-            if fds[6].revents & !libc::POLLOUT != 0 {
+            if revents[6] & !libc::POLLOUT != 0 {
                 for input in self.braille.read() {
                     self.braille_input(input);
                 }
             }
             for (i, console) in self.consoles.iter_mut().enumerate() {
-                if fds[7 + i].revents != 0 {
+                if revents[7 + i] != 0 {
                     console.read();
                 }
             }

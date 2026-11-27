@@ -38,6 +38,11 @@ export class Element {
     this.open = false;
     this.returnValue = '';
     this.classes = new Set();
+    // Custom properties a page sets, as a meter's `--v`.
+    if (!('style' in this)) {
+      const properties = new Map();
+      this.style = { properties, setProperty: (name, value) => properties.set(name, String(value)) };
+    }
     this.classList = {
       add: (...names) => names.forEach((name) => this.classes.add(name)),
       remove: (...names) => names.forEach((name) => this.classes.delete(name)),

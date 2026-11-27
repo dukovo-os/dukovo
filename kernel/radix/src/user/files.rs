@@ -43,6 +43,7 @@ use radix_linux::notify::{IN_ACCESS, IN_ATTRIB, IN_MODIFY};
 use radix_mm::{Flags, HEAP};
 use radix_vfs::attributes;
 use radix_vfs::mount::{Location, Mount, OpenFlags as VfsOpen};
+use radix_vfs::writes::Writer;
 use radix_vfs::{
     Access, AccessChange, FsKind, In, Kind, NodeRef, Out, PATH_MAX, Setting, Who, want,
 };
@@ -809,7 +810,8 @@ pub(super) fn directory_call(
             } else {
                 None
             };
-            let mut at = vfs()?.open(&who, &dir.at, path.as_str()?, flags).map_err(fs::status)?;
+            let (mut at, mut writer) =
+                vfs()?.open_file(&who, &dir.at, path.as_str()?, flags).map_err(fs::status)?;
             let kind = at.node.kind();
             let description = Description {
                 append: a.flags.contains(OpenFlags::APPEND),
@@ -824,6 +826,11 @@ pub(super) fn directory_call(
             let missing = wanted.difference(found.cap.rights());
             if !missing.is_empty() {
                 return Err(cap_error(CapError::MissingRights(missing)));
+            }
+            // The writer an open to cut took goes now, unless the handle
+            // may write.
+            if !wanted.contains(Rights::WRITE) {
+                writer = None;
             }
             // The node's kind, unless it is replaced below.
             let mut known = Some(kind);
@@ -843,8 +850,9 @@ pub(super) fn directory_call(
             let rights = wanted.union(Rights::COPY).union(Rights::TRANSFER).union(bypass);
             // The bytes the VFS took as a path above.
             let from = Some((&dir.opened, path.bytes()));
-            let mut object = FileObject::opened_as(at, known, description, from, dir.name.clone())
-                .ok_or(error(Kernel::NoMemory))?;
+            let mut object =
+                FileObject::opened_as(at, known, description, from, dir.name.clone(), writer)
+                    .ok_or(error(Kernel::NoMemory))?;
             if let Some(opening) = opening {
                 let cut = a.flags.contains(OpenFlags::TRUNCATE) && kind == Kind::File;
                 notices::opened(&mut object, &opening, wanted.contains(Rights::WRITE), cut);
@@ -980,8 +988,12 @@ pub(super) fn directory_call(
             }
             who.check(&*at.node, want::WRITE).map_err(fs::status)?;
             at.writable().map_err(fs::status)?;
+            // A writer for the cut, as an open with O_TRUNC takes: ETXTBSY
+            // while programs share the file's pages (ADR 0658).
+            let writer = Writer::of(&at.node).map_err(fs::status)?;
             grows_within_file_size(user, &at.node, a.size)?;
             at.node.set_size(a.size).map_err(fs::status)?;
+            drop(writer);
             if notify::watched() {
                 notices::changed(vfs()?, &who, &dir.at, path.as_str()?, &at, IN_MODIFY);
             }
@@ -3862,6 +3874,8 @@ fn write_from(
             written
         }
     } as u64;
+    // With no lock held: the writeback thread may need the file's.
+    fs::writeback::throttle();
     user.process.note_written(written);
     if written > 0 && notify::watched() {
         notify::of_file(file, IN_MODIFY);

@@ -200,7 +200,7 @@ pub async fn worker(shared: &Shared, call: &TokenCall) -> Result<Link, Failure> 
     let (ours, theirs) = link::pipes().map_err(internal)?;
     let console = Console::TokenStart { token: token.bytes().to_vec() };
     let [calls, replies] = theirs.fds();
-    let fds = [calls, replies, libc::STDERR_FILENO];
+    let fds = [calls, replies, sysapi::fd::Standard::Error.fd()];
     let (answer, _) = authd::ask(&shared.authd, console, &fds)
         .await
         .map_err(|why| Failure::new(Kind::AuthdSilent, why))?;

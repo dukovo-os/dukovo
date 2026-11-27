@@ -12,6 +12,8 @@ publish.workspace = true
 
 [dependencies]
 serde_json = "1.0.140"
+# The fault on purpose, behind a safe call (ADR 0730).
+sysapi = { path = "../sysapi" }
 
 [lints]
 workspace = true

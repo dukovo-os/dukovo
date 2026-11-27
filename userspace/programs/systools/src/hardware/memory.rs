@@ -18,6 +18,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
+use sysapi::volatile;
+
 use super::check::{Area, Check, Problem, counted};
 use crate::util;
 
@@ -48,16 +50,14 @@ impl Words for [u64] {
         self.len()
     }
 
+    // Volatile, so that the compiler does not answer a read from the
+    // write before it.
     fn read(&self, index: usize) -> u64 {
-        // SAFETY: the indexing checked the bounds, so the reference is
-        // valid and aligned. The access is volatile so that the compiler
-        // does not answer a read from the write before it.
-        unsafe { std::ptr::read_volatile(&raw const self[index]) }
+        volatile::read(&self[index])
     }
 
     fn write(&mut self, index: usize, value: u64) {
-        // SAFETY: as for the read.
-        unsafe { std::ptr::write_volatile(&raw mut self[index], value) }
+        volatile::write(&mut self[index], value);
     }
 }
 

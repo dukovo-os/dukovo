@@ -42,7 +42,14 @@ The classes, by name or number:
 	Served by level, 0 first, before the idle class.
 
 *3*, *idle*
-	Served only when no other class waits.
+	Served only when the disk has nothing else to do, or once a request
+	has waited a fifth of a second for that, as Linux's BFQ scheduler
+	serves it: then it goes as *best-effort* at level 4.
+
+A request of the idle class, or of *best-effort* at level 5 to 7, goes
+as *best-effort* at level 4 while its thread holds a lock in the kernel
+that another thread waits for, as a filesystem's reader holds the
+filesystem's: the other thread waits for the request too.
 
 # OPTIONS
 

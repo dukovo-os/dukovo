@@ -46,9 +46,10 @@ use crate::memory;
 use crate::{acpi, apic, cpu, devices, time};
 
 /// The most units used.
-const MAX_UNITS: usize = 8;
-/// The most PCI functions with domains.
-const MAX_DEVICES: usize = 128;
+const MAX_UNITS: usize = 32;
+/// The most PCI functions with domains: a two-socket server's NVMe bays,
+/// network ports and controllers pass 128 (ADR 0660).
+const MAX_DEVICES: usize = 512;
 /// Faults logged in each window.
 pub const FAULTS_LOGGED: u32 = 10;
 /// The window, in nanoseconds.

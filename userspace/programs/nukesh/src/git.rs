@@ -11,18 +11,23 @@
 //! from the repository's files, without running git. The counts of
 //! files staged, changed, untracked and in conflict, and how far the
 //! branch is ahead of and behind its upstream, come from `git status`,
-//! run on a thread of its own: the prompt waits for it a moment at most
-//! and otherwise shows what it found the last time, so that a big
-//! repository never holds the prompt up.
+//! run beside the shell: the prompt waits for it a moment at most and
+//! otherwise shows what it found the last time, and the next prompt
+//! takes the run's answer, so that a big repository never holds the
+//! prompt up.
 //!
 //! Everything here is a hint that shows the real git command: nothing
 //! runs until Enter, and nothing hides or replaces git.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io;
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+
+use crate::jobs::Reaped;
 
 /// A repository: its work tree, its git folder (a worktree's own), and
 /// the folder its branches and objects are in.
@@ -299,17 +304,100 @@ pub fn parse_status(text: &str) -> Status {
     status
 }
 
-/// The last status found for each work tree, and when.
-type Cache = Mutex<HashMap<PathBuf, (Status, Instant)>>;
-
-fn cache() -> &'static Arc<Cache> {
-    static CACHE: OnceLock<Arc<Cache>> = OnceLock::new();
-    CACHE.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+/// What `git status` found in each work tree, and when; and the runs
+/// that had not finished when their prompt was drawn.
+#[derive(Default)]
+struct Found {
+    last: HashMap<PathBuf, (Status, Instant)>,
+    running: HashMap<PathBuf, Run>,
 }
 
-/// Runs `git status` in `work` and returns what it says.
-pub fn run_status(work: &Path) -> Option<Status> {
-    let out = Command::new("git")
+thread_local! {
+    static FOUND: RefCell<Found> = RefCell::new(Found::default());
+}
+
+impl Found {
+    fn keep(&mut self, work: &Path, found: &Status) {
+        self.last.insert(work.to_path_buf(), (found.clone(), Instant::now()));
+    }
+
+    fn last(&self, work: &Path) -> Option<Status> {
+        self.last.get(work).map(|(found, _)| found.clone())
+    }
+}
+
+/// `git status` running in a work tree, its output read as it comes so
+/// that it never waits on a full pipe for long.
+struct Run {
+    child: Child,
+    out: OwnedFd,
+    text: Vec<u8>,
+    /// The output has ended.
+    read: bool,
+}
+
+/// Where a run is.
+enum Progress {
+    Going(Run),
+    /// It ended: what it found, when it succeeded.
+    Ended(Option<Status>),
+}
+
+impl Run {
+    fn start(work: &Path) -> Option<Run> {
+        let mut child = status_command(work).stdout(Stdio::piped()).spawn().ok()?;
+        let out = OwnedFd::from(child.stdout.take()?);
+        if sysapi::fd::set_nonblocking(&out, true).is_err() {
+            let _ = child.kill();
+            return None;
+        }
+        Some(Run { child, out, text: Vec::new(), read: false })
+    }
+
+    /// Reads what has come, and then whether it ended, waiting until
+    /// `until` at most. A run the shell's own wait for its jobs took
+    /// left its wait status in `reaped`.
+    fn progress(mut self, until: Instant, reaped: &Reaped) -> Progress {
+        let mut buffer = [0u8; 8192];
+        loop {
+            while !self.read {
+                match sysapi::fd::read(&self.out, &mut buffer) {
+                    Ok(0) => self.read = true,
+                    Ok(n) => self.text.extend_from_slice(&buffer[..n]),
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(_) => return Progress::Ended(None),
+                }
+            }
+            let left = until.saturating_duration_since(Instant::now());
+            if self.read {
+                let pid = self.child.id().try_into().unwrap_or(-1);
+                let success = match self.child.try_wait() {
+                    Ok(Some(status)) => status.success(),
+                    Ok(None) if !left.is_zero() => {
+                        std::thread::sleep(left.min(Duration::from_millis(1)));
+                        continue;
+                    }
+                    Ok(None) => return Progress::Going(self),
+                    Err(_) => reaped.get(pid).is_some_and(|status| status == 0),
+                };
+                let found = success.then(|| parse_status(&String::from_utf8_lossy(&self.text)));
+                return Progress::Ended(found);
+            }
+            if left.is_zero() {
+                return Progress::Going(self);
+            }
+            if sysapi::poll::wait_readable(&self.out, left).is_err() {
+                return Progress::Ended(None);
+            }
+        }
+    }
+}
+
+/// `git status` as the prompt and Tab read it.
+fn status_command(work: &Path) -> Command {
+    let mut command = Command::new("git");
+    command
         .args([
             "--no-optional-locks",
             "status",
@@ -320,47 +408,71 @@ pub fn run_status(work: &Path) -> Option<Status> {
         ])
         .current_dir(work)
         .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
+        .stderr(Stdio::null());
+    command
+}
+
+/// Runs `git status` in `work` and returns what it says.
+pub fn run_status(work: &Path) -> Option<Status> {
+    let out = status_command(work).output().ok()?;
     out.status.success().then(|| parse_status(&String::from_utf8_lossy(&out.stdout)))
 }
 
 /// The status of `repo`'s work tree, waiting for `git status` at most
 /// `wait`; after that, what was found the last time, while the run goes
-/// on and leaves its answer for the next prompt.
-pub fn status(repo: &Repo, wait: Duration) -> Option<Status> {
-    let work = repo.work.clone();
-    let (sender, receiver) = std::sync::mpsc::channel();
-    let shared = Arc::clone(cache());
-    std::thread::spawn(move || {
-        let found = run_status(&work);
-        if let Some(found) = &found
-            && let Ok(mut cache) = shared.lock()
-        {
-            cache.insert(work, (found.clone(), Instant::now()));
+/// on and leaves its answer for the next prompt. One run goes on in a
+/// work tree at a time. `reaped` holds the wait statuses of children
+/// the shell's job control took.
+pub fn status(repo: &Repo, wait: Duration, reaped: &Reaped) -> Option<Status> {
+    let until = Instant::now() + wait;
+    FOUND.with_borrow_mut(|found| {
+        // The runs left by earlier prompts, here or in other work trees.
+        let running = std::mem::take(&mut found.running);
+        for (work, run) in running {
+            match run.progress(Instant::now(), reaped) {
+                Progress::Going(run) => {
+                    found.running.insert(work, run);
+                }
+                Progress::Ended(Some(status)) => found.keep(&work, &status),
+                Progress::Ended(None) => {}
+            }
         }
-        let _ = sender.send(found);
-    });
-    match receiver.recv_timeout(wait) {
-        Ok(found) => found,
-        Err(_) => cache().lock().ok()?.get(&repo.work).map(|(s, _)| s.clone()),
-    }
+        let run = match found.running.remove(&repo.work) {
+            Some(run) => run,
+            None => match Run::start(&repo.work) {
+                Some(run) => run,
+                None => return found.last(&repo.work),
+            },
+        };
+        match run.progress(until, reaped) {
+            Progress::Going(run) => {
+                found.running.insert(repo.work.clone(), run);
+                found.last(&repo.work)
+            }
+            Progress::Ended(Some(status)) => {
+                found.keep(&repo.work, &status);
+                Some(status)
+            }
+            Progress::Ended(None) => found.last(&repo.work),
+        }
+    })
 }
 
 /// The status, at once if it is fresh enough for Tab's words.
 pub fn status_now(repo: &Repo) -> Option<Status> {
-    if let Ok(cache) = cache().lock()
-        && let Some((found, at)) = cache.get(&repo.work)
-        && at.elapsed() < Duration::from_secs(2)
-    {
-        return Some(found.clone());
+    let fresh = FOUND.with_borrow(|found| {
+        found
+            .last
+            .get(&repo.work)
+            .filter(|(_, at)| at.elapsed() < Duration::from_secs(2))
+            .map(|(status, _)| status.clone())
+    });
+    if fresh.is_some() {
+        return fresh;
     }
-    let found = run_status(&repo.work)?;
-    if let Ok(mut cache) = cache().lock() {
-        cache.insert(repo.work.clone(), (found.clone(), Instant::now()));
-    }
-    Some(found)
+    let status = run_status(&repo.work)?;
+    FOUND.with_borrow_mut(|found| found.keep(&repo.work, &status));
+    Some(status)
 }
 
 /// The right prompt's account of a repository, as (colour key, text)

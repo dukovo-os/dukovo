@@ -11,6 +11,8 @@
 //! it, from the first root. The times the canaries are judged at are
 //! given with `--now`, so that nothing waits.
 
+#![forbid(unsafe_code)]
+
 use std::io::{Read as _, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -248,13 +250,15 @@ fn server(what: &str) -> (Server, Receiver) {
         .spawn()
         .unwrap();
     let receiver = Receiver(receiver);
+    // The socket's file is there from its bind, a moment before it
+    // listens; a connection taken says it listens.
     for _ in 0..1000 {
-        if server.socket.exists() {
+        if UnixStream::connect(&server.socket).is_ok() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert!(server.socket.exists(), "the receiver made no socket");
+    assert!(UnixStream::connect(&server.socket).is_ok(), "the receiver takes no connection");
     (server, receiver)
 }
 

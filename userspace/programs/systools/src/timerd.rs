@@ -41,16 +41,18 @@ pub(crate) mod state;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::AsFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use manifest::service::{self as service_file, Service};
 use spark_api::show::State;
+use sysapi::poll::{self, PollFd};
+use sysapi::signal::{self, Caught};
 
 use self::crontab::{Crontab, When};
 use self::plan::{Timing, Watch, spread_delay};
@@ -72,11 +74,7 @@ const RESCAN: i64 = 60;
 /// The most connections served at once.
 const CONNECTIONS_MAX: usize = 16;
 
-static STOP: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_term(_: libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-}
+static STOP: Caught = Caught::new();
 
 fn log(level: u8, text: &str) {
     eprintln!("<{level}>timerd: {text}");
@@ -195,15 +193,10 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
 }
 
 fn install_signals() {
-    // SAFETY: setting a signal's disposition touches no memory. A client
-    // that goes away must not end timerd: the write to it fails instead.
-    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
-    // SAFETY: all zeros is a valid sigaction: numbers, a signal set and a
-    // function address.
-    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
-    action.sa_sigaction = on_term as extern "C" fn(libc::c_int) as usize;
-    // SAFETY: `action` is valid for the call, and on_term only stores a flag.
-    unsafe { libc::sigaction(libc::SIGTERM, &raw const action, std::ptr::null_mut()) };
+    // A client that goes away must not end timerd: the write to it fails
+    // instead.
+    let _ = signal::ignore(libc::SIGPIPE);
+    let _ = signal::catch(libc::SIGTERM, &STOP, 0);
 }
 
 fn listen() -> Result<UnixListener, Fail> {
@@ -226,25 +219,20 @@ fn listen() -> Result<UnixListener, Fail> {
 /// runs what is due.
 fn serve_loop(daemon: &Arc<Daemon>, listener: &UnixListener) -> std::io::Result<()> {
     let serving = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    // A negative descriptor is one poll does not wait on.
-    let woken = daemon.waker.as_ref().map_or(-1, |(_, hear)| hear.as_raw_fd());
-    while !STOP.load(Ordering::Relaxed) {
+    while !STOP.is_set() {
         let wait = daemon.tick();
+        // An entry without a descriptor is one poll does not wait on.
         let mut fds = [
-            libc::pollfd { fd: listener.as_raw_fd(), events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: woken, events: libc::POLLIN, revents: 0 },
+            PollFd::new(listener.as_fd(), libc::POLLIN),
+            PollFd::optional(daemon.waker.as_ref().map(|(_, hear)| hear.as_fd()), libc::POLLIN),
         ];
-        let ms = i32::try_from(wait.as_millis()).unwrap_or(i32::MAX);
-        // SAFETY: `fds` holds two valid pollfds, and its length is 2.
-        let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, ms) };
-        if ready < 0 {
-            let err = std::io::Error::last_os_error();
+        if let Err(err) = poll::poll(&mut fds, Some(wait)) {
             if err.kind() == std::io::ErrorKind::Interrupted {
                 continue;
             }
             return Err(err);
         }
-        if fds[1].revents != 0
+        if fds[1].revents() != 0
             && let Some((_, hear)) = &daemon.waker
         {
             let (mut hear, mut bytes): (&UnixStream, _) = (hear, [0; 64]);

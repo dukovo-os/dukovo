@@ -33,6 +33,9 @@
 # (tools/xtask/src/test/upgrade.rs) has its steps in the `fixtures` job and
 # its restore in the `run` job.
 name: Update matrix
+# A full run is named so, for `./ob release sign` to find on the commit it
+# signs (ADR 0778).
+run-name: ${{ inputs.full && 'Update matrix, full' || 'Update matrix' }}
 
 on:
   schedule:

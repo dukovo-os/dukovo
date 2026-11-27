@@ -125,3 +125,10 @@ tests/basic/bug71273.phpt
 ext/curl/tests/curl_setopt_ssl.phpt
 ext/curl/tests/curl_basic_030.phpt
 ext/openssl/tests/openssl_get_cert_locations_basic.phpt
+
+# PostgreSQL 19 removed standard_conforming_strings = off, which these
+# tests of the pgsql extension set and expect to work: the server answers
+# "non-standard string literals are not supported".
+ext/pgsql/tests/10pg_convert_9.phpt
+ext/pgsql/tests/12pg_insert_9.phpt
+ext/pgsql/tests/14pg_update_9.phpt

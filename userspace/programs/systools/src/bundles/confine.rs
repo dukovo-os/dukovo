@@ -83,23 +83,23 @@ impl Report {
 
 /// `bundle unpack --confined`: the unpacker itself, in its own process.
 pub fn confined() -> i32 {
-    // SAFETY: descriptor 1 is the report pipe the starter gave.
-    let mut report = unsafe { <File as std::os::fd::FromRawFd>::from_raw_fd(1) };
     let line = match run_confined() {
         Ok(checked) => Report::of(&checked).line(),
         Err(why) => format!("error\t{}\n", why.replace(['\n', '\t'], " ")),
     };
     let ok = line.starts_with("ok");
-    let _ = report.write_all(line.as_bytes());
+    // The standard output is the report pipe the starter gave.
+    let mut report = std::io::stdout().lock();
+    let _ = report.write_all(line.as_bytes()).and_then(|()| report.flush());
     if ok { 0 } else { 1 }
 }
 
 #[cfg(target_os = "radix")]
 fn run_confined() -> Result<Checked, String> {
-    use std::os::fd::FromRawFd;
-
-    // SAFETY: descriptor 0 is the archive the starter gave.
-    let archive = unsafe { File::from_raw_fd(0) };
+    // The standard input is the archive the starter gave; the unpacker
+    // reads it through a copy of its own. Its root has nothing else.
+    let archive = sysapi::fd::Standard::Input.fd().try_clone_to_owned();
+    let archive = File::from(archive.map_err(|e| format!("the archive: {e}"))?);
     let mut target = radix::CapabilityTarget::new(&archive, 3)?;
     signed::unpack(&archive, Some(&mut target))
 }
@@ -136,17 +136,16 @@ fn start(archive: &File, folder: &Path) -> Result<Report, String> {
 /// in a process of its own that holds that folder's capability, as
 /// bundled(8) does into the folder it made (ADR 0223).
 #[cfg(target_os = "radix")]
-pub fn unpack_into(archive: &File, folder: &std::os::fd::OwnedFd) -> Result<Report, String> {
-    use std::os::fd::AsRawFd;
-    radix::start_with(archive, crate::sys::slot_of(folder.as_raw_fd()))
+pub fn unpack_into(archive: &File, folder: impl std::os::fd::AsFd) -> Result<Report, String> {
+    radix::start_with(archive, sysapi::kernel::slot_of(folder))
 }
 
 /// Built for another system, for tests: the same work, in this process,
 /// through the folder's name in /proc.
 #[cfg(not(target_os = "radix"))]
-pub fn unpack_into(archive: &File, folder: &std::os::fd::OwnedFd) -> Result<Report, String> {
+pub fn unpack_into(archive: &File, folder: impl std::os::fd::AsFd) -> Result<Report, String> {
     use std::os::fd::AsRawFd;
-    let path = std::path::PathBuf::from(format!("/proc/self/fd/{}", folder.as_raw_fd()));
+    let path = std::path::PathBuf::from(format!("/proc/self/fd/{}", folder.as_fd().as_raw_fd()));
     start(archive, &path)
 }
 
@@ -154,8 +153,8 @@ pub fn unpack_into(archive: &File, folder: &std::os::fd::OwnedFd) -> Result<Repo
 mod radix {
     use std::fs::File;
     use std::io::Read;
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::process::ExitStatusExt;
     use std::path::Path;
 
     use radix_abi::capability::{self, ObjectKind, Rights};
@@ -165,6 +164,8 @@ mod radix {
     use super::Report;
     use crate::bundles::signed::{Fill, Target};
     use crate::signin;
+    use sysapi::kernel;
+
     use crate::sys::{self, SYS};
 
     /// The program the unpacker runs.
@@ -193,14 +194,7 @@ mod radix {
     pub fn start_with(archive: &File, dir: u32) -> Result<Report, String> {
         // The pipe first: the spare slots below are free descriptors to
         // the C library until they are filled, and pipe2 would take one.
-        let mut fds = [0i32; 2];
-        // SAFETY: `fds` has room for the two descriptors pipe2 writes.
-        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
-            return Err(format!("a pipe: {}", std::io::Error::last_os_error()));
-        }
-        // SAFETY: pipe2 made both, and nothing else owns them.
-        let (reader, writer) =
-            unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        let (reader, writer) = sysapi::fd::pipe().map_err(|e| format!("a pipe: {e}"))?;
         let spares = signin::Spares::new(2).map_err(|e| format!("no slots: {e}"))?;
         let [program, child] = [0, 1].map(|i| spares.slot(i));
         // The folder without the bypass right or control, whatever the
@@ -219,10 +213,10 @@ mod radix {
         .map_err(status("opening the unpacker"))?;
         process::create(&SYS, startup::SLOT_PROCESS, ObjectKind::Process, signin::SLOTS, child)
             .map_err(status("making its process"))?;
-        let pipe = sys::slot_of(writer.as_raw_fd());
+        let pipe = kernel::slot_of(&writer);
         let read_only = Rights(Rights::READ.bits() | Rights::COPY.bits());
         let shares = [
-            (sys::slot_of(archive.as_raw_fd()), startup::SLOT_FD_BASE, read_only),
+            (kernel::slot_of(archive), startup::SLOT_FD_BASE, read_only),
             (pipe, startup::SLOT_FD_BASE + 1, Rights::WRITE),
             (pipe, startup::SLOT_FD_BASE + 2, Rights::WRITE),
             (dir, startup::SLOT_FD_BASE + 3, rights),
@@ -239,16 +233,20 @@ mod radix {
         drop(spares);
         let mut text = String::new();
         let read = File::from(reader).take(4096).read_to_string(&mut text);
-        let mut code = 0;
-        // SAFETY: waitpid writes the status.
-        unsafe { libc::waitpid(number as i32, &raw mut code, 0) };
+        // A wait that fails leaves the report to say how it went.
+        let ended = libc::pid_t::try_from(number)
+            .ok()
+            .and_then(|pid| sysapi::process::wait(pid).ok())
+            .unwrap_or_default();
         read.map_err(|e| format!("the unpacker's report: {e}"))?;
         let report = Report::read(&text);
-        if report.is_ok() && !(libc::WIFEXITED(code) && libc::WEXITSTATUS(code) == 0) {
+        if report.is_ok() && !ended.success() {
             return Err("the unpacker did not finish".into());
         }
-        if report.is_err() && libc::WIFSIGNALED(code) {
-            return Err(format!("the unpacker was ended by signal {}", libc::WTERMSIG(code)));
+        if report.is_err()
+            && let Some(signal) = ended.signal()
+        {
+            return Err(format!("the unpacker was ended by signal {signal}"));
         }
         report
     }
@@ -264,7 +262,7 @@ mod radix {
     impl CapabilityTarget {
         pub fn new(archive: &File, fd: i32) -> Result<CapabilityTarget, String> {
             let spare = archive.try_clone().map_err(|e| format!("a slot: {e}"))?;
-            let scratch = sys::slot_of(spare.as_raw_fd());
+            let scratch = kernel::slot_of(&spare);
             // The descriptor stays open in name, so nothing else takes its
             // slot; the slot holds each new file in turn.
             std::mem::forget(spare);

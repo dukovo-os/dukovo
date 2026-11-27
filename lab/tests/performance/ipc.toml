@@ -15,8 +15,13 @@ expect = "the profile is benchmark"
 
 # The POSIX benchmarks: the C program `ob bench` runs on both systems
 # (userspace/posix/bench.c), here on the machine under test, against the
-# same program built for Linux in the Linux kit. Every row is held to
-# parity, as `ob bench --gate` holds it.
+# same program built for Linux in the Linux kit. The rows held are those
+# `ob bench --gate` holds to parity, each at parity. posix_poll_idle is not
+# among them: `ob bench` reports it only until Radix reaches parity
+# (Gate::Yet in tools/xtask/src/bench.rs; ADRs 0353 and 0354; the row
+# "posix_poll_idle reported, not gated" of docs/deferred.md), so the test
+# leaves it out of `rows`; the step's note still keeps the row's BENCH line
+# the program prints. It goes back in with the gate.
 [[step]]
 bench = "/system/tests/posix/bench"
 rows = [
@@ -24,7 +29,6 @@ rows = [
     "posix_signal",
     "posix_poll",
     "posix_events_idle",
-    "posix_poll_idle",
     "posix_futex_same_cpu",
     "posix_futex_cross_cpu",
     "posix_futex_shared_same_cpu",

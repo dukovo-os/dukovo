@@ -311,8 +311,7 @@ fn with_add_ons(
     mut command: std::process::Command,
 ) -> Result<i32, Fail> {
     use std::os::unix::process::ExitStatusExt;
-    // SAFETY: getuid has no failure and touches no memory.
-    let uid = unsafe { libc::getuid() };
+    let uid = sysapi::process::uid();
     let folder = add_ons_folder(&found.id, uid).map_err(fail)?;
     for variable in &add_ons.variables {
         command.env(&variable.0, &folder);
@@ -321,24 +320,29 @@ fn with_add_ons(
     let before = stamp(&commands);
     let program = command.get_program().to_string_lossy().into_owned();
     let mut child = command.spawn().map_err(|e| util::failed(&program, e))?;
-    // As system(3): the terminal's Ctrl+C is the program's to take.
-    // SAFETY: setting dispositions touches no memory.
-    let old = unsafe {
-        (libc::signal(libc::SIGINT, libc::SIG_IGN), libc::signal(libc::SIGQUIT, libc::SIG_IGN))
-    };
-    let status = child.wait();
-    // SAFETY: as above.
-    unsafe {
-        libc::signal(libc::SIGINT, old.0);
-        libc::signal(libc::SIGQUIT, old.1);
-    }
-    let status = status.map_err(|e| util::failed(&program, e))?;
+    let status = as_system(|| child.wait()).map_err(|e| util::failed(&program, e))?;
     if stamp(&commands) != before
         && let Err(why) = link_add_ons()
     {
         eprintln!("bundle: {}: the commands of its add-ons are not linked: {why}", found.id);
     }
     Ok(status.code().or_else(|| status.signal().map(|s| 128 + s)).unwrap_or(1))
+}
+
+/// Runs `wait` with SIGINT and SIGQUIT ignored, as system(3) waits for
+/// its child: the terminal's Ctrl+C is the program's to take. Each does
+/// what it did before once `wait` returns.
+fn as_system<T>(wait: impl FnOnce() -> T) -> T {
+    let interrupts = [libc::SIGINT, libc::SIGQUIT];
+    let saved = interrupts.map(sysapi::signal::save);
+    for signal in interrupts {
+        let _ = sysapi::signal::ignore(signal);
+    }
+    let result = wait();
+    for saved in saved.iter().flatten() {
+        let _ = saved.restore();
+    }
+    result
 }
 
 /// The add-ons folder of line `id` for `uid`, made theirs if it is not
@@ -803,8 +807,7 @@ fn start(
     }
     let given = given(&sealed.manifest, &chosen.program, said, |name| ask_person(found, name))
         .map_err(fail)?;
-    // SAFETY: getuid has no failure and touches no memory.
-    let uid = unsafe { libc::getuid() };
+    let uid = sysapi::process::uid();
     let user = bundled::account(uid).map_err(fail)?;
     let home = user.home.trim_end_matches('/');
     // Each folder of theirs it is given, there to attach, and theirs.
@@ -1014,8 +1017,7 @@ pub(crate) mod sandbox {
             for &process in processes {
                 let Ok(pid) = i32::try_from(process) else { continue };
                 if process != number || !*ended {
-                    // SAFETY: kill(2) touches no memory.
-                    unsafe { libc::kill(pid, signal) };
+                    let _ = sysapi::process::kill(pid, signal);
                 }
             }
         };
@@ -1150,7 +1152,7 @@ pub(crate) mod sandbox {
         // attached beneath what is.
         let in_home = plan.sealed.path.starts_with(&format!("{}/", plan.home));
         if !(plan.given.home && in_home) {
-            let folder = sys::slot_of(plan.sealed.folder.0.as_raw_fd());
+            let folder = sysapi::kernel::slot_of(&plan.sealed.folder);
             capability::derive(&SYS, folder, s.scratch, READ_ONLY, 0)
                 .map_err(failed(plan.sealed.path.clone()))?;
             let at = plan.sealed.path.trim_start_matches('/');
@@ -1285,32 +1287,11 @@ pub(crate) mod sandbox {
     /// Waits for the program, and gives its exit status as a shell does:
     /// 128 and the signal's number for one a signal ended.
     fn wait(number: u64) -> i32 {
-        // As system(3): the terminal's Ctrl+C is the program's to take.
-        // SAFETY: setting dispositions touches no memory.
-        let old = unsafe {
-            (libc::signal(libc::SIGINT, libc::SIG_IGN), libc::signal(libc::SIGQUIT, libc::SIG_IGN))
-        };
-        let mut status = 0;
+        use std::os::unix::process::ExitStatusExt;
         let pid = i32::try_from(number).unwrap_or(-1);
-        loop {
-            // SAFETY: waitpid writes the status.
-            let r = unsafe { libc::waitpid(pid, &raw mut status, 0) };
-            if r >= 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
-                break;
-            }
-        }
-        // SAFETY: as above.
-        unsafe {
-            libc::signal(libc::SIGINT, old.0);
-            libc::signal(libc::SIGQUIT, old.1);
-        }
-        if libc::WIFEXITED(status) {
-            libc::WEXITSTATUS(status)
-        } else if libc::WIFSIGNALED(status) {
-            128 + libc::WTERMSIG(status)
-        } else {
-            1
-        }
+        // A wait that fails is taken as an exit with 0, as it always was.
+        let status = super::as_system(|| sysapi::process::wait(pid)).unwrap_or_default();
+        status.code().or_else(|| status.signal().map(|signal| 128 + signal)).unwrap_or(1)
     }
 }
 

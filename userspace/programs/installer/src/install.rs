@@ -111,7 +111,9 @@ const GRUBENV: &str = "boot/grub/grubenv";
 
 /// Finds the release, in `release` or on the stick or DVD, and checks it
 /// against the root the system trusts: every signature and version, and
-/// the list's hash. Its files are checked as they are copied.
+/// the list's hash. Its files are checked as they are copied. A
+/// repository that lists several releases names the one to install in
+/// its `version` file.
 ///
 /// # Errors
 ///
@@ -129,7 +131,9 @@ pub fn find_release(release: Option<&Path>, log: &mut Log) -> Result<Source, Str
     let stick = medium.map(|medium| medium.disk);
     let root =
         fs::read(TRUSTED_ROOT).map_err(|err| format!("the trusted root {TRUSTED_ROOT}: {err}"))?;
-    let opened = system_release::repo::open(&repo, &root, None)?;
+    // The project's sticks carry the update server's metadata, which lists
+    // every release it offers, and name their own (ADR 0779).
+    let opened = system_release::repo::open_named(&repo, &root, None)?;
     log.note(&format!(
         "release {} ({}), built {} from commit {}, {} files of {} MiB, in {}",
         opened.release.version,

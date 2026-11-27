@@ -23,11 +23,15 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, BufRead, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
+
+use sysapi::fd;
+use sysapi::poll::{self, PollFd};
+use sysapi::process;
 
 use crate::args::{Arg, Args};
 use crate::util::{Fail, fail, usage};
@@ -200,7 +204,7 @@ fn serve(mut stream: TcpStream, answers: &Answers, limits: Limits) {
 /// If waiting for a connection fails.
 pub fn run(
     listeners: &[TcpListener],
-    stop: RawFd,
+    stop: BorrowedFd<'_>,
     answers: &Arc<Answers>,
     limits: Limits,
 ) -> io::Result<()> {
@@ -209,33 +213,25 @@ pub fn run(
     }
     let open = Arc::new(AtomicUsize::new(0));
     loop {
-        let mut fds = vec![libc::pollfd { fd: stop, events: libc::POLLIN, revents: 0 }];
-        fds.extend(listeners.iter().map(|listener| libc::pollfd {
-            fd: listener.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        }));
-        // SAFETY: poll reads and writes the entries of `fds`, which are as many as it is told.
-        let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
-        if ready < 0 {
-            let error = io::Error::last_os_error();
+        let mut fds = vec![PollFd::new(stop, libc::POLLIN)];
+        fds.extend(listeners.iter().map(|listener| PollFd::new(listener.as_fd(), libc::POLLIN)));
+        if let Err(error) = poll::poll(&mut fds, None) {
             if error.kind() == io::ErrorKind::Interrupted {
                 continue;
             }
             return Err(error);
         }
-        if fds[0].revents != 0 {
+        if fds[0].revents() != 0 {
             let mut sink = [0u8; 256];
-            // SAFETY: read writes at most the buffer's length.
-            let count = unsafe { libc::read(stop, sink.as_mut_ptr().cast(), sink.len()) };
-            if count == 0 {
-                return Ok(());
-            }
-            if count < 0 {
-                let error = io::Error::last_os_error();
-                if !matches!(error.kind(), io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock) {
-                    return Ok(());
-                }
+            match fd::read(stop, &mut sink) {
+                Ok(0) => return Ok(()),
+                Ok(_) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+                    ) => {}
+                Err(_) => return Ok(()),
             }
         }
         for listener in listeners {
@@ -340,13 +336,13 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         return Err(usage("usage: acme-answer FD...".into()));
     }
     let answers = read_answers(&mut io::stdin().lock()).map_err(fail)?;
-    let listeners: Vec<TcpListener> = descriptors
-        .into_iter()
-        // SAFETY: the caller made these descriptors its listening sockets and gave them to this
-        // process alone, so each is open and owned here.
-        .map(|fd| unsafe { TcpListener::from_raw_fd(fd) })
-        .collect();
-    run(&listeners, 0, &Arc::new(answers), LIMITS)
+    let mut listeners = Vec::new();
+    for number in descriptors {
+        let owned = fd::handed_down(number)
+            .map_err(|error| fail(format!("acme-answer: descriptor {number}: {error}")))?;
+        listeners.push(TcpListener::from(owned));
+    }
+    run(&listeners, io::stdin().as_fd(), &Arc::new(answers), LIMITS)
         .map_err(|error| fail(format!("acme-answer: {error}")))?;
     Ok(0)
 }
@@ -407,17 +403,12 @@ impl Responder {
         let Ok(pid) = i32::try_from(self.number) else { return };
         let until = Instant::now() + Duration::from_secs(5);
         loop {
-            let mut status = 0;
-            // SAFETY: waitpid writes the status.
-            let done = unsafe { libc::waitpid(pid, &raw mut status, libc::WNOHANG) };
-            if done != 0 {
+            if !matches!(process::try_wait(pid), Ok(None)) {
                 return;
             }
             if Instant::now() >= until {
-                // SAFETY: kill touches no memory.
-                unsafe { libc::kill(pid, libc::SIGKILL) };
-                // SAFETY: as above.
-                unsafe { libc::waitpid(pid, &raw mut status, 0) };
+                let _ = process::kill(pid, libc::SIGKILL);
+                let _ = process::wait(pid);
                 return;
             }
             thread::sleep(Duration::from_millis(20));
@@ -495,7 +486,7 @@ fn launch(listeners: &[RawFd], input: RawFd) -> Result<u64, String> {
     // program that answers strangers never holds a person's terminal,
     // which it could read from. It writes nothing else.
     let errors = sys::slot_of(2);
-    if !crate::util::is_terminal(2) && capability::info(&SYS, errors).is_ok() {
+    if !crate::util::is_terminal(std::io::stderr()) && capability::info(&SYS, errors).is_ok() {
         shares.push((errors, startup::SLOT_FD_BASE + 2));
     } else {
         shares.push((null, startup::SLOT_FD_BASE + 2));
@@ -646,7 +637,7 @@ mod tests {
     /// descriptor's other end is closed.
     struct Running {
         address: SocketAddr,
-        stop: Option<File>,
+        stop: Option<io::PipeWriter>,
         server: Option<thread::JoinHandle<io::Result<()>>>,
     }
 
@@ -654,14 +645,10 @@ mod tests {
         fn start(limits: Limits) -> Running {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let address = listener.local_addr().unwrap();
-            let mut fds = [0; 2];
-            // SAFETY: pipe writes the two descriptors.
-            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-            // SAFETY: both are open and owned here.
-            let (read, write) = unsafe { (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) };
+            let (read, write) = io::pipe().unwrap();
             let answers = Arc::new(answers());
             let server = thread::spawn(move || {
-                let result = run(&[listener], read.as_raw_fd(), &answers, limits);
+                let result = run(&[listener], read.as_fd(), &answers, limits);
                 drop(read);
                 result
             });

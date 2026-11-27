@@ -21,6 +21,8 @@
 //! what did not read; then with the KDC's own log, which records each
 //! request.
 
+#![forbid(unsafe_code)]
+
 pub mod client;
 pub mod config;
 pub mod creds;

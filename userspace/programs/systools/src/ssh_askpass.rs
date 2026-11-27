@@ -24,7 +24,6 @@
 //! own.
 
 use std::io::{self, Write};
-use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use accounts::request;
@@ -122,8 +121,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
 /// the question.
 fn typed(prompt: &str, shown: bool) -> Option<Vec<u8>> {
     let terminal = std::fs::OpenOptions::new().read(true).write(true).open(TERMINAL).ok()?;
-    let fd = terminal.as_raw_fd();
-    match prompt::ask_on(fd, fd, prompt, shown) {
+    match prompt::ask_on(&terminal, &terminal, prompt, shown) {
         Ok(prompt::Answer::Line(line)) => Some(line),
         Ok(prompt::Answer::Stopped) | Err(_) => None,
     }

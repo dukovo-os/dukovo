@@ -78,6 +78,17 @@ userspace or documentation), and add them to the table above in a pull
 request. Code owners per area and a voting rule for disagreements between
 maintainers will be added here when there is more than one maintainer.
 
+## If the maintainer is unavailable
+
+While the maintainer cannot act, the person they have named in writing
+acts for them, as the handbook's
+[When the maintainer is unavailable](docs/handbook/src/incident-maintainer.md)
+says: they keep the project's signatures and services running and answer
+security reports, and decide nothing else for the project. If the
+maintainer does not come back, that person invites new maintainers, as
+under [Becoming a maintainer](#becoming-a-maintainer), and hands them the
+project's keys and accounts.
+
 ## Changes to this document
 
 Changes to this file, the code of conduct or the security policy are made

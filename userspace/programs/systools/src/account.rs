@@ -439,11 +439,8 @@ fn remove(args: &mut Args) -> Result<i32, Fail> {
     }
     // The terminal may close under it: what is left to do is done all
     // the same.
-    // SAFETY: ignoring SIGHUP and SIGPIPE changes no memory.
-    unsafe {
-        libc::signal(libc::SIGHUP, libc::SIG_IGN);
-        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
-    }
+    let _ = sysapi::signal::ignore(libc::SIGHUP);
+    let _ = sysapi::signal::ignore(libc::SIGPIPE);
     let answer = ask(&Request::Remove { name: name.clone() })?;
     let Answer::Done(home_path) = answer else {
         return done(answer, |_| {});

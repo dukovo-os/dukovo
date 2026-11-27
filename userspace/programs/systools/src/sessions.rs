@@ -5,9 +5,10 @@
 //! is a session leader with a controlling terminal, as `/processes` shows it,
 //! logged in when its leader started, by the user it acts for.
 
-use std::ffi::CStr;
 use std::io::{self, Write};
 use std::os::unix::fs::MetadataExt;
+
+use sysapi::terminal;
 
 use crate::args::{Arg, Args};
 use crate::proc::{self, Process};
@@ -60,14 +61,8 @@ fn idle_seconds(terminal: &str) -> Option<u64> {
 
 /// The terminal standard input is, as `pts/N`.
 fn own_terminal() -> Option<String> {
-    // SAFETY: ttyname returns a C string the C library keeps, or null.
-    let name = unsafe { libc::ttyname(0) };
-    if name.is_null() {
-        return None;
-    }
-    // SAFETY: a non-null result is a C string.
-    let name = unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned();
-    Some(util::terminal_name(&name).to_string())
+    let name = terminal::path(io::stdin()).ok()?;
+    Some(util::terminal_name(&name.to_string_lossy()).to_string())
 }
 
 /// uptime(1)'s line: the time, how long the system has been up, the

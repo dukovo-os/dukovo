@@ -40,7 +40,7 @@ mod tests;
 pub mod wire;
 
 use std::ffi::CString;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::call::{Answer, Process};
@@ -76,17 +76,8 @@ impl RootFiles {
 impl SocketFiles for RootFiles {
     fn open(&self, id: u64) -> Result<OwnedFd, i32> {
         let path = CString::new(format!(".netlink/{id}")).map_err(|_| libc::EINVAL)?;
-        // SAFETY: `root` is an open descriptor that lives as long as
-        // `self`, and the path is a NUL-ended string that lives until
-        // openat returns.
-        let fd = unsafe {
-            libc::openat(self.root.as_raw_fd(), path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC)
-        };
-        if fd < 0 {
-            return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO));
-        }
-        // SAFETY: openat made this descriptor and nothing else holds it.
-        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+        sysapi::fs::open_at(&self.root, &path, libc::O_RDWR)
+            .map_err(|error| error.raw_os_error().unwrap_or(libc::EIO))
     }
 }
 

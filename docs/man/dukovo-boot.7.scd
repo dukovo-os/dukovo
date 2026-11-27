@@ -365,7 +365,9 @@ this by walking its finished page tables and reports it at boot. Where
 the CPU has them, SMEP stops the kernel from running code in a user page,
 and SMAP from reading or writing one except where it says it means to;
 PCIDs tag TLB entries by address space, so switching between them does
-not flush the TLB (the *nopcid* flag turns that off). When the kernel
+not flush the TLB (the *nopcid* flag turns that off), and a kernel thread
+runs on the tables of the program that ran before it, so a switch back
+to that program loads nothing. When the kernel
 removes a mapping that other CPUs may have cached, it sends them an
 inter-processor interrupt and waits until each has flushed it (a TLB
 shootdown).
@@ -660,6 +662,23 @@ them to *init*, and the kernel does not read them.
 	Leave the CPUs' speed to the firmware, though they have Intel's HWP
 	or AMD's CPPC, as Linux's *intel_pstate=disable* and
 	*amd_pstate=disable* do. See *CPU FREQUENCY*.
+
+*ups*=show
+	Show the UPSes plugged in by USB in _/kernel/class/power_supply_
+	(*radix-sysfs*(5)), but do not shut the machine down when one runs
+	it on a low battery, for a machine that another program or another
+	machine shuts down. The kernel says so in its log when it finds the
+	UPS.
+
+*hybrid*=off
+	Place threads on a processor's performance and efficient cores
+	alike, as on a processor whose cores are all of one kind. By
+	default, on Intel's processors with cores of both kinds, a waking
+	thread goes to an idle performance core first, then to an idle
+	efficient core, then to a busy performance core's second hardware
+	thread, and a thread running alone on a slower core moves to a
+	faster one that goes idle; the boot log says which. For comparing
+	the two, or for a workload that does better spread alike.
 
 *epp*=_preference_
 	Ask the CPUs for this energy preference, by Linux's names:
@@ -1347,6 +1366,19 @@ Hub ports past 15 and hubs more than five deep are not used. Before the
 machine is powered off or restarted, every controller is halted.
 Keyboards, mice and tablets are read through their HID reports (ADR
 0148).
+
+A UPS that speaks USB's HID power device class, as APC's, CyberPower's
+and Eaton's do, is read through its Feature reports every 2 seconds (ADR
+0741) and shown as _/kernel/class/power_supply/ups0_ (*radix-sysfs*(5)).
+When it runs the machine on its battery and the battery is low, Spark is
+asked to power the machine off, as for the power button, unless
+*ups=show*. The log says when it is found, when the mains goes and
+comes back, and when its battery should be replaced:
+
+	USB: 1-3: interface 0: a UPS, read every 2 s into /kernel/class/power_supply
+	UPS: ups0 is CP1500PFCLCD by CPS; the machine shuts down cleanly when its battery is low
+	UPS: ups0: the mains is gone; the machine runs on its battery, at 100%
+	Power: ups0's battery is low; asking Spark to power the machine off
 
 A USB stick, card reader or USB disk speaking the Bulk-Only Transport
 gets a kernel thread, _usb-storage_, which finds the disks behind it and

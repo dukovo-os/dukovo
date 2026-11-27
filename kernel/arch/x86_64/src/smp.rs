@@ -20,7 +20,7 @@ use crate::fpu;
 use crate::memory::{self, PAGE};
 use crate::paging;
 use crate::percpu::{self, IST_STACKS};
-use crate::{acpi, apic, cpu, interrupts, kvm, mce, microcode, time};
+use crate::{acpi, apic, cpu, interrupts, kvm, mce, microcode, time, tsc_sync};
 
 core::arch::global_asm!(
     r#"
@@ -324,6 +324,7 @@ pub fn start_all(entry: fn(usize) -> !) -> usize {
     if total <= 1 {
         return 1;
     }
+    tsc_sync::match_adjust(0);
 
     // Copy the trampoline and fill in its fixed parameters.
     let size = offset!(ap_trampoline_end);
@@ -351,6 +352,7 @@ pub fn start_all(entry: fn(usize) -> !) -> usize {
         patch(base, offset!(ap_stack), &(stack_top as u64).to_le_bytes());
         patch(base, offset!(ap_index), &(index as u64).to_le_bytes());
         cpu::mfence();
+        let measure = tsc_sync::due(index);
         STARTING.store(true, Ordering::Release);
         radix_klog::tracepoint!("smp.start", index, apic_id);
 
@@ -373,6 +375,10 @@ pub fn start_all(entry: fn(usize) -> !) -> usize {
             }
         }
         if started {
+            // First: the CPU waits for it, with interrupts masked.
+            if measure {
+                tsc_sync::measure_source(index);
+            }
             online += 1;
             radix_klog::debug!("SMP: CPU {index} (APIC ID {apic_id}) is online");
         } else {
@@ -380,11 +386,15 @@ pub fn start_all(entry: fn(usize) -> !) -> usize {
             // next CPU's stack and index from the shared parameter block.
             apic::send_init(apic_id);
             STARTING.store(false, Ordering::Release);
+            if measure {
+                tsc_sync::cancel();
+            }
             radix_klog::error!("SMP: CPU {index} (APIC ID {apic_id}) did not start");
         }
     }
 
     paging::unmap_identity(page);
+    tsc_sync::report();
     online
 }
 
@@ -399,6 +409,8 @@ extern "C" fn ap_entry(index: usize) -> ! {
     // Before anything can use the APIC, a panic's NMIs to the other CPUs
     // included: in x2APIC mode its registers do not exist until then.
     apic::enable();
+    // Before anything else here reads the clock, which this may move.
+    tsc_sync::match_adjust(index);
     paging::init_cpu();
     fpu::init_cpu();
     time::set_cpu_number(index);
@@ -412,6 +424,8 @@ extern "C" fn ap_entry(index: usize) -> ! {
     radix_klog::tracepoint!("smp.online", index, apic::id());
     cpu.online.store(true, Ordering::Release);
     STARTING.store(false, Ordering::Release);
+    // The boot CPU joins it as soon as it sees this CPU started.
+    tsc_sync::measure_target(index);
     match ENTRY.get() {
         Some(entry) => entry(index),
         None => cpu::halt_forever(),

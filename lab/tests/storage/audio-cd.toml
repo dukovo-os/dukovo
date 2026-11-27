@@ -4,6 +4,13 @@
 about = "audiocd lists a music CD's tracks by their CD-Text, rips them to FLAC and to WAV files of every sector, and plays one through the sound output; ejected, no drive has a music CD"
 time = "10m"
 
+# A machine with no sound output, as QEMU in the lab has none, has nothing
+# to play the second track through (`audiocd: no sound output`): the test is
+# skipped there. `audio list` says "no sound output" when none is there.
+[[step]]
+run = "sh -c '! audio list | grep -q \"^no sound output\"'"
+root = true
+or_skip = "the machine has no sound output to play a track through"
 # The disc, audio-cd.cue beside this file and the audio-cd.bin it names:
 # two tracks of tones, the second after a second of silence, with
 # CD-Text (ADR 0447). In QEMU it is in an emulated USB CD drive, as

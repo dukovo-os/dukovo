@@ -106,6 +106,9 @@ const OUTLIVES: &[&str] = &[
     // 0516), which keeps a service's file as it keeps any change there,
     // and the others' state, which changes as the system runs.
     "/system/state/(log|sign-ins|starts|metrics|hardware|reports|crash|timed|timerd|netd|sshd|consoled|admind)(/.*)?",
+    // timed's status, which it writes first when its first look at a time
+    // server ends, however long after the start that is.
+    "/system/live/timed(/.*)?",
     // Alice's own folders, which her first install and first run make in
     // her home: no one bundle's.
     "/users/alice/(app-data|app-data/.snapshots|applications|applications/commands)",

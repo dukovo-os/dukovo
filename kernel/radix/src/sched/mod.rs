@@ -29,7 +29,10 @@
 //! Wake-ups place threads with the topology (`balance`): an idle CPU
 //! sharing caches first, then one on the same node. A CPU balances its
 //! load against the others, level by level, at every tick (less often for
-//! farther levels) and whenever it is about to go idle. Idle CPUs wait with
+//! farther levels) and whenever it is about to go idle. On a processor
+//! whose cores differ, a waking thread goes to the fastest idle CPU, and
+//! a thread running alone on a slower CPU moves to a faster one that is
+//! idle (ADR 0740). Idle CPUs wait with
 //! MWAIT where it works (and wakers then need no interrupt), else HLT; every
 //! idle CPU polls for a while first, for as long as recent idle periods
 //! suggest (`radix_sched::haltpoll`): up to 200 µs in a virtual machine
@@ -71,6 +74,7 @@ use radix_sync::{Mutex, Once, SpinLock, SpinLockGuard};
 use crate::Arch;
 use crate::domains::{self, DomainError, DomainRef, JoinError};
 use crate::percpu::{PerCpu, Slot};
+pub use balance::rank_cores;
 pub use hooks::{lockdep_last_problem, lockdep_reports, set_lockdep_expecting, write_lockdep};
 use queue::{Class, Rq, Weighing};
 use thread::{Context, State};
@@ -117,6 +121,10 @@ struct CpuSched {
     running: AtomicU32,
     rt_prio: AtomicU8,
     online: AtomicBool,
+    /// How fast the CPU is beside the others, where its processor's cores
+    /// differ ([`balance::rank_cores`]); 0 until then, and where they do
+    /// not.
+    rank: AtomicU8,
     _rq: LineBreak,
     // Lines 1 to 5: the run queue, which other CPUs lock only to queue a
     // thread on a busy CPU, or to balance.
@@ -133,7 +141,12 @@ struct CpuSched {
     /// kernel (`radix_sched::account`); the rest found it idle.
     user_ticks: AtomicU64,
     system_ticks: AtomicU64,
+    /// Switches away from a thread that could have gone on: not from the
+    /// idle thread, which gives way whenever work comes.
     preemptions: AtomicU64,
+    /// Threads this CPU moved to another CPU than the one they ran on
+    /// last, as it woke them or balanced ([`count_migration`]).
+    migrations: AtomicU64,
     /// Set by a switch away from a thread that has exited, for the thread
     /// switched to, which tells the reaper (`after_switch`).
     left_dead: AtomicBool,
@@ -148,6 +161,15 @@ struct CpuSched {
     timers: SpinLock<Option<Vec<(u64, ThreadRef), Kmalloc>>>,
     /// Balancing attempts that found nothing to move, by level.
     balance_failures: [AtomicU32; 4],
+    /// What kind of core the CPU is, as it said when it started
+    /// ([`radix_hal::CoreKind`], by [`balance::kind_code`]).
+    kind: AtomicU8,
+    /// One more than the faster idle CPU the running thread, alone here,
+    /// should move to at the next switch ([`balance::move_up`]); 0 for
+    /// none.
+    move_to: AtomicUsize,
+    /// Threads moved from this CPU to a faster idle one.
+    moves_up: AtomicU64,
     _idle: LineBreak,
     // What this CPU writes as an idle period ends, in a line of its own.
     /// Nanoseconds idle, in periods that have ended; while one is under
@@ -182,6 +204,10 @@ impl CpuSched {
             running: AtomicU32::new(0),
             rt_prio: AtomicU8::new(0),
             online: AtomicBool::new(false),
+            rank: AtomicU8::new(0),
+            kind: AtomicU8::new(0),
+            move_to: AtomicUsize::new(0),
+            moves_up: AtomicU64::new(0),
             timers: SpinLock::new(None),
             timer_next: AtomicU64::new(u64::MAX),
             slice_end: AtomicU64::new(u64::MAX),
@@ -189,6 +215,7 @@ impl CpuSched {
             user_ticks: AtomicU64::new(0),
             system_ticks: AtomicU64::new(0),
             preemptions: AtomicU64::new(0),
+            migrations: AtomicU64::new(0),
             idle_ns: AtomicU64::new(0),
             idle_since: AtomicU64::new(0),
             idle_seq: AtomicU64::new(0),
@@ -210,7 +237,7 @@ impl CpuSched {
 }
 
 static CPUS: PerCpu<CpuSched> = PerCpu::new([const { Slot::new(CpuSched::new()) }; MAX_CPUS]);
-static TOPOLOGY: Once<Topology> = Once::new();
+static TOPOLOGY: Once<Topology<Kmalloc>> = Once::new();
 /// Every thread until the reaper frees it.
 static REGISTRY: SpinLock<Option<Vec<ThreadRef, Kmalloc>>> = SpinLock::new(None);
 /// Exited threads waiting for the reaper.
@@ -394,7 +421,7 @@ impl Default for Options {
 /// `Arch::init` and `domains::init`, with interrupts off.
 pub fn init(lockdep: Option<bool>) {
     let cpu = Arch::current_cpu();
-    let mut topology = Topology::flat(Arch::cpu_count());
+    let mut topology = Topology::flat_in(Arch::cpu_count(), kmalloc());
     for index in 0..Arch::cpu_count() {
         if let Some(place) = Arch::cpu_place(index) {
             topology.set_place(
@@ -409,6 +436,8 @@ pub fn init(lockdep: Option<bool>) {
             topology.set_distance(a, b, FRAMES.distance(a, b));
         }
     }
+    // Without memory for them, the spans are worked out at each look.
+    let _ = topology.finish();
     let _ = TOPOLOGY.set(topology);
     if Arch::tick_hz() > 0 {
         TICK_NS.store(1_000_000_000 / u64::from(Arch::tick_hz()), Ordering::Relaxed);
@@ -591,6 +620,7 @@ fn start_cpu_with(cpu: usize, current: &ThreadRef, idle: ThreadRef, boot: bool) 
     }
     current.cpu.store(cpu, Ordering::Relaxed);
     let slot = CPUS.get(cpu);
+    slot.kind.store(balance::kind_code(Arch::core_kind()), Ordering::Relaxed);
     *slot.timers.lock_irq() = Some(timers);
     slot.current.store(current.token(), Ordering::Relaxed);
     // Each CPU starts its own scheduling, so this is that CPU's word.
@@ -926,7 +956,7 @@ fn place_woken(thread: &ThreadRef, mut state: SpinLockGuard<'_, State>, target: 
         return;
     }
     if target != thread.cpu.load(Ordering::Relaxed) {
-        thread.stats.migrations.fetch_add(1, Ordering::Relaxed);
+        count_migration(thread);
     }
     thread.cpu.store(target, Ordering::Relaxed);
     drop(state);
@@ -952,7 +982,7 @@ pub fn interrupt(thread: &ThreadRef) {
     // interrupts masked (`user::on_return`). So either the thread is seen
     // running here, or that look sees what the caller set. The thread
     // running here is the caller, which looks on its own way back.
-    atomic::fence(Ordering::SeqCst);
+    radix_sync::barrier::full();
     let token = thread.token();
     let cpu = thread.cpu.load(Ordering::Relaxed);
     if token != current_token() && CPUS.get(cpu).current.load(Ordering::Relaxed) == token {
@@ -1110,7 +1140,7 @@ fn enqueue_on(thread: &ThreadRef, state: &mut State, new: bool, target: usize) {
         panic!("Scheduler: CPU {target} has no run queue");
     };
     if target != previous && !new {
-        thread.stats.migrations.fetch_add(1, Ordering::Relaxed);
+        count_migration(thread);
     }
     thread.cpu.store(target, Ordering::Relaxed);
     rq.enqueue(thread.clone(), Class::of(state, new));
@@ -1135,11 +1165,13 @@ fn choose_cpu(previous: usize, state: &State) -> usize {
     let Some(first) = allowed.lowest() else { return previous };
     let Some(topology) = TOPOLOGY.get() else { return first };
     // The CPU it ran on last, if idle, is what the topology would choose
-    // first anyway: no need to gather every CPU's load for it.
+    // first anyway, unless a faster one is idle: no need to gather every
+    // CPU's load for it.
     let slot = CPUS.get(previous);
     if allowed.contains(previous)
         && slot.online.load(Ordering::Relaxed)
         && slot.running.load(Ordering::Relaxed) == 0
+        && (!topology.is_ranked() || slot.rank.load(Ordering::Relaxed) == balance::FASTEST)
     {
         return previous;
     }
@@ -1163,10 +1195,11 @@ impl Loads for LiveLoads {
             CpuLoad {
                 running: slot.running.load(Ordering::Relaxed),
                 rt_prio: slot.rt_prio.load(Ordering::Relaxed),
+                rank: slot.rank.load(Ordering::Relaxed),
             }
         } else {
             // A CPU that runs no threads looks fully busy.
-            CpuLoad { running: u32::MAX / 2, rt_prio: u8::MAX }
+            CpuLoad { running: u32::MAX / 2, rt_prio: u8::MAX, rank: 0 }
         })
     }
 }
@@ -1560,6 +1593,10 @@ fn reschedule(mut why: Switch) {
     rq.charge(now);
     slot.owed.store(false, Ordering::Relaxed);
     let mut moving = None;
+    // Asked for at a tick; only a preemption carries it out, and only
+    // while the move still makes sense.
+    let move_to = slot.move_to.swap(0, Ordering::Relaxed).checked_sub(1);
+    let mut moving_to = None;
     match (why, state.as_mut()) {
         (Switch::Block(reason), Some(state)) => {
             state.run = Run::Blocked(reason);
@@ -1577,13 +1614,21 @@ fn reschedule(mut why: Switch) {
             // A ready thread on a CPU it may no longer use moves on.
             if !rq.idling() && !me.allowed().contains(cpu) {
                 moving = rq.dequeue(&me);
+            } else if let Some(to) = move_to
+                && !rq.idling()
+                && rq.len() == 1
+                && balance::may_move_up(&me, to)
+            {
+                moving = rq.dequeue(&me);
+                moving_to = moving.is_some().then_some(to);
             }
         }
     }
+    let idled = rq.idling();
     let next = rq.pick();
     let switching = !ThreadRef::ptr_eq(&next, &me);
     if switching {
-        slot.preemptions.fetch_add(u64::from(why == Switch::Preempt), Ordering::Relaxed);
+        slot.preemptions.fetch_add(u64::from(why == Switch::Preempt && !idled), Ordering::Relaxed);
         match why {
             Switch::Block(_) => me.stats.voluntary.fetch_add(1, Ordering::Relaxed),
             Switch::Preempt | Switch::Yield => me.stats.involuntary.fetch_add(1, Ordering::Relaxed),
@@ -1617,7 +1662,13 @@ fn reschedule(mut why: Switch) {
     if let Some(lag) = moving {
         let mut state = me.state.lock();
         state.lag_ns = lag;
-        enqueue_ready(&me, &mut state, false);
+        match moving_to {
+            Some(to) => {
+                slot.moves_up.fetch_add(1, Ordering::Relaxed);
+                enqueue_on(&me, &mut state, false, to);
+            }
+            None => enqueue_ready(&me, &mut state, false),
+        }
     }
     if !switching {
         Arch::set_preempt_count(count);
@@ -1772,6 +1823,9 @@ fn on_timer(tick: bool) {
             rcu::quiescent(cpu);
         }
         balance::tick(cpu, now);
+        if !idling {
+            balance::move_up(cpu, now);
+        }
         if cpu == 0 && now >= NEXT_LOAD_NS.load(Ordering::Relaxed) {
             sample_load(now);
         }
@@ -2067,8 +2121,16 @@ pub fn thread_count() -> usize {
 /// `cpu`.
 fn adopt(rq: &mut Rq, cpu: usize, thread: ThreadRef, class: Class) {
     thread.cpu.store(cpu, Ordering::Relaxed);
-    thread.stats.migrations.fetch_add(1, Ordering::Relaxed);
+    count_migration(&thread);
     rq.enqueue(thread, class);
+}
+
+/// Counts a move of `thread` to another CPU than the one it ran on last:
+/// in its own statistics, and in those of the CPU that moved it, which
+/// alone writes them.
+fn count_migration(thread: &ThreadRef) {
+    thread.stats.migrations.fetch_add(1, Ordering::Relaxed);
+    CPUS.get(Arch::current_cpu()).migrations.fetch_add(1, Ordering::Relaxed);
 }
 
 // ---- Reports ----
@@ -2086,8 +2148,16 @@ pub fn pulled(cpu: usize) -> Option<[u64; 4]> {
 /// CPUs, for the benchmarks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counters {
-    /// Context switches.
+    /// Context switches, the ones that took the CPU from a thread that
+    /// could have gone on, and moves of threads to another CPU than the
+    /// one they ran on last, each of which leaves the thread's memory in
+    /// the other CPU's caches.
     pub switches: u64,
+    pub preemptions: u64,
+    pub migrations: u64,
+    /// Moves of a thread running alone on a CPU to a faster idle one, on
+    /// a processor whose cores differ (ADR 0740).
+    pub moves_up: u64,
     /// Writes of the timer hardware.
     pub timer_writes: u64,
     /// Interprocessor interrupts sent.
@@ -2106,6 +2176,9 @@ impl Counters {
     pub fn since(&self, earlier: &Counters) -> Counters {
         Counters {
             switches: self.switches.wrapping_sub(earlier.switches),
+            preemptions: self.preemptions.wrapping_sub(earlier.preemptions),
+            migrations: self.migrations.wrapping_sub(earlier.migrations),
+            moves_up: self.moves_up.wrapping_sub(earlier.moves_up),
             timer_writes: self.timer_writes.wrapping_sub(earlier.timer_writes),
             ipis: self.ipis.wrapping_sub(earlier.ipis),
             halts: self.halts.wrapping_sub(earlier.halts),
@@ -2128,6 +2201,9 @@ pub fn counters() -> Counters {
     for cpu in online().iter() {
         let slot = CPUS.get(cpu);
         total.switches += slot.rq.lock_irq().as_ref().map_or(0, |rq| rq.switches);
+        total.preemptions += slot.preemptions.load(Ordering::Relaxed);
+        total.migrations += slot.migrations.load(Ordering::Relaxed);
+        total.moves_up += slot.moves_up.load(Ordering::Relaxed);
         total.timer_writes += Arch::timer_writes(cpu);
         total.ipis += Arch::ipis_sent(cpu);
         total.halts += slot.halts.load(Ordering::Relaxed);

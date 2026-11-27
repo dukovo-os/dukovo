@@ -7,27 +7,27 @@
 # commands, writes a file and reads it back, and uploads a file and downloads
 # it again, every sum held to the one the lab PC made.
 #
-#   day-ssh.sh work KEYFOLDER ACCOUNT MACHINE PORT
-#   day-ssh.sh finish
-#   day-ssh.sh trend [KIB]
+#   day-ssh.sh work FOLDER ACCOUNT MACHINE PORT
+#   day-ssh.sh finish FOLDER
+#   day-ssh.sh trend FOLDER [KIB]
 #
-# work goes round for the `minutes` that the file `info` of the journey's folder
-# gives, which the browsers read too, says "ssh session ready" after its first
-# round, and keeps the result in /tmp/lab-journey-day-in-the-life/ssh-result
-# when it ends, then waits to be ended with the test. finish waits for that
+# FOLDER is the journey's folder on the lab PC, {work}, which holds the key
+# of ACCOUNT, as ssh-as.sh takes them. work goes round for the `minutes` that
+# the file `info` in it gives, which the browsers read too, says "ssh session
+# ready" after its first round, and keeps the result in ssh-result there when
+# it ends, then waits to be ended with the test. finish waits for that
 # result, up to 10 minutes, and says it: how many rounds, how many failures
 # and what each failure was. trend says how far the memory in use, which each
 # round read, grew in the second half of the rounds, and holds it to KIB (16384
-# by default). KEYFOLDER and ACCOUNT are as ssh-as.sh takes them, MACHINE and
-# PORT are {machine} and {machine-port:22}.
+# by default). MACHINE and PORT are {machine} and {machine-port:22}.
 set -u
 
-folder=/tmp/lab-journey-day-in-the-life
+folder=${2:-.}
 result=$folder/ssh-result
 
 case "${1:-}" in
 work)
-	key_folder=$2
+	key_folder=$folder
 	account=$3
 	machine=$4
 	port=$5
@@ -93,7 +93,7 @@ trend)
 	# The memory in use at the start, in the middle and at the end of the day:
 	# a day's use fills caches in its first minutes, and what matters is whether
 	# the second half goes on growing.
-	awk -v limit="${2:-16384}" '{ kib[NR] = $2 } END {
+	awk -v limit="${3:-16384}" '{ kib[NR] = $2 } END {
 		if (NR < 4) { print "memory: too few rounds to tell"; exit }
 		mid = int(NR / 2)
 		growth = kib[NR] - kib[mid]
@@ -102,7 +102,7 @@ trend)
 	}' "$folder/ssh-memory"
 	;;
 *)
-	echo "usage: day-ssh.sh work KEYFOLDER ACCOUNT MACHINE PORT | finish | trend [KIB]" >&2
+	echo "usage: day-ssh.sh work FOLDER ACCOUNT MACHINE PORT | finish FOLDER | trend FOLDER [KIB]" >&2
 	exit 2
 	;;
 esac

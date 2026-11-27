@@ -91,3 +91,6 @@ plus an offset, slewed by `adjtime` at most 500 ppm (radix-hal's
   calibrated, another architecture), nothing is mapped and no
   `AT_SYSINFO_EHDR` is given, so the C libraries make the system calls,
   as before.
+- The clock page and the vDSO came to main ahead of the rest of Phase
+  18, as servers read the clock several times a request (PostgreSQL 22
+  times a TPC-B transaction, PHP-FPM about 16 times a request).

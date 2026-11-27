@@ -28,6 +28,9 @@ const ENDS_MOVED_MS = 2000;
 /** The journal's newest rows that are read to find who began a trial. */
 const JOURNAL_ROWS = 100;
 
+/** How long after a trial begun elsewhere is seen each read of it reads the journal too. */
+const WHO_WAIT_MS = 30_000;
+
 /** A timer that gives what cancels it, as lib/trial-model.js's machine takes it. */
 const later = (fn, ms) => {
   const timer = setTimeout(fn, ms);
@@ -96,6 +99,9 @@ export function makeTrialBanner(view, {
   let spoken = null;
   let settled = false;
   let latest = 0;
+  let whoOut = false; // a read of the journal is out
+  let whoAgain = false;
+  let seenAt = 0;
 
   const ends = () => view.time.clock(Math.floor(anchor.endsMs / 1000));
   const leftNow = () => (anchor === null ? 0 : anchor.leftMs - (performance.now() - anchor.at));
@@ -191,17 +197,21 @@ export function makeTrialBanner(view, {
     onState({ running: false, ended: outcome });
   }
 
-  /** Who began a trial that this page did not: from the journal. A journal that cannot be read says nothing. */
+  /** Who began a trial that this page did not: from the journal, one read at a time. A read that fails says nothing. */
   async function findWho() {
-    try {
-      const rows = await view.api.get(`/api/1/changes?limit=${JOURNAL_ROWS}`);
-      began = triedBy(rows?.changes, id);
-    } catch {
-      began = undefined;
+    if (whoOut) {
+      whoAgain = true;
+      return;
     }
+    whoOut = true;
+    whoAgain = false;
+    const rows = await view.api.get(`/api/1/changes?limit=${JOURNAL_ROWS}`).catch(() => null);
+    whoOut = false;
+    if (rows !== null) began = triedBy(rows?.changes, id);
     if (began?.seconds) windowMs = Math.max(windowMs, began.seconds * 1000);
     drawWhat();
     drawTime();
+    if (whoAgain && !began) findWho();
   }
 
   /** A trial of the document: the first time it is seen starts the banner. */
@@ -228,10 +238,12 @@ export function makeTrialBanner(view, {
       drawTime();
       draw();
       onState({ running: true, ended: null });
+      seenAt = anchor.at;
       if (!mine) findWho();
       startReach();
       return;
     }
+    if (!mine && !began && anchor.at - seenAt < WHO_WAIT_MS) findWho();
     drawTime();
     draw();
     startReach();
@@ -366,11 +378,10 @@ export function makeTrialBanner(view, {
   view.every(READ_MS, () => {
     if (anchor !== null) read();
   });
-  // A change's row comes as its command ends, after Spark shows the trial:
-  // while no row names who began it, each new row reads the journal again.
+  // A change's row comes as its command ends, after Spark shows the trial.
   view.on('change', () => {
     read();
-    if (!mine && anchor !== null && began === null) findWho();
+    if (!mine && anchor !== null && !began) findWho();
   });
 
   return {

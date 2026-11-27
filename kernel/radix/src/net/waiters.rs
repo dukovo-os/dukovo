@@ -30,10 +30,30 @@
 //! the count of changes and looks, and a wake moves the count before it
 //! reads how many wait, each sequentially consistent, so either the
 //! waiter sees the change or the wake sees the waiter.
+//!
+//! A connected stream socket keeps what a look found it ready for, with
+//! the sum of its counts of changes and of its own calls read before the
+//! look (ADR 0771): a `poll` or an event queue that finds the sum where it
+//! was takes what was found, without its stack's lock, as Linux's
+//! `tcp_poll` reads a socket without its lock. A change smoltcp makes
+//! wakes a side and moves its count; one the socket's own call makes, as
+//! a read that empties its buffer, moves the count of its calls. A look
+//! that races a change finds the socket as one of the two states has it,
+//! as one under the lock would.
+//!
+//! A listening socket's threads wait in `accept`, and one connection is
+//! for one of them: its receive side wakes one waiter for each change
+//! ([`Waiters::accepts`]), as Linux's exclusive waits in `accept` do, and
+//! its smoltcp sockets have no wakers of their own. Its interface tells it
+//! of each connection made, once, after the poll that made it (ADR 0651).
+//! A waiter woken alone that leaves without looking again, at its
+//! deadline or for a signal, looks once more as it goes, so that a
+//! connection it was woken for is not left with the others asleep
+//! ([`Waiters::wakes_one`]).
 
 use alloc::sync::Arc;
 use core::ptr;
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::task::{RawWaker, RawWakerVTable, Waker};
 
 use radix_mm::{Flags, HEAP, Kmalloc};
@@ -58,23 +78,35 @@ struct Side {
     changes: AtomicU64,
     /// How many threads wait on this side.
     sleepers: AtomicUsize,
+    /// Set once its socket listens: a change wakes one waiter, not all.
+    one: AtomicBool,
 }
 
 impl Side {
     const fn new() -> Side {
-        Side { changes: AtomicU64::new(0), sleepers: AtomicUsize::new(0) }
+        Side {
+            changes: AtomicU64::new(0),
+            sleepers: AtomicUsize::new(0),
+            one: AtomicBool::new(false),
+        }
     }
 
-    /// Moves the count, and wakes the waiters if there are any: lazily
-    /// for a waker that holds its stack's lock ([`sched::lazily`]).
-    fn changed(&self, lazily: bool) {
+    /// Moves the count, and wakes the waiters if there are any: one of
+    /// them on a side that wakes one, unless `all`, and lazily for a waker
+    /// that holds its stack's lock ([`sched::lazily`]).
+    fn changed(&self, lazily: bool, all: bool) {
         self.changes.fetch_add(1, Ordering::SeqCst);
-        if self.sleepers.load(Ordering::SeqCst) > 0 {
-            if lazily {
-                wait::wake_all_lazily(self.key());
-            } else {
-                wait::wake_all(self.key());
+        if self.sleepers.load(Ordering::SeqCst) == 0 {
+            return;
+        }
+        let key = self.key();
+        match (lazily, !all && self.one.load(Ordering::Relaxed)) {
+            (false, false) => wait::wake_all(key),
+            (true, false) => wait::wake_all_lazily(key),
+            (false, true) => {
+                wait::wake_one(key);
             }
+            (true, true) => wait::wake_one_lazily(key),
         }
     }
 
@@ -89,12 +121,29 @@ pub struct Waiters {
     receive: Side,
     send: Side,
     polled: Polled,
+    /// Moves after each of the socket's own calls has taken its state:
+    /// what they change, smoltcp does not wake for (ADR 0771).
+    own: AtomicU64,
+    /// What the socket was last found ready for, with the sum of the
+    /// counts of changes read before that look ([`Waiters::keep`]).
+    looked: AtomicU64,
 }
+
+/// The bits of [`Waiters::looked`] below the sum of counts: the events,
+/// and one that says they were kept.
+const LOOKED_SHIFT: u32 = 17;
+const LOOKED_KEPT: u64 = 1 << 16;
 
 impl Waiters {
     /// Waiters for a new socket, or `None` without memory for them.
     pub fn new() -> Option<Arc<Waiters, Kmalloc>> {
-        let waiters = Waiters { receive: Side::new(), send: Side::new(), polled: Polled::new() };
+        let waiters = Waiters {
+            receive: Side::new(),
+            send: Side::new(),
+            polled: Polled::new(),
+            own: AtomicU64::new(0),
+            looked: AtomicU64::new(0),
+        };
         Arc::try_new_in(waiters, HEAP.with(Flags::MAY_SLEEP)).ok()
     }
 
@@ -110,11 +159,11 @@ impl Waiters {
         &self.polled
     }
 
-    /// What the socket can do either way may have changed: its waiters
-    /// look again, and so do its pollers.
+    /// What the socket can do either way may have changed: all its
+    /// waiters look again, and so do its pollers.
     pub fn changed(&self) {
-        self.receive.changed(false);
-        self.send.changed(false);
+        self.receive.changed(false, true);
+        self.send.changed(false, true);
         self.polled.changed();
     }
 
@@ -126,8 +175,21 @@ impl Waiters {
     ///
     /// [`StackGuard`]: super::StackGuard
     pub fn changed_way(&self, way: Way) {
-        self.side(way).changed(true);
+        self.side(way).changed(true, false);
         self.polled.changed();
+    }
+
+    /// Its socket listens: from now on a change to what it can receive,
+    /// a connection made, wakes one of the threads waiting in `accept`.
+    /// [`Waiters::changed`] still wakes them all.
+    pub fn accepts(&self) {
+        self.receive.one.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether a change `way` wakes one waiter, who then looks once more
+    /// if it leaves without a look after its wake.
+    pub fn wakes_one(&self, way: Way) -> bool {
+        self.side(way).one.load(Ordering::Relaxed)
     }
 
     /// Counts the caller among those waiting `way` until the guard drops:
@@ -141,6 +203,40 @@ impl Waiters {
     /// The count of changes `way`, which a waiter reads before it looks.
     pub fn count(&self, way: Way) -> u64 {
         self.side(way).changes.load(Ordering::SeqCst)
+    }
+
+    /// One of the socket's own calls has taken its state, and may have
+    /// changed what the socket is ready for, as reading its bytes does:
+    /// the next look at it looks again. The caller still holds the state.
+    pub fn touched(&self) {
+        self.own.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The sum of the counts of changes either way and of the socket's own
+    /// calls, which a look at what the socket is ready for reads before it
+    /// looks. Every change to that moves it: smoltcp wakes for those it
+    /// makes, and the calls for theirs ([`Waiters::touched`]).
+    pub fn seen(&self) -> u64 {
+        self.count(Way::Receive)
+            .wrapping_add(self.count(Way::Send))
+            .wrapping_add(self.own.load(Ordering::SeqCst))
+    }
+
+    /// What a look that read `seen` before it looked found the socket
+    /// ready for, if the sum read now is that one: no change came since.
+    pub fn kept(&self, seen: u64) -> Option<u16> {
+        let looked = self.looked.load(Ordering::Acquire);
+        let same = looked >> LOOKED_SHIFT == seen & (u64::MAX >> LOOKED_SHIFT);
+        (looked & LOOKED_KEPT != 0 && same).then_some(looked as u16)
+    }
+
+    /// Keeps `events`, what a look that read `seen` before it looked found
+    /// the socket ready for. Two looks may store in either order: each
+    /// one's events are at least as new as the sum it read, and a look
+    /// whose sum is older than the one read now looks again.
+    pub fn keep(&self, seen: u64, events: u16) {
+        let looked = seen << LOOKED_SHIFT | LOOKED_KEPT | u64::from(events);
+        self.looked.store(looked, Ordering::Release);
     }
 
     /// Sleeps until the count of changes `way` moves from `seen`, or the

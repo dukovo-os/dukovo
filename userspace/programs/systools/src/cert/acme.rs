@@ -657,15 +657,33 @@ pub async fn order(
     };
     let identifiers: Vec<Identifier> =
         wanted.names.iter().map(|name| Identifier::Dns(name.clone())).collect();
-    let mut new = NewOrder::new(&identifiers);
-    if let Some(identifier) = replaces {
-        new = new.replaces(identifier);
-    }
-    if let Some(profile) = &wanted.profile {
-        new = new.profile(profile);
-    }
+    let build = |replaces: Option<CertificateIdentifier<'static>>| {
+        let mut new = NewOrder::new(&identifiers);
+        if let Some(identifier) = replaces {
+            new = new.replaces(identifier);
+        }
+        if let Some(profile) = &wanted.profile {
+            new = new.profile(profile);
+        }
+        new
+    };
+    let replacing = replaces.is_some();
     say(&format!("asking for a certificate for {}", wanted.names.join(", ")));
-    let mut ordered = account.new_order(&new).await.map_err(explain)?;
+    let mut ordered = match account.new_order(&build(replaces)).await {
+        Ok(ordered) => ordered,
+        // `replaces` only hints that the old certificate is replaced, so the
+        // order the authority will not take with it is made once without it
+        // (RFC 9773, section 5).
+        Err(error) if replacing && problems::refuses_the_replaced(&error) => {
+            say(&format!(
+                "the authority refused the certificate this one replaces ({}): asking again \
+                 without it",
+                explain(error)
+            ));
+            account.new_order(&build(None)).await.map_err(explain)?
+        }
+        Err(error) => return Err(explain(error)),
+    };
     let kind = match serving {
         Serving::ByHand { .. } => ChallengeType::Dns01,
         _ => ChallengeType::Http01,

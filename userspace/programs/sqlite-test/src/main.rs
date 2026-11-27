@@ -15,6 +15,8 @@
 //! WAL between connections is not among the checks: its index is a shared
 //! writable mapping of a file, which Radix refuses (docs/deferred.md).
 
+#![forbid(unsafe_code)]
+
 use std::fmt::Debug;
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -587,20 +587,8 @@ pub fn ask(name: &str, request: &str) -> io::Result<String> {
 
 /// Waits up to `limit` for `stream` to be readable: whether it is. Radix's
 /// Unix sockets have no SO_RCVTIMEO.
-pub fn readable(stream: &impl std::os::fd::AsRawFd, limit: Duration) -> io::Result<bool> {
-    let mut fd = libc::pollfd { fd: stream.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-    let ms = i32::try_from(limit.as_millis()).unwrap_or(i32::MAX);
-    loop {
-        // SAFETY: one pollfd, of a descriptor `stream` owns.
-        let ready = unsafe { libc::poll(&raw mut fd, 1, ms) };
-        if ready >= 0 {
-            return Ok(ready > 0);
-        }
-        let error = io::Error::last_os_error();
-        if error.kind() != io::ErrorKind::Interrupted {
-            return Err(error);
-        }
-    }
+pub fn readable(stream: &impl std::os::fd::AsFd, limit: Duration) -> io::Result<bool> {
+    sysapi::poll::wait_readable(stream, limit)
 }
 
 /// The interfaces wgd runs: those with a socket in [`LIVE`], by name.

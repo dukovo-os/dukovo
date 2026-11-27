@@ -7,15 +7,23 @@
 //! process that runs it, yet each space filled a page of its own from the
 //! file the first time it touched one: twenty services that run one
 //! program held twenty copies of the code each of them ran. A file that
-//! cannot change, one in a read-only Btrfs subvolume (as the system's
-//! slots are) or in the startup archive, now has a [`ProgramPages`] while
-//! a space maps it, which keeps the pages filled from it: a fault on a
-//! whole page of the file, in a region the space may not write, maps the
-//! page kept for it if there is one, and keeps the page it makes if not.
-//! Whether a file can change is asked again at each such fault: a file
-//! found to be able to change has no page kept for any space from then
-//! on, though it could not change again later, and each space fills its
-//! own.
+//! cannot change now has a [`ProgramPages`] while a space maps it, which
+//! keeps the pages filled from it: a fault on a whole page of the file,
+//! in a region the space may not write, maps the page kept for it if
+//! there is one, and keeps the page it makes if not. A file cannot change
+//! when it is
+//!
+//! - in a read-only Btrfs subvolume, as the system's slots are, or in the
+//!   startup archive. Whether it still is is asked again at each such
+//!   fault: a file found to be able to change has no page kept for any
+//!   space from then on, though it could not change again later, and each
+//!   space fills its own;
+//! - or one no one may write by its mode, as a sealed bundle's files are,
+//!   on a filesystem that counts its files' writers (ADR 0658). Its pages
+//!   are kept only while no handle may write it, and while they are, an
+//!   open to write it or cut it fails with ETXTBSY, as Linux's does for a
+//!   program that runs ([`radix_vfs::writes`]). With a handle open to
+//!   write it, each space fills its own copies.
 //!
 //! A kept page is anonymous memory as any other (`Owner::Anon`). Its share
 //! count counts the spaces that map it and one more for the
@@ -41,13 +49,13 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use radix_mm::{FRAMES, Flags, HEAP, Kmalloc, Owner};
 use radix_sync::Mutex;
 use radix_vfs::NodeRef;
+use radix_vfs::writes::WriteAccess;
 
 use super::anon::{CHUNK, Chunk, unshare};
 
 /// The pages kept of one file that programs map, while a space maps it.
 pub struct ProgramPages {
     /// The file, which its pages keep alive and so at its address.
-    #[expect(dead_code, reason = "held only to keep the file at its address")]
     node: NodeRef,
     /// The frames of its kept pages, in chunks of [`CHUNK`] pages kept in
     /// order of their number; 0 for a page not kept. Allocated without
@@ -57,6 +65,10 @@ pub struct ProgramPages {
     /// Whether the file was found to be able to change after its pages
     /// were kept: they are handed to no space more.
     stale: AtomicBool,
+    /// Whether it keeps the file from being written while it lives, as
+    /// one no one may write by its mode ([`WriteAccess::deny_writes`]),
+    /// rather than the file being read-only.
+    denies: bool,
 }
 
 /// A file's kept pages, shared by the regions that map the file.
@@ -88,9 +100,7 @@ impl ProgramPages {
     /// now if none maps it yet: `None` for a file that can change, whose
     /// pages each space fills for itself, or with memory short.
     pub fn of(node: &NodeRef) -> Option<ProgramRef> {
-        if !node.read_only() {
-            return None;
-        }
+        let writes = if node.read_only() { None } else { Some(unwritable(node)?) };
         let key = key_of(node);
         let mut files = FILES.lock();
         let files = files.get_or_insert_with(|| Vec::new_in(super::kmalloc()));
@@ -100,10 +110,18 @@ impl ProgramPages {
         {
             return Some(pages);
         }
+        // A handle may write it: each space fills its own.
+        if let Some(writes) = writes
+            && !writes.deny_writes()
+        {
+            return None;
+        }
+        // Dropped, it lets writes go again.
         let pages = ProgramPages {
             node: node.clone(),
             chunks: Mutex::new(Vec::new_in(atomic())),
             stale: AtomicBool::new(false),
+            denies: writes.is_some(),
         };
         let pages = Arc::try_new_in(pages, super::kmalloc()).ok()?;
         if let Ok(at) = found {
@@ -123,7 +141,11 @@ impl ProgramPages {
 
     /// Whether its pages may be handed out: the file, `node`, still
     /// cannot change, nor could at any fault since they were first kept.
+    /// One kept from being written cannot while they are kept.
     pub(super) fn usable(&self, node: &NodeRef) -> bool {
+        if self.denies {
+            return true;
+        }
         if self.stale.load(Ordering::Acquire) {
             return false;
         }
@@ -234,12 +256,29 @@ impl ProgramPages {
 
 impl Drop for ProgramPages {
     /// Lets go of every page it kept: no region maps the file any more,
-    /// and so no space any of its pages.
+    /// and so no space any of its pages. The file may be written again,
+    /// once no other set of its pages is kept.
     fn drop(&mut self) {
         for (_, chunk) in self.chunks.get_mut().iter() {
             for &phys in chunk.iter().filter(|&&phys| phys != 0) {
                 unshare(phys);
             }
         }
+        if self.denies
+            && let Some(writes) = self.node.write_access()
+        {
+            writes.allow_writes();
+        }
     }
+}
+
+/// The count of writers of `node` if no one may write it by its mode: a
+/// regular file whose filesystem counts its writers, with no write bit
+/// for its owner, its group or others, as a sealed bundle's files are
+/// (ADR 0658). An access list gives no one more than the mode's group
+/// bits allow, its mask; only a caller past the second gate may write
+/// it, and that one's open fails while its pages are kept.
+fn unwritable(node: &NodeRef) -> Option<&WriteAccess> {
+    let writes = node.write_access()?;
+    (node.access().mode & 0o222 == 0).then_some(writes)
 }

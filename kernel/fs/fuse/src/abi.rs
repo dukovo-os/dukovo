@@ -116,6 +116,7 @@ pub mod errno {
     pub const ENOTDIR: i32 = 20;
     pub const EISDIR: i32 = 21;
     pub const EINVAL: i32 = 22;
+    pub const ETXTBSY: i32 = 26;
     pub const EFBIG: i32 = 27;
     pub const ENOSPC: i32 = 28;
     pub const EROFS: i32 = 30;
@@ -144,6 +145,7 @@ pub fn error_of(errno: i32) -> Error {
         errno::ENOMEM => Error::NoMemory,
         errno::EACCES => Error::Denied,
         errno::EBUSY => Error::InUse,
+        errno::ETXTBSY => Error::TextBusy,
         errno::EEXIST => Error::Exists,
         errno::EXDEV => Error::CrossMount,
         errno::ENODEV | errno::ENXIO => Error::NoDevice,

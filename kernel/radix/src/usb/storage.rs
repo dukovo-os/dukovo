@@ -323,11 +323,12 @@ pub fn probed(link: &Link) {
 }
 
 impl Link {
-    /// Wakes the stick's thread, if it runs.
+    /// Wakes the stick's thread, if it runs, through the link's reference
+    /// and under its lock, as an interrupt handler wakes a thread
+    /// ([`sched::ThreadRef`]).
     fn wake_stick(&self) {
-        let stick = self.stick.lock_irq().clone();
-        if let Some(thread) = stick {
-            sched::wake(&thread);
+        if let Some(thread) = self.stick.lock_irq().as_ref() {
+            sched::wake(thread);
         }
     }
 

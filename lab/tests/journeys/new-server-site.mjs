@@ -10,7 +10,7 @@
 
 import { ensure, fetchAsPage, lookAll } from "../web-console/console.mjs";
 import { pressAndAnswer } from "../web-console/trial.mjs";
-import { eventually, infoOf, readJson, signedIn, unlock } from "./journey.mjs";
+import { eventually, journeyInfo, readJson, signedIn, unlock } from "./journey.mjs";
 
 const buttonOf = (scope, name) => scope.getByRole("button", { name, exact: true });
 
@@ -86,7 +86,7 @@ async function setEmail(t, page, info) {
 }
 
 export default async function check(t) {
-  const info = await infoOf("new-server");
+  const info = await journeyInfo();
   const { page } = await signedIn(t, info.admin, info.admin_password);
   await unlock(page, info.admin_password);
   await addWebsite(t, page, info.site, info.admin);

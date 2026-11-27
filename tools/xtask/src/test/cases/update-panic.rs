@@ -59,11 +59,11 @@ fn update_panic(vm: &mut Vm, _case: &Case) -> Result<(), String> {
 pub fn tries(vm: &mut Vm, version: &str, failure: &str) -> Result<(), String> {
     for (n, word) in ["first", "second", "last"].iter().enumerate() {
         if n > 0 {
-            vm.expect(&format!("Booting `Dukovo Server {version} (update, {word} try)'"))?;
+            vm.expect_grub(&format!("Booting `Dukovo Server {version} (update, {word} try)'"))?;
         }
         vm.expect(" slot=b ")?;
         vm.expect(failure).map_err(|err| format!("the {word} try: {err}"))?;
     }
-    vm.expect(&format!("Booting `Dukovo Server {VERSION} (the update to {version} failed)'"))?;
+    vm.expect_grub(&format!("Booting `Dukovo Server {VERSION} (the update to {version} failed)'"))?;
     Ok(())
 }

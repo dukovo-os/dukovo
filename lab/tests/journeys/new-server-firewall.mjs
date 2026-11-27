@@ -9,7 +9,7 @@
 
 import { ensure, fetchAsPage, lookAll, sessionOf, sleep } from "../web-console/console.mjs";
 import { WORDS, bannerBecomes, bannerEnds, keepOf, pressAndAnswer } from "../web-console/trial.mjs";
-import { infoOf, readJson, signedIn, unlock } from "./journey.mjs";
+import { journeyInfo, readJson, signedIn, unlock } from "./journey.mjs";
 
 const TRIED = "The firewall rules are being tried.";
 
@@ -53,7 +53,7 @@ async function allowAndKeep(t, page, ports, from) {
 }
 
 export default async function check(t) {
-  const info = await infoOf("new-server");
+  const info = await journeyInfo();
   const { page } = await signedIn(t, info.admin, info.admin_password);
   const session = await sessionOf(page);
   ensure(session.admin === true, `${info.admin} signs in to the console as no administrator`);

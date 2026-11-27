@@ -87,7 +87,13 @@ setup() {
 	chmod 700 "$state"
 
 	for id in $bundles; do
-		installed=$(bundle install --for-everyone --yes "/users/lab/$id.dkv" 2>&1 | tail -n 1)
+		# nginx from the lab's catalog, `labtest` (lab-catalog.sh), the
+		# others from the files the test copied.
+		case "$id" in
+		org.nginx.nginx) set -- "$id" --from labtest ;;
+		*) set -- "/users/lab/$id.dkv" ;;
+		esac
+		installed=$(bundle install --for-everyone --yes "$@" 2>&1 | tail -n 1)
 		case "$installed" in
 		"installed $id"*) ;;
 		*) fail "bundle $id: $installed" ;;

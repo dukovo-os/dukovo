@@ -45,7 +45,7 @@ use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -61,7 +61,7 @@ use spark_api::show;
 use crate::args::{Arg, Args};
 use crate::bundles::catalogs::{self, Catalog};
 use crate::bundles::feeds;
-use crate::bundles::folder::{DEPTH_MAX, Dir, check, fd_stat, same};
+use crate::bundles::folder::{DEPTH_MAX, Dir, fd_stat, same};
 use crate::bundles::grants::{self, Grant, Grants, Said};
 use crate::bundles::health::{Verdict, verdict};
 use crate::bundles::history::{self, Event, What};
@@ -80,6 +80,8 @@ use crate::bundles::{
 };
 use crate::util::{self, Fail};
 use crate::{proc, signin, sys};
+use sysapi::poll::{self, PollFd};
+use sysapi::signal;
 
 /// Where bundles for everyone are.
 pub const EVERYONE: &str = "/applications";
@@ -126,11 +128,9 @@ macro_rules! audit {
 }
 
 /// Makes `fd`'s file root's, with `mode`.
-fn set_root(fd: &OwnedFd, mode: libc::mode_t) -> io::Result<()> {
-    // SAFETY: plain calls on a descriptor we hold.
-    check(unsafe { libc::fchown(fd.as_raw_fd(), 0, 0) })?;
-    // SAFETY: as above.
-    check(unsafe { libc::fchmod(fd.as_raw_fd(), mode) })
+fn set_root(fd: impl AsFd, mode: libc::mode_t) -> io::Result<()> {
+    std::os::unix::fs::fchown(&fd, Some(0), Some(0))?;
+    sysapi::fs::set_mode(fd, mode)
 }
 
 /// Seals what is in `dir`: every folder root's and 0555, every file
@@ -145,9 +145,9 @@ fn seal(dir: &Dir, depth: usize) -> Result<(), String> {
         let st = fd_stat(&fd).map_err(|e| format!("{name}: {e}"))?;
         match st.st_mode & libc::S_IFMT {
             libc::S_IFDIR => {
-                let inner = Dir(fd);
+                let inner = Dir::from(fd);
                 seal(&inner, depth + 1).map_err(|why| format!("{name}/{why}"))?;
-                set_root(&inner.0, 0o555).map_err(|e| format!("{name}: {e}"))?;
+                set_root(&inner, 0o555).map_err(|e| format!("{name}: {e}"))?;
             }
             libc::S_IFREG => {
                 // fchown and fchmod need a descriptor open for writing.
@@ -434,21 +434,14 @@ impl Connection {
 
 /// Waits until `stream` has something to read, or `deadline` passes.
 fn readable(stream: &UnixStream, deadline: Instant) -> io::Result<()> {
-    let mut wanted = libc::pollfd { fd: stream.as_raw_fd(), events: libc::POLLIN, revents: 0 };
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
-        let ms = i32::try_from(left.as_millis()).unwrap_or(i32::MAX);
-        // SAFETY: one pollfd, valid for the call.
-        let n = unsafe { libc::poll(&raw mut wanted, 1, ms) };
-        if n > 0 {
-            return Ok(());
-        }
-        if n == 0 {
-            return Err(io::Error::from(io::ErrorKind::TimedOut));
-        }
-        let e = io::Error::last_os_error();
-        if e.kind() != io::ErrorKind::Interrupted {
-            return Err(e);
+        let mut wanted = [PollFd::new(stream.as_fd(), libc::POLLIN)];
+        match poll::poll(&mut wanted, Some(left)) {
+            Ok(0) => return Err(io::Error::from(io::ErrorKind::TimedOut)),
+            Ok(_) => return Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
         }
     }
 }
@@ -688,7 +681,7 @@ fn install_in(
     if made.st_uid != 0 || made.st_mode & 0o7777 != 0o700 {
         return Err(format!("{path}/{working} changed as it was made"));
     }
-    let report = confine::unpack_into(archive, &folder.0)?;
+    let report = confine::unpack_into(archive, &folder)?;
     // Checked again here, as the unpacker read what came from anywhere:
     // the signature, the list and every byte, and nothing else there.
     let unpacked = format!("{path}/{working}");
@@ -871,7 +864,7 @@ fn install_in(
     // Its services' accounts and data folders, before it is in place.
     make_accounts(&checked.manifest)?;
     seal(&folder, 0)?;
-    set_root(&folder.0, 0o555).map_err(|e| format!("{unpacked}: {e}"))?;
+    set_root(&folder, 0o555).map_err(|e| format!("{unpacked}: {e}"))?;
     still("as it was sealed")?;
     let version = checked.manifest.version.0.clone();
     let mut registry = shared.lock();
@@ -1648,7 +1641,7 @@ fn link_commands(registry: &Registry, place: Place) -> Result<(), String> {
         None => {
             places.make(COMMANDS, 0o755).map_err(|e| format!("{folder}: {e}"))?;
             let made = places.dir_at(COMMANDS).map_err(|e| format!("{folder}: {e}"))?;
-            set_root(&made.0, 0o755).map_err(|e| format!("{folder}: {e}"))?;
+            set_root(&made, 0o755).map_err(|e| format!("{folder}: {e}"))?;
         }
         Some(st) if st.st_mode & libc::S_IFMT == libc::S_IFDIR && st.st_uid == 0 => {}
         Some(_) => return Err(format!("{folder} is not bundled's, so it links nothing there")),
@@ -2323,10 +2316,9 @@ fn make_private(parent: &Dir, name: &str) -> io::Result<Dir> {
     parent.make(name, 0o700)?;
     let dir = parent.dir_at(name)?;
     let owner = parent.stat()?;
-    // SAFETY: plain calls on a descriptor we hold.
-    check(unsafe { libc::fchown(dir.0.as_raw_fd(), owner.st_uid, owner.st_gid) })?;
-    // SAFETY: as above; the mask may have taken bits off the mode made.
-    check(unsafe { libc::fchmod(dir.0.as_raw_fd(), 0o700) })?;
+    std::os::unix::fs::fchown(&dir, Some(owner.st_uid), Some(owner.st_gid))?;
+    // The mask may have taken bits off the mode made.
+    sysapi::fs::set_mode(&dir, 0o700)?;
     Ok(dir)
 }
 
@@ -2343,15 +2335,6 @@ fn private_folder(parent: &Dir, name: &str) -> io::Result<Dir> {
 /// `base` for the first try at a name, then `base-2`, `base-3`, ….
 fn numbered(base: &str, number: u32) -> String {
     if number == 1 { base.to_string() } else { format!("{base}-{number}") }
-}
-
-/// Renames `name` in `from` to `new` in `to`, as the descriptors hold them.
-fn move_between(from: &Dir, name: &str, to: &Dir, new: &str) -> io::Result<()> {
-    let (name, new) = (crate::bundles::folder::c_name(name)?, crate::bundles::folder::c_name(new)?);
-    // SAFETY: all four are valid for the call.
-    check(unsafe {
-        libc::renameat(from.0.as_raw_fd(), name.as_ptr(), to.0.as_raw_fd(), new.as_ptr())
-    })
 }
 
 /// Moves the data and the version copies of `id` in `app_data`, which is
@@ -2390,10 +2373,10 @@ fn set_aside_app_data(
         }
     };
     if has_data {
-        move_between(app_data, id, &folder, "data")?;
+        app_data.move_to(id, &folder, "data")?;
     }
     if let Some(copies) = copies.filter(|_| has_copies) {
-        move_between(&copies, id, &folder, "snapshots")?;
+        copies.move_to(id, &folder, "snapshots")?;
     }
     Ok(Some(name))
 }
@@ -2437,7 +2420,7 @@ fn set_aside_service_data(data: &Dir, id: &str, base: &str) -> io::Result<Option
     for number in 1..=SET_ASIDE_NAMES {
         let name = numbered(base, number);
         if aside.stat_at(&name)?.is_none() {
-            move_between(data, id, &aside, &name)?;
+            data.move_to(id, &aside, &name)?;
             return Ok(Some(name));
         }
     }
@@ -3497,7 +3480,7 @@ fn stop_withdrawn(
     }
     let mut changed = false;
     if st.st_mode & 0o7777 != 0o500 {
-        set_root(&folder.0, 0o500).map_err(|e| format!("{path}/{id}: {e}"))?;
+        set_root(&folder, 0o500).map_err(|e| format!("{path}/{id}: {e}"))?;
         changed = true;
     }
     let mut said = String::new();
@@ -4947,9 +4930,8 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     if let Some(arg) = args.next()? {
         return Err(args.unknown(&arg));
     }
-    // SAFETY: setting a signal's disposition touches no memory; no other
-    // thread runs yet. A client that goes away must not end bundled.
-    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
+    // A client that goes away must not end bundled.
+    let _ = signal::ignore(libc::SIGPIPE);
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)

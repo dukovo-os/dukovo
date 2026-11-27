@@ -65,9 +65,7 @@ pub struct LinuxFs {
 impl LinuxFs {
     /// The filesystem, whose `.netlink` files are `netlinks`' sockets.
     pub fn new(netlinks: Arc<Netlinks>) -> LinuxFs {
-        // SAFETY: getuid and getgid take no arguments, touch no memory
-        // and cannot fail.
-        let owner = unsafe { (libc::getuid(), libc::getgid()) };
+        let owner = (sysapi::process::uid(), sysapi::process::gid());
         let mounts = std::env::var(mounts::VARIABLE).ok().filter(|path| !path.is_empty());
         let tree = Tree::new(Machine, Arc::clone(&netlinks), mounts, owner);
         let boot = tree.boot_time();

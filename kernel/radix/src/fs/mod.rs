@@ -79,6 +79,7 @@ use radix_klog::{error, info, warn};
 use radix_mm::{FRAMES, Kmalloc, PAGE_SIZE};
 use radix_sync::{Mutex, Once, SpinLock};
 use radix_vfs::mount::{Location, OpenFlags, Vfs};
+use radix_vfs::writes::Writer;
 use radix_vfs::{Error, FileSystem, FsInfo, FsKind, FsRef, Kind, NodeRef, Who, mem};
 
 use crate::Arch;
@@ -414,6 +415,10 @@ pub struct FileObject {
     /// The name it acts for (ADR 0214): what the second gate checks on
     /// the files opened or made through it, which take it too.
     pub name: Identity,
+    /// A file's leave to write it, if it was opened to write: while it
+    /// lives, programs that map the file share none of its pages
+    /// (ADR 0658).
+    writer: Option<Writer>,
 }
 
 impl FileObject {
@@ -446,11 +451,13 @@ impl FileObject {
         from: Option<(&Opened, &[u8])>,
         name: Identity,
     ) -> Option<FileRef> {
-        FileObject::opened_as(at, None, description, from, name)
+        FileObject::opened_as(at, None, description, from, name, None)
     }
 
     /// [`FileObject::opened`], with the node's kind when the caller has
     /// asked it already: asking is a call through the node's filesystem.
+    /// A file opened to write comes with the open's `writer`
+    /// ([`radix_vfs::mount::Vfs::open_file`]), which goes with the object.
     #[allow(unsafe_code)]
     pub fn opened_as(
         at: Location,
@@ -458,6 +465,7 @@ impl FileObject {
         description: Description,
         from: Option<(&Opened, &[u8])>,
         name: Identity,
+        writer: Option<Writer>,
     ) -> Option<FileRef> {
         // Only a node of a pipe's, a socket's or a character device's kind
         // can be one.
@@ -512,6 +520,7 @@ impl FileObject {
             (&raw mut (*place).next).write(SpinLock::new(Link { queued: false, next: None }));
             (&raw mut (*place).name).write(name);
             (&raw mut (*place).parent).write(None);
+            (&raw mut (*place).writer).write(writer);
             Opened::write_at(&raw mut (*place).opened, &(*place).at, from);
         }
         // SAFETY: written just above.
@@ -1392,6 +1401,7 @@ pub fn status(err: Error) -> Status {
         Error::QuotaExceeded => FileError::QuotaExceeded,
         Error::Denied => FileError::Denied,
         Error::NoAttribute => FileError::NoAttribute,
+        Error::TextBusy => FileError::TextBusy,
         Error::OutOfRange => return Kernel::OutOfRange.status(0),
         // The program that serves a filesystem answered a call EINTR, a
         // signal having asked it to stop: the call fails, and does not

@@ -36,7 +36,6 @@ use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -45,6 +44,7 @@ use prometheus::{Endpoint, Machine, Scrape};
 use sample::{Reader, Snapshot, Sources};
 use settings::{Network, Settings, Thresholds};
 use store::Store;
+use sysapi::signal::{self, Caught};
 use warnings::{Sent, Warnings};
 
 use crate::alerts::client;
@@ -71,16 +71,8 @@ const FLUSH_STEPS: u32 = 10;
 /// How often the service looks at whether a signal came.
 const WATCH: Duration = Duration::from_millis(250);
 
-static STOP: AtomicBool = AtomicBool::new(false);
-static RELOAD: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_term(_: libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-}
-
-extern "C" fn on_hangup(_: libc::c_int) {
-    RELOAD.store(true, Ordering::Relaxed);
-}
+static STOP: Caught = Caught::new();
+static RELOAD: Caught = Caught::new();
 
 /// metrics(1).
 pub use command::main as metrics;
@@ -124,21 +116,14 @@ fn step_option(args: &mut Args) -> Result<u64, Fail> {
 /// `metricsd run`: the service.
 fn run(args: &mut Args) -> Result<i32, Fail> {
     let step = Duration::from_secs(step_option(args)?);
-    for (signal, handler) in
-        [(libc::SIGTERM, on_term as extern "C" fn(libc::c_int)), (libc::SIGHUP, on_hangup)]
-    {
-        // SAFETY: all zeros is a valid sigaction: numbers, a signal set
-        // and a function address.
-        let mut action: libc::sigaction = unsafe { util::zeroed() };
-        action.sa_sigaction = handler as *const () as usize;
-        // SAFETY: the handlers only store to an atomic.
-        unsafe { libc::sigaction(signal, &raw const action, std::ptr::null_mut()) };
+    for (number, caught) in [(libc::SIGTERM, &STOP), (libc::SIGHUP, &RELOAD)] {
+        let _ = signal::catch(number, caught, 0);
     }
     let mut daemon = Daemon::new(Places::system(), Sources::system(), Box::new(client::set));
     println!("metricsd: reading the machine every {} s into {STATE}", step.as_secs());
     let mut due = Instant::now();
-    while !STOP.load(Ordering::Relaxed) {
-        if RELOAD.swap(false, Ordering::Relaxed) {
+    while !STOP.is_set() {
+        if RELOAD.take() {
             daemon.reload();
         }
         let now = Instant::now();

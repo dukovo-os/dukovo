@@ -98,11 +98,18 @@ pub struct PciFunction {
     pub revision: u8,
     /// Its subsystem vendor and subsystem IDs, (0, 0) for none.
     pub subsystem: (u16, u16),
+    /// The segment and root bus whose NUMA node it has ([`numa_node`]):
+    /// where the scan found it, or for a function behind an Intel VMD,
+    /// where the VMD itself is, since the VMD's domain sits on the
+    /// socket the VMD does.
+    pub numa_root: (u16, u8),
 }
 
 /// The `sd` letters taken, a bit each from `sda`'s: SATA and USB disks
 /// share them.
 static SD_LETTERS: AtomicU32 = AtomicU32::new(0);
+/// The warning that [`FUNCTIONS`] is full has been logged.
+static FULL_WARNED: AtomicBool = AtomicBool::new(false);
 /// The PCI scan is done: the SATA disks it found have their names.
 static SCANNED: AtomicBool = AtomicBool::new(false);
 
@@ -145,20 +152,82 @@ fn wait_for_scan() {
     }
 }
 
-/// The most functions [`pci_functions`] lists.
-const MAX_FUNCTIONS: usize = 128;
+/// The most functions [`pci_functions`] lists. A server's uncore alone
+/// has more than 128.
+const MAX_FUNCTIONS: usize = 1024;
 
 static FUNCTIONS: SpinLock<([Option<PciFunction>; MAX_FUNCTIONS], usize)> =
     SpinLock::new(([None; MAX_FUNCTIONS], 0));
 
+/// The most root buses [`ROOTS`] and [`ROOT_NODES`] hold: a two-socket
+/// Xeon Scalable has about a dozen, an eight-socket machine about fifty.
+const MAX_ROOTS: usize = 64;
+
+/// The root buses the scan found, as (segment, root bus).
+static ROOTS: SpinLock<[Option<(u16, u8)>; MAX_ROOTS]> = SpinLock::new([None; MAX_ROOTS]);
+
+/// The NUMA node of each root bus the firmware named one for, as
+/// (segment, root bus, node).
+static ROOT_NODES: SpinLock<[Option<(u16, u8, u8)>; MAX_ROOTS]> = SpinLock::new([None; MAX_ROOTS]);
+
 /// Calls `f` with every PCI function the scan found, in order.
 pub fn pci_functions(mut f: impl FnMut(&PciFunction)) {
     // One at a time, and without the lock held while `f` runs: a copy of
-    // the whole table would take 2.5 KiB of a kernel stack.
+    // the whole table would not fit a kernel stack.
     for index in 0..MAX_FUNCTIONS {
         let Some(function) = FUNCTIONS.lock().0[index] else { break };
         f(&function);
     }
+}
+
+/// Calls `f` with the segment and number of every root bus the scan
+/// found a function on, in the order found.
+pub fn pci_roots(mut f: impl FnMut(u16, u8)) {
+    for index in 0..MAX_ROOTS {
+        let Some((segment, root)) = ROOTS.lock()[index] else { break };
+        f(segment, root);
+    }
+}
+
+/// Whether the scan found functions on root bus `root` of `segment`.
+pub fn has_pci_root(segment: u16, root: u8) -> bool {
+    ROOTS.lock().iter().flatten().any(|&found| found == (segment, root))
+}
+
+/// Records that the scan found functions on root bus `root` of `segment`.
+fn remember_root(segment: u16, root: u8) {
+    let mut roots = ROOTS.lock();
+    if let Some(free) = roots.iter_mut().find(|entry| entry.is_none()) {
+        *free = Some((segment, root));
+    }
+}
+
+/// Gives root bus `root` of `segment` the NUMA node `node`, from the
+/// proximity domain of the ACPI host bridge that names it. Called from a
+/// thread that may sleep, after uACPI starts.
+pub fn set_numa_node(segment: u16, root: u8, node: u8) {
+    let full = {
+        let mut nodes = ROOT_NODES.lock();
+        let slot =
+            nodes.iter_mut().find(|entry| entry.is_none_or(|(s, r, _)| (s, r) == (segment, root)));
+        match slot {
+            Some(slot) => {
+                *slot = Some((segment, root, node));
+                false
+            }
+            None => true,
+        }
+    };
+    if full {
+        warn!("PCI: no room for the node of root bus {segment:04x}:{root:02x}");
+    }
+}
+
+/// The NUMA node of `function`, as its root bus's ACPI host bridge gave
+/// it; `None` when the firmware named none, or uACPI has not run.
+pub fn numa_node(function: &PciFunction) -> Option<u8> {
+    let (segment, root) = function.numa_root;
+    ROOT_NODES.lock().iter().flatten().find(|(s, r, _)| (*s, *r) == (segment, root)).map(|e| e.2)
 }
 
 /// Where a partition is on its disk.
@@ -263,83 +332,95 @@ pub fn init() {
             let phys = base + (u64::from(bus) << 20);
             <Arch as Devices>::map_device(phys, pci::BUS_SIZE)
         };
-        pci::scan(number, first_bus, last_bus, &mut map_bus, &mut |function| {
-            functions += 1;
-            describe(&function);
-            if device_type(&function) == Some(radix_virtio::device_type::BLOCK) {
-                match virtio::bind(&function, disks) {
-                    Ok(()) => disks += 1,
-                    Err(why) => warn!("Disk: could not set up a virtio block device: {why}"),
+        let mut answers =
+            |bus: u8| <Arch as Devices>::pci_bus_answers(base + (u64::from(bus) << 20));
+        let mut on_root = [0u16; 256];
+        pci::scan(
+            number,
+            first_bus,
+            last_bus,
+            &mut map_bus,
+            &mut answers,
+            &mut |function, root| {
+                functions += 1;
+                on_root[usize::from(root)] = on_root[usize::from(root)].saturating_add(1);
+                describe(&function, (number, root));
+                if device_type(&function) == Some(radix_virtio::device_type::BLOCK) {
+                    match virtio::bind(&function, disks) {
+                        Ok(()) => disks += 1,
+                        Err(why) => warn!("Disk: could not set up a virtio block device: {why}"),
+                    }
+                } else if device_type(&function) == Some(radix_virtio::device_type::SCSI) {
+                    if let Err(why) = virtio_scsi::bind(&function, adapters, &mut scsi) {
+                        warn!(
+                            "Disk: could not set up the virtio SCSI adapter at {}: {why}",
+                            function.address()
+                        );
+                    }
+                    adapters += 1;
+                } else if (function.vendor_id(), function.device_id())
+                    == (radix_pvscsi::VENDOR, radix_pvscsi::DEVICE)
+                {
+                    if let Err(why) = pvscsi::bind(&function, vmware, &mut scsi) {
+                        warn!(
+                            "Disk: could not set up the VMware PVSCSI adapter at {}: {why}",
+                            function.address()
+                        );
+                    }
+                    vmware += 1;
+                } else if device_type(&function) == Some(radix_virtio::device_type::CONSOLE) {
+                    crate::vports::bind(&function);
+                } else if device_type(&function) == Some(radix_virtio::device_type::NET) {
+                    crate::net::bind(&function);
+                } else if device_type(&function) == Some(radix_virtio::device_type::SOUND) {
+                    crate::audio::virtio::bind(&function);
+                } else if radix_hda::is_hda(&function) {
+                    crate::audio::hda::bind(&function);
+                } else if vmd::is_vmd(&function) {
+                    vmd::bind(&function, root, &mut controllers, &mut functions);
+                } else if function.class() == radix_ahci::PCI_CLASS {
+                    if let Err(why) = ahci::bind(&function, (&mut sata, &mut optical)) {
+                        warn!(
+                            "Disk: could not set up the AHCI controller at {}: {why}",
+                            function.address()
+                        );
+                    }
+                } else if is_ide(&function) {
+                    if let Err(why) = ide::bind(&function, (&mut ide, &mut optical)) {
+                        warn!(
+                            "Disk: could not set up the IDE controller at {}: {why}",
+                            function.address()
+                        );
+                    }
+                } else if is_sd_reader(&function) {
+                    if let Err(why) = sdhci::bind(&function, &mut cards) {
+                        warn!(
+                            "Disk: could not set up the SD card reader at {}: {why}",
+                            function.address()
+                        );
+                    }
+                } else if let Some(chip) = realtek_reader(&function) {
+                    if let Err(why) = sdhci::bind_realtek(&function, chip, &mut cards) {
+                        warn!(
+                            "Disk: could not set up the Realtek {} card reader at {}: {why}",
+                            chip.name(),
+                            function.address()
+                        );
+                    }
+                } else if function.class() == radix_nvme::PCI_CLASS {
+                    nvme::bind(&function, &mut controllers);
+                } else if crate::i2c::designware::is_lpss(&function) {
+                    crate::i2c::designware::bind_lpss(&function);
+                } else if let Some(kind) = crate::serial::pci::identify(&function) {
+                    crate::serial::pci::bind(&function, kind);
+                } else if let Some(card) = crate::net::identify(&function) {
+                    crate::net::bind_card(&function, card);
+                } else {
+                    crate::usb::found(&function);
                 }
-            } else if device_type(&function) == Some(radix_virtio::device_type::SCSI) {
-                if let Err(why) = virtio_scsi::bind(&function, adapters, &mut scsi) {
-                    warn!(
-                        "Disk: could not set up the virtio SCSI adapter at {}: {why}",
-                        function.address()
-                    );
-                }
-                adapters += 1;
-            } else if (function.vendor_id(), function.device_id())
-                == (radix_pvscsi::VENDOR, radix_pvscsi::DEVICE)
-            {
-                if let Err(why) = pvscsi::bind(&function, vmware, &mut scsi) {
-                    warn!(
-                        "Disk: could not set up the VMware PVSCSI adapter at {}: {why}",
-                        function.address()
-                    );
-                }
-                vmware += 1;
-            } else if device_type(&function) == Some(radix_virtio::device_type::CONSOLE) {
-                crate::vports::bind(&function);
-            } else if device_type(&function) == Some(radix_virtio::device_type::NET) {
-                crate::net::bind(&function);
-            } else if device_type(&function) == Some(radix_virtio::device_type::SOUND) {
-                crate::audio::virtio::bind(&function);
-            } else if radix_hda::is_hda(function.class()) {
-                crate::audio::hda::bind(&function);
-            } else if vmd::is_vmd(&function) {
-                vmd::bind(&function, &mut controllers, &mut functions);
-            } else if function.class() == radix_ahci::PCI_CLASS {
-                if let Err(why) = ahci::bind(&function, (&mut sata, &mut optical)) {
-                    warn!(
-                        "Disk: could not set up the AHCI controller at {}: {why}",
-                        function.address()
-                    );
-                }
-            } else if is_ide(&function) {
-                if let Err(why) = ide::bind(&function, (&mut ide, &mut optical)) {
-                    warn!(
-                        "Disk: could not set up the IDE controller at {}: {why}",
-                        function.address()
-                    );
-                }
-            } else if is_sd_reader(&function) {
-                if let Err(why) = sdhci::bind(&function, &mut cards) {
-                    warn!(
-                        "Disk: could not set up the SD card reader at {}: {why}",
-                        function.address()
-                    );
-                }
-            } else if let Some(chip) = realtek_reader(&function) {
-                if let Err(why) = sdhci::bind_realtek(&function, chip, &mut cards) {
-                    warn!(
-                        "Disk: could not set up the Realtek {} card reader at {}: {why}",
-                        chip.name(),
-                        function.address()
-                    );
-                }
-            } else if function.class() == radix_nvme::PCI_CLASS {
-                nvme::bind(&function, &mut controllers);
-            } else if crate::i2c::designware::is_lpss(&function) {
-                crate::i2c::designware::bind_lpss(&function);
-            } else if let Some(kind) = crate::serial::pci::identify(&function) {
-                crate::serial::pci::bind(&function, kind);
-            } else if let Some(card) = crate::net::identify(&function) {
-                crate::net::bind_card(&function, card);
-            } else {
-                crate::usb::found(&function);
-            }
-        });
+            },
+        );
+        log_roots(number, first_bus, &on_root);
     }
     crate::usb::bind_found();
     let plural = |n: usize, one: &'static str, many: &'static str| if n == 1 { one } else { many };
@@ -368,6 +449,24 @@ pub fn init() {
     SCANNED.store(true, Ordering::Release);
 }
 
+/// Keeps the root buses of `segment` that had functions, and logs each
+/// beyond `first_bus`, the one the scan starts from: those are the
+/// second socket's or the other quadrants' buses, which only the peer
+/// root probe finds. `on_root` counts the functions found on each bus.
+fn log_roots(segment: u16, first_bus: u8, on_root: &[u16; 256]) {
+    for root in 0..=u8::MAX {
+        let count = on_root[usize::from(root)];
+        if count == 0 {
+            continue;
+        }
+        remember_root(segment, root);
+        if root != first_bus {
+            let what = if count == 1 { "function" } else { "functions" };
+            info!("PCI: root bus {segment:04x}:{root:02x} beyond the first, with {count} {what}");
+        }
+    }
+}
+
 /// Whether `function` is an IDE controller, or a SATA controller in IDE
 /// mode, which shows itself as one.
 fn is_ide(function: &Function) -> bool {
@@ -390,9 +489,10 @@ fn realtek_reader(function: &Function) -> Option<radix_rtsx::Chip> {
 }
 
 /// Logs a function: where it is, its IDs and what its class says it is.
-fn describe(function: &Function) {
+/// `numa_root` is the segment and root bus whose NUMA node it has.
+fn describe(function: &Function, numa_root: (u16, u8)) {
     let (class, subclass, interface) = function.class();
-    {
+    let full = {
         let mut found = FUNCTIONS.lock();
         let count = found.1;
         if count < MAX_FUNCTIONS {
@@ -403,9 +503,14 @@ fn describe(function: &Function) {
                 class: (u32::from(class) << 16) | (u32::from(subclass) << 8) | u32::from(interface),
                 revision: function.revision(),
                 subsystem: function.subsystem(),
+                numa_root,
             });
             found.1 += 1;
         }
+        count >= MAX_FUNCTIONS
+    };
+    if full && !FULL_WARNED.swap(true, Ordering::Relaxed) {
+        warn!("PCI: more than {MAX_FUNCTIONS} functions; the ones after these are not listed");
     }
     let what = match (class, subclass) {
         (0x01, 0x00) => "SCSI controller",

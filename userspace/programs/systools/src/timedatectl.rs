@@ -19,6 +19,8 @@ use std::path::Path;
 use radix_abi::clock;
 use radix_abi::errors::Kernel;
 use radix_abi::startup::SLOT_CLOCK;
+use sysapi::process;
+use sysapi::time::{self, Civil};
 
 use crate::args::{Arg, Args};
 use crate::sys::SYS;
@@ -105,8 +107,7 @@ fn timed_runs() -> bool {
     fs::read_to_string(timed::PID)
         .ok()
         .and_then(|text| text.trim().parse::<i32>().ok())
-        // SAFETY: kill(2) with signal 0 only asks whether it is there.
-        .is_some_and(|pid| unsafe { libc::kill(pid, 0) } == 0)
+        .is_some_and(|pid| process::kill(pid, 0).is_ok())
 }
 
 fn status() {
@@ -209,20 +210,20 @@ fn parse_local(text: &str) -> Option<i64> {
         [second] => *second,
         _ => return None,
     };
-    // SAFETY: an all-zero tm is valid; mktime reads and normalizes it.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    tm.tm_year = year - 1900;
-    tm.tm_mon = month - 1;
-    tm.tm_mday = *day;
-    tm.tm_hour = *hour;
-    tm.tm_min = *minute;
-    tm.tm_sec = second;
-    tm.tm_isdst = -1;
-    let fields = (tm.tm_mon, tm.tm_mday, tm.tm_hour, tm.tm_min);
-    // SAFETY: the pointer is valid for the call.
-    let seconds = unsafe { libc::mktime(&raw mut tm) };
+    let wanted = Civil {
+        year: i64::from(*year),
+        month: u32::try_from(*month).ok()?,
+        day: u32::try_from(*day).ok()?,
+        hour: u32::try_from(*hour).ok()?,
+        minute: u32::try_from(*minute).ok()?,
+        second: u32::try_from(second).ok()?,
+        ..Civil::default()
+    };
+    let (seconds, found) = time::from_local(&wanted).ok()?;
     // A field out of range comes back changed.
-    (seconds != -1 && fields == (tm.tm_mon, tm.tm_mday, tm.tm_hour, tm.tm_min)).then_some(seconds)
+    ((found.month, found.day, found.hour, found.minute)
+        == (wanted.month, wanted.day, wanted.hour, wanted.minute))
+        .then_some(seconds)
 }
 
 fn set_time(text: &str) -> Result<(), Fail> {

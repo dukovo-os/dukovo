@@ -16,7 +16,13 @@
 //! entity also has a *virtual deadline*, `v` plus its slice in virtual
 //! time, and the queue runs the eligible entity with the earliest deadline.
 //! The running entity keeps the CPU until its slice is used up (the
-//! deadline passes) or an entity with an earlier deadline wakes up.
+//! deadline passes) or an entity with an earlier deadline wakes up, and
+//! one that wakes up waits while the running entity is still eligible and
+//! has not used up the slice it was picked with, as Linux's `RUN_TO_PARITY`
+//! has it (its default since 6.6): a thread that wakes another and is about
+//! to wait itself, as a client that sends a request does, then gets there
+//! without being switched out first, and the two switch once rather than
+//! twice ([`FairQueue::should_preempt`]).
 //!
 //! An entity that leaves the queue (to sleep, or to move to another CPU)
 //! takes its lag along, clamped to two slices or a tick, whichever is
@@ -134,6 +140,9 @@ pub struct FairQueue<K, A: Allocator> {
     tick_ns: u64,
     /// The running entity has yielded since it was picked.
     yielded: bool,
+    /// The running entity has not used up the slice it was picked with,
+    /// nor yielded it.
+    protected: bool,
 }
 
 impl<K, A: Allocator> FairQueue<K, A> {
@@ -149,6 +158,7 @@ impl<K, A: Allocator> FairQueue<K, A> {
             slice_ns: slice_ns.max(1),
             tick_ns,
             yielded: false,
+            protected: false,
         }
     }
 
@@ -325,6 +335,7 @@ impl<K, A: Allocator> FairQueue<K, A> {
     pub fn set_running(&mut self, index: Option<usize>) {
         self.running = index.filter(|&i| i < self.entities.len());
         self.yielded = false;
+        self.protected = self.running.is_some();
     }
 
     /// The index of the running entity.
@@ -345,6 +356,7 @@ impl<K, A: Allocator> FairQueue<K, A> {
         let expired = entity.vruntime.wrapping_sub(entity.deadline) as i64 >= 0;
         if expired {
             entity.deadline = entity.vruntime.wrapping_add(virtual_ns(slice_ns, weight));
+            self.protected = false;
         }
         self.sum += i128::from(weight) * i128::from(delta);
         self.rebase();
@@ -377,6 +389,7 @@ impl<K, A: Allocator> FairQueue<K, A> {
             return;
         }
         self.yielded = true;
+        self.protected = false;
         if !self.eligible(&self.entities[index]) {
             return;
         }
@@ -445,9 +458,17 @@ impl<K, A: Allocator> FairQueue<K, A> {
     }
 
     /// Whether a just-woken entity should take the CPU from the running
-    /// one: it is the pick and its deadline is earlier.
+    /// one: it is the pick and its deadline is earlier, and the running one
+    /// has used up the slice it was picked with or is no longer eligible
+    /// (run to parity, as Linux's `RUN_TO_PARITY`). A slice is a few
+    /// milliseconds, so a woken entity waits at most that long, and the
+    /// running one cannot keep the CPU past its share: once it runs ahead
+    /// of the queue's virtual time it is not eligible.
     pub fn should_preempt(&self) -> bool {
         let Some(running) = self.running else { return !self.entities.is_empty() };
+        if self.protected && self.eligible(&self.entities[running]) {
+            return false;
+        }
         match self.pick() {
             Some(pick) if pick != running => {
                 (self.entities[pick].deadline.wrapping_sub(self.entities[running].deadline) as i64)
@@ -576,6 +597,42 @@ mod tests {
         queue2.charge(500_000);
         queue2.enqueue(1, weight(0), Placement::Lag(-2_000_000)).unwrap();
         assert!(!queue2.should_preempt());
+    }
+
+    #[test]
+    fn a_running_entity_keeps_its_slice_against_wake_ups_while_eligible() {
+        let mut queue = queue();
+        let a = queue.enqueue(0, weight(0), Placement::Lag(0)).unwrap();
+        queue.set_running(Some(a));
+        assert!(!queue.charge(1_000_000));
+        // A newcomer's deadline, half a slice on, comes before the rest of
+        // `a`'s slice, but `a` is eligible and has slice left.
+        let b = queue.enqueue(1, weight(0), Placement::New).unwrap();
+        assert!(!queue.should_preempt());
+        // Once its slice is used up, the newcomer goes first.
+        assert!(queue.charge(2_000_000));
+        assert!(queue.should_preempt());
+        assert_eq!(queue.pick(), Some(b));
+        // An entity that has yielded keeps nothing.
+        let mut queue = self::queue();
+        let a = queue.enqueue(0, weight(0), Placement::Lag(0)).unwrap();
+        queue.enqueue(1, weight(0), Placement::Lag(0)).unwrap();
+        queue.set_running(Some(a));
+        queue.yield_running();
+        assert!(queue.should_preempt());
+        // Nor one that has run ahead of the queue's virtual time: one that
+        // slept while owed time comes back owed it, with an earlier deadline.
+        let mut queue = self::queue();
+        let a = queue.enqueue(0, weight(0), Placement::Lag(0)).unwrap();
+        queue.set_running(Some(a));
+        assert!(!queue.charge(1_000_000));
+        queue.enqueue(1, weight(0), Placement::Lag(2_000_000)).unwrap();
+        assert!(queue.should_preempt());
+        // A pick protects the slice again.
+        let pick = queue.pick();
+        queue.set_running(pick);
+        queue.enqueue(2, weight(0), Placement::New).unwrap();
+        assert!(!queue.should_preempt());
     }
 
     #[test]

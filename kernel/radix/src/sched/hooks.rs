@@ -95,10 +95,26 @@ pub extern "Rust" fn radix_let_go_cpu(were: bool) {
 }
 
 // The hooks every lock calls, which `radix_sync` calls by these names
-// rather than through `Hooks` (ADR 0406), so that fat LTO inlines them
-// into each lock: `KernelHooks` calls the same functions, so the two ways
-// agree. `radix_sync::hooks` declares each symbol with the same
-// signature, so exporting them unmangled is sound.
+// rather than through `Hooks` (ADRs 0406 and 0776), so that fat LTO
+// inlines them into each lock: `KernelHooks` calls the same functions, so
+// the two ways agree. `radix_sync::hooks` declares each symbol with the
+// same signature, so exporting them unmangled is sound.
+
+/// Masks interrupts on the running CPU ([`Hooks::disable_interrupts`]),
+/// for a spin lock taken with them masked: three instructions. Gives
+/// whether they were on.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "Rust" fn radix_disable_interrupts() -> bool {
+    Arch::disable_interrupts()
+}
+
+/// Unmasks interrupts if they were on ([`Hooks::restore_interrupts`]).
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "Rust" fn radix_restore_interrupts(were_enabled: bool) {
+    Arch::restore_interrupts(were_enabled);
+}
 
 /// Holds off preemption on the running CPU ([`Hooks::preempt_disable`]):
 /// one instruction.
@@ -180,11 +196,11 @@ pub(super) fn switch_in(cpu: usize, thread: &ThreadRef) {
 
 impl Hooks for KernelHooks {
     fn disable_interrupts(&self) -> bool {
-        Arch::disable_interrupts()
+        radix_disable_interrupts()
     }
 
     fn restore_interrupts(&self, were_enabled: bool) {
-        Arch::restore_interrupts(were_enabled);
+        radix_restore_interrupts(were_enabled);
     }
 
     fn preempt_disable(&self) {

@@ -52,11 +52,11 @@
 //! run queue's.
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering, fence};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use radix_hal::{CpuLocal, MAX_CPUS};
 use radix_mm::Kmalloc;
-use radix_sync::{RawMutex, SpinLock};
+use radix_sync::{RawMutex, SpinLock, barrier};
 
 use super::thread::ThreadRef;
 use super::{current, registry_find, set_boost};
@@ -299,6 +299,13 @@ pub fn wake_all_lazily(key: usize) {
     super::lazily(|| wake_all(key));
 }
 
+/// As [`wake_one`], [`super::lazily`].
+pub fn wake_one_lazily(key: usize) {
+    super::lazily(|| {
+        wake_one(key);
+    });
+}
+
 /// How many threads wait on one key through it, so that a wake with
 /// nobody to wake takes no lock: a change that happens often to what is
 /// seldom waited for (a pipe's bytes, an event queue's ring) costs a
@@ -341,7 +348,7 @@ impl WaitCount {
     /// if anyone waits. It takes a full barrier first, whether or not it
     /// wakes anyone, which a caller may count on for what it reads next.
     pub fn wake_all(&self, key: usize) {
-        fence(Ordering::SeqCst);
+        barrier::full();
         if self.0.load(Ordering::Relaxed) > 0 {
             wake_all(key);
         }
@@ -355,7 +362,7 @@ impl WaitCount {
 
     /// [`wake_one`], with no lock taken while nobody waits.
     pub fn wake_one(&self, key: usize) {
-        fence(Ordering::SeqCst);
+        barrier::full();
         if self.0.load(Ordering::Relaxed) > 0 {
             wake_one(key);
         }
@@ -363,7 +370,7 @@ impl WaitCount {
 
     fn count(&self) -> Counted<'_> {
         self.0.fetch_add(1, Ordering::SeqCst);
-        fence(Ordering::SeqCst);
+        barrier::after_rmw();
         Counted(&self.0)
     }
 }
@@ -713,6 +720,14 @@ pub fn mutex_counts() -> MutexCounts {
         handoffs: total(|c| &c.handoffs),
         wakes: total(|c| &c.mutex_wakes),
     }
+}
+
+/// Whether another thread waits for a mutex that `thread` holds: then
+/// what `thread` waits for, the other waits for too, which the disk queue
+/// asks before it keeps a request of little urgency waiting (ADR 0548).
+pub fn holds_wanted_lock(thread: &ThreadRef) -> bool {
+    let token = thread.token();
+    TABLE.lock_irq().as_ref().is_some_and(|table| table.waiters.iter().any(|w| w.owner == token))
 }
 
 /// How many threads wait in the table now, or `None` if it is locked.

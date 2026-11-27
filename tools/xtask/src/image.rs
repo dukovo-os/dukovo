@@ -267,6 +267,11 @@ pub struct Overrides {
     /// The lab key and password a [`Kind::Lab`] image trusts (ADRs 0401
     /// and 0408).
     pub lab: Option<lab::Access>,
+    /// The release repository the stick or ISO carries, laid out already:
+    /// the project's release as the update server serves it, which
+    /// `./ob release images` lays out (ADR 0779). Without it, the image
+    /// carries a release this machine signs with its own keys.
+    pub release: Option<PathBuf>,
 }
 
 /// Builds the kernel and the release image described by dukovo.toml.
@@ -292,6 +297,10 @@ pub fn build_release(
     if overrides.lab.is_some() != (kind == Kind::Lab) {
         crate::bail!("the lab key goes into the lab image, and the lab image needs one");
     }
+    if overrides.release.is_some() && !matches!(kind, Kind::Stick | Kind::Iso) {
+        crate::bail!("a release is carried by the stick and the ISO, which install it");
+    }
+    let carried = overrides.release.as_deref();
     let kernel = kernel::build(ctx, profile)?;
     // The lab's tests need systools' lab routes, which no other image has.
     let programs = userspace::build_for(ctx, profile, kind == Kind::Lab)?;
@@ -309,14 +318,16 @@ pub fn build_release(
             Menu::Installed(make_root(ctx, &kernel, &programs, &staging, &root, extras)?)
         }
         Kind::Stick => {
-            make_live(ctx, &kernel, &programs, &ctx.out.join("live-staging"), &live)?;
+            make_live(ctx, &kernel, &programs, carried, &ctx.out.join("live-staging"), &live)?;
             Menu::Live(LiveStart::Install)
         }
         Kind::Iso => Menu::Live(LiveStart::Install),
     };
     // The ISO's release, staged where the stick's is.
     let release = match kind {
-        Kind::Iso => Some(stage_release(ctx, &kernel, &programs, &ctx.out.join("live-staging"))?),
+        Kind::Iso => {
+            Some(stage_release(ctx, &kernel, &programs, carried, &ctx.out.join("live-staging"))?)
+        }
         _ => None,
     };
     // The features' flags go on whichever command line the image boots.
@@ -1293,17 +1304,18 @@ enabled = true
 /// Makes the install stick's DUKOVO_LIVE filesystem in the file `output`
 /// (ADR 0308): a Btrfs labelled [`LIVE_LABEL`] whose read-only subvolume
 /// [`release::SUBVOLUME`] holds the signed release of the system's slot,
-/// staged in `staging` first, as the update server will serve it. The
-/// installer installs from it, after checking it against the root the
-/// live system trusts.
+/// or the repository `carried`, staged in `staging` first, as the update
+/// server will serve it ([`stage_release`]). The installer installs from
+/// it, after checking it against the root the live system trusts.
 pub fn make_live(
     ctx: &Ctx,
     kernel: &Path,
     programs: &userspace::Programs,
+    carried: Option<&Path>,
     staging: &Path,
     output: &Path,
 ) -> Result<()> {
-    let repository = stage_release(ctx, kernel, programs, staging)?;
+    let repository = stage_release(ctx, kernel, programs, carried, staging)?;
     step(&format!("Making the DUKOVO_LIVE Btrfs {}", ctx.display(output)));
     // Room for the release a quarter over, before zstd shrinks it, and
     // what Btrfs keeps for itself.
@@ -1326,17 +1338,25 @@ pub fn make_live(
 /// it: the slot in `staging/system`, and the release's repository, which
 /// it returns, in `staging/filesystem/release`. The stick's DUKOVO_LIVE
 /// is a Btrfs of `staging/filesystem` ([`make_live`]); an ISO carries
-/// the repository in its `release` directory (ADR 0433).
+/// the repository in its `release` directory (ADR 0433). With
+/// `carried`, a repository laid out already, the project's release as the
+/// server serves it (ADR 0779), that is copied in, and nothing is signed.
 pub fn stage_release(
     ctx: &Ctx,
     kernel: &Path,
     programs: &userspace::Programs,
+    carried: Option<&Path>,
     staging: &Path,
 ) -> Result<PathBuf> {
     fresh_dir(staging)?;
+    let repository = staging.join("filesystem").join(release::SUBVOLUME);
+    if let Some(carried) = carried {
+        step(&format!("Copying the release in {} onto the image", ctx.display(carried)));
+        copy_tree(carried, &repository)?;
+        return Ok(repository);
+    }
     let system = staging.join("system");
     stage_system(ctx, kernel, programs, &system)?;
-    let repository = staging.join("filesystem").join(release::SUBVOLUME);
     release::make(ctx, &system, &repository)?;
     Ok(repository)
 }

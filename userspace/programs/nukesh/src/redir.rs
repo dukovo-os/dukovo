@@ -499,13 +499,12 @@ impl Shell {
         if let Some(name) = named {
             // A new descriptor, not closed on exec, that outlives the
             // command.
-            // SAFETY: F_DUPFD only acts on the descriptor table.
-            let new = unsafe { libc::fcntl(source, libc::F_DUPFD, sys::HIGH_FD) };
+            let new = sys::dup_kept(source, sys::HIGH_FD);
             sys::close(source);
-            if new < 0 {
+            let Ok(new) = new else {
                 self.error("cannot allocate a file descriptor");
                 return Err(None);
-            }
+            };
             let element = match self.expand_element(&name) {
                 Ok(element) => element,
                 Err(flow) => {

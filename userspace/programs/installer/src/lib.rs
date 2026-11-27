@@ -28,6 +28,8 @@
 //!   `/system/state/log/install.log` in the installed system: when an
 //!   install fails, read it from its end.
 
+#![forbid(unsafe_code)]
+
 pub mod answers;
 pub mod copy;
 pub mod disks;

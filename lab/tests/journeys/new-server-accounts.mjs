@@ -11,7 +11,7 @@
 import { readFile } from "node:fs/promises";
 
 import { ensure, fetchAsPage, lookAll, openConsole, press, signIn, signOut } from "../web-console/console.mjs";
-import { eventually, folderOf, infoOf, readJson, signedIn, unlock, wordsOf } from "./journey.mjs";
+import { eventually, journeyFolder, journeyInfo, readJson, signedIn, unlock, wordsOf } from "./journey.mjs";
 
 const buttonOf = (scope, name) => scope.getByRole("button", { name, exact: true });
 const dialogOf = (page, name) => page.getByRole("dialog", { name, exact: true });
@@ -67,12 +67,12 @@ const accountWith = (page, name, keys) =>
   }, `${name} did not have ${keys} keys`);
 
 export default async function check(t) {
-  const info = await infoOf("new-server");
+  const info = await journeyInfo();
   const page = await firstSignIn(t, info);
   await unlock(page, info.owner_password);
 
   // The administrator, with the key made on the lab PC. The dialog checks the line as authd reads it, so a key of a kind Dukovo does not take is refused first.
-  const keyLine = (await readFile(`${folderOf("new-server")}/key.pub`, "utf8")).trim();
+  const keyLine = (await readFile(`${journeyFolder()}/key.pub`, "utf8")).trim();
   const offer = await addAccount(t, page, { name: info.admin, full: "Journey Administrator", admin: true, password: info.admin_password });
   await offer.getByLabel("Public key", { exact: true }).fill("ssh-rsa AAAAB3NzaC1yc2E");
   await buttonOf(offer, "Add the key").click();

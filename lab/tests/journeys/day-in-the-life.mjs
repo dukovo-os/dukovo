@@ -15,7 +15,7 @@
 
 import { ensure, fetchAsPage, mustBe, policyStopped, sessionOf, signInDone, sleep, watchPolicy } from "../web-console/console.mjs";
 import { bannerBecomes, bannerEnds, pressAndAnswer, undoOf } from "../web-console/trial.mjs";
-import { infoOf, otherEngine, readJson, unlock } from "./journey.mjs";
+import { journeyInfo, otherEngine, readJson, unlock } from "./journey.mjs";
 
 // The pages an administrator goes round, and the pages a reader does: the path and the heading each shows.
 const ADMIN_PAGES = [
@@ -120,7 +120,7 @@ async function rounds(t, who, pages, deadline, { admin, password }) {
 }
 
 export default async function check(t) {
-  const info = await infoOf("day-in-the-life");
+  const info = await journeyInfo();
   const minutes = Number(info.minutes);
   ensure(Number.isFinite(minutes) && minutes > 0, `the journey's facts give ${info.minutes} minutes`);
   const deadline = Date.now() + minutes * 60_000;

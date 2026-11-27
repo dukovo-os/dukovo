@@ -19,7 +19,9 @@
 //!
 //! A thermal zone past its critical trip point ([`overheated`], ADR 0203)
 //! reaches Spark as a press of the button, and the thread powers the
-//! machine off itself if it is still on [`OVERHEAT_GRACE_NS`] later.
+//! machine off itself if it is still on [`OVERHEAT_GRACE_NS`] later. A
+//! UPS whose battery is low ([`battery_low`], ADR 0741) does the same,
+//! with [`BATTERY_GRACE_NS`].
 
 use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -46,12 +48,19 @@ use crate::{Arch, console, crashlog, watchdog};
 /// its critical trip point, before the kernel does, as Linux's
 /// `hw_protection_shutdown` waits.
 pub const OVERHEAT_GRACE_NS: u64 = 30_000_000_000;
+/// How long Spark has to power the machine off once a UPS says its
+/// battery is low, before the kernel does: longer than for heat, as the
+/// services of a server may take a while to stop, and within the minutes
+/// a UPS's low battery still leaves.
+pub const BATTERY_GRACE_NS: u64 = 60_000_000_000;
 
 /// Whether the platform hears the power button.
 static HEARD: AtomicBool = AtomicBool::new(false);
-/// When the kernel powers an overheated machine off itself; 0 while none
-/// is.
-static OVERHEAT_DEADLINE: AtomicU64 = AtomicU64::new(0);
+/// When the kernel powers an overheated machine, or one whose UPS's
+/// battery is low, off itself; 0 while none is.
+static END_DEADLINE: AtomicU64 = AtomicU64::new(0);
+/// Whether the deadline is a UPS's, not heat's.
+static BATTERY_LOW: AtomicBool = AtomicBool::new(false);
 /// Presses of the button so far, and those passed on.
 static PRESSES: AtomicU64 = AtomicU64::new(0);
 static PASSED: AtomicU64 = AtomicU64::new(0);
@@ -129,15 +138,32 @@ fn pressed() {
 /// to power the machine off, as for the power button, and the `power`
 /// thread does it if Spark has not within [`OVERHEAT_GRACE_NS`].
 pub fn overheated(zone: &str) {
-    let deadline = Arch::now_ns().saturating_add(OVERHEAT_GRACE_NS).max(1);
-    if OVERHEAT_DEADLINE.compare_exchange(0, deadline, Ordering::AcqRel, Ordering::Acquire).is_err()
-    {
-        return;
+    if set_deadline(OVERHEAT_GRACE_NS) {
+        info!("Power: {zone} is too hot; asking Spark to power the machine off");
     }
-    info!("Power: {zone} is too hot; asking Spark to power the machine off");
+}
+
+/// The UPS `ups` runs the machine on its battery, which is low: Spark is
+/// asked to power the machine off, as for the power button, and the
+/// `power` thread does it if Spark has not within [`BATTERY_GRACE_NS`].
+pub fn battery_low(ups: &str) {
+    if set_deadline(BATTERY_GRACE_NS) {
+        BATTERY_LOW.store(true, Ordering::Release);
+        info!("Power: {ups}'s battery is low; asking Spark to power the machine off");
+    }
+}
+
+/// Sets when the kernel powers the machine off itself, `grace` from now,
+/// and wakes the thread; false if that is set already.
+fn set_deadline(grace: u64) -> bool {
+    let deadline = Arch::now_ns().saturating_add(grace).max(1);
+    if END_DEADLINE.compare_exchange(0, deadline, Ordering::AcqRel, Ordering::Acquire).is_err() {
+        return false;
+    }
     if let Some(thread) = THREAD.get() {
         sched::wake(thread);
     }
+    true
 }
 
 /// Tells Spark of a press of the button. Returns whether it listens.
@@ -159,7 +185,7 @@ fn signal(listener: &SpinLock<Option<(NotificationRef, u64)>>) -> bool {
 }
 
 fn run(_: usize) {
-    let mut overheat_told = false;
+    let mut end_told = false;
     loop {
         let presses = PRESSES.load(Ordering::Acquire);
         if PASSED.swap(presses, Ordering::AcqRel) != presses {
@@ -172,36 +198,42 @@ fn run(_: usize) {
         if RESTARTS_PASSED.swap(restarts, Ordering::AcqRel) != restarts && !signal(&RESTART) {
             warn!("Power: nothing listens for the host's restarts");
         }
-        let deadline = OVERHEAT_DEADLINE.load(Ordering::Acquire);
+        let deadline = END_DEADLINE.load(Ordering::Acquire);
         if deadline == 0 {
             sched::block("power");
             continue;
         }
-        if !overheat_told {
-            overheat_told = true;
+        if !end_told {
+            end_told = true;
             if !tell_spark() {
                 log_error!("Power: nothing listens for the power button; powering off at once");
-                overheat_power_off();
+                forced_power_off();
             }
         } else if Arch::now_ns() >= deadline {
+            let (grace, why) = if BATTERY_LOW.load(Ordering::Acquire) {
+                (BATTERY_GRACE_NS, "its UPS's battery was low")
+            } else {
+                (OVERHEAT_GRACE_NS, "it overheated")
+            };
             log_error!(
-                "Power: the machine is still on {} s after it overheated; powering it off",
-                OVERHEAT_GRACE_NS / 1_000_000_000
+                "Power: the machine is still on {} s after {why}; powering it off",
+                grace / 1_000_000_000
             );
-            overheat_power_off();
+            forced_power_off();
         }
         sched::block_until(deadline, "power");
     }
 }
 
-/// Powers an overheated machine off without Spark, as the method does
-/// once Spark has stopped everything; halts it if the firmware cannot.
-fn overheat_power_off() -> ! {
+/// Powers an overheated machine, or one whose UPS's battery is low, off
+/// without Spark, as the method does once Spark has stopped everything;
+/// halts it if the firmware cannot.
+fn forced_power_off() -> ! {
     watchdog::ending(false);
     wind_down();
     crate::acpi::power_off();
     Arch::power_off();
-    log_error!("Power: this machine cannot be powered off by the kernel; halting it to cool");
+    log_error!("Power: this machine cannot be powered off by the kernel; halting it");
     Arch::stop_other_cpus();
     Arch::halt()
 }

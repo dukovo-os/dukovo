@@ -368,7 +368,8 @@ softirq 0 0 0 0 0 0 0 0 0 0 0
     #[test]
     fn the_version_names_linux() {
         let text = version();
-        assert!(text.starts_with("Linux version 6.1.0-dukovo #1 SMP Dukovo 0."), "{text}");
+        let release = text.strip_prefix("Linux version 6.1.0-dukovo #1 SMP Dukovo ");
+        assert!(release.is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit())), "{text}");
         assert!(text.ends_with('\n'));
     }
 

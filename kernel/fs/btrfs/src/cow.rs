@@ -386,7 +386,7 @@ impl Writer {
         if size > Block::max_item(volume.superblock().nodesize) {
             return Err(Error::TooBig);
         }
-        self.guard(volume, |w| {
+        let done = self.guard(volume, |w| {
             let path = w.search(volume, tree, key, Want::Insert(size))?;
             let (leaf, slot) = path.at(0)?;
             let blocks = volume.blocks();
@@ -398,7 +398,19 @@ impl Writer {
                 Self::fix_keys(volume, &path, 1, key)?;
             }
             Ok(())
-        })
+        });
+        Self::changed_item(volume, tree, key);
+        done
+    }
+
+    /// Tells the directories' caches of names (ADR 0659) that item `key`
+    /// of tree `tree` changed, or may have, if it is a directory's entries:
+    /// after the change, so that a lookup that read the count before its
+    /// search, and so may have missed the change, finds the count moved.
+    fn changed_item(volume: &Volume, tree: u64, key: &Key) {
+        if key.kind == item::DIR_ITEM {
+            volume.names_changed(tree, key.objectid);
+        }
     }
 
     /// Inserts the item `key` with data `data` into tree `tree`.
@@ -415,7 +427,7 @@ impl Writer {
         key: &Key,
         change: impl FnOnce(&mut [u8]) -> R,
     ) -> Result<R> {
-        self.guard(volume, |w| {
+        let done = self.guard(volume, |w| {
             let path = w.search(volume, tree, key, Want::Change)?;
             let (leaf, slot) = path.at(0)?;
             let blocks = volume.blocks();
@@ -423,13 +435,15 @@ impl Writer {
                 return Err(Error::NotFound);
             }
             blocks.edit(leaf, |b| change(b.item_mut(slot)))
-        })
+        });
+        Self::changed_item(volume, tree, key);
+        done
     }
 
     /// Deletes item `key` of tree `tree`. Fails with [`Error::NotFound`]
     /// if there is no such item.
     pub fn delete(&mut self, volume: &Volume, tree: u64, key: &Key) -> Result<()> {
-        self.guard(volume, |w| {
+        let done = self.guard(volume, |w| {
             let mut path = w.search(volume, tree, key, Want::Delete)?;
             let (leaf, slot) = path.at(0)?;
             let blocks = volume.blocks();
@@ -438,7 +452,9 @@ impl Writer {
             }
             blocks.edit(leaf, |b| b.delete_items(slot, 1))?;
             w.after_delete(volume, &mut path, 0)
-        })
+        });
+        Self::changed_item(volume, tree, key);
+        done
     }
 
     /// Copies the block at `bytenr`, at `level` of tree `tree`, and the
@@ -505,7 +521,9 @@ impl Writer {
             }
             // It does not fit where it is: it moves, through a copy.
             Ok(Some(blocks.view(leaf, |b| mem::copy(b.item(slot)))??))
-        })?;
+        });
+        Self::changed_item(volume, tree, key);
+        let fits = fits?;
         if let Some(old) = fits {
             self.delete(volume, tree, key)?;
             self.insert_with(volume, tree, key, size, |out| {

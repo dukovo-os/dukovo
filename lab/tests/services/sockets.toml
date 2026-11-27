@@ -9,14 +9,18 @@
 # be refused or go without its page.
 about = "Spark keeps nginx's ports open across restarts and an update, and no request is refused (ADR 0477)"
 time = "6m"
-host_needs = ["curl", "scp"]
+host_needs = ["curl", "scp", "ssh"]
 
 [[step]]
-host = "sh {here}/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
-expect = "copied: org.nginx.nginx"
+host = "sh {here}/lab-catalog.sh {machine} {machine-port:22}"
+expect = "copied: the test catalog"
+[[step]]
+run = "sh /users/lab/lab-catalog-add.sh"
+root = true
+expect = "added catalog labtest, which lists"
 # From nothing: a run before may have left it installed.
 [[step]]
-run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle install --for-everyone --yes org.nginx.nginx --from labtest | tail -1'"
 root = true
 expect = "installed org.nginx.nginx"
 [[step]]
@@ -39,7 +43,7 @@ expect = "80"
 # by a shell of the machine's own so that the step returns, while the lab
 # PC asks.
 [[step]]
-run = '''sh -c '(for i in 1 2 3; do sleep 6; service nginx restart; done; sleep 6; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv) > /dev/null 2>&1 &' '''
+run = '''sh -c '(for i in 1 2 3; do sleep 6; service nginx restart; done; sleep 6; bundle install --for-everyone --yes org.nginx.nginx --from labtest) > /dev/null 2>&1 &' '''
 root = true
 [[step]]
 host = "sh {here}/nginx-load.sh {machine} {machine-port:80} -"

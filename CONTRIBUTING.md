@@ -139,6 +139,17 @@ were on `main` before the rule began
 ([ADR 0025](docs/adr/0025-dco-sign-off-and-project-policies.md)) are not
 checked or rewritten.
 
+A commit that reached `main` without its sign-off is not rewritten either.
+Its author signs it off afterwards, with this line in the message of a
+later commit that carries their own sign-off:
+
+```text
+I, Your Name <you@example.org>, hereby add my Signed-off-by to this commit: <the commit's whole hash>
+```
+
+`./ob signoff` counts that as the named commit's sign-off, so a branch that
+brings `main` in passes the check.
+
 **AI assistants.** Only a person can make the DCO's promises. An AI tool
 never signs off a commit in its own name, and `./ob signoff` ignores
 sign-offs from tool identities such as `noreply@anthropic.com` or GitHub

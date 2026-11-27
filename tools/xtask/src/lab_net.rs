@@ -68,9 +68,29 @@ const WRITER_DONE: &str = "lab-writer: done";
 /// the writer's own check. Realtek's PHY driver goes before r8169: r8169
 /// finds its PHY's driver when it binds the card and refuses the card
 /// when there is none ("no dedicated PHY driver found"), and the writer
-/// has no modprobe to fetch it then.
-const WRITER_MODULES: &[&str] =
-    &["ahci", "nvme", "e1000e", "igb", "igc", "e1000", "realtek", "r8169"];
+/// has no modprobe to fetch it then. Then a server's (Phase 19): the
+/// Broadcom 5720 and Intel 10 to 40 GbE and Broadcom NetXtreme-E cards a
+/// Dell rNDC carries, the PERC and SAS HBA drivers, and USB storage, for
+/// a lab disk on a server's internal USB port. The 57800 (`bnx2x`) waits:
+/// it loads firmware files the writer does not carry.
+const WRITER_MODULES: &[&str] = &[
+    "ahci",
+    "nvme",
+    "e1000e",
+    "igb",
+    "igc",
+    "e1000",
+    "realtek",
+    "r8169",
+    "tg3",
+    "ixgbe",
+    "i40e",
+    "bnxt_en",
+    "megaraid_sas",
+    "mpt3sas",
+    "usb-storage",
+    "uas",
+];
 
 /// What the network GRUB adds to the images' GRUB for x86-64 UEFI (ADR
 /// 0306's [`grub::MODULES`] and [`grub::EFI_MODULES`]): the firmware's

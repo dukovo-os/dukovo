@@ -15,8 +15,7 @@ use accounts::{rescue, sshd_config};
 use russh::keys::PrivateKey;
 use russh::keys::ssh_key::private::{Ed25519Keypair, KeypairData};
 use russh::keys::ssh_key::{HashAlg, LineEnding};
-
-use crate::sys;
+use sysapi::{random, system};
 
 /// The folder sshd keeps it in.
 const FOLDER: &str = "/system/state/sshd";
@@ -66,9 +65,10 @@ pub fn load_or_make() -> Result<(PrivateKey, bool), String> {
         .mode(0o755)
         .create(FOLDER)
         .map_err(|err| format!("cannot make {FOLDER}: {err}"))?;
-    let seed = sys::random::<32>().map_err(|err| format!("cannot read random bytes: {err}"))?;
+    let seed = random::bytes::<32>().map_err(|err| format!("cannot read random bytes: {err}"))?;
     let pair = KeypairData::Ed25519(Ed25519Keypair::from_seed(&seed));
-    let comment = format!("root@{}", sys::hostname());
+    let host = system::host_name().unwrap_or_else(|_| "localhost".into());
+    let comment = format!("root@{host}");
     let key = PrivateKey::new(pair, comment.as_str())
         .map_err(|err| format!("cannot make the host key: {err}"))?;
     let private = key

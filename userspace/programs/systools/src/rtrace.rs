@@ -10,13 +10,13 @@
 //! (`radix_abi::catalog`) and the data of its byte arguments.
 
 use std::collections::HashMap;
-use std::ffi::{CString, OsString};
+use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::fd::FromRawFd;
-use std::os::unix::ffi::OsStrExt;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::path::PathBuf;
+use std::process::Command;
 
 use radix_abi::catalog::{self, Call, Shape};
 use radix_abi::process as abi;
@@ -25,6 +25,12 @@ use radix_abi::trace::{
     TraceSignal,
 };
 use radix_abi::{Status, syscalls};
+
+use sysapi::fd;
+use sysapi::fs;
+use sysapi::poll::{self, PollFd};
+use sysapi::process::{self, Fork};
+use sysapi::signal::{self, Caught};
 
 use crate::args::{Arg, Args};
 use crate::proc;
@@ -512,33 +518,12 @@ impl Printer<'_> {
 }
 
 /// Set by SIGINT, SIGTERM or SIGHUP while tracing running processes.
-static STOP: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_signal(_: libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-}
+static STOP: Caught = Caught::new();
 
 /// Traces process `pid` into a new file descriptor.
 fn attach(pid: u64, flags: TraceFlags) -> Result<File, Status> {
-    loop {
-        // The lowest free descriptor: the one /devices/null would get.
-        // SAFETY: opening and closing a descriptor of our own.
-        let fd = unsafe { libc::open(c"/devices/null".as_ptr(), libc::O_RDONLY) };
-        if fd < 0 {
-            return Err(radix_abi::errors::Kernel::NoRoom.status(0));
-        }
-        // SAFETY: `fd` was just opened here.
-        unsafe { libc::close(fd) };
-        match abi::trace(&SYS, SLOT_PROCESS, pid, flags, sys::slot_of(fd)) {
-            // SAFETY: the kernel put the trace file in descriptor `fd`'s
-            // slot, which nothing else owns.
-            Ok(()) => return Ok(unsafe { File::from_raw_fd(fd) }),
-            Err(status)
-                if radix_abi::errors::Kernel::from_status(status)
-                    == Some(radix_abi::errors::Kernel::Occupied) => {}
-            Err(status) => return Err(status),
-        }
-    }
+    sysapi::kernel::new_descriptor(|slot| abi::trace(&SYS, SLOT_PROCESS, pid, flags, slot))
+        .map(File::from)
 }
 
 /// rtrace(1).
@@ -651,11 +636,8 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             }
         }
         for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
-            // SAFETY: all zeros is a valid sigaction: numbers, a signal set and a function address.
-            let mut action: libc::sigaction = unsafe { util::zeroed() };
-            action.sa_sigaction = on_signal as *const () as usize;
-            // SAFETY: the handler only stores to an atomic.
-            unsafe { libc::sigaction(signal, &raw const action, std::ptr::null_mut()) };
+            // Without SA_RESTART, so that a signal ends the wait for records.
+            let _ = signal::catch(signal, &STOP, 0);
         }
     } else {
         let program = program(&command[0])?;
@@ -664,14 +646,11 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         traces.push(file);
         // The terminal's Ctrl-C is for the command: rtrace reads on to
         // its end.
-        // SAFETY: setting dispositions touches no memory.
-        unsafe {
-            libc::signal(libc::SIGINT, libc::SIG_IGN);
-            libc::signal(libc::SIGQUIT, libc::SIG_IGN);
-        }
+        let _ = signal::ignore(libc::SIGINT);
+        let _ = signal::ignore(libc::SIGQUIT);
     }
     read_all(&mut printer, &mut traces)?;
-    if STOP.load(Ordering::Relaxed) && !s.quiet {
+    if STOP.is_set() && !s.quiet {
         for pid in &pids {
             eprintln!("rtrace: Process {pid} detached");
         }
@@ -682,37 +661,27 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     }
     printer.out.flush()?;
     let Some(pid) = child else { return Ok(0) };
-    let mut status = 0;
-    // SAFETY: waits for our own child.
-    unsafe { libc::waitpid(pid, &raw mut status, 0) };
-    if libc::WIFEXITED(status) {
-        return Ok(libc::WEXITSTATUS(status));
+    let Ok(status) = process::wait(pid) else { return Ok(0) };
+    if let Some(code) = status.code() {
+        return Ok(code);
     }
     // A command a signal ended ends rtrace by the same signal, as strace
     // does, so that what runs rtrace sees what ended the command.
-    let signal = libc::WTERMSIG(status);
-    // SAFETY: setting a disposition and the signal mask touches only the
-    // set built here; raising a signal at ourselves.
-    unsafe {
-        libc::signal(signal, libc::SIG_DFL);
-        let mut set: libc::sigset_t = util::zeroed();
-        libc::sigemptyset(&raw mut set);
-        libc::sigaddset(&raw mut set, signal);
-        libc::sigprocmask(libc::SIG_UNBLOCK, &raw const set, std::ptr::null_mut());
-        libc::raise(signal);
-    }
+    let signal = status.signal().unwrap_or(0);
+    let _ = signal::restore_default(signal);
+    let _ = signal::unblock(&[signal]);
+    let _ = signal::raise(signal);
     Ok(128 + signal)
 }
 
 /// The program `name` names, found as strace finds it before it starts
 /// anything: a name with a `/` must exist; another must be an executable
 /// file in a directory of PATH.
-fn program(name: &OsString) -> Result<CString, Fail> {
-    let bytes = name.as_bytes();
-    let c = |path: &[u8]| CString::new(path).map_err(|_| fail("a NUL in the command".into()));
+fn program(name: &OsString) -> Result<PathBuf, Fail> {
+    let bytes = name.as_encoded_bytes();
     if bytes.contains(&b'/') {
         return match std::fs::metadata(name) {
-            Ok(_) => c(bytes),
+            Ok(_) => Ok(PathBuf::from(name)),
             Err(e) => Err(fail(format!(
                 "Cannot stat '{}': {}",
                 name.to_string_lossy(),
@@ -723,11 +692,8 @@ fn program(name: &OsString) -> Result<CString, Fail> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     for dir in std::env::split_paths(&path) {
         let candidate = dir.join(name);
-        let Ok(found) = c(candidate.as_os_str().as_bytes()) else { continue };
-        // SAFETY: access takes a C string.
-        let runs = unsafe { libc::access(found.as_ptr(), libc::X_OK) } == 0;
-        if runs && candidate.is_file() {
-            return Ok(found);
+        if fs::access(&candidate, libc::X_OK) && candidate.is_file() {
+            return Ok(candidate);
         }
     }
     Err(fail(format!("Cannot find executable '{}'", name.to_string_lossy())))
@@ -737,59 +703,33 @@ fn program(name: &OsString) -> Result<CString, Fail> {
 /// that waits for word to run it, traces the child, and tells it to go
 /// on.
 fn start(
-    program: &CString,
+    program: &PathBuf,
     command: &[OsString],
     flags: TraceFlags,
 ) -> Result<(libc::pid_t, File), Fail> {
-    let c: Vec<CString> = command.iter().filter_map(|a| CString::new(a.as_bytes()).ok()).collect();
-    let mut argv: Vec<*const libc::c_char> = c.iter().map(|a| a.as_ptr()).collect();
-    argv.push(std::ptr::null());
-    let mut go = [0; 2];
-    // SAFETY: `go` has room for two descriptors.
-    if unsafe { libc::pipe(go.as_mut_ptr()) } != 0 {
-        return Err(io::Error::last_os_error().into());
-    }
-    // SAFETY: the program is single-threaded; the child only reads,
-    // closes, execs and exits.
-    let pid = unsafe { libc::fork() };
-    if pid < 0 {
-        return Err(io::Error::last_os_error().into());
-    }
-    if pid == 0 {
-        // SAFETY: async-signal-safe calls on our own descriptors and the
-        // argv built before the fork.
-        unsafe {
-            libc::close(go[1]);
-            let mut byte = 0u8;
-            libc::read(go[0], (&raw mut byte).cast(), 1);
-            libc::close(go[0]);
-            libc::execv(program.as_ptr(), argv.as_ptr());
+    let (go_read, go_write) = fd::pipe()?;
+    let pid = match process::fork()? {
+        Fork::Child => {
+            drop(go_write);
+            let _ = fd::read(&go_read, &mut [0u8; 1]);
+            drop(go_read);
+            let error = Command::new(program).arg0(&command[0]).args(&command[1..]).exec();
             // As strace says it, with the error's text.
-            let error = libc::strerror(io::Error::last_os_error().raw_os_error().unwrap_or(0));
-            let message = b"rtrace: exec: ";
-            libc::write(2, message.as_ptr().cast(), message.len());
-            libc::write(2, error.cast(), libc::strlen(error));
-            libc::write(2, b"\n".as_ptr().cast(), 1);
-            libc::_exit(1);
+            eprintln!("rtrace: exec: {}", util::strip_os_error(&error));
+            process::exit_now(1);
         }
-    }
-    // SAFETY: closing our copy of the read end.
-    unsafe { libc::close(go[0]) };
+        Fork::Parent(pid) => pid,
+    };
+    drop(go_read);
     let file = attach(pid as u64, flags);
     // Go on, traced or not: a failure kills it below.
-    // SAFETY: writes a byte from a local and closes our descriptor.
-    unsafe {
-        libc::write(go[1], b"g".as_ptr().cast(), 1);
-        libc::close(go[1]);
-    }
+    let _ = fd::write(&go_write, b"g");
+    drop(go_write);
     match file {
         Ok(file) => Ok((pid, file)),
         Err(status) => {
-            // SAFETY: our own child.
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
-                libc::waitpid(pid, std::ptr::null_mut(), 0);
-            }
+            let _ = process::kill(pid, libc::SIGKILL);
+            let _ = process::wait(pid);
             Err(fail(format!(
                 "cannot trace the command: {}",
                 util::strip_os_error(&sys::io_error(status))
@@ -800,34 +740,28 @@ fn start(
 
 /// Reads every trace to its end, printing as records come.
 fn read_all(printer: &mut Printer, traces: &mut [File]) -> Result<(), Fail> {
-    use std::os::fd::AsRawFd;
+    use std::os::fd::AsFd;
     let mut pending: Vec<Vec<u8>> = vec![Vec::new(); traces.len()];
     let mut open: Vec<bool> = vec![true; traces.len()];
     let mut buffer = vec![0u8; TRACE_BUFFER as usize];
     while open.iter().any(|&o| o) {
-        if STOP.load(Ordering::Relaxed) {
+        if STOP.is_set() {
             break;
         }
-        let mut fds: Vec<libc::pollfd> = traces
+        let mut fds: Vec<PollFd> = traces
             .iter()
             .zip(&open)
-            .map(|(t, &o)| libc::pollfd {
-                fd: if o { t.as_raw_fd() } else { -1 },
-                events: libc::POLLIN,
-                revents: 0,
-            })
+            .map(|(t, &o)| PollFd::optional(o.then(|| t.as_fd()), libc::POLLIN))
             .collect();
-        // SAFETY: `fds` is valid for its length.
-        let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
-        if ready < 0 {
-            let e = io::Error::last_os_error();
-            if e.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(e.into());
+        match poll::poll(&mut fds, None) {
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.into()),
         }
-        for (i, fd) in fds.iter().enumerate() {
-            if !open[i] || fd.revents == 0 {
+        let events: Vec<i16> = fds.iter().map(PollFd::revents).collect();
+        drop(fds);
+        for (i, revents) in events.into_iter().enumerate() {
+            if !open[i] || revents == 0 {
                 continue;
             }
             match traces[i].read(&mut buffer) {

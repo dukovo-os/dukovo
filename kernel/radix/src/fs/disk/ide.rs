@@ -710,9 +710,7 @@ impl IdeLink {
             }
             if waited >= limit_us {
                 self.share.wants.fetch_and(!(1 << self.end), Ordering::AcqRel);
-                if let Some(disks) = &self.disks {
-                    disks.collect(0);
-                }
+                self.wake_disks();
                 return false;
             }
             wait(BORROW_US);
@@ -724,8 +722,18 @@ impl IdeLink {
     /// for it.
     fn give_back(&self) {
         self.share.holder.store(0, Ordering::Release);
+        self.wake_disks();
+    }
+
+    /// Wakes the disks' requests that waited for room while the drive had
+    /// the channel or waited for it: they look again. A collect alone
+    /// wakes them only if a request of theirs ended, and while the drive
+    /// had the channel none was in flight, so a lone request waited on
+    /// for a completion that would never come.
+    fn wake_disks(&self) {
         if let Some(disks) = &self.disks {
             disks.collect(0);
+            disks.wake_room();
         }
     }
 

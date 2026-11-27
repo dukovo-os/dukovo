@@ -13,7 +13,6 @@
 //! one program. linuxd ends when the filesystem does: when the sandbox's
 //! last program has gone and the kernel lets go of the mount.
 
-use std::os::fd::{FromRawFd, OwnedFd};
 use std::sync::Arc;
 
 use radix_abi::linux_call::FORWARDED;
@@ -76,10 +75,15 @@ const PERSONALITY_QUERY: u64 = 0xffff_ffff;
 
 /// Serves until the filesystem ends; returns the exit status.
 pub fn run(again: bool) -> i32 {
-    // SAFETY: `linux run` hands linuxd these two descriptors, open, and
-    // nothing else in linuxd uses them; each is owned once, here.
-    let (connection, root) =
-        unsafe { (OwnedFd::from_raw_fd(CONNECTION), OwnedFd::from_raw_fd(ROOT)) };
+    let handed = sysapi::fd::handed_down(CONNECTION)
+        .and_then(|connection| Ok((connection, sysapi::fd::handed_down(ROOT)?)));
+    let (connection, root) = match handed {
+        Ok(both) => both,
+        Err(error) => {
+            eprintln!("linuxd: descriptors 3 and 4 are not what linux run hands linuxd: {error}");
+            return 2;
+        }
+    };
     let netlinks = Arc::new(Netlinks::new(Box::new(netlink::RootFiles::new(root))));
     for index in 0..WORKERS {
         let netlinks = Arc::clone(&netlinks);

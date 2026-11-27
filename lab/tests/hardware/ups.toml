@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# A UPS plugged in by USB (ADR 0741), as the lab's CyberPower CP1500PFCLCD
+# is: the kernel finds it among the HID interfaces, reads its Feature
+# reports, and shows it as /kernel/class/power_supply/ups0, which
+# `hardware power` and `hardware check battery` read. The mains is never
+# cut here: the shut down on a low battery is the host tests' (radix-hid's
+# UPS states) and a power cut by hand, with the UPS's own test button, on
+# a machine whose work can be lost.
+about = "A UPS plugged in by USB is found and read: /kernel/class/power_supply/ups0 says UPS, on the mains, its charge and run time, hardware power says when the machine shuts down, the kernel's log names it, and hardware check battery looks at its battery. Needs a machine with a USB UPS"
+time = "3m"
+
+# The kernel found it, and says the machine shuts down on its low battery.
+[[step]]
+run = "sh -c 'dmesg | grep \"UPS: ups0 is\"'"
+expect = ["UPS: ups0 is", "shuts down cleanly when its battery is low"]
+# Its files, read within a few seconds of the boot: on the mains, a charge,
+# and a run time.
+[[step]]
+run = "sh -c 'cd /kernel/class/power_supply/ups0 && for f in type scope online status capacity time_to_empty_now capacity_alert_min shuts_down health; do printf \"%s=%s \" $f \"$(cat $f)\"; done; echo'"
+expect = ["type=UPS", "scope=System", "online=1", "shuts_down=1"]
+expect_not = ["status=Discharging", "capacity= ", "health=Dead"]
+[[step]]
+run = "hardware power"
+expect = ["ups0: UPS", "on the mains", "% charged", "shuts the machine down cleanly on its battery at"]
+[[step]]
+run = "hardware power --json"
+expect = ["\"kind\":\"ups\"", "\"online\":true", "\"shuts_down\":true"]
+# The battery area of a check has a line for it.
+[[step]]
+run = "hardware check battery --yes"
+root = true
+expect = ["ups0", "the UPS says its battery"]
+expect_not = ["HW-142"]

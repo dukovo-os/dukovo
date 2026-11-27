@@ -170,7 +170,7 @@ impl End {
     fn pair(first_peer: (Name, Peer), second_peer: (Name, Peer)) -> Result<(End, End), Status> {
         // Each pipe starts with one reader and one writer, which the ends
         // are from here.
-        let (one, other) = (Pipe::new()?, Pipe::new()?);
+        let (one, other) = (Pipe::of_socket()?, Pipe::of_socket()?);
         let end = |rx: &KArc<Pipe>, tx: &KArc<Pipe>, (peer_name, peer)| End {
             rx: rx.clone(),
             tx: tx.clone(),
@@ -536,7 +536,10 @@ impl Socket {
         }
     }
 
-    /// A connected stream socket, with `end`.
+    /// A connected stream socket, with `end`. Kept out of line: inlined in
+    /// `make_pair`, which makes two, its sockets would take that call's
+    /// frame past the kernel's budget (ADR 0058).
+    #[inline(never)]
     fn connected_with(end: End, name: Name) -> Socket {
         let socket = Socket::new(Phase::Connected, name, None);
         // It is new, so its end is not set.

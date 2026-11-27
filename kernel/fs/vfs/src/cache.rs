@@ -49,6 +49,19 @@ use crate::{APPEND, Error, In, Out, Result, mem};
 
 const PAGE: u64 = PAGE_SIZE as u64;
 
+/// The pages of files on disks that wait in their page caches to be
+/// written back, over every file ([`dirty_pages`]).
+static DIRTY: AtomicUsize = AtomicUsize::new(0);
+
+/// How many pages of files on disks wait in the page cache to be written
+/// back, over every file: what the kernel holds writers to, so that
+/// unwritten data cannot fill memory (as Linux's `dirty_ratio`). Pages of
+/// files with no disk, such as tmpfs's, are not counted: they have
+/// nowhere to go.
+pub fn dirty_pages() -> usize {
+    DIRTY.load(Ordering::Relaxed)
+}
+
 /// The most pages [`FileCache::sync`] hands its backing in one write,
 /// unless it asks for more ([`Backing::write_run_pages`]): 256 KiB, two of
 /// the extents Btrfs compresses, which it compresses at once on two CPUs
@@ -215,8 +228,39 @@ struct State {
     pages: PageMap<Slot>,
     size: u64,
     dirty: usize,
+    /// The file's pages counted in [`dirty_pages`]: its dirty pages if
+    /// it is on a disk, none if not.
+    counted: usize,
     /// When the data last changed.
     modified: u64,
+}
+
+impl State {
+    /// Notes `pages` made dirty, counting them in [`dirty_pages`] if the
+    /// file is on a disk.
+    fn dirtied(&mut self, pages: usize, backing: &dyn Backing) {
+        self.dirty += pages;
+        if backing.persistent() {
+            self.counted += pages;
+            DIRTY.fetch_add(pages, Ordering::Relaxed);
+        }
+    }
+
+    /// Notes `pages` made clean, or gone while dirty.
+    fn cleaned(&mut self, pages: usize) {
+        self.dirty -= pages;
+        uncount(&mut self.counted, pages);
+    }
+}
+
+/// Takes up to `pages` of a file's `counted` pages out of
+/// [`dirty_pages`].
+fn uncount(counted: &mut usize, pages: usize) {
+    let pages = pages.min(*counted);
+    if pages > 0 {
+        *counted -= pages;
+        DIRTY.fetch_sub(pages, Ordering::Relaxed);
+    }
 }
 
 /// A file's size and cached pages.
@@ -225,6 +269,16 @@ pub struct FileCache {
     /// Held by a write or size change for the whole call, while `state`
     /// may be let go to make a page of the caller's memory.
     writing: Mutex<()>,
+}
+
+impl Drop for FileCache {
+    /// A cache that goes with pages still dirty, as a file's last link and
+    /// handle go before its pages were written, takes them out of
+    /// [`dirty_pages`].
+    fn drop(&mut self) {
+        let state = self.state.get_mut();
+        uncount(&mut state.counted, state.dirty);
+    }
 }
 
 /// How far a copy under the lock got.
@@ -246,7 +300,13 @@ impl FileCache {
     /// nothing in memory yet.
     pub fn new(size: u64, modified: u64) -> FileCache {
         FileCache {
-            state: Mutex::new(State { pages: PageMap::new(), size, dirty: 0, modified }),
+            state: Mutex::new(State {
+                pages: PageMap::new(),
+                size,
+                dirty: 0,
+                counted: 0,
+                modified,
+            }),
             writing: Mutex::new(()),
         }
     }
@@ -287,6 +347,12 @@ impl FileCache {
     /// as it goes: any lock may be held then.
     pub fn dirty_pages_mut(&mut self) -> usize {
         self.state.get_mut().dirty
+    }
+
+    /// The file's pages counted in [`dirty_pages`], for the tests.
+    #[cfg(test)]
+    pub(crate) fn counted_pages(&self) -> usize {
+        self.state.lock().counted
     }
 
     /// Whether some pages wait to be written back.
@@ -471,7 +537,7 @@ impl FileCache {
                     let inside = size.saturating_sub(at).min(n as u64) as usize;
                     bytes[inside..].fill(0);
                     if inside > 0 && !core::mem::replace(&mut slot.dirty, true) {
-                        state.dirty += 1;
+                        state.dirtied(1, backing);
                         *dirtied += 1;
                     } else if reserved && !slot.dirty {
                         backing.release_pages(1);
@@ -482,7 +548,7 @@ impl FileCache {
             }
             let was_dirty = core::mem::replace(&mut slot.dirty, true);
             if !was_dirty {
-                state.dirty += 1;
+                state.dirtied(1, backing);
                 *dirtied += 1;
             }
             done += n;
@@ -530,7 +596,7 @@ impl FileCache {
                 },
                 drop,
             );
-            state.dirty -= lost_dirty;
+            state.cleaned(lost_dirty);
             backing.release_pages(lost_dirty);
             let within = (size % PAGE) as usize;
             if within != 0
@@ -587,7 +653,7 @@ impl FileCache {
             },
             drop,
         );
-        state.dirty -= lost_dirty;
+        state.cleaned(lost_dirty);
         backing.release_pages(lost_dirty);
         state.size = state.size.max(size);
         state.modified = crate::now();
@@ -603,7 +669,7 @@ impl FileCache {
         }
         let most = backing.write_run_pages().clamp(1, WRITE_RUN_MAX);
         let mut state = self.state.lock();
-        let State { pages, size, dirty, .. } = &mut *state;
+        let State { pages, size, dirty, counted, .. } = &mut *state;
         let mut failed = None;
         let mut index = 0;
         while *dirty > 0
@@ -654,6 +720,7 @@ impl FileCache {
                         }
                     }
                     *dirty -= n;
+                    uncount(counted, n);
                     backing.release_pages(n);
                 }
                 Err(err) => failed = Some(err),
@@ -666,12 +733,14 @@ impl FileCache {
     }
 
     /// Drops up to `max` clean pages, which the disk has; returns how many
-    /// went. Pages of a file without a disk are never dropped.
+    /// went. Pages of a file without a disk are never dropped. A cache
+    /// whose lock is held is passed over, as while it is written back or
+    /// a writer that holds it waits for memory: shrinking never waits.
     pub fn shrink(&self, max: usize, backing: &dyn Backing) -> usize {
         if !backing.persistent() || max == 0 {
             return 0;
         }
-        let mut state = self.state.lock();
+        let Some(mut state) = self.state.try_lock() else { return 0 };
         let mut dropped = 0;
         state.pages.retain(
             |_, slot| {
@@ -824,7 +893,7 @@ fn zero_gap(state: &mut State, from: u64, to: u64, backing: &dyn Backing) -> Res
             if !slot.dirty {
                 backing.reserve_pages(1)?;
                 slot.dirty = true;
-                state.dirty += 1;
+                state.dirtied(1, backing);
             }
         }
     }

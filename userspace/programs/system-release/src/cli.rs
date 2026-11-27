@@ -24,6 +24,7 @@ usage: system-release keys [--rotate ROLE | --online KEY] DIR
        system-release online-key --out KEY SECRET
        system-release release-key --yubikey-helper FILE [--serial NUMBER] KEYS
        system-release first-root --yubikey-helper FILE --out METADATA KEYS
+       system-release next-root --yubikey-helper FILE --out METADATA [--repo DIR] [--yes] KEYS
        system-release make --tree DIR --keys DIR --out DIR --version VERSION
                            --commit COMMIT --toolchain TOOLCHAIN --built SECONDS
                            [--updates-from VERSION]
@@ -31,14 +32,20 @@ usage: system-release keys [--rotate ROLE | --online KEY] DIR
                            --toolchain TOOLCHAIN --built SECONDS
                            [--updates-from VERSION] [--out FILE]
        system-release add --repo DIR --keys DIR RELEASE
+       system-release fetch --root FILE [--roots METADATA] --out DIR URL
+       system-release medium --root FILE --tree DIR --out DIR URL LIST
+       system-release sums --root FILE --yubikey-helper FILE [--serial NUMBER]
+                           --version VERSION --out DIR [--record FILE] [--yes] IMAGE...
+       system-release offer --repo DIR SIGNER --tree DIR [--advisories SOURCE]
+                            [--record FILE] [--yes] LIST CHANNEL
        system-release firmware --repo DIR --keys DIR --version VERSION
                                --microcode FILE --license LICENSE
-       system-release pull --repo DIR --keys DIR --version VERSION --reason TEXT
+       system-release pull --repo DIR SIGNER --version VERSION --reason TEXT
                            --advice rollback|stay
-       system-release channel --repo DIR --keys DIR [--advisories SOURCE] CHANNEL VERSION
-       system-release channel --repo DIR --keys DIR [--advisories SOURCE]
+       system-release channel --repo DIR SIGNER [--advisories SOURCE] CHANNEL VERSION
+       system-release channel --repo DIR SIGNER [--advisories SOURCE]
                               --firmware VERSION|none CHANNEL
-       system-release advisories --repo DIR --keys DIR SOURCE
+       system-release advisories --repo DIR SIGNER SOURCE
        system-release advisories --check SOURCE
        system-release refresh --repo DIR (--keys DIR | --online-key SECRET [--plan FILE])
        system-release publish --repo DIR --online-key SECRET [--plan FILE] INCOMING
@@ -55,7 +62,9 @@ usage: system-release keys [--rotate ROLE | --online KEY] DIR
        system-release pack --repo DIR [--root FILE] --version VERSION --out FILE
        system-release check [--root FILE] [--version VERSION] REPOSITORY|FILE
        system-release served [--json] [--root FILE] URL
-       system-release rescue --out ESP [--root FILE] [--version VERSION] REPOSITORY";
+       system-release rescue --out ESP [--root FILE] [--version VERSION] REPOSITORY
+SIGNER is --keys DIR, or --yubikey-helper FILE [--serial NUMBER] to sign on a
+YubiKey, with the release key the repository's newest root names.";
 
 /// How many damaged files `check` names before it counts the rest.
 const SHOWN_PROBLEMS: usize = 20;
@@ -81,9 +90,14 @@ pub fn run(args: &[String]) -> i32 {
         "online-key" => online_key(&options),
         "release-key" => release_key(&options),
         "first-root" => first_root(&options),
+        "next-root" => next_root(&options),
         "make" => make(&options),
         "list" => list(&options),
         "add" => add(&options),
+        "fetch" => fetch(&options),
+        "medium" => medium(&options),
+        "sums" => sums(&options),
+        "offer" => offer(&options),
         "firmware" => firmware(&options),
         "pull" => pull(&options),
         "channel" => channel(&options),
@@ -130,6 +144,9 @@ struct Options {
     online_key: Option<PathBuf>,
     out: Option<PathBuf>,
     root: Option<PathBuf>,
+    /// For `fetch`: the source tree's roots, to add those the server
+    /// does not serve yet.
+    roots: Option<PathBuf>,
     version: Option<String>,
     commit: Option<String>,
     toolchain: Option<String>,
@@ -147,6 +164,12 @@ struct Options {
     socket: Option<PathBuf>,
     yubikey_helper: Option<PathBuf>,
     serial: Option<u64>,
+    /// For `offer` and `sums`: where to write the Rekor entry of the
+    /// signature.
+    record: Option<PathBuf>,
+    /// For `offer` and `sums`: sign without asking for the version to be
+    /// typed.
+    yes: bool,
     /// For tests: the time the canaries are judged at, in place of now.
     now: Option<i64>,
     json: bool,
@@ -170,6 +193,7 @@ impl Options {
                 "--online-key" => options.online_key = Some(value()?.into()),
                 "--out" => options.out = Some(value()?.into()),
                 "--root" => options.root = Some(value()?.into()),
+                "--roots" => options.roots = Some(value()?.into()),
                 "--version" => options.version = Some(value()?),
                 "--commit" => options.commit = Some(value()?),
                 "--toolchain" => options.toolchain = Some(value()?),
@@ -185,6 +209,8 @@ impl Options {
                 "--reports" => options.reports = Some(value()?.into()),
                 "--socket" => options.socket = Some(value()?.into()),
                 "--yubikey-helper" => options.yubikey_helper = Some(value()?.into()),
+                "--record" => options.record = Some(value()?.into()),
+                "--yes" => options.yes = true,
                 "--serial" => {
                     let text = value()?;
                     let serial = text.parse().map_err(|_| {
@@ -303,7 +329,11 @@ fn release_key(options: &Options) -> Result<(), String> {
     };
     let helper = needed(&options.yubikey_helper, "--yubikey-helper")?;
     let path = ceremony::add_yubikey(Path::new(dir), helper, options.serial)?;
-    println!("system-release: wrote {}", path.display());
+    println!(
+        "system-release: wrote {} and the key in PEM, {}",
+        path.display(),
+        path.with_extension("pem").display()
+    );
     Ok(())
 }
 
@@ -329,6 +359,104 @@ fn first_root(options: &Options) -> Result<(), String> {
     Ok(())
 }
 
+/// `next-root --yubikey-helper FILE --out METADATA [--repo DIR] [--yes]
+/// KEYS`: the next root of the system's releases, from the keys in
+/// `KEYS`, after the newest in `METADATA`, signed on the YubiKeys plugged
+/// in once the version is typed, and written to `METADATA`; with `--repo`,
+/// put in that repository too, with the roots of `METADATA` it lacks and
+/// its targets signed again under it, to deploy (ADR 0780).
+fn next_root(options: &Options) -> Result<(), String> {
+    let [dir] = options.operands.as_slice() else {
+        return Err("next-root takes the folder of the release keys' public halves".into());
+    };
+    let helper = needed(&options.yubikey_helper, "--yubikey-helper")?;
+    let metadata = needed(&options.out, "--out")?;
+    let repo = options.repo.as_deref();
+    let signed = ceremony::sign_next_root(
+        Path::new(dir),
+        metadata,
+        helper,
+        repo,
+        tuf::time::now(),
+        |next| {
+            print!("{}", next_root_lines(next));
+            if options.yes { Ok(()) } else { typed(&format!("root {}", next.version)) }
+        },
+    )?;
+    let next = &signed.shown;
+    println!(
+        "system-release: signed root {}, {}, on {}; it expires {}",
+        next.version,
+        metadata.join(format!("{}.root.json", next.version)).display(),
+        yubikeys_named(&next.signers),
+        tuf::time::format(next.expires)
+    );
+    println!(
+        "SHA-256 {}",
+        crate::list::hex(ring::digest::digest(&ring::digest::SHA256, &signed.root).as_ref())
+    );
+    match (repo, next.targets) {
+        (Some(repo), Some(targets)) => println!(
+            "system-release: signed targets version {targets} of {} again under it, as they \
+             are: deploy it to serve root {}",
+            repo.display(),
+            next.version
+        ),
+        (Some(repo), None) => println!(
+            "system-release: {} offers nothing yet: the first release signed carries root {}",
+            repo.display(),
+            next.version
+        ),
+        (None, _) => {}
+    }
+    Ok(())
+}
+
+/// What `next-root` is about to sign, in lines for the person who signs it.
+fn next_root_lines(next: &ceremony::NextRoot) -> String {
+    use std::fmt::Write as _;
+    let mut lines = format!(
+        "Root {} of the system's releases, good until {}:\n",
+        next.version,
+        tuf::time::format(next.expires)
+    );
+    let mut named = Vec::new();
+    for serial in &next.yubikeys {
+        let new = if next.new_yubikeys.contains(serial) { ", new" } else { "" };
+        named.push(format!("YubiKey {serial}{new}"));
+    }
+    let _ = writeln!(lines, "  every role: {}", named.join(" and "));
+    let new = if next.new_online { ", new" } else { "" };
+    let _ = writeln!(
+        lines,
+        "  snapshot and timestamp also: the update server's online key {}{new}",
+        &next.online[..16]
+    );
+    if next.dropped.is_empty() {
+        lines.push_str("  no key of the root before is dropped\n");
+    }
+    for id in &next.dropped {
+        let _ = writeln!(lines, "  dropped: the key {}", &id[..16]);
+    }
+    if next.yubikeys.len() == 1 {
+        lines.push_str("  it names one YubiKey: sign the next root once a second is added\n");
+    }
+    let _ = writeln!(lines, "  signed on {}", yubikeys_named(&next.signers));
+    if let Some(targets) = next.targets {
+        let _ = writeln!(lines, "  then the targets again as they are, as version {targets}");
+    }
+    lines
+}
+
+/// "YubiKey 1001" or "YubiKeys 1001 and 1003".
+fn yubikeys_named(serials: &[u64]) -> String {
+    let names: Vec<String> = serials.iter().map(u64::to_string).collect();
+    match names.as_slice() {
+        [one] => format!("YubiKey {one}"),
+        _ => format!("YubiKeys {}", names.join(" and ")),
+    }
+}
+
 /// The keys `--keys` or `--online-key` name for the repository `dir`.
 fn signing_keys(options: &Options, dir: &Path) -> Result<Keys, String> {
     match (&options.keys, &options.online_key) {
@@ -339,6 +467,21 @@ fn signing_keys(options: &Options, dir: &Path) -> Result<Keys, String> {
             updates::server_keys(dir, &secret)
         }
         _ => Err("name the keys: --keys or --online-key".into()),
+    }
+}
+
+/// The keys that sign the targets of the repository at `dir`: those in
+/// the folder `--keys` names, or the release key of the YubiKey plugged
+/// in, or of `--serial`, through `--yubikey-helper`, which the
+/// repository's newest root must name for targets (ADR 0538).
+fn targets_keys(options: &Options, dir: &Path) -> Result<Keys, String> {
+    match (&options.keys, &options.yubikey_helper) {
+        (Some(keys), None) => Keys::load(keys),
+        (None, Some(helper)) => {
+            let yubikey = crate::yubikey::release_key(helper, options.serial)?;
+            Keys::hardware(repo::roots_in(dir)?, &yubikey, &["targets"])
+        }
+        _ => Err("name the keys: --keys or --yubikey-helper".into()),
     }
 }
 
@@ -425,6 +568,240 @@ fn add(options: &Options) -> Result<(), String> {
     Ok(())
 }
 
+/// `fetch --root FILE --out DIR URL`: what the update server at `URL`
+/// serves, read from the first root `FILE`, as a new repository in `DIR`
+/// for `offer` to change (ADR 0778).
+fn fetch(options: &Options) -> Result<(), String> {
+    let [url] = options.operands.as_slice() else {
+        return Err("fetch takes the address of an update server's repository".into());
+    };
+    let root_path = needed(&options.root, "--root")?;
+    let out = needed(&options.out, "--out")?;
+    let root = std::fs::read(root_path).map_err(|err| format!("{}: {err}", root_path.display()))?;
+    let url = if url.ends_with('/') { url.clone() } else { format!("{url}/") };
+    let base = tuf::Url::parse(&url).map_err(|err| format!("{url}: {err}"))?;
+    let fetched = repo::fetch(&base, &root, out)?;
+    if let Some(metadata) = &options.roots {
+        let added = repo::add_roots(out, metadata).inspect_err(|_| {
+            let _ = std::fs::remove_dir_all(out);
+        })?;
+        if added > 0 {
+            println!(
+                "system-release: added {} that {url} does not serve yet, from {}",
+                count(added, "root"),
+                metadata.display()
+            );
+        }
+    }
+    if fetched.targets == 0 {
+        println!(
+            "system-release: {url} serves no releases yet; {} holds the first root",
+            out.display()
+        );
+    } else {
+        println!(
+            "system-release: fetched root version {} and targets version {}, with {}, from {url} \
+             into {}",
+            fetched.root,
+            fetched.targets,
+            count(fetched.listed, "target"),
+            out.display()
+        );
+    }
+    Ok(())
+}
+
+/// `medium --root FILE --tree DIR --out DIR URL LIST`: the release whose
+/// list `./ob release build` wrote in `LIST`, as the update server at
+/// `URL` serves it, read from the first root `FILE`, laid out in the new
+/// folder `DIR` for an install stick or ISO, with its files from the tree
+/// `--tree` (ADR 0779).
+fn medium(options: &Options) -> Result<(), String> {
+    let [url, list] = options.operands.as_slice() else {
+        return Err("medium takes the update server's address and the release list".into());
+    };
+    let root_path = needed(&options.root, "--root")?;
+    let tree = needed(&options.tree, "--tree")?;
+    let out = needed(&options.out, "--out")?;
+    let root = std::fs::read(root_path).map_err(|err| format!("{}: {err}", root_path.display()))?;
+    let list = std::fs::read(list).map_err(|err| format!("{list}: {err}"))?;
+    let url = if url.ends_with('/') { url.clone() } else { format!("{url}/") };
+    let base = tuf::Url::parse(&url).map_err(|err| format!("{url}: {err}"))?;
+    let medium = crate::medium::write(&base, &root, &list, tree, out)?;
+    println!(
+        "system-release: Dukovo {} ({}) as {url} serves it, {} of {} MiB, in {}: root version \
+         {}, timestamp {}, snapshot {}, targets {}",
+        medium.version,
+        &medium.name[..16],
+        count(medium.files, "file"),
+        medium.bytes >> 20,
+        out.display(),
+        medium.root,
+        medium.timestamp,
+        medium.snapshot,
+        medium.targets
+    );
+    Ok(())
+}
+
+/// `sums --root FILE --yubikey-helper FILE --version VERSION --out DIR
+/// IMAGE...`: the checksums of the install images of Dukovo `VERSION`,
+/// signed on a YubiKey with the release key the root `FILE` names for
+/// targets, after they are shown and the version typed, into `DIR`. With
+/// `--record FILE`, the Rekor entry of the signature is written to `FILE`
+/// (ADR 0779).
+fn sums(options: &Options) -> Result<(), String> {
+    use tuf::repo::Signer as _;
+    if options.operands.is_empty() {
+        return Err("sums takes the images to sign the checksums of".into());
+    }
+    let root_path = needed(&options.root, "--root")?;
+    let helper = needed(&options.yubikey_helper, "--yubikey-helper")?;
+    let version = needed(&options.version, "--version")?;
+    let out = needed(&options.out, "--out")?;
+    let root = std::fs::read(root_path).map_err(|err| format!("{}: {err}", root_path.display()))?;
+    let yubikey = crate::yubikey::release_key(helper, options.serial)?;
+    let images: Vec<PathBuf> = options.operands.iter().map(PathBuf::from).collect();
+    let (named, text) = crate::sums::sums(&images)?;
+    let signature = crate::sums::sign(&text, &root, &yubikey, || {
+        print!("{}", sums_lines(version, &named, &yubikey));
+        if options.yes { Ok(()) } else { typed(version) }
+    })?;
+    let [sums_file, signature_file] = crate::sums::write(out, &text, &signature, yubikey.serial())?;
+    println!(
+        "system-release: signed the checksums of {} on YubiKey {}: {} and {}",
+        count(named.len(), "image"),
+        yubikey.serial(),
+        sums_file.display(),
+        signature_file.display()
+    );
+    if let Some(record) = &options.record {
+        let entry = crate::rekor::entry_for(&text, &signature, yubikey.key())?;
+        std::fs::write(record, entry).map_err(|err| format!("{}: {err}", record.display()))?;
+        println!("system-release: the Rekor entry of the signature is in {}", record.display());
+    }
+    Ok(())
+}
+
+/// What `sums` is about to sign, in lines for the person who signs it.
+fn sums_lines(
+    version: &str,
+    images: &[crate::sums::Image],
+    yubikey: &crate::yubikey::YubiKey,
+) -> String {
+    use std::fmt::Write as _;
+    use tuf::repo::Signer as _;
+    let mut text = format!(
+        "To be signed on YubiKey {}, with release key {}:\n  the checksums of the install \
+         images of Dukovo {version}\n",
+        yubikey.serial(),
+        &yubikey.key().id()[..16]
+    );
+    for image in images {
+        let mib = image.bytes.div_ceil(1 << 20);
+        let _ = writeln!(text, "  {}, {mib} MiB, SHA-256 {}", image.name, image.sha256);
+    }
+    text
+}
+
+/// `offer --repo DIR SIGNER --tree DIR LIST CHANNEL`: the release whose
+/// list `./ob release build` wrote in `LIST`, of the tree `--tree`,
+/// offered on `CHANNEL`, signed in one targets version after what is
+/// about to be signed is shown and its version typed. With `--record
+/// FILE`, the Rekor entry of the signature is written to `FILE` (ADR
+/// 0778).
+fn offer(options: &Options) -> Result<(), String> {
+    let [list, channel] = options.operands.as_slice() else {
+        return Err("offer takes the release list and the channel to offer it on".into());
+    };
+    let dir = needed(&options.repo, "--repo")?;
+    let tree = needed(&options.tree, "--tree")?;
+    let keys = targets_keys(options, dir)?;
+    let key = keys.signer("targets")?.key().clone();
+    if options.record.is_some() && !key.is_p256() {
+        return Err(
+            "only a YubiKey's signature is recorded in Rekor: sign with --yubikey-helper".into()
+        );
+    }
+    let list = std::fs::read(list).map_err(|err| format!("{list}: {err}"))?;
+    let sources = options.advisories.as_deref().map(load_advisories).transpose()?;
+    let new = updates::NewRelease { tree, list: &list, channel, advisories: sources.as_deref() };
+    let offered = updates::offer(dir, &keys, &new, tuf::time::now(), |proposal| {
+        print!("{}", proposal_lines(proposal));
+        if options.yes { Ok(()) } else { typed(&proposal.version) }
+    })?;
+    let proposal = &offered.proposal;
+    println!(
+        "system-release: signed targets version {}: the {} channel of {} offers Dukovo {}, with {} \
+         its store did not hold{}",
+        proposal.targets_version,
+        proposal.channel,
+        dir.display(),
+        proposal.version,
+        count(offered.new_files, "file"),
+        signed_here(&keys)
+    );
+    if let Some(record) = &options.record {
+        let entry = crate::rekor::entry(&offered.targets, &key)?;
+        std::fs::write(record, entry).map_err(|err| format!("{}: {err}", record.display()))?;
+        println!("system-release: the Rekor entry of the signature is in {}", record.display());
+    }
+    Ok(())
+}
+
+/// What `offer` is about to sign, in lines for the person who signs it.
+fn proposal_lines(proposal: &updates::Proposal) -> String {
+    let replaces = proposal
+        .replaces
+        .as_ref()
+        .map_or_else(|| "which offers no release until now".into(), |v| format!("in place of {v}"));
+    let advisories = proposal.advised.as_ref().map_or_else(
+        || "  no security advisories are signed with it\n".to_string(),
+        |advised| {
+            let mut changes: Vec<String> = Vec::new();
+            for (word, ids) in [
+                ("new", &advised.added),
+                ("changed", &advised.changed),
+                ("removed", &advised.removed),
+            ] {
+                if !ids.is_empty() {
+                    changes.push(format!("{word}: {}", ids.join(", ")));
+                }
+            }
+            let changes = if changes.is_empty() { "as served".into() } else { changes.join("; ") };
+            format!("  {}, {changes}\n", advisories_count(advised.count))
+        },
+    );
+    format!(
+        "To be signed:\n  Dukovo {}, release list SHA-256 {}\n  built from commit {}, {} of {} \
+         MiB\n  on the {} channel, {replaces}\n{advisories}  as targets version {}, which \
+         expires {}\n",
+        proposal.version,
+        proposal.name,
+        proposal.commit,
+        count(proposal.files, "file"),
+        proposal.bytes >> 20,
+        proposal.channel,
+        proposal.targets_version,
+        proposal.expires
+    )
+}
+
+/// Asks for `version` to be typed, and refuses anything else: the touch
+/// that signs follows at once.
+fn typed(version: &str) -> Result<(), String> {
+    use std::io::Write as _;
+    print!("Type {version} to sign it, or anything else to stop: ");
+    std::io::stdout().flush().map_err(|err| format!("the standard output: {err}"))?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).map_err(|err| format!("the standard input: {err}"))?;
+    if line.trim() == version {
+        Ok(())
+    } else {
+        Err(format!("nothing was signed: {version} was not typed"))
+    }
+}
+
 /// `firmware --repo DIR --version VERSION --microcode FILE --license
 /// LICENSE`: a firmware set of the CPU microcode `FILE`, in the update
 /// repository (ADR 0468).
@@ -458,7 +835,7 @@ fn firmware(options: &Options) -> Result<(), String> {
 /// rollback|stay`: the release is withdrawn (ADR 0469).
 fn pull(options: &Options) -> Result<(), String> {
     let dir = needed(&options.repo, "--repo")?;
-    let keys = Keys::load(needed(&options.keys, "--keys")?)?;
+    let keys = targets_keys(options, dir)?;
     let version = needed(&options.version, "--version")?;
     let reason = needed(&options.reason, "--reason")?;
     let advice = match needed(&options.advice, "--advice")?.as_str() {
@@ -481,7 +858,7 @@ fn pull(options: &Options) -> Result<(), String> {
 /// same targets version (ADR 0534).
 fn channel(options: &Options) -> Result<(), String> {
     let dir = needed(&options.repo, "--repo")?;
-    let keys = Keys::load(needed(&options.keys, "--keys")?)?;
+    let keys = targets_keys(options, dir)?;
     let sources = options.advisories.as_deref().map(load_advisories).transpose()?;
     let sources = sources.as_deref();
     let (said, advised) = if let Some(firmware) = &options.firmware {
@@ -574,7 +951,7 @@ fn advisories(options: &Options) -> Result<(), String> {
         return Ok(());
     }
     let dir = needed(&options.repo, "--repo")?;
-    let keys = Keys::load(needed(&options.keys, "--keys")?)?;
+    let keys = targets_keys(options, dir)?;
     let advised = updates::set_advisories(dir, &keys, &sources, tuf::time::now())?;
     println!(
         "system-release: {}{}",
@@ -893,7 +1270,7 @@ fn check(options: &Options) -> Result<(), String> {
         let (opened, archive) = updates::open_file(dir, &root, options.version.as_deref())?;
         (opened, Some(archive))
     } else {
-        (repo::open(dir, &root, options.version.as_deref())?, None)
+        (repo::open_named(dir, &root, options.version.as_deref())?, None)
     };
     let release = &opened.release;
     println!(
@@ -943,7 +1320,7 @@ fn served(options: &Options) -> Result<(), String> {
         .map_err(|err| format!("the trusted root {}: {err}", root_path.display()))?;
     let url = if url.ends_with('/') { url.clone() } else { format!("{url}/") };
     let base = tuf::Url::parse(&url).map_err(|err| format!("{url}: {err}"))?;
-    if !published(&base)? {
+    if !repo::serves(&base)? {
         if options.json {
             println!("{}", serde_json::json!({ "url": url, "published": false }));
         } else {
@@ -974,17 +1351,6 @@ fn served(options: &Options) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether the server at `base` serves a repository at all: before the
-/// first deploy it has no timestamp, which is no fault of the server's.
-fn published(base: &tuf::Url) -> Result<bool, String> {
-    let url = base.resolve("metadata/timestamp.json").map_err(|err| format!("{base}: {err}"))?;
-    match tuf::fetch::fetch(&url, tuf::Limits::default().timestamp) {
-        Ok(_) => Ok(true),
-        Err(tuf::fetch::Error::NotFound) => Ok(false),
-        Err(err) => Err(format!("{url}: {err}")),
-    }
-}
-
 /// `rescue --out ESP REPOSITORY`: Rescue of the release there, read from
 /// the trusted root, written into the EFI system partition's folder
 /// `ESP`, from the repository's store (ADR 0460).
@@ -997,7 +1363,7 @@ fn rescue(options: &Options) -> Result<(), String> {
     let root = std::fs::read(&root_path)
         .map_err(|err| format!("the trusted root {}: {err}", root_path.display()))?;
     let dir = Path::new(dir);
-    let opened = repo::open(dir, &root, options.version.as_deref())?;
+    let opened = repo::open_named(dir, &root, options.version.as_deref())?;
     let store = crate::store::Store::at(&dir.join("files"));
     let file = |entry: &crate::list::Entry| store.path(entry.file().map_or("", |(sha, _)| sha));
     let written = crate::rescue::write(esp, dir, &opened.release, &file)?;
@@ -1092,8 +1458,8 @@ mod tests {
         assert_eq!(run(&strings(&["served", "--json", "--root", &root, &served])), 0);
         // A server that has had nothing deployed has no timestamp, and is
         // not at fault; one that cannot be reached is.
-        assert!(!published(&tuf::Url::parse("file:///nowhere/").unwrap()).unwrap());
-        assert!(published(&tuf::Url::parse(&format!("{served}/")).unwrap()).unwrap());
+        assert!(!repo::serves(&tuf::Url::parse("file:///nowhere/").unwrap()).unwrap());
+        assert!(repo::serves(&tuf::Url::parse(&format!("{served}/")).unwrap()).unwrap());
         assert_eq!(run(&strings(&["served", "--root", &root, "file:///nowhere"])), 0);
         assert_eq!(run(&strings(&["served", "--json", "--root", &root, "file:///nowhere"])), 0);
         assert_eq!(run(&strings(&["served", "--root", &root, "ftp://nowhere/"])), 1);
@@ -1290,6 +1656,208 @@ mod tests {
         assert_eq!(canary(&[]), 1);
         assert_eq!(run(&strings(&["canary", "add", "ref-box", &key.public_hex()])), 1);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn fetch_and_offer_sign_a_release_on_a_yubikey_with_its_rekor_entry() {
+        let dir = scratch("cli-offer");
+        let path = |name: &str| dir.join(name).display().to_string();
+        let (helper, _, _) = crate::updates::tests::ceremony(&dir);
+        let (helper, root) = (helper.display().to_string(), path("releases/metadata/1.root.json"));
+        tree(&dir.join("slot"));
+        let list = strings(&["list", "--tree", &path("slot"), "--version", "0.18.0"]);
+        let about = ["--commit", "01d66b7", "--toolchain", "nightly-2026-10-15"];
+        let out = ["--built", "1793923200", "--out", &path("system.json")];
+        assert_eq!(run(&[list, strings(&about), strings(&out)].concat()), 0);
+        let advisories = crate::advisory::tests::folder(
+            &dir.join("advisories"),
+            &[("DKSA-2026-0001", "2026-11-15T09:30:00Z", "high")],
+        );
+        assert_eq!(advisories.len(), 1);
+        let server = format!("file://{}/", path("server"));
+
+        let fetch = strings(&["fetch", "--root", &root, "--out", &path("work"), &server]);
+        assert_eq!(run(&fetch), 0);
+        assert_eq!(run(&fetch), 1);
+        // `--yes` in place of the version typed, which a test cannot type.
+        let offer = ["offer", "--repo", &path("work"), "--tree", &path("slot"), "--yes"];
+        let signer = ["--yubikey-helper", &helper, "--serial", "1001"];
+        let record = ["--record", &path("rekor.json"), "--advisories", &path("advisories")];
+        let operands = [&path("system.json"), "beta"];
+        assert_eq!(run(&strings(&[&offer[..], &signer, &record, &operands].concat())), 0);
+        assert!(dir.join("work/metadata/1.targets.json").exists());
+        let entry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("rekor.json")).unwrap()).unwrap();
+        assert_eq!(entry["kind"], "hashedrekord");
+        // The release keys of the development folder do not make a record.
+        assert_eq!(run(&strings(&["keys", &path("keys")])), 0);
+        let dev = ["offer", "--repo", &path("work"), "--keys", &path("keys"), "--record", "x"];
+        assert_eq!(run(&strings(&[&dev[..], &[&path("system.json"), "beta"]].concat())), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_served_release_is_laid_out_for_a_medium_and_its_images_checksums_signed() {
+        let dir = scratch("cli-medium");
+        let path = |name: &str| dir.join(name).display().to_string();
+        let (helper, _, secret) = crate::updates::tests::ceremony(&dir);
+        let (helper, root) = (helper.display().to_string(), path("releases/metadata/1.root.json"));
+        tree(&dir.join("slot"));
+        let list = strings(&["list", "--tree", &path("slot"), "--version", "0.18.0"]);
+        let about = ["--commit", "01d66b7", "--toolchain", "nightly-2026-10-15"];
+        let out = ["--built", "1793923200", "--out", &path("system.json")];
+        assert_eq!(run(&[list, strings(&about), strings(&out)].concat()), 0);
+        let server = format!("file://{}/", path("server"));
+        let medium = ["medium", "--root", &root, "--tree", &path("slot"), "--out", &path("medium")];
+        let medium = strings(&[&medium[..], &[&server, &path("system.json")]].concat());
+        // Nothing is served yet.
+        assert_eq!(run(&medium), 1);
+        assert_eq!(run(&strings(&["fetch", "--root", &root, "--out", &path("work"), &server])), 0);
+        let offer = ["offer", "--repo", &path("work"), "--tree", &path("slot"), "--yes"];
+        let signer = ["--yubikey-helper", &helper, "--serial", "1001"];
+        let operands = [&path("system.json"), "beta"];
+        assert_eq!(run(&strings(&[&offer[..], &signer, &operands].concat())), 0);
+        let now = tuf::time::now();
+        updates::publish(&dir.join("server"), &dir.join("work"), &secret, None, now).unwrap();
+
+        assert_eq!(run(&medium), 0);
+        assert_eq!(run(&strings(&["check", "--root", &root, &path("medium")])), 0);
+        let images = dir.join("images");
+        std::fs::create_dir_all(&images).unwrap();
+        for name in ["dukovo-0.18.0-x86_64.img", "dukovo-0.18.0-x86_64.iso"] {
+            std::fs::write(images.join(name), name).unwrap();
+        }
+        let image = |name: &str| images.join(name).display().to_string();
+        let sums = [
+            "sums",
+            "--root",
+            &path("medium/metadata/root.json"),
+            "--version",
+            "0.18.0",
+            "--out",
+            &path("images"),
+            "--record",
+            &path("sums-rekor.json"),
+            "--yes",
+        ];
+        let named = [image("dukovo-0.18.0-x86_64.img"), image("dukovo-0.18.0-x86_64.iso")];
+        let named: Vec<&str> = named.iter().map(String::as_str).collect();
+        assert_eq!(run(&strings(&[&sums[..], &signer, &named].concat())), 0);
+        assert!(images.join("SHA256SUMS").is_file());
+        assert!(images.join("SHA256SUMS.yubikey-1001.sig").is_file());
+        let entry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("sums-rekor.json")).unwrap()).unwrap();
+        assert_eq!(entry["kind"], "hashedrekord");
+        // Images are named; the checksums of none are not signed.
+        assert_eq!(run(&strings(&[&sums[..], &signer].concat())), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_next_root_is_signed_into_the_tree_and_a_repository_fetched_with_its_roots() {
+        let dir = scratch("cli-next-root");
+        let server = crate::updates::tests::Server::new(&dir);
+        tree(&dir.join("slot"));
+        server.sign_and_serve(&dir.join("slot"), "0.18.0", 1001);
+        std::fs::write(dir.join("plugged"), "1001\n").unwrap();
+        let path = |name: &str| dir.join(name).display().to_string();
+        let (metadata, url) = (path("releases/metadata"), server.url.to_string());
+        let root = path("releases/metadata/1.root.json");
+        let fetch = |out: &str| {
+            run(&strings(&["fetch", "--root", &root, "--roots", &metadata, "--out", out, &url]))
+        };
+        assert_eq!(fetch(&path("work")), 0);
+        let helper = server.helper.display().to_string();
+        let next = ["next-root", "--yubikey-helper", &helper, "--out", &metadata];
+        let repo = ["--repo", &path("work"), "--yes", &path("releases/keys")];
+        assert_eq!(run(&strings(&[&next[..], &repo].concat())), 0);
+        assert!(dir.join("releases/metadata/2.root.json").is_file());
+        assert!(dir.join("work/metadata/2.targets.json").is_file());
+        // The server does not serve it yet; a fetch with the tree's roots
+        // carries it, and one into the same folder is refused.
+        assert_eq!(fetch(&path("again")), 0);
+        assert!(dir.join("again/metadata/2.root.json").is_file());
+        assert_eq!(fetch(&path("again")), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_next_root_is_shown_with_what_it_adds_and_drops() {
+        let next = ceremony::NextRoot {
+            version: 2,
+            expires: 1_830_000_000,
+            yubikeys: vec![1001],
+            new_yubikeys: vec![],
+            online: "cd".repeat(32),
+            new_online: true,
+            dropped: vec!["ab".repeat(32), "ef".repeat(32)],
+            signers: vec![1001, 1002],
+            targets: Some(4),
+        };
+        let lines = next_root_lines(&next);
+        for wanted in [
+            "Root 2 of the system's releases, good until 2027-12-28T",
+            "every role: YubiKey 1001\n",
+            "online key cdcdcdcdcdcdcdcd, new\n",
+            "dropped: the key abababababababab\n",
+            "dropped: the key efefefefefefefef\n",
+            "it names one YubiKey",
+            "signed on YubiKeys 1001 and 1002\n",
+            "then the targets again as they are, as version 4\n",
+        ] {
+            assert!(lines.contains(wanted), "{wanted} in\n{lines}");
+        }
+    }
+
+    #[test]
+    fn what_is_to_be_signed_is_shown_whole() {
+        let mut proposal = updates::Proposal {
+            version: "1.0.0-alpha.1".into(),
+            name: "ab".repeat(32),
+            commit: "53299fc".into(),
+            files: 1,
+            bytes: 3 << 20,
+            channel: "beta".into(),
+            replaces: None,
+            targets_version: 4,
+            expires: "2027-05-27T00:00:00Z".into(),
+            advised: None,
+        };
+        let shown = proposal_lines(&proposal);
+        assert!(shown.contains("Dukovo 1.0.0-alpha.1, release list SHA-256 abab"), "{shown}");
+        assert!(shown.contains("commit 53299fc, 1 file of 3 MiB"), "{shown}");
+        assert!(shown.contains("beta channel, which offers no release until now"), "{shown}");
+        assert!(shown.contains("no security advisories"), "{shown}");
+        assert!(shown.contains("targets version 4, which expires 2027-05-27T00:00:00Z"), "{shown}");
+        proposal.replaces = Some("0.18.0".into());
+        proposal.advised = Some(updates::Advised {
+            count: 2,
+            added: vec!["DKSA-2026-0002".into()],
+            ..updates::Advised::default()
+        });
+        let shown = proposal_lines(&proposal);
+        assert!(shown.contains("beta channel, in place of 0.18.0"), "{shown}");
+        assert!(shown.contains("2 security advisories, new: DKSA-2026-0002"), "{shown}");
+    }
+
+    #[test]
+    fn the_checksums_to_be_signed_are_shown_with_the_yubikey_that_signs() {
+        use tuf::repo::Signer as _;
+        let key = crate::ceremony::tests::P256::new().key().clone();
+        let id = key.id();
+        let yubikey = crate::yubikey::YubiKey::new(Path::new("helper"), 38_775_519, "95", key);
+        let image = |name: &str, bytes| crate::sums::Image {
+            name: name.into(),
+            bytes,
+            sha256: "cd".repeat(32),
+        };
+        let images = [image("dukovo-1.0.0-alpha.1-x86_64.img", 3 << 20), image("x.iso", 1)];
+        let shown = sums_lines("1.0.0-alpha.1", &images, &yubikey);
+        let signer = format!("YubiKey 38775519, with release key {}", &id[..16]);
+        assert!(shown.contains(&signer), "{shown}");
+        assert!(shown.contains("install images of Dukovo 1.0.0-alpha.1"), "{shown}");
+        assert!(shown.contains("dukovo-1.0.0-alpha.1-x86_64.img, 3 MiB, SHA-256 cdcd"), "{shown}");
+        assert!(shown.contains("x.iso, 1 MiB"), "{shown}");
     }
 
     #[test]

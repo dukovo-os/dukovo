@@ -18,13 +18,11 @@
 
 use std::fmt::Write as _;
 use std::io::{self, Write};
-use std::mem::MaybeUninit;
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
-use std::os::fd::AsRawFd;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs, UdpSocket};
 use std::time::{Duration, Instant};
 
-use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use socket2::{Domain, Protocol, Socket, Type};
+use sysapi::signal::{self, Caught};
 
 use crate::args::{Arg, Args};
 use crate::traceroute::{self, Heard, ORIGIN_ICMP6};
@@ -54,11 +52,7 @@ const REQUEST_V6: u8 = 128;
 const REPLY_V6: u8 = 129;
 
 /// Whether SIGINT came: ping stops, and says how it went.
-static INTERRUPTED: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_interrupt(_: libc::c_int) {
-    INTERRUPTED.store(true, Ordering::Relaxed);
-}
+static INTERRUPTED: Caught = Caught::new();
 
 /// What the command line asks for.
 #[derive(Debug)]
@@ -337,7 +331,7 @@ fn error_text(heard: &Heard) -> String {
 /// requests to `address`, and prints each, as iputils' ping does, unless
 /// `quiet`: how many there were.
 fn take_errors(
-    socket: &Socket,
+    socket: &UdpSocket,
     v6: bool,
     address: IpAddr,
     quiet: bool,
@@ -345,7 +339,7 @@ fn take_errors(
 ) -> io::Result<u64> {
     let request = if v6 { REQUEST_V6 } else { REQUEST };
     let mut taken = 0;
-    while let Ok(received) = traceroute::receive(socket.as_raw_fd(), true) {
+    while let Ok(received) = traceroute::receive(socket, true) {
         let Some(heard) = received.heard else { continue };
         let message = &received.data;
         // Another program's, or no error about a request.
@@ -385,14 +379,12 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         if v6 { (libc::SOL_IPV6, libc::IPV6_RECVERR) } else { (libc::SOL_IP, libc::IP_RECVERR) };
     traceroute::set_int(&socket, level, option, 1)
         .map_err(|e| fail_with(2, format!("setsockopt: {}", util::strip_os_error(&e))))?;
-    // SAFETY: all zeros is a valid sigaction: numbers, a signal set and a
-    // function address.
-    let mut action: libc::sigaction = unsafe { util::zeroed() };
-    action.sa_sigaction = on_interrupt as extern "C" fn(libc::c_int) as *const () as usize;
-    // SAFETY: the handler only stores to an atomic; without SA_RESTART a
-    // wait for a reply ends when SIGINT comes.
-    unsafe { libc::sigaction(libc::SIGINT, &raw const action, std::ptr::null_mut()) };
-    let to = SockAddr::from(SocketAddr::new(address, 0));
+    // A ping socket is a datagram socket, which std's UdpSocket sends on
+    // and reads into a buffer of plain bytes, with the sender's address.
+    let socket = UdpSocket::from(socket);
+    // Without SA_RESTART a wait for a reply ends when SIGINT comes.
+    let _ = signal::catch(libc::SIGINT, &INTERRUPTED, 0);
+    let to = SocketAddr::new(address, 0);
     let mut out = io::stdout().lock();
     if v6 {
         writeln!(out, "PING {} ({address}) {} data bytes", options.target, options.size)?;
@@ -412,9 +404,9 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let mut answered = vec![false; 1 << 16];
     let mut next = start;
     let mut last_sent: Option<Instant> = None;
-    let mut buffer = vec![MaybeUninit::<u8>::uninit(); HEADER + SIZE_MAX];
+    let mut buffer = vec![0u8; HEADER + SIZE_MAX];
     loop {
-        if INTERRUPTED.load(Ordering::Relaxed) {
+        if INTERRUPTED.is_set() {
             break;
         }
         // As iputils' ends: once each request of the count was answered
@@ -445,10 +437,10 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             next = now + options.interval;
             // An error about an earlier request fails the next send once,
             // as on Linux: its own, which goes again.
-            let sent = match socket.send_to(&message, &to) {
+            let sent = match socket.send_to(&message, to) {
                 Err(e) if traceroute::left_by_icmp(&e) => {
                     tally.errors += take_errors(&socket, v6, address, options.quiet, &mut out)?;
-                    socket.send_to(&message, &to)
+                    socket.send_to(&message, to)
                 }
                 sent => sent,
             };
@@ -487,10 +479,8 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
                 continue;
             }
         };
-        // SAFETY: recv_from wrote the first `len` bytes.
-        let message: Vec<u8> = buffer[..len].iter().map(|b| unsafe { b.assume_init() }).collect();
-        let Some((seq, sent)) = reply(v6, &message) else { continue };
-        let from = from.as_socket().map_or(address, |a| a.ip());
+        let Some((seq, sent)) = reply(v6, &buffer[..len]) else { continue };
+        let from = from.ip();
         let index = usize::from(seq.wrapping_sub(1));
         let duplicate = answered[index];
         let ms = sent.map(|sent| (start.elapsed().saturating_sub(sent)).as_secs_f64() * 1000.0);
@@ -544,9 +534,10 @@ pub(crate) fn echo(to: SocketAddr, size: usize, wait: Duration) -> io::Result<Ec
     let (level, option) =
         if v6 { (libc::SOL_IPV6, libc::IPV6_RECVERR) } else { (libc::SOL_IP, libc::IP_RECVERR) };
     traceroute::set_int(&socket, level, option, 1)?;
+    // Read and written as a UdpSocket, as in `main`.
+    let socket = UdpSocket::from(socket);
     let started = Instant::now();
-    let to = SockAddr::from(to);
-    let sent = socket.send_to(&request(v6, 1, size, Duration::ZERO), &to);
+    let sent = socket.send_to(&request(v6, 1, size, Duration::ZERO), to);
     if let Err(error) = sent {
         // An ICMP error about an earlier request fails the send; with a
         // fresh socket it is this request's own, which was refused.
@@ -556,16 +547,13 @@ pub(crate) fn echo(to: SocketAddr, size: usize, wait: Duration) -> io::Result<Ec
             Err(error)
         };
     }
-    let mut buffer = vec![MaybeUninit::<u8>::uninit(); HEADER + SIZE_MAX];
+    let mut buffer = vec![0u8; HEADER + SIZE_MAX];
     loop {
         let left = wait.saturating_sub(started.elapsed()).max(Duration::from_millis(1));
         socket.set_read_timeout(Some(left))?;
         match socket.recv_from(&mut buffer) {
             Ok((len, _)) => {
-                // SAFETY: recv_from wrote the first `len` bytes.
-                let message: Vec<u8> =
-                    buffer[..len].iter().map(|b| unsafe { b.assume_init() }).collect();
-                if reply(v6, &message).is_some() {
+                if reply(v6, &buffer[..len]).is_some() {
                     return Ok(Echo::Answered(started.elapsed()));
                 }
             }
@@ -588,9 +576,9 @@ pub(crate) fn echo(to: SocketAddr, size: usize, wait: Duration) -> io::Result<Ec
 }
 
 /// The ICMP error waiting for `socket`, in ping's words.
-fn refusal(socket: &Socket, v6: bool) -> Option<String> {
+fn refusal(socket: &UdpSocket, v6: bool) -> Option<String> {
     let request = if v6 { REQUEST_V6 } else { REQUEST };
-    while let Ok(received) = traceroute::receive(socket.as_raw_fd(), true) {
+    while let Ok(received) = traceroute::receive(socket, true) {
         let Some(heard) = received.heard else { continue };
         if received.data.first() == Some(&request) {
             return Some(error_text(&heard));

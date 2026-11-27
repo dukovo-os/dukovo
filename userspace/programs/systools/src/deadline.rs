@@ -8,9 +8,11 @@
 //! for each, as SO_RCVTIMEO and SO_SNDTIMEO would give.
 
 use std::io::{self, Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
+
+use sysapi::poll::{self, PollFd};
 
 /// A Unix stream whose reads and writes fail with TimedOut once `until`
 /// has passed.
@@ -50,18 +52,12 @@ impl<'a> Deadline<'a> {
             if left.is_zero() {
                 return Err(io::ErrorKind::TimedOut.into());
             }
-            let ms = i32::try_from(left.as_millis().max(1)).unwrap_or(i32::MAX);
-            let mut fd = libc::pollfd { fd: self.stream.as_raw_fd(), events, revents: 0 };
-            // SAFETY: one pollfd, of a descriptor the stream owns.
-            let ready = unsafe { libc::poll(&raw mut fd, 1, ms) };
-            if ready > 0 {
-                return Ok(());
-            }
-            if ready < 0 {
-                let error = io::Error::last_os_error();
-                if error.kind() != io::ErrorKind::Interrupted {
-                    return Err(error);
-                }
+            let mut fds = [PollFd::new(self.stream.as_fd(), events)];
+            match poll::poll(&mut fds, Some(left)) {
+                Ok(0) => {}
+                Ok(_) => return Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error),
             }
         }
     }

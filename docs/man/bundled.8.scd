@@ -73,6 +73,10 @@ it, binds the ID to its key, and to its catalog if it came from one, at
 its first install there, links its commands, and writes a security event to the audit log. Anything that
 fails removes the folder it made, and nothing is recorded.
 
+As no one may write a sealed file, the processes that run a bundle's
+programs share one copy of their pages, and opening one of its files to
+write fails with ETXTBSY while a program maps it (ADR 0658).
+
 # COMMANDS
 
 Each place has a _commands_ folder of bundled's, root's, mode 0755:
@@ -381,6 +385,10 @@ account, its arguments, environment, restart, limits and secrets, order
 70, and what it may do: read the bundle's folder, change its data
 folder, and of what the bundle asks for and the program keeps, connect
 out, listen on its ports and reach the folders of _/shared_ it names. A
+folder of _/shared_ that its services only read, such as _/shared/www_,
+is made empty, the root's, when it is not there, so that a service starts
+before anything is put in it; it is no one bundle's, and stays when the
+bundle is removed, even with *--purge*. A
 person's permissions never reach a service. It tells *spark*(8) to
 start each service that starts at boot; one that starts when enabled
 waits for *service* _NAME_ *enable*. A service name that a file bundled

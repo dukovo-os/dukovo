@@ -52,12 +52,20 @@ about = "Ansible on the lab PC runs the task that the web console shows for each
 time = "40m"
 host_needs = ["python3", "ssh", "ssh-keyscan", "sha256sum", "scp", "curl"]
 
+# Python comes from the lab's catalog, `labtest`, as every lab test that
+# installs it has it (services/lab-catalog.sh says why). The copy a test
+# before may have left is replaced. The test skips where the lab has no test
+# catalog.
 [[step]]
-host = "sh {here}/../services/copy-bundle.sh org.python.python {machine} {machine-port:22}"
-expect = "copied: org.python.python"
+host = "sh {here}/../services/lab-catalog.sh {machine} {machine-port:22}"
+expect = "copied: the test catalog"
+[[step]]
+run = "sh /users/lab/lab-catalog-add.sh"
+root = true
+expect = "added catalog labtest, which lists"
 # From nothing: a run before may have left it installed.
 [[step]]
-run = "sh -c 'bundle remove --for-everyone --purge org.python.python > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.python.python.dkv | tail -1'"
+run = "sh -c 'bundle remove --for-everyone --purge org.python.python > /dev/null 2>&1; bundle install --for-everyone --yes org.python.python --from labtest | tail -1'"
 root = true
 expect = "installed org.python.python"
 # The console answers within seconds of the boot; its last answer is shown
@@ -78,6 +86,6 @@ expect = [
     "check mode agreed with Ansible on each change",
 ]
 [[step]]
-run = "bundle remove --for-everyone --purge org.python.python"
+run = "sh -c 'bundle remove --for-everyone --purge org.python.python && bundle catalog remove labtest > /dev/null 2>&1; rm -rf /users/lab/lab-catalog /shared/lab-catalog'"
 root = true
 expect = "removed org.python.python"

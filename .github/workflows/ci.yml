@@ -1120,7 +1120,7 @@ jobs:
           cat > "$context/Containerfile" <<EOF
           FROM $base
           COPY ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-          RUN sed -i 's#http://[a-z.]*ubuntu\.com/ubuntu#https://mirrors.edge.kernel.org/ubuntu#g' \\
+          RUN sed -i 's#http://[a-z0-9.-]*ubuntu\.com/ubuntu#https://mirrors.edge.kernel.org/ubuntu#g' \\
                 /etc/apt/sources.list.d/ubuntu.sources
           EOF
           "$engine" pull "$base"

@@ -14,10 +14,17 @@
 //! "ttyN: drawing the sign-in screen again for the web console's address"
 //! when it happens.
 
-use std::ffi::CString;
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::unix::process::CommandExt;
+use std::path::Path;
+use std::process::Command;
 use std::time::{Duration, Instant};
+
+use sysapi::fd::{self, Standard};
+use sysapi::process::{self, Fork};
+use sysapi::terminal::{self, Pty, WindowSize};
+use sysapi::{signal, system};
 
 use crate::term::Terminal;
 use crate::welcome;
@@ -136,12 +143,6 @@ fn quick_exits_after(count: u32, lived: Duration, redrawn: bool) -> u32 {
     }
 }
 
-/// An argument or environment string as C wants it; one with a NUL in it
-/// becomes empty.
-fn c_string(text: &str) -> CString {
-    CString::new(text).unwrap_or_default()
-}
-
 impl Console {
     /// Console `number`, of `cols` by `rows` cells, with no session yet.
     pub fn new(number: usize, cols: usize, rows: usize) -> Console {
@@ -175,8 +176,7 @@ impl Console {
     /// Whether someone is signed in: a session has the terminal as its
     /// controlling terminal. Sign-in itself does not take it (ADR 0250).
     pub fn signed_in(&self) -> bool {
-        // SAFETY: tcgetsid only reads the terminal's session.
-        self.master_fd().is_some_and(|fd| unsafe { libc::tcgetsid(fd) } > 0)
+        self.master_fd().is_some_and(|fd| terminal::session(fd).is_ok_and(|session| session > 0))
     }
 
     /// Whether the sign-in screen may be drawn again for a change of the
@@ -204,8 +204,8 @@ impl Console {
     }
 
     /// The master's descriptor, while it can be read.
-    pub fn master_fd(&self) -> Option<RawFd> {
-        self.master.as_ref().filter(|_| !self.hung_up).map(AsRawFd::as_raw_fd)
+    pub fn master_fd(&self) -> Option<BorrowedFd<'_>> {
+        self.master.as_ref().filter(|_| !self.hung_up).map(AsFd::as_fd)
     }
 
     /// The session's process.
@@ -254,77 +254,30 @@ impl Console {
                 self.term.feed(format!("{}\n", notice.trim_end()).replace('\n', "\r\n").as_bytes());
             }
         }
-        let size = libc::winsize {
-            ws_row: self.term.rows() as u16,
-            ws_col: self.term.cols() as u16,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        };
-        let (mut master, mut slave) = (-1, -1);
-        let mut pts = [0 as libc::c_char; 64];
-        // SAFETY: openpty writes the two descriptors and the terminal's
-        // name, which is far shorter than the buffer.
-        let opened = unsafe {
-            libc::openpty(
-                &raw mut master,
-                &raw mut slave,
-                pts.as_mut_ptr(),
-                std::ptr::null(),
-                &raw const size,
-            )
-        };
-        if opened != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: openpty made both descriptors, which are ours alone.
-        let (master, slave) =
-            unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
-        set_flags(master.as_raw_fd());
+        let Pty { master, terminal: slave, path } = terminal::open_pty(Some(self.window_size()))?;
+        fd::set_nonblocking(&master, true)?;
         // A login shell's name starts with a dash (sh(1)); login's and a
         // program's run once do not.
         let name = self.program.rsplit('/').next().unwrap_or("sh");
         let login_shell = !sign_in && once.is_none();
         let argv0 = if login_shell { format!("-{name}") } else { name.to_string() };
-        let argv_strings = [c_string(&self.program), c_string(&argv0)];
-        let argv = [argv_strings[1].as_ptr(), std::ptr::null()];
+        let mut command = Command::new(&self.program);
+        command.arg0(argv0).env_clear();
         // XDG_VTNR names the console, as on Linux: nukesh's [folders]
         // resume keeps a place for each (ADR 0286).
         let vtnr = format!("XDG_VTNR={}", self.number);
-        let env_strings: Vec<CString> =
-            shell.env.iter().map(|e| c_string(e)).chain(std::iter::once(c_string(&vtnr))).collect();
-        let mut envp: Vec<*const libc::c_char> = env_strings.iter().map(|e| e.as_ptr()).collect();
-        envp.push(std::ptr::null());
-        // SAFETY: consoled has one thread; the child only makes the
-        // terminal its own and execs, with what was built before the fork.
-        let pid = unsafe { libc::fork() };
-        if pid < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if pid == 0 {
-            // SAFETY: async-signal-safe calls on the child's own copies of
-            // the descriptors and the strings built before the fork.
-            unsafe {
-                libc::signal(libc::SIGCHLD, libc::SIG_DFL);
-                libc::close(master.as_raw_fd());
-                if sign_in {
-                    // A session of its own, leaving consoled's, with the
-                    // terminal as 0 to 2 but not controlling it.
-                    libc::setsid();
-                    for fd in 0..3 {
-                        libc::dup2(slave.as_raw_fd(), fd);
-                    }
-                    if slave.as_raw_fd() > 2 {
-                        libc::close(slave.as_raw_fd());
-                    }
-                } else {
-                    libc::login_tty(slave.as_raw_fd());
-                }
-                libc::execve(argv_strings[0].as_ptr(), argv.as_ptr(), envp.as_ptr());
-                libc::_exit(127);
+        for variable in shell.env.iter().chain([&vtnr]) {
+            if let Some((name, value)) = variable.split_once('=') {
+                command.env(name, value);
             }
         }
+        // consoled has one thread, which the fork checks.
+        let pid = match process::fork()? {
+            Fork::Child => run_session(&mut command, master, slave, sign_in),
+            Fork::Parent(pid) => pid,
+        };
         drop(slave);
-        self.terminal = pts_name(&pts);
+        self.terminal = pts_name(&path);
         self.master = Some(master);
         self.child = Some(pid);
         self.hung_up = false;
@@ -337,22 +290,19 @@ impl Console {
     /// Takes in what the session wrote. Returns false once the terminal's
     /// other side has closed.
     pub fn read(&mut self) -> bool {
-        let Some(fd) = self.master_fd() else { return false };
+        let Some(master) = self.master.as_ref().filter(|_| !self.hung_up) else { return false };
         let mut buffer = [0u8; 16384];
         // A burst of output is drawn once: up to four buffers a turn.
         for _ in 0..4 {
-            // SAFETY: reads into our buffer.
-            let n = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
-            if n > 0 {
-                self.term.feed(&buffer[..n as usize]);
-                continue;
-            }
-            let error = io::Error::last_os_error();
-            if n < 0 && error.kind() == io::ErrorKind::WouldBlock {
-                break;
-            }
-            if n < 0 && error.kind() == io::ErrorKind::Interrupted {
-                continue;
+            match fd::read(master, &mut buffer) {
+                Ok(0) => {}
+                Ok(n) => {
+                    self.term.feed(&buffer[..n]);
+                    continue;
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => {}
             }
             // EOF, or EIO: no descriptor of the terminal is open.
             self.hung_up = true;
@@ -371,16 +321,18 @@ impl Console {
     pub fn resize(&mut self, cols: usize, rows: usize) {
         self.term.resize(cols, rows);
         let Some(fd) = self.master_fd() else { return };
-        let size = libc::winsize {
-            ws_row: self.term.rows() as u16,
-            ws_col: self.term.cols() as u16,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        };
-        // SAFETY: TIOCSWINSZ reads the winsize, which lives through the call.
-        if unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &raw const size) } < 0 {
-            let error = io::Error::last_os_error();
+        if let Err(error) = terminal::set_window_size(fd, self.window_size()) {
             eprintln!("consoled: tty{}: cannot set the window size: {error}", self.number);
+        }
+    }
+
+    /// The terminal's size, the console's in cells.
+    fn window_size(&self) -> WindowSize {
+        let fit = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
+        WindowSize {
+            rows: fit(self.term.rows()),
+            cols: fit(self.term.cols()),
+            ..WindowSize::default()
         }
     }
 
@@ -402,12 +354,11 @@ impl Console {
         let Some(fd) = self.master_fd() else { return };
         let mut at = 0;
         while at < bytes.len() {
-            // SAFETY: writes from our buffer.
-            let n = unsafe { libc::write(fd, bytes[at..].as_ptr().cast(), bytes.len() - at) };
-            if n > 0 {
-                at += n as usize;
-            } else if n == 0 || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-                break;
+            match fd::write(fd, &bytes[at..]) {
+                Ok(0) => break,
+                Ok(n) => at += n,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(_) => break,
             }
         }
     }
@@ -419,10 +370,7 @@ impl Console {
     /// ignore that too.
     pub fn redraw(&mut self) -> io::Result<()> {
         let Some(pid) = self.child else { return Ok(()) };
-        // SAFETY: kill only sends the signal to the child consoled started.
-        if unsafe { libc::kill(pid, libc::SIGHUP) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        process::kill(pid, libc::SIGHUP)?;
         self.sign_in_screen = SignInScreen::Redrawing;
         Ok(())
     }
@@ -463,7 +411,6 @@ impl Console {
     }
 }
 
-/// The `pts/N` in a terminal's path, as openpty wrote it.
 /// The notices in [`NOTICES`], by their names.
 fn notices() -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(NOTICES) else { return Vec::new() };
@@ -472,21 +419,37 @@ fn notices() -> Vec<String> {
     paths.iter().filter_map(|path| std::fs::read_to_string(path).ok()).collect()
 }
 
-fn pts_name(name: &[libc::c_char]) -> Option<String> {
-    let bytes: Vec<u8> = name.iter().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
-    let path = String::from_utf8(bytes).ok()?;
+/// The `pts/N` in a terminal's path, as openpty gives it.
+fn pts_name(path: &Path) -> Option<String> {
+    let path = path.to_str()?;
     let at = path.rfind("pts/")?;
     Some(path[at..].to_string())
 }
 
-/// Makes the master non-blocking and closed on exec.
-fn set_flags(fd: RawFd) {
-    // SAFETY: fcntl on our own descriptor.
-    unsafe {
-        let flags = libc::fcntl(fd, libc::F_GETFL);
-        libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
-        libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+/// The child of a fork in [`Console::start`]: makes the terminal its own
+/// and runs the session's program, `command`; ends with 127 when it
+/// cannot. A child of a process with one thread holds no lock another
+/// thread took, so it may do what it likes before the program runs.
+fn run_session(command: &mut Command, master: OwnedFd, slave: OwnedFd, sign_in: bool) -> ! {
+    // Ended sessions are consoled's to hear of, not the program's.
+    let _ = signal::restore_default(libc::SIGCHLD);
+    drop(master);
+    let ready = if sign_in {
+        // A session of its own, leaving consoled's, with the terminal as 0
+        // to 2 but not controlling it.
+        process::new_session().and_then(|_| {
+            [Standard::Input, Standard::Output, Standard::Error]
+                .into_iter()
+                .try_for_each(|which| fd::redirect(which, &slave))
+        })
+    } else {
+        process::login_terminal(slave)
+    };
+    if ready.is_ok() {
+        // It returns only when the program cannot run.
+        let _ = command.exec();
     }
+    process::exit_now(127)
 }
 
 /// /system/settings/issue's text for console `number`, with agetty(8)'s
@@ -494,17 +457,7 @@ fn set_flags(fd: RawFd) {
 /// system's, `\r` its release, `\v` its version, `\m` the machine, `\\` a
 /// backslash.
 pub fn expand_issue(issue: &str, number: usize) -> String {
-    // SAFETY: uname fills the structure.
-    let mut names: libc::utsname = unsafe { std::mem::zeroed() };
-    // SAFETY: as above.
-    let named = unsafe { libc::uname(&raw mut names) } == 0;
-    let field = |field: &[libc::c_char]| -> String {
-        if !named {
-            return String::new();
-        }
-        let bytes: Vec<u8> = field.iter().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
-        String::from_utf8_lossy(&bytes).into_owned()
-    };
+    let names = system::uname().unwrap_or_default();
     let mut out = String::new();
     let mut chars = issue.chars();
     while let Some(c) = chars.next() {
@@ -514,11 +467,11 @@ pub fn expand_issue(issue: &str, number: usize) -> String {
         }
         match chars.next() {
             Some('l') => out.push_str(&format!("tty{number}")),
-            Some('n') => out.push_str(&field(&names.nodename)),
-            Some('s') => out.push_str(&field(&names.sysname)),
-            Some('r') => out.push_str(&field(&names.release)),
-            Some('v') => out.push_str(&field(&names.version)),
-            Some('m') => out.push_str(&field(&names.machine)),
+            Some('n') => out.push_str(&names.node),
+            Some('s') => out.push_str(&names.system),
+            Some('r') => out.push_str(&names.release),
+            Some('v') => out.push_str(&names.version),
+            Some('m') => out.push_str(&names.machine),
             Some(other) => out.push(other),
             None => out.push('\\'),
         }
@@ -528,18 +481,15 @@ pub fn expand_issue(issue: &str, number: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::process::{CommandExt, ExitStatusExt};
+    use std::os::unix::process::ExitStatusExt;
 
     use super::*;
 
     #[test]
     fn terminals_are_named_as_processes_names_them() {
-        let name = |text: &str| -> Vec<libc::c_char> {
-            text.bytes().map(|b| b as libc::c_char).chain([0, 7]).collect()
-        };
-        assert_eq!(pts_name(&name("/devices/pts/3")).as_deref(), Some("pts/3"));
-        assert_eq!(pts_name(&name("/dev/pts/12")).as_deref(), Some("pts/12"));
-        assert_eq!(pts_name(&name("")), None);
+        assert_eq!(pts_name(Path::new("/devices/pts/3")).as_deref(), Some("pts/3"));
+        assert_eq!(pts_name(Path::new("/dev/pts/12")).as_deref(), Some("pts/12"));
+        assert_eq!(pts_name(Path::new("")), None);
     }
 
     #[test]
@@ -600,40 +550,18 @@ mod tests {
     /// A pseudo-terminal's two ends: the console's master, and the slave, in
     /// raw mode so that what the console sends is readable at once.
     fn terminal() -> (OwnedFd, OwnedFd) {
-        let (mut master, mut slave) = (-1, -1);
-        // SAFETY: openpty writes the two descriptors, and is asked for
-        // nothing else.
-        let opened = unsafe {
-            libc::openpty(
-                &raw mut master,
-                &raw mut slave,
-                std::ptr::null_mut(),
-                std::ptr::null(),
-                std::ptr::null(),
-            )
-        };
-        assert_eq!(opened, 0);
-        // SAFETY: openpty made both descriptors, which are ours alone.
-        let (master, slave) =
-            unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
-        // SAFETY: tcgetattr fills the termios, which cfmakeraw and tcsetattr
-        // then read, on a terminal of ours.
-        unsafe {
-            let mut modes: libc::termios = std::mem::zeroed();
-            libc::tcgetattr(slave.as_raw_fd(), &raw mut modes);
-            libc::cfmakeraw(&raw mut modes);
-            libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &raw const modes);
-        }
-        set_flags(master.as_raw_fd());
+        let Pty { master, terminal: slave, .. } = terminal::open_pty(None).unwrap();
+        let mut modes = terminal::attributes(&slave).unwrap();
+        terminal::make_raw(&mut modes);
+        terminal::set_attributes(&slave, terminal::When::Now, &modes).unwrap();
+        fd::set_nonblocking(&master, true).unwrap();
         (master, slave)
     }
 
     /// Waits up to two seconds for `fd` to have something to read.
     fn wait_readable(fd: &OwnedFd) {
-        let mut waiting = libc::pollfd { fd: fd.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-        // SAFETY: poll reads and writes the one pollfd.
-        let ready = unsafe { libc::poll(&raw mut waiting, 1, 2000) };
-        assert_eq!(ready, 1, "nothing came within two seconds");
+        let ready = sysapi::poll::wait_readable(fd, Duration::from_secs(2)).unwrap();
+        assert!(ready, "nothing came within two seconds");
     }
 
     #[test]
@@ -645,27 +573,19 @@ mod tests {
         // answers on the terminal's input, as it does to a program that
         // asks where its cursor is.
         let mut buffer = [0u8; 16];
-        // SAFETY: writes and reads go through buffers that live through the
-        // calls.
-        unsafe {
-            assert_eq!(libc::write(slave.as_raw_fd(), b"\x1b[5n".as_ptr().cast(), 4), 4);
-        }
+        assert_eq!(fd::write(&slave, b"\x1b[5n").unwrap(), 4);
         console.master = Some(master);
         wait_readable(console.master.as_ref().unwrap());
         assert!(console.read());
         wait_readable(&slave);
-        // SAFETY: as above.
-        let got =
-            unsafe { libc::read(slave.as_raw_fd(), buffer.as_mut_ptr().cast(), buffer.len()) };
-        assert_eq!(&buffer[..got as usize], b"\x1b[0n");
+        let got = fd::read(&slave, &mut buffer).unwrap();
+        assert_eq!(&buffer[..got], b"\x1b[0n");
         assert!(console.may_redraw(), "a reply is not typing");
         assert!(console.web_console_differs(OTHER_WEB_CONSOLE));
         console.type_keys(b"a");
         wait_readable(&slave);
-        // SAFETY: as above.
-        let got =
-            unsafe { libc::read(slave.as_raw_fd(), buffer.as_mut_ptr().cast(), buffer.len()) };
-        assert_eq!(&buffer[..got as usize], b"a");
+        let got = fd::read(&slave, &mut buffer).unwrap();
+        assert_eq!(&buffer[..got], b"a");
         assert!(!console.may_redraw());
         assert!(!console.web_console_differs(OTHER_WEB_CONSOLE));
     }
@@ -679,19 +599,11 @@ mod tests {
 
     #[test]
     fn the_sign_in_program_is_hung_up_and_its_screen_marked() {
-        let mut command = std::process::Command::new("sleep");
-        command.arg("30");
-        // SAFETY: the closure runs between fork and exec and only sets a
-        // signal's disposition, which touches no memory. The test may itself
-        // run with hangups ignored, which the program would keep across
-        // exec.
-        unsafe {
-            command.pre_exec(|| {
-                libc::signal(libc::SIGHUP, libc::SIG_DFL);
-                Ok(())
-            });
-        }
-        let mut program = command.spawn().unwrap();
+        // The tests may run with hangups ignored, which the program would
+        // keep: they take a hangup as a program does by default, so that
+        // the program does too. No test sends the tests one.
+        signal::restore_default(libc::SIGHUP).unwrap();
+        let mut program = Command::new("sleep").arg("30").spawn().unwrap();
         let mut console = Console::new(1, 80, 25);
         console.sign_in_screen = untouched(WEB_CONSOLE);
         console.child = Some(libc::pid_t::try_from(program.id()).unwrap());

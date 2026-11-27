@@ -15,7 +15,7 @@
 
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
 
 use accounts::User;
@@ -23,7 +23,7 @@ use accounts::User;
 use super::{Accounts, own_name};
 use crate::account_errors;
 use crate::args::{Arg, Args};
-use crate::bundles::folder::{Dir, check, fd_stat};
+use crate::bundles::folder::{Dir, fd_stat};
 use crate::sshkeys::{self, Entry};
 use crate::util::{self, Fail, fail, usage};
 
@@ -216,7 +216,7 @@ fn folder(user: &User, shown: &str, make: bool) -> Result<Option<Dir>, Fail> {
     let home = accounts::rescue::installed(&user.home);
     let home = home.to_str().ok_or_else(|| fail(format!("{}: not a name", user.home)))?;
     let home = Dir::open(home).map_err(|e| util::failed(&user.home, e))?;
-    sshkeys::safe(&home.0, user, &user.home).map_err(fail)?;
+    sshkeys::safe(&home, user, &user.home).map_err(fail)?;
     let made = match home.stat_at(".ssh").map_err(|e| util::failed(&shown, e))? {
         Some(_) => false,
         None if make => {
@@ -227,9 +227,9 @@ fn folder(user: &User, shown: &str, make: bool) -> Result<Option<Dir>, Fail> {
     };
     let folder = home.dir_at(".ssh").map_err(|e| util::failed(&shown, e))?;
     if made {
-        own(&folder.0, user, FOLDER_MODE).map_err(|e| util::failed(&shown, e))?;
+        own(&folder, user, FOLDER_MODE).map_err(|e| util::failed(&shown, e))?;
     }
-    sshkeys::safe(&folder.0, user, shown).map_err(fail)?;
+    sshkeys::safe(&folder, user, shown).map_err(fail)?;
     Ok(Some(folder))
 }
 
@@ -266,14 +266,12 @@ fn read(folder: &Dir, user: &User, shown: &str) -> Result<String, Fail> {
 
 /// Makes `fd` `user`'s, with `mode`, changing the owner only if it is not
 /// theirs already: a person changes nothing of what is theirs.
-fn own(fd: &OwnedFd, user: &User, mode: libc::mode_t) -> io::Result<()> {
-    let st = fd_stat(fd)?;
+fn own(fd: impl AsFd, user: &User, mode: libc::mode_t) -> io::Result<()> {
+    let st = fd_stat(&fd)?;
     if st.st_uid != user.uid || st.st_gid != user.gid {
-        // SAFETY: fchown changes what the open descriptor names.
-        check(unsafe { libc::fchown(fd.as_raw_fd(), user.uid, user.gid) })?;
+        std::os::unix::fs::fchown(&fd, Some(user.uid), Some(user.gid))?;
     }
-    // SAFETY: fchmod changes what the open descriptor names.
-    check(unsafe { libc::fchmod(fd.as_raw_fd(), mode) })
+    sysapi::fs::set_mode(fd, mode)
 }
 
 /// Puts `text` in the file in `folder`: written whole to a new file, made
@@ -400,8 +398,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-        // SAFETY: getuid and getgid read this process's ids and cannot fail.
-        let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+        let (uid, gid) = (sysapi::process::uid(), sysapi::process::gid());
         let user = User {
             name: "me".into(),
             uid,

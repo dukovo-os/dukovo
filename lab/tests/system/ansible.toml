@@ -10,17 +10,18 @@
 # which ansible-core 2.22 needs, the test is skipped.
 #
 # Python, which the system has none of, comes by python.yml, with
-# ansible.builtin.raw, from the bundle's file. site.yml then runs each
-# module once: facts, feature, service, bundle, snapshot and the channel
-# of update; run again it must report changed=0. The lab has no catalog, so
-# ripgrep, which site.yml installs from the boot test's catalog, is
-# installed from its file first, and the playbook finds it there. With the
-# feature removed here, --check --diff must say it would be added, as the
-# JSON of its state before and after, and leave it not added. update.yml
-# follows the stable channel and stages the update the lab's update server
-# offers, restarts the machine into it with reboot: true as the reboot
-# module does, and checks that sysupdate status names the new version as
-# running, as online.toml's machine does (ADRs 0466 and 0467).
+# ansible.builtin.raw, from the lab's catalog (services/lab-catalog.sh).
+# site.yml then runs each module once: facts, feature, service, bundle,
+# snapshot and the channel of update; run again it must report changed=0.
+# The lab's catalog lists no ripgrep, so ripgrep, which site.yml installs
+# from the boot test's catalog, is installed from its file first, and the
+# playbook finds it there. With the feature removed here, --check --diff
+# must say it would be added, as the JSON of its state before and after,
+# and leave it not added. update.yml follows the stable channel and stages
+# the update the lab's update server offers, restarts the machine into it
+# with reboot: true as the reboot module does, and checks that sysupdate
+# status names the new version as running, as online.toml's machine does
+# (ADRs 0466 and 0467).
 about = "Ansible's dukovo.system manages the machine from the lab PC over SSH: python.yml installs Python with ansible.builtin.raw; site.yml runs facts, feature, service, bundle, snapshot and update's channel through elevate, and run again reports changed=0; with the feature removed, --check --diff reports it as JSON before and after and changes nothing; update.yml stages the update the lab's update server offers with reboot: true, and the machine comes back on the new version, which sysupdate status and the facts name as running (skipped without Python 3.13 or later on the lab PC)"
 time = "60m"
 fresh = true
@@ -53,12 +54,16 @@ run = "sh -c 'bundle remove --for-everyone --purge io.github.burntsushi.ripgrep 
 root = true
 expect = "installed io.github.burntsushi.ripgrep"
 [[step]]
-host = "sh {here}/../services/copy-bundle.sh org.python.python {machine} {machine-port:22}"
-expect = "copied: org.python.python"
+host = "sh {here}/../services/lab-catalog.sh {machine} {machine-port:22}"
+expect = "copied: the test catalog"
+[[step]]
+run = "sh /users/lab/lab-catalog-add.sh"
+root = true
+expect = "added catalog labtest, which lists"
 
 # Python, by raw: the one task that changes is the install.
 [[step]]
-host = "sh {here}/ansible.sh {machine} {machine-port:22} python.yml -e dukovo_python_from=/users/lab/org.python.python.dkv"
+host = "sh {here}/ansible.sh {machine} {machine-port:22} python.yml -e '{\"dukovo_python_from\": \"org.python.python --from labtest\"}'"
 input = "{password}\n"
 expect = ["changed: 1", "unreachable: 0", "failed: 0"]
 
@@ -111,7 +116,11 @@ input = "{password}\n"
 expect = ["\"rebooted\": true", "unreachable: 0", "failed: 0"]
 [[step]]
 wait = "ready"
+# The new start is an update being tried until its services have run steadily
+# for the stable period (10 seconds, set above), which ends some time after the
+# machine is ready, so status is asked again, for up to 3 minutes, until the
+# update is the default.
 [[step]]
-run = "sysupdate status"
+run = '''sh -c 'i=0; while [ $i -lt 180 ] && ! sysupdate status | grep -q -e "-test.bridge, the default"; do sleep 2; i=$((i + 2)); done; sysupdate status' '''
 root = true
 expect = ["Running:  slot B", "-test.bridge, the default"]

@@ -95,7 +95,7 @@ $ last
 alice    web          192.0.2.7        Sat Oct 31 12:50   still logged in
 bob      pts/1                         Sat Oct 31 12:46   still logged in
 bob      pts/1                         Sat Oct 31 12:41 - 12:45  (00:04)
-reboot   system boot  0.17.0           Sat Oct 31 12:39   still running
+reboot   system boot  1.0.0-alpha.1    Sat Oct 31 12:39   still running
 
 sign-in records begin Sat Oct 31 12:39:01 2026
 ```

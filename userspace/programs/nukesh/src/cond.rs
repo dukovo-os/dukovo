@@ -6,7 +6,6 @@
 //! regular expressions (through the C library's POSIX regcomp, as bash
 //! does) and `&&`, `||` and `( )` inside it.
 
-use std::ffi::{CString, c_char, c_int, c_void};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 
 use crate::ast::CondExpr;
@@ -406,88 +405,21 @@ impl From<Flow> for CondError {
     }
 }
 
-// Regular expressions, through the C library.
-
-/// `regex_t`, which the C libraries lay out differently: room for any.
-#[repr(C, align(16))]
-struct RegexBuf([u8; 256]);
-
-#[cfg(target_env = "gnu")]
-type RegOff = i32;
-#[cfg(not(target_env = "gnu"))]
-type RegOff = isize;
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct RegMatch {
-    rm_so: RegOff,
-    rm_eo: RegOff,
-}
-
-const REG_EXTENDED: c_int = 1;
-const REG_ICASE: c_int = 2;
-
-unsafe extern "C" {
-    fn regcomp(preg: *mut c_void, pattern: *const c_char, cflags: c_int) -> c_int;
-    fn regexec(
-        preg: *const c_void,
-        string: *const c_char,
-        nmatch: usize,
-        pmatch: *mut RegMatch,
-        eflags: c_int,
-    ) -> c_int;
-    fn regerror(code: c_int, preg: *const c_void, buf: *mut c_char, size: usize) -> usize;
-    fn regfree(preg: *mut c_void);
-}
-
 /// Matches `text` against the extended regular expression `pattern`: the
 /// match and its groups (`BASH_REMATCH`), or `None`.
 pub fn regex_match(pattern: &str, text: &str, nocase: bool) -> Result<Option<Vec<String>>, String> {
-    let c_pattern = CString::new(text::encode(pattern))
-        .map_err(|_| "invalid regular expression".to_string())?;
+    let regex = sysapi::pattern::Regex::with_groups(&text::encode(pattern), nocase)
+        .map_err(|why| format!("{pattern}: {why}"))?;
     let bytes = text::encode(text);
-    let c_text = CString::new(bytes.clone()).unwrap_or_default();
-    let mut buf = RegexBuf([0; 256]);
-    let flags = REG_EXTENDED | if nocase { REG_ICASE } else { 0 };
-    // SAFETY: buf has room for any C library's regex_t; the pattern is a
-    // C string.
-    let code = unsafe { regcomp(buf.0.as_mut_ptr().cast(), c_pattern.as_ptr(), flags) };
-    if code != 0 {
-        let mut message = [0 as c_char; 256];
-        // SAFETY: regerror writes at most message.len() bytes.
-        unsafe { regerror(code, buf.0.as_ptr().cast(), message.as_mut_ptr(), message.len()) };
-        // SAFETY: regerror wrote a terminated string.
-        let text =
-            unsafe { std::ffi::CStr::from_ptr(message.as_ptr()) }.to_string_lossy().into_owned();
-        return Err(format!("{pattern}: {text}"));
-    }
-    // Room for every group the pattern could have.
-    let groups = pattern.matches('(').count() + 1;
-    let mut matches = vec![RegMatch { rm_so: -1, rm_eo: -1 }; groups];
-    // SAFETY: buf holds a compiled regex; matches has `groups` entries.
-    let found =
-        unsafe { regexec(buf.0.as_ptr().cast(), c_text.as_ptr(), groups, matches.as_mut_ptr(), 0) };
-    // SAFETY: buf holds a compiled regex, freed once.
-    unsafe { regfree(buf.0.as_mut_ptr().cast()) };
-    if found != 0 {
-        return Ok(None);
-    }
-    // The groups the pattern really has: the C libraries mark the rest -1.
-    let mut out = Vec::new();
-    let mut last = 0;
-    for (i, m) in matches.iter().enumerate() {
-        if m.rm_so >= 0 {
-            last = i;
-        }
-    }
-    for m in &matches[..=last] {
-        if m.rm_so < 0 {
-            out.push(String::new());
-        } else {
-            out.push(text::decode(&bytes[m.rm_so as usize..m.rm_eo as usize]));
-        }
-    }
-    Ok(Some(out))
+    let Some(groups) = regex.captures(&bytes) else { return Ok(None) };
+    // The groups the pattern really has: the C libraries leave the rest
+    // unset, as they do a group that took no part.
+    let last = groups.iter().rposition(Option::is_some).unwrap_or(0);
+    let words = groups[..=last]
+        .iter()
+        .map(|range| range.clone().map_or_else(String::new, |range| text::decode(&bytes[range])))
+        .collect();
+    Ok(Some(words))
 }
 
 #[cfg(test)]

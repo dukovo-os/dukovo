@@ -236,7 +236,10 @@ _/processes/meminfo_
 	*mapped_areas* is the kernel's stacks and the other memory it maps
 	with guard pages. The page cache is the files' data in memory
 	(*radix-files*(7)), which the kernel gives back when memory runs low.
-	Then *swap_total* and *swap_free*, the room of the swap areas on and
+	Then *dirty*, the page cache's data that waits to be written to a
+	disk (Linux's *Dirty*): a write that leaves it over a tenth of memory
+	has it written at once, and one that leaves it over a fifth waits
+	until it is under (*radix-files*(7)). Then *swap_total* and *swap_free*, the room of the swap areas on and
 	how much of it is free (*swapon*(8)), and *hardware_corrupted*, the
 	memory a machine check said went bad, which is out of use for good or
 	leaves use when freed (Linux's *HardwareCorrupted*; *dukovo-boot*(7)).
@@ -254,12 +257,22 @@ _/processes/stat_
 	events that cost an exit to the host under a hypervisor (writes of
 	the timer hardware, interrupts sent to other CPUs, idle periods that
 	halted and idle periods a wake-up ended while the CPU polled);
+	*preemptions*, *migrations* and *faults*, what leaves a thread's
+	memory out of a CPU's caches and TLB (switches away from a thread
+	that could have gone on, moves of a thread to another CPU than the
+	one it ran on last, and page faults resolved), since boot;
+	*moves_up*, the moves of a thread running alone on a slower core to
+	a faster idle one, on a processor whose cores differ in speed
+	(*dukovo-boot*(7)'s *hybrid*), since boot;
 	*mutex_contended*, *mutex_waits*, *mutex_handoffs* and *mutex_wakes*,
 	the times a thread found a kernel mutex taken, the times it slept
 	waiting for one, the times a mutex was handed to a sleeping waiter,
 	and the times one was let go with a sleeping waiter woken to try
-	again; *cap_cache_flushes*, how often the CPUs' caches of
-	capabilities went stale;
+	again; *cap_cache_flushes*, how often a capability the CPUs' caches
+	held left its slot, which takes from the caches what they kept of
+	the slots that share its version word; *cap_cache_fills*, how often
+	a system call's lookup found nothing in its CPU's cache and asked
+	the store;
 	*swap_ins* and *swap_outs*, the pages read back from swap and
 	written to it since boot; and *boot_time_ns*, when the kernel
 	started, in nanoseconds since 1970.

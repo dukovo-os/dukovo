@@ -150,8 +150,7 @@ fn default_client(keyring: &mut Authd, realm: Option<&str>) -> Result<Principal,
     if let Ok(Some(client)) = creds::client(keyring) {
         return Ok(client);
     }
-    // SAFETY: getuid has no preconditions and cannot fail.
-    let name = util::user_name(unsafe { libc::getuid() });
+    let name = util::user_name(sysapi::process::uid());
     Principal::parse(&name, realm).map_err(failed)
 }
 

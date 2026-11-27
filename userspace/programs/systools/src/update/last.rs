@@ -80,8 +80,7 @@ pub(crate) fn keep(by: By, updates: &str) {
 /// Whether this process runs as root: the one that may write what update
 /// keeps for everyone.
 pub(crate) fn is_root() -> bool {
-    // SAFETY: geteuid has no arguments and cannot fail.
-    unsafe { libc::geteuid() == 0 }
+    sysapi::process::euid() == 0
 }
 
 /// Writes `text` to `file`: to a file beside it, which is renamed over it,

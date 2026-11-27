@@ -85,6 +85,7 @@ pub(crate) enum Problem {
     SensorHot,
     FanStopped,
     BatteryWorn,
+    UpsBattery,
     LinkHalfDuplex,
     LinkErrors,
 }
@@ -92,7 +93,7 @@ pub(crate) enum Problem {
 impl Problem {
     /// Every problem, for the tests that check each one's ID and advice.
     #[cfg(test)]
-    pub(crate) const ALL: [Problem; 16] = [
+    pub(crate) const ALL: [Problem; 17] = [
         Problem::MemoryCorrected,
         Problem::MemoryUncorrected,
         Problem::MemoryTest,
@@ -107,6 +108,7 @@ impl Problem {
         Problem::SensorHot,
         Problem::FanStopped,
         Problem::BatteryWorn,
+        Problem::UpsBattery,
         Problem::LinkHalfDuplex,
         Problem::LinkErrors,
     ];
@@ -127,6 +129,7 @@ impl Problem {
             Problem::SensorHot => "HW-131",
             Problem::FanStopped => "HW-132",
             Problem::BatteryWorn => "HW-141",
+            Problem::UpsBattery => "HW-142",
             Problem::LinkHalfDuplex => "HW-152",
             Problem::LinkErrors => "HW-153",
         }
@@ -174,6 +177,9 @@ impl Problem {
                 "Check that the fan is plugged in and turns freely, and replace it if it does not."
             }
             Problem::BatteryWorn => "Replace the battery to get back a full charge's use.",
+            Problem::UpsBattery => {
+                "Replace the UPS's battery: it may not carry the machine through a power cut."
+            }
             Problem::LinkHalfDuplex => {
                 "Check the cable and the switch port: both ends must agree on full duplex."
             }

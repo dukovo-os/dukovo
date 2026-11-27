@@ -110,6 +110,13 @@ a person's own `~/applications` (ADR 0223), with only the command's name as
     in; a server that made its listening socket non-blocking got streams
     it took to be non-blocking that were not, and their reads waited with
     no timeout.
+  - `0011-pg-trace-file-belongs-to-the-link`: `pg_trace()` gave libpq the
+    `FILE` of a stream that the request's end closed before it freed a
+    link a global variable held, and the link's `PQuntrace()` then flushed
+    the freed `FILE`, which ended PHP with SIGSEGV on Dukovo (valgrind shows
+    the same read after free on Linux); libpq now gets a `FILE` of the
+    link's own, on a copy of the stream's descriptor, which the link closes
+    after `PQuntrace()`.
 - **Answers for configure**, one line each in `build.sh`: no `dlopen` (the
   three variables `ac_cv_func_dlopen`, `ac_cv_lib_dl_dlopen` and
   `ac_cv_search_dlopen`, which is the one that sets `HAVE_LIBDL` in PHP), so

@@ -19,8 +19,29 @@
 //! cold ([`is_cache_hot`]).
 //!
 //! Loads are counts of runnable threads; weights are left to the fair queues
-//! on each CPU. Only threads waiting in a queue move: a thread alone on its
-//! CPU stays where it is.
+//! on each CPU. Balancing moves only threads waiting in a queue: a thread
+//! alone on its CPU stays where it is, but on a machine whose cores differ.
+//!
+//! On a machine whose cores differ in speed, as Intel's performance and
+//! efficient cores do, the topology is *ranked* ([`Topology::set_ranked`]):
+//! each CPU's load carries its rank, higher for a faster CPU, and the
+//! kernel sets the ranks. A waking thread then goes to the fastest idle
+//! CPU it may use, the nearest of them if several are as fast, and a
+//! thread running alone on a slower CPU moves to a faster one that is idle
+//! ([`Topology::faster_idle`]). Counts of threads still decide what
+//! balancing moves. With every rank the same, a ranked topology chooses
+//! as an unranked one does.
+//!
+//! Each CPU's span at each level, and which of its levels add CPUs to the
+//! one below, are worked out once, when the topology is complete
+//! ([`Topology::finish`]): every wake-up that looks for an idle CPU and
+//! every balancing attempt reads them, and working them out costs a look
+//! at every CPU, which on a server of a hundred CPUs is thousands of
+//! instructions each time.
+
+use alloc::vec::Vec;
+use core::alloc::Allocator;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::cpuset::{CpuSet, MAX_CPUS};
 
@@ -43,6 +64,16 @@ pub enum Level {
 impl Level {
     /// Every level, closest first.
     pub const ALL: [Level; 4] = [Level::Core, Level::Package, Level::Node, Level::Machine];
+
+    /// Its place in [`Level::ALL`].
+    pub const fn index(self) -> usize {
+        match self {
+            Level::Core => 0,
+            Level::Package => 1,
+            Level::Node => 2,
+            Level::Machine => 3,
+        }
+    }
 
     /// Lower-case name.
     pub const fn name(self) -> &'static str {
@@ -97,6 +128,9 @@ pub struct CpuLoad {
     /// The real-time priority of the running thread, 0 when it is fair or
     /// the CPU is idle.
     pub rt_prio: u8,
+    /// How fast the CPU is beside the others, higher for faster, which a
+    /// ranked topology reads ([`Topology::set_ranked`]).
+    pub rank: u8,
 }
 
 /// How many timer ticks pass between balancing attempts at `level` on a
@@ -133,42 +167,83 @@ pub const fn should_pull(from: u32, from_cpus: u32, to: u32, to_cpus: u32) -> bo
     (from as u64 - 1) * to_cpus as u64 >= (to as u64 + 1) * from_cpus as u64
 }
 
+/// What [`Topology::finish`] works out for one CPU.
+#[derive(Clone, Copy)]
+struct Known {
+    /// Its span at each level, in [`Level::ALL`]'s order.
+    spans: [CpuSet; 4],
+    /// Bit `i` set when level `Level::ALL[i]` adds CPUs to the one below.
+    grows: u8,
+}
+
 /// The machine's CPUs, packages and nodes.
-#[derive(Clone)]
-pub struct Topology {
+pub struct Topology<A: Allocator> {
     cpus: usize,
     places: [Place; MAX_CPUS],
     distance: [[u8; MAX_NODES]; MAX_NODES],
+    /// Each CPU's spans and levels, from [`Topology::finish`]. Empty before
+    /// it, after a change of the CPUs or their places, or when there was
+    /// no memory for them: they are then worked out each time.
+    known: Vec<Known, A>,
+    /// Whether the CPUs' ranks count ([`Topology::set_ranked`]). Set once
+    /// every CPU has told the kernel what kind of core it is, which is
+    /// after the topology is in use.
+    ranked: AtomicBool,
 }
 
-impl Topology {
-    /// `cpus` CPUs, each its own core in one package on one node.
-    pub const fn flat(cpus: usize) -> Topology {
-        let cpus = if cpus > MAX_CPUS { MAX_CPUS } else { cpus };
+impl<A: Allocator> Topology<A> {
+    /// `cpus` CPUs, each its own core in one package on one node, keeping
+    /// what [`Topology::finish`] works out in memory from `alloc`.
+    pub fn flat_in(cpus: usize, alloc: A) -> Topology<A> {
+        let cpus = cpus.min(MAX_CPUS);
         let mut places = [Place { package: 0, core: 0, node: 0 }; MAX_CPUS];
-        let mut i = 0;
-        while i < MAX_CPUS {
-            places[i].core = i as u32;
-            i += 1;
+        for (i, place) in places.iter_mut().enumerate() {
+            place.core = i as u32;
         }
         let mut distance = [[20u8; MAX_NODES]; MAX_NODES];
-        let mut n = 0;
-        while n < MAX_NODES {
-            distance[n][n] = 10;
-            n += 1;
+        for (n, row) in distance.iter_mut().enumerate() {
+            row[n] = 10;
         }
-        Topology { cpus, places, distance }
+        Topology {
+            cpus,
+            places,
+            distance,
+            known: Vec::new_in(alloc),
+            ranked: AtomicBool::new(false),
+        }
+    }
+
+    /// Works out each CPU's spans and levels once, for every later look:
+    /// call it when the CPUs and their places are all set. Returns false
+    /// when there is no memory for them, which leaves them to be worked
+    /// out each time, as before.
+    pub fn finish(&mut self) -> bool {
+        self.known.clear();
+        if self.known.try_reserve_exact(self.cpus).is_err() {
+            return false;
+        }
+        for cpu in 0..self.cpus {
+            let known = Known {
+                spans: Level::ALL.map(|level| self.span_of(cpu, level)),
+                grows: self.grows_of(cpu),
+            };
+            // Reserved just above.
+            let _ = self.known.push_within_capacity(known);
+        }
+        true
     }
 
     /// Sets how many CPUs there are.
     pub fn set_cpus(&mut self, cpus: usize) {
         self.cpus = cpus.min(MAX_CPUS);
+        self.known.clear();
     }
 
     /// Records where CPU `cpu` sits.
     pub fn set_place(&mut self, cpu: usize, place: Place) {
         if let Some(slot) = self.places.get_mut(cpu) {
             *slot = Place { node: place.node.min(MAX_NODES as u8 - 1), ..place };
+            self.known.clear();
         }
     }
 
@@ -177,6 +252,17 @@ impl Topology {
         if from < MAX_NODES && to < MAX_NODES {
             self.distance[from][to] = distance;
         }
+    }
+
+    /// Makes placement read the CPUs' ranks ([`CpuLoad::rank`]), or stop
+    /// reading them: for a machine whose cores differ in speed.
+    pub fn set_ranked(&self, ranked: bool) {
+        self.ranked.store(ranked, Ordering::Relaxed);
+    }
+
+    /// Whether placement reads the CPUs' ranks.
+    pub fn is_ranked(&self) -> bool {
+        self.ranked.load(Ordering::Relaxed)
     }
 
     /// How many CPUs there are.
@@ -208,6 +294,14 @@ impl Topology {
 
     /// The CPUs that share `level` with `cpu`.
     pub fn span(&self, cpu: usize, level: Level) -> CpuSet {
+        match self.known.get(cpu) {
+            Some(known) => known.spans[level.index()],
+            None => self.span_of(cpu, level),
+        }
+    }
+
+    /// [`Topology::span`], worked out from the places.
+    fn span_of(&self, cpu: usize, level: Level) -> CpuSet {
         let mut set = CpuSet::EMPTY;
         for other in 0..self.cpus {
             if self.shares(cpu, other, level) {
@@ -219,13 +313,26 @@ impl Topology {
 
     /// The levels of `cpu` that add CPUs to the one below, closest first.
     pub fn levels(&self, cpu: usize) -> impl Iterator<Item = Level> + '_ {
+        let grows = match self.known.get(cpu) {
+            Some(known) => known.grows,
+            None => self.grows_of(cpu),
+        };
+        Level::ALL.into_iter().filter(move |level| grows & (1 << level.index()) != 0)
+    }
+
+    /// [`Topology::levels`] as bits of [`Level::ALL`], worked out from the
+    /// places.
+    fn grows_of(&self, cpu: usize) -> u8 {
         let mut below = CpuSet::single(cpu);
-        Level::ALL.into_iter().filter(move |&level| {
-            let span = self.span(cpu, level).or(&below);
-            let grows = span.len() > below.len();
+        let mut grows = 0;
+        for level in Level::ALL {
+            let span = self.span_of(cpu, level).or(&below);
+            if span.len() > below.len() {
+                grows |= 1 << level.index();
+            }
             below = span;
-            grows
-        })
+        }
+        grows
     }
 
     /// The CPU an underloaded `this` should pull a thread from, comparing
@@ -283,20 +390,16 @@ impl Topology {
     }
 
     /// Where a waking fair thread that last ran on `prev` should run: an
-    /// idle CPU as close to `prev` as possible, else `prev`, else the least
-    /// busy CPU it may use. `allowed` must not be empty.
+    /// idle CPU as close to `prev` as possible (the fastest idle one, when
+    /// ranked), else `prev`, else the least busy CPU it may use. `allowed`
+    /// must not be empty.
     pub fn select_cpu(
         &self,
         prev: usize,
         allowed: &CpuSet,
         loads: &(impl Loads + ?Sized),
     ) -> usize {
-        let idle =
-            |cpu: usize| allowed.contains(cpu) && loads.load(cpu).is_some_and(|l| l.running == 0);
-        if idle(prev) {
-            return prev;
-        }
-        if let Some(cpu) = self.nearest(prev, allowed, idle) {
+        if let Some(cpu) = self.idle_near(prev, allowed, loads) {
             return cpu;
         }
         if allowed.contains(prev) && prev < self.cpus {
@@ -316,12 +419,7 @@ impl Topology {
         allowed: &CpuSet,
         loads: &(impl Loads + ?Sized),
     ) -> usize {
-        let idle =
-            |cpu: usize| allowed.contains(cpu) && loads.load(cpu).is_some_and(|l| l.running == 0);
-        if idle(prev) {
-            return prev;
-        }
-        if let Some(cpu) = self.nearest(prev, allowed, idle) {
+        if let Some(cpu) = self.idle_near(prev, allowed, loads) {
             return cpu;
         }
         let below = |cpu: usize| loads.load(cpu).map_or(u8::MAX, |l| l.rt_prio);
@@ -337,6 +435,61 @@ impl Topology {
             None if allowed.contains(prev) && prev < self.cpus => prev,
             None => self.least_busy(prev, allowed, loads),
         }
+    }
+
+    /// The idle CPU a thread that last ran on `prev` should wake on, if
+    /// one it may use is idle: `prev` itself, else the nearest, by level
+    /// and then by node distance. When ranked, only the fastest idle CPUs
+    /// count.
+    fn idle_near(
+        &self,
+        prev: usize,
+        allowed: &CpuSet,
+        loads: &(impl Loads + ?Sized),
+    ) -> Option<usize> {
+        let load = |cpu: usize| loads.load(cpu).filter(|l| allowed.contains(cpu) && l.running == 0);
+        let rank = if self.is_ranked() { self.fastest(allowed, &load, 0)? } else { 0 };
+        let idle = |cpu: usize| load(cpu).is_some_and(|l| l.rank >= rank);
+        if idle(prev) {
+            return Some(prev);
+        }
+        self.nearest(prev, allowed, idle)
+    }
+
+    /// Where the thread running alone on `cpu` should move, if the
+    /// topology is ranked: the nearest of the fastest idle CPUs it may
+    /// use, when they are faster than `cpu`. `None` on an unranked
+    /// topology, or when no idle CPU it may use is faster.
+    pub fn faster_idle(
+        &self,
+        cpu: usize,
+        allowed: &CpuSet,
+        loads: &(impl Loads + ?Sized),
+    ) -> Option<usize> {
+        if !self.is_ranked() {
+            return None;
+        }
+        let here = loads.load(cpu)?.rank;
+        let load = |c: usize| loads.load(c).filter(|l| allowed.contains(c) && l.running == 0);
+        let rank = self.fastest(allowed, &load, here.checked_add(1)?)?;
+        self.nearest(cpu, allowed, |c| load(c).is_some_and(|l| l.rank >= rank))
+    }
+
+    /// The highest rank, of at least `least`, of the CPUs in `allowed`
+    /// for which `load` gives a load.
+    fn fastest(
+        &self,
+        allowed: &CpuSet,
+        load: &impl Fn(usize) -> Option<CpuLoad>,
+        least: u8,
+    ) -> Option<u8> {
+        allowed
+            .iter()
+            .take_while(|&c| c < self.cpus)
+            .filter_map(load)
+            .map(|l| l.rank)
+            .filter(|&rank| rank >= least)
+            .max()
     }
 
     /// The CPU satisfying `want` that is closest to `cpu`, by level and
@@ -370,14 +523,27 @@ impl Topology {
 
 #[cfg(test)]
 mod tests {
+    use std::alloc::Global;
+
     use proptest::prelude::*;
 
     use super::*;
 
+    fn flat(cpus: usize) -> Topology<Global> {
+        Topology::flat_in(cpus, Global)
+    }
+
     /// Two packages of two cores with two hardware threads each; one node
-    /// per package.
-    fn machine() -> Topology {
-        let mut topology = Topology::flat(8);
+    /// per package; finished.
+    fn machine() -> Topology<Global> {
+        let mut topology = unfinished_machine();
+        assert!(topology.finish());
+        topology
+    }
+
+    /// [`machine`], with its spans worked out each time.
+    fn unfinished_machine() -> Topology<Global> {
+        let mut topology = flat(8);
         for cpu in 0..8 {
             topology.set_place(
                 cpu,
@@ -394,7 +560,7 @@ mod tests {
     }
 
     fn loads(running: &[u32]) -> Vec<CpuLoad> {
-        running.iter().map(|&r| CpuLoad { running: r, rt_prio: 0 }).collect()
+        running.iter().map(|&r| CpuLoad { running: r, ..CpuLoad::default() }).collect()
     }
 
     #[test]
@@ -410,15 +576,30 @@ mod tests {
             [Level::Core, Level::Package, Level::Machine]
         );
         // One package over two nodes counts as one per node.
-        let mut split = Topology::flat(4);
+        let mut split = flat(4);
         for cpu in 0..4 {
             split.set_place(cpu, Place { package: 0, core: cpu as u32, node: (cpu / 2) as u8 });
         }
         assert_eq!(split.span(3, Level::Package).to_string(), "2-3");
         assert_eq!(split.levels(3).collect::<Vec<_>>(), [Level::Package, Level::Machine]);
-        let flat = Topology::flat(4);
-        assert_eq!(flat.levels(2).collect::<Vec<_>>(), [Level::Package]);
-        assert_eq!(Topology::flat(1).levels(0).count(), 0);
+        let four = flat(4);
+        assert_eq!(four.levels(2).collect::<Vec<_>>(), [Level::Package]);
+        assert_eq!(flat(1).levels(0).count(), 0);
+    }
+
+    #[test]
+    fn a_change_of_place_forgets_what_finish_worked_out() {
+        let mut topology = flat(4);
+        assert!(topology.finish());
+        assert_eq!(topology.span(3, Level::Package).to_string(), "0-3");
+        topology.set_place(3, Place { package: 1, core: 0, node: 0 });
+        assert_eq!(topology.span(3, Level::Package).to_string(), "3");
+        assert_eq!(topology.span(0, Level::Package).to_string(), "0-2");
+        assert!(topology.finish());
+        assert_eq!(topology.span(0, Level::Package).to_string(), "0-2");
+        assert_eq!(topology.levels(3).collect::<Vec<_>>(), [Level::Node]);
+        topology.set_cpus(2);
+        assert_eq!(topology.span(0, Level::Machine).to_string(), "0-1");
     }
 
     #[test]
@@ -486,7 +667,7 @@ mod tests {
         let topology = machine();
         let all = CpuSet::first(4);
         let busy = |prios: [u8; 4]| {
-            prios.iter().map(|&p| CpuLoad { running: 1, rt_prio: p }).collect::<Vec<_>>()
+            prios.iter().map(|&p| CpuLoad { running: 1, rt_prio: p, rank: 0 }).collect::<Vec<_>>()
         };
         assert_eq!(topology.select_rt_cpu(0, 50, &all, &*busy([0, 0, 0, 0])), 0);
         assert_eq!(topology.select_rt_cpu(0, 50, &all, &*busy([60, 10, 0, 70])), 2);
@@ -496,7 +677,185 @@ mod tests {
         assert_eq!(topology.select_rt_cpu(0, 50, &all, &*mixed), 3);
     }
 
+    /// A machine like a 12th generation Core's, in small: CPUs 0 to 7 are
+    /// four performance cores of two threads each, CPUs 8 to 11 four
+    /// efficient cores of one, all in one package. Ranks as the kernel
+    /// gives them: a performance core's first thread, then an efficient
+    /// core, then a performance core's second thread.
+    fn hybrid() -> Topology<Global> {
+        let mut topology = flat(12);
+        for cpu in 0..12 {
+            let core = if cpu < 8 { cpu / 2 } else { cpu - 4 };
+            topology.set_place(cpu, Place { package: 0, core: core as u32, node: 0 });
+        }
+        assert!(topology.finish());
+        topology.set_ranked(true);
+        topology
+    }
+
+    const HYBRID_RANKS: [u8; 12] = [3, 1, 3, 1, 3, 1, 3, 1, 2, 2, 2, 2];
+
+    fn ranked(running: &[u32]) -> Vec<CpuLoad> {
+        running
+            .iter()
+            .zip(HYBRID_RANKS)
+            .map(|(&running, rank)| CpuLoad { running, rt_prio: 0, rank })
+            .collect()
+    }
+
+    #[test]
+    fn waking_threads_go_to_the_fastest_idle_cpu() {
+        let topology = hybrid();
+        let all = CpuSet::first(12);
+        // Last on an efficient core, with a performance core idle.
+        assert_eq!(topology.select_cpu(9, &all, &*ranked(&[0; 12])), 0);
+        // The nearest idle performance core's first thread.
+        assert_eq!(
+            topology.select_cpu(9, &all, &*ranked(&[1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0])),
+            4
+        );
+        // Every performance core busy: an idle efficient core before a
+        // performance core's second thread, and the one it ran on first.
+        let first_threads_busy = [1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0];
+        assert_eq!(topology.select_cpu(9, &all, &*ranked(&first_threads_busy)), 9);
+        assert_eq!(topology.select_cpu(0, &all, &*ranked(&first_threads_busy)), 8);
+        // Only a second thread idle.
+        let only_seconds = [1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+        assert_eq!(topology.select_cpu(9, &all, &*ranked(&only_seconds)), 1);
+        // Nothing idle: where it ran.
+        assert_eq!(topology.select_cpu(9, &all, &*ranked(&[1; 12])), 9);
+        // Affinity first.
+        let efficient = CpuSet::from_words([0xf00, 0, 0, 0]);
+        assert_eq!(topology.select_cpu(0, &efficient, &*ranked(&[0; 12])), 8);
+        // Real-time threads look for idle CPUs the same way.
+        assert_eq!(topology.select_rt_cpu(9, 50, &all, &*ranked(&[0; 12])), 0);
+        // Unranked, the topology keeps a thread where it ran.
+        topology.set_ranked(false);
+        assert_eq!(topology.select_cpu(9, &all, &*ranked(&[0; 12])), 9);
+    }
+
+    #[test]
+    fn a_lone_thread_moves_to_a_faster_idle_cpu() {
+        let topology = hybrid();
+        let all = CpuSet::first(12);
+        let alone_on_9 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0];
+        assert_eq!(topology.faster_idle(9, &all, &*ranked(&alone_on_9)), Some(0));
+        // Only performance cores' second threads idle: slower than an
+        // efficient core, so it stays.
+        let seconds_idle = [1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1];
+        assert_eq!(topology.faster_idle(9, &all, &*ranked(&seconds_idle)), None);
+        // From a second thread, an idle efficient core is faster.
+        let one_efficient_idle = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1];
+        assert_eq!(topology.faster_idle(1, &all, &*ranked(&one_efficient_idle)), Some(10));
+        // The fastest never move, nor threads that may use no faster CPU.
+        let alone_on_0 = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(topology.faster_idle(0, &all, &*ranked(&alone_on_0)), None);
+        let efficient = CpuSet::from_words([0xf00, 0, 0, 0]);
+        assert_eq!(topology.faster_idle(9, &efficient, &*ranked(&alone_on_9)), None);
+        // Unranked, nothing moves.
+        topology.set_ranked(false);
+        assert_eq!(topology.faster_idle(9, &all, &*ranked(&alone_on_9)), None);
+    }
+
     proptest! {
+        /// With every rank the same, a ranked topology places threads as
+        /// an unranked one does: a machine whose cores are alike is
+        /// untouched by ranking.
+        #[test]
+        fn equal_ranks_place_as_unranked(
+            prev in 0usize..12,
+            words in any::<u64>(),
+            running in prop::collection::vec(0u32..3, 12),
+            rank in any::<u8>(),
+        ) {
+            let topology = hybrid();
+            let allowed = CpuSet::from_words([words & 0xfff, 0, 0, 0]);
+            prop_assume!(!allowed.is_empty());
+            let loads: Vec<CpuLoad> =
+                running.iter().map(|&running| CpuLoad { running, rt_prio: 0, rank }).collect();
+            let ranked = (
+                topology.select_cpu(prev, &allowed, &*loads),
+                topology.select_rt_cpu(prev, 40, &allowed, &*loads),
+                topology.faster_idle(prev, &allowed, &*loads),
+            );
+            topology.set_ranked(false);
+            let unranked = (
+                topology.select_cpu(prev, &allowed, &*loads),
+                topology.select_rt_cpu(prev, 40, &allowed, &*loads),
+                None,
+            );
+            prop_assert_eq!(ranked, unranked);
+        }
+
+        /// A ranked wake-up picks an idle CPU of the highest rank the
+        /// thread may use, when one is idle, and a move is always to a
+        /// faster idle CPU.
+        #[test]
+        fn ranked_choices_are_the_fastest(
+            prev in 0usize..12,
+            words in any::<u64>(),
+            running in prop::collection::vec(0u32..3, 12),
+        ) {
+            let topology = hybrid();
+            let allowed = CpuSet::from_words([words & 0xfff, 0, 0, 0]);
+            prop_assume!(!allowed.is_empty());
+            let loads = ranked(&running);
+            let best = allowed.iter().filter(|&c| running[c] == 0).map(|c| HYBRID_RANKS[c]).max();
+            let chosen = topology.select_cpu(prev, &allowed, &*loads);
+            prop_assert!(allowed.contains(chosen));
+            if let Some(best) = best {
+                prop_assert_eq!(running[chosen], 0);
+                prop_assert_eq!(HYBRID_RANKS[chosen], best);
+            }
+            if let Some(to) = topology.faster_idle(prev, &allowed, &*loads) {
+                prop_assert!(allowed.contains(to));
+                prop_assert_eq!(running[to], 0);
+                prop_assert!(HYBRID_RANKS[to] > HYBRID_RANKS[prev]);
+            }
+        }
+
+        /// What `finish` works out answers as the places do.
+        #[test]
+        fn finished_answers_as_worked_out(
+            cpus in 1usize..16,
+            places in prop::collection::vec((0u32..3, 0u32..4, 0u8..3), 16),
+            running in prop::collection::vec(0u32..4, 16),
+            words in any::<u64>(),
+        ) {
+            let mut worked_out = flat(cpus);
+            for (cpu, &(package, core, node)) in places.iter().enumerate().take(cpus) {
+                worked_out.set_place(cpu, Place { package, core, node });
+            }
+            worked_out.set_distance(0, 1, 21);
+            let mut finished = flat(cpus);
+            for cpu in 0..cpus {
+                finished.set_place(cpu, worked_out.place(cpu));
+            }
+            finished.set_distance(0, 1, 21);
+            prop_assert!(finished.finish());
+            let loads = loads(&running);
+            let allowed = CpuSet::from_words([words & 0xffff, 0, 0, 0]).and(&CpuSet::first(cpus));
+            for cpu in 0..cpus {
+                for level in Level::ALL {
+                    prop_assert_eq!(finished.span(cpu, level), worked_out.span(cpu, level));
+                    prop_assert_eq!(
+                        finished.find_busiest(cpu, level, &*loads),
+                        worked_out.find_busiest(cpu, level, &*loads)
+                    );
+                }
+                prop_assert_eq!(
+                    finished.levels(cpu).collect::<Vec<_>>(),
+                    worked_out.levels(cpu).collect::<Vec<_>>()
+                );
+                if !allowed.is_empty() {
+                    prop_assert_eq!(
+                        finished.select_cpu(cpu, &allowed, &*loads),
+                        worked_out.select_cpu(cpu, &allowed, &*loads)
+                    );
+                }
+            }
+        }
+
         #[test]
         fn placement_respects_affinity(prev in 0usize..8, words in any::<u64>(), running in prop::collection::vec(0u32..4, 8)) {
             let topology = machine();
