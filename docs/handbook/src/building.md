@@ -93,6 +93,11 @@ udftools, UDFclient and genisoimage make and fill the UDF volumes Radix's
 UDF tests read. Fedora and Arch Linux have no UDFclient package: build it
 from <https://www.13thmonkey.org/udfclient/>, or test in the container.
 
+pixman, libxkbcommon and xkeyboard-config are what windowd's unit tests
+link and read on the host. Only `./ob test unit` needs them, so
+`./ob doctor` shows them as a note when they are absent, and the image
+builds and boots without them.
+
 The Go toolchain, which builds programs in Go for Radix, is built from
 source by `./ob ports` (the `go` port), and only a release of Go builds Go.
 `ob` downloads Go's own toolchain module for the release the port pins (about

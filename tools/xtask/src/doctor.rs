@@ -155,6 +155,30 @@ fn library_version(module: &str) -> Option<String> {
     (output.status.success() && !version.is_empty()).then_some(version)
 }
 
+/// What windowd's unit tests link and read on this machine, as
+/// pkg-config names each, with its Debian package: the library windowd
+/// draws with, the one it reads keyboard layouts with, and the layouts.
+const WINDOW_TEST_LIBRARIES: &[(&str, &str)] = &[
+    ("pixman-1", "libpixman-1-dev"),
+    ("xkbcommon", "libxkbcommon-dev"),
+    ("xkeyboard-config", "xkb-data"),
+];
+
+/// Those of [`WINDOW_TEST_LIBRARIES`] this machine lacks. Only `ob test
+/// unit` needs them, so a host that builds and boots the image may go
+/// without.
+pub fn window_test_libraries_absent() -> Vec<&'static str> {
+    let absent =
+        WINDOW_TEST_LIBRARIES.iter().filter(|(module, _)| library_version(module).is_none());
+    absent.map(|(module, _)| *module).collect()
+}
+
+/// How to install [`WINDOW_TEST_LIBRARIES`].
+pub fn window_test_libraries_install() -> String {
+    let packages: Vec<&str> = WINDOW_TEST_LIBRARIES.iter().map(|(_, package)| *package).collect();
+    format!("packages {}", packages.join(", "))
+}
+
 fn program_version(program: &str, flag: &str) -> Option<String> {
     let path = process::find_program(program)?;
     let version = Command::new(&path)
@@ -626,40 +650,6 @@ fn requirements() -> Vec<Requirement> {
             fallback: None,
         },
         Requirement {
-            name: "pixman",
-            purpose: "the library windowd draws with, which its unit tests link on this machine",
-            found: |_| library_version("pixman-1"),
-            packages: Packages {
-                apt: Some("libpixman-1-dev"),
-                dnf: Some("pixman-devel"),
-                pacman: Some("pixman"),
-            },
-            fallback: None,
-        },
-        Requirement {
-            name: "libxkbcommon",
-            purpose: "the library windowd reads keyboard layouts with, which its unit tests link \
-                      on this machine",
-            found: |_| library_version("xkbcommon"),
-            packages: Packages {
-                apt: Some("libxkbcommon-dev"),
-                dnf: Some("libxkbcommon-devel"),
-                pacman: Some("libxkbcommon"),
-            },
-            fallback: None,
-        },
-        Requirement {
-            name: "xkeyboard-config",
-            purpose: "the keyboard layouts windowd's unit tests give their programs",
-            found: |_| library_version("xkeyboard-config"),
-            packages: Packages {
-                apt: Some("xkb-data"),
-                dnf: Some("xkeyboard-config"),
-                pacman: Some("xkeyboard-config"),
-            },
-            fallback: None,
-        },
-        Requirement {
             name: "Autoconf",
             purpose: "makes OpenSSH's configure script from the release's commit",
             found: |_| program_version("autoconf", "--version"),
@@ -783,6 +773,17 @@ pub fn doctor(ctx: &Ctx) -> Result<()> {
              (packages dash, bash and util-linux)",
             "Shell corpus",
             absent.join(", ")
+        );
+    }
+    let absent = window_test_libraries_absent();
+    if absent.is_empty() {
+        println!("  ok       {:<15} pixman, libxkbcommon and xkeyboard-config", "Window tests");
+    } else {
+        println!(
+            "  note     {:<15} {} not installed; only `./ob test unit` needs them ({})",
+            "Window tests",
+            absent.join(", "),
+            window_test_libraries_install()
         );
     }
     match program_version(crate::riscv::QEMU, "--version") {
