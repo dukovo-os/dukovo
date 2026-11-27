@@ -187,7 +187,7 @@ fn dukovo_check(vm: &mut Vm, _case: &Case) -> Result<(), String> {
             count("last-lines", LINE, "/tmp/last.txt"),
         ),
     )?;
-    vm.expect_screen(&["last 0", "last-heading 1", "last-lines 16", "same 42", "mode 1"])?;
+    vm.expect_screen(&["last 0", "last-heading 1", "last-lines 17", "same 42", "mode 1"])?;
 
     // SSH on, as it was meant to be left: keys alone sign in. The port is
     // one that other machines reach now.
