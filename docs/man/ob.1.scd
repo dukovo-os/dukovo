@@ -179,7 +179,9 @@ _target/userspace/_).
 	third: Btrfs made and filled by the kernel's Btrfs crate, as
 	*mkfs-btrfs*(8) makes one, whose read-only subvolume _release_ holds
 	the release, signed with this machine's keys, which *ob* makes in
-	_.cache/release-keys_ the first time (*system-release*(8)). The boot
+	_.cache/release-keys_ the first time (*system-release*(8)); the
+	project's stick and ISO of a release are made by *release images*,
+	and trust the project's release root instead. The boot
 	menu starts the live system, which Spark runs from memory without
 	taking any disk's root (*spark*(8)), or boots the machine's first
 	disk.
@@ -2171,7 +2173,7 @@ _target/userspace/_).
 	are changed with *release canary* (ADR 0533), and *rollout canary*
 	is refused. *bundle*(1) says what a computer does with one.
 
-*release* *build* [*--out* _dir_] | *sign* _version_ [*--channel* _channel_] [*--serial* _n_] | *record* _version_ | *key* *yubikey* [*--serial* _n_] | *root* | *server* *setup* [*--dukovo*] | *channel* _repository_ (_channel_ _version_ | *--firmware* _version_|*none* _channel_) | *advisories* _repository_ | *deploy* _repository_ | *send* [*--copy-only*] _repository_ | *check* [*--root* _file_] [_url_] | *rollout* (*pause* _version_ _reason_ | *resume* _version_) | *canaries* [*--json*] | *canary* (*add* _name_ _key_ | *remove* _name_ | _name_ *red*|*green* _reason_ | _name_ *auto*)
+*release* *build* [*--out* _dir_] | *sign* _version_ [*--channel* _channel_] [*--serial* _n_] | *record* _version_ | *images* _version_ [*--serial* _n_] | *key* *yubikey* [*--serial* _n_] | *root* | *server* *setup* [*--dukovo*] | *channel* _repository_ (_channel_ _version_ | *--firmware* _version_|*none* _channel_) | *advisories* _repository_ | *deploy* _repository_ | *send* [*--copy-only*] _repository_ | *check* [*--root* _file_] [_url_] | *rollout* (*pause* _version_ _reason_ | *resume* _version_) | *canaries* [*--json*] | *canary* (*add* _name_ _key_ | *remove* _name_ | _name_ *red*|*green* _reason_ | _name_ *auto*)
 	Build the system's release, and deploy the system's releases to the
 	update server and check what it serves (ADR 0467), over the same SSH
 	login as *catalog*.
@@ -2223,11 +2225,29 @@ _target/userspace/_).
 	_https://rekor.sigstage.dev_. The repository is then sent with
 	*deploy*.
 
+	*images* makes the project's install stick and ISO of _version_ once
+	it is signed and deployed (ADR 0779), as _releases/README.md_ walks
+	through. It refuses unless the checkout has nothing changed and
+	builds _version_. It runs *build*, and *system-release*(8) *medium*
+	reads the release as the update server serves it, from
+	_releases/metadata/1.root.json_, and refuses unless it is the one
+	just built, byte for byte. The stick and the ISO trust that root and
+	carry the release as served, so a system installed from one takes
+	its updates from the server. Then *system-release sums* writes their
+	_SHA256SUMS_, shows it, asks for the version to be typed, and signs
+	it on the YubiKey, or the one *--serial* names, into
+	_SHA256SUMS.yubikey-SERIAL.sig_, which *openssl dgst -sha256 -verify*
+	checks with _releases/keys/yubikey-SERIAL.pem_. It sends the
+	signature to the Rekor log as *sign* does; *record* sends the
+	release's and the images' entries the log has not answered. All of
+	it is left in _out/release-images/version_.
+
 	*key yubikey* and *root* are the key ceremony (ADRs 0457 and 0538),
 	which _releases/README.md_ walks through. *key yubikey* adds
 	_releases/keys/yubikey-SERIAL.json_, the public half of the P-256
 	key in slot 95 of the YubiKey plugged in, or of the one *--serial*
-	names, made with ykman. *root* signs root version 1 of the system's
+	names, made with ykman, and the key alone in PEM beside it,
+	_releases/keys/yubikey-SERIAL.pem_. *root* signs root version 1 of the system's
 	releases on both YubiKeys, a PIN and a touch for each, from their
 	keys and the server's online key in _releases/keys/_, and writes
 	_releases/metadata/1.root.json_. The last line it prints is the

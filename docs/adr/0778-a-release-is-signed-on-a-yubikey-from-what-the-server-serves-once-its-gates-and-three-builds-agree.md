@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0778. A release is signed on a YubiKey from what the server serves, once its gates and three builds agree
 
-- Status: Accepted; carries out the signing of [0457](0457-releases-are-signed-on-two-hardware-keys-after-three-builds-agree.md) and the gates of [0450](0450-updates-keep-eleven-promises-each-a-gate-before-a-release-is-signed.md)
+- Status: Accepted; the install images of a release by [0779](0779-the-project-s-install-images-carry-the-release-as-the-server-serves-it-and-their-checksums-are-signed-on-a-yubikey.md); carries out the signing of [0457](0457-releases-are-signed-on-two-hardware-keys-after-three-builds-agree.md) and the gates of [0450](0450-updates-keep-eleven-promises-each-a-gate-before-a-release-is-signed.md)
 - Date: 2026-11-26
 
 ## Context
@@ -106,10 +106,8 @@ two small files.
 - The first entry sent to the live log is the first release's.
   `DUKOVO_REKOR=https://rekor.sigstage.dev` sends to Sigstore's staging
   log instead, for a trial.
-- **Not yet:**
-  - Install images that trust the release root and hold a release
-    signed on a YubiKey, so that an install takes updates from
-    updates.dukovo.org (`docs/deferred.md`).
-  - `ob` commands for a channel's move, a withdrawal and the advisories
-    alone on a YubiKey; until then they are `system-release fetch`, the
-    command with `--yubikey-helper`, and `./ob release deploy`.
+- The install images of a signed release are made by `./ob release
+  images` ([0779](0779-the-project-s-install-images-carry-the-release-as-the-server-serves-it-and-their-checksums-are-signed-on-a-yubikey.md)).
+- **Not yet:** `ob` commands for a channel's move, a withdrawal and the
+  advisories alone on a YubiKey; until then they are `system-release
+  fetch`, the command with `--yubikey-helper`, and `./ob release deploy`.

@@ -470,6 +470,49 @@ pub(crate) fn write_roots(dir: &Path, keys: &Keys) -> Result<(), String> {
     std::fs::write(&path, keys.root()).map_err(|err| format!("{}: {err}", path.display()))
 }
 
+/// The file in a repository's folder that names the release to read
+/// among those its targets list, when they list more than one: an
+/// install medium's, whose metadata is the update server's (ADR 0779),
+/// and Rescue's. It chooses and is not trusted: the release it names is
+/// read and checked as any other, and it can name only one the targets
+/// list.
+pub const VERSION_FILE: &str = "version";
+
+/// [`open`], of `version`, or else of the release the repository's
+/// [`VERSION_FILE`] names, or else of the only one there.
+///
+/// # Errors
+///
+/// As [`open`], and if the file names what cannot be a version.
+pub fn open_named(dir: &Path, root: &[u8], version: Option<&str>) -> Result<Published, String> {
+    if version.is_some() {
+        return open(dir, root, version);
+    }
+    let named = dir.join(VERSION_FILE);
+    let text = match std::fs::read_to_string(&named) {
+        Ok(text) => Some(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => return Err(format!("{}: {err}", named.display())),
+    };
+    let version = match text.as_deref().map(str::trim) {
+        Some(text) => {
+            Some(plain_version(text).ok_or_else(|| format!("{}: not a version", named.display()))?)
+        }
+        None => None,
+    };
+    open(dir, root, version)
+}
+
+/// `text`, if it can only be a version: letters, digits, `.`, `-` and
+/// `+`, and no more than 64 of them.
+fn plain_version(text: &str) -> Option<&str> {
+    let plain = !text.is_empty()
+        && text.len() <= 64
+        && !text.starts_with('.')
+        && text.bytes().all(|b| b.is_ascii_alphanumeric() || b".-+".contains(&b));
+    plain.then_some(text)
+}
+
 /// Reads the release in the repository at `dir` with the TUF client,
 /// starting from `root`, the root this computer trusts, offline: the
 /// release of `version`, or the only one there.

@@ -48,6 +48,7 @@ mod process;
 mod qemu;
 mod redteam;
 mod release;
+mod release_images;
 mod release_sign;
 mod repro;
 mod riscv;
@@ -841,6 +842,7 @@ resolve)."
             "Usage: ./ob release build [--out <dir>]
        ./ob release sign <version> [--channel <channel>] [--serial <number>]
        ./ob release record <version>
+       ./ob release images <version> [--serial <number>]
        ./ob release key yubikey [--serial <number>]
        ./ob release root
        ./ob release server setup [--dukovo]
@@ -882,10 +884,24 @@ touch. Last, it sends the signature to Sigstore's Rekor log and keeps the
 answer beside it; `record` sends it again when the log could not be reached,
 and $DUKOVO_REKOR names another log. `deploy` then sends the repository.
 
+`images` makes the project's install stick and ISO of <version> once it is
+signed and deployed (ADR 0779), as releases/README.md walks through. It
+refuses unless the checkout has nothing changed and builds <version>. It runs
+`build`, reads the release as updates.dukovo.org serves it, from
+releases/metadata/1.root.json, and refuses unless it is the one just built,
+byte for byte. The stick and the ISO trust that root and carry the release as
+served, so a system installed from one takes its updates from the server.
+Then it writes their SHA256SUMS, shows it, asks for the version to be typed,
+signs it on a YubiKey (SHA256SUMS.yubikey-SERIAL.sig, which `openssl dgst
+-sha256 -verify releases/keys/yubikey-SERIAL.pem` checks), and sends the
+signature to the Rekor log, as `sign` does; `record` sends both. All of it is
+left in out/release-images/<version>.
+
 `key yubikey` and `root` are the key ceremony (ADRs 0457 and 0538), as
 releases/README.md says. `key yubikey` adds releases/keys/yubikey-SERIAL.json,
 the P-256 key in slot 95 of the YubiKey plugged in, or of the one --serial
-names, made with ykman. `root` signs root version 1 on both YubiKeys, a PIN
+names, made with ykman, and the key alone in PEM beside it,
+releases/keys/yubikey-SERIAL.pem. `root` signs root version 1 on both YubiKeys, a PIN
 and a touch for each, from the two YubiKeys' keys and the server's online key
 in releases/keys/, and writes releases/metadata/1.root.json; the last line it
 prints is the root's SHA-256. It signs the first root once.
@@ -1265,6 +1281,7 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
                 disk_check: args.value("--disk-check")?,
                 account: None,
                 lab: None,
+                release: None,
             };
             let profile = args.profile(&ctx.config)?;
             args.finish()?;

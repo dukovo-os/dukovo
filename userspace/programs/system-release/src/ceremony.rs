@@ -53,6 +53,14 @@ impl ReleaseKey {
         format!("yubikey-{}.json", self.serial)
     }
 
+    /// The name of the file beside it that holds the key alone, in PEM,
+    /// which `openssl` checks the install images' checksums with (ADR
+    /// 0779).
+    #[must_use]
+    pub fn pem_name(&self) -> String {
+        format!("yubikey-{}.pem", self.serial)
+    }
+
     fn to_json(&self) -> Value {
         json!({ "yubikey": self.serial, "slot": RELEASE_SLOT, "key": self.key })
     }
@@ -71,7 +79,8 @@ impl ReleaseKey {
 }
 
 /// Reads the release key of YubiKey `serial`, or of the only one plugged
-/// in, through `helper`, and keeps its public half in `dir`.
+/// in, through `helper`, and keeps its public half in `dir`: its file,
+/// which it returns, and the key alone in PEM beside it.
 ///
 /// # Errors
 ///
@@ -88,6 +97,8 @@ pub fn add_yubikey(dir: &Path, helper: &Path, serial: Option<u64>) -> Result<Pat
     let mut text = serde_json::to_string_pretty(&key.to_json()).map_err(|e| e.to_string())?;
     text.push('\n');
     std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+    let pem = dir.join(key.pem_name());
+    std::fs::write(&pem, &key.key.keyval.public).map_err(|e| format!("{}: {e}", pem.display()))?;
     Ok(path)
 }
 

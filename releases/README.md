@@ -13,18 +13,21 @@ The public half of the system's release repository is kept here (ADRs
   server setup` writes it the first time it sets the server up; its
   secret half never leaves the server.
 - `keys/yubikey-SERIAL.json`: the public half of the release key in slot
-  95 of each of the two YubiKeys, which `./ob release key yubikey` writes.
-  Slot 9c of the same YubiKeys holds the catalog's key; the two are kept
-  apart so that nothing signed for one repository is taken by the other.
+  95 of each of the two YubiKeys, which `./ob release key yubikey` writes,
+  and `keys/yubikey-SERIAL.pem`, the same key alone in PEM, which checks
+  the signature of an install image's checksums with `openssl`. Slot 9c
+  of the same YubiKeys holds the catalog's key; the two are kept apart so
+  that nothing signed for one repository is taken by the other.
 - `metadata/1.root.json`: the first root of the releases the update
   server serves, signed on both YubiKeys in the key ceremony. `./ob
   release deploy` deploys only a repository that starts from it.
 
 The ceremony signed the first root on 2026-11-17; its SHA-256 is
 `b9b2421ef1cd9f67d376547970bac6dcecd1c85f83a333559ebfb8d6c9345e14`.
-`./ob release sign` signs the project's releases on the YubiKeys
-(below). The images and install sticks a machine builds still hold a
-release signed with that machine's own keys in `.cache/release-keys`,
+`./ob release sign` signs the project's releases on the YubiKeys, and
+`./ob release images` makes their install stick and ISO (below). Every
+other image a machine builds, with `./ob image` or for the tests, holds
+a release signed with that machine's own keys in `.cache/release-keys`,
 and nothing those keys sign is deployed.
 
 `stand-in-root.json` is a root made once with `system-release keys`,
@@ -111,6 +114,43 @@ and `gh` must be signed in.
 When it stops, it says which gate or build it was. A build that is not
 CI's is read with `diff` of the two `files.txt` it names, which are in
 `out/release-sign/ci-COMMIT/`.
+
+## Making the install images
+
+Once the release is deployed, on the same computer, from the same
+checkout, with one YubiKey (ADR 0779). It takes about as long as `./ob
+build`, and the PIN and a touch once more.
+
+1. Plug in a YubiKey and run `./ob release images VERSION`; with both
+   plugged in, `--serial` names one. It builds the release again, reads
+   it as updates.dukovo.org serves it, and stops unless the two are the
+   same.
+2. It builds the install stick and the ISO, which trust
+   `metadata/1.root.json` and carry the release as the server serves
+   it, so that a system installed from one updates from the server.
+3. It shows their `SHA256SUMS` and the YubiKey that will sign, and asks
+   for the version to be typed. The YubiKey then asks for its PIN and a
+   touch.
+4. It sends the signature to the Rekor log, as `sign` does; `./ob
+   release record VERSION` sends it again.
+
+Everything is in `out/release-images/VERSION`: the stick
+`dukovo-VERSION-x86_64.img`, the ISO `dukovo-VERSION-x86_64.iso`,
+`SHA256SUMS`, its signature `SHA256SUMS.yubikey-SERIAL.sig`, and the
+Rekor entry and the log's answer. Publish the first four beside the
+release notes. When it stops at the server's release, the release is
+not deployed yet or the checkout is not its commit.
+
+A download is checked with two common tools, on any system that has
+them, the key's PEM taken from this folder:
+
+```
+openssl dgst -sha256 -verify releases/keys/yubikey-SERIAL.pem \
+  -signature SHA256SUMS.yubikey-SERIAL.sig SHA256SUMS
+sha256sum -c SHA256SUMS
+```
+
+## Changing a channel by hand
 
 A channel's move, a withdrawal and the advisories alone are signed on a
 YubiKey by hand, with the system-release that `./ob release` builds in

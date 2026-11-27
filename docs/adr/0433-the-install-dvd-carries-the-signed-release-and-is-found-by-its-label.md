@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0433. The install DVD carries the signed release and is found by its label
 
-- Status: Accepted
+- Status: Accepted; the project's ISOs of a release carry it as the update server serves it, and trust the release root, by [0779](0779-the-project-s-install-images-carry-the-release-as-the-server-serves-it-and-their-checksums-are-signed-on-a-yubikey.md)
 - Date: 2026-11-09
 
 ## Context

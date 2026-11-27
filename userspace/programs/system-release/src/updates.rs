@@ -1731,7 +1731,7 @@ pub(crate) mod tests {
 
     const BUILT: i64 = 1_793_923_200;
 
-    fn about(version: &str, updates_from: &str) -> About {
+    pub(crate) fn about(version: &str, updates_from: &str) -> About {
         About {
             version: version.into(),
             commit: "01d66b7".into(),
@@ -1817,7 +1817,7 @@ pub(crate) mod tests {
     }
 
     /// The release key of YubiKey `serial`, for the repository at `dir`.
-    fn yubikey_keys(dir: &Path, helper: &Path, serial: u64) -> Keys {
+    pub(crate) fn yubikey_keys(dir: &Path, helper: &Path, serial: u64) -> Keys {
         let yubikey = crate::yubikey::release_key(helper, Some(serial)).unwrap();
         Keys::hardware(repo::roots_in(dir).unwrap(), &yubikey, &["targets"]).unwrap()
     }

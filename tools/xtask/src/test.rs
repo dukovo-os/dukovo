@@ -3987,7 +3987,7 @@ pub fn build_test_image(
     let staging = dir.join(format!("{name}-release"));
     let release = match (kind, iso) {
         (TestImage::Live, true) => {
-            Some(image::stage_release(ctx, &built.kernel, &built.programs, &staging)?)
+            Some(image::stage_release(ctx, &built.kernel, &built.programs, None, &staging)?)
         }
         _ => None,
     };
@@ -4271,7 +4271,7 @@ fn test_live(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> Result<Op
         return Ok(None);
     }
     let path = dir.join("live.btrfs");
-    image::make_live(ctx, &built.kernel, &built.programs, &dir.join("live-staging"), &path)?;
+    image::make_live(ctx, &built.kernel, &built.programs, None, &dir.join("live-staging"), &path)?;
     Ok(Some(path))
 }
 

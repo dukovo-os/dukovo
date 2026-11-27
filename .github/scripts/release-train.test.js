@@ -96,11 +96,13 @@ test('the checklist names the commands of the release and ticks nothing', () => 
     releaseDay: new Date('2026-12-08T00:00:00Z'),
   });
   const state = train.checklistState(body);
-  assert.equal(state.total, 10);
+  assert.equal(state.total, 11);
   assert.equal(state.done, 0);
   for (const wanted of [
     './ob release canaries',
-    './ob release channel <repository> beta 0.15.0',
+    './ob release sign 0.15.0',
+    './ob release deploy out/release-sign/0.15.0',
+    './ob release images 0.15.0',
     './ob release channel <repository> stable 0.15.0',
     './ob release deploy <repository>',
     './ob release check',
@@ -217,7 +219,7 @@ test('on cut day the branch is cut from the head of main and the issue is opened
   assert.equal(issue.title, 'Release 0.15');
   assert.deepEqual(repo.labelNamesOf(issue.number), ['release']);
   assert.ok(repo.labels.includes('release'));
-  assert.equal(train.checklistState(issue.body).total, 10);
+  assert.equal(train.checklistState(issue.body).total, 11);
   assert.match(core.summaryText, /cut `release\/0\.15`/);
   assert.match(core.summaryText, /opened issue #1/);
   // The version is read at the commit it cuts from, not at a branch name.
@@ -264,7 +266,7 @@ test('the version on main names the branch', async () => {
   await runOn(repo, '2026-11-24');
   assert.ok(repo.branches['release/1.0']);
   assert.equal(repo.issues[0].title, 'Release 1.0');
-  assert.match(repo.issues[0].body, /beta 1\.0\.0-alpha\.1/);
+  assert.match(repo.issues[0].body, /release sign 1\.0\.0-alpha\.1/);
 });
 
 test('a missing version stops the run with a message', async () => {
@@ -311,7 +313,7 @@ test('on release day a release with open boxes is not green and skips the month'
   const core = await runOn(repo, '2026-12-08');
   assert.equal(issue.comments.length, 1);
   assert.match(issue.comments[0].body, /not green on its release day/);
-  assert.match(issue.comments[0].body, /0 of 10 checklist boxes are ticked/);
+  assert.match(issue.comments[0].body, /0 of 11 checklist boxes are ticked/);
   assert.match(issue.comments[0].body, /The next release day is 2027-01-12/);
   assert.match(core.summaryText, /Commented on #1/);
   // The issue stays open: the bot comments and changes nothing else.

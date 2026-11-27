@@ -32,13 +32,7 @@ use crate::list::hex;
 /// recorded, `metadata` is not targets metadata, or it carries no
 /// signature of `key` that checks.
 pub fn entry(metadata: &[u8], key: &Key) -> Result<Vec<u8>, String> {
-    let id = key.id();
-    if !key.is_p256() {
-        return Err(format!(
-            "key {} is not a YubiKey's: only a release key's signature is recorded",
-            &id[..16]
-        ));
-    }
+    let id = yubikeys(key)?;
     let signed = Signed::<Targets>::parse(metadata).map_err(|err| format!("the targets: {err}"))?;
     let der = signed
         .signatures
@@ -48,21 +42,53 @@ pub fn entry(metadata: &[u8], key: &Key) -> Result<Vec<u8>, String> {
         .ok_or_else(|| {
             format!("the targets carry no signature of key {} that checks", &id[..16])
         })?;
-    let sha256 = hex(ring::digest::digest(&ring::digest::SHA256, &signed.bytes).as_ref());
+    Ok(body(&signed.bytes, &der, key))
+}
+
+/// The Rekor entry of `signature`, in DER, which `key` made of `data`, a
+/// file signed whole, as the install images' checksums are (ADR 0779).
+///
+/// # Errors
+///
+/// If `key` is not a P-256 key, or the signature does not check.
+pub fn entry_for(data: &[u8], signature: &[u8], key: &Key) -> Result<Vec<u8>, String> {
+    let id = yubikeys(key)?;
+    if !key.verifies(data, &hex(signature)) {
+        return Err(format!("the signature is not key {}'s of what it signs", &id[..16]));
+    }
+    Ok(body(data, signature, key))
+}
+
+/// `key`'s ID, if it is a YubiKey's: only a release key's signature is
+/// recorded.
+fn yubikeys(key: &Key) -> Result<String, String> {
+    let id = key.id();
+    if !key.is_p256() {
+        return Err(format!(
+            "key {} is not a YubiKey's: only a release key's signature is recorded",
+            &id[..16]
+        ));
+    }
+    Ok(id)
+}
+
+/// The entry of `der`, `key`'s signature of `signed`.
+fn body(signed: &[u8], der: &[u8], key: &Key) -> Vec<u8> {
+    let sha256 = hex(ring::digest::digest(&ring::digest::SHA256, signed).as_ref());
     let body = json!({
         "apiVersion": "0.0.1",
         "kind": "hashedrekord",
         "spec": {
             "data": { "hash": { "algorithm": "sha256", "value": sha256 } },
             "signature": {
-                "content": to_base64(&der),
+                "content": to_base64(der),
                 "publicKey": { "content": to_base64(key.keyval.public.as_bytes()) },
             },
         },
     });
-    let mut bytes = serde_json::to_vec_pretty(&body).map_err(|err| err.to_string())?;
+    let mut bytes = serde_json::to_vec_pretty(&body).expect("an entry is JSON");
     bytes.push(b'\n');
-    Ok(bytes)
+    bytes
 }
 
 #[cfg(test)]

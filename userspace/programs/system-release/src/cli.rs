@@ -32,6 +32,9 @@ usage: system-release keys [--rotate ROLE | --online KEY] DIR
                            [--updates-from VERSION] [--out FILE]
        system-release add --repo DIR --keys DIR RELEASE
        system-release fetch --root FILE --out DIR URL
+       system-release medium --root FILE --tree DIR --out DIR URL LIST
+       system-release sums --root FILE --yubikey-helper FILE [--serial NUMBER]
+                           --version VERSION --out DIR [--record FILE] [--yes] IMAGE...
        system-release offer --repo DIR SIGNER --tree DIR [--advisories SOURCE]
                             [--record FILE] [--yes] LIST CHANNEL
        system-release firmware --repo DIR --keys DIR --version VERSION
@@ -90,6 +93,8 @@ pub fn run(args: &[String]) -> i32 {
         "list" => list(&options),
         "add" => add(&options),
         "fetch" => fetch(&options),
+        "medium" => medium(&options),
+        "sums" => sums(&options),
         "offer" => offer(&options),
         "firmware" => firmware(&options),
         "pull" => pull(&options),
@@ -154,9 +159,11 @@ struct Options {
     socket: Option<PathBuf>,
     yubikey_helper: Option<PathBuf>,
     serial: Option<u64>,
-    /// For `offer`: where to write the Rekor entry of its signature.
+    /// For `offer` and `sums`: where to write the Rekor entry of the
+    /// signature.
     record: Option<PathBuf>,
-    /// For `offer`: sign without asking for the version to be typed.
+    /// For `offer` and `sums`: sign without asking for the version to be
+    /// typed.
     yes: bool,
     /// For tests: the time the canaries are judged at, in place of now.
     now: Option<i64>,
@@ -316,7 +323,11 @@ fn release_key(options: &Options) -> Result<(), String> {
     };
     let helper = needed(&options.yubikey_helper, "--yubikey-helper")?;
     let path = ceremony::add_yubikey(Path::new(dir), helper, options.serial)?;
-    println!("system-release: wrote {}", path.display());
+    println!(
+        "system-release: wrote {} and the key in PEM, {}",
+        path.display(),
+        path.with_extension("pem").display()
+    );
     Ok(())
 }
 
@@ -482,6 +493,99 @@ fn fetch(options: &Options) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// `medium --root FILE --tree DIR --out DIR URL LIST`: the release whose
+/// list `./ob release build` wrote in `LIST`, as the update server at
+/// `URL` serves it, read from the first root `FILE`, laid out in the new
+/// folder `DIR` for an install stick or ISO, with its files from the tree
+/// `--tree` (ADR 0779).
+fn medium(options: &Options) -> Result<(), String> {
+    let [url, list] = options.operands.as_slice() else {
+        return Err("medium takes the update server's address and the release list".into());
+    };
+    let root_path = needed(&options.root, "--root")?;
+    let tree = needed(&options.tree, "--tree")?;
+    let out = needed(&options.out, "--out")?;
+    let root = std::fs::read(root_path).map_err(|err| format!("{}: {err}", root_path.display()))?;
+    let list = std::fs::read(list).map_err(|err| format!("{list}: {err}"))?;
+    let url = if url.ends_with('/') { url.clone() } else { format!("{url}/") };
+    let base = tuf::Url::parse(&url).map_err(|err| format!("{url}: {err}"))?;
+    let medium = crate::medium::write(&base, &root, &list, tree, out)?;
+    println!(
+        "system-release: Dukovo {} ({}) as {url} serves it, {} of {} MiB, in {}: root version \
+         {}, timestamp {}, snapshot {}, targets {}",
+        medium.version,
+        &medium.name[..16],
+        count(medium.files, "file"),
+        medium.bytes >> 20,
+        out.display(),
+        medium.root,
+        medium.timestamp,
+        medium.snapshot,
+        medium.targets
+    );
+    Ok(())
+}
+
+/// `sums --root FILE --yubikey-helper FILE --version VERSION --out DIR
+/// IMAGE...`: the checksums of the install images of Dukovo `VERSION`,
+/// signed on a YubiKey with the release key the root `FILE` names for
+/// targets, after they are shown and the version typed, into `DIR`. With
+/// `--record FILE`, the Rekor entry of the signature is written to `FILE`
+/// (ADR 0779).
+fn sums(options: &Options) -> Result<(), String> {
+    use tuf::repo::Signer as _;
+    if options.operands.is_empty() {
+        return Err("sums takes the images to sign the checksums of".into());
+    }
+    let root_path = needed(&options.root, "--root")?;
+    let helper = needed(&options.yubikey_helper, "--yubikey-helper")?;
+    let version = needed(&options.version, "--version")?;
+    let out = needed(&options.out, "--out")?;
+    let root = std::fs::read(root_path).map_err(|err| format!("{}: {err}", root_path.display()))?;
+    let yubikey = crate::yubikey::release_key(helper, options.serial)?;
+    let images: Vec<PathBuf> = options.operands.iter().map(PathBuf::from).collect();
+    let (named, text) = crate::sums::sums(&images)?;
+    let signature = crate::sums::sign(&text, &root, &yubikey, || {
+        print!("{}", sums_lines(version, &named, &yubikey));
+        if options.yes { Ok(()) } else { typed(version) }
+    })?;
+    let [sums_file, signature_file] = crate::sums::write(out, &text, &signature, yubikey.serial())?;
+    println!(
+        "system-release: signed the checksums of {} on YubiKey {}: {} and {}",
+        count(named.len(), "image"),
+        yubikey.serial(),
+        sums_file.display(),
+        signature_file.display()
+    );
+    if let Some(record) = &options.record {
+        let entry = crate::rekor::entry_for(&text, &signature, yubikey.key())?;
+        std::fs::write(record, entry).map_err(|err| format!("{}: {err}", record.display()))?;
+        println!("system-release: the Rekor entry of the signature is in {}", record.display());
+    }
+    Ok(())
+}
+
+/// What `sums` is about to sign, in lines for the person who signs it.
+fn sums_lines(
+    version: &str,
+    images: &[crate::sums::Image],
+    yubikey: &crate::yubikey::YubiKey,
+) -> String {
+    use std::fmt::Write as _;
+    use tuf::repo::Signer as _;
+    let mut text = format!(
+        "To be signed on YubiKey {}, with release key {}:\n  the checksums of the install \
+         images of Dukovo {version}\n",
+        yubikey.serial(),
+        &yubikey.key().id()[..16]
+    );
+    for image in images {
+        let mib = image.bytes.div_ceil(1 << 20);
+        let _ = writeln!(text, "  {}, {mib} MiB, SHA-256 {}", image.name, image.sha256);
+    }
+    text
 }
 
 /// `offer --repo DIR SIGNER --tree DIR LIST CHANNEL`: the release whose
@@ -1050,7 +1154,7 @@ fn check(options: &Options) -> Result<(), String> {
         let (opened, archive) = updates::open_file(dir, &root, options.version.as_deref())?;
         (opened, Some(archive))
     } else {
-        (repo::open(dir, &root, options.version.as_deref())?, None)
+        (repo::open_named(dir, &root, options.version.as_deref())?, None)
     };
     let release = &opened.release;
     println!(
@@ -1143,7 +1247,7 @@ fn rescue(options: &Options) -> Result<(), String> {
     let root = std::fs::read(&root_path)
         .map_err(|err| format!("the trusted root {}: {err}", root_path.display()))?;
     let dir = Path::new(dir);
-    let opened = repo::open(dir, &root, options.version.as_deref())?;
+    let opened = repo::open_named(dir, &root, options.version.as_deref())?;
     let store = crate::store::Store::at(&dir.join("files"));
     let file = |entry: &crate::list::Entry| store.path(entry.file().map_or("", |(sha, _)| sha));
     let written = crate::rescue::write(esp, dir, &opened.release, &file)?;
@@ -1477,6 +1581,63 @@ mod tests {
     }
 
     #[test]
+    fn a_served_release_is_laid_out_for_a_medium_and_its_images_checksums_signed() {
+        let dir = scratch("cli-medium");
+        let path = |name: &str| dir.join(name).display().to_string();
+        let (helper, _, secret) = crate::updates::tests::ceremony(&dir);
+        let (helper, root) = (helper.display().to_string(), path("releases/metadata/1.root.json"));
+        tree(&dir.join("slot"));
+        let list = strings(&["list", "--tree", &path("slot"), "--version", "0.18.0"]);
+        let about = ["--commit", "01d66b7", "--toolchain", "nightly-2026-10-15"];
+        let out = ["--built", "1793923200", "--out", &path("system.json")];
+        assert_eq!(run(&[list, strings(&about), strings(&out)].concat()), 0);
+        let server = format!("file://{}/", path("server"));
+        let medium = ["medium", "--root", &root, "--tree", &path("slot"), "--out", &path("medium")];
+        let medium = strings(&[&medium[..], &[&server, &path("system.json")]].concat());
+        // Nothing is served yet.
+        assert_eq!(run(&medium), 1);
+        assert_eq!(run(&strings(&["fetch", "--root", &root, "--out", &path("work"), &server])), 0);
+        let offer = ["offer", "--repo", &path("work"), "--tree", &path("slot"), "--yes"];
+        let signer = ["--yubikey-helper", &helper, "--serial", "1001"];
+        let operands = [&path("system.json"), "beta"];
+        assert_eq!(run(&strings(&[&offer[..], &signer, &operands].concat())), 0);
+        let now = tuf::time::now();
+        updates::publish(&dir.join("server"), &dir.join("work"), &secret, None, now).unwrap();
+
+        assert_eq!(run(&medium), 0);
+        assert_eq!(run(&strings(&["check", "--root", &root, &path("medium")])), 0);
+        let images = dir.join("images");
+        std::fs::create_dir_all(&images).unwrap();
+        for name in ["dukovo-0.18.0-x86_64.img", "dukovo-0.18.0-x86_64.iso"] {
+            std::fs::write(images.join(name), name).unwrap();
+        }
+        let image = |name: &str| images.join(name).display().to_string();
+        let sums = [
+            "sums",
+            "--root",
+            &path("medium/metadata/root.json"),
+            "--version",
+            "0.18.0",
+            "--out",
+            &path("images"),
+            "--record",
+            &path("sums-rekor.json"),
+            "--yes",
+        ];
+        let named = [image("dukovo-0.18.0-x86_64.img"), image("dukovo-0.18.0-x86_64.iso")];
+        let named: Vec<&str> = named.iter().map(String::as_str).collect();
+        assert_eq!(run(&strings(&[&sums[..], &signer, &named].concat())), 0);
+        assert!(images.join("SHA256SUMS").is_file());
+        assert!(images.join("SHA256SUMS.yubikey-1001.sig").is_file());
+        let entry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("sums-rekor.json")).unwrap()).unwrap();
+        assert_eq!(entry["kind"], "hashedrekord");
+        // Images are named; the checksums of none are not signed.
+        assert_eq!(run(&strings(&[&sums[..], &signer].concat())), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn what_is_to_be_signed_is_shown_whole() {
         let mut proposal = updates::Proposal {
             version: "1.0.0-alpha.1".into(),
@@ -1505,6 +1666,26 @@ mod tests {
         let shown = proposal_lines(&proposal);
         assert!(shown.contains("beta channel, in place of 0.18.0"), "{shown}");
         assert!(shown.contains("2 security advisories, new: DKSA-2026-0002"), "{shown}");
+    }
+
+    #[test]
+    fn the_checksums_to_be_signed_are_shown_with_the_yubikey_that_signs() {
+        use tuf::repo::Signer as _;
+        let key = crate::ceremony::tests::P256::new().key().clone();
+        let id = key.id();
+        let yubikey = crate::yubikey::YubiKey::new(Path::new("helper"), 38_775_519, "95", key);
+        let image = |name: &str, bytes| crate::sums::Image {
+            name: name.into(),
+            bytes,
+            sha256: "cd".repeat(32),
+        };
+        let images = [image("dukovo-1.0.0-alpha.1-x86_64.img", 3 << 20), image("x.iso", 1)];
+        let shown = sums_lines("1.0.0-alpha.1", &images, &yubikey);
+        let signer = format!("YubiKey 38775519, with release key {}", &id[..16]);
+        assert!(shown.contains(&signer), "{shown}");
+        assert!(shown.contains("install images of Dukovo 1.0.0-alpha.1"), "{shown}");
+        assert!(shown.contains("dukovo-1.0.0-alpha.1-x86_64.img, 3 MiB, SHA-256 cdcd"), "{shown}");
+        assert!(shown.contains("x.iso, 1 MiB"), "{shown}");
     }
 
     #[test]

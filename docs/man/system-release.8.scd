@@ -32,6 +32,10 @@ system-release - check, sign, offer, publish, pack, keep Rescue of and make keys
 
 *system-release fetch* *--root* _file_ *--out* _dir_ _url_
 
+*system-release medium* *--root* _file_ *--tree* _dir_ *--out* _dir_ _url_ _list_
+
+*system-release sums* *--root* _file_ *--yubikey-helper* _file_ [*--serial* _number_] *--version* _version_ *--out* _dir_ [*--record* _file_] [*--yes*] _image_...
+
 *system-release offer* *--repo* _dir_ (*--keys* _dir_ | *--yubikey-helper* _file_ [*--serial* _number_]) *--tree* _dir_ [*--advisories* _dir_] [*--record* _file_] [*--yes*] _list_ _channel_
 
 *system-release channel* *--repo* _dir_ (*--keys* _dir_ | *--yubikey-helper* _file_ [*--serial* _number_]) [*--advisories* _dir_] _channel_ _version_
@@ -85,7 +89,10 @@ it checks every signature and version of the metadata and the list's
 hash, then reads every file of the release and checks its size and
 SHA-256. It checks offline, as a USB stick must be: everything but the
 metadata's expiry, which says that a server still vouches for it and
-cannot be known from a stick, so a stick a year old still checks. Each
+cannot be known from a stick, so a stick a year old still checks. When
+the metadata lists more than one release, as the update server's does
+on the project's sticks, it reads the one *--version* names, or else
+the one the file _version_ in _repository_ names. Each
 file that does not match is named by its path in the release:
 
 ```
@@ -94,7 +101,8 @@ system-release: release 0.15.0 (8f2c0e61d4a7b3c9), built 2026-11-06T04:18:31Z fr
 system-release: all 2312 files match the signed list (210 MiB)
 ```
 
-*rescue* checks the release in _repository_ as *check* does, and writes
+*rescue* checks the release in _repository_ as *check* does, the one
+*--version* or the file _version_ names among several, and writes
 it as Rescue (*dukovo-rescue*(8), ADR 0460) into _boot/rescue_ of the
 EFI system partition mounted at _esp_: its startup folder, a boot archive
 of the rest of the release, and the repository's signed metadata and
@@ -132,9 +140,11 @@ computer that trusts the first walks to the newest. *keys --online*
 _key_ signs the next root naming the update server's online key, the
 public key in the file _key_, for snapshot and timestamp beside the keys
 in _dir_, either of which signs alone (ADR 0467). The project's releases
-are signed on its YubiKeys (*offer*); each build machine signs the
-release of its images with keys of its own, which *ob* makes in
-_.cache/release-keys_, and its images trust only those.
+are signed on its YubiKeys (*offer*), and its install images carry
+them as the update server serves them (*medium*); each build machine
+signs the release of the other images it builds with keys of its own,
+which *ob* makes in _.cache/release-keys_, and those images trust only
+them.
 
 *online-key* makes the update server's online key: an Ed25519 key whose
 secret half goes into the new file _secret_, readable by its owner
@@ -144,7 +154,8 @@ alone, and whose public half goes into *--out*, for a root to name.
 releases (ADRs 0457 and 0538), which ob(1) runs as *ob release key
 yubikey* and *ob release root*. *release-key* writes the public half of
 the ECDSA P-256 key in slot 95 of the YubiKey plugged in, or of the one
-*--serial* names, as _keys_/yubikey-_serial_.json, through the helper
+*--serial* names, as _keys_/yubikey-_serial_.json, and the key alone in
+PEM as _keys_/yubikey-_serial_.pem, through the helper
 *--yubikey-helper*, tools/yubikey-piv.py in the source tree. It refuses
 a key that was imported rather than made on the YubiKey. *first-root*
 signs root version 1, good for a year, on both YubiKeys whose files are
@@ -186,6 +197,24 @@ to _file_, which *ob release sign* sends to Sigstore's log.
 repository, with *--yubikey-helper* in place of *--keys*. The newest
 root must name the YubiKey's key in slot 95 for targets, or nothing is
 asked of it.
+The project's install stick and ISO of a release carry it as the
+update server serves it (ADR 0779), as *ob release images* makes them.
+*medium* reads the server at _url_ from the first root in *--root*, as
+*fetch* does, and lays out in the new folder *--out* the release whose
+list *system-release list* wrote in _list_: the roots walked to, the
+newest timestamp, snapshot and targets as served, the list, the
+signatures *troubleshoot*(8) matches, the file _version_ naming the
+release, and the files from the tree *--tree*, each checked against the
+list. It refuses unless the server offers the release with that list
+byte for byte, and reads the folder back as *check* does. *sums*
+writes _SHA256SUMS_ of each _image_ into *--out*, as *sha256sum* writes
+it, shows it and the YubiKey that will sign, and once the version is
+typed, or with *--yes*, signs it whole with the YubiKey's key in slot
+95, which the root in *--root* must name for targets. The signature, in
+DER, goes into _SHA256SUMS.yubikey-SERIAL.sig_, which *openssl* checks
+with that key's PEM, _releases/keys/yubikey-SERIAL.pem_ in the source
+tree (*ob*(1) *release images*). With *--record* _file_, it writes the Rekor entry of
+the signature to _file_.
 *firmware* adds a firmware set of the optional firmware package (ADR
 0468): the CPU microcode _file_, with its license as an SPDX expression,
 under a version such as *2026.11.12*, signed as a release is, with the
@@ -346,12 +375,14 @@ or with *--json* prints *{"url": ..., "published": false}*, and succeeds.
 
 *--root* _file_
 	Check against the root in _file_ instead of the system's; for
-	*fetch*, the first root to read the server from.
+	*fetch* and *medium*, the first root to read the server from; for
+	*sums*, the root that names the release key that signs.
 
 *--version* _version_
 	The release to check, when the repository holds several; the
-	version of the release *make* makes; or that of the firmware set
-	*firmware* adds.
+	version of the release *make* makes; that of the firmware set
+	*firmware* adds; or, for *sums*, that of the images, which is typed
+	to sign.
 
 *--microcode* _file_
 	The CPU microcode of the firmware set *firmware* adds.
@@ -391,7 +422,7 @@ or with *--json* prints *{"url": ..., "published": false}*, and succeeds.
 
 *--tree* _dir_
 	The slot to make a release of: what _/system_ will hold. For
-	*offer*, the tree the release list was made of.
+	*offer* and *medium*, the tree the release list was made of.
 
 *--keys* _dir_
 	The keys *keys* made.
@@ -399,18 +430,20 @@ or with *--json* prints *{"url": ..., "published": false}*, and succeeds.
 *--yubikey-helper* _file_
 	Sign on a YubiKey, through the helper _file_, tools/yubikey-piv.py
 	in the source tree, which asks for the PIN and the touch: with its
-	key in slot 95 for *offer*, *channel*, *advisories* and *pull*, which
-	the repository's newest root must name for targets.
+	key in slot 95 for *offer*, *channel*, *advisories*, *pull* and
+	*sums*, which the newest root must name for targets.
 
 *--serial* _number_
 	The YubiKey to use, by the serial number on its label, when more
 	than one is plugged in.
 
 *--record* _file_
-	For *offer*, where to write the Rekor entry of the signature.
+	For *offer* and *sums*, where to write the Rekor entry of the
+	signature.
 
 *--yes*
-	For *offer*, sign without asking for the version to be typed.
+	For *offer* and *sums*, sign without asking for the version to be
+	typed.
 
 *--repo* _dir_
 	The update repository.
@@ -428,7 +461,8 @@ or with *--json* prints *{"url": ..., "published": false}*, and succeeds.
 	snapshot and timestamp.
 
 *--out* _dir_
-	Where *make* lays out the repository, and *fetch* writes it; for
+	Where *make* and *medium* lay out the repository, and *fetch*
+	writes it; for *sums*, the folder of _SHA256SUMS_ and its signature; for
 	*list*, the file that takes the list, in place of the standard
 	output; for *rescue*, the EFI system partition's mount point; for
 	*pack*, the update file; for *online-key*, the public half of the
