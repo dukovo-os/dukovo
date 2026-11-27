@@ -392,6 +392,7 @@ dependencies = [
  "radix-smbios",
  "radix-smbus",
  "radix-sync",
+ "radix-thunks",
  "radix-tty",
  "radix-uart",
  "radix-vtd",
@@ -846,6 +847,10 @@ version = "1.0.0-alpha.1"
 
 [[package]]
 name = "radix-sync"
+version = "1.0.0-alpha.1"
+
+[[package]]
+name = "radix-thunks"
 version = "1.0.0-alpha.1"
 
 [[package]]

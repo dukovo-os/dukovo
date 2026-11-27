@@ -504,6 +504,10 @@ name = "radix-sync"
 version = "1.0.0-alpha.1"
 
 [[package]]
+name = "radix-thunks"
+version = "1.0.0-alpha.1"
+
+[[package]]
 name = "radix-vfs"
 version = "1.0.0-alpha.1"
 dependencies = [
@@ -728,6 +732,7 @@ dependencies = [
  "radix-ksyms",
  "radix-microcode",
  "radix-relocs",
+ "radix-thunks",
  "radix-vfs",
  "ridlc",
  "rustc-demangle",

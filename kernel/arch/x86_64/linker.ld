@@ -86,6 +86,13 @@ SECTIONS
     {
         KEEP(*(.krelocs))
     }
+    /* Where the indirect branches and returns are that go through the
+     * thunks, filled the same way; the boot CPU rewrites each
+     * (src/thunks.rs). */
+    .kthunks : AT(ADDR(.kthunks) - KERNEL_OFFSET) ALIGN(16)
+    {
+        KEEP(*(.kthunks))
+    }
     . = ALIGN(4K);
     __kernel_rodata_end = .;
 

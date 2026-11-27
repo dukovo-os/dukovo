@@ -243,6 +243,7 @@ const RED_ZONE: u64 = 128;
 // The system call entry and the copies to and from user memory. The
 // block starts a cache line, as every kernel function does (ADR 0411).
 core::arch::global_asm!(
+    crate::thunks::asm_begin!(),
     r#"
     .section .text
     .balign 64
@@ -435,7 +436,7 @@ radix_user_copy_done:
     clac
 3:
     mov rax, rcx
-    ret
+    radix_ret
     // From the end: single bytes until a multiple of 8 is left, then 32
     // bytes at a time, then 8. RCX is always what is left to copy, at
     // the start, so that every load and store here may fault and go
@@ -476,6 +477,7 @@ radix_user_copy_back:
 radix_user_copy_back_end:
     jmp radix_user_copy_done
     "#,
+    crate::thunks::asm_end!(),
     scratch = const SCRATCH_OFFSET,
     kernel_rsp = const KERNEL_RSP_OFFSET,
     full_rcx = const FULL_RCX_OFFSET,
@@ -493,6 +495,7 @@ radix_user_copy_back_end:
     site_spec_ctrl_entry = const crate::speculation::Site::SpecCtrlEntry as u8,
     site_spec_ctrl_exit = const crate::speculation::Site::SpecCtrlExit as u8,
     site_ibpb_entry = const crate::speculation::Site::IbpbEntry as u8,
+    site_untrain_entry = const crate::speculation::Site::UntrainEntry as u8,
     site_bhb_clear = const crate::speculation::Site::BhbClear as u8,
     site_verw_exit = const crate::speculation::Site::VerwExit as u8,
     site_div0_exit = const crate::speculation::Site::Div0Exit as u8,

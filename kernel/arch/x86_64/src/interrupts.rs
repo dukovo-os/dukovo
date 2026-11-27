@@ -289,6 +289,7 @@ radix_isr_user_machine_check:
     site_spec_ctrl_exit = const crate::speculation::Site::SpecCtrlExit as u8,
     site_spec_ctrl_paranoid = const crate::speculation::Site::SpecCtrlParanoid as u8,
     site_ibpb_entry = const crate::speculation::Site::IbpbEntry as u8,
+    site_untrain_entry = const crate::speculation::Site::UntrainEntry as u8,
     site_verw_exit = const crate::speculation::Site::VerwExit as u8,
     site_div0_exit = const crate::speculation::Site::Div0Exit as u8,
     site_swapgs_fence = const crate::speculation::Site::SwapgsFence as u8,

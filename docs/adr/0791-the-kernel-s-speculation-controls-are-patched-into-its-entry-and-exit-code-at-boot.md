@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0791. The kernel's speculation controls are patched into its entry and exit code at boot
 
-- Status: Accepted
+- Status: Accepted; retpolines and return thunks since [0793](0793-the-kernel-s-indirect-branches-and-returns-go-through-thunks-that-the-boot-cpu-rewrites-for-the-processor.md)
 - Date: 2026-11-27
 
 ## Context

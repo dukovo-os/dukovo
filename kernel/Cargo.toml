@@ -92,6 +92,7 @@ members = [
     "lib/smbios",
     "lib/spd",
     "lib/sync",
+    "lib/thunks",
     "lib/tty",
     "lib/uacpi",
     "lib/vdso",

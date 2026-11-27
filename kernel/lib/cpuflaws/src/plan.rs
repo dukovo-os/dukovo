@@ -46,6 +46,12 @@ pub enum Pick {
     Ibrs,
     /// IBPB on every entry to the kernel.
     Ibpb,
+    /// Retpolines for the kernel's indirect branches, even where the
+    /// processor's own protection would do.
+    Retpoline,
+    /// A return thunk for the kernel's returns, even where
+    /// `mitigations=off` would leave them plain.
+    Thunk,
 }
 
 /// Whether hardware threads are turned off.
@@ -66,13 +72,13 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("mitigations", &["auto", "off", "auto,nosmt"]),
     ("nosmt", &[]),
     ("nospectre_v1", &[]),
-    ("spectre_v2", &["auto", "off", "on", "ibrs"]),
+    ("spectre_v2", &["auto", "off", "on", "ibrs", "retpoline", "retpoline,generic"]),
     ("nospectre_v2", &[]),
     ("spectre_v2_user", &["auto", "off", "on"]),
     ("spec_store_bypass_disable", &["auto", "off", "on"]),
     ("nospec_store_bypass_disable", &[]),
-    ("retbleed", &["auto", "off", "ibpb"]),
-    ("spec_rstack_overflow", &["auto", "off", "ibpb"]),
+    ("retbleed", &["auto", "off", "ibpb", "unret"]),
+    ("spec_rstack_overflow", &["auto", "off", "ibpb", "safe-ret"]),
     ("tsx", &["auto", "off", "on"]),
     ("mds", &["auto", "off"]),
     ("tsx_async_abort", &["auto", "off"]),
@@ -81,6 +87,7 @@ pub const FLAGS: &[(&str, &[&str])] = &[
     ("tsa", &["auto", "off"]),
     ("srbds", &["auto", "off"]),
     ("gather_data_sampling", &["auto", "off"]),
+    ("indirect_target_selection", &["on", "off"]),
 ];
 
 /// A flag of [`FLAGS`] was given a value it does not take.
@@ -106,13 +113,15 @@ pub struct Choice {
     tsa: Pick,
     srbds: Pick,
     gather_data_sampling: Pick,
+    indirect_target_selection: Pick,
 }
 
 impl Choice {
     /// Reads one command-line flag: `Ok(true)` if it is one of [`FLAGS`],
     /// `Ok(false)` if it is not. A later flag wins over an earlier one.
     /// `mitigations=off` turns off every protection that its own flag does
-    /// not ask for by `on`, `ibrs` or `ibpb`.
+    /// not ask for by `on`, `ibrs`, `ibpb`, `retpoline`, `unret` or
+    /// `safe-ret`.
     pub fn set(&mut self, name: &str, value: Option<&str>) -> Result<bool, BadValue> {
         let Some(&(_, values)) = FLAGS.iter().find(|&&(flag, _)| flag == name) else {
             return Ok(false);
@@ -129,6 +138,8 @@ impl Choice {
             Some("on") => Pick::On,
             Some("ibrs") => Pick::Ibrs,
             Some("ibpb") => Pick::Ibpb,
+            Some("retpoline" | "retpoline,generic") => Pick::Retpoline,
+            Some("unret" | "safe-ret") => Pick::Thunk,
             _ => Pick::Auto,
         };
         match name {
@@ -154,7 +165,8 @@ impl Choice {
             "reg_file_data_sampling" => self.reg_file_data_sampling = pick,
             "tsa" => self.tsa = pick,
             "srbds" => self.srbds = pick,
-            _ => self.gather_data_sampling = pick,
+            "gather_data_sampling" => self.gather_data_sampling = pick,
+            _ => self.indirect_target_selection = pick,
         }
         Ok(true)
     }
@@ -188,6 +200,18 @@ pub struct Built {
     /// It lets programs set their own FS and GS bases (CR4.FSGSBASE), so
     /// a program can point GS at the kernel.
     pub fsgsbase: bool,
+}
+
+impl Built {
+    /// None of it: a kernel without retpolines, return thunks or page-table
+    /// isolation, that runs no guests.
+    pub const DEFAULT: Built = Built {
+        retpoline: false,
+        return_thunks: false,
+        pti: false,
+        guests: false,
+        fsgsbase: false,
+    };
 }
 
 /// How the kernel keeps programs from steering its indirect branches.
@@ -250,6 +274,51 @@ enum Stibp {
     Forced,
 }
 
+/// How the kernel's indirect calls and jumps run, each rewritten at boot
+/// from the call or jump to the retpoline that it was compiled to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum IndirectBranches {
+    /// As plain indirect branches.
+    #[default]
+    Plain,
+    /// Through the retpoline.
+    Retpoline,
+    /// As plain indirect branches, each ending in the upper half of its
+    /// cache line, which Indirect Target Selection does not reach, or
+    /// through a thunk whose branch does.
+    Aligned,
+}
+
+/// How the kernel's returns run, each rewritten at boot from the jump to
+/// the return thunk that it was compiled to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ReturnPath {
+    /// As plain returns.
+    #[default]
+    Plain,
+    /// As plain returns in the upper half of their cache lines, or through
+    /// a thunk whose return is there (ITS).
+    Aligned,
+    /// Through one return whose prediction is untrained on every entry
+    /// from a program (Retbleed on AMD's Zen 1 and 2).
+    Untrained,
+    /// Through a call to a return that drops the call's own return
+    /// address, so that a return is only ever predicted to a trap, with
+    /// that return untrained on every entry (SRSO on Zen 1 and 2; it
+    /// closes Retbleed too).
+    SafeRet,
+    /// The same, with the untraining and the return at two addresses the
+    /// branch predictor of Zen 3 and 4 takes for one.
+    SafeRetAliased,
+}
+
+impl ReturnPath {
+    /// Whether every entry from a program untrains the return.
+    pub fn untrains(self) -> bool {
+        matches!(self, ReturnPath::Untrained | ReturnPath::SafeRet | ReturnPath::SafeRetAliased)
+    }
+}
+
 /// What the architecture sets on every CPU and does at every entry to and
 /// exit from the kernel.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -296,6 +365,10 @@ pub struct Controls {
     pub mcu_opt_clear: u64,
     /// Start no second hardware thread of any core.
     pub nosmt: bool,
+    /// How the kernel's indirect branches run.
+    pub indirect_branches: IndirectBranches,
+    /// How the kernel's returns run.
+    pub returns: ReturnPath,
 }
 
 /// The flaws a processor has and how each is closed.
@@ -317,6 +390,7 @@ pub struct Plan {
     tsa: bool,
     srbds: bool,
     gds: bool,
+    its: bool,
 }
 
 impl Plan {
@@ -482,6 +556,32 @@ impl Plan {
         let smap = cpu.leaf7_ebx & bits::LEAF7_SMAP != 0;
         let swapgs_fence = spectre_v1 && (built.fsgsbase || !smap || found.has(Flaw::Meltdown));
 
+        // Indirect Target Selection reaches the indirect branches and
+        // returns that end in the lower half of a cache line, where the
+        // processor's own protection of indirect branches would be used:
+        // with retpolines the kernel has no indirect branches left, but
+        // its returns still count.
+        let its = found.has(Flaw::IndirectTargetSelection)
+            && choice.wants(choice.indirect_target_selection)
+            && spectre_v2 != SpectreV2::Off
+            && built.retpoline
+            && built.return_thunks;
+        let indirect_branches = match spectre_v2 {
+            SpectreV2::Retpoline => IndirectBranches::Retpoline,
+            _ if its => IndirectBranches::Aligned,
+            _ => IndirectBranches::Plain,
+        };
+        // The safe return of SRSO's closing covers Retbleed too.
+        let returns = if srso == Returns::Thunk {
+            if cpu.family >= 0x19 { ReturnPath::SafeRetAliased } else { ReturnPath::SafeRet }
+        } else if retbleed == Returns::Thunk {
+            ReturnPath::Untrained
+        } else if its {
+            ReturnPath::Aligned
+        } else {
+            ReturnPath::Plain
+        };
+
         let srbds = choice.wants(choice.srbds);
         let gds = choice.wants(choice.gather_data_sampling);
         let (mcu_opt_set, mcu_opt_clear) = mcu_opt_bits(cpu, &found, tsx_disable, srbds, gds);
@@ -506,6 +606,8 @@ impl Plan {
             mcu_opt_set,
             mcu_opt_clear,
             nosmt,
+            indirect_branches,
+            returns,
         };
         Plan {
             cpu: *cpu,
@@ -524,6 +626,7 @@ impl Plan {
             tsa,
             srbds,
             gds,
+            its,
         }
     }
 
@@ -619,16 +722,11 @@ impl Plan {
             } else {
                 "Vulnerable"
             }),
-            Flaw::IndirectTargetSelection => out.write_str(
-                if self.spectre_v2 != SpectreV2::Off
-                    && self.built.retpoline
-                    && self.built.return_thunks
-                {
-                    "Mitigation: Aligned branch/return thunks"
-                } else {
-                    "Vulnerable"
-                },
-            ),
+            Flaw::IndirectTargetSelection => out.write_str(if self.its {
+                "Mitigation: Aligned branch/return thunks"
+            } else {
+                "Vulnerable"
+            }),
             Flaw::Tsa => out.write_str(if self.tsa {
                 "Mitigation: Clear CPU buffers: user/kernel boundary"
             } else if self.cpu.ext21_eax & bits::EXT21_VERW_CLEAR == 0 {
@@ -820,6 +918,9 @@ fn spectre_v2(cpu: &Cpu, found: &Found, choice: &Choice, built: Built) -> Spectr
     }
     if pick == Pick::Ibrs && cpu.ibrs() {
         return SpectreV2::Ibrs;
+    }
+    if pick == Pick::Retpoline && built.retpoline {
+        return SpectreV2::Retpoline;
     }
     if cpu.eibrs() {
         return SpectreV2::Eibrs;

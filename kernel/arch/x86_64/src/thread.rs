@@ -162,6 +162,7 @@ pub fn current_area() -> usize {
 }
 
 core::arch::global_asm!(
+    crate::thunks::asm_begin!(),
     r#"
     .section .text
     .global radix_context_switch
@@ -193,7 +194,7 @@ radix_context_switch:
     pop r12
     pop rbx
     pop rbp
-    ret
+    radix_ret
 
     .global radix_thread_trampoline
 radix_thread_trampoline:
@@ -205,6 +206,7 @@ radix_thread_trampoline:
     xor ebp, ebp
     jmp radix_thread_start
     "#,
+    crate::thunks::asm_end!(),
     site_rsb_fill_switch = const crate::speculation::Site::RsbFillSwitch as u8,
 );
 
