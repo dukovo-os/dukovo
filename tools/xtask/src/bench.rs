@@ -713,8 +713,15 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     let from = args.value("--from")?;
     let shell = args.flag("--shell");
     let scaling = args.flag("--scaling");
+    let display_only = args.flag("--display");
     let profile = args.profile(&ctx.config)?;
     args.finish()?;
+    if display_only && (gate || instructions || shell || scaling || from.is_some()) {
+        crate::bail!(
+            "--display measures the display and input rows alone, a look and no gate, so it \
+             takes none of --gate, --instructions, --shell, --scaling and --from"
+        );
+    }
     if defer_close && (!gate || instructions || shell || scaling || from.is_some()) {
         crate::bail!(
             "--defer-close hands a close timing gate on to another runner, so it takes --gate \
@@ -767,6 +774,10 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     let close_list = dir.join(CLOSE_LIST);
     let _ = std::fs::remove_file(&close_list);
     let image = test::build_test_image(ctx, &built, &dir, TestImage::Plain, false)?;
+    if display_only {
+        let linux = linux.then_some(given_kernel);
+        return time_display_alone(ctx, &dir, &image, linux, runs, summary.as_deref());
+    }
     let btrfs = btrfs_disk(ctx, &dir)?;
     if instructions {
         return count_instructions(ctx, &dir, &image, &btrfs, gate, summary.as_deref());
@@ -790,22 +801,7 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
             None
         }
         Some(posix) => {
-            let (kernel, modules) = match linux_kernel(given_kernel)? {
-                Some(kernel) => (kernel, None),
-                None => {
-                    let pinned = baseline::fetch(ctx)?;
-                    (pinned.kernel, Some(pinned.modules))
-                }
-            };
-            let initrd = linux_init(
-                ctx,
-                &dir,
-                Some(posix),
-                git_linux.as_deref(),
-                &kernel,
-                modules.as_deref(),
-            )?;
-            Some((kernel, initrd))
+            Some(linux_vm_boot(ctx, &dir, Some(posix), git_linux.as_deref(), given_kernel)?)
         }
         None => None,
     };
@@ -818,6 +814,8 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         more: 0,
         radix: Vec::new(),
         counts: Vec::new(),
+        host: HostCounts::default(),
+        display_only: false,
         linux_vm: Vec::new(),
         linux_host: Vec::new(),
     };
@@ -839,10 +837,12 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
             numbers.counts.extend(posix_counts);
         }
         step(&format!("Booting Radix with the display and input rows{of}"));
-        let (display, display_counts) = radix_display_numbers(ctx, &dir, &image, Accel::of(kvm))?;
+        let (display, display_counts, host) =
+            radix_display_numbers(ctx, &dir, &image, Accel::of(kvm))?;
         keep_best(&mut numbers.radix, display);
         if numbers.runs == 0 {
             numbers.counts.extend(display_counts);
+            numbers.host.radix = host;
         }
         if let Some((kernel, initrd)) = &vm_kernel {
             step(&format!(
@@ -853,9 +853,11 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
             let (linux, linux_counts) = linux_vm_numbers(ctx, &dir, kernel, initrd, &btrfs)?;
             keep_best(&mut numbers.linux_vm, linux);
             step(&format!("Booting that Linux with its display and input rows{of}"));
-            keep_best(&mut numbers.linux_vm, linux_display_numbers(ctx, &dir, kernel, initrd)?);
+            let (display, host) = linux_display_numbers(ctx, &dir, kernel, initrd)?;
+            keep_best(&mut numbers.linux_vm, display);
             if numbers.runs == 0 {
                 numbers.counts.extend(linux_counts);
+                numbers.host.linux = host;
             }
         }
         numbers.runs += 1;
@@ -909,6 +911,90 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     Ok(())
 }
 
+/// The Linux kernel the virtual machine boots, `given` or else the
+/// pinned one, and the initramfs of [`linux_init`] for it, with the POSIX
+/// benchmarks `posix` and `git` where they are given.
+fn linux_vm_boot(
+    ctx: &Ctx,
+    dir: &Path,
+    posix: Option<&Path>,
+    git: Option<&Path>,
+    given: Option<String>,
+) -> Result<(PathBuf, PathBuf)> {
+    let (kernel, modules) = match linux_kernel(given)? {
+        Some(kernel) => (kernel, None),
+        None => {
+            let pinned = baseline::fetch(ctx)?;
+            (pinned.kernel, Some(pinned.modules))
+        }
+    };
+    let initrd = linux_init(ctx, dir, posix, git, &kernel, modules.as_deref())?;
+    Ok((kernel, initrd))
+}
+
+/// `ob bench --display`: the display and input rows alone, each system
+/// in the boot the whole benchmark gives them, for work on those rows.
+/// `linux` is the kernel given for Linux's side, if it is measured.
+/// Nothing is gated, and the whole benchmark's report is left as it is.
+fn time_display_alone(
+    ctx: &Ctx,
+    dir: &Path,
+    image: &[u8],
+    linux: Option<Option<String>>,
+    runs: u32,
+    summary: Option<&str>,
+) -> Result<()> {
+    let kvm = qemu::kvm_available();
+    if !kvm {
+        eprintln!("    No KVM: QEMU emulates, so Linux is not measured. One run only.");
+    }
+    let vm_kernel = match linux {
+        Some(given) if kvm => Some(linux_vm_boot(ctx, dir, None, None, given)?),
+        _ => None,
+    };
+    let mut numbers = Numbers {
+        vm_release: match &vm_kernel {
+            Some((kernel, _)) => Some(release_of(kernel)?),
+            None => None,
+        },
+        runs: 0,
+        more: 0,
+        radix: Vec::new(),
+        counts: Vec::new(),
+        host: HostCounts::default(),
+        display_only: true,
+        linux_vm: Vec::new(),
+        linux_host: Vec::new(),
+    };
+    let runs = if kvm { runs } else { 1 };
+    for run in 1..=runs {
+        step(&format!("Booting Radix with the display and input rows, run {run} of {runs}"));
+        let (display, counts, host) = radix_display_numbers(ctx, dir, image, Accel::of(kvm))?;
+        keep_best(&mut numbers.radix, display);
+        if run == 1 {
+            (numbers.counts, numbers.host.radix) = (counts, host);
+        }
+        if let Some((kernel, initrd)) = &vm_kernel {
+            step(&format!("Booting Linux with its display and input rows, run {run} of {runs}"));
+            let (display, host) = linux_display_numbers(ctx, dir, kernel, initrd)?;
+            keep_best(&mut numbers.linux_vm, display);
+            if run == 1 {
+                numbers.host.linux = host;
+            }
+        }
+        numbers.runs += 1;
+    }
+    let report = report(ctx, &numbers, kvm);
+    let markdown = dir.join("display.md");
+    std::fs::write(&markdown, &report).context(|| format!("writing {}", markdown.display()))?;
+    if let Some(path) = summary {
+        append(path, &report)?;
+    }
+    eprintln!("\n{report}");
+    step(&format!("Display and input report in {}", ctx.display(&markdown)));
+    Ok(())
+}
+
 /// Adds the measurements of one run to `best`, keeping the fastest of
 /// each operation.
 pub(crate) fn keep_best(best: &mut Vec<Measurement>, run: Vec<Measurement>) {
@@ -938,7 +1024,7 @@ fn count_instructions(
     step("Booting Radix with the POSIX benchmarks on 2 CPUs, counting instructions (minutes)");
     radix.extend(radix_posix_numbers(ctx, dir, image, btrfs, Accel::Count)?.0);
     step("Booting Radix with the display and input rows, counting instructions");
-    let (display, display_counts) = radix_display_numbers(ctx, dir, image, Accel::Count)?;
+    let (display, display_counts, _) = radix_display_numbers(ctx, dir, image, Accel::Count)?;
     radix.extend(display);
     let report = budget_report(&radix) + &events_report(&display_counts);
     let markdown = dir.join("instructions.md");
@@ -1092,10 +1178,27 @@ struct Numbers {
     radix: Vec<Measurement>,
     /// What the kernel did, in the first run, and Linux's TLB interrupts.
     counts: Vec<Counts>,
+    /// What the host did for the mouse's motions, in the first run.
+    host: HostCounts,
+    /// Whether the display and input rows were measured alone
+    /// (`--display`), and are all the report shows.
+    display_only: bool,
     /// Linux in a virtual machine like Radix's: the baseline that counts.
     linux_vm: Vec<Measurement>,
     /// Linux on the host, outside any virtual machine, for reference.
     linux_host: Vec<Measurement>,
+}
+
+/// What the host's KVM counted while the mouse's motions were sent
+/// ([`drive_display_rows`]), for each system's virtual machine, by
+/// counter: under KVM each exit from a virtual machine costs far more
+/// than the instructions around it, and no count the guest keeps shows
+/// them all. Empty for a machine that was not measured, or not under
+/// KVM.
+#[derive(Default)]
+struct HostCounts {
+    radix: Vec<(String, u64)>,
+    linux: Vec<(String, u64)>,
 }
 
 /// Radix's time for a row as a share of Linux's in the virtual machine,
@@ -1274,6 +1377,8 @@ fn machine_numbers(text: &str) -> (Numbers, Vec<String>) {
         more: 0,
         radix,
         counts,
+        host: HostCounts::default(),
+        display_only: false,
         linux_vm: parse(&linux),
         linux_host: Vec::new(),
     };
@@ -1929,23 +2034,35 @@ fn display_devices() -> [String; 4] {
 /// Sees the display rows' program in `vm` through: waits until it wants
 /// the mouse's motions, sends them one at a time, and waits for `done`.
 /// `ended` is what the program says if it ends before it wants them.
+/// Gives what the host's KVM counted from before the first motion to
+/// after the last ([`test::Vm::host_counts`]), the pauses between them
+/// with it.
 fn drive_display_rows(
     vm: &mut test::Vm,
     done: &str,
     ended: &str,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<Vec<(String, u64)>, String> {
     if vm.expect_first(&[&motions_wanted(), ended])? != 0 {
         return Err("the program ended before its input rows".into());
     }
     let motion = [r#"{"type":"rel","data":{"axis":"x","value":1}}"#.to_string()];
+    let before = vm.host_counts();
     for _ in 0..MOTIONS {
         vm.input_events(DISPLAY_SCREEN, &motion)?;
         std::thread::sleep(MOTION_PAUSE);
     }
+    let counted = counted_since(&before, &vm.host_counts());
     match vm.expect_first(&[done, ended])? {
-        0 => Ok(()),
+        0 => Ok(counted),
         _ => Err("the program failed".into()),
     }
+}
+
+/// How far each of the host's counters in `after` has gone on from
+/// `before`.
+fn counted_since(before: &[(String, u64)], after: &[(String, u64)]) -> Vec<(String, u64)> {
+    let was = |name: &str| before.iter().find(|(known, _)| known == name).map_or(0, |(_, v)| *v);
+    after.iter().map(|(name, value)| (name.clone(), value.saturating_sub(was(name)))).collect()
 }
 
 /// Fails unless `log`, of a display rows' boot, says that each card's
@@ -1965,16 +2082,16 @@ fn said_by(log: &str, program: &str) -> String {
 }
 
 /// Boots the test image `base` with Spark running the display and input
-/// rows ([`DISPLAY_ROWS`]) and reads their `BENCH` lines, and the
-/// `BENCHCOUNT` line of the input rows. The machine has the VGA card the
-/// others have, whose framebuffer is the firmware's card, a virtio
-/// graphics card and a virtio mouse.
+/// rows ([`DISPLAY_ROWS`]) and reads their `BENCH` lines, and their
+/// `BENCHCOUNT` lines. The machine has the VGA card the others have,
+/// whose framebuffer is the firmware's card, a virtio graphics card and
+/// a virtio mouse. Last is what the host counted for the mouse's motions.
 fn radix_display_numbers(
     ctx: &Ctx,
     dir: &Path,
     base: &[u8],
     accel: Accel,
-) -> Result<(Vec<Measurement>, Vec<Counts>)> {
+) -> Result<(Vec<Measurement>, Vec<Counts>, Vec<(String, u64)>)> {
     let image = dir.join("display-bench.img");
     let bytes =
         test::with_cmdline(base, &accel.cmdline(DISPLAY_CMDLINE)).map_err(crate::Error::new)?;
@@ -2004,26 +2121,29 @@ fn radix_display_numbers(
     let log = vm.log();
     drop(vm);
     let _ = std::fs::remove_file(&image);
-    if let Err(reason) = outcome.and_then(|()| display_sizes(&log)) {
-        show_trouble(&log);
-        crate::bail!(
-            "the display rows' boot failed: {reason}{}; serial log: {}",
-            said_by(&log, "display-test: "),
-            ctx.display(&dir.join("boot-display-bench.log"))
-        );
+    match outcome.and_then(|host| display_sizes(&log).map(|()| host)) {
+        Ok(host) => Ok((parse(&log), parse_counts(&log), host)),
+        Err(reason) => {
+            show_trouble(&log);
+            crate::bail!(
+                "the display rows' boot failed: {reason}{}; serial log: {}",
+                said_by(&log, "display-test: "),
+                ctx.display(&dir.join("boot-display-bench.log"))
+            )
+        }
     }
-    Ok((parse(&log), parse_counts(&log)))
 }
 
 /// Boots `kernel` with the `initrd` of [`linux_init`] on the machine of
 /// [`radix_display_numbers`], for `linux-bench` to run its display and
-/// input rows, and reads their `BENCH` lines.
+/// input rows, and reads their `BENCH` lines. Last is what the host
+/// counted for the mouse's motions.
 fn linux_display_numbers(
     ctx: &Ctx,
     dir: &Path,
     kernel: &Path,
     initrd: &Path,
-) -> Result<Vec<Measurement>> {
+) -> Result<(Vec<Measurement>, Vec<(String, u64)>)> {
     let machine = Machine {
         firmware: Firmware::Bios,
         media: Media::Usb,
@@ -2051,15 +2171,17 @@ fn linux_display_numbers(
     let outcome = drive_display_rows(&mut vm, "linux-bench: done", "linux-bench: done");
     let log = vm.log();
     drop(vm);
-    if let Err(reason) = outcome.and_then(|()| display_sizes(&log)) {
-        show_trouble(&log);
-        crate::bail!(
-            "the Linux display rows' boot failed: {reason}{}; serial log: {}",
-            said_by(&log, "linux-bench: "),
-            ctx.display(&dir.join("boot-linux-display.log"))
-        );
+    match outcome.and_then(|host| display_sizes(&log).map(|()| host)) {
+        Ok(host) => Ok((parse(&log), host)),
+        Err(reason) => {
+            show_trouble(&log);
+            crate::bail!(
+                "the Linux display rows' boot failed: {reason}{}; serial log: {}",
+                said_by(&log, "linux-bench: "),
+                ctx.display(&dir.join("boot-linux-display.log"))
+            )
+        }
     }
-    Ok(parse(&log))
 }
 
 /// Makes the benchmarks' disks afresh in `dir`, filled with bytes rather
@@ -2274,7 +2396,8 @@ fn host_kernel() -> String {
 /// The Markdown report.
 fn report(ctx: &Ctx, numbers: &Numbers, kvm: bool) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "## Radix benchmarks\n");
+    let title = if numbers.display_only { "display and input rows" } else { "benchmarks" };
+    let _ = writeln!(out, "## Radix {title}\n");
     let baseline = if numbers.linux_vm.is_empty() {
         "Linux was not measured in a virtual machine this time, so there is no ratio".to_string()
     } else {
@@ -2306,6 +2429,27 @@ fn report(ctx: &Ctx, numbers: &Numbers, kvm: bool) -> String {
             ),
         },
     );
+    rows_table(&mut out, numbers);
+    if !numbers.display_only {
+        let _ = writeln!(
+            out,
+            "\nRound trips pass one message there and back between two programs (two threads \
+             on Linux), pinned to one CPU or to two. Under a hypervisor, a wake-up on another \
+             CPU is an interrupt the host delivers, so two-CPU numbers in a virtual machine \
+             carry the host's cost on top; Linux (VM) pays it too. A ratio in bold is over \
+             the gate's {GATE_RATIO:.2}. docs/design/ipc.md describes each measurement."
+        );
+    }
+    if !numbers.counts.is_empty() {
+        counts_table(&mut out, &numbers.counts, numbers.runs > 1);
+    }
+    host_table(&mut out, &numbers.host, numbers.runs > 1);
+    out
+}
+
+/// The report's table: a line for each row with what both systems took,
+/// or for each of [`DISPLAY_ROWS`] alone when only they were measured.
+fn rows_table(out: &mut String, numbers: &Numbers) {
     let _ = writeln!(
         out,
         "| Operation | Radix | Linux (VM) | Ratio | Linux (host) | Linux equivalent |"
@@ -2313,7 +2457,9 @@ fn report(ctx: &Ctx, numbers: &Numbers, kvm: bool) -> String {
     let _ = writeln!(out, "| --- | ---: | ---: | ---: | ---: | --- |");
     let measured =
         |list: &[Measurement], name| find(list, name).map_or(String::new(), |m| show(m.ns));
-    for row in rows() {
+    let table: Vec<&Row> =
+        if numbers.display_only { DISPLAY_ROWS.iter().collect() } else { rows().collect() };
+    for row in table {
         let ours = find(&numbers.radix, row.radix).map_or("missing".into(), |m| show(m.ns));
         let (vm, host, how) = match row.linux {
             Some((name, how)) => {
@@ -2332,18 +2478,42 @@ fn report(ctx: &Ctx, numbers: &Numbers, kvm: bool) -> String {
         };
         let _ = writeln!(out, "| {} | {ours} | {vm} | {ratio} | {host} | {how} |", row.what);
     }
+}
+
+/// What the host did for each of the mouse's motions on each system, by
+/// KVM's counters: nothing where the host counted nothing. A counter
+/// that rounds to no hundredth a motion on both systems is left out.
+fn host_table(out: &mut String, host: &HostCounts, first_of_several: bool) {
+    let each = |count: u64| count as f64 / MOTIONS as f64;
+    let told = |count: u64| each(count) >= 0.005;
+    let shown = |name: &str, count: u64| {
+        if name.ends_with("_ns") { show(each(count)) } else { format!("{:.2}", each(count)) }
+    };
+    let theirs = |name: &str| host.linux.iter().find(|(known, _)| known == name).map(|(_, v)| *v);
+    let rows: Vec<&(String, u64)> = host
+        .radix
+        .iter()
+        .filter(|(name, ours)| told(*ours) || theirs(name).is_some_and(told))
+        .collect();
+    if rows.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "\n### What the host did for each motion of the mouse\n");
+    let _ = writeln!(out, "| KVM's counter | Radix | Linux (VM) |\n| --- | ---: | ---: |");
+    for (name, ours) in rows {
+        let linux = theirs(name).map_or(String::new(), |count| shown(name, count));
+        let _ = writeln!(out, "| {} | {} | {linux} |", name.replace('_', " "), shown(name, *ours));
+    }
     let _ = writeln!(
         out,
-        "\nRound trips pass one message there and back between two programs (two threads \
-         on Linux), pinned to one CPU or to two. Under a hypervisor, a wake-up on another \
-         CPU is an interrupt the host delivers, so two-CPU numbers in a virtual machine \
-         carry the host's cost on top; Linux (VM) pays it too. A ratio in bold is over the \
-         gate's {GATE_RATIO:.2}. docs/design/ipc.md describes each measurement."
+        "\nCounted by the host's KVM over the CPUs of each virtual machine{}, from before the \
+         first of the {MOTIONS} motions to after the last, the 5 ms between them with it, and \
+         divided by the motions. Exits is every time a CPU of the virtual machine stopped \
+         for the host, which costs far more than the instructions around it; the other \
+         counters say why it stopped or what the host then did. The kernel's own counts \
+         above show the exits it knows it asks for; this table shows them all.",
+        if first_of_several { " in the first run" } else { "" }
     );
-    if !numbers.counts.is_empty() {
-        counts_table(&mut out, &numbers.counts, numbers.runs > 1);
-    }
-    out
 }
 
 /// What the kernel did per operation: under a hypervisor each timer write,
@@ -2668,6 +2838,8 @@ mod tests {
             more: 0,
             radix: Vec::new(),
             counts: Vec::new(),
+            host: HostCounts::default(),
+            display_only: false,
             linux_vm: Vec::new(),
             linux_host: Vec::new(),
         };
@@ -2676,6 +2848,46 @@ mod tests {
             numbers.linux_vm.push(measurement(row.linux.expect("a Linux row").0, linux_ns));
         }
         numbers
+    }
+
+    #[test]
+    fn the_hosts_counts_are_what_was_counted_since_and_told_a_motion() {
+        let count = |name: &str, value: u64| (name.to_string(), value);
+        let before = [count("exits", 1_000), count("halt_exits", 50)];
+        let after = [count("exits", 3_000), count("halt_exits", 850), count("io_exits", 1)];
+        let radix = counted_since(&before, &after);
+        assert_eq!(radix, [count("exits", 2_000), count("halt_exits", 800), count("io_exits", 1)]);
+        // Nothing is counted where QEMU emulates, and then nothing is told.
+        let mut none = String::new();
+        host_table(&mut none, &HostCounts::default(), false);
+        assert_eq!(none, "");
+
+        let linux =
+            vec![count("exits", 1_200), count("halt_exits", 400), count("halt_wait_ns", 4_000)];
+        let mut radix = radix;
+        radix.push(count("halt_wait_ns", 2_000_000));
+        let mut out = String::new();
+        host_table(&mut out, &HostCounts { radix, linux }, false);
+        assert!(out.contains("| exits | 5.00 | 3.00 |"), "{out}");
+        assert!(out.contains("| halt exits | 2.00 | 1.00 |"), "{out}");
+        assert!(out.contains("| halt wait ns | 5000 ns | 10 ns |"), "{out}");
+        // One exit to QEMU in 400 motions rounds to none.
+        assert!(!out.contains("io exits"), "{out}");
+    }
+
+    #[test]
+    fn a_table_of_the_display_rows_alone_shows_no_other_row() {
+        let mut measured = numbers(100.0, 100.0);
+        let mut all = String::new();
+        rows_table(&mut all, &measured);
+        assert!(all.contains(ROWS[0].what), "{all}");
+        measured.display_only = true;
+        let mut alone = String::new();
+        rows_table(&mut alone, &measured);
+        for row in DISPLAY_ROWS {
+            assert!(alone.contains(row.what), "{}", row.what);
+        }
+        assert!(!alone.contains(ROWS[0].what), "{alone}");
     }
 
     #[test]

@@ -7268,6 +7268,18 @@ impl Vm {
         ))
     }
 
+    /// What the host's KVM has counted for the machine's CPUs so far,
+    /// summed over them, by counter: QMP's `query-stats`. Empty where
+    /// QEMU emulates, which has nothing counted, or is older than the
+    /// command (QEMU 7.1).
+    pub fn host_counts(&mut self) -> Vec<(String, u64)> {
+        let Some(socket) = self.qmp.clone() else { return Vec::new() };
+        let reply = Qmp::connect(&socket).and_then(|mut qmp| {
+            qmp.execute_reply(r#"{"execute":"query-stats","arguments":{"target":"vcpu"}}"#)
+        });
+        reply.map(|reply| host_counters(&reply)).unwrap_or_default()
+    }
+
     /// Holds down, or lets go of, `keys` (QEMU key codes) on the keyboard
     /// bound to `display`.
     pub fn keys_on(&mut self, display: &str, keys: &[&str], down: bool) -> Result<(), String> {
@@ -7529,6 +7541,36 @@ impl Qmp {
             }
         }
     }
+}
+
+/// The counters in a reply to QMP's `query-stats`, summed over the CPUs
+/// it lists, in the order of their first mention: each object with a
+/// `name` and a `value` of one whole number. A histogram, whose value is
+/// a list, is left out.
+pub(crate) fn host_counters(reply: &str) -> Vec<(String, u64)> {
+    let mut counters: Vec<(String, u64)> = Vec::new();
+    // A counter is an object with no object in it: from a `{` to the
+    // first `}` after it.
+    let objects = reply.split('{').filter_map(|rest| Some(rest.split_once('}')?.0));
+    for object in objects {
+        let (Some(name), Some(value)) = (member(object, "name"), member(object, "value")) else {
+            continue;
+        };
+        let Ok(value) = value.parse::<u64>() else { continue };
+        let name = name.trim_matches('"');
+        match counters.iter_mut().find(|(known, _)| known == name) {
+            Some((_, sum)) => *sum += value,
+            None => counters.push((name.to_string(), value)),
+        }
+    }
+    counters
+}
+
+/// The value of the member `key` of a JSON object's text `object`, up to
+/// the next comma: for members whose values hold none.
+fn member<'a>(object: &'a str, key: &str) -> Option<&'a str> {
+    let (_, rest) = object.split_once(&format!("\"{key}\":"))?;
+    Some(rest.split(',').next()?.trim())
 }
 
 /// The string a QMP reply returns, unescaped: `{"return": "..."}`.
@@ -12452,6 +12494,24 @@ fn microcode(vm: &mut Vm, case: &Case) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hosts_counters_are_summed_over_the_cpus_whatever_the_members_order() {
+        // QEMU writes an object's members in no fixed order.
+        let reply = concat!(
+            r#"{"return": [{"provider": "kvm", "qom-path": "/machine/unattached/device[0]", "#,
+            r#""stats": [{"name": "exits", "value": 40}, {"value": 7, "name": "halt_exits"}, "#,
+            r#"{"name": "halt_wait_hist", "value": [1, 2, 3]}, {"name": "guest_mode", "value": false}]}, "#,
+            r#"{"stats": [{"value": 2, "name": "exits"}, {"name": "io_exits","value":5}], "#,
+            r#""provider": "kvm", "qom-path": "/machine/unattached/device[1]"}]}"#,
+        );
+        assert_eq!(
+            host_counters(reply),
+            [("exits".to_string(), 42), ("halt_exits".to_string(), 7), ("io_exits".to_string(), 5)]
+        );
+        // QEMU without KVM counts nothing.
+        assert_eq!(host_counters(r#"{"return": []}"#), []);
+    }
 
     #[test]
     fn a_lock_report_is_told_with_its_locks() {
