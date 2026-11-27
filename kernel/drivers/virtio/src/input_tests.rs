@@ -11,10 +11,10 @@ use std::vec::Vec;
 
 use radix_hw::{Mmio, Registers, fake_memory_write};
 
-use crate::input::{ANSWER_MAX, EVENT_SIZE, Event, Ids, Input, QUEUE_SIZE, Range};
+use crate::input::{ANSWER_MAX, EVENT_SIZE, Event, Ids, Input, QUEUE_SIZE, Range, Vectors};
 use crate::snd_tests::{Ring, next_chain, put_used, read_mem};
 use crate::tests::{BAR_SIZE, alloc, function};
-use crate::{Error, Transport, device_type, feature as common_feature, status};
+use crate::{Error, NO_VECTOR, Transport, device_type, feature as common_feature, status};
 
 const NAME: &[u8] = b"A keyboard with a pointer";
 const SERIAL: &[u8] = b"vk-0001";
@@ -47,6 +47,12 @@ struct State {
     lit: Vec<Event>,
     /// The device leaves the status queue unread.
     deaf: bool,
+    /// The MSI-X entry the driver gave for a change of the
+    /// configuration, and whether the device takes none.
+    config_vector: u16,
+    no_config_vector: bool,
+    /// How many times the driver read a register.
+    reads: u32,
 }
 
 struct Device {
@@ -144,9 +150,11 @@ impl Device {
 
 impl Registers for Device {
     fn read(&self, offset: usize, size: usize) -> u64 {
-        let s = self.state.lock().unwrap();
+        let mut s = self.state.lock().unwrap();
+        s.reads += 1;
         match (offset, size) {
             (0x04, 4) => (s.features >> (32 * s.device_select)) & 0xffff_ffff,
+            (0x10, 2) => u64::from(s.config_vector),
             (0x12, 2) => 2,
             (0x14, 1) => u64::from(s.status),
             (0x15, 1) => 0,
@@ -175,6 +183,7 @@ impl Registers for Device {
                 s.driver_features =
                     (s.driver_features & !(0xffff_ffff << shift)) | (value << shift);
             }
+            0x10 => s.config_vector = if s.no_config_vector { NO_VECTOR } else { value as u16 },
             0x14 => {
                 let value = value as u8;
                 if value & status::FEATURES_OK != 0 && s.driver_features & !s.features != 0 {
@@ -214,10 +223,13 @@ fn transport(device: &Arc<Device>) -> Transport {
     Transport::find(&f, &mut |_, _| Some(Mmio::fake(regs.clone(), BAR_SIZE))).unwrap()
 }
 
+/// Entry 0 for the queues and entry 1 for a change of the configuration.
+const VECTORS: Vectors = Vectors { queues: 0, config: 1 };
+
 /// A started device.
 fn setup() -> (Arc<Device>, Input) {
     let device = Device::new(FEATURES);
-    let mut input = Input::new(transport(&device), 0, &mut alloc).unwrap();
+    let mut input = Input::new(transport(&device), VECTORS, &mut alloc).unwrap();
     input.start().unwrap();
     (device, input)
 }
@@ -241,7 +253,7 @@ fn finds_the_input_device() {
 #[test]
 fn refuses_a_device_older_than_virtio_1() {
     let device = Device::new(common_feature::EVENT_IDX);
-    let made = Input::new(transport(&device), 0, &mut alloc);
+    let made = Input::new(transport(&device), VECTORS, &mut alloc);
     assert!(matches!(made, Err(Error::MissingFeature(_))));
     assert_eq!(device.state.lock().unwrap().status & status::FAILED, status::FAILED);
 }
@@ -380,6 +392,38 @@ fn lights_wait_while_the_device_reads_none() {
     drop(s);
     assert!(input.light(&[(0, true)]));
     assert_eq!(device.state.lock().unwrap().lit.len(), 10);
+}
+
+#[test]
+fn the_device_is_told_where_a_change_of_its_configuration_goes() {
+    let (device, _input) = setup();
+    assert_eq!(device.state.lock().unwrap().config_vector, VECTORS.config);
+
+    let device = Device::new(FEATURES);
+    device.state.lock().unwrap().no_config_vector = true;
+    let made = Input::new(transport(&device), VECTORS, &mut alloc);
+    assert!(matches!(made, Err(Error::NoVector)));
+    assert_eq!(device.state.lock().unwrap().status & status::FAILED, status::FAILED);
+}
+
+#[test]
+fn taking_events_reads_no_register_of_the_device() {
+    let (device, mut input) = setup();
+    let before = device.state.lock().unwrap().reads;
+    for _ in 0..3 * usize::from(QUEUE_SIZE) {
+        device.say(EV_REL, REL_X, 1);
+        device.say(EV_SYN, 0, 0);
+        assert_eq!(all(&mut input).len(), 2);
+    }
+    assert_eq!(device.state.lock().unwrap().reads, before);
+}
+
+#[test]
+fn a_device_that_needs_a_reset_says_so_when_asked() {
+    let (device, input) = setup();
+    assert!(!input.failed());
+    device.state.lock().unwrap().status |= status::NEEDS_RESET;
+    assert!(input.failed());
 }
 
 #[test]

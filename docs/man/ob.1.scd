@@ -1757,7 +1757,7 @@ _target/userspace/_).
 	*--lab-password* _file_
 		The lab's password, as *image --lab* takes it.
 
-*bench* [*--gate* [*--defer-close*]] [*--linux-kernel* _file_] [*--runs* _n_] [*--no-linux*] [*--instructions*] [*--shell*] [*--scaling*] [*--from* _file_] [*--summary* _file_] [*--debug* | *--release*]
+*bench* [*--gate* [*--defer-close*]] [*--linux-kernel* _file_] [*--runs* _n_] [*--no-linux*] [*--instructions*] [*--display*] [*--shell*] [*--scaling*] [*--from* _file_] [*--summary* _file_] [*--debug* | *--release*]
 	Measure what system calls, IPC round trips, context switches, fresh
 	pages, TLB shootdowns, memory copies, files, POSIX calls, changes of
 	a screen's picture and a mouse's motions cost on Radix, next to
@@ -1792,7 +1792,13 @@ _target/userspace/_).
 	motions of the mouse, which *ob* sends through QEMU 5 ms apart, each
 	from the time its interrupt stamped it with to the program that
 	waited for it having read it. The kernel counts what it does for
-	each of these rows too.
+	each of these rows too. Under KVM, *ob* also asks QEMU what the
+	host counted for each system's virtual machine while the motions
+	were sent (QMP's *query-stats*: exits from the virtual machine and
+	why, halts, interrupts given), and the report says it for each
+	motion on both systems: an exit costs far more than the
+	instructions around it, and the kernel's own counts show only the
+	exits it knows it asks for.
 
 	Then boot Linux in a virtual machine set up the same way, with
 	_tools/linux-bench_ built as a static program and run as its only
@@ -1884,6 +1890,15 @@ _target/userspace/_).
 		*ob bench --instructions --gate* on every pull request and every
 		merge, so a longer hot path fails there even when the timings are
 		noisy.
+
+	*--display*
+		Measure the display and input rows alone: Radix's boot with the
+		virtio graphics card and mouse, and Linux's, _n_ times each as
+		*--runs* says, for work on those rows. Nothing else is built or
+		booted, nothing is gated, and the report, with the kernel's
+		counts and the host's, goes to _out/bench/display.md_ and
+		*--summary*'s file. It takes *--runs*, *--no-linux*,
+		*--linux-kernel* and *--summary*.
 
 	*--shell*
 		Boot nothing: time *nukesh*(1) next to bash on this machine

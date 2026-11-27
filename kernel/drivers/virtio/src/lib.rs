@@ -132,7 +132,7 @@ pub enum Error {
     FeaturesRefused,
     /// The device has no such queue, or offers none of a usable size.
     NoQueue,
-    /// The device did not accept the queue's interrupt vector.
+    /// The device did not accept an interrupt vector it was given.
     NoVector,
     /// Memory for the queues could not be allocated.
     NoMemory,
@@ -156,7 +156,7 @@ impl fmt::Display for Error {
             Error::MissingFeature(name) => write!(f, "the device lacks {name}"),
             Error::FeaturesRefused => write!(f, "the device refused the driver's features"),
             Error::NoQueue => write!(f, "no usable queue"),
-            Error::NoVector => write!(f, "the device refused the queue's interrupt vector"),
+            Error::NoVector => write!(f, "the device refused an interrupt vector"),
             Error::NoMemory => write!(f, "out of memory for the queues"),
             Error::DeviceFailed => write!(f, "the device needs a reset"),
             Error::Full => write!(f, "the queue is full"),

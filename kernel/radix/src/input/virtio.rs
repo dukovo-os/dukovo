@@ -6,10 +6,17 @@
 //! controller or a PS/2 port between.
 //!
 //! [`bind`] sets a device up with one MSI-X interrupt for both its
-//! queues, asks it what it is, and adds it to the input devices with
-//! what it says: its name and numbers, the keys it has, how it moves,
-//! where it points and in what range, and its lights. The first device
-//! starts the thread `vinput`, which serves them all.
+//! queues and one for a change of its configuration, asks it what it
+//! is, and adds it to the input devices with what it says: its name and
+//! numbers, the keys it has, how it moves, where it points and in what
+//! range, and its lights. The first device starts the thread `vinput`,
+//! which serves them all.
+//!
+//! An event is taken from memory the device wrote, with no register of
+//! the device read: a read leaves a virtual machine for its host, and
+//! the event's reader waits behind the thread (ADR 0711). A device that
+//! needs a reset says so with a change of its configuration, and is
+//! asked for its status then.
 //!
 //! A device's events are in Linux's codes already, so they are handed on
 //! as they come, a frame for each run that ends with the device's
@@ -38,13 +45,13 @@ use radix_klog::{TextBuf, info, warn};
 use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_sync::{Once, SpinLock};
 use radix_virtio::Transport;
-use radix_virtio::input::{ANSWER_MAX, Event, Input};
+use radix_virtio::input::{ANSWER_MAX, Event, Input, Vectors};
 
 use super::{About, Axis, FRAME_MAX, Said};
 use crate::Arch;
 use crate::sched::{self, Options, Policy, ThreadRef};
 
-/// The most devices: a bit each in [`PENDING`].
+/// The most devices: a bit each in [`PENDING`] and [`CHANGED`].
 const MAX_DEVICES: usize = 16;
 
 /// Linux's codes for a wheel that counts whole notches, which the input
@@ -63,6 +70,9 @@ static FOUND: AtomicUsize = AtomicUsize::new(0);
 static THREAD: Once<ThreadRef> = Once::new();
 /// The devices whose interrupts came, waiting for the thread.
 static PENDING: AtomicU32 = AtomicU32::new(0);
+/// The devices to ask whether they need a reset: each once it is set
+/// up, and after that those that said their configuration changed.
+static CHANGED: AtomicU32 = AtomicU32::new(0);
 /// When each device's interrupt last came, on the kernel's clock: the
 /// time its events carry.
 static CAME_NS: [AtomicU64; MAX_DEVICES] = [const { AtomicU64::new(0) }; MAX_DEVICES];
@@ -70,9 +80,9 @@ static CAME_NS: [AtomicU64; MAX_DEVICES] = [const { AtomicU64::new(0) }; MAX_DEV
 static BOUND: [SpinLock<Option<Box<Bound, Kmalloc>>>; MAX_DEVICES] =
     [const { SpinLock::new(None) }; MAX_DEVICES];
 
-/// A device's interrupt vector, given back when the device goes. It is
-/// dropped after the device itself, which a reset has made quiet by
-/// then.
+/// One of a device's interrupt vectors, given back when the device
+/// goes. It is dropped after the device itself, which a reset has made
+/// quiet by then.
 struct Vector(u32);
 
 impl Drop for Vector {
@@ -81,12 +91,19 @@ impl Drop for Vector {
     }
 }
 
+/// A device's interrupts: the MSI-X entries it is told of, and the
+/// vectors behind them.
+struct Interrupts {
+    entries: Vectors,
+    vectors: [Option<Vector>; 2],
+}
+
 /// A device as the thread serves it.
 struct Bound {
     index: usize,
     input: Input,
-    /// After `input`, so that it is dropped after it.
-    _vector: Vector,
+    /// After `input`, so that they are dropped after it.
+    _vectors: [Option<Vector>; 2],
     /// Its number among the input devices.
     number: u32,
     /// Whether it counts its wheel, and its horizontal wheel, in 120ths
@@ -107,13 +124,28 @@ impl Drop for Bound {
     }
 }
 
-/// A device's interrupt: the time is noted, and the thread reads it.
+/// A device's interrupt for its queues: the time is noted, and the
+/// thread reads it.
 fn on_interrupt(index: usize) {
     if let Some(came) = CAME_NS.get(index) {
         came.store(sched::now_ns(), Ordering::Release);
     }
     PENDING.fetch_or(1 << index, Ordering::AcqRel);
     wake();
+}
+
+/// A device's interrupt for a change of its configuration: the thread
+/// asks it whether it needs a reset.
+fn on_change(index: usize) {
+    CHANGED.fetch_or(1 << index, Ordering::AcqRel);
+    wake();
+}
+
+/// The interrupt of a device that has one for everything: either of the
+/// two.
+fn on_either(index: usize) {
+    CHANGED.fetch_or(1 << index, Ordering::AcqRel);
+    on_interrupt(index);
 }
 
 fn wake() {
@@ -149,7 +181,22 @@ fn try_bind(function: &Function) -> Result<(), &'static str> {
         Bar::Io { .. } => None,
     };
     let transport = Transport::find(function, &mut map_bar).map_err(|_| "no modern transport")?;
-    // One MSI-X entry for both queues: they wake the same thread.
+    let interrupts = interrupts(function, index)?;
+    let bound = new_bound(function, transport, (index, interrupts))?;
+    *BOUND[index].lock() = Some(bound);
+    // A device that failed before it was started sent no interrupt for
+    // it: it is asked once.
+    CHANGED.fetch_or(1 << index, Ordering::AcqRel);
+    start_thread();
+    wake();
+    Ok(())
+}
+
+/// Gives the device at place `index` its interrupts: MSI-X entry 0 for
+/// both its queues, which wake the same thread, and entry 1 for a change
+/// of its configuration. A device with one entry, or one for which no
+/// second vector is free, raises entry 0 for either.
+fn interrupts(function: &Function, index: usize) -> Result<Interrupts, &'static str> {
     let msix = MsiX::find(function).ok_or("it has no MSI-X")?;
     let (bar, offset) = msix.table_location();
     let Some(Bar::Memory { address, .. }) = function.bar(bar) else {
@@ -157,18 +204,24 @@ fn try_bind(function: &Function) -> Result<(), &'static str> {
     };
     let table = <Arch as Devices>::map_device(address + offset, msix.table_len())
         .ok_or("its MSI-X table could not be mapped")?;
-    let (vector, message) =
-        <Arch as Devices>::allocate_interrupt(function.address(), on_interrupt, index)
-            .ok_or("no interrupt vector is free")?;
-    let vector = Vector(vector);
+    let source = function.address();
+    // Dropped on a failure from here, a vector is given back.
+    let change = (msix.entries() >= 2)
+        .then(|| <Arch as Devices>::allocate_interrupt(source, on_change, index))
+        .flatten()
+        .map(|(vector, message)| (Vector(vector), message));
+    let handler: fn(usize) = if change.is_some() { on_interrupt } else { on_either };
+    let (queues, first) = <Arch as Devices>::allocate_interrupt(source, handler, index)
+        .ok_or("no interrupt vector is free")?;
+    let queues = Vector(queues);
     msix.enable_masked(function);
-    msix.set_entry(&table, 0, message);
+    msix.set_entry(&table, 0, first);
+    if let Some((_, second)) = &change {
+        msix.set_entry(&table, 1, *second);
+    }
     msix.unmask_all(function);
-    let bound = new_bound(function, transport, (index, vector))?;
-    *BOUND[index].lock() = Some(bound);
-    start_thread();
-    wake();
-    Ok(())
+    let entries = Vectors { queues: 0, config: if change.is_some() { 1 } else { 0 } };
+    Ok(Interrupts { entries, vectors: [Some(queues), change.map(|(vector, _)| vector)] })
 }
 
 /// Starts the thread, at the first device. It runs on the boot CPU,
@@ -190,18 +243,18 @@ fn start_thread() {
 
 /// The device behind `transport`, set up, added to the input devices and
 /// started, on the heap; `slot` is its place among these devices and its
-/// interrupt vector.
+/// interrupts.
 #[inline(never)]
 fn new_bound(
     function: &Function,
     transport: Transport,
-    slot: (usize, Vector),
+    slot: (usize, Interrupts),
 ) -> Result<Box<Bound, Kmalloc>, &'static str> {
-    let (index, vector) = slot;
+    let (index, Interrupts { entries, vectors }) = slot;
     let heap = HEAP.with(Flags::MAY_SLEEP);
     let mut alloc = |pages: usize| <Arch as Devices>::alloc_dma(function.address(), pages, false);
-    let input =
-        Input::new(transport, 0, &mut alloc).map_err(|_| "the device refused to be set up")?;
+    let input = Input::new(transport, entries, &mut alloc)
+        .map_err(|_| "the device refused to be set up")?;
     let (about, fine) = about(&input, function);
     let has_lights = LIGHTS
         .iter()
@@ -211,7 +264,7 @@ fn new_bound(
     let bound = Bound {
         index,
         input,
-        _vector: vector,
+        _vectors: vectors,
         number,
         fine,
         has_lights,
@@ -372,12 +425,14 @@ impl Bound {
 }
 
 /// The thread `vinput`: takes each device as it is set up, reads those
-/// whose interrupt came, and sends the keyboards their lights.
+/// whose interrupt came, sends the keyboards their lights, and lets go
+/// of a device that says it needs a reset.
 fn run(_: usize) {
     let mut devices: [Option<Box<Bound, Kmalloc>>; MAX_DEVICES] = [const { None }; MAX_DEVICES];
     loop {
         let found = FOUND.load(Ordering::Acquire).min(MAX_DEVICES);
         let pending = PENDING.swap(0, Ordering::AcqRel);
+        let changed = CHANGED.swap(0, Ordering::AcqRel);
         for (index, device) in devices.iter_mut().enumerate().take(found) {
             if device.is_none() {
                 *device = BOUND[index].lock().take();
@@ -387,13 +442,17 @@ fn run(_: usize) {
                 bound.serve();
             }
             bound.light();
-            if bound.input.failed() {
+            // Asking reads a register of the device, which leaves a
+            // virtual machine for its host while the reader of what was
+            // just handed on waits behind this thread: a device is
+            // asked when it says something changed.
+            if changed & (1 << index) != 0 && bound.input.failed() {
                 warn!("Input: /devices/input/{} stopped: its device needs a reset", bound.number);
                 // Dropped, it leaves the input devices.
                 *device = None;
             }
         }
-        if PENDING.load(Ordering::Acquire) == 0 {
+        if PENDING.load(Ordering::Acquire) == 0 && CHANGED.load(Ordering::Acquire) == 0 {
             sched::block("vinput");
         }
     }

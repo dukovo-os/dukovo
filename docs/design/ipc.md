@@ -555,6 +555,21 @@ interrupts to another CPU fails, which is a reader woken on a CPU that
 slept: it counts few instructions more and takes several times as long
 under a hypervisor.
 
+Under KVM the host is asked as well. `ob bench` reads KVM's counters
+for each system's virtual machine before the first motion and after the
+last (QEMU's `query-stats`), and the report gives them for each motion,
+Radix's beside Linux's: every exit from the virtual machine, and by
+kind the halts, the exits for an I/O port or device memory, the
+interrupts given. An exit costs far more than the instructions around
+it, and a kernel counts only the ones it knows it asks for, so a row
+that is slower than its instructions and its kernel's counts say is
+read here next. A mouse's motion that took twice Linux's time on CI's
+runners read one register of its device each time, which is an exit to
+the host's emulator and counts as a handful of instructions: the device
+now tells the driver when its status changes (ADR 0711). `ob bench
+--display` measures these rows alone, in a few minutes, for work on
+them.
+
 The report shows each Radix number, the Linux one from the virtual
 machine, their ratio and the host's Linux. Under KVM a system call does
 not leave the guest, and a wake-up on another CPU is an interrupt the

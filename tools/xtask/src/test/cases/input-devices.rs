@@ -32,7 +32,9 @@ pub const CASE: Case = Case {
     cpu_model: None,
     // The keyboard and the mouse are bound to the display, so that the
     // events sent to it reach them; where a pointer points reaches the
-    // tablet, the one device that takes it.
+    // tablet, the one device that takes it. The tablet has one interrupt
+    // for its queues and a change of its configuration alike, as a host
+    // may give a device; the other two have one for each.
     qemu: &[
         "-vga",
         "none",
@@ -43,7 +45,7 @@ pub const CASE: Case = Case {
         "-device",
         "virtio-mouse-pci,display=video0",
         "-device",
-        "virtio-tablet-pci",
+        "virtio-tablet-pci,vectors=1",
         "-chardev",
         SERIAL_LINE[0],
         "-device",
