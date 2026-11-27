@@ -176,8 +176,31 @@ pub enum Invalid {
     NoReturn,
 }
 
+/// A set of instruction codes, made from a list as the crate compiles:
+/// whether it holds a code is one look rather than a search, so the Kani
+/// proofs' unwind bound need only cover the steps of a run.
+pub(crate) struct Codes([bool; 256]);
+
+impl Codes {
+    /// The set of `codes`, each below 256, as every classic BPF code is.
+    pub(crate) const fn of(codes: &[u16]) -> Codes {
+        let mut set = [false; 256];
+        let mut at = 0;
+        while at < codes.len() {
+            set[codes[at] as usize] = true;
+            at += 1;
+        }
+        Codes(set)
+    }
+
+    /// Whether `code` is one of the set's.
+    pub(crate) fn has(&self, code: u16) -> bool {
+        self.0.get(usize::from(code)).copied().unwrap_or(false)
+    }
+}
+
 /// The instructions that are always ones the machine runs.
-const PLAIN: [u16; 16] = [
+const PLAIN: Codes = Codes::of(&[
     LD | W | ABS,
     LD | H | ABS,
     LD | B | ABS,
@@ -194,17 +217,17 @@ const PLAIN: [u16; 16] = [
     RET | A,
     MISC | TAX,
     MISC | TXA,
-];
+]);
 /// Those that load or store a memory word, their constant's.
-const WITH_MEMORY: [u16; 4] = [LD | W | MEM, LDX | W | MEM, ST, STX];
+const WITH_MEMORY: Codes = Codes::of(&[LD | W | MEM, LDX | W | MEM, ST, STX]);
 /// The arithmetic operations besides NEG, on the constant or on `X`.
-const ARITHMETIC: [u16; 10] = [ADD, SUB, MUL, DIV, OR, AND, LSH, RSH, MOD, XOR];
+const ARITHMETIC: Codes = Codes::of(&[ADD, SUB, MUL, DIV, OR, AND, LSH, RSH, MOD, XOR]);
 /// The jumps that test `A`, against the constant or `X`.
-const TESTS: [u16; 4] = [JEQ, JGT, JGE, JSET];
+const TESTS: Codes = Codes::of(&[JEQ, JGT, JGE, JSET]);
 
 /// Whether `code` is one of the jumps that test `A`.
 pub(crate) fn is_test(code: u16) -> bool {
-    code & !0xf8 == JMP && TESTS.contains(&(code & 0xf0))
+    code & !0xf8 == JMP && TESTS.has(code & 0xf0)
 }
 
 /// Whether `insn`, at `at` in a program of `len` instructions, is one
@@ -213,11 +236,11 @@ fn valid(insn: Instruction, at: usize, len: usize) -> Result<(), Invalid> {
     let code = insn.code;
     // Whether a jump of `skip` lands on one of the instructions after.
     let lands = |skip: u32| (skip as usize) < len - at - 1;
-    let ok = if PLAIN.contains(&code) {
+    let ok = if PLAIN.has(code) {
         true
-    } else if WITH_MEMORY.contains(&code) {
+    } else if WITH_MEMORY.has(code) {
         (insn.k as usize) < MEMORY
-    } else if code & !0xf8 == ALU && ARITHMETIC.contains(&(code & 0xf0)) {
+    } else if code & !0xf8 == ALU && ARITHMETIC.has(code & 0xf0) {
         // A constant divisor of 0, or shift by 32 or more, never works.
         code & X == X
             || match code & 0xf0 {

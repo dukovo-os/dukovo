@@ -10,10 +10,10 @@
 //! [`machine`]: crate::machine
 
 use crate::machine::opcode::{
-    A, ABS, ADD, ALU, AND, DIV, IMM, JA, JEQ, JGE, JGT, JMP, JSET, K, LD, LDX, LEN, LSH, MEM, MISC,
-    MOD, MUL, NEG, OR, RET, RSH, ST, STX, SUB, TAX, TXA, W, X, XOR,
+    A, ABS, ADD, ALU, AND, DIV, IMM, JA, JEQ, JGE, JGT, JMP, K, LD, LDX, LEN, LSH, MEM, MISC, MOD,
+    MUL, NEG, OR, RET, RSH, ST, STX, SUB, TAX, TXA, W, X, XOR,
 };
-use crate::machine::{self, Instruction, Invalid, is_test};
+use crate::machine::{self, Codes, Instruction, Invalid, is_test};
 use crate::seccomp::{SECCOMP_DATA_SIZE, SeccompData};
 
 /// A program that passed Linux's checks, in storage `S`: an array, or the
@@ -155,9 +155,8 @@ fn check_seccomp(program: &[Instruction]) -> Result<(), Invalid> {
 /// lists: no load of a byte, a half word or at an index, and no `MOD`,
 /// though the machine has them.
 fn is_allowed(code: u16) -> bool {
-    const ARITHMETIC: [u16; 9] = [ADD, SUB, MUL, DIV, AND, OR, XOR, LSH, RSH];
-    const TESTS: [u16; 4] = [JEQ, JGE, JGT, JSET];
-    const OTHERS: [u16; 14] = [
+    const ARITHMETIC: Codes = Codes::of(&[ADD, SUB, MUL, DIV, AND, OR, XOR, LSH, RSH]);
+    const OTHERS: Codes = Codes::of(&[
         LD | W | LEN,
         LDX | W | LEN,
         LD | IMM,
@@ -172,8 +171,6 @@ fn is_allowed(code: u16) -> bool {
         JMP | JA,
         RET | K,
         RET | A,
-    ];
-    OTHERS.contains(&code)
-        || ARITHMETIC.iter().any(|&op| code == ALU | op | K || code == ALU | op | X)
-        || TESTS.iter().any(|&op| code == JMP | op | K || code == JMP | op | X)
+    ]);
+    OTHERS.has(code) || (code & !0xf8 == ALU && ARITHMETIC.has(code & 0xf0)) || is_test(code)
 }

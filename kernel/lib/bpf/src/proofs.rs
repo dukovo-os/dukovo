@@ -4,11 +4,15 @@
 //! Kani proof harnesses (ADR 0623): for every program of up to
 //! [`LONGEST`] instructions, whatever their bits, and every call, the
 //! checks never panic; a checked program runs without a panic or an
-//! index out of bounds and ends within one step per instruction; a call
-//! the cache would skip the filter for is one the program allows whatever
-//! its arguments; and a filter added to a chain never makes its verdict
-//! less strict. `ob test kani` runs them. Longer programs are the host
-//! tests' and the fuzz target's.
+//! index out of bounds and ends; a call the cache would skip the filter
+//! for is one the program allows whatever its arguments; and a filter
+//! added to a chain never makes its verdict less strict. `ob test kani`
+//! runs them. Longer programs are the host tests' and the fuzz target's.
+//!
+//! Their unwind bound, 6, covers the loops over a program of at most
+//! [`LONGEST`] instructions, a run's steps among them: the checks look
+//! codes up in sets (`machine::Codes`) rather than search lists, which
+//! would be loops of up to 16.
 
 use crate::calls::allows_whatever_the_arguments;
 use crate::filter::Program;
@@ -49,7 +53,7 @@ fn the_checks_take_any_program() {
 }
 
 /// A checked program runs to a RET for any call: no panic, no index out of
-/// bounds, and at most one step per instruction (the unwind bound).
+/// bounds, and no loop past the unwind bound.
 #[kani::proof]
 #[kani::unwind(6)]
 fn a_checked_program_always_ends() {
