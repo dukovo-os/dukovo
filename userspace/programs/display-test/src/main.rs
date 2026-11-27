@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! `display-test`: the display layer (radix-display(2)) on real cards,
-//! for the display boot tests.
+//! and the input that follows it (radix-input(2)), for the display and
+//! input boot tests.
 //!
 //! ```text
-//! display-test virtio | beat | handover | panic | cost
+//! display-test virtio | beat | handover | panic | input | cost
 //! ```
 //!
 //! Each word but the last is one test, which a boot test of the same
@@ -19,6 +20,10 @@
 //!   and left behind by a program that ends ([`handover`]).
 //! - `panic`: a kernel panic while a program has the screens
 //!   ([`panic`]).
+//! - `input`: who hears a key: the holder in front, a holder behind it,
+//!   nobody's reader, and what inputd(8) hands out ([`input`]). The
+//!   input boot tests tell it what to do on the serial port it is
+//!   given, as `display-test input /devices/ttyS1`.
 //!
 //! `cost` is for `ob bench`: it prints what a change, a check and a
 //! pointer's move cost on each card ([`cost`]), and waits for no key.
@@ -34,6 +39,7 @@
 mod beat;
 mod cost;
 mod handover;
+mod input;
 mod panic;
 mod rig;
 mod stage;
@@ -52,8 +58,9 @@ fn main() -> ExitCode {
         ["handover"] => handover::run(),
         ["borrow", seed] => handover::borrow(seed),
         ["panic"] => panic::run(),
+        ["input", line] => input::run(line),
         ["cost"] => cost::run(),
-        _ => Err("usage: display-test virtio | beat | handover | panic | cost".into()),
+        _ => Err("usage: display-test virtio | beat | handover | panic | input | cost".into()),
     };
     match outcome {
         Ok(()) => {

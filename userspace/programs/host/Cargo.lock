@@ -1388,7 +1388,9 @@ version = "1.0.0-alpha.1"
 dependencies = [
  "display",
  "display-pattern",
+ "input",
  "libc",
+ "radix-abi",
  "sysapi",
 ]
 
@@ -5180,6 +5182,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "if-addrs",
+ "input",
  "instant-acme",
  "jiff",
  "kerberos",

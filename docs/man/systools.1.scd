@@ -152,6 +152,8 @@ error that starts with the tool's name.
 :  the machine's name and what it runs on, and set the name
 |  *hwinfo*(8)
 :  what the machine is, as its firmware's SMBIOS tables say
+|  *inputd*(8)
+:  hand the input devices to the program that has the screens
 |  *ionice*(1)
 :  a process's I/O class and level
 |  *iostat*(1)

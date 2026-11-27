@@ -165,6 +165,7 @@ mod help_session;
 mod hexdump;
 mod hostnamectl;
 mod hwinfo;
+mod inputd;
 mod iostat;
 mod ip;
 mod jobs;
@@ -362,6 +363,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("host", dig::host),
     ("hostnamectl", hostnamectl::main),
     ("hwinfo", hwinfo::main),
+    ("inputd", inputd::main),
     ("ionice", priority::ionice),
     ("iostat", iostat::main),
     ("ip", ip::main),

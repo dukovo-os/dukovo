@@ -123,6 +123,7 @@ admin-hardware kernel/radix/src/fs/sysfs/net.rs userspace/defaults/spark/service
 admin-hardware userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/authd.toml
 admin-hardware tools/xtask/src/test/console_client.rs ports/netcat/
 admin-hardware kernel/radix/src/display/report.rs kernel/lib/display/src/layer/report.rs
+admin-hardware kernel/lib/input/src/report.rs
 admin-security userspace/programs/systools/src/private_access.rs userspace/programs/systools/src/private_access/ userspace/programs/systools/src/wireguard.rs
 admin-security userspace/programs/systools/src/firewall.rs userspace/programs/systools/src/firewall/ userspace/programs/systools/src/check.rs
 admin-security userspace/programs/systools/src/check/ userspace/programs/spark-api/ userspace/spark/src/supervisor/ userspace/programs/sshd/
@@ -335,7 +336,7 @@ console-access kernel/lib/fbcon/ tools/xtask/src/screen.rs userspace/defaults/co
 console-access userspace/programs/consoled/ userspace/programs/systools/src/reader.rs
 console-screens kernel/lib/display/ kernel/radix/src/display/ kernel/drivers/virtio/ userspace/programs/display/
 console-screens userspace/programs/consoled/ kernel/lib/fbcon/ tools/xtask/src/test/screens.rs tools/xtask/src/test/viewer.rs tools/xtask/src/screen.rs
-consoles kernel/lib/fbcon/ kernel/lib/hid/ kernel/lib/input/ kernel/lib/tty/
+consoles kernel/lib/fbcon/ kernel/lib/hid/ kernel/lib/input/ kernel/radix/src/input/ kernel/lib/tty/
 consoles tools/xtask/src/screen.rs tools/xtask/src/vt.rs userspace/defaults/console/
 consoles userspace/defaults/keyboard/ userspace/defaults/nukesh/ userspace/defaults/spark/services/
 consoles userspace/programs/consoled/ userspace/programs/keymap/ userspace/programs/nukesh/
@@ -475,6 +476,12 @@ hyperv kernel/drivers/mana/ kernel/radix/src/vpci.rs
 i2c kernel/drivers/i2c/ tools/xtask/src/acpi/
 idle-reader-lock kernel/fs/btrfs/ kernel/radix/src/fs/disk/queue.rs kernel/radix/src/sched/wait.rs
 idle-reader-lock userspace/spark/tests/services/io-weight/
+input-devices kernel/lib/input/ kernel/radix/src/input/ kernel/drivers/virtio/ userspace/programs/input/
+input-devices userspace/programs/display-test/ userspace/programs/systools/src/hardware/
+input-follow kernel/lib/input/ kernel/radix/src/input/ kernel/lib/display/ kernel/radix/src/display/ kernel/lib/hid/
+input-follow userspace/programs/input/ userspace/programs/display/ userspace/programs/display-test/ userspace/programs/consoled/
+inputd kernel/lib/input/ kernel/radix/src/input/ userspace/programs/input/ userspace/programs/display-test/
+inputd userspace/programs/systools/src/inputd.rs userspace/programs/systools/src/inputd/ userspace/defaults/spark/services/inputd.toml
 install-beside image/grub/installed.cfg.in kernel/fs/ntfs/ tools/xtask/src/grub.rs
 install-beside tools/xtask/src/grub_theme.rs userspace/programs/consoled/ userspace/programs/disk/
 install-beside userspace/programs/installer/ userspace/programs/systools/src/efiboot.rs
@@ -870,6 +877,8 @@ screen-reader kernel/drivers/virtio/ kernel/radix/src/audio/ ports/espeak-ng/ us
 screen-reader userspace/programs/audio/ userspace/programs/consoled/ userspace/programs/systools/src/reader.rs
 sd-card-change kernel/drivers/sdhci/ kernel/radix/src/fs/disk/sdhci.rs kernel/radix/src/fs/disk/removable.rs
 sd-card-change kernel/fs/fat/ userspace/programs/systools/src/eject.rs userspace/programs/systools/src/volumed.rs
+secure-key kernel/lib/input/ kernel/radix/src/input/ kernel/lib/display/ kernel/radix/src/display/
+secure-key userspace/programs/consoled/ userspace/programs/display/ userspace/programs/display-test/ userspace/programs/input/
 send-receive kernel/fs/btrfs/ kernel/radix/src/user/files.rs ports/diffutils/ ports/uutils-coreutils/
 send-receive userspace/programs/systools/src/subvolume.rs userspace/programs/systools/src/subvolume/
 send-receive userspace/programs/systools/src/snap.rs userspace/programs/systools/src/facl.rs
@@ -1077,7 +1086,7 @@ usb-ethernet kernel/net/ userspace/posix/nics.c userspace/programs/systools/src/
 usb-ethernet userspace/programs/systools/src/dhcp6.rs userspace/programs/systools/src/netd.rs
 usb-ethernet userspace/spark/tests/services/dhcp/
 usb-input kernel/drivers/usb/ kernel/drivers/usbhc/ kernel/drivers/xhci/ kernel/lib/hid/
-usb-input kernel/lib/input/ userspace/programs/systools/src/hexdump.rs
+usb-input kernel/lib/input/ kernel/radix/src/input/ userspace/programs/systools/src/hexdump.rs
 usb-ohci kernel/drivers/usb/ kernel/drivers/usbhc/ kernel/drivers/xhci/ ports/usbids/
 usb-ohci userspace/programs/systools/src/lsusb.rs
 usb-serial kernel/drivers/uart/ kernel/drivers/usb/ kernel/drivers/usbhc/ kernel/drivers/xhci/

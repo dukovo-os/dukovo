@@ -236,6 +236,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/host", "systools"),
     ("system/commands/hostnamectl", "systools"),
     ("system/commands/hwinfo", "systools"),
+    ("system/commands/inputd", "systools"),
     ("system/commands/ionice", "systools"),
     ("system/commands/iostat", "systools"),
     ("system/commands/ip", "systools"),

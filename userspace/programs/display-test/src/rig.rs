@@ -71,6 +71,11 @@ impl Seat {
         Seat { holder: Holder::new(Device(file)), waiting: VecDeque::new() }
     }
 
+    /// Its description of the display layer's file.
+    pub fn file(&self) -> &File {
+        &self.holder.file().0
+    }
+
     /// The slot its description is in, for another holder's LEND.
     pub fn slot(&self) -> u32 {
         kernel::slot_of(&self.holder.file().0)
