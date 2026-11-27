@@ -352,6 +352,81 @@ fn a_paused_reader_of_the_merged_files_reads_everything_let_go() {
     assert_eq!(keys(&mut hub, 1), []);
 }
 
+#[test]
+fn a_key_down_when_the_front_passes_types_nothing_into_the_next_reader() {
+    let mut hub = plain();
+    hub.front_is(5, 0);
+    open(&mut hub, 2, Source::Keyboard);
+    open(&mut hub, 3, Source::Keyboard);
+    hub.tie(2, 5, 0).unwrap();
+    hub.tie(3, 6, 0).unwrap();
+    // A goes down for the holder in front, and the front passes with it
+    // still down: the one that read it go down reads it let go.
+    hub.frame(0, 1_000, &[Said::key(KEY_A, true)]);
+    hub.front_is(6, 2_000);
+    assert_eq!(keys(&mut hub, 2), [(KEY_A, PRESSED), (KEY_A, RELEASED)]);
+    // The next reads neither its repeats nor its release.
+    let woken = hub.readers[2].waker.clone();
+    let repeats = 1_000 + REPEAT_DELAY_NS;
+    assert_eq!(hub.tick(repeats), Some(repeats + REPEAT_PERIOD_NS));
+    hub.frame(0, repeats + 1, &[Said::key(KEY_A, false)]);
+    assert_eq!(keys(&mut hub, 3), []);
+    assert_eq!(woken.0.get(), 0, "and is woken for none of it");
+    // A key that goes down from here is its own, and so is A again.
+    hub.frame(0, repeats + 2, &[Said::key(KEY_B, true), Said::key(KEY_A, true)]);
+    hub.frame(0, repeats + 3, &[Said::key(KEY_A, false)]);
+    assert_eq!(keys(&mut hub, 3), [(KEY_B, PRESSED), (KEY_A, PRESSED), (KEY_A, RELEASED)]);
+    // The front comes back with B down: the first reader, which read
+    // nothing of B, reads nothing of it now; the other reads it let go.
+    hub.front_is(5, repeats + 4);
+    hub.frame(0, repeats + 5, &[Said::key(KEY_B, false)]);
+    assert_eq!(keys(&mut hub, 2), []);
+    assert_eq!(keys(&mut hub, 3), [(KEY_B, RELEASED)]);
+    // The reader tied to none read every key as it was.
+    assert_eq!(keys(&mut hub, 1).len(), 7);
+}
+
+#[test]
+fn a_key_down_when_a_file_is_opened_or_tied_is_not_that_reader_s() {
+    let mut hub = plain();
+    hub.front_is(5, 0);
+    hub.frame(0, 1, &[Said::key(KEY_A, true), Said::key(KEY_B, true)]);
+    // Opened with A and B down, as by the program that Enter started.
+    open(&mut hub, 2, Source::Keyboard);
+    hub.frame(0, 2, &[Said::key(KEY_A, false)]);
+    assert_eq!(keys(&mut hub, 2), []);
+    // Tied to the holder in front, with B still down.
+    hub.tie(2, 5, 3).unwrap();
+    hub.frame(0, 4, &[Said::key(KEY_B, false), Said::key(KEY_A, true)]);
+    assert_eq!(keys(&mut hub, 2), [(KEY_A, PRESSED)]);
+    // A reader that stops being heard is let go of what it read go down,
+    // in the order of the codes, and of nothing else.
+    hub.frame(0, 5, &[Said::key(KEY_B, true)]);
+    open(&mut hub, 3, Source::Keyboard);
+    hub.tie(3, 5, 6).unwrap();
+    hub.front_is(6, 7);
+    assert_eq!(keys(&mut hub, 2), [(KEY_B, PRESSED), (KEY_A, RELEASED), (KEY_B, RELEASED)]);
+    assert_eq!(keys(&mut hub, 3), []);
+}
+
+#[test]
+fn the_attention_holder_reads_nothing_of_the_keys_that_began_its_hold() {
+    let mut hub = plain();
+    hub.attention_is(1, 0);
+    hub.front_is(2, 0);
+    open(&mut hub, 2, Source::Keyboard);
+    hub.tie(2, 1, 0).unwrap();
+    let chord = [Said::key(KEY_LEFTCTRL, true), Said::key(KEY_LEFTALT, true)];
+    hub.frame(0, 1, &chord);
+    assert!(hub.frame(0, 2, &[Said::key(KEY_DELETE, true)]));
+    // The holder of the attention file is heard from here, with Ctrl and
+    // Alt down that it never read go down.
+    let all_up = [KEY_DELETE, KEY_LEFTALT, KEY_LEFTCTRL].map(|code| Said::key(code, false));
+    hub.frame(0, 3, &all_up);
+    hub.frame(0, 4, &[Said::key(KEY_A, true)]);
+    assert_eq!(keys(&mut hub, 2), [(KEY_A, PRESSED)]);
+}
+
 /// A hub where holder 1 has the attention file and holder 2 is in front,
 /// with a second keyboard (device 2), and four readers of the first
 /// keyboard: 1 tied to the attention holder, 2 tied to the front, 3 tied

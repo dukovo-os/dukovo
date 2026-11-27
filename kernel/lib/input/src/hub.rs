@@ -19,10 +19,16 @@
 //! layer ([`Hub::tie`]) is heard only while that holder is in front
 //! ([`Hub::front_is`]); one tied to none always is. A reader that stops
 //! being heard is told: a device's file reads SYN_PAUSED,
-//! _/devices/kbd_ reads the release of every key that is down, and
+//! _/devices/kbd_ reads the release of every key it read go down, and
 //! _/devices/mouse_ its buttons let go. Nothing reaches it until it is
 //! heard again, when a device's file reads SYN_RESUMED. What it is asked
 //! for the state meanwhile, it is told that nothing is down.
+//!
+//! **A key is one reader's from down to up.** A reader of
+//! _/devices/kbd_ that begins to be heard while a key is down reads
+//! neither that key's repeats nor its release: the key that started a
+//! program, or ended one, types nothing into the next. A device's file
+//! reads the release, as its reader asks the state after SYN_RESUMED.
 //!
 //! **The secure key.** Ctrl+Alt+Delete, on any keyboards, begins a hold
 //! if a holder has the display layer's attention file
@@ -192,8 +198,47 @@ struct Reader<W, A: Allocator> {
     heard: bool,
     /// Its device has gone.
     gone: bool,
+    /// The keys that were down when a reader of _/devices/kbd_ began to
+    /// be heard. It did not read them go down, so it reads none of them
+    /// repeat or go up.
+    missed: Keys,
     queue: Queue<A>,
     waker: W,
+}
+
+impl<W, A: Allocator + Copy> Reader<W, A> {
+    /// Whether events reach it from now, with the keys `down`: one that
+    /// begins to be heard has missed those going down.
+    fn hear(&mut self, heard: bool, down: &Keys) {
+        self.heard = heard;
+        self.missed = if heard { *down } else { Keys::new() };
+    }
+
+    /// Gives a reader of _/devices/kbd_ the keys `keys` of a frame, but
+    /// for the repeats and the releases of keys it missed going down.
+    /// Returns whether it was given any.
+    fn give_keys(&mut self, keys: &[Event], now: u64) -> bool {
+        let Queue::Keys(ring) = &mut self.queue else { return false };
+        if self.missed.is_empty() {
+            ring.push(keys, now, &KEYS);
+            return true;
+        }
+        let mut any = false;
+        for key in keys {
+            // A key it missed is its own again once it goes up, or once
+            // another keyboard's goes down.
+            if self.missed.has(key.code) && key.value != PRESSED {
+                if key.value == RELEASED {
+                    self.missed.set(key.code, false);
+                }
+                continue;
+            }
+            self.missed.set(key.code, false);
+            ring.push(core::slice::from_ref(key), now, &KEYS);
+            any = true;
+        }
+        any
+    }
 }
 
 /// Whether a reader tied to `tie` is heard while `front` is in front and,
@@ -403,7 +448,17 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
             Source::Control => Queue::Changes(Ring::new_in(self.alloc)),
         };
         let heard = source == Source::Control || hears(None, self.front, self.attention, self.held);
-        let reader = Reader { key, source, tie: None, heard, gone: false, queue, waker };
+        let mut reader = Reader {
+            key,
+            source,
+            tie: None,
+            heard,
+            gone: false,
+            missed: Keys::new(),
+            queue,
+            waker,
+        };
+        reader.hear(heard, &self.down());
         // Within the room just reserved.
         let _ = self.readers.push_within_capacity(reader);
         Ok(())
@@ -435,6 +490,7 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
     /// for the control file, and [`Refused::NoReader`].
     pub fn tie(&mut self, key: usize, holder: u32, now: u64) -> Result<(), Refused> {
         let (front, attention, held) = (self.front, self.attention, self.held);
+        let down = self.down();
         let reader = self.reader_mut(key)?;
         if reader.source == Source::Control {
             return Err(Refused::NotThisFile);
@@ -444,7 +500,7 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
         }
         reader.tie = Some(holder);
         reader.queue.clear();
-        reader.heard = hears(reader.tie, front, attention, held);
+        reader.hear(hears(reader.tie, front, attention, held), &down);
         if let (Queue::Events(ring), false) = (&mut reader.queue, reader.heard) {
             ring.push(&[mark(now, SYN_PAUSED)], now, &EVENTS);
             reader.waker.wake();
@@ -498,27 +554,19 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
     /// that changed.
     fn retune(&mut self, now: u64) {
         let (front, attention, held) = (self.front, self.attention, self.held);
-        let mut down = Keys::new();
-        let mut buttons = false;
-        for device in &self.devices {
-            down.merge(device.down());
-            buttons |= device.buttons() != 0;
-        }
-        // No reader heard the secure key's Delete go down, so none reads
-        // it let go.
-        if let Some((_, code)) = self.swallowed {
-            down.set(code, false);
-        }
+        let down = self.down();
+        let buttons = self.devices.iter().any(|device| device.buttons() != 0);
         for reader in &mut self.readers {
             let heard = hears(reader.tie, front, attention, held);
             if reader.source == Source::Control || heard == reader.heard {
                 continue;
             }
-            reader.heard = heard;
+            let missed = reader.missed;
+            reader.hear(heard, &down);
             match (&mut reader.queue, heard) {
                 (Queue::Events(ring), false) => ring.push(&[mark(now, SYN_PAUSED)], now, &EVENTS),
                 (Queue::Events(ring), true) => ring.push(&[mark(now, SYN_RESUMED)], now, &EVENTS),
-                (Queue::Keys(ring), false) => let_go(ring, &down, now),
+                (Queue::Keys(ring), false) => let_go(ring, &down, &missed, now),
                 (Queue::Motions(ring), false) if buttons => {
                     let still = Motion {
                         time_ns: now,
@@ -537,6 +585,20 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
             }
             reader.waker.wake();
         }
+    }
+
+    /// The keys that are down, on any device, as the readers know them:
+    /// no reader heard the secure key's Delete go down, so none reads it
+    /// let go.
+    fn down(&self) -> Keys {
+        let mut down = Keys::new();
+        for device in &self.devices {
+            down.merge(device.down());
+        }
+        if let Some((_, code)) = self.swallowed {
+            down.set(code, false);
+        }
+        down
     }
 
     /// Whether a Ctrl and an Alt are down, on any keyboards.
@@ -617,23 +679,26 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
         let now = frame.time_ns;
         frame.events[frame.count] = mark(now, SYN_REPORT);
         for reader in readers.iter_mut().filter(|reader| reader.heard) {
-            match (&mut reader.queue, reader.source) {
+            let given = match (&mut reader.queue, reader.source) {
                 (Queue::Events(ring), Source::Device(of)) if of == device.number => {
-                    if frame.count == 0 {
-                        continue;
+                    if frame.count > 0 {
+                        ring.push(&frame.events[..=frame.count], now, &EVENTS);
                     }
-                    ring.push(&frame.events[..=frame.count], now, &EVENTS);
-                }
-                (Queue::Keys(ring), _) if frame.key_count > 0 => {
-                    ring.push(&frame.keys[..frame.key_count], now, &KEYS);
+                    frame.count > 0
                 }
                 (Queue::Motions(ring), _) => {
-                    let Some(motion) = motion else { continue };
-                    ring.push(&[motion], now, &MOTIONS);
+                    if let Some(motion) = motion {
+                        ring.push(&[motion], now, &MOTIONS);
+                    }
+                    motion.is_some()
                 }
+                (Queue::Keys(_), _) => false,
                 _ => continue,
+            };
+            let keys = &frame.keys[..frame.key_count];
+            if given || (!keys.is_empty() && reader.give_keys(keys, now)) {
+                reader.waker.wake();
             }
-            reader.waker.wake();
         }
         frame.begin(now);
     }
@@ -678,8 +743,7 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
         }
         let key = Event { time_ns: now, code: repeat.code, value: REPEATED, reserved: 0 };
         for reader in self.readers.iter_mut().filter(|reader| reader.heard) {
-            if let Queue::Keys(ring) = &mut reader.queue {
-                ring.push(&[key], now, &KEYS);
+            if reader.give_keys(&[key], now) {
                 reader.waker.wake();
             }
         }
@@ -781,10 +845,12 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
     }
 }
 
-/// Gives a reader of _/devices/kbd_ that is no longer heard the release
-/// of every key of `down`, at `now`.
-fn let_go<A: Allocator + Copy>(ring: &mut Ring<Event, A>, down: &Keys, now: u64) {
-    for code in down.codes().filter(|code| !BUTTON_CODES.contains(code)) {
+/// Gives a reader of _/devices/kbd_ that is no longer heard the release,
+/// at `now`, of every key of `down` that it read go down: all but those
+/// it `missed`.
+fn let_go<A: Allocator + Copy>(ring: &mut Ring<Event, A>, down: &Keys, missed: &Keys, now: u64) {
+    let read = |code: &u16| !BUTTON_CODES.contains(code) && !missed.has(*code);
+    for code in down.codes().filter(read) {
         ring.push(&[Event { time_ns: now, code, value: RELEASED, reserved: 0 }], now, &KEYS);
     }
 }
