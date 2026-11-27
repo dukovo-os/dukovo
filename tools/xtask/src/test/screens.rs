@@ -19,7 +19,10 @@
 //! which draws test patterns and says in the log what each screen
 //! shows. A [`Watch`] reads those lines up to each step of the program
 //! and compares a picture of every screen with what they say, pixel
-//! for pixel.
+//! for pixel. The tests of the desktop watch the same way
+//! ([`Watch::of_desktop`]): their program is `window-test`
+//! (userspace/programs/window-test), a window on the desktop, which says
+//! what the screens show around it and in it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -185,16 +188,36 @@ fn differs(expected: &Expected, image: &Image) -> Option<String> {
     ))
 }
 
-/// What every screen should show, by what `display-test` has said.
-#[derive(Debug, Default)]
+/// What every screen should show, by what `display-test` has said, or
+/// `window-test`.
+#[derive(Debug)]
 pub(super) struct Watch {
+    /// How each line of the program starts.
+    start: &'static str,
     /// How far the log has been read.
     read: usize,
     /// Each screen the program has named.
     screens: BTreeMap<String, Expected>,
 }
 
+impl Default for Watch {
+    /// A watch of what `display-test` says.
+    fn default() -> Watch {
+        Watch { start: said::START, read: 0, screens: BTreeMap::new() }
+    }
+}
+
 impl Watch {
+    /// A watch of the desktop's screens, by what `window-test` says.
+    pub(super) fn of_desktop() -> Watch {
+        Watch { start: said::WINDOW_START, ..Watch::default() }
+    }
+
+    /// The program's name, as its lines have it.
+    fn program(&self) -> &'static str {
+        self.start.trim_end_matches(": ")
+    }
+
     /// Colours `rect` of `screen`'s picture, each pixel as `colour`
     /// gives it for its column and row in the rectangle.
     fn paint(
@@ -225,6 +248,10 @@ impl Watch {
             Said::Shows { screen, width, height, seed } => {
                 let all = (0..*height).flat_map(|y| (0..*width).map(move |x| (x, y)));
                 let pixels = all.map(|(x, y)| pattern::colour(*seed, x, y)).collect();
+                self.screens.insert(screen.clone(), Expected::Picture(*width as usize, pixels));
+            }
+            Said::Fill { screen, width, height, colour } => {
+                let pixels = vec![*colour; *width as usize * *height as usize];
                 self.screens.insert(screen.clone(), Expected::Picture(*width as usize, pixels));
             }
             Said::Patch { screen, rect, seed } => {
@@ -261,7 +288,8 @@ impl Watch {
             let until = Instant::now() + PATIENCE;
             while let Some(why) = differs(expected, &vm.screenshot_of(head)?) {
                 if Instant::now() >= until {
-                    return Err(format!("{name} does not show what display-test said: {why}"));
+                    let program = self.program();
+                    return Err(format!("{name} does not show what {program} said: {why}"));
                 }
                 std::thread::sleep(Duration::from_millis(300));
             }
@@ -274,12 +302,12 @@ impl Watch {
     /// caller then looks at the screens, does what the step is for and
     /// presses a key ([`Watch::go_on`]).
     pub(super) fn arrive(&mut self, vm: &mut Vm, name: &str) -> Result<(), String> {
-        let step = Said::Step(name.to_string()).to_string();
-        if vm.expect_first(&[&step, said::FAILED])? != 0 {
+        let step = Said::Step(name.to_string()).said_by(self.start);
+        if vm.expect_first(&[&step, &said::failure(self.start)])? != 0 {
             let from = vm.cursor;
             vm.expect("\n")?;
             let why = vm.log().get(from..vm.cursor).unwrap_or_default().trim_end().to_string();
-            return Err(format!("display-test failed before its step {name}{why}"));
+            return Err(format!("{} failed before its step {name}{why}", self.program()));
         }
         self.read_to(&vm.log(), vm.cursor)
     }
@@ -310,15 +338,35 @@ impl Watch {
 /// Where Spark says how `display-test` ended.
 const ENDED: &str = "(/system/tests/posix/display-test) exited with code ";
 
+/// Where Spark says how the desktop ended, which ends as the command it
+/// ran did (desktop(1)): `window-test`.
+const DESKTOP_ENDED: &str = "(/system/commands/desktop) exited with code ";
+
 /// Waits for `display-test` to end, and fails unless it passed.
 pub(super) fn passed(vm: &mut Vm) -> Result<(), String> {
-    let code = super::program_line(vm, ENDED)?;
+    ended_well(vm, ENDED, said::START)
+}
+
+/// Waits for the desktop that ran `window-test` to end, and fails unless
+/// `window-test` passed.
+pub(super) fn desktop_passed(vm: &mut Vm) -> Result<(), String> {
+    ended_well(vm, DESKTOP_ENDED, said::WINDOW_START)
+}
+
+/// Waits for Spark's line `ended`, and fails unless the code on it is 0
+/// and the program whose lines start with `start` said it passed, and
+/// of no failure.
+fn ended_well(vm: &mut Vm, ended: &str, start: &'static str) -> Result<(), String> {
+    let code = super::program_line(vm, ended)?;
     let log = vm.log();
+    let failure = said::failure(start);
     let failed: Vec<&str> =
-        log.lines().filter(|line| line.contains(said::FAILED)).map(str::trim).collect();
-    let passed = log.lines().any(|line| Said::read(line) == Some(Said::Passed));
+        log.lines().filter(|line| line.contains(&failure)).map(str::trim).collect();
+    let passed = Said::Passed.said_by(start);
+    let passed = log.lines().any(|line| line.trim_end().ends_with(&passed));
     if !failed.is_empty() || !passed || code != "0x0" {
-        return Err(format!("display-test did not pass ({code}): {}", failed.join("; ")));
+        let program = start.trim_end_matches(": ");
+        return Err(format!("{program} did not pass ({code}): {}", failed.join("; ")));
     }
     Ok(())
 }

@@ -147,6 +147,14 @@ fn distro_from_os_release(text: &str) -> Option<Distro> {
     })
 }
 
+/// The version pkg-config gives for the library or the data `module`,
+/// if this machine has its development files.
+fn library_version(module: &str) -> Option<String> {
+    let output = Command::new("pkg-config").args(["--modversion", module]).output().ok()?;
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (output.status.success() && !version.is_empty()).then_some(version)
+}
+
 fn program_version(program: &str, flag: &str) -> Option<String> {
     let path = process::find_program(program)?;
     let version = Command::new(&path)
@@ -614,6 +622,40 @@ fn requirements() -> Vec<Requirement> {
                 apt: Some("pkgconf"),
                 dnf: Some("pkgconf-pkg-config"),
                 pacman: Some("pkgconf"),
+            },
+            fallback: None,
+        },
+        Requirement {
+            name: "pixman",
+            purpose: "the library windowd draws with, which its unit tests link on this machine",
+            found: |_| library_version("pixman-1"),
+            packages: Packages {
+                apt: Some("libpixman-1-dev"),
+                dnf: Some("pixman-devel"),
+                pacman: Some("pixman"),
+            },
+            fallback: None,
+        },
+        Requirement {
+            name: "libxkbcommon",
+            purpose: "the library windowd reads keyboard layouts with, which its unit tests link \
+                      on this machine",
+            found: |_| library_version("xkbcommon"),
+            packages: Packages {
+                apt: Some("libxkbcommon-dev"),
+                dnf: Some("libxkbcommon-devel"),
+                pacman: Some("libxkbcommon"),
+            },
+            fallback: None,
+        },
+        Requirement {
+            name: "xkeyboard-config",
+            purpose: "the keyboard layouts windowd's unit tests give their programs",
+            found: |_| library_version("xkeyboard-config"),
+            packages: Packages {
+                apt: Some("xkb-data"),
+                dnf: Some("xkeyboard-config"),
+                pacman: Some("xkeyboard-config"),
             },
             fallback: None,
         },

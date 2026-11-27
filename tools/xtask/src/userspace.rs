@@ -148,6 +148,7 @@ pub const STD_ARCHIVE: &[(&str, &str)] = &[
     ("system/commands/smbd", "smbd"),
     ("system/commands/sshd", "sshd"),
     ("system/commands/systools", "systools"),
+    ("system/commands/windowd", "windowd"),
     ("system/tests/posix/display-test", "display-test"),
     ("system/tests/posix/fuse-test", "fuse-test"),
     ("system/tests/posix/git-https-test", "git-https-test"),
@@ -156,6 +157,7 @@ pub const STD_ARCHIVE: &[(&str, &str)] = &[
     ("system/tests/posix/sqlite-test", "sqlite-test"),
     ("system/tests/posix/std-test", "std-test"),
     ("system/tests/posix/tls-test", "tls-test"),
+    ("system/tests/posix/window-test", "window-test"),
     ("system/tests/report/crash-test", "report-test"),
 ];
 
@@ -163,11 +165,13 @@ pub const STD_ARCHIVE: &[(&str, &str)] = &[
 /// and its target. Nukesh is the POSIX shell when it is started as `sh`,
 /// a restricted shell as `rnukesh`, and runs bash's scripts as `bash`
 /// (nukesh(1), ADR 0103); the native tools are one program, which each
-/// tool's name runs (ADR 0096).
+/// tool's name runs (ADR 0096); windowd is the command people type,
+/// `desktop` (desktop(1), ADR 0712).
 pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/bash", "nukesh"),
     ("system/commands/sh", "nukesh"),
     ("system/commands/rnukesh", "nukesh"),
+    ("system/commands/desktop", "windowd"),
     ("system/commands/admin", "systools"),
     ("system/commands/admind", "systools"),
     ("system/commands/alertd", "systools"),
@@ -572,6 +576,8 @@ pub const HOST_TESTED: &[&str] = &[
     "system-release",
     "systools",
     "tuf",
+    "window-test",
+    "windowd",
 ];
 
 /// The Cargo.lock of the host builds of the programs on Rust's standard

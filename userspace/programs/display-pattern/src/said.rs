@@ -45,8 +45,11 @@ pub const START: &str = "display-test: ";
 /// How every line of `window-test` starts.
 pub const WINDOW_START: &str = "window-test: ";
 
-/// How the line of a failure starts.
-pub const FAILED: &str = "display-test: FAILED";
+/// How the line of a failure starts when the program whose lines start
+/// with `start` says it.
+pub fn failure(start: &str) -> String {
+    format!("{start}FAILED")
+}
 
 /// A rectangle of a screen, in pixels from its top left corner.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -249,7 +252,10 @@ mod tests {
             "display-test: patch virtio0/0 200x100 at 300,200 seed 4"
         );
         assert_eq!(Said::Step("shown".into()).to_string(), "display-test: step shown.");
-        assert!(Said::Failed("why".into()).to_string().starts_with(FAILED));
+        assert!(Said::Failed("why".into()).to_string().starts_with(&failure(START)));
+        assert!(
+            Said::Failed("why".into()).said_by(WINDOW_START).starts_with(&failure(WINDOW_START))
+        );
     }
 
     #[test]

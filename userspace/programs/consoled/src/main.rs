@@ -1126,7 +1126,10 @@ fn main() -> ExitCode {
     };
     consoled.lights();
     consoled.switch(0);
-    eprintln!("consoled: {} consoles; tty1 is shown", options.consoles);
+    // A consoled started while a program has the screens stands under
+    // it, and shows tty1 when the program is done (consoled(8)).
+    let shown = if consoled.screen.away() { "a program has the screens" } else { "tty1 is shown" };
+    eprintln!("consoled: {} consoles; {shown}", options.consoles);
     match consoled.run(&mut wake) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {

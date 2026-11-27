@@ -83,6 +83,12 @@ const FIRMWARE_ALLOW: &[&str] = &["LicenseRef-Intel-Microcode"];
 /// in place of a license, which SPDX names `blessing` (ADR 0511). Tcl,
 /// whose license is BSD-style, is a toolchain port that builds SQLite's
 /// tests only and is in no manifest, so its license is not here.
+/// libxkbcommon and the keyboard layouts of xkeyboard-config are under
+/// the X Consortium's and The Open Group's forms of the MIT license
+/// (`X11`, `MIT-open-group`), the historical permission notices of the
+/// companies that wrote X's keyboard code (`HPND`, `HPND-sell-variant`
+/// and Digital's, which SPDX has no identifier for), and Ivan Zinoviev's
+/// for his layouts, all of them permissive (ADR 0712).
 const PORT_EXTRA_ALLOW: &[&str] = &[
     "CC0-1.0",
     "GPL-2.0-only",
@@ -117,6 +123,12 @@ const PORT_EXTRA_ALLOW: &[&str] = &[
     "Unicode-DFS-2016",
     "Python-2.0",
     "blessing",
+    "HPND",
+    "HPND-sell-variant",
+    "X11",
+    "MIT-open-group",
+    "xkeyboard-config-Zinoviev",
+    "LicenseRef-digital-equipment-corporation",
 ];
 
 /// Crates from crates.io that compile another project's C code into what

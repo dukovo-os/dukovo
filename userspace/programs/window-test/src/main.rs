@@ -10,12 +10,14 @@
 //! the machine's card draws the pointer into what a test can see of the
 //! screen (`pointer-drawn`). At each step it waits for the space bar,
 //! which reaches it through the kernel, inputd and windowd as any key
-//! does. `alone` goes through what needs nobody at the keyboard, for a
-//! machine in the lab.
+//! does. Its last steps are after it has had Spark restart consoled,
+//! which lent the desktop the screens: the desktop goes on. `alone` goes
+//! through what needs nobody at the keyboard and leaves consoled be, for
+//! a machine in the lab.
 
 #![forbid(unsafe_code)]
 
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 use std::time::Duration;
 
 use display_pattern::said::{Rect, Said, WINDOW_START};
@@ -206,6 +208,18 @@ impl Shown {
     }
 }
 
+/// The command that has Spark restart consoled (service(8)).
+const RESTART_CONSOLED: [&str; 3] = ["/system/commands/service", "consoled", "restart"];
+
+/// Has Spark restart consoled. The command returns once Spark has taken
+/// the request, and the host waits for the new consoled in the log.
+fn restart_consoled() -> Outcome {
+    let [service, arguments @ ..] = RESTART_CONSOLED;
+    let ended = Command::new(service).args(arguments).status();
+    let ended = ended.map_err(|err| format!("{service}: {err}"))?;
+    ensure(ended.success(), || format!("{}: {ended}", RESTART_CONSOLED.join(" ")))
+}
+
 /// The steps a boot test goes through with the program.
 fn steps(pointer_drawn: bool) -> Outcome {
     let mut shown = Shown::open(pointer_drawn)?;
@@ -218,7 +232,13 @@ fn steps(pointer_drawn: bool) -> Outcome {
     shown.mouse_moved()?;
     shown.step("moved")?;
     shown.outlive_cut_pixels()?;
-    shown.step("outlived")
+    shown.step("outlived")?;
+    // The host switches consoles and comes back at the step before, while
+    // the consoled that lent the screens is there to switch them.
+    restart_consoled()?;
+    shown.step("restarted")?;
+    shown.draw(8)?;
+    shown.step("stayed")
 }
 
 /// What needs nobody at the keyboard.
