@@ -39,6 +39,10 @@ pub const CASE: Case = Case {
     second: None,
 };
 
+/// Where timed keeps the time it last synced, which it sets a clock behind
+/// forward to when it starts.
+const LAST_SYNC: &str = "/system/state/timed/last";
+
 /// Starts the machine with a clock that timed leaves alone, `ahead`
 /// seconds past the host's (before it, when negative), and the update
 /// server `server` followed, and checks that the clock is in that year.
@@ -46,8 +50,9 @@ pub const CASE: Case = Case {
 /// timed is told to ask no server, and said so in its log, before
 /// anything else is done: a clock that a time server had set would test
 /// nothing. A server may have answered timed before it was told, so
-/// while it is stopped the clock is set `ahead` again, as QEMU started
-/// it.
+/// while it is stopped its record of that sync goes, as timed would set
+/// a clock behind it forward to it when it starts, and the clock is set
+/// `ahead` again, as QEMU started it.
 pub(crate) fn start_with_a_wrong_clock(
     vm: &mut Vm,
     server: &Server,
@@ -60,9 +65,9 @@ pub(crate) fn start_with_a_wrong_clock(
         vm,
         &format!(
             "printf 'servers =\\nfallback =\\n' > /system/settings/timed && service timed stop \
-             > /dev/null && TZ=UTC timedatectl set-time '{clock}' && service timed start > \
-             /dev/null; until log timed | grep -q 'NTS servers none'; do sleep 1; done; echo \
-             \"told: $((6 * 7))\""
+             > /dev/null && rm -f {LAST_SYNC} && TZ=UTC timedatectl set-time '{clock}' && \
+             service timed start > /dev/null; until log timed | grep -q 'NTS servers none'; do \
+             sleep 1; done; echo \"told: $((6 * 7))\""
         ),
         &["told: 42"],
     )?;
