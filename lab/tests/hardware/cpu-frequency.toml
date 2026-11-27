@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Where the kernel sets the CPUs' speed, its files read as Linux's do, and a busy CPU speeds up"
+time = "2m"
+
+# Intel's HWP, AMD's CPPC or the firmware's P-states (ADRs 0202 and
+# 0796). A machine whose speed is the firmware's alone, as a virtual one,
+# has no policy.
+[[step]]
+run = "cat /kernel/devices/system/cpu/cpufreq/policy0/scaling_driver"
+or_skip = "needs a machine whose CPU speed the kernel sets"
+
+[[step]]
+run = "dmesg"
+root = true
+expect = "CPU frequency: "
+
+# One of the three drivers, the same on every CPU, with a policy for
+# each, which cpuN/cpufreq leads to.
+[[step]]
+run = '''sh -c 'base=/kernel/devices/system/cpu; for c in $base/cpu[0-9]*; do n=${c##*cpu}; d=$(cat $base/cpufreq/policy$n/scaling_driver); case "$d" in intel_pstate|amd-pstate-epp|acpi-cpufreq) ;; *) echo "unknown driver: policy$n: $d" ;; esac; [ "$(cat $c/cpufreq/scaling_driver)" = "$d" ] || echo "cpu$n/cpufreq is not policy$n"; done; echo "policies: che""cked"' '''
+expect = "policies: checked"
+expect_not = ["unknown driver:", "is not policy"]
+[[step]]
+run = '''sh -c 'p=$(ls -d /kernel/devices/system/cpu/cpufreq/policy* | wc -l); if [ "$p" -eq "$(nproc)" ]; then echo "policies: one for each C""PU"; else echo "policies: $p for $(nproc) CPUs"; fi' '''
+expect = "policies: one for each CPU"
+
+# The range it is asked to stay in lies within what it can do, and its
+# governor is one of those it lists.
+[[step]]
+run = '''sh -c 'for p in /kernel/devices/system/cpu/cpufreq/policy*; do lo=$(cat $p/cpuinfo_min_freq); hi=$(cat $p/cpuinfo_max_freq); a=$(cat $p/scaling_min_freq); b=$(cat $p/scaling_max_freq); [ "$lo" -lt "$hi" ] && [ "$lo" -le "$a" ] && [ "$a" -le "$b" ] && [ "$b" -le "$hi" ] || echo "odd range: $p: $lo $a $b $hi"; g=$(cat $p/scaling_governor); case " $(cat $p/scaling_available_governors) " in *" $g "*) ;; *) echo "governor not listed: $p: $g" ;; esac; done; echo "ranges: che""cked"' '''
+expect = "ranges: checked"
+expect_not = ["odd range:", "governor not listed:"]
+
+# A CPU kept busy runs at more than half its highest speed, whoever picks
+# it: the processor itself, or the kernel from its load.
+[[step]]
+run = '''sh -c 'taskset -c 0 sh -c "while :; do :; done" & busy=$!; sleep 1; f=$(cat /kernel/devices/system/cpu/cpufreq/policy0/scaling_cur_freq); kill $busy; hi=$(cat /kernel/devices/system/cpu/cpufreq/policy0/cpuinfo_max_freq); if [ $((f * 2)) -gt "$hi" ]; then echo "busy: sped u""p"; else echo "busy: $f kHz of $hi"; fi' '''
+expect = "busy: sped up"

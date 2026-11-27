@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The kernel tells how the processor stands against each speculative-execution flaw, and lscpu and the boot log say the same"
+time = "2m"
+
+# One file for each flaw the kernel knows, named as Linux's are (ADR 0790).
+[[step]]
+run = "ls /kernel/devices/system/cpu/vulnerabilities"
+expect = ["meltdown", "spectre_v1", "spectre_v2", "mds", "retbleed", "spec_store_bypass", "spec_rstack_overflow"]
+
+# Each holds one line in Linux's words: not affected, vulnerable, the
+# mitigation, or unknown.
+[[step]]
+run = '''sh -c 'for f in /kernel/devices/system/cpu/vulnerabilities/*; do line=$(cat "$f"); case "$line" in "Not affected"|Vulnerable*|"Mitigation: "*|"Unknown: "*) ;; *) echo "unread: $(basename "$f"): $line" ;; esac; done; echo "flaws: re""ad"' '''
+expect = "flaws: read"
+expect_not = "unread:"
+
+# lscpu shows every one of them.
+[[step]]
+run = '''sh -c 'files=$(ls /kernel/devices/system/cpu/vulnerabilities | wc -l); shown=$(lscpu | grep -c "^Vulnerability "); if [ "$files" -eq "$shown" ]; then echo "lscpu: every fl""aw"; else echo "lscpu: $shown of $files"; fi' '''
+expect = "lscpu: every flaw"
+[[step]]
+run = "lscpu"
+expect = ["Vulnerability Meltdown:", "Vulnerability Spectre v2:", "Vulnerability Spec store bypass:"]
+
+# The boot log counts the flaws that apply and names what the kernel
+# turned on against them.
+[[step]]
+run = "dmesg"
+root = true
+expect = ["CPU flaws: ", " apply; "]
+
+# Page-table isolation, which only a processor with Meltdown needs, is on
+# exactly where the meltdown file says it is.
+[[step]]
+run = '''sh -c 'm=$(cat /kernel/devices/system/cpu/vulnerabilities/meltdown); if dmesg | grep "CPU flaws:" | grep -q "page-table isolation"; then p=on; else p=off; fi; case "$m:$p" in "Mitigation: PTI:on"|"Not affected:off") echo "isolation: as the fi""le says" ;; *) echo "isolation: $p, but meltdown says $m" ;; esac' '''
+root = true
+expect = "isolation: as the file says"
