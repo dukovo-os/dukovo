@@ -206,7 +206,10 @@ fn hears(tie: Option<u32>, front: u32, attention: u32, held: bool) -> bool {
     }
 }
 
-/// What of one frame has not been given to the readers yet.
+/// What of one frame has not been given to the readers yet. The hub
+/// keeps one, which each report fills in turn: it is too large for the
+/// kernel's stack, and a report writes only the places it uses.
+#[derive(Debug)]
 struct Frame {
     time_ns: u64,
     /// The events, with room for the SYN_REPORT after them.
@@ -219,15 +222,23 @@ struct Frame {
 }
 
 impl Frame {
-    fn new(time_ns: u64) -> Frame {
+    const fn new() -> Frame {
         Frame {
-            time_ns,
-            events: [mark(time_ns, SYN_REPORT); FRAME_MAX + 1],
+            time_ns: 0,
+            events: [mark(0, SYN_REPORT); FRAME_MAX + 1],
             count: 0,
-            keys: [Event { time_ns, code: 0, value: 0, reserved: 0 }; FRAME_MAX],
+            keys: [Event { time_ns: 0, code: 0, value: 0, reserved: 0 }; FRAME_MAX],
             key_count: 0,
-            moved: Moved::default(),
+            moved: Moved::NOTHING,
         }
+    }
+
+    /// Starts the frame of a report that came at `time_ns`.
+    fn begin(&mut self, time_ns: u64) {
+        self.time_ns = time_ns;
+        self.count = 0;
+        self.key_count = 0;
+        self.moved = Moved::NOTHING;
     }
 
     fn is_full(&self) -> bool {
@@ -275,6 +286,8 @@ pub struct Hub<W, A: Allocator + Copy> {
     /// The key that repeats, if one is held on a keyboard that does not
     /// repeat its keys itself.
     repeat: Option<Repeat>,
+    /// The frame of the report being handed over ([`Hub::frame`]).
+    frame: Frame,
 }
 
 impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
@@ -290,6 +303,7 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
             held: false,
             swallowed: None,
             repeat: None,
+            frame: Frame::new(),
         }
     }
 
@@ -358,11 +372,12 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
         &self.devices
     }
 
-    /// INPUT_LIST: writes the devices' numbers into `out`, as many as
-    /// fit, lowest first, and returns how many devices there are.
-    pub fn list(&self, out: &mut [u32]) -> usize {
-        for (slot, device) in out.iter_mut().zip(&self.devices) {
-            *slot = device.number;
+    /// INPUT_LIST: writes the devices' numbers into `out`, four bytes
+    /// each, as many as fit whole, lowest first, and returns how many
+    /// devices there are.
+    pub fn list(&self, out: &mut [u8]) -> usize {
+        for (slot, device) in out.as_chunks_mut::<4>().0.iter_mut().zip(&self.devices) {
+            *slot = device.number.to_le_bytes();
         }
         self.devices.len()
     }
@@ -540,7 +555,7 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
     pub fn frame(&mut self, number: u32, time_ns: u64, said: &[Said]) -> bool {
         let Some(index) = self.index_of(number) else { return false };
         let mut secure = false;
-        let mut frame = Frame::new(time_ns);
+        self.frame.begin(time_ns);
         for &said in said {
             let heard = self.devices[index].hear(said);
             if heard == Heard::Nothing {
@@ -552,7 +567,7 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
             if said.kind == EV_KEY && heard == Heard::Changed && self.begins_hold(said) {
                 // What the report said before the key is for those who
                 // were heard until now.
-                self.send(index, &mut frame);
+                self.send(index);
                 self.held = true;
                 self.swallowed = Some((number, said.code));
                 // A key held since before the hold repeats for nobody.
@@ -561,13 +576,13 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
                 secure = true;
                 continue;
             }
-            if frame.is_full() {
-                self.send(index, &mut frame);
+            if self.frame.is_full() {
+                self.send(index);
             }
             self.note_repeat(index, time_ns, said, heard);
-            frame.add(&mut self.devices[index], said, heard);
+            self.frame.add(&mut self.devices[index], said, heard);
         }
-        self.send(index, &mut frame);
+        self.send(index);
         secure
     }
 
@@ -590,17 +605,18 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
         delete && self.attention != 0 && !self.held && self.chord()
     }
 
-    /// Gives the readers that are heard their records of `frame`, which
-    /// the device at `index` said, and empties it.
-    fn send(&mut self, index: usize, frame: &mut Frame) {
-        let device = &mut self.devices[index];
+    /// Gives the readers that are heard their records of the frame,
+    /// which the device at `index` said, and empties it.
+    fn send(&mut self, index: usize) {
+        let Hub { devices, readers, frame, .. } = self;
+        let device = &mut devices[index];
         let motion = device.motion(frame.time_ns, &frame.moved);
         if frame.count == 0 && frame.key_count == 0 && motion.is_none() {
             return;
         }
         let now = frame.time_ns;
         frame.events[frame.count] = mark(now, SYN_REPORT);
-        for reader in self.readers.iter_mut().filter(|reader| reader.heard) {
+        for reader in readers.iter_mut().filter(|reader| reader.heard) {
             match (&mut reader.queue, reader.source) {
                 (Queue::Events(ring), Source::Device(of)) if of == device.number => {
                     if frame.count == 0 {
@@ -619,9 +635,7 @@ impl<W: Wake, A: Allocator + Copy> Hub<W, A> {
             }
             reader.waker.wake();
         }
-        frame.count = 0;
-        frame.key_count = 0;
-        frame.moved = Moved::default();
+        frame.begin(now);
     }
 
     /// Notes what `said`, which the device at `index` heard as `heard`,

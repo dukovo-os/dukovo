@@ -474,9 +474,11 @@ fn devices_come_and_go_with_numbers_never_used_twice() {
     hub.frame(1, 1, &[Said::key(BTN_LEFT, true)]);
     hub.remove(1, 2);
     assert_eq!(hub.add(&mouse(), 3), Ok(2));
-    let mut numbers = [9u32; 4];
+    // Whole numbers only: the last three bytes of room stay as they were.
+    let mut numbers = [9u8; 15];
     assert_eq!(hub.list(&mut numbers), 2);
-    assert_eq!(numbers, [0, 2, 9, 9]);
+    assert_eq!(numbers, [0, 0, 0, 0, 2, 0, 0, 0, 9, 9, 9, 9, 9, 9, 9]);
+    assert_eq!(hub.list(&mut numbers[..7]), 2);
     assert_eq!(control.0.get(), 2);
     let mut out = [0u8; 80];
     assert_eq!(hub.read(1, &mut out), Ok(32));

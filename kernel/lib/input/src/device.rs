@@ -202,6 +202,11 @@ pub struct Moved {
     pressed: bool,
 }
 
+impl Moved {
+    /// Nothing moved, pointed or was pressed.
+    pub const NOTHING: Moved = Moved { dx: 0, dy: 0, placed: false, pressed: false };
+}
+
 /// A device the hub knows.
 #[derive(Debug)]
 pub struct Device {

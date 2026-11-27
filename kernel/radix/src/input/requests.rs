@@ -8,12 +8,15 @@
 //! has gone. A request that fills the buffer with as much as fits writes
 //! that much and returns the length of the whole answer.
 
+use alloc::vec::Vec;
+
 use radix_abi::Status;
 use radix_abi::errors::Kernel;
 use radix_abi::input::{self as abi, INPUT_TEXT_MAX, InputAxis, InputInfo, KEY_CODES};
 use radix_input::device::{Device, text};
 use radix_input::event::Record;
 use radix_input::hub::{DEVICES_MAX, Source};
+use radix_mm::{Flags, HEAP, Kmalloc};
 
 use super::{keyboard, refused, source_of, with_reader};
 use crate::fs::{FileObject, FileRef};
@@ -70,6 +73,7 @@ const _: () = assert!(abi::INPUT_TIE > abi::INPUT_INFO && abi::INPUT_TIE < abi::
 
 /// INPUT_TIE: ties the reader to the holder that the display file in
 /// the slot `argument` names is.
+#[inline(never)]
 fn tie(file: &FileObject, call: &Call<'_>) -> Result<u64, Status> {
     let slot = u32::try_from(call.argument).map_err(|_| invalid())?;
     let display = (call.file_in)(slot)?;
@@ -84,24 +88,29 @@ fn tie(file: &FileObject, call: &Call<'_>) -> Result<u64, Status> {
 
 /// INPUT_LIST: the number of each device, as many as fit. Returns how
 /// many there are.
+#[inline(never)]
 fn list(file: &FileObject, call: &Call<'_>) -> Result<u64, Status> {
     if source_of(file) != Some(Source::Control) {
         return Err(Kernel::NotTerminal.status(0));
     }
-    let mut numbers = [0u32; DEVICES_MAX];
-    let count = with_reader(file, |hub, _| Ok(hub.list(&mut numbers)))?.map_err(refused)?;
-    let fit = usize::try_from(call.size / 4).unwrap_or(usize::MAX).min(count);
-    let mut bytes = [0u8; DEVICES_MAX * 4];
-    for (out, number) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(&numbers[..fit]) {
-        *out = number.to_le_bytes();
+    // On the heap: a number for every device there may be is more than
+    // a frame of the kernel's stack is for (ADR 0058).
+    let room = usize::try_from(call.size).unwrap_or(usize::MAX).min(DEVICES_MAX * 4) & !3;
+    let mut bytes: Vec<u8, Kmalloc> = Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
+    bytes.try_reserve_exact(room).map_err(|_| Kernel::NoMemory.status(0))?;
+    while bytes.len() < room {
+        // Room was reserved above.
+        let _ = bytes.push_within_capacity(0);
     }
-    (call.copy_out)(&bytes[..fit * 4])?;
+    let count = with_reader(file, |hub, _| Ok(hub.list(&mut bytes)))?.map_err(refused)?;
+    (call.copy_out)(&bytes[..room.min(count * 4)])?;
     Ok(count as u64)
 }
 
 /// The requests that ask a device's file about its device: fills the
 /// caller's buffer with the answer, as much as fits, and returns the
 /// length of the whole.
+#[inline(never)]
 fn about(file: &FileObject, call: &Call<'_>) -> Result<u64, Status> {
     let mut answer = [0u8; ANSWER_MAX];
     let whole = with_reader(file, |hub, key| {
