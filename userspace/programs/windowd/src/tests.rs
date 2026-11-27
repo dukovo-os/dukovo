@@ -412,6 +412,46 @@ fn a_program_that_goes_takes_its_window_and_the_one_behind_has_the_keyboard() {
 }
 
 #[test]
+fn a_program_whose_pixels_are_cut_short_is_let_go_and_the_desktop_draws_on() {
+    let mut world = World::one_screen();
+    let (first, broken) = (world.program(), world.program());
+    world.show(&first, (320, 200), 7);
+    world.ask(&broken, |client| client.cut_short((320, 200))).unwrap();
+    // The window that stays is drawn anew, and nothing shows of the
+    // other, which was a step right and down of it.
+    world.show(&first, (320, 200), 9);
+    world.settle();
+    let (left, top) = middle((320, 200));
+    assert_eq!(world.colour(left + 40, top + 40), pattern::colour(9, 40, 40));
+    assert_eq!(world.colour(left + 330, top + 210), BACKGROUND);
+    let has_keyboard = world.ask(&first, |client| {
+        let keyboard = |heard: &Heard| match heard {
+            Heard::Keyboard(has) => Some(*has),
+            _ => None,
+        };
+        client.take_heard().iter().rev().find_map(keyboard)
+    });
+    assert_ne!(has_keyboard, Some(false));
+}
+
+#[test]
+fn a_program_s_own_pointer_shows_over_its_window_with_no_frame_drawn() {
+    assert_eq!(BACKGROUND, window_test::DESKTOP);
+    let mut world = World::one_screen();
+    let program = world.program();
+    world.show(&program, (320, 200), 7);
+    world.heard(&program, |heard| matches!(heard, Heard::Enter(..)));
+    world.settle();
+    let before = world.showed();
+    world.ask(&program, |client| client.point_with(16, 9)).unwrap();
+    world.settle();
+    let showed = world.showed_since(before);
+    assert!(showed.iter().any(|showed| showed.pointer), "{showed:?}");
+    assert!(showed.iter().all(|showed| !showed.main && showed.damage.is_empty()), "{showed:?}");
+    assert_eq!(showed.last().unwrap().pointer_at, Some((512, 384)));
+}
+
+#[test]
 fn nothing_is_drawn_in_the_back_and_the_keys_held_are_let_go() {
     let mut world = World::one_screen();
     let program = world.program();

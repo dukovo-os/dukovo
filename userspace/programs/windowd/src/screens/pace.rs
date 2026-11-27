@@ -101,6 +101,7 @@ impl Pace {
     }
 
     /// Whether a frame is on its way to the screen.
+    #[cfg(test)]
     pub fn waits(&self) -> bool {
         self.waits == Waits::Beat
     }

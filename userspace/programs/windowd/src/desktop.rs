@@ -43,6 +43,12 @@ const REPEAT: (i32, i32) = (250, 30);
 /// How far one notch of a wheel scrolls, as the programs reckon it.
 const NOTCH: f64 = 15.0;
 
+/// How many frames in a row may fail to be drawn before the desktop
+/// ends. One fails when a program's pixels cannot be read, and that
+/// program is gone before the next is drawn; frames that go on failing
+/// fail for a reason that letting a program go does not mend.
+const SPOILED_MOST: u8 = 3;
+
 /// A time of the monotonic clock as the protocols carry it: in
 /// milliseconds, the low 32 bits.
 fn ms(time_ns: u64) -> u32 {
@@ -70,6 +76,8 @@ where
     held: Vec<u16>,
     /// What a chord asked for, until `main` takes it.
     asked: Option<Chord>,
+    /// How many frames in a row could not be drawn.
+    spoiled: u8,
 }
 
 impl<L: Link> Desktop<L>
@@ -111,6 +119,7 @@ where
             kept: Vec::new(),
             held: Vec::new(),
             asked: None,
+            spoiled: 0,
         };
         desktop.centre();
         Ok(desktop)
@@ -122,6 +131,7 @@ where
     }
 
     /// Whether the desktop is in front.
+    #[cfg(test)]
     pub fn front(&self) -> bool {
         self.screens.front()
     }
@@ -364,9 +374,14 @@ where
 
     /// Draws the frames that are due at `now_ns`.
     ///
+    /// A frame that cannot be drawn because a program's pixels cannot
+    /// be read, as when the program cut their file short, is drawn anew
+    /// once that program is let go, which Smithay has seen to by then.
+    ///
     /// # Errors
     ///
-    /// What the layer's requests fail with, and what the renderer does.
+    /// What the layer's requests fail with, and what the renderer does
+    /// [`SPOILED_MOST`] frames in a row.
     pub fn draw(&mut self, now_ns: u64) -> Result<(), Failed> {
         let Some(pointer) = self.shell.seat.get_pointer() else { return Ok(()) };
         let pointing = Pointing {
@@ -375,7 +390,17 @@ where
             picture: self.pointer_picture,
             arrow: &self.arrow,
         };
-        self.screens.draw(&mut self.renderer, &self.shell, &pointing, now_ns)
+        match self.screens.draw(&mut self.renderer, &self.shell, &pointing, now_ns) {
+            Err(Failed::Renderer(_)) if self.spoiled < SPOILED_MOST => {
+                self.spoiled += 1;
+                self.settle();
+                Ok(())
+            }
+            drawn => {
+                self.spoiled = 0;
+                drawn
+            }
+        }
     }
 
     /// The lock lights the keyboards are to show, as INPUT_LIGHTS takes

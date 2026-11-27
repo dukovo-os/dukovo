@@ -32,6 +32,10 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 /// How a test's failure is told.
 pub type Outcome<T = ()> = Result<T, String>;
 
+/// The colour of the desktop where no window is, as red, green and blue
+/// (windowd(1)).
+pub const DESKTOP: [u8; 3] = [0x12, 0x16, 0x1e];
+
 /// One thing the window server told the program.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Heard {
@@ -106,6 +110,8 @@ struct Told {
     /// The serial of the configure the window is to answer.
     configured: Option<u32>,
     active: bool,
+    /// The serial of the pointer's last coming onto the window.
+    entered: Option<u32>,
     heard: VecDeque<Heard>,
 }
 
@@ -126,6 +132,9 @@ pub struct Client {
     queue: EventQueue<Told>,
     told: Told,
     window: Option<Window>,
+    /// The pointer's picture over the window, kept for as long as it
+    /// shows.
+    _pointer: Option<(wl_surface::WlSurface, wl_buffer::WlBuffer, File)>,
 }
 
 impl Client {
@@ -169,7 +178,7 @@ impl Client {
         if let Some((name, _)) = missing.iter().find(|(_, missing)| *missing) {
             return Err(format!("the window server offers no {name}"));
         }
-        Ok(Client { queue, told, window: None })
+        Ok(Client { queue, told, window: None, _pointer: None })
     }
 
     /// The screens.
@@ -270,6 +279,76 @@ impl Client {
         self.turn(Duration::ZERO)
     }
 
+    /// Gives the pointer, which is over the window, a picture of the
+    /// program's own: a square of `side` pixels with the pattern of
+    /// `seed`, whose top left corner is where the pointer points.
+    ///
+    /// # Errors
+    ///
+    /// When the pointer has not come onto the window, or the window
+    /// server is gone.
+    pub fn point_with(&mut self, side: u32, seed: u32) -> Outcome {
+        let handle = self.queue.handle();
+        let (Some(compositor), Some(pointer), Some(entered)) =
+            (&self.told.compositor, &self.told.pointer, self.told.entered)
+        else {
+            return Err("the pointer is not over the window".into());
+        };
+        let surface = compositor.create_surface(&handle, ());
+        pointer.set_cursor(entered, Some(&surface), 0, 0);
+        let (buffer, file) = self.buffer((side, side), seed)?;
+        surface.attach(Some(&buffer), 0, 0);
+        surface.damage_buffer(0, 0, side as i32, side as i32);
+        surface.commit();
+        self._pointer = Some((surface, buffer, file));
+        self.queue.roundtrip(&mut self.told).map_err(|err| format!("the window server: {err}"))?;
+        Ok(())
+    }
+
+    /// Shows a window whose pixels' file the program then cuts short,
+    /// as a program does that breaks, or that wants the window server
+    /// to read memory that is not there. Returns once the window server
+    /// has let the program go, which it does when it finds the pixels
+    /// gone.
+    ///
+    /// # Errors
+    ///
+    /// When the window server keeps the program for ten seconds.
+    pub fn cut_short(&mut self, (width, height): (u32, u32)) -> Outcome {
+        let handle = self.queue.handle();
+        let (Some(compositor), Some(shell)) = (&self.told.compositor, &self.told.shell) else {
+            return Err("the window server offers no windows".into());
+        };
+        let surface = compositor.create_surface(&handle, ());
+        let role = shell.get_xdg_surface(&surface, &handle, ());
+        let _toplevel = role.get_toplevel(&handle, ());
+        surface.commit();
+        let until = Instant::now() + Duration::from_secs(10);
+        while self.told.configured.is_none() {
+            if Instant::now() >= until {
+                return Err("the window server did not configure the second window".into());
+            }
+            self.turn(Duration::from_millis(100))?;
+        }
+        let (buffer, file) = self.buffer((width, height), 0)?;
+        // Once the round trip is made the window server has the pool,
+        // mapped at its whole length.
+        self.queue.roundtrip(&mut self.told).map_err(|err| format!("the window server: {err}"))?;
+        file.set_len(0).map_err(|err| format!("cutting the pixels' file short: {err}"))?;
+        if let Some(serial) = self.told.configured.take() {
+            role.ack_configure(serial);
+        }
+        surface.attach(Some(&buffer), 0, 0);
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        surface.commit();
+        while Instant::now() < until {
+            if self.turn(Duration::from_millis(100)).is_err() {
+                return Ok(());
+            }
+        }
+        Err("the window server kept a program whose pixels' file was cut short".into())
+    }
+
     /// A buffer of `size` with the pattern of `seed`, and the file its
     /// pixels are in.
     fn buffer(
@@ -316,6 +395,12 @@ impl Client {
             }
             self.turn(left.min(Duration::from_millis(100)))?;
         }
+    }
+
+    /// Everything the window server has told the program and no test
+    /// has asked about, in the order it came, without waiting for more.
+    pub fn take_heard(&mut self) -> Vec<Heard> {
+        self.told.heard.drain(..).collect()
     }
 
     /// Waits up to `patience` for the first thing `wanted` takes, and
@@ -465,7 +550,8 @@ impl Dispatch<wl_pointer::WlPointer, ()> for Told {
         _handle: &QueueHandle<Told>,
     ) {
         let heard = match event {
-            wl_pointer::Event::Enter { surface_x, surface_y, .. } => {
+            wl_pointer::Event::Enter { serial, surface_x, surface_y, .. } => {
+                told.entered = Some(serial);
                 Heard::Enter(surface_x, surface_y)
             }
             wl_pointer::Event::Leave { .. } => Heard::Leave,

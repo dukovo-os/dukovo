@@ -261,6 +261,7 @@ where
     }
 
     /// Whether the desktop is in front.
+    #[cfg(test)]
     pub fn front(&self) -> bool {
         self.front
     }
@@ -485,7 +486,11 @@ where
                     self.front = false;
                     return Ok(());
                 }
-                Err(failed) => return Err(failed),
+                Err(failed) => {
+                    // The picture is drawn in part, and shows as it was.
+                    self.shown[at].lost();
+                    return Err(failed);
+                }
             }
         }
         Ok(())

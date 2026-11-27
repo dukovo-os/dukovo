@@ -1,15 +1,18 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The lines `display-test` says, and the host reads.
+//! The lines `display-test` says, and the host reads. `window-test`
+//! says the same lines of the desktop's screens (windowd(1)).
 //!
-//! Each starts with [`START`]. A screen is named by its card and its
+//! Each starts with [`START`], or with [`WINDOW_START`] when
+//! `window-test` says it. A screen is named by its card and its
 //! place on the card, as `virtio0/1`. The lines that say what a screen
 //! shows build on each other: the host keeps a picture for each screen
 //! and changes it as the lines say, so a line says only what is new.
 //!
 //! ```text
 //! display-test: shows virtio0/0 1024x768 seed 3
+//! display-test: fill virtio0/0 1024x768 colour 12161e
 //! display-test: patch virtio0/0 200x100 at 300,200 seed 4
 //! display-test: pointer firmware0/0 32x32 at 196,144 seed 5
 //! display-test: dark virtio0/1
@@ -20,10 +23,13 @@
 //!
 //! - `shows`: the screen is of this size and shows all of the picture
 //!   of the seed ([`crate::pattern`]).
+//! - `fill`: the screen is of this size and shows this colour all over,
+//!   which is written as its red, green and blue in hexadecimal.
 //! - `patch`: the rectangle shows the picture of the seed, each pixel
 //!   that picture's pixel at the same place of the screen.
 //! - `pointer`: the rectangle shows the picture of the seed from that
-//!   picture's top left corner, as a pointer moved there does.
+//!   picture's top left corner, as a pointer moved there does, and a
+//!   window that shows there.
 //! - `dark`: the screen shows nothing.
 //! - `step`: the program has done what the lines before say and waits
 //!   for a key. The host looks at the screens, does what the step is
@@ -33,8 +39,11 @@
 
 use core::fmt;
 
-/// How every line starts.
+/// How every line of `display-test` starts.
 pub const START: &str = "display-test: ";
+
+/// How every line of `window-test` starts.
+pub const WINDOW_START: &str = "window-test: ";
 
 /// How the line of a failure starts.
 pub const FAILED: &str = "display-test: FAILED";
@@ -66,6 +75,17 @@ pub enum Said {
         height: u32,
         /// The picture.
         seed: u32,
+    },
+    /// The screen is `width` by `height` and shows `colour` all over.
+    Fill {
+        /// The screen.
+        screen: String,
+        /// Its width.
+        width: u32,
+        /// Its height.
+        height: u32,
+        /// The colour: red, green and blue.
+        colour: [u8; 3],
     },
     /// `rect` of the screen shows the picture of `seed`, pixel for
     /// pixel in place.
@@ -105,23 +125,38 @@ pub fn screen(card: &str, index: u32) -> String {
     format!("{card}/{index}")
 }
 
+/// A line as `display-test` says it.
 impl fmt::Display for Said {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(START)?;
-        let placed = |f: &mut fmt::Formatter<'_>, word: &str, screen: &str, rect: &Rect, seed| {
+        write!(f, "{START}{}", self.words())
+    }
+}
+
+impl Said {
+    /// The line as the program whose lines start with `start` says it.
+    pub fn said_by(&self, start: &str) -> String {
+        format!("{start}{}", self.words())
+    }
+
+    /// The line without its start.
+    fn words(&self) -> String {
+        let placed = |word: &str, screen: &str, rect: &Rect, seed: &u32| {
             let Rect { x, y, width, height } = rect;
-            write!(f, "{word} {screen} {width}x{height} at {x},{y} seed {seed}")
+            format!("{word} {screen} {width}x{height} at {x},{y} seed {seed}")
         };
         match self {
             Said::Shows { screen, width, height, seed } => {
-                write!(f, "shows {screen} {width}x{height} seed {seed}")
+                format!("shows {screen} {width}x{height} seed {seed}")
             }
-            Said::Patch { screen, rect, seed } => placed(f, "patch", screen, rect, seed),
-            Said::Pointer { screen, rect, seed } => placed(f, "pointer", screen, rect, seed),
-            Said::Dark { screen } => write!(f, "dark {screen}"),
-            Said::Step(name) => write!(f, "step {name}."),
-            Said::Passed => f.write_str("passed"),
-            Said::Failed(why) => write!(f, "FAILED: {why}"),
+            Said::Fill { screen, width, height, colour: [red, green, blue] } => {
+                format!("fill {screen} {width}x{height} colour {red:02x}{green:02x}{blue:02x}")
+            }
+            Said::Patch { screen, rect, seed } => placed("patch", screen, rect, seed),
+            Said::Pointer { screen, rect, seed } => placed("pointer", screen, rect, seed),
+            Said::Dark { screen } => format!("dark {screen}"),
+            Said::Step(name) => format!("step {name}."),
+            Said::Passed => "passed".to_owned(),
+            Said::Failed(why) => format!("FAILED: {why}"),
         }
     }
 }
@@ -133,10 +168,12 @@ fn pair(text: &str, between: char) -> Option<(u32, u32)> {
 }
 
 impl Said {
-    /// Reads a line of a log: what follows [`START`] in it, if that is
-    /// a whole line of the program's. Anything else is `None`.
+    /// Reads a line of a log: what follows [`START`] or [`WINDOW_START`]
+    /// in it, if that is a whole line of the program's. Anything else is
+    /// `None`.
     pub fn read(line: &str) -> Option<Said> {
-        let said = line.split_once(START)?.1.trim_end();
+        let started = line.split_once(START).or_else(|| line.split_once(WINDOW_START));
+        let said = started?.1.trim_end();
         if let Some(why) = said.strip_prefix("FAILED: ") {
             return Some(Said::Failed(why.to_string()));
         }
@@ -147,6 +184,13 @@ impl Said {
             "shows" if words.len() == 5 => {
                 let (width, height) = pair(words[2], 'x')?;
                 Some(Said::Shows { screen: screen(1)?, width, height, seed: seed(4)? })
+            }
+            "fill" if words.len() == 5 && words[3] == "colour" => {
+                let (width, height) = pair(words[2], 'x')?;
+                let colour =
+                    u32::from_str_radix(words[4], 16).ok().filter(|_| words[4].len() == 6)?;
+                let [_, red, green, blue] = colour.to_be_bytes();
+                Some(Said::Fill { screen: screen(1)?, width, height, colour: [red, green, blue] })
             }
             word @ ("patch" | "pointer") if words.len() == 7 && words[3] == "at" => {
                 let ((width, height), (x, y)) = (pair(words[2], 'x')?, pair(words[4], ',')?);
@@ -174,6 +218,12 @@ mod tests {
         let rect = Rect { x: 300, y: 200, width: 200, height: 100 };
         let lines = [
             Said::Shows { screen: screen("virtio0", 2), width: 1024, height: 768, seed: 3 },
+            Said::Fill {
+                screen: screen("virtio0", 1),
+                width: 800,
+                height: 600,
+                colour: [0x12, 0x16, 0x1e],
+            },
             Said::Patch { screen: screen("virtio0", 0), rect, seed: 4 },
             Said::Pointer { screen: screen("firmware0", 0), rect, seed: 5 },
             Said::Dark { screen: screen("virtio0", 1) },
@@ -184,8 +234,16 @@ mod tests {
         for line in lines {
             // As the kernel's log carries it: after the log's own words.
             let logged = format!("[   12.345678] {line}\r");
-            assert_eq!(Said::read(&logged), Some(line), "{logged}");
+            assert_eq!(Said::read(&logged), Some(line.clone()), "{logged}");
+            let by_window_test = line.said_by(WINDOW_START);
+            assert!(by_window_test.starts_with("window-test: "), "{by_window_test}");
+            assert_eq!(Said::read(&by_window_test), Some(line), "{by_window_test}");
         }
+        assert_eq!(
+            Said::Fill { screen: "firmware0/0".into(), width: 4, height: 3, colour: [1, 2, 255] }
+                .to_string(),
+            "display-test: fill firmware0/0 4x3 colour 0102ff"
+        );
         assert_eq!(
             Said::Patch { screen: "virtio0/0".into(), rect, seed: 4 }.to_string(),
             "display-test: patch virtio0/0 200x100 at 300,200 seed 4"
