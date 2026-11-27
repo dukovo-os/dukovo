@@ -22,8 +22,9 @@ use display::wire::{self, ChangeBytes, PutBytes};
 use display_pattern::pattern;
 use display_pattern::said::{Rect, Said};
 
+use sysapi::memory::{MemoryFile, SharedMapping};
+
 use crate::rig::{Found, Outcome, Seat, say};
-use crate::sys::{self, Mapping};
 
 /// How many rows of a kept picture one PUT sends.
 const PUT_ROWS: u32 = 64;
@@ -40,9 +41,10 @@ pub struct Canvas {
     pub height: u32,
     /// The bytes from one of its rows to the next.
     row_bytes: usize,
-    /// Its pixels: the pages of its memory file. `None` for a picture
-    /// the card keeps, which PUT writes.
-    pixels: Option<Mapping>,
+    /// Its pixels: the pages of its memory file, which the host may read
+    /// at any moment, as it does any picture a program draws in while it
+    /// shows. `None` for a picture the card keeps, which PUT writes.
+    pixels: Option<SharedMapping>,
 }
 
 impl Canvas {
@@ -55,12 +57,12 @@ impl Canvas {
         (width, height): (u32, u32),
     ) -> Outcome<Canvas> {
         let failed = |what: &str, err: std::io::Error| format!("{what} of {width}x{height}: {err}");
-        let file = sys::memory_file().map_err(|err| failed("a memory file", err))?;
-        let slot = sys::slot(std::os::fd::AsRawFd::as_raw_fd(&file));
+        let mut file = MemoryFile::new().map_err(|err| failed("a memory file", err))?;
+        let slot = file.slot();
         let asked = Buffer { file: slot, card, format, width, height, ..Buffer::default() };
         let (row_bytes, bytes) =
             seat.holder.make_buffer(&asked).map_err(|err| failed("MAKE_BUFFER", err))?;
-        let pixels = Mapping::of(&file, bytes as usize).map_err(|err| failed("mapping", err))?;
+        let pixels = file.map(bytes as usize).map_err(|err| failed("mapping", err))?;
         let described =
             Picture { file: slot, card, format, width, height, row_bytes, ..Picture::default() };
         let picture =
@@ -86,7 +88,7 @@ impl Canvas {
         };
         let from = rect.y as usize * self.row_bytes + rect.x as usize * 4;
         let to = (rect.y + rect.height) as usize * self.row_bytes;
-        let rows = &mut pixels.bytes()[from..to];
+        let rows = &mut pixels.bytes_mut()[from..to];
         pattern::paint(seed, (rect.x, rect.y), rect.width, self.row_bytes, rows);
         Ok(())
     }
@@ -118,7 +120,7 @@ impl Canvas {
     /// pattern to show as it is.
     fn make_solid(&mut self) {
         if let Some(pixels) = &mut self.pixels {
-            for pixel in pixels.bytes().as_chunks_mut::<4>().0 {
+            for pixel in pixels.bytes_mut().as_chunks_mut::<4>().0 {
                 pixel[3] = 0xff;
             }
         }

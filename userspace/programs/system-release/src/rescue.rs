@@ -55,7 +55,7 @@ pub const ARCHIVE: &str = "system";
 pub const RELEASE: &str = "release";
 
 /// The file in Rescue's `release/` that names the release's version.
-pub const VERSION: &str = "version";
+pub const VERSION: &str = repo::VERSION_FILE;
 
 /// The folders of a repository Rescue keeps: not `files`, its store.
 const KEPT: [&str; 2] = ["metadata", "targets"];
@@ -411,38 +411,16 @@ fn switch(esp: &Path) -> Result<(), String> {
 }
 
 /// The release of the Rescue at `rescue`, read from the root this system
-/// trusts, `root`, offline, as an install stick's is.
+/// trusts, `root`, offline, as an install stick's is: the one its
+/// [`VERSION`] file names. A Rescue written before it named its version
+/// holds one release.
 ///
 /// # Errors
 ///
 /// If there is no Rescue there, or its metadata is not signed by the
 /// trusted root.
 pub fn open(rescue: &Path, root: &[u8]) -> Result<Published, String> {
-    let dir = rescue.join(RELEASE);
-    // A Rescue written before it named its version holds one release.
-    let named = dir.join(VERSION);
-    let text = match std::fs::read_to_string(&named) {
-        Ok(text) => Some(text),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-        Err(err) => return Err(format!("{}: {err}", named.display())),
-    };
-    let version = match text.as_deref().map(str::trim) {
-        Some(text) => {
-            Some(plain_version(text).ok_or_else(|| format!("{}: not a version", named.display()))?)
-        }
-        None => None,
-    };
-    repo::open(&dir, root, version)
-}
-
-/// `text`, if it can only be a version: letters, digits, `.`, `-` and
-/// `+`, and no more than 64 of them.
-fn plain_version(text: &str) -> Option<&str> {
-    let plain = !text.is_empty()
-        && text.len() <= 64
-        && !text.starts_with('.')
-        && text.bytes().all(|b| b.is_ascii_alphanumeric() || b".-+".contains(&b));
-    plain.then_some(text)
+    repo::open_named(&rescue.join(RELEASE), root, None)
 }
 
 /// The bytes Rescue of `release` takes on a FAT partition, with room to

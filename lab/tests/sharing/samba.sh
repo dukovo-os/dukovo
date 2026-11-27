@@ -9,7 +9,8 @@
 # same folder only to read. The account alice, with the sharing password
 # alice-share-pass, is the lab's account under another name (a username
 # map), so a test signs in as alice on any lab PC. It says "samba ready"
-# once it listens, and runs until the lab ends it.
+# once it listens, and runs until the lab ends it, with the RPC server
+# smbd starts.
 set -eu
 
 port=$1
@@ -57,6 +58,27 @@ echo "inside" > share/folder/inner.txt
 # In this script's process group, which the lab ends at the test's end:
 # without --no-process-group, smbd would make a group of its own.
 smbd --foreground --no-process-group --configfile="$work/smb.conf" &
+
+# smbd starts samba-dcerpcd, Samba's RPC server, when a client first
+# opens one of its pipes (listing the shares does), and samba-dcerpcd
+# makes a session of its own. The lab's end of this process group misses
+# it and its rpcd_* helpers, which would run on after the test, so the
+# script ends their group itself, by the number samba-dcerpcd keeps in
+# pid/: SIGTERM, then SIGKILL after 2 seconds, well within the 5 the lab
+# gives this script before its own SIGKILL.
+end_rpc_server() {
+	[ -s pid/samba-dcerpcd.pid ] || return 0
+	group=$(cat pid/samba-dcerpcd.pid)
+	kill -s TERM -- "-$group" 2> /dev/null || return 0
+	i=0
+	while [ "$i" -lt 20 ] && kill -s 0 -- "-$group" 2> /dev/null; do
+		sleep 0.1
+		i=$((i + 1))
+	done
+	kill -s KILL -- "-$group" 2> /dev/null || true
+}
+trap 'end_rpc_server; exit 0' TERM INT
+
 i=0
 until nc -z 127.0.0.1 "$port" 2> /dev/null; do
 	i=$((i + 1))

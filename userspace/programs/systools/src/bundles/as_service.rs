@@ -61,8 +61,7 @@ const TRIES: u32 = 30;
 /// When the caller is not root, the bundle, its program or its service is
 /// not as it was installed, or Spark refused or could not be reached.
 pub fn run(id: &str, program: &str, service: &str, args: &[&str]) -> Result<Ran, String> {
-    // SAFETY: geteuid has no failure and touches no memory.
-    root_only(unsafe { libc::geteuid() })?;
+    root_only(sysapi::process::euid())?;
     let found = installed_for_everyone(id)?;
     let sealed = run::open_sealed(&found)?;
     let record = crate::bundled::read_record(service);

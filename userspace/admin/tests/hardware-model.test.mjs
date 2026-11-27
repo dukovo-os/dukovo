@@ -16,6 +16,7 @@ import {
   disksOf, pillOf, testArgs, testsOf,
 } from '../pages/hardware/disks-model.js';
 import { askedWords, startRun } from '../pages/hardware/memtest-lines.js';
+import { cardPill, durationWords, suppliesOf } from '../pages/hardware/supplies-model.js';
 import {
   hereWords, nextWords, quietMinutes, testMinutes,
 } from '../pages/hardware/memtest-model.js';
@@ -508,6 +509,40 @@ test('the line of a test at a start copes with one error, one place, a small mem
 test('a test at a start that was never kept, or whose result is not known, is not said', () => {
   for (const answer of [null, undefined, {}, { result: 'passed' }, { at_ms: 'now', result: 'passed' }]) assert.equal(startRun(answer, time, NOW_SECONDS), null);
   assert.equal(startRun({ ...startTest('passed'), result: 'exploded' }, time, NOW_SECONDS), null);
+});
+
+test('the UPSes come before the batteries, adapters are left out, and the worst pill is the card\'s', () => {
+  const answer = {
+    format: 1,
+    supplies: [
+      { name: 'BAT0', kind: 'battery', status: 'Discharging', percent: 54 },
+      { name: 'AC', kind: 'mains', online: false },
+      { name: 'ups0', kind: 'ups', online: true, status: 'Full', percent: 100, low_percent: 10, low_seconds: 120, shuts_down: true, replace: false },
+    ],
+  };
+  const supplies = suppliesOf(answer);
+  assert.deepEqual(supplies.map((one) => one.name), ['ups0', 'BAT0']);
+  assert.deepEqual(supplies.map((one) => one.pill), [{ word: 'On mains', tone: 'ok' }, { word: 'On battery', tone: 'warn' }]);
+  assert.deepEqual(cardPill(supplies), { word: 'On battery', tone: 'warn' });
+  assert.equal(supplies[1].title, 'Battery');
+  assert.deepEqual(supplies[1].rows, [['State', 'Running this machine.'], ['Charge', '54%']]);
+  assert.equal(supplies[1].note, null);
+  assert.deepEqual(suppliesOf(null), []);
+  assert.equal(cardPill([]), null);
+});
+
+test('a UPS that says little has no rows for what it does not say, and its shut down at its own low battery', () => {
+  const [one] = suppliesOf({ supplies: [{ name: 'ups1', kind: 'ups', online: null, percent: null }] });
+  assert.deepEqual(one.rows, []);
+  assert.equal(one.pill, null);
+  assert.equal(one.note, 'On its battery, this machine shuts down cleanly at the low battery the UPS says.');
+});
+
+test('durations read as hardware power says them', () => {
+  assert.equal(durationWords(90), '90 s');
+  assert.equal(durationWords(1500), '25 min');
+  assert.equal(durationWords(3900), '1 h 05 min');
+  assert.equal(durationWords(null), null);
 });
 
 // ---- Screens ---------------------------------------------------------------------

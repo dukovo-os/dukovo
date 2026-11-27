@@ -15,22 +15,20 @@
 //! `what` is a file's FNV-1a hash, a link's target, or `-`; `xattrs` the
 //! extended attributes, `name=hex` in order, or `-`.
 
-use std::ffi::{CStr, CString};
 use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::os::fd::AsRawFd;
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::Path;
 
+use sysapi::fs::{self, Link};
+use sysapi::linux;
+
 /// The disk, the virtual machine's only one, and where it is mounted.
-const DISK: &CStr = c"/dev/vda";
+const DISK: &str = "/dev/vda";
 const AT: &str = "/mnt/log";
 
-/// FS_IOC_SETFLAGS, and its flag for a file Btrfs compresses
-/// (`chattr +c`).
-const FS_IOC_SETFLAGS: libc::c_ulong = 0x4008_6602;
+/// The inode flag of a file Btrfs compresses (`chattr +c`).
 const FS_COMPR_FL: libc::c_long = 0x4;
 
 /// `len` bytes that do not repeat, the xorshift run of `seed`.
@@ -57,24 +55,17 @@ fn text(len: usize) -> Vec<u8> {
 }
 
 /// Mounts the disk on [`AT`] with `flags` and the options `options`.
-fn mount(flags: libc::c_ulong, options: &CStr) {
+fn mount(flags: libc::c_ulong, options: &str) {
     let _ = std::fs::create_dir_all(AT);
-    let at = CString::new(AT).unwrap_or_default();
-    // SAFETY: the strings are NUL-terminated and live through the call.
-    let result = unsafe {
-        libc::mount(DISK.as_ptr(), at.as_ptr(), c"btrfs".as_ptr(), flags, options.as_ptr().cast())
-    };
-    if result != 0 {
-        fail(&format!("cannot mount the disk: {}", std::io::Error::last_os_error()));
+    if let Err(err) = linux::mount(DISK, Path::new(AT), "btrfs", flags, options) {
+        fail(&format!("cannot mount the disk: {err}"));
     }
 }
 
 /// Unmounts [`AT`], which commits what is open.
 fn unmount() {
-    let at = CString::new(AT).unwrap_or_default();
-    // SAFETY: the string is NUL-terminated and lives through the call.
-    if unsafe { libc::umount(at.as_ptr()) } != 0 {
-        fail(&format!("cannot unmount the disk: {}", std::io::Error::last_os_error()));
+    if let Err(err) = linux::unmount(Path::new(AT)) {
+        fail(&format!("cannot unmount the disk: {err}"));
     }
 }
 
@@ -110,27 +101,22 @@ fn fsync_path(name: &str) {
 }
 
 /// Sets the extended attribute `key` of `name` to `value`, or removes it.
-fn xattr(name: &str, key: &CStr, value: Option<&[u8]>) {
-    let file = CString::new(path(name)).unwrap_or_default();
-    // SAFETY: the strings are NUL-terminated and the value's bytes are
-    // valid for their length, through the call.
-    let result = unsafe {
-        match value {
-            Some(value) => {
-                libc::setxattr(file.as_ptr(), key.as_ptr(), value.as_ptr().cast(), value.len(), 0)
-            }
-            None => libc::removexattr(file.as_ptr(), key.as_ptr()),
-        }
+fn xattr(name: &str, key: &str, value: Option<&[u8]>) {
+    let file = path(name);
+    let file = Path::new(&file);
+    let result = match value {
+        Some(value) => fs::set_xattr(file, key, value),
+        None => fs::remove_xattr(file, key),
     };
-    if result != 0 {
-        fail(&format!("xattr of {name}: {}", std::io::Error::last_os_error()));
+    if let Err(err) = result {
+        fail(&format!("xattr of {name}: {err}"));
     }
 }
 
 /// `--btrfs-log make`.
 pub fn make() {
     // No commit of its own before the machine goes off.
-    mount(0, c"commit=300");
+    mount(0, "commit=300");
     // What the last commit holds.
     put("kept", &noise(1, 64 << 10));
     put("shrinks", &noise(2, 40 << 10));
@@ -141,11 +127,10 @@ pub fn make() {
     put("d/gone", &noise(4, 3000));
     put("d/stays", &noise(5, 3000));
     put("attrs", b"a file with extended attributes\n");
-    xattr("attrs", c"user.kept", Some(b"one"));
-    xattr("attrs", c"user.changed", Some(b"old"));
-    xattr("attrs", c"user.removed", Some(b"gone"));
-    // SAFETY: sync takes no arguments.
-    unsafe { libc::sync() };
+    xattr("attrs", "user.kept", Some(b"one"));
+    xattr("attrs", "user.changed", Some(b"old"));
+    xattr("attrs", "user.removed", Some(b"gone"));
+    linux::sync();
 
     // A file moved to another directory and made durable: Linux 6.8
     // commits the transaction for it, rather than log it, so it comes
@@ -183,16 +168,14 @@ pub fn make() {
     let other = put("newdir/other", &noise(9, 5000));
     fsync(&other, "newdir/other");
     fsync_path("newdir");
-    xattr("attrs", c"user.changed", Some(b"new"));
-    xattr("attrs", c"user.removed", None);
-    xattr("attrs", c"user.added", Some(b"added"));
+    xattr("attrs", "user.changed", Some(b"new"));
+    xattr("attrs", "user.removed", None);
+    xattr("attrs", "user.added", Some(b"added"));
     fsync_path("attrs");
     let zipped = put("zipped", b"");
     let flags = FS_COMPR_FL;
-    // SAFETY: the descriptor is open, and the flags are a long that lives
-    // through the call.
-    if unsafe { libc::ioctl(zipped.as_raw_fd(), FS_IOC_SETFLAGS, &raw const flags) } != 0 {
-        fail(&format!("chattr +c: {}", std::io::Error::last_os_error()));
+    if let Err(err) = linux::set_inode_flags(&zipped, flags) {
+        fail(&format!("chattr +c: {err}"));
     }
     (&zipped).write_all(&text(200 << 10)).unwrap_or_else(|e| fail(&format!("zipped: {e}")));
     fsync(&zipped, "zipped");
@@ -206,11 +189,11 @@ pub fn make() {
 
 /// `--btrfs-log list`.
 pub fn list() {
-    mount(libc::MS_RDONLY, c"rescue=nologreplay");
+    mount(libc::MS_RDONLY, "rescue=nologreplay");
     println!("LIST committed");
     walk(Path::new(AT), "");
     unmount();
-    mount(0, c"");
+    mount(0, "");
     println!("LIST replayed");
     walk(Path::new(AT), "");
     unmount();
@@ -268,23 +251,12 @@ fn line(at: &Path, rel: &str) {
 /// The extended attributes of `at`, `name=hex` in the order of their
 /// names, or `-`.
 fn xattrs(at: &Path) -> String {
-    let Ok(file) = CString::new(at.as_os_str().as_bytes()) else { return "-".into() };
-    let mut names = vec![0u8; 4096];
-    // SAFETY: the string is NUL-terminated, and the buffer is writable for
-    // its length, through the call.
-    let len = unsafe { libc::llistxattr(file.as_ptr(), names.as_mut_ptr().cast(), names.len()) };
-    let Ok(len) = usize::try_from(len) else { return "-".into() };
+    let Ok(names) = fs::xattr_names(at, Link::Itself) else { return "-".into() };
     let mut out: Vec<String> = Vec::new();
-    for name in names[..len].split(|&b| b == 0).filter(|n| !n.is_empty()) {
-        let Ok(key) = CString::new(name) else { continue };
-        let mut value = vec![0u8; 4096];
-        // SAFETY: as above, with the attribute's name.
-        let got = unsafe {
-            libc::lgetxattr(file.as_ptr(), key.as_ptr(), value.as_mut_ptr().cast(), value.len())
-        };
-        let Ok(got) = usize::try_from(got) else { continue };
-        let mut entry = format!("{}=", String::from_utf8_lossy(name));
-        for byte in &value[..got] {
+    for name in names {
+        let Ok(value) = fs::xattr(at, &name, Link::Itself) else { continue };
+        let mut entry = format!("{}=", name.to_string_lossy());
+        for byte in &value {
             let _ = write!(entry, "{byte:02x}");
         }
         out.push(entry);

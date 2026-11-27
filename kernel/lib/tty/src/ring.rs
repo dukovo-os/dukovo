@@ -45,6 +45,16 @@ impl<B: AsRef<[u8]> + AsMut<[u8]>> Ring<B> {
         self.capacity() - self.len
     }
 
+    /// `at`, an index less than one lap past the end of the storage, as
+    /// every index these methods make is, brought back into it: what `%`
+    /// would give, without its division, which costs some 26 cycles on
+    /// the lab's Skylake, on each pipe's write and read.
+    fn wrap(&self, at: usize) -> usize {
+        let cap = self.capacity();
+        debug_assert!(at < 2 * cap, "an index more than a lap past the ring's end");
+        if at >= cap { at - cap } else { at }
+    }
+
     /// Drops every byte.
     pub fn clear(&mut self) {
         self.head = 0;
@@ -56,7 +66,7 @@ impl<B: AsRef<[u8]> + AsMut<[u8]>> Ring<B> {
         if i >= self.len {
             return None;
         }
-        Some(self.buf.as_ref()[(self.head + i) % self.capacity()])
+        Some(self.buf.as_ref()[self.wrap(self.head + i)])
     }
 
     /// Adds `byte` at the back, if it fits.
@@ -64,7 +74,7 @@ impl<B: AsRef<[u8]> + AsMut<[u8]>> Ring<B> {
         if self.free() == 0 {
             return false;
         }
-        let at = (self.head + self.len) % self.capacity();
+        let at = self.wrap(self.head + self.len);
         self.buf.as_mut()[at] = byte;
         self.len += 1;
         true
@@ -76,7 +86,7 @@ impl<B: AsRef<[u8]> + AsMut<[u8]>> Ring<B> {
             return None;
         }
         self.len -= 1;
-        Some(self.buf.as_ref()[(self.head + self.len) % self.capacity()])
+        Some(self.buf.as_ref()[self.wrap(self.head + self.len)])
     }
 
     /// Adds as much of `bytes` as fits at the back; returns how much.
@@ -118,7 +128,7 @@ impl<B: AsRef<[u8]> + AsMut<[u8]>> Ring<B> {
             if let Err(err) = sink(&self.buf.as_ref()[self.head..self.head + run]) {
                 return if done == 0 { Err(err) } else { Ok(done) };
             }
-            self.head = (self.head + run) % cap;
+            self.head = self.wrap(self.head + run);
             self.len -= run;
             done += run;
         }
@@ -138,7 +148,7 @@ impl<B: AsRef<[u8]> + AsMut<[u8]>> Ring<B> {
     ) -> Result<usize, E> {
         let (cap, mut done) = (self.capacity(), 0);
         while done < max.min(self.len) {
-            let head = (self.head + done) % cap;
+            let head = self.wrap(self.head + done);
             let run = (max.min(self.len) - done).min(cap - head);
             if let Err(err) = sink(&self.buf.as_ref()[head..head + run]) {
                 return if done == 0 { Err(err) } else { Ok(done) };
@@ -159,7 +169,7 @@ impl<B: AsRef<[u8]> + AsMut<[u8]>> Ring<B> {
         let mut done = 0;
         while done < max && self.free() > 0 {
             let cap = self.capacity();
-            let tail = (self.head + self.len) % cap;
+            let tail = self.wrap(self.head + self.len);
             let run = (max - done).min(self.free()).min(cap - tail);
             if let Err(err) = source(&mut self.buf.as_mut()[tail..tail + run]) {
                 return if done == 0 { Err(err) } else { Ok(done) };

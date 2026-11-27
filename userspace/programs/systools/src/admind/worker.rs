@@ -23,7 +23,8 @@
 //! attestations) are base64url in the JSON, as it writes them; the ids of
 //! passkeys are hexadecimal, as `steps` lists them.
 
-use std::os::fd::{FromRawFd, OwnedFd, RawFd};
+use std::io;
+use std::os::fd::RawFd;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -33,6 +34,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use sysapi::fd::Standard;
 
 use super::authd;
 use super::errors::Kind;
@@ -59,24 +61,19 @@ const REPLIES: RawFd = 3;
 ///
 /// If descriptors 0 and 3 are not the link's pipes, or the link breaks.
 pub fn run() -> Result<i32, Fail> {
-    for fd in [CALLS, REPLIES] {
-        // SAFETY: fcntl only reads and sets the descriptor's flags.
-        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-        // Closed in what the worker starts, so that no command it runs
-        // can read the calls or keep the link open after the worker ends.
-        // SAFETY: as above.
-        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
-            return Err(fail(format!(
-                "the worker is started by authd, with the link's pipes as descriptors {CALLS} \
-                 and {REPLIES}: descriptor {fd} is not open"
-            )));
-        }
-    }
-    // SAFETY: authd gives the worker the calls' pipe as descriptor 0 and
-    // the replies' as 3, both open as the loop above found; nothing else of
-    // the worker reads, writes or closes them.
-    let theirs =
-        unsafe { link::Ends::new(OwnedFd::from_raw_fd(CALLS), OwnedFd::from_raw_fd(REPLIES)) };
+    // Each is closed in what the worker starts, so that no command it runs
+    // can read the calls or keep the link open after the worker ends. The
+    // calls' pipe leaves descriptor 0, which keeps the null device.
+    let missing = |err: io::Error| {
+        fail(format!(
+            "the worker is started by authd, with the link's pipes as descriptors {CALLS} and \
+             {REPLIES}: {}",
+            util::strip_os_error(&err)
+        ))
+    };
+    let replies = sysapi::fd::handed_down(REPLIES).map_err(missing)?;
+    let calls = sysapi::fd::take_standard(Standard::Input).map_err(missing)?;
+    let theirs = link::Ends::new(calls, replies);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

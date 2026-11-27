@@ -10,6 +10,8 @@
 use std::fs;
 use std::path::Path;
 
+use sysapi::terminal;
+
 use crate::disks;
 use crate::windows::{self, Windows};
 
@@ -188,15 +190,8 @@ impl Machine {
 /// the port Enter is pressed on under `serial-console=any` (ADR 0481).
 #[must_use]
 pub fn serial_port() -> Option<String> {
-    // SAFETY: ttyname returns a C string the C library keeps, or null;
-    // the installer asks before it starts any thread that would.
-    let name = unsafe { libc::ttyname(0) };
-    if name.is_null() {
-        return None;
-    }
-    // SAFETY: a non-null result is a C string, which is read at once.
-    let path = unsafe { std::ffi::CStr::from_ptr(name) }.to_str().ok()?;
-    serial_port_of(path).map(str::to_string)
+    let path = terminal::path(std::io::stdin()).ok()?;
+    serial_port_of(path.to_str()?).map(str::to_string)
 }
 
 /// The port's name in terminal path `path`, if it is a serial port's:
@@ -235,15 +230,8 @@ const SPEEDS: &[(u32, libc::speed_t)] = &[
 /// None if the terminal says no line, or one a PC's port does not run.
 #[must_use]
 pub fn serial_options() -> Option<String> {
-    // SAFETY: all zeros is a valid termios: numbers and an array of them.
-    let mut settings: libc::termios = unsafe { std::mem::zeroed() };
-    // SAFETY: tcgetattr writes the termios it is given.
-    if unsafe { libc::tcgetattr(0, &raw mut settings) } != 0 {
-        return None;
-    }
-    // SAFETY: cfgetospeed reads the termios, which lives for the call.
-    let speed = unsafe { libc::cfgetospeed(&raw const settings) };
-    options_of(speed, settings.c_cflag)
+    let settings = terminal::attributes(std::io::stdin()).ok()?;
+    options_of(terminal::output_speed(&settings), settings.c_cflag)
 }
 
 /// The console options for a line of termios speed code `speed` and
@@ -282,9 +270,7 @@ pub fn with_speech() -> bool {
 pub fn under_hypervisor() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
-        // SAFETY: every x86-64 processor has CPUID, which only reads.
-        #[allow(unused_unsafe)]
-        let leaf = unsafe { core::arch::x86_64::__cpuid(1) };
+        let leaf = core::arch::x86_64::__cpuid(1);
         leaf.ecx & (1 << 31) != 0
     }
     #[cfg(not(target_arch = "x86_64"))]

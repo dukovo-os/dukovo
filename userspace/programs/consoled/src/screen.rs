@@ -47,7 +47,7 @@ mod paint;
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read};
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -59,9 +59,9 @@ use display::abi::{
 use display::wire::{self, ChangeBytes, PutBytes};
 use display::{Control, Holder, Unmade};
 use radix_fbcon::{Font, builtin_font, choose_font_for};
+use sysapi::kernel;
 
 use crate::access::Size;
-use crate::sys;
 use crate::term::{Cell, Palette, Terminal, default_palette};
 use outputs::{Found, Output};
 use paint::{Drawn, Look, Span};
@@ -135,15 +135,15 @@ impl Device {
     }
 }
 
-impl AsRawFd for Device {
-    fn as_raw_fd(&self) -> RawFd {
-        self.file.as_raw_fd()
+impl AsFd for Device {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.file.as_fd()
     }
 }
 
 impl Control for Device {
     fn control(&self, request: u32, argument: u64, buffer: &mut [u8]) -> io::Result<u64> {
-        sys::control(self.file.as_raw_fd(), request, argument, buffer)
+        kernel::control(&self.file, request, argument, buffer).map_err(kernel::io_error)
     }
 }
 
@@ -158,7 +158,7 @@ impl Link for Device {
     }
 
     fn slot(&self) -> u32 {
-        sys::slot(self.file.as_raw_fd())
+        kernel::slot_of(&self.file)
     }
 }
 
@@ -318,8 +318,8 @@ impl Screen<Device> {
     }
 
     /// The file to wait on for the layer's events.
-    pub fn fd(&self) -> RawFd {
-        self.holder.file().as_raw_fd()
+    pub fn fd(&self) -> BorrowedFd<'_> {
+        self.holder.file().as_fd()
     }
 }
 

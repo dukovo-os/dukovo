@@ -16,6 +16,8 @@
 //! - [`bytes`], byte vectors zeroed or filled with one string store;
 //! - [`lease`], memory lent as a `&'static mut` slice that comes back
 //!   when the slice is handed back, as smoltcp's socket buffers do;
+//! - [`counted`], an allocator that counts the bytes it has out, for the
+//!   tests that measure what a structure keeps;
 //! - the heap [stress test](stress) the kernel runs on every CPU.
 //!
 //! Every allocation takes [`Flags`] that say whether the caller may sleep,
@@ -31,7 +33,8 @@
 //! written down: the `raw` module, the frame allocator's zeroing of the
 //! blocks it hands out, the slab layer's free-object pattern, the heap's
 //! `free`, the [`Platform`] trait, the stress test, the lengths
-//! [`bytes`] sets and the memory a [`lease`] takes back.
+//! [`bytes`] sets, the memory a [`lease`] takes back, and the calls
+//! [`counted`] passes on to the allocator it counts for.
 //! The crate builds for the host too, where its unit and property tests
 //! run, and for Kani, which proves the allocators' invariants
 //! (`docs/design/memory.md`).
@@ -52,6 +55,8 @@ pub mod buddy;
 pub mod bytes;
 pub mod class;
 pub mod context;
+#[cfg(not(kani))]
+pub mod counted;
 pub mod frames;
 pub mod heap;
 pub mod lease;

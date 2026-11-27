@@ -32,7 +32,7 @@
 
 use std::fs::File;
 use std::io::{ErrorKind, PipeWriter, Write, pipe};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, OwnedFd};
 use std::task::Poll;
 use std::time::Duration;
 
@@ -169,8 +169,7 @@ async fn started(
     // authd takes the last of the four as the relay, whose closing hangs
     // the command up: ours stays open until the command has ended.
     let (relay, relay_end) = pipe().map_err(internal)?;
-    let fds =
-        [input_end.as_raw_fd(), output_end.as_raw_fd(), errors_end.as_raw_fd(), relay.as_raw_fd()];
+    let fds = [input_end.as_fd(), output_end.as_fd(), errors_end.as_fd(), relay.as_fd()];
     let (answer, asked) = authd::ask(&shared.authd, console, &fds)
         .await
         .map_err(|why| Failure::new(Kind::AuthdSilent, why))?;

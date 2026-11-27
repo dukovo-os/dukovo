@@ -98,10 +98,11 @@ pub struct Acquire<'a> {
 /// registers its hooks.
 ///
 /// In a kernel build (a target without an operating system) the locks
-/// reach [`Hooks::preempt_disable`], [`Hooks::preempt_enable`] and
+/// reach [`Hooks::disable_interrupts`], [`Hooks::restore_interrupts`],
+/// [`Hooks::preempt_disable`], [`Hooks::preempt_enable`] and
 /// [`Hooks::current_thread`] through functions the kernel defines by name
-/// instead (ADR 0406): its hooks must be the only ones such a build
-/// registers, and call the same functions.
+/// instead (ADRs 0406 and 0776): its hooks must be the only ones such a
+/// build registers, and call the same functions.
 pub trait Hooks: Sync {
     /// Masks interrupts on this CPU and returns whether they were enabled.
     fn disable_interrupts(&self) -> bool {
@@ -214,12 +215,43 @@ pub(crate) fn active() -> Option<&'static dyn Hooks> {
 #[cfg(target_os = "none")]
 #[allow(unsafe_code)]
 unsafe extern "Rust" {
+    /// [`Hooks::disable_interrupts`].
+    safe fn radix_disable_interrupts() -> bool;
+    /// [`Hooks::restore_interrupts`].
+    safe fn radix_restore_interrupts(were_enabled: bool);
     /// [`Hooks::preempt_disable`].
     safe fn radix_preempt_disable();
     /// [`Hooks::preempt_enable`].
     safe fn radix_preempt_enable();
     /// [`Hooks::current_thread`].
     safe fn radix_current_thread() -> usize;
+}
+
+/// `hooks.disable_interrupts()`, for the active hooks: inline in the
+/// kernel, where a spin lock taken with interrupts masked (ADR 0776) would
+/// otherwise make two calls through the table for three instructions.
+#[inline(always)]
+pub(crate) fn disable_interrupts(hooks: &'static dyn Hooks) -> bool {
+    #[cfg(target_os = "none")]
+    {
+        let _ = hooks;
+        radix_disable_interrupts()
+    }
+    #[cfg(not(target_os = "none"))]
+    hooks.disable_interrupts()
+}
+
+/// `hooks.restore_interrupts(were_enabled)`, for the active hooks: inline
+/// in the kernel.
+#[inline(always)]
+pub(crate) fn restore_interrupts(hooks: &'static dyn Hooks, were_enabled: bool) {
+    #[cfg(target_os = "none")]
+    {
+        let _ = hooks;
+        radix_restore_interrupts(were_enabled);
+    }
+    #[cfg(not(target_os = "none"))]
+    hooks.restore_interrupts(were_enabled);
 }
 
 /// `hooks.preempt_disable()`, for the active hooks: inline in the kernel.

@@ -71,6 +71,11 @@ and ADR 0223 (what a removal leaves).
   - `/shared/services`, the folder of every service bundle's data, made at
     the first install of one, and `/system/live/services`, the folder of
     every service's live folder, which Spark makes for the first;
+  - a folder of `/shared` that a bundle's services only read, such as
+    nginx's `/shared/www`, which the install makes empty when it is not
+    there, so that the service starts before anything is put in it: it
+    is where people and other bundles put what such services read, the
+    sites that nginx, Caddy and PHP all serve, and no one bundle's;
   - what bundled read of the catalogs, which an install from a file reads
     too;
   - the system's log and the audit log in it, which keep what was said

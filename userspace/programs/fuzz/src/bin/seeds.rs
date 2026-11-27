@@ -6,6 +6,8 @@
 //! in this folder. The corpus is kept in git, and `ob test fuzz` copies
 //! it into the cache the targets grow it in.
 
+#![forbid(unsafe_code)]
+
 use std::path::Path;
 
 use serde_json::json;

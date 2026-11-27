@@ -4,13 +4,10 @@ version = 4
 
 [[package]]
 name = "accounts"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "argon2",
  "base64ct",
- "hmac",
- "md-5",
- "md4",
 ]
 
 [[package]]
@@ -55,7 +52,7 @@ dependencies = [
 
 [[package]]
 name = "audio"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "md-5",
 ]
@@ -128,12 +125,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cmov"
-version = "0.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
-
-[[package]]
 name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -177,15 +168,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ctutils"
-version = "0.4.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2376ffd6f96d8a9db59875b4b6b0237d6900b5baf64279714e05493ce64828a"
-dependencies = [
- "cmov",
-]
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -205,19 +187,14 @@ dependencies = [
  "block-buffer 0.12.1",
  "const-oid",
  "crypto-common 0.2.2",
- "ctutils",
 ]
 
 [[package]]
 name = "disk"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "radix-block",
  "radix-btrfs",
- "radix-fat",
- "radix-iso9660",
- "radix-ntfs",
- "radix-udf",
  "radix-vfs",
  "serde",
  "serde_json",
@@ -225,11 +202,11 @@ dependencies = [
 
 [[package]]
 name = "display-pattern"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "dkv"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "blake2",
  "ed25519-compact",
@@ -240,12 +217,6 @@ dependencies = [
  "serde_json",
  "sha2",
 ]
-
-[[package]]
-name = "dyn-clone"
-version = "1.0.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "ed25519-compact"
@@ -274,15 +245,6 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
-
-[[package]]
-name = "hmac"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f"
-dependencies = [
- "digest 0.11.3",
-]
 
 [[package]]
 name = "hybrid-array"
@@ -320,11 +282,12 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "lab-writer"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "libc",
  "serde_json",
  "sha2",
+ "sysapi",
 ]
 
 [[package]]
@@ -335,17 +298,17 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "linux-bench"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "libc",
+ "sysapi",
 ]
 
 [[package]]
 name = "manifest"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "radix-abi",
- "schemars",
  "serde",
  "serde_json",
  "toml",
@@ -358,15 +321,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69b6441f590336821bb897fb28fc622898ccceb1d6cea3fde5ea86b090c4de98"
 dependencies = [
  "cfg-if",
- "digest 0.11.3",
-]
-
-[[package]]
-name = "md4"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd76fb0fd6b2e4be62a73f8e0858ca97f81babcb1af322dcaca196f735f17f80"
-dependencies = [
  "digest 0.11.3",
 ]
 
@@ -434,14 +388,14 @@ dependencies = [
 
 [[package]]
 name = "radix-abi"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "ridlc",
 ]
 
 [[package]]
 name = "radix-bitlocker"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "aes",
  "ccm",
@@ -451,7 +405,7 @@ dependencies = [
 
 [[package]]
 name = "radix-block"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "radix-hw",
  "radix-mm",
@@ -460,11 +414,11 @@ dependencies = [
 
 [[package]]
 name = "radix-bootfs"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "radix-btrfs"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "radix-block",
  "radix-hw",
@@ -474,7 +428,7 @@ dependencies = [
 
 [[package]]
 name = "radix-fat"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "radix-block",
  "radix-hw",
@@ -484,7 +438,7 @@ dependencies = [
 
 [[package]]
 name = "radix-fbcon"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "radix-hal",
  "radix-klog",
@@ -492,7 +446,7 @@ dependencies = [
 
 [[package]]
 name = "radix-hal"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "radix-hw",
  "radix-pstate",
@@ -502,86 +456,56 @@ dependencies = [
 
 [[package]]
 name = "radix-hw"
-version = "0.17.0"
-
-[[package]]
-name = "radix-iso9660"
-version = "0.17.0"
-dependencies = [
- "radix-block",
- "radix-hw",
- "radix-sync",
- "radix-vfs",
-]
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "radix-kdb"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "radix-klog"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "radix-sync",
 ]
 
 [[package]]
 name = "radix-ksyms"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "radix-microcode"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "radix-mm"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "radix-sync",
-]
-
-[[package]]
-name = "radix-ntfs"
-version = "0.17.0"
-dependencies = [
- "radix-block",
- "radix-hw",
- "radix-sync",
- "radix-vfs",
 ]
 
 [[package]]
 name = "radix-pstate"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "radix-relocs"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "radix-sensors"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "radix-hw",
 ]
 
 [[package]]
 name = "radix-sync"
-version = "0.17.0"
-
-[[package]]
-name = "radix-udf"
-version = "0.17.0"
-dependencies = [
- "radix-block",
- "radix-hw",
- "radix-sync",
- "radix-vfs",
-]
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "radix-vfs"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "radix-block",
  "radix-bootfs",
@@ -591,7 +515,7 @@ dependencies = [
 
 [[package]]
 name = "radix-vmware"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "rand_core"
@@ -600,28 +524,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 
 [[package]]
-name = "ref-cast"
-version = "1.0.27"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e440fb4e4b4147295338efb76001ab9e4efc0e5839df2c47fc5ac2381d365c3"
-dependencies = [
- "ref-cast-impl",
-]
-
-[[package]]
-name = "ref-cast-impl"
-version = "1.0.27"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92ecd8964f8453721699a1ed72037b0db49ce2f5a5138486ee89bed6f67cdf3a"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "ridlc"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "rustc-demangle"
@@ -634,31 +538,6 @@ name = "ruzstd"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69e4ce4a039f42bf25920b95667e4d789e98749ab11bbb8d2c2936f788421bb5"
-
-[[package]]
-name = "schemars"
-version = "1.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab508826f74a77ca9d5aba6ff19b522583ee3eaf28a19384ff3d0e5835fadf6e"
-dependencies = [
- "dyn-clone",
- "ref-cast",
- "schemars_derive",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "schemars_derive"
-version = "1.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1c3a92094fa7d61aa124645844facb6b554dfc797136d0f5fd1f890e2bffc69"
-dependencies = [
- "proc-macro2",
- "quote",
- "serde_derive_internals",
- "syn",
-]
 
 [[package]]
 name = "serde"
@@ -684,17 +563,6 @@ name = "serde_derive"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "serde_derive_internals"
-version = "0.30.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -736,7 +604,7 @@ dependencies = [
 
 [[package]]
 name = "slots"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "subtle"
@@ -753,6 +621,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "sysapi"
+version = "1.0.0-alpha.1"
+dependencies = [
+ "libc",
+ "radix-abi",
+ "radix-hw",
 ]
 
 [[package]]
@@ -832,7 +709,7 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 
 [[package]]
 name = "xtask"
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 dependencies = [
  "accounts",
  "audio",

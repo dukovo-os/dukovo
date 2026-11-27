@@ -69,6 +69,7 @@ mod log;
 pub mod lzo;
 #[cfg(any(test, feature = "make"))]
 pub mod make;
+mod names;
 pub mod node;
 mod pack;
 mod quota;

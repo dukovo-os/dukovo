@@ -13,7 +13,7 @@
 //! holds nothing else up.
 
 use std::io;
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -21,6 +21,7 @@ use std::time::Duration;
 use accounts::request::{self, Answer, Request, SshProof, SshRun};
 use russh::server::Handle;
 use russh::{ChannelId, Sig};
+use sysapi::fd;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::unix::pipe;
 use tokio::sync::mpsc;
@@ -28,7 +29,6 @@ use tokio::task::{AbortHandle, JoinHandle};
 
 use crate::authd;
 use crate::pty;
-use crate::sys;
 
 /// How much a client may send on a channel before the session takes
 /// it: the window it starts with, and the most it has again.
@@ -173,9 +173,9 @@ pub async fn start(
             (Ends::Terminal(master), vec![terminal])
         }
         None => {
-            let (input, to_input) = sys::pipe().map_err(failed)?;
-            let (from_output, output) = sys::pipe().map_err(failed)?;
-            let (from_error, error) = sys::pipe().map_err(failed)?;
+            let (input, to_input) = fd::pipe().map_err(failed)?;
+            let (from_output, output) = fd::pipe().map_err(failed)?;
+            let (from_error, error) = fd::pipe().map_err(failed)?;
             (
                 Ends::Pipes { input: to_input, output: from_output, error: from_error },
                 vec![input, output, error],
@@ -190,7 +190,7 @@ pub async fn start(
         run,
         language: channel.language.clone(),
     };
-    let fds: Vec<RawFd> = given.iter().map(AsRawFd::as_raw_fd).collect();
+    let fds: Vec<BorrowedFd<'_>> = given.iter().map(AsFd::as_fd).collect();
     let (answer, asked) = authd::ask(&request, &fds).await?;
     // The session holds its ends now.
     drop(given);
@@ -202,10 +202,10 @@ pub async fn start(
     // only: mio's poll(2) takes the interest away once it is told, and
     // only mio's own sources ask for it again.
     let reader = |fd: OwnedFd| {
-        sys::set_nonblocking(&fd).and_then(|()| pipe::Receiver::from_owned_fd_unchecked(fd))
+        fd::set_nonblocking(&fd, true).and_then(|()| pipe::Receiver::from_owned_fd_unchecked(fd))
     };
     let writer = |fd: OwnedFd| {
-        sys::set_nonblocking(&fd).and_then(|()| pipe::Sender::from_owned_fd_unchecked(fd))
+        fd::set_nonblocking(&fd, true).and_then(|()| pipe::Sender::from_owned_fd_unchecked(fd))
     };
     let (input_sender, input) = mpsc::unbounded_channel();
     let queued = Arc::new(AtomicUsize::new(0));

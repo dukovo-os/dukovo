@@ -937,12 +937,24 @@ fn bend_bytes(rng: &mut Rng, seed: &[u8]) -> Vec<u8> {
 }
 
 /// The message `body` to the MCP server, bent once where a tool reads:
-/// in its parameters, or in the arguments they give the tool.
+/// in its parameters, or in the arguments they give the tool. A batch is
+/// bent in one of its messages.
 fn bend_message(rng: &mut Rng, body: &Value) -> Vec<u8> {
     const PLACE: &str = "bent-here";
     let mut message = body.clone();
-    let deep = rng.chance(60) && message["params"]["arguments"].is_object();
-    let place = if deep { &mut message["params"]["arguments"] } else { &mut message["params"] };
+    let one = match &mut message {
+        Value::Array(batch) if !batch.is_empty() => {
+            let at = rng.below(batch.len());
+            &mut batch[at]
+        }
+        whole => whole,
+    };
+    // A message that is no object has no parameters: all of it is bent.
+    if !one.is_object() {
+        return bend_json(rng, one, &[]);
+    }
+    let deep = rng.chance(60) && one["params"]["arguments"].is_object();
+    let place = if deep { &mut one["params"]["arguments"] } else { &mut one["params"] };
     let bent = bend_json(rng, place, &[]);
     *place = json!(PLACE);
     // What the bend made may be no JSON: it goes in as the bytes it is.

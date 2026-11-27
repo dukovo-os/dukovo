@@ -30,10 +30,10 @@ use display::abi::{
     PLANE_PICTURE,
 };
 use display::wire::{self, ChangeBytes};
+use sysapi::time;
 
 use crate::rig::{Outcome, Seat};
 use crate::stage::{Stage, unmade};
-use crate::sys;
 
 /// How many times each operation is done.
 const ROUNDS: u32 = 400;
@@ -74,8 +74,8 @@ pub fn run() -> Outcome {
 /// tries.
 fn clock_cost() -> u64 {
     let pair = || {
-        let before = sys::now_ns();
-        sys::now_ns().saturating_sub(before)
+        let before = time::monotonic_ns();
+        time::monotonic_ns().saturating_sub(before)
     };
     (0..1000).map(|_| pair()).min().unwrap_or(0)
 }
@@ -96,9 +96,9 @@ fn row(
     rest(0)?;
     let mut total = 0;
     for round in 1..=ROUNDS {
-        let before = sys::now_ns();
+        let before = time::monotonic_ns();
         one(round)?;
-        total += sys::now_ns().saturating_sub(before).saturating_sub(clock);
+        total += time::monotonic_ns().saturating_sub(before).saturating_sub(clock);
         rest(round)?;
     }
     let each = total as f64 / f64::from(ROUNDS);

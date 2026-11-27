@@ -618,7 +618,9 @@ from the hardware's wall clock, *CLOCK_MONOTONIC* and *CLOCK_BOOTTIME*
 from the scheduler's clock, their *\_COARSE* and *\_RAW* forms, and
 *CLOCK_PROCESS_CPUTIME_ID* and *CLOCK_THREAD_CPUTIME_ID*. Every clock
 counts in nanoseconds. Nobody may set the clock yet (*clock_settime*
-fails with EPERM).
+fails with EPERM). The real-time, monotonic and boot-time clocks are read
+without a system call, through the vDSO that *exec* maps into every
+program (*radix-vdso*(7)), and so are *gettimeofday* and *time*.
 
 *nanosleep* and *clock_nanosleep* sleep as timed futex waits, and tell
 how long was left when a signal ends them. *alarm* and *setitimer*'s
@@ -734,7 +736,11 @@ be made writable (EACCES). *mprotect* and *munmap*
 work as on Linux, *msync* has nothing to write back, and
 *posix_madvise* takes advice. Linux's *madvise* and its *MADV_* names
 are not there, as they are not POSIX's. There is no program break:
-*malloc* maps memory, and *sbrk* fails. There are no huge pages, and
+*malloc* maps memory, and *sbrk* fails. Each thread keeps a few freed
+blocks of each size up to 4 KiB for its next *malloc*, as glibc's
+tcache does, and, as glibc, ends the process with SIGABRT on a double
+*free* of a block it keeps or on a write to a kept block's link to the
+next. There are no huge pages, and
 <sys/mman.h> has no *MAP_HUGETLB*; *mmap* given Linux's number for it
 fails with ENOMEM, or EINVAL for a file, as on Linux when none is
 reserved.
@@ -1001,7 +1007,6 @@ passed*; the boot test fails on any failure.
   the stack's, never a socket's.
 - A shared writable mapping of a file fails with ENODEV, but for one in
   */dev/shm*.
-- *clock_gettime* is a system call; there is no vDSO.
 - A *poll* waits for a change anywhere, so many pollers on a busy system
   wake for each other's changes. An event queue does not: a change
   reaches only the queues that watch it.
@@ -1022,4 +1027,5 @@ passed*; the boot test fails on any failure.
 *radix-process*(2), *radix-signal*(2), *radix-terminal*(2),
 *radix-file*(2), *radix-directory*(2), *radix-address-space*(2),
 *radix-startup*(2), *radix-errors*(2), *radix-processes*(7),
-*radix-files*(7), *radix-scheduling*(7), *spark*(8), *ob*(1)
+*radix-files*(7), *radix-scheduling*(7), *radix-vdso*(7), *spark*(8),
+*ob*(1)

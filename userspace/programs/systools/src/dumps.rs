@@ -337,8 +337,8 @@ fn list(folder: &Path, json: bool) -> Result<i32, Fail> {
     for dump in &saved {
         table.push(row(dump, &head_of(folder, dump)?));
     }
-    let width = if util::is_terminal(1) {
-        util::terminal_size(1).map(|(columns, _)| columns)
+    let width = if util::is_terminal(std::io::stdout()) {
+        util::terminal_size(std::io::stdout()).map(|(columns, _)| columns)
     } else {
         None
     };
@@ -430,7 +430,7 @@ fn show(folder: &Path, name: Option<&str>) -> Result<i32, Fail> {
 /// standard output is a terminal, and straight to it otherwise or when
 /// the pager cannot be started.
 pub(crate) fn page(text: &[u8]) -> Result<(), Fail> {
-    if util::is_terminal(1) {
+    if util::is_terminal(std::io::stdout()) {
         let pager = std::env::var("PAGER").ok().filter(|pager| !pager.trim().is_empty());
         let mut words = pager.as_deref().unwrap_or("less").split_whitespace();
         if let Some(program) = words.next()
@@ -517,7 +517,7 @@ fn save(folder: &Path) -> Result<i32, Fail> {
     // A `<4>` in front makes the line a warning in the log, where Spark
     // passes it on to the kernel's; a person who runs the command would
     // see it, so a terminal gets the line without it.
-    let level = if util::is_terminal(2) { "" } else { "<4>" };
+    let level = if util::is_terminal(std::io::stderr()) { "" } else { "<4>" };
     eprintln!(
         "{level}dumps: the previous boot ended with a kernel panic: {panic}; the dump is \
          {FOLDER}/{name} (dumps show)"

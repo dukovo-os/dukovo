@@ -188,7 +188,8 @@ only if a dead thread's lock was held while it looked.
 preemption count; nothing else holds off preemption. They reach it, and
 mutexes the running thread's token, through functions the kernel defines
 by name, which fat LTO inlines into each lock, not through the hooks'
-table (ADR 0406). A request to switch is
+table (ADR 0406), as do the spin locks taken with interrupts masked for
+the masking (ADR 0776). A request to switch is
 acted on as the interrupt that set it returns, if the count is 0, or when
 the last spin lock is let go: the guard restores the interrupt flag
 first and then drops the count, so the reschedule it may trigger runs
@@ -368,6 +369,25 @@ sleeps. Only threads waiting in a queue move, never the running one, and
 threads that ran within the level's cache window (`is_cache_hot`: 0.5 ms
 in a package, 5 ms across nodes) stay unless attempts at that level have
 failed several times in a row.
+
+**Cores of more than one kind.** Intel's processors from the 12th
+generation Core on have performance cores, with two hardware threads
+each, and slower efficient cores of one; CPUID leaf 1Ah tells each CPU
+which kind it is (ADR 0740). Once every CPU is up, `rank_cores` gives each
+a rank, highest first: a performance core's first thread, an efficient
+core, a performance core's other threads, which share their core with a
+first thread that is busy whenever they are chosen after it. The topology
+is then *ranked*, and a waking thread goes to an idle CPU of the highest
+rank it may use, the nearest of them, before any slower idle CPU; the
+shortcut back to an idle last CPU holds only when that CPU is of the top
+rank. Balancing still counts threads alone, and never moves a running
+thread, so a thread running alone on a slower CPU for 4 ms
+(`MOVE_UP_NS`), with a faster CPU it may use idle, is moved there at its
+next preemption, which the tick asks for (`move_up`, `faster_idle`). With
+every rank equal a ranked topology chooses as an unranked one, which a
+property test checks, and on a processor whose cores are all of one
+kind, or with `hybrid=off`, nothing is ranked. `/processes/stat` counts
+the moves (`moves_up`).
 
 **Affinity.** A thread's affinity is a `CpuSet`. `set_affinity` updates
 it under the thread's lock. A queued thread on a CPU it may no longer use
@@ -808,6 +828,13 @@ picking, `AllFinish` fails.
 - The timing checks of `sched-rt` assume KVM or real hardware. Under TCG
   they pass on an idle machine with room to spare, but a loaded host can
   delay a virtual CPU past them.
+- On cores of more than one kind, balancing counts threads alike on
+  every CPU, rather than by each CPU's speed, and the hints of Intel's
+  Thread Director (the hardware feedback interface's table of each core's
+  performance and efficiency, and its classes of each thread's work) are
+  not read: ranks come from the kind of core alone. QEMU cannot present
+  cores of two kinds, so ranking is tested on the host, and the first
+  run of it is on real hardware.
 - MWAIT idle is used where CPUID offers it and works. QEMU does not offer
   it by default, so the boot tests exercise HLT; the first boot on real
   hardware is its first run.

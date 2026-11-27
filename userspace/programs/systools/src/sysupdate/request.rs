@@ -28,12 +28,12 @@
 //! unattended round and `update apply` at the same moment take turns.
 
 use std::fs::OpenOptions;
-use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 
 use spark_api::show::{self, State};
+use sysapi::fs::{self, Lock};
 
 use super::{firmware, place, stage};
 use crate::util::{self, Fail, fail};
@@ -194,14 +194,11 @@ fn write_outcome(text: &str) -> Result<(), Fail> {
 /// ended without an outcome.
 pub fn ask(what: &What) -> Result<Vec<String>, Fail> {
     let asking = asking()?;
-    // SAFETY: flock takes a descriptor `asking` owns; the lock goes when
-    // it is closed, as this function returns or the program ends.
-    if unsafe { libc::flock(asking.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+    // The lock goes when `asking` is closed, as this function returns or
+    // the program ends.
+    if fs::lock(&asking, Lock::Exclusive, false).is_err() {
         println!("sysupdate: another update is being staged; waiting for it to finish");
-        // SAFETY: as above.
-        if unsafe { libc::flock(asking.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            return Err(util::failed(&ASKING, std::io::Error::last_os_error()));
-        }
+        fs::lock(&asking, Lock::Exclusive, true).map_err(|err| util::failed(&ASKING, err))?;
     }
     // A stage an asker that has gone started may still run: its outcome
     // is not this request's.
@@ -235,11 +232,9 @@ pub fn ask(what: &What) -> Result<Vec<String>, Fail> {
 /// If the request cannot be written or Spark refuses the start.
 pub fn start(what: &What) -> Result<bool, Fail> {
     let asking = asking()?;
-    // SAFETY: as in `ask`; the lock is held until the start is asked,
-    // after which another asker sees the stage run and waits for it.
-    if unsafe { libc::flock(asking.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0
-        || stage_runs()
-    {
+    // The lock is held until the start is asked, after which another
+    // asker sees the stage run and waits for it.
+    if fs::lock(&asking, Lock::Exclusive, false).is_err() || stage_runs() {
         return Ok(false);
     }
     let _ = std::fs::remove_file(OUTCOME);

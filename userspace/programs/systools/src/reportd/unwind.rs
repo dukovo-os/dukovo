@@ -372,6 +372,7 @@ fn readable(name: &str) -> String {
 mod tests {
     use super::super::record::{Mapping, Record};
     use super::*;
+    use std::os::unix::fs::FileExt;
 
     /// A record of a thread of a program at `path` mapped at 0x10_0000
     /// from file offset 0, whose stack holds `words` from 0x7000_0000.
@@ -439,18 +440,7 @@ mod tests {
     /// information and its symbols: a trace from a real stack of it.
     #[inline(never)]
     fn innermost(out: &mut Option<(u64, u64, u64, Vec<u8>)>) {
-        let (pc, sp, fp): (u64, u64, u64);
-        // SAFETY: reads three registers and writes nothing.
-        unsafe {
-            std::arch::asm!(
-                "lea {pc}, [rip]",
-                "mov {sp}, rsp",
-                "mov {fp}, rbp",
-                pc = out(reg) pc,
-                sp = out(reg) sp,
-                fp = out(reg) fp,
-            );
-        }
+        let sysapi::process::Registers { pc, sp, fp } = sysapi::process::registers();
         // To 16 KiB up, or the end of the stack's mapping, as Linux has it:
         // a test's thread may have less above it.
         let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
@@ -464,10 +454,10 @@ mod tests {
             .map(|(_, end)| end)
             .unwrap();
         let len = (end - sp).min(16 * 1024) as usize;
-        // SAFETY: the bytes from this frame's stack pointer to `len` are
-        // this thread's stack, mapped, and its callers' frames, which
-        // outlive the copy.
-        let stack = unsafe { std::slice::from_raw_parts(sp as *const u8, len) }.to_vec();
+        // The bytes from this frame's stack pointer up are this thread's
+        // stack and its callers' frames, which outlive the copy.
+        let mut stack = vec![0u8; len];
+        std::fs::File::open("/proc/self/mem").unwrap().read_exact_at(&mut stack, sp).unwrap();
         *out = Some((pc, sp, fp, stack));
     }
 

@@ -10,19 +10,15 @@
 
 use std::collections::HashMap;
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::args::{Arg, Args};
 use crate::proc::{self, Process, Thread};
 use crate::util::{self, Fail, Regex, usage};
+use sysapi::signal::{self, Caught};
 
 /// Set by SIGINT: the averages come next, as with sysstat's pidstat.
-static INTERRUPTED: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_interrupt(_: libc::c_int) {
-    INTERRUPTED.store(true, Ordering::Relaxed);
-}
+static INTERRUPTED: Caught = Caught::new();
 
 /// What one process or thread had used when it was read, and how it is
 /// scheduled.
@@ -419,11 +415,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         print(&mut out, &shown, &report, &time, &time, true, false)?;
         return Ok(0);
     };
-    // SAFETY: all zeros is a valid sigaction: numbers, a signal set and a function address.
-    let mut action: libc::sigaction = unsafe { util::zeroed() };
-    action.sa_sigaction = on_interrupt as *const () as usize;
-    // SAFETY: the handler only stores to an atomic.
-    unsafe { libc::sigaction(libc::SIGINT, &raw const action, std::ptr::null_mut()) };
+    let _ = signal::catch(libc::SIGINT, &INTERRUPTED, 0);
     let mut before = sample(&select);
     let mut at = util::monotonic_ns();
     let first: HashMap<Key, (Use, u64)> =
@@ -437,10 +429,10 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     loop {
         // Each interval from the first sample, so that they do not drift.
         let deadline = started + Duration::from_secs(interval.saturating_mul(round + 1));
-        while Instant::now() < deadline && !INTERRUPTED.load(Ordering::Relaxed) {
+        while Instant::now() < deadline && !INTERRUPTED.is_set() {
             std::thread::sleep((deadline - Instant::now()).min(Duration::from_millis(100)));
         }
-        if INTERRUPTED.load(Ordering::Relaxed) {
+        if INTERRUPTED.is_set() {
             break;
         }
         let uses = sample(&select);
@@ -461,7 +453,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         at = now;
         time_before = time;
         round += 1;
-        if count.is_some_and(|c| round >= c) || INTERRUPTED.load(Ordering::Relaxed) {
+        if count.is_some_and(|c| round >= c) || INTERRUPTED.is_set() {
             break;
         }
     }
@@ -469,7 +461,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     if round == 0 {
         return Ok(0);
     }
-    if INTERRUPTED.load(Ordering::Relaxed) {
+    if INTERRUPTED.is_set() {
         // Past the ^C the terminal echoed.
         writeln!(out)?;
     }

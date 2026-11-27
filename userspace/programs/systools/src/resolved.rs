@@ -46,7 +46,7 @@ use std::net::{
     IpAddr, Ipv4Addr, Shutdown, SocketAddr, SocketAddrV4, TcpListener, TcpStream, UdpSocket,
 };
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::thread;
@@ -54,6 +54,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use ring::rand::{SecureRandom, SystemRandom};
 use rustls::ClientConfig;
+use sysapi::signal::{self, Caught};
 
 use crate::args::Args;
 use crate::tls;
@@ -104,21 +105,9 @@ const DOT_ALPN: &[u8] = b"dot";
 /// HTTP/1.1, for DNS over HTTPS.
 const HTTP_ALPN: &[u8] = b"http/1.1";
 
-static STOP: AtomicBool = AtomicBool::new(false);
-static RELOAD: AtomicBool = AtomicBool::new(false);
-static FLUSH: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_term(_: libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-}
-
-extern "C" fn on_hangup(_: libc::c_int) {
-    RELOAD.store(true, Ordering::Relaxed);
-}
-
-extern "C" fn on_usr2(_: libc::c_int) {
-    FLUSH.store(true, Ordering::Relaxed);
-}
+static STOP: Caught = Caught::new();
+static RELOAD: Caught = Caught::new();
+static FLUSH: Caught = Caught::new();
 
 /// How servers named by address alone are asked.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -935,17 +924,10 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     if let Some(arg) = args.next()? {
         return Err(args.unknown(&arg));
     }
-    for (signal, handler) in [
-        (libc::SIGTERM, on_term as extern "C" fn(libc::c_int)),
-        (libc::SIGHUP, on_hangup),
-        (libc::SIGUSR2, on_usr2),
-    ] {
-        // SAFETY: all zeros is a valid sigaction: numbers, a signal set
-        // and a function address.
-        let mut action: libc::sigaction = unsafe { util::zeroed() };
-        action.sa_sigaction = handler as *const () as usize;
-        // SAFETY: the handlers only store to an atomic.
-        unsafe { libc::sigaction(signal, &raw const action, std::ptr::null_mut()) };
+    for (number, caught) in
+        [(libc::SIGTERM, &STOP), (libc::SIGHUP, &RELOAD), (libc::SIGUSR2, &FLUSH)]
+    {
+        let _ = signal::catch(number, caught, 0);
     }
     let udp = UdpSocket::bind(LISTEN).map_err(|e| util::failed(&"resolved: port 53", e))?;
     let tcp = TcpListener::bind(LISTEN).map_err(|e| util::failed(&"resolved: port 53", e))?;
@@ -1008,7 +990,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
 fn serve_udp(shared: &Shared, udp: &UdpSocket, queue: &SyncSender<(Vec<u8>, SocketAddr)>) {
     let mut buf = vec![0; 65_535];
     let mut nothing = Links::default();
-    while !STOP.load(Ordering::Relaxed) {
+    while !STOP.is_set() {
         let Ok((len, from)) = udp.recv_from(&mut buf) else { continue };
         let query = &buf[..len];
         let Some(question) = dns::question(query) else {
@@ -1142,7 +1124,7 @@ impl Watcher {
     /// were asked to be read; empties the cache when asked; and writes the
     /// stub resolv.conf and the status if they changed.
     fn look(&mut self, shared: &Shared, first: bool) {
-        let reload = RELOAD.swap(false, Ordering::Relaxed);
+        let reload = RELOAD.take();
         if reload {
             println!("resolved: reading {SETTINGS} again");
         }
@@ -1155,7 +1137,7 @@ impl Watcher {
             self.netd_time = netd_time;
             self.read(shared, first || reload);
         }
-        if FLUSH.swap(false, Ordering::Relaxed) || reload {
+        if FLUSH.take() || reload {
             shared.cache.lock().unwrap_or_else(PoisonError::into_inner).empty();
             println!("resolved: emptied the cache");
         }

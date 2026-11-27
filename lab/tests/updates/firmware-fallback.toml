@@ -44,9 +44,11 @@ serial = "has data that failed its checks, so none of it was used"
 serial = "the update gives up its tries"
 # The boot menu is GRUB's, drawn before the system starts, so a console
 # that starts with the network (netlog) never carries it; the step needs
-# the console from the power-on.
+# the console from the power-on. GRUB breaks a line that would reach the
+# serial terminal's 80th column at its last space before it, and with this
+# release's version the title's "failed)" goes onto the next line.
 [[step]]
-serial = "(the firmware update to 2026.3.1 failed)"
+serial = "(the firmware update to 2026.3.1"
 early = true
 [[step]]
 serial = "spark: started slot a, @system.a"

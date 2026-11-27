@@ -179,7 +179,9 @@ _target/userspace/_).
 	third: Btrfs made and filled by the kernel's Btrfs crate, as
 	*mkfs-btrfs*(8) makes one, whose read-only subvolume _release_ holds
 	the release, signed with this machine's keys, which *ob* makes in
-	_.cache/release-keys_ the first time (*system-release*(8)). The boot
+	_.cache/release-keys_ the first time (*system-release*(8)); the
+	project's stick and ISO of a release are made by *release images*,
+	and trust the project's release root instead. The boot
 	menu starts the live system, which Spark runs from memory without
 	taking any disk's root (*spark*(8)), or boots the machine's first
 	disk.
@@ -2171,7 +2173,7 @@ _target/userspace/_).
 	are changed with *release canary* (ADR 0533), and *rollout canary*
 	is refused. *bundle*(1) says what a computer does with one.
 
-*release* *build* [*--out* _dir_] | *key* *yubikey* [*--serial* _n_] | *root* | *server* *setup* [*--dukovo*] | *channel* _repository_ (_channel_ _version_ | *--firmware* _version_|*none* _channel_) | *advisories* _repository_ | *deploy* _repository_ | *send* [*--copy-only*] _repository_ | *check* [*--root* _file_] [_url_] | *rollout* (*pause* _version_ _reason_ | *resume* _version_) | *canaries* [*--json*] | *canary* (*add* _name_ _key_ | *remove* _name_ | _name_ *red*|*green* _reason_ | _name_ *auto*)
+*release* *build* [*--out* _dir_] | *sign* _version_ [*--channel* _channel_] [*--serial* _n_] | *record* _version_ | *images* _version_ [*--serial* _n_] | *key* *yubikey* [*--serial* _n_] | *root* [*--repo* _repository_] | *server* *setup* [*--dukovo*] | *channel* _repository_ (_channel_ _version_ | *--firmware* _version_|*none* _channel_) | *advisories* _repository_ | *deploy* _repository_ | *send* [*--copy-only*] _repository_ | *check* [*--root* _file_] [_url_] | *rollout* (*pause* _version_ _reason_ | *resume* _version_) | *canaries* [*--json*] | *canary* (*add* _name_ _key_ | *remove* _name_ | _name_ *red*|*green* _reason_ | _name_ *auto*)
 	Build the system's release, and deploy the system's releases to the
 	update server and check what it serves (ADR 0467), over the same SSH
 	login as *catalog*.
@@ -2201,22 +2203,76 @@ _target/userspace/_).
 	unless it is set. CI runs *build* twice in different
 	places and compares the results (_.github/workflows/reproducible.yml_).
 
+	*sign* signs the release of this checkout's commit on a YubiKey
+	(ADRs 0457 and 0778), as _releases/README.md_ walks through. It
+	refuses unless the checkout has nothing changed and builds
+	_version_, and, read with *gh* from GitHub, the commit is on main or
+	a release branch with *CI passed*, a full run of the update test
+	matrix and a run of the reproducible workflow green on it. It
+	downloads that run's two builds into _out/release-sign/ci-COMMIT_,
+	runs *build*, and refuses unless all three have the same
+	_system.json.sha256_ and _files.txt_. Then *system-release*(8)
+	*fetch* reads what the update server serves into
+	_out/release-sign/version_, and *offer* adds the release there and
+	points _channel_, *beta* by default, at it, with the security
+	advisories of _security/advisories_, in one targets version: it
+	shows what it is about to sign and asks for the version to be
+	typed, and the YubiKey, or the one *--serial* names, asks for its PIN
+	and a touch. Last, it sends the signature to Sigstore's Rekor log,
+	keeps the answer in _out/release-sign/version.rekor.json_ and prints
+	the entry's address; *record* sends it again when the log could not
+	be reached. *$DUKOVO_REKOR* names another log, such as
+	_https://rekor.sigstage.dev_. The repository is then sent with
+	*deploy*.
+
+	*images* makes the project's install stick and ISO of _version_ once
+	it is signed and deployed (ADR 0779), as _releases/README.md_ walks
+	through. It refuses unless the checkout has nothing changed and
+	builds _version_. It runs *build*, and *system-release*(8) *medium*
+	reads the release as the update server serves it, from
+	_releases/metadata/1.root.json_, and refuses unless it is the one
+	just built, byte for byte. The stick and the ISO trust that root and
+	carry the release as served, so a system installed from one takes
+	its updates from the server. Then *system-release sums* writes their
+	_SHA256SUMS_, shows it, asks for the version to be typed, and signs
+	it on the YubiKey, or the one *--serial* names, into
+	_SHA256SUMS.yubikey-SERIAL.sig_, which *openssl dgst -sha256 -verify*
+	checks with _releases/keys/yubikey-SERIAL.pem_. It sends the
+	signature to the Rekor log as *sign* does; *record* sends the
+	release's and the images' entries the log has not answered. All of
+	it is left in _out/release-images/version_.
+
 	*key yubikey* and *root* are the key ceremony (ADRs 0457 and 0538),
 	which _releases/README.md_ walks through. *key yubikey* adds
 	_releases/keys/yubikey-SERIAL.json_, the public half of the P-256
 	key in slot 95 of the YubiKey plugged in, or of the one *--serial*
-	names, made with ykman. *root* signs root version 1 of the system's
+	names, made with ykman, and the key alone in PEM beside it,
+	_releases/keys/yubikey-SERIAL.pem_. *root* signs root version 1 of the system's
 	releases on both YubiKeys, a PIN and a touch for each, from their
 	keys and the server's online key in _releases/keys/_, and writes
 	_releases/metadata/1.root.json_. The last line it prints is the
 	root's SHA-256. It signs the first root once (*system-release*(8)
 	*first-root*).
 
+	Once the first root is there, *root* signs the next (ADR 0780;
+	*system-release*(8) *next-root*), from _releases/keys/_ as it is
+	now: a YubiKey whose files were taken out is dropped, one whose
+	files were added is named and signs it too, and a new
+	_releases/keys/online.json_ is named for snapshot and timestamp. It
+	reads what updates.dukovo.org serves into _out/release-root/N_, adding
+	the roots of _releases/metadata/_ the server lacks, shows the root
+	and signs it once *root N* is typed, signs the targets again as they
+	are, writes _releases/metadata/N.root.json_ and says how to deploy
+	it; with nothing served yet, it keeps no folder, as the root then
+	goes out with the first release *sign* signs. With *--repo*, it signs into
+	_repository_ instead, which a server that cannot be read needs. The
+	handbook's *Keys and incidents* says when.
+
 	*server setup* is *catalog server setup*, which sets up both; it
 	writes the server's online key for the system's releases to
 	_releases/keys/online.json_, for the release keys' next root to name
-	for snapshot and timestamp beside their own keys (*system-release*(8)
-	*keys --online*), and fails if a different one is there.
+	for snapshot and timestamp beside their own keys (*root*), and fails
+	if a different one is there.
 
 	*channel* has the channel of an update _repository_, which
 	*system-release add* added a release to, offer that release, or with
@@ -2483,12 +2539,14 @@ _target/userspace/_).
 		default is this tree's version).
 
 *lint*
-	Check formatting with rustfmt and run Clippy, treating every warning as
-	an error, on the build tool, on the kernel for x86-64, on the
-	architecture-independent kernel against the AArch64 and RISC-V stubs
-	of the hardware abstraction layer (with the RISC-V smoke boot), on the
-	kernel libraries with their
-	tests, and on the user programs. CI runs the same command.
+	Check formatting with rustfmt; check that every crate outside the
+	trusted computing base starts each of its targets with
+	*#![forbid(unsafe_code)]* (ADR 0730); and run Clippy, treating every
+	warning as an error, on the build tool, on the kernel for x86-64, on
+	the architecture-independent kernel against the AArch64 and RISC-V
+	stubs of the hardware abstraction layer (with the RISC-V smoke boot),
+	on the kernel libraries with their tests, and on the user programs. CI
+	runs the same command.
 
 *fmt*
 	Format all Rust code with rustfmt.
@@ -3100,7 +3158,7 @@ Build the image and write it to a USB stick. Check the device name with
 ```
 ./ob image
 lsblk -d -o NAME,SIZE,MODEL,TRAN
-sudo dd if=out/dukovo-0.17.0-x86_64.img of=/dev/sdX bs=4M conv=fsync status=progress
+sudo dd if=out/dukovo-1.0.0-alpha.1-x86_64.img of=/dev/sdX bs=4M conv=fsync status=progress
 ```
 
 Graphical alternatives that write the same image are balenaEtcher, GNOME

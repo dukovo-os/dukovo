@@ -252,24 +252,14 @@ fn snapshots_in(folder: &Path) -> Result<Vec<Snapshot>, Fail> {
 /// The local date and time of `seconds` since 1970: year, month, day,
 /// hour and minute.
 pub(crate) fn local(seconds: i64) -> (i64, u32, u32, u32, u32) {
-    let time = seconds as libc::time_t;
-    // SAFETY: an all-zero tm is valid, and localtime_r fills it.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    // SAFETY: both pointers are valid for the call.
-    if unsafe { libc::localtime_r(&raw const time, &raw mut tm) }.is_null() {
+    let Ok(civil) = sysapi::time::local(seconds) else {
         // Before the clock or time zone can be read: as UTC.
         let day = seconds.div_euclid(86_400);
         let rest = seconds.rem_euclid(86_400) as u32;
         let (y, m, d) = civil(day);
         return (y, m, d, rest / 3600, rest / 60 % 60);
-    }
-    (
-        i64::from(tm.tm_year) + 1900,
-        (tm.tm_mon + 1) as u32,
-        tm.tm_mday as u32,
-        tm.tm_hour as u32,
-        tm.tm_min as u32,
-    )
+    };
+    (civil.year, civil.month, civil.day, civil.hour, civil.minute)
 }
 
 /// The date of day `day` since 1970-01-01, by Howard Hinnant's

@@ -11,7 +11,7 @@
 
 use std::io;
 use std::net::Shutdown;
-use std::os::fd::RawFd;
+use std::os::fd::BorrowedFd;
 use std::time::Duration;
 
 use accounts::console::Console;
@@ -21,7 +21,6 @@ use tokio::net::UnixStream;
 
 use crate::authd::console::clients::{CLIENTS_MAX, SCOPES_MAX};
 use crate::authd::console::{PASSKEYS_MAX, TOKENS_MAX};
-use crate::signin;
 
 /// How long authd may take to answer. A wrong proof's wait grows to a
 /// minute or so, which this is longer than.
@@ -92,7 +91,11 @@ impl Asked {
 /// # Errors
 ///
 /// In plain words, if authd cannot be reached or does not answer in time.
-pub async fn ask(socket: &str, console: Console, fds: &[RawFd]) -> Result<(Answer, Asked), String> {
+pub async fn ask(
+    socket: &str,
+    console: Console,
+    fds: &[BorrowedFd<'_>],
+) -> Result<(Answer, Asked), String> {
     ask_within(socket, ANSWER_TIME, console, fds).await
 }
 
@@ -101,13 +104,13 @@ async fn ask_within(
     socket: &str,
     limit: Duration,
     console: Console,
-    fds: &[RawFd],
+    fds: &[BorrowedFd<'_>],
 ) -> Result<(Answer, Asked), String> {
     let unreachable = |err: io::Error| format!("cannot ask authd at {socket}: {err}");
     let stream = std::os::unix::net::UnixStream::connect(socket).map_err(unreachable)?;
     let mut request = Request::Console(console);
     let mut bytes = request.encode();
-    let sent = signin::send_with_fds(&stream, &bytes, fds);
+    let sent = sysapi::net::send_with_fds(&stream, &bytes, fds);
     accounts::wipe(&mut bytes);
     request.wipe();
     sent.map_err(unreachable)?;
@@ -128,7 +131,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::io::{Read, Write};
-    use std::os::fd::AsRawFd;
+    use std::os::fd::AsFd;
     use std::os::unix::net::UnixListener;
 
     /// A socket path of the test's own.
@@ -193,9 +196,7 @@ mod tests {
         run(async {
             let console = Console::Lock { session: "3f9a".into() };
             let (answer, _) =
-                ask_within(&path, Duration::from_secs(5), console, &[ours.as_raw_fd()])
-                    .await
-                    .unwrap();
+                ask_within(&path, Duration::from_secs(5), console, &[ours.as_fd()]).await.unwrap();
             assert_eq!(answer, Answer::Refused("the name or the password is wrong".into()));
         });
         authd.join().unwrap();

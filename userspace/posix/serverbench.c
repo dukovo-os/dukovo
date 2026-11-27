@@ -18,7 +18,8 @@
 //     BENCHCOUNT group=<name> rounds=<operations> switches=<n> user_ns=<n>
 //         system_ns=<n> idle_ns=<n> [ipis=<n> halts=<n> timer_writes=<n>
 //         preemptions=<n> migrations=<n> faults=<n> polls=<n>
-//         mutex_waits=<n>] [faults=<n> interrupts=<n>]
+//         mutex_waits=<n> mutex_contended=<n> cap_fills=<n>
+//         cap_flushes=<n>] [faults=<n> interrupts=<n>]
 //
 // from /processes/stat on Radix (all twelve) and from /proc/stat on Linux
 // (the first four; the clock ticks become nanoseconds). The Radix fields
@@ -26,12 +27,30 @@
 // the timer, the preemptions (switches away from a thread that could have
 // gone on), the migrations (moves of a thread to another CPU than the one
 // it ran on last), the page faults resolved, the polls (idle periods a
-// wake-up ended while polling) and the mutex waits (threads that slept
-// waiting for a kernel mutex). Linux prints instead its page faults
+// wake-up ended while polling), the mutex waits (threads that slept
+// waiting for a kernel mutex), the times a thread found a mutex taken, and
+// the capability cache's lookups that asked the store and the slots its
+// entries were taken from (0 from a kernel without those three). Linux prints instead its page faults
 // (pgfault in /proc/vmstat) and its interrupts (the total of the intr
 // line of /proc/stat), each left out if its file cannot be read. A run of
 // valkey-benchmark prints three rows and one such line, group
 // server_valkey_run; if neither file can be read there is no line.
+//
+// After that line comes the CPU time of the pass's client, the program
+// that drove the server (this program for nginx and PHP-FPM, pgbench,
+// valkey-benchmark, and the php CLI, which is the whole of its row),
+//
+//     BENCHCLIENT group=<name> rounds=<operations> user_ns=<n> system_ns=<n>
+//
+// so that what is left of BENCHCOUNT's user and system time is the
+// server's.
+//
+// With SERVERBENCH_TRACE set in its environment, on Radix, each
+// PostgreSQL row runs one more pass against a server started under
+// rtrace(1), which counts the system calls of the server and of the
+// processes it starts, and prints the table, each line after
+// "TRACE <row> ". That pass prints no row: tracing
+// slows the server.
 //
 // The servers run as the account `bench` (the program drops root first,
 // since PostgreSQL's initdb refuses root), with their data in a folder it
@@ -54,6 +73,7 @@
 #include <grp.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <pthread.h>
 #include <pwd.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -62,8 +82,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -117,6 +139,7 @@ struct counts {
 	uint64_t switches, user_ns, system_ns, idle_ns;
 	uint64_t ipis, halts, timer_writes;
 	uint64_t preemptions, migrations, faults, polls, mutex_waits;
+	uint64_t cap_fills, cap_flushes, mutex_contended;
 	uint64_t interrupts;
 };
 
@@ -146,6 +169,22 @@ static int read_radix_counts(struct counts *counts) {
 		}
 	}
 	fclose(file);
+	// Counted since, so read apart: a kernel without them reads as 0.
+	const struct {
+		const char *name;
+		uint64_t *value;
+	} more[] = {{"cap_cache_fills", &counts->cap_fills}, {"cap_cache_flushes", &counts->cap_flushes},
+	            {"mutex_contended", &counts->mutex_contended}};
+	file = fopen("/processes/stat", "r");
+	while(file && fgets(line, sizeof(line), file)) {
+		for(size_t i = 0; i < sizeof(more) / sizeof(more[0]); i++) {
+			size_t length = strlen(more[i].name);
+			if(!strncmp(line, more[i].name, length) && line[length] == ':')
+				*more[i].value = strtoull(line + length + 1, NULL, 10);
+		}
+	}
+	if(file)
+		fclose(file);
 	return found == all;
 }
 
@@ -247,6 +286,10 @@ static void print_counts(const char *group, struct counts before, struct counts 
 		       (unsigned long long)(after.preemptions - before.preemptions), (unsigned long long)(after.migrations - before.migrations),
 		       (unsigned long long)(after.faults - before.faults), (unsigned long long)(after.polls - before.polls),
 		       (unsigned long long)(after.mutex_waits - before.mutex_waits));
+		printf(" mutex_contended=%llu cap_fills=%llu cap_flushes=%llu",
+		       (unsigned long long)(after.mutex_contended - before.mutex_contended),
+		       (unsigned long long)(after.cap_fills - before.cap_fills),
+		       (unsigned long long)(after.cap_flushes - before.cap_flushes));
 	} else {
 		if(before.have_faults && after.have_faults)
 			printf(" faults=%llu", (unsigned long long)(after.faults - before.faults));
@@ -275,12 +318,37 @@ static size_t log_count;
 // What the servers and tools run with.
 static char *environment[5];
 
+// The CPU time of the last program run_tool ran, as its wait gave it.
+static uint64_t tool_user_ns, tool_system_ns;
+
 // A time under 10 ns, as the clock row's fraction of a nanosecond, gets
 // four decimals, as in bench.c: the lab holds the two systems' clocks to
 // 3%, finer than two decimals of 0.2 ns.
 static void print_row(const char *name, double ns, uint64_t iterations) {
 	printf("BENCH name=%s ns=%.*f iterations=%llu\n", name, ns < 10 ? 4 : 2, ns,
 	       (unsigned long long)iterations);
+	fflush(stdout);
+}
+
+static uint64_t timeval_ns(struct timeval time) {
+	return (uint64_t)time.tv_sec * 1000000000u + (uint64_t)time.tv_usec * 1000u;
+}
+
+// This program's own CPU time so far, 0 for both if it cannot be read.
+static void own_time(uint64_t *user_ns, uint64_t *system_ns) {
+	struct rusage usage;
+	*user_ns = *system_ns = 0;
+	if(getrusage(RUSAGE_SELF, &usage) == 0) {
+		*user_ns = timeval_ns(usage.ru_utime);
+		*system_ns = timeval_ns(usage.ru_stime);
+	}
+}
+
+// Prints the CPU time of a pass's client as the BENCHCLIENT line of a pass
+// of `rounds` operations.
+static void print_client(const char *group, uint64_t user_ns, uint64_t system_ns, uint64_t rounds) {
+	printf("BENCHCLIENT group=%s rounds=%llu user_ns=%llu system_ns=%llu\n", group, (unsigned long long)rounds,
+	       (unsigned long long)user_ns, (unsigned long long)system_ns);
 	fflush(stdout);
 }
 
@@ -454,10 +522,13 @@ static void run_tool(const char *name, char *const argv[]) {
 	remember_log(name);
 	pid_t pid = spawn(log, argv);
 	int status;
-	while(waitpid(pid, &status, 0) < 0) {
+	struct rusage usage;
+	while(wait4(pid, &status, 0, &usage) < 0) {
 		if(errno != EINTR)
 			fail(name, "cannot wait for it: %s", strerror(errno));
 	}
+	tool_user_ns = timeval_ns(usage.ru_utime);
+	tool_system_ns = timeval_ns(usage.ru_stime);
 	if(!WIFEXITED(status))
 		fail(name, "ended by signal %d", WTERMSIG(status));
 	if(WEXITSTATUS(status) != 0)
@@ -819,12 +890,16 @@ static void http_row(const char *row, const char *path, int keep_alive, uint64_t
 	http_row_now = row;
 	http_pass(path, keep_alive, requests, expected);
 	for(int pass = 0; pass < PASSES; pass++) {
+		uint64_t user_before, system_before, user_after, system_after;
+		own_time(&user_before, &system_before);
 		struct counts before = counts_now();
 		uint64_t started = now_ns();
 		http_pass(path, keep_alive, requests, expected);
 		struct counts after = counts_now();
+		own_time(&user_after, &system_after);
 		report(row, started, requests);
 		print_counts(row, before, after, requests);
+		print_client(row, user_after - user_before, system_after - system_before, requests);
 	}
 }
 
@@ -900,6 +975,7 @@ static void php_rows(void) {
 		struct counts after = counts_now();
 		print_row("server_php_compute", ns / PHP_COMPUTE_PASSES, PHP_COMPUTE_PASSES);
 		print_counts("server_php_compute", before, after, PHP_COMPUTE_PASSES);
+		print_client("server_php_compute", tool_user_ns, tool_system_ns, PHP_COMPUTE_PASSES);
 	}
 }
 
@@ -945,6 +1021,7 @@ static void valkey_rows(void) {
 		print_row("server_valkey_get", 1e9 / csv_rate("valkey-benchmark", "GET"), VALKEY_REQUESTS);
 		print_row("server_valkey_lpush", 1e9 / csv_rate("valkey-benchmark", "LPUSH"), VALKEY_REQUESTS);
 		print_counts("server_valkey_run", before, after, 3 * (uint64_t)VALKEY_REQUESTS);
+		print_client("server_valkey_run", tool_user_ns, tool_system_ns, 3 * (uint64_t)VALKEY_REQUESTS);
 	}
 	valkey_benchmark("get", VALKEY_PIPELINED_REQUESTS, VALKEY_PIPELINE);
 	for(int pass = 0; pass < PASSES; pass++) {
@@ -953,6 +1030,7 @@ static void valkey_rows(void) {
 		struct counts after = counts_now();
 		print_row("server_valkey_get_pipelined", 1e9 / csv_rate("valkey-benchmark", "GET"), VALKEY_PIPELINED_REQUESTS);
 		print_counts("server_valkey_get_pipelined", before, after, VALKEY_PIPELINED_REQUESTS);
+		print_client("server_valkey_get_pipelined", tool_user_ns, tool_system_ns, VALKEY_PIPELINED_REQUESTS);
 	}
 	stop_server(valkey);
 }
@@ -988,7 +1066,65 @@ static void pgbench_row(const char *row, int select_only, int per_client) {
 		struct counts after = counts_now();
 		print_row(row, 1e9 / tps, rounds);
 		print_counts(row, before, after, rounds);
+		print_client(row, tool_user_ns, tool_system_ns, rounds);
 	}
+}
+
+// Prints each line of `path` after "TRACE <row> ".
+static void print_traced(const char *row, const char *path) {
+	FILE *file = fopen(path, "r");
+	char line[512];
+	while(file && fgets(line, sizeof(line), file))
+		printf("TRACE %s %s%s", row, line, strchr(line, '\n') ? "" : "\n");
+	if(file)
+		fclose(file);
+	fflush(stdout);
+}
+
+// With SERVERBENCH_TRACE set and rtrace there (Radix), one more pass of a
+// pgbench row against a server started under rtrace, which counts the
+// calls of the server and of every process it starts (the backends, the
+// checkpointer, the writers) from its start to its end; prints the table,
+// what the machine did during the pass, and the pass's transactions per
+// second, as TRACE lines. rtrace starts the server, since Radix lets a
+// process trace only those below it (ADR 0214). `server` is the server's
+// command, which `postgresql_rows` has stopped.
+static void traced_pgbench_pass(const char *row, char *const server[], int select_only, int per_client) {
+	static const char rtrace[] = "/system/commands/rtrace";
+	if(!getenv("SERVERBENCH_TRACE") || access(rtrace, X_OK) != 0)
+		return;
+	char *table = format("%s/trace-%s.txt", work, row);
+	char *argv[40] = {(char *)rtrace, "-c", "-f", "-q", "-o", table};
+	size_t count = 6;
+	for(size_t i = 0; server[i] && count < sizeof(argv) / sizeof(argv[0]) - 1; i++)
+		argv[count++] = server[i];
+	argv[count] = NULL;
+	// Stopped by its own end: rtrace ends when the server does.
+	struct child *traced = start_server("postgres-traced", 0, argv);
+	wait_ready(traced, postgres_ready);
+	uint64_t rounds = (uint64_t)CONNECTIONS * (uint64_t)per_client;
+	struct counts before = counts_now();
+	double tps = pgbench_tps(select_only, per_client);
+	struct counts after = counts_now();
+	FILE *pid_file = fopen(format("%s/pg/postmaster.pid", work), "r");
+	long postmaster = 0;
+	if(pid_file) {
+		if(fscanf(pid_file, "%ld", &postmaster) != 1)
+			postmaster = 0;
+		fclose(pid_file);
+	}
+	if(postmaster > 0)
+		kill((pid_t)postmaster, SIGINT);
+	stop_server(traced);
+	printf("TRACE %s traced pass: %.1f ns per transaction, %llu transactions; pgbench user_ns=%llu system_ns=%llu\n", row, 1e9 / tps,
+	       (unsigned long long)rounds, (unsigned long long)tool_user_ns, (unsigned long long)tool_system_ns);
+	if(before.valid && after.valid && after.radix)
+		printf("TRACE %s machine: switches=%llu user_ns=%llu system_ns=%llu faults=%llu preemptions=%llu\n", row,
+		       (unsigned long long)(after.switches - before.switches), (unsigned long long)(after.user_ns - before.user_ns),
+		       (unsigned long long)(after.system_ns - before.system_ns), (unsigned long long)(after.faults - before.faults),
+		       (unsigned long long)(after.preemptions - before.preemptions));
+	print_traced(row, table);
+	print_traced(row, format("%s/postgres-traced.log", work));
 }
 
 static void postgresql_rows(void) {
@@ -1007,6 +1143,8 @@ static void postgresql_rows(void) {
 	pgbench_row("server_postgresql_select", 1, PGBENCH_SELECT_PER_CLIENT);
 	pgbench_row("server_postgresql_tpcb", 0, PGBENCH_TPCB_PER_CLIENT);
 	stop_server(postgres);
+	traced_pgbench_pass("server_postgresql_select", argv, 1, PGBENCH_SELECT_PER_CLIENT);
+	traced_pgbench_pass("server_postgresql_tpcb", argv, 0, PGBENCH_TPCB_PER_CLIENT);
 }
 
 // A chain of additions, each waiting for the one before, so one clock
@@ -1016,6 +1154,18 @@ static void postgresql_rows(void) {
 // that lets its clock fall when idle has climbed back to the clock the
 // rows run at; the lab compares the two systems' clocks from it before
 // it compares any row (ADR 0557).
+//
+// The timed additions run in CLOCK_SLICES slices of about 3 ms, and the
+// row is the fastest slice: time the kernel or another program takes from
+// this CPU makes the slices it lands in slow, where a clock that is lower
+// makes every slice slow. main() measures the clock at its start and again
+// after the server rows, under the same name, and the lab keeps the faster
+// of the two. On the lab's OptiPlex 7040, a single timing of all the
+// additions at the start read 9% slow in two PHP runs of six while the
+// PHP rows after it ran at the full clock, and the lab would not compare
+// those runs' rows.
+#define CLOCK_SLICES 10
+
 static void cpu_cycle(uint64_t rounds) {
 #ifdef __x86_64__
 	uint64_t x = 0, warmed = 0;
@@ -1025,15 +1175,64 @@ static void cpu_cycle(uint64_t rounds) {
 			__asm__ volatile(".rept 100\n\taddq $1, %0\n\t.endr" : "+r"(x));
 		warmed += 100000;
 	}
-	uint64_t started = now_ns();
-	for(uint64_t i = 0; i < rounds; i++)
-		__asm__ volatile(".rept 100\n\taddq $1, %0\n\t.endr" : "+r"(x));
-	report("cpu_cycle", started, rounds * 100);
-	if(x != (warmed + rounds) * 100)
+	uint64_t per_slice = rounds / CLOCK_SLICES, fastest = UINT64_MAX;
+	for(int slice = 0; slice < CLOCK_SLICES; slice++) {
+		uint64_t started = now_ns();
+		for(uint64_t i = 0; i < per_slice; i++)
+			__asm__ volatile(".rept 100\n\taddq $1, %0\n\t.endr" : "+r"(x));
+		uint64_t took = now_ns() - started;
+		if(took < fastest)
+			fastest = took;
+	}
+	print_row("cpu_cycle", (double)fastest / (double)(per_slice * 100), per_slice * 100);
+	if(x != (warmed + per_slice * CLOCK_SLICES) * 100)
 		fail("cpu_cycle", "the sum is wrong");
 #else
 	(void)rounds;
 #endif
+}
+
+// The C library's allocator, as the servers use it: each operation frees
+// the oldest of MALLOC_LIVE blocks and allocates one of a size from 16 to
+// 512 bytes, as a server's requests make and drop their small objects.
+// server_malloc_one runs it on one thread, server_malloc_two on two at
+// once, which share the allocator as pgbench's two threads do. Neither
+// row is held to Linux's: they say how much of a server's time its C
+// library's allocator could account for.
+#define MALLOC_LIVE 1024
+#define MALLOC_ROUNDS 2000000
+
+static void *malloc_rounds(void *argument) {
+	(void)argument;
+	static const size_t sizes[] = {16, 24, 32, 48, 64, 96, 128, 256, 512};
+	void *live[MALLOC_LIVE] = {0};
+	uint32_t seed = 12345;
+	for(uint64_t i = 0; i < MALLOC_ROUNDS; i++) {
+		seed = seed * 1103515245u + 12345u;
+		size_t at = i % MALLOC_LIVE;
+		free(live[at]);
+		live[at] = malloc(sizes[(seed >> 16) % (sizeof(sizes) / sizeof(sizes[0]))]);
+		if(!live[at])
+			fail("server_malloc", "out of memory");
+		*(volatile char *)live[at] = 1;
+	}
+	for(size_t at = 0; at < MALLOC_LIVE; at++)
+		free(live[at]);
+	return NULL;
+}
+
+static void malloc_rows(void) {
+	malloc_rounds(NULL);
+	uint64_t started = now_ns();
+	malloc_rounds(NULL);
+	report("server_malloc_one", started, MALLOC_ROUNDS);
+	pthread_t other;
+	started = now_ns();
+	if(pthread_create(&other, NULL, malloc_rounds, NULL) != 0)
+		fail("server_malloc", "cannot start a thread");
+	malloc_rounds(NULL);
+	pthread_join(other, NULL);
+	report("server_malloc_two", started, MALLOC_ROUNDS);
 }
 
 // Makes the work folder. As root it gives the folder to `bench` and
@@ -1123,6 +1322,7 @@ int main(int argc, char **argv) {
 	make_work();
 	make_environment();
 	cpu_cycle(1000000);
+	malloc_rows();
 	for(int i = first; i < argc; i++) {
 		if(!strcmp(argv[i], "nginx"))
 			nginx_rows();
@@ -1133,6 +1333,7 @@ int main(int argc, char **argv) {
 		else
 			postgresql_rows();
 	}
+	cpu_cycle(1000000);
 	printf("serverbench: done\n");
 	fflush(stdout);
 	return 0;

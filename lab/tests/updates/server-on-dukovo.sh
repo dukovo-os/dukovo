@@ -28,8 +28,9 @@
 #   needs       exits with 77, which skips the test, when what it takes is
 #               not there: the test update server as this tree builds it
 #               (a build from before this test has none of its folders),
-#               the files of the server's setup for Dukovo, and nginx's
-#               bundle, which setup would fetch from the catalog.
+#               the files of the server's setup for Dukovo, and the lab's
+#               catalog, which nginx is installed from, as setup would
+#               fetch it from Dukovo's (../services/lab-catalog.sh).
 #   copy-setup  copies those files to dukovo-update-server in the lab
 #               account's home, as `ob catalog server setup --dukovo` does.
 #   keys        step 4 of the runbook: the online keys of the old server,
@@ -74,8 +75,10 @@ if [ "$mode" = needs ]; then
 		echo "./ob lab, which stages them"
 		exit 77
 	fi
-	if ! ls "${DUKOVO_LAB_BUNDLES:-/nowhere}"/org.nginx.nginx-*.dkv >/dev/null 2>&1; then
-		echo "no bundle org.nginx.nginx: run the update tests through ./ob lab, which packs it"
+	catalog="${DUKOVO_LAB_CATALOG:-}"
+	if [ -z "$catalog" ] || [ ! -f "$catalog/root.json" ] || [ ! -d "$catalog/catalog" ]; then
+		echo "no test catalog, which nginx comes from: run the update tests through ./ob lab,"
+		echo "which signs it"
 		exit 77
 	fi
 	echo "the test update server and the setup's files are there"

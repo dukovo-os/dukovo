@@ -32,13 +32,13 @@ use accounts::request::{self, HELP_ONLY, HELP_TRANSCRIPT_MAX, HELP_WAITING, Help
 use accounts::sshd_config::Settings;
 use russh::server::Handle;
 use russh::{ChannelId, Disconnect, MethodKind};
+use sysapi::fd;
 use tokio::io::AsyncReadExt;
 use tokio::net::unix::pipe;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::session::{self, Running, Taken};
-use crate::sys;
 
 /// What the room left in a transcript must hold besides a line: its time
 /// and kind, and authd's own lines at the end.
@@ -145,11 +145,12 @@ impl Helping {
         let failed = |err: io::Error| format!("cannot use the help screen's pipes: {err}");
         // tokio's pipes, unchecked, as the session's own are (session.rs).
         let reader = |fd: OwnedFd| {
-            sys::set_nonblocking(&fd).and_then(|()| pipe::Receiver::from_owned_fd_unchecked(fd))
+            fd::set_nonblocking(&fd, true)
+                .and_then(|()| pipe::Receiver::from_owned_fd_unchecked(fd))
         };
         let from = reader(pipes.screen).map_err(failed)?;
         let mut cut = reader(pipes.cut).map_err(failed)?;
-        let to = sys::set_nonblocking(&pipes.typing)
+        let to = fd::set_nonblocking(&pipes.typing, true)
             .and_then(|()| pipe::Sender::from_owned_fd_unchecked(pipes.typing))
             .map_err(failed)?;
         let output = {

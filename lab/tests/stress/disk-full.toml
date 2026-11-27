@@ -3,6 +3,10 @@
 
 about = "The lab account fills the disk: the write stops with no space left, the system keeps working, and the space comes back once the file goes"
 time = "15m"
+# The lab image's own root, 512 MiB, which a real machine's disk fills in
+# seconds: a root grown to the end of a 238 GiB disk takes longer than the
+# test may.
+small_root = true
 
 [[step]]
 run = "dd if=/dev/zero of=/users/lab/fill bs=1M"

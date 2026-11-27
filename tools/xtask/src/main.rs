@@ -7,6 +7,8 @@
 //! with the pinned toolchain and runs it. Every command is documented in
 //! ob(1); `docs/man/ob.1.scd` is the source of that page.
 
+#![forbid(unsafe_code)]
+
 mod account;
 mod ansible;
 mod baseline;
@@ -46,6 +48,8 @@ mod process;
 mod qemu;
 mod redteam;
 mod release;
+mod release_images;
+mod release_sign;
 mod repro;
 mod riscv;
 mod rootfs;
@@ -59,6 +63,7 @@ mod site;
 mod test;
 mod tla;
 mod tuf;
+mod unsafe_code;
 mod updates;
 mod upstream;
 mod userspace;
@@ -705,9 +710,11 @@ and the tutorials, guides, runbooks and error pages, with search.
         "lint" => {
             "Usage: ./ob lint
 
-Checks formatting with rustfmt and runs Clippy on the host tools, the kernel
-(for x86-64, and for AArch64 against the HAL stubs), the kernel libraries
-and the user programs, treating every warning as an error."
+Checks formatting with rustfmt, checks that every crate outside the trusted
+computing base forbids unsafe code in each of its targets (ADR 0730), and
+runs Clippy on the host tools, the kernel (for x86-64, and for AArch64 against
+the HAL stubs), the kernel libraries and the user programs, treating every
+warning as an error."
         }
         "fmt" => {
             "Usage: ./ob fmt
@@ -833,8 +840,11 @@ resolve)."
         }
         "release" => {
             "Usage: ./ob release build [--out <dir>]
+       ./ob release sign <version> [--channel <channel>] [--serial <number>]
+       ./ob release record <version>
+       ./ob release images <version> [--serial <number>]
        ./ob release key yubikey [--serial <number>]
-       ./ob release root
+       ./ob release root [--repo <repository>]
        ./ob release server setup [--dukovo]
        ./ob release channel <repository> (<channel> <version>
                                           | --firmware <version>|none <channel>)
@@ -861,13 +871,52 @@ would make the tree differ from every other machine's. The tree stays in
 out/release-build-tree. SOURCE_DATE_EPOCH is the commit's time unless it is
 set, and the build takes as long as `./ob build`.
 
+`sign` signs this commit's release on a YubiKey (ADRs 0457 and 0778), as
+releases/README.md walks through. It refuses unless the checkout has nothing
+changed and builds <version>, and the commit is on main or a release branch
+with CI passed, a full update matrix run and a reproducible run green on it,
+read with gh. It downloads that run's two builds, runs `build`, and refuses
+unless the three are the same. Then it reads what the update server serves
+into out/release-sign/<version>, adds the release and points <channel> (beta
+by default) at it with the security advisories, shows what it will sign, asks
+for the version to be typed, and signs on the YubiKey with its PIN and a
+touch. Last, it sends the signature to Sigstore's Rekor log and keeps the
+answer beside it; `record` sends it again when the log could not be reached,
+and $DUKOVO_REKOR names another log. `deploy` then sends the repository.
+
+`images` makes the project's install stick and ISO of <version> once it is
+signed and deployed (ADR 0779), as releases/README.md walks through. It
+refuses unless the checkout has nothing changed and builds <version>. It runs
+`build`, reads the release as updates.dukovo.org serves it, from
+releases/metadata/1.root.json, and refuses unless it is the one just built,
+byte for byte. The stick and the ISO trust that root and carry the release as
+served, so a system installed from one takes its updates from the server.
+Then it writes their SHA256SUMS, shows it, asks for the version to be typed,
+signs it on a YubiKey (SHA256SUMS.yubikey-SERIAL.sig, which `openssl dgst
+-sha256 -verify releases/keys/yubikey-SERIAL.pem` checks), and sends the
+signature to the Rekor log, as `sign` does; `record` sends both. All of it is
+left in out/release-images/<version>.
+
 `key yubikey` and `root` are the key ceremony (ADRs 0457 and 0538), as
 releases/README.md says. `key yubikey` adds releases/keys/yubikey-SERIAL.json,
 the P-256 key in slot 95 of the YubiKey plugged in, or of the one --serial
-names, made with ykman. `root` signs root version 1 on both YubiKeys, a PIN
+names, made with ykman, and the key alone in PEM beside it,
+releases/keys/yubikey-SERIAL.pem. `root` signs root version 1 on both YubiKeys, a PIN
 and a touch for each, from the two YubiKeys' keys and the server's online key
 in releases/keys/, and writes releases/metadata/1.root.json; the last line it
-prints is the root's SHA-256. It signs the first root once.
+prints is the root's SHA-256. Once that is there, `root` signs the next root
+(ADR 0780) from the keys releases/keys/ holds then, which is how a lost or
+stolen YubiKey is dropped, a new one or a new online key named, and the root
+signed again each year: it shows what changes and asks for the version to be
+typed, signs on every YubiKey plugged in that either root names (one of the
+root before's, and every one new to the root), and writes
+releases/metadata/N.root.json. It fetches what the server serves into
+out/release-root/N with the source tree's roots, and signs its targets again
+under the new root, for `./ob release deploy out/release-root/N`; while the
+server serves no release, the first that `sign` signs carries the root. With
+--repo, the root goes into that repository, one deployed before such as
+out/release-sign/VERSION, in place of what the server serves: for a new
+server that replaces one broken into.
 
 Deploys the system's releases to the update server (ADR 0467), reached over
 SSH as `$OB_UPDATE_SSH` (default updates.dukovo.org), as `ob catalog` deploys
@@ -926,6 +975,10 @@ origin/main) has a Signed-off-by line certifying the Developer Certificate
 of Origin. A person signs off their own commits; a commit written by a tool,
 such as an AI assistant, needs the sign-off of the person submitting it,
 and a tool's own sign-off does not count. Merge commits are skipped.
+A commit that is already on a shared branch without its sign-off is signed
+off afterwards: a later commit that the same person signed off says, on a
+line of its message, \"I, Name <email>, hereby add my Signed-off-by to this
+commit: <the commit's whole hash>\".
 CI runs this on the commits of every pull request."
         }
         "clean" => {
@@ -1244,6 +1297,7 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
                 disk_check: args.value("--disk-check")?,
                 account: None,
                 lab: None,
+                release: None,
             };
             let profile = args.profile(&ctx.config)?;
             args.finish()?;

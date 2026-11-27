@@ -15,11 +15,15 @@ time = "6m"
 host_needs = ["curl", "scp", "ssh", "openssl"]
 
 [[step]]
-host = "sh {here}/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
-expect = "copied: org.nginx.nginx"
+host = "sh {here}/lab-catalog.sh {machine} {machine-port:22}"
+expect = "copied: the test catalog"
+[[step]]
+run = "sh /users/lab/lab-catalog-add.sh"
+root = true
+expect = "added catalog labtest, which lists"
 # From nothing: a run before may have left it installed.
 [[step]]
-run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle install --for-everyone --yes org.nginx.nginx --from labtest | tail -1'"
 root = true
 expect = "installed org.nginx.nginx"
 [[step]]

@@ -23,9 +23,10 @@
 //! A refusal is one line on the error output, `ADM-NNN: words`, and the
 //! status 125, which no read of the console's ends with.
 
-use std::ffi::{CString, OsString};
+use std::ffi::OsString;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::process::CommandExt;
 
 use serde_json::{Value, json};
 
@@ -126,15 +127,8 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         let failure = Failure::new(Kind::NoProgram, format!("{name}{}", super::errors::NOT_FOUND));
         return Ok(refuse(&failure));
     };
-    let c = |bytes: &[u8]| CString::new(bytes).unwrap_or_default();
-    let path = c(&path);
-    let strings: Vec<CString> = argv.iter().map(|word| c(word.as_bytes())).collect();
-    let mut pointers: Vec<*const libc::c_char> = strings.iter().map(|s| s.as_ptr()).collect();
-    pointers.push(std::ptr::null());
-    // SAFETY: execv takes NUL-terminated strings and a null-ended list,
-    // which live until it returns, if it does.
-    unsafe { libc::execv(path.as_ptr(), pointers.as_ptr()) };
-    let err = io::Error::last_os_error();
+    // The program takes this one's place, and only a failure comes back.
+    let err = util::program(&path, argv.iter().map(String::as_bytes)).exec();
     let code = if err.kind() == io::ErrorKind::NotFound { 127 } else { 126 };
     Err(util::fail_with(code, format!("{}: {}", argv[0], util::strip_os_error(&err))))
 }

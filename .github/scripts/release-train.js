@@ -109,7 +109,8 @@ function checklistItems({ version, branch }) {
   return [
     `Only fixes are merged into \`${branch}\`: each reaches main first and is brought over by the \`backport\` label.`,
     `\`${CI_CHECK}\` is successful on the head of \`${branch}\` (CI runs on each push to it; \`gh workflow run ci.yml --ref ${branch}\` runs it again).`,
-    `The release is in the update repository (\`system-release add\`) and the beta channel offers it: \`./ob release channel ${repository} beta ${version.text}\`, then \`./ob release deploy ${repository}\`.`,
+    `The release is signed on a YubiKey and the beta channel offers it: \`./ob release sign ${version.text}\`, then \`./ob release deploy out/release-sign/${version.text}\`.`,
+    `Its install images are made and their checksums signed, \`./ob release images ${version.text}\`, to publish with the release notes.`,
     'The betas have soaked on the canaries and the canaries are green: `./ob release canaries`.',
     `The security advisories of this release are checked, \`./ob security check\`, and signed with the channel, or alone: \`./ob release advisories ${repository}\`.`,
     'The release notes are written.',

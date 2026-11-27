@@ -53,10 +53,14 @@ installed() {
 # of their live folders stay; authd's retired numbers are never given
 # again (ADR 0220); the logs keep what was said while the bundle was
 # there, the console's journal what changed in the settings (ADR 0516),
-# and the other records of the system change as it runs; and an app's
-# folders in a person's home are no one bundle's. The boot test
-# bundle-leaves-nothing holds the list, with the reason for each.
-outlives='/system/state/bundled/(installed|bound|developer-keys|catalog-bound|previous|held|automatic|defaults|withdrawn|history|catalogs(/.*)?|services)|/system/state/authd/retired|/shared/services|/system/live/services|/system/state/(log|sign-ins|starts|metrics|hardware|reports|crash|timed|timerd|netd|sshd|consoled|admind)(/.*)?|/users/[^/]+/(app-data|app-data/.snapshots|applications|applications/commands)'
+# and the other records of the system change as it runs, as timed's
+# status does once its first look at a time server ends; and an app's
+# folders in a person's home, and a folder of /shared that a service only
+# reads, made empty and the root's at the install, are no one bundle's:
+# only the folder itself, so what is left in it still shows. The boot test
+# bundle-leaves-nothing holds the list, with the reason for each, but for
+# that folder, as its bundle's service reads none.
+outlives='/system/state/bundled/(installed|bound|developer-keys|catalog-bound|previous|held|automatic|defaults|withdrawn|history|catalogs(/.*)?|services)|/system/state/authd/retired|/shared/services|/shared/[^/]+ d 755 0 0|/system/live/services|/system/state/(log|sign-ins|starts|metrics|hardware|reports|crash|timed|timerd|netd|sshd|consoled|admind)(/.*)?|/system/live/timed(/.*)?|/users/[^/]+/(app-data|app-data/.snapshots|applications|applications/commands)'
 
 # What a removal that keeps the data of the bundle `$1` leaves besides:
 # its data folder in /shared/services, and its data in each person's

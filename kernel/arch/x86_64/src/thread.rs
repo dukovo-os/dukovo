@@ -363,7 +363,9 @@ impl Context {
                     cpu::wrmsr(msr::FS_BASE, to.thread_pointer.load(Ordering::Relaxed));
                 }
             }
-            None => AddressSpace::switch_to_kernel(),
+            // A kernel thread keeps the tables loaded: a switch back to
+            // their space, the usual next one, reloads nothing.
+            None => AddressSpace::run_kernel_thread(),
         }
         // SAFETY: both blocks are mapped while their contexts exist, which
         // the references guarantee for the whole switch. `from` is the

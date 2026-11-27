@@ -7,64 +7,21 @@
 //! The times a file was last read and changed in any way are not
 //! compared, as a receive cannot set the second.
 
-use std::ffi::{CString, c_char, c_void};
 use std::fs::{self, File, Metadata};
 use std::io::{self, Read};
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-// The C library's extended attribute calls (sys/xattr.h), which the
-// libc crate does not declare for Radix.
-unsafe extern "C" {
-    fn llistxattr(path: *const c_char, list: *mut c_char, size: usize) -> isize;
-    fn lgetxattr(
-        path: *const c_char,
-        name: *const c_char,
-        value: *mut c_void,
-        size: usize,
-    ) -> isize;
-}
-
-/// Calls `call` with a buffer it fills, growing it until what it gives
-/// fits: the size it says, or ERANGE, asks for more.
-fn sized(mut call: impl FnMut(&mut [u8]) -> isize) -> io::Result<Vec<u8>> {
-    let mut buffer = vec![0u8; 256];
-    loop {
-        let got = call(&mut buffer);
-        if let Ok(got) = usize::try_from(got) {
-            if got <= buffer.len() {
-                buffer.truncate(got);
-                return Ok(buffer);
-            }
-            buffer.resize(got, 0);
-            continue;
-        }
-        let error = io::Error::last_os_error();
-        if error.raw_os_error() != Some(libc::ERANGE) || buffer.len() > 1 << 24 {
-            return Err(error);
-        }
-        let grown = buffer.len() * 4;
-        buffer.resize(grown, 0);
-    }
-}
+use sysapi::fs::Link;
 
 /// The extended attributes of `path`, itself and not what a link names,
 /// by name.
 fn attributes(path: &Path) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
-    let c_path = CString::new(path.as_os_str().as_bytes()).map_err(io::Error::other)?;
-    // SAFETY: the path is a C string and the buffer holds `len` bytes.
-    let names = sized(|buffer| unsafe {
-        llistxattr(c_path.as_ptr(), buffer.as_mut_ptr().cast(), buffer.len())
-    })?;
     let mut found = Vec::new();
-    for name in names.split(|&b| b == 0).filter(|n| !n.is_empty()) {
-        let c_name = CString::new(name).map_err(io::Error::other)?;
-        // SAFETY: both are C strings and the buffer holds `len` bytes.
-        let value = sized(|buffer| unsafe {
-            lgetxattr(c_path.as_ptr(), c_name.as_ptr(), buffer.as_mut_ptr().cast(), buffer.len())
-        })?;
-        found.push((name.to_vec(), value));
+    for name in sysapi::fs::xattr_names(path, Link::Itself)? {
+        let value = sysapi::fs::xattr(path, &name, Link::Itself)?;
+        found.push((name.into_vec(), value));
     }
     found.sort();
     Ok(found)
@@ -184,6 +141,7 @@ mod tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
 
     use super::*;
+    use sysapi::fs::Time;
 
     fn tree(name: &str) -> PathBuf {
         let top =
@@ -207,20 +165,9 @@ mod tests {
                     paths.push(at.join(name));
                 }
             }
-            let Ok(path) = CString::new(copy.join(&at).as_os_str().as_bytes()) else { continue };
-            let times = [
-                libc::timespec { tv_sec: 0, tv_nsec: libc::UTIME_OMIT },
-                libc::timespec { tv_sec: meta.mtime(), tv_nsec: meta.mtime_nsec() },
-            ];
-            // SAFETY: the path is a C string and the times two timespecs.
-            unsafe {
-                libc::utimensat(
-                    libc::AT_FDCWD,
-                    path.as_ptr(),
-                    times.as_ptr(),
-                    libc::AT_SYMLINK_NOFOLLOW,
-                );
-            }
+            let modified =
+                Time::At { seconds: meta.mtime(), nanoseconds: meta.mtime_nsec() as u32 };
+            let _ = sysapi::fs::set_times(&copy.join(&at), Time::Keep, modified, Link::Itself);
         }
     }
 

@@ -7,14 +7,18 @@
 
 about = "nginx from the catalog serves a small file, new connections and a large file to a client on the machine no slower than the same nginx on Linux (ADR 0546)"
 time = "20m"
-host_needs = ["scp"]
+host_needs = ["scp", "ssh"]
 
 [[step]]
-host = "sh {here}/../services/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
-expect = "copied: org.nginx.nginx"
+host = "sh {here}/../services/lab-catalog.sh {machine} {machine-port:22}"
+expect = "copied: the test catalog"
+[[step]]
+run = "sh /users/lab/lab-catalog-add.sh"
+root = true
+expect = "added catalog labtest, which lists"
 # From nothing: a run before may have left it installed.
 [[step]]
-run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle install --for-everyone --yes org.nginx.nginx --from labtest | tail -1'"
 root = true
 expect = "installed org.nginx.nginx"
 # Both systems run at the base clock for the rows (ADR 0557).

@@ -736,7 +736,11 @@ fn ask_service() -> Result<String, Fail> {
             .map(|(name, description)| vec![name.clone(), description.clone()])
             .collect();
         println!();
-        print_table(&rows, &[false, false], util::terminal_size(1).map(|(columns, _)| columns))?;
+        print_table(
+            &rows,
+            &[false, false],
+            util::terminal_size(std::io::stdout()).map(|(columns, _)| columns),
+        )?;
         println!();
     }
     loop {
@@ -836,7 +840,7 @@ fn list(client: &Client) -> Result<i32, Fail> {
     let crashes: Vec<Crash> = client.list(&request("crashes"), client::QUICK)?;
     let waiting: Vec<Waiting> = client.list(&request("queue"), client::QUICK)?;
     let sent: Vec<Status> = client.list(&request("status"), client::ONLINE)?;
-    let width = util::terminal_size(1).map(|(columns, _)| columns);
+    let width = util::terminal_size(std::io::stdout()).map(|(columns, _)| columns);
     println!("Crashes kept");
     table(&crash_rows(&crashes), &[false, false, false, true, false, false], width, "None.")?;
     println!("\nReports waiting to be sent");
@@ -849,7 +853,7 @@ fn list(client: &Client) -> Result<i32, Fail> {
 /// `report crashes`: the crashes kept, as the table of `list` has them.
 fn crashes(client: &Client) -> Result<i32, Fail> {
     let crashes: Vec<Crash> = client.list(&request("crashes"), client::QUICK)?;
-    let width = util::terminal_size(1).map(|(columns, _)| columns);
+    let width = util::terminal_size(std::io::stdout()).map(|(columns, _)| columns);
     table(&crash_rows(&crashes), &[false, false, false, true, false, false], width, "None.")?;
     Ok(0)
 }

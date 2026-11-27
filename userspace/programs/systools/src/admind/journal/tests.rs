@@ -704,9 +704,7 @@ fn a_pipe_is_not_opened() {
     let machine = Machine::new("look-pipe");
     let pipe = machine.path("fifo");
     fs::create_dir_all(Path::new(&pipe).parent().unwrap()).unwrap();
-    let name = std::ffi::CString::new(pipe.clone()).unwrap();
-    // SAFETY: the name is a C string.
-    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o644) }, 0);
+    sysapi::fs::make_fifo(Path::new(&pipe), 0o644).unwrap();
     // Opening it to read would wait for a writer: it is not opened.
     let (seen, stamp) = look(&machine.store, &pipe, 1).unwrap();
     assert_eq!(seen, Seen::Unreadable);

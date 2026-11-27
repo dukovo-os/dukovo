@@ -21,6 +21,7 @@
 //! `./ob test unit`. A service that starts in the wrong order is found
 //! there first; Spark's own side is the `service-graph` boot test.
 
+#![forbid(unsafe_code)]
 #![no_std]
 
 extern crate alloc;

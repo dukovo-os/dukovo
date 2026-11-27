@@ -13,5 +13,10 @@ publish.workspace = true
 [dependencies]
 radix-abi = { path = "../../abi" }
 
+[dev-dependencies]
+# The allocator that counts, for the test of what the layer keeps
+# (tests/kept.rs).
+radix-mm = { path = "../../mm" }
+
 [lints]
 workspace = true

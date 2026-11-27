@@ -18,9 +18,10 @@
 
 mod duke;
 
-use std::ffi::{CStr, OsStr};
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Write};
+use std::os::fd::AsFd;
 use std::path::Path;
 
 use crate::args::{Arg, Args};
@@ -136,7 +137,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         plain_text(&facts, None)
     } else {
         let mode = if truecolor() { Mode::True } else { Mode::Indexed };
-        let columns = util::terminal_size(1).map_or(WIDE, |(columns, _)| columns);
+        let columns = util::terminal_size(std::io::stdout()).map_or(WIDE, |(columns, _)| columns);
         if logo { beside_duke(&facts, mode, columns) } else { plain_text(&facts, Some(mode)) }
     };
     let mut out = io::stdout().lock();
@@ -151,7 +152,7 @@ fn plain() -> bool {
     let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
     set("NO_COLOR")
         || std::env::var_os("TERM").is_some_and(|t| t == "dumb")
-        || !util::is_terminal(1)
+        || !util::is_terminal(std::io::stdout())
 }
 
 /// Whether COLORTERM says the terminal has 24-bit colour.
@@ -219,7 +220,7 @@ fn shell(path: &str) -> Shell {
 /// session's (sshd sets SSH_CONNECTION), one whose emulator says its name
 /// in TERM_PROGRAM, or a console's (consoled sets TERM linux).
 fn terminal() -> Option<Terminal> {
-    let device = [1, 0].into_iter().find_map(terminal_device)?;
+    let device = terminal_device(io::stdout()).or_else(|| terminal_device(io::stdin()))?;
     let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
     let program = if var("SSH_CONNECTION").is_some() {
         Some("sshd".to_string())
@@ -232,15 +233,9 @@ fn terminal() -> Option<Terminal> {
 }
 
 /// The terminal on `fd`, as `pts/0`.
-fn terminal_device(fd: i32) -> Option<String> {
-    // SAFETY: ttyname returns a C string the C library keeps, or null.
-    let name = unsafe { libc::ttyname(fd) };
-    if name.is_null() {
-        return None;
-    }
-    // SAFETY: a non-null result is a C string.
-    let name = unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned();
-    Some(util::terminal_name(&name).to_string())
+fn terminal_device(fd: impl AsFd) -> Option<String> {
+    let name = sysapi::terminal::path(fd).ok()?;
+    Some(util::terminal_name(&name.to_string_lossy()).to_string())
 }
 
 fn cpu() -> Option<Cpu> {

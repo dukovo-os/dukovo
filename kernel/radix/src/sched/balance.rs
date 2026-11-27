@@ -14,12 +14,118 @@
 //! often; an idle CPU tries every level before it sleeps. Threads whose
 //! caches are probably still warm are left where they are, unless
 //! attempts at that level have failed several times in a row.
+//!
+//! On a processor whose cores differ in speed, as Intel's performance and
+//! efficient cores do (ADR 0740), each CPU has a rank ([`rank_cores`]):
+//! a performance core's first hardware thread, then an efficient core,
+//! then a performance core's other threads, which share their core's
+//! execution units with a first thread that is busy whenever they are
+//! chosen after it. A waking thread goes to the fastest idle CPU it may
+//! use (`radix_sched::Topology::select_cpu`), and a thread that has run
+//! alone on a CPU for [`MOVE_UP_NS`] moves to a faster idle CPU at its
+//! next switch ([`move_up`]): balancing alone never moves a thread that
+//! is alone on its CPU. Linux places threads on these processors much
+//! the same way, from the ranks Intel's ITMT gives its CPUs. The kernel
+//! flag `hybrid=off` leaves the ranks unset, and the CPUs placed alike.
 
 use core::sync::atomic::Ordering;
 
+use radix_hal::{CoreKind, Smp};
+use radix_klog::info;
 use radix_sched::{Level, interval_ticks};
 
-use super::{CPUS, LiveLoads, TOPOLOGY, adopt};
+use super::{CPUS, LiveLoads, TOPOLOGY, ThreadRef, adopt, borrow, online};
+use crate::Arch;
+
+/// The rank of a performance core's first hardware thread, the fastest.
+pub(super) const FASTEST: u8 = 3;
+/// The rank of an efficient core.
+const EFFICIENT: u8 = 2;
+/// The rank of a performance core's other hardware threads.
+const PERFORMANCE_SIBLING: u8 = 1;
+
+/// How long a thread runs alone on a slower CPU before it moves to a
+/// faster idle one, checked at each tick. A thread that has run for less
+/// was placed as it woke, against the CPUs idle then, and may block again
+/// before a move pays for the caches it leaves; one that has run this long
+/// is work that a faster core finishes sooner.
+pub(super) const MOVE_UP_NS: u64 = 4_000_000;
+
+/// A [`CoreKind`] as a byte, for a CPU's slot.
+pub(super) const fn kind_code(kind: CoreKind) -> u8 {
+    match kind {
+        CoreKind::Only => 0,
+        CoreKind::Performance => 1,
+        CoreKind::Efficient => 2,
+    }
+}
+
+/// Ranks the online CPUs by the kinds of core they said they are, if
+/// they are of more than one kind and `off` (`hybrid=off`) is not set.
+/// Call once, when the CPUs are all up.
+pub fn rank_cores(off: bool) {
+    let cpus = online();
+    let count = |kind: CoreKind| {
+        cpus.iter()
+            .filter(|&cpu| CPUS.get(cpu).kind.load(Ordering::Relaxed) == kind_code(kind))
+            .count()
+    };
+    let (performance, efficient) = (count(CoreKind::Performance), count(CoreKind::Efficient));
+    let Some(topology) = TOPOLOGY.get() else { return };
+    if performance == 0 || efficient == 0 {
+        return;
+    }
+    if off {
+        info!(
+            "Scheduler: {performance} CPUs on performance cores and {efficient} on efficient              cores, placed alike (hybrid=off)"
+        );
+        return;
+    }
+    for cpu in cpus.iter() {
+        let slot = CPUS.get(cpu);
+        let first = Arch::cpu_place(cpu).is_none_or(|place| place.thread == 0);
+        let rank = match slot.kind.load(Ordering::Relaxed) {
+            code if code == kind_code(CoreKind::Performance) && first => FASTEST,
+            code if code == kind_code(CoreKind::Performance) => PERFORMANCE_SIBLING,
+            _ => EFFICIENT,
+        };
+        slot.rank.store(rank, Ordering::Relaxed);
+    }
+    topology.set_ranked(true);
+    info!(
+        "Scheduler: {performance} CPUs on performance cores and {efficient} on efficient cores;          threads go to idle performance cores first"
+    );
+}
+
+/// From the timer tick on CPU `cpu`, busy, with interrupts off: when the
+/// thread running there is alone and has run for [`MOVE_UP_NS`], and a
+/// faster CPU it may use is idle, asks for a switch that moves it there.
+pub(super) fn move_up(cpu: usize, now: u64) {
+    let Some(topology) = TOPOLOGY.get().filter(|topology| topology.is_ranked()) else { return };
+    let slot = CPUS.get(cpu);
+    if slot.rank.load(Ordering::Relaxed) == FASTEST || slot.running.load(Ordering::Relaxed) != 1 {
+        return;
+    }
+    let Some(running) = borrow(slot.current.load(Ordering::Relaxed)) else { return };
+    let since = running.stats.last_ran_ns.load(Ordering::Relaxed);
+    if now.saturating_sub(since) < MOVE_UP_NS {
+        return;
+    }
+    if let Some(to) = topology.faster_idle(cpu, &running.allowed(), &LiveLoads) {
+        slot.move_to.store(to + 1, Ordering::Relaxed);
+        slot.resched.request();
+    }
+}
+
+/// Whether `thread`, running alone on this CPU, may still move to `to`,
+/// which [`move_up`] chose: `to` runs threads, is idle, and the thread
+/// may use it.
+pub(super) fn may_move_up(thread: &ThreadRef, to: usize) -> bool {
+    let target = CPUS.get(to);
+    thread.allowed().contains(to)
+        && target.online.load(Ordering::Relaxed)
+        && target.running.load(Ordering::Relaxed) == 0
+}
 
 /// Failed attempts at a level after which a cache-hot thread may move.
 const FORCE_AFTER: u32 = 4;

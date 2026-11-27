@@ -169,6 +169,8 @@ pub mod aux {
     pub const AT_FLAGS: u64 = 8;
     /// The program's entry point.
     pub const AT_ENTRY: u64 = 9;
+    /// Nothing: an entry to pass over.
+    pub const AT_IGNORE: u64 = 1;
     /// User and group numbers (0 until Phase 13 brings users).
     pub const AT_UID: u64 = 11;
     /// See [`AT_UID`].
@@ -189,6 +191,8 @@ pub mod aux {
     pub const AT_RANDOM: u64 = 25;
     /// The path the program was run as.
     pub const AT_EXECFN: u64 = 31;
+    /// Where the vDSO's ELF header is (ADR 0616).
+    pub const AT_SYSINFO_EHDR: u64 = 33;
     /// Radix's own (Phase 8): the working directory, a string the C
     /// library keeps, since the kernel keeps none.
     pub const AT_RADIX_CWD: u64 = radix_abi::process::AUX_CWD;

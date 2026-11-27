@@ -14,13 +14,13 @@
 
 use std::fs::File;
 use std::io::{self, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::AsFd;
 
 use super::FOLDER_MAX;
 use super::conf::Kind;
 use super::host::Paths;
 use super::plan::{self, SITES};
-use crate::bundles::folder::{Dir, check};
+use crate::bundles::folder::Dir;
 use crate::util::strip_os_error;
 
 /// The folder the sites' folders are in.
@@ -91,15 +91,13 @@ pub struct Seen {
 
 /// The user who runs this, whose folders `website` trusts above a site's.
 fn own() -> u32 {
-    // SAFETY: geteuid has no failure and touches no memory.
-    unsafe { libc::geteuid() }
+    sysapi::process::euid()
 }
 
 /// Who the folders above a site's and the check files belong to: root, as
 /// `website` runs as root.
 fn root_owner() -> Owner {
-    // SAFETY: getegid has no failure and touches no memory.
-    Owner { uid: own(), gid: unsafe { libc::getegid() } }
+    Owner { uid: own(), gid: sysapi::process::egid() }
 }
 
 /// Whether `st` is a folder.
@@ -197,15 +195,13 @@ pub enum Entry {
 }
 
 /// Changes the owner of what `fd` holds.
-fn chown(fd: &OwnedFd, owner: Owner) -> io::Result<()> {
-    // SAFETY: fchown takes a descriptor we hold and two numbers.
-    check(unsafe { libc::fchown(fd.as_raw_fd(), owner.uid, owner.gid) })
+fn chown(fd: impl AsFd, owner: Owner) -> io::Result<()> {
+    std::os::unix::fs::fchown(fd, Some(owner.uid), Some(owner.gid))
 }
 
 /// Changes the mode of what `fd` holds, whatever the mask says.
-fn chmod(fd: &OwnedFd, mode: libc::mode_t) -> io::Result<()> {
-    // SAFETY: fchmod takes a descriptor we hold and a mode.
-    check(unsafe { libc::fchmod(fd.as_raw_fd(), mode) })
+fn chmod(fd: impl AsFd, mode: libc::mode_t) -> io::Result<()> {
+    sysapi::fs::set_mode(fd, mode)
 }
 
 /// Opens the folder `name` of `parent`, making it first, `owner`'s with
@@ -227,8 +223,8 @@ fn open_or_make(
             parent.make(name, 0o755).map_err(words)?;
             made.entries.push(Entry::Folder(view.to_string()));
             let dir = parent.dir_at(name).map_err(words)?;
-            chown(&dir.0, owner).map_err(words)?;
-            chmod(&dir.0, 0o755).map_err(words)?;
+            chown(&dir, owner).map_err(words)?;
+            chmod(&dir, 0o755).map_err(words)?;
             Ok(dir)
         }
     }
@@ -338,9 +334,7 @@ pub fn undo(paths: &Paths, made: &Made) -> Vec<String> {
 
 /// Removes the empty folder `name` of `parent`.
 fn rmdir(parent: &Dir, name: &str) -> io::Result<()> {
-    let c = crate::bundles::folder::c_name(name)?;
-    // SAFETY: the name is a C string.
-    check(unsafe { libc::unlinkat(parent.0.as_raw_fd(), c.as_ptr(), libc::AT_REMOVEDIR) })
+    parent.remove_dir(name)
 }
 
 /// Removes the site's folder `folder`, and all that is in it.
@@ -440,8 +434,7 @@ mod tests {
     }
 
     fn me() -> Owner {
-        // SAFETY: both calls have no failure and touch no memory.
-        Owner { uid: unsafe { libc::geteuid() }, gid: unsafe { libc::getegid() } }
+        Owner { uid: sysapi::process::euid(), gid: sysapi::process::egid() }
     }
 
     fn make_of<'a>(folder: &'a str, kind: Kind) -> Make<'a> {

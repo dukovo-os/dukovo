@@ -24,7 +24,7 @@
 about = "changes bisect finds the change that broke a start: an update, a boot option and two apps came between a good start and a failed one; it restarts the machine by itself, tries each half, and names the failing app confirmed after two tries, then, with the failure moved to the boot option and a power cut during the first try, the option by elimination, which --confirm confirms; the slot state is as it was after each (ADR 0475)"
 time = "60m"
 fresh = true
-host_needs = ["scp"]
+host_needs = ["scp", "ssh"]
 
 [[step]]
 host = "sh {here}/copy-update.sh bisect {machine} {machine-port:22}"
@@ -33,8 +33,8 @@ expect = "copied: bisect"
 host = "sh {here}/copy-bundle.sh io.valkey.valkey {machine} {machine-port:22}"
 expect = "copied: io.valkey.valkey"
 [[step]]
-host = "sh {here}/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
-expect = "copied: org.nginx.nginx"
+host = "sh {here}/../services/lab-catalog.sh {machine} {machine-port:22}"
+expect = "copied: the test catalog"
 
 # An update proves itself after 10 seconds here, and Valkey, once it is
 # there, is an essential service.
@@ -78,10 +78,15 @@ serial = "is seen through"
 [[step]]
 wait = "ready"
 
-# The apps, for everyone and enabled. Valkey's first start copies its
-# settings into its data folder; one it does not know there ends it.
+# The apps, for everyone and enabled: Valkey from its file and nginx from
+# the lab's catalog, added first. Valkey's first start copies its settings
+# into its data folder; one it does not know there ends it.
 [[step]]
-run = "sh -c 'bundle install --for-everyone --yes /users/lab/io.valkey.valkey.dkv | tail -1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+run = "sh /users/lab/lab-catalog-add.sh"
+root = true
+expect = "added catalog labtest, which lists"
+[[step]]
+run = "sh -c 'bundle install --for-everyone --yes /users/lab/io.valkey.valkey.dkv | tail -1; bundle install --for-everyone --yes org.nginx.nginx --from labtest | tail -1'"
 root = true
 expect = ["installed io.valkey.valkey", "installed org.nginx.nginx"]
 [[step]]

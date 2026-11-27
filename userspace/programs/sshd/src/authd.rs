@@ -11,20 +11,22 @@
 
 use std::io;
 use std::net::Shutdown;
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{BorrowedFd, OwnedFd};
 use std::time::Duration;
 
 use accounts::request::{Answer, Request};
+use sysapi::net;
 use tokio::io::{AsyncBufReadExt, BufReader, Interest};
 use tokio::net::UnixStream;
-
-use crate::sys;
 
 /// How long authd may take to answer.
 const ANSWER_TIME: Duration = Duration::from_secs(90);
 
 /// The longest line authd writes, past which it is not read.
 const LINE_MAX: u64 = 4096;
+
+/// The most descriptors kept from one answer: more are closed.
+const DESCRIPTORS_MAX: usize = 4;
 
 /// A connection to authd, its request sent.
 pub struct Asked(BufReader<UnixStream>);
@@ -48,7 +50,7 @@ impl Asked {
 /// runtime.
 pub fn tell(request: &Request) {
     let told = std::os::unix::net::UnixStream::connect(accounts::SOCKET).and_then(|stream| {
-        sys::send_with_fds(&stream, &request.encode(), &[])?;
+        net::send_with_fds(&stream, &request.encode(), &[])?;
         stream.shutdown(Shutdown::Write)?;
         // Radix's sockets take no SO_RCVTIMEO: the answer is waited for
         // without blocking.
@@ -78,10 +80,10 @@ const TELL_TIME: Duration = Duration::from_secs(5);
 
 /// Sends authd `request`, with the descriptors `fds`: its answer, and
 /// the connection, on which a session's end comes later.
-pub async fn ask(request: &Request, fds: &[RawFd]) -> Result<(Answer, Asked), String> {
+pub async fn ask(request: &Request, fds: &[BorrowedFd<'_>]) -> Result<(Answer, Asked), String> {
     let unreachable = |err: io::Error| format!("cannot ask authd at {}: {err}", accounts::SOCKET);
     let stream = std::os::unix::net::UnixStream::connect(accounts::SOCKET).map_err(unreachable)?;
-    sys::send_with_fds(&stream, &request.encode(), fds).map_err(unreachable)?;
+    net::send_with_fds(&stream, &request.encode(), fds).map_err(unreachable)?;
     stream.shutdown(Shutdown::Write).map_err(unreachable)?;
     stream.set_nonblocking(true).map_err(unreachable)?;
     let mut asked = Asked(BufReader::new(UnixStream::from_std(stream).map_err(unreachable)?));
@@ -100,7 +102,7 @@ pub async fn ask(request: &Request, fds: &[RawFd]) -> Result<(Answer, Asked), St
 pub async fn ask_for_fds(request: &Request) -> Result<(Answer, Vec<OwnedFd>), String> {
     let unreachable = |err: io::Error| format!("cannot ask authd at {}: {err}", accounts::SOCKET);
     let stream = std::os::unix::net::UnixStream::connect(accounts::SOCKET).map_err(unreachable)?;
-    sys::send_with_fds(&stream, &request.encode(), &[]).map_err(unreachable)?;
+    net::send_with_fds(&stream, &request.encode(), &[]).map_err(unreachable)?;
     stream.shutdown(Shutdown::Write).map_err(unreachable)?;
     stream.set_nonblocking(true).map_err(unreachable)?;
     let stream = UnixStream::from_std(stream).map_err(unreachable)?;
@@ -109,8 +111,8 @@ pub async fn ask_for_fds(request: &Request) -> Result<(Answer, Vec<OwnedFd>), St
         let mut buffer = [0u8; 512];
         while !line.contains(&b'\n') && (line.len() as u64) < LINE_MAX {
             stream.readable().await?;
-            let fd = stream.as_raw_fd();
-            match stream.try_io(Interest::READABLE, || sys::receive(fd, &mut buffer, &mut fds)) {
+            let receive = || net::receive_with_fds(&stream, &mut buffer, &mut fds, DESCRIPTORS_MAX);
+            match stream.try_io(Interest::READABLE, receive) {
                 Ok(0) => break,
                 Ok(n) => line.extend_from_slice(&buffer[..n]),
                 Err(err)

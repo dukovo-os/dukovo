@@ -8,17 +8,21 @@
 
 about = "PHP-FPM behind nginx serves a page through FastCGI, and PHP's command runs a loop of its own, no slower than the same PHP on Linux (ADR 0546)"
 time = "20m"
-host_needs = ["scp"]
+host_needs = ["scp", "ssh"]
 
 [[step]]
-host = "sh {here}/../services/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
-expect = "copied: org.nginx.nginx"
+host = "sh {here}/../services/lab-catalog.sh {machine} {machine-port:22}"
+expect = "copied: the test catalog"
+[[step]]
+run = "sh /users/lab/lab-catalog-add.sh"
+root = true
+expect = "added catalog labtest, which lists"
 [[step]]
 host = "sh {here}/../services/copy-bundle.sh net.php.php {machine} {machine-port:22}"
 expect = "copied: net.php.php"
 # From nothing: a run before may have left it installed.
 [[step]]
-run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle install --for-everyone --yes org.nginx.nginx --from labtest | tail -1'"
 root = true
 expect = "installed org.nginx.nginx"
 [[step]]

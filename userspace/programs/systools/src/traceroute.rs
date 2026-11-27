@@ -25,15 +25,16 @@
 //! the host; traceroute6 is traceroute -6.
 
 use std::collections::HashMap;
-use std::ffi::CStr;
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::mem;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::AsFd;
 use std::time::{Duration, Instant};
 
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use sysapi::net;
+use sysapi::poll::{self, PollFd};
 
 use crate::args::{Arg, Args};
 use crate::util::{self, Fail, fail_with, usage};
@@ -467,84 +468,27 @@ pub struct Received {
     pub heard: Option<Heard>,
 }
 
-/// Reads the next datagram from `fd`, or with `errors` its next error
+/// Reads the next datagram from `socket`, or with `errors` its next error
 /// (MSG_ERRQUEUE), without waiting.
-pub fn receive(fd: RawFd, errors: bool) -> io::Result<Received> {
+pub fn receive(socket: impl AsFd, errors: bool) -> io::Result<Received> {
     let mut data = vec![0u8; PACKET_MAX + 512];
-    // SAFETY: all zeros is a valid sockaddr_storage.
-    let mut name: libc::sockaddr_storage = unsafe { mem::zeroed() };
-    let mut control = [0u64; 64];
-    let mut iov = libc::iovec { iov_base: data.as_mut_ptr().cast(), iov_len: data.len() };
-    // SAFETY: all zeros is a valid msghdr: null pointers and lengths.
-    let mut message: libc::msghdr = unsafe { mem::zeroed() };
-    message.msg_name = (&raw mut name).cast();
-    message.msg_namelen = mem::size_of_val(&name) as libc::socklen_t;
-    message.msg_iov = &raw mut iov;
-    message.msg_iovlen = 1;
-    message.msg_control = control.as_mut_ptr().cast();
-    message.msg_controllen = mem::size_of_val(&control) as _;
-    let flags = libc::MSG_DONTWAIT | if errors { libc::MSG_ERRQUEUE } else { 0 };
-    // SAFETY: the message's buffers are this function's, of the sizes it
-    // gives.
-    let length = unsafe { libc::recvmsg(fd, &raw mut message, flags) };
-    if length < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    data.truncate(length as usize);
+    let message = net::receive_message(socket, &mut data, net::ReceiveFlags { now: true, errors })?;
+    data.truncate(message.length);
     let mut heard_error = None;
-    // SAFETY: the kernel filled `control` with whole control messages, as
-    // msg_controllen says, which CMSG_FIRSTHDR and CMSG_NXTHDR walk.
-    unsafe {
-        let mut cmsg = libc::CMSG_FIRSTHDR(&raw const message);
-        while !cmsg.is_null() {
-            let (level, kind) = ((*cmsg).cmsg_level, (*cmsg).cmsg_type);
-            if (level == libc::SOL_IP && kind == libc::IP_RECVERR)
-                || (level == libc::SOL_IPV6 && kind == libc::IPV6_RECVERR)
-            {
-                let start = libc::CMSG_DATA(cmsg);
-                let header = start as usize - cmsg as usize;
-                let length = ((*cmsg).cmsg_len as usize).saturating_sub(header);
-                heard_error = heard(std::slice::from_raw_parts(start, length));
-            }
-            cmsg = libc::CMSG_NXTHDR(&raw const message, cmsg);
+    for control in &message.control {
+        let recverr = (control.level == libc::SOL_IP && control.kind == libc::IP_RECVERR)
+            || (control.level == libc::SOL_IPV6 && control.kind == libc::IPV6_RECVERR);
+        if recverr {
+            heard_error = heard(&control.data);
         }
     }
-    // SAFETY: `name` is a sockaddr_storage the kernel wrote
-    // msg_namelen bytes of.
-    let bytes = unsafe {
-        std::slice::from_raw_parts((&raw const name).cast::<u8>(), message.msg_namelen as usize)
-    };
-    Ok(Received { data, name: address_in(bytes), heard: heard_error })
+    let name = message.from.map(|from| from.ip().to_canonical());
+    Ok(Received { data, name, heard: heard_error })
 }
 
 /// Sets an int option of `socket`.
-pub fn set_int(socket: &Socket, level: i32, name: i32, value: i32) -> io::Result<()> {
-    // SAFETY: an int option, of an int's size.
-    let result = unsafe {
-        libc::setsockopt(
-            socket.as_raw_fd(),
-            level,
-            name,
-            (&raw const value).cast(),
-            mem::size_of::<i32>() as libc::socklen_t,
-        )
-    };
-    if result < 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
-}
-
-/// Binds `socket` to interface `name` (SO_BINDTODEVICE).
-fn bind_device(socket: &Socket, name: &str) -> io::Result<()> {
-    // SAFETY: a name of `name.len()` bytes.
-    let result = unsafe {
-        libc::setsockopt(
-            socket.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_BINDTODEVICE,
-            name.as_ptr().cast(),
-            name.len() as libc::socklen_t,
-        )
-    };
-    if result < 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+pub fn set_int(socket: impl AsFd, level: i32, name: i32, value: i32) -> io::Result<()> {
+    net::set_int_option(socket, level, name, value)
 }
 
 /// Whether `error` is one an ICMP error left for the socket's next call,
@@ -604,7 +548,8 @@ impl Trace {
         };
         set_int(&socket, level, option, 1).map_err(|e| broken("setsockopt IP_RECVERR", e))?;
         if let Some(interface) = &self.options.interface {
-            bind_device(&socket, interface).map_err(|e| broken("setsockopt SO_BINDTODEVICE", e))?;
+            net::bind_to_device(&socket, interface)
+                .map_err(|e| broken("setsockopt SO_BINDTODEVICE", e))?;
         }
         if let Some(source) = self.options.source {
             socket
@@ -698,16 +643,19 @@ impl Trace {
 
     /// Reads what `-I`'s socket has: errors first, whose taking leaves
     /// the next for the socket's next call, then echo replies.
-    fn read_icmp(&mut self, fd: RawFd) {
+    fn read_icmp(&mut self) {
+        let Some(Ok(socket)) = self.icmp.as_ref().map(Socket::try_clone) else {
+            return;
+        };
         let reply = if self.v6 { ECHO_REPLY_V6 } else { ECHO_REPLY };
         for _ in 0..256 {
-            while let Ok(received) = receive(fd, true) {
+            while let Ok(received) = receive(&socket, true) {
                 let when = Instant::now();
                 if let Some(at) = echo_probe(&received.data) {
                     self.answer(at, &received, when);
                 }
             }
-            match receive(fd, false) {
+            match receive(&socket, false) {
                 Ok(received) => {
                     let when = Instant::now();
                     if received.data.first() == Some(&reply)
@@ -727,38 +675,40 @@ impl Trace {
     /// Waits until `until` for answers to the probes from `start` to
     /// `end`, and takes those that come.
     fn wait(&mut self, start: usize, end: usize, until: Instant) -> Result<(), Fail> {
-        let mut fds = Vec::new();
         let mut owners = Vec::new();
+        let mut fds = Vec::new();
         if let Some(socket) = &self.icmp {
-            fds.push(libc::pollfd { fd: socket.as_raw_fd(), events: libc::POLLIN, revents: 0 });
+            fds.push(PollFd::new(socket.as_fd(), libc::POLLIN));
             owners.push(None);
         }
         for (at, probe) in self.probes.iter().enumerate().take(end).skip(start) {
             if let (false, Some(socket)) = (probe.done, &probe.socket) {
-                fds.push(libc::pollfd { fd: socket.as_raw_fd(), events: libc::POLLIN, revents: 0 });
+                fds.push(PollFd::new(socket.as_fd(), libc::POLLIN));
                 owners.push(Some(at));
             }
         }
         let wait = until.saturating_duration_since(Instant::now());
-        let ms = wait.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32;
-        // SAFETY: `fds` is a vector of pollfds of its length.
-        let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, ms) };
-        if ready < 0 {
-            let e = io::Error::last_os_error();
+        if let Err(e) = poll::poll(&mut fds, Some(wait)) {
             if e.kind() == io::ErrorKind::Interrupted {
                 return Ok(());
             }
             return Err(fail_with(1, format!("poll: {}", util::strip_os_error(&e))));
         }
-        for (entry, owner) in fds.iter().zip(owners) {
-            if entry.revents == 0 {
+        let events: Vec<_> = fds.iter().map(PollFd::revents).collect();
+        drop(fds);
+        for (revents, owner) in events.into_iter().zip(owners) {
+            if revents == 0 {
                 continue;
             }
             match owner {
-                None => self.read_icmp(entry.fd),
+                None => self.read_icmp(),
                 Some(at) => {
-                    let errors = entry.revents & libc::POLLERR != 0;
-                    if let Ok(received) = receive(entry.fd, errors) {
+                    let errors = revents & libc::POLLERR != 0;
+                    let Some(Ok(socket)) = self.probes[at].socket.as_ref().map(Socket::try_clone)
+                    else {
+                        continue;
+                    };
+                    if let Ok(received) = receive(&socket, errors) {
                         self.answer(at, &received, Instant::now());
                     }
                 }
@@ -856,26 +806,7 @@ impl Trace {
 
 /// The name of `address`, or its number if it has none.
 fn reverse(address: IpAddr) -> String {
-    let name = SockAddr::from(SocketAddr::new(address, 0));
-    let mut host = [0 as libc::c_char; 1025];
-    // SAFETY: the address is a sockaddr of its length; the host buffer is
-    // of the length given, and no service is asked for.
-    let result = unsafe {
-        libc::getnameinfo(
-            name.as_ptr().cast(),
-            name.len(),
-            host.as_mut_ptr(),
-            host.len() as libc::socklen_t,
-            std::ptr::null_mut(),
-            0,
-            0,
-        )
-    };
-    if result != 0 {
-        return address.to_string();
-    }
-    // SAFETY: getnameinfo wrote a NUL-terminated name.
-    unsafe { CStr::from_ptr(host.as_ptr()) }.to_string_lossy().into_owned()
+    net::name_of(address)
 }
 
 /// traceroute(8).

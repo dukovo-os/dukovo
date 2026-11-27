@@ -46,7 +46,7 @@ The same from a terminal, a command at a time:
 ```
 
 `./ob lab run` and `./ob lab ui` build the lab image,
-`out/dukovo-0.17.0-x86_64-lab.img`, first; `--no-build` tests the one
+`out/dukovo-1.0.0-alpha.1-x86_64-lab.img`, first; `--no-build` tests the one
 already there. The runner page picks machines and tests, runs them,
 shows each run as it goes and what failed, and lists past runs; each of
 its buttons is a `dukovo-lab` command, which it shows. After a rebuild,
@@ -278,7 +278,8 @@ The service bundles' tests install bundles of the catalog that `./ob
 lab` packs from the same tree, and names to the lab in
 `DUKOVO_LAB_BUNDLES`. A host step copies one onto the machine over SSH
 (`lab/tests/services/copy-bundle.sh`), and the test installs it for
-everyone: `services/nginx` has nginx serve the lab PC over HTTP and
+everyone; nginx and Python come from the lab's catalog instead, as the
+next paragraph says. `services/nginx` has nginx serve the lab PC over HTTP and
 HTTPS, and reload its settings while the lab PC keeps requests coming,
 `services/valkey` has the lab PC store 40,000 keys in Valkey, with
 a client of its own in Python, and find them all after a restart, and
@@ -301,17 +302,20 @@ which `./ob lab` names, with the other ports' such files, in
 `DUKOVO_LAB_PORTS` (the folder of the ports' builds, `out/ports`) and
 `lab/tests/services/copy-port-file.sh` copies over. From the nginx and
 Python bundles `./ob lab` also signs a catalog with throwaway keys, in
-`out/lab-catalog`, which it names in `DUKOVO_LAB_CATALOG` for the web
-console's test of adding an app (`lab/tests/web-console/add-app-catalog.sh`
-copies it over). `web-console/apps` and `web-console/ansible` install
-nginx and Python from that catalog as well, by the name `labtest`: an
-app installed from a catalog stays bound to it after it is removed (ADR
-0383), so a test of the same boot that installed one from a file would be
-refused. `bundles/every-catalog-app` reads the catalogs the system has,
-which are on the internet, and is skipped on a machine with none, as the
-real machines on the lab network have; it leaves out the commands that
-need the grant "runs with your access", which no console in a test can
-give. With an image given by `--image`, `./ob lab` packs no
+`out/lab-catalog`, which it names in `DUKOVO_LAB_CATALOG`, and every test
+that installs nginx or Python installs them from it, by the name
+`labtest` (`lab/tests/services/lab-catalog.sh` copies it over and
+`lab-catalog-add.sh` adds it): an app installed from a catalog stays
+bound to it after it is removed (ADR 0383), so a test of the same boot
+that installed one from a file would be refused. The lab image has
+Dukovo's own catalog turned off, so that a machine that reaches the
+internet, as QEMU's does, is as the real machines on the lab network,
+which do not: a catalog that vouches for an app's publisher refuses any
+other build of the app (ADR 0592), and what Dukovo's catalog lists never
+decides a test. `bundles/every-catalog-app` turns it on again, on a boot
+of its own (`own_boot`), installs each bundle it lists, and is skipped on
+a machine with no internet; it leaves out the commands that need the
+grant "runs with your access", which no console in a test can give. With an image given by `--image`, `./ob lab` packs no
 bundles but names the ones this tree packed already, if any. Without the
 bundles or the ports' builds those tests are skipped too.
 
@@ -394,6 +398,10 @@ bundles, puts the machine in the benchmark profile, and runs
 one worker of the server on the machine, drives it itself over the loopback
 or a Unix socket with its data in `/tmp`, and prints each row after a
 warm-up pass and three measured passes, of which the lab keeps the fastest.
+It measures the clock, `cpu_cycle`, before the rows and again after them,
+each time as the fastest of ten slices of about 3 ms, so that other work
+that takes the CPU for a moment does not read as a lower clock; the lab
+keeps the faster of the two.
 Each measured pass is followed by a `BENCHCOUNT` line with the machine's
 context switches and CPU time (user, system and idle, over all CPUs) during
 the pass, and on Dukovo its IPIs, halts and timer writes, preemptions

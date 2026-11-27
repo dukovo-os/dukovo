@@ -10,7 +10,8 @@ import test, { afterEach, beforeEach } from 'node:test';
 
 import { ApiError } from '../api.js';
 import {
-  about, asked, broken, clean, devices, diskHealth, inventory, last, memtest, NOW, screens, sensors, show, skipped, startTest, storage, task,
+  about, asked, broken, clean, devices, diskHealth, inventory, last, memtest, NOW, power, screens, sensors, show, skipped,
+  startTest, storage, task, ups,
 } from './hardware-fixtures.mjs';
 import {
   buttonOf, openHardware, refusal, settle, useStore,
@@ -602,7 +603,7 @@ test('Temperatures and fans is a table of the processor, the disks and the zones
 test('the cards come in the order of the phone, with the temperatures, the devices, the screens and the restart across both columns', async (context) => {
   const world = await openHardware(context);
   const cards = world.view.main.querySelector('.hw').children.filter((one) => one.tag === 'section');
-  assert.deepEqual(cards.map((one) => one.id), ['machine', 'check', 'temps', 'disks', 'memory', 'devices', 'screens', 'power']);
+  assert.deepEqual(cards.map((one) => one.id), ['machine', 'check', 'temps', 'supplies', 'disks', 'memory', 'devices', 'screens', 'power']);
   assert.deepEqual(cards.filter((one) => one.classes.has('hw-wide')).map((one) => one.id), ['temps', 'devices', 'screens', 'power']);
 });
 
@@ -884,6 +885,43 @@ test('a machine whose list is empty says so', async (context) => {
   await world.press(world.card('devices'), 'Show the devices');
   assert.match(text(world.card('devices')), /The system lists no device\./);
   assert.equal(world.card('devices').querySelectorAll('table').length, 0);
+});
+
+test('Battery and UPS is there only with a UPS or a battery, and says the charge, how long it lasts and when the machine shuts down', async (context) => {
+  const none = await openHardware(context);
+  assert.equal(none.card('supplies').hidden, true, 'a machine with an adapter alone has no card');
+  const world = await openHardware(context, { world: { reads: { '/api/1/hardware/power': power([ups()]) } } });
+  const card = world.card('supplies');
+  assert.equal(card.hidden, false);
+  assert.match(text(card), /Battery and UPS ?On mains/);
+  assert.match(text(card), /UPS · CP1500PFCLCD by CPS ups0 On mains/);
+  assert.match(text(card), /On the mains, charging its battery\./);
+  assert.match(text(card), /Charge ?87%/);
+  assert.match(text(card), /About 25 min at the load now/);
+  assert.match(text(card), /35% of what the UPS gives/);
+  assert.match(text(card), /On its battery, this machine shuts down cleanly at 10% or 2 min left\./);
+  assert.equal(card.querySelector('.hw-charge').getAttribute('aria-label'), 'Charged 87%');
+  assert.equal(card.querySelector('.hw-charge').style.properties.get('--v'), '87');
+  assert.ok(!text(card).includes('AC'), 'the adapter is not listed');
+});
+
+test('a UPS on its battery is a warning, low a failure, and one whose battery should be replaced says so', async (context) => {
+  const world = await openHardware(context, { world: { reads: { '/api/1/hardware/power': power([ups({ online: false, status: 'Discharging', percent: 40 })]) } } });
+  assert.match(text(world.card('supplies')), /On battery/);
+  assert.match(text(world.card('supplies')), /The mains is gone: the UPS runs this machine on its battery\./);
+  assert.ok(world.card('supplies').querySelector('.hw-charge.warn'));
+  world.answers['/api/1/hardware/power'] = power([ups({ online: false, status: 'Discharging', percent: 9, replace: true })]);
+  await world.tick(60_000);
+  assert.match(text(world.card('supplies')), /Battery low/);
+  assert.match(text(world.card('supplies')), /The UPS says its battery should be replaced \(HW-142\)\./);
+  world.answers['/api/1/hardware/power'] = refusal('ADM-500', 'down', 500);
+  await world.tick(60_000);
+  assert.match(text(world.card('supplies')), /Battery low/, 'a read that fails leaves what was read');
+});
+
+test('a UPS shown with ups=show says the machine stays on', async (context) => {
+  const world = await openHardware(context, { world: { reads: { '/api/1/hardware/power': power([ups({ shuts_down: false })]) } } });
+  assert.match(text(world.card('supplies')), /this machine stays on: it was started with ups=show\./);
 });
 
 // ---- Screens -------------------------------------------------------------------

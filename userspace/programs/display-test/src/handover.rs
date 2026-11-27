@@ -27,7 +27,7 @@
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -36,6 +36,7 @@ use display::Unmade;
 use display::abi::{DisplayEvent, EVENT_BACK, EVENT_BORROWER_ENDED, EVENT_FRONT, KIND_PIPE};
 use display::wire::ChangeBytes;
 use display_pattern::said::Said;
+use sysapi::net;
 
 use crate::rig::{Keys, Outcome, Seat, State, ensure};
 use crate::stage::{Stage, unmade};
@@ -56,29 +57,10 @@ const READY: &str = "display-test: the child shows";
 /// with it.
 fn answer(stream: &UnixStream) -> Outcome<(String, Option<OwnedFd>)> {
     let mut bytes = [0u8; 32];
-    let mut iov = libc::iovec { iov_base: bytes.as_mut_ptr().cast(), iov_len: bytes.len() };
-    let mut control = [0u64; 4];
-    // SAFETY: all zeros is a valid msghdr: numbers and null pointers.
-    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
-    message.msg_iov = &raw mut iov;
-    message.msg_iovlen = 1;
-    message.msg_control = control.as_mut_ptr().cast();
-    message.msg_controllen = size_of_val(&control) as _;
-    // SAFETY: the message points at the buffer and the control space
-    // above, which outlive the call.
-    let read = unsafe { libc::recvmsg(stream.as_raw_fd(), &raw mut message, 0) };
-    let read = usize::try_from(read)
-        .map_err(|_| format!("{LENDER}: {}", std::io::Error::last_os_error()))?;
-    // SAFETY: the header is the one recvmsg wrote into `control`, and a
-    // descriptor in it is the program's to own.
-    let passed = unsafe {
-        let header = libc::CMSG_FIRSTHDR(&raw const message);
-        (!header.is_null() && (*header).cmsg_type == libc::SCM_RIGHTS).then(|| {
-            let fd = libc::CMSG_DATA(header).cast::<libc::c_int>().read_unaligned();
-            OwnedFd::from_raw_fd(fd)
-        })
-    };
-    Ok((String::from_utf8_lossy(&bytes[..read]).into_owned(), passed))
+    let mut passed = Vec::new();
+    let read = net::receive_with_fds(stream, &mut bytes, &mut passed, 1)
+        .map_err(|err| format!("{LENDER}: {err}"))?;
+    Ok((String::from_utf8_lossy(&bytes[..read]).into_owned(), passed.pop()))
 }
 
 /// Borrows the screens from consoled: a holder that is in front. It

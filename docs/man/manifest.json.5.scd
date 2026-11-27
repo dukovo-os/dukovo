@@ -50,9 +50,10 @@ prints its JSON Schema, for an editor that checks as you type.
 	with a message to update Dukovo.
 
 The names of what later versions bring are reserved, and a manifest
-that uses one is refused: *entries* and *actions*, where an app shows up
-on the desktop and what it can do there (Dukovo 1.5), *display*, its
-windows (1.1), *runtime*, the Linux layer (1.3), and *plugins* (1.10).
+that uses one is refused: *entries*, where an app shows up on the
+desktop and which files and links it opens (Dukovo 1.6, ADR 0760),
+*actions*, what it can do there (1.4), *display*, its windows (1.1),
+*runtime*, the Linux layer (1.3), and *plugins* (1.10).
 
 # FIELDS
 

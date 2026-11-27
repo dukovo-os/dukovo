@@ -37,7 +37,6 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read as _, Write as _};
-use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -742,9 +741,8 @@ fn hold(me: &Person, doing: &str) -> Result<Held, String> {
         .custom_flags(libc::O_NOFOLLOW)
         .open(LOCK)
         .map_err(|err| format!("{LOCK}: {err}"))?;
-    // SAFETY: flock takes a descriptor `file` owns; the lock goes when it
-    // is closed.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+    // The lock goes when `file` is closed.
+    if sysapi::fs::lock(&file, sysapi::fs::Lock::Exclusive, false).is_err() {
         let mut line = String::new();
         let _ = file.read_to_string(&mut line);
         return Err(held_by(&line));

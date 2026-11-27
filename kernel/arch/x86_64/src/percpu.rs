@@ -175,6 +175,10 @@ pub struct PerCpu {
     /// The address space this CPU runs (its address), or 0 for the
     /// kernel's own tables.
     pub space: AtomicUsize,
+    /// Whether the CPU runs a kernel thread on `space`'s tables, which it
+    /// kept from the user thread it ran before
+    /// (`AddressSpace::run_kernel_thread`).
+    pub lazy: AtomicBool,
     /// Exception handlers running on this CPU, to catch recursion.
     pub exception_depth: AtomicU32,
     /// The fault this CPU is panicking for.
@@ -240,6 +244,7 @@ impl PerCpu {
             pings: AtomicU64::new(0),
             tlb_generation: AtomicU64::new(0),
             space: AtomicUsize::new(0),
+            lazy: AtomicBool::new(false),
             exception_depth: AtomicU32::new(0),
             fault: SpinLock::new(None),
             stacks: Once::new(),

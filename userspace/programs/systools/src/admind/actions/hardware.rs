@@ -23,9 +23,10 @@
 //! takes, and the check of them is the command's own rule: each once, and
 //! with a disk, the disks alone.
 //!
-//! `hardware.sensors`, `hardware.highest`, `hardware.devices` and
-//! `hardware.screens` run as the person, as the commands answer anyone; with no history, the highest is
-//! `[]`. `hardware.memtest` asks
+//! `hardware.sensors`, `hardware.highest`, `hardware.devices`,
+//! `hardware.power` and `hardware.screens` run as the person, as the
+//! commands answer anyone; with no history, the highest is `[]`.
+//! `hardware.memtest` asks
 //! the start menu for the memory to be tested at the next start, and
 //! `hardware.memtest-cancel` takes that back; each is the other's undo.
 //! Both write the start menu's block on the EFI system partitions and a
@@ -409,6 +410,29 @@ impl Action for Devices {
     }
 }
 
+/// `hardware power --json`: the batteries, adapters and UPSes, with their
+/// charge and when a UPS shuts the machine down (ADR 0741).
+pub struct Power;
+
+impl Action for Power {
+    const ID: &'static str = "hardware.power";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/hardware/power";
+    const RUNS: Runs = Runs::AsThePerson;
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Show the batteries and UPSes";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["hardware", "power", "--json"].map(String::from).to_vec()
+    }
+
+    fn examples() -> Examples<Nothing> {
+        reads()
+    }
+}
+
 /// `hardware screens --json`: the graphics cards the system draws
 /// through, their screens and the monitor plugged into each, and which
 /// program has the screens.
@@ -584,7 +608,7 @@ mod tests {
 
     /// Each action of the page: its id, its address, whether it changes
     /// anything, who runs it, and the command its first example makes.
-    const ACTIONS: [(&str, &str, bool, Runs, &[&str]); 12] = [
+    const ACTIONS: [(&str, &str, bool, Runs, &[&str]); 13] = [
         (
             "hardware.show",
             "/api/1/hardware",
@@ -642,6 +666,13 @@ mod tests {
             &["hardware", "devices", "--json"],
         ),
         (
+            "hardware.power",
+            "/api/1/hardware/power",
+            false,
+            Runs::AsThePerson,
+            &["hardware", "power", "--json"],
+        ),
+        (
             "hardware.screens",
             "/api/1/hardware/screens",
             false,
@@ -672,7 +703,7 @@ mod tests {
     ];
 
     /// The reads that take nothing.
-    const READS: [&str; 9] = [
+    const READS: [&str; 10] = [
         "hardware.show",
         "hardware.inventory",
         "hardware.last",
@@ -680,6 +711,7 @@ mod tests {
         "hardware.sensors",
         "hardware.highest",
         "hardware.devices",
+        "hardware.power",
         "hardware.screens",
         "hardware.memtest-status",
     ];
@@ -992,6 +1024,7 @@ mod tests {
             ("/api/1/hardware/sensors", "hardware.sensors"),
             ("/api/1/hardware/highest", "hardware.highest"),
             ("/api/1/hardware/devices", "hardware.devices"),
+            ("/api/1/hardware/power", "hardware.power"),
             ("/api/1/hardware/screens", "hardware.screens"),
             ("/api/1/hardware/memtest", "hardware.memtest-status"),
         ] {
@@ -1033,6 +1066,7 @@ mod tests {
             "/api/1/hardware/sensors/x",
             "/api/1/hardware/highest/x",
             "/api/1/hardware/devices/x",
+            "/api/1/hardware/power/x",
             "/api/1/hardware/screens/x",
         ] {
             assert!(matches!(find(REGISTRY, false, path), Found::None), "{path}");
@@ -1055,6 +1089,7 @@ mod tests {
             ("hardware.sensors", true, true, true),
             ("hardware.highest", true, true, true),
             ("hardware.devices", true, true, true),
+            ("hardware.power", true, true, true),
             ("hardware.screens", true, true, true),
             ("hardware.memtest-status", true, true, true),
             ("hardware.inventory", false, true, false),
@@ -1097,6 +1132,7 @@ mod tests {
             "hardware.sensors",
             "hardware.highest",
             "hardware.devices",
+            "hardware.power",
             "hardware.screens",
             "hardware.memtest-status",
         ] {
@@ -1256,6 +1292,7 @@ mod tests {
         // one call covers every sensor and every disk.
         assert_eq!(argv("hardware.sensors", json!({})), ["hardware", "sensors", "--json"]);
         assert_eq!(argv("hardware.devices", json!({})), ["hardware", "devices", "--json"]);
+        assert_eq!(argv("hardware.power", json!({})), ["hardware", "power", "--json"]);
         assert_eq!(argv("hardware.screens", json!({})), ["hardware", "screens", "--json"]);
         assert_eq!(
             argv("hardware.memtest-status", json!({})),
@@ -1266,6 +1303,7 @@ mod tests {
             "hardware.sensors",
             "hardware.highest",
             "hardware.devices",
+            "hardware.power",
             "hardware.screens",
             "hardware.memtest-status",
         ] {

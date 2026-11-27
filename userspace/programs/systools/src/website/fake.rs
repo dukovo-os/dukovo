@@ -84,8 +84,7 @@ pub struct Fake {
 
 /// This process's user and group numbers.
 fn me() -> (u32, u32) {
-    // SAFETY: both calls have no failure and touch no memory.
-    unsafe { (libc::geteuid(), libc::getegid()) }
+    (sysapi::process::euid(), sysapi::process::egid())
 }
 
 /// The number of the first person: the process's own when it is the

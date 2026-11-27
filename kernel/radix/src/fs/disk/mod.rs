@@ -376,7 +376,7 @@ pub fn init() {
                     crate::audio::virtio::bind(&function);
                 } else if device_type(&function) == Some(radix_virtio::device_type::GPU) {
                     crate::display::virtio::bind(&function);
-                } else if radix_hda::is_hda(function.class()) {
+                } else if radix_hda::is_hda(&function) {
                     crate::audio::hda::bind(&function);
                 } else if vmd::is_vmd(&function) {
                     vmd::bind(&function, root, &mut controllers, &mut functions);

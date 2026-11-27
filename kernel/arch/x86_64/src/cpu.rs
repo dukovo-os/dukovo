@@ -47,6 +47,18 @@ pub fn max_leaf() -> u32 {
     cpuid(0, 0).eax
 }
 
+/// CPUID leaf 7, EDX: the processor has cores of more than one kind.
+pub const LEAF7_HYBRID: u32 = 1 << 15;
+
+/// What kind of core the running CPU is: CPUID leaf 1Ah says, on a
+/// processor whose leaf 7 says its cores differ.
+pub fn core_kind() -> radix_hal::CoreKind {
+    let max = max_leaf();
+    let hybrid = is_intel() && max >= 0x1a && cpuid(7, 0).edx & LEAF7_HYBRID != 0;
+    let core_type = if hybrid { (cpuid(0x1a, 0).eax >> 24) as u8 } else { 0 };
+    radix_hal::CoreKind::of_intel(hybrid, core_type)
+}
+
 /// Highest extended CPUID leaf.
 pub fn max_extended_leaf() -> u32 {
     cpuid(0x8000_0000, 0).eax
@@ -120,6 +132,18 @@ pub mod feature {
     /// Global pages (CPUID 1, EDX bit 13).
     pub fn pge() -> bool {
         cpuid(1, 0).edx & (1 << 13) != 0
+    }
+
+    /// The `rdtscp` instruction and IA32_TSC_AUX (CPUID 0x80000001, EDX
+    /// bit 27).
+    pub fn rdtscp() -> bool {
+        super::max_extended_leaf() >= 0x8000_0001 && cpuid(0x8000_0001, 0).edx & (1 << 27) != 0
+    }
+
+    /// The `rdpid` instruction, which reads IA32_TSC_AUX (CPUID 7, ECX bit
+    /// 22).
+    pub fn rdpid() -> bool {
+        super::max_leaf() >= 7 && cpuid(7, 0).ecx & (1 << 22) != 0
     }
 
     /// The page attribute table (CPUID 1, EDX bit 16).

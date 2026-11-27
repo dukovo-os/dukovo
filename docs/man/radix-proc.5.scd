@@ -241,12 +241,18 @@ _/processes/stat_
 	memory out of a CPU's caches and TLB (switches away from a thread
 	that could have gone on, moves of a thread to another CPU than the
 	one it ran on last, and page faults resolved), since boot;
+	*moves_up*, the moves of a thread running alone on a slower core to
+	a faster idle one, on a processor whose cores differ in speed
+	(*dukovo-boot*(7)'s *hybrid*), since boot;
 	*mutex_contended*, *mutex_waits*, *mutex_handoffs* and *mutex_wakes*,
 	the times a thread found a kernel mutex taken, the times it slept
 	waiting for one, the times a mutex was handed to a sleeping waiter,
 	and the times one was let go with a sleeping waiter woken to try
-	again; *cap_cache_flushes*, how often the CPUs' caches of
-	capabilities went stale;
+	again; *cap_cache_flushes*, how often a capability the CPUs' caches
+	held left its slot, which takes from the caches what they kept of
+	the slots that share its version word; *cap_cache_fills*, how often
+	a system call's lookup found nothing in its CPU's cache and asked
+	the store;
 	*swap_ins* and *swap_outs*, the pages read back from swap and
 	written to it since boot; and *boot_time_ns*, when the kernel
 	started, in nanoseconds since 1970.

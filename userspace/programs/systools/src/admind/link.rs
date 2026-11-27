@@ -33,7 +33,7 @@ use std::fmt;
 use std::fs::File;
 use std::future::Future;
 use std::io;
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -156,8 +156,8 @@ impl Ends {
     }
 
     /// The descriptors, the end it reads first, as authd is sent them.
-    pub fn fds(&self) -> [RawFd; 2] {
-        [self.reads.as_raw_fd(), self.writes.as_raw_fd()]
+    pub fn fds(&self) -> [BorrowedFd<'_>; 2] {
+        [self.reads.as_fd(), self.writes.as_fd()]
     }
 
     /// The ends as the runtime's pipes.

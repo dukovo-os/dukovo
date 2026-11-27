@@ -223,6 +223,11 @@ pub struct Pipe {
     /// For a named pipe, its node, kept while the pipe is open so that
     /// [`NAMED`] finds the pipe by the node's address.
     named: Option<NodeRef>,
+    /// Whether it is a pipe of its own, plain or named, and not one of a
+    /// Unix socket's pair: only then are the watches for reading among
+    /// its pollers watches of its ends, which only what makes it readable
+    /// makes ready ([`Pipe::emptied`]).
+    own: bool,
 }
 
 /// Pipes by the address of their node.
@@ -244,12 +249,19 @@ impl Drop for Pipe {
 impl Pipe {
     /// A new, empty pipe, with one end reading it and one writing it.
     pub(super) fn new() -> Result<KArc<Pipe>, Status> {
-        Pipe::with_ends(1, None)
+        Pipe::with_ends(1, None, true)
+    }
+
+    /// A new, empty pipe for one way of a Unix socket's connection, with
+    /// one end reading it and one writing it.
+    pub(super) fn of_socket() -> Result<KArc<Pipe>, Status> {
+        Pipe::with_ends(1, None, false)
     }
 
     /// A new, empty pipe, with `ends` ends reading it and as many writing
-    /// it, the pipe `named` is if any.
-    fn with_ends(ends: u32, named: Option<NodeRef>) -> Result<KArc<Pipe>, Status> {
+    /// it, the pipe `named` is if any, and whether it is a pipe of its
+    /// `own`.
+    fn with_ends(ends: u32, named: Option<NodeRef>, own: bool) -> Result<KArc<Pipe>, Status> {
         let buffer = Buffer { ring: Ring::new(new_buffer()?), taken: 0, attachments: Fifo::new() };
         mem::arc(Pipe {
             buffer: Mutex::new(buffer),
@@ -264,6 +276,7 @@ impl Pipe {
             waits: WaitCount::new(),
             opened: [AtomicU32::new(0), AtomicU32::new(0)],
             named,
+            own,
         })
         .map_err(|_| Kernel::NoMemory.status(0))
     }
@@ -287,6 +300,18 @@ impl Pipe {
         self.waits.wake_all(self.key());
         // `wake_all` took the full barrier that `Polled::changed` would.
         self.polled.changed_by_rmw();
+    }
+
+    /// A read left it empty while some end still writes it: the waits
+    /// look again, and so do its pollers and the watches for writing, for
+    /// the room the read made. No watch for reading can be ready until
+    /// something else changes it: a write, or the last writer's going
+    /// (ADR 0777).
+    fn emptied(&self) {
+        self.waits.wake_all(self.key());
+        // `wake_all` took the full barrier that `Polled::emptied_by_rmw`
+        // would.
+        self.polled.emptied_by_rmw();
     }
 
     /// What its pollers count themselves in.
@@ -491,8 +516,16 @@ impl Pipe {
                         attachment.files
                     });
                     self.len.store(buffer.ring.len(), Ordering::Release);
+                    // A writer's going after this load makes its own change.
+                    let emptied = self.own
+                        && buffer.ring.is_empty()
+                        && self.writers.load(Ordering::Acquire) > 0;
                     drop(buffer);
-                    self.changed();
+                    if emptied {
+                        self.emptied();
+                    } else {
+                        self.changed();
+                    }
                     return read.map(|read| (read, files)).map_err(super::status);
                 }
                 if self.writers.load(Ordering::Acquire) == 0 {
@@ -921,7 +954,7 @@ pub fn open_named(
         let pipe = match open {
             Some(pipe) => pipe,
             None => {
-                let pipe = Pipe::with_ends(0, Some(at.node.clone()))?;
+                let pipe = Pipe::with_ends(0, Some(at.node.clone()), true)?;
                 named.try_reserve(1).map_err(|_| Kernel::NoMemory.status(0))?;
                 let _ = named.push_within_capacity((key, KArc::downgrade(&pipe)));
                 pipe

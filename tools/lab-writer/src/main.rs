@@ -29,15 +29,18 @@
 //!    answer, or any failure (after `POST failed`), it powers the machine
 //!    off. It never restarts into the network.
 
+#![forbid(unsafe_code)]
+
 mod disk;
 mod http;
 mod net;
 mod plan;
 
 use std::io::Write as _;
-use std::os::fd::AsRawFd as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+use sysapi::{linux, terminal};
 
 use http::{Base, Client};
 use net::Address;
@@ -46,10 +49,6 @@ use plan::Plan;
 /// Where `ob lab` puts the kernel modules for the machine's disks and
 /// cards, named so that they load in the order of their names.
 const MODULES: &str = "/modules";
-
-/// finit_module(2)'s flag for a compressed module, which the kernel
-/// uncompresses itself.
-const MODULE_INIT_COMPRESSED_FILE: libc::c_uint = 4;
 
 /// How long the card and the disk may take to show up once their drivers
 /// load, and the card's link to come up.
@@ -227,23 +226,18 @@ fn tell(client: &Client, text: &str) {
 fn finish(ending: Ending) -> ! {
     let _ = std::io::stdout().flush();
     let _ = std::io::stderr().flush();
-    for fd in [std::io::stdout().as_raw_fd(), std::io::stderr().as_raw_fd()] {
-        // SAFETY: tcdrain only waits; on a descriptor that is not a
-        // terminal it fails at once.
-        unsafe { libc::tcdrain(fd) };
-    }
+    // On a descriptor that is not a terminal, tcdrain fails at once.
+    let _ = terminal::drain(std::io::stdout());
+    let _ = terminal::drain(std::io::stderr());
     if std::process::id() != 1 {
         std::process::exit(i32::from(ending != Ending::Restart));
     }
-    // SAFETY: sync takes nothing and cannot fail.
-    unsafe { libc::sync() };
-    let command = match ending {
-        Ending::Restart => libc::LINUX_REBOOT_CMD_RESTART,
-        Ending::PowerOff => libc::LINUX_REBOOT_CMD_POWER_OFF,
-    };
-    // SAFETY: as process 1, this program may restart or power off the
-    // machine; everything it wrote is on the disk.
-    unsafe { libc::reboot(command) };
+    linux::sync();
+    let err = linux::end(match ending {
+        Ending::Restart => linux::Ending::Restart,
+        Ending::PowerOff => linux::Ending::PowerOff,
+    });
+    say(&format!("cannot end the boot: {err}"));
     loop {
         std::thread::park();
     }
@@ -254,16 +248,8 @@ fn finish(ending: Ending) -> ! {
 /// where the disks are.
 fn mount(kind: &str, at: &str) {
     let _ = std::fs::create_dir_all(at);
-    let (Ok(kind_c), Ok(at_c)) = (std::ffi::CString::new(kind), std::ffi::CString::new(at)) else {
-        return;
-    };
-    // SAFETY: the strings are NUL-terminated and live through the call;
-    // these filesystems take no data.
-    let result = unsafe {
-        libc::mount(kind_c.as_ptr(), at_c.as_ptr(), kind_c.as_ptr(), 0, std::ptr::null())
-    };
-    if result != 0 {
-        say(&format!("cannot mount {at}: {}", std::io::Error::last_os_error()));
+    if let Err(err) = linux::mount(kind, Path::new(at), kind, 0, "") {
+        say(&format!("cannot mount {at}: {err}"));
     }
 }
 
@@ -282,15 +268,12 @@ fn load_modules() {
             }
         };
         let compressed = path.extension().is_some_and(|e| e == "zst" || e == "xz" || e == "gz");
-        let flags = if compressed { MODULE_INIT_COMPRESSED_FILE } else { 0 };
-        // SAFETY: the descriptor is open, and the parameters are an empty
-        // NUL-terminated string that lives through the call.
-        let result =
-            unsafe { libc::syscall(libc::SYS_finit_module, file.as_raw_fd(), c"".as_ptr(), flags) };
-        let err = std::io::Error::last_os_error();
         // EEXIST: built in, or loaded already. ENODEV: no such hardware.
-        if result != 0 && !matches!(err.raw_os_error(), Some(libc::EEXIST | libc::ENODEV)) {
-            say(&format!("cannot load {}: {err}", path.display()));
+        match linux::load_module(&file, compressed) {
+            Err(err) if !matches!(err.raw_os_error(), Some(libc::EEXIST | libc::ENODEV)) => {
+                say(&format!("cannot load {}: {err}", path.display()));
+            }
+            _ => {}
         }
     }
 }

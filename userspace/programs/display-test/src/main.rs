@@ -29,13 +29,14 @@
 //! screen with what was said. It ends with `display-test: passed` and
 //! status 0, or with `display-test: FAILED:` and why, and status 1.
 
+#![forbid(unsafe_code)]
+
 mod beat;
 mod cost;
 mod handover;
 mod panic;
 mod rig;
 mod stage;
-mod sys;
 mod virtio;
 
 use std::process::ExitCode;

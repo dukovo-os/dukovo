@@ -4,9 +4,9 @@
 // Event queues, kqueue(2) and kevent(2) (ADR 0353): the descriptors a
 // queue takes and refuses, a change's errors and receipts, pipes and
 // sockets watched for reading and writing (level, edge, oneshot, dispatch
-// and disabled watches), user events, threads and signals that end a
-// wait, timeouts, what a watch holds across close, dup2 and fork, poll on
-// a queue, and a thousand watches at once.
+// and disabled watches, and what reads report), user events, threads and
+// signals that end a wait, timeouts, what a watch holds across close,
+// dup2 and fork, poll on a queue, and a thousand watches at once.
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -340,6 +340,51 @@ static void edge(void) {
 	CHECK(look(kq, events, 4) == 0);
 	close(fds[0]);
 	close(fds[1]);
+	close(kq);
+}
+
+// EV_CLEAR and reads (ADR 0777): a read that leaves bytes in the pipe is
+// a change its read watch reports, one that takes the last byte leaves it
+// nothing to report, and each makes room its write watch reports. Once
+// the writer has gone, the read that takes the last byte reports the end.
+static void edge_reads(void) {
+	int kq = kqueue();
+	CHECK(kq >= 0);
+	int fds[2];
+	CHECK(pipe(fds) == 0);
+	struct kevent events[4] = {{0}};
+	CHECK(watch(kq, fds[0], EVFILT_READ, EV_ADD | EV_CLEAR, NULL) == 0);
+	CHECK(watch(kq, fds[1], EVFILT_WRITE, EV_ADD | EV_CLEAR, NULL) == 0);
+	// The write end is ready as its watch is added, the read end not yet.
+	CHECK(look(kq, events, 4) == 1);
+	CHECK(reports(&events[0], fds[1], EVFILT_WRITE, EV_CLEAR));
+	CHECK(write(fds[1], "ab", 2) == 2);
+	CHECK(look(kq, events, 4) == 2);
+	CHECK(find_event(events, 2, fds[0], EVFILT_READ) != NULL);
+	CHECK(find_event(events, 2, fds[1], EVFILT_WRITE) != NULL);
+	char byte;
+	CHECK(read(fds[0], &byte, 1) == 1 && byte == 'a');
+	CHECK(look(kq, events, 4) == 2);
+	CHECK(find_event(events, 2, fds[0], EVFILT_READ) != NULL);
+	CHECK(find_event(events, 2, fds[1], EVFILT_WRITE) != NULL);
+	CHECK(read(fds[0], &byte, 1) == 1 && byte == 'b');
+	CHECK(look(kq, events, 4) == 1);
+	CHECK(reports(&events[0], fds[1], EVFILT_WRITE, EV_CLEAR));
+	CHECK(look(kq, events, 4) == 0);
+	// The next write reports the read end again.
+	CHECK(write(fds[1], "c", 1) == 1);
+	CHECK(look(kq, events, 4) == 2);
+	CHECK(find_event(events, 2, fds[0], EVFILT_READ) != NULL);
+	// The writer's going ends its watch, and the read watch reports the
+	// end, and again once the last byte is read.
+	close(fds[1]);
+	CHECK(look(kq, events, 4) == 1);
+	CHECK(reports(&events[0], fds[0], EVFILT_READ, EV_CLEAR | EV_EOF));
+	CHECK(read(fds[0], &byte, 1) == 1 && byte == 'c');
+	CHECK(look(kq, events, 4) == 1);
+	CHECK(reports(&events[0], fds[0], EVFILT_READ, EV_CLEAR | EV_EOF));
+	CHECK(look(kq, events, 4) == 0);
+	close(fds[0]);
 	close(kq);
 }
 
@@ -1123,6 +1168,7 @@ int main(void) {
 	RUN(receipt);
 	RUN(pipes);
 	RUN(edge);
+	RUN(edge_reads);
 	RUN(oneshot_dispatch);
 	RUN(disable);
 	RUN(user);

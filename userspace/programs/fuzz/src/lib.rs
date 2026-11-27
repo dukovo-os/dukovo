@@ -10,6 +10,8 @@
 //! come out on every run and the seed corpus in git stays signed by the
 //! keys the targets trust. `cargo run --bin seeds` writes the corpus.
 
+#![forbid(unsafe_code)]
+
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 

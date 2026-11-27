@@ -18,19 +18,17 @@
 //! `from=`, `restrict` and the rest) is passed over, with a word in the
 //! log, rather than taken without them: none is carried out yet.
 
-use std::ffi::CString;
 use std::fs::File;
 use std::io::{self, Read};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::ffi::OsStrExt;
+use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
-use std::path::Path;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use ring::signature::{self, UnparsedPublicKey};
 
 use accounts::User;
+use sysapi::dir::Dir;
 
 /// The key algorithms whose signatures authd checks.
 pub const ALGORITHMS: &[&str] = accounts::request::SSH_KEY_ALGORITHMS;
@@ -318,30 +316,10 @@ fn is_key_type(word: &str) -> bool {
         || word.starts_with("rsa-sha2-")
 }
 
-/// Opens `name` in the folder `at`, or the path `name` itself without
-/// `at`, without following a link at its last step.
-fn open_at(at: Option<&OwnedFd>, name: &Path, directory: bool) -> io::Result<OwnedFd> {
-    let path = CString::new(name.as_os_str().as_bytes())
-        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-    let mut flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK;
-    if directory {
-        flags |= libc::O_DIRECTORY;
-    }
-    let dir = at.map_or(libc::AT_FDCWD, AsRawFd::as_raw_fd);
-    // SAFETY: openat reads the NUL-ended path, which lives until it
-    // returns.
-    let fd = unsafe { libc::openat(dir, path.as_ptr(), flags) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: openat made the descriptor, which is ours alone.
-    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
-}
-
 /// Checks that what `fd` is open on is `user`'s or root's, and that no
 /// one else may change it, as OpenSSH's StrictModes checks.
-pub(crate) fn safe(fd: &OwnedFd, user: &User, what: &str) -> Result<std::fs::Metadata, String> {
-    let file = File::from(fd.try_clone().map_err(|err| format!("{what}: {err}"))?);
+pub(crate) fn safe(fd: impl AsFd, user: &User, what: &str) -> Result<std::fs::Metadata, String> {
+    let file = File::from(fd.as_fd().try_clone_to_owned().map_err(|err| format!("{what}: {err}"))?);
     let meta = file.metadata().map_err(|err| format!("{what}: {err}"))?;
     if meta.uid() != user.uid && meta.uid() != 0 {
         return Err(format!("{what} is user {}'s, not {}'s", meta.uid(), user.name));
@@ -360,20 +338,21 @@ pub fn read_authorized(user: &User) -> Result<Option<String>, String> {
     let absent = |err: &io::Error| err.kind() == io::ErrorKind::NotFound;
     // In Rescue, the home in the installed system's root (ADR 0540).
     let home = accounts::rescue::installed(&user.home);
-    let home = match open_at(None, &home, true) {
+    let home = home.to_str().ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput));
+    let home = match home.and_then(Dir::open) {
         Ok(fd) => fd,
         Err(err) if absent(&err) => return Ok(None),
         Err(err) => return Err(format!("{}: {err}", user.home)),
     };
     safe(&home, user, &user.home)?;
-    let folder = match open_at(Some(&home), Path::new(".ssh"), true) {
+    let folder = match home.dir_at(".ssh") {
         Ok(fd) => fd,
         Err(err) if absent(&err) => return Ok(None),
         Err(err) => return Err(format!("{}/.ssh: {err}", user.home)),
     };
     let shown = format!("{}/.ssh/authorized_keys", user.home.trim_end_matches('/'));
     safe(&folder, user, &format!("{}/.ssh", user.home.trim_end_matches('/')))?;
-    let fd = match open_at(Some(&folder), Path::new("authorized_keys"), false) {
+    let fd = match folder.open_at("authorized_keys", false) {
         Ok(fd) => fd,
         Err(err) if absent(&err) => return Ok(None),
         Err(err) => return Err(format!("{shown}: {err}")),
@@ -622,8 +601,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let ssh = dir.join(".ssh");
         std::fs::create_dir_all(&ssh).unwrap();
-        // SAFETY: getuid reads this process's user and cannot fail.
-        let me = unsafe { libc::getuid() };
+        let me = sysapi::process::uid();
         let user = User {
             name: "me".into(),
             uid: me,
@@ -632,7 +610,7 @@ mod tests {
             home: dir.display().to_string(),
             shell: String::new(),
         };
-        let mode = |path: &Path, mode: u32| {
+        let mode = |path: &std::path::Path, mode: u32| {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
         };
         mode(&dir, 0o700);

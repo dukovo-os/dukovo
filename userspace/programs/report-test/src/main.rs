@@ -31,6 +31,8 @@
 //! The test's own service files run it, so a crash is the end of a service,
 //! with a line in its log that the test reads back through `report`.
 
+#![forbid(unsafe_code)]
+
 use std::hint::black_box;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -53,12 +55,12 @@ const PANIC_MESSAGE: &str = "crash-test was asked to panic";
 /// maps, so the kernel ends the process with SIGSEGV here.
 #[inline(never)]
 pub fn fault_here() -> u32 {
-    // SAFETY: nothing is mapped at address 0, so the store faults and the
-    // kernel ends the process with SIGSEGV before any memory changes; that
-    // fault is what the test is for. The store is volatile so that the
-    // compiler cannot take a write to a null pointer for one that never
-    // happens and drop it.
-    unsafe { std::ptr::null_mut::<u32>().write_volatile(42) };
+    // The store is inlined here, so the fault is in this frame. The
+    // compiler cannot tell that the branch is always taken, so it keeps
+    // this a function that returns, and the call in `middle` a call.
+    if black_box(true) {
+        sysapi::process::fault();
+    }
     1
 }
 

@@ -10,8 +10,9 @@
 //! second, and changes nothing. When it is sent SIGTERM it says it stops
 //! and ends well at once, as a command that puts back what it did does.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+use sysapi::signal::{self, Caught};
 
 use crate::admind::actions::lab::{SECONDS_DEFAULT, SECONDS_MAX};
 use crate::args::{Arg, Args};
@@ -27,11 +28,7 @@ const STEPS: [&str; 4] = ["Getting ready", "Copying", "Checking", "Finishing"];
 const SLICE: Duration = Duration::from_millis(50);
 
 /// Set by SIGTERM.
-static STOP: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn on_term(_: libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-}
+static STOP: Caught = Caught::new();
 
 /// The lines of second `second` (from 0) of a run of `seconds` seconds:
 /// the step when it starts one, the progress in it, and a log line.
@@ -66,12 +63,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         }
     }
     let seconds = seconds.unwrap_or(SECONDS_DEFAULT);
-    // SAFETY: all zeros is a valid sigaction: numbers, a signal set and a
-    // function address.
-    let mut action: libc::sigaction = unsafe { util::zeroed() };
-    action.sa_sigaction = on_term as *const () as usize;
-    // SAFETY: the handler only stores to an atomic.
-    unsafe { libc::sigaction(libc::SIGTERM, &raw const action, std::ptr::null_mut()) };
+    let _ = signal::catch(libc::SIGTERM, &STOP, 0);
     let start = Instant::now();
     for second in 0..seconds {
         for line in lines(second, seconds) {
@@ -79,7 +71,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         }
         let until = start + Duration::from_secs(u64::from(second) + 1);
         while Instant::now() < until {
-            if STOP.load(Ordering::Relaxed) {
+            if STOP.is_set() {
                 println!("lab-steps: stopped; there is nothing to put back");
                 return Ok(0);
             }

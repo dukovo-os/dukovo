@@ -15,5 +15,7 @@
 //!   row length or from another picture's memory does not pass.
 //! - [`said`] is the lines.
 
+#![forbid(unsafe_code)]
+
 pub mod pattern;
 pub mod said;

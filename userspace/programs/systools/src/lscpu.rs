@@ -19,9 +19,7 @@ pub(crate) type Cpuid<'a> = &'a dyn Fn(u32, u32) -> [u32; 4];
 /// This processor's CPUID.
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn cpuid(leaf: u32, sub: u32) -> [u32; 4] {
-    // SAFETY: every x86-64 processor has CPUID, which only reads.
-    #[allow(unused_unsafe)]
-    let r = unsafe { core::arch::x86_64::__cpuid_count(leaf, sub) };
+    let r = core::arch::x86_64::__cpuid_count(leaf, sub);
     [r.eax, r.ebx, r.ecx, r.edx]
 }
 

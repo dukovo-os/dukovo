@@ -8,11 +8,8 @@
 
 use radix_pstate::{Cpuid, Driver, LEAF6_APERF_MPERF, Levels, Msrs, Request, Scale};
 
-use crate::cpu::{self, cpuid, rdmsr, wrmsr};
+use crate::cpu::{self, LEAF7_HYBRID, cpuid, rdmsr, wrmsr};
 use crate::time;
-
-/// CPUID leaf 7, EDX: the CPU has cores of two kinds.
-const LEAF7_HYBRID: u32 = 1 << 15;
 
 /// The running CPU's registers of the control [`driver`] found, which
 /// is all [`radix_pstate`] reads and writes.

@@ -13,15 +13,17 @@
 //! server, up to half a minute for each report.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 
 use serde::Serialize;
+use sysapi::poll::{self, PollFd};
+use sysapi::signal::Caught;
 
 use super::parts::Asker;
 use super::{CONNECTIONS_MAX, Reportd};
@@ -64,13 +66,10 @@ pub fn listen() -> Result<UnixListener, Fail> {
 /// # Errors
 ///
 /// If waiting for a connection fails.
-pub fn serve(reportd: &Arc<Reportd>, listener: &UnixListener, stop: &AtomicBool) -> io::Result<()> {
-    while !stop.load(Ordering::Relaxed) {
-        let mut fds = [libc::pollfd { fd: listener.as_raw_fd(), events: libc::POLLIN, revents: 0 }];
-        // SAFETY: `fds` holds one valid pollfd.
-        let ready = unsafe { libc::poll(fds.as_mut_ptr(), 1, 500) };
-        if ready < 0 {
-            let err = io::Error::last_os_error();
+pub fn serve(reportd: &Arc<Reportd>, listener: &UnixListener, stop: &Caught) -> io::Result<()> {
+    while !stop.is_set() {
+        let mut fds = [PollFd::new(listener.as_fd(), libc::POLLIN)];
+        if let Err(err) = poll::poll(&mut fds, Some(Duration::from_millis(500))) {
             if err.kind() == io::ErrorKind::Interrupted {
                 continue;
             }

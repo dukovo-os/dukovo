@@ -7,15 +7,17 @@
 resolver = "3"
 members = ["tools/lab-writer", "tools/linux-bench", "tools/ridlc", "tools/xtask"]
 # The kernel crates that tools/xtask uses stay members of the kernel
-# workspace, and the ports that `ob` builds in target/ports/work are
-# workspaces of their own.
-exclude = ["kernel", "target"]
+# workspace, sysapi, which the lab's Linux programs call the system
+# through, stays a member of the programs' workspace with its lints, and
+# the ports that `ob` builds in target/ports/work are workspaces of their
+# own.
+exclude = ["kernel", "target", "userspace"]
 
 [workspace.package]
 # The Dukovo release version. Keep kernel/Cargo.toml, userspace/Cargo.toml
 # and userspace/programs/Cargo.toml in step; a unit test in tools/xtask
 # fails when they differ.
-version = "0.17.0"
+version = "1.0.0-alpha.1"
 edition = "2024"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/dukovo-os/dukovo"

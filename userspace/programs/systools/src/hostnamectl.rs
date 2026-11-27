@@ -23,11 +23,11 @@
 //! answers only to the machine's names, reads them again.
 
 use std::fs;
-use std::io;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use spark_api::show::State;
+use sysapi::system;
 
 use crate::args::{Arg, Args};
 use crate::cert::machine;
@@ -138,10 +138,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
 /// the settings for an administrator.
 fn set_hostname(name: &str) -> Result<i32, Fail> {
     check_name(name).map_err(|why| usage(format!("'{name}': {why}")))?;
-    // SAFETY: the pointer and length are the name's own bytes.
-    let set = unsafe { libc::sethostname(name.as_ptr().cast(), name.len() as _) };
-    if set != 0 {
-        let error = io::Error::last_os_error();
+    if let Err(error) = system::set_host_name(name) {
         if error.raw_os_error() == Some(libc::EPERM) {
             return Err(fail(format!(
                 "only an administrator may name the machine: run `elevate hostnamectl \

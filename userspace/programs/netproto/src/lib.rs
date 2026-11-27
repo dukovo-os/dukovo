@@ -8,6 +8,8 @@
 //! it is a library of its own. Nothing here touches the network: each
 //! function takes and gives bytes.
 
+#![forbid(unsafe_code)]
+
 pub mod dns;
 pub mod ntp;
 pub mod present;

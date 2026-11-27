@@ -20,6 +20,34 @@ system-release check /volumes/sda3/release
 
 [Installing](installing.md) installs it onto a disk.
 
+## The project's images
+
+The project's own stick and ISO of a release,
+`dukovo-<version>-x86_64.img` and `dukovo-<version>-x86_64.iso`, carry
+the release as updates.dukovo.org serves it and trust the project's
+release root, so a system installed from one takes its updates from
+there. An image you build with `./ob image` trusts your own build keys
+instead, and takes no updates from the project's server ([ADR
+0779](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0779-the-project-s-install-images-carry-the-release-as-the-server-serves-it-and-their-checksums-are-signed-on-a-yubikey.md)).
+
+Beside the images are `SHA256SUMS` and its signature,
+`SHA256SUMS.yubikey-<serial>.sig`, made on one of the project's two
+YubiKeys. Check a download before writing it, with the key of that
+serial number from the repository's
+[`releases/keys/`](https://github.com/dukovo-os/dukovo/tree/main/releases/keys)
+folder, `yubikey-<serial>.pem`:
+
+```sh
+openssl dgst -sha256 -verify yubikey-<serial>.pem \
+  -signature SHA256SUMS.yubikey-<serial>.sig SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
+`openssl` says `Verified OK`, and `sha256sum` `OK` for each image you
+downloaded; on macOS, `shasum -a 256 -c SHA256SUMS` checks the sums. The
+signature is also in Sigstore's public Rekor log, found by the SHA-256
+of `SHA256SUMS` at <https://search.sigstore.dev>.
+
 ## Writing the image
 
 Any USB stick works; writing the image **erases everything on it**.
@@ -44,7 +72,7 @@ Any USB stick works; writing the image **erases everything on it**.
 
    ```sh
    sudo umount /dev/sdX?* 2>/dev/null
-   sudo dd if=out/dukovo-0.17.0-x86_64.img of=/dev/sdX bs=4M conv=fsync status=progress
+   sudo dd if=out/dukovo-1.0.0-alpha.1-x86_64.img of=/dev/sdX bs=4M conv=fsync status=progress
    ```
 
 `conv=fsync` makes `dd` wait until the data is on the stick, so it is safe
@@ -100,8 +128,8 @@ choice, on Dukovo with `burn` ([ADR
 or on Linux with `xorriso`, replacing `sr0` with the drive's name:
 
 ```sh
-burn dukovo-0.17.0-x86_64.iso
-xorriso -as cdrecord -v dev=/dev/sr0 out/dukovo-0.17.0-x86_64.iso
+burn dukovo-1.0.0-alpha.1-x86_64.iso
+xorriso -as cdrecord -v dev=/dev/sr0 out/dukovo-1.0.0-alpha.1-x86_64.iso
 ```
 
 Start the computer from the DVD drive as from the stick above. The live

@@ -151,6 +151,7 @@ the exact chips.
 | Device | Status | Driver |
 | --- | --- | --- |
 | Printers and scanners: driverless IPP Everywhere, AirPrint and eSCL, and drivers for older models | Planned, 1.14 | |
+| UPSes on USB (the HID power device class of APC, CyberPower, Eaton and Tripp Lite): charge, run time, and a clean shutdown when the battery is low | Works | usb-hid |
 | Hibernation, battery health and charge limits | Planned, 1.14 | |
 
 ### Platform

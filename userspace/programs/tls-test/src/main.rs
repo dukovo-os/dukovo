@@ -15,6 +15,8 @@
 //! test made them, and the sealed messages' hashes in testdata/aead.txt
 //! are Python's cryptography package's (testdata/aead.py).
 
+#![forbid(unsafe_code)]
+
 use std::fmt::Debug;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};

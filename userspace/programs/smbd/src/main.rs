@@ -11,6 +11,8 @@
 //!   them for each PC that signs in: it serves the shares shares.toml(5)
 //!   lists, with their permissions.
 
+#![forbid(unsafe_code)]
+
 mod auth;
 mod commands;
 mod crypto;

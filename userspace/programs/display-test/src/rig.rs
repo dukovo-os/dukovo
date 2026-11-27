@@ -9,7 +9,6 @@
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, Read};
-use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
 
 use display::abi::{
@@ -18,8 +17,7 @@ use display::abi::{
 };
 use display::{Control, Holder, wire};
 use display_pattern::said::{self, Said};
-
-use crate::sys;
+use sysapi::{kernel, poll};
 
 /// How a check ends: well, or with why it failed.
 pub type Outcome<T = ()> = Result<T, String>;
@@ -34,6 +32,12 @@ pub fn say(line: &Said) {
     println!("{line}");
 }
 
+/// Waits until `file` has something to read, for `patience` at most.
+/// Returns whether it has: a wait that fails found nothing.
+fn readable(file: &File, patience: Duration) -> bool {
+    poll::wait_readable(file, patience).unwrap_or(false)
+}
+
 /// The file a holder is a description of.
 const CONTROL: &str = "/devices/display/control";
 
@@ -43,7 +47,7 @@ pub struct Device(File);
 
 impl Control for Device {
     fn control(&self, request: u32, argument: u64, buffer: &mut [u8]) -> io::Result<u64> {
-        sys::control(self.0.as_raw_fd(), request, argument, buffer)
+        kernel::control(&self.0, request, argument, buffer).map_err(kernel::io_error)
     }
 }
 
@@ -69,13 +73,13 @@ impl Seat {
 
     /// The slot its description is in, for another holder's LEND.
     pub fn slot(&self) -> u32 {
-        sys::slot(self.holder.file().0.as_raw_fd())
+        kernel::slot_of(&self.holder.file().0)
     }
 
     /// The next event, the oldest first: one that waits already, or the
     /// first to come within `patience`.
     pub fn next(&mut self, patience: Duration) -> Outcome<Option<DisplayEvent>> {
-        if self.waiting.is_empty() && sys::readable(&self.holder.file().0, patience) {
+        if self.waiting.is_empty() && readable(&self.holder.file().0, patience) {
             let mut bytes = [0; 16 * DisplayEvent::SIZE];
             let read = (&self.holder.file().0).read(&mut bytes);
             let read = read.map_err(|err| format!("reading the holder's events: {err}"))?;
@@ -107,7 +111,7 @@ impl Seat {
     /// what a program does that makes changes and waits for none.
     pub fn drop_unread(&self) -> Outcome {
         let mut file = &self.holder.file().0;
-        while sys::readable(file, Duration::ZERO) {
+        while readable(file, Duration::ZERO) {
             let mut bytes = [0; 16 * DisplayEvent::SIZE];
             file.read(&mut bytes).map_err(|err| format!("reading the holder's events: {err}"))?;
         }
@@ -250,7 +254,7 @@ impl Keys {
         let until = Instant::now() + STEP_PATIENCE;
         loop {
             let left = until.saturating_duration_since(Instant::now());
-            if !sys::readable(&self.0, left) {
+            if !readable(&self.0, left) {
                 return Err(format!("no key was pressed after step {name}"));
             }
             let mut bytes = [0; 8 * KEY_EVENT];

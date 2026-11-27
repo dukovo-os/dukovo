@@ -37,12 +37,14 @@ SPDX-License-Identifier = "Apache-2.0 OR MIT"
 
 # The catalog's keys and signed TUF metadata (ADR 0381), and the system
 # releases' (ADR 0467): JSON, signed as written, so a header could not be
-# added even if JSON had comments.
+# added even if JSON had comments; and the release keys in PEM, which
+# openssl reads as they are (ADR 0779).
 [[annotations]]
 path = [
   "catalog/keys/*.json",
   "catalog/metadata/*.json",
   "releases/keys/*.json",
+  "releases/keys/*.pem",
   "releases/metadata/*.json",
   "releases/stand-in-root.json",
 ]

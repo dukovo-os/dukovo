@@ -23,7 +23,6 @@ use std::io::{self, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -38,6 +37,7 @@ use crate::probe;
 use crate::proc::{self, Mount};
 use crate::sys::{self, SYS};
 use crate::util::{self, Fail};
+use sysapi::signal::{self, Caught};
 
 /// The exit status of a scrub that found errors no copy mends, as Linux's.
 const UNCORRECTABLE: i32 = 3;
@@ -146,10 +146,11 @@ pub(crate) fn kept_in(dir: &Path, uuid: &str) -> Option<Kept> {
 
 /// Whether process `pid` is there.
 fn alive(pid: i32) -> bool {
-    // SAFETY: signal 0 checks that the process is there, and sends none.
     pid > 0
-        && (unsafe { libc::kill(pid, 0) } == 0
-            || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
+        && match sysapi::process::kill(pid, 0) {
+            Ok(()) => true,
+            Err(err) => err.raw_os_error() == Some(libc::EPERM),
+        }
 }
 
 /// The lock of a filesystem's scrub, removed when it goes.
@@ -318,25 +319,25 @@ impl Pace {
     }
 }
 
-/// The number of the signal that asked scrub to stop, or 0.
-static STOPPED: AtomicI32 = AtomicI32::new(0);
+static INTERRUPTED: Caught = Caught::new();
+static TERMINATED: Caught = Caught::new();
+static HUNG_UP: Caught = Caught::new();
 
-extern "C" fn on_signal(signal: libc::c_int) {
-    STOPPED.store(signal, Ordering::Relaxed);
+/// The number of the signal that asked scrub to stop, or 0.
+fn stopped_by() -> i32 {
+    [(libc::SIGINT, &INTERRUPTED), (libc::SIGTERM, &TERMINATED), (libc::SIGHUP, &HUNG_UP)]
+        .into_iter()
+        .find(|(_, caught)| caught.is_set())
+        .map_or(0, |(signal, _)| signal)
 }
 
 /// Has Ctrl-C, SIGTERM (which the web console's stop sends) and SIGHUP
 /// stop the scrub: it is told of, and ends the command, which writes what
 /// it has.
 fn stop_on_signals() {
-    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
-        // SAFETY: all zeros is a valid sigaction: numbers, a signal set
-        // and a function address.
-        let mut action: libc::sigaction = unsafe { util::zeroed() };
-        action.sa_sigaction = on_signal as extern "C" fn(libc::c_int) as *const () as usize;
-        // SAFETY: the handler only stores to an atomic.
-        unsafe { libc::sigaction(signal, &raw const action, std::ptr::null_mut()) };
-    }
+    let _ = signal::catch(libc::SIGINT, &INTERRUPTED, 0);
+    let _ = signal::catch(libc::SIGTERM, &TERMINATED, 0);
+    let _ = signal::catch(libc::SIGHUP, &HUNG_UP, 0);
 }
 
 /// Why a scrub did not end.
@@ -498,7 +499,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break None,
         }
-        if STOPPED.load(Ordering::Relaxed) != 0 {
+        if stopped_by() != 0 {
             break None;
         }
         if options.progress
@@ -550,7 +551,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             stopped("it failed before the end");
             Err(util::failed(&path.display(), err))
         }
-        None => match STOPPED.load(Ordering::Relaxed) {
+        None => match stopped_by() {
             0 => {
                 stopped("it ended without an answer");
                 Err(util::fail("the scrub ended without an answer".into()))

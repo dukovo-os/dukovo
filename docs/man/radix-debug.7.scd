@@ -52,7 +52,7 @@ A report looks like this:
 
 ```
 Radix panic on CPU 0 at 0.327298 s: Page fault (#PF) at 0xffffffffa031416e while writing 0xdead0000: the page is not mapped
-  Radix 0.17.0 on x86_64, boot 1; 1 of 1 other CPUs stopped
+  Radix 1.0.0-alpha.1 on x86_64, boot 1; 1 of 1 other CPUs stopped
 Registers:
      rax 00000000dead0000     rbx 0000000000000000     rcx 00000000f6d8320b     rdx 000000001fcbfbfd
      ...
@@ -743,6 +743,14 @@ boots.
 	QEMU without KVM reads MSRs it does not know as 0, and there the
 	test is skipped with a warning that says what it read; on aarch64,
 	which has no MSRs, it is skipped too.
+
+*copy*
+	Has *memcpy* copy each size from 0 to 1,100 bytes, from each of the 8
+	places in a quadword to each, into a buffer filled with a byte no
+	source byte is. Each copy must match its source and leave every byte
+	around it as it was. The sizes pass each way the x86-64 kernel's own
+	*memcpy* copies by, which change at 16, 32 and 512 bytes. Reports
+	*selftest copy: passed* with the number of copies.
 
 *caps*
 	Runs the capability store's test suite in spaces of its own (see

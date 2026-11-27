@@ -35,13 +35,13 @@
 //! covers it.
 
 use std::io::{self, Read, Write};
-use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use accounts::console::{Console, Way};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sysapi::fd::Standard;
 
 use crate::account::Input;
 use crate::admin::{ask, table, told};
@@ -464,7 +464,7 @@ fn client(name: &str, args: &mut Args) -> Result<i32, Fail> {
     let first = connect(name).map_err(fail)?;
     let mut again = || connect(name);
     let carried = bridge::carry(
-        io::stdin().as_raw_fd(),
+        Standard::Input.fd(),
         io::stdout().lock(),
         Some(first),
         &mut again,

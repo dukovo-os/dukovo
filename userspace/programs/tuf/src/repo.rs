@@ -127,6 +127,13 @@ fn normal_pem(pem: &str) -> String {
     out
 }
 
+/// `bytes` in base64 with padding, as Sigstore's Rekor takes a signature
+/// and a public key.
+#[must_use]
+pub fn to_base64(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
 /// The PEM SubjectPublicKeyInfo of the P-256 point `point`, uncompressed.
 #[must_use]
 pub fn p256_pem(point: &[u8]) -> String {
