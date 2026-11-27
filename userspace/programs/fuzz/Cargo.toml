@@ -113,4 +113,4 @@ debug = 1
 
 [workspace.package]
 # Keep in step with the root Cargo.toml (a unit test of ob checks it).
-version = "0.17.0"
+version = "1.0.0-alpha.1"
