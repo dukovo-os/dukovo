@@ -312,6 +312,22 @@ impl FuseNode {
         self.fetch().unwrap_or(kept.attr)
     }
 
+    /// Its [`Stat`] made of attributes `a`.
+    fn stat_of(&self, a: Attr) -> Stat {
+        Stat {
+            kind: self.kind,
+            size: a.size,
+            allocated: a.blocks.saturating_mul(512),
+            id: a.ino,
+            created: 0,
+            modified: time(a.mtime, a.mtimensec),
+            accessed: time(a.atime, a.atimensec),
+            changed: time(a.ctime, a.ctimensec),
+            links: a.nlink,
+            device: device(a.rdev),
+        }
+    }
+
     /// Asks for its attributes now.
     fn fetch(&self) -> Result<Attr> {
         let data = self.call(op::GETATTR, &[&[0u8; 16]])?;
@@ -525,19 +541,12 @@ impl Node for FuseNode {
     }
 
     fn stat(&self) -> Stat {
-        let a = self.attr();
-        Stat {
-            kind: self.kind,
-            size: a.size,
-            allocated: a.blocks.saturating_mul(512),
-            id: a.ino,
-            created: 0,
-            modified: time(a.mtime, a.mtimensec),
-            accessed: time(a.atime, a.atimensec),
-            changed: time(a.ctime, a.ctimensec),
-            links: a.nlink,
-            device: device(a.rdev),
-        }
+        self.stat_of(self.attr())
+    }
+
+    fn stat_kept(&self) -> Stat {
+        let kept = self.cached.lock().attr;
+        self.stat_of(kept)
     }
 
     fn kind(&self) -> Kind {

@@ -269,6 +269,28 @@ fn only_authd_holds_its_own_domain() {
 }
 
 #[test]
+fn only_authd_holds_the_jit_capability() {
+    // authd hands memory.jit to each sign-in session (ADR 0624), and no
+    // other shipped service may ask for it.
+    for (name, text) in SHIPPED {
+        let service = service::from_toml(text).unwrap();
+        assert_eq!(service.permissions.memory.jit, *name == "authd", "{name}");
+    }
+    assert!(!service::from_toml(&file("")).unwrap().permissions.memory.jit);
+    let asked = service::from_toml(&file("[permissions]\nmemory.jit = true\n")).unwrap();
+    assert!(asked.permissions.memory.jit);
+    let refused = file("[permissions]\nmemory.jit = false\n");
+    assert!(!service::from_toml(&refused).unwrap().permissions.memory.jit);
+    // The group is read by hand (`Memory::from_toml`): it refuses what a
+    // derived reader would.
+    assert!(error(&file("[permissions]\nmemory.jit = \"yes\"\n")).contains("true or false"));
+    let other = error(&file("[permissions]\nmemory.exec = true\n"));
+    assert!(other.contains("`exec` is not a setting here"), "{other}");
+    let one = error(&file("[permissions]\nmemory = 1\n"));
+    assert!(one.contains("memory is a group of keys"), "{one}");
+}
+
+#[test]
 fn devices_name_the_cards_a_driver_drives() {
     // Of the shipped services only e1000d drives cards (ADR 0198).
     for (name, text) in SHIPPED {

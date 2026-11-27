@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Memory that is writable and executable at once is given only with
+# memory.jit (ADR 0624), on the machine's own processor, whose page tables
+# and instruction cache the kernel keeps right as code is written and run.
+# The program is the boot test's own, userspace/posix/linux/jit.c, built on
+# the lab PC with its glibc. Run through `linux run --allow-jit`, which the
+# lab account's SSH session may give, it writes machine code into private
+# anonymous memory and runs it, turns a writable mapping executable, keeps
+# the right across fork and execve, and never gets a file's pages or shared
+# memory writable and executable. Run without the option, it is refused, ends
+# with status 3, and `linux run` says that `--allow-jit` would have given
+# it.
+about = "a Linux program given memory.jit through linux run --allow-jit writes and runs machine code in its private memory, turns a writable mapping executable and keeps the right across fork and execve, never for a file's pages or shared memory; without it the program is refused and linux run names the option (ADR 0624)"
+time = "5m"
+host_needs = ["scp", "cc"]
+
+[[step]]
+run = "sh -c 'rm -rf /users/lab/linux-static && mkdir /users/lab/linux-static'"
+[[step]]
+host = "sh {here}/linux-static.sh jit {machine} {machine-port:22}"
+expect = "copied: jit"
+[[step]]
+run = "chmod 755 /users/lab/linux-static/jit"
+[[step]]
+run = "sh -c 'cd /tmp && linux run --allow /users/lab/linux-static --allow-jit -- /users/lab/linux-static/jit --given; echo jit-rc=$?'"
+expect = ["jit (given): running on Dukovo", "jit (given): every check passed", "jit-rc=0"]
+expect_not = ["FAILED"]
+[[step]]
+run = "sh -c 'cd /tmp && linux run --allow /users/lab/linux-static -- /users/lab/linux-static/jit --refused; echo jit-rc=$?'"
+expect = ["run it with linux run --allow-jit", "jit-rc=3"]
+[[step]]
+run = "sh -c 'rm -rf /users/lab/linux-static && echo gone'"
+expect = "gone"

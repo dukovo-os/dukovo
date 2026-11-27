@@ -558,6 +558,18 @@ const ROWS: &[Row] = &[
         "lx_clock_gettime",
         "Linux program: monotonic clock read through the vDSO (`clock_gettime`)",
     ),
+    linux_program(
+        "lx_forwarded_null",
+        "Linux program: a call Dukovo's linuxd answers (`personality(0xffffffff)`)",
+    ),
+    linux_program(
+        "lx_seccomp_null",
+        "Linux program: system call under Podman's seccomp profile, which it always allows (`getppid`)",
+    ),
+    linux_program(
+        "lx_seccomp_filtered",
+        "Linux program: a call whose argument Podman's seccomp profile checks (`personality`)",
+    ),
 ];
 
 /// `ob bench`.

@@ -86,6 +86,7 @@ pub const KEYS: &[&str] = &[
     "names",
     "domain",
     "devices.pci",
+    "memory.jit",
     "backup",
     "backup.before",
     "backup.after",
@@ -767,6 +768,9 @@ pub struct Permissions {
     pub domain: bool,
     /// `devices.*`: the cards it drives, as a driver program.
     pub devices: Devices,
+    /// `memory.*`: what of memory it may do beyond what every program
+    /// does.
+    pub memory: Memory,
 }
 
 impl Permissions {
@@ -808,6 +812,43 @@ pub struct Admin {
     /// kernel's settings, as the tune service does (ADR 0476).
     #[serde(default)]
     pub tune: bool,
+}
+
+/// The memory group: `memory.jit`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Memory {
+    /// Whether it gets the jit capability (radix-jit(2), ADR 0624), with
+    /// which it lets a program it starts map memory that is writable and
+    /// executable at once: authd's, which puts it in each sign-in session
+    /// for `bundle run` and `linux run --allow-jit`. The service itself
+    /// does not get memory.jit from it.
+    pub jit: bool,
+}
+
+impl Memory {
+    /// The group from the file's `memory` table, read by hand rather than
+    /// by a reader serde derives: Spark reads service files, and such a
+    /// reader for one more group costs it about 5 KiB, where ADR 0427
+    /// holds Spark, the startup archive, under a MiB.
+    fn from_toml(value: &toml::Value) -> Result<Memory, String> {
+        let toml::Value::Table(table) = value else {
+            return Err("memory is a group of keys, such as memory.jit = true".to_owned());
+        };
+        let mut memory = Memory::default();
+        for (key, value) in table {
+            match (key.as_str(), value) {
+                ("jit", toml::Value::Boolean(jit)) => memory.jit = *jit,
+                ("jit", _) => return Err("memory.jit is true or false".to_owned()),
+                (key, _) => return Err(format!("unknown field `{key}`, expected `jit`")),
+            }
+        }
+        Ok(memory)
+    }
+}
+
+/// An empty group, for a file that leaves one out.
+fn no_group() -> toml::Value {
+    toml::Value::Table(toml::Table::new())
 }
 
 /// The devices group: `devices.pci`, the cards the kernel left for a
@@ -1118,6 +1159,9 @@ struct RawPermissions {
     domain: bool,
     #[serde(default)]
     devices: Devices,
+    /// Read as [`Memory::from_toml`] says.
+    #[serde(default = "no_group")]
+    memory: toml::Value,
 }
 
 impl TryFrom<RawPermissions> for Permissions {
@@ -1132,6 +1176,7 @@ impl TryFrom<RawPermissions> for Permissions {
             names: raw.names,
             domain: raw.domain,
             devices: raw.devices,
+            memory: Memory::from_toml(&raw.memory)?,
         };
         let grants = permissions.network.grants() + usize::from(permissions.admin.network);
         if grants > NETWORK_SLOTS as usize {
@@ -1420,6 +1465,10 @@ domain = false
 # The cards it drives, as a driver program does, by their PCI vendor and
 # device IDs, such as "8086:100e", or "8086:*" for any of the vendor's.
 devices.pci = []
+# Letting the programs it starts make machine code as they run, as
+# JavaScript engines do: only for authd, which hands it to each sign-in
+# session.
+memory.jit = false
 
 # What it runs around the snapshots of backup(8), each a program's
 # absolute path and its arguments, as the service runs: before, to bring

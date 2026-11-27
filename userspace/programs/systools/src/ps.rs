@@ -66,6 +66,7 @@ const KEYS: &[(&[&str], &str, bool)] = &[
     (&["addr"], "ADDR", false),
     (&["tpgid"], "TPGID", true),
     (&["ioclass"], "IOCLASS", false),
+    (&["jit"], "JIT", false),
     (&["domain"], "DOMAIN", false),
 ];
 
@@ -597,6 +598,12 @@ impl Row<'_> {
             "addr" => "-".into(),
             "tpgid" => self.terminal_group().to_string(),
             "ioclass" => format!("{}/{}", p.io_class, p.io_level),
+            "jit" => match (p.jit, p.jit_refused) {
+                (true, _) => "yes",
+                (false, true) => "refused",
+                (false, false) => "no",
+            }
+            .into(),
             "domain" => p.domain.clone(),
             _ => "?".into(),
         }

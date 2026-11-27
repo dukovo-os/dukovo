@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! `ob test fuzz`: runs the cargo-fuzz targets of the update path's
-//! parsers and verifiers (ADR 0536), and linuxd's netlink request parser
-//! (ADR 0621), which are in `userspace/programs/fuzz`.
+//! parsers and verifiers (ADR 0536), linuxd's netlink request parser
+//! (ADR 0621) and the kernel's classic BPF (radix-bpf, ADRs 0346 and
+//! 0623), which are in `userspace/programs/fuzz`.
 //!
 //! Each target runs for `--seconds` (60 without it) on the corpus kept in
 //! `.cache/fuzz/<target>/`, which starts from the seeds in git under
@@ -23,7 +24,7 @@ use crate::{Args, Context, Ctx, Error, Result};
 
 /// The fuzz targets, each named for the file in the fuzz crate's
 /// `fuzz_targets` folder.
-pub const TARGETS: [&str; 10] = [
+pub const TARGETS: [&str; 11] = [
     "release-list",
     "tuf-root",
     "tuf-targets",
@@ -34,6 +35,7 @@ pub const TARGETS: [&str; 10] = [
     "canary-report",
     "slot-state",
     "linuxd-netlink",
+    "bpf-filter",
 ];
 
 /// The fuzz crate, relative to the root of the tree.

@@ -1,8 +1,9 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-# The fuzz targets of the update path's parsers (ADR 0536) and of linuxd's
-# netlink request parser (ADR 0621), run by `./ob test fuzz` with
+# The fuzz targets of the update path's parsers (ADR 0536), of linuxd's
+# netlink request parser (ADR 0621) and of the kernel's classic BPF
+# (radix-bpf: packet filters and seccomp filters, ADRs 0346 and 0623), run by `./ob test fuzz` with
 # cargo-fuzz on the pinned nightly. They build on the host, in a workspace
 # and with a Cargo.lock of their own, apart from the programs' for Radix
 # and from their host builds.
@@ -22,6 +23,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4.13"
 linuxd = { path = "../linuxd" }
+radix-bpf = { path = "../../../kernel/lib/bpf" }
 ring = "0.17.14"
 serde_json = "1.0.140"
 slots = { path = "../slots" }
@@ -94,6 +96,13 @@ bench = false
 [[bin]]
 name = "linuxd-netlink"
 path = "fuzz_targets/linuxd-netlink.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bpf-filter"
+path = "fuzz_targets/bpf-filter.rs"
 test = false
 doc = false
 bench = false

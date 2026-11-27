@@ -163,6 +163,7 @@ pub const KERNEL_LIBRARIES: &[&str] = &[
     "radix-bootfs",
     "radix-block",
     "radix-bootinfo",
+    "radix-bpf",
     "radix-broadcom-net",
     "radix-btrfs",
     "radix-cap",
@@ -588,6 +589,18 @@ const LINUX_FILES: u8 = 47;
 /// dynamic Linux program of the `linux-view` test, which `ob` builds with
 /// the host's C compiler ([`cases::linux_view::make_disk`]).
 const LINUX_VIEW_FILES: u8 = 48;
+
+/// [`Disk::fat`] for a FAT32 disk that holds the Linux base's bundle, both
+/// lines of Node.js's and the project of the `linux-node` test, with the
+/// npm cache and the sums its work makes, which `ob` makes on the build
+/// machine with Node.js's releases ([`cases::linux_node::make_disk`]).
+const LINUX_NODE_FILES: u8 = 49;
+
+/// [`Disk::fat`] for a FAT32 disk that holds the Linux base's bundle, LTP's
+/// system call tests that pass on the build machine's Linux, the runner and
+/// seccomp-diff, and the script of `ob test linux-suite`
+/// ([`linux_suite::make_disk`]).
+const LINUX_SUITE_FILES: u8 = 50;
 
 /// The start of the names of the bundle files of the catalog's programs
 /// built with Go (ADR 0600), about 37 MiB together: they are on the disks
@@ -1406,6 +1419,20 @@ const fn linux_view_disk(kib: u64, label: &'static str) -> Disk {
     Disk { fat: LINUX_VIEW_FILES, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
 }
 
+/// A FAT32 virtio disk of `kib` KiB, labelled `label`, holding the
+/// bundles, the project and the npm cache of the `linux-node` test
+/// ([`LINUX_NODE_FILES`]), which Spark mounts at `/volumes/<disk>`.
+const fn linux_node_disk(kib: u64, label: &'static str) -> Disk {
+    Disk { fat: LINUX_NODE_FILES, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
+}
+
+/// A FAT32 virtio disk of `kib` KiB, labelled `label`, holding what `ob test
+/// linux-suite` runs on Dukovo ([`LINUX_SUITE_FILES`]), which Spark mounts
+/// at `/volumes/<disk>`.
+const fn linux_suite_disk(kib: u64, label: &'static str) -> Disk {
+    Disk { fat: LINUX_SUITE_FILES, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
+}
+
 /// A FAT32 virtio disk of `kib` KiB, labelled `label`, holding the test
 /// updates of the installed system ([`UPDATE_RELEASES`]), which Spark
 /// mounts at `/volumes/<disk>`.
@@ -1876,6 +1903,7 @@ mod affected;
 mod console_client;
 mod fuzz;
 mod go_suite;
+mod linux_suite;
 mod matrix;
 mod phase11;
 mod phase12;
@@ -1980,6 +2008,8 @@ fn needs_packing(case: &Case) -> bool {
                 | GO_APPS_FILES
                 | GO_SUITE_FILES
                 | GO_TOOLCHAIN_FILES
+                | LINUX_NODE_FILES
+                | LINUX_SUITE_FILES
                 | LINUX_VIEW_FILES
                 | PHP_FILES
                 | POSTGRESQL_FILES
@@ -3787,12 +3817,18 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         Some("go-suite") if selected.is_empty() && shard.is_none() && !retry && !image_only => {
             return go_suite::command(ctx, profile, named_timeout.map(Duration::from_secs));
         }
-        Some(suite @ ("unit" | "kani" | "tla" | "tuf" | "riscv" | "lab-writer" | "go-suite")) => {
+        Some("linux-suite") if selected.is_empty() && shard.is_none() && !retry && !image_only => {
+            return linux_suite::command(ctx, profile, named_timeout.map(Duration::from_secs));
+        }
+        Some(
+            suite @ ("unit" | "kani" | "tla" | "tuf" | "riscv" | "lab-writer" | "go-suite"
+            | "linux-suite"),
+        ) => {
             crate::bail!("--case and --shard select boot tests; they cannot be used with `{suite}`")
         }
         Some(other) => crate::bail!(
             "unknown test suite `{other}`; use `unit`, `boot`, `replay`, `matrix`, `fuzz`, `kani`, \
-             `tla`, `tuf`, `corpus`, `riscv`, `lab-writer` or `go-suite`"
+             `tla`, `tuf`, `corpus`, `riscv`, `lab-writer`, `go-suite` or `linux-suite`"
         ),
     };
     if shard.is_some() && which.as_deref() != Some("boot") {
@@ -3912,6 +3948,7 @@ pub const PROVED_LIBRARIES: &[&str] = &[
     "radix-ahci",
     "radix-nvme",
     "radix-net",
+    "radix-bpf",
 ];
 
 /// The programs on Rust's standard library with Kani proof harnesses,
@@ -5758,6 +5795,11 @@ fn make_disks(
             made.push(image);
             continue;
         }
+        if disk.fat == LINUX_SUITE_FILES {
+            linux_suite::make_disk(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
         if disk.fat == GO_FILES {
             cases::go_runtime::make_disk(ctx, disk, &image.path)?;
             made.push(image);
@@ -5770,6 +5812,11 @@ fn make_disks(
         }
         if disk.fat == LINUX_VIEW_FILES {
             cases::linux_view::make_disk(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == LINUX_NODE_FILES {
+            cases::linux_node::make_disk(ctx, disk, &image.path)?;
             made.push(image);
             continue;
         }
@@ -6419,11 +6466,14 @@ fn fsck(disk: &DiskImage, _log: &str) -> Result<(), String> {
 /// with mtools. Go's bundle, about 72 MiB, is on the disks of the two runs
 /// that install it ([`GO_TOOLCHAIN_FILES`]), and the programs' on the disks
 /// of theirs ([`GO_APPS_FILES`]), so that the disks of the others stay
-/// small.
+/// small; the Linux base's and Node.js's, Linux bundles, on the disks of the
+/// tests that run Linux programs ([`LINUX_VIEW_FILES`],
+/// [`LINUX_NODE_FILES`]).
 fn make_bundle_files(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
     make_bundle_disk(ctx, disk, path, |name| {
         !name.starts_with(cases::go_toolchain::BUNDLE_PREFIX)
             && !name.starts_with(cases::linux_view::BUNDLE_PREFIX)
+            && !name.starts_with(cases::linux_node::BUNDLE_PREFIX)
             && !is_go_app_bundle(name)
     })
 }
@@ -7811,7 +7861,7 @@ fn boot_report(vm: &mut Vm, case: &Case) -> Result<(), String> {
     } else {
         vm.expect("Lock checker: ")?;
     }
-    vm.expect("Capabilities: ready; 27 object kinds, 15 rights")?;
+    vm.expect("Capabilities: ready; 28 object kinds, 15 rights")?;
     vm.expect("User mode: SYSCALL/SYSRET entry, user half ")?;
     vm.expect("Files: the root is a tmpfs; Spark mounts the rest")?;
     // Every test image carries the user test programs.

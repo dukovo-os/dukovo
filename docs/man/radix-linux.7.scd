@@ -67,8 +67,8 @@ as Linux's would, *SA_RESTART* included.
 The table has Linux's calls for files and descriptors, paths and
 directories, processes and threads, memory, signals and interval timers,
 futexes, clocks and sleeping, sockets, *poll*, *select* and *epoll*, the
-kernel's own files, file watches, identities, limits and scheduling, and
-*getrandom*. A number it does not know is ENOSYS, as on
+kernel's own files, file watches, identities, limits and scheduling,
+*seccomp* (below), and *getrandom*. A number it does not know is ENOSYS, as on
 a Linux too old for the call, unless the program has linuxd (below).
 
 Some calls are refused for good, as Linux refuses a program without the
@@ -129,11 +129,21 @@ gives "." and ".." first, and *lseek* moves the cursor.
 
 *mmap*, *munmap*, *mprotect* and *brk* map, unmap and protect through the
 address space's methods; a page may not be both writable and executable,
-and asking for both is EACCES. *madvise* with *MADV_DONTNEED* or
+and asking for both is EACCES, but for the private anonymous memory of a
+program given memory.jit, as *linux run --allow-jit* gives it (ADR 0624,
+*radix-jit*(2)): there a JIT compiler, such as Node.js's V8, writes and
+runs its code. A file's pages and shared memory are never writable and
+executable, memory.jit or not. A process keeps memory.jit through *fork*
+and *execve*. *madvise* with *MADV_DONTNEED* or
 *MADV_FREE* lets go of private anonymous pages, which read as zeros when
-touched again (*radix-address-space*(2)'s *forget*). *mremap* shrinks a
-mapping; growing or moving one is ENOMEM, and the C libraries' *realloc*
-copies instead. *memfd_create* makes a file in memory that no directory
+touched again (*radix-address-space*(2)'s *forget*). *mremap* is the
+address space's *remap* (ADR 0629): it shrinks a mapping, grows it where
+the pages after it are free, and with *MREMAP_MAYMOVE* moves it, to the
+place *MREMAP_FIXED* names or one of its own, taking its pages with it
+without copying them, so that the C libraries' *realloc* of a large block
+copies nothing. *MREMAP_DONTUNMAP* leaves the old place of private memory
+mapped and empty, and an old size of 0 maps shared memory a second time.
+*memfd_create* makes a file in memory that no directory
 holds, which *fcntl*'s *F_ADD_SEALS* seals (ADR 0614).
 
 # PROCESSES AND THREADS
@@ -153,6 +163,12 @@ the robust list *set_robust_list* named and marks each lock the thread
 held *FUTEX_OWNER_DIED*, waking a waiter, so the next locker of a robust
 mutex gets EOWNERDEAD (ADR 0617).
 
+*prctl*'s *PR_SET_PDEATHSIG* and *PR_SET_CHILD_SUBREAPER* are kept in the
+kernel's process tree, as on Linux: a process gets its signal when its
+parent ends, sent as *kill* from the parent would be, and the orphans of
+a subreaper's descendants become its children, an ended one told to it
+with SIGCHLD and waited for as its parent would have.
+
 # SIGNALS
 
 Signals, masks and actions are Linux's numbers and records, and a
@@ -164,7 +180,9 @@ A process acts for the user and the group it was started with, and for
 the other groups the account has, and keeps them: Radix has no
 set-user-ID. *setuid*, *setresuid*, *setgid*, *setgroups* and the others
 succeed when they would change nothing and fail with EPERM when they
-would.
+would. *capget* gives root every capability, effective and permitted, and
+another user none, and *capset* may only set them to what they are; the
+bounding set that *prctl*'s *PR_CAPBSET_READ* reads has every capability.
 
 # SOCKETS, POLL AND TERMINALS
 
@@ -206,15 +224,43 @@ terminal's native *control*. *TCGETS* and the *TCSETS* calls move the
 first 36 bytes of the native settings, which are Linux's *struct
 termios*; the speeds follow *c_cflag*'s baud bits.
 
+# SECCOMP
+
+A Linux program may limit its own calls with *seccomp*(2) or *prctl*'s
+*PR_SET_SECCOMP* (ADR 0623). A filter is a classic BPF program, checked
+as Linux checks it, that runs on each call of the thread before the call
+is made, the calls linuxd answers included; of a chain of filters the
+strictest value wins. *ALLOW* and *LOG* make the call; *ERRNO* fails it
+with the data as its errno, at most 4095; *TRAP* sends SIGSYS with
+*si_code* SYS_SECCOMP, *si_errno* the data and *si_call_addr*,
+*si_syscall* and *si_arch*, and ends the process if SIGSYS is blocked,
+ignored or has no handler; *USER_NOTIF* and *TRACE* fail the call with
+ENOSYS; *KILL_THREAD* ends the thread with SIGSYS (the process, if it is
+the last), and *KILL_PROCESS* or an unknown action ends the process.
+Strict mode allows *read*, *write*, *exit* and *rt_sigreturn*, and ends
+the thread with SIGKILL for any other call.
+
+A filter needs *PR_SET_NO_NEW_PRIVS* first (EACCES without it), as for a
+Linux program without *CAP_SYS_ADMIN*. Threads, *fork* and *execve* keep
+a thread's filters; *SECCOMP_FILTER_FLAG_TSYNC* gives every thread of the
+process the caller's chain, or answers the number of a thread that
+cannot take it (ESRCH with *SECCOMP_FILTER_FLAG_TSYNC_ESRCH*). A chain
+holds at most 32,768 instructions, counted as Linux counts them (ENOMEM
+past that). A listener for *USER_NOTIF* is not made: the flags that ask
+for one, and *SECCOMP_GET_NOTIF_SIZES*, are EINVAL. A filtered program
+may not *execve* a Dukovo program (EACCES), as the filter would not
+follow it. Refusals are logged on the kernel log's *seccomp:* lines, at
+most ten in five seconds.
+
 # NOT YET
 
-Later steps of Phase 18 bring seccomp and namespaces. Until then those
-calls are ENOSYS or EPERM, as above. The other gaps are rows of
+A later step of Phase 18 brings namespaces. Until then those calls are
+ENOSYS or EPERM, as above. The other gaps are rows of
 _docs/deferred.md_.
 
 # SEE ALSO
 
 *radix-posix*(7), *radix-processes*(7), *radix-files*(7),
 *radix-vdso*(7), *radix-address-space*(2), *radix-event-queue*(2),
-*radix-file*(2), *radix-linux-call*(2), *radix-process*(2), *linux*(1),
+*radix-file*(2), *radix-jit*(2), *radix-linux-call*(2), *radix-process*(2), *linux*(1),
 *linuxd*(8), *ob*(1)

@@ -58,7 +58,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use radix_abi::address_space::{ANONYMOUS_TOP, PAGE_SIZE, USER_START};
 use radix_abi::errors::Kernel;
 use radix_abi::file::Seals;
-use radix_hal::{PageEdit, Scanned, UserAccess, UserMode};
+use radix_hal::{MapPageError, PageEdit, Scanned, UserAccess, UserMode};
 use radix_mm::{FRAMES, Flags, Owner};
 use radix_vfs::{NodeRef, Out};
 
@@ -441,7 +441,7 @@ impl FileSource {
     fn kept_page(&self, from: u64, access: UserAccess) -> Option<(&ProgramRef, u64)> {
         let pages = self.kept.as_ref().filter(|pages| pages.usable(&self.node))?;
         let at = self.base.checked_add(from)?;
-        (access != UserAccess::ReadWrite
+        (!access.writes()
             && self.size.saturating_sub(from) >= PAGE_SIZE
             && at.is_multiple_of(PAGE_SIZE))
         .then_some((pages, at / PAGE_SIZE))
@@ -457,6 +457,23 @@ pub enum Placement {
     Fixed(u64),
     /// At this address, if nothing is there (`MAP_FIXED_NOREPLACE`).
     FixedNoReplace(u64),
+}
+
+/// How [`SpaceObject::remap`] may place a mapping it grows or moves
+/// (ADR 0629), as Linux's `mremap` flags say.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Remap {
+    /// It may go elsewhere if it cannot grow where it is
+    /// (`MREMAP_MAYMOVE`).
+    pub may_move: bool,
+    /// It goes here, whatever is mapped here going first
+    /// (`MREMAP_FIXED`).
+    pub to: Option<u64>,
+    /// Its old place stays mapped as it was, empty (`MREMAP_DONTUNMAP`):
+    /// a private mapping's alone.
+    pub keep_old: bool,
+    /// Where it goes if it moves, when that is free and `to` is not given.
+    pub hint: u64,
 }
 
 /// What became of a fault on an address of a space.
@@ -485,7 +502,7 @@ pub enum Fault {
 /// The access a page of a private region gets while `sharers` spaces map
 /// it: read-only while it is shared, so that a write copies it first.
 fn private_access(access: UserAccess, sharers: u32) -> UserAccess {
-    if sharers > 1 && access == UserAccess::ReadWrite { UserAccess::Read } else { access }
+    if sharers > 1 { access.without_write() } else { access }
 }
 
 /// A page of RAM as a buffer to read a file into.
@@ -657,7 +674,7 @@ impl SpaceObject {
         if let Some(shared) = &anon.shared
             && shared.deny_writing()
         {
-            if anon.access == Some(UserAccess::ReadWrite) {
+            if anon.access.is_some_and(UserAccess::writes) {
                 return Err(error(Kernel::NotPermitted));
             }
             anon.read_only = true;
@@ -715,29 +732,36 @@ impl SpaceObject {
         let mut covered = start;
         let mut read_only = false;
         let mut sealed = false;
+        let mut private = true;
         for region in &regions[first_after(&regions, start)..] {
             let Backing::Anon(anon) = &region.backing else { break };
             if covered >= end || region.start > covered {
                 break;
             }
             read_only |= anon.read_only;
+            private &= anon.shared.is_none() && anon.file.is_none() && anon.segment.is_none();
             // A mapping that is writable already stays so, whatever the
             // seals the file got after it was made.
-            sealed |= anon.access != Some(UserAccess::ReadWrite)
+            sealed |= !anon.access.is_some_and(UserAccess::writes)
                 && anon.shared.as_ref().is_some_and(|shared| shared.deny_writing());
             covered = region.end();
         }
         if covered < end {
             return Err(error(Kernel::NotMapped));
         }
+        // Only private anonymous memory is ever writable and executable
+        // (memory.jit, ADR 0624): never a file's pages or shared ones.
+        if !private && access == Some(UserAccess::ReadWriteExecute) {
+            return Err(error(Kernel::MissingRights));
+        }
         // A shared mapping of a file or segment that may only be read stays
         // so, as Linux's mprotect refuses with EACCES.
-        if read_only && access == Some(UserAccess::ReadWrite) {
+        if read_only && access.is_some_and(UserAccess::writes) {
             return Err(error(Kernel::MissingRights));
         }
         // A read-only mapping made before a future_write seal cannot be
         // made writable after it, which Linux's `mprotect` allows.
-        if sealed && access == Some(UserAccess::ReadWrite) {
+        if sealed && access.is_some_and(UserAccess::writes) {
             return Err(error(Kernel::NotPermitted));
         }
         Self::split_at(&mut regions, start)?;
@@ -799,6 +823,163 @@ impl SpaceObject {
             }
         }
         Ok(())
+    }
+
+    /// Changes the mapping of the `pages` pages from `start` to `new_pages`
+    /// pages, as Linux's `mremap` does (ADR 0629), and returns where it is
+    /// now. Shrinking unmaps the tail, and needs only a region at `start`.
+    /// Otherwise the pages must lie in one region of anonymous memory
+    /// (not_mapped if they do not); a frame's, a ring's or a card's cannot
+    /// grow or move (wrong_kind). Growing extends the region
+    /// where the pages after it are free, or moves it, as `how` allows
+    /// (no_memory if it may not, or finds no room). A move takes the pages
+    /// as they are, their frames, swap slots and access, by moving their
+    /// entries: nothing is copied, and they stay charged to the space.
+    /// `pages` 0 maps a shared mapping's pages a second time, from
+    /// `start` on.
+    pub fn remap(&self, start: u64, pages: u64, new_pages: u64, how: Remap) -> Result<u64> {
+        let invalid = |at| Err(Kernel::InvalidArgument.status(at));
+        if new_pages == 0 {
+            return invalid(2);
+        }
+        if (how.to.is_some() || how.keep_old) && !how.may_move || how.keep_old && pages != new_pages
+        {
+            return invalid(3);
+        }
+        if radix_ipc::range::user_pages(start, pages.max(1)).is_none() {
+            return invalid(0);
+        }
+        let end = start + pages * PAGE_SIZE;
+        let mut regions = self.regions.lock();
+        let index = first_after(&regions, start);
+        let Some(region) = regions.get(index).filter(|r| r.start <= start) else {
+            return Err(error(Kernel::NotMapped));
+        };
+        // Shrinking needs only a mapping at `start`, as Linux's: the tail
+        // goes, whatever is mapped there, as `discard` takes it.
+        if how.to.is_none() && !how.keep_old && new_pages <= pages {
+            if new_pages < pages {
+                self.cut(&mut regions, start + new_pages * PAGE_SIZE, end)?;
+            }
+            return Ok(start);
+        }
+        if end > region.end() {
+            return Err(error(Kernel::NotMapped));
+        }
+        let Backing::Anon(anon) = &region.backing else {
+            return Err(error(Kernel::WrongKind));
+        };
+        let private = anon.shared.is_none() && anon.segment.is_none();
+        // A private mapping has no pages to map twice, and the old place
+        // of a shared one would not be empty.
+        if pages == 0 && private || how.keep_old && !private {
+            return invalid(0);
+        }
+        // Where a fixed place is, which must not meet the old one.
+        let fixed = match how.to {
+            Some(to) => {
+                let to_end = radix_ipc::range::user_pages(to, new_pages)
+                    .ok_or(Kernel::InvalidArgument.status(4))?;
+                if end > to && to_end > start {
+                    return invalid(4);
+                }
+                Some((to, to_end))
+            }
+            None => None,
+        };
+        if pages == 0 {
+            // Taken before the fixed place is cleared, which may hold it.
+            let twice = Region {
+                start: 0,
+                pages: new_pages,
+                backing: region.backing.clone(),
+                offset: region.offset + (start - region.start) / PAGE_SIZE,
+            };
+            let to = match fixed {
+                Some((to, to_end)) => {
+                    self.cut(&mut regions, to, to_end)?;
+                    to
+                }
+                None => self.room_for(&regions, new_pages, how)?,
+            };
+            regions.try_reserve(1).map_err(|_| error(Kernel::NoMemory))?;
+            insert(&mut regions, Region { start: to, ..twice });
+            return Ok(to);
+        }
+        if let Some((to, to_end)) = fixed {
+            self.cut(&mut regions, to, to_end)?;
+            let kept = pages.min(new_pages);
+            if kept < pages {
+                self.cut(&mut regions, start + kept * PAGE_SIZE, end)?;
+            }
+            return self.move_region(&mut regions, start, kept, new_pages, to, how.keep_old);
+        }
+        // Grown where it is, if it ends its region and the pages after
+        // that are free.
+        if !how.keep_old
+            && end == region.end()
+            && let Some(grown) = radix_ipc::range::user_pages(start, new_pages)
+            && !overlaps(&regions, end, grown)
+        {
+            regions[index].pages += new_pages - pages;
+            return Ok(start);
+        }
+        if !how.may_move {
+            return Err(error(Kernel::NoMemory));
+        }
+        let to = self.room_for(&regions, new_pages, how)?;
+        self.move_region(&mut regions, start, pages, new_pages, to, how.keep_old)
+    }
+
+    /// Where [`remap`](Self::remap) moves a mapping of `pages` pages that
+    /// has no fixed place: at `how`'s hint if that is free, else as
+    /// anonymous memory the kernel places goes.
+    fn room_for(&self, regions: &[Region], pages: u64, how: Remap) -> Result<u64> {
+        let hinted = radix_ipc::range::user_pages(how.hint, pages)
+            .filter(|&end| !overlaps(regions, how.hint, end))
+            .map(|_| how.hint);
+        hinted
+            .or_else(|| Self::free_range(regions, pages, self.anon_top))
+            .or_else(|| Self::free_range(regions, pages, ANONYMOUS_TOP))
+            .ok_or(error(Kernel::NoMemory))
+    }
+
+    /// Moves the `pages` pages from `start`, which lie in one region of
+    /// anonymous memory, to `to`, where nothing is mapped, as a region of
+    /// `new_pages` pages, for [`remap`](Self::remap); with `keep_old`
+    /// their old place stays mapped, empty.
+    fn move_region(
+        &self,
+        regions: &mut Vec<Region, Kmalloc>,
+        start: u64,
+        pages: u64,
+        new_pages: u64,
+        to: u64,
+        keep_old: bool,
+    ) -> Result<u64> {
+        let end = start + pages * PAGE_SIZE;
+        Self::split_at(regions, start)?;
+        Self::split_at(regions, end)?;
+        // The moved region takes the room its old one leaves; the old
+        // place kept empty takes one more.
+        regions.try_reserve(1).map_err(|_| error(Kernel::NoMemory))?;
+        Arch::move_pages(&self.arch, start, to, pages).map_err(|failed| {
+            error(match failed {
+                MapPageError::NoMemory => Kernel::NoMemory,
+                MapPageError::AlreadyMapped => Kernel::AlreadyMapped,
+            })
+        })?;
+        // After the splits, the pages are a region of their own.
+        let mut region = regions.remove(first_after(regions, start));
+        if keep_old {
+            let old =
+                Region { start, pages, backing: region.backing.clone(), offset: region.offset };
+            insert(regions, old);
+        }
+        region.start = to;
+        region.pages = new_pages;
+        insert(regions, region);
+        Ok(to)
     }
 
     /// Maps page `page` of shared `region` with `access`: the mapping's
@@ -945,24 +1126,19 @@ impl SpaceObject {
             // split (`cut`, which holds the lock taken above): then it is
             // mapped again by now, and the access is tried again.
             return match Arch::query_page(&self.arch, page) {
-                Some((_, now))
-                    if (!write || now == UserAccess::ReadWrite)
-                        && (!execute || now == UserAccess::ReadExecute) =>
-                {
+                Some((_, now)) if (!write || now.writes()) && (!execute || now.executes()) => {
                     Fault::Resolved
                 }
                 _ => Fault::Refused,
             };
         };
         let Some(access) = anon.access else { return Fault::Refused };
-        if (write && access != UserAccess::ReadWrite)
-            || (execute && access != UserAccess::ReadExecute)
-        {
+        if (write && !access.writes()) || (execute && !access.executes()) {
             return Fault::Refused;
         }
         match Arch::query_entry(&self.arch, page) {
             Some((phys, Some(now))) => {
-                if !write || now == UserAccess::ReadWrite {
+                if !write || now.writes() {
                     // Another thread made it meanwhile.
                     return Fault::Resolved;
                 }
@@ -1037,7 +1213,7 @@ impl SpaceObject {
         let mut page = address & !(PAGE_SIZE - 1);
         while page < end {
             let ready = match Arch::query_entry(&self.arch, page) {
-                Some((_, Some(access))) => !write || access == UserAccess::ReadWrite,
+                Some((_, Some(access))) => !write || access.writes(),
                 _ => false,
             };
             if !ready && self.resolve(page, write, false) != Fault::Resolved {
@@ -1386,9 +1562,13 @@ impl SpaceObject {
                     }
                     last = Some(phys);
                     given += 1;
+                    // A private page both sides may write is read-only in
+                    // both until one writes it, which copies it; one that
+                    // also runs (memory.jit, ADR 0624) stays executable.
                     match access {
-                        Some(UserAccess::ReadWrite) if anon.shared.is_none() => {
-                            (PageEdit::Set(Some(UserAccess::Read)), Some(Some(UserAccess::Read)))
+                        Some(now) if now.writes() && anon.shared.is_none() => {
+                            let kept = Some(now.without_write());
+                            (PageEdit::Set(kept), Some(kept))
                         }
                         access => (PageEdit::Keep, Some(access)),
                     }

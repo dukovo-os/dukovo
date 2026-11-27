@@ -10,6 +10,7 @@
 
 use std::path::Path;
 
+use radix_bpf::seccomp::AUDIT_ARCH_X86_64;
 use serde_json::json;
 use slots::state::{Slot, State};
 use slots::trial::Trial;
@@ -18,6 +19,10 @@ use update_fuzz::{canary_report, root, root_of_version, snapshot, targets, times
 
 /// The example advisory the tests of system-release read.
 const ADVISORY: &str = include_str!("../../../system-release/tests/fixtures/DKSA-2026-0001.json");
+
+/// The allow list radix-bpf's tests run, as libseccomp compiled it.
+const ALLOW_LIST: &[u8] =
+    include_bytes!("../../../../../kernel/lib/bpf/src/fixtures/allow-list.bpf");
 
 fn put(target: &str, name: &str, bytes: &[u8]) {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("corpus").join(target);
@@ -46,6 +51,24 @@ fn netlink_request(kind: u16, flags: u16, seq: u32, payload: &[u8]) -> Vec<u8> {
     bytes.extend_from_slice(&0u32.to_ne_bytes());
     bytes.extend_from_slice(payload);
     bytes
+}
+
+/// The input of `bpf-filter`: call `nr` with `args`, as `struct
+/// seccomp_data` lays it out, and the program.
+fn bpf_filter(nr: i32, args: [u64; 6], program: &[u8]) -> Vec<u8> {
+    let mut bytes = nr.to_ne_bytes().to_vec();
+    bytes.extend_from_slice(&AUDIT_ARCH_X86_64.to_ne_bytes());
+    bytes.extend_from_slice(&0x40_1000u64.to_ne_bytes());
+    for arg in args {
+        bytes.extend_from_slice(&arg.to_ne_bytes());
+    }
+    bytes.extend_from_slice(program);
+    bytes
+}
+
+/// The bytes of a classic BPF instruction.
+fn instruction(code: u16, jt: u8, jf: u8, k: u32) -> Vec<u8> {
+    [&code.to_ne_bytes()[..], &[jt, jf], &k.to_ne_bytes()].concat()
 }
 
 fn release(version: &str, files: Vec<Entry>) -> Release {
@@ -125,4 +148,32 @@ fn main() {
         "new-address",
         &netlink_request(20, 0x105, 5, &[2, 24, 0, 0, 2, 0, 0, 0]),
     );
+
+    // The allow list on a call it allows by number and on one it judges by
+    // its arguments; and the filter of userspace/posix/linux/seccomp.c
+    // that reads both halves of an argument, the record's length and a
+    // memory word, and returns the value it computed.
+    put("bpf-filter", "allow-list-getppid", &bpf_filter(110, [0; 6], ALLOW_LIST));
+    put("bpf-filter", "allow-list-ioctl", &bpf_filter(16, [1, 0x5401, 0, 0, 0, 0], ALLOW_LIST));
+    let arguments = [
+        instruction(0x20, 0, 0, 4),
+        instruction(0x15, 1, 0, AUDIT_ARCH_X86_64),
+        instruction(0x06, 0, 0, 0x8000_0000),
+        instruction(0x20, 0, 0, 0),
+        instruction(0x15, 1, 0, 110),
+        instruction(0x06, 0, 0, 0x7fff_0000),
+        instruction(0x80, 0, 0, 0),
+        instruction(0x15, 1, 0, 64),
+        instruction(0x06, 0, 0, 0x0005_0001),
+        instruction(0x20, 0, 0, 20),
+        instruction(0x15, 1, 0, 0x1234),
+        instruction(0x06, 0, 0, 0x7fff_0000),
+        instruction(0x20, 0, 0, 16),
+        instruction(0x02, 0, 0, 3),
+        instruction(0x60, 0, 0, 3),
+        instruction(0x44, 0, 0, 0x0005_0000),
+        instruction(0x16, 0, 0, 0),
+    ]
+    .concat();
+    put("bpf-filter", "arguments", &bpf_filter(110, [0x1234_0000_0007, 0, 0, 0, 0, 0], &arguments));
 }

@@ -243,6 +243,10 @@ them:
 |  *ioclass*
 :  IOCLASS
 :  its I/O class (*ionice*(1))
+|  *jit*
+:  JIT
+:  *yes* if it may make machine code as it runs (memory.jit, *radix-jit*(2)),
+   *refused* if it asked for such memory without it, *no* otherwise
 |  *domain*
 :  DOMAIN
 :  its resource domain

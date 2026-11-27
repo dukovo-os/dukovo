@@ -34,6 +34,8 @@ radix-block = { path = "../fs/block" }
 # BitLocker volumes unlocked as block devices of their own (ADR 0240).
 radix-bitlocker = { path = "../fs/bitlocker", features = ["device"] }
 radix-bootfs = { path = "../lib/bootfs" }
+# Classic BPF: Linux programs' seccomp filters (ADR 0623).
+radix-bpf = { path = "../lib/bpf" }
 radix-cap = { path = "../cap" }
 radix-crosec = { path = "../drivers/crosec" }
 radix-elf = { path = "../lib/elf" }

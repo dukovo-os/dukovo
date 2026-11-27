@@ -67,11 +67,14 @@ pub fn fork() -> Result<i32> {
 /// written for Linux, which the kernel cannot start for want of its
 /// dynamic linker, runs through `linux run`, which builds the view its
 /// libraries and `/proc` are in (ADR 0622). The shell looks at the file
-/// only then, so that other programs cost nothing more.
+/// only then, so that other programs cost nothing more. A shell that is
+/// in a Linux view already, as `/bin/sh` there (ADR 0626), has no `linux
+/// run` to start: what the kernel cannot start there does not run.
 pub fn execve(path: &CStr, argv: &[CString], envp: &[CString]) -> Error {
     let error = sysapi::process::exec(path, argv, envp);
     if cfg!(target_os = "radix")
         && error.raw_os_error() == Some(libc::ENOENT)
+        && !personality::in_linux_view()
         && is_linux_view_program(path)
     {
         let command = personality::linux_command(path, argv);

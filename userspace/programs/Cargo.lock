@@ -5128,6 +5128,7 @@ dependencies = [
  "radix-abi",
  "radix-bitlocker",
  "radix-btrfs",
+ "radix-elf",
  "radix-hw",
  "radix-intel-net",
  "radix-nic",

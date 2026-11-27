@@ -63,6 +63,11 @@ pub struct Task<'a> {
     pub priority: u64,
     /// Its nice level.
     pub nice: i64,
+    /// Its seccomp mode and filters, and `no_new_privs`: the main
+    /// thread's, for the process.
+    pub seccomp: (u8, u32),
+    /// Whether it has `no_new_privs`.
+    pub no_new_privs: bool,
 }
 
 impl<'a> Task<'a> {
@@ -70,6 +75,7 @@ impl<'a> Task<'a> {
     /// the one that has the process's number, last ran on.
     pub fn of_process(process: &'a Process, threads: &[Thread]) -> Task<'a> {
         let main = threads.iter().find(|thread| thread.number == process.number);
+        let first = main.or(threads.first());
         Task {
             process,
             id: process.number,
@@ -79,10 +85,12 @@ impl<'a> Task<'a> {
             system_ns: process.system_ns,
             voluntary_switches: process.voluntary_switches,
             involuntary_switches: process.involuntary_switches,
-            cpu: main.or(threads.first()).map_or(0, |thread| thread.cpu),
+            cpu: first.map_or(0, |thread| thread.cpu),
             policy: process.policy,
             priority: process.priority,
             nice: process.nice,
+            seccomp: first.map_or((0, 0), |thread| thread.seccomp),
+            no_new_privs: first.is_some_and(|thread| thread.no_new_privs),
         }
     }
 
@@ -101,6 +109,8 @@ impl<'a> Task<'a> {
             policy: thread.policy,
             priority: thread.priority,
             nice: thread.nice,
+            seccomp: thread.seccomp,
+            no_new_privs: thread.no_new_privs,
         }
     }
 }
@@ -205,9 +215,9 @@ pub fn status(task: &Task<'_>, cpus: u32) -> String {
     page.line(format_args!("CapEff:\t{caps}"));
     page.line(format_args!("CapBnd:\t{CAPABILITIES_ALL}"));
     page.line(format_args!("CapAmb:\t0000000000000000"));
-    page.line(format_args!("NoNewPrivs:\t0"));
-    page.line(format_args!("Seccomp:\t0"));
-    page.line(format_args!("Seccomp_filters:\t0"));
+    page.line(format_args!("NoNewPrivs:\t{}", u8::from(task.no_new_privs)));
+    page.line(format_args!("Seccomp:\t{}", task.seccomp.0));
+    page.line(format_args!("Seccomp_filters:\t{}", task.seccomp.1));
     page.line(format_args!("Cpus_allowed:\t{}", cpu_mask(cpus)));
     page.line(format_args!("Cpus_allowed_list:\t{}", cpu_list(cpus)));
     page.line(format_args!("Mems_allowed:\t00000001"));

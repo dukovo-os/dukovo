@@ -511,6 +511,15 @@ override:
 		profile at each boot. Anyone reads the settings' values in
 		_/kernel/settings_.
 
+	*memory.jit* = *true* | *false*
+		Whether it holds the jit capability, with which it lets a
+		program it starts map memory that is writable and executable at
+		once, as JavaScript engines do (*radix-jit*(2), ADR 0624);
+		*false* unless set. The service itself does not get that memory
+		from it. Only *authd*(8)'s file sets it, to put the capability in
+		each sign-in session for *bundle*(1)'s *run* and *linux*(1)'s
+		*run --allow-jit*.
+
 	*devices.pci* = [_"vendor:device"_, ...]
 		The PCI cards it drives, for a driver program, each by its
 		vendor's and its device's ID in hexadecimal, as *lspci*(8)

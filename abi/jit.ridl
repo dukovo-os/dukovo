@@ -1,0 +1,47 @@
+// SPDX-FileCopyrightText: 2026 The Dukovo contributors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! The jit capability (Phase 18, ADR 0624): what lets a launcher give a
+//! program memory.jit, so that the program may make its private anonymous
+//! memory readable, writable and executable at once, as a JavaScript
+//! engine or another compiler that makes machine code as it runs does.
+//! Without it, no page is ever writable and executable at once
+//! (radix-address-space(2)'s `map_anonymous` and `protect` fail with
+//! invalid_argument, and a Linux program's `mmap` and `mprotect` with
+//! EACCES). A file's pages and shared memory never are, memory.jit or
+//! not.
+//!
+//! A process given memory.jit keeps it until it ends: `fork` copies it to
+//! the child and `exec` keeps it; a process `create` makes starts without
+//! it. Holding the capability gives a process nothing by itself: its
+//! holder gives memory.jit to a process it starts, before that process
+//! runs its program. `/processes/<n>/status` says whether a process has
+//! it (radix-proc(5)).
+//!
+//! The kernel gives Spark the one capability, with the control right.
+//! Spark gives authd a copy when its service file asks for memory.jit,
+//! and authd shares one into SLOT_JIT of each session it signs a person
+//! in to, so that `bundle run` gives memory.jit to a bundle's program
+//! whose grants hold it and `linux run --allow-jit` to a Linux program.
+
+module jit;
+
+/// The authority to give processes memory.jit. Every method needs the
+/// control right.
+interface jit = 0x0036 version 1 {
+    kind = jit;
+    /// Gives the process in slot `process` memory.jit, which it keeps
+    /// until it ends. Needs the control right on the process too.
+    /// invalid_argument if it is the caller's own process: a holder gives
+    /// memory.jit, it does not take it.
+    method allow = 1 (process: slot) -> ()
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument];
+    /// Whether the process in slot `process` has memory.jit (`given`), and
+    /// whether it asked for memory that is writable and executable
+    /// without it and was refused (`refused`), as `linux run` asks once
+    /// its program has ended, to say that `--allow-jit` would have let it.
+    /// Needs the read right on the process too, and works on a process
+    /// that has ended while the capability lasts.
+    method state = 2 (process: slot) -> (given: bool, refused: bool)
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights];
+}

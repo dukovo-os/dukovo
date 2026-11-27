@@ -661,6 +661,47 @@ pub fn fstat(me: &ThreadRef, user: &UserRef, fd: u64, buffer: u64) -> Result<u64
     put_stat(buffer)
 }
 
+/// `fstatfs`: the filesystem of what the descriptor holds, as Dukovo's C
+/// library's `fstatvfs` asks: a directory's `info`, or a file's
+/// `filesystem_info`, written as `struct statfs`.
+pub fn fstatfs(me: &ThreadRef, user: &UserRef, fd: u64, buffer: u64) -> Result<u64> {
+    let slot = paths::slot_of(fd)?;
+    let info = if kind_of(user, slot)? == ObjectKind::Directory {
+        let words = results(me, user, slot, directory::INFO, [0; 8])?;
+        let r = directory::InfoResults::decode(&words)?;
+        (r.filesystem, r.flags, r.block_size, r.blocks, r.free, r.files, r.free_files)
+    } else {
+        let words = results(me, user, slot, file::FILESYSTEM_INFO, [0; 8])?;
+        let r = file::FilesystemInfoResults::decode(&words)?;
+        (r.filesystem, r.flags, r.block_size, r.blocks, r.free, r.files, r.free_files)
+    };
+    let (kind, mount, block_size, blocks, free, files, free_files) = info;
+    let info = records::FsInfo {
+        kind: kind as u8,
+        read_only: mount.contains(directory::MountFlags::READ_ONLY),
+        block_size,
+        blocks,
+        free,
+        files,
+        free_files,
+    };
+    let mut out = [0u8; records::STATFS_SIZE];
+    records::put_statfs(&info, &mut out);
+    super::copy_out(buffer, &out).map(|()| 0)
+}
+
+/// `statfs`: [`fstatfs`] of what the path names, opened for the length of
+/// the call to read without waiting, as Dukovo's C library's `statvfs`
+/// opens it.
+pub fn statfs(me: &ThreadRef, user: &UserRef, address: u64, buffer: u64) -> Result<u64> {
+    let path = paths::read(address)?;
+    let how = flags::O_NONBLOCK | flags::O_NOCTTY | flags::O_CLOEXEC;
+    let slot = open_path(me, user, paths::AT_FDCWD, &path, how)?;
+    let done = fstatfs(me, user, descriptor(slot), buffer);
+    delete(me, user, slot);
+    done
+}
+
 /// Writes the status of what `slot` holds into the program's `buffer`,
 /// as Radix's FileStatus: a file's `stat`, or a directory's of `.`.
 fn status_of(me: &ThreadRef, user: &UserRef, slot: u32, buffer: u64) -> Result<()> {

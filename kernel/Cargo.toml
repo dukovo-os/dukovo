@@ -71,6 +71,7 @@ members = [
     "lib/audio",
     "lib/bootinfo",
     "lib/bootfs",
+    "lib/bpf",
     "lib/elf",
     "lib/fbcon",
     "lib/hid",

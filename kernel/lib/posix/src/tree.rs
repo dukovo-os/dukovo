@@ -11,7 +11,9 @@
 //! A process with no parent is never waited for, so when it ends it is
 //! reaped at once: its parent's part falls to the kernel, which is Spark's
 //! auto-reaping as the root of the tree. So a member that has ended (a
-//! zombie) always has a parent that is alive.
+//! zombie) always has a parent that is alive. A member whose parent ends
+//! goes to the nearest ancestor that adopts orphans (a subreaper, Linux's
+//! PR_SET_CHILD_SUBREAPER), or has none.
 //!
 //! A process group is named by its leader's number and a session by its
 //! leader's; both live as long as any member is in them, the leader or
@@ -74,6 +76,11 @@ pub struct Member<T> {
     pub life: Life,
     /// What its parent's `wait` has yet to hear.
     pub report: Report,
+    /// Whether it adopts the orphans of its descendants (a subreaper).
+    pub subreaper: bool,
+    /// The signal it gets when its parent ends, 0 for none (Linux's
+    /// PR_SET_PDEATHSIG).
+    pub parent_death: u32,
     /// The caller's handle.
     pub handle: T,
 }
@@ -138,6 +145,28 @@ pub enum Found<T> {
     NotYet,
     /// No child the call could wait for.
     NoChild,
+}
+
+/// Whether the members [`Tree::exit`] hands an ended member to reap it at
+/// once, not waiting for it: SIGCHLD's action ignores it, or has
+/// SA_NOCLDWAIT.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Reaps {
+    /// The ending member's parent.
+    pub parent: bool,
+    /// The subreaper that adopts its children.
+    pub reaper: bool,
+}
+
+/// Whom a member's end is for, from [`Tree::exit`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Exit {
+    /// Its parent, if it has one.
+    pub parent: Option<u64>,
+    /// A subreaper that adopted children of it that had ended, to tell as
+    /// their parent would be: the subreaper, the first such child, and how
+    /// it ended.
+    pub adopted: Option<(u64, u64, Ended)>,
 }
 
 /// Why a change to the tree was refused.
@@ -216,6 +245,8 @@ impl<T: Clone, A: Allocator> Tree<T, A> {
             execed: false,
             life: Life::Alive,
             report: Report::default(),
+            subreaper: false,
+            parent_death: 0,
             handle,
         })
     }
@@ -236,6 +267,8 @@ impl<T: Clone, A: Allocator> Tree<T, A> {
             execed: false,
             life: Life::Alive,
             report: Report::default(),
+            subreaper: false,
+            parent_death: 0,
             handle,
         })
     }
@@ -251,51 +284,75 @@ impl<T: Clone, A: Allocator> Tree<T, A> {
     }
 
     /// Member `pid` has ended, `ended`, having used `times` of CPU time.
-    /// Its children lose their parent, and those of them that had ended
-    /// leave the tree; it becomes a zombie for its parent to wait for, or
-    /// leaves the tree at once if it has no parent, or its parent does not
-    /// wait for children (`auto_reap`, from SIGCHLD's action). Returns its
-    /// parent, if it has one to tell, and the handles of the members that
-    /// left, which the caller drops.
+    /// It becomes a zombie for its parent to wait for, or leaves the tree
+    /// at once if it has no parent, or its parent does not wait for
+    /// children (`reaps.parent`, from SIGCHLD's action). Its children go
+    /// to the nearest subreaper above it ([`Tree::reaper`]); with none,
+    /// they lose their parent and those of them that had ended leave the
+    /// tree, as do those a subreaper that does not wait (`reaps.reaper`)
+    /// adopts. Says whom to tell; the handles of the members that left go
+    /// to `gone`, which the caller drops.
     pub fn exit(
         &mut self,
         pid: u64,
         ended: Ended,
         times: (u64, u64),
-        auto_reap: bool,
+        reaps: Reaps,
         gone: &mut dyn FnMut(T),
-    ) -> Option<u64> {
-        let index = self.index(pid)?;
+    ) -> Exit {
+        let Some(index) = self.index(pid) else { return Exit::default() };
         let parent = self.members[index].parent;
         let member = &mut self.members[index];
         member.life = Life::Zombie { ended, times };
         member.report = Report::default();
-        // Its children are orphans now; those that ended go.
+        let reaper = self.reaper(parent);
+        let mut adopted = None;
         let mut i = 0;
         while i < self.members.len() {
             let child = &mut self.members[i];
             if child.parent == pid {
-                child.parent = 0;
-                if matches!(child.life, Life::Zombie { .. }) {
-                    gone(self.members.swap_remove(i).handle);
-                    continue;
+                child.parent = reaper;
+                if let Life::Zombie { ended, .. } = child.life {
+                    if reaper == 0 || reaps.reaper {
+                        gone(self.members.swap_remove(i).handle);
+                        continue;
+                    }
+                    adopted.get_or_insert((reaper, child.pid, ended));
                 }
             }
             i += 1;
         }
-        if (parent == 0 || auto_reap)
+        if (parent == 0 || reaps.parent)
             && let Some(index) = self.index(pid)
         {
             gone(self.members.swap_remove(index).handle);
         }
-        (parent != 0).then_some(parent)
+        Exit { parent: (parent != 0).then_some(parent), adopted }
+    }
+
+    /// The member that adopts the orphans of a child of `from`: `from` if
+    /// it is a subreaper that has not ended, or the nearest such ancestor
+    /// of it; 0 for none.
+    pub fn reaper(&self, from: u64) -> u64 {
+        let mut at = from;
+        // Each step goes up, and the tree has no cycles: at most one step
+        // for each member.
+        for _ in 0..=self.members.len() {
+            let Some(member) = self.get(at) else { return 0 };
+            if member.subreaper && !matches!(member.life, Life::Zombie { .. }) {
+                return at;
+            }
+            at = member.parent;
+        }
+        0
     }
 
     /// Takes member `pid` out of the tree whatever it is doing: for a
     /// process that goes before it ends, such as one a failed `fork` made.
     /// Its children lose their parent as in [`Tree::exit`].
     pub fn remove(&mut self, pid: u64, gone: &mut dyn FnMut(T)) {
-        let _ = self.exit(pid, Ended::Exited(0), (0, 0), true, gone);
+        let reaps = Reaps { parent: true, reaper: false };
+        let _ = self.exit(pid, Ended::Exited(0), (0, 0), reaps, gone);
     }
 
     /// Looks for a child of `caller` that `which` names and has something

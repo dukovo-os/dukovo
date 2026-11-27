@@ -612,7 +612,7 @@ jobs:
         uses: ./.github/actions/apt-install
         with:
           packages: >-
-            qemu-system-x86 ovmf gcc flex gawk musl-tools
+            qemu-system-x86 ovmf gcc flex gawk musl-tools strace
             xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient nfs-kernel-server krb5-kdc krb5-admin-server krb5-user restic scdoc mandoc
             udftools udfclient genisoimage
             clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
@@ -795,6 +795,21 @@ jobs:
       ports-prefix: ${{ needs.ports.outputs.prefix }}
       std-stamp: ${{ needs.ports.outputs.std }}
 
+  # LTP's system call tests and the seccomp differential on the runner's
+  # Linux and on Dukovo (`ob test linux-suite`, ADR 0628), two hours or
+  # less, so a pull request runs it only when its files reach the Linux
+  # layer. Main's runs and the nightly one leave it out until
+  # linux-suite.yml has a schedule of its own.
+  linux-suite:
+    name: Linux test suite
+    needs: [scope, ports]
+    if: github.event_name == 'pull_request' && needs.scope.outputs.linux == 'true'
+    uses: ./.github/workflows/linux-suite.yml
+    with:
+      ports-key: ${{ needs.ports.outputs.key }}
+      ports-prefix: ${{ needs.ports.outputs.prefix }}
+      std-stamp: ${{ needs.ports.outputs.std }}
+
   # Instructions per operation, counted by QEMU (`ob bench --instructions`,
   # ADR 0045): the same on every runner, so a hot path that grows fails
   # here even when the timings above are within their noise.
@@ -884,6 +899,7 @@ jobs:
       code: ${{ steps.scope.outputs.code }}
       virtualbox: ${{ steps.scope.outputs.virtualbox }}
       go: ${{ steps.scope.outputs.go }}
+      linux: ${{ steps.scope.outputs.linux }}
       boot-parts: ${{ steps.boot.outputs.parts }}
       boot-shards: ${{ steps.boot.outputs.shards }}
     steps:
@@ -942,6 +958,10 @@ jobs:
             # Go's port or bundle, the Go programs, or the code that builds
             # the tests and runs the suite.
             echo "go=$(needs '^(ports/go/|ports/go-radix/|userspace/go/|tools/xtask/src/golang\.rs|tools/xtask/src/test/go_suite\.rs)')"
+            # The Linux suite runs for a pull request that changes the
+            # kernel's Linux table or its libraries, radix-bpf, linuxd, linux
+            # run, the Linux base, the suite's programs or the suite itself.
+            echo "linux=$(needs '^(kernel/radix/src/user/linux/|kernel/lib/(linux|bpf)/|userspace/programs/linuxd/|userspace/programs/systools/src/linux/|userspace/linux/|userspace/posix/linux/|ports/linux-base/|tools/xtask/src/test/linux(_suite\.rs|-suite-skips\.txt))')"
             # VirtualBox boots the cloud image: cloud-setup, the guest
             # agent, the image, and the drivers VirtualBox's machine uses.
             echo "virtualbox=$(needs '^(userspace/programs/systools/src/(cloud|guest_agent)|userspace/defaults/spark/services/(cloud-setup|guest-agent)\.toml|tools/xtask/src/image\.rs|tools/virtualbox/|kernel/drivers/(ahci|intel)/)')"
@@ -1310,7 +1330,7 @@ jobs:
   passed:
     name: CI passed
     if: always()
-    needs: [build, docs, unit, chkdsk, smb-windows, virtualbox, boot, instructions, go-suite, scope, ports, kani, tla, corpus, container, checks, workflows]
+    needs: [build, docs, unit, chkdsk, smb-windows, virtualbox, boot, instructions, go-suite, linux-suite, scope, ports, kani, tla, corpus, container, checks, workflows]
     runs-on: ubuntu-24.04
     steps:
       - name: Check that every job passed or was skipped

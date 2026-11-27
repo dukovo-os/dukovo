@@ -1022,6 +1022,10 @@ impl UserMode for Arch {
         from.space().copy_into(to.space(), start, end, &mut decide)
     }
 
+    fn move_pages(space: &Self::Space, from: u64, to: u64, pages: u64) -> Result<(), MapPageError> {
+        space.space().move_entries(from, to, pages.saturating_mul(memory::PAGE))
+    }
+
     fn free_page_tables(space: &Self::Space) {
         space.space().free_empty_tables();
     }

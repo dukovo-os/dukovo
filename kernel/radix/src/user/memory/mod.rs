@@ -65,7 +65,8 @@ use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_sync::Mutex;
 
 pub use anon::{
-    Anon, Fault, FileSource, Lack, Placement, Room, RoomRef, SharedPages, SharedRef, unshare_page,
+    Anon, Fault, FileSource, Lack, Placement, Remap, Room, RoomRef, SharedPages, SharedRef,
+    unshare_page,
 };
 pub use program::{ProgramPages, ProgramRef};
 
@@ -1067,6 +1068,9 @@ pub fn rights_of(access: UserAccess) -> AbiRights {
         UserAccess::Read => AbiRights::READ,
         UserAccess::ReadWrite => AbiRights::READ.union(AbiRights::WRITE),
         UserAccess::ReadExecute => AbiRights::READ.union(AbiRights::EXECUTE),
+        UserAccess::ReadWriteExecute => {
+            AbiRights::READ.union(AbiRights::WRITE).union(AbiRights::EXECUTE)
+        }
     }
 }
 

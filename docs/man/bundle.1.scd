@@ -114,8 +114,9 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	own on standard error, as _file_*:*_line_*:* _why_; a note, such as
 	a permission asked for without a *why*, goes to standard output.
 	Given a folder, it also checks that each program the manifest names
-	is there, for each architecture, and may be run, and that its icon
-	is there. It prints _file_*: ok:* _id_ _version_ when all is well,
+	is there, for each architecture, and may be run, that a Linux
+	bundle's programs are Linux programs or scripts and none is
+	Dukovo's (ADR 0625), and that its icon is there. It prints _file_*: ok:* _id_ _version_ when all is well,
 	and exits with 1 when anything is wrong.
 
 *schema*
@@ -125,8 +126,10 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 
 *upgrade-manifest* [_folder_ | _file_]
 	Brings a manifest of an earlier version up to the newest this
-	Dukovo reads. Version 1 is the first, so for now it checks the
-	manifest and says it is the newest.
+	Dukovo reads, version 2: a version 1 manifest is a version 2
+	manifest without *runtime*, so its *manifest_version* is changed in
+	place and nothing else. A manifest that is the newest already is
+	checked and left as it is.
 
 *key*
 	Prints your developer key, a minisign public key (*RW* and 54 more

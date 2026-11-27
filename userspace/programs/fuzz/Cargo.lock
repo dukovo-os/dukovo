@@ -212,6 +212,10 @@ name = "radix-bootfs"
 version = "1.0.0-alpha.1"
 
 [[package]]
+name = "radix-bpf"
+version = "1.0.0-alpha.1"
+
+[[package]]
 name = "radix-hw"
 version = "1.0.0-alpha.1"
 
@@ -412,6 +416,7 @@ version = "1.0.0-alpha.1"
 dependencies = [
  "libfuzzer-sys",
  "linuxd",
+ "radix-bpf",
  "ring",
  "serde_json",
  "slots",

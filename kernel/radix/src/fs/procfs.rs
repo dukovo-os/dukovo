@@ -442,6 +442,13 @@ fn status(process: &ProcessRef, text: &mut Text) -> fmt::Result {
     writeln!(text, "voluntary_switches: {voluntary}")?;
     writeln!(text, "involuntary_switches: {involuntary}")?;
     writeln!(text, "traced: {}", if process.traced() { "yes" } else { "no" })?;
+    // memory.jit (ADR 0624).
+    let jit = match (process.jit(), process.jit_refused()) {
+        (true, _) => "yes",
+        (false, true) => "refused",
+        (false, false) => "no",
+    };
+    writeln!(text, "jit: {jit}")?;
     let (image, directory) = {
         let posix = process.posix.lock();
         (posix.image.clone(), posix.directory.clone())
@@ -498,6 +505,18 @@ fn threads(process: &ProcessRef, text: &mut Text) -> fmt::Result {
                 text.write_char(if c == ' ' { '_' } else { c })?;
             }
         }
+        // A Linux thread's seccomp (ADR 0623), which linuxd's status shows.
+        let seccomp = &user.linux.seccomp;
+        match seccomp.mode() {
+            radix_linux::seccomp::SECCOMP_MODE_DISABLED => text.write_str(" seccomp=off")?,
+            radix_linux::seccomp::SECCOMP_MODE_STRICT => text.write_str(" seccomp=strict")?,
+            _ => write!(text, " seccomp=filter:{}", seccomp.filters())?,
+        }
+        text.write_str(if seccomp.no_new_privs() {
+            " no_new_privs=yes"
+        } else {
+            " no_new_privs=no"
+        })?;
         text.write_str(" name=")?;
         write_escaped_str(text, thread.name().as_str(), LINE_SPECIAL)?;
         text.write_char('\n')?;
@@ -579,7 +598,11 @@ fn files(process: &ProcessRef, text: &mut Text) -> fmt::Result {
             (false, true) => "w",
             (false, false) => "-",
         };
-        let stat = file.at.node.stat();
+        // What the file's filesystem knows without asking: a file of a
+        // filesystem a program serves would otherwise wait for that
+        // program, and linuxd reads this list to answer for `/proc/PID/fd`,
+        // which would then wait for itself.
+        let stat = file.at.node.stat_kept();
         write!(
             text,
             " kind={} access={mode} id={} size={} fs={} mount={} rights={rights}",
@@ -642,6 +665,7 @@ fn map_line(
         Some(UserAccess::Read) => ('r', '-', '-'),
         Some(UserAccess::ReadWrite) => ('r', 'w', '-'),
         Some(UserAccess::ReadExecute) => ('r', '-', 'x'),
+        Some(UserAccess::ReadWriteExecute) => ('r', 'w', 'x'),
     };
     let shared = if mapping.shared { 's' } else { 'p' };
     let mut head = TextBuf::<96>::new();

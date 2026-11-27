@@ -459,6 +459,11 @@ pub fn exec_from(
         None => None,
     };
     let linux = abi_of(&program_file, &program, interpreter_path.as_deref())? == Abi::Linux;
+    // A seccomp filter speaks Linux's numbers: a filtered thread may not
+    // leave it behind by running a Dukovo program (ADR 0623).
+    if !linux && user.linux.seccomp.is_on() {
+        return Err(Kernel::MissingRights.status(0));
+    }
     let interpreter = match &interpreter_path {
         Some(path) => {
             let file = open_from(target, path)?;

@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "radix-bpf"
+description = "Classic BPF for the kernel: the machine packet captures and seccomp filters run on, Linux's checks of a program, and the calls a seccomp filter always allows (ADRs 0346, 0623)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+bench = false
+
+[lints]
+workspace = true

@@ -158,6 +158,12 @@ is not interactive with status 2, as in dash.
 A file that is a directory, or whose first line has a NUL byte, is not
 run: status 126. One that is not found: 127.
 
+A dynamic program written for Linux, whose dynamic linker Dukovo's root
+does not hold, runs through *linux run* (*linux*(1)), in a view of its
+own. In a Linux view, where the shell is _/bin/sh_ and
+*DUKOVO_LINUX_VIEW* is set, a Linux program runs as it is, in the same
+view.
+
 # INTERACTIVE USE
 
 ## The line editor

@@ -28,7 +28,10 @@
 //! and the real-time clock (ADR 0194), `admin.firewall = true` the
 //! firewall capability, which gives the packet filter its rules (ADR
 //! 0334), and `admin.tune = true` the kernel settings capability, which
-//! changes the kernel's settings (ADR 0476). The ports a service listens on take what other machines start:
+//! changes the kernel's settings (ADR 0476). `memory.jit = true` gives it
+//! the jit capability, with which it lets the programs it starts map
+//! memory that is writable and executable (ADR 0624). The ports a service
+//! listens on take what other machines start:
 //! they are open while it runs (ADR 0334). A driver program's
 //! `devices.pci` names the cards it drives, and Spark gives it each card
 //! the kernel left for a program that one matches (ADR 0198). It reaches
@@ -107,6 +110,8 @@ pub struct Spec {
     pub firewall: bool,
     /// Whether it gets the kernel settings capability: admin.tune.
     pub tune: bool,
+    /// Whether it gets the jit capability: memory.jit.
+    pub jit: bool,
     /// Whether it gets a capability to its own domain: domain.
     pub domain: bool,
     /// The places its view holds beyond what every service's does.
@@ -236,6 +241,7 @@ pub fn parse(name: &str, text: &str, over: Option<&Override>) -> Result<Spec, St
         time: file.permissions.admin.time,
         firewall: file.permissions.admin.firewall,
         tune: file.permissions.admin.tune,
+        jit: file.permissions.memory.jit,
         domain: file.permissions.domain,
         places: file.permissions.places(),
         mounts: file.permissions.files.mount.clone(),

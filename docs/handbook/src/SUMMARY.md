@@ -35,6 +35,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 - [Performance profiles](performance.md)
 - [Python](python.md)
 - [Go](go.md)
+- [Node.js](nodejs.md)
 - [PHP](php.md)
 - [PostgreSQL](postgresql.md)
 - [Cloud and virtual machines](cloud.md)

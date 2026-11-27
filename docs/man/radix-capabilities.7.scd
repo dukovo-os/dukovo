@@ -178,6 +178,16 @@ rights listed, plus *copy* and *transfer*, which every kind has.
 	Rights: *read*, to read the caller's memory; *write*, to write it;
 	*control*, to give the caller a descriptor or take a copy of one.
 
+*jit*
+	The authority to let a process map private memory that is writable
+	and executable at once, as JavaScript engines and other compilers
+	that run as they compile need (*memory.jit*). Spark holds it from
+	the kernel and gives it to *authd*(8), which puts it in each sign-in
+	session; *bundle run* and *linux run --allow-jit* use it for the
+	programs whose bundle asks for *memory.jit* (see *radix-jit*(2), ADR
+	0624). Rights: *control*, to give a process other than one's own
+	memory.jit, which it keeps through *fork* and *exec*.
+
 # RIGHTS
 
 The fifteen rights are *read*, *write*, *execute*, *send*, *receive*,
@@ -321,7 +331,7 @@ Operations on capabilities fail with one of these, and change nothing:
 At boot the kernel reports its store:
 
 ```
-Capabilities: ready; 27 object kinds, 15 rights, spaces of up to 65536 slots, derivations up to 64 deep
+Capabilities: ready; 28 object kinds, 15 rights, spaces of up to 65536 slots, derivations up to 64 deep
 ```
 
 The *kdb* command *caps* counts the spaces, capabilities and objects by

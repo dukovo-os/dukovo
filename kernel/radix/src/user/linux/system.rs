@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Linux's calls for what a process is and has (ADR 0610): its process
-//! group and session, the user and groups it acts for, its limits, times
-//! and scheduling, the names `prctl` sets, the clock `time` reads and the
-//! waits of `waitid`. Each ends in a method of the process's own, as
+//! group and session, the user and groups it acts for and its
+//! capabilities, its limits, times and scheduling, what `prctl` sets, the
+//! clock `time` reads and the waits of `waitid`. Each ends in a method of the process's own, as
 //! Dukovo's C library makes the same calls
 //! (`ports/mlibc/sysdeps/radix/generic/process.cpp`), with Linux's raw
 //! values and records (`radix_linux::system`).
@@ -22,9 +22,10 @@ use radix_abi::process::{
 use radix_abi::startup::SLOT_PROCESS;
 use radix_cap::Rights;
 use radix_hal::CpuLocal;
-use radix_linux::errno::{EINVAL, EPERM, ESRCH};
+use radix_linux::errno::{EFAULT, EINVAL, EPERM, ESRCH};
 use radix_linux::records::{self, RUSAGE_SIZE, SYSINFO_SIZE, Time};
-use radix_linux::system::{self as lx, Rlimit, Usage};
+use radix_linux::seccomp;
+use radix_linux::system::{self as lx, CapSets, Rlimit, Usage};
 
 use super::files::on_object;
 use super::process::identity;
@@ -469,17 +470,109 @@ fn get_name(me: &ThreadRef, user: &UserRef, address: u64) -> Result<u64> {
 }
 
 /// `prctl(option, arg2, ...)`: the thread's name (the native
-/// `set_thread_name` and `thread_name`) and whether the process dumps core,
-/// which is always on and may be set to what it is. Every other option is
-/// EINVAL, as Linux answers an option it does not know.
-pub fn prctl(me: &ThreadRef, user: &UserRef, option: u64, arg: u64) -> Result<u64> {
-    match option as u32 {
+/// `set_thread_name` and `thread_name`); whether the process dumps core,
+/// which is always on and may be set to what it is; the signal it gets
+/// when its parent ends and whether it adopts its descendants' orphans,
+/// which the kernel's process tree keeps; the bounding set, which has
+/// every capability and is not changed; a timer slack, taken and not used,
+/// as Dukovo's timers have none; and the thread's seccomp mode and
+/// `no_new_privs` (ADR 0623). `PR_SET_MM` is EPERM, as for a process
+/// without `CAP_SYS_RESOURCE`, and every other option is EINVAL, as Linux
+/// answers an option it does not know.
+pub fn prctl(me: &ThreadRef, user: &UserRef, a: &Args) -> Result<u64> {
+    let arg = a[1];
+    let orphans = |change: &mut dyn FnMut(&mut bool, &mut u32)| {
+        crate::user::posix::orphan_settings(&user.process, |reaper, signal| change(reaper, signal))
+    };
+    match a[0] as u32 {
         lx::PR_SET_NAME => set_name(me, user, arg),
         lx::PR_GET_NAME => get_name(me, user, arg),
         lx::PR_GET_DUMPABLE => Ok(1),
         lx::PR_SET_DUMPABLE if matches!(arg, 0 | 1) => Ok(0),
+        lx::PR_SET_PDEATHSIG if arg <= lx::SIGNAL_MAX => {
+            orphans(&mut |_, signal| *signal = arg as u32)?;
+            Ok(0)
+        }
+        lx::PR_GET_PDEATHSIG => {
+            let (_, signal) = orphans(&mut |_, _| {})?;
+            copy_out(arg, &signal.to_le_bytes()).map(|()| 0)
+        }
+        lx::PR_SET_CHILD_SUBREAPER => {
+            orphans(&mut |reaper, _| *reaper = arg != 0)?;
+            Ok(0)
+        }
+        lx::PR_GET_CHILD_SUBREAPER => {
+            let (reaper, _) = orphans(&mut |_, _| {})?;
+            copy_out(arg, &u32::from(reaper).to_le_bytes()).map(|()| 0)
+        }
+        lx::PR_CAPBSET_READ if arg <= lx::CAP_LAST_CAP => Ok(1),
+        lx::PR_CAPBSET_DROP => fail(EPERM),
+        lx::PR_SET_TIMERSLACK => Ok(0),
+        lx::PR_GET_TIMERSLACK => Ok(lx::TIMER_SLACK_NS),
+        lx::PR_SET_MM => fail(EPERM),
+        seccomp::PR_GET_SECCOMP => Ok(super::seccomp::mode(user)),
+        seccomp::PR_SET_SECCOMP => super::seccomp::prctl_set(me, user, arg, a[2]),
+        seccomp::PR_SET_NO_NEW_PRIVS => super::seccomp::set_no_new_privs(user, a),
+        seccomp::PR_GET_NO_NEW_PRIVS => super::seccomp::no_new_privs(user, a),
         _ => fail(EINVAL),
     }
+}
+
+/// The header of a `capget` or `capset` at `address`: its pid, and how many
+/// data records its version has. An unknown version is EINVAL once the
+/// current one is written in its place, as Linux tells a caller which it
+/// has; `data` 0 then makes it a question about the version, which
+/// succeeds.
+fn cap_header(address: u64, data: u64) -> Result<Option<(i32, usize)>> {
+    let mut header = [0u8; lx::CAP_HEADER_SIZE];
+    copy_in(address, &mut header)?;
+    let [v0, v1, v2, v3, p0, p1, p2, p3] = header;
+    let Some(records) = lx::cap_records(u32::from_le_bytes([v0, v1, v2, v3])) else {
+        copy_out(address, &lx::CAP_VERSION_3.to_le_bytes())?;
+        return if data == 0 { Ok(None) } else { fail(EINVAL) };
+    };
+    Ok(Some((i32::from_le_bytes([p0, p1, p2, p3]), records)))
+}
+
+/// `capget(header, data)`: the capability sets of the caller (pid 0 or
+/// its own) or of process `pid`, which are every one for root, effective
+/// and permitted, and none for another user, as Dukovo's kernel checks
+/// them; nothing is inheritable. A null `data` asks only whether the
+/// version is known.
+pub fn capget(user: &UserRef, address: u64, data: u64) -> Result<u64> {
+    let Some((pid, records)) = cap_header(address, data)? else { return Ok(0) };
+    if data == 0 {
+        return Ok(0);
+    }
+    let Ok(pid) = u64::try_from(pid) else { return fail(EINVAL) };
+    let of = if pid == 0 || pid == user.process.number() {
+        user.process.user()
+    } else {
+        let Ok(process) = crate::user::posix::find_process(&user.process, pid) else {
+            return fail(ESRCH);
+        };
+        process.user()
+    };
+    let mut out = [0u8; 2 * lx::CAP_DATA_SIZE];
+    CapSets::of_user(of).write(records, &mut out);
+    copy_out(data, &out[..records * lx::CAP_DATA_SIZE]).map(|()| 0)
+}
+
+/// `capset(header, data)`: the caller's sets may only be set to what they
+/// are, as a process keeps the capabilities of the user it acts for; any
+/// change is EPERM, as is another process's.
+pub fn capset(user: &UserRef, address: u64, data: u64) -> Result<u64> {
+    let Some((pid, records)) = cap_header(address, data)? else { return fail(EINVAL) };
+    if pid != 0 && u64::try_from(pid).ok() != Some(user.process.number()) {
+        return fail(EPERM);
+    }
+    if data == 0 {
+        return fail(EFAULT);
+    }
+    let mut given = [0u8; 2 * lx::CAP_DATA_SIZE];
+    copy_in(data, &mut given[..records * lx::CAP_DATA_SIZE])?;
+    let now = CapSets::of_user(user.process.user());
+    if CapSets::read(&given, records, now) == now { Ok(0) } else { fail(EPERM) }
 }
 
 /// `gettimeofday(tv, tz)`: the native `clock`'s wall clock, as a

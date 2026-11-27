@@ -292,9 +292,9 @@ press Ctrl-A then X to quit QEMU. KVM is used when /dev/kvm is accessible.
                        as ./ob image takes them"
         }
         "test" => {
-            "Usage: ./ob test [unit | boot | kani | tla | tuf | corpus | riscv | lab-writer | go-suite]
-                 [--case <name>]... [--shard <part>/<parts>] [--timeout <seconds>]
-                 [--retry] [--debug | --release]
+            "Usage: ./ob test [unit | boot | kani | tla | tuf | corpus | riscv | lab-writer | go-suite
+                 | linux-suite] [--case <name>]... [--shard <part>/<parts>]
+                 [--timeout <seconds>] [--retry] [--debug | --release]
        ./ob test boot --affected <commit> [--shard <part>/<parts> | --list | --plan] [--retry]
        ./ob test boot --case <name>... --image-only
        ./ob test replay [--case <name>] [--points all|<n>] [--part <k>/<m>] [--seed <n>]
@@ -323,7 +323,11 @@ checks what it writes (a minute or two with KVM). `go-suite` runs Go's own
 tests of its standard library on Dukovo, with the Go bundle's `go`: an
 hour or more with KVM, which is why plain `ob test` leaves it out; --timeout
 is how long the machine may run (3 hours 32 minutes without it), and the
-log is out/test/go-suite.log. `boot --shard 2/5`
+log is out/test/go-suite.log. `linux-suite` builds LTP's system call tests,
+runs them on this machine's Linux as an ordinary user, and runs the ones that
+pass there in Dukovo's Linux view, with the seccomp differential: about 8
+minutes on Linux and up to 2 hours on Dukovo, and the report is
+out/test/linux-suite.txt. `boot --shard 2/5`
 runs the second of five shares of the boot tests, as CI's parallel jobs
 do; the shares take about as long by the times in
 tools/xtask/src/test/times.txt. `boot --affected

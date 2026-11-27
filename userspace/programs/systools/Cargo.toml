@@ -66,6 +66,9 @@ catalog-repo = { path = "../catalog-repo" }
 # The system call interface, generated from abi/*.ridl, for what the C
 # library does not wrap: affinity, I/O priority, tracing.
 radix-abi = { path = "../../../kernel/abi" }
+# What `exec` makes of a program: bundle check tells a Linux bundle's
+# programs from Dukovo's with the kernel's own reader (ADR 0625).
+radix-elf = { path = "../../../kernel/lib/elf" }
 # The calls the standard library lacks, made once under the rules that
 # keep them sound, so that systools itself has no `unsafe` (ADR 0730).
 sysapi = { path = "../sysapi" }

@@ -4,9 +4,11 @@
 // What a dynamically linked glibc program finds in the sandbox that linux(1)
 // builds for it (ADRs 0618 to 0622): a /proc and /sys in Linux's text, the
 // program's own path, a standard output that /proc/self/fd/1 leads back to,
+// a /proc/self/fd that lists the descriptors open, its own among them,
 // the network interfaces through a netlink route socket, the accounts in
 // /etc, a resolver file, the kernel's name, and the person's own folders
-// kept out of sight. A call that the Linux table does not handle is
+// kept out of sight, and a /dev/shm whose files two processes map and
+// share. A call that the Linux table does not handle is
 // answered by linuxd, which the case `personality` shows with the one call
 // that only linuxd answers, and which the case `restart` ends and waits for
 // the supervisor to start again.
@@ -47,10 +49,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/personality.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/utsname.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -197,6 +201,23 @@ static int only_terminal_devices(void) {
 	return only;
 }
 
+// Whether /system/commands holds no more of Dukovo's programs than the
+// shell and the core commands that /bin and /usr/bin name (ADR 0626).
+static int only_shell_commands(void) {
+	DIR *folder = opendir("/system/commands");
+	if(!folder)
+		return 1;
+	int only = 1;
+	for(struct dirent *each; (each = readdir(folder));) {
+		const char *name = each->d_name;
+		if(strcmp(name, ".") && strcmp(name, "..") && strcmp(name, "nukesh") &&
+		   strcmp(name, "coreutils") && strcmp(name, "find") && strcmp(name, "xargs"))
+			only = 0;
+	}
+	closedir(folder);
+	return only;
+}
+
 // Whether `text` is a list of CPU numbers and ranges as the kernel writes
 // one: digits, `-` and `,`, ending with a newline.
 static int is_cpu_list(const char *text) {
@@ -329,19 +350,58 @@ static void cpu_online_case(void) {
 	free(online);
 }
 
-// The person's own folders are not in the view. Dukovo's programs and
-// libraries are not; /devices holds a terminal's devices alone, which the
-// links of /dev name; and the parent of the person's home is there only as
-// the way to what the view holds beneath it, so it opens to no more than the
-// home's own name: the other accounts' homes are not in it. The program's
-// HOME is a folder of the person's app-data, from which the home is found.
+// A file of /dev/shm that shm_open makes is shared by the processes that
+// map it: a child writes through its mapping, and its parent reads that
+// through its own, as glibc's named semaphores and LTP's library rely on.
+// The file is /dev/shm's, by its name there, and goes with shm_unlink.
+static void shm_case(void) {
+	char name[64];
+	char path[80];
+	snprintf(name, sizeof(name), "/view-shm-%ld", (long)getpid());
+	snprintf(path, sizeof(path), "/dev/shm%s", name);
+	int fd = shm_open(name, O_CREAT | O_EXCL | O_RDWR, 0600);
+	CHECK(fd >= 0);
+	if(fd < 0)
+		return;
+	CHECK(ftruncate(fd, 4096) == 0);
+	struct stat status;
+	CHECK(stat(path, &status) == 0 && status.st_size == 4096);
+	volatile int *word = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	CHECK(word != MAP_FAILED);
+	CHECK(close(fd) == 0);
+	if(word != MAP_FAILED) {
+		*word = 1;
+		pid_t child = fork();
+		CHECK(child >= 0);
+		if(child == 0) {
+			*word = 0x5eed;
+			_exit(0);
+		}
+		int how = 0;
+		CHECK(child < 0 || waitpid(child, &how, 0) == child);
+		CHECK(WIFEXITED(how) && WEXITSTATUS(how) == 0);
+		CHECK(*word == 0x5eed);
+		CHECK(munmap((void *)word, 4096) == 0);
+	}
+	CHECK(shm_unlink(name) == 0);
+	CHECK(access(path, F_OK) != 0 && errno == ENOENT);
+}
+
+// The person's own folders are not in the view. Of Dukovo's programs only
+// the shell and the core commands are, for /bin/sh and the commands of
+// /usr/bin (ADR 0626), and none of its settings; /devices holds a
+// terminal's devices alone, which the links of /dev name; and the parent of
+// the person's home is there only as the way to what the view holds beneath
+// it, so it opens to no more than the home's own name: the other accounts'
+// homes are not in it. The program's HOME is a folder of the person's
+// app-data, from which the home is found.
 static void hidden_case(void) {
 	if(!on_dukovo) {
 		skip("it checks the sandbox, which only Dukovo makes");
 		return;
 	}
-	CHECK(!opens("/system/commands"));
-	CHECK(!opens("/system/libraries"));
+	CHECK(only_shell_commands());
+	CHECK(!opens("/system/settings"));
 	CHECK(only_terminal_devices());
 	const char *data = getenv("HOME");
 	const char *app_data = data ? strstr(data, "/app-data/") : NULL;
@@ -429,6 +489,61 @@ static void sleep_ms(long ms) {
 	}
 }
 
+// Lists the descriptors of /proc/self/fd through the directory's own
+// handle, as closefrom(3)'s fallback and Python's subprocess do: standard
+// input, output and error are there, and so is the directory itself.
+// Returns how many checks failed.
+static int list_own_descriptors(void) {
+	DIR *dir = opendir("/proc/self/fd");
+	CHECK(dir != NULL);
+	if(!dir)
+		return case_failures;
+	int own = dirfd(dir);
+	int found = 0;
+	errno = 0;
+	for(const struct dirent *entry; (entry = readdir(dir));) {
+		if(entry->d_name[0] == '.')
+			continue;
+		int fd = atoi(entry->d_name);
+		if(fd <= 2)
+			found |= 1 << fd;
+		else if(fd == own)
+			found |= 1 << 3;
+	}
+	CHECK(errno == 0);
+	CHECK(found == 0xf);
+	CHECK(closedir(dir) == 0);
+	return case_failures;
+}
+
+// /proc/self/fd lists the descriptors that are open, its own among them.
+// linuxd makes the listing from the kernel's list of the process's files,
+// which holds a file of linuxd's own /proc: the directory. The listing runs
+// in a child that is ended after CALL_SECONDS, so that a listing that never
+// comes fails the case by name rather than holding the test.
+static void fd_list_case(void) {
+	fflush(stdout);
+	pid_t child = fork();
+	CHECK(child >= 0);
+	if(child < 0)
+		return;
+	if(child == 0)
+		_exit(list_own_descriptors() ? 1 : 0);
+	int how = 0;
+	pid_t ended = 0;
+	long long limit = now_ms() + CALL_SECONDS * 1000LL;
+	while((ended = waitpid(child, &how, WNOHANG)) == 0 && now_ms() < limit)
+		sleep_ms(20);
+	if(ended == 0) {
+		FAIL("/proc/self/fd was not listed in time");
+		kill(child, SIGKILL);
+		waitpid(child, &how, 0);
+		return;
+	}
+	CHECK(ended == child);
+	CHECK(WIFEXITED(how) && WEXITSTATUS(how) == 0);
+}
+
 // linuxd is ended with SIGKILL while the program runs, and the supervisor
 // starts it again on the same connection and endpoint: a forwarded call is
 // answered again within RESTART_SECONDS by another process called linuxd,
@@ -490,6 +605,8 @@ static const struct test_case CASES[] = {
 	{"cpu_online", cpu_online_case},
 	{"hidden", hidden_case},
 	{"personality", personality_case},
+	{"shm", shm_case},
+	{"fd_list", fd_list_case},
 };
 
 enum { CASE_COUNT = sizeof(CASES) / sizeof(CASES[0]) };

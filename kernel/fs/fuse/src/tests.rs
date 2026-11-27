@@ -81,6 +81,10 @@ struct Mem {
     /// Requests left unanswered, by number.
     held: Vec<u64>,
     hold: Option<u32>,
+    /// How many seconds the kernel may keep the attributes an answer
+    /// gives: 0 for those that change at any time, as linuxd's of a
+    /// process's files.
+    kept_for: u64,
 }
 
 fn attr(id: u64, n: &MemNode) -> Attr {
@@ -107,7 +111,7 @@ fn name(r: &mut Reader<'_>) -> Vec<u8> {
 
 impl Mem {
     fn new(minor: u32, max_write: u32) -> Mem {
-        let mut m = Mem { next: 2, minor, max_write, ..Mem::default() };
+        let mut m = Mem { next: 2, minor, max_write, kept_for: 1, ..Mem::default() };
         m.nodes.insert(
             abi::ROOT,
             MemNode { mode: abi::file_type::DIRECTORY | 0o755, ..MemNode::default() },
@@ -118,7 +122,12 @@ impl Mem {
     fn entry(&mut self, id: u64) -> Vec<u8> {
         let node = self.nodes.get_mut(&id).unwrap();
         node.lookups += 1;
-        let e = Entry { nodeid: id, attr_valid: 1, attr: attr(id, node), ..Entry::default() };
+        let e = Entry {
+            nodeid: id,
+            attr_valid: self.kept_for,
+            attr: attr(id, node),
+            ..Entry::default()
+        };
         let mut w = Writer::with_capacity(128).unwrap();
         e.write(&mut w).unwrap();
         w.0.clone()
@@ -173,7 +182,7 @@ impl Mem {
                     }
                 }
                 let mut w = Writer::with_capacity(104).unwrap();
-                w.u64(1).unwrap().u32(0).unwrap().u32(0).unwrap();
+                w.u64(self.kept_for).unwrap().u32(0).unwrap().u32(0).unwrap();
                 attr(id, &self.nodes[&id]).write(&mut w).unwrap();
                 Ok(w.0.clone())
             }
@@ -412,6 +421,28 @@ fn files_are_made_written_read_listed_and_removed() {
     // Every name given back, every file closed.
     assert!(m.nodes.values().all(|n| n.lookups == 0), "names not forgotten");
     assert_eq!(m.open, 0);
+}
+
+#[test]
+fn the_attributes_kept_are_read_without_asking_the_program() {
+    let (fs, mem, server) = mounted(31, 4096);
+    mem.lock().unwrap().kept_for = 0;
+    let file = fs.root().create("status", Kind::File, RW).unwrap();
+    file.write(0, &Slice(b"State: R")).unwrap();
+    let asked = || mem.lock().unwrap().seen.iter().filter(|&&o| o == op::GETATTR).count();
+    let before = asked();
+    // What CREATE said: the program is not asked, though nothing it says
+    // may be kept.
+    let kept = file.stat_kept();
+    assert_eq!((kept.kind, kept.size), (Kind::File, 0));
+    assert_eq!(asked(), before);
+    assert_eq!(file.stat().size, 8);
+    assert_eq!(asked(), before + 1);
+    assert_eq!(file.stat_kept().size, 8);
+    assert_eq!(asked(), before + 1);
+    drop(file);
+    drop(fs);
+    server.join().unwrap();
 }
 
 #[test]

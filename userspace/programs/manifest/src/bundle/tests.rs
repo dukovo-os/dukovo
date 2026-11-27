@@ -16,13 +16,11 @@ const EXAMPLES: &[(&str, &str)] = &[
     ("postgresql", include_str!("examples/postgresql.json")),
     ("git", include_str!("examples/git.json")),
     ("irssi", include_str!("examples/irssi.json")),
+    ("node", include_str!("examples/node-version-2.json")),
 ];
 
 /// Its examples of what later versions bring.
-const LATER: &[(&str, &str)] = &[
-    ("node", include_str!("examples/node-version-2.json")),
-    ("photos", include_str!("examples/photos-version-2.json")),
-];
+const LATER: &[(&str, &str)] = &[("photos", include_str!("examples/photos-version-3.json"))];
 
 /// A manifest with the fields it must have, then `more`, which starts
 /// with a comma.
@@ -102,23 +100,71 @@ fn a_later_version_is_refused_for_what_it_is() {
     for (name, text) in LATER {
         assert_eq!(
             error(text),
-            "line 2: this bundle is for manifest version 2, and this Dukovo reads version 1: \
+            "line 2: this bundle is for manifest version 3, and this Dukovo reads version 2: \
              update Dukovo to install it",
             "{name}"
         );
     }
     assert_eq!(
         error(&with("").replace("\"manifest_version\": 1", "\"manifest_version\": 0")),
-        "line 2: manifest_version is 1, not 0"
+        "line 2: manifest_version is 1 to 2, not 0"
     );
     assert_eq!(
         error(&with("").replace("\"manifest_version\": 1", "\"manifest_version\": \"1\"")),
-        "line 2: manifest_version is 1, not \"1\""
+        "line 2: manifest_version is 1 to 2, not \"1\""
     );
     assert_eq!(
         error(&with("").replace("\"manifest_version\": 1,", "")),
-        "it has no manifest_version: add \"manifest_version\": 1"
+        "it has no manifest_version: add \"manifest_version\": 2"
     );
+    // Version 1 and version 2 read alike.
+    let one = from_json(&with("")).unwrap();
+    let two = from_json(&version_two("")).unwrap();
+    assert_eq!((one.manifest_version, two.manifest_version), (1, 2));
+    assert_eq!((one.runtime, two.runtime), (Runtime::Native, Runtime::Native));
+}
+
+/// [`with`], in manifest version 2.
+fn version_two(more: &str) -> String {
+    with(more).replace("\"manifest_version\": 1", "\"manifest_version\": 2")
+}
+
+#[test]
+fn a_linux_bundle_says_so_in_version_2() {
+    let linux = from_json(&version_two(",\n  \"runtime\": \"linux\"")).unwrap();
+    assert_eq!(linux.runtime, Runtime::Linux);
+    let native = from_json(&version_two(",\n  \"runtime\": \"native\"")).unwrap();
+    assert_eq!(native.runtime, Runtime::Native);
+    assert_eq!(
+        error(&with(",\n  \"runtime\": \"linux\"")),
+        "line 12: runtime comes with manifest version 2: make manifest_version 2"
+    );
+    assert!(
+        error(&version_two(",\n  \"runtime\": \"windows\"")).contains("native"),
+        "an unknown runtime names the known ones"
+    );
+    let service = r#",
+  "runtime": "linux",
+  "services": [ { "name": "app", "program": "app" } ]"#;
+    assert!(error(&version_two(service)).contains("a Linux bundle runs no services yet"));
+    let serial = r#",
+  "runtime": "linux",
+  "permissions": { "devices.serial": { "need": "optional", "why": "It talks to boards" } }"#;
+    assert!(
+        error(&version_two(serial))
+            .ends_with("a Linux bundle's programs are not given devices.serial yet")
+    );
+    let native = serial.replace("\"linux\"", "\"native\"");
+    assert!(from_json(&version_two(&native)).is_ok());
+    // memory.jit, asked at install, in either version.
+    let jit = r#",
+  "permissions": { "memory.jit": { "need": "required", "why": "It compiles as it runs" } }"#;
+    for text in [with(jit), version_two(jit)] {
+        let manifest = from_json(&text).unwrap();
+        assert!(manifest.permissions.get("memory.jit").is_some());
+    }
+    let asked = permissions::find("memory.jit").unwrap();
+    assert_eq!((asked.tier, asked.reserved_until), (permissions::Tier::AtInstall, None));
 }
 
 #[test]
@@ -145,7 +191,7 @@ fn unknown_reserved_and_vendor_fields() {
     );
     assert_eq!(
         error(&with(",\n  \"entries\": {}")),
-        "line 12: entries comes in a later manifest version: version 1 reserves its name"
+        "line 12: entries comes in a later manifest version: version 2 reserves its name"
     );
     for reserved in RESERVED {
         assert!(error(&with(&format!(",\n  \"{reserved}\": 1"))).contains("reserves its name"));
@@ -478,7 +524,7 @@ fn permissions_take_what_the_list_says() {
     );
     assert_eq!(
         error(&asking("\"devices.camera\": { \"need\": \"optional\" }")),
-        "line 13: devices.camera comes with Dukovo 1.6.6, in a later manifest version: version 1 \
+        "line 13: devices.camera comes with Dukovo 1.6.6, in a later manifest version: version 2 \
          reserves its name"
     );
     assert_eq!(error(&asking("\"notifications\": { }")), "line 13: missing field `need`");
@@ -825,7 +871,7 @@ fn the_template_reads() {
 fn the_schema_has_every_field_and_permission() {
     let schema: serde_json::Value = serde_json::from_str(&schema()).unwrap();
     assert_eq!(schema["$schema"], "https://json-schema.org/draft/2020-12/schema");
-    assert_eq!(schema["$id"], "https://dukovo.org/schemas/manifest-1.json");
+    assert_eq!(schema["$id"], "https://dukovo.org/schemas/manifest-2.json");
     let properties = schema["properties"].as_object().unwrap();
     let mut keys: Vec<&str> = properties.keys().map(String::as_str).collect();
     let mut want: Vec<&str> = KEYS.iter().copied().chain(["$schema"]).collect();

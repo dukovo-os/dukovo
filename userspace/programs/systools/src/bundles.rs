@@ -461,7 +461,8 @@ fn new(
 
 /// `bundle check [FOLDER | FILE]`: what is wrong with a manifest, each on
 /// a line of its own as `FILE:LINE: why`; in a folder, also each program
-/// or icon it names that the folder lacks.
+/// or icon it names that the folder lacks, and each program of a Linux
+/// bundle that is Dukovo's (ADR 0625).
 fn check(what: &str) -> Result<i32, Fail> {
     let (path, folder) = manifest_path(what);
     let text = read(&path)?;
@@ -492,19 +493,30 @@ fn check(what: &str) -> Result<i32, Fail> {
         path.display(),
         manifest.id,
         manifest.version,
-        bundle::VERSION
+        manifest.manifest_version
     );
     Ok(0)
 }
 
 /// What of the files `manifest` names `folder` lacks: each program, as
-/// an executable file, and the icon.
+/// an executable file, and the icon. A Linux bundle's programs must be
+/// Linux programs, or scripts: a Dukovo program in one would run in a
+/// Linux view that has none of what it needs.
 fn missing_files(manifest: &Manifest, folder: &Path) -> Vec<String> {
     let mut missing = Vec::new();
+    let linux = manifest.runtime == bundle::Runtime::Linux;
     for (name, program) in manifest.programs.iter() {
         for (arch, path) in program.path.iter() {
             match fs::metadata(folder.join(&path.0)) {
-                Ok(meta) if meta.is_file() && meta.permissions().mode() & 0o111 != 0 => {}
+                Ok(meta) if meta.is_file() && meta.permissions().mode() & 0o111 != 0 => {
+                    if linux && dukovo_program(&folder.join(&path.0)) {
+                        missing.push(format!(
+                            "a Linux bundle holds Linux programs: {}, program {name}, is a Dukovo \
+                             program",
+                            path.0
+                        ));
+                    }
+                }
                 // A WebAssembly module is not run as a program is.
                 Ok(meta) if meta.is_file() && *arch == bundle::Arch::Wasm => {}
                 Ok(meta) if meta.is_file() => missing.push(format!(
@@ -523,13 +535,40 @@ fn missing_files(manifest: &Manifest, folder: &Path) -> Vec<String> {
     missing
 }
 
+/// Whether the file at `path` is a program `exec` runs as Dukovo's.
+fn dukovo_program(path: &Path) -> bool {
+    let abi = fs::File::open(path).and_then(|file| crate::linux::elf::abi_of(&file));
+    matches!(abi, Ok(Some(radix_elf::Abi::Dukovo)))
+}
+
 /// `bundle upgrade-manifest [FOLDER | FILE]`: brings a manifest of an
-/// earlier version to this one. Version 1 is the first, so there is
-/// nothing earlier to bring up yet: it says so, once the manifest reads.
+/// earlier version to this one. A version 1 manifest is a version 2
+/// manifest without the fields version 2 adds (ADR 0625), so its
+/// `manifest_version` is all that changes, in place, the rest of the file
+/// as it was.
 fn upgrade(what: &str) -> Result<i32, Fail> {
     let (path, _) = manifest_path(what);
     let text = read(&path)?;
     match bundle::from_json(&text) {
+        Ok(manifest) if manifest.manifest_version < bundle::VERSION => {
+            let upgraded = upgraded_text(&text).ok_or_else(|| {
+                fail(format!("{}: its manifest_version is not a lone 1", path.display()))
+            })?;
+            bundle::from_json(&upgraded).map_err(|errors| {
+                let why = errors.first().map_or_default(|error| error.message.clone());
+                fail(format!("{}: as version {}, {why}", path.display(), bundle::VERSION))
+            })?;
+            let mode = fs::metadata(&path).map_or(0o644, |meta| meta.permissions().mode() & 0o7777);
+            util::replace_whole(&path, &upgraded, mode)
+                .map_err(|e| fail(format!("{}: {}", path.display(), util::strip_os_error(&e))))?;
+            println!(
+                "{}: manifest version {} is now {}; nothing else changes",
+                path.display(),
+                manifest.manifest_version,
+                bundle::VERSION
+            );
+            Ok(0)
+        }
         Ok(_) => {
             println!(
                 "{}: manifest version {}, the newest this Dukovo reads: nothing to upgrade",
@@ -545,6 +584,30 @@ fn upgrade(what: &str) -> Result<i32, Fail> {
             Ok(1)
         }
     }
+}
+
+/// `text`, a version 1 manifest, with its `manifest_version` made the
+/// newest: the one place where the key is followed by the number 1.
+fn upgraded_text(text: &str) -> Option<String> {
+    let key = "\"manifest_version\"";
+    let at = text.find(key)?;
+    if text[at + key.len()..].contains(key) {
+        return None;
+    }
+    let rest = &text[at + key.len()..];
+    let colon = rest.find(':')?;
+    if !rest[..colon].trim().is_empty() {
+        return None;
+    }
+    let after = &rest[colon + 1..];
+    let number = after.len() - after.trim_start().len();
+    let value = &after[number..];
+    let one = value.strip_prefix('1')?;
+    if one.starts_with(|c: char| c.is_ascii_digit() || c == '.') {
+        return None;
+    }
+    let start = at + key.len() + colon + 1 + number;
+    Some(format!("{}{}{}", &text[..start], bundle::VERSION, &text[start + 1..]))
 }
 
 /// The folder the developer key is in: `$XDG_DATA_HOME/bundle`, or
@@ -1858,6 +1921,67 @@ mod tests {
     use super::*;
 
     const ID: &str = "org.example.app";
+
+    #[test]
+    fn a_version_1_manifest_is_upgraded_by_its_number_alone() {
+        let text = "{\n  \"manifest_version\": 1,\n  \"id\": \"org.example.app\"\n}\n";
+        assert_eq!(
+            upgraded_text(text).unwrap(),
+            "{\n  \"manifest_version\": 2,\n  \"id\": \"org.example.app\"\n}\n"
+        );
+        assert_eq!(
+            upgraded_text("{\"manifest_version\" :1}").unwrap(),
+            "{\"manifest_version\" :2}"
+        );
+        // Not a lone 1, or the key twice: left to the person.
+        for text in [
+            "{\"manifest_version\": 10}",
+            "{\"manifest_version\": 1.0}",
+            "{\"manifest_version\": \"1\"}",
+            "{\"manifest_version\": 1, \"manifest_version\": 1}",
+        ] {
+            assert_eq!(upgraded_text(text), None, "{text}");
+        }
+        // A vendor's field of a like name is not the version.
+        assert_eq!(
+            upgraded_text("{\"x-manifest_version\": 1, \"manifest_version\": 1}").unwrap(),
+            "{\"x-manifest_version\": 1, \"manifest_version\": 2}"
+        );
+    }
+
+    #[test]
+    fn a_linux_bundle_holding_a_dukovo_program_is_refused() {
+        let folder =
+            std::env::temp_dir().join(format!("bundle-linux-check-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&folder);
+        fs::create_dir_all(folder.join("bin")).unwrap();
+        let program = folder.join("bin/tool");
+        // A script: exec runs its interpreter, so it is no one's program.
+        fs::write(&program, "#!/usr/bin/env node\n").unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+        let text = |runtime: &str| {
+            format!(
+                "{{\"manifest_version\": 2, \"id\": \"org.example.tool\", \"version\": \"1.0\",
+                \"name\": \"Tool\", \"summary\": \"A tool\", \"license\": \"MIT\",
+                \"publisher\": {{ \"name\": \"Example\" }},
+                \"requires_os\": \"1.0\", \"architectures\": [\"x86_64\"], \"runtime\": \"{runtime}\",
+                \"programs\": {{ \"tool\": {{ \"path\": {{ \"x86_64\": \"bin/tool\" }} }} }}}}"
+            )
+        };
+        let linux = bundle::from_json(&text("linux")).unwrap();
+        assert_eq!(missing_files(&linux, &folder), Vec::<String>::new());
+        fs::write(&program, crate::linux::elf::executable(None)).unwrap();
+        assert_eq!(missing_files(&linux, &folder), Vec::<String>::new());
+        let dukovo = crate::linux::elf::executable(Some(radix_elf::DUKOVO_LOADER));
+        fs::write(&program, dukovo).unwrap();
+        assert_eq!(
+            missing_files(&linux, &folder),
+            ["a Linux bundle holds Linux programs: bin/tool, program tool, is a Dukovo program"]
+        );
+        let native = bundle::from_json(&text("native")).unwrap();
+        assert_eq!(missing_files(&native, &folder), Vec::<String>::new());
+        let _ = fs::remove_dir_all(&folder);
+    }
 
     fn key(seed: u8) -> SecretKey {
         SecretKey::generate(&[seed; 40]).unwrap()

@@ -54,6 +54,8 @@
 //!   `fcntl`.
 //! - [`magic`]: which paths name a process's own links in /proc that the
 //!   kernel answers (`/proc/self/exe`, `/dev/fd/<n>` and the like).
+//! - [`seccomp`]: the operations, flags and modes of `seccomp(2)` and of
+//!   `prctl`'s seccomp options, and `struct sock_fprog`.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
@@ -71,6 +73,7 @@ pub mod notify;
 pub mod nr;
 pub mod poll;
 pub mod records;
+pub mod seccomp;
 pub mod signals;
 pub mod sockets;
 pub mod system;

@@ -388,7 +388,7 @@ pub fn send_thread(thread: &ThreadRef, user: &UserThread, signal: u32, info: Inf
 pub fn raise_current(signal: u32) {
     let Some(me) = sched::current() else { return };
     let Some(user) = me.user() else { return };
-    let info = Info { code: rules::SI_USER, pid: user.process.number(), status: 0 };
+    let info = Info { code: rules::SI_USER, errno: 0, pid: user.process.number(), status: 0 };
     send_thread(&me, user, signal, info);
 }
 
@@ -411,7 +411,7 @@ pub fn job_control(user: &UserThread, group: u64, signal: u32) -> core::result::
     if with_tree(|tree| tree.orphaned(group)) {
         return Err(FileError::Io.status(0));
     }
-    send_group(group, signal, Info { code: rules::SI_KERNEL, pid: 0, status: 0 });
+    send_group(group, signal, Info { code: rules::SI_KERNEL, errno: 0, pid: 0, status: 0 });
     Err(interrupted(Restart::Always))
 }
 
@@ -486,6 +486,7 @@ fn continue_process(process: &ProcessObject) {
         if wants {
             let info = Info {
                 code: rules::CLD_CONTINUED,
+                errno: 0,
                 pid: process.number(),
                 status: u64::from(SIGCONT),
             };
@@ -514,8 +515,12 @@ fn stop_process(process: &ProcessObject, signal: u32) {
     if let Some(parent) = parent {
         let wants = !parent.posix.lock().actions.get(SIGCHLD).has(ActionFlags::NO_CHILD_STOP);
         if wants {
-            let info =
-                Info { code: rules::CLD_STOPPED, pid: process.number(), status: u64::from(signal) };
+            let info = Info {
+                code: rules::CLD_STOPPED,
+                errno: 0,
+                pid: process.number(),
+                status: u64::from(signal),
+            };
             send_process(&parent, SIGCHLD, info);
         }
         children_changed(&parent);
@@ -578,7 +583,7 @@ pub fn fault(
         let blocked = signals.mask & bit(signal) != 0;
         let handler = matches!(posix.actions.disposition(signal), Disposition::Handle(_));
         if handler && !blocked {
-            signals.pending.add(signal, Info { code, pid: address, status: lsb });
+            signals.pending.add(signal, Info { code, errno: 0, pid: address, status: lsb });
             signals.trap = Some((signal, vector_of(fault), fault.code, address));
             me.set_signalled(true);
             true
@@ -594,10 +599,45 @@ pub fn fault(
     handled
 }
 
+/// Sends `signal` with `info` to the running thread for what it just did,
+/// as Linux's `force_sig_info` sends it: the program's handler runs, if
+/// the thread has one and does not block the signal. Returns whether it
+/// will; if not (the signal is blocked, ignored, or has its default
+/// action), the caller ends the process with [`kill_current`], as Linux
+/// resets the signal to its default action, which ends it. The SIGSYS of a
+/// seccomp filter's TRAP (ADR 0623).
+pub fn force(me: &ThreadRef, user: &UserThread, signal: u32, info: Info) -> bool {
+    let posix = user.process.posix.lock();
+    let mut signals = user.signals.lock();
+    if signals.mask & bit(signal) != 0
+        || !matches!(posix.actions.disposition(signal), Disposition::Handle(_))
+    {
+        return false;
+    }
+    signals.pending.add(signal, info);
+    me.set_signalled(true);
+    true
+}
+
+/// Ends the running thread's process, killed by `signal` with `info`, and
+/// keeps a crash record for a signal that dumps core: what a seccomp
+/// filter's KILL does (ADR 0623). Does not return.
+pub fn kill_current(me: &ThreadRef, user: &UserRef, signal: u32, info: Info) -> ! {
+    let process = &user.process;
+    trace::signal(process, me.id(), signal, TraceSignal::Ended);
+    if rules::is_crash(signal) {
+        warn!("User: process {} ended by signal {signal}", process.number());
+        crate::user::crash::keep(me, user, signal, info.code, info.pid);
+    }
+    kill_process(process, signal);
+    exit_current(user.clone(), EXIT_STOPPED, Ending::Stop)
+}
+
 /// The bytes of a SignalInfo for `signal` from `info`.
 fn info_bytes(signal: u32, info: &Info) -> [u8; SignalInfo::SIZE] {
     let mut bytes = [0u8; SignalInfo::SIZE];
     bytes[SignalInfo::OFFSET_SIGNAL..][..4].copy_from_slice(&(signal as i32).to_le_bytes());
+    bytes[SignalInfo::OFFSET_ERROR..][..4].copy_from_slice(&info.errno.to_le_bytes());
     bytes[SignalInfo::OFFSET_CODE..][..4].copy_from_slice(&info.code.to_le_bytes());
     bytes[SignalInfo::OFFSET_PID..][..8].copy_from_slice(&info.pid.to_le_bytes());
     bytes[SignalInfo::OFFSET_STATUS..][..8].copy_from_slice(&info.status.to_le_bytes());
@@ -987,7 +1027,8 @@ pub fn method(user: &UserRef, label: u32, args: &[u64; 8]) -> Result<Answer> {
             });
             let (thread, target) = found.ok_or(error(Kernel::NoSuchProcess))?;
             if a.signal != 0 {
-                let info = Info { code: rules::SI_TKILL, pid: process.number(), status: 0 };
+                let info =
+                    Info { code: rules::SI_TKILL, errno: 0, pid: process.number(), status: 0 };
                 send_thread(&thread, &target, a.signal, info);
             }
             answer(label, 0, [0; 8])

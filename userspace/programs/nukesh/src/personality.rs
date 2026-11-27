@@ -12,7 +12,8 @@
 //! libraries to load. A static Linux program runs as it is, the kernel's
 //! Linux table serving it. A file whose headers or notes the first bytes do
 //! not show is run as it always was, not through the view: it is the one
-//! the shell cannot tell is Linux's.
+//! the shell cannot tell is Linux's. In a Linux view already, the shell
+//! starts every program as it is (ADR 0626).
 
 use std::ffi::{CStr, CString};
 
@@ -24,6 +25,16 @@ pub const HEAD: usize = 4096;
 
 /// The command that runs a program in a Linux view.
 pub const LINUX: &CStr = c"/system/commands/linux";
+
+/// The variable a Linux view's programs find set (ADR 0626).
+pub const IN_VIEW: &str = "DUKOVO_LINUX_VIEW";
+
+/// Whether the shell runs in a Linux view, as the view's `/bin/sh`: a
+/// Linux program it starts runs there as it is, the kernel finding its
+/// dynamic linker in the view and linuxd serving it.
+pub fn in_linux_view() -> bool {
+    std::env::var_os(IN_VIEW).is_some()
+}
 
 /// Whether the file of `size` bytes that starts with `head` is a program
 /// for Linux that names an interpreter, and so runs in a Linux view.

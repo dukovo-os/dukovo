@@ -1,9 +1,10 @@
 {
   "manifest_version": 2,
   "id": "org.nodejs.node",
-  "name": "Node.js 22",
-  "version": "22.11.0",
-  "line": "22",
+  "name": "Node.js 26",
+  "version": "26.13.1",
+  "line": "26",
+  "line_files": [".nvmrc", ".node-version"],
   "summary": "JavaScript runtime",
   "publisher": { "name": "Dukovo catalog" },
   "license": "MIT",
@@ -21,8 +22,8 @@
     { "name": "npx", "program": "npx", "runs_with": "your-access" }
   ],
   "permissions": {
-    "memory.jit": { "need": "required", "why": "V8 compiles JavaScript to machine code as it runs" }
+    "memory.jit": { "need": "required", "why": "V8, its JavaScript engine, compiles code to machine code as it runs" }
   },
-  "add_ons": { "tool": "npm", "commands": "bin" },
+  "add_ons": { "variables": ["NPM_CONFIG_PREFIX"], "commands": "bin" },
   "data": { "cache": true }
 }

@@ -830,13 +830,16 @@ static void madvise_dontneed(void) {
 	CHECK(munmap(at, 2 * PAGE) == 0);
 }
 
-// What mremap does to the end of a mapping: it shrinks and unmaps the
-// tail; it grows in place when the pages after it are free; and without
-// MREMAP_MAYMOVE it fails with ENOMEM when they are not. With
-// MREMAP_MAYMOVE Linux moves the mapping and carries its contents. Dukovo
-// answers every grow with ENOMEM for now (docs/deferred.md), which the C
-// libraries' realloc answers by copying, so there either is accepted and
-// the case says which it saw.
+// What mremap does to a mapping (ADR 0629): it shrinks and unmaps the
+// tail; it grows in place when the pages after it are free, and without
+// MREMAP_MAYMOVE fails with ENOMEM when they are not; with MREMAP_MAYMOVE
+// it moves, carrying its pages, to a place of its own or the one
+// MREMAP_FIXED names; with MREMAP_DONTUNMAP its old place stays mapped and
+// empty; with an old size of 0 a shared mapping is mapped a second time.
+#ifndef MREMAP_DONTUNMAP
+#define MREMAP_DONTUNMAP 4
+#endif
+
 static void mremap_shrink(void) {
 	char *at = map_pages(4);
 	if(!at)
@@ -861,26 +864,21 @@ static void mremap_grow(void) {
 	fill_page(at, 1, 0x22);
 	CHECK(munmap(at + 2 * PAGE, 2 * PAGE) == 0);
 	void *same = mremap(at, 2 * PAGE, 4 * PAGE, 0);
-	if(same == MAP_FAILED && errno == ENOMEM && on_dukovo) {
-		note("growing in place failed with ENOMEM");
-		CHECK(page_is(at, 0, 0x21) && page_is(at, 1, 0x22));
+	CHECK(same == at);
+	if(same != at) {
 		CHECK(munmap(at, 2 * PAGE) == 0);
 		return;
 	}
-	CHECK(same == at);
-	if(same == at) {
-		CHECK(page_is(at, 0, 0x21) && page_is(at, 1, 0x22));
-		CHECK(page_is(at, 2, 0) && page_is(at, 3, 0));
-		fill_page(at, 3, 0x24);
-		CHECK(page_is(at, 3, 0x24));
-		CHECK(munmap(at, 4 * PAGE) == 0);
-	} else {
-		CHECK(munmap(at, 2 * PAGE) == 0);
-	}
+	CHECK(page_is(at, 0, 0x21) && page_is(at, 1, 0x22));
+	CHECK(page_is(at, 2, 0) && page_is(at, 3, 0));
+	fill_page(at, 3, 0x24);
+	CHECK(page_is(at, 3, 0x24));
+	CHECK(munmap(at, 4 * PAGE) == 0);
 }
 
 // A page with a free page and then mapped pages after it cannot grow to
-// three pages in place, and without MREMAP_MAYMOVE says so.
+// three pages in place, and without MREMAP_MAYMOVE says so; with it, it
+// moves, its page with it, and its old place is gone.
 static void mremap_blocked(void) {
 	char *at = map_pages(4);
 	if(!at)
@@ -890,26 +888,148 @@ static void mremap_blocked(void) {
 	CHECK(munmap(at + PAGE, PAGE) == 0);
 	CHECK_ERROR(mremap(at, PAGE, 3 * PAGE, 0), ENOMEM);
 	CHECK(page_is(at, 0, 0x31) && page_is(at, 2, 0x33));
-	void *moved = mremap(at, PAGE, 3 * PAGE, MREMAP_MAYMOVE);
-	if(moved == MAP_FAILED) {
-		CHECK(errno == ENOMEM && on_dukovo);
-		note("MREMAP_MAYMOVE failed with ENOMEM");
-		CHECK(munmap(at, PAGE) == 0);
-	} else {
-		note("MREMAP_MAYMOVE moved the mapping");
-		CHECK(moved != (void *)at);
+	char *moved = mremap(at, PAGE, 3 * PAGE, MREMAP_MAYMOVE);
+	CHECK(moved != MAP_FAILED && moved != at);
+	if(moved != MAP_FAILED) {
 		CHECK(page_is(moved, 0, 0x31) && page_is(moved, 1, 0) && page_is(moved, 2, 0));
+		fill_page(moved, 2, 0x35);
+		CHECK(page_is(moved, 2, 0x35));
 		CHECK(faults(at));
 		CHECK(munmap(moved, 3 * PAGE) == 0);
 	}
+	CHECK(page_is(at, 2, 0x33));
 	CHECK(munmap(at + 2 * PAGE, 2 * PAGE) == 0);
 }
 
-// The three mremap cases: shrinking, growing, and a grow that is blocked.
+// Over 2 MiB of memory, in pages a page-table apart, moves whole: what was
+// written stays, what was never touched reads as zeros, and a fork after
+// the move gives the child the same memory and the parent its own.
+static void mremap_large(void) {
+	size_t pages = 1100;
+	char *at = map_pages(pages + 1);
+	if(!at)
+		return;
+	for(size_t page = 0; page < pages; page += 7)
+		at[page * PAGE + 5] = (char)(page % 120 + 1);
+	// The page after it is mapped: growing must move.
+	char *moved = mremap(at, pages * PAGE, 2 * pages * PAGE, MREMAP_MAYMOVE);
+	CHECK(moved != MAP_FAILED && moved != at);
+	if(moved == MAP_FAILED) {
+		CHECK(munmap(at, (pages + 1) * PAGE) == 0);
+		return;
+	}
+	int same = 1;
+	for(size_t page = 0; page < pages; page++) {
+		char want = page % 7 == 0 ? (char)(page % 120 + 1) : 0;
+		same &= moved[page * PAGE + 5] == want && moved[page * PAGE] == 0;
+	}
+	CHECK(same);
+	CHECK(page_is(moved, 2 * pages - 1, 0));
+	pid_t child = fork();
+	if(child == 0) {
+		moved[5] = 0x7e;
+		_exit(moved[7 * PAGE + 5] == 8 ? 0 : 1);
+	}
+	CHECK_EXITED(child, 0);
+	CHECK(moved[5] == 1);
+	CHECK(faults(at) && faults(at + (pages - 1) * PAGE));
+	CHECK(munmap(moved, 2 * pages * PAGE) == 0);
+	CHECK(munmap(at + pages * PAGE, PAGE) == 0);
+}
+
+// MREMAP_FIXED puts the mapping where it says, taking away what was there,
+// and may shrink it on the way; MREMAP_DONTUNMAP leaves the old place
+// mapped and empty.
+static void mremap_fixed(void) {
+	char *at = map_pages(3);
+	char *there = map_pages(4);
+	if(!at || !there)
+		return;
+	for(size_t page = 0; page < 3; page++)
+		fill_page(at, page, (char)(0x41 + page));
+	fill_page(there, 0, 0x4f);
+	char *moved = mremap(at, 3 * PAGE, 2 * PAGE, MREMAP_MAYMOVE | MREMAP_FIXED, there);
+	CHECK(moved == there);
+	CHECK(page_is(there, 0, 0x41) && page_is(there, 1, 0x42));
+	CHECK(page_is(there, 2, 0) && page_is(there, 3, 0));
+	CHECK(faults(at) && faults(at + 2 * PAGE));
+	char *kept = mremap(there, 2 * PAGE, 2 * PAGE, MREMAP_MAYMOVE | MREMAP_DONTUNMAP);
+	CHECK(kept != MAP_FAILED && kept != there);
+	if(kept != MAP_FAILED) {
+		CHECK(page_is(kept, 0, 0x41) && page_is(kept, 1, 0x42));
+		// Still mapped, and as new private memory: zeros.
+		CHECK(page_is(there, 0, 0) && page_is(there, 1, 0));
+		fill_page(there, 1, 0x48);
+		CHECK(page_is(there, 1, 0x48) && page_is(kept, 1, 0x42));
+		CHECK(munmap(kept, 2 * PAGE) == 0);
+	}
+	CHECK(munmap(there, 4 * PAGE) == 0);
+}
+
+// What Linux refuses, in its order: flags it does not know, MREMAP_FIXED or
+// MREMAP_DONTUNMAP without MREMAP_MAYMOVE, MREMAP_DONTUNMAP that resizes, an
+// address within a page, a new size of 0, places that overlap, a fixed
+// place within a page, a private mapping's old size of 0 (EINVAL); memory
+// not mapped (EFAULT).
+static void mremap_refused(void) {
+	char *at = map_pages(4);
+	if(!at)
+		return;
+	CHECK_ERROR(mremap(at, PAGE, PAGE, 0x80), EINVAL);
+	CHECK_ERROR(mremap(at, PAGE, PAGE, MREMAP_FIXED, at + 2 * PAGE), EINVAL);
+	CHECK_ERROR(mremap(at, PAGE, PAGE, MREMAP_DONTUNMAP), EINVAL);
+	CHECK_ERROR(mremap(at, PAGE, 2 * PAGE, MREMAP_MAYMOVE | MREMAP_DONTUNMAP), EINVAL);
+	CHECK_ERROR(mremap(at + 1, PAGE, PAGE, MREMAP_MAYMOVE), EINVAL);
+	CHECK_ERROR(mremap(at, PAGE, 0, MREMAP_MAYMOVE), EINVAL);
+	CHECK_ERROR(mremap(at, 2 * PAGE, 2 * PAGE, MREMAP_MAYMOVE | MREMAP_FIXED, at + PAGE), EINVAL);
+	CHECK_ERROR(mremap(at, PAGE, PAGE, MREMAP_MAYMOVE | MREMAP_FIXED, at + 2 * PAGE + 1), EINVAL);
+	CHECK_ERROR(mremap(at, 0, PAGE, MREMAP_MAYMOVE), EINVAL);
+	CHECK(munmap(at, 4 * PAGE) == 0);
+	CHECK_ERROR(mremap(at, PAGE, 2 * PAGE, MREMAP_MAYMOVE), EFAULT);
+	CHECK_ERROR(mremap(at, PAGE, PAGE, 0), EFAULT);
+}
+
+// Shared memory moves as a mapping of the same pages, and an old size of 0
+// maps them a second time: a write through one is seen through the other.
+static void mremap_shared(void) {
+	char *at = mmap(NULL, 2 * PAGE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	CHECK(at != MAP_FAILED);
+	if(at == MAP_FAILED)
+		return;
+	fill_page(at, 0, 0x51);
+	char *twice = mremap(at, 0, PAGE, MREMAP_MAYMOVE);
+	CHECK(twice != MAP_FAILED && twice != at);
+	if(twice != MAP_FAILED) {
+		CHECK(page_is(twice, 0, 0x51));
+		fill_page(twice, 0, 0x52);
+		CHECK(page_is(at, 0, 0x52));
+	}
+	char *there = map_pages(2);
+	if(!there)
+		return;
+	char *moved = mremap(at, 2 * PAGE, 2 * PAGE, MREMAP_MAYMOVE | MREMAP_FIXED, there);
+	CHECK(moved == there);
+	if(moved != MAP_FAILED) {
+		CHECK(page_is(moved, 0, 0x52));
+		fill_page(moved, 0, 0x53);
+		if(twice != MAP_FAILED)
+			CHECK(page_is(twice, 0, 0x53));
+		CHECK(faults(at));
+		CHECK(munmap(moved, 2 * PAGE) == 0);
+	}
+	if(twice != MAP_FAILED)
+		CHECK(munmap(twice, PAGE) == 0);
+}
+
+// The mremap cases.
 static void mremap_case(void) {
 	mremap_shrink();
 	mremap_grow();
 	mremap_blocked();
+	mremap_large();
+	mremap_fixed();
+	mremap_refused();
+	mremap_shared();
 }
 
 // uname answers as Linux does: its sysname and machine are Linux's, and
@@ -2346,6 +2466,258 @@ static void sigtimedwait_eintr(void) {
 	CHECK(sigaction(SIGALRM, &old, NULL) == 0);
 }
 
+// prctl's options, as linux/prctl.h numbers them; the C libraries'
+// headers do not all have the newer ones.
+#define LINUX_PR_SET_PDEATHSIG 1
+#define LINUX_PR_GET_PDEATHSIG 2
+#define LINUX_PR_GET_DUMPABLE 3
+#define LINUX_PR_CAPBSET_READ 23
+#define LINUX_PR_SET_TIMERSLACK 29
+#define LINUX_PR_GET_TIMERSLACK 30
+#define LINUX_PR_SET_MM 35
+#define LINUX_PR_SET_CHILD_SUBREAPER 36
+#define LINUX_PR_GET_CHILD_SUBREAPER 37
+
+// prctl, made without the C library's wrapper, whose arguments differ
+// between them.
+static long raw_prctl(long option, unsigned long a2, unsigned long a3) {
+	return syscall(SYS_prctl, option, a2, a3, 0UL, 0UL);
+}
+
+// prctl answers the options a Linux program asks of it and refuses the
+// rest as Linux does.
+static void prctl_case(void) {
+	int value = -1;
+	CHECK(raw_prctl(LINUX_PR_SET_PDEATHSIG, SIGUSR1, 0) == 0);
+	CHECK(raw_prctl(LINUX_PR_GET_PDEATHSIG, (unsigned long)&value, 0) == 0 && value == SIGUSR1);
+	CHECK(raw_prctl(LINUX_PR_SET_PDEATHSIG, 0, 0) == 0);
+	CHECK(raw_prctl(LINUX_PR_GET_PDEATHSIG, (unsigned long)&value, 0) == 0 && value == 0);
+	CHECK_ERROR(raw_prctl(LINUX_PR_SET_PDEATHSIG, 65, 0), EINVAL);
+	CHECK_ERROR(raw_prctl(LINUX_PR_GET_PDEATHSIG, 8, 0), EFAULT);
+	CHECK(raw_prctl(LINUX_PR_GET_CHILD_SUBREAPER, (unsigned long)&value, 0) == 0 && value == 0);
+	CHECK(raw_prctl(LINUX_PR_SET_CHILD_SUBREAPER, 1, 0) == 0);
+	CHECK(raw_prctl(LINUX_PR_GET_CHILD_SUBREAPER, (unsigned long)&value, 0) == 0 && value == 1);
+	CHECK(raw_prctl(LINUX_PR_SET_CHILD_SUBREAPER, 0, 0) == 0);
+	CHECK(raw_prctl(LINUX_PR_GET_DUMPABLE, 0, 0) == 1);
+	// Every capability is in the bounding set, and one past the last is
+	// no capability.
+	CHECK(raw_prctl(LINUX_PR_CAPBSET_READ, 0, 0) == 1);
+	CHECK_ERROR(raw_prctl(LINUX_PR_CAPBSET_READ, 1000, 0), EINVAL);
+	CHECK(raw_prctl(LINUX_PR_SET_TIMERSLACK, 100000, 0) == 0);
+	CHECK(raw_prctl(LINUX_PR_GET_TIMERSLACK, 0, 0) > 0);
+	CHECK(raw_prctl(LINUX_PR_SET_TIMERSLACK, 0, 0) == 0);
+	if(geteuid() != 0)
+		CHECK_ERROR(raw_prctl(LINUX_PR_SET_MM, 1, 0), EPERM);
+	CHECK_ERROR(raw_prctl(0x7777, 0, 0), EINVAL);
+}
+
+// Ends the program with 0 if SIGUSR1 comes from `from` within 5 seconds
+// and this process's parent is `parent` then; the codes after say which
+// part failed. SIGUSR1 is blocked.
+static void await_parent_death(pid_t from, pid_t parent) {
+	sigset_t set;
+	sigemptyset(&set);
+	sigaddset(&set, SIGUSR1);
+	struct timespec limit = {5, 0};
+	siginfo_t info;
+	if(sigtimedwait(&set, &info, &limit) != SIGUSR1)
+		_exit(10);
+	if(info.si_code != SI_USER || info.si_pid != from)
+		_exit(11);
+	_exit(getppid() == parent ? 0 : 12);
+}
+
+// A process that asked for a signal when its parent ends gets it, and a
+// subreaper adopts the orphans of its descendants, ended or not, and
+// waits for them as their parent would have.
+static void orphans(void) {
+	pid_t self = getpid();
+	CHECK(raw_prctl(LINUX_PR_SET_CHILD_SUBREAPER, 1, 0) == 0);
+	// The middle process tells the case its child's number on one pipe,
+	// and the child tells the middle it is ready on the other.
+	int to_case[2], to_middle[2];
+	CHECK(pipe(to_case) == 0 && pipe(to_middle) == 0);
+	sigset_t set, before;
+	sigemptyset(&set);
+	sigaddset(&set, SIGUSR1);
+	CHECK(sigprocmask(SIG_BLOCK, &set, &before) == 0);
+	// A middle process whose child asks for SIGUSR1 when it ends.
+	pid_t grandchild = -1;
+	pid_t middle = fork();
+	if(middle == 0) {
+		pid_t child = fork();
+		if(child == 0) {
+			if(raw_prctl(LINUX_PR_SET_PDEATHSIG, SIGUSR1, 0) != 0)
+				_exit(13);
+			if(write(to_middle[1], "r", 1) != 1)
+				_exit(14);
+			await_parent_death(getppid(), self);
+		}
+		char got;
+		if(child < 0 || write(to_case[1], &child, sizeof(child)) != sizeof(child) ||
+				read(to_middle[0], &got, 1) != 1)
+			_exit(1);
+		_exit(0);
+	}
+	CHECK(middle > 0);
+	CHECK(read(to_case[0], &grandchild, sizeof(grandchild)) == sizeof(grandchild));
+	CHECK_EXITED(middle, 0);
+	// The grandchild is this process's to wait for now.
+	if(grandchild > 0)
+		CHECK_EXITED(grandchild, 0);
+	// A child that ended before its parent did: adopted as it is, to be
+	// waited for here.
+	middle = fork();
+	if(middle == 0) {
+		pid_t child = fork();
+		if(child == 0)
+			_exit(7);
+		siginfo_t info;
+		memset(&info, 0, sizeof(info));
+		if(child < 0 || waitid(P_PID, (id_t)child, &info, WEXITED | WNOWAIT) != 0)
+			_exit(1);
+		if(write(to_case[1], &child, sizeof(child)) != sizeof(child))
+			_exit(1);
+		_exit(0);
+	}
+	CHECK(middle > 0);
+	CHECK(read(to_case[0], &grandchild, sizeof(grandchild)) == sizeof(grandchild));
+	CHECK_EXITED(middle, 0);
+	if(grandchild > 0)
+		CHECK_EXITED(grandchild, 7);
+	CHECK(raw_prctl(LINUX_PR_SET_CHILD_SUBREAPER, 0, 0) == 0);
+	CHECK(sigprocmask(SIG_SETMASK, &before, NULL) == 0);
+	for(int i = 0; i < 2; i++) {
+		close(to_case[i]);
+		close(to_middle[i]);
+	}
+}
+
+// The capability header and data records of capget and capset, as
+// linux/capability.h has them.
+#define LINUX_CAP_VERSION_1 0x19980330
+#define LINUX_CAP_VERSION_3 0x20080522
+
+struct cap_header {
+	uint32_t version;
+	int pid;
+};
+
+struct cap_data {
+	uint32_t effective, permitted, inheritable;
+};
+
+// capget says which version it has and what the process may do; capset
+// may set what is there, and nothing more.
+static void capabilities(void) {
+	struct cap_header header = {0, 0};
+	struct cap_data data[2];
+	CHECK_ERROR(syscall(SYS_capget, &header, data), EINVAL);
+	CHECK(header.version == LINUX_CAP_VERSION_3);
+	header.version = 0;
+	CHECK(syscall(SYS_capget, &header, NULL) == 0);
+	CHECK(header.version == LINUX_CAP_VERSION_3);
+	memset(data, 0xff, sizeof(data));
+	CHECK(syscall(SYS_capget, &header, data) == 0);
+	if(geteuid() != 0) {
+		for(int i = 0; i < 2; i++)
+			CHECK(!data[i].effective && !data[i].permitted && !data[i].inheritable);
+	}
+	// The parent's, which a capget may read and a capset may not set.
+	struct cap_data parents[2];
+	header.pid = getppid();
+	CHECK(syscall(SYS_capget, &header, parents) == 0);
+	CHECK_ERROR(syscall(SYS_capset, &header, data), EPERM);
+	header.pid = -1;
+	CHECK_ERROR(syscall(SYS_capget, &header, data), EINVAL);
+	// What there is may be set again; more may not.
+	header.pid = 0;
+	CHECK(syscall(SYS_capset, &header, data) == 0);
+	if(geteuid() != 0) {
+		struct cap_data more[2];
+		memcpy(more, data, sizeof(more));
+		more[0].effective = 1;
+		more[0].permitted = 1;
+		CHECK_ERROR(syscall(SYS_capset, &header, more), EPERM);
+	}
+	// The first version has one record: the second is left as it was.
+	header.version = LINUX_CAP_VERSION_1;
+	struct cap_data one[2];
+	memset(one, 0xee, sizeof(one));
+	CHECK(syscall(SYS_capget, &header, one) == 0);
+	CHECK(one[0].effective == data[0].effective && one[1].effective == 0xeeeeeeeeU);
+	// A process that has ended is no process to ask about.
+	pid_t gone = fork();
+	if(gone == 0)
+		_exit(0);
+	CHECK_EXITED(gone, 0);
+	header.version = LINUX_CAP_VERSION_3;
+	header.pid = gone;
+	CHECK_ERROR(syscall(SYS_capget, &header, data), ESRCH);
+}
+
+// The kernel's struct statfs, as asm/statfs.h has it for x86-64.
+struct linux_statfs {
+	long f_type, f_bsize, f_blocks, f_bfree, f_bavail, f_files, f_ffree;
+	int f_fsid[2];
+	long f_namelen, f_frsize, f_flags, f_spare[4];
+};
+
+_Static_assert(sizeof(struct linux_statfs) == 120, "the statfs record is 120 bytes");
+
+#define LINUX_ST_VALID 0x20
+
+// statfs and fstatfs say the same of one filesystem, a file's and its
+// folder's alike, and refuse a path that leads nowhere and a descriptor
+// that is not open.
+static void statfs_case(void) {
+	struct linux_statfs by_path, by_fd, of_file;
+	memset(&by_path, 0xaa, sizeof(by_path));
+	CHECK(syscall(SYS_statfs, scratch, &by_path) == 0);
+	CHECK(by_path.f_bsize > 0 && by_path.f_frsize > 0 && by_path.f_namelen >= 255);
+	CHECK(by_path.f_bfree <= by_path.f_blocks && by_path.f_bavail <= by_path.f_bfree);
+	CHECK(by_path.f_flags & LINUX_ST_VALID);
+	int dir = open(scratch, O_RDONLY | O_DIRECTORY);
+	CHECK(dir >= 0);
+	CHECK(syscall(SYS_fstatfs, dir, &by_fd) == 0);
+	CHECK(by_fd.f_type == by_path.f_type && by_fd.f_bsize == by_path.f_bsize);
+	char path[512];
+	int file = open(in_scratch(path, sizeof(path), "statfs-file"), O_RDWR | O_CREAT | O_TRUNC, 0600);
+	CHECK(file >= 0);
+	CHECK(syscall(SYS_fstatfs, file, &of_file) == 0);
+	CHECK(of_file.f_type == by_path.f_type && of_file.f_blocks == by_path.f_blocks);
+	close(file);
+	close(dir);
+	CHECK(unlink(path) == 0);
+	CHECK_ERROR(syscall(SYS_statfs, in_scratch(path, sizeof(path), "nothing-here"), &by_path),
+			ENOENT);
+	CHECK_ERROR(syscall(SYS_fstatfs, 9999, &by_fd), EBADF);
+}
+
+#ifndef SYS_close_range
+#define SYS_close_range 436
+#endif
+#define LINUX_CLOSE_RANGE_UNSHARE 2
+
+// close_range with CLOSE_RANGE_UNSHARE closes in a table of the caller's
+// own, which a process of one thread has: run in a child, as this
+// program's watchdog is a second thread.
+static void close_range_unshare(void) {
+	pid_t child = fork();
+	if(child == 0) {
+		int fd = open("/", O_RDONLY | O_DIRECTORY);
+		if(fd < 0)
+			_exit(1);
+		if(syscall(SYS_close_range, fd, fd, LINUX_CLOSE_RANGE_UNSHARE) != 0)
+			_exit(2);
+		_exit(fcntl(fd, F_GETFD) == -1 && errno == EBADF ? 0 : 3);
+	}
+	CHECK(child > 0);
+	CHECK_EXITED(child, 0);
+	CHECK_ERROR(syscall(SYS_close_range, 5, 4, 0), EINVAL);
+	CHECK_ERROR(syscall(SYS_close_range, 0, 0, 1U << 8), EINVAL);
+}
+
 struct test_case {
 	const char *name;
 	void (*run)(void);
@@ -2389,6 +2761,11 @@ static const struct test_case CASES[] = {
 	{"vectored_flags", vectored_flags},
 	{"wait_time_left", wait_time_left},
 	{"sigtimedwait_eintr", sigtimedwait_eintr},
+	{"prctl", prctl_case},
+	{"orphans", orphans},
+	{"capabilities", capabilities},
+	{"close_range_unshare", close_range_unshare},
+	{"statfs", statfs_case},
 };
 
 enum { CASE_COUNT = sizeof(CASES) / sizeof(CASES[0]) };

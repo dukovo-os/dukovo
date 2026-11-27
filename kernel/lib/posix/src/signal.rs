@@ -231,6 +231,9 @@ impl<S: AsRef<[Action]> + AsMut<[Action]>> Actions<S> {
 pub struct Info {
     /// Where it came from: `si_code`.
     pub code: i32,
+    /// `si_errno`: for the SIGSYS a Linux program's seccomp filter sends,
+    /// the filter's data (ADR 0623); 0 for every other signal.
+    pub errno: i32,
     /// The sender's process number, or the address a fault was on; for a
     /// timer's signal, the timer's number, and in the high half how many
     /// times it expired again before the signal was taken (its overrun).

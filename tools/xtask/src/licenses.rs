@@ -323,8 +323,14 @@ pub fn install(ctx: &Ctx, staging: &Path, extras: &Extras<'_>) -> Result<String>
 /// ports' list allows. The Linux base bundle (ADR 0622) keeps GCC's runtime
 /// libraries, libstdc++, libgcc_s and libatomic, which are under the GPL
 /// with the GCC Runtime Library Exception: programs that link them stay
-/// under their own licenses.
+/// under their own licenses. Node.js's bundles (ADR 0627) carry npm, which
+/// is under the Artistic License 2.0, a permissive license that asks a
+/// changed copy to be marked as changed and is passed on unchanged here,
+/// and npm's modules of Isaac Z. Schlueter's under the Blue Oak Model
+/// License 1.0.0, a permissive license that asks for its notice.
 const BUNDLE_EXTRA_ALLOW: &[&str] = &[
+    "Artistic-2.0",
+    "BlueOak-1.0.0",
     "MPL-2.0",
     "BSD-3-Clause WITH PCRE2-exception",
     "GPL-3.0-or-later WITH GCC-exception-3.1",

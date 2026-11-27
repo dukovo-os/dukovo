@@ -36,9 +36,20 @@
 //! they are ([`ON_LINUX`]) run from /tmp, alone and under a time limit, and
 //! each says ok or FAILED. The others check what Dukovo's own C library
 //! answers (its paths, its error numbers, its limits) and fail on Linux
-//! too, so they could not say whether the kernel answers as Linux does. The
-//! test ends when every program has run, so that one run shows all that
-//! failed.
+//! too, so they could not say whether the kernel answers as Linux does.
+//! Beside them run the Linux programs of userspace/posix/linux
+//! ([`LINUX_ONLY`]), each built with the host's C library and with musl:
+//! seccomp, which checks the filters a Linux program installs (ADR 0623),
+//! and jit, which checks memory that is writable and executable at once
+//! (ADR 0624): run by its name, its process has no memory.jit and every
+//! such mapping is EACCES; run again through `linux run --allow-jit`, its
+//! private anonymous memory runs the code it writes, across fork and
+//! execve, and through plain `linux run`, `linux` says that the option
+//! would have given what it asked for. seccomp runs through `linux run`
+//! too, with `--status`, as run by its name it has no /proc: there linuxd
+//! gives /proc/self/status, whose seccomp mode, filters and no_new_privs it
+//! checks. The test ends when every program has run, so that one run shows
+//! all that failed.
 //!
 //! Building the programs needs musl-gcc (the package musl-tools), which ob
 //! doctor checks; the test says so when it is missing.
@@ -56,7 +67,7 @@ const CORE_MUSL: &str = "linux-core-musl";
 
 /// How many cases linux-core has: the table of userspace/linux/core.c, which
 /// a unit test counts.
-const CORE_CASES: usize = 37;
+const CORE_CASES: usize = 42;
 
 /// How long a run of linux-core may take, in seconds: the program ends a
 /// case that takes thirty and the script ends the program at 250, so that a
@@ -65,16 +76,26 @@ const CORE_SECONDS: u64 = 300;
 
 /// How long the C test programs may take together, in seconds: the script
 /// gives each program 120 and ends it after that.
-const POSIX_SECONDS: u64 = 120 * ON_LINUX.len() as u64 + 30;
+const POSIX_SECONDS: u64 = 120 * (ON_LINUX.len() + 2 * LINUX_ONLY.len()) as u64 + 30;
 
 /// Where the sources are, from the repository's root.
 const CORE_SOURCE: &str = "userspace/linux/core.c";
 const POSIX_SOURCES: &str = "userspace/posix";
+const LINUX_SOURCES: &str = "userspace/posix/linux";
 
 /// The test programs of userspace/posix that pass on a Linux machine, built
 /// there as static programs with its C library: what they check is Linux's
 /// behaviour as much as Dukovo's.
 const ON_LINUX: &[&str] = &["hello", "locks", "epoll", "memfd", "inotify", "kernelfiles"];
+
+/// The test programs of userspace/posix/linux: Linux programs, with
+/// check.h, that Dukovo's own C library does not build. Each runs twice,
+/// built with the host's C library as NAME and with musl as NAME-musl.
+const LINUX_ONLY: &[&str] = &["seccomp", "jit"];
+
+/// How long the runs through `linux run` may take together, in seconds:
+/// the script gives each 120, four of jit and two of seccomp.
+const VIEW_SECONDS: u64 = 6 * 120 + 30;
 
 /// The script that runs one of the two linux-core programs,
 /// `run-core.sh PROGRAM`, from the folder of the script. It names the
@@ -130,6 +151,36 @@ else
 fi
 "#;
 
+/// The script that runs jit and seccomp, each built with each C library,
+/// through `linux run`, `run-view.sh`. jit runs with `--allow-jit` and
+/// `--given`, where its private anonymous memory is writable and
+/// executable, and plainly with `--refused`, where it ends with status 3
+/// for want of it and `linux` says that `--allow-jit` would have given it
+/// (ADR 0624); seccomp runs with `--status`, which checks the status lines
+/// linuxd's /proc gives. It says each run's exit status, the first failed
+/// checks, and whether `linux` told of the option.
+const RUN_VIEW: &str = r#"#!/bin/sh
+dir=$(cd "$(dirname "$0")" && pwd)/posix
+cd /tmp || exit 1
+for name in jit jit-musl; do
+	log=/tmp/linux-jit-$name.log
+	timeout -k 5 120 linux run --allow "$dir" --allow-jit -- "$dir/$name" --given >"$log" 2>&1 </dev/null
+	echo "linux-jit: $name --given exit status $?"
+	grep FAILED "$log" | sed 's|/[^ ]*/userspace/posix/||' | head -n 4 | cut -c 1-78
+	timeout -k 5 120 linux run --allow "$dir" -- "$dir/$name" --refused >"$log" 2>&1 </dev/null
+	echo "linux-jit: $name --refused exit status $?"
+	if grep -q 'run it with linux run --allow-jit$' "$log"; then
+		echo "linux-jit: $name was told of --allow-jit"
+	fi
+done
+for name in seccomp seccomp-musl; do
+	log=/tmp/linux-status-$name.log
+	timeout -k 5 120 linux run --allow "$dir" -- "$dir/$name" --status >"$log" 2>&1 </dev/null
+	echo "linux-status: $name exit status $?"
+	grep -e FAILED -e 'running on' "$log" | sed 's|/[^ ]*/userspace/posix/||' | head -n 4 | cut -c 1-78
+done
+"#;
+
 /// A disk for the programs, which take a few mebibytes: a small FAT32, with
 /// room to spare.
 const DISKS: &[Disk] = &[linux_files_disk(64 * 1024, LABEL)];
@@ -137,7 +188,7 @@ const DISKS: &[Disk] = &[linux_files_disk(64 * 1024, LABEL)];
 /// The test.
 pub const CASE: Case = Case {
     name: "linux-programs",
-    about: "static Linux programs run on Dukovo under the Linux personality (ADR 0610): linux-core, built from userspace/linux/core.c with the build machine's C library and with musl, passes its 37 cases twice, making the calls itself (threads from the C library and from a raw clone, fork, vfork, execve of itself and of a program of Dukovo with the working directory crossing, arch_prctl, brk, madvise, mremap, uname, getcwd, getdents64, statx, signals and restarts, interval timers and pause, futexes with absolute deadlines, bit sets, requeues and wake-ops, robust lists, refused calls, identities, descriptors, umask, terminal settings, waits on thousands of descriptors, vectored I/O, descriptor owners, getcpu, the vDSO), and the C test programs of userspace/posix that pass on Linux each run alone and pass on Dukovo",
+    about: "static Linux programs run on Dukovo under the Linux personality (ADR 0610): linux-core, built from userspace/linux/core.c with the build machine's C library and with musl, passes its 42 cases twice, making the calls itself (threads from the C library and from a raw clone, fork, vfork, execve of itself and of a program of Dukovo with the working directory crossing, arch_prctl, brk, madvise, mremap, uname, getcwd, getdents64, statx, signals and restarts, interval timers and pause, futexes with absolute deadlines, bit sets, requeues and wake-ops, robust lists, refused calls, identities, descriptors, umask, terminal settings, waits on thousands of descriptors, vectored I/O, descriptor owners, getcpu, the vDSO, prctl, parent-death signals and subreapers, capget and capset, close_range's unshare, statfs), and the C test programs of userspace/posix that pass on Linux, and seccomp (userspace/posix/linux, ADR 0623: every filter action, the SIGSYS record, TSYNC, strict mode, inheritance, refused programs, the chain's limit, and through linux run the status lines of the Linux view's /proc) and jit (ADR 0624: writable and executable memory refused without memory.jit, given through linux run --allow-jit, kept across fork and execve, never for a file's pages or shared memory, and linux run's hint without it) built with both C libraries, each run alone and pass on Dukovo",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     cmdline: "lockdep",
@@ -188,8 +239,9 @@ fn build_core(ctx: &Ctx, out: &Path) -> Result<(), String> {
 }
 
 /// Builds the tests of [`ON_LINUX`] as static Linux programs with the host's
-/// C compiler into `out/posix`. The tests are kept clean with Radix's
-/// compiler and C library, so this compiler's own warnings are not errors.
+/// C compiler into `out/posix`, and those of [`LINUX_ONLY`] with it and
+/// with musl. The tests are kept clean with Radix's compiler and C
+/// library, so this compiler's own warnings are not errors.
 fn build_posix(ctx: &Ctx, out: &Path) -> Result<(), String> {
     let sources = ctx.root.join(POSIX_SOURCES);
     let folder = out.join("posix");
@@ -205,6 +257,24 @@ fn build_posix(ctx: &Ctx, out: &Path) -> Result<(), String> {
             .args(["-lpthread", "-lm"]);
         host_tool(&mut cc).map_err(|err| format!("building the test {name} for Linux: {err}"))?;
     }
+    let sources = ctx.root.join(LINUX_SOURCES);
+    let headers = ctx.root.join(POSIX_SOURCES);
+    for name in LINUX_ONLY {
+        for (compiler, program) in [("cc", name.to_string()), ("musl-gcc", format!("{name}-musl"))] {
+            if compiler == "musl-gcc" && process::find_program(compiler).is_none() {
+                return Err(musl_missing());
+            }
+            let mut cc = std::process::Command::new(compiler);
+            cc.args(["-std=c11", "-D_GNU_SOURCE", "-O2", "-Wall", "-Wextra", "-static", "-I"])
+                .arg(&headers)
+                .arg("-o")
+                .arg(folder.join(&program))
+                .arg(sources.join(format!("{name}.c")))
+                .arg("-pthread");
+            host_tool(&mut cc)
+                .map_err(|err| format!("building the test {program} for Linux: {err}"))?;
+        }
+    }
     Ok(())
 }
 
@@ -219,7 +289,9 @@ fn build(ctx: &Ctx) -> Result<PathBuf, String> {
     std::fs::create_dir_all(&out).map_err(|err| format!("making {}: {err}", out.display()))?;
     build_core(ctx, &out)?;
     build_posix(ctx, &out)?;
-    for (name, text) in [("run-core.sh", RUN_CORE), ("run-posix.sh", RUN_POSIX)] {
+    for (name, text) in
+        [("run-core.sh", RUN_CORE), ("run-posix.sh", RUN_POSIX), ("run-view.sh", RUN_VIEW)]
+    {
         let file = out.join(name);
         std::fs::write(&file, text).map_err(|err| format!("writing {}: {err}", file.display()))?;
     }
@@ -309,6 +381,33 @@ fn linux_programs(vm: &mut Vm, case: &Case) -> Result<(), String> {
         ));
     }
 
+    // jit through linux run: given memory.jit with --allow-jit, which the
+    // session's jit capability gives, and told of the option without it;
+    // seccomp's status lines, in the view's /proc.
+    run_within(vm, &format!("clear; sh {VOLUME}/run-view.sh"), VIEW_SECONDS)?;
+    let screen = vm.screen()?;
+    for name in ["jit", "jit-musl"] {
+        require_lines(
+            &screen,
+            name,
+            &[
+                &format!("linux-jit: {name} --given exit status 0"),
+                &format!("linux-jit: {name} --refused exit status 3"),
+                &format!("linux-jit: {name} was told of --allow-jit"),
+            ],
+        )?;
+    }
+    for name in ["seccomp", "seccomp-musl"] {
+        require_lines(
+            &screen,
+            name,
+            &[
+                "seccomp: running on Dukovo, with /proc",
+                &format!("linux-status: {name} exit status 0"),
+            ],
+        )?;
+    }
+
     vm.press_power_button()?;
     vm.expect("spark: every service has stopped")?;
     vm.expect("Power: `spark` asked to power off the machine; syncing the filesystems")?;
@@ -341,6 +440,10 @@ mod tests {
         for name in ON_LINUX {
             assert!(root().join(format!("{POSIX_SOURCES}/{name}.c")).is_file(), "{name}.c");
         }
+        for name in LINUX_ONLY {
+            assert!(root().join(format!("{LINUX_SOURCES}/{name}.c")).is_file(), "{name}.c");
+            assert!(!ON_LINUX.contains(name), "{name}");
+        }
     }
 
     #[test]
@@ -349,6 +452,7 @@ mod tests {
         // holding the test.
         assert_eq!(RUN_CORE.matches("timeout -k").count(), 1);
         assert_eq!(RUN_POSIX.matches("timeout -k").count(), 1);
+        assert_eq!(RUN_VIEW.matches("timeout -k 5 120 linux run").count(), 3);
         assert!(musl_missing().contains("musl-tools"));
     }
 

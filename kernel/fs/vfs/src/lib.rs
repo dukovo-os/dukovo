@@ -684,6 +684,16 @@ pub trait Node: Send + Sync + Any {
     /// What it is.
     fn stat(&self) -> Stat;
 
+    /// What it is, as its filesystem knows it without asking anyone: a
+    /// filesystem that a program serves gives what the program last said,
+    /// where [`Node::stat`] may ask the program again and wait for it. A
+    /// look at the files a process holds takes this, as Linux's
+    /// `/proc/PID/fd` does, so that it never waits for the program, which
+    /// may be the one looking. [`Node::stat`], by default.
+    fn stat_kept(&self) -> Stat {
+        self.stat()
+    }
+
     /// What kind of node it is: what [`Node::stat`] says, without the
     /// rest, which a filesystem may need locks for.
     fn kind(&self) -> Kind {

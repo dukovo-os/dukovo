@@ -253,6 +253,7 @@ impl Tty {
         if group != 0 && self.session() != 0 {
             let info = radix_posix::signal::Info {
                 code: radix_posix::signal::SI_KERNEL,
+                errno: 0,
                 pid: 0,
                 status: 0,
             };

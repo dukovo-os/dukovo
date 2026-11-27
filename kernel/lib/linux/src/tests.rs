@@ -635,6 +635,32 @@ fn stat_has_the_x86_64_layout() {
 }
 
 #[test]
+fn statfs_has_the_x86_64_layout() {
+    let info = FsInfo {
+        kind: 7,
+        read_only: true,
+        block_size: 4096,
+        blocks: 1000,
+        free: 400,
+        files: 0,
+        free_files: 0,
+    };
+    let mut out = [0xaa; STATFS_SIZE];
+    put_statfs(&info, &mut out);
+    assert_eq!(u64_at(&out, 0), 0x9123_683e, "f_type: Btrfs's");
+    assert_eq!(u64_at(&out, 8), 4096, "f_bsize");
+    assert_eq!((u64_at(&out, 16), u64_at(&out, 24), u64_at(&out, 32)), (1000, 400, 400));
+    assert!(zero(&out, 40, 64), "f_files, f_ffree and f_fsid");
+    assert_eq!(u64_at(&out, 64), 255, "f_namelen");
+    assert_eq!(u64_at(&out, 72), 4096, "f_frsize");
+    assert_eq!(u64_at(&out, 80), 0x21, "f_flags: ST_VALID and ST_RDONLY");
+    assert!(zero(&out, 88, STATFS_SIZE), "f_spare");
+    assert_eq!(filesystem_magic(9), 0xef53, "ext4");
+    assert_eq!(filesystem_magic(0), 0x0102_1994, "tmpfs");
+    assert_eq!(filesystem_magic(14), 0x0102_1994, "shm, a tmpfs on Linux");
+}
+
+#[test]
 fn stat_keeps_sizes_past_what_a_signed_field_holds_at_its_largest() {
     let stat = Stat { size: u64::MAX, blocks: u64::MAX, ..sample_stat() };
     let mut out = [0; STAT_SIZE];
@@ -1959,4 +1985,30 @@ proptest! {
     fn an_ioctl_never_moves_more_than_the_number_can_say(request in any::<u32>()) {
         prop_assert!(ioctl_size(request) <= 0x3fff);
     }
+}
+
+#[test]
+fn a_filter_takes_the_flags_dukovo_has_and_refuses_a_listener() {
+    use crate::seccomp::{self, FilterFlags};
+    assert_eq!(seccomp::filter_flags(0), Ok(FilterFlags::default()));
+    let all = seccomp::FLAG_TSYNC
+        | seccomp::FLAG_LOG
+        | seccomp::FLAG_SPEC_ALLOW
+        | seccomp::FLAG_TSYNC_ESRCH;
+    assert_eq!(
+        seccomp::filter_flags(all),
+        Ok(FilterFlags { tsync: true, log: true, tsync_esrch: true })
+    );
+    for refused in [seccomp::FLAG_NEW_LISTENER, seccomp::FLAG_WAIT_KILLABLE_RECV, 1 << 6, 1 << 31] {
+        assert_eq!(seccomp::filter_flags(refused), Err(EINVAL), "{refused:#x}");
+    }
+}
+
+#[test]
+fn a_sock_fprog_reads_as_x86_64_lays_it_out() {
+    use crate::seccomp::{SOCK_FPROG_SIZE, SockFprog};
+    let mut bytes = [0xeeu8; SOCK_FPROG_SIZE];
+    bytes[..2].copy_from_slice(&27u16.to_le_bytes());
+    bytes[8..].copy_from_slice(&0x7fff_1234_5678u64.to_le_bytes());
+    assert_eq!(SockFprog::read(&bytes), SockFprog { len: 27, filter: 0x7fff_1234_5678 });
 }

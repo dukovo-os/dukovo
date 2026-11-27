@@ -45,7 +45,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use manifest::bundle::{
-    AddOns, Arch, BUNDLE_LINES, Manifest, Need, Request as Asked, RunsWith, Wish,
+    AddOns, Arch, BUNDLE_LINES, Manifest, Need, Request as Asked, RunsWith, Runtime, Wish,
 };
 use manifest::service::Ports;
 
@@ -287,6 +287,9 @@ const PINS_MAX: usize = 16;
 /// are of the line it was added with.
 fn run_add_on(add_on: &AddOn, name: &str, args: Vec<OsString>) -> Result<i32, Fail> {
     use std::os::unix::process::CommandExt;
+    if add_on.linux {
+        return run_linux_add_on(add_on, name, args);
+    }
     let base = super::registry::base_id(&add_on.id);
     let now = pins();
     let others = now.split_whitespace().filter(|pin| super::registry::base_id(pin) != base);
@@ -298,6 +301,27 @@ fn run_add_on(add_on: &AddOn, name: &str, args: Vec<OsString>) -> Result<i32, Fa
         .env(BUNDLE_LINES, pins.join(" "))
         .exec();
     Err(util::failed(&add_on.path, error))
+}
+
+/// Runs `add_on`, a command of a Linux line's add-ons, as `name` with
+/// `args`, in the line's Linux view with your access (ADR 0625), as its
+/// commands run: an npm package's command, whose `#!/usr/bin/env node`
+/// finds the line's `node` there.
+fn run_linux_add_on(add_on: &AddOn, name: &str, args: Vec<OsString>) -> Result<i32, Fail> {
+    let (found, said) = match locate(&Find::Id(add_on.id.clone()))? {
+        Target::Bundle(found, said) => (found, said),
+        Target::AddOn(_) => return Err(fail("bundled answered out of turn".into())),
+    };
+    let sealed = open_sealed(&found).map_err(fail)?;
+    if sealed.manifest.runtime != Runtime::Linux || sealed.manifest.add_ons.is_none() {
+        return Err(fail(format!("{} is not the Linux line with add-ons it was", found.id)));
+    }
+    let real = std::fs::canonicalize(&add_on.path).map_err(|e| util::failed(&add_on.path, e))?;
+    let path = real.to_str().ok_or_else(|| fail(format!("{}: not text", real.display())))?;
+    let file = File::open(path).map_err(|e| util::failed(&path, e))?;
+    let linux =
+        Linux { found: &found, said: &said, sealed: &sealed, your_access: true, program: name };
+    linux.run(file.into(), path.into(), name.into(), args)
 }
 
 /// Runs `command`, a command of `found`'s line that runs with your
@@ -557,6 +581,9 @@ pub struct Given {
     /// `keyring.shared`: every entry of your keyring, beside its own
     /// (ADR 0396).
     pub keyring_shared: bool,
+    /// `memory.jit`: memory that is writable and executable at once (ADR
+    /// 0624), if given, with whether it is required.
+    pub jit: Option<bool>,
     /// The permissions given, by name: taking one away stops the program.
     pub names: Vec<String>,
     /// The optional permissions it runs without, by name.
@@ -598,6 +625,7 @@ pub fn give(given: &mut Given, name: &str, request: &Asked, words: &[String]) {
         "files.app-data" => given.app_data.extend(words.iter().cloned()),
         "devices.serial" => given.serial = true,
         "keyring.shared" => given.keyring_shared = true,
+        "memory.jit" => given.jit = Some(required),
         // Notifications are always allowed; starting at sign-in is the
         // session's to do, not the program's.
         _ => {}
@@ -792,6 +820,16 @@ fn start(
     let chosen = choose(&sealed.manifest, command).map_err(fail)?;
     let program = open_program(&sealed, &chosen.path).map_err(fail)?;
     let path = format!("{}/{}", sealed.path, chosen.path);
+    if sealed.manifest.runtime == Runtime::Linux {
+        let linux = Linux {
+            found,
+            said,
+            sealed: &sealed,
+            your_access: chosen.runs_with == RunsWith::YourAccess,
+            program: &chosen.program,
+        };
+        return linux.run(program, path, chosen.arg0, args);
+    }
     if chosen.runs_with == RunsWith::YourAccess {
         your_access(found, said).map_err(fail)?;
         // As a program of the system's: with all the caller holds.
@@ -863,6 +901,120 @@ fn start(
     sandbox::run(&plan, watching).map_err(|why| fail(format!("{}: {why}", found.id)))
 }
 
+/// A program of a Linux bundle to run (ADR 0625), as `bundle run` found
+/// it: `program` of `sealed`, which `found` names and `said` gives what
+/// the person allowed of.
+struct Linux<'a> {
+    found: &'a Found,
+    said: &'a [Grant],
+    sealed: &'a Sealed,
+    /// It is a command that runs with your access, or its line's add-on.
+    your_access: bool,
+    program: &'a str,
+}
+
+impl Linux<'_> {
+    /// Runs the program, open as `file` at `path`, as `arg0` with `args`
+    /// in a Linux view, as `linux run` runs one: with your access for a
+    /// command that runs with it, else with what you give of what it
+    /// asks. Its exit status; when the folder of its line's add-ons'
+    /// commands changed meanwhile, bundled links them beside yours.
+    fn run(
+        &self,
+        file: OwnedFd,
+        path: String,
+        arg0: String,
+        args: Vec<OsString>,
+    ) -> Result<i32, Fail> {
+        let (found, manifest) = (self.found, &self.sealed.manifest);
+        let given = if self.your_access {
+            your_access(found, self.said).map_err(fail)?;
+            Given { jit: your_jit(found, manifest, self.said).map_err(fail)?, ..Given::default() }
+        } else {
+            given(manifest, self.program, self.said, |name| ask_person(found, name))
+                .map_err(fail)?
+        };
+        let uid = sysapi::process::uid();
+        let user = bundled::account(uid).map_err(fail)?;
+        let home = user.home.trim_end_matches('/');
+        if !self.your_access && !given.home {
+            for (folder, _) in &given.folders {
+                own_folder(&format!("{home}/{folder}"), uid).map_err(fail)?;
+            }
+        }
+        let app_data = format!("{home}/{}", bundled::APP_DATA);
+        own_folder(&app_data, uid).map_err(fail)?;
+        let data = format!("{app_data}/{}", found.id);
+        own_folder(&data, uid).map_err(fail)?;
+        if !self.your_access {
+            let version = &manifest.version.0;
+            match super::snapshots::carry(
+                Path::new(&app_data),
+                &found.id,
+                version,
+                SystemTime::now(),
+            ) {
+                Ok(Some(said)) => eprintln!("bundle: {said}"),
+                Ok(None) => {}
+                Err(why) => {
+                    eprintln!("bundle: {}: its data as it was is not kept: {why}", found.id);
+                }
+            }
+        }
+        let add_ons = match &manifest.add_ons {
+            Some(add_ons) => {
+                let folder = add_ons_folder(&found.id, uid).map_err(fail)?;
+                let variables = add_ons.variables.iter().map(|v| v.0.clone()).collect();
+                Some((folder, variables, format!("{}", add_ons.commands)))
+            }
+            None => None,
+        };
+        let commands = add_ons.as_ref().map(|(folder, _, commands)| format!("{folder}/{commands}"));
+        let before = commands.as_deref().map(stamp);
+        // Opened before the view takes its slots, as reading anything is.
+        let follow = watch(found).map_err(fail)?.map(|input| crate::linux::Follow {
+            input,
+            names: given.names.clone(),
+            id: found.id.clone(),
+        });
+        let code = crate::linux::run_bundle(crate::linux::BundleRun {
+            id: &found.id,
+            sealed: self.sealed,
+            program: file,
+            path,
+            arg0,
+            args,
+            given,
+            your_access: self.your_access,
+            data,
+            add_ons: add_ons.map(|(folder, variables, _)| (folder, variables)),
+            follow,
+        })?;
+        if let Some(commands) = commands
+            && before != Some(stamp(&commands))
+            && let Err(why) = link_add_ons()
+        {
+            eprintln!("bundle: {}: the commands of its add-ons are not linked: {why}", found.id);
+        }
+        Ok(code)
+    }
+}
+
+/// What a command of a Linux bundle that runs with your access is given
+/// of memory.jit (ADR 0624): what its bundle asks, once you allowed it.
+/// With your access, it is given nothing else of its permissions: it has
+/// all of yours.
+fn your_jit(found: &Found, manifest: &Manifest, said: &[Grant]) -> Result<Option<bool>, String> {
+    const JIT: &str = "memory.jit";
+    let Some(request) = manifest.permissions.get(JIT) else { return Ok(None) };
+    let grant = said.iter().find(|g| g.permission == JIT);
+    let step = match grants::step(&found.id, JIT, request, grant)? {
+        Step::Ask => grants::answered(&found.id, JIT, request, &ask_person(found, JIT)?)?,
+        step => step,
+    };
+    Ok(matches!(step, Step::Give(_)).then_some(request.need == Need::Required))
+}
+
 /// What the sandbox is built from.
 #[cfg_attr(not(target_os = "radix"), allow(dead_code))]
 pub struct Plan<'a> {
@@ -911,7 +1063,7 @@ pub(crate) mod sandbox {
 
     use radix_abi::capability::{self, ObjectKind, Rights};
     use radix_abi::directory::{self, OpenFlags};
-    use radix_abi::{Status, network, process, startup};
+    use radix_abi::{Status, jit, network, process, startup};
 
     use super::{ALWAYS, DISCOVERY, Given, NETWORK, Plan, SHARED, VOLUMES, stopped_line};
     use crate::bundled::APP_DATA;
@@ -965,22 +1117,51 @@ pub(crate) mod sandbox {
         if let Some(served) = plan.keyring {
             served.open();
         }
-        let ended = Arc::new(Mutex::new(false));
-        let stopping = Arc::new(AtomicBool::new(false));
-        let following = watching.and_then(|input| {
-            let id = plan.sealed.manifest.full_id();
-            let flags = (Arc::clone(&ended), Arc::clone(&stopping));
-            follow(input, number, plan.given.names.clone(), id, flags)
-        });
+        let id = plan.sealed.manifest.full_id();
+        let followed = Followed::start(watching, number, plan.given.names.clone(), id);
         let code = wait(number);
-        *ended.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
-        // Stopping what it started may take the rest of STOP_TIME.
-        if stopping.load(Ordering::SeqCst)
-            && let Some(following) = following
-        {
-            let _ = following.join();
-        }
+        followed.ended();
         Ok(code)
+    }
+
+    /// A run that follows bundled, to stop the program when a permission
+    /// it was given is taken away or its version withdrawn: `bundle run`'s
+    /// sandbox, and a Linux bundle's view (ADR 0625).
+    pub(crate) struct Followed {
+        ended: Arc<Mutex<bool>>,
+        stopping: Arc<AtomicBool>,
+        thread: Option<JoinHandle<()>>,
+    }
+
+    impl Followed {
+        /// Follows `watching`, bundled's connection, for program `number`,
+        /// which was given the permissions `names` of bundle `id`.
+        pub(crate) fn start(
+            watching: Option<BufReader<UnixStream>>,
+            number: u64,
+            names: Vec<String>,
+            id: String,
+        ) -> Followed {
+            let ended = Arc::new(Mutex::new(false));
+            let stopping = Arc::new(AtomicBool::new(false));
+            let thread = watching.and_then(|input| {
+                let flags = (Arc::clone(&ended), Arc::clone(&stopping));
+                follow(input, number, names, id, flags)
+            });
+            Followed { ended, stopping, thread }
+        }
+
+        /// The program was waited for: its number is no longer its. If it
+        /// was being stopped, waits until what it started is too, which
+        /// may take the rest of `STOP_TIME`.
+        pub(crate) fn ended(self) {
+            *self.ended.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+            if self.stopping.load(Ordering::SeqCst)
+                && let Some(thread) = self.thread
+            {
+                let _ = thread.join();
+            }
+        }
     }
 
     /// The processes of the program `number` and those it started,
@@ -1209,6 +1390,9 @@ pub(crate) mod sandbox {
                 .map_err(failed("giving it its capabilities".into()))?;
         }
         give_network(plan.given, s.child, s.network)?;
+        if let Some(required) = plan.given.jit {
+            give_jit(s.child, required)?;
+        }
         let argv: Vec<&[u8]> = plan.argv.iter().map(Vec::as_slice).collect();
         let block =
             signin::exec_block_in(plan.data.as_bytes(), plan.path.as_bytes(), &argv, plan.env);
@@ -1216,6 +1400,25 @@ pub(crate) mod sandbox {
         process::exec(&SYS, s.child, program, &block).map_err(failed("starting it".into()))?;
         let number = process::info(&SYS, s.child).map_err(failed("its number".into()))?.number;
         Ok(number)
+    }
+
+    /// Gives the program memory.jit, before it runs, with the jit
+    /// capability the session holds in SLOT_JIT (ADR 0624); the program
+    /// itself is never given the capability. Without one, as outside a
+    /// session, a program that requires it does not start, and one that
+    /// asks for it as optional runs without it.
+    pub(crate) fn give_jit(child: u32, required: bool) -> Result<(), String> {
+        let held = capability::info(&SYS, startup::SLOT_JIT);
+        if !held.is_ok_and(|info| info.kind == ObjectKind::Jit) {
+            return if required {
+                Err("it requires memory.jit, and only a sign-in session gives it: this one \
+                     holds no jit capability"
+                    .into())
+            } else {
+                Ok(())
+            };
+        }
+        jit::allow(&SYS, startup::SLOT_JIT, child).map_err(failed("giving it memory.jit".into()))
     }
 
     /// The caller's network capabilities, in their slots: each with its

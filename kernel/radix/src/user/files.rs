@@ -1298,6 +1298,7 @@ pub(super) fn directory_call(
         directory::MOUNT => mount_method(user, found, label, args),
         directory::MOUNT_FUSE => mount_fuse_method(user, found, label, args),
         directory::SERVE_FUSE => serve_fuse_method(user, found, label, args),
+        directory::MEMORY_FILESYSTEM => memory_filesystem_method(user, found, label, args),
         directory::UNMOUNT => {
             let a = directory::UnmountArgs::decode(args)?;
             let dir = directory_of(found, Rights::CONTROL)?;
@@ -1929,6 +1930,34 @@ fn serve_fuse_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8])
     let made = radix_fuse::FuseFs::mount(conn, false).map_err(fs::status)?;
     let root = radix_vfs::FileSystem::root(&*made);
     let mount = Mount::apart(made, "fuse").map_err(|_| error(Kernel::NoMemory))?;
+    let object = FileObject::new(Location::new(mount, root), dir.name.clone())
+        .ok_or(error(Kernel::NoMemory))?;
+    // Never control: nothing is mounted on it, and it makes no views.
+    let rights = Rights::READ.union(Rights::WRITE).union(Rights::COPY).union(Rights::TRANSFER);
+    install_file(user, to, ObjectKind::Directory, rights, object, false)?;
+    answer(label, 0, [0; 8])
+}
+
+/// `memory_filesystem`: a memory filesystem of its own, on a mount in no
+/// tree, with a capability to its root for a view to attach, as
+/// `serve_fuse`'s (`fs::shm::apart`). It needs no right, for the same
+/// reason. Out of line, as `serve_fuse` is.
+#[inline(never)]
+fn memory_filesystem_method(
+    user: &UserRef,
+    found: &Found,
+    label: u32,
+    args: &[u64; 8],
+) -> Result<Answer> {
+    let a = directory::MemoryFilesystemArgs::decode(args)?;
+    let dir = directory_of(found, Rights::NONE)?;
+    let to = SlotRef::new(user.cspace, a.to);
+    match caps::get(to) {
+        Err(radix_cap::CapError::Empty) => {}
+        Ok(_) => return Err(error(Kernel::Occupied)),
+        Err(err) => return Err(cap_error(err)),
+    }
+    let (root, mount) = fs::shm::apart().map_err(fs::status)?;
     let object = FileObject::new(Location::new(mount, root), dir.name.clone())
         .ok_or(error(Kernel::NoMemory))?;
     // Never control: nothing is mounted on it, and it makes no views.

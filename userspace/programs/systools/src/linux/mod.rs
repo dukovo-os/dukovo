@@ -18,7 +18,7 @@
 //! names what it could not do; the files it wrote for the program are in
 //! `/tmp/.linux-PID` until it ends.
 
-mod elf;
+pub(crate) mod elf;
 mod environment;
 mod etc;
 mod private;
@@ -36,6 +36,7 @@ use std::path::Path;
 use sysapi::fd::{self, Standard};
 use sysapi::terminal;
 
+pub(crate) use self::sandbox::Follow;
 use self::view::{Base, Entry, Inputs, Terminal, View};
 use crate::args::{Arg, Args};
 use crate::bundled;
@@ -45,14 +46,19 @@ use crate::bundles::run::{self, Given, Sealed, Target};
 use crate::util::{self, Fail, fail_with, strip_os_error};
 
 const USAGE: &str =
-    "Usage: linux run [--allow PATH]... [--allow-write PATH]... [--home] [--] PROGRAM [ARGUMENT...]
+    "Usage: linux run [--allow PATH]... [--allow-write PATH]... [--home] [--allow-jit] [--]
+                 PROGRAM [ARGUMENT...]
        linux help";
 
 /// The Linux base bundle, which holds the libraries a dynamic program
-/// loads.
-const BASE_ID: &str = "org.dukovo.linux-base";
+/// loads, and which a Linux bundle's programs run on (ADR 0625).
+pub(crate) const BASE_ID: &str = "org.dukovo.linux-base";
 /// What a person types to have it.
 const INSTALL: &str = "bundle install org.dukovo.linux-base";
+
+/// The variable a program in a Linux view finds set: Nukesh there runs a
+/// Linux program as it is, in the view it is in (ADR 0626).
+const IN_VIEW: &str = "DUKOVO_LINUX_VIEW";
 
 /// The exit status when `linux` itself could not run the program, as
 /// env(1) gives; the program's own status is any other.
@@ -83,6 +89,8 @@ struct Options {
     allow_write: Vec<String>,
     /// `--home`.
     home: bool,
+    /// `--allow-jit`: memory that is writable and executable (ADR 0624).
+    allow_jit: bool,
     program: OsString,
     args: Vec<OsString>,
 }
@@ -117,6 +125,7 @@ fn parse(args: &mut Args) -> Result<Command, Fail> {
         allow: Vec::new(),
         allow_write: Vec::new(),
         home: false,
+        allow_jit: false,
         program: OsString::new(),
         args: Vec::new(),
     };
@@ -127,6 +136,7 @@ fn parse(args: &mut Args) -> Result<Command, Fail> {
                 options.allow_write.push(args.text()?);
             }
             Some(Arg::Long(long)) if long == "home" => options.home = true,
+            Some(Arg::Long(long)) if long == "allow-jit" => options.allow_jit = true,
             Some(Arg::Long(long)) if long == "help" => return Ok(Command::Help),
             Some(Arg::Operand(program)) => {
                 options.program = program;
@@ -158,49 +168,120 @@ struct Program {
 }
 
 fn run(options: &Options) -> Result<i32, Fail> {
-    let here = fs::canonicalize(".").map_err(|e| refused(format!(".: {}", strip_os_error(&e))))?;
-    let started_in = text(&here)?;
+    let started_in = here()?;
     let given = absolute(&options.program.to_string_lossy(), &started_in);
     let program = open_program(&given)?;
     let base = match program.linking {
         elf::Linking::Static => None,
         elf::Linking::Dynamic => Some(open_base(&program.name)?),
     };
-    let layout = match &base {
-        Some(sealed) => Some(base_layout(&sealed.folder, &sealed.path).map_err(refused)?),
-        None => None,
-    };
-
     let uid = util::own_user();
     let user = bundled::account(uid).map_err(refused)?;
     let home = user.home.trim_end_matches('/').to_string();
     let data =
         private::data_folder(&home, uid, &private::data_name(&program.name)).map_err(refused)?;
-    let data = text(&data)?;
+    let jit = options.allow_jit.then_some(true);
+    launch(Launch {
+        arg0: options.program.clone(),
+        args: &options.args,
+        base,
+        bundle: None,
+        data: text(&data)?,
+        your_home: false,
+        started_in: Some(started_in),
+        allow: resolve_all(&options.allow, "--allow")?,
+        allow_write: resolve_all(&options.allow_write, "--allow-write")?,
+        whole_home: options.home,
+        given: Given { outbound: true, local: true, jit, ..Given::default() },
+        path_first: Vec::new(),
+        more_env: Vec::new(),
+        ask: true,
+        jit_hint: "run it with linux run --allow-jit",
+        follow: None,
+        program,
+        user,
+    })
+}
+
+/// The folder this was started in, by its real path.
+fn here() -> Result<String, Fail> {
+    let here = fs::canonicalize(".").map_err(|e| refused(format!(".: {}", strip_os_error(&e))))?;
+    text(&here)
+}
+
+/// A Linux program to start in a view of its own, and what it is given:
+/// what `linux run` and a Linux bundle's run both start.
+struct Launch<'a> {
+    program: Program,
+    /// The name it is run by, and its arguments.
+    arg0: OsString,
+    args: &'a [OsString],
+    /// The Linux base, for a program that needs its libraries.
+    base: Option<Sealed>,
+    /// The bundle it is of, checked.
+    bundle: Option<&'a Sealed>,
+    user: accounts::User,
+    /// Its data folder, made.
+    data: String,
+    /// Whether its `HOME` is the person's home, as for a command that runs
+    /// with their access; otherwise its data folder.
+    your_home: bool,
+    /// The folder it starts in, if it is given it.
+    started_in: Option<String>,
+    /// What it may read and change besides, by real paths.
+    allow: Vec<String>,
+    allow_write: Vec<String>,
+    whole_home: bool,
+    given: Given,
+    /// Folders its `PATH` names before Linux's: its bundle's commands'.
+    path_first: Vec<String>,
+    /// More of its environment: its add-ons' variables.
+    more_env: Vec<String>,
+    /// Whether the person is asked about the files its arguments name
+    /// that its view does not hold, when they are at a terminal.
+    ask: bool,
+    /// What the person is told to do when it was refused memory that is
+    /// writable and executable.
+    jit_hint: &'a str,
+    follow: Option<sandbox::Follow>,
+}
+
+/// Plans the view of `run`, makes its private folder and starts it.
+fn launch(run: Launch<'_>) -> Result<i32, Fail> {
+    let layout = match &run.base {
+        Some(sealed) => Some(base_layout(&sealed.folder, &sealed.path).map_err(refused)?),
+        None => None,
+    };
+    let uid = run.user.uid;
+    let home = run.user.home.trim_end_matches('/').to_string();
+    let home_env = if run.your_home { home.clone() } else { run.data.clone() };
     let private = private::Private::make(private::TMP, uid, std::process::id()).map_err(refused)?;
-    let etc = write_etc(&private, &user, &data, &home)?;
+    let etc = write_etc(&private, &run.user, &home_env, &home)?;
+    let network = network(&run.given);
 
     let facts = Facts {
-        program: program.real.clone(),
-        started_in,
+        program: run.program.real.clone(),
+        started_in: run.started_in.clone(),
+        bundle: run.bundle.map(|sealed| sealed.path.clone()),
         home: home.clone(),
-        data,
+        data: run.data.clone(),
         private: private.path().to_string(),
         base: layout,
         zoneinfo: Path::new(etc::DUKOVO_ZONEINFO).is_dir(),
+        commands: shell_commands(),
         zone: zone(),
         devices: devices(),
         terminal: terminal_of(first_terminal().as_deref()),
         etc,
         certificates: certificates(),
-        network: network(),
-        allow: resolve_all(&options.allow, "--allow")?,
-        allow_write: resolve_all(&options.allow_write, "--allow-write")?,
-        whole_home: options.home,
+        network,
+        allow: run.allow,
+        allow_write: run.allow_write,
+        whole_home: run.whole_home,
     };
     let mut view = facts.plan(&[]).map_err(refused)?;
-    if util::is_terminal(Standard::Input.fd()) {
-        let asked = ask_about(&options.args, &program.name, &view);
+    if run.ask && util::is_terminal(Standard::Input.fd()) {
+        let asked = ask_about(run.args, &run.program.name, &view);
         if !asked.is_empty() {
             view = facts.plan(&asked).map_err(refused)?;
         }
@@ -210,34 +291,165 @@ fn run(options: &Options) -> Result<i32, Fail> {
     }
     private.write("mounts", &view::mounts_text(&view.mounts), 0o600).map_err(refused)?;
 
-    let mut argv: Vec<Vec<u8>> = vec![options.program.as_bytes().to_vec()];
-    argv.extend(options.args.iter().map(|arg| arg.as_bytes().to_vec()));
-    let env = environment::environment(&user, &facts.data, &run::caller_environment());
-    let given = Given { outbound: true, local: true, ..Given::default() };
+    let mut argv: Vec<Vec<u8>> = vec![run.arg0.as_bytes().to_vec()];
+    argv.extend(run.args.iter().map(|arg| arg.as_bytes().to_vec()));
+    let mut env = environment::environment(&run.user, &home_env, &run::caller_environment());
+    if !run.path_first.is_empty() {
+        let path = format!("PATH={}:{}", run.path_first.join(":"), environment::PATH);
+        env.retain(|entry| !entry.starts_with("PATH="));
+        env.insert(0, path);
+    }
+    env.extend(run.more_env);
+    // Nukesh in the view runs a Linux program as it is, in the same view.
+    env.retain(|entry| !entry.starts_with(&format!("{IN_VIEW}=")));
+    env.push(format!("{IN_VIEW}=1"));
     let daemon_env =
         [format!("LINUXD_MOUNTS={}", private.at("mounts")), "PATH=/system/commands".into()];
     let plan = sandbox::Plan {
         view: &view,
-        base: base.as_ref(),
-        program: &program.file,
-        path: &program.real,
+        base: run.base.as_ref(),
+        program: &run.program.file,
+        path: &run.program.real,
         argv: &argv,
         env: &env,
         daemon_env: &daemon_env,
-        given: &given,
+        given: &run.given,
+        bundle: run.bundle,
+        jit_hint: run.jit_hint,
     };
-    sandbox::run(&plan).map_err(refused)
+    sandbox::run(&plan, run.follow).map_err(refused)
+}
+
+/// A Linux bundle's program, as `bundle run` found and checked it (ADR
+/// 0625).
+pub(crate) struct BundleRun<'a> {
+    /// The bundle's full ID.
+    pub id: &'a str,
+    pub sealed: &'a Sealed,
+    /// The program, open, and its path: in the bundle, or in its line's
+    /// add-ons.
+    pub program: OwnedFd,
+    pub path: String,
+    pub arg0: String,
+    pub args: Vec<OsString>,
+    /// What its permissions give it.
+    pub given: Given,
+    /// It runs with the person's access: all of their files, the folder
+    /// it was started in, the network, and `HOME` their own.
+    pub your_access: bool,
+    /// Its data folder, made.
+    pub data: String,
+    /// Its line's add-ons folder, which it may change, and the variables
+    /// that name it.
+    pub add_ons: Option<(String, Vec<String>)>,
+    /// bundled's connection, to stop it by.
+    pub follow: Option<sandbox::Follow>,
+}
+
+/// Runs a Linux bundle's program in a Linux view, as `linux run` runs one,
+/// with what its bundle is given: its exit status.
+pub(crate) fn run_bundle(run: BundleRun<'_>) -> Result<i32, Fail> {
+    let name = run.path.rsplit('/').next().unwrap_or(&run.path).to_string();
+    let program =
+        Program { name, real: run.path.clone(), file: run.program, linking: elf::Linking::Dynamic };
+    let base = open_base(&format!("{} of {}", program.name, run.id))?;
+    let uid = util::own_user();
+    let user = bundled::account(uid).map_err(refused)?;
+    let home = user.home.trim_end_matches('/').to_string();
+    let given = run.given;
+    let mut allow = Vec::new();
+    let mut allow_write = Vec::new();
+    let whole_home = run.your_access || given.home;
+    if !whole_home {
+        for (folder, write) in &given.folders {
+            let path = format!("{home}/{folder}");
+            if *write { allow_write.push(path) } else { allow.push(path) }
+        }
+        let own = run.sealed.manifest.full_id();
+        for app in given.app_data.iter().filter(|app| **app != own) {
+            let path = format!("{home}/{}/{app}", bundled::APP_DATA);
+            if fs::symlink_metadata(&path).is_ok() {
+                allow.push(path);
+            }
+        }
+    }
+    if given.volumes && fs::symlink_metadata(run::VOLUMES).is_ok() {
+        allow_write.push(run::VOLUMES.into());
+    }
+    for (folder, write) in &given.shared {
+        let path = format!("{}/{folder}", run::SHARED);
+        if fs::symlink_metadata(&path).is_ok() {
+            if *write { allow_write.push(path) } else { allow.push(path) }
+        }
+    }
+    let mut more_env = Vec::new();
+    let mut path_first = commands_folders(run.sealed);
+    if let Some((folder, variables)) = &run.add_ons {
+        allow_write.push(folder.clone());
+        more_env.extend(variables.iter().map(|name| format!("{name}={folder}")));
+        if let Some(commands) = &run.sealed.manifest.add_ons {
+            path_first.push(format!("{folder}/{}", commands.commands));
+        }
+    }
+    let given = if run.your_access {
+        Given { outbound: true, local: true, jit: given.jit, ..Given::default() }
+    } else {
+        given
+    };
+    let hint = format!("{} does not ask for memory.jit", run.id);
+    launch(Launch {
+        program,
+        arg0: run.arg0.into(),
+        args: &run.args,
+        base: Some(base),
+        bundle: Some(run.sealed),
+        user,
+        data: run.data,
+        your_home: run.your_access,
+        started_in: if run.your_access { Some(here()?) } else { None },
+        allow,
+        allow_write,
+        whole_home,
+        given,
+        path_first,
+        more_env,
+        ask: run.your_access,
+        jit_hint: &hint,
+        follow: run.follow,
+    })
+}
+
+/// The folders of the bundle's commands' programs, in its folder, once
+/// each, in the order of its commands: what a program of it that runs
+/// another of its commands by name finds them by.
+fn commands_folders(sealed: &Sealed) -> Vec<String> {
+    let manifest = &sealed.manifest;
+    let mut folders: Vec<String> = Vec::new();
+    for command in &manifest.commands {
+        let Some(program) = manifest.programs.get(command.program.0.as_str()) else { continue };
+        let Some(path) = program.path.get(&run::ARCH) else { continue };
+        let folder = match path.0.rsplit_once('/') {
+            Some((folder, _)) => format!("{}/{folder}", sealed.path),
+            None => sealed.path.clone(),
+        };
+        if !folders.contains(&folder) {
+            folders.push(folder);
+        }
+    }
+    folders
 }
 
 /// What the plan of the view is made from, besides what the person asks.
 struct Facts {
     program: String,
-    started_in: String,
+    started_in: Option<String>,
+    bundle: Option<String>,
     home: String,
     data: String,
     private: String,
     base: Option<Base>,
     zoneinfo: bool,
+    commands: Vec<String>,
     zone: String,
     devices: Vec<String>,
     terminal: Terminal,
@@ -254,12 +466,14 @@ impl Facts {
     fn plan(&self, asked: &[String]) -> Result<View, String> {
         view::plan(&Inputs {
             program: &self.program,
-            started_in: &self.started_in,
+            started_in: self.started_in.as_deref(),
+            bundle: self.bundle.as_deref(),
             home: &self.home,
             data: &self.data,
             private: &self.private,
             base: self.base.as_ref(),
             zoneinfo: self.zoneinfo,
+            commands: &self.commands,
             zone: &self.zone,
             devices: &self.devices,
             terminal: self.terminal,
@@ -371,12 +585,13 @@ fn base_layout(folder: &Dir, path: &str) -> Result<Base, String> {
 }
 
 /// Writes the program's `/etc` files into its private folder, and says
-/// which. A file whose source is not there is left out, and the program
+/// which: its account's home is `own_home`, its `HOME`, and `home` is the
+/// person's. A file whose source is not there is left out, and the program
 /// finds none at its name.
 fn write_etc(
     private: &private::Private,
     user: &accounts::User,
-    data: &str,
+    own_home: &str,
     home: &str,
 ) -> Result<Vec<String>, Fail> {
     let mut written = Vec::new();
@@ -386,7 +601,7 @@ fn write_etc(
         Ok(())
     };
     let host = etc::host_name(&util::hostname());
-    put("passwd", &etc::passwd(user, data))?;
+    put("passwd", &etc::passwd(user, own_home))?;
     put("group", &etc::group(user, &util::group_name(user.gid)))?;
     put("hosts", &etc::hosts(&host))?;
     put("hostname", &format!("{host}\n"))?;
@@ -397,7 +612,9 @@ fn write_etc(
     if let Ok(text) = fs::read_to_string("/system/libraries/os-release") {
         put("os-release", &text)?;
     }
-    let store = Path::new(home).join(bundled::APP_DATA).join("linux").join(".machine-id");
+    // A bundle's program keeps its data in the bundle's folder, so this
+    // may be the first of the person's Linux programs to need app-data/linux.
+    let store = private::linux_folder(home, user.uid).map_err(refused)?.join(".machine-id");
     let random = || {
         let mut bytes = [0u8; 16];
         File::open("/devices/urandom")?.read_exact(&mut bytes)?;
@@ -413,6 +630,19 @@ fn zone() -> String {
     etc::zone_of(&target.to_string_lossy()).to_string()
 }
 
+/// The programs of the view's shell that this system has, each a file.
+fn shell_commands() -> Vec<String> {
+    let there = |program: &str| {
+        fs::symlink_metadata(format!("{}/{program}", view::COMMANDS)).is_ok_and(|m| m.is_file())
+    };
+    view::SHELL
+        .iter()
+        .map(|(program, _)| *program)
+        .filter(|program| there(program))
+        .map(String::from)
+        .collect()
+}
+
 /// The names of the devices the view has that this system has.
 fn devices() -> Vec<String> {
     let wanted =
@@ -423,13 +653,17 @@ fn devices() -> Vec<String> {
         .collect()
 }
 
-/// The folders of the network that this system has: those a bundle that
-/// connects out and reaches the local network gets.
-fn network() -> Vec<String> {
-    run::NETWORK
-        .iter()
-        .copied()
-        .chain([run::DISCOVERY])
+/// The folders of the network that this system has that `given` reaches,
+/// as `bundle run` attaches them: the resolver's and netd's to connect out
+/// or reach the local network, discoverd's to find the machines on it.
+fn network(given: &Given) -> Vec<String> {
+    let reaches = given.outbound || given.local;
+    let mut folders: Vec<&str> = if reaches { run::NETWORK.to_vec() } else { Vec::new() };
+    if given.local {
+        folders.push(run::DISCOVERY);
+    }
+    folders
+        .into_iter()
         .filter(|folder| fs::symlink_metadata(folder).is_ok())
         .map(String::from)
         .collect()
@@ -544,6 +778,7 @@ mod tests {
             "--allow",
             "docs",
             "--home",
+            "--allow-jit",
             "--",
             "./hello",
             "-v",
@@ -555,6 +790,7 @@ mod tests {
         assert_eq!(options.allow, strings(&["/shared/photos", "docs"]));
         assert_eq!(options.allow_write, strings(&["/users/alice/out"]));
         assert!(options.home);
+        assert!(options.allow_jit);
         assert_eq!(options.program, OsString::from("./hello"));
         // What follows the program is the program's.
         assert_eq!(options.args, ["-v", "--allow", "x"].map(OsString::from));
@@ -565,7 +801,7 @@ mod tests {
         let Ok(Command::Run(options)) = parsed(&["run", "hello", "--home", "-x"]) else {
             panic!("not a run");
         };
-        assert!(!options.home);
+        assert!(!options.home && !options.allow_jit);
         assert_eq!(options.program, OsString::from("hello"));
         assert_eq!(options.args, ["--home", "-x"].map(OsString::from));
     }

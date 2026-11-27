@@ -698,9 +698,9 @@ service holds:
   its place, with the user's own _/tmp_ at _tmp_ (see below);
 - it makes a process, names it for the user and their groups, and gives
   it that root, the random source, the log, the terminal as its
-  descriptors 0, 1 and 2, and the network (see below), and nothing else
-  of authd's: not its root, not the names capability, not the bypass
-  right;
+  descriptors 0, 1 and 2, the network and the jit capability (see
+  below), and nothing else of authd's: not its root, not the names
+  capability, not the bypass right;
 - it runs *login --session* in it, with the environment *HOME*,
   *SHELL*, *USER*, *LOGNAME*, *PATH=/system/commands*, *TERM*,
   *LANG=C.UTF-8* and *EDITOR=nano*; login makes the terminal the
@@ -728,6 +728,17 @@ below 1024: binding one fails with *EACCES*, as on Linux. Root's
 sessions, and commands run with *elevate*(8), get the network as authd
 holds it, so *ip*(8) sets the interfaces up and a server listens on
 port 80.
+
+The jit capability (*radix-jit*(2), ADR 0624) comes from Spark too,
+because authd's service file asks for *memory.jit*. authd puts it in
+_SLOT_JIT_ of each session, help screen, web terminal, SSH session, job
+and elevated command, with the copy and transfer rights, so that their
+programs keep it through *fork* and *exec*. Holding it gives no program
+memory that is writable and executable: *bundle*(1)'s *run* uses it to
+give memory.jit to an app whose bundle was granted it, and *linux*(1)'s
+*run --allow-jit* to the Linux program it starts, and neither puts it in
+the sandbox. A share session's, an NFS worker's and the web console's
+workers do not get it.
 
 The groups are the account's own and each group of
 _/system/settings/group_ that lists its name, up to 32. A session

@@ -1309,4 +1309,16 @@ interface directory = 0x000b version 14 {
     method serve_fuse = 57 (connection: u32, to: slot) -> ()
         raises [no_such_slot, empty_slot, wrong_kind, missing_rights, occupied, no_memory,
                 in_use, not_connected];
+    /// Makes a memory filesystem of its own, as `/devices/shm` is, on a
+    /// mount in no tree, and puts a capability to its root in slot `to`,
+    /// acting for this capability's name, with the read, write, copy and
+    /// transfer rights and never the control right: a view attaches it,
+    /// as `linux run` does at a Linux program's `/dev/shm`. Its root has
+    /// mode 1777 and root as its owner. Its files and segments take their
+    /// pages from the room memory files share, half of memory, and it may
+    /// hold a file for every two pages of memory. It goes with the last
+    /// capability to it or to anything in it. Needs no right: only the
+    /// capability reaches it. (Since Phase 18, ADR 0628.)
+    method memory_filesystem = 58 (to: slot) -> ()
+        raises [no_such_slot, empty_slot, wrong_kind, occupied, no_memory];
 }

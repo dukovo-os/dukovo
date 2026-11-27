@@ -7,11 +7,14 @@
 //! Dukovo's rule that no page is writable and executable at once holds
 //! for Linux programs too: `mmap` and `mprotect` refuse PROT_WRITE with
 //! PROT_EXEC with EACCES, as Linux does where a security module forbids
-//! such memory. `madvise`'s MADV_DONTNEED and MADV_FREE let go of the
-//! pages (radix-address-space(2)'s `forget`), so that they read as zeros
-//! or as their file again. `mremap` shrinks in place; a mapping that
-//! would have to grow or move is ENOMEM, and the C libraries then copy
-//! (docs/deferred.md). The break is the process's own (`LinuxProcess`).
+//! such memory, but for the private anonymous memory of a process given
+//! memory.jit (ADR 0624), where a JIT compiler writes its code. A refusal
+//! for want of memory.jit is noted on the process, for `linux run` to say
+//! so. `madvise`'s MADV_DONTNEED and MADV_FREE let go of the pages
+//! (radix-address-space(2)'s `forget`), so that they read as zeros or as
+//! their file again. `mremap` is the address space's `remap` (ADR 0629),
+//! which grows a mapping in place or moves its pages without copying
+//! them. The break is the process's own (`LinuxProcess`).
 
 use core::cmp::Ordering;
 
@@ -21,7 +24,9 @@ use radix_abi::capability::Rights;
 use radix_abi::errors::{File, Kernel};
 use radix_abi::process::{self, MemoryFileArgs};
 use radix_abi::startup::{SLOT_PROCESS, SLOT_SPACE};
-use radix_linux::errno::{EACCES, EBADF, EINVAL, ENAMETOOLONG, ENODEV, ENOMEM, EOPNOTSUPP, EPERM};
+use radix_linux::errno::{
+    EACCES, EBADF, EFAULT, EINVAL, ENAMETOOLONG, ENODEV, ENOMEM, EOPNOTSUPP, EPERM,
+};
 use radix_linux::memfd;
 
 use super::{Args, Error, Result, fail, files, is, method, paths, results};
@@ -66,11 +71,18 @@ const MAP_KNOWN: u64 = MAP_TYPE
     | MAP_FIXED_NOREPLACE
     | (0x3f << 26);
 
+/// Whether `prot` asks for memory that is writable and executable.
+fn writes_and_executes(prot: u64) -> bool {
+    prot & (PROT_WRITE | PROT_EXEC) == PROT_WRITE | PROT_EXEC
+}
+
 /// The native rights for `prot`, as Dukovo's C library gives them: write
 /// and execute each imply read, as on x86-64. EACCES for writable and
-/// executable memory.
-fn rights_of(prot: u64) -> Result<Rights> {
-    if prot & (PROT_WRITE | PROT_EXEC) == PROT_WRITE | PROT_EXEC {
+/// executable memory, unless `jit`: the process has memory.jit and the
+/// memory is private and anonymous, or may be (`mprotect`, which the
+/// address space refuses for any other).
+fn rights_of(prot: u64, jit: bool) -> Result<Rights> {
+    if writes_and_executes(prot) && !jit {
         return fail(EACCES);
     }
     let mut rights = Rights::NONE;
@@ -128,7 +140,12 @@ pub fn mmap(me: &ThreadRef, user: &UserRef, a: &Args) -> Result<u64> {
     if flags & MAP_TYPE != MAP_PRIVATE {
         map_flags = map_flags.union(MapFlags::SHARED);
     }
-    let rights = rights_of(prot)?;
+    let private_anonymous = anonymous && flags & MAP_TYPE == MAP_PRIVATE;
+    let jit = user.process.jit() && private_anonymous;
+    if private_anonymous && !jit && writes_and_executes(prot) {
+        user.process.refuse_jit();
+    }
+    let rights = rights_of(prot, jit)?;
     let mapped = if anonymous {
         let args = abi::MapAnonymousArgs { address, size: length, rights, flags: map_flags };
         results(me, user, SLOT_SPACE, abi::MAP_ANONYMOUS, args.encode())
@@ -191,7 +208,11 @@ pub fn mprotect(
     if length > USER_TOP {
         return fail(ENOMEM);
     }
-    let args = abi::ProtectArgs { address, size: length, rights: rights_of(prot)? };
+    let jit = user.process.jit();
+    if !jit && writes_and_executes(prot) {
+        user.process.refuse_jit();
+    }
+    let args = abi::ProtectArgs { address, size: length, rights: rights_of(prot, jit)? };
     match results(me, user, SLOT_SPACE, abi::PROTECT, args.encode()) {
         Ok(_) => Ok(0),
         // A page that is not mapped: ENOMEM, as Linux says it.
@@ -294,33 +315,61 @@ const MREMAP_MAYMOVE: u64 = 1;
 const MREMAP_FIXED: u64 = 2;
 const MREMAP_DONTUNMAP: u64 = 4;
 
-/// `mremap(old_address, old_size, new_size, flags, new_address)`: a
-/// mapping shrinks in place, by discarding its tail. One that would have
-/// to grow or move is ENOMEM, which the C libraries' `realloc` answers by
-/// copying (docs/deferred.md).
+/// `mremap(old_address, old_size, new_size, flags, new_address)` (ADR
+/// 0629): the address space's `remap`, after Linux's checks in Linux's
+/// order. A mapping shrinks in place, grows in place where the pages after
+/// it are free, and otherwise moves with MREMAP_MAYMOVE, taking its pages
+/// with it, as C libraries' `realloc` of a large block and Node.js's heap
+/// do. Errors as Linux's `mm/mremap.c`: EFAULT where no mapping holds the
+/// old range, ENOMEM where it cannot grow or move.
 pub fn mremap(me: &ThreadRef, user: &UserRef, a: &Args) -> Result<u64> {
-    let [address, old_size, new_size, flags, _, _] = *a;
-    if flags & !(MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP) != 0
-        || (flags & (MREMAP_FIXED | MREMAP_DONTUNMAP) != 0 && flags & MREMAP_MAYMOVE == 0)
+    let [address, old_size, new_size, flags, new_address, _] = *a;
+    let moves = MREMAP_FIXED | MREMAP_DONTUNMAP;
+    if flags & !(MREMAP_MAYMOVE | moves) != 0
+        || flags & moves != 0 && flags & MREMAP_MAYMOVE == 0
+        || flags & MREMAP_DONTUNMAP != 0 && old_size != new_size
         || !aligned(address)
-        || new_size == 0
-        || old_size == 0
     {
         return fail(EINVAL);
     }
+    // Linux's PAGE_ALIGN, which wraps a size near the top to 0.
+    let page_align = |size: u64| size.wrapping_add(PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    let (old_size, new_size) = (page_align(old_size), page_align(new_size));
+    if new_size == 0 {
+        return fail(EINVAL);
+    }
     if old_size > USER_TOP || new_size > USER_TOP {
-        return fail(ENOMEM);
+        return fail(if flags & moves != 0 { EINVAL } else { ENOMEM });
     }
-    let (old_top, new_top) =
-        (old_size.next_multiple_of(PAGE_SIZE), new_size.next_multiple_of(PAGE_SIZE));
-    if flags & (MREMAP_FIXED | MREMAP_DONTUNMAP) != 0 || new_top > old_top {
-        return fail(ENOMEM);
+    let mut how = abi::RemapFlags::NONE;
+    for (flag, native) in [
+        (MREMAP_MAYMOVE, abi::RemapFlags::MAY_MOVE),
+        (MREMAP_FIXED, abi::RemapFlags::FIXED),
+        (MREMAP_DONTUNMAP, abi::RemapFlags::KEEP_OLD),
+    ] {
+        if flags & flag != 0 {
+            how = how.union(native);
+        }
     }
-    if new_top < old_top {
-        let args = abi::DiscardArgs { address: address + new_top, size: old_top - new_top };
-        results(me, user, SLOT_SPACE, abi::DISCARD, args.encode())?;
+    // Linux's new address is a hint with MREMAP_DONTUNMAP alone, and
+    // passed over without either.
+    let to = if flags & moves != 0 { new_address } else { 0 };
+    let args = abi::RemapArgs { address, size: old_size, new_size, flags: how, to };
+    match results(me, user, SLOT_SPACE, abi::REMAP, args.encode()) {
+        Ok(words) => Ok(abi::RemapResults::decode(&words)?.address),
+        Err(Error::Native(status)) if is(status, Kernel::NotMapped) => fail(EFAULT),
+        // A frame's, ring's or card's pages, as Linux's VM_PFNMAP: EFAULT to
+        // grow, EINVAL to keep the old place.
+        Err(Error::Native(status)) if is(status, Kernel::WrongKind) => {
+            fail(if flags & MREMAP_DONTUNMAP != 0 { EINVAL } else { EFAULT })
+        }
+        Err(Error::Native(status))
+            if is(status, Kernel::NoMemory) || is(status, Kernel::AlreadyMapped) =>
+        {
+            fail(ENOMEM)
+        }
+        Err(err) => Err(err),
     }
-    Ok(address)
 }
 
 /// `memfd_create` (ADR 0614): the native `memory_file` (radix-process(2))

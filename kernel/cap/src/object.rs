@@ -90,10 +90,12 @@ pub enum ObjectKind {
     /// reaches the calling process until the call has its answer (ADR
     /// 0618).
     LinuxCall = 26,
+    /// What lets a launcher give a process memory.jit (ADR 0624).
+    Jit = 27,
 }
 
 /// How many kinds there are.
-pub const KINDS: usize = 27;
+pub const KINDS: usize = 28;
 
 impl ObjectKind {
     /// Every kind, in the order of their numbers.
@@ -125,6 +127,7 @@ impl ObjectKind {
         ObjectKind::KernelSettings,
         ObjectKind::EventQueue,
         ObjectKind::LinuxCall,
+        ObjectKind::Jit,
     ];
 
     /// The kind numbered `n`.
@@ -199,6 +202,8 @@ impl ObjectKind {
             // control its descriptors. Its one capability is made without
             // the copy and transfer rights, so it never leaves its holder.
             ObjectKind::LinuxCall => Rights::READ.union(Rights::WRITE).union(Rights::CONTROL),
+            // Control gives a process memory.jit.
+            ObjectKind::Jit => Rights::CONTROL,
         };
         own.union(Rights::COPY).union(Rights::TRANSFER)
     }
@@ -266,6 +271,7 @@ impl ObjectKind {
             ObjectKind::KernelSettings => "kernel settings",
             ObjectKind::EventQueue => "event queue",
             ObjectKind::LinuxCall => "Linux call",
+            ObjectKind::Jit => "jit",
         }
     }
 }
