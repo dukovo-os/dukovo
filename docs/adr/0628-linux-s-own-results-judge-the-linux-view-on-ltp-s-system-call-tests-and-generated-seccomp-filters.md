@@ -83,7 +83,16 @@ rules as written; they cannot show that the rules were read right.
   that changes the Linux layer: the kernel's Linux table and libraries,
   radix-bpf, linuxd, `linux run`, the Linux base, the suite's programs
   or the suite itself. Its report, the results on both systems and the
-  logs of the cases that failed on Dukovo are kept as an artifact.
+  logs of the cases that failed on Dukovo are kept as an artifact, and a
+  failed run prints in the job's log the report, with the lines of each
+  failed case's log that say why, the machine's threads and what each
+  waited for at the last of the looks the run takes every five minutes,
+  and what the kernel said of crashes and warnings.
+- **A run that hangs.** A case still running after 3 minutes is ended
+  with its process group. Three in a row say the system runs no case
+  any more, and the runner stops there; the cases after them are
+  reported as missing, the threads show where the machine waits, and the
+  seccomp differential, which runs first, has its lines all the same.
 - **Times.** On a build machine with 4 CPUs, LTP's build takes about 2
   minutes and the Linux run 8: 1,552 cases, of which 848 pass as an
   ordinary user, 662 do not apply and 42 fail, break, time out or were

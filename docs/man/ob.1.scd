@@ -473,7 +473,8 @@ _target/userspace/_).
 	Linux base lacks. It runs every case of LTP's _runtest/syscalls_ here
 	with *suite-run* (_userspace/linux/suite-run.c_), one at a time, each in
 	a process group of its own and ended after 3 minutes, as the user
-	who runs *ob*, which must not be root: about 8 minutes. The cases that
+	who runs *ob*, which must not be root: about 8 minutes; after three
+	cases in a row that run out of time, *suite-run* runs no more. The cases that
 	pass, but for those that _tools/xtask/src/test/linux-suite-skips.txt_
 	names, then run on Dukovo, in a machine with 4 CPUs, 4 GiB of memory
 	and a root grown to 2 GiB: alice installs the Linux base and runs
@@ -481,9 +482,11 @@ _target/userspace/_).
 	2,000 seeded filters) under *linux run*. Each case must pass on Dukovo
 	too, and *seccomp-diff* must print Linux's lines; a case that does not
 	pass on Linux is listed and not judged. The report, with the counts,
-	the times and each case that failed, is _out/test/linux-suite.txt_; the
-	logs of the cases that failed on Dukovo are
-	_out/test/linux-suite-failed.log_. A skip is a case's name, or a
+	the times and each case that failed with the lines of its log that
+	say why, is _out/test/linux-suite.txt_; the logs of the cases that
+	failed on Dukovo are _out/test/linux-suite-failed.log_, and the
+	machine's threads, with what each waited for, every five minutes of
+	the run, _out/test/linux-suite-threads.txt_. A skip is a case's name, or a
 	pattern with *\**, and a reason that quotes, in double quotes, words
 	of its row of _docs/deferred.md_; *ob* refuses a skip whose row is not
 	there or that names no case. *--timeout* _seconds_ is how long the

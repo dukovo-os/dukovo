@@ -112,11 +112,24 @@ jobs:
         timeout-minutes: 150
         run: ./ob test linux-suite
 
+      # The whole report, with why each case failed, then the threads at
+      # the last look the run took and what the kernel said of crashes and
+      # warnings: what a failed run needs read is in the job's log.
       - name: Show the suite's report
         if: failure()
         run: |
           if [ -f out/test/linux-suite.txt ]; then
-            head -n 400 out/test/linux-suite.txt
+            head -n 4000 out/test/linux-suite.txt
+          fi
+          if [ -s out/test/linux-suite-threads.txt ]; then
+            echo "== The threads at the run's last look"
+            awk '/^== threads at/ { last = "" } { last = last $0 "\n" } END { printf "%s", last }' \
+              out/test/linux-suite-threads.txt | head -n 800
+          fi
+          if [ -f out/test/boot-linux-suite.log ]; then
+            echo "== The kernel's crashes and warnings"
+            grep -E -i 'reportd|panic|warning|lockdep|out of memory|no memory|linuxd' \
+              out/test/boot-linux-suite.log | grep -v 'Domains:' | head -n 400 || true
           fi
 
       - name: Upload the suite's results
@@ -129,6 +142,7 @@ jobs:
             out/test/linux-suite-dukovo.txt
             out/test/linux-suite-seccomp.txt
             out/test/linux-suite-failed.log
+            out/test/linux-suite-threads.txt
             out/test/boot-linux-suite.log
             out/test/linux-suite.ppm
             target/linux-suite/on-linux/results.txt

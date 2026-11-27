@@ -24,9 +24,11 @@
 // MILLISECONDS`: the exit status (0 when the test passed; LTP adds 1 for a
 // failure, 2 for a broken test, 4 for a warning and 32 for a test that
 // does not apply), `signal-N` when a signal ended it, `timeout`, or
-// `not-run` when it could not be started, and how long it ran. It ends by
-// saying, on its standard output, `suite-run: N cases, P passed`, and exits
-// with 0, or with 2 when it could not read its list or write its results.
+// `not-run` when it could not be started, and how long it ran. Three cases
+// in a row that run out of time say the system no longer runs any, and the
+// runner stops there rather than wait out the rest. It ends by saying, on
+// its standard output, `suite-run: N cases, P passed`, and exits with 0,
+// or with 2 when it could not read its list or write its results.
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -52,6 +54,8 @@ enum {
 	PATH_LONGEST = 2 * LINE + 64,
 	// What a case that could not be started exits with.
 	NOT_RUN = 127,
+	// How many cases in a row may run out of time before the runner stops.
+	TIMEOUTS_IN_A_ROW = 3,
 };
 
 static long long now_ms(void) {
@@ -112,9 +116,12 @@ static pid_t start(char **words, const char *root, const char *log) {
 	_exit(NOT_RUN);
 }
 
-// Runs one case and writes its line of `results`; returns whether it
-// passed.
-static int run_case(char **words, const char *root, const char *logs, int seconds,
+// What became of a case.
+enum outcome { PASSED, FAILED, TIMED_OUT };
+
+// Runs one case and writes its line of `results`; returns what became of
+// it.
+static enum outcome run_case(char **words, const char *root, const char *logs, int seconds,
 		FILE *results) {
 	char log[PATH_LONGEST], status_text[32];
 	int log_fits = snprintf(log, sizeof(log), "%s/%s.log", logs, words[0]) < (int)sizeof(log);
@@ -142,7 +149,9 @@ static int run_case(char **words, const char *root, const char *logs, int second
 	}
 	fprintf(results, "%s %s %lld\n", words[0], status_text, now_ms() - started);
 	fflush(results);
-	return strcmp(status_text, "0") == 0;
+	if(strcmp(status_text, "timeout") == 0)
+		return TIMED_OUT;
+	return strcmp(status_text, "0") == 0 ? PASSED : FAILED;
 }
 
 int main(int argc, char **argv) {
@@ -175,8 +184,8 @@ int main(int argc, char **argv) {
 	// A case that ends its group's readers leaves the runner be.
 	signal(SIGPIPE, SIG_IGN);
 	char line[LINE];
-	int count = 0, passed = 0;
-	while(fgets(line, sizeof(line), cases)) {
+	int count = 0, passed = 0, timed_out = 0;
+	while(timed_out < TIMEOUTS_IN_A_ROW && fgets(line, sizeof(line), cases)) {
 		char *words[WORDS + 1];
 		int n = 0;
 		for(char *word = strtok(line, " \t\n"); word && n < WORDS; word = strtok(NULL, " \t\n"))
@@ -184,12 +193,17 @@ int main(int argc, char **argv) {
 		if(n < 2 || words[0][0] == '#')
 			continue;
 		words[n] = NULL;
-		passed += run_case(words, root, logs, seconds, results);
+		enum outcome outcome = run_case(words, root, logs, seconds, results);
+		passed += outcome == PASSED;
+		timed_out = outcome == TIMED_OUT ? timed_out + 1 : 0;
 		count++;
 		// The children a case's processes left to the runner.
 		while(waitpid(-1, NULL, WNOHANG) > 0) {
 		}
 	}
+	if(timed_out == TIMEOUTS_IN_A_ROW)
+		printf("suite-run: %d cases in a row ran out of time; the rest are not run\n",
+				timed_out);
 	printf("suite-run: %d cases, %d passed\n", count, passed);
 	return 0;
 }

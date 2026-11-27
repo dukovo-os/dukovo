@@ -32,9 +32,13 @@
 //!
 //! ob writes what it found to `out/test/linux-suite.txt`: the counts on both
 //! systems, each case that failed on Dukovo with its status, and the first
-//! line where seccomp-diff's output parts. The logs of the cases that did
-//! not pass on Dukovo are in `out/test/linux-suite-failed.log`; the serial
-//! log, `out/test/boot-linux-suite.log`, has the kernel's own words.
+//! line where seccomp-diff's output parts, and under each case that failed
+//! the first lines of its log that say why ([`faults_of`]). The logs of the
+//! cases that did not pass on Dukovo are in `out/test/linux-suite-failed.log`,
+//! every thread of the machine and what it waited for, each five minutes of
+//! the run, in `out/test/linux-suite-threads.txt`, so that a run that hangs
+//! shows where; the serial log, `out/test/boot-linux-suite.log`, has the
+//! kernel's own words.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -104,16 +108,18 @@ const SECCOMP_FILE: &str = "seccomp-diff";
 const RESULTS_FILE: &str = "results.txt";
 const SECCOMP_RESULTS_FILE: &str = "seccomp.txt";
 const FAILED_FILE: &str = "failed.log";
+const THREADS_FILE: &str = "threads.txt";
 
 /// What ob saves in the folder of the boot tests' logs: its report, and
 /// what the run left on Dukovo, each file's path there, its name on the
 /// disk, which it is copied to, and the name ob saves it by. The script's
 /// own log is outside the folder it works in, which it makes anew.
 const REPORT: &str = "linux-suite.txt";
-const SAVED: [(&str, &str, &str); 4] = [
+const SAVED: [(&str, &str, &str); 5] = [
     ("/users/alice/linux-suite/out/results.txt", RESULTS_FILE, "linux-suite-dukovo.txt"),
     ("/users/alice/linux-suite/out/seccomp.txt", SECCOMP_RESULTS_FILE, "linux-suite-seccomp.txt"),
     ("/users/alice/linux-suite/out/failed.log", FAILED_FILE, "linux-suite-failed.log"),
+    ("/users/alice/linux-suite/out/threads.txt", THREADS_FILE, "linux-suite-threads.txt"),
     (SCRIPT_LOG, "script.log", "linux-suite-script.log"),
 ];
 
@@ -151,8 +157,10 @@ const SAVE_SECONDS: u64 = 300;
 const ROOM_KIB: u64 = 1536 * 1024;
 
 /// The script, `sh linux-suite.sh`, as `@VOLUME@`, where the disk is,
-/// `@WORK@`, where it works, and the run's numbers are filled in. It ends
-/// with the line `linux-suite: done`.
+/// `@WORK@`, where it works, and the run's numbers are filled in. seccomp-diff,
+/// which takes seconds, runs before the cases, so that a run of them that
+/// hangs leaves its lines all the same. It ends with the line
+/// `linux-suite: done`.
 const SCRIPT: &str = r#"#!/bin/sh
 volume=@VOLUME@
 work=@WORK@
@@ -162,10 +170,15 @@ cp -R "$volume/@LTP@" "$work/@LTP@"
 cp "$volume/@RUNNER@" "$volume/@SECCOMP@" "$work/"
 chmod 755 "$work/@RUNNER@" "$work/@SECCOMP@" "$work"/@LTP@/testcases/bin/*
 cd "$work"
-linux run -- "$work/@RUNNER@" "$work/@LTP@/@CASES@" "$work/@LTP@" "$work/out" @SECONDS@
-echo "suite-run status $?"
+# Each five minutes, every thread and what it waits for.
+(while sleep 300; do echo "== threads at $(date)"; ps -eLo pid,lwp,stat,wchan,args; done) \
+	> "$work/out/@THREADS@" 2>&1 &
+watch=$!
 linux run -- "$work/@SECCOMP@" @SEED@ @FILTERS@ > "$work/out/@SECCOMP_RESULTS@" 2>&1
 echo "seccomp-diff status $?"
+linux run -- "$work/@RUNNER@" "$work/@LTP@/@CASES@" "$work/@LTP@" "$work/out" @SECONDS@
+echo "suite-run status $?"
+kill "$watch"
 # The logs of the cases that did not pass, in one file.
 awk '$2 != "0" { print $1 }' "$work/out/@RESULTS@" | while read -r name; do
 	echo "== $name"
@@ -195,6 +208,7 @@ fn script_for(volume: &str, work: &str) -> String {
         .replace("@SECCOMP_RESULTS@", SECCOMP_RESULTS_FILE)
         .replace("@RESULTS@", RESULTS_FILE)
         .replace("@FAILED@", FAILED_FILE)
+        .replace("@THREADS@", THREADS_FILE)
 }
 
 /// The disks: Dukovo's root on a copy of the test image with room after it,
@@ -311,15 +325,18 @@ pub fn command(ctx: &Ctx, profile: crate::config::Profile, limit: Option<Duratio
     // Whatever the machine got through is judged and reported, even when it
     // did not end in time.
     let saved = |index: usize| read_file(&logs.join(SAVED[index].2)).unwrap_or_default();
-    let verdict = Verdict::judge(
-        &all,
-        &linux,
-        &skips,
-        &chosen,
-        &parse_results(&saved(0)),
-        &String::from_utf8_lossy(&expected.stdout),
-        &saved(1),
-    );
+    let verdict = Verdict {
+        why: faults_of(&saved(2)),
+        ..Verdict::judge(
+            &all,
+            &linux,
+            &skips,
+            &chosen,
+            &parse_results(&saved(0)),
+            &String::from_utf8_lossy(&expected.stdout),
+            &saved(1),
+        )
+    };
     let report = logs.join(REPORT);
     std::fs::write(&report, verdict.report())
         .context(|| format!("writing {}", report.display()))?;
@@ -729,6 +746,8 @@ struct Verdict {
     /// The cases that passed on Linux and did not on Dukovo, with their
     /// status there: `missing` when the run ended before them.
     failed: Vec<(String, String)>,
+    /// What the logs of the failed cases say of why ([`faults_of`]).
+    why: BTreeMap<String, Vec<String>>,
     /// The milliseconds the chosen cases ran, on Linux and on Dukovo.
     linux_millis: u64,
     dukovo_millis: u64,
@@ -781,6 +800,7 @@ impl Verdict {
             chosen: chosen.len(),
             dukovo_passed: chosen.len() - failed.len(),
             failed,
+            why: BTreeMap::new(),
             linux_millis: millis(linux),
             dukovo_millis: millis(dukovo),
             seccomp: seccomp_difference(seccomp_linux, seccomp_dukovo),
@@ -820,6 +840,9 @@ impl Verdict {
                 text.push_str(&format!("\n{heading}:\n"));
                 for (name, why) in cases {
                     text.push_str(&format!("  {name} {why}\n"));
+                    for line in self.why.get(name).into_iter().flatten() {
+                        text.push_str(&format!("      {line}\n"));
+                    }
                 }
             }
         };
@@ -852,6 +875,33 @@ impl Verdict {
         }
         (!faults.is_empty()).then(|| faults.join("; "))
     }
+}
+
+/// The most lines of a failed case's log the report shows, and the most
+/// characters of each.
+const WHY_LINES: usize = 2;
+const WHY_WIDTH: usize = 160;
+
+/// What the logs of the failed cases say of why, from the file of them
+/// the script writes (`== NAME` and then its log, a case after another):
+/// for each, its first lines that LTP marks as a failure, a broken test,
+/// a warning or a test that does not apply, or else the last line it
+/// wrote, each cut to [`WHY_WIDTH`] characters.
+fn faults_of(failed: &str) -> BTreeMap<String, Vec<String>> {
+    let mut faults = BTreeMap::new();
+    for section in failed.split("== ").filter(|section| !section.is_empty()) {
+        let (name, log) = section.split_once('\n').unwrap_or((section, ""));
+        let cut = |line: &str| line.trim().chars().take(WHY_WIDTH).collect::<String>();
+        let marked = |line: &&str| {
+            ["TFAIL: ", "TBROK: ", "TWARN: ", "TCONF: "].iter().any(|mark| line.contains(mark))
+        };
+        let mut why: Vec<String> = log.lines().filter(marked).take(WHY_LINES).map(cut).collect();
+        if why.is_empty() {
+            why.extend(log.lines().rev().find(|line| !line.trim().is_empty()).map(cut));
+        }
+        faults.insert(name.trim().to_string(), why);
+    }
+    faults
 }
 
 /// Where seccomp-diff's lines on Dukovo part from Linux's, if they do.
@@ -985,6 +1035,12 @@ mod tests {
             "{report}"
         );
         assert!(report.contains("  brk01 1\n"), "{report}");
+        let verdict = Verdict {
+            why: faults_of("== brk01\nbrk01.c:20: TFAIL: brk() failed: ENOMEM\n"),
+            ..verdict
+        };
+        let report = verdict.report();
+        assert!(report.contains("  brk01 1\n      brk01.c:20: TFAIL: brk() failed: ENOMEM\n"));
         assert!(report.contains("Skipped:\n  fcntl36 \"Open file\"\n"), "{report}");
 
         // A run that ended early leaves cases missing.
@@ -1002,6 +1058,28 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_case_is_shown_with_the_lines_that_say_why() {
+        let failed = "== mmap01\ntst_test.c:1: TINFO: Timeout per run is 0h 00m 30s\n\
+                      mmap01.c:9: TFAIL: mmap() failed: EINVAL\n\
+                      mmap01.c:12: TBROK: munmap() failed: EINVAL\n\
+                      mmap01.c:14: TFAIL: a third\n\
+                      == pipe08\nstarted\nwaiting\n\n";
+        let faults = faults_of(failed);
+        assert_eq!(
+            faults["mmap01"],
+            [
+                "mmap01.c:9: TFAIL: mmap() failed: EINVAL",
+                "mmap01.c:12: TBROK: munmap() failed: EINVAL"
+            ]
+        );
+        // A log with no marked line shows its last.
+        assert_eq!(faults["pipe08"], ["waiting"]);
+        let long = format!("== x\nx.c:1: TFAIL: {}\n", "a".repeat(400));
+        assert_eq!(faults_of(&long)["x"][0].chars().count(), WHY_WIDTH);
+        assert!(faults_of("").is_empty());
+    }
+
+    #[test]
     fn patterns_match_any_run_of_characters_for_a_star() {
         assert!(matches_pattern("fcntl*_64", "fcntl12_64"));
         assert!(!matches_pattern("fcntl*_64", "fcntl12"));
@@ -1013,7 +1091,7 @@ mod tests {
     #[test]
     fn what_is_saved_is_where_the_script_writes_it() {
         let out = format!("{WORK}/out/");
-        let written = [RESULTS_FILE, SECCOMP_RESULTS_FILE, FAILED_FILE];
+        let written = [RESULTS_FILE, SECCOMP_RESULTS_FILE, FAILED_FILE, THREADS_FILE];
         for ((from, name, _), file) in SAVED.iter().zip(written) {
             assert_eq!(*from, format!("{out}{file}"));
             assert_eq!(*name, file);
@@ -1072,6 +1150,7 @@ mod tests {
             format!("seccomp {SECCOMP_SEED} {SECCOMP_FILTERS}\n")
         );
         assert_eq!(read(FAILED_FILE), "== bad\nbad said why\n");
+        assert!(out.join(THREADS_FILE).is_file());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
