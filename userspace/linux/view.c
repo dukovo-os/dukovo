@@ -200,6 +200,23 @@ static int only_terminal_devices(void) {
 	return only;
 }
 
+// Whether /system/commands holds no more of Dukovo's programs than the
+// shell and the core commands that /bin and /usr/bin name (ADR 0626).
+static int only_shell_commands(void) {
+	DIR *folder = opendir("/system/commands");
+	if(!folder)
+		return 1;
+	int only = 1;
+	for(struct dirent *each; (each = readdir(folder));) {
+		const char *name = each->d_name;
+		if(strcmp(name, ".") && strcmp(name, "..") && strcmp(name, "nukesh") &&
+		   strcmp(name, "coreutils") && strcmp(name, "find") && strcmp(name, "xargs"))
+			only = 0;
+	}
+	closedir(folder);
+	return only;
+}
+
 // Whether `text` is a list of CPU numbers and ranges as the kernel writes
 // one: digits, `-` and `,`, ending with a newline.
 static int is_cpu_list(const char *text) {
@@ -369,19 +386,21 @@ static void shm_case(void) {
 	CHECK(access(path, F_OK) != 0 && errno == ENOENT);
 }
 
-// The person's own folders are not in the view. Dukovo's programs and
-// libraries are not; /devices holds a terminal's devices alone, which the
-// links of /dev name; and the parent of the person's home is there only as
-// the way to what the view holds beneath it, so it opens to no more than the
-// home's own name: the other accounts' homes are not in it. The program's
-// HOME is a folder of the person's app-data, from which the home is found.
+// The person's own folders are not in the view. Of Dukovo's programs only
+// the shell and the core commands are, for /bin/sh and the commands of
+// /usr/bin (ADR 0626), and none of its settings; /devices holds a
+// terminal's devices alone, which the links of /dev name; and the parent of
+// the person's home is there only as the way to what the view holds beneath
+// it, so it opens to no more than the home's own name: the other accounts'
+// homes are not in it. The program's HOME is a folder of the person's
+// app-data, from which the home is found.
 static void hidden_case(void) {
 	if(!on_dukovo) {
 		skip("it checks the sandbox, which only Dukovo makes");
 		return;
 	}
-	CHECK(!opens("/system/commands"));
-	CHECK(!opens("/system/libraries"));
+	CHECK(only_shell_commands());
+	CHECK(!opens("/system/settings"));
 	CHECK(only_terminal_devices());
 	const char *data = getenv("HOME");
 	const char *app_data = data ? strstr(data, "/app-data/") : NULL;
