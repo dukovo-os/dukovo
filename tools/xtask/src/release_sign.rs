@@ -254,9 +254,19 @@ fn same_builds(built: &Path, ci: &[PathBuf; 2]) -> Result<()> {
 /// YubiKey, with the security advisories, writing the Rekor entry beside
 /// it.
 fn offer(ctx: &Ctx, request: &Request, repo: &Path) -> Result<()> {
-    let root = ctx.root.join(REPO).join("metadata/1.root.json");
+    let metadata = ctx.root.join(REPO).join("metadata");
     let mut fetch = Command::new(release::tool(ctx)?);
-    fetch.arg("fetch").arg("--root").arg(&root).arg("--out").arg(repo).arg(URL);
+    // A root the source tree has and the server does not serve yet goes
+    // out with the release (ADR 0780).
+    fetch
+        .arg("fetch")
+        .arg("--root")
+        .arg(metadata.join("1.root.json"))
+        .arg("--roots")
+        .arg(&metadata)
+        .arg("--out")
+        .arg(repo)
+        .arg(URL);
     process::run(ctx, &mut fetch)?;
     let mut offer = Command::new(release::tool(ctx)?);
     offer

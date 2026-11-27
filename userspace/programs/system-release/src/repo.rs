@@ -750,6 +750,102 @@ pub fn roots_in(dir: &Path) -> Result<Vec<Vec<u8>>, String> {
     Ok(roots)
 }
 
+/// Checks that the root `new` follows the root `old`, as a client takes
+/// the next root (TUF 5.3.4 to 5.3.8): one version on, and signed by
+/// enough of `old`'s root keys and of its own.
+///
+/// # Errors
+///
+/// If either is not a root, or `new` does not follow `old`.
+pub fn follows(old: &[u8], new: &[u8]) -> Result<(), String> {
+    let old = Signed::<Root>::parse(old).map_err(|err| format!("root: {err}"))?;
+    let parsed = Signed::<Root>::parse(new).map_err(|err| format!("the next root: {err}"))?;
+    let next = old.version + 1;
+    if parsed.version != next {
+        return Err(format!(
+            "root {} follows root {}, not root {next}",
+            parsed.version, old.version
+        ));
+    }
+    parsed.verified_by(&old.signed, "root").map_err(|err| {
+        format!("root {next} is not signed by root {}'s keys: {err}", old.version)
+    })?;
+    parsed
+        .verified_by(&parsed.signed, "root")
+        .map_err(|err| format!("root {next} is not signed by its own keys: {err}"))
+}
+
+/// Every root in the folder `metadata`, as the source tree keeps them in
+/// `releases/metadata/`: `1.root.json`, then each next version while there
+/// is one, each checked to follow the one before.
+///
+/// # Errors
+///
+/// If there is no first root, one cannot be read, or one does not follow
+/// the one before.
+pub fn root_chain(metadata: &Path) -> Result<Vec<Vec<u8>>, String> {
+    let mut roots: Vec<Vec<u8>> = Vec::new();
+    for version in 1_u64.. {
+        let path = metadata.join(format!("{version}.root.json"));
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound && version > 1 => break,
+            Err(err) => return Err(format!("{}: {err}", path.display())),
+        };
+        if let Some(old) = roots.last() {
+            follows(old, &bytes).map_err(|err| format!("{}: {err}", path.display()))?;
+        }
+        roots.push(bytes);
+    }
+    Ok(roots)
+}
+
+/// Adds to the repository at `dir`, fetched from the update server, the
+/// roots of the source tree's `metadata` that the server does not serve
+/// yet, by version, and the newest as `root.json`, so that what is signed
+/// in it next is signed under the newest root and a deploy carries them
+/// (ADR 0780). Gives how many were added.
+///
+/// # Errors
+///
+/// If a root of the tree does not follow the one before, or the server
+/// serves a root that the tree does not hold, or holds otherwise: the
+/// tree is then behind the server, or not the project's.
+pub fn add_roots(dir: &Path, metadata: &Path) -> Result<usize, String> {
+    let tree = root_chain(metadata)?;
+    let served = roots_in(dir)?;
+    for (n, root) in served.iter().enumerate() {
+        match tree.get(n) {
+            Some(held) if held == root => {}
+            Some(_) => {
+                return Err(format!(
+                    "root {} as served is not {}'s: nothing was added",
+                    n + 1,
+                    metadata.display()
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "the server serves root {}, which {} does not hold: the source tree is behind",
+                    n + 1,
+                    metadata.display()
+                ));
+            }
+        }
+    }
+    let folder = dir.join("metadata");
+    let added = &tree[served.len()..];
+    for (n, root) in added.iter().enumerate() {
+        let path = folder.join(format!("{}.root.json", served.len() + n + 1));
+        std::fs::write(&path, root).map_err(|err| format!("{}: {err}", path.display()))?;
+    }
+    if let Some(newest) = added.last() {
+        let path = folder.join("root.json");
+        std::fs::write(&path, newest).map_err(|err| format!("{}: {err}", path.display()))?;
+    }
+    Ok(added.len())
+}
+
 /// What [`fetch`] wrote.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Fetched {

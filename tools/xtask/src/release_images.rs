@@ -187,6 +187,7 @@ mod tests {
             assert_eq!(held["key"]["keyval"]["public"].as_str(), Some(pem.as_str()), "{name}");
             checked += 1;
         }
-        assert_eq!(checked, 2, "the two YubiKeys' keys");
+        // Two, or one between a YubiKey's loss and its replacement.
+        assert!((1..=2).contains(&checked), "{checked} YubiKeys' keys");
     }
 }

@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0457. Releases are signed on two hardware keys, after three builds agree
 
-- Status: Accepted; the builds are made reproducible, and CI builds twice, by [0535](0535-a-release-is-built-twice-by-ci-in-different-places-and-must-come-out-the-same.md); the first root's ceremony and the release keys' own slot are set by [0538](0538-the-system-releases-first-root-is-signed-on-a-slot-of-each-yubikey-of-its-own.md); `ob release sign` and the Rekor record by [0778](0778-a-release-is-signed-on-a-yubikey-from-what-the-server-serves-once-its-gates-and-three-builds-agree.md)
+- Status: Accepted; the builds are made reproducible, and CI builds twice, by [0535](0535-a-release-is-built-twice-by-ci-in-different-places-and-must-come-out-the-same.md); the first root's ceremony and the release keys' own slot are set by [0538](0538-the-system-releases-first-root-is-signed-on-a-slot-of-each-yubikey-of-its-own.md); `ob release sign` and the Rekor record by [0778](0778-a-release-is-signed-on-a-yubikey-from-what-the-server-serves-once-its-gates-and-three-builds-agree.md); the roots after the first by [0780](0780-the-system-s-next-root-is-signed-on-the-yubikeys-from-the-keys-the-source-tree-holds-and-served-with-the-targets-signed-again.md); the online keys kept as files by [0782](0782-the-update-server-s-online-keys-stay-files-that-only-their-jobs-read.md)
 - Date: 2026-11-11
 
 ## Context
